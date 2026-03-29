@@ -91,12 +91,14 @@ Construction: **Iterated BLAKE3 hash chain**
 
 DOLI uses a hash-chain VDF with dynamic calibration to maintain consistent timing across all networks:
 
-| Parameter       | All Networks |
-|-----------------|--------------|
-| Target time     | ~55ms        |
-| Iterations      | ~800,000 (calibrated) |
-| Output          | 32 bytes     |
-| Verification    | Recompute    |
+| Parameter       | Consensus Constant | Network Default |
+|-----------------|-------------------|-----------------|
+| T_BLOCK         | 800,000           | 1,000 (all networks) |
+| Target time     | ~55ms (at 800K)   | <1ms (at 1,000) |
+| Output          | 32 bytes          | 32 bytes |
+| Verification    | Recompute         | Recompute |
+
+**Note:** Network defaults override VDF iterations to 1,000 (minimal). Bond staking is the primary Sybil defense, not VDF timing. The consensus constant T_BLOCK = 800,000 exists for potential future tightening via protocol upgrade.
 
 ```
 VDF_compute(input, iterations) -> output
@@ -104,11 +106,9 @@ VDF_verify(input, output, iterations) -> bool  // Recomputes the chain
 ```
 
 **Dynamic Calibration:**
-- Iterations adjusted ±20% per cycle to maintain ~55ms target timing
-- Min: 100,000 | Max: 100,000,000 iterations
-- Calibration runs every 60 seconds
+A calibration module exists in the codebase (`tpop/calibration.rs`) but is not currently used for block production. Block iterations are set per network via `NetworkParams` (currently 1,000 for all networks). Calibration bounds: min 100,000, max 100,000,000 iterations.
 
-**Note**: All networks use the same ~55ms VDF heartbeat. Grinding prevention comes from Epoch Lookahead (deterministic leader selection), not VDF timing.
+**Note**: Grinding prevention comes from Epoch Lookahead (deterministic leader selection), not VDF timing. Bond staking is the primary Sybil defense.
 
 ---
 
@@ -126,8 +126,13 @@ transaction = {
                                  // 10 = epoch_reward,
                                  // 11 = remove_maintainer, 12 = add_maintainer,
                                  // 13 = delegate_bond, 14 = revoke_delegation,
-                                 // 15 = protocol_activation,
-                                 // 17 = mint_asset, 18 = burn_asset (16 reserved)
+                                 // 15 = protocol_activation, (16 reserved),
+                                 // 17 = mint_asset, 18 = burn_asset,
+                                 // 19 = create_pool, 20 = add_liquidity,
+                                 // 21 = remove_liquidity, 22 = swap, (23 reserved),
+                                 // 24 = create_loan, 25 = repay_loan,
+                                 // 26 = liquidate_loan, 27 = lending_deposit,
+                                 // 28 = lending_withdraw
     inputs:     input[],
     outputs:    output[],
     extra_data: bytes            // Type-specific data
@@ -163,7 +168,7 @@ output = {
 }
 ```
 
-**Output Types (9 total):**
+**Output Types (13 total):**
 
 | ID | Type | Purpose | extra_data |
 |----|------|---------|------------|
@@ -176,9 +181,14 @@ output = {
 | 6 | NFT | Non-fungible token with metadata | Covenant conditions |
 | 7 | FungibleAsset | User-issued token | Covenant conditions + asset_id |
 | 8 | BridgeHTLC | Cross-chain atomic swap | Covenant conditions + chain metadata |
+| 9 | Pool | AMM pool (reserves + TWAP state) | Pool metadata (116 bytes) |
+| 10 | LPShare | Liquidity provider share (transferable) | Pool ID |
+| 11 | Collateral | Lending collateral (locked loan collateral) | Loan metadata |
+| 12 | LendingDeposit | Lending pool deposit receipt | Deposit metadata |
 
 Output types 2-8 use the programmable conditions system (`crates/core/src/conditions/`)
 with composable predicates (Signature, Multisig, Hashlock, Timelock, And, Or, Threshold).
+Output types 9-12 are DeFi primitives for the AMM pool and lending systems.
 
 **Bond UTXO extra_data format:**
 ```
@@ -224,7 +234,7 @@ boundaries via EpochReward transactions (see section 3.11).
 ```
 coinbase_tx = {
     version: 1,
-    type: 6,                     // TxType::Coinbase
+    type: 0,                     // TxType::Transfer (coinbase uses Transfer with no inputs)
     inputs: [],                  // Empty
     outputs: [{
         output_type: 0,
@@ -326,27 +336,27 @@ Burns 100% of producer's bond. This is the only slashable offense because it's t
 
 ### 3.11 Epoch Reward Transaction
 
-Epoch rewards are the **primary reward mechanism**. At each epoch boundary (every 360 blocks),
-rewards are automatically distributed to qualified producers based on weighted presence
-(attestation qualification + bond count). This is NOT deprecated — it is the active reward path.
+Epoch rewards are the **primary reward mechanism**. At each epoch boundary,
+rewards are automatically distributed to attestation-qualified producers, weighted by
+bond count (from epoch bond snapshot). This is NOT deprecated — it is the active reward path.
 
-Epoch rewards are distributed at epoch boundaries using a fully deterministic,
-BlockStore-derived model. All calculations derive from on-chain data with zero local state.
+Epoch rewards are distributed at epoch boundaries using a fully deterministic model.
+All calculations derive from on-chain data (attestation bitfields + UTXO bond snapshot).
 
 ```
 epoch_reward_tx = {
     version: 1,
     type: 10,
-    inputs: [],                  // Minted, no inputs
+    inputs: [],                  // Pool UTXOs consumed by consensus engine
     outputs: [{
         output_type: 0,
-        amount: proportional_share,  // (pool * blocks_by_producer) / total_blocks
-        pubkey_hash: producer_pubkey_hash,
+        amount: proportional_share,  // (pool * producer_bonds) / qualifying_bonds
+        pubkey_hash: producer_or_delegator_hash,
         lock_until: 0
-    }],
+    }, ...],                     // One output per qualifier (+ delegator outputs)
     extra_data: {
-        epoch: uint64,           // Epoch number being rewarded
-        public_key: 32 bytes     // Recipient producer's public key
+        height: uint64,          // Block height (8 bytes LE)
+        epoch: uint64            // Epoch number being rewarded (8 bytes LE)
     }
 }
 ```
@@ -369,55 +379,77 @@ def scan_chain_for_last_epoch_reward():
     # Return 0 if no rewards ever distributed
 ```
 
-**Pool Calculation (No Phantom Rewards):**
+**Pool Calculation:**
 
-The reward pool is calculated from actual blocks produced, not slot count:
+The reward pool is the sum of accumulated coinbase UTXOs at the reward pool address,
+plus the current block's coinbase (not yet in UTXO set during production):
 
 ```
-pool = produced_blocks × block_reward(current_height)
+pool = sum(coinbase UTXOs at reward_pool_address) + block_reward(epoch_end_height)
 ```
 
-Empty slots do NOT inflate the pool. If an epoch has 300 blocks out of 360 slots,
-the pool is `300 × block_reward`, not `360 × block_reward`.
-
-**Distribution Algorithm:**
+**Distribution Algorithm (Bond-Weighted with Attestation Qualification):**
 
 ```python
 def calculate_epoch_rewards(epoch, current_height):
-    start_slot = epoch * slots_per_reward_epoch
-    end_slot = start_slot + slots_per_reward_epoch
+    epoch_start = epoch * blocks_per_reward_epoch
+    epoch_end = (epoch + 1) * blocks_per_reward_epoch
+
+    # Get active producers at epoch start, sorted by pubkey
+    sorted_producers = get_active_producers_sorted(epoch_start)
+
+    # Scan blocks in epoch, decode presence_root attestation bitfields
+    attested_minutes = {}  # producer_index -> set of attested minutes
+    for h in range(epoch_start, epoch_end):
+        block = block_store.get(h)
+        if block and block.presence_root != ZERO:
+            minute = attestation_minute(block.slot)
+            indices = decode_attestation_bitfield(block.presence_root, len(sorted_producers))
+            for idx in indices:
+                attested_minutes.setdefault(idx, set()).add(minute)
+
+    # Qualify with never-burn fallback tiers
+    threshold = attestation_qualification_threshold(blocks_per_reward_epoch)  # 90%
     if epoch == 0:
-        start_slot = 1  # Skip genesis block (null producer)
+        qualified = sorted_producers  # All qualify in genesis epoch
+    else:
+        tier1 = [p for i, p in enumerate(sorted_producers)
+                 if len(attested_minutes.get(i, set())) >= threshold]
+        if tier1:
+            qualified = tier1
+        else:
+            # Tier 2: 80% of median attendance, floor of 1
+            # Tier 3: if all have 0, pool accumulates
+            ...
 
-    blocks = block_store.get_blocks_in_slot_range(start_slot, end_slot)
+    # Bond-weighted distribution from epoch bond snapshot
+    pool = sum(coinbase UTXOs at pool) + block_reward(epoch_end)
+    qualifying_bonds = sum(epoch_bond_snapshot[p] for p in qualified)
+    for producer in qualified:
+        reward = pool * bonds[producer] / qualifying_bonds  # u128 intermediate
 
-    # Count blocks per producer (skip null producer)
-    producer_blocks = {}
-    for block in blocks:
-        if block.producer != NULL_PRODUCER:
-            producer_blocks[block.producer] += 1
+        if producer has no delegations:
+            outputs.append((reward, producer_pubkey_hash))
+        else:
+            # Split between producer's own bonds and delegated bonds
+            own_bonds = count_bonds(producer)
+            delegated = sum(delegation_counts)
+            total = own_bonds + delegated
 
-    total_blocks = sum(producer_blocks.values())
-    if total_blocks == 0:
-        return []  # Empty epoch, no rewards
+            own_share = reward * own_bonds / total
+            delegated_share = reward - own_share
+            delegate_fee = delegated_share * DELEGATE_REWARD_PCT / 100  # 10%
+            staker_pool = delegated_share - delegate_fee
 
-    pool = total_blocks * block_reward(current_height)
+            # Distribute staker_pool to individual delegators by bond count
+            for delegator in delegations:
+                delegator_reward = staker_pool * delegator_bonds / delegated
+            # Last delegator gets remainder (no dust)
 
-    # Sort producers by pubkey for deterministic ordering
-    sorted_producers = sorted(producer_blocks.keys())
+            outputs.append((own_share + delegate_fee, producer_pubkey_hash))
+            outputs.append((delegator_reward, delegator_pubkey_hash))  # per delegator
 
-    rewards = []
-    distributed = 0
-    for i, producer in enumerate(sorted_producers):
-        blocks_by_producer = producer_blocks[producer]
-        # Use u128 intermediate to prevent overflow
-        share = (pool * blocks_by_producer) // total_blocks
-        if i == len(sorted_producers) - 1:
-            share = pool - distributed  # Last producer gets rounding dust
-        distributed += share
-        rewards.append(EpochRewardTx(epoch, producer, share))
-
-    return rewards
+    # Integer division remainder goes to first qualifier
 ```
 
 **Catch-Up Mechanism:**
@@ -448,11 +480,10 @@ Validators recalculate expected rewards from BlockStore and require exact match:
 |-----------|------|
 | At epoch boundary | Block MUST contain correct EpochReward txs |
 | At non-boundary | Block MUST NOT contain EpochReward txs |
-| Amounts | Each reward MUST match `(pool × producer_blocks) / total_blocks` exactly |
-| Recipients | Only producers who produced blocks in the epoch |
+| Amounts | Each reward MUST match `(pool × producer_bonds) / qualifying_bonds` exactly |
+| Recipients | Only attestation-qualified producers (and their delegators) |
 | Ordering | EpochReward txs sorted by producer pubkey |
 | Epoch number | Must match `last_rewarded + 1` |
-| No coinbase | Epoch boundary blocks MUST NOT have coinbase tx |
 
 **Guarantees:**
 
@@ -741,7 +772,35 @@ burn_asset_tx = {
 }
 ```
 
-**Note**: TxType 16 is reserved and not used.
+**Note**: TxType 16 and 23 are reserved and not used.
+
+### 3.22 AMM Pool Transactions
+
+The following transaction types support the on-chain AMM (Automated Market Maker) system:
+
+**CreatePool (type 19):** Creates a new AMM pool with initial liquidity. Creates a Pool output (type 9) with reserves and TWAP state, plus LPShare outputs (type 10) for the creator.
+
+**AddLiquidity (type 20):** Adds liquidity to an existing pool. Consumes the existing Pool UTXO, creates an updated Pool UTXO with increased reserves, and mints new LPShare outputs.
+
+**RemoveLiquidity (type 21):** Burns LPShare outputs to remove liquidity. Consumes LPShare UTXOs and the Pool UTXO, creates updated Pool UTXO with reduced reserves, and returns assets to the provider.
+
+**Swap (type 22):** Swaps assets through a pool. Consumes the Pool UTXO and input assets, creates updated Pool UTXO with modified reserves and the swapped output. Fee: 0.3% (30 basis points) by default.
+
+Pool IDs are deterministic: `BLAKE3("DOLI_POOL" || asset_a_id || asset_b_id)`. Pool metadata (116 bytes) includes: version, pool_id, asset_b_id, reserve_a, reserve_b, total_lp, cumulative_price (TWAP), last_slot, fee_bps, creation_slot, status.
+
+### 3.23 Lending Transactions
+
+The following transaction types support the on-chain lending system:
+
+**CreateLoan (type 24):** Creates a collateralized loan. Locks collateral in a Collateral output (type 11). The borrower receives the loan amount from the lending pool.
+
+**RepayLoan (type 25):** Repays a loan and recovers collateral. Consumes the Collateral UTXO and returns it to the borrower after loan repayment (principal + interest).
+
+**LiquidateLoan (type 26):** Liquidates an undercollateralized loan. When collateral value falls below the liquidation threshold, anyone can liquidate the position.
+
+**LendingDeposit (type 27):** Deposits DOLI into the lending pool. Creates a LendingDeposit output (type 12) representing the depositor's share of the pool.
+
+**LendingWithdraw (type 28):** Withdraws DOLI plus accrued interest from the lending pool. Consumes LendingDeposit UTXOs.
 
 ---
 
@@ -780,39 +839,34 @@ genesis_hash = BLAKE3(
 ### 4.2 Block Body
 
 ```
-block_body = {
-    tx_count:      varint,
-    transactions:  transaction[],
-    presence:      presence_commitment  // Optional, for weighted rewards
+block = {
+    header:                  BlockHeader,
+    transactions:            transaction[],
+    aggregate_bls_signature: bytes       // BLS aggregate sig over attestation bitfield (empty for pre-BLS blocks)
 }
 ```
 
-### 4.2.1 Presence Commitment
+The `aggregate_bls_signature` field stores the aggregated BLS signatures of producers whose bits are set in the attestation bitfield (stored in `header.presence_root` for v2+ blocks). Empty for pre-BLS blocks (backward compatibility). Stored in body (not header) to keep header hash stable.
 
-Records which producers were present during the block's slot:
-
-```
-presence_commitment = {
-    bitfield:     bytes,         // 1 bit per registered producer
-    merkle_root:  32 bytes,      // Merkle root of heartbeat proofs
-    weights:      uint64[],      // Bond weights of present producers (in bitfield order)
-    total_weight: uint64         // Sum of weights (cached)
-}
-```
-
-**Bitfield encoding:**
-- Bit i = 1 means producer i (sorted by pubkey) was present
-- Size = ceil(producer_count / 8) bytes
-
-**Weights array:**
-- Contains only weights for producers with bit=1
-- Order matches bitfield scan order
+**Note:** In the deterministic scheduler model, presence commitments are not used for consensus. The `presence_root` field in the header is retained for backward compatibility and is `Hash::ZERO` in the deterministic model. For v2+ blocks, it may contain an attestation commitment (Merkle root of RegionAggregates).
 
 ### 4.3 Block Hash
 
 ```
-block_hash = HASH(header_without_vdf || vdf_output)
+block_hash = HASH(
+    version (4B LE) ||
+    prev_hash (32B) ||
+    merkle_root (32B) ||
+    presence_root (32B) ||
+    genesis_hash (32B) ||
+    timestamp (8B LE) ||
+    slot (4B LE) ||
+    producer (32B) ||
+    vdf_output.value (variable)
+)
 ```
+
+Note: The `vdf_proof` is NOT included in the block hash. The presence_root and genesis_hash are always included (presence_root is Hash::ZERO in deterministic scheduler model).
 
 ### 4.4 Merkle Root
 
@@ -855,7 +909,7 @@ vdf_input = HASH("DOLI_VDF_BLOCK_V1" || prev_hash || merkle_root || slot || prod
 ### 5.1 Time Constants
 
 ```
-GENESIS_TIME = 1773186873         // Mainnet genesis (must match chainspec)
+GENESIS_TIME = 1774540572         // Mainnet genesis (must match chainspec)
 SLOT_DURATION = 10                // seconds (all networks)
 SLOTS_PER_EPOCH = 360             // 1 hour (360 × 10s)
 SLOTS_PER_ERA = 12_614_400        // ~4 years
@@ -874,11 +928,12 @@ The slot is NOT a free field; it must be derived from the timestamp.
 
 A block B is valid if ALL conditions hold.
 
-**Implementation Reference:** See `crates/core/src/validation.rs`:
-- `validate_header()` (line 480) - header validation
-- `validate_block()` (line 556) - full block validation
-- `validate_transaction()` (line 1036) - transaction validation
-- `validate_producer_eligibility()` (line 1971) - producer checks
+**Implementation Reference:** See `crates/core/src/validation/` (modularized):
+- `block.rs` -- `validate_header()`, `validate_block()` -- header and full block validation
+- `transaction.rs` -- `validate_transaction()` -- transaction validation
+- `producer.rs` -- `validate_producer_eligibility()` -- producer checks
+- `registration.rs` -- registration validation
+- `utxo.rs` -- UTXO validation
 
 ```
 0. CHAIN IDENTITY (checked FIRST):
@@ -891,7 +946,7 @@ A block B is valid if ALL conditions hold.
 
 2. TIMING:
    B.timestamp > prev_block.timestamp
-   B.timestamp <= local_time + DRIFT (10 seconds)
+   B.timestamp <= local_time + MAX_DRIFT (1 second)
    B.timestamp >= slot_start + (SLOT_DURATION - NETWORK_MARGIN)
    B.timestamp <= slot_start + SLOT_DURATION + DRIFT
 
@@ -912,7 +967,7 @@ A block B is valid if ALL conditions hold.
    B.merkle_root == merkle_tree([tx.hash for tx in B.transactions])
    All transactions are valid
    First transaction is valid coinbase
-   No double-spends within block (check_internal_double_spend, line 1909)
+   No double-spends within block (check_internal_double_spend in validation/utxo.rs)
 ```
 
 ### 5.4 Producer Selection (Deterministic Round-Robin)
@@ -981,22 +1036,22 @@ This ensures fair vesting calculation - bonds that have vested longer incur lowe
 
 ### 5.4.2 Sequential Fallback Windows
 
-When the primary producer misses their slot, fallback producers take over in exclusive 2-second sequential windows. Only ONE rank is eligible at any given time:
+When the primary producer misses their slot, a single fallback producer takes over in an exclusive 2-second sequential window. Only ONE rank is eligible at any given time:
 
 | Window (ms) | Eligible Rank | Description |
 |-------------|---------------|-------------|
-| 0 – 1,999 | 0 | Primary producer only |
-| 2,000 – 3,999 | 1 | First fallback |
-| 4,000 – 5,999 | 2 | Second fallback |
-| 6,000 – 7,999 | 3 | Third fallback |
-| 8,000 – 9,999 | 4 | Fourth fallback |
+| 0 -- 1,999 | 0 | Primary producer only |
+| 2,000 -- 3,999 | 1 | Single fallback (only if rank 0's block not seen via gossip) |
 
-5 ranks × 2,000ms = 10,000ms — fills the entire slot with no emergency window.
+2 ranks x 2,000ms = 4,000ms. The remaining 6,000ms of the slot is empty if both ranks miss. With IP colocation fix, gossip propagates blocks in <100ms, so rank 1 will always see rank 0's block in time, eliminating competing blocks.
 
 **Constants:**
-- `FALLBACK_TIMEOUT_MS = 2,000` — duration of each exclusive window
-- `MAX_FALLBACK_RANKS = 5` — total number of ranked producers per slot
-- `MAX_DRIFT_MS = 200` — maximum clock drift tolerance (ms)
+- `FALLBACK_TIMEOUT_MS = 2,000` -- duration of each exclusive window
+- `MAX_FALLBACK_RANKS = 2` -- total number of ranked producers per slot (primary + single fallback)
+- `MAX_FALLBACK_PRODUCERS = 2` -- maximum producers per slot
+- `MAX_DRIFT_MS = 200` -- maximum clock drift tolerance (ms)
+
+**History:** Previously set to 5 ranks (filling the entire 10s slot), reduced to 2 to eliminate fork fragmentation observed at 22+ nodes. With reliable gossip, a single fallback is sufficient to cover offline primaries without risking competing blocks.
 
 **Fallback producer selection:** Each rank gets an evenly-distributed offset in the ticket space:
 ```
@@ -1141,17 +1196,17 @@ vdf_output = VDF(reg_input, T_REGISTER(epoch))
 
 ### 6.4 Registration Difficulty
 
-Registration VDF is **fixed** at 5,000,000 iterations (~30 seconds on reference hardware).
-There is no dynamic difficulty scaling — `T_REGISTER_BASE == T_REGISTER_CAP == 5,000,000`.
-
-At scale, the bond (10 DOLI per bond) provides Sybil protection via economic dilution.
-The VDF is a lightweight anti-flash-attack barrier, not the primary defense.
+Registration VDF is **fixed** at 1,000 iterations (minimal computation) for all networks.
+Bond is the primary Sybil defense. The VDF is a lightweight barrier, not the primary defense.
 
 ```
-T_REGISTER_BASE = 5_000_000    // ~30 seconds (fixed, no escalation)
-T_REGISTER_CAP  = 5_000_000    // Same as base
+T_REGISTER_BASE = 1,000       // Minimal (bond provides real Sybil protection)
+T_REGISTER_CAP  = 5,000,000   // Consensus constant cap (not used by network defaults)
 R_TARGET = 10                  // Target registrations per epoch (fee calculation)
+vdf_register_iterations = 1,000  // All networks via NetworkParams
 ```
+
+**Note:** The consensus constant `T_REGISTER_CAP` is 5,000,000 but all network defaults override `vdf_register_iterations` to 1,000. The bond requirement (10 DOLI per bond on mainnet, 1 DOLI on testnet/devnet) provides economic Sybil protection at scale.
 
 ### 6.5 Registration Validity
 
@@ -1208,7 +1263,7 @@ Without transport headroom, `ConnectionLimits` rejects connections at TCP level 
 | Network | max_peers | Transport limit | Override |
 |---------|-----------|-----------------|----------|
 | Mainnet | 50 | 75 | `DOLI_MAX_PEERS` |
-| Testnet | 50 | 75 | `DOLI_MAX_PEERS` |
+| Testnet | 25 | ~37 | `DOLI_MAX_PEERS` |
 | Devnet | 150 | 225 | `DOLI_MAX_PEERS` |
 
 Per-peer limit: 2 established connections (handles simultaneous-dial race and DCUtR hole-punching).
@@ -1294,25 +1349,28 @@ Devnet (local development) → Testnet (public testing) → Mainnet (production)
 
 | Parameter | Mainnet | Testnet | Devnet | Configurable |
 |-----------|---------|---------|--------|--------------|
-| Genesis Time | 2026-02-01T00:00:00Z | 2026-01-29T22:00:00Z | Dynamic | Devnet only |
+| Genesis Time | 1774540572 (2026-03-24) | 1774749145 (testnet v96) | Dynamic | Devnet only |
 | Slot Duration | 10s | 10s | 10s | Devnet only |
-| Max Peers | 50 | 50 | 150 | All (`DOLI_MAX_PEERS`) |
-| Transport Limit | 75 (1.5×) | 75 (1.5×) | 225 (1.5×) | Derived from max_peers |
+| Max Peers | 50 | 25 | 150 | All (`DOLI_MAX_PEERS`) |
+| Transport Limit | 75 (1.5x) | ~37 (1.5x) | 225 (1.5x) | Derived from max_peers |
 | P2P Port | 30300 | 40300 | 50300 | All |
 | RPC Port | 8500 | 18500 | 28500 | All |
 | Metrics Port | 9000 | 19000 | 29000 | All |
-| Bond Unit | 10 DOLI | 10 DOLI | 1 DOLI | Devnet only |
+| Bond Unit | 10 DOLI | 1 DOLI | 1 DOLI | Devnet only |
 | Initial Reward | 1 DOLI | 1 DOLI | 20 DOLI | Devnet only |
-| VDF Iterations | 800,000 | 800,000 | 1 | Devnet only |
-| Heartbeat VDF | 800,000 (~55ms) | 800,000 (~55ms) | 800,000 (~55ms) | Devnet only |
+| VDF Iterations (block) | 1,000 | 1,000 | 1 | Devnet only |
+| Heartbeat VDF | 1,000 | 1,000 | 1,000 | Devnet only |
 | Blocks/Year | 3,153,600 | 3,153,600 | 144 | Devnet only |
-| Reward Epoch | 360 blocks | 360 blocks | 4 blocks | Devnet only |
+| Reward Epoch | 360 blocks | 36 blocks | 4 blocks | Devnet only |
 | Bootstrap Blocks | 60,480 | 60,480 | 60 | Devnet only |
-| Veto Period | 5 min * | 5 min * | 60s | All |
+| Unbonding Period | 60,480 blocks (~7d) | 72 blocks (~2 epochs) | 60 blocks | Devnet only |
+| Vesting Quarter | 3,153,600 slots (1yr) | 2,160 slots (6h) | 60 slots (10min) | Devnet only |
+| Veto Period | 5 min | 5 min | 60s | All |
+| Fallback Ranks | 2 | 2 | 2 | All |
 | Data Directory | `~/.doli/mainnet/` | `~/.doli/testnet/` | `~/.doli/devnet/` | - |
 | Config File | `.env` in data dir | `.env` in data dir | `.env` in data dir | - |
 
-All networks use hash-chain VDF with ~55ms target time (800K iterations) for block production heartbeat.
+**VDF note:** Block VDF iterations are set to 1,000 for all production networks (minimal computation). The bond requirement is the primary Sybil defense. The consensus constant `T_BLOCK = 800,000` exists but network defaults override it to 1,000 via `NetworkParams`. The consensus constant `T_REGISTER_CAP = 5,000,000` exists but is not currently applied by network defaults (reserved for future tightening).
 
 ### 8.2.1 Environment Configuration
 
@@ -1400,8 +1458,8 @@ Peers with mismatched `network_id` or `genesis_hash` are immediately disconnecte
 
 | Network | Bootstrap Nodes |
 |---------|-----------------|
-| Mainnet | `/dns4/seed1.doli.network/tcp/30300`<br>`/dns4/seed2.doli.network/tcp/30300` |
-| Testnet | `/dns4/testnet-seed1.doli.network/tcp/40300`<br>`/dns4/testnet-seed2.doli.network/tcp/40300` |
+| Mainnet | `/dns4/seed1.doli.network/tcp/30300`<br>`/dns4/seed2.doli.network/tcp/30300`<br>`/dns4/seeds.doli.network/tcp/30300` |
+| Testnet | `/dns4/bootstrap1.testnet.doli.network/tcp/40300`<br>`/dns4/bootstrap2.testnet.doli.network/tcp/40300`<br>`/dns4/seeds.testnet.doli.network/tcp/40300` |
 | Devnet  | None (local development) |
 
 ---
@@ -1501,12 +1559,13 @@ Result:
 | BOOTSTRAP_BLOCKS   | 60,480                   |
 | DRIFT              | 1                        |
 | NETWORK_MARGIN     | 1                        |
-| VDF_ITERATIONS_DEFAULT | 800,000              |
-| VDF_ITERATIONS_MIN | 100,000                  |
-| VDF_ITERATIONS_MAX | 100,000,000              |
+| T_BLOCK (consensus const) | 800,000            |
+| VDF_ITERATIONS (network default) | 1,000 (bond is primary Sybil defense) |
+| VDF_ITERATIONS_MIN | 100,000 (calibration bound)  |
+| VDF_ITERATIONS_MAX | 100,000,000 (calibration bound) |
 | VDF_TARGET_TIME_MS | 55                       |
-| T_REGISTER_BASE    | 5,000,000 (~30s)         |
-| T_REGISTER_CAP     | 5,000,000 (same as base) |
+| T_REGISTER_BASE    | 1,000 (minimal)          |
+| T_REGISTER_CAP     | 5,000,000 (consensus constant, not used by defaults) |
 | R_TARGET           | 10                       |
 | INITIAL_REWARD     | 100,000,000 (1 DOLI)     |
 | BOND_UNIT          | 1,000,000,000 (10 DOLI)   |

@@ -10,7 +10,7 @@ Devnet is designed for rapid iteration and local testing. Unlike Mainnet/Testnet
 
 | Feature | Devnet | Mainnet/Testnet | Reason |
 |---------|--------|-----------------|--------|
-| **Slot Duration** | **1 second** | 10 seconds | Rapid feedback loop |
+| **Slot Duration** | **10 seconds** (same as mainnet) | 10 seconds | Realistic testing (configurable via env) |
 | **Genesis** | **Dynamic** | Fixed | Starts when *you* start |
 | **VDF** | **Simulated** | Real Hardware | Instant blocks (no CPU burn) |
 | **Bootstrapping** | **Sync-Before-Produce** | Hardcoded Seeds | Prevents split-brain genesis |
@@ -91,11 +91,11 @@ Devnet parameters are highly configurable via the `.env` file in your data direc
 
 | Variable | Default (Devnet) | Description |
 |----------|------------------|-------------|
-| `DOLI_SLOT_DURATION` | `1` | Seconds per slot |
+| `DOLI_SLOT_DURATION` | `10` | Seconds per slot (same as mainnet) |
 | `DOLI_VDF_ITERATIONS` | `1` | Block VDF iterations (1 = instant) |
-| `DOLI_HEARTBEAT_VDF_ITERATIONS` | `10000000` | Keep high to test tpop load |
-| `DOLI_UNBONDING_PERIOD` | `60480` | Reduce to `60` for fast exit testing |
-| `DOLI_BLOCKS_PER_REWARD_EPOCH` | `360` | Reduce to `10` to test rewards often |
+| `DOLI_HEARTBEAT_VDF_ITERATIONS` | `1000` | Heartbeat VDF iterations |
+| `DOLI_UNBONDING_PERIOD` | `60` | ~10 minutes with 10s slots |
+| `DOLI_BLOCKS_PER_REWARD_EPOCH` | `4` | ~40 seconds per epoch |
 
 **Example Fast-Test Config:**
 ```bash

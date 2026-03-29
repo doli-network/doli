@@ -6,17 +6,18 @@ Official DOLI testnet for testing and development.
 
 ---
 
-## Testnet v3 (March 2026 Relaunch)
+## Testnet v96 (March 2026 Relaunch)
 
-The testnet has been relaunched with 6 genesis producers and parameters matching mainnet exactly. Additional producers (NT7-NT12) register on-chain after genesis.
+The testnet has been relaunched with 6 genesis producers and accelerated epoch parameters for faster testing. Additional producers (NT7-NT12) register on-chain after genesis.
 
 | Status | Value |
 |--------|-------|
-| Genesis | March 7, 2026 07:40:52 UTC |
+| Genesis | March 29, 2026 (timestamp 1774749145) |
 | Block Reward | **1 tDOLI** (matches mainnet) |
 | Genesis Producers | 6 pre-registered (NT1-NT6) |
 | Slot Duration | 10 seconds |
-| Epoch Length | 360 blocks (1 hour) |
+| Epoch Length | 36 blocks (~6 minutes) |
+| Bond Unit | 1 tDOLI |
 | Bootstrap DNS | `bootstrap1.testnet.doli.network:40300` / `bootstrap2.testnet.doli.network:40300` |
 
 **To join:**
@@ -72,7 +73,8 @@ You earn **1 tDOLI per block** you produce (matches mainnet).
 | Address Prefix | `tdoli` |
 | Slot Duration | 10 seconds |
 | Block Reward | **1 tDOLI** |
-| Epoch Length | 360 blocks (1 hour) |
+| Epoch Length | 36 blocks (~6 minutes) |
+| Bond Unit | 1 tDOLI |
 | Genesis Producers | 6 (NT1-NT6), NT7-NT12 register on-chain |
 | P2P Port | 40300 |
 | RPC Port | 18500 |
@@ -88,7 +90,7 @@ To earn block rewards, you need to register as a producer with bonds:
 # Check your wallet balance
 doli -n testnet -w ~/.doli/testnet/producer.json balance
 
-# Register with 1 bond (10 tDOLI)
+# Register with 1 bond (1 tDOLI)
 doli -n testnet -w ~/.doli/testnet/producer.json producer register --bonds 1
 
 # Check registration status

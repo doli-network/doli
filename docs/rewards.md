@@ -34,18 +34,18 @@ DOLI uses a **pooled coinbase with epoch distribution** model. Every block's coi
 
 ### Step 1: Coinbase to Pool
 
-Every block contains a coinbase transaction (TxType=6) whose output is sent to the reward pool address, not the block producer:
+Every block contains a coinbase transaction (implemented as `TxType::Transfer` with no inputs) whose output is sent to the reward pool address, not the block producer. Note: the `TxType::Coinbase` (6) enum variant exists but is dead code -- coinbase uses `TxType::Transfer` (0).
 
 ```
-Coinbase (TxType = 6):
+Coinbase (implemented as TxType::Transfer with no inputs):
   version:    1
-  type:       6
+  type:       0 (Transfer)
   inputs:     []              # No inputs (newly minted)
   outputs:    [{
     output_type: 0,           # Normal
     amount:      block_reward,
     pubkey_hash: reward_pool_pubkey_hash(),   # BLAKE3("REWARD_POOL" || "doli")
-    lock_until:  current_height + COINBASE_MATURITY
+    lock_until:  0
   }]
   extra_data: []
 ```
@@ -65,7 +65,10 @@ At height `(epoch + 1) * 360`, the node runs `calculate_epoch_rewards()`:
 
 1. **Collect active producers** at epoch end height, sorted by public key
 2. **Scan all blocks** in the epoch, decode attestation bitfields, count attested minutes per producer
-3. **Qualify producers**: must have attested in >= 54 of 60 minutes (`ATTESTATION_QUALIFICATION_THRESHOLD`)
+3. **Qualify producers** with never-burn fallback tiers:
+   - **Tier 1**: must have attested in >= 90% of attestation minutes (`attestation_qualification_threshold()` — 54/60 for mainnet, 5/6 for testnet)
+   - **Tier 2 fallback**: if no Tier 1 qualifiers, threshold drops to 80% of median attendance (floor of 1 minute)
+   - **Tier 3 fallback**: if all producers have 0 attendance, pool accumulates to next epoch (no distribution)
    - **Epoch 0 exception**: all active producers qualify (no attestation data exists yet)
 4. **Sum qualifying bonds** via `selection_weight()` (own bonds + delegated bonds)
 5. **Calculate pool total**: accumulated coinbase UTXOs in pool + current block's coinbase
@@ -100,15 +103,15 @@ EpochReward (TxType = 10):
 
 ## 3. Coinbase Maturity
 
-Coinbase outputs are **locked** until 6 confirmations have passed:
+Coinbase outputs use `lock_until = 0` (no maturity lock in the output itself). However, the `COINBASE_MATURITY` constant (6 blocks) is used during validation to prevent spending coinbase UTXOs until they have sufficient confirmations.
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
 | **COINBASE_MATURITY** | 6 blocks | ~60 seconds at 10s slots |
-| **Lock Mechanism** | `lock_until` field | Set to `current_height + 6` |
-| **Spending** | After maturity | Normal UTXO spending rules |
+| **Lock Mechanism** | Validation check | `is_spendable_at(height)` enforces maturity |
+| **Spending** | After 6 confirmations | Enforced by validation, not by `lock_until` field |
 
-Note: Coinbase maturity applies to the pool UTXOs. EpochReward outputs are immediately spendable (`lock_until = 0`).
+Note: Both coinbase pool UTXOs and EpochReward outputs have `lock_until = 0`. Maturity is enforced by validation logic, not by the output lock field.
 
 ---
 
@@ -203,14 +206,14 @@ Last delegator: staker_pool - already_distributed  (absorbs rounding dust)
 
 ## 6. Network-Specific Parameters
 
-| Parameter | Mainnet/Testnet | Devnet |
-|-----------|-----------------|--------|
-| **Initial Reward** | 1 DOLI | 20 DOLI |
-| **Halving Interval** | 12,614,400 blocks (~4 yr) | 576 blocks (~96 min) |
-| **Bond Unit** | 10 DOLI | 1 DOLI |
-| **Coinbase Maturity** | 6 blocks | 10 blocks |
-| **Blocks per Reward Epoch** | 360 blocks (~1 hr) | 4 blocks (~40s) |
-| **Slot Duration** | 10 seconds | 10 seconds |
+| Parameter | Mainnet | Testnet | Devnet |
+|-----------|---------|---------|--------|
+| **Initial Reward** | 1 DOLI | 1 DOLI | 20 DOLI |
+| **Halving Interval** | 12,614,400 blocks (~4 yr) | 12,614,400 blocks | 576 blocks (~96 min) |
+| **Bond Unit** | 10 DOLI | 1 DOLI | 1 DOLI |
+| **Coinbase Maturity** | 6 blocks | 6 blocks | 10 blocks |
+| **Blocks per Reward Epoch** | 360 blocks (~1 hr) | 36 blocks (~6 min) | 4 blocks (~40s) |
+| **Slot Duration** | 10 seconds | 10 seconds | 10 seconds |
 
 Devnet uses accelerated parameters for testing the reward and halving mechanisms.
 
@@ -236,13 +239,13 @@ Previously proposed for manual reward claiming. Never activated on mainnet. The 
 
 A coinbase transaction is valid if:
 
-1. **Type**: Transaction type is 6 (Coinbase)
+1. **Type**: Transaction type is 0 (Transfer) with no inputs and one output (`is_coinbase()` check)
 2. **Position**: First transaction in the block
 3. **Inputs**: Empty (no inputs)
 4. **Outputs**: Exactly one output
-5. **Amount**: Equals calculated block reward for the height
+5. **Amount**: Equals calculated block reward for the height (plus extra per-byte fees)
 6. **Recipient**: Output `pubkey_hash` matches `reward_pool_pubkey_hash()`
-7. **Lock**: `lock_until` equals `height + COINBASE_MATURITY`
+7. **Lock**: `lock_until` is 0 (maturity enforced by validation logic, not output field)
 
 ### EpochReward Validation
 
@@ -312,4 +315,4 @@ Actual rewards depend on total qualifying bonds across the network and attestati
 
 ---
 
-*Last updated: March 2026*
+*Last updated: March 2026 (synced against code 2026-03-29)*

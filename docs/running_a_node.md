@@ -309,13 +309,13 @@ DOLI_UNBONDING_PERIOD=30
 | `DOLI_RPC_PORT` | 8500 | All networks |
 | `DOLI_METRICS_PORT` | 9000 | All networks |
 | `DOLI_BOOTSTRAP_NODES` | (seeds) | All networks |
-| `DOLI_SLOT_DURATION` | 10 | Devnet only |
-| `DOLI_GENESIS_TIME` | (fixed) | Devnet only |
-| `DOLI_VETO_PERIOD_SECS` | 604800 | All networks |
-| `DOLI_UNBONDING_PERIOD` | 60480 | Devnet only |
-| `DOLI_BOND_UNIT` | 10B | Devnet only |
-| `DOLI_INITIAL_REWARD` | 100M | Devnet only |
-| `DOLI_VDF_ITERATIONS` | 800000 | Devnet only |
+| `DOLI_SLOT_DURATION` | 10 | Testnet/Devnet |
+| `DOLI_GENESIS_TIME` | (fixed) | Testnet/Devnet |
+| `DOLI_VETO_PERIOD_SECS` | 300 (5 min) | All networks |
+| `DOLI_UNBONDING_PERIOD` | 60480 | Testnet/Devnet |
+| `DOLI_BOND_UNIT` | 1,000,000,000 (10 DOLI) | All networks |
+| `DOLI_INITIAL_REWARD` | 100,000,000 (1 DOLI) | Testnet/Devnet |
+| `DOLI_VDF_ITERATIONS` | 1000 | Testnet/Devnet |
 | `DOLI_BLOCKS_PER_YEAR` | 3153600 | Devnet only |
 | `DOLI_BLOCKS_PER_REWARD_EPOCH` | 360 | Devnet only |
 | `DOLI_COINBASE_MATURITY` | 6 | Devnet only |
@@ -326,9 +326,9 @@ For security, the following parameters are **locked for mainnet** and cannot be 
 
 - `DOLI_SLOT_DURATION` - Must be 10s
 - `DOLI_GENESIS_TIME` - Fixed launch time
-- `DOLI_BOND_UNIT` - 10 DOLI per bond
-- `DOLI_INITIAL_REWARD` - Emission schedule
-- `DOLI_VDF_ITERATIONS` - Consensus security
+- `DOLI_BOND_UNIT` - 10 DOLI per bond (1,000,000,000 base units)
+- `DOLI_INITIAL_REWARD` - Emission schedule (1 DOLI per block)
+- `DOLI_VDF_ITERATIONS` - Consensus security (1,000 iterations)
 - `DOLI_BLOCKS_PER_YEAR` - Era calculation
 - `DOLI_BLOCKS_PER_REWARD_EPOCH` - Reward distribution
 
@@ -660,14 +660,14 @@ doli-node export <file>           # Export blocks to file
 | Metrics Port | 9000 | 19000 | 29000 |
 | Slot Duration | 10s | 10s | 10s |
 | Block Reward | 1 DOLI | 1 DOLI | 20 DOLI |
-| Bond Unit | 10 DOLI | 10 DOLI | 1 DOLI |
-| VDF Iterations | 800K (~55ms) | 800K (~55ms) | 1 |
-| Heartbeat VDF | 800K (~55ms) | 800K (~55ms) | 800K (~55ms) |
+| Bond Unit | 10 DOLI | 1 DOLI | 1 DOLI |
+| VDF Iterations | 1,000 | 1,000 | 1 |
+| Heartbeat VDF | 1,000 | 1,000 | 1,000 |
 | Blocks/Year | 3,153,600 | 3,153,600 | 144 |
-| Reward Epoch | 360 blocks | 360 blocks | 4 blocks |
+| Reward Epoch | 360 blocks | 36 blocks | 4 blocks |
 | Address Prefix | `doli` | `tdoli` | `ddoli` |
 | Config File | `~/.doli/mainnet/.env` | `~/.doli/testnet/.env` | `~/.doli/devnet/.env` |
 
 ---
 
-*Last updated: February 2026*
+*Last updated: March 2026*

@@ -39,6 +39,14 @@ This document describes the DOLI node JSON-RPC API.
 | **Archive** | `verifyChainIntegrity` | Implemented |
 | **Debugging** | `getStateRootDebug` | Implemented |
 | **Debugging** | `getUtxoDiff` | Implemented |
+| **Snapshot** | `getStateSnapshot` | Implemented |
+| **Network** | `getPeerInfo` | Implemented |
+| **Pool** | `getPoolInfo` | Implemented |
+| **Pool** | `getPoolList` | Implemented |
+| **Pool** | `getPoolPrice` | Implemented |
+| **Pool** | `getSwapQuote` | Implemented |
+| **Lending** | `getLoanInfo` | Implemented |
+| **Lending** | `getLoanList` | Implemented |
 
 ### Not Yet Implemented
 
@@ -49,7 +57,6 @@ The following methods are **NOT YET IMPLEMENTED** and will return "Method not fo
 | `getBlockHeader` | Return header only (use `getBlockByHash` instead) |
 | `getTransactionReceipt` | Transaction receipt with logs |
 | `getUtxosByOutpoint` | Lookup specific UTXOs by outpoint |
-| `getPeerInfo` | Detailed peer list (use `getNetworkInfo` instead) |
 | `validateAddress` | Validate address format |
 | `estimateFee` | Estimate transaction fee |
 
@@ -107,12 +114,25 @@ Returns current chain state information.
 ```json
 {
     "network": "mainnet",
+    "version": "1.1.11",
     "bestHash": "0x...",
     "bestHeight": 12345,
     "bestSlot": 45678,
-    "genesisHash": "0x..."
+    "genesisHash": "0x...",
+    "rewardPoolBalance": 500000000
 }
 ```
+
+**Fields:**
+| Field | Description |
+|-------|-------------|
+| network | Network name (mainnet, testnet, devnet) |
+| version | Node software version (e.g. "1.1.11") |
+| bestHash | Best block hash |
+| bestHeight | Best block height |
+| bestSlot | Best block slot number |
+| genesisHash | Genesis block hash |
+| rewardPoolBalance | Reward pool balance in base units (sum of coinbase UTXOs held by pool) |
 
 **Example:**
 ```bash
@@ -286,17 +306,19 @@ Returns balance for an address.
     "confirmed": 100000000000,
     "unconfirmed": 5000000,
     "immature": 100000000,
-    "total": 100105000000
+    "bonded": 50000000000,
+    "total": 150105000000
 }
 ```
 
 **Fields:**
 | Field | Description |
 |-------|-------------|
-| confirmed | Spendable balance (mature, confirmed) |
-| unconfirmed | Pending credits from mempool |
+| confirmed | Spendable balance (mature, confirmed, minus mempool-spent) |
+| unconfirmed | Pending credits from mempool (incoming change outputs) |
 | immature | Coinbase/epoch rewards awaiting maturity (100 blocks) |
-| total | confirmed + unconfirmed + immature |
+| bonded | Balance locked in Bond UTXOs (not spendable directly) |
+| total | confirmed + unconfirmed + immature + bonded |
 
 **Note:** Amounts are in base units (1 DOLI = 100,000,000 units)
 
@@ -339,15 +361,59 @@ Returns unspent transaction outputs for an address.
         "lockUntil": 15000000,
         "height": 12000,
         "spendable": false
+    },
+    {
+        "txHash": "0x...",
+        "outputIndex": 0,
+        "amount": 0,
+        "outputType": "nft",
+        "lockUntil": 0,
+        "height": 12500,
+        "spendable": true,
+        "nft": {
+            "tokenId": "0x...",
+            "contentHash": "0x...",
+            "royalty": { "creator": "0x...", "bps": 500, "percent": "5.00" }
+        }
+    },
+    {
+        "txHash": "0x...",
+        "outputIndex": 0,
+        "amount": 100000000,
+        "outputType": "normal",
+        "lockUntil": 0,
+        "height": 0,
+        "spendable": true,
+        "pending": true
     }
 ]
 ```
+
+**Additional fields (present when applicable):**
+| Field | Description |
+|-------|-------------|
+| pending | `true` if from a mempool transaction (not yet confirmed). Omitted when `false`. |
+| condition | Decoded covenant condition object (only for conditioned output types) |
+| nft | NFT metadata: `tokenId`, `contentHash`, optional `royalty` (only for NFT outputs) |
+| asset | Fungible asset metadata: `assetId`, `totalSupply`, `ticker` (only for FungibleAsset outputs) |
+| bridge | Bridge HTLC metadata: `targetChain`, `targetChainId`, `targetAddress`, optional `counterHash` (only for BridgeHTLC outputs) |
 
 **Output Types:**
 | Type | Description |
 |------|-------------|
 | normal | Standard spendable output |
 | bond | Time-locked bond collateral |
+| multisig | Multi-signature output |
+| hashlock | Hash-locked output |
+| htlc | Hash time-locked contract |
+| vesting | Vesting schedule output |
+| nft | Non-fungible token |
+| fungibleAsset | Fungible token (issued via `issue-token`) |
+| bridgeHtlc | Cross-chain bridge HTLC |
+| pool | AMM pool state output |
+| lpShare | Liquidity provider share |
+| collateral | Lending collateral |
+| lendingDeposit | Lending pool deposit |
 
 **Example:**
 ```bash
@@ -451,6 +517,45 @@ Returns network status information.
 curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getNetworkInfo","params":{},"id":1}'
+```
+
+---
+
+### getPeerInfo
+
+Returns detailed information about all connected peers.
+
+**Parameters:** None
+
+**Response:**
+```json
+[
+    {
+        "peerId": "12D3KooW...",
+        "address": "/ip4/1.2.3.4/tcp/30300",
+        "bestHeight": 12345,
+        "connectedSecs": 3600,
+        "lastSeenSecs": 2,
+        "latencyMs": 45
+    }
+]
+```
+
+**Fields:**
+| Field | Description |
+|-------|-------------|
+| peerId | libp2p peer ID |
+| address | Remote multiaddr |
+| bestHeight | Best known height reported by this peer |
+| connectedSecs | Connection duration in seconds |
+| lastSeenSecs | Seconds since last message from this peer |
+| latencyMs | Latency in milliseconds (null if unknown) |
+
+**Example:**
+```bash
+curl -X POST http://127.0.0.1:8500 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getPeerInfo","params":{},"id":1}'
 ```
 
 ---
@@ -720,7 +825,8 @@ Returns aggregate chain statistics including supply, UTXO count, and staking inf
     "utxoCount": 1500,
     "activeProducers": 5,
     "totalStaked": 50000000000000,
-    "height": 12345
+    "height": 12345,
+    "rewardPoolBalance": 500000000
 }
 ```
 
@@ -733,6 +839,7 @@ Returns aggregate chain statistics including supply, UTXO count, and staking inf
 | activeProducers | Number of active producers |
 | totalStaked | Total bonds staked in base units |
 | height | Current chain height |
+| rewardPoolBalance | Reward pool balance in base units (sum of coinbase UTXOs held by pool) |
 
 **Note:** `totalSupply` is derived from summing all UTXO amounts. Divide by 1e8 for DOLI.
 
@@ -1463,6 +1570,308 @@ Full scan of every height from 1 to tip. Detects missing blocks (gaps) anywhere 
 
 ---
 
-*API version: 1.2*
+## 18. Snapshot Methods
+
+### getStateSnapshot
+
+Returns a full state snapshot (chain state, UTXO set, producer set) as hex-encoded bytes. Used for snap sync and state verification.
+
+**Parameters:** None
+
+**Response:**
+```json
+{
+    "height": 12345,
+    "blockHash": "0x...",
+    "stateRoot": "0x...",
+    "chainState": "hex...",
+    "utxoSet": "hex...",
+    "producerSet": "hex...",
+    "totalBytes": 123456
+}
+```
+
+**Fields:**
+| Field | Description |
+|-------|-------------|
+| height | Block height of the snapshot |
+| blockHash | Block hash at snapshot height |
+| stateRoot | Combined state root hash |
+| chainState | Hex-encoded canonical ChainState bytes |
+| utxoSet | Hex-encoded canonical UTXO set bytes |
+| producerSet | Hex-encoded canonical ProducerSet bytes |
+| totalBytes | Total size of all snapshot data in bytes |
+
+**Example:**
+```bash
+curl -X POST http://127.0.0.1:8500 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getStateSnapshot","params":{},"id":1}'
+```
+
+---
+
+## 19. Pool Methods (AMM)
+
+### getPoolInfo
+
+Returns detailed information about an AMM pool.
+
+**Parameters:**
+| Name | Type | Description |
+|------|------|-------------|
+| poolId | string | Pool ID (hex) |
+
+**Response:**
+```json
+{
+    "poolId": "0x...",
+    "assetA": "0x0000...0000",
+    "assetB": "0x...",
+    "reserveA": 1000000000,
+    "reserveB": 5000000,
+    "totalShares": 70710678,
+    "feeBps": 30,
+    "price": 0.005,
+    "twapCumulativePrice": "12345678901234",
+    "lastUpdateSlot": 45000,
+    "creationSlot": 40000,
+    "status": 0,
+    "txHash": "0x...",
+    "outputIndex": 0
+}
+```
+
+**Fields:**
+| Field | Description |
+|-------|-------------|
+| poolId | Pool identifier (hex) |
+| assetA | Asset A identifier (always DOLI = zero hash) |
+| assetB | Asset B identifier (fungible token ID) |
+| reserveA | DOLI reserve in base units |
+| reserveB | Token reserve in raw token units |
+| totalShares | Total LP shares outstanding |
+| feeBps | Swap fee in basis points (30 = 0.3%) |
+| price | Spot price (reserveB / reserveA) |
+| twapCumulativePrice | Cumulative TWAP price (fixed-point) |
+| lastUpdateSlot | Slot of last pool state update |
+| creationSlot | Slot when pool was created |
+| status | Pool status code |
+| txHash | Transaction hash of the pool UTXO |
+| outputIndex | Output index of the pool UTXO |
+
+**Example:**
+```bash
+curl -X POST http://127.0.0.1:8500 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getPoolInfo","params":{"poolId":"0xabc..."},"id":1}'
+```
+
+---
+
+### getPoolList
+
+Returns all AMM pools (deduplicated by pool ID).
+
+**Parameters:** None
+
+**Response:**
+```json
+[
+    {
+        "poolId": "0x...",
+        "assetB": "0x...",
+        "reserveA": 1000000000,
+        "reserveB": 5000000,
+        "feeBps": 30,
+        "price": 0.005
+    }
+]
+```
+
+**Example:**
+```bash
+curl -X POST http://127.0.0.1:8500 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getPoolList","params":{},"id":1}'
+```
+
+---
+
+### getPoolPrice
+
+Returns the spot price for a pool, with optional TWAP computation.
+
+**Parameters:**
+| Name | Type | Description |
+|------|------|-------------|
+| poolId | string | Pool ID (hex) |
+| windowSlots | integer | (Optional) TWAP window in slots |
+
+**Response:**
+```json
+{
+    "spotPrice": 0.005,
+    "twapPrice": 0.0048,
+    "twapWindow": 360
+}
+```
+
+**Fields:**
+| Field | Description |
+|-------|-------------|
+| spotPrice | Current spot price (reserveB / reserveA) |
+| twapPrice | Time-weighted average price over the window (only if windowSlots provided) |
+| twapWindow | Actual window used (capped to pool age) |
+
+**Example:**
+```bash
+curl -X POST http://127.0.0.1:8500 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getPoolPrice","params":{"poolId":"0xabc...","windowSlots":360},"id":1}'
+```
+
+---
+
+### getSwapQuote
+
+Simulates a swap without creating a transaction. Returns expected output amount, price impact, and fee.
+
+**Parameters:**
+| Name | Type | Description |
+|------|------|-------------|
+| poolId | string | Pool ID (hex) |
+| amountIn | integer | Amount to swap (base units) |
+| direction | string | Swap direction: `"a2b"` (DOLI to token) or `"b2a"` (token to DOLI) |
+
+**Response:**
+```json
+{
+    "amountOut": 4950,
+    "priceImpact": 0.5,
+    "fee": 30
+}
+```
+
+**Fields:**
+| Field | Description |
+|-------|-------------|
+| amountOut | Expected output amount |
+| priceImpact | Price impact as percentage (higher = worse) |
+| fee | Fee deducted from input |
+
+**Example:**
+```bash
+curl -X POST http://127.0.0.1:8500 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getSwapQuote","params":{"poolId":"0xabc...","amountIn":1000000,"direction":"a2b"},"id":1}'
+```
+
+---
+
+## 20. Lending Methods
+
+### getLoanInfo
+
+Returns detailed information about a loan identified by its Collateral UTXO.
+
+**Parameters:**
+| Name | Type | Description |
+|------|------|-------------|
+| txHash | string | Collateral UTXO transaction hash (hex) |
+| outputIndex | integer | Collateral UTXO output index |
+
+**Response:**
+```json
+{
+    "outpoint": {
+        "txHash": "0x...",
+        "outputIndex": 0
+    },
+    "poolId": "0x...",
+    "borrowerHash": "0x...",
+    "collateralAmount": 100000000,
+    "collateralAssetId": "0x...",
+    "principal": 50000000,
+    "interestRateBps": 500,
+    "creationSlot": 40000,
+    "liquidationRatioBps": 15000,
+    "accruedInterest": 125000,
+    "totalDebt": 50125000,
+    "elapsedSlots": 1000,
+    "ltvBps": 5012,
+    "liquidatable": false
+}
+```
+
+**Fields:**
+| Field | Description |
+|-------|-------------|
+| outpoint | Collateral UTXO outpoint (txHash + outputIndex) |
+| poolId | Lending pool ID (hex) |
+| borrowerHash | Borrower's pubkey hash (hex) |
+| collateralAmount | Collateral amount in base units |
+| collateralAssetId | Collateral asset ID (hex) |
+| principal | Original borrowed amount |
+| interestRateBps | Annual interest rate in basis points (500 = 5%) |
+| creationSlot | Slot when the loan was created |
+| liquidationRatioBps | LTV ratio at which liquidation is allowed (15000 = 150%) |
+| accruedInterest | Interest accrued since creation |
+| totalDebt | principal + accruedInterest |
+| elapsedSlots | Slots elapsed since loan creation |
+| ltvBps | Current loan-to-value ratio in basis points |
+| liquidatable | Whether the loan can be liquidated at current LTV |
+
+**Example:**
+```bash
+curl -X POST http://127.0.0.1:8500 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getLoanInfo","params":{"txHash":"0xabc...","outputIndex":0},"id":1}'
+```
+
+---
+
+### getLoanList
+
+Returns all active loans (Collateral UTXOs), optionally filtered by borrower.
+
+**Parameters:**
+| Name | Type | Description |
+|------|------|-------------|
+| borrower | string | (Optional) Borrower pubkey hash (hex) to filter by |
+
+**Response:**
+```json
+[
+    {
+        "outpoint": {
+            "txHash": "0x...",
+            "outputIndex": 0
+        },
+        "borrowerHash": "0x...",
+        "collateralAmount": 100000000,
+        "principal": 50000000,
+        "totalDebt": 50125000,
+        "interestRateBps": 500,
+        "liquidatable": false
+    }
+]
+```
+
+**Example:**
+```bash
+curl -X POST http://127.0.0.1:8500 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getLoanList","params":{},"id":1}'
+
+# Filter by borrower
+curl -X POST http://127.0.0.1:8500 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getLoanList","params":{"borrower":"0xabc..."},"id":1}'
+```
+
+---
+
+*API version: 1.3 (39 methods)*
 
 *Last updated: March 2026*

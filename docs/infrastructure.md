@@ -332,8 +332,8 @@ All bootstrap from `--bootstrap /dns4/bootstrap1.testnet.doli.network/tcp/40300 
 | Genesis Producers | 6 (NT1-NT6) |
 | Block Reward | 1 tDOLI |
 | Slot Duration | 10 seconds |
-| Epoch Length | 360 blocks (1 hour) |
-| Bond Unit | 10 tDOLI |
+| Epoch Length | 36 blocks (~6 minutes) |
+| Bond Unit | 1 tDOLI |
 | Vesting | 1 day (6h quarters: 75/50/25/0%) |
 
 ### Log Paths

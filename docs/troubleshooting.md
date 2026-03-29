@@ -13,8 +13,14 @@ This guide helps diagnose and resolve common issues with DOLI nodes and wallets.
 | Possible Cause | Solution |
 |----------------|----------|
 | Port already in use | Check for existing process: `lsof -i :30300` |
-| Corrupt database | Remove and resync: `rm -rf ~/.doli/mainnet/db/` |
+| Corrupt database | Remove and resync: `rm -rf <DATA_DIR>/data/` (see note below) |
 | Missing dependencies | Reinstall via `nix develop` or install manually |
+
+**Data directory locations:**
+- Linux: `/var/lib/doli/{network}/`
+- macOS: `~/Library/Application Support/doli/{network}/`
+- Legacy fallback: `~/.doli/{network}/`
+- Override: set `DOLI_DATA_DIR` env var or use `--data-dir` flag
 | Insufficient permissions | Check data directory permissions |
 | Out of disk space | Free up space or move data directory |
 
@@ -148,12 +154,14 @@ nc -zv your-node-ip 30300
 | Possible Cause | Solution |
 |----------------|----------|
 | Large mempool | Restart node (mempool clears on restart) |
-| Many peers | Use `--max-peers 25` flag |
+| Many peers | Set `DOLI_MAX_PEERS=25` env var |
 | Memory leak | Update to latest version |
+| Peer eviction churn | Set `DOLI_EVICTION_GRACE_SECS=30` (default: 30s) |
 
-**Reduce resource usage with CLI flags:**
+**Reduce resource usage with env vars (in .env or shell):**
 ```bash
-./doli-node --max-peers 25 run
+DOLI_MAX_PEERS=25 doli-node run
+# Or set in .env file in data directory
 ```
 
 ---
@@ -315,7 +323,7 @@ echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governo
 
 **Check balance:**
 ```bash
-./target/release/doli wallet balance
+doli balance
 ```
 
 ---
@@ -374,7 +382,7 @@ curl -X POST http://127.0.0.1:8500 \
 
 **Verify address:**
 ```bash
-./target/release/doli wallet addresses
+doli addresses
 ```
 
 **Check via RPC:**
@@ -472,7 +480,11 @@ curl -X POST http://127.0.0.1:8500 \
 **Force resync if needed:**
 ```bash
 sudo systemctl stop doli-node
-rm -rf ~/.doli/mainnet/db/
+# Remove chain data (platform-specific path, or use DOLI_DATA_DIR):
+#   Linux:  /var/lib/doli/mainnet/data/
+#   macOS:  ~/Library/Application Support/doli/mainnet/data/
+#   Legacy: ~/.doli/mainnet/data/
+rm -rf <DATA_DIR>/data/
 sudo systemctl start doli-node
 ```
 
@@ -565,7 +577,8 @@ curl -s -X POST http://127.0.0.1:8500 \
     -d '{"jsonrpc":"2.0","method":"getMempoolInfo","params":{},"id":1}' | jq
 
 echo -e "\n=== Disk Usage ==="
-du -sh ~/.doli/mainnet/db/
+# Adjust path for your platform (see Section 1.1 for locations)
+du -sh /var/lib/doli/mainnet/data/ 2>/dev/null || du -sh ~/Library/Application\ Support/doli/mainnet/data/ 2>/dev/null || du -sh ~/.doli/mainnet/data/
 
 echo -e "\n=== Memory Usage ==="
 ps aux | grep doli-node | grep -v grep

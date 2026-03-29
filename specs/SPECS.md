@@ -27,6 +27,23 @@ Master index for all DOLI protocol specifications.
 | [single-proposer-requirements.md](./single-proposer-requirements.md) | Single-Proposer-Per-Slot requirements - migration from multi-rank fallback to single proposer, attestation fork choice |
 | [gui-desktop-requirements.md](./gui-desktop-requirements.md) | GUI Desktop Application requirements - Tauri 2.x cross-platform wallet with full CLI feature parity |
 
+## Improvement Specifications
+
+| File | Description |
+|------|-------------|
+| [improvements/apply-block-modularization.md](./improvements/apply-block-modularization.md) | Apply-block modularization analysis and plan |
+| [improvements/cli-modularization.md](./improvements/cli-modularization.md) | CLI modularization analysis and plan |
+| [improvements/consensus-modularization.md](./improvements/consensus-modularization.md) | Consensus module modularization analysis and plan |
+| [improvements/modularization-improvement.md](./improvements/modularization-improvement.md) | General modularization improvement specification |
+| [improvements/scaling-100k-producers.md](./improvements/scaling-100k-producers.md) | Scaling to 100K producers analysis and plan |
+
+## Bugfix Analysis
+
+| File | Description |
+|------|-------------|
+| [bugfixes/production-gate-deadlock-analysis.md](./bugfixes/production-gate-deadlock-analysis.md) | Production gate deadlock root cause analysis |
+| [bugfixes/reward-validation-analysis.md](./bugfixes/reward-validation-analysis.md) | Reward validation gap analysis and fixes |
+
 ---
 
 ## Quick Navigation
@@ -40,7 +57,16 @@ specs/
 ├── single-proposer-architecture.md   # Single-proposer migration architecture
 ├── single-proposer-requirements.md   # Single-proposer migration requirements
 ├── gui-architecture.md               # GUI Desktop Application architecture
-└── gui-desktop-requirements.md       # GUI Desktop Application requirements
+├── gui-desktop-requirements.md       # GUI Desktop Application requirements
+├── improvements/
+│   ├── apply-block-modularization.md # Apply-block modularization
+│   ├── cli-modularization.md         # CLI modularization
+│   ├── consensus-modularization.md   # Consensus modularization
+│   ├── modularization-improvement.md # General modularization
+│   └── scaling-100k-producers.md     # Scaling to 100K producers
+└── bugfixes/
+    ├── production-gate-deadlock-analysis.md  # Production gate deadlock
+    └── reward-validation-analysis.md         # Reward validation gaps
 ```
 
 ---

@@ -114,13 +114,13 @@ If you don't have SSH or filesystem access to the archive, you can restore direc
 ### Backfill via RPC (most common)
 
 ```bash
-doli-node --network mainnet restore --from-rpc http://archive.doli.network:8548 --backfill --yes
+doli-node --network mainnet restore --from-rpc http://archive.doli.network:8500 --backfill --yes
 ```
 
 ### Full restore via RPC
 
 ```bash
-doli-node --network mainnet restore --from-rpc http://archive.doli.network:8548 --yes
+doli-node --network mainnet restore --from-rpc http://archive.doli.network:8500 --yes
 ```
 
 After a full restore, rebuild state: `doli-node recover --yes`

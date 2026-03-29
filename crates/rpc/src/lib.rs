@@ -30,17 +30,29 @@
 //! | `getUpdateStatus` | Get auto-update status |
 //! | `getMaintainerSet` | Get maintainer set |
 //! | `submitMaintainerChange` | Submit maintainer change transaction |
+//! | `getPeerInfo` | Get detailed peer list |
 //! | `getNodeInfo` | Get node version info |
+//! | `getNetworkParams` | Get network parameters |
+//! | `getBondDetails` | Get per-bond vesting details |
+//! | `getChainStats` | Get chain statistics |
+//! | `getMempoolTransactions` | Get pending mempool transactions |
+//! | `getSlotSchedule` | Get upcoming slot assignments |
+//! | `getProducerSchedule` | Get producer schedule info |
+//! | `getAttestationStats` | Get attestation statistics |
+//! | `getBlockRaw` | Get raw block data |
+//! | `backfillFromPeer` | Trigger block backfill |
+//! | `backfillStatus` | Check backfill progress |
+//! | `verifyChainIntegrity` | Verify chain completeness |
+//! | `getStateRootDebug` | Debug state root hashes |
+//! | `getUtxoDiff` | Diff UTXOs across nodes |
 //!
-//! ## Deprecated Methods (Not Implemented)
-//!
-//! The following methods were documented for a weighted presence reward system
-//! that was deprecated. Rewards now work like Bitcoin - automatic via coinbase.
-//!
-//! - `getClaimableRewards` - Not implemented
-//! - `getClaimHistory` - Not implemented
-//! - `estimateEpochReward` - Not implemented
-//! - `buildClaimTx` - Not implemented
+//! | `getStateSnapshot` | Get full state snapshot |
+//! | `getPoolInfo` | Get AMM pool details |
+//! | `getPoolList` | List all AMM pools |
+//! | `getPoolPrice` | Get pool spot price and TWAP |
+//! | `getSwapQuote` | Simulate a swap |
+//! | `getLoanInfo` | Get loan details |
+//! | `getLoanList` | List active loans |
 //!
 //! ## Example Request
 //!

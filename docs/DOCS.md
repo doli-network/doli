@@ -19,12 +19,15 @@ Master index for all DOLI documentation.
 |------|-------------|
 | [genesis.md](./genesis.md) | **Mainnet genesis launch guide** - critical checklist, key generation, and launch procedure |
 | [testnet.md](./testnet.md) | Testnet information, bootstrap nodes, and setup guide for joining |
+| [devnet.md](./devnet.md) | Devnet guide - local development environment, bootstrap mode, configuration |
+| [genesis_ceremony.md](./genesis_ceremony.md) | Genesis ceremony procedures and verification |
+| [infrastructure.md](./infrastructure.md) | Infrastructure layout - servers, DNS, directory structure, service configuration |
 
 ## Guides
 
 | File | Description |
 |------|-------------|
-| [rewards.md](./rewards.md) | Block rewards system - direct coinbase model, emission schedule, maturity rules |
+| [rewards.md](./rewards.md) | Block rewards system - pooled epoch model, emission schedule, maturity rules |
 | [cli.md](./cli.md) | Complete CLI reference - all WHITEPAPER operations via command line |
 | [docker.md](./docker.md) | Docker deployment guide - containers, compose, and monitoring |
 | [running_a_node.md](./running_a_node.md) | Node setup, operation, and **environment configuration** (.env files) |
@@ -35,6 +38,10 @@ Master index for all DOLI documentation.
 | [disaster-recovery.md](./disaster-recovery.md) | Disaster recovery procedures (restore, backfill, hot backfill) |
 | [releases.md](./releases.md) | Release process, versioning, and download verification |
 | [buy_doli.md](./buy_doli.md) | DOLI/USDT exchange system - API, deployment, and operational guide |
+| [faucet-bot.md](./faucet-bot.md) | Testnet faucet bot setup and operation |
+| [producer_node_quickstart.md](./producer_node_quickstart.md) | Quick-start guide for producer node setup |
+| [producer-ux-proposal.md](./producer-ux-proposal.md) | Producer UX improvement proposal |
+| [configuration_verification.md](./configuration_verification.md) | Configuration verification procedures |
 
 ## Governance
 
@@ -63,31 +70,38 @@ Archived historical documents in `legacy/` subdirectory.
 
 ```
 docs/
-├── DOCS.md                   # ← You are here (master index)
-├── architecture.md           # System architecture
-├── attack_analysis.md        # Security analysis
-├── auto_update_system.md     # Auto-update documentation
-├── battle_test.md            # Battle testing
-├── becoming_a_producer.md    # Producer guide
-├── buy_doli.md               # Exchange system guide
-├── cli.md                    # CLI reference
-├── archiver.md               # Block archiver & seed infrastructure
-├── disaster-recovery.md      # Disaster recovery procedures
-├── docker.md                 # Docker deployment
-├── rewards.md                # Block rewards (coinbase)
-├── extreme_devnet_600.md     # Extreme testing results
-├── genesis.md                # Genesis launch guide
-├── manifesto.md              # Project philosophy
-├── protocol.md               # Wire protocol spec
-├── releases.md               # Release process
-├── roadmap.md                # Development roadmap
-├── rpc_reference.md          # API documentation
-├── running_a_node.md         # Node operation guide
-├── security_model.md         # Security model
-├── testnet.md                # Testnet setup
-├── troubleshooting.md        # Common issues
-├── whitepaper_test_plan.md   # Whitepaper test plan
-└── legacy/                   # Archived documents
+├── DOCS.md                       # <- You are here (master index)
+├── architecture.md               # System architecture
+├── archiver.md                   # Block archiver & seed infrastructure
+├── attack_analysis.md            # Security analysis
+├── auto_update_system.md         # Auto-update documentation
+├── battle_test.md                # Battle testing
+├── becoming_a_producer.md        # Producer guide
+├── buy_doli.md                   # Exchange system guide
+├── cli.md                        # CLI reference
+├── configuration_verification.md # Configuration verification
+├── devnet.md                     # Devnet guide
+├── disaster-recovery.md          # Disaster recovery procedures
+├── docker.md                     # Docker deployment
+├── extreme_devnet_600.md         # Extreme testing results
+├── faucet-bot.md                 # Testnet faucet bot
+├── genesis.md                    # Genesis launch guide
+├── genesis_ceremony.md           # Genesis ceremony procedures
+├── infrastructure.md             # Infrastructure layout
+├── manifesto.md                  # Project philosophy
+├── producer-ux-proposal.md       # Producer UX proposal
+├── producer_node_quickstart.md   # Producer quickstart
+├── protocol.md                   # Wire protocol spec
+├── releases.md                   # Release process
+├── rewards.md                    # Block rewards (pooled epoch)
+├── roadmap.md                    # Development roadmap
+├── rpc_reference.md              # API documentation
+├── running_a_node.md             # Node operation guide
+├── security_model.md             # Security model
+├── testnet.md                    # Testnet setup
+├── troubleshooting.md            # Common issues
+├── whitepaper_test_plan.md       # Whitepaper test plan
+└── legacy/                       # Archived documents
 ```
 
 ---

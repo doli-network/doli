@@ -195,16 +195,16 @@ DOLI uses two VDF types for different purposes:
 - Preimage resistance of BLAKE3
 
 **Parameters**:
-| Parameter | Value | Rationale |
-|-----------|-------|-----------|
-| Target Time | ~55ms | Heartbeat proof of presence |
-| Iterations | ~800,000 | Fixed per network (`heartbeat_vdf_iterations`) |
+| Parameter | Consensus Constant | NetworkParams Default | Rationale |
+|-----------|-------------------|----------------------|-----------|
+| T_BLOCK | 800,000 | 1,000 (all networks) | Bond is primary Sybil defense |
+| Target Time | ~55ms (at 800K) | <1ms (at 1,000) | Minimal computation overhead |
 
 **Properties**:
 - **Sequentiality**: Cannot be parallelized
 - **Verification**: Recompute the entire chain (O(T))
 - **Unique output**: Given input, only one valid output exists
-- **Fixed iterations**: 800,000 for all networks (mainnet/testnet/devnet)
+- **NetworkParams override**: All networks default to 1,000 iterations via `NetworkParams::defaults()`. The consensus constant `T_BLOCK=800,000` exists for potential future tightening via protocol upgrade
 
 **Note**: A dynamic calibration module exists in the codebase but is not currently
 used for block production. Block iterations are fixed per network configuration.
@@ -223,10 +223,10 @@ used for block production. Block iterations are fixed per network configuration.
 - Preimage resistance of BLAKE3
 
 **Parameters**:
-| Parameter | Value | Rationale |
-|-----------|-------|-----------|
-| T_REGISTER_BASE | 5,000,000 iterations (~30s) | Anti-Sybil protection |
-| T_REGISTER_CAP | 5,000,000 iterations | Fixed (not dynamically scaled) |
+| Parameter | Consensus Constant | NetworkParams Default | Rationale |
+|-----------|-------------------|----------------------|-----------|
+| T_REGISTER_BASE | 1,000 | 1,000 (all networks) | Minimal barrier; bond is primary Sybil defense |
+| T_REGISTER_CAP | 5,000,000 | N/A (not currently applied) | Reserved for future tightening |
 
 **Properties**:
 - **Sequentiality**: Cannot be parallelized
@@ -320,9 +320,10 @@ To control the network, an attacker would need to:
 3. **Risk detection**: Equivocation leads to permanent bond loss
 
 **Cost Analysis** (Era 0, assuming 100 active producers):
-- Minimum 51 registrations: 51 * ~30 seconds = ~25 minutes sequential time (5M VDF iterations each)
+- Minimum 51 registrations: VDF barrier is minimal (1,000 iterations per registration, <1ms each). Bond staking is the real cost.
 - Bond requirement: 51 * 10 DOLI = 510 DOLI minimum at risk (1 bond each)
 - Potential loss if detected: All bonded capital slashed
+- **Note**: The primary Sybil defense is the bond requirement, not VDF computation time. Registration VDF at T_REGISTER_BASE=1,000 is near-instant. Anti-parallel protection comes from the chained registration hash requirement.
 
 ### 4.4 Time-Based Economics
 
@@ -499,7 +500,7 @@ Token bucket rate limiting protects against DoS attacks at both per-peer and glo
 
 Transaction hashes exclude signatures to prevent third-party modification.
 
-**Implementation** (`crates/core/src/transaction.rs:869`):
+**Implementation** (`crates/core/src/transaction/core.rs`):
 
 ```rust
 pub fn hash(&self) -> Hash {
@@ -540,10 +541,10 @@ Producer registration uses a hash-chain VDF (iterated BLAKE3) for Sybil resistan
 
 **Implementation Details**:
 
-| Parameter | Mainnet/Testnet | Devnet |
-|-----------|-----------------|--------|
-| Base Iterations (T_REGISTER_BASE) | 5,000,000 (~30s) | Skipped (no VDF validation) |
-| Maximum (T_REGISTER_CAP) | 5,000,000 | Skipped |
+| Parameter | Consensus Constant | Network Default (all networks) |
+|-----------|-------------------|-------------------------------|
+| T_REGISTER_BASE | 1,000 | 1,000 (via `vdf_register_iterations`) |
+| T_REGISTER_CAP | 5,000,000 | Not applied (reserved for future tightening) |
 
 **Chained Hash System** (`RegistrationData` in `transaction.rs`):
 ```rust
@@ -568,36 +569,39 @@ pub struct RegistrationData {
 
 Block VDF input construction prevents pre-computation attacks.
 
-**VDF Input Construction** (`crates/vdf/src/lib.rs:224`):
+**VDF Input Construction** (`crates/core/src/consensus/vdf.rs` and `crates/vdf/src/lib.rs`):
 ```rust
-pub fn block_input(
+// In consensus/vdf.rs: construct_vdf_input()
+// In vdf crate: block_input()
+// Both produce identical output:
+pub fn construct_vdf_input(
     prev_hash: &Hash,        // Unknown until previous block
-    merkle_root: &Hash,      // Block content commitment
-    slot: u32,               // Time ordering
-    producer: &PublicKey,    // Identity binding
+    tx_root: &Hash,          // Block content commitment (merkle root)
+    slot: Slot,              // Time ordering
+    producer_key: &PublicKey, // Identity binding
 ) -> Hash {
-    let mut hasher = Hasher::new();
-    hasher.update(b"DOLI_VDF_BLOCK_V1");
-    hasher.update(prev_hash.as_bytes());
-    hasher.update(merkle_root.as_bytes());
-    hasher.update(&slot.to_le_bytes());
-    hasher.update(producer.as_bytes());
-    hasher.finalize()
+    hash_concat(&[
+        b"DOLI_VDF_BLOCK_V1",
+        prev_hash.as_bytes(),
+        tx_root.as_bytes(),
+        &slot.to_le_bytes(),
+        producer_key.as_bytes(),
+    ])
 }
 ```
 
 **Parameters**:
 
-| Parameter | Value | Effect |
-|-----------|-------|--------|
-| T_BLOCK | 800,000 iterations | ~55ms computation |
-| Slot Duration | 10 seconds | Full slot for production |
-| Fallback Window | 2,000ms per rank | 5 ranks fill entire slot |
+| Parameter | Consensus Constant | NetworkParams Default | Effect |
+|-----------|-------------------|----------------------|--------|
+| T_BLOCK | 800,000 iterations | 1,000 | <1ms computation at network default |
+| Slot Duration | 10 seconds | 10 seconds | Full slot for production |
+| Fallback Window | 2,000ms per rank | 2,000ms | 2 ranks (primary + single fallback) |
 
 **Why Grinding Is Impractical**:
 1. **Epoch Lookahead**: Selection uses `slot % total_tickets`, independent of `prev_hash`
 2. **prev_hash in VDF input**: VDF output changes with different block content, but cannot influence selection
-3. **Sequential VDF**: Each attempt takes ~55ms, cannot parallelize
+3. **Sequential VDF**: Cannot be parallelized regardless of iteration count
 4. **No Compounding**: Winning slot N provides no advantage for N+1
 5. **Deterministic rotation**: Producer schedule is fixed for the entire epoch at epoch boundary
 
@@ -737,7 +741,7 @@ impl Transaction {
 **Risk**: Network splits could create competing chains
 
 **Mitigations**:
-- Longest-slot chain rule provides clear resolution
+- Weight-based fork choice rule provides clear resolution (heaviest chain wins)
 - VDF ensures time passes even during partition
 - Reconciliation upon reconnection is deterministic
 
@@ -747,63 +751,38 @@ impl Transaction {
 
 **Mitigations**:
 - No economies of scale in VDF computation
-- Bond decreases over time (easier entry)
-- Inactivity penalties encourage liveness
+- Bond is fixed at BOND_UNIT (10 DOLI mainnet) with MAX_BONDS cap (3,000) limiting maximum stake per producer
+- Producers who miss slots miss rewards (natural economic penalty). No slashing for inactivity
 
-### 7.5 Producer Selection Grinding (prev_hash manipulation)
+### 7.5 Producer Selection Grinding (Epoch Lookahead Defense)
 
-**Risk**: A malicious producer of block N-1 could attempt to manipulate `prev_hash` to influence producer selection for slot N.
+**Risk**: A malicious producer of block N-1 could attempt to manipulate `prev_hash` to influence producer selection for future slots.
 
-**Attack Mechanism**:
+**Defense: Epoch Lookahead**
+
+DOLI's producer selection uses `slot % total_tickets` (deterministic round-robin based on bond count), which is completely independent of `prev_hash`. This eliminates grinding attacks entirely:
+
 ```
-seed_N = HASH("SEED" || prev_hash || slot_N)
-score(producer) = HASH(seed_N || producer_pubkey)
+selected_producer(slot) = find_ticket_owner(slot % total_tickets)
 ```
 
-Since `prev_hash = HASH(block_N-1)`, an attacker who produces block N-1 could:
-1. Generate multiple valid block candidates (varying timestamp, tx ordering, etc.)
-2. Compute resulting `prev_hash` for each candidate
-3. Select the candidate that gives them best `score` for slot N
-4. Pre-compute VDF for slot N using the chosen `prev_hash`
+The selection depends ONLY on:
+1. The slot number (deterministic from wall-clock time)
+2. The producer set and bond counts (frozen at epoch boundary)
 
-**Cost-Benefit Analysis**:
+Since `prev_hash` is not used in selection, manipulating block content cannot influence who produces future blocks. This is a fundamental design choice -- Epoch Lookahead trades theoretical unpredictability for grinding immunity.
 
-| Factor | Value | Impact |
-|--------|-------|--------|
-| VDF computation time | ~55ms | Fast heartbeat with Epoch Lookahead |
-| Must win slot N-1 first | Probabilistic | Attacker needs prior slot control |
-| Benefit | Better position in N | Only probabilistic advantage |
-| Detection | None | Attack is indistinguishable from honest behavior |
+**prev_hash in VDF input**: The VDF input includes `prev_hash`, but this only affects VDF output validity (anti-pre-computation), NOT producer selection. An attacker cannot pre-compute VDF for a future block because they do not know `prev_hash` until the previous block is finalized.
 
-**Quantitative Assessment**:
-- With 100 producers and random selection, probability of winning any slot ≈ 1%
-- Grinding N variants improves odds to approximately `1 - (1 - 1/100)^N`
-- 60 variants (1 hour grinding): ~45% chance of winning next slot
-- But attacker must already control slot N-1 to grind
+**Residual risk**: The only remaining vector is manipulating the producer set itself (registering/deregistering at epoch boundaries to shift ticket assignments). This is mitigated by:
+1. Registration requires VDF computation + bond
+2. Bond withdrawals incur vesting penalties
+3. Producer set changes are deferred to epoch boundaries
+4. MAX_BONDS cap (3,000) limits any single entity's influence
 
-**Current Mitigations**:
-1. **Epoch Lookahead**: Leader selection is deterministic at epoch start, not per-slot
-2. **Sequential dependency**: Must win N-1 before grinding for N
-3. **Diminishing returns**: Each additional variant provides marginal improvement
-4. **No compounding**: Winning slot N doesn't help grind for N+1 (new prev_hash)
+**Status**: Grinding is a non-issue due to Epoch Lookahead. No monitoring needed for this specific attack vector.
 
-**Why This Is Acceptable**:
-- Attack requires sustained slot control (hard to achieve)
-- Benefit is positional advantage, not consensus violation
-- No known practical exploitation in similar systems (Ethereum's RANDAO has analogous properties)
-- Class group VDFs have no efficient ASIC design (grinding throughput is hardware-limited)
-
-**Future Considerations**:
-- If VDF ASICs emerge, T parameter should be increased proportionally
-- Commit-reveal schemes could eliminate grinding but add latency
-- VRF-based selection (like Algorand) would eliminate grinding entirely but requires different trust assumptions
-
-**Monitoring Recommendation**:
-Track producer win rates. Statistically significant deviation from expected distribution (>3σ) over extended periods could indicate grinding attacks.
-
-**Status**: Accepted risk. Cost/benefit ratio makes attack impractical with current technology. Will revisit if VDF acceleration hardware emerges.
-
-*Documented: 2026-01-25 during security audit*
+*Updated: 2026-03-29 -- rewrote to reflect actual deterministic selection (was describing obsolete hash-based selection)*
 
 ---
 
@@ -848,8 +827,7 @@ Track producer win rates. Statistically significant deviation from expected dist
 - **Fix**: Changed SlashingEvidence to include full BlockHeaders for VDF verification
 - **Commit**: `5863805`
 
-**Note**: VDF iterations are fixed per network. Block production uses ~800,000
-iterations (~55ms) across all eras. Registration uses 5,000,000 iterations (~30s).
+**Note**: VDF iterations are configured via NetworkParams. Block production defaults to 1,000 iterations (<1ms) across all networks. Registration uses T_REGISTER_BASE=1,000 iterations (consensus constant T_REGISTER_CAP=5,000,000 exists but is not currently applied by network defaults). Bond staking is the primary Sybil defense.
 
 ### 8.3 Test Coverage
 
@@ -911,7 +889,7 @@ A bug bounty program will be established after mainnet launch. Categories:
 
 ---
 
-*Last updated: 2026-03-15*
+*Last updated: 2026-03-29 (synced against code)*
 *DOLI Security Team*
 # DOLI Security Checklist
 
@@ -1091,7 +1069,7 @@ This checklist helps node operators and producers secure their DOLI infrastructu
   # Check metrics
   curl http://localhost:9000/metrics | grep vdf_compute
 
-  # Should complete in ~55ms (heartbeat VDF)
+  # Should complete in <1ms (1,000 iterations at network default)
   ```
 
 - [ ] **Ensure clock synchronization**

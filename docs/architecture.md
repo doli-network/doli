@@ -95,7 +95,7 @@ crypto ──► bins/cli (wallet binary)
 
 ### 3.2. vdf
 
-**Purpose:** Verifiable Delay Functions using Wesolowski construction over class groups.
+**Purpose:** Verifiable Delay Functions (Wesolowski construction over class groups). **NOT used in production.** Both block and registration VDFs use the iterated BLAKE3 hash-chain implementation in `doli-core/src/tpop/heartbeat.rs`.
 
 | Module | Function |
 |--------|----------|
@@ -103,16 +103,12 @@ crypto ──► bins/cli (wallet binary)
 | `vdf.rs` | VDF compute and verify |
 | `proof.rs` | Wesolowski proof structures |
 
-**Key functions:**
-- `compute(input, t)` - Compute y = x^(2^t) with proof
-- `verify(input, output, proof, t)` - Verify proof
-- `block_input()` - Build block VDF preimage
-- `registration_input()` - Build registration VDF preimage
+**Status:** The `doli-vdf` crate exists but is dead code for production purposes. The actual VDF used is a BLAKE3 hash-chain in `doli-core`.
 
-**Parameters:**
-- Block: 800K iterations (~55ms)
-- Registration base: 600M iterations (~10 minutes)
-- Discriminant: 2048 bits
+**Actual VDF Parameters (from NetworkParams defaults):**
+- Block VDF: 1,000 iterations (~0.07ms) on mainnet/testnet. Constant `T_BLOCK=800,000` exists but NetworkParams overrides it. Bond is the real Sybil protection.
+- Registration VDF: `T_REGISTER_BASE=1,000` iterations (trivial). `T_REGISTER_CAP=5,000,000`.
+- Devnet: Block VDF = 1 iteration (instant)
 
 ### 3.3. doli-core
 
@@ -121,31 +117,50 @@ crypto ──► bins/cli (wallet binary)
 | Module | Function |
 |--------|----------|
 | `block.rs` | Block and BlockHeader types |
-| `transaction.rs` | 16 transaction types, UTXO model |
+| `transaction/` | 27 transaction types, UTXO model |
 | `types.rs` | Amount, Slot, Epoch, Era |
-| `consensus.rs` | PoT parameters, producer selection |
-| `validation.rs` | Block and tx validation |
+| `consensus/` | PoT parameters, producer selection, bonds, tiers |
+| `validation/` | Block and tx validation |
 | `genesis.rs` | Genesis block generation |
-| `network.rs` | Network configuration |
+| `network/` | Network configuration |
+| `network_params/` | Configurable network parameters (env overrides) |
 | `discovery/` | Producer discovery (G-Set CRDT) |
+| `tpop/` | Time proof: heartbeat VDF, presence, calibration |
+| `attestation.rs` | Attestation types and bitfield encoding |
+| `conditions/` | Programmable output conditions (covenants) |
+| `amm.rs` | Automated market maker logic |
+| `lending.rs` | Lending protocol logic |
 
-**Transaction types** (see `crates/core/src/transaction.rs` for canonical list):
-1. Transfer - Value transfer
-2. Registration - Producer registration
-3. Exit - Producer exit
-4. Coinbase - Block reward (→ reward pool, not direct to producer)
-5. ClaimReward - DEPRECATED (replaced by automatic EpochReward)
-6. ClaimBond - DEPRECATED (replaced by automatic withdrawal)
-7. AddBond - Bond stacking (creates Bond UTXOs with creation_slot in extra_data)
-8. WithdrawalRequest - Bond withdrawal request (7-day delay, FIFO vesting penalty)
-9. ClaimWithdrawal - Claim matured withdrawal
-10. EpochReward - Epoch reward distribution (ACTIVE — pool drained bond-weighted)
-11. SlashProducer - Slash equivocator (100% bond burn)
-12. DelegateBond - Delegate bonds to another producer
-13. RevokeDelegation - Revoke delegated bonds
-14. SetPresenceCommitment - Set attestation commitment
-15. AddMaintainer - Add maintainer to governance set (immediate, not deferred)
-16. RemoveMaintainer - Remove maintainer from governance set (immediate)
+**Transaction types** (see `crates/core/src/transaction/types.rs` for canonical list):
+1. Transfer (0) - Value transfer. Also used as coinbase (Transfer with no inputs, single output to reward pool)
+2. Registration (1) - Producer registration
+3. Exit (2) - Producer exit
+4. ClaimReward (3) - DEPRECATED (replaced by automatic EpochReward)
+5. ClaimBond (4) - DEPRECATED (replaced by automatic withdrawal)
+6. SlashProducer (5) - Slash equivocator (100% bond burn)
+7. Coinbase (6) - DEAD CODE (enum variant exists but `new_coinbase()` creates TxType::Transfer)
+8. AddBond (7) - Bond stacking (creates Bond UTXOs with creation_slot in extra_data)
+9. RequestWithdrawal (8) - Instant bond withdrawal with FIFO vesting penalty
+10. ClaimWithdrawal (9) - Reserved tombstone (wire compat)
+11. EpochReward (10) - Epoch reward distribution (ACTIVE — pool drained bond-weighted)
+12. RemoveMaintainer (11) - Remove maintainer from governance set (immediate)
+13. AddMaintainer (12) - Add maintainer to governance set (immediate, not deferred)
+14. DelegateBond (13) - Delegate bonds to another producer
+15. RevokeDelegation (14) - Revoke delegated bonds
+16. ProtocolActivation (15) - On-chain consensus rule activation (3/5 multisig)
+17. MintAsset (17) - Mint fungible asset (issuer-only)
+18. BurnAsset (18) - Burn fungible asset
+19. CreatePool (19) - Create AMM pool with initial liquidity
+20. AddLiquidity (20) - Add liquidity to AMM pool
+21. RemoveLiquidity (21) - Remove liquidity from AMM pool
+22. Swap (22) - Swap assets through AMM pool
+23. CreateLoan (24) - Create collateralized loan
+24. RepayLoan (25) - Repay loan and recover collateral
+25. LiquidateLoan (26) - Liquidate undercollateralized loan
+26. LendingDeposit (27) - Deposit DOLI into lending pool
+27. LendingWithdraw (28) - Withdraw DOLI + interest from lending pool
+
+**Note:** TxType 16 and 23 are reserved and not used.
 
 ### 3.4. Configuration Hierarchy
 
@@ -227,7 +242,7 @@ DOLI uses a strict 3-level configuration hierarchy:
 **Connection model (two-tier):**
 - **Application layer** (`max_peers`): Tracks scored peers. When full, evicts lowest gossipsub-scored peer. Producers keep slots (high P2 score from first-message delivery).
 - **Transport layer** (`max_peers * 1.5`): Allows temporary over-capacity so new peers can be evaluated before eviction decides who stays. Without headroom, libp2p rejects connections at TCP level before scoring runs.
-- **Defaults**: Mainnet/Testnet: 50 peers (Ethereum geth default). Devnet: 150. Override: `DOLI_MAX_PEERS` env var.
+- **Defaults**: Mainnet: 50, Testnet: 25 (halved from 50, INC-I-012 Yamux RAM fix), Devnet: 150. Override: `DOLI_MAX_PEERS` env var.
 - **Peer discovery flow**: Bootstrap node → Identify → DHT → peer cache. Bootnodes are introduction points, not permanent hubs.
 
 ### 3.7. mempool
@@ -317,7 +332,7 @@ Producer Selection (deterministic round-robin)
     │
     ▼
 ┌───────────────────────┐
-│ Compute Block VDF     │ (~700ms)
+│ Compute Block VDF     │ (~0.07ms at 1K iters)
 │ - prev_hash           │
 │ - tx_root             │
 │ - slot                │
@@ -522,7 +537,7 @@ doli-node
 │   ├── Mempool            (pending txs)
 │   └── RpcServer          (API)
 ├── producer::Producer     (optional block production)
-│   └── VdfWorker          (VDF computation)
+│   └── hash_chain_vdf     (BLAKE3 hash-chain, ~0.07ms)
 ├── metrics::MetricsServer (Prometheus)
 └── updater::Updater       (auto-updates)
 ```
@@ -587,7 +602,7 @@ doli
 
 Both stamp Bond `extra_data` with the block slot. If they diverge → state roots diverge across nodes after restart → snap sync breaks (quorum impossible). This was the root cause of the snap sync failure discovered 2026-03-11.
 
-Code: `bins/node/src/node.rs:~3561-3574`
+Code: `bins/node/src/node/apply_block/`
 
 ### 9.2. State Root
 
@@ -599,7 +614,7 @@ Code: `crates/storage/src/snapshot.rs`
 
 `rollback_one_block()` uses **undo-based rollback** as first option (O(1) — reverses created/spent UTXOs from stored `UndoData`). Rebuild-from-genesis is fallback only for blocks without undo data.
 
-Code: `bins/node/src/node.rs:~6492`
+Code: `bins/node/src/node/rollback.rs`
 
 ### 9.4. Deferred Producer Mutations
 
@@ -607,7 +622,7 @@ Producer mutations (Register, AddBond, Exit, Slash, WithdrawalRequest, DelegateB
 
 ### 9.5. Genesis Phase
 
-Blocks 1 through `genesis_blocks` are the genesis phase. At `genesis_blocks + 1`, `derive_genesis_producers_from_chain()` runs — consuming genesis coinbase UTXOs to back real bonds. Code: `bins/node/src/node.rs:~6129`
+Blocks 1 through `genesis_blocks` are the genesis phase. At `genesis_blocks + 1`, `derive_genesis_producers_from_chain()` runs — consuming genesis coinbase UTXOs to back real bonds. Code: `bins/node/src/node/genesis.rs`
 
 ---
 
@@ -619,7 +634,8 @@ Code that exists but is never called — kept for serialization backward compati
 |------|-------|----------|
 | `ChainState::apply_coinbase()` / `total_minted` | `chain_state.rs` | Never called, always 0 |
 | `ClaimReward` (TxType 3) | `transaction.rs` | Replaced by automatic EpochReward |
-| `ClaimBond` (TxType 6) | `transaction.rs` | Replaced by automatic withdrawal |
+| `ClaimBond` (TxType 4) | `transaction.rs` | Replaced by automatic withdrawal |
+| `Coinbase` (TxType 6) | `transaction.rs` | Enum variant exists but coinbase uses `TxType::Transfer` with no inputs |
 | `PresenceScore` scoring | `consensus.rs` | Orphaned — scheduler uses `DeterministicScheduler` |
 | `Block::total_fees()` | `block.rs` | Always returns 0 |
 | `blocks_produced`, `pending_rewards` in ProducerInfo | `producer.rs` | Vestigial from Pull/Claim model |
@@ -705,4 +721,4 @@ Full architecture specification: `specs/gui-architecture.md`
 
 ---
 
-*Architecture version: 2.1 — March 2026*
+*Architecture version: 2.2 — March 2026 (synced against code 2026-03-29)*

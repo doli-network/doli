@@ -8,9 +8,9 @@ This guide covers how to become a block producer in the DOLI network.
 
 Block producers in DOLI:
 - Create new blocks at their assigned slots
-- Compute VDF proofs (~55ms per block)
+- Compute VDF proofs (1,000 iterations per block)
 - Earn block rewards (1 DOLI per block in Era 1)
-- Require a bond (10 DOLI per bond unit)
+- Require a bond (10 DOLI per bond unit on mainnet, 1 DOLI on testnet/devnet)
 
 **Key differences from other systems:**
 - **Deterministic selection** - You know exactly when your blocks will be produced
@@ -40,10 +40,10 @@ Block producers in DOLI:
 
 | Requirement | Amount | Vesting Period |
 |-------------|--------|----------------|
-| Bond unit | 10 DOLI | 1 day (4 × 6h quarters) |
-| Maximum bonds | 10,000 bonds (100,000 DOLI) | 1 day |
+| Bond unit | 10 DOLI (mainnet), 1 DOLI (testnet/devnet) | 4 years mainnet (4 × 1yr quarters), 1 day testnet (4 × 6h quarters) |
+| Maximum bonds | 3,000 bonds (30,000 DOLI mainnet) | Same |
 
-**Bond Stacking**: You can hold multiple bonds (up to 10,000), each with its own creation time and vesting schedule. Withdrawals follow FIFO (First-In-First-Out) order, withdrawing oldest bonds first.
+**Bond Stacking**: You can hold multiple bonds (up to 3,000), each with its own creation time and vesting schedule. Withdrawals follow FIFO (First-In-First-Out) order, withdrawing oldest bonds first.
 
 ### 2.3. Time Commitment
 
@@ -239,14 +239,11 @@ If the primary producer is offline, fallback producers become eligible in exclus
 | Time in slot | Eligible rank |
 |--------------|---------------|
 | 0-2 seconds | Rank 0 only (primary) |
-| 2-4 seconds | Rank 1 (first fallback) |
-| 4-6 seconds | Rank 2 (second fallback) |
-| 6-8 seconds | Rank 3 (third fallback) |
-| 8-10 seconds | Rank 4 (fourth fallback) |
+| 2-4 seconds | Rank 1 (single fallback) |
 
-5 ranks x 2,000ms = 10,000ms — fills the entire slot.
+2 ranks x 2,000ms = 4,000ms. Rank 1 only produces if rank 0's block hasn't arrived via gossip after 2 seconds.
 
-**Fallback calculation:** Fallback producers at ranks 1-4 are selected by offsetting the primary ticket:
+**Fallback calculation:** The fallback producer at rank 1 is selected by offsetting the primary ticket:
 `offset = total_bonds * rank / MAX_FALLBACK_RANKS`
 
 Only one rank is eligible at any given time. Producers verify block existence before and after VDF computation to prevent duplicates.
@@ -266,28 +263,29 @@ Only one rank is eligible at any given time. Producers verify block existence be
 
 ### 5.2. Distribution Mechanism
 
-Rewards are distributed via **coinbase transactions** directly to the block producer:
+Rewards are distributed via a **pooled epoch model**:
 
 | Aspect | Behavior |
 |--------|----------|
-| Timing | Immediate, included in each block |
-| Delivery | Coinbase transaction to producer's address |
-| Maturity | 100 blocks (~17 minutes) before spendable |
+| Per-block | Coinbase output goes to the **reward pool** (not directly to producer) |
+| Epoch end | Pool is drained and distributed to qualified producers, weighted by bond count |
+| Maturity | 6 blocks (~1 minute) before spendable |
 | Empty slots | No reward generated for missed slots |
 
 **Key characteristics:**
 
-- **Simple**: Each block contains a coinbase output to its producer
+- **Pooled**: Each block's coinbase goes to a deterministic reward pool address
+- **Epoch distribution**: At epoch boundary, pool is distributed bond-weighted to qualified producers
 - **Deterministic**: Reward amount based on era (halves every ~4 years)
-- **No claiming required**: Rewards appear directly in your UTXO set
 - **Maturity period**: Coinbase outputs require 6 confirmations before spending
 
 **Example:**
 
 ```
-Block produced by Alice at height 1000:
-- Coinbase reward: 1 DOLI to Alice
-- Spendable after: height 1100 (100 block maturity)
+Epoch of 360 blocks (mainnet):
+- Each block: 1 DOLI coinbase to reward pool
+- Epoch end: 360 DOLI distributed to qualified producers by bond weight
+- Spendable after: 6 blocks (~1 minute)
 ```
 
 ### 5.3. ROI Calculation
@@ -317,14 +315,14 @@ Producers also earn transaction fees from included transactions.
 
 ### 6.1. Bond Stacking
 
-You can hold multiple bonds (up to 10,000), each with its own vesting schedule:
-- Each bond = 10 DOLI = 1 ticket per cycle
-- Maximum: 10,000 bonds = 100,000 DOLI
+You can hold multiple bonds (up to 3,000), each with its own vesting schedule:
+- Each bond = 10 DOLI (mainnet) or 1 DOLI (testnet/devnet) = 1 ticket per cycle
+- Maximum: 3,000 bonds = 30,000 DOLI (mainnet)
 - Bonds vest individually based on their creation time
 
 ### 6.2. Adding Bonds
 
-Increase your stake (up to 10,000 bonds / 100,000 DOLI):
+Increase your stake (up to 3,000 bonds / 30,000 DOLI on mainnet):
 
 ```bash
 # Add 2 more bonds (20 DOLI)
@@ -333,10 +331,10 @@ Increase your stake (up to 10,000 bonds / 100,000 DOLI):
 
 ### 6.3. Requesting Withdrawal
 
-**Instant withdrawal.** Consumes Bond UTXOs in FIFO order (oldest first), returns net amount after vesting penalty in the same block. No delay.
+Withdrawal requires an **unbonding period** (60,480 blocks / ~7 days on mainnet, 72 blocks on testnet). Consumes Bond UTXOs in FIFO order (oldest first), applies vesting penalty.
 
 ```bash
-# Withdraw 1 bond (oldest Bond UTXO, instant payout)
+# Request withdrawal of 1 bond (oldest Bond UTXO, subject to unbonding period)
 ./target/release/doli producer request-withdrawal --count 1
 ```
 
@@ -554,16 +552,16 @@ Updates have a veto period (currently 5 minutes, early network; target 7 days):
 
 | Metric | Value |
 |--------|-------|
-| Bond unit | 10 DOLI |
-| Maximum bonds | 10,000 per producer (100,000 DOLI) |
+| Bond unit | 10 DOLI (mainnet), 1 DOLI (testnet/devnet) |
+| Maximum bonds | 3,000 per producer (30,000 DOLI mainnet) |
 | Block reward (Era 1) | 1 DOLI |
 | Blocks per year (1 bond, 1000 total) | ~3,154 |
 | Annual rewards (1 bond, 1000 total) | ~3,154 DOLI |
-| Full vesting period | 1 day (8,640 slots) |
-| Withdrawal delay | 7 days (60,480 slots) |
-| Coinbase maturity | 100 blocks |
-| Early exit penalties | 75%/50%/25%/0% (Q1/Q2/Q3/Q4+, 6h each) |
+| Full vesting period | 4 years mainnet (3,153,600 slots/quarter), 1 day testnet (2,160 slots/quarter) |
+| Unbonding period | 60,480 blocks (~7 days mainnet), 72 blocks (testnet) |
+| Coinbase maturity | 6 blocks |
+| Early exit penalties | 75%/50%/25%/0% (Q1/Q2/Q3/Q4+; 1yr each mainnet, 6h each testnet) |
 
 ---
 
-*Last updated: February 2026*
+*Last updated: March 2026*
