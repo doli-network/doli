@@ -105,7 +105,8 @@ impl Node {
         .with_producers_weighted(weighted)
         .with_bootstrap_producers(bootstrap_producers)
         .with_bootstrap_liveness(live_bp, stale_bp)
-        .with_excluded_producers(self.excluded_producers.clone());
+        .with_excluded_producers(self.excluded_producers.clone())
+        .with_epoch_producer_list(self.epoch_producer_list.clone());
 
         // Apply chainspec if present
         if let Some(ref spec) = self.config.chainspec {
@@ -249,7 +250,8 @@ impl Node {
         .with_pending_producer_keys(pending_keys)
         .with_bootstrap_producers(bootstrap_producers)
         .with_bootstrap_liveness(live_bp, stale_bp)
-        .with_excluded_producers(self.excluded_producers.clone());
+        .with_excluded_producers(self.excluded_producers.clone())
+        .with_epoch_producer_list(self.epoch_producer_list.clone());
 
         if let Some(ref spec) = self.config.chainspec {
             ctx.params.apply_chainspec(spec);

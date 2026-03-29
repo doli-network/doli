@@ -44,6 +44,16 @@ pub struct BlockHeader {
     pub vdf_output: VdfOutput,
     /// VDF proof
     pub vdf_proof: VdfProof,
+    /// Producers who missed their scheduled slots since the previous block.
+    ///
+    /// Computed by the block producer from the slot gap and the current schedule.
+    /// All nodes validate this field independently — if it doesn't match the
+    /// expected missed producers for the skipped slots, the block is rejected.
+    ///
+    /// This is the ON-CHAIN source of truth for liveness exclusion. Replaces the
+    /// previous local HashSet approach which could diverge between nodes.
+    #[serde(default)]
+    pub missed_producers: Vec<PublicKey>,
 }
 
 impl BlockHeader {
@@ -58,6 +68,11 @@ impl BlockHeader {
         hasher.update(self.merkle_root.as_bytes());
         hasher.update(self.presence_root.as_bytes()); // Commit to presence data
         hasher.update(self.genesis_hash.as_bytes()); // Commit to chain identity
+                                                     // Commit to missed producers (on-chain liveness exclusion)
+        hasher.update(&(self.missed_producers.len() as u32).to_le_bytes());
+        for pk in &self.missed_producers {
+            hasher.update(pk.as_bytes());
+        }
         hasher.update(&self.timestamp.to_le_bytes());
         hasher.update(&self.slot.to_le_bytes());
         hasher.update(self.producer.as_bytes());
@@ -87,10 +102,18 @@ impl BlockHeader {
 
     /// Get approximate size in bytes
     pub fn size(&self) -> usize {
-        // Fixed fields + variable VDF data
+        // Fixed fields + variable VDF data + missed_producers
         // version(4) + prev_hash(32) + merkle_root(32) + presence_root(32) +
-        // timestamp(8) + slot(4) + producer(32) + vdf_output + vdf_proof
-        4 + 32 + 32 + 32 + 8 + 4 + 32 + self.vdf_output.value.len() + self.vdf_proof.pi.len()
+        // timestamp(8) + slot(4) + producer(32) + vdf_output + vdf_proof + missed_producers
+        4 + 32
+            + 32
+            + 32
+            + 8
+            + 4
+            + 32
+            + self.vdf_output.value.len()
+            + self.vdf_proof.pi.len()
+            + self.missed_producers.len() * 32
     }
 
     /// For version >= 2 blocks, `presence_root` contains the attestation commitment
@@ -238,6 +261,7 @@ pub struct BlockBuilder {
     params: ConsensusParams,
     genesis_hash: Hash,
     presence_root: Hash,
+    missed_producers: Vec<PublicKey>,
 }
 
 impl BlockBuilder {
@@ -253,6 +277,7 @@ impl BlockBuilder {
             params,
             genesis_hash,
             presence_root: Hash::ZERO,
+            missed_producers: Vec::new(),
         }
     }
 
@@ -266,6 +291,12 @@ impl BlockBuilder {
     /// Set the presence_root (attestation bitfield commitment).
     pub fn with_presence_root(mut self, root: Hash) -> Self {
         self.presence_root = root;
+        self
+    }
+
+    /// Set the missed producers (on-chain liveness exclusion).
+    pub fn with_missed_producers(mut self, missed: Vec<PublicKey>) -> Self {
+        self.missed_producers = missed;
         self
     }
 
@@ -329,6 +360,7 @@ impl BlockBuilder {
             producer: self.producer,
             vdf_output: VdfOutput { value: Vec::new() },
             vdf_proof: VdfProof::empty(),
+            missed_producers: self.missed_producers,
         };
 
         Some((header, self.transactions))
@@ -378,6 +410,7 @@ mod tests {
                 value: vec![1, 2, 3],
             },
             vdf_proof: VdfProof::empty(),
+            missed_producers: Vec::new(),
         };
 
         let hash1 = header.hash();
@@ -401,6 +434,7 @@ mod tests {
                 value: vec![1, 2, 3],
             },
             vdf_proof: VdfProof::empty(),
+            missed_producers: Vec::new(),
         };
 
         // Different presence_root should produce different hash

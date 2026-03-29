@@ -471,6 +471,7 @@ mod tests {
                 value: vec![0u8; 32],
             },
             vdf_proof: VdfProof { pi: vec![] },
+            missed_producers: Vec::new(),
         };
 
         // NOTE: Presence commitment removed in deterministic scheduler model

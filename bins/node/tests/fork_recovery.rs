@@ -58,6 +58,7 @@ fn build_block(
             value: vec![0u8; 32],
         },
         vdf_proof: VdfProof::empty(),
+        missed_producers: Vec::new(),
     };
 
     Block::new(header, vec![coinbase])

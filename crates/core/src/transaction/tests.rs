@@ -243,6 +243,7 @@ fn test_slash_producer_transaction() {
         producer: *producer_keypair.public_key(),
         vdf_output: VdfOutput { value: vec![] },
         vdf_proof: VdfProof::empty(),
+        missed_producers: Vec::new(),
     };
     let header2 = BlockHeader {
         version: 1,
@@ -255,6 +256,7 @@ fn test_slash_producer_transaction() {
         producer: *producer_keypair.public_key(),
         vdf_output: VdfOutput { value: vec![] },
         vdf_proof: VdfProof::empty(),
+        missed_producers: Vec::new(),
     };
 
     let evidence = SlashingEvidence::DoubleProduction {
@@ -302,6 +304,7 @@ fn test_slash_producer_serialization() {
         producer: *producer_keypair.public_key(),
         vdf_output: VdfOutput { value: vec![] },
         vdf_proof: VdfProof::empty(),
+        missed_producers: Vec::new(),
     };
     let header2 = BlockHeader {
         version: 1,
@@ -314,6 +317,7 @@ fn test_slash_producer_serialization() {
         producer: *producer_keypair.public_key(),
         vdf_output: VdfOutput { value: vec![] },
         vdf_proof: VdfProof::empty(),
+        missed_producers: Vec::new(),
     };
 
     let evidence = SlashingEvidence::DoubleProduction {

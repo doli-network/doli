@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Message {
     /// Announce new block
-    NewBlock(Block),
+    NewBlock(Box<Block>),
 
     /// Announce new transaction
     NewTransaction(Transaction),

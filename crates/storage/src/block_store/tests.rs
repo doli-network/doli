@@ -27,6 +27,7 @@ fn create_test_header(slot: u32, producer: &PublicKey) -> BlockHeader {
         producer: *producer,
         vdf_output: VdfOutput { value: Vec::new() },
         vdf_proof: VdfProof::empty(),
+        missed_producers: Vec::new(),
     }
 }
 

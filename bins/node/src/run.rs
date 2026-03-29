@@ -467,8 +467,8 @@ pub(crate) async fn run_node(
     )
     .await?;
 
-    // Rebuild excluded_producers from block store (same logic used after rollback).
-    node.rebuild_excluded_producers().await;
+    // Rebuild excluded_producers from block headers (on-chain source of truth).
+    node.rebuild_excluded_from_headers().await;
 
     // Checkpoint/snap sync is now handled internally by SyncManager.
     // CLI checkpoint overrides and compiled-in constants are no longer needed here.

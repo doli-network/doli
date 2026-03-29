@@ -57,38 +57,12 @@ impl Node {
 
             // Reset minute tracker for the new epoch
             self.minute_tracker.reset();
-        }
 
-        // LIVE LIVENESS FILTER: exclude on missed slot, re-include on attestation.
-        {
-            let prev_slot = if height > 1 {
-                if let Ok(Some(prev_block)) = self.block_store.get_block_by_height(height - 1) {
-                    prev_block.header.slot
-                } else {
-                    block.header.slot.saturating_sub(1)
-                }
-            } else {
-                0
-            };
-
-            let slot_gap = block.header.slot.saturating_sub(prev_slot);
-
-            // EXCLUDE: producers who missed skipped slots
-            //
-            // Safety caps (INC-I-017):
-            // 1. MAX_EXCLUSIONS_PER_BLOCK: A single large slot gap (e.g., 24 slots
-            //    during a gossip partition) must not mass-exclude the entire producer
-            //    set. Capped at 3 per block — genuine offline producers accumulate
-            //    exclusions over multiple blocks; a gossip hiccup can't nuke the set.
-            // 2. MAX_EXCLUDED_FRACTION (1/3): Even accumulated exclusions can't push
-            //    the round-robin denominator below 2/3 of normal. This bounds how far
-            //    the schedule can diverge between nodes with slightly different views.
-            //
-            // Without these caps, a single 24-slot gap excluded 23/32 producers,
-            // changed slot%30 → slot%8, permanently diverging the scheduler.
-            const MAX_EXCLUSIONS_PER_BLOCK: usize = 3;
-
-            if slot_gap > 1 && height > 36 {
+            // EPOCH PRODUCER LIST: Freeze the schedule for the new epoch.
+            // Includes active producers who attested in the previous epoch
+            // (or all active if this is epoch 0/1). This is the base denominator
+            // for slot % N scheduling — it never changes mid-epoch.
+            {
                 let producers = self.producer_set.read().await;
                 let active: Vec<PublicKey> = producers
                     .active_producers_at_height(height)
@@ -97,55 +71,89 @@ impl Node {
                     .collect();
                 drop(producers);
 
-                let active_count = active.len();
-                let max_excluded_total = active_count / 3; // never exclude >1/3
+                let mut new_list: Vec<PublicKey> = if epoch <= 1 {
+                    // Genesis/early epochs: all active producers qualify
+                    active
+                } else {
+                    // Producers who attested in the previous epoch are included.
+                    // Scan previous epoch blocks for presence_root attestation data.
+                    let prev_epoch_start = (epoch - 1) * blocks_per_epoch;
+                    let prev_epoch_end = epoch * blocks_per_epoch;
+                    let mut attested: HashSet<PublicKey> = HashSet::new();
 
-                let mut sorted = active;
-                sorted.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
-                let rr_list: Vec<&PublicKey> = sorted
-                    .iter()
-                    .filter(|pk| !self.excluded_producers.contains(pk))
-                    .collect();
-                let rr_count = rr_list.len();
+                    let mut sorted_for_decode = active.clone();
+                    sorted_for_decode.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
 
-                if rr_count > 0 {
-                    let mut exclusions_this_block = 0usize;
-                    for skipped_slot in (prev_slot + 1)..block.header.slot {
-                        if exclusions_this_block >= MAX_EXCLUSIONS_PER_BLOCK {
-                            if exclusions_this_block == MAX_EXCLUSIONS_PER_BLOCK {
-                                warn!(
-                                    "[LIVENESS] Exclusion cap hit ({}/block) — {} more skipped slots ignored (gap={})",
-                                    MAX_EXCLUSIONS_PER_BLOCK,
-                                    block.header.slot.saturating_sub(skipped_slot),
-                                    slot_gap
+                    for h in prev_epoch_start..prev_epoch_end {
+                        if let Ok(Some(blk)) = self.block_store.get_block_by_height(h) {
+                            // Block producer attested by producing
+                            attested.insert(blk.header.producer);
+                            // Decode presence_root for explicit attestations
+                            if !blk.header.presence_root.is_zero() {
+                                let indices = decode_attestation_bitfield(
+                                    &blk.header.presence_root,
+                                    sorted_for_decode.len(),
                                 );
+                                for idx in indices {
+                                    if let Some(pk) = sorted_for_decode.get(idx) {
+                                        attested.insert(*pk);
+                                    }
+                                }
                             }
-                            break;
-                        }
-                        if self.excluded_producers.len() >= max_excluded_total {
-                            warn!(
-                                "[LIVENESS] Total exclusion cap hit ({}/{} active) — skipping remaining",
-                                self.excluded_producers.len(),
-                                active_count
-                            );
-                            break;
-                        }
-                        let idx = (skipped_slot as usize) % rr_count;
-                        let missed = *rr_list[idx];
-                        if !self.excluded_producers.contains(&missed) {
-                            self.excluded_producers.insert(missed);
-                            exclusions_this_block += 1;
-                            info!(
-                                "[LIVENESS] EXCLUDED {} — missed slot {}",
-                                hex::encode(&missed.as_bytes()[..4]),
-                                skipped_slot
-                            );
                         }
                     }
+
+                    // Include: attested producers + newly registered (not in prev epoch)
+                    active
+                        .into_iter()
+                        .filter(|pk| {
+                            attested.contains(pk) || {
+                                // Newly registered producers get a free pass
+                                // (they weren't in the previous epoch's active set)
+                                // Check by seeing if they were active at prev epoch start
+                                false // Conservative: rely on attestation
+                            }
+                        })
+                        .collect()
+                };
+
+                // Deadlock safety: if no one attested, include everyone
+                if new_list.is_empty() {
+                    let producers = self.producer_set.read().await;
+                    new_list = producers
+                        .active_producers_at_height(height)
+                        .iter()
+                        .map(|p| p.public_key)
+                        .collect();
+                }
+
+                new_list.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+                info!(
+                    "[EPOCH] Frozen producer list for epoch {}: {} producers",
+                    epoch,
+                    new_list.len()
+                );
+                self.epoch_producer_list = new_list;
+                // Clear mid-epoch exclusions — fresh start for new epoch
+                self.excluded_producers.clear();
+            }
+        }
+
+        // ON-CHAIN LIVENESS: read missed_producers from header (deterministic).
+        // This replaces the old local gap analysis that could diverge between nodes.
+        {
+            // EXCLUDE: producers listed in header.missed_producers
+            for pk in &block.header.missed_producers {
+                if self.excluded_producers.insert(*pk) {
+                    info!(
+                        "[LIVENESS] EXCLUDED {} — missed slot (from header at h={})",
+                        hex::encode(&pk.as_bytes()[..4]),
+                        height
+                    );
                 }
             }
 
-            // RE-INCLUDE: producers who attested in this block
+            // RE-INCLUDE: producers who attested in this block via presence_root
             if !self.excluded_producers.is_empty() && !block.header.presence_root.is_zero() {
                 let sorted_pks: Vec<PublicKey> = {
                     let producers = self.producer_set.read().await;

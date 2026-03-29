@@ -38,6 +38,7 @@ fn create_block_wrong_prev_hash(
         producer: producer.clone(),
         vdf_output: VdfOutput { value: vec![0u8; 32] },
         vdf_proof: VdfProof::empty(),
+        missed_producers: Vec::new(),
     };
 
     Block::new(header, vec![coinbase])
@@ -65,6 +66,7 @@ fn create_block_bad_merkle(
         producer: producer.clone(),
         vdf_output: VdfOutput { value: vec![0u8; 32] },
         vdf_proof: VdfProof::empty(),
+        missed_producers: Vec::new(),
     };
 
     Block::new(header, vec![coinbase])
@@ -92,6 +94,7 @@ fn create_block_bad_version(
         producer: producer.clone(),
         vdf_output: VdfOutput { value: vec![0u8; 32] },
         vdf_proof: VdfProof::empty(),
+        missed_producers: Vec::new(),
     };
 
     Block::new(header, vec![coinbase])
@@ -287,6 +290,7 @@ async fn test_future_dated_block() {
         producer: producer.public_key().clone(),
         vdf_output: VdfOutput { value: vec![0u8; 32] },
         vdf_proof: VdfProof::empty(),
+        missed_producers: Vec::new(),
     };
 
     let future_block = Block::new(header, vec![coinbase]);
@@ -314,6 +318,7 @@ async fn test_empty_block() {
         producer: producer.public_key().clone(),
         vdf_output: VdfOutput { value: vec![0u8; 32] },
         vdf_proof: VdfProof::empty(),
+        missed_producers: Vec::new(),
     };
 
     let empty_block = Block::new(header, vec![]);
@@ -452,6 +457,7 @@ async fn test_slot_timestamp_mismatch() {
         producer: producer.public_key().clone(),
         vdf_output: VdfOutput { value: vec![0u8; 32] },
         vdf_proof: VdfProof::empty(),
+        missed_producers: Vec::new(),
     };
 
     let mismatched_block = Block::new(header, vec![coinbase]);

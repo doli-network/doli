@@ -208,8 +208,39 @@ pub fn validate_producer_eligibility(
         return validate_bootstrap_producer(header, ctx);
     }
 
-    // Post-genesis: ROUND-ROBIN validation (matches production).
-    // Excluded producers (missed slot) are filtered out.
+    // Post-genesis: EPOCH-FROZEN ROUND-ROBIN validation (matches production).
+    // Uses epoch_producer_list (frozen at epoch boundary) filtered by
+    // excluded_producers (derived from on-chain missed_producers headers).
+    if !ctx.epoch_producer_list.is_empty() {
+        let mut effective: Vec<crypto::PublicKey> = ctx
+            .epoch_producer_list
+            .iter()
+            .filter(|pk| !ctx.excluded_producers.contains(pk))
+            .copied()
+            .collect();
+        // epoch_producer_list is already sorted
+
+        // Deadlock safety: all excluded → fall back to full epoch list
+        if effective.is_empty() {
+            effective = ctx.epoch_producer_list.clone();
+        }
+
+        if effective.is_empty() {
+            return Err(ValidationError::InvalidProducer);
+        }
+
+        let producer_index = (header.slot as usize) % effective.len();
+        let expected_producer = effective[producer_index];
+
+        if header.producer != expected_producer {
+            return Err(ValidationError::InvalidProducer);
+        }
+
+        return Ok(());
+    }
+
+    // Fallback: use active_producers_weighted if epoch_producer_list not set
+    // (backward compatibility during transition)
     if !ctx.active_producers_weighted.is_empty() {
         let mut sorted: Vec<crypto::PublicKey> = ctx
             .active_producers_weighted
@@ -219,7 +250,6 @@ pub fn validate_producer_eligibility(
             .collect();
         sorted.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
 
-        // Deadlock safety
         if sorted.is_empty() {
             sorted = ctx
                 .active_producers_weighted

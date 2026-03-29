@@ -634,10 +634,14 @@ impl Node {
         // Use provided shutdown flag or create a new one
         let shutdown = shutdown_flag.unwrap_or_else(|| Arc::new(RwLock::new(false)));
 
-        // excluded_producers is initialized empty here and rebuilt from block store
-        // after construction via rebuild_excluded_producers(). This ensures the same
-        // rebuild logic is used at startup, after rollback, and after any state reset.
+        // excluded_producers is initialized empty here and rebuilt from block headers
+        // after construction. This ensures the same rebuild logic is used at startup,
+        // after rollback, and after any state reset.
         let excluded_producers = HashSet::new();
+
+        // epoch_producer_list is initialized from active producers and rebuilt
+        // from attestation data after construction.
+        let epoch_producer_list = Vec::new();
 
         // Recover announcement sequence from persisted GSet to avoid creating
         // stale announcements after restart. +1 so the next announcement is fresh.
@@ -685,6 +689,7 @@ impl Node {
             cumulative_rollback_depth: 0,
             seen_blocks_for_slot: std::collections::HashSet::new(),
             excluded_producers,
+            epoch_producer_list,
             epoch_bond_snapshot: initial_bond_snapshot,
             epoch_bond_snapshot_epoch: initial_bond_epoch,
             cached_scheduler: None,
@@ -854,6 +859,7 @@ impl Node {
             cumulative_rollback_depth: 0,
             seen_blocks_for_slot: HashSet::new(),
             excluded_producers: HashSet::new(),
+            epoch_producer_list: producers.iter().map(|kp| *kp.public_key()).collect(),
             epoch_bond_snapshot,
             epoch_bond_snapshot_epoch: 0,
             cached_scheduler: None,

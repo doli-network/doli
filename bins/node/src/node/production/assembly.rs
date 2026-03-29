@@ -263,6 +263,43 @@ impl Node {
         };
         let builder = builder.with_presence_root(presence_root);
 
+        // Compute missed_producers: which producers were scheduled for skipped slots?
+        // Uses the epoch_producer_list (frozen at epoch boundary) minus already-excluded.
+        // This is the ON-CHAIN source of truth — all nodes validate this independently.
+        let missed_producers = {
+            let mut missed = Vec::new();
+            if current_slot > prev_slot + 1 && !self.epoch_producer_list.is_empty() {
+                let effective: Vec<PublicKey> = self
+                    .epoch_producer_list
+                    .iter()
+                    .filter(|pk| !self.excluded_producers.contains(pk))
+                    .copied()
+                    .collect();
+                if !effective.is_empty() {
+                    // Safety cap: max 3 exclusions per block (INC-I-017)
+                    const MAX_MISSED_PER_BLOCK: usize = 3;
+                    let max_total = self.epoch_producer_list.len() / 3;
+                    let current_excluded = self.excluded_producers.len();
+
+                    for skipped in (prev_slot + 1)..current_slot {
+                        if missed.len() >= MAX_MISSED_PER_BLOCK {
+                            break;
+                        }
+                        if current_excluded + missed.len() >= max_total {
+                            break;
+                        }
+                        let idx = (skipped as usize) % effective.len();
+                        let pk = effective[idx];
+                        if !self.excluded_producers.contains(&pk) && !missed.contains(&pk) {
+                            missed.push(pk);
+                        }
+                    }
+                }
+            }
+            missed
+        };
+        let builder = builder.with_missed_producers(missed_producers);
+
         // Build header + finalized transaction list. The merkle root is computed from
         // exactly these transactions, guaranteeing header-body consistency.
         let (header, transactions) = match builder.build(now) {

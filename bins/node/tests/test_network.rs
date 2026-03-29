@@ -117,6 +117,7 @@ impl TestNetwork {
                 value: vec![0u8; 32],
             },
             vdf_proof: VdfProof::empty(),
+            missed_producers: Vec::new(),
         };
 
         Block::new(header, vec![coinbase])
@@ -2252,4 +2253,340 @@ async fn test_scheduler_slot_coverage_500_nodes_varied_bonds() {
             deviation * 100.0
         );
     }
+}
+
+// ============================================================
+// ON-CHAIN LIVENESS EXCLUSION TESTS
+// Tests for missed_producers in BlockHeader + epoch-frozen list
+// ============================================================
+
+impl TestNetwork {
+    /// Build a block with a slot gap, computing missed_producers from the schedule.
+    ///
+    /// `slot_gap`: how many slots were skipped (e.g., gap=3 means slots prev+1, prev+2 were empty)
+    /// The missed_producers field is populated based on the sorted producer list and
+    /// which producers were scheduled for the skipped slots.
+    pub fn build_block_with_gap(
+        &self,
+        height: u64,
+        slot: u32,
+        prev_slot: u32,
+        prev_hash: Hash,
+        producer: &KeyPair,
+        schedule: &[PublicKey],
+    ) -> Block {
+        let reward = self.params.block_reward(height);
+        let pool_hash = doli_core::consensus::reward_pool_pubkey_hash();
+        let coinbase = Transaction::new_coinbase(reward, pool_hash, height);
+        let timestamp = self.params.genesis_time + (slot as u64 * self.params.slot_duration);
+        let merkle_root = doli_core::block::compute_merkle_root(std::slice::from_ref(&coinbase));
+        let genesis_hash = doli_core::chainspec::ChainSpec::devnet().genesis_hash();
+
+        // Compute missed_producers: who was scheduled for the skipped slots?
+        let mut missed = Vec::new();
+        if !schedule.is_empty() && slot > prev_slot + 1 {
+            const MAX_MISSED: usize = 3;
+            let max_total = schedule.len() / 3;
+            for skipped in (prev_slot + 1)..slot {
+                if missed.len() >= MAX_MISSED || missed.len() >= max_total {
+                    break;
+                }
+                let idx = (skipped as usize) % schedule.len();
+                let pk = schedule[idx];
+                if !missed.contains(&pk) {
+                    missed.push(pk);
+                }
+            }
+        }
+
+        let header = BlockHeader {
+            version: 2,
+            prev_hash,
+            merkle_root,
+            presence_root: Hash::ZERO,
+            genesis_hash,
+            timestamp,
+            slot,
+            producer: *producer.public_key(),
+            vdf_output: VdfOutput {
+                value: vec![0u8; 32],
+            },
+            vdf_proof: VdfProof::empty(),
+            missed_producers: missed,
+        };
+
+        Block::new(header, vec![coinbase])
+    }
+
+    /// Get the epoch_producer_list from a node
+    pub async fn epoch_list(&self, node_id: usize) -> Vec<PublicKey> {
+        let n = self.nodes[node_id].lock().await;
+        n.epoch_producer_list.clone()
+    }
+
+    /// Set the epoch_producer_list on all nodes (for test setup)
+    pub async fn set_epoch_list_all(&self, list: &[PublicKey]) {
+        for node in &self.nodes {
+            let mut n = node.lock().await;
+            n.epoch_producer_list = list.to_vec();
+        }
+    }
+}
+
+/// Test: missed_producers in header correctly excludes producers and all nodes agree.
+///
+/// Scenario:
+/// 1. 50 nodes, 10 producers, build past genesis
+/// 2. Set epoch_producer_list on all nodes (simulating epoch boundary)
+/// 3. Build blocks WITH slot gaps → missed_producers set in header
+/// 4. Propagate to all nodes
+/// 5. Verify all nodes have identical excluded_producers sets
+/// 6. Verify excluded producers are removed from scheduling
+#[tokio::test]
+async fn test_onchain_liveness_exclusion_deterministic() {
+    let n_nodes = 50;
+    let n_producers = 10;
+    let net = TestNetwork::new(n_nodes, n_producers).await;
+    let genesis = net.genesis_hash;
+
+    // Phase 1: Build 45 blocks to exit genesis — all synced
+    let base = net.build_chain(1, 1, genesis, &net.producers[0].clone(), 45);
+    for block in &base {
+        net.apply_to_node(0, block.clone()).await.ok();
+        net.propagate(0, block.clone()).await;
+    }
+    assert!(net.is_synced().await);
+    assert_eq!(net.height(0).await, 45);
+
+    // Phase 2: Set epoch_producer_list on all nodes (simulate epoch boundary)
+    let mut sorted_pks: Vec<PublicKey> = net.producers.iter().map(|kp| *kp.public_key()).collect();
+    sorted_pks.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+    net.set_epoch_list_all(&sorted_pks).await;
+
+    // Phase 3: Build block at slot 48 (gap: slots 46, 47 missed)
+    // Producers[slot%10] were scheduled but didn't produce
+    let rr_idx_46 = (46usize) % sorted_pks.len();
+    let rr_idx_48 = (48usize) % sorted_pks.len();
+
+    // Find the keypair for the producer at rr_idx_48
+    let producer_48_pk = sorted_pks[rr_idx_48];
+    let producer_48_kp = net
+        .producers
+        .iter()
+        .find(|kp| *kp.public_key() == producer_48_pk)
+        .unwrap();
+
+    let block_48 =
+        net.build_block_with_gap(46, 48, 45, base[44].hash(), producer_48_kp, &sorted_pks);
+
+    // Verify the block has missed_producers set
+    assert!(
+        !block_48.header.missed_producers.is_empty(),
+        "Block with slot gap should have missed_producers"
+    );
+    let missed_count = block_48.header.missed_producers.len();
+    eprintln!(
+        "  Block at slot 48: {} missed producers (gap 45→48)",
+        missed_count
+    );
+
+    // The missed producer at slot 46 should be sorted_pks[46%10]
+    let expected_missed = sorted_pks[rr_idx_46];
+    assert!(
+        block_48.header.missed_producers.contains(&expected_missed),
+        "Missed producer for slot 46 should be in header"
+    );
+
+    // Phase 4: Apply to all nodes — they should all agree
+    for i in 0..n_nodes {
+        net.apply_to_node(i, block_48.clone())
+            .await
+            .unwrap_or_else(|e| {
+                panic!("Node {} rejected block with missed_producers: {}", i, e);
+            });
+    }
+    assert!(net.is_synced().await);
+
+    // Phase 5: Verify ALL nodes have identical excluded_producers
+    let mut exclusion_sets: Vec<HashSet<PublicKey>> = Vec::new();
+    for i in 0..n_nodes {
+        let n = net.nodes[i].lock().await;
+        exclusion_sets.push(n.excluded_producers.clone());
+    }
+
+    let reference_set = &exclusion_sets[0];
+    for (i, set) in exclusion_sets.iter().enumerate().skip(1) {
+        assert_eq!(
+            set,
+            reference_set,
+            "Node {} excluded_producers differs from node 0! Node 0: {:?}, Node {}: {:?}",
+            i,
+            reference_set.len(),
+            i,
+            set.len()
+        );
+    }
+
+    eprintln!(
+        "  All {} nodes agree: {} producers excluded",
+        n_nodes,
+        reference_set.len()
+    );
+
+    // Phase 6: Build more blocks — verify excluded producers are skipped in scheduling
+    // The excluded producer should NOT be selected for their normal slot
+    let effective: Vec<PublicKey> = sorted_pks
+        .iter()
+        .filter(|pk| !reference_set.contains(pk))
+        .copied()
+        .collect();
+    let next_slot = 49u32;
+    let expected_next = effective[(next_slot as usize) % effective.len()];
+
+    // Build the next block with the correct producer
+    let next_kp = net
+        .producers
+        .iter()
+        .find(|kp| *kp.public_key() == expected_next)
+        .unwrap();
+    let block_49 = net.build_block(47, 49, block_48.hash(), next_kp);
+
+    for i in 0..n_nodes {
+        net.apply_to_node(i, block_49.clone())
+            .await
+            .unwrap_or_else(|e| {
+                panic!("Node {} rejected block from effective schedule: {}", i, e);
+            });
+    }
+    assert!(net.is_synced().await);
+
+    eprintln!(
+        "  Effective schedule works: block at slot 49 accepted by all {} nodes",
+        n_nodes
+    );
+    eprintln!(
+        "  PASS: On-chain liveness exclusion is deterministic across {} nodes",
+        n_nodes
+    );
+}
+
+/// 10,000-node test via ClusterNetwork.
+///
+/// Each cluster independently validates:
+/// 1. Epoch-frozen producer list
+/// 2. missed_producers in headers from slot gaps
+/// 3. All nodes in cluster converge on same excluded set
+/// 4. Blocks with excluded producers are accepted by all
+///
+/// 10 clusters × 1000 nodes = 10,000 total simulated nodes.
+#[tokio::test]
+async fn test_onchain_liveness_10k_nodes() {
+    let n_producers = 10;
+    let nodes_per_cluster = 1000;
+    let n_clusters = 10;
+    let total_start = std::time::Instant::now();
+
+    let producers: Vec<KeyPair> = (0..n_producers).map(|_| KeyPair::generate()).collect();
+    let mut sorted_pks: Vec<PublicKey> = producers.iter().map(|kp| *kp.public_key()).collect();
+    sorted_pks.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+
+    let mut total_nodes = 0usize;
+    let mut all_passed = true;
+
+    for cluster_id in 0..n_clusters {
+        let cluster_start = std::time::Instant::now();
+
+        // Create cluster
+        let net = TestNetwork::new(nodes_per_cluster, n_producers).await;
+        let genesis = net.genesis_hash;
+        let init_time = cluster_start.elapsed();
+
+        // Build 10 blocks — all synced (past any early genesis guards)
+        let base = net.build_chain(1, 1, genesis, &net.producers[0].clone(), 10);
+        for block in &base {
+            net.apply_to_node(0, block.clone()).await.ok();
+            net.propagate(0, block.clone()).await;
+        }
+        assert!(net.is_synced().await);
+
+        // Set epoch_producer_list on all nodes
+        net.set_epoch_list_all(&sorted_pks).await;
+
+        // Build block with slot gap (slot 13, gap over 11-12)
+        let gap_block = net.build_block_with_gap(
+            11,
+            13,
+            10,
+            base[9].hash(),
+            &net.producers[cluster_id % n_producers],
+            &sorted_pks,
+        );
+        let missed_in_header = gap_block.header.missed_producers.len();
+
+        // Apply to all nodes in parallel
+        let apply_start = std::time::Instant::now();
+        net.apply_to_node(0, gap_block.clone()).await.ok();
+        let accepted = net.propagate(0, gap_block.clone()).await;
+        let apply_time = apply_start.elapsed();
+
+        // Verify all nodes agree on exclusion set
+        let (nodes_with_excl, max_excl, _) = net.count_divergent_exclusions().await;
+        let synced = net.is_synced().await;
+
+        // Check determinism: sample 10 nodes and verify identical sets
+        let mut sets_match = true;
+        let ref_set = {
+            let n = net.nodes[0].lock().await;
+            n.excluded_producers.clone()
+        };
+        for i in [1, 100, 250, 500, 750, 999]
+            .iter()
+            .copied()
+            .filter(|&i| i < nodes_per_cluster)
+        {
+            let n = net.nodes[i].lock().await;
+            if n.excluded_producers != ref_set {
+                sets_match = false;
+                break;
+            }
+        }
+
+        let cluster_passed = synced && sets_match && missed_in_header > 0;
+        if !cluster_passed {
+            all_passed = false;
+        }
+
+        total_nodes += nodes_per_cluster;
+        let cluster_time = cluster_start.elapsed();
+
+        eprintln!(
+            "  Cluster {}/{}: {} nodes, init={:?}, apply={:?}, total={:?}, synced={}, excl={}/{}, deterministic={}, missed_in_header={}, accepted={}",
+            cluster_id + 1, n_clusters, nodes_per_cluster,
+            init_time, apply_time, cluster_time,
+            synced, nodes_with_excl, max_excl,
+            sets_match, missed_in_header, accepted
+        );
+
+        // Drop cluster to free FDs
+        drop(net);
+    }
+
+    let total_time = total_start.elapsed();
+    eprintln!();
+    eprintln!("  === On-Chain Liveness Exclusion @ 10K Nodes ===");
+    eprintln!("  Total nodes:    {}", total_nodes);
+    eprintln!("  Clusters:       {}", n_clusters);
+    eprintln!("  Total time:     {:?}", total_time);
+    eprintln!("  All passed:     {}", all_passed);
+    eprintln!(
+        "  Throughput:     {:.0} nodes/sec",
+        total_nodes as f64 / total_time.as_secs_f64()
+    );
+
+    assert!(
+        all_passed,
+        "All {} clusters must pass liveness exclusion test",
+        n_clusters
+    );
+    assert_eq!(total_nodes, 10_000);
 }

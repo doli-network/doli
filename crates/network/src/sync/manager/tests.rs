@@ -580,6 +580,7 @@ fn create_test_header(prev_hash: Hash, slot: u32) -> BlockHeader {
         producer: crypto::PublicKey::from_bytes([0u8; 32]),
         vdf_output: vdf::VdfOutput { value: vec![0; 32] },
         vdf_proof: vdf::VdfProof::empty(),
+        missed_producers: Vec::new(),
     }
 }
 

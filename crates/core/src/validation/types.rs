@@ -140,7 +140,11 @@ pub struct ValidationContext {
     #[allow(dead_code)]
     pub producer_bls_keys: Vec<Vec<u8>>,
     /// Producers excluded from round-robin (missed slot, not yet re-attested).
+    /// Derived from on-chain missed_producers headers (not local state).
     pub excluded_producers: std::collections::HashSet<crypto::PublicKey>,
+    /// Epoch-frozen producer list. The scheduling denominator is derived from
+    /// this list minus excluded_producers. Never changes mid-epoch.
+    pub epoch_producer_list: Vec<crypto::PublicKey>,
 }
 
 impl ValidationContext {
@@ -169,7 +173,15 @@ impl ValidationContext {
             pending_producer_keys: Vec::new(),
             producer_bls_keys: Vec::new(),
             excluded_producers: std::collections::HashSet::new(),
+            epoch_producer_list: Vec::new(),
         }
+    }
+
+    /// Set epoch-frozen producer list.
+    #[must_use]
+    pub fn with_epoch_producer_list(mut self, list: Vec<crypto::PublicKey>) -> Self {
+        self.epoch_producer_list = list;
+        self
     }
 
     /// Set excluded producers.

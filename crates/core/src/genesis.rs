@@ -226,6 +226,7 @@ pub fn generate_genesis_block(config: &GenesisConfig) -> Block {
         producer: PublicKey::from_bytes(GENESIS_PUBKEY),
         vdf_output: genesis_vdf_output(config.network),
         vdf_proof: VdfProof::empty(), // Genesis has no VDF proof (bootstrap)
+        missed_producers: Vec::new(),
     };
 
     Block {

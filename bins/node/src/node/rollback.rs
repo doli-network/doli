@@ -173,13 +173,11 @@ impl Node {
         // converge on the same liveness view.
         self.rebuild_producer_liveness(target_height);
 
-        // Rebuild excluded_producers from the canonical chain after rollback.
-        // Previously this did .clear(), which nuked ALL exclusion history — including
-        // exclusions from blocks that weren't rolled back. This caused divergence:
-        // the rolled-back node had an empty excluded set while others still had
-        // exclusions, leading to different round-robin assignments and forks.
-        // Rebuilding from block store produces the correct set for the new chain tip.
-        self.rebuild_excluded_producers().await;
+        // Rebuild excluded_producers from block headers after rollback.
+        // The exclusion set is derived from on-chain missed_producers fields and
+        // presence_root re-inclusions — all from block headers, not local state.
+        // Deterministic: same chain → same excluded set.
+        self.rebuild_excluded_from_headers().await;
 
         // Update chain state to parent
         {

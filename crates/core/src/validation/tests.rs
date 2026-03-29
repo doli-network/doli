@@ -68,6 +68,7 @@ fn test_validate_timestamp_advancing() {
         producer: crypto::PublicKey::from_bytes([0u8; 32]),
         vdf_output: vdf::VdfOutput { value: vec![] },
         vdf_proof: vdf::VdfProof::empty(),
+        missed_producers: Vec::new(),
     };
 
     assert!(validate_header(&header, &ctx).is_ok());
@@ -88,6 +89,7 @@ fn test_validate_timestamp_not_advancing() {
         producer: crypto::PublicKey::from_bytes([0u8; 32]),
         vdf_output: vdf::VdfOutput { value: vec![] },
         vdf_proof: vdf::VdfProof::empty(),
+        missed_producers: Vec::new(),
     };
 
     assert!(matches!(
@@ -113,6 +115,7 @@ fn test_validate_slot_derivation() {
         producer: crypto::PublicKey::from_bytes([0u8; 32]),
         vdf_output: vdf::VdfOutput { value: vec![] },
         vdf_proof: vdf::VdfProof::empty(),
+        missed_producers: Vec::new(),
     };
 
     assert!(matches!(
@@ -745,6 +748,7 @@ proptest! {
                 producer: crypto::PublicKey::from_bytes([0u8; 32]),
                 vdf_output: vdf::VdfOutput { value: vec![] },
                 vdf_proof: vdf::VdfProof::empty(),
+                missed_producers: Vec::new(),
                     },
             transactions: vec![tx1, tx2],
             aggregate_bls_signature: Vec::new(),
@@ -1428,6 +1432,7 @@ fn create_block_with_merkle() -> (Block, ValidationContext) {
             value: vec![0u8; 32],
         },
         vdf_proof: VdfProof::default(),
+        missed_producers: Vec::new(),
     };
 
     let mut block = Block {

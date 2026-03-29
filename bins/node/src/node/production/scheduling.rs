@@ -422,42 +422,41 @@ impl Node {
         &mut self,
         current_slot: u32,
         _height: u64,
-        active_with_weights: &[(PublicKey, u64)],
+        _active_with_weights: &[(PublicKey, u64)],
     ) -> Vec<PublicKey> {
-        // REMOVED: Liveness filter from epoch scheduler.
-        // producer_liveness is local state — different on each node at different heights.
-        // Filtering out "stale" producers changes the scheduler input non-deterministically.
-        let effective_weights = active_with_weights;
-
-        // ROUND-ROBIN PRODUCTION: one producer per slot. Excluded producers
-        // (missed their slot) are filtered out. Re-included when they attest.
-        let mut sorted: Vec<PublicKey> = effective_weights
+        // EPOCH-FROZEN SCHEDULING: Use the epoch_producer_list (frozen at epoch boundary)
+        // filtered by excluded_producers (derived from on-chain missed_producers headers).
+        //
+        // Both inputs are deterministic across all nodes:
+        // - epoch_producer_list: computed at epoch boundary from attestation data
+        // - excluded_producers: accumulated from block header missed_producers fields
+        let mut effective: Vec<PublicKey> = self
+            .epoch_producer_list
             .iter()
-            .map(|(pk, _)| *pk)
             .filter(|pk| !self.excluded_producers.contains(pk))
+            .copied()
             .collect();
-        sorted.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+        // epoch_producer_list is already sorted
 
-        if sorted.is_empty() {
-            // Deadlock safety: all excluded → fall back to full list
-            sorted = effective_weights.iter().map(|(pk, _)| *pk).collect();
-            sorted.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
-            if sorted.is_empty() {
+        if effective.is_empty() {
+            // Deadlock safety: all excluded → fall back to full epoch list
+            effective = self.epoch_producer_list.clone();
+            if effective.is_empty() {
                 return Vec::new();
             }
-            warn!("[SCHED_RR] All producers excluded! Falling back to full list");
+            warn!("[SCHED_RR] All producers excluded! Falling back to full epoch list");
         }
 
         let excluded_count = self.excluded_producers.len();
-        let producer_index = (current_slot as usize) % sorted.len();
-        let selected = sorted[producer_index];
+        let producer_index = (current_slot as usize) % effective.len();
+        let selected = effective[producer_index];
         if excluded_count > 0 {
             info!(
                 "[SCHED_RR] slot={} producer={} index={}/{} (excluded={})",
                 current_slot,
                 hex::encode(&selected.as_bytes()[..4]),
                 producer_index,
-                sorted.len(),
+                effective.len(),
                 excluded_count
             );
         }

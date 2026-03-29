@@ -373,73 +373,49 @@ impl Node {
         );
     }
 
-    /// Rebuild excluded_producers from recent blocks in block store.
+    /// Rebuild excluded_producers from block headers since epoch start.
     ///
-    /// Scans the last epoch-window blocks to detect slot gaps (→ exclude) and
-    /// attestation bitfields (→ re-include). Deterministic: all nodes with the
-    /// same blocks compute the same set.
+    /// Reads `missed_producers` from each block header (on-chain source of truth)
+    /// and `presence_root` for re-inclusions. Deterministic: all nodes with the
+    /// same chain compute the same set.
     ///
-    /// Must be called after any rollback instead of clearing the set — clearing
-    /// loses exclusion history from blocks that weren't rolled back, causing
-    /// divergence from nodes that didn't rollback.
-    pub async fn rebuild_excluded_producers(&mut self) {
+    /// Must be called after any rollback to ensure the exclusion set matches
+    /// the canonical chain.
+    pub async fn rebuild_excluded_from_headers(&mut self) {
         let current_h = self.chain_state.read().await.best_height;
-        let scan_blocks = self.config.network.blocks_per_reward_epoch().min(current_h);
-        let start_h = current_h.saturating_sub(scan_blocks);
+        let blocks_per_epoch = self.config.network.blocks_per_reward_epoch();
+        let epoch = current_h / blocks_per_epoch;
+        let epoch_start = epoch * blocks_per_epoch;
+        let start_h = epoch_start.max(1);
+
         let mut excluded: HashSet<PublicKey> = HashSet::new();
 
-        if current_h > 36 && scan_blocks > 1 {
+        // Get sorted active producers for presence_root decoding
+        let sorted_pks: Vec<PublicKey> = {
             let ps = self.producer_set.read().await;
-            let active: Vec<PublicKey> = ps
+            let mut pks: Vec<PublicKey> = ps
                 .active_producers_at_height(current_h)
                 .iter()
                 .map(|p| p.public_key)
                 .collect();
-            drop(ps);
+            pks.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+            pks
+        };
 
-            let active_count = active.len();
-            let max_excluded_total = active_count / 3; // INC-I-017: never exclude >1/3
-            const MAX_EXCLUSIONS_PER_GAP: usize = 3; // INC-I-017: cap per slot gap
+        for h in start_h..=current_h {
+            if let Ok(Some(blk)) = self.block_store.get_block_by_height(h) {
+                // EXCLUDE: from on-chain missed_producers header field
+                for pk in &blk.header.missed_producers {
+                    excluded.insert(*pk);
+                }
 
-            let mut sorted = active;
-            sorted.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
-
-            let mut prev_slot: Option<u32> = None;
-            for h in start_h..=current_h {
-                if let Ok(Some(blk)) = self.block_store.get_block_by_height(h) {
-                    // EXCLUDE: detect skipped slots (capped per gap and total)
-                    if let Some(ps) = prev_slot {
-                        let gap = blk.header.slot.saturating_sub(ps);
-                        if gap > 1 && excluded.len() < max_excluded_total {
-                            let rr_list: Vec<&PublicKey> =
-                                sorted.iter().filter(|pk| !excluded.contains(pk)).collect();
-                            let rr_count = rr_list.len();
-                            if rr_count > 0 {
-                                let mut gap_exclusions = 0usize;
-                                for skipped in (ps + 1)..blk.header.slot {
-                                    if gap_exclusions >= MAX_EXCLUSIONS_PER_GAP
-                                        || excluded.len() >= max_excluded_total
-                                    {
-                                        break;
-                                    }
-                                    let idx = (skipped as usize) % rr_count;
-                                    if excluded.insert(*rr_list[idx]) {
-                                        gap_exclusions += 1;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    prev_slot = Some(blk.header.slot);
-
-                    // RE-INCLUDE: check attestation bitfield
-                    if !blk.header.presence_root.is_zero() {
-                        let indices =
-                            decode_attestation_bitfield(&blk.header.presence_root, sorted.len());
-                        for idx in indices {
-                            if let Some(pk) = sorted.get(idx) {
-                                excluded.remove(pk);
-                            }
+                // RE-INCLUDE: from on-chain presence_root attestation bitfield
+                if !blk.header.presence_root.is_zero() {
+                    let indices =
+                        decode_attestation_bitfield(&blk.header.presence_root, sorted_pks.len());
+                    for idx in indices {
+                        if let Some(pk) = sorted_pks.get(idx) {
+                            excluded.remove(pk);
                         }
                     }
                 }
@@ -452,8 +428,8 @@ impl Node {
 
         if old_count > 0 || new_count > 0 {
             info!(
-                "[LIVENESS] Rebuilt excluded set from {} blocks (h={}-{}): {} excluded (was {})",
-                scan_blocks, start_h, current_h, new_count, old_count
+                "[LIVENESS] Rebuilt excluded set from headers (h={}-{}): {} excluded (was {})",
+                start_h, current_h, new_count, old_count
             );
         }
     }

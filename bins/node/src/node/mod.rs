@@ -141,9 +141,14 @@ pub struct Node {
     /// but the block hasn't been applied to disk yet. Cleaned periodically.
     pub seen_blocks_for_slot: std::collections::HashSet<u32>,
     /// Producers excluded from round-robin for missing their slot.
-    /// Re-included when they attest. Rebuilt from block store at startup.
-    /// Updated live in post_commit_actions on every block.
+    /// Derived from `missed_producers` in block headers (on-chain source of truth).
+    /// Re-included when they attest via `presence_root`. Rebuilt from headers at startup
+    /// and after rollback.
     pub excluded_producers: HashSet<PublicKey>,
+    /// Frozen producer list for the current epoch. Computed at epoch boundary from
+    /// active producers who attested in the previous epoch (+ newly registered).
+    /// The scheduling denominator is derived from this list — it never changes mid-epoch.
+    pub epoch_producer_list: Vec<PublicKey>,
     /// Epoch-locked bond snapshot: {pubkey_hash → bond_count}.
     /// Computed once at each epoch boundary from the UTXO set.
     /// Used by scheduler (validation + production) for the entire epoch.

@@ -400,6 +400,7 @@ mod tests {
             producer: PublicKey::from_bytes([0u8; 32]),
             vdf_output: VdfOutput { value: vec![0; 32] },
             vdf_proof: VdfProof::empty(),
+            missed_producers: Vec::new(),
         };
 
         Block::new(header, vec![])

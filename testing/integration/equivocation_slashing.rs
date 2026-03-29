@@ -34,6 +34,7 @@ fn create_test_block(slot: u32, producer: &PublicKey, prev_hash: Hash, merkle_ro
             value: vec![slot as u8; 32], // Distinct VDF output
         },
         vdf_proof: VdfProof::empty(),
+        missed_producers: Vec::new(),
     };
     Block::new(header, vec![])
 }
