@@ -60,11 +60,18 @@ crypto (foundation - no internal deps)
             │
             ├──► mempool (transaction pool)
             │
-            └──► rpc (JSON-RPC API)
-                    │
-                    └──► bins/node (full node binary)
+            ├──► rpc (JSON-RPC API)
+            │       │
+            │       └──► bins/node (full node binary)
+            │
+            ├──► bridge (cross-chain atomic swaps)
+            │
+            └──► channels (payment channels)
 
-crypto ──► bins/cli (wallet binary)
+crypto ──► wallet (shared wallet library, NO vdf/doli-core)
+              │
+              ├──► bins/cli (wallet binary)
+              └──► bins/gui (Tauri desktop app)
 ```
 
 ---
@@ -200,10 +207,13 @@ DOLI uses a strict 3-level configuration hierarchy:
 | Module | Function |
 |--------|----------|
 | `block_store.rs` | Blocks indexed by hash/height (RocksDB) |
-| `state_db.rs` | Unified state: UTXOs, producers, chain state (RocksDB) |
-| `utxo.rs` | In-memory UTXO working set for fast reads |
+| `state_db/` | Unified state: UTXOs, producers, chain state (RocksDB) |
+| `utxo/` | In-memory UTXO working set for fast reads |
+| `utxo_rocks.rs` | RocksDB-backed UTXO store (`RocksDbUtxoStore`) |
 | `chain_state.rs` | Consensus state tracking |
-| `producer.rs` | Producer registry (simplified: pubkey, registered_at, status, seniority_weight — bond tracking via UTXO set) |
+| `producer/` | Producer registry (simplified: pubkey, registered_at, status, seniority_weight — bond tracking via UTXO set) |
+| `maintainer.rs` | MaintainerState — governance maintainer set tracking |
+| `update.rs` | UpdateState — auto-update state persistence |
 
 **ChainState fields:**
 - `best_hash` - Current chain tip hash
@@ -217,7 +227,7 @@ DOLI uses a strict 3-level configuration hierarchy:
 
 **Storage technologies:**
 - **BlockStore** (RocksDB): Column families `headers`, `bodies`, `height_index`, `slot_index`
-- **StateDb** (RocksDB): Unified state store with atomic WriteBatch per block. Column families: `cf_utxo`, `cf_utxo_by_pubkey`, `cf_producers`, `cf_exit_history`, `cf_meta`. All state changes (UTXOs, chain state, producers) committed atomically — no crash-inconsistency possible.
+- **StateDb** (RocksDB): Unified state store with atomic WriteBatch per block. Column families (6): `cf_utxo`, `cf_utxo_by_pubkey`, `cf_producers`, `cf_exit_history`, `cf_meta`, `cf_undo`. All state changes (UTXOs, chain state, producers) committed atomically — no crash-inconsistency possible.
 - **In-memory UtxoSet**: Loaded from StateDb on startup, mutated in parallel with batch writes for fast mempool/RPC reads
 
 ### 3.6. network
@@ -226,15 +236,23 @@ DOLI uses a strict 3-level configuration hierarchy:
 
 | Module | Function |
 |--------|----------|
-| `service.rs` | Main network service |
+| `service/` | Main network service |
 | `behaviour.rs` | libp2p behaviour composition |
-| `gossip.rs` | GossipSub topic management |
-| `sync/` | Chain synchronization |
+| `config.rs` | Network configuration |
+| `gossip/` | GossipSub management (`mod.rs`, `publish.rs`, `config.rs`) |
+| `sync/` | Chain synchronization (sync manager state machine) |
 | `discovery.rs` | Kademlia DHT |
 | `scoring.rs` | Peer reputation |
+| `messages.rs` | Network message types |
+| `nat.rs` | NAT traversal |
+| `peer.rs` | Peer state tracking |
+| `peer_cache.rs` | Persistent peer cache |
+| `protocols/` | Sub-protocols (`status.rs`, `sync.rs`, `txfetch.rs`) |
+| `rate_limit.rs` | Per-peer rate limiting |
+| `transport.rs` | Transport layer configuration |
 
 **Sub-protocols:**
-- GossipSub for block/tx propagation (mesh D=`sqrt(N)*1.5`, capped at 50)
+- GossipSub for block/tx propagation (fixed mesh params per network: mainnet mesh_n=12/mesh_n_low=8/mesh_n_high=24; testnet mesh_n=25/mesh_n_low=20/mesh_n_high=50; devnet mesh_n=12/mesh_n_low=8/mesh_n_high=24)
 - Kademlia DHT for peer discovery (60s bootstrap interval)
 - Request-response for sync
 - Identify for peer address exchange
@@ -242,7 +260,7 @@ DOLI uses a strict 3-level configuration hierarchy:
 **Connection model (two-tier):**
 - **Application layer** (`max_peers`): Tracks scored peers. When full, evicts lowest gossipsub-scored peer. Producers keep slots (high P2 score from first-message delivery).
 - **Transport layer** (`max_peers * 1.5`): Allows temporary over-capacity so new peers can be evaluated before eviction decides who stays. Without headroom, libp2p rejects connections at TCP level before scoring runs.
-- **Defaults**: Mainnet: 50, Testnet: 25 (halved from 50, INC-I-012 Yamux RAM fix), Devnet: 150. Override: `DOLI_MAX_PEERS` env var.
+- **Defaults**: Mainnet: 50, Testnet: 25 (halved from 50, INC-I-009 Yamux RAM fix), Devnet: 150. Override: `DOLI_MAX_PEERS` env var.
 - **Peer discovery flow**: Bootstrap node → Identify → DHT → peer cache. Bootnodes are introduction points, not permanent hubs.
 
 ### 3.7. mempool

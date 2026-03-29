@@ -154,9 +154,9 @@ produces the same slot 90% of the time, making slot derivation alone insufficien
 **Implementation**:
 ```rust
 // Domain separation prevents cross-protocol attacks
-HASH("BLK" || data)   // Block VDF input
-HASH("REG" || data)   // Registration VDF input
-HASH("SEED" || data)  // Producer selection seed
+HASH("DOLI_VDF_BLOCK_V1" || prev_hash || tx_root || slot || producer_key)  // Block VDF input
+HASH("DOLI_VDF_REGISTER_V1" || data)                                       // Registration VDF input
+HASH("SEED" || data)                                                        // Producer selection seed
 ```
 
 ### 3.2 Digital Signatures: Ed25519
@@ -210,7 +210,7 @@ DOLI uses two VDF types for different purposes:
 used for block production. Block iterations are fixed per network configuration.
 
 **Security Considerations**:
-1. Input includes domain tag ("DOLI_HEARTBEAT_V1") for separation
+1. Input includes domain tag (`"DOLI_VDF_BLOCK_V1"`) for block VDF separation (`"DOLI_HEARTBEAT_V1"` is used separately for the tpop heartbeat system)
 2. Calibration bounds prevent extreme values (min: 100K, max: 100M iterations)
 3. Combined with Epoch Lookahead for grinding prevention
 
@@ -241,15 +241,26 @@ iterated BLAKE3 hash-chain implementation in `doli-core/src/tpop/heartbeat.rs`.
 ### 3.4 Cryptographic Constants
 
 ```rust
-// All domain tags are unique to prevent cross-protocol attacks
+// crypto crate domain tags (crates/crypto/src/lib.rs)
 pub const SIGN_DOMAIN: &[u8] = b"DOLI_SIGN_V1";
 pub const ADDRESS_DOMAIN: &[u8] = b"DOLI_ADDR_V1";
 pub const TX_DOMAIN: &[u8] = b"DOLI_TX_V1";
 pub const BLOCK_DOMAIN: &[u8] = b"DOLI_BLOCK_V1";
 pub const VDF_DOMAIN: &[u8] = b"DOLI_VDF_V1";
-pub const VDF_BLOCK_DOMAIN: &[u8] = b"DOLI_VDF_BLOCK_V1";
-pub const VDF_REGISTER_DOMAIN: &[u8] = b"DOLI_VDF_REGISTER_V1";
-pub const SEED_DOMAIN: &[u8] = b"SEED";
+pub const ATTESTATION_DOMAIN: &[u8] = b"DOLI_ATTEST_V1";
+
+// Inline domain tags used in core/vdf/tpop modules
+b"DOLI_VDF_BLOCK_V1"          // Block VDF input (consensus/vdf.rs)
+b"DOLI_VDF_REGISTER_V1"       // Registration VDF input (vdf crate)
+b"DOLI_HEARTBEAT_V1"          // tpop heartbeat VDF input
+b"DOLI_HEARTBEAT_SIGN_V1"     // Heartbeat signing
+b"DOLI_HEARTBEAT_WITNESS_V1"  // Heartbeat witness
+b"DOLI_PRESENCE_V1"           // Presence heartbeats
+b"DOLI_PRESENCE_CHECKPOINT_V1" // Presence checkpoints
+b"DOLI_PRODUCER_ANN_V1"       // Producer announcements
+b"DOLI_HASHLOCK"              // Hashlock conditions
+b"DOLI_ADAPTOR_NONCE_V1"      // Adaptor signature nonces
+b"SEED"                        // Producer selection seed
 
 // Hash output size
 pub const HASH_SIZE: usize = 32;
@@ -391,7 +402,7 @@ During bootstrap (first 60,480 blocks, ~1 week):
 
 | Risk | Mitigation |
 |------|------------|
-| Single party dominance | Lowest hash wins ties |
+| Single party dominance | Weight-based fork choice (accumulated producer weight) |
 | No economic stake | Bootstrap phase is time-limited |
 | Racing attacks | VDF still required for each block |
 

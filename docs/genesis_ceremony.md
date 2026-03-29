@@ -7,7 +7,7 @@
 
 - [ ] Compile and sign final release binary on ai2 (NEVER compile on ai1/ai3)
 - [ ] Verify all producer service files use identical template via `scripts/install-services.sh validate`
-- [ ] Record peer ID of each seed node before any wipes (libp2p identity file: `<data-dir>/identity.key`)
+- [ ] Record peer ID of each seed node before any wipes (libp2p identity file: `node_key` in parent of data_dir)
 - [ ] Collect all producer pubkeys for chainspec `genesis_producers`
 - [ ] Test `scripts/chain-reset.sh` on a spare node in isolation — verify it wipes correctly
 - [ ] Confirm DNS round-robin for seed1/seed2/seed3.doli.network resolves all three seeds
@@ -18,7 +18,7 @@
 
 1. Generate genesis block on ai1: `doli-node genesis --chainspec chainspec.mainnet.json`
 2. Distribute `chainspec.mainnet.json` to ALL nodes. Do not start any node yet.
-3. Start seed nodes first (ai3 — all 6 seeds). Wait for "Listening on" in logs.
+3. Start seed nodes first (ai1, ai2, ai3 — 2 seeds per server). Wait for "Listening on" in logs.
 4. Wait 60 seconds for seed nodes to discover each other (verify via `getPeerInfo` RPC).
 5. Start producer nodes one at a time, 10 seconds apart. Monitor peer count after each.
 6. Confirm all producers show same `genesis_hash` via `getChainInfo` before any produce blocks.

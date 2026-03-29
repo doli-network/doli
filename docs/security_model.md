@@ -56,19 +56,21 @@ DOLI is built on three fundamental security principles:
 **Block/Heartbeat VDF (Hash-Chain):**
 | Property | Value |
 |----------|-------|
-| Construction | Iterated SHA-256 hash chain |
-| Iterations | ~10,000,000 (~700ms) |
+| Construction | Iterated BLAKE3 hash chain |
+| Iterations | T_BLOCK = 800,000 (~55ms). Network default override: 1,000 iterations |
 | Verification | Recompute (linear time) |
 | Purpose | Block production heartbeat |
 
-**Registration VDF (Wesolowski Class Groups):**
+**Registration VDF (Hash-Chain):**
 | Property | Value |
 |----------|-------|
-| Group | Imaginary quadratic class groups |
-| Discriminant | 2048 bits |
-| Base iterations | 600,000,000 (~10 min) |
-| Verification | O(log t) using Wesolowski proof |
-| Purpose | Anti-Sybil protection |
+| Construction | Hash-chain VDF (same as block VDF) |
+| Discriminant | 1024 bits |
+| Base iterations | 1,000 (essentially instant) |
+| Verification | Recompute (linear time) |
+| Purpose | Lightweight anti-flash-attack barrier (bond is the primary Sybil defense) |
+
+**Note:** Wesolowski class group VDF is only used for telemetry presence (non-consensus).
 
 **Security guarantees:**
 - Sequential computation required (no parallelization)
@@ -131,7 +133,7 @@ Confirmations    Reorganization probability
 | Parameter | Value |
 |-----------|-------|
 | Minimum bond | 10 DOLI |
-| Maximum bonds per producer | 10,000 |
+| Maximum bonds per producer | 3,000 |
 | Lock period | 4 years |
 | Unbonding period | 7 days |
 | Withdrawal delay | 7 days |
@@ -230,7 +232,7 @@ Peers below threshold are disconnected and banned.
    - Bond count does NOT affect weight (seniority only)
 
 5. **Bond Stacking Cap**
-   - Maximum 100 bonds per producer
+   - Maximum 3,000 bonds per producer
    - Prevents single-identity dominance
 
 ### 6.2. Governance Protection

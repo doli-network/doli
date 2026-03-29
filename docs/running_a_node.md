@@ -154,7 +154,7 @@ cargo build --release
 - **Dynamic genesis:** Genesis time is set automatically when the first node starts
 - **Bootstrapping:** "Sync-Before-Produce" logic prevents split-brain genesis (see [devnet.md](./devnet.md))
 - **Fast grace periods:** Reduced wait times for quicker testing
-- **Lower bond:** 1 DOLI required (vs 10 DOLI on mainnet/testnet)
+- **Lower bond:** 1 DOLI required (vs 10 DOLI on mainnet)
 - **Faster reward epochs:** 4 blocks per reward epoch (~40 seconds)
 
 ### 3.1. Local Multi-Node Devnet (Recommended for Development)
@@ -184,7 +184,7 @@ doli-node devnet clean
 This creates a self-contained devnet at `~/.doli/devnet/` with:
 - Auto-generated producer wallets
 - Pre-configured chainspec with all producers
-- Automatic port allocation (P2P: 50300+, RPC: 28500+, Metrics: 9000+)
+- Automatic port allocation (P2P: 50300+, RPC: 28500+, Metrics: 29000+)
 - PID tracking for process management
 
 **Adding producers dynamically:** `devnet add-producer` creates a wallet, funds it from producer_0, registers as a producer, and starts a node — all in one command. The new nodes inherit `.env` configuration and are managed by `devnet stop/status`.
@@ -250,14 +250,17 @@ DOLI nodes can be configured via:
 --data-dir /path/to/data
 
 # P2P settings
---listen-addr 0.0.0.0:30300
---max-peers 50
+--p2p-port 30300
 
 # RPC settings
---rpc-addr 127.0.0.1:8500
+--rpc-port 8500
+--rpc-bind 0.0.0.0              # Default: 127.0.0.1
 
 # Metrics (Prometheus)
---metrics-addr 127.0.0.1:9000
+--metrics-port 9000
+
+# Max peers (via environment variable)
+# DOLI_MAX_PEERS=50
 
 # Logging
 --log-level <trace|debug|info|warn|error>
@@ -265,7 +268,7 @@ DOLI nodes can be configured via:
 
 **Example with custom settings:**
 ```bash
-./doli-node --network mainnet --data-dir /var/lib/doli --listen-addr 0.0.0.0:30300 --rpc-addr 127.0.0.1:8500 run
+./doli-node --network mainnet --data-dir /var/lib/doli run --p2p-port 30300 --rpc-port 8500
 ```
 
 ### 5.2. Environment Variables (.env Files)
@@ -313,12 +316,12 @@ DOLI_UNBONDING_PERIOD=30
 | `DOLI_GENESIS_TIME` | (fixed) | Testnet/Devnet |
 | `DOLI_VETO_PERIOD_SECS` | 300 (5 min) | All networks |
 | `DOLI_UNBONDING_PERIOD` | 60480 | Testnet/Devnet |
-| `DOLI_BOND_UNIT` | 1,000,000,000 (10 DOLI) | All networks |
+| `DOLI_BOND_UNIT` | 1,000,000,000 (10 DOLI) | Testnet/Devnet |
 | `DOLI_INITIAL_REWARD` | 100,000,000 (1 DOLI) | Testnet/Devnet |
 | `DOLI_VDF_ITERATIONS` | 1000 | Testnet/Devnet |
-| `DOLI_BLOCKS_PER_YEAR` | 3153600 | Devnet only |
-| `DOLI_BLOCKS_PER_REWARD_EPOCH` | 360 | Devnet only |
-| `DOLI_COINBASE_MATURITY` | 6 | Devnet only |
+| `DOLI_BLOCKS_PER_YEAR` | 3153600 | Testnet/Devnet |
+| `DOLI_BLOCKS_PER_REWARD_EPOCH` | 360 | Testnet/Devnet |
+| `DOLI_COINBASE_MATURITY` | 6 | Testnet/Devnet |
 
 ### 5.4. Mainnet Locked Parameters
 
@@ -326,11 +329,11 @@ For security, the following parameters are **locked for mainnet** and cannot be 
 
 - `DOLI_SLOT_DURATION` - Must be 10s
 - `DOLI_GENESIS_TIME` - Fixed launch time
-- `DOLI_BOND_UNIT` - 10 DOLI per bond (1,000,000,000 base units)
 - `DOLI_INITIAL_REWARD` - Emission schedule (1 DOLI per block)
 - `DOLI_VDF_ITERATIONS` - Consensus security (1,000 iterations)
 - `DOLI_BLOCKS_PER_YEAR` - Era calculation
 - `DOLI_BLOCKS_PER_REWARD_EPOCH` - Reward distribution
+- `DOLI_BOND_UNIT` - Bond unit (10 DOLI, consensus-critical)
 
 Attempting to override these on mainnet will log a warning and use hardcoded values.
 
@@ -513,7 +516,7 @@ sudo iptables -A INPUT -p tcp --dport 30300 -j ACCEPT
 
 | Path | Content | Priority |
 |------|---------|----------|
-| `~/.doli/{network}/node.key` | Node identity | High |
+| `~/.doli/node_key` | Node identity (parent of data_dir) | High |
 | `~/.doli/{network}/db/` | Blockchain data | Low (can resync) |
 
 ### 10.2. Backup Procedure
@@ -628,6 +631,13 @@ doli-node run                     # Start the node
 doli-node status                  # Show node status
 doli-node import <file>           # Import blocks from file
 doli-node export <file>           # Export blocks to file
+doli-node truncate --blocks <N>   # Remove top N blocks (fork recovery)
+doli-node recover                 # Rebuild state from existing block data
+doli-node restore                 # Restore chain from archive (disaster recovery)
+doli-node reindex                 # Rebuild canonical chain index from headers
+doli-node devnet <subcommand>     # Local devnet management (init/start/stop/status/clean)
+doli-node upgrade                 # Upgrade to latest release from GitHub
+doli-node checkpoint-info         # Print checkpoint constants compiled into binary
 
 # Global flags
 --network <mainnet|testnet|devnet>

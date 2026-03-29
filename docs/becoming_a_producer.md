@@ -49,10 +49,10 @@ Block producers in DOLI:
 
 | Phase | Duration |
 |-------|----------|
-| Registration VDF | ~10 minutes (base) |
-| Bond vesting | 1 day (0% penalty after 18h) |
-| Unbonding period | 7 days |
-| Withdrawal delay | 7 days |
+| Registration VDF | Near-instant (1,000 iterations on all networks) |
+| Bond vesting | 4 years mainnet (0% penalty after 3 years), 1 day testnet (0% penalty after 18h) |
+| Unbonding period | 60,480 blocks (~7 days) mainnet, 72 blocks (~12 min) testnet |
+| Withdrawal delay | Same as unbonding period |
 
 ---
 
@@ -138,9 +138,9 @@ doli --wallet ~/.doli/keys/my_producer.json \
 ```
 
 **What happens during registration:**
-1. Node computes registration VDF (~10 minutes base)
+1. Node computes registration VDF (near-instant, 1,000 iterations)
 2. Registration transaction submitted to network
-3. Bond begins 1-day vesting (fully vested after 18h)
+3. Bond begins vesting (4 years mainnet, 1 day testnet)
 4. Producer added to active set after ACTIVATION_DELAY (10 blocks)
 
 ### 3.5. Start Producing (CRITICAL)
@@ -228,7 +228,8 @@ Slot 5: 5 % 5 = 0 → ticket 0 (Alice) [cycle repeats]
 ### 4.2. Calculating Your Slots
 
 ```
-Your blocks per epoch = (your_bonds / total_bonds) × 360
+Your blocks per epoch = (your_bonds / total_bonds) × blocks_per_epoch
+  (mainnet: 360, testnet: 36, devnet: 4)
 Your blocks per day = (your_bonds / total_bonds) × 8,640
 ```
 
@@ -351,14 +352,20 @@ Full exit from producer set:
 
 ### 6.6. Vesting Schedule and Early Withdrawal Penalties
 
-**Each bond vests independently over 1 day (4 quarters of 6 hours):**
+**Each bond vests independently over 4 quarters. Quarter duration is network-specific:**
+
+| Network | Quarter Duration | Full Vest |
+|---------|-----------------|-----------|
+| Mainnet | ~1 year (3,153,600 slots) | ~4 years |
+| Testnet | ~6 hours (2,160 slots) | ~1 day |
+| Devnet | ~10 min (60 slots) | ~40 min |
 
 | Bond Age | Penalty on Withdrawal |
 |----------|----------------------|
-| Q1 (0-6h) | 75% burned |
-| Q2 (6-12h) | 50% burned |
-| Q3 (12-18h) | 25% burned |
-| Q4+ (18h+) | 0% (fully vested) |
+| Q1 (0-1 quarter) | 75% burned |
+| Q2 (1-2 quarters) | 50% burned |
+| Q3 (2-3 quarters) | 25% burned |
+| Q4+ (3+ quarters) | 0% (fully vested) |
 
 **Example:** If you have 3 bonds created at different times:
 - Bond 1 (created 20 hours ago): 0% penalty, receive 10 DOLI

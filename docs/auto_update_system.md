@@ -923,10 +923,10 @@ doli-node update verify --version 1.0.1
 
 ```bash
 # Vote to VETO (block) an update
-doli-node update vote --veto --version 1.0.1 --key /path/to/producer.json
+doli-node update vote --veto --key /path/to/producer.json
 
 # Vote to APPROVE an update
-doli-node update vote --approve --version 1.0.1 --key /path/to/producer.json
+doli-node update vote --approve --key /path/to/producer.json
 
 # View current vote status for a version
 doli-node update votes --version 1.0.1
@@ -981,7 +981,7 @@ doli-node run \
   --network mainnet \
   --producer \
   --producer-key /path/to/producer.json \
-  --rpc-bind 0.0.0.0:28500
+  --rpc-bind 0.0.0.0 --rpc-port 28500
 ```
 
 ---

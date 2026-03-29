@@ -288,7 +288,7 @@ a1b2c3d4e5f6... (primary)
 |------|-------------|
 | Confirmed | Spendable balance (mature UTXOs, minus mempool-spent) |
 | Unconfirmed | Pending credits from mempool (incoming change outputs) |
-| Immature | Coinbase/epoch rewards pending 100-block maturity |
+| Immature | Coinbase/epoch rewards pending 6-block maturity |
 | Bonded | Balance locked in Bond UTXOs |
 | Total | confirmed + unconfirmed + immature + bonded |
 
@@ -451,19 +451,20 @@ Register as a block producer with bonds.
 doli producer register [OPTIONS]
 
 Options:
-  -b, --bonds <BONDS>    Number of bonds to stake (1-10,000) [default: 1]
+  -b, --bonds <BONDS>    Number of bonds to stake (1-3,000) [default: 1]
 ```
 
 **Bond Requirements:**
-- **Mainnet/Testnet**: Each bond = 10 DOLI (minimum 1 bond, maximum 10,000 bonds = 100,000 DOLI)
+- **Mainnet**: Each bond = 10 DOLI (minimum 1 bond, maximum 3,000 bonds = 30,000 DOLI)
+- **Testnet**: Each bond = 1 DOLI (minimum 1 bond, maximum 3,000 bonds = 3,000 DOLI)
 - **Devnet**: Each bond = 1 DOLI (for testing)
 
 **Example:**
 ```bash
-# Register with 1 bond (10 DOLI on mainnet/testnet, 1 DOLI on devnet)
+# Register with 1 bond (10 DOLI on mainnet, 1 DOLI on testnet/devnet)
 doli producer register
 
-# Register with 5 bonds (50 DOLI on mainnet/testnet)
+# Register with 5 bonds (50 DOLI on mainnet, 5 DOLI on testnet)
 doli producer register --bonds 5
 ```
 
@@ -471,7 +472,7 @@ Registration is epoch-deferred — your producer becomes active at the next epoc
 
 **WHITEPAPER Reference:** Section 6 (Producer Registration)
 - Requires activation bond (Section 6.2)
-- Bond stacking up to 10,000x (Section 6.3)
+- Bond stacking up to 3,000x (Section 6.3)
 - Dynamic registration difficulty (Section 6.1)
 
 ---
@@ -516,7 +517,7 @@ Bonds: 10 (100.00000000 DOLI):
 
 Each bond tier shows time remaining until the oldest bond in that tier graduates to the next tier (lower penalty).
 
-**Rewards:** Automatically distributed via coinbase (1 DOLI per block). No manual claim needed.
+**Rewards:** Pooled epoch distribution — coinbase goes to reward pool, EpochReward tx distributes bond-weighted shares at epoch boundaries. No manual claim needed.
 
 **WHITEPAPER Reference:** Section 7.2 (Deterministic Rewards) - All producers earn identical ROI percentage.
 
@@ -598,7 +599,7 @@ Increase stake by adding more bonds. Activation is epoch-deferred.
 doli producer add-bond --count <COUNT>
 
 Options:
-  -c, --count <COUNT>    Number of bonds to add (1-10,000)
+  -c, --count <COUNT>    Number of bonds to add (1-3,000)
 ```
 
 **Example:**
@@ -963,7 +964,7 @@ doli balance
 ### 8.2 Becoming a Producer
 
 ```bash
-# 1. Ensure you have enough DOLI (100+ per bond on mainnet/testnet)
+# 1. Ensure you have enough DOLI (10 per bond on mainnet, 1 per bond on testnet)
 doli balance
 
 # 2. Register with 1 bond
@@ -1014,7 +1015,7 @@ doli producer slash \
 
 The `doli-node` binary provides node management, update voting, and maintainer operations.
 
-### 11.1 Running the Node
+### 9.1 Running the Node
 
 ```bash
 doli-node run [OPTIONS]
@@ -1040,7 +1041,7 @@ doli-node --network testnet run
 doli-node --network testnet run --producer --producer-key wallet.json
 ```
 
-### 11.2 Node Management
+### 9.2 Node Management
 
 ```bash
 # Initialize data directory

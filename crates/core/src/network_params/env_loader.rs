@@ -59,7 +59,11 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
         },
 
         // Economics (some locked for mainnet)
-        bond_unit: env_parse("DOLI_BOND_UNIT", defaults.bond_unit),
+        bond_unit: if is_mainnet {
+            defaults.bond_unit // LOCKED for mainnet — consensus-critical
+        } else {
+            env_parse("DOLI_BOND_UNIT", defaults.bond_unit)
+        },
         initial_reward: if is_mainnet {
             defaults.initial_reward // LOCKED for mainnet
         } else {

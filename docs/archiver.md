@@ -367,6 +367,6 @@ tar czf doli-archive-$(date +%Y%m%d).tar.gz /mainnet/seed/blocks/
 | File | Purpose |
 |------|---------|
 | `crates/storage/src/archiver.rs` | BlockArchiver, `catch_up()` (gap-filling), `manifest_height()`, restore/backfill from files |
-| `bins/node/src/node.rs` | One-shot archive catch-up trigger in `run_periodic_tasks()` after sync completes |
-| `crates/rpc/src/methods.rs` | `getBlockRaw`, `backfillFromPeer`, `backfillStatus`, `verifyChainIntegrity` RPC handlers |
-| `bins/node/src/main.rs` | CLI flags (`--archive-to`, `restore --from/--from-rpc/--backfill`), startup catch-up, `restore_from_rpc()` |
+| `bins/node/src/node/periodic.rs` | One-shot archive catch-up trigger in `run_periodic_tasks()` after sync completes |
+| `crates/rpc/src/methods/` | `getBlockRaw`, `backfillFromPeer`, `backfillStatus`, `verifyChainIntegrity` RPC handlers (dispatch in `dispatch.rs`, backfill in `backfill.rs`) |
+| `bins/node/src/main.rs` | CLI flags (`--archive-to`, `restore --from/--from-rpc/--backfill`); delegates to `operations` module for `restore_from_rpc()`, `backfill_from_archive()`, `restore_from_archive()` |

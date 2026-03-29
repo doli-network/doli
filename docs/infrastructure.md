@@ -95,6 +95,8 @@ Both users can operate any node via the shared `doliadmin` group.
 | `testnet.doli.network` | A | <ai1-ip> (ai1) | Testnet web |
 | `bootstrap1.testnet.doli.network` | A | <ai1-ip> (ai1) | Testnet P2P seed |
 | `bootstrap2.testnet.doli.network` | A | <ai3-ip> (ai3) | Testnet P2P seed |
+| `seeds.doli.network` | A | <ai3-ip> (ai3) | Mainnet P2P seed (aggregate) |
+| `seeds.testnet.doli.network` | A | <ai3-ip> (ai3) | Testnet P2P seed (aggregate) |
 | `archive.testnet.doli.network` | A | <ai1-ip> (ai1) | Testnet archive RPC |
 
 DNS managed at Hostinger (ns1.dns-parking.com / ns2.dns-parking.com).
@@ -119,7 +121,7 @@ Non-producing, sync-only, publicly accessible. These are the network entry point
 |------|--------|-----|-----|---------|---------|-----|
 | Seed1 | ai1 | 30300 | 8500 | 9000 | `doli-mainnet-seed` | `seed1.doli.network` |
 | Seed2 | ai2 | 30300 | 8500 | 9000 | `doli-mainnet-seed` | `seed2.doli.network` |
-| Seed3 | ai3 | 30300 | 8500 | 9000 | `doli-mainnet-seed` | `seed3.doli.network` |
+| Seed3 | ai3 | 30300 | 8500 | 9000 | `doli-mainnet-seed` | `seeds.doli.network` |
 
 All run with `--relay-server --rpc-bind 0.0.0.0 --archive-to /mainnet/seed/blocks`.
 
@@ -328,8 +330,8 @@ All bootstrap from `--bootstrap /dns4/bootstrap1.testnet.doli.network/tcp/40300 
 
 | Parameter | Value |
 |-----------|-------|
-| Genesis | March 8, 2026 08:54:00 UTC |
-| Genesis Producers | 6 (NT1-NT6) |
+| Genesis | March 29, 2026 01:52:25 UTC (timestamp 1774749145, v96) |
+| Genesis Producers | 0 (all register on-chain post-genesis) |
 | Block Reward | 1 tDOLI |
 | Slot Duration | 10 seconds |
 | Epoch Length | 36 blocks (~6 minutes) |

@@ -235,7 +235,7 @@ If a consensus-critical change was deployed with a rolling restart (not simultan
 **Resolution**: Full genesis reset required.
 
 1. Stop ALL nodes on ALL servers
-2. Update genesis timestamp in 4 places (`consensus.rs`, `network_params.rs`, `chainspec.mainnet.json`, `chainspec.testnet.json`)
+2. Update genesis timestamp in 4 places (`crates/core/src/consensus/constants.rs`, `crates/core/src/network_params/defaults.rs`, `chainspec.mainnet.json`, `chainspec.testnet.json`)
 3. Rebuild binary
 4. Wipe ALL data directories
 5. Deploy and start using the simultaneous procedure

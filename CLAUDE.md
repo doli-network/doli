@@ -74,7 +74,7 @@ Epoch boundary: pool drained → rewards distributed bond-weighted to qualified 
 | Config/env | `crates/core/src/network_params.rs` |
 | Scheduler | `crates/core/src/scheduler.rs` |
 | Validation (5,698 lines) | `crates/core/src/validation.rs` |
-| Transactions (16 types) | `crates/core/src/transaction.rs` |
+| Transactions (27 types) | `crates/core/src/transaction.rs` |
 | Block + BlockBuilder | `crates/core/src/block.rs` |
 | Chainspec + genesis hash | `crates/core/src/chainspec.rs` |
 | Network/gossip | `crates/network/src/service.rs` |
@@ -85,7 +85,7 @@ Epoch boundary: pool drained → rewards distributed bond-weighted to qualified 
 | UTXO set (RocksDB) | `crates/storage/src/utxo_rocks.rs` |
 | ProducerSet + bonds | `crates/storage/src/producer.rs` |
 | State root + snapshots | `crates/storage/src/snapshot.rs` |
-| RPC methods (38) | `crates/rpc/src/methods.rs` |
+| RPC methods (39) | `crates/rpc/src/methods/` |
 | Transaction mempool | `crates/mempool/src/` |
 | Auto-update system | `crates/updater/src/` |
 | Block archiver | `crates/storage/src/archiver.rs` |
@@ -123,7 +123,7 @@ Epoch boundary: pool drained → rewards distributed bond-weighted to qualified 
 |------|-------|
 | Architecture | `docs/architecture.md` |
 | Rewards system | `docs/rewards.md` |
-| RPC reference (38 methods) | `docs/rpc_reference.md` |
+| RPC reference (39 methods) | `docs/rpc_reference.md` |
 | CLI reference | `docs/cli.md` |
 | Troubleshooting | `docs/troubleshooting.md` |
 | Protocol spec | `specs/protocol.md` |

@@ -127,6 +127,16 @@ enum SyncRequest {
     GetBlockByHash {
         hash: [u8; 32],
     },
+    GetStateSnapshot {
+        block_hash: [u8; 32],  // Recent finalized block hash
+    },
+    GetStateRoot {
+        block_hash: [u8; 32],  // Block hash to compute state root for
+    },
+    GetHeadersByHeight {
+        start_height: u64,     // Returns headers from height+1 onward
+        max_count: u32,
+    },
 }
 ```
 
@@ -137,6 +147,19 @@ enum SyncResponse {
     Headers(Vec<BlockHeader>),
     Bodies(Vec<Block>),
     Block(Option<Block>),
+    StateSnapshot {
+        block_hash: [u8; 32],
+        block_height: u64,
+        chain_state: Vec<u8>,   // Serialized ChainState (bincode)
+        utxo_set: Vec<u8>,      // Serialized UtxoSet (bincode)
+        producer_set: Vec<u8>,  // Serialized ProducerSet (bincode)
+        state_root: [u8; 32],   // Merkle root: H(H(chain) || H(utxo) || H(producer))
+    },
+    StateRoot {
+        block_hash: [u8; 32],
+        block_height: u64,
+        state_root: [u8; 32],
+    },
     Error(String),
 }
 ```
@@ -188,16 +211,19 @@ Pub-sub message propagation using GossipSub protocol.
 
 ```
 heartbeat_interval:    1 second
-mesh_n:                6 peers (target)
-mesh_n_low:            4 peers (minimum)
-mesh_n_high:           12 peers (maximum)
+mesh_n:                12 peers (target)        # mainnet/devnet
+mesh_n_low:            8 peers (minimum)        # mainnet/devnet
+mesh_n_high:           24 peers (maximum)       # mainnet/devnet
 mesh_outbound_min:     2 peers
-gossip_lazy:           6 peers
+gossip_lazy:           12 peers                 # mainnet/devnet
 gossip_factor:         0.25
 history_length:        5 messages
 history_gossip:        3 messages
 duplicate_cache_time:  60 seconds
 ```
+
+**Note:** Testnet overrides mesh parameters for eager push to all connected peers
+(mesh_n=25, mesh_n_low=20, mesh_n_high=50, gossip_lazy=25).
 
 ### 6.3. Message Format
 
@@ -253,27 +279,63 @@ enum TxType {
     Transfer = 0,
     Registration = 1,
     Exit = 2,
-    Coinbase = 3,
-    ClaimReward = 4,
-    ClaimBond = 5,
-    AddBond = 6,
-    RequestWithdrawal = 7,
-    ClaimWithdrawal = 8,
-    EpochReward = 9,
-    SlashProducer = 10,
+    ClaimReward = 3,
+    ClaimBond = 4,
+    SlashProducer = 5,
+    Coinbase = 6,
+    AddBond = 7,
+    RequestWithdrawal = 8,
+    ClaimWithdrawal = 9,      // Reserved tombstone — DO NOT REUSE
+    EpochReward = 10,
+    RemoveMaintainer = 11,
+    AddMaintainer = 12,
+    DelegateBond = 13,
+    RevokeDelegation = 14,
+    ProtocolActivation = 15,
+    // 16 unused
+    MintAsset = 17,
+    BurnAsset = 18,
+    CreatePool = 19,
+    AddLiquidity = 20,
+    RemoveLiquidity = 21,
+    Swap = 22,
+    // 23 unused
+    CreateLoan = 24,
+    RepayLoan = 25,
+    LiquidateLoan = 26,
+    LendingDeposit = 27,
+    LendingWithdraw = 28,
 }
 
 struct Input {
     prev_tx_hash: [u8; 32],
     output_index: u32,
     signature: [u8; 64],
+    sighash_type: SighashType,         // All(0) or AnyoneCanPay(1)
+    committed_output_count: u32,       // 0 = all outputs, N > 0 = first N only
 }
 
 struct Output {
-    output_type: OutputType,   // Normal or Bond
+    output_type: OutputType,   // See OutputType enum below
     amount: u64,               // In base units
     pubkey_hash: [u8; 20],     // Recipient address
     lock_until: u64,           // Lock height (0 = unlocked)
+}
+
+enum OutputType {
+    Normal = 0,          // Normal spendable output
+    Bond = 1,            // Bond output (time-locked, protocol-governed withdrawal)
+    Multisig = 2,        // Threshold-of-N signatures (also used for escrow)
+    Hashlock = 3,        // Requires preimage reveal
+    HTLC = 4,            // Hashlock + timelock OR expiry refund
+    Vesting = 5,         // Signature + timelock
+    NFT = 6,             // Non-fungible token with metadata + covenant conditions
+    FungibleAsset = 7,   // Custom fungible token
+    BridgeHTLC = 8,      // Cross-chain atomic swap with target chain metadata
+    Pool = 9,            // AMM liquidity pool
+    LPShare = 10,        // LP share token
+    Collateral = 11,     // Lending collateral
+    LendingDeposit = 12, // Lending pool deposit
 }
 ```
 
@@ -292,9 +354,10 @@ struct VdfProof {
 ```
 
 **VDF Parameters:**
-- Block VDF: 800K iterations (~55ms)
-- Registration VDF base: 600M iterations (~10 minutes)
-- Discriminant bits: 2048
+- Block VDF: 800K iterations (~55ms) — consensus constant `T_BLOCK`
+- Registration VDF base: 1,000 iterations (essentially instant — bond is the real Sybil protection)
+- Discriminant bits: 1024 (consensus constant `VDF_DISCRIMINANT_BITS`)
+- Network default VDF iterations: 1,000 (all networks)
 
 ---
 

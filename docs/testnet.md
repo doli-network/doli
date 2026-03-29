@@ -8,17 +8,17 @@ Official DOLI testnet for testing and development.
 
 ## Testnet v96 (March 2026 Relaunch)
 
-The testnet has been relaunched with 6 genesis producers and accelerated epoch parameters for faster testing. Additional producers (NT7-NT12) register on-chain after genesis.
+The testnet has been relaunched with accelerated epoch parameters for faster testing. All producers (NT1-NT12) register on-chain after genesis (no pre-registered genesis producers in v96).
 
 | Status | Value |
 |--------|-------|
 | Genesis | March 29, 2026 (timestamp 1774749145) |
 | Block Reward | **1 tDOLI** (matches mainnet) |
-| Genesis Producers | 6 pre-registered (NT1-NT6) |
+| Genesis Producers | 0 (all register on-chain post-genesis) |
 | Slot Duration | 10 seconds |
 | Epoch Length | 36 blocks (~6 minutes) |
 | Bond Unit | 1 tDOLI |
-| Bootstrap DNS | `bootstrap1.testnet.doli.network:40300` / `bootstrap2.testnet.doli.network:40300` |
+| Bootstrap DNS | `bootstrap1.testnet.doli.network:40300` / `bootstrap2.testnet.doli.network:40300` / `seeds.testnet.doli.network:40300` |
 
 **To join:**
 - Run with `--producer` flag to participate in block production
@@ -75,7 +75,7 @@ You earn **1 tDOLI per block** you produce (matches mainnet).
 | Block Reward | **1 tDOLI** |
 | Epoch Length | 36 blocks (~6 minutes) |
 | Bond Unit | 1 tDOLI |
-| Genesis Producers | 6 (NT1-NT6), NT7-NT12 register on-chain |
+| Genesis Producers | 0 (all NT1-NT12 register on-chain) |
 | P2P Port | 40300 |
 | RPC Port | 18500 |
 | Bootstrap | `bootstrap1.testnet.doli.network:40300` |

@@ -243,19 +243,33 @@ transactions, use `getBlockByHash` or `getBlockByHeight` and search the transact
 **Transaction Types:**
 | Type | Description |
 |------|-------------|
-| transfer | Standard value transfer |
-| registration | Producer registration |
-| exit | Producer exit |
-| coinbase | Block reward |
-| claim_reward | **DEPRECATED** - Claim epoch rewards |
-| claim_bond | Claim bond after unbonding |
-| add_bond | Add bonds to producer |
-| request_withdrawal | Request bond withdrawal |
-| claim_withdrawal | Claim after withdrawal delay |
-| epoch_reward | **DEPRECATED** - Epoch reward distribution |
-| slash_producer | Slash equivocating producer |
-| add_maintainer | Add maintainer (3/5 multisig) |
-| remove_maintainer | Remove maintainer (3/5 multisig) |
+| transfer (0) | Standard value transfer |
+| registration (1) | Producer registration |
+| exit (2) | Producer exit |
+| claim_reward (3) | **DEPRECATED** - Claim epoch rewards |
+| claim_bond (4) | Claim bond after unbonding |
+| slash_producer (5) | Slash equivocating producer |
+| coinbase (6) | Block reward (enum exists but coinbase uses Transfer) |
+| add_bond (7) | Add bonds to producer |
+| request_withdrawal (8) | Request bond withdrawal (instant with vesting penalty) |
+| claim_withdrawal (9) | Reserved tombstone (wire compat) |
+| epoch_reward (10) | Epoch reward distribution (active — pool drained bond-weighted at epoch boundary) |
+| remove_maintainer (11) | Remove maintainer (3/5 multisig) |
+| add_maintainer (12) | Add maintainer (3/5 multisig) |
+| delegate_bond (13) | Delegate bond weight to another producer |
+| revoke_delegation (14) | Revoke delegated bonds |
+| protocol_activation (15) | On-chain consensus rule activation (3/5 multisig) |
+| mint_asset (17) | Mint fungible asset (issuer-only) |
+| burn_asset (18) | Burn fungible asset |
+| create_pool (19) | Create AMM pool with initial liquidity |
+| add_liquidity (20) | Add liquidity to AMM pool |
+| remove_liquidity (21) | Remove liquidity from AMM pool |
+| swap (22) | Swap assets through AMM pool |
+| create_loan (24) | Create collateralized loan |
+| repay_loan (25) | Repay loan and recover collateral |
+| liquidate_loan (26) | Liquidate undercollateralized loan |
+| lending_deposit (27) | Deposit DOLI into lending pool |
+| lending_withdraw (28) | Withdraw DOLI + interest from lending pool |
 
 **Example:**
 ```bash
@@ -316,7 +330,7 @@ Returns balance for an address.
 |-------|-------------|
 | confirmed | Spendable balance (mature, confirmed, minus mempool-spent) |
 | unconfirmed | Pending credits from mempool (incoming change outputs) |
-| immature | Coinbase/epoch rewards awaiting maturity (100 blocks) |
+| immature | Coinbase/epoch rewards awaiting maturity (6 blocks) |
 | bonded | Balance locked in Bond UTXOs (not spendable directly) |
 | total | confirmed + unconfirmed + immature + bonded |
 
@@ -615,8 +629,9 @@ Returns information about a specific producer.
 }
 ```
 
-**Note:** `bondCount` is derived from the UTXO set. Withdrawal requires
-a 7-day delay after `RequestWithdrawal` before `ClaimWithdrawal`.
+**Note:** `bondCount` is derived from the UTXO set. `RequestWithdrawal` (TxType 8)
+processes instantly with FIFO vesting penalty (per-bond quarter-based).
+`ClaimWithdrawal` (TxType 9) is reserved/unused (tombstone for wire compat).
 
 **Status values:**
 | Status | Description |
@@ -1001,12 +1016,14 @@ curl -X POST http://127.0.0.1:8500 \
 
 ## 9. Rewards Methods
 
-Block rewards in DOLI work like Bitcoin: producers receive rewards automatically
-when they produce a block via the coinbase transaction. **No claiming is needed.**
+DOLI uses a **pooled epoch distribution** model. Every block's coinbase goes to a
+deterministic reward pool address (no private key). At each epoch boundary, the pool
+is drained and distributed bond-weighted to attestation-qualified producers via an
+EpochReward transaction (TxType 10). **No manual claiming is needed.**
 
-Per WHITEPAPER.md Section 9.1:
-- Initial reward: 1 DOLI/block
-- Reward maturity: 6 confirmations (Section 9.2)
+- Initial reward: 1 DOLI/block (to pool)
+- Epoch distribution: every 360 blocks (mainnet), 36 blocks (testnet), 4 blocks (devnet)
+- Reward maturity: 6 confirmations
 - Halving interval: 12,614,400 blocks (~4 years)
 
 ### Deprecated Methods
@@ -1015,14 +1032,14 @@ The following RPC methods are **NOT IMPLEMENTED** and will return errors:
 
 | Method | Status |
 |--------|--------|
-| `getClaimableRewards` | Not implemented - rewards are automatic |
-| `getClaimHistory` | Not implemented - no claiming |
-| `estimateEpochReward` | Not implemented - rewards are automatic |
+| `getClaimableRewards` | Not implemented - rewards distributed automatically at epoch boundary |
+| `getClaimHistory` | Not implemented - no manual claiming |
+| `estimateEpochReward` | Not implemented - use getEpochInfo instead |
 | `buildClaimTx` | Not implemented - no claim transactions |
 
-These methods were documented for a weighted presence reward system that was
-deprecated in favor of the simpler Bitcoin-like coinbase model where 100% of
-block rewards go directly to producers.
+These methods were documented for a manual claim model. The active system
+distributes rewards automatically via EpochReward (TxType 10) at each epoch
+boundary, bond-weighted among attestation-qualified producers.
 
 ---
 
@@ -1052,7 +1069,7 @@ Returns current reward epoch information.
 | currentHeight | Current blockchain height |
 | currentEpoch | Current reward epoch number |
 | lastCompleteEpoch | Most recently completed epoch (null if epoch 0) |
-| blocksPerEpoch | Blocks per epoch (360 mainnet/testnet, 60 devnet) |
+| blocksPerEpoch | Blocks per epoch (360 mainnet, 36 testnet, 4 devnet) |
 | blocksRemaining | Blocks until current epoch ends |
 | epochStartHeight | First block height of current epoch |
 | epochEndHeight | Last block height of current epoch (exclusive) |

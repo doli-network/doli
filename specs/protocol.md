@@ -221,8 +221,12 @@ A transaction is valid if:
 
 Minimum fee:
 ```
-min_fee = tx_size_bytes * BASE_FEE_RATE
+min_fee = BASE_FEE + sum(output.extra_data.len()) * FEE_PER_BYTE
 ```
+Where `BASE_FEE = 1` and `FEE_PER_BYTE = 1`. This prices on-chain storage proportionally:
+- Transfer (0 extra_data bytes): 1 sat
+- Bond (4 bytes): 5 sats
+- NFT (300 bytes): 301 sats
 
 ### 3.6 Coinbase Transaction
 
@@ -1285,16 +1289,24 @@ Bootnodes are introduction points, not permanent hubs. A node needs one successf
 
 | Topic | Content | Purpose |
 |-------|---------|---------|
-| `/doli/{network_id}/blocks` | Block headers + bodies | New block announcements |
-| `/doli/{network_id}/txs` | Transactions | Transaction propagation |
+| `/doli/blocks/1` | Block headers + bodies | New block announcements |
+| `/doli/txs/1` | Transactions | Transaction propagation |
+| `/doli/producers/1` | Producer announcements | Bootstrap protocol |
+| `/doli/votes/1` | Update votes | Governance veto system |
+| `/doli/heartbeats/1` | Presence heartbeats | Weighted rewards |
+| `/doli/t1/blocks/1` | Block propagation | Tier 1 dense mesh (validators only) |
+| `/doli/headers/1` | Lightweight headers | All tiers (Tier 3 header-only validation) |
+| `/doli/attestations/1` | Attestations | Tier 1 + Tier 2 (finality gadget) |
+
+Topics do NOT include `network_id`. Network isolation is achieved via genesis hash check during status exchange (see section 8.3).
 
 ### 7.3 Request-Response Protocols
 
 | Protocol | Request | Response |
 |----------|---------|----------|
-| `/doli/status/1` | Status request | Chain tip, height, genesis hash |
-| `/doli/headers/1` | Block hash range | Block headers |
-| `/doli/bodies/1` | Block hashes | Block bodies |
+| `/doli/status/1.0.0` | Status request (version, network_id, genesis_hash, producer_pubkey) | Chain tip, height, best_hash, best_slot, genesis hash |
+| `/doli/sync/1.0.0` | GetHeaders, GetBodies, GetBlockByHeight, GetBlockByHash, GetStateSnapshot, GetStateRoot, GetHeadersByHeight | Headers, bodies, blocks, state snapshots, state root hashes |
+| `/doli/txfetch/1.0.0` | Transaction hashes (max 50) | Full transactions from mempool |
 
 ### 7.4 Connection Flow
 
@@ -1434,11 +1446,12 @@ Mainnet chainspecs are skipped entirely (defense-in-depth).
 
 Networks are isolated at multiple levels:
 
-1. **GossipSub topics**: Topic names include network ID (e.g., `/doli/1/blocks`)
-2. **Network ID**: Exchanged during peer status exchange
-3. **Genesis hash**: Validated during peer status exchange
-4. **Address prefix**: Prevents cross-network address confusion
-5. **Ports**: Different default ports allow running multiple networks simultaneously
+1. **Genesis hash**: Validated during status exchange — peers with mismatched genesis are rejected
+2. **Network ID**: Exchanged during peer status exchange — must match local network
+3. **Address prefix**: Prevents cross-network address confusion
+4. **Ports**: Different default ports allow running multiple networks simultaneously
+
+Note: GossipSub topic names do NOT include network ID. Network isolation relies on the genesis hash and network ID checks during the status handshake protocol (`/doli/status/1.0.0`).
 
 ### 8.4 Peer Validation
 

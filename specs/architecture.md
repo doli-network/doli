@@ -157,7 +157,11 @@ Column Families:
 ├── headers           # Hash → BlockHeader (serialized)
 ├── bodies            # Hash → Vec<Transaction> (serialized)
 ├── height_index      # Height (u64 LE) → Hash
-└── slot_index        # Slot (u32 LE) → Hash
+├── slot_index        # Slot (u32 LE) → Hash
+├── presence          # Block presence tracking
+├── hash_to_height    # Hash → Height reverse index
+├── tx_index          # TxHash → block location
+└── addr_tx_index     # Address → transaction index
 ```
 
 #### StateDb (Unified RocksDB)
@@ -705,7 +709,7 @@ For devnet/testnet without registered producers:
 doli/
 ├── bins/
 │   ├── node/           # Full node binary (doli-node) (~6,000 lines)
-│   │   └── producer/   # Producer-specific logic (signed slots, guards)
+│   │   └── production/ # Producer-specific logic: mod.rs, scheduling.rs, assembly.rs, gates.rs
 │   └── cli/            # Wallet CLI (doli) (~2,500 lines)
 ├── crates/
 │   ├── core/           # Types, consensus, validation (~23,000 lines)
@@ -765,7 +769,7 @@ Additional crates: channels (Layer 2), bridge (atomic swaps) -- depend on core +
 | `storage` | ~4,500 | RocksDB blocks, UTXO, chain state, producer registry | `block_store.rs`, `state_db.rs`, `utxo_rocks.rs`, `chain_state.rs`, `snapshot.rs`, `archiver.rs`, `maintainer.rs`, `update.rs` |
 | `network` | ~5,900 | libp2p P2P: gossipsub, Kademlia, sync, equivocation detection. Modularized: `service/` (mod, helpers, types, command_handling, behaviour_events, swarm_events, swarm_loop, tests), `sync/` (mod, manager/, headers, bodies, fork_recovery, equivocation, reorg/, adversarial_tests), `gossip/` (mod, publish, config, tests), `protocols/` (mod, status, sync, txfetch) | Key files: `messages.rs`, `behaviour.rs`, `config.rs`, `scoring.rs`, `peer.rs`, `rate_limit.rs`, `transport.rs`, `discovery.rs`, `nat.rs`, `peer_cache.rs` |
 | `mempool` | ~760 | Transaction pool with fee policies, double-spend detection | `pool.rs` (589), `policy.rs` (57) |
-| `rpc` | ~1,700 | JSON-RPC server (Axum) for wallet/explorer | `methods.rs` (839), `types.rs` (527), `server.rs` (121) |
+| `rpc` | ~3,000+ | JSON-RPC server (Axum) for wallet/explorer | `methods/` directory (16 sub-modules: mod, backfill, balance, block, context, dispatch, governance, history, lending, network, pool, producer, schedule, snapshot, stats, transaction), `types/` directory (block, chain, producer, protocol), `server.rs`, `ws.rs` |
 | `updater` | ~1,750 | Auto-update with 3/5 multisig, 2-epoch veto, 40% threshold | `lib.rs` (783), `vote.rs` (357), `download.rs` (241), `apply.rs` (233) |
 | `wallet` | -- | Wallet library: key management, transaction construction | -- |
 | `channels` | -- | Payment channels (Layer 2 scaling) | -- |
@@ -876,19 +880,22 @@ use core::consensus::BOND_UNIT;  // DON'T DO THIS in consumers
 ### Network Crate Submodules
 
 **sync/** - Block Synchronization:
-| File | Lines | Purpose |
-|------|-------|---------|
-| `manager.rs` | ~2,200 | Sync orchestration, production gating (10-layer), first-sync grace period, restart-safe ChainState init |
-| `reorg.rs` | 595 | Chain reorganization handling |
-| `equivocation.rs` | 359 | Double-production detection and slashing |
-| `bodies.rs` | 340 | Block body download |
-| `headers.rs` | 221 | Header-first sync |
+| File / Directory | Purpose |
+|-----------------|---------|
+| `manager/` | Sync orchestration directory with sub-modules: `mod.rs` (core), `block_lifecycle.rs`, `cleanup.rs`, `production_gate.rs` (10-layer gating), `peers.rs`, `snap_sync.rs`, `types.rs`, `tests.rs`, `sync_engine/` (sub-directory: `mod.rs`, `decision.rs`, `dispatch.rs`, `response.rs`) |
+| `reorg/` | Chain reorganization: `mod.rs`, `tests.rs` |
+| `fork_recovery.rs` | Fork recovery logic |
+| `equivocation.rs` | Double-production detection and slashing |
+| `bodies.rs` | Block body download |
+| `headers.rs` | Header-first sync |
+| `adversarial_tests.rs` | Adversarial sync scenario tests |
 
 **protocols/** - Request/Response Protocols:
 | File | Lines | Purpose |
 |------|-------|---------|
-| `status.rs` | 227 | Peer status exchange |
-| `sync.rs` | 198 | Sync request/response |
+| `status.rs` | 227 | Peer status exchange (`/doli/status/1.0.0`) |
+| `sync.rs` | 198 | Unified sync request/response (`/doli/sync/1.0.0`) |
+| `txfetch.rs` | ~100 | Transaction fetch by hash (`/doli/txfetch/1.0.0`) |
 
 ### Maintainer Bootstrap System
 
@@ -953,9 +960,9 @@ Additional top-level files in `bins/node/src/`:
 | Library       | Purpose                    | Language |
 |---------------|----------------------------|----------|
 | libblake3     | BLAKE3 hashing             | C/Rust   |
-| ed25519-donna | Ed25519 signatures         | C        |
+| ed25519-dalek | Ed25519 signatures         | Rust     |
 | gmp           | Class group arithmetic     | C        |
-| libp2p        | P2P networking             | Rust/Go  |
+| libp2p        | P2P networking             | Rust     |
 
 ### Storage
 | Component     | Technology                 |
