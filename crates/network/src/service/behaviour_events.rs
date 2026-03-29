@@ -12,7 +12,7 @@ use libp2p::{autonat, gossipsub, identify, kad, request_response, Multiaddr, Pee
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, info, warn};
 
-use doli_core::{decode_producer_set, is_legacy_bincode_format, Block, BlockHeader};
+use doli_core::{decode_digest, decode_producer_set, is_legacy_bincode_format, Block, BlockHeader};
 
 use crate::behaviour::{DoliBehaviour, DoliBehaviourEvent};
 use crate::config::NetworkConfig;
@@ -79,15 +79,26 @@ pub(super) async fn handle_behaviour_event(
                         return;
                     }
                     rate_limiter.record_transaction(&propagation_source, msg_size);
-                    if let Some(txs) = crate::gossip::decode_tx_message(&message.data) {
-                        for tx in txs {
-                            let _ = event_tx.send(NetworkEvent::NewTransaction(tx)).await;
+                    match crate::gossip::decode_tx_gossip(&message.data) {
+                        Some(crate::gossip::TxGossipMessage::FullBatch(txs)) => {
+                            for tx in txs {
+                                let _ = event_tx.send(NetworkEvent::NewTransaction(tx)).await;
+                            }
                         }
-                    } else {
-                        warn!(
-                            "Failed to deserialize transaction from {}",
-                            propagation_source
-                        );
+                        Some(crate::gossip::TxGossipMessage::Announce(hashes)) => {
+                            let _ = event_tx
+                                .send(NetworkEvent::TxAnnouncement {
+                                    peer_id: propagation_source,
+                                    hashes,
+                                })
+                                .await;
+                        }
+                        None => {
+                            warn!(
+                                "Failed to deserialize transaction from {}",
+                                propagation_source
+                            );
+                        }
                     }
                 }
                 PRODUCERS_TOPIC => {
@@ -100,47 +111,77 @@ pub(super) async fn handle_behaviour_event(
                     }
                     rate_limiter.record_request(&propagation_source, msg_size);
 
-                    // Try to detect format and decode appropriately
-                    if is_legacy_bincode_format(&message.data) {
-                        // Legacy bincode format: Vec<PublicKey>
-                        match bincode::deserialize::<Vec<PublicKey>>(&message.data) {
-                            Ok(pubkeys) => {
-                                debug!(
-                                    "Received legacy producer list ({} producers) from {}",
-                                    pubkeys.len(),
-                                    propagation_source
-                                );
-                                let _ = event_tx
-                                    .send(NetworkEvent::ProducersAnnounced(pubkeys))
-                                    .await;
-                            }
-                            Err(e) => {
-                                warn!(
-                                    "Failed to deserialize legacy producer list from {}: {}",
-                                    propagation_source, e
-                                );
-                            }
+                    // Decode order: bloom digest → ProducerSet protobuf → legacy bincode
+                    //
+                    // INC-I-002: Bloom filter digest MUST be tried FIRST.
+                    // is_legacy_bincode_format() misclassifies ProducerSetDigest protobuf
+                    // as legacy bincode (because ProducerSet::decode fails on digest data,
+                    // the heuristic assumes it's bincode). This caused 39,000+ silent
+                    // deserialization failures and prevented GSet CRDT convergence entirely.
+                    let handled_as_digest = if let Ok(bloom) = decode_digest(&message.data) {
+                        if bloom.size_bits() > 0 {
+                            debug!(
+                                "Received producer digest ({} elements, {} bits) from {}",
+                                bloom.element_count(),
+                                bloom.size_bits(),
+                                propagation_source
+                            );
+                            let _ = event_tx
+                                .send(NetworkEvent::ProducerDigestReceived {
+                                    peer_id: propagation_source,
+                                    digest: bloom,
+                                })
+                                .await;
+                            true
+                        } else {
+                            false
                         }
                     } else {
-                        // New protobuf format: ProducerSet
-                        match decode_producer_set(&message.data) {
-                            Ok(announcements) => {
-                                debug!(
-                                    "Received producer announcements ({} producers) from {}",
-                                    announcements.len(),
-                                    propagation_source
-                                );
-                                let _ = event_tx
-                                    .send(NetworkEvent::ProducerAnnouncementsReceived(
-                                        announcements,
-                                    ))
-                                    .await;
+                        false
+                    };
+
+                    if !handled_as_digest {
+                        if is_legacy_bincode_format(&message.data) {
+                            // Legacy bincode format: Vec<PublicKey>
+                            match bincode::deserialize::<Vec<PublicKey>>(&message.data) {
+                                Ok(pubkeys) => {
+                                    debug!(
+                                        "Received legacy producer list ({} producers) from {}",
+                                        pubkeys.len(),
+                                        propagation_source
+                                    );
+                                    let _ = event_tx
+                                        .send(NetworkEvent::ProducersAnnounced(pubkeys))
+                                        .await;
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        "Failed to deserialize legacy producer list from {}: {}",
+                                        propagation_source, e
+                                    );
+                                }
                             }
-                            Err(e) => {
-                                warn!(
-                                    "Failed to decode producer announcements from {}: {}",
-                                    propagation_source, e
-                                );
+                        } else {
+                            // New protobuf format: ProducerSet
+                            match decode_producer_set(&message.data) {
+                                Ok(announcements) => {
+                                    debug!(
+                                        "Received producer announcements ({} producers) from {}",
+                                        announcements.len(),
+                                        propagation_source
+                                    );
+                                    let _ = event_tx
+                                        .send(NetworkEvent::ProducerAnnouncementsReceived(
+                                            announcements,
+                                        ))
+                                        .await;
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        "Failed to decode producer announcements from {}: {}",
+                                        propagation_source, e
+                                    );
+                                }
                             }
                         }
                     }
@@ -381,6 +422,11 @@ pub(super) async fn handle_behaviour_event(
                         peer_info.best_height = response.best_height;
                         peer_info.best_hash = response.best_hash;
                         peer_info.touch();
+                        // SCALE-T2-004: Mark producer peers so eviction logic
+                        // protects them from being dropped at max_peers capacity.
+                        if response.producer_pubkey.is_some() {
+                            peer_info.is_producer = true;
+                        }
                     }
 
                     let _ = event_tx
@@ -425,6 +471,58 @@ pub(super) async fn handle_behaviour_event(
                 }
             }
         }
+
+        DoliBehaviourEvent::Txfetch(request_response::Event::Message { peer, message }) => {
+            match message {
+                request_response::Message::Request {
+                    request, channel, ..
+                } => {
+                    debug!(
+                        "Received tx fetch request from {} ({} hashes)",
+                        peer,
+                        request.hashes.len()
+                    );
+                    let _ = event_tx
+                        .send(NetworkEvent::TxFetchRequest {
+                            peer_id: peer,
+                            hashes: request.hashes,
+                            channel,
+                        })
+                        .await;
+                }
+                request_response::Message::Response { response, .. } => {
+                    debug!(
+                        "Received tx fetch response from {} ({} txs)",
+                        peer,
+                        response.transactions.len()
+                    );
+                    let _ = event_tx
+                        .send(NetworkEvent::TxFetchResponse {
+                            peer_id: peer,
+                            transactions: response.transactions,
+                        })
+                        .await;
+                }
+            }
+        }
+
+        DoliBehaviourEvent::Txfetch(request_response::Event::OutboundFailure {
+            peer,
+            error,
+            ..
+        }) => {
+            debug!("TxFetch outbound failure to {}: {:?}", peer, error);
+        }
+
+        DoliBehaviourEvent::Txfetch(request_response::Event::InboundFailure {
+            peer,
+            error,
+            ..
+        }) => {
+            debug!("TxFetch inbound failure from {}: {:?}", peer, error);
+        }
+
+        DoliBehaviourEvent::Txfetch(_) => {}
 
         DoliBehaviourEvent::RelayClient(event) => {
             info!("[RELAY] Client: {:?}", event);

@@ -698,6 +698,16 @@ impl Node {
             NetworkEvent::NewHeartbeat(_) => {
                 // Ignored - deterministic scheduler model doesn't use heartbeats
             }
+            NetworkEvent::TxAnnouncement { .. } => {
+                // TX announce-request: handled in Layer 2
+            }
+            NetworkEvent::TxFetchRequest { .. } => {
+                // TX fetch request: handled in Layer 2
+            }
+            NetworkEvent::TxFetchResponse { .. } => {
+                // TX fetch response: handled in Layer 2
+            }
+
             NetworkEvent::NewAttestation(data) => {
                 // Decode and apply attestation for finality + liveness tracking
                 if let Some(attestation) = doli_core::Attestation::from_bytes(&data) {

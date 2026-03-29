@@ -5,6 +5,8 @@
 
 pub mod status;
 pub mod sync;
+pub mod txfetch;
 
 pub use status::{StatusCodec, StatusProtocol, StatusRequest, StatusResponse};
 pub use sync::{SyncCodec, SyncProtocol, SyncRequest, SyncResponse};
+pub use txfetch::{TxFetchCodec, TxFetchRequest, TxFetchResponse};

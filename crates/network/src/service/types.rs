@@ -5,10 +5,10 @@
 use libp2p::request_response::ResponseChannel;
 use libp2p::{Multiaddr, PeerId};
 
-use crypto::PublicKey;
+use crypto::{Hash, PublicKey};
 use doli_core::{Block, BlockHeader, ProducerAnnouncement, ProducerBloomFilter, Transaction};
 
-use crate::protocols::{StatusRequest, StatusResponse, SyncRequest, SyncResponse};
+use crate::protocols::{StatusRequest, StatusResponse, SyncRequest, SyncResponse, TxFetchResponse};
 
 /// Genesis mismatch peers are silently rejected for this duration.
 pub(super) const GENESIS_MISMATCH_COOLDOWN_SECS: u64 = 3600; // 1 hour
@@ -75,6 +75,19 @@ pub enum NetworkEvent {
     NewHeartbeat(Vec<u8>),
     /// Attestation received for finality gadget
     NewAttestation(Vec<u8>),
+    /// Transaction hash announcement received (announce-request pattern)
+    TxAnnouncement { peer_id: PeerId, hashes: Vec<Hash> },
+    /// Peer is requesting transactions by hash (announce-request pattern)
+    TxFetchRequest {
+        peer_id: PeerId,
+        hashes: Vec<Hash>,
+        channel: ResponseChannel<TxFetchResponse>,
+    },
+    /// Peer responded with requested transactions (announce-request pattern)
+    TxFetchResponse {
+        peer_id: PeerId,
+        transactions: Vec<Transaction>,
+    },
 }
 
 /// Commands to the network
@@ -129,8 +142,13 @@ pub enum NetworkCommand {
     BroadcastHeartbeat(Vec<u8>),
     /// Broadcast an attestation (finality gadget)
     BroadcastAttestation(Vec<u8>),
-    /// Reconfigure gossipsub topic subscriptions for a new tier
-    ReconfigureTier { tier: u8, region: Option<u32> },
+    /// Request transactions from a peer by hash (announce-request pattern)
+    RequestTxFetch { peer_id: PeerId, hashes: Vec<Hash> },
+    /// Send transaction fetch response (announce-request pattern)
+    SendTxFetchResponse {
+        channel: ResponseChannel<TxFetchResponse>,
+        response: TxFetchResponse,
+    },
 }
 
 /// Network errors

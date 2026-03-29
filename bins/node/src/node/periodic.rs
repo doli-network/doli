@@ -118,36 +118,34 @@ impl Node {
             }
         }
 
-        // Check for ready checkpoint state (downloaded from peer, waiting to be applied)
+        // Check for ready snap sync snapshot (downloaded from peer, waiting to be applied)
         {
-            let checkpoint_data = self.sync_manager.write().await.take_checkpoint_state();
-            if let Some((block_hash, block_height, cs_bytes, utxo_bytes, ps_bytes, state_root)) =
-                checkpoint_data
-            {
+            let snapshot = self.sync_manager.write().await.take_snap_snapshot();
+            if let Some(snap) = snapshot {
                 info!(
-                    "[CHECKPOINT] Consuming checkpoint state at height={}",
-                    block_height
+                    "[SNAP_SYNC] Consuming snapshot state at height={}",
+                    snap.block_height
                 );
                 match self
                     .apply_checkpoint_state(
-                        block_hash,
-                        block_height,
-                        cs_bytes,
-                        utxo_bytes,
-                        ps_bytes,
-                        state_root,
+                        snap.block_hash,
+                        snap.block_height,
+                        snap.chain_state,
+                        snap.utxo_set,
+                        snap.producer_set,
+                        snap.state_root,
                     )
                     .await
                 {
                     Ok(()) => {
                         info!(
-                            "[CHECKPOINT] Successfully applied checkpoint state at height={}",
-                            block_height
+                            "[SNAP_SYNC] Successfully applied snapshot state at height={}",
+                            snap.block_height
                         );
                     }
                     Err(e) => {
                         error!(
-                            "[CHECKPOINT] Failed to apply checkpoint state: {} — falling back to header-first sync",
+                            "[SNAP_SYNC] Failed to apply snapshot state: {} — falling back to header-first sync",
                             e
                         );
                     }
@@ -348,90 +346,8 @@ impl Node {
             return Ok(());
         }
 
-        // Drive active fork sync: compare probes with block_store, handle transitions
-        {
-            // Phase 1: Binary search — compare peer's block hash with ours
-            let probe = self.sync_manager.read().await.fork_sync_pending_probe();
-            if let Some((height, peer_hash)) = probe {
-                let our_hash = self.block_store.get_hash_by_height(height).ok().flatten();
-                let result = match our_hash {
-                    Some(h) if h == peer_hash => network::sync::ProbeResult::Match,
-                    Some(_) => network::sync::ProbeResult::Mismatch,
-                    None => network::sync::ProbeResult::NotInStore,
-                };
-                self.sync_manager
-                    .write()
-                    .await
-                    .fork_sync_handle_probe(result);
-            }
-
-            // Transition: search complete — provide ancestor hash from our block_store.
-            //
-            // IMPORTANT: Check ancestor_height (happy path) FIRST, before failure cases.
-            // The binary search may find the ancestor at the exact floor height. If we
-            // check bottomed_out() first, it can race with the final probe response and
-            // incorrectly declare "no ancestor found" when one was actually found.
-            let ancestor_height = self.sync_manager.read().await.fork_sync_ancestor_height();
-            if let Some(height) = ancestor_height {
-                let ancestor_hash = self
-                    .block_store
-                    .get_hash_by_height(height)
-                    .ok()
-                    .flatten()
-                    .unwrap_or(self.chain_state.read().await.genesis_hash);
-                self.sync_manager
-                    .write()
-                    .await
-                    .fork_sync_set_ancestor(height, ancestor_hash);
-            }
-
-            // Failure case 1: Store-limited — block store doesn't cover the search range.
-            // NOT a deep fork, just a snap sync gap. Header-first sync will recover.
-            if self.sync_manager.read().await.fork_sync_store_limited() {
-                let floor = self.sync_manager.read().await.store_floor();
-                warn!(
-                    "Fork sync: search limited by block store floor (height {}). \
-                     Skipping — NOT a deep fork. Header-first sync will recover.",
-                    floor
-                );
-                self.sync_manager.write().await.fork_sync_clear();
-                self.sync_manager.write().await.set_post_recovery_grace();
-                return Ok(());
-            }
-
-            // Failure case 2: Bottomed out — check ancestor FIRST.
-            // If a common ancestor exists at any height (even genesis), it's not
-            // a "no ancestor" situation — use it for reorg instead of wiping state.
-            // state_reset_recovery is NEVER called automatically — a validated chain
-            // must not be wiped based on peer behavior (Ethereum/Bitcoin principle).
-            if self.sync_manager.read().await.fork_sync_bottomed_out() {
-                let ancestor = self.sync_manager.read().await.fork_sync_ancestor_height();
-                if let Some(h) = ancestor {
-                    warn!(
-                        "Fork sync: search bottomed out but common ancestor found at height {} — using it (NOT resetting)",
-                        h
-                    );
-                    // Let the result path below handle the reorg
-                } else {
-                    warn!(
-                        "Fork sync: no common ancestor found — clearing fork sync and retrying with different peers \
-                         (state reset disabled: a validated chain is never wiped automatically)"
-                    );
-                    self.sync_manager.write().await.fork_sync_clear();
-                    self.sync_manager.write().await.set_post_recovery_grace();
-                    return Ok(());
-                }
-            }
-
-            // Phase 2/3 complete: take result and execute reorg
-            let result = self.sync_manager.write().await.fork_sync_take_result();
-            if let Some(result) = result {
-                if let Err(e) = self.execute_fork_sync_reorg(result).await {
-                    warn!("Fork sync reorg failed: {}", e);
-                }
-                return Ok(());
-            }
-        }
+        // Fork sync binary search removed — fork recovery is now handled by
+        // the ReorgHandler in the network crate's fork_recovery module.
 
         // DEEP FORK DETECTION: If peers consistently reject our chain tip (10+ empty
         // header responses), log warning. Fork sync handles recovery via binary search.

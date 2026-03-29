@@ -39,7 +39,7 @@ use crate::discovery::new_kademlia;
 use crate::gossip::{new_gossipsub, subscribe_to_topics};
 use crate::peer::PeerInfo;
 use crate::peer_cache::PeerCache;
-use crate::protocols::{StatusRequest, StatusResponse, SyncRequest, SyncResponse};
+use crate::protocols::{StatusRequest, StatusResponse, SyncRequest, SyncResponse, TxFetchResponse};
 use crate::transport::build_transport;
 use crypto::PublicKey;
 use libp2p::request_response::ResponseChannel;
@@ -68,8 +68,15 @@ pub struct NetworkService {
 impl NetworkService {
     /// Create a new network service
     pub async fn new(config: NetworkConfig) -> Result<Self, NetworkError> {
-        let (event_tx, event_rx) = mpsc::channel(1024);
-        let (command_tx, command_rx) = mpsc::channel(1024);
+        // SCALE-T2-003: Channel buffers scale with max_peers.
+        // At 5000 nodes, the old 1024-slot buffer fills in ~2 seconds causing
+        // backpressure that blocks the swarm loop → cascade disconnections.
+        // Formula: max(4096, max_peers * 16) for events, max(2048, max_peers * 4) for commands.
+        // Capped at 32768 to bound memory (~1MB per channel at max capacity).
+        let event_buf = (config.max_peers * 16).clamp(4096, 32768);
+        let command_buf = (config.max_peers * 4).clamp(2048, 32768);
+        let (event_tx, event_rx) = mpsc::channel(event_buf);
+        let (command_tx, command_rx) = mpsc::channel(command_buf);
 
         let peers = Arc::new(RwLock::new(HashMap::new()));
 
@@ -97,10 +104,8 @@ impl NetworkService {
             .map_err(|e| NetworkError::Other(format!("Transport error: {}", e)))?;
 
         // Build gossipsub with mesh params from NetworkParams.
-        // All topics are subscribed to ensure full connectivity at startup.
-        // Tier-aware mesh parameters (new_gossipsub_for_tier / subscribe_to_topics_for_tier)
-        // are available for future hot-reconfiguration when the node's tier is computed
-        // at the first epoch boundary after block sync.
+        // All topics are subscribed at startup. Topic subscriptions are
+        // reconfigured at epoch boundaries when the node's tier is computed.
         let mesh = crate::gossip::MeshConfig {
             mesh_n: config.mesh_n,
             mesh_n_low: config.mesh_n_low,
@@ -115,20 +120,55 @@ impl NetworkService {
         // Build kademlia
         let kademlia = new_kademlia(local_peer_id);
 
-        // Build connection limits.
+        // INC-I-014: Connection limits tuned for large localhost networks.
         //
-        // Transport layer allows 1.5× max_peers so new connections can be
-        // evaluated by the application-layer gossipsub-score eviction
-        // (swarm_events.rs). Without headroom the transport hard-wall
-        // rejects peers before the scoring logic ever runs.
+        // max_established_per_peer=1: The old value of 2 meant each peer consumed
+        // 2 connections (1MB Yamux each). At 156 nodes this caused 100 connections
+        // per node and 54GB RAM. With 1 conn/peer, the same conn_limit serves
+        // 2x more unique peers. The simultaneous-dial race (libp2p#752) resolves
+        // itself — libp2p closes the duplicate, the surviving conn works fine.
         //
-        // 1 per-peer: simultaneous-dial race (rust-libp2p#752) is resolved
-        // upstream since 0.52+ via deterministic connection deduplication.
-        let transport_limit = (config.max_peers as u32) * 3 / 2;
+        // INC-I-014: Connection limits for large networks.
+        // Key insight: per-direction limits (in/out) are checked independently —
+        // 60 in + 60 out = 120 total connections, causing RAM explosion.
+        // Fix: cap TOTAL connections with with_max_established().
+        //
+        // max_peers*2 total gives fast Kademlia discovery (tested: great bootstrap
+        // up to 70+ nodes) while bounding RAM. At max_peers=25: 50 total connections
+        // × 256KB Yamux = 12.5MB/node. Eviction keeps steady-state at ~25 conns.
+        // INC-I-014: Connection limit tightened from max_peers*2 to max_peers+10.
+        // The old 2x headroom allowed up to max_peers "ghost" connections that completed
+        // the Noise+Yamux handshake (~456KB each) but weren't in the peer table. With
+        // 213 nodes and constant churn, the macOS allocator never returned these freed
+        // pages → RSS grew monotonically. +10 gives headroom for bootstrap-only connections
+        // and connection races without doubling the buffer cost.
+        let total_conn_limit = std::env::var("DOLI_CONN_LIMIT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or((config.max_peers + 10) as u32);
+        // INC-I-014: Pending connection limits. with_max_established() only caps
+        // COMPLETED connections. During handshake (TCP+Noise+Yamux), each pending
+        // connection allocates ~1MB with NO cap. At 156 nodes: pending_out=37/node
+        // = 37MB invisible RAM per node. with_max_pending_* checks BEFORE the
+        // handshake starts (handle_pending_inbound/outbound_connection), preventing
+        // Noise+Yamux buffer allocation entirely.
+        // INC-I-014: Pending limit slashed from max_peers (25) to 5.
+        // Each pending connection allocates ~456KB for Noise+Yamux handshake BEFORE
+        // ConnectionEstablished. With max_peers=25 pending, 206 nodes × 25 pending
+        // = 5,150 simultaneous handshakes × 456KB = 2.3GB in handshake buffers that
+        // churn constantly (macOS allocator doesn't return pages → 6.6GB/min leak).
+        // At 5 pending, the handshake buffer cost drops to ~460MB system-wide.
+        let pending_limit = std::env::var("DOLI_PENDING_LIMIT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(5u32);
         let limits = libp2p::connection_limits::ConnectionLimits::default()
             .with_max_established_per_peer(Some(1))
-            .with_max_established_incoming(Some(transport_limit))
-            .with_max_established_outgoing(Some(transport_limit));
+            .with_max_established(Some(total_conn_limit))
+            .with_max_established_incoming(Some(total_conn_limit))
+            .with_max_established_outgoing(Some(total_conn_limit))
+            .with_max_pending_incoming(Some(pending_limit))
+            .with_max_pending_outgoing(Some(pending_limit));
         let connection_limits = libp2p::connection_limits::Behaviour::new(limits);
 
         // Build relay server — all nodes instantiate it, but reservation limits
@@ -172,13 +212,26 @@ impl NetworkService {
             autonat,
         );
 
+        // INC-I-014: Network-aware idle timeout. 24h for mainnet (stable long-lived
+        // connections). 1h for testnet (moderate churn during stress tests). 5min for
+        // devnet (rapid iteration). Override with DOLI_IDLE_TIMEOUT_SECS for tuning.
+        let default_idle_secs = match config.network_id {
+            1 => 86400, // mainnet: 24h
+            2 => 300, // testnet: 5min (INC-I-014: 1h was too long, stale connections held buffers)
+            _ => 300, // devnet: 5min
+        };
+        let idle_timeout_secs = std::env::var("DOLI_IDLE_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(default_idle_secs);
+
         // Build swarm
         let mut swarm = Swarm::new(
             transport,
             behaviour,
             local_peer_id,
             libp2p::swarm::Config::with_tokio_executor()
-                .with_idle_connection_timeout(Duration::from_secs(86400)),
+                .with_idle_connection_timeout(Duration::from_secs(idle_timeout_secs)),
         );
 
         // Listen on configured address
@@ -201,7 +254,26 @@ impl NetworkService {
             info!("Registered external address: {}", ext_addr);
         }
 
+        let yamux_window = std::env::var("DOLI_YAMUX_WINDOW")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(262_144);
         info!("Network service listening on {}", listen_addr);
+        let eviction_grace_secs = std::env::var("DOLI_EVICTION_GRACE_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(30);
+        info!(
+            "[MEM-BOOT] max_peers={} conn_limit={} pending_limit={} yamux_window={}KB idle_timeout={}s eviction_grace={}s event_buf={} cmd_buf={}",
+            config.max_peers,
+            total_conn_limit,
+            pending_limit,
+            yamux_window / 1024,
+            idle_timeout_secs,
+            eviction_grace_secs,
+            event_buf,
+            command_buf
+        );
 
         // Load cached peers and dial them (in addition to bootstrap nodes).
         // Strip embedded /p2p/<id> suffixes — peer IDs change after chain resets,
@@ -434,6 +506,32 @@ impl NetworkService {
         Ok(())
     }
 
+    /// Request transactions from a peer by hash (announce-request pattern)
+    pub async fn request_tx_fetch(
+        &self,
+        peer_id: PeerId,
+        hashes: Vec<crypto::Hash>,
+    ) -> Result<(), NetworkError> {
+        self.command_tx
+            .send(NetworkCommand::RequestTxFetch { peer_id, hashes })
+            .await
+            .map_err(|_| NetworkError::ChannelClosed)?;
+        Ok(())
+    }
+
+    /// Send transaction fetch response (announce-request pattern)
+    pub async fn send_tx_fetch_response(
+        &self,
+        channel: ResponseChannel<TxFetchResponse>,
+        response: TxFetchResponse,
+    ) -> Result<(), NetworkError> {
+        self.command_tx
+            .send(NetworkCommand::SendTxFetchResponse { channel, response })
+            .await
+            .map_err(|_| NetworkError::ChannelClosed)?;
+        Ok(())
+    }
+
     /// Connect to a peer
     pub async fn connect(&self, address: &str) -> Result<(), NetworkError> {
         let multiaddr: Multiaddr = address
@@ -450,19 +548,6 @@ impl NetworkService {
     pub async fn bootstrap(&self) -> Result<(), NetworkError> {
         self.command_tx
             .send(NetworkCommand::Bootstrap)
-            .await
-            .map_err(|_| NetworkError::ChannelClosed)?;
-        Ok(())
-    }
-
-    /// Reconfigure gossipsub topic subscriptions for a new tier
-    pub async fn reconfigure_tier(
-        &self,
-        tier: u8,
-        region: Option<u32>,
-    ) -> Result<(), NetworkError> {
-        self.command_tx
-            .send(NetworkCommand::ReconfigureTier { tier, region })
             .await
             .map_err(|_| NetworkError::ChannelClosed)?;
         Ok(())
@@ -491,6 +576,15 @@ impl NetworkService {
     /// Get shared peers map for sync peer-count queries
     pub fn peers_arc(&self) -> Arc<RwLock<HashMap<PeerId, PeerInfo>>> {
         self.peers.clone()
+    }
+
+    /// Disconnect from a specific peer
+    pub async fn disconnect(&self, peer_id: PeerId) -> Result<(), NetworkError> {
+        self.command_tx
+            .send(NetworkCommand::Disconnect(peer_id))
+            .await
+            .map_err(|_| NetworkError::ChannelClosed)?;
+        Ok(())
     }
 
     /// Get command sender for external use

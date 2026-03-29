@@ -33,6 +33,10 @@ pub struct PeerInfo {
     pub bytes_sent: u64,
     /// Latency (from ping/pong)
     pub latency: Option<Duration>,
+    /// Whether this peer identified itself as a producer via StatusResponse.
+    /// Used by connection eviction to protect producer peers from being
+    /// dropped when at max_peers capacity (SCALE-T2-004).
+    pub is_producer: bool,
 }
 
 impl PeerInfo {
@@ -50,6 +54,7 @@ impl PeerInfo {
             bytes_received: 0,
             bytes_sent: 0,
             latency: None,
+            is_producer: false,
         }
     }
 

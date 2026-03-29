@@ -192,12 +192,20 @@ pub(super) async fn handle_command(
             }
         }
 
-        NetworkCommand::ReconfigureTier { tier, region } => {
-            info!("Reconfiguring gossipsub topics for tier {}", tier);
-            let gs = &mut swarm.behaviour_mut().gossipsub;
-            if let Err(e) = crate::gossip::reconfigure_topics_for_tier(gs, tier, region) {
-                warn!("Failed to reconfigure tier topics: {}", e);
-            }
+        NetworkCommand::RequestTxFetch { peer_id, hashes } => {
+            debug!("Requesting {} txs from peer {}", hashes.len(), peer_id);
+            let request = crate::protocols::TxFetchRequest { hashes };
+            swarm
+                .behaviour_mut()
+                .txfetch
+                .send_request(&peer_id, request);
+        }
+
+        NetworkCommand::SendTxFetchResponse { channel, response } => {
+            let _ = swarm
+                .behaviour_mut()
+                .txfetch
+                .send_response(channel, response);
         }
     }
 }

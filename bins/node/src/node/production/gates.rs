@@ -159,6 +159,13 @@ impl Node {
                 );
                 false
             }
+            ProductionAuthorization::BlockedAwaitingCanonicalBlock => {
+                info!(
+                    "[NODE_PRODUCE] slot={} BLOCKED: Awaiting canonical block after snap sync",
+                    current_slot
+                );
+                false
+            }
         }
     }
 }

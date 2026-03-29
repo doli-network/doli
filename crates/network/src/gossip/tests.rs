@@ -20,43 +20,16 @@ fn test_region_topic_format() {
 }
 
 #[test]
-fn test_tier1_gossipsub_creation() {
-    let keypair = libp2p::identity::Keypair::generate_ed25519();
-    let gs = new_gossipsub_for_tier(&keypair, 1);
-    assert!(gs.is_ok());
-}
-
-#[test]
-fn test_tier2_gossipsub_creation() {
-    let keypair = libp2p::identity::Keypair::generate_ed25519();
-    let gs = new_gossipsub_for_tier(&keypair, 2);
-    assert!(gs.is_ok());
-}
-
-#[test]
-fn test_tier3_gossipsub_creation() {
-    let keypair = libp2p::identity::Keypair::generate_ed25519();
-    let gs = new_gossipsub_for_tier(&keypair, 3);
-    assert!(gs.is_ok());
-}
-
-#[test]
-fn test_default_tier_gossipsub_creation() {
-    let keypair = libp2p::identity::Keypair::generate_ed25519();
-    let gs = new_gossipsub_for_tier(&keypair, 0);
-    assert!(gs.is_ok());
-}
-
-#[test]
-fn test_mesh_config_default() {
+fn test_mesh_config_invariants() {
     let config = MeshConfig {
-        mesh_n: 6,
-        mesh_n_low: 4,
-        mesh_n_high: 12,
-        gossip_lazy: 6,
+        mesh_n: 12,
+        mesh_n_low: 8,
+        mesh_n_high: 24,
+        gossip_lazy: 12,
     };
     assert!(config.mesh_n >= config.mesh_n_low);
     assert!(config.mesh_n <= config.mesh_n_high);
+    assert!(config.gossip_lazy >= config.mesh_n);
 }
 
 #[test]
@@ -101,162 +74,14 @@ fn test_tx_batch_empty_returns_none() {
 }
 
 #[test]
-fn test_topics_for_tier0_is_legacy() {
-    let topics = topics_for_tier(0, None);
-    assert!(topics.contains(&BLOCKS_TOPIC.to_string()));
-    assert!(topics.contains(&TRANSACTIONS_TOPIC.to_string()));
-    assert!(topics.contains(&HEARTBEATS_TOPIC.to_string()));
-    assert!(topics.contains(&HEADERS_TOPIC.to_string()));
-    assert!(topics.contains(&PRODUCERS_TOPIC.to_string()));
-    assert!(topics.contains(&VOTES_TOPIC.to_string()));
-    // Tier 0 should NOT have tier1-specific topics
-    assert!(!topics.contains(&TIER1_BLOCKS_TOPIC.to_string()));
-    // But all tiers receive attestations for finality tracking
-    assert!(topics.contains(&ATTESTATION_TOPIC.to_string()));
-}
-
-#[test]
-fn test_topics_for_tier1_includes_tier1_blocks() {
-    let topics = topics_for_tier(1, None);
-    assert!(topics.contains(&TIER1_BLOCKS_TOPIC.to_string()));
-    assert!(topics.contains(&ATTESTATION_TOPIC.to_string()));
-    assert!(topics.contains(&BLOCKS_TOPIC.to_string()));
-    assert_eq!(topics.len(), 8); // producers, votes, blocks, txs, heartbeats, t1_blocks, attestations, headers
-}
-
-#[test]
-fn test_topics_for_tier3_headers_only() {
-    let topics = topics_for_tier(3, None);
-    assert!(topics.contains(&HEADERS_TOPIC.to_string()));
-    assert!(topics.contains(&PRODUCERS_TOPIC.to_string()));
-    assert!(topics.contains(&VOTES_TOPIC.to_string()));
-    assert!(topics.contains(&ATTESTATION_TOPIC.to_string()));
-    assert!(!topics.contains(&BLOCKS_TOPIC.to_string()));
-    assert!(!topics.contains(&TRANSACTIONS_TOPIC.to_string()));
-    assert!(!topics.contains(&HEARTBEATS_TOPIC.to_string()));
-    assert_eq!(topics.len(), 4);
-}
-
-#[test]
-fn test_reconfigure_tier_unsubscribes() {
+fn test_gossipsub_creation_with_universal_mesh() {
     let keypair = libp2p::identity::Keypair::generate_ed25519();
-    let mut gs = new_gossipsub_for_tier(&keypair, 0).unwrap();
-
-    // Start with Tier 0 (legacy) subscriptions
-    subscribe_to_topics_for_tier(&mut gs, 0, None).unwrap();
-    let initial_count = gs.topics().count();
-    assert_eq!(initial_count, 7); // blocks, txs, heartbeats, headers, attestations, producers, votes
-
-    // Reconfigure to Tier 3 (header-only)
-    // BLOCKS_TOPIC and TRANSACTIONS_TOPIC are protected — never unsubscribed
-    reconfigure_topics_for_tier(&mut gs, 3, None).unwrap();
-    let final_count = gs.topics().count();
-    // headers + attestations + producers + votes + blocks(protected) + txs(protected) = 6
-    assert_eq!(final_count, 6);
-}
-
-#[test]
-fn test_protected_topics_never_unsubscribed() {
-    let keypair = libp2p::identity::Keypair::generate_ed25519();
-    let mut gs = new_gossipsub_for_tier(&keypair, 0).unwrap();
-
-    // Subscribe to all Tier 0 topics
-    subscribe_to_topics_for_tier(&mut gs, 0, None).unwrap();
-
-    // Even reconfiguring to Tier 3 must keep blocks and txs
-    reconfigure_topics_for_tier(&mut gs, 3, None).unwrap();
-
-    let subscribed: Vec<String> = gs.topics().map(|t| t.to_string()).collect();
-    assert!(
-        subscribed.contains(&BLOCKS_TOPIC.to_string()),
-        "BLOCKS_TOPIC must never be unsubscribed"
-    );
-    assert!(
-        subscribed.contains(&TRANSACTIONS_TOPIC.to_string()),
-        "TRANSACTIONS_TOPIC must never be unsubscribed"
-    );
-}
-
-#[test]
-fn test_dynamic_mesh_fallback_for_zero_producers() {
-    let m = compute_dynamic_mesh(0);
-    assert_eq!(m.mesh_n, 8); // Ethereum baseline D=8
-    assert_eq!(m.mesh_n_low, 6);
-    assert_eq!(m.mesh_n_high, 12);
-    assert_eq!(m.gossip_lazy, 6);
-}
-
-#[test]
-fn test_dynamic_mesh_fallback_for_one_producer() {
-    let m = compute_dynamic_mesh(1);
-    assert_eq!(m.mesh_n, 8); // Ethereum baseline D=8
-}
-
-#[test]
-fn test_dynamic_mesh_small_network() {
-    // Small networks (≤20): full mesh (total_peers - 1)
-    let m = compute_dynamic_mesh(3);
-    assert_eq!(m.mesh_n, 8); // min 8 (Ethereum baseline)
-    assert_eq!(m.mesh_n_low, 6);
-
-    let m = compute_dynamic_mesh(5);
-    assert_eq!(m.mesh_n, 8); // min 8
-
-    let m = compute_dynamic_mesh(10);
-    assert_eq!(m.mesh_n, 9);
-
-    let m = compute_dynamic_mesh(15);
-    assert_eq!(m.mesh_n, 14);
-
-    let m = compute_dynamic_mesh(20);
-    assert_eq!(m.mesh_n, 19);
-}
-
-#[test]
-fn test_dynamic_mesh_large_network_sqrt_scaling() {
-    // Large networks (>20): sqrt(N) * 1.5
-    // 50 peers: sqrt(50)*1.5 = 10.6 → 11
-    let m = compute_dynamic_mesh(50);
-    assert_eq!(m.mesh_n, 11);
-
-    // 106 peers: sqrt(106)*1.5 = 15.4 → 16
-    let m = compute_dynamic_mesh(106);
-    assert_eq!(m.mesh_n, 16);
-
-    // 200 peers: sqrt(200)*1.5 = 21.2 → 22
-    let m = compute_dynamic_mesh(200);
-    assert_eq!(m.mesh_n, 22);
-
-    // 1000 peers: sqrt(1000)*1.5 = 47.4 → 48
-    let m = compute_dynamic_mesh(1000);
-    assert_eq!(m.mesh_n, 48);
-
-    // 2000 peers: capped at 50
-    let m = compute_dynamic_mesh(2000);
-    assert_eq!(m.mesh_n, 50);
-}
-
-#[test]
-fn test_dynamic_mesh_invariants() {
-    for n in 0..=2000 {
-        let m = compute_dynamic_mesh(n);
-        assert!(m.mesh_n_low >= 1, "mesh_n_low must be >= 1 for n={}", n);
-        assert!(m.mesh_n_low <= m.mesh_n, "mesh_n_low <= mesh_n for n={}", n);
-        assert!(
-            m.mesh_n <= m.mesh_n_high,
-            "mesh_n <= mesh_n_high for n={}",
-            n
-        );
-        assert!(m.gossip_lazy >= 6, "gossip_lazy >= 6 for n={}", n);
-    }
-}
-
-#[test]
-fn test_dynamic_mesh_gossipsub_creation() {
-    let keypair = libp2p::identity::Keypair::generate_ed25519();
-    for n in [0, 1, 3, 5, 10, 15, 21, 50, 100] {
-        let mesh = compute_dynamic_mesh(n);
-        let gs = new_gossipsub(&keypair, &mesh);
-        assert!(gs.is_ok(), "gossipsub creation must succeed for n={}", n);
-    }
+    let mesh = MeshConfig {
+        mesh_n: 12,
+        mesh_n_low: 8,
+        mesh_n_high: 24,
+        gossip_lazy: 12,
+    };
+    let gs = new_gossipsub(&keypair, &mesh);
+    assert!(gs.is_ok(), "gossipsub creation must succeed");
 }

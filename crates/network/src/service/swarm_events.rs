@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use libp2p::swarm::SwarmEvent;
 use libp2p::{PeerId, Swarm};
 use tokio::sync::{mpsc, RwLock};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::behaviour::{DoliBehaviour, DoliBehaviourEvent};
 use crate::config::NetworkConfig;
@@ -37,6 +37,8 @@ pub(super) async fn handle_swarm_event(
     genesis_mismatch_cooldown: &mut HashMap<PeerId, Instant>,
     mismatch_redial_cooldown: &mut HashMap<String, Instant>,
     dial_backoff: &mut HashMap<PeerId, (u32, Instant)>,
+    eviction_cooldown: &mut HashMap<PeerId, Instant>,
+    bootstrap_peers: &mut HashMap<PeerId, Instant>,
 ) {
     match event {
         SwarmEvent::ConnectionEstablished {
@@ -45,40 +47,127 @@ pub(super) async fn handle_swarm_event(
             num_established,
             ..
         } => {
-            info!(
-                "Connected to peer: {} via {:?} (num_established={})",
-                peer_id, endpoint, num_established
+            let network_info = swarm.network_info();
+            let conn_counters = network_info.connection_counters();
+            let total_established = conn_counters.num_established();
+            debug!(
+                "[MEM-CONN] +conn peer={} num_established={} | total_conns={} (in={} out={})",
+                peer_id,
+                num_established,
+                total_established,
+                conn_counters.num_established_incoming(),
+                conn_counters.num_established_outgoing()
             );
+            // Milestone log every 10 connections
+            if total_established.is_multiple_of(10) {
+                info!(
+                    "[MEM-CONN] connections={} (in={} out={}) pending_in={} pending_out={}",
+                    total_established,
+                    conn_counters.num_established_incoming(),
+                    conn_counters.num_established_outgoing(),
+                    conn_counters.num_pending_incoming(),
+                    conn_counters.num_pending_outgoing()
+                );
+            }
 
             // REQ-SCALE-004: Reset dial backoff on successful connection
             dial_backoff.remove(&peer_id);
 
             // Only register peer on first connection (dedup)
             if num_established.get() == 1 {
+                // INC-I-011: Check eviction cooldown BEFORE acquiring the peer table lock.
+                // If this peer was recently evicted, disconnect immediately to break
+                // the evict→reconnect→evict thrashing loop that causes RAM explosion
+                // when network_nodes > max_peers.
+                if let Some(evicted_at) = eviction_cooldown.get(&peer_id) {
+                    if evicted_at.elapsed() < Duration::from_secs(120) {
+                        let _ = swarm.disconnect_peer_id(peer_id);
+                        // Don't log per-event — would flood logs just like the thrashing.
+                        // The periodic cleanup logs aggregate counts.
+                        return;
+                    } else {
+                        // Cooldown expired — remove stale entry and allow connection
+                        eviction_cooldown.remove(&peer_id);
+                    }
+                }
+
                 let mut peers = peers.write().await;
                 if peers.len() >= config.max_peers {
-                    // REQ-SCALE-005: Peer eviction by gossipsub score.
-                    // When at max capacity, evict the peer with the lowest gossipsub
-                    // score. Producers naturally have higher scores (they deliver
-                    // first-seen blocks), so non-producers are evicted first.
-                    let evictable = peers
-                        .keys()
-                        .map(|pid| {
-                            let score = swarm.behaviour().gossipsub.peer_score(pid).unwrap_or(0.0);
-                            (*pid, score)
-                        })
-                        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+                    // INC-I-014: Eviction rate limiting — max 5 evictions per 60s.
+                    // When network has more nodes than max_peers, constant connect/evict
+                    // cycles allocate ~456KB yamux+noise buffers per connection. The macOS
+                    // allocator doesn't return freed pages → RSS grows monotonically.
+                    // Rate limiting breaks the churn loop: refuse new peers instead of
+                    // evicting when churn is already high.
+                    let recent_evictions = eviction_cooldown
+                        .values()
+                        .filter(|t| t.elapsed() < Duration::from_secs(60))
+                        .count();
+                    if recent_evictions >= 5 {
+                        let _ = swarm.disconnect_peer_id(peer_id);
+                        return;
+                    }
 
-                    if let Some((evict_id, score)) = evictable {
+                    // SCALE-T2-004: Producer-aware peer eviction with grace period.
+                    // When at max capacity, evict the lowest-gossipsub-scored peer,
+                    // but NEVER evict a peer marked as a producer (is_producer=true).
+                    //
+                    // INC-I-016: Connection grace period + age tiebreaker.
+                    // Two protections for non-producer peers (seeds, relays):
+                    //
+                    // 1. GRACE PERIOD (default 30s, tunable via DOLI_EVICTION_GRACE_SECS):
+                    //    Never evict peers connected less than this duration.
+                    //    Without this, a seed's outbound connection to a full node
+                    //    is immediately evicted as the youngest peer — the seed can
+                    //    never establish outbound connections. The grace period gives
+                    //    new connections time to join the gossip mesh and build score.
+                    //
+                    // 2. AGE TIEBREAKER: When scores tie (common at 0.0), evict the
+                    //    youngest connection outside the grace window. This protects
+                    //    long-lived mesh participants from churn cascades.
+                    let grace_secs = std::env::var("DOLI_EVICTION_GRACE_SECS")
+                        .ok()
+                        .and_then(|v| v.parse::<u64>().ok())
+                        .unwrap_or(30);
+                    let eviction_grace_period = Duration::from_secs(grace_secs);
+                    let evictable = peers
+                        .iter()
+                        .filter(|(_, info)| {
+                            !info.is_producer
+                                && info.connected_at.elapsed() >= eviction_grace_period
+                        })
+                        .map(|(pid, info)| {
+                            let score = swarm.behaviour().gossipsub.peer_score(pid).unwrap_or(0.0);
+                            let age = info.connected_at.elapsed();
+                            (*pid, score, age)
+                        })
+                        .min_by(|a, b| {
+                            // Primary: lowest gossipsub score evicted first.
+                            // Tiebreaker: youngest connection evicted first (LIFO).
+                            a.1.partial_cmp(&b.1)
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                                .then_with(|| a.2.cmp(&b.2))
+                        });
+
+                    if let Some((evict_id, score, _age)) = evictable {
                         info!(
-                            "Peer table full ({}) — evicting {} (score={:.1}) for new peer {}",
-                            config.max_peers, evict_id, score, peer_id
+                            "Peer table full ({}) — evicting {} (score={:.1}) for new peer {} | cooldowns={} bootstrap_slots={}",
+                            config.max_peers, evict_id, score, peer_id,
+                            eviction_cooldown.len(), bootstrap_peers.len()
                         );
                         peers.remove(&evict_id);
                         let _ = swarm.disconnect_peer_id(evict_id);
+                        // INC-I-014: Remove evicted peer from Kademlia routing table.
+                        // Without this, DHT bootstrap (every 60s) rediscovers evicted
+                        // peers and re-dials them, creating O(N - max_peers) connection
+                        // attempts per cycle. At 213 nodes: ~188 unnecessary dials/60s.
+                        swarm.behaviour_mut().kademlia.remove_peer(&evict_id);
                         let _ = event_tx
                             .send(NetworkEvent::PeerDisconnected(evict_id))
                             .await;
+                        // INC-I-011: Add evicted peer to cooldown so it can't
+                        // immediately reconnect and trigger another eviction.
+                        eviction_cooldown.insert(evict_id, Instant::now());
                     }
                 }
                 if peers.len() < config.max_peers {
@@ -86,6 +175,22 @@ pub(super) async fn handle_swarm_event(
                     peers.insert(peer_id, PeerInfo::new(peer_id.to_string(), addr));
 
                     let _ = event_tx.send(NetworkEvent::PeerConnected(peer_id)).await;
+                } else if config.bootstrap_slots > 0
+                    && bootstrap_peers.len() < config.bootstrap_slots
+                {
+                    // Bootstrap-only: peer table is full but we have bootstrap headroom.
+                    // Accept the connection temporarily for Kademlia DHT exchange.
+                    // The peer gets Identify + Kademlia routing table entries, then we
+                    // disconnect after 10s to free the slot. This solves the chicken-and-egg:
+                    // new nodes need at least one connected peer to bootstrap DHT discovery.
+                    bootstrap_peers.insert(peer_id, Instant::now());
+                    info!(
+                        "[BOOTSTRAP] Accepted {} as bootstrap-only peer ({}/{} bootstrap slots) — \
+                         will disconnect after DHT exchange",
+                        peer_id,
+                        bootstrap_peers.len(),
+                        config.bootstrap_slots
+                    );
                 }
             }
         }
@@ -96,13 +201,28 @@ pub(super) async fn handle_swarm_event(
             num_established,
             ..
         } => {
-            info!(
-                "Connection closed to peer: {} cause: {:?} (num_established={})",
-                peer_id, cause, num_established
+            let network_info = swarm.network_info();
+            let conn_counters = network_info.connection_counters();
+            debug!(
+                "[MEM-CONN] -conn peer={} cause={:?} remaining={} | total_conns={}",
+                peer_id,
+                cause,
+                num_established,
+                conn_counters.num_established()
             );
 
             // Only remove peer when no connections remain
             if num_established == 0 {
+                // Clean up bootstrap-only tracking (before peer table, no event needed)
+                if bootstrap_peers.remove(&peer_id).is_some() {
+                    info!(
+                        "[BOOTSTRAP] Bootstrap-only peer {} disconnected ({} bootstrap slots remaining)",
+                        peer_id, bootstrap_peers.len()
+                    );
+                    rate_limiter.remove_peer(&peer_id);
+                    return;
+                }
+
                 let mut peers = peers.write().await;
                 peers.remove(&peer_id);
 
@@ -229,6 +349,18 @@ pub(super) async fn handle_swarm_event(
                     warn!("Failed to connect to peer {:?}: {}", peer_id, error);
                 }
             }
+        }
+
+        SwarmEvent::IncomingConnectionError {
+            local_addr,
+            send_back_addr,
+            error,
+            ..
+        } => {
+            warn!(
+                "[MEM-CONN] Incoming connection REJECTED: {} (local={}, remote={})",
+                error, local_addr, send_back_addr
+            );
         }
 
         _ => {}

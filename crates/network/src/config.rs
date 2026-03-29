@@ -42,6 +42,19 @@ pub struct NetworkConfig {
     pub nat_config: NatConfig,
     /// External address to advertise (e.g., public IP for multi-node hosts)
     pub external_address: Option<Multiaddr>,
+    /// Enable transaction announce-request protocol (EIP-4938 style).
+    /// When true, nodes broadcast tx hashes instead of full txs via gossipsub,
+    /// and peers fetch missing transactions via the txfetch request-response protocol.
+    /// Reduces bandwidth ~80% on redundant tx data at scale (1000+ nodes).
+    pub tx_announce_enabled: bool,
+    /// Maximum number of temporary "bootstrap-only" connections.
+    /// When the peer table is full (at max_peers), extra incoming connections
+    /// are accepted into a bootstrap-only state for DHT exchange only.
+    /// After a brief window (10s), the connection is closed to free the slot.
+    /// This solves the chicken-and-egg problem: new nodes need a connected peer
+    /// to run Kademlia discovery, but the seed's peer table may be full.
+    /// Default: same as max_peers.
+    pub bootstrap_slots: usize,
 }
 
 impl Default for NetworkConfig {
@@ -64,13 +77,15 @@ impl NetworkConfig {
             genesis_hash,
             no_dht: false,
             peer_cache_path: None,
-            // Standard gossipsub defaults (overridden from NetworkParams in node.rs)
-            mesh_n: 6,
-            mesh_n_low: 4,
-            mesh_n_high: 12,
-            gossip_lazy: 6,
+            // Universal gossipsub mesh (same for all networks)
+            mesh_n: 12,
+            mesh_n_low: 8,
+            mesh_n_high: 24,
+            gossip_lazy: 12,
             nat_config: NatConfig::default(),
             external_address: None,
+            tx_announce_enabled: false,
+            bootstrap_slots: 50, // Default; overridden from max_peers in node startup
         }
     }
 
