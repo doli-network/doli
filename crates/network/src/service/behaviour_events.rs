@@ -26,6 +26,7 @@ use crypto::PublicKey;
 
 use super::helpers::is_routable_address;
 use super::types::{NetworkEvent, GENESIS_MISMATCH_COOLDOWN_SECS};
+use crate::protocols::status::{CURRENT_PROTOCOL_VERSION, MIN_PEER_PROTOCOL_VERSION};
 
 /// Handle behaviour events
 #[allow(clippy::too_many_arguments)]
@@ -368,6 +369,23 @@ pub(super) async fn handle_behaviour_event(
                         return;
                     }
 
+                    // Validate protocol version
+                    if request.version < MIN_PEER_PROTOCOL_VERSION {
+                        warn!(
+                            "Protocol version mismatch with peer {}: we require >= {}, they report {}",
+                            peer, MIN_PEER_PROTOCOL_VERSION, request.version
+                        );
+                        let _ = event_tx
+                            .send(NetworkEvent::VersionMismatch {
+                                peer_id: peer,
+                                our_version: CURRENT_PROTOCOL_VERSION,
+                                their_version: request.version,
+                            })
+                            .await;
+                        let _ = swarm.disconnect_peer_id(peer);
+                        return;
+                    }
+
                     let _ = event_tx
                         .send(NetworkEvent::StatusRequest {
                             peer_id: peer,
@@ -411,6 +429,23 @@ pub(super) async fn handle_behaviour_event(
                         genesis_mismatch_cooldown.insert(peer, Instant::now());
                         let _ = event_tx
                             .send(NetworkEvent::GenesisMismatch { peer_id: peer })
+                            .await;
+                        let _ = swarm.disconnect_peer_id(peer);
+                        return;
+                    }
+
+                    // Validate protocol version
+                    if response.version < MIN_PEER_PROTOCOL_VERSION {
+                        warn!(
+                            "Protocol version mismatch with peer {}: we require >= {}, they report {}",
+                            peer, MIN_PEER_PROTOCOL_VERSION, response.version
+                        );
+                        let _ = event_tx
+                            .send(NetworkEvent::VersionMismatch {
+                                peer_id: peer,
+                                our_version: CURRENT_PROTOCOL_VERSION,
+                                their_version: response.version,
+                            })
                             .await;
                         let _ = swarm.disconnect_peer_id(peer);
                         return;

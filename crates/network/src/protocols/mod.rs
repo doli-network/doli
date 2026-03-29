@@ -7,6 +7,9 @@ pub mod status;
 pub mod sync;
 pub mod txfetch;
 
-pub use status::{StatusCodec, StatusProtocol, StatusRequest, StatusResponse};
+pub use status::{
+    StatusCodec, StatusProtocol, StatusRequest, StatusResponse, CURRENT_PROTOCOL_VERSION,
+    MIN_PEER_PROTOCOL_VERSION,
+};
 pub use sync::{SyncCodec, SyncProtocol, SyncRequest, SyncResponse};
 pub use txfetch::{TxFetchCodec, TxFetchRequest, TxFetchResponse};

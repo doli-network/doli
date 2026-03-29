@@ -13,6 +13,25 @@ use crypto::{Hash, PublicKey};
 /// Protocol identifier for status exchange
 pub const STATUS_PROTOCOL: &str = "/doli/status/1.0.0";
 
+/// Current protocol version sent in status handshakes.
+///
+/// Bump this when the binary introduces changes that affect consensus,
+/// block validation, or network protocol compatibility.
+///
+/// History:
+///   1 — original (no version enforcement)
+///   2 — version enforcement in status handshake (this release)
+pub const CURRENT_PROTOCOL_VERSION: u32 = 2;
+
+/// Minimum protocol version accepted from peers.
+///
+/// Peers reporting a version below this are disconnected immediately.
+/// Bump this to partition old nodes off the network after a breaking change.
+///
+/// Set to 1 for backward compatibility during rollout. When all nodes
+/// have upgraded to v2+, bump to 2 to enforce.
+pub const MIN_PEER_PROTOCOL_VERSION: u32 = 1;
+
 /// Maximum message size for status messages (64KB)
 const MAX_STATUS_SIZE: usize = 64 * 1024;
 
@@ -55,7 +74,7 @@ pub struct StatusResponse {
 impl StatusRequest {
     pub fn new(network_id: u32, genesis_hash: Hash) -> Self {
         Self {
-            version: 1,
+            version: CURRENT_PROTOCOL_VERSION,
             network_id,
             genesis_hash,
             producer_pubkey: None,
@@ -65,7 +84,7 @@ impl StatusRequest {
     /// Create a status request with producer info for bootstrap discovery
     pub fn with_producer(network_id: u32, genesis_hash: Hash, producer_pubkey: PublicKey) -> Self {
         Self {
-            version: 1,
+            version: CURRENT_PROTOCOL_VERSION,
             network_id,
             genesis_hash,
             producer_pubkey: Some(producer_pubkey),
@@ -82,7 +101,7 @@ impl StatusResponse {
         best_slot: u32,
     ) -> Self {
         Self {
-            version: 1,
+            version: CURRENT_PROTOCOL_VERSION,
             network_id,
             genesis_hash,
             best_height,
@@ -102,7 +121,7 @@ impl StatusResponse {
         producer_pubkey: PublicKey,
     ) -> Self {
         Self {
-            version: 1,
+            version: CURRENT_PROTOCOL_VERSION,
             network_id,
             genesis_hash,
             best_height,

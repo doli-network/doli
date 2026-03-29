@@ -90,6 +90,9 @@ pub use verification::{
     verify_release_signatures_with_keys,
 };
 
+// Re-exports: hardfork
+pub use hardfork::{HardForkInfo, HardForkSchedule};
+
 // Re-exports: util
 pub use util::{current_timestamp, current_version, is_newer_version, platform_identifier};
 

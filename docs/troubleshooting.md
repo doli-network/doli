@@ -610,7 +610,12 @@ sudo systemctl restart doli-node
 
 ### 5.2. Version Mismatch
 
-**Symptom:** Peers reject connection due to version.
+**Symptom:** Peers disconnect immediately after handshake. Logs show:
+```
+Protocol version mismatch with peer <id>: we require >= X, they report Y
+```
+
+**Cause:** The remote peer is running a protocol version below the local node's `MIN_PEER_PROTOCOL_VERSION`. This happens after a network upgrade bumps the minimum required version.
 
 **Solution:**
 ```bash
@@ -622,6 +627,8 @@ cd doli
 git pull
 cargo build --release
 ```
+
+**Note:** If you see `HARD FORK ACTIVE: binary version X is too old for height Y` in the logs, a compile-time hard fork has activated and your binary must be upgraded to resume block production.
 
 ---
 

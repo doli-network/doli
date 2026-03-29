@@ -78,6 +78,8 @@ Epoch boundary: pool drained → rewards distributed bond-weighted to qualified 
 | Block + BlockBuilder | `crates/core/src/block.rs` |
 | Chainspec + genesis hash | `crates/core/src/chainspec.rs` |
 | Network/gossip | `crates/network/src/service.rs` |
+| Status protocol + version constants | `crates/network/src/protocols/status.rs` |
+| Peer scoring (incl. IncompatibleVersion) | `crates/network/src/scoring.rs` |
 | Sync state machine | `crates/network/src/sync/manager.rs` |
 | Block storage | `crates/storage/src/block_store.rs` |
 | State DB (RocksDB) | `crates/storage/src/state_db.rs` |
@@ -87,7 +89,7 @@ Epoch boundary: pool drained → rewards distributed bond-weighted to qualified 
 | State root + snapshots | `crates/storage/src/snapshot.rs` |
 | RPC methods (43) | `crates/rpc/src/methods/` |
 | Transaction mempool | `crates/mempool/src/` |
-| Auto-update system | `crates/updater/src/` |
+| Auto-update + hard fork schedule | `crates/updater/src/` |
 | Block archiver | `crates/storage/src/archiver.rs` |
 | CLI | `bins/cli/src/` |
 

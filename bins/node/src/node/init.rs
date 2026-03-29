@@ -711,6 +711,7 @@ impl Node {
             sync_requests_this_interval: 0,
             last_checkpoint_height: 0,
             pending_tx_announcements: HashMap::new(),
+            hardfork_schedule: updater::HardForkSchedule::default_schedule(),
         })
     }
 
@@ -880,6 +881,7 @@ impl Node {
             sync_requests_this_interval: 0,
             last_checkpoint_height: 0,
             pending_tx_announcements: HashMap::new(),
+            hardfork_schedule: updater::HardForkSchedule::default_schedule(),
         })
     }
 }

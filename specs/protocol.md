@@ -1474,6 +1474,16 @@ status_request = {
 
 Peers with mismatched `network_id` or `genesis_hash` are immediately disconnected.
 
+**Protocol version enforcement:**
+
+The `version` field carries the node's protocol version (`CURRENT_PROTOCOL_VERSION`, currently `2`). Each node defines a `MIN_PEER_PROTOCOL_VERSION` (currently `1`). If a peer's version is below this minimum, the connection is rejected with a `VersionMismatch` event and the peer is disconnected. This allows the network to partition old nodes after a breaking upgrade by bumping `MIN_PEER_PROTOCOL_VERSION`.
+
+Protocol version history:
+| Version | Description |
+|---------|-------------|
+| 1 | Original (version field present but never checked) |
+| 2 | Version enforcement in status handshake |
+
 ### 8.5 Bootstrap Nodes
 
 | Network | Bootstrap Nodes |
@@ -1704,6 +1714,37 @@ if veto_percent >= 40:
 else:
     update APPROVED after veto period (5 min early network*)
 ```
+
+### 10.5 Production Gating
+
+Two independent mechanisms prevent outdated producers from creating blocks:
+
+**Auto-update enforcement** (runtime): After a signed release is approved and the grace period expires, `is_production_allowed()` blocks production. Depends on the update service discovering the release from GitHub.
+
+**Hard fork schedule** (compile-time): `HardForkSchedule::default_schedule()` contains a list of `(activation_height, min_version)` pairs baked into the binary. At each production tick, if `current_height >= activation_height` and the binary version is below `min_version`, production is blocked. This is deterministic — no external service dependency.
+
+```
+hardfork_entry = {
+    activation_height: uint64,
+    min_version: string,          // Semver (e.g., "5.0.0")
+    consensus_changes: string[]   // Human-readable description
+}
+
+// Check on every production tick:
+for fork in schedule:
+    if current_height >= fork.activation_height
+       AND binary_version < fork.min_version:
+        BLOCK PRODUCTION
+```
+
+### 10.6 Network-Layer Version Enforcement
+
+The status handshake (Section 8.4) enforces protocol version compatibility at connection time. Peers below `MIN_PEER_PROTOCOL_VERSION` are disconnected and receive an `IncompatibleVersion` peer scoring penalty (-200, instant disconnect threshold).
+
+This provides three layers of version protection:
+1. **Network layer**: Incompatible peers cannot connect (status handshake)
+2. **Production layer**: Outdated producers cannot create blocks (hard fork schedule + auto-update)
+3. **Validation layer**: Structurally incompatible blocks are rejected (block version check)
 
 ---
 

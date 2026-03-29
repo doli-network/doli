@@ -109,6 +109,26 @@ impl HardForkSchedule {
     pub fn is_empty(&self) -> bool {
         self.forks.is_empty()
     }
+
+    /// Return the compile-time schedule of known hard forks.
+    ///
+    /// Add entries here when scheduling a consensus-breaking upgrade.
+    /// All nodes with the same binary share the same schedule, so
+    /// activation is deterministic — no coordination needed.
+    ///
+    /// Example (uncomment when scheduling a real hard fork):
+    /// ```ignore
+    /// schedule.add(HardForkInfo {
+    ///     activation_height: 100_000,
+    ///     min_version: "5.0.0".to_string(),
+    ///     consensus_changes: vec!["New reward curve".to_string()],
+    /// });
+    /// ```
+    pub fn default_schedule() -> Self {
+        // No hard forks scheduled yet.
+        // When scheduling one, add it here so all binaries enforce it.
+        Self::new()
+    }
 }
 
 #[cfg(test)]

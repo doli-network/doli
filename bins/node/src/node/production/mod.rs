@@ -34,6 +34,36 @@ impl Node {
             return Ok(());
         }
 
+        // HARD FORK SCHEDULE CHECK
+        // If a compile-time hard fork has activated at our height and our binary
+        // version is too old, stop producing to avoid poisoning the network.
+        {
+            let current_height = self.chain_state.read().await.best_height;
+            let current_version = updater::current_version();
+            if self
+                .hardfork_schedule
+                .should_stop_producing(current_height, current_version)
+            {
+                static LAST_FORK_WARNING: std::sync::atomic::AtomicU64 =
+                    std::sync::atomic::AtomicU64::new(0);
+                let now_secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let last = LAST_FORK_WARNING.load(std::sync::atomic::Ordering::Relaxed);
+                if now_secs - last >= 60 {
+                    LAST_FORK_WARNING.store(now_secs, std::sync::atomic::Ordering::Relaxed);
+                    tracing::warn!(
+                        "HARD FORK ACTIVE: binary version {} is too old for height {}. \
+                         Update to continue producing.",
+                        current_version,
+                        current_height,
+                    );
+                }
+                return Ok(());
+            }
+        }
+
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())

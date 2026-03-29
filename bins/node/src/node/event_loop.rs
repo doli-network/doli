@@ -330,6 +330,20 @@ impl Node {
                     let _ = network.disconnect(peer_id).await;
                 }
             }
+            NetworkEvent::VersionMismatch {
+                peer_id,
+                our_version,
+                their_version,
+            } => {
+                warn!(
+                    "Protocol version mismatch with peer {}: ours={}, theirs={} (min required={}) — disconnecting",
+                    peer_id, our_version, their_version,
+                    network::protocols::status::MIN_PEER_PROTOCOL_VERSION,
+                );
+                if let Some(ref network) = self.network {
+                    let _ = network.disconnect(peer_id).await;
+                }
+            }
             NetworkEvent::ProducersAnnounced(remote_list) => {
                 self.on_producers_announced(remote_list);
             }

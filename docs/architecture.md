@@ -345,7 +345,7 @@ DOLI uses a strict 3-level configuration hierarchy:
 | `apply.rs` | Binary swap (backup, install, restart), auto-apply from GitHub |
 | `enforcement.rs` | Version enforcement — pauses production if outdated after grace period |
 | `watchdog.rs` | Crash detection — 3 crashes within crash_window triggers automatic rollback |
-| `hardfork.rs` | Upgrade-at-height mechanism for breaking protocol changes |
+| `hardfork.rs` | Compile-time hard fork schedule — stops production when binary is too old for an activated fork height |
 | `test_keys.rs` | Test maintainer keys for devnet (DOLI_TEST_KEYS=1) |
 
 **Features:**
@@ -356,6 +356,8 @@ DOLI uses a strict 3-level configuration hierarchy:
 - SHA-256 hash verification
 - Automatic rollback on 3 crashes within crash window
 - Version enforcement: outdated producers paused after grace period
+- Hard fork schedule: compile-time `(activation_height, min_version)` pairs checked every production tick
+- Network-layer version enforcement: status handshake rejects peers below `MIN_PEER_PROTOCOL_VERSION`
 
 ---
 

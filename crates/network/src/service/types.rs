@@ -56,6 +56,12 @@ pub enum NetworkEvent {
     },
     /// Genesis hash mismatch detected - peer is on different chain
     GenesisMismatch { peer_id: PeerId },
+    /// Protocol version mismatch - peer is running incompatible version
+    VersionMismatch {
+        peer_id: PeerId,
+        our_version: u32,
+        their_version: u32,
+    },
     /// Producers announced via anti-entropy gossip (bootstrap protocol)
     /// Contains the sender's full view of known producers for CRDT merge
     /// Legacy format - will be deprecated after network migration

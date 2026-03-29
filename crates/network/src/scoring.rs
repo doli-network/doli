@@ -27,6 +27,8 @@ pub enum Infraction {
     Duplicate,
     /// Peer sent data that doesn't deserialize
     MalformedMessage,
+    /// Peer is running an incompatible protocol version
+    IncompatibleVersion { their_version: u32 },
 }
 
 impl Infraction {
@@ -39,6 +41,7 @@ impl Infraction {
             Infraction::Spam { .. } => -50,
             Infraction::Duplicate => -5,
             Infraction::MalformedMessage => -30,
+            Infraction::IncompatibleVersion { .. } => -200,
         }
     }
 }
@@ -223,6 +226,13 @@ impl PeerScorer {
         let score = self.get_or_create_score(peer);
         score.record_infraction(Infraction::MalformedMessage);
         debug!(peer = %peer, score = score.value, "Recorded malformed message");
+    }
+
+    /// Record an incompatible protocol version from a peer (-200 points, instant disconnect)
+    pub fn record_incompatible_version(&mut self, peer: &PeerId, their_version: u32) {
+        let score = self.get_or_create_score(peer);
+        score.record_infraction(Infraction::IncompatibleVersion { their_version });
+        warn!(peer = %peer, their_version, score = score.value, "Recorded incompatible version");
     }
 
     /// Record a duplicate message from a peer (-5 points)

@@ -215,6 +215,9 @@ pub struct Node {
     /// TX announce-request: pending transaction hash announcements from peers.
     /// Batched and fetched periodically to amortize round-trips.
     pub pending_tx_announcements: HashMap<PeerId, Vec<Hash>>,
+    /// Hard fork schedule — stops production when binary is too old for an activated fork.
+    /// Built at compile time from known forks; checked every production tick.
+    pub hardfork_schedule: updater::HardForkSchedule,
 }
 
 impl Node {

@@ -464,6 +464,7 @@ The peer scorer tracks reputation to identify and penalize misbehaving nodes.
 | Spam | -50 | DoS attempt |
 | Duplicate Message | -5 | Mild, may be network issue |
 | Malformed Message | -30 | Cannot parse data |
+| Incompatible Version | -200 | Instant disconnect — peer protocol version below minimum |
 
 **Thresholds**:
 
