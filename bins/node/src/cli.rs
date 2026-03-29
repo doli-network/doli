@@ -127,6 +127,12 @@ pub(crate) enum Commands {
         #[arg(long)]
         archive_to: Option<PathBuf>,
 
+        /// Auto-checkpoint: create RocksDB snapshot every N blocks.
+        /// Keeps last 5 checkpoints. Essential for seeds to enable fast recovery.
+        /// Example: --auto-checkpoint 100
+        #[arg(long)]
+        auto_checkpoint: Option<u64>,
+
         /// Start syncing from a trusted checkpoint height (skip earlier blocks).
         /// Use with --checkpoint-hash for fast initial sync from a known-good state.
         #[arg(long)]

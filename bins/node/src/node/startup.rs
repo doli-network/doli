@@ -306,7 +306,10 @@ impl Node {
         .with_coinbase_maturity(self.config.network.coinbase_maturity())
         .with_bond_unit(self.config.network.bond_unit())
         .with_producer_set(self.producer_set.clone())
-        .with_sync_status(sync_status_fn);
+        .with_sync_status(sync_status_fn)
+        .with_sync_manager(self.sync_manager.clone())
+        .with_state_db(self.state_db.clone())
+        .with_data_dir(self.config.data_dir.clone());
 
         // Wire up peer info so getNetworkInfo reports real values
         if let Some(ref network) = self.network {

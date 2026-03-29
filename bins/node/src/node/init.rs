@@ -709,6 +709,7 @@ impl Node {
             rejected_fork_tips: HashSet::new(),
             snap_sync_height: None,
             sync_requests_this_interval: 0,
+            last_checkpoint_height: 0,
             pending_tx_announcements: HashMap::new(),
         })
     }
@@ -812,6 +813,7 @@ impl Node {
             external_address: None,
             no_snap_sync: false,
             seed_mode: false,
+            auto_checkpoint_interval: None,
         };
 
         Ok(Self {
@@ -876,6 +878,7 @@ impl Node {
             rejected_fork_tips: HashSet::new(),
             snap_sync_height: None,
             sync_requests_this_interval: 0,
+            last_checkpoint_height: 0,
             pending_tx_announcements: HashMap::new(),
         })
     }

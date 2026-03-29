@@ -13,6 +13,7 @@
 //! - `backfill`: backfill from peer, integrity verification
 //! - `stats`: chain stats, debug endpoints, mempool transactions
 //! - `schedule`: slot and producer scheduling, attestation stats
+//! - `guardian`: seed guardian (production halt, checkpoints, status)
 
 mod backfill;
 mod balance;
@@ -20,6 +21,7 @@ mod block;
 mod context;
 mod dispatch;
 mod governance;
+mod guardian;
 mod history;
 mod lending;
 mod network;

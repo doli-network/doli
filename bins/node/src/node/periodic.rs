@@ -482,6 +482,100 @@ impl Node {
             }
         }
 
+        // AUTO-CHECKPOINT: Create RocksDB snapshot every N blocks.
+        // Keeps last 5 checkpoints for fast recovery from poison/fork corruption.
+        if let Some(interval) = self.config.auto_checkpoint_interval {
+            let current_height = self.chain_state.read().await.best_height;
+            if current_height > 0 && current_height >= self.last_checkpoint_height + interval {
+                let checkpoint_base = self.config.data_dir.join("checkpoints");
+                let timestamp = now_secs;
+                let checkpoint_name = format!("h{}-{}", current_height, timestamp);
+                let checkpoint_dir = checkpoint_base.join(&checkpoint_name);
+
+                if let Err(e) = std::fs::create_dir_all(&checkpoint_dir) {
+                    warn!("[AUTO_CHECKPOINT] Failed to create dir: {}", e);
+                } else {
+                    let state_ok = self
+                        .state_db
+                        .create_checkpoint(&checkpoint_dir.join("state_db"))
+                        .is_ok();
+                    let blocks_ok = self
+                        .block_store
+                        .create_checkpoint(&checkpoint_dir.join("blocks"))
+                        .is_ok();
+
+                    if state_ok && blocks_ok {
+                        self.last_checkpoint_height = current_height;
+
+                        // Write health.json — tags checkpoint with peer consensus data
+                        // so recovery can find the last HEALTHY checkpoint.
+                        let (peer_count, peers_agreeing, unique_hashes) = {
+                            let sync = self.sync_manager.read().await;
+                            sync.checkpoint_health()
+                        };
+                        let best_hash = {
+                            let cs = self.chain_state.read().await;
+                            cs.best_hash.to_hex()
+                        };
+                        let healthy =
+                            peer_count > 0 && peers_agreeing == peer_count && unique_hashes <= 1;
+                        let health = serde_json::json!({
+                            "height": current_height,
+                            "hash": best_hash,
+                            "timestamp": timestamp,
+                            "peer_count": peer_count,
+                            "peers_agreeing": peers_agreeing,
+                            "unique_chain_tips": unique_hashes,
+                            "healthy": healthy,
+                        });
+                        let _ = std::fs::write(
+                            checkpoint_dir.join("health.json"),
+                            serde_json::to_string_pretty(&health).unwrap_or_default(),
+                        );
+
+                        if healthy {
+                            info!(
+                                "[AUTO_CHECKPOINT] HEALTHY at height={} ({}/{} peers agree) path={}",
+                                current_height, peers_agreeing, peer_count,
+                                checkpoint_dir.display()
+                            );
+                        } else {
+                            warn!(
+                                "[AUTO_CHECKPOINT] UNHEALTHY at height={} ({}/{} peers agree, {} tips) path={}",
+                                current_height, peers_agreeing, peer_count, unique_hashes,
+                                checkpoint_dir.display()
+                            );
+                        }
+
+                        // Rotate: keep only the last 5 checkpoints
+                        if let Ok(entries) = std::fs::read_dir(&checkpoint_base) {
+                            let mut dirs: Vec<_> = entries
+                                .filter_map(|e| e.ok())
+                                .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+                                .collect();
+                            dirs.sort_by_key(|e| e.file_name());
+                            if dirs.len() > 5 {
+                                for old in &dirs[..dirs.len() - 5] {
+                                    let _ = std::fs::remove_dir_all(old.path());
+                                    info!(
+                                        "[AUTO_CHECKPOINT] Rotated old: {}",
+                                        old.file_name().to_string_lossy()
+                                    );
+                                }
+                            }
+                        }
+                    } else {
+                        warn!(
+                            "[AUTO_CHECKPOINT] Failed at height={} (state={} blocks={})",
+                            current_height, state_ok, blocks_ok
+                        );
+                        // Clean up partial checkpoint
+                        let _ = std::fs::remove_dir_all(&checkpoint_dir);
+                    }
+                }
+            }
+        }
+
         // Periodic health diagnostic — one-line summary every 30s for fork debugging
         if now_secs.is_multiple_of(30) {
             let cs = self.chain_state.read().await;

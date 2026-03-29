@@ -165,6 +165,7 @@ async fn main() -> Result<()> {
             force_start,
             yes,
             chainspec,
+            auto_checkpoint,
             archive_to,
             checkpoint_height,
             checkpoint_hash,
@@ -196,6 +197,7 @@ async fn main() -> Result<()> {
                 force_start,
                 yes,
                 chainspec,
+                auto_checkpoint,
                 archive_to,
                 checkpoint_height,
                 checkpoint_hash,
@@ -308,6 +310,7 @@ async fn main() -> Result<()> {
                 false,
                 false, // yes
                 None,  // chainspec
+                None,  // auto_checkpoint
                 None,  // archive_to
                 None,  // checkpoint_height
                 None,  // checkpoint_hash

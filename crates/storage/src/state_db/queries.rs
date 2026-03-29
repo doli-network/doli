@@ -16,6 +16,18 @@ use super::types::{
 };
 
 impl StateDb {
+    /// Create a RocksDB checkpoint (point-in-time snapshot) at the given path.
+    ///
+    /// Uses hard links — near-instant, near-zero extra disk space.
+    /// The checkpoint is a fully functional RocksDB directory that can be
+    /// opened independently or copied as a backup.
+    pub fn create_checkpoint(&self, path: &std::path::Path) -> Result<(), crate::StorageError> {
+        let checkpoint = rocksdb::checkpoint::Checkpoint::new(&self.db)?;
+        checkpoint
+            .create_checkpoint(path)
+            .map_err(crate::StorageError::from)
+    }
+
     /// Check if the database has any state (non-empty).
     pub fn has_state(&self) -> bool {
         let cf = self.db.cf_handle(CF_META).unwrap();

@@ -47,6 +47,10 @@ This document describes the DOLI node JSON-RPC API.
 | **Pool** | `getSwapQuote` | Implemented |
 | **Lending** | `getLoanInfo` | Implemented |
 | **Lending** | `getLoanList` | Implemented |
+| **Guardian** | `pauseProduction` | Implemented |
+| **Guardian** | `resumeProduction` | Implemented |
+| **Guardian** | `createCheckpoint` | Implemented |
+| **Guardian** | `getGuardianStatus` | Implemented |
 
 ### Not Yet Implemented
 
@@ -2008,6 +2012,130 @@ curl -X POST http://127.0.0.1:8500 \
 
 ---
 
-*API version: 1.3 (39 methods)*
+## Guardian Methods
+
+### `pauseProduction`
+
+Pause block production on this node. The node remains running (serving RPC, syncing blocks) but will not produce new blocks. Seeds are unaffected since they never produce.
+
+**Parameters:** None
+
+**Response:**
+```json
+{
+    "status": "paused",
+    "message": "Block production has been paused. Use resumeProduction to resume."
+}
+```
+
+**Example:**
+```bash
+curl -X POST http://127.0.0.1:8500 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"pauseProduction","params":[],"id":1}'
+```
+
+### `resumeProduction`
+
+Resume block production on this node. Clears the explicit production block set by `pauseProduction`.
+
+**Parameters:** None
+
+**Response:**
+```json
+{
+    "status": "resumed",
+    "message": "Block production has been resumed."
+}
+```
+
+**Example:**
+```bash
+curl -X POST http://127.0.0.1:8500 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"resumeProduction","params":[],"id":1}'
+```
+
+### `createCheckpoint`
+
+Create a RocksDB checkpoint (hot backup) of the state database and block store. Checkpoints use hard links — near-instant, near-zero extra disk space.
+
+**Parameters:** Optional `[path]` to override default checkpoint directory.
+
+**Response:**
+```json
+{
+    "status": "ok",
+    "path": "/data/doli/checkpoints/h24918-1743280000",
+    "height": 24918,
+    "timestamp": 1743280000,
+    "components": ["state_db", "blocks"]
+}
+```
+
+**Example:**
+```bash
+# Default path (data_dir/checkpoints/)
+curl -X POST http://127.0.0.1:8500 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"createCheckpoint","params":[],"id":1}'
+
+# Custom path
+curl -X POST http://127.0.0.1:8500 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"createCheckpoint","params":["/backup/doli"],"id":1}'
+```
+
+**Note:** Checkpoints can also be created automatically with `--auto-checkpoint N` (every N blocks, keeps last 5). Auto-checkpoints include a `health.json` file with peer consensus data — use `last_healthy_checkpoint` in `getGuardianStatus` to find the most recent checkpoint where all peers agreed.
+
+### `getGuardianStatus`
+
+Get guardian system status — production state, last checkpoint, chain health.
+
+**Parameters:** None
+
+**Response:**
+```json
+{
+    "production_paused": false,
+    "production_block_reason": null,
+    "chain_height": 24918,
+    "chain_slot": 25195,
+    "best_hash": "8fc13f65...397fd4",
+    "last_checkpoint": "h24918-1743280000",
+    "last_healthy_checkpoint": "h24818-1743279000"
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `last_checkpoint` | Most recent checkpoint (any) |
+| `last_healthy_checkpoint` | Most recent checkpoint where ALL peers agreed on the same chain tip. This is the safe recovery point. `null` if no healthy checkpoint exists. |
+
+Each auto-checkpoint writes a `health.json` file:
+```json
+{
+    "height": 24818,
+    "hash": "abc123...",
+    "timestamp": 1743279000,
+    "peer_count": 12,
+    "peers_agreeing": 12,
+    "unique_chain_tips": 1,
+    "healthy": true
+}
+```
+
+`healthy: true` when `peer_count > 0 && peers_agreeing == peer_count && unique_chain_tips <= 1`.
+
+**Example:**
+```bash
+curl -X POST http://127.0.0.1:8500 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getGuardianStatus","params":[],"id":1}'
+```
+
+---
+
+*API version: 1.4 (43 methods)*
 
 *Last updated: March 2026*

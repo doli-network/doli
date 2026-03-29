@@ -65,6 +65,11 @@ pub struct NodeConfig {
     /// Seed mode: only serve confirmed blocks (N blocks deep).
     #[serde(default)]
     pub seed_mode: bool,
+
+    /// Auto-checkpoint interval: create RocksDB snapshot every N blocks.
+    /// None = disabled. Keeps last 5 checkpoints for fast recovery.
+    #[serde(default)]
+    pub auto_checkpoint_interval: Option<u64>,
 }
 
 impl Default for NodeConfig {
@@ -122,6 +127,7 @@ impl NodeConfig {
             external_address: None,
             no_snap_sync: false,
             seed_mode: false,
+            auto_checkpoint_interval: None,
         }
     }
 }

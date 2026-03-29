@@ -209,6 +209,9 @@ pub struct Node {
     /// INC-I-012: Rate limiter for sync requests processed per interval.
     /// Reset each production timer tick. Prevents sync I/O from starving production.
     pub sync_requests_this_interval: u32,
+    /// Last height at which an auto-checkpoint was created.
+    /// Used to determine when the next checkpoint is due.
+    pub last_checkpoint_height: u64,
     /// TX announce-request: pending transaction hash announcements from peers.
     /// Batched and fetched periodically to amortize round-trips.
     pub pending_tx_announcements: HashMap<PeerId, Vec<Hash>>,

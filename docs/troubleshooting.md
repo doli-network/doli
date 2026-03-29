@@ -502,6 +502,81 @@ sudo systemctl start doli-node
 
 > See `docs/legacy/bugs/REPORT_HA_FAILURE.md` for the full incident analysis.
 
+### 4.4. Fork Detection & Seed Guardian Recovery
+
+**Symptom:** Fork monitor detects multiple chain tips, or the status dashboard shows nodes on different hashes.
+
+**Use the Seed Guardian system** to contain damage and recover:
+
+**Step 1 — Detect** (continuous monitoring):
+```bash
+scripts/fork-monitor.sh --testnet --loop 30
+```
+
+**Step 2 — Halt** (stop all producers, seeds keep running):
+```bash
+scripts/emergency-halt.sh --testnet
+```
+
+**Step 3 — Backup** (checkpoint seed DB before any fix):
+```bash
+scripts/seed-backup.sh --testnet
+```
+
+**Step 4 — Investigate** the root cause. Check logs, compare chain tips:
+```bash
+curl -sf http://127.0.0.1:8500 -X POST \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getGuardianStatus","params":[],"id":1}'
+```
+
+**Step 5 — Fix & recover**. Deploy fix, wipe producer data, snap-sync from seeds:
+```bash
+# On each producer:
+# 1. Stop node
+# 2. rm -rf data_dir/state_db data_dir/blocks
+# 3. Deploy fixed binary
+# 4. Start node (will snap-sync from seed)
+```
+
+**Step 6 — Resume**:
+```bash
+scripts/emergency-resume.sh --testnet
+```
+
+**Key principle:** Seeds are the canonical chain authority. Producers are disposable — they can always be wiped and snap-synced from seeds. Never wipe seed data without a checkpoint.
+
+**Auto-checkpoint (recommended for seeds):** Start seeds with `--auto-checkpoint 100` to create automatic RocksDB snapshots every 100 blocks. Keeps last 5, rotates oldest. Each checkpoint includes a `health.json` with peer consensus data.
+
+**Finding the last healthy state after a regression:**
+```bash
+# 1. Query the seed for the last known-good checkpoint
+curl -sf http://127.0.0.1:8500 -X POST \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getGuardianStatus","params":[],"id":1}' | jq '.result.last_healthy_checkpoint'
+# Returns e.g. "h24818-1743279000" — all peers agreed at that height
+
+# 2. Or scan health.json files manually
+for d in data_dir/checkpoints/h*; do
+  echo -n "$d: "; cat "$d/health.json" | python3 -c "import sys,json; h=json.load(sys.stdin); print(f'healthy={h[\"healthy\"]} peers={h[\"peer_count\"]} agreeing={h[\"peers_agreeing\"]}')"
+done
+```
+
+**Restoring from a healthy checkpoint:**
+```bash
+# 1. Stop the seed
+# 2. Identify the last healthy checkpoint:
+#    getGuardianStatus → last_healthy_checkpoint field
+#    OR: grep '"healthy": true' data_dir/checkpoints/*/health.json
+# 3. Restore:
+rm -rf data_dir/state_db data_dir/blocks
+cp -r data_dir/checkpoints/h{HEIGHT}-{TS}/state_db data_dir/state_db
+cp -r data_dir/checkpoints/h{HEIGHT}-{TS}/blocks data_dir/blocks
+# 4. Restart the seed — it resumes from the healthy checkpoint
+```
+
+**RPC methods:** `pauseProduction`, `resumeProduction`, `createCheckpoint`, `getGuardianStatus`
+
 ---
 
 ## 5. Update Issues

@@ -200,6 +200,11 @@ impl SyncManager {
         )
     }
 
+    /// Check if production is explicitly blocked (returns the block reason if so).
+    pub fn production_block_reason(&self) -> Option<&str> {
+        self.production_blocked.as_deref()
+    }
+
     /// Explicitly block production (e.g., due to invariant violation)
     pub fn block_production(&mut self, reason: &str) {
         warn!("Production blocked: {}", reason);

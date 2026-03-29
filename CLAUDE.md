@@ -85,7 +85,7 @@ Epoch boundary: pool drained → rewards distributed bond-weighted to qualified 
 | UTXO set (RocksDB) | `crates/storage/src/utxo_rocks.rs` |
 | ProducerSet + bonds | `crates/storage/src/producer.rs` |
 | State root + snapshots | `crates/storage/src/snapshot.rs` |
-| RPC methods (39) | `crates/rpc/src/methods/` |
+| RPC methods (43) | `crates/rpc/src/methods/` |
 | Transaction mempool | `crates/mempool/src/` |
 | Auto-update system | `crates/updater/src/` |
 | Block archiver | `crates/storage/src/archiver.rs` |
@@ -117,13 +117,25 @@ Epoch boundary: pool drained → rewards distributed bond-weighted to qualified 
 | Launch 2-node testnet | `scripts/launch_testnet.sh` — creates local devnet |
 | Deploy producers | `scripts/deploy_producers.sh` — interactive producer setup |
 
+## Map — Scripts (Seed Guardian)
+
+| Task | Script |
+|------|--------|
+| Fork detection | `scripts/fork-monitor.sh` — polls all nodes, detects chain tip divergence |
+| Emergency halt | `scripts/emergency-halt.sh` — pauses production on all nodes via RPC |
+| Emergency resume | `scripts/emergency-resume.sh` — resumes production on all nodes via RPC |
+| Seed backup | `scripts/seed-backup.sh` — creates RocksDB checkpoint via RPC |
+| Test guardian | `scripts/test_guardian.sh` — smoke test all guardian features |
+
+**Seed auto-checkpoint**: Start seeds with `--auto-checkpoint 100` for automatic snapshots every 100 blocks (keeps last 5, rotates oldest). Essential for seed protection.
+
 ## Map — Docs & Skills
 
 | What | Where |
 |------|-------|
 | Architecture | `docs/architecture.md` |
 | Rewards system | `docs/rewards.md` |
-| RPC reference (39 methods) | `docs/rpc_reference.md` |
+| RPC reference (43 methods) | `docs/rpc_reference.md` |
 | CLI reference | `docs/cli.md` |
 | Troubleshooting | `docs/troubleshooting.md` |
 | Protocol spec | `specs/protocol.md` |

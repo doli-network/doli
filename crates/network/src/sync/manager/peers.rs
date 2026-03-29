@@ -206,6 +206,30 @@ impl SyncManager {
         self.peers.values().map(|p| p.best_slot).max().unwrap_or(0)
     }
 
+    /// Get a health summary for checkpoint tagging.
+    ///
+    /// Returns (peer_count, peers_agreeing_with_local, total_unique_hashes).
+    /// If peers_agreeing == peer_count and unique_hashes == 1, the network is healthy.
+    pub fn checkpoint_health(&self) -> (usize, usize, usize) {
+        let peer_count = self.peers.len();
+        if peer_count == 0 {
+            return (0, 0, 0);
+        }
+
+        let local_hash = self.local_hash;
+        let mut agreeing = 0;
+        let mut unique_hashes = std::collections::HashSet::new();
+
+        for status in self.peers.values() {
+            unique_hashes.insert(status.best_hash);
+            if status.best_hash == local_hash {
+                agreeing += 1;
+            }
+        }
+
+        (peer_count, agreeing, unique_hashes.len())
+    }
+
     /// Update the network tip slot from a received block via gossip
     ///
     /// This should be called when receiving blocks from gossip, before applying them.

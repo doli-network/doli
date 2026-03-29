@@ -798,4 +798,50 @@ Full architecture specification: `specs/gui-architecture.md`
 
 ---
 
-*Architecture version: 2.3 — March 2026 (synced against code 2026-03-29, pass 2)*
+## 12. Seed Guardian System
+
+Safety mechanism to detect forks, halt production, and preserve the canonical chain.
+
+### 12.1. Components
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                  Seed Guardian                           │
+├─────────────────────────────────────────────────────────┤
+│ fork-monitor.sh         polls getChainInfo, detects     │
+│                         divergent chain tips             │
+├─────────────────────────────────────────────────────────┤
+│ pauseProduction RPC     sets BlockedExplicit on          │
+│                         SyncManager production gate      │
+├─────────────────────────────────────────────────────────┤
+│ createCheckpoint RPC    RocksDB hard-linked snapshot     │
+│                         of state_db + block_store        │
+├─────────────────────────────────────────────────────────┤
+│ getGuardianStatus RPC   production state, last backup,   │
+│                         chain height/slot/hash            │
+├─────────────────────────────────────────────────────────┤
+│ --auto-checkpoint N     automatic RocksDB snapshot every  │
+│                         N blocks (keeps last 5, rotates)  │
+└─────────────────────────────────────────────────────────┘
+```
+
+### 12.2. Recovery Flow
+
+```
+Fork detected → emergency-halt.sh → seed-backup.sh → investigate
+  → fix bug → wipe producer data → deploy fix → snap-sync from seeds
+  → emergency-resume.sh
+```
+
+### 12.3. Design Principles
+
+- **Seeds are canonical.** Producers are disposable. Seeds hold the full chain DB; producers snap-sync from seeds.
+- **Checkpoints are free.** RocksDB checkpoints use hard links. Zero-copy, near-instant.
+- **Production halt is reversible.** `pauseProduction` sets a flag; `resumeProduction` clears it. No data loss.
+- **Auto-checkpoint is the safety net.** `--auto-checkpoint 100` on seeds means at most 100 blocks of data loss if the seed gets poisoned. Recovery: stop, restore last checkpoint, restart.
+- **Health tagging finds the recovery point.** Each auto-checkpoint writes `health.json` with peer consensus data. `getGuardianStatus` returns `last_healthy_checkpoint` — the most recent snapshot where all peers agreed on the same chain tip. After a regression, this is the safe rollback target.
+- **File: `crates/rpc/src/methods/guardian.rs`**, `bins/node/src/node/periodic.rs` (auto-checkpoint logic)
+
+---
+
+*Architecture version: 2.5 — March 2026 (synced against code 2026-03-29, pass 4)*

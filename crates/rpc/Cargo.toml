@@ -11,6 +11,7 @@ repository.workspace = true
 doli-core = { workspace = true }
 crypto = { workspace = true }
 storage = { workspace = true }
+network = { workspace = true }
 mempool = { workspace = true }
 tokio.workspace = true
 thiserror.workspace = true

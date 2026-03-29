@@ -52,6 +52,11 @@ impl RpcContext {
             "getSwapQuote" => self.get_swap_quote(request.params).await,
             "getLoanInfo" => self.get_loan_info(request.params).await,
             "getLoanList" => self.get_loan_list(request.params).await,
+            // Seed Guardian methods
+            "pauseProduction" => self.pause_production().await,
+            "resumeProduction" => self.resume_production().await,
+            "createCheckpoint" => self.create_checkpoint(Some(request.params)).await,
+            "getGuardianStatus" => self.get_guardian_status().await,
             _ => Err(RpcError::method_not_found(&request.method)),
         };
 

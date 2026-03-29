@@ -1,5 +1,6 @@
 //! RpcContext struct, constructors, and builder methods
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
 
@@ -8,7 +9,8 @@ use tokio::sync::RwLock;
 
 use crypto::Hash;
 use doli_core::Transaction;
-use storage::{BlockStore, ChainState, ProducerSet, UtxoSet};
+use network::SyncManager;
+use storage::{BlockStore, ChainState, ProducerSet, StateDb, UtxoSet};
 
 use crate::error::RpcError;
 use crate::types::PeerInfoEntry;
@@ -78,6 +80,12 @@ pub struct RpcContext {
     pub vesting_quarter_slots: u64,
     /// Shared backfill state for live hot-backfill
     pub backfill_state: Arc<BackfillState>,
+    /// Sync manager (for emergency production halt)
+    pub sync_manager: Option<Arc<RwLock<SyncManager>>>,
+    /// State database (for RocksDB checkpoints)
+    pub state_db: Option<Arc<StateDb>>,
+    /// Node data directory (for checkpoint paths)
+    pub data_dir: Option<PathBuf>,
 }
 
 impl RpcContext {
@@ -127,6 +135,9 @@ impl RpcContext {
                 total: AtomicU64::new(0),
                 error: RwLock::new(None),
             }),
+            sync_manager: None,
+            state_db: None,
+            data_dir: None,
         }
     }
 
@@ -180,6 +191,9 @@ impl RpcContext {
                     total: AtomicU64::new(0),
                     error: RwLock::new(None),
                 }),
+                sync_manager: None,
+                state_db: None,
+                data_dir: None,
             }
         }
     }
@@ -256,6 +270,24 @@ impl RpcContext {
     /// Set update status callback (for getUpdateStatus RPC)
     pub fn with_update_status(mut self, f: impl Fn() -> Value + Send + Sync + 'static) -> Self {
         self.update_status = Arc::new(f);
+        self
+    }
+
+    /// Set sync manager (for emergency production halt via RPC)
+    pub fn with_sync_manager(mut self, sync_manager: Arc<RwLock<SyncManager>>) -> Self {
+        self.sync_manager = Some(sync_manager);
+        self
+    }
+
+    /// Set state database (for RocksDB checkpoint creation)
+    pub fn with_state_db(mut self, state_db: Arc<StateDb>) -> Self {
+        self.state_db = Some(state_db);
+        self
+    }
+
+    /// Set data directory (for checkpoint output paths)
+    pub fn with_data_dir(mut self, data_dir: PathBuf) -> Self {
+        self.data_dir = Some(data_dir);
         self
     }
 

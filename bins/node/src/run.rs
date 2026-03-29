@@ -32,6 +32,7 @@ pub(crate) async fn run_node(
     force_start: bool,
     yes: bool,
     chainspec_path: Option<PathBuf>,
+    auto_checkpoint: Option<u64>,
     archive_to: Option<PathBuf>,
     checkpoint_height: Option<u64>,
     checkpoint_hash: Option<String>,
@@ -161,6 +162,15 @@ pub(crate) async fn run_node(
     if no_snap_sync {
         config.no_snap_sync = true;
         info!("Snap sync disabled — using header-first sync only");
+    }
+    if let Some(interval) = auto_checkpoint {
+        if interval > 0 {
+            config.auto_checkpoint_interval = Some(interval);
+            info!(
+                "Auto-checkpoint enabled: snapshot every {} blocks (keeping last 5)",
+                interval
+            );
+        }
     }
     if let Some(ref addr) = external_address {
         config.external_address = Some(addr.clone());

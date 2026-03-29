@@ -12,6 +12,16 @@ use super::types::{
 };
 
 impl BlockStore {
+    /// Create a RocksDB checkpoint (point-in-time snapshot) at the given path.
+    ///
+    /// Uses hard links — near-instant, near-zero extra disk space.
+    pub fn create_checkpoint(&self, path: &std::path::Path) -> Result<(), StorageError> {
+        let checkpoint = rocksdb::checkpoint::Checkpoint::new(&self.db)?;
+        checkpoint
+            .create_checkpoint(path)
+            .map_err(StorageError::from)
+    }
+
     /// Get a block by hash
     pub fn get_block(&self, hash: &Hash) -> Result<Option<Block>, StorageError> {
         let cf_headers = self.db.cf_handle(CF_HEADERS).unwrap();
