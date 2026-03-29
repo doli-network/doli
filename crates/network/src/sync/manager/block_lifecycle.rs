@@ -321,8 +321,13 @@ impl SyncManager {
         self.pipeline.body_stall_retries = 0;
         self.fork.consecutive_apply_failures = 0;
 
-        // Reset snap sync attempt counter so recovery gets fresh tries.
-        self.snap.attempts = 0;
+        // Reset snap sync attempt counter so recovery gets fresh tries —
+        // BUT only if we had meaningful state before. A node already at h=0
+        // that exhausted snap attempts should stay on header-first; resetting
+        // attempts here restarts the same failing snap cycle. (INC-I-017)
+        if self.local_height > 0 {
+            self.snap.attempts = 0;
+        }
 
         // Reset stale chain timers
         self.network.last_block_seen = Instant::now();

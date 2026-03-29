@@ -66,6 +66,11 @@ impl SyncManager {
 
                 // After 10+ consecutive empty responses, peer doesn't recognize our tip.
                 // Try snap sync first (seconds) before falling back to genesis resync (hours).
+                // BUT: only reset snap attempts for nodes that were previously synced
+                // (local_height > 0). A fresh node at h=0 that exhausted snap attempts
+                // gets empty headers from thundering herd, NOT a deep fork. Resetting
+                // snap.attempts here creates an infinite snap→header→snap cycle where
+                // the node never makes progress. (INC-I-017)
                 if self.fork.consecutive_empty_headers >= 10 {
                     let best_height = self
                         .peers
@@ -75,7 +80,7 @@ impl SyncManager {
                         .unwrap_or(0);
                     let gap = best_height.saturating_sub(self.local_height);
                     let enough_peers = self.peers.len() >= 3;
-                    if enough_peers && gap > self.snap.threshold {
+                    if enough_peers && gap > self.snap.threshold && self.local_height > 0 {
                         info!(
                             "[SNAP_SYNC] Deep fork with {} consecutive empty headers — \
                              attempting snap sync before genesis resync (gap={})",
@@ -236,11 +241,18 @@ impl SyncManager {
             _ => return vec![],
         };
 
+        // Only ask peers that are actually synced (height > ours + threshold).
+        // Without this filter, unsynced nodes (also at h=0) receive GetStateRoot
+        // requests they can't meaningfully answer, wasting bandwidth and saturating
+        // the actually-synced peers' inbound queues. (INC-I-017)
+        let min_height = self.local_height + self.snap.threshold.min(10);
         let candidates: Vec<PeerId> = self
             .peers
             .iter()
-            .filter(|(pid, _)| {
-                !already_asked.contains(pid) && !self.snap.blacklisted_peers.contains(pid)
+            .filter(|(pid, status)| {
+                !already_asked.contains(pid)
+                    && !self.snap.blacklisted_peers.contains(pid)
+                    && status.best_height >= min_height
             })
             .map(|(pid, _)| *pid)
             .collect();
