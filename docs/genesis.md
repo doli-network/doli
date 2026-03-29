@@ -295,12 +295,12 @@ Same structure but different servers:
 
 | Parameter | Mainnet | Testnet |
 |-----------|---------|---------|
-| Bond unit | 10 DOLI | 0.01 DOLI |
+| Bond unit | 10 DOLI (1,000,000,000) | 1 DOLI (100,000,000) |
 | P2P port | 30300 | 40300 |
 | RPC port | 8500 | 18500 |
 | Metrics port | 9000 | 19000 |
 | Vesting quarter | 1 year (3,153,600 slots) | 6 hours (2,160 slots) |
-| Unbonding | 60,480 blocks (~7 days) | 720 blocks (~2 hours) |
+| Unbonding | 60,480 blocks (~7 days) | 72 blocks (2 epochs) |
 
 ---
 
