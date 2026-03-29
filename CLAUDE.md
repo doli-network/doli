@@ -42,12 +42,36 @@ Epoch boundary: pool drained → rewards distributed bond-weighted to qualified 
 - rollback → undo-based rollback is first option (`node.rs:~6531`). Rebuild-from-genesis is fallback for blocks without undo data.
 - Bond `extra_data` → CLI sends `creation_slot=0`, node stamps real slot at apply. Never trust raw tx `extra_data`.
 
+## After Every Modification
+
+After completing any code change, ALWAYS propose the following checklist to the user:
+
+1. **Build gate**: `cargo build --release && cargo clippy -- -D warnings && cargo fmt --check`
+2. **Test**: `cargo test -p <affected-crate> --lib` (or full `cargo test` if cross-crate)
+3. **Version protection** (if consensus/protocol/validation changed):
+   - Bump `CURRENT_PROTOCOL_VERSION` in `crates/network/src/protocols/status.rs`
+   - Consider adding a `HardForkSchedule` entry in `crates/updater/src/hardfork.rs` if the change is consensus-breaking at a future height
+   - Consider bumping `MIN_PEER_PROTOCOL_VERSION` if old peers must be partitioned immediately
+4. **Documentation alignment** (MANDATORY — not optional):
+   - Update specs and docs BEFORE committing. Every code change that affects behavior must have matching documentation.
+   - `specs/protocol.md` — if wire format, messages, encoding, or peer behavior changed
+   - `specs/security_model.md` — if attack surface, scoring, or threat model changed
+   - `docs/architecture.md` — if crate structure or component interactions changed
+   - `docs/troubleshooting.md` — if new error conditions or failure modes added
+   - `docs/rpc_reference.md` — if RPC endpoints changed
+   - `docs/cli.md` — if CLI commands or flags changed
+   - `CLAUDE.md` code map — if new files/modules added
+   - Run `/sync-docs` for thorough alignment verification on larger changes.
+5. **Copy binary** (if deploying to testnet): `cp target/release/doli-node ~/testnet/bin/ && codesign --force --sign - ~/testnet/bin/doli-node`
+6. **Commit and push** — ALWAYS ask the user: "Ready to commit and push?" Do not skip this step. Do not assume. Always ask explicitly after every completed modification.
+7. **Deploy consideration**: testnet first, NEVER mainnet without explicit confirmation
+
 ## Law
 
 1. Show plan → show diff → WAIT for approval → execute. Broken after deploy? STOP, report.
 2. Code is SOT. For design intent: WHITEPAPER > specs/ > docs/. For reality: read the code.
 3. Simplest solution that doesn't compromise safety. Design for 1000s of producers in 10s slots.
-4. Commit: `--author "Ivan D. Lozada <ivan@doli.network>"`. Gate: `cargo build && cargo clippy -- -D warnings && cargo fmt --check && cargo test`.
+4. Commit: `--author "Antonio Lozada <antonio@omegacortex.ai>"`. Gate: `cargo build && cargo clippy -- -D warnings && cargo fmt --check && cargo test`.
 5. Learning protocol: before following any doc/skill, check MEMORY.md hotfixes. Doc drifts from code? Register hotfix, fix the doc. A mistake not fixed at the source repeats forever.
 
 ## Map — Code
