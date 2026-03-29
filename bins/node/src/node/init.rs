@@ -872,6 +872,8 @@ impl Node {
             chainspec: None,
             slot_duration_override: Some(params.slot_duration),
             external_address: None,
+            no_snap_sync: false,
+            seed_mode: false,
         };
 
         Ok(Self {

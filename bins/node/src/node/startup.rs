@@ -158,6 +158,15 @@ impl Node {
         let mut network_config = NetworkConfig::for_network(self.config.network, genesis_hash);
         network_config.listen_addr = listen_addr;
         network_config.bootstrap_nodes = self.config.bootstrap_nodes.clone();
+
+        // Environment variable overrides for network tuning
+        if let Ok(val) = std::env::var("DOLI_MAX_PEERS") {
+            if let Ok(n) = val.parse::<usize>() {
+                self.config.max_peers = n;
+                info!("[ENV] DOLI_MAX_PEERS={}", n);
+            }
+        }
+
         network_config.max_peers = self.config.max_peers;
         network_config.no_dht = self.config.no_dht;
         // Store node_key in parent of data_dir so chain resets (which wipe data_dir)

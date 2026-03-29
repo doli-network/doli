@@ -57,6 +57,14 @@ pub struct NodeConfig {
     /// Use when running multiple nodes on the same host to prevent advertising 127.0.0.1.
     #[serde(skip)]
     pub external_address: Option<String>,
+
+    /// Disable snap sync (header-first only). Defaults to false.
+    #[serde(default)]
+    pub no_snap_sync: bool,
+
+    /// Seed mode: only serve confirmed blocks (N blocks deep).
+    #[serde(default)]
+    pub seed_mode: bool,
 }
 
 impl Default for NodeConfig {
@@ -112,6 +120,8 @@ impl NodeConfig {
             chainspec: None,
             slot_duration_override: None,
             external_address: None,
+            no_snap_sync: false,
+            seed_mode: false,
         }
     }
 }
