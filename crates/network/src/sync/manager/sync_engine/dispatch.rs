@@ -102,7 +102,8 @@ impl SyncManager {
                         .unwrap_or(0);
                     let gap = best_height.saturating_sub(self.local_height);
                     let enough_peers = self.peers.len() >= 3;
-                    if enough_peers && gap > self.snap.threshold && self.confirmed_height_floor > 0 {
+                    if enough_peers && gap > self.snap.threshold && self.confirmed_height_floor > 0
+                    {
                         info!(
                             "[SNAP_SYNC] Deep fork with {} consecutive empty headers — \
                              attempting snap sync before genesis resync (gap={})",

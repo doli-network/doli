@@ -1529,16 +1529,16 @@ fn test_inc_i017_height_based_request_fires_before_genesis_fallback() {
     let result = manager.next_request();
 
     // Height-based request MUST fire, not be intercepted by genesis fallback
-    assert!(result.is_some(), "Height-based request must fire even with empties >= 10");
+    assert!(
+        result.is_some(),
+        "Height-based request must fire even with empties >= 10"
+    );
     let (_, request) = result.unwrap();
     match request {
         crate::protocols::SyncRequest::GetHeadersByHeight { start_height, .. } => {
             assert_eq!(start_height, 1, "Should request from local_height");
         }
-        other => panic!(
-            "Expected GetHeadersByHeight, got {:?}",
-            other
-        ),
+        other => panic!("Expected GetHeadersByHeight, got {:?}", other),
     }
 
     // After firing, the flag and counter should be cleared
