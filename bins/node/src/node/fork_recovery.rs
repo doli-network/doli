@@ -665,6 +665,10 @@ impl Node {
             // Clear cached scheduler so it rebuilds with the correct snapshot
             self.cached_scheduler = None;
 
+            // Clear stale excluded_producers — they belong to the pre-snap chain
+            // and poison the total cap check (excluded.len() + missed.len() > active/3)
+            self.excluded_producers.clear();
+
             info!(
                 "[SNAP_SYNC] Rebuilt epoch state: {} producers, total_bonds={}, epoch={}",
                 self.epoch_bond_snapshot.len(),
