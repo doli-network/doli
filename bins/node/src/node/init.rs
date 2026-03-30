@@ -639,9 +639,28 @@ impl Node {
         // after rollback, and after any state reset.
         let excluded_producers = HashSet::new();
 
-        // epoch_producer_list is initialized from active producers and rebuilt
-        // from attestation data after construction.
-        let epoch_producer_list = Vec::new();
+        // epoch_producer_list: seed from current active producers so production
+        // can resume immediately after restart mid-epoch. Without this, a restart
+        // mid-epoch leaves epoch_producer_list empty → no production → deadlock.
+        // The list will be properly recomputed at the next epoch boundary.
+        let epoch_producer_list = {
+            let producers = producer_set.read().await;
+            let best_h = chain_state.read().await.best_height;
+            let mut pks: Vec<PublicKey> = producers
+                .active_producers_at_height(best_h)
+                .iter()
+                .map(|p| p.public_key)
+                .collect();
+            pks.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+            if !pks.is_empty() {
+                info!(
+                    "[INIT] Seeded epoch_producer_list with {} active producers at h={}",
+                    pks.len(),
+                    best_h
+                );
+            }
+            pks
+        };
 
         // Recover announcement sequence from persisted GSet to avoid creating
         // stale announcements after restart. +1 so the next announcement is fresh.
