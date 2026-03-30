@@ -73,6 +73,9 @@ impl NetworkParams {
                 // Vesting (locked for mainnet — consensus critical)
                 vesting_quarter_slots: consensus::VESTING_QUARTER_SLOTS as u64,
 
+                // Hard fork gates
+                sig_verification_height: u64::MAX, // Not yet activated on mainnet
+
                 // Gossip mesh: universal config for all network sizes.
                 // mesh_n=12 keeps all peers in eager-push for networks ≤24 (mesh_n_high),
                 // and scales to 1000+ nodes at ~3-4 hops with 10s slot margin.
@@ -143,6 +146,9 @@ impl NetworkParams {
                 // Vesting (1-day: 6h quarters — faster than mainnet for testing)
                 vesting_quarter_slots: 2_160,
 
+                // Hard fork gates
+                sig_verification_height: 0, // Enforce from genesis on testnet
+
                 // INC-I-015: Gossip mesh sized to max_peers for eager push to ALL
                 // connected peers. At mesh_n=12, blocks reach 12 peers immediately
                 // and the rest via IHAVE (lazy, 1+ heartbeat delay). At 120+ nodes
@@ -209,6 +215,9 @@ impl NetworkParams {
 
                 // Vesting (fast for devnet testing: 10 min per quarter, 40 min full vest)
                 vesting_quarter_slots: 60,
+
+                // Hard fork gates
+                sig_verification_height: 0, // Enforce from genesis on devnet
 
                 // Gossip mesh: same universal config as mainnet.
                 // With --no-dht, mesh_n_high=24 keeps all devnet peers in mesh.

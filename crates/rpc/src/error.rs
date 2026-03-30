@@ -33,6 +33,8 @@ pub mod codes {
     pub const PRODUCER_NOT_FOUND: i32 = -32006;
     /// Pool not found
     pub const POOL_NOT_FOUND: i32 = -32007;
+    /// Unauthorized — admin token required
+    pub const UNAUTHORIZED: i32 = -32008;
 }
 
 /// RPC error
@@ -132,6 +134,11 @@ impl RpcError {
     /// Pool not found
     pub fn pool_not_found() -> Self {
         Self::new(codes::POOL_NOT_FOUND, "Pool not found")
+    }
+
+    /// Unauthorized — admin token required
+    pub fn unauthorized() -> Self {
+        Self::new(codes::UNAUTHORIZED, "Unauthorized: admin token required")
     }
 }
 

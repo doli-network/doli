@@ -143,6 +143,16 @@ pub struct RpcConfig {
 
     /// Allowed methods (empty = all)
     pub allowed_methods: Vec<String>,
+
+    /// Bearer token for admin RPC methods (pauseProduction, createCheckpoint, etc.).
+    /// Required when RPC is bound to a non-loopback address.
+    /// Set via DOLI_RPC_ADMIN_TOKEN env var or config file.
+    #[serde(default)]
+    pub admin_token: Option<String>,
+
+    /// Allowed CORS origins. Empty = no cross-origin access when CORS is enabled.
+    #[serde(default)]
+    pub allowed_origins: Vec<String>,
 }
 
 impl Default for RpcConfig {
@@ -158,6 +168,8 @@ impl RpcConfig {
             enabled: true,
             listen_addr: format!("127.0.0.1:{}", network.default_rpc_port()),
             allowed_methods: vec![],
+            admin_token: None,
+            allowed_origins: vec![],
         }
     }
 }

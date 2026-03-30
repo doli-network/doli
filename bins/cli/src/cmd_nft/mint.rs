@@ -145,6 +145,7 @@ pub(crate) async fn cmd_mint(
     for i in 0..tx.inputs.len() {
         let signing_hash = tx.signing_message_for_input(i);
         tx.inputs[i].signature = signature::sign_hash(&signing_hash, keypair.private_key());
+        tx.inputs[i].public_key = Some(*keypair.public_key());
     }
 
     let tx_bytes = tx.serialize();

@@ -186,10 +186,13 @@ fn decode_tx_batch(data: &[u8]) -> Option<Vec<Transaction>> {
         return None;
     }
     let count = u32::from_le_bytes(data[1..5].try_into().ok()?) as usize;
-    if count == 0 {
+    if count == 0 || count > 10_000 {
         return None;
     }
-    let mut txs = Vec::with_capacity(count);
+    // Cap pre-allocation to prevent OOM from malicious count values.
+    // Each tx needs at least 4 bytes (length prefix), so bound by remaining data.
+    let max_possible = (data.len() - 5) / 4;
+    let mut txs = Vec::with_capacity(count.min(max_possible));
     let mut offset = 5;
     for _ in 0..count {
         if offset + 4 > data.len() {

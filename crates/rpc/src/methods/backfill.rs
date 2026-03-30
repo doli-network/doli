@@ -1,5 +1,6 @@
 //! Backfill and chain integrity handlers: backfillFromPeer, backfillStatus, verifyChainIntegrity
 
+use std::net::IpAddr;
 use std::sync::atomic::Ordering;
 
 use serde_json::Value;
@@ -12,11 +13,67 @@ use crate::types::*;
 
 use super::context::RpcContext;
 
+/// Check if an IP address is in a private/reserved range (SSRF protection).
+fn is_private_ip(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            v4.is_loopback()         // 127.0.0.0/8
+                || v4.is_private()   // 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+                || v4.is_link_local() // 169.254.0.0/16
+                || v4.is_broadcast() // 255.255.255.255
+                || v4.is_unspecified() // 0.0.0.0
+        }
+        IpAddr::V6(v6) => v6.is_loopback() || v6.is_unspecified(),
+    }
+}
+
+/// Validate that a URL is safe for outbound requests (prevents SSRF).
+/// Primary defense is the admin auth gate; this is defense-in-depth.
+fn validate_backfill_url(raw_url: &str) -> Result<(), RpcError> {
+    // Must start with http:// or https://
+    let after_scheme = if let Some(rest) = raw_url.strip_prefix("http://") {
+        rest
+    } else if let Some(rest) = raw_url.strip_prefix("https://") {
+        rest
+    } else {
+        return Err(RpcError::invalid_params(
+            "Backfill URL must use http:// or https:// scheme",
+        ));
+    };
+
+    // Extract host (before first / or :port)
+    let host = after_scheme
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .split(':')
+        .next()
+        .unwrap_or("");
+
+    if host.is_empty() {
+        return Err(RpcError::invalid_params("URL must include a hostname"));
+    }
+
+    // If host is an IP literal, check for private ranges
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        if is_private_ip(&ip) {
+            return Err(RpcError::invalid_params(
+                "Backfill URL must not point to a private/loopback/link-local address",
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 impl RpcContext {
     /// Start a live backfill from a peer's RPC endpoint.
     pub(super) async fn backfill_from_peer(&self, params: Value) -> Result<Value, RpcError> {
         let params: BackfillParams =
             serde_json::from_value(params).map_err(|e| RpcError::invalid_params(e.to_string()))?;
+
+        // Validate URL to prevent SSRF attacks
+        validate_backfill_url(&params.rpc_url)?;
 
         // Check if already running
         if self.backfill_state.running.load(Ordering::SeqCst) {

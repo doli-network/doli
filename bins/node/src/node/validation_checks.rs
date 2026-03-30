@@ -259,6 +259,68 @@ impl Node {
 
         drop(state);
 
+        // Validate missed_producers header field (P1-001: was unvalidated on receiving nodes)
+        {
+            const MAX_MISSED_PER_BLOCK: usize = 3;
+            let missed = &block.header.missed_producers;
+
+            // Length cap: production enforces MAX_MISSED_PER_BLOCK=3
+            if missed.len() > MAX_MISSED_PER_BLOCK {
+                return Err(validation::ValidationError::InvalidTransaction(format!(
+                    "missed_producers has {} entries (max {})",
+                    missed.len(),
+                    MAX_MISSED_PER_BLOCK,
+                )));
+            }
+
+            // Membership: all missed keys must be in the epoch producer list
+            if !self.epoch_producer_list.is_empty() {
+                for pk in missed {
+                    if !self.epoch_producer_list.contains(pk) {
+                        return Err(validation::ValidationError::InvalidTransaction(format!(
+                            "missed_producers contains key {} not in epoch producer list",
+                            hex::encode(&pk.as_bytes()[..4]),
+                        )));
+                    }
+                }
+            }
+
+            // Total cap: excluded + new missed must not exceed active/3
+            let max_total = if self.epoch_producer_list.is_empty() {
+                usize::MAX
+            } else {
+                self.epoch_producer_list.len() / 3
+            };
+            let total_after = self.excluded_producers.len() + missed.len();
+            if total_after > max_total {
+                return Err(validation::ValidationError::InvalidTransaction(format!(
+                    "missed_producers would bring total excluded to {} (max {})",
+                    total_after, max_total,
+                )));
+            }
+        }
+
+        // P0-001: Enforce public_key presence after sig_verification_height.
+        // Pre-fork blocks have public_key=None (legacy), post-fork must have Some.
+        {
+            let net_params = doli_core::network_params::NetworkParams::load(self.config.network);
+            if height >= net_params.sig_verification_height {
+                for tx in &block.transactions {
+                    if tx.is_coinbase() {
+                        continue; // Coinbase has no inputs
+                    }
+                    for (i, input) in tx.inputs.iter().enumerate() {
+                        if input.public_key.is_none() {
+                            return Err(validation::ValidationError::InvalidTransaction(format!(
+                                "input {} missing public_key (required at height >= {})",
+                                i, net_params.sig_verification_height
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+
         validation::validate_block_with_mode(block, &ctx, mode)
     }
 

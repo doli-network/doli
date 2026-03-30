@@ -117,6 +117,7 @@ pub(super) async fn handle_add_bond(
     for i in 0..tx.inputs.len() {
         let signing_hash = tx.signing_message_for_input(i);
         tx.inputs[i].signature = signature::sign_hash(&signing_hash, keypair.private_key());
+        tx.inputs[i].public_key = Some(*keypair.public_key());
     }
 
     // Submit

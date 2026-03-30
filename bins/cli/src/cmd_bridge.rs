@@ -246,6 +246,7 @@ pub(crate) async fn cmd_bridge_lock(
     for i in 0..tx.inputs.len() {
         let signing_hash = tx.signing_message_for_input(i);
         tx.inputs[i].signature = signature::sign_hash(&signing_hash, keypair.private_key());
+        tx.inputs[i].public_key = Some(*keypair.public_key());
     }
 
     let tx_bytes = tx.serialize();
@@ -381,6 +382,7 @@ pub(crate) async fn cmd_bridge_claim(
 
     let keypair = wallet.primary_keypair()?;
     tx.inputs[0].signature = crypto::signature::sign_hash(&signing_hash, keypair.private_key());
+    tx.inputs[0].public_key = Some(*keypair.public_key());
 
     let tx_bytes = tx.serialize();
     let tx_hex = hex::encode(&tx_bytes);
@@ -524,6 +526,7 @@ pub(crate) async fn cmd_bridge_refund(
 
     let keypair = wallet.primary_keypair()?;
     tx.inputs[0].signature = crypto::signature::sign_hash(&signing_hash, keypair.private_key());
+    tx.inputs[0].public_key = Some(*keypair.public_key());
 
     let tx_bytes = tx.serialize();
     let tx_hex = hex::encode(&tx_bytes);
@@ -696,6 +699,7 @@ pub(crate) async fn cmd_bridge_swap(
     for i in 0..tx.inputs.len() {
         let signing_hash = tx.signing_message_for_input(i);
         tx.inputs[i].signature = signature::sign_hash(&signing_hash, keypair.private_key());
+        tx.inputs[i].public_key = Some(*keypair.public_key());
     }
 
     let tx_bytes = tx.serialize();
@@ -1020,6 +1024,7 @@ pub(crate) async fn cmd_bridge_status(
             let keypair = wallet.primary_keypair()?;
             tx.inputs[0].signature =
                 crypto::signature::sign_hash(&signing_hash, keypair.private_key());
+            tx.inputs[0].public_key = Some(*keypair.public_key());
 
             let tx_hex = hex::encode(tx.serialize());
             match rpc.send_transaction(&tx_hex).await {
@@ -1319,6 +1324,7 @@ pub(crate) async fn cmd_bridge_buy(
 
     let keypair = wallet.primary_keypair()?;
     tx.inputs[0].signature = crypto::signature::sign_hash(&signing_hash, keypair.private_key());
+    tx.inputs[0].public_key = Some(*keypair.public_key());
 
     let tx_bytes = tx.serialize();
     let tx_hex = hex::encode(&tx_bytes);

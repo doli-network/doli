@@ -185,6 +185,7 @@ async fn cmd_loan_deposit(
     for i in 0..tx.inputs.len() {
         let signing_hash = tx.signing_message_for_input(i);
         tx.inputs[i].signature = signature::sign_hash(&signing_hash, keypair.private_key());
+        tx.inputs[i].public_key = Some(*keypair.public_key());
     }
 
     let tx_bytes = tx.serialize();
@@ -335,6 +336,7 @@ async fn cmd_loan_withdraw(
     for i in 0..tx.inputs.len() {
         let signing_hash = tx.signing_message_for_input(i);
         tx.inputs[i].signature = signature::sign_hash(&signing_hash, keypair.private_key());
+        tx.inputs[i].public_key = Some(*keypair.public_key());
     }
 
     let tx_bytes = tx.serialize();
@@ -542,6 +544,7 @@ async fn cmd_loan_create(
     for i in 0..tx.inputs.len() {
         let signing_hash = tx.signing_message_for_input(i);
         tx.inputs[i].signature = signature::sign_hash(&signing_hash, keypair.private_key());
+        tx.inputs[i].public_key = Some(*keypair.public_key());
         // FungibleAsset inputs (token inputs) need covenant witnesses
         if i < num_token_inputs {
             let witness_str = format!("sign({})", wallet_path.display());
@@ -711,6 +714,7 @@ async fn cmd_loan_repay(
     for i in 0..tx.inputs.len() {
         let signing_hash = tx.signing_message_for_input(i);
         tx.inputs[i].signature = signature::sign_hash(&signing_hash, keypair.private_key());
+        tx.inputs[i].public_key = Some(*keypair.public_key());
     }
 
     let tx_bytes = tx.serialize();
@@ -888,6 +892,7 @@ async fn cmd_loan_liquidate(
     for i in 0..tx.inputs.len() {
         let signing_hash = tx.signing_message_for_input(i);
         tx.inputs[i].signature = signature::sign_hash(&signing_hash, keypair.private_key());
+        tx.inputs[i].public_key = Some(*keypair.public_key());
     }
 
     let tx_bytes = tx.serialize();

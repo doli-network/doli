@@ -594,18 +594,20 @@ fn verify_input_conditions(
 }
 
 /// Verify the signature on a transaction input (Normal/Bond outputs only).
+///
+/// Pubkey resolution order:
+/// 1. `input.public_key` — spender-provided (post-P0-001 hard fork)
+/// 2. `utxo.pubkey` — from UTXO set (test mock only; production returns None)
+/// 3. Neither → skip verification (pre-fork legacy transactions)
 fn verify_input_signature(
     input: &Input,
     signing_hash: &Hash,
     utxo: &UtxoInfo,
     input_index: usize,
 ) -> Result<(), ValidationError> {
-    // We need the public key to verify the signature.
-    // In pay-to-pubkey-hash, the UTXO only stores the hash -- the pubkey
-    // is not available until the spender reveals it. When pubkey is None
-    // (production UTXO set), skip signature verification; covenant conditions,
-    // lock times, and balance are still enforced.
-    let pubkey = match utxo.pubkey.as_ref() {
+    // Try input's own public key first (post-fork), then UTXO's (test mock).
+    // Pre-fork transactions have neither → verification skipped.
+    let pubkey = match input.public_key.as_ref().or(utxo.pubkey.as_ref()) {
         Some(pk) => pk,
         None => return Ok(()),
     };

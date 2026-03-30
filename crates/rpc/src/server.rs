@@ -6,15 +6,15 @@ use std::sync::Arc;
 use axum::{
     body::Bytes,
     extract::State,
-    http::{header, StatusCode},
+    http::{header, HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
 use tokio::sync::broadcast;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tower_http::limit::RequestBodyLimitLayer;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::error::RpcError;
 use crate::methods::RpcContext;
@@ -24,6 +24,16 @@ use crate::ws::{self, WsEvent};
 /// Maximum request body size (256 KB)
 const MAX_BODY_SIZE: usize = 256 * 1024;
 
+/// Methods that require admin authentication (bearer token).
+/// These methods can halt production, delete data, or trigger outbound requests.
+pub const ADMIN_METHODS: &[&str] = &[
+    "pauseProduction",
+    "resumeProduction",
+    "createCheckpoint",
+    "pruneBlocks",
+    "backfillFromPeer",
+];
+
 /// RPC server configuration
 #[derive(Clone, Debug)]
 pub struct RpcServerConfig {
@@ -31,8 +41,10 @@ pub struct RpcServerConfig {
     pub listen_addr: SocketAddr,
     /// Enable CORS
     pub enable_cors: bool,
-    /// Allowed origins (if CORS enabled)
+    /// Allowed origins (if CORS enabled). Empty = deny all cross-origin.
     pub allowed_origins: Vec<String>,
+    /// Bearer token for admin methods. None = admin methods disabled when RPC is network-accessible.
+    pub admin_token: Option<String>,
 }
 
 impl Default for RpcServerConfig {
@@ -45,6 +57,7 @@ impl Default for RpcServerConfig {
             listen_addr: "127.0.0.1:8500".parse().expect("valid socket addr"),
             enable_cors: false,
             allowed_origins: vec![],
+            admin_token: None,
         }
     }
 }
@@ -72,9 +85,16 @@ impl RpcServer {
 
     /// Run the server
     pub async fn run(self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Build shared state: context + admin token
+        let shared = Arc::new(RpcSharedState {
+            context: self.context.clone(),
+            admin_token: self.config.admin_token.clone(),
+            is_localhost: self.config.listen_addr.ip().is_loopback(),
+        });
+
         let rpc_router = Router::new()
             .route("/", post(handle_rpc))
-            .with_state(self.context.clone())
+            .with_state(shared)
             .layer(RequestBodyLimitLayer::new(MAX_BODY_SIZE));
 
         let ws_router = Router::new()
@@ -83,12 +103,26 @@ impl RpcServer {
 
         let mut app = rpc_router.merge(ws_router);
 
-        // Add CORS if enabled
+        // Add CORS if enabled — use allowed_origins if specified, never wildcard
         if self.config.enable_cors {
-            let cors = CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods(Any)
-                .allow_headers(Any);
+            let cors = if self.config.allowed_origins.is_empty() {
+                // No origins configured: allow only same-origin (no CORS header)
+                warn!(
+                    "CORS enabled but no allowed_origins configured — using restrictive defaults"
+                );
+                CorsLayer::new().allow_methods(Any).allow_headers(Any)
+            } else {
+                let origins: Vec<_> = self
+                    .config
+                    .allowed_origins
+                    .iter()
+                    .filter_map(|o| o.parse().ok())
+                    .collect();
+                CorsLayer::new()
+                    .allow_origin(AllowOrigin::list(origins))
+                    .allow_methods(Any)
+                    .allow_headers(Any)
+            };
             app = app.layer(cors);
         }
 
@@ -110,9 +144,69 @@ impl RpcServer {
     }
 }
 
+/// Shared state passed to the Axum handler: RPC context + auth config.
+struct RpcSharedState {
+    context: Arc<RpcContext>,
+    admin_token: Option<String>,
+    is_localhost: bool,
+}
+
+/// Check whether a request is authorized for an admin method.
+///
+/// Rules:
+/// - Localhost binding: admin methods allowed without token (backward compat)
+/// - Network-accessible binding + no token configured: admin methods DENIED
+/// - Network-accessible binding + token configured: require `Authorization: Bearer <token>`
+fn check_admin_auth(
+    shared: &RpcSharedState,
+    headers: &HeaderMap,
+    method: &str,
+) -> Result<(), RpcError> {
+    if !ADMIN_METHODS.contains(&method) {
+        return Ok(());
+    }
+
+    // Localhost is trusted (backward compatible)
+    if shared.is_localhost {
+        return Ok(());
+    }
+
+    // Network-accessible: require token
+    match &shared.admin_token {
+        None => {
+            warn!(
+                "Admin method '{}' rejected: no admin_token configured for network-accessible RPC",
+                method
+            );
+            Err(RpcError::unauthorized())
+        }
+        Some(expected) => {
+            let provided = headers
+                .get(header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.strip_prefix("Bearer "));
+
+            match provided {
+                Some(token) if token == expected.as_str() => Ok(()),
+                _ => {
+                    warn!(
+                        "Admin method '{}' rejected: invalid or missing bearer token",
+                        method
+                    );
+                    Err(RpcError::unauthorized())
+                }
+            }
+        }
+    }
+}
+
 /// Handle JSON-RPC request — manually parse body so malformed JSON returns
 /// a proper JSON-RPC error instead of Axum's default plain-text 422.
-async fn handle_rpc(State(context): State<Arc<RpcContext>>, body: Bytes) -> impl IntoResponse {
+async fn handle_rpc(
+    State(shared): State<Arc<RpcSharedState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> impl IntoResponse {
     // Parse JSON body manually
     let request: JsonRpcRequest = match serde_json::from_slice(&body) {
         Ok(r) => r,
@@ -136,7 +230,17 @@ async fn handle_rpc(State(context): State<Arc<RpcContext>>, body: Bytes) -> impl
         );
     }
 
-    let response = context.handle_request(request).await;
+    // Check admin authorization
+    if let Err(e) = check_admin_auth(&shared, &headers, &request.method) {
+        let resp = JsonRpcResponse::error(request.id, e);
+        return (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/json")],
+            Json(resp),
+        );
+    }
+
+    let response = shared.context.handle_request(request).await;
     (
         StatusCode::OK,
         [(header::CONTENT_TYPE, "application/json")],

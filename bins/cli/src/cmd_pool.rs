@@ -378,6 +378,7 @@ async fn cmd_pool_create(
     for i in 0..tx.inputs.len() {
         let signing_hash = tx.signing_message_for_input(i);
         tx.inputs[i].signature = signature::sign_hash(&signing_hash, keypair.private_key());
+        tx.inputs[i].public_key = Some(*keypair.public_key());
         // FungibleAsset inputs (after DOLI inputs) need covenant witnesses
         if i >= num_doli_inputs {
             let witness_str = format!("sign({})", wallet_path.display());
@@ -641,6 +642,7 @@ async fn cmd_pool_swap(
         for i in 0..tx.inputs.len() {
             let signing_hash = tx.signing_message_for_input(i);
             tx.inputs[i].signature = signature::sign_hash(&signing_hash, keypair.private_key());
+            tx.inputs[i].public_key = Some(*keypair.public_key());
         }
 
         broadcast_swap_tx(&rpc, &tx, amount_in, amount_out, direction, fee_bps, yes).await?;
@@ -725,6 +727,7 @@ async fn cmd_pool_swap(
         for i in 0..tx.inputs.len() {
             let signing_hash = tx.signing_message_for_input(i);
             tx.inputs[i].signature = signature::sign_hash(&signing_hash, keypair.private_key());
+            tx.inputs[i].public_key = Some(*keypair.public_key());
             if i >= token_start && i < token_end {
                 let witness_str = format!("sign({})", wallet_path.display());
                 let witness_bytes = crate::parsers::parse_witness(&witness_str, &signing_hash)?;
@@ -1001,6 +1004,7 @@ async fn cmd_pool_add(
     for i in 0..tx.inputs.len() {
         let signing_hash = tx.signing_message_for_input(i);
         tx.inputs[i].signature = signature::sign_hash(&signing_hash, keypair.private_key());
+        tx.inputs[i].public_key = Some(*keypair.public_key());
         if i >= num_non_token_inputs {
             let witness_str = format!("sign({})", wallet_path.display());
             let witness_bytes = crate::parsers::parse_witness(&witness_str, &signing_hash)?;
@@ -1276,6 +1280,7 @@ async fn cmd_pool_remove(
     for i in 0..tx.inputs.len() {
         let signing_hash = tx.signing_message_for_input(i);
         tx.inputs[i].signature = signature::sign_hash(&signing_hash, keypair.private_key());
+        tx.inputs[i].public_key = Some(*keypair.public_key());
     }
 
     let tx_bytes = tx.serialize();

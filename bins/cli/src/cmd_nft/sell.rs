@@ -347,6 +347,7 @@ pub(crate) async fn cmd_nft_sell_sign(
 
     // Sign the regular input signature too
     tx.inputs[0].signature = signature::sign_hash(&signing_hash, seller_keypair.private_key());
+    tx.inputs[0].public_key = Some(*seller_keypair.public_key());
 
     // Build signed offer JSON
     let offer = serde_json::json!({

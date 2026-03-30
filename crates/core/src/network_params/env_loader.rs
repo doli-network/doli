@@ -183,6 +183,12 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
             env_parse("DOLI_VESTING_QUARTER_SLOTS", defaults.vesting_quarter_slots)
         },
 
+        // Hard fork gates (configurable for all networks including mainnet)
+        sig_verification_height: env_parse(
+            "DOLI_SIG_VERIFICATION_HEIGHT",
+            defaults.sig_verification_height,
+        ),
+
         // Gossip mesh (locked for mainnet - wrong values could isolate nodes)
         mesh_n: if is_mainnet {
             defaults.mesh_n

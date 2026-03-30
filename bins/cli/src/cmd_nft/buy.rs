@@ -219,9 +219,11 @@ pub(crate) async fn cmd_nft_buy(
 
     // Sign inputs: input 0 with seller key, inputs 1..N with buyer key
     tx.inputs[0].signature = signature::sign_hash(&signing_hash_0, seller_keypair.private_key());
+    tx.inputs[0].public_key = Some(*seller_keypair.public_key());
     for i in 1..tx.inputs.len() {
         let signing_hash = tx.signing_message_for_input(i);
         tx.inputs[i].signature = signature::sign_hash(&signing_hash, buyer_keypair.private_key());
+        tx.inputs[i].public_key = Some(*buyer_keypair.public_key());
     }
 
     let tx_bytes = tx.serialize();
@@ -437,6 +439,7 @@ pub(crate) async fn cmd_nft_buy_from_signed_offer(
     for i in 1..tx.inputs.len() {
         let signing_hash = tx.signing_message_for_input(i);
         tx.inputs[i].signature = signature::sign_hash(&signing_hash, buyer_keypair.private_key());
+        tx.inputs[i].public_key = Some(*buyer_keypair.public_key());
     }
 
     // Set covenant witnesses: seller's witness for input 0, empty for buyer inputs

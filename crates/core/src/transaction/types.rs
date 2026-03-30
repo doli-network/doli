@@ -249,10 +249,14 @@ pub struct Input {
     /// the seller's signature.
     #[serde(default)]
     pub committed_output_count: u32,
+    /// Public key of the spender (P2PKH: reveals pubkey at spend time).
+    /// Pre-fork transactions have `None` (signature verification skipped).
+    /// Post-fork transactions MUST have `Some(pk)` for signature enforcement.
+    pub public_key: Option<crypto::PublicKey>,
 }
 
 impl Input {
-    /// Create a new input (default sighash: All)
+    /// Create a new input (default sighash: All, no pubkey)
     pub fn new(prev_tx_hash: Hash, output_index: u32) -> Self {
         Self {
             prev_tx_hash,
@@ -260,6 +264,7 @@ impl Input {
             signature: Signature::default(),
             sighash_type: SighashType::All,
             committed_output_count: 0,
+            public_key: None,
         }
     }
 
@@ -272,6 +277,7 @@ impl Input {
             signature: Signature::default(),
             sighash_type: SighashType::AnyoneCanPay,
             committed_output_count: 0,
+            public_key: None,
         }
     }
 
@@ -289,7 +295,14 @@ impl Input {
             signature: Signature::default(),
             sighash_type: SighashType::AnyoneCanPay,
             committed_output_count,
+            public_key: None,
         }
+    }
+
+    /// Builder method: set the spender's public key for signature verification.
+    pub fn with_public_key(mut self, pk: crypto::PublicKey) -> Self {
+        self.public_key = Some(pk);
+        self
     }
 
     /// Create an outpoint identifier

@@ -80,15 +80,38 @@ impl RpcContext {
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
-        // Determine output path
+        // Determine output path — sanitize to prevent path traversal
+        let default_base = data_dir.join("checkpoints");
         let checkpoint_base = if let Some(Value::Array(arr)) = &params {
             if let Some(Value::String(p)) = arr.first() {
-                PathBuf::from(p)
+                let requested = PathBuf::from(p);
+                // Reject absolute paths and path traversal
+                if requested.is_absolute()
+                    || requested
+                        .components()
+                        .any(|c| c == std::path::Component::ParentDir)
+                {
+                    return Err(RpcError::invalid_params(
+                        "Checkpoint path must be relative and cannot contain '..' segments",
+                    ));
+                }
+                // Resolve relative to data_dir
+                let resolved = data_dir.join(&requested);
+                // Double-check: canonicalize parent to catch symlink escapes
+                if let Ok(canon) = resolved.parent().unwrap_or(&resolved).canonicalize() {
+                    let data_canon = data_dir.canonicalize().unwrap_or_else(|_| data_dir.clone());
+                    if !canon.starts_with(&data_canon) {
+                        return Err(RpcError::invalid_params(
+                            "Checkpoint path must be within the node data directory",
+                        ));
+                    }
+                }
+                resolved
             } else {
-                data_dir.join("checkpoints")
+                default_base
             }
         } else {
-            data_dir.join("checkpoints")
+            default_base
         };
 
         let checkpoint_name = format!("h{}-{}", height, timestamp);

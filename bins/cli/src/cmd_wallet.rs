@@ -504,6 +504,7 @@ pub(crate) async fn cmd_send(
         let keypair = wallet.keypair_for_pubkey_hash(owner_pubkey_hash)?;
         let signing_hash = tx.signing_message_for_input(i);
         tx.inputs[i].signature = signature::sign_hash(&signing_hash, keypair.private_key());
+        tx.inputs[i].public_key = Some(*keypair.public_key());
     }
 
     // Serialize transaction
@@ -607,6 +608,7 @@ pub(crate) async fn cmd_spend(
     // Also sign with the wallet key (for inputs that need a signature in the witness)
     let keypair = wallet.primary_keypair()?;
     tx.inputs[0].signature = crypto::signature::sign_hash(&signing_hash, keypair.private_key());
+    tx.inputs[0].public_key = Some(*keypair.public_key());
 
     let tx_bytes = tx.serialize();
     let tx_hex = hex::encode(&tx_bytes);

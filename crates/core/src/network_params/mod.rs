@@ -136,6 +136,13 @@ pub struct NetworkParams {
     /// Vesting quarter duration in slots (default: 2,160 = 6 hours)
     pub vesting_quarter_slots: u64,
 
+    // === Hard fork gates ===
+    /// Height at which Input.public_key becomes mandatory for signature verification.
+    /// Before this height: public_key=None accepted (legacy, no sig verification).
+    /// At or after: public_key must be Some, signature + pubkey_hash verified.
+    /// Mainnet: u64::MAX (not yet activated). Testnet/Devnet: 0 (always enforce).
+    pub sig_verification_height: u64,
+
     // === Gossip mesh ===
     /// Target number of peers in gossipsub mesh per topic
     pub mesh_n: usize,

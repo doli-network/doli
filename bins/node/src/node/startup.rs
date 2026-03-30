@@ -247,10 +247,16 @@ impl Node {
     pub async fn start_rpc(&self) -> Result<()> {
         let listen_addr: SocketAddr = self.config.rpc.listen_addr.parse()?;
 
+        // Wire admin_token from env var (DOLI_RPC_ADMIN_TOKEN) or config
+        let admin_token = std::env::var("DOLI_RPC_ADMIN_TOKEN")
+            .ok()
+            .or_else(|| self.config.rpc.admin_token.clone());
+
         let rpc_config = RpcServerConfig {
             listen_addr,
-            enable_cors: false,
-            allowed_origins: vec![],
+            enable_cors: !self.config.rpc.allowed_origins.is_empty(),
+            allowed_origins: self.config.rpc.allowed_origins.clone(),
+            admin_token,
         };
 
         // Create sync status callback
