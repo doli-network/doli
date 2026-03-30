@@ -28,7 +28,7 @@ pub(crate) use types::{
     SyncRequestId,
 };
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
 use libp2p::PeerId;
@@ -148,6 +148,13 @@ pub struct SyncManager {
     /// blocks. Once set, `reset_local_state()` refuses to go below this
     /// floor — preventing the infinite snap sync death spiral.
     confirmed_height_floor: u64,
+
+    // === CHECKPOINT HEALTH: CANONICAL HASH RING BUFFER ===
+    /// Recent (height, hash) pairs from our canonical chain. Used by
+    /// `checkpoint_health()` to compare at the peer's reported height
+    /// instead of our tip — tolerating normal status-protocol lag while
+    /// still detecting real forks. Capped at 200 entries (~33 min at 10s slots).
+    recent_canonical_hashes: VecDeque<(u64, Hash)>,
 }
 
 impl SyncManager {
@@ -192,6 +199,8 @@ impl SyncManager {
             blocks_since_resync_completed: 0,
             // INC-I-005 Fix C: monotonic progress floor
             confirmed_height_floor: 0,
+            // Checkpoint health: canonical hash ring buffer
+            recent_canonical_hashes: VecDeque::with_capacity(200),
         }
     }
 
@@ -243,6 +252,20 @@ impl SyncManager {
         self.local_height = height;
         self.local_hash = hash;
         self.local_slot = slot;
+
+        // Track canonical (height, hash) for checkpoint_health() comparisons.
+        // On reorg, earlier heights may appear again — replace stale entries.
+        while self
+            .recent_canonical_hashes
+            .back()
+            .is_some_and(|(h, _)| *h >= height)
+        {
+            self.recent_canonical_hashes.pop_back();
+        }
+        self.recent_canonical_hashes.push_back((height, hash));
+        if self.recent_canonical_hashes.len() > 200 {
+            self.recent_canonical_hashes.pop_front();
+        }
 
         // Check if we're now synchronized (require both height AND slot alignment)
         if let Some(best_peer) = self.best_peer() {

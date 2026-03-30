@@ -210,24 +210,58 @@ impl SyncManager {
     ///
     /// Returns (peer_count, peers_agreeing_with_local, total_unique_hashes).
     /// If peers_agreeing == peer_count and unique_hashes == 1, the network is healthy.
+    ///
+    /// Compares each peer's `best_hash` against our canonical hash **at the
+    /// peer's reported height** (via `recent_canonical_hashes` ring buffer).
+    /// This tolerates the normal status-protocol lag where peers report a hash
+    /// 1-2 blocks behind our tip, while still detecting real forks (different
+    /// hash at the same height).
     pub fn checkpoint_health(&self) -> (usize, usize, usize) {
         let peer_count = self.peers.len();
         if peer_count == 0 {
             return (0, 0, 0);
         }
 
-        let local_hash = self.local_hash;
         let mut agreeing = 0;
-        let mut unique_hashes = std::collections::HashSet::new();
+        // Track unique chain tips only among non-agreeing peers to detect real forks.
+        // Peers that match our canonical chain at their height are on the same chain
+        // regardless of which specific height they've reported.
+        let mut divergent_hashes = std::collections::HashSet::new();
 
         for status in self.peers.values() {
-            unique_hashes.insert(status.best_hash);
-            if status.best_hash == local_hash {
-                agreeing += 1;
+            // Look up our canonical hash at the peer's reported height
+            let our_hash_at_peer_height = self
+                .recent_canonical_hashes
+                .iter()
+                .find(|(h, _)| *h == status.best_height)
+                .map(|(_, hash)| *hash);
+
+            match our_hash_at_peer_height {
+                Some(our_hash) if our_hash == status.best_hash => {
+                    // Peer is on our chain, just behind our tip
+                    agreeing += 1;
+                }
+                Some(_) => {
+                    // Same height, different hash = real fork
+                    divergent_hashes.insert(status.best_hash);
+                }
+                None => {
+                    // Peer's height not in our ring buffer (>200 blocks behind
+                    // or ahead of us). Conservative: count as not agreeing.
+                    divergent_hashes.insert(status.best_hash);
+                }
             }
         }
 
-        (peer_count, agreeing, unique_hashes.len())
+        // unique_chain_tips: 1 (ours) + number of distinct divergent hashes.
+        // If all peers agree, divergent_hashes is empty → 1 tip total.
+        let unique_chain_tips = if divergent_hashes.is_empty() {
+            1
+        } else {
+            1 + divergent_hashes.len()
+        };
+
+        (peer_count, agreeing, unique_chain_tips)
     }
 
     /// Update the network tip slot from a received block via gossip

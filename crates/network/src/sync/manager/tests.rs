@@ -4481,4 +4481,117 @@ mod m2_regression_tests {
         assert_eq!(manager.snap.attempts, 0);
         assert!(manager.snap.blacklisted_peers.is_empty());
     }
+
+    /// Checkpoint health: peers behind our tip (normal lag) should count as agreeing
+    /// when their best_hash matches our canonical hash at their reported height.
+    #[test]
+    fn test_checkpoint_health_tolerates_peer_lag() {
+        let genesis = Hash::ZERO;
+        let mut manager = SyncManager::new(SyncConfig::default(), genesis);
+
+        // Simulate applying blocks 1..=10, each with a unique hash
+        let mut hashes = vec![genesis];
+        for h in 1..=10u64 {
+            let hash = Hash::from_bytes([h as u8; 32]);
+            hashes.push(hash);
+            manager.update_local_tip(h, hash, h as u32 * 10);
+        }
+
+        // Add peers that lag behind (reporting height 8 and 9)
+        let peer1 = PeerId::random();
+        let peer2 = PeerId::random();
+        manager.add_peer(peer1, 8, hashes[8], 80);
+        manager.add_peer(peer2, 9, hashes[9], 90);
+
+        let (count, agreeing, tips) = manager.checkpoint_health();
+        assert_eq!(count, 2);
+        assert_eq!(agreeing, 2, "Peers on our canonical chain should agree");
+        assert_eq!(tips, 1, "All on same chain = 1 tip");
+    }
+
+    /// Checkpoint health: a peer at the same height but different hash = real fork.
+    #[test]
+    fn test_checkpoint_health_detects_real_fork() {
+        let genesis = Hash::ZERO;
+        let mut manager = SyncManager::new(SyncConfig::default(), genesis);
+
+        let _hash_5 = Hash::from_bytes([5u8; 32]);
+        for h in 1..=5u64 {
+            let hash = Hash::from_bytes([h as u8; 32]);
+            manager.update_local_tip(h, hash, h as u32 * 10);
+        }
+
+        // Peer at height 5 but with a DIFFERENT hash = fork
+        let forked_hash = Hash::from_bytes([55u8; 32]);
+        let peer = PeerId::random();
+        manager.add_peer(peer, 5, forked_hash, 50);
+
+        let (count, agreeing, tips) = manager.checkpoint_health();
+        assert_eq!(count, 1);
+        assert_eq!(agreeing, 0, "Forked peer must not agree");
+        assert_eq!(tips, 2, "Our chain + forked chain = 2 tips");
+    }
+
+    /// Checkpoint health: mix of agreeing and forked peers.
+    #[test]
+    fn test_checkpoint_health_mixed_peers() {
+        let genesis = Hash::ZERO;
+        let mut manager = SyncManager::new(SyncConfig::default(), genesis);
+
+        let mut hashes = vec![genesis];
+        for h in 1..=10u64 {
+            let hash = Hash::from_bytes([h as u8; 32]);
+            hashes.push(hash);
+            manager.update_local_tip(h, hash, h as u32 * 10);
+        }
+
+        // 2 peers on our chain (lagging)
+        let p1 = PeerId::random();
+        let p2 = PeerId::random();
+        manager.add_peer(p1, 8, hashes[8], 80);
+        manager.add_peer(p2, 10, hashes[10], 100);
+
+        // 1 peer on a fork at height 9
+        let p3 = PeerId::random();
+        let forked = Hash::from_bytes([99u8; 32]);
+        manager.add_peer(p3, 9, forked, 90);
+
+        let (count, agreeing, tips) = manager.checkpoint_health();
+        assert_eq!(count, 3);
+        assert_eq!(agreeing, 2, "2 peers on our chain");
+        assert_eq!(tips, 2, "Our chain + 1 forked chain");
+    }
+
+    /// Checkpoint health: ring buffer handles reorgs (duplicate heights replaced).
+    #[test]
+    fn test_checkpoint_health_reorg_replaces_stale_hashes() {
+        let genesis = Hash::ZERO;
+        let mut manager = SyncManager::new(SyncConfig::default(), genesis);
+
+        // Apply blocks 1..=5
+        for h in 1..=5u64 {
+            manager.update_local_tip(h, Hash::from_bytes([h as u8; 32]), h as u32 * 10);
+        }
+
+        // Reorg: tip drops back to 3, then applies new 4 and 5
+        let new_hash_4 = Hash::from_bytes([44u8; 32]);
+        let new_hash_5 = Hash::from_bytes([55u8; 32]);
+        manager.update_local_tip(4, new_hash_4, 40);
+        manager.update_local_tip(5, new_hash_5, 50);
+
+        // Peer reports the NEW hash at height 4
+        let peer = PeerId::random();
+        manager.add_peer(peer, 4, new_hash_4, 40);
+
+        let (_, agreeing, _) = manager.checkpoint_health();
+        assert_eq!(agreeing, 1, "Peer matches post-reorg canonical hash");
+
+        // Peer with OLD hash at height 4 should NOT agree
+        let peer2 = PeerId::random();
+        let old_hash_4 = Hash::from_bytes([4u8; 32]);
+        manager.add_peer(peer2, 4, old_hash_4, 40);
+
+        let (_, agreeing, _) = manager.checkpoint_health();
+        assert_eq!(agreeing, 1, "Old fork hash must not agree");
+    }
 }
