@@ -312,7 +312,10 @@ pub(super) async fn handle_behaviour_event(
             }
 
             // Add the peer's routable addresses to kademlia (unless DHT is disabled)
-            if !config.no_dht {
+            // Skip our own peer ID — DHT-propagated self-addresses cause
+            // self-connection loops (Noise handshake → "Local peer ID" rejection).
+            let local_peer_id = *swarm.local_peer_id();
+            if !config.no_dht && peer_id != local_peer_id {
                 for addr in routable_addrs {
                     debug!("[DHT] Adding address for peer {}: {}", peer_id, addr);
                     swarm.behaviour_mut().kademlia.add_address(&peer_id, addr);

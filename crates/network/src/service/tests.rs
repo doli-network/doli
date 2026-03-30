@@ -168,6 +168,49 @@ fn test_is_routable_rejects_link_local() {
 }
 
 #[test]
+fn test_is_routable_rejects_rfc1918_private() {
+    // 10.0.0.0/8
+    let addr: Multiaddr = "/ip4/10.0.0.1/tcp/30300".parse().unwrap();
+    assert!(!is_routable_address(&addr));
+    let addr2: Multiaddr = "/ip4/10.10.10.189/tcp/30300".parse().unwrap();
+    assert!(!is_routable_address(&addr2));
+
+    // 172.16.0.0/12
+    let addr3: Multiaddr = "/ip4/172.16.0.1/tcp/30300".parse().unwrap();
+    assert!(!is_routable_address(&addr3));
+    let addr4: Multiaddr = "/ip4/172.31.255.255/tcp/30300".parse().unwrap();
+    assert!(!is_routable_address(&addr4));
+    // 172.32.x should pass (outside /12 range)
+    let addr5: Multiaddr = "/ip4/172.32.0.1/tcp/30300".parse().unwrap();
+    assert!(is_routable_address(&addr5));
+
+    // 192.168.0.0/16
+    let addr6: Multiaddr = "/ip4/192.168.1.1/tcp/30300".parse().unwrap();
+    assert!(!is_routable_address(&addr6));
+    let addr7: Multiaddr = "/ip4/192.168.134.128/tcp/30300".parse().unwrap();
+    assert!(!is_routable_address(&addr7));
+
+    // Docker bridge IPs
+    let addr8: Multiaddr = "/ip4/172.17.0.1/tcp/30300".parse().unwrap();
+    assert!(!is_routable_address(&addr8));
+    let addr9: Multiaddr = "/ip4/172.18.0.1/tcp/30300".parse().unwrap();
+    assert!(!is_routable_address(&addr9));
+}
+
+#[test]
+fn test_is_routable_rejects_cgnat_shared() {
+    // RFC 6598 shared address space (100.64.0.0/10)
+    let addr: Multiaddr = "/ip4/100.64.0.1/tcp/30300".parse().unwrap();
+    assert!(!is_routable_address(&addr));
+    let addr2: Multiaddr = "/ip4/100.127.255.255/tcp/30300".parse().unwrap();
+    assert!(!is_routable_address(&addr2));
+
+    // 100.128.x should pass (outside /10 range)
+    let addr3: Multiaddr = "/ip4/100.128.0.1/tcp/30300".parse().unwrap();
+    assert!(is_routable_address(&addr3));
+}
+
+#[test]
 fn test_strip_p2p_suffix() {
     // With /p2p suffix → stripped
     let addr: Multiaddr = "/ip4/198.51.100.1/tcp/30300/p2p/12D3KooWTest"

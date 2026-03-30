@@ -357,7 +357,9 @@ pub(super) async fn handle_swarm_event(
             error,
             ..
         } => {
-            warn!(
+            // Demoted to debug — these are expected at scale (duplicate connections,
+            // max_established_per_peer rejections, Kademlia discovery races).
+            debug!(
                 "[MEM-CONN] Incoming connection REJECTED: {} (local={}, remote={})",
                 error, local_addr, send_back_addr
             );

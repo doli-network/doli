@@ -15,13 +15,23 @@ pub(super) fn strip_p2p_suffix(addr: &Multiaddr) -> Multiaddr {
         .collect()
 }
 
-/// Filters out loopback (127.x), unspecified (0.0.0.0), and link-local (169.254.x)
-/// addresses that should not be advertised to remote peers via Identify/Kademlia.
+/// Filters out non-globally-routable addresses that should not be advertised
+/// to remote peers via Identify/Kademlia:
+/// - Loopback (127.x)
+/// - Unspecified (0.0.0.0)
+/// - Link-local (169.254.x)
+/// - RFC 1918 private (10.x, 172.16-31.x, 192.168.x)
+/// - RFC 6598 shared/CGNAT (100.64-127.x)
 pub(super) fn is_routable_address(addr: &Multiaddr) -> bool {
     for proto in addr.iter() {
         match proto {
             Protocol::Ip4(ip) => {
-                if ip.is_loopback() || ip.is_unspecified() || ip.is_link_local() {
+                if ip.is_loopback()
+                    || ip.is_unspecified()
+                    || ip.is_link_local()
+                    || ip.is_private()
+                    || is_shared_address(ip)
+                {
                     return false;
                 }
             }
@@ -34,6 +44,12 @@ pub(super) fn is_routable_address(addr: &Multiaddr) -> bool {
         }
     }
     true
+}
+
+/// RFC 6598 shared address space (100.64.0.0/10) used by CGNAT.
+fn is_shared_address(ip: std::net::Ipv4Addr) -> bool {
+    let octets = ip.octets();
+    octets[0] == 100 && (octets[1] & 0xC0) == 64
 }
 
 /// Load keypair from file
