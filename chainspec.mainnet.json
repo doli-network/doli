@@ -3,8 +3,8 @@
   "id": "mainnet",
   "network": "Mainnet",
   "genesis": {
-    "timestamp": 1774540572,
-    "message": "DOLI Mainnet Genesis - Chain reset 19/Mar/2026 v2",
+    "timestamp": 1774841200,
+    "message": "DOLI Mainnet Genesis - Chain reset 29/Mar/2026 v3",
     "initial_reward": 100000000
   },
   "consensus": {
