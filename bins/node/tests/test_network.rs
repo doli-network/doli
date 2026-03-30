@@ -2161,7 +2161,7 @@ async fn test_scheduler_slot_coverage_500_nodes_varied_bonds() {
             sample_fps.push((node_id, fp));
         }
 
-        let fp0 = sample_fps[0].1.clone();
+        let fp0 = sample_fps[0].1;
         for (node_id, fp) in &sample_fps[1..] {
             if *fp != fp0 {
                 scheduler_divergences += 1;

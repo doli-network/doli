@@ -967,20 +967,20 @@ mod tests {
         let pubkey_hash = crypto::hash::hash(b"fee_test_addr");
         let tx_hash = crypto::hash::hash(b"fee_funding_tx");
 
-        // Bond output: 4 bytes extra_data => minimum_fee = 1 + 4 = 5
-        // Fund with bond_amount + 4 sats (fee = 4 < minimum 5)
+        // Bond output: 4 bytes extra_data => minimum_fee = 1 + 4/100 = 1
+        // Fund with exactly bond_amount (fee = 0 < minimum 1)
         let bond_amount = 1_000_000_000u64;
         let mut utxo_set = UtxoSet::new();
         let outpoint = Outpoint::new(tx_hash, 0);
         let entry = UtxoEntry {
-            output: Output::normal(bond_amount + 4, pubkey_hash),
+            output: Output::normal(bond_amount, pubkey_hash),
             height: 1,
             is_coinbase: false,
             is_epoch_reward: false,
         };
         utxo_set.insert(outpoint, entry).unwrap();
 
-        // Fee: (bond_amount + 4) - bond_amount = 4 sats, but needs 5 (1 + 4).
+        // Fee: bond_amount - bond_amount = 0 sats, but needs 1.
         let tx = Transaction {
             version: 1,
             tx_type: doli_core::TxType::Transfer,
@@ -996,8 +996,8 @@ mod tests {
 
         let result = mempool.add_transaction(tx, &utxo_set, 100);
         assert!(
-            matches!(result, Err(MempoolError::FeeTooLow(4, 5))),
-            "Mempool should reject tx with fee 4 when minimum is 5: {:?}",
+            matches!(result, Err(MempoolError::FeeTooLow(0, 1))),
+            "Mempool should reject tx with fee 0 when minimum is 1: {:?}",
             result
         );
     }
