@@ -1948,10 +1948,16 @@ fn test_max_extra_data_size_era_growth() {
     // Era 0: 512 KB
     assert_eq!(max_extra_data_size(0), BASE_EXTRA_DATA_SIZE);
     assert_eq!(max_extra_data_size(1), BASE_EXTRA_DATA_SIZE);
-    assert_eq!(max_extra_data_size(BLOCKS_PER_ERA - 1), BASE_EXTRA_DATA_SIZE);
+    assert_eq!(
+        max_extra_data_size(BLOCKS_PER_ERA - 1),
+        BASE_EXTRA_DATA_SIZE
+    );
 
     // Era 1: 1 MB
-    assert_eq!(max_extra_data_size(BLOCKS_PER_ERA), BASE_EXTRA_DATA_SIZE * 2);
+    assert_eq!(
+        max_extra_data_size(BLOCKS_PER_ERA),
+        BASE_EXTRA_DATA_SIZE * 2
+    );
 
     // Era 2: 2 MB
     assert_eq!(
@@ -1966,8 +1972,14 @@ fn test_max_extra_data_size_era_growth() {
     );
 
     // Era 4+: 8 MB (capped)
-    assert_eq!(max_extra_data_size(BLOCKS_PER_ERA * 4), MAX_EXTRA_DATA_SIZE_CAP);
-    assert_eq!(max_extra_data_size(BLOCKS_PER_ERA * 10), MAX_EXTRA_DATA_SIZE_CAP);
+    assert_eq!(
+        max_extra_data_size(BLOCKS_PER_ERA * 4),
+        MAX_EXTRA_DATA_SIZE_CAP
+    );
+    assert_eq!(
+        max_extra_data_size(BLOCKS_PER_ERA * 10),
+        MAX_EXTRA_DATA_SIZE_CAP
+    );
     assert_eq!(max_extra_data_size(u64::MAX), MAX_EXTRA_DATA_SIZE_CAP);
 }
 

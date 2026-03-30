@@ -2644,7 +2644,7 @@ mod recovery_gate_tests {
         assert!(manager.fork.needs_genesis_resync);
 
         // Second call — flag already true, but gates still open
-        let second = manager.request_genesis_resync(RecoveryReason::AllPeersBlacklistedDeepFork);
+        let _second = manager.request_genesis_resync(RecoveryReason::AllPeersBlacklistedDeepFork);
         // The method should still pass all gates (flag already set is not a gate)
         // The flag stays true regardless
         assert!(

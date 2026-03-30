@@ -102,7 +102,7 @@ fn test_reorg_weight_saturation_deterministic() {
 
     // Chain B: genesis -> B1 (weight=u64::MAX), fork from genesis
     let block_b1 = make_block_with_producer(genesis, 1, 1);
-    let hash_b1 = block_b1.hash();
+    let _hash_b1 = block_b1.hash();
 
     // Both chains have u64::MAX accumulated weight (saturated)
     let result = handler.check_reorg_weighted(&block_b1, hash_a1, u64::MAX);

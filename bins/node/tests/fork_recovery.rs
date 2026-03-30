@@ -8,7 +8,7 @@
 //! excluded_producers, cached_scheduler, epoch_bond_snapshot) is the REAL field
 //! from the production Node. No mocks. No shortcuts.
 
-use crypto::{Hash, KeyPair, PublicKey};
+use crypto::{Hash, KeyPair};
 use doli_core::consensus::ConsensusParams;
 use doli_core::validation::ValidationMode;
 use doli_core::{Block, BlockHeader, Transaction};

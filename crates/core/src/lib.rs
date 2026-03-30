@@ -273,6 +273,7 @@ pub use pool::{
     compute_twap_price, update_twap, verify_invariant,
 };
 pub use transaction::{
+    max_extra_data_size,
     // Bond stacking transactions
     AddBondData,
     // Collateral/lending types
@@ -292,6 +293,7 @@ pub use transaction::{
     Transaction,
     TxType,
     WithdrawalRequestData,
+    BASE_EXTRA_DATA_SIZE,
     // Collateral/lending constants
     COLLATERAL_DEFAULT_INTEREST_BPS,
     COLLATERAL_DEFAULT_LIQUIDATION_BPS,
@@ -303,7 +305,8 @@ pub use transaction::{
     LENDING_DEPOSIT_VERSION,
     LENDING_POOL_ID_DOMAIN,
     LOAN_ID_DOMAIN,
-    BASE_EXTRA_DATA_SIZE, MAX_EXTRA_DATA_SIZE, MAX_EXTRA_DATA_SIZE_CAP, max_extra_data_size,
+    MAX_EXTRA_DATA_SIZE,
+    MAX_EXTRA_DATA_SIZE_CAP,
     MAX_ROYALTY_BPS,
     NFT_METADATA_VERSION_ROYALTY,
     // Pool constants

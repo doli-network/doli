@@ -1,5 +1,5 @@
 use crate::consensus::TOTAL_SUPPLY;
-use crate::transaction::{Output, OutputType, Transaction, TxType, max_extra_data_size};
+use crate::transaction::{max_extra_data_size, Output, OutputType, Transaction, TxType};
 use crate::types::Amount;
 use crypto::Hash;
 
