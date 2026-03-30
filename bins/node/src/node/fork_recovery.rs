@@ -630,10 +630,53 @@ impl Node {
         self.block_store
             .seed_canonical_index(snapshot.block_hash, snapshot.block_height)?;
 
-        // Step 5: Track snap sync height for validation mode selection
+        // Step 5: Rebuild epoch_bond_snapshot and epoch_producer_list from restored ProducerSet.
+        // Without this, the node restarts with epoch_bond_snapshot from init.rs which
+        // uses count_bonds() on the UTXO set — but after snap sync the UTXO may not have
+        // matching Bond UTXOs for all producers, causing scheduler divergence (INC-I-010).
+        {
+            let ps = self.producer_set.read().await;
+            let us = self.utxo_set.read().await;
+            let h = snapshot.block_height;
+            let bpe = self.config.network.blocks_per_reward_epoch();
+            let bond_unit = self.config.network.bond_unit();
+            let active = ps.active_producers_at_height(h);
+
+            // Build bond snapshot from ProducerSet bonds (authoritative after snap sync)
+            let mut snap = std::collections::HashMap::new();
+            for p in &active {
+                let pkh =
+                    crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, p.public_key.as_bytes());
+                // Use UTXO bond count, but guarantee at least 1 (registered = has bond)
+                let count = us.count_bonds(&pkh, bond_unit).max(1) as u64;
+                snap.insert(pkh, count);
+            }
+            let total: u64 = snap.values().sum();
+            let epoch = if bpe > 0 { h / bpe } else { 0 };
+
+            self.epoch_bond_snapshot = snap;
+            self.epoch_bond_snapshot_epoch = epoch;
+
+            // Rebuild epoch_producer_list from active producers
+            let mut pks: Vec<_> = active.iter().map(|p| p.public_key).collect();
+            pks.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+            self.epoch_producer_list = pks;
+
+            // Clear cached scheduler so it rebuilds with the correct snapshot
+            self.cached_scheduler = None;
+
+            info!(
+                "[SNAP_SYNC] Rebuilt epoch state: {} producers, total_bonds={}, epoch={}",
+                self.epoch_bond_snapshot.len(),
+                total,
+                epoch
+            );
+        }
+
+        // Step 6: Track snap sync height for validation mode selection
         self.snap_sync_height = Some(snapshot.block_height);
 
-        // Step 6: Inform sync manager of block store floor
+        // Step 7: Inform sync manager of block store floor
         {
             let mut sync = self.sync_manager.write().await;
             sync.set_store_floor(snapshot.block_height);

@@ -252,6 +252,13 @@ pub struct Input {
     /// Public key of the spender (P2PKH: reveals pubkey at spend time).
     /// Pre-fork transactions have `None` (signature verification skipped).
     /// Post-fork transactions MUST have `Some(pk)` for signature enforcement.
+    ///
+    /// IMPORTANT: `#[serde(skip)]` keeps this OUT of the bincode wire format.
+    /// Adding any field to bincode changes the byte layout — even Option::None
+    /// writes a discriminant byte, breaking v5.0.x deserialization. The wire
+    /// format must not change until the activation height. Post-fork wire
+    /// encoding will use a height-aware serialization mechanism (TODO).
+    #[serde(skip)]
     pub public_key: Option<crypto::PublicKey>,
 }
 

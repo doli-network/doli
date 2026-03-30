@@ -300,26 +300,10 @@ impl Node {
             }
         }
 
-        // P0-001: Enforce public_key presence after sig_verification_height.
-        // Pre-fork blocks have public_key=None (legacy), post-fork must have Some.
-        {
-            let net_params = doli_core::network_params::NetworkParams::load(self.config.network);
-            if height >= net_params.sig_verification_height {
-                for tx in &block.transactions {
-                    if tx.is_coinbase() {
-                        continue; // Coinbase has no inputs
-                    }
-                    for (i, input) in tx.inputs.iter().enumerate() {
-                        if input.public_key.is_none() {
-                            return Err(validation::ValidationError::InvalidTransaction(format!(
-                                "input {} missing public_key (required at height >= {})",
-                                i, net_params.sig_verification_height
-                            )));
-                        }
-                    }
-                }
-            }
-        }
+        // P0-001: public_key enforcement is DEFERRED.
+        // The public_key field uses #[serde(skip)] — it doesn't survive wire serialization.
+        // Height-aware wire format encoding is needed before this gate can activate.
+        // TODO: implement height-aware block serialization for post-fork public_key inclusion.
 
         validation::validate_block_with_mode(block, &ctx, mode)
     }
