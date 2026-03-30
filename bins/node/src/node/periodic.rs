@@ -547,7 +547,9 @@ impl Node {
                                 .filter_map(|e| e.ok())
                                 .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
                                 .collect();
-                            dirs.sort_by_key(|e| e.file_name());
+                            dirs.sort_by_key(|e| {
+                                parse_checkpoint_height(&e.file_name().to_string_lossy())
+                            });
                             if dirs.len() > 5 {
                                 for old in &dirs[..dirs.len() - 5] {
                                     let _ = std::fs::remove_dir_all(old.path());
@@ -592,5 +594,66 @@ impl Node {
         }
 
         Ok(())
+    }
+}
+
+/// Parse the numeric height from a checkpoint directory name like "h4535-1774889941".
+/// Returns 0 if the name doesn't match the expected format.
+pub(crate) fn parse_checkpoint_height(name: &str) -> u64 {
+    name.strip_prefix('h')
+        .and_then(|s| s.split('-').next())
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_checkpoint_height() {
+        assert_eq!(parse_checkpoint_height("h526-1774849792"), 526);
+        assert_eq!(parse_checkpoint_height("h4535-1774889941"), 4535);
+        assert_eq!(parse_checkpoint_height("h12345-9999999999"), 12345);
+        assert_eq!(parse_checkpoint_height("h0-0"), 0);
+        assert_eq!(parse_checkpoint_height("garbage"), 0);
+        assert_eq!(parse_checkpoint_height(""), 0);
+    }
+
+    #[test]
+    fn test_checkpoint_sort_order_numeric_vs_lexicographic() {
+        // These are the actual directory names from the production bug.
+        // Lexicographic sort puts h526-h926 AFTER h3635-h4535 (wrong).
+        // Numeric sort must put h526-h926 BEFORE h3635-h4535 (correct).
+        let mut names = vec![
+            "h526-1774849792",
+            "h626-1774850792",
+            "h726-1774851792",
+            "h826-1774852792",
+            "h926-1774853792",
+            "h3635-1774880882",
+            "h3735-1774881882",
+            "h4335-1774887902",
+            "h4435-1774888902",
+            "h4535-1774889941",
+        ];
+
+        // Sort numerically by height (the fix)
+        names.sort_by_key(|n| parse_checkpoint_height(n));
+
+        // After numeric sort, lowest heights first, highest last
+        assert_eq!(parse_checkpoint_height(names[0]), 526);
+        assert_eq!(parse_checkpoint_height(names[1]), 626);
+        assert_eq!(parse_checkpoint_height(names.last().unwrap()), 4535);
+
+        // Rotation keeps last 5 → should keep h3635, h3735, h4335, h4435, h4535
+        let keep = &names[names.len() - 5..];
+        let keep_heights: Vec<u64> = keep.iter().map(|n| parse_checkpoint_height(n)).collect();
+        assert_eq!(keep_heights, vec![3635, 3735, 4335, 4435, 4535]);
+
+        // The old checkpoints (h526-h926) are in the "delete" range
+        let delete = &names[..names.len() - 5];
+        let delete_heights: Vec<u64> = delete.iter().map(|n| parse_checkpoint_height(n)).collect();
+        assert_eq!(delete_heights, vec![526, 626, 726, 826, 926]);
     }
 }

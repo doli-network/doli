@@ -163,7 +163,16 @@ impl RpcContext {
                             .collect()
                     })
                     .unwrap_or_default();
-                dirs.sort_by_key(|e| e.file_name());
+                dirs.sort_by_key(|e| {
+                    // Sort numerically by height, not lexicographically.
+                    // h526 must sort BEFORE h4535 (lexicographic gets this wrong).
+                    e.file_name()
+                        .to_string_lossy()
+                        .strip_prefix('h')
+                        .and_then(|s| s.split('-').next())
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .unwrap_or(0)
+                });
 
                 let last = dirs
                     .last()
