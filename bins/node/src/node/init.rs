@@ -859,7 +859,11 @@ impl Node {
             cumulative_rollback_depth: 0,
             seen_blocks_for_slot: HashSet::new(),
             excluded_producers: HashSet::new(),
-            epoch_producer_list: producers.iter().map(|kp| *kp.public_key()).collect(),
+            epoch_producer_list: {
+                let mut pks: Vec<_> = producers.iter().map(|kp| *kp.public_key()).collect();
+                pks.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+                pks
+            },
             epoch_bond_snapshot,
             epoch_bond_snapshot_epoch: 0,
             cached_scheduler: None,

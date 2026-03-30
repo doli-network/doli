@@ -1,5 +1,5 @@
 use crate::consensus::TOTAL_SUPPLY;
-use crate::transaction::{Output, OutputType, Transaction, TxType, MAX_EXTRA_DATA_SIZE};
+use crate::transaction::{Output, OutputType, Transaction, TxType, max_extra_data_size};
 use crate::types::Amount;
 use crypto::Hash;
 
@@ -265,13 +265,14 @@ pub(super) fn validate_outputs(
             })?;
         }
 
-        // Validate extra_data size limit (all output types)
-        if output.extra_data.len() > MAX_EXTRA_DATA_SIZE {
+        // Validate extra_data size limit (era-aware: doubles every ~4 years)
+        let max_data = max_extra_data_size(ctx.current_height);
+        if output.extra_data.len() > max_data {
             return Err(ValidationError::InvalidTransaction(format!(
                 "output {} extra_data exceeds max size ({} > {})",
                 i,
                 output.extra_data.len(),
-                MAX_EXTRA_DATA_SIZE,
+                max_data,
             )));
         }
 

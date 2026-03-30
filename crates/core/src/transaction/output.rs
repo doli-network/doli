@@ -5,13 +5,39 @@ use crate::types::{Amount, BlockHeight};
 
 use super::types::OutputType;
 
-/// Maximum size of extra_data in an output (bytes).
-/// Reserved for conditions, metadata, and embedded content (e.g. NFT images).
+/// Base maximum size of extra_data in an output (bytes) — Era 0.
+/// Reserved for conditions, metadata, and embedded content (e.g. NFT images, programs).
 /// Normal and Bond outputs must have empty extra_data.
-/// 4096 bytes enables: multisig 100+ signers, on-chain NFT images (64x64),
-/// complex composed conditions, zero-knowledge proofs, and cases not yet imagined.
+/// 512 KB enables: on-chain images, complex conditions, zero-knowledge proofs,
+/// programmable UTXOs, and cases not yet imagined.
+/// Doubles each era (~4 years), same schedule as block size growth.
 /// The field is variable — unused bytes cost nothing.
-pub const MAX_EXTRA_DATA_SIZE: usize = 4096;
+pub const BASE_EXTRA_DATA_SIZE: usize = 524_288; // 512 KB
+
+/// Maximum extra_data size cap (Era 4+).
+pub const MAX_EXTRA_DATA_SIZE_CAP: usize = 8_388_608; // 8 MB
+
+/// Legacy alias — use `max_extra_data_size(height)` for height-aware validation.
+/// Kept for condition encoding checks (which don't have height context).
+pub const MAX_EXTRA_DATA_SIZE: usize = BASE_EXTRA_DATA_SIZE;
+
+/// Calculate max extra_data size for a given block height.
+///
+/// Doubles every era (~4 years), same schedule as block size:
+/// - Era 0: 512 KB
+/// - Era 1: 1 MB
+/// - Era 2: 2 MB
+/// - Era 3: 4 MB
+/// - Era 4+: 8 MB (capped)
+#[must_use]
+pub fn max_extra_data_size(height: crate::types::BlockHeight) -> usize {
+    let era = height / crate::consensus::BLOCKS_PER_ERA;
+    if era >= 4 {
+        MAX_EXTRA_DATA_SIZE_CAP
+    } else {
+        BASE_EXTRA_DATA_SIZE << era
+    }
+}
 
 /// NFT metadata version (without royalties)
 pub const NFT_METADATA_VERSION: u8 = 1;
