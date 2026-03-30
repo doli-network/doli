@@ -1658,7 +1658,7 @@ fn test_inc_i017_deep_fork_snap_redirect_allowed_for_synced_nodes() {
 
 #[test]
 fn test_gossip_watchdog_blocks_production_when_no_gossip() {
-    // Scenario: Node has peers, gossip timer expired → should block production.
+    // Scenario: Node has peers AHEAD of us, gossip timer expired → should block.
     // This reproduces the mainnet mesh partition where the node had 26 peers
     // but no gossip blocks arrived for 2+ minutes.
     let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
@@ -1666,10 +1666,11 @@ fn test_gossip_watchdog_blocks_production_when_no_gossip() {
     manager.local_height = 24340;
     manager.local_slot = 24493;
 
+    // Peers are AHEAD — gossip should be delivering their blocks
     let peer1 = PeerId::random();
     let peer2 = PeerId::random();
-    manager.add_peer(peer1, 24340, Hash::ZERO, 24493);
-    manager.add_peer(peer2, 24340, Hash::ZERO, 24493);
+    manager.add_peer(peer1, 24342, Hash::ZERO, 24495);
+    manager.add_peer(peer2, 24342, Hash::ZERO, 24495);
     manager.first_peer_status_received = Some(Instant::now());
 
     // Simulate: last gossip block was 200 seconds ago (exceeds 180s default timeout)
@@ -1686,6 +1687,32 @@ fn test_gossip_watchdog_blocks_production_when_no_gossip() {
         }
         other => panic!("Expected BlockedNoGossipActivity, got: {:?}", other),
     }
+}
+
+#[test]
+fn test_gossip_watchdog_bypassed_when_all_peers_at_same_height() {
+    // Scenario: Cold restart / Guardian recovery — all peers at same height,
+    // gossip expired. Should allow production to break the deadlock.
+    let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+    manager.local_height = 24340;
+    manager.local_slot = 24493;
+
+    let peer1 = PeerId::random();
+    let peer2 = PeerId::random();
+    manager.add_peer(peer1, 24340, Hash::ZERO, 24493);
+    manager.add_peer(peer2, 24340, Hash::ZERO, 24493);
+    manager.first_peer_status_received = Some(Instant::now());
+
+    // Gossip expired — but all peers at same height = cold restart scenario
+    manager.last_block_received_via_gossip = Some(Instant::now() - Duration::from_secs(200));
+
+    let result = manager.can_produce(24500);
+    assert_eq!(
+        result,
+        ProductionAuthorization::Authorized,
+        "All peers at same height = cold restart, watchdog must be bypassed"
+    );
 }
 
 #[test]
@@ -1739,17 +1766,18 @@ fn test_gossip_watchdog_skipped_when_insufficient_peers() {
 
 #[test]
 fn test_gossip_watchdog_respects_custom_timeout() {
-    // Scenario: Custom short timeout (30s) — blocks after 30s of silence.
+    // Scenario: Custom short timeout (30s), peers ahead — blocks after 30s of silence.
     let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
 
     manager.local_height = 100;
     manager.local_slot = 100;
     manager.gossip_activity_timeout_secs = 30; // Short timeout
 
+    // Peers ahead — watchdog should activate
     let peer1 = PeerId::random();
     let peer2 = PeerId::random();
-    manager.add_peer(peer1, 100, Hash::ZERO, 100);
-    manager.add_peer(peer2, 100, Hash::ZERO, 100);
+    manager.add_peer(peer1, 102, Hash::ZERO, 102);
+    manager.add_peer(peer2, 102, Hash::ZERO, 102);
     manager.first_peer_status_received = Some(Instant::now());
 
     // 35 seconds without gossip — exceeds custom 30s timeout
@@ -1799,16 +1827,17 @@ fn test_note_gossip_resets_watchdog() {
     manager.local_height = 100;
     manager.local_slot = 100;
 
+    // Peers ahead — watchdog will activate
     let peer1 = PeerId::random();
     let peer2 = PeerId::random();
-    manager.add_peer(peer1, 100, Hash::ZERO, 100);
-    manager.add_peer(peer2, 100, Hash::ZERO, 100);
+    manager.add_peer(peer1, 102, Hash::ZERO, 102);
+    manager.add_peer(peer2, 102, Hash::ZERO, 102);
     manager.first_peer_status_received = Some(Instant::now());
 
     // Gossip expired (200s ago)
     manager.last_block_received_via_gossip = Some(Instant::now() - Duration::from_secs(200));
 
-    // Verify it WOULD block
+    // Verify it WOULD block (peers ahead + no gossip)
     assert!(matches!(
         manager.can_produce(101),
         ProductionAuthorization::BlockedNoGossipActivity { .. }

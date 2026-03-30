@@ -149,18 +149,35 @@ impl SyncManager {
         //
         // Only checks when we have sufficient peers (0-peer case handled above).
         // Self-produced blocks do NOT reset the gossip timer (production/mod.rs).
+        //
+        // BYPASS: When ALL peers are at the same height as us (or lower), the
+        // silence is because nobody has produced yet — not because our gossip is
+        // broken. This prevents the cold-restart deadlock where all nodes block
+        // each other (Guardian recovery, full network restart). Once any peer
+        // advances ahead, the watchdog activates normally to catch INC-I-016.
         if self.peers.len() >= self.min_peers_for_production {
             if let Some(last_gossip) = self.last_block_received_via_gossip {
                 let secs = last_gossip.elapsed().as_secs();
                 if secs >= self.gossip_activity_timeout_secs {
-                    warn!(
-                        "[CAN_PRODUCE] BLOCKED: no gossip blocks for {}s (timeout={}s) with {} peers — possible mesh isolation",
-                        secs, self.gossip_activity_timeout_secs, self.peers.len()
-                    );
-                    return ProductionAuthorization::BlockedNoGossipActivity {
-                        seconds_since_gossip: secs,
-                        peer_count: self.peers.len(),
-                    };
+                    // Check if any peer is ahead of us — if so, gossip SHOULD
+                    // be delivering their blocks and the watchdog is correct.
+                    let any_peer_ahead = self
+                        .peers
+                        .values()
+                        .any(|p| p.best_height > self.local_height);
+
+                    if any_peer_ahead {
+                        warn!(
+                            "[CAN_PRODUCE] BLOCKED: no gossip blocks for {}s (timeout={}s) with {} peers — possible mesh isolation",
+                            secs, self.gossip_activity_timeout_secs, self.peers.len()
+                        );
+                        return ProductionAuthorization::BlockedNoGossipActivity {
+                            seconds_since_gossip: secs,
+                            peer_count: self.peers.len(),
+                        };
+                    }
+                    // All peers at same height or lower — cold restart scenario.
+                    // Allow production to break the deadlock.
                 }
             }
         }
