@@ -155,7 +155,16 @@ impl Node {
         let height = self.chain_state.read().await.best_height + 1;
         let block_slot = block.header.slot;
         let block_producer = block.header.producer;
-        if let Err(e) = self.apply_block(block, ValidationMode::Full).await {
+        // INC-I-010 layer 3: After snap sync, epoch_producer_list contains ALL active
+        // producers instead of the attestation-filtered subset. Full validation would
+        // reject valid gossip blocks (slot%N divergence). Use Light mode until the next
+        // epoch boundary rebuilds the list correctly and clears snap_sync_height.
+        let mode = if self.snap_sync_height.is_some() {
+            ValidationMode::Light
+        } else {
+            ValidationMode::Full
+        };
+        if let Err(e) = self.apply_block(block, mode).await {
             warn!(
                 "[BLOCK] REJECT slot={} h={} producer={} error={} — skipping, sync will catch up",
                 block_slot,

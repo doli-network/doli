@@ -136,6 +136,12 @@ impl Node {
                 self.epoch_producer_list = new_list;
                 // Clear mid-epoch exclusions — fresh start for new epoch
                 self.excluded_producers.clear();
+                // INC-I-010 layer 3: epoch_producer_list is now rebuilt with
+                // attestation filtering — end the post-snap Light-mode window.
+                if self.snap_sync_height.is_some() {
+                    info!("[SNAP_SYNC] Epoch boundary reached — switching gossip validation to Full mode");
+                    self.snap_sync_height = None;
+                }
             }
         }
 

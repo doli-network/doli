@@ -638,3 +638,51 @@ async fn test_fork_recovery_blocked_by_divergent_excluded_producers() {
     assert_eq!(node.chain_state.read().await.best_height, 53);
     assert_eq!(node.chain_state.read().await.best_hash, canonical[7].hash());
 }
+
+// ============================================================
+// TEST 12: Post-snap gossip validation mode (INC-I-010 layer 3)
+// ============================================================
+//
+// After snap sync, epoch_producer_list has ALL active producers (unfiltered).
+// The network may have a smaller attestation-filtered list. To avoid rejecting
+// valid gossip blocks (slot%N divergence), gossip uses Light validation until
+// the next epoch boundary rebuilds the list correctly and clears snap_sync_height.
+#[tokio::test]
+async fn test_post_snap_gossip_validation_mode() {
+    let (mut node, producers, _tmp) = make_node(3).await;
+    let params = node.params.clone();
+
+    // Devnet blocks_per_reward_epoch = 4, so epoch boundary at height 4
+    let bpe = node.config.network.blocks_per_reward_epoch();
+    assert_eq!(bpe, 4, "Test assumes devnet blocks_per_reward_epoch=4");
+
+    // Apply 2 blocks (mid-epoch)
+    let chain = build_chain(1, 1, Hash::ZERO, &producers[0], 2, &params);
+    apply_chain(&mut node, &chain).await;
+    assert_eq!(node.chain_state.read().await.best_height, 2);
+
+    // Simulate snap sync: set snap_sync_height (as fork_recovery.rs does)
+    assert!(
+        node.snap_sync_height.is_none(),
+        "should start without snap marker"
+    );
+    node.snap_sync_height = Some(2);
+
+    // During post-snap catch-up, snap_sync_height is Some → gossip would use Light
+    assert!(
+        node.snap_sync_height.is_some(),
+        "snap_sync_height should be set after snap sync"
+    );
+
+    // Apply blocks 3 and 4 — height 4 is the epoch boundary
+    let epoch_blocks = build_chain(3, 3, chain[1].hash(), &producers[0], 2, &params);
+    apply_chain(&mut node, &epoch_blocks).await;
+    assert_eq!(node.chain_state.read().await.best_height, 4);
+
+    // At epoch boundary, post_commit clears snap_sync_height → gossip returns to Full
+    assert!(
+        node.snap_sync_height.is_none(),
+        "snap_sync_height should be cleared at epoch boundary (h={})",
+        node.chain_state.read().await.best_height
+    );
+}
