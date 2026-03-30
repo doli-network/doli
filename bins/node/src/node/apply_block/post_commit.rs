@@ -153,30 +153,12 @@ impl Node {
                 }
             }
 
-            // RE-INCLUDE: producers who attested in this block via presence_root
-            if !self.excluded_producers.is_empty() && !block.header.presence_root.is_zero() {
-                let sorted_pks: Vec<PublicKey> = {
-                    let producers = self.producer_set.read().await;
-                    let active = producers.active_producers_at_height(height);
-                    let mut pks: Vec<PublicKey> = active.iter().map(|p| p.public_key).collect();
-                    pks.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
-                    pks
-                };
-
-                let indices =
-                    decode_attestation_bitfield(&block.header.presence_root, sorted_pks.len());
-                for idx in indices {
-                    if let Some(pk) = sorted_pks.get(idx) {
-                        if self.excluded_producers.remove(pk) {
-                            info!(
-                                "[LIVENESS] RE-INCLUDED {} — attested at h={}",
-                                hex::encode(&pk.as_bytes()[..4]),
-                                height
-                            );
-                        }
-                    }
-                }
-            }
+            // RE-INCLUSION: handled at epoch boundary only (line 136-138 above).
+            // Mid-epoch re-inclusion by attestation was removed because it causes
+            // an exclude→re-include→miss→exclude cycle that prevents the block rate
+            // from reaching 100% when producers are offline. Excluded producers
+            // stay excluded until the next epoch, where the frozen list is rebuilt
+            // from attestation data. They still earn rewards if they attest.
         }
 
         // Per-block attestation: sign chain tip for finality gadget + record in tracker.

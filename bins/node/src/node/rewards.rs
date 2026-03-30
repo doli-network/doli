@@ -390,18 +390,6 @@ impl Node {
 
         let mut excluded: HashSet<PublicKey> = HashSet::new();
 
-        // Get sorted active producers for presence_root decoding
-        let sorted_pks: Vec<PublicKey> = {
-            let ps = self.producer_set.read().await;
-            let mut pks: Vec<PublicKey> = ps
-                .active_producers_at_height(current_h)
-                .iter()
-                .map(|p| p.public_key)
-                .collect();
-            pks.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
-            pks
-        };
-
         for h in start_h..=current_h {
             if let Ok(Some(blk)) = self.block_store.get_block_by_height(h) {
                 // EXCLUDE: from on-chain missed_producers header field
@@ -409,16 +397,8 @@ impl Node {
                     excluded.insert(*pk);
                 }
 
-                // RE-INCLUDE: from on-chain presence_root attestation bitfield
-                if !blk.header.presence_root.is_zero() {
-                    let indices =
-                        decode_attestation_bitfield(&blk.header.presence_root, sorted_pks.len());
-                    for idx in indices {
-                        if let Some(pk) = sorted_pks.get(idx) {
-                            excluded.remove(pk);
-                        }
-                    }
-                }
+                // RE-INCLUSION: only at epoch boundary. Mid-epoch exclusions
+                // are permanent until the next epoch's frozen list rebuild.
             }
         }
 
