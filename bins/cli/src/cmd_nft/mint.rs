@@ -91,7 +91,8 @@ pub(crate) async fn cmd_mint(
     // Calculate fee: base + per-byte for NFT output extra_data
     let fee_units = {
         let extra_bytes: u64 = nft_output.extra_data.len() as u64;
-        doli_core::consensus::BASE_FEE + extra_bytes * doli_core::consensus::FEE_PER_BYTE
+        doli_core::consensus::BASE_FEE
+            + extra_bytes * doli_core::consensus::FEE_PER_BYTE / doli_core::consensus::FEE_DIVISOR
     };
     let utxos: Vec<_> = rpc
         .get_utxos(&minter_pubkey_hash, true)

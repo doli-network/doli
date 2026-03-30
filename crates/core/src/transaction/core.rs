@@ -633,16 +633,18 @@ impl Transaction {
 
     /// Calculate the minimum required fee for this transaction.
     ///
-    /// `fee = BASE_FEE + sum(output.extra_data.len()) * FEE_PER_BYTE`
+    /// `fee = BASE_FEE + (sum(extra_data.len()) * FEE_PER_BYTE) / FEE_DIVISOR`
     ///
-    /// This prices on-chain storage proportionally:
+    /// With FEE_DIVISOR=100, this is 100x cheaper than 1:1 sat/byte:
     /// - Transfer (0 extra_data bytes): 1 sat
-    /// - Bond (4 bytes): 5 sats
-    /// - NFT (300 bytes): 301 sats
-    /// - Pool swap (116 bytes): 117 sats
+    /// - Bond (4 bytes): 1 sat (minimum BASE_FEE)
+    /// - NFT (300 bytes): 4 sats
+    /// - 512 KB image: 5,243 sats (~0.052 DOLI)
     pub fn minimum_fee(&self) -> Amount {
         let extra_bytes: u64 = self.outputs.iter().map(|o| o.extra_data.len() as u64).sum();
-        crate::consensus::BASE_FEE + extra_bytes * crate::consensus::FEE_PER_BYTE
+        let byte_fee =
+            (extra_bytes * crate::consensus::FEE_PER_BYTE) / crate::consensus::FEE_DIVISOR;
+        crate::consensus::BASE_FEE + byte_fee
     }
 
     /// Sum of native DOLI across all outputs.

@@ -457,10 +457,17 @@ pub const ELIGIBLE_PRODUCER_POOL: usize = 5;
 /// This is the minimum cost to include a zero-extra-data transfer on-chain.
 pub const BASE_FEE: Amount = 1;
 
-/// Fee per byte of extra_data in outputs (1 satoshi per byte).
+/// Fee per byte of extra_data in outputs (1 satoshi per byte, divided by FEE_DIVISOR).
 ///
 /// Transactions with output-level extra_data (NFTs, bonds, pool state, etc.)
-/// pay `sum(output.extra_data.len()) * FEE_PER_BYTE` in addition to BASE_FEE.
-/// This prices on-chain storage proportionally: a 300-byte NFT costs 301 sats,
-/// a plain transfer costs 1 sat.
+/// pay `sum(output.extra_data.len()) * FEE_PER_BYTE / FEE_DIVISOR` in addition to BASE_FEE.
+/// With FEE_DIVISOR=100 this is 100x cheaper than Bitcoin's ~4 sats/vbyte:
+/// - Transfer (0 extra_data): 1 sat
+/// - Bond (4 bytes): 1 sat (minimum)
+/// - NFT (300 bytes): 4 sats
+/// - 512 KB image: 5,243 sats (~0.052 DOLI)
 pub const FEE_PER_BYTE: Amount = 1;
+
+/// Fee divisor — makes per-byte fees 100x cheaper.
+/// `effective_rate = FEE_PER_BYTE / FEE_DIVISOR = 0.01 sats/byte`
+pub const FEE_DIVISOR: Amount = 100;

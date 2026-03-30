@@ -200,7 +200,8 @@ pub(crate) async fn cmd_bridge_lock(
     // Calculate fee: base + per-byte for bridge output extra_data
     let fee_units = {
         let extra_bytes: u64 = bridge_output.extra_data.len() as u64;
-        doli_core::consensus::BASE_FEE + extra_bytes * doli_core::consensus::FEE_PER_BYTE
+        doli_core::consensus::BASE_FEE
+            + extra_bytes * doli_core::consensus::FEE_PER_BYTE / doli_core::consensus::FEE_DIVISOR
     };
     let required = amount_units + fee_units;
     let utxos: Vec<_> = rpc
@@ -649,7 +650,8 @@ pub(crate) async fn cmd_bridge_swap(
     // Calculate fee: base + per-byte for bridge output extra_data
     let fee_units = {
         let extra_bytes: u64 = bridge_output.extra_data.len() as u64;
-        doli_core::consensus::BASE_FEE + extra_bytes * doli_core::consensus::FEE_PER_BYTE
+        doli_core::consensus::BASE_FEE
+            + extra_bytes * doli_core::consensus::FEE_PER_BYTE / doli_core::consensus::FEE_DIVISOR
     };
     let required = amount_units + fee_units;
     let utxos: Vec<_> = rpc

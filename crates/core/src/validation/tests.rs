@@ -1613,8 +1613,8 @@ fn test_fee_validation_add_bond_exact_fee() {
 
     let prev_tx_hash = crypto::hash::hash(b"fee_test_10");
     let bond_amount: u64 = 1_000_000_000;
-    // Input covers bond_amount + 5 sats fee (BASE_FEE + 4 bytes * FEE_PER_BYTE)
-    let prev_output = Output::normal(bond_amount + 5, pubkey_hash);
+    // Input covers bond_amount + 1 sat fee (BASE_FEE + 4/100 = 1, integer division)
+    let prev_output = Output::normal(bond_amount + 1, pubkey_hash);
 
     let mut utxo_provider = MockUtxoProvider::new();
     utxo_provider.add_utxo(prev_tx_hash, 0, prev_output, pubkey);
@@ -1632,8 +1632,8 @@ fn test_fee_validation_add_bond_exact_fee() {
     let signing_hash = tx.signing_message_for_input(0);
     tx.inputs[0].signature = crypto::signature::sign_hash(&signing_hash, keypair.private_key());
 
-    // Bond output has 4 bytes extra_data, so min fee = 1 + 4 = 5
-    assert_eq!(tx.minimum_fee(), 5);
+    // Bond output has 4 bytes extra_data, so min fee = 1 + 4/100 = 1 (integer division)
+    assert_eq!(tx.minimum_fee(), 1);
     let result = utxo::validate_transaction_with_utxos(&tx, &ctx, &utxo_provider);
     assert!(
         result.is_ok(),
@@ -1642,7 +1642,7 @@ fn test_fee_validation_add_bond_exact_fee() {
     );
 }
 
-/// Test 11: AddBond with bond output but only 4 sat fee (needs 5) fails
+/// Test 11: AddBond with bond output but only 0 sat fee (needs 1) fails
 #[test]
 fn test_fee_validation_add_bond_insufficient_per_byte() {
     let ctx = test_context();
@@ -1652,8 +1652,8 @@ fn test_fee_validation_add_bond_insufficient_per_byte() {
 
     let prev_tx_hash = crypto::hash::hash(b"fee_test_11");
     let bond_amount: u64 = 1_000_000_000;
-    // Input covers bond_amount + 4 sats fee — but needs 5 (1 base + 4 bytes)
-    let prev_output = Output::normal(bond_amount + 4, pubkey_hash);
+    // Input covers bond_amount + 0 sats fee — but needs 1 (BASE_FEE; 4 bytes / 100 = 0)
+    let prev_output = Output::normal(bond_amount, pubkey_hash);
 
     let mut utxo_provider = MockUtxoProvider::new();
     utxo_provider.add_utxo(prev_tx_hash, 0, prev_output, pubkey);
@@ -1675,12 +1675,12 @@ fn test_fee_validation_add_bond_insufficient_per_byte() {
         matches!(
             result,
             Err(ValidationError::InsufficientFee {
-                actual: 4,
-                minimum: 5,
+                actual: 0,
+                minimum: 1,
                 ..
             })
         ),
-        "AddBond with 4 sat fee (needs 5) should fail: {:?}",
+        "AddBond with 0 sat fee (needs 1) should fail: {:?}",
         result
     );
 }
@@ -1751,7 +1751,7 @@ fn test_fee_validation_consistency_with_transaction_minimum_fee() {
     let prev_tx_hash = crypto::hash::hash(b"fee_consistency");
     // Bond output: 4 bytes extra_data => minimum_fee = 1 + 4 = 5
     let bond_amount: u64 = 1_000_000_000;
-    let min_fee: u64 = 1 + 4; // BASE_FEE + 4 * FEE_PER_BYTE
+    let min_fee: u64 = 1; // BASE_FEE + 4*1/100 = 1 (integer division)
     let prev_output = Output::normal(bond_amount + min_fee, pubkey_hash);
 
     let mut utxo_provider = MockUtxoProvider::new();

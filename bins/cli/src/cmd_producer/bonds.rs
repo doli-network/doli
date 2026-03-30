@@ -60,7 +60,8 @@ pub(super) async fn handle_add_bond(
     let mut total_input = 0u64;
     let fee = {
         let extra_bytes = count as u64 * 4;
-        doli_core::consensus::BASE_FEE + extra_bytes * doli_core::consensus::FEE_PER_BYTE
+        doli_core::consensus::BASE_FEE
+            + extra_bytes * doli_core::consensus::FEE_PER_BYTE / doli_core::consensus::FEE_DIVISOR
     };
     for utxo in &utxos {
         if total_input >= required_amount + fee {

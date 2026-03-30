@@ -277,7 +277,8 @@ async fn cmd_pool_create(
     let fee_units = {
         let extra_bytes: u64 = (doli_core::transaction::POOL_METADATA_SIZE
             + doli_core::transaction::LP_SHARE_METADATA_SIZE) as u64;
-        doli_core::consensus::BASE_FEE + extra_bytes * doli_core::consensus::FEE_PER_BYTE
+        doli_core::consensus::BASE_FEE
+            + extra_bytes * doli_core::consensus::FEE_PER_BYTE / doli_core::consensus::FEE_DIVISOR
     };
     let required = doli_units + fee_units;
     let utxos: Vec<_> = rpc
@@ -577,7 +578,8 @@ async fn cmd_pool_swap(
     // Calculate fee: base + per-byte for pool output extra_data (POOL_METADATA_SIZE)
     let fee_units = {
         let extra_bytes: u64 = doli_core::transaction::POOL_METADATA_SIZE as u64;
-        doli_core::consensus::BASE_FEE + extra_bytes * doli_core::consensus::FEE_PER_BYTE
+        doli_core::consensus::BASE_FEE
+            + extra_bytes * doli_core::consensus::FEE_PER_BYTE / doli_core::consensus::FEE_DIVISOR
     };
     if direction == "a2b" {
         // Swapping DOLI in: need DOLI UTXOs
@@ -907,7 +909,8 @@ async fn cmd_pool_add(
     let fee_units = {
         let extra_bytes: u64 = (doli_core::transaction::POOL_METADATA_SIZE
             + doli_core::transaction::LP_SHARE_METADATA_SIZE) as u64;
-        doli_core::consensus::BASE_FEE + extra_bytes * doli_core::consensus::FEE_PER_BYTE
+        doli_core::consensus::BASE_FEE
+            + extra_bytes * doli_core::consensus::FEE_PER_BYTE / doli_core::consensus::FEE_DIVISOR
     };
     let required = doli_units + fee_units;
     let utxos: Vec<_> = rpc
@@ -1201,7 +1204,8 @@ async fn cmd_pool_remove(
     // Calculate fee: base + per-byte for pool output extra_data
     let fee_units = {
         let extra_bytes: u64 = doli_core::transaction::POOL_METADATA_SIZE as u64;
-        doli_core::consensus::BASE_FEE + extra_bytes * doli_core::consensus::FEE_PER_BYTE
+        doli_core::consensus::BASE_FEE
+            + extra_bytes * doli_core::consensus::FEE_PER_BYTE / doli_core::consensus::FEE_DIVISOR
     };
     let doli_utxos: Vec<_> = rpc
         .get_utxos(&from_pubkey_hash, true)

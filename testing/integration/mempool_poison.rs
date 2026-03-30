@@ -36,7 +36,8 @@ fn make_signed_nft_tx(keypair: &KeyPair, funding_hash: Hash) -> Transaction {
     extra_data.extend_from_slice(&[0xBB; 32]); // content_hash
 
     let fee = doli_core::consensus::BASE_FEE
-        + extra_data.len() as u64 * doli_core::consensus::FEE_PER_BYTE;
+        + extra_data.len() as u64 * doli_core::consensus::FEE_PER_BYTE
+            / doli_core::consensus::FEE_DIVISOR;
     let nft_output = Output {
         amount: 1,
         pubkey_hash,

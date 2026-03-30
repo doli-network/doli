@@ -64,7 +64,8 @@ pub(super) async fn handle_register(
     let fee = {
         // Each bond output has 4 bytes extra_data (creation_slot)
         let extra_bytes = bonds as u64 * 4;
-        doli_core::consensus::BASE_FEE + extra_bytes * doli_core::consensus::FEE_PER_BYTE
+        doli_core::consensus::BASE_FEE
+            + extra_bytes * doli_core::consensus::FEE_PER_BYTE / doli_core::consensus::FEE_DIVISOR
     };
     for utxo in &utxos {
         if total_input >= required_amount + fee {

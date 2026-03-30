@@ -129,7 +129,8 @@ async fn cmd_loan_deposit(
     // Calculate fee: base + per-byte for deposit output extra_data
     let fee_units = {
         let extra_bytes: u64 = deposit_output.extra_data.len() as u64;
-        doli_core::consensus::BASE_FEE + extra_bytes * doli_core::consensus::FEE_PER_BYTE
+        doli_core::consensus::BASE_FEE
+            + extra_bytes * doli_core::consensus::FEE_PER_BYTE / doli_core::consensus::FEE_DIVISOR
     };
     let required = deposit_amount + fee_units;
     let utxos: Vec<_> = rpc
@@ -474,7 +475,8 @@ async fn cmd_loan_create(
     // Calculate fee: base + per-byte for collateral output extra_data
     let fee_units = {
         let extra_bytes: u64 = collateral_output.extra_data.len() as u64;
-        doli_core::consensus::BASE_FEE + extra_bytes * doli_core::consensus::FEE_PER_BYTE
+        doli_core::consensus::BASE_FEE
+            + extra_bytes * doli_core::consensus::FEE_PER_BYTE / doli_core::consensus::FEE_DIVISOR
     };
     let doli_utxos: Vec<_> = rpc
         .get_utxos(&from_pubkey_hash, true)

@@ -203,7 +203,10 @@ impl Node {
             let extra_fees: u64 = included_txs
                 .iter()
                 .flat_map(|tx| tx.outputs.iter())
-                .map(|o| o.extra_data.len() as u64 * doli_core::consensus::FEE_PER_BYTE)
+                .map(|o| {
+                    o.extra_data.len() as u64 * doli_core::consensus::FEE_PER_BYTE
+                        / doli_core::consensus::FEE_DIVISOR
+                })
                 .sum();
 
             // Now add coinbase with block reward + extra fees.

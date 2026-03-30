@@ -1004,14 +1004,16 @@ fn test_coinbase_extra_fees_from_nft() {
     // extra_fees = 300 * FEE_PER_BYTE = 300
     // coinbase = block_reward + 300
     let block_reward = 100_000_000u64;
-    let extra_fees = 300u64 * crate::consensus::FEE_PER_BYTE;
-    assert_eq!(block_reward + extra_fees, 100_000_300);
+    let extra_fees = 300u64 * crate::consensus::FEE_PER_BYTE / crate::consensus::FEE_DIVISOR;
+    assert_eq!(block_reward + extra_fees, 100_000_003); // 300/100 = 3
 }
 
 #[test]
 fn test_coinbase_no_extra_for_transfers() {
     let extra_bytes: u64 = 0; // transfers have no extra_data
-    let extra_fees = extra_bytes * crate::consensus::FEE_PER_BYTE;
+    let extra_fees = extra_bytes * crate::consensus::FEE_PER_BYTE
+        / crate::consensus::FEE_DIVISOR
+        / crate::consensus::FEE_DIVISOR;
     assert_eq!(extra_fees, 0);
 }
 
@@ -1764,7 +1766,7 @@ fn test_fee_bond_output() {
     };
     // Bond has 4 bytes of extra_data (creation_slot)
     assert_eq!(tx.outputs[0].extra_data.len(), 4);
-    assert_eq!(tx.minimum_fee(), 1 + 4); // BASE_FEE + 4 * FEE_PER_BYTE = 5
+    assert_eq!(tx.minimum_fee(), 1); // BASE_FEE + 4/100 = 1 (integer division)
 }
 
 /// Test 3: NFT-sized output (300 bytes) => minimum_fee = 301 sats
@@ -1784,7 +1786,7 @@ fn test_fee_nft_300_bytes() {
         }],
         extra_data: vec![],
     };
-    assert_eq!(tx.minimum_fee(), 1 + 300); // 301
+    assert_eq!(tx.minimum_fee(), 1 + 300 / 100); // 4 (BASE_FEE + 300/FEE_DIVISOR)
 }
 
 /// Test 4: Pool swap output (116 bytes) => minimum_fee = 117 sats
@@ -1806,7 +1808,7 @@ fn test_fee_pool_swap_116_bytes() {
         extra_data: vec![],
     };
     assert_eq!(POOL_METADATA_SIZE, 116);
-    assert_eq!(tx.minimum_fee(), 1 + 116); // 117
+    assert_eq!(tx.minimum_fee(), 1 + 116 / 100); // 2 (BASE_FEE + 116/FEE_DIVISOR)
 }
 
 /// Test 5: CryptoPunk-sized NFT (3000 bytes) => minimum_fee = 3001 sats
@@ -1826,7 +1828,7 @@ fn test_fee_cryptopunk_3000_bytes() {
         }],
         extra_data: vec![],
     };
-    assert_eq!(tx.minimum_fee(), 1 + 3000); // 3001
+    assert_eq!(tx.minimum_fee(), 1 + 3000 / 100); // 31 (BASE_FEE + 3000/FEE_DIVISOR)
 }
 
 /// Test 6: Multiple outputs with extra_data — fee sums across all outputs
@@ -1851,7 +1853,7 @@ fn test_fee_multiple_outputs_sum() {
         extra_data: vec![],
     };
     // Total extra_data: 0 + 4 + 100 = 104 bytes
-    assert_eq!(tx.minimum_fee(), 1 + 104); // 105
+    assert_eq!(tx.minimum_fee(), 1 + 104 / 100); // 2 (BASE_FEE + 104/FEE_DIVISOR)
 }
 
 /// Test 7: Coinbase/EpochReward have minimum_fee but it is never enforced
@@ -1906,7 +1908,7 @@ fn test_fee_max_extra_data() {
         }],
         extra_data: vec![],
     };
-    assert_eq!(tx.minimum_fee(), 1 + MAX_EXTRA_DATA_SIZE as u64); // 4097
+    assert_eq!(tx.minimum_fee(), 1 + MAX_EXTRA_DATA_SIZE as u64 / 100); // 5243
 }
 
 /// Test 16: Fee calculation does not overflow with many large outputs
@@ -1933,7 +1935,7 @@ fn test_fee_no_overflow_many_outputs() {
     };
     // 100 * 4096 = 409,600 bytes. Fee = 1 + 409,600 = 409,601.
     // No overflow — u64 handles this trivially.
-    let expected = 1 + 100 * MAX_EXTRA_DATA_SIZE as u64;
+    let expected = 1 + 100 * MAX_EXTRA_DATA_SIZE as u64 / 100;
     assert_eq!(tx.minimum_fee(), expected);
 }
 
@@ -1987,49 +1989,49 @@ fn test_max_extra_data_size_era_growth() {
 
 #[test]
 fn test_coinbase_extra_fees_calculation() {
-    use crate::consensus::FEE_PER_BYTE;
+    use crate::consensus::{FEE_DIVISOR, FEE_PER_BYTE};
 
     // Simulate: block with 1 NFT (300 bytes extra_data) + 1 transfer (0 bytes)
     let extra_fees: u64 = [300u64, 0u64]
         .iter()
-        .map(|bytes| bytes * FEE_PER_BYTE)
+        .map(|bytes| bytes * FEE_PER_BYTE / FEE_DIVISOR)
         .sum();
-    assert_eq!(extra_fees, 300);
+    assert_eq!(extra_fees, 3); // 300/100 = 3
 
     // Coinbase should be block_reward + extra_fees
     // Using a test block_reward of 100_000_000 (1 DOLI)
     let block_reward = 100_000_000u64;
     let coinbase_amount = block_reward + extra_fees;
-    assert_eq!(coinbase_amount, 100_000_300);
+    assert_eq!(coinbase_amount, 100_000_003);
 }
 
 #[test]
 fn test_coinbase_no_extra_fees_for_transfers() {
-    use crate::consensus::FEE_PER_BYTE;
+    use crate::consensus::{FEE_DIVISOR, FEE_PER_BYTE};
 
     // Block with only transfers (0 extra_data each)
     let extra_fees: u64 = [0u64, 0u64, 0u64]
         .iter()
-        .map(|bytes| bytes * FEE_PER_BYTE)
+        .map(|bytes| bytes * FEE_PER_BYTE / FEE_DIVISOR)
         .sum();
     assert_eq!(extra_fees, 0);
 }
 
 #[test]
 fn test_extra_fees_multiple_nfts() {
-    use crate::consensus::FEE_PER_BYTE;
+    use crate::consensus::{FEE_DIVISOR, FEE_PER_BYTE};
 
     // 3 NFTs of 300 bytes each + 1 pool swap of 116 bytes
     let extra_fees: u64 = [300u64, 300, 300, 116]
         .iter()
-        .map(|bytes| bytes * FEE_PER_BYTE)
+        .map(|bytes| bytes * FEE_PER_BYTE / FEE_DIVISOR)
         .sum();
-    assert_eq!(extra_fees, 1016);
+    assert_eq!(extra_fees, 10); // 3+3+3+1 = 10 (each divided by 100)
 }
 
 #[test]
 fn test_extra_fees_only_from_user_txs() {
-    use crate::consensus::FEE_PER_BYTE;
+    use crate::consensus::{FEE_DIVISOR, FEE_PER_BYTE};
 
     // Coinbase and EpochReward TXs should NOT count.
     // Only user TXs contribute extra fees.
@@ -2037,8 +2039,11 @@ fn test_extra_fees_only_from_user_txs() {
     let _protocol_tx_bytes = [40u64, 200]; // registration + epoch reward (not counted)
 
     // Only user TXs count
-    let extra_fees: u64 = user_tx_bytes.iter().map(|bytes| bytes * FEE_PER_BYTE).sum();
-    assert_eq!(extra_fees, 416); // NOT 416 + 240
+    let extra_fees: u64 = user_tx_bytes
+        .iter()
+        .map(|bytes| bytes * FEE_PER_BYTE / FEE_DIVISOR)
+        .sum();
+    assert_eq!(extra_fees, 4); // 300/100 + 116/100 = 3 + 1 = 4
 }
 
 #[test]
@@ -2066,7 +2071,7 @@ fn test_block_builder_add_coinbase_with_extra() {
     );
     builder.add_transaction(user_tx);
 
-    // Add coinbase with extra fees (300 bytes * FEE_PER_BYTE = 300)
+    // Add coinbase with extra fees (300 bytes * FEE_PER_BYTE / FEE_DIVISOR = 300)
     let extra_fees = 300u64;
     builder.add_coinbase_with_extra(1, pool_hash, extra_fees);
 
@@ -2088,7 +2093,7 @@ fn test_block_builder_add_coinbase_with_extra() {
 /// Both use BASE_FEE + sum(extra_data.len()) * FEE_PER_BYTE.
 #[test]
 fn test_fee_formula_matches_validation() {
-    use crate::consensus::{BASE_FEE, FEE_PER_BYTE};
+    use crate::consensus::{BASE_FEE, FEE_DIVISOR, FEE_PER_BYTE};
 
     let pubkey_hash = crypto::hash::hash(b"formula_test");
     let extra_sizes: Vec<usize> = vec![0, 4, 33, 116, 300, 3000, 4096];
@@ -2113,7 +2118,7 @@ fn test_fee_formula_matches_validation() {
 
         // Manual formula (same as validation/utxo.rs)
         let extra_bytes: u64 = tx.outputs.iter().map(|o| o.extra_data.len() as u64).sum();
-        let manual_fee = BASE_FEE + extra_bytes * FEE_PER_BYTE;
+        let manual_fee = BASE_FEE + extra_bytes * FEE_PER_BYTE / FEE_DIVISOR;
 
         assert_eq!(
             tx_fee, manual_fee,
@@ -2147,7 +2152,7 @@ fn test_fee_determinism() {
 
     assert_eq!(fee1, fee2);
     assert_eq!(fee2, fee3);
-    assert_eq!(fee1, 1 + 256); // BASE_FEE + 256 * FEE_PER_BYTE
+    assert_eq!(fee1, 1 + 2); // BASE_FEE + 256/100 = 3
 }
 
 // ==================== Group B: NFT lifecycle tests ====================
@@ -2269,14 +2274,14 @@ fn test_coinbase_amount_matches_block_reward() {
 /// C5: Coinbase with extra fees routes to reward pool.
 #[test]
 fn test_coinbase_extra_fees_route_to_pool() {
-    use crate::consensus::{ConsensusParams, FEE_PER_BYTE};
+    use crate::consensus::{ConsensusParams, FEE_DIVISOR, FEE_PER_BYTE};
 
     let params = ConsensusParams::mainnet();
     let height = 1u64;
     let block_reward = params.block_reward(height);
 
     // Simulate a block with an NFT (300 bytes extra_data)
-    let extra_fees = 300u64 * FEE_PER_BYTE;
+    let extra_fees = 300u64 * FEE_PER_BYTE / FEE_DIVISOR;
     let total_coinbase = block_reward + extra_fees;
     let pool_hash = crypto::hash::hash(b"reward_pool_c5");
 
@@ -2301,7 +2306,8 @@ fn test_minimum_fee_for_nft_transaction() {
 
     let tx = Transaction::new_transfer(vec![Input::new(Hash::ZERO, 0)], vec![nft_output]);
 
-    let expected_fee = crate::consensus::BASE_FEE + extra_bytes * crate::consensus::FEE_PER_BYTE;
+    let expected_fee = crate::consensus::BASE_FEE
+        + extra_bytes * crate::consensus::FEE_PER_BYTE / crate::consensus::FEE_DIVISOR;
     assert_eq!(tx.minimum_fee(), expected_fee);
     // Fee must be > 1 because NFT has extra_data
     assert!(tx.minimum_fee() > 1, "NFT tx fee must exceed BASE_FEE");
@@ -2335,10 +2341,10 @@ fn test_batch_nft_minimum_fee() {
     };
     let min_fee = tx.minimum_fee();
     // Each NFT extra_data = condition(~34) + version(1) + token_id(32) + content(150) = ~217
-    // 5 * 217 = ~1085 + 1 base = ~1086
+    // 5 * 217 = ~1085 total bytes / 100 = 10, + 1 base = 11
     assert!(
-        min_fee > 1000,
-        "min_fee={} should be > 1000 for 5 NFTs",
+        min_fee > 1,
+        "min_fee={} should be > BASE_FEE for 5 NFTs",
         min_fee
     );
 }
@@ -2365,7 +2371,7 @@ fn test_batch_nft_100_outputs_fee() {
         outputs,
         extra_data: vec![],
     };
-    assert_eq!(tx.minimum_fee(), 1 + total_extra);
+    assert_eq!(tx.minimum_fee(), 1 + total_extra / 100);
 }
 
 // ========== Gap 2: Fee routing end-to-end ==========
@@ -2373,7 +2379,7 @@ fn test_batch_nft_100_outputs_fee() {
 /// Verify coinbase amount formula with real block construction including NFT extra fees
 #[test]
 fn test_coinbase_with_nft_extra_fees_real_block() {
-    use crate::consensus::{BASE_FEE, FEE_PER_BYTE};
+    use crate::consensus::{BASE_FEE, FEE_DIVISOR, FEE_PER_BYTE};
 
     let block_reward = 100_000_000u64; // 1 DOLI
 
@@ -2391,7 +2397,7 @@ fn test_coinbase_with_nft_extra_fees_real_block() {
     let nft_extra_bytes = nft.extra_data.len() as u64;
 
     // Expected coinbase
-    let extra_fees = nft_extra_bytes * FEE_PER_BYTE;
+    let extra_fees = nft_extra_bytes * FEE_PER_BYTE / FEE_DIVISOR;
     let expected_coinbase = block_reward + extra_fees;
 
     assert!(
@@ -2428,7 +2434,7 @@ fn test_transfer_contributes_zero_extra_fees() {
 /// Full fee lifecycle: NFT mint -> fee calculation -> coinbase includes extra
 #[test]
 fn test_fee_routing_lifecycle() {
-    use crate::consensus::{BASE_FEE, FEE_PER_BYTE};
+    use crate::consensus::{BASE_FEE, FEE_DIVISOR, FEE_PER_BYTE};
 
     // Step 1: Build NFT output (simulating CLI)
     let cond = crate::conditions::Condition::signature(Hash::from_bytes([0x01; 32]));
@@ -2444,7 +2450,7 @@ fn test_fee_routing_lifecycle() {
     let extra_bytes = nft.extra_data.len() as u64;
 
     // Step 2: Calculate fee (what CLI should do)
-    let fee = BASE_FEE + extra_bytes * FEE_PER_BYTE;
+    let fee = BASE_FEE + extra_bytes * FEE_PER_BYTE / FEE_DIVISOR;
     assert!(fee > 1, "NFT fee must be > BASE_FEE");
 
     // Step 3: Build mint transaction
@@ -2462,12 +2468,15 @@ fn test_fee_routing_lifecycle() {
     let extra_fees_from_block: u64 = tx
         .outputs
         .iter()
-        .map(|o| o.extra_data.len() as u64 * FEE_PER_BYTE)
+        .map(|o| o.extra_data.len() as u64 * FEE_PER_BYTE / FEE_DIVISOR)
         .sum();
     let coinbase_amount = block_reward + extra_fees_from_block;
 
     // Step 5: Verify
-    assert_eq!(coinbase_amount, block_reward + extra_bytes * FEE_PER_BYTE);
+    assert_eq!(
+        coinbase_amount,
+        block_reward + extra_bytes * FEE_PER_BYTE / FEE_DIVISOR
+    );
     assert!(coinbase_amount > block_reward);
 
     // Step 6: Create coinbase (what goes to reward pool)

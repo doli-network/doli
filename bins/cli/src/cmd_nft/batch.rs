@@ -86,8 +86,10 @@ pub(crate) async fn cmd_nft_batch_mint(
 
     // Calculate fee + dust for each NFT (1 sat per NFT)
     let nft_dust = entries.len() as u64;
-    let fee_units =
-        doli_core::consensus::BASE_FEE + total_extra_bytes * doli_core::consensus::FEE_PER_BYTE;
+    let fee_units = doli_core::consensus::BASE_FEE
+        + total_extra_bytes * doli_core::consensus::FEE_PER_BYTE
+            / doli_core::consensus::FEE_DIVISOR
+            / doli_core::consensus::FEE_DIVISOR;
     let total_needed = fee_units + nft_dust;
 
     // Select DOLI UTXOs for fee + dust

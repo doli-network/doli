@@ -175,7 +175,8 @@ pub(crate) async fn cmd_nft_buy(
     // Recalculate fee from actual outputs extra_data
     fee_units = {
         let extra_bytes: u64 = outputs.iter().map(|o| o.extra_data.len() as u64).sum();
-        doli_core::consensus::BASE_FEE + extra_bytes * doli_core::consensus::FEE_PER_BYTE
+        doli_core::consensus::BASE_FEE
+            + extra_bytes * doli_core::consensus::FEE_PER_BYTE / doli_core::consensus::FEE_DIVISOR
     };
     let required = price_units + fee_units;
     if total_input < required {
@@ -373,7 +374,8 @@ pub(crate) async fn cmd_nft_buy_from_signed_offer(
             .iter()
             .map(|o| o.extra_data.len() as u64)
             .sum();
-        doli_core::consensus::BASE_FEE + extra_bytes * doli_core::consensus::FEE_PER_BYTE
+        doli_core::consensus::BASE_FEE
+            + extra_bytes * doli_core::consensus::FEE_PER_BYTE / doli_core::consensus::FEE_DIVISOR
     };
     let required = price_units + fee_units;
 
