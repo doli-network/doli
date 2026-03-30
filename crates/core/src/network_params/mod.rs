@@ -143,6 +143,12 @@ pub struct NetworkParams {
     /// Mainnet: u64::MAX (not yet activated). Testnet/Devnet: 0 (always enforce).
     pub sig_verification_height: u64,
 
+    /// Height at which post-snap attestation skip becomes active (INC-I-010).
+    /// Before this height: epoch boundary always filters by attestation (old behavior).
+    /// At or after: skip attestation filtering when block history is incomplete.
+    /// Mainnet: 8500. Testnet/Devnet: 0 (always active).
+    pub snap_attestation_skip_height: u64,
+
     // === Gossip mesh ===
     /// Target number of peers in gossipsub mesh per topic
     pub mesh_n: usize,

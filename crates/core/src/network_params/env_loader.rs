@@ -188,6 +188,10 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
             "DOLI_SIG_VERIFICATION_HEIGHT",
             defaults.sig_verification_height,
         ),
+        snap_attestation_skip_height: env_parse(
+            "DOLI_SNAP_ATTESTATION_SKIP_HEIGHT",
+            defaults.snap_attestation_skip_height,
+        ),
 
         // Gossip mesh (locked for mainnet - wrong values could isolate nodes)
         mesh_n: if is_mainnet {

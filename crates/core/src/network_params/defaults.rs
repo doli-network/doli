@@ -75,6 +75,7 @@ impl NetworkParams {
 
                 // Hard fork gates
                 sig_verification_height: 6807, // Deferred: +800 blocks from h=6007 (INC-I-021 wire format not ready)
+                snap_attestation_skip_height: 8500, // INC-I-010: skip attestation filtering when block history incomplete
 
                 // Gossip mesh: universal config for all network sizes.
                 // mesh_n=12 keeps all peers in eager-push for networks ≤24 (mesh_n_high),
@@ -148,6 +149,7 @@ impl NetworkParams {
 
                 // Hard fork gates
                 sig_verification_height: 0, // Enforce from genesis on testnet
+                snap_attestation_skip_height: 0, // Always active on testnet
 
                 // INC-I-015: Gossip mesh sized to max_peers for eager push to ALL
                 // connected peers. At mesh_n=12, blocks reach 12 peers immediately
@@ -218,6 +220,7 @@ impl NetworkParams {
 
                 // Hard fork gates
                 sig_verification_height: 0, // Enforce from genesis on devnet
+                snap_attestation_skip_height: 0, // Always active on devnet
 
                 // Gossip mesh: same universal config as mainnet.
                 // With --no-dht, mesh_n_high=24 keeps all devnet peers in mesh.

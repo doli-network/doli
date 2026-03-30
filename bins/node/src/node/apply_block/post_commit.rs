@@ -112,7 +112,10 @@ impl Node {
                         }
                     }
 
-                    if have_full_epoch {
+                    let skip_height = self.config.network.params().snap_attestation_skip_height;
+                    if have_full_epoch || height < skip_height {
+                        // Full history: filter by attestation (normal path).
+                        // Before activation height: always filter (old behavior).
                         active
                             .into_iter()
                             .filter(|pk| attested.contains(pk))
