@@ -77,9 +77,13 @@ impl Node {
                 } else {
                     // Producers who attested in the previous epoch are included.
                     // Scan previous epoch blocks for presence_root attestation data.
+                    // INC-I-010: If ANY block is missing (e.g., after snap sync),
+                    // skip filtering — use all active, same as epoch 0/1.
+                    // Self-healing: once a full epoch of blocks exists, filtering resumes.
                     let prev_epoch_start = (epoch - 1) * blocks_per_epoch;
                     let prev_epoch_end = epoch * blocks_per_epoch;
                     let mut attested: HashSet<PublicKey> = HashSet::new();
+                    let mut have_full_epoch = true;
 
                     let mut sorted_for_decode = active.clone();
                     sorted_for_decode.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
@@ -100,21 +104,27 @@ impl Node {
                                     }
                                 }
                             }
+                        } else {
+                            // Missing block — incomplete epoch history (snap sync).
+                            // Cannot reliably filter by attestation.
+                            have_full_epoch = false;
+                            break;
                         }
                     }
 
-                    // Include: attested producers + newly registered (not in prev epoch)
-                    active
-                        .into_iter()
-                        .filter(|pk| {
-                            attested.contains(pk) || {
-                                // Newly registered producers get a free pass
-                                // (they weren't in the previous epoch's active set)
-                                // Check by seeing if they were active at prev epoch start
-                                false // Conservative: rely on attestation
-                            }
-                        })
-                        .collect()
+                    if have_full_epoch {
+                        active
+                            .into_iter()
+                            .filter(|pk| attested.contains(pk))
+                            .collect()
+                    } else {
+                        info!(
+                            "[EPOCH] Incomplete block history for epoch {} — using all {} active producers",
+                            epoch - 1,
+                            active.len()
+                        );
+                        active
+                    }
                 };
 
                 // Deadlock safety: if no one attested, include everyone
