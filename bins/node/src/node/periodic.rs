@@ -369,25 +369,27 @@ impl Node {
             }
         }
 
-        // PERIODIC STATUS REFRESH: Request status from peers to keep network tip updated
-        // This is critical for production gating - without fresh peer status, we can't
-        // know if other nodes have produced blocks we haven't received via gossip yet.
+        // PERIODIC STATUS REFRESH: Request status from ALL peers to keep sync manager fresh.
+        // Critical for:
+        // 1. checkpoint_health() — needs accurate per-peer heights to distinguish
+        //    stale connections (h=0) from real forks
+        // 2. Production gating — knowing if peers are ahead of us
+        //
+        // Previous approach used one-peer-at-a-time round-robin: (now_secs % peer_count).
+        // Bug: when peer_count divides evenly into the interval (e.g., 5 peers, 5s interval),
+        // now_secs is always a multiple of 5, so now_secs % 5 = 0 — always peer[0].
+        // Fix: request ALL peers every 30s. Same total bandwidth, guaranteed freshness.
         let now_secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
-        // During bootstrap (height 0), be VERY aggressive about requesting status
-        // from ALL peers - we need to find at least one peer with height > 0
         let local_height = self.chain_state.read().await.best_height;
         let is_bootstrap = local_height == 0;
 
-        // Request status every ~2 seconds during bootstrap, ~5 seconds during normal ops
-        let status_interval = if is_bootstrap {
-            2 // Aggressive during bootstrap
-        } else {
-            5 // All networks: 5s keeps peer status fresh for fork detection
-        };
+        // Bootstrap: all peers every 2s (need to find peers with height > 0)
+        // Normal: all peers every 30s (sufficient for checkpoint health)
+        let status_interval = if is_bootstrap { 2 } else { 30 };
 
         if now_secs.is_multiple_of(status_interval) {
             if let Some(ref network) = self.network {
@@ -411,21 +413,13 @@ impl Node {
                         )
                     };
 
-                    if is_bootstrap {
-                        // During bootstrap, request from ALL peers to find any with height > 0
-                        for peer_id in peer_ids.iter().take(5) {
-                            // Limit to 5 to avoid flooding
-                            debug!("Bootstrap status request to peer {}", peer_id);
-                            let _ = network
-                                .request_status(*peer_id, status_request.clone())
-                                .await;
-                        }
-                    } else {
-                        // Normal operation - request from one peer at a time
-                        let peer_idx = (now_secs as usize) % peer_ids.len();
-                        let peer_id = peer_ids[peer_idx];
+                    // Request from ALL peers (capped to prevent flooding large networks)
+                    let cap = if is_bootstrap { 5 } else { 20 };
+                    for peer_id in peer_ids.iter().take(cap) {
                         debug!("Periodic status request to peer {}", peer_id);
-                        let _ = network.request_status(peer_id, status_request).await;
+                        let _ = network
+                            .request_status(*peer_id, status_request.clone())
+                            .await;
                     }
                 }
             }

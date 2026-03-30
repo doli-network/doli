@@ -125,6 +125,9 @@ impl Node {
     }
 
     /// Handle a peer's status response: update sync manager, discover bootstrap producers.
+    ///
+    /// Uses `update_peer()` for already-known peers to preserve `last_block_received`
+    /// tracking. Uses `add_peer()` only for the initial handshake.
     pub async fn on_peer_status(&mut self, peer_id: PeerId, status: StatusResponse) {
         debug!(
             "Peer {} status: height={}, slot={}",
@@ -132,12 +135,21 @@ impl Node {
         );
         {
             let mut sync = self.sync_manager.write().await;
-            sync.add_peer(
-                peer_id,
-                status.best_height,
-                status.best_hash,
-                status.best_slot,
-            );
+            if sync.has_peer(&peer_id) {
+                sync.update_peer(
+                    peer_id,
+                    status.best_height,
+                    status.best_hash,
+                    status.best_slot,
+                );
+            } else {
+                sync.add_peer(
+                    peer_id,
+                    status.best_height,
+                    status.best_hash,
+                    status.best_slot,
+                );
+            }
             sync.note_peer_status_received();
         }
 

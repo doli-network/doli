@@ -165,6 +165,11 @@ impl SyncManager {
         }
     }
 
+    /// Check if a peer is known to the sync manager
+    pub fn has_peer(&self, peer: &PeerId) -> bool {
+        self.peers.contains_key(peer)
+    }
+
     /// Get the number of connected peers with known status
     pub fn peer_count(&self) -> usize {
         self.peers.len()
