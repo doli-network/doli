@@ -22,7 +22,7 @@ pub fn is_protocol_active(required_version: u32, active_version: u32) -> bool {
 
 /// Genesis timestamp — must match chainspec.mainnet.json
 /// Guarded by `test_genesis_time_matches_chainspec` test.
-pub const GENESIS_TIME: u64 = 1774841200;
+pub const GENESIS_TIME: u64 = 1774842200;
 
 /// Checkpoint: trusted block for fast initial sync.
 /// Updated with each release. New nodes sync from here instead of genesis.
