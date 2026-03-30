@@ -74,7 +74,7 @@ impl NetworkParams {
                 vesting_quarter_slots: consensus::VESTING_QUARTER_SLOTS as u64,
 
                 // Hard fork gates
-                sig_verification_height: u64::MAX, // Not yet activated on mainnet
+                sig_verification_height: 6340, // Activate signature enforcement at block 6340
 
                 // Gossip mesh: universal config for all network sizes.
                 // mesh_n=12 keeps all peers in eager-push for networks ≤24 (mesh_n_high),
