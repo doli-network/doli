@@ -521,7 +521,7 @@ impl Node {
             producer: header.producer,
             vdf_output,
             vdf_proof,
-            missed_producers: Vec::new(),
+            missed_producers: header.missed_producers,
         };
 
         // Use the transactions from the builder — same list used for merkle root computation.
