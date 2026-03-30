@@ -223,12 +223,20 @@ impl SyncManager {
         }
 
         let mut agreeing = 0;
+        let mut counted = 0;
         // Track unique chain tips only among non-agreeing peers to detect real forks.
         // Peers that match our canonical chain at their height are on the same chain
         // regardless of which specific height they've reported.
         let mut divergent_hashes = std::collections::HashSet::new();
 
         for status in self.peers.values() {
+            // Skip peers stuck at height 0 when chain is past genesis — these are
+            // stale connections whose status was never updated (the status protocol
+            // only reports height at initial handshake). They're not real forks.
+            if status.best_height == 0 && self.local_height > 10 {
+                continue;
+            }
+            counted += 1;
             // Look up our canonical hash at the peer's reported height
             let our_hash_at_peer_height = self
                 .recent_canonical_hashes
@@ -261,7 +269,8 @@ impl SyncManager {
             1 + divergent_hashes.len()
         };
 
-        (peer_count, agreeing, unique_chain_tips)
+        // Use counted (excluding stale h=0 peers) as the peer count for health.
+        (counted, agreeing, unique_chain_tips)
     }
 
     /// Update the network tip slot from a received block via gossip

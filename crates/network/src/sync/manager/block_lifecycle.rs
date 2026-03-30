@@ -37,6 +37,21 @@ impl SyncManager {
         self.local_height = height;
         self.local_hash = hash;
         self.local_slot = slot;
+
+        // Update canonical hash ring buffer for checkpoint_health() comparisons.
+        // On reorg, earlier heights may appear again — replace stale entries.
+        while self
+            .recent_canonical_hashes
+            .back()
+            .is_some_and(|(h, _)| *h >= height)
+        {
+            self.recent_canonical_hashes.pop_back();
+        }
+        self.recent_canonical_hashes.push_back((height, hash));
+        if self.recent_canonical_hashes.len() > 200 {
+            self.recent_canonical_hashes.pop_front();
+        }
+
         self.network.blocks_applied += 1;
         self.network.last_block_applied = Instant::now();
         self.network.last_sync_activity = Instant::now();
