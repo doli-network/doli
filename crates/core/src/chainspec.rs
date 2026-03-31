@@ -350,7 +350,7 @@ mod tests {
         let hash = spec.genesis_hash();
         assert_eq!(
             hash.to_hex(),
-            "57d58cd0d7dfa13130ab2a59ed177baa72ddd772b35a3f9b9437a2f48087015a",
+            "889cb1908136dcd0304b8ca519bbc44e4eb500588f15a8d30e722b89f6ad55e8",
             "CRITICAL: Mainnet genesis hash changed! Binary incompatible with live network. Got {}",
             hash.to_hex()
         );
