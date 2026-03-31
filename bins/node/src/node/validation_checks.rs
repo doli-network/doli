@@ -251,7 +251,8 @@ impl Node {
         .with_bootstrap_producers(bootstrap_producers)
         .with_bootstrap_liveness(live_bp, stale_bp)
         .with_excluded_producers(self.excluded_producers.clone())
-        .with_epoch_producer_list(self.epoch_producer_list.clone());
+        .with_epoch_producer_list(self.epoch_producer_list.clone())
+        .with_sig_verification_height(self.config.network.params().sig_verification_height);
 
         if let Some(ref spec) = self.config.chainspec {
             ctx.params.apply_chainspec(spec);

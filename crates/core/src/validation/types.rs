@@ -145,6 +145,10 @@ pub struct ValidationContext {
     /// Epoch-frozen producer list. The scheduling denominator is derived from
     /// this list minus excluded_producers. Never changes mid-epoch.
     pub epoch_producer_list: Vec<crypto::PublicKey>,
+    /// Height at which Input.public_key becomes mandatory for signature verification.
+    /// Before this height: public_key=None accepted (legacy, no sig verification).
+    /// At or after: public_key must be Some, signature + pubkey_hash verified.
+    pub sig_verification_height: u64,
 }
 
 impl ValidationContext {
@@ -174,6 +178,7 @@ impl ValidationContext {
             producer_bls_keys: Vec::new(),
             excluded_producers: std::collections::HashSet::new(),
             epoch_producer_list: Vec::new(),
+            sig_verification_height: u64::MAX,
         }
     }
 
@@ -256,6 +261,14 @@ impl ValidationContext {
     #[must_use]
     pub fn with_pending_producer_keys(mut self, keys: Vec<crypto::PublicKey>) -> Self {
         self.pending_producer_keys = keys;
+        self
+    }
+
+    /// Set the sig_verification_height for P0-001 enforcement.
+    /// After this height, inputs MUST include their public_key.
+    #[must_use]
+    pub fn with_sig_verification_height(mut self, height: u64) -> Self {
+        self.sig_verification_height = height;
         self
     }
 }

@@ -55,7 +55,8 @@ impl Node {
                 self.config.network,
                 0, // wall-clock not needed for UTXO validation
                 height,
-            );
+            )
+            .with_sig_verification_height(self.config.network.params().sig_verification_height);
             validation::validate_transaction_with_utxos(tx, &utxo_ctx, utxo).map_err(|e| {
                 warn!(
                     "[UTXO] FAIL h={} tx={} type={:?} inputs={} outputs={} error={}",

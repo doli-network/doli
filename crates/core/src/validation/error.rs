@@ -287,4 +287,17 @@ pub enum ValidationError {
     /// Liquidity operation is invalid.
     #[error("invalid liquidity operation: {0}")]
     InvalidLiquidity(String),
+
+    /// Input is missing the required public key (post-sig-verification hard fork).
+    ///
+    /// After `sig_verification_height`, every input MUST include its spender's
+    /// public key so that signature verification can be performed. Pre-fork
+    /// transactions (serialized without public_key) are exempt.
+    #[error("missing public key for input {index} (required at height >= {activation_height})")]
+    MissingPublicKey {
+        /// Index of the input missing its public key.
+        index: usize,
+        /// The activation height after which public keys are mandatory.
+        activation_height: u64,
+    },
 }

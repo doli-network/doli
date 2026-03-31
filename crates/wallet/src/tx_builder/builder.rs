@@ -200,9 +200,16 @@ impl TxBuilder {
             // Input.committed_output_count: u32 — always 0 for wallet-built transactions
             // (only used with AnyoneCanPay sighash for partial-commitment signing)
             buf.extend_from_slice(&0u32.to_le_bytes());
-            // Input.public_key: #[serde(skip)] in core — NOT part of wire format.
-            // The public key is stored in-memory only and populated by the node
-            // from UTXO data during validation. Do NOT serialize it here.
+            // Input.public_key: Option<PublicKey> — part of wire format since v5.1.0 (P0-001).
+            // bincode 1.x encodes Option as: 0u8 (None) or 1u8 + value (Some).
+            // PublicKey serializes via serialize_bytes(): u64 LE length prefix + 32 bytes.
+            if let Some(ref pk_bytes) = input.public_key {
+                buf.push(1u8); // Some discriminant
+                buf.extend_from_slice(&32u64.to_le_bytes()); // length prefix
+                buf.extend_from_slice(pk_bytes);
+            } else {
+                buf.push(0u8); // None discriminant
+            }
         }
 
         // Transaction.outputs: Vec<Output> — u64 LE element count prefix

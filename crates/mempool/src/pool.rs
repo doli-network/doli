@@ -119,7 +119,8 @@ impl Mempool {
         }
 
         // Validate transaction structure
-        let ctx = ValidationContext::new(self.params.clone(), self.network, 0, current_height);
+        let ctx = ValidationContext::new(self.params.clone(), self.network, 0, current_height)
+            .with_sig_verification_height(self.network.params().sig_verification_height);
         validate_transaction(&tx, &ctx)
             .map_err(|e| MempoolError::InvalidTransaction(e.to_string()))?;
 
@@ -287,7 +288,8 @@ impl Mempool {
         }
 
         // Validate transaction structure (but skip UTXO checks)
-        let ctx = ValidationContext::new(self.params.clone(), self.network, 0, current_height);
+        let ctx = ValidationContext::new(self.params.clone(), self.network, 0, current_height)
+            .with_sig_verification_height(self.network.params().sig_verification_height);
         validate_transaction(&tx, &ctx)
             .map_err(|e| MempoolError::InvalidTransaction(e.to_string()))?;
 

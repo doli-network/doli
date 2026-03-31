@@ -2,7 +2,7 @@
 
 | Finding | Priority | Status | Notes |
 |---------|----------|--------|-------|
-| AUDIT-P0-001 | P0 | FIXED | public_key added to Input, verify_input_signature uses it, hard fork gate via sig_verification_height |
+| AUDIT-P0-001 | P0 | FIXED | `#[serde(skip)]` removed from `Input.public_key` (now in wire format). `verify_input_signature` enforces `MissingPublicKey` after `sig_verification_height`. `LegacyInputV3` handles backward compat. 6 regression tests. |
 | AUDIT-P0-002 | P0 | FIXED | RPC admin auth (bearer token + localhost bypass) + path sanitization |
 | AUDIT-P1-001 | P1 | FIXED | missed_producers: length cap, membership check, total exclusion cap |
 | AUDIT-P1-002 | P1 | FIXED | CORS: uses allowed_origins list, no more wildcard Any |

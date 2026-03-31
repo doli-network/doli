@@ -90,7 +90,15 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
         }
 
         // Verify spending conditions (signature for Normal/Bond, condition evaluator for others)
-        verify_input_conditions(tx, input, &signing_hash, &utxo, i, ctx.current_height)?;
+        verify_input_conditions(
+            tx,
+            input,
+            &signing_hash,
+            &utxo,
+            i,
+            ctx.current_height,
+            ctx.sig_verification_height,
+        )?;
 
         // Add to total (with overflow check) — only native DOLI amounts
         if utxo.output.output_type.is_native_amount() {
@@ -544,6 +552,7 @@ fn verify_input_conditions(
     utxo: &UtxoInfo,
     input_index: usize,
     current_height: crate::types::BlockHeight,
+    sig_verification_height: u64,
 ) -> Result<(), ValidationError> {
     if utxo.output.output_type.is_conditioned() {
         // ---- Conditioned output: evaluate condition tree ----
@@ -589,7 +598,14 @@ fn verify_input_conditions(
         Ok(())
     } else {
         // ---- Normal/Bond output: single signature verification ----
-        verify_input_signature(input, signing_hash, utxo, input_index)
+        verify_input_signature(
+            input,
+            signing_hash,
+            utxo,
+            input_index,
+            current_height,
+            sig_verification_height,
+        )
     }
 }
 
@@ -598,18 +614,31 @@ fn verify_input_conditions(
 /// Pubkey resolution order:
 /// 1. `input.public_key` — spender-provided (post-P0-001 hard fork)
 /// 2. `utxo.pubkey` — from UTXO set (test mock only; production returns None)
-/// 3. Neither → skip verification (pre-fork legacy transactions)
+/// 3. Neither:
+///    - If `current_height >= sig_verification_height` → reject (MissingPublicKey)
+///    - If `current_height < sig_verification_height` → skip verification (pre-fork compat)
 fn verify_input_signature(
     input: &Input,
     signing_hash: &Hash,
     utxo: &UtxoInfo,
     input_index: usize,
+    current_height: crate::types::BlockHeight,
+    sig_verification_height: u64,
 ) -> Result<(), ValidationError> {
     // Try input's own public key first (post-fork), then UTXO's (test mock).
-    // Pre-fork transactions have neither → verification skipped.
     let pubkey = match input.public_key.as_ref().or(utxo.pubkey.as_ref()) {
         Some(pk) => pk,
-        None => return Ok(()),
+        None => {
+            // After activation height: public key is mandatory
+            if current_height >= sig_verification_height {
+                return Err(ValidationError::MissingPublicKey {
+                    index: input_index,
+                    activation_height: sig_verification_height,
+                });
+            }
+            // Before activation: skip verification (pre-fork legacy compat)
+            return Ok(());
+        }
     };
 
     // Verify the pubkey hash matches the output

@@ -1903,3 +1903,284 @@ fn test_validate_mixed_outputs_with_unique_nfts() {
     let result = validate_outputs(&[normal, nft], &ctx);
     assert!(result.is_ok(), "mixed outputs should pass: {:?}", result);
 }
+
+// ==========================================================================
+// P0-001 Signature Verification Enforcement Tests
+// ==========================================================================
+
+/// Helper: create a signed transaction with a valid UTXO for P0-001 tests.
+fn p0001_setup() -> (Transaction, MockUtxoProvider, crypto::KeyPair) {
+    let kp = crypto::KeyPair::from_seed([42u8; 32]);
+    let pubkey = *kp.public_key();
+    let pubkey_hash = crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, pubkey.as_bytes());
+    let prev_tx_hash = crypto::hash::hash(b"p0001_prev_tx");
+
+    let mut utxo_provider = MockUtxoProvider::new();
+    utxo_provider.add_utxo(
+        prev_tx_hash,
+        0,
+        Output {
+            output_type: OutputType::Normal,
+            amount: 1_000_000,
+            pubkey_hash,
+            lock_until: 0,
+            extra_data: Vec::new(),
+        },
+        pubkey,
+    );
+
+    let tx = Transaction {
+        version: 1,
+        tx_type: TxType::Transfer,
+        inputs: vec![Input {
+            prev_tx_hash,
+            output_index: 0,
+            signature: crypto::Signature::default(), // Will be overwritten
+            sighash_type: crate::transaction::SighashType::All,
+            committed_output_count: 0,
+            public_key: Some(pubkey),
+        }],
+        outputs: vec![Output {
+            output_type: OutputType::Normal,
+            amount: 999_000,
+            pubkey_hash,
+            lock_until: 0,
+            extra_data: Vec::new(),
+        }],
+        extra_data: Vec::new(),
+    };
+
+    // Sign the transaction
+    let signing_hash = tx.signing_message_for_input(0);
+    let sig = crypto::signature::sign(signing_hash.as_bytes(), kp.private_key());
+    let mut tx = tx;
+    tx.inputs[0].signature = sig;
+
+    (tx, utxo_provider, kp)
+}
+
+/// P0-001 regression: after activation height, inputs without public_key are rejected.
+#[test]
+fn test_p0001_missing_pubkey_rejected_after_activation() {
+    let (mut tx, mut utxo_provider, _kp) = p0001_setup();
+
+    // Remove public_key to simulate pre-fork transaction at post-fork height
+    tx.inputs[0].public_key = None;
+
+    // Also remove UTXO pubkey (production UTXO set doesn't store pubkeys)
+    let prev_tx_hash = tx.inputs[0].prev_tx_hash;
+    let output = utxo_provider
+        .utxos
+        .get(&(prev_tx_hash, 0))
+        .unwrap()
+        .output
+        .clone();
+    utxo_provider.utxos.insert(
+        (prev_tx_hash, 0),
+        UtxoInfo {
+            output,
+            pubkey: None,
+            spent: false,
+        },
+    );
+
+    // Height >= activation (100), sig_verification_height = 100
+    let ctx = ValidationContext::new(
+        ConsensusParams::mainnet(),
+        Network::Mainnet,
+        GENESIS_TIME + 120,
+        100,
+    )
+    .with_prev_block(0, GENESIS_TIME, Hash::ZERO)
+    .with_sig_verification_height(100);
+
+    let result = utxo::validate_transaction_with_utxos(&tx, &ctx, &utxo_provider);
+    assert!(
+        matches!(
+            result,
+            Err(ValidationError::MissingPublicKey {
+                index: 0,
+                activation_height: 100
+            })
+        ),
+        "Must reject missing public_key after activation height, got: {:?}",
+        result,
+    );
+}
+
+/// P0-001: before activation height, missing public_key is accepted (backward compat).
+#[test]
+fn test_p0001_missing_pubkey_accepted_before_activation() {
+    let (mut tx, mut utxo_provider, _kp) = p0001_setup();
+
+    // Remove public_key — simulates pre-fork transactions
+    tx.inputs[0].public_key = None;
+
+    // Also remove UTXO pubkey so there's truly no pubkey to verify with
+    let prev_tx_hash = tx.inputs[0].prev_tx_hash;
+    let output = utxo_provider
+        .utxos
+        .get(&(prev_tx_hash, 0))
+        .unwrap()
+        .output
+        .clone();
+    utxo_provider.utxos.insert(
+        (prev_tx_hash, 0),
+        UtxoInfo {
+            output,
+            pubkey: None,
+            spent: false,
+        },
+    );
+
+    // Height 50 < activation 100 — should skip verification
+    let ctx = ValidationContext::new(
+        ConsensusParams::mainnet(),
+        Network::Mainnet,
+        GENESIS_TIME + 120,
+        50,
+    )
+    .with_prev_block(0, GENESIS_TIME, Hash::ZERO)
+    .with_sig_verification_height(100);
+
+    let result = utxo::validate_transaction_with_utxos(&tx, &ctx, &utxo_provider);
+    assert!(
+        result.is_ok(),
+        "Must accept missing public_key before activation height, got: {:?}",
+        result,
+    );
+}
+
+/// P0-001: valid signature with correct public_key passes after activation.
+#[test]
+fn test_p0001_valid_sig_passes_after_activation() {
+    let (tx, utxo_provider, _kp) = p0001_setup();
+
+    // Height 100 >= activation 100, but we have a valid pubkey + sig
+    let ctx = ValidationContext::new(
+        ConsensusParams::mainnet(),
+        Network::Mainnet,
+        GENESIS_TIME + 120,
+        100,
+    )
+    .with_prev_block(0, GENESIS_TIME, Hash::ZERO)
+    .with_sig_verification_height(100);
+
+    let result = utxo::validate_transaction_with_utxos(&tx, &ctx, &utxo_provider);
+    assert!(
+        result.is_ok(),
+        "Must accept valid signature with public_key after activation, got: {:?}",
+        result,
+    );
+}
+
+/// P0-001: wrong public_key (hash mismatch) is rejected even after activation.
+#[test]
+fn test_p0001_wrong_pubkey_rejected() {
+    let (mut tx, utxo_provider, _kp) = p0001_setup();
+
+    // Set a different (wrong) public key
+    let wrong_kp = crypto::KeyPair::from_seed([99u8; 32]);
+    tx.inputs[0].public_key = Some(*wrong_kp.public_key());
+
+    let ctx = ValidationContext::new(
+        ConsensusParams::mainnet(),
+        Network::Mainnet,
+        GENESIS_TIME + 120,
+        100,
+    )
+    .with_prev_block(0, GENESIS_TIME, Hash::ZERO)
+    .with_sig_verification_height(100);
+
+    let result = utxo::validate_transaction_with_utxos(&tx, &ctx, &utxo_provider);
+    assert!(
+        matches!(result, Err(ValidationError::PubkeyHashMismatch { .. })),
+        "Must reject wrong public_key (hash mismatch), got: {:?}",
+        result,
+    );
+}
+
+/// P0-001: correct public_key but invalid signature is rejected.
+#[test]
+fn test_p0001_invalid_signature_rejected() {
+    let (mut tx, utxo_provider, _kp) = p0001_setup();
+
+    // Corrupt the signature
+    let mut sig_bytes = tx.inputs[0].signature.as_bytes().to_vec();
+    sig_bytes[0] ^= 0xFF;
+    tx.inputs[0].signature = crypto::Signature::from_bytes(sig_bytes.try_into().unwrap());
+
+    let ctx = ValidationContext::new(
+        ConsensusParams::mainnet(),
+        Network::Mainnet,
+        GENESIS_TIME + 120,
+        100,
+    )
+    .with_prev_block(0, GENESIS_TIME, Hash::ZERO)
+    .with_sig_verification_height(100);
+
+    let result = utxo::validate_transaction_with_utxos(&tx, &ctx, &utxo_provider);
+    assert!(
+        matches!(result, Err(ValidationError::InvalidSignature { index: 0 })),
+        "Must reject invalid signature, got: {:?}",
+        result,
+    );
+}
+
+/// P0-001: at exactly the activation height boundary, enforcement is active.
+#[test]
+fn test_p0001_enforcement_at_exact_boundary() {
+    let (mut tx, mut utxo_provider, _kp) = p0001_setup();
+    tx.inputs[0].public_key = None;
+
+    // Remove UTXO pubkey too
+    let prev_tx_hash = tx.inputs[0].prev_tx_hash;
+    let output = utxo_provider
+        .utxos
+        .get(&(prev_tx_hash, 0))
+        .unwrap()
+        .output
+        .clone();
+    utxo_provider.utxos.insert(
+        (prev_tx_hash, 0),
+        UtxoInfo {
+            output,
+            pubkey: None,
+            spent: false,
+        },
+    );
+
+    // Height == activation height: enforcement IS active (>=, not >)
+    let ctx = ValidationContext::new(
+        ConsensusParams::mainnet(),
+        Network::Mainnet,
+        GENESIS_TIME + 120,
+        100,
+    )
+    .with_prev_block(0, GENESIS_TIME, Hash::ZERO)
+    .with_sig_verification_height(100);
+
+    let result = utxo::validate_transaction_with_utxos(&tx, &ctx, &utxo_provider);
+    assert!(
+        matches!(result, Err(ValidationError::MissingPublicKey { .. })),
+        "Must enforce at exact boundary height, got: {:?}",
+        result,
+    );
+
+    // Height == activation - 1: NOT enforced
+    let ctx_before = ValidationContext::new(
+        ConsensusParams::mainnet(),
+        Network::Mainnet,
+        GENESIS_TIME + 120,
+        99,
+    )
+    .with_prev_block(0, GENESIS_TIME, Hash::ZERO)
+    .with_sig_verification_height(100);
+
+    let result_before = utxo::validate_transaction_with_utxos(&tx, &ctx_before, &utxo_provider);
+    assert!(
+        result_before.is_ok(),
+        "Must NOT enforce at height - 1, got: {:?}",
+        result_before,
+    );
+}
