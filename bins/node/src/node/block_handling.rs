@@ -179,13 +179,22 @@ impl Node {
             ValidationMode::Full
         };
         if let Err(e) = self.apply_block(block, mode).await {
+            let err_str = e.to_string();
             warn!(
                 "[BLOCK] REJECT slot={} h={} producer={} error={} — skipping, sync will catch up",
                 block_slot,
                 height,
                 hex::encode(&block_producer.as_bytes()[..4]),
-                e,
+                err_str,
             );
+            // Auto-heal: if rejected for "invalid producer", the scheduler is stale.
+            // Rebuild from blocks so the NEXT gossip block is accepted immediately
+            // instead of waiting for the epoch boundary or a restart.
+            if err_str.contains("invalid producer") {
+                info!("[BLOCK] Auto-healing scheduler after producer eligibility rejection");
+                self.rebuild_excluded_from_headers().await;
+                self.rebuild_epoch_state_from_blocks().await;
+            }
             return Ok(());
         }
 

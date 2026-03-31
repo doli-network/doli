@@ -185,13 +185,30 @@ impl Node {
                 for block in chain {
                     // Validate producer eligibility
                     if let Err(e) = self.check_producer_eligibility(&block).await {
+                        // Auto-heal: rebuild scheduler from blocks. The scheduler may be
+                        // stale (mid-epoch desync). Rebuild once and retry the check.
+                        // Same logic as startup rebuild — no consensus change.
                         warn!(
-                            "[FORK] CACHE_REJECT slot={} producer={} error={}",
+                            "[FORK] CACHE_REJECT slot={} producer={} error={} — rebuilding scheduler",
                             block.header.slot,
                             hex::encode(&block.header.producer.as_bytes()[..4]),
                             e,
                         );
-                        anyhow::bail!("Cached chain contains invalid producer: {}", e);
+                        self.rebuild_excluded_from_headers().await;
+                        self.rebuild_epoch_state_from_blocks().await;
+                        // Retry after rebuild
+                        if let Err(e2) = self.check_producer_eligibility(&block).await {
+                            warn!(
+                                "[FORK] CACHE_REJECT slot={} producer={} error={} — still invalid after rebuild",
+                                block.header.slot,
+                                hex::encode(&block.header.producer.as_bytes()[..4]),
+                                e2,
+                            );
+                            anyhow::bail!("Cached chain contains invalid producer: {}", e2);
+                        }
+                        info!(
+                            "[FORK] Scheduler auto-heal successful — block accepted after rebuild"
+                        );
                     }
                     // Remove from cache before applying
                     {
