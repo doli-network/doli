@@ -414,6 +414,134 @@ impl Node {
         }
     }
 
+    /// Rebuild epoch_bond_snapshot and epoch_producer_list from block history.
+    ///
+    /// At startup, init.rs seeds these with "all active producers" (no attestation
+    /// filtering) and "current UTXO bonds" (may include mid-epoch add-bonds).
+    /// If an epoch boundary passed while the node was offline, these diverge from
+    /// the network's frozen state → "invalid producer for slot" on gossip blocks.
+    ///
+    /// This function replays the same logic as post_commit_actions() at the last
+    /// epoch boundary to reconstruct the exact scheduler state the network is using.
+    pub async fn rebuild_epoch_state_from_blocks(&mut self) {
+        let current_h = self.chain_state.read().await.best_height;
+        let blocks_per_epoch = self.config.network.blocks_per_reward_epoch();
+        if blocks_per_epoch == 0 || current_h == 0 {
+            return;
+        }
+
+        let epoch = current_h / blocks_per_epoch;
+        if epoch == 0 {
+            return; // Genesis epoch — init.rs seeding is correct
+        }
+
+        let epoch_boundary_h = epoch * blocks_per_epoch;
+
+        // 1. Rebuild epoch_bond_snapshot at the epoch boundary height
+        {
+            let utxo = self.utxo_set.read().await;
+            let producers = self.producer_set.read().await;
+            let active = producers.active_producers_at_height(epoch_boundary_h);
+            let mut snapshot = std::collections::HashMap::new();
+            for p in &active {
+                let pkh =
+                    crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, p.public_key.as_bytes());
+                let count = utxo
+                    .count_bonds(&pkh, self.config.network.bond_unit())
+                    .max(1) as u64;
+                snapshot.insert(pkh, count);
+            }
+            let total: u64 = snapshot.values().sum();
+            info!(
+                "[STARTUP] Rebuilt epoch bond snapshot: epoch={}, producers={}, total_bonds={}",
+                epoch,
+                snapshot.len(),
+                total
+            );
+            self.epoch_bond_snapshot = snapshot;
+            self.epoch_bond_snapshot_epoch = epoch;
+            self.cached_scheduler = None;
+        }
+
+        // 2. Rebuild epoch_producer_list with attestation filtering
+        //    (same logic as post_commit.rs:74-131)
+        {
+            let producers = self.producer_set.read().await;
+            let active: Vec<crypto::PublicKey> = producers
+                .active_producers_at_height(epoch_boundary_h)
+                .iter()
+                .map(|p| p.public_key)
+                .collect();
+            drop(producers);
+
+            let mut new_list: Vec<crypto::PublicKey> = if epoch <= 1 {
+                active
+            } else {
+                let prev_epoch_start = (epoch - 1) * blocks_per_epoch;
+                let prev_epoch_end = epoch * blocks_per_epoch;
+                let mut attested: std::collections::HashSet<crypto::PublicKey> =
+                    std::collections::HashSet::new();
+                let mut have_full_epoch = true;
+
+                let mut sorted_for_decode = active.clone();
+                sorted_for_decode.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+
+                for h in prev_epoch_start..prev_epoch_end {
+                    if let Ok(Some(blk)) = self.block_store.get_block_by_height(h) {
+                        attested.insert(blk.header.producer);
+                        if !blk.header.presence_root.is_zero() {
+                            let indices = doli_core::attestation::decode_attestation_bitfield(
+                                &blk.header.presence_root,
+                                sorted_for_decode.len(),
+                            );
+                            for idx in indices {
+                                if let Some(pk) = sorted_for_decode.get(idx) {
+                                    attested.insert(*pk);
+                                }
+                            }
+                        }
+                    } else {
+                        have_full_epoch = false;
+                        break;
+                    }
+                }
+
+                let skip_height = self.config.network.params().snap_attestation_skip_height;
+                if have_full_epoch || epoch_boundary_h < skip_height {
+                    active
+                        .into_iter()
+                        .filter(|pk| attested.contains(pk))
+                        .collect()
+                } else {
+                    info!(
+                        "[STARTUP] Incomplete block history for epoch {} — using all {} active producers",
+                        epoch - 1,
+                        active.len()
+                    );
+                    active
+                }
+            };
+
+            // Deadlock safety: if no one attested, include everyone
+            if new_list.is_empty() {
+                let producers = self.producer_set.read().await;
+                new_list = producers
+                    .active_producers_at_height(epoch_boundary_h)
+                    .iter()
+                    .map(|p| p.public_key)
+                    .collect();
+            }
+
+            new_list.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+            info!(
+                "[STARTUP] Rebuilt epoch_producer_list: epoch={}, {} producers (attestation-filtered)",
+                epoch,
+                new_list.len()
+            );
+            self.epoch_producer_list = new_list;
+        }
+    }
+
     pub fn rebuild_producer_set_from_blocks(
         &self,
         producers: &mut ProducerSet,

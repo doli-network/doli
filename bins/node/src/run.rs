@@ -470,6 +470,12 @@ pub(crate) async fn run_node(
     // Rebuild excluded_producers from block headers (on-chain source of truth).
     node.rebuild_excluded_from_headers().await;
 
+    // Rebuild epoch bond snapshot + epoch producer list from blocks.
+    // Without this, a node that restarts after an epoch boundary has a stale
+    // scheduler (all active producers, no attestation filtering) while the
+    // network uses the filtered list → "invalid producer for slot" on gossip.
+    node.rebuild_epoch_state_from_blocks().await;
+
     // Checkpoint/snap sync is now handled internally by SyncManager.
     // CLI checkpoint overrides and compiled-in constants are no longer needed here.
     if let (Some(cp_height), Some(cp_hash_str)) = (checkpoint_height, checkpoint_hash.as_deref()) {
