@@ -33,9 +33,7 @@ pub(super) fn is_routable_address(addr: &Multiaddr, network_id: u32) -> bool {
                     return false;
                 }
                 // Mainnet only: filter loopback, private, CGNAT
-                if is_mainnet
-                    && (ip.is_loopback() || ip.is_private() || is_shared_address(ip))
-                {
+                if is_mainnet && (ip.is_loopback() || ip.is_private() || is_shared_address(ip)) {
                     return false;
                 }
             }

@@ -146,8 +146,7 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
             let actual_fee = total_input.saturating_sub(total_output);
             let min_fee = tx.minimum_fee();
             if actual_fee < min_fee {
-                let extra_bytes: u64 =
-                    tx.outputs.iter().map(|o| o.extra_data.len() as u64).sum();
+                let extra_bytes: u64 = tx.outputs.iter().map(|o| o.extra_data.len() as u64).sum();
                 return Err(ValidationError::InsufficientFee {
                     actual: actual_fee,
                     minimum: min_fee,
