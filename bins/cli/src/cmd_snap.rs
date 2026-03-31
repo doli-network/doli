@@ -432,9 +432,9 @@ fn restart_matching_service(data_dir: &std::path::Path) {
                 let cat_str = String::from_utf8_lossy(&cat_output.stdout);
                 if cat_str.contains(data_dir_str.as_ref()) {
                     let _ = std::process::Command::new("sudo")
-                        .args(["systemctl", "start", service])
+                        .args(["systemctl", "restart", service])
                         .output();
-                    println!("  Started {}", service);
+                    println!("  Restarted {}", service);
                     return;
                 }
             }
