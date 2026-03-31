@@ -110,7 +110,7 @@ impl SyncManager {
                             ),
                         };
                     }
-                    let min_genesis_quorum = self.min_peers_for_production.max(5);
+                    let min_genesis_quorum = self.min_peers_for_production;
                     if self.peers.len() < min_genesis_quorum {
                         return ProductionAuthorization::BlockedBootstrap {
                             reason: format!(
