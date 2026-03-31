@@ -156,9 +156,9 @@ struct RpcSharedState {
 /// Check whether a request is authorized for an admin method.
 ///
 /// Rules:
-/// - Request from loopback IP: admin methods allowed without token (backward compat)
-/// - Remote request + no token configured: admin methods DENIED
-/// - Remote request + token configured: require `Authorization: Bearer <token>`
+/// - Request from loopback or private IP: admin methods allowed without token
+/// - Public IP + no token configured: admin methods DENIED
+/// - Public IP + token configured: require `Authorization: Bearer <token>`
 fn check_admin_auth(
     shared: &RpcSharedState,
     headers: &HeaderMap,
@@ -169,9 +169,10 @@ fn check_admin_auth(
         return Ok(());
     }
 
-    // Localhost client is trusted — regardless of bind address.
-    // A server on 0.0.0.0 receiving a request from 127.0.0.1 is local.
-    if client_addr.ip().is_loopback() {
+    // Trusted networks: loopback (127.x) and private (RFC 1918).
+    // All operator servers communicate over private IPs — these are trusted.
+    // Public IPs require token auth to prevent external abuse.
+    if is_trusted_network(client_addr.ip()) {
         return Ok(());
     }
 
@@ -201,6 +202,14 @@ fn check_admin_auth(
                 }
             }
         }
+    }
+}
+
+/// Check if an IP is in a trusted network (loopback or RFC 1918 private).
+fn is_trusted_network(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => v4.is_loopback() || v4.is_private(),
+        std::net::IpAddr::V6(v6) => v6.is_loopback(),
     }
 }
 
