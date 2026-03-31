@@ -200,21 +200,9 @@ impl TxBuilder {
             // Input.committed_output_count: u32 — always 0 for wallet-built transactions
             // (only used with AnyoneCanPay sighash for partial-commitment signing)
             buf.extend_from_slice(&0u32.to_le_bytes());
-            // Input.public_key: Option<PublicKey> — bincode: 0u8=None, 1u8+bytes=Some
-            // Wallet always provides the public key for signature verification (P0-001).
-            let pk_bytes = input
-                .public_key
-                .as_ref()
-                .ok_or_else(|| anyhow!("Input missing public_key"))?;
-            if pk_bytes.len() != 32 {
-                return Err(anyhow!(
-                    "Public key must be 32 bytes, got {}",
-                    pk_bytes.len()
-                ));
-            }
-            buf.push(1u8); // Option::Some discriminant
-            buf.extend_from_slice(&32u64.to_le_bytes()); // PublicKey serialize_bytes length prefix
-            buf.extend_from_slice(pk_bytes);
+            // Input.public_key: #[serde(skip)] in core — NOT part of wire format.
+            // The public key is stored in-memory only and populated by the node
+            // from UTXO data during validation. Do NOT serialize it here.
         }
 
         // Transaction.outputs: Vec<Output> — u64 LE element count prefix

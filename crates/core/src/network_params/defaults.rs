@@ -148,8 +148,8 @@ impl NetworkParams {
                 vesting_quarter_slots: 2_160,
 
                 // Hard fork gates
-                sig_verification_height: 0, // Enforce from genesis on testnet
-                snap_attestation_skip_height: 0, // Always active on testnet
+                sig_verification_height: 7247, // Activate at block 7247 on testnet
+                snap_attestation_skip_height: 7247, // Activate at block 7247 on testnet
 
                 // INC-I-015: Gossip mesh sized to max_peers for eager push to ALL
                 // connected peers. At mesh_n=12, blocks reach 12 peers immediately
