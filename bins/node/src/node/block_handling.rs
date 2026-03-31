@@ -27,6 +27,20 @@ impl Node {
             let current_height = state.best_height;
             drop(state);
 
+            // Reject blocks from a different chain (different genesis hash).
+            // Without this, zombie nodes on old chains contaminate our block
+            // store via fork recovery, causing "common ancestor not found".
+            let our_genesis = self.chain_state.read().await.genesis_hash;
+            if block.header.genesis_hash != our_genesis {
+                debug!(
+                    "Dropping block {} from different chain (genesis {} != {})",
+                    block_hash,
+                    block.header.genesis_hash.to_hex()[..16].to_string(),
+                    our_genesis.to_hex()[..16].to_string(),
+                );
+                return Ok(());
+            }
+
             // Cache this block for potential reorg
             {
                 let mut cache = self.fork_block_cache.write().await;

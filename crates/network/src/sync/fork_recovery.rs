@@ -61,6 +61,8 @@ pub struct ForkRecoveryTracker {
     /// Set when recovery is cancelled because the fork exceeds MAX_RECOVERY_DEPTH.
     /// The node should escalate to force_resync_from_genesis().
     exceeded_max_depth: bool,
+    /// Our chain's genesis hash — blocks from other chains are rejected.
+    genesis_hash: Hash,
 }
 
 impl ForkRecoveryTracker {
@@ -69,7 +71,18 @@ impl ForkRecoveryTracker {
             active: None,
             cooldown_until: None,
             exceeded_max_depth: false,
+            genesis_hash: Hash::default(),
         }
+    }
+
+    /// Set the genesis hash for cross-chain block rejection.
+    pub fn set_genesis_hash(&mut self, hash: Hash) {
+        self.genesis_hash = hash;
+    }
+
+    /// Get the genesis hash.
+    pub fn genesis_hash(&self) -> Hash {
+        self.genesis_hash
     }
 
     /// Start recovery for an orphan block.
@@ -82,6 +95,14 @@ impl ForkRecoveryTracker {
             if Instant::now() < until {
                 return false;
             }
+        }
+        // Reject blocks from a different chain before starting recovery
+        if !self.genesis_hash.is_zero() && orphan_block.header.genesis_hash != self.genesis_hash {
+            warn!(
+                "Fork recovery rejected: orphan block from different chain (genesis {})",
+                &orphan_block.header.genesis_hash.to_hex()[..16]
+            );
+            return false;
         }
         let next_parent = orphan_block.header.prev_hash;
         info!(
@@ -164,6 +185,15 @@ impl ForkRecoveryTracker {
                 let expected = recovery.next_parent;
                 if blk.hash() != expected {
                     self.cancel("unexpected block hash");
+                    return true;
+                }
+                // Reject blocks from a different chain
+                if !self.genesis_hash.is_zero() && blk.header.genesis_hash != self.genesis_hash {
+                    warn!(
+                        "Fork recovery cancelled: block from different chain (genesis {})",
+                        &blk.header.genesis_hash.to_hex()[..16]
+                    );
+                    self.cancel("genesis hash mismatch");
                     return true;
                 }
                 recovery.next_parent = blk.header.prev_hash;

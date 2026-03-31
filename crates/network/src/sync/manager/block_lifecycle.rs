@@ -274,7 +274,9 @@ impl SyncManager {
             self.pipeline.pending_blocks.clear();
             self.pipeline.headers_needing_bodies.clear();
             self.pipeline.pending_requests.clear();
+            let genesis = self.fork.fork_recovery.genesis_hash();
             self.fork.fork_recovery = super::super::fork_recovery::ForkRecoveryTracker::new();
+            self.fork.fork_recovery.set_genesis_hash(genesis);
             self.fork.consecutive_empty_headers = 0;
             self.fork.needs_genesis_resync = false;
             self.pipeline.body_stall_retries = 0;
@@ -326,8 +328,10 @@ impl SyncManager {
         self.pipeline.headers_needing_bodies.clear();
         self.pipeline.pending_requests.clear();
 
-        // Cancel any active fork recovery
+        // Cancel any active fork recovery (preserve genesis hash)
+        let genesis = self.fork.fork_recovery.genesis_hash();
         self.fork.fork_recovery = super::super::fork_recovery::ForkRecoveryTracker::new();
+        self.fork.fork_recovery.set_genesis_hash(genesis);
 
         // Reset deep fork detection
         self.fork.consecutive_empty_headers = 0;

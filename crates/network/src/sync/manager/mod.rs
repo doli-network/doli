@@ -189,7 +189,11 @@ impl SyncManager {
             tier: 0,
             finality_tracker: doli_core::FinalityTracker::new(),
             // Fork state (sub-struct)
-            fork: ForkState::new(),
+            fork: {
+                let mut f = ForkState::new();
+                f.fork_recovery.set_genesis_hash(genesis_hash);
+                f
+            },
             peers_lost_at: None,
             peer_loss_timeout_secs: 30,
             // Snap sync state (sub-struct)
