@@ -514,10 +514,15 @@ impl Node {
                         .collect()
                 } else {
                     info!(
-                        "[STARTUP] Incomplete block history for epoch {} — using all {} active producers",
+                        "[STARTUP] Incomplete block history for epoch {} — using all {} active producers, Light validation until next epoch boundary",
                         epoch - 1,
                         active.len()
                     );
+                    // Without full block history, our epoch_producer_list may differ
+                    // from the network's attestation-filtered list. Use Light validation
+                    // (skip producer eligibility on gossip) until the next epoch boundary
+                    // rebuilds the list correctly. Same mechanism as snap sync runtime.
+                    self.snap_sync_height = Some(current_h);
                     active
                 }
             };
