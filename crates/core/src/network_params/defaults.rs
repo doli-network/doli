@@ -74,8 +74,8 @@ impl NetworkParams {
                 vesting_quarter_slots: consensus::VESTING_QUARTER_SLOTS as u64,
 
                 // Hard fork gates
-                sig_verification_height: 8000, // P0-001: enforce input pubkey + sig verification at block 8000
-                snap_attestation_skip_height: 8000, // INC-I-010: skip attestation filtering when block history incomplete
+                sig_verification_height: 0, // P0-001: enforce from genesis (clean chain)
+                snap_attestation_skip_height: 0, // INC-I-010: always active (clean chain)
 
                 // Gossip mesh: universal config for all network sizes.
                 // mesh_n=12 keeps all peers in eager-push for networks ≤24 (mesh_n_high),
@@ -148,8 +148,8 @@ impl NetworkParams {
                 vesting_quarter_slots: 2_160,
 
                 // Hard fork gates
-                sig_verification_height: 8000, // P0-001: enforce input pubkey + sig verification at block 8000
-                snap_attestation_skip_height: 8000, // INC-I-010: skip attestation filtering when block history incomplete
+                sig_verification_height: 0, // P0-001: enforce from genesis (clean chain)
+                snap_attestation_skip_height: 0, // Always active (clean chain)
 
                 // INC-I-015: Gossip mesh sized to max_peers for eager push to ALL
                 // connected peers. At mesh_n=12, blocks reach 12 peers immediately
