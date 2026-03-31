@@ -744,10 +744,44 @@ mod tests {
         Mempool::testnet()
     }
 
+    /// Test keypair used across all mempool tests.
+    fn test_keypair() -> crypto::KeyPair {
+        crypto::KeyPair::from_seed([42u8; 32])
+    }
+
+    /// Create a signed input for the test keypair.
+    fn signed_input(prev_hash: Hash, index: u32, tx: &Transaction) -> Input {
+        let kp = test_keypair();
+        let mut input = Input::new(prev_hash, index);
+        input.public_key = Some(*kp.public_key());
+        let signing_hash = tx.signing_message_for_input(0);
+        input.signature = crypto::signature::sign_hash(&signing_hash, kp.private_key());
+        input
+    }
+
+    /// Create an input with pubkey set (sign after building the full TX).
+    fn input_with_pubkey(prev_hash: Hash, index: u32) -> Input {
+        let kp = test_keypair();
+        let mut input = Input::new(prev_hash, index);
+        input.public_key = Some(*kp.public_key());
+        input
+    }
+
+    /// Sign all inputs in a transaction with the test keypair.
+    fn sign_tx(tx: &mut Transaction) {
+        let kp = test_keypair();
+        for i in 0..tx.inputs.len() {
+            let signing_hash = tx.signing_message_for_input(i);
+            tx.inputs[i].signature = crypto::signature::sign_hash(&signing_hash, kp.private_key());
+        }
+    }
+
     /// Create a funding UTXO and return (utxo_set, tx_hash, pubkey_hash)
     fn funded_utxo(amount: u64) -> (UtxoSet, Hash, Hash) {
+        let kp = test_keypair();
         let mut utxo_set = UtxoSet::new();
-        let pubkey_hash = crypto::hash::hash(b"test_address");
+        let pubkey_hash =
+            crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, kp.public_key().as_bytes());
         let tx_hash = crypto::hash::hash(b"funding_tx");
         let outpoint = Outpoint::new(tx_hash, 0);
         let entry = UtxoEntry {
@@ -760,12 +794,16 @@ mod tests {
         (utxo_set, tx_hash, pubkey_hash)
     }
 
-    /// Create a simple transfer spending from a funded UTXO
+    /// Create a simple signed transfer spending from a funded UTXO
     fn simple_transfer(prev_hash: Hash, amount: u64, fee: u64, dest: Hash) -> Transaction {
-        Transaction::new_transfer(
-            vec![Input::new(prev_hash, 0)],
-            vec![Output::normal(amount - fee, dest)],
-        )
+        let kp = test_keypair();
+        let mut input = Input::new(prev_hash, 0);
+        input.public_key = Some(*kp.public_key());
+        let mut tx =
+            Transaction::new_transfer(vec![input], vec![Output::normal(amount - fee, dest)]);
+        let signing_hash = tx.signing_message_for_input(0);
+        tx.inputs[0].signature = crypto::signature::sign_hash(&signing_hash, kp.private_key());
+        tx
     }
 
     #[test]
@@ -817,10 +855,11 @@ mod tests {
         let (utxo_set, tx_hash, _) = funded_utxo(1_000);
         let dest = crypto::hash::hash(b"dest");
         // Try to send more than available
-        let tx = Transaction::new_transfer(
-            vec![Input::new(tx_hash, 0)],
+        let mut tx = Transaction::new_transfer(
+            vec![input_with_pubkey(tx_hash, 0)],
             vec![Output::normal(2_000, dest)],
         );
+        sign_tx(&mut tx);
 
         let result = mempool.add_transaction(tx, &utxo_set, 100);
         assert!(matches!(result, Err(MempoolError::InvalidTransaction(_))));
@@ -832,18 +871,20 @@ mod tests {
         let (utxo_set, tx_hash, pubkey_hash) = funded_utxo(10_000);
 
         // First tx spends the UTXO
-        let tx1 = Transaction::new_transfer(
-            vec![Input::new(tx_hash, 0)],
+        let mut tx1 = Transaction::new_transfer(
+            vec![input_with_pubkey(tx_hash, 0)],
             vec![Output::normal(9_000, pubkey_hash)],
         );
+        sign_tx(&mut tx1);
         mempool.add_transaction(tx1, &utxo_set, 100).unwrap();
 
         // Second tx tries to spend the same UTXO
         let dest2 = crypto::hash::hash(b"other_dest");
-        let tx2 = Transaction::new_transfer(
-            vec![Input::new(tx_hash, 0)],
+        let mut tx2 = Transaction::new_transfer(
+            vec![input_with_pubkey(tx_hash, 0)],
             vec![Output::normal(8_000, dest2)],
         );
+        sign_tx(&mut tx2);
         let result = mempool.add_transaction(tx2, &utxo_set, 100);
         assert!(matches!(result, Err(MempoolError::DoubleSpend)));
     }
@@ -882,7 +923,10 @@ mod tests {
 
         // Create two funded UTXOs
         let mut utxo_set = UtxoSet::new();
-        let pubkey_hash = crypto::hash::hash(b"addr");
+        let pubkey_hash = crypto::hash::hash_with_domain(
+            crypto::ADDRESS_DOMAIN,
+            test_keypair().public_key().as_bytes(),
+        );
         for i in 0..2u8 {
             let tx_hash = crypto::hash::hash(&[i, 1, 2, 3]);
             let outpoint = Outpoint::new(tx_hash, 0);
@@ -915,7 +959,10 @@ mod tests {
     #[test]
     fn test_cpfp_effective_fee_rate() {
         let mut mempool = test_mempool();
-        let pubkey_hash = crypto::hash::hash(b"addr");
+        let pubkey_hash = crypto::hash::hash_with_domain(
+            crypto::ADDRESS_DOMAIN,
+            test_keypair().public_key().as_bytes(),
+        );
 
         // Create parent UTXO (confirmed)
         let mut utxo_set = UtxoSet::new();
@@ -933,18 +980,20 @@ mod tests {
             .unwrap();
 
         // Parent tx: low fee (fee = 100)
-        let parent_tx = Transaction::new_transfer(
-            vec![Input::new(parent_funding, 0)],
+        let mut parent_tx = Transaction::new_transfer(
+            vec![input_with_pubkey(parent_funding, 0)],
             vec![Output::normal(99_900, pubkey_hash)],
         );
+        sign_tx(&mut parent_tx);
         let parent_hash = parent_tx.hash();
         mempool.add_transaction(parent_tx, &utxo_set, 100).unwrap();
 
         // Child tx: high fee (fee = 50_000)
-        let child_tx = Transaction::new_transfer(
-            vec![Input::new(parent_hash, 0)],
+        let mut child_tx = Transaction::new_transfer(
+            vec![input_with_pubkey(parent_hash, 0)],
             vec![Output::normal(49_900, pubkey_hash)],
         );
+        sign_tx(&mut child_tx);
         let child_hash = child_tx.hash();
         mempool.add_transaction(child_tx, &utxo_set, 100).unwrap();
 
@@ -963,10 +1012,11 @@ mod tests {
 
         // Spend UTXO in mempool, send to different address
         let other = crypto::hash::hash(b"other");
-        let tx = Transaction::new_transfer(
-            vec![Input::new(tx_hash, 0)],
+        let mut tx = Transaction::new_transfer(
+            vec![input_with_pubkey(tx_hash, 0)],
             vec![Output::normal(9_000, other)],
         );
+        sign_tx(&mut tx);
         mempool.add_transaction(tx, &utxo_set, 100).unwrap();
 
         // Original address should show outgoing
@@ -999,7 +1049,10 @@ mod tests {
     #[test]
     fn test_mempool_rejects_insufficient_per_byte_fee() {
         let mut mempool = test_mempool();
-        let pubkey_hash = crypto::hash::hash(b"fee_test_addr");
+        let pubkey_hash = crypto::hash::hash_with_domain(
+            crypto::ADDRESS_DOMAIN,
+            test_keypair().public_key().as_bytes(),
+        );
         let tx_hash = crypto::hash::hash(b"fee_funding_tx");
 
         // Bond output: 4 bytes extra_data => minimum_fee = 1 + 4/100 = 1
@@ -1016,10 +1069,10 @@ mod tests {
         utxo_set.insert(outpoint, entry).unwrap();
 
         // Fee: bond_amount - bond_amount = 0 sats, but needs 1.
-        let tx = Transaction {
+        let mut tx = Transaction {
             version: 1,
             tx_type: doli_core::TxType::Transfer,
-            inputs: vec![doli_core::Input::new(tx_hash, 0)],
+            inputs: vec![input_with_pubkey(tx_hash, 0)],
             outputs: vec![doli_core::Output::bond(
                 bond_amount,
                 pubkey_hash,
@@ -1028,6 +1081,7 @@ mod tests {
             )],
             extra_data: vec![],
         };
+        sign_tx(&mut tx);
 
         let result = mempool.add_transaction(tx, &utxo_set, 100);
         assert!(
@@ -1042,7 +1096,10 @@ mod tests {
     #[test]
     fn test_mempool_accepts_sufficient_per_byte_fee() {
         let mut mempool = test_mempool();
-        let pubkey_hash = crypto::hash::hash(b"fee_ok_addr");
+        let pubkey_hash = crypto::hash::hash_with_domain(
+            crypto::ADDRESS_DOMAIN,
+            test_keypair().public_key().as_bytes(),
+        );
         let tx_hash = crypto::hash::hash(b"fee_ok_funding");
 
         // Bond output: 4 bytes extra_data => minimum_fee = 1 + 4 = 5
@@ -1059,10 +1116,10 @@ mod tests {
         utxo_set.insert(outpoint, entry).unwrap();
 
         // Fee: (bond_amount + 100) - bond_amount = 100 sats >= 5. Should pass.
-        let tx = Transaction {
+        let mut tx = Transaction {
             version: 1,
             tx_type: doli_core::TxType::Transfer,
-            inputs: vec![doli_core::Input::new(tx_hash, 0)],
+            inputs: vec![input_with_pubkey(tx_hash, 0)],
             outputs: vec![doli_core::Output::bond(
                 bond_amount,
                 pubkey_hash,
@@ -1071,6 +1128,7 @@ mod tests {
             )],
             extra_data: vec![],
         };
+        sign_tx(&mut tx);
 
         let result = mempool.add_transaction(tx, &utxo_set, 100);
         assert!(
@@ -1084,7 +1142,10 @@ mod tests {
     #[test]
     fn test_mempool_accepts_base_fee_for_transfers() {
         let mut mempool = test_mempool();
-        let pubkey_hash = crypto::hash::hash(b"base_fee_addr");
+        let pubkey_hash = crypto::hash::hash_with_domain(
+            crypto::ADDRESS_DOMAIN,
+            test_keypair().public_key().as_bytes(),
+        );
         let tx_hash = crypto::hash::hash(b"base_fee_funding");
 
         // Fund with 101 sats (output 100 + fee 1 = BASE_FEE)
@@ -1099,10 +1160,11 @@ mod tests {
         utxo_set.insert(outpoint, entry).unwrap();
 
         let dest = crypto::hash::hash(b"dest_base_fee");
-        let tx = Transaction::new_transfer(
-            vec![doli_core::Input::new(tx_hash, 0)],
+        let mut tx = Transaction::new_transfer(
+            vec![input_with_pubkey(tx_hash, 0)],
             vec![Output::normal(100, dest)],
         );
+        sign_tx(&mut tx);
 
         let result = mempool.add_transaction(tx, &utxo_set, 100);
         assert!(
