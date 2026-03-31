@@ -749,16 +749,6 @@ mod tests {
         crypto::KeyPair::from_seed([42u8; 32])
     }
 
-    /// Create a signed input for the test keypair.
-    fn signed_input(prev_hash: Hash, index: u32, tx: &Transaction) -> Input {
-        let kp = test_keypair();
-        let mut input = Input::new(prev_hash, index);
-        input.public_key = Some(*kp.public_key());
-        let signing_hash = tx.signing_message_for_input(0);
-        input.signature = crypto::signature::sign_hash(&signing_hash, kp.private_key());
-        input
-    }
-
     /// Create an input with pubkey set (sign after building the full TX).
     fn input_with_pubkey(prev_hash: Hash, index: u32) -> Input {
         let kp = test_keypair();
