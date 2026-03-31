@@ -112,15 +112,25 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
 
     // Verify inputs >= outputs (difference is fee).
     // Exempt TxTypes:
-    // - Pool/Lending: DOLI flows in/out of reserves (tracked in extra_data, not Output.amount)
-    // - Genesis Registration (0 inputs, 0 outputs): protocol-generated VDF proof, fee=0 by design
-    // User Registration (from mempool, has inputs/outputs) MUST pay per-byte fees.
-    // See: testnet genesis deadlock 2026-03-26 (Registration fee=0 rejected by per-byte check)
-    // See: coinbase mismatch 2026-03-26 (builder included user Reg fees, validator excluded ALL)
+    // DOLI conservation: native output can NEVER exceed native input.
+    // This applies to ALL TX types including Pool/Lending — prevents coin creation.
+    // Pool/Lending types are only exempt from the FEE check (not the balance check)
+    // because DOLI flows into/out of reserves tracked in extra_data, not Output.amount.
+    //
+    // Genesis Registration (0 inputs, 0 outputs): protocol-generated VDF proof, exempt.
     let is_genesis_registration =
         tx.tx_type == TxType::Registration && tx.inputs.is_empty() && tx.outputs.is_empty();
-    if !is_genesis_registration
-        && !matches!(
+    if !is_genesis_registration {
+        let total_output = tx.total_output();
+        if total_input < total_output {
+            return Err(ValidationError::InsufficientFunds {
+                inputs: total_input,
+                outputs: total_output,
+            });
+        }
+
+        // Fee check: Pool/Lending types are exempt (DOLI moves to reserves, not burned as fee).
+        let fee_exempt = matches!(
             tx.tx_type,
             TxType::CreatePool
                 | TxType::Swap
@@ -131,29 +141,21 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
                 | TxType::LiquidateLoan
                 | TxType::LendingDeposit
                 | TxType::LendingWithdraw
-        )
-    {
-        let total_output = tx.total_output();
-        if total_input < total_output {
-            return Err(ValidationError::InsufficientFunds {
-                inputs: total_input,
-                outputs: total_output,
-            });
-        }
-
-        // Verify fee meets minimum (base + per-byte for output extra_data).
-        // fee = total_input - total_output (the "burned" DOLI).
-        let actual_fee = total_input.saturating_sub(total_output);
-        let min_fee = tx.minimum_fee();
-        if actual_fee < min_fee {
-            let extra_bytes: u64 = tx.outputs.iter().map(|o| o.extra_data.len() as u64).sum();
-            return Err(ValidationError::InsufficientFee {
-                actual: actual_fee,
-                minimum: min_fee,
-                base: BASE_FEE,
-                extra_bytes,
-                per_byte: FEE_PER_BYTE,
-            });
+        );
+        if !fee_exempt {
+            let actual_fee = total_input.saturating_sub(total_output);
+            let min_fee = tx.minimum_fee();
+            if actual_fee < min_fee {
+                let extra_bytes: u64 =
+                    tx.outputs.iter().map(|o| o.extra_data.len() as u64).sum();
+                return Err(ValidationError::InsufficientFee {
+                    actual: actual_fee,
+                    minimum: min_fee,
+                    base: BASE_FEE,
+                    extra_bytes,
+                    per_byte: FEE_PER_BYTE,
+                });
+            }
         }
     }
 
@@ -474,7 +476,12 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
                 output_index: first_input.output_index,
             })?;
 
-        if old_pool_utxo.output.output_type == OutputType::Pool {
+        if old_pool_utxo.output.output_type != OutputType::Pool {
+            return Err(ValidationError::InvalidLiquidity(
+                "AddLiquidity first input must be a Pool UTXO".to_string(),
+            ));
+        }
+        {
             let old_meta = old_pool_utxo.output.pool_metadata();
             let new_meta = tx.outputs[0].pool_metadata();
 
@@ -511,7 +518,12 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
                 output_index: first_input.output_index,
             })?;
 
-        if old_pool_utxo.output.output_type == OutputType::Pool {
+        if old_pool_utxo.output.output_type != OutputType::Pool {
+            return Err(ValidationError::InvalidLiquidity(
+                "RemoveLiquidity first input must be a Pool UTXO".to_string(),
+            ));
+        }
+        {
             let old_meta = old_pool_utxo.output.pool_metadata();
             let new_meta = tx.outputs[0].pool_metadata();
 

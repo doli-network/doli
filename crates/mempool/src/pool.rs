@@ -124,10 +124,48 @@ impl Mempool {
         validate_transaction(&tx, &ctx)
             .map_err(|e| MempoolError::InvalidTransaction(e.to_string()))?;
 
-        // Validate covenant conditions for conditioned inputs (hashlock, timelock, multisig, HTLC)
+        // Validate input spending conditions: pubkey + signature for Normal/Bond,
+        // covenant evaluation for conditioned outputs. Reject early to prevent
+        // mempool DoS with unsigned or wrongly-signed transactions.
+        let sig_height = self.network.params().sig_verification_height;
         for (i, input) in tx.inputs.iter().enumerate() {
             let outpoint = Outpoint::new(input.prev_tx_hash, input.output_index);
             if let Some(entry) = utxo_set.get(&outpoint) {
+                // Normal/Bond: verify pubkey presence + hash match + signature
+                if !entry.output.output_type.is_conditioned()
+                    && current_height >= sig_height
+                {
+                        let pk = match &input.public_key {
+                            Some(pk) => pk,
+                            None => {
+                                return Err(MempoolError::InvalidTransaction(format!(
+                                    "input {} missing public_key (required at height >= {})",
+                                    i, sig_height,
+                                )));
+                            }
+                        };
+                        let expected = entry.output.pubkey_hash;
+                        let actual = crypto::hash::hash_with_domain(
+                            crypto::ADDRESS_DOMAIN,
+                            pk.as_bytes(),
+                        );
+                        if expected != actual {
+                            return Err(MempoolError::InvalidTransaction(format!(
+                                "input {} pubkey hash mismatch",
+                                i,
+                            )));
+                        }
+                        let signing_hash = tx.signing_message_for_input(i);
+                        if crypto::signature::verify_hash(&signing_hash, &input.signature, pk)
+                            .is_err()
+                        {
+                            return Err(MempoolError::InvalidTransaction(format!(
+                                "input {} invalid signature",
+                                i,
+                            )));
+                        }
+                }
+
                 if entry.output.output_type.is_conditioned() {
                     use doli_core::conditions::{Condition, Witness, MAX_CONDITION_OPS};
                     let condition = Condition::decode_prefix(&entry.output.extra_data)

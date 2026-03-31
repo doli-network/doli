@@ -301,10 +301,9 @@ impl Node {
             }
         }
 
-        // P0-001: public_key enforcement is DEFERRED.
-        // The public_key field uses #[serde(skip)] — it doesn't survive wire serialization.
-        // Height-aware wire format encoding is needed before this gate can activate.
-        // TODO: implement height-aware block serialization for post-fork public_key inclusion.
+        // P0-001: public_key enforcement is ACTIVE (v5.2.0+).
+        // Input.public_key is part of the bincode wire format (#[serde(skip)] removed).
+        // sig_verification_height=0 on all networks: enforce from genesis.
 
         validation::validate_block_with_mode(block, &ctx, mode)
     }
