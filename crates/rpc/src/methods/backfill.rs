@@ -29,7 +29,9 @@ fn is_private_ip(ip: &IpAddr) -> bool {
 
 /// Validate that a URL is safe for outbound requests (prevents SSRF).
 /// Primary defense is the admin auth gate; this is defense-in-depth.
-fn validate_backfill_url(raw_url: &str) -> Result<(), RpcError> {
+/// On mainnet: blocks private/loopback IPs. On testnet/devnet: allows them
+/// (operators need localhost backfill on single-server setups).
+fn validate_backfill_url(raw_url: &str, network: &str) -> Result<(), RpcError> {
     // Must start with http:// or https://
     let after_scheme = if let Some(rest) = raw_url.strip_prefix("http://") {
         rest
@@ -54,12 +56,15 @@ fn validate_backfill_url(raw_url: &str) -> Result<(), RpcError> {
         return Err(RpcError::invalid_params("URL must include a hostname"));
     }
 
-    // If host is an IP literal, check for private ranges
-    if let Ok(ip) = host.parse::<IpAddr>() {
-        if is_private_ip(&ip) {
-            return Err(RpcError::invalid_params(
-                "Backfill URL must not point to a private/loopback/link-local address",
-            ));
+    // If host is an IP literal, check for private ranges (mainnet only).
+    // Testnet/devnet allow private IPs for localhost backfill.
+    if network == "mainnet" {
+        if let Ok(ip) = host.parse::<IpAddr>() {
+            if is_private_ip(&ip) {
+                return Err(RpcError::invalid_params(
+                    "Backfill URL must not point to a private/loopback/link-local address",
+                ));
+            }
         }
     }
 
@@ -73,7 +78,7 @@ impl RpcContext {
             serde_json::from_value(params).map_err(|e| RpcError::invalid_params(e.to_string()))?;
 
         // Validate URL to prevent SSRF attacks
-        validate_backfill_url(&params.rpc_url)?;
+        validate_backfill_url(&params.rpc_url, &self.network)?;
 
         // Check if already running
         if self.backfill_state.running.load(Ordering::SeqCst) {
