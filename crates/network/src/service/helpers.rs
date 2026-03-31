@@ -15,22 +15,26 @@ pub(super) fn strip_p2p_suffix(addr: &Multiaddr) -> Multiaddr {
         .collect()
 }
 
-/// Filters out non-globally-routable addresses that should not be advertised
-/// to remote peers via Identify/Kademlia:
-/// - Loopback (127.x)
-/// - Unspecified (0.0.0.0)
-/// - Link-local (169.254.x)
-/// - RFC 1918 private (10.x, 172.16-31.x, 192.168.x)
-/// - RFC 6598 shared/CGNAT (100.64-127.x)
-pub(super) fn is_routable_address(addr: &Multiaddr) -> bool {
+/// Filters out non-routable addresses from Identify/Kademlia advertisements.
+///
+/// On mainnet (network_id=1): filters loopback, unspecified, link-local,
+/// RFC 1918 private, and RFC 6598 CGNAT addresses.
+///
+/// On testnet/devnet: only filters unspecified (0.0.0.0) and link-local.
+/// Loopback and private addresses are allowed so that nodes on localhost
+/// or LAN can discover each other via DHT.
+pub(super) fn is_routable_address(addr: &Multiaddr, network_id: u32) -> bool {
+    let is_mainnet = network_id == 1;
     for proto in addr.iter() {
         match proto {
             Protocol::Ip4(ip) => {
-                if ip.is_loopback()
-                    || ip.is_unspecified()
-                    || ip.is_link_local()
-                    || ip.is_private()
-                    || is_shared_address(ip)
+                // Always filter unspecified and link-local
+                if ip.is_unspecified() || ip.is_link_local() {
+                    return false;
+                }
+                // Mainnet only: filter loopback, private, CGNAT
+                if is_mainnet
+                    && (ip.is_loopback() || ip.is_private() || is_shared_address(ip))
                 {
                     return false;
                 }

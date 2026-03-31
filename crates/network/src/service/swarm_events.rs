@@ -253,7 +253,7 @@ pub(super) async fn handle_swarm_event(
             // listen addresses as external so Identify only advertises public IPs.
             // Without this, Identify announces 127.0.0.1 to remote peers via DHT,
             // causing them to self-dial instead of connecting to us.
-            if config.external_address.is_none() && is_routable_address(&address) {
+            if config.external_address.is_none() && is_routable_address(&address, config.network_id) {
                 swarm.add_external_address(address.clone());
                 info!(
                     "Auto-registered routable listen address as external: {}",

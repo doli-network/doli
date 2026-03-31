@@ -291,7 +291,7 @@ pub(super) async fn handle_behaviour_event(
                 .listen_addrs
                 .into_iter()
                 .filter(|addr| {
-                    let routable = is_routable_address(addr);
+                    let routable = is_routable_address(addr, config.network_id);
                     if !routable {
                         debug!("Filtered non-routable address from {}: {}", peer_id, addr);
                     }

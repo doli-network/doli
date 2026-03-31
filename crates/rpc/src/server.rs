@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use axum::{
     body::Bytes,
-    extract::State,
+    extract::{ConnectInfo, State},
     http::{header, HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
@@ -89,7 +89,6 @@ impl RpcServer {
         let shared = Arc::new(RpcSharedState {
             context: self.context.clone(),
             admin_token: self.config.admin_token.clone(),
-            is_localhost: self.config.listen_addr.ip().is_loopback(),
         });
 
         let rpc_router = Router::new()
@@ -129,7 +128,11 @@ impl RpcServer {
         info!("RPC server listening on {}", self.config.listen_addr);
 
         let listener = tokio::net::TcpListener::bind(self.config.listen_addr).await?;
-        axum::serve(listener, app).await?;
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await?;
 
         Ok(())
     }
@@ -148,26 +151,27 @@ impl RpcServer {
 struct RpcSharedState {
     context: Arc<RpcContext>,
     admin_token: Option<String>,
-    is_localhost: bool,
 }
 
 /// Check whether a request is authorized for an admin method.
 ///
 /// Rules:
-/// - Localhost binding: admin methods allowed without token (backward compat)
-/// - Network-accessible binding + no token configured: admin methods DENIED
-/// - Network-accessible binding + token configured: require `Authorization: Bearer <token>`
+/// - Request from loopback IP: admin methods allowed without token (backward compat)
+/// - Remote request + no token configured: admin methods DENIED
+/// - Remote request + token configured: require `Authorization: Bearer <token>`
 fn check_admin_auth(
     shared: &RpcSharedState,
     headers: &HeaderMap,
     method: &str,
+    client_addr: SocketAddr,
 ) -> Result<(), RpcError> {
     if !ADMIN_METHODS.contains(&method) {
         return Ok(());
     }
 
-    // Localhost is trusted (backward compatible)
-    if shared.is_localhost {
+    // Localhost client is trusted — regardless of bind address.
+    // A server on 0.0.0.0 receiving a request from 127.0.0.1 is local.
+    if client_addr.ip().is_loopback() {
         return Ok(());
     }
 
@@ -204,6 +208,7 @@ fn check_admin_auth(
 /// a proper JSON-RPC error instead of Axum's default plain-text 422.
 async fn handle_rpc(
     State(shared): State<Arc<RpcSharedState>>,
+    ConnectInfo(client_addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     body: Bytes,
 ) -> impl IntoResponse {
@@ -231,7 +236,7 @@ async fn handle_rpc(
     }
 
     // Check admin authorization
-    if let Err(e) = check_admin_auth(&shared, &headers, &request.method) {
+    if let Err(e) = check_admin_auth(&shared, &headers, &request.method, client_addr) {
         let resp = JsonRpcResponse::error(request.id, e);
         return (
             StatusCode::OK,

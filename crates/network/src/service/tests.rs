@@ -137,77 +137,97 @@ fn test_format_detection() {
 #[test]
 fn test_is_routable_rejects_loopback() {
     let addr: Multiaddr = "/ip4/127.0.0.1/tcp/30300".parse().unwrap();
-    assert!(!is_routable_address(&addr));
+    assert!(!is_routable_address(&addr, 1));
 
     let addr6: Multiaddr = "/ip6/::1/tcp/30300".parse().unwrap();
-    assert!(!is_routable_address(&addr6));
+    assert!(!is_routable_address(&addr6, 1));
 }
 
 #[test]
 fn test_is_routable_accepts_public() {
     let addr: Multiaddr = "/ip4/198.51.100.1/tcp/30300".parse().unwrap();
-    assert!(is_routable_address(&addr));
+    assert!(is_routable_address(&addr, 1));
 
     let addr2: Multiaddr = "/ip4/147.93.84.44/tcp/30300".parse().unwrap();
-    assert!(is_routable_address(&addr2));
+    assert!(is_routable_address(&addr2, 1));
 }
 
 #[test]
 fn test_is_routable_rejects_unspecified() {
     let addr: Multiaddr = "/ip4/0.0.0.0/tcp/30300".parse().unwrap();
-    assert!(!is_routable_address(&addr));
+    assert!(!is_routable_address(&addr, 1));
 
     let addr6: Multiaddr = "/ip6/::/tcp/30300".parse().unwrap();
-    assert!(!is_routable_address(&addr6));
+    assert!(!is_routable_address(&addr6, 1));
 }
 
 #[test]
 fn test_is_routable_rejects_link_local() {
     let addr: Multiaddr = "/ip4/169.254.1.1/tcp/30300".parse().unwrap();
-    assert!(!is_routable_address(&addr));
+    assert!(!is_routable_address(&addr, 1));
 }
 
 #[test]
 fn test_is_routable_rejects_rfc1918_private() {
     // 10.0.0.0/8
     let addr: Multiaddr = "/ip4/10.0.0.1/tcp/30300".parse().unwrap();
-    assert!(!is_routable_address(&addr));
+    assert!(!is_routable_address(&addr, 1));
     let addr2: Multiaddr = "/ip4/10.10.10.189/tcp/30300".parse().unwrap();
-    assert!(!is_routable_address(&addr2));
+    assert!(!is_routable_address(&addr2, 1));
 
     // 172.16.0.0/12
     let addr3: Multiaddr = "/ip4/172.16.0.1/tcp/30300".parse().unwrap();
-    assert!(!is_routable_address(&addr3));
+    assert!(!is_routable_address(&addr3, 1));
     let addr4: Multiaddr = "/ip4/172.31.255.255/tcp/30300".parse().unwrap();
-    assert!(!is_routable_address(&addr4));
+    assert!(!is_routable_address(&addr4, 1));
     // 172.32.x should pass (outside /12 range)
     let addr5: Multiaddr = "/ip4/172.32.0.1/tcp/30300".parse().unwrap();
-    assert!(is_routable_address(&addr5));
+    assert!(is_routable_address(&addr5, 1));
 
     // 192.168.0.0/16
     let addr6: Multiaddr = "/ip4/192.168.1.1/tcp/30300".parse().unwrap();
-    assert!(!is_routable_address(&addr6));
+    assert!(!is_routable_address(&addr6, 1));
     let addr7: Multiaddr = "/ip4/192.168.134.128/tcp/30300".parse().unwrap();
-    assert!(!is_routable_address(&addr7));
+    assert!(!is_routable_address(&addr7, 1));
 
     // Docker bridge IPs
     let addr8: Multiaddr = "/ip4/172.17.0.1/tcp/30300".parse().unwrap();
-    assert!(!is_routable_address(&addr8));
+    assert!(!is_routable_address(&addr8, 1));
     let addr9: Multiaddr = "/ip4/172.18.0.1/tcp/30300".parse().unwrap();
-    assert!(!is_routable_address(&addr9));
+    assert!(!is_routable_address(&addr9, 1));
 }
 
 #[test]
 fn test_is_routable_rejects_cgnat_shared() {
     // RFC 6598 shared address space (100.64.0.0/10)
     let addr: Multiaddr = "/ip4/100.64.0.1/tcp/30300".parse().unwrap();
-    assert!(!is_routable_address(&addr));
+    assert!(!is_routable_address(&addr, 1));
     let addr2: Multiaddr = "/ip4/100.127.255.255/tcp/30300".parse().unwrap();
-    assert!(!is_routable_address(&addr2));
+    assert!(!is_routable_address(&addr2, 1));
 
     // 100.128.x should pass (outside /10 range)
     let addr3: Multiaddr = "/ip4/100.128.0.1/tcp/30300".parse().unwrap();
-    assert!(is_routable_address(&addr3));
+    assert!(is_routable_address(&addr3, 1));
+}
+
+#[test]
+fn test_is_routable_testnet_allows_loopback_and_private() {
+    // Testnet (network_id=2): loopback and private are allowed for localhost discovery
+    let loopback: Multiaddr = "/ip4/127.0.0.1/tcp/30300".parse().unwrap();
+    assert!(is_routable_address(&loopback, 2));
+
+    let private: Multiaddr = "/ip4/192.168.1.1/tcp/30300".parse().unwrap();
+    assert!(is_routable_address(&private, 2));
+
+    let ten: Multiaddr = "/ip4/10.0.0.1/tcp/30300".parse().unwrap();
+    assert!(is_routable_address(&ten, 2));
+
+    // Unspecified and link-local are still rejected on testnet
+    let unspec: Multiaddr = "/ip4/0.0.0.0/tcp/30300".parse().unwrap();
+    assert!(!is_routable_address(&unspec, 2));
+
+    let link_local: Multiaddr = "/ip4/169.254.1.1/tcp/30300".parse().unwrap();
+    assert!(!is_routable_address(&link_local, 2));
 }
 
 #[test]
