@@ -21,7 +21,8 @@ use mempool::{Mempool, MempoolPolicy};
 use storage::{Outpoint, UtxoEntry, UtxoSet};
 
 fn make_signed_nft_tx(keypair: &KeyPair, funding_hash: Hash) -> Transaction {
-    let pubkey_hash = crypto::hash::hash(keypair.public_key().as_bytes());
+    let pubkey_hash =
+        crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, keypair.public_key().as_bytes());
 
     // NFT extra_data format: condition_bytes + NFT metadata
     // Condition: version(1) + TAG_SIGNATURE(0x00) + pubkey_hash(32)
@@ -47,10 +48,13 @@ fn make_signed_nft_tx(keypair: &KeyPair, funding_hash: Hash) -> Transaction {
     };
     let change = Output::normal(100_000_000 - 1 - fee, pubkey_hash);
 
+    let mut input = Input::new(funding_hash, 0);
+    input.public_key = Some(*keypair.public_key());
+
     let mut tx = Transaction {
         version: 1,
         tx_type: TxType::Transfer,
-        inputs: vec![Input::new(funding_hash, 0)],
+        inputs: vec![input],
         outputs: vec![nft_output, change],
         extra_data: vec![],
     };
@@ -63,11 +67,15 @@ fn make_signed_nft_tx(keypair: &KeyPair, funding_hash: Hash) -> Transaction {
 }
 
 fn make_signed_transfer(keypair: &KeyPair, funding_hash: Hash) -> Transaction {
-    let pubkey_hash = crypto::hash::hash(keypair.public_key().as_bytes());
+    let pubkey_hash =
+        crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, keypair.public_key().as_bytes());
     let fee = doli_core::consensus::BASE_FEE;
 
+    let mut input = Input::new(funding_hash, 0);
+    input.public_key = Some(*keypair.public_key());
+
     let mut tx = Transaction::new_transfer(
-        vec![Input::new(funding_hash, 0)],
+        vec![input],
         vec![
             Output::normal(50_000_000, pubkey_hash),
             Output::normal(50_000_000 - fee, pubkey_hash),
@@ -81,7 +89,8 @@ fn make_signed_transfer(keypair: &KeyPair, funding_hash: Hash) -> Transaction {
 }
 
 fn setup_mempool_with_utxo(keypair: &KeyPair, funding_hash: Hash) -> (Mempool, UtxoSet) {
-    let pubkey_hash = crypto::hash::hash(keypair.public_key().as_bytes());
+    let pubkey_hash =
+        crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, keypair.public_key().as_bytes());
     let pool = Mempool::new(
         MempoolPolicy::default(),
         ConsensusParams::devnet(),
@@ -144,7 +153,8 @@ async fn test_poison_10_purge_cycles_no_crash() {
     for i in 0..10u64 {
         // Re-create funding UTXO for each cycle
         let funding = crypto::hash::hash(&i.to_le_bytes());
-        let pubkey_hash = crypto::hash::hash(keypair.public_key().as_bytes());
+        let pubkey_hash =
+            crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, keypair.public_key().as_bytes());
         let entry = UtxoEntry {
             output: Output::normal(100_000_000, pubkey_hash),
             height: 10 + i,
@@ -201,7 +211,8 @@ fn test_poison_registration_pattern() {
 #[tokio::test]
 async fn test_poison_mixed_mempool_selective_purge() {
     let keypair = KeyPair::generate();
-    let pubkey_hash = crypto::hash::hash(keypair.public_key().as_bytes());
+    let pubkey_hash =
+        crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, keypair.public_key().as_bytes());
 
     let mut pool = Mempool::new(
         MempoolPolicy::default(),
