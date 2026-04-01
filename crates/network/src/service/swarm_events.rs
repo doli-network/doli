@@ -83,12 +83,23 @@ pub(super) async fn handle_swarm_event(
                 if let Some(evicted_at) = eviction_cooldown.get(&peer_id) {
                     if evicted_at.elapsed() < Duration::from_secs(120) {
                         let _ = swarm.disconnect_peer_id(peer_id);
-                        // Don't log per-event — would flood logs just like the thrashing.
-                        // The periodic cleanup logs aggregate counts.
                         return;
                     } else {
-                        // Cooldown expired — remove stale entry and allow connection
                         eviction_cooldown.remove(&peer_id);
+                    }
+                }
+
+                // Genesis mismatch: peer on a different chain. Reject immediately
+                // before the status handshake to avoid the full noise+yamux+status
+                // cycle that repeats ~1/sec with zombie nodes.
+                if let Some(mismatch_at) = genesis_mismatch_cooldown.get(&peer_id) {
+                    if mismatch_at.elapsed()
+                        < Duration::from_secs(super::types::GENESIS_MISMATCH_COOLDOWN_SECS)
+                    {
+                        let _ = swarm.disconnect_peer_id(peer_id);
+                        return;
+                    } else {
+                        genesis_mismatch_cooldown.remove(&peer_id);
                     }
                 }
 

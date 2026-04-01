@@ -11,7 +11,7 @@ use doli_core::{Block, BlockHeader, ProducerAnnouncement, ProducerBloomFilter, T
 use crate::protocols::{StatusRequest, StatusResponse, SyncRequest, SyncResponse, TxFetchResponse};
 
 /// Genesis mismatch peers are silently rejected for this duration.
-pub(super) const GENESIS_MISMATCH_COOLDOWN_SECS: u64 = 3600; // 1 hour
+pub(super) const GENESIS_MISMATCH_COOLDOWN_SECS: u64 = 86400; // 24 hours
 
 /// Events from the network
 #[derive(Debug)]

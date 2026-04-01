@@ -316,7 +316,8 @@ pub(super) async fn handle_behaviour_event(
             // Skip our own peer ID — DHT-propagated self-addresses cause
             // self-connection loops (Noise handshake → "Local peer ID" rejection).
             let local_peer_id = *swarm.local_peer_id();
-            if !config.no_dht && peer_id != local_peer_id && !stale_peer_ids.contains_key(&peer_id) {
+            if !config.no_dht && peer_id != local_peer_id && !stale_peer_ids.contains_key(&peer_id)
+            {
                 for addr in routable_addrs {
                     debug!("[DHT] Adding address for peer {}: {}", peer_id, addr);
                     swarm.behaviour_mut().kademlia.add_address(&peer_id, addr);
