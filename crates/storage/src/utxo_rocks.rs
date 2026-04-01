@@ -265,7 +265,9 @@ impl RocksDbUtxoStore {
             .flatten()
         {
             if let Ok(entry) = bincode::deserialize::<UtxoEntry>(&value) {
-                total += entry.output.amount;
+                if entry.output.output_type.is_native_amount() {
+                    total += entry.output.amount;
+                }
             }
         }
         total

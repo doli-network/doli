@@ -206,7 +206,11 @@ impl InMemoryUtxoStore {
     }
 
     pub fn total_value(&self) -> Amount {
-        self.utxos.values().map(|e| e.output.amount).sum()
+        self.utxos
+            .values()
+            .filter(|e| e.output.output_type.is_native_amount())
+            .map(|e| e.output.amount)
+            .sum()
     }
 
     pub fn len(&self) -> usize {
