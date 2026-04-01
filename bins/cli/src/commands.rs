@@ -510,6 +510,12 @@ pub(crate) enum Commands {
     #[command(subcommand)]
     Service(ServiceCommand),
 
+    /// Seed Guardian commands (halt, resume, checkpoint, fork monitor)
+    Guardian {
+        #[command(subcommand)]
+        command: GuardianCommands,
+    },
+
     /// Fast-sync: wipe chain data and download a verified state snapshot from the network
     Snap {
         /// Data directory (for multi-node servers with custom paths)
@@ -978,6 +984,36 @@ pub(crate) enum ProtocolCommands {
         /// Path to JSON file containing collected signatures
         #[arg(long)]
         signatures: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum GuardianCommands {
+    /// Show guardian status (production state, checkpoints, chain tip)
+    Status,
+
+    /// Pause block production on this node (emergency halt)
+    Halt {
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
+    },
+
+    /// Resume block production (clear emergency halt)
+    Resume,
+
+    /// Create a RocksDB checkpoint (hot backup)
+    Checkpoint,
+
+    /// Monitor multiple nodes for chain forks
+    Monitor {
+        /// Node RPC endpoint(s) to monitor (repeat for each node)
+        #[arg(long = "endpoint", required = true)]
+        endpoints: Vec<String>,
+
+        /// Continuous monitoring interval in seconds (omit for single check)
+        #[arg(long = "loop")]
+        loop_secs: Option<u64>,
     },
 }
 

@@ -13,6 +13,7 @@ mod cmd_bridge;
 mod cmd_chain;
 mod cmd_channel;
 mod cmd_governance;
+mod cmd_guardian;
 mod cmd_init;
 mod cmd_loan;
 mod cmd_nft;
@@ -374,6 +375,9 @@ async fn main() -> Result<()> {
         }
         Commands::BridgeRefund { utxo, yes } => {
             cmd_bridge::cmd_bridge_refund(&wallet, &rpc_endpoint, &utxo, yes).await?;
+        }
+        Commands::Guardian { command } => {
+            cmd_guardian::cmd_guardian(&rpc_endpoint, command).await?;
         }
         Commands::Service(command) => {
             cmd_service::cmd_service(&cli.network, command)?;
