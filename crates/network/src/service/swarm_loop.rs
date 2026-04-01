@@ -65,6 +65,11 @@ pub(super) async fn run_swarm(
     // multiple old peer IDs for the same address after a chain reset.
     let mut mismatch_redial_cooldown: HashMap<String, Instant> = HashMap::new();
 
+    // Stale peer ID blocklist: peer IDs confirmed via WrongPeerId mismatch.
+    // These are ghost peer IDs from previous chain resets that keep re-entering
+    // via DHT propagation. Blocked for 24h to stop connect/disconnect spam.
+    let mut stale_peer_ids: HashMap<PeerId, Instant> = HashMap::new();
+
     // INC-I-011: Eviction cooldown — recently evicted peers cannot reconnect
     // for 30 seconds, breaking the evict→reconnect→evict thrashing loop that
     // causes RAM explosion when network_nodes > max_peers.
@@ -96,7 +101,7 @@ pub(super) async fn run_swarm(
         tokio::select! {
             // Handle swarm events
             event = swarm.select_next_some() => {
-                handle_swarm_event(event, &mut swarm, &event_tx, &peers, &config, &peer_cache_path, &mut rate_limiter, &mut genesis_mismatch_cooldown, &mut mismatch_redial_cooldown, &mut dial_backoff, &mut eviction_cooldown, &mut bootstrap_peers).await;
+                handle_swarm_event(event, &mut swarm, &event_tx, &peers, &config, &peer_cache_path, &mut rate_limiter, &mut genesis_mismatch_cooldown, &mut mismatch_redial_cooldown, &mut dial_backoff, &mut eviction_cooldown, &mut bootstrap_peers, &mut stale_peer_ids).await;
             }
 
             // Handle commands — intercept BroadcastTransaction for batching
@@ -208,6 +213,8 @@ pub(super) async fn run_swarm(
                 rate_limiter.cleanup(Duration::from_secs(600));
                 // Purge expired mismatch redial cooldowns (older than 60s)
                 mismatch_redial_cooldown.retain(|_, last| last.elapsed() < Duration::from_secs(60));
+                // Purge expired stale peer ID entries (24h TTL)
+                stale_peer_ids.retain(|_, added| added.elapsed() < Duration::from_secs(86400));
                 // Purge expired dial backoff entries (older than 10 minutes)
                 dial_backoff.retain(|_, (_, last)| last.elapsed() < Duration::from_secs(600));
                 // INC-I-011: Purge expired eviction cooldowns.

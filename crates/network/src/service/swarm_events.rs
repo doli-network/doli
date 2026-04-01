@@ -39,6 +39,7 @@ pub(super) async fn handle_swarm_event(
     dial_backoff: &mut HashMap<PeerId, (u32, Instant)>,
     eviction_cooldown: &mut HashMap<PeerId, Instant>,
     bootstrap_peers: &mut HashMap<PeerId, Instant>,
+    stale_peer_ids: &mut HashMap<PeerId, Instant>,
 ) {
     match event {
         SwarmEvent::ConnectionEstablished {
@@ -243,6 +244,7 @@ pub(super) async fn handle_swarm_event(
                 peer_cache_path,
                 rate_limiter,
                 genesis_mismatch_cooldown,
+                stale_peer_ids,
             )
             .await;
         }
@@ -298,8 +300,10 @@ pub(super) async fn handle_swarm_event(
 
                     // Remove the stale peer ID from Kademlia so it stops being
                     // returned in DHT queries and propagated to other peers.
+                    // Also add to 24h blocklist to prevent DHT re-injection.
                     if let Some(old_id) = &peer_id {
                         swarm.behaviour_mut().kademlia.remove_peer(old_id);
+                        stale_peer_ids.insert(*old_id, Instant::now());
                     }
 
                     // Update peer cache: remove stale, record correct mapping.
