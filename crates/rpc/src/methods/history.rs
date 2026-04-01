@@ -157,6 +157,32 @@ impl RpcContext {
                     doli_core::TxType::LendingWithdraw => "lending_withdraw",
                 };
 
+                // Resolve sender addresses from inputs
+                let mut from_addrs: Vec<String> = Vec::new();
+                for input in &tx.inputs {
+                    if let Some(prev_outputs) = tx_output_cache.get(&input.prev_tx_hash) {
+                        if let Some(prev_output) = prev_outputs.get(input.output_index as usize) {
+                            if let Ok(addr) =
+                                crypto::address::encode(&prev_output.pubkey_hash, "doli")
+                            {
+                                if !from_addrs.contains(&addr) {
+                                    from_addrs.push(addr);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Collect recipient addresses from outputs (unique, excluding sender)
+                let mut to_addrs: Vec<String> = Vec::new();
+                for output in &tx.outputs {
+                    if let Ok(addr) = crypto::address::encode(&output.pubkey_hash, "doli") {
+                        if !to_addrs.contains(&addr) && !from_addrs.contains(&addr) {
+                            to_addrs.push(addr);
+                        }
+                    }
+                }
+
                 history.push(HistoryEntryResponse {
                     hash: tx.hash().to_hex(),
                     tx_type: tx_type.to_string(),
@@ -167,6 +193,8 @@ impl RpcContext {
                     amount_sent,
                     fee,
                     confirmations,
+                    from: from_addrs,
+                    to: to_addrs,
                 });
 
                 if history.len() >= limit {

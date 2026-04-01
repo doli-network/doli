@@ -251,6 +251,12 @@ pub struct InputResponse {
     pub output_index: u32,
     /// Signature (hex)
     pub signature: String,
+    /// Resolved sender address (bech32m, populated when input can be resolved)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
+    /// Amount of the spent output (populated when input can be resolved)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub amount: Option<u64>,
 }
 
 impl From<&doli_core::Input> for InputResponse {
@@ -259,6 +265,8 @@ impl From<&doli_core::Input> for InputResponse {
             prev_tx_hash: input.prev_tx_hash.to_hex(),
             output_index: input.output_index,
             signature: hex::encode(input.signature.as_bytes()),
+            address: None,
+            amount: None,
         }
     }
 }
@@ -271,8 +279,11 @@ pub struct OutputResponse {
     pub output_type: String,
     /// Amount in base units
     pub amount: u64,
-    /// Public key hash
+    /// Public key hash (hex)
     pub pubkey_hash: String,
+    /// Human-readable address (bech32m)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
     /// Lock height (for bonds)
     pub lock_until: u64,
     /// Decoded covenant condition (only for conditioned output types)
@@ -374,10 +385,14 @@ impl From<&doli_core::Output> for OutputResponse {
             None
         };
 
+        // Encode bech32m address from pubkey_hash (mainnet "doli" prefix)
+        let address = crypto::address::encode(&output.pubkey_hash, "doli").ok();
+
         Self {
             output_type: output_type.to_string(),
             amount: output.amount,
             pubkey_hash: output.pubkey_hash.to_hex(),
+            address,
             lock_until: output.lock_until,
             condition,
             nft: nft_metadata,

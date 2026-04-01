@@ -174,6 +174,8 @@ mod tests {
             amount_sent: 0,
             fee: 100,
             confirmations: 50,
+            from: vec!["doli1sender".to_string()],
+            to: vec!["doli1receiver".to_string()],
         };
 
         let json = serde_json::to_string(&entry).unwrap();

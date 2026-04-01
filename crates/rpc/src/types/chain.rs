@@ -184,6 +184,12 @@ pub struct HistoryEntryResponse {
     pub fee: u64,
     /// Confirmations
     pub confirmations: u64,
+    /// Sender addresses (bech32m, resolved from inputs)
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub from: Vec<String>,
+    /// Recipient addresses (bech32m, from outputs)
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub to: Vec<String>,
 }
 
 // ==================== Stats & Attestation ====================

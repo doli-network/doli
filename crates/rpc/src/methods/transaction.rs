@@ -54,12 +54,50 @@ impl RpcContext {
                 response.block_hash = Some(block_hash);
                 response.block_height = Some(height);
                 response.confirmations = Some(confirmations);
+
+                // Resolve input addresses from referenced outputs
+                self.resolve_input_addresses(tx, &mut response);
+
+                // Calculate fee from resolved inputs
+                if response.fee.is_none() {
+                    let total_in: u64 = response.inputs.iter().filter_map(|i| i.amount).sum();
+                    let total_out: u64 = response.outputs.iter().map(|o| o.amount).sum();
+                    if total_in > 0 && total_in >= total_out {
+                        response.fee = Some(total_in - total_out);
+                    }
+                }
+
                 return serde_json::to_value(response)
                     .map_err(|e| RpcError::internal_error(e.to_string()));
             }
         }
 
         Err(RpcError::tx_not_found())
+    }
+
+    /// Resolve input addresses by looking up referenced outputs
+    fn resolve_input_addresses(&self, tx: &Transaction, response: &mut TransactionResponse) {
+        for (i, input) in tx.inputs.iter().enumerate() {
+            if let Ok(Some(parent_height)) =
+                self.block_store.get_tx_block_height(&input.prev_tx_hash)
+            {
+                if let Ok(Some(parent_block)) = self.block_store.get_block_by_height(parent_height)
+                {
+                    for ptx in &parent_block.transactions {
+                        if ptx.hash() == input.prev_tx_hash {
+                            if let Some(output) = ptx.outputs.get(input.output_index as usize) {
+                                if let Some(resp_input) = response.inputs.get_mut(i) {
+                                    resp_input.address =
+                                        crypto::address::encode(&output.pubkey_hash, "doli").ok();
+                                    resp_input.amount = Some(output.amount);
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Send transaction
