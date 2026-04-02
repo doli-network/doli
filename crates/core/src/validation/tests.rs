@@ -1107,21 +1107,22 @@ fn test_vdf_validation_uses_network_specific_parameters() {
 // ==========================================================================
 
 #[test]
-fn test_validate_epoch_reward_no_inputs() {
+fn test_validate_epoch_reward_with_inputs_ok() {
     let keypair = crypto::KeyPair::generate();
     let pubkey_hash = crypto::hash::hash(b"recipient");
     let mut tx = Transaction::new_epoch_reward(1, *keypair.public_key(), 1000, pubkey_hash);
 
-    // Add an input (invalid for epoch reward)
+    // Post-activation EpochReward has explicit pool inputs — structural validation allows this.
+    // Height-aware enforcement is in validate_block_economics (Full mode).
     tx.inputs.push(Input::new(Hash::ZERO, 0));
 
     let ctx = test_context();
     let result = validate_transaction(&tx, &ctx);
-
-    assert!(matches!(
-        result,
-        Err(ValidationError::InvalidEpochReward(_))
-    ));
+    assert!(
+        result.is_ok(),
+        "EpochReward with inputs should pass structural validation: {:?}",
+        result
+    );
 }
 
 #[test]
@@ -1160,24 +1161,26 @@ fn test_validate_epoch_reward_normal_output_type() {
 }
 
 #[test]
-fn test_validate_epoch_reward_invalid_structure() {
-    // EpochReward with inputs is invalid (must be minted)
+fn test_validate_epoch_reward_with_inputs_structural_ok() {
+    // Post-activation EpochReward has explicit pool inputs.
+    // Structural validation allows inputs — height-aware enforcement
+    // is in validate_block_economics (Full mode), not here.
     let pubkey_hash = crypto::hash::hash(b"recipient");
     let tx = Transaction {
         version: 1,
         tx_type: TxType::EpochReward,
-        inputs: vec![Input::new(crypto::Hash::ZERO, 0)], // Invalid - must have no inputs
+        inputs: vec![Input::new(crypto::Hash::ZERO, 0)],
         outputs: vec![Output::normal(1000, pubkey_hash)],
         extra_data: vec![],
     };
 
     let ctx = test_context();
     let result = validate_transaction(&tx, &ctx);
-
-    assert!(matches!(
-        result,
-        Err(ValidationError::InvalidEpochReward(_))
-    ));
+    assert!(
+        result.is_ok(),
+        "EpochReward with inputs should pass structural validation: {:?}",
+        result
+    );
 }
 
 #[test]
