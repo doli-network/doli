@@ -165,7 +165,7 @@ pub struct Output {
     /// Lock until height (0 for normal, >0 for bonds)
     pub lock_until: BlockHeight,
     /// Extensible data for future output types (empty for Normal/Bond).
-    /// Interpretation depends on output_type. Max 512 bytes.
+    /// Interpretation depends on output_type. Max 512 KB (era 0), grows per era.
     #[serde(default)]
     pub extra_data: Vec<u8>,
 }
@@ -629,8 +629,15 @@ impl Output {
         bytes.extend_from_slice(&self.amount.to_le_bytes());
         bytes.extend_from_slice(self.pubkey_hash.as_bytes());
         bytes.extend_from_slice(&self.lock_until.to_le_bytes());
-        // extra_data: length-prefixed (u16 LE) + raw bytes
-        bytes.extend_from_slice(&(self.extra_data.len() as u16).to_le_bytes());
+        // extra_data: length-prefixed, backward-compatible encoding.
+        // ≤64KB: u16 LE (matches all existing blocks).
+        // >64KB: escape marker 0xFFFF + u32 LE (no existing blocks affected).
+        if self.extra_data.len() > 65535 {
+            bytes.extend_from_slice(&0xFFFFu16.to_le_bytes()); // escape marker
+            bytes.extend_from_slice(&(self.extra_data.len() as u32).to_le_bytes());
+        } else {
+            bytes.extend_from_slice(&(self.extra_data.len() as u16).to_le_bytes());
+        }
         bytes.extend_from_slice(&self.extra_data);
         bytes
     }
