@@ -21,8 +21,10 @@ use crate::methods::RpcContext;
 use crate::types::{JsonRpcRequest, JsonRpcResponse};
 use crate::ws::{self, WsEvent};
 
-/// Maximum request body size (256 KB)
-const MAX_BODY_SIZE: usize = 256 * 1024;
+/// Maximum request body size.
+/// Must accommodate hex-encoded NFT data: 512KB binary × 2 (hex) + 64KB JSON overhead = ~1.1MB.
+/// Set to 2MB to cover Era 0 max_extra_data_size (512KB) with headroom.
+const MAX_BODY_SIZE: usize = 2 * 1024 * 1024;
 
 /// Methods that require admin authentication (bearer token).
 /// These methods can halt production, delete data, or trigger outbound requests.
