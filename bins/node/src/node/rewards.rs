@@ -172,14 +172,22 @@ impl Node {
         }
 
         // Calculate total pool from accumulated coinbase UTXOs in the reward pool.
-        // Include current block's coinbase (not yet in UTXO set during block production)
-        // so the distributed amount matches what the consume step will remove.
+        // Pre-activation: include current block's coinbase (not yet in UTXO set during
+        // block production) so the distributed amount matches what the side-effect consume
+        // step will remove (it removes ALL pool UTXOs including the new coinbase).
+        // Post-activation: only count existing pool UTXOs — the current block's coinbase
+        // is NOT referenced as an input (its hash isn't known yet at assembly time).
+        // That 1 block reward stays in the pool and gets distributed next epoch.
         let pool_hash = doli_core::consensus::reward_pool_pubkey_hash();
         let pool = {
             let utxo = self.utxo_set.read().await;
             let pool_utxos = utxo.get_by_pubkey_hash(&pool_hash);
             let utxo_total: u64 = pool_utxos.iter().map(|(_, e)| e.output.amount).sum();
-            utxo_total + self.params.block_reward(epoch_end_height)
+            if epoch_end_height >= doli_core::consensus::EPOCH_REWARD_EXPLICIT_INPUTS_HEIGHT {
+                utxo_total // post-activation: only existing UTXOs
+            } else {
+                utxo_total + self.params.block_reward(epoch_end_height) // pre-activation: + current coinbase
+            }
         };
         info!(
             "Epoch {} reward pool: {} units from accumulated coinbase",

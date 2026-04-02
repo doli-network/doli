@@ -458,15 +458,20 @@ impl Node {
                     );
                 }
 
-                // Conservation: total distributed must not exceed pool balance
+                // Conservation: total distributed must not exceed pool balance.
+                // Pre-activation: include current coinbase (side-effect consumes all).
+                // Post-activation: only existing UTXOs (explicit inputs don't include
+                // current coinbase — its hash isn't known at assembly time).
                 let total_distributed: u64 = epoch_tx.outputs.iter().map(|o| o.amount).sum();
                 let pool_balance = {
                     let utxo = self.utxo_set.read().await;
                     let pool_utxos = utxo.get_by_pubkey_hash(&pool_hash);
                     let utxo_total: u64 = pool_utxos.iter().map(|(_, e)| e.output.amount).sum();
-                    // Include the coinbase from this block (use actual coinbase amount,
-                    // not calculated — old-version blocks may not include extra_fees)
-                    utxo_total + coinbase_amount
+                    if height >= doli_core::consensus::EPOCH_REWARD_EXPLICIT_INPUTS_HEIGHT {
+                        utxo_total // post-activation: only existing UTXOs
+                    } else {
+                        utxo_total + coinbase_amount // pre-activation: + current coinbase
+                    }
                 };
 
                 if total_distributed > pool_balance {
