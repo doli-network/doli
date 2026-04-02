@@ -4,21 +4,31 @@
 
 ### A Peer-to-Peer Electronic Cash System Based on Verifiable Time
 
-**E. Weil** · weil@doli.network
+**A. Lozada & I. Lozada** · ivan@doli.network
 
 ---
 
 ## Abstract
 
-We propose a peer-to-peer electronic cash system where the only resource required for consensus is time — the one resource distributed equally to all participants.
+We propose a peer-to-peer electronic cash system where consensus is secured by bonded capital constrained by time — the one resource that cannot be accumulated, parallelized, or purchased.
 
 Block production follows pure round-robin: every active producer receives equal block assignments regardless of stake. The protocol distributes rewards every epoch through a built-in pool — proportional to bonds, no external mining pools, no operators, no fees. Rewards compound into productive stake, creating predictable exponential growth for every participant regardless of size.
 
 A new producer receiving 10 DOLI can reinvest block rewards to double their stake at regular intervals. The doubling rate is identical for all participants — one bond or three thousand. Continuous presence is proven through on-chain liveness attestations — producers who are online and following the chain qualify for their share. A dynamic liveness filter excludes offline producers from the rotation and re-includes them upon attestation. No lottery. No variance. No pools. Just time.
 
-Transactions are ordered through sequential delay proofs — iterated hash computations that cannot be parallelized. No special hardware is required. Any CPU can participate in consensus. The result is a system where consensus weight emerges from time rather than trust, capital, or scale.
+Transactions are ordered through sequential delay proofs — iterated hash computations that cannot be parallelized. No special hardware is required. Any CPU can participate in consensus. The result is a system where consensus weight emerges from bonded capital anchored by sequential time — not trust, not scale, and not purchasable acceleration.
 
-We demonstrate that NFTs, fungible tokens, and trustless cross-chain bridges can be implemented as native UTXO output types with declarative spending conditions, without a virtual machine, without gas metering, and without trusted committees — achieving equivalent expressiveness to VM-based approaches for these use cases while maintaining bounded, predictable verification cost.
+Time constrains every layer of the protocol, not just block production:
+
+- **Blocks**: 10-second slots — can't produce faster
+- **Liveness**: 90% attestation per epoch — can't fake presence
+- **Seniority**: 4 years to maximum weight — can't buy reputation
+- **Vesting**: 75% penalty in year 1 — can't hit-and-run
+- **Unbonding**: 7-day withdrawal delay — can't slash-and-run
+
+An attacker with unlimited capital still cannot outpace an honest producer who has been running for three years. Time is the only resource that equalizes everyone.
+
+We demonstrate that NFTs, fungible tokens, AMM liquidity pools, lending protocols, and trustless cross-chain bridges can be implemented as native UTXO output types with declarative spending conditions, without a virtual machine, without gas metering, and without trusted committees — achieving equivalent expressiveness to VM-based approaches for these use cases while maintaining bounded, predictable verification cost.
 
 ---
 ## 1. Introduction
@@ -82,6 +92,8 @@ A transaction is valid if:
 4. All amounts are positive.
 
 The difference between inputs and outputs constitutes the fee for the block producer.
+
+**Chained transactions.** The mempool accepts transactions that spend unconfirmed outputs from pending transactions (up to 25 ancestors). This enables multi-step workflows — such as funding an address and immediately registering as a producer — without waiting for intermediate confirmations.
 
 ### 2.2. Output Structure
 
@@ -178,9 +190,15 @@ extra_data = [condition_bytes][version][token_id][content_hash_len][content_hash
 
 **Spending conditions.** The condition field is the same composable language as any other output. The simplest case is `Signature(owner)` — only the current holder can transfer the NFT. But nothing prevents a Multisig custody, a Hashlock-gated reveal, or a Timelock-based auction where the NFT becomes spendable by anyone after a deadline.
 
+**On-chain binary data.** The content hash may be a reference to off-chain storage (IPFS CID, HTTP URI), or the content itself may be embedded directly in `extra_data` — up to 4,096 bytes. At 1 satoshi per byte, a CryptoPunk-style 24×24 pixel art (~300 bytes) costs 301 satoshis to store on-chain permanently. The protocol detects 25 content formats via magic bytes (PNG, JPEG, GIF, SVG, WebP, PDF, audio, video, WASM) for wallet and explorer rendering, but does not enforce format — any bytes are valid.
+
+**Batch minting.** Multiple NFTs can be minted in a single transaction with deterministic `token_id` derivation per output index. A collection of 100 NFTs requires one transaction, one block, one fee calculation.
+
 **Transfer.** Transferring an NFT spends the old UTXO and creates a new UniqueAsset output with the same `token_id` and `content_hash` but a new owner and potentially new conditions. The token_id is the permanent identity; the UTXO is the current ownership record.
 
-**No registry, no contract, no global state.** The NFT exists entirely within the UTXO that carries it. Indexing is a reader concern — the protocol validates structure and conditions, nothing more.
+**Protocol-enforced royalties.** NFT metadata supports two versions: v1 (no royalties) and v2 (with royalties). In v2, the creator specifies a royalty percentage (up to 50%) at mint time. Every node validates royalty payment on secondary sales — a transaction that transfers an NFT without paying the creator's royalty is rejected by consensus. This is not an API flag that a marketplace can ignore. It is protocol law. The royalty recipient and percentage are immutable, encoded in the UTXO, and verified by every node on every transfer.
+
+**No registry, no contract, no global state.** The NFT exists entirely within the UTXO that carries it. A UniqueIdIndex provides O(1) duplicate detection — the protocol rejects any transaction that attempts to mint a `token_id` that already exists on-chain. This guarantee extends to asset IDs, pool IDs, and channel IDs.
 
 ### 3.5. User-Issued Tokens (FungibleAsset)
 
@@ -217,6 +235,7 @@ The condition is always an HTLC: `(Hashlock(h) AND Timelock(t)) OR TimelockExpir
 | Monero | 3 | Standard/Integrated | Native (Ed25519 adaptor sigs) |
 | Litecoin | 4 | Base58/Bech32 | Native (same as Bitcoin) |
 | Cardano | 5 | Bech32 | Plutus script |
+| BSC | 6 | 0x-prefixed hex | Solidity contract (EVM-compatible) |
 
 **Atomic swap protocol:**
 
@@ -253,30 +272,55 @@ tx_hash = BLAKE3(version || tx_type || inputs || outputs || extra_data)
 
 This prevents a chicken-and-egg: a Signature witness must sign a hash that does not include the witness itself. The witness is committed in the full `tx_hash` for immutability but excluded from `signing_hash` for constructability.
 
-### 3.8. What This Enables
+### 3.8. Signature Hash Types
+
+Transactions support two signing modes:
+
+- **SighashAll** (default): The signer commits to all inputs and outputs. Standard for transfers.
+- **AnyoneCanPay**: The signer commits only to their own input and a fixed number of outputs. Other participants can add inputs and append outputs without invalidating the existing signature.
+
+AnyoneCanPay enables trustless marketplace workflows: a seller signs their NFT input with  (the payment output). A buyer adds their funding input and a change output. Neither party needs to trust the other — the seller's signature guarantees payment, the buyer's signature guarantees the NFT transfer. This is the same PSBT (Partially Signed Bitcoin Transaction) pattern, implemented natively.
+
+### 3.9. What This Enables
 
 **Without a virtual machine:**
 
 - **Decentralized exchanges:** Atomic swaps between DOLI and any chain that supports hash locks. No intermediary, no custody, no counterparty risk.
-- **Payment channels:** Off-chain transactions with on-chain settlement. HTLCs enable a Lightning-equivalent network natively.
+- **Payment channels:** Full implementation — funding, commitment transactions, in-flight HTLCs, cooperative and penalty close, pathfinding router, and watchtower breach monitoring. A Lightning-equivalent network, native to the protocol.
 - **Multi-party custody:** Corporate treasuries, DAOs, inheritance — any scenario requiring N-of-M authorization.
 - **Trustless escrow:** Buyer, seller, and arbiter each hold a key. Any two can release funds.
 - **Vesting schedules:** Time-locked outputs for team allocations, grants, or contractual obligations.
 - **Native NFTs:** Digital art, identity tokens, certificates — unique assets with composable spending conditions, no contract deployment.
 - **User-issued tokens:** Meme coins, stablecoins, loyalty points — fixed-supply tokens on the base layer, no sidechain required.
-- **Cross-chain bridges:** Trustless atomic swaps with Bitcoin, Ethereum, Monero, Litecoin, and Cardano. No bridge committee, no wrapped tokens, no custodial risk.
+- **Cross-chain bridges:** Trustless atomic swaps with Bitcoin, Ethereum, Monero, Litecoin, Cardano, and BSC. No bridge committee, no wrapped tokens, no custodial risk.
 
 **Without shared mutable state:**
 
 Every output is independent. Spending one output cannot affect another. There is no reentrancy, no front-running, no MEV. Transactions are fully parallelizable — validation scales linearly with cores.
 
-### 3.9. What This Does Not Enable
+### 3.10. Native DeFi Primitives
 
-DOLI outputs cannot maintain persistent state across transactions. There is no on-chain storage, no loops, no arbitrary computation. This is deliberate.
+DOLI demonstrates that automated market makers and lending protocols can be implemented as native UTXO output types — without a virtual machine, without shared mutable state, and without the attack surface of arbitrary code execution.
 
-Applications requiring shared state — automated market makers, lending protocols, on-chain governance with complex voting — belong on Layer 2 or application-specific chains that settle to DOLI.
+**Pool output type.** An AMM pool is a single UTXO containing two reserve balances, a fee rate, TWAP accumulator, and LP share supply — all encoded in  (512 bytes). A swap consumes the pool UTXO and creates a new one with updated reserves. Constant product invariant (*k = reserve_a × reserve_b*) is enforced at the protocol level. No reentrancy is possible because the pool UTXO is consumed atomically.
 
-The base layer provides: **value transfer, time-anchored ordering, programmable spending conditions, native assets, and trustless cross-chain settlement.** Everything else builds on top.
+**LPShare output type.** Liquidity provider shares are UTXOs representing proportional ownership of a pool. Adding liquidity mints LP shares; removing liquidity burns them and returns proportional reserves. Share accounting is verified by the node binary, not by interpreted code.
+
+**Collateral and LendingDeposit output types.** Collateralized lending uses two output types: deposits (lender funds) and collateral (borrower pledge). Interest rates, liquidation thresholds, and repayment conditions are protocol-enforced. No oracle is required for the base lending primitive — the TWAP from on-chain swaps provides a manipulation-resistant price feed.
+
+| DeFi Primitive | Ethereum | DOLI |
+|---------------|----------|------|
+| AMM swap | Solidity contract + EVM execution | Native Pool UTXO, compiled verification |
+| LP shares | ERC-20 token contract | Native LPShare UTXO |
+| Lending | Solidity contract + oracle | Native Collateral + LendingDeposit UTXOs |
+| Price feed | External oracle (Chainlink) | On-chain TWAP from pool swaps |
+| Reentrancy risk | Yes (shared mutable state) | Impossible (UTXO consumed atomically) |
+| MEV / front-running | Yes (sandwich attacks) | **Structurally impossible** (UTXO exclusion) |
+| Gas cost | Variable, unpredictable | Fixed: 1 satoshi per transaction |
+
+**MEV and sandwich attacks.** In account-based systems (Ethereum), a sandwich attack works because multiple transactions execute sequentially against the same mutable pool state within a single block. The attacker inserts a buy before the victim and a sell after, profiting from the price impact. In DOLI, this is **structurally impossible**: the pool is a UTXO, and a swap must reference that specific UTXO as an input. Two swaps referencing the same pool UTXO are mutually exclusive — only one can be included in a block. The second transaction fails because its input has been consumed. A producer can front-run (execute their own swap instead of the user’s), but cannot sandwich: the front-run kills the victim’s transaction entirely. The victim sees a failed transaction, not a worse price, and resubmits against the new pool state without loss.
+
+**What this does not enable.** DOLI outputs cannot maintain arbitrary persistent state across transactions. There are no loops, no arbitrary computation, no Turing-complete execution. Complex applications requiring custom logic — prediction markets, on-chain governance with complex voting, generalized computation — require Layer 2 solutions or application-specific chains that settle to DOLI. The base layer provides financial primitives with protocol-level security guarantees. Everything else builds on top.
 
 ---
 
@@ -396,7 +440,40 @@ T_BLOCK = 1,000 iterations (negligible computation time)
 
 With 10-second slots, the delay proof completes in microseconds, leaving the remainder for block construction and propagation. The fixed iteration count ensures all nodes compute identical proofs — no per-node calibration or dynamic adjustment is needed.
 
-The delay proof is deliberately lightweight. The bond requirement (Section 7.2) is the primary cost of participation; the VDF serves as an anti-grinding measure that prevents a producer from trivially precomputing blocks without knowledge of the previous block hash. Every consensus system enforces a scarce resource. In DOLI, that resource is bonded capital anchored by sequential time.
+The delay proof is deliberately lightweight. The bond requirement (Section 7.2) is the primary cost of participation; the delay proof serves as an anti-grinding measure that prevents a producer from trivially precomputing blocks without knowledge of the previous block hash.
+
+### 5.4. Time as Universal Constraint
+
+The name "Proof of Time" does not refer solely to the delay proof. It refers to the architectural principle that **time is the non-purchasable resource constraining every layer of the protocol.** The delay proof is one expression of this principle — the smallest one. The others are structural:
+
+- **Can't produce faster** — 10-second slots, deterministic round-robin. Hardware, capital, and parallelism provide zero advantage.
+- **Can't fake presence** — 90% attestation per epoch (1 hour). Every minute of presence is cryptographically signed and committed on-chain.
+- **Can't buy reputation** — seniority grows at 0.75 weight/year, reaching maximum at 4 years. No amount of capital accelerates this.
+- **Can't hit-and-run** — 75% vesting penalty in year 1. The only way to recover full capital is to wait 4 years.
+- **Can't slash-and-run** — 7-day unbonding period. Misbehavior is detected and slashed before withdrawal completes.
+
+| Layer | Time Constraint | Cannot be accelerated by |
+|-------|----------------|------------------------|
+| Block production | 10-second slots (round-robin) | Hardware, capital, or parallelism |
+| Liveness | 90% attestation per epoch (1 hour) | Offline identities |
+| Seniority | 0.75 weight/year, 4 years to maximum | Capital or identity multiplication |
+| Bond vesting | 4-year commitment, 75% penalty in year 1 | Early exit without loss |
+| Withdrawal | 7-day unbonding period | Instant escape after misbehavior |
+
+Every consensus system enforces a scarce resource. In Proof of Work, that resource is energy — purchasable and parallelizable. In Proof of Stake, it is capital — purchasable and accumulable. In DOLI, the scarce resource is **calendar time**, which intersects every economic and operational decision:
+
+- An attacker can buy bonds instantly. But the seniority disadvantage persists for 3 years regardless of budget.
+- An attacker can register *M* identities. But each requires continuous attestation (one machine, 90% uptime) for years — an *O(M)* operational cost that compounds with calendar time, not a one-time expense.
+- An attacker can accumulate capital. But early withdrawal burns 75% — the only way to recover full capital is to wait 4 years.
+- An attacker can double-produce. But detection is instant, slashing is 100%, and re-registration requires fresh capital and restarts seniority at zero.
+
+**Does time prevent capture or only slow it?** Time does not make capture impossible — no system can. What time does is make capture *observable*: an attacker registering many identities is visible on-chain for years before achieving seniority parity. Honest participants can respond — by adding bonds, by growing the producer set, by monitoring registration patterns. The defense is not a wall; it is an early warning system with a 3-year lead time.
+
+**Can an attacker age many identities in parallel?** Yes, but each identity requires: (1) *BOND_UNIT* locked capital at risk of 100% slashing, (2) one machine running 24/7 at 90% attestation threshold, and (3) 3+ years of sustained operation before seniority matches incumbents. Aging *M* identities costs *M × BOND_UNIT* capital + *M* machines for 3 years. This is not free parallelism — it is linear cost sustained over calendar time.
+
+**Observable accumulation.** Unlike capital accumulation (which can happen off-chain and appear instantly), identity accumulation in DOLI is observable on-chain in real time. Every new registration is a public transaction. A sudden influx of new producers is visible to all participants months or years before those identities achieve competitive seniority. This transparency converts the multi-identity attack from a surprise event into a slow, observable process that the community can respond to — by adding honest producers, by increasing monitoring, or by social coordination.
+
+**Is time the dominant security resource?** Time is not an alternative to economic security — it is the constraint that prevents economic security from being instantly purchased. The correct description is: **bonded capital, constrained by time, verified by sequential computation.** Capital provides the economic barrier. Time prevents the barrier from being crossed instantly. Sequential computation proves that time elapsed. The three are inseparable.
 
 ---
 
@@ -615,6 +692,8 @@ The protocol maintains a dynamic liveness filter that temporarily excludes produ
 | Producer appears in presence bitfield | Removed from excluded set |
 | Node startup | Excluded set rebuilt from last 360 blocks |
 
+**Re-entry slots.** Every 50 slots, the protocol reserves a re-entry window where excluded producers receive priority scheduling. This ensures that a transiently offline producer can rejoin the rotation without waiting for the next epoch boundary — re-inclusion happens within minutes, not hours. The re-entry overhead is approximately 2% of total slots.
+
 The liveness filter is deterministic: every node reading the same chain computes the same excluded set and therefore the same producer for each slot. No randomness, no voting, no subjectivity.
 
 ### 8.2. Comparison with Existing Systems
@@ -752,11 +831,27 @@ Every producer participates automatically. Rewards are distributed proportionall
 
 ### 10.6. Fees
 
+Fees have two components:
+
 ```
-fee = sum(inputs) - sum(outputs)
+fee = base_fee + per_byte_fee
+base_fee     = 1 satoshi (0.00000001 DOLI) per transaction
+per_byte_fee = sum(extra_data bytes across all outputs) * 1 satoshi/byte
 ```
 
-The fee goes to the block producer. A minimum fee rate prevents spam.
+The base fee goes to the block producer's coinbase. The per-byte fee goes to the **epoch reward pool** and is distributed to all qualified producers proportional to their bonds. This means every transaction with `extra_data` (NFTs, pools, bridges, lending) generates revenue shared by the entire network, not just the block producer.
+
+| Transaction type | Extra data | Total fee |
+|-----------------|------------|-----------|
+| Transfer | 0 bytes | 1 sat |
+| Bond (register/add) | 4 bytes | 5 sats |
+| NFT (text) | ~100 bytes | 101 sats |
+| NFT (pixel art) | ~300 bytes | 301 sats |
+| NFT (on-chain image) | ~3,000 bytes | 3,001 sats |
+| Pool swap | ~116 bytes | 117 sats |
+| Bridge HTLC | ~80 bytes | 81 sats |
+
+All fees are deterministic and calculable before submission.
 
 ### 10.7. Reward Maturity
 
@@ -789,6 +884,10 @@ Week 24:  256 bonds  →   853 DOLI/week
 
 Starting with 10 DOLI, a producer who reinvests all rewards reaches the 3,000-bond cap within months. This trajectory is calculable before the first block is produced.
 
+**Early-mover advantage.** The uniform ROI percentage does not prevent concentration during the network’s infancy. Early participants compound faster because *B* (total bonds) is small, making *D* (doubling time) short. As *B* grows, *D* increases proportionally — late entrants face longer doubling times. This is an inherent property of any fixed-emission system, including Bitcoin. The 3,000-bond cap per producer bounds individual concentration, and round-robin production ensures that additional bonds beyond the first provide no extra block assignments — only proportionally larger epoch rewards. The protocol does not claim equal outcomes; it claims equal rules and equal ROI percentage.
+
+**Founder bootstrap proof.** The genesis block contains exactly 1 DOLI and zero allocations. The five founding producers started with temporary scheduling placeholders carrying no value. At block 361, the protocol created one real bond (10 DOLI) per founder from accumulated pool rewards — the same emission schedule available to all future participants. No founder received more than 1 bond at genesis. The subsequent growth to 250+ bonds per founder occurred through the same compounding mechanism available to any producer who joins and reinvests. The advantage is temporal (they started when *B* was small), not structural (they did not receive special allocations). At block 26,979 (~3 days after genesis), the founders funded a public faucet from their own earned rewards, eliminating the capital barrier for new entrants entirely.
+
 **Self-regulation:** As *B* grows, *D* increases proportionally. Rapid early growth naturally converges toward stable distribution without governance intervention. Late entrants face longer doubling times but benefit from a more secure and valuable network.
 
 ---
@@ -814,7 +913,7 @@ If a producer fails to produce when selected for 50 consecutive slots:
 - Bond remains locked (no penalty for inactivity)
 - Can reactivate with a new registration delay proof
 
-Inactivity is not punished — it is tolerated. A producer who goes offline loses income (missed block rewards) but not capital (bond remains intact). This is a deliberate design choice: penalizing downtime would discourage small operators with less reliable infrastructure.
+Inactivity is not punished with slashing — bonds remain intact. However, prolonged absence triggers an inactivity leak: after 360 consecutive missed slots, the producer's seniority weight decays by 10% per epoch (Ethereum-style quadratic leak), down to a minimum of 1 bond. This ensures that permanently absent producers do not retain disproportionate chain weight indefinitely while still allowing recovery — a returning producer rebuilds weight through continued presence. A producer who goes offline loses income (missed block rewards) but not capital (bond remains intact). This is a deliberate design choice: penalizing downtime would discourage small operators with less reliable infrastructure.
 
 ### 11.3. Double Production
 
@@ -901,7 +1000,7 @@ What DOLI adds beyond pure PoS:
 
 Compare with PoW: an attacker with *M* ASICs gains *M×* hashpower immediately, with no per-identity capital lockup. In DOLI, each identity requires locked capital that can be destroyed upon misbehavior.
 
-The system does not claim immunity from wealthy adversaries — no system can. It claims that (1) identity creation has linear capital cost with slashing risk, (2) the anti-grinding VDF prevents precomputation attacks, and (3) once registered, an attacker's per-identity operational cost is permanent, not a one-time expense.
+The system does not claim immunity from wealthy adversaries — no system can. It claims that (1) identity creation has linear capital cost with slashing risk, (2) the anti-grinding delay proof prevents precomputation attacks, (3) once registered, an attacker's per-identity operational cost is permanent, not a one-time expense, and (4) **calendar time cannot be purchased** — seniority, vesting, and attestation history create a temporal barrier that money alone cannot cross (Section 5.4).
 
 ### 12.4. Safety Theorem
 
@@ -928,7 +1027,13 @@ By the Sequential Deficit theorem (12.2), the attacker cannot compensate by comp
 
 **Corollary.** An attacker starting from zero needs ~3 years of sustained presence before seniority weight equals an established honest producer, even with equal bond count. The attack window is therefore bounded not just by capital but by calendar time.
 
+**Scope of these proofs.** The Sequential Deficit theorem and Safety Theorem establish necessary conditions under stated assumptions — they are not sufficient proofs of absolute security. Real-world security depends on additional factors not modeled here: network partitions, liveness filter edge cases, coordinated early entry, and bootstrap-phase trust assumptions. These proofs provide a formal framework for reasoning about DOLI’s security properties, not a claim of unconditional safety. No consensus system has achieved unconditional safety proofs; the contribution here is making the assumptions explicit and the temporal constraints formally analyzable.
+
 **Limitation.** Seniority protects against *late* attackers — those who attempt to join and dominate an established network. It does not protect against *patient early* attackers who register during the network's infancy and accumulate seniority legitimately alongside honest producers. This is mitigated by: (1) the capital cost still scales linearly with bond count, (2) 100% bond loss risk for double production, and (3) the attestation requirement — maintaining *M* identities at 90% uptime for years has compounding operational cost. No consensus system can distinguish a patient adversary from a legitimate participant; the defense is making sustained dishonesty expensive, not impossible.
+
+**Bootstrap dependency.** The security properties above assume a sufficiently decentralized producer set. During the bootstrap phase, the network depends on the founding producers' honesty — as does every blockchain at genesis, including Bitcoin's first year of solo mining by Nakamoto. The temporal barriers (seniority, vesting, attestation) strengthen monotonically as the producer set grows and ages. The protocol's security is not static; it is a function of calendar time elapsed since genesis.
+
+**What this paper does not claim.** This paper does not claim that time alone secures consensus. It claims that time is the constraint that prevents economic security from being bypassed instantly. The system requires bonded capital (economic barrier), sequential computation (anti-grinding), continuous attestation (operational cost), and seniority weighting (temporal barrier). No single mechanism is sufficient. The contribution is the combination — and specifically, the use of non-purchasable calendar time as the constraint that binds the other mechanisms together.
 
 ---
 
@@ -1067,9 +1172,9 @@ Explorer:   https://doli.network
 
 ## 20. Scope
 
-DOLI optimizes for moving value with deterministic finality, predictable timing, and extensible spending conditions. The base layer is intentionally minimal — but extensible by design.
+DOLI provides value transfer, native assets, DeFi primitives, and cross-chain settlement — all as compiled UTXO output types with protocol-level verification. No virtual machine, no gas metering, no shared mutable state.
 
-This constraint is a feature. A system that does one thing well is more secure, more auditable, and more resistant to governance capture than a system that attempts to be a universal computer. Bitcoin demonstrated that a focused protocol can sustain a trillion-dollar network. Complexity is not a prerequisite for value.
+The design principle is **bounded expressiveness**: every output type has a fixed verification cost known before execution. Adding a new financial primitive is a protocol upgrade (~50 lines of compiled Rust), not a user deployment. This eliminates the unbounded attack surface of arbitrary code execution while providing the financial primitives that 95% of blockchain usage requires.
 
 The difference: Bitcoin's output format was fixed in 2009. DOLI's output format was designed in 2026 with seventeen years of hindsight. The `extra_data` field exists from genesis — no SegWit, no Taproot, no backward-compatibility hacks required.
 
@@ -1077,11 +1182,11 @@ The difference: Bitcoin's output format was fixed in 2009. DOLI's output format 
 
 ## 21. Conclusion
 
-We have proposed a system for electronic transactions that requires no trust in institutions, no massive energy expenditure, and no capital accumulation to participate in consensus.
+We have proposed a system for electronic transactions that requires no trust in institutions, no massive energy expenditure, and minimal capital to participate in consensus — a single bond unit (10 DOLI) and a $5/month server.
 
 We started with the usual framework of coins made from digital signatures, which provides strong control of ownership. This is incomplete without a way to prevent double-spending. To solve this, we proposed a peer-to-peer network using sequential delay proofs to anchor consensus to time.
 
-**Nodes vote with their time.** The network cannot be accelerated by wealth or parallelized by hardware. One hour of sequential computation is one hour, whether performed by an individual or a nation-state.
+**Nodes vote with bonded capital, constrained by time.** The network cannot be accelerated by wealth or parallelized by hardware. One hour of calendar time passes at the same rate for an individual as for a nation-state — and seniority, vesting, and attestation history cannot be purchased at any price.
 
 **Rewards are deterministic, not probabilistic.** Every producer receives equal block assignments through pure round-robin. The protocol acts as a built-in pool, distributing epoch rewards bond-weighted on-chain to all producers who prove continuous presence through on-chain liveness attestations. External pools are unnecessary. The smallest participant receives the same percentage return as the largest.
 
@@ -1093,11 +1198,11 @@ Any needed rules and incentives can be enforced with this consensus mechanism.
 
 ---
 
-**DOLI v4.4.9**
+**DOLI v5.3.1**
 
 *"Time is the only fair currency."*
 
-**E. Weil** · contact: weil@doli.network
+**A. Lozada & I. Lozada** · contact: ivan@doli.network
 
 ---
 ## References
