@@ -629,7 +629,19 @@ impl Output {
         height >= self.lock_until
     }
 
-    /// Serialize for hashing
+    /// Serialize for hashing.
+    ///
+    /// ENCODING SCHEMES FOR LENGTH-PREFIXED DATA
+    ///
+    /// Output::serialize() (hash-only, never deserialized):
+    ///   extra_data.len() < 65536  -> u16 LE (backward-compatible with all existing blocks)
+    ///   extra_data.len() >= 65536 -> u32 LE (for large NFTs >64KB)
+    ///   No ambiguity because this is never deserialized -- bytes go into BLAKE3.
+    ///
+    /// Covenant witnesses (serialized AND deserialized -- see set_covenant_witnesses):
+    ///   witness.len() < 65535   -> u16 LE (backward-compatible)
+    ///   witness.len() >= 65535  -> escape marker 0xFFFF + u32 LE
+    ///   0xFFFF is unambiguous because real u16 lengths max at 65534.
     pub fn serialize(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.push(self.output_type as u8);

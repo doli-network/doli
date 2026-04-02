@@ -588,6 +588,18 @@ impl Transaction {
     ///
     /// This is the DOLI equivalent of Bitcoin's SegWit: witness data lives in
     /// extra_data (which IS part of the tx hash, preventing malleability).
+    ///
+    /// ENCODING SCHEMES FOR LENGTH-PREFIXED DATA
+    ///
+    /// Output::serialize() (hash-only, never deserialized):
+    ///   extra_data.len() < 65536  -> u16 LE (backward-compatible with all existing blocks)
+    ///   extra_data.len() >= 65536 -> u32 LE (for large NFTs >64KB)
+    ///   No ambiguity because this is never deserialized -- bytes go into BLAKE3.
+    ///
+    /// Covenant witnesses (serialized AND deserialized):
+    ///   witness.len() < 65535   -> u16 LE (backward-compatible)
+    ///   witness.len() >= 65535  -> escape marker 0xFFFF + u32 LE
+    ///   0xFFFF is unambiguous because real u16 lengths max at 65534.
     pub fn set_covenant_witnesses(&mut self, witnesses: &[Vec<u8>]) {
         assert_eq!(
             witnesses.len(),

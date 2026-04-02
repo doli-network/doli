@@ -315,6 +315,22 @@ pub(crate) enum Commands {
         /// Skip confirmation prompt (for --batch-mint)
         #[arg(long)]
         yes: bool,
+
+        /// Fractionalize an NFT into fungible shares (by token_id hex)
+        #[arg(long, value_name = "TOKEN_ID")]
+        fractionalize: Option<String>,
+
+        /// Number of fraction shares (for --fractionalize)
+        #[arg(long, value_name = "NUM")]
+        shares: Option<u64>,
+
+        /// Ticker name for fraction tokens (for --fractionalize, default: FRAC)
+        #[arg(long, value_name = "NAME")]
+        ticker: Option<String>,
+
+        /// Redeem a fractionalized NFT back to a whole NFT (by token_id hex)
+        #[arg(long, value_name = "TOKEN_ID")]
+        redeem: Option<String>,
     },
 
     /// Issue a fungible token (meme coin, stablecoin, etc.)
