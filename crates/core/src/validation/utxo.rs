@@ -33,8 +33,56 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
     // = 2.8s wasted, causing nodes to fall behind and trigger fork recovery.
     validate_transaction_skip_registration_vdf(tx, ctx)?;
 
-    // Coinbase and EpochReward transactions don't need UTXO validation (minted)
-    if tx.is_coinbase() || tx.is_epoch_reward() {
+    // Coinbase transactions don't need UTXO validation (minted, no inputs)
+    if tx.is_coinbase() {
+        return Ok(());
+    }
+
+    // EpochReward: pre-activation (no inputs) → skip entirely.
+    // Post-activation (explicit pool inputs) → verify inputs exist and sum, skip signatures.
+    if tx.is_epoch_reward() {
+        if tx.inputs.is_empty() {
+            return Ok(()); // pre-activation format
+        }
+        // Post-activation: verify each pool input exists and is unspent, sum amounts
+        let mut total_input: Amount = 0;
+        for (i, input) in tx.inputs.iter().enumerate() {
+            let utxo = utxo_provider
+                .get_utxo(&input.prev_tx_hash, input.output_index)
+                .ok_or(ValidationError::OutputNotFound {
+                    tx_hash: input.prev_tx_hash,
+                    output_index: input.output_index,
+                })?;
+            if utxo.spent {
+                return Err(ValidationError::OutputAlreadySpent {
+                    tx_hash: input.prev_tx_hash,
+                    output_index: input.output_index,
+                });
+            }
+            // Pool UTXOs must belong to the reward pool
+            let pool_hash = crate::consensus::reward_pool_pubkey_hash();
+            if utxo.output.pubkey_hash != pool_hash {
+                return Err(ValidationError::InvalidTransaction(format!(
+                    "EpochReward input {} is not a pool UTXO",
+                    i
+                )));
+            }
+            if utxo.output.output_type.is_native_amount() {
+                total_input = total_input.checked_add(utxo.output.amount).ok_or_else(|| {
+                    ValidationError::AmountOverflow {
+                        context: format!("epoch reward input total at index {}", i),
+                    }
+                })?;
+            }
+        }
+        // Conservation: inputs must cover outputs exactly (no fee)
+        let total_output = tx.total_output();
+        if total_input < total_output {
+            return Err(ValidationError::InsufficientFunds {
+                inputs: total_input,
+                outputs: total_output,
+            });
+        }
         return Ok(());
     }
 

@@ -500,12 +500,10 @@ pub(super) fn validate_burn_asset(tx: &Transaction) -> Result<(), ValidationErro
 /// NOTE: This is the working automatic push-based reward system.
 /// Rewards are distributed automatically at epoch boundaries by the block producer.
 pub(super) fn validate_epoch_reward_data(tx: &Transaction) -> Result<(), ValidationError> {
-    // Must have no inputs (minted)
-    if !tx.inputs.is_empty() {
-        return Err(ValidationError::InvalidEpochReward(
-            "epoch reward must have no inputs".to_string(),
-        ));
-    }
+    // Pre-activation: must have no inputs (pool consumed by side-effect).
+    // Post-activation: inputs are explicit sorted pool outpoints.
+    // Structural validation allows both formats — the height-aware check
+    // is in validate_block_economics (Full mode) and validation/utxo.rs.
 
     // Must have at least one output
     if tx.outputs.is_empty() {

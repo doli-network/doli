@@ -501,6 +501,44 @@ impl Node {
                         total_distributed
                     );
                 }
+
+                // Post-activation: verify explicit pool UTXO inputs
+                if height >= doli_core::consensus::EPOCH_REWARD_EXPLICIT_INPUTS_HEIGHT {
+                    if epoch_tx.inputs.is_empty() {
+                        anyhow::bail!(
+                            "EpochReward at height {} (post-activation) must have explicit pool inputs",
+                            height
+                        );
+                    }
+                    // Verify inputs match the sorted pool outpoints
+                    let utxo = self.utxo_set.read().await;
+                    let pool_utxos = utxo.get_by_pubkey_hash(&pool_hash);
+                    let mut expected_inputs: Vec<(crypto::Hash, u32)> = pool_utxos
+                        .iter()
+                        .map(|(op, _)| (op.tx_hash, op.index))
+                        .collect();
+                    expected_inputs.sort();
+                    drop(utxo);
+
+                    let actual_inputs: Vec<(crypto::Hash, u32)> = epoch_tx
+                        .inputs
+                        .iter()
+                        .map(|inp| (inp.prev_tx_hash, inp.output_index))
+                        .collect();
+
+                    if actual_inputs != expected_inputs {
+                        anyhow::bail!(
+                            "EpochReward pool inputs mismatch: expected {} inputs, got {}",
+                            expected_inputs.len(),
+                            actual_inputs.len()
+                        );
+                    }
+                } else if !epoch_tx.inputs.is_empty() {
+                    anyhow::bail!(
+                        "EpochReward at height {} (pre-activation) must not have inputs",
+                        height
+                    );
+                }
             }
         } else if is_epoch_boundary && matches!(mode, ValidationMode::Full) {
             // Only enforce missing-EpochReward check in Full mode.

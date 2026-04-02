@@ -71,14 +71,22 @@ impl Transaction {
     /// Each output pays the calculated reward to a producer's address.
     ///
     /// # Arguments
+    /// * `pool_inputs` - Sorted pool UTXO outpoints to consume (empty pre-activation,
+    ///   explicit post-`EPOCH_REWARD_EXPLICIT_INPUTS_HEIGHT`).
     /// * `outputs` - Vector of (amount, pubkey_hash) pairs for each producer
     /// * `height` - Block height (used as extra_data for uniqueness)
     /// * `epoch` - The completed epoch number (stored in extra_data)
     pub fn new_epoch_reward_coinbase(
+        pool_inputs: Vec<(Hash, u32)>,
         outputs: Vec<(Amount, Hash)>,
         height: BlockHeight,
         epoch: u64,
     ) -> Self {
+        let tx_inputs: Vec<Input> = pool_inputs
+            .into_iter()
+            .map(|(tx_hash, index)| Input::new(tx_hash, index))
+            .collect();
+
         let tx_outputs: Vec<Output> = outputs
             .into_iter()
             .map(|(amount, pubkey_hash)| Output::normal(amount, pubkey_hash))
@@ -90,8 +98,8 @@ impl Transaction {
 
         Self {
             version: 1,
-            tx_type: TxType::EpochReward, // Use EpochReward type for automatic distribution
-            inputs: Vec::new(),
+            tx_type: TxType::EpochReward,
+            inputs: tx_inputs,
             outputs: tx_outputs,
             extra_data,
         }
@@ -110,10 +118,11 @@ impl Transaction {
     ///
     /// Epoch reward coinbase transactions have:
     /// - TxType::EpochReward
-    /// - No inputs (minted coins)
     /// - One or more outputs (rewards distributed to present producers)
+    /// - Pre-activation: no inputs (pool consumed by side-effect)
+    /// - Post-activation: explicit pool UTXO inputs
     pub fn is_epoch_reward_coinbase(&self) -> bool {
-        self.tx_type == TxType::EpochReward && self.inputs.is_empty() && !self.outputs.is_empty()
+        self.tx_type == TxType::EpochReward && !self.outputs.is_empty()
     }
 
     /// Check if this is any type of reward-minting transaction (coinbase or epoch reward)

@@ -51,7 +51,25 @@ impl Node {
                             completed_epoch
                         );
 
+                        // Post-activation: include explicit pool UTXO inputs (sorted deterministically).
+                        // Pre-activation: empty inputs (pool consumed by side-effect in tx_processing).
+                        let pool_inputs = if height
+                            >= doli_core::consensus::EPOCH_REWARD_EXPLICIT_INPUTS_HEIGHT
+                        {
+                            let utxo = self.utxo_set.read().await;
+                            let pool_utxos = utxo.get_by_pubkey_hash(&pool_hash);
+                            let mut outpoints: Vec<(crypto::Hash, u32)> = pool_utxos
+                                .iter()
+                                .map(|(op, _)| (op.tx_hash, op.index))
+                                .collect();
+                            outpoints.sort();
+                            outpoints
+                        } else {
+                            Vec::new()
+                        };
+
                         let coinbase = Transaction::new_epoch_reward_coinbase(
+                            pool_inputs,
                             epoch_outputs,
                             height,
                             completed_epoch,

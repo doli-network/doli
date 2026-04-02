@@ -28,8 +28,12 @@ impl Node {
             }
         }
 
-        // EpochReward TX: consume all pool UTXOs (the pool collected per-block coinbase)
-        if tx.tx_type == TxType::EpochReward {
+        // EpochReward TX: consume all pool UTXOs (the pool collected per-block coinbase).
+        // Pre-activation: side-effect consumption (inputs are empty, pool UTXOs removed here).
+        // Post-activation: explicit inputs handle pool spending via normal spend_transaction path.
+        if tx.tx_type == TxType::EpochReward
+            && height < doli_core::consensus::EPOCH_REWARD_EXPLICIT_INPUTS_HEIGHT
+        {
             let pool_hash = doli_core::consensus::reward_pool_pubkey_hash();
             let pool_utxos = utxo.get_by_pubkey_hash(&pool_hash);
             for (outpoint, entry) in &pool_utxos {

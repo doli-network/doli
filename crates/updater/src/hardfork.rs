@@ -125,9 +125,15 @@ impl HardForkSchedule {
     /// });
     /// ```
     pub fn default_schedule() -> Self {
-        // No hard forks scheduled yet.
-        // When scheduling one, add it here so all binaries enforce it.
-        Self::new()
+        let mut schedule = Self::new();
+        schedule.add(HardForkInfo {
+            activation_height: 25_560,
+            min_version: "5.5.0".to_string(),
+            consensus_changes: vec![
+                "EpochReward TX requires explicit pool UTXO inputs (UTXO auditability)".to_string(),
+            ],
+        });
+        schedule
     }
 }
 

@@ -44,6 +44,16 @@ pub fn reward_pool_pubkey_hash() -> crypto::Hash {
     crypto::hash::hash_with_domain(b"REWARD_POOL", b"doli")
 }
 
+// ==================== Hard Fork Activation Heights ====================
+
+/// Height at which EpochReward transactions must include explicit pool UTXO inputs.
+/// Before this height: inputs=[], pool consumed by side-effect in tx_processing.
+/// After this height:  inputs=sorted pool outpoints, normal UTXO spending path.
+/// Aligned to epoch boundary (25,560 = 71 × 360) so nodes on old versions
+/// complete the previous epoch's attestation cycle before forking.
+/// Consensus-breaking — all nodes must update before this height.
+pub const EPOCH_REWARD_EXPLICIT_INPUTS_HEIGHT: u64 = 25_560;
+
 // ==================== Proof of Time Parameters ====================
 
 /// Slot duration in seconds.
