@@ -13,8 +13,10 @@ target/
 .DS_Store
 Thumbs.db
 
-# Claude
+# Claude / AI
 .claude/
+.claude.local
+.omega/
 
 # Node runtime data — both testnet (macOS) and testnetlinux (Linux)
 testnet*/*/data/
@@ -50,3 +52,7 @@ swap.db
 *.json.key
 *.seed.txt
 *.pem
+
+# Internal docs (contain infrastructure details)
+LAUNCH_CHECKLIST.internal.md
+*.internal.md

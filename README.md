@@ -1,256 +1,145 @@
 # DOLI
 
-[![CI](https://github.com/e-weil/doli/actions/workflows/ci.yml/badge.svg)](https://github.com/e-weil/doli/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/e-weil/doli)](https://github.com/e-weil/doli/releases)
-[![Docker](https://img.shields.io/badge/docker-ghcr.io%2Fe--weil%2Fdoli--node-blue)](https://github.com/e-weil/doli/pkgs/container/doli-node)
+**A Peer-to-Peer Electronic Cash System Based on Verifiable Time**
+
+> Consensus weight emerges from bonded capital anchored by sequential time — not trust, not scale, and not purchasable acceleration.
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**A Peer-to-Peer Electronic Cash System Based on Time**
+**Website:** [doli.network](https://doli.network) | **Explorer:** [explorer.doli.network](https://explorer.doli.network) | **Marketplace:** [doli.network/marketplace.html](https://doli.network/marketplace.html) | **Whitepaper:** [WHITEPAPER.md](WHITEPAPER.md)
 
-DOLI is a cryptocurrency that uses Verifiable Delay Functions (VDF) instead of traditional Proof of Work. The scarce resource is not energy or permanent capital, but **time**.
+## What is DOLI?
 
-## Overview
+DOLI is a cryptocurrency where the scarce resource is **time** — the one resource that cannot be accumulated, parallelized, or purchased. One second passes at the same rate for an individual as for a nation-state.
 
-DOLI solves the double-spending problem through a peer network that anchors consensus to verifiable sequential work. Each block requires a VDF computation that takes fixed time and cannot be accelerated through parallelization.
+- **No premine, no ICO, no treasury.** Every coin comes from block rewards.
+- **No mining pools needed.** The protocol is the pool — epoch rewards are distributed on-chain to all qualified producers.
+- **No special hardware.** Any CPU can participate. A $5/month VPS is sufficient.
+- **Equal ROI for all.** A producer with 1 bond earns the same percentage return as one with 3,000 bonds.
 
-### Key Features
+## How It Works
 
-- **Time-based consensus**: Blocks are produced every 10 seconds using VDF proofs
-- **Sybil resistance**: Producer registration requires sequential computation + economic bond
-- **Fair distribution**: No pre-mine, no ICO - coins are distributed through block production
-- **Energy efficient**: Sequential computation cannot benefit from parallel hardware
-- **Predictable issuance**: ~25,228,800 total supply with halving every ~4 years
+**Block production** follows pure round-robin: every active producer receives equal block assignments regardless of stake. Bonds affect only reward distribution, not production frequency.
 
-### Unique Contribution
+**Rewards** accumulate into an epoch pool (360 blocks, ~1 hour) and are distributed proportionally by bond weight to all producers who proved continuous presence via on-chain liveness attestations.
 
-DOLI is the first blockchain where Verifiable Delay Functions (VDF) are the **primary consensus mechanism**, not a complement.
+**Programmable outputs** without a virtual machine: NFTs, fungible tokens, AMM pools, lending, and cross-chain bridges are native UTXO output types with declarative spending conditions — no gas, no EVM, no shared mutable state.
 
-| System    | Scarce Resource   | VDF Role                          |
-|-----------|-------------------|-----------------------------------|
-| Bitcoin   | Energy            | Not used                          |
-| Ethereum  | Capital (stake)   | Not used                          |
-| Chia      | Disk space        | Secondary (synchronizes timing)   |
-| Solana    | Capital (stake)   | Auxiliary (orders events)         |
-| **DOLI**  | **Time**          | **Primary consensus mechanism**   |
-
-In Chia, Proof of Space determines who wins the block; VDF only synchronizes timing. In Solana, stake determines validators; VDF (Proof of History) only orders events within a slot. In both cases, VDF is auxiliary.
-
-In DOLI, sequential time is the only resource that determines consensus. The economic bond is a Sybil filter, not a selection mechanism. This represents a paradigm shift: from "whoever has more resources wins" to "time passes equally for everyone".
+| System | Scarce Resource | Selection | Min Hardware | Pools Needed |
+|--------|----------------|-----------|-------------|-------------|
+| Bitcoin | Energy | Lottery (hashpower) | ASIC ($5,000+) | Yes |
+| Ethereum | Capital (32 ETH) | Lottery (stake) | Server ($100K+) | Yes |
+| Solana | Capital (stake) | Stake-weighted | $10K+ server | Yes |
+| **DOLI** | **Time** | **Deterministic round-robin** | **Any CPU ($5/mo)** | **Built-in** |
 
 ## Quick Start
 
-### Option 1: Pre-built Binary (Fastest)
-
 ```bash
-# Download and install
-curl -L https://raw.githubusercontent.com/e-weil/doli/main/scripts/update.sh | bash
+# Install
+curl -sSf https://doli.network/install.sh | bash
 
 # Run a node
 doli-node run
 
-# Generate a wallet
+# Create a wallet
 doli wallet new
+
+# Check balance
+doli balance
 ```
 
-### Option 2: Docker
+### Build from Source
 
 ```bash
-# Run a mainnet node
-docker run -d --name doli-node \
-  -p 30300:30300 -p 8500:8500 \
-  -v doli-data:/data \
-  ghcr.io/e-weil/doli-node:latest
-
-# View logs
-docker logs -f doli-node
-```
-
-### Option 3: Build from Source
-
-```bash
-# Clone and build
-git clone https://github.com/e-weil/doli.git
+git clone https://github.com/doli-network/doli.git
 cd doli
 cargo build --release
-
-# Run
 ./target/release/doli-node run
 ```
 
-### Network Selection
+## Architecture
 
-```bash
-# Mainnet (default)
-doli-node run
-
-# Testnet
-doli-node --network testnet run
-
-# Devnet (local development)
-doli-node --network devnet run
-```
-
-## Crate Structure
-
-DOLI is implemented as a Rust workspace with the following crates:
+DOLI is implemented as a Rust workspace:
 
 | Crate | Description |
 |-------|-------------|
-| `doli-crypto` | Cryptographic primitives (BLAKE3, Ed25519, key management) |
-| `doli-vdf` | VDF implementation (hash-chain with dynamic calibration) |
-| `doli-core` | Core types, validation rules, and consensus parameters |
-| `doli-storage` | Persistent storage layer (RocksDB) |
-| `doli-network` | P2P networking (libp2p-based) with equivocation detection |
+| `crypto` | BLAKE3 hashing, Ed25519 + BLS12-381 signatures, bech32m addresses |
+| `doli-core` | Transactions (27 types), validation, consensus parameters, conditions |
+| `storage` | RocksDB state database, block store, UTXO set, producer set |
+| `network` | libp2p P2P networking, gossipsub, Kademlia DHT, sync engine |
+| `mempool` | Transaction pool with UTXO verification and chained tx support |
+| `rpc` | JSON-RPC server (45+ methods) |
+| `bridge` | Cross-chain atomic swap library (Bitcoin, Ethereum) |
+| `wallet` | Transaction builder, UTXO selection, key management |
+| `updater` | Auto-update system, hard fork scheduling |
 | `doli-node` | Full node binary |
-| `doli` | Command-line wallet and utilities |
+| `doli-cli` | Command-line wallet and utilities |
+
+## Protocol Parameters
+
+| Parameter | Value |
+|-----------|-------|
+| Block time | 10 seconds |
+| Epoch | 360 slots (1 hour) |
+| Era | 12,614,400 blocks (~4 years) |
+| Total supply | 25,228,800 DOLI |
+| Block reward (Era 1) | 1 DOLI |
+| Halving | Every era (~4 years) |
+| Bond unit | 10 DOLI |
+| Max bonds/producer | 3,000 (30,000 DOLI) |
+| Liveness threshold | 90% attestation per epoch |
+| Unbonding period | 7 days |
+| Slashing (double production) | 100% of bond |
+| Hash function | BLAKE3-256 |
+| Signatures | Ed25519 (transactions) + BLS12-381 (attestation aggregation) |
+| Addresses | Bech32m (doli1...) |
+
+## Native DeFi
+
+All financial primitives are compiled UTXO output types — no VM, no gas, no reentrancy:
+
+| Primitive | Output Type | Description |
+|-----------|------------|-------------|
+| Transfers | Normal | Standard P2PKH payments |
+| Staking | Bond | Producer bonds with FIFO vesting |
+| NFTs | UniqueAsset | On-chain art, royalties, batch minting |
+| Tokens | FungibleAsset | User-issued fixed-supply tokens |
+| AMM Pools | Pool + LPShare | Constant-product AMM (x*y=k), 0.3% fee |
+| Lending | Collateral + LendingDeposit | Collateralized loans with TWAP oracle |
+| Bridges | BridgeHTLC | Atomic swaps: BTC, ETH, BSC, LTC, XMR, ADA |
+| Multisig | Multisig | N-of-M authorization |
+| Timelocks | HTLC, Vesting | Hash + time locked outputs |
+
+MEV and sandwich attacks are structurally impossible: the pool is a UTXO consumed atomically — two swaps referencing the same pool are mutually exclusive.
 
 ## Documentation
 
-- [Whitepaper (Spanish)](WHITEPAPER.md) - Complete technical specification
-- [Architecture](docs/architecture.md) - System design and components
-- [Protocol Specification](docs/protocol.md) - Detailed protocol rules
-- [Roadmap](docs/roadmap.md) - Development timeline and milestones
-- [Contributing](CONTRIBUTING.md) - How to contribute to the project
-
-### API Documentation
-
-Generate the Rust API documentation:
-
-```bash
-cargo doc --workspace --no-deps --open
-```
-
-## Technical Summary
-
-### Consensus Mechanism
-
-DOLI uses **Proof of Time** with two complementary mechanisms:
-
-1. **Epoch Lookahead** (anti-grinding): Leaders are determined deterministically at epoch start
-2. **Heartbeat VDF** (~55ms): Proves continuous sequential presence
-
-| Network | Slot  | VDF Time | Purpose                        |
-|---------|-------|----------|--------------------------------|
-| All     | 10s   | ~55ms    | Heartbeat proof of presence    |
-
-```
-vdf_input = HASH("DOLI_HEARTBEAT_V1" || producer_key || slot || prev_hash)
-vdf_output = hash_chain(vdf_input, iterations)  // ~800K iterations
-```
-
-**Why Epoch Lookahead prevents grinding:**
-- Leaders determined by `slot % total_bonds` (deterministic)
-- Selection uses bond distribution, NOT prev_hash
-- Attackers cannot influence future leader selection
-- Grinding current block is USELESS for next slot
-
-**Two Types of Proof of Time:**
-1. **Immediate Time (VDF)**: ~55ms heartbeat proves you're present NOW
-2. **Historical Time (Longevity)**: Rights earned over weeks/months/years of presence
-
-**Weight-Based Fork Choice**: The chain with the highest accumulated producer weight wins. Producer weight ranges from 1 (new) to 4 (veteran, based on seniority).
-
-### Time Structure
-
-| Unit    | Slots      | Duration    |
-|---------|------------|-------------|
-| Slot    | 1          | 10 seconds  |
-| Epoch   | 360        | 1 hour      |
-| Day     | 8,640      | 24 hours    |
-| Era     | 12,614,400 | ~4 years    |
-
-### Emission Schedule
-
-| Era | Years  | Reward  | Cumulative   | % of Total |
-|-----|--------|---------|--------------|------------|
-| 1   | 0-4    | 1.0     | 12,614,400   | 50.00%     |
-| 2   | 4-8    | 0.5     | 18,921,600   | 75.00%     |
-| 3   | 8-12   | 0.25    | 22,075,200   | 87.50%     |
-| 4   | 12-16  | 0.125   | 23,652,000   | 93.75%     |
-| 5   | 16-20  | 0.0625  | 24,440,400   | 96.88%     |
-
-### Producer Registration
-
-To become a block producer:
-
-1. Complete a VDF proof (base: ~30 seconds, scales with demand)
-2. Lock an activation bond (10 DOLI per bond unit)
-3. Bond is locked and slashed for misbehavior
-
-### Bond Stacking
-
-Producers can stake 1-3,000 bonds to increase their block production share:
-
-| Bonds | Investment | Blocks/Cycle | ROI |
-|-------|------------|--------------|-----|
-| 1 | 10 DOLI | 1 of 10 | 10% |
-| 5 | 50 DOLI | 5 of 10 | 10% |
-| 10 | 100 DOLI | 10 of 20 | 10% |
-
-**Key:** Uses deterministic round-robin rotation (NOT lottery). More bonds = more blocks, same ROI %.
-
-### Cryptographic Primitives
-
-- **Hash function**: BLAKE3-256
-- **Signatures**: Ed25519
-- **VDF**: Hash-chain (iterated BLAKE3, ~800K iterations for blocks, ~5M for registration)
+- [Whitepaper](WHITEPAPER.md) — Complete technical specification
+- [Whitepaper (Spanish)](WHITEPAPER-es.md) — Especificacion tecnica completa
+- [Architecture](docs/architecture.md) — System design and components
+- [RPC Reference](docs/rpc_reference.md) — All 45+ JSON-RPC methods
+- [CLI Reference](docs/cli.md) — Command-line wallet and node usage
 
 ## Networks
 
-DOLI supports multiple networks with a single binary:
+| Network | Address Prefix | Purpose |
+|---------|---------------|---------|
+| Mainnet | `doli1...` | Production network |
+| Testnet | `tdoli1...` | Public test network |
+| Devnet | `ddoli1...` | Local development |
 
-| Network | ID | Purpose | P2P Port | RPC Port |
-|---------|-----|---------|----------|----------|
-| Mainnet | 1   | Production network | 30300 | 8500 |
-| Testnet | 2   | Public test network | 40300 | 18500 |
-| Devnet  | 99  | Local development | 50300 | 28500 |
-
-Each network has its own genesis, address prefix (`doli`, `tdoli`, `ddoli`), and isolated data directory.
-
-## Protocol Parameters (Mainnet)
-
-| Parameter           | Value                  |
-|---------------------|------------------------|
-| Genesis time        | 2026-03-08             |
-| Slot duration       | 10 seconds             |
-| Epoch duration      | 360 slots (1 hour)     |
-| Block size limit    | 1,000,000 bytes        |
-| Reward maturity     | 6 blocks (~60 seconds) |
-| Bond unit           | 10 DOLI                |
-| Max bonds/producer  | 3,000 (30,000 DOLI)   |
-| Slashing (double)   | 100% of bond           |
-| Exclusion period    | 60,480 slots (7 days)  |
-
-## Network
-
-- **Website**: [www.doli.network](https://www.doli.network)
-- **Email**: doli@doli.network
-- **GitHub**: [github.com/doli-network](https://github.com/doli-network)
-
-## Security
-
-DOLI is secure as long as honest participants collectively control more sequential computation capacity than any group of attackers. Unlike PoW systems, attackers cannot accelerate attacks by adding parallel hardware.
-
-### Attack Cost
-
-1. **Time cost**: Registration VDF scales with demand (up to 24 hours per identity)
-2. **Economic cost**: Each identity requires a locked bond
-3. **Risk**: Double production results in 100% bond slashing
+```bash
+doli-node run                      # Mainnet (default)
+doli-node --network testnet run    # Testnet
+doli-node --network devnet run     # Devnet
+```
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+MIT
 
 ---
 
-*"Time is the most democratic resource. DOLI turns it into money."*
+*"Time is the only fair currency."*
 
----
-
-<p align="center">
-  <img src="https://flagcdn.com/w80/ve.png" width="80" alt="Venezuelan Flag">
-  <br><br>
-  <strong>DOLI</strong> was created by <strong><a href="https://www.linkedin.com/in/ivlozada/">Ivan Lozada</a></strong> and <strong><a href="https://www.linkedin.com/in/ajlozada/">Antonio Lozada</a></strong><br>
-  two Venezuelans in exile 🇻🇪<br><br>
-  <a href="https://x.com/isudoajl">𝕏 @isudoajl</a>
-</p>
+I. Lozada &middot; [ivan@doli.network](mailto:ivan@doli.network) | A. Lozada &middot; [antonio@doli.network](mailto:antonio@doli.network)

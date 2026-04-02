@@ -1,5 +1,0 @@
-# Private Claude Rules (gitignored - never shared)
-
-## Git Operations
-
-- **No automatic git**: NEVER run git add, git commit, or git push unless explicitly requested by the user.
