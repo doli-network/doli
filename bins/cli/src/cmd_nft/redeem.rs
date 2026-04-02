@@ -64,12 +64,9 @@ pub(crate) async fn cmd_nft_redeem(
         .get("outputIndex")
         .and_then(|v| v.as_u64())
         .unwrap_or(0) as u32;
-    let nft_amount = nft_utxo
-        .get("amount")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    let prev_tx_hash = Hash::from_hex(nft_tx_hash_hex)
-        .ok_or_else(|| anyhow::anyhow!("Invalid NFT tx hash"))?;
+    let nft_amount = nft_utxo.get("amount").and_then(|v| v.as_u64()).unwrap_or(0);
+    let prev_tx_hash =
+        Hash::from_hex(nft_tx_hash_hex).ok_or_else(|| anyhow::anyhow!("Invalid NFT tx hash"))?;
 
     // Get NFT content/metadata from RPC
     let tx_info = rpc.get_transaction_json(&prev_tx_hash.to_hex()).await?;

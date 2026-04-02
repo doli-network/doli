@@ -65,12 +65,9 @@ pub(crate) async fn cmd_nft_fractionalize(
         .get("outputIndex")
         .and_then(|v| v.as_u64())
         .unwrap_or(0) as u32;
-    let nft_amount = nft_utxo
-        .get("amount")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    let prev_tx_hash = Hash::from_hex(nft_tx_hash_hex)
-        .ok_or_else(|| anyhow::anyhow!("Invalid NFT tx hash"))?;
+    let nft_amount = nft_utxo.get("amount").and_then(|v| v.as_u64()).unwrap_or(0);
+    let prev_tx_hash =
+        Hash::from_hex(nft_tx_hash_hex).ok_or_else(|| anyhow::anyhow!("Invalid NFT tx hash"))?;
 
     // Get NFT content from RPC transaction data
     let tx_info = rpc.get_transaction_json(&prev_tx_hash.to_hex()).await?;
@@ -121,9 +118,15 @@ pub(crate) async fn cmd_nft_fractionalize(
 
     // Build fraction token output (Output 1)
     let frac_cond = doli_core::Condition::signature(owner_hash);
-    let frac_token_output =
-        Output::fungible_asset(shares, owner_hash, frac_asset_id, shares, ticker, &frac_cond)
-            .map_err(|e| anyhow::anyhow!("Failed to create fraction token output: {}", e))?;
+    let frac_token_output = Output::fungible_asset(
+        shares,
+        owner_hash,
+        frac_asset_id,
+        shares,
+        ticker,
+        &frac_cond,
+    )
+    .map_err(|e| anyhow::anyhow!("Failed to create fraction token output: {}", e))?;
 
     // Calculate fee
     let extra_bytes: u64 =
@@ -229,10 +232,7 @@ pub(crate) async fn cmd_nft_fractionalize(
         Ok(result_hash) => {
             println!("NFT fractionalized successfully!");
             println!("TX Hash: {}", result_hash);
-            println!(
-                "Fraction asset ID: {}",
-                frac_asset_id.to_hex()
-            );
+            println!("Fraction asset ID: {}", frac_asset_id.to_hex());
         }
         Err(e) => {
             println!("Error: {}", e);
