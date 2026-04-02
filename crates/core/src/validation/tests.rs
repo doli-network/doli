@@ -2184,3 +2184,293 @@ fn test_p0001_enforcement_at_exact_boundary() {
         result_before,
     );
 }
+
+// ==========================================================================
+// NFT Fractionalization Tests
+// ==========================================================================
+
+/// Create a test context with covenants activated (height >= 2000 for Mainnet).
+fn test_context_with_covenants() -> ValidationContext {
+    ValidationContext::new(
+        ConsensusParams::mainnet(),
+        Network::Mainnet,
+        GENESIS_TIME + 30000,
+        3000,
+    )
+    .with_prev_block(2999, GENESIS_TIME + 29990, Hash::ZERO)
+}
+
+/// Helper: create a simple NFT output with a Signature condition.
+fn make_nft_output(amount: u64, pubkey_hash: Hash, token_id: Hash, content: &[u8]) -> Output {
+    let condition = crate::conditions::Condition::Signature(pubkey_hash);
+    Output::nft(amount, pubkey_hash, token_id, content, &condition).unwrap()
+}
+
+/// Helper: create a fractionalized NFT output (NFT + FRAC metadata appended).
+fn make_fractionalized_nft_output(
+    amount: u64,
+    pubkey_hash: Hash,
+    token_id: Hash,
+    content: &[u8],
+    total_shares: u64,
+) -> Output {
+    let base = make_nft_output(amount, pubkey_hash, token_id, content);
+    let frac_asset_id = Output::fraction_asset_id(&token_id);
+    let extra_data =
+        Output::build_fractionalized_extra_data(&base.extra_data, &frac_asset_id, total_shares);
+    Output { extra_data, ..base }
+}
+
+/// Helper: create a FungibleAsset output for fraction tokens.
+fn make_fraction_token_output(
+    amount: u64,
+    pubkey_hash: Hash,
+    fraction_asset_id: Hash,
+    total_supply: u64,
+) -> Output {
+    let condition = crate::conditions::Condition::Signature(pubkey_hash);
+    Output::fungible_asset(
+        amount,
+        pubkey_hash,
+        fraction_asset_id,
+        total_supply,
+        "FRAC",
+        &condition,
+    )
+    .unwrap()
+}
+
+#[test]
+fn test_fractionalize_nft_happy_path() {
+    let ctx = test_context_with_covenants();
+    let token_id = Hash::from_bytes([0x42; 32]);
+    let owner_hash = Hash::from_bytes([0x01; 32]);
+    let content = b"test-content-hash";
+    let total_shares = 1000u64;
+    let frac_asset_id = Output::fraction_asset_id(&token_id);
+
+    let nft_input_hash = Hash::from_bytes([0xAA; 32]);
+    let fee_input_hash = Hash::from_bytes([0xBB; 32]);
+
+    let tx = Transaction {
+        version: 1,
+        tx_type: TxType::FractionalizeNft,
+        inputs: vec![Input::new(nft_input_hash, 0), Input::new(fee_input_hash, 0)],
+        outputs: vec![
+            make_fractionalized_nft_output(1, owner_hash, token_id, content, total_shares),
+            make_fraction_token_output(total_shares, owner_hash, frac_asset_id, total_shares),
+        ],
+        extra_data: Vec::new(),
+    };
+
+    let result = transaction::validate_transaction(&tx, &ctx);
+    assert!(
+        result.is_ok(),
+        "FractionalizeNft structural validation failed: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_fractionalize_nft_already_fractionalized_rejected() {
+    let ctx = test_context_with_covenants();
+    let token_id = Hash::from_bytes([0x42; 32]);
+    let owner_hash = Hash::from_bytes([0x01; 32]);
+    let content = b"test-content";
+    let total_shares = 1000u64;
+    let frac_asset_id = Output::fraction_asset_id(&token_id);
+    let nft_input_hash = Hash::from_bytes([0xAA; 32]);
+
+    let mut utxo_provider = MockUtxoProvider::new();
+    let fractionalized_nft =
+        make_fractionalized_nft_output(1, owner_hash, token_id, content, total_shares);
+    let keypair = crypto::KeyPair::generate();
+    utxo_provider.add_utxo(nft_input_hash, 0, fractionalized_nft, *keypair.public_key());
+
+    let fee_hash = Hash::from_bytes([0xBB; 32]);
+    let fee_output = Output::normal(100_000, owner_hash);
+    utxo_provider.add_utxo(fee_hash, 0, fee_output, *keypair.public_key());
+
+    let tx = Transaction {
+        version: 1,
+        tx_type: TxType::FractionalizeNft,
+        inputs: vec![Input::new(nft_input_hash, 0), Input::new(fee_hash, 0)],
+        outputs: vec![
+            make_fractionalized_nft_output(1, owner_hash, token_id, content, total_shares),
+            make_fraction_token_output(total_shares, owner_hash, frac_asset_id, total_shares),
+        ],
+        extra_data: Vec::new(),
+    };
+
+    let result = utxo::validate_transaction_with_utxos(&tx, &ctx, &utxo_provider);
+    assert!(result.is_err(), "should reject already-fractionalized NFT");
+    let err = result.unwrap_err();
+    // The spending prevention check fires first: fractionalized NFTs can only
+    // be spent by RedeemNft, so FractionalizeNft is also rejected.
+    assert!(
+        matches!(err, ValidationError::InvalidTransaction(_)),
+        "expected InvalidTransaction (spending prevention), got: {:?}",
+        err
+    );
+}
+
+#[test]
+fn test_redeem_nft_happy_path() {
+    let ctx = test_context_with_covenants();
+    let token_id = Hash::from_bytes([0x42; 32]);
+    let owner_hash = Hash::from_bytes([0x01; 32]);
+    let content = b"test-content";
+
+    let nft_input_hash = Hash::from_bytes([0xAA; 32]);
+    let frac_input_hash = Hash::from_bytes([0xCC; 32]);
+
+    let tx = Transaction {
+        version: 1,
+        tx_type: TxType::RedeemNft,
+        inputs: vec![
+            Input::new(nft_input_hash, 0),
+            Input::new(frac_input_hash, 0),
+        ],
+        outputs: vec![make_nft_output(1, owner_hash, token_id, content)],
+        extra_data: Vec::new(),
+    };
+
+    let result = transaction::validate_transaction(&tx, &ctx);
+    assert!(
+        result.is_ok(),
+        "RedeemNft structural validation failed: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_fractionalized_nft_spending_prevention() {
+    let ctx = test_context_with_covenants();
+    let token_id = Hash::from_bytes([0x42; 32]);
+    let owner_hash = Hash::from_bytes([0x01; 32]);
+    let content = b"test-content";
+    let total_shares = 1000u64;
+    let nft_input_hash = Hash::from_bytes([0xAA; 32]);
+
+    let mut utxo_provider = MockUtxoProvider::new();
+    let fractionalized_nft =
+        make_fractionalized_nft_output(1, owner_hash, token_id, content, total_shares);
+    let keypair = crypto::KeyPair::generate();
+    utxo_provider.add_utxo(nft_input_hash, 0, fractionalized_nft, *keypair.public_key());
+
+    let tx = Transaction {
+        version: 1,
+        tx_type: TxType::Transfer,
+        inputs: vec![Input::new(nft_input_hash, 0)],
+        outputs: vec![make_nft_output(1, owner_hash, token_id, content)],
+        extra_data: Vec::new(),
+    };
+
+    let result = utxo::validate_transaction_with_utxos(&tx, &ctx, &utxo_provider);
+    assert!(
+        result.is_err(),
+        "should reject Transfer spending a fractionalized NFT"
+    );
+    let err = result.unwrap_err();
+    assert!(
+        matches!(err, ValidationError::InvalidTransaction(_)),
+        "expected InvalidTransaction for spending prevention, got: {:?}",
+        err
+    );
+}
+
+#[test]
+fn test_fractionalize_nft_wrong_asset_id_rejected() {
+    let ctx = test_context_with_covenants();
+    let token_id = Hash::from_bytes([0x42; 32]);
+    let owner_hash = Hash::from_bytes([0x01; 32]);
+    let content = b"test-content";
+    let total_shares = 500u64;
+    let wrong_asset_id = Hash::from_bytes([0xFF; 32]);
+
+    let tx = Transaction {
+        version: 1,
+        tx_type: TxType::FractionalizeNft,
+        inputs: vec![Input::new(Hash::from_bytes([0xAA; 32]), 0)],
+        outputs: vec![
+            make_fractionalized_nft_output(1, owner_hash, token_id, content, total_shares),
+            make_fraction_token_output(total_shares, owner_hash, wrong_asset_id, total_shares),
+        ],
+        extra_data: Vec::new(),
+    };
+
+    let result = transaction::validate_transaction(&tx, &ctx);
+    assert!(result.is_err(), "should reject wrong asset_id");
+    let err = result.unwrap_err();
+    assert!(
+        matches!(err, ValidationError::InvalidFractionalization(_)),
+        "expected InvalidFractionalization, got: {:?}",
+        err
+    );
+}
+
+#[test]
+fn test_fractionalize_nft_zero_shares_rejected() {
+    let ctx = test_context_with_covenants();
+    let token_id = Hash::from_bytes([0x42; 32]);
+    let owner_hash = Hash::from_bytes([0x01; 32]);
+    let content = b"test-content";
+    let frac_asset_id = Output::fraction_asset_id(&token_id);
+
+    let base_nft = make_nft_output(1, owner_hash, token_id, content);
+    let frac_nft_extra =
+        Output::build_fractionalized_extra_data(&base_nft.extra_data, &frac_asset_id, 0);
+    let frac_nft = Output {
+        extra_data: frac_nft_extra,
+        ..base_nft
+    };
+
+    let tx = Transaction {
+        version: 1,
+        tx_type: TxType::FractionalizeNft,
+        inputs: vec![Input::new(Hash::from_bytes([0xAA; 32]), 0)],
+        outputs: vec![
+            frac_nft,
+            make_fraction_token_output(1, owner_hash, frac_asset_id, 1),
+        ],
+        extra_data: Vec::new(),
+    };
+
+    let result = transaction::validate_transaction(&tx, &ctx);
+    assert!(result.is_err(), "should reject zero shares");
+}
+
+#[test]
+fn test_is_fractionalized_detection() {
+    let token_id = Hash::from_bytes([0x42; 32]);
+    let owner_hash = Hash::from_bytes([0x01; 32]);
+    let content = b"test-content";
+
+    let normal_nft = make_nft_output(1, owner_hash, token_id, content);
+    assert!(!normal_nft.is_fractionalized());
+    assert!(normal_nft.fractionalization_metadata().is_none());
+
+    let frac_nft = make_fractionalized_nft_output(1, owner_hash, token_id, content, 1000);
+    assert!(frac_nft.is_fractionalized());
+    let (asset_id, shares) = frac_nft.fractionalization_metadata().unwrap();
+    assert_eq!(shares, 1000);
+    assert_eq!(asset_id, Output::fraction_asset_id(&token_id));
+
+    let stripped = frac_nft.strip_fractionalization_metadata().unwrap();
+    assert_eq!(stripped, normal_nft.extra_data);
+}
+
+#[test]
+fn test_fraction_asset_id_deterministic() {
+    let token_id = Hash::from_bytes([0x42; 32]);
+    let id1 = Output::fraction_asset_id(&token_id);
+    let id2 = Output::fraction_asset_id(&token_id);
+    assert_eq!(id1, id2, "fraction_asset_id must be deterministic");
+
+    let other_token = Hash::from_bytes([0x43; 32]);
+    let id3 = Output::fraction_asset_id(&other_token);
+    assert_ne!(
+        id1, id3,
+        "different token_ids must produce different asset_ids"
+    );
+}

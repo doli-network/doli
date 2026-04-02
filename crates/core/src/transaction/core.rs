@@ -596,7 +596,7 @@ impl Transaction {
         );
         let mut buf = Vec::new();
         for w in witnesses {
-            if w.len() > 65535 {
+            if w.len() >= 65535 {
                 buf.extend_from_slice(&0xFFFFu16.to_le_bytes());
                 buf.extend_from_slice(&(w.len() as u32).to_le_bytes());
             } else {
@@ -627,7 +627,8 @@ impl Transaction {
                 if pos + 4 > data.len() {
                     return None;
                 }
-                let l = u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
+                let l = u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]])
+                    as usize;
                 pos += 4;
                 l
             } else {

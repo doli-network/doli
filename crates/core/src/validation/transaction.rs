@@ -182,6 +182,12 @@ pub fn validate_transaction(
         TxType::LendingWithdraw => {
             super::lending::validate_lending_withdraw(tx)?;
         }
+        TxType::FractionalizeNft => {
+            super::fractionalize::validate_fractionalize_nft(tx)?;
+        }
+        TxType::RedeemNft => {
+            super::fractionalize::validate_redeem_nft(tx)?;
+        }
     }
 
     Ok(())

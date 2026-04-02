@@ -171,6 +171,8 @@ impl From<&Transaction> for TransactionResponse {
             doli_core::TxType::LiquidateLoan => "liquidate_loan",
             doli_core::TxType::LendingDeposit => "lending_deposit",
             doli_core::TxType::LendingWithdraw => "lending_withdraw",
+            doli_core::TxType::FractionalizeNft => "fractionalize_nft",
+            doli_core::TxType::RedeemNft => "redeem_nft",
         };
 
         // Decode covenant witnesses from tx.extra_data (if present)

@@ -78,6 +78,14 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
             });
         }
 
+        // Fractionalized NFTs can ONLY be spent by RedeemNft transactions
+        if utxo.output.is_fractionalized() && tx.tx_type != TxType::RedeemNft {
+            return Err(ValidationError::InvalidTransaction(format!(
+                "input {} is a fractionalized NFT — can only be spent by RedeemNft",
+                i
+            )));
+        }
+
         // Check lock time -- skip for WithdrawalRequest/Exit (they unlock Bond UTXOs)
         if tx.tx_type != TxType::RequestWithdrawal
             && tx.tx_type != TxType::Exit
@@ -545,6 +553,131 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
                     ));
                 }
             }
+        }
+    }
+
+    // -- FractionalizeNft UTXO checks --
+    // Input 0 must be a UniqueAsset (NFT), and it must NOT already be fractionalized.
+    if tx.tx_type == TxType::FractionalizeNft {
+        let first_input = &tx.inputs[0];
+        let nft_utxo = utxo_provider
+            .get_utxo(&first_input.prev_tx_hash, first_input.output_index)
+            .ok_or(ValidationError::OutputNotFound {
+                tx_hash: first_input.prev_tx_hash,
+                output_index: first_input.output_index,
+            })?;
+
+        if nft_utxo.output.output_type != OutputType::NFT {
+            return Err(ValidationError::InvalidFractionalization(
+                "input 0 must be a UniqueAsset (NFT) UTXO".to_string(),
+            ));
+        }
+
+        if nft_utxo.output.is_fractionalized() {
+            return Err(ValidationError::InvalidFractionalization(
+                "input NFT is already fractionalized".to_string(),
+            ));
+        }
+
+        // Verify token_id is preserved from input to output
+        let input_meta = nft_utxo.output.nft_metadata().ok_or_else(|| {
+            ValidationError::InvalidFractionalization(
+                "input 0 has invalid NFT metadata".to_string(),
+            )
+        })?;
+        let output_meta = tx.outputs[0].nft_metadata().ok_or_else(|| {
+            ValidationError::InvalidFractionalization(
+                "output 0 has invalid NFT metadata".to_string(),
+            )
+        })?;
+        if input_meta.0 != output_meta.0 {
+            return Err(ValidationError::InvalidFractionalization(
+                "output 0 token_id does not match input NFT token_id".to_string(),
+            ));
+        }
+    }
+
+    // -- RedeemNft UTXO checks --
+    // Input 0 must be a fractionalized NFT.
+    // Other inputs must include FungibleAsset UTXOs totaling the full supply.
+    if tx.tx_type == TxType::RedeemNft {
+        let first_input = &tx.inputs[0];
+        let nft_utxo = utxo_provider
+            .get_utxo(&first_input.prev_tx_hash, first_input.output_index)
+            .ok_or(ValidationError::OutputNotFound {
+                tx_hash: first_input.prev_tx_hash,
+                output_index: first_input.output_index,
+            })?;
+
+        if nft_utxo.output.output_type != OutputType::NFT {
+            return Err(ValidationError::InvalidRedemption(
+                "input 0 must be a UniqueAsset (NFT) UTXO".to_string(),
+            ));
+        }
+
+        let (frac_asset_id, total_shares) = nft_utxo
+            .output
+            .fractionalization_metadata()
+            .ok_or_else(|| {
+                ValidationError::InvalidRedemption(
+                    "input 0 is not a fractionalized NFT".to_string(),
+                )
+            })?;
+
+        // Sum FungibleAsset inputs with matching fraction_asset_id
+        let mut fraction_total: u64 = 0;
+        for (i, input) in tx.inputs.iter().enumerate().skip(1) {
+            let utxo = utxo_provider
+                .get_utxo(&input.prev_tx_hash, input.output_index)
+                .ok_or(ValidationError::OutputNotFound {
+                    tx_hash: input.prev_tx_hash,
+                    output_index: input.output_index,
+                })?;
+            if utxo.output.output_type == OutputType::FungibleAsset {
+                if let Some((asset_id, _, _)) = utxo.output.fungible_asset_metadata() {
+                    if asset_id == frac_asset_id {
+                        fraction_total = fraction_total
+                            .checked_add(utxo.output.amount)
+                            .ok_or_else(|| ValidationError::AmountOverflow {
+                                context: format!("RedeemNft fraction total at input {}", i),
+                            })?;
+                    }
+                }
+            }
+        }
+
+        if fraction_total != total_shares {
+            return Err(ValidationError::InvalidRedemption(format!(
+                "fraction token total ({}) does not match required total_shares ({})",
+                fraction_total, total_shares
+            )));
+        }
+
+        // No output may be FungibleAsset with the fraction_asset_id
+        for (i, output) in tx.outputs.iter().enumerate() {
+            if output.output_type == OutputType::FungibleAsset {
+                if let Some((asset_id, _, _)) = output.fungible_asset_metadata() {
+                    if asset_id == frac_asset_id {
+                        return Err(ValidationError::InvalidRedemption(format!(
+                            "output {} is a FungibleAsset with the fraction asset_id — all fractions must be burned",
+                            i
+                        )));
+                    }
+                }
+            }
+        }
+
+        // Verify token_id is preserved from input to output
+        let input_meta = nft_utxo.output.nft_metadata().ok_or_else(|| {
+            ValidationError::InvalidRedemption("input 0 has invalid NFT metadata".to_string())
+        })?;
+        let output_meta = tx.outputs[0].nft_metadata().ok_or_else(|| {
+            ValidationError::InvalidRedemption("output 0 has invalid NFT metadata".to_string())
+        })?;
+        if input_meta.0 != output_meta.0 {
+            return Err(ValidationError::InvalidRedemption(
+                "output 0 token_id does not match input NFT token_id".to_string(),
+            ));
         }
     }
 

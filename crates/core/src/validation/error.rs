@@ -288,6 +288,14 @@ pub enum ValidationError {
     #[error("invalid liquidity operation: {0}")]
     InvalidLiquidity(String),
 
+    /// FractionalizeNft validation failed.
+    #[error("invalid fractionalization: {0}")]
+    InvalidFractionalization(String),
+
+    /// RedeemNft validation failed.
+    #[error("invalid redemption: {0}")]
+    InvalidRedemption(String),
+
     /// Input is missing the required public key (post-sig-verification hard fork).
     ///
     /// After `sig_verification_height`, every input MUST include its spender's

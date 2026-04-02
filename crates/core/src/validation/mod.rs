@@ -23,6 +23,7 @@
 
 mod block;
 mod error;
+pub(crate) mod fractionalize;
 pub(crate) mod lending;
 pub(crate) mod pool;
 mod producer;

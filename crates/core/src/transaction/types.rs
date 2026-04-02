@@ -78,6 +78,10 @@ pub enum TxType {
     LendingDeposit = 27,
     /// Withdraw DOLI + interest from lending pool
     LendingWithdraw = 28,
+    /// Lock an NFT and mint fungible fraction tokens
+    FractionalizeNft = 29,
+    /// Burn all fraction tokens and unlock the original NFT
+    RedeemNft = 30,
 }
 
 impl TxType {
@@ -110,6 +114,8 @@ impl TxType {
             26 => Some(Self::LiquidateLoan),
             27 => Some(Self::LendingDeposit),
             28 => Some(Self::LendingWithdraw),
+            29 => Some(Self::FractionalizeNft),
+            30 => Some(Self::RedeemNft),
             _ => None,
         }
     }
