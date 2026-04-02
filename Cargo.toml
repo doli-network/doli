@@ -8,7 +8,7 @@ members = [
 ]
 
 [workspace.package]
-version = "5.4.0"
+version = "5.4.1"
 edition = "2021"
 authors = ["DOLI Network <doli@doli.network>"]
 license = "MIT"
