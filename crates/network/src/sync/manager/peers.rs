@@ -194,6 +194,15 @@ impl SyncManager {
         peer_max.max(self.network.network_tip_height)
     }
 
+    /// Get the peer with the highest height and their best_hash.
+    /// Used by stale tip recovery to request a specific missing block.
+    pub fn best_peer_with_hash(&self) -> Option<(PeerId, u64, crypto::Hash)> {
+        self.peers
+            .iter()
+            .max_by_key(|(_, s)| s.best_height)
+            .map(|(pid, s)| (*pid, s.best_height, s.best_hash))
+    }
+
     /// Get the LOWEST height among all connected peers
     /// Used for fork detection: if we're far ahead of ANY peer, something is wrong
     /// Returns None if no peers (can't determine lowest)

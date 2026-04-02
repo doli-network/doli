@@ -591,6 +591,28 @@ impl Node {
                 sync_fails, self.consecutive_fork_blocks, sync.sync_state_name(),
                 self.epoch_bond_snapshot_epoch, snap_bonds, snap_producers
             );
+
+            // INC-I-020: Stale tip recovery.
+            // The sync engine ignores gaps of 1-2 blocks (assumes gossip will deliver).
+            // But if gossip missed the block (reconnection, TTL expiry), the gap becomes
+            // permanent — the node is "Idle" but stuck behind. This safety net runs every
+            // 30s and requests the missing block directly from the best peer.
+            let local_h = cs.best_height;
+            let gap = best_peer_h.saturating_sub(local_h);
+            if (1..=2).contains(&gap) && sync.sync_state_name() == "Idle" && peer_count > 0 {
+                if let Some((peer_id, _peer_h, peer_hash)) = sync.best_peer_with_hash() {
+                    warn!(
+                        "[STALE_TIP] Behind by {} block(s) (local={}, peer={}). Requesting hash={:.8} from {}",
+                        gap, local_h, best_peer_h, peer_hash, peer_id
+                    );
+                    drop(sync); // release read lock before write
+                    drop(cs);
+                    let request = SyncRequest::GetBlockByHash { hash: peer_hash };
+                    if let Some(ref net) = self.network {
+                        let _ = net.request_sync(peer_id, request).await;
+                    }
+                }
+            }
         }
 
         Ok(())
