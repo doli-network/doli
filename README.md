@@ -34,19 +34,41 @@ DOLI is a cryptocurrency where the scarce resource is **time** — the one resou
 
 ## Quick Start
 
+A basic VPS with 2 cores, 2 GB RAM, and 20 GB SSD (~$4/month) is all you need.
+
 ```bash
-# Install
-curl -sSf https://doli.network/install.sh | bash
+# 0. Remove previous installation (if any)
+sudo doli service stop 2>/dev/null; sudo rm -f /usr/bin/doli /usr/bin/doli-node
 
-# Run a node
-doli-node run
+# 1. Install
+curl -sSfL https://doli.network/install.sh | sudo sh
 
-# Create a wallet
-doli wallet new
+# 2. Create wallet + BLS key
+doli init
 
-# Check balance
+# 3. Sync with the network
+sudo doli snap
+
+# 4. Start the node
+sudo doli service install
+
+# 5. Verify your node is synced
+doli chain
+
+# 6. Request 10.01 DOLI from the faucet
+#    Open a faucet request — paste your address (doli info) and doli chain output
+#    Wait ~7 minutes for the bot to process
+
+# 7. Verify you received the DOLI
 doli balance
+
+# 8. Register as producer
+doli producer register --bonds 1
 ```
+
+**Permission model:** Wallet commands (`doli send`, `doli balance`) never need sudo. System commands (`doli service install`, `doli upgrade`, `doli snap`) do.
+
+Full guide: [doli.network/guide.html](https://doli.network/guide.html)
 
 ### Build from Source
 
@@ -54,7 +76,7 @@ doli balance
 git clone https://github.com/doli-network/doli.git
 cd doli
 cargo build --release
-./target/release/doli-node run
+sudo cp target/release/doli-node target/release/doli /usr/bin/
 ```
 
 ## Architecture
