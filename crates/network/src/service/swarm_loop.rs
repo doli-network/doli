@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use libp2p::gossipsub::IdentTopic;
-use libp2p::{PeerId, Swarm};
+use libp2p::{Multiaddr, PeerId, Swarm};
 use tokio::sync::{mpsc, RwLock};
 use tracing::warn;
 
@@ -101,6 +101,14 @@ pub(super) async fn run_swarm(
     let mut discv5_refresh = tokio::time::interval(Duration::from_secs(30));
     discv5_refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let discv5_enabled = discv5_service.is_some();
+
+    // Discv5 dial retry queue: peers discovered via UDP that failed initial TCP dial.
+    // Each entry: (multiaddr, attempts_remaining, next_retry_at).
+    // Backoff: 5s → 10s → 20s. Max 3 retries. Closes the 9/10 → 10/10 gap where
+    // a peer is discovered before it's ready to accept TCP connections.
+    let mut discv5_retry_queue: Vec<(Multiaddr, u8, Instant)> = Vec::new();
+    let mut discv5_retry_tick = tokio::time::interval(Duration::from_secs(5));
+    discv5_retry_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     // TX batching: buffer outbound transactions and flush every 100ms.
     // When tx_announce_enabled, we batch hashes (32 bytes each) instead of full txs.
@@ -317,11 +325,22 @@ pub(super) async fn run_swarm(
                         if let Some(multiaddr) = crate::discovery::discv5_service::Discv5Service::enr_to_multiaddr(&enr) {
                             let peer_count = peers.read().await.len();
                             if peer_count < config.max_peers {
-                                tracing::debug!(
-                                    "[DISCV5] Discovered peer via UDP — dialing TCP {}",
-                                    multiaddr
-                                );
-                                let _ = swarm.dial(multiaddr);
+                                // Check if already in retry queue (avoid duplicates)
+                                let already_queued = discv5_retry_queue.iter().any(|(addr, _, _)| addr == &multiaddr);
+                                if !already_queued {
+                                    tracing::debug!(
+                                        "[DISCV5] Discovered peer via UDP — dialing TCP {}",
+                                        multiaddr
+                                    );
+                                    let _ = swarm.dial(multiaddr.clone());
+                                    // Queue retry: if this dial fails (peer not ready),
+                                    // retry 3 times with 5s/10s/20s backoff.
+                                    discv5_retry_queue.push((
+                                        multiaddr,
+                                        3, // attempts remaining
+                                        Instant::now() + Duration::from_secs(5),
+                                    ));
+                                }
                             }
                         }
                     }
@@ -352,6 +371,64 @@ pub(super) async fn run_swarm(
                         );
                     }
                 }
+            }
+
+            // Discv5 dial retry: re-attempt TCP connections to peers discovered via UDP.
+            // Handles the edge case where a peer is discovered before it's ready to
+            // accept TCP (e.g., still bootstrapping its own gossipsub mesh).
+            _ = discv5_retry_tick.tick(), if discv5_enabled && !discv5_retry_queue.is_empty() => {
+                let now = Instant::now();
+                let peer_count = peers.read().await.len();
+                let connected_addrs: std::collections::HashSet<String> = {
+                    let p = peers.read().await;
+                    p.values().map(|info| info.address.clone()).collect()
+                };
+
+                let mut i = 0;
+                while i < discv5_retry_queue.len() {
+                    let (ref addr, attempts, next_at) = discv5_retry_queue[i];
+
+                    // Already connected — remove from queue
+                    if connected_addrs.contains(&addr.to_string()) {
+                        tracing::debug!("[DISCV5] Retry queue: {} connected, removing", addr);
+                        discv5_retry_queue.swap_remove(i);
+                        continue;
+                    }
+
+                    // Not time yet
+                    if now < next_at {
+                        i += 1;
+                        continue;
+                    }
+
+                    // No attempts left — drop
+                    if attempts == 0 {
+                        tracing::debug!("[DISCV5] Retry queue: {} exhausted retries, dropping", addr);
+                        discv5_retry_queue.swap_remove(i);
+                        continue;
+                    }
+
+                    // Peer table full — skip all retries this tick
+                    if peer_count >= config.max_peers {
+                        break;
+                    }
+
+                    // Retry dial with exponential backoff: 5s → 10s → 20s
+                    let backoff = Duration::from_secs(5 * (1 << (3 - attempts)));
+                    tracing::debug!(
+                        "[DISCV5] Retry dial {} (attempt {}/3, next backoff {:?})",
+                        addr, 4 - attempts, backoff
+                    );
+                    let _ = swarm.dial(addr.clone());
+                    discv5_retry_queue[i].1 -= 1; // decrement attempts
+                    discv5_retry_queue[i].2 = now + backoff; // set next retry time
+                    i += 1;
+                }
+
+                // Purge stale entries older than 2 minutes (safety net)
+                discv5_retry_queue.retain(|(_, attempts, next_at)| {
+                    *attempts > 0 || next_at.elapsed() < Duration::from_secs(120)
+                });
             }
         }
     }
