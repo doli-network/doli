@@ -425,6 +425,10 @@ pub(crate) struct NetworkState {
     pub last_progress_log: Instant,
     /// Idle-behind retry counter
     pub idle_behind_retries: u32,
+    /// When network_tip_height first became unsupported by any connected peer.
+    /// After 42s (~4 slots) without a peer within 5 blocks of the tip, the tip decays
+    /// to the actual peer max — preventing permanent phantom sync gaps.
+    pub tip_unsupported_since: Option<Instant>,
 }
 
 impl NetworkState {
@@ -439,6 +443,7 @@ impl NetworkState {
             blocks_applied: 0,
             last_progress_log: Instant::now(),
             idle_behind_retries: 0,
+            tip_unsupported_since: None,
         }
     }
 }
