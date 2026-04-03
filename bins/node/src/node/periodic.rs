@@ -250,6 +250,36 @@ impl Node {
             }
         }
 
+        // DISCV5 SEED FALLBACK: If discv5 is active but after 60s we still have
+        // 0 peers, reconnect to TCP seeds as safety net. This handles the case where
+        // no discv5 bootnodes are reachable (misconfigured ENR, UDP blocked, etc.).
+        // The seed is a last resort, not the primary discovery mechanism.
+        if !self.config.no_discv5 && self.seeds_released {
+            let peer_count = self.sync_manager.read().await.peer_count();
+            if peer_count == 0 {
+                if let Some(first) = self.first_peer_connected {
+                    // 60s since we last had peers — reconnect to seeds
+                    if first.elapsed() > Duration::from_secs(60)
+                        && self
+                            .last_peer_redial
+                            .map(|t| t.elapsed() > Duration::from_secs(60))
+                            .unwrap_or(true)
+                    {
+                        warn!(
+                            "[DISCV5_FALLBACK] 0 peers for >60s with discv5 active — reconnecting to {} TCP seed(s)",
+                            self.seed_peer_ids.len()
+                        );
+                        if let Some(ref net) = self.network {
+                            for addr in &self.config.bootstrap_nodes {
+                                let _ = net.connect(addr).await;
+                            }
+                        }
+                        self.last_peer_redial = Some(Instant::now());
+                    }
+                }
+            }
+        }
+
         // STALE CHAIN DETECTION (Ethereum-style):
         // If we haven't received any block (gossip or sync) for 3 slots, something is wrong.
         // Diagnose: no peers → re-bootstrap Kademlia; peers exist → aggressive status requests.
@@ -631,7 +661,8 @@ impl Node {
             drop(sync);
 
             let has_enough_peers = peer_count >= 5;
-            let receiving_blocks = net_tip > 0 && local_h > 0 && net_tip >= local_h.saturating_sub(2);
+            let receiving_blocks =
+                net_tip > 0 && local_h > 0 && net_tip >= local_h.saturating_sub(2);
             let is_relay = self.config.relay_server;
 
             if has_enough_peers && receiving_blocks && !is_relay {
