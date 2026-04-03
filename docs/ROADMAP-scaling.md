@@ -206,32 +206,159 @@ Ethereum has the same BLS math but uses it for 128 validators because its archit
 - UTXO model
 - BLS aggregation
 
+## Network Parameters
+
+The tier system parameters live in `ConsensusParams` (same as all other consensus params), with per-network values for realistic testing:
+
+### Parameter Table
+
+| Parameter | Mainnet | Testnet | Devnet | Description |
+|-----------|---------|---------|--------|-------------|
+| `active_producers_cap` | 100 | 10 | 5 | Maximum producers in the active list (round-robin) |
+| `min_bonds_for_active` | 1 | 1 | 1 | Minimum bonds to be eligible for active list |
+| `active_list_activation` | 100 | 10 | 5 | Producer count that triggers tier separation |
+| `promotion_seed_domain` | `DOLI_PROMO_V1` | same | same | BLAKE3 domain for deterministic random promotion |
+
+### Activation Logic
+
+The tier system activates automatically when total registered producers reaches `active_list_activation`:
+
+```
+if registered_producers <= active_list_activation:
+    # Current behavior — all producers in round-robin
+    active_list = all_producers
+else:
+    # Tier system — top N by score in round-robin, rest are attestors
+    active_list = top(active_producers_cap, by=bonds × seniority_weight)
+```
+
+**Before activation:** The network operates exactly as it does today. No code path changes. This allows the tier system to be deployed to mainnet immediately without any effect until the network grows.
+
+**After activation:** The scheduler filters to the active list. Attestors continue receiving rewards. Vacant slots are filled by random promotion.
+
+### Initial Active List Selection
+
+When the tier system first activates, the initial list is the top `active_producers_cap` producers sorted by:
+
+```
+score = bonds × seniority_weight
+```
+
+Where `seniority_weight = 1.0 + min(years_active, 4) × 0.75` (same formula used for fork choice).
+
+This rewards long-term committed operators over newcomers who might register many nodes just before activation. The seniority multiplier means a producer running for 4 years with 10 bonds scores higher than a new producer with 30 bonds.
+
+### Random Promotion Mechanism
+
+When a slot opens in the active list (producer dropped, deregistered, slashed):
+
+```rust
+// Deterministic, verifiable by all nodes
+let seed = BLAKE3("DOLI_PROMO_V1" || epoch_number || state_root);
+let eligible: Vec<ProducerInfo> = attestors
+    .filter(|p| p.attestation_rate >= 90% && p.bonds >= min_bonds_for_active)
+    .collect();
+let promoted_index = u64::from_le_bytes(seed[0..8]) % eligible.len();
+let promoted = eligible[promoted_index];
+```
+
+Every node computes the same result from the same chain state. No randomness oracle, no VRF, no external input.
+
+### Testnet Configuration
+
+Testnet uses `active_producers_cap = 10` to allow testing tier rotation with a small producer set:
+
+- 10 producers triggers activation
+- Active list of 10 with remaining as attestors
+- Fast epoch (36 slots, ~6 min) means promotion/demotion happens every 6 minutes
+- Allows testing the full lifecycle: activation → promotion → demotion → re-promotion in under 1 hour
+
+### Devnet Configuration
+
+Devnet uses `active_producers_cap = 5` with 1-second slots:
+
+- 5 producers triggers activation
+- 1-minute epochs with 30-second reward epochs
+- Full tier lifecycle testable in ~5 minutes
+- Ideal for integration tests and CI
+
+### Era-Based Scaling
+
+The `active_producers_cap` can grow with eras as the network matures:
+
+| Era | Mainnet Cap | Testnet Cap | Block interval per producer |
+|-----|-------------|-------------|---------------------------|
+| 1   | 100         | 10          | ~17 min                   |
+| 2   | 150         | 15          | ~25 min                   |
+| 3   | 200         | 20          | ~27 min (with 8s slots)   |
+| 4   | 250         | 25          | ~25 min (with 6s slots)   |
+
+Formula: `active_producers_cap(era) = base_cap + (era × 50)`, capped at 500.
+
+Slot duration can decrease as global network infrastructure improves, keeping block intervals manageable even with a larger active list.
+
+### ConsensusParams Integration
+
+```rust
+// crates/core/src/consensus/params.rs (proposed addition)
+pub struct ConsensusParams {
+    // ... existing fields ...
+
+    /// Maximum producers in the active production list
+    pub active_producers_cap: u32,
+    /// Minimum bonds required for active list eligibility
+    pub min_bonds_for_active: u32,
+    /// Producer count that triggers tier system activation
+    pub active_list_activation: u32,
+}
+
+impl ConsensusParams {
+    pub fn mainnet() -> Self {
+        Self {
+            // ... existing fields ...
+            active_producers_cap: 100,
+            min_bonds_for_active: 1,
+            active_list_activation: 100,
+        }
+    }
+
+    pub fn testnet() -> Self {
+        Self {
+            // ... existing fields ...
+            active_producers_cap: 10,
+            min_bonds_for_active: 1,
+            active_list_activation: 10,
+        }
+    }
+
+    pub fn devnet() -> Self {
+        Self {
+            // ... existing fields ...
+            active_producers_cap: 5,
+            min_bonds_for_active: 1,
+            active_list_activation: 5,
+        }
+    }
+}
+```
+
 ## Phases
 
 ### Phase 1: Current (34 producers) — Live
 
-All producers in active list. No distinction. Network grows organically.
+All producers in active list. No distinction. Network grows organically. Tier system code can be deployed now — it activates only when producer count reaches `active_list_activation`.
 
 ### Phase 2: Active List (at ~100 producers) — Future
 
-Activate the 100-producer active list when the network approaches that size. Initial list: top 100 by `bonds × seniority_weight`. Random replacement at epoch boundary for dropouts.
+Tier system activates automatically. Top 100 by `bonds × seniority_weight` become the active list. Remaining producers become attestors with identical rewards. Random promotion fills vacant slots.
 
 ### Phase 3: Delegation (at ~500 participants) — Future
 
 Enable Tier 3 delegation for participants who don't want to run infrastructure. 90% rewards to delegator, 10% to operator. Operators compete for delegation by offering reliability and reputation.
 
-### Phase 4: Dynamic List Size (at ~1,000+ producers) — Future
+### Phase 4: Dynamic Cap Scaling (at ~1,000+ producers) — Future
 
-The active list size could increase with eras:
-
-| Era | Active List | Slot Duration | Block interval |
-|-----|-------------|---------------|---------------|
-| 1   | 100         | 10s           | ~17 min       |
-| 2   | 150         | 10s           | ~25 min       |
-| 3   | 200         | 8s            | ~27 min       |
-| 4   | 250         | 6s            | ~25 min       |
-
-Slot duration decreases as network infrastructure matures, keeping block intervals manageable even with a larger active list.
+`active_producers_cap` increases per era. Slot duration decreases as network infrastructure matures. The cap grows from 100 to 500 over 4 eras.
 
 ## Why This Works
 
