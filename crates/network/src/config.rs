@@ -60,6 +60,15 @@ pub struct NetworkConfig {
     /// to run Kademlia discovery, but the seed's peer table may be full.
     /// Default: same as max_peers.
     pub bootstrap_slots: usize,
+    /// Enable Discv5 UDP discovery (default: true).
+    /// When enabled, runs a UDP service on `discv5_port` for stateless peer
+    /// discovery. Discovered peers are fed to libp2p for TCP connections.
+    pub enable_discv5: bool,
+    /// UDP port for Discv5 discovery (default: listen_addr.port() + 1).
+    /// Convention: TCP=30300, UDP=30301.
+    pub discv5_port: Option<u16>,
+    /// Discv5 bootnode ENR strings for UDP peer discovery.
+    pub bootnode_enrs: Vec<String>,
 }
 
 impl Default for NetworkConfig {
@@ -92,6 +101,9 @@ impl NetworkConfig {
             seed_mode: false,
             tx_announce_enabled: false,
             bootstrap_slots: 50, // Default; overridden from max_peers in node startup
+            enable_discv5: true,
+            discv5_port: None, // Default: listen_addr.port() + 1
+            bootnode_enrs: Vec::new(),
         }
     }
 

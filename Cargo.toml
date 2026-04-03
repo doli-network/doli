@@ -56,6 +56,7 @@ tokio = { version = "1.35", features = ["full"] }
 
 # Networking
 libp2p = { version = "0.53", features = ["tcp", "dns", "noise", "yamux", "gossipsub", "kad", "identify", "request-response", "tokio", "macros", "relay", "dcutr", "autonat"] }
+discv5 = "0.10"
 futures = "0.3"
 
 # HTTP server (for RPC)

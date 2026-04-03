@@ -91,6 +91,20 @@ pub(crate) enum Commands {
         #[arg(long)]
         bootstrap: Vec<String>,
 
+        /// Discv5 bootnode ENR(s) for UDP peer discovery.
+        /// Can be specified multiple times. ENRs are base64-encoded strings.
+        /// Discovered peers are dialed via TCP for gossip connections.
+        #[arg(long)]
+        bootnode_enr: Vec<String>,
+
+        /// Disable Discv5 UDP discovery (use TCP Kademlia only).
+        #[arg(long)]
+        no_discv5: bool,
+
+        /// UDP port for Discv5 discovery (default: p2p_port + 1).
+        #[arg(long)]
+        discv5_port: Option<u16>,
+
         /// Disable DHT discovery (only connect to explicitly provided bootstrap nodes)
         /// Use this to isolate test networks from external peers
         #[arg(long)]
