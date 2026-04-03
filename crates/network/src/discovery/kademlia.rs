@@ -25,12 +25,3 @@ pub fn new_kademlia(local_peer_id: PeerId) -> Kademlia<MemoryStore> {
     kad.set_mode(Some(libp2p::kad::Mode::Server));
     kad
 }
-
-/// Events emitted by the discovery layer
-#[derive(Debug)]
-pub enum DiscoveryEvent {
-    /// A new peer was discovered
-    PeerDiscovered(PeerId),
-    /// Peer discovery completed a round
-    DiscoveryComplete,
-}

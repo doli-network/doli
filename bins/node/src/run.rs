@@ -26,6 +26,9 @@ pub(crate) async fn run_node(
     rpc_bind: Option<String>,
     metrics_port: u16,
     bootstrap: Vec<String>,
+    bootnode_enrs: Vec<String>,
+    no_discv5: bool,
+    discv5_port: Option<u16>,
     no_dht: bool,
     relay_server: bool,
     no_snap_sync: bool,
@@ -179,6 +182,13 @@ pub(crate) async fn run_node(
     // Add explicit bootstrap(s) after clearing defaults (so they're preserved with --no-dht)
     for addr in &bootstrap {
         config.bootstrap_nodes.push(addr.clone());
+    }
+    // Discv5 UDP discovery config
+    config.bootnode_enrs = bootnode_enrs;
+    config.no_discv5 = no_discv5;
+    config.discv5_port = discv5_port;
+    if no_discv5 {
+        info!("Discv5 UDP discovery disabled — using TCP Kademlia only");
     }
 
     // Start metrics server

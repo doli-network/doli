@@ -82,6 +82,7 @@ pub mod sync;
 pub mod transport;
 
 pub use config::NetworkConfig;
+pub use discovery::discv5_service::{Discv5Config, Discv5Service};
 pub use nat::{NatConfig, NatInfo, NatStatus};
 pub use rate_limit::{RateLimitConfig, RateLimiter};
 pub use scoring::{Infraction, PeerScore, PeerScorer, PeerScorerConfig, ScorerStats};

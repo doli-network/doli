@@ -159,6 +159,9 @@ async fn main() -> Result<()> {
             rpc_bind,
             metrics_port,
             bootstrap,
+            bootnode_enr,
+            no_discv5,
+            discv5_port,
             no_dht,
             relay_server,
             no_snap_sync,
@@ -191,6 +194,9 @@ async fn main() -> Result<()> {
                 rpc_bind,
                 metrics_port,
                 bootstrap,
+                bootnode_enr,
+                no_discv5,
+                discv5_port,
                 no_dht,
                 relay_server,
                 no_snap_sync,
@@ -304,6 +310,9 @@ async fn main() -> Result<()> {
                 None, // rpc_bind
                 9000,
                 vec![],
+                vec![], // bootnode_enr
+                false,  // no_discv5
+                None,   // discv5_port
                 false,
                 false, // relay_server
                 false, // no_snap_sync

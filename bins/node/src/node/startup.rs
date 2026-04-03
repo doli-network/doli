@@ -250,6 +250,11 @@ impl Node {
             }
         }
 
+        // Discv5 UDP discovery
+        network_config.enable_discv5 = !self.config.no_discv5;
+        network_config.discv5_port = self.config.discv5_port;
+        network_config.bootnode_enrs = self.config.bootnode_enrs.clone();
+
         info!(
             "Starting network service on {} (network={}, id={})",
             listen_addr,

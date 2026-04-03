@@ -842,6 +842,9 @@ impl Node {
             no_snap_sync: false,
             seed_mode: false,
             auto_checkpoint_interval: None,
+            bootnode_enrs: Vec::new(),
+            no_discv5: true,
+            discv5_port: None,
         };
 
         Ok(Self {

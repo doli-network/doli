@@ -29,7 +29,7 @@ use std::time::Duration;
 
 use libp2p::{autonat, dcutr, relay, Multiaddr, PeerId, Swarm};
 use tokio::sync::{mpsc, RwLock};
-use tracing::info;
+use tracing::{info, warn};
 
 use doli_core::{ProducerAnnouncement, ProducerBloomFilter, Transaction};
 
@@ -295,6 +295,53 @@ impl NetworkService {
             }
         }
 
+        // Start Discv5 UDP discovery service (if enabled)
+        let (discv5_events, discv5_svc) = if config.enable_discv5 {
+            let tcp_port = config.listen_addr.port();
+            let udp_port = config.discv5_port.unwrap_or(tcp_port + 1);
+
+            let discv5_config = crate::discovery::discv5_service::Discv5Config {
+                udp_port,
+                tcp_port,
+                external_ip: config.external_address.as_ref().and_then(|addr| {
+                    addr.iter().find_map(|p| match p {
+                        libp2p::multiaddr::Protocol::Ip4(ip) if !ip.is_unspecified() => Some(ip),
+                        _ => None,
+                    })
+                }),
+                network_id: config.network_id,
+                genesis_hash: config.genesis_hash,
+                bootnode_enrs: config.bootnode_enrs.clone(),
+            };
+
+            match crate::discovery::discv5_service::Discv5Service::new(&keypair, discv5_config)
+                .await
+            {
+                Ok(svc) => {
+                    match svc.event_stream().await {
+                        Ok(rx) => {
+                            let svc = std::sync::Arc::new(svc);
+                            info!("[DISCV5] ENR: {}", svc.local_enr_base64());
+                            (Some(rx), Some(svc))
+                        }
+                        Err(e) => {
+                            warn!("[DISCV5] Failed to get event stream: {} — continuing without discv5", e);
+                            (None, None)
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        "[DISCV5] Failed to start: {} — continuing without discv5",
+                        e
+                    );
+                    (None, None)
+                }
+            }
+        } else {
+            (None, None)
+        };
+
         // Spawn the swarm event loop
         let peers_clone = peers.clone();
         let event_tx_clone = event_tx.clone();
@@ -309,6 +356,8 @@ impl NetworkService {
                 peers_clone,
                 config_clone,
                 peer_cache_path,
+                discv5_events,
+                discv5_svc,
             )
             .await;
         });

@@ -28,6 +28,7 @@ use super::swarm_events::handle_swarm_event;
 use super::types::{NetworkCommand, NetworkEvent};
 
 /// Run the swarm event loop
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn run_swarm(
     mut swarm: Swarm<DoliBehaviour>,
     mut command_rx: mpsc::Receiver<NetworkCommand>,
@@ -35,6 +36,8 @@ pub(super) async fn run_swarm(
     peers: Arc<RwLock<HashMap<PeerId, PeerInfo>>>,
     config: NetworkConfig,
     peer_cache_path: Option<PathBuf>,
+    mut discv5_events: Option<mpsc::Receiver<discv5::Event>>,
+    discv5_service: Option<std::sync::Arc<crate::discovery::discv5_service::Discv5Service>>,
 ) {
     // Periodic DHT refresh: re-run Kademlia bootstrap every 60s so that peers
     // discover each other through shared bootstrap nodes. Without this, a node
@@ -93,6 +96,11 @@ pub(super) async fn run_swarm(
     // without requiring lsof or external monitoring.
     let mut conn_budget_log = tokio::time::interval(Duration::from_secs(60));
     conn_budget_log.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    // Discv5 random walk timer: discover new peers every 30s via UDP
+    let mut discv5_refresh = tokio::time::interval(Duration::from_secs(30));
+    discv5_refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let discv5_enabled = discv5_service.is_some();
 
     // TX batching: buffer outbound transactions and flush every 100ms.
     // When tx_announce_enabled, we batch hashes (32 bytes each) instead of full txs.
@@ -280,6 +288,69 @@ pub(super) async fn run_swarm(
                         "[MEM-CONN-BUDGET] HIGH EVICTION CHURN: {} evictions in last 60s — possible evict/reconnect loop",
                         recent_evictions
                     );
+                }
+            }
+
+            // Discv5 UDP discovery events: discovered peers get dialed via TCP
+            Some(event) = async {
+                if let Some(ref mut rx) = discv5_events {
+                    rx.recv().await
+                } else {
+                    // No discv5 — suspend this branch forever
+                    std::future::pending::<Option<discv5::Event>>().await
+                }
+            }, if discv5_enabled => {
+                match event {
+                    discv5::Event::Discovered(enr) => {
+                        // Check network compatibility
+                        if let Some(ref svc) = discv5_service {
+                            if !svc.is_same_network(&enr) {
+                                tracing::debug!(
+                                    "[DISCV5] Ignoring peer {} — different network",
+                                    enr.node_id()
+                                );
+                                continue;
+                            }
+                        }
+
+                        // Extract TCP multiaddr and dial
+                        if let Some(multiaddr) = crate::discovery::discv5_service::Discv5Service::enr_to_multiaddr(&enr) {
+                            let peer_count = peers.read().await.len();
+                            if peer_count < config.max_peers {
+                                tracing::debug!(
+                                    "[DISCV5] Discovered peer via UDP — dialing TCP {}",
+                                    multiaddr
+                                );
+                                let _ = swarm.dial(multiaddr);
+                            }
+                        }
+                    }
+                    discv5::Event::SessionEstablished(enr, socket) => {
+                        tracing::debug!(
+                            "[DISCV5] Session established: {} at {}",
+                            enr.node_id(),
+                            socket
+                        );
+                    }
+                    discv5::Event::SocketUpdated(addr) => {
+                        tracing::info!("[DISCV5] External address updated: {}", addr);
+                    }
+                    _ => {}
+                }
+            }
+
+            // Discv5 periodic random walk: discover new peers via UDP every 30s
+            _ = discv5_refresh.tick(), if discv5_enabled => {
+                if let Some(ref svc) = discv5_service {
+                    let peer_count = peers.read().await.len();
+                    if peer_count < config.max_peers {
+                        tokio::spawn(svc.find_random_peers());
+                    } else {
+                        tracing::debug!(
+                            "[DISCV5] Skipping random walk — peer table full ({}/{})",
+                            peer_count, config.max_peers
+                        );
+                    }
                 }
             }
         }
