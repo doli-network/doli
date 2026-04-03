@@ -42,6 +42,11 @@ pub struct NetworkConfig {
     pub nat_config: NatConfig,
     /// External address to advertise (e.g., public IP for multi-node hosts)
     pub external_address: Option<Multiaddr>,
+    /// Seed mode: auto-disconnect peers after DHT exchange (SEED_PEER_TTL).
+    /// Seeds are bootstrap points — they accept connections, share DHT routing
+    /// tables, and disconnect. Not permanent gossip mesh participants.
+    /// Enabled automatically when relay_server is true.
+    pub seed_mode: bool,
     /// Enable transaction announce-request protocol (EIP-4938 style).
     /// When true, nodes broadcast tx hashes instead of full txs via gossipsub,
     /// and peers fetch missing transactions via the txfetch request-response protocol.
@@ -84,6 +89,7 @@ impl NetworkConfig {
             gossip_lazy: 12,
             nat_config: NatConfig::default(),
             external_address: None,
+            seed_mode: false,
             tx_announce_enabled: false,
             bootstrap_slots: 50, // Default; overridden from max_peers in node startup
         }

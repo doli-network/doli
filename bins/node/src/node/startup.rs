@@ -231,6 +231,15 @@ impl Node {
         // NAT traversal: enable relay server if configured (for public/bootstrap nodes)
         if self.config.relay_server {
             network_config.nat_config = network::NatConfig::relay_server();
+            // Seeds are bootstrap points, not permanent hubs.
+            // Accept up to 100K peers in the table — connections are temporary
+            // (auto-disconnected after DHT exchange via SEED_PEER_TTL).
+            network_config.max_peers = 100_000;
+            network_config.seed_mode = true;
+            info!(
+                "[SEED] Relay server mode: max_peers={} (bootstrap point, temporary connections)",
+                network_config.max_peers
+            );
         }
 
         // External address: advertise a specific public address to peers
