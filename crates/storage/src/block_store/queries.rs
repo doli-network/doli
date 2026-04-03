@@ -69,7 +69,10 @@ impl BlockStore {
             None => return Ok(None),
         };
         if bytes.len() != 8 {
-            return Err(StorageError::Serialization("invalid height length".into()));
+            return Err(StorageError::Serialization(format!(
+                "[STOR022] invalid height length: expected 8 bytes, got {}",
+                bytes.len()
+            )));
         }
         let mut arr = [0u8; 8];
         arr.copy_from_slice(&bytes);
@@ -86,7 +89,10 @@ impl BlockStore {
         };
 
         if bytes.len() != 32 {
-            return Err(StorageError::Serialization("invalid hash length".into()));
+            return Err(StorageError::Serialization(format!(
+                "[STOR023] invalid hash length: expected 32 bytes, got {}",
+                bytes.len()
+            )));
         }
 
         let mut arr = [0u8; 32];
@@ -102,9 +108,10 @@ impl BlockStore {
             None => return Ok(None),
         };
         if bytes.len() != 8 {
-            return Err(StorageError::Serialization(
-                "invalid tx_index height length".into(),
-            ));
+            return Err(StorageError::Serialization(format!(
+                "[STOR024] invalid tx_index height length: expected 8 bytes, got {}",
+                bytes.len()
+            )));
         }
         let mut arr = [0u8; 8];
         arr.copy_from_slice(&bytes);
@@ -192,7 +199,10 @@ impl BlockStore {
         };
 
         if bytes.len() != 32 {
-            return Err(StorageError::Serialization("invalid hash length".into()));
+            return Err(StorageError::Serialization(format!(
+                "[STOR025] invalid slot hash length: expected 32 bytes, got {}",
+                bytes.len()
+            )));
         }
 
         let mut arr = [0u8; 32];

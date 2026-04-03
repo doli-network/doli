@@ -195,7 +195,7 @@ impl InMemoryUtxoStore {
                 }
                 None => {
                     return Err(StorageError::NotFound(format!(
-                        "UTXO not found: {}:{}",
+                        "[STOR026] UTXO not found in memory: {}:{}",
                         input.prev_tx_hash, input.output_index
                     )));
                 }

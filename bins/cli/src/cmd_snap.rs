@@ -223,9 +223,14 @@ pub(crate) async fn cmd_snap(
     let ps_bytes = hex::decode(ps_hex)?;
 
     let computed =
-        storage::snapshot::compute_state_root_from_bytes(&cs_bytes, &utxo_bytes, &ps_bytes);
+        storage::snapshot::compute_state_root_from_bytes(&cs_bytes, &utxo_bytes, &ps_bytes)
+            .map_err(|e| anyhow::anyhow!("INTEGRITY: Snapshot deserialization failed: {}", e))?;
     if computed.to_hex() != snap_root_str {
-        anyhow::bail!("INTEGRITY: Recomputed state root does not match. Snapshot corrupted.");
+        anyhow::bail!(
+            "INTEGRITY: Recomputed state root does not match (computed={}, expected={}). Snapshot corrupted.",
+            &computed.to_hex()[..16],
+            &snap_root_str[..16.min(snap_root_str.len())]
+        );
     }
     println!("  Verified (root confirmed by seeds at h={})", final_height);
     let height = final_height;

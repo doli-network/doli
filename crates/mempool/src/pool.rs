@@ -41,8 +41,17 @@ pub enum MempoolError {
     #[error("missing input: {0}:{1}")]
     MissingInput(Hash, u32),
 
-    #[error("double spend with mempool transaction")]
-    DoubleSpend,
+    #[error(
+        "double spend: outpoint {tx_hash}:{output_index} already spent by mempool tx {spending_tx}"
+    )]
+    DoubleSpend {
+        /// Transaction hash of the output being double-spent.
+        tx_hash: crypto::Hash,
+        /// Output index within that transaction.
+        output_index: u32,
+        /// Hash of the mempool transaction that already spends this output.
+        spending_tx: crypto::Hash,
+    },
 }
 
 /// Transaction mempool
@@ -137,7 +146,7 @@ impl Mempool {
                         Some(pk) => pk,
                         None => {
                             return Err(MempoolError::InvalidTransaction(format!(
-                                "input {} missing public_key (required at height >= {})",
+                                "[MPTX001] input {} missing public_key (required at height >= {})",
                                 i, sig_height,
                             )));
                         }
@@ -147,15 +156,15 @@ impl Mempool {
                         crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, pk.as_bytes());
                     if expected != actual {
                         return Err(MempoolError::InvalidTransaction(format!(
-                            "input {} pubkey hash mismatch",
-                            i,
+                            "[MPTX002] input {} pubkey hash mismatch (expected={}, got={})",
+                            i, expected, actual,
                         )));
                     }
                     let signing_hash = tx.signing_message_for_input(i);
                     if crypto::signature::verify_hash(&signing_hash, &input.signature, pk).is_err()
                     {
                         return Err(MempoolError::InvalidTransaction(format!(
-                            "input {} invalid signature",
+                            "[MPTX003] input {} invalid signature",
                             i,
                         )));
                     }
@@ -167,20 +176,22 @@ impl Mempool {
                         .map(|(cond, _consumed)| cond)
                         .map_err(|e| {
                             MempoolError::InvalidTransaction(format!(
-                                "input {} invalid condition: {}",
+                                "[MPTX004] input {} invalid condition: {}",
                                 i, e
                             ))
                         })?;
                     if condition.ops_count() > MAX_CONDITION_OPS {
                         return Err(MempoolError::InvalidTransaction(format!(
-                            "input {} condition exceeds ops limit",
-                            i
+                            "[MPTX005] input {} condition has {} ops (max {})",
+                            i,
+                            condition.ops_count(),
+                            MAX_CONDITION_OPS
                         )));
                     }
                     let witness_bytes = tx.get_covenant_witness(i).unwrap_or(&[]);
                     let witness = Witness::decode(witness_bytes).map_err(|e| {
                         MempoolError::InvalidTransaction(format!(
-                            "input {} invalid witness: {}",
+                            "[MPTX006] input {} invalid witness: {}",
                             i, e
                         ))
                     })?;
@@ -197,7 +208,7 @@ impl Mempool {
                         &mut or_idx,
                     ) {
                         return Err(MempoolError::InvalidTransaction(format!(
-                            "input {} covenant condition not satisfied",
+                            "[MPTX007] input {} covenant condition not satisfied",
                             i
                         )));
                     }
@@ -211,8 +222,10 @@ impl Mempool {
 
         if total_input < total_output {
             return Err(MempoolError::InvalidTransaction(format!(
-                "insufficient funds: {} < {}",
-                total_input, total_output
+                "[MPTX008] insufficient funds: input={} < output={} (deficit={})",
+                total_input,
+                total_output,
+                total_output - total_input
             )));
         }
 
@@ -243,7 +256,11 @@ impl Mempool {
             let outpoint = Outpoint::new(input.prev_tx_hash, input.output_index);
             if let Some(spending_tx) = self.spent_outputs.get(&outpoint) {
                 if spending_tx != &tx_hash {
-                    return Err(MempoolError::DoubleSpend);
+                    return Err(MempoolError::DoubleSpend {
+                        tx_hash: input.prev_tx_hash,
+                        output_index: input.output_index,
+                        spending_tx: *spending_tx,
+                    });
                 }
             }
         }
@@ -636,8 +653,8 @@ impl Mempool {
                     let maturity = self.network.coinbase_maturity();
                     if !utxo.is_spendable_at_with_maturity(current_height, maturity) {
                         return Err(MempoolError::InvalidTransaction(format!(
-                            "Output not spendable until height {}",
-                            utxo.height + maturity
+                            "[MPTX009] output not spendable until height {} (current={}, maturity={})",
+                            utxo.height + maturity, current_height, maturity
                         )));
                     }
                 }
@@ -876,7 +893,7 @@ mod tests {
         );
         sign_tx(&mut tx2);
         let result = mempool.add_transaction(tx2, &utxo_set, 100);
-        assert!(matches!(result, Err(MempoolError::DoubleSpend)));
+        assert!(matches!(result, Err(MempoolError::DoubleSpend { .. })));
     }
 
     #[test]

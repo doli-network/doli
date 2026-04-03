@@ -68,12 +68,16 @@ impl<'a> BlockBatch<'a> {
             let key = outpoint.to_bytes();
             let entry_bytes = self.db.db.get_cf(cf_utxo, &key)?.ok_or_else(|| {
                 StorageError::NotFound(format!(
-                    "UTXO not found: {}:{}",
+                    "[STOR018] UTXO not found in batch: {}:{}",
                     outpoint.tx_hash, outpoint.index
                 ))
             })?;
-            bincode::deserialize(&entry_bytes)
-                .map_err(|e| StorageError::Serialization(e.to_string()))?
+            bincode::deserialize(&entry_bytes).map_err(|e| {
+                StorageError::Serialization(format!(
+                    "[STOR019] UTXO deserialize failed in batch for {}:{}: {}",
+                    outpoint.tx_hash, outpoint.index, e
+                ))
+            })?
         };
 
         let key = outpoint.to_bytes();

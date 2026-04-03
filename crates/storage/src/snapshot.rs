@@ -94,7 +94,8 @@ impl StateSnapshot {
 /// Compute state root from raw serialized bytes (for checkpoint verification).
 ///
 /// Deserializes each component, then computes the canonical state root.
-/// Returns `Hash::ZERO` if deserialization fails (caller should reject).
+/// Returns a structured error identifying WHICH component failed deserialization,
+/// enabling callers to diagnose corrupt snapshots.
 ///
 /// Wire format:
 /// - `chain_state_bytes`: bincode-serialized `ChainState`
@@ -104,23 +105,29 @@ pub fn compute_state_root_from_bytes(
     chain_state_bytes: &[u8],
     utxo_set_bytes: &[u8],
     producer_set_bytes: &[u8],
-) -> Hash {
-    let cs: ChainState = match bincode::deserialize(chain_state_bytes) {
-        Ok(cs) => cs,
-        Err(_) => return Hash::ZERO,
-    };
-    let ps: ProducerSet = match bincode::deserialize(producer_set_bytes) {
-        Ok(ps) => ps,
-        Err(_) => return Hash::ZERO,
-    };
-    let utxo = match UtxoSet::deserialize_canonical(utxo_set_bytes) {
-        Ok(u) => u,
-        Err(_) => return Hash::ZERO,
-    };
-    match compute_state_root(&cs, &utxo, &ps) {
-        Ok(root) => root,
-        Err(_) => Hash::ZERO,
-    }
+) -> Result<Hash, StorageError> {
+    let cs: ChainState = bincode::deserialize(chain_state_bytes).map_err(|e| {
+        StorageError::Serialization(format!(
+            "[STOR033] ChainState deserialization failed ({} bytes): {}",
+            chain_state_bytes.len(),
+            e
+        ))
+    })?;
+    let ps: ProducerSet = bincode::deserialize(producer_set_bytes).map_err(|e| {
+        StorageError::Serialization(format!(
+            "[STOR034] ProducerSet deserialization failed ({} bytes): {}",
+            producer_set_bytes.len(),
+            e
+        ))
+    })?;
+    let utxo = UtxoSet::deserialize_canonical(utxo_set_bytes).map_err(|e| {
+        StorageError::Serialization(format!(
+            "[STOR035] UtxoSet deserialization failed ({} bytes): {}",
+            utxo_set_bytes.len(),
+            e
+        ))
+    })?;
+    compute_state_root(&cs, &utxo, &ps)
 }
 
 #[cfg(test)]

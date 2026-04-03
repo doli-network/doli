@@ -77,16 +77,31 @@ pub enum ValidationError {
     },
 
     /// Merkle root does not match transactions.
-    #[error("invalid merkle root")]
-    InvalidMerkleRoot,
+    #[error("invalid merkle root: header={header}, computed={computed}")]
+    InvalidMerkleRoot {
+        /// Merkle root stored in the block header.
+        header: Hash,
+        /// Merkle root recomputed from the block's transactions.
+        computed: Hash,
+    },
 
     /// VDF proof is invalid.
-    #[error("invalid VDF proof")]
-    InvalidVdfProof,
+    #[error("invalid VDF proof: {reason}")]
+    InvalidVdfProof {
+        /// What specifically failed in VDF verification.
+        reason: String,
+    },
 
     /// Producer is not authorized for this slot.
-    #[error("invalid producer for slot")]
-    InvalidProducer,
+    #[error("invalid producer for slot: producer={producer}, slot={slot}, reason={reason}")]
+    InvalidProducer {
+        /// The public key of the block's claimed producer.
+        producer: String,
+        /// The slot the block claims to occupy.
+        slot: u32,
+        /// Why the producer is not eligible.
+        reason: String,
+    },
 
     /// Block exceeds maximum size.
     #[error("block too large: {size} > {max}")]
@@ -114,8 +129,13 @@ pub enum ValidationError {
     InvalidTransaction(String),
 
     /// Same output spent twice within a block.
-    #[error("double spend detected")]
-    DoubleSpend,
+    #[error("double spend detected: tx={tx_hash}, output_index={output_index}")]
+    DoubleSpend {
+        /// Transaction hash of the output being double-spent.
+        tx_hash: Hash,
+        /// Output index within that transaction.
+        output_index: u32,
+    },
 
     /// Transaction outputs exceed inputs.
     #[error("insufficient funds: inputs={inputs}, outputs={outputs}")]

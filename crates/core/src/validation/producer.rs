@@ -19,20 +19,35 @@ pub(super) fn validate_vdf(header: &BlockHeader, network: Network) -> Result<(),
 
     // Hash-chain VDF output should be exactly 32 bytes
     if header.vdf_output.value.len() != 32 {
-        return Err(ValidationError::InvalidVdfProof);
+        return Err(ValidationError::InvalidVdfProof {
+            reason: format!(
+                "VDF output length is {} bytes, expected 32 (slot={})",
+                header.vdf_output.value.len(),
+                header.slot
+            ),
+        });
     }
 
-    let expected_output: [u8; 32] = header
-        .vdf_output
-        .value
-        .as_slice()
-        .try_into()
-        .map_err(|_| ValidationError::InvalidVdfProof)?;
+    let expected_output: [u8; 32] =
+        header.vdf_output.value.as_slice().try_into().map_err(|_| {
+            ValidationError::InvalidVdfProof {
+                reason: format!(
+                    "VDF output conversion to [u8; 32] failed (slot={})",
+                    header.slot
+                ),
+            }
+        })?;
 
     // Verify by re-computing the hash-chain VDF
     // Use network-specific iterations (devnet uses fewer for faster blocks)
     if !verify_hash_chain_vdf(&input, &expected_output, network.heartbeat_vdf_iterations()) {
-        return Err(ValidationError::InvalidVdfProof);
+        return Err(ValidationError::InvalidVdfProof {
+            reason: format!(
+                "hash-chain VDF recomputation mismatch (slot={}, iterations={})",
+                header.slot,
+                network.heartbeat_vdf_iterations()
+            ),
+        });
     }
 
     Ok(())
@@ -136,6 +151,13 @@ pub fn bootstrap_schedule_with_liveness(
     result
 }
 
+/// Short hex prefix of a producer public key for error messages.
+/// Returns first 16 hex chars (8 bytes) for identification without full key exposure.
+fn producer_hex(pk: &crypto::PublicKey) -> String {
+    let h = pk.to_hex();
+    h[..16.min(h.len())].to_string()
+}
+
 /// Validate a block's producer during bootstrap using fallback rank windows.
 ///
 /// Same 2-second exclusive windows as the epoch scheduler:
@@ -154,7 +176,14 @@ fn validate_bootstrap_producer(
 
     // Producer must be in the known set
     if !ctx.bootstrap_producers.contains(&header.producer) {
-        return Err(ValidationError::InvalidProducer);
+        return Err(ValidationError::InvalidProducer {
+            producer: producer_hex(&header.producer),
+            slot: header.slot,
+            reason: format!(
+                "not in bootstrap producer set ({} known)",
+                ctx.bootstrap_producers.len()
+            ),
+        });
     }
 
     // Compute fallback order for this slot.
@@ -171,7 +200,11 @@ fn validate_bootstrap_producer(
     };
 
     if eligible.is_empty() {
-        return Err(ValidationError::InvalidProducer);
+        return Err(ValidationError::InvalidProducer {
+            producer: producer_hex(&header.producer),
+            slot: header.slot,
+            reason: "empty eligible list for bootstrap slot".to_string(),
+        });
     }
 
     // Validate time window: producer's rank must match the block's timestamp offset
@@ -183,7 +216,15 @@ fn validate_bootstrap_producer(
     if !is_producer_eligible_ms(&header.producer, &eligible, slot_offset_ms_low)
         && !is_producer_eligible_ms(&header.producer, &eligible, slot_offset_ms_high)
     {
-        return Err(ValidationError::InvalidProducer);
+        return Err(ValidationError::InvalidProducer {
+            producer: producer_hex(&header.producer),
+            slot: header.slot,
+            reason: format!(
+                "outside time window (offset_secs={}, eligible_count={})",
+                slot_offset_secs,
+                eligible.len()
+            ),
+        });
     }
 
     Ok(())
@@ -220,20 +261,33 @@ pub fn validate_producer_eligibility(
             .collect();
         // epoch_producer_list is already sorted
 
-        // Deadlock safety: all excluded → fall back to full epoch list
+        // Deadlock safety: all excluded -> fall back to full epoch list
         if effective.is_empty() {
             effective = ctx.epoch_producer_list.clone();
         }
 
         if effective.is_empty() {
-            return Err(ValidationError::InvalidProducer);
+            return Err(ValidationError::InvalidProducer {
+                producer: producer_hex(&header.producer),
+                slot: header.slot,
+                reason: "epoch producer list is empty".to_string(),
+            });
         }
 
         let producer_index = (header.slot as usize) % effective.len();
         let expected_producer = effective[producer_index];
 
         if header.producer != expected_producer {
-            return Err(ValidationError::InvalidProducer);
+            return Err(ValidationError::InvalidProducer {
+                producer: producer_hex(&header.producer),
+                slot: header.slot,
+                reason: format!(
+                    "expected {} at index {} of {} effective producers",
+                    producer_hex(&expected_producer),
+                    producer_index,
+                    effective.len()
+                ),
+            });
         }
 
         return Ok(());
@@ -260,14 +314,27 @@ pub fn validate_producer_eligibility(
         }
 
         if sorted.is_empty() {
-            return Err(ValidationError::InvalidProducer);
+            return Err(ValidationError::InvalidProducer {
+                producer: producer_hex(&header.producer),
+                slot: header.slot,
+                reason: "weighted producer list is empty".to_string(),
+            });
         }
 
         let producer_index = (header.slot as usize) % sorted.len();
         let expected_producer = sorted[producer_index];
 
         if header.producer != expected_producer {
-            return Err(ValidationError::InvalidProducer);
+            return Err(ValidationError::InvalidProducer {
+                producer: producer_hex(&header.producer),
+                slot: header.slot,
+                reason: format!(
+                    "expected {} at index {} of {} weighted producers",
+                    producer_hex(&expected_producer),
+                    producer_index,
+                    sorted.len()
+                ),
+            });
         }
 
         return Ok(());
@@ -279,5 +346,12 @@ pub fn validate_producer_eligibility(
         return validate_bootstrap_producer(header, ctx);
     }
 
-    Err(ValidationError::InvalidProducer)
+    Err(ValidationError::InvalidProducer {
+        producer: producer_hex(&header.producer),
+        slot: header.slot,
+        reason: format!(
+            "no producer set available (height={}, not in bootstrap)",
+            ctx.current_height
+        ),
+    })
 }

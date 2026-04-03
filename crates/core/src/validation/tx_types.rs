@@ -12,27 +12,28 @@ pub(super) fn validate_exit_data(tx: &Transaction) -> Result<(), ValidationError
     // Exit must have no inputs (just identifies producer to exit)
     if !tx.inputs.is_empty() {
         return Err(ValidationError::InvalidTransaction(
-            "exit transaction must have no inputs".to_string(),
+            "[ERRTX041] exit transaction must have no inputs".to_string(),
         ));
     }
 
     // Exit must have no outputs (bond released after cooldown)
     if !tx.outputs.is_empty() {
         return Err(ValidationError::InvalidTransaction(
-            "exit transaction must have no outputs".to_string(),
+            "[ERRTX042] exit transaction must have no outputs".to_string(),
         ));
     }
 
     // Parse and validate exit data from extra_data
     if tx.extra_data.is_empty() {
         return Err(ValidationError::InvalidTransaction(
-            "missing exit data".to_string(),
+            "[ERRTX043] missing exit data in extra_data".to_string(),
         ));
     }
 
     // Try to deserialize exit data
-    let _exit_data: ExitData = bincode::deserialize(&tx.extra_data)
-        .map_err(|e| ValidationError::InvalidTransaction(format!("invalid exit data: {}", e)))?;
+    let _exit_data: ExitData = bincode::deserialize(&tx.extra_data).map_err(|e| {
+        ValidationError::InvalidTransaction(format!("[ERRTX044] invalid exit data: {}", e))
+    })?;
 
     // Note: Producer state validation (is producer active, not already in cooldown, etc.)
     // is done at the node level where we have access to the producer set

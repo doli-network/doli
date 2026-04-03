@@ -22,7 +22,7 @@ impl RpcContext {
             .block_store
             .get_block(&hash)
             .map_err(|e| RpcError::internal_error(e.to_string()))?
-            .ok_or_else(RpcError::block_not_found)?;
+            .ok_or_else(|| RpcError::block_not_found_by_hash(&params.hash))?;
 
         // Height not directly available from hash lookup
         // Would require reverse index - for now return 0
@@ -43,13 +43,13 @@ impl RpcContext {
             .block_store
             .get_hash_by_height(params.height)
             .map_err(|e| RpcError::internal_error(e.to_string()))?
-            .ok_or_else(RpcError::block_not_found)?;
+            .ok_or_else(|| RpcError::block_not_found_by_height(params.height))?;
 
         let block = self
             .block_store
             .get_block(&hash)
             .map_err(|e| RpcError::internal_error(e.to_string()))?
-            .ok_or_else(RpcError::block_not_found)?;
+            .ok_or_else(|| RpcError::block_not_found_by_height(params.height))?;
 
         let mut response = BlockResponse::from(&block);
         response.height = params.height;
@@ -66,7 +66,7 @@ impl RpcContext {
             .block_store
             .get_block_by_height(params.height)
             .map_err(|e| RpcError::internal_error(e.to_string()))?
-            .ok_or_else(RpcError::block_not_found)?;
+            .ok_or_else(|| RpcError::block_not_found_by_height(params.height))?;
 
         let data =
             bincode::serialize(&block).map_err(|e| RpcError::internal_error(e.to_string()))?;

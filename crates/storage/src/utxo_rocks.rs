@@ -199,13 +199,17 @@ impl RocksDbUtxoStore {
             // Read entry first to get pubkey_hash for secondary index deletion
             let entry_bytes = self.db.get_cf(cf_utxo, &key)?.ok_or_else(|| {
                 StorageError::NotFound(format!(
-                    "UTXO not found: {}:{}",
+                    "[STOR014] UTXO not found in rocks: {}:{}",
                     input.prev_tx_hash, input.output_index
                 ))
             })?;
 
-            let entry: UtxoEntry = bincode::deserialize(&entry_bytes)
-                .map_err(|e| StorageError::Serialization(e.to_string()))?;
+            let entry: UtxoEntry = bincode::deserialize(&entry_bytes).map_err(|e| {
+                StorageError::Serialization(format!(
+                    "[STOR015] UTXO deserialize failed for {}:{}: {}",
+                    input.prev_tx_hash, input.output_index, e
+                ))
+            })?;
 
             if entry.output.output_type.is_native_amount() {
                 total_input += entry.output.amount;

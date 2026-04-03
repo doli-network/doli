@@ -96,14 +96,41 @@ impl RpcError {
         Self::new(codes::INTERNAL_ERROR, msg)
     }
 
-    /// Block not found
+    /// Block not found (no search context)
     pub fn block_not_found() -> Self {
         Self::new(codes::BLOCK_NOT_FOUND, "Block not found")
     }
 
-    /// Transaction not found
+    /// Block not found by hash
+    pub fn block_not_found_by_hash(hash: &str) -> Self {
+        Self::with_data(
+            codes::BLOCK_NOT_FOUND,
+            "Block not found",
+            serde_json::json!({ "searched_by": "hash", "hash": hash }),
+        )
+    }
+
+    /// Block not found by height
+    pub fn block_not_found_by_height(height: u64) -> Self {
+        Self::with_data(
+            codes::BLOCK_NOT_FOUND,
+            "Block not found",
+            serde_json::json!({ "searched_by": "height", "height": height }),
+        )
+    }
+
+    /// Transaction not found (no search context)
     pub fn tx_not_found() -> Self {
         Self::new(codes::TX_NOT_FOUND, "Transaction not found")
+    }
+
+    /// Transaction not found by hash
+    pub fn tx_not_found_by_hash(hash: &str) -> Self {
+        Self::with_data(
+            codes::TX_NOT_FOUND,
+            "Transaction not found",
+            serde_json::json!({ "searched_by": "hash", "hash": hash }),
+        )
     }
 
     /// Invalid transaction

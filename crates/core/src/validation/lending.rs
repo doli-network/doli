@@ -20,48 +20,51 @@ use crate::validation::error::ValidationError;
 pub(crate) fn validate_create_loan(tx: &Transaction) -> Result<(), ValidationError> {
     if tx.inputs.is_empty() {
         return Err(ValidationError::InvalidTransaction(
-            "CreateLoan requires at least one input".to_string(),
+            "[ERRTX045] CreateLoan requires at least one input".to_string(),
         ));
     }
 
     if tx.outputs.len() < 2 {
-        return Err(ValidationError::InvalidTransaction(
-            "CreateLoan requires at least 2 outputs (Collateral + Normal)".to_string(),
-        ));
+        return Err(ValidationError::InvalidTransaction(format!(
+            "[ERRTX046] CreateLoan requires at least 2 outputs (Collateral + Normal), got {}",
+            tx.outputs.len()
+        )));
     }
 
     // First output must be Collateral
     if tx.outputs[0].output_type != OutputType::Collateral {
-        return Err(ValidationError::InvalidTransaction(
-            "CreateLoan first output must be Collateral type".to_string(),
-        ));
+        return Err(ValidationError::InvalidTransaction(format!(
+            "[ERRTX047] CreateLoan first output must be Collateral type, got {:?}",
+            tx.outputs[0].output_type
+        )));
     }
 
     // Validate collateral metadata is decodable
     let meta = tx.outputs[0].collateral_metadata().ok_or_else(|| {
-        ValidationError::InvalidTransaction(
-            "CreateLoan: invalid collateral metadata in output 0".to_string(),
-        )
+        ValidationError::InvalidTransaction(format!(
+            "[ERRTX048] CreateLoan: invalid collateral metadata in output 0 ({} bytes extra_data)",
+            tx.outputs[0].extra_data.len()
+        ))
     })?;
 
     // Principal must be positive
     if meta.principal == 0 {
         return Err(ValidationError::InvalidTransaction(
-            "CreateLoan: principal must be positive".to_string(),
+            "[ERRTX049] CreateLoan: principal must be positive".to_string(),
         ));
     }
 
     // Collateral amount must be positive
     if tx.outputs[0].amount == 0 {
         return Err(ValidationError::InvalidTransaction(
-            "CreateLoan: collateral amount must be positive".to_string(),
+            "[ERRTX050] CreateLoan: collateral amount must be positive".to_string(),
         ));
     }
 
     // Interest rate must be within bounds
     if meta.interest_rate_bps > COLLATERAL_MAX_INTEREST_BPS {
         return Err(ValidationError::InvalidTransaction(format!(
-            "CreateLoan: interest rate {} bps exceeds maximum {} bps",
+            "[ERRTX051] CreateLoan: interest rate {} bps exceeds maximum {} bps",
             meta.interest_rate_bps, COLLATERAL_MAX_INTEREST_BPS
         )));
     }
@@ -69,22 +72,23 @@ pub(crate) fn validate_create_loan(tx: &Transaction) -> Result<(), ValidationErr
     // Liquidation ratio must be at least minimum
     if meta.liquidation_ratio_bps < COLLATERAL_MIN_LIQUIDATION_BPS {
         return Err(ValidationError::InvalidTransaction(format!(
-            "CreateLoan: liquidation ratio {} bps below minimum {} bps",
+            "[ERRTX052] CreateLoan: liquidation ratio {} bps below minimum {} bps",
             meta.liquidation_ratio_bps, COLLATERAL_MIN_LIQUIDATION_BPS
         )));
     }
 
     // Second output must be Normal (borrowed DOLI to borrower)
     if tx.outputs[1].output_type != OutputType::Normal {
-        return Err(ValidationError::InvalidTransaction(
-            "CreateLoan second output must be Normal type (borrowed DOLI)".to_string(),
-        ));
+        return Err(ValidationError::InvalidTransaction(format!(
+            "[ERRTX053] CreateLoan second output must be Normal type (borrowed DOLI), got {:?}",
+            tx.outputs[1].output_type
+        )));
     }
 
     // Second output amount must match principal
     if tx.outputs[1].amount != meta.principal {
         return Err(ValidationError::InvalidTransaction(format!(
-            "CreateLoan: output[1] amount {} must equal principal {}",
+            "[ERRTX054] CreateLoan: output[1] amount {} must equal principal {}",
             tx.outputs[1].amount, meta.principal
         )));
     }
@@ -95,7 +99,7 @@ pub(crate) fn validate_create_loan(tx: &Transaction) -> Result<(), ValidationErr
             && output.output_type != OutputType::FungibleAsset
         {
             return Err(ValidationError::InvalidTransaction(format!(
-                "CreateLoan: output {} must be Normal or FungibleAsset type (change), got {:?}",
+                "[ERRTX055] CreateLoan: output {} must be Normal or FungibleAsset type (change), got {:?}",
                 i, output.output_type
             )));
         }
@@ -111,14 +115,15 @@ pub(crate) fn validate_create_loan(tx: &Transaction) -> Result<(), ValidationErr
 /// - At least 1 output (returned collateral or change)
 pub(crate) fn validate_repay_loan(tx: &Transaction) -> Result<(), ValidationError> {
     if tx.inputs.len() < 2 {
-        return Err(ValidationError::InvalidTransaction(
-            "RepayLoan requires at least 2 inputs (collateral + repayment)".to_string(),
-        ));
+        return Err(ValidationError::InvalidTransaction(format!(
+            "[ERRTX056] RepayLoan requires at least 2 inputs (collateral + repayment), got {}",
+            tx.inputs.len()
+        )));
     }
 
     if tx.outputs.is_empty() {
         return Err(ValidationError::InvalidTransaction(
-            "RepayLoan requires at least 1 output".to_string(),
+            "[ERRTX057] RepayLoan requires at least 1 output".to_string(),
         ));
     }
 
@@ -133,13 +138,13 @@ pub(crate) fn validate_repay_loan(tx: &Transaction) -> Result<(), ValidationErro
 pub(crate) fn validate_liquidate_loan(tx: &Transaction) -> Result<(), ValidationError> {
     if tx.inputs.is_empty() {
         return Err(ValidationError::InvalidTransaction(
-            "LiquidateLoan requires at least 1 input".to_string(),
+            "[ERRTX058] LiquidateLoan requires at least 1 input".to_string(),
         ));
     }
 
     if tx.outputs.is_empty() {
         return Err(ValidationError::InvalidTransaction(
-            "LiquidateLoan requires at least 1 output".to_string(),
+            "[ERRTX059] LiquidateLoan requires at least 1 output".to_string(),
         ));
     }
 
@@ -156,34 +161,36 @@ pub(crate) fn validate_liquidate_loan(tx: &Transaction) -> Result<(), Validation
 pub(crate) fn validate_lending_deposit(tx: &Transaction) -> Result<(), ValidationError> {
     if tx.inputs.is_empty() {
         return Err(ValidationError::InvalidTransaction(
-            "LendingDeposit requires at least one input".to_string(),
+            "[ERRTX060] LendingDeposit requires at least one input".to_string(),
         ));
     }
 
     if tx.outputs.is_empty() {
         return Err(ValidationError::InvalidTransaction(
-            "LendingDeposit requires at least one output".to_string(),
+            "[ERRTX061] LendingDeposit requires at least one output".to_string(),
         ));
     }
 
     // First output must be LendingDeposit type
     if tx.outputs[0].output_type != OutputType::LendingDeposit {
-        return Err(ValidationError::InvalidTransaction(
-            "LendingDeposit first output must be LendingDeposit type".to_string(),
-        ));
+        return Err(ValidationError::InvalidTransaction(format!(
+            "[ERRTX062] LendingDeposit first output must be LendingDeposit type, got {:?}",
+            tx.outputs[0].output_type
+        )));
     }
 
     // Validate metadata is decodable
     tx.outputs[0].lending_deposit_metadata().ok_or_else(|| {
-        ValidationError::InvalidTransaction(
-            "LendingDeposit: invalid metadata in output 0".to_string(),
-        )
+        ValidationError::InvalidTransaction(format!(
+            "[ERRTX063] LendingDeposit: invalid metadata in output 0 ({} bytes extra_data)",
+            tx.outputs[0].extra_data.len()
+        ))
     })?;
 
     // Deposit amount must be positive
     if tx.outputs[0].amount == 0 {
         return Err(ValidationError::InvalidTransaction(
-            "LendingDeposit: deposit amount must be positive".to_string(),
+            "[ERRTX064] LendingDeposit: deposit amount must be positive".to_string(),
         ));
     }
 
@@ -191,7 +198,7 @@ pub(crate) fn validate_lending_deposit(tx: &Transaction) -> Result<(), Validatio
     for (i, output) in tx.outputs.iter().enumerate().skip(1) {
         if output.output_type != OutputType::Normal {
             return Err(ValidationError::InvalidTransaction(format!(
-                "LendingDeposit: output {} must be Normal type (change), got {:?}",
+                "[ERRTX065] LendingDeposit: output {} must be Normal type (change), got {:?}",
                 i, output.output_type
             )));
         }
@@ -208,13 +215,14 @@ pub(crate) fn validate_lending_deposit(tx: &Transaction) -> Result<(), Validatio
 pub(crate) fn validate_lending_withdraw(tx: &Transaction) -> Result<(), ValidationError> {
     if tx.inputs.is_empty() {
         return Err(ValidationError::InvalidTransaction(
-            "LendingWithdraw requires at least 1 input (LendingDeposit UTXO)".to_string(),
+            "[ERRTX066] LendingWithdraw requires at least 1 input (LendingDeposit UTXO)"
+                .to_string(),
         ));
     }
 
     if tx.outputs.is_empty() {
         return Err(ValidationError::InvalidTransaction(
-            "LendingWithdraw requires at least 1 output".to_string(),
+            "[ERRTX067] LendingWithdraw requires at least 1 output".to_string(),
         ));
     }
 

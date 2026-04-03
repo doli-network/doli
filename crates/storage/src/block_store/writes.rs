@@ -127,7 +127,10 @@ impl BlockStore {
 
             // Walk backwards via prev_hash
             let header = self.get_header(&current_hash)?.ok_or_else(|| {
-                StorageError::NotFound(format!("header {} missing", current_hash))
+                StorageError::NotFound(format!(
+                    "[STOR020] header {} missing during chain walk",
+                    current_hash
+                ))
             })?;
             current_hash = header.prev_hash;
             height -= 1;
@@ -230,7 +233,10 @@ impl BlockStore {
         loop {
             chain.push(current);
             let header = self.get_header(&current)?.ok_or_else(|| {
-                StorageError::NotFound(format!("header {} missing during reindex", current))
+                StorageError::NotFound(format!(
+                    "[STOR021] header {} missing during reindex",
+                    current
+                ))
             })?;
 
             if header.prev_hash == Hash::ZERO {

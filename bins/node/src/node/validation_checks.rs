@@ -31,7 +31,11 @@ impl Node {
             let gset_producers = gset.active_producers(7200);
             drop(gset);
             if !gset_producers.contains(&block.header.producer) {
-                anyhow::bail!("unknown producer — not in active set or GSet");
+                anyhow::bail!(
+                    "[ECON_PRODUCER] unknown producer {} — not in active set ({} active) or GSet",
+                    &block.header.producer.to_hex()[..16],
+                    active.len()
+                );
             }
         }
 
@@ -268,7 +272,7 @@ impl Node {
             // Length cap: production enforces MAX_MISSED_PER_BLOCK=3
             if missed.len() > MAX_MISSED_PER_BLOCK {
                 return Err(validation::ValidationError::InvalidTransaction(format!(
-                    "missed_producers has {} entries (max {})",
+                    "[ERRTX068] missed_producers has {} entries (max {})",
                     missed.len(),
                     MAX_MISSED_PER_BLOCK,
                 )));
@@ -279,8 +283,9 @@ impl Node {
                 for pk in missed {
                     if !self.epoch_producer_list.contains(pk) {
                         return Err(validation::ValidationError::InvalidTransaction(format!(
-                            "missed_producers contains key {} not in epoch producer list",
+                            "[ERRTX069] missed_producers contains key {} not in epoch producer list (list_size={})",
                             hex::encode(&pk.as_bytes()[..4]),
+                            self.epoch_producer_list.len(),
                         )));
                     }
                 }
@@ -295,8 +300,8 @@ impl Node {
             let total_after = self.excluded_producers.len() + missed.len();
             if total_after > max_total {
                 return Err(validation::ValidationError::InvalidTransaction(format!(
-                    "missed_producers would bring total excluded to {} (max {})",
-                    total_after, max_total,
+                    "[ERRTX070] missed_producers would bring total excluded to {} (max {}, currently_excluded={})",
+                    total_after, max_total, self.excluded_producers.len(),
                 )));
             }
         }
@@ -331,12 +336,18 @@ impl Node {
     ) -> Result<()> {
         // === Coinbase validation ===
         if block.transactions.is_empty() {
-            anyhow::bail!("block has no transactions (missing coinbase)");
+            anyhow::bail!(
+                "[ECON_COINBASE_MISSING] block has no transactions (missing coinbase) at height={}",
+                height
+            );
         }
 
         let coinbase = &block.transactions[0];
         if !coinbase.is_coinbase() {
-            anyhow::bail!("first transaction is not a valid coinbase");
+            anyhow::bail!(
+                "[ECON_COINBASE_INVALID] first transaction is not a valid coinbase at height={}",
+                height
+            );
         }
 
         // Calculate extra fees from user transactions in this block.
@@ -372,18 +383,23 @@ impl Node {
         // See: N5 fork incident 2026-03-26 (coinbase mismatch on delta=0 reorg).
         if coinbase_amount != expected_with_fees && coinbase_amount != base_reward {
             anyhow::bail!(
-                "coinbase amount {} != expected block reward {} (base {} + extra_fees {}) and != base reward {}",
+                "[ECON_COINBASE_AMOUNT] coinbase amount {} != expected {} (base {} + extra_fees {}) at height={}",
                 coinbase_amount,
                 expected_with_fees,
                 base_reward,
                 extra_fees,
-                base_reward
+                height
             );
         }
 
         let pool_hash = doli_core::consensus::reward_pool_pubkey_hash();
         if coinbase.outputs[0].pubkey_hash != pool_hash {
-            anyhow::bail!("coinbase recipient is not the reward pool — possible theft attempt");
+            anyhow::bail!(
+                "[ECON_COINBASE_RECIPIENT] coinbase recipient {} is not reward pool {} at height={}",
+                coinbase.outputs[0].pubkey_hash,
+                pool_hash,
+                height
+            );
         }
 
         // === EpochReward validation ===
@@ -405,8 +421,9 @@ impl Node {
             // WAS an epoch boundary. Rejecting during resync prevents recovery.
             if !is_epoch_boundary && matches!(mode, ValidationMode::Full) {
                 anyhow::bail!(
-                    "EpochReward transaction at non-epoch-boundary height {}",
-                    height
+                    "[ECON_EPOCH_NOT_BOUNDARY] EpochReward at non-boundary height={} (blocks_per_epoch={})",
+                    height,
+                    blocks_per_epoch
                 );
             }
 
@@ -414,14 +431,15 @@ impl Node {
 
             // No EpochReward at epoch 0 (genesis bonds drained the pool)
             if completed_epoch == 0 {
-                anyhow::bail!("EpochReward not allowed at epoch 0 (genesis pool used for bonds)");
+                anyhow::bail!("[ECON_EPOCH_ZERO] EpochReward not allowed at epoch 0 (genesis pool used for bonds) at height={}", height);
             }
 
             // Exactly one EpochReward TX per block
             if epoch_reward_txs.len() != 1 {
                 anyhow::bail!(
-                    "expected at most 1 EpochReward TX, got {}",
-                    epoch_reward_txs.len()
+                    "[ECON_EPOCH_DUPLICATE] expected 1 EpochReward TX, got {} at height={}",
+                    epoch_reward_txs.len(),
+                    height
                 );
             }
             let epoch_tx = epoch_reward_txs[0];
@@ -435,8 +453,9 @@ impl Node {
                 // Validate extra_data contains correct height + epoch
                 if epoch_tx.extra_data.len() < 16 {
                     anyhow::bail!(
-                        "EpochReward extra_data too short: expected >= 16 bytes, got {}",
-                        epoch_tx.extra_data.len()
+                        "[ECON_EPOCH_EXTRA_DATA] EpochReward extra_data too short: {} bytes < 16 required at height={}",
+                        epoch_tx.extra_data.len(),
+                        height
                     );
                 }
                 let embedded_height =
@@ -445,16 +464,17 @@ impl Node {
                     u64::from_le_bytes(epoch_tx.extra_data[8..16].try_into().unwrap());
                 if embedded_height != height {
                     anyhow::bail!(
-                        "EpochReward embedded height {} != block height {}",
+                        "[ECON_EPOCH_HEIGHT] EpochReward embedded_height={} != block height={}",
                         embedded_height,
                         height
                     );
                 }
                 if embedded_epoch != completed_epoch {
                     anyhow::bail!(
-                        "EpochReward embedded epoch {} != completed epoch {}",
+                        "[ECON_EPOCH_NUMBER] EpochReward embedded_epoch={} != completed_epoch={} at height={}",
                         embedded_epoch,
-                        completed_epoch
+                        completed_epoch,
+                        height
                     );
                 }
 
@@ -476,9 +496,10 @@ impl Node {
 
                 if total_distributed > pool_balance {
                     anyhow::bail!(
-                        "EpochReward total {} exceeds pool balance {} — inflation attack",
+                        "[ECON_EPOCH_OVERFLOW] EpochReward total {} exceeds pool balance {} at height={} — inflation attack",
                         total_distributed,
-                        pool_balance
+                        pool_balance,
+                        height
                     );
                 }
 
@@ -498,8 +519,9 @@ impl Node {
                     let total_distributed: u64 = actual_sorted.iter().map(|(a, _)| *a).sum();
                     let expected_total: u64 = expected_sorted.iter().map(|(a, _)| *a).sum();
                     anyhow::bail!(
-                        "EpochReward distribution mismatch: expected {} outputs totaling {}, \
-                         got {} outputs totaling {} — possible reward theft",
+                        "[ECON_EPOCH_DISTRIBUTION] EpochReward mismatch at height={}: \
+                         expected {} outputs totaling {}, got {} outputs totaling {}",
+                        height,
                         expected_sorted.len(),
                         expected_total,
                         actual_sorted.len(),
@@ -511,7 +533,7 @@ impl Node {
                 if height >= doli_core::consensus::EPOCH_REWARD_EXPLICIT_INPUTS_HEIGHT {
                     if epoch_tx.inputs.is_empty() {
                         anyhow::bail!(
-                            "EpochReward at height {} (post-activation) must have explicit pool inputs",
+                            "[ECON_EPOCH_NO_INPUTS] EpochReward at height={} (post-activation) must have explicit pool inputs",
                             height
                         );
                     }
@@ -533,14 +555,15 @@ impl Node {
 
                     if actual_inputs != expected_inputs {
                         anyhow::bail!(
-                            "EpochReward pool inputs mismatch: expected {} inputs, got {}",
+                            "[ECON_EPOCH_INPUTS_MISMATCH] EpochReward pool inputs mismatch at height={}: expected {} inputs, got {}",
+                            height,
                             expected_inputs.len(),
                             actual_inputs.len()
                         );
                     }
                 } else if !epoch_tx.inputs.is_empty() {
                     anyhow::bail!(
-                        "EpochReward at height {} (pre-activation) must not have inputs",
+                        "[ECON_EPOCH_PRE_INPUTS] EpochReward at height={} (pre-activation) must not have inputs",
                         height
                     );
                 }
@@ -555,7 +578,7 @@ impl Node {
                 let expected = self.calculate_epoch_rewards(completed_epoch).await;
                 if !expected.is_empty() {
                     anyhow::bail!(
-                        "epoch boundary block at height {} missing EpochReward TX for epoch {} ({} qualified producers)",
+                        "[ECON_EPOCH_MISSING] epoch boundary at height={} missing EpochReward TX for epoch={} ({} qualified producers)",
                         height, completed_epoch, expected.len()
                     );
                 }

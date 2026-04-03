@@ -63,8 +63,8 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
             let pool_hash = crate::consensus::reward_pool_pubkey_hash();
             if utxo.output.pubkey_hash != pool_hash {
                 return Err(ValidationError::InvalidTransaction(format!(
-                    "EpochReward input {} is not a pool UTXO",
-                    i
+                    "[ERRTX033] EpochReward input {} is not a pool UTXO (pubkey_hash={})",
+                    i, utxo.output.pubkey_hash
                 )));
             }
             if utxo.output.output_type.is_native_amount() {
@@ -94,13 +94,13 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
         if input.committed_output_count > 0 {
             if input.sighash_type != SighashType::AnyoneCanPay {
                 return Err(ValidationError::InvalidTransaction(format!(
-                    "input {} has committed_output_count={} but sighash is not AnyoneCanPay",
-                    i, input.committed_output_count
+                    "[ERRTX034] input {} has committed_output_count={} but sighash is {:?}, expected AnyoneCanPay",
+                    i, input.committed_output_count, input.sighash_type
                 )));
             }
             if input.committed_output_count as usize > tx.outputs.len() {
                 return Err(ValidationError::InvalidTransaction(format!(
-                    "input {} committed_output_count={} exceeds output count={}",
+                    "[ERRTX035] input {} committed_output_count={} exceeds output count={}",
                     i,
                     input.committed_output_count,
                     tx.outputs.len()
@@ -129,8 +129,8 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
         // Fractionalized NFTs can ONLY be spent by RedeemNft transactions
         if utxo.output.is_fractionalized() && tx.tx_type != TxType::RedeemNft {
             return Err(ValidationError::InvalidTransaction(format!(
-                "input {} is a fractionalized NFT — can only be spent by RedeemNft",
-                i
+                "[ERRTX036] input {} is a fractionalized NFT — can only be spent by RedeemNft, got tx_type={:?}",
+                i, tx.tx_type
             )));
         }
 
@@ -249,8 +249,8 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
                                     .sum();
                                 if actual_royalty < required_royalty {
                                     return Err(ValidationError::InvalidTransaction(format!(
-                                        "NFT input {} requires royalty of {} to creator, got {}",
-                                        i, required_royalty, actual_royalty
+                                        "[ERRTX037] NFT input {} requires royalty of {} to creator, got {} (sale_price={}, royalty_bps={})",
+                                        i, required_royalty, actual_royalty, sale_price, royalty_bps
                                     )));
                                 }
                             }
@@ -752,7 +752,7 @@ fn verify_input_conditions(
             .map(|(cond, _consumed)| cond)
             .map_err(|e| {
                 ValidationError::InvalidTransaction(format!(
-                    "input {} references output with invalid condition: {}",
+                    "[ERRTX038] input {} references output with invalid condition: {}",
                     input_index, e
                 ))
             })?;
@@ -761,7 +761,7 @@ fn verify_input_conditions(
         let ops = condition.ops_count();
         if ops > crate::conditions::MAX_CONDITION_OPS {
             return Err(ValidationError::InvalidTransaction(format!(
-                "input {} condition has {} ops (max {})",
+                "[ERRTX039] input {} condition has {} ops (max {})",
                 input_index,
                 ops,
                 crate::conditions::MAX_CONDITION_OPS
@@ -772,7 +772,7 @@ fn verify_input_conditions(
         let witness_bytes = tx.get_covenant_witness(input_index).unwrap_or(&[]);
         let witness = crate::conditions::Witness::decode(witness_bytes).map_err(|e| {
             ValidationError::InvalidTransaction(format!(
-                "input {} has invalid witness data: {}",
+                "[ERRTX040] input {} has invalid witness data: {}",
                 input_index, e
             ))
         })?;
@@ -860,7 +860,10 @@ pub(super) fn check_internal_double_spend(block: &Block) -> Result<(), Validatio
         for input in &tx.inputs {
             let outpoint = input.outpoint();
             if !spent.insert(outpoint) {
-                return Err(ValidationError::DoubleSpend);
+                return Err(ValidationError::DoubleSpend {
+                    tx_hash: outpoint.0,
+                    output_index: outpoint.1,
+                });
             }
         }
     }

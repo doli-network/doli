@@ -23,9 +23,10 @@ impl ProducerSet {
         let key = crypto_hash(info.public_key.as_bytes());
         if let Some(existing) = self.producers.get(&key) {
             if existing.status != ProducerStatus::Exited {
-                return Err(StorageError::AlreadyExists(
-                    "Producer already registered".to_string(),
-                ));
+                return Err(StorageError::AlreadyExists(format!(
+                    "[STOR011] producer already registered (pubkey={}, status={:?})",
+                    info.public_key, existing.status
+                )));
             }
             // Allow re-registration after exit — replace the old entry
         }
@@ -51,9 +52,10 @@ impl ProducerSet {
         let key = crypto_hash(info.public_key.as_bytes());
         if let Some(existing) = self.producers.get(&key) {
             if existing.status != ProducerStatus::Exited {
-                return Err(StorageError::AlreadyExists(
-                    "Producer already registered".to_string(),
-                ));
+                return Err(StorageError::AlreadyExists(format!(
+                    "[STOR012] producer already registered for network (pubkey={}, status={:?})",
+                    info.public_key, existing.status
+                )));
             }
             // Allow re-registration after exit — replace the old entry
         }
@@ -151,9 +153,10 @@ impl ProducerSet {
     ) -> Result<(), StorageError> {
         let key = crypto_hash(pubkey.as_bytes());
         if self.producers.contains_key(&key) {
-            return Err(StorageError::AlreadyExists(
-                "Genesis producer already registered".to_string(),
-            ));
+            return Err(StorageError::AlreadyExists(format!(
+                "[STOR013] genesis producer already registered (pubkey={})",
+                pubkey
+            )));
         }
 
         // Use network-specific bond_unit instead of hardcoded BOND_UNIT

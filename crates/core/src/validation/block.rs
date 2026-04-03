@@ -107,7 +107,10 @@ pub fn validate_block(block: &Block, ctx: &ValidationContext) -> Result<(), Vali
 
     // 3. Verify merkle root
     if !block.verify_merkle_root() {
-        return Err(ValidationError::InvalidMerkleRoot);
+        return Err(ValidationError::InvalidMerkleRoot {
+            header: block.header.merkle_root,
+            computed: block.compute_merkle_root(),
+        });
     }
 
     // 4. Validate all transactions
@@ -168,7 +171,10 @@ pub fn validate_block_with_mode(
             }
 
             if !block.verify_merkle_root() {
-                return Err(ValidationError::InvalidMerkleRoot);
+                return Err(ValidationError::InvalidMerkleRoot {
+                    header: block.header.merkle_root,
+                    computed: block.compute_merkle_root(),
+                });
             }
 
             // Phase 1: Parallel VDF verification for VDF-heavy TXs.
@@ -322,7 +328,10 @@ pub fn validate_block_with_mode(
 
             // Merkle root integrity
             if !block.verify_merkle_root() {
-                return Err(ValidationError::InvalidMerkleRoot);
+                return Err(ValidationError::InvalidMerkleRoot {
+                    header: block.header.merkle_root,
+                    computed: block.compute_merkle_root(),
+                });
             }
 
             // Transaction structural validation

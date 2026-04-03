@@ -755,7 +755,8 @@ proptest! {
         };
 
         let result = check_internal_double_spend(&block);
-        prop_assert!(matches!(result, Err(ValidationError::DoubleSpend)));
+        let is_double_spend = matches!(result, Err(ValidationError::DoubleSpend { .. }));
+        prop_assert!(is_double_spend);
     }
 }
 
@@ -1480,7 +1481,7 @@ fn test_validate_block_light_rejects_bad_merkle() {
 
     let result = validate_block_with_mode(&block, &ctx, ValidationMode::Light);
     assert!(
-        matches!(result, Err(ValidationError::InvalidMerkleRoot)),
+        matches!(result, Err(ValidationError::InvalidMerkleRoot { .. })),
         "Light mode should still reject bad merkle root: {:?}",
         result
     );

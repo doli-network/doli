@@ -55,9 +55,10 @@ pub fn validate_transaction(
         && !tx.is_protocol_activation()
     // Registration/maintainer/protocol txs handle their own input validation
     {
-        return Err(ValidationError::InvalidTransaction(
-            "transaction must have inputs".to_string(),
-        ));
+        return Err(ValidationError::InvalidTransaction(format!(
+            "[ERRTX001] transaction must have inputs (tx_type={:?})",
+            tx.tx_type
+        )));
     }
 
     // 3. Must have at least one output (unless exit, slash_producer, add_bond, or request_withdrawal)
@@ -78,9 +79,10 @@ pub fn validate_transaction(
         && !tx.is_protocol_activation()
     // Registration/maintainer/protocol txs handle their own output validation
     {
-        return Err(ValidationError::InvalidTransaction(
-            "transaction must have outputs".to_string(),
-        ));
+        return Err(ValidationError::InvalidTransaction(format!(
+            "[ERRTX002] transaction must have outputs (tx_type={:?})",
+            tx.tx_type
+        )));
     }
 
     // 4. Validate all outputs
@@ -248,8 +250,8 @@ pub(super) fn validate_outputs(
         // units / LP shares — zero is also prohibited for them.
         if output.amount == 0 && output.output_type != OutputType::Pool {
             return Err(ValidationError::InvalidTransaction(format!(
-                "output {} has zero amount",
-                i
+                "[ERRTX003] output {} has zero amount (type={:?})",
+                i, output.output_type
             )));
         }
 
@@ -275,10 +277,11 @@ pub(super) fn validate_outputs(
         let max_data = max_extra_data_size(ctx.current_height);
         if output.extra_data.len() > max_data {
             return Err(ValidationError::InvalidTransaction(format!(
-                "output {} extra_data exceeds max size ({} > {})",
+                "[ERRTX004] output {} extra_data exceeds max size ({} > {} at height {})",
                 i,
                 output.extra_data.len(),
                 max_data,
+                ctx.current_height,
             )));
         }
 
@@ -288,15 +291,16 @@ pub(super) fn validate_outputs(
                 // Normal outputs should have lock_until = 0
                 if output.lock_until != 0 {
                     return Err(ValidationError::InvalidTransaction(format!(
-                        "normal output {} has non-zero lock_until",
-                        i
+                        "[ERRTX005] normal output {} has non-zero lock_until={}",
+                        i, output.lock_until
                     )));
                 }
                 // Normal outputs must not carry extra_data
                 if !output.extra_data.is_empty() {
                     return Err(ValidationError::InvalidTransaction(format!(
-                        "normal output {} has non-empty extra_data",
-                        i
+                        "[ERRTX006] normal output {} has non-empty extra_data ({} bytes)",
+                        i,
+                        output.extra_data.len()
                     )));
                 }
             }
@@ -311,7 +315,7 @@ pub(super) fn validate_outputs(
                 // Bond outputs must carry exactly 4 bytes of extra_data (creation_slot)
                 if output.extra_data.len() != 4 {
                     return Err(ValidationError::InvalidTransaction(format!(
-                        "bond output {} has {} bytes extra_data, expected 4 (creation_slot)",
+                        "[ERRTX007] bond output {} has {} bytes extra_data, expected 4 (creation_slot)",
                         i,
                         output.extra_data.len()
                     )));
@@ -326,21 +330,21 @@ pub(super) fn validate_outputs(
                 let activation = ctx.params.covenants_activation_height(&ctx.network);
                 if ctx.current_height < activation {
                     return Err(ValidationError::InvalidTransaction(format!(
-                        "conditioned output {} rejected: covenants activate at height {}",
-                        i, activation
+                        "[ERRTX008] conditioned output {} (type={:?}) rejected: covenants activate at height {}, current={}",
+                        i, output.output_type, activation, ctx.current_height
                     )));
                 }
                 if output.extra_data.is_empty() {
                     return Err(ValidationError::InvalidTransaction(format!(
-                        "conditioned output {} has empty extra_data",
-                        i
+                        "[ERRTX009] conditioned output {} (type={:?}) has empty extra_data",
+                        i, output.output_type
                     )));
                 }
                 // Validate condition decodes successfully
                 if let Err(e) = crate::conditions::Condition::decode(&output.extra_data) {
                     return Err(ValidationError::InvalidTransaction(format!(
-                        "conditioned output {} has invalid condition: {}",
-                        i, e
+                        "[ERRTX010] conditioned output {} (type={:?}) has invalid condition: {}",
+                        i, output.output_type, e
                     )));
                 }
             }
@@ -348,33 +352,33 @@ pub(super) fn validate_outputs(
                 let activation = ctx.params.covenants_activation_height(&ctx.network);
                 if ctx.current_height < activation {
                     return Err(ValidationError::InvalidTransaction(format!(
-                        "NFT output {} rejected: covenants activate at height {}",
-                        i, activation
+                        "[ERRTX011] NFT output {} rejected: covenants activate at height {}, current={}",
+                        i, activation, ctx.current_height
                     )));
                 }
                 if output.extra_data.is_empty() {
                     return Err(ValidationError::InvalidTransaction(format!(
-                        "NFT output {} has empty extra_data",
+                        "[ERRTX012] NFT output {} has empty extra_data",
                         i
                     )));
                 }
                 if let Err(e) = crate::conditions::Condition::decode_prefix(&output.extra_data) {
                     return Err(ValidationError::InvalidTransaction(format!(
-                        "NFT output {} has invalid condition: {}",
+                        "[ERRTX013] NFT output {} has invalid condition: {}",
                         i, e
                     )));
                 }
                 if output.nft_metadata().is_none() {
                     return Err(ValidationError::InvalidTransaction(format!(
-                        "NFT output {} has invalid or missing NFT metadata",
-                        i
+                        "[ERRTX014] NFT output {} has invalid or missing NFT metadata ({} bytes extra_data)",
+                        i, output.extra_data.len()
                     )));
                 }
                 // Reject duplicate NFT token_ids within the same transaction
                 if let Some((token_id, _)) = output.nft_metadata() {
                     if !seen_nft_token_ids.insert(*token_id.as_bytes()) {
                         return Err(ValidationError::InvalidTransaction(format!(
-                            "duplicate NFT token_id in output {}",
+                            "[ERRTX015] duplicate NFT token_id in output {}",
                             i
                         )));
                     }
@@ -384,26 +388,26 @@ pub(super) fn validate_outputs(
                 let activation = ctx.params.covenants_activation_height(&ctx.network);
                 if ctx.current_height < activation {
                     return Err(ValidationError::InvalidTransaction(format!(
-                        "FungibleAsset output {} rejected: covenants activate at height {}",
-                        i, activation
+                        "[ERRTX016] FungibleAsset output {} rejected: covenants activate at height {}, current={}",
+                        i, activation, ctx.current_height
                     )));
                 }
                 if output.extra_data.is_empty() {
                     return Err(ValidationError::InvalidTransaction(format!(
-                        "FungibleAsset output {} has empty extra_data",
+                        "[ERRTX017] FungibleAsset output {} has empty extra_data",
                         i
                     )));
                 }
                 if let Err(e) = crate::conditions::Condition::decode_prefix(&output.extra_data) {
                     return Err(ValidationError::InvalidTransaction(format!(
-                        "FungibleAsset output {} has invalid condition: {}",
+                        "[ERRTX018] FungibleAsset output {} has invalid condition: {}",
                         i, e
                     )));
                 }
                 if output.fungible_asset_metadata().is_none() {
                     return Err(ValidationError::InvalidTransaction(format!(
-                        "FungibleAsset output {} has invalid or missing asset metadata",
-                        i
+                        "[ERRTX019] FungibleAsset output {} has invalid or missing asset metadata ({} bytes extra_data)",
+                        i, output.extra_data.len()
                     )));
                 }
             }
@@ -411,33 +415,33 @@ pub(super) fn validate_outputs(
                 let activation = ctx.params.covenants_activation_height(&ctx.network);
                 if ctx.current_height < activation {
                     return Err(ValidationError::InvalidTransaction(format!(
-                        "BridgeHTLC output {} rejected: covenants activate at height {}",
-                        i, activation
+                        "[ERRTX020] BridgeHTLC output {} rejected: covenants activate at height {}, current={}",
+                        i, activation, ctx.current_height
                     )));
                 }
                 if output.extra_data.is_empty() {
                     return Err(ValidationError::InvalidTransaction(format!(
-                        "BridgeHTLC output {} has empty extra_data",
+                        "[ERRTX021] BridgeHTLC output {} has empty extra_data",
                         i
                     )));
                 }
                 if let Err(e) = crate::conditions::Condition::decode_prefix(&output.extra_data) {
                     return Err(ValidationError::InvalidTransaction(format!(
-                        "BridgeHTLC output {} has invalid condition: {}",
+                        "[ERRTX022] BridgeHTLC output {} has invalid condition: {}",
                         i, e
                     )));
                 }
                 if output.bridge_htlc_metadata().is_none() {
                     return Err(ValidationError::InvalidTransaction(format!(
-                        "BridgeHTLC output {} has invalid or missing bridge metadata",
-                        i
+                        "[ERRTX023] BridgeHTLC output {} has invalid or missing bridge metadata ({} bytes extra_data)",
+                        i, output.extra_data.len()
                     )));
                 }
             }
             OutputType::Pool => {
                 if output.extra_data.len() < crate::transaction::POOL_METADATA_SIZE {
                     return Err(ValidationError::InvalidTransaction(format!(
-                        "Pool output {} has invalid extra_data size: {} < {}",
+                        "[ERRTX024] Pool output {} has invalid extra_data size: {} < {}",
                         i,
                         output.extra_data.len(),
                         crate::transaction::POOL_METADATA_SIZE
@@ -445,29 +449,32 @@ pub(super) fn validate_outputs(
                 }
                 if output.pool_metadata().is_none() {
                     return Err(ValidationError::InvalidTransaction(format!(
-                        "Pool output {} has invalid or undecodable metadata",
-                        i
+                        "[ERRTX025] Pool output {} has invalid or undecodable metadata ({} bytes extra_data)",
+                        i, output.extra_data.len()
                     )));
                 }
             }
             OutputType::LPShare => {
                 if output.extra_data.len() < crate::transaction::LP_SHARE_METADATA_SIZE {
                     return Err(ValidationError::InvalidTransaction(format!(
-                        "LPShare output {} has invalid extra_data size",
-                        i
+                        "[ERRTX026] LPShare output {} has invalid extra_data size: {} < {}",
+                        i,
+                        output.extra_data.len(),
+                        crate::transaction::LP_SHARE_METADATA_SIZE
                     )));
                 }
                 if output.lp_share_metadata().is_none() {
                     return Err(ValidationError::InvalidTransaction(format!(
-                        "LPShare output {} has invalid metadata",
-                        i
+                        "[ERRTX027] LPShare output {} has invalid metadata ({} bytes extra_data)",
+                        i,
+                        output.extra_data.len()
                     )));
                 }
             }
             OutputType::Collateral => {
                 if output.extra_data.len() < crate::transaction::COLLATERAL_METADATA_SIZE {
                     return Err(ValidationError::InvalidTransaction(format!(
-                        "Collateral output {} has invalid extra_data size: {} < {}",
+                        "[ERRTX028] Collateral output {} has invalid extra_data size: {} < {}",
                         i,
                         output.extra_data.len(),
                         crate::transaction::COLLATERAL_METADATA_SIZE
@@ -475,15 +482,15 @@ pub(super) fn validate_outputs(
                 }
                 if output.collateral_metadata().is_none() {
                     return Err(ValidationError::InvalidTransaction(format!(
-                        "Collateral output {} has invalid or undecodable metadata",
-                        i
+                        "[ERRTX029] Collateral output {} has invalid or undecodable metadata ({} bytes extra_data)",
+                        i, output.extra_data.len()
                     )));
                 }
             }
             OutputType::LendingDeposit => {
                 if output.extra_data.len() < crate::transaction::LENDING_DEPOSIT_METADATA_SIZE {
                     return Err(ValidationError::InvalidTransaction(format!(
-                        "LendingDeposit output {} has invalid extra_data size: {} < {}",
+                        "[ERRTX030] LendingDeposit output {} has invalid extra_data size: {} < {}",
                         i,
                         output.extra_data.len(),
                         crate::transaction::LENDING_DEPOSIT_METADATA_SIZE
@@ -491,8 +498,8 @@ pub(super) fn validate_outputs(
                 }
                 if output.lending_deposit_metadata().is_none() {
                     return Err(ValidationError::InvalidTransaction(format!(
-                        "LendingDeposit output {} has invalid or undecodable metadata",
-                        i
+                        "[ERRTX031] LendingDeposit output {} has invalid or undecodable metadata ({} bytes extra_data)",
+                        i, output.extra_data.len()
                     )));
                 }
             }
@@ -501,8 +508,8 @@ pub(super) fn validate_outputs(
         // Pubkey hash must not be zero (except for burn address)
         if output.pubkey_hash == Hash::ZERO {
             return Err(ValidationError::InvalidTransaction(format!(
-                "output {} has zero pubkey_hash",
-                i
+                "[ERRTX032] output {} has zero pubkey_hash (type={:?}, amount={})",
+                i, output.output_type, output.amount
             )));
         }
     }

@@ -13,9 +13,12 @@ impl ProducerSet {
         pubkey: &PublicKey,
         current_height: u64,
     ) -> Result<(), StorageError> {
-        let info = self
-            .get_by_pubkey_mut(pubkey)
-            .ok_or_else(|| StorageError::NotFound("Producer not found".to_string()))?;
+        let info = self.get_by_pubkey_mut(pubkey).ok_or_else(|| {
+            StorageError::NotFound(format!(
+                "[STOR001] producer not found for exit request (pubkey={})",
+                pubkey
+            ))
+        })?;
 
         let key = crypto_hash(pubkey.as_bytes());
         match info.status {
@@ -29,15 +32,18 @@ impl ProducerSet {
                     .push(key);
                 Ok(())
             }
-            ProducerStatus::Unbonding { .. } => Err(StorageError::AlreadyExists(
-                "Already in unbonding".to_string(),
-            )),
-            ProducerStatus::Exited => {
-                Err(StorageError::AlreadyExists("Already exited".to_string()))
-            }
-            ProducerStatus::Slashed { .. } => Err(StorageError::AlreadyExists(
-                "Producer was slashed".to_string(),
-            )),
+            ProducerStatus::Unbonding { .. } => Err(StorageError::AlreadyExists(format!(
+                "[STOR002] producer already in unbonding (pubkey={})",
+                pubkey
+            ))),
+            ProducerStatus::Exited => Err(StorageError::AlreadyExists(format!(
+                "[STOR003] producer already exited (pubkey={})",
+                pubkey
+            ))),
+            ProducerStatus::Slashed { .. } => Err(StorageError::AlreadyExists(format!(
+                "[STOR004] producer was slashed (pubkey={})",
+                pubkey
+            ))),
         }
     }
 
@@ -57,9 +63,12 @@ impl ProducerSet {
     /// - InvalidState: Producer is not in unbonding (already active, exited, or slashed)
     pub fn cancel_exit(&mut self, pubkey: &PublicKey) -> Result<(), StorageError> {
         let key = crypto_hash(pubkey.as_bytes());
-        let info = self
-            .get_by_pubkey_mut(pubkey)
-            .ok_or_else(|| StorageError::NotFound("Producer not found".to_string()))?;
+        let info = self.get_by_pubkey_mut(pubkey).ok_or_else(|| {
+            StorageError::NotFound(format!(
+                "[STOR005] producer not found for cancel_exit (pubkey={})",
+                pubkey
+            ))
+        })?;
 
         match info.status {
             ProducerStatus::Unbonding { started_at } => {
@@ -74,15 +83,18 @@ impl ProducerSet {
                 }
                 Ok(())
             }
-            ProducerStatus::Active => Err(StorageError::AlreadyExists(
-                "Not in unbonding - already active".to_string(),
-            )),
-            ProducerStatus::Exited => Err(StorageError::NotFound(
-                "Cannot cancel - already exited".to_string(),
-            )),
-            ProducerStatus::Slashed { .. } => Err(StorageError::NotFound(
-                "Cannot cancel - producer was slashed".to_string(),
-            )),
+            ProducerStatus::Active => Err(StorageError::AlreadyExists(format!(
+                "[STOR006] cannot cancel exit — producer already active (pubkey={})",
+                pubkey
+            ))),
+            ProducerStatus::Exited => Err(StorageError::NotFound(format!(
+                "[STOR007] cannot cancel exit — producer already exited (pubkey={})",
+                pubkey
+            ))),
+            ProducerStatus::Slashed { .. } => Err(StorageError::NotFound(format!(
+                "[STOR008] cannot cancel exit — producer was slashed (pubkey={})",
+                pubkey
+            ))),
         }
     }
 
@@ -146,9 +158,12 @@ impl ProducerSet {
         current_height: u64,
     ) -> Result<u64, StorageError> {
         let key = crypto_hash(pubkey.as_bytes());
-        let info = self
-            .get_by_pubkey_mut(pubkey)
-            .ok_or_else(|| StorageError::NotFound("Producer not found".to_string()))?;
+        let info = self.get_by_pubkey_mut(pubkey).ok_or_else(|| {
+            StorageError::NotFound(format!(
+                "[STOR009] producer not found for slash (pubkey={})",
+                pubkey
+            ))
+        })?;
 
         let slashed_amount = info.bond_amount;
         info.slash(current_height);
@@ -176,9 +191,12 @@ impl ProducerSet {
         current_height: u64,
         new_era: u32,
     ) -> Result<u64, StorageError> {
-        let info = self
-            .get_by_pubkey_mut(pubkey)
-            .ok_or_else(|| StorageError::NotFound("Producer not found".to_string()))?;
+        let info = self.get_by_pubkey_mut(pubkey).ok_or_else(|| {
+            StorageError::NotFound(format!(
+                "[STOR010] producer not found for renew (pubkey={})",
+                pubkey
+            ))
+        })?;
 
         // Return old bond amount for release
         let old_bond = info.bond_amount;

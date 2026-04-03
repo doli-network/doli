@@ -403,13 +403,17 @@ impl StateDb {
 
             let entry_bytes = self.db.get_cf(cf_utxo, &key)?.ok_or_else(|| {
                 StorageError::NotFound(format!(
-                    "UTXO not found: {}:{}",
+                    "[STOR016] UTXO not found in state_db: {}:{}",
                     input.prev_tx_hash, input.output_index
                 ))
             })?;
 
-            let entry: UtxoEntry = bincode::deserialize(&entry_bytes)
-                .map_err(|e| StorageError::Serialization(e.to_string()))?;
+            let entry: UtxoEntry = bincode::deserialize(&entry_bytes).map_err(|e| {
+                StorageError::Serialization(format!(
+                    "[STOR017] UTXO deserialize failed in state_db for {}:{}: {}",
+                    input.prev_tx_hash, input.output_index, e
+                ))
+            })?;
 
             total_input += entry.output.amount;
 

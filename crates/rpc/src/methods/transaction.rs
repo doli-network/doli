@@ -36,13 +36,13 @@ impl RpcContext {
             .block_store
             .get_tx_block_height(&hash)
             .map_err(|e| RpcError::internal_error(e.to_string()))?
-            .ok_or_else(RpcError::tx_not_found)?;
+            .ok_or_else(|| RpcError::tx_not_found_by_hash(&params.hash))?;
 
         let block = self
             .block_store
             .get_block_by_height(height)
             .map_err(|e| RpcError::internal_error(e.to_string()))?
-            .ok_or_else(RpcError::tx_not_found)?;
+            .ok_or_else(|| RpcError::tx_not_found_by_hash(&params.hash))?;
 
         let block_hash = block.hash().to_hex();
         let best_height = self.chain_state.read().await.best_height;
@@ -72,7 +72,7 @@ impl RpcContext {
             }
         }
 
-        Err(RpcError::tx_not_found())
+        Err(RpcError::tx_not_found_by_hash(&params.hash))
     }
 
     /// Resolve input addresses by looking up referenced outputs

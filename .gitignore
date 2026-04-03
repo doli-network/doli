@@ -48,6 +48,13 @@ swap.db
 *.log
 *.log.*
 
+# OMEGA runtime data
+.omega/.cortex-key
+.omega/.cortex-private-key
+.omega/memory.db
+.omega/memory.db-shm
+.omega/memory.db-wal
+
 # Keys and credentials
 *.json.key
 *.seed.txt
@@ -56,3 +63,5 @@ swap.db
 # Internal docs (contain infrastructure details)
 LAUNCH_CHECKLIST.internal.md
 *.internal.md
+.omega/cortex-config.json
+.omega/.pending-imports.jsonl

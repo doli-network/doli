@@ -204,7 +204,11 @@ impl Node {
                                 hex::encode(&block.header.producer.as_bytes()[..4]),
                                 e2,
                             );
-                            anyhow::bail!("Cached chain contains invalid producer: {}", e2);
+                            anyhow::bail!("[FORK_INVALID_PRODUCER] cached block at slot={} has invalid producer {}: {}",
+                                block.header.slot,
+                                hex::encode(&block.header.producer.as_bytes()[..4]),
+                                e2
+                            );
                         }
                         info!(
                             "[FORK] Scheduler auto-heal successful — block accepted after rebuild"
@@ -246,7 +250,7 @@ impl Node {
 
         // Couldn't build complete chain - maybe we need to sync from peers
         // This will be handled by the normal sync process
-        anyhow::bail!("Could not build complete chain from cached blocks")
+        anyhow::bail!("[FORK_CHAIN_INCOMPLETE] could not build complete chain from {} cached blocks (missing parent)", chain.len())
     }
 
     /// Force resync from genesis (devnet/testnet recovery mechanism)
@@ -397,10 +401,14 @@ impl Node {
             &chain_state_bytes,
             &utxo_set_bytes,
             &producer_set_bytes,
-        );
-        if computed_root == Hash::ZERO {
-            anyhow::bail!("Checkpoint state deserialization failed (computed root = ZERO)");
-        }
+        )
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "Checkpoint state deserialization failed at height={}: {}",
+                block_height,
+                e
+            )
+        })?;
         if computed_root != received_state_root {
             anyhow::bail!(
                 "Checkpoint state root mismatch: computed={} received={}",
@@ -571,11 +579,21 @@ impl Node {
         );
 
         // Step 1: Verify state root (node-side, since network crate has no storage dep)
-        let computed_root = storage::compute_state_root_from_bytes(
+        let computed_root = match storage::compute_state_root_from_bytes(
             &snapshot.chain_state,
             &snapshot.utxo_set,
             &snapshot.producer_set,
-        );
+        ) {
+            Ok(root) => root,
+            Err(e) => {
+                error!(
+                    "[SNAP_SYNC] Snapshot deserialization failed at height={}: {} — rejecting",
+                    snapshot.block_height, e
+                );
+                self.sync_manager.write().await.snap_fallback_to_normal();
+                return Ok(());
+            }
+        };
         if computed_root != snapshot.state_root {
             error!(
                 "[SNAP_SYNC] State root mismatch! computed={}, expected={} — rejecting",
