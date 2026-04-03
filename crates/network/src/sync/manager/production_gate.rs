@@ -392,6 +392,21 @@ impl SyncManager {
         self.bootstrap_grace_period_secs = secs;
     }
 
+    /// Enable discv5 peer discovery grace period for snap sync.
+    ///
+    /// When discv5 is active, the sync engine waits up to `secs` seconds for
+    /// discv5 to discover enough peers (3+) before falling back to header-first.
+    /// Without this, the sync engine may start header-first sync before discv5
+    /// completes its first random walk (~5-30s), missing the snap sync path.
+    pub fn set_discv5_peer_grace(&mut self, secs: u64) {
+        self.snap.discv5_peer_grace_deadline =
+            Some(std::time::Instant::now() + std::time::Duration::from_secs(secs));
+        info!(
+            "[DISCV5] Snap sync peer grace: waiting up to {}s for peer discovery",
+            secs
+        );
+    }
+
     /// Set the minimum peers required for production (P0 #5 echo chamber prevention)
     ///
     /// - For mainnet/testnet: 2 (default) - require multiple peers to prevent echo chambers
