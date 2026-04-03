@@ -96,6 +96,15 @@ pub use sync::{
 pub use libp2p::request_response::ResponseChannel;
 pub use libp2p::{Multiaddr, PeerId};
 
+/// Extract PeerId from a multiaddr string like "/ip4/127.0.0.1/tcp/30300/p2p/12D3KooW..."
+pub fn extract_peer_id_from_multiaddr(addr: &str) -> Option<PeerId> {
+    let ma: Multiaddr = addr.parse().ok()?;
+    ma.iter().find_map(|p| match p {
+        libp2p::multiaddr::Protocol::P2p(pid) => Some(pid),
+        _ => None,
+    })
+}
+
 /// Default P2P port for DOLI nodes.
 ///
 /// Nodes listen on this port by default for incoming peer connections.

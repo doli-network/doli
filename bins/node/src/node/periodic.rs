@@ -615,6 +615,39 @@ impl Node {
             }
         }
 
+        // SEED RELEASE: Disconnect from seed/bootstrap nodes after DHT bootstrap + gossip verified.
+        // Frees seed peer slots so the network scales without the seed as a bottleneck.
+        // Conditions (all must be true):
+        //   1. Not already released
+        //   2. Have seed peer IDs to release
+        //   3. Have 5+ peers from DHT (enough to maintain gossip mesh)
+        //   4. Receiving blocks via gossip (network_tip_height > local_height - 2)
+        //   5. Not a seed/relay node ourselves (they need to stay connected)
+        if !self.seeds_released && !self.seed_peer_ids.is_empty() {
+            let sync = self.sync_manager.read().await;
+            let peer_count = sync.peer_count();
+            let net_tip = sync.network_tip_height();
+            let local_h = self.chain_state.read().await.best_height;
+            drop(sync);
+
+            let has_enough_peers = peer_count >= 5;
+            let receiving_blocks = net_tip > 0 && local_h > 0 && net_tip >= local_h.saturating_sub(2);
+            let is_relay = self.config.relay_server;
+
+            if has_enough_peers && receiving_blocks && !is_relay {
+                if let Some(ref net) = self.network {
+                    for seed_id in &self.seed_peer_ids {
+                        let _ = net.disconnect(*seed_id).await;
+                    }
+                    info!(
+                        "[SEED_RELEASE] Disconnected from {} seed(s) — DHT has {} peers, receiving blocks at h={}",
+                        self.seed_peer_ids.len(), peer_count, local_h
+                    );
+                }
+                self.seeds_released = true;
+            }
+        }
+
         Ok(())
     }
 }
