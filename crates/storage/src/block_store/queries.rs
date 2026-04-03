@@ -39,10 +39,11 @@ impl BlockStore {
 
         let header: BlockHeader = bincode::deserialize(&header_bytes)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
-        let (transactions, bls_sig) = deserialize_body(&body_bytes)?;
+        let (transactions, bls_sig, bitfield) = deserialize_body(&body_bytes)?;
 
         let mut block = Block::new(header, transactions);
         block.aggregate_bls_signature = bls_sig;
+        block.attestation_bitfield = bitfield;
         Ok(Some(block))
     }
 

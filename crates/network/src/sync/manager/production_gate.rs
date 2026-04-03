@@ -6,9 +6,7 @@ use std::time::Instant;
 
 use tracing::{debug, info, warn};
 
-use super::{
-    ProductionAuthorization, SyncManager, MIN_PEERS_TIER1, MIN_PEERS_TIER2, MIN_PEERS_TIER3,
-};
+use super::{ProductionAuthorization, SyncManager};
 
 impl SyncManager {
     // =========================================================================
@@ -426,46 +424,6 @@ impl SyncManager {
     pub fn set_gossip_activity_timeout_secs(&mut self, secs: u64) {
         self.gossip_activity_timeout_secs = secs;
         info!("Set gossip_activity_timeout_secs to {} seconds", secs);
-    }
-
-    /// Set the producer tier and adjust min_peers_for_production accordingly.
-    ///
-    /// Tier 1 validators need more peers (dense mesh), Tier 3 stakers need fewer.
-    /// The `active_producer_count` caps min_peers so small networks aren't deadlocked
-    /// (a node can have at most `active_producer_count - 1` peers).
-    pub fn set_tier(&mut self, tier: u8, active_producer_count: usize) {
-        self.tier = tier;
-
-        // Tier-based min_peers only applies to large networks (500+ producers).
-        // In small networks ALL producers are trivially "Tier 1", but the Tier 1
-        // min_peers (3) is designed for dense validator meshes at scale.
-        // Keep the default min_peers (2) until the network grows enough for
-        // tiering to be meaningful.
-        if active_producer_count < 500 {
-            info!(
-                "Set tier={} min_peers_for_production={} (skipped tier override: network_size={} < 500)",
-                tier, self.min_peers_for_production, active_producer_count
-            );
-            return;
-        }
-
-        let tier_min = match tier {
-            1 => MIN_PEERS_TIER1,
-            2 => MIN_PEERS_TIER2,
-            3 => MIN_PEERS_TIER3,
-            _ => MIN_PEERS_TIER3, // Default: backward compatible
-        };
-        let max_possible = active_producer_count.saturating_sub(1).max(1);
-        self.min_peers_for_production = tier_min.min(max_possible);
-        info!(
-            "Set tier={} min_peers_for_production={} (tier_req={}, network_size={})",
-            tier, self.min_peers_for_production, tier_min, active_producer_count
-        );
-    }
-
-    /// Get the current tier.
-    pub fn tier(&self) -> u8 {
-        self.tier
     }
 
     // =========================================================================

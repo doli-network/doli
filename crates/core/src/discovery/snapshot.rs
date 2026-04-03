@@ -6,7 +6,7 @@
 use crypto::{Hash, PublicKey};
 use serde::{Deserialize, Serialize};
 
-use crate::consensus::{NUM_REGIONS, SLOTS_PER_EPOCH};
+use crate::consensus::SLOTS_PER_EPOCH;
 
 /// Compact snapshot of the producer set at an epoch boundary.
 ///
@@ -18,10 +18,8 @@ pub struct EpochSnapshot {
     pub epoch: u64,
     /// Merkle root of the sorted producer set (deterministic).
     pub merkle_root: Hash,
-    /// Tier 1 validator set (top N by effective weight).
-    pub tier1_set: Vec<PublicKey>,
-    /// Tier 2 regional assignment: NUM_REGIONS entries, each a list of producers.
-    pub tier2_regions: Vec<Vec<PublicKey>>,
+    /// All active producer public keys (sorted by pubkey bytes).
+    pub active_producers: Vec<PublicKey>,
     /// Total number of active producers.
     pub total_producers: u64,
     /// Total effective weight across all active producers.
@@ -33,23 +31,15 @@ impl EpochSnapshot {
     ///
     /// # Arguments
     /// - `epoch`: The epoch this snapshot represents
-    /// - `tier1_set`: Computed Tier 1 validator set
     /// - `all_producers`: All active producer public keys (sorted)
     /// - `total_weight`: Sum of all effective weights
-    pub fn new(
-        epoch: u64,
-        tier1_set: Vec<PublicKey>,
-        all_producers: &[PublicKey],
-        total_weight: u64,
-    ) -> Self {
+    pub fn new(epoch: u64, all_producers: &[PublicKey], total_weight: u64) -> Self {
         let merkle_root = Self::compute_merkle_root(all_producers);
-        let tier2_regions = Self::assign_regions(all_producers, &tier1_set);
 
         Self {
             epoch,
             merkle_root,
-            tier1_set,
-            tier2_regions,
+            active_producers: all_producers.to_vec(),
             total_producers: all_producers.len() as u64,
             total_weight,
         }
@@ -67,26 +57,6 @@ impl EpochSnapshot {
             .collect();
 
         crypto::merkle::merkle_root_from_hashes(&leaves).unwrap_or(Hash::ZERO)
-    }
-
-    /// Assign non-Tier1 producers to regions using deterministic hashing.
-    fn assign_regions(all_producers: &[PublicKey], tier1_set: &[PublicKey]) -> Vec<Vec<PublicKey>> {
-        let mut regions: Vec<Vec<PublicKey>> = (0..NUM_REGIONS).map(|_| Vec::new()).collect();
-        // HashSet for O(1) lookup instead of O(n) per producer
-        let tier1: std::collections::HashSet<&PublicKey> = tier1_set.iter().collect();
-
-        for pk in all_producers {
-            // Skip Tier 1 producers (they don't have regional assignment)
-            if tier1.contains(pk) {
-                continue;
-            }
-            let region = crate::consensus::producer_region(pk);
-            if let Some(bucket) = regions.get_mut(region as usize) {
-                bucket.push(*pk);
-            }
-        }
-
-        regions
     }
 
     /// Compute the epoch number from a block height.
@@ -146,25 +116,12 @@ mod tests {
     }
 
     #[test]
-    fn test_snapshot_region_assignment() {
+    fn test_snapshot_construction() {
         let all = make_keys(20);
-        let tier1 = all[0..3].to_vec(); // First 3 are Tier 1
-
-        let snapshot = EpochSnapshot::new(1, tier1.clone(), &all, 100);
-
-        assert_eq!(snapshot.tier2_regions.len(), NUM_REGIONS as usize);
-        // Tier 1 producers should NOT appear in any region
-        for region in &snapshot.tier2_regions {
-            for pk in region {
-                assert!(
-                    !tier1.contains(pk),
-                    "Tier1 producer should not be in regions"
-                );
-            }
-        }
-        // Total producers in all regions should be all_producers - tier1
-        let total_in_regions: usize = snapshot.tier2_regions.iter().map(|r| r.len()).sum();
-        assert_eq!(total_in_regions, 17); // 20 - 3
+        let snapshot = EpochSnapshot::new(1, &all, 100);
+        assert_eq!(snapshot.active_producers.len(), 20);
+        assert_eq!(snapshot.total_producers, 20);
+        assert_eq!(snapshot.total_weight, 100);
     }
 
     #[test]

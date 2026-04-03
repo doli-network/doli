@@ -46,8 +46,18 @@ impl Node {
                 }
 
                 let minute = attestation_minute(block.header.slot);
-                let indices =
-                    decode_attestation_bitfield(&block.header.presence_root, producer_count);
+                let indices = if h >= doli_core::consensus::BITFIELD_BODY_ACTIVATION_HEIGHT
+                    && !block.attestation_bitfield.is_empty()
+                {
+                    // Post-activation: decode from body bitfield (no 256 cap)
+                    doli_core::decode_attestation_bitfield_vec(
+                        &block.attestation_bitfield,
+                        producer_count,
+                    )
+                } else {
+                    // Pre-activation: decode from presence_root (capped at 256)
+                    decode_attestation_bitfield(&block.header.presence_root, producer_count)
+                };
 
                 // Union: for each producer index attested in this block, add the minute
                 for idx in indices {

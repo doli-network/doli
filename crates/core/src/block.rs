@@ -146,6 +146,15 @@ pub struct Block {
     /// Stored in body (not header) to keep header hash stable.
     #[serde(default)]
     pub aggregate_bls_signature: Vec<u8>,
+    /// Attestation bitfield (post-BITFIELD_BODY_ACTIVATION_HEIGHT).
+    ///
+    /// Variable-length bitfield: ceil(producer_count / 8) bytes.
+    /// Bit N = 1 means producer at index N (sorted by pubkey) attested.
+    /// No 256-producer cap (unlike the old header-packed format).
+    /// `header.presence_root = BLAKE3(attestation_bitfield)` commits to this data.
+    /// Empty for pre-activation blocks (backward compat via serde default).
+    #[serde(default)]
+    pub attestation_bitfield: Vec<u8>,
 }
 
 impl Block {
@@ -155,6 +164,7 @@ impl Block {
             header,
             transactions,
             aggregate_bls_signature: Vec::new(),
+            attestation_bitfield: Vec::new(),
         }
     }
 

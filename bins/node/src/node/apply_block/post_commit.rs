@@ -1,12 +1,11 @@
 use super::*;
 
 impl Node {
-    /// Actions performed after the batch commit: tier recompute, epoch snapshot,
+    /// Actions performed after the batch commit: active-list recompute, epoch snapshot,
     /// attestation, archive buffering, and websocket broadcast.
     pub async fn post_commit_actions(&mut self, block: &Block, block_hash: Hash, height: u64) {
-        // Recompute our tier at epoch boundaries and build EpochSnapshot
-        // (moved after batch commit to avoid borrow conflict with BlockBatch)
-        self.recompute_tier(height).await;
+        // Recompute whether we are in the active production list at epoch boundaries
+        self.recompute_active_status(height).await;
         let blocks_per_epoch = self.config.network.blocks_per_reward_epoch();
         if doli_core::EpochSnapshot::is_epoch_boundary_with(height, blocks_per_epoch) {
             let epoch = doli_core::EpochSnapshot::epoch_from_height_with(height, blocks_per_epoch);
@@ -17,12 +16,11 @@ impl Node {
                 .map(|p| (p.public_key, p.selection_weight()))
                 .collect();
             let total_w: u64 = pws.iter().map(|(_, w)| *w).sum();
-            let tier1 = compute_tier1_set(&pws);
             let mut all_pks: Vec<PublicKey> = pws.into_iter().map(|(pk, _)| pk).collect();
             all_pks.sort_unstable_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
             drop(producers);
 
-            let snapshot = doli_core::EpochSnapshot::new(epoch, tier1, &all_pks, total_w);
+            let snapshot = doli_core::EpochSnapshot::new(epoch, &all_pks, total_w);
             info!(
                 "EpochSnapshot built: epoch={}, producers={}, weight={}, merkle={}",
                 epoch, snapshot.total_producers, snapshot.total_weight, snapshot.merkle_root
@@ -92,12 +90,24 @@ impl Node {
                         if let Ok(Some(blk)) = self.block_store.get_block_by_height(h) {
                             // Block producer attested by producing
                             attested.insert(blk.header.producer);
-                            // Decode presence_root for explicit attestations
+                            // Decode attestation bitfield
                             if !blk.header.presence_root.is_zero() {
-                                let indices = decode_attestation_bitfield(
-                                    &blk.header.presence_root,
-                                    sorted_for_decode.len(),
-                                );
+                                let indices = if h
+                                    >= doli_core::consensus::BITFIELD_BODY_ACTIVATION_HEIGHT
+                                    && !blk.attestation_bitfield.is_empty()
+                                {
+                                    // Post-activation: decode from body (no 256 cap)
+                                    doli_core::decode_attestation_bitfield_vec(
+                                        &blk.attestation_bitfield,
+                                        sorted_for_decode.len(),
+                                    )
+                                } else {
+                                    // Pre-activation: decode from presence_root
+                                    decode_attestation_bitfield(
+                                        &blk.header.presence_root,
+                                        sorted_for_decode.len(),
+                                    )
+                                };
                                 for idx in indices {
                                     if let Some(pk) = sorted_for_decode.get(idx) {
                                         attested.insert(*pk);
@@ -152,7 +162,7 @@ impl Node {
                 // Before activation: all producers in round-robin (identical to epoch_producer_list).
                 // After activation: first ACTIVE_PRODUCERS_CAP by registered_at (earliest first).
                 // Attestors outside the cap still receive bond-weighted epoch rewards.
-                use doli_core::consensus::{TIER_SYSTEM_ACTIVATION_HEIGHT, ACTIVE_PRODUCERS_CAP};
+                use doli_core::consensus::{ACTIVE_PRODUCERS_CAP, TIER_SYSTEM_ACTIVATION_HEIGHT};
                 if height >= TIER_SYSTEM_ACTIVATION_HEIGHT
                     && self.epoch_producer_list.len() > ACTIVE_PRODUCERS_CAP
                 {

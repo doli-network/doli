@@ -108,26 +108,43 @@ pub fn compute_state_root_from_bytes(
     let cs: ChainState = match bincode::deserialize(chain_state_bytes) {
         Ok(cs) => cs,
         Err(e) => {
-            tracing::error!("[SNAP_ROOT] chain_state deserialize FAILED: {} (bytes={})", e, chain_state_bytes.len());
+            tracing::error!(
+                "[SNAP_ROOT] chain_state deserialize FAILED: {} (bytes={})",
+                e,
+                chain_state_bytes.len()
+            );
             return Hash::ZERO;
         }
     };
     let ps: ProducerSet = match bincode::deserialize(producer_set_bytes) {
         Ok(ps) => ps,
         Err(e) => {
-            tracing::error!("[SNAP_ROOT] producer_set deserialize FAILED: {} (bytes={})", e, producer_set_bytes.len());
+            tracing::error!(
+                "[SNAP_ROOT] producer_set deserialize FAILED: {} (bytes={})",
+                e,
+                producer_set_bytes.len()
+            );
             return Hash::ZERO;
         }
     };
     let utxo = match UtxoSet::deserialize_canonical(utxo_set_bytes) {
         Ok(u) => u,
         Err(e) => {
-            tracing::error!("[SNAP_ROOT] utxo_set deserialize FAILED: {} (bytes={})", e, utxo_set_bytes.len());
+            tracing::error!(
+                "[SNAP_ROOT] utxo_set deserialize FAILED: {} (bytes={})",
+                e,
+                utxo_set_bytes.len()
+            );
             return Hash::ZERO;
         }
     };
-    tracing::debug!("[SNAP_ROOT] All deserialized OK: chain_state={}B, utxo={}B ({}), producer={}B",
-        chain_state_bytes.len(), utxo_set_bytes.len(), utxo.len(), producer_set_bytes.len());
+    tracing::debug!(
+        "[SNAP_ROOT] All deserialized OK: chain_state={}B, utxo={}B ({}), producer={}B",
+        chain_state_bytes.len(),
+        utxo_set_bytes.len(),
+        utxo.len(),
+        producer_set_bytes.len()
+    );
     match compute_state_root(&cs, &utxo, &ps) {
         Ok(root) => root,
         Err(e) => {

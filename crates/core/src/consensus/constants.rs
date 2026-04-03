@@ -54,6 +54,13 @@ pub fn reward_pool_pubkey_hash() -> crypto::Hash {
 /// Consensus-breaking — all nodes must update before this height.
 pub const EPOCH_REWARD_EXPLICIT_INPUTS_HEIGHT: u64 = 8_450;
 
+/// Bitfield body activation height.
+/// Before this height: attestation bitfield stored in `presence_root` (header), capped at 256 producers.
+/// After this height: attestation bitfield stored in `block.attestation_bitfield` (body), no cap.
+/// `presence_root` becomes `BLAKE3(attestation_bitfield)` as a commitment.
+/// Consensus-breaking — all nodes must update before this height.
+pub const BITFIELD_BODY_ACTIVATION_HEIGHT: u64 = 8_500;
+
 /// Tier system activation height.
 /// Before this height: all producers participate in round-robin (current behavior).
 /// After this height: only the first ACTIVE_PRODUCERS_CAP producers (by registered_at)
@@ -438,23 +445,12 @@ pub const MAX_FALLBACK_RANKS: usize = 2;
 /// Nodes with drift > 200ms should enable NTP synchronization.
 pub const MAX_DRIFT_MS: u64 = 200;
 
-// ==================== Tiered Architecture Constants ====================
+// ==================== Delegation Constants ====================
 
-/// Maximum Tier 1 validator count. Top N producers by effective_weight.
-/// 500 nodes: O(log 500) = ~9 comparisons, 2-hop gossip in ~120ms.
-pub const TIER1_MAX_VALIDATORS: usize = 500;
-
-/// Maximum Tier 2 attestor count. Validate blocks and produce attestations.
-pub const TIER2_MAX_ATTESTORS: usize = 15_000;
-
-/// Number of gossip regions for Tier 2 sharding.
-/// Each region has ~1,000 attestors with its own mesh.
-pub const NUM_REGIONS: u32 = 15;
-
-/// Percentage of block reward kept by the delegate (Tier 1/2 node).
+/// Percentage of block reward kept by the delegate.
 pub const DELEGATE_REWARD_PCT: u32 = 10;
 
-/// Percentage of block reward distributed to stakers (Tier 3 delegators).
+/// Percentage of block reward distributed to stakers (delegators).
 pub const STAKER_REWARD_PCT: u32 = 90;
 
 /// Unbonding period for delegation revocation (in slots).

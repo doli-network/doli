@@ -138,7 +138,7 @@ pub struct RegionAggregate {
     pub block_hash: Hash,
     /// Slot of the attested block.
     pub slot: u32,
-    /// Region index (0..NUM_REGIONS).
+    /// Region index for gossip sharding.
     pub region: u32,
     /// Number of attestors who signed.
     pub attester_count: u32,
@@ -271,6 +271,68 @@ pub fn encode_attestation_bitfield(attested_indices: &[usize]) -> Hash {
         }
     }
     Hash::from_bytes(bytes)
+}
+
+/// Encode an attestation bitfield into a Vec<u8> (no 256-producer cap).
+///
+/// Used for post-BITFIELD_BODY_ACTIVATION_HEIGHT blocks where the bitfield
+/// is stored in the block body instead of packed into the 32-byte presence_root.
+///
+/// `attested_indices` are indices into the sorted producer list.
+/// `producer_count` determines the length of the output (ceil(producer_count / 8) bytes).
+pub fn encode_attestation_bitfield_vec(
+    attested_indices: &[usize],
+    producer_count: usize,
+) -> Vec<u8> {
+    let byte_count = producer_count.div_ceil(8);
+    let mut bytes = vec![0u8; byte_count];
+    for &idx in attested_indices {
+        if idx < producer_count {
+            bytes[idx / 8] |= 1 << (idx % 8);
+        }
+    }
+    bytes
+}
+
+/// Decode attestation bitfield from a Vec<u8> (no 256-producer cap).
+///
+/// Used for post-BITFIELD_BODY_ACTIVATION_HEIGHT blocks where the bitfield
+/// is stored in the block body.
+///
+/// Returns indices of producers that attested.
+/// `producer_count` limits the scan range.
+pub fn decode_attestation_bitfield_vec(bitfield: &[u8], producer_count: usize) -> Vec<usize> {
+    let mut indices = Vec::new();
+    for idx in 0..producer_count {
+        let byte_idx = idx / 8;
+        if byte_idx >= bitfield.len() {
+            break;
+        }
+        if bitfield[byte_idx] & (1 << (idx % 8)) != 0 {
+            indices.push(idx);
+        }
+    }
+    indices
+}
+
+/// Validate a body attestation bitfield: no bits set beyond `producer_count`.
+pub fn validate_attestation_bitfield_vec(bitfield: &[u8], producer_count: usize) -> bool {
+    let expected_bytes = producer_count.div_ceil(8);
+    // Extra bytes beyond expected must be zero
+    for b in bitfield.iter().skip(expected_bytes) {
+        if *b != 0 {
+            return false;
+        }
+    }
+    // Stray bits in the last expected byte
+    let remainder = producer_count % 8;
+    if remainder > 0 && expected_bytes <= bitfield.len() {
+        let mask = !((1u8 << remainder) - 1); // bits above remainder
+        if bitfield[expected_bytes - 1] & mask != 0 {
+            return false;
+        }
+    }
+    true
 }
 
 /// Decode attestation bitfield from `presence_root`.

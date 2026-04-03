@@ -341,6 +341,7 @@ fn test_reorg_past_finality_rejected() {
         },
         transactions: vec![],
         aggregate_bls_signature: Vec::new(),
+        attestation_bitfield: Vec::new(),
     };
 
     let result = handler.check_reorg_weighted(&fork, block2, 100);
@@ -380,6 +381,7 @@ fn test_reorg_after_finality_ok() {
         },
         transactions: vec![],
         aggregate_bls_signature: Vec::new(),
+        attestation_bitfield: Vec::new(),
     };
 
     let result = handler.check_reorg_weighted(&fork, block2, 100);
@@ -444,6 +446,7 @@ fn test_fork_block_recording_does_not_corrupt_current_weight() {
         },
         transactions: vec![],
         aggregate_bls_signature: Vec::new(),
+        attestation_bitfield: Vec::new(),
     };
     let result = handler.check_reorg_weighted(&fork_block, our_tip, 500);
     assert!(

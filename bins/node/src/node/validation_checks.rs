@@ -106,13 +106,11 @@ impl Node {
         .with_bootstrap_producers(bootstrap_producers)
         .with_bootstrap_liveness(live_bp, stale_bp)
         .with_excluded_producers(self.excluded_producers.clone())
-        .with_epoch_producer_list(
-            if self.active_production_list.is_empty() {
-                self.epoch_producer_list.clone()
-            } else {
-                self.active_production_list.clone()
-            }
-        );
+        .with_epoch_producer_list(if self.active_production_list.is_empty() {
+            self.epoch_producer_list.clone()
+        } else {
+            self.active_production_list.clone()
+        });
 
         // Apply chainspec if present
         if let Some(ref spec) = self.config.chainspec {
@@ -265,7 +263,7 @@ impl Node {
                 self.epoch_producer_list.clone()
             } else {
                 self.active_production_list.clone()
-            }
+            },
         )
         .with_sig_verification_height(self.config.network.params().sig_verification_height);
 
@@ -321,6 +319,37 @@ impl Node {
         // P0-001: public_key enforcement is ACTIVE (v5.2.0+).
         // Input.public_key is part of the bincode wire format (#[serde(skip)] removed).
         // sig_verification_height=0 on all networks: enforce from genesis.
+
+        // Attestation bitfield body validation (post-activation).
+        // Before activation: bitfield packed in presence_root, body must be empty.
+        // After activation: body bitfield present, presence_root = BLAKE3(body).
+        // If bitfield is empty but presence_root is non-zero, that's the legacy path
+        // which is still valid (presence_root can be used as direct bitfield pre-activation).
+        if height >= doli_core::consensus::BITFIELD_BODY_ACTIVATION_HEIGHT
+            && !block.attestation_bitfield.is_empty()
+        {
+            // Verify commitment: presence_root must equal BLAKE3(attestation_bitfield)
+            let expected = crypto::hash::hash(&block.attestation_bitfield);
+            if block.header.presence_root != expected {
+                return Err(validation::ValidationError::InvalidTransaction(format!(
+                    "presence_root mismatch: expected BLAKE3(attestation_bitfield)={}, got {}",
+                    expected, block.header.presence_root,
+                )));
+            }
+            // Verify no stray bits beyond producer count
+            let producers = self.producer_set.read().await;
+            let active = producers.active_producers_at_height(height);
+            let producer_count = active.len();
+            drop(producers);
+            if !doli_core::validate_attestation_bitfield_vec(
+                &block.attestation_bitfield,
+                producer_count,
+            ) {
+                return Err(validation::ValidationError::InvalidTransaction(
+                    "attestation_bitfield has bits set beyond producer_count".to_string(),
+                ));
+            }
+        }
 
         validation::validate_block_with_mode(block, &ctx, mode)
     }

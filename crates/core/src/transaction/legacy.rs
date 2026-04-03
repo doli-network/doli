@@ -79,6 +79,7 @@ impl LegacyBlock {
                 .map(|t| t.into_current())
                 .collect(),
             aggregate_bls_signature: self.aggregate_bls_signature,
+            attestation_bitfield: Vec::new(),
         }
     }
 }
@@ -146,6 +147,7 @@ impl LegacyBlockV2 {
                 .map(|t| t.into_current())
                 .collect(),
             aggregate_bls_signature: self.aggregate_bls_signature,
+            attestation_bitfield: Vec::new(),
         }
     }
 }
@@ -215,6 +217,7 @@ impl LegacyBlockV3 {
                 .map(|t| t.into_current())
                 .collect(),
             aggregate_bls_signature: self.aggregate_bls_signature,
+            attestation_bitfield: Vec::new(),
         }
     }
 }

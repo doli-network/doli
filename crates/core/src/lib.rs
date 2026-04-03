@@ -138,9 +138,10 @@ pub mod validation;
 
 pub use attestation::{
     attestation_minute, attestation_minutes_per_epoch, attestation_qualification_threshold,
-    decode_attestation_bitfield, encode_attestation_bitfield, validate_attestation_bitfield,
-    Attestation, AttestationError, MinuteAttestationTracker, RegionAggregate,
-    ATTESTATION_MINUTES_PER_EPOCH, ATTESTATION_QUALIFICATION_THRESHOLD,
+    decode_attestation_bitfield, decode_attestation_bitfield_vec, encode_attestation_bitfield,
+    encode_attestation_bitfield_vec, validate_attestation_bitfield,
+    validate_attestation_bitfield_vec, Attestation, AttestationError, MinuteAttestationTracker,
+    RegionAggregate, ATTESTATION_MINUTES_PER_EPOCH, ATTESTATION_QUALIFICATION_THRESHOLD,
 };
 pub use block::{Block, BlockBuilder, BlockHeader};
 pub use conditions::{
@@ -154,16 +155,12 @@ pub use consensus::{
     allowed_producer_rank,
     allowed_producer_rank_ms,
     calculate_exit_with_quarter,
-    // Tiered architecture
-    compute_tier1_set,
     eligible_rank_at_ms,
     get_producer_rank,
     is_producer_eligible,
     is_producer_eligible_ms,
     is_protocol_active,
     is_rank_eligible_at_ms,
-    producer_region,
-    producer_tier,
     select_producer_for_slot,
     withdrawal_penalty_rate,
     withdrawal_penalty_rate_with_quarter,
@@ -200,7 +197,6 @@ pub use consensus::{
     MAX_PRESENCE_SCORE,
     MIN_PRESENCE_RATE,
     MIN_PRESENCE_SCORE,
-    NUM_REGIONS,
     // Deprecated window constants (kept for backward compatibility)
     PRIMARY_WINDOW_MS,
     PRIMARY_WINDOW_SECS,
@@ -216,8 +212,6 @@ pub use consensus::{
     STAKER_REWARD_PCT,
     TERTIARY_WINDOW_MS,
     TERTIARY_WINDOW_SECS,
-    TIER1_MAX_VALIDATORS,
-    TIER2_MAX_ATTESTORS,
     VDF_DISCRIMINANT_BITS,
     VESTING_PERIOD_SLOTS,
     VESTING_QUARTER_SLOTS,
