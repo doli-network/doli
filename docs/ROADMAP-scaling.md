@@ -1,6 +1,6 @@
 # DOLI Scaling Roadmap
 
-> From 34 producers to 15,500 participants — without committees, without sharding, without complexity.
+> From 34 producers to 100,000 participants — without committees, without sharding, without complexity.
 
 ## Current State (2026-04)
 
@@ -18,127 +18,152 @@ DOLI does not have Ethereum's scaling problem. Ethereum needs committees because
 
 ## The Real Bottleneck
 
-With 500 producers in round-robin at 10s slots: 1 block per producer every ~83 minutes. Manageable.
+Round-robin assigns slots sequentially. More producers in the rotation = longer wait between turns:
 
-With 15,000 producers in round-robin at 10s slots: 1 block per producer every ~42 hours. Unacceptable — one missed slot costs two days of production opportunity.
+| Producers in rotation | Block interval per producer |
+|-----------------------|---------------------------|
+| 34 (current)          | ~5.7 min                  |
+| 100                   | ~17 min                   |
+| 500                   | ~83 min                   |
+| 15,000                | ~42 hours (unacceptable)  |
 
-The solution: **decouple production from participation.**
+The solution: **fixed production list + unlimited attestation participation.**
 
-## Phase 1: Current (34 producers)
+## Architecture: Active Set + Hot Standby
+
+### The Active List (100 producers)
+
+A fixed list of 100 producers handles all block production via round-robin. With 10s slots, each producer gets 1 block every ~17 minutes. This interval is optimal for global propagation and stays constant regardless of total network size.
+
+### Attestors (unlimited)
+
+Every participant with bonds who attests 90%+ receives epoch rewards — whether they are in the active list or not. There is no economic penalty for being outside the list. Rewards are bond-weighted across ALL qualified attestors:
 
 ```
-All producers:
-  ✓ Verify every block
-  ✓ Attest every minute
-  ✓ Produce blocks (round-robin)
-  ✓ Receive epoch rewards (bond-weighted)
+reward(i) = epoch_pool × bonds(i) / total_qualifying_bonds
 ```
 
-No changes needed. 34 producers with total verification is trivial.
+A participant with 10 bonds outside the list earns the same percentage as a participant with 10 bonds inside the list. Production is a duty, not an economic privilege.
 
-## Phase 2: Tier System (500 + 15,000)
+### Replacement: Random Promotion at Epoch Boundary
 
-### Tier 1 — Block Producers (up to 500)
+When a producer in the active list fails (drops below attestation threshold, deregisters, gets slashed), the slot is filled at the next epoch boundary:
 
-- Verify every block
-- Attest every minute
-- Produce blocks (round-robin among Tier 1 only)
-- Receive epoch rewards (bond-weighted, same as all tiers)
-- Can accept Tier 3 delegation (earn 10% operator fee)
-- Subject to double-production slashing (100% bond)
+1. Identify vacant slots in the active list
+2. Collect all Tier 2 attestors with 90%+ qualification in the completed epoch
+3. Select replacement randomly: `BLAKE3(epoch_number || state_root)` as deterministic seed
+4. Promote selected attestor to the active list
 
-### Tier 2 — Attestors (up to 15,000)
+Properties:
+- **Deterministic** — every node computes the same replacement from chain state
+- **Non-manipulable** — the state_root depends on all transactions in the epoch, not controllable by any single producer
+- **Fair** — every qualified attestor has equal probability regardless of bond size
+- **Self-healing** — the active list repairs itself every epoch without human intervention
 
-- Verify every block (same as Tier 1)
-- Attest every minute (same as Tier 1)
-- Do NOT produce blocks
-- Receive epoch rewards (bond-weighted, identical ROI % as Tier 1)
-- Can accept Tier 3 delegation (earn 10% operator fee)
-- No slashing risk (can't double-produce what they don't produce)
+### If a Producer Returns
 
-### Tier 3 — Delegators (unlimited)
+A producer removed from the active list for inactivity continues as an attestor. They keep receiving rewards (bond-weighted, same as everyone). They can be randomly selected back into the active list in a future epoch. There is no fast-track re-entry — losing your slot means waiting for the random draw like everyone else.
 
-- Do NOT run a node
-- Delegate stake to a Tier 1 or Tier 2 operator
-- Receive 90% of rewards proportional to delegated bonds
-- Operator receives 10% for running infrastructure
-- Can redelegate after unbonding period
+No deregistration. No bond loss. No reward loss. Only the production responsibility changes.
 
-### Key Properties
+## Scaling Properties
 
-**Equal ROI across tiers.** A bond in Tier 1 earns the same percentage as a bond in Tier 2 or a delegated bond in Tier 3. The difference is operational: Tier 1 has production responsibility + slashing risk, Tier 2 has attestation responsibility only, Tier 3 has zero operational requirement.
+| Participants | Active List | Attestors | Block interval | Throughput |
+|-------------|-------------|-----------|---------------|------------|
+| 100         | 100         | 100       | ~17 min       | 6 blk/min  |
+| 1,000       | 100         | 1,000     | ~17 min       | 6 blk/min  |
+| 10,000      | 100         | 10,000    | ~17 min       | 6 blk/min  |
+| 100,000     | 100         | 100,000   | ~17 min       | 6 blk/min  |
 
-**No committees.** All 15,500 participants (Tier 1 + Tier 2) verify every block. There is no random subset, no rotation, no trust delegation. The network is as secure as its total participant count, not as secure as a randomly sampled committee.
+**Production is constant.** The network produces 6 blocks per minute regardless of whether there are 100 or 100,000 participants. What scales is economic participation — more attestors, more bonds staked, more security, more decentralization of rewards.
 
-**Production stays bounded.** Round-robin over 500 Tier 1 producers: 1 block per producer every ~83 minutes. Network throughput is independent of total participant count.
+### BLS Aggregation at Scale
 
-### Tier Selection
+The attestation protocol uses BLS12-381 signature aggregation. At 100,000 participants:
+- Bitfield size: 100,000 bits = 12.5 KB per block header (trivial)
+- Aggregate signature: 1 BLS signature regardless of participant count (48 bytes)
+- Verification: 1 pairing check verifies all 100,000 attestations
 
-How a participant becomes Tier 1 vs Tier 2:
+BLS was designed for exactly this — the protocol already uses it. No changes needed.
 
-**Option A — Bond threshold:** Tier 1 requires minimum N bonds. Simple, but favors wealthy participants.
+### Comparison
 
-**Option B — Self-selection:** Participants choose their tier at registration. Tier 1 has higher slashing risk. Natural market: those with reliable infrastructure choose Tier 1 for delegation fees.
+| System | Scaling approach | Adds complexity | Production set |
+|--------|-----------------|----------------|----------------|
+| Ethereum | Random committees (128 of 900K) | Significant | Stake-weighted lottery |
+| Solana | Stake-weighted leader schedule | Moderate | All validators |
+| Cosmos | Separate chains (IBC) | Significant | Per-chain set |
+| Polkadot | Parachains + relay chain | Significant | Per-parachain |
+| **DOLI** | **Fixed list + unlimited attestors** | **Minimal** | **100 fixed, rotated randomly** |
 
-**Option C — Seniority + bonds:** Top 500 by `bonds × seniority_weight` are Tier 1. Rewards operational commitment over time. Newcomers start as Tier 2 and graduate naturally.
+## Implementation
 
-**Recommended: Option C.** It aligns with DOLI's core thesis — time as the scarce resource. A new participant with $1M can't buy Tier 1 status immediately. They start as Tier 2, build seniority, and earn their way into the production set over years. Same principle as the 4-year seniority weight, extended to tier selection.
-
-## Phase 3: Dynamic Scaling
-
-As the network grows beyond 500 Tier 1 producers:
-
-**Era-based Tier 1 cap increase:**
-| Era | Tier 1 Cap | Tier 2 Cap | Block interval per producer |
-|-----|-----------|-----------|---------------------------|
-| 1   | 500       | 15,000    | ~83 min                   |
-| 2   | 750       | 22,500    | ~125 min                  |
-| 3   | 1,000     | 30,000    | ~167 min                  |
-
-The Tier 1 cap grows with the era, allowing more producers into the rotation as the network matures and slot duration can potentially decrease.
-
-**Slot duration reduction:** With more producers and better global network infrastructure, slot duration could decrease from 10s to 5s, doubling throughput while keeping production intervals reasonable.
-
-## Implementation Estimate
-
-### What already exists (90% of the work):
+### What already exists:
 - Attestation system with bitfield + BLS aggregation
 - Bond-weighted epoch reward distribution
 - Liveness filter (exclusion/re-inclusion)
 - Round-robin scheduler with seniority weighting
 - DelegateBond / RevokeDelegation transaction types
-- Delegation reward split (10% operator / 90% staker) in protocol
+- Delegation reward split (10% operator / 90% staker)
 
 ### What needs to be built (~200 lines):
-- `ProducerTier` enum (Tier1, Tier2) in producer registration
-- Scheduler filter: `if tier == Tier1` for round-robin assignment
-- Tier promotion/demotion logic at epoch boundaries
-- CLI: `doli producer register --tier 2`
-- RPC: tier field in getProducer / getProducers responses
+- `is_active_producer` flag in producer state
+- Active list initialization: top 100 by `bonds × seniority_weight`
+- Scheduler filter: only active list enters round-robin
+- Random promotion at epoch boundary when slots are vacant
+- CLI: `doli producer status` shows active list membership
+- RPC: `isActiveProducer` field in getProducer response
 
-### What does NOT need to change:
+### What does NOT change:
 - Block format
 - Transaction format
 - Attestation protocol
-- Reward calculation (already bond-weighted across all qualified producers)
+- Reward calculation
 - Gossip protocol
 - Sync engine
 - UTXO model
 
+## Phases
+
+### Phase 1: Current (34 producers) — Live
+
+All producers in active list. No distinction. Network grows organically.
+
+### Phase 2: Active List (at ~100 producers) — Future
+
+Activate the 100-producer active list when the network approaches that size. Initial list: top 100 by `bonds × seniority_weight`. Random replacement at epoch boundary for dropouts.
+
+### Phase 3: Delegation (at ~500 participants) — Future
+
+Enable Tier 3 delegation for participants who don't want to run infrastructure. 90% rewards to delegator, 10% to operator. Operators compete for delegation by offering reliability and reputation.
+
+### Phase 4: Dynamic List Size (at ~1,000+ producers) — Future
+
+The active list size could increase with eras:
+
+| Era | Active List | Slot Duration | Block interval |
+|-----|-------------|---------------|---------------|
+| 1   | 100         | 10s           | ~17 min       |
+| 2   | 150         | 10s           | ~25 min       |
+| 3   | 200         | 8s            | ~27 min       |
+| 4   | 250         | 6s            | ~25 min       |
+
+Slot duration decreases as network infrastructure matures, keeping block intervals manageable even with a larger active list.
+
 ## Why This Works
 
-Every blockchain scaling solution adds complexity:
-- Ethereum: committees, random selection, slashing for attestation failures
-- Solana: leader schedule based on stake weighting, vote transactions consuming bandwidth
-- Cosmos: separate chains with IBC bridges
-- Polkadot: parachains with relay chain coordination
+The insight: **production and participation are independent concerns.**
 
-DOLI's approach adds almost nothing:
-- One boolean per producer (Tier 1 or Tier 2)
-- One filter in the scheduler
-- Everything else stays the same
+Every prior blockchain conflates them — if you validate, you produce. If you produce, you earn more. This creates a competition for production slots that drives centralization (mining pools, staking pools, MEV extraction).
 
-The reason it's this simple: DOLI never had the problems that make other chains complex. No VM means no execution bottleneck. No gas means no fee market. No shared mutable state means no MEV. No committees means no committee selection. The architecture was designed in 2026 with 17 years of blockchain hindsight — the complexity was avoided at the design level, not solved at the engineering level.
+DOLI separates them:
+- **Production** = civic duty, assigned randomly, rotated at epoch boundaries
+- **Participation** = attestation + bonds, open to everyone, rewarded equally
+- **Rewards** = bond-weighted across all qualified attestors, not production-weighted
+
+A participant who never produces a single block earns the same ROI as one who produces 100 blocks per day. The economic incentive is to attest and hold bonds, not to compete for production slots.
+
+The result: scaling the network adds participants (security) without adding production overhead (complexity). The simplest possible separation of concerns.
 
 ---
 
