@@ -264,6 +264,13 @@ impl Node {
         let network = NetworkService::new(network_config).await?;
         self.network = Some(network);
 
+        // When discv5 is active, give the sync engine 30s grace to discover
+        // peers via UDP before falling back to header-first sync.
+        if !self.config.no_discv5 {
+            let mut sync = self.sync_manager.write().await;
+            sync.set_discv5_peer_grace(30);
+        }
+
         info!("Network service started");
         Ok(())
     }
