@@ -52,7 +52,19 @@ pub fn reward_pool_pubkey_hash() -> crypto::Hash {
 /// Aligned to epoch boundary (25,560 = 71 × 360) so nodes on old versions
 /// complete the previous epoch's attestation cycle before forking.
 /// Consensus-breaking — all nodes must update before this height.
-pub const EPOCH_REWARD_EXPLICIT_INPUTS_HEIGHT: u64 = 25_560;
+pub const EPOCH_REWARD_EXPLICIT_INPUTS_HEIGHT: u64 = 8_450;
+
+/// Tier system activation height.
+/// Before this height: all producers participate in round-robin (current behavior).
+/// After this height: only the first ACTIVE_PRODUCERS_CAP producers (by registered_at)
+/// enter the round-robin. All other producers remain as attestors with identical rewards.
+/// Consensus-breaking — all nodes must update before this height.
+pub const TIER_SYSTEM_ACTIVATION_HEIGHT: u64 = 10_000;
+
+/// Maximum producers in the active production list (round-robin).
+/// Only affects scheduling after TIER_SYSTEM_ACTIVATION_HEIGHT.
+/// Attestors (outside this cap) still receive bond-weighted epoch rewards.
+pub const ACTIVE_PRODUCERS_CAP: usize = 10;
 
 // ==================== Proof of Time Parameters ====================
 

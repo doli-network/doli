@@ -149,6 +149,11 @@ pub struct Node {
     /// active producers who attested in the previous epoch (+ newly registered).
     /// The scheduling denominator is derived from this list — it never changes mid-epoch.
     pub epoch_producer_list: Vec<PublicKey>,
+    /// Active production list: subset of epoch_producer_list that enters round-robin.
+    /// Before TIER_SYSTEM_ACTIVATION_HEIGHT: identical to epoch_producer_list.
+    /// After activation: first ACTIVE_PRODUCERS_CAP by registered_at (earliest first).
+    /// Attestors outside this list still receive bond-weighted epoch rewards.
+    pub active_production_list: Vec<PublicKey>,
     /// Epoch-locked bond snapshot: {pubkey_hash → bond_count}.
     /// Computed once at each epoch boundary from the UTXO set.
     /// Used by scheduler (validation + production) for the entire epoch.

@@ -709,6 +709,7 @@ impl Node {
             seen_blocks_for_slot: std::collections::HashSet::new(),
             excluded_producers,
             epoch_producer_list,
+            active_production_list: Vec::new(), // Built at first epoch boundary
             epoch_bond_snapshot: initial_bond_snapshot,
             epoch_bond_snapshot_epoch: initial_bond_epoch,
             cached_scheduler: None,
@@ -883,6 +884,7 @@ impl Node {
                 pks.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
                 pks
             },
+            active_production_list: Vec::new(), // Built at first epoch boundary
             epoch_bond_snapshot,
             epoch_bond_snapshot_epoch: 0,
             cached_scheduler: None,
