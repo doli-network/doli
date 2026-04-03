@@ -552,6 +552,7 @@ impl Node {
                 new_list.len()
             );
             self.epoch_producer_list = new_list;
+            self.active_production_list = self.epoch_producer_list.clone();
         }
     }
 

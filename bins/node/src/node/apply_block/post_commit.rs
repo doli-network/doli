@@ -147,6 +147,43 @@ impl Node {
                     new_list.len()
                 );
                 self.epoch_producer_list = new_list;
+
+                // Tier system: build active production list.
+                // Before activation: all producers in round-robin (identical to epoch_producer_list).
+                // After activation: first ACTIVE_PRODUCERS_CAP by registered_at (earliest first).
+                // Attestors outside the cap still receive bond-weighted epoch rewards.
+                use doli_core::consensus::{TIER_SYSTEM_ACTIVATION_HEIGHT, ACTIVE_PRODUCERS_CAP};
+                if height >= TIER_SYSTEM_ACTIVATION_HEIGHT
+                    && self.epoch_producer_list.len() > ACTIVE_PRODUCERS_CAP
+                {
+                    let producers = self.producer_set.read().await;
+                    let mut with_reg: Vec<(PublicKey, u64)> = self
+                        .epoch_producer_list
+                        .iter()
+                        .filter_map(|pk| {
+                            producers.get_by_pubkey(pk).map(|p| (*pk, p.registered_at))
+                        })
+                        .collect();
+                    drop(producers);
+                    // Sort by registered_at ascending (earliest first), pubkey tiebreak
+                    with_reg.sort_by(|a, b| {
+                        a.1.cmp(&b.1)
+                            .then_with(|| a.0.as_bytes().cmp(b.0.as_bytes()))
+                    });
+                    self.active_production_list = with_reg
+                        .iter()
+                        .take(ACTIVE_PRODUCERS_CAP)
+                        .map(|(pk, _)| *pk)
+                        .collect();
+                    info!(
+                        "[TIER] Active production list: {}/{} producers (by registered_at)",
+                        self.active_production_list.len(),
+                        self.epoch_producer_list.len()
+                    );
+                } else {
+                    self.active_production_list = self.epoch_producer_list.clone();
+                }
+
                 // Clear mid-epoch exclusions — fresh start for new epoch
                 self.excluded_producers.clear();
                 // INC-I-010 layer 3: epoch_producer_list is now rebuilt with

@@ -424,14 +424,21 @@ impl Node {
         _height: u64,
         _active_with_weights: &[(PublicKey, u64)],
     ) -> Vec<PublicKey> {
-        // EPOCH-FROZEN SCHEDULING: Use the epoch_producer_list (frozen at epoch boundary)
+        // EPOCH-FROZEN SCHEDULING: Use the active_production_list (frozen at epoch boundary)
         // filtered by excluded_producers (derived from on-chain missed_producers headers).
         //
+        // Before TIER_SYSTEM_ACTIVATION_HEIGHT: active_production_list == epoch_producer_list
+        // After activation: active_production_list is the first ACTIVE_PRODUCERS_CAP by registered_at
+        //
         // Both inputs are deterministic across all nodes:
-        // - epoch_producer_list: computed at epoch boundary from attestation data
+        // - active_production_list: computed at epoch boundary (subset of epoch_producer_list)
         // - excluded_producers: accumulated from block header missed_producers fields
-        let mut effective: Vec<PublicKey> = self
-            .epoch_producer_list
+        let source = if self.active_production_list.is_empty() {
+            &self.epoch_producer_list // Fallback before first epoch boundary
+        } else {
+            &self.active_production_list
+        };
+        let mut effective: Vec<PublicKey> = source
             .iter()
             .filter(|pk| !self.excluded_producers.contains(pk))
             .copied()
