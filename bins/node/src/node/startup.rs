@@ -231,15 +231,11 @@ impl Node {
         // NAT traversal: enable relay server if configured (for public/bootstrap nodes)
         if self.config.relay_server {
             network_config.nat_config = network::NatConfig::relay_server();
-            // Seeds are bootstrap points, not permanent hubs.
-            // Accept up to 100K peers in the table — connections are temporary
-            // (auto-disconnected after DHT exchange via SEED_PEER_TTL).
-            network_config.max_peers = 100_000;
-            network_config.seed_mode = true;
-            info!(
-                "[SEED] Relay server mode: max_peers={} (bootstrap point, temporary connections)",
-                network_config.max_peers
-            );
+            // Seeds accept more peers than regular nodes (like Bitcoin's 125 default).
+            // Client-side seed release ensures connections are temporary — nodes
+            // disconnect after DHT bootstrap + gossip verified.
+            network_config.max_peers = 125;
+            info!("[SEED] Relay server mode: max_peers=125");
         }
 
         // External address: advertise a specific public address to peers

@@ -127,7 +127,7 @@ impl HardForkSchedule {
     pub fn default_schedule() -> Self {
         let mut schedule = Self::new();
         schedule.add(HardForkInfo {
-            activation_height: 25_560,
+            activation_height: 8_450,
             min_version: "5.5.0".to_string(),
             consensus_changes: vec![
                 "EpochReward TX requires explicit pool UTXO inputs (UTXO auditability)".to_string(),

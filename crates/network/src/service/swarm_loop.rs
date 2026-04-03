@@ -83,13 +83,10 @@ pub(super) async fn run_swarm(
     let mut bootstrap_cleanup = tokio::time::interval(Duration::from_secs(5));
     bootstrap_cleanup.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    // SEED MODE: auto-disconnect ALL peers after DHT exchange.
-    // Seeds are bootstrap points — they accept connections, share Kademlia routing
-    // tables, and disconnect after SEED_PEER_TTL. Not permanent gossip mesh participants.
-    // This allows a single seed to serve 100K+ nodes by rotating connections.
-    // Uses PeerInfo.connected_at (no separate tracking needed).
-    const SEED_PEER_TTL: Duration = Duration::from_secs(30);
-    let is_seed_mode = config.seed_mode;
+    // Seed mode flag (unused for auto-disconnect — reverted after INC testing showed
+    // seeds need permanent gossip mesh to receive blocks). Client-side seed release
+    // handles disconnection: nodes disconnect from seed after DHT bootstrap + gossip verified.
+    let _is_seed_mode = config.seed_mode;
 
     // INC-I-014: Periodic connection budget log — shows steady-state connection
     // distribution every 60s. Makes limit enforcement visible during stress tests
@@ -216,33 +213,11 @@ pub(super) async fn run_swarm(
                     }
                 }
 
-                // SEED MODE: auto-disconnect ALL peers after SEED_PEER_TTL.
-                // The seed is a bootstrap point — accept, share DHT, disconnect.
-                // This allows a single seed to rotate through 100K+ nodes.
-                if is_seed_mode {
-                    let peer_table = peers.read().await;
-                    let expired_seeds: Vec<PeerId> = peer_table
-                        .iter()
-                        .filter(|(_, info)| info.connected_at.elapsed() >= SEED_PEER_TTL)
-                        .map(|(pid, _)| *pid)
-                        .collect();
-                    drop(peer_table);
-
-                    if !expired_seeds.is_empty() {
-                        let mut peer_table = peers.write().await;
-                        for pid in &expired_seeds {
-                            peer_table.remove(pid);
-                            let _ = swarm.disconnect_peer_id(*pid);
-                            rate_limiter.remove_peer(pid);
-                        }
-                        drop(peer_table);
-                        tracing::info!(
-                            "[SEED_MODE] Rotated {} peers after {}s DHT exchange",
-                            expired_seeds.len(),
-                            SEED_PEER_TTL.as_secs()
-                        );
-                    }
-                }
+                // NOTE: Server-side seed auto-disconnect was removed after testing showed
+                // seeds need permanent gossip mesh to receive blocks. Scalability is
+                // handled by client-side seed release (periodic.rs) — nodes disconnect
+                // from seed after DHT bootstrap + gossip verified. Same pattern as
+                // Bitcoin (DNS seeds) and Ethereum (UDP bootnodes).
             }
 
             // Periodic rate limiter cleanup
