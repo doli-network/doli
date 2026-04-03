@@ -1,3 +1,4 @@
+#![allow(clippy::absurd_extreme_comparisons)]
 //! DOLI Node - Full node implementation
 //!
 //! This binary runs a full DOLI node that:

@@ -271,7 +271,10 @@ pub(super) fn validate_bls_aggregate(
     // Post-BITFIELD_BODY_ACTIVATION_HEIGHT: bitfield is in block body, presence_root is BLAKE3 commitment.
     // Pre-activation: bitfield is packed directly in presence_root.
     let attested_indices = if !block.attestation_bitfield.is_empty() {
-        crate::attestation::decode_attestation_bitfield_vec(&block.attestation_bitfield, ctx.producer_bls_keys.len())
+        crate::attestation::decode_attestation_bitfield_vec(
+            &block.attestation_bitfield,
+            ctx.producer_bls_keys.len(),
+        )
     } else {
         decode_attestation_bitfield(&block.header.presence_root, ctx.producer_bls_keys.len())
     };

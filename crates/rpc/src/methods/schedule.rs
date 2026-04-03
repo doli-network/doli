@@ -256,7 +256,10 @@ impl RpcContext {
                     let slot = block.header.slot;
                     let minute = attestation_minute(slot);
                     let indices = if !block.attestation_bitfield.is_empty() {
-                        doli_core::decode_attestation_bitfield_vec(&block.attestation_bitfield, producer_count)
+                        doli_core::decode_attestation_bitfield_vec(
+                            &block.attestation_bitfield,
+                            producer_count,
+                        )
                     } else {
                         decode_attestation_bitfield(&pr, producer_count)
                     };
