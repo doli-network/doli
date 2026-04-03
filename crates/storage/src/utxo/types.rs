@@ -64,7 +64,15 @@ impl UtxoEntry {
         buf.extend_from_slice(&self.height.to_le_bytes());
         buf.push(self.is_coinbase as u8);
         buf.push(self.is_epoch_reward as u8);
-        buf.extend_from_slice(&(extra_len as u16).to_le_bytes());
+        // Backward-compatible length encoding:
+        // < 65536: u16 LE (identical to original, all existing snapshots)
+        // >= 65536: u16 marker 0xFFFF + u32 LE (large NFTs >64KB)
+        if extra_len >= 65535 {
+            buf.extend_from_slice(&0xFFFFu16.to_le_bytes());
+            buf.extend_from_slice(&(extra_len as u32).to_le_bytes());
+        } else {
+            buf.extend_from_slice(&(extra_len as u16).to_le_bytes());
+        }
         buf.extend_from_slice(&self.output.extra_data);
         buf
     }
@@ -83,12 +91,24 @@ impl UtxoEntry {
         let height = u64::from_le_bytes(bytes[49..57].try_into().ok()?);
         let is_coinbase = bytes[57] != 0;
         let is_epoch_reward = bytes[58] != 0;
-        let extra_len = u16::from_le_bytes(bytes[59..61].try_into().ok()?) as usize;
-        let extra_data = if extra_len > 0 {
-            if bytes.len() < 61 + extra_len {
+        // Backward-compatible length decoding:
+        // 0xFFFF marker → next 4 bytes are u32 length (large NFTs)
+        // otherwise → u16 length (all existing snapshots)
+        let raw_len = u16::from_le_bytes(bytes[59..61].try_into().ok()?);
+        let (extra_len, data_start) = if raw_len == 0xFFFF {
+            if bytes.len() < 65 {
                 return None;
             }
-            bytes[61..61 + extra_len].to_vec()
+            let len = u32::from_le_bytes(bytes[61..65].try_into().ok()?) as usize;
+            (len, 65)
+        } else {
+            (raw_len as usize, 61)
+        };
+        let extra_data = if extra_len > 0 {
+            if bytes.len() < data_start + extra_len {
+                return None;
+            }
+            bytes[data_start..data_start + extra_len].to_vec()
         } else {
             Vec::new()
         };
