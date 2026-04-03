@@ -54,6 +54,9 @@ pub struct NetworkParams {
     pub default_metrics_port: u16,
     /// Bootstrap nodes (multiaddr format)
     pub bootstrap_nodes: Vec<String>,
+    /// Discv5 bootnode ENRs (base64-encoded) for UDP peer discovery.
+    /// Nodes auto-discover peers via these bootnodes without configuration.
+    pub bootnode_enrs: Vec<String>,
     /// Maximum peer connections per node (application layer).
     /// Transport layer allows 1.5× this for handshake headroom.
     /// Mainnet/Testnet: 50 (Ethereum default). Devnet: 150.

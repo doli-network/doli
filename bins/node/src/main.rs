@@ -164,6 +164,7 @@ async fn main() -> Result<()> {
             discv5_port,
             no_dht,
             relay_server,
+            bootnode,
             no_snap_sync,
             force_start,
             yes,
@@ -173,42 +174,55 @@ async fn main() -> Result<()> {
             checkpoint_height,
             checkpoint_hash,
         }) => {
-            let update_config = UpdateConfig {
-                enabled: !no_auto_update,
-                notify_only: update_notify_only,
-                auto_rollback: !no_auto_rollback,
-                check_interval_secs: network.update_check_interval_secs(),
-                veto_period_secs: network.veto_period_secs(),
-                grace_period_secs: network.grace_period_secs(),
-                custom_url: None,
-            };
-            run::run_node(
-                network,
-                &data_dir,
-                producer,
-                producer_key,
-                update_config,
-                p2p_port,
-                external_address,
-                rpc_port,
-                rpc_bind,
-                metrics_port,
-                bootstrap,
-                bootnode_enr,
-                no_discv5,
-                discv5_port,
-                no_dht,
-                relay_server,
-                no_snap_sync,
-                force_start,
-                yes,
-                chainspec,
-                auto_checkpoint,
-                archive_to,
-                checkpoint_height,
-                checkpoint_hash,
-            )
-            .await?;
+            if bootnode {
+                // Bootnode standalone mode: UDP discovery only, no libp2p/sync/storage
+                run::run_bootnode(
+                    network,
+                    &data_dir,
+                    p2p_port,
+                    external_address,
+                    bootnode_enr,
+                    discv5_port,
+                )
+                .await?;
+            } else {
+                let update_config = UpdateConfig {
+                    enabled: !no_auto_update,
+                    notify_only: update_notify_only,
+                    auto_rollback: !no_auto_rollback,
+                    check_interval_secs: network.update_check_interval_secs(),
+                    veto_period_secs: network.veto_period_secs(),
+                    grace_period_secs: network.grace_period_secs(),
+                    custom_url: None,
+                };
+                run::run_node(
+                    network,
+                    &data_dir,
+                    producer,
+                    producer_key,
+                    update_config,
+                    p2p_port,
+                    external_address,
+                    rpc_port,
+                    rpc_bind,
+                    metrics_port,
+                    bootstrap,
+                    bootnode_enr,
+                    no_discv5,
+                    discv5_port,
+                    no_dht,
+                    relay_server,
+                    no_snap_sync,
+                    force_start,
+                    yes,
+                    chainspec,
+                    auto_checkpoint,
+                    archive_to,
+                    checkpoint_height,
+                    checkpoint_hash,
+                )
+                .await?;
+            }
         }
         Some(Commands::Init { network: net_str }) => {
             let init_network = Network::from_str(&net_str).map_err(|e| anyhow::anyhow!("{}", e))?;

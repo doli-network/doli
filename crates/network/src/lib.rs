@@ -94,8 +94,13 @@ pub use sync::{
 };
 
 // Re-export libp2p types that are part of our public API
+pub use libp2p::identity::Keypair;
+pub use libp2p::multiaddr;
 pub use libp2p::request_response::ResponseChannel;
 pub use libp2p::{Multiaddr, PeerId};
+
+// Re-export discv5 Event for bootnode mode event handling
+pub use discv5::Event as Discv5Event;
 
 /// Extract PeerId from a multiaddr string like "/ip4/127.0.0.1/tcp/30300/p2p/12D3KooW..."
 pub fn extract_peer_id_from_multiaddr(addr: &str) -> Option<PeerId> {

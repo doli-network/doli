@@ -140,7 +140,7 @@ impl NodeConfig {
             no_snap_sync: false,
             seed_mode: false,
             auto_checkpoint_interval: None,
-            bootnode_enrs: Vec::new(),
+            bootnode_enrs: network.bootnode_enrs(),
             no_discv5: false,
             discv5_port: None,
         }
