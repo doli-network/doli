@@ -379,6 +379,31 @@ impl SyncManager {
             }
         }
 
+        // Snap sync retry: if snap sync exhausted its 3 attempts but we're still
+        // far behind, reset the attempt counter after 30s. This gives discv5 time
+        // to discover more peers for a fresh snap sync quorum attempt.
+        if self.snap.attempts >= 3 && self.should_sync() {
+            let gap = self
+                .network
+                .network_tip_height
+                .saturating_sub(self.local_height);
+            if gap > self.snap.threshold && self.peers.len() >= 3 {
+                let since_last_snap = self
+                    .snap
+                    .last_snap_completed
+                    .map(|t| t.elapsed().as_secs())
+                    .unwrap_or(60);
+                if since_last_snap >= 30 {
+                    info!(
+                        "[SNAP_SYNC] Retrying snap sync: {} attempts exhausted but gap={} and {} peers available",
+                        self.snap.attempts, gap, self.peers.len()
+                    );
+                    self.snap.attempts = 0;
+                    self.snap.blacklisted_peers.clear();
+                }
+            }
+        }
+
         // Periodic sync retry: if Idle and behind peers, restart sync.
         // This catches cases where sync was attempted, failed (e.g., empty headers
         // from gossip race), reset to Idle, and never retried.

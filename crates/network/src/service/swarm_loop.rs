@@ -97,10 +97,14 @@ pub(super) async fn run_swarm(
     let mut conn_budget_log = tokio::time::interval(Duration::from_secs(60));
     conn_budget_log.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    // Discv5 random walk timer: discover new peers every 30s via UDP
-    let mut discv5_refresh = tokio::time::interval(Duration::from_secs(30));
+    // Discv5 random walk timer: 5s during startup (first 120s), then 30s steady-state.
+    // Aggressive discovery at boot ensures peers are found before the sync engine
+    // makes its snap-vs-header decision.
+    let mut discv5_refresh = tokio::time::interval(Duration::from_secs(5));
     discv5_refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let discv5_enabled = discv5_service.is_some();
+    let discv5_startup_until = Instant::now() + Duration::from_secs(120);
+    let mut discv5_startup_mode = true;
 
     // Discv5 dial retry queue: peers discovered via UDP that failed initial TCP dial.
     // Each entry: (multiaddr, attempts_remaining, next_retry_at).
@@ -358,8 +362,16 @@ pub(super) async fn run_swarm(
                 }
             }
 
-            // Discv5 periodic random walk: discover new peers via UDP every 30s
+            // Discv5 periodic random walk: 5s during startup, 30s steady-state
             _ = discv5_refresh.tick(), if discv5_enabled => {
+                // Switch from aggressive (5s) to steady-state (30s) after 120s
+                if discv5_startup_mode && Instant::now() >= discv5_startup_until {
+                    discv5_startup_mode = false;
+                    discv5_refresh = tokio::time::interval(Duration::from_secs(30));
+                    discv5_refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                    tracing::info!("[DISCV5] Startup mode ended — random walk interval: 30s");
+                }
+
                 if let Some(ref svc) = discv5_service {
                     let peer_count = peers.read().await.len();
                     if peer_count < config.max_peers {
