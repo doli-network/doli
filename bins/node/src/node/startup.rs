@@ -159,6 +159,21 @@ impl Node {
         network_config.listen_addr = listen_addr;
         network_config.bootstrap_nodes = self.config.bootstrap_nodes.clone();
 
+        // Extract PeerIds from bootstrap multiaddrs for seed release after DHT bootstrap.
+        // The seed is only needed for initial peer discovery — after that, DHT takes over.
+        self.seed_peer_ids = self
+            .config
+            .bootstrap_nodes
+            .iter()
+            .filter_map(|addr| network::extract_peer_id_from_multiaddr(addr))
+            .collect();
+        if !self.seed_peer_ids.is_empty() {
+            info!(
+                "[SEED_RELEASE] Tracking {} seed peer(s) for post-bootstrap disconnect",
+                self.seed_peer_ids.len()
+            );
+        }
+
         // Environment variable overrides for network tuning
         if let Ok(val) = std::env::var("DOLI_MAX_PEERS") {
             if let Ok(n) = val.parse::<usize>() {

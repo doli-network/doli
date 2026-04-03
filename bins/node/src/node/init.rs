@@ -681,6 +681,8 @@ impl Node {
             producer_set,
             mempool,
             network: None,
+            seed_peer_ids: Vec::new(), // Populated in start_network()
+            seeds_released: false,
             sync_manager,
             shutdown,
             producer_key,
@@ -852,6 +854,8 @@ impl Node {
             producer_set,
             mempool,
             network: None, // No networking in tests
+            seed_peer_ids: Vec::new(),
+            seeds_released: false,
             sync_manager,
             shutdown: Arc::new(RwLock::new(false)),
             producer_key,

@@ -85,6 +85,11 @@ pub struct Node {
     pub mempool: Arc<RwLock<Mempool>>,
     /// Network service
     pub network: Option<NetworkService>,
+    /// PeerIds of bootstrap/seed nodes — disconnected after DHT bootstrap + gossip verified.
+    /// Frees seed slots so the network scales without seed becoming a bottleneck.
+    pub seed_peer_ids: Vec<network::PeerId>,
+    /// Whether we've already disconnected from seeds (one-shot, don't reconnect)
+    pub seeds_released: bool,
     /// Sync manager
     pub sync_manager: Arc<RwLock<SyncManager>>,
     /// Shutdown flag
