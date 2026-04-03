@@ -106,7 +106,13 @@ impl Node {
         .with_bootstrap_producers(bootstrap_producers)
         .with_bootstrap_liveness(live_bp, stale_bp)
         .with_excluded_producers(self.excluded_producers.clone())
-        .with_epoch_producer_list(self.epoch_producer_list.clone());
+        .with_epoch_producer_list(
+            if self.active_production_list.is_empty() {
+                self.epoch_producer_list.clone()
+            } else {
+                self.active_production_list.clone()
+            }
+        );
 
         // Apply chainspec if present
         if let Some(ref spec) = self.config.chainspec {
@@ -251,7 +257,16 @@ impl Node {
         .with_bootstrap_producers(bootstrap_producers)
         .with_bootstrap_liveness(live_bp, stale_bp)
         .with_excluded_producers(self.excluded_producers.clone())
-        .with_epoch_producer_list(self.epoch_producer_list.clone())
+        .with_epoch_producer_list(
+            // For scheduling validation: use active_production_list (tier-filtered)
+            // so validation computes the same slot % N as production.
+            // For missed_producers check below: use full epoch_producer_list.
+            if self.active_production_list.is_empty() {
+                self.epoch_producer_list.clone()
+            } else {
+                self.active_production_list.clone()
+            }
+        )
         .with_sig_verification_height(self.config.network.params().sig_verification_height);
 
         if let Some(ref spec) = self.config.chainspec {
@@ -261,6 +276,8 @@ impl Node {
         drop(state);
 
         // Validate missed_producers header field (P1-001: was unvalidated on receiving nodes)
+        // NOTE: This check uses epoch_producer_list (full list), not active_production_list,
+        // because missed producers can be attestors too.
         {
             const MAX_MISSED_PER_BLOCK: usize = 3;
             let missed = &block.header.missed_producers;
