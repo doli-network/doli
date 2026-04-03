@@ -508,10 +508,17 @@ impl Node {
                     if let Ok(Some(blk)) = self.block_store.get_block_by_height(h) {
                         attested.insert(blk.header.producer);
                         if !blk.header.presence_root.is_zero() {
-                            let indices = doli_core::attestation::decode_attestation_bitfield(
-                                &blk.header.presence_root,
-                                sorted_for_decode.len(),
-                            );
+                            let indices = if !blk.attestation_bitfield.is_empty() {
+                                doli_core::decode_attestation_bitfield_vec(
+                                    &blk.attestation_bitfield,
+                                    sorted_for_decode.len(),
+                                )
+                            } else {
+                                doli_core::attestation::decode_attestation_bitfield(
+                                    &blk.header.presence_root,
+                                    sorted_for_decode.len(),
+                                )
+                            };
                             for idx in indices {
                                 if let Some(pk) = sorted_for_decode.get(idx) {
                                     attested.insert(*pk);
