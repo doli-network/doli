@@ -282,21 +282,6 @@ Devnet uses `active_producers_cap = 5` with 1-second slots:
 - Full tier lifecycle testable in ~5 minutes
 - Ideal for integration tests and CI
 
-### Era-Based Scaling
-
-The `active_producers_cap` can grow with eras as the network matures:
-
-| Era | Mainnet Cap | Testnet Cap | Block interval per producer |
-|-----|-------------|-------------|---------------------------|
-| 1   | 100         | 10          | ~17 min                   |
-| 2   | 150         | 15          | ~25 min                   |
-| 3   | 200         | 20          | ~27 min (with 8s slots)   |
-| 4   | 250         | 25          | ~25 min (with 6s slots)   |
-
-Formula: `active_producers_cap(era) = base_cap + (era × 50)`, capped at 500.
-
-Slot duration can decrease as global network infrastructure improves, keeping block intervals manageable even with a larger active list.
-
 ### ConsensusParams Integration
 
 ```rust
@@ -356,9 +341,6 @@ Tier system activates automatically. Top 100 by `bonds × seniority_weight` beco
 
 Enable Tier 3 delegation for participants who don't want to run infrastructure. 90% rewards to delegator, 10% to operator. Operators compete for delegation by offering reliability and reputation.
 
-### Phase 4: Dynamic Cap Scaling (at ~1,000+ producers) — Future
-
-`active_producers_cap` increases per era. Slot duration decreases as network infrastructure matures. The cap grows from 100 to 500 over 4 eras.
 
 ## Why This Works
 
