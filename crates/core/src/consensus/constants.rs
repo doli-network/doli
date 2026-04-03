@@ -59,7 +59,7 @@ pub const EPOCH_REWARD_EXPLICIT_INPUTS_HEIGHT: u64 = 8_450;
 /// After this height: only the first ACTIVE_PRODUCERS_CAP producers (by registered_at)
 /// enter the round-robin. All other producers remain as attestors with identical rewards.
 /// Consensus-breaking — all nodes must update before this height.
-pub const TIER_SYSTEM_ACTIVATION_HEIGHT: u64 = 9_450;
+pub const TIER_SYSTEM_ACTIVATION_HEIGHT: u64 = 8_310;
 
 /// Maximum producers in the active production list (round-robin).
 /// Only affects scheduling after TIER_SYSTEM_ACTIVATION_HEIGHT.
