@@ -59,19 +59,19 @@ pub const EPOCH_REWARD_EXPLICIT_INPUTS_HEIGHT: u64 = 8_450;
 /// After this height: attestation bitfield stored in `block.attestation_bitfield` (body), no cap.
 /// `presence_root` becomes `BLAKE3(attestation_bitfield)` as a commitment.
 /// Consensus-breaking — all nodes must update before this height.
-pub const BITFIELD_BODY_ACTIVATION_HEIGHT: u64 = 8_500;
+pub const BITFIELD_BODY_ACTIVATION_HEIGHT: u64 = 33_333;
 
 /// Tier system activation height.
 /// Before this height: all producers participate in round-robin (current behavior).
 /// After this height: only the first ACTIVE_PRODUCERS_CAP producers (by registered_at)
 /// enter the round-robin. All other producers remain as attestors with identical rewards.
 /// Consensus-breaking — all nodes must update before this height.
-pub const TIER_SYSTEM_ACTIVATION_HEIGHT: u64 = 8_310;
+pub const TIER_SYSTEM_ACTIVATION_HEIGHT: u64 = 33_333;
 
 /// Maximum producers in the active production list (round-robin).
 /// Only affects scheduling after TIER_SYSTEM_ACTIVATION_HEIGHT.
 /// Attestors (outside this cap) still receive bond-weighted epoch rewards.
-pub const ACTIVE_PRODUCERS_CAP: usize = 10;
+pub const ACTIVE_PRODUCERS_CAP: usize = 50;
 
 // ==================== Proof of Time Parameters ====================
 
