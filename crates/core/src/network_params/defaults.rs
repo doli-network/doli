@@ -25,6 +25,7 @@ impl NetworkParams {
                     "/dns4/seed2.doli.network/tcp/30300".to_string(),
                     "/dns4/seeds.doli.network/tcp/30300".to_string(),
                 ],
+                bootnode_enrs: vec![], // Populated when mainnet bootnodes are deployed
                 max_peers: 50, // Ethereum default (geth); GossipSub mesh handles propagation
 
                 // Timing
@@ -97,7 +98,8 @@ impl NetworkParams {
                     "/dns4/bootstrap2.testnet.doli.network/tcp/40300".to_string(),
                     "/dns4/seeds.testnet.doli.network/tcp/40300".to_string(),
                 ],
-                max_peers: 25, // Testnet: halved from 50 to reduce Yamux RAM (INC-I-012)
+                bootnode_enrs: vec![], // Populated when testnet bootnodes are deployed
+                max_peers: 25,         // Testnet: halved from 50 to reduce Yamux RAM (INC-I-012)
                 // Each peer costs ~5MB in Yamux buffers: 25×2×5MB=250MB/node
                 // At 200 nodes: ~50GB. At 50: ~12GB. Gossip mesh_n=12 fits in 25.
 
@@ -170,6 +172,7 @@ impl NetworkParams {
                 default_rpc_port: 28500,
                 default_metrics_port: 29000,
                 bootstrap_nodes: vec![], // No bootstrap for local devnet
+                bootnode_enrs: vec![],   // No bootnode for local devnet
                 max_peers: 150,          // Devnet: local machine, 100+ nodes stress tests
 
                 // Timing (accelerated for testing)

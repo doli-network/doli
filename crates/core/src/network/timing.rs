@@ -64,6 +64,13 @@ impl Network {
         self.params().bootstrap_nodes.clone()
     }
 
+    /// Get default Discv5 bootnode ENRs for this network
+    ///
+    /// Configurable via `DOLI_BOOTNODE_ENRS` environment variable (comma-separated).
+    pub fn bootnode_enrs(&self) -> Vec<String> {
+        self.params().bootnode_enrs.clone()
+    }
+
     // ==================== Time Acceleration Parameters ====================
     //
     // These parameters enable accelerated time simulation for testing:

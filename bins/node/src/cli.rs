@@ -115,6 +115,11 @@ pub(crate) enum Commands {
         #[arg(long)]
         relay_server: bool,
 
+        /// Run as bootnode only (UDP discovery, no gossip/sync/production).
+        /// Minimal resource usage (~2MB RAM). Serves peer discovery via Discv5.
+        #[arg(long, conflicts_with_all = ["producer", "relay_server"])]
+        bootnode: bool,
+
         /// DANGEROUS: Skip duplicate key detection during producer startup.
         /// Only use if you are CERTAIN no other instance is running with this key.
         /// Using this incorrectly WILL cause slashing (100% bond loss).
