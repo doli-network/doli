@@ -150,6 +150,19 @@ POLKIT
         info "Installed polkit rule for doli service management"
     fi
 
+    # 5. Sudoers rule for passwordless binary updates by doli user
+    #    The auto-updater runs as 'doli' but binaries live in /usr/local/bin/ (root-owned).
+    #    This allows `sudo cp` and `sudo chmod` on doli binaries without password prompt.
+    cat > /etc/sudoers.d/doli-update <<'SUDOERS'
+# Allow doli user to update doli binaries without password
+doli ALL=(root) NOPASSWD: /usr/bin/cp /tmp/doli-update-binary /usr/local/bin/doli-node
+doli ALL=(root) NOPASSWD: /usr/bin/cp /tmp/doli-update-binary /usr/local/bin/doli
+doli ALL=(root) NOPASSWD: /usr/bin/chmod 755 /usr/local/bin/doli-node
+doli ALL=(root) NOPASSWD: /usr/bin/chmod 755 /usr/local/bin/doli
+SUDOERS
+    chmod 440 /etc/sudoers.d/doli-update
+    info "Installed sudoers rule for auto-update"
+
 fi
 
 # ---------------------------------------------------------------------------

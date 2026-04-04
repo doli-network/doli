@@ -143,28 +143,81 @@ pub async fn apply_update(
 }
 
 /// Install binary to target path (temp write + atomic rename)
+///
+/// Tries direct write first. If Permission denied (e.g., /usr/local/bin/ owned by root
+/// but process runs as `doli` user), falls back to `sudo cp` for the install step.
+/// This handles both cases:
+/// - Self-owned binary path (e.g., /mainnet/bin/) → direct write
+/// - Root-owned binary path (e.g., /usr/local/bin/, /usr/bin/) → sudo fallback
 pub async fn install_binary(binary: &[u8], target: &Path) -> Result<()> {
-    // On Unix, we need to handle the case where the binary is running
-    // Strategy: write to temp, then atomic rename
-
     let temp_path = target.with_extension("new");
 
-    // Write to temp file
-    fs::write(&temp_path, binary).await?;
+    // Try direct write first
+    match fs::write(&temp_path, binary).await {
+        Ok(()) => {
+            // Set executable permissions
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = fs::metadata(&temp_path).await?.permissions();
+                perms.set_mode(0o755);
+                fs::set_permissions(&temp_path, perms).await?;
+            }
+            // Atomic rename
+            fs::rename(&temp_path, target).await?;
+            debug!("Binary installed to {:?} (direct)", target);
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            // Fallback: write to /tmp, then sudo cp to target
+            info!("Direct write to {:?} denied, using sudo fallback", target);
+            install_binary_sudo(binary, target).await
+        }
+        Err(e) => Err(e.into()),
+    }
+}
 
-    // Set executable permissions on Unix
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&temp_path).await?.permissions();
-        perms.set_mode(0o775);
-        fs::set_permissions(&temp_path, perms).await?;
+/// Install binary via sudo (fallback for root-owned paths like /usr/local/bin/)
+///
+/// Writes binary to a temp file in /tmp/, then uses `sudo cp` + `sudo chmod`
+/// to install it to the target path. Works for any target path as long as
+/// the user has passwordless sudo (standard for `doli` group via polkit rule).
+async fn install_binary_sudo(binary: &[u8], target: &Path) -> Result<()> {
+    use std::process::Command;
+
+    // Write to /tmp first (always writable)
+    let tmp = std::env::temp_dir().join("doli-update-binary");
+    fs::write(&tmp, binary).await?;
+
+    // sudo cp to target
+    let cp_status = Command::new("sudo")
+        .args(["cp", &tmp.to_string_lossy(), &target.to_string_lossy()])
+        .status()
+        .map_err(|e| UpdateError::InstallFailed(format!("sudo cp failed: {}", e)))?;
+
+    if !cp_status.success() {
+        let _ = fs::remove_file(&tmp).await;
+        return Err(UpdateError::InstallFailed(format!(
+            "sudo cp to {:?} failed with exit code {:?}",
+            target,
+            cp_status.code()
+        )));
     }
 
-    // Atomic rename
-    fs::rename(&temp_path, target).await?;
+    // sudo chmod
+    let chmod_status = Command::new("sudo")
+        .args(["chmod", "755", &target.to_string_lossy()])
+        .status()
+        .map_err(|e| UpdateError::InstallFailed(format!("sudo chmod failed: {}", e)))?;
 
-    debug!("Binary installed to {:?}", target);
+    if !chmod_status.success() {
+        warn!("sudo chmod failed, binary may not be executable");
+    }
+
+    // Cleanup temp
+    let _ = fs::remove_file(&tmp).await;
+
+    info!("Binary installed to {:?} (via sudo)", target);
     Ok(())
 }
 
