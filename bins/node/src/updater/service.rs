@@ -477,11 +477,20 @@ impl UpdateService {
             Err(e) => {
                 error!(
                     "Auto-apply failed for v{}: {}. Node continues with v{}. \
-                     Operator can manually run: doli-node update apply",
+                     Will retry on next check cycle.",
                     version,
                     e,
                     current_version()
                 );
+                // Clear the pending update so the next check cycle re-detects the
+                // release and retries from scratch. Without this, the node stays in
+                // a "binary not downloaded" loop forever because binary_ready=false
+                // and the pending state prevents re-processing the same version.
+                let mut pending = self.pending.write().await;
+                *pending = None;
+                if let Err(e) = PendingUpdate::remove(&self.data_dir) {
+                    warn!("Failed to remove pending_update.json: {}", e);
+                }
             }
         }
     }
