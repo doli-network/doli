@@ -255,13 +255,17 @@ impl RpcContext {
                     blocks_with_attestations += 1;
                     let slot = block.header.slot;
                     let minute = attestation_minute(slot);
+                    #[allow(clippy::absurd_extreme_comparisons)]
                     let indices = if !block.attestation_bitfield.is_empty() {
                         doli_core::decode_attestation_bitfield_vec(
                             &block.attestation_bitfield,
                             producer_count,
                         )
-                    } else {
+                    } else if h < doli_core::consensus::BITFIELD_BODY_ACTIVATION_HEIGHT {
                         decode_attestation_bitfield(&pr, producer_count)
+                    } else {
+                        // Post-activation without body: skip
+                        vec![]
                     };
                     for idx in indices {
                         per_producer_minutes.entry(idx).or_default().insert(minute);

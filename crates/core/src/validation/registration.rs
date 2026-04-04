@@ -270,13 +270,17 @@ pub(super) fn validate_bls_aggregate(
     // Decode bitfield to find which producers attested
     // Post-BITFIELD_BODY_ACTIVATION_HEIGHT: bitfield is in block body, presence_root is BLAKE3 commitment.
     // Pre-activation: bitfield is packed directly in presence_root.
+    #[allow(clippy::absurd_extreme_comparisons)]
     let attested_indices = if !block.attestation_bitfield.is_empty() {
         crate::attestation::decode_attestation_bitfield_vec(
             &block.attestation_bitfield,
             ctx.producer_bls_keys.len(),
         )
-    } else {
+    } else if ctx.current_height < crate::consensus::BITFIELD_BODY_ACTIVATION_HEIGHT {
         decode_attestation_bitfield(&block.header.presence_root, ctx.producer_bls_keys.len())
+    } else {
+        // Post-activation without body: skip (presence_root is BLAKE3, not bitfield)
+        vec![]
     };
 
     if attested_indices.is_empty() {

@@ -46,17 +46,20 @@ impl Node {
                 }
 
                 let minute = attestation_minute(block.header.slot);
-                let indices = if h >= doli_core::consensus::BITFIELD_BODY_ACTIVATION_HEIGHT
-                    && !block.attestation_bitfield.is_empty()
-                {
-                    // Post-activation: decode from body bitfield (no 256 cap)
+                let indices = if !block.attestation_bitfield.is_empty() {
+                    // Body bitfield available: decode from body (no 256 cap)
                     doli_core::decode_attestation_bitfield_vec(
                         &block.attestation_bitfield,
                         producer_count,
                     )
-                } else {
-                    // Pre-activation: decode from presence_root (capped at 256)
+                } else if h < doli_core::consensus::BITFIELD_BODY_ACTIVATION_HEIGHT {
+                    // Pre-activation: presence_root IS the raw bitfield
                     decode_attestation_bitfield(&block.header.presence_root, producer_count)
+                } else {
+                    // Post-activation without body (snap sync gap): skip
+                    // presence_root is BLAKE3 hash, NOT a bitfield — decoding it
+                    // produces garbage indices → scheduler divergence → fork
+                    vec![]
                 };
 
                 // Union: for each producer index attested in this block, add the minute
@@ -513,11 +516,14 @@ impl Node {
                                     &blk.attestation_bitfield,
                                     sorted_for_decode.len(),
                                 )
-                            } else {
+                            } else if h < doli_core::consensus::BITFIELD_BODY_ACTIVATION_HEIGHT {
                                 doli_core::attestation::decode_attestation_bitfield(
                                     &blk.header.presence_root,
                                     sorted_for_decode.len(),
                                 )
+                            } else {
+                                // Post-activation without body: skip
+                                vec![]
                             };
                             for idx in indices {
                                 if let Some(pk) = sorted_for_decode.get(idx) {

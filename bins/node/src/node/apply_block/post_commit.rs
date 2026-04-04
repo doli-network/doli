@@ -92,21 +92,22 @@ impl Node {
                             attested.insert(blk.header.producer);
                             // Decode attestation bitfield
                             if !blk.header.presence_root.is_zero() {
-                                let indices = if h
-                                    >= doli_core::consensus::BITFIELD_BODY_ACTIVATION_HEIGHT
-                                    && !blk.attestation_bitfield.is_empty()
-                                {
-                                    // Post-activation: decode from body (no 256 cap)
+                                let indices = if !blk.attestation_bitfield.is_empty() {
+                                    // Body bitfield available: decode from body (no 256 cap)
                                     doli_core::decode_attestation_bitfield_vec(
                                         &blk.attestation_bitfield,
                                         sorted_for_decode.len(),
                                     )
-                                } else {
-                                    // Pre-activation: decode from presence_root
+                                } else if h < doli_core::consensus::BITFIELD_BODY_ACTIVATION_HEIGHT
+                                {
+                                    // Pre-activation: presence_root IS the raw bitfield
                                     decode_attestation_bitfield(
                                         &blk.header.presence_root,
                                         sorted_for_decode.len(),
                                     )
+                                } else {
+                                    // Post-activation without body: skip
+                                    vec![]
                                 };
                                 for idx in indices {
                                     if let Some(pk) = sorted_for_decode.get(idx) {
