@@ -41,6 +41,7 @@ pub(crate) struct Cli {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum Commands {
     /// Run the node
     Run {
@@ -80,6 +81,11 @@ pub(crate) enum Commands {
         /// RPC bind address (default: 127.0.0.1, use 0.0.0.0 for public access)
         #[arg(long)]
         rpc_bind: Option<String>,
+
+        /// Allowed CORS origins for the RPC server. Can be specified multiple times.
+        /// Example: --rpc-cors http://localhost:8080 --rpc-cors http://localhost:3000
+        #[arg(long)]
+        rpc_cors: Vec<String>,
 
         /// Metrics server port (mainnet default: 9000, testnet: 19000, devnet: 29000)
         /// Note: Override with network-specific port if needed

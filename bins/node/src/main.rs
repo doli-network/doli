@@ -158,6 +158,7 @@ async fn main() -> Result<()> {
             external_address,
             rpc_port,
             rpc_bind,
+            rpc_cors,
             metrics_port,
             bootstrap,
             bootnode_enr,
@@ -206,6 +207,7 @@ async fn main() -> Result<()> {
                     external_address,
                     rpc_port,
                     rpc_bind,
+                    rpc_cors,
                     metrics_port,
                     bootstrap,
                     bootnode_enr,
@@ -322,7 +324,8 @@ async fn main() -> Result<()> {
                 None,
                 None, // external_address
                 None,
-                None, // rpc_bind
+                None,   // rpc_bind
+                vec![], // rpc_cors
                 9000,
                 vec![],
                 vec![], // bootnode_enr

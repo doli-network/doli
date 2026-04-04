@@ -25,6 +25,7 @@ pub(crate) async fn run_node(
     external_address: Option<String>,
     rpc_port: Option<u16>,
     rpc_bind: Option<String>,
+    rpc_cors: Vec<String>,
     metrics_port: u16,
     bootstrap: Vec<String>,
     bootnode_enrs: Vec<String>,
@@ -152,6 +153,9 @@ pub(crate) async fn run_node(
         let bind = rpc_bind.as_deref().unwrap_or("127.0.0.1");
         let port = rpc_port.unwrap_or(config.network.default_rpc_port());
         config.rpc.listen_addr = format!("{}:{}", bind, port);
+    }
+    if !rpc_cors.is_empty() {
+        config.rpc.allowed_origins = rpc_cors;
     }
     if no_dht {
         config.no_dht = true;
