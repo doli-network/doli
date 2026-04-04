@@ -152,6 +152,18 @@ impl ConsensusParams {
         }
     }
 
+    /// Returns the activation height for guard conditions (AmountGuard, OutputTypeGuard, RecipientGuard).
+    ///
+    /// Before this height, nodes reject conditions with tags 0x13-0x15.
+    /// Guards require all nodes to upgrade since they change condition evaluation semantics.
+    pub fn guards_activation_height(&self, network: &Network) -> BlockHeight {
+        match network {
+            Network::Devnet => 0,         // Immediate on devnet
+            Network::Testnet => 0,        // Immediate on testnet
+            Network::Mainnet => u64::MAX, // TBD — disabled until coordinated activation
+        }
+    }
+
     /// Calculate max block size for a given height.
     ///
     /// Block size doubles every era until reaching the cap.

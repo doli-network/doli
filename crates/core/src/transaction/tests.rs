@@ -1282,6 +1282,7 @@ fn test_bridge_htlc_wrong_preimage_fails() {
     let ctx = EvalContext {
         current_height: 50,
         signing_hash: &signing_hash,
+        transaction: None,
     };
     let mut idx = 0;
     assert!(evaluate(&cond, &good_witness, &ctx, &mut idx));
@@ -1327,6 +1328,7 @@ fn test_bridge_htlc_claim_before_lock_fails() {
     let ctx_early = EvalContext {
         current_height: 1,
         signing_hash: &signing_hash,
+        transaction: None,
     };
     let mut idx = 0;
     assert!(!evaluate(&cond, &claim_witness, &ctx_early, &mut idx));
@@ -1335,6 +1337,7 @@ fn test_bridge_htlc_claim_before_lock_fails() {
     let ctx_just_before = EvalContext {
         current_height: 99,
         signing_hash: &signing_hash,
+        transaction: None,
     };
     let mut idx = 0;
     assert!(!evaluate(&cond, &claim_witness, &ctx_just_before, &mut idx));
@@ -1343,6 +1346,7 @@ fn test_bridge_htlc_claim_before_lock_fails() {
     let ctx_at_lock = EvalContext {
         current_height: 100,
         signing_hash: &signing_hash,
+        transaction: None,
     };
     let mut idx = 0;
     assert!(evaluate(&cond, &claim_witness, &ctx_at_lock, &mut idx));
@@ -1351,6 +1355,7 @@ fn test_bridge_htlc_claim_before_lock_fails() {
     let ctx_after = EvalContext {
         current_height: 101,
         signing_hash: &signing_hash,
+        transaction: None,
     };
     let mut idx = 0;
     assert!(evaluate(&cond, &claim_witness, &ctx_after, &mut idx));
@@ -1378,6 +1383,7 @@ fn test_bridge_htlc_refund_before_expiry_fails() {
     let ctx_early = EvalContext {
         current_height: 1,
         signing_hash: &signing_hash,
+        transaction: None,
     };
     let mut idx = 0;
     assert!(!evaluate(&cond, &refund_witness, &ctx_early, &mut idx));
@@ -1386,6 +1392,7 @@ fn test_bridge_htlc_refund_before_expiry_fails() {
     let ctx_just_before = EvalContext {
         current_height: 99,
         signing_hash: &signing_hash,
+        transaction: None,
     };
     let mut idx = 0;
     assert!(!evaluate(
@@ -1399,6 +1406,7 @@ fn test_bridge_htlc_refund_before_expiry_fails() {
     let ctx_at_expiry = EvalContext {
         current_height: 100,
         signing_hash: &signing_hash,
+        transaction: None,
     };
     let mut idx = 0;
     assert!(evaluate(&cond, &refund_witness, &ctx_at_expiry, &mut idx));
@@ -1407,6 +1415,7 @@ fn test_bridge_htlc_refund_before_expiry_fails() {
     let ctx_well_after = EvalContext {
         current_height: 200,
         signing_hash: &signing_hash,
+        transaction: None,
     };
     let mut idx = 0;
     assert!(evaluate(&cond, &refund_witness, &ctx_well_after, &mut idx));
@@ -1471,6 +1480,7 @@ fn test_counter_hash_does_not_affect_spending() {
     let ctx = EvalContext {
         current_height: 50,
         signing_hash: &signing_hash,
+        transaction: None,
     };
 
     let mut idx = 0;
@@ -1486,6 +1496,7 @@ fn test_counter_hash_does_not_affect_spending() {
     let ctx_expired = EvalContext {
         current_height: 200,
         signing_hash: &signing_hash,
+        transaction: None,
     };
     let mut idx = 0;
     assert!(evaluate(&cond_a, &refund_witness, &ctx_expired, &mut idx));
@@ -1557,6 +1568,7 @@ fn test_bridge_swap_claim_happy_path() {
     let ctx = EvalContext {
         current_height: 100, // > lock_height(50)
         signing_hash: &signing_hash,
+        transaction: None,
     };
     let mut idx = 0;
     assert!(evaluate(&cond, &claim_witness, &ctx, &mut idx));
@@ -1623,6 +1635,7 @@ fn test_bridge_swap_ethereum_happy_path() {
     let ctx = EvalContext {
         current_height: 50,
         signing_hash: &signing_hash,
+        transaction: None,
     };
     let mut idx = 0;
     assert!(evaluate(&cond, &claim_witness, &ctx, &mut idx));
@@ -1669,6 +1682,7 @@ fn test_bridge_htlc_refund_after_expiry() {
     let ctx_before = EvalContext {
         current_height: 100,
         signing_hash: &signing_hash,
+        transaction: None,
     };
     let mut idx = 0;
     assert!(!evaluate(&cond, &refund_witness, &ctx_before, &mut idx));
@@ -1677,6 +1691,7 @@ fn test_bridge_htlc_refund_after_expiry() {
     let ctx_at = EvalContext {
         current_height: 101,
         signing_hash: &signing_hash,
+        transaction: None,
     };
     let mut idx = 0;
     assert!(evaluate(&cond, &refund_witness, &ctx_at, &mut idx));
@@ -1685,6 +1700,7 @@ fn test_bridge_htlc_refund_after_expiry() {
     let ctx_after = EvalContext {
         current_height: 200,
         signing_hash: &signing_hash,
+        transaction: None,
     };
     let mut idx = 0;
     assert!(evaluate(&cond, &refund_witness, &ctx_after, &mut idx));

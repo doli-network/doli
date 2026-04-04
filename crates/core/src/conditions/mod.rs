@@ -31,6 +31,9 @@
 //! | 0x10 | And                | [condition_a] [condition_b]                |
 //! | 0x11 | Or                 | [condition_a] [condition_b]                |
 //! | 0x12 | Threshold          | 1B n + 1B count + N×[condition]            |
+//! | 0x13 | AmountGuard        | 8B min_amount (LE) + 1B output_index       |
+//! | 0x14 | OutputTypeGuard    | 1B expected_type + 1B output_index         |
+//! | 0x15 | RecipientGuard     | 32B expected_pubkey_hash + 1B output_index |
 
 mod encoding;
 mod eval;
@@ -87,6 +90,9 @@ pub(crate) const TAG_TIMELOCK_EXPIRY: u8 = 0x04;
 pub(crate) const TAG_AND: u8 = 0x10;
 pub(crate) const TAG_OR: u8 = 0x11;
 pub(crate) const TAG_THRESHOLD: u8 = 0x12;
+pub(crate) const TAG_AMOUNT_GUARD: u8 = 0x13;
+pub(crate) const TAG_OUTPUT_TYPE_GUARD: u8 = 0x14;
+pub(crate) const TAG_RECIPIENT_GUARD: u8 = 0x15;
 
 // =============================================================================
 // CONDITION AST
@@ -122,6 +128,27 @@ pub enum Condition {
 
     /// At least `n` of the sub-conditions must be satisfied.
     Threshold { n: u8, conditions: Vec<Condition> },
+
+    /// Requires that the spending transaction's output at `output_index`
+    /// has an amount >= `min_amount`. Use case: limit orders, MEV protection.
+    AmountGuard {
+        min_amount: crate::types::Amount,
+        output_index: u8,
+    },
+
+    /// Requires that the spending transaction's output at `output_index`
+    /// has the specified output type. Use case: prevent fund redirection.
+    OutputTypeGuard {
+        expected_type: crate::transaction::OutputType,
+        output_index: u8,
+    },
+
+    /// Requires that the spending transaction's output at `output_index`
+    /// pays to the specified pubkey_hash. Use case: conditional payments.
+    RecipientGuard {
+        expected_pubkey_hash: Hash,
+        output_index: u8,
+    },
 }
 
 // =============================================================================
@@ -281,5 +308,32 @@ impl Condition {
             Box::new(Condition::Signature(pubkey_hash)),
             Box::new(Condition::Timelock(unlock_height)),
         )
+    }
+
+    /// Create an amount guard: output[index] must have amount >= min_amount.
+    pub fn amount_guard(min_amount: crate::types::Amount, output_index: u8) -> Self {
+        Condition::AmountGuard {
+            min_amount,
+            output_index,
+        }
+    }
+
+    /// Create an output type guard: output[index] must have the expected type.
+    pub fn output_type_guard(
+        expected_type: crate::transaction::OutputType,
+        output_index: u8,
+    ) -> Self {
+        Condition::OutputTypeGuard {
+            expected_type,
+            output_index,
+        }
+    }
+
+    /// Create a recipient guard: output[index] must pay to expected_pubkey_hash.
+    pub fn recipient_guard(expected_pubkey_hash: Hash, output_index: u8) -> Self {
+        Condition::RecipientGuard {
+            expected_pubkey_hash,
+            output_index,
+        }
     }
 }

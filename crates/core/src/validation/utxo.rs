@@ -780,6 +780,7 @@ fn verify_input_conditions(
         let ctx = crate::conditions::EvalContext {
             current_height,
             signing_hash,
+            transaction: Some(tx),
         };
 
         let mut or_idx = 0;

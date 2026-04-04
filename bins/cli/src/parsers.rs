@@ -189,6 +189,9 @@ pub(crate) fn condition_to_output_type(cond: &doli_core::Condition) -> doli_core
         }
         doli_core::Condition::Signature(_) => doli_core::OutputType::Normal,
         doli_core::Condition::Threshold { .. } => doli_core::OutputType::Multisig,
+        doli_core::Condition::AmountGuard { .. }
+        | doli_core::Condition::OutputTypeGuard { .. }
+        | doli_core::Condition::RecipientGuard { .. } => doli_core::OutputType::Multisig,
     }
 }
 

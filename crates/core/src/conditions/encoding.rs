@@ -4,8 +4,9 @@ use crypto::Hash;
 
 use super::{
     Condition, ConditionError, CONDITION_VERSION, MAX_CONDITION_DEPTH, MAX_CONDITION_OPS,
-    MAX_MULTISIG_KEYS, MAX_THRESHOLD_CONDITIONS, TAG_AND, TAG_HASHLOCK, TAG_MULTISIG, TAG_OR,
-    TAG_SIGNATURE, TAG_THRESHOLD, TAG_TIMELOCK, TAG_TIMELOCK_EXPIRY,
+    MAX_MULTISIG_KEYS, MAX_THRESHOLD_CONDITIONS, TAG_AMOUNT_GUARD, TAG_AND, TAG_HASHLOCK,
+    TAG_MULTISIG, TAG_OR, TAG_OUTPUT_TYPE_GUARD, TAG_RECIPIENT_GUARD, TAG_SIGNATURE, TAG_THRESHOLD,
+    TAG_TIMELOCK, TAG_TIMELOCK_EXPIRY,
 };
 
 // =============================================================================
@@ -72,6 +73,30 @@ impl Condition {
                 for cond in conditions {
                     cond.encode_inner(buf);
                 }
+            }
+            Condition::AmountGuard {
+                min_amount,
+                output_index,
+            } => {
+                buf.push(TAG_AMOUNT_GUARD);
+                buf.extend_from_slice(&min_amount.to_le_bytes());
+                buf.push(*output_index);
+            }
+            Condition::OutputTypeGuard {
+                expected_type,
+                output_index,
+            } => {
+                buf.push(TAG_OUTPUT_TYPE_GUARD);
+                buf.push(*expected_type as u8);
+                buf.push(*output_index);
+            }
+            Condition::RecipientGuard {
+                expected_pubkey_hash,
+                output_index,
+            } => {
+                buf.push(TAG_RECIPIENT_GUARD);
+                buf.extend_from_slice(expected_pubkey_hash.as_bytes());
+                buf.push(*output_index);
             }
         }
     }
@@ -239,7 +264,68 @@ impl Condition {
                 Ok((Condition::Threshold { n, conditions }, 1 + offset))
             }
 
+            TAG_AMOUNT_GUARD => {
+                if rest.len() < 9 {
+                    return Err(ConditionError::BufferTooShort);
+                }
+                let min_amount = u64::from_le_bytes(rest[..8].try_into().unwrap());
+                let output_index = rest[8];
+                Ok((
+                    Condition::AmountGuard {
+                        min_amount,
+                        output_index,
+                    },
+                    1 + 9,
+                ))
+            }
+
+            TAG_OUTPUT_TYPE_GUARD => {
+                if rest.len() < 2 {
+                    return Err(ConditionError::BufferTooShort);
+                }
+                let expected_type = crate::transaction::OutputType::from_u8(rest[0])
+                    .ok_or_else(|| ConditionError::UnknownTag { tag: rest[0] })?;
+                let output_index = rest[1];
+                Ok((
+                    Condition::OutputTypeGuard {
+                        expected_type,
+                        output_index,
+                    },
+                    1 + 2,
+                ))
+            }
+
+            TAG_RECIPIENT_GUARD => {
+                if rest.len() < 33 {
+                    return Err(ConditionError::BufferTooShort);
+                }
+                let expected_pubkey_hash = Hash::from_bytes(rest[..32].try_into().unwrap());
+                let output_index = rest[32];
+                Ok((
+                    Condition::RecipientGuard {
+                        expected_pubkey_hash,
+                        output_index,
+                    },
+                    1 + 33,
+                ))
+            }
+
             _ => Err(ConditionError::UnknownTag { tag }),
+        }
+    }
+
+    /// Returns true if this condition tree contains any guard conditions
+    /// (AmountGuard, OutputTypeGuard, RecipientGuard).
+    pub fn contains_guard(&self) -> bool {
+        match self {
+            Condition::AmountGuard { .. }
+            | Condition::OutputTypeGuard { .. }
+            | Condition::RecipientGuard { .. } => true,
+            Condition::And(a, b) | Condition::Or(a, b) => a.contains_guard() || b.contains_guard(),
+            Condition::Threshold { conditions, .. } => {
+                conditions.iter().any(|c| c.contains_guard())
+            }
+            _ => false,
         }
     }
 
@@ -249,7 +335,11 @@ impl Condition {
             Condition::Signature(_) => 1,
             Condition::Multisig { keys, .. } => keys.len(),
             Condition::Hashlock(_) => 1,
-            Condition::Timelock(_) | Condition::TimelockExpiry(_) => 0,
+            Condition::Timelock(_)
+            | Condition::TimelockExpiry(_)
+            | Condition::AmountGuard { .. }
+            | Condition::OutputTypeGuard { .. }
+            | Condition::RecipientGuard { .. } => 0,
             Condition::And(a, b) | Condition::Or(a, b) => a.ops_count() + b.ops_count(),
             Condition::Threshold { conditions, .. } => {
                 conditions.iter().map(|c| c.ops_count()).sum()
@@ -264,7 +354,10 @@ impl Condition {
             | Condition::Multisig { .. }
             | Condition::Hashlock(_)
             | Condition::Timelock(_)
-            | Condition::TimelockExpiry(_) => 0,
+            | Condition::TimelockExpiry(_)
+            | Condition::AmountGuard { .. }
+            | Condition::OutputTypeGuard { .. }
+            | Condition::RecipientGuard { .. } => 0,
             Condition::And(a, b) | Condition::Or(a, b) => 1 + a.depth().max(b.depth()),
             Condition::Threshold { conditions, .. } => {
                 1 + conditions.iter().map(|c| c.depth()).max().unwrap_or(0)

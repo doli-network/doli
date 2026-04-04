@@ -443,6 +443,7 @@ mod tests {
         let ctx = EvalContext {
             current_height: 500, // before dispute window
             signing_hash: &signing_hash,
+            transaction: None,
         };
         let mut branch_idx = 0;
         assert!(evaluate_condition(&cond, &witness, &ctx, &mut branch_idx));
@@ -477,6 +478,7 @@ mod tests {
         let ctx_early = EvalContext {
             current_height: 999,
             signing_hash: &signing_hash,
+            transaction: None,
         };
         let mut branch_idx = 0;
         assert!(!evaluate_condition(
@@ -490,6 +492,7 @@ mod tests {
         let ctx_after = EvalContext {
             current_height: 1000,
             signing_hash: &signing_hash,
+            transaction: None,
         };
         branch_idx = 0;
         assert!(evaluate_condition(
@@ -525,6 +528,7 @@ mod tests {
         let ctx = EvalContext {
             current_height: 500,
             signing_hash: &signing_hash,
+            transaction: None,
         };
         let mut branch_idx = 0;
         assert!(!evaluate_condition(&cond, &witness, &ctx, &mut branch_idx));

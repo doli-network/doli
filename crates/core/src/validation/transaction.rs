@@ -341,11 +341,26 @@ pub(super) fn validate_outputs(
                     )));
                 }
                 // Validate condition decodes successfully
-                if let Err(e) = crate::conditions::Condition::decode(&output.extra_data) {
-                    return Err(ValidationError::InvalidTransaction(format!(
-                        "[ERRTX010] conditioned output {} (type={:?}) has invalid condition: {}",
-                        i, output.output_type, e
-                    )));
+                match crate::conditions::Condition::decode(&output.extra_data) {
+                    Ok(cond) => {
+                        // Guard conditions require separate activation height
+                        if cond.contains_guard() {
+                            let guard_activation =
+                                ctx.params.guards_activation_height(&ctx.network);
+                            if ctx.current_height < guard_activation {
+                                return Err(ValidationError::InvalidTransaction(format!(
+                                    "[ERRTX011] output {} contains guard condition: guards activate at height {}",
+                                    i, guard_activation
+                                )));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        return Err(ValidationError::InvalidTransaction(format!(
+                            "[ERRTX010] conditioned output {} (type={:?}) has invalid condition: {}",
+                            i, output.output_type, e
+                        )));
+                    }
                 }
             }
             OutputType::NFT => {

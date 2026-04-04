@@ -199,6 +199,7 @@ impl Mempool {
                     let eval_ctx = doli_core::conditions::EvalContext {
                         current_height,
                         signing_hash: &signing_hash,
+                        transaction: Some(&tx),
                     };
                     let mut or_idx = 0usize;
                     if !doli_core::conditions::evaluate(

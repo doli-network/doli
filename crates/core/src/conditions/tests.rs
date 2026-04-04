@@ -250,6 +250,7 @@ fn test_eval_timelock_satisfied() {
     let ctx = EvalContext {
         current_height: 100,
         signing_hash: &hash,
+        transaction: None,
     };
     assert!(evaluate(&cond, &Witness::default(), &ctx, &mut 0));
 }
@@ -261,6 +262,7 @@ fn test_eval_timelock_not_satisfied() {
     let ctx = EvalContext {
         current_height: 99,
         signing_hash: &hash,
+        transaction: None,
     };
     assert!(!evaluate(&cond, &Witness::default(), &ctx, &mut 0));
 }
@@ -272,6 +274,7 @@ fn test_eval_timelock_expiry_satisfied() {
     let ctx = EvalContext {
         current_height: 100,
         signing_hash: &hash,
+        transaction: None,
     };
     assert!(evaluate(&cond, &Witness::default(), &ctx, &mut 0));
 }
@@ -285,6 +288,7 @@ fn test_eval_timelock_expiry_not_satisfied() {
     let ctx = EvalContext {
         current_height: 99,
         signing_hash: &hash,
+        transaction: None,
     };
     assert!(!evaluate(&cond, &Witness::default(), &ctx, &mut 0));
 }
@@ -299,6 +303,7 @@ fn test_eval_hashlock() {
     let ctx = EvalContext {
         current_height: 0,
         signing_hash: &hash,
+        transaction: None,
     };
 
     // With correct preimage
@@ -335,6 +340,7 @@ fn test_eval_and() {
     let ctx = EvalContext {
         current_height: 30,
         signing_hash: &hash,
+        transaction: None,
     };
     assert!(!evaluate(&cond, &Witness::default(), &ctx, &mut 0));
 
@@ -342,6 +348,7 @@ fn test_eval_and() {
     let ctx = EvalContext {
         current_height: 100,
         signing_hash: &hash,
+        transaction: None,
     };
     assert!(!evaluate(&cond, &Witness::default(), &ctx, &mut 0));
 
@@ -349,6 +356,7 @@ fn test_eval_and() {
     let ctx = EvalContext {
         current_height: 200,
         signing_hash: &hash,
+        transaction: None,
     };
     assert!(evaluate(&cond, &Witness::default(), &ctx, &mut 0));
 
@@ -356,6 +364,7 @@ fn test_eval_and() {
     let ctx = EvalContext {
         current_height: 300,
         signing_hash: &hash,
+        transaction: None,
     };
     assert!(evaluate(&cond, &Witness::default(), &ctx, &mut 0));
 }
@@ -370,6 +379,7 @@ fn test_eval_or_with_branch_hint() {
     let ctx = EvalContext {
         current_height: 50,
         signing_hash: &hash,
+        transaction: None,
     };
 
     // Branch hint: right (true)
@@ -397,6 +407,7 @@ fn test_eval_or_without_hint_tries_both() {
     let ctx = EvalContext {
         current_height: 50,
         signing_hash: &hash,
+        transaction: None,
     };
 
     // No branch hints — should try left (fail) then right (succeed)
@@ -419,6 +430,7 @@ fn test_eval_threshold() {
     let ctx = EvalContext {
         current_height: 150,
         signing_hash: &hash,
+        transaction: None,
     };
     assert!(evaluate(&cond, &Witness::default(), &ctx, &mut 0));
 
@@ -426,6 +438,7 @@ fn test_eval_threshold() {
     let ctx = EvalContext {
         current_height: 80,
         signing_hash: &hash,
+        transaction: None,
     };
     assert!(!evaluate(&cond, &Witness::default(), &ctx, &mut 0));
 }
@@ -520,6 +533,7 @@ fn integration_signature_condition() {
     let ctx = EvalContext {
         current_height: 100,
         signing_hash: &tx_hash,
+        transaction: None,
     };
 
     let mut branch_idx = 0;
@@ -530,6 +544,7 @@ fn integration_signature_condition() {
     let ctx_wrong = EvalContext {
         current_height: 100,
         signing_hash: &wrong_hash,
+        transaction: None,
     };
     let mut branch_idx = 0;
     assert!(!evaluate(&cond, &witness, &ctx_wrong, &mut branch_idx));
@@ -572,6 +587,7 @@ fn integration_multisig_2_of_3() {
     let ctx = EvalContext {
         current_height: 100,
         signing_hash: &tx_hash,
+        transaction: None,
     };
     let mut idx = 0;
     assert!(evaluate(&cond, &witness, &ctx, &mut idx));
@@ -602,6 +618,7 @@ fn integration_hashlock_preimage() {
     let ctx = EvalContext {
         current_height: 1,
         signing_hash: &tx_hash,
+        transaction: None,
     };
 
     // Correct preimage
@@ -649,6 +666,7 @@ fn integration_htlc_claim_and_refund() {
     let ctx_after_lock = EvalContext {
         current_height: 150,
         signing_hash: &tx_hash,
+        transaction: None,
     };
     let mut idx = 0;
     assert!(evaluate(&cond, &claim_witness, &ctx_after_lock, &mut idx));
@@ -657,6 +675,7 @@ fn integration_htlc_claim_and_refund() {
     let ctx_before_lock = EvalContext {
         current_height: 50,
         signing_hash: &tx_hash,
+        transaction: None,
     };
     let mut idx = 0;
     assert!(!evaluate(&cond, &claim_witness, &ctx_before_lock, &mut idx));
@@ -671,6 +690,7 @@ fn integration_htlc_claim_and_refund() {
     let ctx_before_expiry = EvalContext {
         current_height: 150,
         signing_hash: &tx_hash,
+        transaction: None,
     };
     let mut idx = 0;
     assert!(!evaluate(
@@ -684,6 +704,7 @@ fn integration_htlc_claim_and_refund() {
     let ctx_after_expiry = EvalContext {
         current_height: 250,
         signing_hash: &tx_hash,
+        transaction: None,
     };
     let mut idx = 0;
     assert!(evaluate(
@@ -720,6 +741,7 @@ fn integration_htlc_claim_and_refund() {
     let ctx_after_refund_lock = EvalContext {
         current_height: 250,
         signing_hash: &tx_hash,
+        transaction: None,
     };
     let mut idx = 0;
     assert!(evaluate(
@@ -733,6 +755,7 @@ fn integration_htlc_claim_and_refund() {
     let ctx_too_early = EvalContext {
         current_height: 150,
         signing_hash: &tx_hash,
+        transaction: None,
     };
     let mut idx = 0;
     assert!(!evaluate(
@@ -769,6 +792,7 @@ fn integration_vesting_schedule() {
     let ctx_early = EvalContext {
         current_height: 500,
         signing_hash: &tx_hash,
+        transaction: None,
     };
     let mut idx = 0;
     assert!(!evaluate(&cond, &witness, &ctx_early, &mut idx));
@@ -777,6 +801,7 @@ fn integration_vesting_schedule() {
     let ctx_vested = EvalContext {
         current_height: 1000,
         signing_hash: &tx_hash,
+        transaction: None,
     };
     let mut idx = 0;
     assert!(evaluate(&cond, &witness, &ctx_vested, &mut idx));
@@ -853,6 +878,7 @@ fn integration_threshold_2_of_3_mixed() {
     let ctx = EvalContext {
         current_height: 10, // below timelock
         signing_hash: &tx_hash,
+        transaction: None,
     };
     let mut idx = 0;
     assert!(evaluate(&cond, &witness, &ctx, &mut idx));
@@ -868,6 +894,7 @@ fn integration_threshold_2_of_3_mixed() {
     let ctx_high = EvalContext {
         current_height: 100,
         signing_hash: &tx_hash,
+        transaction: None,
     };
     let mut idx = 0;
     assert!(evaluate(&cond, &witness_no_preimage, &ctx_high, &mut idx));
@@ -876,4 +903,348 @@ fn integration_threshold_2_of_3_mixed() {
     let witness_empty = Witness::default();
     let mut idx = 0;
     assert!(!evaluate(&cond, &witness_empty, &ctx_high, &mut idx));
+}
+
+// ====================================================================
+// Guard condition tests
+// ====================================================================
+
+use crate::transaction::{Input, Output, OutputType, Transaction, TxType};
+
+/// Helper: build a minimal Transaction with the given outputs.
+fn tx_with_outputs(outputs: Vec<Output>) -> Transaction {
+    Transaction {
+        version: 1,
+        tx_type: TxType::Transfer,
+        inputs: vec![],
+        outputs,
+        extra_data: vec![],
+    }
+}
+
+/// Helper: build a Normal output with given amount and pubkey_hash.
+fn normal_output(amount: u64, pkh: Hash) -> Output {
+    Output {
+        output_type: OutputType::Normal,
+        amount,
+        pubkey_hash: pkh,
+        lock_until: 0,
+        extra_data: vec![],
+    }
+}
+
+/// Helper: build an output with a specific type.
+fn typed_output(output_type: OutputType, amount: u64, pkh: Hash) -> Output {
+    Output {
+        output_type,
+        amount,
+        pubkey_hash: pkh,
+        lock_until: 0,
+        extra_data: vec![],
+    }
+}
+
+// ---- AmountGuard roundtrip ----
+
+#[test]
+fn test_amount_guard_roundtrip() {
+    let cond = Condition::amount_guard(1_000_000, 0);
+    let encoded = cond.encode().unwrap();
+    let decoded = Condition::decode(&encoded).unwrap();
+    assert_eq!(cond, decoded);
+    assert_eq!(encoded.len(), 1 + 1 + 8 + 1); // version + tag + amount + index
+}
+
+#[test]
+fn test_output_type_guard_roundtrip() {
+    let cond = Condition::output_type_guard(OutputType::Bond, 2);
+    let encoded = cond.encode().unwrap();
+    let decoded = Condition::decode(&encoded).unwrap();
+    assert_eq!(cond, decoded);
+    assert_eq!(encoded.len(), 1 + 1 + 1 + 1); // version + tag + type + index
+}
+
+#[test]
+fn test_recipient_guard_roundtrip() {
+    let cond = Condition::recipient_guard(dummy_hash(0xAA), 1);
+    let encoded = cond.encode().unwrap();
+    let decoded = Condition::decode(&encoded).unwrap();
+    assert_eq!(cond, decoded);
+    assert_eq!(encoded.len(), 1 + 1 + 32 + 1); // version + tag + hash + index
+}
+
+// ---- AmountGuard evaluation ----
+
+#[test]
+fn test_eval_amount_guard_satisfied() {
+    let cond = Condition::amount_guard(500, 0);
+    let tx = tx_with_outputs(vec![normal_output(500, dummy_hash(1))]);
+    let hash = dummy_hash(0);
+    let ctx = EvalContext {
+        current_height: 100,
+        signing_hash: &hash,
+        transaction: Some(&tx),
+    };
+    assert!(evaluate(&cond, &Witness::default(), &ctx, &mut 0));
+}
+
+#[test]
+fn test_eval_amount_guard_exceeded() {
+    let cond = Condition::amount_guard(500, 0);
+    let tx = tx_with_outputs(vec![normal_output(1000, dummy_hash(1))]);
+    let hash = dummy_hash(0);
+    let ctx = EvalContext {
+        current_height: 100,
+        signing_hash: &hash,
+        transaction: Some(&tx),
+    };
+    assert!(evaluate(&cond, &Witness::default(), &ctx, &mut 0));
+}
+
+#[test]
+fn test_eval_amount_guard_insufficient() {
+    let cond = Condition::amount_guard(500, 0);
+    let tx = tx_with_outputs(vec![normal_output(499, dummy_hash(1))]);
+    let hash = dummy_hash(0);
+    let ctx = EvalContext {
+        current_height: 100,
+        signing_hash: &hash,
+        transaction: Some(&tx),
+    };
+    assert!(!evaluate(&cond, &Witness::default(), &ctx, &mut 0));
+}
+
+#[test]
+fn test_eval_amount_guard_out_of_bounds() {
+    let cond = Condition::amount_guard(500, 5); // index 5 doesn't exist
+    let tx = tx_with_outputs(vec![normal_output(1000, dummy_hash(1))]);
+    let hash = dummy_hash(0);
+    let ctx = EvalContext {
+        current_height: 100,
+        signing_hash: &hash,
+        transaction: Some(&tx),
+    };
+    assert!(!evaluate(&cond, &Witness::default(), &ctx, &mut 0));
+}
+
+#[test]
+fn test_eval_amount_guard_no_transaction() {
+    let cond = Condition::amount_guard(500, 0);
+    let hash = dummy_hash(0);
+    let ctx = EvalContext {
+        current_height: 100,
+        signing_hash: &hash,
+        transaction: None,
+    };
+    assert!(!evaluate(&cond, &Witness::default(), &ctx, &mut 0));
+}
+
+// ---- OutputTypeGuard evaluation ----
+
+#[test]
+fn test_eval_output_type_guard_satisfied() {
+    let cond = Condition::output_type_guard(OutputType::Normal, 0);
+    let tx = tx_with_outputs(vec![normal_output(100, dummy_hash(1))]);
+    let hash = dummy_hash(0);
+    let ctx = EvalContext {
+        current_height: 100,
+        signing_hash: &hash,
+        transaction: Some(&tx),
+    };
+    assert!(evaluate(&cond, &Witness::default(), &ctx, &mut 0));
+}
+
+#[test]
+fn test_eval_output_type_guard_wrong_type() {
+    let cond = Condition::output_type_guard(OutputType::Bond, 0);
+    let tx = tx_with_outputs(vec![normal_output(100, dummy_hash(1))]);
+    let hash = dummy_hash(0);
+    let ctx = EvalContext {
+        current_height: 100,
+        signing_hash: &hash,
+        transaction: Some(&tx),
+    };
+    assert!(!evaluate(&cond, &Witness::default(), &ctx, &mut 0));
+}
+
+#[test]
+fn test_eval_output_type_guard_out_of_bounds() {
+    let cond = Condition::output_type_guard(OutputType::Normal, 10);
+    let tx = tx_with_outputs(vec![normal_output(100, dummy_hash(1))]);
+    let hash = dummy_hash(0);
+    let ctx = EvalContext {
+        current_height: 100,
+        signing_hash: &hash,
+        transaction: Some(&tx),
+    };
+    assert!(!evaluate(&cond, &Witness::default(), &ctx, &mut 0));
+}
+
+// ---- RecipientGuard evaluation ----
+
+#[test]
+fn test_eval_recipient_guard_satisfied() {
+    let recipient = dummy_hash(0xBB);
+    let cond = Condition::recipient_guard(recipient, 0);
+    let tx = tx_with_outputs(vec![normal_output(100, recipient)]);
+    let hash = dummy_hash(0);
+    let ctx = EvalContext {
+        current_height: 100,
+        signing_hash: &hash,
+        transaction: Some(&tx),
+    };
+    assert!(evaluate(&cond, &Witness::default(), &ctx, &mut 0));
+}
+
+#[test]
+fn test_eval_recipient_guard_wrong_recipient() {
+    let expected = dummy_hash(0xBB);
+    let actual = dummy_hash(0xCC);
+    let cond = Condition::recipient_guard(expected, 0);
+    let tx = tx_with_outputs(vec![normal_output(100, actual)]);
+    let hash = dummy_hash(0);
+    let ctx = EvalContext {
+        current_height: 100,
+        signing_hash: &hash,
+        transaction: Some(&tx),
+    };
+    assert!(!evaluate(&cond, &Witness::default(), &ctx, &mut 0));
+}
+
+#[test]
+fn test_eval_recipient_guard_out_of_bounds() {
+    let cond = Condition::recipient_guard(dummy_hash(0xBB), 3);
+    let tx = tx_with_outputs(vec![normal_output(100, dummy_hash(1))]);
+    let hash = dummy_hash(0);
+    let ctx = EvalContext {
+        current_height: 100,
+        signing_hash: &hash,
+        transaction: Some(&tx),
+    };
+    assert!(!evaluate(&cond, &Witness::default(), &ctx, &mut 0));
+}
+
+// ---- Guard composition ----
+
+#[test]
+fn test_guard_and_composition() {
+    // AmountGuard(500, 0) AND RecipientGuard(pkh, 0)
+    let recipient = dummy_hash(0xBB);
+    let cond = Condition::And(
+        Box::new(Condition::amount_guard(500, 0)),
+        Box::new(Condition::recipient_guard(recipient, 0)),
+    );
+
+    let encoded = cond.encode().unwrap();
+    let decoded = Condition::decode(&encoded).unwrap();
+    assert_eq!(cond, decoded);
+
+    // Both satisfied
+    let tx = tx_with_outputs(vec![normal_output(500, recipient)]);
+    let hash = dummy_hash(0);
+    let ctx = EvalContext {
+        current_height: 100,
+        signing_hash: &hash,
+        transaction: Some(&tx),
+    };
+    assert!(evaluate(&cond, &Witness::default(), &ctx, &mut 0));
+
+    // Amount insufficient
+    let tx_low = tx_with_outputs(vec![normal_output(499, recipient)]);
+    let ctx_low = EvalContext {
+        current_height: 100,
+        signing_hash: &hash,
+        transaction: Some(&tx_low),
+    };
+    assert!(!evaluate(&cond, &Witness::default(), &ctx_low, &mut 0));
+
+    // Wrong recipient
+    let tx_wrong = tx_with_outputs(vec![normal_output(500, dummy_hash(0xCC))]);
+    let ctx_wrong = EvalContext {
+        current_height: 100,
+        signing_hash: &hash,
+        transaction: Some(&tx_wrong),
+    };
+    assert!(!evaluate(&cond, &Witness::default(), &ctx_wrong, &mut 0));
+}
+
+#[test]
+fn test_limit_order_pattern() {
+    // Limit order: Signature(owner) AND AmountGuard(min_price, 1)
+    // "My UTXO can only be spent if I sign AND output[1] pays at least min_price"
+    let recipient = dummy_hash(0xBB);
+    let cond = Condition::And(
+        Box::new(Condition::amount_guard(1_000_000, 1)),
+        Box::new(Condition::recipient_guard(recipient, 1)),
+    );
+
+    let tx = tx_with_outputs(vec![
+        normal_output(0, dummy_hash(0xAA)),  // output[0]: change
+        normal_output(1_000_000, recipient), // output[1]: payment to seller
+    ]);
+    let hash = dummy_hash(0);
+    let ctx = EvalContext {
+        current_height: 100,
+        signing_hash: &hash,
+        transaction: Some(&tx),
+    };
+    assert!(evaluate(&cond, &Witness::default(), &ctx, &mut 0));
+}
+
+#[test]
+fn test_guards_with_multiple_output_indices() {
+    // Guard output[0] is Normal AND output[1] pays at least 100
+    let cond = Condition::And(
+        Box::new(Condition::output_type_guard(OutputType::Normal, 0)),
+        Box::new(Condition::amount_guard(100, 1)),
+    );
+
+    let tx = tx_with_outputs(vec![
+        normal_output(50, dummy_hash(1)),
+        normal_output(200, dummy_hash(2)),
+    ]);
+    let hash = dummy_hash(0);
+    let ctx = EvalContext {
+        current_height: 100,
+        signing_hash: &hash,
+        transaction: Some(&tx),
+    };
+    assert!(evaluate(&cond, &Witness::default(), &ctx, &mut 0));
+}
+
+// ---- contains_guard ----
+
+#[test]
+fn test_contains_guard() {
+    assert!(!Condition::timelock(100).contains_guard());
+    assert!(!Condition::signature(dummy_hash(1)).contains_guard());
+    assert!(Condition::amount_guard(100, 0).contains_guard());
+    assert!(Condition::output_type_guard(OutputType::Normal, 0).contains_guard());
+    assert!(Condition::recipient_guard(dummy_hash(1), 0).contains_guard());
+
+    // Nested in And
+    let nested = Condition::And(
+        Box::new(Condition::timelock(100)),
+        Box::new(Condition::amount_guard(500, 0)),
+    );
+    assert!(nested.contains_guard());
+
+    // No guard in And
+    let no_guard = Condition::And(
+        Box::new(Condition::timelock(100)),
+        Box::new(Condition::signature(dummy_hash(1))),
+    );
+    assert!(!no_guard.contains_guard());
+}
+
+// ---- Guard ops count is zero (no crypto ops) ----
+
+#[test]
+fn test_guard_ops_count() {
+    assert_eq!(Condition::amount_guard(100, 0).ops_count(), 0);
+    assert_eq!(
+        Condition::output_type_guard(OutputType::Normal, 0).ops_count(),
+        0
+    );
+    assert_eq!(Condition::recipient_guard(dummy_hash(1), 0).ops_count(), 0);
 }

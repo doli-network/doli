@@ -4,6 +4,7 @@ use crypto::hash::hash_with_domain;
 use crypto::signature::verify_hash;
 use crypto::Hash;
 
+use crate::transaction::Transaction;
 use crate::types::BlockHeight;
 
 use super::{Condition, Witness, ADDRESS_DOMAIN, HASHLOCK_DOMAIN};
@@ -18,6 +19,9 @@ pub struct EvalContext<'a> {
     pub current_height: BlockHeight,
     /// The transaction's signing hash (for signature verification).
     pub signing_hash: &'a Hash,
+    /// The spending transaction (needed for guard conditions that inspect outputs).
+    /// None for legacy evaluation contexts that predate guard conditions.
+    pub transaction: Option<&'a Transaction>,
 }
 
 /// Evaluate a condition tree against witness data.
@@ -112,6 +116,51 @@ pub fn evaluate(
                 }
             }
             false
+        }
+
+        Condition::AmountGuard {
+            min_amount,
+            output_index,
+        } => {
+            let tx = match ctx.transaction {
+                Some(tx) => tx,
+                None => return false,
+            };
+            let idx = *output_index as usize;
+            if idx >= tx.outputs.len() {
+                return false;
+            }
+            tx.outputs[idx].amount >= *min_amount
+        }
+
+        Condition::OutputTypeGuard {
+            expected_type,
+            output_index,
+        } => {
+            let tx = match ctx.transaction {
+                Some(tx) => tx,
+                None => return false,
+            };
+            let idx = *output_index as usize;
+            if idx >= tx.outputs.len() {
+                return false;
+            }
+            tx.outputs[idx].output_type == *expected_type
+        }
+
+        Condition::RecipientGuard {
+            expected_pubkey_hash,
+            output_index,
+        } => {
+            let tx = match ctx.transaction {
+                Some(tx) => tx,
+                None => return false,
+            };
+            let idx = *output_index as usize;
+            if idx >= tx.outputs.len() {
+                return false;
+            }
+            tx.outputs[idx].pubkey_hash == *expected_pubkey_hash
         }
     }
 }

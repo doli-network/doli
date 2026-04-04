@@ -445,6 +445,30 @@ pub fn condition_to_json(cond: &doli_core::Condition) -> serde_json::Value {
             "n": n,
             "conditions": conditions.iter().map(condition_to_json).collect::<Vec<_>>()
         }),
+        doli_core::Condition::AmountGuard {
+            min_amount,
+            output_index,
+        } => json!({
+            "type": "amountGuard",
+            "minAmount": min_amount,
+            "outputIndex": output_index
+        }),
+        doli_core::Condition::OutputTypeGuard {
+            expected_type,
+            output_index,
+        } => json!({
+            "type": "outputTypeGuard",
+            "expectedType": format!("{:?}", expected_type),
+            "outputIndex": output_index
+        }),
+        doli_core::Condition::RecipientGuard {
+            expected_pubkey_hash,
+            output_index,
+        } => json!({
+            "type": "recipientGuard",
+            "expectedPubkeyHash": expected_pubkey_hash.to_hex(),
+            "outputIndex": output_index
+        }),
     }
 }
 
