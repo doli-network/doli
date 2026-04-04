@@ -450,7 +450,7 @@ mod tests {
         let mut watcher = Watcher::new(test_config(tmp.path()));
 
         // Add 3 swaps in different states
-        let mut s1 = SwapRecord::new(
+        let s1 = SwapRecord::new(
             "tx1".to_string(),
             0,
             100,
