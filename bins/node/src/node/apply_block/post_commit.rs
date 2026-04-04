@@ -70,6 +70,7 @@ impl Node {
                 drop(producers);
 
                 let mut attestation_minutes: HashMap<PublicKey, HashSet<u32>> = HashMap::new();
+                let mut blocks_produced: HashMap<PublicKey, u32> = HashMap::new();
                 let mut new_list: Vec<PublicKey> = if epoch <= 1 {
                     // Genesis/early epochs: all active producers qualify
                     active
@@ -93,6 +94,7 @@ impl Node {
                                 doli_core::attestation::attestation_minute(blk.header.slot);
                             // Block producer attested by producing
                             attested.insert(blk.header.producer);
+                            *blocks_produced.entry(blk.header.producer).or_insert(0) += 1;
                             attestation_minutes
                                 .entry(blk.header.producer)
                                 .or_default()
@@ -191,18 +193,27 @@ impl Node {
 
                     if height >= TIER_PROMOTION_ACTIVATION_HEIGHT && epoch > 1 {
                         // Promotion: filter out underperformers before selecting top 50.
-                        // Producers with < MIN_ATTESTATION_MINUTES are demoted to attestor
-                        // regardless of seniority. Healthy attestors fill the gap.
+                        // Two criteria — must meet BOTH:
+                        // 1. Attestation: >= MIN_ATTESTATION_MINUTES (30/60)
+                        // 2. Production: >= 80% of expected blocks produced
+                        let expected_per_producer =
+                            blocks_per_epoch / self.epoch_producer_list.len().max(1) as u64;
+                        let min_produced = (expected_per_producer * 80 / 100).max(1);
+
                         let before = with_reg.len();
                         with_reg.retain(|(pk, _)| {
                             let mins = attestation_minutes.get(pk).map(|s| s.len()).unwrap_or(0);
-                            mins >= MIN_ATTESTATION_MINUTES
+                            let produced = blocks_produced.get(pk).copied().unwrap_or(0) as u64;
+                            mins >= MIN_ATTESTATION_MINUTES && produced >= min_produced
                         });
                         let demoted = before - with_reg.len();
                         if demoted > 0 {
                             info!(
-                                "[TIER] Demoted {} producers with <{} attestation minutes",
-                                demoted, MIN_ATTESTATION_MINUTES
+                                "[TIER] Demoted {} producers (min_att={}, min_prod={}/{})",
+                                demoted,
+                                MIN_ATTESTATION_MINUTES,
+                                min_produced,
+                                expected_per_producer
                             );
                         }
                     }
@@ -224,6 +235,13 @@ impl Node {
                         height >= TIER_PROMOTION_ACTIVATION_HEIGHT,
                     );
                 } else {
+                    self.active_production_list = self.epoch_producer_list.clone();
+                }
+
+                // Deadlock safety: if active_production_list is empty (all filtered),
+                // fall back to full epoch_producer_list. The network must never stop.
+                if self.active_production_list.is_empty() {
+                    warn!("[TIER] All producers filtered! Falling back to full epoch list");
                     self.active_production_list = self.epoch_producer_list.clone();
                 }
 
