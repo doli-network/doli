@@ -419,6 +419,21 @@ pub(crate) enum Commands {
         yes: bool,
     },
 
+    /// Run bridge watcher daemon (monitors swaps, auto-detects preimages)
+    BridgeWatch {
+        /// Bitcoin Core RPC endpoint (for cross-chain monitoring)
+        #[arg(long)]
+        btc_rpc: Option<String>,
+
+        /// Ethereum/BSC RPC endpoint (for cross-chain monitoring)
+        #[arg(long)]
+        eth_rpc: Option<String>,
+
+        /// Poll interval in seconds (default: 10)
+        #[arg(long, default_value = "10")]
+        interval: u64,
+    },
+
     /// List active bridge HTLC swaps on-chain
     BridgeList {
         /// Filter by target chain (bitcoin, ethereum, bsc, monero, etc.)

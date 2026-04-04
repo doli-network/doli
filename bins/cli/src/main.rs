@@ -326,6 +326,20 @@ async fn main() -> Result<()> {
         Commands::BridgeList { chain, blocks } => {
             cmd_bridge::cmd_bridge_list(&rpc_endpoint, chain.as_deref(), blocks).await?;
         }
+        Commands::BridgeWatch {
+            btc_rpc,
+            eth_rpc,
+            interval,
+        } => {
+            cmd_bridge::cmd_bridge_watch(
+                &wallet,
+                &rpc_endpoint,
+                btc_rpc.as_deref(),
+                eth_rpc.as_deref(),
+                interval,
+            )
+            .await?;
+        }
         Commands::BridgeLock {
             amount,
             hash,
