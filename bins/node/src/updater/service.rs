@@ -360,6 +360,7 @@ impl UpdateService {
                             min_version: p.release.version.clone(),
                             enforcement_time,
                             active: false,
+                            binary_ready: false,
                         });
 
                         // Save updated state
