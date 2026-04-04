@@ -511,7 +511,7 @@ impl Node {
             // Configure min peers for production based on network and genesis phase.
             // During genesis, allow single-peer production since the network is
             // still bootstrapping with very few nodes. After the first epoch boundary,
-            // recompute_tier() overrides with tier-aware minimums (Tier1=10, Tier2=5, Tier3=2).
+            // recompute_active_status() runs at epoch boundaries after sync completes.
             let in_genesis_at_start = {
                 let state = chain_state.read().await;
                 config.network.is_in_genesis(state.best_height + 1)
@@ -681,6 +681,8 @@ impl Node {
             producer_set,
             mempool,
             network: None,
+            seed_peer_ids: Vec::new(), // Populated in start_network()
+            seeds_released: false,
             sync_manager,
             shutdown,
             producer_key,
@@ -709,11 +711,12 @@ impl Node {
             seen_blocks_for_slot: std::collections::HashSet::new(),
             excluded_producers,
             epoch_producer_list,
+            active_production_list: Vec::new(), // Built at first epoch boundary
             epoch_bond_snapshot: initial_bond_snapshot,
             epoch_bond_snapshot_epoch: initial_bond_epoch,
             cached_scheduler: None,
-            our_tier: 0, // Computed on first block application
-            last_tier_epoch: None,
+            is_active_producer: false, // Computed on first block application
+            last_active_status_epoch: None,
             vote_tx: None,
             pending_update: None,
             last_peer_redial: None,
@@ -839,6 +842,9 @@ impl Node {
             no_snap_sync: false,
             seed_mode: false,
             auto_checkpoint_interval: None,
+            bootnode_enrs: Vec::new(),
+            no_discv5: true,
+            discv5_port: None,
         };
 
         Ok(Self {
@@ -851,6 +857,8 @@ impl Node {
             producer_set,
             mempool,
             network: None, // No networking in tests
+            seed_peer_ids: Vec::new(),
+            seeds_released: false,
             sync_manager,
             shutdown: Arc::new(RwLock::new(false)),
             producer_key,
@@ -883,11 +891,12 @@ impl Node {
                 pks.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
                 pks
             },
+            active_production_list: Vec::new(), // Built at first epoch boundary
             epoch_bond_snapshot,
             epoch_bond_snapshot_epoch: 0,
             cached_scheduler: None,
-            our_tier: 1, // Tier 1 in tests
-            last_tier_epoch: None,
+            is_active_producer: true, // Active in tests
+            last_active_status_epoch: None,
             // --- Non-fork-recovery fields: safe defaults ---
             vote_tx: None,
             pending_update: None,

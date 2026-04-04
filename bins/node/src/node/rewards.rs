@@ -46,8 +46,21 @@ impl Node {
                 }
 
                 let minute = attestation_minute(block.header.slot);
-                let indices =
-                    decode_attestation_bitfield(&block.header.presence_root, producer_count);
+                let indices = if !block.attestation_bitfield.is_empty() {
+                    // Body bitfield available: decode from body (no 256 cap)
+                    doli_core::decode_attestation_bitfield_vec(
+                        &block.attestation_bitfield,
+                        producer_count,
+                    )
+                } else if h < doli_core::consensus::BITFIELD_BODY_ACTIVATION_HEIGHT {
+                    // Pre-activation: presence_root IS the raw bitfield
+                    decode_attestation_bitfield(&block.header.presence_root, producer_count)
+                } else {
+                    // Post-activation without body (snap sync gap): skip
+                    // presence_root is BLAKE3 hash, NOT a bitfield — decoding it
+                    // produces garbage indices → scheduler divergence → fork
+                    vec![]
+                };
 
                 // Union: for each producer index attested in this block, add the minute
                 for idx in indices {
@@ -498,10 +511,20 @@ impl Node {
                     if let Ok(Some(blk)) = self.block_store.get_block_by_height(h) {
                         attested.insert(blk.header.producer);
                         if !blk.header.presence_root.is_zero() {
-                            let indices = doli_core::attestation::decode_attestation_bitfield(
-                                &blk.header.presence_root,
-                                sorted_for_decode.len(),
-                            );
+                            let indices = if !blk.attestation_bitfield.is_empty() {
+                                doli_core::decode_attestation_bitfield_vec(
+                                    &blk.attestation_bitfield,
+                                    sorted_for_decode.len(),
+                                )
+                            } else if h < doli_core::consensus::BITFIELD_BODY_ACTIVATION_HEIGHT {
+                                doli_core::attestation::decode_attestation_bitfield(
+                                    &blk.header.presence_root,
+                                    sorted_for_decode.len(),
+                                )
+                            } else {
+                                // Post-activation without body: skip
+                                vec![]
+                            };
                             for idx in indices {
                                 if let Some(pk) = sorted_for_decode.get(idx) {
                                     attested.insert(*pk);
@@ -552,6 +575,7 @@ impl Node {
                 new_list.len()
             );
             self.epoch_producer_list = new_list;
+            self.active_production_list = self.epoch_producer_list.clone();
         }
     }
 

@@ -40,7 +40,7 @@ fn build_block(
 ) -> Block {
     let reward = params.block_reward(height);
     let pool_hash = doli_core::consensus::reward_pool_pubkey_hash();
-    let coinbase = Transaction::new_coinbase(reward, pool_hash, height);
+    let coinbase = Transaction::new_coinbase(reward, pool_hash, height, 0);
     let timestamp = params.genesis_time + (slot as u64 * params.slot_duration);
     let merkle_root = doli_core::block::compute_merkle_root(std::slice::from_ref(&coinbase));
     let genesis_hash = doli_core::chainspec::ChainSpec::devnet().genesis_hash();
@@ -499,7 +499,7 @@ async fn test_recovery_preserves_mempool() {
         let mut mempool = node.mempool.write().await;
         for i in 0..10u64 {
             let dummy_hash = crypto::hash::hash(&i.to_le_bytes());
-            let tx = Transaction::new_coinbase(1, dummy_hash, 999 + i);
+            let tx = Transaction::new_coinbase(1, dummy_hash, 999 + i, 0);
             let _ = mempool.add_system_transaction(tx, 10);
         }
     }

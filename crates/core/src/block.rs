@@ -146,6 +146,15 @@ pub struct Block {
     /// Stored in body (not header) to keep header hash stable.
     #[serde(default)]
     pub aggregate_bls_signature: Vec<u8>,
+    /// Attestation bitfield (post-BITFIELD_BODY_ACTIVATION_HEIGHT).
+    ///
+    /// Variable-length bitfield: ceil(producer_count / 8) bytes.
+    /// Bit N = 1 means producer at index N (sorted by pubkey) attested.
+    /// No 256-producer cap (unlike the old header-packed format).
+    /// `header.presence_root = BLAKE3(attestation_bitfield)` commits to this data.
+    /// Empty for pre-activation blocks (backward compat via serde default).
+    #[serde(default)]
+    pub attestation_bitfield: Vec<u8>,
 }
 
 impl Block {
@@ -155,6 +164,7 @@ impl Block {
             header,
             transactions,
             aggregate_bls_signature: Vec::new(),
+            attestation_bitfield: Vec::new(),
         }
     }
 
@@ -307,9 +317,14 @@ impl BlockBuilder {
     }
 
     /// Add the coinbase transaction
-    pub fn add_coinbase(&mut self, height: BlockHeight, pubkey_hash: Hash) -> &mut Self {
+    pub fn add_coinbase(
+        &mut self,
+        height: BlockHeight,
+        slot: Slot,
+        pubkey_hash: Hash,
+    ) -> &mut Self {
         let reward = self.params.block_reward(height);
-        let coinbase = Transaction::new_coinbase(reward, pubkey_hash, height);
+        let coinbase = Transaction::new_coinbase(reward, pubkey_hash, height, slot);
         self.transactions.insert(0, coinbase);
         self
     }
@@ -322,11 +337,12 @@ impl BlockBuilder {
     pub fn add_coinbase_with_extra(
         &mut self,
         height: BlockHeight,
+        slot: Slot,
         pubkey_hash: Hash,
         extra_amount: Amount,
     ) -> &mut Self {
         let reward = self.params.block_reward(height) + extra_amount;
-        let coinbase = Transaction::new_coinbase(reward, pubkey_hash, height);
+        let coinbase = Transaction::new_coinbase(reward, pubkey_hash, height, slot);
         self.transactions.insert(0, coinbase);
         self
     }
@@ -379,15 +395,15 @@ mod tests {
 
     #[test]
     fn test_merkle_root_single() {
-        let tx = Transaction::new_coinbase(100, Hash::ZERO, 0);
+        let tx = Transaction::new_coinbase(100, Hash::ZERO, 0, 0);
         let root = compute_merkle_root(std::slice::from_ref(&tx));
         assert_eq!(root, tx.hash());
     }
 
     #[test]
     fn test_merkle_root_deterministic() {
-        let tx1 = Transaction::new_coinbase(100, Hash::ZERO, 0);
-        let tx2 = Transaction::new_coinbase(200, Hash::ZERO, 1);
+        let tx1 = Transaction::new_coinbase(100, Hash::ZERO, 0, 0);
+        let tx2 = Transaction::new_coinbase(200, Hash::ZERO, 1, 0);
 
         let root1 = compute_merkle_root(&[tx1.clone(), tx2.clone()]);
         let root2 = compute_merkle_root(&[tx1, tx2]);

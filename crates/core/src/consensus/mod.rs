@@ -70,7 +70,6 @@ mod selection;
 mod stress;
 #[cfg(test)]
 mod tests;
-mod tiers;
 mod vdf;
 
 // Re-export everything
@@ -94,5 +93,4 @@ pub use selection::{
     select_producer_for_slot,
 };
 pub use stress::StressTestParams;
-pub use tiers::{compute_tier1_set, producer_region, producer_tier};
 pub use vdf::*;

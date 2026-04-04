@@ -316,9 +316,21 @@ impl UtxoSet {
                 )));
             }
             // Peek at extra_data length to determine total entry size
-            let extra_len =
-                u16::from_le_bytes(bytes[pos + 59..pos + 61].try_into().unwrap()) as usize;
-            let entry_size = 61 + extra_len;
+            // 0xFFFF marker → u32 length follows (large NFTs >64KB)
+            let raw_len = u16::from_le_bytes(bytes[pos + 59..pos + 61].try_into().unwrap());
+            let (extra_len, header_overhead) = if raw_len == 0xFFFF {
+                if pos + 65 > bytes.len() {
+                    return Err(StorageError::Serialization(
+                        "UTXO canonical bytes truncated (u32 length)".to_string(),
+                    ));
+                }
+                let len =
+                    u32::from_le_bytes(bytes[pos + 61..pos + 65].try_into().unwrap()) as usize;
+                (len, 65) // 61 base + 4 bytes u32
+            } else {
+                (raw_len as usize, 61) // 59 base + 2 bytes u16
+            };
+            let entry_size = header_overhead + extra_len;
             if pos + entry_size > bytes.len() {
                 return Err(StorageError::Serialization(format!(
                     "[STOR031] UTXO canonical bytes truncated at extra_data (pos={}, entry_size={}, len={})",

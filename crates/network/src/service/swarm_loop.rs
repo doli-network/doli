@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use libp2p::gossipsub::IdentTopic;
-use libp2p::{PeerId, Swarm};
+use libp2p::{Multiaddr, PeerId, Swarm};
 use tokio::sync::{mpsc, RwLock};
 use tracing::warn;
 
@@ -28,6 +28,7 @@ use super::swarm_events::handle_swarm_event;
 use super::types::{NetworkCommand, NetworkEvent};
 
 /// Run the swarm event loop
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn run_swarm(
     mut swarm: Swarm<DoliBehaviour>,
     mut command_rx: mpsc::Receiver<NetworkCommand>,
@@ -35,6 +36,8 @@ pub(super) async fn run_swarm(
     peers: Arc<RwLock<HashMap<PeerId, PeerInfo>>>,
     config: NetworkConfig,
     peer_cache_path: Option<PathBuf>,
+    mut discv5_events: Option<mpsc::Receiver<discv5::Event>>,
+    discv5_service: Option<std::sync::Arc<crate::discovery::discv5_service::Discv5Service>>,
 ) {
     // Periodic DHT refresh: re-run Kademlia bootstrap every 60s so that peers
     // discover each other through shared bootstrap nodes. Without this, a node
@@ -83,11 +86,33 @@ pub(super) async fn run_swarm(
     let mut bootstrap_cleanup = tokio::time::interval(Duration::from_secs(5));
     bootstrap_cleanup.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+    // Seed mode flag (unused for auto-disconnect — reverted after INC testing showed
+    // seeds need permanent gossip mesh to receive blocks). Client-side seed release
+    // handles disconnection: nodes disconnect from seed after DHT bootstrap + gossip verified.
+    let _is_seed_mode = config.seed_mode;
+
     // INC-I-014: Periodic connection budget log — shows steady-state connection
     // distribution every 60s. Makes limit enforcement visible during stress tests
     // without requiring lsof or external monitoring.
     let mut conn_budget_log = tokio::time::interval(Duration::from_secs(60));
     conn_budget_log.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    // Discv5 random walk timer: 5s during startup (first 120s), then 30s steady-state.
+    // Aggressive discovery at boot ensures peers are found before the sync engine
+    // makes its snap-vs-header decision.
+    let mut discv5_refresh = tokio::time::interval(Duration::from_secs(5));
+    discv5_refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let discv5_enabled = discv5_service.is_some();
+    let discv5_startup_until = Instant::now() + Duration::from_secs(120);
+    let mut discv5_startup_mode = true;
+
+    // Discv5 dial retry queue: peers discovered via UDP that failed initial TCP dial.
+    // Each entry: (multiaddr, attempts_remaining, next_retry_at).
+    // Backoff: 5s → 10s → 20s. Max 3 retries. Closes the 9/10 → 10/10 gap where
+    // a peer is discovered before it's ready to accept TCP connections.
+    let mut discv5_retry_queue: Vec<(Multiaddr, u8, Instant)> = Vec::new();
+    let mut discv5_retry_tick = tokio::time::interval(Duration::from_secs(5));
+    discv5_retry_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     // TX batching: buffer outbound transactions and flush every 100ms.
     // When tx_announce_enabled, we batch hashes (32 bytes each) instead of full txs.
@@ -188,6 +213,7 @@ pub(super) async fn run_swarm(
             // These peers were accepted solely for Kademlia DHT exchange when the peer
             // table was full. After 10s they've had enough time to discover other peers.
             _ = bootstrap_cleanup.tick() => {
+                // Cleanup bootstrap-slot peers (peer table overflow)
                 if !bootstrap_peers.is_empty() {
                     let expired: Vec<PeerId> = bootstrap_peers
                         .iter()
@@ -206,6 +232,12 @@ pub(super) async fn run_swarm(
                         );
                     }
                 }
+
+                // NOTE: Server-side seed auto-disconnect was removed after testing showed
+                // seeds need permanent gossip mesh to receive blocks. Scalability is
+                // handled by client-side seed release (periodic.rs) — nodes disconnect
+                // from seed after DHT bootstrap + gossip verified. Same pattern as
+                // Bitcoin (DNS seeds) and Ethereum (UDP bootnodes).
             }
 
             // Periodic rate limiter cleanup
@@ -269,6 +301,146 @@ pub(super) async fn run_swarm(
                         recent_evictions
                     );
                 }
+            }
+
+            // Discv5 UDP discovery events: discovered peers get dialed via TCP
+            Some(event) = async {
+                if let Some(ref mut rx) = discv5_events {
+                    rx.recv().await
+                } else {
+                    // No discv5 — suspend this branch forever
+                    std::future::pending::<Option<discv5::Event>>().await
+                }
+            }, if discv5_enabled => {
+                match event {
+                    discv5::Event::Discovered(enr) => {
+                        // Check network compatibility
+                        if let Some(ref svc) = discv5_service {
+                            if !svc.is_same_network(&enr) {
+                                tracing::debug!(
+                                    "[DISCV5] Ignoring peer {} — different network",
+                                    enr.node_id()
+                                );
+                                continue;
+                            }
+                        }
+
+                        // Extract TCP multiaddr and dial
+                        if let Some(multiaddr) = crate::discovery::discv5_service::Discv5Service::enr_to_multiaddr(&enr) {
+                            let peer_count = peers.read().await.len();
+                            if peer_count < config.max_peers {
+                                // Check if already in retry queue (avoid duplicates)
+                                let already_queued = discv5_retry_queue.iter().any(|(addr, _, _)| addr == &multiaddr);
+                                if !already_queued {
+                                    tracing::debug!(
+                                        "[DISCV5] Discovered peer via UDP — dialing TCP {}",
+                                        multiaddr
+                                    );
+                                    let _ = swarm.dial(multiaddr.clone());
+                                    // Queue retry: if this dial fails (peer not ready),
+                                    // retry 3 times with 5s/10s/20s backoff.
+                                    discv5_retry_queue.push((
+                                        multiaddr,
+                                        3, // attempts remaining
+                                        Instant::now() + Duration::from_secs(5),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    discv5::Event::SessionEstablished(enr, socket) => {
+                        tracing::debug!(
+                            "[DISCV5] Session established: {} at {}",
+                            enr.node_id(),
+                            socket
+                        );
+                    }
+                    discv5::Event::SocketUpdated(addr) => {
+                        tracing::info!("[DISCV5] External address updated: {}", addr);
+                    }
+                    _ => {}
+                }
+            }
+
+            // Discv5 periodic random walk: 5s during startup, 30s steady-state
+            _ = discv5_refresh.tick(), if discv5_enabled => {
+                // Switch from aggressive (5s) to steady-state (30s) after 120s
+                if discv5_startup_mode && Instant::now() >= discv5_startup_until {
+                    discv5_startup_mode = false;
+                    discv5_refresh = tokio::time::interval(Duration::from_secs(30));
+                    discv5_refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                    tracing::info!("[DISCV5] Startup mode ended — random walk interval: 30s");
+                }
+
+                if let Some(ref svc) = discv5_service {
+                    let peer_count = peers.read().await.len();
+                    if peer_count < config.max_peers {
+                        tokio::spawn(svc.find_random_peers());
+                    } else {
+                        tracing::debug!(
+                            "[DISCV5] Skipping random walk — peer table full ({}/{})",
+                            peer_count, config.max_peers
+                        );
+                    }
+                }
+            }
+
+            // Discv5 dial retry: re-attempt TCP connections to peers discovered via UDP.
+            // Handles the edge case where a peer is discovered before it's ready to
+            // accept TCP (e.g., still bootstrapping its own gossipsub mesh).
+            _ = discv5_retry_tick.tick(), if discv5_enabled && !discv5_retry_queue.is_empty() => {
+                let now = Instant::now();
+                let peer_count = peers.read().await.len();
+                let connected_addrs: std::collections::HashSet<String> = {
+                    let p = peers.read().await;
+                    p.values().map(|info| info.address.clone()).collect()
+                };
+
+                let mut i = 0;
+                while i < discv5_retry_queue.len() {
+                    let (ref addr, attempts, next_at) = discv5_retry_queue[i];
+
+                    // Already connected — remove from queue
+                    if connected_addrs.contains(&addr.to_string()) {
+                        tracing::debug!("[DISCV5] Retry queue: {} connected, removing", addr);
+                        discv5_retry_queue.swap_remove(i);
+                        continue;
+                    }
+
+                    // Not time yet
+                    if now < next_at {
+                        i += 1;
+                        continue;
+                    }
+
+                    // No attempts left — drop
+                    if attempts == 0 {
+                        tracing::debug!("[DISCV5] Retry queue: {} exhausted retries, dropping", addr);
+                        discv5_retry_queue.swap_remove(i);
+                        continue;
+                    }
+
+                    // Peer table full — skip all retries this tick
+                    if peer_count >= config.max_peers {
+                        break;
+                    }
+
+                    // Retry dial with exponential backoff: 5s → 10s → 20s
+                    let backoff = Duration::from_secs(5 * (1 << (3 - attempts)));
+                    tracing::debug!(
+                        "[DISCV5] Retry dial {} (attempt {}/3, next backoff {:?})",
+                        addr, 4 - attempts, backoff
+                    );
+                    let _ = swarm.dial(addr.clone());
+                    discv5_retry_queue[i].1 -= 1; // decrement attempts
+                    discv5_retry_queue[i].2 = now + backoff; // set next retry time
+                    i += 1;
+                }
+
+                // Purge stale entries older than 2 minutes (safety net)
+                discv5_retry_queue.retain(|(_, attempts, next_at)| {
+                    *attempts > 0 || next_at.elapsed() < Duration::from_secs(120)
+                });
             }
         }
     }

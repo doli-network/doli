@@ -33,8 +33,7 @@ use crypto::hash::{hash as crypto_hash, hash_with_domain};
 use crypto::{Hash, KeyPair, PublicKey, ADDRESS_DOMAIN};
 use doli_core::block::BlockBuilder;
 use doli_core::consensus::{
-    self, compute_tier1_set, construct_vdf_input, producer_tier, reward_epoch, ConsensusParams,
-    DELEGATE_REWARD_PCT, UNBONDING_PERIOD,
+    self, construct_vdf_input, reward_epoch, ConsensusParams, DELEGATE_REWARD_PCT, UNBONDING_PERIOD,
 };
 // WeightedRewardCalculator removed — replaced by attestation-qualified bond-weighted distribution
 use doli_core::tpop::calibration::VdfCalibrator;
@@ -85,6 +84,11 @@ pub struct Node {
     pub mempool: Arc<RwLock<Mempool>>,
     /// Network service
     pub network: Option<NetworkService>,
+    /// PeerIds of bootstrap/seed nodes — disconnected after DHT bootstrap + gossip verified.
+    /// Frees seed slots so the network scales without seed becoming a bottleneck.
+    pub seed_peer_ids: Vec<network::PeerId>,
+    /// Whether we've already disconnected from seeds (one-shot, don't reconnect)
+    pub seeds_released: bool,
     /// Sync manager
     pub sync_manager: Arc<RwLock<SyncManager>>,
     /// Shutdown flag
@@ -149,6 +153,11 @@ pub struct Node {
     /// active producers who attested in the previous epoch (+ newly registered).
     /// The scheduling denominator is derived from this list — it never changes mid-epoch.
     pub epoch_producer_list: Vec<PublicKey>,
+    /// Active production list: subset of epoch_producer_list that enters round-robin.
+    /// Before TIER_SYSTEM_ACTIVATION_HEIGHT: identical to epoch_producer_list.
+    /// After activation: first ACTIVE_PRODUCERS_CAP by registered_at (earliest first).
+    /// Attestors outside this list still receive bond-weighted epoch rewards.
+    pub active_production_list: Vec<PublicKey>,
     /// Epoch-locked bond snapshot: {pubkey_hash → bond_count}.
     /// Computed once at each epoch boundary from the UTXO set.
     /// Used by scheduler (validation + production) for the entire epoch.
@@ -159,10 +168,10 @@ pub struct Node {
     /// Cached DeterministicScheduler (epoch, producer_count, total_bonds, scheduler)
     /// Rebuilt when epoch changes OR active producer set changes (new registrations, exits, slashing).
     pub cached_scheduler: Option<(u64, usize, u64, DeterministicScheduler)>,
-    /// Our computed tier (1, 2, or 3). Recomputed at each epoch boundary.
-    pub our_tier: u8,
-    /// Last epoch for which we computed our tier (to detect epoch boundaries).
-    pub last_tier_epoch: Option<u64>,
+    /// Whether this node is in the active production list. Recomputed at each epoch boundary.
+    pub is_active_producer: bool,
+    /// Last epoch for which we computed our active status (to detect epoch boundaries).
+    pub last_active_status_epoch: Option<u64>,
     /// Channel to forward gossip votes to the UpdateService
     pub vote_tx: Option<tokio::sync::mpsc::Sender<node_updater::VoteMessage>>,
     /// Shared pending update state from UpdateService (for RPC to read live)

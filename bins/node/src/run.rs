@@ -4,6 +4,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use crypto::PublicKey;
 use doli_core::Network;
+use network::Discv5Config;
 use storage::ProducerSet;
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
@@ -24,8 +25,12 @@ pub(crate) async fn run_node(
     external_address: Option<String>,
     rpc_port: Option<u16>,
     rpc_bind: Option<String>,
+    rpc_cors: Vec<String>,
     metrics_port: u16,
     bootstrap: Vec<String>,
+    bootnode_enrs: Vec<String>,
+    no_discv5: bool,
+    discv5_port: Option<u16>,
     no_dht: bool,
     relay_server: bool,
     no_snap_sync: bool,
@@ -149,6 +154,9 @@ pub(crate) async fn run_node(
         let port = rpc_port.unwrap_or(config.network.default_rpc_port());
         config.rpc.listen_addr = format!("{}:{}", bind, port);
     }
+    if !rpc_cors.is_empty() {
+        config.rpc.allowed_origins = rpc_cors;
+    }
     if no_dht {
         config.no_dht = true;
         // Clear default bootstrap nodes - only use explicitly provided ones
@@ -179,6 +187,15 @@ pub(crate) async fn run_node(
     // Add explicit bootstrap(s) after clearing defaults (so they're preserved with --no-dht)
     for addr in &bootstrap {
         config.bootstrap_nodes.push(addr.clone());
+    }
+    // Discv5 UDP discovery config: CLI --bootnode-enr appends to network defaults
+    for enr in &bootnode_enrs {
+        config.bootnode_enrs.push(enr.clone());
+    }
+    config.no_discv5 = no_discv5;
+    config.discv5_port = discv5_port;
+    if no_discv5 {
+        info!("Discv5 UDP discovery disabled — using TCP Kademlia only");
     }
 
     // Start metrics server
@@ -559,5 +576,155 @@ pub(crate) async fn run_node(
         }
     }
 
+    Ok(())
+}
+
+/// Run a lightweight bootnode (UDP discovery only, no libp2p/gossip/sync/storage).
+///
+/// A bootnode serves peer discovery via Discv5 UDP protocol. It does not:
+/// - Store blocks or chain state (no RocksDB)
+/// - Participate in gossip (no libp2p/gossipsub)
+/// - Sync or produce blocks
+/// - Consume TCP peer slots on seeds
+///
+/// Memory usage: ~2MB (vs ~200MB+ for a full node).
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_bootnode(
+    network: Network,
+    data_dir: &Path,
+    p2p_port: Option<u16>,
+    external_address: Option<String>,
+    bootnode_enrs: Vec<String>,
+    discv5_port: Option<u16>,
+) -> Result<()> {
+    let data_dir = expand_tilde_path(data_dir);
+    std::fs::create_dir_all(&data_dir)?;
+
+    let default_port = network.default_p2p_port();
+    let tcp_port = p2p_port.unwrap_or(default_port);
+    let udp_port = discv5_port.unwrap_or(tcp_port + 1);
+
+    // Load or generate Ed25519 keypair (reuses node_key for stable identity)
+    let node_key_dir = data_dir
+        .parent()
+        .filter(|p| p.exists())
+        .unwrap_or(&data_dir);
+    let node_key_path = node_key_dir.join("node_key");
+
+    let keypair = if node_key_path.exists() {
+        let bytes = std::fs::read(&node_key_path)?;
+        network::Keypair::from_protobuf_encoding(&bytes)
+            .map_err(|e| anyhow!("Failed to decode node_key: {}", e))?
+    } else {
+        let kp = network::Keypair::generate_ed25519();
+        if let Some(parent) = node_key_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let bytes = kp
+            .to_protobuf_encoding()
+            .map_err(|e| anyhow!("Failed to encode node_key: {}", e))?;
+        std::fs::write(&node_key_path, bytes)?;
+        info!("Generated new node_key at {:?}", node_key_path);
+        kp
+    };
+
+    // Parse external IP from multiaddr if provided
+    let external_ip = external_address.as_ref().and_then(|addr| {
+        addr.parse::<network::Multiaddr>().ok().and_then(|ma| {
+            ma.iter().find_map(|p| match p {
+                network::multiaddr::Protocol::Ip4(ip) if !ip.is_unspecified() => Some(ip),
+                _ => None,
+            })
+        })
+    });
+
+    // Merge network defaults + CLI ENRs
+    let mut all_enrs = network.bootnode_enrs();
+    for enr in &bootnode_enrs {
+        all_enrs.push(enr.clone());
+    }
+
+    let genesis_hash = {
+        let spec = match network {
+            Network::Mainnet => doli_core::chainspec::ChainSpec::mainnet(),
+            Network::Testnet => doli_core::chainspec::ChainSpec::testnet(),
+            Network::Devnet => doli_core::chainspec::ChainSpec::devnet(),
+        };
+        spec.genesis_hash()
+    };
+
+    let discv5_config = Discv5Config {
+        udp_port,
+        tcp_port,
+        external_ip,
+        network_id: network.id(),
+        genesis_hash,
+        bootnode_enrs: all_enrs,
+    };
+
+    info!("Starting bootnode (UDP discovery only)");
+    info!("  Network: {} (id={})", network.name(), network.id());
+    info!("  UDP port: {}", udp_port);
+    info!("  TCP port advertised: {} (not listening)", tcp_port);
+
+    let mut svc = network::Discv5Service::new(&keypair, discv5_config)
+        .await
+        .map_err(|e| anyhow!("Failed to start Discv5: {}", e))?;
+
+    // Print ENR for other nodes to use
+    let local_enr = svc.local_enr_base64();
+    info!("============================================================");
+    info!("  BOOTNODE ENR (share with nodes):");
+    info!("  {}", local_enr);
+    info!("============================================================");
+
+    // Start event stream for logging
+    let mut events = svc
+        .event_stream()
+        .await
+        .map_err(|e| anyhow!("Failed to get event stream: {}", e))?;
+
+    info!("Bootnode running. Press Ctrl+C to stop.");
+
+    // Periodic stats + event logging
+    let mut stats_tick = tokio::time::interval(std::time::Duration::from_secs(60));
+    stats_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                info!("Shutting down bootnode...");
+                break;
+            }
+            Some(event) = events.recv() => {
+                match event {
+                    network::Discv5Event::SessionEstablished(enr, socket) => {
+                        info!(
+                            "[BOOTNODE] Session: {} at {} (tcp={})",
+                            enr.node_id(),
+                            socket,
+                            enr.tcp4().map(|p| p.to_string()).unwrap_or_default()
+                        );
+                    }
+                    network::Discv5Event::Discovered(enr) => {
+                        tracing::debug!("[BOOTNODE] Discovered: {}", enr.node_id());
+                    }
+                    network::Discv5Event::SocketUpdated(addr) => {
+                        info!("[BOOTNODE] External address updated: {}", addr);
+                    }
+                    _ => {}
+                }
+            }
+            _ = stats_tick.tick() => {
+                info!(
+                    "[BOOTNODE] Connected sessions: {}",
+                    svc.connected_peers()
+                );
+            }
+        }
+    }
+
+    svc.shutdown();
+    info!("Bootnode stopped.");
     Ok(())
 }

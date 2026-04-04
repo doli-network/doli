@@ -9,7 +9,7 @@ fn test_utxo_add_and_spend() {
     let mut utxo_set = UtxoSet::new();
 
     // Create a coinbase transaction
-    let tx = Transaction::new_coinbase(500_000_000, Hash::ZERO, 0);
+    let tx = Transaction::new_coinbase(500_000_000, Hash::ZERO, 0, 0);
     let tx_hash = tx.hash();
 
     // Add to UTXO set
@@ -72,7 +72,7 @@ fn test_utxo_entry_epoch_reward_maturity() {
 #[test]
 fn test_utxo_entry_coinbase_maturity_unchanged() {
     // Verify coinbase still requires same maturity
-    let tx = Transaction::new_coinbase(500_000_000, Hash::ZERO, 0);
+    let tx = Transaction::new_coinbase(500_000_000, Hash::ZERO, 0, 0);
     let tx_hash = tx.hash();
 
     let mut utxo_set = UtxoSet::new();
@@ -190,8 +190,8 @@ fn test_serialize_canonical_matches_between_backends() {
 
     // Create InMemory store with some entries
     let mut mem_store = InMemoryUtxoStore::new();
-    let tx1 = Transaction::new_coinbase(100_000, pk_hash, 0);
-    let tx2 = Transaction::new_coinbase(200_000, pk_hash, 1);
+    let tx1 = Transaction::new_coinbase(100_000, pk_hash, 0, 0);
+    let tx2 = Transaction::new_coinbase(200_000, pk_hash, 1, 0);
     mem_store.add_transaction(&tx1, 0, true, 0);
     mem_store.add_transaction(&tx2, 1, true, 0);
 
@@ -213,7 +213,7 @@ fn test_serialize_canonical_matches_between_backends() {
 #[test]
 fn test_utxo_entry_canonical_bytes_fixed_size() {
     let pk_hash = crypto::hash::hash(b"alice");
-    let tx = Transaction::new_coinbase(1_000_000, pk_hash, 0);
+    let tx = Transaction::new_coinbase(1_000_000, pk_hash, 0, 0);
     let entry = UtxoEntry {
         output: tx.outputs[0].clone(),
         height: 42,
@@ -285,8 +285,8 @@ fn test_utxo_canonical_count_header() {
     // Verify the 8-byte count header at the start of serialize_canonical output
     let mut store = InMemoryUtxoStore::new();
     let pk = crypto::hash::hash(b"x");
-    let tx1 = Transaction::new_coinbase(100, pk, 0);
-    let tx2 = Transaction::new_coinbase(200, pk, 1);
+    let tx1 = Transaction::new_coinbase(100, pk, 0, 0);
+    let tx2 = Transaction::new_coinbase(200, pk, 1, 0);
     store.add_transaction(&tx1, 0, true, 0);
     store.add_transaction(&tx2, 1, true, 0);
 

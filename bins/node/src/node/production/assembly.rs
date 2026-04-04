@@ -4,6 +4,8 @@ impl Node {
     /// Build block content: coinbase, epoch rewards, genesis VDF registration, mempool txs,
     /// attestation bitfield, and header. Returns `None` if build failed (slot monotonicity
     /// violation or slot boundary crossed during assembly).
+    /// Returns (header, transactions, body_bitfield) where body_bitfield is non-empty
+    /// only for post-BITFIELD_BODY_ACTIVATION_HEIGHT blocks.
     pub async fn build_block_content(
         &mut self,
         prev_hash: Hash,
@@ -11,7 +13,7 @@ impl Node {
         height: u64,
         current_slot: u32,
         our_pubkey: PublicKey,
-    ) -> Result<Option<(BlockHeader, Vec<Transaction>)>> {
+    ) -> Result<Option<(BlockHeader, Vec<Transaction>, Vec<u8>)>> {
         // Build the block — single transaction list used for both merkle root and block body.
         // All transactions MUST be added to the builder BEFORE build(), which computes the
         // merkle root from exactly the transactions that will be in the final block.
@@ -230,7 +232,7 @@ impl Node {
 
             // Now add coinbase with block reward + extra fees.
             // insert(0, ...) places it at position 0 regardless of when called.
-            builder.add_coinbase_with_extra(height, pool_hash, extra_fees);
+            builder.add_coinbase_with_extra(height, current_slot, pool_hash, extra_fees);
         }
 
         // Recapture timestamp just before building the block.
@@ -254,11 +256,13 @@ impl Node {
             return Ok(None);
         }
 
-        // Build attestation bitfield for presence_root.
+        // Build attestation bitfield for presence_root / body.
         // Records which producers attested the current minute (from gossip).
         // 6 blocks per minute from different producers -> union mitigates censorship.
         let current_minute = attestation_minute(current_slot);
         let attested_pks = self.minute_tracker.attested_in_minute(current_minute);
+        let use_body_bitfield = height >= doli_core::consensus::BITFIELD_BODY_ACTIVATION_HEIGHT;
+        let mut body_bitfield: Vec<u8> = Vec::new();
         let presence_root = if attested_pks.is_empty() {
             Hash::ZERO
         } else {
@@ -281,7 +285,17 @@ impl Node {
                     attested_indices.push(idx);
                 }
             }
-            encode_attestation_bitfield(&attested_indices)
+            if use_body_bitfield {
+                // Post-activation: bitfield in body, presence_root = BLAKE3(bitfield)
+                body_bitfield = doli_core::encode_attestation_bitfield_vec(
+                    &attested_indices,
+                    sorted_producers.len(),
+                );
+                Hash::from_bytes(*crypto::hash::hash(&body_bitfield).as_bytes())
+            } else {
+                // Pre-activation: bitfield packed into presence_root (capped at 256)
+                encode_attestation_bitfield(&attested_indices)
+            }
         };
         let builder = builder.with_presence_root(presence_root);
 
@@ -332,7 +346,7 @@ impl Node {
             }
         };
 
-        Ok(Some((header, transactions)))
+        Ok(Some((header, transactions, body_bitfield)))
     }
 
     // =========================================================================

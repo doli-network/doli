@@ -653,7 +653,7 @@ mod tests {
     }
 
     fn test_coinbase_tx(amount: Amount, pubkey_hash: Hash) -> Transaction {
-        Transaction::new_coinbase(amount, pubkey_hash, 0)
+        Transaction::new_coinbase(amount, pubkey_hash, 0, 0)
     }
 
     fn test_transfer_tx(

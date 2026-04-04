@@ -173,7 +173,7 @@ fn test_coinbase_maturity_unchanged() {
     let recipient_hash = hash(b"producer1");
 
     // Create a coinbase transaction
-    let tx = Transaction::new_coinbase(100_000_000_000, recipient_hash, 50);
+    let tx = Transaction::new_coinbase(100_000_000_000, recipient_hash, 50, 0);
 
     // Create UTXO entry for coinbase (created at height 50)
     let entry = UtxoEntry {

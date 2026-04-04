@@ -250,6 +250,36 @@ impl Node {
             }
         }
 
+        // DISCV5 SEED FALLBACK: If discv5 is active but after 60s we still have
+        // 0 peers, reconnect to TCP seeds as safety net. This handles the case where
+        // no discv5 bootnodes are reachable (misconfigured ENR, UDP blocked, etc.).
+        // The seed is a last resort, not the primary discovery mechanism.
+        if !self.config.no_discv5 && self.seeds_released {
+            let peer_count = self.sync_manager.read().await.peer_count();
+            if peer_count == 0 {
+                if let Some(first) = self.first_peer_connected {
+                    // 60s since we last had peers — reconnect to seeds
+                    if first.elapsed() > Duration::from_secs(60)
+                        && self
+                            .last_peer_redial
+                            .map(|t| t.elapsed() > Duration::from_secs(60))
+                            .unwrap_or(true)
+                    {
+                        warn!(
+                            "[DISCV5_FALLBACK] 0 peers for >60s with discv5 active — reconnecting to {} TCP seed(s)",
+                            self.seed_peer_ids.len()
+                        );
+                        if let Some(ref net) = self.network {
+                            for addr in &self.config.bootstrap_nodes {
+                                let _ = net.connect(addr).await;
+                            }
+                        }
+                        self.last_peer_redial = Some(Instant::now());
+                    }
+                }
+            }
+        }
+
         // STALE CHAIN DETECTION (Ethereum-style):
         // If we haven't received any block (gossip or sync) for 3 slots, something is wrong.
         // Diagnose: no peers → re-bootstrap Kademlia; peers exist → aggressive status requests.
@@ -612,6 +642,40 @@ impl Node {
                         let _ = net.request_sync(peer_id, request).await;
                     }
                 }
+            }
+        }
+
+        // SEED RELEASE: Disconnect from seed/bootstrap nodes after DHT bootstrap + gossip verified.
+        // Frees seed peer slots so the network scales without the seed as a bottleneck.
+        // Conditions (all must be true):
+        //   1. Not already released
+        //   2. Have seed peer IDs to release
+        //   3. Have 5+ peers from DHT (enough to maintain gossip mesh)
+        //   4. Receiving blocks via gossip (network_tip_height > local_height - 2)
+        //   5. Not a seed/relay node ourselves (they need to stay connected)
+        if !self.seeds_released && !self.seed_peer_ids.is_empty() {
+            let sync = self.sync_manager.read().await;
+            let peer_count = sync.peer_count();
+            let net_tip = sync.network_tip_height();
+            let local_h = self.chain_state.read().await.best_height;
+            drop(sync);
+
+            let has_enough_peers = peer_count >= 5;
+            let receiving_blocks =
+                net_tip > 0 && local_h > 0 && net_tip >= local_h.saturating_sub(2);
+            let is_relay = self.config.relay_server;
+
+            if has_enough_peers && receiving_blocks && !is_relay {
+                if let Some(ref net) = self.network {
+                    for seed_id in &self.seed_peer_ids {
+                        let _ = net.disconnect(*seed_id).await;
+                    }
+                    info!(
+                        "[SEED_RELEASE] Disconnected from {} seed(s) — DHT has {} peers, receiving blocks at h={}",
+                        self.seed_peer_ids.len(), peer_count, local_h
+                    );
+                }
+                self.seeds_released = true;
             }
         }
 

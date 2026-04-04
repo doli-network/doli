@@ -248,7 +248,7 @@ pub fn create_test_block(
 
 /// Create a coinbase transaction
 pub fn create_coinbase(height: BlockHeight, recipient: &Hash, amount: Amount) -> Transaction {
-    Transaction::new_coinbase(amount, *recipient, height)
+    Transaction::new_coinbase(amount, *recipient, height, 0)
 }
 
 /// Create a transfer transaction

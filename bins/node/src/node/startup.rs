@@ -119,11 +119,9 @@ impl Node {
             }
         }
 
-        // NOTE: Do NOT call recompute_tier() here. At startup the on-chain ProducerSet
-        // is incomplete (not synced yet). producer_tier() would default to Tier 3
-        // (header-only), causing reconfigure_topics_for_tier(3) to unsubscribe from
-        // BLOCKS_TOPIC — the node would stop receiving blocks and get stuck.
-        // Tier computation runs safely at epoch boundaries (after sync completes).
+        // NOTE: Do NOT call recompute_active_status() here. At startup the on-chain
+        // ProducerSet is incomplete (not synced yet). Active status computation runs
+        // safely at epoch boundaries (after sync completes).
 
         // Start RPC server if enabled
         if self.config.rpc.enabled {
@@ -158,6 +156,21 @@ impl Node {
         let mut network_config = NetworkConfig::for_network(self.config.network, genesis_hash);
         network_config.listen_addr = listen_addr;
         network_config.bootstrap_nodes = self.config.bootstrap_nodes.clone();
+
+        // Extract PeerIds from bootstrap multiaddrs for seed release after DHT bootstrap.
+        // The seed is only needed for initial peer discovery — after that, DHT takes over.
+        self.seed_peer_ids = self
+            .config
+            .bootstrap_nodes
+            .iter()
+            .filter_map(|addr| network::extract_peer_id_from_multiaddr(addr))
+            .collect();
+        if !self.seed_peer_ids.is_empty() {
+            info!(
+                "[SEED_RELEASE] Tracking {} seed peer(s) for post-bootstrap disconnect",
+                self.seed_peer_ids.len()
+            );
+        }
 
         // Environment variable overrides for network tuning
         if let Ok(val) = std::env::var("DOLI_MAX_PEERS") {
@@ -216,6 +229,11 @@ impl Node {
         // NAT traversal: enable relay server if configured (for public/bootstrap nodes)
         if self.config.relay_server {
             network_config.nat_config = network::NatConfig::relay_server();
+            // Seeds accept more peers than regular nodes (like Bitcoin's 125 default).
+            // Client-side seed release ensures connections are temporary — nodes
+            // disconnect after DHT bootstrap + gossip verified.
+            network_config.max_peers = 125;
+            info!("[SEED] Relay server mode: max_peers=125");
         }
 
         // External address: advertise a specific public address to peers
@@ -230,6 +248,11 @@ impl Node {
             }
         }
 
+        // Discv5 UDP discovery
+        network_config.enable_discv5 = !self.config.no_discv5;
+        network_config.discv5_port = self.config.discv5_port;
+        network_config.bootnode_enrs = self.config.bootnode_enrs.clone();
+
         info!(
             "Starting network service on {} (network={}, id={})",
             listen_addr,
@@ -238,6 +261,13 @@ impl Node {
         );
         let network = NetworkService::new(network_config).await?;
         self.network = Some(network);
+
+        // When discv5 is active, give the sync engine 30s grace to discover
+        // peers via UDP before falling back to header-first sync.
+        if !self.config.no_discv5 {
+            let mut sync = self.sync_manager.write().await;
+            sync.set_discv5_peer_grace(30);
+        }
 
         info!("Network service started");
         Ok(())
@@ -444,60 +474,40 @@ impl Node {
         Ok(())
     }
 
-    /// Recompute our tier classification from the active producer set.
+    /// Recompute whether this node is in the active production list.
     /// Called once per epoch boundary (when `height / blocks_per_epoch` changes).
-    pub async fn recompute_tier(&mut self, height: u64) {
+    pub(super) async fn recompute_active_status(&mut self, height: u64) {
         let current_epoch = height / self.config.network.blocks_per_reward_epoch();
-        if self.last_tier_epoch == Some(current_epoch) {
+        if self.last_active_status_epoch == Some(current_epoch) {
             return; // Already computed for this epoch
         }
 
         let our_pubkey = match &self.producer_key {
             Some(kp) => *kp.public_key(),
             None => {
-                self.our_tier = 0; // Non-producer
-                self.last_tier_epoch = Some(current_epoch);
+                self.is_active_producer = false;
+                self.last_active_status_epoch = Some(current_epoch);
                 return;
             }
         };
 
-        let producers = self.producer_set.read().await;
-        let active = producers.active_producers_at_height(height);
-        let producers_with_weights: Vec<(PublicKey, u64)> = active
-            .iter()
-            .map(|p| (p.public_key, p.selection_weight()))
-            .collect();
-        drop(producers);
+        let is_active = self.active_production_list.contains(&our_pubkey);
 
-        let tier1_set = compute_tier1_set(&producers_with_weights);
-        // Build sorted-by-weight list for producer_tier()
-        // Reuse same sort order as compute_tier1_set (weight desc, pubkey asc)
-        let mut all_sorted = producers_with_weights.clone();
-        all_sorted.sort_unstable_by(|a, b| {
-            b.1.cmp(&a.1)
-                .then_with(|| a.0.as_bytes().cmp(b.0.as_bytes()))
-        });
-        let all_sorted_pks: Vec<PublicKey> = all_sorted.into_iter().map(|(pk, _)| pk).collect();
-
-        let new_tier = producer_tier(&our_pubkey, &tier1_set, &all_sorted_pks);
-
-        if self.our_tier != new_tier {
+        if self.is_active_producer != is_active {
             info!(
-                "Tier classification changed: {} -> {} (epoch {})",
-                self.our_tier, new_tier, current_epoch
+                "Active producer status changed: {} -> {} (epoch {})",
+                self.is_active_producer, is_active, current_epoch
             );
-            let mut sync = self.sync_manager.write().await;
-            sync.set_tier(new_tier, producers_with_weights.len());
             // During genesis, keep min_peers=1 to allow bootstrapping with fewer nodes
             if self.config.network.is_in_genesis(height) {
+                let mut sync = self.sync_manager.write().await;
                 sync.set_min_peers_for_production(1);
+                drop(sync);
             }
-            drop(sync);
-            // Tier-based topic reconfiguration removed — handled by network crate internally.
         }
 
-        self.our_tier = new_tier;
-        self.last_tier_epoch = Some(current_epoch);
+        self.is_active_producer = is_active;
+        self.last_active_status_epoch = Some(current_epoch);
     }
 
     /// Create an attestation for a block and broadcast it to the network.

@@ -154,7 +154,7 @@ impl Node {
             .track_finality_and_apply_deferred(block_hash, height, block.header.slot)
             .await;
 
-        // NOTE: recompute_tier + EpochSnapshot + attestation moved after batch commit
+        // NOTE: active status recompute + EpochSnapshot + attestation moved after batch commit
         // to avoid borrow conflict with BlockBatch (which borrows self.state_db).
 
         // Genesis end: derive and register producers with REAL bonds from the blockchain

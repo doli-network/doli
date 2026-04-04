@@ -425,6 +425,10 @@ pub(crate) struct NetworkState {
     pub last_progress_log: Instant,
     /// Idle-behind retry counter
     pub idle_behind_retries: u32,
+    /// When network_tip_height first became unsupported by any connected peer.
+    /// After 42s (~4 slots) without a peer within 5 blocks of the tip, the tip decays
+    /// to the actual peer max — preventing permanent phantom sync gaps.
+    pub tip_unsupported_since: Option<Instant>,
 }
 
 impl NetworkState {
@@ -439,6 +443,7 @@ impl NetworkState {
             blocks_applied: 0,
             last_progress_log: Instant::now(),
             idle_behind_retries: 0,
+            tip_unsupported_since: None,
         }
     }
 }
@@ -472,6 +477,11 @@ pub(crate) struct SnapSyncState {
     /// blacklisting for empty headers within 5 minutes of snap sync — all
     /// canonical peers will return empty when local_hash is unrecognizable.
     pub last_snap_completed: Option<Instant>,
+    /// Discv5 peer discovery grace: when set, the sync engine waits up to
+    /// this deadline for discv5 to discover enough peers before falling back
+    /// to header-first sync. Prevents the 8/10 → 10/10 gap where the sync
+    /// engine decides "not enough peers" before discv5 completes its first walk.
+    pub discv5_peer_grace_deadline: Option<Instant>,
 }
 
 impl SnapSyncState {
@@ -494,6 +504,7 @@ impl SnapSyncState {
             fresh_node_wait_start: None,
             store_floor: 1, // Default: full-sync node has block 1
             last_snap_completed: None,
+            discv5_peer_grace_deadline: None,
         }
     }
 }

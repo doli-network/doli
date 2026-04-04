@@ -41,6 +41,7 @@ pub(crate) struct Cli {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum Commands {
     /// Run the node
     Run {
@@ -81,6 +82,11 @@ pub(crate) enum Commands {
         #[arg(long)]
         rpc_bind: Option<String>,
 
+        /// Allowed CORS origins for the RPC server. Can be specified multiple times.
+        /// Example: --rpc-cors http://localhost:8080 --rpc-cors http://localhost:3000
+        #[arg(long)]
+        rpc_cors: Vec<String>,
+
         /// Metrics server port (mainnet default: 9000, testnet: 19000, devnet: 29000)
         /// Note: Override with network-specific port if needed
         #[arg(long, default_value = "9000")]
@@ -91,6 +97,20 @@ pub(crate) enum Commands {
         #[arg(long)]
         bootstrap: Vec<String>,
 
+        /// Discv5 bootnode ENR(s) for UDP peer discovery.
+        /// Can be specified multiple times. ENRs are base64-encoded strings.
+        /// Discovered peers are dialed via TCP for gossip connections.
+        #[arg(long)]
+        bootnode_enr: Vec<String>,
+
+        /// Disable Discv5 UDP discovery (use TCP Kademlia only).
+        #[arg(long)]
+        no_discv5: bool,
+
+        /// UDP port for Discv5 discovery (default: p2p_port + 1).
+        #[arg(long)]
+        discv5_port: Option<u16>,
+
         /// Disable DHT discovery (only connect to explicitly provided bootstrap nodes)
         /// Use this to isolate test networks from external peers
         #[arg(long)]
@@ -100,6 +120,11 @@ pub(crate) enum Commands {
         /// Allows NAT'd peers to relay connections through this node.
         #[arg(long)]
         relay_server: bool,
+
+        /// Run as bootnode only (UDP discovery, no gossip/sync/production).
+        /// Minimal resource usage (~2MB RAM). Serves peer discovery via Discv5.
+        #[arg(long, conflicts_with_all = ["producer", "relay_server"])]
+        bootnode: bool,
 
         /// DANGEROUS: Skip duplicate key detection during producer startup.
         /// Only use if you are CERTAIN no other instance is running with this key.

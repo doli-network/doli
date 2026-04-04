@@ -166,7 +166,7 @@ impl BlockStore {
                 Ok(Some(b)) => b,
                 _ => continue,
             };
-            let (transactions, _) = match deserialize_body(&body_bytes) {
+            let (transactions, _, _) = match deserialize_body(&body_bytes) {
                 Ok(b) => b,
                 Err(_) => continue,
             };
@@ -234,7 +234,7 @@ impl BlockStore {
                 Ok(Some(b)) => b,
                 _ => continue,
             };
-            let (transactions, _) = match deserialize_body(&body_bytes) {
+            let (transactions, _, _) = match deserialize_body(&body_bytes) {
                 Ok(b) => b,
                 Err(_) => continue,
             };

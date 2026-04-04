@@ -195,6 +195,32 @@ impl SyncManager {
                 self.snap.fresh_node_wait_start = None;
             }
 
+            // Discv5 peer discovery grace: when discv5 is discovering peers via UDP,
+            // wait for enough TCP connections before committing to header-first sync.
+            // Without this, nodes N19/N22 start header-first before discv5 discovers
+            // peers that could serve snap sync (5-30s for first random walk).
+            if !enough_peers && self.snap.attempts < 3 && snap_allowed && gap > self.snap.threshold
+            {
+                if let Some(deadline) = self.snap.discv5_peer_grace_deadline {
+                    if Instant::now() < deadline {
+                        info!(
+                            "[SNAP_SYNC] Discv5 grace: waiting for {} more peer(s) ({}/3, gap={}, grace_remaining={}s)",
+                            3 - self.peers.len(),
+                            self.peers.len(),
+                            gap,
+                            deadline.saturating_duration_since(Instant::now()).as_secs()
+                        );
+                        return;
+                    }
+                    // Grace expired — clear it and fall through to header-first
+                    self.snap.discv5_peer_grace_deadline = None;
+                    warn!(
+                        "[SNAP_SYNC] Discv5 grace expired with only {} peers — falling back to header-first sync",
+                        self.peers.len()
+                    );
+                }
+            }
+
             if should_snap {
                 // FIX: Use the hash that the MAJORITY of eligible peers agree on,
                 // not a single peer's hash. This prevents a partitioned minority

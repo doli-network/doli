@@ -22,7 +22,7 @@ pub fn is_protocol_active(required_version: u32, active_version: u32) -> bool {
 
 /// Genesis timestamp — must match chainspec.mainnet.json
 /// Guarded by `test_genesis_time_matches_chainspec` test.
-pub const GENESIS_TIME: u64 = 1774969550;
+pub const GENESIS_TIME: u64 = 1775245866;
 
 /// Checkpoint: trusted block for fast initial sync.
 /// Updated with each release. New nodes sync from here instead of genesis.
@@ -52,7 +52,34 @@ pub fn reward_pool_pubkey_hash() -> crypto::Hash {
 /// Aligned to epoch boundary (25,560 = 71 × 360) so nodes on old versions
 /// complete the previous epoch's attestation cycle before forking.
 /// Consensus-breaking — all nodes must update before this height.
-pub const EPOCH_REWARD_EXPLICIT_INPUTS_HEIGHT: u64 = 25_560;
+pub const EPOCH_REWARD_EXPLICIT_INPUTS_HEIGHT: u64 = 0;
+
+/// Bitfield body activation height.
+/// Before this height: attestation bitfield stored in `presence_root` (header), capped at 256 producers.
+/// After this height: attestation bitfield stored in `block.attestation_bitfield` (body), no cap.
+/// `presence_root` becomes `BLAKE3(attestation_bitfield)` as a commitment.
+/// Consensus-breaking — all nodes must update before this height.
+pub const BITFIELD_BODY_ACTIVATION_HEIGHT: u64 = 0;
+
+/// Tier system activation height.
+/// Before this height: all producers participate in round-robin (current behavior).
+/// After this height: only the first ACTIVE_PRODUCERS_CAP producers (by registered_at)
+/// enter the round-robin. All other producers remain as attestors with identical rewards.
+/// Consensus-breaking — all nodes must update before this height.
+pub const TIER_SYSTEM_ACTIVATION_HEIGHT: u64 = 0;
+
+/// Maximum producers in the active production list (round-robin).
+/// Only affects scheduling after TIER_SYSTEM_ACTIVATION_HEIGHT.
+/// Attestors (outside this cap) still receive bond-weighted epoch rewards.
+pub const ACTIVE_PRODUCERS_CAP: usize = 50;
+
+/// Unique coinbase activation height.
+/// Before: coinbase extra_data = height only (local height of producer).
+/// After: coinbase extra_data = height ++ slot (slot is globally unique).
+/// Fixes duplicate coinbase TX hash when producer is 1 block behind
+/// (uses same height as previous producer → same TX hash → UTXO collision → lost coins).
+/// Consensus-breaking — all nodes must update before this height.
+pub const UNIQUE_COINBASE_ACTIVATION_HEIGHT: u64 = 7_000;
 
 // ==================== Proof of Time Parameters ====================
 
@@ -426,23 +453,12 @@ pub const MAX_FALLBACK_RANKS: usize = 2;
 /// Nodes with drift > 200ms should enable NTP synchronization.
 pub const MAX_DRIFT_MS: u64 = 200;
 
-// ==================== Tiered Architecture Constants ====================
+// ==================== Delegation Constants ====================
 
-/// Maximum Tier 1 validator count. Top N producers by effective_weight.
-/// 500 nodes: O(log 500) = ~9 comparisons, 2-hop gossip in ~120ms.
-pub const TIER1_MAX_VALIDATORS: usize = 500;
-
-/// Maximum Tier 2 attestor count. Validate blocks and produce attestations.
-pub const TIER2_MAX_ATTESTORS: usize = 15_000;
-
-/// Number of gossip regions for Tier 2 sharding.
-/// Each region has ~1,000 attestors with its own mesh.
-pub const NUM_REGIONS: u32 = 15;
-
-/// Percentage of block reward kept by the delegate (Tier 1/2 node).
+/// Percentage of block reward kept by the delegate.
 pub const DELEGATE_REWARD_PCT: u32 = 10;
 
-/// Percentage of block reward distributed to stakers (Tier 3 delegators).
+/// Percentage of block reward distributed to stakers (delegators).
 pub const STAKER_REWARD_PCT: u32 = 90;
 
 /// Unbonding period for delegation revocation (in slots).

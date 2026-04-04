@@ -42,8 +42,8 @@ fn test_gossip_error_display() {
 
 #[test]
 fn test_tx_batch_roundtrip() {
-    let tx1 = doli_core::Transaction::new_coinbase(100, crypto::Hash::ZERO, 0);
-    let tx2 = doli_core::Transaction::new_coinbase(200, crypto::Hash::ZERO, 1);
+    let tx1 = doli_core::Transaction::new_coinbase(100, crypto::Hash::ZERO, 0, 0);
+    let tx2 = doli_core::Transaction::new_coinbase(200, crypto::Hash::ZERO, 1, 0);
 
     let encoded = encode_tx_batch(&[tx1.clone(), tx2.clone()]);
     assert_eq!(encoded[0], TX_MSG_BATCH);
@@ -56,7 +56,7 @@ fn test_tx_batch_roundtrip() {
 
 #[test]
 fn test_tx_single_legacy_decode() {
-    let tx = doli_core::Transaction::new_coinbase(500, crypto::Hash::ZERO, 42);
+    let tx = doli_core::Transaction::new_coinbase(500, crypto::Hash::ZERO, 42, 0);
     let raw = tx.serialize();
 
     let decoded = decode_tx_message(&raw).expect("legacy decode should succeed");

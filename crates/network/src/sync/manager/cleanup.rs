@@ -13,6 +13,52 @@ impl SyncManager {
     pub fn cleanup(&mut self) {
         let now = Instant::now();
 
+        // Decay stale network_tip_height when no connected peer sustains it.
+        // network_tip_height is a high-water mark — it never decreases normally.
+        // If the peer that reported the highest tip disconnects, should_sync()
+        // sees a phantom gap forever. But we can't just drop it to peer_max
+        // because the tip might be real (peer temporarily disconnected).
+        //
+        // Fix: if no connected peer is within 5 blocks of network_tip_height
+        // for 42s (~4 slots), decay it to the actual peer max. This gives disconnected
+        // peers time to reconnect while preventing permanent phantom gaps.
+        let peer_max = self
+            .peers
+            .values()
+            .map(|p| p.best_height)
+            .max()
+            .unwrap_or(0);
+        if self.network.network_tip_height > peer_max + 5 && !self.peers.is_empty() {
+            let stale_secs = self
+                .network
+                .tip_unsupported_since
+                .get_or_insert(now)
+                .elapsed()
+                .as_secs();
+            if stale_secs >= 42 {
+                info!(
+                    "[SYNC] Decaying stale network_tip_height: {} → {} (no peer within 5 blocks for {}s)",
+                    self.network.network_tip_height, peer_max, stale_secs
+                );
+                self.network.network_tip_height = peer_max;
+                self.network.tip_unsupported_since = None;
+
+                // If gap disappeared after decay, abort sync immediately.
+                // Without this, DownloadingBodies sits for 120s × 3 retries = 6min
+                // before reaching Idle and checking should_sync().
+                if self.state.is_syncing() && !self.should_sync() {
+                    info!(
+                        "[SYNC] Phantom gap resolved — aborting sync (was {:?})",
+                        self.state
+                    );
+                    self.set_state(SyncState::Idle, "tip_decay_no_gap");
+                }
+            }
+        } else {
+            // A connected peer sustains the tip — reset decay timer
+            self.network.tip_unsupported_since = None;
+        }
+
         // Log current state for debugging
         let pending_count = self
             .peers
@@ -375,6 +421,31 @@ impl SyncManager {
                         self.fork.consecutive_empty_headers
                     );
                     self.fork.header_blacklisted_peers.clear();
+                }
+            }
+        }
+
+        // Snap sync retry: if snap sync exhausted its 3 attempts but we're still
+        // far behind, reset the attempt counter after 30s. This gives discv5 time
+        // to discover more peers for a fresh snap sync quorum attempt.
+        if self.snap.attempts >= 3 && self.should_sync() {
+            let gap = self
+                .network
+                .network_tip_height
+                .saturating_sub(self.local_height);
+            if gap > self.snap.threshold && self.peers.len() >= 3 {
+                let since_last_snap = self
+                    .snap
+                    .last_snap_completed
+                    .map(|t| t.elapsed().as_secs())
+                    .unwrap_or(60);
+                if since_last_snap >= 30 {
+                    info!(
+                        "[SNAP_SYNC] Retrying snap sync: {} attempts exhausted but gap={} and {} peers available",
+                        self.snap.attempts, gap, self.peers.len()
+                    );
+                    self.snap.attempts = 0;
+                    self.snap.blacklisted_peers.clear();
                 }
             }
         }

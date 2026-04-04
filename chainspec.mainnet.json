@@ -3,7 +3,7 @@
   "id": "mainnet",
   "network": "Mainnet",
   "genesis": {
-    "timestamp": 1774969550,
+    "timestamp": 1775245866,
     "message": "DOLI Mainnet Genesis - v5.2.2 security hardening 31/Mar/2026 v6",
     "initial_reward": 100000000
   },

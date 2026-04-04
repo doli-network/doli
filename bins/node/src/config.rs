@@ -70,6 +70,18 @@ pub struct NodeConfig {
     /// None = disabled. Keeps last 5 checkpoints for fast recovery.
     #[serde(default)]
     pub auto_checkpoint_interval: Option<u64>,
+
+    /// Discv5 bootnode ENR strings for UDP peer discovery.
+    #[serde(default)]
+    pub bootnode_enrs: Vec<String>,
+
+    /// Disable Discv5 UDP discovery (use TCP Kademlia only).
+    #[serde(default)]
+    pub no_discv5: bool,
+
+    /// UDP port for Discv5 discovery (default: p2p_port + 1).
+    #[serde(default)]
+    pub discv5_port: Option<u16>,
 }
 
 impl Default for NodeConfig {
@@ -128,6 +140,9 @@ impl NodeConfig {
             no_snap_sync: false,
             seed_mode: false,
             auto_checkpoint_interval: None,
+            bootnode_enrs: network.bootnode_enrs(),
+            no_discv5: false,
+            discv5_port: None,
         }
     }
 }

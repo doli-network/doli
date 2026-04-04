@@ -30,10 +30,11 @@ impl BlockStore {
         let cf_headers = self.db.cf_handle(CF_HEADERS).unwrap();
         self.db.put_cf(cf_headers, hash_bytes, &header_bytes)?;
 
-        // Store body (keyed by hash) — includes BLS aggregate signature
+        // Store body (keyed by hash) — includes BLS aggregate signature + attestation bitfield
         let body = BlockBody {
             transactions: block.transactions.clone(),
             aggregate_bls_signature: block.aggregate_bls_signature.clone(),
+            attestation_bitfield: block.attestation_bitfield.clone(),
         };
         let body_bytes =
             bincode::serialize(&body).map_err(|e| StorageError::Serialization(e.to_string()))?;

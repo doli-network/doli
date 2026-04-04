@@ -24,6 +24,7 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
         default_rpc_port: env_parse("DOLI_RPC_PORT", defaults.default_rpc_port),
         default_metrics_port: env_parse("DOLI_METRICS_PORT", defaults.default_metrics_port),
         bootstrap_nodes: env_parse_vec("DOLI_BOOTSTRAP_NODES", defaults.bootstrap_nodes.clone()),
+        bootnode_enrs: env_parse_vec("DOLI_BOOTNODE_ENRS", defaults.bootnode_enrs.clone()),
         max_peers: env_parse("DOLI_MAX_PEERS", defaults.max_peers),
 
         // Timing (some locked for mainnet)

@@ -696,6 +696,8 @@ impl Node {
             let mut pks: Vec<_> = active.iter().map(|p| p.public_key).collect();
             pks.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
             self.epoch_producer_list = pks;
+            // Rebuild active_production_list (tier system will filter at next epoch boundary)
+            self.active_production_list = self.epoch_producer_list.clone();
 
             // Clear cached scheduler so it rebuilds with the correct snapshot
             self.cached_scheduler = None;

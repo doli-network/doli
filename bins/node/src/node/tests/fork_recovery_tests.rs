@@ -31,7 +31,7 @@ fn build_test_block(
 ) -> Block {
     let reward = params.block_reward(height);
     let pool_hash = doli_core::consensus::reward_pool_pubkey_hash();
-    let coinbase = Transaction::new_coinbase(reward, pool_hash, height);
+    let coinbase = Transaction::new_coinbase(reward, pool_hash, height, 0);
     let timestamp = params.genesis_time + (slot as u64 * params.slot_duration);
     let merkle_root = doli_core::block::compute_merkle_root(&[coinbase.clone()]);
 

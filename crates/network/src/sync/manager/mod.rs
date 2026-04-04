@@ -38,13 +38,6 @@ use crypto::Hash;
 
 use super::reorg::ReorgHandler;
 
-/// Minimum peers required for block production, by tier.
-/// Sane defaults for small-to-medium networks. The cap in set_tier()
-/// ensures min_peers <= active_producers - 1, preventing deadlock.
-const MIN_PEERS_TIER1: usize = 3;
-const MIN_PEERS_TIER2: usize = 2;
-const MIN_PEERS_TIER3: usize = 1;
-
 /// Maximum consecutive force-resyncs before giving up.
 /// After this many failed resyncs, the node stops retrying and requires
 /// manual intervention (`recover --yes` or wipe + resync).
@@ -109,9 +102,6 @@ pub struct SyncManager {
     last_peer_status_received: Option<Instant>,
     /// Bootstrap grace period (seconds) - time to wait at genesis for chain evidence
     bootstrap_grace_period_secs: u64,
-
-    /// Producer tier (0=default, 1=validator, 2=attestor, 3=staker)
-    tier: u8,
 
     /// Finality tracker — tracks attestation weight and determines finalized blocks.
     finality_tracker: doli_core::FinalityTracker,
@@ -186,7 +176,6 @@ impl SyncManager {
             first_peer_status_received: None,
             last_peer_status_received: None,
             bootstrap_grace_period_secs: 15, // Wait 15s at genesis for chain evidence
-            tier: 0,
             finality_tracker: doli_core::FinalityTracker::new(),
             // Fork state (sub-struct)
             fork: {
