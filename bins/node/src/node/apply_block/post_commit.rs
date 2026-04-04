@@ -89,10 +89,14 @@ impl Node {
 
                     for h in prev_epoch_start..prev_epoch_end {
                         if let Ok(Some(blk)) = self.block_store.get_block_by_height(h) {
-                            let minute = doli_core::attestation::attestation_minute(blk.header.slot);
+                            let minute =
+                                doli_core::attestation::attestation_minute(blk.header.slot);
                             // Block producer attested by producing
                             attested.insert(blk.header.producer);
-                            attestation_minutes.entry(blk.header.producer).or_default().insert(minute);
+                            attestation_minutes
+                                .entry(blk.header.producer)
+                                .or_default()
+                                .insert(minute);
                             // Decode attestation bitfield
                             if !blk.header.presence_root.is_zero() {
                                 let indices = if !blk.attestation_bitfield.is_empty() {
@@ -191,10 +195,7 @@ impl Node {
                         // regardless of seniority. Healthy attestors fill the gap.
                         let before = with_reg.len();
                         with_reg.retain(|(pk, _)| {
-                            let mins = attestation_minutes
-                                .get(pk)
-                                .map(|s| s.len())
-                                .unwrap_or(0);
+                            let mins = attestation_minutes.get(pk).map(|s| s.len()).unwrap_or(0);
                             mins >= MIN_ATTESTATION_MINUTES
                         });
                         let demoted = before - with_reg.len();
