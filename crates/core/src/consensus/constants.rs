@@ -81,6 +81,18 @@ pub const ACTIVE_PRODUCERS_CAP: usize = 50;
 /// Consensus-breaking — all nodes must update before this height.
 pub const UNIQUE_COINBASE_ACTIVATION_HEIGHT: u64 = 7_000;
 
+/// Tier promotion activation height.
+/// Before: active_production_list = first 50 by registered_at (static seniority).
+/// After: active_production_list = first 50 by attestation_count desc, registered_at asc.
+/// Producers who go offline lose their slot to more active attestors automatically.
+/// Consensus-breaking — all nodes must update before this height.
+pub const TIER_PROMOTION_ACTIVATION_HEIGHT: u64 = 7_000;
+
+/// Minimum attestation minutes (out of 60) to qualify for active production list.
+/// Producers below this threshold are demoted to attestor even if in the top 50.
+/// Only enforced after TIER_PROMOTION_ACTIVATION_HEIGHT.
+pub const MIN_ATTESTATION_MINUTES: usize = 30;
+
 // ==================== Proof of Time Parameters ====================
 
 /// Slot duration in seconds.

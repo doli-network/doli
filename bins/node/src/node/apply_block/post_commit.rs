@@ -69,6 +69,7 @@ impl Node {
                     .collect();
                 drop(producers);
 
+                let mut attestation_minutes: HashMap<PublicKey, HashSet<u32>> = HashMap::new();
                 let mut new_list: Vec<PublicKey> = if epoch <= 1 {
                     // Genesis/early epochs: all active producers qualify
                     active
@@ -88,8 +89,10 @@ impl Node {
 
                     for h in prev_epoch_start..prev_epoch_end {
                         if let Ok(Some(blk)) = self.block_store.get_block_by_height(h) {
+                            let minute = doli_core::attestation::attestation_minute(blk.header.slot);
                             // Block producer attested by producing
                             attested.insert(blk.header.producer);
+                            attestation_minutes.entry(blk.header.producer).or_default().insert(minute);
                             // Decode attestation bitfield
                             if !blk.header.presence_root.is_zero() {
                                 let indices = if !blk.attestation_bitfield.is_empty() {
@@ -112,6 +115,7 @@ impl Node {
                                 for idx in indices {
                                     if let Some(pk) = sorted_for_decode.get(idx) {
                                         attested.insert(*pk);
+                                        attestation_minutes.entry(*pk).or_default().insert(minute);
                                     }
                                 }
                             }
@@ -161,9 +165,13 @@ impl Node {
 
                 // Tier system: build active production list.
                 // Before activation: all producers in round-robin (identical to epoch_producer_list).
-                // After activation: first ACTIVE_PRODUCERS_CAP by registered_at (earliest first).
-                // Attestors outside the cap still receive bond-weighted epoch rewards.
-                use doli_core::consensus::{ACTIVE_PRODUCERS_CAP, TIER_SYSTEM_ACTIVATION_HEIGHT};
+                // After activation: first ACTIVE_PRODUCERS_CAP by registered_at (earliest first),
+                // with promotion: producers below MIN_ATTESTATION_MINUTES are demoted to attestor
+                // and replaced by the next qualifying attestor.
+                use doli_core::consensus::{
+                    ACTIVE_PRODUCERS_CAP, MIN_ATTESTATION_MINUTES,
+                    TIER_PROMOTION_ACTIVATION_HEIGHT, TIER_SYSTEM_ACTIVATION_HEIGHT,
+                };
                 if height >= TIER_SYSTEM_ACTIVATION_HEIGHT
                     && self.epoch_producer_list.len() > ACTIVE_PRODUCERS_CAP
                 {
@@ -176,6 +184,28 @@ impl Node {
                         })
                         .collect();
                     drop(producers);
+
+                    if height >= TIER_PROMOTION_ACTIVATION_HEIGHT && epoch > 1 {
+                        // Promotion: filter out underperformers before selecting top 50.
+                        // Producers with < MIN_ATTESTATION_MINUTES are demoted to attestor
+                        // regardless of seniority. Healthy attestors fill the gap.
+                        let before = with_reg.len();
+                        with_reg.retain(|(pk, _)| {
+                            let mins = attestation_minutes
+                                .get(pk)
+                                .map(|s| s.len())
+                                .unwrap_or(0);
+                            mins >= MIN_ATTESTATION_MINUTES
+                        });
+                        let demoted = before - with_reg.len();
+                        if demoted > 0 {
+                            info!(
+                                "[TIER] Demoted {} producers with <{} attestation minutes",
+                                demoted, MIN_ATTESTATION_MINUTES
+                            );
+                        }
+                    }
+
                     // Sort by registered_at ascending (earliest first), pubkey tiebreak
                     with_reg.sort_by(|a, b| {
                         a.1.cmp(&b.1)
@@ -187,9 +217,10 @@ impl Node {
                         .map(|(pk, _)| *pk)
                         .collect();
                     info!(
-                        "[TIER] Active production list: {}/{} producers (by registered_at)",
+                        "[TIER] Active production list: {}/{} producers (by registered_at, promotion={})",
                         self.active_production_list.len(),
-                        self.epoch_producer_list.len()
+                        self.epoch_producer_list.len(),
+                        height >= TIER_PROMOTION_ACTIVATION_HEIGHT,
                     );
                 } else {
                     self.active_production_list = self.epoch_producer_list.clone();
