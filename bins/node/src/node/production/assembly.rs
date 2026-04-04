@@ -232,7 +232,7 @@ impl Node {
 
             // Now add coinbase with block reward + extra fees.
             // insert(0, ...) places it at position 0 regardless of when called.
-            builder.add_coinbase_with_extra(height, pool_hash, extra_fees);
+            builder.add_coinbase_with_extra(height, current_slot, pool_hash, extra_fees);
         }
 
         // Recapture timestamp just before building the block.

@@ -54,13 +54,25 @@ impl Transaction {
     }
 
     /// Create a coinbase transaction
-    pub fn new_coinbase(amount: Amount, pubkey_hash: Hash, height: BlockHeight) -> Self {
+    ///
+    /// Post-UNIQUE_COINBASE_ACTIVATION_HEIGHT: extra_data includes slot (globally unique)
+    /// to prevent duplicate TX hashes when producer is 1 block behind.
+    pub fn new_coinbase(amount: Amount, pubkey_hash: Hash, height: BlockHeight, slot: u32) -> Self {
+        let extra_data = if height >= crate::consensus::UNIQUE_COINBASE_ACTIVATION_HEIGHT {
+            // height (8 bytes) + slot (4 bytes) = unique per block
+            let mut data = height.to_le_bytes().to_vec();
+            data.extend_from_slice(&slot.to_le_bytes());
+            data
+        } else {
+            // Legacy: height only
+            height.to_le_bytes().to_vec()
+        };
         Self {
             version: 1,
             tx_type: TxType::Transfer,
             inputs: Vec::new(),
             outputs: vec![Output::normal(amount, pubkey_hash)],
-            extra_data: height.to_le_bytes().to_vec(),
+            extra_data,
         }
     }
 
@@ -865,5 +877,30 @@ impl Transaction {
             return None;
         }
         crate::maintainer::ProtocolActivationData::from_bytes(&self.extra_data)
+    }
+}
+
+#[cfg(test)]
+mod coinbase_hash_tests {
+    use super::*;
+    use crypto::Hash;
+
+    #[test]
+    fn coinbase_different_heights_produce_different_hashes() {
+        let pool_hash = Hash::default();
+        let cb1 = Transaction::new_coinbase(100_000_000, pool_hash, 1910, 0);
+        let cb2 = Transaction::new_coinbase(100_000_000, pool_hash, 1911, 0);
+
+        println!("cb1 extra_data: {:?}", cb1.extra_data);
+        println!("cb2 extra_data: {:?}", cb2.extra_data);
+        println!("cb1 hash: {}", cb1.hash());
+        println!("cb2 hash: {}", cb2.hash());
+        println!("Same hash: {}", cb1.hash() == cb2.hash());
+
+        assert_ne!(
+            cb1.hash(),
+            cb2.hash(),
+            "Coinbase at different heights must have different hashes"
+        );
     }
 }

@@ -73,6 +73,14 @@ pub const TIER_SYSTEM_ACTIVATION_HEIGHT: u64 = 0;
 /// Attestors (outside this cap) still receive bond-weighted epoch rewards.
 pub const ACTIVE_PRODUCERS_CAP: usize = 50;
 
+/// Unique coinbase activation height.
+/// Before: coinbase extra_data = height only (local height of producer).
+/// After: coinbase extra_data = height ++ slot (slot is globally unique).
+/// Fixes duplicate coinbase TX hash when producer is 1 block behind
+/// (uses same height as previous producer → same TX hash → UTXO collision → lost coins).
+/// Consensus-breaking — all nodes must update before this height.
+pub const UNIQUE_COINBASE_ACTIVATION_HEIGHT: u64 = 7_000;
+
 // ==================== Proof of Time Parameters ====================
 
 /// Slot duration in seconds.

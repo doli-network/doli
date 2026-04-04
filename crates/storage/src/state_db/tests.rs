@@ -18,7 +18,7 @@ fn create_test_db() -> (StateDb, TempDir) {
 }
 
 fn test_coinbase_tx(amount: u64, pubkey_hash: crypto::Hash) -> Transaction {
-    Transaction::new_coinbase(amount, pubkey_hash, 0)
+    Transaction::new_coinbase(amount, pubkey_hash, 0, 0)
 }
 
 #[test]

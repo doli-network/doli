@@ -6,7 +6,7 @@ use super::*;
 
 #[test]
 fn test_coinbase() {
-    let tx = Transaction::new_coinbase(500_000_000, Hash::ZERO, 0);
+    let tx = Transaction::new_coinbase(500_000_000, Hash::ZERO, 0, 0);
 
     assert!(tx.is_coinbase());
     assert_eq!(tx.inputs.len(), 0);
@@ -16,7 +16,7 @@ fn test_coinbase() {
 
 #[test]
 fn test_tx_hash_deterministic() {
-    let tx = Transaction::new_coinbase(500_000_000, Hash::ZERO, 100);
+    let tx = Transaction::new_coinbase(500_000_000, Hash::ZERO, 100, 0);
 
     let hash1 = tx.hash();
     let hash2 = tx.hash();
@@ -39,7 +39,7 @@ fn test_output_spendability() {
 
 #[test]
 fn test_serialization_roundtrip() {
-    let tx = Transaction::new_coinbase(500_000_000, Hash::ZERO, 42);
+    let tx = Transaction::new_coinbase(500_000_000, Hash::ZERO, 42, 0);
     let bytes = tx.serialize();
     let recovered = Transaction::deserialize(&bytes).unwrap();
 
@@ -449,7 +449,7 @@ fn test_epoch_reward_serialization_roundtrip() {
 
 #[test]
 fn test_epoch_reward_data_none_for_non_epoch_reward() {
-    let tx = Transaction::new_coinbase(1000, Hash::ZERO, 0);
+    let tx = Transaction::new_coinbase(1000, Hash::ZERO, 0, 0);
     assert!(tx.epoch_reward_data().is_none());
 }
 
@@ -522,7 +522,7 @@ fn test_maintainer_tx_serialization_roundtrip() {
 
 #[test]
 fn test_maintainer_change_data_none_for_other_tx_types() {
-    let tx = Transaction::new_coinbase(1000, Hash::ZERO, 0);
+    let tx = Transaction::new_coinbase(1000, Hash::ZERO, 0, 0);
     assert!(tx.maintainer_change_data().is_none());
 
     let keypair = crypto::KeyPair::generate();
@@ -633,7 +633,7 @@ fn test_protocol_activation_serialization_roundtrip() {
 
 #[test]
 fn test_protocol_activation_data_none_for_other_types() {
-    let tx = Transaction::new_coinbase(1000, Hash::ZERO, 0);
+    let tx = Transaction::new_coinbase(1000, Hash::ZERO, 0, 0);
     assert!(tx.protocol_activation_data().is_none());
 }
 
@@ -693,7 +693,7 @@ proptest! {
     #[test]
     fn prop_tx_hash_deterministic(amount in 1u64..u64::MAX/2, height: u64, seed: [u8; 32]) {
         let pubkey_hash = Hash::from_bytes(seed);
-        let tx = Transaction::new_coinbase(amount, pubkey_hash, height);
+        let tx = Transaction::new_coinbase(amount, pubkey_hash, height, 0);
         prop_assert_eq!(tx.hash(), tx.hash());
     }
 
@@ -702,8 +702,8 @@ proptest! {
     fn prop_different_tx_different_hash(amount1 in 1u64..u64::MAX/2, amount2 in 1u64..u64::MAX/2, height1: u64, height2: u64) {
         prop_assume!(amount1 != amount2 || height1 != height2);
         let pubkey_hash = Hash::ZERO;
-        let tx1 = Transaction::new_coinbase(amount1, pubkey_hash, height1);
-        let tx2 = Transaction::new_coinbase(amount2, pubkey_hash, height2);
+        let tx1 = Transaction::new_coinbase(amount1, pubkey_hash, height1, 0);
+        let tx2 = Transaction::new_coinbase(amount2, pubkey_hash, height2, 0);
         prop_assert_ne!(tx1.hash(), tx2.hash());
     }
 
@@ -711,7 +711,7 @@ proptest! {
     #[test]
     fn prop_tx_serialization_roundtrip(amount in 1u64..u64::MAX/2, height: u64, seed: [u8; 32]) {
         let pubkey_hash = Hash::from_bytes(seed);
-        let tx = Transaction::new_coinbase(amount, pubkey_hash, height);
+        let tx = Transaction::new_coinbase(amount, pubkey_hash, height, 0);
         let bytes = tx.serialize();
         let recovered = Transaction::deserialize(&bytes);
         prop_assert!(recovered.is_some());
@@ -775,7 +775,7 @@ proptest! {
     /// Coinbase detection: empty inputs + single output = coinbase
     #[test]
     fn prop_coinbase_detection(amount in 1u64..u64::MAX/2, height: u64, seed: [u8; 32]) {
-        let tx = Transaction::new_coinbase(amount, Hash::from_bytes(seed), height);
+        let tx = Transaction::new_coinbase(amount, Hash::from_bytes(seed), height, 0);
         prop_assert!(tx.is_coinbase());
         prop_assert!(tx.inputs.is_empty());
         prop_assert_eq!(tx.outputs.len(), 1);
@@ -1864,7 +1864,7 @@ fn test_fee_multiple_outputs_sum() {
 ///         (they have no inputs, fee is moot). Verify calculation still works.
 #[test]
 fn test_fee_coinbase_and_epoch_reward() {
-    let coinbase = Transaction::new_coinbase(100_000_000, Hash::from_bytes([1u8; 32]), 0);
+    let coinbase = Transaction::new_coinbase(100_000_000, Hash::from_bytes([1u8; 32]), 0, 0);
     // Coinbase has no outputs with extra_data (normal output)
     assert_eq!(coinbase.minimum_fee(), 1); // BASE_FEE only
 
@@ -2077,7 +2077,7 @@ fn test_block_builder_add_coinbase_with_extra() {
 
     // Add coinbase with extra fees (300 bytes * FEE_PER_BYTE / FEE_DIVISOR = 300)
     let extra_fees = 300u64;
-    builder.add_coinbase_with_extra(1, pool_hash, extra_fees);
+    builder.add_coinbase_with_extra(1, 0, pool_hash, extra_fees);
 
     // Build the block
     let result = builder.build(params.genesis_time + params.slot_duration);
@@ -2232,7 +2232,7 @@ fn test_nft_magic_bytes_preserved() {
 #[test]
 fn test_coinbase_single_output() {
     let pool_hash = crypto::hash::hash(b"reward_pool");
-    let coinbase = Transaction::new_coinbase(100_000_000, pool_hash, 1);
+    let coinbase = Transaction::new_coinbase(100_000_000, pool_hash, 1, 0);
 
     assert_eq!(coinbase.outputs.len(), 1);
     assert_eq!(coinbase.outputs[0].pubkey_hash, pool_hash);
@@ -2244,7 +2244,7 @@ fn test_coinbase_single_output() {
 #[test]
 fn test_coinbase_no_inputs() {
     let pool_hash = crypto::hash::hash(b"reward_pool_c2");
-    let coinbase = Transaction::new_coinbase(100_000_000, pool_hash, 1);
+    let coinbase = Transaction::new_coinbase(100_000_000, pool_hash, 1, 0);
 
     assert!(coinbase.inputs.is_empty());
     assert!(coinbase.is_coinbase());
@@ -2254,7 +2254,7 @@ fn test_coinbase_no_inputs() {
 #[test]
 fn test_coinbase_tx_type() {
     let pool_hash = crypto::hash::hash(b"reward_pool_c3");
-    let coinbase = Transaction::new_coinbase(100_000_000, pool_hash, 1);
+    let coinbase = Transaction::new_coinbase(100_000_000, pool_hash, 1, 0);
 
     // Coinbase is a Transfer with no inputs (not a separate TxType)
     assert_eq!(coinbase.tx_type, TxType::Transfer);
@@ -2271,7 +2271,7 @@ fn test_coinbase_amount_matches_block_reward() {
     let expected_reward = params.block_reward(height);
     let pool_hash = crypto::hash::hash(b"reward_pool_c4");
 
-    let coinbase = Transaction::new_coinbase(expected_reward, pool_hash, height);
+    let coinbase = Transaction::new_coinbase(expected_reward, pool_hash, height, 0);
     assert_eq!(coinbase.outputs[0].amount, expected_reward);
 }
 
@@ -2289,7 +2289,7 @@ fn test_coinbase_extra_fees_route_to_pool() {
     let total_coinbase = block_reward + extra_fees;
     let pool_hash = crypto::hash::hash(b"reward_pool_c5");
 
-    let coinbase = Transaction::new_coinbase(total_coinbase, pool_hash, height);
+    let coinbase = Transaction::new_coinbase(total_coinbase, pool_hash, height, 0);
     assert_eq!(coinbase.outputs[0].amount, total_coinbase);
     assert!(total_coinbase > block_reward);
 }
@@ -2414,7 +2414,8 @@ fn test_coinbase_with_nft_extra_fees_real_block() {
     );
 
     // Create coinbase TX
-    let coinbase = Transaction::new_coinbase(expected_coinbase, Hash::from_bytes([0xFF; 32]), 100);
+    let coinbase =
+        Transaction::new_coinbase(expected_coinbase, Hash::from_bytes([0xFF; 32]), 100, 0);
     assert_eq!(coinbase.outputs[0].amount, expected_coinbase);
     assert!(coinbase.is_coinbase());
     let _ = BASE_FEE; // ensure constant is usable
@@ -2484,6 +2485,6 @@ fn test_fee_routing_lifecycle() {
     assert!(coinbase_amount > block_reward);
 
     // Step 6: Create coinbase (what goes to reward pool)
-    let coinbase = Transaction::new_coinbase(coinbase_amount, Hash::from_bytes([0xFF; 32]), 1);
+    let coinbase = Transaction::new_coinbase(coinbase_amount, Hash::from_bytes([0xFF; 32]), 1, 0);
     assert_eq!(coinbase.outputs[0].amount, coinbase_amount);
 }

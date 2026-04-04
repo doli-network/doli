@@ -107,7 +107,7 @@ fn build_block(
 ) -> Block {
     let reward = params.block_reward(height);
     let pool_hash = consensus::reward_pool_pubkey_hash();
-    let coinbase = Transaction::new_coinbase(reward, pool_hash, height);
+    let coinbase = Transaction::new_coinbase(reward, pool_hash, height, 0);
     let timestamp = params.genesis_time + (slot as u64 * params.slot_duration);
     let merkle_root = doli_core::block::compute_merkle_root(std::slice::from_ref(&coinbase));
     let genesis_hash = doli_core::chainspec::ChainSpec::devnet().genesis_hash();
@@ -382,7 +382,7 @@ async fn test_pre_activation_epoch_reward_drains_pool() {
 
     // Build a block at h=8 (epoch boundary).
     let prev_hash = chain[6].hash();
-    let coinbase = Transaction::new_coinbase(params.block_reward(8), pool_hash, 8);
+    let coinbase = Transaction::new_coinbase(params.block_reward(8), pool_hash, 8, 0);
     let txs = vec![coinbase, epoch_reward_tx];
     let merkle_root = doli_core::block::compute_merkle_root(&txs);
     let genesis_hash = doli_core::chainspec::ChainSpec::devnet().genesis_hash();
@@ -455,7 +455,7 @@ async fn test_rollback_post_activation_restores_pool() {
     );
 
     let prev_hash = chain[6].hash();
-    let coinbase = Transaction::new_coinbase(params.block_reward(8), pool_hash, 8);
+    let coinbase = Transaction::new_coinbase(params.block_reward(8), pool_hash, 8, 0);
     let txs = vec![coinbase, epoch_reward_tx];
     let merkle_root = doli_core::block::compute_merkle_root(&txs);
     let genesis_hash = doli_core::chainspec::ChainSpec::devnet().genesis_hash();

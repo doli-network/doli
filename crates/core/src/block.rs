@@ -317,9 +317,14 @@ impl BlockBuilder {
     }
 
     /// Add the coinbase transaction
-    pub fn add_coinbase(&mut self, height: BlockHeight, pubkey_hash: Hash) -> &mut Self {
+    pub fn add_coinbase(
+        &mut self,
+        height: BlockHeight,
+        slot: Slot,
+        pubkey_hash: Hash,
+    ) -> &mut Self {
         let reward = self.params.block_reward(height);
-        let coinbase = Transaction::new_coinbase(reward, pubkey_hash, height);
+        let coinbase = Transaction::new_coinbase(reward, pubkey_hash, height, slot);
         self.transactions.insert(0, coinbase);
         self
     }
@@ -332,11 +337,12 @@ impl BlockBuilder {
     pub fn add_coinbase_with_extra(
         &mut self,
         height: BlockHeight,
+        slot: Slot,
         pubkey_hash: Hash,
         extra_amount: Amount,
     ) -> &mut Self {
         let reward = self.params.block_reward(height) + extra_amount;
-        let coinbase = Transaction::new_coinbase(reward, pubkey_hash, height);
+        let coinbase = Transaction::new_coinbase(reward, pubkey_hash, height, slot);
         self.transactions.insert(0, coinbase);
         self
     }
@@ -389,15 +395,15 @@ mod tests {
 
     #[test]
     fn test_merkle_root_single() {
-        let tx = Transaction::new_coinbase(100, Hash::ZERO, 0);
+        let tx = Transaction::new_coinbase(100, Hash::ZERO, 0, 0);
         let root = compute_merkle_root(std::slice::from_ref(&tx));
         assert_eq!(root, tx.hash());
     }
 
     #[test]
     fn test_merkle_root_deterministic() {
-        let tx1 = Transaction::new_coinbase(100, Hash::ZERO, 0);
-        let tx2 = Transaction::new_coinbase(200, Hash::ZERO, 1);
+        let tx1 = Transaction::new_coinbase(100, Hash::ZERO, 0, 0);
+        let tx2 = Transaction::new_coinbase(200, Hash::ZERO, 1, 0);
 
         let root1 = compute_merkle_root(&[tx1.clone(), tx2.clone()]);
         let root2 = compute_merkle_root(&[tx1, tx2]);

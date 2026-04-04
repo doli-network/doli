@@ -1733,7 +1733,7 @@ fn test_fee_validation_coinbase_bypass() {
 
     // Coinbase: no inputs, single output, minted from thin air.
     // Must not trigger InsufficientFee.
-    let coinbase = Transaction::new_coinbase(100_000_000, crypto::hash::hash(b"producer_13"), 1);
+    let coinbase = Transaction::new_coinbase(100_000_000, crypto::hash::hash(b"producer_13"), 1, 0);
 
     let result = utxo::validate_transaction_with_utxos(&coinbase, &ctx, &utxo_provider);
     assert!(
