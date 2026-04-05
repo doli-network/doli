@@ -88,6 +88,7 @@ pub mod archiver;
 pub mod block_store;
 pub mod chain_state;
 pub mod maintainer;
+pub mod mmr;
 pub mod producer;
 pub mod snapshot;
 pub mod state_db;
