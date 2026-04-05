@@ -25,7 +25,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgmp-dev libmpfr-dev librocksdb-dev libclang-dev m4 protobuf-compiler
+          sudo apt-get install -y libgmp-dev libmpfr-dev librocksdb-dev libclang-dev m4 protobuf-compiler zlib1g-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -39,6 +39,8 @@ jobs:
 
       - name: Build
         run: cargo build --release --target $TARGET --package doli-node --package doli-cli
+        env:
+          LIBZ_SYS_STATIC: "0"
 
       - name: Package tarball
         run: |
@@ -85,7 +87,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install system dependencies
-        run: brew install gmp mpfr protobuf 2>/dev/null || true
+        run: brew install gmp mpfr protobuf zlib 2>/dev/null || true
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -99,6 +101,8 @@ jobs:
 
       - name: Build
         run: cargo build --release --target $TARGET --package doli-node --package doli-cli
+        env:
+          LIBZ_SYS_STATIC: "0"
 
       - name: Package tarball
         run: |
@@ -147,7 +151,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libgmp-dev libmpfr-dev librocksdb-dev libclang-dev m4 protobuf-compiler \
+            libgmp-dev libmpfr-dev librocksdb-dev libclang-dev m4 protobuf-compiler zlib1g-dev \
             libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf
 
       - name: Install Rust
@@ -180,6 +184,8 @@ jobs:
       - name: Build GUI
         working-directory: bins/gui
         run: cargo tauri build
+        env:
+          LIBZ_SYS_STATIC: "0"
 
       - name: Collect artifacts
         run: |
@@ -202,7 +208,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install system dependencies
-        run: brew install gmp mpfr protobuf 2>/dev/null || true
+        run: brew install gmp mpfr protobuf zlib 2>/dev/null || true
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -234,6 +240,8 @@ jobs:
       - name: Build GUI
         working-directory: bins/gui
         run: cargo tauri build
+        env:
+          LIBZ_SYS_STATIC: "0"
 
       - name: Collect artifacts
         run: |
