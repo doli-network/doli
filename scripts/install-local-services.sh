@@ -25,6 +25,9 @@ LOG_DIR="$TESTNET_DIR/logs"
 # Port scheme (matches remote servers)
 SEED_P2P=30300  SEED_RPC=8500  SEED_METRICS=9000
 
+# CORS origins for explorer (add more as needed)
+CORS_ORIGINS=("http://localhost:8080" "http://localhost:3000" "http://localhost:5500" "http://127.0.0.1:8080" "http://127.0.0.1:3000" "http://127.0.0.1:5500")
+
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
@@ -76,6 +79,10 @@ install_seed() {
         <string>${TESTNET_DIR}/seed/blocks</string>
         <string>--yes</string>
         <string>--no-snap-sync</string>
+$(for origin in "${CORS_ORIGINS[@]}"; do
+  echo "        <string>--rpc-cors</string>"
+  echo "        <string>${origin}</string>"
+done)
     </array>
     <key>RunAtLoad</key>
     <false/>
@@ -138,6 +145,10 @@ install_producer() {
         <string>/ip4/127.0.0.1/tcp/${SEED_P2P}</string>
         <string>--yes</string>
         <string>--force-start</string>
+$(for origin in "${CORS_ORIGINS[@]}"; do
+  echo "        <string>--rpc-cors</string>"
+  echo "        <string>${origin}</string>"
+done)
     </array>
     <key>RunAtLoad</key>
     <false/>
