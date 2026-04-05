@@ -32,50 +32,32 @@ assembly.rs: track cumulative_user_bytes
 - Max block propagation time: <2s (currently ~0.5s for normal blocks)
 - Zero missed slots from data-heavy blocks
 
-## Phase 2: UTXO Pruning & Compaction
+## Phase 2: RocksDB Default (eliminate RAM bottleneck)
 
-**Problem:** NFT UTXOs with 408KB of data live in the UTXO set forever. With 1000 NFTs, that's 400MB in memory.
+**Problem:** The entire UTXO set lives in RAM (`InMemoryUtxoStore`). With 1000 NFTs of 408KB each, that's 400MB of RAM on every node. Doesn't scale.
 
-**Fix:** Tiered UTXO storage.
+**Fix:** Activate `UtxoSet::RocksDb` as default. Already implemented, never used in production.
 
 ```
-Hot tier:  In-memory HashMap — only UTXOs with extra_data < 4KB
-Cold tier: RocksDB direct — UTXOs with extra_data >= 4KB (NFTs, large covenants)
+init.rs: use UtxoSet::RocksDb(state_db) instead of UtxoSet::InMemory(HashMap)
 ```
 
-- `get()` checks hot first, falls back to cold
-- `spend()` works on both tiers
-- NFT data is on-chain (in blocks) but not in RAM
-- State root computation: stream cold UTXOs from disk, don't load all into memory
+- RocksDB block cache automatically keeps hot UTXOs (recent transfers) in RAM
+- Cold UTXOs (old NFTs) stay on disk — accessed only when spent or exported
+- No tiered storage needed — RocksDB + OS page cache does the tiering automatically
+- Lookup cost: ~1-5μs (vs 50ns HashMap). 40 lookups per block = 120μs. Slot is 10 seconds.
+
+**Eliminates old Phase 2 (tiered storage)** — simpler, same result, zero new code.
 
 **Impact:**
-- Memory usage: O(normal UTXOs) instead of O(all UTXOs including NFT blobs)
-- 10,000 NFTs = ~4GB on disk, ~50MB in RAM (metadata only)
+- RAM: proportional to block cache size (configurable), not UTXO set size
+- 10,000 NFTs: ~4GB on disk, ~64MB block cache in RAM
+- 100,000 UTXOs: same 64MB RAM, just more on disk
+- Bitcoin Core made the same migration (in-memory → LevelDB) for the same reason
 
-## Phase 3: Content-Addressed Data Deduplication
+## Phase 3: Lazy Data Propagation (producers skip blobs)
 
-**Problem:** If 100 NFTs reference the same image, it's stored 100 times.
-
-**Fix:** Separate content store with reference counting.
-
-```
-UTXO.extra_data = content_hash (32 bytes)
-content_store[content_hash] = raw_bytes (408KB)
-ref_count[content_hash] = number of UTXOs referencing it
-```
-
-- Mint: if content_hash exists, increment ref_count (no duplicate storage)
-- Spend/burn: decrement ref_count, delete content when ref_count = 0
-- State root: includes content_store merkle root
-- Wire format: block carries content blobs only for NEW content_hashes
-
-**Impact:**
-- 100 copies of same image: 408KB once, not 40MB
-- Block size for duplicate mints: ~300 bytes instead of 408KB
-
-## Phase 4: Lazy Data Propagation
-
-**Problem:** Every node stores every NFT's full data. A node that only validates transfers doesn't need the image bytes.
+**Problem:** Every node stores every NFT's full data. A producer that only validates transfers doesn't need the 408KB image bytes.
 
 **Fix:** Role-based data availability. Three node tiers with different storage responsibilities.
 
@@ -105,6 +87,7 @@ Light nodes:
 - Producers can prune blob data immediately — they never download it
 - Data availability guaranteed by archiver attestation quorum, not by every node storing every blob
 - State root does NOT change — includes hashes of blobs, not blobs. All nodes compute the same state root regardless of what data they store locally.
+- Snap sync transfers UTXO hashes (32 bytes each), not blobs — fast regardless of NFT count
 
 **Impact:**
 - Producers: RAM and disk proportional to UTXO metadata only (~100 bytes per NFT, not 408KB)
@@ -114,9 +97,9 @@ Light nodes:
 - Gossip bandwidth: proportional to transfers, not data size
 - Network scales data storage with archiver count, not producer count
 
-## Phase 5: Streaming UTXO Commitments
+## Phase 4: MMR Incremental State Root (O(log n))
 
-**Problem:** `compute_state_root()` iterates ALL UTXOs. At 1M UTXOs, this takes seconds.
+**Problem:** `compute_state_root()` iterates ALL UTXOs. With RocksDB (Phase 2), this means scanning disk. At 100K UTXOs = ~500ms. At 2TB = minutes. Doesn't scale.
 
 **Fix:** Incremental state root via append-only Merkle Mountain Range (MMR).
 
@@ -130,11 +113,34 @@ Each apply_block:
 - No full UTXO iteration at any point
 - Snap sync: transfer MMR peaks + UTXO set
 - Proof of inclusion: O(log n) for any UTXO
+- Required before UTXO set exceeds ~100K entries
 
 **Impact:**
 - State root computation: O(log n) instead of O(n)
 - 1M UTXOs: ~20 hashes instead of iterating 1M entries
+- 2TB UTXO set: same ~20 hashes, no disk scan
 - Snap sync proofs: compact, verifiable without full UTXO set
+
+## Phase 5: Content-Addressed Data Deduplication
+
+**Problem:** If 100 NFTs reference the same image (e.g., a collection), it's stored 100 times in the block store.
+
+**Fix:** Separate content store with reference counting.
+
+```
+UTXO.extra_data = content_hash (32 bytes)
+content_store[content_hash] = raw_bytes (408KB)
+ref_count[content_hash] = number of UTXOs referencing it
+```
+
+- Mint: if content_hash exists, increment ref_count (no duplicate storage)
+- Spend/burn: decrement ref_count, delete content when ref_count = 0
+- Wire format: block carries content blobs only for NEW content_hashes
+- Most useful for NFT collections (10K PFPs with shared layers)
+
+**Impact:**
+- 100 copies of same image: 408KB once, not 40MB
+- Block size for duplicate mints: ~300 bytes instead of 408KB
 
 ## Phase 6: Parallel Transaction Validation
 
@@ -163,11 +169,21 @@ Each apply_block:
 | Phase | Effort | Impact | When |
 |-------|--------|--------|------|
 | 1. Block data budget | 5 lines | Prevents missed slots from large NFTs | Next release |
-| 2. UTXO tiered storage | ~200 lines | Memory scales with normal txs, not NFT data | v7 |
-| 3. Content dedup | ~300 lines | Storage efficiency for collections | v7 |
-| 4. Lazy data propagation | ~500 lines | Light nodes, bandwidth reduction | v8 |
-| 5. Streaming commitments | ~400 lines | O(log n) state roots | v8 |
+| 2. RocksDB default | ~50 lines | Eliminates RAM bottleneck, scales to any UTXO set size | v7 |
+| 3. Lazy data propagation | ~500 lines | Producers skip blobs, snap sync lightweight | v7-v8 |
+| 4. MMR incremental | ~400 lines | O(log n) state roots, scales to 2TB+ | v8 |
+| 5. Content dedup | ~300 lines | Storage efficiency for NFT collections | v8-v9 |
 | 6. Parallel validation | ~600 lines | Multi-core block processing | v9 |
+
+## Scaling Profile
+
+| UTXO Count | Phase 1 only | + Phase 2 | + Phase 3 | + Phase 4 |
+|------------|-------------|-----------|-----------|-----------|
+| 1K | 50MB RAM | 64MB cache | 64MB cache | 64MB cache |
+| 10K | 4GB RAM | 64MB cache | 64MB cache | 64MB cache |
+| 100K | 40GB RAM (OOM) | 64MB cache | 64MB cache | 64MB cache |
+| 1M | impossible | 64MB cache, 500ms state root | 64MB cache, 500ms | 64MB cache, 20 hashes |
+| 10M+ | impossible | impossible (state root) | impossible | 64MB cache, 24 hashes |
 
 ## Design Principles
 
@@ -176,3 +192,4 @@ Each apply_block:
 3. **Producer decides** — block data budget is builder policy, not consensus. No hard forks for tuning.
 4. **Prune without breaking** — data can be pruned from non-archival nodes without affecting consensus. State root proves it existed.
 5. **Simple beats clever** — each phase is independent. Skip any phase without breaking the others.
+6. **Let the OS work** — RocksDB block cache + OS page cache do automatic tiering. Don't reinvent LRU.
