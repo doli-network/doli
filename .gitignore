@@ -18,12 +18,8 @@ Thumbs.db
 .claude.local
 .omega/
 
-# Node runtime data — both testnet (macOS) and testnetlinux (Linux)
-testnet*/*/data/
-testnet*/nodes*/*/data/
-testnet*/seed/data/
-testnet*/seed/blocks/
-testnet*/logs/
+# Testnet & devnet runtime directories
+testnet/
 devnet/
 
 # Testnet backups and broken snapshots

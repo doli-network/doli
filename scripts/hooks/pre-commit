@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+#
+# Pre-commit hook: blocks commits containing sensitive infrastructure data.
+#
+# Scans the staged DIFF (not full files) for:
+#   1. Production server IPs
+#   2. SSH connection details (aliases, ports, usernames)
+#   3. Private keys (PEM format)
+#   4. Auth tokens (Bearer, API keys)
+#
+# Install:
+#   cp scripts/hooks/pre-commit .git/hooks/pre-commit
+#   chmod +x .git/hooks/pre-commit
+#
+# Or use git config:
+#   git config core.hooksPath scripts/hooks
+#
+# Override for false positives: git commit --no-verify
+#
+
+RED='\033[0;31m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+# Get the staged diff content (only added/modified lines, prefixed with +)
+# Exclude this hook file itself (patterns match their own definitions)
+diff_content=$(git diff --cached --diff-filter=ACMR -U0 -- . ':!scripts/hooks/pre-commit' 2>/dev/null)
+
+if [ -z "$diff_content" ]; then
+  exit 0
+fi
+
+# Extract only added lines (skip diff headers like +++ b/file)
+added_lines=$(echo "$diff_content" | grep '^+' | grep -v '^+++' | grep -v '^+++ ')
+
+if [ -z "$added_lines" ]; then
+  exit 0
+fi
+
+found=0
+
+# Helper: scan added lines for a pattern
+scan() {
+  local category="$1"
+  local pattern="$2"
+
+  local matches
+  matches=$(echo "$added_lines" | grep -Ei "$pattern" 2>/dev/null)
+
+  if [ -n "$matches" ]; then
+    if [ $found -eq 0 ]; then
+      echo ""
+      echo -e "${RED}━━━ BLOCKED: Sensitive information detected in staged changes ━━━${NC}"
+      echo ""
+    fi
+    found=1
+    echo -e "  ${CYAN}[$category]${NC} ${YELLOW}Pattern:${NC} $pattern"
+    echo "$matches" | head -5 | while IFS= read -r line; do
+      echo "    ${line:0:120}"
+    done
+    local count
+    count=$(echo "$matches" | wc -l | tr -d ' ')
+    if [ "$count" -gt 5 ]; then
+      echo "    ... and $((count - 5)) more"
+    fi
+    echo ""
+  fi
+}
+
+# ── Category 1: Production IPs ──────────────────────────────────────
+scan "Server IP"         '72\.60\.228\.233'
+scan "Server IP"         '187\.124\.95\.188'
+scan "Server IP"         '87\.99\.131\.22'
+scan "Server IP"         '49\.12\.244\.21'
+
+# ── Category 2: SSH / Infrastructure ─────────────────────────────────
+scan "SSH"               'ssh[[:space:]]+(ai[1-5]|doli-server|lan-doli-server)'
+scan "SSH"               'ssh[[:space:]]+-p[[:space:]]+[0-9]+[[:space:]]+(ai[1-5]|doli-server)'
+scan "SSH"               'ssh[[:space:]]+.*@.*(ai[1-5]|doli-server)'
+scan "SSH Port"          '[^0-9]50790[^0-9]'
+scan "Username"          'ilozada@'
+
+# ── Category 3: Private keys ────────────────────────────────────────
+scan "Private Key"       'BEGIN.*(PRIVATE KEY|PRIVATE_KEY)'
+scan "Private Key"       'PRIVATE KEY-----'
+
+# ── Category 4: Auth tokens ─────────────────────────────────────────
+scan "Auth Token"        'Bearer[[:space:]]+[A-Za-z0-9_.\-]{20,}'
+scan "API Key"           'sk-[A-Za-z0-9]{20,}'
+scan "GitHub Token"      'ghp_[A-Za-z0-9]{36,}'
+scan "GitHub Token"      'gho_[A-Za-z0-9]{36,}'
+
+if [ $found -eq 1 ]; then
+  echo -e "${RED}━━━ Commit aborted. ━━━${NC}"
+  echo ""
+  echo "  Options:"
+  echo "    1. Remove or redact the sensitive data"
+  echo "    2. Add the file to .gitignore"
+  echo "    3. Override (false positive): git commit --no-verify"
+  echo ""
+  exit 1
+fi
+
+exit 0
