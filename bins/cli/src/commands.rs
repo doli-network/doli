@@ -304,6 +304,11 @@ pub(crate) enum Commands {
         #[arg(long, value_name = "HEX")]
         data: Option<String>,
 
+        /// Read raw binary data from a file and embed on-chain (for --mint)
+        /// The file is read as raw bytes (not hex) — supports images, documents, etc.
+        #[arg(long, value_name = "PATH")]
+        data_file: Option<std::path::PathBuf>,
+
         /// Export NFT content to a file (extract from on-chain UTXO)
         #[arg(long, value_name = "UTXO")]
         export: Option<String>,

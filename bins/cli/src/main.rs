@@ -177,6 +177,7 @@ async fn main() -> Result<()> {
             witness,
             royalty,
             data,
+            data_file,
             export,
             batch_mint,
             yes,
@@ -190,6 +191,15 @@ async fn main() -> Result<()> {
             } else if let Some(utxo) = info {
                 cmd_nft::cmd_nft_info(&rpc_endpoint, &utxo).await?;
             } else if let Some(content) = mint {
+                // --data-file reads raw bytes from file and converts to hex
+                let effective_data = if let Some(ref path) = data_file {
+                    let bytes = std::fs::read(path).map_err(|e| {
+                        anyhow::anyhow!("Failed to read --data-file {:?}: {}", path, e)
+                    })?;
+                    Some(hex::encode(&bytes))
+                } else {
+                    data
+                };
                 cmd_nft::cmd_mint(
                     &wallet,
                     &rpc_endpoint,
@@ -197,7 +207,7 @@ async fn main() -> Result<()> {
                     condition,
                     &amount,
                     royalty,
-                    data,
+                    effective_data,
                 )
                 .await?;
             } else if let Some(utxo) = export {
