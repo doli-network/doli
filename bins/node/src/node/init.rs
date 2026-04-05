@@ -157,7 +157,7 @@ impl Node {
         // In-memory: legacy fallback for testing and migration.
         let utxo_rocks_path = config.data_dir.join("utxo_store");
         let utxo_set = if utxo_rocks_path.exists()
-            || state_db.utxo_len() > 10_000
+            || true // Always use RocksDB UTXO store
             || std::env::var("DOLI_UTXO_ROCKSDB").is_ok()
         {
             // RocksDB mode: open or migrate
