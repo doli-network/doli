@@ -82,6 +82,38 @@ try {
         }
     }
 
+    # Create Windows service
+    $ServiceName = "doli-mainnet"
+    $existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    if ($existing) {
+        Info "Updating existing $ServiceName service..."
+        Stop-Service $ServiceName -ErrorAction SilentlyContinue
+        sc.exe delete $ServiceName | Out-Null
+        Start-Sleep -Seconds 2
+    }
+
+    $BinPath = "`"$InstallDir\doli-node.exe`" --network mainnet --data-dir `"$MainnetDir`" run --yes --force-start --p2p-port 30300 --rpc-port 8500 --rpc-bind 127.0.0.1 --metrics-port 9000 --bootstrap /dns4/seed1.doli.network/tcp/30300 --bootstrap /dns4/seed2.doli.network/tcp/30300"
+
+    sc.exe create $ServiceName binPath= $BinPath start= auto DisplayName= "DOLI Mainnet Node" | Out-Null
+    sc.exe description $ServiceName "DOLI blockchain node — mainnet" | Out-Null
+    sc.exe failure $ServiceName reset= 86400 actions= restart/10000/restart/30000/restart/60000 | Out-Null
+
+    Info "Created Windows service: $ServiceName (auto-start, auto-restart on failure)"
+
+    # Start the service
+    Start-Service $ServiceName -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 3
+    $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    if ($svc -and $svc.Status -eq "Running") {
+        Ok "Service $ServiceName is running"
+    } else {
+        Write-Host "  NOTE: Service created but not yet running. Start with:" -ForegroundColor Yellow
+        Write-Host "    Start-Service $ServiceName" -ForegroundColor Yellow
+    }
+
+    # Configure log output
+    $LogFile = Join-Path $LogDir "mainnet.log"
+
     # Verify
     $NodeVersion = & "$InstallDir\doli-node.exe" --version 2>&1
     $CliVersion = & "$InstallDir\doli.exe" --version 2>&1
@@ -91,10 +123,13 @@ try {
     Write-Host ""
     Write-Host "  doli-node: $InstallDir\doli-node.exe ($NodeVersion)"
     Write-Host "  doli CLI:  $InstallDir\doli.exe ($CliVersion)"
-    Write-Host "  Data:      $DataDir"
+    Write-Host "  Data:      $MainnetDir"
+    Write-Host "  Service:   $ServiceName (auto-start)"
     Write-Host ""
-    Write-Host "  Run a node:"
-    Write-Host "    doli-node --network mainnet run --yes"
+    Write-Host "  Manage the service:"
+    Write-Host "    Start-Service $ServiceName"
+    Write-Host "    Stop-Service $ServiceName"
+    Write-Host "    Get-Service $ServiceName"
     Write-Host ""
     Write-Host "  Check balance:"
     Write-Host "    doli balance"
