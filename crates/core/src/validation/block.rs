@@ -110,6 +110,31 @@ pub fn validate_block(block: &Block, ctx: &ValidationContext) -> Result<(), Vali
         return Err(ValidationError::InvalidMerkleRoot);
     }
 
+    // 3.5. Verify data_root (blob commitment) — post-LAZY_DATA_ACTIVATION_HEIGHT only
+    if ctx.current_height >= crate::consensus::LAZY_DATA_ACTIVATION_HEIGHT {
+        let mut blob_hashes: Vec<crypto::Hash> = Vec::new();
+        for tx in &block.transactions {
+            for output in &tx.outputs {
+                if output.extra_data.len() >= 4096 {
+                    blob_hashes.push(crypto::hash::hash(&output.extra_data));
+                }
+            }
+        }
+        let expected = if blob_hashes.is_empty() {
+            crypto::Hash::ZERO
+        } else {
+            blob_hashes.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+            let mut hasher = crypto::Hasher::new();
+            for h in &blob_hashes {
+                hasher.update(h.as_bytes());
+            }
+            hasher.finalize()
+        };
+        if block.data_root != expected {
+            return Err(ValidationError::InvalidDataRoot);
+        }
+    }
+
     // 4. Validate all transactions
     // Note: The old RewardMode-based validation is deprecated. The new weighted
     // presence reward system uses on-demand ClaimEpochReward transactions.

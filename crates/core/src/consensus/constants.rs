@@ -93,6 +93,13 @@ pub const TIER_PROMOTION_ACTIVATION_HEIGHT: u64 = 7_000;
 /// Only enforced after TIER_PROMOTION_ACTIVATION_HEIGHT.
 pub const MIN_ATTESTATION_MINUTES: usize = 30;
 
+/// Lazy data propagation activation height.
+/// Before: data_root in Block struct is ignored (Hash::ZERO, not validated).
+/// After: data_root = BLAKE3(sorted blob_hashes) validated on every block.
+/// Producers validate data_root without downloading blobs (attestation quorum).
+/// Consensus-breaking — all nodes must update before this height.
+pub const LAZY_DATA_ACTIVATION_HEIGHT: u64 = 18_000;
+
 // ==================== Proof of Time Parameters ====================
 
 /// Slot duration in seconds.

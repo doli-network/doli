@@ -234,6 +234,7 @@ pub fn generate_genesis_block(config: &GenesisConfig) -> Block {
         transactions: vec![coinbase_tx],
         aggregate_bls_signature: Vec::new(),
         attestation_bitfield: Vec::new(),
+        data_root: Hash::ZERO,
     }
 }
 

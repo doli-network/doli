@@ -83,4 +83,48 @@ impl RpcContext {
 
         serde_json::to_value(response).map_err(|e| RpcError::internal_error(e.to_string()))
     }
+
+    /// Get blob data from a specific output in a block (for archivers/exporters).
+    pub(super) async fn get_block_data(&self, params: Value) -> Result<Value, RpcError> {
+        #[derive(serde::Deserialize)]
+        struct Params {
+            hash: String,
+            output_index: u32,
+        }
+        let params: Params =
+            serde_json::from_value(params).map_err(|e| RpcError::invalid_params(e.to_string()))?;
+
+        let hash = crypto::Hash::from_hex(&params.hash)
+            .ok_or_else(|| RpcError::invalid_params("Invalid hash format"))?;
+
+        let block = self
+            .block_store
+            .get_block(&hash)
+            .map_err(|e| RpcError::internal_error(e.to_string()))?
+            .ok_or_else(RpcError::block_not_found)?;
+
+        let mut global_output_idx = 0u32;
+        for tx in &block.transactions {
+            for output in &tx.outputs {
+                if global_output_idx == params.output_index {
+                    use base64::Engine;
+                    let b64 = base64::engine::general_purpose::STANDARD.encode(&output.extra_data);
+                    let blob_hash = crypto::hash::hash(&output.extra_data).to_string();
+                    return serde_json::to_value(serde_json::json!({
+                        "data": b64,
+                        "size": output.extra_data.len(),
+                        "blob_hash": blob_hash,
+                        "output_type": format!("{:?}", output.output_type),
+                    }))
+                    .map_err(|e| RpcError::internal_error(e.to_string()));
+                }
+                global_output_idx += 1;
+            }
+        }
+
+        Err(RpcError::invalid_params(format!(
+            "Output index {} not found in block",
+            params.output_index
+        )))
+    }
 }

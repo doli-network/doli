@@ -151,8 +151,50 @@ impl Node {
             cs
         };
 
-        // Load UTXOs from StateDb into in-memory working set
-        let utxo_set = {
+        // Load UTXOs: use RocksDB-backed store if available, fall back to in-memory.
+        // RocksDB-backed: UTXOs stay on disk, hot entries cached by RocksDB block cache.
+        // Scales to millions of UTXOs without proportional RAM growth.
+        // In-memory: legacy fallback for testing and migration.
+        let utxo_rocks_path = config.data_dir.join("utxo_store");
+        let utxo_set = if utxo_rocks_path.exists()
+            || state_db.utxo_len() > 10_000
+            || std::env::var("DOLI_UTXO_ROCKSDB").is_ok()
+        {
+            // RocksDB mode: open or migrate
+            match UtxoSet::open_rocksdb(&utxo_rocks_path) {
+                Ok(mut store) => {
+                    // If RocksDB store is empty but StateDb has UTXOs, migrate
+                    if store.is_empty() && state_db.utxo_len() > 0 {
+                        info!(
+                            "[UTXO] Migrating {} UTXOs from StateDb to RocksDB...",
+                            state_db.utxo_len()
+                        );
+                        for (outpoint, entry) in state_db.iter_utxos() {
+                            let _ = store.insert(outpoint, entry);
+                        }
+                        info!(
+                            "[UTXO] Migration complete: {} UTXOs in RocksDB",
+                            store.len()
+                        );
+                    } else if !store.is_empty() {
+                        info!("[UTXO] RocksDB store: {} UTXOs", store.len());
+                    }
+                    store
+                }
+                Err(e) => {
+                    warn!(
+                        "[UTXO] Failed to open RocksDB store: {}. Falling back to in-memory.",
+                        e
+                    );
+                    let mut mem = storage::InMemoryUtxoStore::new();
+                    for (outpoint, entry) in state_db.iter_utxos() {
+                        mem.insert(outpoint, entry);
+                    }
+                    UtxoSet::InMemory(mem)
+                }
+            }
+        } else {
+            // In-memory mode: small UTXO set or legacy
             let utxo_count = state_db.utxo_len();
             if utxo_count > 0 {
                 info!(

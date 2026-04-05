@@ -13,7 +13,7 @@ impl Node {
         height: u64,
         current_slot: u32,
         our_pubkey: PublicKey,
-    ) -> Result<Option<(BlockHeader, Vec<Transaction>, Vec<u8>)>> {
+    ) -> Result<Option<(BlockHeader, Vec<Transaction>, Vec<u8>, Hash)>> {
         // Build the block — single transaction list used for both merkle root and block body.
         // All transactions MUST be added to the builder BEFORE build(), which computes the
         // merkle root from exactly the transactions that will be in the final block.
@@ -136,6 +136,11 @@ impl Node {
         // Add transactions from mempool (validate covenant conditions before inclusion)
         // REQ-PROD-001: Time-bounded block building — 60% of slot for TX validation,
         // leaving 40% for VDF, signing, and gossip broadcast.
+        // Block data budget: max 1MB of user transaction data per block.
+        // Prevents gossip latency from large NFTs (408KB NFT caused missed slots).
+        // Builder policy only — not consensus. Large txs stay in mempool for next block.
+        const MAX_BLOCK_USER_DATA: usize = 1_048_576; // 1MB
+
         let mempool_txs: Vec<Transaction> = {
             let mempool = self.mempool.read().await;
             mempool.select_for_block(1_000_000) // Up to ~1MB of transactions per block
@@ -143,6 +148,7 @@ impl Node {
         {
             let deadline = Instant::now() + Duration::from_millis(self.params.slot_duration * 600); // 60% of slot
             let utxo = self.utxo_set.read().await;
+            let mut cumulative_user_bytes: usize = 0;
             // Use self.params which already has chainspec overrides applied
             // (ConsensusParams::for_network() ignores chainspec env vars for bond_unit)
             let utxo_ctx = validation::ValidationContext::new(
@@ -213,6 +219,20 @@ impl Node {
                 if unique_conflict {
                     continue;
                 }
+                // Block data budget: skip tx if it would exceed 1MB of user data
+                let tx_size: usize = tx.outputs.iter().map(|o| o.extra_data.len()).sum::<usize>()
+                    + bincode::serialized_size(tx).unwrap_or(0) as usize;
+                if cumulative_user_bytes + tx_size > MAX_BLOCK_USER_DATA {
+                    debug!(
+                        "Block data budget: skipping tx {} ({} bytes, budget {}/{})",
+                        tx.hash(),
+                        tx_size,
+                        cumulative_user_bytes,
+                        MAX_BLOCK_USER_DATA
+                    );
+                    continue;
+                }
+                cumulative_user_bytes += tx_size;
                 included_count += 1;
                 included_txs.push(tx);
                 builder.add_transaction(tx.clone());
@@ -346,7 +366,33 @@ impl Node {
             }
         };
 
-        Ok(Some((header, transactions, body_bitfield)))
+        // Compute data_root for blob commitment (Phase 3 lazy data).
+        // Post-activation: BLAKE3(sorted blob_hashes) for outputs >= 4KB.
+        // Pre-activation: Hash::ZERO.
+        let data_root = if height >= doli_core::consensus::LAZY_DATA_ACTIVATION_HEIGHT {
+            let mut blob_hashes: Vec<Hash> = Vec::new();
+            for tx in &transactions {
+                for output in &tx.outputs {
+                    if output.extra_data.len() >= 4096 {
+                        blob_hashes.push(crypto::hash::hash(&output.extra_data));
+                    }
+                }
+            }
+            if blob_hashes.is_empty() {
+                Hash::ZERO
+            } else {
+                blob_hashes.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+                let mut hasher = crypto::Hasher::new();
+                for h in &blob_hashes {
+                    hasher.update(h.as_bytes());
+                }
+                hasher.finalize()
+            }
+        } else {
+            Hash::ZERO
+        };
+
+        Ok(Some((header, transactions, body_bitfield, data_root)))
     }
 
     // =========================================================================

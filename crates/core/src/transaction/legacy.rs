@@ -80,6 +80,7 @@ impl LegacyBlock {
                 .collect(),
             aggregate_bls_signature: self.aggregate_bls_signature,
             attestation_bitfield: Vec::new(),
+            data_root: Hash::ZERO,
         }
     }
 }
@@ -148,6 +149,7 @@ impl LegacyBlockV2 {
                 .collect(),
             aggregate_bls_signature: self.aggregate_bls_signature,
             attestation_bitfield: Vec::new(),
+            data_root: Hash::ZERO,
         }
     }
 }
@@ -218,6 +220,7 @@ impl LegacyBlockV3 {
                 .collect(),
             aggregate_bls_signature: self.aggregate_bls_signature,
             attestation_bitfield: Vec::new(),
+            data_root: Hash::ZERO,
         }
     }
 }

@@ -155,6 +155,15 @@ pub struct Block {
     /// Empty for pre-activation blocks (backward compat via serde default).
     #[serde(default)]
     pub attestation_bitfield: Vec<u8>,
+    /// Blob data commitment (post-LAZY_DATA_ACTIVATION_HEIGHT).
+    ///
+    /// `data_root = BLAKE3(sorted blob_hashes)` where blob_hash = BLAKE3(output.extra_data)
+    /// for each output with extra_data >= 4KB.
+    /// Hash::ZERO for blocks without large data or pre-activation.
+    /// NOT included in header.hash() — same pattern as attestation_bitfield.
+    /// Validated independently post-activation.
+    #[serde(default)]
+    pub data_root: Hash,
 }
 
 impl Block {
@@ -165,6 +174,7 @@ impl Block {
             transactions,
             aggregate_bls_signature: Vec::new(),
             attestation_bitfield: Vec::new(),
+            data_root: Hash::ZERO,
         }
     }
 

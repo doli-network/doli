@@ -752,7 +752,7 @@ proptest! {
                     },
             transactions: vec![tx1, tx2],
             aggregate_bls_signature: Vec::new(),
-            attestation_bitfield: Vec::new(),
+            attestation_bitfield: Vec::new(), data_root: crypto::Hash::ZERO,
         };
 
         let result = check_internal_double_spend(&block);
@@ -1444,6 +1444,7 @@ fn create_block_with_merkle() -> (Block, ValidationContext) {
         transactions: vec![],
         aggregate_bls_signature: Vec::new(),
         attestation_bitfield: Vec::new(),
+        data_root: crypto::Hash::ZERO,
     };
     // Fix merkle root to match (empty tx list)
     block.header.merkle_root = block.compute_merkle_root();

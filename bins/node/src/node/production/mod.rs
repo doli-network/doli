@@ -465,7 +465,7 @@ impl Node {
         }
 
         // Build block content (coinbase, rewards, genesis VDF, mempool, attestations)
-        let (header, transactions, body_bitfield) = match self
+        let (header, transactions, body_bitfield, data_root) = match self
             .build_block_content(prev_hash, prev_slot, height, current_slot, our_pubkey)
             .await?
         {
@@ -534,6 +534,7 @@ impl Node {
             transactions,
             aggregate_bls_signature,
             attestation_bitfield: body_bitfield,
+            data_root,
         };
 
         let block_hash = block.hash();
