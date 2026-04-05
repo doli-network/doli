@@ -140,6 +140,57 @@ jobs:
   # Apple Silicon builds run x86_64 binaries via Rosetta 2.
   # Users on Intel Macs should use the aarch64 .pkg (works via Rosetta).
 
+  # ── Windows x86_64 ──────────────────────────────────────────
+  build-windows-x64:
+    name: Build Windows x86_64
+    runs-on: windows-latest
+    env:
+      TARGET: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MSYS2 dependencies
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: mingw-w64-x86_64-gmp mingw-w64-x86_64-mpfr
+
+      - name: Install protobuf
+        run: choco install protoc -y
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: x86_64-pc-windows-msvc
+
+      - name: Build
+        run: cargo build --release --target ${{ env.TARGET }} --package doli-node --package doli-cli
+        env:
+          LIBZ_SYS_STATIC: "0"
+          GMP_DIR: D:\a\_temp\msys64\mingw64
+
+      - name: Package zip
+        run: |
+          $VERSION = "${{ github.ref_name }}"
+          $DIR = "doli-${VERSION}-${{ env.TARGET }}"
+          New-Item -ItemType Directory -Path $DIR
+          Copy-Item "target\${{ env.TARGET }}\release\doli-node.exe" $DIR\
+          Copy-Item "target\${{ env.TARGET }}\release\doli.exe" $DIR\
+          Copy-Item README.md,$null $DIR\ -ErrorAction SilentlyContinue
+          Compress-Archive -Path $DIR -DestinationPath "${DIR}.zip"
+        shell: pwsh
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: doli-*.zip
+
   # ── GUI: Linux x86_64 (.AppImage, .deb) ──────────────────────
   build-gui-linux:
     name: Build GUI Linux x86_64
@@ -317,7 +368,7 @@ jobs:
   # ── Create GitHub Release ─────────────────────────────────────
   release:
     name: Create Release
-    needs: [build-linux-x64, build-macos-arm64, build-gui-linux, build-gui-macos, build-gui-windows]
+    needs: [build-linux-x64, build-macos-arm64, build-windows-x64, build-gui-linux, build-gui-macos, build-gui-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -334,7 +385,7 @@ jobs:
       - name: Flatten artifacts
         run: |
           mkdir -p release
-          find artifacts -type f \( -name "*.tar.gz" -o -name "*.deb" -o -name "*.rpm" -o -name "*.pkg" -o -name "*.AppImage" -o -name "*.dmg" -o -name "*.msi" -o -name "*.exe" \) -exec mv {} release/ \;
+          find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" -o -name "*.deb" -o -name "*.rpm" -o -name "*.pkg" -o -name "*.AppImage" -o -name "*.dmg" -o -name "*.msi" -o -name "*.exe" \) -exec mv {} release/ \;
 
       - name: Generate checksums
         run: |
