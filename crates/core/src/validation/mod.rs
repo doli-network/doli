@@ -25,6 +25,8 @@ mod block;
 mod error;
 pub(crate) mod fractionalize;
 pub(crate) mod lending;
+/// Parallel transaction validation via dependency graph.
+pub mod parallel;
 pub(crate) mod pool;
 mod producer;
 mod registration;
