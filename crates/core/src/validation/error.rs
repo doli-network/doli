@@ -80,6 +80,10 @@ pub enum ValidationError {
     #[error("invalid merkle root")]
     InvalidMerkleRoot,
 
+    /// Data root (blob commitment) does not match blob hashes in block.
+    #[error("invalid data root")]
+    InvalidDataRoot,
+
     /// VDF proof is invalid.
     #[error("invalid VDF proof")]
     InvalidVdfProof,
