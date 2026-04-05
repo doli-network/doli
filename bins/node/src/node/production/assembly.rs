@@ -136,6 +136,11 @@ impl Node {
         // Add transactions from mempool (validate covenant conditions before inclusion)
         // REQ-PROD-001: Time-bounded block building — 60% of slot for TX validation,
         // leaving 40% for VDF, signing, and gossip broadcast.
+        // Block data budget: max 1MB of user transaction data per block.
+        // Prevents gossip latency from large NFTs (408KB NFT caused missed slots).
+        // Builder policy only — not consensus. Large txs stay in mempool for next block.
+        const MAX_BLOCK_USER_DATA: usize = 1_048_576; // 1MB
+
         let mempool_txs: Vec<Transaction> = {
             let mempool = self.mempool.read().await;
             mempool.select_for_block(1_000_000) // Up to ~1MB of transactions per block
@@ -143,6 +148,7 @@ impl Node {
         {
             let deadline = Instant::now() + Duration::from_millis(self.params.slot_duration * 600); // 60% of slot
             let utxo = self.utxo_set.read().await;
+            let mut cumulative_user_bytes: usize = 0;
             // Use self.params which already has chainspec overrides applied
             // (ConsensusParams::for_network() ignores chainspec env vars for bond_unit)
             let utxo_ctx = validation::ValidationContext::new(
@@ -213,6 +219,20 @@ impl Node {
                 if unique_conflict {
                     continue;
                 }
+                // Block data budget: skip tx if it would exceed 1MB of user data
+                let tx_size: usize = tx.outputs.iter().map(|o| o.extra_data.len()).sum::<usize>()
+                    + bincode::serialized_size(tx).unwrap_or(0) as usize;
+                if cumulative_user_bytes + tx_size > MAX_BLOCK_USER_DATA {
+                    debug!(
+                        "Block data budget: skipping tx {} ({} bytes, budget {}/{})",
+                        tx.hash(),
+                        tx_size,
+                        cumulative_user_bytes,
+                        MAX_BLOCK_USER_DATA
+                    );
+                    continue;
+                }
+                cumulative_user_bytes += tx_size;
                 included_count += 1;
                 included_txs.push(tx);
                 builder.add_transaction(tx.clone());
