@@ -77,23 +77,42 @@ ref_count[content_hash] = number of UTXOs referencing it
 
 **Problem:** Every node stores every NFT's full data. A node that only validates transfers doesn't need the image bytes.
 
-**Fix:** Data availability headers.
+**Fix:** Role-based data availability. Three node tiers with different storage responsibilities.
 
 ```
-Block header includes: data_root = BLAKE3(all extra_data in block)
-Full nodes: download and store all data
-Light nodes: verify data_root, download data on-demand via RPC
-Producers: must have full data to produce (validate data_root)
+Block header includes: data_root = BLAKE3(blob_hashes)
+
+Producers/validators:
+  - Do NOT download blobs
+  - Validate data_root via attestation quorum — no blob download required
+  - Produce blocks, attest, earn rewards without touching blob data
+  - UTXO set contains blob hashes (32 bytes), not blob content
+  - State root includes blob hashes, not blobs — identical across all nodes
+
+Full archivers (seeds with --archive-to, explorers):
+  - Download and store everything — blocks, blobs, full history
+  - Serve GetBlockData() requests when users export NFTs
+  - The canonical source of truth for on-chain data retrieval
+  - Run by seed operators and explorer services
+
+Light nodes:
+  - Verify data_root from header
+  - Download blobs on-demand via RPC from archivers
+  - Minimal storage footprint
 ```
 
-- New gossip message: `GetBlockData(hash, output_index)` → returns extra_data bytes
-- Nodes can prune old NFT data after N epochs (configurable)
-- Data availability guaranteed by producers (they validated it)
+- New gossip message: `GetBlockData(hash, output_index)` → returns extra_data bytes (served by archivers only)
+- Producers can prune blob data immediately — they never download it
+- Data availability guaranteed by archiver attestation quorum, not by every node storing every blob
+- State root does NOT change — includes hashes of blobs, not blobs. All nodes compute the same state root regardless of what data they store locally.
 
 **Impact:**
+- Producers: RAM and disk proportional to UTXO metadata only (~100 bytes per NFT, not 408KB)
+- Archivers: full data, same as today's seeds with `--archive-to`
 - Light nodes: sync headers + UTXO set without downloading NFT blobs
-- Storage reduction for non-archival nodes: 10-100x
+- Storage reduction for producers: 1000x for NFT-heavy chains
 - Gossip bandwidth: proportional to transfers, not data size
+- Network scales data storage with archiver count, not producer count
 
 ## Phase 5: Streaming UTXO Commitments
 
