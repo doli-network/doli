@@ -343,10 +343,24 @@ impl RpcClient {
     /// Create a new RPC client. Automatically configures archiver fallback
     /// endpoints from the global NETWORK setting (seeds with full block history).
     pub fn new(endpoint: &str) -> Self {
-        let archivers = crate::common::NETWORK
+        let mut archivers = crate::common::NETWORK
             .get()
             .map(|n| crate::common::archiver_endpoints_for_network(n))
             .unwrap_or_default();
+        // When running against localhost, add the local seed as first archiver.
+        // DNS seeds may not resolve in local/testnet environments.
+        if endpoint.contains("127.0.0.1") || endpoint.contains("localhost") {
+            let default_seed = crate::common::default_rpc_for_network(
+                crate::common::NETWORK
+                    .get()
+                    .map(|s| s.as_str())
+                    .unwrap_or("mainnet"),
+            );
+            let seed = default_seed.to_string();
+            if !archivers.contains(&seed) {
+                archivers.insert(0, seed);
+            }
+        }
         Self {
             endpoint: endpoint.to_string(),
             client: Self::build_client(),
