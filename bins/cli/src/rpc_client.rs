@@ -324,25 +324,51 @@ pub struct BondEntryInfo {
     pub maturation_slot: u64,
 }
 
-/// RPC client for communicating with DOLI nodes
+/// RPC client for communicating with DOLI nodes.
+///
+/// Supports archiver fallback: when the local node returns "not found" for
+/// block-store queries (post-snap-sync), the client retries against archiver
+/// endpoints (seeds) that have full block history. This avoids requiring a
+/// full backfill just to export a single NFT or look up a transaction.
 pub struct RpcClient {
     /// Node RPC endpoint
     endpoint: String,
     /// HTTP client
     client: reqwest::Client,
+    /// Archiver endpoints for fallback on block-store queries
+    archiver_endpoints: Vec<String>,
 }
 
 impl RpcClient {
-    /// Create a new RPC client
+    /// Create a new RPC client. Automatically configures archiver fallback
+    /// endpoints from the global NETWORK setting (seeds with full block history).
     pub fn new(endpoint: &str) -> Self {
+        let archivers = crate::common::NETWORK
+            .get()
+            .map(|n| crate::common::archiver_endpoints_for_network(n))
+            .unwrap_or_default();
         Self {
             endpoint: endpoint.to_string(),
-            client: reqwest::Client::builder()
-                .connect_timeout(std::time::Duration::from_secs(10))
-                .timeout(std::time::Duration::from_secs(30))
-                .build()
-                .unwrap_or_else(|_| reqwest::Client::new()),
+            client: Self::build_client(),
+            archiver_endpoints: archivers,
         }
+    }
+
+    /// Create a bare RPC client without archiver fallback (used internally).
+    fn bare(endpoint: &str) -> Self {
+        Self {
+            endpoint: endpoint.to_string(),
+            client: Self::build_client(),
+            archiver_endpoints: Vec::new(),
+        }
+    }
+
+    fn build_client() -> reqwest::Client {
+        reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
     }
 
     /// Make an RPC call
@@ -423,6 +449,50 @@ impl RpcClient {
         body.get("result")
             .cloned()
             .ok_or_else(|| anyhow!("No result in response"))
+    }
+
+    /// Try an RPC call against the local node first. If the local node returns
+    /// a "not found" error (common post-snap-sync when block history is missing),
+    /// retry against each archiver endpoint until one succeeds.
+    async fn call_with_archiver_fallback<P: Serialize + Clone>(
+        &self,
+        method: &'static str,
+        params: P,
+    ) -> Result<serde_json::Value> {
+        // Try local node first
+        let local_result = self
+            .call::<P, serde_json::Value>(method, params.clone())
+            .await;
+        match local_result {
+            Ok(result) => Ok(result),
+            Err(e) => {
+                let err_msg = e.to_string();
+                // Only fallback on "not found" errors — not on connection or auth errors
+                if !err_msg.contains("not found")
+                    && !err_msg.contains("Not found")
+                    && !err_msg.contains("-32001")
+                {
+                    return Err(e);
+                }
+                if self.archiver_endpoints.is_empty() {
+                    return Err(e);
+                }
+                // Local node doesn't have the data — try archivers
+                for archiver in &self.archiver_endpoints {
+                    if *archiver == self.endpoint {
+                        continue;
+                    }
+                    let archiver_client = RpcClient::bare(archiver);
+                    if let Ok(result) = archiver_client
+                        .call::<P, serde_json::Value>(method, params.clone())
+                        .await
+                    {
+                        return Ok(result);
+                    }
+                }
+                Err(e)
+            }
+        }
     }
 
     /// Get balance for an address
@@ -520,25 +590,32 @@ impl RpcClient {
         .await
     }
 
-    /// Get transaction by hash as raw JSON (includes outputs with NFT metadata)
+    /// Get transaction by hash as raw JSON (includes outputs with NFT metadata).
+    /// Falls back to archiver endpoints if the local node doesn't have block history.
     pub async fn get_transaction_json(&self, hash: &str) -> Result<serde_json::Value> {
-        #[derive(Serialize)]
+        #[derive(Serialize, Clone)]
         struct Params<'a> {
             hash: &'a str,
         }
 
-        self.call("getTransaction", Params { hash }).await
+        self.call_with_archiver_fallback("getTransaction", Params { hash })
+            .await
     }
 
-    /// Get transaction history for an address
+    /// Get transaction history for an address.
+    /// Falls back to archiver endpoints if the local node doesn't have block history.
     pub async fn get_history(&self, address: &str, limit: usize) -> Result<Vec<HistoryEntry>> {
-        #[derive(Serialize)]
+        #[derive(Serialize, Clone)]
         struct Params<'a> {
             address: &'a str,
             limit: usize,
         }
 
-        self.call("getHistory", Params { address, limit }).await
+        // Try with fallback, then deserialize
+        let value: serde_json::Value = self
+            .call_with_archiver_fallback("getHistory", Params { address, limit })
+            .await?;
+        serde_json::from_value(value).map_err(|e| anyhow!("Failed to parse history: {}", e))
     }
 
     /// Get producer information

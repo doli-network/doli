@@ -44,8 +44,9 @@ async fn main() -> Result<()> {
         None => paths::resolve_wallet_path(&cli.network, None, None),
     };
 
-    // Set address prefix from network
+    // Set address prefix and network name from --network flag
     let _ = ADDRESS_PREFIX.set(prefix_for_network(&cli.network).to_string());
+    let _ = common::NETWORK.set(cli.network.clone());
 
     // Resolve RPC endpoint: explicit flag > network default
     let rpc_endpoint = cli
