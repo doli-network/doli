@@ -241,6 +241,7 @@ pub fn create_test_block(
         },
         vdf_proof: VdfProof::empty(),
         missed_producers: Vec::new(),
+        data_root: crypto::Hash::ZERO,
     };
 
     Block::new(header, transactions)
