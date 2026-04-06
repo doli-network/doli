@@ -38,6 +38,7 @@ fn make_block(prev_hash: Hash, slot: u32) -> Block {
         vdf_output: VdfOutput { value: vec![] },
         vdf_proof: VdfProof::empty(),
         missed_producers: Vec::new(),
+        data_root: Hash::ZERO,
     };
     Block::new(header, vec![])
 }
@@ -55,6 +56,7 @@ fn make_block_with_producer(prev_hash: Hash, slot: u32, producer_byte: u8) -> Bl
         vdf_output: VdfOutput { value: vec![] },
         vdf_proof: VdfProof::empty(),
         missed_producers: Vec::new(),
+        data_root: Hash::ZERO,
     };
     Block::new(header, vec![])
 }
@@ -410,6 +412,7 @@ fn test_equivocation_detector_memory_bounded() {
             vdf_output: VdfOutput { value: vec![] },
             vdf_proof: VdfProof::empty(),
             missed_producers: Vec::new(),
+            data_root: Hash::ZERO,
         };
         let block = Block::new(header, vec![]);
         let _ = detector.check_block(&block);
@@ -443,6 +446,7 @@ fn test_equivocation_detector_cleanup_consistency() {
             vdf_output: VdfOutput { value: vec![] },
             vdf_proof: VdfProof::empty(),
             missed_producers: Vec::new(),
+            data_root: Hash::ZERO,
         };
         let block = Block::new(header, vec![]);
         let _ = detector.check_block(&block);
@@ -486,6 +490,7 @@ fn test_equivocation_detected_correctly() {
         vdf_output: VdfOutput { value: vec![] },
         vdf_proof: VdfProof::empty(),
         missed_producers: Vec::new(),
+        data_root: Hash::ZERO,
     };
     let block1 = Block::new(header1, vec![]);
     assert!(detector.check_block(&block1).is_none());
@@ -502,6 +507,7 @@ fn test_equivocation_detected_correctly() {
         vdf_output: VdfOutput { value: vec![] },
         vdf_proof: VdfProof::empty(),
         missed_producers: Vec::new(),
+        data_root: Hash::ZERO,
     };
     let block2 = Block::new(header2, vec![]);
     let proof = detector.check_block(&block2);

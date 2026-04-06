@@ -312,6 +312,7 @@ mod tests {
             vdf_output: vdf::VdfOutput { value: vec![] },
             vdf_proof: vdf::VdfProof::empty(),
             missed_producers: Vec::new(),
+            data_root: Hash::ZERO,
         };
         Block::new(header, vec![])
     }

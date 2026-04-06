@@ -44,6 +44,7 @@ fn test_no_reorg_on_tip() {
         vdf_output: vdf::VdfOutput { value: vec![] },
         vdf_proof: vdf::VdfProof::empty(),
         missed_producers: Vec::new(),
+        data_root: Hash::ZERO,
     };
     let block = Block::new(header, vec![]);
 
@@ -77,6 +78,7 @@ fn test_detect_reorg() {
         vdf_output: vdf::VdfOutput { value: vec![] },
         vdf_proof: vdf::VdfProof::empty(),
         missed_producers: Vec::new(),
+        data_root: Hash::ZERO,
     };
     let block = Block::new(header, vec![]);
 
@@ -156,6 +158,7 @@ fn test_weight_based_fork_choice_rejects_lighter_chain() {
         vdf_output: vdf::VdfOutput { value: vec![] },
         vdf_proof: vdf::VdfProof::empty(),
         missed_producers: Vec::new(),
+        data_root: Hash::ZERO,
     };
     let fork_block = Block::new(header, vec![]);
 
@@ -190,6 +193,7 @@ fn test_weight_based_fork_choice_accepts_heavier_chain() {
         vdf_output: vdf::VdfOutput { value: vec![] },
         vdf_proof: vdf::VdfProof::empty(),
         missed_producers: Vec::new(),
+        data_root: Hash::ZERO,
     };
     let fork_block = Block::new(header, vec![]);
 
@@ -250,6 +254,7 @@ fn test_equal_weight_tiebreak_by_hash() {
         vdf_output: vdf::VdfOutput { value: vec![] },
         vdf_proof: vdf::VdfProof::empty(),
         missed_producers: Vec::new(),
+        data_root: Hash::ZERO,
     };
     let fork_block = Block::new(header, vec![]);
     let fork_hash = fork_block.hash();
@@ -338,6 +343,7 @@ fn test_reorg_past_finality_rejected() {
             },
             vdf_proof: vdf::VdfProof { pi: vec![0u8; 32] },
             missed_producers: Vec::new(),
+            data_root: Hash::ZERO,
         },
         transactions: vec![],
         aggregate_bls_signature: Vec::new(),
@@ -378,6 +384,7 @@ fn test_reorg_after_finality_ok() {
             },
             vdf_proof: vdf::VdfProof { pi: vec![0u8; 32] },
             missed_producers: Vec::new(),
+            data_root: Hash::ZERO,
         },
         transactions: vec![],
         aggregate_bls_signature: Vec::new(),
@@ -443,6 +450,7 @@ fn test_fork_block_recording_does_not_corrupt_current_weight() {
             },
             vdf_proof: vdf::VdfProof { pi: vec![0u8; 32] },
             missed_producers: Vec::new(),
+            data_root: Hash::ZERO,
         },
         transactions: vec![],
         aggregate_bls_signature: Vec::new(),

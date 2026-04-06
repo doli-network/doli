@@ -251,6 +251,7 @@ mod tests {
             vdf_output: VdfOutput { value: vec![] },
             vdf_proof: VdfProof::empty(),
             missed_producers: Vec::new(),
+            data_root: Hash::ZERO,
         };
         Block::new(header, vec![])
     }
@@ -342,6 +343,7 @@ mod tests {
             vdf_output: VdfOutput { value: vec![] },
             vdf_proof: VdfProof::empty(),
             missed_producers: Vec::new(),
+            data_root: Hash::ZERO,
         };
         let header2 = BlockHeader {
             version: 1,
@@ -355,6 +357,7 @@ mod tests {
             vdf_output: VdfOutput { value: vec![] },
             vdf_proof: VdfProof::empty(),
             missed_producers: Vec::new(),
+            data_root: Hash::ZERO,
         };
 
         let proof = EquivocationProof {

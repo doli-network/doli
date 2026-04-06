@@ -69,18 +69,16 @@ impl CompactMmr {
         }
 
         let mut result: Option<Hash> = None;
-        for peak in self.peaks.iter().rev() {
-            if let Some(p) = peak {
-                result = Some(match result {
-                    None => *p,
-                    Some(r) => {
-                        let mut hasher = Hasher::new();
-                        hasher.update(p.as_bytes());
-                        hasher.update(r.as_bytes());
-                        hasher.finalize()
-                    }
-                });
-            }
+        for p in self.peaks.iter().rev().flatten() {
+            result = Some(match result {
+                None => *p,
+                Some(r) => {
+                    let mut hasher = Hasher::new();
+                    hasher.update(p.as_bytes());
+                    hasher.update(r.as_bytes());
+                    hasher.finalize()
+                }
+            });
         }
 
         result.unwrap_or(Hash::ZERO)
