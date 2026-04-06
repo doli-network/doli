@@ -364,6 +364,40 @@ impl BodyDownloader {
         self.permanently_failed.len()
     }
 
+    /// Check if all needed hashes are permanently failed (no progress possible).
+    /// This detects the deadlock where headers_needing_bodies has hashes but
+    /// all of them are in permanently_failed — next_request() filters them all
+    /// out, returning None forever. The sync manager should transition to Idle.
+    pub fn all_needed_permanently_failed(&self, needed: &VecDeque<Hash>) -> bool {
+        if needed.is_empty() {
+            return false;
+        }
+        // All needed hashes must be either permanently_failed or already downloaded
+        needed
+            .iter()
+            .all(|h| self.permanently_failed.contains_key(h) || self.downloaded.contains_key(h))
+    }
+
+    /// Expire permanently_failed entries and move them back to the retry queue.
+    /// Called from cleanup to ensure expiration happens even when next_request()
+    /// is not called (e.g., when headers_needing_bodies is effectively empty
+    /// because all hashes are filtered by permanently_failed).
+    pub fn expire_permanently_failed(&mut self) {
+        let now = Instant::now();
+        let expired: Vec<Hash> = self
+            .permanently_failed
+            .iter()
+            .filter(|(_, failed_at)| now.duration_since(**failed_at).as_secs() >= 60)
+            .map(|(h, _)| *h)
+            .collect();
+        for hash in expired {
+            self.permanently_failed.remove(&hash);
+            self.failure_count.remove(&hash);
+            self.failed_peers.remove(&hash);
+            self.failed.push_back(hash);
+        }
+    }
+
     /// Clear all state
     pub fn clear(&mut self) {
         self.active_requests.clear();

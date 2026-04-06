@@ -77,6 +77,47 @@ impl SyncManager {
         // This moves timed-out hashes back to the failed queue for retry
         self.pipeline.body_downloader.cleanup_timeouts();
 
+        // Expire permanently_failed bodies (60s cooldown) so they can be retried
+        // with fresh peers. This MUST run outside next_request() because the deadlock
+        // scenario prevents next_request() from executing the expiry code:
+        // headers_needing_bodies has hashes → all in permanently_failed → filtered out
+        // → hashes empty → None returned before expiry runs.
+        self.pipeline.body_downloader.expire_permanently_failed();
+
+        // Deadlock detection: if ALL needed bodies are permanently failed,
+        // no progress is possible. Transition to Idle immediately instead of
+        // waiting for the stuck timeout (which never fires because gossip blocks
+        // keep resetting last_sync_activity).
+        if matches!(
+            self.state,
+            SyncState::Syncing {
+                phase: SyncPhase::DownloadingBodies,
+                ..
+            }
+        ) && self
+            .pipeline
+            .body_downloader
+            .all_needed_permanently_failed(&self.pipeline.headers_needing_bodies)
+        {
+            warn!(
+                "[SYNC] Body download deadlock: all {} needed bodies permanently failed. \
+                 No peer has these blocks. Resetting to Idle.",
+                self.pipeline.headers_needing_bodies.len()
+            );
+            self.pipeline.pending_headers.clear();
+            self.pipeline.pending_blocks.clear();
+            self.pipeline.headers_needing_bodies.clear();
+            self.pipeline.pending_requests.clear();
+            for status in self.peers.values_mut() {
+                status.pending_request = None;
+            }
+            self.pipeline.body_downloader.clear();
+            self.pipeline.body_stall_retries = 0;
+            self.pipeline.header_downloader.clear();
+            self.set_state(SyncState::Idle, "body_download_deadlock");
+            self.network.last_sync_activity = Instant::now();
+        }
+
         // Remove timed out requests
         let timed_out: Vec<super::SyncRequestId> = self
             .pipeline
