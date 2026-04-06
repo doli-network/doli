@@ -58,14 +58,11 @@ impl Transaction {
     /// Post-UNIQUE_COINBASE_ACTIVATION_HEIGHT: extra_data includes slot (globally unique)
     /// to prevent duplicate TX hashes when producer is 1 block behind.
     pub fn new_coinbase(amount: Amount, pubkey_hash: Hash, height: BlockHeight, slot: u32) -> Self {
-        let extra_data = if height >= crate::consensus::UNIQUE_COINBASE_ACTIVATION_HEIGHT {
-            // height (8 bytes) + slot (4 bytes) = unique per block
+        // Unique coinbase: height (8 bytes) + slot (4 bytes) — globally unique per block
+        let extra_data = {
             let mut data = height.to_le_bytes().to_vec();
             data.extend_from_slice(&slot.to_le_bytes());
             data
-        } else {
-            // Legacy: height only
-            height.to_le_bytes().to_vec()
         };
         Self {
             version: 1,

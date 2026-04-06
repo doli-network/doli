@@ -1512,3 +1512,44 @@ pub(crate) async fn cmd_bridge_list(
 
     Ok(())
 }
+
+/// Run bridge watcher daemon.
+pub(crate) async fn cmd_bridge_watch(
+    wallet_path: &Path,
+    rpc_endpoint: &str,
+    btc_rpc: Option<&str>,
+    eth_rpc: Option<&str>,
+    interval: u64,
+) -> Result<()> {
+    let wallet = Wallet::load(wallet_path)?;
+    let our_pubkey_hash = wallet.primary_pubkey_hash();
+
+    let data_dir = dirs::home_dir().unwrap_or_default().join(".doli");
+
+    let config = bridge::WatcherConfig {
+        doli_rpc: rpc_endpoint.to_string(),
+        our_pubkey_hash,
+        btc_rpc: btc_rpc.map(|s| s.to_string()),
+        eth_rpc: eth_rpc.map(|s| s.to_string()),
+        data_dir,
+        poll_interval_secs: interval,
+    };
+
+    println!("Starting bridge watcher...");
+    println!("  DOLI RPC: {}", rpc_endpoint);
+    println!("  Wallet:   {}", wallet_path.display());
+    if let Some(btc) = btc_rpc {
+        println!("  BTC RPC:  {}", btc);
+    }
+    if let Some(eth) = eth_rpc {
+        println!("  ETH RPC:  {}", eth);
+    }
+    println!("  Interval: {}s", interval);
+    println!("  Press Ctrl+C to stop.");
+    println!();
+
+    let mut watcher = bridge::Watcher::new(config);
+    watcher.run().await?;
+
+    Ok(())
+}

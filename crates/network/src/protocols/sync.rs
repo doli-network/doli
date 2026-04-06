@@ -79,6 +79,7 @@ pub enum SyncRequest {
 
 /// Sync response types
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[allow(clippy::large_enum_variant)]
 pub enum SyncResponse {
     /// Headers response
     Headers(Vec<BlockHeader>),

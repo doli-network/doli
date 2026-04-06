@@ -227,6 +227,7 @@ pub fn generate_genesis_block(config: &GenesisConfig) -> Block {
         vdf_output: genesis_vdf_output(config.network),
         vdf_proof: VdfProof::empty(), // Genesis has no VDF proof (bootstrap)
         missed_producers: Vec::new(),
+        data_root: Hash::ZERO, // Genesis has no blob data
     };
 
     Block {

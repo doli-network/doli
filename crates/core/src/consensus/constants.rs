@@ -22,7 +22,7 @@ pub fn is_protocol_active(required_version: u32, active_version: u32) -> bool {
 
 /// Genesis timestamp — must match chainspec.mainnet.json
 /// Guarded by `test_genesis_time_matches_chainspec` test.
-pub const GENESIS_TIME: u64 = 1775245866;
+pub const GENESIS_TIME: u64 = 1775432051;
 
 /// Checkpoint: trusted block for fast initial sync.
 /// Updated with each release. New nodes sync from here instead of genesis.
@@ -79,7 +79,19 @@ pub const ACTIVE_PRODUCERS_CAP: usize = 50;
 /// Fixes duplicate coinbase TX hash when producer is 1 block behind
 /// (uses same height as previous producer → same TX hash → UTXO collision → lost coins).
 /// Consensus-breaking — all nodes must update before this height.
-pub const UNIQUE_COINBASE_ACTIVATION_HEIGHT: u64 = 7_000;
+pub const UNIQUE_COINBASE_ACTIVATION_HEIGHT: u64 = 0;
+
+/// Tier promotion activation height.
+/// Before: active_production_list = first 50 by registered_at (static seniority).
+/// After: active_production_list = first 50 by attestation_count desc, registered_at asc.
+/// Producers who go offline lose their slot to more active attestors automatically.
+/// Consensus-breaking — all nodes must update before this height.
+pub const TIER_PROMOTION_ACTIVATION_HEIGHT: u64 = 0;
+
+/// Minimum attestation minutes (out of 60) to qualify for active production list.
+/// Producers below this threshold are demoted to attestor even if in the top 50.
+/// Only enforced after TIER_PROMOTION_ACTIVATION_HEIGHT.
+pub const MIN_ATTESTATION_MINUTES: usize = 30;
 
 // ==================== Proof of Time Parameters ====================
 

@@ -85,6 +85,10 @@ pub enum ValidationError {
         computed: Hash,
     },
 
+    /// Data root (blob commitment) does not match blob hashes in block.
+    #[error("invalid data root")]
+    InvalidDataRoot,
+
     /// VDF proof is invalid.
     #[error("invalid VDF proof: {reason}")]
     InvalidVdfProof {

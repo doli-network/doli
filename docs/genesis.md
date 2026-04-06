@@ -162,17 +162,27 @@ If `signed_slots.db` survives anywhere, nodes will hit slashing protection and r
 echo $(( $(date +%s) + 900 ))
 ```
 
-**7. Update 2 files** with the new timestamp:
+**7. Update 3 files** with the new timestamp:
 - `chainspec.mainnet.json` → `genesis.timestamp` + `genesis.message`
 - `crates/core/src/consensus/constants.rs` → `GENESIS_TIME`
 - `crates/core/src/chainspec.rs` → `ChainSpec::mainnet()` genesis message
 
-**8. Run sync tests:**
+**8. Update genesis hash** — the hash changes when timestamp changes:
+```bash
+cargo test -p doli-core --lib -- test_mainnet_genesis_hash_hardcoded 2>&1 | grep "Got "
+```
+Copy the new hash from the output and update `crates/core/src/chainspec.rs` line ~352 (`test_mainnet_genesis_hash_hardcoded`). Verify:
+```bash
+cargo test -p doli-core --lib -- test_mainnet_genesis_hash_hardcoded
+```
+Must pass. If it fails, the binary will have an inconsistent genesis hash and nodes will reject each other's blocks.
+
+**9. Run sync tests:**
 ```bash
 cargo test -p doli-core test_genesis_time
 ```
 
-**9. Commit & push:**
+**10. Commit & push:**
 ```bash
 git add chainspec.mainnet.json crates/core/src/consensus/constants.rs crates/core/src/chainspec.rs
 git commit --author "Ivan D. Lozada <ivan@doli.network>" \
@@ -184,12 +194,12 @@ git push
 
 ### Phase 3: Compile & Deploy (ai2 → ai1, ai3)
 
-**10. Compile on ai2:**
+**11. Compile on ai2:**
 ```bash
 ssh ai2 "source ~/.cargo/env && cd ~/repos/doli && git pull && cargo build --release"
 ```
 
-**11. Record checksums:**
+**12. Record checksums:**
 ```bash
 ssh ai2 "md5sum ~/repos/doli/target/release/doli-node ~/repos/doli/target/release/doli"
 ```

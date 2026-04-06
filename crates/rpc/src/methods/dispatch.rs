@@ -16,6 +16,7 @@ impl RpcContext {
             "getBlockByHash" => self.get_block_by_hash(request.params).await,
             "getBlockByHeight" => self.get_block_by_height(request.params).await,
             "getBlockRaw" => self.get_block_raw(request.params).await,
+            "getBlockData" => self.get_block_data(request.params).await,
             "getTransaction" => self.get_transaction(request.params).await,
             "sendTransaction" => self.send_transaction(request.params).await,
             "getBalance" => self.get_balance(request.params).await,

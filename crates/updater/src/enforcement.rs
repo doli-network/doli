@@ -55,6 +55,12 @@ pub fn in_grace_period_for_network(release: &Release, network: Network) -> bool 
 // Version Enforcement
 // ============================================================================
 
+/// Maximum enforcement duration (30 minutes).
+/// If enforcement has been active for this long without the update being applied,
+/// it auto-expires. Prevents indefinite production halt when auto-apply fails
+/// (e.g., download error, wrong tarball name, network issues).
+pub const ENFORCEMENT_TIMEOUT_SECS: u64 = 30 * 60;
+
 /// Version enforcement state - tracks when production should be blocked
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VersionEnforcement {
@@ -64,6 +70,9 @@ pub struct VersionEnforcement {
     pub enforcement_time: u64,
     /// Whether this enforcement is active
     pub active: bool,
+    /// Whether the update binary was successfully downloaded and is ready to apply
+    #[serde(default)]
+    pub binary_ready: bool,
 }
 
 impl VersionEnforcement {
@@ -76,6 +85,7 @@ impl VersionEnforcement {
             min_version: release.version.clone(),
             enforcement_time,
             active: false,
+            binary_ready: false,
         }
     }
 
@@ -88,6 +98,7 @@ impl VersionEnforcement {
             min_version: release.version.clone(),
             enforcement_time,
             active: false,
+            binary_ready: false,
         }
     }
 
@@ -153,11 +164,38 @@ impl std::fmt::Display for ProductionBlocked {
 impl std::error::Error for ProductionBlocked {}
 
 /// Check if production is allowed based on version enforcement
+///
+/// Production is blocked ONLY when ALL of these are true:
+/// 1. Enforcement time has passed (veto + grace period expired)
+/// 2. Current version doesn't meet the requirement
+/// 3. The update binary was successfully downloaded (binary_ready = true)
+/// 4. Enforcement hasn't timed out (< ENFORCEMENT_TIMEOUT_SECS since enforcement_time)
+///
+/// If the binary was never downloaded (auto-apply failed), production continues
+/// with a warning — the network shouldn't halt because of a download failure.
 pub fn check_production_allowed(
     enforcement: Option<&VersionEnforcement>,
 ) -> std::result::Result<(), ProductionBlocked> {
     if let Some(enf) = enforcement {
         if enf.should_enforce() && !enf.version_meets_requirement(current_version()) {
+            // Don't block if binary was never downloaded
+            if !enf.binary_ready {
+                tracing::warn!(
+                    "Update v{} approved but binary not downloaded — production continues",
+                    enf.min_version
+                );
+                return Ok(());
+            }
+            // Don't block if enforcement has timed out
+            let elapsed = current_timestamp().saturating_sub(enf.enforcement_time);
+            if elapsed > ENFORCEMENT_TIMEOUT_SECS {
+                tracing::warn!(
+                    "Enforcement for v{} timed out after {}m — production resumed",
+                    enf.min_version,
+                    elapsed / 60
+                );
+                return Ok(());
+            }
             return Err(ProductionBlocked {
                 current_version: current_version().to_string(),
                 required_version: enf.min_version.clone(),

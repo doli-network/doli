@@ -54,6 +54,13 @@ pub struct BlockHeader {
     /// previous local HashSet approach which could diverge between nodes.
     #[serde(default)]
     pub missed_producers: Vec<PublicKey>,
+    /// Commitment to blob data in this block.
+    /// `data_root = BLAKE3(sorted blob_hashes)` where blob_hash = BLAKE3(output.extra_data)
+    /// for each output with extra_data > 4KB.
+    /// Producers validate this without downloading blobs (via attestation quorum).
+    /// Archivers store the actual blobs and serve them via GetBlockData RPC.
+    #[serde(default)]
+    pub data_root: Hash,
 }
 
 impl BlockHeader {
@@ -73,6 +80,7 @@ impl BlockHeader {
         for pk in &self.missed_producers {
             hasher.update(pk.as_bytes());
         }
+        hasher.update(self.data_root.as_bytes()); // Commit to blob data
         hasher.update(&self.timestamp.to_le_bytes());
         hasher.update(&self.slot.to_le_bytes());
         hasher.update(self.producer.as_bytes());
@@ -365,6 +373,30 @@ impl BlockBuilder {
 
         let merkle_root = compute_merkle_root(&self.transactions);
 
+        // Compute data_root: BLAKE3 of sorted blob hashes for outputs with large extra_data.
+        // Threshold: 4KB — anything smaller is metadata, not a blob.
+        let data_root = {
+            let mut blob_hashes: Vec<Hash> = Vec::new();
+            for tx in &self.transactions {
+                for output in &tx.outputs {
+                    if output.extra_data.len() >= 4096 {
+                        let blob_hash = crypto::hash::hash(&output.extra_data);
+                        blob_hashes.push(blob_hash);
+                    }
+                }
+            }
+            if blob_hashes.is_empty() {
+                Hash::ZERO
+            } else {
+                blob_hashes.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+                let mut hasher = Hasher::new();
+                for h in &blob_hashes {
+                    hasher.update(h.as_bytes());
+                }
+                hasher.finalize()
+            }
+        };
+
         let header = BlockHeader {
             version: 2,
             prev_hash: self.prev_hash,
@@ -377,6 +409,7 @@ impl BlockBuilder {
             vdf_output: VdfOutput { value: Vec::new() },
             vdf_proof: VdfProof::empty(),
             missed_producers: self.missed_producers,
+            data_root,
         };
 
         Some((header, self.transactions))
@@ -427,6 +460,7 @@ mod tests {
             },
             vdf_proof: VdfProof::empty(),
             missed_producers: Vec::new(),
+            data_root: Hash::ZERO,
         };
 
         let hash1 = header.hash();
@@ -451,6 +485,7 @@ mod tests {
             },
             vdf_proof: VdfProof::empty(),
             missed_producers: Vec::new(),
+            data_root: Hash::ZERO,
         };
 
         // Different presence_root should produce different hash

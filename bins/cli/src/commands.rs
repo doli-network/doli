@@ -304,6 +304,11 @@ pub(crate) enum Commands {
         #[arg(long, value_name = "HEX")]
         data: Option<String>,
 
+        /// Read raw binary data from a file and embed on-chain (for --mint)
+        /// The file is read as raw bytes (not hex) — supports images, documents, etc.
+        #[arg(long, value_name = "PATH")]
+        data_file: Option<std::path::PathBuf>,
+
         /// Export NFT content to a file (extract from on-chain UTXO)
         #[arg(long, value_name = "UTXO")]
         export: Option<String>,
@@ -417,6 +422,21 @@ pub(crate) enum Commands {
         /// Skip confirmation prompt
         #[arg(long)]
         yes: bool,
+    },
+
+    /// Run bridge watcher daemon (monitors swaps, auto-detects preimages)
+    BridgeWatch {
+        /// Bitcoin Core RPC endpoint (for cross-chain monitoring)
+        #[arg(long)]
+        btc_rpc: Option<String>,
+
+        /// Ethereum/BSC RPC endpoint (for cross-chain monitoring)
+        #[arg(long)]
+        eth_rpc: Option<String>,
+
+        /// Poll interval in seconds (default: 10)
+        #[arg(long, default_value = "10")]
+        interval: u64,
     },
 
     /// List active bridge HTLC swaps on-chain

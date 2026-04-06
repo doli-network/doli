@@ -44,8 +44,9 @@ async fn main() -> Result<()> {
         None => paths::resolve_wallet_path(&cli.network, None, None),
     };
 
-    // Set address prefix from network
+    // Set address prefix and network name from --network flag
     let _ = ADDRESS_PREFIX.set(prefix_for_network(&cli.network).to_string());
+    let _ = common::NETWORK.set(cli.network.clone());
 
     // Resolve RPC endpoint: explicit flag > network default
     let rpc_endpoint = cli
@@ -177,6 +178,7 @@ async fn main() -> Result<()> {
             witness,
             royalty,
             data,
+            data_file,
             export,
             batch_mint,
             yes,
@@ -190,6 +192,15 @@ async fn main() -> Result<()> {
             } else if let Some(utxo) = info {
                 cmd_nft::cmd_nft_info(&rpc_endpoint, &utxo).await?;
             } else if let Some(content) = mint {
+                // --data-file reads raw bytes from file and converts to hex
+                let effective_data = if let Some(ref path) = data_file {
+                    let bytes = std::fs::read(path).map_err(|e| {
+                        anyhow::anyhow!("Failed to read --data-file {:?}: {}", path, e)
+                    })?;
+                    Some(hex::encode(&bytes))
+                } else {
+                    data
+                };
                 cmd_nft::cmd_mint(
                     &wallet,
                     &rpc_endpoint,
@@ -197,7 +208,7 @@ async fn main() -> Result<()> {
                     condition,
                     &amount,
                     royalty,
-                    data,
+                    effective_data,
                 )
                 .await?;
             } else if let Some(utxo) = export {
@@ -325,6 +336,20 @@ async fn main() -> Result<()> {
         }
         Commands::BridgeList { chain, blocks } => {
             cmd_bridge::cmd_bridge_list(&rpc_endpoint, chain.as_deref(), blocks).await?;
+        }
+        Commands::BridgeWatch {
+            btc_rpc,
+            eth_rpc,
+            interval,
+        } => {
+            cmd_bridge::cmd_bridge_watch(
+                &wallet,
+                &rpc_endpoint,
+                btc_rpc.as_deref(),
+                eth_rpc.as_deref(),
+                interval,
+            )
+            .await?;
         }
         Commands::BridgeLock {
             amount,

@@ -49,6 +49,7 @@ fn build_test_block(
         },
         vdf_proof: VdfProof::empty(),
         missed_producers: Vec::new(),
+    data_root: crypto::Hash::ZERO,
     };
 
     Block::new(header, vec![coinbase])

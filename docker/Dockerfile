@@ -20,6 +20,7 @@ RUN apt-get update && apt-get install -y \
     libssl-dev \
     pkg-config \
     protobuf-compiler \
+    zlib1g-dev \
     m4 \
     && rm -rf /var/lib/apt/lists/*
 
@@ -35,6 +36,7 @@ COPY testing/ testing/
 COPY chainspec.mainnet.json chainspec.testnet.json ./
 
 # Build release binary
+ENV LIBZ_SYS_STATIC=0
 RUN cargo build --release --package doli-node
 
 # =============================================================================

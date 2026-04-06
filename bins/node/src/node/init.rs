@@ -151,22 +151,45 @@ impl Node {
             cs
         };
 
-        // Load UTXOs from StateDb into in-memory working set
+        // Load UTXOs: use RocksDB-backed store if available, fall back to in-memory.
+        // RocksDB-backed: UTXOs stay on disk, hot entries cached by RocksDB block cache.
+        // Scales to millions of UTXOs without proportional RAM growth.
+        // In-memory: legacy fallback for testing and migration.
+        let utxo_rocks_path = config.data_dir.join("utxo_store");
+        // Always use RocksDB UTXO store (Phase 2: eliminates RAM bottleneck)
         let utxo_set = {
-            let utxo_count = state_db.utxo_len();
-            if utxo_count > 0 {
-                info!(
-                    "[STATE_DB] Loading {} UTXOs into in-memory working set...",
-                    utxo_count
-                );
-                let mut mem = storage::InMemoryUtxoStore::new();
-                for (outpoint, entry) in state_db.iter_utxos() {
-                    mem.insert(outpoint, entry);
+            // RocksDB mode: open or migrate
+            match UtxoSet::open_rocksdb(&utxo_rocks_path) {
+                Ok(mut store) => {
+                    // If RocksDB store is empty but StateDb has UTXOs, migrate
+                    if store.is_empty() && state_db.utxo_len() > 0 {
+                        info!(
+                            "[UTXO] Migrating {} UTXOs from StateDb to RocksDB...",
+                            state_db.utxo_len()
+                        );
+                        for (outpoint, entry) in state_db.iter_utxos() {
+                            let _ = store.insert(outpoint, entry);
+                        }
+                        info!(
+                            "[UTXO] Migration complete: {} UTXOs in RocksDB",
+                            store.len()
+                        );
+                    } else if !store.is_empty() {
+                        info!("[UTXO] RocksDB store: {} UTXOs", store.len());
+                    }
+                    store
                 }
-                info!("[STATE_DB] Loaded {} UTXOs", mem.len());
-                UtxoSet::InMemory(mem)
-            } else {
-                UtxoSet::new()
+                Err(e) => {
+                    warn!(
+                        "[UTXO] Failed to open RocksDB store: {}. Falling back to in-memory.",
+                        e
+                    );
+                    let mut mem = storage::InMemoryUtxoStore::new();
+                    for (outpoint, entry) in state_db.iter_utxos() {
+                        mem.insert(outpoint, entry);
+                    }
+                    UtxoSet::InMemory(mem)
+                }
             }
         };
         let utxo_set = Arc::new(RwLock::new(utxo_set));
@@ -226,7 +249,75 @@ impl Node {
         if chain_state.best_height > 0 {
             match block_store.get_block(&chain_state.best_hash) {
                 Ok(Some(_tip_block)) => {
-                    // Tip hash exists in store — chain state is consistent
+                    // Tip hash exists in store — verify recent blocks have bodies.
+                    // Header-first sync can leave gaps (headers without bodies).
+                    // If the node restarts with gaps, rollback fails ("no block at height N")
+                    // and the node gets stuck. Fix: undo back to the last complete block.
+                    let check_depth = 100u64.min(chain_state.best_height);
+                    let mut first_gap = None;
+                    for h in (chain_state.best_height.saturating_sub(check_depth)
+                        ..=chain_state.best_height)
+                        .rev()
+                    {
+                        if h == 0 {
+                            continue;
+                        }
+                        if block_store.get_block_by_height(h)?.is_none() {
+                            first_gap = Some(h);
+                            break;
+                        }
+                    }
+
+                    if let Some(gap_height) = first_gap {
+                        // Find the last contiguous complete block below the gap
+                        let mut target_height = gap_height.saturating_sub(1);
+                        while target_height > 0 {
+                            if block_store.get_block_by_height(target_height)?.is_some() {
+                                break;
+                            }
+                            target_height -= 1;
+                        }
+
+                        let undo_count = chain_state.best_height - target_height;
+                        warn!(
+                            "[STARTUP] Body gap at h={} (tip={}). Undoing {} blocks to h={}.",
+                            gap_height, chain_state.best_height, undo_count, target_height
+                        );
+
+                        // Apply undos backward from best_height down to target_height+1
+                        {
+                            let mut utxo = utxo_set.write().await;
+                            for h in (target_height + 1..=chain_state.best_height).rev() {
+                                if let Some(undo) = state_db.get_undo(h) {
+                                    for outpoint in &undo.created_utxos {
+                                        let _ = utxo.remove(outpoint);
+                                    }
+                                    for (outpoint, entry) in &undo.spent_utxos {
+                                        let _ = utxo.insert(*outpoint, entry.clone());
+                                    }
+                                } else {
+                                    error!(
+                                        "[STARTUP] No undo data for h={} — manual wipe required.",
+                                        h
+                                    );
+                                    break;
+                                }
+                            }
+                        }
+
+                        // Update chain state to the target block
+                        if let Some(blk) = block_store.get_block_by_height(target_height)? {
+                            chain_state.best_height = target_height;
+                            chain_state.best_hash = blk.hash();
+                            chain_state.best_slot = blk.header.slot;
+                            state_db.put_chain_state(&chain_state)?;
+                            info!(
+                                "[STARTUP] Recovered to h={} after undoing {} body-gap blocks. \
+                                 Sync will fill the gaps.",
+                                target_height, undo_count
+                            );
+                        }
+                    }
                 }
                 Ok(None) => {
                     if chain_state.is_snap_synced() {
