@@ -193,7 +193,7 @@ mod tests {
     #[test]
     fn test_mixed_independent_dependent() {
         let h1 = crypto::hash::hash(b"input1");
-        let h2 = crypto::hash::hash(b"input2");
+        let _h2 = crypto::hash::hash(b"input2");
         let shared = crypto::hash::hash(b"shared");
 
         // tx0 and tx1 share an input (dependent)

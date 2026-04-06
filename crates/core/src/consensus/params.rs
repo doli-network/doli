@@ -147,7 +147,7 @@ impl ConsensusParams {
     pub fn covenants_activation_height(&self, network: &Network) -> BlockHeight {
         match network {
             Network::Devnet => 0,     // Immediate on devnet
-            Network::Testnet => 0, // All features active from genesis
+            Network::Testnet => 0,    // All features active from genesis
             Network::Mainnet => 2000, // Lowered from 9150 for genesis v2 (2026-03-26)
         }
     }
