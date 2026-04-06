@@ -425,6 +425,21 @@ impl Node {
 
         let old_count = self.excluded_producers.len();
         self.excluded_producers = excluded;
+
+        // Sanity cap: if excluded exceeds 33% of epoch list, something is wrong
+        // (fork blocks in block store inflating exclusions). Reset to prevent
+        // scheduler divergence feedback loop (INC-I-016).
+        if !self.epoch_producer_list.is_empty()
+            && self.excluded_producers.len() > self.epoch_producer_list.len() / 3
+        {
+            warn!(
+                "[LIVENESS] Excluded producers ({}) exceeds 33% of epoch list ({}) — resetting to prevent divergence",
+                self.excluded_producers.len(),
+                self.epoch_producer_list.len()
+            );
+            self.excluded_producers.clear();
+        }
+
         let new_count = self.excluded_producers.len();
 
         if old_count > 0 || new_count > 0 {

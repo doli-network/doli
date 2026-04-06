@@ -32,11 +32,17 @@ impl RpcContext {
         };
 
         // Compute reward pool balance from pool UTXOs
+        let pool_hash = doli_core::consensus::reward_pool_pubkey_hash();
         let reward_pool_balance = {
             let utxo = self.utxo_set.read().await;
-            let pool_hash = doli_core::consensus::reward_pool_pubkey_hash();
             let pool_utxos = utxo.get_by_pubkey_hash(&pool_hash);
             pool_utxos.iter().map(|(_, e)| e.output.amount).sum::<u64>()
+        };
+
+        // Total confirmed (spendable) DOLI — excludes bonds, reward pool, and immature coinbase
+        let total_confirmed = {
+            let utxo = self.utxo_set.read().await;
+            utxo.total_confirmed(height, self.coinbase_maturity, pool_hash.as_bytes())
         };
 
         let response = ChainStatsResponse {
@@ -47,6 +53,7 @@ impl RpcContext {
             total_staked,
             height,
             reward_pool_balance,
+            total_confirmed,
         };
 
         serde_json::to_value(response).map_err(|e| RpcError::internal_error(e.to_string()))

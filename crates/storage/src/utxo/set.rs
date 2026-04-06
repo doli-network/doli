@@ -122,6 +122,14 @@ impl UtxoSet {
         }
     }
 
+    /// Total confirmed (spendable) DOLI excluding bonds and reward pool.
+    pub fn total_confirmed(&self, height: u64, coinbase_maturity: u64, pool_pkh: &[u8; 32]) -> u64 {
+        match self {
+            UtxoSet::InMemory(store) => store.total_confirmed(height, coinbase_maturity, pool_pkh),
+            UtxoSet::RocksDb(store) => store.total_confirmed(height, coinbase_maturity, pool_pkh),
+        }
+    }
+
     /// Convenience aliases for chain stats
     pub fn total_supply(&self) -> u64 {
         self.total_value()
