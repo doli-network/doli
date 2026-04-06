@@ -347,17 +347,12 @@ impl RpcClient {
             .get()
             .map(|n| crate::common::archiver_endpoints_for_network(n))
             .unwrap_or_default();
-        // When running against localhost, add the local seed as first archiver.
+        // When running against localhost, add the local seed (port 8500) as
+        // first archiver. The seed always runs on 8500 regardless of network.
         // DNS seeds may not resolve in local/testnet environments.
         if endpoint.contains("127.0.0.1") || endpoint.contains("localhost") {
-            let default_seed = crate::common::default_rpc_for_network(
-                crate::common::NETWORK
-                    .get()
-                    .map(|s| s.as_str())
-                    .unwrap_or("mainnet"),
-            );
-            let seed = default_seed.to_string();
-            if !archivers.contains(&seed) {
+            let seed = "http://127.0.0.1:8500".to_string();
+            if !archivers.contains(&seed) && seed != endpoint {
                 archivers.insert(0, seed);
             }
         }
