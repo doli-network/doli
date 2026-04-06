@@ -1,5 +1,13 @@
 # CLAUDE.md — DOLI
 
+> **#0 RULE — NO GENESIS RESETS FOR STORAGE/FEATURE CHANGES.**
+> Bitcoin activates features forward-only (BIP9/BIP8) at a future height — never retroactively from block 0.
+> DOLI follows the same practice. If you can activate a feature at a future height without changing the state root
+> of existing blocks, you DO NOT need a genesis reset. Only change activation height to 0 if you are INTENTIONALLY
+> resetting the chain. Before touching activation heights, feature gates, or consensus params, ALWAYS ask:
+> "Does this require a genesis reset or can it activate at a future height?" and REMIND the user of this rule.
+> A genesis reset costs hours of downtime, requires redeploying all nodes, and loses all on-chain state.
+
 > Code is the single source of truth. Everything else is a projection.
 > When a doc drifts from code, the doc is wrong — register hotfix in MEMORY.md.
 
