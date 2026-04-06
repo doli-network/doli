@@ -164,4 +164,4 @@ MIT
 
 *"Time is the only fair currency."*
 
-I. Lozada &middot; [ivan@doli.network](mailto:ivan@doli.network) | A. Lozada &middot; [antonio@doli.network](mailto:antonio@doli.network)
+D. Guanipa 🧠 &middot; [daniel@doli.network](mailto:daniel@doli.network) | I. Lozada &middot; [ivan@doli.network](mailto:ivan@doli.network) | A. Lozada &middot; [antonio@doli.network](mailto:antonio@doli.network)
