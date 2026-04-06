@@ -27,6 +27,7 @@ fn create_header_with_presence(slot: u32, presence_root: Hash) -> BlockHeader {
         },
         vdf_proof: VdfProof::empty(),
         missed_producers: Vec::new(),
+        data_root: crypto::Hash::ZERO,
     }
 }
 

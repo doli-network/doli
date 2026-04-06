@@ -118,6 +118,7 @@ impl TestNetwork {
             },
             vdf_proof: VdfProof::empty(),
             missed_producers: Vec::new(),
+            data_root: crypto::Hash::ZERO,
         };
 
         Block::new(header, vec![coinbase])
@@ -2313,6 +2314,7 @@ impl TestNetwork {
             },
             vdf_proof: VdfProof::empty(),
             missed_producers: missed,
+            data_root: Hash::ZERO,
         };
 
         Block::new(header, vec![coinbase])

@@ -156,10 +156,8 @@ impl Node {
         // Scales to millions of UTXOs without proportional RAM growth.
         // In-memory: legacy fallback for testing and migration.
         let utxo_rocks_path = config.data_dir.join("utxo_store");
-        let utxo_set = if utxo_rocks_path.exists()
-            || true // Always use RocksDB UTXO store
-            || std::env::var("DOLI_UTXO_ROCKSDB").is_ok()
-        {
+        // Always use RocksDB UTXO store (Phase 2: eliminates RAM bottleneck)
+        let utxo_set = {
             // RocksDB mode: open or migrate
             match UtxoSet::open_rocksdb(&utxo_rocks_path) {
                 Ok(mut store) => {
@@ -192,23 +190,6 @@ impl Node {
                     }
                     UtxoSet::InMemory(mem)
                 }
-            }
-        } else {
-            // In-memory mode: small UTXO set or legacy
-            let utxo_count = state_db.utxo_len();
-            if utxo_count > 0 {
-                info!(
-                    "[STATE_DB] Loading {} UTXOs into in-memory working set...",
-                    utxo_count
-                );
-                let mut mem = storage::InMemoryUtxoStore::new();
-                for (outpoint, entry) in state_db.iter_utxos() {
-                    mem.insert(outpoint, entry);
-                }
-                info!("[STATE_DB] Loaded {} UTXOs", mem.len());
-                UtxoSet::InMemory(mem)
-            } else {
-                UtxoSet::new()
             }
         };
         let utxo_set = Arc::new(RwLock::new(utxo_set));

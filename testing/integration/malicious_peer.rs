@@ -39,6 +39,7 @@ fn create_block_wrong_prev_hash(
         vdf_output: VdfOutput { value: vec![0u8; 32] },
         vdf_proof: VdfProof::empty(),
         missed_producers: Vec::new(),
+    data_root: crypto::Hash::ZERO,
     };
 
     Block::new(header, vec![coinbase])
@@ -67,6 +68,7 @@ fn create_block_bad_merkle(
         vdf_output: VdfOutput { value: vec![0u8; 32] },
         vdf_proof: VdfProof::empty(),
         missed_producers: Vec::new(),
+    data_root: crypto::Hash::ZERO,
     };
 
     Block::new(header, vec![coinbase])
@@ -95,6 +97,7 @@ fn create_block_bad_version(
         vdf_output: VdfOutput { value: vec![0u8; 32] },
         vdf_proof: VdfProof::empty(),
         missed_producers: Vec::new(),
+    data_root: crypto::Hash::ZERO,
     };
 
     Block::new(header, vec![coinbase])
@@ -291,6 +294,7 @@ async fn test_future_dated_block() {
         vdf_output: VdfOutput { value: vec![0u8; 32] },
         vdf_proof: VdfProof::empty(),
         missed_producers: Vec::new(),
+    data_root: crypto::Hash::ZERO,
     };
 
     let future_block = Block::new(header, vec![coinbase]);
@@ -319,6 +323,7 @@ async fn test_empty_block() {
         vdf_output: VdfOutput { value: vec![0u8; 32] },
         vdf_proof: VdfProof::empty(),
         missed_producers: Vec::new(),
+    data_root: crypto::Hash::ZERO,
     };
 
     let empty_block = Block::new(header, vec![]);
@@ -458,6 +463,7 @@ async fn test_slot_timestamp_mismatch() {
         vdf_output: VdfOutput { value: vec![0u8; 32] },
         vdf_proof: VdfProof::empty(),
         missed_producers: Vec::new(),
+    data_root: crypto::Hash::ZERO,
     };
 
     let mismatched_block = Block::new(header, vec![coinbase]);
