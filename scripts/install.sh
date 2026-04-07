@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-REPO="e-weil/doli"
+REPO="doli-network/doli"
 GITHUB="https://github.com/${REPO}"
 API="https://api.github.com/repos/${REPO}/releases/latest"
 
@@ -58,22 +58,10 @@ VERSION=$(printf '%s' "$RELEASE_JSON" | grep '"tag_name"' | head -1 | sed 's/.*"
 
 info "Latest version: ${VERSION}"
 
-if [ "$OS" = "Darwin" ] && [ "$ARCH_LABEL" = "aarch64" ]; then
-    FILE="doli-${VERSION}-${TARGET}.pkg"
-    METHOD="pkg"
-elif [ "$OS" = "Darwin" ]; then
-    FILE="doli-${VERSION}-${TARGET}.tar.gz"
-    METHOD="tarball"
-elif command -v dpkg >/dev/null 2>&1; then
-    FILE="doli-${VERSION}-${TARGET}.deb"
-    METHOD="deb"
-elif command -v rpm >/dev/null 2>&1; then
-    FILE="doli-${VERSION}-${TARGET}.rpm"
-    METHOD="rpm"
-else
-    FILE="doli-${VERSION}-${TARGET}.tar.gz"
-    METHOD="tarball"
-fi
+# Always use tarball — it's the only format guaranteed to exist in every release.
+# .deb and .rpm are optional and may not be built for every version.
+FILE="doli-${VERSION}-${TARGET}.tar.gz"
+METHOD="tarball"
 
 URL="${GITHUB}/releases/download/${VERSION}/${FILE}"
 
@@ -83,29 +71,13 @@ trap 'rm -rf "$TMPDIR"' EXIT
 info "Downloading ${FILE}..."
 $FETCH_OUT "${TMPDIR}/${FILE}" "$URL" || err "Download failed. Check ${GITHUB}/releases/tag/${VERSION}"
 
-case "$METHOD" in
-    pkg)
-        info "Installing .pkg (requires sudo)..."
-        sudo installer -pkg "${TMPDIR}/${FILE}" -target /
-        ;;
-    deb)
-        info "Installing .deb (requires sudo)..."
-        sudo dpkg -i "${TMPDIR}/${FILE}"
-        ;;
-    rpm)
-        info "Installing .rpm (requires sudo)..."
-        sudo rpm -i "${TMPDIR}/${FILE}"
-        ;;
-    tarball)
-        info "Extracting..."
-        tar -xzf "${TMPDIR}/${FILE}" -C "$TMPDIR"
-        DIR=$(find "$TMPDIR" -maxdepth 1 -type d -name "doli-*" | head -1)
-        [ -z "$DIR" ] && err "Failed to extract archive"
-        info "Installing to /usr/local/bin (requires sudo)..."
-        sudo install -m 755 "${DIR}/doli-node" /usr/local/bin/doli-node
-        sudo install -m 755 "${DIR}/doli"      /usr/local/bin/doli
-        ;;
-esac
+info "Extracting..."
+tar -xzf "${TMPDIR}/${FILE}" -C "$TMPDIR"
+DIR=$(find "$TMPDIR" -maxdepth 1 -type d -name "doli-*" | head -1)
+[ -z "$DIR" ] && err "Failed to extract archive"
+info "Installing to /usr/bin..."
+sudo install -m 755 "${DIR}/doli-node" /usr/bin/doli-node
+sudo install -m 755 "${DIR}/doli"      /usr/bin/doli
 
 # ---------------------------------------------------------------------------
 # Linux-only: create system user, group, directories, and polkit rule
@@ -155,10 +127,10 @@ POLKIT
     #    This allows `sudo cp` and `sudo chmod` on doli binaries without password prompt.
     cat > /etc/sudoers.d/doli-update <<'SUDOERS'
 # Allow doli user to update doli binaries without password
-doli ALL=(root) NOPASSWD: /usr/bin/cp /tmp/doli-update-binary /usr/local/bin/doli-node
-doli ALL=(root) NOPASSWD: /usr/bin/cp /tmp/doli-update-binary /usr/local/bin/doli
-doli ALL=(root) NOPASSWD: /usr/bin/chmod 755 /usr/local/bin/doli-node
-doli ALL=(root) NOPASSWD: /usr/bin/chmod 755 /usr/local/bin/doli
+doli ALL=(root) NOPASSWD: /usr/bin/cp /tmp/doli-update-binary /usr/bin/doli-node
+doli ALL=(root) NOPASSWD: /usr/bin/cp /tmp/doli-update-binary /usr/bin/doli
+doli ALL=(root) NOPASSWD: /usr/bin/chmod 755 /usr/bin/doli-node
+doli ALL=(root) NOPASSWD: /usr/bin/chmod 755 /usr/bin/doli
 SUDOERS
     chmod 440 /etc/sudoers.d/doli-update
     info "Installed sudoers rule for auto-update"
