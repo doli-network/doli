@@ -213,6 +213,25 @@ impl InMemoryUtxoStore {
             .sum()
     }
 
+    /// Total confirmed (spendable) DOLI excluding bonds and reward pool.
+    pub fn total_confirmed(
+        &self,
+        height: BlockHeight,
+        coinbase_maturity: BlockHeight,
+        pool_pkh: &[u8; 32],
+    ) -> Amount {
+        self.utxos
+            .values()
+            .filter(|entry| {
+                entry.output.output_type.is_native_amount()
+                    && entry.output.output_type != doli_core::OutputType::Bond
+                    && entry.output.pubkey_hash.as_bytes() != pool_pkh
+                    && entry.is_spendable_at_with_maturity(height, coinbase_maturity)
+            })
+            .map(|entry| entry.output.amount)
+            .sum()
+    }
+
     pub fn len(&self) -> usize {
         self.utxos.len()
     }

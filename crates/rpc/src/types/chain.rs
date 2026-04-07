@@ -212,6 +212,8 @@ pub struct ChainStatsResponse {
     pub height: u64,
     /// Reward pool balance (base units) — sum of all coinbase UTXOs held by the pool
     pub reward_pool_balance: u64,
+    /// Total confirmed (spendable) DOLI — excludes bonds, reward pool, and immature coinbase
+    pub total_confirmed: u64,
 }
 
 /// Attestation statistics for current epoch

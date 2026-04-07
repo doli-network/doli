@@ -141,9 +141,11 @@ jobs:
   # Users on Intel Macs should use the aarch64 .pkg (works via Rosetta).
 
   # ── Windows x86_64 ──────────────────────────────────────────
+  # NOTE: gmp-mpfr-sys does not support MSVC. This job is best-effort.
   build-windows-x64:
     name: Build Windows x86_64
     runs-on: windows-latest
+    continue-on-error: true
     env:
       TARGET: x86_64-pc-windows-msvc
     steps:
@@ -211,7 +213,7 @@ jobs:
       - name: Install Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -267,7 +269,7 @@ jobs:
       - name: Install Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -307,9 +309,11 @@ jobs:
           path: gui-artifacts/*
 
   # ── GUI: Windows (.msi) ─────────────────────────────────────
+  # NOTE: gmp-mpfr-sys does not support MSVC. This job is best-effort.
   build-gui-windows:
     name: Build GUI Windows
     runs-on: windows-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -319,7 +323,7 @@ jobs:
       - name: Install Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Install MSYS2 dependencies
         uses: msys2/setup-msys2@v2

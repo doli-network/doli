@@ -277,6 +277,33 @@ impl RocksDbUtxoStore {
         total
     }
 
+    /// Total confirmed (spendable) DOLI excluding bonds and reward pool.
+    pub fn total_confirmed(
+        &self,
+        height: BlockHeight,
+        coinbase_maturity: BlockHeight,
+        pool_pkh: &[u8; 32],
+    ) -> Amount {
+        let cf = self.db.cf_handle(CF_UTXO).unwrap();
+        let mut total: Amount = 0;
+        for (_, value) in self
+            .db
+            .iterator_cf(cf, rocksdb::IteratorMode::Start)
+            .flatten()
+        {
+            if let Ok(entry) = bincode::deserialize::<UtxoEntry>(&value) {
+                if entry.output.output_type.is_native_amount()
+                    && entry.output.output_type != doli_core::OutputType::Bond
+                    && entry.output.pubkey_hash.as_bytes() != pool_pkh
+                    && entry.is_spendable_at_with_maturity(height, coinbase_maturity)
+                {
+                    total += entry.output.amount;
+                }
+            }
+        }
+        total
+    }
+
     /// Get number of UTXOs (O(1) via cached counter)
     pub fn len(&self) -> usize {
         self.count.load(Ordering::Relaxed) as usize

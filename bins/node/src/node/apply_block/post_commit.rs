@@ -278,6 +278,17 @@ impl Node {
             // from attestation data. They still earn rewards if they attest.
         }
 
+        // Sanity cap: prevent excluded_producers feedback loop (INC-I-016)
+        if !self.epoch_producer_list.is_empty()
+            && self.excluded_producers.len() > self.epoch_producer_list.len() / 3
+        {
+            warn!(
+                "[LIVENESS] Excluded producers ({}) exceeds 33% cap — resetting",
+                self.excluded_producers.len()
+            );
+            self.excluded_producers.clear();
+        }
+
         // Per-block attestation: sign chain tip for finality gadget + record in tracker.
         self.create_and_broadcast_attestation(block_hash, block.header.slot, height)
             .await;

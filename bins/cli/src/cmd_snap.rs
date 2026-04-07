@@ -264,24 +264,46 @@ pub(crate) async fn cmd_snap(
     // Fix ownership: snap runs as root (sudo) but the service runs as user 'doli'.
     // Without this, RocksDB files are owned by root and the service crashes with Permission denied.
     // Also fix parent directory (/var/lib/doli/) and log directory (/var/log/doli/).
+    // If user 'doli' doesn't exist, fall back to SUDO_USER (the real user who ran sudo).
     #[cfg(target_os = "linux")]
     {
-        // Fix data_dir and all contents
-        let _ = std::process::Command::new("chown")
-            .args(["-R", "doli:doli"])
-            .arg(&data_dir)
-            .status();
-        // Fix parent directory (node_key, doli-auto-bond.lock may live here)
-        if let Some(parent) = data_dir.parent() {
+        // Determine the correct owner: prefer 'doli' system user, fall back to SUDO_USER
+        let owner = if std::process::Command::new("id")
+            .args(["-u", "doli"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+        {
+            "doli:doli".to_string()
+        } else if let Ok(sudo_user) = std::env::var("SUDO_USER") {
+            format!("{0}:{0}", sudo_user)
+        } else {
+            String::new()
+        };
+
+        if !owner.is_empty() {
+            // Fix data_dir and all contents
+            let status = std::process::Command::new("chown")
+                .args(["-R", &owner])
+                .arg(&data_dir)
+                .status();
+            if let Ok(s) = status {
+                if !s.success() {
+                    eprintln!("Warning: chown -R {} {:?} failed", owner, data_dir);
+                }
+            }
+            // Fix parent directory (node_key, doli-auto-bond.lock may live here)
+            if let Some(parent) = data_dir.parent() {
+                let _ = std::process::Command::new("chown")
+                    .args(["-R", &owner])
+                    .arg(parent)
+                    .status();
+            }
+            // Fix log directory
             let _ = std::process::Command::new("chown")
-                .args(["-R", "doli:doli"])
-                .arg(parent)
+                .args(["-R", &owner, "/var/log/doli"])
                 .status();
         }
-        // Fix log directory
-        let _ = std::process::Command::new("chown")
-            .args(["-R", "doli:doli", "/var/log/doli"])
-            .status();
     }
 
     // 8. Restart the service that owns this data_dir

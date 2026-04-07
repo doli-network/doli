@@ -41,6 +41,25 @@ impl Node {
                 return Ok(());
             }
 
+            // INC-I-020b safety: discard blocks whose parent we don't know.
+            // STALE_TIP/FORK_1BLOCK requests a block from a peer, but if the
+            // peer is on a different fork, the block's prev_hash won't exist in
+            // our block store. Letting it into the fork cache triggers fork
+            // recovery → rollback → excluded_producers corruption → cascade.
+            // Only cache blocks whose parent is either our tip or in our store.
+            let parent_known = block.header.prev_hash == current_tip
+                || self
+                    .block_store
+                    .has_block(&block.header.prev_hash)
+                    .unwrap_or(false);
+            if !parent_known {
+                debug!(
+                    "Dropping block {} — parent {:.8} not in our chain (tip={:.8}, h={})",
+                    block_hash, block.header.prev_hash, current_tip, current_height
+                );
+                return Ok(());
+            }
+
             // Cache this block for potential reorg
             {
                 let mut cache = self.fork_block_cache.write().await;
