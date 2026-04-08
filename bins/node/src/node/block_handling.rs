@@ -41,21 +41,37 @@ impl Node {
                 return Ok(());
             }
 
-            // INC-I-020b safety: discard blocks whose parent we don't know.
-            // STALE_TIP/FORK_1BLOCK requests a block from a peer, but if the
-            // peer is on a different fork, the block's prev_hash won't exist in
-            // our block store. Letting it into the fork cache triggers fork
-            // recovery → rollback → excluded_producers corruption → cascade.
-            // Only cache blocks whose parent is either our tip or in our store.
-            let parent_known = block.header.prev_hash == current_tip
-                || self
-                    .block_store
-                    .has_block(&block.header.prev_hash)
-                    .unwrap_or(false);
-            if !parent_known {
+            // Height-occupied guard: discard blocks that don't extend our tip
+            // if we already have canonical chain at or above their height.
+            //
+            // A fork block's parent exists in our store (shared history) but
+            // we already have a different canonical block at parent_height+1.
+            // Letting it into the fork cache triggers fork recovery → rollback
+            // cascade → block store gaps → stuck nodes.
+            //
+            // Legitimate reorg comes through header-first sync, not gossip.
+            // O(1): one get_block_height + one get_block_by_height lookup.
+            if let Ok(Some(parent_height)) =
+                self.block_store.get_height_by_hash(&block.header.prev_hash)
+            {
+                let fork_block_height = parent_height + 1;
+                if let Ok(Some(canonical)) = self.block_store.get_block_by_height(fork_block_height)
+                {
+                    if canonical.hash() != block_hash {
+                        info!(
+                            "[FORK_GUARD] Dropping fork block {} at h={} — canonical {} exists",
+                            &block_hash.to_hex()[..16],
+                            fork_block_height,
+                            &canonical.hash().to_hex()[..16]
+                        );
+                        return Ok(());
+                    }
+                }
+            } else {
+                // Parent not in store at all — unknown block
                 debug!(
-                    "Dropping block {} — parent {:.8} not in our chain (tip={:.8}, h={})",
-                    block_hash, block.header.prev_hash, current_tip, current_height
+                    "Dropping block {} — parent {:.8} unknown",
+                    block_hash, block.header.prev_hash
                 );
                 return Ok(());
             }
