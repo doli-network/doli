@@ -346,3 +346,152 @@ impl EpochRewardData {
         })
     }
 }
+
+// ==================== L2 Settlement (ZKSettle / ZKRollup) ====================
+//
+// Layout for the `extra_data` field of a ZKRollup output. The verifying_key
+// lives IN the UTXO — L1 does not maintain a registry. Each rollup is its
+// own trust domain. See specs/l2-settlement.md §4.1.
+
+/// Current `ZkRollupData` layout version.
+pub const ZK_ROLLUP_DATA_VERSION: u16 = 1;
+
+/// Maximum verifying key size, in bytes.
+///
+/// Plonky2 verifying keys are typically 1–10 KB. Halo2 can go larger.
+/// Cap at 200 KB to prevent verifying-key-spam DoS while leaving headroom.
+pub const MAX_VERIFYING_KEY_SIZE: usize = 200 * 1024;
+
+/// Maximum proof size, in bytes, per ZKSettle transaction.
+///
+/// Fits comfortably under Era-0 `BASE_EXTRA_DATA_SIZE = 524,288` with
+/// headroom for the rest of the `extra_data` layout.
+/// See specs/l2-settlement.md §4.4.
+pub const MAX_ZK_PROOF_SIZE: usize = 400 * 1024;
+
+/// Committed rollup state + verification parameters, stored in `extra_data`
+/// of a `ZKRollup` output.
+///
+/// Layout is explicit (not bincode) so that `data_root` remains stable across
+/// serde feature flags and crate upgrades. See `to_bytes` for the exact layout.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZkRollupData {
+    /// Encoding version. Must equal `ZK_ROLLUP_DATA_VERSION`.
+    pub version: u16,
+    /// Unique 32-byte identifier for this rollup (chosen by the builder).
+    pub rollup_id: [u8; 32],
+    /// Proof system selector — see `verify_zk_proof` dispatch.
+    ///
+    /// Reserved values:
+    ///   0 = unassigned (rejected)
+    ///   1 = Plonky2 (Goldilocks, STARK-based)
+    ///   2 = Halo2 (BN254)
+    ///   3 = Groth16 (BLS12-381)
+    ///   4 = Risc0 zkVM
+    /// Other values are reserved for future proof systems.
+    pub proof_system_id: u16,
+    /// Verifying key bytes (variable length, ≤ `MAX_VERIFYING_KEY_SIZE`).
+    pub verifying_key: Vec<u8>,
+    /// 32-byte commitment to the rollup's state at this point in time.
+    pub state_root: [u8; 32],
+    /// Optional rollup-specific metadata (opaque to L1).
+    pub metadata: Vec<u8>,
+}
+
+impl ZkRollupData {
+    /// Create new ZkRollupData with the current layout version.
+    pub fn new(
+        rollup_id: [u8; 32],
+        proof_system_id: u16,
+        verifying_key: Vec<u8>,
+        state_root: [u8; 32],
+        metadata: Vec<u8>,
+    ) -> Self {
+        Self {
+            version: ZK_ROLLUP_DATA_VERSION,
+            rollup_id,
+            proof_system_id,
+            verifying_key,
+            state_root,
+            metadata,
+        }
+    }
+
+    /// Serialize to bytes for storage in `Output::extra_data`.
+    ///
+    /// Layout (little-endian):
+    ///   2B  version
+    ///  32B  rollup_id
+    ///   2B  proof_system_id
+    ///   4B  verifying_key_len (u32)
+    ///   *B  verifying_key
+    ///  32B  state_root
+    ///   4B  metadata_len (u32)
+    ///   *B  metadata
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let vk_len = self.verifying_key.len() as u32;
+        let meta_len = self.metadata.len() as u32;
+        let total = 2 + 32 + 2 + 4 + self.verifying_key.len() + 32 + 4 + self.metadata.len();
+        let mut bytes = Vec::with_capacity(total);
+        bytes.extend_from_slice(&self.version.to_le_bytes());
+        bytes.extend_from_slice(&self.rollup_id);
+        bytes.extend_from_slice(&self.proof_system_id.to_le_bytes());
+        bytes.extend_from_slice(&vk_len.to_le_bytes());
+        bytes.extend_from_slice(&self.verifying_key);
+        bytes.extend_from_slice(&self.state_root);
+        bytes.extend_from_slice(&meta_len.to_le_bytes());
+        bytes.extend_from_slice(&self.metadata);
+        bytes
+    }
+
+    /// Deserialize from bytes. Returns None on malformed input.
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        // Minimum: 2 + 32 + 2 + 4 + 0 + 32 + 4 + 0 = 76 bytes
+        if bytes.len() < 76 {
+            return None;
+        }
+        let mut cursor = 0usize;
+
+        let version = u16::from_le_bytes(bytes[cursor..cursor + 2].try_into().ok()?);
+        cursor += 2;
+
+        let rollup_id: [u8; 32] = bytes[cursor..cursor + 32].try_into().ok()?;
+        cursor += 32;
+
+        let proof_system_id = u16::from_le_bytes(bytes[cursor..cursor + 2].try_into().ok()?);
+        cursor += 2;
+
+        let vk_len = u32::from_le_bytes(bytes[cursor..cursor + 4].try_into().ok()?) as usize;
+        cursor += 4;
+        if vk_len > MAX_VERIFYING_KEY_SIZE || cursor + vk_len > bytes.len() {
+            return None;
+        }
+        let verifying_key = bytes[cursor..cursor + vk_len].to_vec();
+        cursor += vk_len;
+
+        if cursor + 32 > bytes.len() {
+            return None;
+        }
+        let state_root: [u8; 32] = bytes[cursor..cursor + 32].try_into().ok()?;
+        cursor += 32;
+
+        if cursor + 4 > bytes.len() {
+            return None;
+        }
+        let meta_len = u32::from_le_bytes(bytes[cursor..cursor + 4].try_into().ok()?) as usize;
+        cursor += 4;
+        if cursor + meta_len > bytes.len() {
+            return None;
+        }
+        let metadata = bytes[cursor..cursor + meta_len].to_vec();
+
+        Some(Self {
+            version,
+            rollup_id,
+            proof_system_id,
+            verifying_key,
+            state_root,
+            metadata,
+        })
+    }
+}

@@ -20,6 +20,12 @@ Master index for all DOLI protocol specifications.
 | [single-proposer-architecture.md](./single-proposer-architecture.md) | Single-Proposer-Per-Slot migration architecture - protocol v2 gating, attestation fork choice, emergency fallback, 3-phase implementation plan |
 | [gui-architecture.md](./gui-architecture.md) | GUI Desktop Application architecture - Tauri 2.x app structure, shared wallet crate, VDF feature flag, CI/CD pipeline, security model |
 
+## Future Interface Specifications
+
+| File | Description |
+|------|-------------|
+| [l2-settlement.md](./l2-settlement.md) | L2 settlement interface — minimal L1 surface for ZK-rollup settlement via `ZKRollup` output type and `ZKSettle` transaction type. Verifier-as-pure-function API, permissionless verifying-key-in-UTXO design, activation via existing `ProtocolActivation` hard-fork mechanism. Zero changes to the consensus engine. |
+
 ## Requirements Specifications
 
 | File | Description |
@@ -58,6 +64,7 @@ specs/
 ├── single-proposer-requirements.md   # Single-proposer migration requirements
 ├── gui-architecture.md               # GUI Desktop Application architecture
 ├── gui-desktop-requirements.md       # GUI Desktop Application requirements
+├── l2-settlement.md                  # L2 settlement interface (ZKSettle / ZKRollup)
 ├── improvements/
 │   ├── apply-block-modularization.md # Apply-block modularization
 │   ├── cli-modularization.md         # CLI modularization

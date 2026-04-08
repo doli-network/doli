@@ -173,6 +173,7 @@ impl From<&Transaction> for TransactionResponse {
             doli_core::TxType::LendingWithdraw => "lending_withdraw",
             doli_core::TxType::FractionalizeNft => "fractionalize_nft",
             doli_core::TxType::RedeemNft => "redeem_nft",
+            doli_core::TxType::ZKSettle => "zk_settle",
         };
 
         // Decode covenant witnesses from tx.extra_data (if present)
@@ -320,6 +321,7 @@ impl From<&doli_core::Output> for OutputResponse {
             doli_core::OutputType::LPShare => "lpShare",
             doli_core::OutputType::Collateral => "collateral",
             doli_core::OutputType::LendingDeposit => "lendingDeposit",
+            doli_core::OutputType::ZKRollup => "zkRollup",
         };
 
         // Decode covenant condition for conditioned outputs

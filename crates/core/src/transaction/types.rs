@@ -82,6 +82,21 @@ pub enum TxType {
     FractionalizeNft = 29,
     /// Burn all fraction tokens and unlock the original NFT
     RedeemNft = 30,
+    /// L2 settlement — verify a zero-knowledge proof of an L2 state transition.
+    ///
+    /// Consumes exactly one `ZKRollup` output (previous committed state) and
+    /// produces exactly one `ZKRollup` output (new committed state). Optional
+    /// `Normal` outputs are allowed (fees, change, L2→L1 withdrawals justified
+    /// by the proof).
+    ///
+    /// L1's only job: call `verify_zk_proof(verifying_key, prev_root, next_root, proof)`.
+    /// If valid, the settlement commits atomically via the UTXO model. No fraud window.
+    ///
+    /// Gated by `ZK_SETTLE_ACTIVATION_HEIGHT` — set to `u64::MAX` until a
+    /// `ProtocolActivation` tx schedules activation at a future epoch.
+    ///
+    /// See `specs/l2-settlement.md` for the full interface specification.
+    ZKSettle = 31,
 }
 
 impl TxType {
@@ -116,6 +131,7 @@ impl TxType {
             28 => Some(Self::LendingWithdraw),
             29 => Some(Self::FractionalizeNft),
             30 => Some(Self::RedeemNft),
+            31 => Some(Self::ZKSettle),
             _ => None,
         }
     }
@@ -151,6 +167,15 @@ pub enum OutputType {
     Collateral = 11,
     /// Lending pool deposit receipt (depositor provides DOLI, earns interest)
     LendingDeposit = 12,
+    /// L2 rollup committed state (verifying_key + state_root in extra_data).
+    ///
+    /// Holds `amount = 0`. Consumable only by a `ZKSettle` tx with a valid
+    /// zero-knowledge proof. Each rollup is its own trust domain — the
+    /// verifying_key lives in the UTXO, not in a maintainer-governed registry.
+    /// Permissionless by construction.
+    ///
+    /// See `specs/l2-settlement.md` §4.1 for the extra_data layout.
+    ZKRollup = 13,
 }
 
 impl OutputType {
@@ -169,6 +194,7 @@ impl OutputType {
             10 => Some(Self::LPShare),
             11 => Some(Self::Collateral),
             12 => Some(Self::LendingDeposit),
+            13 => Some(Self::ZKRollup),
             _ => None,
         }
     }

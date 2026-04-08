@@ -93,6 +93,7 @@ impl RpcContext {
                     doli_core::OutputType::LPShare => "lpShare",
                     doli_core::OutputType::Collateral => "collateral",
                     doli_core::OutputType::LendingDeposit => "lendingDeposit",
+                    doli_core::OutputType::ZKRollup => "zkRollup",
                 };
 
                 let condition = if entry.output.output_type.is_conditioned() {
@@ -205,6 +206,7 @@ impl RpcContext {
                     doli_core::OutputType::LPShare => "lpShare",
                     doli_core::OutputType::Collateral => "collateral",
                     doli_core::OutputType::LendingDeposit => "lendingDeposit",
+                    doli_core::OutputType::ZKRollup => "zkRollup",
                 };
 
                 let nft = if output.output_type == doli_core::OutputType::NFT {

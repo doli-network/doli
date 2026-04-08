@@ -2793,3 +2793,208 @@ fn test_redeem_nft_fraction_in_outputs_rejected() {
         err
     );
 }
+
+// ==========================================================================
+// ZKSettle / ZKRollup L2 Settlement Tests
+//
+// These tests lock in the current hard-fork-gated behavior: every ZKSettle
+// transaction is rejected pre-activation (ZK_SETTLE_ACTIVATION_HEIGHT =
+// u64::MAX by default). The structural validator catches all well-defined
+// failure modes before the verifier is ever reached.
+//
+// When a real verifier is wired and the activation height is lowered, these
+// tests will still pass — pre-activation calls must continue to be rejected
+// at any height below the activation height.
+// ==========================================================================
+
+fn make_zk_rollup_data() -> crate::transaction::ZkRollupData {
+    crate::transaction::ZkRollupData::new(
+        [7u8; 32],                                // rollup_id
+        crate::validation::proof_system::PLONKY2, // proof_system_id
+        vec![0xabu8; 64],                         // verifying_key (non-empty, small)
+        [9u8; 32],                                // state_root
+        vec![],                                   // metadata
+    )
+}
+
+fn make_zk_rollup_output(data: &crate::transaction::ZkRollupData) -> Output {
+    Output {
+        output_type: OutputType::ZKRollup,
+        amount: 0,
+        pubkey_hash: crypto::hash::hash(b"zkrollup-owner"),
+        lock_until: 0,
+        extra_data: data.to_bytes(),
+    }
+}
+
+#[test]
+fn test_zksettle_rejected_pre_activation() {
+    // At any height below ZK_SETTLE_ACTIVATION_HEIGHT (u64::MAX by default),
+    // ZKSettle must be rejected structurally, before the verifier runs.
+    let ctx = test_context();
+
+    let data = make_zk_rollup_data();
+    let tx = Transaction {
+        version: 1,
+        tx_type: TxType::ZKSettle,
+        inputs: vec![Input::new(Hash::ZERO, 0)],
+        outputs: vec![make_zk_rollup_output(&data)],
+        extra_data: vec![0u8; 128], // fake proof blob
+    };
+
+    let result = validate_transaction(&tx, &ctx);
+    assert!(
+        matches!(
+            &result,
+            Err(ValidationError::InvalidTransaction(msg)) if msg.contains("ERRTX-ZK001")
+        ),
+        "expected ERRTX-ZK001 pre-activation rejection, got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_zkrollup_output_requires_zero_amount() {
+    // A ZKRollup output with amount > 0 must be rejected at validate_outputs.
+    let ctx = test_context();
+
+    let data = make_zk_rollup_data();
+    let mut bad_output = make_zk_rollup_output(&data);
+    bad_output.amount = 100; // must be 0
+
+    let tx = Transaction {
+        version: 1,
+        tx_type: TxType::Transfer, // doesn't matter — output check runs regardless
+        inputs: vec![Input::new(Hash::ZERO, 0)],
+        outputs: vec![bad_output],
+        extra_data: vec![],
+    };
+
+    let result = validate_transaction(&tx, &ctx);
+    assert!(
+        matches!(
+            &result,
+            Err(ValidationError::InvalidTransaction(msg)) if msg.contains("ERRTX-ZK010")
+        ),
+        "expected ERRTX-ZK010 (ZKRollup non-zero amount), got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_zkrollup_output_rejects_malformed_extra_data() {
+    // A ZKRollup output with truncated extra_data cannot decode → rejected.
+    let ctx = test_context();
+
+    let bad_output = Output {
+        output_type: OutputType::ZKRollup,
+        amount: 0,
+        pubkey_hash: crypto::hash::hash(b"zkrollup-owner"),
+        lock_until: 0,
+        extra_data: vec![1u8, 2u8, 3u8], // way too short
+    };
+
+    let tx = Transaction {
+        version: 1,
+        tx_type: TxType::Transfer,
+        inputs: vec![Input::new(Hash::ZERO, 0)],
+        outputs: vec![bad_output],
+        extra_data: vec![],
+    };
+
+    let result = validate_transaction(&tx, &ctx);
+    assert!(
+        matches!(
+            &result,
+            Err(ValidationError::InvalidTransaction(msg)) if msg.contains("ERRTX-ZK011")
+        ),
+        "expected ERRTX-ZK011 (malformed ZkRollupData), got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_zk_rollup_data_roundtrip() {
+    // to_bytes → from_bytes must preserve all fields exactly.
+    let data = make_zk_rollup_data();
+    let bytes = data.to_bytes();
+    let decoded = crate::transaction::ZkRollupData::from_bytes(&bytes)
+        .expect("decoding should succeed on well-formed data");
+
+    assert_eq!(decoded.version, data.version);
+    assert_eq!(decoded.rollup_id, data.rollup_id);
+    assert_eq!(decoded.proof_system_id, data.proof_system_id);
+    assert_eq!(decoded.verifying_key, data.verifying_key);
+    assert_eq!(decoded.state_root, data.state_root);
+    assert_eq!(decoded.metadata, data.metadata);
+}
+
+#[test]
+fn test_zk_rollup_data_rejects_oversized_verifying_key() {
+    // A declared verifying_key length larger than MAX_VERIFYING_KEY_SIZE must
+    // be rejected by the deserializer before it consumes the bytes.
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&1u16.to_le_bytes()); // version
+    bytes.extend_from_slice(&[0u8; 32]); // rollup_id
+    bytes.extend_from_slice(&1u16.to_le_bytes()); // proof_system_id
+    let oversized = (crate::transaction::MAX_VERIFYING_KEY_SIZE as u32) + 1;
+    bytes.extend_from_slice(&oversized.to_le_bytes()); // vk_len
+                                                       // Don't actually include the bytes — the length check runs first.
+
+    let decoded = crate::transaction::ZkRollupData::from_bytes(&bytes);
+    assert!(decoded.is_none(), "oversized vk_len must be rejected");
+}
+
+#[test]
+fn test_verify_zk_proof_stub_returns_not_yet_activated() {
+    // The stub verifier must return NotYetActivated for any height below
+    // ZK_SETTLE_ACTIVATION_HEIGHT. This locks in the safe default.
+    use crate::validation::zk::{verify_zk_proof, ZkVerifyContext, ZkVerifyError};
+
+    let verify_ctx = ZkVerifyContext {
+        budget_us_remaining: 2_000_000,
+        proof_system_id: crate::validation::proof_system::PLONKY2,
+        height: 100, // well below u64::MAX
+    };
+
+    let result = verify_zk_proof(&[0u8; 32], &[1u8; 32], &[2u8; 32], &[0u8; 128], &verify_ctx);
+    assert!(
+        matches!(result, Err(ZkVerifyError::NotYetActivated { .. })),
+        "stub must return NotYetActivated pre-activation, got {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_zkrollup_input_only_spendable_by_zksettle() {
+    // A ZKRollup UTXO cannot be consumed by a Transfer transaction.
+    // This test exercises validate_transaction_with_utxos, which is where
+    // the spending-authorization rule lives.
+    let ctx = test_context();
+
+    let data = make_zk_rollup_data();
+    let zkrollup_utxo = make_zk_rollup_output(&data);
+
+    let prev_tx = Hash::from_bytes([42u8; 32]);
+    let mut utxo_provider = MockUtxoProvider::new();
+    utxo_provider.add_utxo(prev_tx, 0, zkrollup_utxo, PublicKey::from_bytes([0u8; 32]));
+
+    // Try to spend the ZKRollup UTXO with a Transfer tx — must fail.
+    let tx = Transaction {
+        version: 1,
+        tx_type: TxType::Transfer,
+        inputs: vec![Input::new(prev_tx, 0)],
+        outputs: vec![Output::normal(1, crypto::hash::hash(b"recipient"))],
+        extra_data: vec![],
+    };
+
+    let result = utxo::validate_transaction_with_utxos(&tx, &ctx, &utxo_provider);
+    assert!(
+        matches!(
+            &result,
+            Err(ValidationError::InvalidTransaction(msg)) if msg.contains("ERRTX-ZK012")
+        ),
+        "expected ERRTX-ZK012 (ZKRollup spent by non-ZKSettle), got: {:?}",
+        result
+    );
+}

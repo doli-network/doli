@@ -157,6 +157,7 @@ impl RpcContext {
                     doli_core::TxType::LendingWithdraw => "lending_withdraw",
                     doli_core::TxType::FractionalizeNft => "fractionalize_nft",
                     doli_core::TxType::RedeemNft => "redeem_nft",
+                    doli_core::TxType::ZKSettle => "zk_settle",
                 };
 
                 // Resolve sender addresses from inputs

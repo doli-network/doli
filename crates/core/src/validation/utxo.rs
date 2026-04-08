@@ -134,6 +134,16 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
             )));
         }
 
+        // ZKRollup UTXOs can ONLY be spent by ZKSettle transactions. This is
+        // the spending-authorization rule for L2 state: the ZK proof inside
+        // the ZKSettle tx IS the signature.
+        if utxo.output.output_type == OutputType::ZKRollup && tx.tx_type != TxType::ZKSettle {
+            return Err(ValidationError::InvalidTransaction(format!(
+                "[ERRTX-ZK012] input {} is a ZKRollup UTXO — can only be spent by ZKSettle, got tx_type={:?}",
+                i, tx.tx_type
+            )));
+        }
+
         // Check lock time -- skip for WithdrawalRequest/Exit (they unlock Bond UTXOs)
         if tx.tx_type != TxType::RequestWithdrawal
             && tx.tx_type != TxType::Exit
@@ -145,16 +155,20 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
             });
         }
 
-        // Verify spending conditions (signature for Normal/Bond, condition evaluator for others)
-        verify_input_conditions(
-            tx,
-            input,
-            &signing_hash,
-            &utxo,
-            i,
-            ctx.current_height,
-            ctx.sig_verification_height,
-        )?;
+        // Verify spending conditions (signature for Normal/Bond, condition evaluator for others).
+        // ZKSettle authorizes spending via a ZK proof, not a signature — the
+        // proof is verified after the input loop (see `verify_zk_settlement`).
+        if !(tx.tx_type == TxType::ZKSettle && utxo.output.output_type == OutputType::ZKRollup) {
+            verify_input_conditions(
+                tx,
+                input,
+                &signing_hash,
+                &utxo,
+                i,
+                ctx.current_height,
+                ctx.sig_verification_height,
+            )?;
+        }
 
         // Add to total (with overflow check) — only native DOLI amounts
         if utxo.output.output_type.is_native_amount() {
@@ -729,7 +743,122 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
         }
     }
 
+    // ------------------------------------------------------------------
+    // -- ZKSettle: verify the zero-knowledge proof
+    // ------------------------------------------------------------------
+    // Structural checks already ran in `validate_transaction` →
+    // `validate_zk_settle_structure`. Here we have the UTXO provider, so
+    // we can resolve the previous ZKRollup UTXO and run the verifier.
+    if tx.tx_type == TxType::ZKSettle {
+        verify_zk_settlement(tx, ctx, utxo_provider)?;
+    }
+
     Ok(())
+}
+
+/// Verify a ZKSettle transaction's proof against the previous rollup state.
+///
+/// Reads the previous `ZKRollup` UTXO (containing the verifying_key and
+/// `prev_state_root`), reads the next `ZKRollup` output (containing the
+/// `next_state_root`), and dispatches to `verify_zk_proof()`.
+///
+/// Rollup identity (`rollup_id`, `proof_system_id`) must be preserved across
+/// the settlement — a ZKSettle tx cannot change which rollup it represents.
+///
+/// Until `ZK_SETTLE_ACTIVATION_HEIGHT` is lowered via `ProtocolActivation`,
+/// this always returns an error — the verifier stub rejects every call.
+fn verify_zk_settlement<U: UtxoProvider>(
+    tx: &Transaction,
+    ctx: &ValidationContext,
+    utxo_provider: &U,
+) -> Result<(), ValidationError> {
+    use crate::transaction::ZkRollupData;
+    use crate::validation::zk::{verify_zk_proof, ZkVerifyContext, ZkVerifyError};
+
+    // Structural check already enforced exactly 1 input. Defensive re-check.
+    let input = tx.inputs.first().ok_or_else(|| {
+        ValidationError::InvalidTransaction(
+            "[ERRTX-ZK013] ZKSettle missing input at verification stage".to_string(),
+        )
+    })?;
+
+    let prev_utxo = utxo_provider
+        .get_utxo(&input.prev_tx_hash, input.output_index)
+        .ok_or(ValidationError::OutputNotFound {
+            tx_hash: input.prev_tx_hash,
+            output_index: input.output_index,
+        })?;
+
+    if prev_utxo.output.output_type != OutputType::ZKRollup {
+        return Err(ValidationError::InvalidTransaction(format!(
+            "[ERRTX-ZK014] ZKSettle input is type {:?}, expected ZKRollup",
+            prev_utxo.output.output_type
+        )));
+    }
+
+    let prev_data = ZkRollupData::from_bytes(&prev_utxo.output.extra_data).ok_or_else(|| {
+        ValidationError::InvalidTransaction(
+            "[ERRTX-ZK015] ZKSettle input ZKRollup UTXO has malformed ZkRollupData".to_string(),
+        )
+    })?;
+
+    let next_output = tx.outputs.first().ok_or_else(|| {
+        ValidationError::InvalidTransaction(
+            "[ERRTX-ZK016] ZKSettle missing output at verification stage".to_string(),
+        )
+    })?;
+
+    let next_data = ZkRollupData::from_bytes(&next_output.extra_data).ok_or_else(|| {
+        ValidationError::InvalidTransaction(
+            "[ERRTX-ZK017] ZKSettle output ZKRollup extra_data is malformed".to_string(),
+        )
+    })?;
+
+    // Rollup identity is immutable across settlements.
+    if prev_data.rollup_id != next_data.rollup_id {
+        return Err(ValidationError::InvalidTransaction(
+            "[ERRTX-ZK018] ZKSettle rollup_id changed between prev and next state".to_string(),
+        ));
+    }
+    if prev_data.proof_system_id != next_data.proof_system_id {
+        return Err(ValidationError::InvalidTransaction(
+            "[ERRTX-ZK019] ZKSettle proof_system_id changed between prev and next state"
+                .to_string(),
+        ));
+    }
+    if prev_data.verifying_key != next_data.verifying_key {
+        return Err(ValidationError::InvalidTransaction(
+            "[ERRTX-ZK020] ZKSettle verifying_key changed between prev and next state".to_string(),
+        ));
+    }
+
+    // Dispatch to the verifier. The proof lives in tx.extra_data
+    // (see specs/l2-settlement.md §4.2 option 1).
+    let verify_ctx = ZkVerifyContext {
+        // 2 second per-block budget; the block-level accountant in
+        // validate_block() will enforce the cumulative cap. Per-call
+        // budget defaults to the full per-block cap for now.
+        budget_us_remaining: 2_000_000,
+        proof_system_id: prev_data.proof_system_id,
+        height: ctx.current_height,
+    };
+
+    match verify_zk_proof(
+        &prev_data.verifying_key,
+        &prev_data.state_root,
+        &next_data.state_root,
+        &tx.extra_data,
+        &verify_ctx,
+    ) {
+        Ok(_cost_us) => Ok(()),
+        Err(ZkVerifyError::NotYetActivated { .. }) => Err(ValidationError::InvalidTransaction(
+            "[ERRTX-ZK021] ZKSettle not yet activated on this chain".to_string(),
+        )),
+        Err(e) => Err(ValidationError::InvalidTransaction(format!(
+            "[ERRTX-ZK022] ZKSettle proof rejected: {}",
+            e
+        ))),
+    }
 }
 
 /// Verify spending conditions on a transaction input.

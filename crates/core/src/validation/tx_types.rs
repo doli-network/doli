@@ -719,3 +719,91 @@ pub(super) fn validate_protocol_activation_data(tx: &Transaction) -> Result<(), 
 
     Ok(())
 }
+
+/// Validate the structure of a `ZKSettle` transaction.
+///
+/// Structural checks (no UTXO lookups, no proof verification):
+///   1. Height gate — reject if below `ZK_SETTLE_ACTIVATION_HEIGHT`.
+///   2. Exactly 1 input (the previous `ZKRollup` UTXO reference).
+///   3. At least 1 output, where the **first** output is a `ZKRollup` output.
+///   4. The first output's `extra_data` deserializes as `ZkRollupData`.
+///   5. The rollup identity fields are within documented caps.
+///   6. The optional proof blob in `tx.extra_data` does not exceed `MAX_ZK_PROOF_SIZE`.
+///
+/// The actual ZK proof is verified in `validate_transaction_with_utxos()`
+/// where the input UTXO (and therefore the previous `ZkRollupData`) is available.
+pub(super) fn validate_zk_settle_structure(
+    tx: &Transaction,
+    ctx: &ValidationContext,
+) -> Result<(), ValidationError> {
+    use crate::transaction::{ZkRollupData, MAX_VERIFYING_KEY_SIZE, MAX_ZK_PROOF_SIZE};
+
+    // 1. Activation gate. Until a ProtocolActivation tx lowers
+    //    ZK_SETTLE_ACTIVATION_HEIGHT, this short-circuits every call.
+    if ctx.current_height < crate::consensus::ZK_SETTLE_ACTIVATION_HEIGHT {
+        return Err(ValidationError::InvalidTransaction(format!(
+            "[ERRTX-ZK001] ZKSettle not yet activated (height {} < activation {})",
+            ctx.current_height,
+            crate::consensus::ZK_SETTLE_ACTIVATION_HEIGHT
+        )));
+    }
+
+    // 2. Exactly one input — the previous ZKRollup UTXO reference.
+    if tx.inputs.len() != 1 {
+        return Err(ValidationError::InvalidTransaction(format!(
+            "[ERRTX-ZK002] ZKSettle must have exactly 1 input, got {}",
+            tx.inputs.len()
+        )));
+    }
+
+    // 3. At least one output, first must be ZKRollup.
+    if tx.outputs.is_empty() {
+        return Err(ValidationError::InvalidTransaction(
+            "[ERRTX-ZK003] ZKSettle must have at least 1 output".to_string(),
+        ));
+    }
+    if tx.outputs[0].output_type != OutputType::ZKRollup {
+        return Err(ValidationError::InvalidTransaction(format!(
+            "[ERRTX-ZK004] ZKSettle first output must be ZKRollup, got {:?}",
+            tx.outputs[0].output_type
+        )));
+    }
+
+    // 4. The first output's extra_data must decode as ZkRollupData.
+    let out_data = ZkRollupData::from_bytes(&tx.outputs[0].extra_data).ok_or_else(|| {
+        ValidationError::InvalidTransaction(
+            "[ERRTX-ZK005] ZKSettle first output extra_data is not a valid ZkRollupData"
+                .to_string(),
+        )
+    })?;
+
+    // 5. Rollup identity caps (defense in depth — the deserializer also enforces).
+    if out_data.verifying_key.is_empty() {
+        return Err(ValidationError::InvalidTransaction(
+            "[ERRTX-ZK006] ZkRollupData verifying_key must not be empty".to_string(),
+        ));
+    }
+    if out_data.verifying_key.len() > MAX_VERIFYING_KEY_SIZE {
+        return Err(ValidationError::InvalidTransaction(format!(
+            "[ERRTX-ZK007] ZkRollupData verifying_key size {} exceeds max {}",
+            out_data.verifying_key.len(),
+            MAX_VERIFYING_KEY_SIZE
+        )));
+    }
+    if out_data.proof_system_id == crate::validation::proof_system::UNASSIGNED {
+        return Err(ValidationError::InvalidTransaction(
+            "[ERRTX-ZK008] ZkRollupData proof_system_id is UNASSIGNED (0)".to_string(),
+        ));
+    }
+
+    // 6. Proof blob size cap. The proof lives in tx.extra_data (see spec §4.2).
+    if tx.extra_data.len() > MAX_ZK_PROOF_SIZE {
+        return Err(ValidationError::InvalidTransaction(format!(
+            "[ERRTX-ZK009] ZKSettle proof size {} exceeds max {}",
+            tx.extra_data.len(),
+            MAX_ZK_PROOF_SIZE
+        )));
+    }
+
+    Ok(())
+}

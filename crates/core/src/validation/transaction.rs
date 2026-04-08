@@ -9,7 +9,7 @@ use super::tx_types::{
     validate_delegate_bond_data, validate_epoch_reward_data, validate_exit_data,
     validate_maintainer_change_data, validate_mint_asset, validate_protocol_activation_data,
     validate_revoke_delegation_data, validate_slash_data, validate_slash_data_skip_vdf,
-    validate_withdrawal_request_data,
+    validate_withdrawal_request_data, validate_zk_settle_structure,
 };
 use super::{ValidationContext, ValidationError};
 
@@ -190,6 +190,12 @@ pub fn validate_transaction(
         TxType::RedeemNft => {
             super::fractionalize::validate_redeem_nft(tx)?;
         }
+        TxType::ZKSettle => {
+            // L2 settlement — structural checks only. The ZK proof itself
+            // is verified in `validate_transaction_with_utxos()` where the
+            // input ZKRollup UTXO is available.
+            validate_zk_settle_structure(tx, ctx)?;
+        }
     }
 
     Ok(())
@@ -246,9 +252,13 @@ pub(super) fn validate_outputs(
     for (i, output) in outputs.iter().enumerate() {
         // Amount must be positive.
         // Pool outputs exempt: reserves tracked in extra_data.
+        // ZKRollup outputs exempt: represent committed state, not currency.
         // Non-native types (FungibleAsset, LPShare, Collateral) carry token
         // units / LP shares — zero is also prohibited for them.
-        if output.amount == 0 && output.output_type != OutputType::Pool {
+        if output.amount == 0
+            && output.output_type != OutputType::Pool
+            && output.output_type != OutputType::ZKRollup
+        {
             return Err(ValidationError::InvalidTransaction(format!(
                 "[ERRTX003] output {} has zero amount (type={:?})",
                 i, output.output_type
@@ -515,6 +525,26 @@ pub(super) fn validate_outputs(
                     return Err(ValidationError::InvalidTransaction(format!(
                         "[ERRTX031] LendingDeposit output {} has invalid or undecodable metadata ({} bytes extra_data)",
                         i, output.extra_data.len()
+                    )));
+                }
+            }
+            OutputType::ZKRollup => {
+                // ZKRollup output: amount must be zero (committed state, not currency).
+                if output.amount != 0 {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "[ERRTX-ZK010] ZKRollup output {} must have amount=0, got {}",
+                        i, output.amount
+                    )));
+                }
+                // The extra_data must decode as ZkRollupData. The full structural
+                // checks (verifying_key size, proof_system_id, etc.) run later in
+                // validate_zk_settle_structure() when the enclosing tx is known
+                // to be a ZKSettle. Here we only confirm the layout is parseable.
+                if crate::transaction::ZkRollupData::from_bytes(&output.extra_data).is_none() {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "[ERRTX-ZK011] ZKRollup output {} extra_data is not a valid ZkRollupData ({} bytes)",
+                        i,
+                        output.extra_data.len()
                     )));
                 }
             }

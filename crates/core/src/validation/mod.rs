@@ -37,6 +37,8 @@ mod transaction;
 mod tx_types;
 mod types;
 mod utxo;
+/// Zero-knowledge proof verification for L2 settlement.
+pub mod zk;
 
 pub use block::{validate_block, validate_block_with_mode, validate_header};
 pub use error::ValidationError;
@@ -48,3 +50,4 @@ pub use types::{
     RegistrationChainState, UtxoInfo, UtxoProvider, ValidationContext, ValidationMode,
 };
 pub use utxo::validate_transaction_with_utxos;
+pub use zk::{proof_system, verify_zk_proof, ZkVerifyContext, ZkVerifyError};

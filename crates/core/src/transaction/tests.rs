@@ -79,7 +79,8 @@ fn test_tx_type_conversion() {
     assert_eq!(TxType::from_u32(28), Some(TxType::LendingWithdraw));
     assert_eq!(TxType::from_u32(29), Some(TxType::FractionalizeNft));
     assert_eq!(TxType::from_u32(30), Some(TxType::RedeemNft));
-    assert_eq!(TxType::from_u32(31), None);
+    assert_eq!(TxType::from_u32(31), Some(TxType::ZKSettle));
+    assert_eq!(TxType::from_u32(32), None);
     assert_eq!(TxType::from_u32(u32::MAX), None);
 }
 
@@ -98,7 +99,8 @@ fn test_output_type_conversion() {
     assert_eq!(OutputType::from_u8(10), Some(OutputType::LPShare));
     assert_eq!(OutputType::from_u8(11), Some(OutputType::Collateral));
     assert_eq!(OutputType::from_u8(12), Some(OutputType::LendingDeposit));
-    assert_eq!(OutputType::from_u8(13), None);
+    assert_eq!(OutputType::from_u8(13), Some(OutputType::ZKRollup));
+    assert_eq!(OutputType::from_u8(14), None);
     assert_eq!(OutputType::from_u8(u8::MAX), None);
 }
 
@@ -659,7 +661,8 @@ fn test_tx_type_from_u32_protocol_activation() {
     assert_eq!(TxType::from_u32(28), Some(TxType::LendingWithdraw));
     assert_eq!(TxType::from_u32(29), Some(TxType::FractionalizeNft));
     assert_eq!(TxType::from_u32(30), Some(TxType::RedeemNft));
-    assert_eq!(TxType::from_u32(31), None);
+    assert_eq!(TxType::from_u32(31), Some(TxType::ZKSettle));
+    assert_eq!(TxType::from_u32(32), None);
 }
 
 // Property-based tests
