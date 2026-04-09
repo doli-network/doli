@@ -18,6 +18,13 @@ mod startup;
 mod tx_announcements;
 mod validation_checks;
 
+// Re-export the startup UTXO init helper so integration tests can exercise it
+// in isolation (INC-I-027 regression tests). Used only through the lib target —
+// the bin target reaches this logic via `Node::new`, so the `pub use` appears
+// unused from the bin's perspective.
+#[allow(unused_imports)]
+pub use init::init_utxo_set;
+
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;

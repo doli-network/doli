@@ -1,5 +1,102 @@
 use super::*;
 
+/// Initialize the UTXO set from disk, reconciling `utxo_store/` against `state_db`.
+///
+/// Called by `Node::new` at startup. Kept as a free function so integration tests
+/// can exercise the startup init logic in isolation (see
+/// `bins/node/tests/inc_i_027_utxo_restore_selfheal.rs`).
+///
+/// ## Behavior
+///
+/// `state_db` is always authoritative — it holds the canonical UTXO set inside its
+/// own column family and is carried in every guardian checkpoint. `utxo_store/` is
+/// a separate RocksDB cache that must stay in lockstep with `state_db`.
+///
+/// Resolution matrix:
+///
+/// | `utxo_store` state | Action |
+/// |---|---|
+/// | Cannot open | Fall back to in-memory, migrate from `state_db` |
+/// | Empty, `state_db` empty | Empty store (genesis / fresh install) |
+/// | Empty, `state_db` non-empty | Migrate from `state_db` (first boot after upgrade) |
+/// | Non-empty, `len` matches `state_db` | Use as-is (normal steady state) |
+/// | Non-empty, `len` differs from `state_db` | **INC-I-027 self-heal**: clear and rebuild from `state_db` |
+///
+/// ## INC-I-027 — guardian-restore self-heal
+///
+/// Pre-fix, the non-empty branch used `utxo_store/` as-is with no comparison against
+/// `state_db`. When an operator restored `state_db + blocks` from a guardian
+/// checkpoint but left `utxo_store/` in place (the default, because the guardian
+/// never snapshotted it), the node started with mismatched local state:
+/// `state_db` at the restored height, `utxo_store/` at the pre-restore height.
+/// The node reported the correct height on RPC but silently operated on stale
+/// UTXOs, making it vulnerable to bad reorgs (2026-04-09 mainnet: ai1/ai2 reorged
+/// forward within 15 seconds of restore).
+///
+/// The fix detects `store.len() != state_db.utxo_len()`, clears `utxo_store/`, and
+/// re-migrates from `state_db.iter_utxos()` — the same authoritative loop already
+/// used for empty stores. Triggers only when the two stores are already inconsistent;
+/// zero cost in steady state.
+pub fn init_utxo_set(data_dir: &std::path::Path, state_db: &StateDb) -> UtxoSet {
+    let utxo_rocks_path = data_dir.join("utxo_store");
+    // RocksDB UTXO store: durable, scales to millions of entries without RAM growth.
+    // In-memory is a legacy fallback for when RocksDB cannot be opened.
+    match UtxoSet::open_rocksdb(&utxo_rocks_path) {
+        Ok(mut store) => {
+            let state_len = state_db.utxo_len();
+            let store_len = store.len();
+
+            if store.is_empty() && state_len > 0 {
+                // First boot after upgrade, or fresh install with pre-seeded state_db.
+                info!(
+                    "[UTXO] Migrating {} UTXOs from StateDb to RocksDB...",
+                    state_len
+                );
+                for (outpoint, entry) in state_db.iter_utxos() {
+                    let _ = store.insert(outpoint, entry);
+                }
+                info!(
+                    "[UTXO] Migration complete: {} UTXOs in RocksDB",
+                    store.len()
+                );
+            } else if !store.is_empty() && store_len != state_len {
+                // INC-I-027 self-heal: detected divergence between the two local
+                // stores. This is the guardian-restore gap — operator restored
+                // state_db from a checkpoint but left the stale utxo_store in place.
+                // state_db is authoritative; rebuild utxo_store from it.
+                warn!(
+                    "[UTXO] INC-I-027: utxo_store mismatch with state_db \
+                     (utxo_store={} state_db={}) — rebuilding from state_db (guardian-restore self-heal)",
+                    store_len, state_len
+                );
+                store.clear();
+                for (outpoint, entry) in state_db.iter_utxos() {
+                    let _ = store.insert(outpoint, entry);
+                }
+                info!(
+                    "[UTXO] INC-I-027: rebuild complete: {} UTXOs in RocksDB",
+                    store.len()
+                );
+            } else if !store.is_empty() {
+                // Steady state — stores agree, use as-is.
+                info!("[UTXO] RocksDB store: {} UTXOs", store_len);
+            }
+            store
+        }
+        Err(e) => {
+            warn!(
+                "[UTXO] Failed to open RocksDB store: {}. Falling back to in-memory.",
+                e
+            );
+            let mut mem = storage::InMemoryUtxoStore::new();
+            for (outpoint, entry) in state_db.iter_utxos() {
+                mem.insert(outpoint, entry);
+            }
+            UtxoSet::InMemory(mem)
+        }
+    }
+}
+
 impl Node {
     /// Create a new node
     ///
@@ -151,47 +248,10 @@ impl Node {
             cs
         };
 
-        // Load UTXOs: use RocksDB-backed store if available, fall back to in-memory.
-        // RocksDB-backed: UTXOs stay on disk, hot entries cached by RocksDB block cache.
-        // Scales to millions of UTXOs without proportional RAM growth.
-        // In-memory: legacy fallback for testing and migration.
-        let utxo_rocks_path = config.data_dir.join("utxo_store");
-        // Always use RocksDB UTXO store (Phase 2: eliminates RAM bottleneck)
-        let utxo_set = {
-            // RocksDB mode: open or migrate
-            match UtxoSet::open_rocksdb(&utxo_rocks_path) {
-                Ok(mut store) => {
-                    // If RocksDB store is empty but StateDb has UTXOs, migrate
-                    if store.is_empty() && state_db.utxo_len() > 0 {
-                        info!(
-                            "[UTXO] Migrating {} UTXOs from StateDb to RocksDB...",
-                            state_db.utxo_len()
-                        );
-                        for (outpoint, entry) in state_db.iter_utxos() {
-                            let _ = store.insert(outpoint, entry);
-                        }
-                        info!(
-                            "[UTXO] Migration complete: {} UTXOs in RocksDB",
-                            store.len()
-                        );
-                    } else if !store.is_empty() {
-                        info!("[UTXO] RocksDB store: {} UTXOs", store.len());
-                    }
-                    store
-                }
-                Err(e) => {
-                    warn!(
-                        "[UTXO] Failed to open RocksDB store: {}. Falling back to in-memory.",
-                        e
-                    );
-                    let mut mem = storage::InMemoryUtxoStore::new();
-                    for (outpoint, entry) in state_db.iter_utxos() {
-                        mem.insert(outpoint, entry);
-                    }
-                    UtxoSet::InMemory(mem)
-                }
-            }
-        };
+        // Load UTXOs: scales to millions of entries via RocksDB-backed store,
+        // with startup self-heal against state_db (INC-I-027 guardian-restore fix).
+        // See `init_utxo_set` doc comment for the full behavior matrix.
+        let utxo_set = init_utxo_set(&config.data_dir, &state_db);
         let utxo_set = Arc::new(RwLock::new(utxo_set));
 
         // Validate genesis hash against embedded chainspec (detect state_db corruption).
