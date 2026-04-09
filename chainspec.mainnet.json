@@ -3,8 +3,8 @@
   "id": "mainnet",
   "network": "Mainnet",
   "genesis": {
-    "timestamp": 1775770218,
-    "message": "DOLI Mainnet Genesis - v6.8.1 rollback cascade fix 09/Apr/2026 v10",
+    "timestamp": 1775775890,
+    "message": "DOLI Mainnet Genesis - v6.8.3 all cascade vectors neutralized 10/Apr/2026 v11",
     "initial_reward": 100000000
   },
   "consensus": {
