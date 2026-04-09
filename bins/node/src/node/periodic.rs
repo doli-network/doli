@@ -622,53 +622,15 @@ impl Node {
                 self.epoch_bond_snapshot_epoch, snap_bonds, snap_producers
             );
 
-            // INC-I-020: Stale tip recovery.
-            // The sync engine ignores gaps of 1-2 blocks (assumes gossip will deliver).
-            // But if gossip missed the block (reconnection, TTL expiry), the gap becomes
-            // permanent — the node is "Idle" but stuck behind. This safety net runs every
-            // 30s and requests the missing block directly from the best peer.
+            // INC-I-020/020b: DISABLED.
             //
-            // INC-I-020b: Also covers "Synchronized" state with hash divergence.
-            // A node can be at the same height as peers but on a 1-block fork.
-            // When heights match but hashes differ, request the peer's block.
-            // Safety: blocks that don't connect to our tip (prev_hash != local_hash)
-            // are discarded in handle_new_block before entering fork cache.
-            let local_h = cs.best_height;
-            let local_hash = cs.best_hash;
-            let gap = best_peer_h.saturating_sub(local_h);
-            let sync_state = sync.sync_state_name();
-            let can_recover = sync_state == "Idle" || sync_state == "Synchronized";
-            if can_recover && peer_count > 0 {
-                if let Some((peer_id, peer_h, peer_hash)) = sync.best_peer_with_hash() {
-                    if (1..=2).contains(&gap) {
-                        warn!(
-                            "[STALE_TIP] Behind by {} block(s) (local={}, peer={}). Requesting hash={:.8} from {}",
-                            gap, local_h, peer_h, peer_hash, peer_id
-                        );
-                        drop(sync);
-                        drop(cs);
-                        let request = SyncRequest::GetBlockByHash { hash: peer_hash };
-                        if let Some(ref net) = self.network {
-                            let _ = net.request_sync(peer_id, request).await;
-                        }
-                    } else if gap == 0
-                        && local_h == peer_h
-                        && local_hash != peer_hash
-                        && local_h > 0
-                    {
-                        warn!(
-                            "[FORK_1BLOCK] Same height {} but hash mismatch: local={:.8} peer={:.8}. Requesting peer block from {}",
-                            local_h, local_hash, peer_hash, peer_id
-                        );
-                        drop(sync);
-                        drop(cs);
-                        let request = SyncRequest::GetBlockByHash { hash: peer_hash };
-                        if let Some(ref net) = self.network {
-                            let _ = net.request_sync(peer_id, request).await;
-                        }
-                    }
-                }
-            }
+            // STALE_TIP and FORK_1BLOCK removed. They fought with FORK_GUARD:
+            // STALE_TIP requested a block → peer sent a different block at same height →
+            // FORK_GUARD dropped it → STALE_TIP triggered rollback → gap grew → cascade.
+            //
+            // With INC-I-026 (deterministic scheduler) and fork_id, gaps of 1-2 blocks
+            // resolve via gossip within seconds. Gaps of 3+ trigger should_sync().
+            // No active intervention needed for small gaps.
         }
 
         // SEED RELEASE: Disconnect from seed/bootstrap nodes after DHT bootstrap + gossip verified.
