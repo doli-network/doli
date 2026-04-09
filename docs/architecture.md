@@ -826,47 +826,106 @@ Full architecture specification: `specs/gui-architecture.md`
 
 ## 12. Seed Guardian System
 
-Safety mechanism to detect forks, halt production, and preserve the canonical chain.
+Safety mechanism to detect fleet-wide chain integrity issues, halt production,
+preserve canonical state, recover poisoned producers, and page operators out
+of band via Telegram.
 
 ### 12.1. Components
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                  Seed Guardian                           │
-├─────────────────────────────────────────────────────────┤
-│ fork-monitor.sh         polls getChainInfo, detects     │
-│                         divergent chain tips             │
-├─────────────────────────────────────────────────────────┤
-│ pauseProduction RPC     sets BlockedExplicit on          │
-│                         SyncManager production gate      │
-├─────────────────────────────────────────────────────────┤
-│ createCheckpoint RPC    RocksDB hard-linked snapshot     │
-│                         of state_db + block_store        │
-├─────────────────────────────────────────────────────────┤
-│ getGuardianStatus RPC   production state, last backup,   │
-│                         chain height/slot/hash            │
-├─────────────────────────────────────────────────────────┤
-│ --auto-checkpoint N     automatic RocksDB snapshot every  │
-│                         N blocks (keeps last 5, rotates)  │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                      Seed Guardian                                │
+├──────────────────────────────────────────────────────────────────┤
+│  DETECTION (read-only, runs on a seed server or laptop)          │
+│    fork-monitor.sh       Polls getChainInfo across the fleet,    │
+│                          detects three event classes:            │
+│                            - fork:     2+ nodes disagree on hash │
+│                            - offline:  prev-reachable node down  │
+│                            - behind:   node lags max height by   │
+│                                        >= DOLI_BEHIND_THRESHOLD  │
+│                          Persists state to                       │
+│                          ~/.doli/monitor-state/*.json so         │
+│                          transitions are detected across polls.  │
+├──────────────────────────────────────────────────────────────────┤
+│  ALERTING (out-of-band push notifications)                       │
+│    telegram-alert.sh     Generic Bot API sender. Reads           │
+│                          DOLI_TELEGRAM_BOT_TOKEN and             │
+│                          DOLI_TELEGRAM_CHAT_ID from env.         │
+│                          No-ops cleanly when unconfigured so     │
+│                          callers can invoke it unconditionally.  │
+│                          Alerts fire on STATE TRANSITIONS ONLY   │
+│                          (entry + recovery), never periodic      │
+│                          reminders.                              │
+├──────────────────────────────────────────────────────────────────┤
+│  CONTROL (RPC against the nodes)                                 │
+│    pauseProduction RPC   Sets BlockedExplicit on SyncManager     │
+│                          production gate. Reversible.            │
+│    resumeProduction RPC  Clears BlockedExplicit.                 │
+│    createCheckpoint RPC  Hard-linked RocksDB snapshot of         │
+│                          state_db + block_store.                 │
+│    getGuardianStatus RPC Production state, last backup,          │
+│                          chain height/slot/hash,                 │
+│                          last_healthy_checkpoint.                │
+├──────────────────────────────────────────────────────────────────┤
+│  RECOVERY (destructive, operator-gated)                          │
+│    node-heal.sh          Rebuild a poisoned producer's data/     │
+│                          from a healthy source via rsync.        │
+│                          Preserves signed_slots.db (slashing     │
+│                          protection) and excludes utxo_store/    │
+│                          (self-healed on startup to avoid        │
+│                          INC-I-027 silent corruption).           │
+│                          Refuses seed nodes.                     │
+│    emergency-halt.sh     Calls pauseProduction on every          │
+│                          reachable producer.                     │
+│    emergency-resume.sh   Inverse.                                │
+├──────────────────────────────────────────────────────────────────┤
+│  PASSIVE PROTECTION (runs inside the node itself)                │
+│    --auto-checkpoint N   Node flag: RocksDB snapshot every N     │
+│                          blocks (keeps last 5, rotates oldest).  │
+│    Canonical anchors     Append-only compile-time                │
+│                          (height, hash, state_root) tuples that  │
+│                          block validation, reorgs, and snap sync │
+│                          from contradicting a known-good prefix. │
+│                          See security_model.md §7.6.             │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 ### 12.2. Recovery Flow
 
 ```
-Fork detected → emergency-halt.sh → seed-backup.sh → investigate
-  → fix bug → wipe producer data → deploy fix → snap-sync from seeds
-  → emergency-resume.sh
+fork-monitor.sh detects issue
+  → telegram-alert.sh pages operator (out-of-band)
+  → operator investigates
+  → if single-node divergence:
+      node-heal.sh --target <bad> --source <good>  (preserves signed_slots.db)
+  → if network-wide split:
+      emergency-halt.sh → seed-backup.sh → investigate
+      → fix bug → deploy fix → node-heal.sh each producer from a healthy source
+      → emergency-resume.sh
+  → fork-monitor.sh fires RECOVERED alerts as each issue clears
 ```
 
 ### 12.3. Design Principles
 
-- **Seeds are canonical.** Producers are disposable. Seeds hold the full chain DB; producers snap-sync from seeds.
+- **Seeds are canonical.** Producers are disposable. Seeds hold the full chain DB; producers can always be rebuilt from a healthy node via `node-heal.sh`.
 - **Checkpoints are free.** RocksDB checkpoints use hard links. Zero-copy, near-instant.
 - **Production halt is reversible.** `pauseProduction` sets a flag; `resumeProduction` clears it. No data loss.
 - **Auto-checkpoint is the safety net.** `--auto-checkpoint 100` on seeds means at most 100 blocks of data loss if the seed gets poisoned. Recovery: stop, restore last checkpoint, restart.
-- **Health tagging finds the recovery point.** Each auto-checkpoint writes `health.json` with peer consensus data. `getGuardianStatus` returns `last_healthy_checkpoint` — the most recent snapshot where all peers agreed on the same chain tip. After a regression, this is the safe rollback target.
-- **File: `crates/rpc/src/methods/guardian.rs`**, `bins/node/src/node/periodic.rs` (auto-checkpoint logic)
+- **Health tagging finds the recovery point.** Each auto-checkpoint writes `health.json` with peer consensus data. `getGuardianStatus` returns `last_healthy_checkpoint` — the most recent snapshot where all peers agreed on the same chain tip.
+- **Slashing protection is sacred.** `node-heal.sh` preserves `signed_slots.db` across wipes. Operators who ignore this and wipe `data/` wholesale re-expose producers to double-sign slashing.
+- **Detection is out-of-band from control.** `fork-monitor.sh` is read-only — it never pauses, wipes, or mutates state. It only observes and alerts. All destructive actions are explicit operator invocations.
+- **Alerts fire on transitions, not polls.** A persistent issue pages once (entry) and pages again when it clears (recovery). Repeating reminders would train operators to mute the channel.
+- **Files**:
+  - `crates/rpc/src/methods/guardian.rs` — RPC methods
+  - `bins/node/src/node/periodic.rs` — auto-checkpoint logic
+  - `scripts/fork-monitor.sh` — detection + alerting orchestration
+  - `scripts/telegram-alert.sh` — generic Bot API sender
+  - `scripts/node-heal.sh` — producer recovery
+  - `scripts/emergency-{halt,resume}.sh` — production control
+  - `scripts/seed-backup.sh` — on-demand checkpoint
+  - `docs/telegram-alerts.md` — operator setup guide
+  - `specs/security_model.md` §7.7 — slashing-safe recovery invariants
+  - `specs/security_model.md` §7.8 — monitoring & alerting as a security control
 
 ---
 

@@ -898,6 +898,103 @@ following invariants enforced in tooling rather than operator discipline:
   and wipe `utxo_store/` alongside `state_db/` and `blocks/`, matching the
   script's invariants.
 
+### 7.8 Operational Monitoring & Alerting
+
+**Risk**: A consensus bug, malicious fork, or producer-level corruption is
+only dangerous to the extent it goes undetected. Previous incidents
+(INC-I-016 mainnet gossip partition, INC-I-026 cascade, INC-I-027
+silent-corruption reorg) all had measurable symptoms in the first minute —
+diverging block hashes across seeds, nodes stalled at specific heights,
+producers dropping out of the gossip mesh — but no operator was paged
+until a human happened to look at dashboards or logs. The blast radius
+was proportional to detection lag, not to the bug itself.
+
+**Defense: real-time fleet monitoring with transition-based alerts**
+(`scripts/fork-monitor.sh` + `scripts/telegram-alert.sh`)
+
+`fork-monitor.sh` polls `getChainInfo` across every node in the configured
+range on a fixed interval and detects three event classes:
+
+| Event | Detection rule |
+|---|---|
+| **fork** | Two or more reachable nodes return different `bestHash`. Groups are computed by distinct `bestHash` values. Canonical identifier is the sorted set of group hashes. |
+| **offline** | A node that was reachable in a prior poll (`ever_seen_online` set) is no longer reachable. Never-reachable ports are ignored so devnet iteration does not spam alerts. |
+| **behind** | A node's `bestHeight` lags the fleet maximum by ≥ `DOLI_BEHIND_THRESHOLD` blocks (default 10). Offline nodes are excluded — they are already reported under `offline` — to prevent duplicate pages. |
+
+State is persisted between polls to
+`$DOLI_MONITOR_STATE_DIR/fork-monitor-$MODE.json` (default
+`~/.doli/monitor-state/`). Each poll diffs the new state against the
+previous one and emits a transition when an event begins (`entry`) or
+ends (`recovery`). This gives three security properties:
+
+1. **Bounded alert volume**: a persistent fork pages the operator exactly
+   twice — once when it starts, once when it clears. No `--loop 30` spam
+   that trains operators to mute the channel. Operators who have muted
+   the channel cannot respond to the *next* real incident.
+2. **Survives restarts**: the state file persists across script restarts.
+   A `systemd` restart of the monitor does not re-fire alerts for events
+   already in the state. First-run behavior is intentional: starting the
+   monitor on an already-broken network fires alerts for every active
+   issue, because the baseline is synthetic `{fork: "ok", offline: [],
+   behind: []}` and the first poll is therefore the entry transition.
+3. **Alerting failures never break monitoring**: `telegram-alert.sh` is
+   invoked as a best-effort subprocess. If the Bot API returns 401
+   (bad token), 400 (chat not found), or times out, the error is logged
+   to stderr and `fork-monitor.sh` continues its next poll. A down
+   alerting channel does not silence detection. Operators who are
+   watching the monitor's own log (`journalctl -u doli-fork-monitor`)
+   still see every event.
+
+**Out-of-band channel requirement**: alerts are pushed via the Telegram
+Bot API over HTTPS to `api.telegram.org`. This is deliberately separate
+from the DOLI network itself — when DOLI is on fire, in-band notification
+(email from a DOLI RPC, a blockchain-hosted dashboard, a producer-run web
+UI) is the least reliable path. The Telegram channel only requires
+outbound HTTPS from one seed server, which is the last thing to fail
+during a consensus incident. A single seed with a working internet
+connection is sufficient to page the fleet. Running the monitor on two
+seeds in parallel (with independent state directories) gives redundancy
+at the cost of one duplicate message per event — an acceptable trade in
+favor of visibility.
+
+**Secret handling**: the bot token is a credential. It is never committed
+to the repository. The recommended production deployment reads it from a
+systemd `EnvironmentFile=/etc/default/doli-fork-monitor` with file mode
+`0600` owned by the service user. The `telegram-alert.sh` helper reads
+the token from `DOLI_TELEGRAM_BOT_TOKEN` and the target chat from
+`DOLI_TELEGRAM_CHAT_ID` — both are empty by default, and the helper
+exits 0 silently when either is missing so callers (including any future
+guardian scripts) can invoke it unconditionally without conditional
+wrappers. The exit-0 behavior is intentional: an unconfigured alerter
+must never hard-fail the script that called it.
+
+**Residual risks**:
+- A compromised bot token lets an attacker spam the operator channel
+  with false alerts. Mitigation: rotate the token via `@BotFather` →
+  `/revoke`. Tokens are cheap to rotate.
+- If the single alerting host loses internet connectivity, the channel
+  is silent until it returns. Mitigation: run the monitor on two seeds
+  with independent state directories (see `docs/telegram-alerts.md` §8).
+- A subtle consensus bug that produces identical `bestHash` values
+  across all nodes despite diverging state would not be detected by
+  `fork-monitor.sh` — it would appear as `ok`. Such bugs are detected
+  instead by per-node state-root verification at the validation layer
+  (see §4) and by canonical anchors (§7.6).
+- `fork-monitor.sh` currently iterates a localhost port range for
+  testnet and devnet (`--testnet` → ports 8500-8512, `--devnet` →
+  28500-28550). A production mainnet fleet spread across multiple
+  servers requires one monitor instance per host or an `--endpoints
+  FILE` extension listing `host:port` pairs. The latter is tracked as
+  a future extension in `docs/telegram-alerts.md` §10.
+
+**What this defense does NOT replace**:
+- Canonical anchors (§7.6) — detection is not prevention. A fork can
+  still happen; the monitor only bounds the time-to-operator-response.
+- Slashing-safe recovery (§7.7) — once the operator is paged, they
+  still need a safe procedure to recover affected nodes.
+- The guardian halt/checkpoint loop — pause/resume/backup still need
+  to be invoked by a human or an automation built on top of the monitor.
+
 ---
 
 ## 8. Audit Trail

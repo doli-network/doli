@@ -36,6 +36,7 @@ Master index for all DOLI documentation.
 | [troubleshooting.md](./troubleshooting.md) | Common issues and solutions |
 | [archiver.md](./archiver.md) | **Block archiver & seed infrastructure** - archive format, seed/relay role, block explorer, disaster recovery, RPC methods |
 | [disaster-recovery.md](./disaster-recovery.md) | Disaster recovery procedures (restore, backfill, hot backfill) |
+| [telegram-alerts.md](./telegram-alerts.md) | Guardian Telegram alert bot — setup, systemd deployment, tuning, troubleshooting |
 | [releases.md](./releases.md) | Release process, versioning, and download verification |
 | [buy_doli.md](./buy_doli.md) | DOLI/USDT exchange system - API, deployment, and operational guide |
 | [faucet-bot.md](./faucet-bot.md) | Testnet faucet bot setup and operation |
@@ -97,6 +98,7 @@ docs/
 ├── roadmap.md                    # Development roadmap
 ├── rpc_reference.md              # API documentation
 ├── running_a_node.md             # Node operation guide
+├── telegram-alerts.md            # Guardian Telegram alert bot
 ├── security_model.md             # Security model
 ├── testnet.md                    # Testnet setup
 ├── troubleshooting.md            # Common issues
