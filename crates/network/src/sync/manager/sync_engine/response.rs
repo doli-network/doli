@@ -239,20 +239,20 @@ impl SyncManager {
                 // causes premature snap sync escalation during shallow forks.
 
                 if gap <= 50 && self.local_height > 0 {
-                    // Small fork: signal rollback. The node's periodic task
-                    // (resolve_shallow_fork) will roll back 1 block per tick,
-                    // changing local_hash to the parent. After 1-3 rollbacks,
-                    // GetHeaders succeeds and sync resumes normally.
-                    warn!(
-                        "Empty headers from {} (gap={}, consecutive={}) — minor fork. \
-                         Signaling rollback to find common ancestor.",
+                    // INC-I-026 + fork_id: with deterministic scheduler and fork
+                    // identity, empty headers at small gaps are gossip timing —
+                    // NOT a real fork. The peer just hasn't seen our latest block
+                    // yet. Gossip will deliver it within seconds.
+                    //
+                    // REMOVED: immediate rollback signal. This caused cascading
+                    // rollbacks when FORK_GUARD dropped the requested block
+                    // (different tip at same height from gossip timing).
+                    debug!(
+                        "Empty headers from {} (gap={}, consecutive={}) — \
+                         gossip timing, not a fork. Waiting for gossip delivery.",
                         peer, gap, self.fork.consecutive_empty_headers
                     );
-                    // Set to 3 immediately to trigger resolve_shallow_fork
-                    // on the next periodic tick (no waiting for 3 separate responses)
-                    self.fork.consecutive_empty_headers =
-                        self.fork.consecutive_empty_headers.max(3);
-                    self.set_state(SyncState::Idle, "small_fork_signal_rollback");
+                    self.set_state(SyncState::Idle, "small_gap_wait_gossip");
                     return;
                 }
 
