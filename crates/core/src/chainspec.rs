@@ -215,7 +215,8 @@ impl ChainSpec {
             network: Network::Mainnet,
             genesis: GenesisSpec {
                 timestamp: params.genesis_time,
-                message: "DOLI Mainnet Genesis - v6.8.1 rollback cascade fix 09/Apr/2026 v10".into(),
+                message: "DOLI Mainnet Genesis - v6.8.1 rollback cascade fix 09/Apr/2026 v10"
+                    .into(),
                 initial_reward: params.initial_reward,
             },
             consensus: ConsensusSpec {
