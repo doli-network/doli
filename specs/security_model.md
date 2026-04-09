@@ -833,6 +833,71 @@ A **canonical anchor** pins a `(height, block_hash, state_root)` tuple at compil
 - The `--auto-checkpoint` snapshot cadence on seeds
 - The hard fork schedule in `crates/updater/src/hardfork.rs`
 
+### 7.7 Operator Recovery & Slashing Protection Preservation
+
+**Risk**: The common operator response to a poisoned or forked producer is to
+stop the node, wipe its `data/` directory, and restart (or rsync from a healthy
+peer). This procedure, applied naively, destroys `signed_slots.db` — the local
+record of every slot the producer has previously signed. A producer restarted
+without its `signed_slots.db` has no memory of prior signatures, so if it is
+scheduled for a slot it previously signed on the now-discarded chain it will
+sign a *second* block for that slot. This is equivocation — the only slashable
+offense in DOLI (see §6.1.1) — and re-exposes the producer's bond to slashing
+even though the operator's intent was recovery.
+
+A second, subtler risk exists when `utxo_store/` is copied from a different
+source than `state_db/` (e.g. restored from a checkpoint while the old UTXO
+cache remains on disk, or rsync'd from a node whose caches are at a different
+height). Prior to v6.7.9 the startup code trusted `utxo_store/` blindly
+whenever it was non-empty, operating on mismatched UTXOs while reporting the
+correct height on RPC. This caused the silent-corruption rollback that killed
+ai1/ai2 during the INC-I-026 recovery on 2026-04-09 (tracked as INC-I-027).
+
+**Defense** (`bins/node/src/node/init.rs::init_utxo_set`, v6.7.9+):
+
+`init_utxo_set` compares `utxo_store.len()` against `state_db.utxo_len()` at
+startup. On mismatch it WARNs, clears `utxo_store/`, and rebuilds from
+`state_db.iter_utxos()` — the authoritative loop used for empty stores. This
+makes recovery procedures self-healing regardless of `utxo_store/` state.
+
+**Defense** (operator procedure — `scripts/node-heal.sh`):
+
+The `node-heal.sh` guardian script automates producer recovery with the
+following invariants enforced in tooling rather than operator discipline:
+
+1. **`signed_slots.db` is preserved across the wipe.** The script deletes
+   every entry in `data/` *except* `signed_slots.db` and explicitly excludes
+   it from the rsync so the source's (wrong-key) slashing history does not
+   overwrite the target's protection. Operators must pass `--wipe-signed-slots`
+   to override, and the script will refuse without a confirmation prompt.
+2. **`utxo_store/` is excluded from the rsync.** The target rebuilds it from
+   the fresh `state_db/` on startup via the v6.7.9 self-healing path,
+   guaranteeing `utxo_store/` and `state_db/` share the same origin height.
+3. **Stale runtime state is cleaned.** `producer.lock` and
+   `pending_update.json` are deleted post-rsync — the former to prevent lock
+   conflicts, the latter to avoid stale auto-update enforcement silently
+   pausing production.
+4. **Seeds are refused.** The script errors out on `--target seed` or any
+   non-`nN`-pattern target name. Seeds require a different recovery procedure
+   (checkpoint restore + full-fleet halt; see §7.6 and
+   `.claude/skills/guardian/SKILL.md` §L2).
+
+**Residual risk**:
+- If an operator uses `--wipe-signed-slots`, the producer loses slashing
+  protection and any scheduled re-sign of a historical slot will cause
+  equivocation. This override exists only for fresh producers that have never
+  signed on any chain.
+- If the healthy source is itself on a hostile chain, `node-heal.sh` will
+  faithfully replicate the hostile state onto the target. The script performs
+  an RPC pre-check against the source's reported chain tip but cannot
+  independently verify canonicity; this is the operator's judgement call.
+  Canonical anchors (§7.6) close this gap at and below the anchor height.
+- Manual recovery procedures documented in `docs/troubleshooting.md` §4.2 and
+  §4.4 still exist as fallbacks for environments where `node-heal.sh` is
+  unavailable. These fallbacks are annotated to preserve `signed_slots.db`
+  and wipe `utxo_store/` alongside `state_db/` and `blocks/`, matching the
+  script's invariants.
+
 ---
 
 ## 8. Audit Trail

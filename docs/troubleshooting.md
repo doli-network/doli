@@ -478,13 +478,21 @@ curl -X POST http://127.0.0.1:8500 \
 ```
 
 **Force resync if needed:**
+
+Prefer `scripts/node-heal.sh` (see §4.4 Step 5) — it preserves `signed_slots.db`
+(slashing protection) and excludes `utxo_store/` (avoids the INC-I-027 silent
+corruption rollback). Producers only.
+
+Manual fallback (only if no trusted healthy source exists):
 ```bash
 sudo systemctl stop doli-node
-# Remove chain data (platform-specific path, or use DOLI_DATA_DIR):
+# Remove chain state (platform-specific path, or use DOLI_DATA_DIR):
 #   Linux:  /var/lib/doli/mainnet/data/
 #   macOS:  ~/Library/Application Support/doli/mainnet/data/
 #   Legacy: ~/.doli/mainnet/data/
-rm -rf <DATA_DIR>/data/
+# IMPORTANT: do NOT delete signed_slots.db — it's slashing protection.
+cd <DATA_DIR>/data
+rm -rf state_db blocks utxo_store maintainer_state.bin producer_gset.bin peers.cache
 sudo systemctl start doli-node
 ```
 
@@ -530,11 +538,35 @@ curl -sf http://127.0.0.1:8500 -X POST \
     -d '{"jsonrpc":"2.0","method":"getGuardianStatus","params":[],"id":1}'
 ```
 
-**Step 5 — Fix & recover**. Deploy fix, wipe producer data, snap-sync from seeds:
+**Step 5 — Fix & recover**. Deploy fix, rebuild each poisoned producer from a healthy node:
+```bash
+# Testnet preset (local launchd):
+scripts/node-heal.sh --testnet --target n5 --source n3 --yes
+
+# Mainnet / systemd (run on the target server, SSH'd in):
+scripts/node-heal.sh \
+    --target-data ~/.doli/mainnet/data \
+    --source-data healthy-host:~/.doli/mainnet/data \
+    --stop-cmd  "sudo systemctl stop doli-mainnet-n5" \
+    --start-cmd "sudo systemctl start doli-mainnet-n5" \
+    --target-rpc 127.0.0.1:8500 \
+    --skip-source-rpc-check \
+    --yes
+```
+
+`node-heal.sh` wipes the target's `data/` **except** `signed_slots.db` (preserving
+slashing protection), excludes `utxo_store/` from the rsync (avoiding the
+INC-I-027 silent-corruption rollback), deletes stale `producer.lock` and
+`pending_update.json`, and polls the target RPC after restart to confirm
+recovery. Producers only — refuses seed nodes.
+
+**Manual fallback** (only if no trusted healthy source is available, AND you've
+read `.claude/skills/guardian/SKILL.md` §L1.1 and §L6):
 ```bash
 # On each producer:
 # 1. Stop node
-# 2. rm -rf data_dir/state_db data_dir/blocks
+# 2. rm -rf data_dir/state_db data_dir/blocks data_dir/utxo_store
+#    (KEEP signed_slots.db — slashing protection)
 # 3. Deploy fixed binary
 # 4. Start node (will snap-sync from seed)
 ```
