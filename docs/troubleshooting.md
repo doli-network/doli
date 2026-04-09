@@ -577,6 +577,70 @@ cp -r data_dir/checkpoints/h{HEIGHT}-{TS}/blocks data_dir/blocks
 
 **RPC methods:** `pauseProduction`, `resumeProduction`, `createCheckpoint`, `getGuardianStatus`
 
+### 4.5. Canonical Anchor Violation (Blocks / Reorgs / Snap Sync Rejected by Binary)
+
+**Symptom:** node logs contain `[ANCHOR]` messages and blocks are being rejected with `ValidationError::CanonicalAnchorViolation`, or reorgs are being rejected with `ANCHOR: Rejecting reorg past canonical anchor`, or snap sync keeps failing with `[SNAP_SYNC] [ANCHOR] Rejecting snapshot`.
+
+**What it means:** the v6.7.10+ binary ships with a compile-time `AnchorSchedule` (see `crates/updater/src/anchor.rs`). When a block, reorg, or snap sync snapshot contradicts a canonical anchor baked into the binary, the node rejects it. This is the canonical anchor subsystem doing its job — it is NOT a bug unless anchors are firing in steady-state operation on the honest chain.
+
+**Log signatures to look for:**
+
+```text
+# Point A — block validation rejection
+[ANCHOR] REJECT block at h=30377 hash=7b1c... expected=9af2... (INC-I-026 cascade recovery)
+... validation error: canonical anchor violated at h=30377: expected 9af2... got 7b1c...
+
+# Point B — reorg rejection (fast path)
+ANCHOR: Rejecting reorg past canonical anchor at h=30377 (ancestor at h=30100, block=7b1c...)
+
+# Point B — reorg rejection (recovery path)
+ANCHOR: plan_reorg rejecting reorg past canonical anchor at h=30377 (ancestor at h=30100, new_tip=7b1c...)
+
+# Point C — snap sync snapshot rejection
+[SNAP_SYNC] [ANCHOR] Rejecting snapshot from 12D3... at h=30100 < anchor.height=30377 — cannot snap-sync below the canonical anchor
+[SNAP_SYNC] [ANCHOR] Rejecting snapshot from 12D3... at anchor h=30377: block_hash 7b1c... != anchor.hash 9af2...
+[SNAP_SYNC] [ANCHOR] Rejecting snapshot from 12D3... at anchor h=30377: state_root 7b1c... != anchor.state_root c3e4...
+
+# Point D — rollback refused
+[ANCHOR] Refusing rollback from h=30500 to h=30376 — would cross canonical anchor at h=30377 (INC-I-026 cascade recovery)
+```
+
+**Decision tree:**
+
+1. **Is the network currently recovering from an incident?**
+   - **Yes:** anchor violations are EXPECTED while stale producers and forked peers are still circulating old blocks. The anchor is correctly rejecting them. Let the network run for 10+ minutes and the violations should stop as the hostile chain dies off. Check `getGuardianStatus.anchor_violation_count` — it should plateau and stop rising.
+   - **No:** go to step 2.
+
+2. **Is your node seeing violations from ONE peer only, or from many peers?**
+   - **One peer:** that peer is on a forked chain (wrong binary, wrong data, or attack). Blacklist the peer and investigate its node state.
+   - **Many peers:** go to step 3.
+
+3. **Is your `anchor_schedule` in sync with the rest of the network?**
+   - Check your binary version: `doli-node --version`. Compare against the release that introduced the anchor. If you are BEHIND, upgrade immediately — you're producing blocks the rest of the network will reject at the anchor height.
+   - If you are AHEAD of an anchor the network hasn't adopted yet: that PR was not supposed to ship to you. Roll back the binary and report to the maintainers.
+
+4. **Are you trying to restore from a pre-anchor checkpoint?** An anchor is, by construction, committed AFTER a known-healthy state. A checkpoint at `h < anchor.height` is stale and cannot be used with the new binary — snap sync will reject it at Point C. Use a checkpoint at or above `anchor.height`, or restore with an older binary and snap sync forward.
+
+5. **Rollback refused at anchor height** (Point D): this is a hard stop. The anchor says the chain prefix at/below that height is immutable. If your node has rolled back to `anchor.height` and wants to go further, something is badly wrong — either your chain is corrupted, or the anchor is wrong (very unlikely after two-seed confirmation + testnet cycle). Stop the node, copy the data directory aside for forensics, and query the guardian team.
+
+**How to inspect the active anchor:**
+
+```bash
+# (Future PR3) — getGuardianStatus will return active_anchor and anchor_violation_count.
+# Until PR3 ships, inspect the compile-time schedule directly:
+grep -A 20 "pub fn for_network" crates/updater/src/anchor.rs
+# Or look at your node's startup log for:
+#   [STARTUP] Canonical anchor configured: h=30377 hash=9af2... state_root=c3e4...
+```
+
+**What NOT to do:**
+
+- **Do NOT** build a binary without the anchor to "work around" the rejection. This is the same as running an old binary during a hard-fork deployment — you will fork off the network permanently.
+- **Do NOT** delete the anchor entry from `anchor.rs` locally. The anchor is append-only by protocol; stripping it locally only partitions YOUR node off the anchored chain.
+- **Do NOT** wipe signed_slots.db while investigating — you'll lose slashing protection if you were a producer on the old chain.
+
+**Reference:** `.claude/skills/guardian/SKILL.md` "Canonical Anchor Recovery" section; `specs/security_model.md` §7.6; `crates/updater/src/anchor.rs`.
+
 ---
 
 ## 5. Update Issues

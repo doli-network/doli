@@ -936,7 +936,7 @@ The slot is NOT a free field; it must be derived from the timestamp.
 
 ### 5.3 Block Validity
 
-A block B is valid if ALL conditions hold.
+A block B at height H is valid if ALL conditions hold.
 
 **Implementation Reference:** See `crates/core/src/validation/` (modularized):
 - `block.rs` -- `validate_header()`, `validate_block()` -- header and full block validation
@@ -946,7 +946,15 @@ A block B is valid if ALL conditions hold.
 - `utxo.rs` -- UTXO validation
 
 ```
-0. CHAIN IDENTITY (checked FIRST):
+-1. CANONICAL ANCHOR (checked BEFORE chain identity, since v6.7.10):
+    If AnchorSchedule.anchor_at(H) is Some(A):
+        B.hash() == A.hash  (otherwise reject with CanonicalAnchorViolation)
+    Canonical anchors are compile-time (height, hash, state_root) commitments
+    shipped in the binary. Runs BEFORE all other checks so hostile blocks
+    cost zero VDF/signature CPU. See specs/security_model.md §7.6.
+    Currently empty on all networks; enforcement is live as a no-op.
+
+0. CHAIN IDENTITY:
    B.genesis_hash == local_genesis_hash
    Rejects blocks from nodes with different genesis parameters.
 
@@ -979,6 +987,17 @@ A block B is valid if ALL conditions hold.
    First transaction is valid coinbase
    No double-spends within block (check_internal_double_spend in validation/utxo.rs)
 ```
+
+**Canonical anchor enforcement spans more than block validation.** The anchor schedule is enforced at four points in the protocol, not just at block admission:
+
+| Point | Where | What it rejects |
+|---|---|---|
+| A | `validate_block_for_apply` (`bins/node/src/node/validation_checks.rs`) | Blocks at `anchor.height` with wrong hash (rule -1 above) |
+| B | `ReorgHandler::check_reorg_weighted` and `plan_reorg` (`crates/network/src/sync/reorg/mod.rs`) | Reorgs whose common ancestor is strictly below the highest anchor height, regardless of accumulated weight |
+| C | `SyncManager::handle_snap_snapshot` (`crates/network/src/sync/manager/snap_sync.rs`) | Snap sync snapshots at/below anchor height that don't match anchor `(hash, state_root)` |
+| D | `rollback_one_block` (`bins/node/src/node/rollback.rs`) | Rollbacks that would cross the anchor height |
+
+See `specs/security_model.md` §7.6 for the full rationale, residual risks, and append-only rules. See `crates/updater/src/anchor.rs` for the data structure. The `.claude/skills/guardian/SKILL.md` "Canonical Anchor Recovery" section documents the operational procedure for extracting, proposing, and shipping a new anchor.
 
 ### 5.4 Producer Selection (Deterministic Round-Robin)
 
