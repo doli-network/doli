@@ -90,6 +90,7 @@ pub(super) const CF_PRESENCE: &str = "presence";
 pub(super) const CF_HASH_TO_HEIGHT: &str = "hash_to_height";
 pub(super) const CF_TX_INDEX: &str = "tx_index";
 pub(super) const CF_ADDR_TX_INDEX: &str = "addr_tx_index";
+pub(super) const CF_META: &str = "meta";
 
 /// Block store
 pub struct BlockStore {

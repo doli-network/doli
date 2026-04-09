@@ -8,7 +8,7 @@ use crate::StorageError;
 
 use super::types::{
     BlockBody, BlockStore, CF_ADDR_TX_INDEX, CF_BODIES, CF_HASH_TO_HEIGHT, CF_HEADERS,
-    CF_HEIGHT_INDEX, CF_SLOT_INDEX, CF_TX_INDEX,
+    CF_HEIGHT_INDEX, CF_META, CF_SLOT_INDEX, CF_TX_INDEX,
 };
 
 impl BlockStore {
@@ -126,6 +126,14 @@ impl BlockStore {
                 break;
             }
 
+            // Snap horizon floor: never walk below the snap sync anchor.
+            // The anchor's header was never persisted — walking into it crashes.
+            if let Ok(Some(floor)) = self.get_snap_horizon() {
+                if height <= floor {
+                    break;
+                }
+            }
+
             // Walk backwards via prev_hash
             let header = self.get_header(&current_hash)?.ok_or_else(|| {
                 StorageError::NotFound(format!("header {} missing", current_hash))
@@ -161,9 +169,11 @@ impl BlockStore {
     pub fn seed_canonical_index(&self, hash: Hash, height: u64) -> Result<(), StorageError> {
         let cf_height = self.db.cf_handle(CF_HEIGHT_INDEX).unwrap();
         let cf_h2h = self.db.cf_handle(CF_HASH_TO_HEIGHT).unwrap();
+        let cf_meta = self.db.cf_handle(CF_META).unwrap();
         let mut batch = rocksdb::WriteBatch::default();
         batch.put_cf(cf_height, height.to_le_bytes(), hash.as_bytes());
         batch.put_cf(cf_h2h, hash.as_bytes(), height.to_le_bytes());
+        batch.put_cf(cf_meta, b"snap_horizon", height.to_le_bytes());
         self.db.write(batch)?;
         info!(
             "[BLOCK_STORE] Snap sync anchor seeded: height={}, hash={:.16}",

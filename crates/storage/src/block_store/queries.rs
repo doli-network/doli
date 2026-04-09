@@ -8,7 +8,7 @@ use crate::StorageError;
 
 use super::types::{
     deserialize_body, BlockStore, CF_ADDR_TX_INDEX, CF_BODIES, CF_HASH_TO_HEIGHT, CF_HEADERS,
-    CF_HEIGHT_INDEX, CF_SLOT_INDEX, CF_TX_INDEX,
+    CF_HEIGHT_INDEX, CF_META, CF_SLOT_INDEX, CF_TX_INDEX,
 };
 
 impl BlockStore {
@@ -173,6 +173,26 @@ impl BlockStore {
     pub fn has_block(&self, hash: &Hash) -> Result<bool, StorageError> {
         let cf_headers = self.db.cf_handle(CF_HEADERS).unwrap();
         Ok(self.db.get_cf(cf_headers, hash.as_bytes())?.is_some())
+    }
+
+    /// Get the snap sync horizon height (floor for canonical chain walks).
+    ///
+    /// Returns the height written by `seed_canonical_index()` during snap sync.
+    /// `set_canonical_chain()` uses this to avoid walking below the anchor,
+    /// whose header was never persisted.
+    pub fn get_snap_horizon(&self) -> Result<Option<u64>, StorageError> {
+        let cf_meta = self.db.cf_handle(CF_META).unwrap();
+        match self.db.get_cf(cf_meta, b"snap_horizon")? {
+            Some(bytes) => {
+                if bytes.len() != 8 {
+                    return Err(StorageError::Serialization("invalid snap_horizon".into()));
+                }
+                let mut arr = [0u8; 8];
+                arr.copy_from_slice(&bytes);
+                Ok(Some(u64::from_le_bytes(arr)))
+            }
+            None => Ok(None),
+        }
     }
 
     // ==================== Milestone 1: BlockStore Query Methods ====================

@@ -656,3 +656,67 @@ fn test_set_canonical_chain_reorg() {
     assert_eq!(store.get_height_by_hash(&hash_b2).unwrap(), Some(1));
     assert_eq!(store.get_height_by_hash(&hash_d2).unwrap(), Some(3));
 }
+
+#[test]
+fn set_canonical_chain_stops_at_snap_horizon() {
+    // Regression test: after snap sync seeds a canonical index at some height,
+    // set_canonical_chain must NOT walk below the snap horizon — the anchor's
+    // header was never persisted, so get_header() would return None → crash.
+    let (store, _dir) = create_test_store();
+    let keypair = KeyPair::generate();
+    let producer = *keypair.public_key();
+
+    let snap_height = 100u64;
+
+    // Simulate snap sync: seed canonical index at height 100 with a fake hash.
+    // This also writes snap_horizon = 100 to CF_META.
+    let snap_hash = Hash::from_bytes([0xAA; 32]);
+    store.seed_canonical_index(snap_hash, snap_height).unwrap();
+
+    // Verify snap_horizon was persisted
+    let horizon = store.get_snap_horizon().unwrap();
+    assert_eq!(horizon, Some(snap_height));
+
+    // Build a block at height 101 whose prev_hash points to the snap anchor.
+    let mut header_101 = create_test_header(200, &producer);
+    header_101.prev_hash = snap_hash;
+    let block_101 = Block::new(header_101, vec![]);
+    let hash_101 = block_101.hash();
+    store.put_block(&block_101, snap_height + 1).unwrap();
+
+    // Build a block at height 102 whose prev_hash points to block 101.
+    let mut header_102 = create_test_header(201, &producer);
+    header_102.prev_hash = hash_101;
+    let block_102 = Block::new(header_102, vec![]);
+    let hash_102 = block_102.hash();
+    store.put_block(&block_102, snap_height + 2).unwrap();
+
+    // This MUST NOT crash. Before the fix, it would walk from height 102
+    // down to 100, try get_header(snap_hash), get None, and panic.
+    store
+        .set_canonical_chain(hash_102, snap_height + 2)
+        .unwrap();
+
+    // Verify the canonical chain was updated for heights 101 and 102
+    assert_eq!(
+        store.get_hash_by_height(snap_height + 1).unwrap(),
+        Some(hash_101)
+    );
+    assert_eq!(
+        store.get_hash_by_height(snap_height + 2).unwrap(),
+        Some(hash_102)
+    );
+
+    // The snap anchor entry at height 100 should still be intact
+    assert_eq!(
+        store.get_hash_by_height(snap_height).unwrap(),
+        Some(snap_hash)
+    );
+}
+
+#[test]
+fn get_snap_horizon_returns_none_without_snap_sync() {
+    // Without snap sync, get_snap_horizon should return None
+    let (store, _dir) = create_test_store();
+    assert_eq!(store.get_snap_horizon().unwrap(), None);
+}
