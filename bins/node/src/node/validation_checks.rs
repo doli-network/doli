@@ -846,6 +846,19 @@ impl Node {
                             snap.total_bytes() / 1024,
                             snap.state_root
                         );
+                        // Option C: include anchor header so receiving node can persist it
+                        let block_header_bytes = if snap.block_height
+                            >= doli_core::consensus::SNAP_HEADER_ACTIVATION_HEIGHT
+                        {
+                            if let Ok(Some(header)) = self.block_store.get_header(&snap.block_hash)
+                            {
+                                bincode::serialize(&header).ok()
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
                         SyncResponse::StateSnapshot {
                             block_hash: snap.block_hash,
                             block_height: snap.block_height,
@@ -853,6 +866,7 @@ impl Node {
                             utxo_set: snap.utxo_set_bytes,
                             producer_set: snap.producer_set_bytes,
                             state_root: snap.state_root,
+                            block_header_bytes,
                         }
                     }
                     Err(e) => SyncResponse::Error(format!("Snapshot error: {}", e)),

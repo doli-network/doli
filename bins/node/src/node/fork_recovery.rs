@@ -647,6 +647,34 @@ impl Node {
         self.block_store
             .seed_canonical_index(snapshot.block_hash, snapshot.block_height)?;
 
+        // Option C: persist anchor header if included in snapshot (post-activation)
+        if let Some(header_bytes) = &snapshot.block_header_bytes {
+            if let Ok(header) = bincode::deserialize::<doli_core::BlockHeader>(header_bytes) {
+                // Create a minimal block with just the header (no transactions)
+                // so put_block persists the header to CF_HEADERS
+                let anchor_block = doli_core::Block {
+                    header,
+                    transactions: vec![],
+                    aggregate_bls_signature: vec![],
+                    attestation_bitfield: vec![],
+                };
+                if let Err(e) = self
+                    .block_store
+                    .put_block(&anchor_block, snapshot.block_height)
+                {
+                    warn!(
+                        "[SNAP_SYNC] Failed to persist anchor header at h={}: {}",
+                        snapshot.block_height, e
+                    );
+                } else {
+                    info!(
+                        "[SNAP_SYNC] Persisted anchor header at h={} (Option C)",
+                        snapshot.block_height
+                    );
+                }
+            }
+        }
+
         // Step 5: Rebuild epoch_bond_snapshot and epoch_producer_list from restored ProducerSet.
         // Without this, the node restarts with epoch_bond_snapshot from init.rs which
         // uses count_bonds() on the UTXO set — but after snap sync the UTXO may not have
