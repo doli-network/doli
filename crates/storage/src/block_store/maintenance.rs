@@ -7,7 +7,7 @@ use crate::StorageError;
 
 use super::types::{
     BlockStore, CF_ADDR_TX_INDEX, CF_BODIES, CF_HASH_TO_HEIGHT, CF_HEADERS, CF_HEIGHT_INDEX,
-    CF_PRESENCE, CF_SLOT_INDEX, CF_TX_INDEX,
+    CF_META, CF_PRESENCE, CF_SLOT_INDEX, CF_TX_INDEX,
 };
 
 impl BlockStore {
@@ -124,6 +124,7 @@ impl BlockStore {
             CF_SLOT_INDEX,
             CF_PRESENCE,
             CF_HASH_TO_HEIGHT,
+            CF_META,
         ];
 
         for cf_name in &cf_names {

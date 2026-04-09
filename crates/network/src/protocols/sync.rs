@@ -104,6 +104,10 @@ pub enum SyncResponse {
         producer_set: Vec<u8>,
         /// Merkle root: H(H(chain_state) || H(utxo_set) || H(producer_set))
         state_root: Hash,
+        /// Anchor block header (post-activation). Allows receiving node to
+        /// persist the header so set_canonical_chain walks never crash.
+        #[serde(default)]
+        block_header_bytes: Option<Vec<u8>>,
     },
 
     /// State root only, for cross-peer verification (snap sync)

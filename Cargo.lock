@@ -620,7 +620,7 @@ dependencies = [
 
 [[package]]
 name = "bridge"
-version = "6.7.4"
+version = "6.7.7"
 dependencies = [
  "chrono",
  "crypto",
@@ -863,7 +863,7 @@ dependencies = [
 
 [[package]]
 name = "channels"
-version = "6.7.4"
+version = "6.7.7"
 dependencies = [
  "chrono",
  "crypto",
@@ -1141,7 +1141,7 @@ checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
 name = "crypto"
-version = "6.7.4"
+version = "6.7.7"
 dependencies = [
  "bech32",
  "blake3",
@@ -1559,7 +1559,7 @@ dependencies = [
 
 [[package]]
 name = "doli-benchmarks"
-version = "6.7.4"
+version = "6.7.7"
 dependencies = [
  "chrono",
  "clap",
@@ -1571,7 +1571,7 @@ dependencies = [
 
 [[package]]
 name = "doli-cli"
-version = "6.7.4"
+version = "6.7.7"
 dependencies = [
  "anyhow",
  "bincode",
@@ -1600,7 +1600,7 @@ dependencies = [
 
 [[package]]
 name = "doli-core"
-version = "6.7.4"
+version = "6.7.7"
 dependencies = [
  "bincode",
  "bitvec",
@@ -1627,7 +1627,7 @@ dependencies = [
 
 [[package]]
 name = "doli-gui"
-version = "6.7.4"
+version = "6.7.7"
 dependencies = [
  "anyhow",
  "crypto",
@@ -1647,7 +1647,7 @@ dependencies = [
 
 [[package]]
 name = "doli-node"
-version = "6.7.4"
+version = "6.7.7"
 dependencies = [
  "anyhow",
  "axum",
@@ -3220,7 +3220,7 @@ dependencies = [
 
 [[package]]
 name = "integration-tests"
-version = "6.7.4"
+version = "6.7.7"
 dependencies = [
  "bincode",
  "crypto",
@@ -4230,7 +4230,7 @@ dependencies = [
 
 [[package]]
 name = "mempool"
-version = "6.7.4"
+version = "6.7.7"
 dependencies = [
  "crypto",
  "doli-core",
@@ -4469,7 +4469,7 @@ dependencies = [
 
 [[package]]
 name = "network"
-version = "6.7.4"
+version = "6.7.7"
 dependencies = [
  "async-trait",
  "bincode",
@@ -5322,7 +5322,7 @@ version = "3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e67ba7e9b2b56446f1d419b1d807906278ffa1a658a8a5d8a39dcb1f5a78614f"
 dependencies = [
- "toml_edit 0.25.10+spec-1.1.0",
+ "toml_edit 0.25.11+spec-1.1.0",
 ]
 
 [[package]]
@@ -6023,7 +6023,7 @@ dependencies = [
 
 [[package]]
 name = "rpc"
-version = "6.7.4"
+version = "6.7.7"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -6784,7 +6784,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "storage"
-version = "6.7.4"
+version = "6.7.7"
 dependencies = [
  "bincode",
  "crypto",
@@ -7507,9 +7507,9 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokio"
-version = "1.51.0"
+version = "1.51.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2bd1c4c0fc4a7ab90fc15ef6daaa3ec3b893f004f915f2392557ed23237820cd"
+checksum = "f66bf9585cda4b724d3e78ab34b73fb2bbaba9011b9bfdf69dc836382ea13b8c"
 dependencies = [
  "bytes",
  "libc",
@@ -7649,9 +7649,9 @@ dependencies = [
 
 [[package]]
 name = "toml_edit"
-version = "0.25.10+spec-1.1.0"
+version = "0.25.11+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a82418ca169e235e6c399a84e395ab6debeb3bc90edc959bf0f48647c6a32d1b"
+checksum = "0b59c4d22ed448339746c59b905d24568fcbb3ab65a500494f7b8c3e97739f2b"
 dependencies = [
  "indexmap 2.13.1",
  "toml_datetime 1.1.1+spec-1.1.0",
@@ -8005,7 +8005,7 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
 name = "updater"
-version = "6.7.4"
+version = "6.7.7"
 dependencies = [
  "anyhow",
  "crypto",
@@ -8108,7 +8108,7 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "vdf"
-version = "6.7.4"
+version = "6.7.7"
 dependencies = [
  "crypto",
  "doli-core",
@@ -8182,7 +8182,7 @@ dependencies = [
 
 [[package]]
 name = "wallet"
-version = "6.7.4"
+version = "6.7.7"
 dependencies = [
  "anyhow",
  "bincode",

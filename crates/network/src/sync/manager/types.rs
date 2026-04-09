@@ -163,6 +163,8 @@ pub struct VerifiedSnapshot {
     pub producer_set: Vec<u8>,
     /// Quorum-agreed state root (node re-verifies)
     pub state_root: Hash,
+    /// Anchor block header bytes (post-activation, for persisting)
+    pub block_header_bytes: Option<Vec<u8>>,
 }
 
 // ---------------------------------------------------------------------------

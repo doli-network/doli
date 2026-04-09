@@ -2199,6 +2199,7 @@ mod regression_tests {
                 utxo_set: vec![],
                 producer_set: vec![],
                 state_root: Hash::ZERO,
+                block_header_bytes: None,
             },
         };
 

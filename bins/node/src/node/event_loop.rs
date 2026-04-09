@@ -531,14 +531,29 @@ async fn handle_sync_request_bg(
             let utxo = utxo_set.read().await;
             let ps = producer_set.read().await;
             match storage::StateSnapshot::create(&cs, &utxo, &ps) {
-                Ok(snap) => SyncResponse::StateSnapshot {
-                    block_hash: snap.block_hash,
-                    block_height: snap.block_height,
-                    chain_state: snap.chain_state_bytes,
-                    utxo_set: snap.utxo_set_bytes,
-                    producer_set: snap.producer_set_bytes,
-                    state_root: snap.state_root,
-                },
+                Ok(snap) => {
+                    // Option C: include anchor header so receiving node can persist it
+                    let block_header_bytes = if snap.block_height
+                        >= doli_core::consensus::SNAP_HEADER_ACTIVATION_HEIGHT
+                    {
+                        if let Ok(Some(header)) = block_store.get_header(&snap.block_hash) {
+                            bincode::serialize(&header).ok()
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    SyncResponse::StateSnapshot {
+                        block_hash: snap.block_hash,
+                        block_height: snap.block_height,
+                        chain_state: snap.chain_state_bytes,
+                        utxo_set: snap.utxo_set_bytes,
+                        producer_set: snap.producer_set_bytes,
+                        state_root: snap.state_root,
+                        block_header_bytes,
+                    }
+                }
                 Err(e) => SyncResponse::Error(format!("Snapshot error: {}", e)),
             }
         }

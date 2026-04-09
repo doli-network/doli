@@ -8,7 +8,7 @@ use crate::StorageError;
 
 use super::types::{
     deserialize_body, BlockStore, CF_ADDR_TX_INDEX, CF_BODIES, CF_HASH_TO_HEIGHT, CF_HEADERS,
-    CF_HEIGHT_INDEX, CF_PRESENCE, CF_SLOT_INDEX, CF_TX_INDEX,
+    CF_HEIGHT_INDEX, CF_META, CF_PRESENCE, CF_SLOT_INDEX, CF_TX_INDEX,
 };
 
 impl BlockStore {
@@ -34,6 +34,7 @@ impl BlockStore {
             CF_HASH_TO_HEIGHT,
             CF_TX_INDEX,
             CF_ADDR_TX_INDEX,
+            CF_META,
         ];
 
         let db = rocksdb::DB::open_cf(&opts, path, cfs)?;
