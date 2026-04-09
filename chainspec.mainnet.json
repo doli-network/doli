@@ -3,8 +3,8 @@
   "id": "mainnet",
   "network": "Mainnet",
   "genesis": {
-    "timestamp": 1775432051,
-    "message": "DOLI Mainnet Genesis - v5.2.2 security hardening 31/Mar/2026 v6",
+    "timestamp": 1775752529,
+    "message": "DOLI Mainnet Genesis - v6.7.8 deterministic scheduler 09/Apr/2026 v7",
     "initial_reward": 100000000
   },
   "consensus": {
