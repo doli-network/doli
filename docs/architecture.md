@@ -346,6 +346,7 @@ DOLI uses a strict 3-level configuration hierarchy:
 | `enforcement.rs` | Version enforcement — pauses production if outdated after grace period |
 | `watchdog.rs` | Crash detection — 3 crashes within crash_window triggers automatic rollback |
 | `hardfork.rs` | Compile-time hard fork schedule — stops production when binary is too old for an activated fork height |
+| `anchor.rs` | Compile-time canonical anchor schedule — pins `(height, block_hash, state_root)` tuples for catastrophic recovery. Enforced at 4 points: block validation (Point A), reorg gate (Point B), snap sync verification (Point C), rollback refuse (Point D). Currently empty on all networks (plumbing + enforcement shipped as no-op in v6.7.10+); real anchors land in a follow-up PR after testnet verification. See `specs/security_model.md` §7.6. |
 | `test_keys.rs` | Test maintainer keys for devnet (DOLI_TEST_KEYS=1) |
 
 **Features:**
@@ -357,6 +358,7 @@ DOLI uses a strict 3-level configuration hierarchy:
 - Automatic rollback on 3 crashes within crash window
 - Version enforcement: outdated producers paused after grace period
 - Hard fork schedule: compile-time `(activation_height, min_version)` pairs checked every production tick
+- Canonical anchor schedule: compile-time `(height, hash, state_root, min_version)` commitments — rejects blocks, reorgs, and snap sync snapshots that contradict the anchored prefix (catastrophic recovery tool)
 - Network-layer version enforcement: status handshake rejects peers below `MIN_PEER_PROTOCOL_VERSION`
 
 ---

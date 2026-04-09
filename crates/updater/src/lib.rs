@@ -22,6 +22,7 @@
 //! - Devnet: Accelerated timing (60s veto, 30s grace) for fast testing
 
 // Existing sub-modules
+pub mod anchor;
 mod apply;
 mod download;
 pub mod hardfork;
@@ -92,6 +93,9 @@ pub use verification::{
 
 // Re-exports: hardfork
 pub use hardfork::{HardForkInfo, HardForkSchedule};
+
+// Re-exports: anchor
+pub use anchor::{AnchorSchedule, AnchorViolation, AnchorViolationKind, CanonicalAnchor};
 
 // Re-exports: util
 pub use util::{current_timestamp, current_version, is_newer_version, platform_identifier};

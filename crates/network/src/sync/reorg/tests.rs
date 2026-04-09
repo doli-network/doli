@@ -538,3 +538,113 @@ fn test_last_finality_height_getter() {
     handler.set_last_finality_height(100);
     assert_eq!(handler.last_finality_height(), Some(100));
 }
+
+#[test]
+fn test_anchor_floor_height_getter() {
+    let mut handler = ReorgHandler::new();
+    assert_eq!(handler.anchor_floor_height(), None);
+
+    handler.set_anchor_floor_height(Some(30_377));
+    assert_eq!(handler.anchor_floor_height(), Some(30_377));
+
+    handler.set_anchor_floor_height(None);
+    assert_eq!(handler.anchor_floor_height(), None);
+}
+
+#[test]
+fn test_plan_reorg_past_anchor_rejected() {
+    // Hostile chain whose common ancestor sits below the canonical anchor:
+    // plan_reorg must reject regardless of weight.
+    let mut handler = ReorgHandler::new();
+
+    let genesis = Hash::ZERO;
+    let block1 = crypto::hash::hash(b"block1");
+    let block2 = crypto::hash::hash(b"block2");
+    let fork_tip = crypto::hash::hash(b"hostile_fork_tip");
+
+    // Main chain: genesis -> block1 -> block2
+    handler.record_block_with_weight(block1, genesis, 10);
+    handler.record_block_with_weight(block2, block1, 10);
+
+    // Hostile fork from genesis with massive weight — would win on pure
+    // weight-based fork choice if there were no anchor.
+    handler.record_fork_block(fork_tip, genesis, 10_000);
+
+    // Anchor at height 2 (block2). Common ancestor is genesis (height 0),
+    // strictly below the anchor — must be rejected.
+    handler.set_anchor_floor_height(Some(2));
+
+    let result = handler.plan_reorg(block2, fork_tip, |_| None);
+    assert!(
+        result.is_none(),
+        "plan_reorg must reject reorg whose common ancestor is below the anchor floor"
+    );
+}
+
+#[test]
+fn test_plan_reorg_at_anchor_allowed() {
+    // Reorg whose common ancestor is exactly at the anchor height is allowed
+    // (the reorg branches ABOVE the anchor).
+    let mut handler = ReorgHandler::new();
+
+    let genesis = Hash::ZERO;
+    let block1 = crypto::hash::hash(b"block1");
+    let block2 = crypto::hash::hash(b"block2");
+    let fork_tip = crypto::hash::hash(b"fork_from_block1");
+
+    // Main chain: genesis -> block1 -> block2
+    handler.record_block_with_weight(block1, genesis, 10);
+    handler.record_block_with_weight(block2, block1, 10);
+
+    // Fork from block1
+    handler.record_fork_block(fork_tip, block1, 100);
+
+    // Anchor at height 1 (block1). Common ancestor IS block1 at the anchor
+    // height — allowed because the reorg branches above the anchor.
+    handler.set_anchor_floor_height(Some(1));
+
+    let result = handler.plan_reorg(block2, fork_tip, |_| None);
+    assert!(
+        result.is_some(),
+        "plan_reorg must allow reorg whose common ancestor equals the anchor height"
+    );
+}
+
+#[test]
+fn test_check_reorg_weighted_past_anchor_rejected() {
+    // Same hostile scenario, but via the fast gossip reorg path.
+    let mut handler = ReorgHandler::new();
+
+    let genesis = Hash::ZERO;
+    let block1 = crypto::hash::hash(b"block1");
+    let block2 = crypto::hash::hash(b"block2");
+
+    handler.record_block_with_weight(block1, genesis, 10);
+    handler.record_block_with_weight(block2, block1, 10);
+
+    handler.set_anchor_floor_height(Some(2));
+
+    // Hostile block building directly on genesis (its parent must already
+    // be tracked for check_reorg_weighted to consider it).
+    let hostile_header = doli_core::BlockHeader {
+        version: 1,
+        prev_hash: genesis,
+        merkle_root: Hash::ZERO,
+        presence_root: Hash::ZERO,
+        genesis_hash: Hash::ZERO,
+        timestamp: 0,
+        slot: 1,
+        producer: crypto::PublicKey::from_bytes([1u8; 32]),
+        vdf_output: vdf::VdfOutput { value: vec![] },
+        vdf_proof: vdf::VdfProof::empty(),
+        missed_producers: Vec::new(),
+        data_root: Hash::ZERO,
+    };
+    let hostile = Block::new(hostile_header, vec![]);
+
+    let result = handler.check_reorg_weighted(&hostile, block2, 10_000);
+    assert!(
+        result.is_none(),
+        "check_reorg_weighted must reject reorg past the canonical anchor"
+    );
+}

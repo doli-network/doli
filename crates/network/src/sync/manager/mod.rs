@@ -145,6 +145,14 @@ pub struct SyncManager {
     /// instead of our tip — tolerating normal status-protocol lag while
     /// still detecting real forks. Capped at 200 entries (~33 min at 10s slots).
     recent_canonical_hashes: VecDeque<(u64, Hash)>,
+
+    // === CANONICAL ANCHOR INFO ===
+    /// Highest canonical anchor in the binary's `AnchorSchedule`, if any.
+    /// Used by snap sync `handle_snap_snapshot` (Point C) to verify that
+    /// a downloaded snapshot is consistent with the anchor — rejecting
+    /// snapshots at or below the anchor height that don't match.
+    /// `None` when the schedule is empty (current default).
+    anchor_info: Option<super::reorg::SyncAnchorInfo>,
 }
 
 impl SyncManager {
@@ -194,6 +202,8 @@ impl SyncManager {
             confirmed_height_floor: 0,
             // Checkpoint health: canonical hash ring buffer
             recent_canonical_hashes: VecDeque::with_capacity(200),
+            // Canonical anchor info (populated at node startup if schedule non-empty)
+            anchor_info: None,
         }
     }
 

@@ -340,4 +340,22 @@ pub enum ValidationError {
         /// The activation height after which public keys are mandatory.
         activation_height: u64,
     },
+
+    /// Block contradicts a canonical anchor hardcoded in this binary.
+    ///
+    /// A canonical anchor pins the expected block hash at a specific height.
+    /// Any block at that height whose hash differs is rejected, regardless of
+    /// its weight, signatures, or producer eligibility. See
+    /// `updater::anchor::CanonicalAnchor`.
+    #[error("canonical anchor violated at h={height}: expected {expected}, got {got} ({reason})")]
+    CanonicalAnchorViolation {
+        /// The anchored height at which the violation occurred.
+        height: BlockHeight,
+        /// The expected block hash from the anchor schedule.
+        expected: Hash,
+        /// The actual block hash that was rejected.
+        got: Hash,
+        /// Human-readable reason from the anchor entry.
+        reason: String,
+    },
 }

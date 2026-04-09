@@ -24,4 +24,4 @@ pub use manager::{
     ForkAction, ProductionAuthorization, RecoveryPhase, RecoveryReason, SyncConfig, SyncManager,
     SyncPhase, SyncPipelineData, SyncState, VerifiedSnapshot, MAX_CONSECUTIVE_RESYNCS,
 };
-pub use reorg::{ReorgHandler, ReorgResult};
+pub use reorg::{ReorgHandler, ReorgResult, SyncAnchorInfo};

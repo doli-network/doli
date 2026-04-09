@@ -167,6 +167,63 @@ impl SyncManager {
                 return;
             }
 
+            // Canonical anchor check (Point C).
+            //
+            // The compile-time `anchor_info` pins a (height, hash, state_root)
+            // tuple. We use it to reject snapshots that disagree with the
+            // anchor at or below its height.
+            //
+            // Policies (in order):
+            //   1. `block_height < anchor.height`: REJECT — a snapshot below
+            //      the anchor height is by definition stale and cannot
+            //      produce a valid post-anchor state.
+            //   2. `block_height == anchor.height`: require block_hash and
+            //      response_root to match the anchor exactly.
+            //   3. `block_height > anchor.height`: accept (the post-anchor
+            //      chain is protected by Point A at apply_block time for
+            //      any block that is later replayed).
+            //
+            // With an empty schedule (current default) `anchor_info` is None
+            // and this entire block is a no-op.
+            if let Some(anchor) = self.anchor_info {
+                if block_height < anchor.height {
+                    warn!(
+                        "[SNAP_SYNC] [ANCHOR] Rejecting snapshot from {} at h={} < anchor.height={} — \
+                         cannot snap-sync below the canonical anchor",
+                        peer, block_height, anchor.height
+                    );
+                    self.handle_snap_download_error(peer);
+                    return;
+                }
+                if block_height == anchor.height {
+                    if block_hash != anchor.hash {
+                        warn!(
+                            "[SNAP_SYNC] [ANCHOR] Rejecting snapshot from {} at anchor h={}: \
+                             block_hash {:.16} != anchor.hash {:.16}",
+                            peer, block_height, block_hash, anchor.hash
+                        );
+                        self.handle_snap_download_error(peer);
+                        return;
+                    }
+                    if response_root != anchor.state_root {
+                        warn!(
+                            "[SNAP_SYNC] [ANCHOR] Rejecting snapshot from {} at anchor h={}: \
+                             state_root {:.16} != anchor.state_root {:.16}",
+                            peer, block_height, response_root, anchor.state_root
+                        );
+                        self.handle_snap_download_error(peer);
+                        return;
+                    }
+                    info!(
+                        "[SNAP_SYNC] [ANCHOR] Snapshot at anchor h={} matches canonical anchor",
+                        block_height
+                    );
+                }
+                // block_height > anchor.height: accept (relies on Point A for
+                // any subsequent block validation; full cross-verification of
+                // the chain through the anchor is a future protocol extension).
+            }
+
             if response_root != *quorum_root {
                 info!(
                     "[SNAP_SYNC] Peer {} advanced since vote: response_root={:.16} != quorum_root={:.16} (height={}). Accepting — node verifies independently.",
@@ -328,5 +385,194 @@ impl SyncManager {
     pub fn snap_blacklist_peer(&mut self, peer: PeerId) {
         warn!("[SNAP_SYNC] Blacklisting peer {} for bad snapshot", peer);
         self.snap.blacklisted_peers.insert(peer);
+    }
+}
+
+#[cfg(test)]
+mod anchor_tests {
+    use std::time::Instant;
+
+    use libp2p::PeerId;
+
+    use crypto::Hash;
+
+    use super::{SyncManager, SyncPhase, SyncPipelineData, SyncState};
+    use crate::sync::{SyncAnchorInfo, SyncConfig};
+
+    fn h(byte: u8) -> Hash {
+        let mut bytes = [0u8; 32];
+        bytes[0] = byte;
+        Hash::from_bytes(bytes)
+    }
+
+    fn downloading_manager(
+        peer: PeerId,
+        target_hash: Hash,
+        target_height: u64,
+        quorum_root: Hash,
+    ) -> SyncManager {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.state = SyncState::Syncing {
+            phase: SyncPhase::SnapDownloading,
+            started_at: Instant::now(),
+        };
+        manager.pipeline_data = SyncPipelineData::SnapDownloading {
+            target_hash,
+            target_height,
+            quorum_root,
+            peer,
+            alternate_peers: vec![],
+        };
+        manager
+    }
+
+    #[test]
+    fn snapshot_without_anchor_accepted() {
+        // No anchor info → baseline behavior unchanged.
+        let peer = PeerId::random();
+        let target = h(7);
+        let mut manager = downloading_manager(peer, target, 100, h(99));
+
+        manager.handle_snap_snapshot(
+            peer,
+            target,
+            100,
+            vec![],
+            vec![],
+            vec![],
+            h(99), // response_root == quorum_root
+            None,
+        );
+
+        assert!(
+            matches!(manager.pipeline_data, SyncPipelineData::SnapReady { .. }),
+            "baseline snapshot must be accepted when no anchor is set"
+        );
+    }
+
+    #[test]
+    fn snapshot_at_anchor_height_with_match_accepted() {
+        let peer = PeerId::random();
+        let anchor_hash = h(42);
+        let anchor_root = h(142);
+        let mut manager = downloading_manager(peer, anchor_hash, 100, anchor_root);
+        manager.set_anchor_info(Some(SyncAnchorInfo {
+            height: 100,
+            hash: anchor_hash,
+            state_root: anchor_root,
+        }));
+
+        manager.handle_snap_snapshot(
+            peer,
+            anchor_hash,
+            100,
+            vec![],
+            vec![],
+            vec![],
+            anchor_root,
+            None,
+        );
+
+        assert!(
+            matches!(manager.pipeline_data, SyncPipelineData::SnapReady { .. }),
+            "matching snapshot at anchor height must be accepted"
+        );
+    }
+
+    #[test]
+    fn snapshot_at_anchor_height_with_wrong_hash_rejected() {
+        let peer = PeerId::random();
+        let hostile_hash = h(99);
+        let mut manager = downloading_manager(peer, hostile_hash, 100, h(142));
+        manager.set_anchor_info(Some(SyncAnchorInfo {
+            height: 100,
+            hash: h(42),
+            state_root: h(142),
+        }));
+
+        manager.handle_snap_snapshot(
+            peer,
+            hostile_hash,
+            100,
+            vec![],
+            vec![],
+            vec![],
+            h(142),
+            None,
+        );
+
+        assert!(
+            !matches!(manager.pipeline_data, SyncPipelineData::SnapReady { .. }),
+            "snapshot with wrong block hash at anchor height must be rejected"
+        );
+    }
+
+    #[test]
+    fn snapshot_at_anchor_height_with_wrong_state_root_rejected() {
+        let peer = PeerId::random();
+        let anchor_hash = h(42);
+        let mut manager = downloading_manager(peer, anchor_hash, 100, h(99));
+        manager.set_anchor_info(Some(SyncAnchorInfo {
+            height: 100,
+            hash: anchor_hash,
+            state_root: h(142),
+        }));
+
+        manager.handle_snap_snapshot(
+            peer,
+            anchor_hash,
+            100,
+            vec![],
+            vec![],
+            vec![],
+            h(99), // response_root != anchor.state_root
+            None,
+        );
+
+        assert!(
+            !matches!(manager.pipeline_data, SyncPipelineData::SnapReady { .. }),
+            "snapshot with wrong state_root at anchor height must be rejected"
+        );
+    }
+
+    #[test]
+    fn snapshot_below_anchor_height_rejected() {
+        let peer = PeerId::random();
+        // target at 150, snapshot at 100 (< anchor.height=120). Note: min_acceptable
+        // for the target's stale check is target-100 = 50, so 100 would pass
+        // baseline staleness but fail the anchor check.
+        let target = h(7);
+        let mut manager = downloading_manager(peer, target, 150, h(99));
+        manager.set_anchor_info(Some(SyncAnchorInfo {
+            height: 120,
+            hash: h(42),
+            state_root: h(142),
+        }));
+
+        manager.handle_snap_snapshot(peer, target, 100, vec![], vec![], vec![], h(99), None);
+
+        assert!(
+            !matches!(manager.pipeline_data, SyncPipelineData::SnapReady { .. }),
+            "snapshot below anchor height must be rejected"
+        );
+    }
+
+    #[test]
+    fn snapshot_above_anchor_height_accepted() {
+        let peer = PeerId::random();
+        let target = h(7);
+        let mut manager = downloading_manager(peer, target, 200, h(99));
+        manager.set_anchor_info(Some(SyncAnchorInfo {
+            height: 100,
+            hash: h(42),
+            state_root: h(142),
+        }));
+
+        manager.handle_snap_snapshot(peer, target, 200, vec![], vec![], vec![], h(99), None);
+
+        assert!(
+            matches!(manager.pipeline_data, SyncPipelineData::SnapReady { .. }),
+            "snapshot above anchor height must be accepted (relies on Point A for subsequent blocks)"
+        );
     }
 }

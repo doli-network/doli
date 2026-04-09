@@ -34,6 +34,25 @@ impl Node {
             return Ok(false);
         }
 
+        // Canonical anchor check: refuse to rollback past the highest anchor.
+        // The anchored prefix of the chain is immutable by construction; any
+        // rollback that would move the tip at or below the anchor height is a
+        // bug and must not proceed. With an empty schedule (current default)
+        // this is a no-op.
+        if let Some(anchor) = self.anchor_schedule.highest() {
+            if target_height < anchor.height {
+                error!(
+                    "[ANCHOR] Refusing rollback from h={} to h={} — would cross canonical anchor at h={} ({})",
+                    local_height, target_height, anchor.height, anchor.reason
+                );
+                return Err(anyhow::anyhow!(
+                    "rollback would cross canonical anchor at h={} ({})",
+                    anchor.height,
+                    anchor.reason
+                ));
+            }
+        }
+
         // Fix 4: Cap cumulative rollback depth at 50 blocks.
         // Prevents cascading rollbacks from gradually eroding the chain back to genesis.
         // After 50 rollbacks without a successful block application, the fork is too

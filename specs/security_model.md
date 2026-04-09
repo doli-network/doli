@@ -740,6 +740,8 @@ impl Transaction {
 - Bond lock duration (~4 years) makes this expensive
 - Social consensus on checkpoints
 - New nodes should sync from trusted sources
+- **Canonical anchors** (see §7.6) provide a compile-time, append-only
+  commitment to `(height, block_hash, state_root)` for recovery anchors
 
 ### 7.2 VDF Hardware Acceleration
 
@@ -797,6 +799,39 @@ Since `prev_hash` is not used in selection, manipulating block content cannot in
 **Status**: Grinding is a non-issue due to Epoch Lookahead. No monitoring needed for this specific attack vector.
 
 *Updated: 2026-03-29 -- rewrote to reflect actual deterministic selection (was describing obsolete hash-based selection)*
+
+### 7.6 Catastrophic Consensus Failure & Recovery (Canonical Anchors)
+
+**Risk**: A critical consensus bug (e.g. the INC-I-026 cascade of 2026-04-09) produces a hostile chain that a seed-guardian recovery procedure cannot reliably eject, because seeds passively accept the heaviest chain and any surviving hostile producer can re-poison a freshly-restored seed within seconds.
+
+**Defense: Canonical anchors** (`crates/updater/src/anchor.rs`)
+
+A **canonical anchor** pins a `(height, block_hash, state_root)` tuple at compile time via `updater::AnchorSchedule::for_network(network)`. The schedule mirrors `HardForkSchedule` structurally: an append-only, compile-time, network-keyed list of commitments baked into the binary. Each anchor also carries a `min_version` that forces old binaries off the network at the anchor height, identical to `HardForkInfo::min_version` semantics.
+
+**Enforcement points** (all no-op when the schedule is empty; current state for all networks):
+
+1. **Block validation (Point A)** — `validate_block_for_apply` in `bins/node/src/node/validation_checks.rs` rejects any block whose `(height, hash)` pair contradicts an anchor, emitting `ValidationError::CanonicalAnchorViolation`. Runs BEFORE VDF/producer checks so hostile blocks cost zero CPU.
+2. **Reorg gate (Point B)** — `ReorgHandler::check_reorg_weighted` and `ReorgHandler::plan_reorg` in `crates/network/src/sync/reorg/mod.rs` reject any reorg whose common ancestor sits strictly below the highest anchor, regardless of accumulated chain weight.
+3. **Snap sync verification (Point C)** — `handle_snap_snapshot` in `crates/network/src/sync/manager/snap_sync.rs` rejects snapshots at or below the anchor height that don't match the anchor's `block_hash` and `state_root`, and rejects any snapshot whose height is strictly below the anchor (stale by construction).
+4. **Rollback refuse (Point D)** — `rollback_one_block` in `bins/node/src/node/rollback.rs` returns an error if a rollback would cross the anchor height, preventing corruption of the anchored state.
+
+**Rules (enforced by review, not code)**:
+- Anchors are append-only. Once shipped in a release, an anchor is never removed or modified — only superseded by a newer anchor at a higher height.
+- Anchors must be derived from a genuinely healthy guardian checkpoint, confirmed by at least 2 independent seed operators emitting identical anchor proposals.
+- A testnet cycle MUST precede any real mainnet anchor release.
+- Each anchor PR requires two reviewers.
+
+**Current state (2026-04-09)**: `AnchorSchedule::for_network` returns an empty schedule for Mainnet, Testnet, and Devnet. All four enforcement points are live in the v6.7.10+ binary as no-ops. The first real anchor (targeting the INC-I-026 recovery at h=30377) will ship in a separate PR after testnet verification.
+
+**Residual risk**:
+- Anchors protect the chain prefix AT AND BELOW the anchor height. Consensus bugs that produce a hostile chain *above* the anchor still require the normal halt/recover workflow (but can never damage the anchored prefix).
+- A wrong anchor (typo, wrong fork) would brick the chain at the anchor height until a corrective binary ships. Mitigated by two-seed confirmation, testnet cycle, and two-reviewer approval.
+- Anchors introduce a form of social trust in the core team at anchor-shipping time. DOLI at its current decentralization level accepts this trade-off; a fully decentralized network would use a weak-subjectivity protocol instead.
+
+**What canonical anchors do NOT replace**:
+- The guardian fork detection + halt loop (see `.claude/skills/guardian/SKILL.md`)
+- The `--auto-checkpoint` snapshot cadence on seeds
+- The hard fork schedule in `crates/updater/src/hardfork.rs`
 
 ---
 

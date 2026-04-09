@@ -462,6 +462,30 @@ impl SyncManager {
         &self.reorg_handler
     }
 
+    /// Set the canonical anchor floor height on the underlying reorg handler.
+    ///
+    /// Called once at Node startup with the height of the highest anchor in
+    /// the binary's `AnchorSchedule`. Reorgs whose common ancestor sits
+    /// strictly below this height are rejected regardless of weight.
+    /// `None` disables the gate (default — empty schedule).
+    pub fn set_anchor_floor_height(&mut self, height: Option<u64>) {
+        self.reorg_handler.set_anchor_floor_height(height);
+    }
+
+    /// Set the full canonical anchor info (height, hash, state_root) used by
+    /// snap sync to verify downloaded snapshots against the compile-time anchor.
+    ///
+    /// Call this at Node startup alongside `set_anchor_floor_height`. `None`
+    /// disables the snap sync anchor check (default).
+    pub fn set_anchor_info(&mut self, info: Option<super::super::reorg::SyncAnchorInfo>) {
+        self.anchor_info = info;
+    }
+
+    /// Get the currently configured canonical anchor info, if any.
+    pub fn anchor_info(&self) -> Option<super::super::reorg::SyncAnchorInfo> {
+        self.anchor_info
+    }
+
     pub fn disable_snap_sync(&mut self) {
         self.snap.threshold = u64::MAX;
     }

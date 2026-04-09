@@ -239,6 +239,13 @@ pub struct Node {
     /// Hard fork schedule — stops production when binary is too old for an activated fork.
     /// Built at compile time from known forks; checked every production tick.
     pub hardfork_schedule: updater::HardForkSchedule,
+    /// Canonical anchor schedule — rejects blocks at anchored heights whose hash
+    /// does not match, rejects reorgs whose common ancestor is below the highest
+    /// anchor, and rejects snap sync snapshots whose state_root does not match
+    /// the anchor at the anchor height. Built at compile time from known anchors
+    /// in `updater::AnchorSchedule::for_network` (currently empty — plumbing
+    /// only, no real anchors committed yet).
+    pub anchor_schedule: updater::AnchorSchedule,
 }
 
 impl Node {

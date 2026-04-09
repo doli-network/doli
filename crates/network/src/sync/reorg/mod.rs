@@ -21,6 +21,27 @@ use tracing::{debug, info, warn};
 /// Maximum depth for reorg detection (must handle network partitions up to ~2.7 hours)
 const MAX_REORG_DEPTH: usize = 1000;
 
+/// Minimal anchor descriptor used by the sync layer.
+///
+/// Defined here (rather than imported from `updater`) to avoid an inverse
+/// crate dependency (`network -> updater`). The node-level startup code is
+/// responsible for translating `updater::CanonicalAnchor` into this struct
+/// and pushing it into `SyncManager` via `set_anchor_info`.
+///
+/// This mirrors the sub-fields of `CanonicalAnchor` that snap sync needs:
+/// the anchored height, the expected block hash, and the expected state
+/// root after applying the anchored block. The reorg handler only needs
+/// the height (stored separately as `anchor_floor_height`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SyncAnchorInfo {
+    /// Block height at which this anchor is pinned.
+    pub height: u64,
+    /// The only valid block hash at `height`.
+    pub hash: Hash,
+    /// State root after applying the anchored block.
+    pub state_root: Hash,
+}
+
 /// Block metadata for fork choice rule
 #[derive(Clone, Debug)]
 pub struct BlockWeight {
@@ -63,6 +84,12 @@ pub struct ReorgHandler {
     current_chain_weight: u64,
     /// Height of the last finalized block (reorgs below this are rejected).
     last_finality_height: Option<u64>,
+    /// Canonical anchor floor — height of the highest canonical anchor in the
+    /// binary's `AnchorSchedule`. Reorgs whose common ancestor sits strictly
+    /// below this height are rejected regardless of weight. `None` when the
+    /// anchor schedule is empty (no enforcement). Set once at node startup
+    /// via `set_anchor_floor_height`; append-only in practice.
+    anchor_floor_height: Option<u64>,
 }
 
 impl ReorgHandler {
@@ -83,6 +110,7 @@ impl ReorgHandler {
             lru_order,
             current_chain_weight: 0,
             last_finality_height: None,
+            anchor_floor_height: None,
         }
     }
 
@@ -179,6 +207,20 @@ impl ReorgHandler {
     /// Get the last finality height (for defense-in-depth checks in execute_reorg).
     pub fn last_finality_height(&self) -> Option<u64> {
         self.last_finality_height
+    }
+
+    /// Set the canonical anchor floor height. Reorgs whose common ancestor
+    /// sits strictly below this height are rejected regardless of weight.
+    ///
+    /// Call this once at node startup with the height of the highest anchor
+    /// in the binary's `AnchorSchedule`. `None` disables the gate (default).
+    pub fn set_anchor_floor_height(&mut self, height: Option<u64>) {
+        self.anchor_floor_height = height;
+    }
+
+    /// Get the canonical anchor floor height.
+    pub fn anchor_floor_height(&self) -> Option<u64> {
+        self.anchor_floor_height
     }
 
     /// Compare two chains and return which is heavier
@@ -315,6 +357,27 @@ impl ReorgHandler {
                     }
                 }
 
+                // Canonical anchor check: reject reorgs whose common ancestor
+                // sits strictly below the highest anchor. An honest chain must
+                // pass through every anchor by construction, so a reorg that
+                // branches below one is necessarily a branch off the hostile
+                // chain. No-op when `anchor_floor_height` is None (empty
+                // schedule, default).
+                if let Some(anchor_height) = self.anchor_floor_height {
+                    let ancestor_height = self
+                        .block_weights
+                        .get(&current)
+                        .map(|w| w.height)
+                        .unwrap_or(0);
+                    if ancestor_height < anchor_height {
+                        warn!(
+                            "ANCHOR: Rejecting reorg past canonical anchor at h={} (ancestor at h={}, block={})",
+                            anchor_height, ancestor_height, block_hash
+                        );
+                        return None;
+                    }
+                }
+
                 let weight_delta = new_chain_weight as i64 - self.current_chain_weight as i64;
 
                 info!(
@@ -430,6 +493,25 @@ impl ReorgHandler {
                 warn!(
                     "FINALITY: plan_reorg rejecting reorg past finalized height {} (ancestor at {})",
                     finality_height, ancestor_height
+                );
+                return None;
+            }
+        }
+
+        // Canonical anchor check: reject reorgs whose common ancestor sits
+        // strictly below the highest canonical anchor. Defense in depth for
+        // fork recovery — if a hostile chain's branch root is below an
+        // anchor, refuse to switch to it regardless of weight.
+        if let Some(anchor_height) = self.anchor_floor_height {
+            let ancestor_height = self
+                .block_weights
+                .get(&common_ancestor)
+                .map(|w| w.height)
+                .unwrap_or(0);
+            if ancestor_height < anchor_height {
+                warn!(
+                    "ANCHOR: plan_reorg rejecting reorg past canonical anchor at h={} (ancestor at h={}, new_tip={})",
+                    anchor_height, ancestor_height, new_tip
                 );
                 return None;
             }

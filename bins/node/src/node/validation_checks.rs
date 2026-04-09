@@ -142,6 +142,23 @@ impl Node {
         height: u64,
         mode: ValidationMode,
     ) -> Result<(), validation::ValidationError> {
+        // Canonical anchor check (Point A): a block at any anchored height MUST
+        // match the anchor's hash. This runs BEFORE every other validation so
+        // that a hostile block can't burn CPU on VDF/sig checks. With an empty
+        // schedule (default), this is a no-op.
+        if let Err(v) = self.anchor_schedule.validate_block(height, block.hash()) {
+            warn!(
+                "[ANCHOR] REJECT block at h={} hash={} expected={} ({})",
+                height, v.got, v.expected, v.reason
+            );
+            return Err(validation::ValidationError::CanonicalAnchorViolation {
+                height,
+                expected: v.expected,
+                got: v.got,
+                reason: v.reason,
+            });
+        }
+
         let state = self.chain_state.read().await;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

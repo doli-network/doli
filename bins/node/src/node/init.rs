@@ -713,6 +713,30 @@ impl Node {
                     floor
                 );
             }
+
+            // Canonical anchor wiring for reorg gate (Point B) and snap sync
+            // verification (Point C).
+            //
+            // Wire the highest anchor from the compile-time schedule into the
+            // sync manager. Reorgs whose common ancestor sits below the anchor
+            // are rejected; snap sync snapshots at the anchor height must match
+            // the anchor's hash and state_root. Empty schedule → no-op.
+            {
+                let anchor_schedule = updater::AnchorSchedule::for_network(config.network);
+                let anchor_info = anchor_schedule.highest().map(|a| network::SyncAnchorInfo {
+                    height: a.height,
+                    hash: a.hash,
+                    state_root: a.state_root,
+                });
+                sm.set_anchor_floor_height(anchor_info.map(|a| a.height));
+                sm.set_anchor_info(anchor_info);
+                if let Some(a) = anchor_info {
+                    info!(
+                        "[STARTUP] Canonical anchor configured: h={} hash={} state_root={}",
+                        a.height, a.hash, a.state_root
+                    );
+                }
+            }
         }
 
         if producer_key.is_some() {
@@ -893,6 +917,7 @@ impl Node {
             last_checkpoint_height: 0,
             pending_tx_announcements: HashMap::new(),
             hardfork_schedule: updater::HardForkSchedule::for_network(network_for_schedule),
+            anchor_schedule: updater::AnchorSchedule::for_network(network_for_schedule),
         })
     }
 
@@ -969,6 +994,15 @@ impl Node {
             let mut sm = sync_manager.write().await;
             sm.set_bootstrap_grace_period_secs(0); // No grace period in tests
             sm.set_min_peers_for_production(0); // No peers needed in tests
+                                                // Canonical anchor wiring — empty devnet schedule → None (no-op).
+            let anchor_schedule = updater::AnchorSchedule::for_network(network);
+            let anchor_info = anchor_schedule.highest().map(|a| network::SyncAnchorInfo {
+                height: a.height,
+                hash: a.hash,
+                state_root: a.state_root,
+            });
+            sm.set_anchor_floor_height(anchor_info.map(|a| a.height));
+            sm.set_anchor_info(anchor_info);
         }
 
         // Real VDF calibrator (minimal iterations for speed)
@@ -1074,6 +1108,7 @@ impl Node {
             last_checkpoint_height: 0,
             pending_tx_announcements: HashMap::new(),
             hardfork_schedule: updater::HardForkSchedule::for_network(network),
+            anchor_schedule: updater::AnchorSchedule::for_network(network),
         })
     }
 }
