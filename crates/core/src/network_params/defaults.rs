@@ -77,13 +77,14 @@ impl NetworkParams {
                 // Hard fork gates
                 sig_verification_height: 0, // P0-001: enforce from genesis (clean chain)
                 snap_attestation_skip_height: 0, // INC-I-010: always active (clean chain)
-                // INC-I-026: NOT ACTIVATED on mainnet from this branch.
-                // When this branch is merged to main, this value MUST be replaced
-                // with a chosen future height (operator pick). Leaving it as
-                // u64::MAX in a main-branch binary keeps the legacy (buggy) scheduler
-                // on mainnet — which is the current production state, so this is a
-                // safe no-op for anyone running this branch against mainnet.
-                inc_i_026_scheduler_activation_height: u64::MAX,
+                // INC-I-026: scheduler fix activates at h=30500 on mainnet.
+                // Forward-only activation per CLAUDE.md #0 RULE — pre-activation
+                // blocks keep their state roots unchanged. Chosen as a comfortable
+                // future height past the recent fork cluster (~h=24640) to give all
+                // operators time to upgrade to v6.7.8+. A matching HardForkSchedule
+                // entry at the SAME height in crates/updater/src/hardfork.rs stops
+                // any node running <6.7.8 from producing past activation.
+                inc_i_026_scheduler_activation_height: 30_500,
 
                 // Gossip mesh: universal config for all network sizes.
                 // mesh_n=12 keeps all peers in eager-push for networks ≤24 (mesh_n_high),

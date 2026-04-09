@@ -145,11 +145,11 @@ impl HardForkSchedule {
     ///   legacy-scheduler nodes can't keep producing wrong blocks after the
     ///   fix activates.
     ///
-    /// - **Mainnet**: no entry. The INC-I-026 mainnet activation will be
-    ///   scheduled when this branch is merged to main — a mainnet entry
-    ///   must ship together with a non-`u64::MAX` value for
+    /// - **Mainnet, h=30500, min_version=6.7.8**: INC-I-026 scheduler fix.
+    ///   Producers running <6.7.8 stop production at h=30500 on mainnet so
+    ///   legacy-scheduler nodes can't keep producing wrong blocks after the
+    ///   fix activates. Must match
     ///   `NetworkParams::inc_i_026_scheduler_activation_height` on mainnet.
-    ///   Until then, mainnet runs the legacy scheduler unchanged.
     ///
     /// - **Devnet**: no entry. Tests exercise activation directly.
     pub fn for_network(network: doli_core::Network) -> Self {
@@ -166,10 +166,14 @@ impl HardForkSchedule {
                 });
             }
             doli_core::Network::Mainnet => {
-                // INC-I-026 mainnet activation is NOT scheduled on this branch.
-                // When merged to main, add an entry here AND set
-                // NetworkParams::inc_i_026_scheduler_activation_height on mainnet
-                // in crates/core/src/network_params/defaults.rs at the SAME height.
+                schedule.add(HardForkInfo {
+                    activation_height: 30_500,
+                    min_version: "6.7.8".to_string(),
+                    consensus_changes: vec![
+                        "INC-I-026: scheduler no longer filters by excluded_producers"
+                            .to_string(),
+                    ],
+                });
             }
             doli_core::Network::Devnet => {
                 // No entries — devnet runs the fixed scheduler from genesis
