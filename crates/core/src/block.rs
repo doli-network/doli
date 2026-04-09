@@ -61,6 +61,11 @@ pub struct BlockHeader {
     /// Archivers store the actual blobs and serve them via GetBlockData RPC.
     #[serde(default)]
     pub data_root: Hash,
+    /// Fork identity — BLAKE3(genesis_hash || sorted active fork heights).
+    /// Blocks from nodes with incompatible consensus rules are rejected.
+    /// Defaults to ZERO for pre-fork-id blocks (backward compatible deserialization).
+    #[serde(default)]
+    pub fork_id: Hash,
 }
 
 impl BlockHeader {
@@ -81,6 +86,9 @@ impl BlockHeader {
             hasher.update(pk.as_bytes());
         }
         hasher.update(self.data_root.as_bytes()); // Commit to blob data
+        if !self.fork_id.is_zero() {
+            hasher.update(self.fork_id.as_bytes()); // Commit to fork identity
+        }
         hasher.update(&self.timestamp.to_le_bytes());
         hasher.update(&self.slot.to_le_bytes());
         hasher.update(self.producer.as_bytes());
@@ -280,6 +288,7 @@ pub struct BlockBuilder {
     genesis_hash: Hash,
     presence_root: Hash,
     missed_producers: Vec<PublicKey>,
+    fork_id: Hash,
 }
 
 impl BlockBuilder {
@@ -296,6 +305,7 @@ impl BlockBuilder {
             genesis_hash,
             presence_root: Hash::ZERO,
             missed_producers: Vec::new(),
+            fork_id: Hash::ZERO,
         }
     }
 
@@ -315,6 +325,12 @@ impl BlockBuilder {
     /// Set the missed producers (on-chain liveness exclusion).
     pub fn with_missed_producers(mut self, missed: Vec<PublicKey>) -> Self {
         self.missed_producers = missed;
+        self
+    }
+
+    /// Set the fork identity hash.
+    pub fn with_fork_id(mut self, fork_id: Hash) -> Self {
+        self.fork_id = fork_id;
         self
     }
 
@@ -410,6 +426,7 @@ impl BlockBuilder {
             vdf_proof: VdfProof::empty(),
             missed_producers: self.missed_producers,
             data_root,
+            fork_id: self.fork_id,
         };
 
         Some((header, self.transactions))
@@ -461,6 +478,7 @@ mod tests {
             vdf_proof: VdfProof::empty(),
             missed_producers: Vec::new(),
             data_root: Hash::ZERO,
+            fork_id: Hash::ZERO,
         };
 
         let hash1 = header.hash();
@@ -486,6 +504,7 @@ mod tests {
             vdf_proof: VdfProof::empty(),
             missed_producers: Vec::new(),
             data_root: Hash::ZERO,
+            fork_id: Hash::ZERO,
         };
 
         // Different presence_root should produce different hash

@@ -259,6 +259,17 @@ impl Node {
         &self.block_store
     }
 
+    /// Compute the current fork_id from the hardfork schedule and genesis hash.
+    pub fn current_fork_id(&self) -> crypto::Hash {
+        let genesis_hash = self.params.genesis_hash;
+        // Use a height of u64::MAX to include ALL scheduled forks in the fork_id.
+        // This ensures that a node running the latest binary always produces the
+        // same fork_id regardless of current chain height — the fork_id represents
+        // "what forks does this binary know about", not "what forks are active now".
+        // At the activation boundary, all upgraded nodes will have the same fork_id.
+        self.hardfork_schedule.fork_id(&genesis_hash, u64::MAX)
+    }
+
     /// Detect if there's a gap in historical blocks (e.g., from snap sync).
     /// Get the current chain tip height
     pub async fn best_height(&self) -> u64 {

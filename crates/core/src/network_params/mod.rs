@@ -177,6 +177,12 @@ pub struct NetworkParams {
     /// containing this field set to the same value before the height arrives.
     pub inc_i_026_scheduler_activation_height: u64,
 
+    /// Height at which fork_id enforcement activates in block headers.
+    /// Before this height: fork_id = Hash::ZERO, not checked.
+    /// At or after: fork_id must match local computation, blocks with mismatch are dropped.
+    /// Mainnet/Testnet: set to a future height before release. Devnet: 0 (always active).
+    pub fork_id_activation_height: u64,
+
     // === Gossip mesh ===
     /// Target number of peers in gossipsub mesh per topic
     pub mesh_n: usize,

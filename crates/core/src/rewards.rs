@@ -473,6 +473,7 @@ mod tests {
             vdf_proof: VdfProof { pi: vec![] },
             missed_producers: Vec::new(),
             data_root: Hash::ZERO,
+            fork_id: Hash::ZERO,
         };
 
         // NOTE: Presence commitment removed in deterministic scheduler model

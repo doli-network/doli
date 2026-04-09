@@ -70,6 +70,7 @@ fn test_validate_timestamp_advancing() {
         vdf_proof: vdf::VdfProof::empty(),
         missed_producers: Vec::new(),
         data_root: Hash::ZERO,
+        fork_id: Hash::ZERO,
     };
 
     assert!(validate_header(&header, &ctx).is_ok());
@@ -92,6 +93,7 @@ fn test_validate_timestamp_not_advancing() {
         vdf_proof: vdf::VdfProof::empty(),
         missed_producers: Vec::new(),
         data_root: Hash::ZERO,
+        fork_id: Hash::ZERO,
     };
 
     assert!(matches!(
@@ -119,6 +121,7 @@ fn test_validate_slot_derivation() {
         vdf_proof: vdf::VdfProof::empty(),
         missed_producers: Vec::new(),
         data_root: Hash::ZERO,
+        fork_id: Hash::ZERO,
     };
 
     assert!(matches!(
@@ -751,7 +754,7 @@ proptest! {
                 producer: crypto::PublicKey::from_bytes([0u8; 32]),
                 vdf_output: vdf::VdfOutput { value: vec![] },
                 vdf_proof: vdf::VdfProof::empty(),
-                missed_producers: Vec::new(), data_root: Hash::ZERO,
+                missed_producers: Vec::new(), data_root: Hash::ZERO, fork_id: Hash::ZERO,
                     },
             transactions: vec![tx1, tx2],
             aggregate_bls_signature: Vec::new(),
@@ -1442,6 +1445,7 @@ fn create_block_with_merkle() -> (Block, ValidationContext) {
         vdf_proof: VdfProof::default(),
         missed_producers: Vec::new(),
         data_root: Hash::ZERO,
+        fork_id: Hash::ZERO,
     };
 
     let mut block = Block {

@@ -198,6 +198,10 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
             "DOLI_INC_I_026_SCHEDULER_ACTIVATION_HEIGHT",
             defaults.inc_i_026_scheduler_activation_height,
         ),
+        fork_id_activation_height: env_parse(
+            "DOLI_FORK_ID_ACTIVATION_HEIGHT",
+            defaults.fork_id_activation_height,
+        ),
 
         // Gossip mesh (locked for mainnet - wrong values could isolate nodes)
         mesh_n: if is_mainnet {

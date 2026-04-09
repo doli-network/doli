@@ -158,6 +158,10 @@ pub struct ValidationContext {
     /// Default `u64::MAX` = fix disabled. Per-network values are set via
     /// `with_inc_i_026_scheduler_activation_height()` from the node validation callsites.
     pub inc_i_026_scheduler_activation_height: u64,
+    /// Expected fork_id for the current height.
+    pub expected_fork_id: crypto::Hash,
+    /// Height at which fork_id enforcement activates.
+    pub fork_id_activation_height: u64,
 }
 
 impl ValidationContext {
@@ -189,6 +193,8 @@ impl ValidationContext {
             epoch_producer_list: Vec::new(),
             sig_verification_height: u64::MAX,
             inc_i_026_scheduler_activation_height: u64::MAX,
+            expected_fork_id: crypto::Hash::ZERO,
+            fork_id_activation_height: u64::MAX,
         }
     }
 
@@ -286,6 +292,14 @@ impl ValidationContext {
     #[must_use]
     pub fn with_sig_verification_height(mut self, height: u64) -> Self {
         self.sig_verification_height = height;
+        self
+    }
+
+    /// Set fork_id enforcement parameters.
+    #[must_use]
+    pub fn with_fork_id(mut self, expected: crypto::Hash, activation_height: u64) -> Self {
+        self.expected_fork_id = expected;
+        self.fork_id_activation_height = activation_height;
         self
     }
 }

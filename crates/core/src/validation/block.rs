@@ -13,12 +13,22 @@ pub fn validate_header(
     header: &BlockHeader,
     ctx: &ValidationContext,
 ) -> Result<(), ValidationError> {
-    // 0. Chain identity -- reject blocks from different genesis FIRST.
+    // 0a. Chain identity -- reject blocks from different genesis FIRST.
     // This is O(1) and catches all genesis-time-hijack attacks with zero tolerance.
     if header.genesis_hash != ctx.params.genesis_hash {
         return Err(ValidationError::GenesisHashMismatch {
             got: header.genesis_hash,
             expected: ctx.params.genesis_hash,
+        });
+    }
+
+    // 0b. Fork identity -- reject blocks from nodes with different active hard forks.
+    // Only enforced after fork_id_activation_height.
+    if ctx.current_height >= ctx.fork_id_activation_height && header.fork_id != ctx.expected_fork_id
+    {
+        return Err(ValidationError::ForkIdMismatch {
+            got: header.fork_id,
+            expected: ctx.expected_fork_id,
         });
     }
 
@@ -317,6 +327,16 @@ pub fn validate_block_with_mode(
                 return Err(ValidationError::GenesisHashMismatch {
                     got: block.header.genesis_hash,
                     expected: ctx.params.genesis_hash,
+                });
+            }
+
+            // Fork identity -- reject blocks from incompatible hard fork sets.
+            if ctx.current_height >= ctx.fork_id_activation_height
+                && block.header.fork_id != ctx.expected_fork_id
+            {
+                return Err(ValidationError::ForkIdMismatch {
+                    got: block.header.fork_id,
+                    expected: ctx.expected_fork_id,
                 });
             }
 

@@ -41,6 +41,23 @@ impl Node {
                 return Ok(());
             }
 
+            // Fork identity — reject blocks from nodes with different active hard forks.
+            // Same level of filtering as genesis_hash: O(1), pre-validation drop.
+            let fork_id_activation = self.config.network.params().fork_id_activation_height;
+            if current_height >= fork_id_activation {
+                let our_fork_id = self.current_fork_id();
+                if block.header.fork_id != our_fork_id {
+                    debug!(
+                        "[FORK_ID] Dropping block {} at h={} — fork_id {} != {}",
+                        block_hash,
+                        current_height,
+                        &block.header.fork_id.to_hex()[..16],
+                        &our_fork_id.to_hex()[..16],
+                    );
+                    return Ok(());
+                }
+            }
+
             // Height-occupied guard: discard blocks that don't extend our tip
             // if we already have canonical chain at or above their height.
             //

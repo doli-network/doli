@@ -110,6 +110,31 @@ impl HardForkSchedule {
         self.forks.is_empty()
     }
 
+    /// Compute the fork identity hash for the given height.
+    ///
+    /// `fork_id = BLAKE3(genesis_hash || h1_le || h2_le || ...)` where
+    /// h1, h2, ... are the activation heights of all forks active at
+    /// `current_height`, sorted ascending (maintained by `add()`).
+    ///
+    /// Returns `Hash::ZERO` when no forks are active (pre-first-fork).
+    pub fn fork_id(&self, genesis_hash: &crypto::Hash, current_height: u64) -> crypto::Hash {
+        let active: Vec<u64> = self
+            .forks
+            .iter()
+            .filter(|f| f.is_active(current_height))
+            .map(|f| f.activation_height)
+            .collect();
+        if active.is_empty() {
+            return crypto::Hash::ZERO;
+        }
+        let mut hasher = crypto::Hasher::new();
+        hasher.update(genesis_hash.as_bytes());
+        for h in &active {
+            hasher.update(&h.to_le_bytes());
+        }
+        hasher.finalize()
+    }
+
     /// Return the compile-time schedule of known hard forks.
     ///
     /// Add entries here when scheduling a consensus-breaking upgrade.
@@ -157,19 +182,33 @@ impl HardForkSchedule {
         match network {
             doli_core::Network::Testnet => {
                 schedule.add(HardForkInfo {
-                    activation_height: 17_000,
+                    activation_height: 950,
                     min_version: "6.7.8".to_string(),
                     consensus_changes: vec![
                         "INC-I-026: scheduler no longer filters by excluded_producers".to_string(),
                     ],
                 });
+                schedule.add(HardForkInfo {
+                    activation_height: 950,
+                    min_version: "6.8.0".to_string(),
+                    consensus_changes: vec![
+                        "fork_id: block header includes fork identity hash".to_string()
+                    ],
+                });
             }
             doli_core::Network::Mainnet => {
                 schedule.add(HardForkInfo {
-                    activation_height: 30_500,
+                    activation_height: 950,
                     min_version: "6.7.8".to_string(),
                     consensus_changes: vec![
                         "INC-I-026: scheduler no longer filters by excluded_producers".to_string(),
+                    ],
+                });
+                schedule.add(HardForkInfo {
+                    activation_height: 950,
+                    min_version: "6.8.0".to_string(),
+                    consensus_changes: vec![
+                        "fork_id: block header includes fork identity hash".to_string()
                     ],
                 });
             }

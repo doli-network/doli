@@ -19,6 +19,14 @@ pub enum ValidationError {
         expected: crypto::Hash,
     },
 
+    /// Block fork_id doesn't match our computed fork identity.
+    /// The block was produced by a node with different active hard forks.
+    #[error("fork_id mismatch: got={got}, expected={expected}")]
+    ForkIdMismatch {
+        got: crypto::Hash,
+        expected: crypto::Hash,
+    },
+
     /// Block or transaction version is unsupported.
     #[error("invalid version: {0}")]
     InvalidVersion(u32),

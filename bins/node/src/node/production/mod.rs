@@ -523,6 +523,7 @@ impl Node {
             vdf_proof,
             missed_producers: header.missed_producers,
             data_root: header.data_root,
+            fork_id: header.fork_id,
         };
 
         // Use the transactions from the builder — same list used for merkle root computation.

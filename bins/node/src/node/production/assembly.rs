@@ -18,8 +18,15 @@ impl Node {
         // All transactions MUST be added to the builder BEFORE build(), which computes the
         // merkle root from exactly the transactions that will be in the final block.
         let pool_hash = doli_core::consensus::reward_pool_pubkey_hash();
-        let mut builder =
-            BlockBuilder::new(prev_hash, prev_slot, our_pubkey).with_params(self.params.clone());
+        let fork_id_activation = self.config.network.params().fork_id_activation_height;
+        let fork_id = if height >= fork_id_activation {
+            self.current_fork_id()
+        } else {
+            crypto::Hash::ZERO
+        };
+        let mut builder = BlockBuilder::new(prev_hash, prev_slot, our_pubkey)
+            .with_params(self.params.clone())
+            .with_fork_id(fork_id);
 
         // Coinbase is deferred until after mempool tx inclusion, so that
         // per-byte extra fees from user transactions can be routed to the
