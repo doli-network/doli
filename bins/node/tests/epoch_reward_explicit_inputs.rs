@@ -127,6 +127,7 @@ fn build_block(
         vdf_proof: VdfProof::empty(),
         missed_producers: Vec::new(),
         data_root: crypto::Hash::ZERO,
+        fork_id: crypto::Hash::ZERO,
     };
 
     Block::new(header, vec![coinbase])
@@ -403,6 +404,7 @@ async fn test_pre_activation_epoch_reward_drains_pool() {
         vdf_proof: VdfProof::empty(),
         missed_producers: Vec::new(),
         data_root: crypto::Hash::ZERO,
+        fork_id: crypto::Hash::ZERO,
     };
     let block = Block::new(header, txs);
 
@@ -477,6 +479,7 @@ async fn test_rollback_post_activation_restores_pool() {
         vdf_proof: VdfProof::empty(),
         missed_producers: Vec::new(),
         data_root: crypto::Hash::ZERO,
+        fork_id: crypto::Hash::ZERO,
     };
     let block = Block::new(header, txs);
     node.apply_block(block, doli_core::validation::ValidationMode::Light)

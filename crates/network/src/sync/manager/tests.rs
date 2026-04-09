@@ -582,6 +582,7 @@ fn create_test_header(prev_hash: Hash, slot: u32) -> BlockHeader {
         vdf_proof: vdf::VdfProof::empty(),
         missed_producers: Vec::new(),
         data_root: Hash::ZERO,
+        fork_id: Hash::ZERO,
     }
 }
 

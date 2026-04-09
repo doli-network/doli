@@ -252,6 +252,7 @@ mod tests {
             vdf_proof: VdfProof::empty(),
             missed_producers: Vec::new(),
             data_root: Hash::ZERO,
+            fork_id: Hash::ZERO,
         };
         Block::new(header, vec![])
     }
@@ -344,6 +345,7 @@ mod tests {
             vdf_proof: VdfProof::empty(),
             missed_producers: Vec::new(),
             data_root: Hash::ZERO,
+            fork_id: Hash::ZERO,
         };
         let header2 = BlockHeader {
             version: 1,
@@ -358,6 +360,7 @@ mod tests {
             vdf_proof: VdfProof::empty(),
             missed_producers: Vec::new(),
             data_root: Hash::ZERO,
+            fork_id: Hash::ZERO,
         };
 
         let proof = EquivocationProof {

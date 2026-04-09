@@ -36,6 +36,7 @@ fn create_test_block(slot: u32, producer: &PublicKey, prev_hash: Hash, merkle_ro
         vdf_proof: VdfProof::empty(),
         missed_producers: Vec::new(),
         data_root: crypto::Hash::ZERO,
+        fork_id: crypto::Hash::ZERO,
     };
     Block::new(header, vec![])
 }
