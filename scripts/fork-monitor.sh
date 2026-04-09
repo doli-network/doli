@@ -138,7 +138,11 @@ else:
       group_num=$((group_num + 1))
     done <<< "$result_code"
     echo ""
-    echo -e "  ${RED}ACTION: Run 'scripts/emergency-halt.sh' to stop all producers${NC}"
+    echo -e "  ${BOLD}Recovery options:${NC}"
+    echo -e "    ${YELLOW}heal a minority${NC}: if most nodes agree and a few are poisoned,"
+    echo -e "      scripts/node-heal.sh${MODE:+ --$MODE} --target <bad-node> --source <good-node> --yes"
+    echo -e "    ${RED}halt everything${NC}: if the split is ambiguous or majority is wrong,"
+    echo -e "      scripts/emergency-halt.sh${MODE:+ --$MODE}"
     echo ""
     return 1
   else

@@ -159,6 +159,7 @@ After completing any code change, ALWAYS propose the following checklist to the 
 | Emergency halt | `scripts/emergency-halt.sh` — pauses production on all nodes via RPC |
 | Emergency resume | `scripts/emergency-resume.sh` — resumes production on all nodes via RPC |
 | Seed backup | `scripts/seed-backup.sh` — creates RocksDB checkpoint via RPC |
+| Node heal (producer recovery) | `scripts/node-heal.sh` — rebuild a poisoned/forked N# producer by rsync'ing data/ from a healthy node. Testnet preset + generic mode for mainnet. Producers only (refuses seeds). |
 | Test guardian | `scripts/test_guardian.sh` — smoke test all guardian features |
 
 **Seed auto-checkpoint**: Start seeds with `--auto-checkpoint 100` for automatic snapshots every 100 blocks (keeps last 5, rotates oldest). Essential for seed protection.
