@@ -160,8 +160,7 @@ impl HardForkSchedule {
                     activation_height: 17_000,
                     min_version: "6.7.8".to_string(),
                     consensus_changes: vec![
-                        "INC-I-026: scheduler no longer filters by excluded_producers"
-                            .to_string(),
+                        "INC-I-026: scheduler no longer filters by excluded_producers".to_string(),
                     ],
                 });
             }
@@ -170,8 +169,7 @@ impl HardForkSchedule {
                     activation_height: 30_500,
                     min_version: "6.7.8".to_string(),
                     consensus_changes: vec![
-                        "INC-I-026: scheduler no longer filters by excluded_producers"
-                            .to_string(),
+                        "INC-I-026: scheduler no longer filters by excluded_producers".to_string(),
                     ],
                 });
             }

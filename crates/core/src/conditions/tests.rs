@@ -909,7 +909,7 @@ fn integration_threshold_2_of_3_mixed() {
 // Guard condition tests
 // ====================================================================
 
-use crate::transaction::{Input, Output, OutputType, Transaction, TxType};
+use crate::transaction::{Output, OutputType, Transaction, TxType};
 
 /// Helper: build a minimal Transaction with the given outputs.
 fn tx_with_outputs(outputs: Vec<Output>) -> Transaction {
@@ -926,17 +926,6 @@ fn tx_with_outputs(outputs: Vec<Output>) -> Transaction {
 fn normal_output(amount: u64, pkh: Hash) -> Output {
     Output {
         output_type: OutputType::Normal,
-        amount,
-        pubkey_hash: pkh,
-        lock_until: 0,
-        extra_data: vec![],
-    }
-}
-
-/// Helper: build an output with a specific type.
-fn typed_output(output_type: OutputType, amount: u64, pkh: Hash) -> Output {
-    Output {
-        output_type,
         amount,
         pubkey_hash: pkh,
         lock_until: 0,
