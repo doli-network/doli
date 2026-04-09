@@ -178,43 +178,13 @@ impl HardForkSchedule {
     ///
     /// - **Devnet**: no entry. Tests exercise activation directly.
     pub fn for_network(network: doli_core::Network) -> Self {
-        let mut schedule = Self::new();
+        let schedule = Self::new();
         match network {
-            doli_core::Network::Testnet => {
-                schedule.add(HardForkInfo {
-                    activation_height: 950,
-                    min_version: "6.7.8".to_string(),
-                    consensus_changes: vec![
-                        "INC-I-026: scheduler no longer filters by excluded_producers".to_string(),
-                    ],
-                });
-                schedule.add(HardForkInfo {
-                    activation_height: 950,
-                    min_version: "6.8.0".to_string(),
-                    consensus_changes: vec![
-                        "fork_id: block header includes fork identity hash".to_string()
-                    ],
-                });
-            }
-            doli_core::Network::Mainnet => {
-                schedule.add(HardForkInfo {
-                    activation_height: 950,
-                    min_version: "6.7.8".to_string(),
-                    consensus_changes: vec![
-                        "INC-I-026: scheduler no longer filters by excluded_producers".to_string(),
-                    ],
-                });
-                schedule.add(HardForkInfo {
-                    activation_height: 950,
-                    min_version: "6.8.0".to_string(),
-                    consensus_changes: vec![
-                        "fork_id: block header includes fork identity hash".to_string()
-                    ],
-                });
-            }
-            doli_core::Network::Devnet => {
-                // No entries — devnet runs the fixed scheduler from genesis
-                // (inc_i_026_scheduler_activation_height=0 on devnet).
+            doli_core::Network::Testnet
+            | doli_core::Network::Mainnet
+            | doli_core::Network::Devnet => {
+                // All features active from genesis (activation_height=0).
+                // No hardfork entries needed — no version gating required.
             }
         }
         schedule
