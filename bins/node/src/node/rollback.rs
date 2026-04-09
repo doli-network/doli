@@ -232,14 +232,27 @@ impl Node {
     /// Capped at 10 rollbacks — if the fork is deeper than that, it's not shallow.
     /// Returns `true` if a rollback was performed (caller should skip other periodic tasks).
     pub async fn resolve_shallow_fork(&mut self) -> Result<bool> {
-        let (empty_headers, local_height, gap) = {
+        let (empty_headers, local_height, gap, last_applied_secs) = {
             let sync = self.sync_manager.read().await;
             let gap = sync.network_tip_height().saturating_sub(sync.local_tip().0);
-            (sync.consecutive_empty_headers(), sync.local_tip().0, gap)
+            let last_applied = sync.last_block_applied_secs();
+            (
+                sync.consecutive_empty_headers(),
+                sync.local_tip().0,
+                gap,
+                last_applied,
+            )
         };
 
         // Need at least 3 fork evidence signals before activating
         if empty_headers < 3 || local_height == 0 {
+            return Ok(false);
+        }
+
+        // With INC-I-026 (deterministic scheduler) + fork_id, forks between
+        // upgraded nodes are impossible. Only rollback if truly stuck for 5+ min.
+        // Anything less is gossip timing, not a fork.
+        if last_applied_secs < 300 {
             return Ok(false);
         }
 

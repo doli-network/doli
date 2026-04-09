@@ -84,7 +84,7 @@ pub const UNIQUE_COINBASE_ACTIVATION_HEIGHT: u64 = 0;
 /// Snap sync includes anchor block header in protocol response.
 /// Before this height: anchor header not included (Option B floor protects).
 /// After this height: anchor header included and persisted.
-pub const SNAP_HEADER_ACTIVATION_HEIGHT: u64 = 30_000;
+pub const SNAP_HEADER_ACTIVATION_HEIGHT: u64 = 500;
 
 /// Tier promotion activation height.
 /// Before: active_production_list = first 50 by registered_at (static seniority).

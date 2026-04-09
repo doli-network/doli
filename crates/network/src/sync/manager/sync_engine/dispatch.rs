@@ -116,13 +116,15 @@ impl SyncManager {
                         return None;
                     }
                     if gap <= 50 && self.local_height > 0 {
-                        warn!(
-                            "Small fork (gap={}, empties={}): redirecting to rollback \
-                             instead of genesis resync — rollback can handle this",
+                        // With INC-I-026 + fork_id, small gaps are gossip timing.
+                        // Don't force rollback — let gossip resolve.
+                        debug!(
+                            "Small gap (gap={}, empties={}): waiting for gossip, \
+                             not redirecting to rollback",
                             gap, self.fork.consecutive_empty_headers
                         );
-                        self.fork.consecutive_empty_headers = 3;
-                        self.set_state(SyncState::Idle, "small_fork_redirect_to_rollback");
+                        self.fork.consecutive_empty_headers = 0;
+                        self.set_state(SyncState::Idle, "small_gap_wait_gossip");
                         return None;
                     }
                     info!(

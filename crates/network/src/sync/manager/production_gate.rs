@@ -189,6 +189,21 @@ impl SyncManager {
             }
         }
 
+        // Check 5: Behind-tip guard — prevent stale block production.
+        // With INC-I-026 (deterministic scheduler), a node >1 block behind
+        // the network tip would produce a block at a height that already has
+        // a canonical block on other nodes → FORK_GUARD drops it everywhere.
+        // Block production until caught up via gossip.
+        let net_tip = self
+            .peers
+            .values()
+            .map(|p| p.best_height)
+            .max()
+            .unwrap_or(0);
+        if net_tip > 0 && self.local_height + 1 < net_tip {
+            return ProductionAuthorization::BlockedSyncing;
+        }
+
         info!("[CAN_PRODUCE] AUTHORIZED");
         ProductionAuthorization::Authorized
     }
@@ -500,6 +515,11 @@ impl SyncManager {
     /// Get consecutive empty header response count (for shallow fork detection)
     pub fn consecutive_empty_headers(&self) -> u32 {
         self.fork.consecutive_empty_headers
+    }
+
+    /// Seconds since last block was applied (for stuck detection)
+    pub fn last_block_applied_secs(&self) -> u64 {
+        self.network.last_block_applied.elapsed().as_secs()
     }
 
     /// Reset empty headers counter after a rollback changes the local tip.

@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use libp2p::PeerId;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use super::{SyncManager, SyncPhase, SyncPipelineData, SyncState};
 
@@ -417,12 +417,11 @@ impl SyncManager {
             && matches!(self.state, SyncState::Idle)
         {
             let stuck_duration = self.network.last_block_applied.elapsed();
-            if stuck_duration > Duration::from_secs(120) {
+            if stuck_duration > Duration::from_secs(300) {
                 if self.fork.consecutive_empty_headers >= 20 {
-                    // Genuinely on a dead fork: many consecutive empties + stuck for 2+ min.
-                    // Escalate to snap sync if enough peers AND gap is large enough.
-                    // For small gaps (≤12), redirect to rollback to preserve
-                    // block history and avoid snap sync cascade.
+                    // 5+ min stuck with 20+ empty headers and all peers blacklisted.
+                    // Escalate to snap sync for large gaps. For small gaps, just clear
+                    // blacklist and let gossip + should_sync() resolve.
                     let enough_peers = self.peers.len() >= 3;
                     let gap = self
                         .network
@@ -430,7 +429,7 @@ impl SyncManager {
                         .saturating_sub(self.local_height);
                     if enough_peers && gap > 12 {
                         warn!(
-                            "All peers blacklisted for >120s with {} consecutive empty headers — \
+                            "All peers blacklisted for >300s with {} consecutive empty headers — \
                              requesting snap sync (gap={})",
                             self.fork.consecutive_empty_headers, gap
                         );
@@ -439,13 +438,14 @@ impl SyncManager {
                             super::RecoveryReason::AllPeersBlacklistedDeepFork,
                         );
                     } else if enough_peers && gap <= 12 {
-                        warn!(
-                            "All peers blacklisted for >120s (gap={}) — clearing blacklist \
-                             and signaling fork recovery (small gap, preserving block history)",
+                        // Small gap: just clear blacklist, don't signal fork recovery.
+                        // With deterministic scheduler, small gaps resolve via gossip.
+                        debug!(
+                            "All peers blacklisted for >300s (gap={}) — clearing blacklist, \
+                             waiting for gossip resolution",
                             gap
                         );
                         self.fork.header_blacklisted_peers.clear();
-                        self.signal_stuck_fork(); // Signal fork recovery without forcing counter
                     } else {
                         warn!(
                             "All peers blacklisted for >120s with {} consecutive empty headers \
@@ -586,7 +586,10 @@ impl SyncManager {
                 .network_tip_height
                 .saturating_sub(self.local_height);
             let stuck_secs = self.network.last_block_applied.elapsed().as_secs();
-            if gap > 0 && stuck_secs > 120 {
+            if gap > 0 && stuck_secs > 300 {
+                // 5 minutes without any block applied = real problem, not gossip timing.
+                // With INC-I-026 (deterministic scheduler) + fork_id, gaps < 5 min
+                // are normal gossip latency. Only escalate after 300s.
                 if gap > 1000 {
                     // Large gap: rollback can't help. Force snap sync to jump to tip.
                     if self.snap.attempts < 3 && self.peers.len() >= 3 {
@@ -599,16 +602,10 @@ impl SyncManager {
                             gap,
                         });
                     }
-                } else if self.fork.consecutive_empty_headers < 3 && self.local_height > 0 {
-                    // Small gap with non-zero height: likely on a fork.
-                    // Signal fork recovery via dedicated flag (not counter force-set).
-                    warn!(
-                        "Stuck-on-fork detected: no block applied for {}s, behind by {} blocks \
-                         (local_h={}, network_tip={}). Signaling fork recovery.",
-                        stuck_secs, gap, self.local_height, self.network.network_tip_height
-                    );
-                    self.signal_stuck_fork();
                 }
+                // Small gap: do NOT signal fork recovery. With deterministic scheduler,
+                // small gaps are gossip timing, not forks. Gossip + should_sync() will
+                // resolve them. Removed: signal_stuck_fork() for small gaps.
             }
         }
 
