@@ -518,8 +518,16 @@ sudo systemctl start doli-node
 
 **Step 1 — Detect** (continuous monitoring):
 ```bash
+# Interactive (stdout display only):
+scripts/fork-monitor.sh --testnet --loop 30
+
+# With Telegram push alerts on state transitions (fork, offline, behind):
+export DOLI_TELEGRAM_BOT_TOKEN="..."   # from @BotFather
+export DOLI_TELEGRAM_CHAT_ID="..."     # target chat / group
 scripts/fork-monitor.sh --testnet --loop 30
 ```
+See `docs/telegram-alerts.md` for bot setup and a systemd unit example for
+long-lived monitoring on a seed server.
 
 **Step 2 — Halt** (stop all producers, seeds keep running):
 ```bash

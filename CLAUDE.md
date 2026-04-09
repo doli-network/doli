@@ -155,7 +155,8 @@ After completing any code change, ALWAYS propose the following checklist to the 
 
 | Task | Script |
 |------|--------|
-| Fork detection | `scripts/fork-monitor.sh` — polls all nodes, detects chain tip divergence |
+| Fork/offline/lag detection | `scripts/fork-monitor.sh` — polls all nodes, detects chain tip divergence, offline nodes, and nodes lagging past `DOLI_BEHIND_THRESHOLD` (default 10 blocks). Emits Telegram alerts on state transitions when `DOLI_TELEGRAM_BOT_TOKEN` + `DOLI_TELEGRAM_CHAT_ID` are set. |
+| Telegram alert helper | `scripts/telegram-alert.sh` — generic alert sender. No-op when env vars are unset so callers can use it unconditionally. |
 | Emergency halt | `scripts/emergency-halt.sh` — pauses production on all nodes via RPC |
 | Emergency resume | `scripts/emergency-resume.sh` — resumes production on all nodes via RPC |
 | Seed backup | `scripts/seed-backup.sh` — creates RocksDB checkpoint via RPC |
