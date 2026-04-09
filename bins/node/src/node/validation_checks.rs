@@ -114,7 +114,13 @@ impl Node {
             self.epoch_producer_list.clone()
         } else {
             self.active_production_list.clone()
-        });
+        })
+        .with_inc_i_026_scheduler_activation_height(
+            self.config
+                .network
+                .params()
+                .inc_i_026_scheduler_activation_height,
+        );
 
         // Apply chainspec if present
         if let Some(ref spec) = self.config.chainspec {
@@ -269,7 +275,13 @@ impl Node {
                 self.active_production_list.clone()
             },
         )
-        .with_sig_verification_height(self.config.network.params().sig_verification_height);
+        .with_sig_verification_height(self.config.network.params().sig_verification_height)
+        .with_inc_i_026_scheduler_activation_height(
+            self.config
+                .network
+                .params()
+                .inc_i_026_scheduler_activation_height,
+        );
 
         if let Some(ref spec) = self.config.chainspec {
             ctx.params.apply_chainspec(spec);

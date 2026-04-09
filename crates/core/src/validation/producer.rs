@@ -250,21 +250,41 @@ pub fn validate_producer_eligibility(
     }
 
     // Post-genesis: EPOCH-FROZEN ROUND-ROBIN validation (matches production).
-    // Uses epoch_producer_list (frozen at epoch boundary) filtered by
-    // excluded_producers (derived from on-chain missed_producers headers).
-    if !ctx.epoch_producer_list.is_empty() {
-        let mut effective: Vec<crypto::PublicKey> = ctx
-            .epoch_producer_list
-            .iter()
-            .filter(|pk| !ctx.excluded_producers.contains(pk))
-            .copied()
-            .collect();
-        // epoch_producer_list is already sorted
+    //
+    // Two behaviors, gated by `inc_i_026_scheduler_activation_height`:
+    //
+    //   Pre-activation (legacy):
+    //     effective = epoch_producer_list.filter(|pk| !excluded_producers.contains(pk))
+    //     expected  = effective[slot % effective.len()]
+    //
+    //   Post-activation (INC-I-026 fix):
+    //     expected  = epoch_producer_list[slot % epoch_producer_list.len()]
+    //
+    // The production scheduler (bins/node/src/node/production/scheduling.rs::
+    // resolve_epoch_eligibility) switches at the SAME height. Production and
+    // validation MUST agree on the scheduler input (behavioral learning #8) —
+    // this symmetric gate preserves that invariant while eliminating the
+    // excluded_producers divergence that caused the mainnet 2026-04-09 fork
+    // cascade.
+    let inc_i_026_active = ctx.current_height >= ctx.inc_i_026_scheduler_activation_height;
 
-        // Deadlock safety: all excluded -> fall back to full epoch list
-        if effective.is_empty() {
-            effective = ctx.epoch_producer_list.clone();
-        }
+    if !ctx.epoch_producer_list.is_empty() {
+        let effective: Vec<crypto::PublicKey> = if inc_i_026_active {
+            // Post-activation: pure function of (slot, epoch_producer_list).
+            ctx.epoch_producer_list.clone()
+        } else {
+            // Pre-activation: legacy filter-by-excluded with deadlock fallback.
+            let mut e: Vec<crypto::PublicKey> = ctx
+                .epoch_producer_list
+                .iter()
+                .filter(|pk| !ctx.excluded_producers.contains(pk))
+                .copied()
+                .collect();
+            if e.is_empty() {
+                e = ctx.epoch_producer_list.clone();
+            }
+            e
+        };
 
         if effective.is_empty() {
             return Err(ValidationError::InvalidProducer {
@@ -294,17 +314,26 @@ pub fn validate_producer_eligibility(
     }
 
     // Fallback: use active_producers_weighted if epoch_producer_list not set
-    // (backward compatibility during transition)
+    // (backward compatibility during transition).
+    // Same INC-I-026 gate as the epoch_producer_list branch above.
     if !ctx.active_producers_weighted.is_empty() {
-        let mut sorted: Vec<crypto::PublicKey> = ctx
-            .active_producers_weighted
-            .iter()
-            .map(|(pk, _)| *pk)
-            .filter(|pk| !ctx.excluded_producers.contains(pk))
-            .collect();
+        let mut sorted: Vec<crypto::PublicKey> = if inc_i_026_active {
+            ctx.active_producers_weighted
+                .iter()
+                .map(|(pk, _)| *pk)
+                .collect()
+        } else {
+            ctx.active_producers_weighted
+                .iter()
+                .map(|(pk, _)| *pk)
+                .filter(|pk| !ctx.excluded_producers.contains(pk))
+                .collect()
+        };
         sorted.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
 
-        if sorted.is_empty() {
+        if sorted.is_empty() && !inc_i_026_active {
+            // Pre-activation deadlock fallback: if everything was filtered out,
+            // fall back to the unfiltered weighted list.
             sorted = ctx
                 .active_producers_weighted
                 .iter()

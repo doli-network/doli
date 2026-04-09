@@ -408,65 +408,108 @@ impl Node {
     ///
     /// EPOCH LOOKAHEAD: Deterministic round-robin selection (anti-grinding)
     ///
-    /// Selection is based ONLY on:
-    /// 1. Slot number (known in advance)
-    /// 2. Sorted producer list with bond weights (fixed at epoch start)
+    /// Selection is based on slot number and a frozen producer list. Two
+    /// behaviors exist, gated by `inc_i_026_scheduler_activation_height`:
     ///
-    /// NO dependency on prev_hash = NO grinding possible.
-    /// This is the core insight: "Proof of Longevity" over time,
-    /// not "Proof of Delay" via long VDF.
+    /// ## Legacy behavior (height < activation_height)
     ///
-    /// Algorithm: slot % total_bonds -> deterministic ticket assignment
-    /// Uses cached DeterministicScheduler for O(log n) lookups per slot.
+    /// ```text
+    /// effective = epoch_producer_list.filter(|pk| !excluded_producers.contains(pk))
+    /// expected  = effective[slot % effective.len()]
+    /// ```
+    ///
+    /// `excluded_producers` is a locally-mutated set (populated at apply time
+    /// from `block.header.missed_producers`) that can diverge between nodes
+    /// that applied different competing blocks at the same height. This is
+    /// the fork-generator documented in INC-I-026 and its sibling INC-I-016.
+    ///
+    /// ## Fixed behavior (height >= activation_height)
+    ///
+    /// ```text
+    /// expected = active_production_list[slot % active_production_list.len()]
+    /// ```
+    ///
+    /// `excluded_producers` is NOT consulted. The scheduler is a pure function
+    /// of `(slot, active_production_list)`, both of which are epoch-frozen and
+    /// identical on all nodes. Trade-off: a dead producer causes an empty slot
+    /// instead of being skipped — benign, whereas scheduler divergence is
+    /// catastrophic (forks).
+    ///
+    /// Per-network activation heights live in `NetworkParams::
+    /// inc_i_026_scheduler_activation_height`. Both production (this function)
+    /// and validation (`crates/core/src/validation/producer.rs::
+    /// validate_producer_eligibility`) switch at the same height — behavioral
+    /// learning #8 (production/validation MUST agree on scheduler input).
     pub fn resolve_epoch_eligibility(
         &mut self,
         current_slot: u32,
-        _height: u64,
+        height: u64,
         _active_with_weights: &[(PublicKey, u64)],
     ) -> Vec<PublicKey> {
-        // EPOCH-FROZEN SCHEDULING: Use the active_production_list (frozen at epoch boundary)
-        // filtered by excluded_producers (derived from on-chain missed_producers headers).
-        //
-        // Before TIER_SYSTEM_ACTIVATION_HEIGHT: active_production_list == epoch_producer_list
-        // After activation: active_production_list is the first ACTIVE_PRODUCERS_CAP by registered_at
-        //
-        // Both inputs are deterministic across all nodes:
-        // - active_production_list: computed at epoch boundary (subset of epoch_producer_list)
-        // - excluded_producers: accumulated from block header missed_producers fields
+        let activation_height = self
+            .config
+            .network
+            .params()
+            .inc_i_026_scheduler_activation_height;
+
+        // EPOCH-FROZEN SCHEDULING: use active_production_list (frozen at epoch boundary)
+        // or fall back to epoch_producer_list before the first epoch boundary.
         let source = if self.active_production_list.is_empty() {
-            &self.epoch_producer_list // Fallback before first epoch boundary
+            &self.epoch_producer_list
         } else {
             &self.active_production_list
         };
-        let mut effective: Vec<PublicKey> = source
-            .iter()
-            .filter(|pk| !self.excluded_producers.contains(pk))
-            .copied()
-            .collect();
-        // epoch_producer_list is already sorted
+        if source.is_empty() {
+            return Vec::new();
+        }
 
-        if effective.is_empty() {
-            // Deadlock safety: all excluded → fall back to full epoch list
-            effective = self.epoch_producer_list.clone();
+        if height < activation_height {
+            // --- Legacy (pre-activation) path ---
+            // Filter by excluded_producers and fall back to the full epoch list
+            // if everything is excluded.
+            let mut effective: Vec<PublicKey> = source
+                .iter()
+                .filter(|pk| !self.excluded_producers.contains(pk))
+                .copied()
+                .collect();
+
             if effective.is_empty() {
-                return Vec::new();
+                // Deadlock safety: all excluded → fall back to full epoch list
+                effective = self.epoch_producer_list.clone();
+                if effective.is_empty() {
+                    return Vec::new();
+                }
+                warn!("[SCHED_RR] All producers excluded! Falling back to full epoch list");
             }
-            warn!("[SCHED_RR] All producers excluded! Falling back to full epoch list");
+
+            let excluded_count = self.excluded_producers.len();
+            let producer_index = (current_slot as usize) % effective.len();
+            let selected = effective[producer_index];
+            if excluded_count > 0 {
+                info!(
+                    "[SCHED_RR] slot={} producer={} index={}/{} (excluded={})",
+                    current_slot,
+                    hex::encode(&selected.as_bytes()[..4]),
+                    producer_index,
+                    effective.len(),
+                    excluded_count
+                );
+            }
+            return vec![selected];
         }
 
-        let excluded_count = self.excluded_producers.len();
-        let producer_index = (current_slot as usize) % effective.len();
-        let selected = effective[producer_index];
-        if excluded_count > 0 {
-            info!(
-                "[SCHED_RR] slot={} producer={} index={}/{} (excluded={})",
-                current_slot,
-                hex::encode(&selected.as_bytes()[..4]),
-                producer_index,
-                effective.len(),
-                excluded_count
-            );
-        }
+        // --- Post-activation (INC-I-026 fix) path ---
+        // excluded_producers is intentionally NOT consulted. Pure function of
+        // (slot, source).
+        let producer_index = (current_slot as usize) % source.len();
+        let selected = source[producer_index];
+        debug!(
+            "[SCHED_RR] slot={} producer={} index={}/{} (inc_i_026=active)",
+            current_slot,
+            hex::encode(&selected.as_bytes()[..4]),
+            producer_index,
+            source.len(),
+        );
         vec![selected]
     }
 }

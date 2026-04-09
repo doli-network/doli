@@ -124,9 +124,59 @@ impl HardForkSchedule {
     ///     consensus_changes: vec!["New reward curve".to_string()],
     /// });
     /// ```
+    ///
+    /// This overload is kept for backward compatibility with callers that
+    /// don't have a `Network` in scope. It returns the network-independent
+    /// schedule (currently empty). Prefer `for_network` whenever possible.
     pub fn default_schedule() -> Self {
-        // All features active from genesis (clean chain reset)
         Self::new()
+    }
+
+    /// Network-aware hard fork schedule.
+    ///
+    /// Returns the baked-in schedule for the given network. Entries added
+    /// here are compile-time deterministic — every node running this binary
+    /// on the same network sees the same activation heights.
+    ///
+    /// ## Current entries
+    ///
+    /// - **Testnet, h=17000, min_version=6.7.8**: INC-I-026 scheduler fix.
+    ///   Producers running <6.7.8 stop production at h=17000 on testnet so
+    ///   legacy-scheduler nodes can't keep producing wrong blocks after the
+    ///   fix activates.
+    ///
+    /// - **Mainnet**: no entry. The INC-I-026 mainnet activation will be
+    ///   scheduled when this branch is merged to main — a mainnet entry
+    ///   must ship together with a non-`u64::MAX` value for
+    ///   `NetworkParams::inc_i_026_scheduler_activation_height` on mainnet.
+    ///   Until then, mainnet runs the legacy scheduler unchanged.
+    ///
+    /// - **Devnet**: no entry. Tests exercise activation directly.
+    pub fn for_network(network: doli_core::Network) -> Self {
+        let mut schedule = Self::new();
+        match network {
+            doli_core::Network::Testnet => {
+                schedule.add(HardForkInfo {
+                    activation_height: 17_000,
+                    min_version: "6.7.8".to_string(),
+                    consensus_changes: vec![
+                        "INC-I-026: scheduler no longer filters by excluded_producers"
+                            .to_string(),
+                    ],
+                });
+            }
+            doli_core::Network::Mainnet => {
+                // INC-I-026 mainnet activation is NOT scheduled on this branch.
+                // When merged to main, add an entry here AND set
+                // NetworkParams::inc_i_026_scheduler_activation_height on mainnet
+                // in crates/core/src/network_params/defaults.rs at the SAME height.
+            }
+            doli_core::Network::Devnet => {
+                // No entries — devnet runs the fixed scheduler from genesis
+                // (inc_i_026_scheduler_activation_height=0 on devnet).
+            }
+        }
+        schedule
     }
 }
 

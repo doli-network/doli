@@ -152,6 +152,31 @@ pub struct NetworkParams {
     /// Mainnet: 8500. Testnet/Devnet: 0 (always active).
     pub snap_attestation_skip_height: u64,
 
+    /// Height at which the INC-I-026 scheduler fix activates.
+    ///
+    /// Before this height:
+    ///   `expected = epoch_producer_list.filter(|pk| !excluded.contains(pk))[slot % effective]`
+    ///   (legacy behavior — `excluded_producers` is mutated locally from
+    ///   `block.header.missed_producers` at apply time, which can diverge between
+    ///   nodes that applied different competing blocks at the same height.)
+    ///
+    /// At or after this height:
+    ///   `expected = epoch_producer_list[slot % epoch_producer_list.len()]`
+    ///   (the fix — scheduler is a pure function of `(slot, epoch_producer_list)`,
+    ///   identical on all nodes regardless of local apply history.)
+    ///
+    /// Per-network defaults:
+    ///   Mainnet: `u64::MAX` — NOT activated. When this branch is merged to main
+    ///     the value must be replaced with a chosen future height (operator pick)
+    ///     before release. Setting it to any real height before merge would be a
+    ///     silent consensus change for anyone running a main-branch binary.
+    ///   Testnet: 17000 — activates ~17000 blocks post-genesis on the local testnet.
+    ///   Devnet: 0 — always active (new behavior is the default in devnet tests).
+    ///
+    /// Consensus-breaking at the activation height — all nodes must run a binary
+    /// containing this field set to the same value before the height arrives.
+    pub inc_i_026_scheduler_activation_height: u64,
+
     // === Gossip mesh ===
     /// Target number of peers in gossipsub mesh per topic
     pub mesh_n: usize,

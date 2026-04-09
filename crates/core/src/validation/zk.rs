@@ -21,6 +21,28 @@
 //!
 //! See `specs/l2-settlement.md` for the full interface specification.
 
+/// Height at which L2 settlement (ZKSettle / ZKRollup) becomes active.
+///
+/// Set to `u64::MAX` = disabled by default. A `ProtocolActivation` transaction
+/// with a real future epoch will lower this to a live height after:
+///   1. A proof system has been selected (see specs/l2-settlement.md §8.1).
+///   2. The verifier crate has been vendored and pinned.
+///   3. The determinism harness passes on the full CI matrix (§8.3).
+///   4. A security audit has cleared the verifier implementation.
+///
+/// Until then, every ZKSettle tx is rejected by `verify_zk_proof()` returning
+/// `ZkVerifyError::NotYetActivated`. Safe-by-default: the interface is published
+/// (spec + code) but no proofs are actually accepted.
+///
+/// See `specs/l2-settlement.md` §7 for the activation path.
+/// Consensus-breaking — all nodes must update before this height if it is ever lowered.
+///
+/// Scoped to `pub(crate)`: this is an implementation detail of the ZK validation
+/// layer. It used to live in `consensus::constants` but was moved here because
+/// nothing outside the validation layer needs (or should need) to reference it
+/// directly — the public surface is `ZkVerifyError::NotYetActivated`.
+pub(crate) const ZK_SETTLE_ACTIVATION_HEIGHT: u64 = u64::MAX;
+
 /// Per-call context for ZK verification.
 ///
 /// The block-level cost budget is passed through this struct and decremented
@@ -134,10 +156,10 @@ pub fn verify_zk_proof(
 ) -> Result<u64, ZkVerifyError> {
     // Gate 1: activation height. Until set via ProtocolActivation, this
     // short-circuits every call. Safe default.
-    if ctx.height < crate::consensus::ZK_SETTLE_ACTIVATION_HEIGHT {
+    if ctx.height < ZK_SETTLE_ACTIVATION_HEIGHT {
         return Err(ZkVerifyError::NotYetActivated {
             height: ctx.height,
-            activation: crate::consensus::ZK_SETTLE_ACTIVATION_HEIGHT,
+            activation: ZK_SETTLE_ACTIVATION_HEIGHT,
         });
     }
 

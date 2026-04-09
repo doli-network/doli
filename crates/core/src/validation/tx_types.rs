@@ -740,11 +740,11 @@ pub(super) fn validate_zk_settle_structure(
 
     // 1. Activation gate. Until a ProtocolActivation tx lowers
     //    ZK_SETTLE_ACTIVATION_HEIGHT, this short-circuits every call.
-    if ctx.current_height < crate::consensus::ZK_SETTLE_ACTIVATION_HEIGHT {
+    if ctx.current_height < crate::validation::zk::ZK_SETTLE_ACTIVATION_HEIGHT {
         return Err(ValidationError::InvalidTransaction(format!(
             "[ERRTX-ZK001] ZKSettle not yet activated (height {} < activation {})",
             ctx.current_height,
-            crate::consensus::ZK_SETTLE_ACTIVATION_HEIGHT
+            crate::validation::zk::ZK_SETTLE_ACTIVATION_HEIGHT
         )));
     }
 

@@ -98,23 +98,6 @@ pub const TIER_PROMOTION_ACTIVATION_HEIGHT: u64 = 0;
 /// Only enforced after TIER_PROMOTION_ACTIVATION_HEIGHT.
 pub const MIN_ATTESTATION_MINUTES: usize = 30;
 
-/// Height at which L2 settlement (ZKSettle / ZKRollup) becomes active.
-///
-/// Set to `u64::MAX` = disabled by default. A `ProtocolActivation` transaction
-/// with a real future epoch will lower this to a live height after:
-///   1. A proof system has been selected (see specs/l2-settlement.md §8.1).
-///   2. The verifier crate has been vendored and pinned.
-///   3. The determinism harness passes on the full CI matrix (§8.3).
-///   4. A security audit has cleared the verifier implementation.
-///
-/// Until then, every ZKSettle tx is rejected by `verify_zk_proof()` returning
-/// `ZkVerifyError::NotYetActivated`. Safe-by-default: the interface is published
-/// (spec + code) but no proofs are actually accepted.
-///
-/// See `specs/l2-settlement.md` §7 for the activation path.
-/// Consensus-breaking — all nodes must update before this height if it is ever lowered.
-pub const ZK_SETTLE_ACTIVATION_HEIGHT: u64 = u64::MAX;
-
 // ==================== Proof of Time Parameters ====================
 
 /// Slot duration in seconds.

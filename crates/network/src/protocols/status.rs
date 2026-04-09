@@ -20,16 +20,25 @@ pub const STATUS_PROTOCOL: &str = "/doli/status/1.0.0";
 ///
 /// History:
 ///   1 — original (no version enforcement)
-///   2 — version enforcement in status handshake (this release)
-pub const CURRENT_PROTOCOL_VERSION: u32 = 2;
+///   2 — version enforcement in status handshake
+///   3 — INC-I-026 scheduler fix gated by
+///       `NetworkParams::inc_i_026_scheduler_activation_height`. v3 binaries
+///       run identical consensus to v2 BEFORE the per-network activation
+///       height, and switch to the fork-resilient scheduler AT and AFTER it.
+///       Wire-compatible with v2 across the gate (no message format change).
+pub const CURRENT_PROTOCOL_VERSION: u32 = 3;
 
 /// Minimum protocol version accepted from peers.
 ///
 /// Peers reporting a version below this are disconnected immediately.
 /// Bump this to partition old nodes off the network after a breaking change.
 ///
-/// Set to 1 for backward compatibility during rollout. When all nodes
-/// have upgraded to v2+, bump to 2 to enforce.
+/// Kept at 1 for backward compatibility during INC-I-026 rollout. v2 peers
+/// remain wire-compatible because the INC-I-026 change is height-gated via
+/// `NetworkParams::inc_i_026_scheduler_activation_height`, not via the
+/// handshake. Bump to 3 after all producers are on v3+ AND past the
+/// activation height on every deployed network, to guarantee nothing
+/// running the legacy scheduler can rejoin.
 pub const MIN_PEER_PROTOCOL_VERSION: u32 = 1;
 
 /// Maximum message size for status messages (64KB)

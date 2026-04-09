@@ -149,6 +149,15 @@ pub struct ValidationContext {
     /// Before this height: public_key=None accepted (legacy, no sig verification).
     /// At or after: public_key must be Some, signature + pubkey_hash verified.
     pub sig_verification_height: u64,
+    /// Height at which the INC-I-026 scheduler fix activates.
+    /// Before this height: producer eligibility is computed with
+    ///   `slot % (epoch_producer_list.len() - excluded_producers.len())`
+    ///   (legacy behavior, vulnerable to the consensus fork documented in INC-I-026).
+    /// At or after: producer eligibility is computed with `slot % epoch_producer_list.len()`
+    ///   (the fix — scheduler is a pure function of `(slot, epoch_producer_list)`).
+    /// Default `u64::MAX` = fix disabled. Per-network values are set via
+    /// `with_inc_i_026_scheduler_activation_height()` from the node validation callsites.
+    pub inc_i_026_scheduler_activation_height: u64,
 }
 
 impl ValidationContext {
@@ -179,7 +188,15 @@ impl ValidationContext {
             excluded_producers: std::collections::HashSet::new(),
             epoch_producer_list: Vec::new(),
             sig_verification_height: u64::MAX,
+            inc_i_026_scheduler_activation_height: u64::MAX,
         }
+    }
+
+    /// Set the INC-I-026 scheduler activation height (see field doc).
+    #[must_use]
+    pub fn with_inc_i_026_scheduler_activation_height(mut self, height: u64) -> Self {
+        self.inc_i_026_scheduler_activation_height = height;
+        self
     }
 
     /// Set epoch-frozen producer list.

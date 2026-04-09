@@ -193,6 +193,11 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
             "DOLI_SNAP_ATTESTATION_SKIP_HEIGHT",
             defaults.snap_attestation_skip_height,
         ),
+        // INC-I-026: env override for testing / emergency rollback.
+        inc_i_026_scheduler_activation_height: env_parse(
+            "DOLI_INC_I_026_SCHEDULER_ACTIVATION_HEIGHT",
+            defaults.inc_i_026_scheduler_activation_height,
+        ),
 
         // Gossip mesh (locked for mainnet - wrong values could isolate nodes)
         mesh_n: if is_mainnet {

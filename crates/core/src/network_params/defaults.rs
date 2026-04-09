@@ -77,6 +77,13 @@ impl NetworkParams {
                 // Hard fork gates
                 sig_verification_height: 0, // P0-001: enforce from genesis (clean chain)
                 snap_attestation_skip_height: 0, // INC-I-010: always active (clean chain)
+                // INC-I-026: NOT ACTIVATED on mainnet from this branch.
+                // When this branch is merged to main, this value MUST be replaced
+                // with a chosen future height (operator pick). Leaving it as
+                // u64::MAX in a main-branch binary keeps the legacy (buggy) scheduler
+                // on mainnet — which is the current production state, so this is a
+                // safe no-op for anyone running this branch against mainnet.
+                inc_i_026_scheduler_activation_height: u64::MAX,
 
                 // Gossip mesh: universal config for all network sizes.
                 // mesh_n=12 keeps all peers in eager-push for networks ≤24 (mesh_n_high),
@@ -152,6 +159,11 @@ impl NetworkParams {
                 // Hard fork gates
                 sig_verification_height: 0, // P0-001: enforce from genesis (clean chain)
                 snap_attestation_skip_height: 0, // Always active (clean chain)
+                // INC-I-026: scheduler fix activates at h=17000 on local testnet.
+                // Current diverged tips at shutdown were 14075 and 16276 — this
+                // leaves ~724 blocks (~2h at 10s slots) for behind nodes to catch up
+                // under the old (legacy) scheduler before the fix engages.
+                inc_i_026_scheduler_activation_height: 17_000,
 
                 // INC-I-015: Gossip mesh sized to max_peers for eager push to ALL
                 // connected peers. At mesh_n=12, blocks reach 12 peers immediately
@@ -224,6 +236,10 @@ impl NetworkParams {
                 // Hard fork gates
                 sig_verification_height: 0, // Enforce from genesis on devnet
                 snap_attestation_skip_height: 0, // Always active on devnet
+                // INC-I-026: always active on devnet. Tests run against the fixed
+                // scheduler by default — the pre-activation (legacy) path is
+                // exercised via a dedicated test that overrides this value.
+                inc_i_026_scheduler_activation_height: 0,
 
                 // Gossip mesh: same universal config as mainnet.
                 // With --no-dht, mesh_n_high=24 keeps all devnet peers in mesh.

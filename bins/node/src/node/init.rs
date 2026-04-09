@@ -762,6 +762,9 @@ impl Node {
                 .map_or(0, |k| gset.sequence_for(k.public_key()) + 1)
         };
 
+        // Capture the network before `config` is moved into Self below.
+        let network_for_schedule = config.network;
+
         Ok(Self {
             config,
             params,
@@ -829,7 +832,7 @@ impl Node {
             sync_requests_this_interval: 0,
             last_checkpoint_height: 0,
             pending_tx_announcements: HashMap::new(),
-            hardfork_schedule: updater::HardForkSchedule::default_schedule(),
+            hardfork_schedule: updater::HardForkSchedule::for_network(network_for_schedule),
         })
     }
 
@@ -1010,7 +1013,7 @@ impl Node {
             sync_requests_this_interval: 0,
             last_checkpoint_height: 0,
             pending_tx_announcements: HashMap::new(),
-            hardfork_schedule: updater::HardForkSchedule::default_schedule(),
+            hardfork_schedule: updater::HardForkSchedule::for_network(network),
         })
     }
 }
