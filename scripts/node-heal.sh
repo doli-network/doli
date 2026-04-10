@@ -13,8 +13,18 @@
 #
 # Usage:
 #
-#   # Testnet preset (local launchd, resolves everything):
+#   # Single target (testnet preset):
 #   scripts/node-heal.sh --testnet --target n5 --source n3 --yes
+#
+#   # Batch (testnet preset, sequential — recommended default):
+#   scripts/node-heal.sh --testnet --source n13 --batch n14-n32 --yes
+#
+#   # Batch parallel (testnet only; refused on generic mode unless you
+#   # pass --i-know-what-im-doing). See safety notes below.
+#   scripts/node-heal.sh --testnet --source n13 --batch n14-n32 --parallel 4 --yes
+#
+#   # Mixed batch spec (ranges + singletons, comma-separated):
+#   scripts/node-heal.sh --testnet --source n13 --batch n14-n16,n20,n25-n27 --yes
 #
 #   # Mainnet / generic (run on the target server; SSH'd in):
 #   scripts/node-heal.sh \
@@ -27,9 +37,18 @@
 #       --yes
 #
 # Flags:
-#   --testnet                    Testnet preset mode (requires --target, --source)
-#   --target NAME                Testnet node name (n1..n12) — preset mode only
-#   --source NAME                Testnet source node name — preset mode only
+#   --testnet                    Testnet preset mode (requires --source + one of --target/--batch)
+#   --target NAME                Single target node name (nNN) — preset mode only
+#   --source NAME                Source node name — preset mode only
+#   --batch SPEC                 Multiple targets: range (n14-n32), list (n14,n15,n20),
+#                                or mixed (n14-n16,n20,n25-n27). Preset mode only (v1).
+#                                Cannot combine with --target.
+#   --parallel N                 Max concurrent heals in batch mode (default 1 = sequential).
+#                                Parallel > 1 is testnet-preset-only unless --i-know-what-im-doing.
+#                                See safety notes below before going parallel on mainnet.
+#   --i-know-what-im-doing       Escape hatch: allow --parallel N>1 in generic (mainnet) mode.
+#                                Only use if you have verified the source disk is on SSD and
+#                                you understand the start-storm risk on your fleet's seed.
 #   --target-data PATH           Target node's data directory (generic mode)
 #   --source-data PATH|HOST:PATH Source data directory (local or remote for rsync)
 #   --target-rpc HOST:PORT       Target RPC for pre/post health checks
@@ -44,14 +63,18 @@
 #   --dry-run                    Print plan without executing
 #   -h, --help                   Show this help
 #
-# Safety notes (see .claude/skills/guardian/SKILL.md sections L1, L1.1, L6):
+# Safety notes (see .claude/skills/guardian/reference/node-heal.md and hostile-recovery.md L1/L1.1/L6):
 #   - signed_slots.db is PRESERVED by default — it's slashing protection, not chain
 #     state, and losing it re-exposes the producer to double-sign slashing.
 #   - utxo_store/ is NOT copied from the source — the node rebuilds it from
 #     state_db on startup (self-heals since v6.7.9, per INC-I-027). Copying
 #     utxo_store across binaries risks a silent-corruption rollback cascade.
+#   - Parallel batch mode multiplies three failure modes: (1) source disk I/O
+#     saturation during concurrent rsync, (2) chain liveness loss from N
+#     producers down simultaneously, (3) start-storm on the seed's gossip mesh
+#     (INC-I-014 territory). Default is --parallel 1 for a reason.
 #
-# Exit codes: 0 = healed, 1 = aborted/error, 2 = bad args
+# Exit codes: 0 = all heals succeeded, 1 = one or more aborted/errored, 2 = bad args
 set -euo pipefail
 
 RED='\033[0;31m'
@@ -71,6 +94,9 @@ usage() {
 PRESET=""
 TARGET_NAME=""
 SOURCE_NAME=""
+BATCH_SPEC=""
+PARALLEL=1
+OVERRIDE=false
 TARGET_DATA=""
 SOURCE_DATA=""
 TARGET_RPC=""
@@ -87,6 +113,9 @@ while [[ $# -gt 0 ]]; do
     --testnet)               PRESET="testnet"; shift ;;
     --target)                TARGET_NAME="$2"; shift 2 ;;
     --source)                SOURCE_NAME="$2"; shift 2 ;;
+    --batch)                 BATCH_SPEC="$2"; shift 2 ;;
+    --parallel)              PARALLEL="$2"; shift 2 ;;
+    --i-know-what-im-doing)  OVERRIDE=true; shift ;;
     --target-data)           TARGET_DATA="$2"; shift 2 ;;
     --source-data)           SOURCE_DATA="$2"; shift 2 ;;
     --target-rpc)            TARGET_RPC="$2"; shift 2 ;;
@@ -102,38 +131,66 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# ---- preset expansion ----
-if [[ "$PRESET" == "testnet" ]]; then
-  [[ -z "$TARGET_NAME" || -z "$SOURCE_NAME" ]] && { echo "--testnet requires --target and --source"; exit 2; }
-  [[ "$TARGET_NAME" == "$SOURCE_NAME" ]] && { echo "target and source must differ"; exit 2; }
-  [[ "$TARGET_NAME" == "seed" || "$SOURCE_NAME" == "seed" ]] && { echo "refusing to heal/use seed nodes — producers only"; exit 2; }
+# ---- validate flag combinations ----
+if [[ -n "$TARGET_NAME" && -n "$BATCH_SPEC" ]]; then
+  echo "ERROR: --target and --batch are mutually exclusive"
+  exit 2
+fi
 
-  # Resolve ports: nN → 8500+N
-  if [[ ! "$TARGET_NAME" =~ ^n([0-9]+)$ ]]; then
-    echo "target must match nN pattern (got: $TARGET_NAME)"; exit 2
-  fi
-  TARGET_IDX="${BASH_REMATCH[1]}"
+if ! [[ "$PARALLEL" =~ ^[0-9]+$ ]] || [[ "$PARALLEL" -lt 1 ]]; then
+  echo "ERROR: --parallel must be a positive integer (got: $PARALLEL)"
+  exit 2
+fi
+
+if [[ "$PARALLEL" -gt 1 && -z "$BATCH_SPEC" ]]; then
+  echo "ERROR: --parallel > 1 only makes sense with --batch"
+  exit 2
+fi
+
+if [[ -n "$BATCH_SPEC" && "$PRESET" != "testnet" ]]; then
+  echo "ERROR: --batch currently requires --testnet (generic batch not implemented)"
+  exit 2
+fi
+
+if [[ "$PARALLEL" -gt 1 && "$PRESET" != "testnet" && "$OVERRIDE" != true ]]; then
+  echo "ERROR: --parallel > 1 on non-testnet mode requires --i-know-what-im-doing"
+  echo "       (parallel heals on mainnet risk liveness loss and source I/O saturation)"
+  exit 2
+fi
+
+# ---- preset: resolve SOURCE only ----
+# (Targets are resolved per-iteration in heal_target so batch mode works cleanly.)
+if [[ "$PRESET" == "testnet" ]]; then
+  [[ -z "$SOURCE_NAME" ]] && { echo "--testnet requires --source"; exit 2; }
+  [[ "$SOURCE_NAME" == "seed" ]] && { echo "refusing to use seed as source — producers only"; exit 2; }
   if [[ ! "$SOURCE_NAME" =~ ^n([0-9]+)$ ]]; then
     echo "source must match nN pattern (got: $SOURCE_NAME)"; exit 2
   fi
   SOURCE_IDX="${BASH_REMATCH[1]}"
-
-  TARGET_DATA="$HOME/testnet/$TARGET_NAME/data"
   SOURCE_DATA="$HOME/testnet/$SOURCE_NAME/data"
-  TARGET_RPC="127.0.0.1:$((8500 + TARGET_IDX))"
   SOURCE_RPC="127.0.0.1:$((8500 + SOURCE_IDX))"
-  STOP_CMD="$SCRIPT_DIR/testnet.sh stop $TARGET_NAME"
-  START_CMD="$SCRIPT_DIR/testnet.sh start $TARGET_NAME"
+
+  # Single-target preset mode still needs a target
+  if [[ -z "$BATCH_SPEC" ]]; then
+    [[ -z "$TARGET_NAME" ]] && { echo "--testnet requires --target OR --batch"; exit 2; }
+    [[ "$TARGET_NAME" == "seed" ]] && { echo "refusing to heal seed — producers only"; exit 2; }
+    [[ "$TARGET_NAME" == "$SOURCE_NAME" ]] && { echo "target and source must differ"; exit 2; }
+    if [[ ! "$TARGET_NAME" =~ ^n([0-9]+)$ ]]; then
+      echo "target must match nN pattern (got: $TARGET_NAME)"; exit 2
+    fi
+  fi
 fi
 
-# ---- validate required ----
-for var in TARGET_DATA SOURCE_DATA STOP_CMD START_CMD; do
-  if [[ -z "${!var}" ]]; then
-    flag=$(echo "$var" | tr '[:upper:]_' '[:lower:]-')
-    echo "Missing required: --$flag"
-    exit 2
-  fi
-done
+# ---- generic mode validation (single target) ----
+if [[ "$PRESET" != "testnet" ]]; then
+  for var in TARGET_DATA SOURCE_DATA STOP_CMD START_CMD; do
+    if [[ -z "${!var}" ]]; then
+      flag=$(echo "$var" | tr '[:upper:]_' '[:lower:]-')
+      echo "Missing required: --$flag"
+      exit 2
+    fi
+  done
+fi
 
 # ---- helpers ----
 rpc_call() {
@@ -170,15 +227,42 @@ run() {
   fi
 }
 
-# ---- pre-check: source health ----
+# Expand a batch spec like "n14-n32" or "n14,n15,n20" or "n14-n16,n20,n25-n27"
+# into a newline-separated list of node names.
+expand_batch() {
+  local spec="$1"
+  local -a out=()
+  local part start end i
+  IFS=',' read -ra parts <<< "$spec"
+  for part in "${parts[@]}"; do
+    part="${part// /}"  # strip whitespace
+    [[ -z "$part" ]] && continue
+    if [[ "$part" =~ ^n([0-9]+)-n([0-9]+)$ ]]; then
+      start="${BASH_REMATCH[1]}"
+      end="${BASH_REMATCH[2]}"
+      if [[ "$start" -gt "$end" ]]; then
+        echo "bad range (start>end): $part" >&2
+        return 1
+      fi
+      for i in $(seq "$start" "$end"); do
+        out+=("n$i")
+      done
+    elif [[ "$part" =~ ^n[0-9]+$ ]]; then
+      out+=("$part")
+    else
+      echo "bad batch spec part: $part" >&2
+      return 1
+    fi
+  done
+  if [[ ${#out[@]} -eq 0 ]]; then
+    echo "empty batch spec" >&2
+    return 1
+  fi
+  printf "%s\n" "${out[@]}"
+}
+
+# ---- pre-check: source health (ONCE, regardless of single or batch) ----
 echo -e "${BOLD}=== NODE HEAL ===${NC}"
-echo ""
-echo "  Target data : $TARGET_DATA"
-echo "  Source data : $SOURCE_DATA"
-echo "  Target RPC  : ${TARGET_RPC:-<none>}"
-echo "  Source RPC  : ${SOURCE_RPC:-<none>}"
-echo "  Stop cmd    : $STOP_CMD"
-echo "  Start cmd   : $START_CMD"
 echo ""
 
 SOURCE_HEIGHT="?"
@@ -200,27 +284,6 @@ else
   echo -e "${YELLOW}Source RPC check SKIPPED${NC} (no --source-rpc provided)"
 fi
 
-TARGET_HEIGHT="?"
-TARGET_HASH="?"
-if [[ -n "$TARGET_RPC" ]]; then
-  if tgt_info=$(rpc_call "$TARGET_RPC" "getChainInfo"); then
-    TARGET_HEIGHT=$(echo "$tgt_info" | json_field bestHeight)
-    TARGET_HASH=$(echo "$tgt_info"   | json_field bestHash)
-  fi
-fi
-
-echo ""
-echo -e "${BOLD}About to DESTROY target data.${NC}"
-echo "  Current target state : height=${TARGET_HEIGHT} hash=$(short_hash "${TARGET_HASH:-?}")"
-echo "  Will be replaced with: height=${SOURCE_HEIGHT} hash=$(short_hash "${SOURCE_HASH:-?}")"
-echo ""
-
-# Source must not equal target path (would wipe source while rsync from it)
-if ! is_remote_source "$SOURCE_DATA" && [[ "$(realpath "$SOURCE_DATA" 2>/dev/null || echo "$SOURCE_DATA")" == "$(realpath "$TARGET_DATA" 2>/dev/null || echo "$TARGET_DATA")" ]]; then
-  echo -e "${RED}ERROR: source and target resolve to the same path${NC}"
-  exit 1
-fi
-
 # Verify local source exists and looks like a DOLI data dir
 if ! is_remote_source "$SOURCE_DATA"; then
   if [[ ! -d "$SOURCE_DATA" ]]; then
@@ -233,66 +296,30 @@ if ! is_remote_source "$SOURCE_DATA"; then
   fi
 fi
 
-# Verify target data path exists so we're not creating state in the wrong place
-if [[ ! -d "$TARGET_DATA" ]]; then
-  echo -e "${YELLOW}WARN: target data directory does not exist yet: $TARGET_DATA${NC}"
-  echo "Creating parent directory; verify this is the right node before confirming."
-fi
-
-if [[ "$YES" != true ]]; then
-  read -rp "Proceed with heal? Type 'yes' to continue: " confirm
-  [[ "$confirm" != "yes" ]] && { echo "Aborted."; exit 1; }
-fi
-
-# ---- execute ----
-echo ""
-echo -e "${BOLD}Step 1/5:${NC} Stop target node"
-run "$STOP_CMD"
-
-# Wait for target RPC to stop responding (up to 20s)
-if [[ -n "$TARGET_RPC" && "$DRY_RUN" != true ]]; then
-  echo -n "  Waiting for target to release RocksDB locks"
-  for _ in $(seq 1 20); do
-    if ! rpc_call "$TARGET_RPC" "getChainInfo" >/dev/null 2>&1; then
-      echo " — stopped"
-      break
+# ---- resolve batch list ----
+declare -a TARGETS=()
+if [[ -n "$BATCH_SPEC" ]]; then
+  # Portable: bash 3.2 on macOS has no mapfile/readarray.
+  batch_out=$(expand_batch "$BATCH_SPEC") || exit 2
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && TARGETS+=("$line")
+  done <<< "$batch_out"
+  # Refuse source in target list
+  for t in "${TARGETS[@]}"; do
+    if [[ "$t" == "$SOURCE_NAME" ]]; then
+      echo -e "${RED}ERROR: source ($SOURCE_NAME) is in the target list — would wipe the source${NC}"
+      exit 1
     fi
-    echo -n "."
-    sleep 1
+    if [[ "$t" == "seed" ]]; then
+      echo -e "${RED}ERROR: seed in target list — producers only${NC}"
+      exit 1
+    fi
   done
-  # Also give filesystem a moment to flush
-  sleep 2
-fi
-
-echo ""
-echo -e "${BOLD}Step 2/5:${NC} Wipe target data (preserving signed_slots.db unless --wipe-signed-slots)"
-if [[ "$DRY_RUN" == true ]]; then
-  if [[ "$WIPE_SIGNED_SLOTS" == true ]]; then
-    echo -e "  ${YELLOW}[dry-run]${NC} find $TARGET_DATA -mindepth 1 -delete  (wipes signed_slots.db too)"
-  else
-    echo -e "  ${YELLOW}[dry-run]${NC} find $TARGET_DATA -mindepth 1 ! -name signed_slots.db ! -path '*/signed_slots.db/*' -delete"
-  fi
 else
-  mkdir -p "$TARGET_DATA"
-  if [[ "$WIPE_SIGNED_SLOTS" == true ]]; then
-    echo -e "  ${RED}WIPING signed_slots.db${NC} (operator override)"
-    find "$TARGET_DATA" -mindepth 1 -delete
-  else
-    # Preserve signed_slots.db (slashing protection) per L6
-    find "$TARGET_DATA" -mindepth 1 \
-      ! -name signed_slots.db \
-      ! -path "$TARGET_DATA/signed_slots.db/*" \
-      -delete 2>/dev/null || true
-  fi
-  echo -e "  ${GREEN}OK${NC} — $TARGET_DATA wiped"
+  TARGETS=("$TARGET_NAME")
 fi
 
-echo ""
-echo -e "${BOLD}Step 3/5:${NC} Rsync from source"
-# Trailing slashes matter: source/ (contents) → target/ (into)
-# Exclude signed_slots.db (preserve target's slashing protection — L6)
-# Exclude utxo_store/ (regenerated by node on startup, avoids L1.1 silent corruption)
-# Exclude producer.lock and pending_update.json (stale runtime state)
+# ---- rsync excludes (shared across all heals) ----
 EXCLUDES=(
   --exclude='signed_slots.db'
   --exclude='signed_slots.db/'
@@ -301,64 +328,275 @@ EXCLUDES=(
   --exclude='producer.lock'
   --exclude='pending_update.json'
 )
-if [[ "$WIPE_SIGNED_SLOTS" == true ]]; then
-  # Operator wants the slashing DB reset too — still don't copy source's (wrong keys)
-  :
-fi
 
+# --progress is portable across GNU rsync and macOS openrsync.
+# Older --info=progress2 is GNU-rsync only and breaks on stock macOS.
 if is_remote_source "$SOURCE_DATA"; then
-  RSYNC_OPTS=(-az --info=progress2 -e ssh)
+  RSYNC_OPTS=(-az --progress -e ssh)
 else
-  RSYNC_OPTS=(-a --info=progress2)
+  RSYNC_OPTS=(-a --progress)
 fi
-RSYNC_SRC="${SOURCE_DATA%/}/"
-run rsync "${RSYNC_OPTS[@]}" "${EXCLUDES[@]}" "$RSYNC_SRC" "${TARGET_DATA%/}/"
 
-echo ""
-echo -e "${BOLD}Step 4/5:${NC} Verify preserved files"
-if [[ "$DRY_RUN" != true ]]; then
-  if [[ "$WIPE_SIGNED_SLOTS" != true ]]; then
-    if [[ -d "$TARGET_DATA/signed_slots.db" ]]; then
-      echo -e "  ${GREEN}OK${NC} signed_slots.db preserved"
-    else
-      echo -e "  ${YELLOW}NOTE${NC} no signed_slots.db on target (fresh producer — will be created on first sign)"
+# ---- per-target heal function ----
+# Usage: heal_target <name> [<prefix>]
+#   name   = node name (e.g. n14), or "single" for generic mode
+#   prefix = optional log prefix for batch mode (e.g. "[n14] ")
+# Returns 0 on success, non-zero on failure. Each worker prints its own step labels.
+heal_target() {
+  local name="$1"
+  local prefix="${2:-}"
+
+  # Per-target variables: local to this function so parallel workers don't clobber each other.
+  local target_data target_rpc stop_cmd start_cmd
+  if [[ "$PRESET" == "testnet" ]]; then
+    if [[ ! "$name" =~ ^n([0-9]+)$ ]]; then
+      echo -e "${prefix}${RED}bad target name in heal_target: $name${NC}"
+      return 1
+    fi
+    local idx="${BASH_REMATCH[1]}"
+    target_data="$HOME/testnet/$name/data"
+    target_rpc="127.0.0.1:$((8500 + idx))"
+    stop_cmd="$SCRIPT_DIR/testnet.sh stop $name"
+    start_cmd="$SCRIPT_DIR/testnet.sh start $name"
+  else
+    target_data="$TARGET_DATA"
+    target_rpc="$TARGET_RPC"
+    stop_cmd="$STOP_CMD"
+    start_cmd="$START_CMD"
+  fi
+
+  # Sanity: source and target can't resolve to the same path
+  if ! is_remote_source "$SOURCE_DATA"; then
+    local src_real tgt_real
+    src_real=$(realpath "$SOURCE_DATA" 2>/dev/null || echo "$SOURCE_DATA")
+    tgt_real=$(realpath "$target_data" 2>/dev/null || echo "$target_data")
+    if [[ "$src_real" == "$tgt_real" ]]; then
+      echo -e "${prefix}${RED}ERROR: source and target resolve to the same path${NC}"
+      return 1
     fi
   fi
-  # utxo_store should NOT exist after rsync (we excluded it); node will rebuild
-  if [[ -d "$TARGET_DATA/utxo_store" ]]; then
-    echo -e "  ${YELLOW}WARN${NC} utxo_store/ present — should have been excluded from rsync"
-  else
-    echo -e "  ${GREEN}OK${NC} utxo_store/ absent — node will rebuild from state_db on startup"
-  fi
-fi
 
-echo ""
-echo -e "${BOLD}Step 5/5:${NC} Start target node"
-run "$START_CMD"
-
-# ---- post-check ----
-if [[ -n "$TARGET_RPC" && "$DRY_RUN" != true ]]; then
-  echo ""
-  echo -n "  Waiting for target RPC to come back"
-  for _ in $(seq 1 30); do
-    if tgt_info=$(rpc_call "$TARGET_RPC" "getChainInfo"); then
-      new_h=$(echo "$tgt_info" | json_field bestHeight)
-      new_hash=$(echo "$tgt_info" | json_field bestHash)
-      if [[ -n "$new_h" ]]; then
-        echo " — up"
-        echo -e "  ${GREEN}Target online${NC}: height=$new_h hash=$(short_hash "$new_hash")"
+  # Step 1/5: stop
+  echo -e "${prefix}${BOLD}Step 1/5:${NC} Stop target node"
+  run "$stop_cmd"
+  if [[ -n "$target_rpc" && "$DRY_RUN" != true ]]; then
+    echo -n "${prefix}  Waiting for target to release RocksDB locks"
+    for _ in $(seq 1 20); do
+      if ! rpc_call "$target_rpc" "getChainInfo" >/dev/null 2>&1; then
+        echo " — stopped"
         break
       fi
+      echo -n "."
+      sleep 1
+    done
+    sleep 2
+  fi
+
+  # Step 2/5: wipe (preserving signed_slots.db unless --wipe-signed-slots)
+  echo -e "${prefix}${BOLD}Step 2/5:${NC} Wipe target data"
+  if [[ "$DRY_RUN" == true ]]; then
+    if [[ "$WIPE_SIGNED_SLOTS" == true ]]; then
+      echo -e "${prefix}  ${YELLOW}[dry-run]${NC} find $target_data -mindepth 1 -delete"
+    else
+      echo -e "${prefix}  ${YELLOW}[dry-run]${NC} find $target_data -mindepth 1 ! -name signed_slots.db ! -path '*/signed_slots.db/*' -delete"
     fi
-    echo -n "."
-    sleep 1
+  else
+    mkdir -p "$target_data"
+    if [[ "$WIPE_SIGNED_SLOTS" == true ]]; then
+      echo -e "${prefix}  ${RED}WIPING signed_slots.db${NC} (operator override)"
+      find "$target_data" -mindepth 1 -delete
+    else
+      find "$target_data" -mindepth 1 \
+        ! -name signed_slots.db \
+        ! -path "$target_data/signed_slots.db/*" \
+        -delete 2>/dev/null || true
+    fi
+    echo -e "${prefix}  ${GREEN}OK${NC} — $target_data wiped"
+  fi
+
+  # Step 3/5: rsync
+  echo -e "${prefix}${BOLD}Step 3/5:${NC} Rsync from source"
+  local rsync_src="${SOURCE_DATA%/}/"
+  if [[ "$DRY_RUN" == true ]]; then
+    echo -e "${prefix}  ${YELLOW}[dry-run]${NC} rsync ${RSYNC_OPTS[*]} ${EXCLUDES[*]} $rsync_src ${target_data%/}/"
+  else
+    if ! rsync "${RSYNC_OPTS[@]}" "${EXCLUDES[@]}" "$rsync_src" "${target_data%/}/" >/dev/null 2>&1; then
+      echo -e "${prefix}  ${RED}RSYNC FAILED${NC}"
+      return 1
+    fi
+    echo -e "${prefix}  ${GREEN}OK${NC} — rsync complete"
+  fi
+
+  # Step 4/5: verify preserved files
+  echo -e "${prefix}${BOLD}Step 4/5:${NC} Verify preserved files"
+  if [[ "$DRY_RUN" != true ]]; then
+    if [[ "$WIPE_SIGNED_SLOTS" != true ]]; then
+      if [[ -d "$target_data/signed_slots.db" ]]; then
+        echo -e "${prefix}  ${GREEN}OK${NC} signed_slots.db preserved"
+      else
+        echo -e "${prefix}  ${YELLOW}NOTE${NC} no signed_slots.db on target (fresh producer)"
+      fi
+    fi
+    if [[ -d "$target_data/utxo_store" ]]; then
+      echo -e "${prefix}  ${YELLOW}WARN${NC} utxo_store/ present — should have been excluded"
+    else
+      echo -e "${prefix}  ${GREEN}OK${NC} utxo_store/ absent — node will self-heal from state_db"
+    fi
+  fi
+
+  # Step 5/5: start
+  echo -e "${prefix}${BOLD}Step 5/5:${NC} Start target node"
+  run "$start_cmd"
+
+  # Post-check
+  if [[ -n "$target_rpc" && "$DRY_RUN" != true ]]; then
+    echo -n "${prefix}  Waiting for target RPC to come back"
+    local tgt_info new_h new_hash
+    for _ in $(seq 1 30); do
+      if tgt_info=$(rpc_call "$target_rpc" "getChainInfo"); then
+        new_h=$(echo "$tgt_info" | json_field bestHeight)
+        new_hash=$(echo "$tgt_info" | json_field bestHash)
+        if [[ -n "$new_h" ]]; then
+          echo " — up"
+          echo -e "${prefix}  ${GREEN}Online${NC}: height=$new_h hash=$(short_hash "$new_hash")"
+          return 0
+        fi
+      fi
+      echo -n "."
+      sleep 1
+    done
+    echo
+    echo -e "${prefix}  ${RED}RPC did not come back within 30s${NC}"
+    return 1
+  fi
+
+  return 0
+}
+
+# ---- confirmation ----
+echo ""
+if [[ ${#TARGETS[@]} -eq 1 ]]; then
+  # Single target — show current state vs source state
+  TARGET_PRE_H="?"
+  TARGET_PRE_HASH="?"
+  if [[ "$PRESET" == "testnet" ]]; then
+    tgt_rpc="127.0.0.1:$((8500 + ${TARGETS[0]#n}))"
+    if tgt_info=$(rpc_call "$tgt_rpc" "getChainInfo"); then
+      TARGET_PRE_H=$(echo "$tgt_info" | json_field bestHeight)
+      TARGET_PRE_HASH=$(echo "$tgt_info" | json_field bestHash)
+    fi
+  elif [[ -n "$TARGET_RPC" ]]; then
+    if tgt_info=$(rpc_call "$TARGET_RPC" "getChainInfo"); then
+      TARGET_PRE_H=$(echo "$tgt_info" | json_field bestHeight)
+      TARGET_PRE_HASH=$(echo "$tgt_info" | json_field bestHash)
+    fi
+  fi
+  echo -e "${BOLD}About to DESTROY target data.${NC}"
+  echo "  Target              : ${TARGETS[0]}"
+  echo "  Current target state: height=${TARGET_PRE_H} hash=$(short_hash "${TARGET_PRE_HASH:-?}")"
+  echo "  Will be replaced w/ : height=${SOURCE_HEIGHT} hash=$(short_hash "${SOURCE_HASH:-?}")"
+else
+  # Batch mode
+  MODE_LABEL="sequential"
+  [[ "$PARALLEL" -gt 1 ]] && MODE_LABEL="parallel (max=$PARALLEL)"
+  echo -e "${BOLD}About to DESTROY target data on ${#TARGETS[@]} nodes.${NC}"
+  echo "  Source   : ${SOURCE_NAME:-<generic>} (height=${SOURCE_HEIGHT} hash=$(short_hash "${SOURCE_HASH:-?}"))"
+  echo "  Targets  : ${TARGETS[*]}"
+  echo "  Mode     : $MODE_LABEL"
+  if [[ "$PARALLEL" -gt 1 ]]; then
+    echo -e "  ${YELLOW}WARNING${NC}: parallel mode may cause start-storm on the seed and"
+    echo -e "           ${YELLOW}       ${NC} temporarily remove ${#TARGETS[@]} producers from the schedule."
+  fi
+fi
+echo ""
+
+if [[ "$YES" != true ]]; then
+  read -rp "Proceed with heal? Type 'yes' to continue: " confirm
+  [[ "$confirm" != "yes" ]] && { echo "Aborted."; exit 1; }
+fi
+
+# ---- execute ----
+declare -a SUCCEEDED=()
+declare -a FAILED=()
+
+if [[ "$PARALLEL" -le 1 ]]; then
+  # Sequential — stop on first failure
+  for t in "${TARGETS[@]}"; do
+    echo ""
+    if [[ ${#TARGETS[@]} -gt 1 ]]; then
+      echo -e "${BOLD}========== $t ==========${NC}"
+    fi
+    if heal_target "$t"; then
+      SUCCEEDED+=("$t")
+    else
+      FAILED+=("$t")
+      if [[ ${#TARGETS[@]} -gt 1 ]]; then
+        echo -e "${RED}!!! heal failed for $t — stopping batch${NC}"
+        # Compute unprocessed tail
+        local_remaining=()
+        started=false
+        for u in "${TARGETS[@]}"; do
+          if $started; then
+            local_remaining+=("$u")
+          elif [[ "$u" == "$t" ]]; then
+            started=true
+          fi
+        done
+      fi
+      break
+    fi
+  done
+else
+  # Parallel — cap concurrency, let all launched workers finish
+  declare -a PIDS=()
+  declare -a PID_NAMES=()
+  STOP_LAUNCHING=false
+
+  for t in "${TARGETS[@]}"; do
+    if $STOP_LAUNCHING; then
+      FAILED+=("$t (skipped)")
+      continue
+    fi
+    # Wait for a free slot
+    while [[ $(jobs -rp | wc -l | tr -d ' ') -ge $PARALLEL ]]; do
+      sleep 0.2
+    done
+    echo ""
+    echo -e "${BOLD}========== launching $t ==========${NC}"
+    heal_target "$t" "[$t] " &
+    PIDS+=($!)
+    PID_NAMES+=("$t")
+  done
+
+  # Wait for all launched workers
+  for i in "${!PIDS[@]}"; do
+    if wait "${PIDS[$i]}"; then
+      SUCCEEDED+=("${PID_NAMES[$i]}")
+    else
+      FAILED+=("${PID_NAMES[$i]}")
+    fi
   done
 fi
 
+# ---- summary ----
 echo ""
+echo -e "${BOLD}=== SUMMARY ===${NC}"
+echo -e "  ${GREEN}Succeeded (${#SUCCEEDED[@]})${NC}: ${SUCCEEDED[*]:-<none>}"
+if [[ ${#FAILED[@]} -gt 0 ]]; then
+  echo -e "  ${RED}Failed (${#FAILED[@]})${NC}: ${FAILED[*]}"
+fi
+echo ""
+
+if [[ ${#FAILED[@]} -gt 0 ]]; then
+  echo -e "${RED}${BOLD}Heal completed with errors.${NC}"
+  exit 1
+fi
+
 echo -e "${GREEN}${BOLD}Heal complete.${NC}"
 echo ""
 echo "Next steps:"
-echo "  - Monitor target via: scripts/fork-monitor.sh${PRESET:+ --testnet}"
-echo "  - Tail logs: scripts/testnet.sh logs ${TARGET_NAME:-<node>}"
-echo "  - If target keeps diverging, check node_key and wallet keys are intact"
+echo "  - Monitor via: scripts/fork-monitor.sh${PRESET:+ --testnet}"
+echo "  - If any target keeps diverging, check node_key and wallet keys are intact"
+echo "  - Note: the INC-I-027 self-heal log line ([UTXO] ... rebuilding from state_db)"
+echo "    is emitted at INFO level; with RUST_LOG=warn it won't appear. The real"
+echo "    verification is fleet convergence via fork-monitor.sh."
