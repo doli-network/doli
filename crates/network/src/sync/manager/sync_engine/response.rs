@@ -238,15 +238,10 @@ impl SyncManager {
                 // not a sync failure. Incrementing sync_failures on empties
                 // causes premature snap sync escalation during shallow forks.
 
-                if gap <= 50 && self.local_height > 0 {
-                    // INC-I-026 + fork_id: with deterministic scheduler and fork
-                    // identity, empty headers at small gaps are gossip timing —
-                    // NOT a real fork. The peer just hasn't seen our latest block
-                    // yet. Gossip will deliver it within seconds.
-                    //
-                    // REMOVED: immediate rollback signal. This caused cascading
-                    // rollbacks when FORK_GUARD dropped the requested block
-                    // (different tip at same height from gossip timing).
+                if gap <= 3 && self.local_height > 0 {
+                    // INC-I-026 + fork_id: empty headers at gap ≤ 3 are gossip
+                    // timing — NOT a fork. Gossip delivers within seconds.
+                    // Do NOT rollback or escalate.
                     debug!(
                         "Empty headers from {} (gap={}, consecutive={}) — \
                          gossip timing, not a fork. Waiting for gossip delivery.",

@@ -115,8 +115,8 @@ impl SyncManager {
                         self.start_sync();
                         return None;
                     }
-                    if gap <= 50 && self.local_height > 0 {
-                        // With INC-I-026 + fork_id, small gaps are gossip timing.
+                    if gap <= 3 && self.local_height > 0 {
+                        // INC-I-026: gap ≤ 3 is gossip timing, not a fork.
                         // Don't force rollback — let gossip resolve.
                         debug!(
                             "Small gap (gap={}, empties={}): waiting for gossip, \
