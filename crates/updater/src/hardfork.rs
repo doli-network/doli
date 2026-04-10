@@ -189,6 +189,14 @@ impl HardForkSchedule {
                             .to_string(),
                     ],
                 });
+                schedule.add(HardForkInfo {
+                    activation_height: 2950,
+                    min_version: "6.10.0".to_string(),
+                    consensus_changes: vec![
+                        "bitfield encode fix: use epoch_producer_list for attestation encoding (matches decoder)"
+                            .to_string(),
+                    ],
+                });
             }
             doli_core::Network::Devnet => {
                 // Devnet: no gating needed

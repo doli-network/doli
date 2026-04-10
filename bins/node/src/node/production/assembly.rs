@@ -293,22 +293,33 @@ impl Node {
         let presence_root = if attested_pks.is_empty() {
             Hash::ZERO
         } else {
-            // Build sorted producer list (same ordering as DeterministicScheduler)
-            // Use height-aware method to match the decoding path in calculate_epoch_rewards()
-            let sorted_producers: Vec<storage::producer::ProducerInfo> = {
+            // Build sorted producer list for bitfield encoding.
+            // Post BITFIELD_ENCODE_FIX_HEIGHT: use epoch_producer_list (frozen at epoch
+            //   boundary) — matches the decoder in calculate_epoch_rewards/post_commit.
+            //   Eliminates mid-epoch registration drift between encode and decode lists.
+            // Pre-fix: use active_producers_at_height(height) — grows mid-epoch when
+            //   new producers activate, causing encode/decode mismatch.
+            let sorted_pubkeys: Vec<crypto::PublicKey> = if height
+                >= doli_core::consensus::BITFIELD_ENCODE_FIX_HEIGHT
+                && !self.epoch_producer_list.is_empty()
+            {
+                let mut pks = self.epoch_producer_list.clone();
+                pks.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+                pks
+            } else {
                 let producers = self.producer_set.read().await;
-                let mut ps: Vec<storage::producer::ProducerInfo> = producers
+                let mut pks: Vec<crypto::PublicKey> = producers
                     .active_producers_at_height(height)
                     .iter()
-                    .map(|p| (*p).clone())
+                    .map(|p| p.public_key)
                     .collect();
-                ps.sort_by(|a, b| a.public_key.as_bytes().cmp(b.public_key.as_bytes()));
-                ps
+                pks.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+                pks
             };
             // Map attesting pubkeys to sorted indices
             let mut attested_indices = Vec::new();
             for pk in &attested_pks {
-                if let Some(idx) = sorted_producers.iter().position(|p| &p.public_key == *pk) {
+                if let Some(idx) = sorted_pubkeys.iter().position(|p| p == *pk) {
                     attested_indices.push(idx);
                 }
             }
@@ -316,7 +327,7 @@ impl Node {
                 // Post-activation: bitfield in body, presence_root = BLAKE3(bitfield)
                 body_bitfield = doli_core::encode_attestation_bitfield_vec(
                     &attested_indices,
-                    sorted_producers.len(),
+                    sorted_pubkeys.len(),
                 );
                 Hash::from_bytes(*crypto::hash::hash(&body_bitfield).as_bytes())
             } else {

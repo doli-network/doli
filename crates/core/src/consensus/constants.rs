@@ -92,6 +92,16 @@ pub const SNAP_HEADER_ACTIVATION_HEIGHT: u64 = 500;
 /// After: bitfield decoded with previous epoch's frozen list (the list used to encode).
 pub const BITFIELD_DECODE_FIX_HEIGHT: u64 = 2700;
 
+/// Bitfield encode fix activation height.
+/// Before: encoder used active_producers_at_height(height) — grows mid-epoch when
+/// new producers activate, causing encode/decode list mismatch with decoder post-fix
+/// (which uses epoch_producer_list since BITFIELD_DECODE_FIX_HEIGHT).
+/// After: encoder uses epoch_producer_list (frozen at epoch boundary) — matches decoder
+/// exactly, eliminating mid-epoch registration drift.
+/// MUST be >= BITFIELD_DECODE_FIX_HEIGHT. Consensus-breaking: changes presence_root
+/// (part of block hash) → requires HardForkSchedule entry + fork_id bump.
+pub const BITFIELD_ENCODE_FIX_HEIGHT: u64 = 2950;
+
 /// Tier promotion activation height.
 /// Before: active_production_list = first 50 by registered_at (static seniority).
 /// After: active_production_list = first 50 by attestation_count desc, registered_at asc.
