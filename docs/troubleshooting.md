@@ -630,6 +630,29 @@ cargo build --release
 
 **Note:** If you see `HARD FORK ACTIVE: binary version X is too old for height Y` in the logs, a compile-time hard fork has activated and your binary must be upgraded to resume block production.
 
+### 5.3. Fork ID Mismatch
+
+**Symptom:** Node rejects all incoming blocks. Logs show:
+```
+[BLOCK] REJECT slot=N h=N producer=XXXX error=fork_id mismatch: got=0000...0000, expected=af68...aba9
+```
+
+**Cause:** Your node's fork_id differs from the network's. fork_id is computed per-block as `BLAKE3(genesis_hash || activated_fork_heights...)`. Common causes:
+- Your binary is too old and missing a `HardForkSchedule` entry that has already activated on the network.
+- You deployed a new binary with a new HardForkSchedule entry, but the activation height hasn't been reached yet AND you're receiving blocks from peers on the old binary. (This was a bug before v6.9.0 — fork_id was computed with `u64::MAX` instead of current height, causing immediate partitioning on deploy.)
+
+**Solution:**
+```bash
+# Check your version
+doli-node --version
+
+# Check current network height vs activation heights in hardfork.rs
+# If height >= activation_height and you're on an old binary → update
+# If height < activation_height → all binaries should produce the same fork_id
+```
+
+**If the fork_id mismatch happens BEFORE activation height**, your binary may have the pre-v6.9.0 bug where fork_id included future forks. Update to v6.9.0+.
+
 ---
 
 ## 6. Diagnostic Commands

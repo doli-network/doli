@@ -400,26 +400,38 @@ def calculate_epoch_rewards(epoch, current_height):
     epoch_start = epoch * blocks_per_reward_epoch
     epoch_end = (epoch + 1) * blocks_per_reward_epoch
 
-    # Get active producers at epoch start, sorted by pubkey
+    # Get active producers at epoch start, sorted by pubkey (for bond/reward data)
     sorted_producers = get_active_producers_sorted(epoch_start)
 
+    # Get producer list for bitfield DECODING.
+    # Post BITFIELD_DECODE_FIX_HEIGHT (h=2700): use the previous epoch's frozen list
+    # (epoch_producer_list) — the same list used to ENCODE the bitfield during production.
+    # Pre-fix: used active set at epoch start (could include mid-epoch activations,
+    # causing index mismatch → false positives/negatives in attestation).
+    if current_height >= BITFIELD_DECODE_FIX_HEIGHT and epoch_producer_list:
+        sorted_pubkeys = sorted(epoch_producer_list)
+    else:
+        sorted_pubkeys = [p.pubkey for p in sorted_producers]
+
     # Scan blocks in epoch, decode presence_root attestation bitfields
-    attested_minutes = {}  # producer_index -> set of attested minutes
+    attested_minutes = {}  # pubkey -> set of attested minutes (index-free)
     for h in range(epoch_start, epoch_end):
         block = block_store.get(h)
         if block and block.presence_root != ZERO:
             minute = attestation_minute(block.slot)
-            indices = decode_attestation_bitfield(block.presence_root, len(sorted_producers))
+            indices = decode_attestation_bitfield(block.presence_root, len(sorted_pubkeys))
             for idx in indices:
-                attested_minutes.setdefault(idx, set()).add(minute)
+                if idx < len(sorted_pubkeys):
+                    pk = sorted_pubkeys[idx]
+                    attested_minutes.setdefault(pk, set()).add(minute)
 
     # Qualify with never-burn fallback tiers
     threshold = attestation_qualification_threshold(blocks_per_reward_epoch)  # 90%
     if epoch == 0:
         qualified = sorted_producers  # All qualify in genesis epoch
     else:
-        tier1 = [p for i, p in enumerate(sorted_producers)
-                 if len(attested_minutes.get(i, set())) >= threshold]
+        tier1 = [p for p in sorted_producers
+                 if len(attested_minutes.get(p.pubkey, set())) >= threshold]
         if tier1:
             qualified = tier1
         else:
@@ -872,11 +884,14 @@ block_hash = HASH(
     timestamp (8B LE) ||
     slot (4B LE) ||
     producer (32B) ||
-    vdf_output.value (variable)
+    vdf_output.value (variable) ||
+    fork_id (32B, only if non-zero)
 )
 ```
 
-Note: The `vdf_proof` is NOT included in the block hash. The presence_root and genesis_hash are always included (presence_root is Hash::ZERO in deterministic scheduler model).
+Note: The `vdf_proof` is NOT included in the block hash. The presence_root and genesis_hash are always included (presence_root is Hash::ZERO in deterministic scheduler model). The `fork_id` is included only when non-zero (post fork_id activation height).
+
+**fork_id** = `BLAKE3(genesis_hash || h1_le || h2_le || ...)` where h1, h2... are activation heights from `HardForkSchedule` that have already activated (activation_height <= current block height). Computed per-block — enables progressive deployment where old and new binaries coexist until activation. After activation, old binaries produce a different fork_id and are partitioned from the network at gossip level (O(1) drop).
 
 ### 4.4 Merkle Root
 

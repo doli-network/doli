@@ -241,7 +241,7 @@ Both are checked at gossip level (O(1) drop) and validation level. A node with w
 **How fork_id works (inspired by Ethereum EIP-2124):**
 
 1. Each consensus-breaking change adds an entry to `HardForkSchedule` in `crates/updater/src/hardfork.rs` with an `activation_height` and `min_version`.
-2. `fork_id = BLAKE3(genesis_hash || h1_le || h2_le || ...)` where h1, h2... are all activation heights in the schedule. Computed at startup using `u64::MAX` as height — includes ALL known forks regardless of current chain height.
+2. `fork_id = BLAKE3(genesis_hash || h1_le || h2_le || ...)` where h1, h2... are activation heights that have **already activated** (activation_height <= current_height). Computed per-block using the block's height — only includes forks active at that height. This enables progressive deployment: old and new binaries coexist until the activation height.
 3. The fork_id is embedded in every block header and committed to the block hash.
 
 **Partitioning behavior:**
