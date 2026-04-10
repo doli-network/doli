@@ -113,7 +113,7 @@ pub const BITFIELD_ENCODE_FIX_HEIGHT: u64 = 2950;
 /// onboarding chicken-and-egg without weakening the liveness filter.
 /// Consensus-breaking: changes epoch_producer_list → changes scheduler inputs →
 /// requires HardForkSchedule entry + fork_id bump.
-pub const NEW_PRODUCER_ONBOARDING_HEIGHT: u64 = 3750;
+pub const NEW_PRODUCER_ONBOARDING_HEIGHT: u64 = 4100;
 
 /// Tier promotion activation height.
 /// Before: active_production_list = first 50 by registered_at (static seniority).

@@ -198,10 +198,10 @@ impl HardForkSchedule {
                     ],
                 });
                 schedule.add(HardForkInfo {
-                    activation_height: 3750,
-                    min_version: "6.11.0".to_string(),
+                    activation_height: 4100,
+                    min_version: "6.11.1".to_string(),
                     consensus_changes: vec![
-                        "new producer onboarding: 2-epoch lookback on registered_at to include newly registered producers (chicken-and-egg fix)"
+                        "new producer onboarding: 2-epoch lookback on registered_at + init.rs seed fix (chicken-and-egg + restart divergence fix)"
                             .to_string(),
                     ],
                 });

@@ -730,23 +730,43 @@ impl Node {
         // after rollback, and after any state reset.
         let excluded_producers = HashSet::new();
 
-        // epoch_producer_list: seed from current active producers so production
-        // can resume immediately after restart mid-epoch. Without this, a restart
-        // mid-epoch leaves epoch_producer_list empty → no production → deadlock.
-        // The list will be properly recomputed at the next epoch boundary.
+        // epoch_producer_list: seed from active producers AT THE PREVIOUS EPOCH
+        // BOUNDARY, not at best_h. Using best_h is INCORRECT when pending_updates
+        // were applied at the current epoch boundary — those include new producers
+        // that the network's attestation filter did NOT include in epoch_producer_list,
+        // causing divergence on restart (node computes scheduler with wrong size,
+        // rejects all incoming blocks as "invalid producer for slot").
+        //
+        // By seeding from prev_epoch_start, we get the producers that were active
+        // BEFORE any mid-epoch pending updates were applied. This is the correct
+        // approximation of the network's epoch_producer_list during mid-epoch.
+        //
+        // The list will be properly recomputed at the next epoch boundary via
+        // post_commit, or immediately via rebuild_epoch_state_from_blocks if a
+        // block is rejected with "invalid producer".
         let epoch_producer_list = {
             let producers = producer_set.read().await;
             let best_h = chain_state.read().await.best_height;
+            let blocks_per_epoch = config.network.blocks_per_reward_epoch();
+            let seed_height = if blocks_per_epoch > 0 && best_h >= blocks_per_epoch {
+                let current_epoch = best_h / blocks_per_epoch;
+                // Use previous epoch's start (not current epoch's boundary) to avoid
+                // picking up newly-applied pending updates from the current boundary.
+                current_epoch.saturating_sub(1) * blocks_per_epoch
+            } else {
+                best_h
+            };
             let mut pks: Vec<PublicKey> = producers
-                .active_producers_at_height(best_h)
+                .active_producers_at_height(seed_height)
                 .iter()
                 .map(|p| p.public_key)
                 .collect();
             pks.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
             if !pks.is_empty() {
                 info!(
-                    "[INIT] Seeded epoch_producer_list with {} active producers at h={}",
+                    "[INIT] Seeded epoch_producer_list with {} active producers from prev_epoch_boundary h={} (current best_h={})",
                     pks.len(),
+                    seed_height,
                     best_h
                 );
             }
