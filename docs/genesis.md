@@ -43,14 +43,26 @@ Service names: `doli-mainnet-seed`, `doli-testnet-seed` on each server.
 
 ## Genesis Timestamp Sources
 
-### Mainnet-only reset (2 files)
+### Mainnet-only reset (3 files, 4 changes)
 
-| # | File | Field | Notes |
-|---|------|-------|-------|
+| # | File | What to change | Notes |
+|---|------|----------------|-------|
 | 1 | `chainspec.mainnet.json` | `genesis.timestamp` + `genesis.message` | Canonical mainnet chainspec |
-| 2 | `crates/core/src/consensus/constants.rs` | `GENESIS_TIME` (line ~25) | **LOCKED at runtime** — cannot be overridden |
+| 2 | `crates/core/src/consensus/constants.rs` | `GENESIS_TIME` | **LOCKED at runtime** — cannot be overridden |
+| 3 | `crates/core/src/chainspec.rs` | `ChainSpec::mainnet()` genesis message + hardcoded genesis hash in test | Message must match JSON. Hash must match computed value. |
 
-Also update `chainspec.rs:ChainSpec::mainnet()` genesis message to match JSON.
+**After updating timestamp + message, you MUST update the genesis hash:**
+```bash
+# 1. Run test to get new hash (it will FAIL and print the correct hash):
+cargo test -p doli-core --lib -- test_mainnet_genesis_hash_hardcoded 2>&1 | grep "Got "
+
+# 2. Copy the hash and update chainspec.rs test (line ~352)
+
+# 3. Verify BOTH tests pass:
+cargo test -p doli-core --lib -- test_mainnet_genesis_hash_hardcoded test_genesis_time
+```
+
+**If the hash test fails, the binary will produce a different chain identity. Nodes will reject each other's blocks. This caused multiple incidents on 2026-04-09/10.**
 
 ### Testnet-only reset (2 files)
 
@@ -59,15 +71,28 @@ Also update `chainspec.rs:ChainSpec::mainnet()` genesis message to match JSON.
 | 1 | `chainspec.testnet.json` | `genesis.timestamp` + `genesis.message` | Canonical testnet chainspec |
 | 2 | `crates/core/src/network_params/defaults.rs` | Testnet `genesis_time:` (line ~97) | Hardcoded `u64`, must match JSON |
 
-### Full reset (all 4 files)
+### Full reset (all files)
 
-Update all 4 files above.
+Update all files above (mainnet + testnet).
 
 **How it flows:**
 - Mainnet `defaults.rs` uses `consensus::GENESIS_TIME` (not hardcoded) — updating `constants.rs` covers mainnet defaults automatically.
 - Testnet `defaults.rs` has its own hardcoded value — must be updated separately.
 - `genesis_hash = BLAKE3(timestamp || network_id || slot_duration || message)` — included in every block header.
 - Two unit tests verify sync: `cargo test -p doli-core test_genesis_time`
+- One unit test verifies hash: `cargo test -p doli-core test_mainnet_genesis_hash_hardcoded`
+- **Startup validation**: node compares StateDb genesis hash against binary. Mismatch = crash with "wipe data" error. Prevents stale data contamination.
+
+### Genesis reset safety checklist
+
+Before deploying a genesis reset binary:
+1. All 3 files updated with same timestamp and message
+2. Genesis hash test passes
+3. Genesis time test passes
+4. `cargo clean && cargo build --release` on ai2 (NEVER incremental)
+5. md5 verified on ALL servers before starting ANY node
+6. ALL servers wiped (`data/*`) before starting ANY node
+7. NO node starts until ALL servers have correct binary + wiped data
 
 ---
 
@@ -194,10 +219,12 @@ git push
 
 ### Phase 3: Compile & Deploy (ai2 → ai1, ai3)
 
-**11. Compile on ai2:**
+**11. Compile on ai2 (MUST cargo clean):**
 ```bash
-ssh ai2 "source ~/.cargo/env && cd ~/repos/doli && git pull && cargo build --release"
+ssh ai2 "source ~/.cargo/env && cd ~/repos/doli && git pull origin main && cargo clean && LIBZ_SYS_STATIC=0 cargo build --release"
+ssh ai2 "~/repos/doli/target/release/doli-node --version && md5sum ~/repos/doli/target/release/doli-node"
 ```
+**CRITICAL**: `cargo clean` is MANDATORY. Incremental builds can produce binaries with code from wrong commits (2026-03-31 incident). `LIBZ_SYS_STATIC=0` required after clean.
 
 **12. Record checksums:**
 ```bash
