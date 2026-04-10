@@ -137,72 +137,37 @@ impl SyncManager {
             };
         }
 
-        // Check 3: Gossip activity watchdog — mesh isolation detection
+        // Check 3: Gossip activity watchdog — DISABLED (INC-I-026).
         //
-        // Detects the case where a node has transport-layer peers but is NOT
-        // receiving blocks via the gossipsub mesh (mesh partition). Without this,
-        // the node produces blocks during the silence, each production marks
-        // missed-slot producers as excluded, and the scheduler diverges from the
-        // network — a cascade that is unrecoverable on main branch.
+        // Pre-INC-I-026, mesh isolation caused scheduler divergence because
+        // excluded_producers was local state. With deterministic scheduler,
+        // a block produced during gossip silence is simply ignored by peers
+        // (FORK_GUARD). Worst case: 1 wasted slot. The deadlock risk from
+        // blocking production far exceeds the cost of an ignored block.
         //
-        // Only checks when we have sufficient peers (0-peer case handled above).
-        // Self-produced blocks do NOT reset the gossip timer (production/mod.rs).
-        //
-        // BYPASS: When ALL peers are at the same height as us (or lower), the
-        // silence is because nobody has produced yet — not because our gossip is
-        // broken. This prevents the cold-restart deadlock where all nodes block
-        // each other (Guardian recovery, full network restart). Once any peer
-        // advances ahead, the watchdog activates normally to catch INC-I-016.
-        if self.peers.len() >= self.min_peers_for_production {
-            if let Some(last_gossip) = self.last_block_received_via_gossip {
-                let secs = last_gossip.elapsed().as_secs();
-                if secs >= self.gossip_activity_timeout_secs {
-                    // Check if any peer is ahead of us — if so, gossip SHOULD
-                    // be delivering their blocks and the watchdog is correct.
-                    let any_peer_ahead = self
-                        .peers
-                        .values()
-                        .any(|p| p.best_height > self.local_height);
+        // The original INC-I-016 attack vector no longer exists because
+        // excluded_producers is no longer used for scheduling.
 
-                    if any_peer_ahead {
-                        warn!(
-                            "[CAN_PRODUCE] BLOCKED: no gossip blocks for {}s (timeout={}s) with {} peers — possible mesh isolation",
-                            secs, self.gossip_activity_timeout_secs, self.peers.len()
-                        );
-                        return ProductionAuthorization::BlockedNoGossipActivity {
-                            seconds_since_gossip: secs,
-                            peer_count: self.peers.len(),
-                        };
-                    }
-                    // All peers at same height or lower — cold restart scenario.
-                    // Allow production to break the deadlock.
-                }
-            }
-        }
-
-        // Check 4: Finality
+        // Check 4: Finality — tolerance of 5 blocks.
+        // A node 1-4 blocks behind finality is normal gossip timing.
+        // Only block if significantly behind (5+ blocks), which indicates
+        // a real fork conflict, not transient delay.
         if let Some(finalized_height) = self.last_finalized_height() {
-            if self.local_height < finalized_height {
+            if self.local_height + 5 < finalized_height {
                 return ProductionAuthorization::BlockedConflictsFinality {
                     local_finalized_height: finalized_height,
                 };
             }
         }
 
-        // Check 5: Behind-tip guard — prevent stale block production.
-        // With INC-I-026 (deterministic scheduler), a node >1 block behind
-        // the network tip would produce a block at a height that already has
-        // a canonical block on other nodes → FORK_GUARD drops it everywhere.
-        // Block production until caught up via gossip.
-        let net_tip = self
-            .peers
-            .values()
-            .map(|p| p.best_height)
-            .max()
-            .unwrap_or(0);
-        if net_tip > 0 && self.local_height + 1 < net_tip {
-            return ProductionAuthorization::BlockedSyncing;
-        }
+        // Check 5: Behind-tip guard — REMOVED (INC-I-026).
+        //
+        // With deterministic scheduler + FORK_GUARD + fork_id, a block
+        // produced by a behind node is silently discarded by all peers.
+        // No fork, no divergence — just 1 wasted slot. Blocking production
+        // causes permanent deadlocks when nodes fall behind for any reason
+        // (restart, gossip delay, network partition). The deadlock risk
+        // vastly exceeds the cost of an ignored block.
 
         info!("[CAN_PRODUCE] AUTHORIZED");
         ProductionAuthorization::Authorized

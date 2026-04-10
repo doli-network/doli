@@ -1169,12 +1169,12 @@ fn test_inc001_rc9_small_lag_allows_production_immediately() {
     manager.pipeline_data = SyncPipelineData::None;
 
     let result = manager.can_produce(101);
-    // With INC-I-026 production gate: node 2 blocks behind is blocked.
-    // Deterministic scheduler means the block would be a duplicate — FORK_GUARD drops it.
+    // INC-I-026: behind-tip gate removed. With deterministic scheduler + FORK_GUARD,
+    // a stale block is silently ignored — no fork risk. Allow production to prevent deadlocks.
     assert_eq!(
         result,
-        ProductionAuthorization::BlockedSyncing,
-        "Production gate: node 2 blocks behind net_tip must be blocked. Got: {:?}",
+        ProductionAuthorization::Authorized,
+        "INC-I-026: node 2 blocks behind must be allowed to produce (FORK_GUARD handles stale blocks). Got: {:?}",
         result
     );
 }
@@ -1204,11 +1204,11 @@ fn test_inc001_rc9_lag3_allows_production_immediately() {
     manager.pipeline_data = SyncPipelineData::None;
 
     let result = manager.can_produce(102);
-    // With INC-I-026 production gate: node 3 blocks behind is blocked.
+    // INC-I-026: behind-tip gate removed. FORK_GUARD handles stale blocks.
     assert_eq!(
         result,
-        ProductionAuthorization::BlockedSyncing,
-        "Production gate: node 3 blocks behind net_tip must be blocked. Got: {:?}",
+        ProductionAuthorization::Authorized,
+        "INC-I-026: node 3 blocks behind must be allowed to produce. Got: {:?}",
         result
     );
 }
@@ -1688,16 +1688,15 @@ fn test_gossip_watchdog_blocks_production_when_no_gossip() {
     manager.last_block_received_via_gossip = Some(Instant::now() - Duration::from_secs(200));
 
     let result = manager.can_produce(24500);
-    match result {
-        ProductionAuthorization::BlockedNoGossipActivity {
-            seconds_since_gossip,
-            peer_count,
-        } => {
-            assert!(seconds_since_gossip >= 180);
-            assert_eq!(peer_count, 2);
-        }
-        other => panic!("Expected BlockedNoGossipActivity, got: {:?}", other),
-    }
+    // INC-I-026: gossip watchdog disabled. With deterministic scheduler + FORK_GUARD,
+    // producing during gossip silence just creates an ignored block — no fork risk.
+    // Blocking production causes deadlocks (h=3851 incident).
+    assert_eq!(
+        result,
+        ProductionAuthorization::Authorized,
+        "INC-I-026: gossip watchdog disabled — production must be allowed. Got: {:?}",
+        result
+    );
 }
 
 #[test]
@@ -1795,12 +1794,11 @@ fn test_gossip_watchdog_respects_custom_timeout() {
     manager.last_block_received_via_gossip = Some(Instant::now() - Duration::from_secs(35));
 
     let result = manager.can_produce(101);
-    assert!(
-        matches!(
-            result,
-            ProductionAuthorization::BlockedNoGossipActivity { .. }
-        ),
-        "Expected BlockedNoGossipActivity with 30s custom timeout, got: {:?}",
+    // INC-I-026: gossip watchdog disabled — always authorized regardless of timeout.
+    assert_eq!(
+        result,
+        ProductionAuthorization::Authorized,
+        "INC-I-026: gossip watchdog disabled — production must be allowed. Got: {:?}",
         result
     );
 }
@@ -1848,21 +1846,16 @@ fn test_note_gossip_resets_watchdog() {
     // Gossip expired (200s ago)
     manager.last_block_received_via_gossip = Some(Instant::now() - Duration::from_secs(200));
 
-    // Verify it WOULD block (peers ahead + no gossip)
-    assert!(matches!(
+    // INC-I-026: gossip watchdog disabled — production allowed even without gossip
+    assert_eq!(
         manager.can_produce(101),
-        ProductionAuthorization::BlockedNoGossipActivity { .. }
-    ));
+        ProductionAuthorization::Authorized,
+    );
 
-    // Now receive a gossip block — resets the timer
+    // Gossip block received — timer reset (no behavioral change, watchdog disabled)
     manager.note_block_received_via_gossip();
 
-    // Gossip watchdog is reset, but production gate still blocks (2 behind net_tip).
-    // Simulate catching up via gossip — node now at peer height.
-    manager.local_height = 102;
-    manager.local_slot = 102;
-
-    // Should be authorized now (caught up + gossip active)
+    // Still authorized
     let result = manager.can_produce(103);
     assert_eq!(
         result,
