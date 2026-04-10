@@ -197,6 +197,14 @@ impl HardForkSchedule {
                             .to_string(),
                     ],
                 });
+                schedule.add(HardForkInfo {
+                    activation_height: 3750,
+                    min_version: "6.11.0".to_string(),
+                    consensus_changes: vec![
+                        "new producer onboarding: 2-epoch lookback on registered_at to include newly registered producers (chicken-and-egg fix)"
+                            .to_string(),
+                    ],
+                });
             }
             doli_core::Network::Devnet => {
                 // Devnet: no gating needed

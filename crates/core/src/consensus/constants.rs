@@ -102,6 +102,19 @@ pub const BITFIELD_DECODE_FIX_HEIGHT: u64 = 2700;
 /// (part of block hash) → requires HardForkSchedule entry + fork_id bump.
 pub const BITFIELD_ENCODE_FIX_HEIGHT: u64 = 2950;
 
+/// New producer onboarding fix activation height.
+/// Before: epoch_producer_list was built solely by the attestation filter. Producers
+/// registered post-BITFIELD_ENCODE_FIX_HEIGHT (h=2950) couldn't attest (encoder uses
+/// frozen epoch_producer_list → their attestations dropped → not in `attested` set
+/// → filtered out of next new_list → permanent chicken-and-egg exclusion).
+/// After: at epoch boundary, include newly-registered producers whose `registered_at`
+/// falls within a 2-epoch lookback window. Long-offline producers (registered long ago,
+/// filter-dropped) are NOT re-included — they stay excluded. Only targets the
+/// onboarding chicken-and-egg without weakening the liveness filter.
+/// Consensus-breaking: changes epoch_producer_list → changes scheduler inputs →
+/// requires HardForkSchedule entry + fork_id bump.
+pub const NEW_PRODUCER_ONBOARDING_HEIGHT: u64 = 3750;
+
 /// Tier promotion activation height.
 /// Before: active_production_list = first 50 by registered_at (static seniority).
 /// After: active_production_list = first 50 by attestation_count desc, registered_at asc.

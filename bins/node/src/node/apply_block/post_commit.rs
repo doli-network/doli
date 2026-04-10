@@ -163,6 +163,39 @@ impl Node {
                     }
                 };
 
+                // Onboarding fix: include newly registered producers that couldn't
+                // attest in the previous epoch (chicken-and-egg). Uses a 2-epoch
+                // lookback on `registered_at` — only producers registered in the
+                // last 2 epochs are re-included. Long-offline producers (registered
+                // long ago but dropped by attestation filter for inactivity) are
+                // NOT re-included → liveness filter preserved.
+                if height >= doli_core::consensus::NEW_PRODUCER_ONBOARDING_HEIGHT && epoch >= 2 {
+                    let prev_epoch_start_onboard = (epoch - 1) * blocks_per_epoch;
+                    let lookback_start = prev_epoch_start_onboard.saturating_sub(blocks_per_epoch);
+                    let before = new_list.len();
+                    let in_new_list: HashSet<PublicKey> = new_list.iter().copied().collect();
+                    let producers = self.producer_set.read().await;
+                    let newly_registered: Vec<PublicKey> = producers
+                        .active_producers_at_height(height)
+                        .iter()
+                        .filter(|p| {
+                            !in_new_list.contains(&p.public_key)
+                                && p.registered_at > 0
+                                && p.registered_at >= lookback_start
+                        })
+                        .map(|p| p.public_key)
+                        .collect();
+                    drop(producers);
+                    new_list.extend(newly_registered);
+                    let added = new_list.len() - before;
+                    if added > 0 {
+                        info!(
+                            "[EPOCH] Onboarding {} newly registered producers (lookback from h={})",
+                            added, lookback_start
+                        );
+                    }
+                }
+
                 // Deadlock safety: if attestation filter left < 1/3 of active producers,
                 // it's a mass event (restart, deploy, network outage), not individual
                 // inactivity. Include everyone to prevent chain death.
