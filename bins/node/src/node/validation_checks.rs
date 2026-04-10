@@ -283,7 +283,7 @@ impl Node {
                 .inc_i_026_scheduler_activation_height,
         )
         .with_fork_id(
-            self.current_fork_id(),
+            self.fork_id_at_height(height),
             self.config.network.params().fork_id_activation_height,
         );
 

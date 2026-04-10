@@ -90,7 +90,7 @@ pub const SNAP_HEADER_ACTIVATION_HEIGHT: u64 = 500;
 /// Before: bitfield decoded with current active set (includes newly registered producers
 /// → false positives/negatives when producer count changes across epoch boundary).
 /// After: bitfield decoded with previous epoch's frozen list (the list used to encode).
-pub const BITFIELD_DECODE_FIX_HEIGHT: u64 = 2300;
+pub const BITFIELD_DECODE_FIX_HEIGHT: u64 = 2700;
 
 /// Tier promotion activation height.
 /// Before: active_production_list = first 50 by registered_at (static seniority).

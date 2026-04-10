@@ -16,7 +16,32 @@ impl Node {
         let epoch_start_height = epoch * blocks_per_epoch;
         let epoch_end_height = (epoch + 1) * blocks_per_epoch;
 
-        // Get active producers at epoch start, sorted by pubkey (same order as bitfield encoding)
+        // Get producers for bitfield decoding AND reward calculation.
+        // Two separate lists:
+        // 1. sorted_pubkeys: for bitfield decoding (must match encoding list exactly)
+        // 2. sorted_producers: for bond-weighted reward distribution
+        let current_h = self.chain_state.read().await.best_height;
+
+        // Bitfield decode list: epoch_producer_list (frozen, same as encoding) post-fix
+        let sorted_pubkeys: Vec<crypto::PublicKey> = if current_h
+            >= doli_core::consensus::BITFIELD_DECODE_FIX_HEIGHT
+            && !self.epoch_producer_list.is_empty()
+        {
+            let mut pks = self.epoch_producer_list.clone();
+            pks.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+            pks
+        } else {
+            let producers = self.producer_set.read().await;
+            let mut pks: Vec<crypto::PublicKey> = producers
+                .active_producers_at_height(epoch_start_height)
+                .iter()
+                .map(|p| p.public_key)
+                .collect();
+            pks.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+            pks
+        };
+
+        // Producer info list: for bond data (reward calculation)
         let sorted_producers: Vec<storage::producer::ProducerInfo> = {
             let producers = self.producer_set.read().await;
             let mut ps: Vec<storage::producer::ProducerInfo> = producers
@@ -28,43 +53,39 @@ impl Node {
             ps
         };
 
-        if sorted_producers.is_empty() {
+        if sorted_pubkeys.is_empty() && sorted_producers.is_empty() {
             return Vec::new();
         }
 
-        let producer_count = sorted_producers.len();
+        let decode_count = sorted_pubkeys.len();
 
-        // Scan all blocks in epoch, decode presence_root bitfield, track attested minutes per producer
-        // Key: producer index → set of attestation minutes they were attested in
-        let mut attested_minutes: HashMap<usize, HashSet<u32>> = HashMap::new();
+        // Scan all blocks in epoch, decode bitfield, track attested minutes per producer pubkey.
+        // Key: PublicKey → set of attestation minutes (index-free, no mismatch possible).
+        let mut attested_minutes: HashMap<crypto::PublicKey, HashSet<u32>> = HashMap::new();
 
         for h in epoch_start_height..epoch_end_height {
             if let Ok(Some(block)) = self.block_store.get_block_by_height(h) {
-                // Skip blocks with zero presence_root (no attestation data)
                 if block.header.presence_root.is_zero() {
                     continue;
                 }
 
                 let minute = attestation_minute(block.header.slot);
                 let indices = if !block.attestation_bitfield.is_empty() {
-                    // Body bitfield available: decode from body (no 256 cap)
                     doli_core::decode_attestation_bitfield_vec(
                         &block.attestation_bitfield,
-                        producer_count,
+                        decode_count,
                     )
                 } else if h < doli_core::consensus::BITFIELD_BODY_ACTIVATION_HEIGHT {
-                    // Pre-activation: presence_root IS the raw bitfield
-                    decode_attestation_bitfield(&block.header.presence_root, producer_count)
+                    decode_attestation_bitfield(&block.header.presence_root, decode_count)
                 } else {
-                    // Post-activation without body (snap sync gap): skip
-                    // presence_root is BLAKE3 hash, NOT a bitfield — decoding it
-                    // produces garbage indices → scheduler divergence → fork
                     vec![]
                 };
 
-                // Union: for each producer index attested in this block, add the minute
+                // Map indices to pubkeys via sorted_pubkeys, then insert
                 for idx in indices {
-                    attested_minutes.entry(idx).or_default().insert(minute);
+                    if let Some(pk) = sorted_pubkeys.get(idx) {
+                        attested_minutes.entry(*pk).or_default().insert(minute);
+                    }
                 }
             }
         }
@@ -86,12 +107,13 @@ impl Node {
             // Tier 1: standard 90% threshold
             let tier1: Vec<&storage::producer::ProducerInfo> = sorted_producers
                 .iter()
-                .enumerate()
-                .filter(|(idx, _)| {
-                    let minutes = attested_minutes.get(idx).map(|s| s.len()).unwrap_or(0);
+                .filter(|p| {
+                    let minutes = attested_minutes
+                        .get(&p.public_key)
+                        .map(|s| s.len())
+                        .unwrap_or(0);
                     minutes as u32 >= threshold
                 })
-                .map(|(_, p)| p)
                 .collect();
 
             if !tier1.is_empty() {
@@ -100,10 +122,9 @@ impl Node {
                 // Tier 2: fallback — 80% of median attendance, floor of 1 minute
                 let mut all_minutes: Vec<u32> = sorted_producers
                     .iter()
-                    .enumerate()
-                    .map(|(idx, _)| {
+                    .map(|p| {
                         attested_minutes
-                            .get(&idx)
+                            .get(&p.public_key)
                             .map(|s| s.len() as u32)
                             .unwrap_or(0)
                     })
@@ -140,12 +161,13 @@ impl Node {
 
                 sorted_producers
                     .iter()
-                    .enumerate()
-                    .filter(|(idx, _)| {
-                        let minutes = attested_minutes.get(idx).map(|s| s.len()).unwrap_or(0);
+                    .filter(|p| {
+                        let minutes = attested_minutes
+                            .get(&p.public_key)
+                            .map(|s| s.len())
+                            .unwrap_or(0);
                         minutes as u32 >= fallback_threshold
                     })
-                    .map(|(_, p)| p)
                     .collect()
             }
         };
@@ -222,11 +244,8 @@ impl Node {
 
             let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, producer_info.public_key.as_bytes());
 
-            // Find this producer's index in sorted list for attestation minute count
-            let att_minutes = sorted_producers
-                .iter()
-                .position(|p| p.public_key == producer_info.public_key)
-                .and_then(|idx| attested_minutes.get(&idx))
+            let att_minutes = attested_minutes
+                .get(&producer_info.public_key)
                 .map(|s| s.len())
                 .unwrap_or(0);
 

@@ -234,9 +234,37 @@ Every block header contains two chain identity fields:
 | Field | What it validates | When it changes |
 |-------|-------------------|-----------------|
 | `genesis_hash` | Chain identity (timestamp + network + slot_duration + message) | Only on genesis reset |
-| `fork_id` | Active hard fork set (BLAKE3 of genesis_hash + sorted activation heights) | When new HardForkSchedule entries activate |
+| `fork_id` | Active hard fork set (BLAKE3 of genesis_hash + sorted activation heights) | When new `HardForkSchedule` entries activate |
 
 Both are checked at gossip level (O(1) drop) and validation level. A node with wrong genesis or wrong fork set cannot produce blocks that any peer accepts.
+
+**How fork_id works (inspired by Ethereum EIP-2124):**
+
+1. Each consensus-breaking change adds an entry to `HardForkSchedule` in `crates/updater/src/hardfork.rs` with an `activation_height` and `min_version`.
+2. `fork_id = BLAKE3(genesis_hash || h1_le || h2_le || ...)` where h1, h2... are all activation heights in the schedule. Computed at startup using `u64::MAX` as height — includes ALL known forks regardless of current chain height.
+3. The fork_id is embedded in every block header and committed to the block hash.
+
+**Partitioning behavior:**
+
+- **Before activation height**: All nodes (old and new binary) produce the same fork_id. Both versions coexist on the network. No urgency to update.
+- **At activation height**: Nodes with the new binary apply new consensus rules. Nodes with the old binary apply old rules. Blocks produced by old nodes are **rejected** by new nodes (fork_id mismatch at gossip level, O(1) drop). Old nodes are effectively partitioned from the network.
+- **After activation height**: Old nodes cannot produce accepted blocks, cannot sync, and cannot participate. They must update their binary to rejoin.
+
+**Operational impact for node operators:**
+
+- **Code-only releases** (no `HardForkSchedule` entry): fork_id does not change. Nodes can update at any time. No deadline.
+- **Consensus releases** (new `HardForkSchedule` entry): fork_id changes at activation height. **All nodes must update before the activation height or they will be isolated from the network.** The `min_version` field in the schedule determines which versions are compatible.
+- The auto-updater (`doli upgrade`) handles this automatically for nodes with auto-update enabled. Nodes with `--no-auto-update` must update manually before the deadline.
+
+**How to check:**
+
+```bash
+# Current fork_id (same for all nodes with same binary):
+doli-node --version  # Shows version — check against min_version in schedule
+
+# Check if a hard fork is approaching:
+# Look in crates/updater/src/hardfork.rs for entries with activation_height > current_height
+```
 
 **Startup protection**: If a node has stale data from a previous chain, it crashes immediately:
 ```

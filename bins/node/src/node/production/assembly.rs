@@ -20,7 +20,7 @@ impl Node {
         let pool_hash = doli_core::consensus::reward_pool_pubkey_hash();
         let fork_id_activation = self.config.network.params().fork_id_activation_height;
         let fork_id = if height >= fork_id_activation {
-            self.current_fork_id()
+            self.fork_id_at_height(height)
         } else {
             crypto::Hash::ZERO
         };

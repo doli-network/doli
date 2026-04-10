@@ -182,7 +182,7 @@ impl HardForkSchedule {
         match network {
             doli_core::Network::Mainnet | doli_core::Network::Testnet => {
                 schedule.add(HardForkInfo {
-                    activation_height: 2300,
+                    activation_height: 2700,
                     min_version: "6.8.9".to_string(),
                     consensus_changes: vec![
                         "bitfield decode fix: use previous epoch list for attestation decoding"
