@@ -972,7 +972,8 @@ fn test_best_peer_height_no_historical_inflation() {
 
 /// Root cause: cleanup() force-sets consecutive_empty_headers to 3, which
 /// triggers resolve_shallow_fork, which resets to 0, then cleanup sets to 3
-/// again. Counter oscillates 0→3→0→3, never reaching 10 for definitive recovery.
+/// With INC-I-026 + fork_id, cleanup does NOT signal fork recovery for small gaps
+/// even after 300s. Small gaps resolve via gossip, not rollback.
 #[test]
 fn test_no_forced_counter_oscillation() {
     let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
@@ -984,20 +985,19 @@ fn test_no_forced_counter_oscillation() {
     let peer = PeerId::random();
     manager.add_peer(peer, 105, Hash::ZERO, 105);
 
-    // Simulate stuck-on-fork: no block applied for >120s
-    manager.network.last_block_applied = Instant::now() - Duration::from_secs(130);
+    // Simulate stuck: no block applied for >300s
+    manager.network.last_block_applied = Instant::now() - Duration::from_secs(310);
 
     // Counter starts at 0
     assert_eq!(manager.fork.consecutive_empty_headers, 0);
 
-    // Run cleanup — stuck-on-fork detection should signal fork, not force counter
+    // Run cleanup — small gap should NOT signal fork recovery
     manager.cleanup();
 
-    // AFTER FIX: cleanup should NOT force-set counter to 3.
-    // Instead, it should use a dedicated signaling mechanism (stuck_fork_signal flag).
+    // With deterministic scheduler, small gaps don't trigger fork signal
     assert!(
-        manager.fork.stuck_fork_signal,
-        "cleanup() must set stuck_fork_signal instead of forcing consecutive_empty_headers to 3"
+        !manager.fork.stuck_fork_signal,
+        "cleanup() must NOT signal fork recovery for small gaps with deterministic scheduler"
     );
 }
 
@@ -1047,15 +1047,21 @@ fn test_blacklist_escalation_uses_signal_not_counter() {
         .header_blacklisted_peers
         .insert(peer3, Instant::now());
 
-    // Stuck for >120s
-    manager.network.last_block_applied = Instant::now() - Duration::from_secs(130);
+    // Stuck for >300s (new threshold with deterministic scheduler)
+    manager.network.last_block_applied = Instant::now() - Duration::from_secs(310);
 
     manager.cleanup();
 
-    // For small gap (5 blocks), cleanup should signal stuck fork
+    // With INC-I-026 + fork_id, small gaps (≤12) just clear blacklist,
+    // no fork signal. Gossip resolves small gaps.
     assert!(
-        manager.fork.stuck_fork_signal,
-        "Blacklist escalation for small gap must set stuck_fork_signal"
+        !manager.fork.stuck_fork_signal,
+        "Blacklist escalation for small gap must NOT signal fork with deterministic scheduler"
+    );
+    // Blacklist should be cleared to allow retrying
+    assert!(
+        manager.fork.header_blacklisted_peers.is_empty(),
+        "Blacklist must be cleared after escalation"
     );
 }
 
@@ -1163,10 +1169,12 @@ fn test_inc001_rc9_small_lag_allows_production_immediately() {
     manager.pipeline_data = SyncPipelineData::None;
 
     let result = manager.can_produce(101);
+    // With INC-I-026 production gate: node 2 blocks behind is blocked.
+    // Deterministic scheduler means the block would be a duplicate — FORK_GUARD drops it.
     assert_eq!(
         result,
-        ProductionAuthorization::Authorized,
-        "RC-9: Node 2 blocks behind must be allowed to produce immediately (no 30s timeout). Got: {:?}",
+        ProductionAuthorization::BlockedSyncing,
+        "Production gate: node 2 blocks behind net_tip must be blocked. Got: {:?}",
         result
     );
 }
@@ -1196,10 +1204,11 @@ fn test_inc001_rc9_lag3_allows_production_immediately() {
     manager.pipeline_data = SyncPipelineData::None;
 
     let result = manager.can_produce(102);
+    // With INC-I-026 production gate: node 3 blocks behind is blocked.
     assert_eq!(
         result,
-        ProductionAuthorization::Authorized,
-        "RC-9: Node 3 blocks behind must be allowed to produce immediately. Got: {:?}",
+        ProductionAuthorization::BlockedSyncing,
+        "Production gate: node 3 blocks behind net_tip must be blocked. Got: {:?}",
         result
     );
 }
@@ -1848,12 +1857,17 @@ fn test_note_gossip_resets_watchdog() {
     // Now receive a gossip block — resets the timer
     manager.note_block_received_via_gossip();
 
-    // Should be authorized again
-    let result = manager.can_produce(101);
+    // Gossip watchdog is reset, but production gate still blocks (2 behind net_tip).
+    // Simulate catching up via gossip — node now at peer height.
+    manager.local_height = 102;
+    manager.local_slot = 102;
+
+    // Should be authorized now (caught up + gossip active)
+    let result = manager.can_produce(103);
     assert_eq!(
         result,
         ProductionAuthorization::Authorized,
-        "After receiving gossip block, production should be authorized"
+        "After receiving gossip block and catching up, production should be authorized"
     );
 }
 
@@ -3411,8 +3425,8 @@ mod site_migration_tests {
         // 20+ consecutive empty headers
         manager.fork.consecutive_empty_headers = 25;
 
-        // Stuck for > 120s
-        manager.network.last_block_applied = Instant::now() - Duration::from_secs(130);
+        // Stuck for > 300s (new threshold with deterministic scheduler)
+        manager.network.last_block_applied = Instant::now() - Duration::from_secs(310);
 
         // Run cleanup — this triggers the blacklisted-peers escalation path
         manager.cleanup();
