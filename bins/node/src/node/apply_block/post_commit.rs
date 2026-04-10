@@ -85,7 +85,19 @@ impl Node {
                     let mut attested: HashSet<PublicKey> = HashSet::new();
                     let mut have_full_epoch = true;
 
-                    let mut sorted_for_decode = active.clone();
+                    // Use the PREVIOUS epoch's frozen list for bitfield decoding.
+                    // The bitfield was encoded against this list, not the current
+                    // active set (which may include newly registered producers).
+                    // Before this fix: decoded with `active` (current) → false positives
+                    // for new producers, false negatives for shifted positions.
+                    let mut sorted_for_decode = if height
+                        >= doli_core::consensus::BITFIELD_DECODE_FIX_HEIGHT
+                        && !self.epoch_producer_list.is_empty()
+                    {
+                        self.epoch_producer_list.clone()
+                    } else {
+                        active.clone()
+                    };
                     sorted_for_decode.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
 
                     for h in prev_epoch_start..prev_epoch_end {

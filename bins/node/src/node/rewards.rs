@@ -519,7 +519,15 @@ impl Node {
                     std::collections::HashSet::new();
                 let mut have_full_epoch = true;
 
-                let mut sorted_for_decode = active.clone();
+                // Use previous epoch's frozen list for bitfield decoding (same fix as post_commit.rs)
+                let mut sorted_for_decode = if current_h
+                    >= doli_core::consensus::BITFIELD_DECODE_FIX_HEIGHT
+                    && !self.epoch_producer_list.is_empty()
+                {
+                    self.epoch_producer_list.clone()
+                } else {
+                    active.clone()
+                };
                 sorted_for_decode.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
 
                 for h in prev_epoch_start..prev_epoch_end {

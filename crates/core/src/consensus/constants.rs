@@ -86,6 +86,12 @@ pub const UNIQUE_COINBASE_ACTIVATION_HEIGHT: u64 = 0;
 /// After this height: anchor header included and persisted.
 pub const SNAP_HEADER_ACTIVATION_HEIGHT: u64 = 500;
 
+/// Bitfield decode fix activation height.
+/// Before: bitfield decoded with current active set (includes newly registered producers
+/// → false positives/negatives when producer count changes across epoch boundary).
+/// After: bitfield decoded with previous epoch's frozen list (the list used to encode).
+pub const BITFIELD_DECODE_FIX_HEIGHT: u64 = 2300;
+
 /// Tier promotion activation height.
 /// Before: active_production_list = first 50 by registered_at (static seniority).
 /// After: active_production_list = first 50 by attestation_count desc, registered_at asc.
