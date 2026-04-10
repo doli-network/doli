@@ -151,14 +151,23 @@ impl Node {
                     }
                 };
 
-                // Deadlock safety: if no one attested, include everyone
-                if new_list.is_empty() {
+                // Deadlock safety: if attestation filter left < 1/3 of active producers,
+                // it's a mass event (restart, deploy, network outage), not individual
+                // inactivity. Include everyone to prevent chain death.
+                {
                     let producers = self.producer_set.read().await;
-                    new_list = producers
-                        .active_producers_at_height(height)
-                        .iter()
-                        .map(|p| p.public_key)
-                        .collect();
+                    let active_count = producers.active_producers_at_height(height).len();
+                    if new_list.len() < active_count / 3 || new_list.is_empty() {
+                        warn!(
+                            "[EPOCH] Attestation filter left {}/{} producers — mass event detected, including all",
+                            new_list.len(), active_count
+                        );
+                        new_list = producers
+                            .active_producers_at_height(height)
+                            .iter()
+                            .map(|p| p.public_key)
+                            .collect();
+                    }
                 }
 
                 new_list.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
@@ -238,10 +247,14 @@ impl Node {
                     self.active_production_list = self.epoch_producer_list.clone();
                 }
 
-                // Deadlock safety: if active_production_list is empty (all filtered),
-                // fall back to full epoch_producer_list. The network must never stop.
-                if self.active_production_list.is_empty() {
-                    warn!("[TIER] All producers filtered! Falling back to full epoch list");
+                // Deadlock safety: if tier filter left < 1/3, mass event — include all.
+                if self.active_production_list.len() < self.epoch_producer_list.len() / 3
+                    || self.active_production_list.is_empty()
+                {
+                    warn!(
+                        "[TIER] Filter left {}/{} producers — mass event, falling back to full epoch list",
+                        self.active_production_list.len(), self.epoch_producer_list.len()
+                    );
                     self.active_production_list = self.epoch_producer_list.clone();
                 }
 

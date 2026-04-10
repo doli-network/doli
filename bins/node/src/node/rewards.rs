@@ -573,14 +573,22 @@ impl Node {
                 }
             };
 
-            // Deadlock safety: if no one attested, include everyone
-            if new_list.is_empty() {
+            // Deadlock safety: if attestation filter left < 1/3, mass event — include all.
+            {
                 let producers = self.producer_set.read().await;
-                new_list = producers
-                    .active_producers_at_height(epoch_boundary_h)
-                    .iter()
-                    .map(|p| p.public_key)
-                    .collect();
+                let active_count = producers.active_producers_at_height(epoch_boundary_h).len();
+                if new_list.len() < active_count / 3 || new_list.is_empty() {
+                    warn!(
+                        "[STARTUP] Attestation filter left {}/{} — mass event, including all",
+                        new_list.len(),
+                        active_count
+                    );
+                    new_list = producers
+                        .active_producers_at_height(epoch_boundary_h)
+                        .iter()
+                        .map(|p| p.public_key)
+                        .collect();
+                }
             }
 
             new_list.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
