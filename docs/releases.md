@@ -155,54 +155,112 @@ doli-v1.0.0-x86_64-unknown-linux-musl/
 
 ## Release Process (For Maintainers)
 
-### Creating a Release
+### Two types of releases
 
-1. **Update version in Cargo.toml:**
-   ```bash
-   # Update workspace version
-   vim Cargo.toml  # Change version = "X.Y.Z"
-   ```
+1. **Code-only release** — bug fixes, features, consensus changes with forward activation height. No genesis reset. Existing chain data is valid.
+2. **Genesis reset release** — new genesis timestamp. All chain data must be wiped. See [genesis.md](./genesis.md) for the full genesis procedure.
 
-2. **Create and push tag:**
-   ```bash
-   git add Cargo.toml
-   git commit -m "chore: bump version to vX.Y.Z"
-   git tag vX.Y.Z
-   git push origin main --tags
-   ```
+### Code-only release procedure
 
-3. **GitHub Actions automatically:**
-   - Builds binaries for all platforms
-   - Builds multi-arch Docker images
-   - Creates GitHub Release with artifacts and empty SIGNATURES.json scaffold
-   - Generates release notes from commits
+**Step 1: Pre-flight checks**
+```bash
+cargo fmt --check
+cargo clippy -- -D warnings
+cargo test -p doli-core --lib
+cargo test -p network --lib
+```
 
-4. **Sign the release (after CI completes):**
-   ```bash
-   # Option A: If gh CLI is on the signing machine
-   ./scripts/sign-release.sh X.Y.Z
+**Step 2: Bump version and tag**
+```bash
+# Edit Cargo.toml version
+sed -i 's/^version = "OLD"/version = "NEW"/' Cargo.toml
+cargo generate-lockfile
+git add Cargo.toml Cargo.lock
+git commit --author "Ivan D. Lozada <ivan@doli.network>" -m "bump: vX.Y.Z — description"
+git tag -a vX.Y.Z -m "vX.Y.Z — description"
+git push origin main --tags
+```
 
-   # Option B: Split workflow (keys on omegacortex, gh on Mac)
-   # See .claude/skills/doli-ops/SKILL.md Section 4.6 for full procedure
-   # Summary:
-   #   1. SSH to omegacortex, sign with producer keys 1-3 using doli release sign
-   #   2. SCP the assembled SIGNATURES.json to Mac
-   #   3. gh release delete-asset + upload from Mac
-   #   4. Verify with: gh release download vX.Y.Z --pattern SIGNATURES.json
-   ```
+**Step 3: CI builds automatically** (~15 min)
+- Builds binaries for Linux x86_64, macOS aarch64
+- Creates GitHub Release with tarballs + CHECKSUMS.txt + empty SIGNATURES.json
+- Builds GUI (Tauri) for all platforms
 
-### Release Checklist
+**Step 4: Build on ai2 and distribute**
+```bash
+ssh ai2 "source ~/.cargo/env && cd ~/repos/doli && git fetch origin && git reset --hard origin/main && cargo clean && LIBZ_SYS_STATIC=0 cargo build --release"
+ssh ai2 "~/repos/doli/target/release/doli-node --version && md5sum ~/repos/doli/target/release/doli-node"
+# Pull and distribute to all servers (see deploy procedure)
+```
 
-- [ ] All tests passing on main branch
-- [ ] Version bumped in Cargo.toml
-- [ ] CHANGELOG.md updated (if maintained)
+**Step 5: Sign release (AFTER CI completes)**
+```bash
+# Verify CI finished
+gh run list --workflow=release.yml --limit 1 --json status,conclusion --jq '.[0]'
+
+# Sign with 3 maintainers — they fetch CI's CHECKSUMS.txt automatically
+ssh ai1 "/mainnet/bin/doli -w /mainnet/n1/keys/producer.json release sign --version vX.Y.Z"
+ssh ai1 "/mainnet/bin/doli -w /mainnet/n2/keys/producer.json release sign --version vX.Y.Z"
+ssh ai1 "/mainnet/bin/doli -w /mainnet/n3/keys/producer.json release sign --version vX.Y.Z"
+
+# Assemble SIGNATURES.json from the 3 outputs (version + checksums_sha256 + signatures array)
+# Upload:
+gh release upload vX.Y.Z /tmp/SIGNATURES.json --clobber
+```
+
+**CRITICAL: NEVER sign before CI completes.** CI overwrites CHECKSUMS.txt with all-platform checksums. Signing before CI = invalid signatures = `doli upgrade` fails with "0/3 signatures".
+
+**Step 6: Rolling deploy** (server by server, never all at once)
+```bash
+ssh $SERVER "sudo systemctl stop $SERVICES && sudo cp /tmp/doli-node-vX /mainnet/bin/doli-node && sudo chmod +x /mainnet/bin/doli-node && /mainnet/bin/doli-node --version && sudo systemctl start $SERVICES"
+```
+
+### Genesis reset release procedure
+
+When a release includes a new genesis timestamp (chain reset):
+
+1. Follow **all steps above** for the code release
+2. **Additionally** follow the genesis procedure in [genesis.md](./genesis.md):
+   - Update 3 files: `chainspec.mainnet.json`, `constants.rs`, `chainspec.rs`
+   - Update genesis hash in test
+   - Verify: `cargo test -p doli-core --lib -- test_mainnet_genesis_hash_hardcoded test_genesis_time`
+3. **ALL servers must have the new binary AND wiped data before ANY node starts**
+4. Startup validation prevents stale data: `StateDb genesis hash mismatch → crash`
+
+### Consensus safety: fork_id + genesis_hash
+
+Every block header contains two chain identity fields:
+
+| Field | What it validates | When it changes |
+|-------|-------------------|-----------------|
+| `genesis_hash` | Chain identity (timestamp + network + slot_duration + message) | Only on genesis reset |
+| `fork_id` | Active hard fork set (BLAKE3 of genesis_hash + sorted activation heights) | When new HardForkSchedule entries activate |
+
+Both are checked at gossip level (O(1) drop) and validation level. A node with wrong genesis or wrong fork set cannot produce blocks that any peer accepts.
+
+**Startup protection**: If a node has stale data from a previous chain, it crashes immediately:
+```
+StateDb genesis hash mismatch!
+StateDb has:    <old hash>
+Chainspec has:  <new hash>
+Fix: wipe data directory and restart to re-sync from peers.
+```
+
+### Release checklist
+
+- [ ] All tests passing (`cargo test -p doli-core --lib && cargo test -p network --lib`)
+- [ ] `cargo fmt --check` clean
+- [ ] `cargo clippy -- -D warnings` clean
+- [ ] Version bumped in Cargo.toml + Cargo.lock regenerated
+- [ ] If genesis reset: 3 files updated + genesis hash test passes
 - [ ] Tag created and pushed
-- [ ] GitHub Actions workflow completed
-- [ ] Binaries tested on target platforms
-- [ ] Docker images verified
-- [ ] Release notes reviewed
-- [ ] SIGNATURES.json signed by 3/5 maintainers (see [auto_update_system.md](./auto_update_system.md))
-- [ ] SIGNATURES.json uploaded to release artifacts
+- [ ] CI Release workflow completed successfully
+- [ ] Binary built on ai2 with `cargo clean` (NEVER incremental)
+- [ ] md5 verified on ALL 10 servers before starting
+- [ ] If genesis reset: ALL servers wiped before starting
+- [ ] SIGNATURES.json signed by 3 maintainers (N1, N2, N3) AFTER CI completes
+- [ ] SIGNATURES.json uploaded with `--clobber`
+- [ ] `doli upgrade` tested from external node
 
 ---
 
@@ -262,4 +320,4 @@ Planned security improvements:
 
 ---
 
-*Last updated: March 2026*
+*Last updated: April 2026*
