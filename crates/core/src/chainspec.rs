@@ -215,9 +215,8 @@ impl ChainSpec {
             network: Network::Mainnet,
             genesis: GenesisSpec {
                 timestamp: params.genesis_time,
-                message:
-                    "DOLI Mainnet Genesis - v6.8.3 all cascade vectors neutralized 10/Apr/2026 v11"
-                        .into(),
+                message: "DOLI Mainnet Genesis - v6.8.7 attestation 1/3 safety 10/Apr/2026 v12"
+                    .into(),
                 initial_reward: params.initial_reward,
             },
             consensus: ConsensusSpec {
@@ -351,7 +350,7 @@ mod tests {
         let hash = spec.genesis_hash();
         assert_eq!(
             hash.to_hex(),
-            "294ab5ecc88f1c1326e3a450d587082b621660d65d2b32a1ad6510cd2fd487ac",
+            "94f4134f733a20e71327a7e419b21c7b0b0c5f6414218356c76e3af916f56d49",
             "CRITICAL: Mainnet genesis hash changed! Binary incompatible with live network. Got {}",
             hash.to_hex()
         );
