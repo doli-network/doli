@@ -237,7 +237,7 @@ impl ChainSpec {
             network: Network::Testnet,
             genesis: GenesisSpec {
                 timestamp: params.genesis_time,
-                message: "DOLI Testnet v2 Genesis - Time is the only fair currency".into(),
+                message: "DOLI Testnet v200 Genesis 2026-04-11".into(),
                 initial_reward: params.initial_reward,
             },
             consensus: ConsensusSpec {
