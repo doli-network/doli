@@ -22,21 +22,34 @@ impl Node {
         // 2. sorted_producers: for bond-weighted reward distribution
         let current_h = self.chain_state.read().await.best_height;
 
-        // Bitfield decode list: epoch_producer_list (frozen, same as encoding) post-fix
-        let sorted_pubkeys: Vec<crypto::PublicKey> = if current_h
-            >= doli_core::consensus::BITFIELD_DECODE_FIX_HEIGHT
-            && !self.epoch_producer_list.is_empty()
+        // Bitfield decode list selection based on the epoch being processed.
+        // Matches the encoder path in assembly.rs.
+        //
+        // Post ATTESTATION_LIST_REVERT (CORRECT): active_at_epoch_start_height —
+        //   all active producers, matches new encoder.
+        //
+        // Post BITFIELD_DECODE_FIX (BROKEN v6.9.0): epoch_producer_list (scheduler list).
+        //   Kept for epochs encoded with the v6.10.0 encoder fix.
+        //
+        // Pre-fix: active_at_epoch_start (same as the new revert path, which is
+        //   correct — the pre-v6.9.0 code always did this).
+        let sorted_pubkeys: Vec<crypto::PublicKey> = if epoch_start_height
+            >= doli_core::consensus::ATTESTATION_LIST_REVERT_HEIGHT
+            || current_h < doli_core::consensus::BITFIELD_DECODE_FIX_HEIGHT
+            || self.epoch_producer_list.is_empty()
         {
-            let mut pks = self.epoch_producer_list.clone();
-            pks.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
-            pks
-        } else {
             let producers = self.producer_set.read().await;
             let mut pks: Vec<crypto::PublicKey> = producers
                 .active_producers_at_height(epoch_start_height)
                 .iter()
                 .map(|p| p.public_key)
                 .collect();
+            pks.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+            pks
+        } else {
+            // Broken v6.9.0 path: kept only for epochs in
+            // [BITFIELD_DECODE_FIX_HEIGHT, ATTESTATION_LIST_REVERT_HEIGHT).
+            let mut pks = self.epoch_producer_list.clone();
             pks.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
             pks
         };
@@ -538,15 +551,25 @@ impl Node {
                     std::collections::HashSet::new();
                 let mut have_full_epoch = true;
 
-                // Use previous epoch's frozen list for bitfield decoding (same fix as post_commit.rs)
-                let mut sorted_for_decode = if current_h
-                    >= doli_core::consensus::BITFIELD_DECODE_FIX_HEIGHT
-                    && !self.epoch_producer_list.is_empty()
-                {
-                    self.epoch_producer_list.clone()
-                } else {
-                    active.clone()
-                };
+                // Decoder list selection — matches encoder in assembly.rs and
+                // post_commit.rs decoder. See post_commit.rs for path rationale.
+                let mut sorted_for_decode: Vec<crypto::PublicKey> =
+                    if prev_epoch_start >= doli_core::consensus::ATTESTATION_LIST_REVERT_HEIGHT {
+                        let producers = self.producer_set.read().await;
+                        let pks: Vec<crypto::PublicKey> = producers
+                            .active_producers_at_height(prev_epoch_start)
+                            .iter()
+                            .map(|p| p.public_key)
+                            .collect();
+                        drop(producers);
+                        pks
+                    } else if current_h >= doli_core::consensus::BITFIELD_DECODE_FIX_HEIGHT
+                        && !self.epoch_producer_list.is_empty()
+                    {
+                        self.epoch_producer_list.clone()
+                    } else {
+                        active.clone()
+                    };
                 sorted_for_decode.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
 
                 for h in prev_epoch_start..prev_epoch_end {
@@ -600,14 +623,21 @@ impl Node {
                 }
             };
 
-            // Onboarding fix: include newly registered producers via 2-epoch
-            // lookback on registered_at (same as post_commit.rs). Long-offline
-            // producers are NOT re-included — liveness filter preserved.
+            // Onboarding fix: include newly registered producers via lookback
+            // on registered_at (same as post_commit.rs). 1-epoch pre-revert,
+            // 3-epoch post-revert for transition catch.
             if epoch_boundary_h >= doli_core::consensus::NEW_PRODUCER_ONBOARDING_HEIGHT
                 && epoch >= 2
             {
                 let prev_epoch_start_onboard = (epoch - 1) * blocks_per_epoch;
-                let lookback_start = prev_epoch_start_onboard.saturating_sub(blocks_per_epoch);
+                let lookback_epochs: u64 =
+                    if epoch_boundary_h >= doli_core::consensus::ATTESTATION_LIST_REVERT_HEIGHT {
+                        3
+                    } else {
+                        1
+                    };
+                let lookback_start =
+                    prev_epoch_start_onboard.saturating_sub(blocks_per_epoch * lookback_epochs);
                 let before = new_list.len();
                 let in_new_list: std::collections::HashSet<crypto::PublicKey> =
                     new_list.iter().copied().collect();

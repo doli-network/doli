@@ -85,13 +85,30 @@ impl Node {
                     let mut attested: HashSet<PublicKey> = HashSet::new();
                     let mut have_full_epoch = true;
 
-                    // Use the PREVIOUS epoch's frozen list for bitfield decoding.
-                    // The bitfield was encoded against this list, not the current
-                    // active set (which may include newly registered producers).
-                    // Before this fix: decoded with `active` (current) → false positives
-                    // for new producers, false negatives for shifted positions.
-                    let mut sorted_for_decode = if height
-                        >= doli_core::consensus::BITFIELD_DECODE_FIX_HEIGHT
+                    // Decoder list selection based on the previous epoch's start height.
+                    // Matches the encoder path in assembly.rs for the blocks being decoded.
+                    //
+                    // Post ATTESTATION_LIST_REVERT (CORRECT): use
+                    //   active_producers_at_height(prev_epoch_start) — all active producers
+                    //   at the start of the epoch being decoded. Matches the new encoder.
+                    //
+                    // Post BITFIELD_DECODE_FIX (BROKEN v6.9.0): use self.epoch_producer_list
+                    //   which at this moment still holds the PREVIOUS epoch's list (not yet
+                    //   updated on line ~191). Matches the broken v6.10.0 encoder path.
+                    //
+                    // Pre-fix: use current `active` (legacy, has drift bugs).
+                    let mut sorted_for_decode: Vec<PublicKey> = if prev_epoch_start
+                        >= doli_core::consensus::ATTESTATION_LIST_REVERT_HEIGHT
+                    {
+                        let producers = self.producer_set.read().await;
+                        let pks: Vec<PublicKey> = producers
+                            .active_producers_at_height(prev_epoch_start)
+                            .iter()
+                            .map(|p| p.public_key)
+                            .collect();
+                        drop(producers);
+                        pks
+                    } else if height >= doli_core::consensus::BITFIELD_DECODE_FIX_HEIGHT
                         && !self.epoch_producer_list.is_empty()
                     {
                         self.epoch_producer_list.clone()
@@ -164,14 +181,23 @@ impl Node {
                 };
 
                 // Onboarding fix: include newly registered producers that couldn't
-                // attest in the previous epoch (chicken-and-egg). Uses a 2-epoch
-                // lookback on `registered_at` — only producers registered in the
-                // last 2 epochs are re-included. Long-offline producers (registered
-                // long ago but dropped by attestation filter for inactivity) are
-                // NOT re-included → liveness filter preserved.
+                // attest in the previous epoch (chicken-and-egg). Lookback window:
+                //   - Pre ATTESTATION_LIST_REVERT_HEIGHT: 1 epoch back (v6.11.1 behavior)
+                //   - Post ATTESTATION_LIST_REVERT_HEIGHT: 3 epochs back, needed for
+                //     the transition at h=4320 to catch producers registered BEFORE
+                //     the first post-activation boundary (alessandro reg=3378 must be
+                //     caught at h=4320 post_commit: 3378 >= 3960 - 3*360 = 2880 ✓).
+                // Long-offline producers registered long ago are still NOT re-included.
                 if height >= doli_core::consensus::NEW_PRODUCER_ONBOARDING_HEIGHT && epoch >= 2 {
                     let prev_epoch_start_onboard = (epoch - 1) * blocks_per_epoch;
-                    let lookback_start = prev_epoch_start_onboard.saturating_sub(blocks_per_epoch);
+                    let lookback_epochs: u64 =
+                        if height >= doli_core::consensus::ATTESTATION_LIST_REVERT_HEIGHT {
+                            3
+                        } else {
+                            1
+                        };
+                    let lookback_start =
+                        prev_epoch_start_onboard.saturating_sub(blocks_per_epoch * lookback_epochs);
                     let before = new_list.len();
                     let in_new_list: HashSet<PublicKey> = new_list.iter().copied().collect();
                     let producers = self.producer_set.read().await;

@@ -225,26 +225,26 @@ impl RpcContext {
         let (epoch_start, _epoch_end) =
             reward_epoch::boundaries_with(current_epoch, blocks_per_epoch);
 
-        // Get sorted producer list that matches the ENCODER's epoch_producer_list.
+        // Get sorted producer list that matches the ENCODER's attestation list.
+        // Matches assembly.rs encoder path per epoch_start height.
         //
-        // The encoder (assembly.rs, post BITFIELD_ENCODE_FIX_HEIGHT) uses
-        // self.epoch_producer_list which was frozen at the current epoch's boundary
-        // via the attestation filter. At h=current_epoch_start, pending_updates
-        // were applied BEFORE post_commit ran the attestation filter, but those
-        // new producers (registered_at in the current epoch) were NOT yet active
-        // at the PREVIOUS epoch's start — so active_producers_at_height(prev_epoch_start)
-        // gives the same set as the frozen epoch_producer_list in the absence of
-        // mid-epoch liveness changes.
+        // Post ATTESTATION_LIST_REVERT (CORRECT): active_at_epoch_start — all active
+        //   producers at the start of the current epoch. Matches the new encoder.
         //
-        // Using active_producers_at_height(epoch_start) (incorrect) includes the
-        // just-applied pending updates → list of N+k producers vs encoder's N,
-        // causing bit index mismatch in decoding → wrong producers appear in stats.
-        let prev_epoch_start = epoch_start.saturating_sub(blocks_per_epoch);
+        // Pre ATTESTATION_LIST_REVERT (broken v6.10.0 path): the encoder used
+        //   epoch_producer_list (frozen scheduler list, unreachable from RPC).
+        //   Approximation: active_at_prev_epoch_start — same set as the frozen list
+        //   when no producers activated during the boundary's ACTIVATION_DELAY window.
+        let seed_height = if epoch_start >= doli_core::consensus::ATTESTATION_LIST_REVERT_HEIGHT {
+            epoch_start
+        } else {
+            epoch_start.saturating_sub(blocks_per_epoch)
+        };
         let sorted_producers: Vec<(crypto::PublicKey, bool)> =
             if let Some(ref ps) = self.producer_set {
                 let producers = ps.read().await;
                 let mut list: Vec<_> = producers
-                    .active_producers_at_height(prev_epoch_start)
+                    .active_producers_at_height(seed_height)
                     .iter()
                     .map(|p| (p.public_key, !p.bls_pubkey.is_empty()))
                     .collect();

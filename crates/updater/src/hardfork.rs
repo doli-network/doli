@@ -205,6 +205,13 @@ impl HardForkSchedule {
                             .to_string(),
                     ],
                 });
+                schedule.add(HardForkInfo {
+                    activation_height: 4320,
+                    min_version: "6.12.0".to_string(),
+                    consensus_changes: vec![
+                        "attestation list revert: use active_producers_at_height(epoch_start) for bitfield encoding/decoding instead of epoch_producer_list. Restores 'attest to earn' model — all active producers attest and earn rewards, not just top 50 scheduler tier. epoch_producer_list becomes scheduler-only. Onboarding lookback widened to 3 epochs for clean transition.".to_string(),
+                    ],
+                });
             }
             doli_core::Network::Devnet => {
                 // Devnet: no gating needed

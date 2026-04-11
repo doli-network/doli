@@ -294,28 +294,51 @@ impl Node {
             Hash::ZERO
         } else {
             // Build sorted producer list for bitfield encoding.
-            // Post BITFIELD_ENCODE_FIX_HEIGHT: use epoch_producer_list (frozen at epoch
-            //   boundary) — matches the decoder in calculate_epoch_rewards/post_commit.
-            //   Eliminates mid-epoch registration drift between encode and decode lists.
-            // Pre-fix: use active_producers_at_height(height) — grows mid-epoch when
-            //   new producers activate, causing encode/decode mismatch.
-            let sorted_pubkeys: Vec<crypto::PublicKey> = if height
-                >= doli_core::consensus::BITFIELD_ENCODE_FIX_HEIGHT
-                && !self.epoch_producer_list.is_empty()
-            {
-                let mut pks = self.epoch_producer_list.clone();
-                pks.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
-                pks
-            } else {
-                let producers = self.producer_set.read().await;
-                let mut pks: Vec<crypto::PublicKey> = producers
-                    .active_producers_at_height(height)
-                    .iter()
-                    .map(|p| p.public_key)
-                    .collect();
-                pks.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
-                pks
-            };
+            //
+            // Three paths based on height:
+            //
+            // 1. Post ATTESTATION_LIST_REVERT_HEIGHT (CORRECT): use
+            //    active_producers_at_height(epoch_start) — ALL active producers at the
+            //    start of the current epoch. Deterministic (fixed height), includes
+            //    every active producer (not limited by scheduler tier), matches the
+            //    decoder path in calculate_epoch_rewards/post_commit post-revert.
+            //    This is the "attest to earn" model.
+            //
+            // 2. Between BITFIELD_ENCODE_FIX_HEIGHT and ATTESTATION_LIST_REVERT_HEIGHT
+            //    (BROKEN v6.10.0): use epoch_producer_list (scheduler list, limited to
+            //    top ACTIVE_PRODUCERS_CAP=50). Kept for historical consistency — blocks
+            //    encoded in this range must decode with the same logic.
+            //
+            // 3. Pre BITFIELD_ENCODE_FIX_HEIGHT: use active_producers_at_height(height)
+            //    (ORIGINAL drift bug path).
+            let sorted_pubkeys: Vec<crypto::PublicKey> =
+                if height >= doli_core::consensus::ATTESTATION_LIST_REVERT_HEIGHT {
+                    let blocks_per_epoch = self.config.network.blocks_per_reward_epoch();
+                    let epoch_start = (height / blocks_per_epoch) * blocks_per_epoch;
+                    let producers = self.producer_set.read().await;
+                    let mut pks: Vec<crypto::PublicKey> = producers
+                        .active_producers_at_height(epoch_start)
+                        .iter()
+                        .map(|p| p.public_key)
+                        .collect();
+                    pks.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+                    pks
+                } else if height >= doli_core::consensus::BITFIELD_ENCODE_FIX_HEIGHT
+                    && !self.epoch_producer_list.is_empty()
+                {
+                    let mut pks = self.epoch_producer_list.clone();
+                    pks.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+                    pks
+                } else {
+                    let producers = self.producer_set.read().await;
+                    let mut pks: Vec<crypto::PublicKey> = producers
+                        .active_producers_at_height(height)
+                        .iter()
+                        .map(|p| p.public_key)
+                        .collect();
+                    pks.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+                    pks
+                };
             // Map attesting pubkeys to sorted indices
             let mut attested_indices = Vec::new();
             for pk in &attested_pks {

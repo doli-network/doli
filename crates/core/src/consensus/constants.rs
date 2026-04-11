@@ -115,6 +115,38 @@ pub const BITFIELD_ENCODE_FIX_HEIGHT: u64 = 2950;
 /// requires HardForkSchedule entry + fork_id bump.
 pub const NEW_PRODUCER_ONBOARDING_HEIGHT: u64 = 4100;
 
+/// Attestation list revert activation height (v6.12.0).
+///
+/// REVERTS the broken v6.9.0-v6.11.x attestation list semantics. Before this
+/// height, the encoder/decoder used `epoch_producer_list` (the SCHEDULER list,
+/// limited to top ACTIVE_PRODUCERS_CAP=50) which conflated two separate concepts:
+///
+///   - Scheduler list: who produces blocks (top 50 via tier system)
+///   - Attestation list: who attests and earns rewards (ALL active producers)
+///
+/// The v6.10.0 encode fix used epoch_producer_list for the attestation bitfield,
+/// which means producers beyond the top 50 would attest via gossip but their bits
+/// would never be in the bitfield → zero rewards. Destroys the "attest to earn"
+/// economic model for large producer sets.
+///
+/// After this height: encoder and decoder use
+/// `active_producers_at_height(epoch_start_height)` where epoch_start_height is
+/// the start of the epoch the block belongs to. This is:
+///   - Deterministic (fixed height per epoch, no mid-epoch drift)
+///   - Includes ALL active producers (not limited by scheduler tier)
+///   - Matches the list used by `sorted_producers` in calculate_epoch_rewards
+///
+/// `epoch_producer_list` continues to exist but is now ONLY used for the
+/// SCHEDULER (determining who produces blocks). It no longer affects who can
+/// attest or earn rewards.
+///
+/// Must be an epoch boundary for clean transition (blocks in the transition
+/// epoch are all pre- or all post-activation).
+///
+/// Consensus-breaking: changes presence_root encoding → HardForkSchedule entry
+/// + fork_id bump required.
+pub const ATTESTATION_LIST_REVERT_HEIGHT: u64 = 4320;
+
 /// Tier promotion activation height.
 /// Before: active_production_list = first 50 by registered_at (static seniority).
 /// After: active_production_list = first 50 by attestation_count desc, registered_at asc.
