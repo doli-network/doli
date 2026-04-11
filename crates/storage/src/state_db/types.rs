@@ -36,6 +36,8 @@ pub(super) const CF_UNDO: &str = "cf_undo";
 pub(super) const META_CHAIN_STATE: &[u8] = b"chain_state";
 pub(super) const META_PENDING_UPDATES: &[u8] = b"pending_updates";
 pub(super) const META_LAST_APPLIED: &[u8] = b"last_applied";
+pub(super) const META_EPOCH_PRODUCER_LIST: &[u8] = b"epoch_producer_list";
+pub(super) const META_ACTIVE_PRODUCTION_LIST: &[u8] = b"active_production_list";
 
 /// Unified state database wrapping a single RocksDB instance.
 pub struct StateDb {

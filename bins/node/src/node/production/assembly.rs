@@ -345,7 +345,11 @@ impl Node {
                 .inc_i_026_scheduler_activation_height;
         let missed_producers = {
             let mut missed = Vec::new();
-            if current_slot > prev_slot + 1 && !self.epoch_producer_list.is_empty() {
+            let slot_gap = current_slot.saturating_sub(prev_slot);
+            // Gap > 3 slots = collective downtime (restart/deploy), not individual
+            // inactivity. Penalizing missed_producers after a cluster restart causes
+            // ERRTX070 (exclusion cap exceeded) → block poison → deadlock.
+            if slot_gap > 1 && slot_gap <= 3 && !self.epoch_producer_list.is_empty() {
                 // Build the effective list matching the scheduler's view.
                 let effective: Vec<PublicKey> = if inc_i_026_active {
                     self.epoch_producer_list.clone()

@@ -278,6 +278,17 @@ impl Node {
                     self.active_production_list = self.epoch_producer_list.clone();
                 }
 
+                // Persist both lists to RocksDB so restart loads them directly
+                // instead of reconstructing from inconsistent ProducerSet + block store.
+                {
+                    let mut batch = self.state_db.begin_batch();
+                    batch.put_epoch_producer_list(&self.epoch_producer_list);
+                    batch.put_active_production_list(&self.active_production_list);
+                    if let Err(e) = batch.commit() {
+                        warn!("[EPOCH] Failed to persist producer lists: {}", e);
+                    }
+                }
+
                 // Clear mid-epoch exclusions — fresh start for new epoch
                 self.excluded_producers.clear();
                 // INC-I-010 layer 3: epoch_producer_list is now rebuilt with
