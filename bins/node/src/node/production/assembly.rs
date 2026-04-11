@@ -293,12 +293,28 @@ impl Node {
         let presence_root = if attested_pks.is_empty() {
             Hash::ZERO
         } else {
-            // Build sorted producer list (same ordering as DeterministicScheduler)
-            // Use height-aware method to match the decoding path in calculate_epoch_rewards()
+            // Build sorted producer list. Must match the decoder in
+            // calculate_epoch_rewards() which uses active_at_epoch_start_height.
+            //
+            // Pre BITFIELD_ENCODER_EPOCH_START_HEIGHT: encoder used active_at(height),
+            //   which shifts the list mid-epoch when a producer crosses ACTIVATION_DELAY.
+            //   The decoder (active_at_epoch_start) then maps bits to wrong producers.
+            //
+            // Post BITFIELD_ENCODER_EPOCH_START_HEIGHT: encoder uses active_at(epoch_start),
+            //   same as decoder. Index alignment guaranteed regardless of mid-epoch
+            //   activation deltas.
+            let encoder_query_height = if height
+                >= doli_core::consensus::BITFIELD_ENCODER_EPOCH_START_HEIGHT
+            {
+                let blocks_per_epoch = self.config.network.blocks_per_reward_epoch();
+                (height / blocks_per_epoch) * blocks_per_epoch
+            } else {
+                height
+            };
             let sorted_producers: Vec<storage::producer::ProducerInfo> = {
                 let producers = self.producer_set.read().await;
                 let mut ps: Vec<storage::producer::ProducerInfo> = producers
-                    .active_producers_at_height(height)
+                    .active_producers_at_height(encoder_query_height)
                     .iter()
                     .map(|p| (*p).clone())
                     .collect();
