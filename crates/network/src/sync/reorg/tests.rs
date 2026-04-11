@@ -639,6 +639,7 @@ fn test_check_reorg_weighted_past_anchor_rejected() {
         vdf_proof: vdf::VdfProof::empty(),
         missed_producers: Vec::new(),
         data_root: Hash::ZERO,
+        fork_id: Hash::ZERO,
     };
     let hostile = Block::new(hostile_header, vec![]);
 
