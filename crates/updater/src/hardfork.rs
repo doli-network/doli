@@ -178,19 +178,13 @@ impl HardForkSchedule {
     ///
     /// - **Devnet**: no entry. Tests exercise activation directly.
     pub fn for_network(network: doli_core::Network) -> Self {
-        let mut schedule = Self::new();
+        let schedule = Self::new();
         match network {
-            doli_core::Network::Mainnet => {
-                schedule.add(HardForkInfo {
-                    activation_height: 3000,
-                    min_version: "6.13.1".to_string(),
-                    consensus_changes: vec![
-                        "bitfield encoder queries active_producers at epoch_start (not current height). Fixes mid-epoch index shift when a producer crosses ACTIVATION_DELAY. Encoder now matches calculate_epoch_rewards decoder exactly.".to_string(),
-                    ],
-                });
-            }
-            doli_core::Network::Testnet | doli_core::Network::Devnet => {
-                // No entries — features active from genesis.
+            doli_core::Network::Testnet
+            | doli_core::Network::Mainnet
+            | doli_core::Network::Devnet => {
+                // All features active from genesis (activation_height=0).
+                // No hardfork entries needed — no version gating required.
             }
         }
         schedule

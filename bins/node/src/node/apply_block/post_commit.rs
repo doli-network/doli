@@ -73,101 +73,133 @@ impl Node {
                 let mut blocks_produced: HashMap<PublicKey, u32> = HashMap::new();
                 let mut new_list: Vec<PublicKey> = if epoch <= 1 {
                     // Genesis/early epochs: all active producers qualify
-                    active
+                    active.clone()
                 } else {
-                    // Producers who attested in the previous epoch are included.
-                    // Scan previous epoch blocks for presence_root attestation data.
-                    // INC-I-010: If ANY block is missing (e.g., after snap sync),
-                    // skip filtering — use all active, same as epoch 0/1.
-                    // Self-healing: once a full epoch of blocks exists, filtering resumes.
-                    let prev_epoch_start = (epoch - 1) * blocks_per_epoch;
-                    let prev_epoch_end = epoch * blocks_per_epoch;
+                    // Rolling 3-epoch lookback window. Producers who attested in
+                    // ANY of the last 3 epochs are retained. A producer must be
+                    // offline for 3 consecutive epochs (~3h) to be culled.
+                    //
+                    // Why 3 epochs: single-epoch filter caused chain death via
+                    // attestation erosion cascade (2026-04-11 incident). One
+                    // restart or glitch = producer dropped permanently due to
+                    // chicken-and-egg (not in list → no bit → no attestation).
+                    // Rolling window gives natural recovery: a producer back
+                    // online can attest and stay in the next list.
+                    //
+                    // INC-I-010: If ANY block in any window is missing (e.g.,
+                    // after snap sync), skip filtering — use all active.
                     let mut attested: HashSet<PublicKey> = HashSet::new();
-                    let mut have_full_epoch = true;
+                    let mut have_full_history = true;
+                    const LOOKBACK_EPOCHS: u64 = 3;
 
-                    let mut sorted_for_decode = active.clone();
-                    sorted_for_decode.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+                    for epoch_back in 1..=LOOKBACK_EPOCHS {
+                        if epoch < epoch_back {
+                            // Not enough history (early epochs) — skip this window.
+                            continue;
+                        }
+                        let target_epoch = epoch - epoch_back;
+                        let window_start = target_epoch * blocks_per_epoch;
+                        let window_end = (target_epoch + 1) * blocks_per_epoch;
 
-                    for h in prev_epoch_start..prev_epoch_end {
-                        if let Ok(Some(blk)) = self.block_store.get_block_by_height(h) {
-                            let minute =
-                                doli_core::attestation::attestation_minute(blk.header.slot);
-                            // Block producer attested by producing
-                            attested.insert(blk.header.producer);
-                            *blocks_produced.entry(blk.header.producer).or_insert(0) += 1;
-                            attestation_minutes
-                                .entry(blk.header.producer)
-                                .or_default()
-                                .insert(minute);
-                            // Decode attestation bitfield
-                            if !blk.header.presence_root.is_zero() {
-                                let indices = if !blk.attestation_bitfield.is_empty() {
-                                    // Body bitfield available: decode from body (no 256 cap)
-                                    doli_core::decode_attestation_bitfield_vec(
-                                        &blk.attestation_bitfield,
-                                        sorted_for_decode.len(),
-                                    )
-                                } else if h < doli_core::consensus::BITFIELD_BODY_ACTIVATION_HEIGHT
-                                {
-                                    // Pre-activation: presence_root IS the raw bitfield
-                                    decode_attestation_bitfield(
-                                        &blk.header.presence_root,
-                                        sorted_for_decode.len(),
-                                    )
-                                } else {
-                                    // Post-activation without body: skip
-                                    vec![]
-                                };
-                                for idx in indices {
-                                    if let Some(pk) = sorted_for_decode.get(idx) {
-                                        attested.insert(*pk);
-                                        attestation_minutes.entry(*pk).or_default().insert(minute);
+                        // Decoder list for this specific window: active at the
+                        // window's epoch_start. Matches the encoder path (which
+                        // queries active_at_epoch_start since BITFIELD_ENCODER_EPOCH_START_HEIGHT=0).
+                        let producers = self.producer_set.read().await;
+                        let mut sorted_for_decode: Vec<PublicKey> = producers
+                            .active_producers_at_height(window_start)
+                            .iter()
+                            .map(|p| p.public_key)
+                            .collect();
+                        drop(producers);
+                        sorted_for_decode.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+
+                        for h in window_start..window_end {
+                            if let Ok(Some(blk)) = self.block_store.get_block_by_height(h) {
+                                let minute =
+                                    doli_core::attestation::attestation_minute(blk.header.slot);
+                                attested.insert(blk.header.producer);
+                                // Only track produced/minutes for the PREVIOUS epoch
+                                // (used by tier promotion below, which reflects
+                                // last-epoch performance specifically).
+                                if epoch_back == 1 {
+                                    *blocks_produced.entry(blk.header.producer).or_insert(0) += 1;
+                                    attestation_minutes
+                                        .entry(blk.header.producer)
+                                        .or_default()
+                                        .insert(minute);
+                                }
+                                if !blk.header.presence_root.is_zero() {
+                                    let indices = if !blk.attestation_bitfield.is_empty() {
+                                        doli_core::decode_attestation_bitfield_vec(
+                                            &blk.attestation_bitfield,
+                                            sorted_for_decode.len(),
+                                        )
+                                    } else if h
+                                        < doli_core::consensus::BITFIELD_BODY_ACTIVATION_HEIGHT
+                                    {
+                                        decode_attestation_bitfield(
+                                            &blk.header.presence_root,
+                                            sorted_for_decode.len(),
+                                        )
+                                    } else {
+                                        vec![]
+                                    };
+                                    for idx in indices {
+                                        if let Some(pk) = sorted_for_decode.get(idx) {
+                                            attested.insert(*pk);
+                                            if epoch_back == 1 {
+                                                attestation_minutes
+                                                    .entry(*pk)
+                                                    .or_default()
+                                                    .insert(minute);
+                                            }
+                                        }
                                     }
                                 }
+                            } else {
+                                // Missing block — incomplete history.
+                                have_full_history = false;
+                                break;
                             }
-                        } else {
-                            // Missing block — incomplete epoch history (snap sync).
-                            // Cannot reliably filter by attestation.
-                            have_full_epoch = false;
+                        }
+
+                        if !have_full_history {
                             break;
                         }
                     }
 
                     let skip_height = self.config.network.params().snap_attestation_skip_height;
-                    if have_full_epoch || height < skip_height {
-                        // Full history: filter by attestation (normal path).
-                        // Before activation height: always filter (old behavior).
+                    if have_full_history || height < skip_height {
+                        // Full history across all lookback windows: filter by attestation.
                         active
+                            .clone()
                             .into_iter()
                             .filter(|pk| attested.contains(pk))
                             .collect()
                     } else {
                         info!(
-                            "[EPOCH] Incomplete block history for epoch {} — using all {} active producers",
-                            epoch - 1,
+                            "[EPOCH] Incomplete block history in lookback window — using all {} active producers",
                             active.len()
                         );
-                        active
+                        active.clone()
                     }
                 };
 
-                // Deadlock safety: if attestation filter left < 1/3 of active producers,
-                // it's a mass event (restart, deploy, network outage), not individual
-                // inactivity. Include everyone to prevent chain death.
-                {
-                    let producers = self.producer_set.read().await;
-                    let active_count = producers.active_producers_at_height(height).len();
-                    if new_list.len() < active_count / 3 || new_list.is_empty() {
-                        warn!(
-                            "[EPOCH] Attestation filter left {}/{} producers — mass event detected, including all",
-                            new_list.len(), active_count
-                        );
-                        new_list = producers
-                            .active_producers_at_height(height)
-                            .iter()
-                            .map(|p| p.public_key)
-                            .collect();
-                    }
+                // Deadlock safety: if attestation filter leaves less than 2/3 of
+                // active producers, treat as a mass event (restart, deploy, network
+                // outage) rather than individual inactivity, and include everyone.
+                //
+                // Tightened from 1/3 (v6.8.8) to 2/3 (v6.13.2): a legitimate
+                // outage affecting more than a third of producers should NEVER
+                // result in chain death. The previous 1/3 threshold allowed
+                // erosion to continue past the deadlock point.
+                let active_count = active.len();
+                if new_list.len() < (active_count * 2 / 3) || new_list.is_empty() {
+                    warn!(
+                        "[EPOCH] Attestation filter left {}/{} producers (<2/3) — mass event detected, including all",
+                        new_list.len(), active_count
+                    );
+                    new_list = active;
                 }
 
                 new_list.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));

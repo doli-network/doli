@@ -22,7 +22,7 @@ pub fn is_protocol_active(required_version: u32, active_version: u32) -> bool {
 
 /// Genesis timestamp — must match chainspec.mainnet.json
 /// Guarded by `test_genesis_time_matches_chainspec` test.
-pub const GENESIS_TIME: u64 = 1775873196;
+pub const GENESIS_TIME: u64 = 1775904415;
 
 /// Checkpoint: trusted block for fast initial sync.
 /// Updated with each release. New nodes sync from here instead of genesis.
@@ -86,7 +86,7 @@ pub const UNIQUE_COINBASE_ACTIVATION_HEIGHT: u64 = 0;
 pub const SNAP_HEADER_ACTIVATION_HEIGHT: u64 = 0;
 
 /// Attestation bitfield encoder: query active_producers at epoch start,
-/// not current block height.
+/// not current block height. Active from genesis (h=0).
 ///
 /// Fixes a latent bug where a producer crossing ACTIVATION_DELAY mid-epoch
 /// would shift bitfield indices: encoder uses active_at(current_h) which
@@ -95,15 +95,12 @@ pub const SNAP_HEADER_ACTIVATION_HEIGHT: u64 = 0;
 /// shift → bits map to wrong producers → rewards go to wrong accounts OR
 /// legitimate attestations are silently dropped.
 ///
-/// Post-activation: encoder queries active_producers_at_height(epoch_start)
-/// matching decoder exactly. Newly-activated producers appear in the bitfield
-/// only from the NEXT epoch boundary, which is cleaner "attest from epoch N+1"
-/// semantics. Cost: producer that registers in the last ACTIVATION_DELAY
-/// blocks of an epoch waits one full epoch (~1h) before attesting.
-///
-/// Consensus-breaking for any epoch with mid-epoch producer activation.
-/// HardForkSchedule entry + min_version gate protects rolling deploy.
-pub const BITFIELD_ENCODER_EPOCH_START_HEIGHT: u64 = 3000;
+/// Encoder queries active_producers_at_height(epoch_start) matching decoder
+/// exactly. Newly-activated producers appear in the bitfield only from the
+/// NEXT epoch boundary — cleaner "attest from epoch N+1" semantics. Cost:
+/// producer that registers in the last ACTIVATION_DELAY blocks of an epoch
+/// waits one full epoch (~1h) before attesting.
+pub const BITFIELD_ENCODER_EPOCH_START_HEIGHT: u64 = 0;
 
 /// Tier promotion activation height.
 /// Before: active_production_list = first 50 by registered_at (static seniority).
