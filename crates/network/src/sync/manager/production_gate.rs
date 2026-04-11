@@ -148,17 +148,19 @@ impl SyncManager {
         // The original INC-I-016 attack vector no longer exists because
         // excluded_producers is no longer used for scheduling.
 
-        // Check 4: Finality — tolerance of 5 blocks.
-        // A node 1-4 blocks behind finality is normal gossip timing.
-        // Only block if significantly behind (5+ blocks), which indicates
-        // a real fork conflict, not transient delay.
-        if let Some(finalized_height) = self.last_finalized_height() {
-            if self.local_height + 5 < finalized_height {
-                return ProductionAuthorization::BlockedConflictsFinality {
-                    local_finalized_height: finalized_height,
-                };
-            }
-        }
+        // Check 4: Finality — REMOVED (v6.13.6-fix123).
+        //
+        // Previously blocked production when local_height + 5 < finalized_height.
+        // During sync catchup the finality tracker advances from historical
+        // block attestations, outpacing local_height → deadlock loop where
+        // the node can't produce because its chain is "behind finality" but
+        // can't catch up because sync resets repeatedly.
+        //
+        // Same reasoning as Check 5 removal (INC-I-026): with deterministic
+        // scheduler + FORK_GUARD + fork_id, a behind node producing costs
+        // 1 wasted slot (block silently discarded). The deadlock risk
+        // exceeds that cost. BlockedSyncing state already gates legitimate
+        // sync-in-progress cases.
 
         // Check 5: Behind-tip guard — REMOVED (INC-I-026).
         //
