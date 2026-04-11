@@ -166,15 +166,20 @@ impl Node {
                     }
                 };
 
-                // Deadlock safety: if attestation filter left < 1/3 of active producers,
-                // it's a mass event (restart, deploy, network outage), not individual
+                // FIX 2 (v6.13.5-fix12): Deadlock safety floor tightened from 1/3 to 2/3.
+                // If attestation filter leaves less than 2/3 of active producers, it's
+                // a mass event (restart, deploy, network outage), not individual
                 // inactivity. Include everyone to prevent chain death.
+                //
+                // Previous 1/3 floor (v6.8.8) allowed erosion cascade past deadlock
+                // point. 2/3 is the canonical BFT majority threshold — if >1/3 of
+                // producers are simultaneously un-attested, assume outage not liveness.
                 {
                     let producers = self.producer_set.read().await;
                     let active_count = producers.active_producers_at_height(height).len();
-                    if new_list.len() < active_count / 3 || new_list.is_empty() {
+                    if new_list.len() < (active_count * 2 / 3) || new_list.is_empty() {
                         warn!(
-                            "[EPOCH] Attestation filter left {}/{} producers — mass event detected, including all",
+                            "[EPOCH] Attestation filter left {}/{} producers (<2/3) — mass event detected, including all",
                             new_list.len(), active_count
                         );
                         new_list = producers
