@@ -730,27 +730,46 @@ impl Node {
         // after rollback, and after any state reset.
         let excluded_producers = HashSet::new();
 
-        // epoch_producer_list: seed from current active producers so production
-        // can resume immediately after restart mid-epoch. Without this, a restart
-        // mid-epoch leaves epoch_producer_list empty → no production → deadlock.
-        // The list will be properly recomputed at the next epoch boundary.
-        let epoch_producer_list = {
-            let producers = producer_set.read().await;
-            let best_h = chain_state.read().await.best_height;
-            let mut pks: Vec<PublicKey> = producers
-                .active_producers_at_height(best_h)
-                .iter()
-                .map(|p| p.public_key)
-                .collect();
-            pks.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
-            if !pks.is_empty() {
+        // epoch_producer_list + active_production_list: load from RocksDB if
+        // persisted (written at each epoch boundary). This eliminates the restart
+        // bug where reconstruction from ProducerSet + block store produces a
+        // different list than the one computed at epoch boundary, causing
+        // eligible_len=1 → deadlock.
+        //
+        // Fallback: if not persisted (first run or pre-upgrade DB), seed from
+        // current active producers so production can resume after restart.
+        let best_h = chain_state.read().await.best_height;
+        let (epoch_producer_list, active_production_list) = {
+            let persisted_epoch = state_db.get_epoch_producer_list();
+            let persisted_active = state_db.get_active_production_list();
+
+            if let Some(epoch_list) = persisted_epoch {
+                let active_list = persisted_active.unwrap_or_else(|| epoch_list.clone());
                 info!(
-                    "[INIT] Seeded epoch_producer_list with {} active producers at h={}",
-                    pks.len(),
-                    best_h
+                    "[INIT] Loaded persisted epoch_producer_list ({} producers) and active_production_list ({} producers) from RocksDB",
+                    epoch_list.len(),
+                    active_list.len()
                 );
+                (epoch_list, active_list)
+            } else {
+                // Fallback: reconstruct from ProducerSet (pre-upgrade path)
+                let producers = producer_set.read().await;
+                let mut pks: Vec<PublicKey> = producers
+                    .active_producers_at_height(best_h)
+                    .iter()
+                    .map(|p| p.public_key)
+                    .collect();
+                pks.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+                if !pks.is_empty() {
+                    info!(
+                        "[INIT] No persisted producer lists — seeded epoch_producer_list with {} active producers at h={}",
+                        pks.len(),
+                        best_h
+                    );
+                }
+                let active = pks.clone();
+                (pks, active)
             }
-            pks
         };
 
         // Recover announcement sequence from persisted GSet to avoid creating
@@ -805,7 +824,7 @@ impl Node {
             seen_blocks_for_slot: std::collections::HashSet::new(),
             excluded_producers,
             epoch_producer_list,
-            active_production_list: Vec::new(), // Built at first epoch boundary
+            active_production_list,
             epoch_bond_snapshot: initial_bond_snapshot,
             epoch_bond_snapshot_epoch: initial_bond_epoch,
             cached_scheduler: None,

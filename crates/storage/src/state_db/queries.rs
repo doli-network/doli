@@ -12,7 +12,8 @@ use crate::utxo::{Outpoint, UtxoEntry};
 
 use super::types::{
     LastApplied, StateDb, CF_EXIT_HISTORY, CF_META, CF_PRODUCERS, CF_UTXO, CF_UTXO_BY_PUBKEY,
-    META_CHAIN_STATE, META_LAST_APPLIED, META_PENDING_UPDATES,
+    META_ACTIVE_PRODUCTION_LIST, META_CHAIN_STATE, META_EPOCH_PRODUCER_LIST, META_LAST_APPLIED,
+    META_PENDING_UPDATES,
 };
 
 impl StateDb {
@@ -289,6 +290,43 @@ impl StateDb {
             }
         }
         buf
+    }
+
+    /// Load persisted epoch producer list.
+    ///
+    /// Returns `None` if never persisted (first run or pre-upgrade DB).
+    /// Callers should fall back to reconstruction from ProducerSet.
+    pub fn get_epoch_producer_list(&self) -> Option<Vec<crypto::PublicKey>> {
+        let cf = self.db.cf_handle(CF_META).unwrap();
+        match self.db.get_cf(cf, META_EPOCH_PRODUCER_LIST) {
+            Ok(Some(bytes)) if bytes.len() >= 32 && bytes.len() % 32 == 0 => {
+                let mut keys = Vec::with_capacity(bytes.len() / 32);
+                for chunk in bytes.chunks_exact(32) {
+                    let arr: [u8; 32] = chunk.try_into().unwrap();
+                    keys.push(crypto::PublicKey::from_bytes(arr));
+                }
+                Some(keys)
+            }
+            _ => None,
+        }
+    }
+
+    /// Load persisted active production list.
+    ///
+    /// Returns `None` if never persisted (first run or pre-upgrade DB).
+    pub fn get_active_production_list(&self) -> Option<Vec<crypto::PublicKey>> {
+        let cf = self.db.cf_handle(CF_META).unwrap();
+        match self.db.get_cf(cf, META_ACTIVE_PRODUCTION_LIST) {
+            Ok(Some(bytes)) if bytes.len() >= 32 && bytes.len() % 32 == 0 => {
+                let mut keys = Vec::with_capacity(bytes.len() / 32);
+                for chunk in bytes.chunks_exact(32) {
+                    let arr: [u8; 32] = chunk.try_into().unwrap();
+                    keys.push(crypto::PublicKey::from_bytes(arr));
+                }
+                Some(keys)
+            }
+            _ => None,
+        }
     }
 
     /// Load the full ProducerSet from the database.

@@ -13,7 +13,8 @@ use crate::StorageError;
 
 use super::types::{
     BlockBatch, LastApplied, StateDb, UndoData, CF_EXIT_HISTORY, CF_META, CF_PRODUCERS, CF_UNDO,
-    CF_UTXO, CF_UTXO_BY_PUBKEY, META_CHAIN_STATE, META_LAST_APPLIED, META_PENDING_UPDATES,
+    CF_UTXO, CF_UTXO_BY_PUBKEY, META_ACTIVE_PRODUCTION_LIST, META_CHAIN_STATE,
+    META_EPOCH_PRODUCER_LIST, META_LAST_APPLIED, META_PENDING_UPDATES,
 };
 
 // ==================== Batch Creation ====================
@@ -178,6 +179,29 @@ impl<'a> BlockBatch<'a> {
         let cf = self.db.db.cf_handle(CF_META).unwrap();
         let bytes = bincode::serialize(updates).expect("PendingProducerUpdate serialization");
         self.batch.put_cf(cf, META_PENDING_UPDATES, &bytes);
+    }
+
+    /// Persist the frozen epoch producer list.
+    ///
+    /// Serialized as concatenated 32-byte public keys. Loaded on restart
+    /// to avoid reconstructing from inconsistent ProducerSet + block store.
+    pub fn put_epoch_producer_list(&mut self, keys: &[crypto::PublicKey]) {
+        let cf = self.db.db.cf_handle(CF_META).unwrap();
+        let mut bytes = Vec::with_capacity(keys.len() * 32);
+        for pk in keys {
+            bytes.extend_from_slice(pk.as_bytes());
+        }
+        self.batch.put_cf(cf, META_EPOCH_PRODUCER_LIST, &bytes);
+    }
+
+    /// Persist the active production list (round-robin subset of epoch list).
+    pub fn put_active_production_list(&mut self, keys: &[crypto::PublicKey]) {
+        let cf = self.db.db.cf_handle(CF_META).unwrap();
+        let mut bytes = Vec::with_capacity(keys.len() * 32);
+        for pk in keys {
+            bytes.extend_from_slice(pk.as_bytes());
+        }
+        self.batch.put_cf(cf, META_ACTIVE_PRODUCTION_LIST, &bytes);
     }
 
     /// Set the last_applied consistency canary.
