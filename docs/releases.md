@@ -230,6 +230,70 @@ See [auto_update_system.md](./auto_update_system.md) for details.
 
 ---
 
+## Consensus Safety: fork_id + genesis_hash
+
+Every block header contains two chain identity fields:
+
+| Field | What it validates | When it changes |
+|-------|-------------------|-----------------|
+| `genesis_hash` | Chain identity (timestamp + network + slot_duration + message) | Only on genesis reset |
+| `fork_id` | Active hard fork set (BLAKE3 of genesis_hash + sorted activation heights) | When new `HardForkSchedule` entries activate |
+
+Both are checked at gossip level (O(1) drop) and validation level. A node with wrong genesis or wrong fork set cannot produce blocks that any peer accepts.
+
+### How fork_id works (inspired by Ethereum EIP-2124)
+
+1. Each consensus-breaking change adds an entry to `HardForkSchedule` in `crates/updater/src/hardfork.rs` with an `activation_height` and `min_version`.
+2. `fork_id = BLAKE3(genesis_hash || h1_le || h2_le || ...)` where h1, h2... are activation heights that have **already activated** (activation_height <= current block height). Computed per-block using the block's height — only includes forks active at that height. This enables progressive deployment: old and new binaries coexist until the activation height.
+3. The fork_id is embedded in every block header and committed to the block hash.
+
+### Partitioning behavior
+
+- **Before activation height**: All nodes (old and new binary) produce the same fork_id. Both versions coexist on the network. No urgency to update.
+- **At activation height**: Nodes with the new binary apply new consensus rules and include the new fork height in fork_id. Nodes with the old binary produce the old fork_id. Blocks from old nodes are **rejected** by new nodes (fork_id mismatch at gossip level, O(1) drop). Old nodes are effectively partitioned from the network.
+- **After activation height**: Old nodes cannot produce accepted blocks, cannot sync, and cannot participate. They must update their binary to rejoin.
+
+### Operational impact for node operators
+
+- **Code-only releases** (no `HardForkSchedule` entry): fork_id does not change. Nodes can update at any time. No deadline.
+- **Consensus releases** (new `HardForkSchedule` entry): fork_id changes at activation height. **All nodes must update before the activation height or they will be isolated from the network.** The `min_version` field in the schedule determines which versions are compatible.
+- The auto-updater (`doli upgrade`) handles this automatically for nodes with auto-update enabled. Nodes with `--no-auto-update` must update manually before the deadline.
+
+### Two types of releases
+
+| Type | fork_id changes? | Deadline? | Deploy strategy |
+|------|-------------------|-----------|-----------------|
+| Code-only (bug fixes, features) | No | No | Rolling, any order, any time |
+| Consensus (HardForkSchedule entry) | Yes, at activation height | Yes | Progressive before activation height |
+
+### Startup protection
+
+If a node has stale data from a previous chain, it crashes immediately:
+```
+Block store genesis mismatch!
+Block 1 prev_hash: <old hash>
+Chainspec genesis:  <new hash>
+Fix: wipe data directory and restart.
+```
+
+### Release checklist
+
+- [ ] All tests passing (`cargo test -p doli-core --lib && cargo test -p network --lib`)
+- [ ] `cargo fmt --check` clean
+- [ ] `cargo clippy -- -D warnings` clean
+- [ ] Version bumped in Cargo.toml + Cargo.lock regenerated
+- [ ] If consensus change: HardForkSchedule entry + activation height constant added
+- [ ] If genesis reset: timestamp + message + genesis hash test updated
+- [ ] Tag created and pushed
+- [ ] CI Release workflow completed successfully
+- [ ] Binary built on ai2 with `cargo clean` (NEVER incremental)
+- [ ] md5 verified on ALL servers before starting
+- [ ] If genesis reset: ALL servers wiped before starting
+- [ ] SIGNATURES.json signed by 3 maintainers (N1, N2, N3) AFTER CI completes
+- [ ] `doli upgrade` tested from external node
+
+---
+
 ## Rollback
 
 If a release causes issues:

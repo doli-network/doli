@@ -869,6 +869,10 @@ block_hash = HASH(
     merkle_root (32B) ||
     presence_root (32B) ||
     genesis_hash (32B) ||
+    missed_producers_count (4B LE) ||
+    missed_producers (32B × count) ||
+    data_root (32B) ||
+    fork_id (32B, only if non-zero) ||
     timestamp (8B LE) ||
     slot (4B LE) ||
     producer (32B) ||
@@ -876,7 +880,9 @@ block_hash = HASH(
 )
 ```
 
-Note: The `vdf_proof` is NOT included in the block hash. The presence_root and genesis_hash are always included (presence_root is Hash::ZERO in deterministic scheduler model).
+Note: The `vdf_proof` is NOT included in the block hash. The presence_root and genesis_hash are always included (presence_root is Hash::ZERO in deterministic scheduler model). The `fork_id` is included only when non-zero (post fork_id activation height).
+
+**fork_id** = `BLAKE3(genesis_hash || h1_le || h2_le || ...)` where h1, h2... are activation heights from `HardForkSchedule` that have already activated (activation_height <= current block height). Computed per-block — enables progressive deployment where old and new binaries coexist until activation. After activation, old binaries produce a different fork_id and are partitioned from the network at gossip level (O(1) drop).
 
 ### 4.4 Merkle Root
 
