@@ -45,7 +45,7 @@ impl Node {
             // Same level of filtering as genesis_hash: O(1), pre-validation drop.
             let fork_id_activation = self.config.network.params().fork_id_activation_height;
             if current_height >= fork_id_activation {
-                let our_fork_id = self.current_fork_id();
+                let our_fork_id = self.fork_id_at_height(current_height);
                 if block.header.fork_id != our_fork_id {
                     debug!(
                         "[FORK_ID] Dropping block {} at h={} — fork_id {} != {}",
