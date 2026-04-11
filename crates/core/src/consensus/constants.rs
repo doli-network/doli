@@ -22,7 +22,7 @@ pub fn is_protocol_active(required_version: u32, active_version: u32) -> bool {
 
 /// Genesis timestamp — must match chainspec.mainnet.json
 /// Guarded by `test_genesis_time_matches_chainspec` test.
-pub const GENESIS_TIME: u64 = 1775823847;
+pub const GENESIS_TIME: u64 = 1775907113;
 
 /// Checkpoint: trusted block for fast initial sync.
 /// Updated with each release. New nodes sync from here instead of genesis.
@@ -82,9 +82,8 @@ pub const ACTIVE_PRODUCERS_CAP: usize = 50;
 pub const UNIQUE_COINBASE_ACTIVATION_HEIGHT: u64 = 0;
 
 /// Snap sync includes anchor block header in protocol response.
-/// Before this height: anchor header not included (Option B floor protects).
-/// After this height: anchor header included and persisted.
-pub const SNAP_HEADER_ACTIVATION_HEIGHT: u64 = 500;
+/// Active from genesis (h=0) — clean chain reset, no legacy blocks.
+pub const SNAP_HEADER_ACTIVATION_HEIGHT: u64 = 0;
 
 /// Tier promotion activation height.
 /// Before: active_production_list = first 50 by registered_at (static seniority).

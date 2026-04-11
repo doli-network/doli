@@ -3,8 +3,8 @@
   "id": "mainnet",
   "network": "Mainnet",
   "genesis": {
-    "timestamp": 1775823847,
-    "message": "DOLI Mainnet Genesis - v6.8.7 attestation 1/3 safety 10/Apr/2026 v12",
+    "timestamp": 1775907113,
+    "message": "DOLI Mainnet Genesis - v6.8.8 pure 11/Apr/2026 v15",
     "initial_reward": 100000000
   },
   "consensus": {
