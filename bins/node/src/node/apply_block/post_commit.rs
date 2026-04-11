@@ -75,76 +75,91 @@ impl Node {
                     // Genesis/early epochs: all active producers qualify
                     active
                 } else {
-                    // Producers who attested in the previous epoch are included.
-                    // Scan previous epoch blocks for presence_root attestation data.
-                    // INC-I-010: If ANY block is missing (e.g., after snap sync),
-                    // skip filtering — use all active, same as epoch 0/1.
-                    // Self-healing: once a full epoch of blocks exists, filtering resumes.
-                    let prev_epoch_start = (epoch - 1) * blocks_per_epoch;
-                    let prev_epoch_end = epoch * blocks_per_epoch;
+                    // FIX 1 (v6.13.4-fix1): Rolling 3-epoch lookback window.
+                    // A producer is retained if they attested in ANY of the last 3
+                    // epochs. Single-epoch filter (v6.8.8) was too aggressive — one
+                    // glitch/restart = permanent cull via chicken-and-egg (not in
+                    // list → no bit → no attestation). Rolling window gives natural
+                    // recovery: a producer back online can attest and re-enter.
+                    //
+                    // Only attestation_minutes and blocks_produced for the immediate
+                    // previous epoch (epoch_back==1) are tracked, to preserve tier
+                    // promotion semantics.
+                    const LOOKBACK_EPOCHS: u64 = 3;
                     let mut attested: HashSet<PublicKey> = HashSet::new();
-                    let mut have_full_epoch = true;
+                    let mut have_full_history = true;
 
                     let mut sorted_for_decode = active.clone();
                     sorted_for_decode.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
 
-                    for h in prev_epoch_start..prev_epoch_end {
-                        if let Ok(Some(blk)) = self.block_store.get_block_by_height(h) {
-                            let minute =
-                                doli_core::attestation::attestation_minute(blk.header.slot);
-                            // Block producer attested by producing
-                            attested.insert(blk.header.producer);
-                            *blocks_produced.entry(blk.header.producer).or_insert(0) += 1;
-                            attestation_minutes
-                                .entry(blk.header.producer)
-                                .or_default()
-                                .insert(minute);
-                            // Decode attestation bitfield
-                            if !blk.header.presence_root.is_zero() {
-                                let indices = if !blk.attestation_bitfield.is_empty() {
-                                    // Body bitfield available: decode from body (no 256 cap)
-                                    doli_core::decode_attestation_bitfield_vec(
-                                        &blk.attestation_bitfield,
-                                        sorted_for_decode.len(),
-                                    )
-                                } else if h < doli_core::consensus::BITFIELD_BODY_ACTIVATION_HEIGHT
-                                {
-                                    // Pre-activation: presence_root IS the raw bitfield
-                                    decode_attestation_bitfield(
-                                        &blk.header.presence_root,
-                                        sorted_for_decode.len(),
-                                    )
-                                } else {
-                                    // Post-activation without body: skip
-                                    vec![]
-                                };
-                                for idx in indices {
-                                    if let Some(pk) = sorted_for_decode.get(idx) {
-                                        attested.insert(*pk);
-                                        attestation_minutes.entry(*pk).or_default().insert(minute);
+                    for epoch_back in 1..=LOOKBACK_EPOCHS {
+                        if epoch < epoch_back {
+                            continue;
+                        }
+                        let target_epoch = epoch - epoch_back;
+                        let window_start = target_epoch * blocks_per_epoch;
+                        let window_end = (target_epoch + 1) * blocks_per_epoch;
+
+                        for h in window_start..window_end {
+                            if let Ok(Some(blk)) = self.block_store.get_block_by_height(h) {
+                                let minute =
+                                    doli_core::attestation::attestation_minute(blk.header.slot);
+                                attested.insert(blk.header.producer);
+                                if epoch_back == 1 {
+                                    *blocks_produced.entry(blk.header.producer).or_insert(0) += 1;
+                                    attestation_minutes
+                                        .entry(blk.header.producer)
+                                        .or_default()
+                                        .insert(minute);
+                                }
+                                if !blk.header.presence_root.is_zero() {
+                                    let indices = if !blk.attestation_bitfield.is_empty() {
+                                        doli_core::decode_attestation_bitfield_vec(
+                                            &blk.attestation_bitfield,
+                                            sorted_for_decode.len(),
+                                        )
+                                    } else if h
+                                        < doli_core::consensus::BITFIELD_BODY_ACTIVATION_HEIGHT
+                                    {
+                                        decode_attestation_bitfield(
+                                            &blk.header.presence_root,
+                                            sorted_for_decode.len(),
+                                        )
+                                    } else {
+                                        vec![]
+                                    };
+                                    for idx in indices {
+                                        if let Some(pk) = sorted_for_decode.get(idx) {
+                                            attested.insert(*pk);
+                                            if epoch_back == 1 {
+                                                attestation_minutes
+                                                    .entry(*pk)
+                                                    .or_default()
+                                                    .insert(minute);
+                                            }
+                                        }
                                     }
                                 }
+                            } else {
+                                have_full_history = false;
+                                break;
                             }
-                        } else {
-                            // Missing block — incomplete epoch history (snap sync).
-                            // Cannot reliably filter by attestation.
-                            have_full_epoch = false;
+                        }
+                        if !have_full_history {
                             break;
                         }
                     }
 
                     let skip_height = self.config.network.params().snap_attestation_skip_height;
-                    if have_full_epoch || height < skip_height {
-                        // Full history: filter by attestation (normal path).
-                        // Before activation height: always filter (old behavior).
+                    if have_full_history || height < skip_height {
+                        // Full history across lookback window: filter by attestation.
                         active
                             .into_iter()
                             .filter(|pk| attested.contains(pk))
                             .collect()
                     } else {
                         info!(
-                            "[EPOCH] Incomplete block history for epoch {} — using all {} active producers",
-                            epoch - 1,
+                            "[EPOCH] Incomplete block history in 3-epoch lookback — using all {} active producers",
                             active.len()
                         );
                         active
