@@ -145,6 +145,15 @@ pub struct SyncManager {
     /// instead of our tip — tolerating normal status-protocol lag while
     /// still detecting real forks. Capped at 200 entries (~33 min at 10s slots).
     recent_canonical_hashes: VecDeque<(u64, Hash)>,
+
+    /// Consecutive orphan gossip blocks received (parent ≠ local tip).
+    /// When ≥ 3, triggers batch sync — the node is behind and gossip alone
+    /// cannot close the gap. Reset on successful block application.
+    consecutive_orphan_gossip_blocks: u32,
+
+    /// Set when peer count transitions from 0 to non-zero. Consumed by the
+    /// node layer to trigger immediate status requests to all peers.
+    needs_mass_status_refresh: bool,
 }
 
 impl SyncManager {
@@ -194,6 +203,8 @@ impl SyncManager {
             confirmed_height_floor: 0,
             // Checkpoint health: canonical hash ring buffer
             recent_canonical_hashes: VecDeque::with_capacity(200),
+            consecutive_orphan_gossip_blocks: 0,
+            needs_mass_status_refresh: false,
         }
     }
 
@@ -234,6 +245,13 @@ impl SyncManager {
     /// this returns H. `reset_local_state()` refuses to go below this floor.
     pub fn confirmed_height_floor(&self) -> u64 {
         self.confirmed_height_floor
+    }
+
+    /// Consume the mass status refresh flag (returns true once after peers
+    /// return from total loss). Node layer uses this to trigger immediate
+    /// status requests to all peers instead of waiting 30s.
+    pub fn take_needs_mass_status_refresh(&mut self) -> bool {
+        std::mem::take(&mut self.needs_mass_status_refresh)
     }
 
     // =========================================================================

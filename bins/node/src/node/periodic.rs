@@ -421,7 +421,12 @@ impl Node {
         // Normal: all peers every 30s (sufficient for checkpoint health)
         let status_interval = if is_bootstrap { 2 } else { 30 };
 
-        if now_secs.is_multiple_of(status_interval) {
+        let force_refresh = {
+            let mut sync = self.sync_manager.write().await;
+            sync.take_needs_mass_status_refresh()
+        };
+
+        if force_refresh || now_secs.is_multiple_of(status_interval) {
             if let Some(ref network) = self.network {
                 let peer_ids: Vec<_> = {
                     let sync = self.sync_manager.read().await;

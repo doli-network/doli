@@ -18,7 +18,11 @@ impl SyncManager {
     pub fn add_peer(&mut self, peer: PeerId, height: u64, hash: Hash, slot: u32) {
         info!("Adding peer {} with height {}, slot {}", peer, height, slot);
 
-        // Clear peer loss tracker since we have a peer again
+        // When transitioning from 0 peers to non-zero, signal the node layer
+        // to request fresh status from all peers immediately (not wait 30s).
+        if self.peers.is_empty() {
+            self.needs_mass_status_refresh = true;
+        }
         self.peers_lost_at = None;
 
         self.peers.insert(
@@ -347,5 +351,38 @@ impl SyncManager {
     /// Used by Node to detect stuck state and trigger re-sync.
     pub fn is_chain_stale(&self, threshold: Duration) -> bool {
         self.network.last_block_seen.elapsed() > threshold
+    }
+
+    /// Notify sync manager that a gossip block was orphaned (parent ≠ local tip).
+    /// Orphan gossip blocks are direct evidence the node is behind the network.
+    /// After 3+ consecutive orphans, force batch sync to close the gap.
+    pub fn note_orphan_gossip_block(&mut self, block_height: u64, block_slot: u32) {
+        self.consecutive_orphan_gossip_blocks += 1;
+        if block_height > self.network.network_tip_height {
+            self.network.network_tip_height = block_height;
+        }
+        if block_slot > self.network.network_tip_slot {
+            self.network.network_tip_slot = block_slot;
+        }
+        if self.consecutive_orphan_gossip_blocks >= 3 {
+            let gap = self
+                .network
+                .network_tip_height
+                .saturating_sub(self.local_height);
+            let state_ok = matches!(self.state, SyncState::Idle | SyncState::Synchronized);
+            if state_ok && gap >= 1 {
+                warn!(
+                    "[SYNC] {} consecutive orphan gossip blocks — forcing sync (local_h={}, tip_h={}, gap={})",
+                    self.consecutive_orphan_gossip_blocks, self.local_height, self.network.network_tip_height, gap
+                );
+                self.consecutive_orphan_gossip_blocks = 0;
+                self.start_sync();
+            }
+        }
+    }
+
+    /// Reset orphan gossip counter (called when a block is successfully applied).
+    pub fn reset_orphan_counter(&mut self) {
+        self.consecutive_orphan_gossip_blocks = 0;
     }
 }

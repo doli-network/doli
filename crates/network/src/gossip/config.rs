@@ -139,6 +139,18 @@ pub fn new_gossipsub(keypair: &Keypair, mesh: &MeshConfig) -> Result<Gossipsub, 
             ..Default::default()
         },
     );
+    topic_scores.insert(
+        IdentTopic::new(ATTESTATION_TOPIC).hash(),
+        TopicScoreParams {
+            topic_weight: 1.0,
+            first_message_deliveries_weight: 8.0,
+            first_message_deliveries_decay: 0.5,
+            first_message_deliveries_cap: 100.0,
+            invalid_message_deliveries_weight: -10.0,
+            invalid_message_deliveries_decay: 0.3,
+            ..Default::default()
+        },
+    );
     // ip_colocation_factor_threshold: number of peers on the same IP before
     // penalties apply. Default 500 allows large local testnets on 127.0.0.1.
     // PRODUCTION NETWORKS should set DOLI_IP_COLOCATION_THRESHOLD=5 to resist

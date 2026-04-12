@@ -222,17 +222,20 @@ impl SyncManager {
             self.handle_snap_download_error(peer);
         }
 
-        // Stall recovery: if "Synchronized" but significantly behind in slots,
-        // we're in a deadlock (height matches but slot lags). Reset to Idle
-        // to allow re-evaluation and potential resync.
+        // Stall recovery: if "Synchronized" but significantly behind in slots
+        // or height, we're in a deadlock. Reset to Idle for recovery.
         if matches!(self.state, SyncState::Synchronized) && !self.peers.is_empty() {
             let best_slot = self.best_peer_slot();
             let slot_lag = best_slot.saturating_sub(self.local_slot);
             let stall_threshold = self.max_slots_behind.saturating_mul(5);
-            if slot_lag > stall_threshold {
+            let height_gap = self
+                .network
+                .network_tip_height
+                .saturating_sub(self.local_height);
+            if slot_lag > stall_threshold || height_gap > 5 {
                 warn!(
-                    "Stall detected: Synchronized but {} slots behind peers (threshold {}). Resetting to Idle for recovery.",
-                    slot_lag, stall_threshold
+                    "Stall detected: Synchronized but slot_lag={} height_gap={} (thresholds: slot={}, height=5). Resetting to Idle.",
+                    slot_lag, height_gap, stall_threshold
                 );
                 self.set_state(SyncState::Idle, "stall_synchronized_behind");
                 if self.should_sync() {

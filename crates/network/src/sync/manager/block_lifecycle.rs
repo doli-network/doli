@@ -55,6 +55,7 @@ impl SyncManager {
         self.network.blocks_applied += 1;
         self.network.last_block_applied = Instant::now();
         self.network.last_sync_activity = Instant::now();
+        self.consecutive_orphan_gossip_blocks = 0;
         self.pipeline.body_stall_retries = 0;
         self.fork.consecutive_apply_failures = 0;
 

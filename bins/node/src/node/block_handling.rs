@@ -85,11 +85,16 @@ impl Node {
                     }
                 }
             } else {
-                // Parent not in store at all — unknown block
+                // Parent not in store at all — orphan gossip block.
+                // Signal sync manager: consecutive orphans prove we're behind.
                 debug!(
                     "Dropping block {} — parent {:.8} unknown",
                     block_hash, block.header.prev_hash
                 );
+                self.sync_manager
+                    .write()
+                    .await
+                    .note_orphan_gossip_block(current_height + 1, block.header.slot);
                 return Ok(());
             }
 

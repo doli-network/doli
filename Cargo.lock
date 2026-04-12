@@ -620,7 +620,7 @@ dependencies = [
 
 [[package]]
 name = "bridge"
-version = "6.13.7"
+version = "6.13.8"
 dependencies = [
  "chrono",
  "crypto",
@@ -863,7 +863,7 @@ dependencies = [
 
 [[package]]
 name = "channels"
-version = "6.13.7"
+version = "6.13.8"
 dependencies = [
  "chrono",
  "crypto",
@@ -1141,7 +1141,7 @@ checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
 name = "crypto"
-version = "6.13.7"
+version = "6.13.8"
 dependencies = [
  "bech32",
  "blake3",
@@ -1559,7 +1559,7 @@ dependencies = [
 
 [[package]]
 name = "doli-benchmarks"
-version = "6.13.7"
+version = "6.13.8"
 dependencies = [
  "chrono",
  "clap",
@@ -1571,7 +1571,7 @@ dependencies = [
 
 [[package]]
 name = "doli-cli"
-version = "6.13.7"
+version = "6.13.8"
 dependencies = [
  "anyhow",
  "bincode",
@@ -1600,7 +1600,7 @@ dependencies = [
 
 [[package]]
 name = "doli-core"
-version = "6.13.7"
+version = "6.13.8"
 dependencies = [
  "bincode",
  "bitvec",
@@ -1627,7 +1627,7 @@ dependencies = [
 
 [[package]]
 name = "doli-gui"
-version = "6.13.7"
+version = "6.13.8"
 dependencies = [
  "anyhow",
  "crypto",
@@ -1647,7 +1647,7 @@ dependencies = [
 
 [[package]]
 name = "doli-node"
-version = "6.13.7"
+version = "6.13.8"
 dependencies = [
  "anyhow",
  "axum",
@@ -3226,7 +3226,7 @@ dependencies = [
 
 [[package]]
 name = "integration-tests"
-version = "6.13.7"
+version = "6.13.8"
 dependencies = [
  "bincode",
  "crypto",
@@ -4236,7 +4236,7 @@ dependencies = [
 
 [[package]]
 name = "mempool"
-version = "6.13.7"
+version = "6.13.8"
 dependencies = [
  "crypto",
  "doli-core",
@@ -4475,7 +4475,7 @@ dependencies = [
 
 [[package]]
 name = "network"
-version = "6.13.7"
+version = "6.13.8"
 dependencies = [
  "async-trait",
  "bincode",
@@ -4771,9 +4771,9 @@ checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
 name = "openssl"
-version = "0.10.76"
+version = "0.10.77"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "951c002c75e16ea2c65b8c7e4d3d51d5530d8dfa7d060b4776828c88cfb18ecf"
+checksum = "bfe4646e360ec77dff7dde40ed3d6c5fee52d156ef4a62f53973d38294dad87f"
 dependencies = [
  "bitflags 2.11.0",
  "cfg-if",
@@ -4803,9 +4803,9 @@ checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
 name = "openssl-sys"
-version = "0.9.112"
+version = "0.9.113"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "57d55af3b3e226502be1526dfdba67ab0e9c96fc293004e79576b2b9edb0dbdb"
+checksum = "ad2f2c0eba47118757e4c6d2bff2838f3e0523380021356e7875e858372ce644"
 dependencies = [
  "cc",
  "libc",
@@ -5176,9 +5176,9 @@ dependencies = [
 
 [[package]]
 name = "pkg-config"
-version = "0.3.32"
+version = "0.3.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7edddbd0b52d732b21ad9a5fab5c704c14cd949e5e9a1ec5929a24fded1b904c"
+checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
 
 [[package]]
 name = "plain"
@@ -6029,7 +6029,7 @@ dependencies = [
 
 [[package]]
 name = "rpc"
-version = "6.13.7"
+version = "6.13.8"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -6790,7 +6790,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "storage"
-version = "6.13.7"
+version = "6.13.8"
 dependencies = [
  "bincode",
  "crypto",
@@ -8011,7 +8011,7 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
 name = "updater"
-version = "6.13.7"
+version = "6.13.8"
 dependencies = [
  "anyhow",
  "crypto",
@@ -8114,7 +8114,7 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "vdf"
-version = "6.13.7"
+version = "6.13.8"
 dependencies = [
  "crypto",
  "doli-core",
@@ -8188,7 +8188,7 @@ dependencies = [
 
 [[package]]
 name = "wallet"
-version = "6.13.7"
+version = "6.13.8"
 dependencies = [
  "anyhow",
  "bincode",

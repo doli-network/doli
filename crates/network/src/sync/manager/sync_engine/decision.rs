@@ -164,7 +164,9 @@ impl SyncManager {
             let should_snap = enough_peers
                 && self.snap.attempts < 3
                 && snap_allowed
-                && (self.local_height == 0 || gap > self.snap.threshold);
+                && (self.local_height == 0
+                    || gap > self.snap.threshold
+                    || self.fork.needs_genesis_resync);
 
             // Fresh node optimization: don't start slow header-first sync.
             // Wait for 5 peers so snap sync can activate — it downloads state
@@ -293,7 +295,10 @@ impl SyncManager {
             // Reset the stuck-sync timer so this new attempt gets a full window
             // before cleanup() declares it stuck.
             self.network.last_sync_activity = Instant::now();
-            self.network.last_block_applied = Instant::now();
+            // INC-I-029: Do NOT reset last_block_applied here. It must only be
+            // updated when a block is actually applied (block_lifecycle.rs).
+            // Resetting every sync cycle prevents resolve_shallow_fork() from
+            // detecting stuck state (300s threshold never reached).
         }
     }
 }
