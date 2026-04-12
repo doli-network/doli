@@ -213,6 +213,14 @@ pub struct Node {
     /// In-memory tracker for minute attestations received via gossip.
     /// Used by block producer to build the presence_root bitfield.
     pub minute_tracker: MinuteAttestationTracker,
+    /// Incremental attestation tracker: accumulates (pubkey → attested minutes)
+    /// and (pubkey → blocks produced) per-block during the epoch. At epoch
+    /// boundary, read instead of scanning 1080 blocks. Rotated each epoch.
+    /// [0] = current epoch, [1] = prev epoch, [2] = prev-prev epoch.
+    pub epoch_attestation_accum: [HashMap<PublicKey, HashSet<u32>>; 3],
+    pub epoch_blocks_produced_accum: HashMap<PublicKey, u32>,
+    /// Set of producers who attested in any of the 3 lookback epochs (incremental).
+    pub epoch_attested_set: [HashSet<PublicKey>; 3],
     /// INC-I-014: Fork tips we've already rejected (prevents re-requesting them).
     /// Bounded to prevent memory growth: entries removed after 1000 blocks.
     pub rejected_fork_tips: HashSet<Hash>,
