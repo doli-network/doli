@@ -24,6 +24,8 @@ mod validation_checks;
 // unused from the bin's perspective.
 #[allow(unused_imports)]
 pub use init::init_utxo_set;
+#[allow(unused_imports)]
+pub use init::recover_body_gaps;
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;

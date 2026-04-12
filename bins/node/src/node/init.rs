@@ -1,5 +1,110 @@
 use super::*;
 
+/// Check for body gaps in the block store and undo blocks back to the last
+/// complete height. Called during startup when the tip block exists but some
+/// block bodies may be missing (e.g., after header-first sync or snap sync).
+///
+/// Extracted from `Node::new` so integration tests can exercise the recovery
+/// logic directly (see `bins/node/tests/inc_i_028_body_gap_recovery.rs`).
+///
+/// ## INC-I-028 — partial-undo leak
+///
+/// Before this fix, if the undo loop encountered a height without undo data
+/// (normal after snap sync — undo data was never stored for pre-snap blocks),
+/// it would `break` without reverting the partial mutations already applied to
+/// `utxo_set`. Since `utxo_set` is RocksDB-backed, those mutations persisted
+/// immediately, leaving the reward pool permanently short by N × coinbase_reward
+/// (where N = number of blocks successfully undone before the break).
+///
+/// The fix: when undo data is missing, rebuild `utxo_set` from `state_db` (the
+/// authoritative source) to revert any partial mutations — the same self-heal
+/// pattern proven by INC-I-027.
+pub fn recover_body_gaps(
+    chain_state: &mut ChainState,
+    block_store: &BlockStore,
+    state_db: &StateDb,
+    utxo: &mut UtxoSet,
+) -> anyhow::Result<()> {
+    if chain_state.best_height == 0 {
+        return Ok(());
+    }
+
+    let check_depth = 100u64.min(chain_state.best_height);
+    let mut first_gap = None;
+    for h in (chain_state.best_height.saturating_sub(check_depth)..=chain_state.best_height).rev() {
+        if h == 0 {
+            continue;
+        }
+        if block_store.get_block_by_height(h)?.is_none() {
+            first_gap = Some(h);
+            break;
+        }
+    }
+
+    if let Some(gap_height) = first_gap {
+        let mut target_height = gap_height.saturating_sub(1);
+        while target_height > 0 {
+            if block_store.get_block_by_height(target_height)?.is_some() {
+                break;
+            }
+            target_height -= 1;
+        }
+
+        let undo_count = chain_state.best_height - target_height;
+        warn!(
+            "[STARTUP] Body gap at h={} (tip={}). Undoing {} blocks to h={}.",
+            gap_height, chain_state.best_height, undo_count, target_height
+        );
+
+        for h in (target_height + 1..=chain_state.best_height).rev() {
+            if let Some(undo) = state_db.get_undo(h) {
+                for outpoint in &undo.created_utxos {
+                    let _ = utxo.remove(outpoint);
+                }
+                for (outpoint, entry) in &undo.spent_utxos {
+                    let _ = utxo.insert(*outpoint, entry.clone());
+                }
+            } else {
+                // INC-I-028: The undo loop has already mutated utxo for heights
+                // above h. Since utxo is RocksDB-backed, those mutations persisted
+                // immediately. Continuing with partially unwound state causes reward
+                // pool balance divergence (N38 testnet incident: pool short by
+                // N×100M → ECON_EPOCH_OVERFLOW at next epoch boundary).
+                //
+                // Fix: rebuild from state_db, which is always authoritative (INC-I-027).
+                warn!(
+                    "[STARTUP] No undo data for h={} — partial undo unsafe. \
+                     Rebuilding utxo_store from state_db (INC-I-028).",
+                    h
+                );
+                utxo.clear();
+                for (outpoint, entry) in state_db.iter_utxos() {
+                    let _ = utxo.insert(outpoint, entry);
+                }
+                info!(
+                    "[STARTUP] INC-I-028: rebuilt {} UTXOs from state_db after partial undo.",
+                    utxo.len()
+                );
+                break;
+            }
+        }
+
+        if let Some(blk) = block_store.get_block_by_height(target_height)? {
+            chain_state.best_height = target_height;
+            chain_state.best_hash = blk.hash();
+            chain_state.best_slot = blk.header.slot;
+            state_db.put_chain_state(chain_state)?;
+            info!(
+                "[STARTUP] Recovered to h={} after undoing {} body-gap blocks. \
+                 Sync will fill the gaps.",
+                target_height, undo_count
+            );
+        }
+    }
+
+    Ok(())
+}
+
 /// Initialize the UTXO set from disk, reconciling `utxo_store/` against `state_db`.
 ///
 /// Called by `Node::new` at startup. Kept as a free function so integration tests
@@ -309,74 +414,11 @@ impl Node {
         if chain_state.best_height > 0 {
             match block_store.get_block(&chain_state.best_hash) {
                 Ok(Some(_tip_block)) => {
-                    // Tip hash exists in store — verify recent blocks have bodies.
-                    // Header-first sync can leave gaps (headers without bodies).
-                    // If the node restarts with gaps, rollback fails ("no block at height N")
-                    // and the node gets stuck. Fix: undo back to the last complete block.
-                    let check_depth = 100u64.min(chain_state.best_height);
-                    let mut first_gap = None;
-                    for h in (chain_state.best_height.saturating_sub(check_depth)
-                        ..=chain_state.best_height)
-                        .rev()
+                    // Tip hash exists in store — delegate body-gap recovery
+                    // to the extracted helper (testable, see INC-I-028).
                     {
-                        if h == 0 {
-                            continue;
-                        }
-                        if block_store.get_block_by_height(h)?.is_none() {
-                            first_gap = Some(h);
-                            break;
-                        }
-                    }
-
-                    if let Some(gap_height) = first_gap {
-                        // Find the last contiguous complete block below the gap
-                        let mut target_height = gap_height.saturating_sub(1);
-                        while target_height > 0 {
-                            if block_store.get_block_by_height(target_height)?.is_some() {
-                                break;
-                            }
-                            target_height -= 1;
-                        }
-
-                        let undo_count = chain_state.best_height - target_height;
-                        warn!(
-                            "[STARTUP] Body gap at h={} (tip={}). Undoing {} blocks to h={}.",
-                            gap_height, chain_state.best_height, undo_count, target_height
-                        );
-
-                        // Apply undos backward from best_height down to target_height+1
-                        {
-                            let mut utxo = utxo_set.write().await;
-                            for h in (target_height + 1..=chain_state.best_height).rev() {
-                                if let Some(undo) = state_db.get_undo(h) {
-                                    for outpoint in &undo.created_utxos {
-                                        let _ = utxo.remove(outpoint);
-                                    }
-                                    for (outpoint, entry) in &undo.spent_utxos {
-                                        let _ = utxo.insert(*outpoint, entry.clone());
-                                    }
-                                } else {
-                                    error!(
-                                        "[STARTUP] No undo data for h={} — manual wipe required.",
-                                        h
-                                    );
-                                    break;
-                                }
-                            }
-                        }
-
-                        // Update chain state to the target block
-                        if let Some(blk) = block_store.get_block_by_height(target_height)? {
-                            chain_state.best_height = target_height;
-                            chain_state.best_hash = blk.hash();
-                            chain_state.best_slot = blk.header.slot;
-                            state_db.put_chain_state(&chain_state)?;
-                            info!(
-                                "[STARTUP] Recovered to h={} after undoing {} body-gap blocks. \
-                                 Sync will fill the gaps.",
-                                target_height, undo_count
-                            );
-                        }
+                        let mut utxo = utxo_set.write().await;
+                        recover_body_gaps(&mut chain_state, &block_store, &state_db, &mut utxo)?;
                     }
                 }
                 Ok(None) => {
