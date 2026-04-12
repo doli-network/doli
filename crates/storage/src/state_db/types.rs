@@ -38,6 +38,9 @@ pub(super) const META_PENDING_UPDATES: &[u8] = b"pending_updates";
 pub(super) const META_LAST_APPLIED: &[u8] = b"last_applied";
 pub(super) const META_EPOCH_PRODUCER_LIST: &[u8] = b"epoch_producer_list";
 pub(super) const META_ACTIVE_PRODUCTION_LIST: &[u8] = b"active_production_list";
+pub(super) const META_EPOCH_ATTESTED_SET: &[u8] = b"epoch_attested_set";
+pub(super) const META_EPOCH_ATTESTATION_ACCUM: &[u8] = b"epoch_attestation_accum";
+pub(super) const META_EPOCH_BLOCKS_PRODUCED: &[u8] = b"epoch_blocks_produced";
 
 /// Unified state database wrapping a single RocksDB instance.
 pub struct StateDb {

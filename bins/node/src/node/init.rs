@@ -772,6 +772,25 @@ impl Node {
             }
         };
 
+        // Load persisted attestation accumulators (survive restarts).
+        let (epoch_attested_set, epoch_attestation_accum, epoch_blocks_produced_accum) =
+            if let Some((attested, accum, produced)) = state_db.get_attestation_accumulators() {
+                info!(
+                    "[INIT] Loaded persisted attestation accumulators: attested=[{},{},{}] accum=[{},{},{}] produced={}",
+                    attested[0].len(), attested[1].len(), attested[2].len(),
+                    accum[0].len(), accum[1].len(), accum[2].len(),
+                    produced.len()
+                );
+                (attested, accum, produced)
+            } else {
+                info!("[INIT] No persisted attestation accumulators — starting fresh");
+                (
+                    [HashSet::new(), HashSet::new(), HashSet::new()],
+                    [HashMap::new(), HashMap::new(), HashMap::new()],
+                    HashMap::new(),
+                )
+            };
+
         // Recover announcement sequence from persisted GSet to avoid creating
         // stale announcements after restart. +1 so the next announcement is fresh.
         let initial_seq = {
@@ -846,9 +865,9 @@ impl Node {
             archive_caught_up: false,
             ws_sender: Arc::new(RwLock::new(None)),
             minute_tracker: MinuteAttestationTracker::new(),
-            epoch_attestation_accum: [HashMap::new(), HashMap::new(), HashMap::new()],
-            epoch_blocks_produced_accum: HashMap::new(),
-            epoch_attested_set: [HashSet::new(), HashSet::new(), HashSet::new()],
+            epoch_attestation_accum,
+            epoch_blocks_produced_accum,
+            epoch_attested_set,
             rejected_fork_tips: HashSet::new(),
             snap_sync_height: None,
             sync_requests_this_interval: 0,

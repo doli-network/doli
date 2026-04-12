@@ -14,6 +14,7 @@ use crate::StorageError;
 use super::types::{
     BlockBatch, LastApplied, StateDb, UndoData, CF_EXIT_HISTORY, CF_META, CF_PRODUCERS, CF_UNDO,
     CF_UTXO, CF_UTXO_BY_PUBKEY, META_ACTIVE_PRODUCTION_LIST, META_CHAIN_STATE,
+    META_EPOCH_ATTESTATION_ACCUM, META_EPOCH_ATTESTED_SET, META_EPOCH_BLOCKS_PRODUCED,
     META_EPOCH_PRODUCER_LIST, META_LAST_APPLIED, META_PENDING_UPDATES,
 };
 
@@ -192,6 +193,27 @@ impl<'a> BlockBatch<'a> {
             bytes.extend_from_slice(pk.as_bytes());
         }
         self.batch.put_cf(cf, META_EPOCH_PRODUCER_LIST, &bytes);
+    }
+
+    /// Persist attestation accumulators (survives restarts).
+    /// Serialized with bincode for simplicity — these are local state, not consensus.
+    pub fn put_attestation_accumulators(
+        &mut self,
+        attested_set: &[std::collections::HashSet<crypto::PublicKey>; 3],
+        attestation_accum: &[std::collections::HashMap<crypto::PublicKey, std::collections::HashSet<u32>>;
+             3],
+        blocks_produced: &std::collections::HashMap<crypto::PublicKey, u32>,
+    ) {
+        let cf = self.db.db.cf_handle(CF_META).unwrap();
+        if let Ok(bytes) = bincode::serialize(attested_set) {
+            self.batch.put_cf(cf, META_EPOCH_ATTESTED_SET, &bytes);
+        }
+        if let Ok(bytes) = bincode::serialize(attestation_accum) {
+            self.batch.put_cf(cf, META_EPOCH_ATTESTATION_ACCUM, &bytes);
+        }
+        if let Ok(bytes) = bincode::serialize(blocks_produced) {
+            self.batch.put_cf(cf, META_EPOCH_BLOCKS_PRODUCED, &bytes);
+        }
     }
 
     /// Persist the active production list (round-robin subset of epoch list).

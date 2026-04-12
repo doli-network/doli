@@ -12,8 +12,9 @@ use crate::utxo::{Outpoint, UtxoEntry};
 
 use super::types::{
     LastApplied, StateDb, CF_EXIT_HISTORY, CF_META, CF_PRODUCERS, CF_UTXO, CF_UTXO_BY_PUBKEY,
-    META_ACTIVE_PRODUCTION_LIST, META_CHAIN_STATE, META_EPOCH_PRODUCER_LIST, META_LAST_APPLIED,
-    META_PENDING_UPDATES,
+    META_ACTIVE_PRODUCTION_LIST, META_CHAIN_STATE, META_EPOCH_ATTESTATION_ACCUM,
+    META_EPOCH_ATTESTED_SET, META_EPOCH_BLOCKS_PRODUCED, META_EPOCH_PRODUCER_LIST,
+    META_LAST_APPLIED, META_PENDING_UPDATES,
 };
 
 impl StateDb {
@@ -327,6 +328,35 @@ impl StateDb {
             }
             _ => None,
         }
+    }
+
+    /// Load persisted attestation accumulators.
+    /// Returns None if not persisted (first run or pre-upgrade DB).
+    #[allow(clippy::type_complexity)]
+    pub fn get_attestation_accumulators(
+        &self,
+    ) -> Option<(
+        [std::collections::HashSet<crypto::PublicKey>; 3],
+        [std::collections::HashMap<crypto::PublicKey, std::collections::HashSet<u32>>; 3],
+        std::collections::HashMap<crypto::PublicKey, u32>,
+    )> {
+        let cf = self.db.cf_handle(CF_META).unwrap();
+        let attested: [std::collections::HashSet<crypto::PublicKey>; 3] =
+            match self.db.get_cf(cf, META_EPOCH_ATTESTED_SET) {
+                Ok(Some(bytes)) => bincode::deserialize(&bytes).ok()?,
+                _ => return None,
+            };
+        let accum: [std::collections::HashMap<crypto::PublicKey, std::collections::HashSet<u32>>;
+            3] = match self.db.get_cf(cf, META_EPOCH_ATTESTATION_ACCUM) {
+            Ok(Some(bytes)) => bincode::deserialize(&bytes).ok()?,
+            _ => return None,
+        };
+        let produced: std::collections::HashMap<crypto::PublicKey, u32> =
+            match self.db.get_cf(cf, META_EPOCH_BLOCKS_PRODUCED) {
+                Ok(Some(bytes)) => bincode::deserialize(&bytes).ok()?,
+                _ => return None,
+            };
+        Some((attested, accum, produced))
     }
 
     /// Load the full ProducerSet from the database.

@@ -249,12 +249,17 @@ impl Node {
                     self.active_production_list = self.epoch_producer_list.clone();
                 }
 
-                // Persist both lists to RocksDB so restart loads them directly
-                // instead of reconstructing from inconsistent ProducerSet + block store.
+                // Persist lists + attestation accumulators to RocksDB.
+                // On restart, loaded directly instead of reconstructing.
                 {
                     let mut batch = self.state_db.begin_batch();
                     batch.put_epoch_producer_list(&self.epoch_producer_list);
                     batch.put_active_production_list(&self.active_production_list);
+                    batch.put_attestation_accumulators(
+                        &self.epoch_attested_set,
+                        &self.epoch_attestation_accum,
+                        &self.epoch_blocks_produced_accum,
+                    );
                     if let Err(e) = batch.commit() {
                         warn!("[EPOCH] Failed to persist producer lists: {}", e);
                     }
