@@ -97,18 +97,9 @@ impl Node {
             // Reset minute tracker for the new epoch
             self.minute_tracker.reset();
 
-            // Rotate attestation accumulators: [0]=current becomes [1]=prev,
-            // [1]=prev becomes [2]=prev-prev, [2] is discarded.
-            self.epoch_attested_set[2] = std::mem::take(&mut self.epoch_attested_set[1]);
-            self.epoch_attested_set[1] = std::mem::take(&mut self.epoch_attested_set[0]);
-            self.epoch_attestation_accum[2] = std::mem::take(&mut self.epoch_attestation_accum[1]);
-            self.epoch_attestation_accum[1] = std::mem::take(&mut self.epoch_attestation_accum[0]);
-            self.epoch_blocks_produced_accum.clear();
-
             // EPOCH PRODUCER LIST: Freeze the schedule for the new epoch.
-            // Includes active producers who attested in the previous epoch
-            // (or all active if this is epoch 0/1). This is the base denominator
-            // for slot % N scheduling — it never changes mid-epoch.
+            // Read accumulators BEFORE rotation (they contain the just-completed epoch's data).
+            // [0] = just-completed epoch, [1] = prev epoch, [2] = prev-prev epoch.
             {
                 let producers = self.producer_set.read().await;
                 let active: Vec<PublicKey> = producers
@@ -118,16 +109,13 @@ impl Node {
                     .collect();
                 drop(producers);
 
-                // Read attestation data from incremental accumulators (O(N) read
-                // instead of O(N × 1080) block scan). The accumulators were updated
-                // per-block during the epoch by the tracking code above.
-                let attestation_minutes = self.epoch_attestation_accum[0].clone();
-                let blocks_produced = self.epoch_blocks_produced_accum.clone();
+                // Read by reference — no clone needed, same scope as self.
+                let attestation_minutes = &self.epoch_attestation_accum[0];
+                let blocks_produced = &self.epoch_blocks_produced_accum;
                 let mut new_list: Vec<PublicKey> = if epoch <= 1 {
                     active
                 } else {
                     // 3-epoch lookback: producer retained if attested in ANY of last 3 epochs.
-                    // accum[0] = current (just completed), [1] = prev, [2] = prev-prev.
                     let mut attested: HashSet<PublicKey> = HashSet::new();
                     for i in 0..3 {
                         attested.extend(&self.epoch_attested_set[i]);
@@ -280,6 +268,16 @@ impl Node {
                     info!("[SNAP_SYNC] Epoch boundary reached — switching gossip validation to Full mode");
                     self.snap_sync_height = None;
                 }
+
+                // Rotate attestation accumulators AFTER reading them.
+                // [0]=just-completed → [1]=prev, [1]=prev → [2]=prev-prev, [2] discarded.
+                self.epoch_attested_set[2] = std::mem::take(&mut self.epoch_attested_set[1]);
+                self.epoch_attested_set[1] = std::mem::take(&mut self.epoch_attested_set[0]);
+                self.epoch_attestation_accum[2] =
+                    std::mem::take(&mut self.epoch_attestation_accum[1]);
+                self.epoch_attestation_accum[1] =
+                    std::mem::take(&mut self.epoch_attestation_accum[0]);
+                self.epoch_blocks_produced_accum.clear();
             }
         }
 
