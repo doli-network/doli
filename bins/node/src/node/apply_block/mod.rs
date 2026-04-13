@@ -16,6 +16,19 @@ impl Node {
 
         let height = self.chain_state.read().await.best_height + 1;
 
+        // Guard: after snap sync, never apply blocks at or below the snap height.
+        // The UTXO set reflects post-snap state — applying pre-snap blocks would
+        // try to spend UTXOs that were already consumed in the snap state.
+        if let Some(snap_h) = self.snap_sync_height {
+            if height <= snap_h {
+                debug!(
+                    "Skipping block at h={} — below snap sync height {}",
+                    height, snap_h
+                );
+                return Ok(());
+            }
+        }
+
         // Defense-in-depth: skip blocks we already have AND have applied.
         // Prevents height double-counting if sync delivers stored blocks (ISSUE-5).
         //
