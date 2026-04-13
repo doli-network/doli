@@ -409,43 +409,40 @@ impl Node {
         let epoch_start = epoch * blocks_per_epoch;
         let start_h = epoch_start.max(1);
 
+        // Cap: same 1/3 limit as real-time processing in post_commit.
+        // Without this, rebuilding an entire epoch applies all exclusions
+        // at once → hits cap exactly → next block's missed_producers pushes
+        // over → ERRTX070 → node permanently stuck (INC-I-030 Bug 3).
+        let max_excluded = if self.epoch_producer_list.is_empty() {
+            12 // safe default
+        } else {
+            self.epoch_producer_list.len() / 3
+        };
+
         let mut excluded: HashSet<PublicKey> = HashSet::new();
 
         for h in start_h..=current_h {
+            if excluded.len() >= max_excluded {
+                break;
+            }
             if let Ok(Some(blk)) = self.block_store.get_block_by_height(h) {
-                // EXCLUDE: from on-chain missed_producers header field
                 for pk in &blk.header.missed_producers {
+                    if excluded.len() >= max_excluded {
+                        break;
+                    }
                     excluded.insert(*pk);
                 }
-
-                // RE-INCLUSION: only at epoch boundary. Mid-epoch exclusions
-                // are permanent until the next epoch's frozen list rebuild.
             }
         }
 
         let old_count = self.excluded_producers.len();
         self.excluded_producers = excluded;
-
-        // Sanity cap: if excluded exceeds 33% of epoch list, something is wrong
-        // (fork blocks in block store inflating exclusions). Reset to prevent
-        // scheduler divergence feedback loop (INC-I-016).
-        if !self.epoch_producer_list.is_empty()
-            && self.excluded_producers.len() > self.epoch_producer_list.len() / 3
-        {
-            warn!(
-                "[LIVENESS] Excluded producers ({}) exceeds 33% of epoch list ({}) — resetting to prevent divergence",
-                self.excluded_producers.len(),
-                self.epoch_producer_list.len()
-            );
-            self.excluded_producers.clear();
-        }
-
         let new_count = self.excluded_producers.len();
 
         if old_count > 0 || new_count > 0 {
             info!(
-                "[LIVENESS] Rebuilt excluded set from headers (h={}-{}): {} excluded (was {})",
-                start_h, current_h, new_count, old_count
+                "[LIVENESS] Rebuilt excluded set from headers (h={}-{}): {} excluded (was {}, cap={})",
+                start_h, current_h, new_count, old_count, max_excluded
             );
         }
     }
