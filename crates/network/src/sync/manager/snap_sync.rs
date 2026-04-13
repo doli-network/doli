@@ -144,6 +144,7 @@ impl SyncManager {
         producer_set: Vec<u8>,
         response_root: Hash,
         block_header_bytes: Option<Vec<u8>>,
+        epoch_bond_snapshot_bytes: Option<Vec<u8>>,
     ) {
         if let SyncPipelineData::SnapDownloading {
             target_height,
@@ -188,6 +189,7 @@ impl SyncManager {
                         producer_set,
                         state_root: response_root,
                         block_header_bytes,
+                        epoch_bond_snapshot_bytes,
                     },
                 },
                 "snap_snapshot_received",

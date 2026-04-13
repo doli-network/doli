@@ -108,6 +108,11 @@ pub enum SyncResponse {
         /// persist the header so set_canonical_chain walks never crash.
         #[serde(default)]
         block_header_bytes: Option<Vec<u8>>,
+        /// Epoch bond snapshot: serialized (HashMap<Hash, u64>, u64).
+        /// Allows receiving node to use the correct bond weights without
+        /// recalculating from UTXO (which diverges due to mid-epoch add-bonds).
+        #[serde(default)]
+        epoch_bond_snapshot_bytes: Option<Vec<u8>>,
     },
 
     /// State root only, for cross-peer verification (snap sync)

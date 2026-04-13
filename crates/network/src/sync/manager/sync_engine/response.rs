@@ -133,12 +133,14 @@ impl SyncManager {
                 producer_set,
                 state_root,
                 block_header_bytes,
+                epoch_bond_snapshot_bytes,
             } => {
                 info!(
-                    "[SNAP_SYNC] Received state snapshot from peer {}: hash={}, height={}, root={}, size={}KB, has_anchor_header={}",
+                    "[SNAP_SYNC] Received state snapshot from peer {}: hash={}, height={}, root={}, size={}KB, has_anchor_header={}, has_bond_snapshot={}",
                     peer, block_hash, block_height, state_root,
                     (chain_state.len() + utxo_set.len() + producer_set.len()) / 1024,
-                    block_header_bytes.is_some()
+                    block_header_bytes.is_some(),
+                    epoch_bond_snapshot_bytes.is_some()
                 );
                 self.handle_snap_snapshot(
                     peer,
@@ -149,6 +151,7 @@ impl SyncManager {
                     producer_set,
                     state_root,
                     block_header_bytes,
+                    epoch_bond_snapshot_bytes,
                 );
                 vec![]
             }

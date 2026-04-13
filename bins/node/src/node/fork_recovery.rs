@@ -704,7 +704,29 @@ impl Node {
             let bpe = self.config.network.blocks_per_reward_epoch();
             let active = ps.active_producers_at_height(h);
 
-            if let Some((snap, epoch)) = self.state_db.get_epoch_bond_snapshot() {
+            // Try 3 sources in order:
+            // 1. Bond snapshot from sync protocol payload (v6.13.17+ peers)
+            // 2. Persisted in state_db (from previous epoch boundary)
+            // 3. Fallback: recalculate from UTXO (may diverge)
+            let from_payload: Option<(std::collections::HashMap<crypto::Hash, u64>, u64)> =
+                snapshot
+                    .epoch_bond_snapshot_bytes
+                    .as_ref()
+                    .and_then(|bytes| bincode::deserialize(bytes).ok());
+
+            if let Some((snap, epoch)) = from_payload {
+                let total: u64 = snap.values().sum();
+                self.epoch_bond_snapshot = snap;
+                self.epoch_bond_snapshot_epoch = epoch;
+                // Persist so restarts don't lose it
+                let mut batch = self.state_db.begin_batch();
+                batch.put_epoch_bond_snapshot(&self.epoch_bond_snapshot, epoch);
+                let _ = batch.commit();
+                info!(
+                    "[SNAP_SYNC] Bond snapshot from peer payload: {} producers, total_bonds={}, epoch={}",
+                    self.epoch_bond_snapshot.len(), total, epoch
+                );
+            } else if let Some((snap, epoch)) = self.state_db.get_epoch_bond_snapshot() {
                 let total: u64 = snap.values().sum();
                 self.epoch_bond_snapshot = snap;
                 self.epoch_bond_snapshot_epoch = epoch;

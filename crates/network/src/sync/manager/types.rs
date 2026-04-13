@@ -165,6 +165,8 @@ pub struct VerifiedSnapshot {
     pub state_root: Hash,
     /// Anchor block header bytes (post-activation, for persisting)
     pub block_header_bytes: Option<Vec<u8>>,
+    /// Epoch bond snapshot bytes from peer (correct, computed at epoch boundary)
+    pub epoch_bond_snapshot_bytes: Option<Vec<u8>>,
 }
 
 // ---------------------------------------------------------------------------
