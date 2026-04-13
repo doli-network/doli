@@ -254,6 +254,30 @@ pub(crate) async fn cmd_snap(
         .atomic_replace(&chain_state, &producer_set, utxo_iter.into_iter())
         .map_err(|e| anyhow!("StateDb write: {}", e))?;
 
+    // Write epoch bond snapshot if present in the RPC response.
+    // This ensures doli snap receivers get the correct bond weights
+    // (computed at epoch boundary by the peer, not from snap-height UTXO).
+    if let Some(bond_hex) = snap["epochBondSnapshot"].as_str() {
+        if let Ok(bond_bytes) = hex::decode(bond_hex) {
+            if let Ok((bond_snap, bond_epoch)) = bincode::deserialize::<(
+                std::collections::HashMap<crypto::Hash, u64>,
+                u64,
+            )>(&bond_bytes)
+            {
+                let total: u64 = bond_snap.values().sum();
+                let mut batch = state_db.begin_batch();
+                batch.put_epoch_bond_snapshot(&bond_snap, bond_epoch);
+                let _ = batch.commit();
+                println!(
+                    "  Bond snapshot: {} producers, total_bonds={}, epoch={}",
+                    bond_snap.len(),
+                    total,
+                    bond_epoch
+                );
+            }
+        }
+    }
+
     println!(
         "  Applied: h={}, {} UTXOs, {} producers",
         height,

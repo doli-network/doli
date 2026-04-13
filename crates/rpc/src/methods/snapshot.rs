@@ -41,6 +41,16 @@ impl RpcContext {
         let snapshot = storage::StateSnapshot::create(&chain_state, &utxo_set, producer_set_ref)
             .map_err(|e| RpcError::internal_error(format!("Failed to create snapshot: {}", e)))?;
 
+        // Include persisted epoch meta keys so doli snap receivers get
+        // the correct bond snapshot (computed at epoch boundary, not snap height).
+        let epoch_meta = self.state_db.as_ref().and_then(|db| {
+            let bond = db.get_epoch_bond_snapshot();
+            bond.map(|(snap, epoch)| {
+                let bytes = bincode::serialize(&(snap, epoch)).unwrap_or_default();
+                hex::encode(&bytes)
+            })
+        });
+
         let response = serde_json::json!({
             "height": snapshot.block_height,
             "blockHash": snapshot.block_hash.to_hex(),
@@ -48,6 +58,7 @@ impl RpcContext {
             "chainState": hex::encode(&snapshot.chain_state_bytes),
             "utxoSet": hex::encode(&snapshot.utxo_set_bytes),
             "producerSet": hex::encode(&snapshot.producer_set_bytes),
+            "epochBondSnapshot": epoch_meta,
             "totalBytes": snapshot.total_bytes(),
         });
 

@@ -41,6 +41,7 @@ pub(super) const META_ACTIVE_PRODUCTION_LIST: &[u8] = b"active_production_list";
 pub(super) const META_EPOCH_ATTESTED_SET: &[u8] = b"epoch_attested_set";
 pub(super) const META_EPOCH_ATTESTATION_ACCUM: &[u8] = b"epoch_attestation_accum";
 pub(super) const META_EPOCH_BLOCKS_PRODUCED: &[u8] = b"epoch_blocks_produced";
+pub(super) const META_EPOCH_BOND_SNAPSHOT: &[u8] = b"epoch_bond_snapshot";
 
 /// Unified state database wrapping a single RocksDB instance.
 pub struct StateDb {

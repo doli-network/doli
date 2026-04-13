@@ -662,7 +662,16 @@ impl Node {
         // Build initial epoch bond snapshot from current UTXO set.
         // Without this, nodes that restart mid-epoch fall back to live UTXO
         // counting → scheduler changes with every add-bond TX → divergence.
-        let (initial_bond_snapshot, initial_bond_epoch) = {
+        let (initial_bond_snapshot, initial_bond_epoch) = if let Some((snap, epoch)) =
+            state_db.get_epoch_bond_snapshot()
+        {
+            let total: u64 = snap.values().sum();
+            info!(
+                    "[INIT] Loaded persisted epoch_bond_snapshot: {} producers, total_bonds={}, epoch={}",
+                    snap.len(), total, epoch
+                );
+            (snap, epoch)
+        } else {
             let ps = producer_set.read().await;
             let us = utxo_set.read().await;
             let cs = chain_state.read().await;
@@ -679,11 +688,9 @@ impl Node {
             let total: u64 = snap.values().sum();
             let epoch = if bpe > 0 { h / bpe } else { 0 };
             info!(
-                "Initial epoch bond snapshot: {} producers, total_bonds={}, epoch={}",
-                snap.len(),
-                total,
-                epoch
-            );
+                    "[INIT] No persisted bond snapshot — rebuilt from UTXO: {} producers, total_bonds={}, epoch={}",
+                    snap.len(), total, epoch
+                );
             (snap, epoch)
         };
 

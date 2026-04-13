@@ -693,32 +693,47 @@ impl Node {
             }
         }
 
-        // Step 5: Rebuild epoch_bond_snapshot and epoch_producer_list from restored ProducerSet.
-        // Without this, the node restarts with epoch_bond_snapshot from init.rs which
-        // uses count_bonds() on the UTXO set — but after snap sync the UTXO may not have
-        // matching Bond UTXOs for all producers, causing scheduler divergence (INC-I-010).
+        // Step 5: Load epoch_bond_snapshot from persisted state_db (downloaded from peer).
+        // The peer persisted the correct bond snapshot at the epoch boundary.
+        // Do NOT recalculate from UTXO — the downloaded UTXO set reflects snap_height,
+        // not epoch_boundary, so count_bonds() includes mid-epoch add-bonds that diverge
+        // from the canonical snapshot computed at epoch boundary.
         {
             let ps = self.producer_set.read().await;
-            let us = self.utxo_set.read().await;
             let h = snapshot.block_height;
             let bpe = self.config.network.blocks_per_reward_epoch();
-            let bond_unit = self.config.network.bond_unit();
             let active = ps.active_producers_at_height(h);
 
-            // Build bond snapshot from ProducerSet bonds (authoritative after snap sync)
-            let mut snap = std::collections::HashMap::new();
-            for p in &active {
-                let pkh =
-                    crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, p.public_key.as_bytes());
-                // Use UTXO bond count, but guarantee at least 1 (registered = has bond)
-                let count = us.count_bonds(&pkh, bond_unit).max(1) as u64;
-                snap.insert(pkh, count);
+            if let Some((snap, epoch)) = self.state_db.get_epoch_bond_snapshot() {
+                let total: u64 = snap.values().sum();
+                self.epoch_bond_snapshot = snap;
+                self.epoch_bond_snapshot_epoch = epoch;
+                info!(
+                    "[SNAP_SYNC] Loaded persisted bond snapshot: {} producers, total_bonds={}, epoch={}",
+                    self.epoch_bond_snapshot.len(), total, epoch
+                );
+            } else {
+                // Fallback for peers on pre-v6.13.14 (no persisted bond snapshot).
+                let us = self.utxo_set.read().await;
+                let bond_unit = self.config.network.bond_unit();
+                let mut snap = std::collections::HashMap::new();
+                for p in &active {
+                    let pkh = crypto::hash::hash_with_domain(
+                        crypto::ADDRESS_DOMAIN,
+                        p.public_key.as_bytes(),
+                    );
+                    let count = us.count_bonds(&pkh, bond_unit).max(1) as u64;
+                    snap.insert(pkh, count);
+                }
+                let total: u64 = snap.values().sum();
+                let epoch = if bpe > 0 { h / bpe } else { 0 };
+                self.epoch_bond_snapshot = snap;
+                self.epoch_bond_snapshot_epoch = epoch;
+                warn!(
+                    "[SNAP_SYNC] No persisted bond snapshot — rebuilt from UTXO (may diverge): {} producers, total_bonds={}, epoch={}",
+                    self.epoch_bond_snapshot.len(), total, epoch
+                );
             }
-            let total: u64 = snap.values().sum();
-            let epoch = if bpe > 0 { h / bpe } else { 0 };
-
-            self.epoch_bond_snapshot = snap;
-            self.epoch_bond_snapshot_epoch = epoch;
 
             // Rebuild epoch_producer_list from active producers
             let mut pks: Vec<_> = active.iter().map(|p| p.public_key).collect();
@@ -734,11 +749,12 @@ impl Node {
             // and poison the total cap check (excluded.len() + missed.len() > active/3)
             self.excluded_producers.clear();
 
+            let total: u64 = self.epoch_bond_snapshot.values().sum();
             info!(
                 "[SNAP_SYNC] Rebuilt epoch state: {} producers, total_bonds={}, epoch={}",
                 self.epoch_bond_snapshot.len(),
                 total,
-                epoch
+                self.epoch_bond_snapshot_epoch
             );
         }
 

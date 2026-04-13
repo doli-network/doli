@@ -13,8 +13,8 @@ use crate::utxo::{Outpoint, UtxoEntry};
 use super::types::{
     LastApplied, StateDb, CF_EXIT_HISTORY, CF_META, CF_PRODUCERS, CF_UTXO, CF_UTXO_BY_PUBKEY,
     META_ACTIVE_PRODUCTION_LIST, META_CHAIN_STATE, META_EPOCH_ATTESTATION_ACCUM,
-    META_EPOCH_ATTESTED_SET, META_EPOCH_BLOCKS_PRODUCED, META_EPOCH_PRODUCER_LIST,
-    META_LAST_APPLIED, META_PENDING_UPDATES,
+    META_EPOCH_ATTESTED_SET, META_EPOCH_BLOCKS_PRODUCED, META_EPOCH_BOND_SNAPSHOT,
+    META_EPOCH_PRODUCER_LIST, META_LAST_APPLIED, META_PENDING_UPDATES,
 };
 
 impl StateDb {
@@ -357,6 +357,17 @@ impl StateDb {
                 _ => return None,
             };
         Some((attested, accum, produced))
+    }
+
+    /// Load persisted epoch bond snapshot.
+    pub fn get_epoch_bond_snapshot(
+        &self,
+    ) -> Option<(std::collections::HashMap<crypto::Hash, u64>, u64)> {
+        let cf = self.db.cf_handle(CF_META).unwrap();
+        match self.db.get_cf(cf, META_EPOCH_BOND_SNAPSHOT) {
+            Ok(Some(bytes)) => bincode::deserialize(&bytes).ok(),
+            _ => None,
+        }
     }
 
     /// Load the full ProducerSet from the database.

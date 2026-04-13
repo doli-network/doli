@@ -249,8 +249,7 @@ impl Node {
                     self.active_production_list = self.epoch_producer_list.clone();
                 }
 
-                // Persist lists + attestation accumulators to RocksDB.
-                // On restart, loaded directly instead of reconstructing.
+                // Persist lists + attestation accumulators + bond snapshot to RocksDB.
                 {
                     let mut batch = self.state_db.begin_batch();
                     batch.put_epoch_producer_list(&self.epoch_producer_list);
@@ -260,8 +259,12 @@ impl Node {
                         &self.epoch_attestation_accum,
                         &self.epoch_blocks_produced_accum,
                     );
+                    batch.put_epoch_bond_snapshot(
+                        &self.epoch_bond_snapshot,
+                        self.epoch_bond_snapshot_epoch,
+                    );
                     if let Err(e) = batch.commit() {
-                        warn!("[EPOCH] Failed to persist producer lists: {}", e);
+                        warn!("[EPOCH] Failed to persist epoch state: {}", e);
                     }
                 }
 
