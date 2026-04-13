@@ -293,36 +293,45 @@ impl Node {
         let presence_root = if attested_pks.is_empty() {
             Hash::ZERO
         } else {
-            // Build sorted producer list at EPOCH START height (not current height).
-            // Must match the decode list (epoch_producer_list) which is frozen at
-            // epoch boundary. Using current height causes index shift when a producer
-            // activates mid-epoch (ACTIVATION_DELAY=10), breaking attestation attribution
-            // for all producers after the insertion point.
-            let bpe = self.config.network.blocks_per_reward_epoch();
-            let epoch_start = (height / bpe) * bpe;
-            let sorted_producers: Vec<storage::producer::ProducerInfo> = {
-                let producers = self.producer_set.read().await;
-                let mut ps: Vec<storage::producer::ProducerInfo> = producers
-                    .active_producers_at_height(epoch_start)
-                    .iter()
-                    .map(|p| (*p).clone())
-                    .collect();
-                ps.sort_by(|a, b| a.public_key.as_bytes().cmp(b.public_key.as_bytes()));
-                ps
-            };
-            // Map attesting pubkeys to sorted indices
+            // Use epoch_producer_list as the BASE for bitfield encoding.
+            // This matches the decoder in post_commit.rs exactly (indices 0..N-1).
+            // New producers activated mid-epoch via deferred updates are appended
+            // AFTER the frozen list (index N, N+1, ...) so existing indices stay
+            // stable. The decoder ignores indices >= epoch_producer_list.len(),
+            // which is correct — new producers enter the list at the next epoch.
+            let base_list = &self.epoch_producer_list;
+            let base_set: HashSet<&PublicKey> = base_list.iter().collect();
+
+            // Find new producers not in epoch_producer_list (activated mid-epoch)
+            let producers = self.producer_set.read().await;
+            let all_active: Vec<PublicKey> = producers
+                .active_producers_at_height(height)
+                .iter()
+                .map(|p| p.public_key)
+                .collect();
+            drop(producers);
+
+            let mut extra: Vec<&PublicKey> = all_active
+                .iter()
+                .filter(|pk| !base_set.contains(pk))
+                .collect();
+            extra.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+
+            // Full encode list: frozen list + new producers appended at end
+            let total_len = base_list.len() + extra.len();
+
+            // Map attesting pubkeys to indices
             let mut attested_indices = Vec::new();
             for pk in &attested_pks {
-                if let Some(idx) = sorted_producers.iter().position(|p| &p.public_key == *pk) {
+                if let Some(idx) = base_list.iter().position(|p| p == *pk) {
                     attested_indices.push(idx);
+                } else if let Some(idx) = extra.iter().position(|p| *p == *pk) {
+                    attested_indices.push(base_list.len() + idx);
                 }
             }
             if use_body_bitfield {
-                // Post-activation: bitfield in body, presence_root = BLAKE3(bitfield)
-                body_bitfield = doli_core::encode_attestation_bitfield_vec(
-                    &attested_indices,
-                    sorted_producers.len(),
-                );
+                body_bitfield =
+                    doli_core::encode_attestation_bitfield_vec(&attested_indices, total_len);
                 Hash::from_bytes(*crypto::hash::hash(&body_bitfield).as_bytes())
             } else {
                 // Pre-activation: bitfield packed into presence_root (capped at 256)
