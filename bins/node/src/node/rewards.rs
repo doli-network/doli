@@ -470,11 +470,21 @@ impl Node {
 
         let epoch_boundary_h = epoch * blocks_per_epoch;
 
-        // 1. epoch_bond_snapshot: use persisted if available (correct, computed
-        //    at epoch boundary). Only rebuild from UTXO as fallback for pre-v6.13.14
-        //    nodes that don't have a persisted snapshot. Rebuilding from UTXO at
-        //    current height includes mid-epoch add-bonds that diverge from canonical.
-        if self.state_db.get_epoch_bond_snapshot().is_some() {
+        // 1. epoch_bond_snapshot: never overwrite with an older epoch.
+        //    During header-first catch-up, this function is called at each epoch
+        //    boundary the node processes. If the node already has a correct snapshot
+        //    from a later epoch (loaded from persisted or received via snap sync),
+        //    overwriting it with an earlier epoch's UTXO recalculation causes divergence.
+        if self.epoch_bond_snapshot_epoch >= epoch {
+            info!(
+                "[STARTUP] Keeping epoch_bond_snapshot (epoch={} >= rebuild epoch={}, bonds={})",
+                self.epoch_bond_snapshot_epoch,
+                epoch,
+                self.epoch_bond_snapshot.values().sum::<u64>()
+            );
+        } else if self.state_db.get_epoch_bond_snapshot().is_some()
+            && self.epoch_bond_snapshot_epoch > 0
+        {
             info!(
                 "[STARTUP] Keeping persisted epoch_bond_snapshot (epoch={}, bonds={})",
                 self.epoch_bond_snapshot_epoch,

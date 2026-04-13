@@ -2208,6 +2208,7 @@ mod regression_tests {
                 producer_set: vec![],
                 state_root: Hash::ZERO,
                 block_header_bytes: None,
+                epoch_bond_snapshot_bytes: None,
             },
         };
 

@@ -70,7 +70,16 @@ impl Node {
             // Rebuild epoch bond snapshot from UTXO set.
             // This snapshot is used by the scheduler for the ENTIRE next epoch.
             // All nodes compute this at the same height → deterministic scheduling.
-            {
+            //
+            // Guard: during header-first catch-up, the node processes old epoch
+            // boundaries. If a correct snapshot from a later epoch exists (from
+            // snap sync payload or persisted), don't overwrite with stale data.
+            if self.epoch_bond_snapshot_epoch >= epoch {
+                info!(
+                    "Epoch bond snapshot: keeping existing (epoch {} >= {})",
+                    self.epoch_bond_snapshot_epoch, epoch
+                );
+            } else {
                 let utxo = self.utxo_set.read().await;
                 let producers = self.producer_set.read().await;
                 let active = producers.active_producers_at_height(height);
@@ -91,7 +100,7 @@ impl Node {
                 );
                 self.epoch_bond_snapshot = snapshot;
                 self.epoch_bond_snapshot_epoch = epoch;
-                self.cached_scheduler = None; // Force scheduler rebuild with new bonds
+                self.cached_scheduler = None;
             }
 
             // Reset minute tracker for the new epoch
