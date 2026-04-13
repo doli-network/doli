@@ -470,8 +470,17 @@ impl Node {
 
         let epoch_boundary_h = epoch * blocks_per_epoch;
 
-        // 1. Rebuild epoch_bond_snapshot at the epoch boundary height
-        {
+        // 1. epoch_bond_snapshot: use persisted if available (correct, computed
+        //    at epoch boundary). Only rebuild from UTXO as fallback for pre-v6.13.14
+        //    nodes that don't have a persisted snapshot. Rebuilding from UTXO at
+        //    current height includes mid-epoch add-bonds that diverge from canonical.
+        if self.state_db.get_epoch_bond_snapshot().is_some() {
+            info!(
+                "[STARTUP] Keeping persisted epoch_bond_snapshot (epoch={}, bonds={})",
+                self.epoch_bond_snapshot_epoch,
+                self.epoch_bond_snapshot.values().sum::<u64>()
+            );
+        } else {
             let utxo = self.utxo_set.read().await;
             let producers = self.producer_set.read().await;
             let active = producers.active_producers_at_height(epoch_boundary_h);
@@ -485,11 +494,9 @@ impl Node {
                 snapshot.insert(pkh, count);
             }
             let total: u64 = snapshot.values().sum();
-            info!(
-                "[STARTUP] Rebuilt epoch bond snapshot: epoch={}, producers={}, total_bonds={}",
-                epoch,
-                snapshot.len(),
-                total
+            warn!(
+                "[STARTUP] No persisted bond snapshot — rebuilt from UTXO (may diverge): epoch={}, producers={}, total_bonds={}",
+                epoch, snapshot.len(), total
             );
             self.epoch_bond_snapshot = snapshot;
             self.epoch_bond_snapshot_epoch = epoch;
