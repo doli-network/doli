@@ -293,12 +293,17 @@ impl Node {
         let presence_root = if attested_pks.is_empty() {
             Hash::ZERO
         } else {
-            // Build sorted producer list (same ordering as DeterministicScheduler)
-            // Use height-aware method to match the decoding path in calculate_epoch_rewards()
+            // Build sorted producer list at EPOCH START height (not current height).
+            // Must match the decode list (epoch_producer_list) which is frozen at
+            // epoch boundary. Using current height causes index shift when a producer
+            // activates mid-epoch (ACTIVATION_DELAY=10), breaking attestation attribution
+            // for all producers after the insertion point.
+            let bpe = self.config.network.blocks_per_reward_epoch();
+            let epoch_start = (height / bpe) * bpe;
             let sorted_producers: Vec<storage::producer::ProducerInfo> = {
                 let producers = self.producer_set.read().await;
                 let mut ps: Vec<storage::producer::ProducerInfo> = producers
-                    .active_producers_at_height(height)
+                    .active_producers_at_height(epoch_start)
                     .iter()
                     .map(|p| (*p).clone())
                     .collect();
