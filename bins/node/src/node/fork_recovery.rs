@@ -780,6 +780,37 @@ impl Node {
             );
         }
 
+        // Step 5b: Load attestation accumulators from peer payload.
+        // Eliminates the 3-epoch convergence window where attestation data
+        // diverges after snap sync.
+        if let Some(ref accum_bytes) = snapshot.epoch_accumulators_bytes {
+            type AccumType = (
+                [std::collections::HashSet<crypto::PublicKey>; 3],
+                [std::collections::HashMap<crypto::PublicKey, std::collections::HashSet<u32>>; 3],
+                std::collections::HashMap<crypto::PublicKey, u32>,
+            );
+            if let Ok((attested, accum, produced)) = bincode::deserialize::<AccumType>(accum_bytes)
+            {
+                info!(
+                    "[SNAP_SYNC] Attestation accumulators from peer: attested=[{},{},{}] accum=[{},{},{}] produced={}",
+                    attested[0].len(), attested[1].len(), attested[2].len(),
+                    accum[0].len(), accum[1].len(), accum[2].len(),
+                    produced.len()
+                );
+                self.epoch_attested_set = attested;
+                self.epoch_attestation_accum = accum;
+                self.epoch_blocks_produced_accum = produced;
+                // Persist so restarts don't lose them
+                let mut batch = self.state_db.begin_batch();
+                batch.put_attestation_accumulators(
+                    &self.epoch_attested_set,
+                    &self.epoch_attestation_accum,
+                    &self.epoch_blocks_produced_accum,
+                );
+                let _ = batch.commit();
+            }
+        }
+
         // Step 6: Track snap sync height for validation mode selection
         self.snap_sync_height = Some(snapshot.block_height);
 

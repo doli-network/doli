@@ -902,6 +902,10 @@ impl Node {
                             .state_db
                             .get_epoch_bond_snapshot()
                             .and_then(|(snap, epoch)| bincode::serialize(&(snap, epoch)).ok());
+                        let epoch_accumulators_bytes = self
+                            .state_db
+                            .get_attestation_accumulators()
+                            .and_then(|data| bincode::serialize(&data).ok());
                         SyncResponse::StateSnapshot {
                             block_hash: snap.block_hash,
                             block_height: snap.block_height,
@@ -911,6 +915,7 @@ impl Node {
                             state_root: snap.state_root,
                             block_header_bytes,
                             epoch_bond_snapshot_bytes,
+                            epoch_accumulators_bytes,
                         }
                     }
                     Err(e) => SyncResponse::Error(format!("Snapshot error: {}", e)),

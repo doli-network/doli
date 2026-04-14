@@ -167,6 +167,8 @@ pub struct VerifiedSnapshot {
     pub block_header_bytes: Option<Vec<u8>>,
     /// Epoch bond snapshot bytes from peer (correct, computed at epoch boundary)
     pub epoch_bond_snapshot_bytes: Option<Vec<u8>>,
+    /// Attestation accumulators from peer (eliminates 3-epoch convergence)
+    pub epoch_accumulators_bytes: Option<Vec<u8>>,
 }
 
 // ---------------------------------------------------------------------------

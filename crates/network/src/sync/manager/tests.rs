@@ -2209,6 +2209,7 @@ mod regression_tests {
                 state_root: Hash::ZERO,
                 block_header_bytes: None,
                 epoch_bond_snapshot_bytes: None,
+                epoch_accumulators_bytes: None,
             },
         };
 

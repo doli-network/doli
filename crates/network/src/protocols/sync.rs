@@ -113,6 +113,10 @@ pub enum SyncResponse {
         /// recalculating from UTXO (which diverges due to mid-epoch add-bonds).
         #[serde(default)]
         epoch_bond_snapshot_bytes: Option<Vec<u8>>,
+        /// Attestation accumulators: serialized (attested_set, attestation_accum, blocks_produced).
+        /// Eliminates the 3-epoch convergence window after snap sync.
+        #[serde(default)]
+        epoch_accumulators_bytes: Option<Vec<u8>>,
     },
 
     /// State root only, for cross-peer verification (snap sync)
