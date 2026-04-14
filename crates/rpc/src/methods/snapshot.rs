@@ -51,6 +51,16 @@ impl RpcContext {
             })
         });
 
+        // Include attestation accumulators so doli snap receivers arrive at
+        // the next epoch boundary with correct attestation data — eliminates
+        // the 3-epoch convergence window where qualified-producer sets diverge.
+        let epoch_accumulators = self.state_db.as_ref().and_then(|db| {
+            db.get_attestation_accumulators().map(|data| {
+                let bytes = bincode::serialize(&data).unwrap_or_default();
+                hex::encode(&bytes)
+            })
+        });
+
         let response = serde_json::json!({
             "height": snapshot.block_height,
             "blockHash": snapshot.block_hash.to_hex(),
@@ -59,6 +69,7 @@ impl RpcContext {
             "utxoSet": hex::encode(&snapshot.utxo_set_bytes),
             "producerSet": hex::encode(&snapshot.producer_set_bytes),
             "epochBondSnapshot": epoch_meta,
+            "epochAccumulators": epoch_accumulators,
             "totalBytes": snapshot.total_bytes(),
         });
 

@@ -278,6 +278,36 @@ pub(crate) async fn cmd_snap(
         }
     }
 
+    // Write attestation accumulators if present. Eliminates the 3-epoch
+    // convergence window after CLI snap sync — receiver arrives at the next
+    // epoch boundary with the same qualified-producer set as canonical.
+    if let Some(accum_hex) = snap["epochAccumulators"].as_str() {
+        if let Ok(accum_bytes) = hex::decode(accum_hex) {
+            #[allow(clippy::type_complexity)]
+            type AccumType = (
+                [std::collections::HashSet<crypto::PublicKey>; 3],
+                [std::collections::HashMap<crypto::PublicKey, std::collections::HashSet<u32>>; 3],
+                std::collections::HashMap<crypto::PublicKey, u32>,
+            );
+            if let Ok((attested, accum, produced)) = bincode::deserialize::<AccumType>(&accum_bytes)
+            {
+                let mut batch = state_db.begin_batch();
+                batch.put_attestation_accumulators(&attested, &accum, &produced);
+                let _ = batch.commit();
+                println!(
+                    "  Attestation accumulators: attested=[{},{},{}] accum=[{},{},{}] produced={}",
+                    attested[0].len(),
+                    attested[1].len(),
+                    attested[2].len(),
+                    accum[0].len(),
+                    accum[1].len(),
+                    accum[2].len(),
+                    produced.len()
+                );
+            }
+        }
+    }
+
     println!(
         "  Applied: h={}, {} UTXOs, {} producers",
         height,
