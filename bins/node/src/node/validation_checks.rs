@@ -322,19 +322,16 @@ impl Node {
                 }
             }
 
-            // Total cap: excluded + new missed must not exceed active/3
-            let max_total = if self.epoch_producer_list.is_empty() {
-                usize::MAX
-            } else {
-                self.epoch_producer_list.len() / 3
-            };
-            let total_after = self.excluded_producers.len() + missed.len();
-            if total_after > max_total {
-                return Err(validation::ValidationError::InvalidTransaction(format!(
-                    "[ERRTX070] missed_producers would bring total excluded to {} (max {}, currently_excluded={})",
-                    total_after, max_total, self.excluded_producers.len(),
-                )));
-            }
+            // NOTE: the previous total-cap check against self.excluded_producers
+            // (ERRTX070) was removed in v6.13.21. It compared LOCAL state
+            // (self.excluded_producers) with a CANONICAL block header field
+            // (missed), which made validation non-deterministic across nodes —
+            // two nodes with different excluded sets would validate the same
+            // block differently and fork. With INC-I-026 the scheduler no
+            // longer consults excluded_producers, so there is no consensus
+            // reason to enforce the cap at validation time. The sanity cap
+            // in post_commit.rs clears excluded_producers after apply if it
+            // exceeds 1/3, preventing unbounded growth.
         }
 
         // P0-001: public_key enforcement is ACTIVE (v5.2.0+).

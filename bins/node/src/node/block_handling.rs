@@ -262,6 +262,23 @@ impl Node {
             .await
             .clear_awaiting_canonical_block();
 
+        // Post-apply catch-up: if any peer has a block above our new tip, pull
+        // the next one immediately instead of waiting for gossip. Without this,
+        // nodes on resource-contended hosts stabilize at a persistent lag of 1:
+        // gossip delivers h=N while the network produces h=N+1, apply takes long
+        // enough that by the time we finish, h=N+1 already exists but our gap
+        // (=1) stays below the sync-manager threshold, so no catch-up fires.
+        //
+        // catch_up_request() is read-only; it returns None when we are actively
+        // syncing, already at tip, or have a pending request for the next block.
+        // Self-limiting: zero requests when caught up.
+        let catch_up = self.sync_manager.read().await.catch_up_request();
+        if let Some((peer_id, request)) = catch_up {
+            if let Some(ref network) = self.network {
+                let _ = network.request_sync(peer_id, request).await;
+            }
+        }
+
         Ok(())
     }
 

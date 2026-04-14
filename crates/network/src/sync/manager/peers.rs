@@ -8,6 +8,7 @@ use tracing::{debug, info, warn};
 use crypto::Hash;
 
 use super::{PeerSyncStatus, SyncManager, SyncPipelineData, SyncState};
+use crate::protocols::SyncRequest;
 
 impl SyncManager {
     // =========================================================================
@@ -196,6 +197,58 @@ impl SyncManager {
             .unwrap_or(0);
         // Return the higher of peer data or network gossip tip
         peer_max.max(self.network.network_tip_height)
+    }
+
+    /// Post-apply catch-up: if we're behind a peer by one or more blocks,
+    /// return a single-block pull request for the next height.
+    ///
+    /// This is the invariant: "after each apply, if anyone has more, ask for it."
+    /// No timers, no thresholds, no new state — the method is `&self` and purely
+    /// derived from the current peer map, local height, and pipeline state.
+    ///
+    /// Returns None when:
+    /// - We are actively syncing (full sync pipeline handles it)
+    /// - We are caught up (local_height >= best_peer_height)
+    /// - We already have a pending GetBlockByHeight for local_height+1
+    /// - No peer has a usable higher tip
+    ///
+    /// The returned request is NOT registered in pending_requests — the response
+    /// flows through the normal block handling path, which treats untracked
+    /// SyncResponse::Block as legitimate (see response.rs:34 comment).
+    pub fn catch_up_request(&self) -> Option<(PeerId, SyncRequest)> {
+        // Don't interfere with an active full-sync pipeline.
+        if self.state.is_syncing() {
+            return None;
+        }
+
+        let target_height = self.local_height + 1;
+
+        // If we already sent a catch-up for this height, don't duplicate.
+        if self
+            .pipeline
+            .pending_requests
+            .values()
+            .any(|r| matches!(r.request, SyncRequest::GetBlockByHeight { height } if height == target_height))
+        {
+            return None;
+        }
+
+        // Pick any peer whose advertised tip is higher than our local and who
+        // has no outstanding request from us (to spread load and avoid queueing
+        // behind a header-sync request).
+        let peer = self
+            .peers
+            .iter()
+            .filter(|(_, s)| s.best_height > self.local_height && s.pending_request.is_none())
+            .max_by_key(|(_, s)| s.best_height)
+            .map(|(pid, _)| *pid)?;
+
+        Some((
+            peer,
+            SyncRequest::GetBlockByHeight {
+                height: target_height,
+            },
+        ))
     }
 
     /// Get the peer with the highest height and their best_hash.
