@@ -9,9 +9,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use libp2p::{autonat, gossipsub, identify, kad, request_response, Multiaddr, PeerId, Swarm};
+use std::time::SystemTime;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, info, warn};
-use std::time::SystemTime;
 
 use doli_core::{decode_digest, decode_producer_set, is_legacy_bincode_format, Block, BlockHeader};
 
@@ -84,7 +84,10 @@ pub(super) async fn handle_behaviour_event(
                             .send(NetworkEvent::NewBlock(block, propagation_source))
                             .await;
                     } else {
-                        warn!("[GOSSIP_BLOCK] deserialize_failed from={} size={}", propagation_source, msg_size);
+                        warn!(
+                            "[GOSSIP_BLOCK] deserialize_failed from={} size={}",
+                            propagation_source, msg_size
+                        );
                     }
                 }
                 TRANSACTIONS_TOPIC => {
@@ -278,7 +281,10 @@ pub(super) async fn handle_behaviour_event(
                             .send(NetworkEvent::NewBlock(block, propagation_source))
                             .await;
                     } else {
-                        warn!("[GOSSIP_BLOCK] t1_deserialize_failed from={} size={}", propagation_source, msg_size);
+                        warn!(
+                            "[GOSSIP_BLOCK] t1_deserialize_failed from={} size={}",
+                            propagation_source, msg_size
+                        );
                     }
                 }
                 topic if topic.starts_with("/doli/r") && topic.ends_with("/blocks/1") => {
@@ -633,10 +639,7 @@ pub(super) async fn handle_behaviour_event(
         }
 
         DoliBehaviourEvent::Gossipsub(gossipsub::Event::GossipsubNotSupported { peer_id }) => {
-            warn!(
-                "[GOSSIP_SUB] gossipsub_not_supported peer={}",
-                peer_id
-            );
+            warn!("[GOSSIP_SUB] gossipsub_not_supported peer={}", peer_id);
         }
 
         _ => {}

@@ -29,9 +29,11 @@ pub(super) async fn handle_command(
             let block_hash = block.hash();
             let block_producer = block.header.producer;
             let block_ts = block.header.timestamp;
-            let mesh_peers = swarm.behaviour().gossipsub.mesh_peers(
-                &libp2p::gossipsub::IdentTopic::new(BLOCKS_TOPIC).hash()
-            ).count();
+            let mesh_peers = swarm
+                .behaviour()
+                .gossipsub
+                .mesh_peers(&libp2p::gossipsub::IdentTopic::new(BLOCKS_TOPIC).hash())
+                .count();
             let data = block.serialize();
             let data_len = data.len();
             let topic = IdentTopic::new(BLOCKS_TOPIC);
