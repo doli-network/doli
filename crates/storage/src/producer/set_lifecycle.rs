@@ -23,6 +23,10 @@ impl ProducerSet {
         let key = crypto_hash(pubkey.as_bytes());
         match info.status {
             ProducerStatus::Active => {
+                tracing::info!(
+                    "[PRODUCER] Exit initiated: pk_hash={:.16} reason=voluntary_unbonding",
+                    key
+                );
                 info.start_unbonding(current_height);
                 self.active_cache = None;
                 // Maintain unbonding index
@@ -166,6 +170,10 @@ impl ProducerSet {
         })?;
 
         let slashed_amount = info.bond_amount;
+        tracing::info!(
+            "[PRODUCER] Exit initiated: pk_hash={:.16} reason=slashed",
+            key
+        );
         info.slash(current_height);
 
         // Record in exit history with current height (slashed producers lose all seniority)

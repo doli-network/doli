@@ -37,6 +37,16 @@ impl ProducerSet {
             info.has_prior_exit = true;
         }
 
+        let bond_count = info.bond_count;
+        let activation_height = info
+            .registered_at
+            .saturating_add(super::constants::ACTIVATION_DELAY);
+        tracing::info!(
+            "[PRODUCER] Registered: pk_hash={:.16} bond_count={} activation_h={}",
+            key,
+            bond_count,
+            activation_height
+        );
         self.producers.insert(key, info);
         self.active_cache = None;
         Ok(())
@@ -65,6 +75,16 @@ impl ProducerSet {
             info.has_prior_exit = true;
         }
 
+        let bond_count = info.bond_count;
+        let activation_height = info
+            .registered_at
+            .saturating_add(super::constants::ACTIVATION_DELAY);
+        tracing::info!(
+            "[PRODUCER] Registered: pk_hash={:.16} bond_count={} activation_h={}",
+            key,
+            bond_count,
+            activation_height
+        );
         self.producers.insert(key, info);
         self.active_cache = None;
         Ok(())

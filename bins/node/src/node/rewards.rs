@@ -420,14 +420,19 @@ impl Node {
         };
 
         let mut excluded: HashSet<PublicKey> = HashSet::new();
+        let mut blocks_scanned: u64 = 0;
+        let mut cap_hit = false;
 
         for h in start_h..=current_h {
             if excluded.len() >= max_excluded {
+                cap_hit = true;
                 break;
             }
             if let Ok(Some(blk)) = self.block_store.get_block_by_height(h) {
+                blocks_scanned += 1;
                 for pk in &blk.header.missed_producers {
                     if excluded.len() >= max_excluded {
+                        cap_hit = true;
                         break;
                     }
                     excluded.insert(*pk);
@@ -438,6 +443,11 @@ impl Node {
         let old_count = self.excluded_producers.len();
         self.excluded_producers = excluded;
         let new_count = self.excluded_producers.len();
+
+        info!(
+            "[LIVENESS] Excluded rebuild: count={} cap={} blocks_scanned={} cap_hit={}",
+            new_count, max_excluded, blocks_scanned, cap_hit
+        );
 
         if old_count > 0 || new_count > 0 {
             info!(

@@ -34,6 +34,16 @@ pub fn compute_state_root(
     let utxo_hash = crypto::hash::hash(&utxo_bytes);
     let ps_hash = crypto::hash::hash(&ps_bytes);
 
+    tracing::debug!(
+        "[STATE_ROOT] cs={:.16} utxo={:.16} ps={:.16} cs_bytes={} utxo_bytes={} ps_bytes={}",
+        cs_hash,
+        utxo_hash,
+        ps_hash,
+        cs_bytes.len(),
+        utxo_bytes.len(),
+        ps_bytes.len()
+    );
+
     let mut combined = Vec::with_capacity(96);
     combined.extend_from_slice(cs_hash.as_bytes());
     combined.extend_from_slice(utxo_hash.as_bytes());
@@ -74,6 +84,16 @@ impl StateSnapshot {
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
 
         let state_root = compute_state_root(chain_state, utxo_set, producer_set)?;
+
+        tracing::info!(
+            "[SNAPSHOT] Created: h={} hash={:.16} root={:.16} cs={}B utxo={}B ps={}B",
+            chain_state.best_height,
+            chain_state.best_hash,
+            state_root,
+            chain_state_bytes.len(),
+            utxo_set_bytes.len(),
+            producer_set_bytes.len()
+        );
 
         Ok(Self {
             block_hash: chain_state.best_hash,

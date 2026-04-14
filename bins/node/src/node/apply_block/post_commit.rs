@@ -37,6 +37,17 @@ impl Node {
                 } else {
                     vec![]
                 };
+                debug!(
+                    "[ATTEST_DECODE] h={} epoch_list={} indices={} bitfield_len={}",
+                    height,
+                    self.epoch_producer_list.len(),
+                    indices.len(),
+                    if !block.attestation_bitfield.is_empty() {
+                        block.attestation_bitfield.len()
+                    } else {
+                        32
+                    }
+                );
                 for idx in indices {
                     if let Some(pk) = self.epoch_producer_list.get(idx) {
                         self.epoch_attested_set[0].insert(*pk);
@@ -76,8 +87,10 @@ impl Node {
             // snap sync payload or persisted), don't overwrite with stale data.
             if self.epoch_bond_snapshot_epoch >= epoch {
                 info!(
-                    "Epoch bond snapshot: keeping existing (epoch {} >= {})",
-                    self.epoch_bond_snapshot_epoch, epoch
+                    "[EPOCH] Bond snapshot: KEEPING existing epoch={} (incoming epoch={}) producers={} total_bonds={}",
+                    self.epoch_bond_snapshot_epoch, epoch,
+                    self.epoch_bond_snapshot.len(),
+                    self.epoch_bond_snapshot.values().sum::<u64>()
                 );
             } else {
                 let utxo = self.utxo_set.read().await;
@@ -101,6 +114,25 @@ impl Node {
                 self.epoch_bond_snapshot = snapshot;
                 self.epoch_bond_snapshot_epoch = epoch;
                 self.cached_scheduler = None;
+                {
+                    let mut keys: Vec<_> = self.epoch_bond_snapshot.keys().collect();
+                    keys.sort();
+                    let fp_bytes: Vec<u8> = keys
+                        .iter()
+                        .flat_map(|k| k.as_bytes())
+                        .copied()
+                        .chain(
+                            self.epoch_bond_snapshot
+                                .values()
+                                .flat_map(|v| v.to_le_bytes()),
+                        )
+                        .collect();
+                    let fp = crypto::hash::hash(&fp_bytes);
+                    info!(
+                        "[EPOCH] Bond snapshot fingerprint: epoch={} producers={} total_bonds={} fp={:.16}",
+                        epoch, self.epoch_bond_snapshot.len(), total, fp
+                    );
+                }
             }
 
             // Reset minute tracker for the new epoch
@@ -168,6 +200,21 @@ impl Node {
                             .map(|p| p.public_key)
                             .collect();
                     }
+                }
+
+                // Log filter summary: how many retained vs active, with attestation window sizes.
+                {
+                    let producers = self.producer_set.read().await;
+                    let active_count = producers.active_producers_at_height(height).len();
+                    info!(
+                        "[EPOCH] Producer list filter: epoch={} retained={} active={} attested_e0={} attested_e1={} attested_e2={}",
+                        epoch,
+                        new_list.len(),
+                        active_count,
+                        self.epoch_attested_set[0].len(),
+                        self.epoch_attested_set[1].len(),
+                        self.epoch_attested_set[2].len()
+                    );
                 }
 
                 new_list.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
@@ -288,6 +335,15 @@ impl Node {
 
                 // Rotate attestation accumulators AFTER reading them.
                 // [0]=just-completed → [1]=prev, [1]=prev → [2]=prev-prev, [2] discarded.
+                debug!(
+                    "[EPOCH] Accum pre-rotation: e0_attested={} e1_attested={} e2_attested={} e0_minutes={} e1_minutes={} blocks_produced={}",
+                    self.epoch_attested_set[0].len(),
+                    self.epoch_attested_set[1].len(),
+                    self.epoch_attested_set[2].len(),
+                    self.epoch_attestation_accum[0].len(),
+                    self.epoch_attestation_accum[1].len(),
+                    self.epoch_blocks_produced_accum.len()
+                );
                 self.epoch_attested_set[2] = std::mem::take(&mut self.epoch_attested_set[1]);
                 self.epoch_attested_set[1] = std::mem::take(&mut self.epoch_attested_set[0]);
                 self.epoch_attestation_accum[2] =

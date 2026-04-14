@@ -329,6 +329,15 @@ impl Node {
                     attested_indices.push(base_list.len() + idx);
                 }
             }
+            debug!(
+                "[ATTEST_ENCODE] h={} base_list={} extra={} attested={} total_len={} body={}",
+                height,
+                base_list.len(),
+                extra.len(),
+                attested_indices.len(),
+                total_len,
+                use_body_bitfield
+            );
             if use_body_bitfield {
                 body_bitfield =
                     doli_core::encode_attestation_bitfield_vec(&attested_indices, total_len);
@@ -406,6 +415,18 @@ impl Node {
             }
             missed
         };
+        if !missed_producers.is_empty() {
+            let slot_gap = current_slot.saturating_sub(prev_slot);
+            debug!(
+                "[LIVENESS] missed_producers: slot_gap={} count={} pks={:?}",
+                slot_gap,
+                missed_producers.len(),
+                missed_producers
+                    .iter()
+                    .map(|pk| hex::encode(&pk.as_bytes()[..4]))
+                    .collect::<Vec<_>>()
+            );
+        }
         let builder = builder.with_missed_producers(missed_producers);
 
         // Build header + finalized transaction list. The merkle root is computed from

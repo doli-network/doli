@@ -326,6 +326,14 @@ impl ProducerInfo {
         }
 
         self.bond_count += bonds_to_add;
+        if bonds_to_add > 0 {
+            tracing::info!(
+                "[PRODUCER] Bond added: pk={} new_bond_count={} total_bonds={}",
+                self.public_key,
+                bonds_to_add,
+                self.bond_count
+            );
+        }
         bonds_to_add
     }
 

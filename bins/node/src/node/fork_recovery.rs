@@ -714,6 +714,18 @@ impl Node {
                     .as_ref()
                     .and_then(|bytes| bincode::deserialize(bytes).ok());
 
+            {
+                let has_bond_snap = from_payload.is_some();
+                let (bond_producers, bond_total, bond_epoch) = from_payload
+                    .as_ref()
+                    .map(|(s, e)| (s.len(), s.values().sum::<u64>(), *e))
+                    .unwrap_or((0, 0, 0));
+                info!(
+                    "[SNAP_SYNC] Bond snapshot from peer: included={} epoch={} producers={} total_bonds={}",
+                    has_bond_snap, bond_epoch, bond_producers, bond_total
+                );
+            }
+
             if let Some((snap, epoch)) = from_payload {
                 let total: u64 = snap.values().sum();
                 self.epoch_bond_snapshot = snap;

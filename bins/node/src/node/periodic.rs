@@ -627,6 +627,23 @@ impl Node {
                 self.epoch_bond_snapshot_epoch, snap_bonds, snap_producers
             );
 
+            // Sync state summary — captures key sync variables for post-incident analysis.
+            {
+                let gap = net_tip_h.saturating_sub(cs.best_height);
+                let secs_since_last_apply = sync.last_block_applied_secs();
+                let excluded_count = self.excluded_producers.len();
+                let epoch_list_len = self.epoch_producer_list.len();
+                info!(
+                    "[SYNC_STATE] gap={} phase={:?} last_applied_ago={}s excluded={}/{} rollback_depth={}",
+                    gap,
+                    sync.sync_state_name(),
+                    secs_since_last_apply,
+                    excluded_count,
+                    epoch_list_len,
+                    self.cumulative_rollback_depth
+                );
+            }
+
             // INC-I-020/020b: DISABLED.
             //
             // STALE_TIP and FORK_1BLOCK removed. They fought with FORK_GUARD:

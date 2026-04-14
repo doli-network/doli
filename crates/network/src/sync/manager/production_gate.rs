@@ -171,6 +171,35 @@ impl SyncManager {
         // (restart, gossip delay, network partition). The deadlock risk
         // vastly exceeds the cost of an ignored block.
 
+        // Log all numeric decision inputs that led to AUTHORIZED.
+        // When production is DENIED, log_production_denial() captures the reason.
+        // This line captures the healthy-path inputs for post-incident correlation.
+        {
+            let gossip_silence_ms = self
+                .last_block_received_via_gossip
+                .map(|t| t.elapsed().as_millis() as u64)
+                .unwrap_or(0);
+            let peers_ahead = self
+                .peers
+                .values()
+                .filter(|p| p.best_height > self.local_height)
+                .count();
+            let finalized_height = self
+                .finality_tracker
+                .last_finalized
+                .as_ref()
+                .map(|c| c.height);
+            debug!(
+                "[CAN_PRODUCE] local_h={} net_tip={} finalized={:?} gossip_silence_ms={} peers_ahead={} total_peers={} decision=AUTHORIZED",
+                self.local_height,
+                self.network.network_tip_height,
+                finalized_height,
+                gossip_silence_ms,
+                peers_ahead,
+                self.peers.len()
+            );
+        }
+
         info!("[CAN_PRODUCE] AUTHORIZED");
         ProductionAuthorization::Authorized
     }

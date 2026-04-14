@@ -15,6 +15,25 @@ impl Node {
             sync.local_tip().0
         };
 
+        // Log all context that led to this rollback being initiated.
+        // The caller (resolve_shallow_fork, auto_resync) provides the trigger;
+        // this captures the numeric state for post-incident root-cause analysis.
+        {
+            let sync = self.sync_manager.read().await;
+            let empty_headers = sync.consecutive_empty_headers();
+            let best_peer_h = sync.best_peer_height();
+            let gap = best_peer_h.saturating_sub(local_height);
+            info!(
+                "[ROLLBACK] Initiating: depth={} local_h={} target_h={} gap={} empty_headers={} shallow_count={}",
+                self.cumulative_rollback_depth + 1,
+                local_height,
+                local_height.saturating_sub(1),
+                gap,
+                empty_headers,
+                self.shallow_rollback_count
+            );
+        }
+
         if local_height == 0 {
             return Ok(false);
         }

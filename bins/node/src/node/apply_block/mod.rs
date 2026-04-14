@@ -70,7 +70,18 @@ impl Node {
         self.validate_block_for_apply(&block, height, mode).await?;
         self.validate_block_economics(&block, height, mode).await?;
 
-        info!("Applying block {} at height {}", block_hash, height);
+        {
+            let blocks_per_epoch = self.config.network.blocks_per_reward_epoch();
+            info!(
+                "[BLOCK] Applied h={} hash={:.16} producer={:.8} slot={} txs={} epoch={}",
+                height,
+                block_hash,
+                hex::encode(block.header.producer.as_bytes()),
+                block.header.slot,
+                block.transactions.len(),
+                height / blocks_per_epoch
+            );
+        }
 
         // NOTE: Block store write is deferred to AFTER all transaction validation.
         // Writing here would poison the store if UTXO validation fails later —

@@ -369,7 +369,17 @@ impl Node {
             }
         }
 
-        validation::validate_block_with_mode(block, &ctx, mode)
+        validation::validate_block_with_mode(block, &ctx, mode).map_err(|e| {
+            warn!(
+                "[VALIDATION] Failed: h={} hash={:.16} producer={:.8} slot={} err={}",
+                height,
+                block.hash(),
+                hex::encode(block.header.producer.as_bytes()),
+                block.header.slot,
+                e
+            );
+            e
+        })
     }
 
     /// Validate block economics — prevents inflation and reward theft.
@@ -577,6 +587,16 @@ impl Node {
                 if expected_sorted != actual_sorted {
                     let total_distributed: u64 = actual_sorted.iter().map(|(a, _)| *a).sum();
                     let expected_total: u64 = expected_sorted.iter().map(|(a, _)| *a).sum();
+                    warn!(
+                        "[VALIDATION] EpochReward divergence: h={} hash={:.16} epoch={} expected_outputs={} actual_outputs={} expected_total={} actual_total={}",
+                        height,
+                        block.hash(),
+                        completed_epoch,
+                        expected_sorted.len(),
+                        actual_sorted.len(),
+                        expected_total,
+                        total_distributed
+                    );
                     anyhow::bail!(
                         "[ECON_EPOCH_DISTRIBUTION] EpochReward mismatch at height={}: \
                          expected {} outputs totaling {}, got {} outputs totaling {}",
@@ -895,14 +915,24 @@ impl Node {
                         } else {
                             None
                         };
-                        let epoch_bond_snapshot_bytes = self
-                            .state_db
-                            .get_epoch_bond_snapshot()
-                            .and_then(|(snap, epoch)| bincode::serialize(&(snap, epoch)).ok());
+                        let epoch_bond_snapshot_bytes =
+                            self.state_db.get_epoch_bond_snapshot().and_then(
+                                |(snap_data, epoch)| bincode::serialize(&(snap_data, epoch)).ok(),
+                            );
                         let epoch_accumulators_bytes = self
                             .state_db
                             .get_attestation_accumulators()
                             .and_then(|data| bincode::serialize(&data).ok());
+                        let has_bond_snap = epoch_bond_snapshot_bytes.is_some();
+                        info!(
+                            "[SNAP_SYNC] Sending snapshot response: h={} hash={:.16} cs={}B utxo={}B ps={}B bond_snap={}",
+                            snap.block_height,
+                            snap.block_hash,
+                            snap.chain_state_bytes.len(),
+                            snap.utxo_set_bytes.len(),
+                            snap.producer_set_bytes.len(),
+                            if has_bond_snap { "included" } else { "MISSING" }
+                        );
                         SyncResponse::StateSnapshot {
                             block_hash: snap.block_hash,
                             block_height: snap.block_height,
