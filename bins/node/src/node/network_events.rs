@@ -120,6 +120,19 @@ impl Node {
             sync.update_network_tip_slot(block.header.slot);
             sync.note_block_received_via_gossip();
         }
+
+        // Gossip latency instrumentation (v6.13.22): pair this with [APPLY_START]
+        // and [APPLY_END] in handle_new_block by block slot. Gap between
+        // [GOSSIP_RECV slot=S] and [APPLY_START slot=S] = event-loop dispatch
+        // latency. Gap between [APPLY_END slot=S] and next [GOSSIP_RECV slot=S+k]
+        // = mesh propagation + producer-side delay for the next occupied slot.
+        info!(
+            "[GOSSIP_RECV] slot={} src={} hash={}",
+            block.header.slot,
+            source_peer,
+            block.hash()
+        );
+
         self.handle_new_block(block, source_peer).await?;
         Ok(())
     }

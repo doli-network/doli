@@ -4,10 +4,21 @@ impl Node {
     /// Handle a new block from the network
     pub async fn handle_new_block(&mut self, block: Block, source_peer: PeerId) -> Result<()> {
         let block_hash = block.hash();
+        let block_slot = block.header.slot;
+
+        // Gossip latency instrumentation (v6.13.22): correlate by slot with
+        // [GOSSIP_RECV] and [APPLY_END] lines. See on_new_block_event.
+        let apply_start = Instant::now();
+        info!("[APPLY_START] slot={} hash={}", block_slot, block_hash);
 
         // Check if we already have this block
         if self.block_store.get_block(&block_hash)?.is_some() {
             debug!("Block {} already known", block_hash);
+            info!(
+                "[APPLY_END] slot={} apply_ms={} status=already_known",
+                block_slot,
+                apply_start.elapsed().as_millis()
+            );
             return Ok(());
         }
 
@@ -278,6 +289,13 @@ impl Node {
                 let _ = network.request_sync(peer_id, request).await;
             }
         }
+
+        // Gossip latency instrumentation (v6.13.22).
+        info!(
+            "[APPLY_END] slot={} apply_ms={} status=applied",
+            block_slot,
+            apply_start.elapsed().as_millis()
+        );
 
         Ok(())
     }
