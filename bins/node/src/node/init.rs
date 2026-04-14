@@ -31,7 +31,7 @@ impl Node {
 
         // Open storage
         let blocks_path = config.data_dir.join("blocks");
-        let block_store = Arc::new(BlockStore::open(&blocks_path)?);
+        let mut block_store = Arc::new(BlockStore::open(&blocks_path)?);
 
         // Open unified StateDb (atomic WriteBatch per block)
         let state_db_path = config.data_dir.join("state_db");
@@ -209,9 +209,32 @@ impl Node {
                 &chain_state.genesis_hash.to_string()[..16],
                 &canonical.to_string()[..16],
             );
-            // Wipe block store — old-chain blocks poison sync via "already in store" guard
+            // Wipe block store — old-chain blocks poison sync via "already in store" guard.
+            // If the in-place clear fails, force-remove the directory and reopen.
+            // Without this fallback, a transient FS error leaves the OLD block 1 in
+            // place; the genesis-mismatch check below then refuses to start, and the
+            // node enters a permanent restart loop that requires manual intervention
+            // (the n6/n11/n12 incident on 2026-04-14).
             if let Err(e) = block_store.clear() {
-                warn!("Failed to clear block store during genesis reset: {}", e);
+                error!(
+                    "[GENESIS_RESET] block_store.clear() failed: {} — force-wiping {}",
+                    e,
+                    blocks_path.display()
+                );
+                drop(block_store);
+                if let Err(rm) = std::fs::remove_dir_all(&blocks_path) {
+                    return Err(anyhow::anyhow!(
+                        "Genesis reset failed: could not clear nor remove block store at {}: clear={} remove={}",
+                        blocks_path.display(),
+                        e,
+                        rm
+                    ));
+                }
+                block_store = Arc::new(BlockStore::open(&blocks_path)?);
+                info!(
+                    "[GENESIS_RESET] block store force-wiped and reopened at {}",
+                    blocks_path.display()
+                );
             }
             // Reset chain state and UTXOs to genesis
             chain_state = ChainState::new(canonical);

@@ -92,6 +92,14 @@ impl Node {
                             fork_block_height,
                             &canonical.hash().to_hex()[..16]
                         );
+                        // Signal sync manager: a fork block at an occupied height is
+                        // evidence the sender's view diverges from ours. Without this
+                        // increment, recovery never escalates and the divergence stays
+                        // invisible to the fork-detection counter (INC-I-032 finding).
+                        self.sync_manager
+                            .write()
+                            .await
+                            .note_orphan_gossip_block(fork_block_height, block.header.slot);
                         return Ok(());
                     }
                 }

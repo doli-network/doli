@@ -613,6 +613,19 @@ impl Node {
         // Mark that we produced for this slot
         self.last_produced_slot = Some(current_slot as u64);
 
+        // Soft warning if producing while behind tip. Does NOT block (the hard
+        // behind-tip gate was removed in fe4da5a4 because it caused the h=3851
+        // deadlock — INC-I-026). The diagnostic value is high: any block we
+        // emit while peers are >=2 ahead will be silently dropped by their
+        // FORK_GUARD, contributing to lost slots without obvious cause.
+        let net_tip = self.sync_manager.read().await.best_peer_height();
+        if net_tip >= height + 2 {
+            warn!(
+                "[BEHIND_TIP_PRODUCE] producing h={} slot={} while net_tip={} (peers may drop via FORK_GUARD)",
+                height, current_slot, net_tip
+            );
+        }
+
         // Broadcast the block to the network
         // This is only done for blocks we produce ourselves - received blocks
         // are already on the network and don't need to be re-broadcast.

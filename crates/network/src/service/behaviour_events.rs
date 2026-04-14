@@ -70,7 +70,11 @@ pub(super) async fn handle_behaviour_event(
                             .duration_since(SystemTime::UNIX_EPOCH)
                             .map(|d| d.as_millis())
                             .unwrap_or(0);
-                        debug!(
+                        // INFO (was DEBUG): earliest possible receive timestamp from
+                        // libp2p layer. Pair with [GOSSIP_RECV] (event-loop layer) to
+                        // measure dispatch latency. Without this at INFO we are blind
+                        // to libp2p→event-loop queue saturation (INC-I-032 blind spot).
+                        info!(
                             "[GOSSIP_BLOCK] recv s={} hash={:.8} producer={:.8} block_ts={} from={} size={} recv_ts_ms={}",
                             block.header.slot,
                             block.hash(),
@@ -267,7 +271,8 @@ pub(super) async fn handle_behaviour_event(
                             .duration_since(SystemTime::UNIX_EPOCH)
                             .map(|d| d.as_millis())
                             .unwrap_or(0);
-                        debug!(
+                        // INFO (was DEBUG): same rationale as [GOSSIP_BLOCK] recv above.
+                        info!(
                             "[GOSSIP_BLOCK] recv_t1 s={} hash={:.8} producer={:.8} block_ts={} from={} size={} recv_ts_ms={}",
                             block.header.slot,
                             block.hash(),
