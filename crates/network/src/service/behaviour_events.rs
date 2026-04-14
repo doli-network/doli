@@ -11,6 +11,7 @@ use std::time::Instant;
 use libp2p::{autonat, gossipsub, identify, kad, request_response, Multiaddr, PeerId, Swarm};
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, info, warn};
+use std::time::SystemTime;
 
 use doli_core::{decode_digest, decode_producer_set, is_legacy_bincode_format, Block, BlockHeader};
 
@@ -65,11 +66,25 @@ pub(super) async fn handle_behaviour_event(
                     }
                     rate_limiter.record_block(&propagation_source, msg_size);
                     if let Some(block) = Block::deserialize(&message.data) {
+                        let recv_ts = SystemTime::now()
+                            .duration_since(SystemTime::UNIX_EPOCH)
+                            .map(|d| d.as_millis())
+                            .unwrap_or(0);
+                        debug!(
+                            "[GOSSIP_BLOCK] recv s={} hash={:.8} producer={:.8} block_ts={} from={} size={} recv_ts_ms={}",
+                            block.header.slot,
+                            block.hash(),
+                            block.header.producer,
+                            block.header.timestamp,
+                            propagation_source,
+                            msg_size,
+                            recv_ts
+                        );
                         let _ = event_tx
                             .send(NetworkEvent::NewBlock(block, propagation_source))
                             .await;
                     } else {
-                        warn!("Failed to deserialize block from {}", propagation_source);
+                        warn!("[GOSSIP_BLOCK] deserialize_failed from={} size={}", propagation_source, msg_size);
                     }
                 }
                 TRANSACTIONS_TOPIC => {
@@ -245,11 +260,25 @@ pub(super) async fn handle_behaviour_event(
                     }
                     if let Some(block) = Block::deserialize(&message.data) {
                         rate_limiter.record_block(&propagation_source, msg_size);
+                        let recv_ts = SystemTime::now()
+                            .duration_since(SystemTime::UNIX_EPOCH)
+                            .map(|d| d.as_millis())
+                            .unwrap_or(0);
+                        debug!(
+                            "[GOSSIP_BLOCK] recv_t1 s={} hash={:.8} producer={:.8} block_ts={} from={} size={} recv_ts_ms={}",
+                            block.header.slot,
+                            block.hash(),
+                            block.header.producer,
+                            block.header.timestamp,
+                            propagation_source,
+                            msg_size,
+                            recv_ts
+                        );
                         let _ = event_tx
                             .send(NetworkEvent::NewBlock(block, propagation_source))
                             .await;
                     } else {
-                        warn!("Failed to deserialize t1 block from {}", propagation_source);
+                        warn!("[GOSSIP_BLOCK] t1_deserialize_failed from={} size={}", propagation_source, msg_size);
                     }
                 }
                 topic if topic.starts_with("/doli/r") && topic.ends_with("/blocks/1") => {
@@ -588,6 +617,27 @@ pub(super) async fn handle_behaviour_event(
             }
         },
         DoliBehaviourEvent::Autonat(_) => {}
+
+        DoliBehaviourEvent::Gossipsub(gossipsub::Event::Subscribed { peer_id, topic }) => {
+            debug!(
+                "[GOSSIP_SUB] peer_subscribed peer={} topic={}",
+                peer_id, topic
+            );
+        }
+
+        DoliBehaviourEvent::Gossipsub(gossipsub::Event::Unsubscribed { peer_id, topic }) => {
+            debug!(
+                "[GOSSIP_SUB] peer_unsubscribed peer={} topic={}",
+                peer_id, topic
+            );
+        }
+
+        DoliBehaviourEvent::Gossipsub(gossipsub::Event::GossipsubNotSupported { peer_id }) => {
+            warn!(
+                "[GOSSIP_SUB] gossipsub_not_supported peer={}",
+                peer_id
+            );
+        }
 
         _ => {}
     }

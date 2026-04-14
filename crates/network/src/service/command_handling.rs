@@ -25,10 +25,29 @@ pub(super) async fn handle_command(
 ) {
     match command {
         NetworkCommand::BroadcastBlock(block) => {
+            let block_slot = block.header.slot;
+            let block_hash = block.hash();
+            let block_producer = block.header.producer;
+            let block_ts = block.header.timestamp;
+            let mesh_peers = swarm.behaviour().gossipsub.mesh_peers(
+                &libp2p::gossipsub::IdentTopic::new(BLOCKS_TOPIC).hash()
+            ).count();
             let data = block.serialize();
+            let data_len = data.len();
             let topic = IdentTopic::new(BLOCKS_TOPIC);
-            if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, data) {
-                warn!("Failed to broadcast block: {}", e);
+            match swarm.behaviour_mut().gossipsub.publish(topic, data) {
+                Ok(_msg_id) => {
+                    info!(
+                        "[GOSSIP_PUB] block_published s={} hash={:.8} producer={:.8} block_ts={} size={} mesh_peers={}",
+                        block_slot, block_hash, block_producer, block_ts, data_len, mesh_peers
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        "[GOSSIP_PUB] block_publish_failed s={} hash={:.8} err={} mesh_peers={}",
+                        block_slot, block_hash, e, mesh_peers
+                    );
+                }
             }
         }
 

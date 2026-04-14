@@ -97,6 +97,11 @@ pub(super) async fn run_swarm(
     let mut conn_budget_log = tokio::time::interval(Duration::from_secs(60));
     conn_budget_log.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+    // INC-I-032: Periodic gossip mesh summary — every 30s, log mesh peer counts
+    // per topic and detect peers with negative gossipsub scores.
+    let mut gossip_mesh_log = tokio::time::interval(Duration::from_secs(30));
+    gossip_mesh_log.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
     // Discv5 random walk timer: 5s during startup (first 120s), then 30s steady-state.
     // Aggressive discovery at boot ensures peers are found before the sync engine
     // makes its snap-vs-header decision.
@@ -299,6 +304,57 @@ pub(super) async fn run_swarm(
                     tracing::warn!(
                         "[MEM-CONN-BUDGET] HIGH EVICTION CHURN: {} evictions in last 60s — possible evict/reconnect loop",
                         recent_evictions
+                    );
+                }
+            }
+
+            // INC-I-032: Periodic gossip mesh summary
+            _ = gossip_mesh_log.tick() => {
+                use libp2p::gossipsub::IdentTopic as MeshTopic;
+                use crate::gossip::{
+                    BLOCKS_TOPIC as B, TRANSACTIONS_TOPIC as T, PRODUCERS_TOPIC as P,
+                    ATTESTATION_TOPIC as A, HEARTBEATS_TOPIC as HB, HEADERS_TOPIC as HD,
+                    TIER1_BLOCKS_TOPIC as T1,
+                };
+
+                let gs = &swarm.behaviour().gossipsub;
+
+                // Count mesh peers per topic
+                let blocks_mesh = gs.mesh_peers(&MeshTopic::new(B).hash()).count();
+                let txs_mesh = gs.mesh_peers(&MeshTopic::new(T).hash()).count();
+                let producers_mesh = gs.mesh_peers(&MeshTopic::new(P).hash()).count();
+                let attestation_mesh = gs.mesh_peers(&MeshTopic::new(A).hash()).count();
+                let heartbeats_mesh = gs.mesh_peers(&MeshTopic::new(HB).hash()).count();
+                let headers_mesh = gs.mesh_peers(&MeshTopic::new(HD).hash()).count();
+                let t1_mesh = gs.mesh_peers(&MeshTopic::new(T1).hash()).count();
+                let total_mesh = gs.all_mesh_peers().count();
+                let total_gossip_peers = gs.all_peers().count();
+
+                // Detect peers with negative gossipsub scores
+                let mut negative_score_count = 0u32;
+                let mut worst_score: f64 = 0.0;
+                for (peer_id, _) in gs.all_peers() {
+                    if let Some(score) = gs.peer_score(peer_id) {
+                        if score < 0.0 {
+                            negative_score_count += 1;
+                            if score < worst_score {
+                                worst_score = score;
+                            }
+                        }
+                    }
+                }
+
+                tracing::info!(
+                    "[GOSSIP_MESH] blocks={} txs={} producers={} attestations={} heartbeats={} headers={} t1={} | total_mesh={} gossip_peers={}",
+                    blocks_mesh, txs_mesh, producers_mesh, attestation_mesh,
+                    heartbeats_mesh, headers_mesh, t1_mesh,
+                    total_mesh, total_gossip_peers
+                );
+
+                if negative_score_count > 0 {
+                    tracing::warn!(
+                        "[GOSSIP_MESH] negative_scores={} worst_score={:.2}",
+                        negative_score_count, worst_score
                     );
                 }
             }
