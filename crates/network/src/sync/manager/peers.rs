@@ -424,6 +424,37 @@ impl SyncManager {
                 .saturating_sub(self.local_height);
             let state_ok = matches!(self.state, SyncState::Idle | SyncState::Synchronized);
             if state_ok && gap >= 1 {
+                // Fix #2b (2026-04-15): anti-cascade orphan path. If we applied
+                // a block recently (within 60s) AND the gap is small (<50),
+                // accumulating orphans means we're stuck on a minority fork —
+                // peers are extending a different chain. start_sync() here
+                // requests headers that won't link to our tip, eventually
+                // escalating to snap sync (the 2026-04-15 deploy incident:
+                // N1/N2/N3/seed1 ended on minority fork at h=33505, snap
+                // sync triggered 2 minutes later, requiring manual rsync).
+                //
+                // Trigger signal_stuck_fork instead → resolve_shallow_fork
+                // rolls back the divergent block(s) and retries from the
+                // common ancestor. Recovery in seconds, no snap sync, no
+                // block_store gaps.
+                let recently_synced =
+                    self.network.last_block_applied.elapsed() < Duration::from_secs(60);
+                if recently_synced && gap < 50 {
+                    warn!(
+                        "[SYNC] {} orphan gossip blocks (local_h={}, tip_h={}, gap={}) — \
+                         recently synced ({}s since last apply), suppressing sync escalation. \
+                         Signaling stuck fork for shallow rollback (anti-cascade-orphan).",
+                        self.consecutive_orphan_gossip_blocks,
+                        self.local_height,
+                        self.network.network_tip_height,
+                        gap,
+                        self.network.last_block_applied.elapsed().as_secs()
+                    );
+                    self.consecutive_orphan_gossip_blocks = 0;
+                    self.signal_stuck_fork();
+                    return;
+                }
+
                 warn!(
                     "[SYNC] {} consecutive orphan gossip blocks — forcing sync (local_h={}, tip_h={}, gap={})",
                     self.consecutive_orphan_gossip_blocks, self.local_height, self.network.network_tip_height, gap
