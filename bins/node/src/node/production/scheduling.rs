@@ -463,48 +463,17 @@ impl Node {
             return Vec::new();
         }
 
-        if height < activation_height {
-            // --- Legacy (pre-activation) path ---
-            // Filter by excluded_producers and fall back to the full epoch list
-            // if everything is excluded.
-            let mut effective: Vec<PublicKey> = source
-                .iter()
-                .filter(|pk| !self.excluded_producers.contains(pk))
-                .copied()
-                .collect();
-
-            if effective.is_empty() {
-                // Deadlock safety: all excluded → fall back to full epoch list
-                effective = self.epoch_producer_list.clone();
-                if effective.is_empty() {
-                    return Vec::new();
-                }
-                warn!("[SCHED_RR] All producers excluded! Falling back to full epoch list");
-            }
-
-            let excluded_count = self.excluded_producers.len();
-            let producer_index = (current_slot as usize) % effective.len();
-            let selected = effective[producer_index];
-            if excluded_count > 0 {
-                info!(
-                    "[SCHED_RR] slot={} producer={} index={}/{} (excluded={})",
-                    current_slot,
-                    hex::encode(&selected.as_bytes()[..4]),
-                    producer_index,
-                    effective.len(),
-                    excluded_count
-                );
-            }
-            return vec![selected];
-        }
-
-        // --- Post-activation (INC-I-026 fix) path ---
-        // excluded_producers is intentionally NOT consulted. Pure function of
-        // (slot, source).
+        // Fix #3 cleanup (2026-04-15, synmgrefactor): pre-INC-I-026 path removed.
+        // With activation_height = 0 for every deployed network (see
+        // network_params/defaults.rs), the scheduler is always a pure function
+        // of (slot, source). The legacy `height < activation_height` branch
+        // that consulted self.excluded_producers is dead code — removed along
+        // with the excluded_producers field.
+        let _ = (height, activation_height); // kept for API compat until removed upstream
         let producer_index = (current_slot as usize) % source.len();
         let selected = source[producer_index];
         debug!(
-            "[SCHED_RR] slot={} producer={} index={}/{} (inc_i_026=active)",
+            "[SCHED_RR] slot={} producer={} index={}/{} (post-INC-I-026)",
             current_slot,
             hex::encode(&selected.as_bytes()[..4]),
             producer_index,

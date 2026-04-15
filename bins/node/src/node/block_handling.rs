@@ -268,7 +268,6 @@ impl Node {
             // instead of waiting for the epoch boundary or a restart.
             if err_str.contains("invalid producer") {
                 info!("[BLOCK] Auto-healing scheduler after producer eligibility rejection");
-                self.rebuild_excluded_from_headers().await;
                 self.rebuild_epoch_state_from_blocks().await;
             }
             return Ok(());
@@ -527,11 +526,6 @@ impl Node {
             // round-robin assignments. Rebuilding from block_store ensures all nodes
             // converge on the same liveness view.
             self.rebuild_producer_liveness(target_height);
-
-            // Rebuild excluded_producers from block headers in the canonical chain.
-            // Same reason as liveness: the old excluded set reflects the abandoned
-            // fork, not the new canonical chain. Without this, round-robin diverges.
-            self.rebuild_excluded_from_headers().await;
 
             // Atomically persist common ancestor state to StateDb
             {

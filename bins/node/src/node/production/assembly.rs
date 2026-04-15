@@ -368,47 +368,34 @@ impl Node {
                 .network
                 .params()
                 .inc_i_026_scheduler_activation_height;
+        let _ = inc_i_026_active; // kept until env_loader field is removed
         let missed_producers = {
             let mut missed = Vec::new();
             let slot_gap = current_slot.saturating_sub(prev_slot);
             // Gap > 3 slots = collective downtime (restart/deploy), not individual
             // inactivity. Penalizing missed_producers after a cluster restart causes
             // ERRTX070 (exclusion cap exceeded) → block poison → deadlock.
+            //
+            // Post-INC-I-026 (always active with activation_height=0) + Fix #3
+            // excluded_producers cleanup (2026-04-15, synmgrefactor): scheduler is
+            // a pure function of epoch_producer_list. No exclusion filter at this
+            // layer — the list was already filtered at epoch boundary by post_commit.
             if slot_gap > 1 && slot_gap <= 3 && !self.epoch_producer_list.is_empty() {
-                // Build the effective list matching the scheduler's view.
-                let effective: Vec<PublicKey> = if inc_i_026_active {
-                    self.epoch_producer_list.clone()
-                } else {
-                    self.epoch_producer_list
-                        .iter()
-                        .filter(|pk| !self.excluded_producers.contains(pk))
-                        .copied()
-                        .collect()
-                };
+                let effective: Vec<PublicKey> = self.epoch_producer_list.clone();
                 if !effective.is_empty() {
                     // Safety cap: max 3 exclusions per block (INC-I-017)
                     const MAX_MISSED_PER_BLOCK: usize = 3;
                     let max_total = self.epoch_producer_list.len() / 3;
-                    let current_excluded = if inc_i_026_active {
-                        0
-                    } else {
-                        self.excluded_producers.len()
-                    };
 
                     for skipped in (prev_slot + 1)..current_slot {
                         if missed.len() >= MAX_MISSED_PER_BLOCK {
                             break;
                         }
-                        if current_excluded + missed.len() >= max_total {
+                        if missed.len() >= max_total {
                             break;
                         }
                         let idx = (skipped as usize) % effective.len();
                         let pk = effective[idx];
-                        // Pre-activation: also skip producers already excluded
-                        // (so we don't re-report the same miss).
-                        if !inc_i_026_active && self.excluded_producers.contains(&pk) {
-                            continue;
-                        }
                         if !missed.contains(&pk) {
                             missed.push(pk);
                         }

@@ -109,7 +109,6 @@ impl Node {
         .with_producers_weighted(weighted)
         .with_bootstrap_producers(bootstrap_producers)
         .with_bootstrap_liveness(live_bp, stale_bp)
-        .with_excluded_producers(self.excluded_producers.clone())
         .with_epoch_producer_list(if self.active_production_list.is_empty() {
             self.epoch_producer_list.clone()
         } else {
@@ -264,7 +263,6 @@ impl Node {
         .with_pending_producer_keys(pending_keys)
         .with_bootstrap_producers(bootstrap_producers)
         .with_bootstrap_liveness(live_bp, stale_bp)
-        .with_excluded_producers(self.excluded_producers.clone())
         .with_epoch_producer_list(
             // For scheduling validation: use active_production_list (tier-filtered)
             // so validation computes the same slot % N as production.

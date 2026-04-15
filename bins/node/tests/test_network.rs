@@ -743,7 +743,6 @@ impl TestNetwork {
                             ancestor_hash,
                             ancestor_h as u32,
                         );
-                        node.excluded_producers.clear();
                         node.cumulative_rollback_depth = 0;
                     }
 
@@ -856,23 +855,9 @@ impl TestNetwork {
         (accepted, rejected_elig, rejected_apply)
     }
 
-    /// Add a producer to excluded_producers on a specific node
-    pub async fn exclude_producer(&self, node_id: usize, producer: &PublicKey) {
-        let mut n = self.nodes[node_id].lock().await;
-        n.excluded_producers.insert(*producer);
-    }
-
-    /// Get excluded_producers count for a node
-    pub async fn excluded_count(&self, node_id: usize) -> usize {
-        let n = self.nodes[node_id].lock().await;
-        n.excluded_producers.len()
-    }
-
-    /// Clear excluded_producers on a specific node
-    pub async fn clear_excluded(&self, node_id: usize) {
-        let mut n = self.nodes[node_id].lock().await;
-        n.excluded_producers.clear();
-    }
+    // Removed (Fix #3 cleanup, synmgrefactor): exclude_producer(),
+    // excluded_count(), clear_excluded() helpers. The Node.excluded_producers
+    // field no longer exists.
 }
 
 // ============================================================
@@ -1284,7 +1269,6 @@ impl TestNetwork {
                 }
 
                 // Clear stale fork recovery state
-                node.excluded_producers.clear();
                 node.cumulative_rollback_depth = 0;
 
                 total_rollbacks += (current_h - ancestor_h) as usize;
@@ -1320,21 +1304,9 @@ impl TestNetwork {
         (nodes_synced, total_rollbacks, total_applied)
     }
 
-    /// Count how many nodes have divergent excluded_producers
+    /// Count divergent exclusions (Fix #3 cleanup: field removed, now always 0,0,0).
     pub async fn count_divergent_exclusions(&self) -> (usize, usize, usize) {
-        let n = self.nodes.len();
-        let mut exclusion_counts: Vec<usize> = Vec::new();
-
-        for i in 0..n {
-            let node = self.nodes[i].lock().await;
-            exclusion_counts.push(node.excluded_producers.len());
-        }
-
-        let with_exclusions = exclusion_counts.iter().filter(|c| **c > 0).count();
-        let max_exclusions = exclusion_counts.iter().max().copied().unwrap_or(0);
-        let total_exclusions: usize = exclusion_counts.iter().sum();
-
-        (with_exclusions, max_exclusions, total_exclusions)
+        (0, 0, 0)
     }
 
     /// Count how many nodes are at each height
@@ -1399,7 +1371,6 @@ async fn test_realistic_gossip_20_nodes_100_blocks() {
         let expected_producer = sorted[expected_idx];
 
         let node1_height = n1.chain_state.read().await.best_height;
-        let excluded_count = n1.excluded_producers.len();
         let snapshot_len = n1.epoch_bond_snapshot.len();
 
         eprintln!();
@@ -1408,7 +1379,6 @@ async fn test_realistic_gossip_20_nodes_100_blocks() {
         eprintln!("  Active producers:   {}", n_active);
         eprintln!("  Weighted producers: {}", n_weighted);
         eprintln!("  Sorted list len:    {}", sorted.len());
-        eprintln!("  Excluded count:     {}", excluded_count);
         eprintln!("  Bond snapshot len:  {}", snapshot_len);
         eprintln!("  Slot 46 % {} = idx {}", sorted.len(), expected_idx);
         eprintln!(
@@ -2409,65 +2379,16 @@ async fn test_onchain_liveness_exclusion_deterministic() {
     }
     assert!(net.is_synced().await);
 
-    // Phase 5: Verify ALL nodes have identical excluded_producers
-    let mut exclusion_sets: Vec<HashSet<PublicKey>> = Vec::new();
-    for i in 0..n_nodes {
-        let n = net.nodes[i].lock().await;
-        exclusion_sets.push(n.excluded_producers.clone());
-    }
-
-    let reference_set = &exclusion_sets[0];
-    for (i, set) in exclusion_sets.iter().enumerate().skip(1) {
-        assert_eq!(
-            set,
-            reference_set,
-            "Node {} excluded_producers differs from node 0! Node 0: {:?}, Node {}: {:?}",
-            i,
-            reference_set.len(),
-            i,
-            set.len()
-        );
-    }
+    // Phases 5+6 removed (Fix #3 cleanup, synmgrefactor): checked that all
+    // nodes had identical excluded_producers sets and that the scheduler
+    // skipped excluded producers. Both properties are moot now — the field
+    // no longer exists and the scheduler never consults it post-INC-I-026.
+    // The on-chain `missed_producers` field in the block header remains the
+    // deterministic source of truth, already validated in Phase 4 by the
+    // successful apply_to_node calls above.
 
     eprintln!(
-        "  All {} nodes agree: {} producers excluded",
-        n_nodes,
-        reference_set.len()
-    );
-
-    // Phase 6: Build more blocks — verify excluded producers are skipped in scheduling
-    // The excluded producer should NOT be selected for their normal slot
-    let effective: Vec<PublicKey> = sorted_pks
-        .iter()
-        .filter(|pk| !reference_set.contains(pk))
-        .copied()
-        .collect();
-    let next_slot = 49u32;
-    let expected_next = effective[(next_slot as usize) % effective.len()];
-
-    // Build the next block with the correct producer
-    let next_kp = net
-        .producers
-        .iter()
-        .find(|kp| *kp.public_key() == expected_next)
-        .unwrap();
-    let block_49 = net.build_block(47, 49, block_48.hash(), next_kp);
-
-    for i in 0..n_nodes {
-        net.apply_to_node(i, block_49.clone())
-            .await
-            .unwrap_or_else(|e| {
-                panic!("Node {} rejected block from effective schedule: {}", i, e);
-            });
-    }
-    assert!(net.is_synced().await);
-
-    eprintln!(
-        "  Effective schedule works: block at slot 49 accepted by all {} nodes",
-        n_nodes
-    );
-    eprintln!(
-        "  PASS: On-chain liveness exclusion is deterministic across {} nodes",
+        "  PASS: On-chain missed_producers in header is deterministic across {} nodes",
         n_nodes
     );
 }
@@ -2531,27 +2452,12 @@ async fn test_onchain_liveness_10k_nodes() {
         let accepted = net.propagate(0, gap_block.clone()).await;
         let apply_time = apply_start.elapsed();
 
-        // Verify all nodes agree on exclusion set
+        // Fix #3 cleanup (synmgrefactor): excluded_producers field removed.
+        // Tracking fields kept as placeholders so the summary printout below
+        // stays compatible, but the "divergence" metric is meaningless now.
         let (nodes_with_excl, max_excl, _) = net.count_divergent_exclusions().await;
         let synced = net.is_synced().await;
-
-        // Check determinism: sample 10 nodes and verify identical sets
-        let mut sets_match = true;
-        let ref_set = {
-            let n = net.nodes[0].lock().await;
-            n.excluded_producers.clone()
-        };
-        for i in [1, 100, 250, 500, 750, 999]
-            .iter()
-            .copied()
-            .filter(|&i| i < nodes_per_cluster)
-        {
-            let n = net.nodes[i].lock().await;
-            if n.excluded_producers != ref_set {
-                sets_match = false;
-                break;
-            }
-        }
+        let sets_match = true; // trivially true — no per-node set to diverge
 
         let cluster_passed = synced && sets_match && missed_in_header > 0;
         if !cluster_passed {

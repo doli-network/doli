@@ -394,64 +394,6 @@ impl Node {
         );
     }
 
-    /// Rebuild excluded_producers from block headers since epoch start.
-    ///
-    /// Reads `missed_producers` from each block header (on-chain source of truth)
-    /// and `presence_root` for re-inclusions. Deterministic: all nodes with the
-    /// same chain compute the same set.
-    ///
-    /// Must be called after any rollback to ensure the exclusion set matches
-    /// the canonical chain.
-    pub async fn rebuild_excluded_from_headers(&mut self) {
-        let current_h = self.chain_state.read().await.best_height;
-        let blocks_per_epoch = self.config.network.blocks_per_reward_epoch();
-        let epoch = current_h / blocks_per_epoch;
-        let epoch_start = epoch * blocks_per_epoch;
-        let start_h = epoch_start.max(1);
-
-        // Cap: same 1/3 limit as real-time processing in post_commit.
-        // Without this, rebuilding an entire epoch applies all exclusions
-        // at once → hits cap exactly → next block's missed_producers pushes
-        // over → ERRTX070 → node permanently stuck (INC-I-030 Bug 3).
-        let max_excluded = if self.epoch_producer_list.is_empty() {
-            12 // safe default
-        } else {
-            self.epoch_producer_list.len() / 3
-        };
-
-        let mut excluded: HashSet<PublicKey> = HashSet::new();
-        let mut blocks_scanned: u64 = 0;
-        let mut cap_hit = false;
-
-        for h in start_h..=current_h {
-            if excluded.len() >= max_excluded {
-                cap_hit = true;
-                break;
-            }
-            if let Ok(Some(blk)) = self.block_store.get_block_by_height(h) {
-                blocks_scanned += 1;
-                for pk in &blk.header.missed_producers {
-                    if excluded.len() >= max_excluded {
-                        cap_hit = true;
-                        break;
-                    }
-                    excluded.insert(*pk);
-                }
-            }
-        }
-
-        let old_count = self.excluded_producers.len();
-        self.excluded_producers = excluded;
-        let new_count = self.excluded_producers.len();
-
-        if old_count > 0 || new_count > 0 {
-            info!(
-                "[LIVENESS] Excluded rebuild: h={}-{} count={} (was {}) cap={} blocks_scanned={} cap_hit={}",
-                start_h, current_h, new_count, old_count, max_excluded, blocks_scanned, cap_hit
-            );
-        }
-    }
-
     /// Rebuild epoch_bond_snapshot and epoch_producer_list from block history.
     ///
     /// At startup, init.rs seeds these with "all active producers" (no attestation

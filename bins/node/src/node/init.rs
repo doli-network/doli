@@ -755,11 +755,6 @@ impl Node {
         // Use provided shutdown flag or create a new one
         let shutdown = shutdown_flag.unwrap_or_else(|| Arc::new(RwLock::new(false)));
 
-        // excluded_producers is initialized empty here and rebuilt from block headers
-        // after construction. This ensures the same rebuild logic is used at startup,
-        // after rollback, and after any state reset.
-        let excluded_producers = HashSet::new();
-
         // epoch_producer_list + active_production_list: load from RocksDB if
         // persisted (written at each epoch boundary). This eliminates the restart
         // bug where reconstruction from ProducerSet + block store produces a
@@ -871,7 +866,6 @@ impl Node {
             shallow_rollback_count: 0,
             cumulative_rollback_depth: 0,
             seen_blocks_for_slot: std::collections::HashSet::new(),
-            excluded_producers,
             epoch_producer_list,
             active_production_list,
             epoch_bond_snapshot: initial_bond_snapshot,
@@ -1050,7 +1044,6 @@ impl Node {
             shallow_rollback_count: 0,
             cumulative_rollback_depth: 0,
             seen_blocks_for_slot: HashSet::new(),
-            excluded_producers: HashSet::new(),
             epoch_producer_list: {
                 let mut pks: Vec<_> = producers.iter().map(|kp| *kp.public_key()).collect();
                 pks.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));

@@ -283,16 +283,6 @@ impl Node {
         {
             use crypto::hash::hash as h;
 
-            let excl_fp = {
-                let mut v: Vec<Vec<u8>> = self
-                    .excluded_producers
-                    .iter()
-                    .map(|pk| pk.as_bytes().to_vec())
-                    .collect();
-                v.sort();
-                h(&bincode::serialize(&v).unwrap_or_default())
-            };
-
             let bonds_fp = {
                 let mut v: Vec<(Vec<u8>, u64)> = self
                     .epoch_bond_snapshot
@@ -348,7 +338,6 @@ impl Node {
             // for the same slot → fork. Detect with one grep/compare instead
             // of seven separate component diffs.
             let scheduler_root = storage::compute_scheduler_root(
-                &self.excluded_producers,
                 &self.epoch_bond_snapshot,
                 self.epoch_bond_snapshot_epoch,
                 &self.epoch_producer_list,
@@ -369,17 +358,15 @@ impl Node {
                 .unwrap_or_else(|| "none".to_string());
 
             info!(
-                "[STATE_FP] h={} sr={} sched={:.16} excl={:.16} bonds={:.16} epl={:.16} apl={:.16} accum={:.16} minute={:.16} excl_n={} bonds_n={} epl_n={} apl_n={} minute_n={}",
+                "[STATE_FP] h={} sr={} sched={:.16} bonds={:.16} epl={:.16} apl={:.16} accum={:.16} minute={:.16} bonds_n={} epl_n={} apl_n={} minute_n={}",
                 height,
                 state_root,
                 scheduler_root,
-                excl_fp,
                 bonds_fp,
                 epl_fp,
                 apl_fp,
                 accum_fp,
                 minute_fp,
-                self.excluded_producers.len(),
                 self.epoch_bond_snapshot.len(),
                 self.epoch_producer_list.len(),
                 self.active_production_list.len(),

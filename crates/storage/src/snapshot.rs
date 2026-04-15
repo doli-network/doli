@@ -73,7 +73,6 @@ pub fn compute_state_root(
 /// comparison instead of seven.
 ///
 /// INCLUDES (consensus-derived):
-///   - excluded_producers (HashSet, sorted)
 ///   - epoch_bond_snapshot (HashMap, sorted by key) + epoch
 ///   - epoch_producer_list (Vec, order preserved — index = slot % len)
 ///   - active_production_list (Vec, order preserved)
@@ -85,12 +84,13 @@ pub fn compute_state_root(
 /// EXCLUDES (local observation, not consensus-derived):
 ///   - minute_tracker (depends on wall-clock when OUR node observed
 ///     attestations; naturally diverges between nodes)
+///   - excluded_producers (removed in Fix #3 cleanup; was vestigial post-
+///     INC-I-026 activation — no consumers in scheduler or validation)
 ///
 /// NOT in block header. Observational only — same semantics as
 /// compute_state_root. Canary deploy safe.
 #[allow(clippy::too_many_arguments)]
 pub fn compute_scheduler_root(
-    excluded_producers: &HashSet<PublicKey>,
     epoch_bond_snapshot: &HashMap<Hash, u64>,
     epoch_bond_snapshot_epoch: u64,
     epoch_producer_list: &[PublicKey],
@@ -100,16 +100,6 @@ pub fn compute_scheduler_root(
     epoch_blocks_produced_accum: &HashMap<PublicKey, u32>,
 ) -> Hash {
     let h = crypto::hash::hash;
-
-    // excluded_producers: sorted
-    let excl_h = {
-        let mut v: Vec<Vec<u8>> = excluded_producers
-            .iter()
-            .map(|pk| pk.as_bytes().to_vec())
-            .collect();
-        v.sort();
-        h(&bincode::serialize(&v).unwrap_or_default())
-    };
 
     // epoch_bond_snapshot: sorted by key + epoch appended
     let bonds_h = {
@@ -184,9 +174,9 @@ pub fn compute_scheduler_root(
         h(&bincode::serialize(&v).unwrap_or_default())
     };
 
-    // Combine all 7 component hashes in a fixed order.
-    let mut combined = Vec::with_capacity(7 * 32);
-    for hash in [excl_h, bonds_h, epl_h, apl_h, attested_h, accum_h, blocks_h] {
+    // Combine all 6 component hashes in a fixed order.
+    let mut combined = Vec::with_capacity(6 * 32);
+    for hash in [bonds_h, epl_h, apl_h, attested_h, accum_h, blocks_h] {
         combined.extend_from_slice(hash.as_bytes());
     }
     h(&combined)

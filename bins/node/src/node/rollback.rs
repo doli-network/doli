@@ -189,12 +189,6 @@ impl Node {
         // converge on the same liveness view.
         self.rebuild_producer_liveness(target_height);
 
-        // Rebuild excluded_producers from block headers after rollback.
-        // The exclusion set is derived from on-chain missed_producers fields and
-        // presence_root re-inclusions — all from block headers, not local state.
-        // Deterministic: same chain → same excluded set.
-        self.rebuild_excluded_from_headers().await;
-
         // Update chain state to parent
         {
             let mut state = self.chain_state.write().await;
@@ -472,7 +466,6 @@ impl Node {
 
         self.shallow_rollback_count = 0;
         self.cumulative_rollback_depth = 0;
-        self.excluded_producers.clear(); // At height 0, no exclusions
 
         info!("State reset complete. Header-first sync will rebuild from genesis.");
         Ok(true)

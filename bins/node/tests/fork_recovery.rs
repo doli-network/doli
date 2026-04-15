@@ -98,6 +98,7 @@ async fn apply_chain(node: &mut Node, blocks: &[Block]) {
 
 /// Get the genesis hash from a node (the best_hash at height 0).
 /// Get the devnet genesis hash (used as prev_hash for the first block).
+#[allow(dead_code)] // Previously used by removed TEST 11 (excluded_producers cleanup).
 fn devnet_genesis_hash() -> Hash {
     doli_core::chainspec::ChainSpec::devnet().genesis_hash()
 }
@@ -529,117 +530,12 @@ async fn test_recovery_preserves_mempool() {
     );
 }
 
-// ============================================================
-// TEST 11: Fork recovery — excluded_producers rebuilt after rollback
-//
-// THIS IS THE REAL BUG. This test MUST FAIL with current code.
-//
-// Root cause: validate_block_for_apply passes self.excluded_producers
-// to the ValidationContext. When a node is on a fork, its excluded set
-// diverges from the canonical chain. Blocks from the canonical chain
-// are produced by producers that the forked node considers "excluded"
-// → "invalid producer for slot" → blocks rejected → node can never sync.
-//
-// After fix: rebuild_excluded_from_headers() deterministically rebuilds
-// exclusions from on-chain data. Canonical blocks sync via Light mode.
-// ============================================================
-#[tokio::test]
-async fn test_fork_recovery_blocked_by_divergent_excluded_producers() {
-    let (mut node, producers, _tmp) = make_node(5).await;
-    let params = node.params.clone();
-
-    // Build common base: 45 blocks to exit genesis period (devnet genesis_blocks=40).
-    let mut base = Vec::new();
-    let mut prev = devnet_genesis_hash();
-    for i in 0..45 {
-        let producer_idx = i % 5;
-        let block = build_block(
-            (i + 1) as u64,
-            (i + 1) as u32,
-            prev,
-            &producers[producer_idx],
-            &params,
-        );
-        prev = block.hash();
-        base.push(block);
-    }
-    apply_chain(&mut node, &base).await;
-    assert_eq!(node.chain_state.read().await.best_height, 45);
-
-    // Node goes on fork: 5 blocks produced ONLY by producer[0]
-    let fork = build_chain(46, 46, base[44].hash(), &producers[0], 5, &params);
-    apply_chain(&mut node, &fork).await;
-    assert_eq!(node.chain_state.read().await.best_height, 50);
-
-    // Simulate divergent excluded_producers (the original bug).
-    // In production, the fork accumulates stale exclusions from missed slots.
-    node.excluded_producers.insert(*producers[1].public_key());
-    node.excluded_producers.insert(*producers[2].public_key());
-    node.excluded_producers.insert(*producers[3].public_key());
-    node.excluded_producers.insert(*producers[4].public_key());
-    assert_eq!(node.excluded_producers.len(), 4);
-
-    // Build canonical chain from fork point using rotating producers.
-    // Start from producer[1] to avoid hash collision with fork blocks (produced by [0]).
-    // In production, syncing nodes apply these via Light mode (no strict eligibility).
-    let mut canonical = Vec::new();
-    let mut prev = base[44].hash();
-    for i in 0..8 {
-        let slot = 46 + i as u32;
-        let height = 46 + i as u64;
-        let producer_idx = (i + 1) % 5; // Start from producer[1], not [0]
-        let block = build_block(height, slot, prev, &producers[producer_idx], &params);
-        prev = block.hash();
-        canonical.push(block);
-    }
-
-    // Rollback the fork (5 blocks).
-    // FIX: rebuild_excluded_from_headers() deterministically rebuilds from on-chain data.
-    // OLD BUG: stale excluded_producers persisted → divergent scheduling.
-    for _ in 0..5 {
-        node.rollback_one_block().await.unwrap();
-    }
-    assert_eq!(node.chain_state.read().await.best_height, 45);
-
-    // VERIFY: excluded_producers rebuilt from block headers.
-    // Test blocks have no missed_producers → should be empty after rebuild.
-    assert_eq!(
-        node.excluded_producers.len(),
-        0,
-        "excluded_producers should be rebuilt (empty) after rollback, has {} entries",
-        node.excluded_producers.len()
-    );
-
-    // VERIFY: canonical blocks apply via Light mode (the actual sync path).
-    // Light mode skips strict producer eligibility — this is how syncing nodes
-    // recover after rollback. Even if epoch_producer_list is stale from the
-    // fork's epoch boundary, Light mode succeeds.
-    for (i, block) in canonical.iter().enumerate() {
-        let h_before = node.chain_state.read().await.best_height;
-        node.apply_block(block.clone(), ValidationMode::Light)
-            .await
-            .unwrap_or_else(|e| {
-                panic!(
-                    "Light mode apply_block failed at slot={} (block {}): {}",
-                    block.header.slot, i, e
-                )
-            });
-        let h_after = node.chain_state.read().await.best_height;
-        assert_eq!(
-            h_after,
-            h_before + 1,
-            "Block {} (slot={}) did not advance height: {} → {}",
-            i,
-            block.header.slot,
-            h_before,
-            h_after
-        );
-    }
-
-    // All 8 canonical blocks applied — node recovered from fork
-    assert_eq!(node.chain_state.read().await.best_height, 53);
-    assert_eq!(node.chain_state.read().await.best_hash, canonical[7].hash());
-}
+// TEST 11 removed (Fix #3 cleanup, synmgrefactor): was
+// `test_fork_recovery_blocked_by_divergent_excluded_producers`, which
+// specifically exercised the `excluded_producers` field behavior after
+// rollback. With that field removed, the test is obsolete — the bug class
+// it guarded against no longer exists (there is no local divergent
+// exclusion set to resync).
 
 // ============================================================
 // TEST 12: Post-snap gossip validation mode (INC-I-010 layer 3)

@@ -90,7 +90,6 @@ async fn test_node_for_test_initializes() {
     assert_eq!(node.cumulative_rollback_depth, 0);
     assert_eq!(node.consecutive_fork_blocks, 0);
     assert_eq!(node.shallow_rollback_count, 0);
-    assert!(node.excluded_producers.is_empty());
     assert_eq!(node.epoch_bond_snapshot.len(), 3);
     assert!(node.producer_key.is_some());
 

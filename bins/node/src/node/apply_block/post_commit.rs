@@ -327,8 +327,6 @@ impl Node {
                     }
                 }
 
-                // Clear mid-epoch exclusions — fresh start for new epoch
-                self.excluded_producers.clear();
                 // INC-I-010 layer 3: epoch_producer_list is now rebuilt with
                 // attestation filtering — end the post-snap Light-mode window.
                 if self.snap_sync_height.is_some() {
@@ -355,39 +353,6 @@ impl Node {
                     std::mem::take(&mut self.epoch_attestation_accum[0]);
                 self.epoch_blocks_produced_accum.clear();
             }
-        }
-
-        // ON-CHAIN LIVENESS: read missed_producers from header (deterministic).
-        // This replaces the old local gap analysis that could diverge between nodes.
-        {
-            // EXCLUDE: producers listed in header.missed_producers
-            for pk in &block.header.missed_producers {
-                if self.excluded_producers.insert(*pk) {
-                    info!(
-                        "[LIVENESS] EXCLUDED {} — missed slot (from header at h={})",
-                        hex::encode(&pk.as_bytes()[..4]),
-                        height
-                    );
-                }
-            }
-
-            // RE-INCLUSION: handled at epoch boundary only (line 136-138 above).
-            // Mid-epoch re-inclusion by attestation was removed because it causes
-            // an exclude→re-include→miss→exclude cycle that prevents the block rate
-            // from reaching 100% when producers are offline. Excluded producers
-            // stay excluded until the next epoch, where the frozen list is rebuilt
-            // from attestation data. They still earn rewards if they attest.
-        }
-
-        // Sanity cap: prevent excluded_producers feedback loop (INC-I-016)
-        if !self.epoch_producer_list.is_empty()
-            && self.excluded_producers.len() > self.epoch_producer_list.len() / 3
-        {
-            warn!(
-                "[LIVENESS] Excluded producers ({}) exceeds 33% cap — resetting",
-                self.excluded_producers.len()
-            );
-            self.excluded_producers.clear();
         }
 
         // Per-block attestation: sign chain tip for finality gadget + record in tracker.

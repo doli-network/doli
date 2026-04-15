@@ -194,7 +194,6 @@ impl Node {
                             hex::encode(&block.header.producer.as_bytes()[..4]),
                             e,
                         );
-                        self.rebuild_excluded_from_headers().await;
                         self.rebuild_epoch_state_from_blocks().await;
                         // Retry after rebuild
                         if let Err(e2) = self.check_producer_eligibility(&block).await {
@@ -775,10 +774,6 @@ impl Node {
             self.epoch_producer_list = pks;
             // Rebuild active_production_list (tier system will filter at next epoch boundary)
             self.active_production_list = self.epoch_producer_list.clone();
-
-            // Clear stale excluded_producers — they belong to the pre-snap chain
-            // and poison the total cap check (excluded.len() + missed.len() > active/3)
-            self.excluded_producers.clear();
 
             let total: u64 = self.epoch_bond_snapshot.values().sum();
             info!(

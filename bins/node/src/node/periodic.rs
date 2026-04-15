@@ -631,14 +631,12 @@ impl Node {
             {
                 let gap = net_tip_h.saturating_sub(cs.best_height);
                 let secs_since_last_apply = sync.last_block_applied_secs();
-                let excluded_count = self.excluded_producers.len();
                 let epoch_list_len = self.epoch_producer_list.len();
                 info!(
-                    "[SYNC_STATE] gap={} phase={:?} last_applied_ago={}s excluded={}/{} rollback_depth={}",
+                    "[SYNC_STATE] gap={} phase={:?} last_applied_ago={}s epoch_list={} rollback_depth={}",
                     gap,
                     sync.sync_state_name(),
                     secs_since_last_apply,
-                    excluded_count,
                     epoch_list_len,
                     self.cumulative_rollback_depth
                 );
