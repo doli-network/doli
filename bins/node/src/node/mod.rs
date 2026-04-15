@@ -240,7 +240,20 @@ pub struct Node {
     /// Hard fork schedule — stops production when binary is too old for an activated fork.
     /// Built at compile time from known forks; checked every production tick.
     pub hardfork_schedule: updater::HardForkSchedule,
+
+    /// Per-peer connection churn tracker (Fix 5a, 2026-04-15).
+    /// Rolling window of recent connect/disconnect timestamps per peer. If a peer
+    /// exceeds PEER_CHURN_MAX events in PEER_CHURN_WINDOW, we stop doing expensive
+    /// work (status request, sync_manager mutation, bootstrap redial) for its
+    /// connection events. Prevents flapping peers from starving the event loop and
+    /// triggering spurious snap sync cascades. See 2026-04-15 incident.
+    pub peer_churn: HashMap<PeerId, std::collections::VecDeque<Instant>>,
 }
+
+/// Max connect+disconnect events per peer within PEER_CHURN_WINDOW before rate-limit kicks in.
+pub const PEER_CHURN_MAX: usize = 5;
+/// Rolling window for peer churn tracking.
+pub const PEER_CHURN_WINDOW: Duration = Duration::from_secs(30);
 
 impl Node {
     /// Set the vote forwarding channel (connects gossip votes to UpdateService)

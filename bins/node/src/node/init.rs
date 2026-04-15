@@ -904,6 +904,7 @@ impl Node {
             last_checkpoint_height: 0,
             pending_tx_announcements: HashMap::new(),
             hardfork_schedule: updater::HardForkSchedule::for_network(network_for_schedule),
+            peer_churn: HashMap::new(),
         })
     }
 
@@ -1088,6 +1089,7 @@ impl Node {
             last_checkpoint_height: 0,
             pending_tx_announcements: HashMap::new(),
             hardfork_schedule: updater::HardForkSchedule::for_network(network),
+            peer_churn: HashMap::new(),
         })
     }
 }

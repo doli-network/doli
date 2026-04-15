@@ -258,6 +258,39 @@ impl SyncManager {
                 }
 
                 if self.fork.consecutive_empty_headers >= 3 {
+                    // Fix #2 (2026-04-15): anti-cascade rollback guard.
+                    // If we applied a block recently (within 60s) AND the gap is
+                    // small (<50), we were NOT on a fork — this is most likely
+                    // transient peer confusion (flapping peer, peer restart,
+                    // peers mid-rollback). Forcing rollback here is what caused
+                    // the 2026-04-15 N3 cascade (08:27-08:39 UTC): a recently
+                    // synced node rolled back 48 blocks chasing phantom fork
+                    // evidence, landing on a state the peers couldn't serve.
+                    //
+                    // Instead: clear the counter, blacklist, and fall back to
+                    // height-based headers. Real forks (long time since last
+                    // apply OR large gap) still take the rollback path below.
+                    let recently_synced = self.network.last_block_applied.elapsed()
+                        < std::time::Duration::from_secs(60);
+                    if recently_synced && gap < 50 {
+                        warn!(
+                            "Empty headers from {} (gap={}, consecutive={}) — \
+                             recently synced ({}s since last apply), suppressing \
+                             rollback cascade. Retrying header-first (anti-cascade).",
+                            peer,
+                            gap,
+                            self.fork.consecutive_empty_headers,
+                            self.network.last_block_applied.elapsed().as_secs()
+                        );
+                        self.fork.consecutive_empty_headers = 0;
+                        self.fork.header_blacklisted_peers.clear();
+                        self.fork.use_height_based_headers = true;
+                        self.set_state(SyncState::Idle, "anti_cascade_recently_synced");
+                        if self.should_sync() {
+                            self.start_sync();
+                        }
+                        return;
+                    }
                     // 3+ consecutive empties from different peers = WE are on a fork.
                     // Stop blacklisting — removing canonical peers prevents recovery.
                     // Clear any existing blacklist and signal fork recovery.

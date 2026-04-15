@@ -88,9 +88,65 @@ impl RpcContext {
         }
 
         // Find the gap: look for the lowest existing block
-        let tip_height = self.chain_state.read().await.best_height;
+        let (tip_height, tip_hash) = {
+            let cs = self.chain_state.read().await;
+            (cs.best_height, cs.best_hash)
+        };
         if tip_height == 0 {
             return Err(RpcError::internal_error("Node has no blocks yet"));
+        }
+
+        // Fix #3 (2026-04-15): preflight tip agreement check.
+        // backfillFromPeer only fills block_store gaps — it does NOT reapply state.
+        // If our tip hash differs from the peer's block at our tip height, we have a
+        // state divergence (e.g. from a rollback cascade). Running backfill in that
+        // case fills "holes" but leaves bond_snapshot / accumulators / UTXO diverged,
+        // producing a FALSE integrity signal ("chain complete") while consensus
+        // state is still wrong. Prevent that here.
+        {
+            let client = reqwest::Client::new();
+            match client
+                .post(&params.rpc_url)
+                .json(&serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "getBlockByHeight",
+                    "params": { "height": tip_height },
+                    "id": 0
+                }))
+                .send()
+                .await
+            {
+                Ok(resp) => {
+                    if let Ok(body) = resp.json::<serde_json::Value>().await {
+                        if let Some(peer_hash_str) =
+                            body.pointer("/result/hash").and_then(|v| v.as_str())
+                        {
+                            let our_hash_str = tip_hash.to_string();
+                            if peer_hash_str != our_hash_str {
+                                return Err(RpcError::invalid_params(format!(
+                                    "Tip divergence detected — our h={} hash={:.16} vs peer hash={:.16}. \
+                                     Backfill only fills block_store gaps; it cannot repair state \
+                                     divergence. Use snap sync or wipe+rsync from a canonical peer.",
+                                    tip_height, our_hash_str, peer_hash_str
+                                )));
+                            }
+                        } else {
+                            warn!(
+                                "Backfill preflight: peer did not return a tip hash for h={} — \
+                                 proceeding without divergence check",
+                                tip_height
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        "Backfill preflight: could not reach peer for tip check ({}) — \
+                         proceeding without divergence check",
+                        e
+                    );
+                }
+            }
         }
 
         // Full scan: find ALL missing heights (leading, mid-chain, and trailing gaps)

@@ -6,6 +6,17 @@ use network::ResponseChannel;
 impl Node {
     /// Handle a newly connected peer: enable bootstrap gate and request status.
     pub async fn on_peer_connected(&mut self, peer_id: PeerId) {
+        // Fix 5a (2026-04-15): per-peer churn rate-limit. Flapping peers
+        // (reconnect every 200ms) starve the event loop otherwise — root cause
+        // of the 2026-04-15 gap=50 → snap sync cascade incident.
+        if self.record_peer_churn_and_check(peer_id) {
+            debug!(
+                "Peer {} exceeded churn limit — dropping PeerConnected work",
+                peer_id
+            );
+            return;
+        }
+
         info!("Peer connected: {}", peer_id);
 
         if self.first_peer_connected.is_none() {
@@ -33,6 +44,15 @@ impl Node {
 
     /// Handle a disconnected peer: remove from sync manager and attempt bootstrap reconnect.
     pub async fn on_peer_disconnected(&mut self, peer_id: PeerId) {
+        // Fix 5a (2026-04-15): per-peer churn rate-limit. See on_peer_connected.
+        if self.record_peer_churn_and_check(peer_id) {
+            debug!(
+                "Peer {} exceeded churn limit — dropping PeerDisconnected work",
+                peer_id
+            );
+            return;
+        }
+
         info!("Peer disconnected: {}", peer_id);
         self.sync_manager.write().await.remove_peer(&peer_id);
 
@@ -65,7 +85,30 @@ impl Node {
             return Ok(());
         }
 
-        debug!("Received new block: {} from {}", block.hash(), source_peer);
+        // Fix (2026-04-15, upstream already_known filter): drop blocks we've already
+        // applied canonically BEFORE entering the full apply path. Gossip rebroadcast
+        // bursts (e.g. 17 old blocks in 7s from multiple peers) would otherwise each
+        // acquire sync_manager.write(), emit [GOSSIP_RECV]/[APPLY_START]/[APPLY_END],
+        // hit block_store.get_block() — serializing legitimate new-tip processing
+        // behind the noise. This was the primary amplifier in the 2026-04-15
+        // incident (N1 04:37-04:48 apply cadence collapse). Cheap: one O(1)
+        // height_by_hash lookup + one read of best_height. No log noise on hit.
+        let block_hash = block.hash();
+        if let Ok(Some(stored_height)) = self.block_store.get_height_by_hash(&block_hash) {
+            let best_height = self.chain_state.read().await.best_height;
+            if stored_height <= best_height {
+                debug!(
+                    "Upstream drop: block {} already applied at h={} (tip h={})",
+                    block_hash, stored_height, best_height
+                );
+                return Ok(());
+            }
+            // stored_height > best_height = "poisoned" block (in store but not
+            // applied — see apply_block comment on N4 2026-03-13 incident).
+            // Fall through to the full path so it can be re-applied.
+        }
+
+        debug!("Received new block: {} from {}", block_hash, source_peer);
 
         // INC-I-014: Skip blocks extending from rejected fork tips.
         // When finality rejects a reorg, the fork tip hash is cached. Future blocks
@@ -532,5 +575,50 @@ impl Node {
             self.handle_new_transaction(tx).await?;
         }
         Ok(())
+    }
+
+    /// Record a connect/disconnect event for `peer_id` and return true if the peer
+    /// has exceeded PEER_CHURN_MAX events within PEER_CHURN_WINDOW. Old entries are
+    /// pruned in place. Callers should early-return (drop the heavy work) when true.
+    ///
+    /// Fix 5a (2026-04-15): a peer flapping every 200ms can enqueue hundreds of
+    /// connection events per second. Each event triggers request_status + a
+    /// sync_manager write lock. Under that load, the event loop cannot service
+    /// NewBlock gossip and falls behind → gap → snap sync cascade.
+    fn record_peer_churn_and_check(&mut self, peer_id: PeerId) -> bool {
+        let now = Instant::now();
+        let entry = self.peer_churn.entry(peer_id).or_default();
+
+        // Prune events outside the rolling window.
+        while let Some(&front) = entry.front() {
+            if now.duration_since(front) > PEER_CHURN_WINDOW {
+                entry.pop_front();
+            } else {
+                break;
+            }
+        }
+
+        entry.push_back(now);
+        let over_limit = entry.len() > PEER_CHURN_MAX;
+
+        // Warn once when a peer first crosses the threshold.
+        if entry.len() == PEER_CHURN_MAX + 1 {
+            warn!(
+                "Peer {} exceeded churn limit ({} events in {}s) — rate-limiting connection events",
+                peer_id,
+                entry.len(),
+                PEER_CHURN_WINDOW.as_secs()
+            );
+        }
+
+        // Opportunistically drop cold tracking entries. Bounded: only O(peers).
+        if self.peer_churn.len() > 1024 {
+            self.peer_churn.retain(|_, dq| {
+                dq.back()
+                    .is_some_and(|t| now.duration_since(*t) <= PEER_CHURN_WINDOW)
+            });
+        }
+
+        over_limit
     }
 }
