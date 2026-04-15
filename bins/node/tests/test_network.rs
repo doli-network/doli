@@ -642,8 +642,7 @@ async fn test_cluster_100x1000() {
 // ============================================================
 
 /// Simulate realistic gossip propagation where blocks arrive at different
-/// nodes at different times, causing temporary excluded_producers divergence.
-/// This is the test that reveals whether the network can grow.
+/// nodes at different times. Tests whether the network can grow.
 impl TestNetwork {
     /// Production-accurate gossip: deliver block to nodes, and when a node
     /// can't apply (prev_hash mismatch = it's behind), sync it from a peer
@@ -854,20 +853,15 @@ impl TestNetwork {
 
         (accepted, rejected_elig, rejected_apply)
     }
-
-    // Removed (Fix #3 cleanup, synmgrefactor): exclude_producer(),
-    // excluded_count(), clear_excluded() helpers. The Node.excluded_producers
-    // field no longer exists.
 }
 
 // ============================================================
 // TEST: Gossip divergence with growing producer count
 // ============================================================
 
-/// Test that N nodes with different excluded_producers sets can still
-/// sync after rollback clears the exclusions.
+/// Test that N nodes with different local state can still sync.
 /// This simulates the real production scenario where nodes see different
-/// blocks first and accumulate different exclusion sets.
+/// blocks first.
 #[tokio::test]
 async fn test_gossip_divergence_and_recovery() {
     let n_nodes = 20;
@@ -984,8 +978,7 @@ async fn test_gossip_convergence_50_nodes() {
 }
 
 // ============================================================
-// REALISTIC GOSSIP — delay, partial delivery, slot gaps,
-// excluded_producers divergence, sync backfill
+// REALISTIC GOSSIP — delay, partial delivery, slot gaps, sync backfill
 // ============================================================
 
 /// Result of a gossip round for a single block
@@ -1039,7 +1032,7 @@ impl TestNetwork {
     /// - Configurable delivery probability (simulates network loss)
     /// - Deterministic "randomness" based on block hash + node id (reproducible)
     /// - check_producer_eligibility gate (the real gossip path)
-    /// - Slot gap tracking that causes excluded_producers divergence
+    /// - Slot gap tracking
     ///
     /// Returns per-round stats.
     pub async fn gossip_realistic(
@@ -1146,7 +1139,6 @@ impl TestNetwork {
     }
 
     /// Simulate sync/backfill that goes through check_producer_eligibility.
-    /// This is the path that BREAKS when excluded_producers diverges.
     /// Returns (backfilled, rejected_by_eligibility).
     pub async fn backfill_with_eligibility(&self) -> (usize, usize) {
         let leader_height = self.height(0).await;
@@ -2312,8 +2304,7 @@ impl TestNetwork {
 /// 2. Set epoch_producer_list on all nodes (simulating epoch boundary)
 /// 3. Build blocks WITH slot gaps → missed_producers set in header
 /// 4. Propagate to all nodes
-/// 5. Verify all nodes have identical excluded_producers sets
-/// 6. Verify excluded producers are removed from scheduling
+/// 5. Verify all nodes converge
 #[tokio::test]
 async fn test_onchain_liveness_exclusion_deterministic() {
     let n_nodes = 50;
@@ -2379,13 +2370,8 @@ async fn test_onchain_liveness_exclusion_deterministic() {
     }
     assert!(net.is_synced().await);
 
-    // Phases 5+6 removed (Fix #3 cleanup, synmgrefactor): checked that all
-    // nodes had identical excluded_producers sets and that the scheduler
-    // skipped excluded producers. Both properties are moot now — the field
-    // no longer exists and the scheduler never consults it post-INC-I-026.
-    // The on-chain `missed_producers` field in the block header remains the
-    // deterministic source of truth, already validated in Phase 4 by the
-    // successful apply_to_node calls above.
+    // Phase 5: convergence verified by is_synced() above. The on-chain
+    // `missed_producers` header field is validated by successful apply_to_node.
 
     eprintln!(
         "  PASS: On-chain missed_producers in header is deterministic across {} nodes",
@@ -2452,12 +2438,9 @@ async fn test_onchain_liveness_10k_nodes() {
         let accepted = net.propagate(0, gap_block.clone()).await;
         let apply_time = apply_start.elapsed();
 
-        // Fix #3 cleanup (synmgrefactor): excluded_producers field removed.
-        // Tracking fields kept as placeholders so the summary printout below
-        // stays compatible, but the "divergence" metric is meaningless now.
         let (nodes_with_excl, max_excl, _) = net.count_divergent_exclusions().await;
         let synced = net.is_synced().await;
-        let sets_match = true; // trivially true — no per-node set to diverge
+        let sets_match = true;
 
         let cluster_passed = synced && sets_match && missed_in_header > 0;
         if !cluster_passed {

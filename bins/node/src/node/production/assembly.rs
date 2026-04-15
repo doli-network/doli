@@ -376,10 +376,8 @@ impl Node {
             // inactivity. Penalizing missed_producers after a cluster restart causes
             // ERRTX070 (exclusion cap exceeded) → block poison → deadlock.
             //
-            // Post-INC-I-026 (always active with activation_height=0) + Fix #3
-            // excluded_producers cleanup (2026-04-15, synmgrefactor): scheduler is
-            // a pure function of epoch_producer_list. No exclusion filter at this
-            // layer — the list was already filtered at epoch boundary by post_commit.
+            // Post-INC-I-026: scheduler is a pure function of epoch_producer_list.
+            // No exclusion filter — the list was already filtered at epoch boundary.
             if slot_gap > 1 && slot_gap <= 3 && !self.epoch_state.producer_list.is_empty() {
                 let effective: Vec<PublicKey> = self.epoch_state.producer_list.clone();
                 if !effective.is_empty() {

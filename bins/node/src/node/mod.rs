@@ -100,8 +100,6 @@ pub struct Node {
     /// Set after successful broadcast — checked at the top of try_produce_block()
     /// before any eligibility/scheduler work to save CPU and silence fallback-rank noise.
     pub last_produced_slot: Option<u64>,
-    /// Last time we checked for production opportunity
-    pub _last_production_check: Instant,
     /// All known producers (persists across epochs for round-robin)
     pub known_producers: Arc<RwLock<Vec<PublicKey>>>,
     /// Time when we first connected to a peer (for discovery grace period)
@@ -317,58 +315,12 @@ impl Node {
         self.maintainer_state = Some(state);
     }
 
-    /// Get current chain height
-    #[allow(dead_code)]
-    pub async fn height(&self) -> u64 {
-        self.chain_state.read().await.best_height
-    }
-
-    /// Get current best hash
-    #[allow(dead_code)]
-    pub async fn best_hash(&self) -> Hash {
-        self.chain_state.read().await.best_hash
-    }
-
-    /// Get sync state
-    #[allow(dead_code)]
-    pub async fn sync_state(&self) -> network::SyncState {
-        self.sync_manager.read().await.state().clone()
-    }
-
-    /// Get peer count
-    #[allow(dead_code)]
-    pub async fn peer_count(&self) -> usize {
-        if let Some(ref network) = self.network {
-            network.peer_count().await
-        } else {
-            0
-        }
-    }
-
-    /// Get mempool size
-    #[allow(dead_code)]
-    pub async fn mempool_size(&self) -> usize {
-        self.mempool.read().await.len()
-    }
-
-    /// Save all node state — now a no-op.
-    ///
-    /// All state persistence happens atomically via StateDb WriteBatch.
-    /// apply_block() commits chain_state + producers + UTXOs in one batch.
-    /// Reorg/rollback/snap_sync use atomic_replace().
-    pub async fn save_state(&self) -> Result<()> {
-        Ok(())
-    }
-
     /// Shutdown the node
     pub async fn shutdown(&mut self) -> Result<()> {
         info!("Shutting down node...");
 
         // Set shutdown flag
         *self.shutdown.write().await = true;
-
-        // Final state save
-        self.save_state().await?;
 
         info!("Node shutdown complete");
         Ok(())

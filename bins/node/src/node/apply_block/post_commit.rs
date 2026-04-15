@@ -1,9 +1,16 @@
 use super::*;
 
 impl Node {
-    /// Actions performed after the batch commit: active-list recompute, epoch snapshot,
+    /// Actions performed around batch commit: active-list recompute, epoch snapshot,
     /// attestation, archive buffering, and websocket broadcast.
-    pub async fn post_commit_actions(&mut self, block: &Block, block_hash: Hash, height: u64) {
+    /// Epoch state writes go into the passed batch (atomic with block commit).
+    pub async fn post_commit_actions(
+        &mut self,
+        block: &Block,
+        block_hash: Hash,
+        height: u64,
+        batch: &mut storage::BlockBatch<'_>,
+    ) {
         // Recompute whether we are in the active production list at epoch boundaries
         self.recompute_active_status(height).await;
         let blocks_per_epoch = self.config.network.blocks_per_reward_epoch();
@@ -182,23 +189,16 @@ impl Node {
                 self.epoch_state.producer_list.len(),
             );
 
-            // Persist BEFORE applying (crash safety: if we crash after persist but
-            // before apply, restart loads from disk correctly).
-            {
-                let mut batch = self.state_db.begin_batch();
-                batch.put_epoch_producer_list(&new_state.producer_list);
-                batch.put_active_production_list(&new_state.active_list);
-                batch.put_attestation_accumulators(
-                    &new_state.attested_sets,
-                    &new_state.attestation_accum,
-                    &new_state.blocks_produced,
-                );
-                batch.put_epoch_bond_snapshot(&new_state.bond_snapshot, new_state.epoch);
-                batch.put_epoch_state(&new_state.serialize_canonical());
-                if let Err(e) = batch.commit() {
-                    warn!("[EPOCH] Failed to persist epoch state: {}", e);
-                }
-            }
+            // Persist epoch state atomically with the block commit (M5: no crash window).
+            batch.put_epoch_producer_list(&new_state.producer_list);
+            batch.put_active_production_list(&new_state.active_list);
+            batch.put_attestation_accumulators(
+                &new_state.attested_sets,
+                &new_state.attestation_accum,
+                &new_state.blocks_produced,
+            );
+            batch.put_epoch_bond_snapshot(&new_state.bond_snapshot, new_state.epoch);
+            batch.put_epoch_state(&new_state.serialize_canonical());
 
             // Apply the new epoch state
             self.epoch_state = new_state;

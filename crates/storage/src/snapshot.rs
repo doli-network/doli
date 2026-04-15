@@ -84,8 +84,6 @@ pub fn compute_state_root(
 /// EXCLUDES (local observation, not consensus-derived):
 ///   - minute_tracker (depends on wall-clock when OUR node observed
 ///     attestations; naturally diverges between nodes)
-///   - excluded_producers (removed in Fix #3 cleanup; was vestigial post-
-///     INC-I-026 activation — no consumers in scheduler or validation)
 ///
 /// NOT in block header. Observational only — same semantics as
 /// compute_state_root. Canary deploy safe.

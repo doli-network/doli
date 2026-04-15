@@ -154,16 +154,9 @@ pub struct NetworkParams {
 
     /// Height at which the INC-I-026 scheduler fix activates.
     ///
-    /// Before this height:
-    ///   `expected = epoch_producer_list.filter(|pk| !excluded.contains(pk))[slot % effective]`
-    ///   (legacy behavior — `excluded_producers` is mutated locally from
-    ///   `block.header.missed_producers` at apply time, which can diverge between
-    ///   nodes that applied different competing blocks at the same height.)
-    ///
-    /// At or after this height:
-    ///   `expected = epoch_producer_list[slot % epoch_producer_list.len()]`
-    ///   (the fix — scheduler is a pure function of `(slot, epoch_producer_list)`,
-    ///   identical on all nodes regardless of local apply history.)
+    /// At or after this height: `expected = epoch_producer_list[slot % len()]`
+    /// (pure function, identical on all nodes). All deployed networks use 0
+    /// (always active).
     ///
     /// Per-network defaults:
     ///   Mainnet: `u64::MAX` — NOT activated. When this branch is merged to main

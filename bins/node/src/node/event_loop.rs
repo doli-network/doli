@@ -562,6 +562,7 @@ async fn handle_sync_request_bg(
                         block_header_bytes,
                         epoch_bond_snapshot_bytes: None,
                         epoch_accumulators_bytes: None,
+                        epoch_state_bytes: None,
                     }
                 }
                 Err(e) => SyncResponse::Error(format!("Snapshot error: {}", e)),

@@ -320,16 +320,9 @@ impl Node {
                 }
             }
 
-            // NOTE: the previous total-cap check against self.excluded_producers
-            // (ERRTX070) was removed in v6.13.21. It compared LOCAL state
-            // (self.excluded_producers) with a CANONICAL block header field
-            // (missed), which made validation non-deterministic across nodes —
-            // two nodes with different excluded sets would validate the same
-            // block differently and fork. With INC-I-026 the scheduler no
-            // longer consults excluded_producers, so there is no consensus
-            // reason to enforce the cap at validation time. The sanity cap
-            // in post_commit.rs clears excluded_producers after apply if it
-            // exceeds 1/3, preventing unbounded growth.
+            // NOTE: the previous total-cap check (ERRTX070) was removed in
+            // v6.13.21. It compared local state with a canonical block header
+            // field, making validation non-deterministic across nodes.
         }
 
         // P0-001: public_key enforcement is ACTIVE (v5.2.0+).
@@ -921,15 +914,16 @@ impl Node {
                             .state_db
                             .get_attestation_accumulators()
                             .and_then(|data| bincode::serialize(&data).ok());
-                        let has_bond_snap = epoch_bond_snapshot_bytes.is_some();
+                        // M7: complete EpochState for direct transfer (no reconstruction)
+                        let epoch_state_bytes = self.state_db.get_epoch_state();
                         info!(
-                            "[SNAP_SYNC] Sending snapshot response (inline): h={} hash={:.16} cs={}B utxo={}B ps={}B bond_snap={}",
+                            "[SNAP_SYNC] Sending snapshot response: h={} hash={:.16} cs={}B utxo={}B ps={}B epoch_state={}",
                             snap.block_height,
                             snap.block_hash,
                             snap.chain_state_bytes.len(),
                             snap.utxo_set_bytes.len(),
                             snap.producer_set_bytes.len(),
-                            if has_bond_snap { "included" } else { "MISSING" }
+                            if epoch_state_bytes.is_some() { "included" } else { "MISSING" }
                         );
                         SyncResponse::StateSnapshot {
                             block_hash: snap.block_hash,
@@ -941,6 +935,7 @@ impl Node {
                             block_header_bytes,
                             epoch_bond_snapshot_bytes,
                             epoch_accumulators_bytes,
+                            epoch_state_bytes,
                         }
                     }
                     Err(e) => SyncResponse::Error(format!("Snapshot error: {}", e)),

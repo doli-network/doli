@@ -169,6 +169,9 @@ pub struct VerifiedSnapshot {
     pub epoch_bond_snapshot_bytes: Option<Vec<u8>>,
     /// Attestation accumulators from peer (eliminates 3-epoch convergence)
     pub epoch_accumulators_bytes: Option<Vec<u8>>,
+    /// Complete EpochState (canonical serialization). Takes precedence over
+    /// individual epoch_bond_snapshot_bytes/epoch_accumulators_bytes.
+    pub epoch_state_bytes: Option<Vec<u8>>,
 }
 
 // ---------------------------------------------------------------------------

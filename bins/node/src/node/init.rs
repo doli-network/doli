@@ -845,7 +845,6 @@ impl Node {
             producer_key,
             bls_key,
             last_produced_slot: None,
-            _last_production_check: Instant::now(),
             known_producers: Arc::new(RwLock::new(Vec::new())),
             first_peer_connected: None,
             equivocation_detector,
@@ -1025,7 +1024,6 @@ impl Node {
             producer_key,
             bls_key,
             last_produced_slot: None,
-            _last_production_check: Instant::now(),
             known_producers: Arc::new(RwLock::new(
                 producers.iter().map(|kp| *kp.public_key()).collect(),
             )),

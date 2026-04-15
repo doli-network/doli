@@ -139,24 +139,18 @@ pub struct ValidationContext {
     /// Empty Vec at index N means that producer has no BLS key (pre-BLS registration).
     #[allow(dead_code)]
     pub producer_bls_keys: Vec<Vec<u8>>,
-    /// Producers excluded from round-robin (missed slot, not yet re-attested).
-    /// Derived from on-chain missed_producers headers (not local state).
-    pub excluded_producers: std::collections::HashSet<crypto::PublicKey>,
-    /// Epoch-frozen producer list. The scheduling denominator is derived from
-    /// this list minus excluded_producers. Never changes mid-epoch.
+    /// Epoch-frozen producer list. The scheduling denominator:
+    /// `expected = epoch_producer_list[slot % epoch_producer_list.len()]`.
+    /// Never changes mid-epoch.
     pub epoch_producer_list: Vec<crypto::PublicKey>,
     /// Height at which Input.public_key becomes mandatory for signature verification.
     /// Before this height: public_key=None accepted (legacy, no sig verification).
     /// At or after: public_key must be Some, signature + pubkey_hash verified.
     pub sig_verification_height: u64,
     /// Height at which the INC-I-026 scheduler fix activates.
-    /// Before this height: producer eligibility is computed with
-    ///   `slot % (epoch_producer_list.len() - excluded_producers.len())`
-    ///   (legacy behavior, vulnerable to the consensus fork documented in INC-I-026).
-    /// At or after: producer eligibility is computed with `slot % epoch_producer_list.len()`
-    ///   (the fix — scheduler is a pure function of `(slot, epoch_producer_list)`).
-    /// Default `u64::MAX` = fix disabled. Per-network values are set via
-    /// `with_inc_i_026_scheduler_activation_height()` from the node validation callsites.
+    /// At or after: producer eligibility is `slot % epoch_producer_list.len()`
+    /// (pure function, no local state). Default `u64::MAX` = fix disabled.
+    /// All deployed networks have activation_height=0 (always active).
     pub inc_i_026_scheduler_activation_height: u64,
     /// Expected fork_id for the current height.
     pub expected_fork_id: crypto::Hash,
@@ -189,7 +183,6 @@ impl ValidationContext {
             registration_chain: RegistrationChainState::default(),
             pending_producer_keys: Vec::new(),
             producer_bls_keys: Vec::new(),
-            excluded_producers: std::collections::HashSet::new(),
             epoch_producer_list: Vec::new(),
             sig_verification_height: u64::MAX,
             inc_i_026_scheduler_activation_height: u64::MAX,
@@ -209,16 +202,6 @@ impl ValidationContext {
     #[must_use]
     pub fn with_epoch_producer_list(mut self, list: Vec<crypto::PublicKey>) -> Self {
         self.epoch_producer_list = list;
-        self
-    }
-
-    /// Set excluded producers.
-    #[must_use]
-    pub fn with_excluded_producers(
-        mut self,
-        excluded: std::collections::HashSet<crypto::PublicKey>,
-    ) -> Self {
-        self.excluded_producers = excluded;
         self
     }
 

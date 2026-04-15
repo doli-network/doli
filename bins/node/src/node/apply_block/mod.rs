@@ -260,6 +260,11 @@ impl Node {
         };
         batch.put_undo(height, &undo);
 
+        // Epoch state writes go into the same batch (M5: atomic with block commit).
+        // post_commit_actions adds epoch derivation + accumulator writes to the batch.
+        self.post_commit_actions(&block, block_hash, height, &mut batch)
+            .await;
+
         batch
             .commit()
             .map_err(|e| anyhow::anyhow!("StateDb batch commit failed: {}", e))?;
@@ -269,9 +274,6 @@ impl Node {
         if height > UNDO_KEEP_DEPTH {
             self.state_db.prune_undo_before(height - UNDO_KEEP_DEPTH);
         }
-
-        // Post-commit: tier recompute, epoch snapshot, attestation, archive, websocket
-        self.post_commit_actions(&block, block_hash, height).await;
 
         // State fingerprints: one hash per ephemeral consensus-derived state
         // component. Compare [STATE_FP] lines across nodes at the same height

@@ -407,7 +407,14 @@ impl Node {
     ///
     /// This function replays the same logic as post_commit_actions() at the last
     /// epoch boundary to reconstruct the exact scheduler state the network is using.
+    /// DEPRECATED: backward-compatibility fallback for pre-upgrade undo data.
+    /// Post-upgrade blocks carry epoch_state_snapshot in UndoData, making this
+    /// function unnecessary. If this fires on a post-upgrade block, it indicates
+    /// a persistence bug.
     pub async fn rebuild_epoch_state_from_blocks(&mut self) {
+        warn!(
+            "[EPOCH_REBUILD] rebuild_epoch_state_from_blocks called — this should only fire for pre-upgrade undo data"
+        );
         let current_h = self.chain_state.read().await.best_height;
         let blocks_per_epoch = self.config.network.blocks_per_reward_epoch();
         if blocks_per_epoch == 0 || current_h == 0 {

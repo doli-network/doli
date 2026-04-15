@@ -1663,8 +1663,8 @@ fn test_inc_i017_deep_fork_snap_redirect_allowed_for_synced_nodes() {
 //
 // Reproduces the mainnet death cascade (2026-03-29): node had 26 peers but
 // received no gossip blocks for 2 minutes. Without the watchdog, the node
-// produced during the silence, excluded_producers exploded (1→24→32), and
-// the scheduler permanently diverged from the network.
+// produced during the silence and the scheduler permanently diverged from
+// the network.
 // =========================================================================
 
 #[test]

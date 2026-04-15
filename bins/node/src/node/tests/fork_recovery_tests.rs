@@ -5,8 +5,7 @@
 //! manually to simulate forks and peer synchronization.
 //!
 //! Every fork recovery field (cumulative_rollback_depth, consecutive_fork_blocks,
-//! excluded_producers, cached_scheduler, epoch_bond_snapshot) is the REAL field
-//! from the production Node. No mocks. No shortcuts.
+//! epoch_state) is the REAL field from the production Node. No mocks. No shortcuts.
 
 use super::*;
 use tempfile::TempDir;

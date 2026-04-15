@@ -5,8 +5,7 @@
 //! manually to simulate forks and peer synchronization.
 //!
 //! Every fork recovery field (cumulative_rollback_depth, consecutive_fork_blocks,
-//! excluded_producers, cached_scheduler, epoch_bond_snapshot) is the REAL field
-//! from the production Node. No mocks. No shortcuts.
+//! epoch_state) is the REAL field from the production Node. No mocks. No shortcuts.
 
 use crypto::{Hash, KeyPair};
 use doli_core::consensus::ConsensusParams;
@@ -96,9 +95,8 @@ async fn apply_chain(node: &mut Node, blocks: &[Block]) {
     }
 }
 
-/// Get the genesis hash from a node (the best_hash at height 0).
 /// Get the devnet genesis hash (used as prev_hash for the first block).
-#[allow(dead_code)] // Previously used by removed TEST 11 (excluded_producers cleanup).
+#[allow(dead_code)]
 fn devnet_genesis_hash() -> Hash {
     doli_core::chainspec::ChainSpec::devnet().genesis_hash()
 }
@@ -529,13 +527,6 @@ async fn test_recovery_preserves_mempool() {
         mempool_after_recovery
     );
 }
-
-// TEST 11 removed (Fix #3 cleanup, synmgrefactor): was
-// `test_fork_recovery_blocked_by_divergent_excluded_producers`, which
-// specifically exercised the `excluded_producers` field behavior after
-// rollback. With that field removed, the test is obsolete — the bug class
-// it guarded against no longer exists (there is no local divergent
-// exclusion set to resync).
 
 // ============================================================
 // TEST 12: Post-snap gossip validation mode (INC-I-010 layer 3)

@@ -117,6 +117,11 @@ pub enum SyncResponse {
         /// Eliminates the 3-epoch convergence window after snap sync.
         #[serde(default)]
         epoch_accumulators_bytes: Option<Vec<u8>>,
+        /// Complete EpochState (canonical serialization).
+        /// When present, receiver uses this directly (no reconstruction needed).
+        /// Backward compatible: older peers send None, receiver falls back.
+        #[serde(default)]
+        epoch_state_bytes: Option<Vec<u8>>,
     },
 
     /// State root only, for cross-peer verification (snap sync)

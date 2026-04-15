@@ -408,38 +408,17 @@ impl Node {
     ///
     /// EPOCH LOOKAHEAD: Deterministic round-robin selection (anti-grinding)
     ///
-    /// Selection is based on slot number and a frozen producer list. Two
-    /// behaviors exist, gated by `inc_i_026_scheduler_activation_height`:
-    ///
-    /// ## Legacy behavior (height < activation_height)
-    ///
     /// ```text
-    /// effective = epoch_producer_list.filter(|pk| !excluded_producers.contains(pk))
-    /// expected  = effective[slot % effective.len()]
+    /// expected = active_list[slot % active_list.len()]
     /// ```
     ///
-    /// `excluded_producers` is a locally-mutated set (populated at apply time
-    /// from `block.header.missed_producers`) that can diverge between nodes
-    /// that applied different competing blocks at the same height. This is
-    /// the fork-generator documented in INC-I-026 and its sibling INC-I-016.
+    /// Pure function of `(slot, active_list)`, both epoch-frozen and identical
+    /// on all nodes. A dead producer causes an empty slot instead of being
+    /// skipped — benign, whereas scheduler divergence is catastrophic (forks).
     ///
-    /// ## Fixed behavior (height >= activation_height)
-    ///
-    /// ```text
-    /// expected = active_production_list[slot % active_production_list.len()]
-    /// ```
-    ///
-    /// `excluded_producers` is NOT consulted. The scheduler is a pure function
-    /// of `(slot, active_production_list)`, both of which are epoch-frozen and
-    /// identical on all nodes. Trade-off: a dead producer causes an empty slot
-    /// instead of being skipped — benign, whereas scheduler divergence is
-    /// catastrophic (forks).
-    ///
-    /// Per-network activation heights live in `NetworkParams::
-    /// inc_i_026_scheduler_activation_height`. Both production (this function)
-    /// and validation (`crates/core/src/validation/producer.rs::
-    /// validate_producer_eligibility`) switch at the same height — behavioral
-    /// learning #8 (production/validation MUST agree on scheduler input).
+    /// Both production (this function) and validation
+    /// (`crates/core/src/validation/producer.rs::validate_producer_eligibility`)
+    /// use the same formula — behavioral learning #8.
     pub fn resolve_epoch_eligibility(
         &mut self,
         current_slot: u32,
@@ -463,13 +442,7 @@ impl Node {
             return Vec::new();
         }
 
-        // Fix #3 cleanup (2026-04-15, synmgrefactor): pre-INC-I-026 path removed.
-        // With activation_height = 0 for every deployed network (see
-        // network_params/defaults.rs), the scheduler is always a pure function
-        // of (slot, source). The legacy `height < activation_height` branch
-        // that consulted self.excluded_producers is dead code — removed along
-        // with the excluded_producers field.
-        let _ = (height, activation_height); // kept for API compat until removed upstream
+        let _ = (height, activation_height); // kept for API compat until callers updated
         let producer_index = (current_slot as usize) % source.len();
         let selected = source[producer_index];
         debug!(

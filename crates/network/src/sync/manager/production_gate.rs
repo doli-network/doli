@@ -139,14 +139,10 @@ impl SyncManager {
 
         // Check 3: Gossip activity watchdog — DISABLED (INC-I-026).
         //
-        // Pre-INC-I-026, mesh isolation caused scheduler divergence because
-        // excluded_producers was local state. With deterministic scheduler,
-        // a block produced during gossip silence is simply ignored by peers
-        // (FORK_GUARD). Worst case: 1 wasted slot. The deadlock risk from
-        // blocking production far exceeds the cost of an ignored block.
-        //
-        // The original INC-I-016 attack vector no longer exists because
-        // excluded_producers is no longer used for scheduling.
+        // With deterministic scheduler, a block produced during gossip
+        // silence is simply ignored by peers (FORK_GUARD). Worst case:
+        // 1 wasted slot. The deadlock risk from blocking production far
+        // exceeds the cost of an ignored block.
 
         // Check 4: Finality — REMOVED (v6.13.6-fix123).
         //
