@@ -341,6 +341,23 @@ impl Node {
 
             let minute_fp = self.minute_tracker.fingerprint();
 
+            // Fix #9 (2026-04-15, synmgrefactor): unified scheduler_root hash.
+            // Single commitment over all consensus-derived scheduler state.
+            // Two nodes with matching state_root but different scheduler_root
+            // have divergent schedulers — will select different producers
+            // for the same slot → fork. Detect with one grep/compare instead
+            // of seven separate component diffs.
+            let scheduler_root = storage::compute_scheduler_root(
+                &self.excluded_producers,
+                &self.epoch_bond_snapshot,
+                self.epoch_bond_snapshot_epoch,
+                &self.epoch_producer_list,
+                &self.active_production_list,
+                &self.epoch_attested_set,
+                &self.epoch_attestation_accum,
+                &self.epoch_blocks_produced_accum,
+            );
+
             let state_root = self
                 .cached_state_root
                 .read()
@@ -352,9 +369,10 @@ impl Node {
                 .unwrap_or_else(|| "none".to_string());
 
             info!(
-                "[STATE_FP] h={} sr={} excl={:.16} bonds={:.16} epl={:.16} apl={:.16} accum={:.16} minute={:.16} excl_n={} bonds_n={} epl_n={} apl_n={} minute_n={}",
+                "[STATE_FP] h={} sr={} sched={:.16} excl={:.16} bonds={:.16} epl={:.16} apl={:.16} accum={:.16} minute={:.16} excl_n={} bonds_n={} epl_n={} apl_n={} minute_n={}",
                 height,
                 state_root,
+                scheduler_root,
                 excl_fp,
                 bonds_fp,
                 epl_fp,
