@@ -61,6 +61,12 @@ impl Node {
                 });
         }
 
+        // Persist epoch_state after every block (not just epoch boundaries).
+        // Without this, mid-epoch accumulator changes are RAM-only — lost on restart,
+        // causing sched divergence until the next epoch boundary. Latent fork trigger
+        // at 50+ producers when tier promotion reads attestation_accum[0].
+        batch.put_epoch_state(&self.epoch_state.serialize());
+
         if doli_core::EpochSnapshot::is_epoch_boundary_with(height, blocks_per_epoch) {
             let epoch = doli_core::EpochSnapshot::epoch_from_height_with(height, blocks_per_epoch);
 
