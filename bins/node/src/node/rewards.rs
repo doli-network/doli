@@ -490,8 +490,34 @@ impl Node {
             // below can read it.
             let mut scan_covered_full_epoch = false;
 
+            // Fix #6 (2026-04-15, synmgrefactor branch): if epoch_attested_set is
+            // already populated (e.g. peer transferred accumulators via snap sync,
+            // or persisted on disk from a prior run), use those directly for the
+            // 3-epoch attested lookback. The block scan below is only needed when
+            // we have NO attestation history at all (cold start on post-wipe node
+            // with no peer accumulator payload).
+            let have_inmem_accum = !self.epoch_attested_set[0].is_empty()
+                || !self.epoch_attested_set[1].is_empty()
+                || !self.epoch_attested_set[2].is_empty();
+
             let mut new_list: Vec<crypto::PublicKey> = if epoch <= 1 {
                 active
+            } else if have_inmem_accum {
+                info!(
+                    "[STARTUP] Using in-memory epoch_attested_set for filter (attested=[{},{},{}]) — no block scan needed",
+                    self.epoch_attested_set[0].len(),
+                    self.epoch_attested_set[1].len(),
+                    self.epoch_attested_set[2].len(),
+                );
+                let mut attested: std::collections::HashSet<crypto::PublicKey> =
+                    std::collections::HashSet::new();
+                for i in 0..3 {
+                    attested.extend(&self.epoch_attested_set[i]);
+                }
+                active
+                    .into_iter()
+                    .filter(|pk| attested.contains(pk))
+                    .collect()
             } else {
                 // Fix #4A (2026-04-15, synmgrefactor branch): attestation lookback
                 // must be 3 epochs to match post_commit. Pre-fix used 1-epoch

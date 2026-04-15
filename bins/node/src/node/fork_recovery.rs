@@ -768,16 +768,18 @@ impl Node {
                 );
             }
 
-            // Rebuild epoch_producer_list from active producers
+            // Temporary unfiltered epoch_producer_list. Will be replaced by
+            // rebuild_epoch_state_from_blocks() below (Fix #6) which applies
+            // the attestation filter using the in-memory epoch_attested_set
+            // loaded from the peer's accumulator payload.
             let mut pks: Vec<_> = active.iter().map(|p| p.public_key).collect();
             pks.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
             self.epoch_producer_list = pks;
-            // Rebuild active_production_list (tier system will filter at next epoch boundary)
             self.active_production_list = self.epoch_producer_list.clone();
 
             let total: u64 = self.epoch_bond_snapshot.values().sum();
             info!(
-                "[SNAP_SYNC] Rebuilt epoch state: {} producers, total_bonds={}, epoch={}",
+                "[SNAP_SYNC] Rebuilt epoch state (pre-filter): {} producers, total_bonds={}, epoch={}",
                 self.epoch_bond_snapshot.len(),
                 total,
                 self.epoch_bond_snapshot_epoch
@@ -787,6 +789,10 @@ impl Node {
         // Step 5b: Load attestation accumulators from peer payload.
         // Eliminates the 3-epoch convergence window where attestation data
         // diverges after snap sync.
+        //
+        // Fix #6 (2026-04-15, synmgrefactor): MUST run BEFORE the attestation-
+        // filter rebuild below, because that rebuild reads epoch_attested_set
+        // to decide which producers belong in epoch_producer_list.
         if let Some(ref accum_bytes) = snapshot.epoch_accumulators_bytes {
             type AccumType = (
                 [std::collections::HashSet<crypto::PublicKey>; 3],
@@ -814,6 +820,22 @@ impl Node {
                 let _ = batch.commit();
             }
         }
+
+        // Fix #6 (2026-04-15, synmgrefactor): apply the attestation filter to
+        // epoch_producer_list AFTER accumulators are loaded. Pre-fix, snap sync
+        // left epoch_producer_list = ALL active producers (unfiltered), causing
+        // the receiving node's scheduler to disagree with the network's
+        // attestation-filtered scheduler until the next epoch boundary
+        // re-applied the filter. That 3-epoch-long window was the root cause
+        // of the abraham/alessandro scheduler divergence on 2026-04-15.
+        //
+        // rebuild_epoch_state_from_blocks now prefers the in-memory
+        // epoch_attested_set (loaded above) over a block scan, so snap sync
+        // without block history produces the SAME filter as apply_block's
+        // post_commit at the matching height. When the peer payload did NOT
+        // include accumulators (older protocol version), rebuild falls back
+        // to the existing "unfiltered + Light validation" path.
+        self.rebuild_epoch_state_from_blocks().await;
 
         // Step 6: Track snap sync height for validation mode selection
         self.snap_sync_height = Some(snapshot.block_height);
