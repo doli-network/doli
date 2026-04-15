@@ -10,6 +10,7 @@ mod block_lifecycle;
 mod cleanup;
 mod peers;
 mod production_gate;
+pub mod recovery;
 mod snap_sync;
 mod sync_engine;
 mod types;
