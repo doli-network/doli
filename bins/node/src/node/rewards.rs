@@ -683,10 +683,103 @@ impl Node {
                 );
             } else if !self.epoch_attestation_accum[0].is_empty() {
                 info!(
-                    "[STARTUP] Tier accumulators loaded from disk: \
-                     minutes_entries={}, blocks_entries={} (keeping persisted, ignoring scan)",
+                    "[STARTUP] Tier accumulators loaded from disk (pre-complete): \
+                     minutes_entries={}, blocks_entries={}",
                     self.epoch_attestation_accum[0].len(),
                     self.epoch_blocks_produced_accum.len()
+                );
+            }
+
+            // Fix #4C (2026-04-15, synmgrefactor branch): COMPLETE the current-epoch
+            // accumulators by replaying blocks between the last epoch boundary and
+            // current_h.
+            //
+            // Rationale: post_commit persists epoch_attestation_accum +
+            // epoch_blocks_produced_accum + epoch_attested_set to disk ONLY at
+            // epoch boundaries. After an atomic deploy / restart mid-epoch, the
+            // node loads disk state from the LAST boundary, so [0] reflects the
+            // state AT that boundary (post-rotation: empty). Blocks already
+            // applied between the boundary and the restart point had accumulated
+            // into [0] on the OLD binary's in-memory state, which was LOST.
+            //
+            // Canary evidence (2026-04-15): n1 and n9 reached h=36021 with
+            // identical state_root, bonds, epoch_producer_list, active_production_
+            // list, and epoch_attested_set — but DIFFERENT sched= hash. The
+            // delta was in the minute-level epoch_attestation_accum because
+            // each node restarted at a different mid-epoch height, so they
+            // accumulated into [0] from different starting points.
+            //
+            // This is cosmetic today (tier promotion doesn't fire with <50
+            // producers), but a latent fork risk post-growth. Scan here is
+            // bounded to at most blocks_per_epoch blocks (~360 for mainnet),
+            // typically much less. Cost: ~50ms at startup.
+            if current_h > epoch_boundary_h {
+                let mut sorted_for_decode = self.epoch_producer_list.clone();
+                sorted_for_decode.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+
+                let mut replayed = 0u64;
+                let mut attested_before = self.epoch_attested_set[0].len();
+                let minutes_before = self.epoch_attestation_accum[0].len();
+                let blocks_before = self.epoch_blocks_produced_accum.len();
+
+                for h in (epoch_boundary_h + 1)..=current_h {
+                    let Ok(Some(blk)) = self.block_store.get_block_by_height(h) else {
+                        warn!(
+                            "[STARTUP] Fix #4C accumulator replay: missing block at h={} \
+                             (gap in store) — accumulators for current epoch may be partial",
+                            h
+                        );
+                        break;
+                    };
+                    replayed += 1;
+                    let minute = doli_core::attestation::attestation_minute(blk.header.slot);
+
+                    self.epoch_attested_set[0].insert(blk.header.producer);
+                    *self
+                        .epoch_blocks_produced_accum
+                        .entry(blk.header.producer)
+                        .or_insert(0) += 1;
+                    self.epoch_attestation_accum[0]
+                        .entry(blk.header.producer)
+                        .or_default()
+                        .insert(minute);
+
+                    if !blk.header.presence_root.is_zero() && !sorted_for_decode.is_empty() {
+                        let indices = if !blk.attestation_bitfield.is_empty() {
+                            doli_core::decode_attestation_bitfield_vec(
+                                &blk.attestation_bitfield,
+                                sorted_for_decode.len(),
+                            )
+                        } else if h < doli_core::consensus::BITFIELD_BODY_ACTIVATION_HEIGHT {
+                            doli_core::attestation::decode_attestation_bitfield(
+                                &blk.header.presence_root,
+                                sorted_for_decode.len(),
+                            )
+                        } else {
+                            vec![]
+                        };
+                        for idx in indices {
+                            if let Some(pk) = sorted_for_decode.get(idx) {
+                                self.epoch_attested_set[0].insert(*pk);
+                                self.epoch_attestation_accum[0]
+                                    .entry(*pk)
+                                    .or_default()
+                                    .insert(minute);
+                            }
+                        }
+                    }
+                }
+
+                attested_before = self.epoch_attested_set[0].len() - attested_before;
+                info!(
+                    "[STARTUP] Fix #4C accumulator replay: scanned {} blocks (h={}..={}) — \
+                     +{} attested, +{} minutes entries, +{} blocks entries",
+                    replayed,
+                    epoch_boundary_h + 1,
+                    current_h,
+                    attested_before,
+                    self.epoch_attestation_accum[0].len() - minutes_before,
+                    self.epoch_blocks_produced_accum.len() - blocks_before,
                 );
             }
 
