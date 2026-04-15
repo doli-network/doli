@@ -540,6 +540,14 @@ impl Node {
             let mut just_completed_blocks: std::collections::HashMap<crypto::PublicKey, u32> =
                 std::collections::HashMap::new();
             let mut scan_produced_data = false;
+            // Fix #4B-edge (2026-04-15, synmgrefactor): track whether block scan
+            // covered the full just-completed epoch. If the scan aborted early
+            // because a block was missing from the store (historic gap post-
+            // rollback), accumulators are PARTIAL and must NOT be used — tier
+            // promotion could incorrectly demote producers whose contribution
+            // fell in the gap. Moved out of the `else` branch so the guard
+            // below can read it.
+            let mut scan_covered_full_epoch = false;
 
             let mut new_list: Vec<crypto::PublicKey> = if epoch <= 1 {
                 active
@@ -619,6 +627,10 @@ impl Node {
                     }
                 }
 
+                // Propagate scan coverage to outer scope for the tier-accumulator
+                // population guard (Fix #4B-edge).
+                scan_covered_full_epoch = have_full_epoch;
+
                 let skip_height = self.config.network.params().snap_attestation_skip_height;
                 if have_full_epoch || epoch_boundary_h < skip_height {
                     active
@@ -674,7 +686,16 @@ impl Node {
             // loads persisted accumulators at startup — if present, they are more
             // authoritative than a block-scan reconstruction (they reflect the
             // exact state apply_block produced, including edge cases).
-            if self.epoch_attestation_accum[0].is_empty() && scan_produced_data {
+            //
+            // Fix #4B-edge (2026-04-15, synmgrefactor): also require
+            // scan_covered_full_epoch. If the block scan aborted mid-epoch due
+            // to a missing block (historic gap post-rollback), accumulators are
+            // PARTIAL and must not be used — tier promotion could demote
+            // producers whose contribution fell in the gap.
+            if self.epoch_attestation_accum[0].is_empty()
+                && scan_produced_data
+                && scan_covered_full_epoch
+            {
                 info!(
                     "[STARTUP] Tier accumulators empty — rebuilt from block scan: \
                      producers_with_minutes={}, producers_with_blocks={} (just-completed epoch={})",
@@ -684,6 +705,15 @@ impl Node {
                 );
                 self.epoch_attestation_accum[0] = just_completed_minutes;
                 self.epoch_blocks_produced_accum = just_completed_blocks;
+            } else if self.epoch_attestation_accum[0].is_empty()
+                && scan_produced_data
+                && !scan_covered_full_epoch
+            {
+                warn!(
+                    "[STARTUP] Tier accumulators empty AND scan incomplete \
+                     (historic gap in block store) — leaving accumulators empty, \
+                     tier promotion will be inactive until next epoch boundary"
+                );
             } else if !self.epoch_attestation_accum[0].is_empty() {
                 info!(
                     "[STARTUP] Tier accumulators loaded from disk: \
