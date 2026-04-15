@@ -532,8 +532,20 @@ impl Node {
             let mut new_list: Vec<crypto::PublicKey> = if epoch <= 1 {
                 active
             } else {
-                let prev_epoch_start = (epoch - 1) * blocks_per_epoch;
-                let prev_epoch_end = epoch * blocks_per_epoch;
+                // Fix #4A (2026-04-15, synmgrefactor branch): attestation lookback
+                // must be 3 epochs to match post_commit. Pre-fix used 1-epoch
+                // window, producing a DIFFERENT producer list than the one
+                // apply_block produces at epoch boundary. On any mid-epoch restart
+                // (startup, snap sync, rollback), the node would freeze a wrong
+                // scheduler list and diverge from the rest of the network until
+                // the NEXT epoch boundary re-applied the correct filter.
+                //
+                // Scan up to 3 completed epochs. Union attested producers across
+                // all of them. Matches post_commit line 163-168.
+                let lookback_epochs: u64 = 3;
+                let first_epoch = epoch.saturating_sub(lookback_epochs);
+                let scan_start = first_epoch * blocks_per_epoch;
+                let scan_end = epoch * blocks_per_epoch;
                 let mut attested: std::collections::HashSet<crypto::PublicKey> =
                     std::collections::HashSet::new();
                 let mut have_full_epoch = true;
@@ -541,7 +553,8 @@ impl Node {
                 let mut sorted_for_decode = active.clone();
                 sorted_for_decode.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
 
-                for h in prev_epoch_start..prev_epoch_end {
+                let start_h = if scan_start == 0 { 1 } else { scan_start };
+                for h in start_h..scan_end {
                     if let Ok(Some(blk)) = self.block_store.get_block_by_height(h) {
                         attested.insert(blk.header.producer);
                         if !blk.header.presence_root.is_zero() {
@@ -579,8 +592,8 @@ impl Node {
                         .collect()
                 } else {
                     info!(
-                        "[STARTUP] Incomplete block history for epoch {} — using all {} active producers, Light validation until next epoch boundary",
-                        epoch - 1,
+                        "[STARTUP] Incomplete block history for last {} epoch(s) — using all {} active producers, Light validation until next epoch boundary",
+                        lookback_epochs,
                         active.len()
                     );
                     // Without full block history, our epoch_producer_list may differ
@@ -592,13 +605,16 @@ impl Node {
                 }
             };
 
-            // Deadlock safety: if attestation filter left < 1/3, mass event — include all.
+            // Fix #4A (2026-04-15, synmgrefactor): deadlock safety floor
+            // tightened from 1/3 to 2/3 to match post_commit.rs:196. See that
+            // file's explanation: >1/3 un-attested is assumed to be mass event
+            // (outage), not individual inactivity. Canonical BFT threshold.
             {
                 let producers = self.producer_set.read().await;
                 let active_count = producers.active_producers_at_height(epoch_boundary_h).len();
-                if new_list.len() < active_count / 3 || new_list.is_empty() {
+                if new_list.len() < (active_count * 2 / 3) || new_list.is_empty() {
                     warn!(
-                        "[STARTUP] Attestation filter left {}/{} — mass event, including all",
+                        "[STARTUP] Attestation filter left {}/{} (<2/3) — mass event, including all",
                         new_list.len(),
                         active_count
                     );
