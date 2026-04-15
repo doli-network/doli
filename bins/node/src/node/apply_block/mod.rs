@@ -272,6 +272,103 @@ impl Node {
         // Post-commit: tier recompute, epoch snapshot, attestation, archive, websocket
         self.post_commit_actions(&block, block_hash, height).await;
 
+        // State fingerprints: one hash per ephemeral consensus-derived state
+        // component. Compare [STATE_FP] lines across nodes at the same height
+        // to detect divergence in seconds instead of 30-60 min. All container
+        // types with non-deterministic iteration order (HashSet, HashMap) are
+        // sorted before serialization. Vec types (epoch_producer_list,
+        // active_production_list) are NOT sorted because their order is
+        // consensus-relevant (producer index = slot % len). Zero consensus
+        // impact — observation only.
+        {
+            use crypto::hash::hash as h;
+
+            let excl_fp = {
+                let mut v: Vec<Vec<u8>> = self
+                    .excluded_producers
+                    .iter()
+                    .map(|pk| pk.as_bytes().to_vec())
+                    .collect();
+                v.sort();
+                h(&bincode::serialize(&v).unwrap_or_default())
+            };
+
+            let bonds_fp = {
+                let mut v: Vec<(Vec<u8>, u64)> = self
+                    .epoch_bond_snapshot
+                    .iter()
+                    .map(|(k, v)| (k.as_bytes().to_vec(), *v))
+                    .collect();
+                v.sort_by(|a, b| a.0.cmp(&b.0));
+                h(&bincode::serialize(&v).unwrap_or_default())
+            };
+
+            // Vec types — order matters for consensus (index → slot).
+            let epl_fp = h(&bincode::serialize(
+                &self
+                    .epoch_producer_list
+                    .iter()
+                    .map(|pk| pk.as_bytes().to_vec())
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap_or_default());
+
+            let apl_fp = h(&bincode::serialize(
+                &self
+                    .active_production_list
+                    .iter()
+                    .map(|pk| pk.as_bytes().to_vec())
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap_or_default());
+
+            // Hash all 3 epochs of the attestation accumulator (full lookback
+            // window) so encoder/decoder mismatches across epochs are visible,
+            // not just the current one.
+            let accum_fp = {
+                let per_epoch: Vec<Vec<u8>> = self
+                    .epoch_attested_set
+                    .iter()
+                    .map(|s| {
+                        let mut v: Vec<Vec<u8>> =
+                            s.iter().map(|pk| pk.as_bytes().to_vec()).collect();
+                        v.sort();
+                        bincode::serialize(&v).unwrap_or_default()
+                    })
+                    .collect();
+                h(&bincode::serialize(&per_epoch).unwrap_or_default())
+            };
+
+            let minute_fp = self.minute_tracker.fingerprint();
+
+            let state_root = self
+                .cached_state_root
+                .read()
+                .await
+                .map(|(sr, _, _)| {
+                    let s = sr.to_hex();
+                    s[..s.len().min(16)].to_string()
+                })
+                .unwrap_or_else(|| "none".to_string());
+
+            info!(
+                "[STATE_FP] h={} sr={} excl={:.16} bonds={:.16} epl={:.16} apl={:.16} accum={:.16} minute={:.16} excl_n={} bonds_n={} epl_n={} apl_n={} minute_n={}",
+                height,
+                state_root,
+                excl_fp,
+                bonds_fp,
+                epl_fp,
+                apl_fp,
+                accum_fp,
+                minute_fp,
+                self.excluded_producers.len(),
+                self.epoch_bond_snapshot.len(),
+                self.epoch_producer_list.len(),
+                self.active_production_list.len(),
+                self.minute_tracker.total_entries(),
+            );
+        }
+
         // Note: Don't broadcast here. Blocks received from the network should not be
         // re-broadcast (they already came from the network). Locally produced blocks
         // should be broadcast explicitly by the caller (produce_block).

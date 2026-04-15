@@ -401,6 +401,29 @@ impl MinuteAttestationTracker {
         }
     }
 
+    /// Deterministic fingerprint of the attested map for cross-node
+    /// divergence detection. Sorts by pubkey then by minute to eliminate
+    /// HashMap/HashSet iteration-order variance, then hashes.
+    /// Returns zeroed Hash if internally empty.
+    pub fn fingerprint(&self) -> crypto::Hash {
+        let mut entries: Vec<(Vec<u8>, Vec<u32>)> = self
+            .attested
+            .iter()
+            .map(|(pk, mins)| {
+                let mut m: Vec<u32> = mins.iter().copied().collect();
+                m.sort();
+                (pk.as_bytes().to_vec(), m)
+            })
+            .collect();
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        crypto::hash::hash(&bincode::serialize(&entries).unwrap_or_default())
+    }
+
+    /// Total count of (pubkey, minute) entries.
+    pub fn total_entries(&self) -> usize {
+        self.attested.values().map(|m| m.len()).sum()
+    }
+
     /// Get all producers that attested in a specific minute.
     pub fn attested_in_minute(&self, minute: u32) -> Vec<&PublicKey> {
         self.attested
