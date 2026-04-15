@@ -146,15 +146,28 @@ impl StateDb {
 
         let mut batch = rocksdb::WriteBatch::default();
 
-        // Phase 1: delete all existing keys
-        let all_cfs: [(&str, &rocksdb::ColumnFamily); 5] = [
+        // Phase 1: delete all existing keys.
+        //
+        // Fix #10 (2026-04-15, synmgrefactor branch): DO NOT iterate-delete
+        // CF_META. That column family holds the scheduler meta-state keys
+        // (META_EPOCH_PRODUCER_LIST, META_ACTIVE_PRODUCTION_LIST,
+        // META_EPOCH_ATTESTED_SET, META_EPOCH_ATTESTATION_ACCUM,
+        // META_EPOCH_BLOCKS_PRODUCED, META_EPOCH_BOND_SNAPSHOT) written by
+        // apply_block's post_commit at epoch boundaries. Pre-fix, each
+        // atomic_replace call (from rollback and snap_sync completion)
+        // destroyed the persisted scheduler state, forcing every restart
+        // after a rollback/snap to rebuild it from blocks.
+        //
+        // Phase 2 below still overwrites META_CHAIN_STATE,
+        // META_PENDING_UPDATES, and META_LAST_APPLIED — so those three keys
+        // retain the atomic replace semantics. Other META keys now survive.
+        let deletable_cfs: [(&str, &rocksdb::ColumnFamily); 4] = [
             (CF_UTXO, cf_utxo),
             (CF_UTXO_BY_PUBKEY, cf_by_pk),
             (CF_PRODUCERS, cf_prod),
             (CF_EXIT_HISTORY, cf_exit),
-            (CF_META, cf_meta),
         ];
-        for (_, cf) in &all_cfs {
+        for (_, cf) in &deletable_cfs {
             for (key, _) in self
                 .db
                 .iterator_cf(*cf, rocksdb::IteratorMode::Start)
