@@ -529,6 +529,18 @@ impl Node {
                 .collect();
             drop(producers);
 
+            // Fix #4B (2026-04-15, synmgrefactor branch): tier-promotion accumulators
+            // reconstructed from block scan below. Declared here so the tier logic
+            // after epoch_producer_list assignment can use them. HashMaps are empty
+            // when epoch <= 1 (no scan needed) and tier logic then won't promote.
+            let mut just_completed_minutes: std::collections::HashMap<
+                crypto::PublicKey,
+                std::collections::HashSet<u32>,
+            > = std::collections::HashMap::new();
+            let mut just_completed_blocks: std::collections::HashMap<crypto::PublicKey, u32> =
+                std::collections::HashMap::new();
+            let mut scan_produced_data = false;
+
             let mut new_list: Vec<crypto::PublicKey> = if epoch <= 1 {
                 active
             } else {
@@ -546,6 +558,9 @@ impl Node {
                 let first_epoch = epoch.saturating_sub(lookback_epochs);
                 let scan_start = first_epoch * blocks_per_epoch;
                 let scan_end = epoch * blocks_per_epoch;
+                // Just-completed epoch window, used for tier promotion accumulators.
+                let just_completed_start = (epoch - 1) * blocks_per_epoch;
+                let just_completed_end = scan_end;
                 let mut attested: std::collections::HashSet<crypto::PublicKey> =
                     std::collections::HashSet::new();
                 let mut have_full_epoch = true;
@@ -556,7 +571,21 @@ impl Node {
                 let start_h = if scan_start == 0 { 1 } else { scan_start };
                 for h in start_h..scan_end {
                     if let Ok(Some(blk)) = self.block_store.get_block_by_height(h) {
+                        let in_just_completed = h >= just_completed_start && h < just_completed_end;
+                        let minute = doli_core::attestation::attestation_minute(blk.header.slot);
+
                         attested.insert(blk.header.producer);
+                        if in_just_completed {
+                            scan_produced_data = true;
+                            *just_completed_blocks
+                                .entry(blk.header.producer)
+                                .or_insert(0) += 1;
+                            just_completed_minutes
+                                .entry(blk.header.producer)
+                                .or_default()
+                                .insert(minute);
+                        }
+
                         if !blk.header.presence_root.is_zero() {
                             let indices = if !blk.attestation_bitfield.is_empty() {
                                 doli_core::decode_attestation_bitfield_vec(
@@ -575,6 +604,12 @@ impl Node {
                             for idx in indices {
                                 if let Some(pk) = sorted_for_decode.get(idx) {
                                     attested.insert(*pk);
+                                    if in_just_completed {
+                                        just_completed_minutes
+                                            .entry(*pk)
+                                            .or_default()
+                                            .insert(minute);
+                                    }
                                 }
                             }
                         }
@@ -633,7 +668,104 @@ impl Node {
                 new_list.len()
             );
             self.epoch_producer_list = new_list;
-            self.active_production_list = self.epoch_producer_list.clone();
+
+            // Fix #4B (2026-04-15, synmgrefactor branch): populate tier-promotion
+            // accumulators ONLY if in-memory state is empty. init.rs:806 already
+            // loads persisted accumulators at startup — if present, they are more
+            // authoritative than a block-scan reconstruction (they reflect the
+            // exact state apply_block produced, including edge cases).
+            if self.epoch_attestation_accum[0].is_empty() && scan_produced_data {
+                info!(
+                    "[STARTUP] Tier accumulators empty — rebuilt from block scan: \
+                     producers_with_minutes={}, producers_with_blocks={} (just-completed epoch={})",
+                    just_completed_minutes.len(),
+                    just_completed_blocks.len(),
+                    epoch - 1
+                );
+                self.epoch_attestation_accum[0] = just_completed_minutes;
+                self.epoch_blocks_produced_accum = just_completed_blocks;
+            } else if !self.epoch_attestation_accum[0].is_empty() {
+                info!(
+                    "[STARTUP] Tier accumulators loaded from disk: \
+                     minutes_entries={}, blocks_entries={} (keeping persisted, ignoring scan)",
+                    self.epoch_attestation_accum[0].len(),
+                    self.epoch_blocks_produced_accum.len()
+                );
+            }
+
+            // Fix #4B: apply tier system identical to post_commit.rs:237-310.
+            // With current mainnet (24 producers < ACTIVE_PRODUCERS_CAP=50), this
+            // is a no-op (active_production_list = epoch_producer_list.clone()),
+            // but we include it for forward-compatibility when the network grows
+            // past 50 producers.
+            use doli_core::consensus::{
+                ACTIVE_PRODUCERS_CAP, MIN_ATTESTATION_MINUTES, TIER_PROMOTION_ACTIVATION_HEIGHT,
+                TIER_SYSTEM_ACTIVATION_HEIGHT,
+            };
+            if epoch_boundary_h >= TIER_SYSTEM_ACTIVATION_HEIGHT
+                && self.epoch_producer_list.len() > ACTIVE_PRODUCERS_CAP
+            {
+                let producers = self.producer_set.read().await;
+                let mut with_reg: Vec<(crypto::PublicKey, u64)> = self
+                    .epoch_producer_list
+                    .iter()
+                    .filter_map(|pk| producers.get_by_pubkey(pk).map(|p| (*pk, p.registered_at)))
+                    .collect();
+                drop(producers);
+
+                if epoch_boundary_h >= TIER_PROMOTION_ACTIVATION_HEIGHT && epoch > 1 {
+                    // Promotion: demote producers who failed to meet minimums.
+                    let expected_per_producer =
+                        blocks_per_epoch / self.epoch_producer_list.len().max(1) as u64;
+                    let min_produced = (expected_per_producer * 80 / 100).max(1);
+                    let attestation_minutes = &self.epoch_attestation_accum[0];
+                    let blocks_produced = &self.epoch_blocks_produced_accum;
+
+                    let before = with_reg.len();
+                    with_reg.retain(|(pk, _)| {
+                        let mins = attestation_minutes.get(pk).map(|s| s.len()).unwrap_or(0);
+                        let produced = blocks_produced.get(pk).copied().unwrap_or(0) as u64;
+                        mins >= MIN_ATTESTATION_MINUTES && produced >= min_produced
+                    });
+                    let demoted = before - with_reg.len();
+                    if demoted > 0 {
+                        info!(
+                            "[STARTUP][TIER] Demoted {} producers (min_att={}, min_prod={}/{})",
+                            demoted, MIN_ATTESTATION_MINUTES, min_produced, expected_per_producer
+                        );
+                    }
+                }
+
+                with_reg.sort_by(|a, b| {
+                    a.1.cmp(&b.1)
+                        .then_with(|| a.0.as_bytes().cmp(b.0.as_bytes()))
+                });
+                self.active_production_list = with_reg
+                    .iter()
+                    .take(ACTIVE_PRODUCERS_CAP)
+                    .map(|(pk, _)| *pk)
+                    .collect();
+                info!(
+                    "[STARTUP][TIER] Active production list: {}/{} (by registered_at, promotion={})",
+                    self.active_production_list.len(),
+                    self.epoch_producer_list.len(),
+                    epoch_boundary_h >= TIER_PROMOTION_ACTIVATION_HEIGHT,
+                );
+            } else {
+                self.active_production_list = self.epoch_producer_list.clone();
+            }
+
+            // Deadlock safety: if tier filter left < 1/3, mass event — fall back.
+            if self.active_production_list.len() < self.epoch_producer_list.len() / 3
+                || self.active_production_list.is_empty()
+            {
+                warn!(
+                    "[STARTUP][TIER] Filter left {}/{} — mass event, falling back to full epoch list",
+                    self.active_production_list.len(),
+                    self.epoch_producer_list.len()
+                );
+                self.active_production_list = self.epoch_producer_list.clone();
+            }
         }
     }
 
