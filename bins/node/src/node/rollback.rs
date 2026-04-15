@@ -251,28 +251,54 @@ impl Node {
     /// Capped at 10 rollbacks — if the fork is deeper than that, it's not shallow.
     /// Returns `true` if a rollback was performed (caller should skip other periodic tasks).
     pub async fn resolve_shallow_fork(&mut self) -> Result<bool> {
-        let (empty_headers, local_height, gap, last_applied_secs) = {
-            let sync = self.sync_manager.read().await;
+        let (empty_headers, local_height, gap, last_applied_secs, stuck_signal) = {
+            let mut sync = self.sync_manager.write().await;
             let gap = sync.network_tip_height().saturating_sub(sync.local_tip().0);
             let last_applied = sync.last_block_applied_secs();
+            // Fix #2c (2026-04-15): consume the stuck_fork_signal set by
+            // note_orphan_gossip_block (Fix #2b). The signal is stronger
+            // evidence than the empty_headers/last_applied heuristics —
+            // peers.rs already confirmed we received 3+ orphan gossip
+            // blocks (our tip is on a minority fork).
+            let stuck = sync.take_stuck_fork_signal();
             (
                 sync.consecutive_empty_headers(),
                 sync.local_tip().0,
                 gap,
                 last_applied,
+                stuck,
             )
         };
 
-        // Need at least 3 fork evidence signals before activating
-        if empty_headers < 3 || local_height == 0 {
+        if local_height == 0 {
             return Ok(false);
         }
 
-        // With INC-I-026 (deterministic scheduler) + fork_id, forks between
-        // upgraded nodes are impossible. Only rollback if truly stuck for 5+ min.
-        // Anything less is gossip timing, not a fork.
-        if last_applied_secs < 300 {
-            return Ok(false);
+        // Fix #2c: the orphan-path signal bypasses both heuristic gates.
+        // Without this, Fix #2b sets the flag but no one consumes it —
+        // observed in 2026-04-15 abraham/alessandro fork: signal fired at
+        // 12:26:44 but rollback never ran, then snap sync escalated at
+        // 12:27:30. resolve_shallow_fork's empty_headers>=3 and
+        // last_applied_secs>=300 are for detecting stuckness WITHOUT an
+        // external signal; when one exists, they should not block.
+        if !stuck_signal {
+            // Need at least 3 fork evidence signals before activating
+            if empty_headers < 3 {
+                return Ok(false);
+            }
+
+            // With INC-I-026 (deterministic scheduler) + fork_id, forks between
+            // upgraded nodes are impossible. Only rollback if truly stuck for 5+ min.
+            // Anything less is gossip timing, not a fork.
+            if last_applied_secs < 300 {
+                return Ok(false);
+            }
+        } else {
+            info!(
+                "[FORK] stuck_fork_signal consumed (gap={}, last_applied={}s, empty_headers={}) — \
+                 bypassing heuristic guards (anti-cascade-orphan path)",
+                gap, last_applied_secs, empty_headers
+            );
         }
 
         // Don't rollback if we're making progress. If height advanced since
