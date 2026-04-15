@@ -1371,7 +1371,7 @@ async fn test_realistic_gossip_20_nodes_100_blocks() {
         let expected_producer = sorted[expected_idx];
 
         let node1_height = n1.chain_state.read().await.best_height;
-        let snapshot_len = n1.epoch_bond_snapshot.len();
+        let snapshot_len = n1.epoch_state.bond_snapshot.len();
 
         eprintln!();
         eprintln!("  === DIAGNOSTIC: Node 1 eligibility for slot 46 ===");
@@ -2293,14 +2293,14 @@ impl TestNetwork {
     /// Get the epoch_producer_list from a node
     pub async fn epoch_list(&self, node_id: usize) -> Vec<PublicKey> {
         let n = self.nodes[node_id].lock().await;
-        n.epoch_producer_list.clone()
+        n.epoch_state.producer_list.clone()
     }
 
     /// Set the epoch_producer_list on all nodes (for test setup)
     pub async fn set_epoch_list_all(&self, list: &[PublicKey]) {
         for node in &self.nodes {
             let mut n = node.lock().await;
-            n.epoch_producer_list = list.to_vec();
+            n.epoch_state.producer_list = list.to_vec();
         }
     }
 }

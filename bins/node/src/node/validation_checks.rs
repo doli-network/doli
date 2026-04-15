@@ -96,7 +96,7 @@ impl Node {
                 hex::encode(&block.header.producer.as_bytes()[..4]),
                 weighted.len(),
                 total_bonds,
-                self.epoch_bond_snapshot_epoch,
+                self.epoch_state.epoch,
             );
         }
 
@@ -109,10 +109,10 @@ impl Node {
         .with_producers_weighted(weighted)
         .with_bootstrap_producers(bootstrap_producers)
         .with_bootstrap_liveness(live_bp, stale_bp)
-        .with_epoch_producer_list(if self.active_production_list.is_empty() {
-            self.epoch_producer_list.clone()
+        .with_epoch_producer_list(if self.epoch_state.active_list.is_empty() {
+            self.epoch_state.producer_list.clone()
         } else {
-            self.active_production_list.clone()
+            self.epoch_state.active_list.clone()
         })
         .with_inc_i_026_scheduler_activation_height(
             self.config
@@ -267,10 +267,10 @@ impl Node {
             // For scheduling validation: use active_production_list (tier-filtered)
             // so validation computes the same slot % N as production.
             // For missed_producers check below: use full epoch_producer_list.
-            if self.active_production_list.is_empty() {
-                self.epoch_producer_list.clone()
+            if self.epoch_state.active_list.is_empty() {
+                self.epoch_state.producer_list.clone()
             } else {
-                self.active_production_list.clone()
+                self.epoch_state.active_list.clone()
             },
         )
         .with_sig_verification_height(self.config.network.params().sig_verification_height)
@@ -308,13 +308,13 @@ impl Node {
             }
 
             // Membership: all missed keys must be in the epoch producer list
-            if !self.epoch_producer_list.is_empty() {
+            if !self.epoch_state.producer_list.is_empty() {
                 for pk in missed {
-                    if !self.epoch_producer_list.contains(pk) {
+                    if !self.epoch_state.producer_list.contains(pk) {
                         return Err(validation::ValidationError::InvalidTransaction(format!(
                             "[ERRTX069] missed_producers contains key {} not in epoch producer list (list_size={})",
                             hex::encode(&pk.as_bytes()[..4]),
-                            self.epoch_producer_list.len(),
+                            self.epoch_state.producer_list.len(),
                         )));
                     }
                 }

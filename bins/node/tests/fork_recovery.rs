@@ -123,7 +123,7 @@ async fn test_fork_recovery_with_divergent_bonds() {
             crypto::ADDRESS_DOMAIN,
             producers[0].public_key().as_bytes(),
         );
-        node.epoch_bond_snapshot.insert(pubkey_hash, 100);
+        node.epoch_state.bond_snapshot.insert(pubkey_hash, 100);
     }
 
     // Fork A: node's local chain continues (5 blocks by producer[0] who has 101 bonds locally)
@@ -269,7 +269,7 @@ async fn test_recovery_with_scheduler_divergence() {
         crypto::ADDRESS_DOMAIN,
         producers[0].public_key().as_bytes(),
     );
-    node.epoch_bond_snapshot.insert(pubkey_hash, 50);
+    node.epoch_state.bond_snapshot.insert(pubkey_hash, 50);
 
     // Fork: 5 blocks with divergent scheduler
     let fork = build_chain(11, 11, base[9].hash(), &producers[0], 5, &params);

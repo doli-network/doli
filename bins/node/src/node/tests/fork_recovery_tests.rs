@@ -90,13 +90,13 @@ async fn test_node_for_test_initializes() {
     assert_eq!(node.cumulative_rollback_depth, 0);
     assert_eq!(node.consecutive_fork_blocks, 0);
     assert_eq!(node.shallow_rollback_count, 0);
-    assert_eq!(node.epoch_bond_snapshot.len(), 3);
+    assert_eq!(node.epoch_state.bond_snapshot.len(), 3);
     assert!(node.producer_key.is_some());
 
     // Verify each producer has 1 bond in the snapshot
     for kp in &producers {
         let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, kp.public_key().as_bytes());
-        assert_eq!(node.epoch_bond_snapshot.get(&pubkey_hash), Some(&1));
+        assert_eq!(node.epoch_state.bond_snapshot.get(&pubkey_hash), Some(&1));
     }
 }
 

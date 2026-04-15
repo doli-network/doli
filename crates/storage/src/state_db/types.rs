@@ -22,6 +22,11 @@ pub struct UndoData {
     /// Producer state is complex (bonds, pending updates, epoch boundaries)
     /// so we snapshot instead of tracking individual deltas.
     pub producer_snapshot: Vec<u8>,
+    /// Serialized EpochState snapshot BEFORE this block was applied.
+    /// Enables O(1) rollback of scheduler state instead of rebuilding from blocks.
+    /// None for blocks created before this field was added (backward compat).
+    #[serde(default)]
+    pub epoch_state_snapshot: Option<Vec<u8>>,
 }
 
 // Column family names
@@ -42,6 +47,7 @@ pub(super) const META_EPOCH_ATTESTED_SET: &[u8] = b"epoch_attested_set";
 pub(super) const META_EPOCH_ATTESTATION_ACCUM: &[u8] = b"epoch_attestation_accum";
 pub(super) const META_EPOCH_BLOCKS_PRODUCED: &[u8] = b"epoch_blocks_produced";
 pub(super) const META_EPOCH_BOND_SNAPSHOT: &[u8] = b"epoch_bond_snapshot";
+pub(super) const META_EPOCH_STATE: &[u8] = b"epoch_state";
 
 /// Unified state database wrapping a single RocksDB instance.
 pub struct StateDb {

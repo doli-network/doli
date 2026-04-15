@@ -256,6 +256,7 @@ impl Node {
             spent_utxos: undo_spent_utxos,
             created_utxos: undo_created_utxos,
             producer_snapshot: undo_producer_snapshot,
+            epoch_state_snapshot: Some(self.epoch_state.serialize_canonical()),
         };
         batch.put_undo(height, &undo);
 
@@ -285,7 +286,8 @@ impl Node {
 
             let bonds_fp = {
                 let mut v: Vec<(Vec<u8>, u64)> = self
-                    .epoch_bond_snapshot
+                    .epoch_state
+                    .bond_snapshot
                     .iter()
                     .map(|(k, v)| (k.as_bytes().to_vec(), *v))
                     .collect();
@@ -296,7 +298,8 @@ impl Node {
             // Vec types — order matters for consensus (index → slot).
             let epl_fp = h(&bincode::serialize(
                 &self
-                    .epoch_producer_list
+                    .epoch_state
+                    .producer_list
                     .iter()
                     .map(|pk| pk.as_bytes().to_vec())
                     .collect::<Vec<_>>(),
@@ -305,7 +308,8 @@ impl Node {
 
             let apl_fp = h(&bincode::serialize(
                 &self
-                    .active_production_list
+                    .epoch_state
+                    .active_list
                     .iter()
                     .map(|pk| pk.as_bytes().to_vec())
                     .collect::<Vec<_>>(),
@@ -317,7 +321,8 @@ impl Node {
             // not just the current one.
             let accum_fp = {
                 let per_epoch: Vec<Vec<u8>> = self
-                    .epoch_attested_set
+                    .epoch_state
+                    .attested_sets
                     .iter()
                     .map(|s| {
                         let mut v: Vec<Vec<u8>> =
@@ -338,13 +343,13 @@ impl Node {
             // for the same slot → fork. Detect with one grep/compare instead
             // of seven separate component diffs.
             let scheduler_root = storage::compute_scheduler_root(
-                &self.epoch_bond_snapshot,
-                self.epoch_bond_snapshot_epoch,
-                &self.epoch_producer_list,
-                &self.active_production_list,
-                &self.epoch_attested_set,
-                &self.epoch_attestation_accum,
-                &self.epoch_blocks_produced_accum,
+                &self.epoch_state.bond_snapshot,
+                self.epoch_state.epoch,
+                &self.epoch_state.producer_list,
+                &self.epoch_state.active_list,
+                &self.epoch_state.attested_sets,
+                &self.epoch_state.attestation_accum,
+                &self.epoch_state.blocks_produced,
             );
 
             let state_root = self
@@ -367,9 +372,9 @@ impl Node {
                 apl_fp,
                 accum_fp,
                 minute_fp,
-                self.epoch_bond_snapshot.len(),
-                self.epoch_producer_list.len(),
-                self.active_production_list.len(),
+                self.epoch_state.bond_snapshot.len(),
+                self.epoch_state.producer_list.len(),
+                self.epoch_state.active_list.len(),
                 self.minute_tracker.total_entries(),
             );
         }

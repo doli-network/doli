@@ -185,32 +185,11 @@ impl Node {
                 for block in chain {
                     // Validate producer eligibility
                     if let Err(e) = self.check_producer_eligibility(&block).await {
-                        // Auto-heal: rebuild scheduler from blocks. The scheduler may be
-                        // stale (mid-epoch desync). Rebuild once and retry the check.
-                        // Same logic as startup rebuild — no consensus change.
-                        warn!(
-                            "[FORK] CACHE_REJECT slot={} producer={} error={} — rebuilding scheduler",
+                        anyhow::bail!(
+                            "[FORK_INVALID_PRODUCER] cached block at slot={} has invalid producer {}: {}",
                             block.header.slot,
                             hex::encode(&block.header.producer.as_bytes()[..4]),
-                            e,
-                        );
-                        self.rebuild_epoch_state_from_blocks().await;
-                        // Retry after rebuild
-                        if let Err(e2) = self.check_producer_eligibility(&block).await {
-                            warn!(
-                                "[FORK] CACHE_REJECT slot={} producer={} error={} — still invalid after rebuild",
-                                block.header.slot,
-                                hex::encode(&block.header.producer.as_bytes()[..4]),
-                                e2,
-                            );
-                            anyhow::bail!("[FORK_INVALID_PRODUCER] cached block at slot={} has invalid producer {}: {}",
-                                block.header.slot,
-                                hex::encode(&block.header.producer.as_bytes()[..4]),
-                                e2
-                            );
-                        }
-                        info!(
-                            "[FORK] Scheduler auto-heal successful — block accepted after rebuild"
+                            e
                         );
                     }
                     // Remove from cache before applying
@@ -727,23 +706,23 @@ impl Node {
 
             if let Some((snap, epoch)) = from_payload {
                 let total: u64 = snap.values().sum();
-                self.epoch_bond_snapshot = snap;
-                self.epoch_bond_snapshot_epoch = epoch;
+                self.epoch_state.bond_snapshot = snap;
+                self.epoch_state.epoch = epoch;
                 // Persist so restarts don't lose it
                 let mut batch = self.state_db.begin_batch();
-                batch.put_epoch_bond_snapshot(&self.epoch_bond_snapshot, epoch);
+                batch.put_epoch_bond_snapshot(&self.epoch_state.bond_snapshot, epoch);
                 let _ = batch.commit();
                 info!(
                     "[SNAP_SYNC] Bond snapshot from peer payload: {} producers, total_bonds={}, epoch={}",
-                    self.epoch_bond_snapshot.len(), total, epoch
+                    self.epoch_state.bond_snapshot.len(), total, epoch
                 );
             } else if let Some((snap, epoch)) = self.state_db.get_epoch_bond_snapshot() {
                 let total: u64 = snap.values().sum();
-                self.epoch_bond_snapshot = snap;
-                self.epoch_bond_snapshot_epoch = epoch;
+                self.epoch_state.bond_snapshot = snap;
+                self.epoch_state.epoch = epoch;
                 info!(
                     "[SNAP_SYNC] Loaded persisted bond snapshot: {} producers, total_bonds={}, epoch={}",
-                    self.epoch_bond_snapshot.len(), total, epoch
+                    self.epoch_state.bond_snapshot.len(), total, epoch
                 );
             } else {
                 // Fallback for peers on pre-v6.13.14 (no persisted bond snapshot).
@@ -760,29 +739,29 @@ impl Node {
                 }
                 let total: u64 = snap.values().sum();
                 let epoch = if bpe > 0 { h / bpe } else { 0 };
-                self.epoch_bond_snapshot = snap;
-                self.epoch_bond_snapshot_epoch = epoch;
+                self.epoch_state.bond_snapshot = snap;
+                self.epoch_state.epoch = epoch;
                 warn!(
                     "[SNAP_SYNC] No persisted bond snapshot — rebuilt from UTXO (may diverge): {} producers, total_bonds={}, epoch={}",
-                    self.epoch_bond_snapshot.len(), total, epoch
+                    self.epoch_state.bond_snapshot.len(), total, epoch
                 );
             }
 
             // Temporary unfiltered epoch_producer_list. Will be replaced by
-            // rebuild_epoch_state_from_blocks() below (Fix #6) which applies
-            // the attestation filter using the in-memory epoch_attested_set
-            // loaded from the peer's accumulator payload.
+            // derive_at_boundary() below which applies the attestation filter
+            // using the in-memory epoch_attested_set loaded from the peer's
+            // accumulator payload.
             let mut pks: Vec<_> = active.iter().map(|p| p.public_key).collect();
             pks.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
-            self.epoch_producer_list = pks;
-            self.active_production_list = self.epoch_producer_list.clone();
+            self.epoch_state.producer_list = pks;
+            self.epoch_state.active_list = self.epoch_state.producer_list.clone();
 
-            let total: u64 = self.epoch_bond_snapshot.values().sum();
+            let total: u64 = self.epoch_state.bond_snapshot.values().sum();
             info!(
                 "[SNAP_SYNC] Rebuilt epoch state (pre-filter): {} producers, total_bonds={}, epoch={}",
-                self.epoch_bond_snapshot.len(),
+                self.epoch_state.bond_snapshot.len(),
                 total,
-                self.epoch_bond_snapshot_epoch
+                self.epoch_state.epoch
             );
         }
 
@@ -807,35 +786,70 @@ impl Node {
                     accum[0].len(), accum[1].len(), accum[2].len(),
                     produced.len()
                 );
-                self.epoch_attested_set = attested;
-                self.epoch_attestation_accum = accum;
-                self.epoch_blocks_produced_accum = produced;
+                self.epoch_state.attested_sets = attested;
+                self.epoch_state.attestation_accum = accum;
+                self.epoch_state.blocks_produced = produced;
                 // Persist so restarts don't lose them
                 let mut batch = self.state_db.begin_batch();
                 batch.put_attestation_accumulators(
-                    &self.epoch_attested_set,
-                    &self.epoch_attestation_accum,
-                    &self.epoch_blocks_produced_accum,
+                    &self.epoch_state.attested_sets,
+                    &self.epoch_state.attestation_accum,
+                    &self.epoch_state.blocks_produced,
                 );
                 let _ = batch.commit();
             }
         }
 
-        // Fix #6 (2026-04-15, synmgrefactor): apply the attestation filter to
-        // epoch_producer_list AFTER accumulators are loaded. Pre-fix, snap sync
-        // left epoch_producer_list = ALL active producers (unfiltered), causing
-        // the receiving node's scheduler to disagree with the network's
-        // attestation-filtered scheduler until the next epoch boundary
-        // re-applied the filter. That 3-epoch-long window was the root cause
-        // of the abraham/alessandro scheduler divergence on 2026-04-15.
-        //
-        // rebuild_epoch_state_from_blocks now prefers the in-memory
-        // epoch_attested_set (loaded above) over a block scan, so snap sync
-        // without block history produces the SAME filter as apply_block's
-        // post_commit at the matching height. When the peer payload did NOT
-        // include accumulators (older protocol version), rebuild falls back
-        // to the existing "unfiltered + Light validation" path.
-        self.rebuild_epoch_state_from_blocks().await;
+        // Apply attestation filter via the canonical derive_at_boundary().
+        // The accumulators were loaded above (from peer payload or persisted).
+        // derive_at_boundary uses them for the 3-epoch lookback filter.
+        {
+            let snap_h = snapshot.block_height;
+            let bpe = self.config.network.blocks_per_reward_epoch();
+            let epoch = if bpe > 0 { snap_h / bpe } else { 0 };
+
+            let producers = self.producer_set.read().await;
+            let active_producers: Vec<PublicKey> = producers
+                .active_producers_at_height(snap_h)
+                .iter()
+                .map(|p| p.public_key)
+                .collect();
+            let registered_at: std::collections::HashMap<PublicKey, u64> = producers
+                .active_producers_at_height(snap_h)
+                .iter()
+                .map(|p| (p.public_key, p.registered_at))
+                .collect();
+            drop(producers);
+
+            let input = doli_core::EpochDerivationInput {
+                active_producers,
+                bond_counts: self.epoch_state.bond_snapshot.clone(),
+                blocks_per_epoch: bpe,
+                snap_attestation_skip_height: self
+                    .config
+                    .network
+                    .params()
+                    .snap_attestation_skip_height,
+                height: snap_h,
+                epoch,
+                registered_at,
+            };
+            let derived = doli_core::EpochState::derive_at_boundary(&self.epoch_state, &input);
+            info!(
+                "[SNAP_SYNC] Derived epoch state: epoch={} producers={} active={}",
+                derived.epoch,
+                derived.producer_list.len(),
+                derived.active_list.len()
+            );
+            self.epoch_state = derived;
+
+            // Persist the derived state
+            let mut batch = self.state_db.begin_batch();
+            batch.put_epoch_producer_list(&self.epoch_state.producer_list);
+            batch.put_active_production_list(&self.epoch_state.active_list);
+            batch.put_epoch_state(&self.epoch_state.serialize_canonical());
+            let _ = batch.commit();
+        }
 
         // Step 6: Track snap sync height for validation mode selection
         self.snap_sync_height = Some(snapshot.block_height);

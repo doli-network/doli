@@ -299,7 +299,7 @@ impl Node {
             // AFTER the frozen list (index N, N+1, ...) so existing indices stay
             // stable. The decoder ignores indices >= epoch_producer_list.len(),
             // which is correct — new producers enter the list at the next epoch.
-            let base_list = &self.epoch_producer_list;
+            let base_list = &self.epoch_state.producer_list;
             let base_set: HashSet<&PublicKey> = base_list.iter().collect();
 
             // Find new producers not in epoch_producer_list (activated mid-epoch)
@@ -380,12 +380,12 @@ impl Node {
             // excluded_producers cleanup (2026-04-15, synmgrefactor): scheduler is
             // a pure function of epoch_producer_list. No exclusion filter at this
             // layer — the list was already filtered at epoch boundary by post_commit.
-            if slot_gap > 1 && slot_gap <= 3 && !self.epoch_producer_list.is_empty() {
-                let effective: Vec<PublicKey> = self.epoch_producer_list.clone();
+            if slot_gap > 1 && slot_gap <= 3 && !self.epoch_state.producer_list.is_empty() {
+                let effective: Vec<PublicKey> = self.epoch_state.producer_list.clone();
                 if !effective.is_empty() {
                     // Safety cap: max 3 exclusions per block (INC-I-017)
                     const MAX_MISSED_PER_BLOCK: usize = 3;
-                    let max_total = self.epoch_producer_list.len() / 3;
+                    let max_total = self.epoch_state.producer_list.len() / 3;
 
                     for skipped in (prev_slot + 1)..current_slot {
                         if missed.len() >= MAX_MISSED_PER_BLOCK {

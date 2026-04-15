@@ -176,7 +176,11 @@ impl Node {
         // identical on all nodes.
         let bond_for = |p: &storage::producer::ProducerInfo| -> u64 {
             let pkh = hash_with_domain(ADDRESS_DOMAIN, p.public_key.as_bytes());
-            self.epoch_bond_snapshot.get(&pkh).copied().unwrap_or(1)
+            self.epoch_state
+                .bond_snapshot
+                .get(&pkh)
+                .copied()
+                .unwrap_or(1)
         };
         let qualifying_bonds: u64 = qualified.iter().map(|p| bond_for(p)).sum();
 
@@ -422,20 +426,18 @@ impl Node {
         //    boundary the node processes. If the node already has a correct snapshot
         //    from a later epoch (loaded from persisted or received via snap sync),
         //    overwriting it with an earlier epoch's UTXO recalculation causes divergence.
-        if self.epoch_bond_snapshot_epoch >= epoch {
+        if self.epoch_state.epoch >= epoch {
             info!(
                 "[STARTUP] Keeping epoch_bond_snapshot (epoch={} >= rebuild epoch={}, bonds={})",
-                self.epoch_bond_snapshot_epoch,
+                self.epoch_state.epoch,
                 epoch,
-                self.epoch_bond_snapshot.values().sum::<u64>()
+                self.epoch_state.bond_snapshot.values().sum::<u64>()
             );
-        } else if self.state_db.get_epoch_bond_snapshot().is_some()
-            && self.epoch_bond_snapshot_epoch > 0
-        {
+        } else if self.state_db.get_epoch_bond_snapshot().is_some() && self.epoch_state.epoch > 0 {
             info!(
                 "[STARTUP] Keeping persisted epoch_bond_snapshot (epoch={}, bonds={})",
-                self.epoch_bond_snapshot_epoch,
-                self.epoch_bond_snapshot.values().sum::<u64>()
+                self.epoch_state.epoch,
+                self.epoch_state.bond_snapshot.values().sum::<u64>()
             );
         } else {
             let utxo = self.utxo_set.read().await;
@@ -455,8 +457,8 @@ impl Node {
                 "[STARTUP] No persisted bond snapshot — rebuilt from UTXO (may diverge): epoch={}, producers={}, total_bonds={}",
                 epoch, snapshot.len(), total
             );
-            self.epoch_bond_snapshot = snapshot;
-            self.epoch_bond_snapshot_epoch = epoch;
+            self.epoch_state.bond_snapshot = snapshot;
+            self.epoch_state.epoch = epoch;
         }
 
         // 2. Rebuild epoch_producer_list with attestation filtering
@@ -496,23 +498,23 @@ impl Node {
             // 3-epoch attested lookback. The block scan below is only needed when
             // we have NO attestation history at all (cold start on post-wipe node
             // with no peer accumulator payload).
-            let have_inmem_accum = !self.epoch_attested_set[0].is_empty()
-                || !self.epoch_attested_set[1].is_empty()
-                || !self.epoch_attested_set[2].is_empty();
+            let have_inmem_accum = !self.epoch_state.attested_sets[0].is_empty()
+                || !self.epoch_state.attested_sets[1].is_empty()
+                || !self.epoch_state.attested_sets[2].is_empty();
 
             let mut new_list: Vec<crypto::PublicKey> = if epoch <= 1 {
                 active
             } else if have_inmem_accum {
                 info!(
                     "[STARTUP] Using in-memory epoch_attested_set for filter (attested=[{},{},{}]) — no block scan needed",
-                    self.epoch_attested_set[0].len(),
-                    self.epoch_attested_set[1].len(),
-                    self.epoch_attested_set[2].len(),
+                    self.epoch_state.attested_sets[0].len(),
+                    self.epoch_state.attested_sets[1].len(),
+                    self.epoch_state.attested_sets[2].len(),
                 );
                 let mut attested: std::collections::HashSet<crypto::PublicKey> =
                     std::collections::HashSet::new();
                 for i in 0..3 {
-                    attested.extend(&self.epoch_attested_set[i]);
+                    attested.extend(&self.epoch_state.attested_sets[i]);
                 }
                 active
                     .into_iter()
@@ -646,7 +648,7 @@ impl Node {
                 epoch,
                 new_list.len()
             );
-            self.epoch_producer_list = new_list;
+            self.epoch_state.producer_list = new_list;
 
             // Fix #4B (2026-04-15, synmgrefactor branch): populate tier-promotion
             // accumulators ONLY if in-memory state is empty. init.rs:806 already
@@ -659,7 +661,7 @@ impl Node {
             // to a missing block (historic gap post-rollback), accumulators are
             // PARTIAL and must not be used — tier promotion could demote
             // producers whose contribution fell in the gap.
-            if self.epoch_attestation_accum[0].is_empty()
+            if self.epoch_state.attestation_accum[0].is_empty()
                 && scan_produced_data
                 && scan_covered_full_epoch
             {
@@ -670,9 +672,9 @@ impl Node {
                     just_completed_blocks.len(),
                     epoch - 1
                 );
-                self.epoch_attestation_accum[0] = just_completed_minutes;
-                self.epoch_blocks_produced_accum = just_completed_blocks;
-            } else if self.epoch_attestation_accum[0].is_empty()
+                self.epoch_state.attestation_accum[0] = just_completed_minutes;
+                self.epoch_state.blocks_produced = just_completed_blocks;
+            } else if self.epoch_state.attestation_accum[0].is_empty()
                 && scan_produced_data
                 && !scan_covered_full_epoch
             {
@@ -681,12 +683,12 @@ impl Node {
                      (historic gap in block store) — leaving accumulators empty, \
                      tier promotion will be inactive until next epoch boundary"
                 );
-            } else if !self.epoch_attestation_accum[0].is_empty() {
+            } else if !self.epoch_state.attestation_accum[0].is_empty() {
                 info!(
                     "[STARTUP] Tier accumulators loaded from disk (pre-complete): \
                      minutes_entries={}, blocks_entries={}",
-                    self.epoch_attestation_accum[0].len(),
-                    self.epoch_blocks_produced_accum.len()
+                    self.epoch_state.attestation_accum[0].len(),
+                    self.epoch_state.blocks_produced.len()
                 );
             }
 
@@ -714,13 +716,13 @@ impl Node {
             // bounded to at most blocks_per_epoch blocks (~360 for mainnet),
             // typically much less. Cost: ~50ms at startup.
             if current_h > epoch_boundary_h {
-                let mut sorted_for_decode = self.epoch_producer_list.clone();
+                let mut sorted_for_decode = self.epoch_state.producer_list.clone();
                 sorted_for_decode.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
 
                 let mut replayed = 0u64;
-                let mut attested_before = self.epoch_attested_set[0].len();
-                let minutes_before = self.epoch_attestation_accum[0].len();
-                let blocks_before = self.epoch_blocks_produced_accum.len();
+                let mut attested_before = self.epoch_state.attested_sets[0].len();
+                let minutes_before = self.epoch_state.attestation_accum[0].len();
+                let blocks_before = self.epoch_state.blocks_produced.len();
 
                 for h in (epoch_boundary_h + 1)..=current_h {
                     let Ok(Some(blk)) = self.block_store.get_block_by_height(h) else {
@@ -734,12 +736,13 @@ impl Node {
                     replayed += 1;
                     let minute = doli_core::attestation::attestation_minute(blk.header.slot);
 
-                    self.epoch_attested_set[0].insert(blk.header.producer);
+                    self.epoch_state.attested_sets[0].insert(blk.header.producer);
                     *self
-                        .epoch_blocks_produced_accum
+                        .epoch_state
+                        .blocks_produced
                         .entry(blk.header.producer)
                         .or_insert(0) += 1;
-                    self.epoch_attestation_accum[0]
+                    self.epoch_state.attestation_accum[0]
                         .entry(blk.header.producer)
                         .or_default()
                         .insert(minute);
@@ -760,8 +763,8 @@ impl Node {
                         };
                         for idx in indices {
                             if let Some(pk) = sorted_for_decode.get(idx) {
-                                self.epoch_attested_set[0].insert(*pk);
-                                self.epoch_attestation_accum[0]
+                                self.epoch_state.attested_sets[0].insert(*pk);
+                                self.epoch_state.attestation_accum[0]
                                     .entry(*pk)
                                     .or_default()
                                     .insert(minute);
@@ -770,7 +773,7 @@ impl Node {
                     }
                 }
 
-                attested_before = self.epoch_attested_set[0].len() - attested_before;
+                attested_before = self.epoch_state.attested_sets[0].len() - attested_before;
                 info!(
                     "[STARTUP] Fix #4C accumulator replay: scanned {} blocks (h={}..={}) — \
                      +{} attested, +{} minutes entries, +{} blocks entries",
@@ -778,8 +781,8 @@ impl Node {
                     epoch_boundary_h + 1,
                     current_h,
                     attested_before,
-                    self.epoch_attestation_accum[0].len() - minutes_before,
-                    self.epoch_blocks_produced_accum.len() - blocks_before,
+                    self.epoch_state.attestation_accum[0].len() - minutes_before,
+                    self.epoch_state.blocks_produced.len() - blocks_before,
                 );
             }
 
@@ -793,11 +796,12 @@ impl Node {
                 TIER_SYSTEM_ACTIVATION_HEIGHT,
             };
             if epoch_boundary_h >= TIER_SYSTEM_ACTIVATION_HEIGHT
-                && self.epoch_producer_list.len() > ACTIVE_PRODUCERS_CAP
+                && self.epoch_state.producer_list.len() > ACTIVE_PRODUCERS_CAP
             {
                 let producers = self.producer_set.read().await;
                 let mut with_reg: Vec<(crypto::PublicKey, u64)> = self
-                    .epoch_producer_list
+                    .epoch_state
+                    .producer_list
                     .iter()
                     .filter_map(|pk| producers.get_by_pubkey(pk).map(|p| (*pk, p.registered_at)))
                     .collect();
@@ -806,10 +810,10 @@ impl Node {
                 if epoch_boundary_h >= TIER_PROMOTION_ACTIVATION_HEIGHT && epoch > 1 {
                     // Promotion: demote producers who failed to meet minimums.
                     let expected_per_producer =
-                        blocks_per_epoch / self.epoch_producer_list.len().max(1) as u64;
+                        blocks_per_epoch / self.epoch_state.producer_list.len().max(1) as u64;
                     let min_produced = (expected_per_producer * 80 / 100).max(1);
-                    let attestation_minutes = &self.epoch_attestation_accum[0];
-                    let blocks_produced = &self.epoch_blocks_produced_accum;
+                    let attestation_minutes = &self.epoch_state.attestation_accum[0];
+                    let blocks_produced = &self.epoch_state.blocks_produced;
 
                     let before = with_reg.len();
                     with_reg.retain(|(pk, _)| {
@@ -830,31 +834,31 @@ impl Node {
                     a.1.cmp(&b.1)
                         .then_with(|| a.0.as_bytes().cmp(b.0.as_bytes()))
                 });
-                self.active_production_list = with_reg
+                self.epoch_state.active_list = with_reg
                     .iter()
                     .take(ACTIVE_PRODUCERS_CAP)
                     .map(|(pk, _)| *pk)
                     .collect();
                 info!(
                     "[STARTUP][TIER] Active production list: {}/{} (by registered_at, promotion={})",
-                    self.active_production_list.len(),
-                    self.epoch_producer_list.len(),
+                    self.epoch_state.active_list.len(),
+                    self.epoch_state.producer_list.len(),
                     epoch_boundary_h >= TIER_PROMOTION_ACTIVATION_HEIGHT,
                 );
             } else {
-                self.active_production_list = self.epoch_producer_list.clone();
+                self.epoch_state.active_list = self.epoch_state.producer_list.clone();
             }
 
             // Deadlock safety: if tier filter left < 1/3, mass event — fall back.
-            if self.active_production_list.len() < self.epoch_producer_list.len() / 3
-                || self.active_production_list.is_empty()
+            if self.epoch_state.active_list.len() < self.epoch_state.producer_list.len() / 3
+                || self.epoch_state.active_list.is_empty()
             {
                 warn!(
                     "[STARTUP][TIER] Filter left {}/{} — mass event, falling back to full epoch list",
-                    self.active_production_list.len(),
-                    self.epoch_producer_list.len()
+                    self.epoch_state.active_list.len(),
+                    self.epoch_state.producer_list.len()
                 );
-                self.active_production_list = self.epoch_producer_list.clone();
+                self.epoch_state.active_list = self.epoch_state.producer_list.clone();
             }
         }
     }

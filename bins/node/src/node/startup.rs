@@ -491,7 +491,7 @@ impl Node {
             }
         };
 
-        let is_active = self.active_production_list.contains(&our_pubkey);
+        let is_active = self.epoch_state.active_list.contains(&our_pubkey);
 
         if self.is_active_producer != is_active {
             info!(

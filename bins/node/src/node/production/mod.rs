@@ -279,7 +279,7 @@ impl Node {
                 current_slot, height, active_with_weights.len(), total_bonds,
                 hex::encode(r0), hex::encode(r1),
                 if use_bootstrap { "BOOT" } else { "EPOCH" },
-                self.epoch_bond_snapshot_epoch,
+                self.epoch_state.epoch,
             );
         }
 

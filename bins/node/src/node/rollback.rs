@@ -225,42 +225,33 @@ impl Node {
                 .map_err(|e| anyhow::anyhow!("StateDb atomic_replace failed: {}", e))?;
         }
 
-        // Fix #5 (2026-04-15, synmgrefactor branch): rebuild epoch scheduler
-        // state after rollback.
-        //
-        // Pre-fix, rollback left these fields STALE — reflecting pre-rollback
-        // state that included blocks we just reverted:
-        //   - epoch_producer_list
-        //   - active_production_list
-        //   - epoch_bond_snapshot (+ epoch_bond_snapshot_epoch)
-        //   - epoch_attestation_accum[0..=2]
-        //   - epoch_blocks_produced_accum
-        //   - epoch_attested_set[0..=2]
-        //
-        // This was the root cause of abraham/alessandro remaining on a
-        // minority fork post-rollback on 2026-04-15: rollback reverted the
-        // fork blocks but the scheduler kept selecting producers based on
-        // the forked state, so they re-produced on the minority chain.
-        //
-        // Clear in-memory scheduler state, then call rebuild (which now has
-        // Fix #4A/#4B logic and matches apply_block exactly) to repopulate
-        // from the canonical post-rollback block chain.
-        info!("[ROLLBACK] Rebuilding epoch scheduler state from blocks after rollback");
-        self.epoch_attestation_accum = [
-            std::collections::HashMap::new(),
-            std::collections::HashMap::new(),
-            std::collections::HashMap::new(),
-        ];
-        self.epoch_blocks_produced_accum.clear();
-        self.epoch_attested_set = [
-            std::collections::HashSet::new(),
-            std::collections::HashSet::new(),
-            std::collections::HashSet::new(),
-        ];
-        self.epoch_bond_snapshot.clear();
-        self.epoch_bond_snapshot_epoch = 0;
-
-        self.rebuild_epoch_state_from_blocks().await;
+        // Restore epoch scheduler state from undo data (O(1) vs O(chain) rebuild).
+        // The undo snapshot was taken BEFORE apply_block, so it reflects the correct
+        // scheduler state at the pre-rollback height.
+        if let Some(undo) = self.state_db.get_undo(local_height) {
+            if let Some(ref epoch_bytes) = undo.epoch_state_snapshot {
+                match doli_core::EpochState::deserialize_canonical(epoch_bytes) {
+                    Ok(restored) => {
+                        info!(
+                            "[ROLLBACK] Restored epoch state from undo: epoch={} producers={} active={}",
+                            restored.epoch, restored.producer_list.len(), restored.active_list.len()
+                        );
+                        self.epoch_state = restored;
+                    }
+                    Err(e) => {
+                        warn!("[ROLLBACK] Failed to deserialize epoch state from undo: {} — rebuilding", e);
+                        self.rebuild_epoch_state_from_blocks().await;
+                    }
+                }
+            } else {
+                // Pre-upgrade undo data (no epoch_state_snapshot) — fall back to rebuild
+                info!("[ROLLBACK] No epoch state in undo (pre-upgrade block) — rebuilding");
+                self.rebuild_epoch_state_from_blocks().await;
+            }
+        } else {
+            // No undo data at all (legacy path already handled above) — rebuild
+            self.rebuild_epoch_state_from_blocks().await;
+        }
 
         // Track cumulative rollback depth (Fix 4)
         self.cumulative_rollback_depth += 1;

@@ -15,7 +15,8 @@ use super::types::{
     BlockBatch, LastApplied, StateDb, UndoData, CF_EXIT_HISTORY, CF_META, CF_PRODUCERS, CF_UNDO,
     CF_UTXO, CF_UTXO_BY_PUBKEY, META_ACTIVE_PRODUCTION_LIST, META_CHAIN_STATE,
     META_EPOCH_ATTESTATION_ACCUM, META_EPOCH_ATTESTED_SET, META_EPOCH_BLOCKS_PRODUCED,
-    META_EPOCH_BOND_SNAPSHOT, META_EPOCH_PRODUCER_LIST, META_LAST_APPLIED, META_PENDING_UPDATES,
+    META_EPOCH_BOND_SNAPSHOT, META_EPOCH_PRODUCER_LIST, META_EPOCH_STATE, META_LAST_APPLIED,
+    META_PENDING_UPDATES,
 };
 
 // ==================== Batch Creation ====================
@@ -226,6 +227,12 @@ impl<'a> BlockBatch<'a> {
         if let Ok(bytes) = bincode::serialize(&(snapshot, epoch)) {
             self.batch.put_cf(cf, META_EPOCH_BOND_SNAPSHOT, &bytes);
         }
+    }
+
+    /// Persist the complete EpochState as a single key.
+    pub fn put_epoch_state(&mut self, bytes: &[u8]) {
+        let cf = self.db.db.cf_handle(CF_META).unwrap();
+        self.batch.put_cf(cf, META_EPOCH_STATE, bytes);
     }
 
     /// Persist the active production list (round-robin subset of epoch list).

@@ -454,10 +454,10 @@ impl Node {
 
         // EPOCH-FROZEN SCHEDULING: use active_production_list (frozen at epoch boundary)
         // or fall back to epoch_producer_list before the first epoch boundary.
-        let source = if self.active_production_list.is_empty() {
-            &self.epoch_producer_list
+        let source = if self.epoch_state.active_list.is_empty() {
+            &self.epoch_state.producer_list
         } else {
-            &self.active_production_list
+            &self.epoch_state.active_list
         };
         if source.is_empty() {
             return Vec::new();

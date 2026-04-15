@@ -119,6 +119,7 @@ pub mod conditions;
 pub mod config_validation;
 pub mod consensus;
 pub mod discovery;
+pub mod epoch_state;
 pub mod finality;
 pub mod genesis;
 pub mod heartbeat;
@@ -220,6 +221,9 @@ pub use consensus::{
 pub use finality::{
     FinalityCheckpoint, FinalityTracker, FINALITY_THRESHOLD_PCT, FINALITY_TIMEOUT_SLOTS,
 };
+
+// Epoch scheduler state
+pub use epoch_state::{BlockAccumulationInput, EpochDerivationInput, EpochState};
 
 // Block-height based reward epoch utilities
 pub use consensus::reward_epoch;

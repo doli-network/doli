@@ -144,22 +144,9 @@ pub struct Node {
     /// but the block hasn't been applied to disk yet. Cleaned periodically.
     pub seen_blocks_for_slot: std::collections::HashSet<u32>,
     /// Producers excluded from round-robin for missing their slot.
-    /// Frozen producer list for the current epoch. Computed at epoch boundary from
-    /// active producers who attested in the previous epoch (+ newly registered).
-    /// The scheduling denominator is derived from this list — it never changes mid-epoch.
-    pub epoch_producer_list: Vec<PublicKey>,
-    /// Active production list: subset of epoch_producer_list that enters round-robin.
-    /// Before TIER_SYSTEM_ACTIVATION_HEIGHT: identical to epoch_producer_list.
-    /// After activation: first ACTIVE_PRODUCERS_CAP by registered_at (earliest first).
-    /// Attestors outside this list still receive bond-weighted epoch rewards.
-    pub active_production_list: Vec<PublicKey>,
-    /// Epoch-locked bond snapshot: {pubkey_hash → bond_count}.
-    /// Computed once at each epoch boundary from the UTXO set.
-    /// Used by scheduler (validation + production) for the entire epoch.
-    /// Prevents mid-epoch add-bond from changing total_bonds and diverging schedulers.
-    pub epoch_bond_snapshot: HashMap<Hash, u64>,
-    /// The epoch number for which the bond snapshot was taken.
-    pub epoch_bond_snapshot_epoch: u64,
+    /// Unified epoch scheduler state: producer lists, bond snapshot, attestation
+    /// accumulators. Single source of truth for all consensus-derived scheduler inputs.
+    pub epoch_state: doli_core::EpochState,
     /// Whether this node is in the active production list. Recomputed at each epoch boundary.
     pub is_active_producer: bool,
     /// Last epoch for which we computed our active status (to detect epoch boundaries).
@@ -205,14 +192,8 @@ pub struct Node {
     /// In-memory tracker for minute attestations received via gossip.
     /// Used by block producer to build the presence_root bitfield.
     pub minute_tracker: MinuteAttestationTracker,
-    /// Incremental attestation tracker: accumulates (pubkey → attested minutes)
-    /// and (pubkey → blocks produced) per-block during the epoch. At epoch
-    /// boundary, read instead of scanning 1080 blocks. Rotated each epoch.
-    /// [0] = current epoch, [1] = prev epoch, [2] = prev-prev epoch.
-    pub epoch_attestation_accum: [HashMap<PublicKey, HashSet<u32>>; 3],
-    pub epoch_blocks_produced_accum: HashMap<PublicKey, u32>,
-    /// Set of producers who attested in any of the 3 lookback epochs (incremental).
-    pub epoch_attested_set: [HashSet<PublicKey>; 3],
+    // NOTE: epoch_attestation_accum, epoch_blocks_produced_accum, and
+    // epoch_attested_set are now inside epoch_state: EpochState.
     /// INC-I-014: Fork tips we've already rejected (prevents re-requesting them).
     /// Bounded to prevent memory growth: entries removed after 1000 blocks.
     pub rejected_fork_tips: HashSet<Hash>,
@@ -299,7 +280,7 @@ impl Node {
         &self,
         active_producers: Vec<PublicKey>,
     ) -> Vec<(PublicKey, u64)> {
-        if self.epoch_bond_snapshot.is_empty() {
+        if self.epoch_state.bond_snapshot.is_empty() {
             // No snapshot yet (first epoch) — fall back to UTXO
             let utxo = self.utxo_set.read().await;
             active_producers
@@ -319,7 +300,8 @@ impl Node {
                 .map(|pk| {
                     let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, pk.as_bytes());
                     let count = self
-                        .epoch_bond_snapshot
+                        .epoch_state
+                        .bond_snapshot
                         .get(&pubkey_hash)
                         .copied()
                         .unwrap_or(1);

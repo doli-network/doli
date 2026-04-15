@@ -617,21 +617,21 @@ impl Node {
             let net_tip_h = sync.network_tip_height();
             let net_tip_s = sync.network_tip_slot();
             let sync_fails = sync.consecutive_sync_failure_count();
-            let snap_bonds: u64 = self.epoch_bond_snapshot.values().sum();
-            let snap_producers = self.epoch_bond_snapshot.len();
+            let snap_bonds: u64 = self.epoch_state.bond_snapshot.values().sum();
+            let snap_producers = self.epoch_state.bond_snapshot.len();
             warn!(
                 "[HEALTH] h={} s={} hash={:.8} | peers={} best_peer_h={} best_peer_s={} net_tip_h={} net_tip_s={} | sync_fails={} fork_counter={} state={:?} | snap_epoch={} snap_bonds={} snap_producers={}",
                 cs.best_height, cs.best_slot, cs.best_hash,
                 peer_count, best_peer_h, best_peer_s, net_tip_h, net_tip_s,
                 sync_fails, self.consecutive_fork_blocks, sync.sync_state_name(),
-                self.epoch_bond_snapshot_epoch, snap_bonds, snap_producers
+                self.epoch_state.epoch, snap_bonds, snap_producers
             );
 
             // Sync state summary — captures key sync variables for post-incident analysis.
             {
                 let gap = net_tip_h.saturating_sub(cs.best_height);
                 let secs_since_last_apply = sync.last_block_applied_secs();
-                let epoch_list_len = self.epoch_producer_list.len();
+                let epoch_list_len = self.epoch_state.producer_list.len();
                 info!(
                     "[SYNC_STATE] gap={} phase={:?} last_applied_ago={}s epoch_list={} rollback_depth={}",
                     gap,

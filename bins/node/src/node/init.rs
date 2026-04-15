@@ -866,10 +866,15 @@ impl Node {
             shallow_rollback_count: 0,
             cumulative_rollback_depth: 0,
             seen_blocks_for_slot: std::collections::HashSet::new(),
-            epoch_producer_list,
-            active_production_list,
-            epoch_bond_snapshot: initial_bond_snapshot,
-            epoch_bond_snapshot_epoch: initial_bond_epoch,
+            epoch_state: doli_core::EpochState {
+                epoch: initial_bond_epoch,
+                bond_snapshot: initial_bond_snapshot,
+                producer_list: epoch_producer_list,
+                active_list: active_production_list,
+                attested_sets: epoch_attested_set,
+                attestation_accum: epoch_attestation_accum,
+                blocks_produced: epoch_blocks_produced_accum,
+            },
             is_active_producer: false, // Computed on first block application
             last_active_status_epoch: None,
             vote_tx: None,
@@ -888,9 +893,6 @@ impl Node {
             archive_caught_up: false,
             ws_sender: Arc::new(RwLock::new(None)),
             minute_tracker: MinuteAttestationTracker::new(),
-            epoch_attestation_accum,
-            epoch_blocks_produced_accum,
-            epoch_attested_set,
             rejected_fork_tips: HashSet::new(),
             snap_sync_height: None,
             sync_requests_this_interval: 0,
@@ -1044,14 +1046,19 @@ impl Node {
             shallow_rollback_count: 0,
             cumulative_rollback_depth: 0,
             seen_blocks_for_slot: HashSet::new(),
-            epoch_producer_list: {
-                let mut pks: Vec<_> = producers.iter().map(|kp| *kp.public_key()).collect();
-                pks.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
-                pks
+            epoch_state: doli_core::EpochState {
+                producer_list: {
+                    let mut pks: Vec<_> = producers.iter().map(|kp| *kp.public_key()).collect();
+                    pks.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+                    pks
+                },
+                active_list: Vec::new(), // Built at first epoch boundary
+                bond_snapshot: epoch_bond_snapshot,
+                epoch: 0,
+                attested_sets: [HashSet::new(), HashSet::new(), HashSet::new()],
+                attestation_accum: [HashMap::new(), HashMap::new(), HashMap::new()],
+                blocks_produced: HashMap::new(),
             },
-            active_production_list: Vec::new(), // Built at first epoch boundary
-            epoch_bond_snapshot,
-            epoch_bond_snapshot_epoch: 0,
             is_active_producer: true, // Active in tests
             last_active_status_epoch: None,
             // --- Non-fork-recovery fields: safe defaults ---
@@ -1071,9 +1078,6 @@ impl Node {
             archive_caught_up: true,
             ws_sender: Arc::new(RwLock::new(None)),
             minute_tracker: MinuteAttestationTracker::new(),
-            epoch_attestation_accum: [HashMap::new(), HashMap::new(), HashMap::new()],
-            epoch_blocks_produced_accum: HashMap::new(),
-            epoch_attested_set: [HashSet::new(), HashSet::new(), HashSet::new()],
             rejected_fork_tips: HashSet::new(),
             snap_sync_height: None,
             sync_requests_this_interval: 0,

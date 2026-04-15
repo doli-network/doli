@@ -484,11 +484,9 @@ pub(crate) async fn run_node(
     )
     .await?;
 
-    // Rebuild epoch bond snapshot + epoch producer list from blocks.
-    // Without this, a node that restarts after an epoch boundary has a stale
-    // scheduler (all active producers, no attestation filtering) while the
-    // network uses the filtered list → "invalid producer for slot" on gossip.
-    node.rebuild_epoch_state_from_blocks().await;
+    // EpochState is loaded from persisted RocksDB keys in init.rs. The epoch
+    // boundary derive_at_boundary() call in post_commit keeps it correct.
+    // No startup rebuild needed — the persisted state IS the state.
 
     // Checkpoint/snap sync is now handled internally by SyncManager.
     // CLI checkpoint overrides and compiled-in constants are no longer needed here.

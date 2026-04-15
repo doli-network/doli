@@ -14,7 +14,7 @@ use super::types::{
     LastApplied, StateDb, CF_EXIT_HISTORY, CF_META, CF_PRODUCERS, CF_UTXO, CF_UTXO_BY_PUBKEY,
     META_ACTIVE_PRODUCTION_LIST, META_CHAIN_STATE, META_EPOCH_ATTESTATION_ACCUM,
     META_EPOCH_ATTESTED_SET, META_EPOCH_BLOCKS_PRODUCED, META_EPOCH_BOND_SNAPSHOT,
-    META_EPOCH_PRODUCER_LIST, META_LAST_APPLIED, META_PENDING_UPDATES,
+    META_EPOCH_PRODUCER_LIST, META_EPOCH_STATE, META_LAST_APPLIED, META_PENDING_UPDATES,
 };
 
 impl StateDb {
@@ -366,6 +366,15 @@ impl StateDb {
         let cf = self.db.cf_handle(CF_META).unwrap();
         match self.db.get_cf(cf, META_EPOCH_BOND_SNAPSHOT) {
             Ok(Some(bytes)) => bincode::deserialize(&bytes).ok(),
+            _ => None,
+        }
+    }
+
+    /// Load persisted complete EpochState.
+    pub fn get_epoch_state(&self) -> Option<Vec<u8>> {
+        let cf = self.db.cf_handle(CF_META).unwrap();
+        match self.db.get_cf(cf, META_EPOCH_STATE) {
+            Ok(Some(bytes)) => Some(bytes.to_vec()),
             _ => None,
         }
     }

@@ -263,13 +263,9 @@ impl Node {
                 hex::encode(&block_producer.as_bytes()[..4]),
                 err_str,
             );
-            // Auto-heal: if rejected for "invalid producer", the scheduler is stale.
-            // Rebuild from blocks so the NEXT gossip block is accepted immediately
-            // instead of waiting for the epoch boundary or a restart.
-            if err_str.contains("invalid producer") {
-                info!("[BLOCK] Auto-healing scheduler after producer eligibility rejection");
-                self.rebuild_epoch_state_from_blocks().await;
-            }
+            // NOTE: auto-heal removed. EpochState::derive_at_boundary() is now the
+            // single canonical derivation — called at every epoch boundary in post_commit.
+            // If "invalid producer" is hit, it self-corrects at the next boundary.
             return Ok(());
         }
 
