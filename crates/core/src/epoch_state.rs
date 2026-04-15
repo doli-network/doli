@@ -365,41 +365,6 @@ pub fn epoch_state_hash(
 mod tests {
     use super::*;
 
-    // OUTPUT CONTRACT: EpochState::genesis()
-    // O1: epoch = 0
-    // O2: all collections empty
-    // PATHS: P1=constructor
-    // MATRIX: O1×P1, O2×P1
-
-    // OUTPUT CONTRACT: EpochState::accumulate_block(input)
-    // O1: self.attested_sets[0] — adds producer + attested indices
-    // O2: self.blocks_produced — increments producer count
-    // O3: self.attestation_accum[0] — adds minute for producer + attested
-    // PATHS: P1=no attestation data, P2=with attestation data
-    // MATRIX: O1×P1, O1×P2, O2×P1, O2×P2, O3×P1, O3×P2
-
-    // OUTPUT CONTRACT: EpochState::derive_at_boundary(prev, input)
-    // O1: epoch = input.epoch
-    // O2: bond_snapshot = input.bond_counts
-    // O3: producer_list — attestation-filtered, sorted
-    // O4: active_list — tier-filtered from producer_list
-    // O5: attested_sets — rotated ([0]=empty, [1]=prev[0], [2]=prev[1])
-    // O6: attestation_accum — rotated
-    // O7: blocks_produced — empty (new epoch)
-    // PATHS: P1=epoch<=1, P2=epoch>1 with attestation, P3=epoch>1 empty accum
-    // MATRIX: O1-O7 × P1-P3
-
-    // OUTPUT CONTRACT: serialize/deserialize round-trip
-    // O1: deserialized fields match original
-    // PATHS: P1=empty, P2=populated
-    // MATRIX: O1×P1, O1×P2
-
-    // OUTPUT CONTRACT: hash()
-    // O1: same state → same hash
-    // O2: different state → different hash
-    // PATHS: P1=identical, P2=epoch differs, P3=producers differ
-    // MATRIX: O1×P1, O2×P2, O2×P3
-
     fn make_pubkey(seed: u8) -> PublicKey {
         let mut bytes = [0u8; 32];
         bytes[0] = seed;
@@ -412,6 +377,17 @@ mod tests {
         Hash::from_bytes(bytes)
     }
 
+    // OUTPUT CONTRACT: fn EpochState::genesis()
+    //   O1: return.epoch — u64, 0
+    //   O2: return.bond_snapshot — HashMap, empty
+    //   O3: return.producer_list — Vec, empty
+    //   O4: return.active_list — Vec, empty
+    //   O5: return.attested_sets — [HashSet; 3], all empty
+    //   O6: return.attestation_accum — [HashMap; 3], all empty
+    //   O7: return.blocks_produced — HashMap, empty
+    // PATHS: P1: constructor (single path)
+    // MATRIX: 7 outputs × 1 path = 7 cells
+    //   P1: O1✓ O2✓ O3✓ O4✓ O5✓ O6✓ O7✓
     #[test]
     fn test_genesis_creates_empty_state() {
         let state = EpochState::genesis();
@@ -426,6 +402,13 @@ mod tests {
         assert!(state.blocks_produced.is_empty());
     }
 
+    // OUTPUT CONTRACT: fn EpochState::accumulate_block(&mut self, input)
+    //   O1: self.attested_sets[0] — HashSet, contains input.producer
+    //   O2: self.blocks_produced — HashMap, producer entry incremented by 1
+    //   O3: self.attestation_accum[0] — HashMap, minute inserted for producer
+    // PATHS: P1: no attestation data (has_attestation_data=false)
+    // MATRIX: 3 outputs × 1 path = 3 cells
+    //   P1: O1✓ O2✓ O3✓
     #[test]
     fn test_accumulate_block_no_attestation() {
         let pk = make_pubkey(1);
@@ -445,6 +428,13 @@ mod tests {
         assert!(!state.attestation_accum[0][&pk].is_empty());
     }
 
+    // OUTPUT CONTRACT: fn EpochState::accumulate_block(&mut self, input)
+    //   O1: self.attested_sets[0] — HashSet, contains producer AND attested peers
+    //   O2: self.blocks_produced — HashMap, only producer incremented (not peers)
+    //   O3: self.attestation_accum[0] — HashMap, minutes for producer AND peers
+    // PATHS: P2: with attestation data (has_attestation_data=true, indices=[0,1])
+    // MATRIX: 3 outputs × 1 path = 3 cells
+    //   P2: O1✓ O2✓ O3✓
     #[test]
     fn test_accumulate_block_with_attestation() {
         let pk0 = make_pubkey(1);
@@ -468,6 +458,11 @@ mod tests {
         assert!(!state.attestation_accum[0][&pk1].is_empty());
     }
 
+    // OUTPUT CONTRACT: fn EpochState::accumulate_block(&mut self, input)
+    //   O2: self.blocks_produced — HashMap, increments per call
+    // PATHS: P3: multiple blocks same producer (5 calls)
+    // MATRIX: 1 output × 1 path = 1 cell
+    //   P3: O2✓
     #[test]
     fn test_accumulate_block_increments_count() {
         let pk = make_pubkey(1);
@@ -485,6 +480,18 @@ mod tests {
         assert_eq!(state.blocks_produced[&pk], 5);
     }
 
+    // OUTPUT CONTRACT: fn EpochState::derive_at_boundary(prev, input) -> EpochState
+    //   O1: return.epoch — u64, equals input.epoch
+    //   O2: return.bond_snapshot — HashMap, equals input.bond_counts
+    //   O3: return.producer_list — Vec, all active (no filter for epoch<=1), sorted
+    //   O4: return.active_list — Vec, same as producer_list (<50 producers)
+    //   O5: return.attested_sets[0] — HashSet, empty (new epoch)
+    //   O6: return.attested_sets[1] — HashSet, equals prev.attested_sets[0]
+    //   O7: return.attestation_accum[0] — HashMap, empty (new epoch)
+    //   O8: return.blocks_produced — HashMap, empty (new epoch)
+    // PATHS: P1: epoch<=1 (no attestation filter)
+    // MATRIX: 8 outputs × 1 path = 8 cells
+    //   P1: O1✓ O2✓ O3✓ O4✓ O5✓ O6✓ O7✓ O8✓
     #[test]
     fn test_derive_at_boundary_epoch_1() {
         let pk0 = make_pubkey(1);
@@ -522,6 +529,11 @@ mod tests {
         assert!(new_state.blocks_produced.is_empty());
     }
 
+    // OUTPUT CONTRACT: fn EpochState::derive_at_boundary(prev, input) -> EpochState
+    //   O3: return.producer_list — Vec, attestation-filtered (only attested retained)
+    // PATHS: P2: epoch>1 with attestation data, 2/3 attested (filter applies)
+    // MATRIX: 1 output × 1 path = 1 cell
+    //   P2: O3✓
     #[test]
     fn test_derive_at_boundary_attestation_filter() {
         let pk0 = make_pubkey(1);
@@ -552,6 +564,11 @@ mod tests {
         assert!(!new_state.producer_list.contains(&pk2));
     }
 
+    // OUTPUT CONTRACT: fn EpochState::derive_at_boundary(prev, input) -> EpochState
+    //   O3: return.producer_list — Vec, ALL active (deadlock floor triggered)
+    // PATHS: P4: epoch>1, only 1/3 attested (below 2/3 floor)
+    // MATRIX: 1 output × 1 path = 1 cell
+    //   P4: O3✓
     #[test]
     fn test_derive_deadlock_safety_floor() {
         let pk0 = make_pubkey(1);
@@ -578,6 +595,11 @@ mod tests {
         assert_eq!(new_state.producer_list.len(), 3);
     }
 
+    // OUTPUT CONTRACT: fn EpochState::derive_at_boundary(prev, input) -> EpochState
+    //   O3: return.producer_list — Vec, ALL active (empty accum fallback)
+    // PATHS: P3: epoch>1, empty attested_sets (post-snap/cold start)
+    // MATRIX: 1 output × 1 path = 1 cell
+    //   P3: O3✓
     #[test]
     fn test_derive_empty_accum_uses_all_producers() {
         let pk0 = make_pubkey(1);
@@ -603,6 +625,12 @@ mod tests {
         assert_eq!(new_state.producer_list.len(), 2);
     }
 
+    // OUTPUT CONTRACT: fn EpochState::derive_at_boundary(prev, input) -> EpochState
+    //   O5: return.attested_sets — [HashSet;3], [0]=empty, [1]=prev[0], [2]=prev[1]
+    //   O7: return.attestation_accum — [HashMap;3], [0]=empty, [1]=prev[0], [2]=prev[1]
+    // PATHS: P5: rotation with all 3 slots populated in prev
+    // MATRIX: 2 outputs × 1 path = 2 cells (7 sub-assertions)
+    //   P5: O5([0]empty✓ [1]=prev[0]✓ [2]=prev[1]✓ prev[2]discarded✓) O7([0]empty✓ [1]=prev[0]✓ [2]=prev[1]✓)
     #[test]
     fn test_derive_accumulator_rotation() {
         let pk0 = make_pubkey(1);
@@ -642,6 +670,11 @@ mod tests {
         assert!(!new_state.attested_sets[2].contains(&pk2));
     }
 
+    // OUTPUT CONTRACT: fn EpochState::serialize_canonical() + deserialize_canonical()
+    //   O3: return — EpochState, epoch and producer_list match original
+    // PATHS: P1: empty state (genesis)
+    // MATRIX: 1 output × 1 path = 1 cell
+    //   P1: O3(epoch✓ producer_list✓)
     #[test]
     fn test_serialize_deserialize_round_trip_empty() {
         let state = EpochState::genesis();
@@ -651,6 +684,11 @@ mod tests {
         assert!(restored.producer_list.is_empty());
     }
 
+    // OUTPUT CONTRACT: fn EpochState::serialize_canonical() + deserialize_canonical()
+    //   O3: return — EpochState, all 7 fields match original
+    // PATHS: P2: populated state (all fields set)
+    // MATRIX: 1 output × 1 path = 1 cell (7 sub-assertions)
+    //   P2: O3(epoch✓ bond_snapshot✓ producer_list✓ active_list✓ attested_sets✓ attestation_accum✓ blocks_produced✓)
     #[test]
     fn test_serialize_deserialize_round_trip_populated() {
         let pk = make_pubkey(1);
@@ -677,12 +715,22 @@ mod tests {
         assert_eq!(restored.blocks_produced[&pk], 7);
     }
 
+    // OUTPUT CONTRACT: fn EpochState::hash() -> Hash
+    //   O3: return — Hash, deterministic (same input → same output)
+    // PATHS: P1: same state called twice
+    // MATRIX: 1 output × 1 path = 1 cell
+    //   P1: O3✓
     #[test]
     fn test_hash_deterministic() {
         let state = EpochState::genesis();
         assert_eq!(state.hash(), state.hash());
     }
 
+    // OUTPUT CONTRACT: fn EpochState::hash() -> Hash
+    //   O3: return — Hash, differs when any field changes
+    // PATHS: P2: epoch differs, P3: producer_list differs
+    // MATRIX: 1 output × 2 paths = 2 cells
+    //   P2: O3✓ P3: O3✓
     #[test]
     fn test_hash_differs_on_change() {
         let mut s1 = EpochState::genesis();

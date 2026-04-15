@@ -93,16 +93,13 @@ async fn apply_chain(node: &mut Node, blocks: &[Block]) {
     }
 }
 
-// ============================================================
-// TEST 1: accumulate_block tracks producer per block
-// ============================================================
-// OUTPUT CONTRACT: Node::apply_block(block) via post_commit → accumulate_block
-// O1: epoch_state.attested_sets[0] contains block.header.producer after apply
-// O2: epoch_state.blocks_produced[producer] increments by 1 per block
-// O3: epoch_state.attestation_accum[0][producer] contains the attestation minute
-// PATHS: P1=single block, P2=multiple blocks same producer
-// MATRIX: O1×P1, O1×P2, O2×P1, O2×P2, O3×P1, O3×P2
-
+// OUTPUT CONTRACT: fn Node::apply_block(block) via post_commit → accumulate_block
+//   O1: self.epoch_state.attested_sets[0] — HashSet, contains block.header.producer
+//   O2: self.epoch_state.blocks_produced — HashMap, producer entry = block count
+//   O3: self.epoch_state.attestation_accum[0] — HashMap, producer has non-empty minute set
+// PATHS: P1: 3 blocks applied by same producer
+// MATRIX: 3 outputs × 1 path = 3 cells
+//   P1: O1✓ O2✓ O3✓
 #[tokio::test]
 async fn test_accumulate_block_tracks_producer() {
     let (mut node, producers, _tmp) = make_node(3).await;
@@ -139,21 +136,18 @@ async fn test_accumulate_block_tracks_producer() {
     );
 }
 
-// ============================================================
-// TEST 2: Epoch boundary derives correct state via derive_at_boundary
-// ============================================================
-// OUTPUT CONTRACT: post_commit_actions at epoch boundary
-// O1: epoch_state.epoch advances to new epoch number
-// O2: epoch_state.producer_list is sorted by pubkey bytes
-// O3: epoch_state.active_list = producer_list (no tier system with ≤50 producers)
-// O4: epoch_state.bond_snapshot has entries for all active producers
-// O5: epoch_state.blocks_produced is empty (new epoch)
-// O6: epoch_state.attested_sets[0] is empty (rotated)
-// O7: epoch_state.attested_sets[1] contains prev epoch's attested producers
-// O8: epoch_state.attestation_accum[0] is empty (rotated)
-// PATHS: P1=first epoch boundary (h=4 in devnet)
-// MATRIX: O1-O8 × P1
-
+// OUTPUT CONTRACT: fn Node::post_commit_actions(block) at epoch boundary
+//   O1: self.epoch_state.epoch — u64, advances to new epoch number
+//   O2: self.epoch_state.producer_list — Vec<PK>, sorted by pubkey bytes
+//   O3: self.epoch_state.active_list — Vec<PK>, equals producer_list (<50 producers)
+//   O4: self.epoch_state.bond_snapshot — HashMap, non-empty (entries for active producers)
+//   O5: self.epoch_state.blocks_produced — HashMap, empty (new epoch, rotated)
+//   O6: self.epoch_state.attested_sets[0] — HashSet, empty (new epoch, rotated)
+//   O7: self.epoch_state.attested_sets[1] — HashSet, contains prev epoch producer
+//   O8: self.epoch_state.attestation_accum[0] — HashMap, empty (new epoch, rotated)
+// PATHS: P1: first epoch boundary (h=4, devnet blocks_per_epoch=4)
+// MATRIX: 8 outputs × 1 path = 8 cells
+//   P1: O1✓ O2✓ O3✓ O4✓ O5✓ O6✓ O7✓ O8✓
 #[tokio::test]
 async fn test_epoch_boundary_derives_correct_state() {
     let (mut node, producers, _tmp) = make_node(3).await;
@@ -223,17 +217,13 @@ async fn test_epoch_boundary_derives_correct_state() {
     );
 }
 
-// ============================================================
-// TEST 3: UndoData round-trip preserves epoch_state
-// ============================================================
-// OUTPUT CONTRACT: rollback_one_block with epoch_state_snapshot in UndoData
-// O1: epoch_state after rollback matches epoch_state BEFORE the rolled-back block
-// O2: epoch_state.blocks_produced reverts (producer count decreases)
-// O3: epoch_state.attested_sets reverts
-// O4: epoch_state hash after rollback = hash before the rolled-back block
-// PATHS: P1=rollback single block mid-epoch
-// MATRIX: O1×P1, O2×P1, O3×P1, O4×P1
-
+// OUTPUT CONTRACT: fn Node::rollback_one_block() with epoch_state_snapshot in UndoData
+//   O1: self.epoch_state.hash() — Hash, equals hash captured before the rolled-back block
+//   O2: self.epoch_state.blocks_produced — HashMap, reverts to pre-block-2 count
+//   O3: self.epoch_state.attested_sets[0] — HashSet, reverts to pre-block-2 state
+// PATHS: P1: rollback single block mid-epoch (undo data has epoch_state_snapshot)
+// MATRIX: 3 outputs × 1 path = 3 cells
+//   P1: O1✓ O2✓ O3✓
 #[tokio::test]
 async fn test_undo_data_roundtrip_preserves_epoch_state() {
     let (mut node, producers, _tmp) = make_node(3).await;
@@ -287,17 +277,14 @@ async fn test_undo_data_roundtrip_preserves_epoch_state() {
     );
 }
 
-// ============================================================
-// TEST 4: Multi-epoch accumulator rotation
-// ============================================================
-// OUTPUT CONTRACT: Two epoch boundaries in sequence
-// O1: After epoch 1 boundary: attested_sets[1] = epoch 0 data, [2] = empty
-// O2: After epoch 2 boundary: attested_sets[2] = epoch 0 data (shifted from [1])
-// O3: After epoch 2 boundary: attested_sets[1] = epoch 1 data
-// O4: After epoch 2 boundary: attested_sets[0] = empty (new epoch)
-// PATHS: P1=two consecutive epoch boundaries
-// MATRIX: O1-O4 × P1
-
+// OUTPUT CONTRACT: fn Node::post_commit_actions — two consecutive epoch boundaries
+//   O1: self.epoch_state.attested_sets[1] — HashSet, epoch 0 producer after 1st boundary
+//   O2: self.epoch_state.attested_sets[2] — HashSet, empty after 1st boundary; epoch 0 producer after 2nd
+//   O3: self.epoch_state.attested_sets[1] — HashSet, epoch 1 producer after 2nd boundary
+//   O4: self.epoch_state.attested_sets[0] — HashSet, empty after 2nd boundary (new epoch)
+// PATHS: P1: 4 blocks epoch 0 (pk0) + 4 blocks epoch 1 (pk1) = two boundaries
+// MATRIX: 4 outputs × 1 path = 4 cells
+//   P1: O1✓ O2✓ O3✓ O4✓
 #[tokio::test]
 async fn test_multi_epoch_accumulator_rotation() {
     let (mut node, producers, _tmp) = make_node(3).await;
@@ -345,14 +332,13 @@ async fn test_multi_epoch_accumulator_rotation() {
     );
 }
 
-// ============================================================
-// TEST 5: EpochState hash is deterministic across derive calls
-// ============================================================
-// OUTPUT CONTRACT: hash() consistency
-// O1: Two nodes with same blocks produce identical epoch_state.hash()
-// PATHS: P1=both at height 4 (epoch boundary)
-// MATRIX: O1×P1
-
+// OUTPUT CONTRACT: fn EpochState::hash() — cross-node determinism
+//   O1: node1.epoch_state.hash() — Hash, equals node2.epoch_state.hash()
+//   O2: node1.epoch_state.producer_list — Vec<PK>, equals node2's
+//   O3: node1.epoch_state.active_list — Vec<PK>, equals node2's
+// PATHS: P1: two independent nodes, same producers, same 4-block chain
+// MATRIX: 3 outputs × 1 path = 3 cells
+//   P1: O1✓ O2✓ O3✓
 #[tokio::test]
 async fn test_epoch_state_hash_deterministic_across_nodes() {
     let producers: Vec<KeyPair> = (0..3).map(|_| KeyPair::generate()).collect();
@@ -395,16 +381,13 @@ async fn test_epoch_state_hash_deterministic_across_nodes() {
     );
 }
 
-// ============================================================
-// TEST 6: Rollback across epoch boundary restores pre-boundary state
-// ============================================================
-// OUTPUT CONTRACT: rollback_one_block when block IS the epoch boundary
-// O1: epoch_state.epoch reverts to pre-boundary epoch
-// O2: epoch_state.attested_sets are un-rotated (pre-boundary state)
-// O3: epoch_state.blocks_produced reverts to pre-boundary counts
-// PATHS: P1=rollback the epoch boundary block itself
-// MATRIX: O1×P1, O2×P1, O3×P1
-
+// OUTPUT CONTRACT: fn Node::rollback_one_block() — rollback the epoch boundary block
+//   O1: self.epoch_state.epoch — u64, reverts to pre-boundary epoch
+//   O2: self.epoch_state.hash() — Hash, matches pre-boundary snapshot
+//   O3: self.epoch_state.blocks_produced — HashMap, reverts to pre-boundary count
+// PATHS: P1: apply 3 blocks + boundary block (h=4), then rollback h=4
+// MATRIX: 3 outputs × 1 path = 3 cells
+//   P1: O1✓ O2✓ O3✓
 #[tokio::test]
 async fn test_rollback_across_epoch_boundary() {
     let (mut node, producers, _tmp) = make_node(3).await;
@@ -457,15 +440,16 @@ async fn test_rollback_across_epoch_boundary() {
     );
 }
 
-// ============================================================
-// TEST 7: EpochState serialization round-trip via RocksDB persistence
-// ============================================================
-// OUTPUT CONTRACT: put_epoch_state → get_epoch_state
-// O1: Deserialized EpochState matches original
-// O2: All fields preserved (epoch, bond_snapshot, producer_list, active_list, accums)
-// PATHS: P1=after epoch boundary (populated state)
-// MATRIX: O1×P1, O2×P1
-
+// OUTPUT CONTRACT: fn StateDb::put_epoch_state() + get_epoch_state() via post_commit
+//   O1: restored.hash() — Hash, equals in-memory epoch_state hash
+//   O2: restored.epoch — u64, equals in-memory epoch
+//   O3: restored.producer_list — Vec<PK>, same len as in-memory
+//   O4: restored.active_list — Vec<PK>, equals in-memory
+//   O5: restored.bond_snapshot — HashMap, equals in-memory
+//   O6: restored.attested_sets — [HashSet;3], equals in-memory
+// PATHS: P1: after epoch boundary (post_commit persists epoch_state)
+// MATRIX: 6 outputs × 1 path = 6 cells
+//   P1: O1✓ O2✓ O3✓ O4✓ O5✓ O6✓
 #[tokio::test]
 async fn test_epoch_state_persistence_roundtrip() {
     let (mut node, producers, _tmp) = make_node(3).await;
