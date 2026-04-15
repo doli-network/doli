@@ -545,13 +545,12 @@ async fn handle_sync_request_bg(
                         None
                     };
                     info!(
-                        "[SNAP_SYNC] Sending snapshot response: h={} hash={:.16} cs={}B utxo={}B ps={}B bond_snap={}",
+                        "[SNAP_SYNC] Sending snapshot response (bg): h={} hash={:.16} cs={}B utxo={}B ps={}B bond_snap=n/a",
                         snap.block_height,
                         snap.block_hash,
                         snap.chain_state_bytes.len(),
                         snap.utxo_set_bytes.len(),
                         snap.producer_set_bytes.len(),
-                        "MISSING(bg)"
                     );
                     SyncResponse::StateSnapshot {
                         block_hash: snap.block_hash,

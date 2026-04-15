@@ -444,15 +444,10 @@ impl Node {
         self.excluded_producers = excluded;
         let new_count = self.excluded_producers.len();
 
-        info!(
-            "[LIVENESS] Excluded rebuild: count={} cap={} blocks_scanned={} cap_hit={}",
-            new_count, max_excluded, blocks_scanned, cap_hit
-        );
-
         if old_count > 0 || new_count > 0 {
             info!(
-                "[LIVENESS] Rebuilt excluded set from headers (h={}-{}): {} excluded (was {}, cap={})",
-                start_h, current_h, new_count, old_count, max_excluded
+                "[LIVENESS] Excluded rebuild: h={}-{} count={} (was {}) cap={} blocks_scanned={} cap_hit={}",
+                start_h, current_h, new_count, old_count, max_excluded, blocks_scanned, cap_hit
             );
         }
     }

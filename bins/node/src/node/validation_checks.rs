@@ -925,7 +925,7 @@ impl Node {
                             .and_then(|data| bincode::serialize(&data).ok());
                         let has_bond_snap = epoch_bond_snapshot_bytes.is_some();
                         info!(
-                            "[SNAP_SYNC] Sending snapshot response: h={} hash={:.16} cs={}B utxo={}B ps={}B bond_snap={}",
+                            "[SNAP_SYNC] Sending snapshot response (inline): h={} hash={:.16} cs={}B utxo={}B ps={}B bond_snap={}",
                             snap.block_height,
                             snap.block_hash,
                             snap.chain_state_bytes.len(),

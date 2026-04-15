@@ -42,7 +42,7 @@ impl SyncManager {
     /// resolve via heaviest-chain fork choice; deep forks via is_deep_fork_detected().
     pub fn can_produce(&mut self, current_slot: u32) -> ProductionAuthorization {
         let best_peer_h = self.best_peer_height();
-        info!(
+        debug!(
             "[CAN_PRODUCE] slot={} local_h={} peers={} state={:?}",
             current_slot,
             self.local_height,
