@@ -200,7 +200,7 @@ impl SyncManager {
             );
         }
 
-        info!("[CAN_PRODUCE] AUTHORIZED");
+        debug!("[CAN_PRODUCE] AUTHORIZED");
         ProductionAuthorization::Authorized
     }
 
