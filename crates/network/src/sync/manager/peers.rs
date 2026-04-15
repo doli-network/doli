@@ -417,6 +417,20 @@ impl SyncManager {
         if block_slot > self.network.network_tip_slot {
             self.network.network_tip_slot = block_slot;
         }
+
+        // Recovery Coordinator phase 2 (2026-04-15, synmgrefactor): shadow report.
+        // Detectors feed evidence into the coordinator alongside their legacy
+        // action. Coordinator runs in observation-only mode until phase 3 flip.
+        let gap_for_report = self
+            .network
+            .network_tip_height
+            .saturating_sub(self.local_height);
+        self.recovery
+            .report(super::recovery::RecoveryEvidence::OrphanGossip {
+                slot: block_slot,
+                gap: gap_for_report,
+            });
+
         if self.consecutive_orphan_gossip_blocks >= 3 {
             let gap = self
                 .network

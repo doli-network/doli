@@ -642,6 +642,13 @@ impl Node {
                 );
             }
 
+            // Recovery Coordinator phase 2 shadow dispatch (2026-04-15,
+            // synmgrefactor). SyncManager logs what action the coordinator
+            // would take; legacy detector→action paths still own real
+            // dispatch. Post-deploy, operators grep [COORDINATOR] and
+            // compare with actual actions for phase 3 flip validation.
+            sync.shadow_classify_recovery(peer_count);
+
             // INC-I-020/020b: DISABLED.
             //
             // STALE_TIP and FORK_1BLOCK removed. They fought with FORK_GUARD:

@@ -197,6 +197,13 @@ impl SyncManager {
             self.recovery_phase
         );
 
+        // Recovery Coordinator phase 2 shadow report (2026-04-15,
+        // synmgrefactor). Legacy escalation below still runs.
+        self.recovery
+            .report(super::recovery::RecoveryEvidence::ApplyFailure {
+                height: self.local_height,
+            });
+
         // Clear everything — don't salvage blocks from a bad chain
         self.pipeline.pending_headers.clear();
         self.pipeline.pending_blocks.clear();
@@ -513,6 +520,46 @@ impl SyncManager {
     ///     proven successful yet → signal legitimately triggers next rollback.
     pub fn note_rollback_completed(&mut self, post_rollback_height: u64) {
         self.fork.last_rollback_local_height = Some(post_rollback_height);
+    }
+
+    /// Recovery Coordinator phase 2 (2026-04-15, synmgrefactor): classify
+    /// current evidence + context and log what action the coordinator would
+    /// take. Called from the periodic task loop. Legacy detector→action
+    /// paths still own the real dispatch. Divergence between this log and
+    /// the actual action taken is the validation signal for the phase 3
+    /// flip to authoritative.
+    pub fn shadow_classify_recovery(&self, peer_count: usize) {
+        use super::recovery::RecoveryAction;
+        use super::RecoveryPhase;
+
+        let in_grace_period = !matches!(self.recovery_phase, RecoveryPhase::Normal);
+        let ctx = super::recovery::RecoveryContext {
+            local_height: self.local_height,
+            network_tip_height: self.network.network_tip_height,
+            peer_count,
+            last_applied_secs: self.network.last_block_applied.elapsed().as_secs(),
+            // `shallow_rollback_count` lives on Node, not SyncManager.
+            // Acceptable to pass 0 for shadow mode — phase 3 can wire it
+            // through if needed.
+            shallow_rollback_count: 0,
+            snap_attempts: self.snap.attempts,
+            last_rollback_local_height: self.fork.last_rollback_local_height,
+            in_grace_period,
+        };
+        let action = self.recovery.classify(&ctx);
+        if action != RecoveryAction::None {
+            tracing::info!(
+                "[COORDINATOR] shadow action={:?} gap={} last_applied={}s peers={} \
+                 last_rb_h={:?} snap_attempts={} grace={}",
+                action,
+                ctx.gap(),
+                ctx.last_applied_secs,
+                ctx.peer_count,
+                ctx.last_rollback_local_height,
+                ctx.snap_attempts,
+                ctx.in_grace_period,
+            );
+        }
     }
 
     pub fn reset_sync_for_rollback(&mut self) {

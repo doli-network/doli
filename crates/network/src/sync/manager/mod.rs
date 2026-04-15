@@ -155,6 +155,24 @@ pub struct SyncManager {
     /// Set when peer count transitions from 0 to non-zero. Consumed by the
     /// node layer to trigger immediate status requests to all peers.
     needs_mass_status_refresh: bool,
+
+    /// Recovery Coordinator (phase 2 shadow integration, 2026-04-15,
+    /// synmgrefactor branch).
+    ///
+    /// Centralized classifier for recovery actions. Detectors call
+    /// `self.recovery.report(evidence)` to feed observations; periodic
+    /// dispatch layer calls `self.recovery.classify(ctx)` to decide what
+    /// action (if any) to take.
+    ///
+    /// In phase 2 (this commit), the coordinator runs in SHADOW MODE:
+    /// detectors report, periodic.rs classifies and LOGS what the
+    /// coordinator would do, but the legacy direct-action paths still
+    /// fire. This lets us compare coordinator decisions to the actual
+    /// actions taken, without any behavior change in production.
+    ///
+    /// Phase 3 (future commit) flips to authoritative: coordinator's
+    /// action is executed, legacy paths are removed.
+    pub(crate) recovery: recovery::RecoveryCoordinator,
 }
 
 impl SyncManager {
@@ -206,6 +224,7 @@ impl SyncManager {
             recent_canonical_hashes: VecDeque::with_capacity(200),
             consecutive_orphan_gossip_blocks: 0,
             needs_mass_status_refresh: false,
+            recovery: recovery::RecoveryCoordinator::new(),
         }
     }
 

@@ -244,6 +244,12 @@ impl SyncManager {
                 // not a sync failure. Incrementing sync_failures on empties
                 // causes premature snap sync escalation during shallow forks.
 
+                // Recovery Coordinator phase 2 shadow report (2026-04-15,
+                // synmgrefactor). Legacy action paths below still run; the
+                // coordinator just observes.
+                self.recovery
+                    .report(super::super::recovery::RecoveryEvidence::EmptyHeaders { peer, gap });
+
                 if gap <= 3 && self.local_height > 0 {
                     // INC-I-026 + fork_id: empty headers at gap ≤ 3 are gossip
                     // timing — NOT a fork. Gossip delivers within seconds.
