@@ -34,7 +34,11 @@ pub fn compute_state_root(
     let utxo_hash = crypto::hash::hash(&utxo_bytes);
     let ps_hash = crypto::hash::hash(&ps_bytes);
 
-    tracing::debug!(
+    // INFO so the 3 component hashes are visible in production without
+    // RUST_LOG=debug. State root divergence diagnosis is the canonical
+    // hard incident — one grep per node and you know which component
+    // (chain_state / utxo / producer_set) diverged.
+    tracing::info!(
         "[STATE_ROOT] cs={:.16} utxo={:.16} ps={:.16} cs_bytes={} utxo_bytes={} ps_bytes={}",
         cs_hash,
         utxo_hash,

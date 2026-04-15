@@ -329,7 +329,9 @@ impl Node {
                     attested_indices.push(base_list.len() + idx);
                 }
             }
-            debug!(
+            // INFO to make encoder/decoder parity diagnosable in production.
+            // See [ATTEST_DECODE] in apply_block/post_commit.rs for rationale.
+            info!(
                 "[ATTEST_ENCODE] h={} base_list={} extra={} attested={} total_len={} body={}",
                 height,
                 base_list.len(),

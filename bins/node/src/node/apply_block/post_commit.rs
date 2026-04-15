@@ -37,7 +37,11 @@ impl Node {
                 } else {
                     vec![]
                 };
-                debug!(
+                // INFO so the decode path is symmetric with [ATTEST_ENCODE]
+                // and visible in production. Encoder/decoder mismatch is the
+                // class of bug that took multiple bisects to isolate (3a1e64ee,
+                // 69b4755e, ee99546f) — at INFO they self-diagnose.
+                info!(
                     "[ATTEST_DECODE] h={} epoch_list={} indices={} bitfield_len={}",
                     height,
                     self.epoch_producer_list.len(),
