@@ -120,7 +120,11 @@ async fn test_accumulate_block_tracks_producer() {
 
     // O2: blocks_produced = 3
     assert_eq!(
-        node.epoch_state.blocks_produced.get(&pk0).copied().unwrap_or(0),
+        node.epoch_state
+            .blocks_produced
+            .get(&pk0)
+            .copied()
+            .unwrap_or(0),
         3,
         "blocks_produced should be 3 after 3 blocks"
     );
@@ -168,7 +172,8 @@ async fn test_epoch_boundary_derives_correct_state() {
     assert!(
         node.epoch_state.epoch > pre_epoch || node.epoch_state.epoch == 1,
         "epoch should advance at boundary: was {}, now {}",
-        pre_epoch, node.epoch_state.epoch
+        pre_epoch,
+        node.epoch_state.epoch
     );
 
     // O2: producer_list is sorted by pubkey bytes
@@ -244,7 +249,11 @@ async fn test_undo_data_roundtrip_preserves_epoch_state() {
     // Verify block 2 changed the state
     let pk0 = *producers[0].public_key();
     assert_eq!(
-        node.epoch_state.blocks_produced.get(&pk0).copied().unwrap_or(0),
+        node.epoch_state
+            .blocks_produced
+            .get(&pk0)
+            .copied()
+            .unwrap_or(0),
         2,
         "Should have 2 blocks produced after 2 blocks"
     );
@@ -264,15 +273,22 @@ async fn test_undo_data_roundtrip_preserves_epoch_state() {
 
     // O2: blocks_produced reverted
     assert_eq!(
-        node.epoch_state.blocks_produced.get(&pk0).copied().unwrap_or(0),
-        state_before_block2.blocks_produced.get(&pk0).copied().unwrap_or(0),
+        node.epoch_state
+            .blocks_produced
+            .get(&pk0)
+            .copied()
+            .unwrap_or(0),
+        state_before_block2
+            .blocks_produced
+            .get(&pk0)
+            .copied()
+            .unwrap_or(0),
         "blocks_produced should revert to pre-block-2 value"
     );
 
     // O3: attested_sets reverted
     assert_eq!(
-        node.epoch_state.attested_sets[0],
-        state_before_block2.attested_sets[0],
+        node.epoch_state.attested_sets[0], state_before_block2.attested_sets[0],
         "attested_sets should revert to pre-block-2 state"
     );
 }
@@ -370,13 +386,11 @@ async fn test_epoch_state_hash_deterministic_across_nodes() {
         "Two nodes with identical blocks should have identical epoch_state hash"
     );
     assert_eq!(
-        node1.epoch_state.producer_list,
-        node2.epoch_state.producer_list,
+        node1.epoch_state.producer_list, node2.epoch_state.producer_list,
         "producer_list should match"
     );
     assert_eq!(
-        node1.epoch_state.active_list,
-        node2.epoch_state.active_list,
+        node1.epoch_state.active_list, node2.epoch_state.active_list,
         "active_list should match"
     );
 }
@@ -402,7 +416,12 @@ async fn test_rollback_across_epoch_boundary() {
     // Snapshot state before epoch boundary block
     let pre_boundary_hash = node.epoch_state.hash();
     let pre_boundary_epoch = node.epoch_state.epoch;
-    let pre_boundary_blocks_produced = node.epoch_state.blocks_produced.get(&pk0).copied().unwrap_or(0);
+    let pre_boundary_blocks_produced = node
+        .epoch_state
+        .blocks_produced
+        .get(&pk0)
+        .copied()
+        .unwrap_or(0);
 
     // Apply block 4 (epoch boundary)
     let boundary_block = build_block(4, 4, chain.last().unwrap().hash(), &producers[0], &params);
@@ -428,13 +447,18 @@ async fn test_rollback_across_epoch_boundary() {
 
     // O2: attested_sets un-rotated
     assert_eq!(
-        node.epoch_state.hash(), pre_boundary_hash,
+        node.epoch_state.hash(),
+        pre_boundary_hash,
         "epoch_state hash should match pre-boundary state"
     );
 
     // O3: blocks_produced reverts
     assert_eq!(
-        node.epoch_state.blocks_produced.get(&pk0).copied().unwrap_or(0),
+        node.epoch_state
+            .blocks_produced
+            .get(&pk0)
+            .copied()
+            .unwrap_or(0),
         pre_boundary_blocks_produced,
         "blocks_produced should revert to pre-boundary count"
     );
@@ -471,8 +495,7 @@ async fn test_epoch_state_persistence_roundtrip() {
         .get_epoch_state()
         .expect("epoch_state should be persisted after epoch boundary");
 
-    let restored =
-        EpochState::deserialize_canonical(&persisted_bytes).expect("deserialization should work");
+    let restored = EpochState::deserialize(&persisted_bytes).expect("deserialization should work");
 
     // O1: hash matches
     assert_eq!(

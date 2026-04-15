@@ -682,17 +682,34 @@ impl Node {
             info!("Block production enabled");
         }
 
-        // Build initial epoch bond snapshot from current UTXO set.
-        // Without this, nodes that restart mid-epoch fall back to live UTXO
-        // counting → scheduler changes with every add-bond TX → divergence.
-        let (initial_bond_snapshot, initial_bond_epoch) = if let Some((snap, epoch)) =
-            state_db.get_epoch_bond_snapshot()
-        {
+        // Load complete EpochState from unified key (written by post_commit + snap sync).
+        // Falls back to individual keys (pre-upgrade) then UTXO reconstruction.
+        let loaded_epoch_state: Option<doli_core::EpochState> =
+            state_db.get_epoch_state().and_then(|bytes| {
+                match doli_core::EpochState::deserialize(&bytes) {
+                    Ok(es) => {
+                        info!(
+                            "[INIT] Loaded persisted EpochState: epoch={} producers={} active={} bonds={}",
+                            es.epoch, es.producer_list.len(), es.active_list.len(), es.bond_snapshot.len()
+                        );
+                        Some(es)
+                    }
+                    Err(e) => {
+                        warn!("[INIT] Failed to deserialize persisted EpochState: {} — falling back to individual keys", e);
+                        None
+                    }
+                }
+            });
+
+        // Legacy fallback: load bond snapshot from individual key
+        let (initial_bond_snapshot, initial_bond_epoch) = if let Some(ref es) = loaded_epoch_state {
+            (es.bond_snapshot.clone(), es.epoch)
+        } else if let Some((snap, epoch)) = state_db.get_epoch_bond_snapshot() {
             let total: u64 = snap.values().sum();
             info!(
-                    "[INIT] Loaded persisted epoch_bond_snapshot: {} producers, total_bonds={}, epoch={}",
-                    snap.len(), total, epoch
-                );
+                "[INIT] Loaded persisted epoch_bond_snapshot: {} producers, total_bonds={}, epoch={}",
+                snap.len(), total, epoch
+            );
             (snap, epoch)
         } else {
             let ps = producer_set.read().await;
@@ -711,9 +728,9 @@ impl Node {
             let total: u64 = snap.values().sum();
             let epoch = if bpe > 0 { h / bpe } else { 0 };
             info!(
-                    "[INIT] No persisted bond snapshot — rebuilt from UTXO: {} producers, total_bonds={}, epoch={}",
-                    snap.len(), total, epoch
-                );
+                "[INIT] No persisted bond snapshot — rebuilt from UTXO: {} producers, total_bonds={}, epoch={}",
+                snap.len(), total, epoch
+            );
             (snap, epoch)
         };
 
@@ -755,29 +772,25 @@ impl Node {
         // Use provided shutdown flag or create a new one
         let shutdown = shutdown_flag.unwrap_or_else(|| Arc::new(RwLock::new(false)));
 
-        // epoch_producer_list + active_production_list: load from RocksDB if
-        // persisted (written at each epoch boundary). This eliminates the restart
-        // bug where reconstruction from ProducerSet + block store produces a
-        // different list than the one computed at epoch boundary, causing
-        // eligible_len=1 → deadlock.
-        //
-        // Fallback: if not persisted (first run or pre-upgrade DB), seed from
-        // current active producers so production can resume after restart.
+        // Producer lists + attestation accumulators: prefer unified EpochState,
+        // fall back to individual keys (pre-upgrade), then ProducerSet reconstruction.
         let best_h = chain_state.read().await.best_height;
-        let (epoch_producer_list, active_production_list) = {
+        let (epoch_producer_list, active_production_list) = if let Some(ref es) = loaded_epoch_state
+        {
+            (es.producer_list.clone(), es.active_list.clone())
+        } else {
             let persisted_epoch = state_db.get_epoch_producer_list();
             let persisted_active = state_db.get_active_production_list();
 
             if let Some(epoch_list) = persisted_epoch {
                 let active_list = persisted_active.unwrap_or_else(|| epoch_list.clone());
                 info!(
-                    "[INIT] Loaded persisted epoch_producer_list ({} producers) and active_production_list ({} producers) from RocksDB",
+                    "[INIT] Loaded persisted epoch_producer_list ({} producers) and active_production_list ({} producers) from individual keys",
                     epoch_list.len(),
                     active_list.len()
                 );
                 (epoch_list, active_list)
             } else {
-                // Fallback: reconstruct from ProducerSet (pre-upgrade path)
                 let producers = producer_set.read().await;
                 let mut pks: Vec<PublicKey> = producers
                     .active_producers_at_height(best_h)
@@ -787,9 +800,8 @@ impl Node {
                 pks.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
                 if !pks.is_empty() {
                     info!(
-                        "[INIT] No persisted producer lists — seeded epoch_producer_list with {} active producers at h={}",
-                        pks.len(),
-                        best_h
+                        "[INIT] No persisted producer lists — seeded with {} active producers at h={}",
+                        pks.len(), best_h
                     );
                 }
                 let active = pks.clone();
@@ -797,13 +809,19 @@ impl Node {
             }
         };
 
-        // Load persisted attestation accumulators (survive restarts).
         let (epoch_attested_set, epoch_attestation_accum, epoch_blocks_produced_accum) =
-            if let Some((attested, accum, produced)) = state_db.get_attestation_accumulators() {
+            if let Some(ref es) = loaded_epoch_state {
+                (
+                    es.attested_sets.clone(),
+                    es.attestation_accum.clone(),
+                    es.blocks_produced.clone(),
+                )
+            } else if let Some((attested, accum, produced)) =
+                state_db.get_attestation_accumulators()
+            {
                 info!(
-                    "[INIT] Loaded persisted attestation accumulators: attested=[{},{},{}] accum=[{},{},{}] produced={}",
+                    "[INIT] Loaded persisted attestation accumulators from individual keys: attested=[{},{},{}] produced={}",
                     attested[0].len(), attested[1].len(), attested[2].len(),
-                    accum[0].len(), accum[1].len(), accum[2].len(),
                     produced.len()
                 );
                 (attested, accum, produced)

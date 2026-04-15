@@ -87,6 +87,8 @@ pub fn compute_state_root(
 ///
 /// NOT in block header. Observational only — same semantics as
 /// compute_state_root. Canary deploy safe.
+///
+/// Delegates to `doli_core::epoch_state_hash` (single implementation).
 #[allow(clippy::too_many_arguments)]
 pub fn compute_scheduler_root(
     epoch_bond_snapshot: &HashMap<Hash, u64>,
@@ -97,87 +99,15 @@ pub fn compute_scheduler_root(
     epoch_attestation_accum: &[HashMap<PublicKey, HashSet<u32>>; 3],
     epoch_blocks_produced_accum: &HashMap<PublicKey, u32>,
 ) -> Hash {
-    let h = crypto::hash::hash;
-
-    // epoch_bond_snapshot: sorted by key + epoch appended
-    let bonds_h = {
-        let mut v: Vec<(Vec<u8>, u64)> = epoch_bond_snapshot
-            .iter()
-            .map(|(k, v)| (k.as_bytes().to_vec(), *v))
-            .collect();
-        v.sort_by(|a, b| a.0.cmp(&b.0));
-        let mut bytes = bincode::serialize(&v).unwrap_or_default();
-        bytes.extend_from_slice(&epoch_bond_snapshot_epoch.to_le_bytes());
-        h(&bytes)
-    };
-
-    // Vec<PublicKey> fields: order preserved (consensus-relevant)
-    let epl_h = h(&bincode::serialize(
-        &epoch_producer_list
-            .iter()
-            .map(|pk| pk.as_bytes().to_vec())
-            .collect::<Vec<_>>(),
+    doli_core::epoch_state_hash(
+        epoch_bond_snapshot,
+        epoch_bond_snapshot_epoch,
+        epoch_producer_list,
+        active_production_list,
+        epoch_attested_set,
+        epoch_attestation_accum,
+        epoch_blocks_produced_accum,
     )
-    .unwrap_or_default());
-
-    let apl_h = h(&bincode::serialize(
-        &active_production_list
-            .iter()
-            .map(|pk| pk.as_bytes().to_vec())
-            .collect::<Vec<_>>(),
-    )
-    .unwrap_or_default());
-
-    // epoch_attested_set[0..3]: sorted per epoch
-    let attested_h = {
-        let per_epoch: Vec<Vec<u8>> = epoch_attested_set
-            .iter()
-            .map(|s| {
-                let mut v: Vec<Vec<u8>> = s.iter().map(|pk| pk.as_bytes().to_vec()).collect();
-                v.sort();
-                bincode::serialize(&v).unwrap_or_default()
-            })
-            .collect();
-        h(&bincode::serialize(&per_epoch).unwrap_or_default())
-    };
-
-    // epoch_attestation_accum[0..3]: HashMap<PubKey, HashSet<minute>>,
-    // sort per-epoch by pubkey, inner minute-set also sorted.
-    let accum_h = {
-        let per_epoch: Vec<Vec<u8>> = epoch_attestation_accum
-            .iter()
-            .map(|m| {
-                let mut v: Vec<(Vec<u8>, Vec<u32>)> = m
-                    .iter()
-                    .map(|(pk, mins)| {
-                        let mut sorted_mins: Vec<u32> = mins.iter().copied().collect();
-                        sorted_mins.sort_unstable();
-                        (pk.as_bytes().to_vec(), sorted_mins)
-                    })
-                    .collect();
-                v.sort_by(|a, b| a.0.cmp(&b.0));
-                bincode::serialize(&v).unwrap_or_default()
-            })
-            .collect();
-        h(&bincode::serialize(&per_epoch).unwrap_or_default())
-    };
-
-    // epoch_blocks_produced_accum: sorted by key
-    let blocks_h = {
-        let mut v: Vec<(Vec<u8>, u32)> = epoch_blocks_produced_accum
-            .iter()
-            .map(|(pk, n)| (pk.as_bytes().to_vec(), *n))
-            .collect();
-        v.sort_by(|a, b| a.0.cmp(&b.0));
-        h(&bincode::serialize(&v).unwrap_or_default())
-    };
-
-    // Combine all 6 component hashes in a fixed order.
-    let mut combined = Vec::with_capacity(6 * 32);
-    for hash in [bonds_h, epl_h, apl_h, attested_h, accum_h, blocks_h] {
-        combined.extend_from_slice(hash.as_bytes());
-    }
-    h(&combined)
 }
 
 /// A serialized state snapshot ready for transfer.

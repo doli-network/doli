@@ -198,7 +198,7 @@ impl Node {
                 &new_state.blocks_produced,
             );
             batch.put_epoch_bond_snapshot(&new_state.bond_snapshot, new_state.epoch);
-            batch.put_epoch_state(&new_state.serialize_canonical());
+            batch.put_epoch_state(&new_state.serialize());
 
             // Apply the new epoch state
             self.epoch_state = new_state;

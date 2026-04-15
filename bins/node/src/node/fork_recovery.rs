@@ -461,85 +461,6 @@ impl Node {
         Ok(())
     }
 
-    /// Nuclear reset: wipe ALL state INCLUDING block data.
-    ///
-    /// This is a complete state reset + full block store clear.
-    /// Reserved for manual CLI `recover --yes` — NEVER called automatically.
-    #[allow(dead_code)]
-    pub async fn force_resync_from_genesis(&mut self) -> Result<()> {
-        warn!("Force resync initiated - performing COMPLETE state reset to genesis (including block data)");
-
-        // Use canonical chainspec genesis hash, not state_db (may be corrupt).
-        let genesis_hash = self.canonical_genesis_hash();
-
-        // Reset sync manager (blocks production via ProductionGate)
-        {
-            let mut sync = self.sync_manager.write().await;
-            sync.reset_local_state(genesis_hash);
-        }
-
-        // Reset chain state to genesis
-        {
-            let mut state = self.chain_state.write().await;
-            state.best_height = 0;
-            state.best_hash = genesis_hash;
-            state.best_slot = 0;
-        }
-
-        // Clear UTXO set
-        {
-            let mut utxo = self.utxo_set.write().await;
-            utxo.clear();
-        }
-
-        // Clear producer set
-        {
-            let mut producers = self.producer_set.write().await;
-            producers.clear();
-        }
-
-        // Atomic clear of StateDb
-        {
-            let genesis_cs = ChainState::new(genesis_hash);
-            self.state_db.clear_and_write_genesis(&genesis_cs);
-        }
-
-        // Clear caches
-        {
-            let mut known = self.known_producers.write().await;
-            known.clear();
-        }
-        {
-            let mut cache = self.fork_block_cache.write().await;
-            cache.clear();
-        }
-        {
-            let mut detector = self.equivocation_detector.write().await;
-            detector.clear();
-        }
-        {
-            let mut gset = self.producer_gset.write().await;
-            gset.clear();
-        }
-
-        // Reset production timing state
-        self.last_produced_slot = None;
-        self.first_peer_connected = None;
-        self.last_producer_list_change = None;
-
-        // Clear block store entirely (headers, bodies, indexes)
-        if let Err(e) = self.block_store.clear() {
-            error!("Failed to clear block store during resync: {}", e);
-        }
-
-        info!(
-            "Complete state reset to genesis (height 0, block store wiped). \
-             Production blocked until sync completes + grace period."
-        );
-
-        Ok(())
-    }
-
     /// Apply a verified snap sync snapshot, replacing local state.
     ///
     /// Called when the sync manager's snap sync quorum voting + download completes.
@@ -675,7 +596,7 @@ impl Node {
         // This is the canonical state from the sender, computed by derive_at_boundary().
         // No reconstruction, no filtering, no fallback — the sender's state IS the state.
         if let Some(ref epoch_state_bytes) = snapshot.epoch_state_bytes {
-            match doli_core::EpochState::deserialize_canonical(epoch_state_bytes) {
+            match doli_core::EpochState::deserialize(epoch_state_bytes) {
                 Ok(epoch_state) => {
                     info!(
                         "[SNAP_SYNC] Complete EpochState from peer: epoch={} producers={} active={}",
@@ -697,7 +618,7 @@ impl Node {
                         &self.epoch_state.bond_snapshot,
                         self.epoch_state.epoch,
                     );
-                    batch.put_epoch_state(&self.epoch_state.serialize_canonical());
+                    batch.put_epoch_state(&self.epoch_state.serialize());
                     let _ = batch.commit();
                 }
                 Err(e) => {
@@ -891,7 +812,7 @@ impl Node {
                 let mut batch = self.state_db.begin_batch();
                 batch.put_epoch_producer_list(&self.epoch_state.producer_list);
                 batch.put_active_production_list(&self.epoch_state.active_list);
-                batch.put_epoch_state(&self.epoch_state.serialize_canonical());
+                batch.put_epoch_state(&self.epoch_state.serialize());
                 let _ = batch.commit();
             }
         } // end legacy reconstruction guard

@@ -223,7 +223,7 @@ pub use finality::{
 };
 
 // Epoch scheduler state
-pub use epoch_state::{BlockAccumulationInput, EpochDerivationInput, EpochState};
+pub use epoch_state::{epoch_state_hash, BlockAccumulationInput, EpochDerivationInput, EpochState};
 
 // Block-height based reward epoch utilities
 pub use consensus::reward_epoch;

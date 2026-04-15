@@ -137,17 +137,6 @@ impl Node {
         Ok(())
     }
 
-    /// Return the canonical genesis hash from the embedded chainspec.
-    /// Always correct regardless of state_db corruption.
-    pub fn canonical_genesis_hash(&self) -> Hash {
-        let spec = match self.config.network {
-            Network::Mainnet => doli_core::chainspec::ChainSpec::mainnet(),
-            Network::Testnet => doli_core::chainspec::ChainSpec::testnet(),
-            Network::Devnet => doli_core::chainspec::ChainSpec::devnet(),
-        };
-        spec.genesis_hash()
-    }
-
     /// Start the network service
     pub async fn start_network(&mut self) -> Result<()> {
         let listen_addr: SocketAddr = self.config.listen_addr.parse()?;

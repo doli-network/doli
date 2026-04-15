@@ -256,7 +256,7 @@ impl Node {
             spent_utxos: undo_spent_utxos,
             created_utxos: undo_created_utxos,
             producer_snapshot: undo_producer_snapshot,
-            epoch_state_snapshot: Some(self.epoch_state.serialize_canonical()),
+            epoch_state_snapshot: Some(self.epoch_state.serialize()),
         };
         batch.put_undo(height, &undo);
 

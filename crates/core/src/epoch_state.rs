@@ -190,7 +190,10 @@ impl EpochState {
 
             #[allow(clippy::absurd_extreme_comparisons)]
             if input.height >= TIER_PROMOTION_ACTIVATION_HEIGHT && epoch > 1 {
-                // Promotion: filter out underperformers
+                // Promotion: filter out underperformers from the just-completed epoch.
+                // prev.attestation_accum[0] = just-completed epoch (pre-rotation).
+                // prev.blocks_produced = just-completed epoch's production count.
+                // NOTE: rotation happens AFTER this (lines below create new state with [0]=empty).
                 let expected_per_producer = input.blocks_per_epoch / new_list.len().max(1) as u64;
                 let min_produced = (expected_per_producer * 80 / 100).max(1);
                 let attestation_minutes = &prev.attestation_accum[0];
@@ -248,13 +251,18 @@ impl EpochState {
         }
     }
 
-    /// Serialize to canonical bytes for persistence/transfer.
-    pub fn serialize_canonical(&self) -> Vec<u8> {
-        bincode::serialize(self).unwrap_or_default()
+    /// Serialize to deterministic bytes for persistence/transfer.
+    ///
+    /// NOTE: bincode serializes HashMap/HashSet in iteration order, which is
+    /// non-deterministic. This is acceptable for persistence (deserialize
+    /// reconstructs the same logical state) but NOT suitable for cross-node
+    /// byte comparison. Use `hash()` for deterministic fingerprinting.
+    pub fn serialize(&self) -> Vec<u8> {
+        bincode::serialize(self).expect("EpochState serialization is infallible")
     }
 
-    /// Deserialize from canonical bytes.
-    pub fn deserialize_canonical(bytes: &[u8]) -> Result<Self, bincode::Error> {
+    /// Deserialize from bytes produced by `serialize()`.
+    pub fn deserialize(bytes: &[u8]) -> Result<Self, bincode::Error> {
         bincode::deserialize(bytes)
     }
 
@@ -293,7 +301,7 @@ pub fn epoch_state_hash(
             .map(|(k, v)| (k.as_bytes().to_vec(), *v))
             .collect();
         v.sort_by(|a, b| a.0.cmp(&b.0));
-        let mut bytes = bincode::serialize(&v).unwrap_or_default();
+        let mut bytes = bincode::serialize(&v).expect("bincode serialization is infallible");
         bytes.extend_from_slice(&epoch.to_le_bytes());
         h(&bytes)
     };
@@ -304,7 +312,7 @@ pub fn epoch_state_hash(
             .map(|pk| pk.as_bytes().to_vec())
             .collect::<Vec<_>>(),
     )
-    .unwrap_or_default());
+    .expect("bincode serialization is infallible"));
 
     let apl_h = h(&bincode::serialize(
         &active_list
@@ -312,7 +320,7 @@ pub fn epoch_state_hash(
             .map(|pk| pk.as_bytes().to_vec())
             .collect::<Vec<_>>(),
     )
-    .unwrap_or_default());
+    .expect("bincode serialization is infallible"));
 
     let attested_h = {
         let per_epoch: Vec<Vec<u8>> = attested_sets
@@ -320,10 +328,10 @@ pub fn epoch_state_hash(
             .map(|s| {
                 let mut v: Vec<Vec<u8>> = s.iter().map(|pk| pk.as_bytes().to_vec()).collect();
                 v.sort();
-                bincode::serialize(&v).unwrap_or_default()
+                bincode::serialize(&v).expect("bincode serialization is infallible")
             })
             .collect();
-        h(&bincode::serialize(&per_epoch).unwrap_or_default())
+        h(&bincode::serialize(&per_epoch).expect("bincode serialization is infallible"))
     };
 
     let accum_h = {
@@ -339,10 +347,10 @@ pub fn epoch_state_hash(
                     })
                     .collect();
                 v.sort_by(|a, b| a.0.cmp(&b.0));
-                bincode::serialize(&v).unwrap_or_default()
+                bincode::serialize(&v).expect("bincode serialization is infallible")
             })
             .collect();
-        h(&bincode::serialize(&per_epoch).unwrap_or_default())
+        h(&bincode::serialize(&per_epoch).expect("bincode serialization is infallible"))
     };
 
     let blocks_h = {
@@ -351,7 +359,7 @@ pub fn epoch_state_hash(
             .map(|(pk, n)| (pk.as_bytes().to_vec(), *n))
             .collect();
         v.sort_by(|a, b| a.0.cmp(&b.0));
-        h(&bincode::serialize(&v).unwrap_or_default())
+        h(&bincode::serialize(&v).expect("bincode serialization is infallible"))
     };
 
     let mut combined = Vec::with_capacity(6 * 32);
@@ -670,7 +678,7 @@ mod tests {
         assert!(!new_state.attested_sets[2].contains(&pk2));
     }
 
-    // OUTPUT CONTRACT: fn EpochState::serialize_canonical() + deserialize_canonical()
+    // OUTPUT CONTRACT: fn EpochState::serialize() + deserialize()
     //   O3: return — EpochState, epoch and producer_list match original
     // PATHS: P1: empty state (genesis)
     // MATRIX: 1 output × 1 path = 1 cell
@@ -678,13 +686,13 @@ mod tests {
     #[test]
     fn test_serialize_deserialize_round_trip_empty() {
         let state = EpochState::genesis();
-        let bytes = state.serialize_canonical();
-        let restored = EpochState::deserialize_canonical(&bytes).unwrap();
+        let bytes = state.serialize();
+        let restored = EpochState::deserialize(&bytes).unwrap();
         assert_eq!(restored.epoch, 0);
         assert!(restored.producer_list.is_empty());
     }
 
-    // OUTPUT CONTRACT: fn EpochState::serialize_canonical() + deserialize_canonical()
+    // OUTPUT CONTRACT: fn EpochState::serialize() + deserialize()
     //   O3: return — EpochState, all 7 fields match original
     // PATHS: P2: populated state (all fields set)
     // MATRIX: 1 output × 1 path = 1 cell (7 sub-assertions)
@@ -703,8 +711,8 @@ mod tests {
         state.attestation_accum[0].entry(pk).or_default().insert(42);
         state.blocks_produced.insert(pk, 7);
 
-        let bytes = state.serialize_canonical();
-        let restored = EpochState::deserialize_canonical(&bytes).unwrap();
+        let bytes = state.serialize();
+        let restored = EpochState::deserialize(&bytes).unwrap();
 
         assert_eq!(restored.epoch, 5);
         assert_eq!(restored.bond_snapshot[&pkh], 10);
