@@ -567,6 +567,26 @@ pub(crate) struct ForkState {
     /// height-based retry and falls through to normal fork detection.
     /// Prevents a 60-second retry loop when the peer has no headers to serve.
     pub height_fallback_attempted: bool,
+    /// Fix #2b-bis (2026-04-15, synmgrefactor branch): local_height AT THE
+    /// MOMENT of the most recent rollback (pre-rollback height, BEFORE rollback
+    /// reverted).
+    ///
+    /// Used by Fix #2b (note_orphan_gossip_block) to distinguish "on minority
+    /// fork" from "behind canonical":
+    ///
+    ///   - if `local_height > last_rollback_local_height`: since the last
+    ///     rollback we've applied at least one block → rollback worked, we
+    ///     reconnected to canonical. Further orphan accumulation means we're
+    ///     LAGGING (peers are ahead, gossip of their new blocks is orphan to
+    ///     us). signal_stuck_fork here would trigger the 14:52 folsi cascade:
+    ///     25 consecutive rollbacks while peers kept advancing.
+    ///
+    ///   - if None or local_height <= last_rollback_local_height: we haven't
+    ///     applied since the last rollback (or have never rolled back). The
+    ///     signal is legitimate — rollback.
+    ///
+    /// None = no rollback has occurred this session.
+    pub last_rollback_local_height: Option<u64>,
 }
 
 impl ForkState {
@@ -585,6 +605,7 @@ impl ForkState {
             stuck_fork_signal: false,
             use_height_based_headers: false,
             height_fallback_attempted: false,
+            last_rollback_local_height: None,
         }
     }
 

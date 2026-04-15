@@ -440,6 +440,38 @@ impl SyncManager {
                 let recently_synced =
                     self.network.last_block_applied.elapsed() < Duration::from_secs(60);
                 if recently_synced && gap < 50 {
+                    // Fix #2b-bis (2026-04-15, synmgrefactor): discriminate
+                    // "on minority fork" vs "behind canonical".
+                    //
+                    // If we've applied at least one block PAST the height we
+                    // rolled back to, the prior rollback succeeded — we
+                    // reconnected to canonical. Further orphan accumulation
+                    // means peers have advanced beyond us (we're BEHIND), and
+                    // rolling back again would make us MORE behind, not less.
+                    // This was the folsi cascade on 2026-04-15 14:52-14:56:
+                    // 25 consecutive rollbacks while peers kept advancing,
+                    // gap growing from 2 to 50+.
+                    //
+                    // When proven post-rollback, fall through to the normal
+                    // start_sync() path below → header-first sync catches up.
+                    if let Some(rb_h) = self.fork.last_rollback_local_height {
+                        if self.local_height > rb_h {
+                            warn!(
+                                "[SYNC] {} orphan gossip blocks (local_h={}, tip_h={}, gap={}) — \
+                                 applied since last rollback (rb_h={}) → BEHIND not forked. \
+                                 Suppressing stuck_fork signal, running normal sync.",
+                                self.consecutive_orphan_gossip_blocks,
+                                self.local_height,
+                                self.network.network_tip_height,
+                                gap,
+                                rb_h
+                            );
+                            self.consecutive_orphan_gossip_blocks = 0;
+                            self.start_sync();
+                            return;
+                        }
+                    }
+
                     warn!(
                         "[SYNC] {} orphan gossip blocks (local_h={}, tip_h={}, gap={}) — \
                          recently synced ({}s since last apply), suppressing sync escalation. \

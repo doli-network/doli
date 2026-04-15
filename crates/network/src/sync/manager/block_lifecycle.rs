@@ -497,6 +497,24 @@ impl SyncManager {
         self.fork.peak_height
     }
 
+    /// Fix #2b-bis (2026-04-15, synmgrefactor): record that a rollback just
+    /// completed, at local_height `post_rollback_height`.
+    ///
+    /// Called by Node::rollback_one_block AFTER the rollback is applied and
+    /// local_tip is updated. Captures the POST-rollback height (i.e. the
+    /// height to which we rolled back). Fix #2b in note_orphan_gossip_block
+    /// uses this to distinguish:
+    ///
+    ///   - `local_height > last_rollback_local_height`: we've applied at least
+    ///     one block PAST the rollback tip → rollback reconnected us to
+    ///     canonical, further orphans mean we're BEHIND → skip signal.
+    ///
+    ///   - `local_height <= last_rollback_local_height`: rollback hasn't
+    ///     proven successful yet → signal legitimately triggers next rollback.
+    pub fn note_rollback_completed(&mut self, post_rollback_height: u64) {
+        self.fork.last_rollback_local_height = Some(post_rollback_height);
+    }
+
     pub fn reset_sync_for_rollback(&mut self) {
         // Gate: monotonic progress floor (REQ-SYNC-102)
         if self.local_height > 0 && self.local_height <= self.confirmed_height_floor {

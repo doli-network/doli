@@ -211,6 +211,11 @@ impl Node {
             let mut sync = self.sync_manager.write().await;
             sync.update_local_tip(target_height, parent_hash, parent_slot);
             sync.reset_sync_for_rollback();
+            // Fix #2b-bis (2026-04-15, synmgrefactor): record post-rollback
+            // height so that note_orphan_gossip_block can detect the
+            // "applied since rollback → behind, not forked" case and skip
+            // further rollback signals.
+            sync.note_rollback_completed(target_height);
         }
 
         // Atomically persist the rolled-back state via StateDb.
