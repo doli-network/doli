@@ -876,7 +876,6 @@ impl Node {
             active_production_list,
             epoch_bond_snapshot: initial_bond_snapshot,
             epoch_bond_snapshot_epoch: initial_bond_epoch,
-            cached_scheduler: None,
             is_active_producer: false, // Computed on first block application
             last_active_status_epoch: None,
             vote_tx: None,
@@ -1060,7 +1059,6 @@ impl Node {
             active_production_list: Vec::new(), // Built at first epoch boundary
             epoch_bond_snapshot,
             epoch_bond_snapshot_epoch: 0,
-            cached_scheduler: None,
             is_active_producer: true, // Active in tests
             last_active_status_epoch: None,
             // --- Non-fork-recovery fields: safe defaults ---

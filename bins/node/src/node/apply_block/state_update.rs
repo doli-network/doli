@@ -171,7 +171,6 @@ impl Node {
                 if producers.has_pending_updates() {
                     let count = producers.pending_update_count();
                     producers.apply_pending_updates();
-                    self.cached_scheduler = None; // Force scheduler rebuild
                     needs_full_producer_write = true; // Many producers may have changed
                     info!(
                         "Applied {} deferred producer updates at height {} (epoch_0={}, boundary={})",

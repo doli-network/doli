@@ -42,7 +42,6 @@ use doli_core::transaction::{RegistrationData, TxType};
 use doli_core::types::UNITS_PER_COIN;
 use doli_core::validation;
 use doli_core::validation::ValidationMode;
-use doli_core::DeterministicScheduler;
 use doli_core::{
     attestation_minute, decode_attestation_bitfield, encode_attestation_bitfield, AdaptiveGossip,
     Attestation, Block, BlockHeader, MinuteAttestationTracker, Network, ProducerAnnouncement,
@@ -165,9 +164,6 @@ pub struct Node {
     pub epoch_bond_snapshot: HashMap<Hash, u64>,
     /// The epoch number for which the bond snapshot was taken.
     pub epoch_bond_snapshot_epoch: u64,
-    /// Cached DeterministicScheduler (epoch, producer_count, total_bonds, scheduler)
-    /// Rebuilt when epoch changes OR active producer set changes (new registrations, exits, slashing).
-    pub cached_scheduler: Option<(u64, usize, u64, DeterministicScheduler)>,
     /// Whether this node is in the active production list. Recomputed at each epoch boundary.
     pub is_active_producer: bool,
     /// Last epoch for which we computed our active status (to detect epoch boundaries).

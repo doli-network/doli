@@ -745,7 +745,6 @@ impl TestNetwork {
                         );
                         node.excluded_producers.clear();
                         node.cumulative_rollback_depth = 0;
-                        node.cached_scheduler = None;
                     }
 
                     // Apply leader's chain from ancestor+1 to current leader height
@@ -1287,7 +1286,6 @@ impl TestNetwork {
                 // Clear stale fork recovery state
                 node.excluded_producers.clear();
                 node.cumulative_rollback_depth = 0;
-                node.cached_scheduler = None;
 
                 total_rollbacks += (current_h - ancestor_h) as usize;
             }

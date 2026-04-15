@@ -182,9 +182,6 @@ impl Node {
             }
         }
 
-        // Force scheduler rebuild after producer set reconstruction
-        self.cached_scheduler = None;
-
         // Rebuild producer liveness map from canonical block_store.
         // Critical: rollback does NOT undo liveness entries from fork blocks,
         // causing nodes to have divergent live_producers lists and conflicting

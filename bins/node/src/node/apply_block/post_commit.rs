@@ -117,7 +117,6 @@ impl Node {
                 );
                 self.epoch_bond_snapshot = snapshot;
                 self.epoch_bond_snapshot_epoch = epoch;
-                self.cached_scheduler = None;
                 {
                     let mut keys: Vec<_> = self.epoch_bond_snapshot.keys().collect();
                     keys.sort();

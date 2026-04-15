@@ -776,9 +776,6 @@ impl Node {
             // Rebuild active_production_list (tier system will filter at next epoch boundary)
             self.active_production_list = self.epoch_producer_list.clone();
 
-            // Clear cached scheduler so it rebuilds with the correct snapshot
-            self.cached_scheduler = None;
-
             // Clear stale excluded_producers — they belong to the pre-snap chain
             // and poison the total cap check (excluded.len() + missed.len() > active/3)
             self.excluded_producers.clear();

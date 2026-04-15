@@ -515,7 +515,6 @@ impl Node {
             );
             self.epoch_bond_snapshot = snapshot;
             self.epoch_bond_snapshot_epoch = epoch;
-            self.cached_scheduler = None;
         }
 
         // 2. Rebuild epoch_producer_list with attestation filtering
