@@ -190,33 +190,6 @@ pub(crate) enum Commands {
     /// Two nodes with the same commitment have identical chains.
     ChainVerify,
 
-    /// Repair chain by backfilling missing blocks from a known-good peer.
-    ///
-    /// Verifies local chain integrity, requests gap ranges from the peer via
-    /// backfillFromPeer RPC, and polls backfillStatus until complete.
-    ///
-    /// This is the operator tool for healing santiago / ivan / seed3 style
-    /// gaps before the M-Choice1 HardForkSchedule activation enforces
-    /// block_store completeness at block-accept time.
-    ChainRepair {
-        /// RPC URL of a peer with a complete block history
-        /// (e.g. http://127.0.0.1:8500). NEVER a libp2p peer ID.
-        #[arg(long)]
-        peer: String,
-
-        /// Skip the confirmation prompt
-        #[arg(long)]
-        yes: bool,
-
-        /// Polling interval for backfillStatus in seconds
-        #[arg(long, default_value = "5")]
-        poll_interval_secs: u64,
-
-        /// Maximum wait time before giving up in seconds
-        #[arg(long, default_value = "3600")]
-        max_wait_secs: u64,
-    },
-
     /// Update governance commands
     Update {
         #[command(subcommand)]
