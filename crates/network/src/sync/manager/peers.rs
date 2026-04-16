@@ -486,15 +486,38 @@ impl SyncManager {
                         }
                     }
 
+                    // Guard: if last block was applied <30s ago, we're on a
+                    // live chain tip — orphans are from future blocks we haven't
+                    // received yet, not evidence of a fork. Rolling back a fresh
+                    // canonical block destroys good state and creates a real fork
+                    // (2026-04-16 N4 h=2566 incident: rollback of slot 2572 →
+                    // applied worse slot 2576 → stuck permanently).
+                    let secs_since_apply = self.network.last_block_applied.elapsed().as_secs();
+                    if secs_since_apply < 30 {
+                        warn!(
+                            "[SYNC] {} orphan gossip blocks (local_h={}, tip_h={}, gap={}) — \
+                             last apply {}s ago (< 30s), suppressing rollback. \
+                             Running normal sync instead.",
+                            self.consecutive_orphan_gossip_blocks,
+                            self.local_height,
+                            self.network.network_tip_height,
+                            gap,
+                            secs_since_apply
+                        );
+                        self.consecutive_orphan_gossip_blocks = 0;
+                        self.start_sync();
+                        return;
+                    }
+
                     warn!(
                         "[SYNC] {} orphan gossip blocks (local_h={}, tip_h={}, gap={}) — \
-                         recently synced ({}s since last apply), suppressing sync escalation. \
+                         stale tip ({}s since last apply). \
                          Signaling stuck fork for shallow rollback (anti-cascade-orphan).",
                         self.consecutive_orphan_gossip_blocks,
                         self.local_height,
                         self.network.network_tip_height,
                         gap,
-                        self.network.last_block_applied.elapsed().as_secs()
+                        secs_since_apply
                     );
                     self.consecutive_orphan_gossip_blocks = 0;
                     self.signal_stuck_fork();
