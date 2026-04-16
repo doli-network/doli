@@ -198,13 +198,10 @@ impl HardForkSchedule {
         match network {
             doli_core::Network::Mainnet => {
                 // EPOCH_SNAPSHOT_HF — INC-I-034 / M-Choice1.
-                //
-                // activation_height = 10_000_080 is a placeholder
-                // (= 27778 * 360, epoch-aligned with BLOCKS_PER_EPOCH=360).
-                // Must be updated at deploy-time; see for_network doc above.
+                // Activated at h=2750 (epoch 7 boundary + 310 blocks).
                 schedule.add(HardForkInfo {
-                    activation_height: 10_000_080,
-                    min_version: "7.0.0".to_string(),
+                    activation_height: 2_750,
+                    min_version: "6.14.11".to_string(),
                     consensus_changes: vec![
                         "EpochState state root inclusion (M-Choice1)".to_string()
                     ],
