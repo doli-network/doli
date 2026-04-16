@@ -3844,23 +3844,17 @@ mod floor_extension_tests {
 
         manager.reset_sync_for_rollback();
 
-        // Should remain Normal (the early return skips the phase change)
+        // Fix: floor is now LOWERED instead of refusing. The rollback proceeds
+        // and state resets to Idle. Floor should be lowered to local_height.
         assert!(
-            matches!(manager.recovery_phase, RecoveryPhase::Normal),
-            "T-M2-010: recovery_phase must remain Normal when reset_sync_for_rollback is refused. \
-             Got: {:?}",
-            manager.recovery_phase
+            manager.confirmed_height_floor <= manager.local_height,
+            "T-M2-010: floor must be lowered to allow rollback. floor={}, local_h={}",
+            manager.confirmed_height_floor,
+            manager.local_height
         );
-        // State should NOT have been reset to Idle
         assert!(
-            matches!(
-                *manager.state(),
-                SyncState::Syncing {
-                    phase: SyncPhase::ProcessingBlocks,
-                    ..
-                }
-            ),
-            "T-M2-010: state must remain Syncing:Processing when floor blocks rollback. Got: {:?}",
+            matches!(*manager.state(), SyncState::Idle),
+            "T-M2-010: state must be Idle after floor-lowered rollback. Got: {:?}",
             manager.state()
         );
     }
@@ -3887,22 +3881,16 @@ mod floor_extension_tests {
 
         manager.reset_sync_for_rollback();
 
+        // Fix: floor is now LOWERED instead of refusing, even when height < floor.
         assert!(
-            matches!(manager.recovery_phase, RecoveryPhase::Normal),
-            "T-M2-010b: recovery_phase must remain Normal when height ({}) < floor ({}). Got: {:?}",
+            manager.confirmed_height_floor <= manager.local_height,
+            "T-M2-010b: floor must be lowered to local_height ({}). Got floor={}",
             manager.local_height,
-            manager.confirmed_height_floor,
-            manager.recovery_phase
+            manager.confirmed_height_floor
         );
         assert!(
-            matches!(
-                *manager.state(),
-                SyncState::Syncing {
-                    phase: SyncPhase::ProcessingBlocks,
-                    ..
-                }
-            ),
-            "T-M2-010b: state must remain Syncing:Processing. Got: {:?}",
+            matches!(*manager.state(), SyncState::Idle),
+            "T-M2-010b: state must be Idle after floor-lowered rollback. Got: {:?}",
             manager.state()
         );
     }
