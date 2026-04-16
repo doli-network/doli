@@ -86,21 +86,34 @@ impl Node {
                 if let Ok(Some(canonical)) = self.block_store.get_block_by_height(fork_block_height)
                 {
                     if canonical.hash() != block_hash {
-                        info!(
-                            "[FORK_GUARD] Dropping fork block {} at h={} — canonical {} exists",
-                            &block_hash.to_hex()[..16],
-                            fork_block_height,
-                            &canonical.hash().to_hex()[..16]
-                        );
-                        // Signal sync manager: a fork block at an occupied height is
-                        // evidence the sender's view diverges from ours. Without this
-                        // increment, recovery never escalates and the divergence stays
-                        // invisible to the fork-detection counter (INC-I-032 finding).
-                        self.sync_manager
-                            .write()
-                            .await
-                            .note_orphan_gossip_block(fork_block_height, block.header.slot);
-                        return Ok(());
+                        // Fork choice: lower slot wins (deterministic tiebreak).
+                        // If the new block was produced in a strictly lower slot,
+                        // it has priority — let it through to the reorg path.
+                        if block.header.slot < canonical.header.slot {
+                            info!(
+                                "[FORK_CHOICE] Allowing reorg at h={}: new slot {} < canonical slot {}",
+                                fork_block_height,
+                                block.header.slot,
+                                canonical.header.slot
+                            );
+                            // Fall through — reorg path will handle rollback + apply
+                        } else {
+                            info!(
+                                "[FORK_GUARD] Dropping fork block {} at h={} slot {} — canonical slot {} wins",
+                                &block_hash.to_hex()[..16],
+                                fork_block_height,
+                                block.header.slot,
+                                canonical.header.slot
+                            );
+                            self.sync_manager
+                                .write()
+                                .await
+                                .note_orphan_gossip_block(
+                                    fork_block_height,
+                                    block.header.slot,
+                                );
+                            return Ok(());
+                        }
                     }
                 }
             } else {
