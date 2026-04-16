@@ -395,13 +395,70 @@ impl Node {
                 current_height, target_height
             );
 
-            // Find the common ancestor block
+            // REQ-REDESIGN-011 (FORK_GUARD backfill invariant): chain_state
+            // must NEVER advance past block_store completeness. Before we
+            // mutate chain_state, verify the entire 1..=target_height range
+            // is dense in block_store. Any gap means a prior partial reorg,
+            // archiver prune, or snap-sync race left the store inconsistent
+            // — completing the reorg would corrupt chain_state by writing a
+            // best_hash whose block is missing from local storage. The
+            // 2026-04-16 santiago/ivan/seed3 cascade (INC-I-034) traces back
+            // to exactly this silent advance. If the range is incomplete,
+            // refuse the switch and surface the error so sync can backfill.
+            //
+            // target_height == 0 is the legitimate full-rollback-to-genesis
+            // case; ensure_blocks_present treats low=0 as a no-op so that
+            // path is unaffected.
+            self.block_store
+                .ensure_blocks_present(1, target_height)
+                .map_err(|e| {
+                    error!(
+                        "[FORK_GUARD_BACKFILL_REQUIRED] Reorg refused: \
+                         block_store missing canonical blocks in 1..={} — {}. \
+                         chain_state.best_hash NOT advanced. Backfill required \
+                         before this reorg can proceed.",
+                        target_height, e
+                    );
+                    anyhow::anyhow!(
+                        "[FORK_GUARD_BACKFILL_REQUIRED] block_store incomplete \
+                         in range 1..={}: {}",
+                        target_height,
+                        e
+                    )
+                })?;
+
+            // Find the common ancestor block. With ensure_blocks_present above
+            // we are guaranteed get_block_by_height(target_height) returns
+            // Some(_) when target_height > 0; the only acceptable None branch
+            // is the genesis case (target_height == 0).
             let common_ancestor_block = if target_height == 0 {
                 None
             } else {
-                self.block_store.get_block_by_height(target_height)?
+                match self.block_store.get_block_by_height(target_height)? {
+                    Some(b) => Some(b),
+                    None => {
+                        // Defense-in-depth: ensure_blocks_present already
+                        // rejected this case. If we somehow reach here, refuse
+                        // rather than silently substituting genesis_hash (the
+                        // pre-fix bug at this site).
+                        error!(
+                            "[FORK_GUARD_BACKFILL_REQUIRED] Reorg refused: \
+                             common ancestor at h={} missing from block_store \
+                             after completeness check. chain_state.best_hash \
+                             NOT advanced.",
+                            target_height
+                        );
+                        anyhow::bail!(
+                            "[FORK_GUARD_BACKFILL_REQUIRED] common ancestor at \
+                             h={} missing from block_store",
+                            target_height
+                        );
+                    }
+                }
             };
 
+            // Genesis (target_height == 0) anchors at genesis_hash; otherwise
+            // the common ancestor's own hash. No silent substitution.
             let genesis_hash = self.chain_state.read().await.genesis_hash;
             let common_ancestor_hash = common_ancestor_block
                 .as_ref()

@@ -721,3 +721,67 @@ fn get_snap_horizon_returns_none_without_snap_sync() {
     let (store, _dir) = create_test_store();
     assert_eq!(store.get_snap_horizon().unwrap(), None);
 }
+
+// ============================================================
+// REQ-REDESIGN-011 — ensure_blocks_present (FORK_GUARD backfill)
+// ============================================================
+
+#[test]
+fn ensure_blocks_present_empty_range_is_ok() {
+    let (store, _dir) = create_test_store();
+    // low > high: vacuous range, must succeed.
+    assert!(store.ensure_blocks_present(5, 4).is_ok());
+}
+
+#[test]
+fn ensure_blocks_present_low_zero_skips_genesis() {
+    let (store, _dir) = create_test_store();
+    let kp = KeyPair::generate();
+    let producer = *kp.public_key();
+    // Heights 1..=2 present.
+    let b1 = create_test_block(1, &producer);
+    let b2 = create_test_block(2, &producer);
+    store.put_block_canonical(&b1, 1).unwrap();
+    store.put_block_canonical(&b2, 2).unwrap();
+    // low=0 must be tolerated — genesis (h=0) is not stored in height_index.
+    assert!(store.ensure_blocks_present(0, 2).is_ok());
+}
+
+#[test]
+fn ensure_blocks_present_dense_range_returns_ok() {
+    let (store, _dir) = create_test_store();
+    let kp = KeyPair::generate();
+    let producer = *kp.public_key();
+    for h in 1..=5 {
+        let b = create_test_block(h as u32, &producer);
+        store.put_block_canonical(&b, h).unwrap();
+    }
+    assert!(store.ensure_blocks_present(1, 5).is_ok());
+    assert!(store.ensure_blocks_present(2, 4).is_ok());
+}
+
+#[test]
+fn ensure_blocks_present_reports_first_missing_height() {
+    let (store, _dir) = create_test_store();
+    let kp = KeyPair::generate();
+    let producer = *kp.public_key();
+    for h in 1..=5 {
+        let b = create_test_block(h as u32, &producer);
+        store.put_block_canonical(&b, h).unwrap();
+    }
+    // Engineer a mid-chain gap by deleting heights 3..=5.
+    let deleted = store.delete_blocks_above(2).unwrap();
+    assert_eq!(deleted, 3);
+    let err = store.ensure_blocks_present(1, 5).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("FORK_GUARD_BACKFILL"),
+        "error must mention FORK_GUARD_BACKFILL, got: {}",
+        msg
+    );
+    assert!(
+        msg.contains("height 3"),
+        "error must name FIRST missing height (3), got: {}",
+        msg
+    );
+}
