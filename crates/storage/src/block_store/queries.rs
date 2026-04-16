@@ -176,6 +176,38 @@ impl BlockStore {
         self.get_block(&hash)
     }
 
+    /// Verify that block_store contains a canonical block at every height in
+    /// `low..=high` (inclusive).
+    ///
+    /// Returns `Ok(())` if the range is dense, or `Err(StorageError::NotFound)`
+    /// naming the FIRST missing height. Used by `execute_reorg` to enforce
+    /// REQ-REDESIGN-011 — chain_state.best_hash MUST NOT advance past
+    /// block_store completeness (FORK_GUARD backfill invariant).
+    ///
+    /// `low > high` is a no-op (returns `Ok(())`).
+    /// `low == 0` is allowed and skipped (genesis is implicit, not stored
+    /// in `height_index` for non-snap-sync nodes).
+    ///
+    /// O(high - low + 1) RocksDB point lookups against the height index
+    /// only — no header/body deserialization.
+    pub fn ensure_blocks_present(&self, low: u64, high: u64) -> Result<(), StorageError> {
+        if low > high {
+            return Ok(());
+        }
+        // Skip genesis (height 0) — it is the chain anchor, not a stored block.
+        let start = low.max(1);
+        for h in start..=high {
+            if self.get_hash_by_height(h)?.is_none() {
+                return Err(StorageError::NotFound(format!(
+                    "[FORK_GUARD_BACKFILL] block_store missing canonical block at height {} \
+                     (range checked: {}..={})",
+                    h, start, high
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// Check if block exists
     pub fn has_block(&self, hash: &Hash) -> Result<bool, StorageError> {
         let cf_headers = self.db.cf_handle(CF_HEADERS).unwrap();
