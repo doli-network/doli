@@ -37,7 +37,7 @@ The original milestone list was generated from the synthesis spec, which capture
 | M-RC12-full | Complete asymmetric blacklist (42fe7982 was partial) | `crates/network/src/sync/manager/sync_engine/response.rs:222-344` | -20 +35 | conf(0.7, partial fix exists) | COMPLETE (local, pending commit) — 4/4 m_rc12_full_asymmetric_blacklist_tests PASS (FAIL→PASS), post-snap test still PASS, 302/0/1 network lib suite clean. See `docs/bugfixes/inc-i-034-m-rc12-full-asymmetric-blacklist-fix.md` |
 | M-Choice1 | State-root inclusion of EpochState (HF gated) — Phase-1 primitive + HF schedule entry + protocol v4 bump (NO call-site wiring) | `crates/storage/src/snapshot.rs` (new `compute_state_root_with_epoch_state`), `crates/updater/src/hardfork.rs` (`EPOCH_SNAPSHOT_HF` entry, Mainnet+Testnet, placeholder h=10_000_080, min_version 7.0.0), `crates/network/src/protocols/status.rs` (`CURRENT_PROTOCOL_VERSION 3 -> 4`) | +~110 (source) / +345 (w/ tests already landed by test-writer) | conf(0.7, FAIL→PASS verified) | COMPLETE (local, pending commit) — 7/7 m_choice1 tests PASS (storage 3/3, updater 2/2, network 2/2), regression clean (storage 173/173, updater 36/36, network 304/304, doli-node lib 20/20), release build clean, clippy clean. See `docs/bugfixes/inc-i-034-m-choice1-state-root-hf.md` |
 | M-Choice2 | RUNTIME PERIODIC integrity check (background task) | `bins/node/src/node/periodic.rs` | +60 | conf(0.7) | COMPLETE (local, pending commit) — 10/10 unit tests pass, see `docs/bugfixes/inc-i-034-m-choice2-periodic-integrity-check.md` |
-| M-Choice3 | `doli-cli repair-chain` subcommand | `bins/cli/src/cmd_chain.rs` | +80 | conf(0.65) | COMPLETE (local, pending commit) — 15/15 unit tests pass, see `docs/bugfixes/inc-i-034-m-choice3-chain-repair.md` |
+| ~~M-Choice3~~ | ~~`doli chain-repair` subcommand~~ | — | — | — | **REVERTED 2026-04-16** — wrapped the existing `backfillFromPeer` RPC with no new operator capability (operators already drive backfill via curl or the doli-ops backfill skill). Fresh-session review caught the bloat; M-Choice1 activation is a far-future placeholder, so the "before HF activation" premise did not hold. Behavioral learning: *verify demand before supply*. Revert commit above the stack preserves audit trail; 8caea821 remains in history. |
 
 **Net remaining scope**: ~+205 LOC added, -54 LOC removed. Much smaller than the original 23-milestone plan because INC-I-035 work already landed.
 
@@ -66,7 +66,7 @@ Phase 1 ships in one release. All milestones are safe to deploy without HardFork
 | **M5** | **Delete `cached_scheduler` field + 8 sites** | `bins/node/src/node/mod.rs`, 8 caller sites | **PURE DELETION** | **−9** | **conf(0.85, measured)** | **PENDING — RECOMMENDED FIRST** |
 | M6 | Delete `excluded_producers` field + coupling sites + `rebuild_excluded_from_headers()` | `bins/node/src/node/mod.rs`, `bins/node/src/node/apply_block/post_commit.rs`, others | PURE DELETION | −120 | conf(0.8, measured) | PENDING |
 | M7 | Delete dead convenience methods | `bins/node/src/node/mod.rs` (height, best_hash, save_state, state_reset_recovery, is_active_producer, last_active_status_epoch) | PURE DELETION | −70 | conf(0.7, measured) | PENDING |
-| M8 | Ship `doli-cli repair-chain` command | `bins/cli/src/cmd_chain.rs` (new subcommand) | additive | +80 | conf(0.65, inferred) | PENDING |
+| ~~M8~~ | ~~Ship `doli-cli repair-chain` command~~ | — | — | — | — | **SUPERSEDED & REVERTED** — reintroduced as M-Choice3 then reverted 2026-04-16 (see REVERTED row above). Operators heal gaps via `backfillFromPeer` RPC directly. |
 | M9 | Add `HardForkSchedule::EPOCH_SNAPSHOT_HF` entry (activation height TBD by ops) | `crates/updater/src/hardfork.rs` | additive | +20 | conf(0.7, converged) | PENDING |
 
 **Phase 1 net**: ~+390 LOC, **-199 LOC**, **+191 LOC net**. Reversible. Deployable on testnet then mainnet without HF coordination.
@@ -122,7 +122,7 @@ Phase 3 ships ≥1 release after Phase 2 activation, after Phase 1 shadow-mode l
 ## Critical sequencing rules (DO NOT VIOLATE)
 
 1. **M9 before Phase 2**: HardForkSchedule entry must exist on at least 1 release before Phase 2 ships, so all nodes agree on activation height.
-2. **M8 before Phase 2 activation**: `doli-cli repair-chain` must be available so operators of santiago/ivan/seed3 can backfill block_store gaps before HALT_PRODUCTION fires at activation.
+2. ~~**M8 before Phase 2 activation**: `doli-cli repair-chain` must be available so operators of santiago/ivan/seed3 can backfill block_store gaps before HALT_PRODUCTION fires at activation.~~ **SUPERSEDED 2026-04-16**: operators heal gaps via the existing `backfillFromPeer` RPC (curl or the doli-ops backfill skill — see MEMORY.md rule #1). No dedicated subcommand required.
 3. **M2 + M3 + M4 before any Phase 2 milestone**: shadow mode requires the new types and CF to exist.
 4. **Phase 1 dual-read divergence = 0 for ≥3 epochs on testnet** before Phase 2 ships to mainnet (REQ-REDESIGN-001 byte-identical state-root test).
 5. **Phase 3 gated on**: Phase 2 sanity-check halt did not fire for ≥3 epochs after activation.
@@ -142,4 +142,4 @@ The 9 Phase 1 milestones can largely run independently, but the recommended orde
 6. **M2** — shadow-mode compute (depends on M1)
 7. **M4** — wire-format additions (depends on M3)
 8. **M9** — HardForkSchedule entry
-9. **M8** — `doli-cli repair-chain` (independent; can run anytime before Phase 2)
+9. ~~**M8** — `doli-cli repair-chain`~~ — **REMOVED 2026-04-16** (see REVERTED row above; operators use `backfillFromPeer` RPC directly).

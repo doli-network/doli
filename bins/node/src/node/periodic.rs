@@ -707,8 +707,9 @@ impl Node {
     ///
     /// Runs every `INTEGRITY_CHECK_INTERVAL_BLOCKS` blocks (default 1000).
     /// Scans `BlockStore::ensure_blocks_present(1, tip)`. On gap detection,
-    /// emits a CRITICAL log line with a clear operator-action message pointing
-    /// to `doli chain-repair`. Does NOT halt production (Phase 2 HF concern).
+    /// emits a CRITICAL log line with a clear operator-action message.
+    /// Operators heal gaps via the `backfillFromPeer` RPC (curl or the
+    /// doli-ops backfill skill). Does NOT halt production (Phase 2 HF concern).
     ///
     /// Runs the scan in a blocking task to avoid starving the async runtime;
     /// O(range) hot CF point lookups.
@@ -737,7 +738,8 @@ impl Node {
             Ok(Err(e)) => {
                 error!(
                     "[INTEGRITY_CHECK] CRITICAL: {}. This node's block_store has a gap. \
-                     Run `doli chain-repair --peer <RPC_URL>` against a known-good peer to heal. \
+                     Heal via the backfillFromPeer RPC against a known-good peer (curl or \
+                     the doli-ops backfill skill — see MEMORY.md rule #1 for RPC-URL format). \
                      Production will continue for now; at the M-Choice1 HardForkSchedule \
                      activation height, gapped nodes will enter HALT_PRODUCTION.",
                     e
@@ -754,7 +756,7 @@ impl Node {
         // Update the last-checked marker regardless of scan result — we tried.
         // On success, this prevents re-scanning for another 1000 blocks.
         // On failure, this prevents log spam every tick; operator will see the
-        // CRITICAL once per interval until they run chain-repair.
+        // CRITICAL once per interval until they heal the gap via backfillFromPeer.
         self.last_integrity_check_tip = Some(current_tip);
     }
 }

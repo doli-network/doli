@@ -131,21 +131,6 @@ async fn main() -> Result<()> {
         Commands::ChainVerify => {
             cmd_chain::cmd_chain_verify(&rpc_endpoint).await?;
         }
-        Commands::ChainRepair {
-            peer,
-            yes,
-            poll_interval_secs,
-            max_wait_secs,
-        } => {
-            cmd_chain::cmd_chain_repair(
-                &rpc_endpoint,
-                &peer,
-                yes,
-                poll_interval_secs,
-                max_wait_secs,
-            )
-            .await?;
-        }
         Commands::Update { command } => {
             cmd_governance::cmd_update(&wallet, &rpc_endpoint, command).await?;
         }
