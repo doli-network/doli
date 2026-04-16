@@ -11,6 +11,26 @@ impl Node {
     /// Non-qualifiers' share is redistributed to qualifiers (not burned).
     ///
     /// Returns a vector of (amount, pubkey_hash) tuples for the EpochReward transaction.
+    ///
+    /// # FAIL-FAST SEMANTICS (M-RC9, INC-I-034, 2026-04-16)
+    ///
+    /// This function is authoritative for EpochReward output construction. If the
+    /// local block_store is incomplete within `[epoch_start, epoch_end)` — either
+    /// because blocks are missing, or because post-activation blocks lack a body
+    /// bitfield — any attestation-minute count we compute is a silent subset of
+    /// the canonical count, and the resulting EpochReward will diverge from peers
+    /// with complete stores. That divergence caused the 2026-04-16 live mainnet
+    /// cascade (Santiago 39600–39628 gap).
+    ///
+    /// To prevent silent divergence, the function REFUSES TO PRODUCE OUTPUT when
+    /// the input is incomplete: it returns an empty `Vec<(u64, Hash)>`, which the
+    /// caller already handles as "no epoch reward distributable this epoch" (the
+    /// pool accumulates into the next epoch — identical to Tier 3 fallback at
+    /// line ~133 and the all-qualifiers-disqualified path at line ~158). The
+    /// return type is intentionally unchanged from the pre-fix version.
+    ///
+    /// Epoch 0 is exempt from the incompleteness check because it has no
+    /// attestation data by construction (genesis epoch short-circuit).
     pub async fn calculate_epoch_rewards(&self, epoch: u64) -> Vec<(u64, Hash)> {
         let blocks_per_epoch = self.config.network.blocks_per_reward_epoch();
         let epoch_start_height = epoch * blocks_per_epoch;
@@ -38,35 +58,83 @@ impl Node {
         // Key: producer index → set of attestation minutes they were attested in
         let mut attested_minutes: HashMap<usize, HashSet<u32>> = HashMap::new();
 
+        // M-RC9 (INC-I-034): track any form of incompleteness in the block_store
+        // window. A non-zero count in either bucket means we CANNOT compute a
+        // canonical qualifier set, and must fail-fast to prevent divergent
+        // EpochReward outputs across peers. Skip for epoch 0 (genesis has no
+        // attestation data — the epoch-0 branch below includes all producers
+        // unconditionally, so incompleteness is irrelevant).
+        let mut missing_block_count: u64 = 0;
+        let mut silent_bitfield_count: u64 = 0;
+
         for h in epoch_start_height..epoch_end_height {
-            if let Ok(Some(block)) = self.block_store.get_block_by_height(h) {
-                // Skip blocks with zero presence_root (no attestation data)
-                if block.header.presence_root.is_zero() {
-                    continue;
+            match self.block_store.get_block_by_height(h) {
+                Ok(Some(block)) => {
+                    // Skip blocks with zero presence_root (no attestation data)
+                    if block.header.presence_root.is_zero() {
+                        continue;
+                    }
+
+                    let minute = attestation_minute(block.header.slot);
+                    let indices = if !block.attestation_bitfield.is_empty() {
+                        // Body bitfield available: decode from body (no 256 cap)
+                        doli_core::decode_attestation_bitfield_vec(
+                            &block.attestation_bitfield,
+                            producer_count,
+                        )
+                    } else if h < doli_core::consensus::BITFIELD_BODY_ACTIVATION_HEIGHT {
+                        // Pre-activation: presence_root IS the raw bitfield
+                        decode_attestation_bitfield(&block.header.presence_root, producer_count)
+                    } else {
+                        // Post-activation without body (snap sync gap or header-only
+                        // store). M-RC9: record as incomplete instead of silently
+                        // dropping. presence_root is BLAKE3 hash, NOT a bitfield —
+                        // decoding it produces garbage indices.
+                        silent_bitfield_count += 1;
+                        vec![]
+                    };
+
+                    // Union: for each producer index attested in this block, add the minute
+                    for idx in indices {
+                        attested_minutes.entry(idx).or_default().insert(minute);
+                    }
                 }
-
-                let minute = attestation_minute(block.header.slot);
-                let indices = if !block.attestation_bitfield.is_empty() {
-                    // Body bitfield available: decode from body (no 256 cap)
-                    doli_core::decode_attestation_bitfield_vec(
-                        &block.attestation_bitfield,
-                        producer_count,
-                    )
-                } else if h < doli_core::consensus::BITFIELD_BODY_ACTIVATION_HEIGHT {
-                    // Pre-activation: presence_root IS the raw bitfield
-                    decode_attestation_bitfield(&block.header.presence_root, producer_count)
-                } else {
-                    // Post-activation without body (snap sync gap): skip
-                    // presence_root is BLAKE3 hash, NOT a bitfield — decoding it
-                    // produces garbage indices → scheduler divergence → fork
-                    vec![]
-                };
-
-                // Union: for each producer index attested in this block, add the minute
-                for idx in indices {
-                    attested_minutes.entry(idx).or_default().insert(minute);
+                Ok(None) => {
+                    // M-RC9: block missing from local store. Cannot be silently
+                    // skipped — see function doc "FAIL-FAST SEMANTICS".
+                    missing_block_count += 1;
+                }
+                Err(e) => {
+                    // Treat a store read error as incompleteness — we cannot
+                    // prove the block is present.
+                    missing_block_count += 1;
+                    warn!(
+                        "[ECON_EPOCH_DISTRIBUTION] block_store read error at height={} \
+                         during epoch={} scan: {} — treating as missing",
+                        h, epoch, e
+                    );
                 }
             }
+        }
+
+        // Fail-fast: any incompleteness in the epoch window invalidates the
+        // qualifier set for everyone. Returning empty is the same shape the
+        // caller already handles for Tier 3 ("pool accumulates to next epoch").
+        // Epoch 0 is exempt — the epoch-0 branch below auto-qualifies every
+        // producer without reading `attested_minutes`, so incompleteness of
+        // the scan cannot cause divergence for that epoch.
+        if epoch > 0 && (missing_block_count > 0 || silent_bitfield_count > 0) {
+            error!(
+                "[ECON_EPOCH_DISTRIBUTION] incomplete_block_store: gap_count={} \
+                 silent_bitfield_count={} — refusing to compute epoch rewards for \
+                 epoch={} (range={}..{}). Pool accumulates to next epoch.",
+                missing_block_count,
+                silent_bitfield_count,
+                epoch,
+                epoch_start_height,
+                epoch_end_height
+            );
+            return Vec::new();
         }
 
         // Qualify producers: attested in ≥ ATTESTATION_QUALIFICATION_THRESHOLD minutes
