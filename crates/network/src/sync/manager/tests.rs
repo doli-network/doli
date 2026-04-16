@@ -2210,6 +2210,7 @@ mod regression_tests {
                 block_header_bytes: None,
                 epoch_bond_snapshot_bytes: None,
                 epoch_accumulators_bytes: None,
+                epoch_state_bytes: None,
             },
         };
 
@@ -4634,5 +4635,347 @@ mod m2_regression_tests {
 
         let (_, agreeing, _) = manager.checkpoint_health();
         assert_eq!(agreeing, 1, "Old fork hash must not agree");
+    }
+}
+
+// =========================================================================
+// M-RC12-full — Asymmetric blacklist invariant (B-5 / F-4 / S-6 convergence)
+//
+// Spec: specs/scheduler-state-architecture.md
+//   "Empty-headers response from peer for local hash triggers
+//    GetHeadersByHeight(local_height) + weight_compare(peer_chain). Peer
+//    is NEVER blacklisted on empty-headers alone. RC#12 structurally
+//    impossible. (F-4 satisfied.)"
+//
+// Target code (bug): crates/network/src/sync/manager/sync_engine/response.rs
+//   lines 317-347. The `consecutive_empty_headers < 3` branch inserts the
+//   peer into `fork.header_blacklisted_peers` when not recently_snapped.
+//   This is the RC#12 symmetric-blacklist heuristic and violates B-5.
+//
+// Partial fix at 42fe7982 (M-RC12 phase 1) only touched the ORPHAN-GOSSIP
+// path (block_lifecycle.rs / peers.rs / types.rs / rollback.rs). It did
+// NOT touch `sync_engine/response.rs` — empty-headers blacklist still
+// exists. M-RC12-full closes this gap.
+//
+// OUTPUT CONTRACT: fn handle_response(&mut self, peer, SyncResponse::Headers(vec![]))
+//                  which delegates to handle_headers_response for empty headers.
+//   O2: self.fork.header_blacklisted_peers — HashMap<PeerId, Instant>
+//       Post-condition on empty-headers path: peer MUST NOT be inserted.
+//   O2: self.fork.use_height_based_headers — bool
+//       Post-condition: MUST become true so next sync cycle consults fork
+//       choice via GetHeadersByHeight (replacement for deleted blacklist).
+//   O2: self.fork.consecutive_empty_headers — u32
+//       Post-condition: incremented by 1 (cascade detection preserved).
+//   O2: self.state — SyncState
+//       Post-condition: transitions to Idle (unchanged by M-RC12-full).
+//   O3: return value — Vec<Block>
+//       Post-condition: vec![] (unchanged for all Headers responses).
+// PATHS covered by the four tests below:
+//   P1: first empty (counter 0 -> 1), not recently snapped, not post-snap
+//   P2: second empty (counter 1 -> 2), same pre-conditions
+//   P3: snap available but not exhausted (attempts=1, threshold=1000)
+//   P4: adversarial — 2 distinct peers each give 1 empty response
+// MATRIX: 4 outputs of interest × 4 paths = 16 cells. Every cell is asserted
+// or explicitly documented as out-of-scope (state and return are invariant
+// across paths, so asserted once in P1; cascade/stuck-fork path at >=3 is
+// out of M-RC12-full scope per spec RC#12 row).
+// =========================================================================
+mod m_rc12_full_asymmetric_blacklist_tests {
+    use super::*;
+
+    /// Build a SyncManager positioned at the empty-headers branch that
+    /// currently inserts into header_blacklisted_peers (response.rs:329-332).
+    ///
+    /// Pre-conditions required to reach the buggy path:
+    ///   - `recovery_phase = Normal` (not AwaitingCanonicalBlock) → skips
+    ///     post-snap height-fallback branch at response.rs:218.
+    ///   - `snap.last_snap_completed` was > 5 min ago → `recently_snapped = false`
+    ///     at response.rs:323-327, so the guard at 328 does NOT skip the insert.
+    ///   - `pipeline.headers_needing_bodies.is_empty()` and
+    ///     `pipeline.pending_headers.is_empty()` → reaches the "no bodies, no
+    ///     pending" arm at response.rs:193.
+    ///   - `local_height > 0` and peer gap > 3 → skips small-gap branch at
+    ///     response.rs:256.
+    ///   - `consecutive_empty_headers < 3` post-increment → skips stuck-fork
+    ///     branch at response.rs:269.
+    fn mk_manager_at_empty_headers_blacklist_path(
+        local_height: u64,
+        consecutive_before: u32,
+        snap_attempts: u8,
+        snap_threshold: u64,
+    ) -> (SyncManager, PeerId) {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        manager.local_height = local_height;
+        manager.local_slot = local_height as u32;
+        manager.local_hash = crypto::hash::hash(format!("local_{}", local_height).as_bytes());
+
+        // Normal phase — bypass the post-snap AwaitingCanonicalBlock branch
+        // at response.rs:211-214 that ALREADY avoids the blacklist.
+        manager.recovery_phase = RecoveryPhase::Normal;
+
+        // Snap completed 10 minutes ago → recently_snapped = false.
+        manager.snap.last_snap_completed = Some(Instant::now() - Duration::from_secs(600));
+        manager.snap.attempts = snap_attempts;
+        manager.snap.threshold = snap_threshold;
+
+        // Counter starts below 3 so we don't enter the stuck-fork branch.
+        manager.fork.consecutive_empty_headers = consecutive_before;
+        assert!(
+            manager.fork.header_blacklisted_peers.is_empty(),
+            "precondition: blacklist starts empty"
+        );
+        assert!(
+            !manager.fork.use_height_based_headers,
+            "precondition: use_height_based_headers starts false"
+        );
+
+        // Peer at gap > 3 to skip the small-gap gossip-timing branch.
+        let peer = PeerId::random();
+        let peer_height = local_height + 10;
+        manager.add_peer(
+            peer,
+            peer_height,
+            crypto::hash::hash(format!("peer_{}", peer_height).as_bytes()),
+            peer_height as u32,
+        );
+
+        manager.state = SyncState::Syncing {
+            phase: SyncPhase::DownloadingHeaders,
+            started_at: Instant::now(),
+        };
+        manager.pipeline_data = SyncPipelineData::Headers {
+            target_slot: peer_height as u32,
+            peer,
+            headers_count: 0,
+        };
+
+        (manager, peer)
+    }
+
+    /// Test 1 (P1): The VERY FIRST empty-headers response must not blacklist
+    /// the responding peer. This is the asymmetric-blacklist invariant (B-5):
+    /// empty-headers is NOT positive fault evidence — peer may simply have a
+    /// heavier chain that doesn't link from our local_hash.
+    #[test]
+    fn test_m_rc12_first_empty_headers_does_not_blacklist() {
+        let (mut manager, peer) = mk_manager_at_empty_headers_blacklist_path(
+            500, // local_height
+            0,   // consecutive_empty_headers before
+            0,   // snap.attempts (not stuck)
+            50,  // snap.threshold (default-ish)
+        );
+
+        // Return value contract (O3): empty block vec for all Headers responses.
+        let returned = manager.handle_response(peer, SyncResponse::Headers(vec![]));
+        assert!(
+            returned.is_empty(),
+            "O3: handle_response for Headers must return empty Vec<Block>"
+        );
+
+        // O2 (PRIMARY INVARIANT): responding peer must NOT be blacklisted.
+        assert!(
+            !manager.fork.header_blacklisted_peers.contains_key(&peer),
+            "M-RC12-full: first empty-headers must NOT blacklist responding peer \
+             (asymmetric invariant — peer is not fault evidence). Blacklist \
+             contents: {:?}",
+            manager
+                .fork
+                .header_blacklisted_peers
+                .keys()
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            manager.fork.header_blacklisted_peers.is_empty(),
+            "M-RC12-full: first empty-headers must leave blacklist empty. \
+             Size: {}",
+            manager.fork.header_blacklisted_peers.len()
+        );
+
+        // O2: use_height_based_headers must be set so the next sync cycle
+        // consults fork choice via GetHeadersByHeight (B-5 replacement for
+        // the deleted blacklist heuristic).
+        assert!(
+            manager.fork.use_height_based_headers,
+            "M-RC12-full: first empty-headers must set use_height_based_headers=true \
+             to consult fork choice on next sync cycle"
+        );
+
+        // O2: counter must still advance for cascade detection at >= 3.
+        assert_eq!(
+            manager.fork.consecutive_empty_headers, 1,
+            "M-RC12-full: counter must still advance for cascade detection"
+        );
+
+        // O2: state transitions to Idle (invariant across all empty-headers arms).
+        assert!(
+            matches!(manager.state, SyncState::Idle),
+            "M-RC12-full: empty-headers must transition state to Idle. Got: {:?}",
+            manager.state
+        );
+    }
+
+    /// Test 2 (P2): A SECOND empty-headers in a row also must not blacklist.
+    /// The bug has the same symptom at counter=1→2; the asymmetric invariant
+    /// must hold until cascade detection takes over at counter>=3.
+    #[test]
+    fn test_m_rc12_second_empty_headers_still_no_blacklist() {
+        let (mut manager, peer) = mk_manager_at_empty_headers_blacklist_path(
+            500, // local_height
+            1,   // consecutive_empty_headers before — simulate second-in-a-row
+            0,   // snap.attempts
+            50,  // snap.threshold
+        );
+
+        let _ = manager.handle_response(peer, SyncResponse::Headers(vec![]));
+
+        // O2: PRIMARY invariant — no blacklist at second empty.
+        assert!(
+            !manager.fork.header_blacklisted_peers.contains_key(&peer),
+            "M-RC12-full: second consecutive empty-headers must NOT blacklist \
+             responding peer"
+        );
+
+        // O2: use_height_based_headers set.
+        assert!(
+            manager.fork.use_height_based_headers,
+            "M-RC12-full: second empty-headers must set use_height_based_headers=true"
+        );
+
+        // O2: counter advanced to 2 (still below cascade threshold of 3).
+        assert_eq!(
+            manager.fork.consecutive_empty_headers, 2,
+            "M-RC12-full: counter must advance 1 -> 2"
+        );
+    }
+
+    /// Test 3 (P3): When snap is AVAILABLE but not exhausted (attempts=1,
+    /// threshold=1000), the pre-M-RC12 gate at response.rs:210-217 required
+    /// `snap_exhausted = attempts >= 3` before allowing height-fallback.
+    /// M-RC12-full removes that gate for the blacklist invariant: the peer
+    /// is still not fault evidence regardless of whether snap is retryable.
+    #[test]
+    fn test_m_rc12_snap_not_exhausted_still_no_blacklist() {
+        let (mut manager, peer) = mk_manager_at_empty_headers_blacklist_path(
+            500,  // local_height
+            0,    // consecutive_empty_headers before
+            1,    // snap.attempts (snap tried once, 2 retries left)
+            1000, // snap.threshold (large — snap still viable)
+        );
+
+        // Sanity: precondition for the "snap available" path.
+        assert!(
+            manager.snap.attempts < 3,
+            "precondition: snap is not exhausted"
+        );
+
+        let _ = manager.handle_response(peer, SyncResponse::Headers(vec![]));
+
+        // O2: PRIMARY invariant — no blacklist regardless of snap availability.
+        assert!(
+            !manager.fork.header_blacklisted_peers.contains_key(&peer),
+            "M-RC12-full: empty-headers must NOT blacklist peer even when snap \
+             is available and not exhausted. Blacklist contents: {:?}",
+            manager
+                .fork
+                .header_blacklisted_peers
+                .keys()
+                .collect::<Vec<_>>()
+        );
+
+        // O2: use_height_based_headers set — asymmetric behaviour is the same
+        // whether or not snap is exhausted.
+        assert!(
+            manager.fork.use_height_based_headers,
+            "M-RC12-full: use_height_based_headers must be set even when snap \
+             is available — blacklist invariant is independent of snap state"
+        );
+
+        // O2: counter advanced.
+        assert_eq!(
+            manager.fork.consecutive_empty_headers, 1,
+            "M-RC12-full: counter advances to 1 regardless of snap state"
+        );
+    }
+
+    /// Test 4 (P4, adversarial): Two distinct peers each give a single
+    /// empty-headers response (each peer's first empty, not third). Simulates
+    /// a symmetric fork where multiple peers reject our local_hash. The
+    /// blacklist must remain empty across the entire loop — otherwise a
+    /// regression where `insert()` creeps back under a different code path
+    /// would be hidden by single-peer tests.
+    #[test]
+    fn test_m_rc12_blacklist_invariant_covers_multiple_peers() {
+        let (mut manager, peer1) = mk_manager_at_empty_headers_blacklist_path(
+            500, // local_height
+            0,   // consecutive_empty_headers before
+            0,   // snap.attempts
+            50,  // snap.threshold
+        );
+
+        // Peer 1: first empty.
+        let _ = manager.handle_response(peer1, SyncResponse::Headers(vec![]));
+
+        // Counter is now 1. Reset to 0 before the second peer's response so
+        // BOTH peers hit the `consecutive_empty_headers < 3` first-empty branch
+        // (the one carrying the blacklist bug) — not the cascade/stuck-fork
+        // branch at >=3, which is out of M-RC12-full scope.
+        manager.fork.consecutive_empty_headers = 0;
+        // Allow height-fallback to fire again for the second peer.
+        manager.fork.height_fallback_attempted = false;
+        manager.fork.use_height_based_headers = false;
+
+        // Re-arm the sync pipeline for peer 2 (state machine transitions to
+        // Idle after the first response; rewire pipeline_data directly rather
+        // than driving cleanup()).
+        let peer2 = PeerId::random();
+        let peer2_height = manager.local_height + 10;
+        manager.add_peer(
+            peer2,
+            peer2_height,
+            crypto::hash::hash(b"peer2_hash"),
+            peer2_height as u32,
+        );
+        manager.state = SyncState::Syncing {
+            phase: SyncPhase::DownloadingHeaders,
+            started_at: Instant::now(),
+        };
+        manager.pipeline_data = SyncPipelineData::Headers {
+            target_slot: peer2_height as u32,
+            peer: peer2,
+            headers_count: 0,
+        };
+
+        // Peer 2: first empty.
+        let _ = manager.handle_response(peer2, SyncResponse::Headers(vec![]));
+
+        // O2: PRIMARY adversarial invariant — blacklist stays empty after
+        // BOTH peers' empty responses. Catches regressions where a new code
+        // path re-introduces the insert.
+        assert!(
+            manager.fork.header_blacklisted_peers.is_empty(),
+            "M-RC12-full: asymmetric-blacklist invariant must hold across \
+             multiple peers. Blacklist contents after 2 peers: {:?}",
+            manager
+                .fork
+                .header_blacklisted_peers
+                .keys()
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            !manager.fork.header_blacklisted_peers.contains_key(&peer1),
+            "M-RC12-full: peer1 must not be blacklisted"
+        );
+        assert!(
+            !manager.fork.header_blacklisted_peers.contains_key(&peer2),
+            "M-RC12-full: peer2 must not be blacklisted"
+        );
+
+        // O2: use_height_based_headers still true after second peer's response.
+        assert!(
+            manager.fork.use_height_based_headers,
+            "M-RC12-full: use_height_based_headers must be set after multi-peer \
+             empty-headers loop"
+        );
     }
 }
