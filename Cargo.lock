@@ -620,7 +620,7 @@ dependencies = [
 
 [[package]]
 name = "bridge"
-version = "6.13.29-synmgr"
+version = "6.14.11"
 dependencies = [
  "chrono",
  "crypto",
@@ -863,7 +863,7 @@ dependencies = [
 
 [[package]]
 name = "channels"
-version = "6.13.29-synmgr"
+version = "6.14.11"
 dependencies = [
  "chrono",
  "crypto",
@@ -917,9 +917,9 @@ dependencies = [
 
 [[package]]
 name = "clap"
-version = "4.6.0"
+version = "4.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b193af5b67834b676abd72466a96c1024e6a6ad978a1f484bd90b85c94041351"
+checksum = "1ddb117e43bbf7dacf0a4190fef4d345b9bad68dfc649cb349e7d17d28428e51"
 dependencies = [
  "clap_builder",
  "clap_derive",
@@ -939,9 +939,9 @@ dependencies = [
 
 [[package]]
 name = "clap_derive"
-version = "4.6.0"
+version = "4.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1110bd8a634a1ab8cb04345d8d878267d57c3cf1b38d91b71af6686408bbca6a"
+checksum = "f2ce8604710f6733aa641a2b3731eaa1e8b3d9973d5e3565da11800813f997a9"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
@@ -1074,15 +1074,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "core2"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b49ba7ef1ad6107f8824dbe97de947cbaac53c44e7f9756a1fba0d37c1eec505"
-dependencies = [
- "memchr",
-]
-
-[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1141,7 +1132,7 @@ checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
 name = "crypto"
-version = "6.13.29-synmgr"
+version = "6.14.11"
 dependencies = [
  "bech32",
  "blake3",
@@ -1559,7 +1550,7 @@ dependencies = [
 
 [[package]]
 name = "doli-benchmarks"
-version = "6.13.29-synmgr"
+version = "6.14.11"
 dependencies = [
  "chrono",
  "clap",
@@ -1571,7 +1562,7 @@ dependencies = [
 
 [[package]]
 name = "doli-cli"
-version = "6.13.29-synmgr"
+version = "6.14.11"
 dependencies = [
  "anyhow",
  "bincode",
@@ -1600,7 +1591,7 @@ dependencies = [
 
 [[package]]
 name = "doli-core"
-version = "6.13.29-synmgr"
+version = "6.14.11"
 dependencies = [
  "bincode",
  "bitvec",
@@ -1627,7 +1618,7 @@ dependencies = [
 
 [[package]]
 name = "doli-gui"
-version = "6.13.29-synmgr"
+version = "6.14.11"
 dependencies = [
  "anyhow",
  "crypto",
@@ -1647,7 +1638,7 @@ dependencies = [
 
 [[package]]
 name = "doli-node"
-version = "6.13.29-synmgr"
+version = "6.14.11"
 dependencies = [
  "anyhow",
  "axum",
@@ -3226,7 +3217,7 @@ dependencies = [
 
 [[package]]
 name = "integration-tests"
-version = "6.13.29-synmgr"
+version = "6.14.11"
 dependencies = [
  "bincode",
  "crypto",
@@ -4236,7 +4227,7 @@ dependencies = [
 
 [[package]]
 name = "mempool"
-version = "6.13.29-synmgr"
+version = "6.14.11"
 dependencies = [
  "crypto",
  "doli-core",
@@ -4350,11 +4341,11 @@ dependencies = [
 
 [[package]]
 name = "multihash"
-version = "0.19.3"
+version = "0.19.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b430e7953c29dd6a09afc29ff0bb69c6e306329ee6794700aee27b76a1aea8d"
+checksum = "89ace881e3f514092ce9efbcb8f413d0ad9763860b828981c2de51ddc666936c"
 dependencies = [
- "core2",
+ "no_std_io2",
  "unsigned-varint 0.8.0",
 ]
 
@@ -4475,7 +4466,7 @@ dependencies = [
 
 [[package]]
 name = "network"
-version = "6.13.29-synmgr"
+version = "6.14.11"
 dependencies = [
  "async-trait",
  "bincode",
@@ -4509,6 +4500,15 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "libc",
+]
+
+[[package]]
+name = "no_std_io2"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a3564ce7035b1e4778d8cb6cacebb5d766b5e8fe5a75b9e441e33fb61a872c6"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]
@@ -6029,7 +6029,7 @@ dependencies = [
 
 [[package]]
 name = "rpc"
-version = "6.13.29-synmgr"
+version = "6.14.11"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -6790,7 +6790,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "storage"
-version = "6.13.29-synmgr"
+version = "6.14.11"
 dependencies = [
  "bincode",
  "crypto",
@@ -7513,9 +7513,9 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokio"
-version = "1.51.1"
+version = "1.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f66bf9585cda4b724d3e78ab34b73fb2bbaba9011b9bfdf69dc836382ea13b8c"
+checksum = "a91135f59b1cbf38c91e73cf3386fca9bb77915c45ce2771460c9d92f0f3d776"
 dependencies = [
  "bytes",
  "libc",
@@ -8011,7 +8011,7 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
 name = "updater"
-version = "6.13.29-synmgr"
+version = "6.14.11"
 dependencies = [
  "anyhow",
  "crypto",
@@ -8090,9 +8090,9 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "uuid"
-version = "1.23.0"
+version = "1.23.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ac8b6f42ead25368cf5b098aeb3dc8a1a2c05a3eee8a9a1a68c640edbfc79d9"
+checksum = "ddd74a9687298c6858e9b88ec8935ec45d22e8fd5e6394fa1bd4e99a87789c76"
 dependencies = [
  "getrandom 0.4.2",
  "js-sys",
@@ -8114,7 +8114,7 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "vdf"
-version = "6.13.29-synmgr"
+version = "6.14.11"
 dependencies = [
  "crypto",
  "doli-core",
@@ -8188,7 +8188,7 @@ dependencies = [
 
 [[package]]
 name = "wallet"
-version = "6.13.29-synmgr"
+version = "6.14.11"
 dependencies = [
  "anyhow",
  "bincode",
