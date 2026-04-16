@@ -260,6 +260,44 @@ impl SyncManager {
             .map(|(pid, s)| (*pid, s.best_height, s.best_hash))
     }
 
+    /// Check if we're on a minority fork by comparing our tip hash with peers
+    /// at the same height. Returns Some((majority_hash, peer_id, vote_count))
+    /// if >66% of peers at our height have a different hash. None if we agree
+    /// with the majority or not enough data.
+    pub fn minority_fork_check(
+        &self,
+        local_height: u64,
+        local_hash: crypto::Hash,
+    ) -> Option<(crypto::Hash, PeerId, usize)> {
+        let peers_at_height: Vec<_> = self
+            .peers
+            .iter()
+            .filter(|(_, s)| s.best_height == local_height)
+            .collect();
+
+        if peers_at_height.len() < 3 {
+            return None;
+        }
+
+        let mut hash_votes: std::collections::HashMap<crypto::Hash, (usize, PeerId)> =
+            std::collections::HashMap::new();
+        for (pid, status) in &peers_at_height {
+            let entry = hash_votes
+                .entry(status.best_hash)
+                .or_insert((0, **pid));
+            entry.0 += 1;
+        }
+
+        let threshold = (peers_at_height.len() * 2) / 3;
+        for (hash, (count, pid)) in &hash_votes {
+            if *hash != local_hash && *count > threshold {
+                return Some((*hash, *pid, *count));
+            }
+        }
+
+        None
+    }
+
     /// Get the LOWEST height among all connected peers
     /// Used for fork detection: if we're far ahead of ANY peer, something is wrong
     /// Returns None if no peers (can't determine lowest)

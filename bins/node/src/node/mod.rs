@@ -224,6 +224,10 @@ pub struct Node {
     /// `None` before first scan. Updated after each scan (Ok or Err).
     /// Phase 1 observability-only (INC-I-034 / M-Choice2).
     pub last_integrity_check_tip: Option<u64>,
+
+    /// Height at which last active fork correction was performed.
+    /// Max 1 correction per epoch (360 blocks) to prevent rollback loops.
+    pub last_active_fork_correction_height: u64,
 }
 
 /// Max connect+disconnect events per peer within PEER_CHURN_WINDOW before rate-limit kicks in.

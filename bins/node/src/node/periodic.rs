@@ -356,6 +356,34 @@ impl Node {
             }
         }
 
+        // ACTIVE FORK DETECTION: compare our tip hash with peer majority.
+        // Catches silent micro-forks where gossip never delivered the canonical block.
+        // Runs every tick but only acts if >66% of peers at our height disagree.
+        {
+            let (local_h, local_hash, _) = self.sync_manager.read().await.local_tip();
+            let blocks_per_epoch = self.config.network.blocks_per_reward_epoch();
+            let since_last = local_h.saturating_sub(self.last_active_fork_correction_height);
+            if local_h > 10 && since_last >= blocks_per_epoch {
+                let check = self
+                    .sync_manager
+                    .read()
+                    .await
+                    .minority_fork_check(local_h, local_hash);
+                if let Some((majority_hash, _peer_id, vote_count)) = check {
+                    warn!(
+                        "[ACTIVE_FORK_DETECT] Minority fork at h={}: local={:.16} majority={:.16} ({} peers agree). Rolling back 1.",
+                        local_h, local_hash, majority_hash, vote_count
+                    );
+                    let rolled_back = self.rollback_one_block().await?;
+                    if rolled_back {
+                        self.last_active_fork_correction_height = local_h;
+                        info!("[ACTIVE_FORK_DETECT] Rollback done, sync will fetch canonical block");
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
         // FORK SYNC: Binary search for common ancestor when on a dead fork.
         // Triggers after 3+ consecutive empty header responses. O(log N) recovery.
         if self.resolve_shallow_fork().await? {
