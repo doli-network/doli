@@ -484,32 +484,93 @@ impl RpcContext {
                 "tip": 0,
                 "scanned": 0,
                 "missing": [],
-                "missing_count": 0
+                "missingCount": 0
             }));
         }
 
+        // Fast path: if incremental commitment exists, return it in O(1).
+        // The commitment is updated atomically on every apply_block.
+        // Only fall through to full scan if no commitment persisted (legacy node
+        // or first run after upgrade).
+        let persisted_commitment = self
+            .state_db
+            .as_ref()
+            .and_then(|db| db.get_chain_commitment());
+        if let Some(commitment) = persisted_commitment {
+            // Still need gap detection — commitment only covers applied blocks,
+            // not block_store completeness. Quick scan for gaps only (no hashing).
+            let block_store = self.block_store.clone();
+            let tip = tip_height;
+            let gaps = tokio::task::spawn_blocking(move || {
+                let mut missing: Vec<String> = Vec::new();
+                let mut range_start: Option<u64> = None;
+                let mut range_end: u64 = 0;
+                for h in 1..=tip {
+                    let exists = block_store
+                        .get_block_by_height(h)
+                        .map(|opt| opt.is_some())
+                        .unwrap_or(false);
+                    if !exists {
+                        if range_start.is_none() {
+                            range_start = Some(h);
+                        }
+                        range_end = h;
+                    } else if let Some(start) = range_start.take() {
+                        if start == range_end {
+                            missing.push(format!("{}", start));
+                        } else {
+                            missing.push(format!("{}-{}", start, range_end));
+                        }
+                    }
+                }
+                if let Some(start) = range_start {
+                    if start == range_end {
+                        missing.push(format!("{}", start));
+                    } else {
+                        missing.push(format!("{}-{}", start, range_end));
+                    }
+                }
+                missing
+            })
+            .await
+            .map_err(|e| RpcError::internal_error(format!("Gap scan failed: {}", e)))?;
+
+            let missing_count: u64 = gaps
+                .iter()
+                .map(|s| {
+                    if let Some((a, b)) = s.split_once('-') {
+                        b.parse::<u64>().unwrap_or(0) - a.parse::<u64>().unwrap_or(0) + 1
+                    } else {
+                        1
+                    }
+                })
+                .sum();
+
+            return Ok(serde_json::json!({
+                "complete": missing_count == 0,
+                "tip": tip_height,
+                "scanned": tip_height,
+                "missing": gaps,
+                "missingCount": missing_count,
+                "chainCommitment": format!("{}", commitment)
+            }));
+        }
+
+        // Fallback: full scan (legacy nodes without persisted commitment).
+        // Computes commitment from scratch and persists it for future O(1) lookups.
         let block_store = self.block_store.clone();
+        let state_db_opt = self.state_db.clone();
         let tip = tip_height;
 
-        // Run scan in blocking task to avoid starving the async runtime.
-        // Computes both gap detection AND a running chain commitment:
-        //   commitment[N] = BLAKE3(commitment[N-1] || block_hash[N])
-        // If the chain is complete, the final commitment is a 32-byte fingerprint
-        // that uniquely identifies the exact sequence of all blocks 1..tip.
-        // Two nodes with the same commitment have identical chains.
         let result = tokio::task::spawn_blocking(move || {
             let mut missing: Vec<String> = Vec::new();
             let mut range_start: Option<u64> = None;
             let mut range_end: u64 = 0;
-            // Chain commitment: BLAKE3(prev_commitment || block_hash)
-            let mut commitment = Hash::default(); // Start with zeros
-            let mut commitment_valid = true; // Breaks on first gap
+            let mut commitment = Hash::default();
+            let mut commitment_valid = true;
 
             for h in 1..=tip {
-                // Check actual block data, not just the height→hash index.
-                // The index can exist without the block (e.g. after partial sync).
                 let block = block_store.get_block_by_height(h).ok().flatten();
-
                 if let Some(blk) = block {
                     let hash = blk.hash();
                     if commitment_valid {
@@ -518,7 +579,6 @@ impl RpcContext {
                         hasher.update(hash.as_bytes());
                         commitment = hasher.finalize();
                     }
-
                     if let Some(start) = range_start.take() {
                         if start == range_end {
                             missing.push(format!("{}", start));
@@ -531,10 +591,9 @@ impl RpcContext {
                         range_start = Some(h);
                     }
                     range_end = h;
-                    commitment_valid = false; // Gap breaks the chain
+                    commitment_valid = false;
                 }
             }
-            // Flush final range if chain ends with a gap
             if let Some(start) = range_start {
                 if start == range_end {
                     missing.push(format!("{}", start));
@@ -543,7 +602,6 @@ impl RpcContext {
                 }
             }
 
-            // Count total missing
             let missing_count: u64 = missing
                 .iter()
                 .map(|s| {
@@ -554,6 +612,13 @@ impl RpcContext {
                     }
                 })
                 .sum();
+
+            // Bootstrap: persist the computed commitment for future O(1) lookups.
+            if commitment_valid && missing_count == 0 {
+                if let Some(ref db) = state_db_opt {
+                    db.put_chain_commitment(&commitment);
+                }
+            }
 
             let commitment_hex = if commitment_valid && missing_count == 0 {
                 Some(format!("{}", commitment))

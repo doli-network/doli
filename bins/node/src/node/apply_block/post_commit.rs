@@ -68,6 +68,17 @@ impl Node {
         batch.put_epoch_state(&self.epoch_state.serialize());
         batch.put_epoch_state_version(CURRENT_PROTOCOL_VERSION);
 
+        // Incremental chain commitment: O(1) per block, replaces O(n) full-chain scan.
+        // commitment[h] = BLAKE3(commitment[h-1] || block_hash[h])
+        {
+            let prev = self.state_db.get_chain_commitment().unwrap_or_default();
+            let mut hasher = crypto::Hasher::new();
+            hasher.update(prev.as_bytes());
+            hasher.update(block_hash.as_bytes());
+            let new_commitment = hasher.finalize();
+            batch.put_chain_commitment(&new_commitment);
+        }
+
         if doli_core::EpochSnapshot::is_epoch_boundary_with(height, blocks_per_epoch) {
             let epoch = doli_core::EpochSnapshot::epoch_from_height_with(height, blocks_per_epoch);
 
