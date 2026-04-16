@@ -117,12 +117,20 @@ impl Node {
                     }
                 }
             } else {
-                // Parent not in store at all — orphan gossip block.
-                // Signal sync manager: consecutive orphans prove we're behind.
-                debug!(
-                    "Dropping block {} — parent {:.8} unknown",
-                    block_hash, block.header.prev_hash
-                );
+                // Parent not in store — orphan gossip block. The sender has the
+                // missing block (they passed through our height to produce this one).
+                // Request it directly: causal, deterministic, no heuristics.
+                let need_height = current_height + 1;
+                if let Some(ref network) = self.network {
+                    info!(
+                        "[ORPHAN_CHASE] Requesting h={} from {} (orphan block {:.8} at slot {})",
+                        need_height, source_peer, block_hash, block.header.slot
+                    );
+                    let request = SyncRequest::GetBlockByHeight {
+                        height: need_height,
+                    };
+                    let _ = network.request_sync(source_peer, request).await;
+                }
                 self.sync_manager
                     .write()
                     .await
