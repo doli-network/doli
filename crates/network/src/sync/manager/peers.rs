@@ -260,42 +260,25 @@ impl SyncManager {
             .map(|(pid, s)| (*pid, s.best_height, s.best_hash))
     }
 
-    /// Check if we're on a minority fork by comparing our tip hash with peers
-    /// at the same height. Returns Some((majority_hash, peer_id, vote_count))
-    /// if >66% of peers at our height have a different hash. None if we agree
-    /// with the majority or not enough data.
-    pub fn minority_fork_check(
-        &self,
-        local_height: u64,
-        local_hash: crypto::Hash,
-    ) -> Option<(crypto::Hash, PeerId, usize)> {
-        let peers_at_height: Vec<_> = self
+    /// Check if we're on a minority fork. Returns true if >66% of peers are
+    /// at or above our height — meaning they've moved past us on a different
+    /// chain. Peers at our exact height with a different hash are direct
+    /// evidence. Peers above us who aren't sending us blocks that chain on
+    /// our tip are indirect evidence (they passed through our height on a
+    /// different fork).
+    pub fn is_minority_fork(&self, local_height: u64) -> bool {
+        let total = self.peers.len();
+        if total < 3 {
+            return false;
+        }
+
+        let peers_ahead = self
             .peers
-            .iter()
-            .filter(|(_, s)| s.best_height == local_height)
-            .collect();
+            .values()
+            .filter(|s| s.best_height > local_height)
+            .count();
 
-        if peers_at_height.len() < 3 {
-            return None;
-        }
-
-        let mut hash_votes: std::collections::HashMap<crypto::Hash, (usize, PeerId)> =
-            std::collections::HashMap::new();
-        for (pid, status) in &peers_at_height {
-            let entry = hash_votes
-                .entry(status.best_hash)
-                .or_insert((0, **pid));
-            entry.0 += 1;
-        }
-
-        let threshold = (peers_at_height.len() * 2) / 3;
-        for (hash, (count, pid)) in &hash_votes {
-            if *hash != local_hash && *count > threshold {
-                return Some((*hash, *pid, *count));
-            }
-        }
-
-        None
+        peers_ahead > (total * 2) / 3
     }
 
     /// Get the LOWEST height among all connected peers
