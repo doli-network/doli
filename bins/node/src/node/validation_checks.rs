@@ -476,10 +476,23 @@ impl Node {
 
         if !epoch_reward_txs.is_empty() {
             // EpochReward only allowed at epoch boundaries, post-genesis.
-            // Skip this check in Light mode (sync/reorg): the canonical chain may
-            // have been produced by a node at a different fork tip where this height
-            // WAS an epoch boundary. Rejecting during resync prevents recovery.
-            if !is_epoch_boundary && matches!(mode, ValidationMode::Full) {
+            //
+            // This is a STRUCTURAL CONSENSUS rule — a block carrying an
+            // EpochReward TX at a non-boundary height is invalid regardless of
+            // sync path. Cheap constant-time arithmetic (`height %
+            // blocks_per_epoch`); must fire in BOTH Full and Light modes.
+            //
+            // Historical note: this check was previously gated behind
+            // `ValidationMode::Full` on the theory that Light-mode resync
+            // might receive blocks whose "boundary-ness" depended on a
+            // different `blocks_per_epoch`. That rationale was wrong:
+            // `blocks_per_epoch` is a network-wide constant, not a per-fork
+            // state. Skipping the check let the santiago 2026-04-16 05:11 UTC
+            // cascade (INC-I-034) proceed — a non-boundary EpochReward was
+            // rejected by Full-mode validation then silently "Applied" by a
+            // Light-mode apply entry point, corrupting producer_liveness and
+            // triggering [UTXO] FAIL downstream.
+            if !is_epoch_boundary {
                 anyhow::bail!(
                     "[ECON_EPOCH_NOT_BOUNDARY] EpochReward at non-boundary height={} (blocks_per_epoch={})",
                     height,
@@ -487,7 +500,22 @@ impl Node {
                 );
             }
 
-            let completed_epoch = (height / blocks_per_epoch) - 1;
+            // Defense-in-depth: even though `is_epoch_boundary=true` implies
+            // `height >= blocks_per_epoch` (so `height / blocks_per_epoch >= 1`),
+            // use checked arithmetic so a future refactor cannot silently
+            // underflow. Pre-fix, this line executed for any height when
+            // `mode=Light` skipped the boundary check — producing either a
+            // debug panic or a release-mode wrap to u64::MAX.
+            let completed_epoch =
+                (height / blocks_per_epoch)
+                    .checked_sub(1)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "[ECON_EPOCH_UNDERFLOW] completed_epoch underflow at height={} (blocks_per_epoch={}) — internal invariant violated",
+                            height,
+                            blocks_per_epoch
+                        )
+                    })?;
 
             // No EpochReward at epoch 0 (genesis bonds drained the pool)
             if completed_epoch == 0 {
@@ -504,65 +532,70 @@ impl Node {
             }
             let epoch_tx = epoch_reward_txs[0];
 
-            // In Light mode (sync/reorg), skip all EpochReward consistency checks.
-            // The canonical chain may have EpochReward TXs produced at different
-            // chain states (different height/epoch/pool balance). Rejecting them
-            // during sync creates infinite apply-failure loops.
-            // Full validation happens when blocks arrive via gossip.
+            // Structural consistency checks — always fire (Full + Light).
+            // These are cheap constant-time checks of wire-format fields and
+            // conservation; they do not depend on local fork state. Lifting
+            // the Full-only gate closes the INC-I-034 apply-after-reject desync.
+            //
+            // Validate extra_data contains correct height + epoch
+            if epoch_tx.extra_data.len() < 16 {
+                anyhow::bail!(
+                    "[ECON_EPOCH_EXTRA_DATA] EpochReward extra_data too short: {} bytes < 16 required at height={}",
+                    epoch_tx.extra_data.len(),
+                    height
+                );
+            }
+            let embedded_height = u64::from_le_bytes(epoch_tx.extra_data[0..8].try_into().unwrap());
+            let embedded_epoch = u64::from_le_bytes(epoch_tx.extra_data[8..16].try_into().unwrap());
+            if embedded_height != height {
+                anyhow::bail!(
+                    "[ECON_EPOCH_HEIGHT] EpochReward embedded_height={} != block height={}",
+                    embedded_height,
+                    height
+                );
+            }
+            if embedded_epoch != completed_epoch {
+                anyhow::bail!(
+                    "[ECON_EPOCH_NUMBER] EpochReward embedded_epoch={} != completed_epoch={} at height={}",
+                    embedded_epoch,
+                    completed_epoch,
+                    height
+                );
+            }
+
+            // Conservation: total distributed must not exceed pool balance.
+            // Pre-activation: include current coinbase (side-effect consumes all).
+            // Post-activation: only existing UTXOs (explicit inputs don't include
+            // current coinbase — its hash isn't known at assembly time).
+            // Conservation is consensus-critical; must fire in both modes.
+            let total_distributed: u64 = epoch_tx.outputs.iter().map(|o| o.amount).sum();
+            let pool_balance = {
+                let utxo = self.utxo_set.read().await;
+                let pool_utxos = utxo.get_by_pubkey_hash(&pool_hash);
+                let utxo_total: u64 = pool_utxos.iter().map(|(_, e)| e.output.amount).sum();
+                if height >= doli_core::consensus::EPOCH_REWARD_EXPLICIT_INPUTS_HEIGHT {
+                    utxo_total // post-activation: only existing UTXOs
+                } else {
+                    utxo_total + coinbase_amount // pre-activation: + current coinbase
+                }
+            };
+
+            if total_distributed > pool_balance {
+                anyhow::bail!(
+                    "[ECON_EPOCH_OVERFLOW] EpochReward total {} exceeds pool balance {} at height={} — inflation attack",
+                    total_distributed,
+                    pool_balance,
+                    height
+                );
+            }
+
+            // Fork-sensitive checks below depend on local-state rewards
+            // calculation (`calculate_epoch_rewards`) and local pool-UTXO
+            // composition. In Light mode (sync/reorg) the local state may be
+            // on a transient micro-fork or behind the canonical chain, so
+            // these comparisons can spuriously reject valid blocks. Keep them
+            // Full-only.
             if matches!(mode, ValidationMode::Full) {
-                // Validate extra_data contains correct height + epoch
-                if epoch_tx.extra_data.len() < 16 {
-                    anyhow::bail!(
-                        "[ECON_EPOCH_EXTRA_DATA] EpochReward extra_data too short: {} bytes < 16 required at height={}",
-                        epoch_tx.extra_data.len(),
-                        height
-                    );
-                }
-                let embedded_height =
-                    u64::from_le_bytes(epoch_tx.extra_data[0..8].try_into().unwrap());
-                let embedded_epoch =
-                    u64::from_le_bytes(epoch_tx.extra_data[8..16].try_into().unwrap());
-                if embedded_height != height {
-                    anyhow::bail!(
-                        "[ECON_EPOCH_HEIGHT] EpochReward embedded_height={} != block height={}",
-                        embedded_height,
-                        height
-                    );
-                }
-                if embedded_epoch != completed_epoch {
-                    anyhow::bail!(
-                        "[ECON_EPOCH_NUMBER] EpochReward embedded_epoch={} != completed_epoch={} at height={}",
-                        embedded_epoch,
-                        completed_epoch,
-                        height
-                    );
-                }
-
-                // Conservation: total distributed must not exceed pool balance.
-                // Pre-activation: include current coinbase (side-effect consumes all).
-                // Post-activation: only existing UTXOs (explicit inputs don't include
-                // current coinbase — its hash isn't known at assembly time).
-                let total_distributed: u64 = epoch_tx.outputs.iter().map(|o| o.amount).sum();
-                let pool_balance = {
-                    let utxo = self.utxo_set.read().await;
-                    let pool_utxos = utxo.get_by_pubkey_hash(&pool_hash);
-                    let utxo_total: u64 = pool_utxos.iter().map(|(_, e)| e.output.amount).sum();
-                    if height >= doli_core::consensus::EPOCH_REWARD_EXPLICIT_INPUTS_HEIGHT {
-                        utxo_total // post-activation: only existing UTXOs
-                    } else {
-                        utxo_total + coinbase_amount // pre-activation: + current coinbase
-                    }
-                };
-
-                if total_distributed > pool_balance {
-                    anyhow::bail!(
-                        "[ECON_EPOCH_OVERFLOW] EpochReward total {} exceeds pool balance {} at height={} — inflation attack",
-                        total_distributed,
-                        pool_balance,
-                        height
-                    );
-                }
-
                 // Exact match of amounts and recipients
                 let expected = self.calculate_epoch_rewards(completed_epoch).await;
                 let mut expected_sorted: Vec<(u64, crypto::Hash)> = expected;
@@ -643,7 +676,10 @@ impl Node {
             // In Light mode (sync/reorg), the canonical chain may have blocks at epoch
             // boundaries produced by nodes with different epoch parameters (ConsensusParams
             // vs NetworkParams mismatch). Rejecting these blocks prevents recovery.
-            let completed_epoch = (height / blocks_per_epoch) - 1;
+            //
+            // Defense-in-depth: `is_epoch_boundary` implies height >= blocks_per_epoch,
+            // but use checked_sub to harden against future changes to that invariant.
+            let completed_epoch = (height / blocks_per_epoch).saturating_sub(1);
             if completed_epoch > 0 {
                 let expected = self.calculate_epoch_rewards(completed_epoch).await;
                 if !expected.is_empty() {
