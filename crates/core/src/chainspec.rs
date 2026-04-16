@@ -215,7 +215,8 @@ impl ChainSpec {
             network: Network::Mainnet,
             genesis: GenesisSpec {
                 timestamp: params.genesis_time,
-                message: "DOLI Mainnet Genesis - v6.14.11 EpochState+ForkFixes 16/Apr/2026 v16".into(),
+                message: "DOLI Mainnet Genesis - v6.14.11 EpochState+ForkFixes 16/Apr/2026 v16"
+                    .into(),
                 initial_reward: params.initial_reward,
             },
             consensus: ConsensusSpec {

@@ -268,6 +268,12 @@ impl Node {
         self.chain_state.read().await.best_height
     }
 
+    /// Get the current chain tip hash
+    #[allow(dead_code)]
+    pub async fn best_hash(&self) -> crypto::Hash {
+        self.chain_state.read().await.best_hash
+    }
+
     /// Compute bond weights for scheduling from epoch snapshot (or UTXO fallback for epoch 0).
     ///
     /// Single source of truth for bond weights used by the scheduler.

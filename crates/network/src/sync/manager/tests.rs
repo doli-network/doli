@@ -2210,6 +2210,7 @@ mod regression_tests {
                 block_header_bytes: None,
                 epoch_bond_snapshot_bytes: None,
                 epoch_accumulators_bytes: None,
+                epoch_state_bytes: None,
             },
         };
 

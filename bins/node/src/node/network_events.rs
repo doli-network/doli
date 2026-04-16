@@ -117,7 +117,9 @@ impl Node {
             if current_slot > 50 && block.header.slot < current_slot - 50 {
                 debug!(
                     "Upstream drop: stale gossip block {} at slot={} (tip_slot={}, behind by {})",
-                    block_hash, block.header.slot, current_slot,
+                    block_hash,
+                    block.header.slot,
+                    current_slot,
                     current_slot - block.header.slot
                 );
                 return Ok(());
