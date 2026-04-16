@@ -694,7 +694,68 @@ impl Node {
             }
         }
 
+        // INC-I-034 / M-Choice2: Phase-1 observability-only periodic block-store
+        // integrity check. Runs every INTEGRITY_CHECK_INTERVAL_BLOCKS blocks,
+        // emits CRITICAL on gap detection. See specs/scheduler-state-architecture.md
+        // Block-store integrity contract + locked Choice 2 (RUNTIME PERIODIC).
+        self.maybe_run_integrity_check().await;
+
         Ok(())
+    }
+
+    /// Phase-1 observability-only periodic block-store integrity check (M-Choice2).
+    ///
+    /// Runs every `INTEGRITY_CHECK_INTERVAL_BLOCKS` blocks (default 1000).
+    /// Scans `BlockStore::ensure_blocks_present(1, tip)`. On gap detection,
+    /// emits a CRITICAL log line with a clear operator-action message pointing
+    /// to `doli chain-repair`. Does NOT halt production (Phase 2 HF concern).
+    ///
+    /// Runs the scan in a blocking task to avoid starving the async runtime;
+    /// O(range) hot CF point lookups.
+    pub(crate) async fn maybe_run_integrity_check(&mut self) {
+        let current_tip = self.chain_state.read().await.best_height;
+        if !should_run_integrity_check(
+            current_tip,
+            self.last_integrity_check_tip,
+            INTEGRITY_CHECK_INTERVAL_BLOCKS,
+        ) {
+            return;
+        }
+
+        let block_store = self.block_store.clone();
+        let result =
+            tokio::task::spawn_blocking(move || block_store.ensure_blocks_present(1, current_tip))
+                .await;
+
+        match result {
+            Ok(Ok(())) => {
+                info!(
+                    "[INTEGRITY_CHECK] block_store complete 1..={} (next scan in {} blocks)",
+                    current_tip, INTEGRITY_CHECK_INTERVAL_BLOCKS
+                );
+            }
+            Ok(Err(e)) => {
+                error!(
+                    "[INTEGRITY_CHECK] CRITICAL: {}. This node's block_store has a gap. \
+                     Run `doli chain-repair --peer <RPC_URL>` against a known-good peer to heal. \
+                     Production will continue for now; at the M-Choice1 HardForkSchedule \
+                     activation height, gapped nodes will enter HALT_PRODUCTION.",
+                    e
+                );
+            }
+            Err(join_err) => {
+                warn!(
+                    "[INTEGRITY_CHECK] scan task join error at tip={}: {}",
+                    current_tip, join_err
+                );
+            }
+        }
+
+        // Update the last-checked marker regardless of scan result — we tried.
+        // On success, this prevents re-scanning for another 1000 blocks.
+        // On failure, this prevents log spam every tick; operator will see the
+        // CRITICAL once per interval until they run chain-repair.
+        self.last_integrity_check_tip = Some(current_tip);
     }
 }
 
@@ -706,6 +767,27 @@ pub(crate) fn parse_checkpoint_height(name: &str) -> u64 {
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(0)
 }
+
+// =============================================================================
+// Phase-1 periodic block-store integrity check (M-Choice2, INC-I-034)
+// =============================================================================
+//
+// See `specs/scheduler-state-architecture.md` §"Block-store integrity contract:
+// bounded fail-fast + self-heal (F-11 / B-2 refinement)" and the CHOICE 2 lock
+// ("RUNTIME PERIODIC — runs at startup, on every chain_state advance, AND as a
+// background task every 1000 blocks").
+//
+// Phase 1 is OBSERVABILITY-ONLY: detect gaps, emit CRITICAL log, record the
+// scan tip. No HALT_PRODUCTION, no automatic backfill dispatch.
+//
+// The pure helper `should_run_integrity_check` below is the scheduling
+// predicate that decides — given a tip and the last-checked tip — whether a
+// new scan is due. Everything stateful and async (the actual scan, log
+// emission, and tip bookkeeping) lives in the `Node` method that calls this
+// helper from `run_periodic_tasks`.
+//
+// The helper is pure so it can be unit-tested without a tokio runtime, a
+// BlockStore fixture, or any timing dependency.
 
 #[cfg(test)]
 mod tests {
@@ -756,5 +838,199 @@ mod tests {
         let delete = &names[..names.len() - 5];
         let delete_heights: Vec<u64> = delete.iter().map(|n| parse_checkpoint_height(n)).collect();
         assert_eq!(delete_heights, vec![526, 626, 726, 826, 926]);
+    }
+}
+
+// =============================================================================
+// M-Choice2 / INC-I-034 — Phase 1 periodic integrity-check scheduling predicate
+// =============================================================================
+
+/// Minimum number of blocks between periodic block-store integrity scans.
+///
+/// Phase 1 observability-only: scan runs every ~1000 blocks (~3h at 10s slots).
+/// Spec: `specs/scheduler-state-architecture.md` — "Block-store integrity contract"
+/// + locked USER DECISION Choice 2 (RUNTIME PERIODIC).
+pub(crate) const INTEGRITY_CHECK_INTERVAL_BLOCKS: u64 = 1000;
+
+/// Phase-1 scheduling predicate for the periodic integrity check.
+///
+/// Returns `true` iff (a) we've never scanned, OR (b) tip has advanced
+/// `min_interval_blocks` or more since the last scan. Genesis (tip=0)
+/// always returns `false` (nothing to scan yet). Defensive against tip
+/// going backwards (rollback): treats it as "no advance" and returns `false`.
+///
+/// Pure: no I/O, no locks, no time source.
+pub(crate) fn should_run_integrity_check(
+    current_tip: u64,
+    last_checked_tip: Option<u64>,
+    min_interval_blocks: u64,
+) -> bool {
+    if current_tip == 0 {
+        return false;
+    }
+    match last_checked_tip {
+        None => true,
+        Some(last) => {
+            if current_tip <= last {
+                return false; // no advance or rollback — defensive
+            }
+            current_tip.saturating_sub(last) >= min_interval_blocks
+        }
+    }
+}
+//
+// OUTPUT CONTRACT: fn should_run_integrity_check(current_tip: u64, last_checked_tip: Option<u64>, min_interval_blocks: u64) -> bool
+//   O1: mutable params        — none (all parameters are by-value `u64` / `Option<u64>`, no `&mut`)
+//   O2: receiver/self         — none (free function, no self)
+//   O3: return                — bool: `true` => caller SHOULD run the scan, `false` => skip
+//   O4: persistent stores     — none (pure function, no I/O)
+//   O5: global/static state   — none (no statics, no env)
+//   O6: channels/events       — none (no send/emit/callback)
+// PATHS (enumerated per milestone brief):
+//   P1: Genesis            — tip=0, last=None, interval=1000           => false
+//   P2: First-run crossed  — tip=1500, last=None, interval=1000        => true
+//   P3: Too soon           — tip=1500, last=Some(1499), interval=1000  => false
+//   P4: Boundary inclusive — tip=2000, last=Some(1000), interval=1000  => true
+//   P5: Just past boundary — tip=2001, last=Some(1000), interval=1000  => true
+//   P6: Zero interval      — tip=5,    last=Some(5),    interval=0     => false
+//   P7: Tip backward       — tip=100,  last=Some(500),  interval=1000  => false
+//   P8: u64::MAX boundary  — tip=MAX,  last=Some(MAX-1000), interval=1000 => true   (adversarial)
+//   P9: u64::MAX no-advance— tip=MAX,  last=Some(MAX),  interval=1000   => false  (adversarial)
+// MATRIX: 1 output (O3 bool return) × 9 paths = 9 cells, each asserted by a dedicated #[test].
+//
+// Notes
+//  - The helper is pure by contract: the developer MUST NOT add I/O, locks, or a
+//    time source to its signature. All stateful glue (calling BlockStore,
+//    updating `last_integrity_check_tip`, emitting the CRITICAL log) belongs in
+//    the `Node` method that INVOKES this helper from `run_periodic_tasks`.
+//  - P1 (genesis) intentionally returns `false` — a fresh node at tip=0 has
+//    nothing to scan, and we do not want CRITICAL-log spam on cold starts.
+//  - P6 (interval=0) guards against an operator misconfiguration or uninitialised
+//    constant turning the periodic scan into a busy loop. Contract: require
+//    actual tip advancement (strictly greater than `last_checked_tip`) before
+//    running; when `interval == 0` AND `last == Some(tip)`, no advance
+//    happened, so return `false`.
+//  - P7 (tip backward) is defensive — in a healthy chain `current_tip` is
+//    monotonically non-decreasing, but a rollback path could make
+//    `last_checked_tip > current_tip` transiently. The helper must NOT
+//    underflow and must NOT re-scan on a backward move.
+
+#[cfg(test)]
+mod integrity_check_tests {
+    use super::*;
+
+    // ---- P1: Genesis — no scan on a fresh node ----
+    // Requirement: INC-I-034 / M-Choice2 / CHOICE 2 ("RUNTIME PERIODIC")
+    // Acceptance: tip=0 with no prior scan returns false (no log spam on cold start).
+    #[test]
+    fn p1_genesis_tip_zero_no_prior_scan_returns_false() {
+        let ran = should_run_integrity_check(0, None, INTEGRITY_CHECK_INTERVAL_BLOCKS);
+        assert!(
+            !ran,
+            "tip=0 with no prior scan must return false (nothing to check at genesis)"
+        );
+    }
+
+    // ---- P2: First-ever run, tip has crossed the threshold ----
+    // Requirement: INC-I-034 / M-Choice2
+    // Acceptance: first run after tip advances >= interval returns true.
+    #[test]
+    fn p2_first_run_tip_past_interval_returns_true() {
+        let ran = should_run_integrity_check(1500, None, 1000);
+        assert!(
+            ran,
+            "first-ever run with tip >= interval must return true (initial scan is due)"
+        );
+    }
+
+    // ---- P3: Last scan too recent — must skip ----
+    // Requirement: INC-I-034 / M-Choice2
+    // Acceptance: fewer than `interval` blocks since last scan returns false.
+    #[test]
+    fn p3_last_scan_recent_returns_false() {
+        let ran = should_run_integrity_check(1500, Some(1499), 1000);
+        assert!(
+            !ran,
+            "delta=1 < interval=1000 must return false (too soon to re-scan)"
+        );
+    }
+
+    // ---- P4: Exact boundary — inclusive >= ----
+    // Requirement: INC-I-034 / M-Choice2
+    // Acceptance: tip - last == interval returns true (inclusive boundary).
+    #[test]
+    fn p4_exact_boundary_returns_true() {
+        let ran = should_run_integrity_check(2000, Some(1000), 1000);
+        assert!(
+            ran,
+            "delta == interval must return true (inclusive >=, not strict >)"
+        );
+    }
+
+    // ---- P5: Just past the boundary ----
+    // Requirement: INC-I-034 / M-Choice2
+    // Acceptance: tip - last == interval + 1 returns true.
+    #[test]
+    fn p5_just_past_boundary_returns_true() {
+        let ran = should_run_integrity_check(2001, Some(1000), 1000);
+        assert!(ran, "delta > interval must return true");
+    }
+
+    // ---- P6: Pathological zero interval, no tip advance ----
+    // Requirement: INC-I-034 / M-Choice2 — guard against busy loop on misconfig.
+    // Acceptance: interval=0 AND tip did not advance returns false.
+    #[test]
+    fn p6_zero_interval_no_advance_returns_false() {
+        let ran = should_run_integrity_check(5, Some(5), 0);
+        assert!(
+            !ran,
+            "interval=0 with no tip advance must return false (no busy-loop)"
+        );
+    }
+
+    // ---- P7: Tip went backward — defensive ----
+    // Requirement: INC-I-034 / M-Choice2
+    // Acceptance: current_tip < last_checked_tip returns false; no underflow.
+    #[test]
+    fn p7_tip_backward_returns_false_no_underflow() {
+        let ran = should_run_integrity_check(100, Some(500), 1000);
+        assert!(
+            !ran,
+            "current_tip < last_checked_tip must return false (and must not underflow)"
+        );
+    }
+
+    // ---- P8: u64::MAX boundary (adversarial) ----
+    // Requirement: INC-I-034 / M-Choice2 — arithmetic must not overflow at extremes.
+    // Acceptance: tip=MAX, last=MAX-1000, interval=1000 returns true.
+    #[test]
+    fn p8_u64_max_boundary_returns_true() {
+        let ran = should_run_integrity_check(u64::MAX, Some(u64::MAX - 1000), 1000);
+        assert!(
+            ran,
+            "delta == interval at u64::MAX must return true (no overflow)"
+        );
+    }
+
+    // ---- P9: u64::MAX no advance (adversarial) ----
+    // Requirement: INC-I-034 / M-Choice2
+    // Acceptance: tip=MAX, last=MAX, interval=1000 returns false.
+    #[test]
+    fn p9_u64_max_no_advance_returns_false() {
+        let ran = should_run_integrity_check(u64::MAX, Some(u64::MAX), 1000);
+        assert!(
+            !ran,
+            "tip did not advance at u64::MAX must return false (no spurious re-scan)"
+        );
+    }
+
+    // ---- Sanity guard on the documented default constant ----
+    // Requirement: INC-I-034 / M-Choice2 — default interval is 1000 blocks.
+    #[test]
+    fn default_interval_constant_is_1000() {
+        assert_eq!(
+            INTEGRITY_CHECK_INTERVAL_BLOCKS, 1000,
+            "INTEGRITY_CHECK_INTERVAL_BLOCKS default is locked to 1000 blocks (~3h of slot time)"
+        );
     }
 }

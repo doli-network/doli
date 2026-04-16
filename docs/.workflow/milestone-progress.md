@@ -36,7 +36,7 @@ The original milestone list was generated from the synthesis spec, which capture
 | M-RC11 | FORK_GUARD with backfill | `bins/node/src/node/block_handling.rs:90` (FORK_GUARD log) and `block_handling.rs:311` (`execute_reorg`, the actual switch site); bug at `block_handling.rs:399-413` (`unwrap_or(genesis_hash)`) | -10 +40 | conf(0.85, measured) | TEST WRITTEN (FAIL on HEAD) — `bins/node/tests/m_rc11_fork_guard_backfill_regression.rs::test_b_deeper_reorg_with_missing_ancestor_preserves_invariant` |
 | M-RC12-full | Complete asymmetric blacklist (42fe7982 was partial) | `crates/network/src/sync/manager/sync_engine/response.rs:222-344` | -20 +35 | conf(0.7, partial fix exists) | PENDING |
 | M-Choice1 | State-root inclusion of EpochState (HF gated) | `crates/storage/src/snapshot.rs:22-57` + `crates/updater/src/hardfork.rs` | +40 | conf(0.7) | PENDING |
-| M-Choice2 | RUNTIME PERIODIC integrity check (background task) | `bins/node/src/node/periodic.rs` | +60 | conf(0.7) | PENDING |
+| M-Choice2 | RUNTIME PERIODIC integrity check (background task) | `bins/node/src/node/periodic.rs` | +60 | conf(0.7) | COMPLETE (local, pending commit) — 10/10 unit tests pass, see `docs/bugfixes/inc-i-034-m-choice2-periodic-integrity-check.md` |
 | M-Choice3 | `doli-cli repair-chain` subcommand | `bins/cli/src/cmd_chain.rs` | +80 | conf(0.65) | COMPLETE (local, pending commit) — 15/15 unit tests pass, see `docs/bugfixes/inc-i-034-m-choice3-chain-repair.md` |
 
 **Net remaining scope**: ~+205 LOC added, -54 LOC removed. Much smaller than the original 23-milestone plan because INC-I-035 work already landed.
