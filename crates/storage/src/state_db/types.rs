@@ -48,6 +48,7 @@ pub(super) const META_EPOCH_ATTESTATION_ACCUM: &[u8] = b"epoch_attestation_accum
 pub(super) const META_EPOCH_BLOCKS_PRODUCED: &[u8] = b"epoch_blocks_produced";
 pub(super) const META_EPOCH_BOND_SNAPSHOT: &[u8] = b"epoch_bond_snapshot";
 pub(super) const META_EPOCH_STATE: &[u8] = b"epoch_state";
+pub(super) const META_EPOCH_STATE_VERSION: &[u8] = b"epoch_state_version";
 
 /// Unified state database wrapping a single RocksDB instance.
 pub struct StateDb {

@@ -682,6 +682,28 @@ impl Node {
             info!("Block production enabled");
         }
 
+        // ── Epoch state version check ──
+        // If the binary's protocol version differs from the version that produced
+        // the persisted epoch_state, delete it so it gets rebuilt from blocks.
+        // This prevents reward-calculation mismatches after binary upgrades.
+        let persisted_version = state_db.get_epoch_state_version();
+        if let Some(pv) = persisted_version {
+            if pv != CURRENT_PROTOCOL_VERSION {
+                warn!(
+                    "[INIT] Protocol version changed ({} → {}): invalidating persisted epoch_state to force rebuild from blocks",
+                    pv, CURRENT_PROTOCOL_VERSION
+                );
+                state_db.delete_epoch_state();
+            }
+        } else if state_db.get_epoch_state().is_some() {
+            // Epoch state exists but no version marker — written by an older binary.
+            // Invalidate to be safe.
+            warn!(
+                "[INIT] Persisted epoch_state has no version marker: invalidating to force rebuild from blocks"
+            );
+            state_db.delete_epoch_state();
+        }
+
         // Load complete EpochState from unified key (written by post_commit + snap sync).
         // Falls back to individual keys (pre-upgrade) then UTXO reconstruction.
         let loaded_epoch_state: Option<doli_core::EpochState> =

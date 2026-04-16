@@ -14,7 +14,8 @@ use super::types::{
     LastApplied, StateDb, CF_EXIT_HISTORY, CF_META, CF_PRODUCERS, CF_UTXO, CF_UTXO_BY_PUBKEY,
     META_ACTIVE_PRODUCTION_LIST, META_CHAIN_STATE, META_EPOCH_ATTESTATION_ACCUM,
     META_EPOCH_ATTESTED_SET, META_EPOCH_BLOCKS_PRODUCED, META_EPOCH_BOND_SNAPSHOT,
-    META_EPOCH_PRODUCER_LIST, META_EPOCH_STATE, META_LAST_APPLIED, META_PENDING_UPDATES,
+    META_EPOCH_PRODUCER_LIST, META_EPOCH_STATE, META_EPOCH_STATE_VERSION, META_LAST_APPLIED,
+    META_PENDING_UPDATES,
 };
 
 impl StateDb {
@@ -377,6 +378,31 @@ impl StateDb {
             Ok(Some(bytes)) => Some(bytes.to_vec()),
             _ => None,
         }
+    }
+
+    /// Read the protocol version that was active when epoch_state was last persisted.
+    pub fn get_epoch_state_version(&self) -> Option<u32> {
+        let cf = self.db.cf_handle(CF_META).unwrap();
+        match self.db.get_cf(cf, META_EPOCH_STATE_VERSION) {
+            Ok(Some(bytes)) if bytes.len() == 4 => {
+                Some(u32::from_le_bytes(bytes[..4].try_into().unwrap()))
+            }
+            _ => None,
+        }
+    }
+
+    /// Delete the persisted epoch_state (forces rebuild from blocks on next startup).
+    pub fn delete_epoch_state(&self) {
+        let cf = self.db.cf_handle(CF_META).unwrap();
+        let _ = self.db.delete_cf(cf, META_EPOCH_STATE);
+    }
+
+    /// Persist the protocol version that was active when epoch_state was written.
+    pub fn put_epoch_state_version(&self, version: u32) {
+        let cf = self.db.cf_handle(CF_META).unwrap();
+        let _ = self
+            .db
+            .put_cf(cf, META_EPOCH_STATE_VERSION, version.to_le_bytes());
     }
 
     /// Load the full ProducerSet from the database.

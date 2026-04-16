@@ -47,7 +47,7 @@ use doli_core::{
     Attestation, Block, BlockHeader, MinuteAttestationTracker, Network, ProducerAnnouncement,
     ProducerGSet, Transaction,
 };
-use network::protocols::{SyncRequest, SyncResponse};
+use network::protocols::{SyncRequest, SyncResponse, CURRENT_PROTOCOL_VERSION};
 use network::{
     EquivocationDetector, EquivocationProof, NetworkCommand, NetworkConfig, NetworkEvent,
     NetworkService, PeerId, ProductionAuthorization, ReorgResult, SyncConfig, SyncManager,

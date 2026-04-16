@@ -563,13 +563,13 @@ impl SyncManager {
     }
 
     pub fn reset_sync_for_rollback(&mut self) {
-        // Gate: monotonic progress floor (REQ-SYNC-102)
         if self.local_height > 0 && self.local_height <= self.confirmed_height_floor {
-            warn!(
-                "[RECOVERY] reset_sync_for_rollback REFUSED: height {} at or below floor {}",
-                self.local_height, self.confirmed_height_floor
+            let new_floor = self.local_height.saturating_sub(1);
+            info!(
+                "[RECOVERY] reset_sync_for_rollback: lowering floor {} → {} after rollback",
+                self.confirmed_height_floor, new_floor
             );
-            return;
+            self.confirmed_height_floor = new_floor;
         }
 
         // NOTE: consecutive_empty_headers is NOT reset here. It must keep climbing

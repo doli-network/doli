@@ -66,6 +66,7 @@ impl Node {
         // causing sched divergence until the next epoch boundary. Latent fork trigger
         // at 50+ producers when tier promotion reads attestation_accum[0].
         batch.put_epoch_state(&self.epoch_state.serialize());
+        batch.put_epoch_state_version(CURRENT_PROTOCOL_VERSION);
 
         if doli_core::EpochSnapshot::is_epoch_boundary_with(height, blocks_per_epoch) {
             let epoch = doli_core::EpochSnapshot::epoch_from_height_with(height, blocks_per_epoch);
@@ -205,6 +206,7 @@ impl Node {
             );
             batch.put_epoch_bond_snapshot(&new_state.bond_snapshot, new_state.epoch);
             batch.put_epoch_state(&new_state.serialize());
+            batch.put_epoch_state_version(CURRENT_PROTOCOL_VERSION);
 
             // Apply the new epoch state
             self.epoch_state = new_state;

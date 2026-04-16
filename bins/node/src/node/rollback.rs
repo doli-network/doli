@@ -318,6 +318,17 @@ impl Node {
                 return Ok(false);
             }
         } else {
+            // Backoff: after 3 consecutive rollbacks without a successful block
+            // apply, stop rolling back. The rollback loop (every 10s, gap grows
+            // infinitely) was the root cause of the 2026-04-16 cascade.
+            if self.shallow_rollback_count >= 3 && last_applied_secs < 60 {
+                warn!(
+                    "[FORK] stuck_fork_signal SUPPRESSED: {} consecutive rollbacks without progress, \
+                     waiting for sync (gap={}, last_applied={}s)",
+                    self.shallow_rollback_count, gap, last_applied_secs
+                );
+                return Ok(false);
+            }
             info!(
                 "[FORK] stuck_fork_signal consumed (gap={}, last_applied={}s, empty_headers={}) — \
                  bypassing heuristic guards (anti-cascade-orphan path)",
