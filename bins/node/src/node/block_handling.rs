@@ -108,10 +108,7 @@ impl Node {
                             self.sync_manager
                                 .write()
                                 .await
-                                .note_orphan_gossip_block(
-                                    fork_block_height,
-                                    block.header.slot,
-                                );
+                                .note_orphan_gossip_block(fork_block_height, block.header.slot);
                             return Ok(());
                         }
                     }

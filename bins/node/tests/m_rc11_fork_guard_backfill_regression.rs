@@ -393,7 +393,10 @@ async fn test_a_simple_tip_reorg_preserves_invariant() {
     );
 
     // Pre-populate fork_block_cache so execute_reorg can find B5.
-    node.fork_block_cache.write().await.insert(b5_hash, b5.clone());
+    node.fork_block_cache
+        .write()
+        .await
+        .insert(b5_hash, b5.clone());
 
     // Construct ReorgResult: roll back A5, common_ancestor=A4, new_blocks=[B5].
     let reorg = ReorgResult {
@@ -421,15 +424,17 @@ async fn test_a_simple_tip_reorg_preserves_invariant() {
     );
 
     // O2 + O3 + O4: completeness invariant must hold post-reorg.
-    check_completeness_invariant(&node).await.unwrap_or_else(|e| {
-        panic!(
-            "P1 POST: REQ-REDESIGN-011 invariant violated after a simple \
+    check_completeness_invariant(&node)
+        .await
+        .unwrap_or_else(|e| {
+            panic!(
+                "P1 POST: REQ-REDESIGN-011 invariant violated after a simple \
              tip reorg. This is the REGRESSION ANCHOR — if it fails, the \
              fix has broken the common case. Pre={:?} Post={:?}\n\
              Violation: {}",
-            pre, post, e
-        )
-    });
+                pre, post, e
+            )
+        });
 }
 
 // ============================================================
@@ -531,8 +536,8 @@ async fn test_b_deeper_reorg_with_missing_ancestor_preserves_invariant() {
     let derived_a5_hash = derive_chain_hash_at(5, &producers, &params).await;
     let b6 = build_block(
         6,
-        6_u32,    // block_slot
-        9999_u32, // coinbase_slot — distinct so B6 differs from the deleted A6
+        6_u32,           // block_slot
+        9999_u32,        // coinbase_slot — distinct so B6 differs from the deleted A6
         derived_a5_hash, // builds on the NOW-MISSING A5
         &producers[(6_usize) % producers.len()],
         &params,
@@ -593,12 +598,7 @@ async fn test_b_deeper_reorg_with_missing_ancestor_preserves_invariant() {
                  silent `unwrap_or(genesis_hash)` at \
                  block_handling.rs:406-409 corrupts chain_state and is the \
                  root cause of the 2026-04-16 santiago/ivan/seed3 cascade.",
-                pre.best_height,
-                pre.best_hash,
-                post.best_height,
-                post.best_hash,
-                cs_genesis,
-                e
+                pre.best_height, pre.best_hash, post.best_height, post.best_hash, cs_genesis, e
             );
         }
     } else {
@@ -692,13 +692,15 @@ async fn test_c_reorg_with_missing_new_block_does_not_advance_chain_state() {
     );
 
     // O2+O3: invariant still holds.
-    check_completeness_invariant(&node).await.unwrap_or_else(|e| {
-        panic!(
-            "P4 POST: invariant must hold after a no-op execute_reorg. \
+    check_completeness_invariant(&node)
+        .await
+        .unwrap_or_else(|e| {
+            panic!(
+                "P4 POST: invariant must hold after a no-op execute_reorg. \
              Violation: {}",
-            e
-        )
-    });
+                e
+            )
+        });
 }
 
 // ============================================================

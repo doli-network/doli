@@ -193,9 +193,7 @@ impl RpcContext {
                 .await
             {
                 if let Ok(body) = resp.json::<serde_json::Value>().await {
-                    let peer_commitment = body["result"]["chainCommitment"]
-                        .as_str()
-                        .unwrap_or("");
+                    let peer_commitment = body["result"]["chainCommitment"].as_str().unwrap_or("");
                     let local_hex = hex::encode(local_commitment.as_bytes());
                     if !peer_commitment.is_empty() && peer_commitment != local_hex {
                         info!(

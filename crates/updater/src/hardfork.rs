@@ -404,9 +404,10 @@ mod m_choice1_epoch_snapshot_hf_tests {
     fn find_epoch_snapshot_entry(schedule: &HardForkSchedule) -> Option<&HardForkInfo> {
         schedule.all().iter().find(|f| {
             let text = f.consensus_changes.join(" ").to_lowercase();
-            let has_epoch_marker =
-                text.contains("epochstate") || text.contains("epochsnapshot")
-                    || text.contains("epoch state") || text.contains("epoch snapshot");
+            let has_epoch_marker = text.contains("epochstate")
+                || text.contains("epochsnapshot")
+                || text.contains("epoch state")
+                || text.contains("epoch snapshot");
             let has_state_root = text.contains("state root") || text.contains("state_root");
             has_epoch_marker && has_state_root
         })
@@ -450,7 +451,9 @@ mod m_choice1_epoch_snapshot_hf_tests {
                          per spec formula floor((current_height + 7200) / 360) * 360. \
                          Committing a low height here would retro-activate the HF on \
                          an already-running chain and fork the network.",
-                        network, entry.activation_height, FAR_FUTURE_MIN
+                        network,
+                        entry.activation_height,
+                        FAR_FUTURE_MIN
                     );
 
                     assert!(
@@ -459,7 +462,8 @@ mod m_choice1_epoch_snapshot_hf_tests {
                          MUST start with '7.' — the state-root formula change is a \
                          major consensus break and requires a major-version bump so \
                          peer-scoring can partition legacy binaries at the gate.",
-                        network, entry.min_version
+                        network,
+                        entry.min_version
                     );
                 }
                 doli_core::Network::Devnet => {

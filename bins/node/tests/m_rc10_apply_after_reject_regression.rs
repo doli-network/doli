@@ -397,10 +397,8 @@ async fn test_b_non_boundary_full_mode_rejects_cleanly() {
         pre.pool_utxo_count
     );
 
-    let recipient_pkh = crypto::hash_with_domain(
-        crypto::ADDRESS_DOMAIN,
-        producers[0].public_key().as_bytes(),
-    );
+    let recipient_pkh =
+        crypto::hash_with_domain(crypto::ADDRESS_DOMAIN, producers[0].public_key().as_bytes());
     let distributable = pre.pool_utxo_total_amount + params.block_reward(3);
     let bad_block = build_bad_epoch_reward_block(
         3,
@@ -488,10 +486,8 @@ async fn test_c_non_boundary_light_mode_must_also_reject() {
         pre.pool_utxo_count
     );
 
-    let recipient_pkh = crypto::hash_with_domain(
-        crypto::ADDRESS_DOMAIN,
-        producers[0].public_key().as_bytes(),
-    );
+    let recipient_pkh =
+        crypto::hash_with_domain(crypto::ADDRESS_DOMAIN, producers[0].public_key().as_bytes());
     let distributable = pre.pool_utxo_total_amount + params.block_reward(3);
     let bad_block = build_bad_epoch_reward_block(
         3,
@@ -625,10 +621,8 @@ async fn test_d_duplicate_reject_no_ratcheting_damage() {
     let (tip_hash, _) = apply_plain_chain(&mut node, &producers, 2, &params).await;
     let pre = snapshot_state(&node).await;
 
-    let recipient_pkh = crypto::hash_with_domain(
-        crypto::ADDRESS_DOMAIN,
-        producers[0].public_key().as_bytes(),
-    );
+    let recipient_pkh =
+        crypto::hash_with_domain(crypto::ADDRESS_DOMAIN, producers[0].public_key().as_bytes());
     let distributable = pre.pool_utxo_total_amount + params.block_reward(3);
     let bad_block = build_bad_epoch_reward_block(
         3,

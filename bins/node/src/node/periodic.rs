@@ -366,11 +366,7 @@ impl Node {
             let check_height = local_h % 10 == 1 || local_h % 10 == 4 || local_h % 10 == 7;
             if local_h > 10 && check_height && since_last >= blocks_per_epoch {
                 let last_applied_secs = self.sync_manager.read().await.last_block_applied_secs();
-                let is_minority = self
-                    .sync_manager
-                    .read()
-                    .await
-                    .is_minority_fork(local_h);
+                let is_minority = self.sync_manager.read().await.is_minority_fork(local_h);
                 if is_minority && last_applied_secs > 60 {
                     warn!(
                         "[ACTIVE_FORK_DETECT] Minority fork at h={}: local={:.16}, stale {}s. Rolling back 1.",

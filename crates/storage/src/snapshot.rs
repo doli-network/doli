@@ -475,8 +475,7 @@ mod m_choice1_state_root_hf_tests {
         cs2.best_height = 1234;
 
         let legacy2 = compute_state_root(&cs2, &utxo, &ps).unwrap();
-        let new_with_none2 =
-            compute_state_root_with_epoch_state(&cs2, &utxo, &ps, None).unwrap();
+        let new_with_none2 = compute_state_root_with_epoch_state(&cs2, &utxo, &ps, None).unwrap();
         assert_eq!(
             legacy2, new_with_none2,
             "M-Choice1: None-path must track legacy across arbitrary state changes"
