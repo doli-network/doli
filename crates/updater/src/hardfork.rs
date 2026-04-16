@@ -165,26 +165,65 @@ impl HardForkSchedule {
     ///
     /// ## Current entries
     ///
-    /// - **Testnet, h=17000, min_version=6.7.8**: INC-I-026 scheduler fix.
-    ///   Producers running <6.7.8 stop production at h=17000 on testnet so
-    ///   legacy-scheduler nodes can't keep producing wrong blocks after the
-    ///   fix activates.
+    /// - **Mainnet, h=10_000_080, min_version=7.0.0**: INC-I-034 / M-Choice1
+    ///   EpochState-in-state-root hard fork (Phase-1 scheduling). The
+    ///   activation height is a FAR-FUTURE PLACEHOLDER and MUST be updated
+    ///   before any mainnet binary deploy using the spec formula
+    ///   `floor((current_height + 7200) / 360) * 360`, which aligns to the
+    ///   next epoch boundary at least 2 hours ahead of deploy. Per CLAUDE.md
+    ///   Rule #0: NO genesis reset; activation is strictly future-height.
     ///
-    /// - **Mainnet, h=30500, min_version=6.7.8**: INC-I-026 scheduler fix.
-    ///   Producers running <6.7.8 stop production at h=30500 on mainnet so
-    ///   legacy-scheduler nodes can't keep producing wrong blocks after the
-    ///   fix activates. Must match
-    ///   `NetworkParams::inc_i_026_scheduler_activation_height` on mainnet.
+    /// - **Testnet, h=10_000_080, min_version=7.0.0**: INC-I-034 / M-Choice1
+    ///   EpochState-in-state-root hard fork (Phase-1 scheduling). Same
+    ///   placeholder as Mainnet. Operators set the real testnet height
+    ///   first, validate REQ-REDESIGN-001 (byte-identical state root vs
+    ///   6.13.28 reference for 3 consecutive epochs), then update Mainnet.
     ///
-    /// - **Devnet**: no entry. Tests exercise activation directly.
+    /// - **Devnet**: no entry. Devnet resets constantly and exercises
+    ///   activation paths directly via test fixtures.
+    ///
+    /// Phase-1 responsibility (this milestone): ship the scheduled entry,
+    /// land the `storage::compute_state_root_with_epoch_state` primitive,
+    /// bump `CURRENT_PROTOCOL_VERSION` 3 -> 4. No call-site wiring; no
+    /// retroactive state-root change.
+    ///
+    /// Phase-2 responsibility (separate milestone): wire the 15 current
+    /// `storage::compute_state_root` call-sites to consult this schedule
+    /// and pass `Some(H(EpochSnapshot))` at/after activation_height.
+    ///
+    /// Spec: `specs/scheduler-state-architecture.md` — "State-root inclusion
+    /// (timing: SAME HF)"; migration path "Phase 1" item 6.
     pub fn for_network(network: doli_core::Network) -> Self {
-        let schedule = Self::new();
+        let mut schedule = Self::new();
         match network {
-            doli_core::Network::Testnet
-            | doli_core::Network::Mainnet
-            | doli_core::Network::Devnet => {
-                // All features active from genesis (activation_height=0).
-                // No hardfork entries needed — no version gating required.
+            doli_core::Network::Mainnet => {
+                // EPOCH_SNAPSHOT_HF — INC-I-034 / M-Choice1.
+                //
+                // activation_height = 10_000_080 is a placeholder
+                // (= 27778 * 360, epoch-aligned with BLOCKS_PER_EPOCH=360).
+                // Must be updated at deploy-time; see for_network doc above.
+                schedule.add(HardForkInfo {
+                    activation_height: 10_000_080,
+                    min_version: "7.0.0".to_string(),
+                    consensus_changes: vec![
+                        "EpochState state root inclusion (M-Choice1)".to_string()
+                    ],
+                });
+            }
+            doli_core::Network::Testnet => {
+                // Same placeholder as Mainnet — operators update after
+                // testnet activation-height decision; see for_network doc.
+                schedule.add(HardForkInfo {
+                    activation_height: 10_000_080,
+                    min_version: "7.0.0".to_string(),
+                    consensus_changes: vec![
+                        "EpochState state root inclusion (M-Choice1)".to_string()
+                    ],
+                });
+            }
+            doli_core::Network::Devnet => {
+                // No entry. Devnet resets constantly and exercises
+                // activation paths directly via test fixtures.
             }
         }
         schedule
@@ -317,5 +356,187 @@ mod tests {
         assert_eq!(schedule.active_forks(50).len(), 0);
         assert_eq!(schedule.active_forks(100).len(), 1);
         assert_eq!(schedule.active_forks(200).len(), 2);
+    }
+}
+
+// =============================================================================
+// M-Choice1 — EPOCH_SNAPSHOT_HF schedule entry
+// =============================================================================
+//
+// INC-I-034 / M-Choice1. Spec: specs/scheduler-state-architecture.md
+// "State-root inclusion (timing: SAME HF — convergent)". Locked 2026-04-16 as
+// CHOICE 1 = SAME HF.
+//
+// Phase-1 scope (this module verifies):
+//   - `HardForkSchedule::for_network(network)` contains an entry for every
+//     production network (Mainnet, Testnet) whose consensus_changes describe
+//     the EpochState → state-root inclusion change, at a far-future placeholder
+//     height (>= 1_000_000) per CLAUDE.md Rule #0 (NO genesis reset — activate
+//     forward-only). Operator will set the real height at deploy-time using
+//     the spec formula floor((current_height + 7200) / 360) * 360 before the
+//     binary ships.
+//   - `min_version` starts with "7." — the major bump for this HF.
+//   - `fork_id()` transitions from Hash::ZERO (pre-activation) to a non-ZERO
+//     value (at and after activation) for a schedule carrying only this entry.
+//
+// OUTPUT CONTRACT: HardForkSchedule::for_network(network)
+//   O1: return schedule with EPOCH_SNAPSHOT_HF entry containing
+//       "EpochState"|"EpochSnapshot" AND "state root" in consensus_changes.
+//       Mainnet/Testnet: activation_height >= 1_000_000, min_version ^ "7."
+//       Devnet: no entry OR activation_height = 0 (devnet resets constantly).
+// PATHS: P1: Mainnet, P2: Testnet, P3: Devnet
+// MATRIX: 1 output × 3 paths = 3 assertion clusters (Test 4)
+//
+// OUTPUT CONTRACT: HardForkSchedule::fork_id(genesis, h) with EPOCH_SNAPSHOT_HF
+//   O1: Hash::ZERO  when h < activation_height
+//       non-ZERO    when h >= activation_height
+// PATHS: P1: h = activation-1, P2: h = activation, P3: h = activation+1
+// MATRIX: 1 output × 3 paths = 3 assertions (Test 5)
+#[cfg(test)]
+mod m_choice1_epoch_snapshot_hf_tests {
+    use super::*;
+
+    const FAR_FUTURE_MIN: u64 = 1_000_000;
+
+    /// Locate the EPOCH_SNAPSHOT_HF entry inside a schedule. Returns the
+    /// `activation_height` on success so sibling tests can pin behavior at
+    /// that exact height. A fork is considered the EPOCH_SNAPSHOT entry when
+    /// its consensus_changes mention BOTH an EpochState/EpochSnapshot marker
+    /// AND the phrase "state root" — the combination is what defines this HF
+    /// vs any future fork that might only change one of those things.
+    fn find_epoch_snapshot_entry(schedule: &HardForkSchedule) -> Option<&HardForkInfo> {
+        schedule.all().iter().find(|f| {
+            let text = f.consensus_changes.join(" ").to_lowercase();
+            let has_epoch_marker =
+                text.contains("epochstate") || text.contains("epochsnapshot")
+                    || text.contains("epoch state") || text.contains("epoch snapshot");
+            let has_state_root = text.contains("state root") || text.contains("state_root");
+            has_epoch_marker && has_state_root
+        })
+    }
+
+    /// Test 4 — every production network has an EPOCH_SNAPSHOT_HF entry at a
+    /// safe far-future placeholder height, with a version marker that forces
+    /// a major bump. Devnet is allowed to have either no entry or an entry at
+    /// height 0 (devnet resets constantly and re-derives from genesis).
+    #[test]
+    fn test_m_choice1_schedule_has_epoch_snapshot_hf() {
+        for network in [
+            doli_core::Network::Mainnet,
+            doli_core::Network::Testnet,
+            doli_core::Network::Devnet,
+        ] {
+            let schedule = HardForkSchedule::for_network(network);
+            let entry_opt = find_epoch_snapshot_entry(&schedule);
+
+            match network {
+                doli_core::Network::Mainnet | doli_core::Network::Testnet => {
+                    let entry = entry_opt.unwrap_or_else(|| {
+                        panic!(
+                            "M-Choice1: HardForkSchedule::for_network({:?}) MUST contain \
+                             an EPOCH_SNAPSHOT_HF entry whose consensus_changes mention \
+                             both an EpochState/EpochSnapshot marker and 'state root'. \
+                             Spec: specs/scheduler-state-architecture.md, \
+                             'State-root inclusion (timing: SAME HF — convergent)'. \
+                             Schedule currently has {} entries: {:#?}",
+                            network,
+                            schedule.all().len(),
+                            schedule.all()
+                        )
+                    });
+
+                    assert!(
+                        entry.activation_height >= FAR_FUTURE_MIN,
+                        "M-Choice1: {:?} EPOCH_SNAPSHOT_HF activation_height = {} \
+                         MUST be a far-future placeholder (>= {}). CLAUDE.md Rule #0: \
+                         NO genesis reset. Operators set the real height at deploy-time \
+                         per spec formula floor((current_height + 7200) / 360) * 360. \
+                         Committing a low height here would retro-activate the HF on \
+                         an already-running chain and fork the network.",
+                        network, entry.activation_height, FAR_FUTURE_MIN
+                    );
+
+                    assert!(
+                        entry.min_version.starts_with("7."),
+                        "M-Choice1: {:?} EPOCH_SNAPSHOT_HF min_version = {:?} \
+                         MUST start with '7.' — the state-root formula change is a \
+                         major consensus break and requires a major-version bump so \
+                         peer-scoring can partition legacy binaries at the gate.",
+                        network, entry.min_version
+                    );
+                }
+                doli_core::Network::Devnet => {
+                    if let Some(entry) = entry_opt {
+                        assert_eq!(
+                            entry.activation_height, 0,
+                            "M-Choice1: Devnet EPOCH_SNAPSHOT_HF entry, if present, \
+                             must be at activation_height=0 (devnet resets constantly \
+                             and re-derives genesis). activation_height={} is neither \
+                             absent nor 0.",
+                            entry.activation_height
+                        );
+                    }
+                    // No entry at all is also acceptable for devnet.
+                }
+            }
+        }
+    }
+
+    /// Test 5 — fork_id transition at activation boundary.
+    ///
+    /// Build a synthetic schedule carrying ONLY the EPOCH_SNAPSHOT_HF entry
+    /// (extracted from the Mainnet schedule so the activation_height we test
+    /// is the exact one the binary will deploy with). Assert that fork_id()
+    /// flips from Hash::ZERO to a non-ZERO value at the boundary and stays
+    /// non-ZERO afterwards. This is how peers distinguish pre- and post-HF
+    /// chains during handshake, so a broken transition would silently allow
+    /// pre-HF peers to keep gossiping on the post-HF chain.
+    #[test]
+    fn test_m_choice1_fork_id_changes_at_activation() {
+        let mainnet_schedule = HardForkSchedule::for_network(doli_core::Network::Mainnet);
+        let entry = find_epoch_snapshot_entry(&mainnet_schedule).unwrap_or_else(|| {
+            panic!(
+                "M-Choice1: cannot run fork_id transition test — Mainnet schedule \
+                 is missing the EPOCH_SNAPSHOT_HF entry. Test 4 should fail first."
+            )
+        });
+        let activation = entry.activation_height;
+        assert!(
+            activation >= FAR_FUTURE_MIN,
+            "fixture sanity: activation must be a far-future placeholder"
+        );
+
+        // Fresh schedule carrying only the EPOCH_SNAPSHOT_HF entry.
+        let mut isolated = HardForkSchedule::new();
+        isolated.add(entry.clone());
+
+        let genesis = crypto::Hash::ZERO;
+
+        let before = isolated.fork_id(&genesis, activation.saturating_sub(1));
+        let at = isolated.fork_id(&genesis, activation);
+        let after = isolated.fork_id(&genesis, activation + 1);
+
+        assert_eq!(
+            before,
+            crypto::Hash::ZERO,
+            "M-Choice1: fork_id BEFORE activation (h = {} - 1) must be Hash::ZERO \
+             (no fork active yet). Got {:?}",
+            activation,
+            before
+        );
+        assert_ne!(
+            at,
+            crypto::Hash::ZERO,
+            "M-Choice1: fork_id AT activation (h = {}) must be non-ZERO — the HF \
+             boundary must be observable in fork_id to partition legacy peers.",
+            activation
+        );
+        assert_eq!(
+            at, after,
+            "M-Choice1: fork_id AT activation (h = {}) and AFTER (h = {}+1) must \
+             be EQUAL — fork_id is a function of the set of ACTIVE forks, so the \
+             value is stable once all included forks have activated.",
+            activation, activation
+        );
     }
 }
