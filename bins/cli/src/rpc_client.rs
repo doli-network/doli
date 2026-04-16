@@ -131,6 +131,28 @@ pub struct ChainIntegrity {
     pub chain_commitment: Option<String>,
 }
 
+/// Backfill progress status (from backfillStatus RPC).
+///
+/// Mirrors the server-side `BackfillStatusResponse` in
+/// `crates/rpc/src/types/chain.rs`. Single-word field names are identical in
+/// both snake_case and camelCase, so this is on-the-wire compatible regardless
+/// of server serialization choice.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackfillStatusResponse {
+    /// Whether a backfill is currently running
+    pub running: bool,
+    /// Number of blocks imported so far
+    pub imported: u64,
+    /// Total number of blocks to import
+    pub total: u64,
+    /// Progress percentage (0-100)
+    pub pct: u64,
+    /// Error message if backfill failed
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
 /// Network parameters (from getNetworkParams RPC)
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
@@ -556,6 +578,28 @@ impl RpcClient {
         struct Params {}
 
         self.call("verifyChainIntegrity", Params {}).await
+    }
+
+    /// Start a backfill from a peer's RPC URL.
+    ///
+    /// Returns the raw JSON response; the server controls the shape:
+    ///   - `{started: true, gaps: "1-3, 7-8", total: 5}` when a new backfill starts
+    ///   - `{started: false, message: "..."}` when there are no gaps or backfill is already running
+    pub async fn backfill_from_peer(&self, rpc_url: &str) -> Result<serde_json::Value> {
+        #[derive(Serialize)]
+        struct Params<'a> {
+            rpc_url: &'a str,
+        }
+
+        self.call_raw("backfillFromPeer", Params { rpc_url }).await
+    }
+
+    /// Get backfill progress status.
+    pub async fn backfill_status(&self) -> Result<BackfillStatusResponse> {
+        #[derive(Serialize)]
+        struct Params {}
+
+        self.call("backfillStatus", Params {}).await
     }
 
     /// Get network parameters (bond_unit, slot_duration, etc.)
