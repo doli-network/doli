@@ -1,5 +1,16 @@
 # INC-I-034 / M-Choice2 — RUNTIME PERIODIC Block-store Integrity Check (Phase 1, Observability-only)
 
+> **UPDATE 2026-04-16 (post-M-Choice3 revert):** the CRITICAL log message
+> referenced throughout this report originally pointed operators at
+> `doli chain-repair --peer <RPC_URL>`. That subcommand was reverted
+> alongside commit 8caea821 because it wrapped the existing `backfillFromPeer`
+> RPC with no new capability. The live code (commit a1334818) now points
+> operators at the RPC directly — call it via curl or the doli-ops
+> backfill skill (see MEMORY.md rule #1 for the RPC-URL format). The
+> body of this report below is preserved as a historical snapshot for
+> commit 953a7c3d; all runtime behaviour (interval, spam guard,
+> observability-only stance) is unchanged.
+
 - **Incident**: INC-I-034
 - **Milestone**: M-Choice2 (locked user decision: "RUNTIME PERIODIC")
 - **Branch**: `synmgrefactor`
