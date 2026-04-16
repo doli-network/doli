@@ -168,7 +168,7 @@ pub fn rank_producers_by_presence(
         .collect();
 
     // Sort by score descending (bonds don't affect rank, only selection weight)
-    ranked.sort_by(|a, b| b.1.cmp(&a.1));
+    ranked.sort_by_key(|b| std::cmp::Reverse(b.1));
 
     // Add ranks
     ranked

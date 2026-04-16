@@ -196,7 +196,7 @@ impl SimplePresenceState {
             .collect();
 
         // Sort by score descending
-        ranked.sort_by(|a, b| b.1.cmp(&a.1));
+        ranked.sort_by_key(|b| std::cmp::Reverse(b.1));
         ranked
     }
 
@@ -373,7 +373,7 @@ impl TpopMetrics {
 
         let total: u64 = scores.iter().sum();
         let count = scores.len() as u64;
-        let avg = if count > 0 { total / count } else { 0 };
+        let avg = total.checked_div(count).unwrap_or(0);
 
         let gini = calculate_gini(&scores);
 

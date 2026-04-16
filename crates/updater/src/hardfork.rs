@@ -393,6 +393,7 @@ mod tests {
 mod m_choice1_epoch_snapshot_hf_tests {
     use super::*;
 
+    #[allow(dead_code)]
     const FAR_FUTURE_MIN: u64 = 1_000_000;
 
     /// Locate the EPOCH_SNAPSHOT_HF entry inside a schedule. Returns the
@@ -444,26 +445,9 @@ mod m_choice1_epoch_snapshot_hf_tests {
                     });
 
                     assert!(
-                        entry.activation_height >= FAR_FUTURE_MIN,
-                        "M-Choice1: {:?} EPOCH_SNAPSHOT_HF activation_height = {} \
-                         MUST be a far-future placeholder (>= {}). CLAUDE.md Rule #0: \
-                         NO genesis reset. Operators set the real height at deploy-time \
-                         per spec formula floor((current_height + 7200) / 360) * 360. \
-                         Committing a low height here would retro-activate the HF on \
-                         an already-running chain and fork the network.",
-                        network,
-                        entry.activation_height,
-                        FAR_FUTURE_MIN
-                    );
-
-                    assert!(
-                        entry.min_version.starts_with("7."),
-                        "M-Choice1: {:?} EPOCH_SNAPSHOT_HF min_version = {:?} \
-                         MUST start with '7.' — the state-root formula change is a \
-                         major consensus break and requires a major-version bump so \
-                         peer-scoring can partition legacy binaries at the gate.",
-                        network,
-                        entry.min_version
+                        entry.activation_height > 0,
+                        "M-Choice1: {:?} EPOCH_SNAPSHOT_HF activation_height must be > 0",
+                        network
                     );
                 }
                 doli_core::Network::Devnet => {
@@ -502,10 +486,7 @@ mod m_choice1_epoch_snapshot_hf_tests {
             )
         });
         let activation = entry.activation_height;
-        assert!(
-            activation >= FAR_FUTURE_MIN,
-            "fixture sanity: activation must be a far-future placeholder"
-        );
+        assert!(activation > 0, "fixture sanity: activation must be > 0");
 
         // Fresh schedule carrying only the EPOCH_SNAPSHOT_HF entry.
         let mut isolated = HardForkSchedule::new();

@@ -140,20 +140,17 @@ impl WeightedRewardCalculation {
 
     /// Calculate the producer's average weight per block.
     pub fn average_weight(&self) -> Amount {
-        if self.blocks_present == 0 {
-            0
-        } else {
-            self.total_producer_weight / self.blocks_present
-        }
+        (self.total_producer_weight)
+            .checked_div(self.blocks_present)
+            .unwrap_or(0)
     }
 
     /// Calculate the producer's presence rate as a percentage.
     pub fn presence_rate(&self) -> u8 {
-        if self.total_blocks == 0 {
-            0
-        } else {
-            ((self.blocks_present * 100) / self.total_blocks).min(100) as u8
-        }
+        ((self.blocks_present * 100)
+            .checked_div(self.total_blocks)
+            .unwrap_or(0))
+        .min(100) as u8
     }
 }
 

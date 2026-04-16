@@ -87,6 +87,55 @@ impl Node {
 
     /// Run periodic tasks
     pub async fn run_periodic_tasks(&mut self) -> Result<()> {
+        // One-shot block store integrity scan on first tick after startup.
+        // Verifies no gaps exist and bootstraps the incremental chain commitment.
+        // Runs once (last_integrity_check_tip goes from None → Some), O(1) thereafter.
+        if self.last_integrity_check_tip.is_none() {
+            let tip = self.chain_state.read().await.best_height;
+            if tip > 0 {
+                let block_store = self.block_store.clone();
+                let state_db = self.state_db.clone();
+                let scan_tip = tip;
+                tokio::task::spawn(async move {
+                    let result = tokio::task::spawn_blocking(move || {
+                        let mut missing = 0u64;
+                        let mut commitment = crypto::Hash::default();
+                        for h in 1..=scan_tip {
+                            match block_store.get_block_by_height(h) {
+                                Ok(Some(blk)) => {
+                                    let hash = blk.hash();
+                                    let mut hasher = crypto::Hasher::new();
+                                    hasher.update(commitment.as_bytes());
+                                    hasher.update(hash.as_bytes());
+                                    commitment = hasher.finalize();
+                                }
+                                _ => missing += 1,
+                            }
+                        }
+                        (missing, commitment)
+                    })
+                    .await;
+                    if let Ok((missing, commitment)) = result {
+                        if missing > 0 {
+                            tracing::warn!(
+                                "[INTEGRITY] Startup scan: {} missing blocks in 1..={}",
+                                missing,
+                                scan_tip
+                            );
+                            state_db.delete_chain_commitment();
+                        } else {
+                            tracing::info!(
+                                "[INTEGRITY] Startup scan: chain complete (1..={}), commitment persisted",
+                                scan_tip
+                            );
+                            state_db.put_chain_commitment(&commitment);
+                        }
+                    }
+                });
+                self.last_integrity_check_tip = Some(tip);
+            }
+        }
+
         // Clean stale entries from seen_blocks_for_slot (keep last 10 slots)
         {
             let current_slot = self.chain_state.read().await.best_slot;
