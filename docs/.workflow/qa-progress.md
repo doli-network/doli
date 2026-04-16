@@ -170,3 +170,45 @@ Recommendation: green-light
 - Author: `Antonio Lozada <antonio@omegacortex.ai>`.
 - Post-commit: testnet deployment per CLAUDE.md checklist (step 5: cp + codesign).
 - Monitor post-deploy for new log line: `local hash not recognized by peer. NOT blacklisting (asymmetric invariant)`. Expected on minority-fork nodes; benign.
+
+---
+
+# M-Choice1 Reviewer (2026-04-16)
+
+- Milestone: M-Choice1 — Phase-1 EpochState-in-state-root HardForkSchedule entry (NO call-site wiring)
+- Incident: INC-I-034
+- Branch: `synmgrefactor` (uncommitted)
+- Scope reviewed:
+  - `crates/storage/src/snapshot.rs` (+71 LOC: new `compute_state_root_with_epoch_state` + 3 m_choice1 tests; legacy `compute_state_root` verified byte-identical)
+  - `crates/network/src/protocols/status.rs` (`CURRENT_PROTOCOL_VERSION: 3 -> 4`, MIN_PEER held at 1, +2 tests)
+  - `crates/updater/src/hardfork.rs` (`for_network` seeds Mainnet+Testnet EPOCH_SNAPSHOT_HF at h=10_000_080, min_version 7.0.0; Devnet empty; +2 tests)
+  - `docs/bugfixes/inc-i-034-m-choice1-state-root-hf.md` (new)
+  - `docs/.workflow/milestone-progress.md` (M-Choice1 row flipped)
+- Spec: `specs/scheduler-state-architecture.md` — "State-root inclusion (timing: SAME HF)" + Migration Phase-1 items 3 + 6
+
+## M-Choice1 Reviewer Verdict
+Verdict: APPROVE
+Legacy compute_state_root untouched: yes (snapshot.rs:24-59 byte-identical; signature, doc, canonical-encoding, individual hashes, tracing::info!, 96-byte combined buffer, all preserved)
+4-component ordering: matches legacy prefix (cs || utxo || ps || es) — spec prose ordering differs but legacy order is locked by committed mainnet state roots; reviewer confirms correctness of developer choice.
+CURRENT_PROTOCOL_VERSION bump: 3 -> 4
+MIN_PEER unchanged: yes (held at 1 — essential for v3/v4 Phase-1 coexistence)
+No call-site wiring: yes — zero callers outside m_choice1 test module. 4 production callers of legacy `compute_state_root` (event_loop, apply_block/state_update, validation_checks, fork_recovery) unchanged.
+HF entries: correct — Mainnet + Testnet at h=10_000_080 (= 27778*360, epoch-aligned); Devnet no entry; consensus_changes mentions EpochState + state root + INC-I-034.
+Tests: 7/7 m_choice1 (storage 3/3, updater 2/2, network 2/2) + regression (storage 173/173, updater 36/36, network 304/304 +1 pre-existing ignored, doli-node lib 20/20).
+Build gates: clean (cargo build --release --workspace + cargo clippy --workspace -- -D warnings).
+Scope: pass — exactly 5 files; no apply_block/snap_sync/cleanup/Node-struct edits.
+Docs: pass — bugfix report covers Phase-1-only scope (repeated), three-layer coverage table with Phase-2 deferrals, FAIL->PASS per crate, placeholder rationale + operator checklist, version-bump justification.
+
+## Consensus-layer safety summary
+- State root unchanged on every existing chain: legacy function byte-identical; every production caller still invokes 3-component; new function exists as a linked-but-uncalled primitive. Phase-1 state roots bit-identical to pre-M-Choice1.
+- Activation height safely future: placeholder 10_000_080 is ~250x current tip; accidental ship-as-is = HF never fires = no consensus change.
+- fork_id boundary sharp: pre-activation Hash::ZERO, at-and-after activation non-ZERO and stable.
+- Protocol version signals capability without partitioning: v4 advertises "can switch formulas at gate"; MIN_PEER=1 keeps v3 peers connected until operators cross the mainnet boundary.
+- 4-component formula pinned by explicit byte recomputation in Test 2: any silent re-ordering or extra framing would break the test.
+
+## Issues (non-blocking)
+- (nit) Developer bugfix cites "15 call sites" — actual production count is 4 (bookkeeping number, not a defect).
+- (nit) `specs/protocol.md:1479` has pre-existing stale CURRENT_PROTOCOL_VERSION=2 note (out of scope; `/sync-docs` follow-up).
+- (nit) `cargo fmt --check` drift in test modules is pre-existing from test-writer pass.
+
+Recommendation: green-light for commit as `Antonio Lozada <antonio@omegacortex.ai>` on `synmgrefactor`.

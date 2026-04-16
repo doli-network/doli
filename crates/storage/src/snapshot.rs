@@ -58,6 +58,77 @@ pub fn compute_state_root(
     Ok(crypto::hash::hash(&combined))
 }
 
+/// Compute a deterministic state root with optional `H(EpochSnapshot)` inclusion.
+///
+/// Phase-1 / M-Choice1 primitive for the INC-I-034 `HardForkSchedule` entry
+/// `EPOCH_SNAPSHOT_HF`. At the activation height, callers switch from
+/// `compute_state_root(cs, utxo, ps)` to this function passing `Some(h_es)` so
+/// the state root becomes:
+///
+///   `state_root = H(H(cs_canonical) || H(utxo_canonical) || H(ps_canonical) || h_es)`
+///
+/// Pre-activation (or when `epoch_state_hash == None`), this function returns
+/// the exact same bytes as `compute_state_root(cs, utxo, ps)` — the pre-HF
+/// chain is not altered by the mere presence of this function in the binary.
+///
+/// Per CLAUDE.md Rule #0 (NO genesis reset, future-height activation only),
+/// the call-site gate that chooses `Some` vs `None` MUST be keyed on the
+/// `HardForkSchedule::EPOCH_SNAPSHOT_HF` activation height — never genesis,
+/// never retroactive.
+///
+/// Phase-1 scope (this milestone): the function is present but NOT YET WIRED
+/// at any call site. Phase-2 (separate milestone) wires the 15 current
+/// `compute_state_root` call-sites to consult the schedule and pass
+/// `Some`/`None` accordingly.
+///
+/// See: `specs/scheduler-state-architecture.md` "State-root inclusion
+/// (timing: SAME HF — convergent, with sequenced option surfaced)".
+pub fn compute_state_root_with_epoch_state(
+    chain_state: &ChainState,
+    utxo_set: &UtxoSet,
+    producer_set: &ProducerSet,
+    epoch_state_hash: Option<Hash>,
+) -> Result<Hash, StorageError> {
+    match epoch_state_hash {
+        None => compute_state_root(chain_state, utxo_set, producer_set),
+        Some(es_hash) => {
+            // Same canonical encoding as compute_state_root; append
+            // H(EpochSnapshot) as the 4th component.
+            let cs_bytes = chain_state.serialize_canonical();
+            let utxo_bytes = utxo_set.serialize_canonical();
+            let ps_bytes = producer_set.serialize_canonical();
+
+            let cs_hash = crypto::hash::hash(&cs_bytes);
+            let utxo_hash = crypto::hash::hash(&utxo_bytes);
+            let ps_hash = crypto::hash::hash(&ps_bytes);
+
+            // INFO so the 4 component hashes are visible in production
+            // without RUST_LOG=debug — mirrors the legacy [STATE_ROOT] log
+            // but distinguished with the _HF suffix so operators can tell
+            // pre- vs post-activation block hashes apart at a glance.
+            tracing::info!(
+                "[STATE_ROOT_HF] cs={:.16} utxo={:.16} ps={:.16} es={:.16} \
+                 cs_bytes={} utxo_bytes={} ps_bytes={}",
+                cs_hash,
+                utxo_hash,
+                ps_hash,
+                es_hash,
+                cs_bytes.len(),
+                utxo_bytes.len(),
+                ps_bytes.len()
+            );
+
+            let mut combined = Vec::with_capacity(128);
+            combined.extend_from_slice(cs_hash.as_bytes());
+            combined.extend_from_slice(utxo_hash.as_bytes());
+            combined.extend_from_slice(ps_hash.as_bytes());
+            combined.extend_from_slice(es_hash.as_bytes());
+
+            Ok(crypto::hash::hash(&combined))
+        }
+    }
+}
+
 /// Fix #9 (2026-04-15, synmgrefactor branch): unified hash over all
 /// consensus-derived scheduler state.
 ///
@@ -334,5 +405,168 @@ mod tests {
         let root1 = compute_state_root(&n1, &utxo, &ps).unwrap();
         let root2 = compute_state_root(&n2, &utxo, &ps).unwrap();
         assert_eq!(root1, root2, "state roots must match for identical state");
+    }
+}
+
+// =============================================================================
+// M-Choice1 — EpochState state-root inclusion, Phase-1 primitive
+// =============================================================================
+//
+// INC-I-034 / M-Choice1. Spec: specs/scheduler-state-architecture.md
+// ("State-root inclusion (timing: SAME HF — convergent, with sequenced option
+// surfaced)"). Locked 2026-04-16 as CHOICE 1 = SAME HF.
+//
+// Phase-1 scope (this test module verifies):
+//   - A new pure function `compute_state_root_with_epoch_state` exists.
+//   - Passing `None` returns bit-identical bytes to legacy `compute_state_root`
+//     (pre-HF chain is NOT altered by the new function existing).
+//   - Passing `Some(h)` returns the 4-component hash
+//     H(H(cs) || H(utxo) || H(ps) || h) which materially differs from the
+//     legacy 3-component hash.
+//   - Two distinct `Some(h1)`, `Some(h2)` with `h1 != h2` yield distinct roots.
+//
+// OUT of Phase-1 scope (NOT tested here — deferred to Phase 2):
+//   - Wiring of the new function into apply_block/snap_sync/cleanup call sites.
+//   - The height-keyed switch between 3- and 4-component formulas.
+//
+// OUTPUT CONTRACT: fn compute_state_root_with_epoch_state(cs, utxo, ps, opt_hash)
+//   O1: return Hash
+//         None      → bit-identical to compute_state_root(cs,utxo,ps)
+//         Some(h)   → H(H(cs_canon)||H(utxo_canon)||H(ps_canon)||h)
+//   (no mutable params, no receiver, no persistent store, no channel)
+// PATHS: P1: None (legacy-equivalence), P2: Some(h) (4-component),
+//        P3: Some(h1) vs Some(h2), h1!=h2 (hash-distinction)
+// MATRIX: 1 output × 3 paths = 3 assertion clusters (Tests 1, 2, 3)
+#[cfg(test)]
+mod m_choice1_state_root_hf_tests {
+    use super::*;
+
+    /// Test 1 — Phase-1 backward-compatibility (None path).
+    ///
+    /// With `epoch_state_hash = None`, the new function MUST produce the exact
+    /// same Hash bytes as the legacy `compute_state_root`. This is the
+    /// invariant that lets Phase-1 ship safely: callers not yet wired to the
+    /// new function keep producing the old hash, AND callers wired to the new
+    /// function produce the old hash whenever the schedule says the HF has not
+    /// activated yet. Without this invariant, the mere act of migrating a
+    /// call-site would change the state root — a silent consensus break.
+    #[test]
+    fn test_m_choice1_compute_state_root_with_none_equals_legacy() {
+        // Minimal fixture: default constructors per spec note.
+        let cs = ChainState::new(Hash::ZERO);
+        let utxo = UtxoSet::new();
+        let ps = ProducerSet::new();
+
+        let legacy = compute_state_root(&cs, &utxo, &ps)
+            .expect("legacy compute_state_root must succeed for default fixture");
+        let new_with_none = compute_state_root_with_epoch_state(&cs, &utxo, &ps, None)
+            .expect("compute_state_root_with_epoch_state(None) must succeed for default fixture");
+
+        assert_eq!(
+            legacy, new_with_none,
+            "M-Choice1: compute_state_root_with_epoch_state(.., None) must be \
+             BIT-IDENTICAL to legacy compute_state_root(..). Phase-1 safety \
+             depends on this — any drift here is a silent consensus break."
+        );
+
+        // And: drifting any one of the three components still drifts the
+        // None-path hash in lockstep with the legacy hash.
+        let mut cs2 = ChainState::new(Hash::ZERO);
+        cs2.best_height = 1234;
+
+        let legacy2 = compute_state_root(&cs2, &utxo, &ps).unwrap();
+        let new_with_none2 =
+            compute_state_root_with_epoch_state(&cs2, &utxo, &ps, None).unwrap();
+        assert_eq!(
+            legacy2, new_with_none2,
+            "M-Choice1: None-path must track legacy across arbitrary state changes"
+        );
+        assert_ne!(
+            legacy, legacy2,
+            "sanity: changing cs.best_height must change the legacy hash \
+             (test fixture sanity, not the invariant under test)"
+        );
+    }
+
+    /// Test 2 — Phase-1 new 4-component hash (Some path).
+    ///
+    /// With `epoch_state_hash = Some(h)`, the function MUST fold h in as a 4th
+    /// component. Specifically the defined formula is:
+    ///   H(H(cs_canonical) || H(utxo_canonical) || H(ps_canonical) || h)
+    /// which is NOT equal to the legacy 3-component hash. This test pins both:
+    /// (a) the result materially differs from the legacy hash, and
+    /// (b) the result equals the explicit byte-level recomputation — so the
+    /// developer cannot satisfy the test by returning any hash-of-the-4-inputs
+    /// (e.g. a reordering) that is consensus-incompatible with the spec.
+    #[test]
+    fn test_m_choice1_compute_state_root_with_some_uses_four_components() {
+        let cs = ChainState::new(Hash::ZERO);
+        let utxo = UtxoSet::new();
+        let ps = ProducerSet::new();
+
+        // Arbitrary but deterministic epoch-state hash.
+        let es_hash = crypto::hash::hash(b"m-choice1-fixture-epoch-state");
+
+        let legacy = compute_state_root(&cs, &utxo, &ps).unwrap();
+        let new_with_some =
+            compute_state_root_with_epoch_state(&cs, &utxo, &ps, Some(es_hash)).unwrap();
+
+        // (a) Material difference from the 3-component legacy hash.
+        assert_ne!(
+            legacy, new_with_some,
+            "M-Choice1: folding a 4th component MUST change the state root. \
+             If this asserts fails, the EpochState hash is being dropped on the \
+             floor — a silent consensus no-op."
+        );
+
+        // (b) Explicit spec-level byte recomputation:
+        //   state_root = H(H(cs_canon) || H(utxo_canon) || H(ps_canon) || es_hash)
+        let cs_bytes = cs.serialize_canonical();
+        let utxo_bytes = utxo.serialize_canonical();
+        let ps_bytes = ps.serialize_canonical();
+        let cs_h = crypto::hash::hash(&cs_bytes);
+        let utxo_h = crypto::hash::hash(&utxo_bytes);
+        let ps_h = crypto::hash::hash(&ps_bytes);
+        let mut combined = Vec::with_capacity(128);
+        combined.extend_from_slice(cs_h.as_bytes());
+        combined.extend_from_slice(utxo_h.as_bytes());
+        combined.extend_from_slice(ps_h.as_bytes());
+        combined.extend_from_slice(es_hash.as_bytes());
+        let expected = crypto::hash::hash(&combined);
+
+        assert_eq!(
+            new_with_some, expected,
+            "M-Choice1: Some-path formula must be EXACTLY \
+             H(H(cs_canon) || H(utxo_canon) || H(ps_canon) || es_hash). \
+             Any re-ordering or extra framing here is a consensus-breaking \
+             formula drift from specs/scheduler-state-architecture.md."
+        );
+    }
+
+    /// Test 3 — hash-distinction: two EpochSnapshot variants yield distinct roots.
+    ///
+    /// Sanity: the 4th component actually flows into the output hash. If two
+    /// distinct `es_hash` values produced the same root, the developer could
+    /// have plugged in a no-op (e.g. `XOR` of bytes with accidental collision
+    /// on fixtures). This test forces the assertion to reveal any such error.
+    #[test]
+    fn test_m_choice1_state_root_distinguishes_epoch_state_variants() {
+        let cs = ChainState::new(Hash::ZERO);
+        let utxo = UtxoSet::new();
+        let ps = ProducerSet::new();
+
+        let h1 = crypto::hash::hash(b"m-choice1-epoch-state-variant-1");
+        let h2 = crypto::hash::hash(b"m-choice1-epoch-state-variant-2");
+        assert_ne!(h1, h2, "fixture sanity: input hashes must differ");
+
+        let r1 = compute_state_root_with_epoch_state(&cs, &utxo, &ps, Some(h1)).unwrap();
+        let r2 = compute_state_root_with_epoch_state(&cs, &utxo, &ps, Some(h2)).unwrap();
+
+        assert_ne!(
+            r1, r2,
+            "M-Choice1: distinct epoch_state_hash values MUST produce distinct \
+             state roots. If this fails, the EpochState input is not contributing \
+             to the hash — a silent consensus no-op."
+        );
     }
 }

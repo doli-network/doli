@@ -26,19 +26,29 @@ pub const STATUS_PROTOCOL: &str = "/doli/status/1.0.0";
 ///       run identical consensus to v2 BEFORE the per-network activation
 ///       height, and switch to the fork-resilient scheduler AT and AFTER it.
 ///       Wire-compatible with v2 across the gate (no message format change).
-pub const CURRENT_PROTOCOL_VERSION: u32 = 3;
+///   4 — INC-I-034 / M-Choice1: EpochState-in-state-root `HardForkSchedule`
+///       entry scheduled. v4 binaries carry the
+///       `compute_state_root_with_epoch_state` primitive and the
+///       `EPOCH_SNAPSHOT_HF` entry; the actual state-root formula change is
+///       height-gated via the schedule, NOT via the handshake. v3 peers
+///       remain wire-compatible pre-activation. Bumping this constant is
+///       the Phase-1 signal to peer-scoring that the binary is capable of
+///       crossing the gate — call-site wiring lands in Phase-2.
+pub const CURRENT_PROTOCOL_VERSION: u32 = 4;
 
 /// Minimum protocol version accepted from peers.
 ///
 /// Peers reporting a version below this are disconnected immediately.
 /// Bump this to partition old nodes off the network after a breaking change.
 ///
-/// Kept at 1 for backward compatibility during INC-I-026 rollout. v2 peers
-/// remain wire-compatible because the INC-I-026 change is height-gated via
-/// `NetworkParams::inc_i_026_scheduler_activation_height`, not via the
-/// handshake. Bump to 3 after all producers are on v3+ AND past the
-/// activation height on every deployed network, to guarantee nothing
-/// running the legacy scheduler can rejoin.
+/// Kept at 1 for backward compatibility during INC-I-026 and
+/// INC-I-034 / M-Choice1 rollouts. v2/v3 peers remain wire-compatible with
+/// v4 because both changes are height-gated (INC-I-026 via
+/// `NetworkParams::inc_i_026_scheduler_activation_height`, M-Choice1 via
+/// `HardForkSchedule::EPOCH_SNAPSHOT_HF`) rather than handshake-gated. Bump
+/// to 4 only AFTER mainnet crosses the M-Choice1 activation height on every
+/// deployed network — at that point legacy state-root binaries cannot rejoin
+/// safely.
 pub const MIN_PEER_PROTOCOL_VERSION: u32 = 1;
 
 /// Maximum message size for status messages (64KB)
@@ -251,5 +261,69 @@ impl request_response::Codec for StatusCodec {
         io.flush().await?;
 
         Ok(())
+    }
+}
+
+// =============================================================================
+// M-Choice1 — protocol version pins
+// =============================================================================
+//
+// INC-I-034 / M-Choice1. Spec: specs/scheduler-state-architecture.md
+// "Migration path — Phase 1: Pre-activation" item 3 (CURRENT_PROTOCOL_VERSION
+// bump). Locked 2026-04-16 as CHOICE 1 = SAME HF.
+//
+// OUTPUT CONTRACT: const CURRENT_PROTOCOL_VERSION: u32
+//   O1: value — MUST equal 4 (Phase-1 bump per M-Choice1)
+// PATHS: P1 only (compile-time constant)
+// MATRIX: 1 output × 1 path = 1 assertion (Test 6)
+//
+// OUTPUT CONTRACT: const MIN_PEER_PROTOCOL_VERSION: u32
+//   O1: value — MUST remain 1 during Phase-1 rollout (height-gated HF keeps
+//       v3 peers wire-compatible with v4 binaries)
+// PATHS: P1 only (compile-time constant)
+// MATRIX: 1 output × 1 path = 1 assertion (Test 7)
+#[cfg(test)]
+mod m_choice1_protocol_version_tests {
+    use super::*;
+
+    /// Test 6 — Phase-1 protocol version bump.
+    ///
+    /// The state-root formula can change at EPOCH_SNAPSHOT_HF's activation
+    /// height. Binaries that carry the new schedule entry and the new
+    /// `compute_state_root_with_epoch_state` function MUST advertise a bumped
+    /// `CURRENT_PROTOCOL_VERSION` so peer-scoring can observe which binaries
+    /// are capable of handling the transition (v3 binaries lack the function
+    /// AND the schedule entry — they'd silently fork at activation if they
+    /// connected to a v4 mesh that crosses the gate).
+    #[test]
+    fn test_m_choice1_current_protocol_version_is_4() {
+        assert_eq!(
+            CURRENT_PROTOCOL_VERSION, 4,
+            "M-Choice1: CURRENT_PROTOCOL_VERSION must bump from 3 to 4 when \
+             EPOCH_SNAPSHOT_HF is scheduled. Per CLAUDE.md 'After Every \
+             Modification' step 3 — signal to peer scoring that this binary \
+             may switch state-root formula at the scheduled height."
+        );
+    }
+
+    /// Test 7 — MIN_PEER_PROTOCOL_VERSION held defensively at 1.
+    ///
+    /// Phase-1 is a pre-activation rollout — EPOCH_SNAPSHOT_HF activation is
+    /// far-future. Raising MIN_PEER_PROTOCOL_VERSION now would immediately
+    /// partition v3 peers (INC-I-026 rollout cohort) from the network even
+    /// though they remain wire-compatible until the HF boundary. Hold at 1;
+    /// bump to 4 (or higher) only AFTER mainnet crosses the activation
+    /// height per spec Phase 2 cutover.
+    #[test]
+    fn test_m_choice1_min_peer_protocol_version_held_at_1() {
+        assert_eq!(
+            MIN_PEER_PROTOCOL_VERSION, 1,
+            "M-Choice1: MIN_PEER_PROTOCOL_VERSION must remain at 1 during \
+             Phase-1 rollout. v3 (INC-I-026) peers stay wire-compatible with \
+             v4 (M-Choice1) binaries because the state-root change is \
+             height-gated via HardForkSchedule::EPOCH_SNAPSHOT_HF, not via \
+             the handshake. Bump to 4 only AFTER mainnet crosses the \
+             activation height per spec Phase 2 cutover."
+        );
     }
 }
