@@ -135,6 +135,18 @@ impl Node {
                     .write()
                     .await
                     .note_orphan_gossip_block(current_height + 1, block.header.slot);
+                // Cache the orphan so it's available when the missing parent arrives.
+                // Without this, the orphan is lost and we wait for gossip re-delivery.
+                {
+                    let mut cache = self.fork_block_cache.write().await;
+                    cache.insert(block_hash, block.clone());
+                    if cache.len() > 100 {
+                        let oldest = cache.keys().next().copied();
+                        if let Some(k) = oldest {
+                            cache.remove(&k);
+                        }
+                    }
+                }
                 return Ok(());
             }
 
