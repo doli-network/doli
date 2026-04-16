@@ -309,6 +309,28 @@ impl Node {
             .await
             .clear_awaiting_canonical_block();
 
+        // Post-apply: check fork cache for the next block (orphan that arrived
+        // before its parent). If found, apply it immediately — no gossip wait.
+        {
+            let new_tip_hash = self.chain_state.read().await.best_hash;
+            let next_from_cache = {
+                let cache = self.fork_block_cache.read().await;
+                cache
+                    .values()
+                    .find(|b| b.header.prev_hash == new_tip_hash)
+                    .cloned()
+            };
+            if let Some(cached_block) = next_from_cache {
+                let cached_hash = cached_block.hash();
+                info!(
+                    "[ORPHAN_APPLY] Applying cached orphan {:.8} (slot {}) from fork cache",
+                    cached_hash, cached_block.header.slot
+                );
+                let _ = self.apply_block(cached_block, mode).await;
+                self.fork_block_cache.write().await.remove(&cached_hash);
+            }
+        }
+
         // Post-apply catch-up: if any peer has a block above our new tip, pull
         // the next one immediately instead of waiting for gossip. Without this,
         // nodes on resource-contended hosts stabilize at a persistent lag of 1:
