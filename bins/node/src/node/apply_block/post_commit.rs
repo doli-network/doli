@@ -70,8 +70,10 @@ impl Node {
 
         // Incremental chain commitment: O(1) per block, replaces O(n) full-chain scan.
         // commitment[h] = BLAKE3(commitment[h-1] || block_hash[h])
-        {
-            let prev = self.state_db.get_chain_commitment().unwrap_or_default();
+        // Only update if a previous commitment exists (bootstrapped by verifyChainIntegrity
+        // or by continuous apply from genesis). Without this guard, a node deployed mid-chain
+        // would start from zeros → produce wrong commitment that diverges from full-scan.
+        if let Some(prev) = self.state_db.get_chain_commitment() {
             let mut hasher = crypto::Hasher::new();
             hasher.update(prev.as_bytes());
             hasher.update(block_hash.as_bytes());

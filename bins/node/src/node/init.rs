@@ -704,6 +704,14 @@ impl Node {
             state_db.delete_epoch_state();
         }
 
+        // Clear stale chain commitment on startup. The incremental commitment
+        // must be bootstrapped from a full scan (verifyChainIntegrity RPC) to
+        // ensure correctness. A mid-chain deploy that starts from zeros produces
+        // a wrong commitment. Clearing forces re-bootstrap on first integrity check.
+        if state_db.get_chain_commitment().is_some() {
+            state_db.delete_chain_commitment();
+        }
+
         // Load complete EpochState from unified key (written by post_commit + snap sync).
         // Falls back to individual keys (pre-upgrade) then UTXO reconstruction.
         let loaded_epoch_state: Option<doli_core::EpochState> =

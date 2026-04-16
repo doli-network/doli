@@ -430,6 +430,12 @@ impl StateDb {
             .put_cf(cf, META_CHAIN_COMMITMENT, commitment.as_bytes());
     }
 
+    /// Delete chain commitment (forces re-bootstrap on next integrity check).
+    pub fn delete_chain_commitment(&self) {
+        let cf = self.db.cf_handle(CF_META).unwrap();
+        let _ = self.db.delete_cf(cf, META_CHAIN_COMMITMENT);
+    }
+
     /// Load the full ProducerSet from the database.
     ///
     /// Rebuilds the in-memory ProducerSet from cf_producers, cf_exit_history,
