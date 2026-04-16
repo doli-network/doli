@@ -939,6 +939,7 @@ impl Node {
             pending_tx_announcements: HashMap::new(),
             hardfork_schedule: updater::HardForkSchedule::for_network(network_for_schedule),
             peer_churn: HashMap::new(),
+            last_integrity_check_tip: None,
         })
     }
 
@@ -1123,6 +1124,7 @@ impl Node {
             pending_tx_announcements: HashMap::new(),
             hardfork_schedule: updater::HardForkSchedule::for_network(network),
             peer_churn: HashMap::new(),
+            last_integrity_check_tip: None,
         })
     }
 }

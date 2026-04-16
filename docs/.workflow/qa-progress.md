@@ -105,3 +105,38 @@ No retry logic, no progress bars, no peer discovery. Orchestrator is ~140 LOC of
 ## Final verdict: **PASS** — green-light for commit.
 
 Report: `docs/.workflow/qa-progress.md` (this section)
+
+---
+
+# M-Choice2 Reviewer (2026-04-16)
+
+- Milestone: M-Choice2 — Phase-1 RUNTIME PERIODIC block-store integrity check (observability-only)
+- Incident: INC-I-034
+- Branch: `synmgrefactor` (uncommitted)
+- Scope reviewed: `bins/node/src/node/periodic.rs`, `bins/node/src/node/mod.rs`, `bins/node/src/node/init.rs`, `docs/bugfixes/inc-i-034-m-choice2-periodic-integrity-check.md`, `docs/.workflow/milestone-progress.md` (row M-Choice2)
+- Spec: `specs/scheduler-state-architecture.md` — "Block-store integrity contract" + locked CHOICE 2 (RUNTIME PERIODIC)
+
+## Verdict: **APPROVE** — green-light for commit.
+
+| Category       | Result |
+|----------------|--------|
+| Correctness (helper) | pass — 9 paths x 1 output, all asserted (periodic.rs:863-880) |
+| Correctness (async)  | pass — minimal lock, spawn_blocking offload, correct log-spam guard (periodic.rs:715-759) |
+| Correctness (struct) | pass — field added at mod.rs:226, initialized at init.rs:920 and init.rs:1105 |
+| Scope                | pass — 3 source files touched, no drive-bys, no Phase-2 leakage |
+| Tests                | 10/10 PASS (`integrity_check_tests` + `default_interval_constant_is_1000`) |
+| Regression           | clean (lib 20/20, clippy/fmt clean, m_rc11 compiles) |
+| Docs                 | pass — bugfix report complete, milestone row flipped |
+| Issues               | none blocking |
+
+## Key findings
+1. `saturating_sub` is belt-and-braces (the caller already guards `current_tip > last`), but harmless; P8 at `u64::MAX` proves no overflow.
+2. TOCTOU between tip read and scan is a known Phase-1 design choice — subsequent gaps caught next tick.
+3. `last_integrity_check_tip` updated regardless of scan outcome — deliberate anti-spam guard (1 CRITICAL per ~3 h instead of per 5 s tick).
+4. CRITICAL log preserves first-missing height from `ensure_blocks_present` and names `doli chain-repair` as remediation.
+5. Zero Phase-2 leakage: no `HALT_PRODUCTION`, no `BackfillRequest`, no auto-recovery added.
+
+## Informational (non-blocking, deferred)
+- `docs/troubleshooting.md` entry for `[INTEGRITY_CHECK] CRITICAL` deferred to operator-docs sweep (noted in bugfix report section 4).
+
+## Recommendation: green-light for commit as `Antonio Lozada <antonio@omegacortex.ai>` on `synmgrefactor`.

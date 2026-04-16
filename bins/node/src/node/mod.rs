@@ -219,6 +219,11 @@ pub struct Node {
     /// connection events. Prevents flapping peers from starving the event loop and
     /// triggering spurious snap sync cascades. See 2026-04-15 incident.
     pub peer_churn: HashMap<PeerId, std::collections::VecDeque<Instant>>,
+
+    /// Last tip height at which we ran the periodic block-store integrity check.
+    /// `None` before first scan. Updated after each scan (Ok or Err).
+    /// Phase 1 observability-only (INC-I-034 / M-Choice2).
+    pub last_integrity_check_tip: Option<u64>,
 }
 
 /// Max connect+disconnect events per peer within PEER_CHURN_WINDOW before rate-limit kicks in.
