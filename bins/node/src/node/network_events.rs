@@ -108,6 +108,22 @@ impl Node {
             // Fall through to the full path so it can be re-applied.
         }
 
+        // Drop stale gossip blocks whose slot is far behind our tip.
+        // After wipe+rsync, the already_known filter misses old blocks (not in
+        // store). A peer re-gossipping hundreds of old blocks saturates the
+        // event loop for no reason — they can never be applied.
+        {
+            let current_slot = self.sync_manager.read().await.best_peer_slot();
+            if current_slot > 50 && block.header.slot < current_slot - 50 {
+                debug!(
+                    "Upstream drop: stale gossip block {} at slot={} (tip_slot={}, behind by {})",
+                    block_hash, block.header.slot, current_slot,
+                    current_slot - block.header.slot
+                );
+                return Ok(());
+            }
+        }
+
         debug!("Received new block: {} from {}", block_hash, source_peer);
 
         // INC-I-014: Skip blocks extending from rejected fork tips.
