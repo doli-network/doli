@@ -149,32 +149,124 @@ impl RpcContext {
             }
         }
 
-        // Full scan: find ALL missing heights (leading, mid-chain, and trailing gaps)
-        // Uses get_block_by_height to check actual block data, not just the index.
-        // The height→hash index can exist without block data (partial sync).
+        // Full scan: find ALL missing heights AND divergent blocks.
+        // Phase 1: detect gaps (missing block data)
+        // Phase 2: compare chain commitment with peer — if different,
+        //          find divergent heights by comparing block hashes.
         let block_store_scan = self.block_store.clone();
-        let missing_heights: Vec<u64> = tokio::task::spawn_blocking(move || {
+        let peer_url = params.rpc_url.clone();
+        let (missing_heights, local_commitment) = tokio::task::spawn_blocking(move || {
             let mut missing = Vec::new();
+            let mut commitment = crypto::Hash::default();
             for h in 1..=tip_height {
-                let exists = block_store_scan
-                    .get_block_by_height(h)
-                    .map(|opt| opt.is_some())
-                    .unwrap_or(false);
-                if !exists {
-                    missing.push(h);
+                match block_store_scan.get_block_by_height(h) {
+                    Ok(Some(blk)) => {
+                        let hash = blk.hash();
+                        let mut hasher = Hasher::new();
+                        hasher.update(commitment.as_bytes());
+                        hasher.update(hash.as_bytes());
+                        commitment = hasher.finalize();
+                    }
+                    _ => {
+                        missing.push(h);
+                    }
                 }
             }
-            missing
+            (missing, commitment)
         })
         .await
         .map_err(|e| RpcError::internal_error(e.to_string()))?;
 
+        // Phase 2: check peer commitment — if different, find divergent heights
+        let mut repair_heights: Vec<u64> = Vec::new();
         if missing_heights.is_empty() {
+            let client = reqwest::Client::new();
+            if let Ok(resp) = client
+                .post(&peer_url)
+                .json(&serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "verifyChainIntegrity",
+                    "params": [],
+                    "id": 1
+                }))
+                .send()
+                .await
+            {
+                if let Ok(body) = resp.json::<serde_json::Value>().await {
+                    let peer_commitment = body["result"]["chainCommitment"]
+                        .as_str()
+                        .unwrap_or("");
+                    let local_hex = hex::encode(local_commitment.as_bytes());
+                    if !peer_commitment.is_empty() && peer_commitment != local_hex {
+                        info!(
+                            "Backfill: commitment mismatch (local={:.16} peer={:.16}), scanning for divergent blocks",
+                            local_hex, peer_commitment
+                        );
+                        // Reverse scan: walk backwards from tip to find the fork point.
+                        // Most forks are recent — this finds divergence in O(depth) not O(n).
+                        // Once we find a matching block, everything below is identical.
+                        let block_store_repair = self.block_store.clone();
+                        let mut fork_point = tip_height + 1;
+                        for h in (1..=tip_height).rev() {
+                            if let Ok(Some(local_block)) = block_store_repair.get_block_by_height(h)
+                            {
+                                if let Ok(resp) = client
+                                    .post(&peer_url)
+                                    .json(&serde_json::json!({
+                                        "jsonrpc": "2.0",
+                                        "method": "getBlockByHeight",
+                                        "params": [h],
+                                        "id": h
+                                    }))
+                                    .send()
+                                    .await
+                                {
+                                    if let Ok(body) = resp.json::<serde_json::Value>().await {
+                                        let peer_hash =
+                                            body["result"]["hash"].as_str().unwrap_or("");
+                                        let local_hash = local_block.hash().to_hex();
+                                        if peer_hash.is_empty() {
+                                            continue;
+                                        }
+                                        if peer_hash == local_hash {
+                                            break;
+                                        }
+                                        fork_point = h;
+                                    }
+                                }
+                            }
+                        }
+                        if fork_point <= tip_height {
+                            info!(
+                                "Backfill repair: fork diverges at h={}, refetching h={}..={}",
+                                fork_point, fork_point, tip_height
+                            );
+                            repair_heights.extend(fork_point..=tip_height);
+                        }
+                        if repair_heights.is_empty() {
+                            info!("Backfill: commitment differs but no individual block divergence found (height difference)");
+                        }
+                    }
+                }
+            }
+        }
+
+        let all_heights: Vec<u64> = {
+            let mut combined = missing_heights.clone();
+            combined.extend(&repair_heights);
+            combined.sort_unstable();
+            combined.dedup();
+            combined
+        };
+
+        if all_heights.is_empty() {
             return Ok(serde_json::json!({
                 "started": false,
                 "message": "No gaps detected — chain is complete."
             }));
         }
+
+        let missing_heights = all_heights;
 
         let total_to_fetch = missing_heights.len() as u64;
 
