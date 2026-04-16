@@ -315,34 +315,30 @@ impl SyncManager {
                     self.fork.header_blacklisted_peers.clear();
                     self.signal_stuck_fork();
                 } else {
-                    // First 1-2 empties: could be a peer-specific issue.
-                    // INC-I-012 F7: Skip blacklisting if snap sync completed
-                    // within the last 5 minutes — ALL canonical peers will return
-                    // empty for our unrecognizable hash, so blacklisting just
-                    // removes good peers from the pool.
-                    let recently_snapped = self
-                        .snap
-                        .last_snap_completed
-                        .map(|t| t.elapsed().as_secs() < 300)
-                        .unwrap_or(false);
-                    if !recently_snapped {
-                        self.fork
-                            .header_blacklisted_peers
-                            .insert(peer, Instant::now());
-                    }
+                    // M-RC12-full (INC-I-034) — asymmetric blacklist invariant (B-5 / S-6 / F-4).
+                    //
+                    // Empty-headers is NOT positive evidence against the peer.
+                    // The peer correctly returned empty because it does not recognize
+                    // OUR hash — either we are on a minority fork (our problem, not
+                    // theirs) or gossip has not yet delivered the missing parent.
+                    //
+                    // Per specs/scheduler-state-architecture.md "Sync manager asymmetric
+                    // blacklist": blacklist requires positive evidence (signature/economics
+                    // fail), never inference from an empty response. Instead, set
+                    // use_height_based_headers = true so the next sync attempt consults
+                    // fork choice via GetHeadersByHeight(local_height) — the same
+                    // mechanism used by the INC-I-012 / INC-I-017 post-snap path above.
+                    //
+                    // The consecutive_empty_headers counter still advances (see +=1
+                    // above) so the >=3 cascade branch can still detect broad fork
+                    // conditions across multiple peers. That branch CLEARS the
+                    // blacklist; this branch must never ADD to it.
+                    self.fork.use_height_based_headers = true;
                     warn!(
-                        "Empty headers from {} (peer_h={}, local_h={}, gap={}) — \
-                         fork evidence (consecutive={}){}.",
-                        peer,
-                        peer_height,
-                        self.local_height,
-                        gap,
-                        self.fork.consecutive_empty_headers,
-                        if recently_snapped {
-                            " (skipping blacklist — recent snap sync)"
-                        } else {
-                            ". Blacklisted peer"
-                        }
+                        "Empty headers from {} (peer_h={}, local_h={}, gap={}, consecutive={}) — \
+                         local hash not recognized by peer. NOT blacklisting (asymmetric invariant). \
+                         Consulting fork choice via height-based headers on next sync attempt.",
+                        peer, peer_height, self.local_height, gap, self.fork.consecutive_empty_headers,
                     );
                 }
                 self.set_state(SyncState::Idle, "empty_headers_fork_detected");
