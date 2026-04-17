@@ -97,6 +97,13 @@ pub const TIER_PROMOTION_ACTIVATION_HEIGHT: u64 = 0;
 /// Only enforced after TIER_PROMOTION_ACTIVATION_HEIGHT.
 pub const MIN_ATTESTATION_MINUTES: usize = 30;
 
+/// Rewards epoch-list fix activation height (epoch 37 boundary).
+/// Before: calculate_epoch_rewards decodes bitfields with active_producers_at_height (all active).
+/// After: decodes with epoch_state.producer_list (attestation-filtered, same as encoder).
+/// Fixes index misalignment when attestation filter reduces the producer list.
+/// Consensus-breaking — all nodes must update before this height.
+pub const REWARDS_EPOCH_LIST_FIX_HEIGHT: u64 = 13_320;
+
 // ==================== Proof of Time Parameters ====================
 
 /// Slot duration in seconds.

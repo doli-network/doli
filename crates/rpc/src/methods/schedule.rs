@@ -225,20 +225,43 @@ impl RpcContext {
         let (epoch_start, _epoch_end) =
             reward_epoch::boundaries_with(current_epoch, blocks_per_epoch);
 
-        // Get sorted producer list (same order as bitfield)
-        let sorted_producers: Vec<(crypto::PublicKey, bool)> =
-            if let Some(ref ps) = self.producer_set {
-                let producers = ps.read().await;
-                let mut list: Vec<_> = producers
-                    .active_producers_at_height(epoch_start)
-                    .iter()
-                    .map(|p| (p.public_key, !p.bls_pubkey.is_empty()))
-                    .collect();
-                list.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
-                list
+        // Get producer list for bitfield decoding — must match the encoder.
+        // Same gate as rewards.rs: post-fix reconstructs [base | extra sorted].
+        let use_epoch_list = epoch_start >= doli_core::consensus::REWARDS_EPOCH_LIST_FIX_HEIGHT;
+        let sorted_producers: Vec<(crypto::PublicKey, bool)> = if use_epoch_list {
+            if let (Some(ref sdb), Some(ref ps)) = (&self.state_db, &self.producer_set) {
+                if let Some(epl) = sdb.get_epoch_producer_list() {
+                    let producers = ps.read().await;
+                    let base_set: std::collections::HashSet<crypto::PublicKey> =
+                        epl.iter().copied().collect();
+                    let all_active: Vec<_> = producers
+                        .active_producers_at_height(epoch_start)
+                        .iter()
+                        .map(|p| (p.public_key, !p.bls_pubkey.is_empty()))
+                        .collect();
+                    // Base list first
+                    let mut result: Vec<(crypto::PublicKey, bool)> = epl
+                        .iter()
+                        .filter_map(|pk| all_active.iter().find(|(p, _)| p == pk).copied())
+                        .collect();
+                    // Extra sorted by pubkey
+                    let mut extra: Vec<(crypto::PublicKey, bool)> = all_active
+                        .iter()
+                        .filter(|(pk, _)| !base_set.contains(pk))
+                        .copied()
+                        .collect();
+                    extra.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+                    result.extend(extra);
+                    result
+                } else {
+                    Self::legacy_producer_list(&self.producer_set, epoch_start).await
+                }
             } else {
-                Vec::new()
-            };
+                Self::legacy_producer_list(&self.producer_set, epoch_start).await
+            }
+        } else {
+            Self::legacy_producer_list(&self.producer_set, epoch_start).await
+        };
 
         let producer_count = sorted_producers.len();
 
@@ -317,6 +340,25 @@ impl RpcContext {
         };
 
         serde_json::to_value(response).map_err(|e| RpcError::internal_error(e.to_string()))
+    }
+
+    /// Legacy producer list: all active sorted by pubkey (pre-fix behavior).
+    async fn legacy_producer_list(
+        producer_set: &Option<std::sync::Arc<tokio::sync::RwLock<storage::ProducerSet>>>,
+        epoch_start: u64,
+    ) -> Vec<(crypto::PublicKey, bool)> {
+        if let Some(ref ps) = producer_set {
+            let producers = ps.read().await;
+            let mut list: Vec<_> = producers
+                .active_producers_at_height(epoch_start)
+                .iter()
+                .map(|p| (p.public_key, !p.bls_pubkey.is_empty()))
+                .collect();
+            list.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+            list
+        } else {
+            Vec::new()
+        }
     }
 }
 

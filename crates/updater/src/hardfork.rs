@@ -206,6 +206,17 @@ impl HardForkSchedule {
                         "EpochState state root inclusion (M-Choice1)".to_string()
                     ],
                 });
+                // REWARDS_EPOCH_LIST_FIX — epoch 37 boundary.
+                // Rewards decode uses epoch_state.producer_list (attestation-filtered)
+                // instead of active_producers_at_height (all active). Fixes index
+                // misalignment that caused qualified producers to lose rewards.
+                schedule.add(HardForkInfo {
+                    activation_height: 13_320,
+                    min_version: "6.17.0".to_string(),
+                    consensus_changes: vec![
+                        "Rewards bitfield decode uses epoch producer list".to_string()
+                    ],
+                });
             }
             doli_core::Network::Testnet => {
                 // Same placeholder as Mainnet — operators update after

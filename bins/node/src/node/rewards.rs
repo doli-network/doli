@@ -36,8 +36,47 @@ impl Node {
         let epoch_start_height = epoch * blocks_per_epoch;
         let epoch_end_height = (epoch + 1) * blocks_per_epoch;
 
-        // Get active producers at epoch start, sorted by pubkey (same order as bitfield encoding)
-        let sorted_producers: Vec<storage::producer::ProducerInfo> = {
+        // Get producer list for bitfield decoding, sorted by pubkey.
+        //
+        // Before REWARDS_EPOCH_LIST_FIX_HEIGHT: active_producers_at_height (all active).
+        // After: epoch_state.producer_list (attestation-filtered, same as encoder).
+        //
+        // The encoder in assembly.rs uses epoch_state.producer_list (e.g. 28 members).
+        // When attestation filtering removes producers, active_producers_at_height returns
+        // more members (e.g. 40), shifting ALL indices. This caused qualified producers
+        // to lose rewards because bit N in the 28-list mapped to a different producer
+        // at position N in the 40-list.
+        let use_epoch_list =
+            epoch_start_height >= doli_core::consensus::REWARDS_EPOCH_LIST_FIX_HEIGHT;
+        let sorted_producers: Vec<storage::producer::ProducerInfo> = if use_epoch_list {
+            // Post-fix: reconstruct the EXACT order used by the encoder (assembly.rs:296-318).
+            // Order = [epoch_state.producer_list | extra sorted by pubkey]
+            // where extra = active_producers - epoch_state.producer_list.
+            let base_list = &self.epoch_state.producer_list;
+            let base_set: std::collections::HashSet<&crypto::PublicKey> =
+                base_list.iter().collect();
+            let producers = self.producer_set.read().await;
+            let all_active: Vec<storage::producer::ProducerInfo> = producers
+                .active_producers_at_height(epoch_start_height)
+                .iter()
+                .map(|p| (*p).clone())
+                .collect();
+            // Base list first (already sorted by pubkey at epoch freeze)
+            let mut result: Vec<storage::producer::ProducerInfo> = base_list
+                .iter()
+                .filter_map(|pk| all_active.iter().find(|p| &p.public_key == pk).cloned())
+                .collect();
+            // Extra producers appended, sorted by pubkey
+            let mut extra: Vec<storage::producer::ProducerInfo> = all_active
+                .iter()
+                .filter(|p| !base_set.contains(&p.public_key))
+                .cloned()
+                .collect();
+            extra.sort_by(|a, b| a.public_key.as_bytes().cmp(b.public_key.as_bytes()));
+            result.extend(extra);
+            result
+        } else {
+            // Pre-fix: legacy behavior (active_producers_at_height sorted globally)
             let producers = self.producer_set.read().await;
             let mut ps: Vec<storage::producer::ProducerInfo> = producers
                 .active_producers_at_height(epoch_start_height)
