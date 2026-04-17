@@ -573,7 +573,7 @@ impl Node {
                     };
                     let _ = network.request_sync(pid, request).await;
                 } else {
-                    debug!(
+                    info!(
                         "[DIRECT_ATTEST] No v5+ peer found for producer of slot {} ({:.8})",
                         next_slot, next_producer
                     );
