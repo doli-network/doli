@@ -148,6 +148,17 @@ pub fn new_gossipsub(keypair: &Keypair, mesh: &MeshConfig) -> Result<Gossipsub, 
             first_message_deliveries_cap: 100.0,
             invalid_message_deliveries_weight: -10.0,
             invalid_message_deliveries_decay: 0.3,
+            // Disable mesh_message_deliveries penalty. With 38 producers
+            // sending 1 attestation per 10s block and decay=0.5/s, the
+            // delivery counter converges to ~3-4, far below libp2p's
+            // default threshold of 20. Every peer gets penalized →
+            // mesh degenerates to random selection → N2/N6 stuck in
+            // negative feedback loop.
+            mesh_message_deliveries_weight: 0.0,
+            mesh_message_deliveries_threshold: 0.0,
+            mesh_message_deliveries_decay: 0.5,
+            mesh_message_deliveries_cap: 0.0,
+            mesh_message_deliveries_activation: std::time::Duration::from_secs(3600),
             ..Default::default()
         },
     );
