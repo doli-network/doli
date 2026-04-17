@@ -147,8 +147,8 @@ pub fn verify_release_signatures_with_keys(
 
 /// Calculate veto result
 pub fn calculate_veto_result(veto_count: usize, total_producers: usize) -> VoteResult {
-    let veto_percent = if total_producers > 0 {
-        ((veto_count * 100) / total_producers) as u8
+    let veto_percent = if let Some(pct) = (veto_count * 100).checked_div(total_producers) {
+        pct as u8
     } else {
         0
     };
