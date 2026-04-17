@@ -316,6 +316,26 @@ impl Node {
         } else {
             debug!("Sync request from {}: {:?}", peer_id, request);
             self.sync_requests_this_interval += 1;
+            // DirectAttestation: register locally BEFORE delegating to handle_sync_request
+            // (which only re-broadcasts via gossip). gossipsub does not deliver published
+            // messages back to the publisher, so re-broadcast alone never reaches our own
+            // minute_tracker. Process here where we have &mut self.
+            if let SyncRequest::DirectAttestation { ref data } = request {
+                if let Some(att) = doli_core::Attestation::from_bytes(data) {
+                    if att.verify().is_ok() {
+                        let minute = doli_core::attestation::attestation_minute(att.slot);
+                        if att.bls_signature.is_empty() {
+                            self.minute_tracker.record(att.attester, minute);
+                        } else {
+                            self.minute_tracker.record_with_bls(
+                                att.attester,
+                                minute,
+                                att.bls_signature.clone(),
+                            );
+                        }
+                    }
+                }
+            }
             self.handle_sync_request(request, channel).await?;
         }
         Ok(())
