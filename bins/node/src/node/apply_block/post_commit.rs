@@ -47,6 +47,29 @@ impl Node {
                         32
                     }
                 );
+                // Log producers MISSING from the attestation bitfield (only when partial)
+                if !idx.is_empty() && idx.len() < self.epoch_state.producer_list.len() {
+                    let attested: HashSet<usize> = idx.iter().copied().collect();
+                    let missing: Vec<String> = (0..self.epoch_state.producer_list.len())
+                        .filter(|i| !attested.contains(i))
+                        .filter_map(|i| {
+                            self.epoch_state.producer_list.get(i).map(|pk| {
+                                let h = hex::encode(pk.as_bytes());
+                                h[..8].to_string()
+                            })
+                        })
+                        .collect();
+                    if !missing.is_empty() {
+                        let minute = attestation_minute(block.header.slot);
+                        warn!(
+                            "[ATTEST_MISS] h={} minute={} missing={} producers=[{}]",
+                            height,
+                            minute,
+                            missing.len(),
+                            missing.join(",")
+                        );
+                    }
+                }
                 idx
             } else {
                 vec![]
