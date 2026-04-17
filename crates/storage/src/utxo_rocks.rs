@@ -421,8 +421,8 @@ impl RocksDbUtxoStore {
             .filter(|(_, entry)| entry.output.output_type == doli_core::OutputType::Bond)
             .map(|(_, entry)| entry.output.amount)
             .sum();
-        if bond_unit > 0 {
-            (total / bond_unit) as u32
+        if let Some(count) = total.checked_div(bond_unit) {
+            count as u32
         } else {
             0
         }

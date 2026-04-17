@@ -316,6 +316,8 @@ fn test_should_sync_uses_height_not_slot() {
             last_status_response: Instant::now(),
             last_block_received: None,
             pending_request: None,
+            protocol_version: 0,
+            producer_pubkey: None,
         },
     );
 
@@ -343,6 +345,8 @@ fn test_should_sync_triggers_when_peer_ahead_in_height() {
             last_status_response: Instant::now(),
             last_block_received: None,
             pending_request: None,
+            protocol_version: 0,
+            producer_pubkey: None,
         },
     );
 
@@ -371,6 +375,8 @@ fn test_best_peer_ignores_peer_behind_in_height() {
             last_status_response: Instant::now(),
             last_block_received: None,
             pending_request: None,
+            protocol_version: 0,
+            producer_pubkey: None,
         },
     );
 
@@ -402,6 +408,8 @@ fn test_stall_recovery_resets_to_idle() {
             last_status_response: Instant::now(),
             last_block_received: None,
             pending_request: None,
+            protocol_version: 0,
+            producer_pubkey: None,
         },
     );
 
@@ -433,6 +441,8 @@ fn test_update_local_tip_requires_slot_alignment() {
             last_status_response: Instant::now(),
             last_block_received: None,
             pending_request: None,
+            protocol_version: 0,
+            producer_pubkey: None,
         },
     );
 
@@ -484,6 +494,8 @@ fn test_processing_stuck_recovery_on_block_applied() {
             last_status_response: Instant::now(),
             last_block_received: None,
             pending_request: None,
+            protocol_version: 0,
+            producer_pubkey: None,
         },
     );
 
@@ -538,6 +550,8 @@ fn test_processing_stuck_recovery_via_cleanup() {
             last_status_response: Instant::now(),
             last_block_received: None,
             pending_request: None,
+            protocol_version: 0,
+            producer_pubkey: None,
         },
     );
 
@@ -1024,6 +1038,8 @@ fn test_blacklist_escalation_uses_signal_not_counter() {
                 last_status_response: Instant::now(),
                 last_block_received: None,
                 pending_request: None,
+                protocol_version: 0,
+                producer_pubkey: None,
             },
         );
     }

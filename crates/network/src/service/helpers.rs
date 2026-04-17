@@ -37,10 +37,8 @@ pub(super) fn is_routable_address(addr: &Multiaddr, network_id: u32) -> bool {
                     return false;
                 }
             }
-            Protocol::Ip6(ip) => {
-                if ip.is_loopback() || ip.is_unspecified() {
-                    return false;
-                }
+            Protocol::Ip6(ip) if ip.is_loopback() || ip.is_unspecified() => {
+                return false;
             }
             _ => {}
         }
