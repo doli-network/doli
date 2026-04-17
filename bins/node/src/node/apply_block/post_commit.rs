@@ -21,25 +21,52 @@ impl Node {
         {
             let has_attestation_data =
                 !block.header.presence_root.is_zero() && !self.epoch_state.producer_list.is_empty();
+
+            // After FULL_BITFIELD_DECODE_HEIGHT: decode ALL indices (base + extra)
+            // so filtered producers can re-enter via 3-epoch lookback.
+            // Before: only base indices (epoch_state.producer_list.len()).
+            let use_full_decode = height >= doli_core::consensus::FULL_BITFIELD_DECODE_HEIGHT;
+            let base_len = self.epoch_state.producer_list.len();
+
+            // Build full decode list [base | extra sorted] when needed
+            let (decode_len, extra_pks) = if use_full_decode && has_attestation_data {
+                let producers = self.producer_set.read().await;
+                let all_active: Vec<crypto::PublicKey> = producers
+                    .active_producers_at_height(height)
+                    .iter()
+                    .map(|p| p.public_key)
+                    .collect();
+                drop(producers);
+                let base_set: HashSet<&crypto::PublicKey> =
+                    self.epoch_state.producer_list.iter().collect();
+                let mut extra: Vec<crypto::PublicKey> = all_active
+                    .iter()
+                    .filter(|pk| !base_set.contains(pk))
+                    .copied()
+                    .collect();
+                extra.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+                let total = base_len + extra.len();
+                (total, extra)
+            } else {
+                (base_len, Vec::new())
+            };
+
             let indices = if has_attestation_data {
                 let idx = if !block.attestation_bitfield.is_empty() {
                     doli_core::decode_attestation_bitfield_vec(
                         &block.attestation_bitfield,
-                        self.epoch_state.producer_list.len(),
+                        decode_len,
                     )
                 } else if height < doli_core::consensus::BITFIELD_BODY_ACTIVATION_HEIGHT {
-                    decode_attestation_bitfield(
-                        &block.header.presence_root,
-                        self.epoch_state.producer_list.len(),
-                    )
+                    decode_attestation_bitfield(&block.header.presence_root, decode_len)
                 } else {
                     vec![]
                 };
-                // INFO so the decode path is symmetric with [ATTEST_ENCODE]
                 info!(
-                    "[ATTEST_DECODE] h={} epoch_list={} indices={} bitfield_len={}",
+                    "[ATTEST_DECODE] h={} epoch_list={} decode_len={} indices={} bitfield_len={}",
                     height,
-                    self.epoch_state.producer_list.len(),
+                    base_len,
+                    decode_len,
                     idx.len(),
                     if !block.attestation_bitfield.is_empty() {
                         block.attestation_bitfield.len()
@@ -48,9 +75,9 @@ impl Node {
                     }
                 );
                 // Log producers MISSING from the attestation bitfield (only when partial)
-                if !idx.is_empty() && idx.len() < self.epoch_state.producer_list.len() {
+                if !idx.is_empty() && idx.len() < base_len {
                     let attested: HashSet<usize> = idx.iter().copied().collect();
-                    let missing: Vec<String> = (0..self.epoch_state.producer_list.len())
+                    let missing: Vec<String> = (0..base_len)
                         .filter(|i| !attested.contains(i))
                         .filter_map(|i| {
                             self.epoch_state.producer_list.get(i).map(|pk| {
@@ -75,13 +102,35 @@ impl Node {
                 vec![]
             };
 
+            // Split indices: base (0..base_len) go to accumulate_block,
+            // extra (base_len..) resolved manually into epoch_state.
+            let base_indices: Vec<usize> =
+                indices.iter().filter(|&&i| i < base_len).copied().collect();
+
             self.epoch_state
                 .accumulate_block(&doli_core::BlockAccumulationInput {
                     producer: block.header.producer,
                     slot: block.header.slot,
-                    has_attestation_data: has_attestation_data && !indices.is_empty(),
-                    attested_indices: indices,
+                    has_attestation_data: has_attestation_data && !base_indices.is_empty(),
+                    attested_indices: base_indices,
                 });
+
+            // Track extra producers directly in epoch_state
+            if use_full_decode && has_attestation_data {
+                let minute = attestation_minute(block.header.slot);
+                for &idx in &indices {
+                    if idx >= base_len {
+                        let extra_idx = idx - base_len;
+                        if let Some(pk) = extra_pks.get(extra_idx) {
+                            self.epoch_state.attested_sets[0].insert(*pk);
+                            self.epoch_state.attestation_accum[0]
+                                .entry(*pk)
+                                .or_default()
+                                .insert(minute);
+                        }
+                    }
+                }
+            }
         }
 
         // Persist epoch_state after every block (not just epoch boundaries).

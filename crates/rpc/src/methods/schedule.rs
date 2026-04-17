@@ -226,10 +226,46 @@ impl RpcContext {
             reward_epoch::boundaries_with(current_epoch, blocks_per_epoch);
 
         // Get producer list for bitfield decoding — must match the encoder.
-        // Same gate as rewards.rs: post-fix uses epoch_state.producer_list only.
-        // Extra (mid-epoch) producers are ignored — they can't qualify this epoch.
+        // Three eras:
+        //   pre-REWARDS_EPOCH_LIST_FIX_HEIGHT: legacy sort_all (broken indices)
+        //   REWARDS..FULL_BITFIELD: epoch_state.producer_list only (base, no extra)
+        //   post-FULL_BITFIELD_DECODE_HEIGHT: [base | extra sorted] (shows ALL producers)
+        let use_full_decode = epoch_start >= doli_core::consensus::FULL_BITFIELD_DECODE_HEIGHT;
         let use_epoch_list = epoch_start >= doli_core::consensus::REWARDS_EPOCH_LIST_FIX_HEIGHT;
-        let sorted_producers: Vec<(crypto::PublicKey, bool)> = if use_epoch_list {
+        let sorted_producers: Vec<(crypto::PublicKey, bool)> = if use_full_decode {
+            // Full decode: [base | extra sorted] — shows all producers
+            if let (Some(ref sdb), Some(ref ps)) = (&self.state_db, &self.producer_set) {
+                if let Some(epl) = sdb.get_epoch_producer_list() {
+                    let producers = ps.read().await;
+                    let base_set: std::collections::HashSet<crypto::PublicKey> =
+                        epl.iter().copied().collect();
+                    let all_active: Vec<_> = producers
+                        .active_producers_at_height(epoch_start)
+                        .iter()
+                        .map(|p| (p.public_key, !p.bls_pubkey.is_empty()))
+                        .collect();
+                    // Base first
+                    let mut result: Vec<(crypto::PublicKey, bool)> = epl
+                        .iter()
+                        .filter_map(|pk| all_active.iter().find(|(p, _)| p == pk).copied())
+                        .collect();
+                    // Extra sorted
+                    let mut extra: Vec<(crypto::PublicKey, bool)> = all_active
+                        .iter()
+                        .filter(|(pk, _)| !base_set.contains(pk))
+                        .copied()
+                        .collect();
+                    extra.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+                    result.extend(extra);
+                    result
+                } else {
+                    Self::legacy_producer_list(&self.producer_set, epoch_start).await
+                }
+            } else {
+                Self::legacy_producer_list(&self.producer_set, epoch_start).await
+            }
+        } else if use_epoch_list {
+            // Epoch list only (base, no extra) — rewards fix era
             if let (Some(ref sdb), Some(ref ps)) = (&self.state_db, &self.producer_set) {
                 if let Some(epl) = sdb.get_epoch_producer_list() {
                     let producers = ps.read().await;

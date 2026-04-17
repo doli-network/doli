@@ -104,6 +104,14 @@ pub const MIN_ATTESTATION_MINUTES: usize = 30;
 /// Consensus-breaking — all nodes must update before this height.
 pub const REWARDS_EPOCH_LIST_FIX_HEIGHT: u64 = 13_320;
 
+/// Full bitfield decode activation height.
+/// Before: accumulate_block decodes only epoch_state.producer_list indices (base).
+/// After: decodes ALL indices including mid-epoch activated producers (base + extra).
+/// Fixes the death spiral where filtered producers can never re-enter the epoch list
+/// because their attestations in indices N+ are silently ignored.
+/// Consensus-breaking — changes attested_sets/attestation_accum → state root.
+pub const FULL_BITFIELD_DECODE_HEIGHT: u64 = 14_000;
+
 // ==================== Proof of Time Parameters ====================
 
 /// Slot duration in seconds.
