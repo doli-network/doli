@@ -224,14 +224,9 @@ impl Node {
                     status.best_slot,
                 );
             }
+            sync.set_peer_producer_info(peer_id, status.producer_pubkey, status.version);
             sync.note_peer_status_received();
         }
-
-        self.sync_manager.write().await.set_peer_producer_info(
-            peer_id,
-            status.producer_pubkey,
-            status.version,
-        );
         if let Some(ref producer_pubkey) = status.producer_pubkey {
             self.maybe_add_bootstrap_producer(producer_pubkey, "status")
                 .await;
@@ -254,7 +249,7 @@ impl Node {
 
         let state = self.chain_state.read().await;
         let response = StatusResponse {
-            version: 1,
+            version: CURRENT_PROTOCOL_VERSION,
             network_id: self.config.network.id(),
             genesis_hash: state.genesis_hash,
             best_height: state.best_height,
