@@ -227,6 +227,11 @@ impl Node {
             sync.note_peer_status_received();
         }
 
+        self.sync_manager.write().await.set_peer_producer_info(
+            peer_id,
+            status.producer_pubkey,
+            status.version,
+        );
         if let Some(ref producer_pubkey) = status.producer_pubkey {
             self.maybe_add_bootstrap_producer(producer_pubkey, "status")
                 .await;

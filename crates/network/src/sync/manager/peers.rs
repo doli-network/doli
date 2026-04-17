@@ -35,6 +35,8 @@ impl SyncManager {
                 last_status_response: Instant::now(),
                 last_block_received: None,
                 pending_request: None,
+                protocol_version: 0,
+                producer_pubkey: None,
             },
         );
 
@@ -279,6 +281,36 @@ impl SyncManager {
             .count();
 
         peers_ahead > (total * 2) / 3
+    }
+
+    /// Set the producer public key and protocol version for a peer.
+    pub fn set_peer_producer_info(
+        &mut self,
+        peer: PeerId,
+        pubkey: Option<crypto::PublicKey>,
+        version: u32,
+    ) {
+        if let Some(status) = self.peers.get_mut(&peer) {
+            if let Some(pk) = pubkey {
+                status.producer_pubkey = Some(pk);
+            }
+            status.protocol_version = version;
+        }
+    }
+
+    /// Find the peer_id of a producer by their public key.
+    /// Only returns peers with protocol_version >= min_version.
+    pub fn find_peer_by_producer_key(
+        &self,
+        pubkey: &crypto::PublicKey,
+        min_version: u32,
+    ) -> Option<PeerId> {
+        self.peers
+            .iter()
+            .find(|(_, s)| {
+                s.producer_pubkey.as_ref() == Some(pubkey) && s.protocol_version >= min_version
+            })
+            .map(|(pid, _)| *pid)
     }
 
     /// Get the LOWEST height among all connected peers

@@ -493,6 +493,17 @@ async fn handle_sync_request_bg(
             SyncResponse::Headers(headers)
         }
 
+        SyncRequest::DirectAttestation { data } => {
+            // Direct attestation from a peer — re-broadcast via gossip
+            // so it reaches our minute tracker and other nodes.
+            if let Some(ref cmd_tx) = network_cmd_tx {
+                let _ = cmd_tx
+                    .send(network::service::NetworkCommand::BroadcastAttestation(data))
+                    .await;
+            }
+            SyncResponse::Block(None)
+        }
+
         SyncRequest::GetStateRoot { block_hash: _ } => {
             // Use cached state root to avoid race conditions
             let cache = cached_state_root.read().await;

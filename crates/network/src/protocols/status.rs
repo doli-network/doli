@@ -34,7 +34,10 @@ pub const STATUS_PROTOCOL: &str = "/doli/status/1.0.0";
 ///       remain wire-compatible pre-activation. Bumping this constant is
 ///       the Phase-1 signal to peer-scoring that the binary is capable of
 ///       crossing the gate — call-site wiring lands in Phase-2.
-pub const CURRENT_PROTOCOL_VERSION: u32 = 4;
+///   5 — Direct attestation delivery via sync protocol. Nodes with v5+
+///       can receive DirectAttestation requests. Senders check peer version
+///       before sending — old peers only get gossip.
+pub const CURRENT_PROTOCOL_VERSION: u32 = 5;
 
 /// Minimum protocol version accepted from peers.
 ///

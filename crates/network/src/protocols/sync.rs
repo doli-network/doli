@@ -62,6 +62,13 @@ pub enum SyncRequest {
         block_hash: Hash,
     },
 
+    /// Direct attestation delivery to next block producer (protocol v5+).
+    /// Bypasses gossip mesh — causal delivery like orphan chase.
+    DirectAttestation {
+        /// Serialized attestation bytes
+        data: Vec<u8>,
+    },
+
     /// Request headers starting from a height (INC-I-012 F1).
     ///
     /// Used after snap sync when the node's local_hash is from a forked peer

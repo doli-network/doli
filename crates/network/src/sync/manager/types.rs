@@ -274,6 +274,10 @@ pub struct PeerSyncStatus {
     pub last_block_received: Option<Instant>,
     /// Pending sync request ID
     pub pending_request: Option<SyncRequestId>,
+    /// Protocol version reported by peer (from status protocol)
+    pub protocol_version: u32,
+    /// Producer public key (from status protocol, if peer is a producer)
+    pub producer_pubkey: Option<crypto::PublicKey>,
 }
 
 /// Unique request identifier

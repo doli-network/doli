@@ -540,9 +540,36 @@ impl Node {
             sync.add_attestation_weight(&block_hash, weight);
         }
 
-        // Broadcast to network
+        // Broadcast to network via gossip
+        let attestation_bytes = attestation.to_bytes();
         if let Some(ref network) = self.network {
-            let _ = network.broadcast_attestation(attestation.to_bytes()).await;
+            let _ = network
+                .broadcast_attestation(attestation_bytes.clone())
+                .await;
+
+            // Direct attestation delivery to producer of slot+1.
+            // Like orphan chase: causal, deterministic, point-to-point.
+            // Only send to peers with protocol_version >= 5.
+            let next_slot = slot + 1;
+            let source = if self.epoch_state.active_list.is_empty() {
+                &self.epoch_state.producer_list
+            } else {
+                &self.epoch_state.active_list
+            };
+            if !source.is_empty() {
+                let next_producer = source[next_slot as usize % source.len()];
+                let peer_id = self
+                    .sync_manager
+                    .read()
+                    .await
+                    .find_peer_by_producer_key(&next_producer, 5);
+                if let Some(pid) = peer_id {
+                    let request = SyncRequest::DirectAttestation {
+                        data: attestation_bytes,
+                    };
+                    let _ = network.request_sync(pid, request).await;
+                }
+            }
         }
     }
 }

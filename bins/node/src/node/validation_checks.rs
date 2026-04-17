@@ -977,6 +977,14 @@ impl Node {
                     Err(e) => SyncResponse::Error(format!("Snapshot error: {}", e)),
                 }
             }
+
+            SyncRequest::DirectAttestation { data } => {
+                // Re-broadcast via gossip so it reaches minute tracker
+                if let Some(ref network) = self.network {
+                    let _ = network.broadcast_attestation(data).await;
+                }
+                SyncResponse::Block(None)
+            }
         };
 
         if let Some(ref network) = self.network {
