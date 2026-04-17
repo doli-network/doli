@@ -333,6 +333,10 @@ impl Node {
                                 att.bls_signature.clone(),
                             );
                         }
+                        info!(
+                            "[DIRECT_ATTEST_RECV] registered attestation from {:.8} for slot {}",
+                            att.attester, att.slot
+                        );
                     }
                 }
             }
