@@ -308,8 +308,8 @@ impl InMemoryUtxoStore {
             .filter(|(_, entry)| entry.output.output_type == doli_core::OutputType::Bond)
             .map(|(_, entry)| entry.output.amount)
             .sum();
-        if bond_unit > 0 {
-            (total / bond_unit) as u32
+        if let Some(count) = total.checked_div(bond_unit) {
+            count as u32
         } else {
             0
         }
@@ -368,7 +368,7 @@ impl InMemoryUtxoStore {
     /// Keys are sorted lexicographically (by outpoint bytes).
     pub fn serialize_canonical(&self) -> Vec<u8> {
         let mut entries: Vec<(&Outpoint, &UtxoEntry)> = self.utxos.iter().collect();
-        entries.sort_by(|(a, _), (b, _)| a.to_bytes().cmp(&b.to_bytes()));
+        entries.sort_by_key(|(a, _)| a.to_bytes());
 
         let count = entries.len() as u64;
         // 36 bytes outpoint key + 61+ bytes canonical entry value + 8 bytes header
