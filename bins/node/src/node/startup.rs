@@ -564,10 +564,19 @@ impl Node {
                     .await
                     .find_peer_by_producer_key(&next_producer, 5);
                 if let Some(pid) = peer_id {
+                    info!(
+                        "[DIRECT_ATTEST] Sending attestation for slot {} to producer of slot {} (peer {})",
+                        slot, next_slot, pid
+                    );
                     let request = SyncRequest::DirectAttestation {
                         data: attestation_bytes,
                     };
                     let _ = network.request_sync(pid, request).await;
+                } else {
+                    debug!(
+                        "[DIRECT_ATTEST] No v5+ peer found for producer of slot {} ({:.8})",
+                        next_slot, next_producer
+                    );
                 }
             }
         }
