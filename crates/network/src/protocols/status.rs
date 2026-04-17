@@ -301,11 +301,10 @@ mod m_choice1_protocol_version_tests {
     #[test]
     fn test_m_choice1_current_protocol_version_is_4() {
         assert_eq!(
-            CURRENT_PROTOCOL_VERSION, 4,
-            "M-Choice1: CURRENT_PROTOCOL_VERSION must bump from 3 to 4 when \
-             EPOCH_SNAPSHOT_HF is scheduled. Per CLAUDE.md 'After Every \
-             Modification' step 3 — signal to peer scoring that this binary \
-             may switch state-root formula at the scheduled height."
+            CURRENT_PROTOCOL_VERSION, 5,
+            "M-Choice1: CURRENT_PROTOCOL_VERSION must be 5 (bumped for \
+             DirectAttestation protocol support). Per CLAUDE.md 'After Every \
+             Modification' step 3."
         );
     }
 

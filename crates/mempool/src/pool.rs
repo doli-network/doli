@@ -482,7 +482,7 @@ impl Mempool {
 
         // Build a list sorted by effective fee rate (CPFP-aware)
         let mut candidates: Vec<(&Hash, &MempoolEntry)> = self.entries.iter().collect();
-        candidates.sort_by(|a, b| b.1.effective_fee_rate().cmp(&a.1.effective_fee_rate()));
+        candidates.sort_by_key(|b| std::cmp::Reverse(b.1.effective_fee_rate()));
 
         for &(tx_hash, entry) in &candidates {
             if selected_hashes.contains(tx_hash) {
