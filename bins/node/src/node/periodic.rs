@@ -405,6 +405,25 @@ impl Node {
             }
         }
 
+        // SILENCE PULL: if gossip hasn't delivered a block in 30s, request
+        // the next block from a random peer. Complements orphan chase —
+        // chase handles "got something I can't use", this handles "got nothing".
+        {
+            let last_applied = self.sync_manager.read().await.last_block_applied_secs();
+            if last_applied >= 30 {
+                let catch_up = self.sync_manager.read().await.catch_up_request();
+                if let Some((peer_id, request)) = catch_up {
+                    if let Some(ref network) = self.network {
+                        info!(
+                            "[SILENCE_PULL] No block for {}s, requesting from {}",
+                            last_applied, peer_id
+                        );
+                        let _ = network.request_sync(peer_id, request).await;
+                    }
+                }
+            }
+        }
+
         // ACTIVE FORK DETECTION: if >66% of peers are above us and we're not
         // receiving blocks that chain on our tip, we're on a minority fork.
         // Runs at heights ending in 1, 4, 7 (~every 30s). Max 1 per epoch.
