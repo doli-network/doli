@@ -19,7 +19,7 @@ DOLI is a cryptocurrency where the scarce resource is **time** — the one resou
 
 ## How It Works
 
-**Block production** follows pure round-robin: every active producer receives equal block assignments regardless of stake. Bonds affect only reward distribution, not production frequency.
+**Block production** follows deterministic bond-weighted scheduling: each producer receives block assignments proportional to their bond count. Both production frequency and epoch rewards scale linearly with bonds — ensuring identical ROI percentage for all participants.
 
 **Rewards** accumulate into an epoch pool (360 blocks, ~1 hour) and are distributed proportionally by bond weight to all producers who proved continuous presence via on-chain liveness attestations.
 
@@ -30,7 +30,7 @@ DOLI is a cryptocurrency where the scarce resource is **time** — the one resou
 | Bitcoin | Energy | Lottery (hashpower) | ASIC ($5,000+) | Yes |
 | Ethereum | Capital (32 ETH) | Lottery (stake) | Server ($100K+) | Yes |
 | Solana | Capital (stake) | Stake-weighted | $10K+ server | Yes |
-| **DOLI** | **Time** | **Deterministic round-robin** | **Any CPU ($5/mo)** | **Built-in** |
+| **DOLI** | **Time** | **Deterministic bond-weighted** | **Any CPU ($5/mo)** | **Built-in** |
 
 ## Quick Start
 
@@ -86,7 +86,7 @@ DOLI is implemented as a Rust workspace:
 | Crate | Description |
 |-------|-------------|
 | `crypto` | BLAKE3 hashing, Ed25519 + BLS12-381 signatures, bech32m addresses |
-| `doli-core` | Transactions (27 types), validation, consensus parameters, conditions |
+| `doli-core` | Transactions (30 types), validation, consensus parameters, conditions, EpochState |
 | `storage` | RocksDB state database, block store, UTXO set, producer set |
 | `network` | libp2p P2P networking, gossipsub, Kademlia DHT, sync engine |
 | `mempool` | Transaction pool with UTXO verification and chained tx support |

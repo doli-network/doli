@@ -12,7 +12,7 @@
 
 Proponemos un sistema de efectivo electrónico peer-to-peer donde el único recurso requerido para el consenso es el tiempo — el único recurso distribuido equitativamente entre todos los participantes.
 
-La produccion de bloques sigue un round-robin puro: cada productor activo recibe asignaciones de bloques iguales sin importar su stake. El protocolo distribuye recompensas cada epoch a traves de un pool integrado — proporcional a los bonds, sin pools de mineria externos, sin operadores, sin comisiones. Las recompensas se reinvierten en stake productivo, creando un crecimiento exponencial predecible para cada participante sin importar su tamano.
+La produccion de bloques sigue un scheduling determinista ponderado por bonds: cada productor activo recibe asignaciones de bloques proporcionales a su stake. El protocolo distribuye recompensas cada epoch a traves de un pool integrado — proporcional a los bonds, sin pools de mineria externos, sin operadores, sin comisiones. Las recompensas se reinvierten en stake productivo, creando un crecimiento exponencial predecible para cada participante sin importar su tamano.
 
 Un nuevo productor que recibe 10 DOLI puede reinvertir las recompensas de bloques para duplicar su stake a intervalos regulares. La tasa de duplicacion es identica para todos los participantes — uno o tres mil bonds. La presencia continua se demuestra mediante attestations de actividad on-chain — los productores que estan en linea y siguiendo la cadena califican para su parte. Sin loteria. Sin varianza. Sin pools. Solo tiempo.
 
@@ -270,13 +270,19 @@ Esto previene un problema circular: un testigo de Signature debe firmar un hash 
 
 Cada salida es independiente. Gastar una salida no puede afectar a otra. No hay reentrancia, no hay front-running, no hay MEV. Las transacciones son completamente paralelizables — la validacion escala linealmente con los nucleos.
 
-### 3.9. Lo que esto no permite
+### 3.9. Primitivos DeFi nativos
 
-Las salidas de DOLI no pueden mantener estado persistente entre transacciones. No hay almacenamiento en cadena, no hay bucles, no hay computacion arbitraria. Esto es deliberado.
+DOLI implementa operaciones DeFi centrales como tipos de transaccion nativos en lugar de contratos ejecutados en una VM. Los creadores de mercado automatizados (CreatePool, AddLiquidity, RemoveLiquidity, Swap), prestamos (CreateLoan, RepayLoan, LiquidateLoan, LendingDeposit, LendingWithdraw) y fraccionalizacion de NFTs (FractionalizeNft, RedeemNft) estan compilados en el binario del nodo como transiciones de estado validadas.
 
-Las aplicaciones que requieren estado compartido — creadores de mercado automatizados, protocolos de prestamo, gobernanza en cadena con votacion compleja — pertenecen a la Capa 2 o a cadenas especificas de aplicacion que liquidan en DOLI.
+**Resistencia a MEV.** Un swap consume un UTXO de pool atomicamente — dos swaps contra el mismo pool son mutuamente excluyentes por semantica UTXO. El front-running es posible (enviar antes del objetivo), pero el sandwiching no (insertar entre dos tramos de la misma operacion). El modelo UTXO proporciona resistencia a MEV por construccion, sin juegos de ordenamiento de mempool.
 
-La capa base proporciona: **transferencia de valor, ordenamiento anclado al tiempo, condiciones de gasto programables, activos nativos y liquidacion entre cadenas sin confianza.** Todo lo demas se construye encima.
+**Liquidacion L2.** Para aplicaciones que requieren computacion arbitraria, DOLI soporta liquidacion de rollups L2 sin permisos mediante transacciones `ZKSettle` que verifican pruebas de conocimiento cero contra una `verifying_key` comprometida en una salida `ZKRollup`. Cada rollup es su propio dominio de confianza — sin registro gobernado por maintainers.
+
+### 3.10. Lo que esto no permite
+
+Las salidas de DOLI no pueden mantener estado compartido persistente entre transacciones. No hay almacenamiento en cadena, no hay bucles, no hay computacion arbitraria. Esto es deliberado. Las aplicaciones que requieren estado compartido complejo mas alla de los primitivos nativos anteriores pertenecen a cadenas L2 que liquidan en DOLI mediante el mecanismo ZKSettle.
+
+La capa base proporciona: **transferencia de valor, ordenamiento anclado al tiempo, condiciones de gasto programables, activos nativos, liquidacion entre cadenas sin confianza, AMM/prestamos nativos y verificacion de rollups L2.** Todo lo demas se construye encima.
 
 ---
 
@@ -341,9 +347,9 @@ DOLI utiliza una **cadena de hash iterada** (BLAKE3), no una VDF algebraica sobr
 | Resistencia cuantica | Incierta | Basada en hash (conservadora) |
 | Implementacion | Compleja (GMP/enteros grandes) | Simple (~10 lineas) |
 
-Las VDFs algebraicas ofrecen verificacion *O(log T)*, lo cual es critico cuando el parametro de retardo *T* es grande (minutos a horas). La prueba de retardo de bloque de DOLI requiere solo *T* = 800,000 iteraciones (~55ms), haciendo aceptable la verificacion *O(T)* — cada nodo recomputa la cadena en los mismos ~55ms.
+Las VDFs algebraicas ofrecen verificacion *O(log T)*, lo cual es critico cuando el parametro de retardo *T* es grande (minutos a horas). La prueba de retardo de bloque de DOLI requiere solo *T* = 1,000 iteraciones (tiempo de computacion despreciable), haciendo la verificacion *O(T)* trivialmente rapida — cada nodo recomputa la cadena en microsegundos.
 
-La concesion es deliberada: DOLI gana simplicidad, auditabilidad y ausencia de configuracion confiable al costo de verificacion lineal. Para una prueba de latido donde *T* es pequeno, esta es la eleccion de ingenieria correcta.
+La concesion es deliberada: DOLI gana simplicidad, auditabilidad y ausencia de configuracion confiable al costo de verificacion lineal. Para una barrera anti-grinding liviana donde *T* es pequeno, esta es la eleccion de ingenieria correcta. El requisito de bond (10 DOLI por productor) es la defensa principal contra Sybil; la prueba de retardo sirve como latido a nivel de protocolo y barrera anti-flash, no como una prueba de trabajo intensiva en tiempo.
 
 ```
 Input: prev_hash ∥ slot ∥ producer_key
@@ -353,7 +359,7 @@ Input: prev_hash ∥ slot ∥ producer_key
     │ BLAKE3  │ ◄──┐
     └────┬────┘    │
          │         │
-         └─────────┘  × T iterations (T = 800,000)
+         └─────────┘  × T iterations (T = 1,000)
          │
          ▼
       Output: h_T = H^T(input)
@@ -361,12 +367,14 @@ Input: prev_hash ∥ slot ∥ producer_key
 
 **Verificacion:** Un verificador recomputa *h_T = H^T(input)* y comprueba que *h_T == salida_declarada*. La dependencia secuencial *h_{i+1} = H(h_i)* previene la paralelizacion. No se conoce ningun atajo para computar *H^T* mas rapido que *T* evaluaciones secuenciales para BLAKE3 o cualquier funcion hash criptografica — esta es una suposicion estandar en criptografia basada en hash, no un limite inferior demostrado. La seguridad de la prueba de retardo descansa sobre esta suposicion, que compartimos con todas las construcciones de hash iterado incluyendo la Proof of History de Solana [4].
 
+**Verificacion paralela de multiples pruebas:** Cuando un bloque contiene multiples transacciones que requieren verificacion VDF (ej. varios registros de productores), el nodo verifica cada prueba en un hilo separado usando `thread::scope`. Cada prueba individual permanece secuencial, pero pruebas independientes se verifican concurrentemente. Esto asegura que bloques con muchos registros no creen un cuello de botella de verificacion.
+
 ### 5.2. Estructura temporal
 
 La red define el tiempo de la siguiente manera:
 
 ```
-GENESIS_TIME = 2026-03-10T23:54:33Z (UTC)
+GENESIS_TIME = 2026-03-19T22:31:20Z (UTC)
 ```
 
 Un slot es 10 segundos. Un numero de slot se deriva deterministicamente de la marca de tiempo:
@@ -386,15 +394,15 @@ Un epoch es 360 slots (1 hora). En los limites de epoch, el conjunto activo de p
 
 ### 5.3. Parametros de iteracion
 
-Cada red define un conteo fijo de iteraciones calibrado para ~55ms en CPUs modernas:
+Cada red define un conteo fijo de iteraciones:
 
 ```
-T_BLOCK = 800,000 iterations (~55ms)
+T_BLOCK = 1,000 iterations (tiempo de computacion despreciable)
 ```
 
-Con slots de 10 segundos, la prueba de retardo toma ~55ms, dejando el resto para la construccion y propagacion del bloque. El conteo fijo de iteraciones asegura que todos los nodos computen pruebas identicas — no se necesita calibracion por nodo ni ajuste dinamico.
+Con slots de 10 segundos, la prueba de retardo se completa en microsegundos, dejando el resto para la construccion y propagacion del bloque. El conteo fijo de iteraciones asegura que todos los nodos computen pruebas identicas — no se necesita calibracion por nodo ni ajuste dinamico.
 
-Todo sistema de consenso impone un recurso escaso. En DOLI, ese recurso es el tiempo secuencial.
+La prueba de retardo es deliberadamente liviana. El requisito de bond (Seccion 7.2) es el costo principal de participacion; la VDF sirve como medida anti-grinding que previene que un productor precompute bloques trivialmente sin conocimiento del hash del bloque anterior. Todo sistema de consenso impone un recurso escaso. En DOLI, ese recurso es capital en bond anclado por tiempo secuencial.
 
 ---
 
@@ -465,11 +473,11 @@ DOLI no compite en rendimiento bruto. Compite en accesibilidad:
 
 En una red abierta, cualquiera puede crear identidades sin costo. Permitir la creacion ilimitada y gratuita de identidades expondria a la red a ataques Sybil donde un atacante inunda el sistema con nodos falsos.
 
-Para prevenir esto, el registro requiere completar una prueba de retardo secuencial cuya dificultad impone un tiempo minimo de reloj de pared por identidad.
+Para prevenir esto, el registro requiere tanto una prueba de retardo secuencial como un bond de activacion (Seccion 7.2). El bond es el principal disuasivo Sybil; la prueba de retardo agrega una barrera anti-grinding liviana.
 
 ```
 input  = HASH(prefix || public_key || epoch)
-output = HASH^T(input)    where T = T_REGISTER_BASE = 5,000,000 iterations (~30 seconds)
+output = HASH^T(input)    where T = T_REGISTER_BASE = 1,000 iterations
 ```
 
 Un registro es valido si:
@@ -484,10 +492,10 @@ Un registro es valido si:
 La dificultad de registro es fija:
 
 ```
-T_registration = T_REGISTER_BASE = 5,000,000 iterations (~30 seconds)
+T_registration = T_REGISTER_BASE = 1,000 iterations (tiempo de computacion despreciable)
 ```
 
-Esto es deliberadamente constante. El costo de capital del bond de activacion (10 DOLI) es el principal disuasivo Sybil; la prueba de retardo agrega un piso temporal que previene el registro masivo instantaneo independientemente del capital. Un atacante con *M* maquinas puede registrar *M* identidades en paralelo, pero cada una aun requiere ~30 segundos de computacion secuencial mas el capital del bond.
+Esto es deliberadamente liviano. El costo de capital del bond de activacion (10 DOLI) es el principal disuasivo Sybil. La prueba de retardo sirve como medida anti-grinding — vincula el registro a un epoch especifico y una clave publica, previniendo la precomputacion de pruebas de registro. Un atacante con *M* maquinas puede registrar *M* identidades, pero cada una requiere *BOND_UNIT* de capital, haciendo el costo de un ataque Sybil *O(M)* en capital en bond.
 
 ### 7.2. Bond de activacion
 
@@ -517,7 +525,7 @@ MIN_STAKE = 1 × BOND_UNIT (10 DOLI)
 MAX_STAKE = 3,000 × BOND_UNIT (30,000 DOLI)
 ```
 
-La produccion de bloques utiliza round-robin puro — cada productor activo recibe asignaciones de bloques iguales sin importar su cantidad de bonds. Un productor con 1 bond produce la misma cantidad de bloques que un productor con 250 bonds. Los bonds afectan unicamente la distribucion de recompensas por epoch (Seccion 10.2), no la frecuencia de produccion.
+La produccion de bloques utiliza scheduling ponderado por bonds — cada productor recibe asignaciones de bloques proporcionales a su conteo de bonds. Un productor con 5 bonds recibe 5 slots consecutivos por ciclo de rotacion; un productor con 1 bond recibe 1. Tanto la frecuencia de produccion como la distribucion de recompensas por epoch (Seccion 10.2) escalan linealmente con los bonds.
 
 **Ejemplo (3 productores):**
 
@@ -566,9 +574,11 @@ T_commitment = 12,614,400 blocks (~4 years)
 
 Cada bond rastrea su propio tiempo de creacion. El retiro utiliza orden FIFO (los bonds mas antiguos primero), con penalizacion calculada individualmente por bond segun su edad.
 
-**El pago del retiro es instantaneo** — los fondos se devuelven en el mismo bloque. Sin demora de 7 dias. Sin paso de reclamacion separado. La eliminacion del bond del conjunto activo toma efecto en el siguiente limite de epoch.
+**El retiro utiliza un proceso de dos pasos con un periodo de desvinculacion de 7 dias** (60,480 bloques). Un productor envia una transaccion `RequestWithdrawal`, que inicia la cuenta regresiva de desvinculacion. Despues de 60,480 bloques (~7 dias), el productor envia una transaccion `ClaimWithdrawal` para recibir los fondos. La eliminacion del bond del conjunto activo toma efecto en el siguiente limite de epoch despues de la solicitud.
 
-El retiro anticipado incurre en una penalizacion escalonada basada en la edad individual del bond:
+El periodo de desvinculacion previene ataques de corto alcance donde un productor se retira inmediatamente despues de portarse mal, y asegura que la red retenga la capacidad de slashing durante la ventana de disputa.
+
+El retiro anticipado incurre en una penalizacion escalonada FIFO basada en la edad individual del bond:
 
 | Edad del bond | Penalizacion | Devuelto |
 |---------------|-------------|----------|
@@ -585,33 +595,35 @@ Todas las penalizaciones se queman permanentemente, removiendo monedas de la cir
 
 ## 8. Seleccion de productores
 
-Para cada slot, una funcion determinista selecciona al productor de bloques. Sea *P* = {*p_1*, ..., *p_n*} el conjunto activo ordenado por clave publica, y *L* ⊂ *P* el conjunto de productores actualmente excluidos por el filtro de actividad (Seccion 8.1). Definimos el conjunto efectivo *E* = *P* \ *L*, ordenado lexicograficamente por bytes de clave publica.
+Para cada slot, una funcion determinista selecciona al productor de bloques. Sea *P* = {*p_1*, ..., *p_n*} el conjunto activo congelado en el limite de epoch, ordenado por clave publica. Cada productor *p_i* recibe *bonds(p_i)* tickets consecutivos en la rotacion. El espacio total de tickets es *T = Σ bonds(p_i)*.
 
 ```
-producer(s) = E[s mod |E|]
+ticket(s) = s mod T
+producer(s) = p_i donde ticket(s) cae en el rango de tickets de p_i
 ```
 
-La funcion es round-robin puro: `producer(s) = f(s, ActiveSet(epoch(s)), LivenessFilter(s))`. No depende de ningun valor que el productor actual pueda influenciar — ni `prev_hash`, ni el ordenamiento de transacciones, ni marcas de tiempo dentro de la ventana de deriva, ni el conteo de bonds. **Grinding es imposible porque el calendario es una funcion solo del tiempo.**
+El scheduler es un `DeterministicScheduler`: una funcion pura de `(slot, EpochBondSnapshot)`. No depende de ningun valor que el productor actual pueda influenciar — ni `prev_hash`, ni el ordenamiento de transacciones, ni marcas de tiempo dentro de la ventana de deriva. **Grinding es imposible porque el calendario es una funcion del tiempo y el snapshot de bonds congelado del epoch.**
 
-El conteo de bonds no influye en la frecuencia de produccion. Un productor con 1 bond y un productor con 250 bonds producen con igual frecuencia. Los bonds afectan unicamente la distribucion de recompensas por epoch (Seccion 10.2). Esta separacion asegura que la capacidad de produccion de bloques no pueda comprarse — solo la presencia y el tiempo determinan quien produce.
+El conteo de bonds influye en la frecuencia de produccion proporcionalmente — un productor con 5 bonds recibe 5 slots consecutivos por ciclo de rotacion, un productor con 1 bond recibe 1. Tanto la frecuencia de produccion como la distribucion de recompensas por epoch (Seccion 10.2) escalan con los bonds. Esto asegura que cada DOLI bondeado genera un retorno identico sin importar el tamano total del stake del productor — el porcentaje de ROI es uniforme.
 
 ### 8.1. Filtro de actividad
 
-El protocolo mantiene un filtro de actividad dinamico que excluye temporalmente a los productores que estan demostrablemente fuera de linea, previniendo slots desperdiciados en la rotacion round-robin.
+El protocolo utiliza un filtro de actividad basado en attestations aplicado en los limites de epoch. En lugar de exclusion mid-epoch (que creaba divergencia entre nodos con diferente estado local), la lista activa de productores se congela en cada limite de epoch basada en una ventana de lookback de 3 epochs.
 
-**Exclusion.** Cuando un bloque se confirma, el protocolo verifica si la brecha de slots entre bloques consecutivos excede 1. Si un productor estaba programado para un slot omitido y no produjo, se agrega al conjunto de excluidos.
+**Filtrado por attestation.** En el limite de epoch, los productores que atestiguaron en cualquiera de los 3 epochs anteriores se retienen en el conjunto activo. Los productores con cero attestations en los 3 epochs son excluidos de la rotacion del siguiente epoch.
 
-**Re-inclusion.** El bitfield de presencia incluido en cada cabecera de bloque (`presence_root`, Seccion 10.3) registra cuales productores atestiguaron durante la ventana de attestation de ese bloque. Un productor en el conjunto de excluidos que aparece en el bitfield de presencia de un bloque es inmediatamente re-incluido en el conjunto efectivo.
+**Piso de seguridad anti-deadlock.** Si el filtro de attestation dejaria menos de 2/3 de los productores activos, el filtro se omite y todos los productores se incluyen — previniendo la muerte de la cadena durante eventos masivos (caida de red, deploy coordinado).
 
-**Reconstruccion.** El conjunto de excluidos no se persiste — se reconstruye al iniciar el nodo escaneando el ultimo epoch de bloques (360 bloques) desde el almacen de bloques. Esto asegura que los nodos que se unen mediante cualquier metodo de sincronizacion computen un conjunto de excluidos identico a partir de los mismos datos de cadena.
+**Promocion por tier.** Cuando el conjunto activo excede el `ACTIVE_PRODUCERS_CAP` (50), los productores se ordenan por tiempo de registro (mas antiguos primero). Los productores por debajo del umbral de attestation para el epoch recien completado son degradados y reemplazados por attestors calificados.
 
 | Evento | Efecto |
 |--------|--------|
-| Productor pierde slot asignado | Agregado al conjunto de excluidos |
-| Productor aparece en bitfield de presencia | Removido del conjunto de excluidos |
-| Inicio de nodo | Conjunto de excluidos reconstruido desde ultimos 360 bloques |
+| Limite de epoch | Lista activa reconstruida desde lookback de attestation de 3 epochs |
+| Productor atestigua en cualquiera de 3 epochs | Retenido en conjunto activo |
+| Cero attestations en 3 epochs | Excluido del siguiente epoch |
+| Filtro deja < 2/3 productores | Bypass: incluir todos (piso de seguridad) |
 
-El filtro de actividad es determinista: cada nodo leyendo la misma cadena computa el mismo conjunto de excluidos y por lo tanto el mismo productor para cada slot. Sin aleatoriedad, sin votacion, sin subjetividad.
+El filtro de actividad es determinista: cada nodo computa el mismo `EpochState` en la misma altura de limite. El `EpochState` — incluyendo la lista activa, el snapshot de bonds y los acumuladores de attestation — se persiste atomicamente y se incluye en el state root para verificacion cross-nodo.
 
 ### 8.2. Comparacion con sistemas existentes
 
@@ -622,7 +634,7 @@ Los pools existen en PoW y PoS porque las recompensas son probabilisticas — la
 | Bitcoin      | Loteria (hashpower)        | Alta     | Si    | ~150 TWh/ano   | ASIC ($5,000+)      |
 | Ethereum PoS | Loteria (stake)            | Media    | Si    | ~2.6 GWh/ano   | 32 ETH ($100K+)     |
 | Solana PoH   | Calendario (stake)         | Baja     | Si    | ~4 GWh/ano     | Servidor $10,000+   |
-| DOLI PoT     | Round-robin deterministico | **Cero** | **Integrado** | **Despreciable** | **Cualquier CPU ($5/mes)** |
+| DOLI PoT     | Ponderado por bonds deterministico | **Cero** | **Integrado** | **Despreciable** | **Cualquier CPU ($5/mes)** |
 
 Solana usa Proof of History como reloj, pero la seleccion de lider sigue siendo ponderada por stake con elementos probabilisticos y requiere hardware de alto rendimiento. DOLI usa la prueba de retardo puramente como latido — la seleccion de lider es una funcion pura de `(slot, ActiveSet(epoch), LivenessFilter)`. No existe ventaja de hardware. No existe ventaja de stake para la produccion — solo para las recompensas.
 
@@ -710,7 +722,12 @@ El hash del bloque demuestra que el productor no solo esta vivo sino que activam
 
 La firma BLS agregada comprime todas las firmas individuales de attestation en una sola verificacion. Un bit falso — afirmando que un productor atestiguó cuando no lo hizo — causa que la verificacion de la firma agregada falle. El bloque es rechazado.
 
-En el limite de epoch, cada nodo escanea los bitfields registrados en los bloques del epoch y cuenta los minutos de attestation por productor. Cada epoch abarca 60 minutos de attestation (uno por cada 6 slots). El umbral es 90%: un productor debe atestiguar en al menos 54 de 60 minutos para calificar para recompensas. Deterministico: cada nodo lee la misma cadena, computa los mismos conteos, coincide en la misma calificacion.
+En el limite de epoch, cada nodo escanea los bitfields registrados en los bloques del epoch y cuenta los minutos de attestation por productor. Cada epoch abarca 60 minutos de attestation (uno por cada 6 slots). Dos umbrales distintos aplican:
+
+1. **Calificacion para recompensas de epoch (90%):** Un productor debe atestiguar en al menos 54 de 60 minutos para calificar para la distribucion de recompensas de ese epoch. Los no calificados no reciben nada; su parte se redistribuye a los productores calificados.
+2. **Retencion en el conjunto activo (50%):** Un productor debe mantener una tasa de presencia de al menos 50% para permanecer en el conjunto activo de productores. Los productores que caen por debajo de este umbral son removidos del conjunto y deben re-registrarse para reincorporarse.
+
+Ambos umbrales son deterministas: cada nodo lee la misma cadena, computa los mismos conteos, coincide en las mismas decisiones de calificacion y retencion.
 
 ### 10.4. Diseno de doble clave
 
@@ -873,27 +890,26 @@ El deficit es monotonamente no decreciente. Anadir hardware paralelo permite com
 
 El unico vector de ataque es controlar >50% de los productores en el conjunto activo, lo que requiere:
 
-1. *T_registration* de tiempo secuencial por identidad (no puede paralelizarse por identidad)
-2. *BOND_UNIT* de capital por identidad
+1. *BOND_UNIT* de capital bloqueado por identidad (costo lineal, sujeto a slashing)
+2. Prueba de retardo *T_registration* por identidad (anti-grinding, vinculada al epoch)
 3. 100% de riesgo de perdida de bond si se detecta doble produccion
 
-### 12.3. La objecion de acumulacion de CPUs
+### 12.3. La objecion de acumulacion de capital
 
-Una objecion natural: "El tiempo no puede acumularse, pero la capacidad de probar retardos si — mas CPUs permiten mas identidades paralelas."
+Una objecion natural: "Si el registro requiere solo 1,000 iteraciones de hash (tiempo despreciable), que impide que un atacante inunde la red con identidades?"
 
-Esto es correcto y es por diseno. Un atacante con *M* maquinas puede registrar *M* identidades en paralelo, cada una completando *T_registration* independientemente. Sin embargo, cada identidad aun requiere:
+La respuesta es **capital en bond**. Cada identidad requiere *BOND_UNIT* (10 DOLI) bloqueado como bond de activacion. Un atacante que registra *M* identidades debe bloquear *M x BOND_UNIT* de capital — el costo es *O(M)*, identico a Proof of Stake. DOLI no escapa de la economia fundamental de la resistencia Sybil: prevenir la inundacion de identidades requiere un recurso escaso que escale linealmente con el numero de identidades.
 
-1. **Tiempo secuencial:** *T_registration* segundos de reloj de pared (no puede reducirse anadiendo nucleos)
-2. **Capital:** *BOND_UNIT* bloqueado por identidad (costo lineal en *M*)
-3. **Presencia continua:** Un latido de prueba de retardo por slot por identidad (costo operativo lineal en *M*)
+Lo que DOLI agrega mas alla de PoS puro:
 
-El costo de capital es *O(M)* — identico a Proof of Stake. DOLI no escapa de esto. Un atacante con recursos suficientes que puede costear *M* bonds enfrenta el mismo costo lineal de capital que en cualquier sistema PoS.
+1. **Capital en riesgo:** *BOND_UNIT* bloqueado por identidad, con slashing del 100% por doble produccion y penalizaciones de vesting por retiro anticipado.
+2. **Anti-grinding:** La VDF de registro (1,000 iteraciones) vincula la prueba a un epoch especifico y una clave publica, previniendo la precomputacion de pruebas de registro entre epochs futuros.
+3. **Costo operativo continuo:** Cada identidad requiere attestation de actividad continua (90% de uptime por epoch). Mantener *M* identidades a este umbral tiene un costo operativo compuesto — una maquina por identidad, indefinidamente.
+4. **Desventaja de antiguedad:** Las nuevas identidades reciben peso 1.0; los productores establecidos acumulan hasta 4.0. Un atacante que parte de cero necesita ~3 anos antes de que su peso de antiguedad iguale al de los participantes honestos establecidos.
 
-Lo que DOLI agrega es un **piso temporal** que PoS no tiene: incluso con capital ilimitado, registrar *M* identidades toma al menos *T_registration* de tiempo de reloj de pared por identidad. El registro requiere un *T_REGISTER_BASE* fijo (~30 segundos) de computacion secuencial por identidad mas *BOND_UNIT* de capital. Un ataque estilo PoS de "comprar el 51% del stake de la noche a la manana" requiere tanto tiempo como capital — ninguno de los dos es suficiente por si solo.
+Comparemos con PoW: un atacante con *M* ASICs obtiene *Mx* hashpower inmediatamente, sin bloqueo de capital por identidad. En DOLI, cada identidad requiere capital bloqueado que puede ser destruido ante mal comportamiento.
 
-Comparemos con PoW: un atacante con *M* ASICs obtiene *Mx* hashpower inmediatamente, sin demora temporal por identidad. En DOLI, las mismas *M* maquinas producen *M* identidades, pero el pipeline de registro impone un cuello de botella secuencial por identidad y el requisito de capital escala linealmente.
-
-El sistema no reclama inmunidad ante adversarios adinerados — ningun sistema puede. Reclama dos cosas: (1) el capital solo no puede eludir el piso temporal, y (2) una vez registrado, el costo operativo por identidad del atacante es permanente, no un gasto unico.
+El sistema no reclama inmunidad ante adversarios adinerados — ningun sistema puede. Reclama que (1) la creacion de identidades tiene costo de capital lineal con riesgo de slashing, (2) la VDF anti-grinding previene ataques de precomputacion, y (3) una vez registrado, el costo operativo por identidad del atacante es permanente, no un gasto unico.
 
 ### 12.4. Teorema de seguridad
 
@@ -979,6 +995,8 @@ El resultado: los productores fundadores pagaron sus propios bonds con produccio
 
 **Los fundadores no recibieron privilegio alguno — pagaron el costo del arranque con trabajo.**
 
+**Fase 4 — Participacion abierta.** En el bloque 26,979 (~3 dias despues del genesis), los productores fundadores financiaron un faucet publico con sus propias recompensas ganadas — 250 DOLI cada uno, 1,500 DOLI en total. El faucet distribuye 10.01 DOLI (1 unidad de bond + comisiones de transaccion) a cualquier nuevo participante que lo solicite. La barrera de entrada es cero capital — solo un VPS de $5/mes y la voluntad de operar un nodo. Todas las transacciones del faucet estan en cadena y son verificables. Hoy, los nuevos participantes pueden reclamar su airdrop de DOLI para comenzar a minar uniendose al [Discord de DOLI](https://discord.gg/hB3mjQmv) y mencionando a @dolifather o @isudoajl.
+
 ---
 
 ## 17. Inmutabilidad
@@ -1031,27 +1049,33 @@ La eleccion es simple: participar en el consenso con software actual, o no parti
 
 DOLI no es una propuesta. La red descrita en este documento esta operativa.
 
-A marzo de 2026, la red principal esta en su **fase de arranque** — operativa y produciendo bloques, pero con un conjunto reducido de productores operado principalmente por el equipo fundador en servidores geograficamente distribuidos. El codigo fuente es abierto, el estado de la cadena es verificable publicamente, y productores externos han comenzado a unirse.
+A abril de 2026, la red principal esta en su **fase de crecimiento** — operativa con 38 productores registrados en 11 servidores geograficamente distribuidos. El codigo fuente es abierto, el estado de la cadena es verificable publicamente, y productores externos operan de forma independiente. La cadena paso por multiples resets de genesis durante el arranque; las metricas a continuacion reflejan la cadena actual (genesis: 2026-04-16).
 
 | Metrica | Valor |
 |---------|-------|
 | Tiempo de bloque | 10 segundos |
-| Computacion de prueba de retardo | ~55ms por bloque |
+| Computacion de prueba de retardo | Despreciable (~1,000 iteraciones) |
 | Propagacion de bloques | < 500ms |
-| Forks desde genesis | 0 |
-| Tasa de slots perdidos | < 10% (mecanismo de respaldo) |
 | Hardware de nodos | VPS estandar, cualquier CPU |
 | Bond minimo | 10 DOLI |
-| Productores activos | 14 (fase de arranque) |
-| Productores externos | Incorporacion en progreso |
+| Filtro de actividad | Exclusion/re-inclusion dinamica |
+| Periodo de desvinculacion | 7 dias (60,480 bloques) |
 
-El conteo actual de productores refleja la fase de arranque descrita en la Seccion 16.2. Las propiedades de seguridad del protocolo se fortalecen a medida que productores independientes se unen — cada operador adicional aumenta el costo de un ataque >50% del conjunto activo y reduce la dependencia del conjunto fundador. El objetivo es un conjunto de productores lo suficientemente grande como para que ninguna entidad unica controle una fraccion significativa de las asignaciones de produccion.
+El conteo actual de productores refleja el crecimiento temprano. Las propiedades de seguridad del protocolo se fortalecen a medida que productores independientes se unen — cada operador adicional aumenta el costo de un ataque >50% del conteo de productores y reduce la dependencia del conjunto fundador.
+
+**Evolucion post-lanzamiento del protocolo.** Los siguientes mecanismos fueron agregados despues del lanzamiento mediante hard forks activados forward-only (sin resets de genesis):
+
+- **EpochState en state root** (h=2750): El state root ahora incluye el estado completo del scheduler de epoch (snapshot de bonds, lista de productores, acumuladores de attestation). La divergencia entre nodos es detectable en 10 segundos en lugar de esperar al limite de epoch.
+- **Chain commitment incremental**: Cada bloque actualiza un commitment BLAKE3 rodante — `commitment[h] = BLAKE3(commitment[h-1] || block_hash[h])`. La verificacion de integridad es O(1) por bloque en lugar de un scan O(n) de toda la cadena.
+- **Recuperacion de bloques en tres capas**: (1) Gossip entrega bloques via push, (2) ORPHAN_CHASE solicita bloques faltantes directamente al peer que envio un bloque dependiente — causal, determinista, sin heuristicas, (3) Silence pull solicita bloques proactivamente cuando gossip esta en silencio por 30 segundos.
+- **Entrega directa de attestations**: Las attestations se envian punto-a-punto al productor del siguiente slot via el protocolo sync, evitando dependencias de timing del mesh gossip.
+- **Fingerprints de estado**: Cada bloque registra hashes de 7 componentes de estado para diagnostico instantaneo de divergencia entre nodos.
 
 ```
-Genesis:    March 2026
+Genesis:    2026-04-16 (cadena actual, v6.14.11 EpochState+ForkFixes)
 Consensus:  Proof of Time (delay proof heartbeat + deterministic round-robin)
 Status:     Live
-Source:     https://github.com/e-weil/doli
+Source:     https://github.com/doli-network/doli
 Explorer:   https://doli.network
 ```
 
@@ -1075,7 +1099,7 @@ Comenzamos con el marco habitual de monedas hechas de firmas digitales, que prop
 
 **Los nodos votan con su tiempo.** La red no puede acelerarse con riqueza ni paralelizarse con hardware. Una hora de computacion secuencial es una hora, ya sea realizada por un individuo o un estado-nacion.
 
-**Las recompensas son deterministas, no probabilisticas.** Cada productor recibe asignaciones de bloques iguales a traves de round-robin puro. El protocolo actua como un pool integrado, distribuyendo recompensas de epoch ponderadas por bonds en cadena a todos los productores que demuestran presencia continua mediante attestations de actividad on-chain. Los pools externos son innecesarios. El participante mas pequeno recibe el mismo porcentaje de retorno que el mas grande.
+**Las recompensas son deterministas, no probabilisticas.** Cada productor recibe asignaciones de bloques proporcionales a sus bonds mediante scheduling determinista. El protocolo actua como un pool integrado, distribuyendo recompensas de epoch ponderadas por bonds en cadena a todos los productores que demuestran presencia continua mediante attestations de actividad on-chain. Los pools externos son innecesarios. El participante mas pequeno recibe el mismo porcentaje de retorno que el mas grande.
 
 La red es robusta en su simplicidad. Los nodos trabajan con poca coordinacion. No necesitan ser identificados, ya que los mensajes no se enrutan a ningun lugar particular y solo necesitan ser entregados con el mejor esfuerzo posible. Los nodos pueden irse y reincorporarse a la red a voluntad, aceptando la cadena mas pesada como prueba de lo que ocurrio mientras estuvieron ausentes.
 
@@ -1085,11 +1109,9 @@ Cualquier regla e incentivo necesario puede aplicarse con este mecanismo de cons
 
 ---
 
-**DOLI v3.4.1**
+**DOLI v6.16.3**
 
 *"El tiempo es la unica moneda justa."*
-
-**E. Weil** · contacto: weil@doli.network
 
 ---
 ## Referencias
