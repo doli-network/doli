@@ -539,50 +539,6 @@ impl Node {
             } else {
                 ProducerSet::new()
             };
-            // Startup verification: ensure genesis producers match block store.
-            // Catches stale ProducerSet persisted from a pre-reorg chain.
-            let genesis_blocks = config.network.genesis_blocks();
-            let best_height = chain_state.read().await.best_height;
-            if genesis_blocks > 0 && best_height > genesis_blocks && set.active_count() > 0 {
-                // Check if genesis blocks exist (snap-synced nodes may be missing them)
-                let has_genesis_blocks =
-                    block_store.get_block_by_height(1).ok().flatten().is_some();
-                if !has_genesis_blocks {
-                    info!(
-                        "[STARTUP] Snap sync detected (genesis blocks missing). \
-                         Trusting StateDb producer set ({} producers).",
-                        set.active_count()
-                    );
-                } else {
-                    let mut seen = std::collections::HashSet::new();
-                    let mut chain_genesis_count = 0usize;
-                    for h in 1..=genesis_blocks {
-                        if let Ok(Some(block)) = block_store.get_block_by_height(h) {
-                            for tx in &block.transactions {
-                                if tx.tx_type == TxType::Registration {
-                                    if let Some(reg_data) = tx.registration_data() {
-                                        if reg_data.vdf_output.len() == 32
-                                            && seen.insert(reg_data.public_key)
-                                        {
-                                            chain_genesis_count += 1;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if chain_genesis_count > 0 && chain_genesis_count != set.active_count() {
-                        warn!(
-                            "[STARTUP] [INTEGRITY_RISK] Genesis producer mismatch: StateDb has {} producers \
-                             but block store has {}. Block store may be incomplete (snap sync gap). \
-                             If this persists across restarts, wipe data and full-sync from genesis.",
-                            set.active_count(),
-                            chain_genesis_count
-                        );
-                    }
-                }
-            }
-
             // Reuse the caller's Arc if provided (so UpdateService shares the same reference).
             // We already updated its contents above if StateDb had data.
             if let Some(ref provided) = producer_set {
