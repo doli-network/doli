@@ -118,9 +118,53 @@ We spent months building defenses around the symptoms. Silence pull. Fork detect
 
 When the two root causes were fixed — 14 lines for Orphan Chase, a decoder alignment for Full Bitfield Decode — all the symptoms disappeared simultaneously. The defenses we built became redundant. They remain as safety nets, but the network no longer needs them.
 
+## What we gained: defense in depth
+
+By not finding the root causes for months, we were forced to build defenses against every symptom. Each defense addressed a real failure mode. When the two root causes were fixed, the defenses became redundant — but they remain as safety nets that protect the network against future, unknown failures.
+
+The network now has 8 independent defense layers. No other L1 blockchain at this stage has this many tested-under-fire fallbacks:
+
+### Block delivery (3 layers)
+
+1. **Gossip (push)** — standard gossipsub mesh delivery. Blocks propagate through the mesh in 1-2 hops. This is the primary delivery mechanism and handles ~99% of blocks under normal conditions.
+
+2. **Orphan Chase (reactive pull)** — when a gossip block arrives whose parent is unknown, the node immediately requests `GetBlockByHeight(local_height+1)` from the sender peer and caches the orphan. When the parent arrives, the cached orphan is applied automatically. Causal, deterministic, 14 lines. Covers the case where gossip delivers blocks out of order.
+
+3. **Silence Pull (proactive pull)** — if `last_block_applied_secs >= 30`, the node requests a `catch_up_request()` from a random peer. Covers the case where gossip delivers nothing at all — total mesh failure, network partition, or all mesh peers offline.
+
+### Attestation delivery (3 layers)
+
+4. **Gossip attestation topic** — attestations broadcast via gossipsub on the `/doli/attestations/1` topic. Each producer attests every block it applies. With 40 producers and 10s slots, ~40 attestations per block propagate through the mesh. The block producer reads its `minute_tracker` (populated from gossip) to build the bitfield.
+
+5. **Direct Attestation (point-to-point bypass)** — after broadcasting via gossip, the attestation is also sent directly to the producer of `slot+1` via the sync protocol (`SyncRequest::DirectAttestation`). The receiving producer registers it in its `minute_tracker` before re-broadcasting. This bypasses the gossip mesh entirely — if mesh is degraded, the attestation still reaches the one producer that needs it most.
+
+6. **minute_tracker registration on receive** — the `DirectAttestation` handler deserializes, verifies, and calls `minute_tracker.record()` before re-broadcasting via gossip. Without this, gossipsub wouldn't deliver the re-published message back to the publisher (by design), so the producer would relay the attestation to others but never include it in its own bitfield.
+
+### Mesh quality (2 layers)
+
+7. **mesh_message_deliveries penalty disabled** — the default gossipsub `mesh_message_deliveries_threshold` of 20 was unreachable with 40 producers and 10s slots (delivery counter converges to ~3-4). Every peer was penalized → mesh degenerated to random selection → some nodes stuck in poor mesh positions permanently. Setting the weight and threshold to 0 eliminated the universal penalty. Nodes now maintain stable meshes based on actual message delivery quality, not an impossible threshold.
+
+8. **Gossipsub scoring tuned for small networks** — `gossip_factor=0.50` (vs Ethereum's 0.25) ensures non-mesh peers receive IHAVE/IWANT quickly. `ip_colocation_factor_threshold=500` prevents false penalties on shared servers. `first_message_deliveries_weight` on blocks and attestations prioritizes producers in the mesh naturally — they create first-seen messages.
+
+### Operational resilience
+
+Beyond the code defenses, the months of fighting symptoms produced operational knowledge:
+
+- **Staggered restarts**: never restart all nodes on the same server simultaneously. Gossipsub assigns mesh positions by connection order — the last node to connect gets lazy delivery (IHAVE/IWANT instead of eager push). Restart one, wait 10 seconds, restart the next.
+
+- **Rolling deploy procedure**: stop → swap binary → start per server. Pre-stage binaries to `/tmp/` before stopping. Never stop all servers simultaneously.
+
+- **Consensus changes use constant gates, not HardForkSchedule**: `current_fork_id()` passes `u64::MAX`, making all schedule entries active in `fork_id` immediately. Adding an entry breaks rolling deploy. Use constants like `REWARDS_EPOCH_LIST_FIX_HEIGHT` and `FULL_BITFIELD_DECODE_HEIGHT` as gates instead.
+
+### The metaphor
+
+We trained with weights and resistance. Every symptom we fought made the network stronger. When we removed the resistance (fixed the root causes), the network ran with all that extra strength. The defenses built during months of instability are now a permanent advantage — tested under real adversarial conditions, not in a simulation.
+
 ## Future considerations
 
 These two pillars may need strengthening as the network scales:
 
 - **Orphan Chase**: currently requests one block at a time. At 100K+ nodes with higher orphan rates, batch requests or pipeline chasing may be needed.
 - **Full Bitfield Decode**: the extra list changes block-by-block as producers activate mid-epoch. The decoder reconstructs it from `active_producers_at_height(height)` on every block. At scale, this lookup should be O(1) (cached) not O(n) (ProducerSet scan).
+- **Direct Attestation**: currently sends to the producer of `slot+1` only. At scale with missed slots, sending to `slot+2` and `slot+3` as fallbacks would increase coverage.
+- **Mesh scoring**: the disabled `mesh_message_deliveries` penalty should be re-enabled with correct thresholds once the network has enough producers for the delivery counter to converge above threshold naturally.
