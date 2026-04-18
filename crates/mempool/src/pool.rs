@@ -231,7 +231,7 @@ impl Mempool {
         }
 
         let fee = total_input - total_output;
-        let fee_rate = if tx_size > 0 { fee / tx_size as u64 } else { 0 };
+        let fee_rate = fee.checked_div(tx_size as u64).unwrap_or(0);
 
         // Require fee >= minimum_fee (base + per-byte for output extra_data)
         let min_fee = tx.minimum_fee();

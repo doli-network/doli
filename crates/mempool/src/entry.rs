@@ -36,7 +36,7 @@ impl MempoolEntry {
     pub fn new(tx: Transaction, fee: u64) -> Self {
         let tx_hash = tx.hash();
         let size = tx.size();
-        let fee_rate = if size > 0 { fee / size as u64 } else { 0 };
+        let fee_rate = fee.checked_div(size as u64).unwrap_or(0);
 
         let added_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)

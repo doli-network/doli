@@ -704,7 +704,7 @@ impl Node {
                 snap.insert(pkh, count);
             }
             let total: u64 = snap.values().sum();
-            let epoch = if bpe > 0 { h / bpe } else { 0 };
+            let epoch = h.checked_div(bpe).unwrap_or(0);
             info!(
                 "[INIT] No persisted bond snapshot — rebuilt from UTXO: {} producers, total_bonds={}, epoch={}",
                 snap.len(), total, epoch

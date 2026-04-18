@@ -702,7 +702,7 @@ impl Node {
                         snap.insert(pkh, count);
                     }
                     let total: u64 = snap.values().sum();
-                    let epoch = if bpe > 0 { h / bpe } else { 0 };
+                    let epoch = h.checked_div(bpe).unwrap_or(0);
                     self.epoch_state.bond_snapshot = snap;
                     self.epoch_state.epoch = epoch;
                     warn!(
@@ -772,7 +772,7 @@ impl Node {
             {
                 let snap_h = snapshot.block_height;
                 let bpe = self.config.network.blocks_per_reward_epoch();
-                let epoch = if bpe > 0 { snap_h / bpe } else { 0 };
+                let epoch = snap_h.checked_div(bpe).unwrap_or(0);
 
                 let producers = self.producer_set.read().await;
                 let active_producers: Vec<PublicKey> = producers
