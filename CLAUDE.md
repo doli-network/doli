@@ -41,10 +41,20 @@ Epoch boundary: pool drained → rewards distributed bond-weighted to qualified 
 
 **Bond lifecycle**: Register (creates Bond UTXOs) → ACTIVATION_DELAY (10 blocks) → scheduled for production → earn epoch rewards → RequestWithdrawal (FIFO, vesting penalty, 7-day delay) → ClaimWithdrawal. Bonds are UTXOs with `output_type=Bond`, `lock_until=MAX`, `extra_data=creation_slot`.
 
+## Stability Pillars (read `docs/postmortems/2026-04-17-attestation-stability-pillars.md`)
+
+Two root-cause fixes stabilized the network. All other fixes were symptom mitigation:
+1. **Orphan Chase** (v6.16.1): request parent block from sender when orphan arrives. 14 lines.
+2. **Full Bitfield Decode** (v6.17.1, h=14000): decoder matches encoder order `[base | extra sorted]`. Broke the death spiral where filtered producers could never re-enter.
+
+**CRITICAL**: Any encoder/decoder pair MUST be verified for index parity. Any consensus change MUST use constant gate (NOT HardForkSchedule) for rolling deploy — `current_fork_id(u64::MAX)` includes ALL entries immediately.
+
 ## If You Touch
 
 - `apply_block()` → verify both UTXO paths match, check rollback paths mirror it, test state root convergence. Producer mutations (Register, AddBond, Exit, Slash, Withdrawal, Delegation) are DEFERRED to epoch boundary — never mid-epoch except epoch 0. Maintainer changes are immediate.
-- rewards → check `calculate_epoch_rewards()` in `node.rs:~5993` AND `calculate_expected_epoch_rewards()` in `validation.rs` (currently disconnected — see MEMORY.md Open Items).
+- **bitfield encoder/decoder** → encoder order is `[epoch_state.producer_list | extra sorted by pubkey]`. ALL decoders (post_commit, rewards, RPC) MUST use the same order or indices misalign. See Full Bitfield Decode pillar.
+- **HardForkSchedule** → NEVER add entries for rolling deploys. `current_fork_id()` uses `u64::MAX`, which makes ALL entries active in fork_id immediately. Use constant gates instead.
+- rewards → check `calculate_epoch_rewards()` in `rewards.rs` AND `calculate_expected_epoch_rewards()` in `validation.rs` (currently disconnected — see MEMORY.md Open Items).
 - storage serialization → every node diverges if canonical encoding changes. Requires chain reset. See `→ snapshot.rs`.
 - consensus params → programmatic in `NetworkParams::defaults()`, NOT `include_str!`. Mainnet overrides blocked. Change requires new binary on ALL nodes simultaneously.
 - rollback → undo-based rollback is first option (`node.rs:~6531`). Rebuild-from-genesis is fallback for blocks without undo data.
