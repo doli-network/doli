@@ -2178,7 +2178,7 @@ async fn test_scheduler_slot_coverage_500_nodes_varied_bonds() {
 
     // Show per-producer distribution (sorted by block count)
     let mut dist: Vec<(PublicKey, u64)> = producer_block_count.into_iter().collect();
-    dist.sort_by(|a, b| b.1.cmp(&a.1));
+    dist.sort_by_key(|b| std::cmp::Reverse(b.1));
     eprintln!("  Producer distribution (top 10):");
     for (pk, count) in dist.iter().take(10) {
         eprintln!(

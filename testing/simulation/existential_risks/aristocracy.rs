@@ -170,7 +170,7 @@ fn calculate_aristocracy_metrics(
         (weight, is_founder)
     }).collect();
 
-    weights.sort_by(|a, b| b.0.cmp(&a.0)); // Sort descending
+    weights.sort_by_key(|b| std::cmp::Reverse(b.0)); // Sort descending
 
     let total_weight: u64 = weights.iter().map(|(w, _)| *w).sum();
 
