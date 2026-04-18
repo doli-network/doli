@@ -265,8 +265,8 @@ impl RpcContext {
         let utxo_set = self.utxo_set.read().await;
         let utxo_bonds = utxo_set.get_bond_entries(&pubkey_hash);
         let total_staked: u64 = utxo_bonds.iter().map(|(_, _, amt)| *amt).sum();
-        let bond_count = if self.bond_unit > 0 {
-            (total_staked / self.bond_unit) as u32
+        let bond_count = if let Some(count) = total_staked.checked_div(self.bond_unit) {
+            count as u32
         } else {
             0
         };

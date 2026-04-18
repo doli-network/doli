@@ -175,11 +175,9 @@ impl RpcContext {
         // Economics
         let block_reward = self.params.block_reward(current_height);
         let slots_per_week: u64 = 60480; // 7 * 24 * 360
-        let weekly_earnings = if total_bonds > 0 {
-            slots_per_week * block_reward * effective_bonds / total_bonds
-        } else {
-            0
-        };
+        let weekly_earnings = (slots_per_week * block_reward * effective_bonds)
+            .checked_div(total_bonds)
+            .unwrap_or(0);
         let doubling_weeks = if weekly_earnings > 0 {
             (self.bond_unit as f64 * effective_bonds as f64) / weekly_earnings as f64
         } else {

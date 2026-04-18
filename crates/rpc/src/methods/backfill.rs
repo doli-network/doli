@@ -455,7 +455,7 @@ impl RpcContext {
         let running = self.backfill_state.running.load(Ordering::SeqCst);
         let imported = self.backfill_state.imported.load(Ordering::SeqCst);
         let total = self.backfill_state.total.load(Ordering::SeqCst);
-        let pct = if total > 0 { imported * 100 / total } else { 0 };
+        let pct = (imported * 100).checked_div(total).unwrap_or(0);
         let error = self.backfill_state.error.read().await.clone();
 
         let response = BackfillStatusResponse {
