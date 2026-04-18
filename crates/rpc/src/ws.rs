@@ -75,6 +75,7 @@ async fn handle_socket(mut socket: WebSocket, sender: Arc<broadcast::Sender<WsEv
             msg = socket.recv() => {
                 match msg {
                     Some(Ok(Message::Close(_))) | None => break,
+                    #[allow(clippy::collapsible_match)]
                     Some(Ok(Message::Ping(data))) => {
                         if socket.send(Message::Pong(data)).await.is_err() {
                             break;

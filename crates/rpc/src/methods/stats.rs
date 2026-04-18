@@ -120,7 +120,7 @@ impl RpcContext {
         match &*utxo_set {
             storage::UtxoSet::InMemory(store) => {
                 let mut sorted: Vec<_> = store.iter().collect();
-                sorted.sort_by(|(a, _), (b, _)| a.to_bytes().cmp(&b.to_bytes()));
+                sorted.sort_by_key(|(a, _)| a.to_bytes());
                 for (outpoint, entry) in sorted {
                     let op_hex = hex::encode(outpoint.to_bytes());
                     let canonical = entry.serialize_canonical_bytes();
@@ -206,7 +206,7 @@ impl RpcContext {
             .collect();
 
         // Sort by fee rate descending (highest-fee first)
-        txs.sort_by(|a, b| b.fee_rate.cmp(&a.fee_rate));
+        txs.sort_by_key(|b| std::cmp::Reverse(b.fee_rate));
 
         serde_json::to_value(txs).map_err(|e| RpcError::internal_error(e.to_string()))
     }
