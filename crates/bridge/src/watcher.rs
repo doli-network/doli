@@ -184,6 +184,7 @@ impl Watcher {
 
         for swap_id in &swap_ids {
             let swap = self.swaps.get(swap_id).unwrap().clone();
+            #[allow(clippy::collapsible_match)]
             match swap.state {
                 SwapState::DoliLocked => {
                     // Check if expired → refund
