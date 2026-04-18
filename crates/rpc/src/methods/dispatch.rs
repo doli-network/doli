@@ -18,6 +18,7 @@ impl RpcContext {
             "getBlockRaw" => self.get_block_raw(request.params).await,
             "getBlockData" => self.get_block_data(request.params).await,
             "getTransaction" => self.get_transaction(request.params).await,
+            "getNftByTokenId" => self.get_nft_by_token_id(request.params).await,
             "sendTransaction" => self.send_transaction(request.params).await,
             "getBalance" => self.get_balance(request.params).await,
             "getUtxos" => self.get_utxos(request.params).await,

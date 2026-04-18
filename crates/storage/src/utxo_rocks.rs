@@ -486,6 +486,29 @@ impl RocksDbUtxoStore {
         results
     }
 
+    /// Find an NFT UTXO by token ID (scans all NFT UTXOs).
+    pub fn find_nft_by_token_id(&self, token_id: &Hash) -> Option<(Outpoint, UtxoEntry)> {
+        let cf = self.db.cf_handle(CF_UTXO).unwrap();
+        for (key, value) in self
+            .db
+            .iterator_cf(cf, rocksdb::IteratorMode::Start)
+            .flatten()
+        {
+            if let Ok(entry) = bincode::deserialize::<UtxoEntry>(&value) {
+                if entry.output.output_type == doli_core::OutputType::NFT {
+                    if let Some((tid, _)) = entry.output.nft_metadata() {
+                        if &tid == token_id {
+                            if let Some(outpoint) = Outpoint::from_bytes(&key) {
+                                return Some((outpoint, entry));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// Clear all UTXOs
     pub fn clear(&self) {
         let cf_utxo = self.db.cf_handle(CF_UTXO).unwrap();

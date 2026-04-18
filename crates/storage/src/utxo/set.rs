@@ -368,6 +368,32 @@ impl UtxoSet {
         }
     }
 
+    /// Find an NFT UTXO by its token ID.
+    /// Returns (outpoint, utxo_entry) if found in the current UTXO set.
+    pub fn find_nft_by_token_id(&self, token_id: &Hash) -> Option<(Outpoint, UtxoEntry)> {
+        use super::types::UID_PREFIX_NFT;
+        // Fast check: if the token ID isn't in the unique_ids index, it doesn't exist
+        if !self.has_unique_id(UID_PREFIX_NFT, token_id) {
+            return None;
+        }
+        // Scan NFT UTXOs for matching token_id
+        match self {
+            Self::InMemory(store) => {
+                for (outpoint, entry) in store.iter() {
+                    if entry.output.output_type == doli_core::OutputType::NFT {
+                        if let Some((tid, _)) = entry.output.nft_metadata() {
+                            if &tid == token_id {
+                                return Some((*outpoint, entry.clone()));
+                            }
+                        }
+                    }
+                }
+                None
+            }
+            Self::RocksDb(store) => store.find_nft_by_token_id(token_id),
+        }
+    }
+
     /// Check if this is the RocksDB backend
     pub fn is_rocksdb(&self) -> bool {
         matches!(self, UtxoSet::RocksDb(_))

@@ -100,6 +100,67 @@ impl RpcContext {
         }
     }
 
+    /// Get NFT by token ID — scans UTXO set for the NFT with matching token_id
+    pub(super) async fn get_nft_by_token_id(&self, params: Value) -> Result<Value, RpcError> {
+        let token_id_hex: String = match params {
+            Value::Array(ref arr) if !arr.is_empty() => arr[0]
+                .as_str()
+                .ok_or_else(|| RpcError::invalid_params("token_id must be a string"))?
+                .to_string(),
+            Value::Object(ref obj) => obj
+                .get("tokenId")
+                .or_else(|| obj.get("token_id"))
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| RpcError::invalid_params("missing tokenId field"))?
+                .to_string(),
+            _ => {
+                return Err(RpcError::invalid_params(
+                    "Expected [tokenId] or {tokenId: ...}",
+                ))
+            }
+        };
+
+        let token_id = Hash::from_hex(&token_id_hex)
+            .ok_or_else(|| RpcError::invalid_params("Invalid token ID hex"))?;
+
+        let utxo_set = self.utxo_set.read().await;
+        let result = utxo_set.find_nft_by_token_id(&token_id);
+        drop(utxo_set);
+
+        match result {
+            Some((outpoint, entry)) => {
+                let address =
+                    crypto::address::encode(&entry.output.pubkey_hash, "doli").unwrap_or_default();
+                let mut response = serde_json::json!({
+                    "tokenId": token_id_hex,
+                    "outpoint": format!("{}:{}", outpoint.tx_hash.to_hex(), outpoint.index),
+                    "owner": address,
+                    "amount": entry.output.amount,
+                    "height": entry.height,
+                });
+
+                if let Some((_, content)) = entry.output.nft_metadata() {
+                    // Check if content starts with PNG magic bytes
+                    let content_hex = hex::encode(&content);
+                    response["contentHash"] = Value::String(content_hex);
+                    response["contentSize"] = Value::Number(content.len().into());
+                }
+
+                // Royalty info from extra_data
+                if let Ok(output_resp) = serde_json::to_value(OutputResponse::from(&entry.output)) {
+                    if let Some(nft) = output_resp.get("nft") {
+                        if let Some(royalty) = nft.get("royalty") {
+                            response["royalty"] = royalty.clone();
+                        }
+                    }
+                }
+
+                Ok(response)
+            }
+            None => Err(RpcError::invalid_params("NFT not found with this token ID")),
+        }
+    }
+
     /// Send transaction
     pub(super) async fn send_transaction(&self, params: Value) -> Result<Value, RpcError> {
         let params: SendTransactionParams =
