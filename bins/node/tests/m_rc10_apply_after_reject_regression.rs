@@ -32,7 +32,7 @@
 //!
 //!   - `bins/node/src/node/validation_checks.rs:482` guards the
 //!     `ECON_EPOCH_NOT_BOUNDARY` check with:
-//!         `if !is_epoch_boundary && matches!(mode, ValidationMode::Full)`
+//!     `if !is_epoch_boundary && matches!(mode, ValidationMode::Full)`
 //!     In `ValidationMode::Light` (used by `periodic.rs:112`,
 //!     `execute_reorg:548`, and `handle_new_block` itself when
 //!     `snap_sync_height.is_some()`), the check is SKIPPED.
@@ -165,6 +165,7 @@ fn build_plain_block(
 /// always true on HEAD — `EPOCH_REWARD_EXPLICIT_INPUTS_HEIGHT = 0`). The
 /// inputs reference a pool UTXO hash that **does not exist** on the node —
 /// mimicking the santiago `error=output not found` failure mode.
+#[allow(clippy::too_many_arguments)]
 fn build_bad_epoch_reward_block(
     height: u64,
     slot: u32,

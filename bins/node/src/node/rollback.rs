@@ -253,6 +253,12 @@ impl Node {
             self.rebuild_epoch_state_from_blocks().await;
         }
 
+        // Invalidate chain commitment — the incremental commitment was computed
+        // with the rolled-back block's hash. Without clearing, the next apply_block
+        // would chain onto the contaminated value, corrupting the commitment
+        // permanently. The startup scan will recompute from h=1 on next restart.
+        self.state_db.delete_chain_commitment();
+
         // Track cumulative rollback depth (Fix 4)
         self.cumulative_rollback_depth += 1;
 

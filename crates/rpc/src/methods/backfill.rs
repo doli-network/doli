@@ -611,10 +611,16 @@ impl RpcContext {
                 })
                 .sum();
 
-            // Bootstrap: persist the computed commitment for future O(1) lookups.
+            // Bootstrap: persist the computed commitment ONLY if none exists yet.
+            // If post_commit already maintains an incremental commitment, writing here
+            // would race: this scan computes commitment up to tip_at_scan_start, but
+            // post_commit may have already advanced it further. Overwriting would
+            // retrocede the commitment, corrupting all subsequent incremental updates.
             if commitment_valid && missing_count == 0 {
                 if let Some(ref db) = state_db_opt {
-                    db.put_chain_commitment(&commitment);
+                    if db.get_chain_commitment().is_none() {
+                        db.put_chain_commitment(&commitment);
+                    }
                 }
             }
 
