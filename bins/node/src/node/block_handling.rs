@@ -114,32 +114,9 @@ impl Node {
                     }
                 }
             } else {
-                // Parent not in store — orphan gossip block.
-                //
-                // Before chasing: check if we have a DIFFERENT block at the parent's
-                // height (fork detection). If our block at current_height has a different
-                // hash than the orphan's prev_hash, we're on a fork — rollback 1 and
-                // let sync re-apply the canonical chain.
-                if let Ok(Some(our_tip)) = self.block_store.get_block_by_height(current_height) {
-                    let our_tip_hash = our_tip.hash();
-                    if our_tip_hash != block.header.prev_hash {
-                        info!(
-                            "[ORPHAN_FORK] Fork detected at h={}: our hash={:.8} != orphan prev_hash={:.8} — rolling back",
-                            current_height, our_tip_hash, block.header.prev_hash
-                        );
-                        self.rollback_one_block().await?;
-                        // Cache the orphan's parent request — after rollback, sync
-                        // will re-apply the canonical block and the orphan cache
-                        // will resolve the rest.
-                        {
-                            let mut cache = self.fork_block_cache.write().await;
-                            cache.insert(block_hash, block.clone());
-                        }
-                        return Ok(());
-                    }
-                }
-
-                // Normal orphan chase: sender has the missing block, request it.
+                // Parent not in store — orphan gossip block. The sender has the
+                // missing block (they passed through our height to produce this one).
+                // Request it directly: causal, deterministic, no heuristics.
                 let need_height = current_height + 1;
                 if let Some(ref network) = self.network {
                     info!(
