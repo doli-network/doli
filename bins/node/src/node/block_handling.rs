@@ -114,15 +114,47 @@ impl Node {
                     }
                 }
             } else {
-                // Parent not in store — orphan gossip block. The sender has the
-                // missing block (they passed through our height to produce this one).
-                // Request it directly: causal, deterministic, no heuristics.
-                let need_height = current_height + 1;
+                // Parent not in store — orphan gossip block.
+                //
+                // Two cases:
+                // A) Normal orphan: we're missing h+1 (gossip out of order).
+                //    Request h+1 from peer → apply when it arrives.
+                // B) Fork orphan: we have a DIFFERENT block at h (fork block).
+                //    The orphan's prev_hash points to the canonical h, not ours.
+                //    Request h from peer → canonical arrives → FORK_CHOICE
+                //    replaces our fork block (lower slot wins) → orphan from
+                //    cache chains on top. One request, one reorg, resolved.
+                let need_height = if let Ok(Some(our_block)) =
+                    self.block_store.get_block_by_height(current_height)
+                {
+                    if our_block.hash() != block.header.prev_hash {
+                        // Case B: fork — request the canonical block at OUR height
+                        info!(
+                            "[ORPHAN_FORK_CHASE] Fork at h={}: our={:.8} != orphan prev={:.8}. Requesting canonical h={} from {}",
+                            current_height, our_block.hash(), block.header.prev_hash,
+                            current_height, source_peer
+                        );
+                        current_height
+                    } else {
+                        // Case A: normal orphan — request next height
+                        current_height + 1
+                    }
+                } else {
+                    current_height + 1
+                };
+
                 if let Some(ref network) = self.network {
-                    info!(
-                        "[ORPHAN_CHASE] Requesting h={} from {} (orphan block {:.8} at slot {})",
-                        need_height, source_peer, block_hash, block.header.slot
-                    );
+                    if need_height == current_height {
+                        info!(
+                            "[ORPHAN_FORK_CHASE] Requesting h={} from {} (fork resolution for orphan {:.8} at slot {})",
+                            need_height, source_peer, block_hash, block.header.slot
+                        );
+                    } else {
+                        info!(
+                            "[ORPHAN_CHASE] Requesting h={} from {} (orphan block {:.8} at slot {})",
+                            need_height, source_peer, block_hash, block.header.slot
+                        );
+                    }
                     let request = SyncRequest::GetBlockByHeight {
                         height: need_height,
                     };
