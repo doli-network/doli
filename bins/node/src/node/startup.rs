@@ -192,7 +192,21 @@ impl Node {
         let seed_count = network_config.bootstrap_nodes.len();
         let known_peers = active_producers + seed_count;
         let expected_peers = network_config.max_peers.max(known_peers);
-        let mesh = network::gossip::compute_dynamic_mesh(expected_peers);
+        let mesh = if self.config.network == doli_core::Network::Mainnet {
+            // Mainnet: full eager mesh — every connected peer receives blocks via
+            // eager push. At 42 nodes, bandwidth is trivial (~8KB/block × 50 peers).
+            // This eliminates the lazy pull path (IHAVE/IWANT 1-3s delay) that caused
+            // fork blocks to arrive before canonical on some nodes.
+            // compute_dynamic_mesh produced mesh_n_high=16 (39% eager) — insufficient.
+            network::gossip::MeshConfig {
+                mesh_n: 12,
+                mesh_n_low: 8,
+                mesh_n_high: network_config.max_peers,
+                gossip_lazy: 12,
+            }
+        } else {
+            network::gossip::compute_dynamic_mesh(expected_peers)
+        };
         info!(
             "Gossip mesh: mesh_n={} mesh_n_low={} mesh_n_high={} gossip_lazy={} (producers={}, seeds={}, max_peers={}, expected={})",
             mesh.mesh_n, mesh.mesh_n_low, mesh.mesh_n_high, mesh.gossip_lazy, active_producers, seed_count, network_config.max_peers, expected_peers

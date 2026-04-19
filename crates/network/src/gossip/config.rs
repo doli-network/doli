@@ -89,6 +89,10 @@ pub fn new_gossipsub(keypair: &Keypair, mesh: &MeshConfig) -> Result<Gossipsub, 
         .max_transmit_size(1024 * 1024)
         // Duplicate cache time
         .duplicate_cache_time(Duration::from_secs(60))
+        // Flood publish: send OUR messages to ALL peers, not just mesh.
+        // Defensive — ensures our blocks/attestations reach everyone regardless
+        // of mesh topology. At 42 nodes the bandwidth cost is negligible.
+        .flood_publish(true)
         .build()
         .map_err(|e| GossipError::Config(e.to_string()))?;
 
