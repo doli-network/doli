@@ -426,25 +426,38 @@ impl Node {
 
         // ACTIVE FORK DETECTION: if >66% of peers are above us and we're not
         // receiving blocks that chain on our tip, we're on a minority fork.
-        // Runs at heights ending in 1, 4, 7 (~every 30s). Max 1 per epoch.
+        // Normal mode: runs at heights ending in 1, 4, 7 (~every 30s). Max 1 per epoch.
+        // Stuck mode: if last_applied > 120s, bypass height/epoch restrictions.
+        // This handles the orphan chase loop where the node is stuck on a fork
+        // block and can't advance — the height never changes so the normal
+        // check_height condition never re-fires.
         {
             let (local_h, local_hash, _) = self.sync_manager.read().await.local_tip();
+            let last_applied_secs = self.sync_manager.read().await.last_block_applied_secs();
+            let is_minority = self.sync_manager.read().await.is_minority_fork(local_h);
             let blocks_per_epoch = self.config.network.blocks_per_reward_epoch();
             let since_last = local_h.saturating_sub(self.last_active_fork_correction_height);
             let check_height = local_h % 10 == 1 || local_h % 10 == 4 || local_h % 10 == 7;
-            if local_h > 10 && check_height && since_last >= blocks_per_epoch {
-                let last_applied_secs = self.sync_manager.read().await.last_block_applied_secs();
-                let is_minority = self.sync_manager.read().await.is_minority_fork(local_h);
-                if is_minority && last_applied_secs > 60 {
-                    warn!(
-                        "[ACTIVE_FORK_DETECT] Minority fork at h={}: local={:.16}, stale {}s. Rolling back 1.",
-                        local_h, local_hash, last_applied_secs
-                    );
-                    let rolled_back = self.rollback_one_block().await?;
-                    if rolled_back {
-                        self.last_active_fork_correction_height = local_h;
-                        return Ok(());
-                    }
+
+            // Stuck mode: node hasn't applied a block in 2+ minutes and is on minority fork
+            let stuck_mode = last_applied_secs > 120 && is_minority;
+            // Normal mode: periodic check with epoch cooldown
+            let normal_mode = local_h > 10
+                && check_height
+                && since_last >= blocks_per_epoch
+                && is_minority
+                && last_applied_secs > 60;
+
+            if stuck_mode || normal_mode {
+                warn!(
+                    "[ACTIVE_FORK_DETECT] Minority fork at h={}: local={:.16}, stale {}s. Rolling back 1.{}",
+                    local_h, local_hash, last_applied_secs,
+                    if stuck_mode { " (stuck mode — orphan chase loop detected)" } else { "" }
+                );
+                let rolled_back = self.rollback_one_block().await?;
+                if rolled_back {
+                    self.last_active_fork_correction_height = local_h;
+                    return Ok(());
                 }
             }
         }
