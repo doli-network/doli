@@ -1,8 +1,12 @@
+use std::path::Path;
+
 use anyhow::Result;
 
 use crate::rpc_client::RpcClient;
+use crate::wallet::Wallet;
 
 pub(crate) async fn cmd_nft_export(
+    wallet_path: &Path,
     rpc_endpoint: &str,
     utxo_ref: &str,
     out_path: &str,
@@ -30,13 +34,61 @@ pub(crate) async fn cmd_nft_export(
         .and_then(|arr| arr.get(output_index))
         .ok_or_else(|| anyhow::anyhow!("Output not found"))?;
 
-    // Verify it's an NFT
     let output_type = output
         .get("outputType")
         .and_then(|v| v.as_str())
         .unwrap_or("");
+
+    // Handle EncryptedContent — decrypt with wallet
+    if output_type == "encryptedContent" {
+        let wallet = Wallet::load(wallet_path)?;
+        let keypair = wallet.primary_keypair()?;
+
+        let extra_data_hex = output
+            .get("extraData")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing extraData"))?;
+        let extra_data =
+            hex::decode(extra_data_hex).map_err(|_| anyhow::anyhow!("Invalid hex in extraData"))?;
+
+        if extra_data.len() < 128 {
+            anyhow::bail!("Malformed EncryptedContent");
+        }
+
+        let ct_len = u32::from_le_bytes(extra_data[0..4].try_into()?) as usize;
+        let offset = 4 + ct_len;
+        if extra_data.len() < offset + 80 + 12 + 32 {
+            anyhow::bail!("Truncated EncryptedContent extra_data");
+        }
+
+        let ciphertext = &extra_data[4..4 + ct_len];
+        let mut wrapped_key = [0u8; 80];
+        wrapped_key.copy_from_slice(&extra_data[offset..offset + 80]);
+        let nonce: [u8; 12] = extra_data[offset + 80..offset + 92].try_into()?;
+
+        let content_key =
+            crypto::encrypted_content::unwrap_key(&wrapped_key, keypair.private_key())
+                .map_err(|_| anyhow::anyhow!("Failed to unwrap key — not the owner"))?;
+
+        let plaintext =
+            crypto::encrypted_content::decrypt_content(&content_key, ciphertext, &nonce)
+                .map_err(|_| anyhow::anyhow!("Decryption failed"))?;
+
+        std::fs::write(out_path, &plaintext)?;
+        println!(
+            "Exported encrypted content to {} ({} bytes decrypted)",
+            out_path,
+            plaintext.len()
+        );
+        return Ok(());
+    }
+
+    // Legacy NFT path
     if output_type != "nft" {
-        anyhow::bail!("Output is not an NFT (type: {})", output_type);
+        anyhow::bail!(
+            "Output is not an NFT or EncryptedContent (type: {})",
+            output_type
+        );
     }
 
     // Extract content bytes from NFT metadata

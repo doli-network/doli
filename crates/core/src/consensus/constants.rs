@@ -119,7 +119,7 @@ pub const FULL_BITFIELD_DECODE_HEIGHT: u64 = 14_000;
 /// Consensus-breaking — changes validation rules for transaction outputs.
 /// Placeholder — set to real height AFTER EncryptedContent is implemented,
 /// deployed, and confirmed working. Only then does this gate close NFT plaintext.
-pub const ENCRYPTED_CONTENT_ACTIVATION_HEIGHT: u64 = u64::MAX;
+pub const ENCRYPTED_CONTENT_ACTIVATION_HEIGHT: u64 = 37_500;
 
 // ==================== Proof of Time Parameters ====================
 

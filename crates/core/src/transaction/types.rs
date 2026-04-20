@@ -180,11 +180,11 @@ pub enum OutputType {
     ///
     /// Content is AES-256-GCM encrypted with a unique symmetric key.
     /// The key is ECIES-wrapped with the owner's public key.
-    /// Only the owner can decrypt. Transfer re-wraps the key.
-    /// RevealContent TX publishes the key on-chain (irrevocable).
+    /// Only the owner can decrypt. Transfer re-wraps the key for new owner.
+    /// Publication is off-chain (owner shares key externally if desired).
     ///
-    /// extra_data layout: [ciphertext_len(4) | ciphertext | wrapped_key(80) |
-    ///                     nonce(12) | content_hash(32) | metadata_bytes]
+    /// extra_data layout: [ciphertext_len(4 LE) | ciphertext | wrapped_key(80) |
+    ///                     nonce(12) | content_hash(32)]
     EncryptedContent = 14,
 }
 

@@ -313,6 +313,55 @@ impl Output {
         })
     }
 
+    /// Create an EncryptedContent output.
+    ///
+    /// `extra_data` layout: `[ciphertext_len(4 LE) | ciphertext | wrapped_key(80) | nonce(12) | content_hash(32)]`
+    pub fn encrypted_content(
+        amount: Amount,
+        pubkey_hash: Hash,
+        ciphertext: &[u8],
+        wrapped_key: &[u8; 80],
+        nonce: &[u8; 12],
+        content_hash: &[u8; 32],
+    ) -> Self {
+        let ciphertext_len = ciphertext.len() as u32;
+        let mut extra_data = Vec::with_capacity(4 + ciphertext.len() + 80 + 12 + 32);
+        extra_data.extend_from_slice(&ciphertext_len.to_le_bytes());
+        extra_data.extend_from_slice(ciphertext);
+        extra_data.extend_from_slice(wrapped_key);
+        extra_data.extend_from_slice(nonce);
+        extra_data.extend_from_slice(content_hash);
+        Self {
+            output_type: OutputType::EncryptedContent,
+            amount,
+            pubkey_hash,
+            lock_until: 0,
+            extra_data,
+        }
+    }
+
+    /// Parse EncryptedContent extra_data layout.
+    /// Returns (ciphertext, wrapped_key, nonce, content_hash) or None if malformed.
+    #[allow(clippy::type_complexity)]
+    pub fn parse_encrypted_content(&self) -> Option<(&[u8], [u8; 80], [u8; 12], [u8; 32])> {
+        if self.output_type != OutputType::EncryptedContent || self.extra_data.len() < 128 {
+            return None;
+        }
+        let ct_len = u32::from_le_bytes(self.extra_data[0..4].try_into().ok()?) as usize;
+        let offset = 4 + ct_len;
+        if self.extra_data.len() < offset + 80 + 12 + 32 {
+            return None;
+        }
+        let ciphertext = &self.extra_data[4..4 + ct_len];
+        let mut wrapped_key = [0u8; 80];
+        wrapped_key.copy_from_slice(&self.extra_data[offset..offset + 80]);
+        let mut nonce = [0u8; 12];
+        nonce.copy_from_slice(&self.extra_data[offset + 80..offset + 92]);
+        let mut content_hash = [0u8; 32];
+        content_hash.copy_from_slice(&self.extra_data[offset + 92..offset + 124]);
+        Some((ciphertext, wrapped_key, nonce, content_hash))
+    }
+
     /// Compute a deterministic NFT token ID.
     /// `token_id = BLAKE3("DOLI_NFT" || creator_pubkey_hash || nonce)`
     pub fn compute_nft_token_id(creator_pubkey_hash: &Hash, nonce: &[u8]) -> Hash {

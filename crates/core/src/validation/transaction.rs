@@ -381,6 +381,12 @@ pub(super) fn validate_outputs(
                         i, activation, ctx.current_height
                     )));
                 }
+                if ctx.current_height >= crate::consensus::ENCRYPTED_CONTENT_ACTIVATION_HEIGHT {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "[ERRTX-EC010] New NFT outputs rejected after h={} — use EncryptedContent",
+                        crate::consensus::ENCRYPTED_CONTENT_ACTIVATION_HEIGHT
+                    )));
+                }
                 if output.extra_data.is_empty() {
                     return Err(ValidationError::InvalidTransaction(format!(
                         "[ERRTX012] NFT output {} has empty extra_data",

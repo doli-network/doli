@@ -5,7 +5,6 @@ use crypto::{signature, Hash};
 use doli_core::{Input, Output, Transaction};
 
 use crate::common::address_prefix;
-use crate::parsers::parse_condition;
 use crate::rpc_client::{coins_to_units, format_balance, RpcClient};
 use crate::wallet::Wallet;
 
@@ -13,9 +12,9 @@ pub(crate) async fn cmd_mint(
     wallet_path: &Path,
     rpc_endpoint: &str,
     content: &str,
-    condition: Option<String>,
+    _condition: Option<String>,
     amount: &str,
-    royalty_pct: Option<f64>,
+    _royalty_pct: Option<f64>,
     data: Option<String>,
 ) -> Result<()> {
     let wallet = Wallet::load(wallet_path)?;
@@ -29,68 +28,52 @@ pub(crate) async fn cmd_mint(
     let minter_hash = Hash::from_hex(&minter_pubkey_hash)
         .ok_or_else(|| anyhow::anyhow!("Invalid minter pubkey hash"))?;
 
-    // Parse amount (minimum 1 sat dust for pure NFT — protocol requires non-zero)
+    // Parse amount (minimum 1 sat dust — protocol requires non-zero)
     let amount_units = std::cmp::max(
         1u64,
         coins_to_units(amount).map_err(|e| anyhow::anyhow!("Invalid amount: {}", e))?,
     );
 
     // Content bytes: --data overrides content with raw hex-decoded binary data.
-    // Without --data, content is interpreted as hex (if 64 hex chars) or URI bytes.
+    // Without --data, content is interpreted as hex (if 64 hex chars) or URI/path bytes.
     let content_bytes = if let Some(ref hex_data) = data {
         hex::decode(hex_data).map_err(|_| anyhow::anyhow!("Invalid hex in --data"))?
+    } else if std::path::Path::new(content).exists() {
+        // If content looks like a file path, read the file
+        std::fs::read(content)?
     } else if content.len() == 64 && content.chars().all(|c| c.is_ascii_hexdigit()) {
         hex::decode(content).unwrap_or_else(|_| content.as_bytes().to_vec())
     } else {
         content.as_bytes().to_vec()
     };
 
-    // Generate a nonce from current timestamp for token_id uniqueness
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
-        .to_le_bytes()
-        .to_vec();
-    let token_id = Output::compute_nft_token_id(&minter_hash, &nonce);
+    if content_bytes.is_empty() {
+        anyhow::bail!("Content is empty");
+    }
 
-    // Default condition: signature of the minter (only minter can transfer)
-    let cond = if let Some(cond_str) = &condition {
-        parse_condition(cond_str)?
-    } else {
-        doli_core::Condition::signature(minter_hash)
-    };
+    // Encrypt content with AES-256-GCM + ECIES key wrapping
+    let keypair = wallet.primary_keypair()?;
+    let content_key = crypto::encrypted_content::generate_content_key();
+    let (ciphertext, nonce) =
+        crypto::encrypted_content::encrypt_content(&content_key, &content_bytes)
+            .map_err(|e| anyhow::anyhow!("Encryption failed: {}", e))?;
+    let wrapped_key = crypto::encrypted_content::wrap_key(&content_key, keypair.public_key())
+        .map_err(|e| anyhow::anyhow!("Key wrapping failed: {}", e))?;
+    let c_hash = crypto::encrypted_content::content_hash(&content_bytes);
 
-    // Build NFT output (with optional royalty)
-    let royalty_bps = match royalty_pct {
-        Some(pct) => {
-            if !(0.0..=50.0).contains(&pct) {
-                anyhow::bail!("Royalty must be between 0 and 50 percent");
-            }
-            (pct * 100.0) as u16 // percent to basis points
-        }
-        None => 0,
-    };
+    // Build EncryptedContent output
+    let ec_output = Output::encrypted_content(
+        amount_units,
+        minter_hash,
+        &ciphertext,
+        &wrapped_key,
+        &nonce,
+        &c_hash,
+    );
 
-    let nft_output = if royalty_bps > 0 {
-        Output::nft_with_royalty(
-            amount_units,
-            minter_hash,
-            token_id,
-            &content_bytes,
-            &cond,
-            minter_hash, // creator = minter
-            royalty_bps,
-        )
-        .map_err(|e| anyhow::anyhow!("Failed to create NFT output: {}", e))?
-    } else {
-        Output::nft(amount_units, minter_hash, token_id, &content_bytes, &cond)
-            .map_err(|e| anyhow::anyhow!("Failed to create NFT output: {}", e))?
-    };
-
-    // Calculate fee: base + per-byte for NFT output extra_data
+    // Calculate fee: base + per-byte for extra_data
     let fee_units = {
-        let extra_bytes: u64 = nft_output.extra_data.len() as u64;
+        let extra_bytes: u64 = ec_output.extra_data.len() as u64;
         doli_core::consensus::BASE_FEE
             + extra_bytes * doli_core::consensus::FEE_PER_BYTE / doli_core::consensus::FEE_DIVISOR
     };
@@ -131,8 +114,8 @@ pub(crate) async fn cmd_mint(
         inputs.push(Input::new(prev_tx_hash, utxo.output_index));
     }
 
-    // Build outputs: NFT + change
-    let mut outputs = vec![nft_output];
+    // Build outputs: EncryptedContent + change
+    let mut outputs = vec![ec_output];
     let change = total_input - required;
     if change > 0 {
         outputs.push(Output::normal(change, minter_hash));
@@ -140,8 +123,7 @@ pub(crate) async fn cmd_mint(
 
     let mut tx = Transaction::new_transfer(inputs, outputs);
 
-    // Sign each input (BIP-143: per-input signing hash)
-    let keypair = wallet.primary_keypair()?;
+    // Sign each input
     for i in 0..tx.inputs.len() {
         let signing_hash = tx.signing_message_for_input(i);
         tx.inputs[i].signature = signature::sign_hash(&signing_hash, keypair.private_key());
@@ -155,27 +137,31 @@ pub(crate) async fn cmd_mint(
     let minter_display = crypto::address::encode(&minter_hash, address_prefix())
         .unwrap_or_else(|_| minter_hash.to_hex());
 
-    println!("Minting NFT:");
-    println!("  Token ID:  {}", token_id.to_hex());
-    println!("  Content:   {}", content);
-    println!("  Minter:    {}", minter_display);
-    if royalty_bps > 0 {
-        println!("  Royalty:   {}% to creator", royalty_bps as f64 / 100.0);
+    println!("Minting encrypted content:");
+    println!("  Content hash: {}", hex::encode(c_hash));
+    println!("  Plaintext:    {} bytes", content_bytes.len());
+    println!("  Ciphertext:   {} bytes", ciphertext.len());
+    println!("  Owner:        {}", minter_display);
+    if amount_units > 1 {
+        println!("  Value:        {}", format_balance(amount_units));
     }
-    if amount_units > 0 {
-        println!("  Value:     {}", format_balance(amount_units));
-    }
-    println!("  Fee:       {}", format_balance(fee_units));
-    println!("  TX Hash:   {}", tx_hash.to_hex());
-    println!("  Size:      {} bytes", tx_bytes.len());
+    println!("  Fee:          {}", format_balance(fee_units));
+    println!("  TX Hash:      {}", tx_hash.to_hex());
+    println!("  Size:         {} bytes", tx_bytes.len());
 
     println!();
     println!("Broadcasting transaction...");
     match rpc.send_transaction(&tx_hex).await {
         Ok(result_hash) => {
-            println!("NFT minted successfully!");
-            println!("TX Hash:  {}", result_hash);
-            println!("Token ID: {}", token_id.to_hex());
+            println!("Content minted successfully!");
+            println!("TX Hash:      {}", result_hash);
+            println!("Content Hash: {}", hex::encode(c_hash));
+            println!();
+            println!("Only you can decrypt this content with your private key.");
+            println!(
+                "Use `doli nft --export {}:0` to decrypt and save.",
+                result_hash
+            );
         }
         Err(e) => {
             println!("Error: {}", e);

@@ -214,7 +214,7 @@ async fn main() -> Result<()> {
             } else if let Some(utxo) = export {
                 let out =
                     output.ok_or_else(|| anyhow::anyhow!("-o/--out is required for --export"))?;
-                cmd_nft::cmd_nft_export(&rpc_endpoint, &utxo, &out).await?;
+                cmd_nft::cmd_nft_export(&wallet, &rpc_endpoint, &utxo, &out).await?;
             } else if let Some(manifest) = batch_mint {
                 cmd_nft::cmd_nft_batch_mint(&wallet, &rpc_endpoint, &manifest, yes).await?;
             } else if let Some(utxo) = transfer {

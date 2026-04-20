@@ -3,7 +3,7 @@
 //! Content is encrypted with a random symmetric key (`AES-256-GCM`).
 //! The key is wrapped with the owner's public key (ECIES: `X25519` + `BLAKE3` KDF).
 //! Transfer re-wraps the key with the new owner's public key.
-//! `RevealContent` publishes the symmetric key on-chain (irrevocable).
+//! Publication is off-chain — owner shares the key externally if desired.
 #![allow(
     clippy::missing_errors_doc,
     clippy::must_use_candidate,
