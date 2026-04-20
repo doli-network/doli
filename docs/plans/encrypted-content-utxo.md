@@ -130,17 +130,19 @@ If a user publishes illegal content via RevealContent:
 
 Current NFTs (OutputType::NFT) store plaintext in `extra_data`. EncryptedContent replaces this:
 
-- **New NFTs**: always EncryptedContent
-- **Existing NFTs**: remain as-is (backward compatible, no migration needed)
-- **Dual support**: validation accepts both OutputType::NFT (legacy) and OutputType::EncryptedContent (new)
-- **CLI**: `doli nft --mint` creates EncryptedContent by default, `--plaintext` flag for legacy
+- **New content**: EncryptedContent only — no plaintext option
+- **Existing NFTs**: remain as-is in the UTXO set (legacy, read-only)
+- **No new plaintext**: after activation, validation rejects new OutputType::NFT transactions
+- **CLI**: `doli nft --mint` always creates EncryptedContent. No `--plaintext` flag.
+
+Cifrado obligatorio. Si plaintext sigue permitido, la protección no existe.
 
 ### Activation
 
 - Hard fork with activation height (constant gate, no HardForkSchedule)
 - Before activation: only OutputType::NFT accepted
-- After activation: both NFT and EncryptedContent accepted
-- Rolling deploy — nodes with new binary accept both types
+- After activation: only OutputType::EncryptedContent accepted for NEW transactions. Existing NFT UTXOs remain spendable/transferable but new NFT outputs are rejected.
+- Rolling deploy — nodes with new binary enforce the gate
 
 ## Files That Change
 
