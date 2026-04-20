@@ -251,12 +251,16 @@ impl Node {
             }
         }
 
+        // Capture chain commitment BEFORE this block (for undo on rollback)
+        let prev_commitment = self.state_db.get_chain_commitment().map(|h| *h.as_bytes());
+
         // Include undo data in the same atomic batch (avoids separate WAL entry)
         let undo = storage::UndoData {
             spent_utxos: undo_spent_utxos,
             created_utxos: undo_created_utxos,
             producer_snapshot: undo_producer_snapshot,
             epoch_state_snapshot: Some(self.epoch_state.serialize()),
+            chain_commitment: prev_commitment,
         };
         batch.put_undo(height, &undo);
 

@@ -549,6 +549,14 @@ pub(super) fn validate_outputs(
                 }
             }
             OutputType::EncryptedContent => {
+                // Activation gate: reject before ENCRYPTED_CONTENT_ACTIVATION_HEIGHT
+                if ctx.current_height < crate::consensus::ENCRYPTED_CONTENT_ACTIVATION_HEIGHT {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "[ERRTX-EC000] EncryptedContent not active until h={}, current h={}",
+                        crate::consensus::ENCRYPTED_CONTENT_ACTIVATION_HEIGHT,
+                        ctx.current_height
+                    )));
+                }
                 // Encrypted content: extra_data must contain at minimum
                 // ciphertext_len(4) + wrapped_key(80) + nonce(12) + content_hash(32) = 128 bytes
                 if output.extra_data.len() < 128 {

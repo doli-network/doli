@@ -1,9 +1,16 @@
-//! Encrypted content primitives: AES-256-GCM + ECIES key wrapping.
+//! Encrypted content primitives: `AES-256-GCM` + ECIES key wrapping.
 //!
-//! Content is encrypted with a random symmetric key (AES-256-GCM).
-//! The key is wrapped with the owner's public key (ECIES: X25519 + BLAKE3 KDF).
+//! Content is encrypted with a random symmetric key (`AES-256-GCM`).
+//! The key is wrapped with the owner's public key (ECIES: `X25519` + `BLAKE3` KDF).
 //! Transfer re-wraps the key with the new owner's public key.
-//! RevealContent publishes the symmetric key on-chain (irrevocable).
+//! `RevealContent` publishes the symmetric key on-chain (irrevocable).
+#![allow(
+    clippy::missing_errors_doc,
+    clippy::must_use_candidate,
+    clippy::missing_panics_doc,
+    clippy::doc_markdown,
+    clippy::unwrap_used
+)]
 
 use aes_gcm::{
     aead::{Aead, KeyInit},
@@ -78,9 +85,9 @@ fn ed25519_to_x25519_secret(private_key: &PrivateKey) -> StaticSecret {
     let mut secret_bytes = [0u8; 32];
     secret_bytes.copy_from_slice(&hash[..32]);
     // Clamp (X25519 requirement)
-    secret_bytes[0] &= 248;
-    secret_bytes[31] &= 127;
-    secret_bytes[31] |= 64;
+    secret_bytes[0] &= 0xF8;
+    secret_bytes[31] &= 0x7F;
+    secret_bytes[31] |= 0x40;
     StaticSecret::from(secret_bytes)
 }
 
