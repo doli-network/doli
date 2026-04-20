@@ -100,7 +100,8 @@ fn test_output_type_conversion() {
     assert_eq!(OutputType::from_u8(11), Some(OutputType::Collateral));
     assert_eq!(OutputType::from_u8(12), Some(OutputType::LendingDeposit));
     assert_eq!(OutputType::from_u8(13), Some(OutputType::ZKRollup));
-    assert_eq!(OutputType::from_u8(14), None);
+    assert_eq!(OutputType::from_u8(14), Some(OutputType::EncryptedContent));
+    assert_eq!(OutputType::from_u8(15), None);
     assert_eq!(OutputType::from_u8(u8::MAX), None);
 }
 
