@@ -99,6 +99,8 @@ impl Node {
                                 block.header.slot,
                                 canonical.header.slot
                             );
+                            // Save the existing block before rollback (for restore on failure)
+                            let existing_block = canonical.clone();
                             self.rollback_one_block().await?;
                             let mode = if self.snap_sync_height.is_some() {
                                 ValidationMode::Light
@@ -106,10 +108,14 @@ impl Node {
                                 ValidationMode::Full
                             };
                             if let Err(e) = self.apply_block(block, mode).await {
+                                // Transactional: restore original block — all or nothing
                                 warn!(
-                                    "[FORK_CHOICE] Failed to apply canonical block after rollback: {}",
+                                    "[FORK_CHOICE] Apply failed: {} — restoring original block",
                                     e
                                 );
+                                let _ = self
+                                    .apply_block(existing_block, ValidationMode::Light)
+                                    .await;
                             }
                             return Ok(());
                         } else {
