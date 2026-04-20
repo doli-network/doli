@@ -112,6 +112,15 @@ pub const REWARDS_EPOCH_LIST_FIX_HEIGHT: u64 = 13_320;
 /// Consensus-breaking — changes attested_sets/attestation_accum → state root.
 pub const FULL_BITFIELD_DECODE_HEIGHT: u64 = 14_000;
 
+/// Encrypted content activation height.
+/// Before: OutputType::NFT (plaintext) accepted for new transactions.
+/// After: only OutputType::EncryptedContent accepted. Existing NFT UTXOs
+/// remain spendable/transferable but new NFT outputs are rejected.
+/// Consensus-breaking — changes validation rules for transaction outputs.
+/// Placeholder — set to real height AFTER EncryptedContent is implemented,
+/// deployed, and confirmed working. Only then does this gate close NFT plaintext.
+pub const ENCRYPTED_CONTENT_ACTIVATION_HEIGHT: u64 = u64::MAX;
+
 // ==================== Proof of Time Parameters ====================
 
 /// Slot duration in seconds.

@@ -176,6 +176,16 @@ pub enum OutputType {
     ///
     /// See `specs/l2-settlement.md` §4.1 for the extra_data layout.
     ZKRollup = 13,
+    /// Encrypted content (privacy-first NFT replacement).
+    ///
+    /// Content is AES-256-GCM encrypted with a unique symmetric key.
+    /// The key is ECIES-wrapped with the owner's public key.
+    /// Only the owner can decrypt. Transfer re-wraps the key.
+    /// RevealContent TX publishes the key on-chain (irrevocable).
+    ///
+    /// extra_data layout: [ciphertext_len(4) | ciphertext | wrapped_key(80) |
+    ///                     nonce(12) | content_hash(32) | metadata_bytes]
+    EncryptedContent = 14,
 }
 
 impl OutputType {
@@ -195,6 +205,7 @@ impl OutputType {
             11 => Some(Self::Collateral),
             12 => Some(Self::LendingDeposit),
             13 => Some(Self::ZKRollup),
+            14 => Some(Self::EncryptedContent),
             _ => None,
         }
     }
@@ -210,6 +221,7 @@ impl OutputType {
                 | Self::NFT
                 | Self::FungibleAsset
                 | Self::BridgeHTLC
+                | Self::EncryptedContent
         )
     }
 
@@ -230,6 +242,7 @@ impl OutputType {
                 | Self::BridgeHTLC
                 | Self::NFT
                 | Self::LendingDeposit
+                | Self::EncryptedContent
         )
     }
 }

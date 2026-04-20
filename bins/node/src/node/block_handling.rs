@@ -88,15 +88,30 @@ impl Node {
                     if canonical.hash() != block_hash {
                         // Fork choice: lower slot wins (deterministic tiebreak).
                         // If the new block was produced in a strictly lower slot,
-                        // it has priority — let it through to the reorg path.
+                        // it has priority — rollback the fork block and apply canonical.
+                        // Direct execution: the weight-based reorg path can't handle
+                        // this case because the canonical block's prev_hash doesn't
+                        // connect to the fork block's hash (different block at same height).
                         if block.header.slot < canonical.header.slot {
                             info!(
-                                "[FORK_CHOICE] Allowing reorg at h={}: new slot {} < canonical slot {}",
+                                "[FORK_CHOICE] Reorg at h={}: new slot {} < fork slot {} — rollback + apply",
                                 fork_block_height,
                                 block.header.slot,
                                 canonical.header.slot
                             );
-                            // Fall through — reorg path will handle rollback + apply
+                            self.rollback_one_block().await?;
+                            let mode = if self.snap_sync_height.is_some() {
+                                ValidationMode::Light
+                            } else {
+                                ValidationMode::Full
+                            };
+                            if let Err(e) = self.apply_block(block, mode).await {
+                                warn!(
+                                    "[FORK_CHOICE] Failed to apply canonical block after rollback: {}",
+                                    e
+                                );
+                            }
+                            return Ok(());
                         } else {
                             info!(
                                 "[FORK_GUARD] Dropping fork block {} at h={} slot {} — canonical slot {} wins",

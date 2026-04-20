@@ -27,6 +27,8 @@ serde.workspace = true
 hex.workspace = true
 zeroize.workspace = true
 subtle.workspace = true
+aes-gcm.workspace = true
+x25519-dalek.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

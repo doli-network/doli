@@ -54,6 +54,7 @@
 pub mod adaptor;
 pub mod address;
 pub mod bls;
+pub mod encrypted_content;
 pub mod hash;
 pub mod keys;
 pub mod merkle;

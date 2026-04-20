@@ -40,6 +40,8 @@ rand_core = "0.6"
 zeroize = { version = "1.7", features = ["derive"] }
 blst = "0.3"    # BLS12-381 aggregate signatures (attestation)
 subtle = "2.5"  # Constant-time operations
+aes-gcm = "0.10"  # AES-256-GCM authenticated encryption (encrypted content)
+x25519-dalek = { version = "2.0", features = ["static_secrets"] }  # ECIES key wrapping
 sha2 = "0.10"   # For compatibility and cross-verification
 tiny-keccak = { version = "2.0", features = ["keccak"] }  # keccak256 for Ethereum
 bip39 = { version = "2.1", features = ["rand", "zeroize"] }

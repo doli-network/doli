@@ -322,6 +322,7 @@ impl From<&doli_core::Output> for OutputResponse {
             doli_core::OutputType::Collateral => "collateral",
             doli_core::OutputType::LendingDeposit => "lendingDeposit",
             doli_core::OutputType::ZKRollup => "zkRollup",
+            doli_core::OutputType::EncryptedContent => "encryptedContent",
         };
 
         // Decode covenant condition for conditioned outputs

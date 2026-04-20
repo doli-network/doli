@@ -548,6 +548,25 @@ pub(super) fn validate_outputs(
                     )));
                 }
             }
+            OutputType::EncryptedContent => {
+                // Encrypted content: extra_data must contain at minimum
+                // ciphertext_len(4) + wrapped_key(80) + nonce(12) + content_hash(32) = 128 bytes
+                if output.extra_data.len() < 128 {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "[ERRTX-EC001] EncryptedContent output {} extra_data too small ({} bytes, min 128)",
+                        i,
+                        output.extra_data.len()
+                    )));
+                }
+                // Max 512 KB ciphertext
+                if output.extra_data.len() > 524_288 + 128 {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "[ERRTX-EC002] EncryptedContent output {} extra_data too large ({} bytes, max ~524KB)",
+                        i,
+                        output.extra_data.len()
+                    )));
+                }
+            }
         }
 
         // Pubkey hash must not be zero (except for burn address)
