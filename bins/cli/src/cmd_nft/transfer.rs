@@ -34,75 +34,151 @@ pub(crate) async fn cmd_nft_transfer(
         .parse()
         .map_err(|_| anyhow::anyhow!("Invalid output index: {}", parts[1]))?;
 
-    // Get the NFT UTXO details via RPC to extract token_id and content
+    // Get the UTXO details via RPC
     let tx_info = rpc.get_transaction_json(&prev_tx_hash.to_hex()).await?;
-    let nft_output = tx_info
+    let utxo_output = tx_info
         .get("outputs")
         .and_then(|o| o.as_array())
         .and_then(|arr| arr.get(output_index as usize))
         .ok_or_else(|| anyhow::anyhow!("Cannot find output {}:{}", parts[0], output_index))?;
 
-    let nft_meta = nft_output
-        .get("nft")
-        .ok_or_else(|| anyhow::anyhow!("Output is not an NFT"))?;
-    let token_id_hex = nft_meta
-        .get("tokenId")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Missing tokenId in NFT metadata"))?;
-    let content_hash_hex = nft_meta
-        .get("contentHash")
+    let output_type = utxo_output
+        .get("outputType")
         .and_then(|v| v.as_str())
         .unwrap_or("");
 
-    let token_id =
-        Hash::from_hex(token_id_hex).ok_or_else(|| anyhow::anyhow!("Invalid token_id"))?;
-    let content_bytes = hex::decode(content_hash_hex).unwrap_or_default();
-
-    // Parse recipient
-    let recipient_hash = crypto::address::resolve(to, None)
-        .map_err(|e| anyhow::anyhow!("Invalid recipient address: {}", e))?;
-
-    // The NFT output carries forward the same token_id and content, new owner
-    // Use a simple signature condition for the new owner
-    let new_cond = doli_core::Condition::signature(recipient_hash);
-    let nft_amount = nft_output
+    let amount = utxo_output
         .get("amount")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
-    // Extract royalty info to preserve it on transfer
-    let royalty = nft_meta.get("royalty").and_then(|r| {
-        let creator = r.get("creator")?.as_str()?;
-        let bps = r.get("bps")?.as_u64()?;
-        let creator_hash = Hash::from_hex(creator)?;
-        Some((creator_hash, bps as u16))
-    });
 
-    let new_nft_output = if let Some((creator_hash, royalty_bps)) = royalty {
-        Output::nft_with_royalty(
-            nft_amount,
+    // Branch: EncryptedContent transfer (re-wrap key) vs legacy NFT transfer
+    let (new_output, recipient_hash, is_encrypted) = if output_type == "encryptedContent" {
+        // EncryptedContent transfer requires recipient's PUBLIC KEY (not just hash)
+        // because ECIES re-wrap needs the actual key. Accept --to as:
+        //   - 64 hex chars → raw pubkey
+        //   - bech32 address → error (need pubkey for re-wrap)
+        let recipient_pubkey = if to.len() == 64 && to.chars().all(|c| c.is_ascii_hexdigit()) {
+            let pubkey_bytes: [u8; 32] = hex::decode(to)
+                .map_err(|_| anyhow::anyhow!("Invalid pubkey hex"))?
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("Pubkey must be 32 bytes"))?;
+            crypto::PublicKey::from_bytes(pubkey_bytes)
+        } else {
+            anyhow::bail!(
+                "EncryptedContent transfer requires recipient's public key (64 hex chars).\n\
+                 The recipient can find theirs with: doli info\n\
+                 Usage: doli nft --transfer <utxo> --to <recipient_pubkey_hex>"
+            );
+        };
+
+        let recipient_hash =
+            crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, recipient_pubkey.as_bytes());
+
+        // Parse extra_data
+        let extra_data_hex = utxo_output
+            .get("extraData")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing extraData in EncryptedContent"))?;
+        let extra_data =
+            hex::decode(extra_data_hex).map_err(|_| anyhow::anyhow!("Invalid hex in extraData"))?;
+
+        if extra_data.len() < 128 {
+            anyhow::bail!("Malformed EncryptedContent extra_data");
+        }
+
+        let ct_len = u32::from_le_bytes(extra_data[0..4].try_into()?) as usize;
+        let offset = 4 + ct_len;
+        if extra_data.len() < offset + 80 + 12 + 32 {
+            anyhow::bail!("Truncated EncryptedContent extra_data");
+        }
+
+        let ciphertext = &extra_data[4..4 + ct_len];
+        let mut wrapped_key = [0u8; 80];
+        wrapped_key.copy_from_slice(&extra_data[offset..offset + 80]);
+        let nonce: [u8; 12] = extra_data[offset + 80..offset + 92].try_into()?;
+        let mut content_hash = [0u8; 32];
+        content_hash.copy_from_slice(&extra_data[offset + 92..offset + 124]);
+
+        // Unwrap the content key with sender's private key
+        let keypair = wallet.primary_keypair()?;
+        let content_key =
+            crypto::encrypted_content::unwrap_key(&wrapped_key, keypair.private_key())
+                .map_err(|_| anyhow::anyhow!("Failed to unwrap key — you are not the owner"))?;
+
+        // Re-wrap with recipient's public key
+        let new_wrapped_key = crypto::encrypted_content::wrap_key(&content_key, &recipient_pubkey)
+            .map_err(|e| anyhow::anyhow!("Re-wrap failed: {}", e))?;
+
+        // Build new EncryptedContent output with same content, new wrapped_key
+        let output = Output::encrypted_content(
+            amount,
             recipient_hash,
-            token_id,
-            &content_bytes,
-            &new_cond,
-            creator_hash,
-            royalty_bps,
-        )
-        .map_err(|e| anyhow::anyhow!("Failed to create NFT output: {}", e))?
+            ciphertext,
+            &new_wrapped_key,
+            &nonce,
+            &content_hash,
+        );
+
+        (output, recipient_hash, true)
+    } else if output_type == "nft" {
+        // Legacy NFT transfer path
+        let recipient_hash = crypto::address::resolve(to, None)
+            .map_err(|e| anyhow::anyhow!("Invalid recipient address: {}", e))?;
+
+        let nft_meta = utxo_output
+            .get("nft")
+            .ok_or_else(|| anyhow::anyhow!("Output is not an NFT"))?;
+        let token_id_hex = nft_meta
+            .get("tokenId")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing tokenId in NFT metadata"))?;
+        let content_hash_hex = nft_meta
+            .get("contentHash")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        let token_id =
+            Hash::from_hex(token_id_hex).ok_or_else(|| anyhow::anyhow!("Invalid token_id"))?;
+        let content_bytes = hex::decode(content_hash_hex).unwrap_or_default();
+
+        let new_cond = doli_core::Condition::signature(recipient_hash);
+
+        let royalty = nft_meta.get("royalty").and_then(|r| {
+            let creator = r.get("creator")?.as_str()?;
+            let bps = r.get("bps")?.as_u64()?;
+            let creator_hash = Hash::from_hex(creator)?;
+            Some((creator_hash, bps as u16))
+        });
+
+        let output = if let Some((creator_hash, royalty_bps)) = royalty {
+            Output::nft_with_royalty(
+                amount,
+                recipient_hash,
+                token_id,
+                &content_bytes,
+                &new_cond,
+                creator_hash,
+                royalty_bps,
+            )
+            .map_err(|e| anyhow::anyhow!("Failed to create NFT output: {}", e))?
+        } else {
+            Output::nft(amount, recipient_hash, token_id, &content_bytes, &new_cond)
+                .map_err(|e| anyhow::anyhow!("Failed to create NFT output: {}", e))?
+        };
+
+        (output, recipient_hash, false)
     } else {
-        Output::nft(
-            nft_amount,
-            recipient_hash,
-            token_id,
-            &content_bytes,
-            &new_cond,
-        )
-        .map_err(|e| anyhow::anyhow!("Failed to create NFT output: {}", e))?
+        anyhow::bail!(
+            "Output is not an NFT or EncryptedContent (type: {})",
+            output_type
+        );
     };
 
-    // Calculate fee: base + per-byte for NFT output extra_data
+    // Calculate fee
     let sender_pubkey_hash = wallet.primary_pubkey_hash();
     let fee_units = {
-        let extra_bytes: u64 = new_nft_output.extra_data.len() as u64;
+        let extra_bytes: u64 = new_output.extra_data.len() as u64;
         doli_core::consensus::BASE_FEE
             + extra_bytes * doli_core::consensus::FEE_PER_BYTE / doli_core::consensus::FEE_DIVISOR
     };
@@ -133,17 +209,17 @@ pub(crate) async fn cmd_nft_transfer(
         );
     }
 
-    // Build inputs: NFT input first, then fee-paying UTXOs
-    let nft_input = Input::new(prev_tx_hash, output_index);
-    let mut inputs = vec![nft_input];
+    // Build inputs: content input first, then fee-paying UTXOs
+    let content_input = Input::new(prev_tx_hash, output_index);
+    let mut inputs = vec![content_input];
     for utxo in &selected_utxos {
         let tx_hash =
             Hash::from_hex(&utxo.tx_hash).ok_or_else(|| anyhow::anyhow!("Invalid UTXO tx_hash"))?;
         inputs.push(Input::new(tx_hash, utxo.output_index));
     }
 
-    // Build outputs: NFT + change
-    let mut outputs = vec![new_nft_output];
+    // Build outputs: content + change
+    let mut outputs = vec![new_output];
     let change = total_fee_input - fee_units;
     if change > 0 {
         let sender_hash = Hash::from_hex(&sender_pubkey_hash)
@@ -155,27 +231,28 @@ pub(crate) async fn cmd_nft_transfer(
 
     // Sign: BIP-143 per-input signing hash
     let keypair = wallet.primary_keypair()?;
-    let signing_hash_0 = tx.signing_message_for_input(0);
 
-    // Auto-provide signature witness for NFT covenant (input 0)
-    let witness_bytes = if witness_str == "none()" {
-        let mut w = doli_core::Witness::default();
-        w.signatures.push(doli_core::ConditionWitnessSignature {
-            pubkey: *keypair.public_key(),
-            signature: crypto::signature::sign_hash(&signing_hash_0, keypair.private_key()),
-        });
-        w.encode()
-    } else {
-        parse_witness(witness_str, &signing_hash_0)?
-    };
-    // Covenant witnesses: one per input (NFT has witness, fee inputs have empty)
-    let mut witnesses: Vec<Vec<u8>> = vec![witness_bytes];
-    for _ in &selected_utxos {
-        witnesses.push(Vec::new());
+    // For legacy NFTs with covenants: provide witness for input 0
+    if !is_encrypted {
+        let signing_hash_0 = tx.signing_message_for_input(0);
+        let witness_bytes = if witness_str == "none()" {
+            let mut w = doli_core::Witness::default();
+            w.signatures.push(doli_core::ConditionWitnessSignature {
+                pubkey: *keypair.public_key(),
+                signature: crypto::signature::sign_hash(&signing_hash_0, keypair.private_key()),
+            });
+            w.encode()
+        } else {
+            parse_witness(witness_str, &signing_hash_0)?
+        };
+        let mut witnesses: Vec<Vec<u8>> = vec![witness_bytes];
+        for _ in &selected_utxos {
+            witnesses.push(Vec::new());
+        }
+        tx.set_covenant_witnesses(&witnesses);
     }
-    tx.set_covenant_witnesses(&witnesses);
 
-    // Sign all inputs with per-input signing hash
+    // Sign all inputs
     for i in 0..tx.inputs.len() {
         let signing_hash = tx.signing_message_for_input(i);
         tx.inputs[i].signature = crypto::signature::sign_hash(&signing_hash, keypair.private_key());
@@ -189,28 +266,42 @@ pub(crate) async fn cmd_nft_transfer(
     let recipient_display = crypto::address::encode(&recipient_hash, address_prefix())
         .unwrap_or_else(|_| recipient_hash.to_hex());
 
-    println!("Transferring NFT:");
-    println!("  Token ID: {}", token_id.to_hex());
-    println!(
-        "  From:     {}:{}",
-        &prev_tx_hash.to_hex()[..16],
-        output_index
-    );
-    println!("  To:       {}", recipient_display);
-    println!("  Fee:      {}", format_balance(fee_units));
-    println!("  TX Hash:  {}", tx_hash.to_hex());
-    println!("  Size:     {} bytes", tx_bytes.len());
+    if is_encrypted {
+        println!("Transferring encrypted content:");
+        println!(
+            "  From:     {}:{}",
+            &prev_tx_hash.to_hex()[..16],
+            output_index
+        );
+        println!("  To:       {}", recipient_display);
+        println!("  Fee:      {}", format_balance(fee_units));
+        println!("  TX Hash:  {}", tx_hash.to_hex());
+        println!("  Size:     {} bytes", tx_bytes.len());
+        println!();
+        println!("Key re-wrapped for recipient. Only they can decrypt after transfer.");
+    } else {
+        println!("Transferring NFT:");
+        println!(
+            "  From:     {}:{}",
+            &prev_tx_hash.to_hex()[..16],
+            output_index
+        );
+        println!("  To:       {}", recipient_display);
+        println!("  Fee:      {}", format_balance(fee_units));
+        println!("  TX Hash:  {}", tx_hash.to_hex());
+        println!("  Size:     {} bytes", tx_bytes.len());
+    }
 
     println!();
     println!("Broadcasting transaction...");
     match rpc.send_transaction(&tx_hex).await {
         Ok(result_hash) => {
-            println!("NFT transferred successfully!");
+            println!("Transfer successful!");
             println!("TX Hash: {}", result_hash);
         }
         Err(e) => {
             println!("Error: {}", e);
-            return Err(anyhow::anyhow!("NFT transfer failed: {}", e));
+            return Err(anyhow::anyhow!("Transfer failed: {}", e));
         }
     }
 
