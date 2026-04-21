@@ -62,6 +62,8 @@ impl RpcContext {
             "resumeProduction" => self.resume_production().await,
             "createCheckpoint" => self.create_checkpoint(Some(request.params)).await,
             "getGuardianStatus" => self.get_guardian_status().await,
+            "enterRecoveryMode" => self.enter_recovery_mode().await,
+            "exitRecoveryMode" => self.exit_recovery_mode().await,
             _ => Err(RpcError::method_not_found(&request.method)),
         };
 

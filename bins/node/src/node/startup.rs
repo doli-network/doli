@@ -348,7 +348,8 @@ impl Node {
         .with_sync_status(sync_status_fn)
         .with_sync_manager(self.sync_manager.clone())
         .with_state_db(self.state_db.clone())
-        .with_data_dir(self.config.data_dir.clone());
+        .with_data_dir(self.config.data_dir.clone())
+        .with_recovery_mode(self.recovery_mode.clone());
 
         // Wire up peer info so getNetworkInfo reports real values
         if let Some(ref network) = self.network {

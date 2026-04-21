@@ -1,9 +1,10 @@
-//! Seed Guardian RPC methods — production halt, checkpoint creation, guardian status.
+//! Seed Guardian RPC methods — production halt, checkpoint creation, guardian status, recovery mode.
 
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 
 use serde_json::Value;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::error::RpcError;
 
@@ -229,6 +230,33 @@ impl RpcContext {
             "best_hash": chain_state.best_hash.to_hex(),
             "last_checkpoint": last_checkpoint,
             "last_healthy_checkpoint": last_healthy_checkpoint,
+            "recovery_mode": self.recovery_mode.load(Ordering::Relaxed),
+        }))
+    }
+
+    /// Enter recovery mode — drop all inbound blocks and snap sync (anti-poisoning gate).
+    ///
+    /// Used during seed recovery to prevent non-recovered nodes from poisoning
+    /// freshly restored seeds via gossip. The node continues serving RPC and
+    /// snap sync to peers, but will not apply any state mutations.
+    pub(super) async fn enter_recovery_mode(&self) -> Result<Value, RpcError> {
+        self.recovery_mode.store(true, Ordering::Relaxed);
+        warn!("[RECOVERY] Recovery mode ACTIVATED via RPC — all inbound blocks and snap sync will be dropped");
+
+        Ok(serde_json::json!({
+            "status": "recovery_mode_active",
+            "message": "Recovery mode activated. All inbound blocks and snap sync are dropped. Use exitRecoveryMode to resume normal operation."
+        }))
+    }
+
+    /// Exit recovery mode — resume normal block and snap sync processing.
+    pub(super) async fn exit_recovery_mode(&self) -> Result<Value, RpcError> {
+        self.recovery_mode.store(false, Ordering::Relaxed);
+        info!("[RECOVERY] Recovery mode DEACTIVATED via RPC — normal operation resumed");
+
+        Ok(serde_json::json!({
+            "status": "recovery_mode_inactive",
+            "message": "Recovery mode deactivated. Normal block and snap sync processing resumed."
         }))
     }
 }

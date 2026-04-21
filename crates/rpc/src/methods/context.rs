@@ -86,6 +86,9 @@ pub struct RpcContext {
     pub state_db: Option<Arc<StateDb>>,
     /// Node data directory (for checkpoint paths)
     pub data_dir: Option<PathBuf>,
+    /// Recovery mode flag (anti-poisoning gate for seed recovery).
+    /// When true, apply_block() and apply_snap_snapshot() drop all inbound state mutations.
+    pub recovery_mode: Arc<AtomicBool>,
 }
 
 impl RpcContext {
@@ -138,6 +141,7 @@ impl RpcContext {
             sync_manager: None,
             state_db: None,
             data_dir: None,
+            recovery_mode: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -194,6 +198,7 @@ impl RpcContext {
                 sync_manager: None,
                 state_db: None,
                 data_dir: None,
+                recovery_mode: Arc::new(AtomicBool::new(false)),
             }
         }
     }
@@ -288,6 +293,12 @@ impl RpcContext {
     /// Set data directory (for checkpoint output paths)
     pub fn with_data_dir(mut self, data_dir: PathBuf) -> Self {
         self.data_dir = Some(data_dir);
+        self
+    }
+
+    /// Set recovery mode flag (shared with Node for anti-poisoning gate)
+    pub fn with_recovery_mode(mut self, rm: Arc<AtomicBool>) -> Self {
+        self.recovery_mode = rm;
         self
     }
 

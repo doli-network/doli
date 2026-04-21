@@ -34,6 +34,8 @@ pub const ADMIN_METHODS: &[&str] = &[
     "createCheckpoint",
     "pruneBlocks",
     "backfillFromPeer",
+    "enterRecoveryMode",
+    "exitRecoveryMode",
 ];
 
 /// RPC server configuration

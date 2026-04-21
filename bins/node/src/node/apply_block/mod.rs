@@ -12,6 +12,11 @@ impl Node {
     /// `mode`: `Full` for gossip/production (checks MAX_PAST_SLOTS, VDF),
     ///         `Light` for sync/reorg (skips time-based checks that reject old blocks).
     pub async fn apply_block(&mut self, block: Block, mode: ValidationMode) -> Result<()> {
+        // Recovery mode: drop all inbound blocks silently (anti-poisoning gate)
+        if self.recovery_mode.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+
         let block_hash = block.hash();
 
         let height = self.chain_state.read().await.best_height + 1;

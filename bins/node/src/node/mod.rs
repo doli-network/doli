@@ -21,7 +21,7 @@ mod validation_checks;
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -228,6 +228,11 @@ pub struct Node {
     /// Height at which last active fork correction was performed.
     /// Max 1 correction per epoch (360 blocks) to prevent rollback loops.
     pub last_active_fork_correction_height: u64,
+
+    /// Recovery mode: when true, apply_block() and apply_snap_snapshot() silently
+    /// drop all inbound state mutations (anti-poisoning gate for seed recovery).
+    /// Toggled via enterRecoveryMode/exitRecoveryMode RPC. Non-persistent: cleared on restart.
+    pub recovery_mode: Arc<AtomicBool>,
 }
 
 /// Max connect+disconnect events per peer within PEER_CHURN_WINDOW before rate-limit kicks in.

@@ -472,6 +472,12 @@ impl Node {
     /// 4. Persists to StateDb
     /// 5. Seeds canonical index for post-snap header sync
     pub async fn apply_snap_snapshot(&mut self, snapshot: network::VerifiedSnapshot) -> Result<()> {
+        // Recovery mode: block snap sync consumption (anti-poisoning gate)
+        if self.recovery_mode.load(Ordering::Relaxed) {
+            warn!("[RECOVERY] Snap sync blocked — node is in recovery mode");
+            return Ok(());
+        }
+
         info!(
             "[SNAP_SYNC] Applying snapshot: height={}, hash={:.16}, root={:.16}",
             snapshot.block_height, snapshot.block_hash, snapshot.state_root
