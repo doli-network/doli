@@ -12,10 +12,10 @@ use crate::utxo::{Outpoint, UtxoEntry};
 
 use super::types::{
     LastApplied, StateDb, CF_EXIT_HISTORY, CF_META, CF_PRODUCERS, CF_UTXO, CF_UTXO_BY_PUBKEY,
-    META_ACTIVE_PRODUCTION_LIST, META_CHAIN_COMMITMENT, META_CHAIN_STATE,
-    META_EPOCH_ATTESTATION_ACCUM, META_EPOCH_ATTESTED_SET, META_EPOCH_BLOCKS_PRODUCED,
-    META_EPOCH_BOND_SNAPSHOT, META_EPOCH_PRODUCER_LIST, META_EPOCH_STATE, META_EPOCH_STATE_VERSION,
-    META_LAST_APPLIED, META_PENDING_UPDATES,
+    META_ACTIVE_PRODUCTION_LIST, META_CHAIN_COMMITMENT, META_CHAIN_COMMITMENT_TIP,
+    META_CHAIN_STATE, META_EPOCH_ATTESTATION_ACCUM, META_EPOCH_ATTESTED_SET,
+    META_EPOCH_BLOCKS_PRODUCED, META_EPOCH_BOND_SNAPSHOT, META_EPOCH_PRODUCER_LIST,
+    META_EPOCH_STATE, META_EPOCH_STATE_VERSION, META_LAST_APPLIED, META_PENDING_UPDATES,
 };
 
 impl StateDb {
@@ -412,7 +412,7 @@ impl StateDb {
             .put_cf(cf, META_EPOCH_STATE_VERSION, version.to_le_bytes());
     }
 
-    /// Get the persisted incremental chain commitment.
+    /// Get the persisted chain commitment.
     pub fn get_chain_commitment(&self) -> Option<Hash> {
         let cf = self.db.cf_handle(CF_META).unwrap();
         self.db
@@ -428,7 +428,27 @@ impl StateDb {
             })
     }
 
-    /// Persist chain commitment (non-batch, for bootstrap).
+    /// Get the persisted chain commitment together with the scan tip it was computed at.
+    pub fn get_chain_commitment_with_tip(&self) -> Option<(Hash, u64)> {
+        let commitment = self.get_chain_commitment()?;
+        let cf = self.db.cf_handle(CF_META).unwrap();
+        let tip = self
+            .db
+            .get_cf(cf, META_CHAIN_COMMITMENT_TIP)
+            .ok()
+            .flatten()
+            .and_then(|bytes| {
+                if bytes.len() == 8 {
+                    Some(u64::from_le_bytes(bytes[..8].try_into().ok()?))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0);
+        Some((commitment, tip))
+    }
+
+    /// Persist chain commitment with the scan tip it was computed at.
     pub fn put_chain_commitment(&self, commitment: &Hash) {
         let cf = self.db.cf_handle(CF_META).unwrap();
         let _ = self
@@ -436,10 +456,22 @@ impl StateDb {
             .put_cf(cf, META_CHAIN_COMMITMENT, commitment.as_bytes());
     }
 
+    /// Persist chain commitment together with the scan tip it was computed at.
+    pub fn put_chain_commitment_with_tip(&self, commitment: &Hash, scan_tip: u64) {
+        let cf = self.db.cf_handle(CF_META).unwrap();
+        let _ = self
+            .db
+            .put_cf(cf, META_CHAIN_COMMITMENT, commitment.as_bytes());
+        let _ = self
+            .db
+            .put_cf(cf, META_CHAIN_COMMITMENT_TIP, scan_tip.to_le_bytes());
+    }
+
     /// Delete chain commitment (forces re-bootstrap on next integrity check).
     pub fn delete_chain_commitment(&self) {
         let cf = self.db.cf_handle(CF_META).unwrap();
         let _ = self.db.delete_cf(cf, META_CHAIN_COMMITMENT);
+        let _ = self.db.delete_cf(cf, META_CHAIN_COMMITMENT_TIP);
     }
 
     /// Load the full ProducerSet from the database.

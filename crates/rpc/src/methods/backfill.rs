@@ -489,11 +489,13 @@ impl RpcContext {
         // Fast path: if periodic commitment exists, return it in O(1).
         // The commitment is recomputed every 100 blocks via full BLAKE3 scan
         // in periodic.rs. Always correct by construction.
-        let persisted_commitment = self
+        // IMPORTANT: report the actual scan_tip (not current tip) so the explorer
+        // can distinguish "different scan time" from "divergent chain".
+        let persisted = self
             .state_db
             .as_ref()
-            .and_then(|db| db.get_chain_commitment());
-        if let Some(commitment) = persisted_commitment {
+            .and_then(|db| db.get_chain_commitment_with_tip());
+        if let Some((commitment, scan_tip)) = persisted {
             // Still need gap detection — commitment only covers applied blocks,
             // not block_store completeness. Quick scan for gaps only (no hashing).
             let block_store = self.block_store.clone();
@@ -543,10 +545,14 @@ impl RpcContext {
                 })
                 .sum();
 
+            // Report actual scan_tip so the explorer can detect "different scan time"
+            // vs "divergent chain". scan_tip=0 means legacy commitment without tip.
+            let reported_scan = if scan_tip > 0 { scan_tip } else { tip_height };
+
             return Ok(serde_json::json!({
                 "complete": missing_count == 0,
                 "tip": tip_height,
-                "scanned": tip_height,
+                "scanned": reported_scan,
                 "missing": gaps,
                 "missingCount": missing_count,
                 "chainCommitment": format!("{}", commitment)
@@ -618,7 +624,7 @@ impl RpcContext {
             if commitment_valid && missing_count == 0 {
                 if let Some(ref db) = state_db_opt {
                     if db.get_chain_commitment().is_none() {
-                        db.put_chain_commitment(&commitment);
+                        db.put_chain_commitment_with_tip(&commitment, tip);
                     }
                 }
             }

@@ -132,7 +132,7 @@ impl Node {
                                 scan_tip,
                                 commitment
                             );
-                            state_db.put_chain_commitment(&commitment);
+                            state_db.put_chain_commitment_with_tip(&commitment, scan_tip);
                         }
                     }
                 });
