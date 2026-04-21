@@ -140,18 +140,10 @@ impl Node {
         batch.put_epoch_state(&self.epoch_state.serialize());
         batch.put_epoch_state_version(CURRENT_PROTOCOL_VERSION);
 
-        // Incremental chain commitment: O(1) per block, replaces O(n) full-chain scan.
-        // commitment[h] = BLAKE3(commitment[h-1] || block_hash[h])
-        // Only update if a previous commitment exists (bootstrapped by verifyChainIntegrity
-        // or by continuous apply from genesis). Without this guard, a node deployed mid-chain
-        // would start from zeros → produce wrong commitment that diverges from full-scan.
-        if let Some(prev) = self.state_db.get_chain_commitment() {
-            let mut hasher = crypto::Hasher::new();
-            hasher.update(prev.as_bytes());
-            hasher.update(block_hash.as_bytes());
-            let new_commitment = hasher.finalize();
-            batch.put_chain_commitment(&new_commitment);
-        }
+        // Chain commitment: computed periodically via full scan in periodic.rs.
+        // Incremental computation was removed — it corrupted on every code path
+        // that modified the chain without updating the commitment (fork replacement,
+        // sync, rsync, snap sync). Periodic full scan is always correct by construction.
 
         if doli_core::EpochSnapshot::is_epoch_boundary_with(height, blocks_per_epoch) {
             let epoch = doli_core::EpochSnapshot::epoch_from_height_with(height, blocks_per_epoch);

@@ -27,11 +27,8 @@ pub struct UndoData {
     /// None for blocks created before this field was added (backward compat).
     #[serde(default)]
     pub epoch_state_snapshot: Option<Vec<u8>>,
-    /// Chain commitment BEFORE this block was applied.
-    /// Restored on rollback so the incremental commitment continues from
-    /// the correct base — without this, rollback corrupts the commitment
-    /// permanently (the post-rollback apply chains onto the wrong value).
-    /// None for blocks created before this field was added (backward compat).
+    /// Legacy field — kept for backward compat deserialization of existing undo data.
+    /// Chain commitment is now computed via periodic full scan, not incrementally.
     #[serde(default)]
     pub chain_commitment: Option<[u8; 32]>,
 }

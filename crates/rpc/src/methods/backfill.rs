@@ -486,10 +486,9 @@ impl RpcContext {
             }));
         }
 
-        // Fast path: if incremental commitment exists, return it in O(1).
-        // The commitment is updated atomically on every apply_block.
-        // Only fall through to full scan if no commitment persisted (legacy node
-        // or first run after upgrade).
+        // Fast path: if periodic commitment exists, return it in O(1).
+        // The commitment is recomputed every 100 blocks via full BLAKE3 scan
+        // in periodic.rs. Always correct by construction.
         let persisted_commitment = self
             .state_db
             .as_ref()

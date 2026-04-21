@@ -253,27 +253,9 @@ impl Node {
             self.rebuild_epoch_state_from_blocks().await;
         }
 
-        // Restore chain commitment from undo data.
-        // The undo snapshot contains the commitment BEFORE the rolled-back block was
-        // applied. Restoring it means the next apply_block chains onto the correct
-        // base — zero interruption, no startup recompute needed.
-        // Fallback: if undo has no commitment (pre-upgrade block), delete so startup
-        // recomputes from h=1 (safe but slower).
-        if let Some(undo) = self.state_db.get_undo(local_height) {
-            if let Some(commitment_bytes) = undo.chain_commitment {
-                let commitment = crypto::Hash::from_bytes(commitment_bytes);
-                self.state_db.put_chain_commitment(&commitment);
-                info!(
-                    "[ROLLBACK] Restored chain commitment from undo: {:.16}",
-                    commitment
-                );
-            } else {
-                self.state_db.delete_chain_commitment();
-                info!("[ROLLBACK] No commitment in undo (pre-upgrade) — deleted, will recompute on restart");
-            }
-        } else {
-            self.state_db.delete_chain_commitment();
-        }
+        // Chain commitment: invalidate on rollback. Periodic scan in periodic.rs
+        // will recompute it correctly on the next tick.
+        self.state_db.delete_chain_commitment();
 
         // Track cumulative rollback depth (Fix 4)
         self.cumulative_rollback_depth += 1;

@@ -87,12 +87,15 @@ impl Node {
 
     /// Run periodic tasks
     pub async fn run_periodic_tasks(&mut self) -> Result<()> {
-        // One-shot block store integrity scan on first tick after startup.
-        // Verifies no gaps exist and bootstraps the incremental chain commitment.
-        // Runs once (last_integrity_check_tip goes from None → Some), O(1) thereafter.
-        if self.last_integrity_check_tip.is_none() {
+        // Periodic chain integrity scan: full BLAKE3(h1||h2||...||hn) every 100 blocks.
+        // Always correct by construction — no incremental state to corrupt.
+        // Replaces the incremental commitment which broke on every code path that
+        // modified the chain without updating it (fork replacement, sync, rsync, snap sync).
+        // With 40K+ blocks, full scan takes <1 second via BLAKE3.
+        {
             let tip = self.chain_state.read().await.best_height;
-            if tip > 0 {
+            let last_scan = self.last_integrity_check_tip.unwrap_or(0);
+            if tip > 0 && (last_scan == 0 || tip >= last_scan + 100) {
                 let block_store = self.block_store.clone();
                 let state_db = self.state_db.clone();
                 let scan_tip = tip;
@@ -118,15 +121,16 @@ impl Node {
                     if let Ok((missing, commitment)) = result {
                         if missing > 0 {
                             tracing::warn!(
-                                "[INTEGRITY] Startup scan: {} missing blocks in 1..={}",
+                                "[INTEGRITY] Periodic scan: {} missing blocks in 1..={}",
                                 missing,
                                 scan_tip
                             );
                             state_db.delete_chain_commitment();
                         } else {
                             tracing::info!(
-                                "[INTEGRITY] Startup scan: chain complete (1..={}), commitment persisted",
-                                scan_tip
+                                "[INTEGRITY] Periodic scan: chain complete (1..={}), commitment={:.16}",
+                                scan_tip,
+                                commitment
                             );
                             state_db.put_chain_commitment(&commitment);
                         }
