@@ -198,9 +198,9 @@ impl HardForkSchedule {
         match network {
             doli_core::Network::Mainnet => {
                 // EPOCH_SNAPSHOT_HF — INC-I-034 / M-Choice1.
-                // Activated at h=43844.
+                // Activated at h=43262.
                 schedule.add(HardForkInfo {
-                    activation_height: 43_844,
+                    activation_height: 43_262,
                     min_version: "6.14.11".to_string(),
                     consensus_changes: vec![
                         "EpochState state root inclusion (M-Choice1)".to_string()
