@@ -237,9 +237,7 @@ impl HardForkSchedule {
                 schedule.add(HardForkInfo {
                     activation_height: 4_836,
                     min_version: "6.18.6".to_string(),
-                    consensus_changes: vec![
-                        "Testnet HF deployment".to_string()
-                    ],
+                    consensus_changes: vec!["Testnet HF deployment".to_string()],
                 });
             }
             doli_core::Network::Devnet => {
