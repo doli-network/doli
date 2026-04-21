@@ -171,7 +171,7 @@ impl DoliClient {
         let result: serde_json::Value = self
             .call(
                 "sendTransaction",
-                serde_json::json!({ "transaction": tx_hex }),
+                serde_json::json!({ "tx": tx_hex }),
             )
             .await?;
         Ok(result
