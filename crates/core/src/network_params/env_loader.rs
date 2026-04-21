@@ -202,6 +202,23 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
             "DOLI_FORK_ID_ACTIVATION_HEIGHT",
             defaults.fork_id_activation_height,
         ),
+        // Per-network activation heights (env override for testing / emergency rollback)
+        full_bitfield_decode_height: env_parse(
+            "DOLI_FULL_BITFIELD_DECODE_HEIGHT",
+            defaults.full_bitfield_decode_height,
+        ),
+        rewards_epoch_list_fix_height: env_parse(
+            "DOLI_REWARDS_EPOCH_LIST_FIX_HEIGHT",
+            defaults.rewards_epoch_list_fix_height,
+        ),
+        encrypted_content_activation_height: env_parse(
+            "DOLI_ENCRYPTED_CONTENT_ACTIVATION_HEIGHT",
+            defaults.encrypted_content_activation_height,
+        ),
+        epoch_state_reorg_activation_height: env_parse(
+            "DOLI_EPOCH_STATE_REORG_ACTIVATION_HEIGHT",
+            defaults.epoch_state_reorg_activation_height,
+        ),
 
         // Gossip mesh (locked for mainnet - wrong values could isolate nodes)
         mesh_n: if is_mainnet {

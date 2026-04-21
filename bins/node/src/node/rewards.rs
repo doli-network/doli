@@ -46,7 +46,7 @@ impl Node {
         // (they can't reach 54/60 attestation minutes). Decoding only the first N indices
         // matches post_commit.rs exactly — proven correct in production.
         let use_epoch_list =
-            epoch_start_height >= doli_core::consensus::REWARDS_EPOCH_LIST_FIX_HEIGHT;
+            epoch_start_height >= self.config.network.params().rewards_epoch_list_fix_height;
         let sorted_producers: Vec<storage::producer::ProducerInfo> = if use_epoch_list {
             // Post-fix: use epoch_state.producer_list (identical to post_commit decoder)
             let epl = &self.epoch_state.producer_list;

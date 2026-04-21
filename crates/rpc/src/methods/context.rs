@@ -89,6 +89,10 @@ pub struct RpcContext {
     /// Recovery mode flag (anti-poisoning gate for seed recovery).
     /// When true, apply_block() and apply_snap_snapshot() drop all inbound state mutations.
     pub recovery_mode: Arc<AtomicBool>,
+    /// Full bitfield decode activation height (network-specific)
+    pub full_bitfield_decode_height: u64,
+    /// Rewards epoch list fix activation height (network-specific)
+    pub rewards_epoch_list_fix_height: u64,
 }
 
 impl RpcContext {
@@ -132,6 +136,8 @@ impl RpcContext {
             }),
             maintainer_state: None,
             vesting_quarter_slots: net_params.vesting_quarter_slots,
+            full_bitfield_decode_height: net_params.full_bitfield_decode_height,
+            rewards_epoch_list_fix_height: net_params.rewards_epoch_list_fix_height,
             backfill_state: Arc::new(BackfillState {
                 running: AtomicBool::new(false),
                 imported: AtomicU64::new(0),
@@ -189,6 +195,8 @@ impl RpcContext {
                 }),
                 maintainer_state: None,
                 vesting_quarter_slots: doli_core::consensus::VESTING_QUARTER_SLOTS as u64,
+                full_bitfield_decode_height: doli_core::consensus::FULL_BITFIELD_DECODE_HEIGHT,
+                rewards_epoch_list_fix_height: doli_core::consensus::REWARDS_EPOCH_LIST_FIX_HEIGHT,
                 backfill_state: Arc::new(BackfillState {
                     running: AtomicBool::new(false),
                     imported: AtomicU64::new(0),

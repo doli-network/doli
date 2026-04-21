@@ -119,6 +119,12 @@ impl Node {
                 .network
                 .params()
                 .inc_i_026_scheduler_activation_height,
+        )
+        .with_encrypted_content_activation_height(
+            self.config
+                .network
+                .params()
+                .encrypted_content_activation_height,
         );
 
         // Apply chainspec if present
@@ -283,6 +289,12 @@ impl Node {
         .with_fork_id(
             self.current_fork_id(),
             self.config.network.params().fork_id_activation_height,
+        )
+        .with_encrypted_content_activation_height(
+            self.config
+                .network
+                .params()
+                .encrypted_content_activation_height,
         );
 
         if let Some(ref spec) = self.config.chainspec {

@@ -603,7 +603,13 @@ impl Node {
                 // Without this, execute_reorg leaves stale attestation accumulators from
                 // the OLD fork → wrong derive_at_boundary → wrong scheduling → persistent fork.
                 // Height-gated: consensus-breaking change (different scheduling after reorg).
-                if current_height >= doli_core::consensus::EPOCH_STATE_REORG_ACTIVATION_HEIGHT {
+                if current_height
+                    >= self
+                        .config
+                        .network
+                        .params()
+                        .epoch_state_reorg_activation_height
+                {
                     let first_undo = self.state_db.get_undo(target_height + 1).unwrap();
                     if let Some(ref epoch_bytes) = first_undo.epoch_state_snapshot {
                         match doli_core::EpochState::deserialize(epoch_bytes) {
@@ -684,7 +690,13 @@ impl Node {
                 }
 
                 // Legacy path: rebuild epoch_state from blocks (same activation gate).
-                if current_height >= doli_core::consensus::EPOCH_STATE_REORG_ACTIVATION_HEIGHT {
+                if current_height
+                    >= self
+                        .config
+                        .network
+                        .params()
+                        .epoch_state_reorg_activation_height
+                {
                     self.rebuild_epoch_state_from_blocks().await;
                 }
             }
@@ -711,7 +723,13 @@ impl Node {
             }
 
             // Persist epoch_state to DB after atomic_replace (same gate).
-            if current_height >= doli_core::consensus::EPOCH_STATE_REORG_ACTIVATION_HEIGHT {
+            if current_height
+                >= self
+                    .config
+                    .network
+                    .params()
+                    .epoch_state_reorg_activation_height
+            {
                 let epoch_bytes = self.epoch_state.serialize();
                 self.state_db.put_epoch_state(&epoch_bytes);
             }

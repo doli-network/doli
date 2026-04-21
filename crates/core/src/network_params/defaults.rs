@@ -86,6 +86,11 @@ impl NetworkParams {
                 // any node running <6.7.8 from producing past activation.
                 inc_i_026_scheduler_activation_height: 0,
                 fork_id_activation_height: 0,
+                // Per-network activation heights (mainnet preserves original values)
+                full_bitfield_decode_height: consensus::FULL_BITFIELD_DECODE_HEIGHT,
+                rewards_epoch_list_fix_height: consensus::REWARDS_EPOCH_LIST_FIX_HEIGHT,
+                encrypted_content_activation_height: consensus::ENCRYPTED_CONTENT_ACTIVATION_HEIGHT,
+                epoch_state_reorg_activation_height: consensus::EPOCH_STATE_REORG_ACTIVATION_HEIGHT,
 
                 // Gossip mesh: universal config for all network sizes.
                 // mesh_n=12 keeps all peers in eager-push for networks ≤24 (mesh_n_high),
@@ -167,6 +172,11 @@ impl NetworkParams {
                 // under the old (legacy) scheduler before the fix engages.
                 inc_i_026_scheduler_activation_height: 0,
                 fork_id_activation_height: 0,
+                // Testnet: all features active from genesis (clean chain)
+                full_bitfield_decode_height: 0,
+                rewards_epoch_list_fix_height: 0,
+                encrypted_content_activation_height: 0,
+                epoch_state_reorg_activation_height: 0,
 
                 // INC-I-015: Gossip mesh sized to max_peers for eager push to ALL
                 // connected peers. At mesh_n=12, blocks reach 12 peers immediately
@@ -244,6 +254,11 @@ impl NetworkParams {
                 // exercised via a dedicated test that overrides this value.
                 inc_i_026_scheduler_activation_height: 0,
                 fork_id_activation_height: 0, // Always active on devnet
+                // Devnet: all features active from genesis
+                full_bitfield_decode_height: 0,
+                rewards_epoch_list_fix_height: 0,
+                encrypted_content_activation_height: 0,
+                epoch_state_reorg_activation_height: 0,
 
                 // Gossip mesh: same universal config as mainnet.
                 // With --no-dht, mesh_n_high=24 keeps all devnet peers in mesh.

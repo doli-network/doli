@@ -228,8 +228,8 @@ impl RpcContext {
         //   pre-REWARDS_EPOCH_LIST_FIX_HEIGHT: legacy sort_all (broken indices)
         //   REWARDS..FULL_BITFIELD: epoch_state.producer_list only (base, no extra)
         //   post-FULL_BITFIELD_DECODE_HEIGHT: [base | extra sorted] (shows ALL producers)
-        let use_full_decode = epoch_start >= doli_core::consensus::FULL_BITFIELD_DECODE_HEIGHT;
-        let use_epoch_list = epoch_start >= doli_core::consensus::REWARDS_EPOCH_LIST_FIX_HEIGHT;
+        let use_full_decode = epoch_start >= self.full_bitfield_decode_height;
+        let use_epoch_list = epoch_start >= self.rewards_epoch_list_fix_height;
         let sorted_producers: Vec<(crypto::PublicKey, bool)> = if use_full_decode {
             // Full decode: [base | extra sorted] — shows all producers
             if let (Some(ref sdb), Some(ref ps)) = (&self.state_db, &self.producer_set) {

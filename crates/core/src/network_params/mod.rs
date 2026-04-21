@@ -176,6 +176,29 @@ pub struct NetworkParams {
     /// Mainnet/Testnet: set to a future height before release. Devnet: 0 (always active).
     pub fork_id_activation_height: u64,
 
+    /// Height at which bitfield decoder switches to [base | extra sorted] (full decode).
+    /// Before: only epoch_state.producer_list indices decoded (base).
+    /// After: ALL indices including mid-epoch activated producers (base + extra).
+    /// Mainnet: 14,000. Testnet/Devnet: 0 (active from genesis).
+    pub full_bitfield_decode_height: u64,
+
+    /// Height at which epoch reward bitfield uses epoch_state.producer_list for decoding.
+    /// Before: decodes with active_producers_at_height (all active, broken indices).
+    /// After: decodes with epoch_state.producer_list (attestation-filtered, same as encoder).
+    /// Mainnet: 13,320. Testnet/Devnet: 0 (active from genesis).
+    pub rewards_epoch_list_fix_height: u64,
+
+    /// Height at which new NFT outputs are rejected in favor of EncryptedContent.
+    /// Before: OutputType::NFT accepted. After: only EncryptedContent accepted.
+    /// Mainnet: 37,500. Testnet/Devnet: 0 (active from genesis).
+    pub encrypted_content_activation_height: u64,
+
+    /// INC-I-040: Height at which execute_reorg restores epoch_state from undo data.
+    /// Before: reorg skips epoch_state → stale attestation accumulators → wrong scheduling.
+    /// After: reorg restores epoch_state (matching rollback_one_block behavior).
+    /// Mainnet: 44,246. Testnet/Devnet: 0 (active from genesis).
+    pub epoch_state_reorg_activation_height: u64,
+
     // === Gossip mesh ===
     /// Target number of peers in gossipsub mesh per topic
     pub mesh_n: usize,

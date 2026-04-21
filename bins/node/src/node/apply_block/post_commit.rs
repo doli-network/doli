@@ -25,7 +25,8 @@ impl Node {
             // After FULL_BITFIELD_DECODE_HEIGHT: decode ALL indices (base + extra)
             // so filtered producers can re-enter via 3-epoch lookback.
             // Before: only base indices (epoch_state.producer_list.len()).
-            let use_full_decode = height >= doli_core::consensus::FULL_BITFIELD_DECODE_HEIGHT;
+            let use_full_decode =
+                height >= self.config.network.params().full_bitfield_decode_height;
             let base_len = self.epoch_state.producer_list.len();
 
             // Build full decode list [base | extra sorted] when needed

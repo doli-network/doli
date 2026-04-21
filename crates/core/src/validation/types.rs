@@ -156,6 +156,8 @@ pub struct ValidationContext {
     pub expected_fork_id: crypto::Hash,
     /// Height at which fork_id enforcement activates.
     pub fork_id_activation_height: u64,
+    /// Height at which new NFT outputs are rejected in favor of EncryptedContent.
+    pub encrypted_content_activation_height: u64,
 }
 
 impl ValidationContext {
@@ -188,7 +190,15 @@ impl ValidationContext {
             inc_i_026_scheduler_activation_height: u64::MAX,
             expected_fork_id: crypto::Hash::ZERO,
             fork_id_activation_height: u64::MAX,
+            encrypted_content_activation_height: u64::MAX,
         }
+    }
+
+    /// Set the encrypted content activation height (see field doc).
+    #[must_use]
+    pub fn with_encrypted_content_activation_height(mut self, height: u64) -> Self {
+        self.encrypted_content_activation_height = height;
+        self
     }
 
     /// Set the INC-I-026 scheduler activation height (see field doc).

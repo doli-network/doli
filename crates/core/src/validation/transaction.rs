@@ -381,10 +381,10 @@ pub(super) fn validate_outputs(
                         i, activation, ctx.current_height
                     )));
                 }
-                if ctx.current_height >= crate::consensus::ENCRYPTED_CONTENT_ACTIVATION_HEIGHT {
+                if ctx.current_height >= ctx.encrypted_content_activation_height {
                     return Err(ValidationError::InvalidTransaction(format!(
                         "[ERRTX-EC010] New NFT outputs rejected after h={} — use EncryptedContent",
-                        crate::consensus::ENCRYPTED_CONTENT_ACTIVATION_HEIGHT
+                        ctx.encrypted_content_activation_height
                     )));
                 }
                 if output.extra_data.is_empty() {
@@ -556,11 +556,10 @@ pub(super) fn validate_outputs(
             }
             OutputType::EncryptedContent => {
                 // Activation gate: reject before ENCRYPTED_CONTENT_ACTIVATION_HEIGHT
-                if ctx.current_height < crate::consensus::ENCRYPTED_CONTENT_ACTIVATION_HEIGHT {
+                if ctx.current_height < ctx.encrypted_content_activation_height {
                     return Err(ValidationError::InvalidTransaction(format!(
                         "[ERRTX-EC000] EncryptedContent not active until h={}, current h={}",
-                        crate::consensus::ENCRYPTED_CONTENT_ACTIVATION_HEIGHT,
-                        ctx.current_height
+                        ctx.encrypted_content_activation_height, ctx.current_height
                     )));
                 }
                 // Encrypted content: extra_data must contain at minimum
