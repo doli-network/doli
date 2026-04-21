@@ -166,6 +166,12 @@ pub(crate) enum Commands {
         /// Hash of the trusted checkpoint block (must match --checkpoint-height).
         #[arg(long)]
         checkpoint_hash: Option<String>,
+
+        /// Start in recovery mode — drop all inbound blocks from first network event.
+        /// Used during seed checkpoint restore to prevent fork block poisoning.
+        /// Exit recovery mode via RPC: exitRecoveryMode
+        #[arg(long)]
+        recovery_mode: bool,
     },
 
     /// Initialize a new data directory

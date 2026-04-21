@@ -175,6 +175,7 @@ async fn main() -> Result<()> {
             archive_to,
             checkpoint_height,
             checkpoint_hash,
+            recovery_mode,
         }) => {
             if bootnode {
                 // Bootnode standalone mode: UDP discovery only, no libp2p/sync/storage
@@ -223,6 +224,7 @@ async fn main() -> Result<()> {
                     archive_to,
                     checkpoint_height,
                     checkpoint_hash,
+                    recovery_mode,
                 )
                 .await?;
             }
@@ -341,6 +343,7 @@ async fn main() -> Result<()> {
                 None,  // archive_to
                 None,  // checkpoint_height
                 None,  // checkpoint_hash
+                false, // recovery_mode
             )
             .await?;
         }

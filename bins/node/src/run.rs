@@ -41,6 +41,7 @@ pub(crate) async fn run_node(
     archive_to: Option<PathBuf>,
     checkpoint_height: Option<u64>,
     checkpoint_hash: Option<String>,
+    recovery_mode: bool,
 ) -> Result<()> {
     // Expand tilde in all paths (shell expansion doesn't happen in Rust)
     let data_dir = expand_tilde_path(data_dir);
@@ -483,6 +484,14 @@ pub(crate) async fn run_node(
         Some(shutdown_flag_for_node),
     )
     .await?;
+
+    // Set recovery mode BEFORE start_network() to close the F5 race window
+    // (P2P starts before RPC — blocks would be applied before operator can call enterRecoveryMode)
+    if recovery_mode {
+        node.recovery_mode
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        warn!("[RECOVERY] Starting in recovery mode — all inbound blocks will be dropped until exitRecoveryMode RPC is called");
+    }
 
     // EpochState is loaded from persisted RocksDB keys in init.rs. The epoch
     // boundary derive_at_boundary() call in post_commit keeps it correct.

@@ -250,13 +250,18 @@ impl RpcContext {
     }
 
     /// Exit recovery mode — resume normal block and snap sync processing.
+    ///
+    /// Note: fork_block_cache and rejected_fork_tips live on the Node struct
+    /// (not accessible from RpcContext). A restart is recommended to clear any
+    /// cached fork blocks that may have accumulated during recovery.
     pub(super) async fn exit_recovery_mode(&self) -> Result<Value, RpcError> {
         self.recovery_mode.store(false, Ordering::Relaxed);
         info!("[RECOVERY] Recovery mode DEACTIVATED via RPC — normal operation resumed");
+        info!("[RECOVERY] Recommend restarting the node to clear any cached fork blocks");
 
         Ok(serde_json::json!({
             "status": "recovery_mode_inactive",
-            "message": "Recovery mode deactivated. Normal block and snap sync processing resumed."
+            "message": "Recovery mode deactivated. Normal block and snap sync processing resumed. Recommend restarting the node to clear any cached fork blocks."
         }))
     }
 }
