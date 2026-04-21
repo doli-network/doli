@@ -209,15 +209,7 @@ impl HardForkSchedule {
         let mut schedule = Self::new();
         match network {
             doli_core::Network::Mainnet => {
-                // EPOCH_SNAPSHOT_HF — INC-I-034 / M-Choice1.
-                // Activated at h=43262.
-                schedule.add(HardForkInfo {
-                    activation_height: 43_262,
-                    min_version: "6.14.11".to_string(),
-                    consensus_changes: vec![
-                        "EpochState state root inclusion (M-Choice1)".to_string()
-                    ],
-                });
+                // Mainnet genesis reset — no hard forks needed (all features from genesis)
                 // REWARDS_EPOCH_LIST_FIX — epoch 37 boundary (h=13320).
                 // NOT in HardForkSchedule: adding an entry changes fork_id immediately
                 // (current_fork_id uses u64::MAX), which breaks rolling deploy.
@@ -451,14 +443,22 @@ mod m_choice1_epoch_snapshot_hf_tests {
             let entry_opt = find_epoch_snapshot_entry(&schedule);
 
             match network {
-                doli_core::Network::Mainnet | doli_core::Network::Testnet => {
+                doli_core::Network::Mainnet => {
+                    // Mainnet genesis reset — no HF entries needed (all features from genesis)
+                    // Entry is optional; if present, activation_height must be > 0
+                    if let Some(entry) = entry_opt {
+                        assert!(
+                            entry.activation_height > 0,
+                            "M-Choice1: Mainnet EPOCH_SNAPSHOT_HF activation_height must be > 0",
+                        );
+                    }
+                }
+                doli_core::Network::Testnet => {
                     let entry = entry_opt.unwrap_or_else(|| {
                         panic!(
                             "M-Choice1: HardForkSchedule::for_network({:?}) MUST contain \
                              an EPOCH_SNAPSHOT_HF entry whose consensus_changes mention \
                              both an EpochState/EpochSnapshot marker and 'state root'. \
-                             Spec: specs/scheduler-state-architecture.md, \
-                             'State-root inclusion (timing: SAME HF — convergent)'. \
                              Schedule currently has {} entries: {:#?}",
                             network,
                             schedule.all().len(),
@@ -468,8 +468,7 @@ mod m_choice1_epoch_snapshot_hf_tests {
 
                     assert!(
                         entry.activation_height > 0,
-                        "M-Choice1: {:?} EPOCH_SNAPSHOT_HF activation_height must be > 0",
-                        network
+                        "M-Choice1: Testnet EPOCH_SNAPSHOT_HF activation_height must be > 0",
                     );
                 }
                 doli_core::Network::Devnet => {
@@ -501,12 +500,10 @@ mod m_choice1_epoch_snapshot_hf_tests {
     #[test]
     fn test_m_choice1_fork_id_changes_at_activation() {
         let mainnet_schedule = HardForkSchedule::for_network(doli_core::Network::Mainnet);
-        let entry = find_epoch_snapshot_entry(&mainnet_schedule).unwrap_or_else(|| {
-            panic!(
-                "M-Choice1: cannot run fork_id transition test — Mainnet schedule \
-                 is missing the EPOCH_SNAPSHOT_HF entry. Test 4 should fail first."
-            )
-        });
+        let entry = match find_epoch_snapshot_entry(&mainnet_schedule) {
+            Some(e) => e,
+            None => return, // No HF entry (genesis reset) — test not applicable
+        };
         let activation = entry.activation_height;
         assert!(activation > 0, "fixture sanity: activation must be > 0");
 

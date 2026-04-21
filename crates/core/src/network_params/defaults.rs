@@ -86,11 +86,11 @@ impl NetworkParams {
                 // any node running <6.7.8 from producing past activation.
                 inc_i_026_scheduler_activation_height: 0,
                 fork_id_activation_height: 0,
-                // Per-network activation heights (mainnet preserves original values)
-                full_bitfield_decode_height: consensus::FULL_BITFIELD_DECODE_HEIGHT,
-                rewards_epoch_list_fix_height: consensus::REWARDS_EPOCH_LIST_FIX_HEIGHT,
-                encrypted_content_activation_height: consensus::ENCRYPTED_CONTENT_ACTIVATION_HEIGHT,
-                epoch_state_reorg_activation_height: consensus::EPOCH_STATE_REORG_ACTIVATION_HEIGHT,
+                // Mainnet genesis reset — all features active from genesis
+                full_bitfield_decode_height: 0,
+                rewards_epoch_list_fix_height: 0,
+                encrypted_content_activation_height: 0,
+                epoch_state_reorg_activation_height: 0,
 
                 // Gossip mesh: universal config for all network sizes.
                 // mesh_n=12 keeps all peers in eager-push for networks ≤24 (mesh_n_high),
