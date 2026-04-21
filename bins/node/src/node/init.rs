@@ -1,5 +1,187 @@
 use super::*;
 
+/// Initialize the UTXO set from disk, reconciling `utxo_store/` against `state_db`.
+///
+/// Called by `Node::new` at startup. Kept as a free function so integration tests
+/// can exercise the startup init logic in isolation (see
+/// `bins/node/tests/inc_i_027_utxo_restore_selfheal.rs`).
+///
+/// ## Behavior
+///
+/// `state_db` is always authoritative — it holds the canonical UTXO set inside its
+/// own column family and is carried in every guardian checkpoint. `utxo_store/` is
+/// a separate RocksDB cache that must stay in lockstep with `state_db`.
+///
+/// Resolution matrix:
+///
+/// | `utxo_store` state | Action |
+/// |---|---|
+/// | Cannot open | Fall back to in-memory, migrate from `state_db` |
+/// | Empty, `state_db` empty | Empty store (genesis / fresh install) |
+/// | Empty, `state_db` non-empty | Migrate from `state_db` (first boot after upgrade) |
+/// | Non-empty, `len` matches `state_db` | Use as-is (normal steady state) |
+/// | Non-empty, `len` differs from `state_db` | **INC-I-027 self-heal**: clear and rebuild from `state_db` |
+///
+/// ## INC-I-027 — guardian-restore self-heal
+///
+/// Pre-fix, the non-empty branch used `utxo_store/` as-is with no comparison against
+/// `state_db`. When an operator restored `state_db + blocks` from a guardian
+/// checkpoint but left `utxo_store/` in place (the default, because the guardian
+/// never snapshotted it), the node started with mismatched local state:
+/// `state_db` at the restored height, `utxo_store/` at the pre-restore height.
+/// The node reported the correct height on RPC but silently operated on stale
+/// UTXOs, making it vulnerable to bad reorgs (2026-04-09 mainnet: ai1/ai2 reorged
+/// forward within 15 seconds of restore).
+///
+/// The fix detects `store.len() != state_db.utxo_len()`, clears `utxo_store/`, and
+/// re-migrates from `state_db.iter_utxos()` — the same authoritative loop already
+/// used for empty stores. Triggers only when the two stores are already inconsistent;
+/// zero cost in steady state.
+pub fn init_utxo_set(data_dir: &std::path::Path, state_db: &StateDb) -> UtxoSet {
+    let utxo_rocks_path = data_dir.join("utxo_store");
+    match UtxoSet::open_rocksdb(&utxo_rocks_path) {
+        Ok(mut store) => {
+            let state_len = state_db.utxo_len();
+            let store_len = store.len();
+
+            if store.is_empty() && state_len > 0 {
+                info!(
+                    "[UTXO] Migrating {} UTXOs from StateDb to RocksDB...",
+                    state_len
+                );
+                for (outpoint, entry) in state_db.iter_utxos() {
+                    let _ = store.insert(outpoint, entry);
+                }
+                info!(
+                    "[UTXO] Migration complete: {} UTXOs in RocksDB",
+                    store.len()
+                );
+            } else if !store.is_empty() && store_len != state_len {
+                // INC-I-027 self-heal: detected divergence between the two local
+                // stores. This is the guardian-restore gap — operator restored
+                // state_db from a checkpoint but left the stale utxo_store in place.
+                // state_db is authoritative; rebuild utxo_store from it.
+                warn!(
+                    "[UTXO] INC-I-027: utxo_store mismatch with state_db \
+                     (utxo_store={} state_db={}) — rebuilding from state_db (guardian-restore self-heal)",
+                    store_len, state_len
+                );
+                store.clear();
+                for (outpoint, entry) in state_db.iter_utxos() {
+                    let _ = store.insert(outpoint, entry);
+                }
+                info!(
+                    "[UTXO] INC-I-027: rebuild complete: {} UTXOs in RocksDB",
+                    store.len()
+                );
+            } else if !store.is_empty() {
+                info!("[UTXO] RocksDB store: {} UTXOs", store_len);
+            }
+            store
+        }
+        Err(e) => {
+            warn!(
+                "[UTXO] Failed to open RocksDB store: {}. Falling back to in-memory.",
+                e
+            );
+            let mut mem = storage::InMemoryUtxoStore::new();
+            for (outpoint, entry) in state_db.iter_utxos() {
+                mem.insert(outpoint, entry);
+            }
+            UtxoSet::InMemory(mem)
+        }
+    }
+}
+
+/// Detect and recover from block body gaps in the recent chain.
+///
+/// Called during `Node::new` when the tip block exists in the block store.
+/// Header-first sync can leave gaps (headers present, bodies missing).
+/// If the node restarts with such gaps, rollback fails ("no block at height N").
+pub fn recover_body_gaps(
+    chain_state: &mut ChainState,
+    block_store: &BlockStore,
+    state_db: &StateDb,
+    utxo_set: &mut UtxoSet,
+) -> Result<(), anyhow::Error> {
+    let check_depth = 100u64.min(chain_state.best_height);
+    let mut first_gap = None;
+    for h in (chain_state.best_height.saturating_sub(check_depth)..=chain_state.best_height).rev() {
+        if h == 0 {
+            continue;
+        }
+        if block_store.get_block_by_height(h)?.is_none() {
+            first_gap = Some(h);
+            break;
+        }
+    }
+
+    let gap_height = match first_gap {
+        Some(h) => h,
+        None => return Ok(()),
+    };
+
+    let mut target_height = gap_height.saturating_sub(1);
+    while target_height > 0 {
+        if block_store.get_block_by_height(target_height)?.is_some() {
+            break;
+        }
+        target_height -= 1;
+    }
+
+    let undo_count = chain_state.best_height - target_height;
+    warn!(
+        "[STARTUP] Body gap at h={} (tip={}). Undoing {} blocks to h={}.",
+        gap_height, chain_state.best_height, undo_count, target_height
+    );
+
+    // Collect ALL undo data before mutating the UTXO set.
+    // The UTXO set is RocksDB-backed — each remove/insert is immediately
+    // persisted. If we mutate first and then discover a missing undo,
+    // the partial mutations are already committed and cannot be rolled back.
+    let mut undos = Vec::with_capacity(undo_count as usize);
+    for h in (target_height + 1..=chain_state.best_height).rev() {
+        match state_db.get_undo(h) {
+            Some(undo) => undos.push(undo),
+            None => {
+                warn!(
+                    "[STARTUP] No undo data at h={} — rebuilding UTXO set from state_db \
+                     (avoiding partial mutation leak)",
+                    h
+                );
+                utxo_set.clear();
+                for (outpoint, entry) in state_db.iter_utxos() {
+                    let _ = utxo_set.insert(outpoint, entry);
+                }
+                return Ok(());
+            }
+        }
+    }
+
+    for undo in &undos {
+        for outpoint in &undo.created_utxos {
+            let _ = utxo_set.remove(outpoint);
+        }
+        for (outpoint, entry) in &undo.spent_utxos {
+            let _ = utxo_set.insert(*outpoint, entry.clone());
+        }
+    }
+
+    if let Some(blk) = block_store.get_block_by_height(target_height)? {
+        chain_state.best_height = target_height;
+        chain_state.best_hash = blk.hash();
+        chain_state.best_slot = blk.header.slot;
+        state_db.put_chain_state(chain_state)?;
+        info!(
+            "[STARTUP] Recovered to h={} after undoing {} body-gap blocks. \
+             Sync will fill the gaps.",
+            target_height, undo_count
+        );
+    }
+
+    Ok(())
+}
+
 impl Node {
     /// Create a new node
     ///
@@ -151,47 +333,10 @@ impl Node {
             cs
         };
 
-        // Load UTXOs: use RocksDB-backed store if available, fall back to in-memory.
-        // RocksDB-backed: UTXOs stay on disk, hot entries cached by RocksDB block cache.
-        // Scales to millions of UTXOs without proportional RAM growth.
-        // In-memory: legacy fallback for testing and migration.
-        let utxo_rocks_path = config.data_dir.join("utxo_store");
-        // Always use RocksDB UTXO store (Phase 2: eliminates RAM bottleneck)
-        let utxo_set = {
-            // RocksDB mode: open or migrate
-            match UtxoSet::open_rocksdb(&utxo_rocks_path) {
-                Ok(mut store) => {
-                    // If RocksDB store is empty but StateDb has UTXOs, migrate
-                    if store.is_empty() && state_db.utxo_len() > 0 {
-                        info!(
-                            "[UTXO] Migrating {} UTXOs from StateDb to RocksDB...",
-                            state_db.utxo_len()
-                        );
-                        for (outpoint, entry) in state_db.iter_utxos() {
-                            let _ = store.insert(outpoint, entry);
-                        }
-                        info!(
-                            "[UTXO] Migration complete: {} UTXOs in RocksDB",
-                            store.len()
-                        );
-                    } else if !store.is_empty() {
-                        info!("[UTXO] RocksDB store: {} UTXOs", store.len());
-                    }
-                    store
-                }
-                Err(e) => {
-                    warn!(
-                        "[UTXO] Failed to open RocksDB store: {}. Falling back to in-memory.",
-                        e
-                    );
-                    let mut mem = storage::InMemoryUtxoStore::new();
-                    for (outpoint, entry) in state_db.iter_utxos() {
-                        mem.insert(outpoint, entry);
-                    }
-                    UtxoSet::InMemory(mem)
-                }
-            }
-        };
+        // Load UTXOs: scales to millions of entries via RocksDB-backed store,
+        // with startup self-heal against state_db (INC-I-027 guardian-restore fix).
+        // See `init_utxo_set` doc comment for the full behavior matrix.
+        let utxo_set = init_utxo_set(&config.data_dir, &state_db);
         let utxo_set = Arc::new(RwLock::new(utxo_set));
 
         // Validate genesis hash against embedded chainspec (detect state_db corruption).
@@ -272,75 +417,10 @@ impl Node {
         if chain_state.best_height > 0 {
             match block_store.get_block(&chain_state.best_hash) {
                 Ok(Some(_tip_block)) => {
-                    // Tip hash exists in store — verify recent blocks have bodies.
-                    // Header-first sync can leave gaps (headers without bodies).
-                    // If the node restarts with gaps, rollback fails ("no block at height N")
-                    // and the node gets stuck. Fix: undo back to the last complete block.
-                    let check_depth = 100u64.min(chain_state.best_height);
-                    let mut first_gap = None;
-                    for h in (chain_state.best_height.saturating_sub(check_depth)
-                        ..=chain_state.best_height)
-                        .rev()
-                    {
-                        if h == 0 {
-                            continue;
-                        }
-                        if block_store.get_block_by_height(h)?.is_none() {
-                            first_gap = Some(h);
-                            break;
-                        }
-                    }
-
-                    if let Some(gap_height) = first_gap {
-                        // Find the last contiguous complete block below the gap
-                        let mut target_height = gap_height.saturating_sub(1);
-                        while target_height > 0 {
-                            if block_store.get_block_by_height(target_height)?.is_some() {
-                                break;
-                            }
-                            target_height -= 1;
-                        }
-
-                        let undo_count = chain_state.best_height - target_height;
-                        warn!(
-                            "[STARTUP] Body gap at h={} (tip={}). Undoing {} blocks to h={}.",
-                            gap_height, chain_state.best_height, undo_count, target_height
-                        );
-
-                        // Apply undos backward from best_height down to target_height+1
-                        {
-                            let mut utxo = utxo_set.write().await;
-                            for h in (target_height + 1..=chain_state.best_height).rev() {
-                                if let Some(undo) = state_db.get_undo(h) {
-                                    for outpoint in &undo.created_utxos {
-                                        let _ = utxo.remove(outpoint);
-                                    }
-                                    for (outpoint, entry) in &undo.spent_utxos {
-                                        let _ = utxo.insert(*outpoint, entry.clone());
-                                    }
-                                } else {
-                                    error!(
-                                        "[STARTUP] No undo data for h={} — manual wipe required.",
-                                        h
-                                    );
-                                    break;
-                                }
-                            }
-                        }
-
-                        // Update chain state to the target block
-                        if let Some(blk) = block_store.get_block_by_height(target_height)? {
-                            chain_state.best_height = target_height;
-                            chain_state.best_hash = blk.hash();
-                            chain_state.best_slot = blk.header.slot;
-                            state_db.put_chain_state(&chain_state)?;
-                            info!(
-                                "[STARTUP] Recovered to h={} after undoing {} body-gap blocks. \
-                                 Sync will fill the gaps.",
-                                target_height, undo_count
-                            );
-                        }
-                    }
+                    // Tip hash exists — check for body gaps and recover if needed.
+                    // Delegated to the extracted helper (INC-I-028).
+                    let mut utxo = utxo_set.write().await;
+                    recover_body_gaps(&mut chain_state, &block_store, &state_db, &mut utxo)?;
                 }
                 Ok(None) => {
                     if chain_state.is_snap_synced() {
