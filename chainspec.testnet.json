@@ -3,8 +3,8 @@
   "id": "testnet",
   "network": "Testnet",
   "genesis": {
-    "timestamp": 1775916798,
-    "message": "DOLI Testnet v200 Genesis 2026-04-11",
+    "timestamp": 1776722017,
+    "message": "DOLI Testnet v201 Genesis 2026-04-20",
     "initial_reward": 100000000
   },
   "consensus": {

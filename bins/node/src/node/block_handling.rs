@@ -92,17 +92,32 @@ impl Node {
                         // via the periodic task (with backoff, cumulative cap, etc.).
                         // FORK_CHOICE (direct reorg) was removed: 397 attempts,
                         // 1 success, 396 failures — net negative.
-                        info!(
-                            "[FORK_GUARD] Dropping fork block {} at h={} slot {} — keeping canonical slot {}",
-                            &block_hash.to_hex()[..16],
-                            fork_block_height,
-                            block.header.slot,
-                            canonical.header.slot
-                        );
-                        self.sync_manager
-                            .write()
-                            .await
-                            .note_orphan_gossip_block(fork_block_height, block.header.slot);
+                        //
+                        // INC-I-040: If the dropped block has a BETTER (lower) slot,
+                        // WE are on the losing fork. Signal stuck_fork directly for
+                        // immediate recovery via resolve_shallow_fork on the next
+                        // periodic tick (~1s), instead of routing through
+                        // note_orphan_gossip_block which had an unreachable signal path.
+                        if block.header.slot < canonical.header.slot {
+                            info!(
+                                "[FORK_GUARD] Better block dropped (slot {} < {}) at h={} — \
+                                 signaling fork recovery",
+                                block.header.slot, canonical.header.slot, fork_block_height
+                            );
+                            self.sync_manager.write().await.signal_stuck_fork();
+                        } else {
+                            info!(
+                                "[FORK_GUARD] Dropping fork block {} at h={} slot {} — keeping canonical slot {}",
+                                &block_hash.to_hex()[..16],
+                                fork_block_height,
+                                block.header.slot,
+                                canonical.header.slot
+                            );
+                            self.sync_manager
+                                .write()
+                                .await
+                                .note_orphan_gossip_block(fork_block_height, block.header.slot);
+                        }
                         return Ok(());
                     }
                 }
@@ -114,40 +129,32 @@ impl Node {
                 //    Request h+1 from peer → apply when it arrives.
                 // B) Fork orphan: we have a DIFFERENT block at h (fork block).
                 //    The orphan's prev_hash points to the canonical h, not ours.
-                //    Request h from peer → canonical arrives → FORK_CHOICE
-                //    replaces our fork block (lower slot wins) → orphan from
-                //    cache chains on top. One request, one reorg, resolved.
-                let need_height = if let Ok(Some(our_block)) =
+                //    INC-I-040: Signal stuck_fork directly instead of requesting
+                //    the canonical block (FORK_GUARD would drop it anyway since
+                //    FORK_CHOICE was removed in b430959a). resolve_shallow_fork
+                //    handles the rollback safely on the next periodic tick.
+                let is_fork_orphan = if let Ok(Some(our_block)) =
                     self.block_store.get_block_by_height(current_height)
                 {
-                    if our_block.hash() != block.header.prev_hash {
-                        // Case B: fork — request the canonical block at OUR height
-                        info!(
-                            "[ORPHAN_FORK_CHASE] Fork at h={}: our={:.8} != orphan prev={:.8}. Requesting canonical h={} from {}",
-                            current_height, our_block.hash(), block.header.prev_hash,
-                            current_height, source_peer
-                        );
-                        current_height
-                    } else {
-                        // Case A: normal orphan — request next height
-                        current_height + 1
-                    }
+                    our_block.hash() != block.header.prev_hash
                 } else {
-                    current_height + 1
+                    false
                 };
 
-                if let Some(ref network) = self.network {
-                    if need_height == current_height {
-                        info!(
-                            "[ORPHAN_FORK_CHASE] Requesting h={} from {} (fork resolution for orphan {:.8} at slot {})",
-                            need_height, source_peer, block_hash, block.header.slot
-                        );
-                    } else {
-                        info!(
-                            "[ORPHAN_CHASE] Requesting h={} from {} (orphan block {:.8} at slot {})",
-                            need_height, source_peer, block_hash, block.header.slot
-                        );
-                    }
+                if is_fork_orphan {
+                    info!(
+                        "[ORPHAN_FORK] Fork at h={}: our tip != orphan prev={:.8}. \
+                         Signaling fork recovery (slot {})",
+                        current_height, block.header.prev_hash, block.header.slot
+                    );
+                    self.sync_manager.write().await.signal_stuck_fork();
+                } else if let Some(ref network) = self.network {
+                    // Case A: normal orphan — request next height
+                    let need_height = current_height + 1;
+                    info!(
+                        "[ORPHAN_CHASE] Requesting h={} from {} (orphan block {:.8} at slot {})",
+                        need_height, source_peer, block_hash, block.header.slot
+                    );
                     let request = SyncRequest::GetBlockByHeight {
                         height: need_height,
                     };
@@ -591,6 +598,33 @@ impl Node {
                     }
                 }
 
+                // INC-I-040: Restore epoch_state from undo snapshot at target_height + 1.
+                // The snapshot was taken BEFORE that block was applied = state AT target_height.
+                // Without this, execute_reorg leaves stale attestation accumulators from
+                // the OLD fork → wrong derive_at_boundary → wrong scheduling → persistent fork.
+                // Height-gated: consensus-breaking change (different scheduling after reorg).
+                if current_height >= doli_core::consensus::EPOCH_STATE_REORG_ACTIVATION_HEIGHT {
+                    let first_undo = self.state_db.get_undo(target_height + 1).unwrap();
+                    if let Some(ref epoch_bytes) = first_undo.epoch_state_snapshot {
+                        match doli_core::EpochState::deserialize(epoch_bytes) {
+                            Ok(restored) => {
+                                info!(
+                                    "[REORG] Restored epoch state from undo: epoch={} producers={} active={}",
+                                    restored.epoch, restored.producer_list.len(), restored.active_list.len()
+                                );
+                                self.epoch_state = restored;
+                            }
+                            Err(e) => {
+                                warn!("[REORG] Failed to deserialize epoch state from undo: {} — rebuilding", e);
+                                self.rebuild_epoch_state_from_blocks().await;
+                            }
+                        }
+                    } else {
+                        info!("[REORG] No epoch state in undo (pre-upgrade block) — rebuilding");
+                        self.rebuild_epoch_state_from_blocks().await;
+                    }
+                }
+
                 // Update chain state
                 {
                     let mut state = self.chain_state.write().await;
@@ -648,6 +682,11 @@ impl Node {
                     let mut producers = self.producer_set.write().await;
                     self.rebuild_producer_set_from_blocks(&mut producers, target_height)?;
                 }
+
+                // Legacy path: rebuild epoch_state from blocks (same activation gate).
+                if current_height >= doli_core::consensus::EPOCH_STATE_REORG_ACTIVATION_HEIGHT {
+                    self.rebuild_epoch_state_from_blocks().await;
+                }
             }
 
             // Rebuild producer liveness map from canonical block_store.
@@ -669,6 +708,12 @@ impl Node {
                 self.state_db
                     .atomic_replace(&state, &producers, utxo_pairs.into_iter())
                     .map_err(|e| anyhow::anyhow!("Reorg StateDb atomic_replace failed: {}", e))?;
+            }
+
+            // Persist epoch_state to DB after atomic_replace (same gate).
+            if current_height >= doli_core::consensus::EPOCH_STATE_REORG_ACTIVATION_HEIGHT {
+                let epoch_bytes = self.epoch_state.serialize();
+                self.state_db.put_epoch_state(&epoch_bytes);
             }
         } // end if rollback_count > 0
 

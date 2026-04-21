@@ -545,8 +545,14 @@ impl SyncManager {
                     // canonical block destroys good state and creates a real fork
                     // (2026-04-16 N4 h=2566 incident: rollback of slot 2572 →
                     // applied worse slot 2576 → stuck permanently).
+                    //
+                    // INC-I-040: Threshold 30s (not 60s). The outer guard
+                    // (recently_synced) uses 60s. Using 60s here made
+                    // signal_stuck_fork() unreachable (same clock, same threshold
+                    // = tautology). 30s creates a 30-60s window where the fork
+                    // signal can fire.
                     let secs_since_apply = self.network.last_block_applied.elapsed().as_secs();
-                    if secs_since_apply < 60 {
+                    if secs_since_apply < 30 {
                         warn!(
                             "[SYNC] {} orphan gossip blocks (local_h={}, tip_h={}, gap={}) — \
                              last apply {}s ago (< 60s), suppressing rollback. \

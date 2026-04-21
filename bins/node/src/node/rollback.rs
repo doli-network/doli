@@ -237,6 +237,9 @@ impl Node {
                             restored.epoch, restored.producer_list.len(), restored.active_list.len()
                         );
                         self.epoch_state = restored;
+                        // Persist to DB — atomic_replace above doesn't include epoch_state,
+                        // so a crash between here and the next apply_block would lose it.
+                        self.state_db.put_epoch_state(epoch_bytes);
                     }
                     Err(e) => {
                         warn!("[ROLLBACK] Failed to deserialize epoch state from undo: {} — rebuilding", e);

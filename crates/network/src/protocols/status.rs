@@ -42,7 +42,9 @@ pub const STATUS_PROTOCOL: &str = "/doli/status/1.0.0";
 ///       mismatched fork_id are disconnected at handshake — prevents gossip
 ///       waste with incompatible nodes. Backward-compatible: old peers send
 ///       Hash::ZERO (serde default) which is tolerated.
-pub const CURRENT_PROTOCOL_VERSION: u32 = 6;
+///   7 — INC-I-040: EpochState restoration in execute_reorg (h=44750),
+///       timing tautology fix, FORK_GUARD direct recovery signal.
+pub const CURRENT_PROTOCOL_VERSION: u32 = 7;
 
 /// Minimum protocol version accepted from peers.
 ///
@@ -314,12 +316,12 @@ impl request_response::Codec for StatusCodec {
 mod m_choice1_protocol_version_tests {
     use super::*;
 
-    /// Test 6 — protocol version bump for fork_id in status handshake.
+    /// Test 6 — protocol version bump for INC-I-040 fork fixes.
     #[test]
-    fn test_current_protocol_version_is_6() {
+    fn test_current_protocol_version_is_7() {
         assert_eq!(
-            CURRENT_PROTOCOL_VERSION, 6,
-            "CURRENT_PROTOCOL_VERSION must be 6 (v6: fork_id in status handshake)."
+            CURRENT_PROTOCOL_VERSION, 7,
+            "CURRENT_PROTOCOL_VERSION must be 7 (v7: INC-I-040 EpochState reorg + fork recovery)."
         );
     }
 

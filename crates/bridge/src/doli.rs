@@ -169,10 +169,7 @@ impl DoliClient {
     /// Send a raw transaction (hex-encoded).
     pub async fn send_transaction(&self, tx_hex: &str) -> Result<String> {
         let result: serde_json::Value = self
-            .call(
-                "sendTransaction",
-                serde_json::json!({ "tx": tx_hex }),
-            )
+            .call("sendTransaction", serde_json::json!({ "tx": tx_hex }))
             .await?;
         Ok(result
             .get("hash")

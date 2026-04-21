@@ -391,6 +391,13 @@ impl StateDb {
         }
     }
 
+    /// Persist the complete EpochState directly (outside a WriteBatch).
+    /// Used by rollback and reorg paths where atomic_replace has already run.
+    pub fn put_epoch_state(&self, bytes: &[u8]) {
+        let cf = self.db.cf_handle(CF_META).unwrap();
+        let _ = self.db.put_cf(cf, META_EPOCH_STATE, bytes);
+    }
+
     /// Delete the persisted epoch_state (forces rebuild from blocks on next startup).
     pub fn delete_epoch_state(&self) {
         let cf = self.db.cf_handle(CF_META).unwrap();

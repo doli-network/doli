@@ -121,6 +121,15 @@ pub const FULL_BITFIELD_DECODE_HEIGHT: u64 = 14_000;
 /// deployed, and confirmed working. Only then does this gate close NFT plaintext.
 pub const ENCRYPTED_CONTENT_ACTIVATION_HEIGHT: u64 = 37_500;
 
+/// INC-I-040: EpochState restoration in execute_reorg activation height.
+/// Before: execute_reorg skips epoch_state, leaving stale attestation
+/// accumulators → wrong scheduling → persistent fork after any reorg
+/// crossing an epoch boundary.
+/// After: execute_reorg restores epoch_state from undo data (matching
+/// rollback_one_block's existing behavior). Consensus-breaking — changes
+/// which producer is scheduled after a reorg.
+pub const EPOCH_STATE_REORG_ACTIVATION_HEIGHT: u64 = 44_136;
+
 // ==================== Proof of Time Parameters ====================
 
 /// Slot duration in seconds.
