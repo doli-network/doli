@@ -128,7 +128,7 @@ pub const ENCRYPTED_CONTENT_ACTIVATION_HEIGHT: u64 = 37_500;
 /// After: execute_reorg restores epoch_state from undo data (matching
 /// rollback_one_block's existing behavior). Consensus-breaking — changes
 /// which producer is scheduled after a reorg.
-pub const EPOCH_STATE_REORG_ACTIVATION_HEIGHT: u64 = 44_136;
+pub const EPOCH_STATE_REORG_ACTIVATION_HEIGHT: u64 = 44_246;
 
 // ==================== Proof of Time Parameters ====================
 
