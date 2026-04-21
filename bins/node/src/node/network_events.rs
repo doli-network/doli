@@ -27,10 +27,16 @@ impl Node {
         self.sync_manager.write().await.set_peer_connected();
 
         let genesis_hash = self.chain_state.read().await.genesis_hash;
+        let fork_id = self.current_fork_id();
         let status_request = if let Some(ref key) = self.producer_key {
-            StatusRequest::with_producer(self.config.network.id(), genesis_hash, *key.public_key())
+            StatusRequest::with_producer(
+                self.config.network.id(),
+                genesis_hash,
+                fork_id,
+                *key.public_key(),
+            )
         } else {
-            StatusRequest::new(self.config.network.id(), genesis_hash)
+            StatusRequest::new(self.config.network.id(), genesis_hash, fork_id)
         };
 
         if let Some(ref network) = self.network {
@@ -256,6 +262,7 @@ impl Node {
             best_hash: state.best_hash,
             best_slot: state.best_slot,
             producer_pubkey: self.producer_key.as_ref().map(|k| *k.public_key()),
+            fork_id: self.current_fork_id(),
         };
 
         if let Some(ref network) = self.network {

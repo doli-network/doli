@@ -383,16 +383,19 @@ impl Node {
                     );
                     if let Some(ref network) = self.network {
                         let genesis_hash = self.chain_state.read().await.genesis_hash;
+                        let fork_id = self.current_fork_id();
                         let status_request = if let Some(ref key) = self.producer_key {
                             network::protocols::StatusRequest::with_producer(
                                 self.config.network.id(),
                                 genesis_hash,
+                                fork_id,
                                 *key.public_key(),
                             )
                         } else {
                             network::protocols::StatusRequest::new(
                                 self.config.network.id(),
                                 genesis_hash,
+                                fork_id,
                             )
                         };
                         let peer_ids: Vec<_> = {
@@ -545,16 +548,19 @@ impl Node {
 
                 if !peer_ids.is_empty() {
                     let genesis_hash = self.chain_state.read().await.genesis_hash;
+                    let fork_id = self.current_fork_id();
                     let status_request = if let Some(ref key) = self.producer_key {
                         network::protocols::StatusRequest::with_producer(
                             self.config.network.id(),
                             genesis_hash,
+                            fork_id,
                             *key.public_key(),
                         )
                     } else {
                         network::protocols::StatusRequest::new(
                             self.config.network.id(),
                             genesis_hash,
+                            fork_id,
                         )
                     };
 

@@ -431,6 +431,19 @@ pub(super) async fn handle_behaviour_event(
                         return;
                     }
 
+                    // Validate fork identity — disconnect peers with incompatible
+                    // hard fork schedules. Hash::ZERO means old binary (tolerated).
+                    if request.fork_id != crypto::Hash::ZERO && request.fork_id != config.fork_id {
+                        warn!(
+                            "Fork ID mismatch with peer {} (request): theirs={}, ours={} — disconnecting",
+                            peer,
+                            &request.fork_id.to_hex()[..16],
+                            &config.fork_id.to_hex()[..16],
+                        );
+                        let _ = swarm.disconnect_peer_id(peer);
+                        return;
+                    }
+
                     let _ = event_tx
                         .send(NetworkEvent::StatusRequest {
                             peer_id: peer,
@@ -492,6 +505,20 @@ pub(super) async fn handle_behaviour_event(
                                 their_version: response.version,
                             })
                             .await;
+                        let _ = swarm.disconnect_peer_id(peer);
+                        return;
+                    }
+
+                    // Validate fork identity — disconnect peers with incompatible
+                    // hard fork schedules. Hash::ZERO means old binary (tolerated).
+                    if response.fork_id != crypto::Hash::ZERO && response.fork_id != config.fork_id
+                    {
+                        warn!(
+                            "Fork ID mismatch with peer {} (response): theirs={}, ours={} — disconnecting",
+                            peer,
+                            &response.fork_id.to_hex()[..16],
+                            &config.fork_id.to_hex()[..16],
+                        );
                         let _ = swarm.disconnect_peer_id(peer);
                         return;
                     }

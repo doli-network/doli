@@ -60,6 +60,10 @@ pub struct NetworkConfig {
     /// to run Kademlia discovery, but the seed's peer table may be full.
     /// Default: same as max_peers.
     pub bootstrap_slots: usize,
+    /// Fork identity — BLAKE3(genesis_hash || sorted active fork heights).
+    /// Set by the node from `current_fork_id()` at startup. Used to disconnect
+    /// incompatible peers at status handshake before any blocks are exchanged.
+    pub fork_id: Hash,
     /// Enable Discv5 UDP discovery (default: true).
     /// When enabled, runs a UDP service on `discv5_port` for stateless peer
     /// discovery. Discovered peers are fed to libp2p for TCP connections.
@@ -90,6 +94,7 @@ impl NetworkConfig {
             network_id: network.id(),
             genesis_hash,
             no_dht: false,
+            fork_id: Hash::default(),
             peer_cache_path: None,
             // Universal gossipsub mesh (same for all networks)
             mesh_n: 12,

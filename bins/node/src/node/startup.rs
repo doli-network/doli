@@ -143,6 +143,7 @@ impl Node {
         let genesis_hash = self.chain_state.read().await.genesis_hash;
 
         let mut network_config = NetworkConfig::for_network(self.config.network, genesis_hash);
+        network_config.fork_id = self.current_fork_id();
         network_config.listen_addr = listen_addr;
         network_config.bootstrap_nodes = self.config.bootstrap_nodes.clone();
 

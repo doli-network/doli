@@ -37,7 +37,12 @@ pub const STATUS_PROTOCOL: &str = "/doli/status/1.0.0";
 ///   5 — Direct attestation delivery via sync protocol. Nodes with v5+
 ///       can receive DirectAttestation requests. Senders check peer version
 ///       before sending — old peers only get gossip.
-pub const CURRENT_PROTOCOL_VERSION: u32 = 5;
+///   6 — fork_id in status handshake. StatusRequest/StatusResponse now carry
+///       fork_id (BLAKE3 of genesis + active fork heights). Peers with
+///       mismatched fork_id are disconnected at handshake — prevents gossip
+///       waste with incompatible nodes. Backward-compatible: old peers send
+///       Hash::ZERO (serde default) which is tolerated.
+pub const CURRENT_PROTOCOL_VERSION: u32 = 6;
 
 /// Minimum protocol version accepted from peers.
 ///
@@ -70,6 +75,12 @@ pub struct StatusRequest {
     /// Used to discover other producers during bootstrap before blocks are exchanged
     #[serde(default)]
     pub producer_pubkey: Option<PublicKey>,
+    /// Fork identity — BLAKE3(genesis_hash || sorted active fork heights).
+    /// Old binaries omit this field; `#[serde(default)]` deserializes as Hash::ZERO
+    /// which is tolerated (same as pre-fork-id behavior). New-vs-new mismatches
+    /// trigger immediate disconnect at handshake, preventing gossip waste.
+    #[serde(default)]
+    pub fork_id: Hash,
 }
 
 /// Status response
@@ -91,25 +102,35 @@ pub struct StatusResponse {
     /// Used to discover other producers during bootstrap before blocks are exchanged
     #[serde(default)]
     pub producer_pubkey: Option<PublicKey>,
+    /// Fork identity (see StatusRequest::fork_id doc).
+    #[serde(default)]
+    pub fork_id: Hash,
 }
 
 impl StatusRequest {
-    pub fn new(network_id: u32, genesis_hash: Hash) -> Self {
+    pub fn new(network_id: u32, genesis_hash: Hash, fork_id: Hash) -> Self {
         Self {
             version: CURRENT_PROTOCOL_VERSION,
             network_id,
             genesis_hash,
             producer_pubkey: None,
+            fork_id,
         }
     }
 
     /// Create a status request with producer info for bootstrap discovery
-    pub fn with_producer(network_id: u32, genesis_hash: Hash, producer_pubkey: PublicKey) -> Self {
+    pub fn with_producer(
+        network_id: u32,
+        genesis_hash: Hash,
+        fork_id: Hash,
+        producer_pubkey: PublicKey,
+    ) -> Self {
         Self {
             version: CURRENT_PROTOCOL_VERSION,
             network_id,
             genesis_hash,
             producer_pubkey: Some(producer_pubkey),
+            fork_id,
         }
     }
 }
@@ -118,6 +139,7 @@ impl StatusResponse {
     pub fn new(
         network_id: u32,
         genesis_hash: Hash,
+        fork_id: Hash,
         best_height: u64,
         best_hash: Hash,
         best_slot: u32,
@@ -130,6 +152,7 @@ impl StatusResponse {
             best_hash,
             best_slot,
             producer_pubkey: None,
+            fork_id,
         }
     }
 
@@ -137,6 +160,7 @@ impl StatusResponse {
     pub fn with_producer(
         network_id: u32,
         genesis_hash: Hash,
+        fork_id: Hash,
         best_height: u64,
         best_hash: Hash,
         best_slot: u32,
@@ -150,6 +174,7 @@ impl StatusResponse {
             best_hash,
             best_slot,
             producer_pubkey: Some(producer_pubkey),
+            fork_id,
         }
     }
 }
@@ -276,7 +301,7 @@ impl request_response::Codec for StatusCodec {
 // bump). Locked 2026-04-16 as CHOICE 1 = SAME HF.
 //
 // OUTPUT CONTRACT: const CURRENT_PROTOCOL_VERSION: u32
-//   O1: value — MUST equal 4 (Phase-1 bump per M-Choice1)
+//   O1: value — MUST equal 6 (v6: fork_id in status handshake)
 // PATHS: P1 only (compile-time constant)
 // MATRIX: 1 output × 1 path = 1 assertion (Test 6)
 //
@@ -289,33 +314,16 @@ impl request_response::Codec for StatusCodec {
 mod m_choice1_protocol_version_tests {
     use super::*;
 
-    /// Test 6 — Phase-1 protocol version bump.
-    ///
-    /// The state-root formula can change at EPOCH_SNAPSHOT_HF's activation
-    /// height. Binaries that carry the new schedule entry and the new
-    /// `compute_state_root_with_epoch_state` function MUST advertise a bumped
-    /// `CURRENT_PROTOCOL_VERSION` so peer-scoring can observe which binaries
-    /// are capable of handling the transition (v3 binaries lack the function
-    /// AND the schedule entry — they'd silently fork at activation if they
-    /// connected to a v4 mesh that crosses the gate).
+    /// Test 6 — protocol version bump for fork_id in status handshake.
     #[test]
-    fn test_m_choice1_current_protocol_version_is_4() {
+    fn test_current_protocol_version_is_6() {
         assert_eq!(
-            CURRENT_PROTOCOL_VERSION, 5,
-            "M-Choice1: CURRENT_PROTOCOL_VERSION must be 5 (bumped for \
-             DirectAttestation protocol support). Per CLAUDE.md 'After Every \
-             Modification' step 3."
+            CURRENT_PROTOCOL_VERSION, 6,
+            "CURRENT_PROTOCOL_VERSION must be 6 (v6: fork_id in status handshake)."
         );
     }
 
     /// Test 7 — MIN_PEER_PROTOCOL_VERSION held defensively at 1.
-    ///
-    /// Phase-1 is a pre-activation rollout — EPOCH_SNAPSHOT_HF activation is
-    /// far-future. Raising MIN_PEER_PROTOCOL_VERSION now would immediately
-    /// partition v3 peers (INC-I-026 rollout cohort) from the network even
-    /// though they remain wire-compatible until the HF boundary. Hold at 1;
-    /// bump to 4 (or higher) only AFTER mainnet crosses the activation
-    /// height per spec Phase 2 cutover.
     #[test]
     fn test_m_choice1_min_peer_protocol_version_held_at_1() {
         assert_eq!(
