@@ -139,6 +139,15 @@ impl UtxoSet {
         self.len() as u64
     }
 
+    /// Iterate all UTXOs as (Outpoint, UtxoEntry) pairs.
+    /// Used by atomic_replace to persist the authoritative UTXO state to StateDb.
+    pub fn iter_all(&self) -> Vec<(Outpoint, UtxoEntry)> {
+        match self {
+            UtxoSet::InMemory(store) => store.iter().map(|(o, e)| (*o, e.clone())).collect(),
+            UtxoSet::RocksDb(store) => store.iter_entries(),
+        }
+    }
+
     /// Count unique addresses (pubkey hashes) in the UTXO set
     pub fn address_count(&self) -> u64 {
         match self {

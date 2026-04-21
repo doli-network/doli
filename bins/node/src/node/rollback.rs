@@ -215,11 +215,7 @@ impl Node {
             let state = self.chain_state.read().await;
             let producers = self.producer_set.read().await;
             let utxo = self.utxo_set.read().await;
-            let utxo_pairs: Vec<(storage::Outpoint, storage::UtxoEntry)> = match &*utxo {
-                UtxoSet::InMemory(mem) => mem.iter().map(|(o, e)| (*o, e.clone())).collect(),
-                // RocksDb variant shouldn't occur (we load InMemory from StateDb), but handle it
-                UtxoSet::RocksDb(_) => self.state_db.iter_utxos(),
-            };
+            let utxo_pairs = utxo.iter_all();
             self.state_db
                 .atomic_replace(&state, &producers, utxo_pairs.into_iter())
                 .map_err(|e| anyhow::anyhow!("StateDb atomic_replace failed: {}", e))?;

@@ -550,10 +550,7 @@ impl Node {
             }
 
             // Persist to StateDb
-            let utxo_pairs: Vec<_> = match &*utxo {
-                UtxoSet::InMemory(mem) => mem.iter().map(|(o, e)| (*o, e.clone())).collect(),
-                UtxoSet::RocksDb(_) => self.state_db.iter_utxos(),
-            };
+            let utxo_pairs = utxo.iter_all();
             if let Err(e) = self
                 .state_db
                 .atomic_replace(&cs, &ps, utxo_pairs.into_iter())
