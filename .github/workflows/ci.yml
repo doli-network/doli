@@ -79,6 +79,7 @@ jobs:
         run: cargo test --all-features
         env:
           LIBZ_SYS_STATIC: "0"
+          RUST_TEST_THREADS: "2"
 
   build:
     name: Build
