@@ -92,6 +92,18 @@ impl HardForkSchedule {
         self.forks.iter().find(|f| !f.is_active(current_height))
     }
 
+    /// Log any hard forks that activate exactly at this height.
+    pub fn log_activations(&self, current_height: u64) {
+        for fork in &self.forks {
+            if fork.activation_height == current_height {
+                info!(
+                    "🔔 Hard fork ACTIVATED at height {}: min_version={}, changes={:?}",
+                    fork.activation_height, fork.min_version, fork.consensus_changes
+                );
+            }
+        }
+    }
+
     /// Get all forks that are active at the given height.
     pub fn active_forks(&self, current_height: u64) -> Vec<&HardForkInfo> {
         self.forks
@@ -220,6 +232,13 @@ impl HardForkSchedule {
                     min_version: "6.18.2".to_string(),
                     consensus_changes: vec![
                         "EpochState state root inclusion (M-Choice1)".to_string()
+                    ],
+                });
+                schedule.add(HardForkInfo {
+                    activation_height: 4_836,
+                    min_version: "6.18.6".to_string(),
+                    consensus_changes: vec![
+                        "Testnet HF deployment".to_string()
                     ],
                 });
             }

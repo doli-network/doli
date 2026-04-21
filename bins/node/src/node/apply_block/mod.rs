@@ -88,6 +88,9 @@ impl Node {
             );
         }
 
+        // Log any hard fork activations at this exact height
+        self.hardfork_schedule.log_activations(height);
+
         // NOTE: Block store write is deferred to AFTER all transaction validation.
         // Writing here would poison the store if UTXO validation fails later —
         // the "already in store" check would then skip the block forever.
