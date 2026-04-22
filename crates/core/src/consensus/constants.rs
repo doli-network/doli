@@ -22,7 +22,7 @@ pub fn is_protocol_active(required_version: u32, active_version: u32) -> bool {
 
 /// Genesis timestamp — must match chainspec.mainnet.json
 /// Guarded by `test_genesis_time_matches_chainspec` test.
-pub const GENESIS_TIME: u64 = 1776808119;
+pub const GENESIS_TIME: u64 = 1776837510;
 
 /// Checkpoint: trusted block for fast initial sync.
 /// Updated with each release. New nodes sync from here instead of genesis.
@@ -102,7 +102,7 @@ pub const MIN_ATTESTATION_MINUTES: usize = 30;
 /// After: decodes with epoch_state.producer_list (attestation-filtered, same as encoder).
 /// Fixes index misalignment when attestation filter reduces the producer list.
 /// Consensus-breaking — all nodes must update before this height.
-pub const REWARDS_EPOCH_LIST_FIX_HEIGHT: u64 = 13_320;
+pub const REWARDS_EPOCH_LIST_FIX_HEIGHT: u64 = 0;
 
 /// Full bitfield decode activation height.
 /// Before: accumulate_block decodes only epoch_state.producer_list indices (base).
@@ -110,7 +110,7 @@ pub const REWARDS_EPOCH_LIST_FIX_HEIGHT: u64 = 13_320;
 /// Fixes the death spiral where filtered producers can never re-enter the epoch list
 /// because their attestations in indices N+ are silently ignored.
 /// Consensus-breaking — changes attested_sets/attestation_accum → state root.
-pub const FULL_BITFIELD_DECODE_HEIGHT: u64 = 14_000;
+pub const FULL_BITFIELD_DECODE_HEIGHT: u64 = 0;
 
 /// Encrypted content activation height.
 /// Before: OutputType::NFT (plaintext) accepted for new transactions.
@@ -119,7 +119,7 @@ pub const FULL_BITFIELD_DECODE_HEIGHT: u64 = 14_000;
 /// Consensus-breaking — changes validation rules for transaction outputs.
 /// Placeholder — set to real height AFTER EncryptedContent is implemented,
 /// deployed, and confirmed working. Only then does this gate close NFT plaintext.
-pub const ENCRYPTED_CONTENT_ACTIVATION_HEIGHT: u64 = 37_500;
+pub const ENCRYPTED_CONTENT_ACTIVATION_HEIGHT: u64 = 0;
 
 /// INC-I-040: EpochState restoration in execute_reorg activation height.
 /// Before: execute_reorg skips epoch_state, leaving stale attestation
@@ -128,7 +128,7 @@ pub const ENCRYPTED_CONTENT_ACTIVATION_HEIGHT: u64 = 37_500;
 /// After: execute_reorg restores epoch_state from undo data (matching
 /// rollback_one_block's existing behavior). Consensus-breaking — changes
 /// which producer is scheduled after a reorg.
-pub const EPOCH_STATE_REORG_ACTIVATION_HEIGHT: u64 = 44_246;
+pub const EPOCH_STATE_REORG_ACTIVATION_HEIGHT: u64 = 0;
 
 // ==================== Proof of Time Parameters ====================
 
