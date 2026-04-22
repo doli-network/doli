@@ -129,30 +129,31 @@ impl Node {
                 //    Request h+1 from peer → apply when it arrives.
                 // B) Fork orphan: we have a DIFFERENT block at h (fork block).
                 //    The orphan's prev_hash points to the canonical h, not ours.
-                //    INC-I-040: Signal stuck_fork directly instead of requesting
-                //    the canonical block (FORK_GUARD would drop it anyway since
-                //    FORK_CHOICE was removed in b430959a). resolve_shallow_fork
-                //    handles the rollback safely on the next periodic tick.
-                let is_fork_orphan = if let Ok(Some(our_block)) =
+                //    Rollback to H-1 (common ancestor), then request canonical at H.
+                //    When it arrives, we're at H-1 so it applies as next block.
+                let need_height = if let Ok(Some(our_block)) =
                     self.block_store.get_block_by_height(current_height)
                 {
-                    our_block.hash() != block.header.prev_hash
+                    if our_block.hash() != block.header.prev_hash {
+                        // Case B: fork — rollback + request canonical
+                        info!(
+                            "[ORPHAN_FORK_CHASE] Fork at h={}: our={:.8} != orphan prev={:.8} — rollback + request h={} from {}",
+                            current_height, our_block.hash(), block.header.prev_hash,
+                            current_height, source_peer
+                        );
+                        self.rollback_one_block().await?;
+                        current_height
+                    } else {
+                        // Case A: normal orphan — request next height
+                        current_height + 1
+                    }
                 } else {
-                    false
+                    current_height + 1
                 };
 
-                if is_fork_orphan {
+                if let Some(ref network) = self.network {
                     info!(
-                        "[ORPHAN_FORK] Fork at h={}: our tip != orphan prev={:.8}. \
-                         Signaling fork recovery (slot {})",
-                        current_height, block.header.prev_hash, block.header.slot
-                    );
-                    self.sync_manager.write().await.signal_stuck_fork();
-                } else if let Some(ref network) = self.network {
-                    // Case A: normal orphan — request next height
-                    let need_height = current_height + 1;
-                    info!(
-                        "[ORPHAN_CHASE] Requesting h={} from {} (orphan block {:.8} at slot {})",
+                        "[ORPHAN_CHASE] Requesting h={} from {} (orphan {:.8} slot {})",
                         need_height, source_peer, block_hash, block.header.slot
                     );
                     let request = SyncRequest::GetBlockByHeight {
