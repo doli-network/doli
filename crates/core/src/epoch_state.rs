@@ -135,7 +135,8 @@ impl EpochState {
     /// Returns the new epoch state for the epoch being entered.
     pub fn derive_at_boundary(prev: &EpochState, input: &EpochDerivationInput) -> EpochState {
         use crate::consensus::{
-            ACTIVE_PRODUCERS_CAP, MIN_ATTESTATION_MINUTES, TIER_PROMOTION_ACTIVATION_HEIGHT,
+            ACTIVE_PRODUCERS_CAP, GHOST_EXCLUSION_ACTIVATION_HEIGHT, GHOST_EXCLUSION_GRACE_EPOCHS,
+            MIN_ATTESTATION_MINUTES, TIER_PROMOTION_ACTIVATION_HEIGHT,
             TIER_SYSTEM_ACTIVATION_HEIGHT,
         };
 
@@ -145,21 +146,18 @@ impl EpochState {
         let bond_snapshot = input.bond_counts.clone();
 
         // 2. Attestation-filtered producer list
+        let attested_union: HashSet<&PublicKey> =
+            prev.attested_sets.iter().flat_map(|s| s.iter()).collect();
+
         let mut new_list: Vec<PublicKey> = if epoch <= 1 {
             input.active_producers.clone()
         } else {
-            // 3-epoch lookback: producer retained if attested in ANY of last 3 epochs
-            let mut attested: HashSet<PublicKey> = HashSet::new();
-            for i in 0..3 {
-                attested.extend(&prev.attested_sets[i]);
-            }
-
             let have_full_history = !prev.attested_sets[0].is_empty();
             if have_full_history || input.height < input.snap_attestation_skip_height {
                 input
                     .active_producers
                     .iter()
-                    .filter(|pk| attested.contains(pk))
+                    .filter(|pk| attested_union.contains(pk))
                     .copied()
                     .collect()
             } else {
@@ -169,9 +167,58 @@ impl EpochState {
         };
 
         // 3. Deadlock safety floor: 2/3 of active producers
+        //    INC-I-046: After GHOST_EXCLUSION_ACTIVATION_HEIGHT, subtract ghost producers
+        //    from the denominator. A ghost = not attested in ANY of 3 lookback epochs AND
+        //    registered for > GHOST_EXCLUSION_GRACE_EPOCHS. This prevents permanently-offline
+        //    producers from inflating the floor and overriding the attestation filter.
         let active_count = input.active_producers.len();
-        if new_list.len() < (active_count * 2 / 3) || new_list.is_empty() {
-            new_list = input.active_producers.clone();
+        let ghost_exclusion_active = input.height >= GHOST_EXCLUSION_ACTIVATION_HEIGHT && epoch > 1;
+
+        let is_ghost = |pk: &PublicKey| -> bool {
+            if !ghost_exclusion_active {
+                return false;
+            }
+            if attested_union.contains(pk) {
+                return false;
+            }
+            match input.registered_at.get(pk) {
+                Some(&reg_height) => {
+                    let reg_epoch = if input.blocks_per_epoch > 0 {
+                        reg_height / input.blocks_per_epoch
+                    } else {
+                        0
+                    };
+                    epoch.saturating_sub(reg_epoch) > GHOST_EXCLUSION_GRACE_EPOCHS
+                }
+                None => false, // Unknown registration: not a ghost (conservative)
+            }
+        };
+
+        let ghost_count = if ghost_exclusion_active {
+            input
+                .active_producers
+                .iter()
+                .filter(|pk| is_ghost(pk))
+                .count()
+        } else {
+            0
+        };
+        let effective_active = active_count - ghost_count;
+
+        if new_list.len() < (effective_active * 2 / 3)
+            || (new_list.is_empty() && effective_active > 0)
+        {
+            if ghost_exclusion_active && ghost_count > 0 {
+                // Mass event — include all non-ghost producers
+                new_list = input
+                    .active_producers
+                    .iter()
+                    .filter(|pk| !is_ghost(pk))
+                    .copied()
+                    .collect();
+            } else {
+                new_list = input.active_producers.clone();
+            }
         }
 
         // 4. Sort by pubkey (deterministic ordering)
@@ -751,5 +798,197 @@ mod tests {
 
         s1.producer_list = vec![make_pubkey(1)];
         assert_ne!(s1.hash(), EpochState::genesis().hash());
+    }
+
+    // INC-I-046: Ghost producers excluded from deadlock floor denominator.
+    // 5 real + 5 ghosts = 10 active. Without ghost exclusion, deadlock floor
+    // triggers (5 < 10*2/3=6) and re-includes all 10. With ghost exclusion,
+    // effective_active=5, floor check: 5 >= 5*2/3=3 → ghosts stay excluded.
+    #[test]
+    fn test_ghost_exclusion_prevents_deadlock_floor_override() {
+        use crate::consensus::GHOST_EXCLUSION_ACTIVATION_HEIGHT;
+
+        // 5 real producers (attested)
+        let real: Vec<PublicKey> = (1..=5).map(make_pubkey).collect();
+        // 5 ghost producers (never attested, registered long ago)
+        let ghosts: Vec<PublicKey> = (6..=10).map(make_pubkey).collect();
+
+        let mut prev = EpochState::genesis();
+        prev.epoch = 9;
+        for pk in &real {
+            prev.attested_sets[0].insert(*pk);
+        }
+        // ghosts NOT in any attested_sets
+
+        let mut all = real.clone();
+        all.extend_from_slice(&ghosts);
+
+        let mut registered_at = HashMap::new();
+        for pk in &real {
+            registered_at.insert(*pk, 0); // registered at genesis
+        }
+        for pk in &ghosts {
+            registered_at.insert(*pk, 360); // registered at epoch 1 (well past grace)
+        }
+
+        let input = EpochDerivationInput {
+            active_producers: all,
+            bond_counts: HashMap::new(),
+            blocks_per_epoch: 360,
+            snap_attestation_skip_height: u64::MAX,
+            height: GHOST_EXCLUSION_ACTIVATION_HEIGHT + 1,
+            epoch: 10,
+            registered_at,
+        };
+
+        let new_state = EpochState::derive_at_boundary(&prev, &input);
+
+        // Only the 5 real producers should be in the list
+        assert_eq!(new_state.producer_list.len(), 5);
+        for pk in &real {
+            assert!(new_state.producer_list.contains(pk));
+        }
+        for pk in &ghosts {
+            assert!(!new_state.producer_list.contains(pk));
+        }
+    }
+
+    // INC-I-046: Before activation height, ghosts are NOT excluded (backward compat).
+    #[test]
+    fn test_ghost_exclusion_inactive_before_activation() {
+        // Same setup as above but height < GHOST_EXCLUSION_ACTIVATION_HEIGHT
+        let real: Vec<PublicKey> = (1..=5).map(make_pubkey).collect();
+        let ghosts: Vec<PublicKey> = (6..=10).map(make_pubkey).collect();
+
+        let mut prev = EpochState::genesis();
+        prev.epoch = 9;
+        for pk in &real {
+            prev.attested_sets[0].insert(*pk);
+        }
+
+        let mut all = real.clone();
+        all.extend_from_slice(&ghosts);
+
+        let mut registered_at = HashMap::new();
+        for pk in &all {
+            registered_at.insert(*pk, 0);
+        }
+
+        let input = EpochDerivationInput {
+            active_producers: all.clone(),
+            bond_counts: HashMap::new(),
+            blocks_per_epoch: 360,
+            snap_attestation_skip_height: u64::MAX,
+            height: 720, // well below activation
+            epoch: 10,
+            registered_at,
+        };
+
+        let new_state = EpochState::derive_at_boundary(&prev, &input);
+
+        // Deadlock floor triggers (5 < 10*2/3=6) — all 10 included
+        assert_eq!(new_state.producer_list.len(), 10);
+    }
+
+    // INC-I-046: Recently registered producers are NOT classified as ghosts.
+    #[test]
+    fn test_ghost_exclusion_grace_period_for_new_registrations() {
+        use crate::consensus::GHOST_EXCLUSION_ACTIVATION_HEIGHT;
+
+        let real: Vec<PublicKey> = (1..=5).map(make_pubkey).collect();
+        let ghost = make_pubkey(6); // registered long ago, never attested
+        let new_reg = make_pubkey(7); // registered recently, not yet attested
+
+        let mut prev = EpochState::genesis();
+        prev.epoch = 9;
+        for pk in &real {
+            prev.attested_sets[0].insert(*pk);
+        }
+
+        let mut all = real.clone();
+        all.push(ghost);
+        all.push(new_reg);
+
+        let mut registered_at = HashMap::new();
+        for pk in &real {
+            registered_at.insert(*pk, 0);
+        }
+        registered_at.insert(ghost, 360); // epoch 1, well past grace
+        registered_at.insert(new_reg, 3240); // epoch 9, within grace (10-9=1 <= 3)
+
+        let input = EpochDerivationInput {
+            active_producers: all,
+            bond_counts: HashMap::new(),
+            blocks_per_epoch: 360,
+            snap_attestation_skip_height: u64::MAX,
+            height: GHOST_EXCLUSION_ACTIVATION_HEIGHT + 1,
+            epoch: 10,
+            registered_at,
+        };
+
+        let new_state = EpochState::derive_at_boundary(&prev, &input);
+
+        // ghost excluded (1 ghost), new_reg NOT a ghost (within grace)
+        // effective_active = 7 - 1 = 6, filtered = 5
+        // 5 < 6*2/3=4 → 5 >= 4 → floor NOT triggered
+        // Result: only 5 attested (real) producers
+        assert_eq!(new_state.producer_list.len(), 5);
+        for pk in &real {
+            assert!(new_state.producer_list.contains(pk));
+        }
+        assert!(!new_state.producer_list.contains(&ghost));
+        // new_reg is filtered by attestation (not attested), NOT by ghost logic
+        assert!(!new_state.producer_list.contains(&new_reg));
+    }
+
+    // INC-I-046: Mass event with ghosts — real producers saved, ghosts still excluded.
+    #[test]
+    fn test_ghost_exclusion_mass_event_saves_real_producers() {
+        use crate::consensus::GHOST_EXCLUSION_ACTIVATION_HEIGHT;
+
+        // Only 2 of 8 real producers attested — mass event
+        let attested: Vec<PublicKey> = (1..=2).map(make_pubkey).collect();
+        let offline_real: Vec<PublicKey> = (3..=8).map(make_pubkey).collect();
+        let ghosts: Vec<PublicKey> = (9..=12).map(make_pubkey).collect();
+
+        let mut prev = EpochState::genesis();
+        prev.epoch = 9;
+        for pk in &attested {
+            prev.attested_sets[0].insert(*pk);
+        }
+
+        let mut all = attested.clone();
+        all.extend_from_slice(&offline_real);
+        all.extend_from_slice(&ghosts);
+        // 12 total: 2 attested + 6 offline_real + 4 ghosts
+
+        let mut registered_at = HashMap::new();
+        for pk in &all {
+            registered_at.insert(*pk, 0);
+        }
+
+        let input = EpochDerivationInput {
+            active_producers: all,
+            bond_counts: HashMap::new(),
+            blocks_per_epoch: 360,
+            snap_attestation_skip_height: u64::MAX,
+            height: GHOST_EXCLUSION_ACTIVATION_HEIGHT + 1,
+            epoch: 10,
+            registered_at,
+        };
+
+        let new_state = EpochState::derive_at_boundary(&prev, &input);
+
+        // ghost_count = 4+6 = 10 (all non-attested registered at epoch 0, 10-0=10 > 3)
+        // effective_active = 12 - 10 = 2
+        // filtered = 2, 2 >= 2*2/3=1 → floor NOT triggered
+        // Result: 2 attested producers only
+        assert_eq!(new_state.producer_list.len(), 2);
+        for pk in &attested {
+            assert!(new_state.producer_list.contains(pk));
+        }
+        for pk in &ghosts {
+            assert!(!new_state.producer_list.contains(pk));
+        }
     }
 }

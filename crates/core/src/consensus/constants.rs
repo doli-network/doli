@@ -130,6 +130,20 @@ pub const ENCRYPTED_CONTENT_ACTIVATION_HEIGHT: u64 = 0;
 /// which producer is scheduled after a reorg.
 pub const EPOCH_STATE_REORG_ACTIVATION_HEIGHT: u64 = 0;
 
+/// Ghost producer exclusion activation height.
+/// Before: producers who register+bond but never come online are scheduled forever,
+/// wasting throughput. The 2/3 deadlock safety floor re-includes them because it
+/// can't distinguish ghosts from mass outage.
+/// After: producers absent from ALL 3 attestation lookback epochs AND registered
+/// for > GHOST_EXCLUSION_GRACE_EPOCHS are excluded from the deadlock floor denominator.
+/// Consensus-breaking — changes which producers enter the scheduler at epoch boundary.
+pub const GHOST_EXCLUSION_ACTIVATION_HEIGHT: u64 = 12_999;
+
+/// Grace period (in epochs) before a non-attesting producer is classified as a ghost.
+/// Must be >= 3 to match the attestation lookback window. A newly registered producer
+/// needs at least 3 epochs to appear in the lookback union via the "extra" bitfield decode.
+pub const GHOST_EXCLUSION_GRACE_EPOCHS: u64 = 3;
+
 // ==================== Proof of Time Parameters ====================
 
 /// Slot duration in seconds.

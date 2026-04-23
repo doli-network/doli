@@ -718,20 +718,71 @@ impl Node {
             // tightened from 1/3 to 2/3 to match post_commit.rs:196. See that
             // file's explanation: >1/3 un-attested is assumed to be mass event
             // (outage), not individual inactivity. Canonical BFT threshold.
+            //
+            // INC-I-046: ghost exclusion — same logic as derive_at_boundary.
             {
+                use doli_core::consensus::{
+                    GHOST_EXCLUSION_ACTIVATION_HEIGHT, GHOST_EXCLUSION_GRACE_EPOCHS,
+                };
                 let producers = self.producer_set.read().await;
-                let active_count = producers.active_producers_at_height(epoch_boundary_h).len();
-                if new_list.len() < (active_count * 2 / 3) || new_list.is_empty() {
-                    warn!(
-                        "[STARTUP] Attestation filter left {}/{} (<2/3) — mass event, including all",
-                        new_list.len(),
-                        active_count
-                    );
-                    new_list = producers
-                        .active_producers_at_height(epoch_boundary_h)
-                        .iter()
-                        .map(|p| p.public_key)
-                        .collect();
+                let active_at = producers.active_producers_at_height(epoch_boundary_h);
+                let active_count = active_at.len();
+
+                let ghost_exclusion_active =
+                    epoch_boundary_h >= GHOST_EXCLUSION_ACTIVATION_HEIGHT && epoch > 1;
+
+                let attested_union: std::collections::HashSet<&crypto::PublicKey> = self
+                    .epoch_state
+                    .attested_sets
+                    .iter()
+                    .flat_map(|s| s.iter())
+                    .collect();
+
+                let is_ghost = |pk: &crypto::PublicKey| -> bool {
+                    if !ghost_exclusion_active || attested_union.contains(pk) {
+                        return false;
+                    }
+                    match active_at.iter().find(|p| &p.public_key == pk) {
+                        Some(p) => {
+                            let reg_epoch = if blocks_per_epoch > 0 {
+                                p.registered_at / blocks_per_epoch
+                            } else {
+                                0
+                            };
+                            epoch.saturating_sub(reg_epoch) > GHOST_EXCLUSION_GRACE_EPOCHS
+                        }
+                        None => false,
+                    }
+                };
+
+                let ghost_count = if ghost_exclusion_active {
+                    active_at.iter().filter(|p| is_ghost(&p.public_key)).count()
+                } else {
+                    0
+                };
+                let effective_active = active_count - ghost_count;
+
+                if new_list.len() < (effective_active * 2 / 3)
+                    || (new_list.is_empty() && effective_active > 0)
+                {
+                    if ghost_exclusion_active && ghost_count > 0 {
+                        warn!(
+                            "[STARTUP] Attestation filter left {}/{} (<2/3 of {} non-ghost) — including all non-ghosts (excluded {} ghosts)",
+                            new_list.len(), active_count, effective_active, ghost_count
+                        );
+                        new_list = active_at
+                            .iter()
+                            .filter(|p| !is_ghost(&p.public_key))
+                            .map(|p| p.public_key)
+                            .collect();
+                    } else {
+                        warn!(
+                            "[STARTUP] Attestation filter left {}/{} (<2/3) — mass event, including all",
+                            new_list.len(),
+                            active_count
+                        );
+                        new_list = active_at.iter().map(|p| p.public_key).collect();
+                    }
                 }
             }
 
