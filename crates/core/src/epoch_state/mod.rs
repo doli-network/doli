@@ -34,6 +34,8 @@ pub struct EpochDerivationInput {
     pub epoch: u64,
     /// Producer registered_at timestamps for tier system (pubkey → registered_at)
     pub registered_at: HashMap<PublicKey, u64>,
+    /// INC-I-046: Ghost exclusion activation height (from NetworkParams)
+    pub ghost_exclusion_activation_height: u64,
 }
 
 /// Block data needed by accumulate_block. Extracted from BlockHeader so
@@ -138,9 +140,8 @@ impl EpochState {
     /// Returns the new epoch state for the epoch being entered.
     pub fn derive_at_boundary(prev: &EpochState, input: &EpochDerivationInput) -> EpochState {
         use crate::consensus::{
-            ACTIVE_PRODUCERS_CAP, GHOST_EXCLUSION_ACTIVATION_HEIGHT, GHOST_EXCLUSION_GRACE_EPOCHS,
-            MIN_ATTESTATION_MINUTES, TIER_PROMOTION_ACTIVATION_HEIGHT,
-            TIER_SYSTEM_ACTIVATION_HEIGHT,
+            ACTIVE_PRODUCERS_CAP, GHOST_EXCLUSION_GRACE_EPOCHS, MIN_ATTESTATION_MINUTES,
+            TIER_PROMOTION_ACTIVATION_HEIGHT, TIER_SYSTEM_ACTIVATION_HEIGHT,
         };
 
         let epoch = input.epoch;
@@ -170,12 +171,13 @@ impl EpochState {
         };
 
         // 3. Deadlock safety floor: 2/3 of active producers
-        //    INC-I-046: After GHOST_EXCLUSION_ACTIVATION_HEIGHT, subtract ghost producers
+        //    INC-I-046: After ghost_exclusion_activation_height, subtract ghost producers
         //    from the denominator. A ghost = not attested in ANY of 3 lookback epochs AND
         //    registered for > GHOST_EXCLUSION_GRACE_EPOCHS. This prevents permanently-offline
         //    producers from inflating the floor and overriding the attestation filter.
         let active_count = input.active_producers.len();
-        let ghost_exclusion_active = input.height >= GHOST_EXCLUSION_ACTIVATION_HEIGHT && epoch > 1;
+        let ghost_exclusion_active =
+            input.height >= input.ghost_exclusion_activation_height && epoch > 1;
 
         let is_ghost = |pk: &PublicKey| -> bool {
             if !ghost_exclusion_active {

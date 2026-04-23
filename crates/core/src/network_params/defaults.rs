@@ -91,6 +91,8 @@ impl NetworkParams {
                 rewards_epoch_list_fix_height: 0,
                 encrypted_content_activation_height: 0,
                 epoch_state_reorg_activation_height: 0,
+                // INC-I-046: Ghost exclusion not yet activated on mainnet
+                ghost_exclusion_activation_height: u64::MAX,
 
                 // Gossip mesh: universal config for all network sizes.
                 // mesh_n=12 keeps all peers in eager-push for networks ≤24 (mesh_n_high),
@@ -177,6 +179,8 @@ impl NetworkParams {
                 rewards_epoch_list_fix_height: 0,
                 encrypted_content_activation_height: 0,
                 epoch_state_reorg_activation_height: 0,
+                // INC-I-046: Ghost exclusion activates at h=10830 on testnet
+                ghost_exclusion_activation_height: 10_830,
 
                 // INC-I-015: Gossip mesh sized to max_peers for eager push to ALL
                 // connected peers. At mesh_n=12, blocks reach 12 peers immediately
@@ -259,6 +263,7 @@ impl NetworkParams {
                 rewards_epoch_list_fix_height: 0,
                 encrypted_content_activation_height: 0,
                 epoch_state_reorg_activation_height: 0,
+                ghost_exclusion_activation_height: 0, // Always active on devnet
 
                 // Gossip mesh: same universal config as mainnet.
                 // With --no-dht, mesh_n_high=24 keeps all devnet peers in mesh.

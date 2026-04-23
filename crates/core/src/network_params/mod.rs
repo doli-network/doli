@@ -199,6 +199,13 @@ pub struct NetworkParams {
     /// Mainnet: 44,246. Testnet/Devnet: 0 (active from genesis).
     pub epoch_state_reorg_activation_height: u64,
 
+    /// INC-I-046: Height at which ghost producer exclusion activates.
+    /// Before: permanently-offline producers inflate the 2/3 deadlock safety floor.
+    /// After: producers absent from ALL 3 attestation lookback epochs AND registered
+    /// for > GHOST_EXCLUSION_GRACE_EPOCHS are excluded from the floor denominator.
+    /// Mainnet: u64::MAX (not yet activated). Testnet: 10,830. Devnet: 0.
+    pub ghost_exclusion_activation_height: u64,
+
     // === Gossip mesh ===
     /// Target number of peers in gossipsub mesh per topic
     pub mesh_n: usize,

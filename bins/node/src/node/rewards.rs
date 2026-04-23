@@ -721,15 +721,18 @@ impl Node {
             //
             // INC-I-046: ghost exclusion — same logic as derive_at_boundary.
             {
-                use doli_core::consensus::{
-                    GHOST_EXCLUSION_ACTIVATION_HEIGHT, GHOST_EXCLUSION_GRACE_EPOCHS,
-                };
+                use doli_core::consensus::GHOST_EXCLUSION_GRACE_EPOCHS;
                 let producers = self.producer_set.read().await;
                 let active_at = producers.active_producers_at_height(epoch_boundary_h);
                 let active_count = active_at.len();
 
-                let ghost_exclusion_active =
-                    epoch_boundary_h >= GHOST_EXCLUSION_ACTIVATION_HEIGHT && epoch > 1;
+                let ghost_exclusion_active = epoch_boundary_h
+                    >= self
+                        .config
+                        .network
+                        .params()
+                        .ghost_exclusion_activation_height
+                    && epoch > 1;
 
                 let attested_union: std::collections::HashSet<&crypto::PublicKey> = self
                     .epoch_state

@@ -802,6 +802,11 @@ impl Node {
                     height: snap_h,
                     epoch,
                     registered_at,
+                    ghost_exclusion_activation_height: self
+                        .config
+                        .network
+                        .params()
+                        .ghost_exclusion_activation_height,
                 };
                 let derived = doli_core::EpochState::derive_at_boundary(&self.epoch_state, &input);
                 info!(

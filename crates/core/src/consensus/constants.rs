@@ -137,7 +137,9 @@ pub const EPOCH_STATE_REORG_ACTIVATION_HEIGHT: u64 = 0;
 /// After: producers absent from ALL 3 attestation lookback epochs AND registered
 /// for > GHOST_EXCLUSION_GRACE_EPOCHS are excluded from the deadlock floor denominator.
 /// Consensus-breaking — changes which producers enter the scheduler at epoch boundary.
-pub const GHOST_EXCLUSION_ACTIVATION_HEIGHT: u64 = 12_999;
+/// **DEPRECATED**: Use `NetworkParams::ghost_exclusion_activation_height` instead.
+/// Kept as fallback for code paths that don't have access to NetworkParams.
+pub const GHOST_EXCLUSION_ACTIVATION_HEIGHT: u64 = u64::MAX;
 
 /// Grace period (in epochs) before a non-attesting producer is classified as a ghost.
 /// Must be >= 3 to match the attestation lookback window. A newly registered producer

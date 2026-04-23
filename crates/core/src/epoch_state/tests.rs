@@ -151,6 +151,7 @@ fn test_derive_at_boundary_epoch_1() {
         height: 360,
         epoch: 1,
         registered_at: HashMap::new(),
+        ghost_exclusion_activation_height: u64::MAX,
     };
 
     let new_state = EpochState::derive_at_boundary(&prev, &input);
@@ -189,6 +190,7 @@ fn test_derive_at_boundary_attestation_filter() {
         height: 720,
         epoch: 2,
         registered_at: HashMap::new(),
+        ghost_exclusion_activation_height: u64::MAX,
     };
 
     let new_state = EpochState::derive_at_boundary(&prev, &input);
@@ -223,6 +225,7 @@ fn test_derive_deadlock_safety_floor() {
         height: 720,
         epoch: 2,
         registered_at: HashMap::new(),
+        ghost_exclusion_activation_height: u64::MAX,
     };
 
     let new_state = EpochState::derive_at_boundary(&prev, &input);
@@ -253,6 +256,7 @@ fn test_derive_empty_accum_uses_all_producers() {
         height: 720,
         epoch: 2,
         registered_at: HashMap::new(),
+        ghost_exclusion_activation_height: u64::MAX,
     };
 
     let new_state = EpochState::derive_at_boundary(&prev, &input);
@@ -289,6 +293,7 @@ fn test_derive_accumulator_rotation() {
         height: 360,
         epoch: 1,
         registered_at: HashMap::new(),
+        ghost_exclusion_activation_height: u64::MAX,
     };
 
     let new_state = EpochState::derive_at_boundary(&prev, &input);
@@ -387,8 +392,6 @@ fn test_hash_differs_on_change() {
 // effective_active=5, floor check: 5 >= 5*2/3=3 → ghosts stay excluded.
 #[test]
 fn test_ghost_exclusion_prevents_deadlock_floor_override() {
-    use crate::consensus::GHOST_EXCLUSION_ACTIVATION_HEIGHT;
-
     // 5 real producers (attested)
     let real: Vec<PublicKey> = (1..=5).map(make_pubkey).collect();
     // 5 ghost producers (never attested, registered long ago)
@@ -417,9 +420,10 @@ fn test_ghost_exclusion_prevents_deadlock_floor_override() {
         bond_counts: HashMap::new(),
         blocks_per_epoch: 360,
         snap_attestation_skip_height: u64::MAX,
-        height: GHOST_EXCLUSION_ACTIVATION_HEIGHT + 1,
+        height: 10_680,
         epoch: 10,
         registered_at,
+        ghost_exclusion_activation_height: 0,
     };
 
     let new_state = EpochState::derive_at_boundary(&prev, &input);
@@ -437,7 +441,7 @@ fn test_ghost_exclusion_prevents_deadlock_floor_override() {
 // INC-I-046: Before activation height, ghosts are NOT excluded (backward compat).
 #[test]
 fn test_ghost_exclusion_inactive_before_activation() {
-    // Same setup as above but height < GHOST_EXCLUSION_ACTIVATION_HEIGHT
+    // Same setup as above but ghost_exclusion_activation_height = u64::MAX (OFF)
     let real: Vec<PublicKey> = (1..=5).map(make_pubkey).collect();
     let ghosts: Vec<PublicKey> = (6..=10).map(make_pubkey).collect();
 
@@ -463,6 +467,7 @@ fn test_ghost_exclusion_inactive_before_activation() {
         height: 720, // well below activation
         epoch: 10,
         registered_at,
+        ghost_exclusion_activation_height: u64::MAX, // ghost exclusion OFF
     };
 
     let new_state = EpochState::derive_at_boundary(&prev, &input);
@@ -474,8 +479,6 @@ fn test_ghost_exclusion_inactive_before_activation() {
 // INC-I-046: Recently registered producers are NOT classified as ghosts.
 #[test]
 fn test_ghost_exclusion_grace_period_for_new_registrations() {
-    use crate::consensus::GHOST_EXCLUSION_ACTIVATION_HEIGHT;
-
     let real: Vec<PublicKey> = (1..=5).map(make_pubkey).collect();
     let ghost = make_pubkey(6); // registered long ago, never attested
     let new_reg = make_pubkey(7); // registered recently, not yet attested
@@ -502,9 +505,10 @@ fn test_ghost_exclusion_grace_period_for_new_registrations() {
         bond_counts: HashMap::new(),
         blocks_per_epoch: 360,
         snap_attestation_skip_height: u64::MAX,
-        height: GHOST_EXCLUSION_ACTIVATION_HEIGHT + 1,
+        height: 10_680,
         epoch: 10,
         registered_at,
+        ghost_exclusion_activation_height: 0,
     };
 
     let new_state = EpochState::derive_at_boundary(&prev, &input);
@@ -525,8 +529,6 @@ fn test_ghost_exclusion_grace_period_for_new_registrations() {
 // INC-I-046: Mass event with ghosts — real producers saved, ghosts still excluded.
 #[test]
 fn test_ghost_exclusion_mass_event_saves_real_producers() {
-    use crate::consensus::GHOST_EXCLUSION_ACTIVATION_HEIGHT;
-
     // Only 2 of 8 real producers attested — mass event
     let attested: Vec<PublicKey> = (1..=2).map(make_pubkey).collect();
     let offline_real: Vec<PublicKey> = (3..=8).map(make_pubkey).collect();
@@ -553,9 +555,10 @@ fn test_ghost_exclusion_mass_event_saves_real_producers() {
         bond_counts: HashMap::new(),
         blocks_per_epoch: 360,
         snap_attestation_skip_height: u64::MAX,
-        height: GHOST_EXCLUSION_ACTIVATION_HEIGHT + 1,
+        height: 10_680,
         epoch: 10,
         registered_at,
+        ghost_exclusion_activation_height: 0,
     };
 
     let new_state = EpochState::derive_at_boundary(&prev, &input);

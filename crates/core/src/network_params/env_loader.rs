@@ -219,6 +219,10 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
             "DOLI_EPOCH_STATE_REORG_ACTIVATION_HEIGHT",
             defaults.epoch_state_reorg_activation_height,
         ),
+        ghost_exclusion_activation_height: env_parse(
+            "DOLI_GHOST_EXCLUSION_ACTIVATION_HEIGHT",
+            defaults.ghost_exclusion_activation_height,
+        ),
 
         // Gossip mesh (locked for mainnet - wrong values could isolate nodes)
         mesh_n: if is_mainnet {
