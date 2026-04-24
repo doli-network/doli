@@ -211,6 +211,14 @@ impl OutputType {
     }
 
     /// Returns true if this output type uses covenant conditions in extra_data.
+    ///
+    /// NOTE: EncryptedContent is NOT conditioned — its extra_data layout is
+    /// `[ciphertext_len | ciphertext | wrapped_key | nonce | content_hash]`,
+    /// NOT a condition-prefixed encoding. It uses standard signature verification
+    /// on pubkey_hash, same as Normal outputs.
+    /// (Fix for AUDIT-NFT-001: EncryptedContent was incorrectly listed here,
+    /// causing verify_input_conditions to try condition decoding on non-condition
+    /// bytes, making ALL EncryptedContent UTXOs permanently unspendable.)
     pub fn is_conditioned(&self) -> bool {
         matches!(
             self,
@@ -221,7 +229,6 @@ impl OutputType {
                 | Self::NFT
                 | Self::FungibleAsset
                 | Self::BridgeHTLC
-                | Self::EncryptedContent
         )
     }
 

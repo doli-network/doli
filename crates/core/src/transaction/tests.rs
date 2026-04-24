@@ -1130,11 +1130,20 @@ fn test_bridge_htlc_v2_roundtrip() {
                 }
                 _ => panic!("Expected And(Hashlock, Timelock)"),
             }
-            // Right: TimelockExpiry
-            assert!(matches!(
-                right.as_ref(),
-                crate::conditions::Condition::TimelockExpiry(200)
-            ));
+            // Right: And(Signature, TimelockExpiry) — signed refund (AUDIT-BRIDGE-001)
+            match right.as_ref() {
+                crate::conditions::Condition::And(sig, expiry) => {
+                    assert!(matches!(
+                        sig.as_ref(),
+                        crate::conditions::Condition::Signature(_)
+                    ));
+                    assert!(matches!(
+                        expiry.as_ref(),
+                        crate::conditions::Condition::TimelockExpiry(200)
+                    ));
+                }
+                _ => panic!("Expected And(Signature, TimelockExpiry) for signed refund"),
+            }
         }
         _ => panic!("Expected Or condition"),
     }
@@ -1436,12 +1445,17 @@ fn test_bridge_htlc_refund_before_expiry_fails() {
 /// Test 10: counter_hash is metadata only — does not affect spending condition
 #[test]
 fn test_counter_hash_does_not_affect_spending() {
-    use crate::conditions::{evaluate, EvalContext, Witness, HASHLOCK_DOMAIN};
+    use crate::conditions::{evaluate, EvalContext, Witness, WitnessSignature, HASHLOCK_DOMAIN};
     use crypto::hash::hash_with_domain;
 
     let preimage = [0xEE; 32];
     let expected_hash = hash_with_domain(HASHLOCK_DOMAIN, &preimage);
-    let pubkey_hash = Hash::from_bytes([0xAA; 32]);
+
+    // Generate a real keypair for the creator (needed for signed refund)
+    let creator_keypair = crypto::KeyPair::generate();
+    let creator_pubkey = creator_keypair.public_key();
+    let pubkey_hash =
+        hash_with_domain(crate::conditions::ADDRESS_DOMAIN, creator_pubkey.as_bytes());
 
     // Two BridgeHTLCs with different counter_hashes
     let counter_hash_a = Hash::from_bytes([0x11; 32]);
@@ -1500,9 +1514,14 @@ fn test_counter_hash_does_not_affect_spending() {
     let mut idx = 0;
     assert!(evaluate(&cond_b, &claim_witness, &ctx, &mut idx));
 
-    // Refund also works identically on both
-    let refund_witness = Witness {
+    // Signed refund works identically on both (AUDIT-BRIDGE-001: requires signature)
+    let signature = crypto::signature::sign_hash(&signing_hash, creator_keypair.private_key());
+    let signed_refund_witness = Witness {
         or_branches: vec![true],
+        signatures: vec![WitnessSignature {
+            pubkey: *creator_pubkey,
+            signature,
+        }],
         ..Default::default()
     };
     let ctx_expired = EvalContext {
@@ -1511,9 +1530,19 @@ fn test_counter_hash_does_not_affect_spending() {
         transaction: None,
     };
     let mut idx = 0;
-    assert!(evaluate(&cond_a, &refund_witness, &ctx_expired, &mut idx));
+    assert!(evaluate(
+        &cond_a,
+        &signed_refund_witness,
+        &ctx_expired,
+        &mut idx
+    ));
     let mut idx = 0;
-    assert!(evaluate(&cond_b, &refund_witness, &ctx_expired, &mut idx));
+    assert!(evaluate(
+        &cond_b,
+        &signed_refund_witness,
+        &ctx_expired,
+        &mut idx
+    ));
 }
 
 /// Test 4: Swap happy path — BridgeHTLC creation + claim with preimage
@@ -1656,13 +1685,18 @@ fn test_bridge_swap_ethereum_happy_path() {
 /// Test 6: Refund after expiry
 #[test]
 fn test_bridge_htlc_refund_after_expiry() {
-    use crate::conditions::{evaluate, EvalContext, Witness, HASHLOCK_DOMAIN};
+    use crate::conditions::{evaluate, EvalContext, Witness, WitnessSignature, HASHLOCK_DOMAIN};
     use crypto::hash::hash_with_domain;
+
+    // Generate a real keypair for the creator (refund signer)
+    let creator_keypair = crypto::KeyPair::generate();
+    let creator_pubkey = creator_keypair.public_key();
+    let creator_pubkey_hash =
+        hash_with_domain(crate::conditions::ADDRESS_DOMAIN, creator_pubkey.as_bytes());
 
     let preimage = [0xDD; 32];
     let expected_hash = hash_with_domain(HASHLOCK_DOMAIN, &preimage);
     let counter_hash = Hash::from_bytes([0xFF; 32]);
-    let creator_hash = Hash::from_bytes([0x01; 32]);
 
     // Create BridgeHTLC with expiry close to current
     let current_height = 100;
@@ -1671,7 +1705,7 @@ fn test_bridge_htlc_refund_after_expiry() {
 
     let bridge_output = Output::bridge_htlc(
         2_000_000,
-        creator_hash,
+        creator_pubkey_hash,
         expected_hash,
         lock_height,
         expiry_height,
@@ -1682,48 +1716,78 @@ fn test_bridge_htlc_refund_after_expiry() {
     .unwrap();
 
     let cond = bridge_output.condition().unwrap().unwrap();
+
+    // Verify the condition has a signed refund branch (AUDIT-BRIDGE-001 fix)
+    assert!(cond.has_signed_refund(), "HTLC must have signed refund");
+
     let signing_hash = Hash::from_bytes([0x00; 32]);
 
-    // Refund witness: branch(right) + no preimage
-    let refund_witness = Witness {
+    // AUDIT-BRIDGE-001: Refund WITHOUT signature must fail even after expiry
+    let unsigned_refund_witness = Witness {
         or_branches: vec![true],
         ..Default::default()
     };
+    let ctx_expired = EvalContext {
+        current_height: 200,
+        signing_hash: &signing_hash,
+        transaction: None,
+    };
+    let mut idx = 0;
+    assert!(
+        !evaluate(&cond, &unsigned_refund_witness, &ctx_expired, &mut idx),
+        "Unsigned refund must fail — this was the vulnerability"
+    );
 
-    // Before expiry (height 100): refund fails
+    // Refund WITH valid signature: create proper witness
+    let signature = crypto::signature::sign_hash(&signing_hash, creator_keypair.private_key());
+    let signed_refund_witness = Witness {
+        or_branches: vec![true],
+        signatures: vec![WitnessSignature {
+            pubkey: *creator_pubkey,
+            signature,
+        }],
+        ..Default::default()
+    };
+
+    // Before expiry (height 100): signed refund still fails (timelock not expired)
     let ctx_before = EvalContext {
         current_height: 100,
         signing_hash: &signing_hash,
         transaction: None,
     };
     let mut idx = 0;
-    assert!(!evaluate(&cond, &refund_witness, &ctx_before, &mut idx));
+    assert!(!evaluate(
+        &cond,
+        &signed_refund_witness,
+        &ctx_before,
+        &mut idx
+    ));
 
-    // At expiry (height 101): refund succeeds
+    // At expiry (height 101): signed refund succeeds
     let ctx_at = EvalContext {
         current_height: 101,
         signing_hash: &signing_hash,
         transaction: None,
     };
     let mut idx = 0;
-    assert!(evaluate(&cond, &refund_witness, &ctx_at, &mut idx));
+    assert!(evaluate(&cond, &signed_refund_witness, &ctx_at, &mut idx));
 
-    // Well after expiry (height 200): refund still succeeds
-    let ctx_after = EvalContext {
-        current_height: 200,
-        signing_hash: &signing_hash,
-        transaction: None,
-    };
+    // Well after expiry (height 200): signed refund still succeeds
     let mut idx = 0;
-    assert!(evaluate(&cond, &refund_witness, &ctx_after, &mut idx));
+    assert!(evaluate(
+        &cond,
+        &signed_refund_witness,
+        &ctx_expired,
+        &mut idx
+    ));
 
     // Build a refund transaction and verify witness encoding
-    let refund_output = Output::normal(2_000_000 - 1, creator_hash);
+    let refund_output = Output::normal(2_000_000 - 1, creator_pubkey_hash);
     let mut refund_tx = Transaction::new_transfer(
         vec![Input::new(Hash::from_bytes([0xAA; 32]), 0)],
         vec![refund_output],
     );
-    let refund_bytes = refund_witness.encode();
+    let refund_bytes = signed_refund_witness.encode();
     refund_tx.set_covenant_witnesses(&[refund_bytes]);
     assert!(!refund_tx.extra_data.is_empty());
 }

@@ -199,6 +199,13 @@ pub struct NetworkParams {
     /// Mainnet: 44,246. Testnet/Devnet: 0 (active from genesis).
     pub epoch_state_reorg_activation_height: u64,
 
+    /// AUDIT-BRIDGE-001: Height at which HTLC signed-refund enforcement activates.
+    /// Before: HTLC/BridgeHTLC outputs may have unsigned refund branches (legacy).
+    /// After: new HTLC/BridgeHTLC outputs MUST have a Signature on the refund branch.
+    /// Existing UTXOs with unsigned refund branches remain spendable (old condition tree).
+    /// Mainnet: u64::MAX (not yet activated). Testnet/Devnet: 0 (always active).
+    pub htlc_signed_refund_height: u64,
+
     /// INC-I-046: Height at which ghost producer exclusion activates.
     /// Before: permanently-offline producers inflate the 2/3 deadlock safety floor.
     /// After: producers absent from ALL 3 attestation lookback epochs AND registered

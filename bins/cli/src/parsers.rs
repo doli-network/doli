@@ -110,8 +110,10 @@ fn parse_simple_condition(name: &str, args: &[&str]) -> Result<doli_core::Condit
             Ok(doli_core::Condition::hashlock(hash))
         }
         "htlc" => {
-            if args.len() != 3 {
-                anyhow::bail!("htlc requires 3 args: hex_hash, lock_height, expiry_height");
+            if args.len() != 4 {
+                anyhow::bail!(
+                    "htlc requires 4 args: hex_hash, lock_height, expiry_height, refund_pubkey_hash"
+                );
             }
             let hash = crypto::Hash::from_hex(args[0])
                 .ok_or_else(|| anyhow::anyhow!("Invalid hex hash: {}", args[0]))?;
@@ -121,7 +123,14 @@ fn parse_simple_condition(name: &str, args: &[&str]) -> Result<doli_core::Condit
             let expiry: u64 = args[2]
                 .parse()
                 .map_err(|_| anyhow::anyhow!("Invalid expiry_height: {}", args[2]))?;
-            Ok(doli_core::Condition::htlc(hash, lock, expiry))
+            let refund_hash = crypto::Hash::from_hex(args[3])
+                .ok_or_else(|| anyhow::anyhow!("Invalid refund pubkey hash: {}", args[3]))?;
+            Ok(doli_core::Condition::htlc_signed_refund(
+                hash,
+                lock,
+                expiry,
+                refund_hash,
+            ))
         }
         "timelock" => {
             if args.len() != 1 {

@@ -251,6 +251,14 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
                 defaults.epoch_state_reorg_activation_height,
             )
         },
+        htlc_signed_refund_height: if is_mainnet {
+            defaults.htlc_signed_refund_height
+        } else {
+            env_parse(
+                "DOLI_HTLC_SIGNED_REFUND_HEIGHT",
+                defaults.htlc_signed_refund_height,
+            )
+        },
         ghost_exclusion_activation_height: if is_mainnet {
             defaults.ghost_exclusion_activation_height
         } else {

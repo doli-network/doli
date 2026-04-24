@@ -160,7 +160,8 @@ pub(crate) async fn cmd_bridge_lock(
                 .iter()
                 .map(|k| crate::parsers::resolve_to_hash(k))
                 .collect::<Result<Vec<_>>>()?;
-            let htlc_cond = doli_core::Condition::htlc(expected_hash, lock, expiry);
+            let htlc_cond =
+                doli_core::Condition::htlc_signed_refund(expected_hash, lock, expiry, from_hash);
             let ms_cond = doli_core::Condition::multisig(threshold, keys);
             let wrapped = doli_core::Condition::And(Box::new(ms_cond), Box::new(htlc_cond));
             let condition_bytes = wrapped

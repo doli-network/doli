@@ -289,9 +289,13 @@ impl Condition {
         Condition::TimelockExpiry(max_height)
     }
 
-    /// Create an HTLC: (Hashlock AND Timelock) OR TimelockExpiry.
-    /// The receiver can claim with the preimage after lock_height.
-    /// The sender can reclaim after expiry_height.
+    /// Create a legacy HTLC: (Hashlock AND Timelock) OR TimelockExpiry.
+    ///
+    /// **SECURITY WARNING**: The refund branch (TimelockExpiry) has NO signature
+    /// requirement. After expiry, ANYONE can spend the UTXO — not just the creator.
+    /// Use `htlc_signed_refund()` for new HTLCs (AUDIT-BRIDGE-001).
+    ///
+    /// Retained for backward compatibility with existing on-chain UTXOs.
     pub fn htlc(expected_hash: Hash, lock_height: BlockHeight, expiry_height: BlockHeight) -> Self {
         Condition::Or(
             Box::new(Condition::And(
@@ -300,6 +304,55 @@ impl Condition {
             )),
             Box::new(Condition::TimelockExpiry(expiry_height)),
         )
+    }
+
+    /// Create a signed-refund HTLC: (Hashlock AND Timelock) OR (Signature AND TimelockExpiry).
+    ///
+    /// The receiver can claim with the preimage after lock_height.
+    /// The sender can reclaim after expiry_height, but MUST provide a signature.
+    /// This prevents anyone from front-running expired HTLC refunds.
+    /// (Fix for AUDIT-BRIDGE-001)
+    pub fn htlc_signed_refund(
+        expected_hash: Hash,
+        lock_height: BlockHeight,
+        expiry_height: BlockHeight,
+        refund_pubkey_hash: Hash,
+    ) -> Self {
+        Condition::Or(
+            Box::new(Condition::And(
+                Box::new(Condition::Hashlock(expected_hash)),
+                Box::new(Condition::Timelock(lock_height)),
+            )),
+            Box::new(Condition::And(
+                Box::new(Condition::Signature(refund_pubkey_hash)),
+                Box::new(Condition::TimelockExpiry(expiry_height)),
+            )),
+        )
+    }
+
+    /// Check if an HTLC condition has a signed refund branch.
+    ///
+    /// Returns true if the condition is `Or(_, branch)` where `branch` contains
+    /// a `Signature` node. Used to validate that post-activation HTLCs include
+    /// sender authentication on the refund path. (AUDIT-BRIDGE-001)
+    pub fn has_signed_refund(&self) -> bool {
+        match self {
+            Condition::Or(_, right) => Self::contains_signature(right),
+            _ => false,
+        }
+    }
+
+    /// Recursively check if a condition tree contains a Signature node.
+    fn contains_signature(cond: &Condition) -> bool {
+        match cond {
+            Condition::Signature(_) => true,
+            Condition::And(a, b) => Self::contains_signature(a) || Self::contains_signature(b),
+            Condition::Or(a, b) => Self::contains_signature(a) || Self::contains_signature(b),
+            Condition::Threshold { conditions, .. } => {
+                conditions.iter().any(Self::contains_signature)
+            }
+            _ => false,
+        }
     }
 
     /// Create a vesting condition: signature + timelock.

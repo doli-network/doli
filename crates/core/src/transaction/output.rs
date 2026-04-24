@@ -258,15 +258,24 @@ impl Output {
         Self::conditioned(OutputType::Hashlock, amount, pubkey_hash, &cond)
     }
 
-    /// Create an HTLC output.
+    /// Create an HTLC output with signed refund (AUDIT-BRIDGE-001).
+    ///
+    /// `refund_pubkey_hash` is the creator/sender who can reclaim after expiry.
+    /// The refund branch requires their signature, preventing front-running.
     pub fn htlc(
         amount: Amount,
         pubkey_hash: Hash,
         expected_hash: Hash,
         lock_height: BlockHeight,
         expiry_height: BlockHeight,
+        refund_pubkey_hash: Hash,
     ) -> Result<Self, crate::conditions::ConditionError> {
-        let cond = crate::conditions::Condition::htlc(expected_hash, lock_height, expiry_height);
+        let cond = crate::conditions::Condition::htlc_signed_refund(
+            expected_hash,
+            lock_height,
+            expiry_height,
+            refund_pubkey_hash,
+        );
         Self::conditioned(OutputType::HTLC, amount, pubkey_hash, &cond)
     }
 
@@ -584,7 +593,12 @@ impl Output {
                 expiry: expiry_height,
             });
         }
-        let cond = crate::conditions::Condition::htlc(expected_hash, lock_height, expiry_height);
+        let cond = crate::conditions::Condition::htlc_signed_refund(
+            expected_hash,
+            lock_height,
+            expiry_height,
+            pubkey_hash,
+        );
         let condition_bytes = cond.encode()?;
         let metadata_len =
             BRIDGE_HTLC_HEADER_SIZE + target_address.len() + BRIDGE_HTLC_COUNTER_HASH_SIZE;

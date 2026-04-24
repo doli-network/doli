@@ -364,6 +364,18 @@ pub(super) fn validate_outputs(
                                 )));
                             }
                         }
+                        // AUDIT-BRIDGE-001: After activation, HTLC outputs must have
+                        // a signature on the refund branch to prevent front-running.
+                        if output.output_type == OutputType::HTLC
+                            && ctx.current_height >= ctx.htlc_signed_refund_height
+                            && !cond.has_signed_refund()
+                        {
+                            return Err(ValidationError::InvalidTransaction(format!(
+                                "[ERRTX-HTLC001] HTLC output {} has unsigned refund branch \
+                                 (requires Signature after h={})",
+                                i, ctx.htlc_signed_refund_height
+                            )));
+                        }
                     }
                     Err(e) => {
                         return Err(ValidationError::InvalidTransaction(format!(
@@ -456,11 +468,26 @@ pub(super) fn validate_outputs(
                         i
                     )));
                 }
-                if let Err(e) = crate::conditions::Condition::decode_prefix(&output.extra_data) {
-                    return Err(ValidationError::InvalidTransaction(format!(
-                        "[ERRTX022] BridgeHTLC output {} has invalid condition: {}",
-                        i, e
-                    )));
+                match crate::conditions::Condition::decode_prefix(&output.extra_data) {
+                    Ok((cond, _consumed)) => {
+                        // AUDIT-BRIDGE-001: After activation, BridgeHTLC must have
+                        // a signature on the refund branch.
+                        if ctx.current_height >= ctx.htlc_signed_refund_height
+                            && !cond.has_signed_refund()
+                        {
+                            return Err(ValidationError::InvalidTransaction(format!(
+                                "[ERRTX-HTLC002] BridgeHTLC output {} has unsigned refund branch \
+                                 (requires Signature after h={})",
+                                i, ctx.htlc_signed_refund_height
+                            )));
+                        }
+                    }
+                    Err(e) => {
+                        return Err(ValidationError::InvalidTransaction(format!(
+                            "[ERRTX022] BridgeHTLC output {} has invalid condition: {}",
+                            i, e
+                        )));
+                    }
                 }
                 if output.bridge_htlc_metadata().is_none() {
                     return Err(ValidationError::InvalidTransaction(format!(

@@ -227,29 +227,64 @@ async fn install_binary_sudo(binary: &[u8], target: &Path) -> Result<()> {
 /// passed without rejection). It bypasses the veto/approval checks in `apply_update()`
 /// because those were already verified by the UpdateService.
 ///
+/// # Arguments
+/// * `version` - Semantic version string (e.g., "1.0.27")
+/// * `signed_checksums_sha256` - SHA-256 hash of CHECKSUMS.txt that was verified
+///   against maintainer signatures. This anchors the entire chain of trust:
+///   signatures → CHECKSUMS.txt hash → per-platform binary hash → tarball.
+///   Without this parameter, re-fetching CHECKSUMS.txt creates a TOCTOU window
+///   where a compromised GitHub release could serve different content after
+///   signature verification. (Fix for AUDIT-UPDATE-002)
+///
 /// Steps:
-/// 1. Fetch release info from GitHub (to get tarball URL)
-/// 2. Download the tarball
-/// 3. Verify SHA-256 hash
-/// 4. Extract doli-node binary
-/// 5. Backup current binary
-/// 6. Install new binary via atomic rename
+/// 1. Fetch release info from GitHub (to get tarball URL + CHECKSUMS.txt)
+/// 2. Verify CHECKSUMS.txt integrity against signed hash (closes TOCTOU)
+/// 3. Parse per-platform binary hash from CHECKSUMS.txt
+/// 4. Download the tarball
+/// 5. Verify tarball hash against per-platform hash
+/// 6. Extract doli-node binary
+/// 7. Backup current binary
+/// 8. Install new binary via atomic rename
 ///
 /// Does NOT call `restart_node()` — the caller is responsible for that
 /// (because it needs to clean up state before exec()).
-pub async fn auto_apply_from_github(version: &str) -> Result<()> {
+pub async fn auto_apply_from_github(version: &str, signed_checksums_sha256: &str) -> Result<()> {
     info!("Auto-applying approved update v{}...", version);
 
-    // 1. Fetch release info (gets tarball URL + expected hash)
+    // 1. Fetch release info (gets tarball URL + CHECKSUMS.txt content)
     let release_info = crate::fetch_github_release(Some(version)).await?;
 
-    // 2. Download tarball
+    // 2. SECURITY: Verify the freshly-fetched CHECKSUMS.txt matches what was signed.
+    //    This closes the TOCTOU window (AUDIT-UPDATE-002): signatures were verified
+    //    against `signed_checksums_sha256` earlier; we must ensure the CHECKSUMS.txt
+    //    we just fetched produces the same hash.
+    //    Note: `release_info.checksums_sha256` is computed by `fetch_github_release()`
+    //    as SHA256 of the downloaded CHECKSUMS.txt file.
+    if !release_info
+        .checksums_sha256
+        .eq_ignore_ascii_case(signed_checksums_sha256)
+    {
+        error!(
+            "CHECKSUMS.txt integrity failure: signed={}, fetched={}. \
+             Possible TOCTOU attack — GitHub release may have been modified after signing.",
+            signed_checksums_sha256, release_info.checksums_sha256
+        );
+        return Err(UpdateError::HashMismatch {
+            expected: signed_checksums_sha256.to_string(),
+            actual: release_info.checksums_sha256.clone(),
+        });
+    }
+    info!("CHECKSUMS.txt integrity verified against signed hash");
+
+    // 3. Download tarball
     info!("Downloading v{} tarball...", version);
     let tarball = crate::download_from_url(&release_info.tarball_url).await?;
 
-    // 3. Verify hash
+    // 4. Verify tarball hash against the per-platform hash from CHECKSUMS.txt
+    //    (AUDIT-UPDATE-005 fix: `expected_hash` is the per-platform binary hash
+    //    parsed from CHECKSUMS.txt, NOT SHA256(CHECKSUMS.txt) itself)
     crate::verify_hash(&tarball, &release_info.expected_hash)?;
-    info!("Checksum verified for v{}", version);
+    info!("Tarball checksum verified for v{}", version);
 
     // 4. Extract doli-node binary
     let binary = extract_binary_from_tarball(&tarball)?;

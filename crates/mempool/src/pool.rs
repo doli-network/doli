@@ -132,7 +132,8 @@ impl Mempool {
             .with_sig_verification_height(self.network.params().sig_verification_height)
             .with_encrypted_content_activation_height(
                 self.network.params().encrypted_content_activation_height,
-            );
+            )
+            .with_htlc_signed_refund_height(self.network.params().htlc_signed_refund_height);
         validate_transaction(&tx, &ctx)
             .map_err(|e| MempoolError::InvalidTransaction(e.to_string()))?;
 
@@ -358,7 +359,8 @@ impl Mempool {
             .with_sig_verification_height(self.network.params().sig_verification_height)
             .with_encrypted_content_activation_height(
                 self.network.params().encrypted_content_activation_height,
-            );
+            )
+            .with_htlc_signed_refund_height(self.network.params().htlc_signed_refund_height);
         validate_transaction(&tx, &ctx)
             .map_err(|e| MempoolError::InvalidTransaction(e.to_string()))?;
 

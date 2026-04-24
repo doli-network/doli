@@ -357,8 +357,14 @@ pub struct GithubReleaseInfo {
     pub version: String,
     /// Direct download URL for the platform tarball
     pub tarball_url: String,
-    /// Expected SHA-256 hash from CHECKSUMS.txt
+    /// Expected SHA-256 hash of the platform tarball (parsed from CHECKSUMS.txt)
     pub expected_hash: String,
+    /// SHA-256 hash of the CHECKSUMS.txt file itself.
+    /// This is the value that maintainer signatures cover:
+    /// `sign("{version}:{checksums_sha256}")`.
+    /// Used to verify CHECKSUMS.txt integrity against the signed hash,
+    /// closing the TOCTOU window (AUDIT-UPDATE-002).
+    pub checksums_sha256: String,
     /// Release changelog (body from GitHub)
     pub changelog: String,
 }
@@ -434,8 +440,13 @@ pub async fn fetch_github_release(version: Option<&str>) -> Result<GithubRelease
             UpdateError::DownloadFailed("CHECKSUMS.txt not found in release assets".into())
         })?;
 
-    // Download and parse CHECKSUMS.txt
+    // Download and parse CHECKSUMS.txt, computing its SHA-256 for TOCTOU verification
     let checksums_body = download_from_url(checksums_url).await?;
+    let checksums_sha256 = {
+        let mut hasher = Sha256::new();
+        hasher.update(&checksums_body);
+        hex::encode(hasher.finalize())
+    };
     let checksums_text = String::from_utf8_lossy(&checksums_body);
 
     let triple = platform_target_triple();
@@ -475,6 +486,7 @@ pub async fn fetch_github_release(version: Option<&str>) -> Result<GithubRelease
         version: version_str.to_string(),
         tarball_url,
         expected_hash,
+        checksums_sha256,
         changelog,
     })
 }

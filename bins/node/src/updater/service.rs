@@ -461,7 +461,18 @@ impl UpdateService {
             current_version()
         );
 
-        match auto_apply_from_github(version).await {
+        // Extract the signed checksums hash from the pending release.
+        // This is SHA256(CHECKSUMS.txt) that was verified against maintainer signatures.
+        // Passing it to auto_apply_from_github closes the TOCTOU window (AUDIT-UPDATE-002).
+        let signed_checksums_sha256 = {
+            let pending = self.pending.read().await;
+            pending
+                .as_ref()
+                .map(|p| p.release.binary_sha256.clone())
+                .unwrap_or_default()
+        };
+
+        match auto_apply_from_github(version, &signed_checksums_sha256).await {
             Ok(()) => {
                 info!("Update v{} installed successfully, restarting...", version);
 

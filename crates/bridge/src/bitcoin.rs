@@ -223,21 +223,38 @@ impl BitcoinClient {
                 let value_btc = vout.get("value").and_then(|v| v.as_f64()).unwrap_or(0.0);
                 let amount_sat = (value_btc * 1e8) as u64;
 
-                // Check the scriptPubKey for P2WSH or P2SH that might contain an HTLC
+                // Validate the scriptPubKey is a P2WSH output (OP_0 <32-byte hash>).
+                // AUDIT-BRIDGE-002: Previously used string matching (asm.contains(hash))
+                // which could be spoofed with OP_RETURN or other script types
+                // containing the hash bytes.
                 let script_hex = vout
                     .get("scriptPubKey")
                     .and_then(|s| s.get("hex"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                let asm = vout
+                let script_type = vout
                     .get("scriptPubKey")
-                    .and_then(|s| s.get("asm"))
+                    .and_then(|s| s.get("type"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
 
-                // Look for watched hashes in the script ASM or hex
+                // Only consider P2WSH outputs (witness_v0_scripthash).
+                // The HTLC hash is inside the witness script, not in the
+                // scriptPubKey itself, so we match by witness script hash.
+                if script_type != "witness_v0_scripthash" {
+                    continue;
+                }
+                // P2WSH scriptPubKey = OP_0 (0x00) + PUSH32 (0x20) + 32-byte hash
+                if script_hex.len() != 68 || !script_hex.starts_with("0020") {
+                    continue;
+                }
+                let witness_script_hash = &script_hex[4..]; // 64 hex chars
+
                 for (watched_hash, swap_id) in watch_hashes {
-                    if asm.contains(watched_hash) || script_hex.contains(watched_hash) {
+                    // Match by the P2WSH witness script hash.
+                    // The watcher must provide SHA256(witness_script) as watched_hash,
+                    // NOT the HTLC preimage hash directly.
+                    if witness_script_hash == watched_hash {
                         detected.push((
                             DetectedBtcHtlc {
                                 txid: txid.to_string(),
@@ -245,7 +262,7 @@ impl BitcoinClient {
                                 amount_sat,
                                 confirmations,
                                 hash: watched_hash.clone(),
-                                locktime: 0, // TODO: parse from witness script
+                                locktime: 0,
                             },
                             swap_id.clone(),
                         ));
