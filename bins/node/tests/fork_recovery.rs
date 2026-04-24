@@ -4,8 +4,8 @@
 //! and real fork recovery counters. No networking, no gossip — blocks are injected
 //! manually to simulate forks and peer synchronization.
 //!
-//! Every fork recovery field (cumulative_rollback_depth, consecutive_fork_blocks,
-//! epoch_state) is the REAL field from the production Node. No mocks. No shortcuts.
+//! Every fork recovery field (cumulative_rollback_depth, epoch_state) is the
+//! REAL field from the production Node. No mocks. No shortcuts.
 
 use crypto::{Hash, KeyPair};
 use doli_core::consensus::ConsensusParams;
@@ -184,33 +184,6 @@ async fn test_cumulative_rollback_resets_on_sync() {
 }
 
 // ============================================================
-// TEST 3: Consecutive fork blocks not reset to 0 after rollback
-// ============================================================
-#[tokio::test]
-async fn test_consecutive_fork_blocks_not_reset() {
-    let (mut node, producers, _tmp) = make_node(3).await;
-    let params = node.params.clone();
-
-    // Build and apply 15 blocks
-    let chain = build_chain(1, 1, Hash::ZERO, &producers[0], 15, &params);
-    apply_chain(&mut node, &chain).await;
-
-    // Simulate 8 consecutive fork-blocked slots
-    node.consecutive_fork_blocks = 8;
-
-    // Rollback 1 block (simulating what maybe_auto_resync does)
-    node.rollback_one_block().await.unwrap();
-
-    // consecutive_fork_blocks should NOT be reset to 0
-    // NOTE: This test will FAIL before the fix. That's the point.
-    assert!(
-        node.consecutive_fork_blocks > 0,
-        "consecutive_fork_blocks should NOT reset to 0 after rollback, got {}",
-        node.consecutive_fork_blocks
-    );
-}
-
-// ============================================================
 // TEST 4: Complete recovery from 20-block fork
 // ============================================================
 #[tokio::test]
@@ -368,7 +341,6 @@ async fn test_no_refork_after_recovery() {
         continuation[99].hash()
     );
     // Counters should be clean
-    assert_eq!(node.consecutive_fork_blocks, 0);
     assert_eq!(node.shallow_rollback_count, 0);
 }
 

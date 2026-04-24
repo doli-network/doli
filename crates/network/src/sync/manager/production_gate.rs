@@ -13,19 +13,6 @@ impl SyncManager {
     // PRODUCTION GATE - Single source of truth for block production authorization
     // =========================================================================
 
-    /// Update fork detection and gossip state. Call BEFORE can_produce().
-    ///
-    /// Side effects extracted from can_produce() to make it a pure query.
-    /// This fixes a class of race-like bugs where a "read" operation (can_produce)
-    /// mutated state, causing the system to behave differently depending on how
-    /// often production was checked.
-    /// Pre-production state update. Currently a no-op after M2 simplification —
-    /// can_produce() does its own hash comparison inline. Kept as a hook for
-    /// callers that still call it before can_produce().
-    pub fn update_production_state(&mut self) {
-        // M2: All side effects removed. can_produce() now checks hash agreement inline each call.
-    }
-
     /// Check if block production is authorized.
     ///
     /// M2 redesign: 3 checks replace the former 11-layer defense-in-depth.
@@ -483,11 +470,6 @@ impl SyncManager {
     // =========================================================================
     // DIAGNOSTICS
     // =========================================================================
-
-    /// Check if sync failures indicate we're on a fork (no-op, kept for API compatibility)
-    pub fn has_sync_failure_fork_indicator(&self) -> bool {
-        false
-    }
 
     /// Network tip height (best seen via gossip or peer status)
     pub fn network_tip_height(&self) -> u64 {

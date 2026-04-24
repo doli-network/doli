@@ -758,10 +758,10 @@ impl Node {
             let snap_bonds: u64 = self.epoch_state.bond_snapshot.values().sum();
             let snap_producers = self.epoch_state.bond_snapshot.len();
             warn!(
-                "[HEALTH] h={} s={} hash={:.8} | peers={} best_peer_h={} best_peer_s={} net_tip_h={} net_tip_s={} | sync_fails={} fork_counter={} state={:?} | snap_epoch={} snap_bonds={} snap_producers={}",
+                "[HEALTH] h={} s={} hash={:.8} | peers={} best_peer_h={} best_peer_s={} net_tip_h={} net_tip_s={} | sync_fails={} state={:?} | snap_epoch={} snap_bonds={} snap_producers={}",
                 cs.best_height, cs.best_slot, cs.best_hash,
                 peer_count, best_peer_h, best_peer_s, net_tip_h, net_tip_s,
-                sync_fails, self.consecutive_fork_blocks, sync.sync_state_name(),
+                sync_fails, sync.sync_state_name(),
                 self.epoch_state.epoch, snap_bonds, snap_producers
             );
 

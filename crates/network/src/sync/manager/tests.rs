@@ -235,8 +235,8 @@ fn test_ahead_of_network_tip_still_produces() {
     let result = manager.can_produce(140);
     // With Layer 7 removed, this should be authorized
     assert!(
-        !matches!(result, ProductionAuthorization::BlockedAheadOfPeers { .. }),
-        "Layer 7 removed: should not block as AheadOfPeers, got: {:?}",
+        matches!(result, ProductionAuthorization::Authorized),
+        "Layer 7 removed: should be Authorized, got: {:?}",
         result
     );
 }

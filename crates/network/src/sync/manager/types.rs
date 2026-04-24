@@ -185,54 +185,12 @@ pub enum ProductionAuthorization {
     Authorized,
     /// Production is blocked during active sync
     BlockedSyncing,
-    /// Production is blocked due to resync in progress
-    BlockedResync {
-        /// Seconds remaining in grace period
-        grace_remaining_secs: u64,
-    },
-    /// Production is blocked - we're too far behind peers
-    BlockedBehindPeers {
-        /// Our height
-        local_height: u64,
-        /// Best peer height
-        peer_height: u64,
-        /// Height difference
-        height_diff: u64,
-    },
-    /// Production is blocked - we're suspiciously ahead of all peers (likely forked)
-    BlockedAheadOfPeers {
-        /// Our height
-        local_height: u64,
-        /// Best peer height
-        peer_height: u64,
-        /// How far ahead we are
-        height_ahead: u64,
-    },
-    /// Production blocked: critical chain mismatch with connected peer (P0 #1)
-    BlockedChainMismatch {
-        peer_id: PeerId,
-        local_hash: Hash,
-        peer_hash: Hash,
-        local_height: u64,
-    },
     /// Production is blocked - too few peers to safely validate chain (echo chamber prevention)
     BlockedInsufficientPeers {
         /// Current peer count
         peer_count: usize,
         /// Minimum required
         min_required: usize,
-    },
-    /// Production is blocked due to excessive sync failures (likely on a fork)
-    BlockedSyncFailures {
-        /// How many consecutive sync failures
-        failure_count: u32,
-    },
-    /// Production is blocked due to no gossip activity (likely isolated)
-    BlockedNoGossipActivity {
-        /// Seconds since last gossip block
-        seconds_since_gossip: u64,
-        /// Number of connected peers
-        peer_count: usize,
     },
     /// Production is explicitly blocked (e.g., invariant violation)
     BlockedExplicit {
@@ -243,11 +201,6 @@ pub enum ProductionAuthorization {
     BlockedBootstrap {
         /// Reason for bootstrap block
         reason: String,
-    },
-    /// Production is blocked because our chain conflicts with a finalized block.
-    BlockedConflictsFinality {
-        /// Height of the last finalized block.
-        local_finalized_height: u64,
     },
     /// Production is blocked after snap sync until a canonical gossip block is received.
     /// Prevents producing on an empty block store before the node proves it's on the

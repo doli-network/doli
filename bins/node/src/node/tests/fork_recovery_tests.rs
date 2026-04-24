@@ -4,8 +4,8 @@
 //! and real fork recovery counters. No networking, no gossip — blocks are injected
 //! manually to simulate forks and peer synchronization.
 //!
-//! Every fork recovery field (cumulative_rollback_depth, consecutive_fork_blocks,
-//! epoch_state) is the REAL field from the production Node. No mocks. No shortcuts.
+//! Every fork recovery field (cumulative_rollback_depth, epoch_state) is the
+//! REAL field from the production Node. No mocks. No shortcuts.
 
 use super::*;
 use tempfile::TempDir;
@@ -87,7 +87,6 @@ async fn test_node_for_test_initializes() {
     assert_eq!(node.chain_state.read().await.best_height, 0);
     assert_eq!(node.producer_set.read().await.active_count(), 3);
     assert_eq!(node.cumulative_rollback_depth, 0);
-    assert_eq!(node.consecutive_fork_blocks, 0);
     assert_eq!(node.shallow_rollback_count, 0);
     assert_eq!(node.epoch_state.bond_snapshot.len(), 3);
     assert!(node.producer_key.is_some());

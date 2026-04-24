@@ -119,8 +119,6 @@ pub struct Node {
     pub vdf_calibrator: Arc<RwLock<VdfCalibrator>>,
     /// Cache of blocks received during forks (for reorg execution)
     pub fork_block_cache: Arc<RwLock<HashMap<Hash, Block>>>,
-    /// Last time we triggered a forced resync (cooldown to prevent loops)
-    pub last_resync_time: Option<Instant>,
     /// Time when the bootstrap producer list last changed (for stability check)
     pub last_producer_list_change: Option<Instant>,
     /// Producer discovery CRDT with cryptographic announcements
@@ -136,9 +134,6 @@ pub struct Node {
     pub last_broadcast_gset_len: usize,
     /// Signed slots database (prevents double-signing after restart)
     pub signed_slots_db: Option<SignedSlotsDb>,
-    /// Consecutive slots where production was blocked due to fork detection
-    /// (AheadOfPeers, SyncFailures, ChainMismatch). Triggers auto-resync when threshold exceeded.
-    pub consecutive_fork_blocks: u32,
     /// Number of shallow fork rollbacks performed since last successful sync.
     /// Capped at MAX_SHALLOW_ROLLBACKS to prevent rolling back the entire chain.
     pub shallow_rollback_count: u32,
