@@ -1,6 +1,117 @@
 use super::*;
 
+// =============================================================================
+// Block classification — pure decision logic, no side effects
+// =============================================================================
+
+/// Classification of a gossip block relative to our current chain state.
+/// Separates the decision (what kind of block is this?) from the action
+/// (what do we do about it?), making the logic testable and self-documenting.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum BlockClass {
+    /// Block extends our current tip — apply directly.
+    ExtendsTip,
+    /// Fork block: parent known, competes with canonical chain.
+    ForkBlock(ForkBlockKind),
+    /// Orphan: parent not in our block store.
+    Orphan {
+        /// Height we need to request from the sender.
+        need_height: u64,
+    },
+    /// Rejected: different chain, fork_id mismatch, etc.
+    Rejected(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum ForkBlockKind {
+    /// Height already occupied by a different canonical block — drop.
+    HeightOccupied {
+        fork_height: u64,
+        canonical_slot: u32,
+        /// True if the fork block has a better (lower) slot than canonical.
+        is_better: bool,
+    },
+    /// Parent known but no height conflict — cache for potential reorg.
+    ReorgCandidate,
+}
+
+/// Pure classification function: determines what kind of gossip block this is
+/// without performing any side effects (no caching, no network requests, no
+/// state mutations). All inputs are read-only snapshots of node state.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn classify_gossip_block(
+    block: &Block,
+    block_hash: Hash,
+    best_hash: Hash,
+    best_height: u64,
+    genesis_hash: Hash,
+    our_fork_id: Hash,
+    fork_id_activation_height: u64,
+    block_store: &BlockStore,
+) -> BlockClass {
+    // ExtendsTip: block builds directly on our chain tip
+    if block.header.prev_hash == best_hash {
+        return BlockClass::ExtendsTip;
+    }
+
+    // Reject blocks from a different chain (different genesis hash)
+    if block.header.genesis_hash != genesis_hash {
+        return BlockClass::Rejected(format!(
+            "different chain (genesis {:.16} != {:.16})",
+            block.header.genesis_hash, genesis_hash
+        ));
+    }
+
+    // Reject blocks with different fork_id (different hard fork set)
+    if best_height >= fork_id_activation_height && block.header.fork_id != our_fork_id {
+        return BlockClass::Rejected(format!(
+            "fork_id mismatch ({:.16} != {:.16})",
+            block.header.fork_id, our_fork_id
+        ));
+    }
+
+    // Check if parent is in our block store
+    if let Ok(Some(parent_height)) = block_store.get_height_by_hash(&block.header.prev_hash) {
+        let fork_height = parent_height + 1;
+        if let Ok(Some(canonical)) = block_store.get_block_by_height(fork_height) {
+            if canonical.hash() != block_hash {
+                // Height occupied by a different canonical block
+                return BlockClass::ForkBlock(ForkBlockKind::HeightOccupied {
+                    fork_height,
+                    canonical_slot: canonical.header.slot,
+                    is_better: block.header.slot < canonical.header.slot,
+                });
+            }
+        }
+        // Parent known, no height conflict → reorg candidate
+        return BlockClass::ForkBlock(ForkBlockKind::ReorgCandidate);
+    }
+
+    // Parent not in store → orphan
+    BlockClass::Orphan {
+        need_height: best_height + 1,
+    }
+}
+
+// =============================================================================
+// Block handling — dispatch actions based on classification
+// =============================================================================
+
 impl Node {
+    /// Insert a block into the fork cache with unified slot-sorted eviction.
+    async fn cache_block_with_eviction(&self, hash: Hash, block: Block) {
+        let mut cache = self.fork_block_cache.write().await;
+        cache.insert(hash, block);
+        if cache.len() > 100 {
+            let mut blocks_by_slot: Vec<(Hash, u32)> =
+                cache.iter().map(|(h, b)| (*h, b.header.slot)).collect();
+            blocks_by_slot.sort_by_key(|(_, slot)| *slot);
+            for (hash, _) in blocks_by_slot.into_iter().take(50) {
+                cache.remove(&hash);
+            }
+        }
+    }
+
     /// Handle a new block from the network
     pub async fn handle_new_block(&mut self, block: Block, source_peer: PeerId) -> Result<()> {
         let block_hash = block.hash();
@@ -11,7 +122,7 @@ impl Node {
         let apply_start = Instant::now();
         info!("[APPLY_START] slot={} hash={}", block_slot, block_hash);
 
-        // Check if we already have this block
+        // Pre-check: already known?
         if self.block_store.get_block(&block_hash)?.is_some() {
             debug!("Block {} already known", block_hash);
             info!(
@@ -22,114 +133,85 @@ impl Node {
             return Ok(());
         }
 
-        // Check for equivocation (double signing) - even for forks
-        // This is critical for slashing misbehaving producers
+        // Check for equivocation (double signing) - even for forks.
+        // This is critical for slashing misbehaving producers.
         let equivocation_proof = { self.equivocation_detector.write().await.check_block(&block) };
         if let Some(proof) = equivocation_proof {
-            // Equivocation detected! Create and submit slash transaction
             self.handle_equivocation(proof).await;
         }
 
-        // Check if block builds on our chain
-        let state = self.chain_state.read().await;
-        if block.header.prev_hash != state.best_hash {
-            // Might be a reorg or we're out of sync
-            let current_tip = state.best_hash;
-            let current_height = state.best_height;
-            drop(state);
+        // Classify the block against our current chain state
+        let (best_hash, best_height, genesis_hash) = {
+            let state = self.chain_state.read().await;
+            (state.best_hash, state.best_height, state.genesis_hash)
+        };
+        let our_fork_id = self.current_fork_id();
+        let fork_id_activation = self.config.network.params().fork_id_activation_height;
 
-            // Reject blocks from a different chain (different genesis hash).
-            // Without this, zombie nodes on old chains contaminate our block
-            // store via fork recovery, causing "common ancestor not found".
-            let our_genesis = self.chain_state.read().await.genesis_hash;
-            if block.header.genesis_hash != our_genesis {
-                debug!(
-                    "Dropping block {} from different chain (genesis {} != {})",
-                    block_hash,
-                    block.header.genesis_hash.to_hex()[..16].to_string(),
-                    our_genesis.to_hex()[..16].to_string(),
-                );
+        let class = classify_gossip_block(
+            &block,
+            block_hash,
+            best_hash,
+            best_height,
+            genesis_hash,
+            our_fork_id,
+            fork_id_activation,
+            &self.block_store,
+        );
+
+        match class {
+            BlockClass::Rejected(reason) => {
+                debug!("[CLASSIFY] Dropping block {}: {}", block_hash, reason);
                 return Ok(());
             }
 
-            // Fork identity — reject blocks from nodes with different active hard forks.
-            // Same level of filtering as genesis_hash: O(1), pre-validation drop.
-            let fork_id_activation = self.config.network.params().fork_id_activation_height;
-            if current_height >= fork_id_activation {
-                let our_fork_id = self.current_fork_id();
-                if block.header.fork_id != our_fork_id {
-                    debug!(
-                        "[FORK_ID] Dropping block {} at h={} — fork_id {} != {}",
-                        block_hash,
-                        current_height,
-                        &block.header.fork_id.to_hex()[..16],
-                        &our_fork_id.to_hex()[..16],
+            BlockClass::ForkBlock(ForkBlockKind::HeightOccupied {
+                fork_height,
+                canonical_slot,
+                is_better,
+            }) => {
+                // Height-occupied fork guard: discard blocks that don't extend our tip
+                // if we already have canonical chain at or above their height.
+                //
+                // Legitimate reorg comes through header-first sync, not gossip.
+                // O(1): one get_block_height + one get_block_by_height lookup.
+                if is_better {
+                    // INC-I-040: If the dropped block has a BETTER (lower) slot,
+                    // WE are on the losing fork. Signal stuck_fork directly for
+                    // immediate recovery via resolve_shallow_fork on the next
+                    // periodic tick (~1s).
+                    info!(
+                        "[FORK_GUARD] Better block dropped (slot {} < {}) at h={} — \
+                         signaling fork recovery",
+                        block_slot, canonical_slot, fork_height
                     );
-                    return Ok(());
+                    self.sync_manager.write().await.signal_stuck_fork();
+                } else {
+                    info!(
+                        "[FORK_GUARD] Dropping fork block {} at h={} slot {} — keeping canonical slot {}",
+                        &block_hash.to_hex()[..16],
+                        fork_height,
+                        block_slot,
+                        canonical_slot
+                    );
+                    // INC-I-036: Do NOT call note_orphan_gossip_block() here.
+                    // Fork blocks with known parents are NOT orphans. Calling it
+                    // inflated the orphan counter, triggering false-positive
+                    // rollbacks after 3 fork blocks (190 rollbacks in 19 minutes).
                 }
+                return Ok(());
             }
 
-            // Height-occupied guard: discard blocks that don't extend our tip
-            // if we already have canonical chain at or above their height.
-            //
-            // A fork block's parent exists in our store (shared history) but
-            // we already have a different canonical block at parent_height+1.
-            // Letting it into the fork cache triggers fork recovery → rollback
-            // cascade → block store gaps → stuck nodes.
-            //
-            // Legitimate reorg comes through header-first sync, not gossip.
-            // O(1): one get_block_height + one get_block_by_height lookup.
-            if let Ok(Some(parent_height)) =
-                self.block_store.get_height_by_hash(&block.header.prev_hash)
-            {
-                let fork_block_height = parent_height + 1;
-                if let Ok(Some(canonical)) = self.block_store.get_block_by_height(fork_block_height)
-                {
-                    if canonical.hash() != block_hash {
-                        // Fork block at same height — drop it regardless of slot.
-                        // Never rollback in the hot path. If we're genuinely on a
-                        // minority fork, resolve_shallow_fork() handles it safely
-                        // via the periodic task (with backoff, cumulative cap, etc.).
-                        // FORK_CHOICE (direct reorg) was removed: 397 attempts,
-                        // 1 success, 396 failures — net negative.
-                        //
-                        // INC-I-040: If the dropped block has a BETTER (lower) slot,
-                        // WE are on the losing fork. Signal stuck_fork directly for
-                        // immediate recovery via resolve_shallow_fork on the next
-                        // periodic tick (~1s), instead of routing through
-                        // note_orphan_gossip_block which had an unreachable signal path.
-                        if block.header.slot < canonical.header.slot {
-                            info!(
-                                "[FORK_GUARD] Better block dropped (slot {} < {}) at h={} — \
-                                 signaling fork recovery",
-                                block.header.slot, canonical.header.slot, fork_block_height
-                            );
-                            self.sync_manager.write().await.signal_stuck_fork();
-                        } else {
-                            info!(
-                                "[FORK_GUARD] Dropping fork block {} at h={} slot {} — keeping canonical slot {}",
-                                &block_hash.to_hex()[..16],
-                                fork_block_height,
-                                block.header.slot,
-                                canonical.header.slot
-                            );
-                            self.sync_manager
-                                .write()
-                                .await
-                                .note_orphan_gossip_block(fork_block_height, block.header.slot);
-                        }
-                        return Ok(());
-                    }
-                }
-            } else {
+            BlockClass::Orphan { need_height } => {
                 // Parent not in store — orphan gossip block. The sender has the
                 // missing block (they passed through our height to produce this one).
                 // Request it directly: causal, deterministic, no heuristics.
-                let need_height = current_height + 1;
+                //
+                // STABILITY PILLAR: ORPHAN_CHASE — do not modify this request logic.
                 if let Some(ref network) = self.network {
                     info!(
                         "[ORPHAN_CHASE] Requesting h={} from {} (orphan block {:.8} at slot {})",
-                        need_height, source_peer, block_hash, block.header.slot
+                        need_height, source_peer, block_hash, block_slot
                     );
                     let request = SyncRequest::GetBlockByHeight {
                         height: need_height,
@@ -139,144 +221,106 @@ impl Node {
                 self.sync_manager
                     .write()
                     .await
-                    .note_orphan_gossip_block(current_height + 1, block.header.slot);
+                    .note_orphan_gossip_block(need_height, block_slot);
                 // Cache the orphan so it's available when the missing parent arrives.
-                // Without this, the orphan is lost and we wait for gossip re-delivery.
-                {
-                    let mut cache = self.fork_block_cache.write().await;
-                    cache.insert(block_hash, block.clone());
-                    if cache.len() > 100 {
-                        let oldest = cache.keys().next().copied();
-                        if let Some(k) = oldest {
-                            cache.remove(&k);
+                self.cache_block_with_eviction(block_hash, block).await;
+                return Ok(());
+            }
+
+            BlockClass::ForkBlock(ForkBlockKind::ReorgCandidate) => {
+                // Parent is in our store but block doesn't extend our tip.
+                // Cache it for potential reorg evaluation.
+                self.cache_block_with_eviction(block_hash, block.clone())
+                    .await;
+
+                debug!(
+                    "Block {} doesn't build on tip {} (builds on {}), cached for potential reorg",
+                    block_hash, best_hash, block.header.prev_hash
+                );
+
+                // Check for reorg using weight-based fork choice rule
+                let producer_weight = {
+                    let producers = self.producer_set.read().await;
+                    producers
+                        .get_by_pubkey(&block.header.producer)
+                        .map(|p| p.effective_weight(best_height + 1))
+                        .unwrap_or(1)
+                };
+
+                let reorg_result = {
+                    self.sync_manager
+                        .write()
+                        .await
+                        .handle_new_block_weighted(block.clone(), producer_weight)
+                };
+
+                if let Some(reorg_result) = reorg_result {
+                    info!(
+                        "Reorg to heavier chain: rolling back {} blocks, applying {} new blocks, weight_delta=+{}",
+                        reorg_result.rollback.len(),
+                        reorg_result.new_blocks.len(),
+                        reorg_result.weight_delta
+                    );
+                    if let Err(e) = self.execute_reorg(reorg_result, block).await {
+                        error!("Failed to execute reorg: {}", e);
+                    }
+                } else {
+                    // Reorg detection failed (parent not in our recent blocks).
+                    // Try active fork recovery: walk backward through parent chain.
+                    let can_start = self.sync_manager.read().await.can_start_fork_recovery();
+                    if can_start {
+                        let started = self
+                            .sync_manager
+                            .write()
+                            .await
+                            .start_fork_recovery(block.clone(), source_peer);
+                        if started {
+                            info!(
+                                "Fork recovery started: walking parents from block {} (asking source peer {})",
+                                block_hash, source_peer
+                            );
+                            return Ok(());
+                        }
+                    }
+
+                    // Fallback: Check if we're likely on a fork by looking at RECENT orphan blocks.
+                    let our_slot = self.chain_state.read().await.best_slot;
+                    let our_height = self.chain_state.read().await.best_height;
+                    let cache_size = {
+                        let cache = self.fork_block_cache.read().await;
+                        let slot_window = 30u32;
+                        let min_slot = our_slot.saturating_sub(slot_window);
+                        cache.values().filter(|b| b.header.slot >= min_slot).count()
+                    };
+
+                    if cache_size >= 10 && cache_size % 10 == 0 {
+                        warn!(
+                            "Fork detected: {} orphan blocks don't build on our chain (height {}). Relying on fork recovery + stale chain sync.",
+                            cache_size, our_height
+                        );
+                    }
+
+                    self.try_trigger_fork_recovery().await;
+
+                    if cache_size >= 2 {
+                        debug!(
+                            "Attempting to apply cached chain: {} blocks in cache",
+                            cache_size
+                        );
+                        if let Err(e) = self.try_apply_cached_chain(block).await {
+                            debug!("Could not apply cached chain: {}", e);
                         }
                     }
                 }
                 return Ok(());
             }
 
-            // Cache this block for potential reorg
-            {
-                let mut cache = self.fork_block_cache.write().await;
-                cache.insert(block_hash, block.clone());
-                // Keep cache size reasonable (last 100 fork blocks)
-                // Evict oldest blocks by slot to keep recent fork candidates
-                if cache.len() > 100 {
-                    let mut blocks_by_slot: Vec<(Hash, u32)> =
-                        cache.iter().map(|(h, b)| (*h, b.header.slot)).collect();
-                    blocks_by_slot.sort_by_key(|(_, slot)| *slot);
-                    // Remove oldest 50 blocks
-                    for (hash, _) in blocks_by_slot.into_iter().take(50) {
-                        cache.remove(&hash);
-                    }
-                }
+            BlockClass::ExtendsTip => {
+                // Block extends our tip — apply it
             }
-
-            debug!(
-                "Block {} doesn't build on tip {} (builds on {}), cached for potential reorg",
-                block_hash, current_tip, block.header.prev_hash
-            );
-
-            // Check for reorg using weight-based fork choice rule
-            // Get the producer's effective weight to compare chain weights
-            let producer_weight = {
-                let producers = self.producer_set.read().await;
-                producers
-                    .get_by_pubkey(&block.header.producer)
-                    .map(|p| p.effective_weight(current_height + 1))
-                    .unwrap_or(1) // Default weight 1 for unknown producers (bootstrap)
-            };
-
-            let reorg_result = {
-                self.sync_manager
-                    .write()
-                    .await
-                    .handle_new_block_weighted(block.clone(), producer_weight)
-            };
-
-            if let Some(reorg_result) = reorg_result {
-                // Weight-based fork choice: the new chain is heavier
-                info!(
-                    "Reorg to heavier chain: rolling back {} blocks, applying {} new blocks, weight_delta=+{}",
-                    reorg_result.rollback.len(),
-                    reorg_result.new_blocks.len(),
-                    reorg_result.weight_delta
-                );
-
-                // Execute the reorg
-                if let Err(e) = self.execute_reorg(reorg_result, block).await {
-                    error!("Failed to execute reorg: {}", e);
-                }
-            } else {
-                // Reorg detection failed (parent not in our recent blocks).
-                // Try active fork recovery: walk backward through parent chain
-                // from this orphan block until we connect to our chain.
-                // Use source_peer (who gossiped this block) — they have the fork chain.
-                let can_start = self.sync_manager.read().await.can_start_fork_recovery();
-                if can_start {
-                    let started = self
-                        .sync_manager
-                        .write()
-                        .await
-                        .start_fork_recovery(block.clone(), source_peer);
-                    if started {
-                        info!(
-                            "Fork recovery started: walking parents from block {} (asking source peer {})",
-                            block_hash, source_peer
-                        );
-                        return Ok(());
-                    }
-                }
-
-                // Fallback: Check if we're likely on a fork by looking at RECENT orphan blocks.
-                // Only blocks near our current slot count as fork evidence.
-                // Old blocks from syncing peers are NOT fork evidence.
-                let our_slot = self.chain_state.read().await.best_slot;
-                let our_height = self.chain_state.read().await.best_height;
-                let cache_size = {
-                    let cache = self.fork_block_cache.read().await;
-                    let slot_window = 30u32; // only count blocks within last 30 slots (~5 min)
-                    let min_slot = our_slot.saturating_sub(slot_window);
-                    cache.values().filter(|b| b.header.slot >= min_slot).count()
-                };
-
-                // Many orphan blocks indicate we're on a minority fork.
-                // Stale chain detector + fork recovery handle this — no genesis resync.
-                if cache_size >= 10 && cache_size % 10 == 0 {
-                    warn!(
-                        "Fork detected: {} orphan blocks don't build on our chain (height {}). Relying on fork recovery + stale chain sync.",
-                        cache_size, our_height
-                    );
-                }
-
-                // Try fork recovery for the orphan block
-                self.try_trigger_fork_recovery().await;
-
-                if cache_size >= 2 {
-                    // Try to chain the blocks from cache
-                    debug!(
-                        "Attempting to apply cached chain: {} blocks in cache",
-                        cache_size
-                    );
-
-                    if let Err(e) = self.try_apply_cached_chain(block).await {
-                        debug!("Could not apply cached chain: {}", e);
-                    }
-                }
-            }
-            return Ok(());
         }
-        drop(state);
 
-        // REMOVED: Pre-apply gossip eligibility check.
-        // This check used LOCAL chain state to validate gossip blocks. When the
-        // receiving node was on a micro-fork (different tip), it computed different
-        // eligibility and rejected valid canonical blocks — causing nodes to fall
-        // behind and need expensive sync recovery.
-        //
-        // Full validation happens in apply_block() below, which correctly validates
-        // against the chain state the block actually builds on. Letting apply_block
-        // handle validation is both correct and sufficient.
+        // === ExtendsTip path: apply the block ===
 
         // Apply the block — absorb errors so an invalid gossip block
         // (e.g. from a forked peer) doesn't crash the process.
@@ -301,51 +345,49 @@ impl Node {
                 hex::encode(&block_producer.as_bytes()[..4]),
                 err_str,
             );
-            // NOTE: auto-heal removed. EpochState::derive_at_boundary() is now the
-            // single canonical derivation — called at every epoch boundary in post_commit.
-            // If "invalid producer" is hit, it self-corrects at the next boundary.
             return Ok(());
         }
 
         // A canonical gossip block was applied on our tip — clear the post-snap gate.
-        // This proves we're on the canonical chain and our block store has a real parent.
         self.sync_manager
             .write()
             .await
             .clear_awaiting_canonical_block();
 
-        // Post-apply: check fork cache for the next block (orphan that arrived
-        // before its parent). If found, apply it immediately — no gossip wait.
+        // Post-apply: recursively drain cached orphans that chain on our new tip.
+        // Bounded to 50 iterations to prevent unbounded loops from malicious caches.
         {
-            let new_tip_hash = self.chain_state.read().await.best_hash;
-            let next_from_cache = {
-                let cache = self.fork_block_cache.read().await;
-                cache
-                    .values()
-                    .find(|b| b.header.prev_hash == new_tip_hash)
-                    .cloned()
-            };
-            if let Some(cached_block) = next_from_cache {
-                let cached_hash = cached_block.hash();
-                info!(
-                    "[ORPHAN_APPLY] Applying cached orphan {:.8} (slot {}) from fork cache",
-                    cached_hash, cached_block.header.slot
-                );
-                let _ = self.apply_block(cached_block, mode).await;
-                self.fork_block_cache.write().await.remove(&cached_hash);
+            let mut drained = 0u32;
+            const MAX_DRAIN: u32 = 50;
+            while drained < MAX_DRAIN {
+                let tip_hash = self.chain_state.read().await.best_hash;
+                let next_from_cache = {
+                    let cache = self.fork_block_cache.read().await;
+                    cache
+                        .values()
+                        .find(|b| b.header.prev_hash == tip_hash)
+                        .cloned()
+                };
+                match next_from_cache {
+                    Some(cached_block) => {
+                        let cached_hash = cached_block.hash();
+                        info!(
+                            "[ORPHAN_APPLY] Applying cached orphan {:.8} (slot {}) from fork cache [{}/{}]",
+                            cached_hash, cached_block.header.slot, drained + 1, MAX_DRAIN
+                        );
+                        self.fork_block_cache.write().await.remove(&cached_hash);
+                        if self.apply_block(cached_block, mode).await.is_err() {
+                            break;
+                        }
+                        drained += 1;
+                    }
+                    None => break,
+                }
             }
         }
 
         // Post-apply catch-up: if any peer has a block above our new tip, pull
-        // the next one immediately instead of waiting for gossip. Without this,
-        // nodes on resource-contended hosts stabilize at a persistent lag of 1:
-        // gossip delivers h=N while the network produces h=N+1, apply takes long
-        // enough that by the time we finish, h=N+1 already exists but our gap
-        // (=1) stays below the sync-manager threshold, so no catch-up fires.
-        //
-        // catch_up_request() is read-only; it returns None when we are actively
-        // syncing, already at tip, or have a pending request for the next block.
-        // Self-limiting: zero requests when caught up.
+        // the next one immediately instead of waiting for gossip.
         let catch_up = self.sync_manager.read().await.catch_up_request();
         if let Some((peer_id, request)) = catch_up {
             if let Some(ref network) = self.network {
@@ -497,10 +539,6 @@ impl Node {
                 match self.block_store.get_block_by_height(target_height)? {
                     Some(b) => Some(b),
                     None => {
-                        // Defense-in-depth: ensure_blocks_present already
-                        // rejected this case. If we somehow reach here, refuse
-                        // rather than silently substituting genesis_hash (the
-                        // pre-fix bug at this site).
                         error!(
                             "[FORK_GUARD_BACKFILL_REQUIRED] Reorg refused: \
                              common ancestor at h={} missing from block_store \
@@ -728,10 +766,6 @@ impl Node {
                     new_block_count,
                     post_height
                 );
-                // CRITICAL: If we rolled back significantly but applied very few blocks,
-                // this was a bad reorg (peer had a different/invalid chain). Log the
-                // damage so the operator knows what happened. Header-first sync will
-                // recover from post_height, but the height loss is real.
                 if pre_reorg_height > post_height + 10 {
                     error!(
                         "CATASTROPHIC REORG: lost {} blocks ({} → {}). \
@@ -742,8 +776,6 @@ impl Node {
                         post_height
                     );
                 }
-                // State is consistent (common ancestor + whatever blocks succeeded).
-                // Don't propagate error — let normal sync fill the gap.
                 return Ok(());
             }
         }

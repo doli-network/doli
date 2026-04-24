@@ -149,6 +149,26 @@ impl Node {
                 .retain(|&s| (s as u64) + 10 > current_slot as u64);
         }
 
+        // TTL sweep: evict cached blocks older than 30 slots (~5 min at 10s/slot).
+        // Blocks that sit in fork_block_cache for this long were never resolved
+        // (parent never arrived, fork never connected). Drop them to free memory
+        // and prevent stale blocks from interfering with future fork recovery.
+        {
+            let current_slot = self.chain_state.read().await.best_slot;
+            const CACHE_TTL_SLOTS: u32 = 30; // ~5 minutes at 10s/slot
+            let min_slot = current_slot.saturating_sub(CACHE_TTL_SLOTS);
+            let mut cache = self.fork_block_cache.write().await;
+            let before = cache.len();
+            cache.retain(|_, b| b.header.slot >= min_slot);
+            let evicted = before - cache.len();
+            if evicted > 0 {
+                info!(
+                    "[CACHE_TTL] Evicted {} stale blocks from fork_block_cache (slot < {})",
+                    evicted, min_slot
+                );
+            }
+        }
+
         // Apply pending sync blocks in correct order BEFORE cleanup.
         //
         // The body downloader fetches blocks in parallel, so they arrive out of order.

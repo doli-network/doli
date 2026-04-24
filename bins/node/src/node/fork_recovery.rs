@@ -830,6 +830,20 @@ impl Node {
         // Step 6: Track snap sync height for validation mode selection
         self.snap_sync_height = Some(snapshot.block_height);
 
+        // Step 6b: Clear fork_block_cache — pre-snap cached blocks are stale
+        // and would waste memory, pollute eviction, and cause pointless validation.
+        {
+            let mut cache = self.fork_block_cache.write().await;
+            let cleared = cache.len();
+            cache.clear();
+            if cleared > 0 {
+                info!(
+                    "[SNAP_SYNC] Cleared {} stale blocks from fork_block_cache",
+                    cleared
+                );
+            }
+        }
+
         // Step 7: Inform sync manager of block store floor
         {
             let mut sync = self.sync_manager.write().await;
