@@ -188,11 +188,7 @@ impl EpochState {
             }
             match input.registered_at.get(pk) {
                 Some(&reg_height) => {
-                    let reg_epoch = if input.blocks_per_epoch > 0 {
-                        reg_height / input.blocks_per_epoch
-                    } else {
-                        0
-                    };
+                    let reg_epoch = reg_height.checked_div(input.blocks_per_epoch).unwrap_or(0);
                     epoch.saturating_sub(reg_epoch) > GHOST_EXCLUSION_GRACE_EPOCHS
                 }
                 None => false, // Unknown registration: not a ghost (conservative)
