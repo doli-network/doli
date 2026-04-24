@@ -24,17 +24,22 @@ fn make_signed_nft_tx(keypair: &KeyPair, funding_hash: Hash) -> Transaction {
     let pubkey_hash =
         crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, keypair.public_key().as_bytes());
 
-    // NFT extra_data format: condition_bytes + NFT metadata
-    // Condition: version(1) + TAG_SIGNATURE(0x00) + pubkey_hash(32)
+    // EncryptedContent extra_data: condition(34) + ciphertext_len(4) + wrapped_key(80) + nonce(12) + content_hash(32) = 162 bytes min
     let mut extra_data = Vec::new();
+    // Condition: version(1) + TAG_SIGNATURE(0x00) + pubkey_hash(32)
     extra_data.push(1u8); // CONDITION_VERSION
     extra_data.push(0x00); // TAG_SIGNATURE
     extra_data.extend_from_slice(pubkey_hash.as_bytes());
-    // NFT metadata: version(1) + token_id(32) + content_hash_len(1) + content_hash(32)
-    extra_data.push(1u8); // nft metadata version
-    extra_data.extend_from_slice(&[0xAA; 32]); // token_id
-    extra_data.push(32u8); // content_hash_len
-    extra_data.extend_from_slice(&[0xBB; 32]); // content_hash
+    // ciphertext_len (4 bytes)
+    extra_data.extend_from_slice(&32u32.to_le_bytes());
+    // wrapped_key (80 bytes)
+    extra_data.extend_from_slice(&[0xCC; 80]);
+    // nonce (12 bytes)
+    extra_data.extend_from_slice(&[0xDD; 12]);
+    // content_hash (32 bytes)
+    extra_data.extend_from_slice(&[0xBB; 32]);
+    // ciphertext (32 bytes, matching ciphertext_len)
+    extra_data.extend_from_slice(&[0xAA; 32]);
 
     let fee = doli_core::consensus::BASE_FEE
         + extra_data.len() as u64 * doli_core::consensus::FEE_PER_BYTE
@@ -42,7 +47,7 @@ fn make_signed_nft_tx(keypair: &KeyPair, funding_hash: Hash) -> Transaction {
     let nft_output = Output {
         amount: 1,
         pubkey_hash,
-        output_type: OutputType::NFT,
+        output_type: OutputType::EncryptedContent,
         lock_until: 0,
         extra_data: extra_data.clone(),
     };

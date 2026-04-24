@@ -747,7 +747,8 @@ impl Node {
                     }
                     match active_at.iter().find(|p| &p.public_key == pk) {
                         Some(p) => {
-                            let reg_epoch = p.registered_at.checked_div(blocks_per_epoch).unwrap_or(0);
+                            let reg_epoch =
+                                p.registered_at.checked_div(blocks_per_epoch).unwrap_or(0);
                             epoch.saturating_sub(reg_epoch) > GHOST_EXCLUSION_GRACE_EPOCHS
                         }
                         None => false,

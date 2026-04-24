@@ -544,10 +544,10 @@ impl Mempool {
             .filter(|(_, entry)| {
                 let tx = &entry.tx;
                 if (err_msg.contains("token_id") || err_msg.contains("NFT"))
-                    && tx
-                        .outputs
-                        .iter()
-                        .any(|o| o.output_type == doli_core::OutputType::NFT)
+                    && tx.outputs.iter().any(|o| {
+                        o.output_type == doli_core::OutputType::NFT
+                            || o.output_type == doli_core::OutputType::EncryptedContent
+                    })
                 {
                     return true;
                 }
