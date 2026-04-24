@@ -475,10 +475,7 @@ impl RpcContext {
     /// Optional param: `up_to_height` (u64) — scan blocks 1..=up_to_height instead of
     /// 1..=tip. Allows the explorer to request all nodes compute their commitment at the
     /// same height, making hashes directly comparable.
-    pub(super) async fn verify_chain_integrity(
-        &self,
-        params: Value,
-    ) -> Result<Value, RpcError> {
+    pub(super) async fn verify_chain_integrity(&self, params: Value) -> Result<Value, RpcError> {
         let chain_state = self.chain_state.read().await;
         let tip_height = chain_state.best_height;
         drop(chain_state);
