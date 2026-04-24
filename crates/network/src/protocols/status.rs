@@ -44,7 +44,8 @@ pub const STATUS_PROTOCOL: &str = "/doli/status/1.0.0";
 ///       Hash::ZERO (serde default) which is tolerated.
 ///   7 — INC-I-040: EpochState restoration in execute_reorg (h=44750),
 ///       timing tautology fix, FORK_GUARD direct recovery signal.
-pub const CURRENT_PROTOCOL_VERSION: u32 = 7;
+///   8 — INC-I-046: Ghost producer exclusion activated on mainnet (h=18052).
+pub const CURRENT_PROTOCOL_VERSION: u32 = 8;
 
 /// Minimum protocol version accepted from peers.
 ///
@@ -320,8 +321,8 @@ mod m_choice1_protocol_version_tests {
     #[test]
     fn test_current_protocol_version_is_7() {
         assert_eq!(
-            CURRENT_PROTOCOL_VERSION, 7,
-            "CURRENT_PROTOCOL_VERSION must be 7 (v7: INC-I-040 EpochState reorg + fork recovery)."
+            CURRENT_PROTOCOL_VERSION, 8,
+            "CURRENT_PROTOCOL_VERSION must be 8 (v8: INC-I-046 ghost exclusion on mainnet)."
         );
     }
 
