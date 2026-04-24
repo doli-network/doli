@@ -453,15 +453,10 @@ impl Node {
             }
         }
 
-        // RECOVERY COORDINATOR: single dispatch point for all fork/sync recovery.
+        // RECOVERY COORDINATOR: single authoritative dispatch for all fork/sync recovery.
         //
-        // Replaces 3 independent detector→action paths (ACTIVE_FORK_DETECT,
-        // resolve_shallow_fork, DEEP_FORK_DETECT) with the RecoveryCoordinator's
-        // classify→execute dispatch. Evidence is reported based on current state,
-        // then the coordinator classifies and returns a single action.
-        //
-        // Phase 2 ran this in shadow mode (log only). Phase 3 (M2) makes it
-        // authoritative — the coordinator's action is executed.
+        // Evidence is reported based on current state, then the coordinator
+        // classifies and returns a single RecoveryAction that is executed here.
         {
             // Report evidence based on current state before classifying
             {
@@ -785,19 +780,11 @@ impl Node {
                 );
             }
 
-            // Recovery Coordinator: shadow dispatch removed (M2 promotion).
-            // The coordinator is now authoritative — classify_and_dispatch()
-            // runs earlier in the periodic loop and executes the action directly.
-
-            // INC-I-020/020b: DISABLED.
-            //
-            // STALE_TIP and FORK_1BLOCK removed. They fought with FORK_GUARD:
-            // STALE_TIP requested a block → peer sent a different block at same height →
-            // FORK_GUARD dropped it → STALE_TIP triggered rollback → gap grew → cascade.
-            //
-            // With INC-I-026 (deterministic scheduler) and fork_id, gaps of 1-2 blocks
-            // resolve via gossip within seconds. Gaps of 3+ trigger should_sync().
-            // No active intervention needed for small gaps.
+            // INC-I-020/020b: STALE_TIP and FORK_1BLOCK were removed because they
+            // fought with FORK_GUARD, causing rollback cascades. With INC-I-026
+            // (deterministic scheduler) and fork_id, small gaps resolve via gossip;
+            // gaps of 3+ trigger should_sync(). Recovery is handled by the
+            // RecoveryCoordinator earlier in this loop.
         }
 
         // SEED RELEASE: Disconnect from seed/bootstrap nodes after DHT bootstrap + gossip verified.
