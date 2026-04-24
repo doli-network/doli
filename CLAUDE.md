@@ -106,7 +106,7 @@ After completing any code change, ALWAYS propose the following checklist to the 
 | **try_produce_block()** | `bins/node/src/node/production.rs` |
 | **check_producer_eligibility(), validate_block_*()** | `bins/node/src/node/validation_checks.rs` |
 | **calculate_epoch_rewards(), handle_equivocation()** | `bins/node/src/node/rewards.rs` |
-| **rollback_one_block(), resolve_shallow_fork()** | `bins/node/src/node/rollback.rs` |
+| **rollback_one_block()** | `bins/node/src/node/rollback.rs` |
 | **Fork recovery integration tests (11)** | `bins/node/tests/fork_recovery.rs` |
 | **Node::new_for_test()** | `bins/node/src/node/init.rs` |
 | **Node lib (test access)** | `bins/node/src/lib.rs` |
@@ -188,3 +188,120 @@ After completing any code change, ALWAYS propose the following checklist to the 
 | Drift tracker | `MEMORY.md` (auto-memory) |
 | Bug reports | `docs/legacy/bugs/` |
 | CLI issues | `CLI.md` |
+
+---
+
+# OMEGA Ω
+
+## Philosophy
+OMEGA is a multi-agent workflow where each agent has a specific role and code passes through multiple validation layers.
+Every agent reads from and writes to a shared institutional memory (SQLite) — no agent acts alone, without backpressure.
+
+## Source of Truth Hierarchy
+1. **Codebase** — the ultimate source of truth. Always trust code over documentation.
+2. **`.omega/memory.db`** — institutional memory. Accumulated decisions, failed approaches, hotspots, findings across all sessions.
+3. **specs/** — technical specifications per domain. `specs/SPECS.md` is the master index.
+4. **docs/** — user-facing and developer documentation. `docs/DOCS.md` is the master index.
+
+When specs or docs conflict with the codebase, the codebase wins. Agents must flag the discrepancy and update specs/docs accordingly.
+
+## Institutional Memory
+
+Every workflow reads from and writes to `.omega/memory.db`. **This protocol is not optional.**
+
+**Cortex (team sharing):** Read @INDEX of `.claude/protocols/cortex-protocol.md` for shared knowledge rules.
+
+**Full protocol reference:** Read the **@INDEX** (first 13 lines) of `.claude/protocols/memory-protocol.md` to find section line ranges, then Read ONLY needed sections with offset/limit. For cross-file lookup: `.claude/protocols/PROTOCOLS-INDEX.md`.
+
+**Core rules (always in effect):**
+- **DB Detection**: `test -f .omega/memory.db` at session/workflow start. If missing, skip memory ops gracefully.
+- **Session briefing = behavioral learnings + open incidents + active invariants**. NOT decisions, bug details, outcomes, or hotspots — those are on-demand.
+- **Briefing before action**: Every agent queries memory.db for scope-specific context (hotspots, failed approaches, findings, decisions, patterns, invariants) before starting work.
+- **Log incrementally**: Write to memory.db immediately after each significant action. Never batch for the end — context compaction loses batched entries.
+- **Self-score every action**: Rate significant actions (-1/0/+1) immediately after completing them.
+- **Track bugs as incidents**: Every bug gets an INC-{PREFIX}-NNN ticket (prefix from `user_profile.contributor_prefix`). Use `--incident` on doctor to resume. Read @INDEX of `.claude/protocols/incident-protocol.md`.
+- **Extract invariants from bugs**: Level 2+ incidents must produce an `invariants` record (INV-{DOMAIN}-NNN) + linked `regression_tests`. Level 3 also requires `monitoring_signals`. Query `v_regression_map` before modifying files with linked invariants. Read `.claude/protocols/invariant-protocol.md`.
+- **Extract behavioral learnings**: When the user corrects you or an incident reveals a reasoning flaw, extract a behavioral rule (HOW to think, not domain patterns).
+- **Close-out when done**: Verify completeness, distill lessons, extract learnings, track bugs as incidents.
+- **Pipeline tracking**: Every code-modifying `/omega-*` command registers a `workflow_runs` entry at start, updates at end. Read-only commands skip tracking.
+- **Non-pipeline work**: Informal work gets a `workflow_runs` entry with type `'manual'`.
+- **sqlite3 quoting**: ALWAYS use heredoc syntax (`<<'EOF' ... EOF`). NEVER inline single-quote wrapping — breaks `datetime('now')` due to shell quote nesting.
+- **Immediate self-correction**: When the user points out a mistake, immediately save a behavioral learning and fix. The correction target is Claude, not the user.
+- **Error tolerance**: If sqlite3 fails, log the error and continue working. Never block work for a DB failure.
+
+## Identity
+
+The briefing hook may inject an identity block. **Full reference:** Read @INDEX of `.claude/protocols/identity.md` for section lookup.
+
+**Core rules:**
+- Protocol always overrides identity. Identity influences communication style, not functional behavior.
+- **Auto-onboarding:** If the session briefing contains "No OMEGA profile found", you MUST run `/omega-onboard` before responding to the user's first message. This is a blocking prerequisite — do not skip it.
+
+## Contextual Tips (Progressive Onboarding)
+
+After completing a user's task, if they did something manually that an OMEGA command handles better, add a **one-line tip** at the end of your response. Format: `Tip: /omega-<command> can <benefit>.` Rules: max 1 tip per session, never repeat a tip the user has seen (query `tips_shown` in memory.db), and never tip about the command they just used.
+
+## Global Rules
+
+1. **NEVER write code without tests first** (strict TDD)
+2. **NEVER assume** — if something is unclear, the analyst must ask
+3. **Module by module** — do not implement everything at once
+4. **Understand architecture before ANY modification** — comprehend module boundaries, data flows, dependencies, blast radius
+5. **Every assumption must be explicit** — technical + human-readable summary
+6. **Codebase is king** — when in doubt, read the actual code
+7. **Keep specs/, docs/, and protocols in sync** — every code change must update relevant specs, docs, and protocol files
+8. **Every requirement has acceptance criteria** — "it should work" is not acceptable
+9. **Every requirement has a priority** — Must/Should/Could/Won't (MoSCoW)
+10. **Every requirement is traceable** — from ID through tests to implementation
+11. **60% context budget** — every agent must complete its work within 60% of the context window
+12. **Briefing before action** — every agent queries memory.db before starting work
+13. **Log incrementally during work** — every agent writes to memory.db immediately after each significant action
+14. **Self-score every action** — every agent rates its own significant actions (-1/0/+1) immediately
+15. **Distill lessons from patterns** — when 3+ outcomes share a theme, distill a permanent lesson that changes future agent behavior
+16. **Read-only agents stay in their lane** — research agents (codebase-expert, functionality-analyst) NEVER offer to implement. They report findings and suggest appropriate commands
+17. **Security chain enforcement** — when a feature involves external data (multi-user, network, file ingestion), 5 agents independently verify security: Analyst (REQ-*-SEC requirements), Architect (trust boundary analysis or STOP), Test Writer (adversarial injection tests), QA (independent probing), Reviewer (injection pattern scan — automatic blocker)
+18. **Stupid Simple First (SSF)** — before ANY design work, state the stupidest one-sentence solution that works. Present it ALONE. Only add complexity if the user rejects it with a specific reason. Never present a menu of options. Read `.claude/protocols/anti-overengineering.md`
+19. **Modular coding enforcement** — no source file exceeds 500 lines (800 for test files). When approaching the limit, split into focused modules. Read MODULE-SIZE-BUDGET in `.claude/protocols/anti-overengineering.md`
+20. **Intellectual honesty** — if your analysis contradicts itself (claim X, find not-X), STOP and resolve before continuing. Show your work on math/logic claims. State what you don't understand before proposing solutions. Try to disprove your own hypotheses before acting on them. Max 2 inferences without verification. Read `.claude/protocols/intellectual-honesty.md`
+21. **Output Contract (all tests, all languages)** — before writing ANY test assertion, produce the Output Contract Checklist (enumerate ALL observable outputs of the function: mutable params, receiver/self, return values, persistent stores). No assertion without the checklist. No test complete until every output × path cell has an assertion. Read `.claude/protocols/output-contract.md`. Fix confidence above 0.7 requires FAIL→PASS test evidence — no exceptions, any language. **Sequence: test BEFORE fix** — in bugfix workflows, the reproduction test must exist and FAIL before any fix code is written OR any fix plan is presented to the user. Describing the fix before the test exists biases the test toward confirming the fix rather than verifying correctness
+22. **Prompt refinement at intake** — every omega command that accepts a user description MUST run prompt refinement BEFORE any agent work begins. Detect and neutralize investigation-anchoring language ("in the logs", "the bug is in X"), preserve domain context (symptoms, nodes, timestamps), reframe assumed root causes as hypotheses. Display the refinement to the user. Read `.claude/protocols/prompt-refinement.md`
+
+## Fail-Safe Controls
+
+**Full reference:** Read @INDEX of `.claude/protocols/fail-safes.md` for section lookup.
+
+**Core rules:** Prerequisite gates (agents verify upstream output). Iteration limits (QA↔Dev: 3, Reviewer↔Dev: 2, Audit fix: 5). Error recovery to `docs/.workflow/chain-state.md`. Developer max 5 retries/module.
+
+## Context Efficiency (ENFORCED)
+
+**Full reference:** Read @INDEX of `.claude/protocols/context-budget.md` for section lookup.
+
+**Rules:** CLAUDE.md MUST stay under 15,000 characters. Never inline templates/SQL/procedures — put them in `core/protocols/` and reference. Never duplicate content across files. Lazy-load protocol sections via @INDEX (first N lines) then Read with offset/limit. 60% context budget per agent. Never read the entire codebase.
+
+## Traceability Chain
+```
+Discovery → Analyst (REQ-XXX-001) → Architect (module map) → Test Writer (TEST-XXX-001) → Developer → QA (acceptance criteria) → Reviewer (completeness)
+```
+
+## Project Layout
+```
+root-project/
+├── backend/              ← Backend source code
+├── frontend/             ← Frontend (if applicable)
+├── specs/                ← Technical specifications
+├── docs/                 ← Documentation
+├── CLAUDE.md             ← Workflow rules
+├── .omega/
+│   └── memory.db         ← Institutional memory (SQLite)
+└── .claude/
+    ├── agents/           ← Agent definitions
+    ├── commands/         ← Command definitions
+    ├── protocols/        ← Protocol reference files (loaded on-demand)
+    └── db-queries/       ← Query reference files
+```
+
+## Conventions
+- Preferred language: Rust (or whatever the user defines)
+- Tests: alongside code or in `backend/tests/` (or `frontend/tests/`)
+- Commits: conventional (feat:, fix:, docs:, refactor:, test:)
+- Branches: feature/, bugfix/, hotfix/

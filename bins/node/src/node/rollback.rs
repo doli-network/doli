@@ -3,10 +3,8 @@ use super::*;
 impl Node {
     /// Unconditionally roll back 1 block for fork recovery.
     ///
-    /// Unlike `resolve_shallow_fork()`, this has no `empty_headers` or
-    /// `shallow_rollback_count` preconditions — it just rolls back. Used by
-    /// `maybe_auto_resync()` on mainnet where same-height forks never trigger
-    /// empty header responses (peers are at the same height, not ahead).
+    /// No preconditions — it just rolls back. Called by the RecoveryCoordinator
+    /// dispatch in periodic.rs when ShallowRollback action is classified.
     ///
     /// Returns `Ok(true)` if rollback succeeded, `Ok(false)` if at height 0.
     pub async fn rollback_one_block(&mut self) -> Result<bool> {
@@ -16,8 +14,7 @@ impl Node {
         };
 
         // Log all context that led to this rollback being initiated.
-        // The caller (resolve_shallow_fork, auto_resync) provides the trigger;
-        // this captures the numeric state for post-incident root-cause analysis.
+        // Captures the numeric state for post-incident root-cause analysis.
         {
             let sync = self.sync_manager.read().await;
             let empty_headers = sync.consecutive_empty_headers();
@@ -265,171 +262,5 @@ impl Node {
         );
 
         Ok(true)
-    }
-
-    /// Detect and resolve shallow forks (1-block orphan tips from ungraceful shutdown).
-    ///
-    /// When a node is killed during block production, it may persist a block that
-    /// peers never received. On restart, peers don't recognize our tip hash, causing
-    /// consecutive empty header responses. If the gap to peers is small (<100 blocks),
-    /// this is a shallow fork — not a deep fork needing genesis resync.
-    ///
-    /// Fix: roll back one block at a time until we reach a tip peers recognize.
-    /// Capped at 10 rollbacks — if the fork is deeper than that, it's not shallow.
-    /// Returns `true` if a rollback was performed (caller should skip other periodic tasks).
-    ///
-    /// NOTE (M2): Primary dispatch is now via RecoveryCoordinator in periodic.rs.
-    /// This function is kept for its stuck_fork_signal consumption and
-    /// LAST_ROLLBACK_HEIGHT tracking logic. It may be called as a fallback
-    /// or removed in Phase 4 cleanup.
-    #[allow(dead_code)]
-    pub async fn resolve_shallow_fork(&mut self) -> Result<bool> {
-        let (empty_headers, local_height, gap, last_applied_secs, stuck_signal) = {
-            let mut sync = self.sync_manager.write().await;
-            let gap = sync.network_tip_height().saturating_sub(sync.local_tip().0);
-            let last_applied = sync.last_block_applied_secs();
-            // Fix #2c (2026-04-15): consume the stuck_fork_signal set by
-            // note_orphan_gossip_block (Fix #2b). The signal is stronger
-            // evidence than the empty_headers/last_applied heuristics —
-            // peers.rs already confirmed we received 3+ orphan gossip
-            // blocks (our tip is on a minority fork).
-            let stuck = sync.take_stuck_fork_signal();
-            (
-                sync.consecutive_empty_headers(),
-                sync.local_tip().0,
-                gap,
-                last_applied,
-                stuck,
-            )
-        };
-
-        if local_height == 0 {
-            return Ok(false);
-        }
-
-        // Fix #2c: the orphan-path signal bypasses both heuristic gates.
-        // Without this, Fix #2b sets the flag but no one consumes it —
-        // observed in 2026-04-15 abraham/alessandro fork: signal fired at
-        // 12:26:44 but rollback never ran, then snap sync escalated at
-        // 12:27:30. resolve_shallow_fork's empty_headers>=3 and
-        // last_applied_secs>=300 are for detecting stuckness WITHOUT an
-        // external signal; when one exists, they should not block.
-        if !stuck_signal {
-            // Need at least 3 fork evidence signals before activating
-            if empty_headers < 3 {
-                return Ok(false);
-            }
-
-            // With INC-I-026 (deterministic scheduler) + fork_id, forks between
-            // upgraded nodes are impossible. Only rollback if truly stuck for 5+ min.
-            // Anything less is gossip timing, not a fork.
-            if last_applied_secs < 300 {
-                return Ok(false);
-            }
-        } else {
-            // Backoff: after 3 consecutive rollbacks without a successful block
-            // apply, stop rolling back. The rollback loop (every 10s, gap grows
-            // infinitely) was the root cause of the 2026-04-16 cascade.
-            if self.shallow_rollback_count >= 3 && last_applied_secs < 60 {
-                warn!(
-                    "[FORK] stuck_fork_signal SUPPRESSED: {} consecutive rollbacks without progress, \
-                     waiting for sync (gap={}, last_applied={}s)",
-                    self.shallow_rollback_count, gap, last_applied_secs
-                );
-                return Ok(false);
-            }
-            info!(
-                "[FORK] stuck_fork_signal consumed (gap={}, last_applied={}s, empty_headers={}) — \
-                 bypassing heuristic guards (anti-cascade-orphan path)",
-                gap, last_applied_secs, empty_headers
-            );
-        }
-
-        // Don't rollback if we're making progress. If height advanced since
-        // last rollback, sync is working — empty headers are just from peers
-        // that haven't caught up yet. Only rollback when truly stuck.
-        static LAST_ROLLBACK_HEIGHT: std::sync::atomic::AtomicU64 =
-            std::sync::atomic::AtomicU64::new(0);
-        let last_rb_h = LAST_ROLLBACK_HEIGHT.load(std::sync::atomic::Ordering::Relaxed);
-        if local_height > last_rb_h && last_rb_h > 0 {
-            // Height advanced since last rollback — sync is working, skip rollback
-            debug!(
-                "[FORK] Skipping rollback: height advanced {} → {} since last rollback",
-                last_rb_h, local_height
-            );
-            LAST_ROLLBACK_HEIGHT.store(local_height, std::sync::atomic::Ordering::Relaxed);
-            let mut sync = self.sync_manager.write().await;
-            sync.reset_empty_headers();
-            return Ok(false);
-        }
-
-        // Fast path: small gap (<= 12 blocks) — just rollback 1 block.
-        // This changes local_hash to the parent, and the next sync attempt
-        // will try GetHeaders with the parent hash. After 1-N rollbacks,
-        // we find a hash peers recognize and sync resumes.
-        // No binary search needed, no grace check — immediate recovery.
-        //
-        // Range expanded to 50 to prevent small-to-medium forks from
-        // escalating to snap sync, which loses block history and creates
-        // a cascade (snap → no block 1 → future rollback fails → re-snap).
-        if gap <= 50 && self.shallow_rollback_count < 50 {
-            info!(
-                "[FORK] ROLLBACK gap={} empties={} h={} rollback_count={} — rolling back 1 block",
-                gap,
-                empty_headers,
-                local_height,
-                self.shallow_rollback_count + 1
-            );
-            let rolled_back = self.rollback_one_block().await?;
-            if rolled_back {
-                self.shallow_rollback_count += 1;
-                LAST_ROLLBACK_HEIGHT.store(
-                    local_height.saturating_sub(1),
-                    std::sync::atomic::Ordering::Relaxed,
-                );
-                // Reset empty headers so sync retries with new tip hash
-                let mut sync = self.sync_manager.write().await;
-                sync.reset_empty_headers();
-                return Ok(true);
-            }
-        }
-
-        // Deep fork or rollback limit reached: use binary search.
-        // BUT: if post_recovery_grace is active, fork sync JUST failed and cleared.
-        // Re-triggering immediately creates a Sisyphean loop:
-        //   fork_sync → bottoms out → grace → 1 header → empty → fork_sync again
-        // Let header-first sync make progress during grace instead.
-        let grace_active = self.sync_manager.read().await.post_recovery_grace_active();
-        if grace_active {
-            debug!(
-                "resolve_shallow_fork: skipping fork sync escalation — \
-                 post_recovery_grace active (gap={}, empty_headers={})",
-                gap, empty_headers
-            );
-            // Do NOT reset empty_headers here — that creates a deadlock where
-            // grace prevents fork sync AND resets the counter that would
-            // eventually trigger it. Let the counter accumulate so fork sync
-            // can activate once grace expires.
-            return Ok(false);
-        }
-
-        // When fork sync has failed repeatedly, retry with different peers instead
-        // of wiping state. A validated chain at height 400+ must NEVER be reset to
-        // genesis based on peer behavior — this is a core safety invariant that
-        // Ethereum and Bitcoin both enforce.
-        if empty_headers >= 9 {
-            warn!(
-                "[FORK] RETRY empties={} local_h={} gap={} — retrying with different peers",
-                empty_headers, local_height, gap
-            );
-            self.sync_manager.write().await.reset_empty_headers();
-            self.sync_manager.write().await.set_post_recovery_grace();
-            return Ok(false);
-        }
-
-        // Fork sync binary search removed — fork recovery handled by network crate.
-        // At this point, rollback-based recovery and retry with different peers have
-        // both been attempted. Let header-first sync handle further recovery.
-        Ok(false)
     }
 }
