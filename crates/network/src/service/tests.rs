@@ -6,7 +6,7 @@ use doli_core::{
 };
 use libp2p::{Multiaddr, PeerId};
 
-use super::helpers::{is_routable_address, strip_p2p_suffix};
+use super::helpers::{is_routable_address, plan_startup_dials, strip_p2p_suffix};
 use super::types::{NetworkCommand, NetworkEvent};
 
 #[test]
@@ -250,4 +250,145 @@ fn test_strip_p2p_suffix() {
         .unwrap();
     let stripped3 = strip_p2p_suffix(&addr3);
     assert_eq!(stripped3.to_string(), "/dns4/seed1.doli.network/tcp/30300");
+}
+
+// ── INC-I-048: Bootstrap dial priority tests ──────────────────────────
+
+/// Reproduces the bug: with the OLD ordering (cached first, bootstrap second),
+/// 17 cached peers would fill all 5 pending slots, starving the bootstrap dial.
+/// The fix ensures bootstrap comes first and cached dials are capped.
+#[test]
+fn test_inc_i048_bootstrap_dials_before_cached_peers() {
+    let bootstrap = vec!["/ip4/127.0.0.1/tcp/30300".to_string()];
+    // 17 cached peers — the exact scenario from N3's logs
+    let cached: Vec<Multiaddr> = (1..=17)
+        .map(|i| {
+            format!("/ip4/192.168.1.{}/tcp/{}", i, 30300 + i)
+                .parse()
+                .unwrap()
+        })
+        .collect();
+    let pending_limit = 5;
+
+    let (boot_addrs, cached_addrs) = plan_startup_dials(&bootstrap, cached, pending_limit);
+
+    // Bootstrap MUST be in the first batch (gets dialed first)
+    assert_eq!(boot_addrs.len(), 1);
+    assert_eq!(boot_addrs[0].to_string(), "/ip4/127.0.0.1/tcp/30300");
+
+    // Cached peers MUST be capped to pending_limit - bootstrap_count = 4
+    assert_eq!(cached_addrs.len(), 4);
+
+    // Total dials (bootstrap + cached) must not exceed pending_limit
+    assert!(boot_addrs.len() + cached_addrs.len() <= pending_limit as usize);
+}
+
+/// DNS multiaddrs in the cache must be filtered out — they consume pending
+/// slots with 75s DNS timeouts on localhost.
+#[test]
+fn test_inc_i048_dns_filtered_from_cached_peers() {
+    let bootstrap = vec!["/ip4/127.0.0.1/tcp/30300".to_string()];
+    let cached: Vec<Multiaddr> = vec![
+        "/ip4/192.168.1.1/tcp/30301".parse().unwrap(),
+        "/dns4/bootstrap1.testnet.doli.network/tcp/40300"
+            .parse()
+            .unwrap(),
+        "/dns4/bootstrap2.testnet.doli.network/tcp/40300"
+            .parse()
+            .unwrap(),
+        "/dns6/seeds.testnet.doli.network/tcp/40300"
+            .parse()
+            .unwrap(),
+        "/ip4/192.168.1.2/tcp/30302".parse().unwrap(),
+    ];
+    let pending_limit = 5;
+
+    let (_, cached_addrs) = plan_startup_dials(&bootstrap, cached, pending_limit);
+
+    // Only IP4 addresses should remain — all dns4/dns6 filtered
+    assert_eq!(cached_addrs.len(), 2);
+    for addr in &cached_addrs {
+        let s = addr.to_string();
+        assert!(!s.starts_with("/dns4/"), "DNS4 should be filtered: {}", s);
+        assert!(!s.starts_with("/dns6/"), "DNS6 should be filtered: {}", s);
+    }
+}
+
+/// With multiple bootstrap nodes, cached dial cap adjusts correctly.
+#[test]
+fn test_inc_i048_multiple_bootstrap_nodes_reduce_cached_cap() {
+    let bootstrap = vec![
+        "/ip4/127.0.0.1/tcp/30300".to_string(),
+        "/ip4/10.0.0.1/tcp/30300".to_string(),
+        "/ip4/10.0.0.2/tcp/30300".to_string(),
+    ];
+    let cached: Vec<Multiaddr> = (1..=10)
+        .map(|i| {
+            format!("/ip4/192.168.1.{}/tcp/{}", i, 30300 + i)
+                .parse()
+                .unwrap()
+        })
+        .collect();
+    let pending_limit = 5;
+
+    let (boot_addrs, cached_addrs) = plan_startup_dials(&bootstrap, cached, pending_limit);
+
+    assert_eq!(boot_addrs.len(), 3);
+    // 5 - 3 = 2 cached slots
+    assert_eq!(cached_addrs.len(), 2);
+    assert!(boot_addrs.len() + cached_addrs.len() <= pending_limit as usize);
+}
+
+/// Edge case: more bootstrap nodes than pending_limit — cached gets at least 1.
+#[test]
+fn test_inc_i048_bootstrap_exceeds_pending_limit() {
+    let bootstrap: Vec<String> = (1..=7)
+        .map(|i| format!("/ip4/10.0.0.{}/tcp/30300", i))
+        .collect();
+    let cached: Vec<Multiaddr> = (1..=5)
+        .map(|i| {
+            format!("/ip4/192.168.1.{}/tcp/{}", i, 30300 + i)
+                .parse()
+                .unwrap()
+        })
+        .collect();
+    let pending_limit = 5;
+
+    let (boot_addrs, cached_addrs) = plan_startup_dials(&bootstrap, cached, pending_limit);
+
+    assert_eq!(boot_addrs.len(), 7);
+    // saturating_sub(7).max(1) = 1 — always allow at least 1 cached dial
+    assert_eq!(cached_addrs.len(), 1);
+}
+
+/// Empty cache — only bootstrap dials happen.
+#[test]
+fn test_inc_i048_empty_cache() {
+    let bootstrap = vec!["/ip4/127.0.0.1/tcp/30300".to_string()];
+    let cached: Vec<Multiaddr> = vec![];
+    let pending_limit = 5;
+
+    let (boot_addrs, cached_addrs) = plan_startup_dials(&bootstrap, cached, pending_limit);
+
+    assert_eq!(boot_addrs.len(), 1);
+    assert_eq!(cached_addrs.len(), 0);
+}
+
+/// P2P suffixes are stripped from both bootstrap and cached addrs.
+#[test]
+fn test_inc_i048_p2p_suffixes_stripped() {
+    // Generate a real peer ID for the test
+    let kp = libp2p::identity::Keypair::generate_ed25519();
+    let pid = PeerId::from(kp.public());
+    let bootstrap = vec![format!("/ip4/127.0.0.1/tcp/30300/p2p/{}", pid)];
+    let cached_addr: Multiaddr = format!("/ip4/192.168.1.1/tcp/30301/p2p/{}", pid)
+        .parse()
+        .unwrap();
+    let cached: Vec<Multiaddr> = vec![cached_addr];
+    let pending_limit = 5;
+
+    let (boot_addrs, cached_addrs) = plan_startup_dials(&bootstrap, cached, pending_limit);
+
+    assert_eq!(boot_addrs[0].to_string(), "/ip4/127.0.0.1/tcp/30300");
+    assert_eq!(cached_addrs[0].to_string(), "/ip4/192.168.1.1/tcp/30301");
 }

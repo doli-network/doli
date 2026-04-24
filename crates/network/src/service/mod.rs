@@ -44,7 +44,7 @@ use crate::transport::build_transport;
 use crypto::PublicKey;
 use libp2p::request_response::ResponseChannel;
 
-use helpers::{load_keypair, save_keypair, strip_p2p_suffix};
+use helpers::{load_keypair, plan_startup_dials, save_keypair};
 use swarm_loop::run_swarm;
 
 /// Network service handle
@@ -275,23 +275,43 @@ impl NetworkService {
             command_buf
         );
 
-        // Load cached peers and dial them (in addition to bootstrap nodes).
-        // Strip embedded /p2p/<id> suffixes — peer IDs change after chain resets,
-        // so we dial by address only and accept whatever peer ID answers.
-        if let Some(ref cache_path) = config.peer_cache_path {
-            if let Some(cache) = PeerCache::load(cache_path) {
-                let addrs = cache.addresses();
-                if !addrs.is_empty() {
-                    info!(
-                        "Dialing {} cached peers from {}",
-                        addrs.len(),
-                        cache_path.display()
-                    );
-                    for addr in addrs {
-                        let clean = strip_p2p_suffix(&addr);
-                        let _ = swarm.dial(clean);
-                    }
-                }
+        // INC-I-048: Dial bootstrap nodes FIRST, directly on swarm.
+        // Previously, cached peers were dialed first (filling all pending slots),
+        // and bootstrap nodes were dialed via async command channel (arriving too late).
+        // With max_pending_outgoing=5, stale cached peers with 75s timeouts permanently
+        // starved the bootstrap dial, leaving nodes like N3/N10 at 0 peers forever.
+        let cached_addrs = config
+            .peer_cache_path
+            .as_ref()
+            .and_then(|p| PeerCache::load(p))
+            .map(|c| c.addresses())
+            .unwrap_or_default();
+
+        let (bootstrap_addrs, cached_addrs) =
+            plan_startup_dials(&config.bootstrap_nodes, cached_addrs, pending_limit);
+
+        for addr in &bootstrap_addrs {
+            if let Err(e) = swarm.dial(addr.clone()) {
+                warn!("Failed to dial bootstrap {}: {}", addr, e);
+            }
+        }
+        if !bootstrap_addrs.is_empty() {
+            info!(
+                "Dialed {} bootstrap nodes (priority)",
+                bootstrap_addrs.len()
+            );
+        }
+
+        if !cached_addrs.is_empty() {
+            info!(
+                "Dialing {} cached peers (limit {})",
+                cached_addrs.len(),
+                pending_limit
+                    .saturating_sub(bootstrap_addrs.len() as u32)
+                    .max(1),
+            );
+            for addr in &cached_addrs {
+                let _ = swarm.dial(addr.clone());
             }
         }
 
@@ -362,14 +382,8 @@ impl NetworkService {
             .await;
         });
 
-        // Always connect to bootstrap nodes — even if cached peers exist.
-        // Cached peers may be stale or on a minority fork after a rolling restart.
-        // Bootstrap/seed nodes are the authoritative network entry points.
-        for addr in &config.bootstrap_nodes {
-            if let Ok(multiaddr) = addr.parse::<Multiaddr>() {
-                let _ = command_tx.send(NetworkCommand::Connect(multiaddr)).await;
-            }
-        }
+        // INC-I-048: Bootstrap dials moved to pre-swarm-spawn (above) so they
+        // get pending slots before cached peers. No longer needed here.
 
         Ok(Self {
             config,

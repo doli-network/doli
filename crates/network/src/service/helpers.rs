@@ -52,6 +52,42 @@ fn is_shared_address(ip: std::net::Ipv4Addr) -> bool {
     octets[0] == 100 && (octets[1] & 0xC0) == 64
 }
 
+/// INC-I-048: Plan the startup dial order — bootstrap first, then capped cached peers.
+///
+/// Returns `(bootstrap_addrs, cached_addrs)` where bootstrap addrs must be dialed
+/// first to guarantee they get pending connection slots before stale cached peers.
+/// Cached addrs are filtered (no DNS) and capped to `pending_limit - bootstrap_count`.
+pub(super) fn plan_startup_dials(
+    bootstrap_nodes: &[String],
+    cached_addrs: Vec<Multiaddr>,
+    pending_limit: u32,
+) -> (Vec<Multiaddr>, Vec<Multiaddr>) {
+    // Parse and clean bootstrap addresses
+    let bootstrap: Vec<Multiaddr> = bootstrap_nodes
+        .iter()
+        .filter_map(|s| s.parse::<Multiaddr>().ok())
+        .map(|a| strip_p2p_suffix(&a))
+        .collect();
+
+    let bootstrap_count = bootstrap.len() as u32;
+
+    // Cap cached dials to leave room for bootstrap slots
+    let cached_limit = pending_limit.saturating_sub(bootstrap_count).max(1) as usize;
+
+    // Filter DNS multiaddrs from cache (they belong in bootstrap, not cache)
+    let cached: Vec<Multiaddr> = cached_addrs
+        .into_iter()
+        .filter(|a| {
+            let s = a.to_string();
+            !s.starts_with("/dns4/") && !s.starts_with("/dns6/")
+        })
+        .take(cached_limit)
+        .map(|a| strip_p2p_suffix(&a))
+        .collect();
+
+    (bootstrap, cached)
+}
+
 /// Load keypair from file
 pub(super) fn load_keypair(
     path: &std::path::Path,
