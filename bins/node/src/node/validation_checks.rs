@@ -183,71 +183,72 @@ impl Node {
         //   scheduler (on-chain data), bypassing bootstrap path entirely
         // This is safe: header chain continuity is verified during header
         // download, and blocks were already validated by the network.
-        let (bootstrap_producers, live_bp, stale_bp) = if mode == ValidationMode::Light {
-            (Vec::new(), Vec::new(), Vec::new())
-        } else {
-            let mut bp = {
-                let gset = self.producer_gset.read().await;
-                gset.active_producers(7200)
-            };
-            if bp.is_empty() {
-                let known = self.known_producers.read().await;
-                bp = known.clone();
-            }
-
-            // ACTIVATION_DELAY filter: mirror the production code's filtering
-            // (node.rs try_produce_block lines 4993-5014). Without this, the
-            // validation path may compute a different producer count N than
-            // production, causing slot % N mismatches → "invalid producer for slot".
-            {
-                let producers = self.producer_set.read().await;
-                bp.retain(|pk| match producers.get_by_pubkey(pk) {
-                    Some(info) => {
-                        if !info.is_active() {
-                            return false;
-                        }
-                        // Genesis producers: always eligible
-                        if info.registered_at == 0 {
-                            return true;
-                        }
-                        // Late joiners: must wait activation delay
-                        height >= info.registered_at + storage::ACTIVATION_DELAY
-                    }
-                    None => {
-                        // Not registered (gossip-discovered): include in bootstrap
-                        true
-                    }
-                });
-            }
-
-            bp.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
-
-            // Build liveness split
-            let num_bp = bp.len();
-            let liveness_window = std::cmp::max(
-                consensus::LIVENESS_WINDOW_MIN,
-                (num_bp as u64).saturating_mul(3),
-            );
-            let chain_height = height.saturating_sub(1);
-            let cutoff = chain_height.saturating_sub(liveness_window);
-            let (live, stale): (Vec<PublicKey>, Vec<PublicKey>) = {
-                let (l, s): (Vec<_>, Vec<_>) =
-                    bp.iter()
-                        .partition(|pk| match self.producer_liveness.get(pk) {
-                            Some(&last_h) => last_h >= cutoff,
-                            None => chain_height < liveness_window,
-                        });
-                (
-                    l.into_iter().copied().collect(),
-                    s.into_iter().copied().collect(),
-                )
-            };
-            if live.is_empty() {
-                (bp.clone(), bp, Vec::new())
+        let (bootstrap_producers, live_bp, stale_bp) =
+            if matches!(mode, ValidationMode::Light | ValidationMode::Replay) {
+                (Vec::new(), Vec::new(), Vec::new())
             } else {
-                (bp, live, stale)
-            }
-        };
+                let mut bp = {
+                    let gset = self.producer_gset.read().await;
+                    gset.active_producers(7200)
+                };
+                if bp.is_empty() {
+                    let known = self.known_producers.read().await;
+                    bp = known.clone();
+                }
+
+                // ACTIVATION_DELAY filter: mirror the production code's filtering
+                // (node.rs try_produce_block lines 4993-5014). Without this, the
+                // validation path may compute a different producer count N than
+                // production, causing slot % N mismatches → "invalid producer for slot".
+                {
+                    let producers = self.producer_set.read().await;
+                    bp.retain(|pk| match producers.get_by_pubkey(pk) {
+                        Some(info) => {
+                            if !info.is_active() {
+                                return false;
+                            }
+                            // Genesis producers: always eligible
+                            if info.registered_at == 0 {
+                                return true;
+                            }
+                            // Late joiners: must wait activation delay
+                            height >= info.registered_at + storage::ACTIVATION_DELAY
+                        }
+                        None => {
+                            // Not registered (gossip-discovered): include in bootstrap
+                            true
+                        }
+                    });
+                }
+
+                bp.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+
+                // Build liveness split
+                let num_bp = bp.len();
+                let liveness_window = std::cmp::max(
+                    consensus::LIVENESS_WINDOW_MIN,
+                    (num_bp as u64).saturating_mul(3),
+                );
+                let chain_height = height.saturating_sub(1);
+                let cutoff = chain_height.saturating_sub(liveness_window);
+                let (live, stale): (Vec<PublicKey>, Vec<PublicKey>) = {
+                    let (l, s): (Vec<_>, Vec<_>) =
+                        bp.iter()
+                            .partition(|pk| match self.producer_liveness.get(pk) {
+                                Some(&last_h) => last_h >= cutoff,
+                                None => chain_height < liveness_window,
+                            });
+                    (
+                        l.into_iter().copied().collect(),
+                        s.into_iter().copied().collect(),
+                    )
+                };
+                if live.is_empty() {
+                    (bp.clone(), bp, Vec::new())
+                } else {
+                    (bp, live, stale)
+                }
+            };
 
         // Get previous block timestamp from block store for header validation
         let prev_timestamp = self

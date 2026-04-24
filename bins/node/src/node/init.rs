@@ -1167,4 +1167,176 @@ impl Node {
             recovery_mode: Arc::new(AtomicBool::new(false)),
         })
     }
+
+    /// Create a headless Node for disaster recovery replay.
+    ///
+    /// Uses the EXISTING block_store from `data_dir/blocks/` and a FRESH state_db.
+    /// No networking, no archiver — only the state transition machinery.
+    ///
+    /// Genesis producers are registered from the chainspec so `maybe_complete_genesis`
+    /// works correctly during replay.
+    pub async fn new_for_replay(data_dir: std::path::PathBuf, network: Network) -> Result<Self> {
+        let spec = match network {
+            Network::Mainnet => doli_core::chainspec::ChainSpec::mainnet(),
+            Network::Testnet => doli_core::chainspec::ChainSpec::testnet(),
+            Network::Devnet => doli_core::chainspec::ChainSpec::devnet(),
+        };
+        let genesis_hash = spec.genesis_hash();
+        let params = ConsensusParams::for_network(network);
+
+        std::fs::create_dir_all(&data_dir)?;
+        let block_store = Arc::new(BlockStore::open(&data_dir.join("blocks"))?);
+        let state_db = Arc::new(StateDb::open(&data_dir.join("state_db"))?);
+
+        // Fresh state — replay builds everything from genesis
+        let chain_state = ChainState::new(genesis_hash);
+        state_db.put_chain_state(&chain_state)?;
+
+        // Register genesis producers so maybe_complete_genesis can find them
+        let mut ps = ProducerSet::new();
+        let bond_unit = network.bond_unit();
+        if network == Network::Mainnet {
+            let genesis_producers = doli_core::genesis::mainnet_genesis_producers();
+            for (pk, bonds) in &genesis_producers {
+                let _ = ps.register_genesis_producer(*pk, *bonds, bond_unit);
+            }
+        }
+        state_db.write_producer_set(&ps)?;
+
+        let epoch_bond_snapshot: HashMap<Hash, u64> = ps
+            .all_producers()
+            .iter()
+            .map(|p| {
+                let pkh = hash_with_domain(ADDRESS_DOMAIN, p.public_key.as_bytes());
+                (pkh, p.bonds() as u64)
+            })
+            .collect();
+
+        let producer_liveness: HashMap<PublicKey, u64> = ps
+            .all_producers()
+            .iter()
+            .map(|p| (p.public_key, 0))
+            .collect();
+
+        let epoch_producer_list: Vec<PublicKey> = {
+            let mut pks: Vec<_> = ps.all_producers().iter().map(|p| p.public_key).collect();
+            pks.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+            pks
+        };
+
+        let chain_state = Arc::new(RwLock::new(chain_state));
+        let producer_set = Arc::new(RwLock::new(ps));
+        let utxo_set = Arc::new(RwLock::new(UtxoSet::new()));
+
+        let mempool = Arc::new(RwLock::new(Mempool::new(
+            MempoolPolicy::testnet(),
+            params.clone(),
+            network,
+        )));
+
+        let sync_config = SyncConfig::default();
+        let sync_manager = Arc::new(RwLock::new(SyncManager::new(sync_config, genesis_hash)));
+        {
+            let mut sm = sync_manager.write().await;
+            sm.set_bootstrap_grace_period_secs(0);
+            sm.set_min_peers_for_production(0);
+        }
+
+        let vdf_calibrator = Arc::new(RwLock::new(VdfCalibrator::new(100, 55)));
+
+        let config = NodeConfig {
+            network,
+            data_dir,
+            listen_addr: "0.0.0.0:0".to_string(),
+            bootstrap_nodes: Vec::new(),
+            max_peers: 0,
+            rpc: crate::config::RpcConfig::for_network(network),
+            producer: None,
+            no_dht: true,
+            relay_server: false,
+            genesis_time_override: Some(params.genesis_time),
+            chainspec: None,
+            slot_duration_override: Some(params.slot_duration),
+            external_address: None,
+            no_snap_sync: false,
+            seed_mode: false,
+            auto_checkpoint_interval: None,
+            bootnode_enrs: Vec::new(),
+            no_discv5: true,
+            discv5_port: None,
+        };
+
+        Ok(Self {
+            config,
+            params,
+            block_store,
+            state_db,
+            utxo_set,
+            chain_state,
+            producer_set,
+            mempool,
+            network: None, // No networking — headless replay
+            seed_peer_ids: Vec::new(),
+            seeds_released: false,
+            sync_manager,
+            shutdown: Arc::new(RwLock::new(false)),
+            producer_key: None, // No production key — replay only
+            bls_key: None,
+            last_produced_slot: None,
+            known_producers: Arc::new(RwLock::new(epoch_producer_list.clone())),
+            first_peer_connected: None,
+            equivocation_detector: Arc::new(RwLock::new(EquivocationDetector::new())),
+            vdf_calibrator,
+            fork_block_cache: Arc::new(RwLock::new(HashMap::new())),
+            last_resync_time: None,
+            last_producer_list_change: None,
+            producer_gset: Arc::new(RwLock::new(ProducerGSet::new(network.id(), genesis_hash))),
+            adaptive_gossip: Arc::new(RwLock::new(AdaptiveGossip::new())),
+            our_announcement: Arc::new(RwLock::new(None)),
+            announcement_sequence: Arc::new(AtomicU64::new(0)),
+            last_broadcast_gset_len: 0,
+            signed_slots_db: None,
+            consecutive_fork_blocks: 0,
+            shallow_rollback_count: 0,
+            cumulative_rollback_depth: 0,
+            seen_blocks_for_slot: HashSet::new(),
+            epoch_state: doli_core::EpochState {
+                producer_list: epoch_producer_list,
+                active_list: Vec::new(),
+                bond_snapshot: epoch_bond_snapshot,
+                epoch: 0,
+                attested_sets: [HashSet::new(), HashSet::new(), HashSet::new()],
+                attestation_accum: [HashMap::new(), HashMap::new(), HashMap::new()],
+                blocks_produced: HashMap::new(),
+            },
+            is_active_producer: false, // No production during replay
+            last_active_status_epoch: None,
+            vote_tx: None,
+            pending_update: None,
+            last_peer_redial: None,
+            bootstrap_backoff: HashMap::new(),
+            producer_liveness,
+            genesis_vdf_output: None,
+            cached_state_root: Arc::new(RwLock::new(None)),
+            cached_genesis_producers: std::sync::OnceLock::new(),
+            port_check_done: true,
+            maintainer_state: None,
+            archive_tx: None,
+            pending_archive: std::collections::VecDeque::new(),
+            archive_dir: None,
+            archive_caught_up: true,
+            ws_sender: Arc::new(RwLock::new(None)),
+            minute_tracker: MinuteAttestationTracker::new(),
+            rejected_fork_tips: HashSet::new(),
+            snap_sync_height: None,
+            sync_requests_this_interval: 0,
+            last_checkpoint_height: 0,
+            pending_tx_announcements: HashMap::new(),
+            hardfork_schedule: updater::HardForkSchedule::for_network(network),
+            peer_churn: HashMap::new(),
+            last_integrity_check_tip: None,
+            last_active_fork_correction_height: 0,
+            recovery_mode: Arc::new(AtomicBool::new(false)),
+        })
+    }
 }

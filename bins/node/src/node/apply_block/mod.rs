@@ -12,8 +12,9 @@ impl Node {
     /// `mode`: `Full` for gossip/production (checks MAX_PAST_SLOTS, VDF),
     ///         `Light` for sync/reorg (skips time-based checks that reject old blocks).
     pub async fn apply_block(&mut self, block: Block, mode: ValidationMode) -> Result<()> {
-        // Recovery mode: drop all inbound blocks silently (anti-poisoning gate)
-        if self.recovery_mode.load(Ordering::Relaxed) {
+        // Recovery mode: drop all inbound blocks silently (anti-poisoning gate).
+        // Replay mode bypasses this — disaster recovery must proceed regardless.
+        if mode != ValidationMode::Replay && self.recovery_mode.load(Ordering::Relaxed) {
             return Ok(());
         }
 
@@ -24,25 +25,31 @@ impl Node {
         // Guard: after snap sync, never apply blocks at or below the snap height.
         // The UTXO set reflects post-snap state — applying pre-snap blocks would
         // try to spend UTXOs that were already consumed in the snap state.
-        if let Some(snap_h) = self.snap_sync_height {
-            if height <= snap_h {
-                debug!(
-                    "Skipping block at h={} — below snap sync height {}",
-                    height, snap_h
-                );
-                return Ok(());
+        // Replay mode bypasses this — replaying from genesis with fresh state.
+        if mode != ValidationMode::Replay {
+            if let Some(snap_h) = self.snap_sync_height {
+                if height <= snap_h {
+                    debug!(
+                        "Skipping block at h={} — below snap sync height {}",
+                        height, snap_h
+                    );
+                    return Ok(());
+                }
             }
         }
 
         // Defense-in-depth: skip blocks we already have AND have applied.
         // Prevents height double-counting if sync delivers stored blocks (ISSUE-5).
         //
+        // Replay mode bypasses this entirely — blocks ARE in the store because
+        // we're replaying from backup. That's intentional, not a duplicate.
+        //
         // Critical: We must check that the block was actually APPLIED (chain state
         // advanced past it), not just stored. A block can be in the store but not
         // applied if a previous apply_block() wrote the block then failed during
         // UTXO validation (block store poisoning — see N4 incident 2026-03-13).
         // In that case, we allow re-apply — put_block() will overwrite harmlessly.
-        if self.block_store.has_block(&block_hash)? {
+        if mode != ValidationMode::Replay && self.block_store.has_block(&block_hash)? {
             if let Some(stored_height) = self.block_store.get_height_by_hash(&block_hash)? {
                 if stored_height < height {
                     // Block is in store but chain state didn't advance past it.

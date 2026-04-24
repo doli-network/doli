@@ -92,6 +92,17 @@ pub enum ValidationMode {
     /// Used for: gap blocks after snap sync where state root was
     /// already verified by peer quorum (2+ peers).
     Light,
+    /// Replay mode for disaster recovery: replays blocks already in the store
+    /// through the canonical `apply_block()` path.
+    ///
+    /// Like `Light`, skips VDF proof verification (blocks are trusted — they
+    /// came from the node's own backup).
+    ///
+    /// Additionally bypasses:
+    /// - Block dedup check (blocks ARE in the store; that's intentional)
+    /// - Recovery mode gate (replay must proceed regardless)
+    /// - Snap sync height guard (replaying from genesis)
+    Replay,
 }
 
 /// Block validation context.

@@ -317,7 +317,7 @@ pub fn validate_block_with_mode(
 
             validate_producer_eligibility(&block.header, ctx)?;
         }
-        ValidationMode::Light => {
+        ValidationMode::Light | ValidationMode::Replay => {
             // Light validation for synced gap blocks: skip VDF and time-based header
             // checks (MAX_PAST_SLOTS would reject old blocks during sync).
             // Header chain linkage was already verified during header download.

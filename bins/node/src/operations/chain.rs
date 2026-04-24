@@ -189,27 +189,37 @@ pub(crate) fn truncate_chain(
     Ok(())
 }
 
+/// Recover chain state by replaying blocks through the canonical `apply_block()` path.
+///
+/// This uses `ValidationMode::Replay` to feed every block in the store through the
+/// same state transition function used during normal operation. This guarantees:
+/// - ALL transaction types are processed (Registration, AddBond, DelegateBond, etc.)
+/// - Epoch state is correctly derived (bond_snapshot, producer_list, attestation)
+/// - Undo data is produced (enables rollback after recovery)
+/// - State is written to state_db atomically (not legacy files)
+/// - Genesis hash comes from chainspec (not a hardcoded literal)
+///
+/// Side effects suppressed by headless Node (C8):
+/// - network = None → no gossip possible
+/// - mempool starts empty → no tx pollution
+/// - No peer notifications, no VDF computation
 pub(crate) fn recover_chain_state(
     network: Network,
     data_dir: &PathBuf,
     skip_confirm: bool,
 ) -> Result<()> {
-    use doli_core::consensus::{ConsensusParams, UNBONDING_PERIOD};
-    use doli_core::transaction::TxType;
-    use storage::{BlockStore, ChainState, ProducerInfo, ProducerSet, UtxoSet};
+    use storage::BlockStore;
 
-    println!("=== DOLI Chain State Recovery ===");
+    println!("=== DOLI Chain State Recovery (apply_block replay) ===");
     println!();
     println!("Data directory: {:?}", data_dir);
     println!("Network: {}", network.name());
     println!();
 
-    // Check if data directory exists
     if !data_dir.exists() {
         return Err(anyhow!("Data directory does not exist: {:?}", data_dir));
     }
 
-    // Check if blocks directory exists
     let blocks_path = data_dir.join("blocks");
     if !blocks_path.exists() {
         return Err(anyhow!(
@@ -218,35 +228,25 @@ pub(crate) fn recover_chain_state(
         ));
     }
 
-    // Open BlockStore
+    // Open BlockStore and scan for chain tip
     println!("Opening BlockStore...");
     let block_store = BlockStore::open(&blocks_path)?;
 
-    // Scan to find chain tip (highest block)
     println!("Scanning for blocks...");
     let mut tip_height = 0u64;
-    let mut tip_hash = crypto::hash::hash(b"DOLI Genesis");
-    let mut tip_slot = 0u32;
     let mut block_count = 0u64;
 
-    // Scan heights starting from 1
     for height in 1..=u64::MAX {
         match block_store.get_block_by_height(height) {
-            Ok(Some(block)) => {
+            Ok(Some(_)) => {
                 tip_height = height;
-                tip_hash = block.hash();
-                tip_slot = block.header.slot;
                 block_count += 1;
-
                 if block_count.is_multiple_of(1000) {
                     print!("\r  Scanned {} blocks (height {})...", block_count, height);
                     std::io::Write::flush(&mut std::io::stdout()).ok();
                 }
             }
-            Ok(None) => {
-                // No more blocks at this height
-                break;
-            }
+            Ok(None) => break,
             Err(e) => {
                 warn!("Error reading block at height {}: {}", height, e);
                 break;
@@ -262,39 +262,12 @@ pub(crate) fn recover_chain_state(
     }
 
     println!();
-    println!("Found {} blocks:", block_count);
-    println!("  Chain tip height: {}", tip_height);
-    println!("  Chain tip hash:   {}", tip_hash);
-    println!("  Chain tip slot:   {}", tip_slot);
+    println!("Found {} blocks (tip height: {})", block_count, tip_height);
     println!();
 
-    // Check existing state files
-    let state_path = data_dir.join("chain_state.bin");
-    let utxo_path = data_dir.join("utxo");
-    let producers_path = data_dir.join("producers.bin");
-
-    let state_exists = state_path.exists();
-    let utxo_exists = utxo_path.exists();
-    let producers_exists = producers_path.exists();
-
-    if state_exists || utxo_exists || producers_exists {
-        println!("Existing state files:");
-        if state_exists {
-            println!("  - chain_state.bin (will be overwritten)");
-        }
-        if utxo_exists {
-            println!("  - utxo/ (will be overwritten)");
-        }
-        if producers_exists {
-            println!("  - producers.bin (will be overwritten)");
-        }
-        println!();
-    }
-
-    // Confirm with user
     if !skip_confirm {
         print!(
-            "Proceed with recovery? This will rebuild state from {} blocks. [y/N] ",
+            "Proceed with recovery? This will wipe state_db and rebuild from {} blocks. [y/N] ",
             block_count
         );
         std::io::Write::flush(&mut std::io::stdout()).ok();
@@ -307,7 +280,7 @@ pub(crate) fn recover_chain_state(
         }
     }
 
-    // Step 1: Rebuild canonical chain index from headers (fixes corrupt height_index)
+    // Step 1: Rebuild canonical chain index
     println!();
     println!("Rebuilding canonical chain index from headers...");
     let (reindex_tip, reindex_height) = block_store.rebuild_canonical_index()?;
@@ -317,150 +290,75 @@ pub(crate) fn recover_chain_state(
         &reindex_tip.to_string()[..16]
     );
 
-    // Step 2: Replay blocks using the now-correct height_index
-    println!();
-    println!("Rebuilding state from blocks...");
-
-    // Initialize fresh state
-    let genesis_hash = crypto::hash::hash(b"DOLI Genesis");
-    let mut chain_state = ChainState::new(genesis_hash);
-    let mut utxo_set = UtxoSet::new();
-    let mut producer_set = ProducerSet::new();
-    let params = ConsensusParams::for_network(network);
-
-    // Replay all blocks
-    for height in 1..=tip_height {
-        let block = block_store
-            .get_block_by_height(height)?
-            .ok_or_else(|| anyhow!("Block at height {} disappeared during recovery", height))?;
-
-        // Apply transactions to UTXO set
-        for (tx_index, tx) in block.transactions.iter().enumerate() {
-            let is_coinbase = tx_index == 0 && tx.is_coinbase();
-            let _ = utxo_set.spend_transaction(tx); // Ignore errors for coinbase
-            utxo_set.add_transaction(tx, height, is_coinbase, block.header.slot)?;
-
-            // Process registration transactions
-            if tx.tx_type == TxType::Registration {
-                if let Some(reg_data) = tx.registration_data() {
-                    if let Some((bond_index, bond_output)) =
-                        tx.outputs.iter().enumerate().find(|(_, o)| {
-                            o.output_type == doli_core::transaction::OutputType::Bond
-                        })
-                    {
-                        let tx_hash = tx.hash();
-                        let era = params.height_to_era(height);
-
-                        let producer_info = ProducerInfo::new_with_bonds(
-                            reg_data.public_key,
-                            height,
-                            bond_output.amount,
-                            (tx_hash, bond_index as u32),
-                            era,
-                            reg_data.bond_count,
-                        );
-
-                        if let Err(e) = producer_set.register(producer_info, height) {
-                            warn!("Failed to register producer at height {}: {}", height, e);
-                        }
-                    }
-                }
-            }
-
-            // Process exit transactions
-            if tx.tx_type == TxType::Exit {
-                if let Some(exit_data) = tx.exit_data() {
-                    if let Err(e) = producer_set.request_exit(&exit_data.public_key, height) {
-                        warn!("Failed to process exit at height {}: {}", height, e);
-                    }
-                }
-            }
-
-            // Process slash transactions
-            if tx.tx_type == TxType::SlashProducer {
-                if let Some(slash_data) = tx.slash_data() {
-                    if let Err(e) = producer_set.slash_producer(&slash_data.producer_pubkey, height)
-                    {
-                        warn!("Failed to slash producer at height {}: {}", height, e);
-                    }
-                }
-            }
-        }
-
-        // Process completed unbonding periods
-        let _ = producer_set.process_unbonding(height, UNBONDING_PERIOD);
-
-        // Update chain state
-        chain_state.update(block.hash(), height, block.header.slot);
-
-        // Set genesis timestamp from first block if needed
-        if chain_state.genesis_timestamp == 0 && height == 1 {
-            let block_timestamp = block.header.timestamp;
-            chain_state.genesis_timestamp =
-                block_timestamp - (block_timestamp % params.slot_duration);
-        }
-
-        // Progress indicator
-        if height % 500 == 0 || height == tip_height {
-            let pct = (height as f64 / tip_height as f64) * 100.0;
-            print!(
-                "\r  Replayed {}/{} blocks ({:.1}%)...",
-                height, tip_height, pct
-            );
-            std::io::Write::flush(&mut std::io::stdout()).ok();
-        }
+    // Step 2: Wipe and recreate state_db (fresh start)
+    let state_db_path = data_dir.join("state_db");
+    if state_db_path.exists() {
+        println!("Wiping existing state_db...");
+        std::fs::remove_dir_all(&state_db_path)?;
     }
+
+    // Step 3: Replay blocks via headless Node + apply_block(Replay)
+    //
+    // Construct a headless Node with the existing block_store and fresh state_db.
+    // This reuses the exact same state transition code used during normal operation,
+    // guaranteeing identical results for ALL transaction types, epoch boundaries,
+    // and undo data generation. No shadow implementation.
     println!();
+    println!("Replaying blocks through canonical apply_block()...");
 
-    // Save recovered state
-    println!();
-    println!("Saving recovered state...");
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
 
-    chain_state.save(&state_path)?;
-    println!(
-        "  Saved chain_state.bin (height={}, slot={})",
-        chain_state.best_height, chain_state.best_slot
-    );
+    rt.block_on(async {
+        use crate::node::Node;
+        use doli_core::validation::ValidationMode;
 
-    utxo_set.save(&utxo_path)?;
-    println!("  Saved utxo/ ({} UTXOs)", utxo_set.len());
+        // Construct headless Node for replay.
+        // Uses new_for_test infrastructure (proven) with the correct network chainspec.
+        let mut node = Node::new_for_replay(data_dir.clone(), network)
+            .await
+            .map_err(|e| anyhow!("Failed to construct replay node: {}", e))?;
 
-    // Merge genesis producers from hardcoded genesis constants.
-    // Genesis producers are registered out-of-band (not via on-chain transactions),
-    // so block replay alone cannot reconstruct them. We load them from the
-    // hardcoded MAINNET_GENESIS_PRODUCERS and add any missing from the recovered set.
-    let genesis_merged = match network {
-        Network::Mainnet => {
-            let genesis_producers = doli_core::genesis::mainnet_genesis_producers();
-            let mut added = 0usize;
-            for (pk, bonds) in &genesis_producers {
-                if producer_set.get_by_pubkey(pk).is_none() {
-                    let _ =
-                        producer_set.register_genesis_producer(*pk, *bonds, network.bond_unit());
-                    added += 1;
-                }
+        for height in 1..=tip_height {
+            let block = node
+                .block_store
+                .get_block_by_height(height)?
+                .ok_or_else(|| anyhow!("Block at height {} disappeared during recovery", height))?;
+
+            node.apply_block(block, ValidationMode::Replay)
+                .await
+                .map_err(|e| anyhow!("apply_block failed at height {}: {}", height, e))?;
+
+            if height % 500 == 0 || height == tip_height {
+                let pct = (height as f64 / tip_height as f64) * 100.0;
+                print!(
+                    "\r  Replayed {}/{} blocks ({:.1}%)...",
+                    height, tip_height, pct
+                );
+                std::io::Write::flush(&mut std::io::stdout()).ok();
             }
-            added
         }
-        _ => 0,
-    };
+        println!();
 
-    producer_set.save(&producers_path)?;
-    println!(
-        "  Saved producers.bin ({} producers, {} genesis merged)",
-        producer_set.active_count(),
-        genesis_merged
-    );
+        let cs = node.chain_state.read().await;
+        let utxo_count = node.utxo_set.read().await.len();
+        let producer_count = node.producer_set.read().await.active_count();
 
-    println!();
-    println!("=== Recovery Complete ===");
-    println!();
-    println!("Chain state recovered:");
-    println!("  Height: {}", chain_state.best_height);
-    println!("  Hash:   {}", chain_state.best_hash);
-    println!("  Slot:   {}", chain_state.best_slot);
-    println!();
-    println!("You can now start the node normally.");
+        println!();
+        println!("=== Recovery Complete ===");
+        println!();
+        println!("Chain state recovered (written to state_db):");
+        println!("  Height:    {}", cs.best_height);
+        println!("  Hash:      {}", cs.best_hash);
+        println!("  Slot:      {}", cs.best_slot);
+        println!("  UTXOs:     {}", utxo_count);
+        println!("  Producers: {}", producer_count);
+        println!();
+        println!("You can now start the node normally.");
+
+        Ok::<(), anyhow::Error>(())
+    })?;
 
     Ok(())
 }
