@@ -59,9 +59,17 @@ impl Payment {
     }
 
     /// Mark the payment as succeeded with the revealed preimage.
-    pub fn succeed(&mut self, preimage: [u8; 32]) {
+    ///
+    /// AUDIT-ROUTE-003: Validates that hash(preimage) == payment_hash
+    /// before marking succeeded. Returns false if preimage is invalid.
+    pub fn succeed(&mut self, preimage: [u8; 32]) -> bool {
+        let hash = crypto::hash::hash_with_domain(doli_core::HASHLOCK_DOMAIN, &preimage);
+        if *hash.as_bytes() != self.payment_hash {
+            return false;
+        }
         self.preimage = Some(preimage);
         self.status = PaymentStatus::Succeeded;
+        true
     }
 
     /// Mark the payment as failed.

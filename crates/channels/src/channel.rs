@@ -53,9 +53,14 @@ impl ChannelRecord {
     }
 
     /// Transition to a new state.
-    pub fn transition(&mut self, new_state: ChannelState) {
+    ///
+    /// AUDIT-CHAN-002: Now enforces validate_transition() — previously
+    /// the state machine validation existed but was never called.
+    pub fn transition(&mut self, new_state: ChannelState) -> crate::error::Result<()> {
+        crate::state_machine::validate_transition(&self.state, &new_state)?;
         self.state = new_state;
         self.updated_at = Utc::now();
+        Ok(())
     }
 
     /// Advance the commitment number and return the new number.

@@ -106,7 +106,7 @@ impl ChannelManager {
                             "channel {} funding confirmed ({} confs)",
                             channel_id, confirmations
                         );
-                        channel.transition(ChannelState::Active);
+                        let _ = channel.transition(ChannelState::Active);
                     }
                 }
             }
@@ -123,7 +123,7 @@ impl ChannelManager {
                     channel_id
                 );
                 if let Some(channel) = self.store.find_mut(&channel_id) {
-                    channel.transition(ChannelState::PenaltyInFlight);
+                    let _ = channel.transition(ChannelState::PenaltyInFlight);
                     channel.close_tx_hash = Some(spending_tx_hash);
                     // Penalty tx construction would go here with the keypair
                     // (requires access to the local keypair, which the manager
@@ -140,7 +140,7 @@ impl ChannelManager {
                     channel_id
                 );
                 if let Some(channel) = self.store.find_mut(&channel_id) {
-                    channel.transition(ChannelState::AwaitingClaim);
+                    let _ = channel.transition(ChannelState::AwaitingClaim);
                     // Delayed claim tx construction would go here
                 }
             }
@@ -155,7 +155,7 @@ impl ChannelManager {
                 );
                 if let Some(channel) = self.store.find_mut(&channel_id) {
                     if channel.state == ChannelState::Active {
-                        channel.transition(ChannelState::CounterpartyClosing);
+                        let _ = channel.transition(ChannelState::CounterpartyClosing);
                         channel.close_tx_hash = Some(spending_tx_hash);
                     }
                 }

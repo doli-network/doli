@@ -166,15 +166,14 @@ pub fn new_gossipsub(keypair: &Keypair, mesh: &MeshConfig) -> Result<Gossipsub, 
             ..Default::default()
         },
     );
-    // ip_colocation_factor_threshold: number of peers on the same IP before
-    // penalties apply. Default 500 allows large local testnets on 127.0.0.1.
-    // PRODUCTION NETWORKS should set DOLI_IP_COLOCATION_THRESHOLD=5 to resist
-    // Sybil attacks from a single IP. At threshold=1 with N co-located peers,
+    // AUDIT-GOSSIP-006: ip_colocation_factor_threshold defaults to 5 (Sybil
+    // resistant). Set DOLI_IP_COLOCATION_THRESHOLD=500 for local testnets
+    // with many nodes on 127.0.0.1. At threshold=1 with N co-located peers,
     // the penalty is -35*(N-1)^2 — 33+ peers on one IP exceed graylist (-16K).
     let ip_colocation_threshold: f64 = std::env::var("DOLI_IP_COLOCATION_THRESHOLD")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(500.0);
+        .unwrap_or(5.0);
 
     let peer_score_params = PeerScoreParams {
         topics: topic_scores,

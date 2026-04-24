@@ -346,7 +346,7 @@ pub(crate) async fn cmd_channel(
                 let ch_mut = store
                     .find_mut(&ch.channel_id)
                     .ok_or_else(|| anyhow::anyhow!("Channel disappeared"))?;
-                ch_mut.transition(ChannelState::ForceClosing);
+                let _ = ch_mut.transition(ChannelState::ForceClosing);
                 ch_mut.close_tx_hash = Some(tx_hash.to_hex());
                 store.save()?;
             } else {
@@ -394,7 +394,7 @@ pub(crate) async fn cmd_channel(
                 let ch_mut = store
                     .find_mut(&ch.channel_id)
                     .ok_or_else(|| anyhow::anyhow!("Channel disappeared"))?;
-                ch_mut.transition(ChannelState::Closed);
+                let _ = ch_mut.transition(ChannelState::Closed);
                 ch_mut.close_tx_hash = Some(tx_hash.to_hex());
                 store.save()?;
             }

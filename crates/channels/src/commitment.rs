@@ -56,8 +56,13 @@ pub fn revocation_hash(preimage: &[u8; 32]) -> Hash {
 
 /// Derive a channel seed from a keypair and channel ID.
 /// This seed is used to deterministically generate all revocation preimages.
+///
+/// AUDIT-CHAN-001: MUST use private key material, not just the public key.
+/// Using only public data would allow anyone to compute all revocation
+/// preimages, completely breaking the LN-Penalty security model.
 pub fn derive_channel_seed(keypair: &KeyPair, channel_id: &[u8; 32]) -> [u8; 32] {
-    let mut data = Vec::with_capacity(64);
+    let mut data = Vec::with_capacity(96);
+    data.extend_from_slice(keypair.private_key().as_bytes());
     data.extend_from_slice(keypair.public_key().as_bytes());
     data.extend_from_slice(channel_id);
     let hash = hash_with_domain(b"DOLI_CHANNEL_SEED", &data);

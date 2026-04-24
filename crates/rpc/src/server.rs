@@ -37,6 +37,12 @@ pub const ADMIN_METHODS: &[&str] = &[
     "enterRecoveryMode",
     "exitRecoveryMode",
     "bridgeFromArchive",
+    // AUDIT-RPC2-011: Debug/diagnostic methods that expose full state or trigger
+    // expensive scans. Previously unauthenticated — now require admin token.
+    "getUtxoDiff",
+    "getStateSnapshot",
+    "getStateRootDebug",
+    "verifyChainIntegrity",
 ];
 
 /// RPC server configuration
@@ -197,7 +203,9 @@ fn check_admin_auth(
                 .and_then(|v| v.strip_prefix("Bearer "));
 
             match provided {
-                Some(token) if token == expected.as_str() => Ok(()),
+                // AUDIT-RPC3-001: Use constant-time comparison to prevent
+                // timing side-channel attacks on the admin bearer token.
+                Some(token) if constant_time_eq(token.as_bytes(), expected.as_bytes()) => Ok(()),
                 _ => {
                     warn!(
                         "Admin method '{}' rejected: invalid or missing bearer token",
@@ -208,6 +216,18 @@ fn check_admin_auth(
             }
         }
     }
+}
+
+/// Constant-time byte comparison to prevent timing side-channel attacks.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 /// Check if an IP is in a trusted network (loopback or RFC 1918 private).
