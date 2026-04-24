@@ -703,7 +703,8 @@ impl Transaction {
             .iter()
             .filter(|o| o.output_type.is_native_amount())
             .map(|o| o.amount)
-            .sum()
+            .try_fold(0u64, |acc, x| acc.checked_add(x))
+            .unwrap_or(u64::MAX)
     }
 
     /// Serialize the transaction

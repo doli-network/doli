@@ -7,6 +7,29 @@ use super::types::{ProducerInfo, ProducerSet, ProducerStatus};
 use crate::StorageError;
 
 impl ProducerSet {
+    /// Clear all delegations received by a producer (called on exit/slash).
+    ///
+    /// Resets each delegator's `delegated_to` and `delegated_bonds` fields,
+    /// then clears the exiting producer's `received_delegations` list.
+    fn clear_received_delegations(&mut self, pubkey_hash: &Hash) {
+        let delegator_hashes: Vec<(Hash, u32)> = self
+            .producers
+            .get(pubkey_hash)
+            .map(|p| p.received_delegations.clone())
+            .unwrap_or_default();
+
+        for (delegator_hash, _) in &delegator_hashes {
+            if let Some(delegator) = self.producers.get_mut(delegator_hash) {
+                delegator.delegated_to = None;
+                delegator.delegated_bonds = 0;
+            }
+        }
+
+        if let Some(producer) = self.producers.get_mut(pubkey_hash) {
+            producer.received_delegations.clear();
+        }
+    }
+
     /// Process exit request for a producer (starts unbonding period)
     pub fn request_exit(
         &mut self,
@@ -29,6 +52,8 @@ impl ProducerSet {
                 );
                 info.start_unbonding(current_height);
                 self.active_cache = None;
+                // Clean up any delegations this producer received
+                self.clear_received_delegations(&key);
                 // Maintain unbonding index
                 self.unbonding_index
                     .entry(current_height)
@@ -175,6 +200,9 @@ impl ProducerSet {
             key
         );
         info.slash(current_height);
+
+        // Clean up any delegations this producer received
+        self.clear_received_delegations(&key);
 
         // Record in exit history with current height (slashed producers lose all seniority)
         self.exit_history.insert(key, current_height);

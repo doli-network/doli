@@ -500,6 +500,13 @@ impl Node {
         if let Some(ref vote_tx) = self.vote_tx {
             match serde_json::from_slice::<node_updater::VoteMessage>(&vote_data) {
                 Ok(vote_msg) => {
+                    if !vote_msg.verify(&vote_msg.producer_id) {
+                        debug!(
+                            "Rejected gossip vote with invalid signature from {}",
+                            &vote_msg.producer_id[..16.min(vote_msg.producer_id.len())]
+                        );
+                        return;
+                    }
                     info!(
                         "Vote received via gossip: {} vote for v{} from {}",
                         if vote_msg.vote == node_updater::Vote::Veto {
@@ -523,6 +530,18 @@ impl Node {
     pub async fn on_new_attestation(&mut self, data: Vec<u8>) {
         if let Some(attestation) = doli_core::Attestation::from_bytes(&data) {
             if attestation.verify().is_ok() {
+                // Only accept attestations for blocks we know are canonical
+                match self.block_store.get_height_by_hash(&attestation.block_hash) {
+                    Ok(Some(_)) => {} // Block exists in our store — proceed
+                    _ => {
+                        debug!(
+                            "Ignoring attestation for unknown block {}",
+                            attestation.block_hash
+                        );
+                        return;
+                    }
+                }
+
                 let mut sync = self.sync_manager.write().await;
                 sync.add_attestation_weight(&attestation.block_hash, attestation.attester_weight);
                 drop(sync);

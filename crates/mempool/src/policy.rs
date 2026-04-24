@@ -13,6 +13,8 @@ pub struct MempoolPolicy {
     pub max_tx_size: usize,
     /// Maximum ancestor count
     pub max_ancestors: usize,
+    /// Maximum descendant count per transaction
+    pub max_descendants: usize,
     /// Maximum time in mempool (seconds)
     pub max_age: u64,
 }
@@ -25,6 +27,7 @@ impl Default for MempoolPolicy {
             min_fee_rate: 0,            // flat fee model — any fee > 0 accepted
             max_tx_size: 600 * 1024, // 600 KB per transaction (covers 512KB NFT + inputs/outputs)
             max_ancestors: 25,
+            max_descendants: 25,
             max_age: 14 * 24 * 60 * 60, // 14 days
         }
     }

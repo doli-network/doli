@@ -17,6 +17,9 @@ impl ProducerSet {
         delegatee_pubkey: &PublicKey,
         bond_count: u32,
     ) -> Result<(), String> {
+        if delegator_pubkey == delegatee_pubkey {
+            return Err("cannot delegate bonds to self".into());
+        }
         let delegator_hash = crypto_hash(delegator_pubkey.as_bytes());
         let delegatee_hash = crypto_hash(delegatee_pubkey.as_bytes());
 

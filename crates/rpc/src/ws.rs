@@ -4,6 +4,7 @@
 //! - `new_block`: emitted when a new block is applied
 //! - `new_tx`: emitted when a new transaction enters the mempool
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -12,6 +13,12 @@ use axum::response::IntoResponse;
 use serde::Serialize;
 use tokio::sync::broadcast;
 use tracing::{debug, warn};
+
+/// Maximum concurrent WebSocket connections
+const MAX_WS_CONNECTIONS: usize = 100;
+
+/// Global WebSocket connection counter
+static WS_CONNECTION_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 /// Events broadcast to WebSocket clients
 #[derive(Debug, Clone, Serialize)]
@@ -44,11 +51,20 @@ pub fn broadcast_channel() -> (broadcast::Sender<WsEvent>, broadcast::Receiver<W
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
     State(sender): State<Arc<broadcast::Sender<WsEvent>>>,
-) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket, sender))
+) -> Result<impl IntoResponse, axum::http::StatusCode> {
+    let current = WS_CONNECTION_COUNT.load(Ordering::Relaxed);
+    if current >= MAX_WS_CONNECTIONS {
+        warn!(
+            "WebSocket connection rejected: limit reached ({}/{})",
+            current, MAX_WS_CONNECTIONS
+        );
+        return Err(axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    }
+    Ok(ws.on_upgrade(move |socket| handle_socket(socket, sender)))
 }
 
 async fn handle_socket(mut socket: WebSocket, sender: Arc<broadcast::Sender<WsEvent>>) {
+    WS_CONNECTION_COUNT.fetch_add(1, Ordering::Relaxed);
     let mut rx = sender.subscribe();
 
     loop {
@@ -90,4 +106,6 @@ async fn handle_socket(mut socket: WebSocket, sender: Arc<broadcast::Sender<WsEv
             }
         }
     }
+
+    WS_CONNECTION_COUNT.fetch_sub(1, Ordering::Relaxed);
 }

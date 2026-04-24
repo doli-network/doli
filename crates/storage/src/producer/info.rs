@@ -385,13 +385,13 @@ impl ProducerInfo {
     /// Returns 0 if producer is not active.
     pub fn selection_weight(&self) -> u64 {
         if self.is_active() {
-            let own_bonds = self.bond_count as u64;
-            let delegated: u64 = self
+            let own_bonds = (self.bond_count as u64).saturating_sub(self.delegated_bonds as u64);
+            let received: u64 = self
                 .received_delegations
                 .iter()
                 .map(|(_, count)| *count as u64)
                 .sum();
-            own_bonds + delegated
+            own_bonds + received
         } else {
             0
         }

@@ -255,6 +255,18 @@ impl Mempool {
             ));
         }
 
+        // Check descendant limits: reject if any ancestor already has too many descendants
+        for ancestor_hash in &ancestors {
+            if let Some(ancestor) = self.entries.get(ancestor_hash) {
+                if ancestor.descendants.len() >= self.policy.max_descendants {
+                    return Err(MempoolError::TooManyDescendants(
+                        ancestor.descendants.len() + 1,
+                        self.policy.max_descendants,
+                    ));
+                }
+            }
+        }
+
         // Check for double-spend with mempool
         for input in &tx.inputs {
             let outpoint = Outpoint::new(input.prev_tx_hash, input.output_index);

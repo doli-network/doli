@@ -329,11 +329,9 @@ impl Node {
             if producer_info.received_delegations.is_empty() {
                 reward_outputs.push((reward, pubkey_hash));
             } else {
-                let utxo = self.utxo_set.read().await;
-                let own_bonds = utxo
-                    .count_bonds(&pubkey_hash, self.config.network.bond_unit())
-                    .max(1) as u64;
-                drop(utxo);
+                // Use epoch bond_snapshot (deterministic) instead of live UTXO
+                // to prevent cross-node divergence from mid-epoch withdrawals.
+                let own_bonds = bond_for(producer_info).max(1);
                 let delegated: u64 = producer_info
                     .received_delegations
                     .iter()
