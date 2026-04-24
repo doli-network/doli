@@ -95,10 +95,12 @@ impl Node {
         {
             let tip = self.chain_state.read().await.best_height;
             let last_scan = self.last_integrity_check_tip.unwrap_or(0);
-            if tip > 0 && (last_scan == 0 || tip >= last_scan + 100) {
+            // Round scan_tip to nearest 100 so all nodes compute the same commitment
+            // at the same height, eliminating explorer flickering from scan-timing drift.
+            let scan_tip = (tip / 100) * 100;
+            if scan_tip > 0 && scan_tip > last_scan {
                 let block_store = self.block_store.clone();
                 let state_db = self.state_db.clone();
-                let scan_tip = tip;
                 tokio::task::spawn(async move {
                     let result = tokio::task::spawn_blocking(move || {
                         let mut missing = 0u64;
@@ -136,7 +138,7 @@ impl Node {
                         }
                     }
                 });
-                self.last_integrity_check_tip = Some(tip);
+                self.last_integrity_check_tip = Some(scan_tip);
             }
         }
 
