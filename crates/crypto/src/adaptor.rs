@@ -204,9 +204,12 @@ pub fn adaptor_sign(
     let a_point = &a * ED25519_BASEPOINT_TABLE;
     let a_compressed = a_point.compress();
 
-    // Generate deterministic nonce: r = H(DOMAIN || nonce_prefix || message)
+    // Generate deterministic nonce: r = H(DOMAIN || nonce_prefix || T || message)
+    // AUDIT-ADAPT-001: T MUST be included to prevent private key extraction
+    // when signing the same message with different adaptor points.
     let mut hasher = crate::Hasher::new_with_domain(ADAPTOR_NONCE_DOMAIN);
     hasher.update(nonce_prefix);
+    hasher.update(adaptor_point.compress().as_bytes());
     hasher.update(message);
     let nonce_hash = hasher.finalize();
     let r = Scalar::from_bytes_mod_order(*nonce_hash.as_bytes());

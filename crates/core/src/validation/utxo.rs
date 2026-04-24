@@ -144,11 +144,12 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
             )));
         }
 
-        // Check lock time -- skip for WithdrawalRequest/Exit (they unlock Bond UTXOs)
-        if tx.tx_type != TxType::RequestWithdrawal
-            && tx.tx_type != TxType::Exit
-            && !utxo.output.is_spendable_at(ctx.current_height)
-        {
+        // Check lock time -- skip for WithdrawalRequest/Exit ONLY on Bond UTXOs.
+        // AUDIT-UTXO-002: Previously skipped for ALL output types, allowing
+        // RequestWithdrawal to bypass Vesting/HTLC/any lock. Now restricted to Bond.
+        let lock_bypass = (tx.tx_type == TxType::RequestWithdrawal || tx.tx_type == TxType::Exit)
+            && utxo.output.output_type == OutputType::Bond;
+        if !lock_bypass && !utxo.output.is_spendable_at(ctx.current_height) {
             return Err(ValidationError::OutputLocked {
                 lock_height: utxo.output.lock_until,
                 current_height: ctx.current_height,

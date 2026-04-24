@@ -184,45 +184,81 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
             env_parse("DOLI_VESTING_QUARTER_SLOTS", defaults.vesting_quarter_slots)
         },
 
-        // Hard fork gates (configurable for all networks including mainnet)
-        sig_verification_height: env_parse(
-            "DOLI_SIG_VERIFICATION_HEIGHT",
-            defaults.sig_verification_height,
-        ),
-        snap_attestation_skip_height: env_parse(
-            "DOLI_SNAP_ATTESTATION_SKIP_HEIGHT",
-            defaults.snap_attestation_skip_height,
-        ),
-        // INC-I-026: env override for testing / emergency rollback.
-        inc_i_026_scheduler_activation_height: env_parse(
-            "DOLI_INC_I_026_SCHEDULER_ACTIVATION_HEIGHT",
-            defaults.inc_i_026_scheduler_activation_height,
-        ),
-        fork_id_activation_height: env_parse(
-            "DOLI_FORK_ID_ACTIVATION_HEIGHT",
-            defaults.fork_id_activation_height,
-        ),
-        // Per-network activation heights (env override for testing / emergency rollback)
-        full_bitfield_decode_height: env_parse(
-            "DOLI_FULL_BITFIELD_DECODE_HEIGHT",
-            defaults.full_bitfield_decode_height,
-        ),
-        rewards_epoch_list_fix_height: env_parse(
-            "DOLI_REWARDS_EPOCH_LIST_FIX_HEIGHT",
-            defaults.rewards_epoch_list_fix_height,
-        ),
-        encrypted_content_activation_height: env_parse(
-            "DOLI_ENCRYPTED_CONTENT_ACTIVATION_HEIGHT",
-            defaults.encrypted_content_activation_height,
-        ),
-        epoch_state_reorg_activation_height: env_parse(
-            "DOLI_EPOCH_STATE_REORG_ACTIVATION_HEIGHT",
-            defaults.epoch_state_reorg_activation_height,
-        ),
-        ghost_exclusion_activation_height: env_parse(
-            "DOLI_GHOST_EXCLUSION_ACTIVATION_HEIGHT",
-            defaults.ghost_exclusion_activation_height,
-        ),
+        // AUDIT-CLI-001: Hard fork activation heights are LOCKED for mainnet.
+        // Overriding these via .env on mainnet could disable signature verification
+        // or fork ID enforcement, breaking consensus safety.
+        sig_verification_height: if is_mainnet {
+            defaults.sig_verification_height
+        } else {
+            env_parse(
+                "DOLI_SIG_VERIFICATION_HEIGHT",
+                defaults.sig_verification_height,
+            )
+        },
+        snap_attestation_skip_height: if is_mainnet {
+            defaults.snap_attestation_skip_height
+        } else {
+            env_parse(
+                "DOLI_SNAP_ATTESTATION_SKIP_HEIGHT",
+                defaults.snap_attestation_skip_height,
+            )
+        },
+        inc_i_026_scheduler_activation_height: if is_mainnet {
+            defaults.inc_i_026_scheduler_activation_height
+        } else {
+            env_parse(
+                "DOLI_INC_I_026_SCHEDULER_ACTIVATION_HEIGHT",
+                defaults.inc_i_026_scheduler_activation_height,
+            )
+        },
+        fork_id_activation_height: if is_mainnet {
+            defaults.fork_id_activation_height
+        } else {
+            env_parse(
+                "DOLI_FORK_ID_ACTIVATION_HEIGHT",
+                defaults.fork_id_activation_height,
+            )
+        },
+        full_bitfield_decode_height: if is_mainnet {
+            defaults.full_bitfield_decode_height
+        } else {
+            env_parse(
+                "DOLI_FULL_BITFIELD_DECODE_HEIGHT",
+                defaults.full_bitfield_decode_height,
+            )
+        },
+        rewards_epoch_list_fix_height: if is_mainnet {
+            defaults.rewards_epoch_list_fix_height
+        } else {
+            env_parse(
+                "DOLI_REWARDS_EPOCH_LIST_FIX_HEIGHT",
+                defaults.rewards_epoch_list_fix_height,
+            )
+        },
+        encrypted_content_activation_height: if is_mainnet {
+            defaults.encrypted_content_activation_height
+        } else {
+            env_parse(
+                "DOLI_ENCRYPTED_CONTENT_ACTIVATION_HEIGHT",
+                defaults.encrypted_content_activation_height,
+            )
+        },
+        epoch_state_reorg_activation_height: if is_mainnet {
+            defaults.epoch_state_reorg_activation_height
+        } else {
+            env_parse(
+                "DOLI_EPOCH_STATE_REORG_ACTIVATION_HEIGHT",
+                defaults.epoch_state_reorg_activation_height,
+            )
+        },
+        ghost_exclusion_activation_height: if is_mainnet {
+            defaults.ghost_exclusion_activation_height
+        } else {
+            env_parse(
+                "DOLI_GHOST_EXCLUSION_ACTIVATION_HEIGHT",
+                defaults.ghost_exclusion_activation_height,
+            )
+        },
 
         // Gossip mesh (locked for mainnet - wrong values could isolate nodes)
         mesh_n: if is_mainnet {

@@ -129,7 +129,13 @@ impl Wallet {
         }
 
         let contents = serde_json::to_string_pretty(self)?;
-        std::fs::write(path, contents)?;
+        std::fs::write(path, &contents)?;
+        // AUDIT-KEY-001: Restrict wallet file permissions (contains private keys)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        }
         Ok(())
     }
 

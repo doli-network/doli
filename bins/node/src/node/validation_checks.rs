@@ -423,6 +423,17 @@ impl Node {
             );
         }
 
+        // AUDIT-VALID-001: Reject additional coinbase transactions at index > 0.
+        // Without this check, a malicious producer could mint unlimited coins.
+        for (i, tx) in block.transactions.iter().enumerate().skip(1) {
+            if tx.is_coinbase() {
+                anyhow::bail!(
+                    "[ECON_EXTRA_COINBASE] coinbase transaction at index {} (only index 0 allowed) at height={}",
+                    i, height
+                );
+            }
+        }
+
         // Calculate extra fees from user transactions in this block.
         // Excluded from extra_fees calculation:
         // - Coinbase/EpochReward: protocol-generated, no user fees
