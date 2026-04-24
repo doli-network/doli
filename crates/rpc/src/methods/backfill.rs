@@ -469,12 +469,45 @@ impl RpcContext {
         serde_json::to_value(response).map_err(|e| RpcError::internal_error(e.to_string()))
     }
 
-    /// Verify chain integrity by scanning every height from 1 to tip.
+    /// Verify chain integrity by scanning every height from 1 to tip (or up_to_height).
     /// Returns missing heights (gaps) and chain-linking errors.
-    pub(super) async fn verify_chain_integrity(&self) -> Result<Value, RpcError> {
+    ///
+    /// Optional param: `up_to_height` (u64) — scan blocks 1..=up_to_height instead of
+    /// 1..=tip. Allows the explorer to request all nodes compute their commitment at the
+    /// same height, making hashes directly comparable.
+    pub(super) async fn verify_chain_integrity(
+        &self,
+        params: Value,
+    ) -> Result<Value, RpcError> {
         let chain_state = self.chain_state.read().await;
         let tip_height = chain_state.best_height;
         drop(chain_state);
+
+        // Parse optional up_to_height from params: [height] or {"up_to_height": height}
+        let up_to_height = params
+            .get(0)
+            .or_else(|| params.get("up_to_height"))
+            .and_then(|v| v.as_u64());
+
+        let scan_ceiling = match up_to_height {
+            Some(h) if h > tip_height => {
+                return Err(RpcError::invalid_params(format!(
+                    "up_to_height {} exceeds current tip {}",
+                    h, tip_height
+                )));
+            }
+            Some(0) => {
+                return Ok(serde_json::json!({
+                    "complete": true,
+                    "tip": tip_height,
+                    "scanned": 0,
+                    "missing": [],
+                    "missingCount": 0
+                }));
+            }
+            Some(h) => h,
+            None => tip_height,
+        };
 
         if tip_height == 0 {
             return Ok(serde_json::json!({
@@ -486,84 +519,89 @@ impl RpcContext {
             }));
         }
 
-        // Fast path: if periodic commitment exists, return it in O(1).
-        // The commitment is recomputed every 100 blocks via full BLAKE3 scan
-        // in periodic.rs. Always correct by construction.
-        // IMPORTANT: report the actual scan_tip (not current tip) so the explorer
-        // can distinguish "different scan time" from "divergent chain".
+        // Fast path: if periodic commitment exists AND covers the requested height,
+        // return it in O(1). The commitment is recomputed every 100 blocks via full
+        // BLAKE3 scan in periodic.rs. Always correct by construction.
+        // Only usable when no specific up_to_height was requested, or when the
+        // persisted scan_tip matches the requested height exactly.
         let persisted = self
             .state_db
             .as_ref()
             .and_then(|db| db.get_chain_commitment_with_tip());
         if let Some((commitment, scan_tip)) = persisted {
-            // Still need gap detection — commitment only covers applied blocks,
-            // not block_store completeness. Quick scan for gaps only (no hashing).
-            let block_store = self.block_store.clone();
-            let tip = tip_height;
-            let gaps = tokio::task::spawn_blocking(move || {
-                let mut missing: Vec<String> = Vec::new();
-                let mut range_start: Option<u64> = None;
-                let mut range_end: u64 = 0;
-                for h in 1..=tip {
-                    let exists = block_store
-                        .get_block_by_height(h)
-                        .map(|opt| opt.is_some())
-                        .unwrap_or(false);
-                    if !exists {
-                        if range_start.is_none() {
-                            range_start = Some(h);
+            let persisted_matches = match up_to_height {
+                None => true, // no specific height requested, use whatever we have
+                Some(h) => scan_tip > 0 && scan_tip == h, // exact match required
+            };
+            if persisted_matches {
+                // Still need gap detection — commitment only covers applied blocks,
+                // not block_store completeness. Quick scan for gaps only (no hashing).
+                let block_store = self.block_store.clone();
+                let ceiling = scan_ceiling;
+                let gaps = tokio::task::spawn_blocking(move || {
+                    let mut missing: Vec<String> = Vec::new();
+                    let mut range_start: Option<u64> = None;
+                    let mut range_end: u64 = 0;
+                    for h in 1..=ceiling {
+                        let exists = block_store
+                            .get_block_by_height(h)
+                            .map(|opt| opt.is_some())
+                            .unwrap_or(false);
+                        if !exists {
+                            if range_start.is_none() {
+                                range_start = Some(h);
+                            }
+                            range_end = h;
+                        } else if let Some(start) = range_start.take() {
+                            if start == range_end {
+                                missing.push(format!("{}", start));
+                            } else {
+                                missing.push(format!("{}-{}", start, range_end));
+                            }
                         }
-                        range_end = h;
-                    } else if let Some(start) = range_start.take() {
+                    }
+                    if let Some(start) = range_start {
                         if start == range_end {
                             missing.push(format!("{}", start));
                         } else {
                             missing.push(format!("{}-{}", start, range_end));
                         }
                     }
-                }
-                if let Some(start) = range_start {
-                    if start == range_end {
-                        missing.push(format!("{}", start));
-                    } else {
-                        missing.push(format!("{}-{}", start, range_end));
-                    }
-                }
-                missing
-            })
-            .await
-            .map_err(|e| RpcError::internal_error(format!("Gap scan failed: {}", e)))?;
-
-            let missing_count: u64 = gaps
-                .iter()
-                .map(|s| {
-                    if let Some((a, b)) = s.split_once('-') {
-                        b.parse::<u64>().unwrap_or(0) - a.parse::<u64>().unwrap_or(0) + 1
-                    } else {
-                        1
-                    }
+                    missing
                 })
-                .sum();
+                .await
+                .map_err(|e| RpcError::internal_error(format!("Gap scan failed: {}", e)))?;
 
-            // Report actual scan_tip so the explorer can detect "different scan time"
-            // vs "divergent chain". scan_tip=0 means legacy commitment without tip.
-            let reported_scan = if scan_tip > 0 { scan_tip } else { tip_height };
+                let missing_count: u64 = gaps
+                    .iter()
+                    .map(|s| {
+                        if let Some((a, b)) = s.split_once('-') {
+                            b.parse::<u64>().unwrap_or(0) - a.parse::<u64>().unwrap_or(0) + 1
+                        } else {
+                            1
+                        }
+                    })
+                    .sum();
 
-            return Ok(serde_json::json!({
-                "complete": missing_count == 0,
-                "tip": tip_height,
-                "scanned": reported_scan,
-                "missing": gaps,
-                "missingCount": missing_count,
-                "chainCommitment": format!("{}", commitment)
-            }));
+                let reported_scan = if scan_tip > 0 { scan_tip } else { tip_height };
+
+                return Ok(serde_json::json!({
+                    "complete": missing_count == 0,
+                    "tip": tip_height,
+                    "scanned": reported_scan,
+                    "missing": gaps,
+                    "missingCount": missing_count,
+                    "chainCommitment": format!("{}", commitment)
+                }));
+            }
         }
 
-        // Fallback: full scan (legacy nodes without persisted commitment).
-        // Computes commitment from scratch and persists it for future O(1) lookups.
+        // Full scan: compute commitment over 1..=scan_ceiling.
+        // Also used when up_to_height doesn't match the persisted scan_tip.
         let block_store = self.block_store.clone();
         let state_db_opt = self.state_db.clone();
-        let tip = tip_height;
+        let tip = scan_ceiling;
+        let persist_commitment = up_to_height.is_none(); // only persist for natural scans
 
         let result = tokio::task::spawn_blocking(move || {
             let mut missing: Vec<String> = Vec::new();
@@ -616,12 +654,9 @@ impl RpcContext {
                 })
                 .sum();
 
-            // Bootstrap: persist the computed commitment ONLY if none exists yet.
-            // If post_commit already maintains an incremental commitment, writing here
-            // would race: this scan computes commitment up to tip_at_scan_start, but
-            // post_commit may have already advanced it further. Overwriting would
-            // retrocede the commitment, corrupting all subsequent incremental updates.
-            if commitment_valid && missing_count == 0 {
+            // Only persist for natural scans (no up_to_height). Targeted scans
+            // compute a partial commitment that must not overwrite the full one.
+            if commitment_valid && missing_count == 0 && persist_commitment {
                 if let Some(ref db) = state_db_opt {
                     if db.get_chain_commitment().is_none() {
                         db.put_chain_commitment_with_tip(&commitment, tip);
@@ -645,7 +680,7 @@ impl RpcContext {
         Ok(serde_json::json!({
             "complete": missing_count == 0,
             "tip": tip_height,
-            "scanned": tip_height,
+            "scanned": scan_ceiling,
             "missing": missing,
             "missingCount": missing_count,
             "chainCommitment": chain_commitment

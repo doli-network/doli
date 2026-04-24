@@ -39,7 +39,7 @@ impl RpcContext {
             "getBondDetails" => self.get_bond_details(request.params).await,
             "backfillFromPeer" => self.backfill_from_peer(request.params).await,
             "backfillStatus" => self.backfill_status().await,
-            "verifyChainIntegrity" => self.verify_chain_integrity().await,
+            "verifyChainIntegrity" => self.verify_chain_integrity(request.params).await,
             "getChainStats" => self.get_chain_stats().await,
             "getMempoolTransactions" => self.get_mempool_transactions(request.params).await,
             "getSlotSchedule" => self.get_slot_schedule(request.params).await,
