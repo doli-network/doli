@@ -131,19 +131,16 @@ struct StateSnapshot {
     best_hash: Hash,
     best_slot: u32,
     utxo_count: usize,
-    producer_count: usize,
 }
 
 async fn snapshot_state(node: &Node) -> StateSnapshot {
     let cs = node.chain_state.read().await;
     let utxo = node.utxo_set.read().await;
-    let ps = node.producer_set.read().await;
     StateSnapshot {
         height: cs.best_height,
         best_hash: cs.best_hash,
         best_slot: cs.best_slot,
         utxo_count: utxo.len(),
-        producer_count: ps.active_count(),
     }
 }
 
