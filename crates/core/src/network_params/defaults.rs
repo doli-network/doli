@@ -91,8 +91,8 @@ impl NetworkParams {
                 rewards_epoch_list_fix_height: 0,
                 encrypted_content_activation_height: 0,
                 epoch_state_reorg_activation_height: 0,
-                // INC-I-046: Ghost exclusion activates at epoch boundary >= 18052
-                ghost_exclusion_activation_height: 18_052,
+                // INC-I-046: Ghost exclusion activates at epoch boundary >= 18152
+                ghost_exclusion_activation_height: 18_152,
 
                 // Gossip mesh: universal config for all network sizes.
                 // mesh_n=12 keeps all peers in eager-push for networks ≤24 (mesh_n_high),

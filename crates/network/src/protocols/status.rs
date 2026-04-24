@@ -44,7 +44,7 @@ pub const STATUS_PROTOCOL: &str = "/doli/status/1.0.0";
 ///       Hash::ZERO (serde default) which is tolerated.
 ///   7 — INC-I-040: EpochState restoration in execute_reorg (h=44750),
 ///       timing tautology fix, FORK_GUARD direct recovery signal.
-///   8 — INC-I-046: Ghost producer exclusion activated on mainnet (h=18052).
+///   8 — INC-I-046: Ghost producer exclusion activated on mainnet (h=18152).
 pub const CURRENT_PROTOCOL_VERSION: u32 = 8;
 
 /// Minimum protocol version accepted from peers.
