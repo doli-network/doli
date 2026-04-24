@@ -562,6 +562,83 @@ impl SyncManager {
         }
     }
 
+    /// Recovery Coordinator phase 3 (M2): authoritative classify + dispatch.
+    ///
+    /// Builds a `RecoveryContext` from the current SyncManager state, calls
+    /// `classify()` on the coordinator, records the action, and returns it
+    /// for the caller (periodic.rs) to execute.
+    ///
+    /// `shallow_rollback_count` is passed from the Node layer because the
+    /// coordinator needs it for rollback-exhaustion checks but it lives on
+    /// Node, not SyncManager.
+    pub fn classify_and_dispatch(
+        &mut self,
+        shallow_rollback_count: u32,
+    ) -> super::recovery::RecoveryAction {
+        use super::recovery::{RecoveryAction, RecoveryContext};
+        use super::RecoveryPhase;
+
+        let in_grace_period = !matches!(self.recovery_phase, RecoveryPhase::Normal);
+        let ctx = RecoveryContext {
+            local_height: self.local_height,
+            network_tip_height: self.network.network_tip_height,
+            peer_count: self.peers.len(),
+            last_applied_secs: self.network.last_block_applied.elapsed().as_secs(),
+            shallow_rollback_count,
+            snap_attempts: self.snap.attempts,
+            last_rollback_local_height: self.fork.last_rollback_local_height,
+            in_grace_period,
+        };
+        let action = self.recovery.classify(&ctx);
+        if action != RecoveryAction::None {
+            info!(
+                "[COORDINATOR] action={:?} gap={} last_applied={}s peers={} \
+                 shallow_rb={} last_rb_h={:?} snap_attempts={} grace={}",
+                action,
+                ctx.gap(),
+                ctx.last_applied_secs,
+                ctx.peer_count,
+                shallow_rollback_count,
+                ctx.last_rollback_local_height,
+                ctx.snap_attempts,
+                ctx.in_grace_period,
+            );
+        }
+        self.recovery.record_action(action);
+        action
+    }
+
+    /// Report orphan gossip evidence to the RecoveryCoordinator.
+    /// Called when the node receives a gossip block whose parent is not in our store.
+    pub fn report_orphan_gossip(&mut self, slot: u32, gap: u64) {
+        self.recovery
+            .report(super::recovery::RecoveryEvidence::OrphanGossip { slot, gap });
+    }
+
+    /// Report empty headers evidence to the RecoveryCoordinator.
+    /// Called when a peer returns 0 headers for our tip hash.
+    pub fn report_empty_headers(&mut self, peer: libp2p::PeerId, gap: u64) {
+        self.recovery
+            .report(super::recovery::RecoveryEvidence::EmptyHeaders { peer, gap });
+    }
+
+    /// Report apply failure evidence to the RecoveryCoordinator.
+    /// Called when apply_block() returns an error.
+    pub fn report_apply_failure(&mut self, height: u64) {
+        self.recovery
+            .report(super::recovery::RecoveryEvidence::ApplyFailure { height });
+    }
+
+    /// Report stale tip evidence to the RecoveryCoordinator.
+    /// Called when no block has been applied for a long time despite the network producing.
+    pub fn report_stale_tip(&mut self, last_applied_secs: u64, gap: u64) {
+        self.recovery
+            .report(super::recovery::RecoveryEvidence::StaleTip {
+                last_applied_secs,
+                gap,
+            });
+    }
+
     pub fn reset_sync_for_rollback(&mut self) {
         if self.local_height > 0 && self.local_height <= self.confirmed_height_floor {
             let new_floor = self.local_height.saturating_sub(1);

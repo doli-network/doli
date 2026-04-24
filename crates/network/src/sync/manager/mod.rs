@@ -23,6 +23,8 @@ pub use types::{
     ForkAction, ProductionAuthorization, RecoveryPhase, RecoveryReason, SyncConfig, SyncPhase,
     SyncPipelineData, SyncState, VerifiedSnapshot,
 };
+// Re-export recovery coordinator types used by Node layer
+pub use recovery::{RecoveryAction, RecoveryEvidence};
 // Re-export pub(crate) types used by sibling modules
 pub(crate) use types::{
     ForkState, NetworkState, PeerSyncStatus, PendingRequest, SnapSyncState, SyncPipeline,
@@ -156,22 +158,16 @@ pub struct SyncManager {
     /// node layer to trigger immediate status requests to all peers.
     needs_mass_status_refresh: bool,
 
-    /// Recovery Coordinator (phase 2 shadow integration, 2026-04-15,
-    /// synmgrefactor branch).
+    /// Recovery Coordinator (authoritative since M2, 2026-04-24).
     ///
-    /// Centralized classifier for recovery actions. Detectors call
-    /// `self.recovery.report(evidence)` to feed observations; periodic
-    /// dispatch layer calls `self.recovery.classify(ctx)` to decide what
-    /// action (if any) to take.
+    /// Centralized classifier for recovery actions. Evidence is reported
+    /// via `report_*()` methods; `classify_and_dispatch()` builds context,
+    /// classifies, and returns a `RecoveryAction` for the caller to execute.
     ///
-    /// In phase 2 (this commit), the coordinator runs in SHADOW MODE:
-    /// detectors report, periodic.rs classifies and LOGS what the
-    /// coordinator would do, but the legacy direct-action paths still
-    /// fire. This lets us compare coordinator decisions to the actual
-    /// actions taken, without any behavior change in production.
-    ///
-    /// Phase 3 (future commit) flips to authoritative: coordinator's
-    /// action is executed, legacy paths are removed.
+    /// Promoted from shadow mode (phase 2, 2026-04-15) to authoritative
+    /// dispatch (M2, 2026-04-24). The 3 legacy detector→action paths
+    /// (ACTIVE_FORK_DETECT, resolve_shallow_fork, DEEP_FORK_DETECT) have
+    /// been replaced by this single classify→execute dispatch.
     pub(crate) recovery: recovery::RecoveryCoordinator,
 }
 

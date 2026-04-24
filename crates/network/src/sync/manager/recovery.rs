@@ -1,10 +1,11 @@
-//! Recovery Coordinator (2026-04-15, synmgrefactor branch)
+//! Recovery Coordinator (authoritative since M2, 2026-04-24)
 //!
-//! The `#[allow(dead_code)]` below is intentional: the coordinator is fully
-//! implemented and tested here, but not yet wired into the production event
-//! loop. Integration (detectors reporting evidence + periodic.rs dispatching
-//! the action) lands in a follow-up commit so each step can be reviewed and
-//! reverted independently.
+//! Promoted from shadow mode (phase 2) to authoritative dispatch (phase 3/M2).
+//! periodic.rs now calls `classify_and_dispatch()` which builds a RecoveryContext,
+//! classifies evidence, and returns a RecoveryAction that the caller executes.
+//! The 3 independent detector→action paths (ACTIVE_FORK_DETECT,
+//! resolve_shallow_fork, DEEP_FORK_DETECT) have been replaced by this single
+//! classify→execute dispatch.
 //!
 //! Centralizes the "node detected divergence, what should recovery action be"
 //! decision. Before this module, each detector (orphan gossip counter, empty
@@ -57,8 +58,6 @@
 //! - This is NOT a state machine — there is no "current state" the
 //!   coordinator owns. Every call to classify() evaluates the whole context
 //!   from scratch.
-
-#![allow(dead_code)]
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -212,7 +211,7 @@ const MAX_ENTRIES: usize = 256;
 /// How long an evidence entry lives before pruning.
 const EVIDENCE_TTL: Duration = Duration::from_secs(120);
 /// Minimum time between same-action repeats.
-const ACTION_COOLDOWN: Duration = Duration::from_secs(5);
+const ACTION_COOLDOWN: Duration = Duration::from_secs(30);
 
 impl RecoveryCoordinator {
     /// Create an empty coordinator with no evidence and no prior action.

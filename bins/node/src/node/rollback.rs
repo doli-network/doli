@@ -277,6 +277,12 @@ impl Node {
     /// Fix: roll back one block at a time until we reach a tip peers recognize.
     /// Capped at 10 rollbacks — if the fork is deeper than that, it's not shallow.
     /// Returns `true` if a rollback was performed (caller should skip other periodic tasks).
+    ///
+    /// NOTE (M2): Primary dispatch is now via RecoveryCoordinator in periodic.rs.
+    /// This function is kept for its stuck_fork_signal consumption and
+    /// LAST_ROLLBACK_HEIGHT tracking logic. It may be called as a fallback
+    /// or removed in Phase 4 cleanup.
+    #[allow(dead_code)]
     pub async fn resolve_shallow_fork(&mut self) -> Result<bool> {
         let (empty_headers, local_height, gap, last_applied_secs, stuck_signal) = {
             let mut sync = self.sync_manager.write().await;

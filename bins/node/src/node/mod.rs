@@ -231,6 +231,9 @@ pub struct Node {
 
     /// Height at which last active fork correction was performed.
     /// Max 1 correction per epoch (360 blocks) to prevent rollback loops.
+    /// NOTE (M2): ACTIVE_FORK_DETECT is now superseded by RecoveryCoordinator
+    /// dispatch. Field kept for Phase 4 cleanup.
+    #[allow(dead_code)]
     pub last_active_fork_correction_height: u64,
 
     /// Recovery mode: when true, apply_block() and apply_snap_snapshot() silently

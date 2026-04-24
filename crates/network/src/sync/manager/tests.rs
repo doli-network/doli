@@ -2642,6 +2642,8 @@ mod recovery_gate_tests {
                 peak: 500,
                 current: 10,
             },
+            RecoveryReason::CoordinatorSnapEscalation,
+            RecoveryReason::CoordinatorGenesisEscalation,
         ];
 
         for reason in reasons {
@@ -3746,6 +3748,8 @@ mod site_migration_tests {
                 peak: 500,
                 current: 10,
             },
+            RecoveryReason::CoordinatorSnapEscalation,
+            RecoveryReason::CoordinatorGenesisEscalation,
         ];
 
         for reason in blocked_reasons {
@@ -3805,6 +3809,8 @@ mod site_migration_tests {
                 peak: 500,
                 current: 10,
             },
+            RecoveryReason::CoordinatorSnapEscalation,
+            RecoveryReason::CoordinatorGenesisEscalation,
         ];
 
         for reason in reasons {

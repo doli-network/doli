@@ -364,6 +364,10 @@ pub enum RecoveryReason {
     ApplyFailuresSnapThreshold { gap: u64 },
     /// Rollback death spiral exceeded max depth (Node rollback.rs)
     RollbackDeathSpiral { peak: u64, current: u64 },
+    /// RecoveryCoordinator escalated to snap sync (periodic.rs M2 dispatch)
+    CoordinatorSnapEscalation,
+    /// RecoveryCoordinator escalated to genesis resync (periodic.rs M2 dispatch)
+    CoordinatorGenesisEscalation,
 }
 
 // ---------------------------------------------------------------------------

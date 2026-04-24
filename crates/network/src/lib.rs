@@ -88,9 +88,9 @@ pub use rate_limit::{RateLimitConfig, RateLimiter};
 pub use scoring::{Infraction, PeerScore, PeerScorer, PeerScorerConfig, ScorerStats};
 pub use service::{NetworkCommand, NetworkError, NetworkEvent, NetworkService};
 pub use sync::{
-    EquivocationDetector, EquivocationProof, ForkAction, ProductionAuthorization, RecoveryPhase,
-    RecoveryReason, ReorgResult, SyncConfig, SyncManager, SyncPhase, SyncPipelineData, SyncState,
-    VerifiedSnapshot, MAX_CONSECUTIVE_RESYNCS,
+    EquivocationDetector, EquivocationProof, ForkAction, ProductionAuthorization, RecoveryAction,
+    RecoveryEvidence, RecoveryPhase, RecoveryReason, ReorgResult, SyncConfig, SyncManager,
+    SyncPhase, SyncPipelineData, SyncState, VerifiedSnapshot, MAX_CONSECUTIVE_RESYNCS,
 };
 
 // Re-export libp2p types that are part of our public API

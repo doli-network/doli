@@ -453,60 +453,65 @@ impl Node {
             }
         }
 
-        // ACTIVE FORK DETECTION: if >66% of peers are above us and we're not
-        // receiving blocks that chain on our tip, we're on a minority fork.
-        // Normal mode: runs at heights ending in 1, 4, 7 (~every 30s). Max 1 per epoch.
-        // Stuck mode: if last_applied > 120s, bypass height/epoch restrictions.
-        // This handles the orphan chase loop where the node is stuck on a fork
-        // block and can't advance — the height never changes so the normal
-        // check_height condition never re-fires.
+        // RECOVERY COORDINATOR: single dispatch point for all fork/sync recovery.
+        //
+        // Replaces 3 independent detector→action paths (ACTIVE_FORK_DETECT,
+        // resolve_shallow_fork, DEEP_FORK_DETECT) with the RecoveryCoordinator's
+        // classify→execute dispatch. Evidence is reported based on current state,
+        // then the coordinator classifies and returns a single action.
+        //
+        // Phase 2 ran this in shadow mode (log only). Phase 3 (M2) makes it
+        // authoritative — the coordinator's action is executed.
         {
-            let (local_h, local_hash, _) = self.sync_manager.read().await.local_tip();
-            let last_applied_secs = self.sync_manager.read().await.last_block_applied_secs();
-            let is_minority = self.sync_manager.read().await.is_minority_fork(local_h);
-            let blocks_per_epoch = self.config.network.blocks_per_reward_epoch();
-            let since_last = local_h.saturating_sub(self.last_active_fork_correction_height);
-            let check_height = local_h % 10 == 1 || local_h % 10 == 4 || local_h % 10 == 7;
+            // Report evidence based on current state before classifying
+            {
+                let sync = self.sync_manager.read().await;
+                let local_h = sync.local_tip().0;
+                let gap = sync.network_tip_height().saturating_sub(local_h);
+                let last_applied = sync.last_block_applied_secs();
+                let empty_headers = sync.consecutive_empty_headers();
+                drop(sync);
 
-            // Stuck mode: node hasn't applied a block in 2+ minutes and is on minority fork
-            let stuck_mode = last_applied_secs > 120 && is_minority;
-            // Normal mode: periodic check with epoch cooldown
-            let normal_mode = local_h > 10
-                && check_height
-                && since_last >= blocks_per_epoch
-                && is_minority
-                && last_applied_secs > 60;
-
-            if stuck_mode || normal_mode {
-                warn!(
-                    "[ACTIVE_FORK_DETECT] Minority fork at h={}: local={:.16}, stale {}s. Rolling back 1.{}",
-                    local_h, local_hash, last_applied_secs,
-                    if stuck_mode { " (stuck mode — orphan chase loop detected)" } else { "" }
-                );
-                let rolled_back = self.rollback_one_block().await?;
-                if rolled_back {
-                    self.last_active_fork_correction_height = local_h;
-                    return Ok(());
+                let mut sync_w = self.sync_manager.write().await;
+                if empty_headers >= 3 {
+                    sync_w.report_empty_headers(PeerId::random(), gap);
+                }
+                if last_applied >= 30 && gap > 0 {
+                    sync_w.report_stale_tip(last_applied, gap);
                 }
             }
-        }
 
-        // FORK SYNC: Binary search for common ancestor when on a dead fork.
-        // Triggers after 3+ consecutive empty header responses. O(log N) recovery.
-        if self.resolve_shallow_fork().await? {
-            // Fork sync was just initiated, don't do anything else this tick
-            return Ok(());
-        }
-
-        // Fork sync binary search removed — fork recovery is now handled by
-        // the ReorgHandler in the network crate's fork_recovery module.
-
-        // DEEP FORK DETECTION: If peers consistently reject our chain tip (10+ empty
-        // header responses), log warning. Fork sync handles recovery via binary search.
-        {
-            let is_deep_fork = self.sync_manager.read().await.is_deep_fork_detected();
-            if is_deep_fork {
-                warn!("[FORK] DEEP_FORK peers consistently reject our chain tip — fork sync will attempt recovery");
+            let action = {
+                let mut sync = self.sync_manager.write().await;
+                sync.classify_and_dispatch(self.shallow_rollback_count)
+            };
+            match action {
+                network::RecoveryAction::None => {}
+                network::RecoveryAction::ShallowRollback { depth } => {
+                    for _ in 0..depth {
+                        if !self.rollback_one_block().await? {
+                            break;
+                        }
+                        self.shallow_rollback_count += 1;
+                    }
+                    return Ok(());
+                }
+                network::RecoveryAction::HeaderFirstSync => {
+                    // Trigger header-first sync by resetting empty headers,
+                    // which allows should_sync() → start_sync() on next tick.
+                    let mut sync = self.sync_manager.write().await;
+                    sync.reset_empty_headers();
+                }
+                network::RecoveryAction::SnapSync => {
+                    let mut sync = self.sync_manager.write().await;
+                    sync.request_genesis_resync(network::RecoveryReason::CoordinatorSnapEscalation);
+                }
+                network::RecoveryAction::GenesisResync => {
+                    let mut sync = self.sync_manager.write().await;
+                    sync.request_genesis_resync(
+                        network::RecoveryReason::CoordinatorGenesisEscalation,
+                    );
+                }
             }
         }
 
@@ -780,12 +785,9 @@ impl Node {
                 );
             }
 
-            // Recovery Coordinator phase 2 shadow dispatch (2026-04-15,
-            // synmgrefactor). SyncManager logs what action the coordinator
-            // would take; legacy detector→action paths still own real
-            // dispatch. Post-deploy, operators grep [COORDINATOR] and
-            // compare with actual actions for phase 3 flip validation.
-            sync.shadow_classify_recovery(peer_count);
+            // Recovery Coordinator: shadow dispatch removed (M2 promotion).
+            // The coordinator is now authoritative — classify_and_dispatch()
+            // runs earlier in the periodic loop and executes the action directly.
 
             // INC-I-020/020b: DISABLED.
             //
