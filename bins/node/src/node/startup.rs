@@ -352,6 +352,11 @@ impl Node {
         .with_data_dir(self.config.data_dir.clone())
         .with_recovery_mode(self.recovery_mode.clone());
 
+        // Wire archive_dir if configured (for bridge_checkpoint_to_archive via guardian RPC)
+        if let Some(ref archive_dir) = self.archive_dir {
+            context = context.with_archive_dir(archive_dir.clone());
+        }
+
         // Wire up peer info so getNetworkInfo reports real values
         if let Some(ref network) = self.network {
             let peers = network.peers_arc();

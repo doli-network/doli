@@ -36,6 +36,7 @@ pub const ADMIN_METHODS: &[&str] = &[
     "backfillFromPeer",
     "enterRecoveryMode",
     "exitRecoveryMode",
+    "bridgeFromArchive",
 ];
 
 /// RPC server configuration

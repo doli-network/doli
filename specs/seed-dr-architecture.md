@@ -136,6 +136,167 @@ Two non-DR code paths still read `producers.bin`:
 
 **Recommended**: Update both to read from state_db. The run.rs path is effectively dead code (overwritten). The maintainer.rs path is a correctness bug -- it may show different producers than the node is actually using.
 
+## Archive-to-Checkpoint Bridge
+
+### Bridge Problem Statement
+
+After checkpoint restore at height C, blocks C+1..A exist in the archive (flat files with BLAKE3 checksums) but the restore path never consults the archive. The checkpoint provides state at height C; the archive provides the sequential block log up to height A. No code composes them. This is the "Disconnected Pipeline" anti-pattern (Pattern Matcher) -- two complementary backup systems with no bridge.
+
+### Bridge Evaluation Summary (Round 2)
+
+| Evaluator | Lens | Top Proposal | Confidence | Key Finding |
+|-----------|------|-------------|------------|-------------|
+| Subtractionist | removal | Compose 2 existing functions (5-10 lines, 0 new abstractions) | conf(0.60, inferred) | Bridge is pure composition; nothing to add beyond function calls |
+| Restructurer | boundaries | Compose inline (~25 lines) or dedicated function in restore.rs | conf(0.60, observed) | Guardian RPC path KILLED: blocks via RPC don't advance state_db |
+| Pattern Matcher | patterns | Single ~30-line orchestrator callable from init.rs and guardian.rs | conf(0.65, observed) | Disconnected Pipeline anti-pattern; PostgreSQL Checkpoint+WAL analogue |
+| Failure Analyst | failures | Bridge useless without D1; 11 failure modes; 9 constraints | conf(0.70, observed) | D1 is hard dependency for full DR capability; commitment is always stale |
+| Radical Simplifier | minimal | 8-35 lines, 0 new types/traits/modules/interfaces | conf(0.65, inferred) | "Natural" 360-line design is 10-45x excess |
+
+### Bridge Convergence Matrix
+
+```
+                                              Subtract  Restructure  Pattern  Failure  Radical
+No new abstractions (0 modules/traits/types):    Y          Y           Y        Y        Y    -> 5/5 -> DEFINITE
+Compose backfill_from_archive + delete_commit:   Y          Y           Y        Y        Y    -> 5/5 -> DEFINITE
+Place bridge function in restore.rs:             Y          Y           Y(*)     -        -    -> 2-3/5 -> RECOMMEND
+Delete commitment BEFORE backfill:               -          Y           -        Y        -    -> 2/5 -> RECOMMEND (contradiction resolved)
+Parent-hash validation before import (FM-3):     -          -           -        Y        -    -> 1/5 -> RECOMMEND (prevents catastrophic FM-3)
+Assert recovery_mode at bridge entry:            -          -           -        Y        -    -> 1/5 -> RECOMMEND (prevents FM-10 race)
+```
+
+(*) Pattern Matcher says "naturally belongs in operations/restore.rs" in cross-layer signals.
+
+### Bridge Definite Changes
+
+#### B1: Thin bridge function composing existing primitives
+
+**Convergence**: 5/5 evaluators agree on approach. conf(0.70, converged)
+
+**CONVERGENCE INDEPENDENCE CHECK:**
+```
+Addition: bridge_checkpoint_to_archive() function
+Converging evaluators: All five (on approach), 4/5 (on function vs. inline)
+Evidence independence:
+  - Subtractionist: dead-code analysis -> both primitives exist and work, compose them
+  - Restructurer: coupling analysis -> restore.rs has all dependencies, 0 new cross-crate deps
+  - Pattern Matcher: industry pattern -> PostgreSQL Checkpoint+WAL recovery = compose checkpoint + replay
+  - Failure Analyst: failure enumeration -> 11 FM handled by composition with validation guards
+  - Radical Simplifier: complexity audit -> 8-35 lines vs 360-line "natural" design
+  INDEPENDENT? YES -- five lenses, same conclusion via different evidence
+```
+
+**What**: A single function `bridge_checkpoint_to_archive()` in `operations/restore.rs` that:
+
+```
+Step 1: VALIDATE -- verify first archive block's parent hash matches block C in store
+        (prevents FM-3: wrong-network archive import, CRITICAL blast radius)
+Step 2: DELETE -- state_db.delete_chain_commitment()
+        (unconditionally stale after checkpoint restore per Failure Analyst C3)
+Step 3: BACKFILL -- backfill_from_archive(block_store, archive_dir)
+        (existing function, idempotent, skips existing blocks)
+Step 4: REPORT -- return (blocks_imported, gaps_remaining)
+        (enables AC3: unfillable gaps produce warnings, not errors)
+```
+
+**Estimated size**: 15-35 lines (range across evaluators: 5-50 lines; median ~25)
+
+**Step ordering rationale (CONTRADICTION RESOLVED)**:
+- Pattern Matcher proposed delete AFTER backfill (transactional semantics: "if backfill fails, commitment still valid").
+- Failure Analyst proposed delete BEFORE backfill (FM-4: "strictly safer").
+- Restructurer proposed delete BEFORE backfill (blocks might be rejected if stale commitment references old tip H).
+- **Resolution**: Delete BEFORE backfill wins. The Failure Analyst's analysis is more thorough (examines all 4 partial-failure combinations) and the Pattern Matcher's "still valid" reasoning incorrectly assumes the commitment references checkpoint height C when it actually references pre-restore tip H. The commitment is unconditionally stale. See reasoning trace for full analysis.
+
+**Complexity cost**: +1 function, +15-35 lines, +0 modules, +0 interfaces, +0 cross-crate dependencies.
+
+**Failure mode handling**:
+| FM | Description | How handled |
+|----|-------------|-------------|
+| FM-1 | No archive dir | Early return with info log |
+| FM-2 | Corrupt blocks (BLAKE3) | backfill_from_archive validates per-block |
+| FM-3 | Wrong network | Parent-hash validation before any writes |
+| FM-4 | Ordering | Delete commitment before backfill |
+| FM-6 | Duplicate blocks | backfill skips existing (idempotent) |
+| FM-7 | C > A | Early return when no gap |
+| FM-9 | Zombie UTXOs | Out of scope; post-bridge state root logging is partial defense |
+| FM-10 | Race condition | Recovery mode assertion at entry |
+| FM-11 | Format evolution | deserialize_block_compat in archiver handles legacy |
+
+### Bridge Recommended Changes
+
+#### BR1: Assert recovery_mode at bridge entry (if called via RPC)
+
+**Source**: Failure Analyst P5, conf(0.65, observed)
+
+If the bridge runs via guardian RPC while the node is live, apply_block could concurrently process inbound blocks. Recovery mode prevents this race (same class as INC-I-041).
+
+At startup (init.rs), this is not needed -- no concurrent processing occurs during Node::new().
+
+#### BR2: Post-bridge state root logging
+
+**Source**: Failure Analyst C7, conf(0.60, inferred)
+
+After bridge + replay completes, log the state root at the final height. In the zero-peers seed DR scenario, no external reference exists for comparison. Internal consistency checks (UTXO count, epoch state) provide partial defense but cannot detect zombie UTXOs (FM-9).
+
+### Bridge Integration Points (Options for User)
+
+The bridge function lives in `operations/restore.rs`. The question is WHERE it is CALLED FROM:
+
+#### OPTION F: Guardian RPC call site (AC4 compliant)
+
+**Source**: Design brief (stated integration point), Pattern Matcher, Radical Simplifier
+**What**: Call bridge function from guardian.rs after checkpoint restore confirmation (exitRecoveryMode or a post-restore hook).
+**AC4**: YES -- satisfies the acceptance criterion as written.
+**Risks**:
+- Archive directory path may not be in RpcContext (highest-risk unknown per Radical Simplifier)
+- backfill_from_archive is synchronous; RPC handler is async (needs spawn_blocking)
+- Restructurer KILLED the "blocks advance state via RPC" assumption -- blocks sit unapplied
+**Mitigation**: The bridge only fills BlockStore gaps and deletes commitment. State advancement is handled by step 4 (recover/replay, requires D1). The bridge does not need blocks to advance state.
+**Confidence**: conf(0.50, weakened by RPC path concerns)
+
+#### OPTION G: Startup auto-detection (operationally superior)
+
+**Source**: Pattern Matcher P1, Radical Simplifier P3
+**What**: Add a 4th self-heal check to init.rs startup sequence: detect archive directory, compare archive tip vs store tip, call bridge if gap exists.
+**AC4**: NO -- does not integrate into guardian restore path.
+**Advantage**: Handles manual `cp` checkpoint restores automatically. Zero operator intervention. Follows proven init.rs self-heal pattern (INC-I-027 UTXO self-heal, body gap recovery).
+**Risk**: Startup delay for large gaps (thousands of blocks). init.rs already at 1,171 lines.
+**Confidence**: conf(0.55, partial convergence)
+
+#### OPTION F+G: Both (recommended by Pattern Matcher P3)
+
+**Source**: Pattern Matcher P3
+**What**: Function in restore.rs callable from both sites. Guardian satisfies AC4; startup provides automatic detection.
+**Complexity cost**: +5-10 lines at each call site (function body is shared).
+**Confidence**: conf(0.65, covers all scenarios)
+
+### Bridge Constraints (from Failure Analyst)
+
+These constraints apply to ANY bridge implementation:
+
+| ID | Constraint | Confidence | Source |
+|----|-----------|------------|--------|
+| BC1 | Archive directory must be discoverable (via --archive-to config) | conf(0.80) | Pattern Matcher, Radical |
+| BC2 | Backfill is blocks-only, not state (does NOT advance state_db) | conf(0.95) | Restructurer |
+| BC3 | Chain commitment is unconditionally stale after checkpoint restore | conf(0.65) | Failure Analyst |
+| BC4 | Recovery mode must be active during RPC-triggered bridge execution | conf(0.65) | Failure Analyst |
+| BC5 | Block store deduplication handled by backfill idempotency | conf(0.90) | Pattern Matcher |
+| BC6 | Bridge requires D1 to deliver full DR capability (partial value without) | conf(0.70) | Failure Analyst |
+| BC7 | Post-bridge verification is essential but incomplete in zero-peers scenario | conf(0.60) | Failure Analyst |
+| BC8 | Archive block deserialization must use deserialize_block_compat | conf(0.55) | Failure Analyst |
+| BC9 | Bridge must handle C > A (checkpoint newer than archive) gracefully | conf(0.70) | Failure Analyst |
+
+### Bridge Dependency on D1
+
+The Failure Analyst identified (FM-8a) that the bridge delivers blocks to step 4 (recover/replay), which is currently broken (5 fatal bugs in `recover_chain_state()`). Without D1, the bridge fills the block store and cleans the commitment but the downstream replay always fails.
+
+**Resolution**: The bridge is independently valuable for 3 of 4 acceptance criteria:
+- AC1: Block store gaps filled -- YES, independently
+- AC2: Stale chain_commitment deleted -- YES, independently
+- AC3: Unfillable gaps produce warnings -- YES, independently
+- AC4: Full DR flow via guardian -- REQUIRES D1 for the replay step
+
+The bridge should be built as infrastructure. D1 unlocks the full capability. Neither is useful for complete DR without the other, but both can be implemented and tested independently.
+
 ## Options for User Decision
 
 ### OPTION A: Unified CheckpointManager module
@@ -277,9 +438,10 @@ Data flow (BROKEN):
   Runtime:  block -> apply_block() -> state_db (atomic) -> CORRECT
   Recovery: blocks -> recover() -> legacy files (non-atomic) -> BROKEN
   Checkpoint: state_db + blocks -> RocksDB hardlinks -> manual cp -> WORKS
+  Bridge: DOES NOT EXIST (checkpoint and archive are disconnected)
 ```
 
-### Proposed Architecture (Definite + Recommended)
+### Proposed Architecture (Definite + Recommended + Bridge)
 
 ```
 CLI (main.rs)
@@ -289,28 +451,35 @@ CLI (main.rs)
   |     +-- truncate_chain() -> UNCHANGED
   |     +-- reindex_canonical_chain() -> UNCHANGED
   |
-  +-- operations/restore.rs (UNCHANGED)
+  +-- operations/restore.rs (+15-35 lines for bridge)
   |     +-- restore_from_archive() -> calls new recover_chain_state() -> NOW WORKS
   |     +-- restore_from_rpc() -> UNCHANGED
   |     +-- backfill_from_archive() -> UNCHANGED
+  |     +-- bridge_checkpoint_to_archive() -> NEW: compose validate+delete+backfill+report
   |
   +-- node/init.rs (UNCHANGED structure, see Option B for split)
   |     +-- Node::new() -> unchanged
   |     +-- Node::new_for_replay() -> NEW: headless Node variant (~30 lines, based on new_for_test)
   |     +-- init_utxo_set() -> unchanged
+  |     +-- (OPTION G: startup archive gap detection -> calls bridge_checkpoint_to_archive)
   |
   +-- node/apply_block/ (UNCHANGED)
   |     +-- CANONICAL state transition -> now also used by recovery
   |     +-- Handles ValidationMode::Replay or headless None-components (R1)
   |
   +-- node/periodic.rs (UNCHANGED)
-  +-- rpc/guardian.rs (UNCHANGED)
+  +-- rpc/guardian.rs (+5-10 lines for bridge call site)
+  |     +-- createCheckpoint (no health.json, no rotation)
+  |     +-- recovery mode enter/exit
+  |     +-- (OPTION F: post-restore hook -> calls bridge_checkpoint_to_archive)
+  |
   +-- storage/archiver.rs (UNCHANGED)
 
 Data flow (FIXED):
   Runtime:  block -> apply_block() -> state_db (atomic) -> CORRECT
   Recovery: blocks -> apply_block() -> state_db (atomic) -> CORRECT (same path!)
   Checkpoint: state_db + blocks -> RocksDB hardlinks -> manual cp (or Option A) -> WORKS
+  Bridge: checkpoint(C) + archive(A) -> validate -> delete_commitment -> backfill(C+1..A) -> WORKS
 ```
 
 ## Migration Path
@@ -337,21 +506,38 @@ Data flow (FIXED):
 
 **Verification**: After this milestone, `recover --yes` produces correct state_db with all tx types, correct genesis hash, complete epoch state, and undo data.
 
-### Milestone 2: Fix producers.bin readers (R3) -- SHOULD
+### Milestone 2: Archive-to-Checkpoint Bridge (B1) -- SHOULD
+
+**Dependencies**: Can be implemented independently of Milestone 1 (provides partial value). Full DR requires Milestone 1.
+
+1. Add `bridge_checkpoint_to_archive(block_store, state_db, archive_dir, genesis_hash) -> Result<BridgeReport>` to `operations/restore.rs`:
+   - Validate: first archive block's parent hash matches block C in store (FM-3 defense)
+   - Delete: `state_db.delete_chain_commitment()` (unconditionally safe after restore)
+   - Backfill: `backfill_from_archive(block_store, archive_dir)` (existing, idempotent)
+   - Report: return blocks imported + gaps remaining
+2. Wire into guardian.rs call site (AC4 compliance -- Option F):
+   - After checkpoint restore confirmation, call bridge function
+   - Requires: archive_dir available in RpcContext or passed as parameter
+   - Requires: spawn_blocking for synchronous backfill in async handler
+3. Test: Regression test with checkpoint at height C, archive at height A, verify blocks C+1..A imported and commitment deleted
+
+**Verification**: After this milestone, `backfill_from_archive` fills block store gaps after checkpoint restore. Stale chain_commitment is cleaned. Full DR requires Milestone 1 for the replay step.
+
+### Milestone 3: Fix producers.bin readers (R3) -- SHOULD
 
 **Dependencies**: None (standalone)
 
 1. Update `maintainer.rs:35` to read from state_db instead of producers.bin
 2. Update `run.rs:350-421` to get producer data from state_db (or confirm it's already overwritten and mark as dead code)
 
-### Milestone 3: Deprecate legacy migration (R2) -- COULD
+### Milestone 4: Deprecate legacy migration (R2) -- COULD
 
 **Dependencies**: Milestone 1 (so recover no longer writes legacy files)
 
 1. Add deprecation warning to legacy migration code (init.rs:236-302)
 2. In a future release: replace migration code with a clear error message directing to the previous version
 
-### Milestones 4+: User-selected options -- COULD
+### Milestones 5+: User-selected options -- COULD
 
 **Dependencies**: Milestone 1 for Options C, D, E. Independent for Options A, B.
 
@@ -361,13 +547,14 @@ These are deferred to user choice:
 - Option C (Unified DR pipeline): requires Milestone 1
 - Option D (Auto state rebuild): requires Milestone 1
 - Option E (Kill rebuild_producer_set): requires version gate analysis
+- Option F+G (Both integration points): Milestone 2 for F, Milestone 1 for G
 
 ## Complexity Comparison
 
-| Metric | Current | Radical Minimum | Proposed (D1+R1+R2+R3) |
-|--------|---------|----------------|------------------------|
+| Metric | Current | Radical Minimum | Proposed (D1+R1+R2+R3+B1) |
+|--------|---------|----------------|---------------------------|
 | State transition functions for replay | 2 (apply_block + recover) | 1 (apply_block) | 1 (apply_block) |
-| DR-specific code lines | ~935 | ~200 | ~400 |
+| DR-specific code lines | ~935 | ~200 | ~435 (+35 for bridge) |
 | Data formats written during recovery | 2 (legacy + state_db) | 1 (state_db) | 1 (state_db) |
 | Recovery paths that work | 1 of 2 | 2 of 2 | 2 of 2 |
 | TX types handled in replay | 3/10+ | All | All |
@@ -375,22 +562,26 @@ These are deferred to user choice:
 | Legacy file readers remaining | 3 (recover, run.rs, maintainer.rs) | 0 | 0 (after R3) |
 | CLI commands for DR | 4 | 2 | 4 (same, but all work) |
 | Shadow implementations | 3 | 0-1 | 1 (rebuild_producer_set remains) |
+| Checkpoint-archive bridge | None | Composed | Composed (15-35 lines) |
+| Bridge integration points | 0 | 1 | 1-2 (guardian + optional startup) |
 
-The proposed architecture matches the Radical Simplifier's minimum for the core change (1 state transition function) while preserving existing CLI commands and not removing infrastructure that serves non-DR purposes (archiver, utxo_store). The ~200-line gap between proposed (~400) and radical minimum (~200) comes from keeping existing CLI structure and the rebuild_producer_set fallback.
+The proposed architecture matches the Radical Simplifier's minimum for the core change (1 state transition function) while preserving existing CLI commands and not removing infrastructure that serves non-DR purposes (archiver, utxo_store). The ~235-line gap between proposed (~435) and radical minimum (~200) comes from keeping existing CLI structure, the rebuild_producer_set fallback, and the bridge function.
 
 ## Design Synthesis Quality Gate
 
 ```
---- DESIGN SYNTHESIS QUALITY GATE ---
-Evaluators completed:           5/5
-Deletion convergence items:     2 (5/5 agreement on recover loop, 4/5 on legacy writes)
+--- DESIGN SYNTHESIS QUALITY GATE (Round 1 + Bridge) ---
+Evaluators completed:           5/5 (both rounds)
+Deletion convergence items:     2 (5/5 on recover loop, 4/5 on legacy writes)
+                                + 1 bridge-specific (5/5 on no new abstractions)
 Restructuring convergence:      2 (5/5 on apply_block reuse, 4/5 on headless Node)
-Addition options presented:     5 (A through E)
-Failure modes identified:       9 (C1-C9 from Failure Analyst)
-Failure modes applied as filters: 9/9
-Radical floor gap:              935 lines -> 200 (radical) -> 400 (proposed)
-Contradictions found:           1 (see reasoning trace)
-Contradictions resolved:        1/1
+                                + 1 bridge (5/5 on compose two primitives)
+Addition options presented:     5 original (A-E) + 4 bridge (F-I)
+Failure modes identified:       9 original (C1-C9) + 11 bridge (FM-1 to FM-11)
+Failure modes applied as filters: 9/9 original + 11/11 bridge
+Radical floor gap:              935 -> 200 (radical) -> 435 (proposed with bridge)
+Contradictions found:           2 (ordering + D1 dependency)
+Contradictions resolved:        2/2
 Evidence independence verified: YES
--------------------------------------
+---------------------------------------------------------
 ```

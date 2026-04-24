@@ -64,6 +64,7 @@ impl RpcContext {
             "getGuardianStatus" => self.get_guardian_status().await,
             "enterRecoveryMode" => self.enter_recovery_mode().await,
             "exitRecoveryMode" => self.exit_recovery_mode().await,
+            "bridgeFromArchive" => self.bridge_from_archive().await,
             _ => Err(RpcError::method_not_found(&request.method)),
         };
 

@@ -89,6 +89,8 @@ pub struct RpcContext {
     /// Recovery mode flag (anti-poisoning gate for seed recovery).
     /// When true, apply_block() and apply_snap_snapshot() drop all inbound state mutations.
     pub recovery_mode: Arc<AtomicBool>,
+    /// Archive directory path (for bridge_checkpoint_to_archive)
+    pub archive_dir: Option<PathBuf>,
     /// Full bitfield decode activation height (network-specific)
     pub full_bitfield_decode_height: u64,
     /// Rewards epoch list fix activation height (network-specific)
@@ -147,6 +149,7 @@ impl RpcContext {
             sync_manager: None,
             state_db: None,
             data_dir: None,
+            archive_dir: None,
             recovery_mode: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -206,6 +209,7 @@ impl RpcContext {
                 sync_manager: None,
                 state_db: None,
                 data_dir: None,
+                archive_dir: None,
                 recovery_mode: Arc::new(AtomicBool::new(false)),
             }
         }
@@ -301,6 +305,12 @@ impl RpcContext {
     /// Set data directory (for checkpoint output paths)
     pub fn with_data_dir(mut self, data_dir: PathBuf) -> Self {
         self.data_dir = Some(data_dir);
+        self
+    }
+
+    /// Set archive directory path (for bridge_checkpoint_to_archive)
+    pub fn with_archive_dir(mut self, dir: PathBuf) -> Self {
+        self.archive_dir = Some(dir);
         self
     }
 

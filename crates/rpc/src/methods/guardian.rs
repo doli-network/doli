@@ -264,4 +264,101 @@ impl RpcContext {
             "message": "Recovery mode deactivated. Normal block and snap sync processing resumed. Recommend restarting the node to clear any cached fork blocks."
         }))
     }
+
+    /// Bridge checkpoint restore to archive backfill.
+    ///
+    /// After restoring a RocksDB checkpoint, this method:
+    /// 1. Deletes the stale chain_commitment (unconditionally stale after restore)
+    /// 2. Backfills missing blocks from the archive directory into the block store
+    /// 3. Returns a summary of what was imported
+    ///
+    /// Recovery mode should be active (enterRecoveryMode) before calling this
+    /// to prevent concurrent block processing during the bridge operation.
+    pub(super) async fn bridge_from_archive(&self) -> Result<Value, RpcError> {
+        // BC4: Warn if recovery mode is not active (race condition risk)
+        if !self.recovery_mode.load(Ordering::Relaxed) {
+            warn!(
+                "[BRIDGE] bridge_from_archive called without recovery mode active — \
+                 concurrent block processing may interfere"
+            );
+        }
+
+        let archive_dir = self.archive_dir.clone().ok_or_else(|| {
+            RpcError::internal_error(
+                "archive_dir not configured — start node with --archive-to to enable".to_string(),
+            )
+        })?;
+
+        let state_db = self
+            .state_db
+            .clone()
+            .ok_or_else(|| RpcError::internal_error("state_db not available".to_string()))?;
+
+        let block_store = self.block_store.clone();
+
+        // The bridge is synchronous (file I/O) — run in blocking thread
+        let result = tokio::task::spawn_blocking(move || -> Result<(u64, bool), String> {
+            // Step 1: DELETE stale chain_commitment BEFORE backfill (BC3, FM-4).
+            state_db.delete_chain_commitment();
+            info!("[BRIDGE] Deleted stale chain_commitment after checkpoint restore");
+
+            // FM-1: No archive directory — early return
+            if !archive_dir.exists() {
+                info!(
+                    "[BRIDGE] Archive directory does not exist ({:?}), skipping backfill",
+                    archive_dir
+                );
+                return Ok((0u64, false));
+            }
+
+            // Read genesis_hash from block store for cross-chain validation
+            let genesis_hash = {
+                let mut found = None;
+                for h in 1..=10_000u64 {
+                    if let Ok(Some(blk)) = block_store.get_block_by_height(h) {
+                        found = Some(blk.header.genesis_hash);
+                        break;
+                    }
+                }
+                found
+            };
+
+            // Step 2: BACKFILL from archive (existing idempotent function, BC5)
+            let imported = storage::archiver::backfill_from_archive(
+                &archive_dir,
+                &block_store,
+                genesis_hash.as_ref(),
+            )?;
+
+            Ok((imported, true))
+        })
+        .await
+        .map_err(|e| RpcError::internal_error(format!("Bridge task failed: {}", e)))?;
+
+        match result {
+            Ok((imported, archive_found)) => {
+                info!(
+                    "[BRIDGE] Archive bridge complete: {} blocks imported",
+                    imported
+                );
+                Ok(serde_json::json!({
+                    "status": "ok",
+                    "blocks_imported": imported,
+                    "archive_found": archive_found,
+                    "commitment_deleted": true
+                }))
+            }
+            Err(e) => {
+                // Archive errors are warnings, not hard failures (AC3)
+                warn!("[BRIDGE] Archive bridge error (non-fatal): {}", e);
+                Ok(serde_json::json!({
+                    "status": "warning",
+                    "blocks_imported": 0,
+                    "archive_found": true,
+                    "commitment_deleted": true,
+                    "warning": format!("{}", e)
+                }))
+            }
+        }
+    }
 }

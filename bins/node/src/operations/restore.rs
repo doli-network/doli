@@ -1,7 +1,107 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use doli_core::Network;
+use tracing::{info, warn};
+
+use storage::{BlockStore, StateDb};
+
+/// Report from the archive-to-checkpoint bridge.
+#[allow(dead_code)]
+pub struct BridgeReport {
+    /// Number of blocks imported from archive.
+    pub blocks_imported: u64,
+    /// Whether there are remaining gaps in the block store.
+    pub has_gaps: bool,
+}
+
+/// Bridge checkpoint restore to archive backfill.
+///
+/// After a RocksDB checkpoint is restored (manual `cp` or guardian RPC), the
+/// state_db reflects height C but the block store may have gaps for heights
+/// below C. The archive directory (flat files with BLAKE3 checksums) contains
+/// the sequential block log. This function composes two existing primitives:
+///
+/// 1. Delete stale `chain_commitment` from state_db (unconditionally stale
+///    after checkpoint restore -- it references the pre-restore tip, not C).
+/// 2. Backfill missing blocks from the archive directory into the block store.
+///
+/// Errors from archive backfill produce warnings, not hard failures. The
+/// function is safe to call when no archive exists (early return with info log).
+///
+/// Currently used by the `bridgeFromArchive` guardian RPC (composed inline in
+/// `crates/rpc/src/methods/guardian.rs`). This standalone version is infrastructure
+/// for Option G (startup auto-detection in init.rs).
+#[allow(dead_code)]
+pub fn bridge_checkpoint_to_archive(
+    block_store: &Arc<BlockStore>,
+    state_db: &Arc<StateDb>,
+    archive_dir: &Path,
+) -> Result<BridgeReport> {
+    // FM-1: No archive directory -- early return with info log
+    if !archive_dir.exists() {
+        info!(
+            "[BRIDGE] Archive directory does not exist ({:?}), skipping backfill",
+            archive_dir
+        );
+        return Ok(BridgeReport {
+            blocks_imported: 0,
+            has_gaps: false,
+        });
+    }
+
+    // Step 1: DELETE stale chain_commitment BEFORE backfill (BC3, FM-4).
+    // The commitment references the pre-restore tip H, not checkpoint height C.
+    // It is unconditionally stale after any checkpoint restore.
+    state_db.delete_chain_commitment();
+    info!("[BRIDGE] Deleted stale chain_commitment after checkpoint restore");
+
+    // Step 2: BACKFILL from archive using existing idempotent function (BC5).
+    // Read genesis_hash from the block store for cross-chain validation.
+    let genesis_hash = find_genesis_hash(block_store);
+
+    let imported = match storage::archiver::backfill_from_archive(
+        archive_dir,
+        block_store,
+        genesis_hash.as_ref(),
+    ) {
+        Ok(count) => count,
+        Err(e) => {
+            // Archive errors are warnings, not hard failures (AC3).
+            warn!("[BRIDGE] Archive backfill encountered an error: {}", e);
+            0
+        }
+    };
+
+    // Step 3: REPORT summary
+    let has_gaps = imported == 0 && genesis_hash.is_none();
+    if imported > 0 {
+        info!(
+            "[BRIDGE] Backfill complete: {} blocks imported from archive",
+            imported
+        );
+    } else {
+        info!("[BRIDGE] Backfill complete: no missing blocks found in archive");
+    }
+
+    Ok(BridgeReport {
+        blocks_imported: imported,
+        has_gaps,
+    })
+}
+
+/// Find the genesis_hash from an existing block in the store.
+/// Scans the first 10,000 heights to find any block with a genesis_hash.
+#[allow(dead_code)]
+fn find_genesis_hash(block_store: &BlockStore) -> Option<crypto::Hash> {
+    for h in 1..=10_000 {
+        if let Ok(Some(block)) = block_store.get_block_by_height(h) {
+            return Some(block.header.genesis_hash);
+        }
+    }
+    None
+}
 
 pub(crate) fn backfill_from_archive(
     network: Network,
