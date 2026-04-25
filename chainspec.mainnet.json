@@ -4,7 +4,7 @@
   "network": "Mainnet",
   "genesis": {
     "timestamp": 1776837510,
-    "message": "DOLI Mainnet Genesis - v6.19.0 Fresh Start 22/Apr/2026 v18",
+    "message": "DOLI Mainnet Genesis - v6.14.11 EpochState+ForkFixes 16/Apr/2026 v16",
     "initial_reward": 100000000
   },
   "consensus": {
