@@ -92,7 +92,7 @@ impl NetworkParams {
                 encrypted_content_activation_height: 0,
                 epoch_state_reorg_activation_height: 0,
                 // Security audit fixes (2026-04-25): all consensus-breaking fixes activate here
-                security_audit_activation_height: 27_305,
+                security_audit_activation_height: 27_547,
                 // INC-I-046: Ghost exclusion activates at epoch boundary >= 18152
                 ghost_exclusion_activation_height: 18_152,
 
