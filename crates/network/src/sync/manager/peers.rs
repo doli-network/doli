@@ -521,21 +521,32 @@ impl SyncManager {
                     //
                     // When proven post-rollback, fall through to the normal
                     // start_sync() path below → header-first sync catches up.
-                    if let Some(rb_h) = self.fork.last_rollback_local_height {
-                        if self.local_height > rb_h {
-                            warn!(
-                                "[SYNC] {} orphan gossip blocks (local_h={}, tip_h={}, gap={}) — \
-                                 applied since last rollback (rb_h={}) → BEHIND not forked. \
-                                 Suppressing stuck_fork signal, running normal sync.",
-                                self.consecutive_orphan_gossip_blocks,
-                                self.local_height,
-                                self.network.network_tip_height,
-                                gap,
-                                rb_h
-                            );
-                            self.consecutive_orphan_gossip_blocks = 0;
-                            self.start_sync();
-                            return;
+                    // INC-I-049: Expire rollback state after 5 minutes.
+                    // Stale last_rollback_local_height=Some(27971) from 2h ago
+                    // suppressed fork detection permanently. Now the guard only
+                    // applies within 5 minutes of the rollback.
+                    let rollback_fresh = self
+                        .fork
+                        .last_rollback_time
+                        .map(|t| t.elapsed().as_secs() < 300)
+                        .unwrap_or(false);
+                    if rollback_fresh {
+                        if let Some(rb_h) = self.fork.last_rollback_local_height {
+                            if self.local_height > rb_h {
+                                warn!(
+                                    "[SYNC] {} orphan gossip blocks (local_h={}, tip_h={}, gap={}) — \
+                                     applied since last rollback (rb_h={}) → BEHIND not forked. \
+                                     Suppressing stuck_fork signal, running normal sync.",
+                                    self.consecutive_orphan_gossip_blocks,
+                                    self.local_height,
+                                    self.network.network_tip_height,
+                                    gap,
+                                    rb_h
+                                );
+                                self.consecutive_orphan_gossip_blocks = 0;
+                                self.start_sync();
+                                return;
+                            }
                         }
                     }
 

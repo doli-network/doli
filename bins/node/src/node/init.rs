@@ -975,6 +975,7 @@ impl Node {
             peer_churn: HashMap::new(),
             last_integrity_check_tip: None,
             recovery_mode: Arc::new(AtomicBool::new(false)),
+            attest_fetch_tracker: HashMap::new(),
         })
     }
 
@@ -1159,6 +1160,7 @@ impl Node {
             peer_churn: HashMap::new(),
             last_integrity_check_tip: None,
             recovery_mode: Arc::new(AtomicBool::new(false)),
+            attest_fetch_tracker: HashMap::new(),
         })
     }
 
@@ -1328,6 +1330,7 @@ impl Node {
             peer_churn: HashMap::new(),
             last_integrity_check_tip: None,
             recovery_mode: Arc::new(AtomicBool::new(false)),
+            attest_fetch_tracker: HashMap::new(),
         })
     }
 }

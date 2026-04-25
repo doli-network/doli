@@ -551,6 +551,10 @@ pub(crate) struct ForkState {
     ///
     /// None = no rollback has occurred this session.
     pub last_rollback_local_height: Option<u64>,
+    /// INC-I-049: Timestamp of the most recent rollback. Used to expire
+    /// `last_rollback_local_height` after 5 minutes — stale rollback state
+    /// was suppressing fork detection for hours (h=27971 → h=28640, 2h gap).
+    pub last_rollback_time: Option<Instant>,
 }
 
 impl ForkState {
@@ -570,6 +574,7 @@ impl ForkState {
             use_height_based_headers: false,
             height_fallback_attempted: false,
             last_rollback_local_height: None,
+            last_rollback_time: None,
         }
     }
 

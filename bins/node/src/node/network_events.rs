@@ -344,6 +344,11 @@ impl Node {
                             "[DIRECT_ATTEST_RECV] registered attestation from {:.8} for slot {}",
                             att.attester, att.slot
                         );
+
+                        // INC-I-049: If attestation references unknown block at height+1,
+                        // fetch it. This recovers from rate-limiter drops.
+                        self.maybe_fetch_attested_block(&att.block_hash, peer_id)
+                            .await;
                     }
                 }
             }
@@ -527,17 +532,18 @@ impl Node {
     }
 
     /// Handle a new attestation: verify, accumulate finality weight, flush to archive.
-    pub async fn on_new_attestation(&mut self, data: Vec<u8>) {
+    /// INC-I-049: Now includes source_peer for attestation-triggered block fetch.
+    pub async fn on_new_attestation(&mut self, data: Vec<u8>, source_peer: PeerId) {
         if let Some(attestation) = doli_core::Attestation::from_bytes(&data) {
             if attestation.verify().is_ok() {
                 // Only accept attestations for blocks we know are canonical
                 match self.block_store.get_height_by_hash(&attestation.block_hash) {
                     Ok(Some(_)) => {} // Block exists in our store — proceed
                     _ => {
-                        debug!(
-                            "Ignoring attestation for unknown block {}",
-                            attestation.block_hash
-                        );
+                        // INC-I-049: Unknown block — try to fetch it if it's
+                        // at height+1 (candidate next block).
+                        self.maybe_fetch_attested_block(&attestation.block_hash, source_peer)
+                            .await;
                         return;
                     }
                 }
@@ -561,6 +567,55 @@ impl Node {
             } else {
                 debug!("Received invalid attestation signature");
             }
+        }
+    }
+
+    /// INC-I-049: Fetch a block referenced by an attestation if we don't have it.
+    /// Deduplicated: max 3 peers per hash, 10s cooldown per hash.
+    /// Only fetches if the block hash is unknown (not in block store).
+    async fn maybe_fetch_attested_block(&mut self, block_hash: &Hash, source_peer: PeerId) {
+        // Skip if we already have this block
+        if let Ok(Some(_)) = self.block_store.get_height_by_hash(block_hash) {
+            return;
+        }
+        // Skip Hash::ZERO attestations
+        if *block_hash == Hash::default() {
+            return;
+        }
+
+        let now = Instant::now();
+
+        // Clean stale entries (>30s old) to bound memory
+        self.attest_fetch_tracker
+            .retain(|_, (t, _)| now.duration_since(*t).as_secs() < 30);
+
+        // Deduplication: max 3 peers asked per hash, 10s cooldown
+        let entry = self
+            .attest_fetch_tracker
+            .entry(*block_hash)
+            .or_insert((now, 0));
+        if entry.1 >= 3 {
+            return; // Already asked 3 peers for this hash
+        }
+        if entry.1 > 0 && now.duration_since(entry.0).as_secs() < 10 {
+            return; // Asked recently, wait for response
+        }
+
+        entry.0 = now;
+        entry.1 += 1;
+
+        info!(
+            "[ATTEST_FETCH] requesting unknown block {:.8} from peer {} (attempt {})",
+            block_hash, source_peer, entry.1
+        );
+
+        if let Some(ref network) = self.network {
+            let _ = network
+                .request_sync(
+                    source_peer,
+                    network::protocols::SyncRequest::get_block_by_hash(*block_hash),
+                )
+                .await;
         }
     }
 

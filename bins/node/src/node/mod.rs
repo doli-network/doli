@@ -233,6 +233,13 @@ pub struct Node {
     /// drop all inbound state mutations (anti-poisoning gate for seed recovery).
     /// Toggled via enterRecoveryMode/exitRecoveryMode RPC. Non-persistent: cleared on restart.
     pub recovery_mode: Arc<AtomicBool>,
+
+    /// INC-I-049: Attestation-triggered block fetch deduplication.
+    /// Maps block_hash → (last_fetch_time, peers_asked). Prevents flooding
+    /// the network with duplicate GetBlockByHash requests when multiple
+    /// attestations arrive for the same unknown block. Max 3 peers per hash,
+    /// max 1 request per slot per hash (10s TTL). Cleaned periodically.
+    pub attest_fetch_tracker: HashMap<Hash, (Instant, u8)>,
 }
 
 /// Max connect+disconnect events per peer within PEER_CHURN_WINDOW before rate-limit kicks in.

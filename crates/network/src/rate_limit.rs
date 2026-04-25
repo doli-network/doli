@@ -180,7 +180,7 @@ impl RateLimiter {
         limits
     }
 
-    /// Check if a block can be received from a peer
+    /// Check if a block can be received from a peer (per-peer + global)
     pub fn check_block(&mut self, peer: &PeerId) -> bool {
         if !self.config.enabled {
             return true;
@@ -194,6 +194,23 @@ impl RateLimiter {
 
         if !self.global_blocks.can_consume(1) {
             debug!("Global block rate limit exceeded");
+            return false;
+        }
+
+        true
+    }
+
+    /// INC-I-049: Check only the global block rate limit (skip per-peer).
+    /// Used for candidate-next blocks (slot >= our best slot) that must not
+    /// be silently dropped by per-peer limits. The global 100/min limit
+    /// still provides flood protection.
+    pub fn check_block_global_only(&mut self) -> bool {
+        if !self.config.enabled {
+            return true;
+        }
+
+        if !self.global_blocks.can_consume(1) {
+            debug!("Global block rate limit exceeded (priority path)");
             return false;
         }
 
@@ -449,5 +466,46 @@ mod tests {
 
         limiter.remove_peer(&peer);
         assert_eq!(limiter.stats().tracked_peers, 0);
+    }
+
+    /// INC-I-049: check_block_global_only bypasses per-peer limit
+    #[test]
+    fn test_global_only_bypasses_per_peer() {
+        let config = RateLimitConfig {
+            max_blocks_per_minute: 2,
+            ..Default::default()
+        };
+        let mut limiter = RateLimiter::new(config);
+        let peer = test_peer_id();
+
+        // Exhaust per-peer limit
+        for _ in 0..2 {
+            assert!(limiter.check_block(&peer));
+            limiter.record_block(&peer, 1000);
+        }
+        // Per-peer check fails
+        assert!(!limiter.check_block(&peer));
+
+        // But global-only still passes (global limit is 100/min)
+        assert!(limiter.check_block_global_only());
+    }
+
+    /// INC-I-049: check_block_global_only respects global limit
+    #[test]
+    fn test_global_only_respects_global_limit() {
+        let config = RateLimitConfig {
+            max_blocks_per_minute: 200, // high per-peer
+            ..Default::default()
+        };
+        let mut limiter = RateLimiter::new(config);
+
+        // Exhaust global limit (100 blocks)
+        for _ in 0..100 {
+            let peer = test_peer_id(); // different peers
+            assert!(limiter.check_block_global_only());
+            limiter.record_block(&peer, 100);
+        }
+        // Global limit exhausted — global-only check fails
+        assert!(!limiter.check_block_global_only());
     }
 }

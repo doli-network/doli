@@ -40,6 +40,7 @@ pub(super) async fn handle_swarm_event(
     eviction_cooldown: &mut HashMap<PeerId, Instant>,
     bootstrap_peers: &mut HashMap<PeerId, Instant>,
     stale_peer_ids: &mut HashMap<PeerId, Instant>,
+    best_slot: &Arc<std::sync::atomic::AtomicU32>,
 ) {
     match event {
         SwarmEvent::ConnectionEstablished {
@@ -256,6 +257,7 @@ pub(super) async fn handle_swarm_event(
                 rate_limiter,
                 genesis_mismatch_cooldown,
                 stale_peer_ids,
+                best_slot,
             )
             .await;
         }

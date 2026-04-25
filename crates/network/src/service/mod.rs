@@ -24,6 +24,7 @@ mod tests;
 pub use types::{NetworkCommand, NetworkError, NetworkEvent};
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -63,6 +64,10 @@ pub struct NetworkService {
     command_tx: mpsc::Sender<NetworkCommand>,
     /// Local peer ID
     local_peer_id: PeerId,
+    /// INC-I-049: Shared best slot for rate limiter height+1 exemption.
+    /// Updated by the node after every apply_block. Read by the network layer
+    /// to exempt candidate-next blocks from per-peer rate limiting.
+    best_slot: Arc<AtomicU32>,
 }
 
 impl NetworkService {
@@ -362,11 +367,15 @@ impl NetworkService {
             (None, None)
         };
 
+        // INC-I-049: Shared best slot for rate limiter height+1 exemption
+        let best_slot = Arc::new(AtomicU32::new(0));
+
         // Spawn the swarm event loop
         let peers_clone = peers.clone();
         let event_tx_clone = event_tx.clone();
         let config_clone = config.clone();
         let peer_cache_path = config.peer_cache_path.clone();
+        let best_slot_clone = best_slot.clone();
 
         tokio::spawn(async move {
             run_swarm(
@@ -378,6 +387,7 @@ impl NetworkService {
                 peer_cache_path,
                 discv5_events,
                 discv5_svc,
+                best_slot_clone,
             )
             .await;
         });
@@ -392,7 +402,15 @@ impl NetworkService {
             event_rx,
             command_tx,
             local_peer_id,
+            best_slot,
         })
+    }
+
+    /// INC-I-049: Update the best slot after applying a block.
+    /// Read by the network rate limiter to exempt candidate-next blocks
+    /// from per-peer rate limiting.
+    pub fn update_best_slot(&self, slot: u32) {
+        self.best_slot.store(slot, Ordering::Relaxed);
     }
 
     /// Get the next network event

@@ -520,6 +520,9 @@ impl SyncManager {
     ///     proven successful yet → signal legitimately triggers next rollback.
     pub fn note_rollback_completed(&mut self, post_rollback_height: u64) {
         self.fork.last_rollback_local_height = Some(post_rollback_height);
+        // INC-I-049: Record rollback timestamp for 5-minute TTL expiry.
+        // Stale rollback state suppressed fork detection for hours.
+        self.fork.last_rollback_time = Some(std::time::Instant::now());
     }
 
     /// Recovery Coordinator phase 2 (2026-04-15, synmgrefactor): classify
@@ -544,6 +547,7 @@ impl SyncManager {
             shallow_rollback_count: 0,
             snap_attempts: self.snap.attempts,
             last_rollback_local_height: self.fork.last_rollback_local_height,
+            last_rollback_time: self.fork.last_rollback_time,
             in_grace_period,
         };
         let action = self.recovery.classify(&ctx);
@@ -587,6 +591,7 @@ impl SyncManager {
             shallow_rollback_count,
             snap_attempts: self.snap.attempts,
             last_rollback_local_height: self.fork.last_rollback_local_height,
+            last_rollback_time: self.fork.last_rollback_time,
             in_grace_period,
         };
         let action = self.recovery.classify(&ctx);

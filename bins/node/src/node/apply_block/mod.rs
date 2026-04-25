@@ -238,6 +238,13 @@ impl Node {
         // the chain is advancing, so any prior rollback sequence is resolved.
         self.cumulative_rollback_depth = 0;
 
+        // INC-I-049: Update shared best_slot for network rate limiter exemption.
+        // The network layer uses this to exempt candidate-next blocks from
+        // per-peer rate limiting (blocks with slot >= best_slot skip per-peer check).
+        if let Some(ref network) = self.network {
+            network.update_best_slot(block.header.slot);
+        }
+
         // Store the block AFTER all transaction validation has passed.
         // This prevents block store poisoning: if UTXO validation fails, the block
         // is NOT in the store, so sync can retry it cleanly on the next attempt.

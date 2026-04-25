@@ -139,6 +139,9 @@ pub struct RecoveryContext {
     /// since the rollback (Fix #2b-bis: "applied since rollback" = behind not
     /// forked).
     pub last_rollback_local_height: Option<u64>,
+    /// INC-I-049: Timestamp of the most recent rollback. Used to expire
+    /// the rollback guard after 5 minutes.
+    pub last_rollback_time: Option<Instant>,
     /// True if we're inside a post-recovery grace window where another path
     /// owns recovery decisions (e.g. active snap sync, first canonical block
     /// wait).
@@ -151,9 +154,19 @@ impl RecoveryContext {
         self.network_tip_height.saturating_sub(self.local_height)
     }
 
-    /// True if the most recent rollback was followed by at least one apply.
-    /// Fix #2b-bis discriminator.
+    /// True if the most recent rollback was followed by at least one apply
+    /// AND the rollback is still fresh (< 5 minutes).
+    /// INC-I-049: Stale rollback state (>5min) returns false, allowing
+    /// fork detection to proceed normally.
     pub fn applied_since_rollback(&self) -> bool {
+        // Expire rollback state after 5 minutes
+        let rollback_fresh = self
+            .last_rollback_time
+            .map(|t| t.elapsed().as_secs() < 300)
+            .unwrap_or(false);
+        if !rollback_fresh {
+            return false;
+        }
         match self.last_rollback_local_height {
             Some(h) => self.local_height > h,
             None => false,
@@ -389,6 +402,7 @@ mod tests {
             shallow_rollback_count: 0,
             snap_attempts: 0,
             last_rollback_local_height: None,
+            last_rollback_time: None,
             in_grace_period: false,
         }
     }
@@ -442,6 +456,7 @@ mod tests {
         ctx.network_tip_height = 1003;
         // Most recent rollback was to 999; we're now at 1000 → applied since.
         ctx.last_rollback_local_height = Some(999);
+        ctx.last_rollback_time = Some(Instant::now()); // INC-I-049: must be fresh
         assert_eq!(c.classify(&ctx), RecoveryAction::HeaderFirstSync);
     }
 
@@ -619,6 +634,8 @@ mod tests {
             snap_attempts: 0,
             // Post-first-rollback: rolled to 34557, applied 34558 → applied_since true.
             last_rollback_local_height: Some(34557),
+            // INC-I-049: rollback is fresh (just happened) for this test
+            last_rollback_time: Some(Instant::now()),
             in_grace_period: false,
         };
         assert_eq!(
@@ -626,6 +643,65 @@ mod tests {
             RecoveryAction::HeaderFirstSync,
             "Coordinator must not rollback again when we've applied since last rollback"
         );
+    }
+
+    // --- INC-I-049: Rollback TTL expiry tests --------------------------------
+
+    /// INC-I-049: Fresh rollback (< 5min) — applied_since_rollback returns true
+    #[test]
+    fn rollback_ttl_fresh_returns_true() {
+        let ctx = RecoveryContext {
+            local_height: 1005,
+            last_rollback_local_height: Some(1000),
+            last_rollback_time: Some(Instant::now()), // just happened
+            ..base_ctx()
+        };
+        assert!(ctx.applied_since_rollback());
+    }
+
+    /// INC-I-049: Stale rollback (> 5min) — applied_since_rollback returns false
+    #[test]
+    fn rollback_ttl_stale_returns_false() {
+        let ctx = RecoveryContext {
+            local_height: 1005,
+            last_rollback_local_height: Some(1000),
+            // 6 minutes ago — expired
+            last_rollback_time: Some(Instant::now() - Duration::from_secs(360)),
+            ..base_ctx()
+        };
+        assert!(!ctx.applied_since_rollback());
+    }
+
+    /// INC-I-049: No rollback ever — applied_since_rollback returns false
+    #[test]
+    fn rollback_ttl_none_returns_false() {
+        let ctx = RecoveryContext {
+            local_height: 1005,
+            last_rollback_local_height: None,
+            last_rollback_time: None,
+            ..base_ctx()
+        };
+        assert!(!ctx.applied_since_rollback());
+    }
+
+    /// INC-I-049: Stale rollback no longer suppresses fork detection
+    #[test]
+    fn stale_rollback_allows_shallow_rollback() {
+        let mut c = RecoveryCoordinator::new();
+        for slot in [100, 101, 102] {
+            c.report(RecoveryEvidence::OrphanGossip { slot, gap: 3 });
+        }
+        // Stale rollback (6min ago) should NOT suppress — Gate 1 inactive
+        let ctx = RecoveryContext {
+            local_height: 1005,
+            network_tip_height: 1008,
+            last_rollback_local_height: Some(1000),
+            last_rollback_time: Some(Instant::now() - Duration::from_secs(360)),
+            ..base_ctx()
+        };
+        let action = c.classify(&ctx);
+        // Should NOT return HeaderFirstSync (which Gate 1 would give)
+        assert_ne!(action, RecoveryAction::HeaderFirstSync);
     }
 
     // --- Evidence window pruning ---------------------------------------------

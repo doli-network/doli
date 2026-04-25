@@ -375,8 +375,8 @@ impl Node {
             } => {
                 self.on_tx_fetch_response(peer_id, transactions).await?;
             }
-            NetworkEvent::NewAttestation(data) => {
-                self.on_new_attestation(data).await;
+            NetworkEvent::NewAttestation(data, source_peer) => {
+                self.on_new_attestation(data, source_peer).await;
             }
         }
         Ok(())

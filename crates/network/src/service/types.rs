@@ -79,8 +79,10 @@ pub enum NetworkEvent {
     NewVote(Vec<u8>),
     /// Heartbeat received for weighted presence rewards
     NewHeartbeat(Vec<u8>),
-    /// Attestation received for finality gadget
-    NewAttestation(Vec<u8>),
+    /// Attestation received for finality gadget.
+    /// INC-I-049: Now includes propagation_source so the node can request
+    /// blocks from the attestation source peer.
+    NewAttestation(Vec<u8>, PeerId),
     /// Transaction hash announcement received (announce-request pattern)
     TxAnnouncement { peer_id: PeerId, hashes: Vec<Hash> },
     /// Peer is requesting transactions by hash (announce-request pattern)

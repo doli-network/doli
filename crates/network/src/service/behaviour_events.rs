@@ -41,6 +41,7 @@ pub(super) async fn handle_behaviour_event(
     rate_limiter: &mut RateLimiter,
     genesis_mismatch_cooldown: &mut HashMap<PeerId, Instant>,
     stale_peer_ids: &mut HashMap<PeerId, Instant>,
+    best_slot: &Arc<std::sync::atomic::AtomicU32>,
 ) {
     match event {
         DoliBehaviourEvent::Gossipsub(gossipsub::Event::Message {
@@ -57,37 +58,56 @@ pub(super) async fn handle_behaviour_event(
 
             match topic {
                 BLOCKS_TOPIC => {
-                    if !rate_limiter.check_block(&propagation_source) {
-                        warn!(
-                            "Rate limit: dropping block from {} (block rate exceeded)",
-                            propagation_source
-                        );
-                        return;
-                    }
-                    rate_limiter.record_block(&propagation_source, msg_size);
+                    // INC-I-049: Deserialize first, then decide rate limiting.
+                    // Blocks at or beyond our best slot are candidate-next blocks
+                    // and only subject to the global rate limit (100/min), not
+                    // per-peer limits. This prevents the rate limiter from silently
+                    // dropping the ONE canonical block we need to advance.
                     if let Some(block) = Block::deserialize(&message.data) {
+                        let current_best = best_slot.load(std::sync::atomic::Ordering::Relaxed);
+                        let is_candidate_next = block.header.slot >= current_best;
+
+                        if is_candidate_next {
+                            // Candidate next block: skip per-peer limit, check global only
+                            if !rate_limiter.check_block_global_only() {
+                                warn!(
+                                    "Rate limit: dropping candidate block s={} from {} (global rate exceeded)",
+                                    block.header.slot, propagation_source
+                                );
+                                return;
+                            }
+                        } else if !rate_limiter.check_block(&propagation_source) {
+                            // Old block: apply full per-peer + global rate limit
+                            warn!(
+                                "Rate limit: dropping block s={} from {} (per-peer rate exceeded)",
+                                block.header.slot, propagation_source
+                            );
+                            return;
+                        }
+
+                        rate_limiter.record_block(&propagation_source, msg_size);
                         let recv_ts = SystemTime::now()
                             .duration_since(SystemTime::UNIX_EPOCH)
                             .map(|d| d.as_millis())
                             .unwrap_or(0);
-                        // INFO (was DEBUG): earliest possible receive timestamp from
-                        // libp2p layer. Pair with [GOSSIP_RECV] (event-loop layer) to
-                        // measure dispatch latency. Without this at INFO we are blind
-                        // to libp2p→event-loop queue saturation (INC-I-032 blind spot).
                         info!(
-                            "[GOSSIP_BLOCK] recv s={} hash={:.8} producer={:.8} block_ts={} from={} size={} recv_ts_ms={}",
+                            "[GOSSIP_BLOCK] recv s={} hash={:.8} producer={:.8} block_ts={} from={} size={} recv_ts_ms={} next={}",
                             block.header.slot,
                             block.hash(),
                             block.header.producer,
                             block.header.timestamp,
                             propagation_source,
                             msg_size,
-                            recv_ts
+                            recv_ts,
+                            is_candidate_next
                         );
                         let _ = event_tx
                             .send(NetworkEvent::NewBlock(block, propagation_source))
                             .await;
                     } else {
+                        // Deserialization failed — apply per-peer rate limit to
+                        // penalize peers sending garbage
+                        rate_limiter.record_block(&propagation_source, msg_size);
                         warn!(
                             "[GOSSIP_BLOCK] deserialize_failed from={} size={}",
                             propagation_source, msg_size
@@ -246,7 +266,10 @@ pub(super) async fn handle_behaviour_event(
                         msg_size, propagation_source
                     );
                     let _ = event_tx
-                        .send(NetworkEvent::NewAttestation(message.data.clone()))
+                        .send(NetworkEvent::NewAttestation(
+                            message.data.clone(),
+                            propagation_source,
+                        ))
                         .await;
                 }
                 HEADERS_TOPIC => {
