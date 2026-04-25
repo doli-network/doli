@@ -67,7 +67,12 @@ impl Node {
                     .params()
                     .encrypted_content_activation_height,
             )
-            .with_htlc_signed_refund_height(self.config.network.params().htlc_signed_refund_height);
+            .with_security_audit_activation_height(
+                self.config
+                    .network
+                    .params()
+                    .security_audit_activation_height,
+            );
             validation::validate_transaction_with_utxos(tx, &utxo_ctx, utxo).map_err(|e| {
                 warn!(
                     "[UTXO] FAIL h={} tx={} type={:?} inputs={} outputs={} error={}",

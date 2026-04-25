@@ -91,8 +91,8 @@ impl NetworkParams {
                 rewards_epoch_list_fix_height: 0,
                 encrypted_content_activation_height: 0,
                 epoch_state_reorg_activation_height: 0,
-                // AUDIT-BRIDGE-001: HTLC signed refund — active from genesis (clean chain)
-                htlc_signed_refund_height: 0,
+                // Security audit fixes (2026-04-24): all consensus-breaking fixes activate here
+                security_audit_activation_height: 27_070,
                 // INC-I-046: Ghost exclusion activates at epoch boundary >= 18152
                 ghost_exclusion_activation_height: 18_152,
 
@@ -182,7 +182,7 @@ impl NetworkParams {
                 encrypted_content_activation_height: 0,
                 epoch_state_reorg_activation_height: 0,
                 // AUDIT-BRIDGE-001: HTLC signed refund — active from genesis
-                htlc_signed_refund_height: 0,
+                security_audit_activation_height: 0,
                 // INC-I-046: Ghost exclusion activates at h=10830 on testnet
                 ghost_exclusion_activation_height: 10_830,
 
@@ -267,7 +267,7 @@ impl NetworkParams {
                 rewards_epoch_list_fix_height: 0,
                 encrypted_content_activation_height: 0,
                 epoch_state_reorg_activation_height: 0,
-                htlc_signed_refund_height: 0, // Always active on devnet
+                security_audit_activation_height: 0, // Always active on devnet
                 ghost_exclusion_activation_height: 0, // Always active on devnet
 
                 // Gossip mesh: same universal config as mainnet.

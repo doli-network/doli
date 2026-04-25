@@ -126,7 +126,12 @@ impl Node {
                 .params()
                 .encrypted_content_activation_height,
         )
-        .with_htlc_signed_refund_height(self.config.network.params().htlc_signed_refund_height);
+        .with_security_audit_activation_height(
+            self.config
+                .network
+                .params()
+                .security_audit_activation_height,
+        );
 
         // Apply chainspec if present
         if let Some(ref spec) = self.config.chainspec {
@@ -298,7 +303,12 @@ impl Node {
                 .params()
                 .encrypted_content_activation_height,
         )
-        .with_htlc_signed_refund_height(self.config.network.params().htlc_signed_refund_height);
+        .with_security_audit_activation_height(
+            self.config
+                .network
+                .params()
+                .security_audit_activation_height,
+        );
 
         if let Some(ref spec) = self.config.chainspec {
             ctx.params.apply_chainspec(spec);

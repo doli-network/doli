@@ -52,7 +52,9 @@ impl ProducerSet {
                 );
                 info.start_unbonding(current_height);
                 self.active_cache = None;
-                // Clean up any delegations this producer received
+                // AUDIT-PROD-003: Clean up any delegations this producer received.
+                // Always call — no delegations exist before this was deployed,
+                // so no height gate needed (the function is a no-op if empty).
                 self.clear_received_delegations(&key);
                 // Maintain unbonding index
                 self.unbonding_index

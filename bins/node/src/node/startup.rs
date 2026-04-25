@@ -530,7 +530,15 @@ impl Node {
                 let producers = self.producer_set.read().await;
                 let w = producers
                     .get_by_pubkey(&pk)
-                    .map(|p| p.selection_weight())
+                    .map(|p| {
+                        p.selection_weight_at(
+                            height,
+                            self.config
+                                .network
+                                .params()
+                                .security_audit_activation_height,
+                        )
+                    })
                     .unwrap_or(0);
                 (kp.private_key().clone(), pk, w)
             }

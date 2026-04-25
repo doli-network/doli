@@ -147,7 +147,15 @@ impl Node {
             let total_weight: u64 = producers
                 .active_producers_at_height(height)
                 .iter()
-                .map(|p| p.selection_weight())
+                .map(|p| {
+                    p.selection_weight_at(
+                        height,
+                        self.config
+                            .network
+                            .params()
+                            .security_audit_activation_height,
+                    )
+                })
                 .sum();
             drop(producers);
 

@@ -367,13 +367,13 @@ pub(super) fn validate_outputs(
                         // AUDIT-BRIDGE-001: After activation, HTLC outputs must have
                         // a signature on the refund branch to prevent front-running.
                         if output.output_type == OutputType::HTLC
-                            && ctx.current_height >= ctx.htlc_signed_refund_height
+                            && ctx.current_height >= ctx.security_audit_activation_height
                             && !cond.has_signed_refund()
                         {
                             return Err(ValidationError::InvalidTransaction(format!(
                                 "[ERRTX-HTLC001] HTLC output {} has unsigned refund branch \
                                  (requires Signature after h={})",
-                                i, ctx.htlc_signed_refund_height
+                                i, ctx.security_audit_activation_height
                             )));
                         }
                     }
@@ -472,13 +472,13 @@ pub(super) fn validate_outputs(
                     Ok((cond, _consumed)) => {
                         // AUDIT-BRIDGE-001: After activation, BridgeHTLC must have
                         // a signature on the refund branch.
-                        if ctx.current_height >= ctx.htlc_signed_refund_height
+                        if ctx.current_height >= ctx.security_audit_activation_height
                             && !cond.has_signed_refund()
                         {
                             return Err(ValidationError::InvalidTransaction(format!(
                                 "[ERRTX-HTLC002] BridgeHTLC output {} has unsigned refund branch \
                                  (requires Signature after h={})",
-                                i, ctx.htlc_signed_refund_height
+                                i, ctx.security_audit_activation_height
                             )));
                         }
                     }

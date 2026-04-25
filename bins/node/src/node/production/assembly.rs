@@ -171,7 +171,12 @@ impl Node {
                     .params()
                     .encrypted_content_activation_height,
             )
-            .with_htlc_signed_refund_height(self.config.network.params().htlc_signed_refund_height);
+            .with_security_audit_activation_height(
+                self.config
+                    .network
+                    .params()
+                    .security_audit_activation_height,
+            );
             let total_mempool = mempool_txs.len();
             let mut included_count = 0usize;
             let mut included_txs: Vec<&Transaction> = Vec::new();

@@ -383,9 +383,18 @@ impl ProducerInfo {
     /// This is used for weighted producer selection and tier computation.
     /// Includes own bonds plus all delegated bonds received from other producers.
     /// Returns 0 if producer is not active.
-    pub fn selection_weight(&self) -> u64 {
+    ///
+    /// `audit_activation`: if `height >= audit_activation`, subtract delegated_bonds
+    /// from own bonds to prevent double-counting (AUDIT-PROD-001). Pass `0` to always
+    /// use the new formula, `u64::MAX` for legacy behavior.
+    pub fn selection_weight_at(&self, height: u64, audit_activation: u64) -> u64 {
         if self.is_active() {
-            let own_bonds = (self.bond_count as u64).saturating_sub(self.delegated_bonds as u64);
+            let own_bonds = if height >= audit_activation {
+                // AUDIT-PROD-001: Subtract bonds this producer delegated away
+                (self.bond_count as u64).saturating_sub(self.delegated_bonds as u64)
+            } else {
+                self.bond_count as u64
+            };
             let received: u64 = self
                 .received_delegations
                 .iter()
@@ -395,6 +404,12 @@ impl ProducerInfo {
         } else {
             0
         }
+    }
+
+    /// Legacy selection_weight without height gating. Delegates to selection_weight_at
+    /// with activation=0 (always subtract delegated_bonds).
+    pub fn selection_weight(&self) -> u64 {
+        self.selection_weight_at(0, 0)
     }
 
     // ==================== Per-Bond Withdrawal Methods ====================

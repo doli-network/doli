@@ -154,7 +154,18 @@ impl Node {
             let active = producers.active_producers_at_height(height);
             let pws: Vec<(PublicKey, u64)> = active
                 .iter()
-                .map(|p| (p.public_key, p.selection_weight()))
+                .map(|p| {
+                    (
+                        p.public_key,
+                        p.selection_weight_at(
+                            height,
+                            self.config
+                                .network
+                                .params()
+                                .security_audit_activation_height,
+                        ),
+                    )
+                })
                 .collect();
             let total_w: u64 = pws.iter().map(|(_, w)| *w).sum();
             let mut all_pks: Vec<PublicKey> = pws.into_iter().map(|(pk, _)| pk).collect();

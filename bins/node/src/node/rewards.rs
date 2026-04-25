@@ -329,9 +329,24 @@ impl Node {
             if producer_info.received_delegations.is_empty() {
                 reward_outputs.push((reward, pubkey_hash));
             } else {
-                // Use epoch bond_snapshot (deterministic) instead of live UTXO
-                // to prevent cross-node divergence from mid-epoch withdrawals.
-                let own_bonds = bond_for(producer_info).max(1);
+                // AUDIT-REWARD-003: Use epoch bond_snapshot (deterministic) instead
+                // of live UTXO to prevent cross-node divergence from mid-epoch withdrawals.
+                // Gated by security_audit_activation_height for consensus compatibility.
+                let activation = self
+                    .config
+                    .network
+                    .params()
+                    .security_audit_activation_height;
+                let own_bonds = if epoch_end_height >= activation {
+                    bond_for(producer_info).max(1)
+                } else {
+                    let utxo = self.utxo_set.read().await;
+                    let bonds = utxo
+                        .count_bonds(&pubkey_hash, self.config.network.bond_unit())
+                        .max(1) as u64;
+                    drop(utxo);
+                    bonds
+                };
                 let delegated: u64 = producer_info
                     .received_delegations
                     .iter()

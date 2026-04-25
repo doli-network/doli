@@ -169,8 +169,8 @@ pub struct ValidationContext {
     pub fork_id_activation_height: u64,
     /// Height at which new NFT outputs are rejected in favor of EncryptedContent.
     pub encrypted_content_activation_height: u64,
-    /// AUDIT-BRIDGE-001: Height at which HTLC/BridgeHTLC outputs must have a signed refund branch.
-    pub htlc_signed_refund_height: u64,
+    /// Unified activation height for all consensus-breaking security audit fixes.
+    pub security_audit_activation_height: u64,
 }
 
 impl ValidationContext {
@@ -204,7 +204,7 @@ impl ValidationContext {
             expected_fork_id: crypto::Hash::ZERO,
             fork_id_activation_height: u64::MAX,
             encrypted_content_activation_height: u64::MAX,
-            htlc_signed_refund_height: u64::MAX,
+            security_audit_activation_height: u64::MAX,
         }
     }
 
@@ -215,10 +215,10 @@ impl ValidationContext {
         self
     }
 
-    /// Set the HTLC signed refund activation height (AUDIT-BRIDGE-001).
+    /// Set the security audit activation height (all consensus-breaking audit fixes).
     #[must_use]
-    pub fn with_htlc_signed_refund_height(mut self, height: u64) -> Self {
-        self.htlc_signed_refund_height = height;
+    pub fn with_security_audit_activation_height(mut self, height: u64) -> Self {
+        self.security_audit_activation_height = height;
         self
     }
 
