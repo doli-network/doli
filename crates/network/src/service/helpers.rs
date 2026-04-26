@@ -69,6 +69,52 @@ pub(super) fn all_addresses_routable<'a>(
     count > 0
 }
 
+/// INC-I-050 v2: Periodic DHT routing table purge.
+///
+/// Scans all k-bucket entries and removes non-routable addresses (loopback,
+/// private, CGNAT on mainnet). If a peer has no routable addresses left after
+/// purging, the peer is fully removed from the routing table.
+///
+/// This closes the gap where `connection_updated()` (libp2p internal) adds
+/// the connected address (e.g., 127.0.0.1 for co-located nodes) directly to
+/// the routing table, bypassing the Identify filter. Those addresses then
+/// propagate via FIND_NODE responses to remote nodes, causing Peer ID
+/// mismatch churn.
+///
+/// Returns the number of addresses removed.
+pub(super) fn purge_non_routable_dht_addresses(
+    kad: &mut libp2p::kad::Behaviour<libp2p::kad::store::MemoryStore>,
+    network_id: u32,
+) -> usize {
+    // Phase 1: Collect non-routable addresses per peer.
+    // We must collect first because remove_address takes &mut self.
+    let mut to_remove: Vec<(libp2p::PeerId, libp2p::Multiaddr)> = Vec::new();
+
+    for bucket in kad.kbuckets() {
+        for entry in bucket.iter() {
+            let peer_id = *entry.node.key.preimage();
+            for addr in entry.node.value.iter() {
+                // Addresses in the routing table have /p2p/PeerId suffix.
+                // Strip it for the routability check.
+                let clean = strip_p2p_suffix(addr);
+                if !is_routable_address(&clean, network_id) {
+                    to_remove.push((peer_id, addr.clone()));
+                }
+            }
+        }
+    }
+
+    // Phase 2: Remove collected non-routable addresses.
+    let count = to_remove.len();
+    for (peer_id, addr) in to_remove {
+        // remove_address returns Some(EntryView) if the peer was fully removed
+        // (it was the last address). Returns None if other addresses remain.
+        kad.remove_address(&peer_id, &addr);
+    }
+
+    count
+}
+
 /// RFC 6598 shared address space (100.64.0.0/10) used by CGNAT.
 fn is_shared_address(ip: std::net::Ipv4Addr) -> bool {
     let octets = ip.octets();

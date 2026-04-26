@@ -203,6 +203,22 @@ pub(super) async fn run_swarm(
                             peer_count, config.max_peers, eviction_cooldown.len()
                         );
                     } else {
+                        // INC-I-050 v2: Purge non-routable addresses BEFORE bootstrap.
+                        // Co-located nodes inject 127.0.0.1 via connection_updated(),
+                        // which bypasses the Identify filter. Purging before bootstrap
+                        // ensures our FIND_NODE responses contain only routable addresses,
+                        // draining poisoned entries from the network over bootstrap cycles.
+                        let purged = super::helpers::purge_non_routable_dht_addresses(
+                            &mut swarm.behaviour_mut().kademlia,
+                            config.network_id,
+                        );
+                        if purged > 0 {
+                            tracing::info!(
+                                "[DHT] Purged {} non-routable address(es) from routing table",
+                                purged
+                            );
+                        }
+
                         match swarm.behaviour_mut().kademlia.bootstrap() {
                             Ok(query_id) => {
                                 tracing::info!("[DHT] Periodic bootstrap started (query={:?})", query_id);

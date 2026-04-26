@@ -7,7 +7,8 @@ use doli_core::{
 use libp2p::{Multiaddr, PeerId};
 
 use super::helpers::{
-    all_addresses_routable, is_routable_address, plan_startup_dials, strip_p2p_suffix,
+    all_addresses_routable, is_routable_address, plan_startup_dials,
+    purge_non_routable_dht_addresses, strip_p2p_suffix,
 };
 use super::types::{NetworkCommand, NetworkEvent};
 
@@ -455,4 +456,164 @@ fn test_all_addresses_routable_rejects_empty() {
         !all_addresses_routable(empty.into_iter(), 1),
         "Empty address list must be rejected"
     );
+}
+
+// =========================================================================
+// INC-I-050 v2: Periodic DHT routing table purge tests
+// =========================================================================
+//
+// The RoutingUpdated filter (f023eefd) only catches NEW peers entering the
+// k-bucket. It misses non-routable addresses injected into EXISTING peers
+// via libp2p's internal connection_updated() path (co-located nodes connect
+// via 127.0.0.1, address enters routing table, propagates via FIND_NODE).
+//
+// The periodic purge scans the entire routing table and removes non-routable
+// addresses, draining the network of poisoned entries over bootstrap cycles.
+
+// OUTPUT CONTRACT: fn purge_non_routable_dht_addresses(kad, network_id) -> usize
+// O1: return value (usize) — count of addresses removed
+// O2: side effect — non-routable addresses removed from Kademlia routing table
+// O3: side effect — peers with NO remaining routable addresses fully removed
+// PATHS: peer_with_mixed_addrs, peer_with_only_loopback, clean_peer, empty_table, testnet
+// MATRIX:
+//   O1×mixed=1, O2×mixed=loopback_gone+public_stays, O3×mixed=peer_stays
+//   O1×only_loopback=1, O2×only_loopback=addr_gone, O3×only_loopback=peer_removed
+//   O1×clean=0, O2×clean=unchanged, O3×clean=peer_stays
+//   O1×empty=0
+//   O1×testnet=0 (loopback is routable on testnet)
+
+use crate::discovery::kademlia::new_kademlia;
+
+#[test]
+fn test_inc_i050v2_purge_removes_loopback_from_mixed_peer() {
+    // INC-I-050 v2: A peer on the same server has BOTH public and 127.0.0.1
+    // addresses in the DHT (injected via connection_updated). The purge must
+    // remove the loopback but keep the peer with its public address.
+    let local_peer = PeerId::random();
+    let mut kad = new_kademlia(local_peer);
+
+    let remote_peer = PeerId::random();
+    let public_addr: Multiaddr = "/ip4/198.51.100.1/tcp/30300".parse().unwrap();
+    let loopback_addr: Multiaddr = "/ip4/127.0.0.1/tcp/30300".parse().unwrap();
+
+    // Simulate connection_updated + Identify adding both addresses
+    kad.add_address(&remote_peer, public_addr.clone());
+    kad.add_address(&remote_peer, loopback_addr.clone());
+
+    // Act: periodic purge on mainnet (network_id=1)
+    let removed = purge_non_routable_dht_addresses(&mut kad, 1);
+
+    // Assert: loopback removed, peer still present with public address
+    assert!(removed > 0, "Should have removed non-routable address(es)");
+
+    let mut peer_found = false;
+    let mut has_loopback = false;
+    let mut has_public = false;
+    for bucket in kad.kbuckets() {
+        for entry in bucket.iter() {
+            if entry.node.key.preimage() == &remote_peer {
+                peer_found = true;
+                for addr in entry.node.value.iter() {
+                    let s = addr.to_string();
+                    if s.contains("127.0.0.1") {
+                        has_loopback = true;
+                    }
+                    if s.contains("198.51.100.1") {
+                        has_public = true;
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        peer_found,
+        "Peer should still be in DHT (has public address)"
+    );
+    assert!(has_public, "Public address should remain");
+    assert!(!has_loopback, "Loopback address should have been purged");
+}
+
+#[test]
+fn test_inc_i050v2_purge_removes_peer_with_only_loopback() {
+    // A peer with ONLY a loopback address (the original poisoned peer) should
+    // be fully removed from the routing table after purge.
+    let local_peer = PeerId::random();
+    let mut kad = new_kademlia(local_peer);
+
+    let poisoned_peer = PeerId::random();
+    let loopback_addr: Multiaddr = "/ip4/127.0.0.1/tcp/30300".parse().unwrap();
+    kad.add_address(&poisoned_peer, loopback_addr);
+
+    let removed = purge_non_routable_dht_addresses(&mut kad, 1);
+
+    assert!(removed > 0, "Should have removed the loopback address");
+
+    // Peer should be gone entirely (no routable addresses left)
+    let mut peer_found = false;
+    for bucket in kad.kbuckets() {
+        for entry in bucket.iter() {
+            if entry.node.key.preimage() == &poisoned_peer {
+                peer_found = true;
+            }
+        }
+    }
+    assert!(
+        !peer_found,
+        "Peer with only loopback should be fully removed"
+    );
+}
+
+#[test]
+fn test_inc_i050v2_purge_skips_clean_peers() {
+    // A peer with only public addresses should not be touched.
+    let local_peer = PeerId::random();
+    let mut kad = new_kademlia(local_peer);
+
+    let clean_peer = PeerId::random();
+    let public_addr: Multiaddr = "/ip4/198.51.100.1/tcp/30300".parse().unwrap();
+    kad.add_address(&clean_peer, public_addr);
+
+    let removed = purge_non_routable_dht_addresses(&mut kad, 1);
+
+    assert_eq!(removed, 0, "Clean peer should not be touched");
+
+    let mut peer_found = false;
+    for bucket in kad.kbuckets() {
+        for entry in bucket.iter() {
+            if entry.node.key.preimage() == &clean_peer {
+                peer_found = true;
+            }
+        }
+    }
+    assert!(peer_found, "Clean peer should remain in DHT");
+}
+
+#[test]
+fn test_inc_i050v2_purge_allows_loopback_on_testnet() {
+    // On testnet (network_id=2), loopback is routable — purge should not remove it.
+    let local_peer = PeerId::random();
+    let mut kad = new_kademlia(local_peer);
+
+    let peer = PeerId::random();
+    let loopback_addr: Multiaddr = "/ip4/127.0.0.1/tcp/30300".parse().unwrap();
+    kad.add_address(&peer, loopback_addr);
+
+    let removed = purge_non_routable_dht_addresses(&mut kad, 2);
+
+    assert_eq!(removed, 0, "Loopback should be allowed on testnet");
+}
+
+#[test]
+fn test_inc_i050v2_purge_removes_private_on_mainnet() {
+    // RFC 1918 private addresses should also be purged on mainnet.
+    let local_peer = PeerId::random();
+    let mut kad = new_kademlia(local_peer);
+
+    let peer = PeerId::random();
+    let private_addr: Multiaddr = "/ip4/192.168.1.1/tcp/30300".parse().unwrap();
+    kad.add_address(&peer, private_addr);
+
+    let removed = purge_non_routable_dht_addresses(&mut kad, 1);
+
+    assert!(removed > 0, "Private address should be purged on mainnet");
 }
