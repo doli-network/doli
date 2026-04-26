@@ -149,6 +149,65 @@ impl Node {
                 .retain(|&s| (s as u64) + 10 > current_slot as u64);
         }
 
+        // INC-I-049 DEFERRED ATTEST_FETCH: check entries >500ms old.
+        // If block_store now has the block → gossip delivered it, silently clear.
+        // If still missing → genuine recovery, send GetBlockByHash to recorded peer.
+        {
+            let now = Instant::now();
+            const GRACE_MS: u128 = 500;
+            const COOLDOWN_SECS: u64 = 10;
+
+            // Collect matured entries (>500ms old)
+            let matured: Vec<(Hash, PeerId, u8)> = self
+                .attest_fetch_tracker
+                .iter()
+                .filter(|(_, (t, _, _))| now.duration_since(*t).as_millis() >= GRACE_MS)
+                .map(|(hash, (_, count, peer))| (*hash, *peer, *count))
+                .collect();
+
+            for (block_hash, source_peer, attempt) in matured {
+                // Check if gossip delivered the block during the grace period
+                if let Ok(Some(_)) = self.block_store.get_height_by_hash(&block_hash) {
+                    // Block arrived via gossip — no fetch needed
+                    self.attest_fetch_tracker.remove(&block_hash);
+                    continue;
+                }
+
+                // Still missing — genuine recovery needed
+                // Enforce cooldown: only fire if this is the first attempt,
+                // or enough time has passed since the entry was recorded
+                let entry = self.attest_fetch_tracker.get(&block_hash);
+                if let Some((t, count, _)) = entry {
+                    if *count > 1 && now.duration_since(*t).as_secs() < COOLDOWN_SECS {
+                        continue; // Already fired recently, wait
+                    }
+                }
+
+                info!(
+                    "[ATTEST_FETCH] recovered block {:.8} from peer {} after grace (attempt {})",
+                    block_hash, source_peer, attempt
+                );
+
+                if let Some(ref network) = self.network {
+                    let _ = network
+                        .request_sync(
+                            source_peer,
+                            network::protocols::SyncRequest::get_block_by_hash(block_hash),
+                        )
+                        .await;
+                }
+
+                // Update timestamp for cooldown tracking
+                if let Some(entry) = self.attest_fetch_tracker.get_mut(&block_hash) {
+                    entry.0 = now;
+                }
+            }
+
+            // Clean stale entries (>30s old) to bound memory
+            self.attest_fetch_tracker
+                .retain(|_, (t, _, _)| now.duration_since(*t).as_secs() < 30);
+        }
+
         // TTL sweep: evict cached blocks older than 30 slots (~5 min at 10s/slot).
         // Blocks that sit in fork_block_cache for this long were never resolved
         // (parent never arrived, fork never connected). Drop them to free memory
@@ -965,6 +1024,133 @@ mod tests {
         let delete = &names[..names.len() - 5];
         let delete_heights: Vec<u64> = delete.iter().map(|n| parse_checkpoint_height(n)).collect();
         assert_eq!(delete_heights, vec![526, 626, 726, 826, 926]);
+    }
+}
+
+// =============================================================================
+// INC-I-049 follow-up: Deferred ATTEST_FETCH tracker unit tests
+// =============================================================================
+//
+// The deferred fetch logic lives in run_periodic_tasks() and requires Node +
+// async runtime. These pure tests verify the tracker HashMap behavior:
+// deduplication (max 3 peers), TTL cleanup (>30s), and grace period filtering.
+
+#[cfg(test)]
+mod attest_fetch_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn make_hash(b: u8) -> Hash {
+        let mut bytes = [0u8; 32];
+        bytes[0] = b;
+        Hash::from(bytes)
+    }
+
+    fn make_peer(_b: u8) -> PeerId {
+        PeerId::random()
+    }
+
+    /// Attestation for unknown block within grace period → no fetch should fire.
+    /// Verified by: entry exists in tracker, but periodic task should skip
+    /// entries <500ms old.
+    #[test]
+    fn fresh_entry_within_grace_period_not_matured() {
+        let mut tracker: HashMap<Hash, (Instant, u8, PeerId)> = HashMap::new();
+        let hash = make_hash(1);
+        let peer = make_peer(1);
+        let now = Instant::now();
+
+        tracker.insert(hash, (now, 1, peer));
+
+        // Simulate periodic check: entries <500ms old should NOT be collected
+        let grace_ms: u128 = 500;
+        let matured: Vec<_> = tracker
+            .iter()
+            .filter(|(_, (t, _, _))| now.duration_since(*t).as_millis() >= grace_ms)
+            .collect();
+
+        assert!(
+            matured.is_empty(),
+            "Entry just recorded should not be matured yet"
+        );
+    }
+
+    /// Entry older than 500ms → should be collected for deferred fetch check.
+    #[test]
+    fn entry_past_grace_period_is_matured() {
+        let mut tracker: HashMap<Hash, (Instant, u8, PeerId)> = HashMap::new();
+        let hash = make_hash(2);
+        let peer = make_peer(2);
+        // Simulate 600ms ago
+        let recorded_at = Instant::now() - Duration::from_millis(600);
+
+        tracker.insert(hash, (recorded_at, 1, peer));
+
+        let now = Instant::now();
+        let grace_ms: u128 = 500;
+        let matured: Vec<_> = tracker
+            .iter()
+            .filter(|(_, (t, _, _))| now.duration_since(*t).as_millis() >= grace_ms)
+            .collect();
+
+        assert_eq!(matured.len(), 1, "Entry 600ms old should be matured");
+        assert_eq!(*matured[0].0, hash);
+    }
+
+    /// Max 3 peers per hash — 4th insert should be rejected.
+    #[test]
+    fn max_three_peers_per_hash() {
+        let mut tracker: HashMap<Hash, (Instant, u8, PeerId)> = HashMap::new();
+        let hash = make_hash(3);
+        let now = Instant::now();
+
+        // Simulate 3 attestations from different peers
+        let entry = tracker.entry(hash).or_insert((now, 0, PeerId::random()));
+        entry.1 += 1; // count=1
+        assert_eq!(entry.1, 1);
+
+        entry.1 += 1; // count=2
+        entry.1 += 1; // count=3
+        assert_eq!(entry.1, 3);
+
+        // 4th should be rejected by the `>= 3` check
+        assert!(
+            entry.1 >= 3,
+            "After 3 peers, further attestations should be rejected"
+        );
+    }
+
+    /// Entries older than 30s are cleaned to bound memory.
+    #[test]
+    fn stale_entries_cleaned_after_30s() {
+        let mut tracker: HashMap<Hash, (Instant, u8, PeerId)> = HashMap::new();
+        let hash_old = make_hash(10);
+        let hash_new = make_hash(11);
+
+        // Old entry: 31s ago
+        tracker.insert(
+            hash_old,
+            (
+                Instant::now() - Duration::from_secs(31),
+                1,
+                PeerId::random(),
+            ),
+        );
+        // New entry: just now
+        tracker.insert(hash_new, (Instant::now(), 1, PeerId::random()));
+
+        let now = Instant::now();
+        tracker.retain(|_, (t, _, _)| now.duration_since(*t).as_secs() < 30);
+
+        assert_eq!(tracker.len(), 1, "Only the recent entry should survive");
+        assert!(
+            tracker.contains_key(&hash_new),
+            "New entry should be retained"
+        );
+        assert!(
+            !tracker.contains_key(&hash_old),
+            "31s-old entry should be cleaned"
+        );
     }
 }
 

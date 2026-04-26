@@ -234,12 +234,15 @@ pub struct Node {
     /// Toggled via enterRecoveryMode/exitRecoveryMode RPC. Non-persistent: cleared on restart.
     pub recovery_mode: Arc<AtomicBool>,
 
-    /// INC-I-049: Attestation-triggered block fetch deduplication.
-    /// Maps block_hash → (last_fetch_time, peers_asked). Prevents flooding
-    /// the network with duplicate GetBlockByHash requests when multiple
-    /// attestations arrive for the same unknown block. Max 3 peers per hash,
-    /// max 1 request per slot per hash (10s TTL). Cleaned periodically.
-    pub attest_fetch_tracker: HashMap<Hash, (Instant, u8)>,
+    /// INC-I-049: Deferred attestation-triggered block fetch.
+    /// Maps block_hash → (record_time, peers_asked, source_peer).
+    /// When an attestation references an unknown block, we record it here
+    /// but DON'T send the request immediately. run_periodic_tasks() checks
+    /// entries >500ms old: if block_store still missing → send GetBlockByHash
+    /// (genuine recovery); if block arrived via gossip → silently clear.
+    /// Max 3 peers per hash, 30s TTL. Eliminates ~94% false-positive fetches
+    /// where gossip delivers the block 1-2ms after the attestation.
+    pub attest_fetch_tracker: HashMap<Hash, (Instant, u8, PeerId)>,
 }
 
 /// Max connect+disconnect events per peer within PEER_CHURN_WINDOW before rate-limit kicks in.

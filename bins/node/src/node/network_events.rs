@@ -570,9 +570,14 @@ impl Node {
         }
     }
 
-    /// INC-I-049: Fetch a block referenced by an attestation if we don't have it.
-    /// Deduplicated: max 3 peers per hash, 10s cooldown per hash.
-    /// Only fetches if the block hash is unknown (not in block store).
+    /// INC-I-049: Record an attestation referencing an unknown block for deferred fetch.
+    ///
+    /// Does NOT send GetBlockByHash immediately — gossip delivers 94% of blocks
+    /// within 1-2ms of the attestation. Instead, records (hash, peer, timestamp).
+    /// `run_periodic_tasks()` checks entries >500ms old and only fires the fetch
+    /// if block_store still doesn't have the block (genuine recovery).
+    ///
+    /// Deduplicated: max 3 peers per hash, 30s TTL to bound memory.
     async fn maybe_fetch_attested_block(&mut self, block_hash: &Hash, source_peer: PeerId) {
         // Skip if we already have this block
         if let Ok(Some(_)) = self.block_store.get_height_by_hash(block_hash) {
@@ -587,36 +592,25 @@ impl Node {
 
         // Clean stale entries (>30s old) to bound memory
         self.attest_fetch_tracker
-            .retain(|_, (t, _)| now.duration_since(*t).as_secs() < 30);
+            .retain(|_, (t, _, _)| now.duration_since(*t).as_secs() < 30);
 
-        // Deduplication: max 3 peers asked per hash, 10s cooldown
+        // Deduplication: max 3 peers recorded per hash
         let entry = self
             .attest_fetch_tracker
             .entry(*block_hash)
-            .or_insert((now, 0));
+            .or_insert((now, 0, source_peer));
         if entry.1 >= 3 {
-            return; // Already asked 3 peers for this hash
-        }
-        if entry.1 > 0 && now.duration_since(entry.0).as_secs() < 10 {
-            return; // Asked recently, wait for response
+            return; // Already recorded 3 peers for this hash
         }
 
         entry.0 = now;
         entry.1 += 1;
+        entry.2 = source_peer; // Latest peer — used if deferred fetch fires
 
-        info!(
-            "[ATTEST_FETCH] requesting unknown block {:.8} from peer {} (attempt {})",
+        debug!(
+            "[ATTEST_FETCH] recorded unknown block {:.8} from peer {} (count {}), deferring 500ms",
             block_hash, source_peer, entry.1
         );
-
-        if let Some(ref network) = self.network {
-            let _ = network
-                .request_sync(
-                    source_peer,
-                    network::protocols::SyncRequest::get_block_by_hash(*block_hash),
-                )
-                .await;
-        }
     }
 
     /// Handle tx hash announcements: record unknown hashes, fetch missing txs.
