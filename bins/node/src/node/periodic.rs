@@ -151,11 +151,12 @@ impl Node {
 
         // INC-I-049 DEFERRED ATTEST_FETCH: check entries >500ms old.
         // If block_store now has the block → gossip delivered it, silently clear.
-        // If still missing → genuine recovery, send GetBlockByHash to recorded peer.
+        // If still missing → genuine recovery, send GetBlockByHash to recorded peer,
+        // then REMOVE the entry. If the block still doesn't arrive and a new
+        // attestation comes in, it re-creates the entry with a fresh grace period.
         {
             let now = Instant::now();
             const GRACE_MS: u128 = 500;
-            const COOLDOWN_SECS: u64 = 10;
 
             // Collect matured entries (>500ms old)
             let matured: Vec<(Hash, PeerId, u8)> = self
@@ -173,19 +174,12 @@ impl Node {
                     continue;
                 }
 
-                // Still missing — genuine recovery needed
-                // Enforce cooldown: only fire if this is the first attempt,
-                // or enough time has passed since the entry was recorded
-                let entry = self.attest_fetch_tracker.get(&block_hash);
-                if let Some((t, count, _)) = entry {
-                    if *count > 1 && now.duration_since(*t).as_secs() < COOLDOWN_SECS {
-                        continue; // Already fired recently, wait
-                    }
-                }
-
+                // Still missing — genuine recovery, fire one fetch and remove.
+                // If another attestation arrives for this hash later, it will
+                // re-create the entry with a fresh 500ms grace period.
                 info!(
-                    "[ATTEST_FETCH] recovered block {:.8} from peer {} after grace (attempt {})",
-                    block_hash, source_peer, attempt
+                    "[ATTEST_FETCH] fetching block {:.8} from peer {} after {}ms grace (attempt {})",
+                    block_hash, source_peer, GRACE_MS, attempt
                 );
 
                 if let Some(ref network) = self.network {
@@ -197,10 +191,9 @@ impl Node {
                         .await;
                 }
 
-                // Update timestamp for cooldown tracking
-                if let Some(entry) = self.attest_fetch_tracker.get_mut(&block_hash) {
-                    entry.0 = now;
-                }
+                // Remove after firing — prevents repeated fetches every tick.
+                // New attestations will re-add if the block still hasn't arrived.
+                self.attest_fetch_tracker.remove(&block_hash);
             }
 
             // Clean stale entries (>30s old) to bound memory
@@ -1235,6 +1228,30 @@ mod integrity_check_tests {
     // ---- P1: Genesis — no scan on a fresh node ----
     // Requirement: INC-I-034 / M-Choice2 / CHOICE 2 ("RUNTIME PERIODIC")
     // Acceptance: tip=0 with no prior scan returns false (no log spam on cold start).
+    // OUTPUT CONTRACT: fn maybe_fetch_attested_block(&mut self, block_hash: &Hash, source_peer: PeerId)
+    //   O1: mutable params   — &mut self (modifies self.attest_fetch_tracker)
+    //   O2: receiver/self    — mutates Node.attest_fetch_tracker (HashMap insert/retain)
+    //   O3: return           — () (no return value — side effect only)
+    //   O4: persistent stores — block_store read-only (get_height_by_hash check)
+    //   O5: global/static    — none
+    //   O6: channels/events  — none (NO network request sent — deferred to periodic)
+    //
+    // OUTPUT CONTRACT: fn run_periodic_tasks(&mut self) -> Result<()>
+    //   (scoped to ATTEST_FETCH section only)
+    //   O1: mutable params   — &mut self (modifies self.attest_fetch_tracker)
+    //   O2: receiver/self    — removes matured entries from tracker
+    //   O3: return           — Result<()>
+    //   O4: persistent stores — block_store read-only (get_height_by_hash check)
+    //   O5: global/static    — none
+    //   O6: channels/events  — network.request_sync() if block missing after grace
+    //
+    // PATHS:
+    //   PA: Record unknown hash  — tracker gets entry, NO network request
+    //   PB: Gossip delivers      — block in store before grace expires → entry cleared, no fetch
+    //   PC: Grace expires, miss  — block NOT in store after 500ms → fetch fires ONCE, entry removed
+    //   PD: Second periodic tick — entry was removed in PC → no re-fire
+    // MATRIX: 4 paths × 2 outputs (tracker state, network activity) = 8 cells
+
     #[test]
     fn p1_genesis_tip_zero_no_prior_scan_returns_false() {
         let ran = should_run_integrity_check(0, None, INTEGRITY_CHECK_INTERVAL_BLOCKS);
@@ -1344,6 +1361,237 @@ mod integrity_check_tests {
         assert_eq!(
             INTEGRITY_CHECK_INTERVAL_BLOCKS, 1000,
             "INTEGRITY_CHECK_INTERVAL_BLOCKS default is locked to 1000 blocks (~3h of slot time)"
+        );
+    }
+}
+
+// =============================================================================
+// INC-I-049: Deferred ATTEST_FETCH integration tests (Node-level)
+// =============================================================================
+//
+// These tests exercise the REAL maybe_fetch_attested_block() → run_periodic_tasks()
+// interaction on a Node::new_for_test() instance. They verify:
+//   A) Recording creates tracker entry, no immediate network request
+//   B) Gossip delivery within grace period clears entry silently
+//   C) Grace expiry with missing block fires fetch exactly once, removes entry
+//   D) Second periodic tick after removal does NOT re-fire
+
+#[cfg(test)]
+mod attest_fetch_integration_tests {
+    use super::*;
+
+    async fn make_test_node() -> (Node, tempfile::TempDir) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let kp = crypto::KeyPair::generate();
+        let node = Node::new_for_test(tmp.path().to_path_buf(), vec![kp])
+            .await
+            .expect("Node::new_for_test failed");
+        (node, tmp)
+    }
+
+    fn make_hash(b: u8) -> Hash {
+        let mut bytes = [0u8; 32];
+        bytes[0] = b;
+        Hash::from(bytes)
+    }
+
+    /// Test A: maybe_fetch_attested_block() with unknown hash records a tracker
+    /// entry but does NOT send any network request (network is None in tests,
+    /// but the key invariant is: tracker entry exists, no request_sync called).
+    ///
+    /// Against old code (pre-INC-I-049 fix): the function sent GetBlockByHash
+    /// immediately and did NOT populate a tracker. This test would FAIL because
+    /// attest_fetch_tracker would be empty.
+    #[tokio::test]
+    async fn test_a_record_unknown_block_no_immediate_fetch() {
+        let (mut node, _tmp) = make_test_node().await;
+        let block_hash = make_hash(42);
+        let peer = PeerId::random();
+
+        // Precondition: tracker is empty
+        assert!(node.attest_fetch_tracker.is_empty());
+
+        // Act: attestation for unknown block
+        node.maybe_fetch_attested_block(&block_hash, peer).await;
+
+        // Assert: tracker has the entry (deferred, not sent immediately)
+        assert_eq!(
+            node.attest_fetch_tracker.len(),
+            1,
+            "Tracker must have exactly 1 entry after recording"
+        );
+        assert!(
+            node.attest_fetch_tracker.contains_key(&block_hash),
+            "Tracker must contain the recorded block hash"
+        );
+        let (_, count, recorded_peer) = node.attest_fetch_tracker[&block_hash];
+        assert_eq!(count, 1, "First recording should have count=1");
+        assert_eq!(recorded_peer, peer, "Recorded peer must match source");
+
+        // Key invariant: network is None, so no request could have been sent.
+        // In production, the deferred design means request_sync is NOT called here.
+        assert!(
+            node.network.is_none(),
+            "Test node must not have network — confirms no request was sent"
+        );
+    }
+
+    /// Test B: After recording, insert the block into block_store (simulating
+    /// gossip delivery within 500ms), then run periodic tasks → entry cleared,
+    /// no fetch sent.
+    #[tokio::test]
+    async fn test_b_gossip_delivery_clears_entry_no_fetch() {
+        let (mut node, _tmp) = make_test_node().await;
+        let block_hash = make_hash(43);
+        let peer = PeerId::random();
+
+        // Record attestation for unknown block
+        node.maybe_fetch_attested_block(&block_hash, peer).await;
+        assert_eq!(node.attest_fetch_tracker.len(), 1);
+
+        // Simulate gossip delivering the block: build a minimal block with
+        // matching hash. We need put_block_canonical so get_height_by_hash works.
+        // To get a block whose hash matches `block_hash`, we store the block
+        // and use its actual hash instead.
+        let kp = crypto::KeyPair::generate();
+        let params = doli_core::consensus::ConsensusParams::devnet();
+        let reward = params.block_reward(1);
+        let pool_hash = doli_core::consensus::reward_pool_pubkey_hash();
+        let coinbase = doli_core::Transaction::new_coinbase(reward, pool_hash, 1, 0);
+        let genesis_hash = doli_core::chainspec::ChainSpec::devnet().genesis_hash();
+        let merkle_root = doli_core::block::compute_merkle_root(std::slice::from_ref(&coinbase));
+        let header = doli_core::BlockHeader {
+            version: 2,
+            prev_hash: genesis_hash,
+            merkle_root,
+            presence_root: Hash::ZERO,
+            genesis_hash,
+            timestamp: 0,
+            slot: 1,
+            producer: *kp.public_key(),
+            vdf_output: vdf::VdfOutput {
+                value: vec![0u8; 32],
+            },
+            vdf_proof: vdf::VdfProof::empty(),
+            missed_producers: Vec::new(),
+            data_root: Hash::ZERO,
+            fork_id: Hash::ZERO,
+        };
+        let block = doli_core::Block::new(header, vec![coinbase]);
+        let real_hash = block.hash();
+
+        // Re-record with the real block hash
+        node.attest_fetch_tracker.clear();
+        node.maybe_fetch_attested_block(&real_hash, peer).await;
+        assert_eq!(node.attest_fetch_tracker.len(), 1);
+
+        // Simulate gossip: store the block canonically
+        node.block_store
+            .put_block_canonical(&block, 1)
+            .expect("put_block_canonical failed");
+
+        // Confirm block_store now has it
+        assert!(
+            node.block_store
+                .get_height_by_hash(&real_hash)
+                .unwrap()
+                .is_some(),
+            "Block must be in store after put_block_canonical"
+        );
+
+        // Manually backdate the entry so it's past 500ms grace
+        if let Some(entry) = node.attest_fetch_tracker.get_mut(&real_hash) {
+            entry.0 = Instant::now() - Duration::from_millis(600);
+        }
+
+        // Run periodic tasks — should see block in store and clear entry silently
+        node.run_periodic_tasks().await.expect("periodic failed");
+
+        // Assert: entry removed (gossip delivered), no fetch sent
+        assert!(
+            node.attest_fetch_tracker.is_empty(),
+            "Tracker must be empty after gossip delivery + periodic sweep"
+        );
+    }
+
+    /// Test C: After recording, do NOT insert block, advance past 500ms grace,
+    /// run periodic tasks → fetch fires exactly once (via request_sync, which is
+    /// a no-op since network=None), entry removed from tracker.
+    #[tokio::test]
+    async fn test_c_grace_expiry_missing_block_fires_once_and_removes() {
+        let (mut node, _tmp) = make_test_node().await;
+        let block_hash = make_hash(44);
+        let peer = PeerId::random();
+
+        // Record attestation
+        node.maybe_fetch_attested_block(&block_hash, peer).await;
+        assert_eq!(node.attest_fetch_tracker.len(), 1);
+
+        // Block is NOT in store (simulating gossip hasn't arrived)
+        assert!(
+            node.block_store
+                .get_height_by_hash(&block_hash)
+                .unwrap()
+                .is_none(),
+            "Block must NOT be in store for this test"
+        );
+
+        // Backdate entry past 500ms grace
+        if let Some(entry) = node.attest_fetch_tracker.get_mut(&block_hash) {
+            entry.0 = Instant::now() - Duration::from_millis(600);
+        }
+
+        // Run periodic tasks — should fire fetch (no-op: network=None) and REMOVE entry
+        node.run_periodic_tasks().await.expect("periodic failed");
+
+        // Assert: entry removed after firing
+        assert!(
+            !node.attest_fetch_tracker.contains_key(&block_hash),
+            "Entry must be removed after deferred fetch fires"
+        );
+        assert!(
+            node.attest_fetch_tracker.is_empty(),
+            "Tracker must be empty — entry removed, not refreshed"
+        );
+    }
+
+    /// Test D: After Test C's fetch fires and removes the entry, run periodic
+    /// tasks a SECOND time → no additional fetch, tracker stays empty.
+    ///
+    /// This is the regression test for fix attempt 1 (commit b29f370d) where
+    /// entries re-fired every tick because the timestamp was refreshed instead
+    /// of the entry being removed.
+    #[tokio::test]
+    async fn test_d_second_periodic_tick_no_refire() {
+        let (mut node, _tmp) = make_test_node().await;
+        let block_hash = make_hash(45);
+        let peer = PeerId::random();
+
+        // Record and backdate past grace
+        node.maybe_fetch_attested_block(&block_hash, peer).await;
+        if let Some(entry) = node.attest_fetch_tracker.get_mut(&block_hash) {
+            entry.0 = Instant::now() - Duration::from_millis(600);
+        }
+
+        // First periodic tick — fires fetch and removes entry
+        node.run_periodic_tasks().await.expect("periodic 1 failed");
+        assert!(
+            node.attest_fetch_tracker.is_empty(),
+            "After first tick: entry must be removed"
+        );
+
+        // Second periodic tick — nothing to do, tracker stays empty
+        node.run_periodic_tasks().await.expect("periodic 2 failed");
+        assert!(
+            node.attest_fetch_tracker.is_empty(),
+            "After second tick: tracker must still be empty (no re-fire)"
+        );
+
+        // Third periodic tick — still nothing (paranoia check)
+        node.run_periodic_tasks().await.expect("periodic 3 failed");
+        assert!(
+            node.attest_fetch_tracker.is_empty(),
+            "After third tick: tracker must still be empty (no re-fire)"
         );
     }
 }

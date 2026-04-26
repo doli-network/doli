@@ -578,7 +578,11 @@ impl Node {
     /// if block_store still doesn't have the block (genuine recovery).
     ///
     /// Deduplicated: max 3 peers per hash, 30s TTL to bound memory.
-    async fn maybe_fetch_attested_block(&mut self, block_hash: &Hash, source_peer: PeerId) {
+    pub(crate) async fn maybe_fetch_attested_block(
+        &mut self,
+        block_hash: &Hash,
+        source_peer: PeerId,
+    ) {
         // Skip if we already have this block
         if let Ok(Some(_)) = self.block_store.get_height_by_hash(block_hash) {
             return;
