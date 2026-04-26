@@ -6,7 +6,9 @@ use doli_core::{
 };
 use libp2p::{Multiaddr, PeerId};
 
-use super::helpers::{is_routable_address, plan_startup_dials, strip_p2p_suffix};
+use super::helpers::{
+    all_addresses_routable, is_routable_address, plan_startup_dials, strip_p2p_suffix,
+};
 use super::types::{NetworkCommand, NetworkEvent};
 
 #[test]
@@ -391,4 +393,66 @@ fn test_inc_i048_p2p_suffixes_stripped() {
 
     assert_eq!(boot_addrs[0].to_string(), "/ip4/127.0.0.1/tcp/30300");
     assert_eq!(cached_addrs[0].to_string(), "/ip4/192.168.1.1/tcp/30301");
+}
+
+// =========================================================================
+// INC-I-050: Kademlia DHT address filter tests
+// =========================================================================
+
+// OUTPUT CONTRACT: fn all_addresses_routable(addrs, network_id)
+// O1: return value (bool) — true if ALL addrs are routable for network_id, false otherwise
+// O2: return value (bool) — false when addrs is empty (no addresses = not routable)
+// PATHS: mainnet+loopback, mainnet+public, mainnet+mixed, testnet+loopback, empty
+// MATRIX: O1×mainnet_loopback=false, O1×mainnet_public=true, O1×mainnet_mixed=false,
+//         O1×testnet_loopback=true, O2×empty=false
+
+#[test]
+fn test_all_addresses_routable_rejects_loopback_on_mainnet() {
+    // INC-I-050: Kademlia FIND_NODE responses propagate addresses without filtering.
+    // A peer with 127.0.0.1 in its DHT entry must be rejected on mainnet.
+    let loopback: Multiaddr = "/ip4/127.0.0.1/tcp/30300".parse().unwrap();
+    assert!(
+        !all_addresses_routable([&loopback].into_iter(), 1),
+        "Loopback address must be rejected on mainnet (network_id=1)"
+    );
+}
+
+#[test]
+fn test_all_addresses_routable_accepts_public_on_mainnet() {
+    let public: Multiaddr = "/ip4/198.51.100.1/tcp/30300".parse().unwrap();
+    assert!(
+        all_addresses_routable([&public].into_iter(), 1),
+        "Public address must be accepted on mainnet"
+    );
+}
+
+#[test]
+fn test_all_addresses_routable_rejects_mixed_on_mainnet() {
+    // If a peer has both public and loopback addresses, the whole entry is tainted
+    let public: Multiaddr = "/ip4/198.51.100.1/tcp/30300".parse().unwrap();
+    let loopback: Multiaddr = "/ip4/127.0.0.1/tcp/30300".parse().unwrap();
+    assert!(
+        !all_addresses_routable([&public, &loopback].into_iter(), 1),
+        "Mixed routable+loopback must be rejected on mainnet"
+    );
+}
+
+#[test]
+fn test_all_addresses_routable_allows_loopback_on_testnet() {
+    // Testnet allows loopback for localhost discovery
+    let loopback: Multiaddr = "/ip4/127.0.0.1/tcp/30300".parse().unwrap();
+    assert!(
+        all_addresses_routable([&loopback].into_iter(), 2),
+        "Loopback must be allowed on testnet (network_id=2)"
+    );
+}
+
+#[test]
+fn test_all_addresses_routable_rejects_empty() {
+    // A peer with zero addresses should not be kept in the routing table
+    let empty: Vec<&Multiaddr> = vec![];
+    assert!(
+        !all_addresses_routable(empty.into_iter(), 1),
+        "Empty address list must be rejected"
+    );
 }

@@ -25,7 +25,7 @@ use crate::peer_cache::PeerCache;
 use crate::rate_limit::RateLimiter;
 use crypto::PublicKey;
 
-use super::helpers::is_routable_address;
+use super::helpers::{all_addresses_routable, is_routable_address};
 use super::types::{NetworkEvent, GENESIS_MISMATCH_COOLDOWN_SECS};
 use crate::protocols::status::{CURRENT_PROTOCOL_VERSION, MIN_PEER_PROTOCOL_VERSION};
 
@@ -331,13 +331,32 @@ pub(super) async fn handle_behaviour_event(
             }
         }
 
-        DoliBehaviourEvent::Kademlia(kad::Event::RoutingUpdated { peer, .. }) => {
-            info!("[DHT] Routing updated for peer: {}", peer);
+        DoliBehaviourEvent::Kademlia(kad::Event::RoutingUpdated {
+            peer, addresses, ..
+        }) => {
+            // INC-I-050: Filter non-routable addresses from Kademlia routing table.
+            //
+            // The Identify handler (below) filters listen_addrs via is_routable_address()
+            // before calling kademlia.add_address(). But Kademlia's internal FIND_NODE
+            // responses propagate addresses through the DHT routing table exchange,
+            // bypassing the Identify filter entirely.
+            //
+            // Without this check, a node with a loopback address (e.g., 127.0.0.1:30300)
+            // can poison the DHT, causing all nodes to self-dial and generating connection
+            // error churn that degrades the gossip mesh. See INC-I-050 for the full
+            // causal chain: DHT poisoning → event loop saturation → gossip mesh collapse
+            // → 28 empty slots on mainnet.
+            if !all_addresses_routable(addresses.iter(), config.network_id) {
+                warn!(
+                    "[DHT] Removing peer {} — non-routable address in Kademlia routing table",
+                    peer
+                );
+                swarm.behaviour_mut().kademlia.remove_peer(&peer);
+            } else {
+                info!("[DHT] Routing updated for peer: {}", peer);
+            }
             // Don't auto-dial on RoutingUpdated — this is the main trigger for
             // the simultaneous-dial race on co-located nodes (rust-libp2p#752).
-            // The periodic DHT bootstrap (every 60s) and explicit bootstrap dials
-            // already handle peer discovery. Auto-dialing here is redundant and
-            // on localhost (latency ≈ 0) it guarantees the race fires.
         }
         DoliBehaviourEvent::Kademlia(_) => {
             // Other Kademlia events (query progress, etc.) — no action needed

@@ -46,6 +46,29 @@ pub(super) fn is_routable_address(addr: &Multiaddr, network_id: u32) -> bool {
     true
 }
 
+/// INC-I-050: Check if ALL addresses for a DHT peer are routable.
+///
+/// Used to filter Kademlia routing table updates. When a peer has ANY
+/// non-routable address (loopback, private, CGNAT on mainnet), the peer
+/// should be removed from the routing table to prevent DHT poisoning.
+///
+/// This closes the gap where `is_routable_address` was only applied to the
+/// Identify path but not to Kademlia's internal FIND_NODE response path.
+pub(super) fn all_addresses_routable<'a>(
+    addrs: impl Iterator<Item = &'a Multiaddr>,
+    network_id: u32,
+) -> bool {
+    let mut count = 0;
+    for addr in addrs {
+        count += 1;
+        if !is_routable_address(addr, network_id) {
+            return false;
+        }
+    }
+    // A peer with zero addresses should not be kept
+    count > 0
+}
+
 /// RFC 6598 shared address space (100.64.0.0/10) used by CGNAT.
 fn is_shared_address(ip: std::net::Ipv4Addr) -> bool {
     let octets = ip.octets();

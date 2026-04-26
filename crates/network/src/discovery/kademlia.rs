@@ -15,8 +15,11 @@ pub fn new_kademlia(local_peer_id: PeerId) -> Kademlia<MemoryStore> {
     let mut config = KademliaConfig::default();
     config.set_protocol_names(vec![libp2p::StreamProtocol::new(KAD_PROTOCOL)]);
 
-    // Set replication factor
-    config.set_replication_factor(std::num::NonZeroUsize::new(20).unwrap());
+    // INC-I-050: Replication factor 20 in a 26-node network (77%) amplified DHT
+    // poisoning — a single bad entry reached nearly every node within one 60s
+    // bootstrap cycle. Reduced to 8 (~31%) to limit amplification while
+    // maintaining sufficient redundancy for peer discovery.
+    config.set_replication_factor(std::num::NonZeroUsize::new(8).unwrap());
 
     config.set_query_timeout(std::time::Duration::from_secs(60));
 

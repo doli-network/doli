@@ -124,12 +124,34 @@ impl SyncManager {
             };
         }
 
-        // Check 3: Gossip activity watchdog — DISABLED (INC-I-026).
+        // Check 3: Gossip activity watchdog — NON-BLOCKING (INC-I-050).
         //
-        // With deterministic scheduler, a block produced during gossip
-        // silence is simply ignored by peers (FORK_GUARD). Worst case:
-        // 1 wasted slot. The deadlock risk from blocking production far
-        // exceeds the cost of an ignored block.
+        // INC-I-026 disabled this check because blocking production during
+        // gossip silence caused deadlocks. That was correct for single-node
+        // gossip failure (worst case: 1 wasted slot).
+        //
+        // INC-I-050 revealed the flaw: network-wide gossip failure wastes
+        // ALL slots, not just one. The identical pattern as INC-I-016 recurred
+        // because this detection was removed.
+        //
+        // Re-enabled as NON-BLOCKING: production remains AUTHORIZED, but we
+        // log a warning so operators can detect gossip mesh failure. This
+        // preserves INC-I-026's deadlock fix while restoring INC-I-016's
+        // observability.
+        if let Some(last_gossip) = self.last_block_received_via_gossip {
+            let silence_secs = last_gossip.elapsed().as_secs();
+            let peers_ahead = self
+                .peers
+                .values()
+                .filter(|p| p.best_height > self.local_height)
+                .count();
+            if silence_secs >= self.gossip_activity_timeout_secs && peers_ahead > 0 {
+                warn!(
+                    "[GOSSIP_WATCHDOG] Gossip silent for {}s with {} peers ahead (timeout={}s) — possible mesh failure. Production AUTHORIZED (non-blocking).",
+                    silence_secs, peers_ahead, self.gossip_activity_timeout_secs
+                );
+            }
+        }
 
         // Check 4: Finality — REMOVED (v6.13.6-fix123).
         //
