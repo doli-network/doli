@@ -22,6 +22,9 @@ Thumbs.db
 testnet/
 devnet/
 
+# Personal working directories (local scripts, not committed)
+isudoajl/
+
 # Testnet backups and broken snapshots
 testnetlinux-backup*/
 testnetlinux-broken*/
