@@ -486,6 +486,12 @@ impl RpcContext {
             .or_else(|| params.get("up_to_height"))
             .and_then(|v| v.as_u64());
 
+        // Parse optional from_height: [up_to_height, from_height] or {"from_height": height}
+        let from_height = params
+            .get(1)
+            .or_else(|| params.get("from_height"))
+            .and_then(|v| v.as_u64());
+
         let scan_ceiling = match up_to_height {
             Some(h) if h > tip_height => {
                 return Err(RpcError::invalid_params(format!(
@@ -498,6 +504,7 @@ impl RpcContext {
                     "complete": true,
                     "tip": tip_height,
                     "scanned": 0,
+                    "fromHeight": from_height.unwrap_or(1),
                     "missing": [],
                     "missingCount": 0
                 }));
@@ -506,15 +513,26 @@ impl RpcContext {
             None => tip_height,
         };
 
+        let scan_floor = from_height.unwrap_or(1).max(1); // minimum 1
+        if scan_floor > scan_ceiling {
+            return Err(RpcError::invalid_params(format!(
+                "from_height {} exceeds up_to_height/tip {}",
+                scan_floor, scan_ceiling
+            )));
+        }
+
         if tip_height == 0 {
             return Ok(serde_json::json!({
                 "complete": true,
                 "tip": 0,
                 "scanned": 0,
+                "fromHeight": scan_floor,
                 "missing": [],
                 "missingCount": 0
             }));
         }
+
+        let is_full_scan = scan_floor == 1;
 
         // Fast path: if periodic commitment exists AND covers the requested height,
         // return it in O(1). The commitment is recomputed every 100 blocks via full
@@ -526,20 +544,22 @@ impl RpcContext {
             .as_ref()
             .and_then(|db| db.get_chain_commitment_with_tip());
         if let Some((commitment, scan_tip)) = persisted {
-            let persisted_matches = match up_to_height {
-                None => true, // no specific height requested, use whatever we have
-                Some(h) => scan_tip > 0 && scan_tip == h, // exact match required
-            };
+            let persisted_matches = is_full_scan
+                && match up_to_height {
+                    None => true, // no specific height requested, use whatever we have
+                    Some(h) => scan_tip > 0 && scan_tip == h, // exact match required
+                };
             if persisted_matches {
                 // Still need gap detection — commitment only covers applied blocks,
                 // not block_store completeness. Quick scan for gaps only (no hashing).
                 let block_store = self.block_store.clone();
                 let ceiling = scan_ceiling;
+                let floor = scan_floor;
                 let gaps = tokio::task::spawn_blocking(move || {
                     let mut missing: Vec<String> = Vec::new();
                     let mut range_start: Option<u64> = None;
                     let mut range_end: u64 = 0;
-                    for h in 1..=ceiling {
+                    for h in floor..=ceiling {
                         let exists = block_store
                             .get_block_by_height(h)
                             .map(|opt| opt.is_some())
@@ -586,6 +606,7 @@ impl RpcContext {
                     "complete": missing_count == 0,
                     "tip": tip_height,
                     "scanned": reported_scan,
+                    "fromHeight": scan_floor,
                     "missing": gaps,
                     "missingCount": missing_count,
                     "chainCommitment": format!("{}", commitment)
@@ -598,16 +619,18 @@ impl RpcContext {
         let block_store = self.block_store.clone();
         let state_db_opt = self.state_db.clone();
         let tip = scan_ceiling;
-        let persist_commitment = up_to_height.is_none(); // only persist for natural scans
+        let floor = scan_floor;
+        let full_scan = is_full_scan;
+        let persist_commitment = up_to_height.is_none() && full_scan; // only persist for natural full scans
 
         let result = tokio::task::spawn_blocking(move || {
             let mut missing: Vec<String> = Vec::new();
             let mut range_start: Option<u64> = None;
             let mut range_end: u64 = 0;
             let mut commitment = Hash::default();
-            let mut commitment_valid = true;
+            let mut commitment_valid = full_scan; // partial scans can't produce valid commitment
 
-            for h in 1..=tip {
+            for h in floor..=tip {
                 let block = block_store.get_block_by_height(h).ok().flatten();
                 if let Some(blk) = block {
                     let hash = blk.hash();
@@ -678,6 +701,7 @@ impl RpcContext {
             "complete": missing_count == 0,
             "tip": tip_height,
             "scanned": scan_ceiling,
+            "fromHeight": scan_floor,
             "missing": missing,
             "missingCount": missing_count,
             "chainCommitment": chain_commitment

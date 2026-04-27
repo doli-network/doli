@@ -1674,9 +1674,16 @@ Check the progress of an active backfill operation.
 
 ### `verifyChainIntegrity`
 
-Full scan of every height from 1 to tip. Detects missing blocks (gaps) anywhere in the chain. Deserializes each block and computes a running BLAKE3 chain commitment (returned as `chainCommitment` when no gaps exist, null otherwise).
+Scans a height range for missing blocks (gaps). Deserializes each block and computes a running BLAKE3 chain commitment (returned as `chainCommitment` when scanning from block 1 with no gaps, null otherwise).
 
-**Parameters:** None
+**Parameters:**
+
+| # | Name | Type | Default | Description |
+|---|------|------|---------|-------------|
+| 0 | `up_to_height` | `u64` | tip | Upper bound of scan range (inclusive) |
+| 1 | `from_height` | `u64` | 1 | Lower bound of scan range (inclusive, minimum 1) |
+
+Positional: `[up_to_height, from_height]` — or named: `{"up_to_height": N, "from_height": M}`.
 
 **Response (complete chain):**
 ```json
@@ -1684,6 +1691,7 @@ Full scan of every height from 1 to tip. Detects missing blocks (gaps) anywhere 
   "complete": true,
   "tip": 1223,
   "scanned": 1223,
+  "fromHeight": 1,
   "missing": [],
   "missingCount": 0,
   "chainCommitment": "abc123..."
@@ -1696,8 +1704,22 @@ Full scan of every height from 1 to tip. Detects missing blocks (gaps) anywhere 
   "complete": false,
   "tip": 1000000,
   "scanned": 1000000,
+  "fromHeight": 1,
   "missing": ["45-67", "1234", "50000-50100"],
   "missingCount": 125,
+  "chainCommitment": null
+}
+```
+
+**Response (partial range scan):**
+```json
+{
+  "complete": true,
+  "tip": 1000000,
+  "scanned": 1000000,
+  "fromHeight": 999000,
+  "missing": [],
+  "missingCount": 0,
   "chainCommitment": null
 }
 ```
@@ -1706,9 +1728,10 @@ Full scan of every height from 1 to tip. Detects missing blocks (gaps) anywhere 
 - Missing heights are returned as compressed ranges (e.g., `"45-67"` means blocks 45 through 67 are missing)
 - Single missing blocks are returned as individual strings (e.g., `"1234"`)
 - `missingCount` is the total number of missing blocks across all ranges
-- `chainCommitment` is a BLAKE3 fingerprint of the entire chain (null when gaps exist)
+- `chainCommitment` is a BLAKE3 fingerprint of the entire chain — only valid when `from_height=1` and no gaps exist; null otherwise
+- `fromHeight` echoes back the scan floor used
 - Runs in a background thread to avoid blocking the RPC event loop
-- Added in v2.0.29
+- Added in v2.0.29; `from_height` parameter added in v6.20.4
 
 ---
 
