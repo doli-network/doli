@@ -614,7 +614,7 @@ impl RpcContext {
             }
         }
 
-        // Full scan: compute commitment over 1..=scan_ceiling.
+        // Compute commitment over scan_floor..=scan_ceiling.
         // Also used when up_to_height doesn't match the persisted scan_tip.
         let block_store = self.block_store.clone();
         let state_db_opt = self.state_db.clone();
@@ -628,7 +628,7 @@ impl RpcContext {
             let mut range_start: Option<u64> = None;
             let mut range_end: u64 = 0;
             let mut commitment = Hash::default();
-            let mut commitment_valid = full_scan; // partial scans can't produce valid commitment
+            let mut commitment_valid = true;
 
             for h in floor..=tip {
                 let block = block_store.get_block_by_height(h).ok().flatten();

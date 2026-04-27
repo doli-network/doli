@@ -1720,7 +1720,7 @@ Positional: `[up_to_height, from_height]` — or named: `{"up_to_height": N, "fr
   "fromHeight": 999000,
   "missing": [],
   "missingCount": 0,
-  "chainCommitment": null
+  "chainCommitment": "d4e5f6..."
 }
 ```
 
@@ -1728,10 +1728,11 @@ Positional: `[up_to_height, from_height]` — or named: `{"up_to_height": N, "fr
 - Missing heights are returned as compressed ranges (e.g., `"45-67"` means blocks 45 through 67 are missing)
 - Single missing blocks are returned as individual strings (e.g., `"1234"`)
 - `missingCount` is the total number of missing blocks across all ranges
-- `chainCommitment` is a BLAKE3 fingerprint of the entire chain — only valid when `from_height=1` and no gaps exist; null otherwise
+- `chainCommitment` is a rolling BLAKE3 hash over blocks in the scanned range — deterministic for the same range and blocks, null when gaps exist
 - `fromHeight` echoes back the scan floor used
 - Runs in a background thread to avoid blocking the RPC event loop
-- Added in v2.0.29; `from_height` parameter added in v6.20.4
+- The persisted full-chain commitment (used as a fast path) is only stored/used for full scans from block 1
+- Added in v2.0.29; `from_height` parameter added in v6.20.5
 
 ---
 
