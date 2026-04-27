@@ -304,7 +304,7 @@ pub(super) async fn handle_swarm_event(
                     );
 
                     if should_log {
-                        warn!(
+                        debug!(
                             "Peer ID mismatch at {} — expected {:?}, got {}. Removing stale entry.",
                             address, peer_id, obtained
                         );
