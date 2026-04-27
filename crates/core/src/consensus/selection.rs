@@ -114,12 +114,19 @@ pub const fn is_rank_eligible_at_ms(rank: usize, offset_ms: u64) -> bool {
 ///
 /// Uses sequential 2s exclusive windows. Only the producer whose rank matches
 /// the current window is eligible (exclusive, not cumulative).
+///
+/// Special case: when only one producer is eligible, rank windows are bypassed
+/// and the sole producer is eligible for the full slot duration. Rank windows
+/// exist to prevent competing blocks — meaningless with no contention (INC-I-046).
 pub fn is_producer_eligible_ms(
     producer: &crypto::PublicKey,
     eligible_producers: &[crypto::PublicKey],
     slot_offset_ms: u64,
 ) -> bool {
     if let Some(rank) = eligible_producers.iter().position(|p| p == producer) {
+        if eligible_producers.len() == 1 {
+            return true;
+        }
         is_rank_eligible_at_ms(rank, slot_offset_ms)
     } else {
         false

@@ -1669,3 +1669,35 @@ fn test_testnet_genesis_time_matches_chainspec() {
         params.genesis_time, chainspec_time
     );
 }
+
+/// INC-I-046: When only one producer is eligible (epoch mode), the sole producer
+/// must be eligible for the FULL slot duration, not just the 0-1999ms rank-0 window.
+/// Rank windows exist to prevent competing blocks — meaningless with 1 producer.
+#[test]
+fn test_single_producer_eligible_full_slot() {
+    let producer = crypto::PublicKey::from_bytes([1u8; 32]);
+    let single = vec![producer];
+
+    // Sole producer must be eligible at ALL offsets within the slot
+    assert!(is_producer_eligible_ms(&producer, &single, 0));
+    assert!(is_producer_eligible_ms(&producer, &single, 1000));
+    assert!(is_producer_eligible_ms(&producer, &single, 1999));
+    // These currently FAIL — the bug: rank window moves to rank 1 where nobody exists
+    assert!(
+        is_producer_eligible_ms(&producer, &single, 2000),
+        "sole producer must be eligible at 2000ms (INC-I-046)"
+    );
+    assert!(
+        is_producer_eligible_ms(&producer, &single, 5000),
+        "sole producer must be eligible at 5000ms (INC-I-046)"
+    );
+    assert!(
+        is_producer_eligible_ms(&producer, &single, 9999),
+        "sole producer must be eligible at 9999ms (INC-I-046)"
+    );
+
+    // Unknown producer should still be rejected
+    let unknown = crypto::PublicKey::from_bytes([2u8; 32]);
+    assert!(!is_producer_eligible_ms(&unknown, &single, 0));
+    assert!(!is_producer_eligible_ms(&unknown, &single, 5000));
+}
