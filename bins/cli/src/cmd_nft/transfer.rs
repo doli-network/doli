@@ -77,9 +77,10 @@ pub(crate) async fn cmd_nft_transfer(
 
         // Parse extra_data
         let extra_data_hex = utxo_output
-            .get("extraData")
+            .get("encryptedContent")
+            .and_then(|ec| ec.get("extraData"))
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Missing extraData in EncryptedContent"))?;
+            .ok_or_else(|| anyhow::anyhow!("Missing encryptedContent.extraData in RPC response"))?;
         let extra_data =
             hex::decode(extra_data_hex).map_err(|_| anyhow::anyhow!("Invalid hex in extraData"))?;
 

@@ -301,6 +301,9 @@ pub struct OutputResponse {
     /// Bridge HTLC metadata (only for BridgeHTLC output types)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bridge: Option<serde_json::Value>,
+    /// EncryptedContent metadata (only for EncryptedContent output types)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encrypted_content: Option<serde_json::Value>,
     /// Size of extra_data in bytes (useful for debugging/inspection)
     pub extra_data_size: usize,
 }
@@ -370,6 +373,24 @@ impl From<&doli_core::Output> for OutputResponse {
             None
         };
 
+        // Decode EncryptedContent metadata if present
+        let encrypted_content_metadata =
+            if output.output_type == doli_core::OutputType::EncryptedContent {
+                output.parse_encrypted_content().map(
+                    |(ciphertext, wrapped_key, nonce, content_hash)| {
+                        serde_json::json!({
+                            "extraData": hex::encode(&output.extra_data),
+                            "ciphertextSize": ciphertext.len(),
+                            "wrappedKey": hex::encode(wrapped_key),
+                            "nonce": hex::encode(nonce),
+                            "contentHash": hex::encode(content_hash),
+                        })
+                    },
+                )
+            } else {
+                None
+            };
+
         // Decode bridge HTLC metadata if present
         let bridge_metadata = if output.output_type == doli_core::OutputType::BridgeHTLC {
             output
@@ -403,6 +424,7 @@ impl From<&doli_core::Output> for OutputResponse {
             nft: nft_metadata,
             asset: asset_metadata,
             bridge: bridge_metadata,
+            encrypted_content: encrypted_content_metadata,
             extra_data_size: output.extra_data.len(),
         }
     }
@@ -521,4 +543,71 @@ pub struct GetTransactionParams {
 pub struct SendTransactionParams {
     /// Serialized transaction (hex)
     pub tx: String,
+}
+
+// OUTPUT CONTRACT: fn OutputResponse::from(&Output)
+// O1: output_type — String classification
+// O2: encrypted_content — Option<Value> with extraData, wrappedKey, nonce, contentHash for EncryptedContent
+// O3: extra_data_size — usize byte count
+// PATHS: EncryptedContent output → O2 = Some({...}), Normal output → O2 = None
+// MATRIX: EncryptedContent × O2 = Some with all 4 fields, Normal × O2 = None
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encrypted_content_output_includes_extra_data_fields() {
+        let ciphertext = vec![0xABu8; 64];
+        let wrapped_key = [0x11u8; 80];
+        let nonce = [0x22u8; 12];
+        let content_hash = [0x33u8; 32];
+        let pubkey_hash = crypto::Hash::from_bytes([0x44u8; 32]);
+
+        let output = doli_core::Output::encrypted_content(
+            1,
+            pubkey_hash,
+            &ciphertext,
+            &wrapped_key,
+            &nonce,
+            &content_hash,
+        );
+
+        let response = OutputResponse::from(&output);
+
+        assert_eq!(response.output_type, "encryptedContent");
+
+        // The encrypted_content field MUST be present with decoded metadata
+        let ec = response
+            .encrypted_content
+            .as_ref()
+            .expect("encrypted_content field must be Some for EncryptedContent outputs");
+
+        // extraData must contain the full hex of extra_data (so CLI can parse wrapped_key etc.)
+        let extra_data_hex = ec.get("extraData").and_then(|v| v.as_str()).unwrap();
+        assert!(!extra_data_hex.is_empty());
+        // Round-trip: decode hex back and verify content_hash at the tail
+        let decoded = hex::decode(extra_data_hex).unwrap();
+        assert_eq!(&decoded[decoded.len() - 32..], &content_hash);
+
+        // contentHash convenience field
+        let ch = ec.get("contentHash").and_then(|v| v.as_str()).unwrap();
+        assert_eq!(ch, hex::encode(content_hash));
+
+        // wrappedKey
+        let wk = ec.get("wrappedKey").and_then(|v| v.as_str()).unwrap();
+        assert_eq!(wk, hex::encode(wrapped_key));
+
+        // nonce
+        let n = ec.get("nonce").and_then(|v| v.as_str()).unwrap();
+        assert_eq!(n, hex::encode(nonce));
+    }
+
+    #[test]
+    fn normal_output_has_no_encrypted_content_field() {
+        let pubkey_hash = crypto::Hash::from_bytes([0x44u8; 32]);
+        let output = doli_core::Output::normal(100, pubkey_hash);
+        let response = OutputResponse::from(&output);
+        assert_eq!(response.output_type, "normal");
+        assert!(response.encrypted_content.is_none());
+    }
 }
