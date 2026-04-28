@@ -254,6 +254,9 @@ pub struct InputResponse {
     pub output_index: u32,
     /// Signature (hex)
     pub signature: String,
+    /// Signer's public key (hex, from input)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<String>,
     /// Resolved sender address (bech32m, populated when input can be resolved)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub address: Option<String>,
@@ -268,6 +271,10 @@ impl From<&doli_core::Input> for InputResponse {
             prev_tx_hash: input.prev_tx_hash.to_hex(),
             output_index: input.output_index,
             signature: hex::encode(input.signature.as_bytes()),
+            public_key: input
+                .public_key
+                .as_ref()
+                .map(|pk| hex::encode(pk.as_bytes())),
             address: None,
             amount: None,
         }

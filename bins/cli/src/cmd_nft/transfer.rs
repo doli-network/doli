@@ -57,7 +57,7 @@ pub(crate) async fn cmd_nft_transfer(
         // EncryptedContent transfer requires recipient's PUBLIC KEY (not just hash)
         // because ECIES re-wrap needs the actual key. Accept --to as:
         //   - 64 hex chars → raw pubkey
-        //   - bech32 address → error (need pubkey for re-wrap)
+        //   - bech32 address → resolve pubkey from on-chain tx history
         let recipient_pubkey = if to.len() == 64 && to.chars().all(|c| c.is_ascii_hexdigit()) {
             let pubkey_bytes: [u8; 32] = hex::decode(to)
                 .map_err(|_| anyhow::anyhow!("Invalid pubkey hex"))?
@@ -65,11 +65,8 @@ pub(crate) async fn cmd_nft_transfer(
                 .map_err(|_| anyhow::anyhow!("Pubkey must be 32 bytes"))?;
             crypto::PublicKey::from_bytes(pubkey_bytes)
         } else {
-            anyhow::bail!(
-                "EncryptedContent transfer requires recipient's public key (64 hex chars).\n\
-                 The recipient can find theirs with: doli info\n\
-                 Usage: doli nft --transfer <utxo> --to <recipient_pubkey_hex>"
-            );
+            // Try bech32 address → resolve pubkey from transaction history
+            resolve_pubkey_from_address(&rpc, to).await?
         };
 
         let recipient_hash =
@@ -307,4 +304,52 @@ pub(crate) async fn cmd_nft_transfer(
     }
 
     Ok(())
+}
+
+/// Resolve a public key from a bech32 address by looking up the recipient's
+/// transaction history. When someone sends a transaction, their public key
+/// is included in the input — we extract it from the first matching tx.
+async fn resolve_pubkey_from_address(rpc: &RpcClient, address: &str) -> Result<crypto::PublicKey> {
+    // Decode bech32 to get the pubkey_hash
+    let (pubkey_hash, _hrp) = crypto::address::decode(address)
+        .map_err(|e| anyhow::anyhow!("Invalid address '{}': {}", address, e))?;
+    let pubkey_hash_hex = pubkey_hash.to_hex();
+
+    // Get their transaction history — we need any tx where they were the sender
+    let history = rpc.get_history(address, 10).await?;
+
+    // Find a tx where they sent funds (their pubkey will be in the inputs)
+    for entry in &history {
+        if entry.amount_sent == 0 {
+            continue;
+        }
+        // Fetch the full transaction to get input public keys
+        let tx_json = rpc.get_transaction_json(&entry.hash).await?;
+        if let Some(inputs) = tx_json.get("inputs").and_then(|v| v.as_array()) {
+            for input in inputs {
+                // Check if this input's public_key hashes to the recipient's address
+                if let Some(pk_hex) = input.get("publicKey").and_then(|v| v.as_str()) {
+                    if let Ok(pk_bytes) = hex::decode(pk_hex) {
+                        if pk_bytes.len() == 32 {
+                            let pk_hash =
+                                crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, &pk_bytes);
+                            if pk_hash.to_hex() == pubkey_hash_hex {
+                                let mut arr = [0u8; 32];
+                                arr.copy_from_slice(&pk_bytes);
+                                return Ok(crypto::PublicKey::from_bytes(arr));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    anyhow::bail!(
+        "Cannot resolve public key for '{}' — recipient has no on-chain send history.\n\
+         ECIES encryption requires the actual public key, not just the address.\n\
+         Ask the recipient for their public key: doli info\n\
+         Then use: doli nft --transfer <utxo> --to <recipient_pubkey_hex>",
+        address
+    )
 }
