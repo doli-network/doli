@@ -206,8 +206,13 @@ pub struct NetworkParams {
     /// AUDIT-REWARD-003 (bond snapshot), AUDIT-PROD-001 (selection weight),
     /// AUDIT-PROD-002 (self-delegation), AUDIT-PROD-003 (delegation cleanup).
     ///
-    /// Mainnet: 27,070. Testnet/Devnet: 0 (always active).
+    /// Mainnet: 71,290. Testnet: 21,450. Devnet: 0 (always active).
     pub security_audit_activation_height: u64,
+
+    /// Height at which EncryptedContent v1 metadata (MIME + royalties) activates.
+    /// Before: only v0 layout accepted. After: v1 extension fields validated.
+    /// Mainnet: 71,290. Testnet: 20,690. Devnet: 0.
+    pub encrypted_content_v2_activation_height: u64,
 
     /// INC-I-046: Height at which ghost producer exclusion activates.
     /// Before: permanently-offline producers inflate the 2/3 deadlock safety floor.
