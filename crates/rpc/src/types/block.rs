@@ -385,13 +385,29 @@ impl From<&doli_core::Output> for OutputResponse {
             if output.output_type == doli_core::OutputType::EncryptedContent {
                 output.parse_encrypted_content().map(
                     |(ciphertext, wrapped_key, nonce, content_hash)| {
-                        serde_json::json!({
+                        let mut obj = serde_json::json!({
                             "extraData": hex::encode(&output.extra_data),
                             "ciphertextSize": ciphertext.len(),
                             "wrappedKey": hex::encode(wrapped_key),
                             "nonce": hex::encode(nonce),
                             "contentHash": hex::encode(content_hash),
-                        })
+                        });
+                        // Add v1 extension fields (MIME + royalty) if present
+                        if let Some((mime, creator, bps)) = output.parse_encrypted_content_v1() {
+                            if !mime.is_empty() {
+                                obj["mimeType"] = serde_json::Value::String(
+                                    String::from_utf8(mime)
+                                        .unwrap_or_else(|e| hex::encode(e.into_bytes())),
+                                );
+                            }
+                            if bps > 0 {
+                                obj["royalty"] = serde_json::json!({
+                                    "creator": creator.to_hex(),
+                                    "bps": bps,
+                                });
+                            }
+                        }
+                        obj
                     },
                 )
             } else {
@@ -616,5 +632,64 @@ mod tests {
         let response = OutputResponse::from(&output);
         assert_eq!(response.output_type, "normal");
         assert!(response.encrypted_content.is_none());
+    }
+}
+
+// OUTPUT CONTRACT: fn OutputResponse::from(&Output) for EncryptedContent v1
+// O1: encrypted_content.mimeType — String from mime_type bytes
+// O2: encrypted_content.royalty.creator — hex creator_hash
+// O3: encrypted_content.royalty.bps — u16 royalty basis points
+// PATHS: v1 with mime + royalty → O1+O2+O3 present
+// MATRIX: v1(mime="image/png", bps=500) × O1="image/png", O2=creator hex, O3=500
+#[cfg(test)]
+mod ec_v1_tests {
+    use super::*;
+
+    #[test]
+    fn encrypted_content_v1_output_includes_mime_and_royalty() {
+        let pubkey_hash = crypto::Hash::from_bytes([0x44u8; 32]);
+        let creator_hash = crypto::Hash::from_bytes([0x55u8; 32]);
+        let ciphertext = vec![0xABu8; 64];
+        let wrapped_key = [0x11u8; 80];
+        let nonce = [0x22u8; 12];
+        let content_hash = [0x33u8; 32];
+
+        let output = doli_core::Output::encrypted_content_v1(
+            1,
+            pubkey_hash,
+            &ciphertext,
+            &wrapped_key,
+            &nonce,
+            &content_hash,
+            b"image/png",
+            creator_hash,
+            500, // 5%
+        );
+
+        let response = OutputResponse::from(&output);
+
+        assert_eq!(response.output_type, "encryptedContent");
+
+        let ec = response
+            .encrypted_content
+            .as_ref()
+            .expect("encrypted_content field must be Some for v1 output");
+
+        // mimeType
+        let mime = ec.get("mimeType").and_then(|v| v.as_str()).unwrap();
+        assert_eq!(mime, "image/png");
+
+        // royalty object
+        let royalty = ec.get("royalty").expect("royalty field must be present");
+        let creator = royalty.get("creator").and_then(|v| v.as_str()).unwrap();
+        assert_eq!(creator, creator_hash.to_hex());
+        let bps = royalty.get("bps").and_then(|v| v.as_u64()).unwrap();
+        assert_eq!(bps, 500);
+
+        // v0 fields should still be present
+        assert!(ec.get("wrappedKey").is_some());
+        assert!(ec.get("nonce").is_some());
+        assert!(ec.get("contentHash").is_some());
+        assert!(ec.get("extraData").is_some());
     }
 }

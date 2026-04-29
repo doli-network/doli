@@ -3002,3 +3002,370 @@ fn test_zkrollup_input_only_spendable_by_zksettle() {
         result
     );
 }
+
+// ==========================================================================
+// EncryptedContent v1 (MIME + Royalties) Validation Tests
+// ==========================================================================
+
+/// Build v0 EncryptedContent extra_data for testing (ct_len=0 → v0_end=128).
+fn ec_v0_extra_data() -> Vec<u8> {
+    let mut data = Vec::new();
+    data.extend_from_slice(&0u32.to_le_bytes()); // ciphertext_len = 0
+    data.extend_from_slice(&[0x11u8; 80]); // wrapped_key
+    data.extend_from_slice(&[0x22u8; 12]); // nonce
+    data.extend_from_slice(&[0x33u8; 32]); // content_hash
+    data
+}
+
+fn ec_output_from_extra(extra_data: Vec<u8>) -> Output {
+    Output {
+        output_type: OutputType::EncryptedContent,
+        amount: 1,
+        pubkey_hash: Hash::from_bytes([0x44u8; 32]),
+        lock_until: 0,
+        extra_data,
+    }
+}
+
+fn ec_v1_test_context() -> ValidationContext {
+    test_context()
+        .with_encrypted_content_activation_height(0)
+        .with_encrypted_content_v2_activation_height(0)
+}
+
+#[test]
+fn ec003_unknown_metadata_version_rejected() {
+    let ctx = ec_v1_test_context();
+    let mut extra = ec_v0_extra_data();
+    extra.push(99); // unknown version
+    let result = validate_outputs(&[ec_output_from_extra(extra)], &ctx);
+    assert!(
+        matches!(&result, Err(ValidationError::InvalidTransaction(msg)) if msg.contains("EC003")),
+        "expected EC003, got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn ec004_truncated_no_mime_len_rejected() {
+    let ctx = ec_v1_test_context();
+    let mut extra = ec_v0_extra_data();
+    extra.push(Output::EC_METADATA_VERSION_V1);
+    let result = validate_outputs(&[ec_output_from_extra(extra)], &ctx);
+    assert!(
+        matches!(&result, Err(ValidationError::InvalidTransaction(msg)) if msg.contains("EC004")),
+        "expected EC004, got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn ec005_mime_too_long_rejected() {
+    let ctx = ec_v1_test_context();
+    let mut extra = ec_v0_extra_data();
+    extra.push(Output::EC_METADATA_VERSION_V1);
+    extra.push(128u8); // mime_len = 128 > MAX (127)
+    extra.extend_from_slice(&vec![0u8; 128 + 32 + 2]);
+    let result = validate_outputs(&[ec_output_from_extra(extra)], &ctx);
+    assert!(
+        matches!(&result, Err(ValidationError::InvalidTransaction(msg)) if msg.contains("EC005")),
+        "expected EC005, got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn ec006_truncated_incomplete_fields_rejected() {
+    let ctx = ec_v1_test_context();
+    let mut extra = ec_v0_extra_data();
+    extra.push(Output::EC_METADATA_VERSION_V1);
+    extra.push(5); // mime_len = 5
+    extra.extend_from_slice(b"image"); // missing creator_hash + royalty_bps
+    let result = validate_outputs(&[ec_output_from_extra(extra)], &ctx);
+    assert!(
+        matches!(&result, Err(ValidationError::InvalidTransaction(msg)) if msg.contains("EC006")),
+        "expected EC006, got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn ec007_royalty_bps_exceeds_max_rejected() {
+    let ctx = ec_v1_test_context();
+    let mut extra = ec_v0_extra_data();
+    extra.push(Output::EC_METADATA_VERSION_V1);
+    extra.push(0);
+    extra.extend_from_slice(&[0x55u8; 32]); // non-zero creator_hash
+    extra.extend_from_slice(&5001u16.to_le_bytes());
+    let result = validate_outputs(&[ec_output_from_extra(extra)], &ctx);
+    assert!(
+        matches!(&result, Err(ValidationError::InvalidTransaction(msg)) if msg.contains("EC007")),
+        "expected EC007, got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn ec008_nonzero_royalty_with_zero_creator_rejected() {
+    let ctx = ec_v1_test_context();
+    let mut extra = ec_v0_extra_data();
+    extra.push(Output::EC_METADATA_VERSION_V1);
+    extra.push(0);
+    extra.extend_from_slice(&[0u8; 32]); // creator_hash = ZERO
+    extra.extend_from_slice(&500u16.to_le_bytes());
+    let result = validate_outputs(&[ec_output_from_extra(extra)], &ctx);
+    assert!(
+        matches!(&result, Err(ValidationError::InvalidTransaction(msg)) if msg.contains("EC008")),
+        "expected EC008, got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn ec_valid_v1_output_accepted() {
+    let ctx = ec_v1_test_context();
+    let output = Output::encrypted_content_v1(
+        1,
+        Hash::from_bytes([0x44u8; 32]),
+        &[0xABu8; 0],
+        &[0x11u8; 80],
+        &[0x22u8; 12],
+        &[0x33u8; 32],
+        b"image/png",
+        Hash::from_bytes([0x55u8; 32]),
+        500,
+    );
+    let result = validate_outputs(&[output], &ctx);
+    assert!(result.is_ok(), "valid v1 output rejected: {:?}", result);
+}
+
+#[test]
+fn ec_valid_v0_output_accepted_with_v2_active() {
+    let ctx = ec_v1_test_context();
+    let output = Output::encrypted_content(
+        1,
+        Hash::from_bytes([0x44u8; 32]),
+        &[0xABu8; 0],
+        &[0x11u8; 80],
+        &[0x22u8; 12],
+        &[0x33u8; 32],
+    );
+    let result = validate_outputs(&[output], &ctx);
+    assert!(
+        result.is_ok(),
+        "valid v0 output rejected with v2 active: {:?}",
+        result
+    );
+}
+
+// ==========================================================================
+// EncryptedContent v1 Royalty Enforcement (EC009) Tests
+// ==========================================================================
+
+/// Helper: sign all inputs using their respective keypairs.
+fn sign_tx_inputs(tx: &mut Transaction, keypairs: &[&crypto::KeyPair]) {
+    for (i, kp) in keypairs.iter().enumerate() {
+        let signing_hash = tx.signing_message_for_input(i);
+        tx.inputs[i].signature = crypto::signature::sign_hash(&signing_hash, kp.private_key());
+    }
+}
+
+#[test]
+fn ec009_missing_royalty_payment_rejected() {
+    let ctx = ec_v1_test_context();
+    let seller_kp = crypto::KeyPair::generate();
+    let seller_pub = *seller_kp.public_key();
+    let seller_hash = crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, seller_pub.as_bytes());
+    let creator_hash = Hash::from_bytes([0x55u8; 32]);
+    let buyer_hash = Hash::from_bytes([0x66u8; 32]);
+
+    let ec_output = Output::encrypted_content_v1(
+        1,
+        seller_hash,
+        &[0xABu8; 0],
+        &[0x11u8; 80],
+        &[0x22u8; 12],
+        &[0x33u8; 32],
+        b"image/png",
+        creator_hash,
+        500,
+    );
+    let prev_tx = Hash::from_bytes([0x42u8; 32]);
+    let mut utxo_provider = MockUtxoProvider::new();
+    utxo_provider.add_utxo(prev_tx, 0, ec_output, seller_pub);
+
+    let buyer_kp = crypto::KeyPair::generate();
+    let buyer_pub = *buyer_kp.public_key();
+    let buyer_fund_hash =
+        crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, buyer_pub.as_bytes());
+    let fund_tx = Hash::from_bytes([0x43u8; 32]);
+    utxo_provider.add_utxo(
+        fund_tx,
+        0,
+        Output::normal(100_000, buyer_fund_hash),
+        buyer_pub,
+    );
+
+    // inputs = 1 + 100_000 = 100_001
+    // outputs = 1 + 1000 + 98_998 = 99_999 → fee = 2 (covers BASE_FEE + extra_data bytes)
+    // No royalty payment to creator → should fail EC009
+    let mut tx = Transaction {
+        version: 1,
+        tx_type: TxType::Transfer,
+        inputs: vec![Input::new(prev_tx, 0), Input::new(fund_tx, 0)],
+        outputs: vec![
+            Output::encrypted_content(
+                1,
+                buyer_hash,
+                &[0xABu8; 0],
+                &[0x11u8; 80],
+                &[0x22u8; 12],
+                &[0x33u8; 32],
+            ),
+            Output::normal(1000, seller_hash),
+            Output::normal(98_998, buyer_fund_hash),
+        ],
+        extra_data: vec![],
+    };
+    sign_tx_inputs(&mut tx, &[&seller_kp, &buyer_kp]);
+
+    let result = utxo::validate_transaction_with_utxos(&tx, &ctx, &utxo_provider);
+    assert!(
+        matches!(&result, Err(ValidationError::InvalidTransaction(msg)) if msg.contains("EC009")),
+        "expected EC009 (missing royalty), got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn ec009_correct_royalty_payment_accepted() {
+    let ctx = ec_v1_test_context();
+    let seller_kp = crypto::KeyPair::generate();
+    let seller_pub = *seller_kp.public_key();
+    let seller_hash = crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, seller_pub.as_bytes());
+    let creator_hash = Hash::from_bytes([0x55u8; 32]);
+    let buyer_hash = Hash::from_bytes([0x66u8; 32]);
+
+    let ec_output = Output::encrypted_content_v1(
+        1,
+        seller_hash,
+        &[0xABu8; 0],
+        &[0x11u8; 80],
+        &[0x22u8; 12],
+        &[0x33u8; 32],
+        b"image/png",
+        creator_hash,
+        500,
+    );
+    let prev_tx = Hash::from_bytes([0x42u8; 32]);
+    let mut utxo_provider = MockUtxoProvider::new();
+    utxo_provider.add_utxo(prev_tx, 0, ec_output, seller_pub);
+
+    let buyer_kp = crypto::KeyPair::generate();
+    let buyer_pub = *buyer_kp.public_key();
+    let buyer_fund_hash =
+        crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, buyer_pub.as_bytes());
+    let fund_tx = Hash::from_bytes([0x43u8; 32]);
+    utxo_provider.add_utxo(
+        fund_tx,
+        0,
+        Output::normal(100_000, buyer_fund_hash),
+        buyer_pub,
+    );
+
+    // inputs = 1 + 100_000 = 100_001
+    // outputs = 1 + 1000 + 50 + 98_948 = 99_999 → fee = 2
+    let mut tx = Transaction {
+        version: 1,
+        tx_type: TxType::Transfer,
+        inputs: vec![Input::new(prev_tx, 0), Input::new(fund_tx, 0)],
+        outputs: vec![
+            Output::encrypted_content(
+                1,
+                buyer_hash,
+                &[0xABu8; 0],
+                &[0x11u8; 80],
+                &[0x22u8; 12],
+                &[0x33u8; 32],
+            ),
+            Output::normal(1000, seller_hash),
+            Output::normal(50, creator_hash),
+            Output::normal(98_948, buyer_fund_hash),
+        ],
+        extra_data: vec![],
+    };
+    sign_tx_inputs(&mut tx, &[&seller_kp, &buyer_kp]);
+
+    let result = utxo::validate_transaction_with_utxos(&tx, &ctx, &utxo_provider);
+    assert!(
+        result.is_ok(),
+        "correct royalty should be accepted, got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn ec009_no_sale_price_gift_accepted() {
+    let ctx = ec_v1_test_context();
+    let seller_kp = crypto::KeyPair::generate();
+    let seller_pub = *seller_kp.public_key();
+    let seller_hash = crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, seller_pub.as_bytes());
+    let creator_hash = Hash::from_bytes([0x55u8; 32]);
+    let buyer_hash = Hash::from_bytes([0x66u8; 32]);
+
+    let ec_output = Output::encrypted_content_v1(
+        1,
+        seller_hash,
+        &[0xABu8; 0],
+        &[0x11u8; 80],
+        &[0x22u8; 12],
+        &[0x33u8; 32],
+        b"image/png",
+        creator_hash,
+        500,
+    );
+    let prev_tx = Hash::from_bytes([0x42u8; 32]);
+    let mut utxo_provider = MockUtxoProvider::new();
+    utxo_provider.add_utxo(prev_tx, 0, ec_output, seller_pub);
+
+    let buyer_kp = crypto::KeyPair::generate();
+    let buyer_pub = *buyer_kp.public_key();
+    let buyer_fund_hash =
+        crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, buyer_pub.as_bytes());
+    let fund_tx = Hash::from_bytes([0x43u8; 32]);
+    utxo_provider.add_utxo(
+        fund_tx,
+        0,
+        Output::normal(100_000, buyer_fund_hash),
+        buyer_pub,
+    );
+
+    // Gift: no payment to seller → no royalty needed
+    // inputs = 1 + 100_000 = 100_001
+    // outputs = 1 + 99_998 = 99_999 → fee = 2
+    let mut tx = Transaction {
+        version: 1,
+        tx_type: TxType::Transfer,
+        inputs: vec![Input::new(prev_tx, 0), Input::new(fund_tx, 0)],
+        outputs: vec![
+            Output::encrypted_content(
+                1,
+                buyer_hash,
+                &[0xABu8; 0],
+                &[0x11u8; 80],
+                &[0x22u8; 12],
+                &[0x33u8; 32],
+            ),
+            Output::normal(99_998, buyer_fund_hash),
+        ],
+        extra_data: vec![],
+    };
+    sign_tx_inputs(&mut tx, &[&seller_kp, &buyer_kp]);
+
+    let result = utxo::validate_transaction_with_utxos(&tx, &ctx, &utxo_provider);
+    assert!(
+        result.is_ok(),
+        "gift should skip royalty, got: {:?}",
+        result
+    );
+}
