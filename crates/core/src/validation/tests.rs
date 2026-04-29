@@ -3369,3 +3369,230 @@ fn ec009_no_sale_price_gift_accepted() {
         result
     );
 }
+
+// ==========================================================================
+// EncryptedContent creator_hash Immutability (AUDIT-AUTH-003) Tests
+// ==========================================================================
+
+// OUTPUT CONTRACT: fn validate_transaction_with_utxos (EC creator_hash immutability)
+//   O1: Err(InvalidTransaction("EC010")) when output creator_hash differs from input
+//   O2: Err(InvalidTransaction("EC011")) when output royalty_bps differs from input
+//   O3: Err(InvalidTransaction("EC012")) when v1 input produces v0 output (metadata stripped)
+//   O4: Ok(()) when creator_hash and royalty_bps are preserved
+//   O5: Ok(()) when check is gated (height < activation)
+// PATHS: P1=creator_hash mutated, P2=royalty_bps mutated, P3=v1->v0 downgrade,
+//        P4=preserved (happy path), P5=pre-activation (gated)
+// MATRIX:
+//   P1*O1=FAIL  P2*O2=FAIL  P3*O3=FAIL  P4*O4=PASS  P5*O5=PASS
+
+fn ec_v1_immutability_context() -> ValidationContext {
+    test_context()
+        .with_encrypted_content_activation_height(0)
+        .with_encrypted_content_v2_activation_height(0)
+        .with_security_audit_activation_height(0)
+}
+
+/// Helper: build a Transfer tx spending an EC v1 input and producing an EC output.
+fn build_ec_transfer(
+    seller_kp: &crypto::KeyPair,
+    buyer_kp: &crypto::KeyPair,
+    utxo_provider: &mut MockUtxoProvider,
+    output_ec: Output,
+) -> Transaction {
+    let seller_pub = *seller_kp.public_key();
+    let seller_hash = crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, seller_pub.as_bytes());
+    let creator_hash = Hash::from_bytes([0x55u8; 32]);
+
+    let ec_input = Output::encrypted_content_v1(
+        1,
+        seller_hash,
+        &[0xABu8; 0],
+        &[0x11u8; 80],
+        &[0x22u8; 12],
+        &[0x33u8; 32],
+        b"image/png",
+        creator_hash,
+        500,
+    );
+    let prev_tx = Hash::from_bytes([0x42u8; 32]);
+    utxo_provider.add_utxo(prev_tx, 0, ec_input, seller_pub);
+
+    let buyer_pub = *buyer_kp.public_key();
+    let buyer_fund_hash =
+        crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, buyer_pub.as_bytes());
+    let fund_tx = Hash::from_bytes([0x43u8; 32]);
+    utxo_provider.add_utxo(
+        fund_tx,
+        0,
+        Output::normal(100_000, buyer_fund_hash),
+        buyer_pub,
+    );
+
+    let royalty_amount = 50u64; // 5% of 1000
+    let mut tx = Transaction {
+        version: 1,
+        tx_type: TxType::Transfer,
+        inputs: vec![Input::new(prev_tx, 0), Input::new(fund_tx, 0)],
+        outputs: vec![
+            output_ec,
+            Output::normal(1000, seller_hash),
+            Output::normal(royalty_amount, creator_hash),
+            Output::normal(100_000 + 1 - 1000 - royalty_amount - 2 - 1, buyer_fund_hash),
+        ],
+        extra_data: vec![],
+    };
+    sign_tx_inputs(&mut tx, &[seller_kp, buyer_kp]);
+    tx
+}
+
+#[test]
+fn ec010_creator_hash_mutated_rejected() {
+    let ctx = ec_v1_immutability_context();
+    let seller_kp = crypto::KeyPair::generate();
+    let buyer_kp = crypto::KeyPair::generate();
+    let buyer_hash = Hash::from_bytes([0x66u8; 32]);
+    let attacker_hash = Hash::from_bytes([0xAAu8; 32]);
+
+    let bad_output = Output::encrypted_content_v1(
+        1,
+        buyer_hash,
+        &[0xABu8; 0],
+        &[0x11u8; 80],
+        &[0x22u8; 12],
+        &[0x33u8; 32],
+        b"image/png",
+        attacker_hash,
+        500,
+    );
+
+    let mut utxo_provider = MockUtxoProvider::new();
+    let tx = build_ec_transfer(&seller_kp, &buyer_kp, &mut utxo_provider, bad_output);
+
+    let result = utxo::validate_transaction_with_utxos(&tx, &ctx, &utxo_provider);
+    assert!(
+        matches!(&result, Err(ValidationError::InvalidTransaction(msg)) if msg.contains("EC010")),
+        "expected EC010 (creator_hash mutated), got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn ec011_royalty_bps_mutated_rejected() {
+    let ctx = ec_v1_immutability_context();
+    let seller_kp = crypto::KeyPair::generate();
+    let buyer_kp = crypto::KeyPair::generate();
+    let buyer_hash = Hash::from_bytes([0x66u8; 32]);
+
+    let bad_output = Output::encrypted_content_v1(
+        1,
+        buyer_hash,
+        &[0xABu8; 0],
+        &[0x11u8; 80],
+        &[0x22u8; 12],
+        &[0x33u8; 32],
+        b"image/png",
+        Hash::from_bytes([0x55u8; 32]),
+        0,
+    );
+
+    let mut utxo_provider = MockUtxoProvider::new();
+    let tx = build_ec_transfer(&seller_kp, &buyer_kp, &mut utxo_provider, bad_output);
+
+    let result = utxo::validate_transaction_with_utxos(&tx, &ctx, &utxo_provider);
+    assert!(
+        matches!(&result, Err(ValidationError::InvalidTransaction(msg)) if msg.contains("EC011")),
+        "expected EC011 (royalty_bps mutated), got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn ec012_v1_downgraded_to_v0_rejected() {
+    let ctx = ec_v1_immutability_context();
+    let seller_kp = crypto::KeyPair::generate();
+    let buyer_kp = crypto::KeyPair::generate();
+    let buyer_hash = Hash::from_bytes([0x66u8; 32]);
+
+    let bad_output = Output::encrypted_content(
+        1,
+        buyer_hash,
+        &[0xABu8; 0],
+        &[0x11u8; 80],
+        &[0x22u8; 12],
+        &[0x33u8; 32],
+    );
+
+    let mut utxo_provider = MockUtxoProvider::new();
+    let tx = build_ec_transfer(&seller_kp, &buyer_kp, &mut utxo_provider, bad_output);
+
+    let result = utxo::validate_transaction_with_utxos(&tx, &ctx, &utxo_provider);
+    assert!(
+        matches!(&result, Err(ValidationError::InvalidTransaction(msg)) if msg.contains("EC012")),
+        "expected EC012 (v1 downgraded to v0), got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn ec_creator_hash_preserved_accepted() {
+    let ctx = ec_v1_immutability_context();
+    let seller_kp = crypto::KeyPair::generate();
+    let buyer_kp = crypto::KeyPair::generate();
+    let buyer_hash = Hash::from_bytes([0x66u8; 32]);
+
+    let good_output = Output::encrypted_content_v1(
+        1,
+        buyer_hash,
+        &[0xABu8; 0],
+        &[0x11u8; 80],
+        &[0x22u8; 12],
+        &[0x33u8; 32],
+        b"image/png",
+        Hash::from_bytes([0x55u8; 32]),
+        500,
+    );
+
+    let mut utxo_provider = MockUtxoProvider::new();
+    let tx = build_ec_transfer(&seller_kp, &buyer_kp, &mut utxo_provider, good_output);
+
+    let result = utxo::validate_transaction_with_utxos(&tx, &ctx, &utxo_provider);
+    assert!(
+        result.is_ok(),
+        "preserved creator_hash should be accepted, got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn ec_creator_hash_check_gated_by_activation_height() {
+    let ctx = test_context()
+        .with_encrypted_content_activation_height(0)
+        .with_encrypted_content_v2_activation_height(0)
+        .with_security_audit_activation_height(u64::MAX);
+    let seller_kp = crypto::KeyPair::generate();
+    let buyer_kp = crypto::KeyPair::generate();
+    let buyer_hash = Hash::from_bytes([0x66u8; 32]);
+    let attacker_hash = Hash::from_bytes([0xAAu8; 32]);
+
+    let bad_output = Output::encrypted_content_v1(
+        1,
+        buyer_hash,
+        &[0xABu8; 0],
+        &[0x11u8; 80],
+        &[0x22u8; 12],
+        &[0x33u8; 32],
+        b"image/png",
+        attacker_hash,
+        500,
+    );
+
+    let mut utxo_provider = MockUtxoProvider::new();
+    let tx = build_ec_transfer(&seller_kp, &buyer_kp, &mut utxo_provider, bad_output);
+
+    let result = utxo::validate_transaction_with_utxos(&tx, &ctx, &utxo_provider);
+    assert!(
+        result.is_ok(),
+        "before activation, mutated creator_hash should pass, got: {:?}",
+        result
+    );
+}

@@ -272,6 +272,96 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
                         }
                     }
                 }
+                // EncryptedContent royalty enforcement (same logic as NFT royalties)
+                if let Some((creator_hash, royalty_bps)) = utxo.output.encrypted_content_royalty() {
+                    if royalty_bps > 0 {
+                        let seller_hash = utxo.output.pubkey_hash;
+                        let sale_price: Amount = tx
+                            .outputs
+                            .iter()
+                            .filter(|o| {
+                                o.output_type == OutputType::Normal && o.pubkey_hash == seller_hash
+                            })
+                            .map(|o| o.amount)
+                            .sum();
+
+                        if sale_price > 0 {
+                            let required_royalty =
+                                (sale_price as u128 * royalty_bps as u128 / 10000) as Amount;
+                            if required_royalty > 0 {
+                                let actual_royalty: Amount = tx
+                                    .outputs
+                                    .iter()
+                                    .filter(|o| o.pubkey_hash == creator_hash)
+                                    .map(|o| o.amount)
+                                    .sum();
+                                if actual_royalty < required_royalty {
+                                    return Err(ValidationError::InvalidTransaction(format!(
+                                        "[ERRTX-EC009] EncryptedContent input {} requires royalty of {} to creator, got {} (sale_price={}, royalty_bps={})",
+                                        i, required_royalty, actual_royalty, sale_price, royalty_bps
+                                    )));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // -- EncryptedContent creator_hash immutability (AUDIT-AUTH-003) --
+    // When transferring EncryptedContent with v1 metadata, the output MUST preserve
+    // the creator_hash and royalty_bps from the input. Without this, a reseller can
+    // rewrite creator_hash to redirect all future royalties to themselves.
+    if tx.tx_type == TxType::Transfer && ctx.current_height >= ctx.security_audit_activation_height
+    {
+        for (i, input) in tx.inputs.iter().enumerate() {
+            if let Some(utxo) = utxo_provider.get_utxo(&input.prev_tx_hash, input.output_index) {
+                // Only applies to EncryptedContent inputs with v1 metadata
+                if let Some((_, _, input_content_hash)) = utxo
+                    .output
+                    .parse_encrypted_content()
+                    .map(|(_, _, _, ch)| ((), (), ch))
+                {
+                    if let Some((_, input_creator, input_bps)) =
+                        utxo.output.parse_encrypted_content_v1()
+                    {
+                        // Find EncryptedContent outputs with matching content_hash
+                        for (j, output) in tx.outputs.iter().enumerate() {
+                            if let Some((_, _, _, output_content_hash)) =
+                                output.parse_encrypted_content()
+                            {
+                                if input_content_hash == output_content_hash {
+                                    if let Some((_, output_creator, output_bps)) =
+                                        output.parse_encrypted_content_v1()
+                                    {
+                                        if output_creator != input_creator {
+                                            return Err(ValidationError::InvalidTransaction(format!(
+                                                "[ERRTX-EC010] EncryptedContent output {} has different creator_hash than input {} \
+                                                 — creator_hash is immutable across transfers",
+                                                j, i
+                                            )));
+                                        }
+                                        if output_bps != input_bps {
+                                            return Err(ValidationError::InvalidTransaction(format!(
+                                                "[ERRTX-EC011] EncryptedContent output {} has different royalty_bps ({}) than input {} ({}) \
+                                                 — royalty_bps is immutable across transfers",
+                                                j, output_bps, i, input_bps
+                                            )));
+                                        }
+                                    } else {
+                                        // v1 input produced v0 output — metadata stripped
+                                        return Err(ValidationError::InvalidTransaction(format!(
+                                            "[ERRTX-EC012] EncryptedContent output {} drops v1 metadata \
+                                             (creator_hash/royalty) from input {} — metadata is immutable",
+                                            j, i
+                                        )));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
