@@ -384,11 +384,12 @@ impl From<&doli_core::Output> for OutputResponse {
         let encrypted_content_metadata =
             if output.output_type == doli_core::OutputType::EncryptedContent {
                 output.parse_encrypted_content().map(
-                    |(ciphertext, wrapped_key, nonce, content_hash)| {
+                    |(ciphertext, _wrapped_key, nonce, content_hash)| {
+                        // AUDIT-CFG-003: Only expose extraData (full blob) and summary fields.
+                        // Removed wrappedKey convenience field to reduce scraping surface.
                         let mut obj = serde_json::json!({
                             "extraData": hex::encode(&output.extra_data),
                             "ciphertextSize": ciphertext.len(),
-                            "wrappedKey": hex::encode(wrapped_key),
                             "nonce": hex::encode(nonce),
                             "contentHash": hex::encode(content_hash),
                         });
@@ -616,9 +617,8 @@ mod tests {
         let ch = ec.get("contentHash").and_then(|v| v.as_str()).unwrap();
         assert_eq!(ch, hex::encode(content_hash));
 
-        // wrappedKey
-        let wk = ec.get("wrappedKey").and_then(|v| v.as_str()).unwrap();
-        assert_eq!(wk, hex::encode(wrapped_key));
+        // AUDIT-CFG-003: wrappedKey no longer exposed as convenience field
+        assert!(ec.get("wrappedKey").is_none());
 
         // nonce
         let n = ec.get("nonce").and_then(|v| v.as_str()).unwrap();
@@ -686,8 +686,8 @@ mod ec_v1_tests {
         let bps = royalty.get("bps").and_then(|v| v.as_u64()).unwrap();
         assert_eq!(bps, 500);
 
-        // v0 fields should still be present
-        assert!(ec.get("wrappedKey").is_some());
+        // v0 fields should still be present (wrappedKey removed per AUDIT-CFG-003)
+        assert!(ec.get("wrappedKey").is_none());
         assert!(ec.get("nonce").is_some());
         assert!(ec.get("contentHash").is_some());
         assert!(ec.get("extraData").is_some());

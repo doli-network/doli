@@ -98,6 +98,9 @@ pub(crate) async fn cmd_nft_buy(
         let royalty = nft_meta.get("royalty").and_then(|r| {
             let creator = r.get("creator")?.as_str()?;
             let bps = r.get("bps")?.as_u64()?;
+            if bps > doli_core::MAX_ROYALTY_BPS as u64 {
+                return None;
+            }
             let creator_hash = Hash::from_hex(creator)?;
             Some((creator_hash, bps as u16))
         });
@@ -146,13 +149,16 @@ pub(crate) async fn cmd_nft_buy(
         outputs.push(Output::normal(royalty_amount, creator_hash));
     }
 
-    // Calculate fee
-    let fee_units = {
+    // AUDIT-LOGIC-001: Estimate fee from known outputs, then recalculate after full tx construction.
+    let estimated_fee = {
         let extra_bytes: u64 = outputs.iter().map(|o| o.extra_data.len() as u64).sum();
         doli_core::consensus::BASE_FEE
             + extra_bytes * doli_core::consensus::FEE_PER_BYTE / doli_core::consensus::FEE_DIVISOR
     };
-    let required = price_units + fee_units;
+    // AUDIT-LOGIC-002: Use checked addition to prevent overflow.
+    let required = price_units
+        .checked_add(estimated_fee)
+        .ok_or_else(|| anyhow::anyhow!("Price + fee overflows u64"))?;
 
     // Get buyer's spendable UTXOs for payment + fee
     let buyer_utxos: Vec<_> = rpc
@@ -177,7 +183,7 @@ pub(crate) async fn cmd_nft_buy(
             format_balance(total_input),
             format_balance(required),
             format_balance(price_units),
-            format_balance(fee_units)
+            format_balance(estimated_fee)
         );
     }
 
@@ -232,6 +238,8 @@ pub(crate) async fn cmd_nft_buy(
     let tx_bytes = tx.serialize();
     let tx_hex = hex::encode(&tx_bytes);
     let tx_hash = tx.hash();
+    // AUDIT-LOGIC-001: Use canonical fee from fully-constructed transaction.
+    let fee_units = tx.minimum_fee();
 
     let buyer_display = crypto::address::encode(&buyer_hash, address_prefix())
         .unwrap_or_else(|_| buyer_hash.to_hex());
@@ -380,8 +388,70 @@ pub(crate) async fn cmd_nft_buy_from_signed_offer(
     let seller_witness = hex::decode(seller_witness_hex)
         .map_err(|_| anyhow::anyhow!("Invalid seller_witness hex"))?;
 
-    // Calculate fee from partial tx outputs
-    let fee_units = {
+    // AUDIT-AUTH-001: Verify partial_tx outputs match offer claims before signing.
+    // Without this, a malicious seller could craft outputs that redirect funds.
+    let seller_pubkey_hash_hex = offer
+        .get("seller_pubkey_hash")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Missing seller_pubkey_hash in signed offer"))?;
+    let seller_hash = Hash::from_hex(seller_pubkey_hash_hex)
+        .ok_or_else(|| anyhow::anyhow!("Invalid seller_pubkey_hash in offer"))?;
+    let outputs_count = offer
+        .get("outputs_count")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as usize;
+
+    if partial_tx.outputs.is_empty() {
+        anyhow::bail!("Signed offer partial_tx has no outputs");
+    }
+    if outputs_count > 0 && partial_tx.outputs.len() != outputs_count {
+        anyhow::bail!(
+            "Output count mismatch: offer says {} but partial_tx has {}",
+            outputs_count,
+            partial_tx.outputs.len()
+        );
+    }
+
+    // Verify output 0 (content) goes to the buyer
+    if partial_tx.outputs[0].pubkey_hash != buyer_hash {
+        anyhow::bail!(
+            "Content output goes to {} but buyer is {} — possible fraud",
+            partial_tx.outputs[0].pubkey_hash.to_hex(),
+            buyer_hash.to_hex()
+        );
+    }
+
+    // Verify output 1 (payment) goes to the seller and matches the price
+    if partial_tx.outputs.len() < 2 {
+        anyhow::bail!("Signed offer missing payment output to seller");
+    }
+    // Sum all outputs to seller (payment may be split if royalty reduces it)
+    let seller_total: u64 = partial_tx
+        .outputs
+        .iter()
+        .skip(1)
+        .filter(|o| o.pubkey_hash == seller_hash)
+        .map(|o| o.amount)
+        .sum();
+    // Sum royalty outputs (outputs to neither buyer nor seller)
+    let royalty_total: u64 = partial_tx
+        .outputs
+        .iter()
+        .skip(1)
+        .filter(|o| o.pubkey_hash != seller_hash && o.pubkey_hash != buyer_hash)
+        .map(|o| o.amount)
+        .sum();
+    if seller_total + royalty_total != price_units {
+        anyhow::bail!(
+            "Payment mismatch: seller gets {} + royalty {}, but price is {}",
+            seller_total,
+            royalty_total,
+            price_units
+        );
+    }
+
+    // Estimate fee from partial tx outputs (recalculated canonically after full construction)
+    let estimated_fee = {
         let extra_bytes: u64 = partial_tx
             .outputs
             .iter()
@@ -390,7 +460,9 @@ pub(crate) async fn cmd_nft_buy_from_signed_offer(
         doli_core::consensus::BASE_FEE
             + extra_bytes * doli_core::consensus::FEE_PER_BYTE / doli_core::consensus::FEE_DIVISOR
     };
-    let required = price_units + fee_units;
+    let required = price_units
+        .checked_add(estimated_fee)
+        .ok_or_else(|| anyhow::anyhow!("Price + fee overflows u64"))?;
 
     // Get buyer's spendable UTXOs
     let buyer_utxos: Vec<_> = rpc
@@ -415,7 +487,7 @@ pub(crate) async fn cmd_nft_buy_from_signed_offer(
             format_balance(total_input),
             format_balance(required),
             format_balance(price_units),
-            format_balance(fee_units)
+            format_balance(estimated_fee)
         );
     }
 
@@ -456,14 +528,10 @@ pub(crate) async fn cmd_nft_buy_from_signed_offer(
     let tx_bytes = tx.serialize();
     let tx_hex = hex::encode(&tx_bytes);
     let tx_hash = tx.hash();
+    let fee_units = tx.minimum_fee();
 
     let buyer_display = crypto::address::encode(&buyer_hash, address_prefix())
         .unwrap_or_else(|_| buyer_hash.to_hex());
-    let seller_pubkey_hash_hex = offer
-        .get("seller_pubkey_hash")
-        .and_then(|v| v.as_str())
-        .unwrap_or("?");
-    let seller_hash = Hash::from_hex(seller_pubkey_hash_hex).unwrap_or(Hash::ZERO);
     let seller_display = crypto::address::encode(&seller_hash, address_prefix())
         .unwrap_or_else(|_| seller_hash.to_hex());
 

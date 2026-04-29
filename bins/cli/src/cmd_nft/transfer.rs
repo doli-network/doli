@@ -61,11 +61,12 @@ pub(crate) async fn cmd_nft_transfer(
         //   - 64 hex chars → raw pubkey
         //   - bech32 address → resolve pubkey from on-chain tx history
         let recipient_pubkey = if to.len() == 64 && to.chars().all(|c| c.is_ascii_hexdigit()) {
-            let pubkey_bytes: [u8; 32] = hex::decode(to)
-                .map_err(|_| anyhow::anyhow!("Invalid pubkey hex"))?
-                .try_into()
-                .map_err(|_| anyhow::anyhow!("Pubkey must be 32 bytes"))?;
-            crypto::PublicKey::from_bytes(pubkey_bytes)
+            // AUDIT-CRYPTO-002: Validate curve point to avoid panic in ECIES key conversion.
+            let pubkey_bytes =
+                hex::decode(to).map_err(|_| anyhow::anyhow!("Invalid pubkey hex"))?;
+            crypto::PublicKey::try_from_slice(&pubkey_bytes).map_err(|_| {
+                anyhow::anyhow!("Invalid public key — not a valid Ed25519 curve point")
+            })?
         } else {
             // Try bech32 address → resolve pubkey from transaction history
             resolve_pubkey_from_address(&rpc, to).await?
@@ -118,6 +119,9 @@ pub(crate) async fn cmd_nft_transfer(
         let ec_royalty = ec_meta.and_then(|ec| ec.get("royalty")).and_then(|r| {
             let creator = r.get("creator")?.as_str()?;
             let bps = r.get("bps")?.as_u64()?;
+            if bps > doli_core::MAX_ROYALTY_BPS as u64 {
+                return None;
+            }
             let creator_hash = Hash::from_hex(creator)?;
             Some((creator_hash, bps as u16))
         });
@@ -175,6 +179,9 @@ pub(crate) async fn cmd_nft_transfer(
         let royalty = nft_meta.get("royalty").and_then(|r| {
             let creator = r.get("creator")?.as_str()?;
             let bps = r.get("bps")?.as_u64()?;
+            if bps > doli_core::MAX_ROYALTY_BPS as u64 {
+                return None;
+            }
             let creator_hash = Hash::from_hex(creator)?;
             Some((creator_hash, bps as u16))
         });
@@ -203,9 +210,9 @@ pub(crate) async fn cmd_nft_transfer(
         );
     };
 
-    // Calculate fee
+    // Estimate fee (recalculated canonically after full tx construction)
     let sender_pubkey_hash = wallet.primary_pubkey_hash();
-    let fee_units = {
+    let estimated_fee = {
         let extra_bytes: u64 = new_output.extra_data.len() as u64;
         doli_core::consensus::BASE_FEE
             + extra_bytes * doli_core::consensus::FEE_PER_BYTE / doli_core::consensus::FEE_DIVISOR
@@ -223,17 +230,17 @@ pub(crate) async fn cmd_nft_transfer(
     let mut selected_utxos = Vec::new();
     let mut total_fee_input = 0u64;
     for utxo in &utxos {
-        if total_fee_input >= fee_units {
+        if total_fee_input >= estimated_fee {
             break;
         }
         selected_utxos.push(utxo.clone());
         total_fee_input += utxo.amount;
     }
-    if total_fee_input < fee_units {
+    if total_fee_input < estimated_fee {
         anyhow::bail!(
             "Insufficient balance for fee. Available: {}, Required: {}",
             format_balance(total_fee_input),
-            format_balance(fee_units)
+            format_balance(estimated_fee)
         );
     }
 
@@ -248,7 +255,7 @@ pub(crate) async fn cmd_nft_transfer(
 
     // Build outputs: content + change
     let mut outputs = vec![new_output];
-    let change = total_fee_input - fee_units;
+    let change = total_fee_input - estimated_fee;
     if change > 0 {
         let sender_hash = Hash::from_hex(&sender_pubkey_hash)
             .ok_or_else(|| anyhow::anyhow!("Invalid sender pubkey hash"))?;
@@ -290,6 +297,7 @@ pub(crate) async fn cmd_nft_transfer(
     let tx_bytes = tx.serialize();
     let tx_hex = hex::encode(&tx_bytes);
     let tx_hash = tx.hash();
+    let fee_units = tx.minimum_fee();
 
     let recipient_display = crypto::address::encode(&recipient_hash, address_prefix())
         .unwrap_or_else(|_| recipient_hash.to_hex());

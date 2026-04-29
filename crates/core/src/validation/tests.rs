@@ -3065,7 +3065,7 @@ fn ec005_mime_too_long_rejected() {
     let mut extra = ec_v0_extra_data();
     extra.push(Output::EC_METADATA_VERSION_V1);
     extra.push(128u8); // mime_len = 128 > MAX (127)
-    extra.extend_from_slice(&vec![0u8; 128 + 32 + 2]);
+    extra.extend_from_slice(&[0u8; 128 + 32 + 2]);
     let result = validate_outputs(&[ec_output_from_extra(extra)], &ctx);
     assert!(
         matches!(&result, Err(ValidationError::InvalidTransaction(msg)) if msg.contains("EC005")),

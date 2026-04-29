@@ -35,11 +35,11 @@ pub(crate) async fn resolve_buyer_pubkey(
     address_or_pubkey: &str,
 ) -> Result<crypto::PublicKey> {
     if address_or_pubkey.len() == 64 && address_or_pubkey.chars().all(|c| c.is_ascii_hexdigit()) {
-        let pubkey_bytes: [u8; 32] = hex::decode(address_or_pubkey)
-            .map_err(|_| anyhow::anyhow!("Invalid pubkey hex"))?
-            .try_into()
-            .map_err(|_| anyhow::anyhow!("Pubkey must be 32 bytes"))?;
-        Ok(crypto::PublicKey::from_bytes(pubkey_bytes))
+        let pubkey_bytes =
+            hex::decode(address_or_pubkey).map_err(|_| anyhow::anyhow!("Invalid pubkey hex"))?;
+        // AUDIT-CRYPTO-002: Validate curve point to avoid panic in ECIES key conversion.
+        crypto::PublicKey::try_from_slice(&pubkey_bytes)
+            .map_err(|_| anyhow::anyhow!("Invalid public key — not a valid Ed25519 curve point"))
     } else {
         transfer::resolve_pubkey_from_address(rpc, address_or_pubkey).await
     }
@@ -99,6 +99,9 @@ pub(crate) fn build_ec_output_for_buyer(
     let ec_royalty = ec_meta.and_then(|ec| ec.get("royalty")).and_then(|r| {
         let creator = r.get("creator")?.as_str()?;
         let bps = r.get("bps")?.as_u64()?;
+        if bps > doli_core::MAX_ROYALTY_BPS as u64 {
+            return None; // AUDIT-INJ-001: reject invalid BPS
+        }
         let creator_hash = Hash::from_hex(creator)?;
         Some((creator_hash, bps as u16))
     });

@@ -4,6 +4,24 @@ use anyhow::Result;
 use crypto::{signature, Hash};
 use doli_core::{Input, Output, Transaction};
 
+// AUDIT-CFG-001: Write offer files with owner-only permissions on Unix.
+#[cfg(unix)]
+fn write_offer_file(path: &str, content: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    f.write_all(content.as_bytes())
+}
+#[cfg(not(unix))]
+fn write_offer_file(path: &str, content: &str) -> std::io::Result<()> {
+    std::fs::write(path, content)
+}
+
 use crate::common::address_prefix;
 use crate::rpc_client::{coins_to_units, format_balance, RpcClient};
 use crate::wallet::Wallet;
@@ -54,6 +72,19 @@ pub(crate) async fn cmd_nft_sell(
         .unwrap_or(0);
 
     let seller_pubkey_hash = wallet.primary_pubkey_hash();
+
+    // AUDIT-AUTH-002: Verify wallet owns this UTXO before creating offer.
+    let utxo_owner = utxo_output
+        .get("pubkeyHash")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if !utxo_owner.is_empty() && utxo_owner != seller_pubkey_hash {
+        anyhow::bail!(
+            "This UTXO belongs to {}, not your wallet ({})",
+            utxo_owner,
+            seller_pubkey_hash
+        );
+    }
 
     // Build offer JSON based on content type
     let (offer, label) = if output_type == "encryptedContent" {
@@ -115,7 +146,7 @@ pub(crate) async fn cmd_nft_sell(
     };
 
     let offer_json = serde_json::to_string_pretty(&offer)?;
-    std::fs::write(output_file, &offer_json)?;
+    write_offer_file(output_file, &offer_json)?;
 
     let seller_hash = Hash::from_hex(&seller_pubkey_hash)
         .ok_or_else(|| anyhow::anyhow!("Invalid seller hash"))?;
@@ -169,11 +200,12 @@ pub(crate) async fn cmd_nft_buy_from_file(
         .get("tx_hash")
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing tx_hash in offer"))?;
-    let out_index = utxo_obj
+    let out_index_u64 = utxo_obj
         .get("output_index")
         .and_then(|v| v.as_u64())
-        .ok_or_else(|| anyhow::anyhow!("Missing output_index in offer"))?
-        as u32;
+        .ok_or_else(|| anyhow::anyhow!("Missing output_index in offer"))?;
+    let out_index = u32::try_from(out_index_u64)
+        .map_err(|_| anyhow::anyhow!("output_index {} exceeds u32", out_index_u64))?;
     let price_units = offer
         .get("price")
         .and_then(|v| v.as_u64())
@@ -251,6 +283,19 @@ pub(crate) async fn cmd_nft_sell_sign(
         .ok_or_else(|| anyhow::anyhow!("Invalid seller pubkey hash"))?;
     let seller_keypair = wallet.primary_keypair()?;
 
+    // AUDIT-AUTH-002: Verify wallet owns this UTXO.
+    let utxo_owner = utxo_output
+        .get("pubkeyHash")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if !utxo_owner.is_empty() && utxo_owner != seller_pubkey_hash {
+        anyhow::bail!(
+            "This UTXO belongs to {}, not your wallet ({})",
+            utxo_owner,
+            seller_pubkey_hash
+        );
+    }
+
     // === Build content output + royalty based on type ===
     let (buyer_hash, content_output, effective_royalty, label) = if output_type
         == "encryptedContent"
@@ -288,6 +333,9 @@ pub(crate) async fn cmd_nft_sell_sign(
         let royalty_info = nft_meta.get("royalty").and_then(|r| {
             let creator = r.get("creator")?.as_str()?;
             let bps = r.get("bps")?.as_u64()?;
+            if bps > doli_core::MAX_ROYALTY_BPS as u64 {
+                return None;
+            }
             Some((creator.to_string(), bps as u16))
         });
         let extra_data_hex = utxo_output
@@ -402,7 +450,7 @@ pub(crate) async fn cmd_nft_sell_sign(
     });
 
     let offer_json = serde_json::to_string_pretty(&offer)?;
-    std::fs::write(output_file, &offer_json)?;
+    write_offer_file(output_file, &offer_json)?;
 
     let seller_display = crypto::address::encode(&seller_hash, address_prefix())
         .unwrap_or_else(|_| seller_hash.to_hex());
