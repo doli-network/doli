@@ -90,6 +90,7 @@ impl NetworkParams {
                 full_bitfield_decode_height: 0,
                 rewards_epoch_list_fix_height: 0,
                 encrypted_content_activation_height: 0,
+                encrypted_content_v2_activation_height: u64::MAX, // Not yet activated on mainnet
                 epoch_state_reorg_activation_height: 0,
                 // Security audit fixes (2026-04-25): all consensus-breaking fixes activate here
                 security_audit_activation_height: 27_547,
@@ -180,9 +181,10 @@ impl NetworkParams {
                 full_bitfield_decode_height: 0,
                 rewards_epoch_list_fix_height: 0,
                 encrypted_content_activation_height: 0,
+                encrypted_content_v2_activation_height: 20_690, // MIME + royalties activate at h=20690
                 epoch_state_reorg_activation_height: 0,
-                // AUDIT-BRIDGE-001: HTLC signed refund — activates at h=70 on testnet
-                security_audit_activation_height: 70,
+                // AUDIT-BRIDGE-001 + AUDIT-AUTH-003: activates at h=21400 on testnet
+                security_audit_activation_height: 21_450,
                 // INC-I-046: Ghost exclusion activates at h=10830 on testnet
                 ghost_exclusion_activation_height: 10_830,
 
@@ -266,6 +268,7 @@ impl NetworkParams {
                 full_bitfield_decode_height: 0,
                 rewards_epoch_list_fix_height: 0,
                 encrypted_content_activation_height: 0,
+                encrypted_content_v2_activation_height: 0, // Always active on devnet
                 epoch_state_reorg_activation_height: 0,
                 security_audit_activation_height: 0, // Always active on devnet
                 ghost_exclusion_activation_height: 0, // Always active on devnet
