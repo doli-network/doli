@@ -228,7 +228,7 @@ This creates a self-contained devnet at `~/.doli/devnet/` with:
     --rpc-port 8500 \             # RPC API port
     --metrics-port 9000 \         # Prometheus metrics port
     --bootstrap /ip4/x.x.x.x/tcp/30300  # Bootstrap node
-    --log-level info              # trace|debug|info|warn|error
+    --log-level info              # trace|debug|info|warn|error (default: warn)
 ```
 
 ---

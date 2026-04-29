@@ -32,8 +32,8 @@ pub(crate) struct Cli {
     #[arg(short, long)]
     pub data_dir: Option<PathBuf>,
 
-    /// Log level
-    #[arg(long, default_value = "info")]
+    /// Log level (trace, debug, info, warn, error)
+    #[arg(long, default_value = "warn")]
     pub log_level: String,
 
     #[command(subcommand)]
