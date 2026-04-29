@@ -67,18 +67,42 @@ pub(crate) async fn cmd_nft_export(
         wrapped_key.copy_from_slice(&extra_data[offset..offset + 80]);
         let nonce: [u8; 12] = extra_data[offset + 80..offset + 92].try_into()?;
 
-        let content_key =
+        let mut content_key =
             crypto::encrypted_content::unwrap_key(&wrapped_key, keypair.private_key())
                 .map_err(|_| anyhow::anyhow!("Failed to unwrap key — not the owner"))?;
 
         let plaintext =
             crypto::encrypted_content::decrypt_content(&content_key, ciphertext, &nonce)
                 .map_err(|_| anyhow::anyhow!("Decryption failed"))?;
+        zeroize::Zeroize::zeroize(&mut content_key);
 
-        std::fs::write(out_path, &plaintext)?;
+        // Check for v1 MIME type from RPC response and suggest extension
+        let mime_type = output
+            .get("encryptedContent")
+            .and_then(|ec| ec.get("mimeType"))
+            .and_then(|v| v.as_str());
+
+        let final_path = if let Some(mime) = mime_type {
+            let ext = mime_to_extension(mime);
+            let p = std::path::Path::new(out_path);
+            if p.extension().is_none() && !ext.is_empty() {
+                let new_path = format!("{}.{}", out_path, ext);
+                println!(
+                    "  Detected content type: {} (adding .{} extension)",
+                    mime, ext
+                );
+                new_path
+            } else {
+                out_path.to_string()
+            }
+        } else {
+            out_path.to_string()
+        };
+
+        std::fs::write(&final_path, &plaintext)?;
         println!(
             "Exported encrypted content to {} ({} bytes decrypted)",
-            out_path,
+            final_path,
             plaintext.len()
         );
         return Ok(());
@@ -197,4 +221,24 @@ pub(crate) async fn cmd_nft_export(
     }
 
     Ok(())
+}
+
+fn mime_to_extension(mime: &str) -> &str {
+    match mime {
+        "image/jpeg" => "jpg",
+        "image/png" => "png",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "image/svg+xml" => "svg",
+        "image/bmp" => "bmp",
+        "application/pdf" => "pdf",
+        "text/plain" => "txt",
+        "application/json" => "json",
+        "audio/mpeg" => "mp3",
+        "video/mp4" => "mp4",
+        "audio/wav" => "wav",
+        "application/zip" => "zip",
+        "text/html" => "html",
+        _ => "",
+    }
 }

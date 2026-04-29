@@ -70,6 +70,13 @@ pub(crate) fn build_ec_output_for_buyer(
     }
 
     let ct_len = u32::from_le_bytes(extra_data[0..4].try_into()?) as usize;
+    // AUDIT-CRYPTO-010: Guard against ct_len pointing past the buffer.
+    if ct_len > extra_data.len().saturating_sub(4) {
+        anyhow::bail!(
+            "EncryptedContent ciphertext_len ({}) exceeds extra_data",
+            ct_len
+        );
+    }
     let offset = 4 + ct_len;
     if extra_data.len() < offset + 80 + 12 + 32 {
         anyhow::bail!("Truncated EncryptedContent extra_data");
@@ -83,13 +90,15 @@ pub(crate) fn build_ec_output_for_buyer(
     content_hash.copy_from_slice(&extra_data[offset + 92..offset + 124]);
 
     // Unwrap the content key with seller's private key
-    let content_key =
+    // AUDIT-CRYPTO-001: Zeroize content_key when done to prevent lingering secrets in memory.
+    let mut content_key =
         crypto::encrypted_content::unwrap_key(&wrapped_key, seller_keypair.private_key())
             .map_err(|_| anyhow::anyhow!("Failed to unwrap key — you are not the owner"))?;
 
     // Re-wrap with buyer's public key
     let new_wrapped_key = crypto::encrypted_content::wrap_key(&content_key, buyer_pubkey)
         .map_err(|e| anyhow::anyhow!("Re-wrap failed: {}", e))?;
+    zeroize::Zeroize::zeroize(&mut content_key);
 
     // Check for v1 metadata (MIME + royalty) from RPC response
     let ec_meta = utxo_json.get("encryptedContent");

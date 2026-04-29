@@ -103,13 +103,14 @@ pub(crate) async fn cmd_nft_transfer(
 
         // Unwrap the content key with sender's private key
         let keypair = wallet.primary_keypair()?;
-        let content_key =
+        let mut content_key =
             crypto::encrypted_content::unwrap_key(&wrapped_key, keypair.private_key())
                 .map_err(|_| anyhow::anyhow!("Failed to unwrap key — you are not the owner"))?;
 
         // Re-wrap with recipient's public key
         let new_wrapped_key = crypto::encrypted_content::wrap_key(&content_key, &recipient_pubkey)
             .map_err(|e| anyhow::anyhow!("Re-wrap failed: {}", e))?;
+        zeroize::Zeroize::zeroize(&mut content_key);
 
         // Check for v1 metadata (MIME + royalty) from RPC response
         let ec_meta = utxo_output.get("encryptedContent");
