@@ -53,7 +53,9 @@ pub(crate) async fn cmd_nft_transfer(
         .unwrap_or(0);
 
     // Branch: EncryptedContent transfer (re-wrap key) vs legacy NFT transfer
-    let (new_output, recipient_hash, is_encrypted) = if output_type == "encryptedContent" {
+    let (new_output, recipient_hash, is_encrypted, ec_royalty_info) = if output_type
+        == "encryptedContent"
+    {
         // EncryptedContent transfer requires recipient's PUBLIC KEY (not just hash)
         // because ECIES re-wrap needs the actual key. Accept --to as:
         //   - 64 hex chars → raw pubkey
@@ -108,17 +110,45 @@ pub(crate) async fn cmd_nft_transfer(
         let new_wrapped_key = crypto::encrypted_content::wrap_key(&content_key, &recipient_pubkey)
             .map_err(|e| anyhow::anyhow!("Re-wrap failed: {}", e))?;
 
-        // Build new EncryptedContent output with same content, new wrapped_key
-        let output = Output::encrypted_content(
-            amount,
-            recipient_hash,
-            ciphertext,
-            &new_wrapped_key,
-            &nonce,
-            &content_hash,
-        );
+        // Check for v1 metadata (MIME + royalty) from RPC response
+        let ec_meta = utxo_output.get("encryptedContent");
+        let mime_type = ec_meta
+            .and_then(|ec| ec.get("mimeType"))
+            .and_then(|v| v.as_str());
+        let ec_royalty = ec_meta.and_then(|ec| ec.get("royalty")).and_then(|r| {
+            let creator = r.get("creator")?.as_str()?;
+            let bps = r.get("bps")?.as_u64()?;
+            let creator_hash = Hash::from_hex(creator)?;
+            Some((creator_hash, bps as u16))
+        });
 
-        (output, recipient_hash, true)
+        // Build new EncryptedContent output preserving v1 metadata
+        let output = if mime_type.is_some() || ec_royalty.is_some() {
+            let mime_bytes = mime_type.unwrap_or("").as_bytes();
+            let (creator, bps) = ec_royalty.unwrap_or((Hash::ZERO, 0));
+            Output::encrypted_content_v1(
+                amount,
+                recipient_hash,
+                ciphertext,
+                &new_wrapped_key,
+                &nonce,
+                &content_hash,
+                mime_bytes,
+                creator,
+                bps,
+            )
+        } else {
+            Output::encrypted_content(
+                amount,
+                recipient_hash,
+                ciphertext,
+                &new_wrapped_key,
+                &nonce,
+                &content_hash,
+            )
+        };
+
+        (output, recipient_hash, true, ec_royalty)
     } else if output_type == "nft" {
         // Legacy NFT transfer path
         let recipient_hash = crypto::address::resolve(to, None)
@@ -165,7 +195,7 @@ pub(crate) async fn cmd_nft_transfer(
                 .map_err(|e| anyhow::anyhow!("Failed to create NFT output: {}", e))?
         };
 
-        (output, recipient_hash, false)
+        (output, recipient_hash, false, None)
     } else {
         anyhow::bail!(
             "Output is not an NFT or EncryptedContent (type: {})",
@@ -272,6 +302,15 @@ pub(crate) async fn cmd_nft_transfer(
             output_index
         );
         println!("  To:       {}", recipient_display);
+        if let Some((creator, bps)) = &ec_royalty_info {
+            let creator_display = crypto::address::encode(creator, address_prefix())
+                .unwrap_or_else(|_| creator.to_hex());
+            println!(
+                "  Royalty:  {}% to {}",
+                *bps as f64 / 100.0,
+                creator_display
+            );
+        }
         println!("  Fee:      {}", format_balance(fee_units));
         println!("  TX Hash:  {}", tx_hash.to_hex());
         println!("  Size:     {} bytes", tx_bytes.len());
@@ -309,7 +348,10 @@ pub(crate) async fn cmd_nft_transfer(
 /// Resolve a public key from a bech32 address by looking up the recipient's
 /// transaction history. When someone sends a transaction, their public key
 /// is included in the input — we extract it from the first matching tx.
-async fn resolve_pubkey_from_address(rpc: &RpcClient, address: &str) -> Result<crypto::PublicKey> {
+pub(crate) async fn resolve_pubkey_from_address(
+    rpc: &RpcClient,
+    address: &str,
+) -> Result<crypto::PublicKey> {
     // Decode bech32 to get the pubkey_hash
     let (pubkey_hash, _hrp) = crypto::address::decode(address)
         .map_err(|e| anyhow::anyhow!("Invalid address '{}': {}", address, e))?;
