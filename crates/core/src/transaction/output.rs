@@ -1056,4 +1056,281 @@ impl Output {
         let new_len = self.extra_data.len() - FRAC_METADATA_SIZE;
         Some(self.extra_data[..new_len].to_vec())
     }
+
+    // ==================== EncryptedContent v1 (MIME + Royalties) ====================
+
+    /// EncryptedContent metadata version for MIME + royalties extension.
+    pub const EC_METADATA_VERSION_V1: u8 = 1;
+
+    /// Maximum MIME type length in bytes.
+    pub const EC_MAX_MIME_LEN: usize = 127;
+
+    /// Minimum v1 extension size: version(1) + mime_len(1) + creator_hash(32) + royalty_bps(2) = 36.
+    pub const EC_V1_MIN_EXTENSION: usize = 36;
+
+    /// Create an EncryptedContent v1 output with MIME type and royalties.
+    ///
+    /// `extra_data` layout:
+    /// `[ciphertext_len(4 LE) | ciphertext | wrapped_key(80) | nonce(12) | content_hash(32)
+    ///  | metadata_version(1) | mime_len(1) | mime_bytes(N) | creator_hash(32) | royalty_bps(2)]`
+    #[allow(clippy::too_many_arguments)]
+    pub fn encrypted_content_v1(
+        amount: Amount,
+        pubkey_hash: Hash,
+        ciphertext: &[u8],
+        wrapped_key: &[u8; 80],
+        nonce: &[u8; 12],
+        content_hash: &[u8; 32],
+        mime_type: &[u8],
+        creator_hash: Hash,
+        royalty_bps: u16,
+    ) -> Self {
+        assert!(mime_type.len() <= Self::EC_MAX_MIME_LEN);
+        assert!(royalty_bps <= MAX_ROYALTY_BPS);
+        let ciphertext_len = ciphertext.len() as u32;
+        let total = 4 + ciphertext.len() + 80 + 12 + 32 + 1 + 1 + mime_type.len() + 32 + 2;
+        let mut extra_data = Vec::with_capacity(total);
+        extra_data.extend_from_slice(&ciphertext_len.to_le_bytes());
+        extra_data.extend_from_slice(ciphertext);
+        extra_data.extend_from_slice(wrapped_key);
+        extra_data.extend_from_slice(nonce);
+        extra_data.extend_from_slice(content_hash);
+        // v1 extension
+        extra_data.push(Self::EC_METADATA_VERSION_V1);
+        extra_data.push(mime_type.len() as u8);
+        extra_data.extend_from_slice(mime_type);
+        extra_data.extend_from_slice(creator_hash.as_bytes());
+        extra_data.extend_from_slice(&royalty_bps.to_le_bytes());
+        Self {
+            output_type: OutputType::EncryptedContent,
+            amount,
+            pubkey_hash,
+            lock_until: 0,
+            extra_data,
+        }
+    }
+
+    /// Parse EncryptedContent v1 metadata extension.
+    /// Returns `Some((mime_type, creator_hash, royalty_bps))` if v1 extension present, None for v0.
+    pub fn parse_encrypted_content_v1(&self) -> Option<(Vec<u8>, Hash, u16)> {
+        if self.output_type != OutputType::EncryptedContent || self.extra_data.len() < 128 {
+            return None;
+        }
+        let ct_len = u32::from_le_bytes(self.extra_data[0..4].try_into().ok()?) as usize;
+        let v0_end = 4 + ct_len + 80 + 12 + 32;
+        if self.extra_data.len() <= v0_end {
+            return None; // v0 — no extension
+        }
+        if self.extra_data[v0_end] != Self::EC_METADATA_VERSION_V1 {
+            return None; // unknown version
+        }
+        if self.extra_data.len() < v0_end + 2 {
+            return None;
+        }
+        let mime_len = self.extra_data[v0_end + 1] as usize;
+        let ext_start = v0_end + 2;
+        if self.extra_data.len() < ext_start + mime_len + 32 + 2 {
+            return None;
+        }
+        let mime_type = self.extra_data[ext_start..ext_start + mime_len].to_vec();
+        let mut creator_bytes = [0u8; 32];
+        creator_bytes
+            .copy_from_slice(&self.extra_data[ext_start + mime_len..ext_start + mime_len + 32]);
+        let creator_hash = Hash::from_bytes(creator_bytes);
+        let bps_start = ext_start + mime_len + 32;
+        let royalty_bps =
+            u16::from_le_bytes([self.extra_data[bps_start], self.extra_data[bps_start + 1]]);
+        Some((mime_type, creator_hash, royalty_bps))
+    }
+
+    /// Extract royalty info from an EncryptedContent output.
+    /// Returns `Some((creator_hash, royalty_bps))` if this content has royalties (v1).
+    pub fn encrypted_content_royalty(&self) -> Option<(Hash, u16)> {
+        self.parse_encrypted_content_v1()
+            .map(|(_, creator, bps)| (creator, bps))
+    }
+}
+
+// OUTPUT CONTRACT: fn Output::encrypted_content(amount, pubkey_hash, ciphertext, wrapped_key, nonce, content_hash)
+//   O1: return.output_type — OutputType::EncryptedContent
+//   O2: return.extra_data — [ct_len(4 LE) | ciphertext | wrapped_key(80) | nonce(12) | content_hash(32)]
+//   O3: return.amount — amount passthrough
+//   O4: return.pubkey_hash — pubkey_hash passthrough
+// PATHS: P1 = v0 construction (always)
+//
+// OUTPUT CONTRACT: fn Output::encrypted_content_v1(... + mime_type, creator_hash, royalty_bps)
+//   O1-O4: same as v0
+//   O5: return.extra_data tail — [metadata_version(1) | mime_len(1) | mime_bytes(N) | creator_hash(32) | royalty_bps(2 LE)]
+// PATHS: P1 = v1 construction (always)
+//
+// OUTPUT CONTRACT: fn Output::parse_encrypted_content(&self) -> Option<(ciphertext, wrapped_key, nonce, content_hash)>
+//   O1: return — Some(tuple) if valid EncryptedContent, None otherwise
+// PATHS: P1 = v0 output, P2 = v1 output (backward compat), P3 = non-EC output (None), P4 = truncated (None)
+//
+// OUTPUT CONTRACT: fn Output::parse_encrypted_content_v1(&self) -> Option<(mime, creator_hash, royalty_bps)>
+//   O1: return — Some(tuple) if v1 extension present, None for v0/non-EC
+// PATHS: P1 = v1 output (Some), P2 = v0 output (None), P3 = non-EC (None), P4 = empty MIME (Some with empty vec)
+//
+// OUTPUT CONTRACT: fn Output::encrypted_content_royalty(&self) -> Option<(creator_hash, royalty_bps)>
+//   O1: return — delegates to parse_encrypted_content_v1, strips mime
+// PATHS: P1 = v1 with royalty (Some), P2 = v0 (None)
+//
+// MATRIX:
+//   v0×parse_v0=Some(4 fields)  | v0×parse_v1=None          | v0×royalty=None
+//   v1×parse_v0=Some(4 fields)  | v1×parse_v1=Some(3 fields)| v1×royalty=Some(2 fields)
+//   empty_mime×parse_v1=Some     | various_mime×parse_v1=Some (roundtrip)
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_v0_output() -> Output {
+        let ciphertext = vec![0xABu8; 64];
+        let wrapped_key = [0x11u8; 80];
+        let nonce = [0x22u8; 12];
+        let content_hash = [0x33u8; 32];
+        let pubkey_hash = Hash::from_bytes([0x44u8; 32]);
+        Output::encrypted_content(
+            1,
+            pubkey_hash,
+            &ciphertext,
+            &wrapped_key,
+            &nonce,
+            &content_hash,
+        )
+    }
+
+    fn sample_v1_output() -> Output {
+        let ciphertext = vec![0xABu8; 64];
+        let wrapped_key = [0x11u8; 80];
+        let nonce = [0x22u8; 12];
+        let content_hash = [0x33u8; 32];
+        let pubkey_hash = Hash::from_bytes([0x44u8; 32]);
+        let creator_hash = Hash::from_bytes([0x55u8; 32]);
+        Output::encrypted_content_v1(
+            1,
+            pubkey_hash,
+            &ciphertext,
+            &wrapped_key,
+            &nonce,
+            &content_hash,
+            b"image/png",
+            creator_hash,
+            500, // 5%
+        )
+    }
+
+    #[test]
+    fn v0_output_parses_correctly() {
+        let output = sample_v0_output();
+        let parsed = output.parse_encrypted_content();
+        assert!(parsed.is_some(), "v0 output must parse");
+        let (ct, wk, n, ch) = parsed.unwrap();
+        assert_eq!(ct, &[0xABu8; 64]);
+        assert_eq!(wk, [0x11u8; 80]);
+        assert_eq!(n, [0x22u8; 12]);
+        assert_eq!(ch, [0x33u8; 32]);
+    }
+
+    #[test]
+    fn v0_output_has_no_v1_extension() {
+        let output = sample_v0_output();
+        assert!(
+            output.parse_encrypted_content_v1().is_none(),
+            "v0 output must not parse as v1"
+        );
+        assert!(
+            output.encrypted_content_royalty().is_none(),
+            "v0 output has no royalty"
+        );
+    }
+
+    #[test]
+    fn v1_output_still_parses_as_v0() {
+        let output = sample_v1_output();
+        let parsed = output.parse_encrypted_content();
+        assert!(
+            parsed.is_some(),
+            "v1 output must still parse as v0 (backward compat)"
+        );
+        let (ct, wk, n, ch) = parsed.unwrap();
+        assert_eq!(ct, &[0xABu8; 64]);
+        assert_eq!(wk, [0x11u8; 80]);
+        assert_eq!(n, [0x22u8; 12]);
+        assert_eq!(ch, [0x33u8; 32]);
+    }
+
+    #[test]
+    fn v1_output_parses_mime_and_royalty() {
+        let output = sample_v1_output();
+        let parsed = output.parse_encrypted_content_v1();
+        assert!(parsed.is_some(), "v1 output must parse v1 extension");
+        let (mime, creator, bps) = parsed.unwrap();
+        assert_eq!(mime, b"image/png");
+        assert_eq!(creator, Hash::from_bytes([0x55u8; 32]));
+        assert_eq!(bps, 500);
+    }
+
+    #[test]
+    fn v1_royalty_extraction() {
+        let output = sample_v1_output();
+        let royalty = output.encrypted_content_royalty();
+        assert!(royalty.is_some());
+        let (creator, bps) = royalty.unwrap();
+        assert_eq!(creator, Hash::from_bytes([0x55u8; 32]));
+        assert_eq!(bps, 500);
+    }
+
+    #[test]
+    fn v1_zero_length_mime() {
+        let ciphertext = vec![0xABu8; 32];
+        let wrapped_key = [0x11u8; 80];
+        let nonce = [0x22u8; 12];
+        let content_hash = [0x33u8; 32];
+        let pubkey_hash = Hash::from_bytes([0x44u8; 32]);
+        let creator_hash = Hash::from_bytes([0x55u8; 32]);
+        let output = Output::encrypted_content_v1(
+            1,
+            pubkey_hash,
+            &ciphertext,
+            &wrapped_key,
+            &nonce,
+            &content_hash,
+            b"", // empty MIME
+            creator_hash,
+            0, // no royalty
+        );
+        let parsed = output.parse_encrypted_content_v1();
+        assert!(parsed.is_some());
+        let (mime, creator, bps) = parsed.unwrap();
+        assert!(mime.is_empty());
+        assert_eq!(creator, creator_hash);
+        assert_eq!(bps, 0);
+    }
+
+    #[test]
+    fn v1_roundtrip_various_mime_types() {
+        let mimes: &[&[u8]] = &[
+            b"image/jpeg",
+            b"image/png",
+            b"text/plain",
+            b"application/pdf",
+            b"audio/mpeg",
+            b"video/mp4",
+        ];
+        for mime in mimes {
+            let output = Output::encrypted_content_v1(
+                1,
+                Hash::from_bytes([0x44u8; 32]),
+                &[0u8; 16],
+                &[0u8; 80],
+                &[0u8; 12],
+                &[0u8; 32],
+                mime,
+                Hash::from_bytes([0x55u8; 32]),
+                250,
+            );
+            let parsed = output.parse_encrypted_content_v1().unwrap();
+            assert_eq!(&parsed.0, mime);
+        }
+    }
 }

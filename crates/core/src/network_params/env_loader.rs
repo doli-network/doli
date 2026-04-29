@@ -243,6 +243,14 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
                 defaults.encrypted_content_activation_height,
             )
         },
+        encrypted_content_v2_activation_height: if is_mainnet {
+            defaults.encrypted_content_v2_activation_height
+        } else {
+            env_parse(
+                "DOLI_ENCRYPTED_CONTENT_V2_ACTIVATION_HEIGHT",
+                defaults.encrypted_content_v2_activation_height,
+            )
+        },
         epoch_state_reorg_activation_height: if is_mainnet {
             defaults.epoch_state_reorg_activation_height
         } else {

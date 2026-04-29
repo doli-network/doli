@@ -67,6 +67,12 @@ impl Node {
                     .params()
                     .encrypted_content_activation_height,
             )
+            .with_encrypted_content_v2_activation_height(
+                self.config
+                    .network
+                    .params()
+                    .encrypted_content_v2_activation_height,
+            )
             .with_security_audit_activation_height(
                 self.config
                     .network

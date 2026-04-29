@@ -606,6 +606,69 @@ pub(super) fn validate_outputs(
                         output.extra_data.len()
                     )));
                 }
+                // v1 metadata validation (MIME + royalties)
+                if ctx.current_height >= ctx.encrypted_content_v2_activation_height {
+                    let ct_len =
+                        u32::from_le_bytes(output.extra_data[0..4].try_into().unwrap_or([0; 4]))
+                            as usize;
+                    let v0_end = 4 + ct_len + 80 + 12 + 32;
+                    if output.extra_data.len() > v0_end {
+                        // Has extension bytes — must be valid v1
+                        let version = output.extra_data[v0_end];
+                        if version != Output::EC_METADATA_VERSION_V1 {
+                            return Err(ValidationError::InvalidTransaction(format!(
+                                "[ERRTX-EC003] EncryptedContent output {} unknown metadata version {} (expected 0 or 1)",
+                                i, version
+                            )));
+                        }
+                        // Validate v1 extension is complete
+                        if output.extra_data.len() < v0_end + 2 {
+                            return Err(ValidationError::InvalidTransaction(format!(
+                                "[ERRTX-EC004] EncryptedContent output {} v1 extension truncated (no mime_len byte)",
+                                i
+                            )));
+                        }
+                        let mime_len = output.extra_data[v0_end + 1] as usize;
+                        if mime_len > Output::EC_MAX_MIME_LEN {
+                            return Err(ValidationError::InvalidTransaction(format!(
+                                "[ERRTX-EC005] EncryptedContent output {} MIME type too long ({}, max {})",
+                                i, mime_len, Output::EC_MAX_MIME_LEN
+                            )));
+                        }
+                        let needed = v0_end + 2 + mime_len + 32 + 2;
+                        if output.extra_data.len() < needed {
+                            return Err(ValidationError::InvalidTransaction(format!(
+                                "[ERRTX-EC006] EncryptedContent output {} v1 extension truncated ({} bytes, need {})",
+                                i, output.extra_data.len(), needed
+                            )));
+                        }
+                        let bps_start = v0_end + 2 + mime_len + 32;
+                        let royalty_bps = u16::from_le_bytes([
+                            output.extra_data[bps_start],
+                            output.extra_data[bps_start + 1],
+                        ]);
+                        if royalty_bps > crate::transaction::MAX_ROYALTY_BPS {
+                            return Err(ValidationError::InvalidTransaction(format!(
+                                "[ERRTX-EC007] EncryptedContent output {} royalty_bps {} exceeds max {}",
+                                i, royalty_bps, crate::transaction::MAX_ROYALTY_BPS
+                            )));
+                        }
+                        let creator_start = v0_end + 2 + mime_len;
+                        let creator_hash = Hash::from_bytes({
+                            let mut buf = [0u8; 32];
+                            buf.copy_from_slice(
+                                &output.extra_data[creator_start..creator_start + 32],
+                            );
+                            buf
+                        });
+                        if royalty_bps > 0 && creator_hash == Hash::ZERO {
+                            return Err(ValidationError::InvalidTransaction(format!(
+                                "[ERRTX-EC008] EncryptedContent output {} has royalty_bps={} but zero creator_hash",
+                                i, royalty_bps
+                            )));
+                        }
+                    }
+                }
             }
         }
 

@@ -169,6 +169,8 @@ pub struct ValidationContext {
     pub fork_id_activation_height: u64,
     /// Height at which new NFT outputs are rejected in favor of EncryptedContent.
     pub encrypted_content_activation_height: u64,
+    /// Height at which EncryptedContent v1 metadata (MIME + royalties) is validated.
+    pub encrypted_content_v2_activation_height: u64,
     /// Unified activation height for all consensus-breaking security audit fixes.
     pub security_audit_activation_height: u64,
 }
@@ -204,6 +206,7 @@ impl ValidationContext {
             expected_fork_id: crypto::Hash::ZERO,
             fork_id_activation_height: u64::MAX,
             encrypted_content_activation_height: u64::MAX,
+            encrypted_content_v2_activation_height: u64::MAX,
             security_audit_activation_height: u64::MAX,
         }
     }
@@ -212,6 +215,13 @@ impl ValidationContext {
     #[must_use]
     pub fn with_encrypted_content_activation_height(mut self, height: u64) -> Self {
         self.encrypted_content_activation_height = height;
+        self
+    }
+
+    /// Set the EncryptedContent v2 (MIME + royalties) activation height.
+    #[must_use]
+    pub fn with_encrypted_content_v2_activation_height(mut self, height: u64) -> Self {
+        self.encrypted_content_v2_activation_height = height;
         self
     }
 

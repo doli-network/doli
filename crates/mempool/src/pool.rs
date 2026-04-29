@@ -133,6 +133,9 @@ impl Mempool {
             .with_encrypted_content_activation_height(
                 self.network.params().encrypted_content_activation_height,
             )
+            .with_encrypted_content_v2_activation_height(
+                self.network.params().encrypted_content_v2_activation_height,
+            )
             .with_security_audit_activation_height(
                 self.network.params().security_audit_activation_height,
             );
@@ -361,6 +364,9 @@ impl Mempool {
             .with_sig_verification_height(self.network.params().sig_verification_height)
             .with_encrypted_content_activation_height(
                 self.network.params().encrypted_content_activation_height,
+            )
+            .with_encrypted_content_v2_activation_height(
+                self.network.params().encrypted_content_v2_activation_height,
             )
             .with_security_audit_activation_height(
                 self.network.params().security_audit_activation_height,

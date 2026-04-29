@@ -177,6 +177,7 @@ async fn main() -> Result<()> {
             amount,
             witness,
             royalty,
+            content_type,
             data,
             data_file,
             export,
@@ -208,6 +209,7 @@ async fn main() -> Result<()> {
                     condition,
                     &amount,
                     royalty,
+                    content_type,
                     effective_data,
                 )
                 .await?;

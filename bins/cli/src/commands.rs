@@ -300,6 +300,10 @@ pub(crate) enum Commands {
         #[arg(long)]
         royalty: Option<f64>,
 
+        /// MIME content type (for --mint, e.g. image/png). Auto-detected from file extension if omitted.
+        #[arg(long, value_name = "MIME")]
+        content_type: Option<String>,
+
         /// Raw binary data (hex-encoded) to embed in the NFT on-chain (for --mint)
         #[arg(long, value_name = "HEX")]
         data: Option<String>,

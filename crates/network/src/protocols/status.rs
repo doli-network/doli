@@ -45,7 +45,8 @@ pub const STATUS_PROTOCOL: &str = "/doli/status/1.0.0";
 ///   7 — INC-I-040: EpochState restoration in execute_reorg (h=44750),
 ///       timing tautology fix, FORK_GUARD direct recovery signal.
 ///   8 — INC-I-046: Ghost producer exclusion activated on mainnet (h=18152).
-pub const CURRENT_PROTOCOL_VERSION: u32 = 8;
+///   9 — EncryptedContent v1: MIME content type + royalty enforcement.
+pub const CURRENT_PROTOCOL_VERSION: u32 = 9;
 
 /// Minimum protocol version accepted from peers.
 ///
@@ -304,7 +305,7 @@ impl request_response::Codec for StatusCodec {
 // bump). Locked 2026-04-16 as CHOICE 1 = SAME HF.
 //
 // OUTPUT CONTRACT: const CURRENT_PROTOCOL_VERSION: u32
-//   O1: value — MUST equal 6 (v6: fork_id in status handshake)
+//   O1: value — MUST equal 9 (v9: EncryptedContent v1 MIME + royalties)
 // PATHS: P1 only (compile-time constant)
 // MATRIX: 1 output × 1 path = 1 assertion (Test 6)
 //
@@ -317,12 +318,12 @@ impl request_response::Codec for StatusCodec {
 mod m_choice1_protocol_version_tests {
     use super::*;
 
-    /// Test 6 — protocol version bump for INC-I-040 fork fixes.
+    /// Test 6 — protocol version bump for EncryptedContent v1 (MIME + royalties).
     #[test]
-    fn test_current_protocol_version_is_7() {
+    fn test_current_protocol_version_is_9() {
         assert_eq!(
-            CURRENT_PROTOCOL_VERSION, 8,
-            "CURRENT_PROTOCOL_VERSION must be 8 (v8: INC-I-046 ghost exclusion on mainnet)."
+            CURRENT_PROTOCOL_VERSION, 9,
+            "CURRENT_PROTOCOL_VERSION must be 9 (v9: EncryptedContent v1 MIME + royalties)."
         );
     }
 

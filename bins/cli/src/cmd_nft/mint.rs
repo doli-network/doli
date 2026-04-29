@@ -8,13 +8,15 @@ use crate::common::address_prefix;
 use crate::rpc_client::{coins_to_units, format_balance, RpcClient};
 use crate::wallet::Wallet;
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn cmd_mint(
     wallet_path: &Path,
     rpc_endpoint: &str,
     content: &str,
     _condition: Option<String>,
     amount: &str,
-    _royalty_pct: Option<f64>,
+    royalty_pct: Option<f64>,
+    content_type: Option<String>,
     data: Option<String>,
 ) -> Result<()> {
     let wallet = Wallet::load(wallet_path)?;
@@ -61,15 +63,64 @@ pub(crate) async fn cmd_mint(
         .map_err(|e| anyhow::anyhow!("Key wrapping failed: {}", e))?;
     let c_hash = crypto::encrypted_content::content_hash(&content_bytes);
 
-    // Build EncryptedContent output
-    let ec_output = Output::encrypted_content(
-        amount_units,
-        minter_hash,
-        &ciphertext,
-        &wrapped_key,
-        &nonce,
-        &c_hash,
-    );
+    // Determine MIME type: explicit --content-type, auto-detect from file extension, or none
+    let mime_type: Option<String> = content_type.or_else(|| {
+        let path = std::path::Path::new(content);
+        path.extension()
+            .and_then(|ext| match ext.to_str()?.to_lowercase().as_str() {
+                "jpg" | "jpeg" => Some("image/jpeg".to_string()),
+                "png" => Some("image/png".to_string()),
+                "gif" => Some("image/gif".to_string()),
+                "webp" => Some("image/webp".to_string()),
+                "svg" => Some("image/svg+xml".to_string()),
+                "bmp" => Some("image/bmp".to_string()),
+                "pdf" => Some("application/pdf".to_string()),
+                "txt" => Some("text/plain".to_string()),
+                "json" => Some("application/json".to_string()),
+                "mp3" => Some("audio/mpeg".to_string()),
+                "mp4" => Some("video/mp4".to_string()),
+                "wav" => Some("audio/wav".to_string()),
+                "zip" => Some("application/zip".to_string()),
+                "html" => Some("text/html".to_string()),
+                _ => None,
+            })
+    });
+
+    // Convert royalty percentage to basis points (5.0% -> 500 bps)
+    let royalty_bps: u16 = if let Some(pct) = royalty_pct {
+        if !(0.0..=50.0).contains(&pct) {
+            anyhow::bail!("Royalty must be between 0% and 50%, got {}%", pct);
+        }
+        (pct * 100.0) as u16
+    } else {
+        0
+    };
+
+    // Build EncryptedContent output (v1 if MIME or royalty specified, v0 otherwise)
+    let use_v1 = mime_type.is_some() || royalty_bps > 0;
+    let ec_output = if use_v1 {
+        let mime_bytes = mime_type.as_deref().unwrap_or("").as_bytes();
+        Output::encrypted_content_v1(
+            amount_units,
+            minter_hash,
+            &ciphertext,
+            &wrapped_key,
+            &nonce,
+            &c_hash,
+            mime_bytes,
+            minter_hash, // creator = minter
+            royalty_bps,
+        )
+    } else {
+        Output::encrypted_content(
+            amount_units,
+            minter_hash,
+            &ciphertext,
+            &wrapped_key,
+            &nonce,
+            &c_hash,
+        )
+    };
 
     // Calculate fee: base + per-byte for extra_data
     let fee_units = {
@@ -137,11 +188,20 @@ pub(crate) async fn cmd_mint(
     let minter_display = crypto::address::encode(&minter_hash, address_prefix())
         .unwrap_or_else(|_| minter_hash.to_hex());
 
-    println!("Minting encrypted content:");
+    println!(
+        "Minting encrypted content{}:",
+        if use_v1 { " (v1)" } else { "" }
+    );
     println!("  Content hash: {}", hex::encode(c_hash));
     println!("  Plaintext:    {} bytes", content_bytes.len());
     println!("  Ciphertext:   {} bytes", ciphertext.len());
+    if let Some(ref mime) = mime_type {
+        println!("  Content type: {}", mime);
+    }
     println!("  Owner:        {}", minter_display);
+    if royalty_bps > 0 {
+        println!("  Royalty:      {}% to creator", royalty_bps as f64 / 100.0);
+    }
     if amount_units > 1 {
         println!("  Value:        {}", format_balance(amount_units));
     }
