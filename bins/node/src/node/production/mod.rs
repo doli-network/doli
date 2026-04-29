@@ -8,6 +8,25 @@ impl Node {
     // NOTE: try_broadcast_heartbeat removed in deterministic scheduler model
     // Rewards go 100% to block producer via coinbase, no heartbeats needed
 
+    /// INC-I-053: Check if epoch-mode production should be deferred after startup.
+    ///
+    /// After a node restarts, it needs time to sync the canonical chain tip via
+    /// gossip before producing. Without this, simultaneously-restarted nodes
+    /// produce blocks for each other and form a competing fork chain.
+    ///
+    /// Returns `true` if production should be deferred (grace period active).
+    pub fn should_defer_epoch_production(&self) -> bool {
+        let grace_secs: u64 = match self.config.network {
+            Network::Devnet => 5,
+            _ => 15,
+        };
+
+        match self.first_peer_connected {
+            Some(t) => t.elapsed().as_secs() < grace_secs,
+            None => false, // No peers yet — other guards handle this
+        }
+    }
+
     /// Try to produce a block if we're an eligible producer
     pub async fn try_produce_block(&mut self) -> Result<()> {
         let our_pubkey = match &self.producer_key {
@@ -240,6 +259,24 @@ impl Node {
                 None => return Ok(()),
             }
         } else {
+            // INC-I-053: Startup sync gate for epoch mode.
+            //
+            // After a restart, defer epoch production for a grace period so the node
+            // can sync the canonical chain tip via gossip before producing. Without
+            // this, simultaneously-restarted nodes produce for each other and form a
+            // competing chain (they connect to each other first, see stale heights,
+            // and the behind-peers check never fires).
+            //
+            // Bootstrap mode already has its own guards (scheduling.rs:90-167).
+            // This guard only applies to epoch mode.
+            if self.should_defer_epoch_production() {
+                debug!(
+                    "Epoch startup grace: deferring production (first_peer_connected {:?} ago)",
+                    self.first_peer_connected.map(|t| t.elapsed())
+                );
+                return Ok(());
+            }
+
             // REMOVED: Emergency equalization was the #1 source of forks.
             //
             // When nodes see different slot_gap values (due to propagation delay
