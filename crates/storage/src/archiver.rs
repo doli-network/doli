@@ -54,20 +54,52 @@ impl BlockArchiver {
     /// Catch up: archive all blocks from 1 to `tip` using the BlockStore.
     /// Skips blocks whose .block file already exists on disk to avoid redundant I/O.
     /// Fixes gaps left when the manifest advanced but intermediate files are missing.
+    ///
+    /// If `expected_genesis_hash` is provided, existing archive files are verified:
+    /// stale files from a previous chain are overwritten with the correct block.
     pub fn catch_up(
         dir: &Path,
         block_store: &super::BlockStore,
         tip: u64,
+        expected_genesis_hash: Option<&crypto::Hash>,
     ) -> Result<u64, std::io::Error> {
         std::fs::create_dir_all(dir)?;
 
         let mut archived = 0u64;
         let mut last_hash = None;
         let mut last_genesis_hash = None;
+        let mut overwritten = 0u64;
         for h in 1..=tip {
             let block_path = dir.join(format!("{:010}.block", h));
             if block_path.exists() {
-                continue;
+                // Verify genesis hash of existing file if we have an expected value
+                if let Some(expected) = expected_genesis_hash {
+                    if let Ok(data) = std::fs::read(&block_path) {
+                        if let Some(block) =
+                            doli_core::transaction::legacy::deserialize_block_compat(&data)
+                        {
+                            if block.header.genesis_hash != *expected {
+                                warn!(
+                                    "[ARCHIVER] Stale archive file at height {} \
+                                     (genesis={}, expected={}) — overwriting",
+                                    h,
+                                    &block.header.genesis_hash.to_string()[..16],
+                                    &expected.to_string()[..16]
+                                );
+                                overwritten += 1;
+                                // Fall through to re-archive from block store
+                            } else {
+                                continue; // File is valid, skip
+                            }
+                        } else {
+                            continue; // Can't deserialize, skip
+                        }
+                    } else {
+                        continue; // Can't read, skip
+                    }
+                } else {
+                    continue; // No genesis hash to verify, skip as before
+                }
             }
 
             let block = match block_store.get_block_by_height(h) {
@@ -109,10 +141,10 @@ impl BlockArchiver {
             write_manifest(dir, tip, &hash, &genesis_hash)?;
         }
 
-        if archived > 0 {
+        if archived > 0 || overwritten > 0 {
             info!(
-                "[ARCHIVER] Catch-up complete: filled {} missing blocks (1 to {})",
-                archived, tip
+                "[ARCHIVER] Catch-up complete: {} new, {} overwritten (stale) in 1..={}",
+                archived, overwritten, tip
             );
         }
 
@@ -289,6 +321,7 @@ fn import_archive_blocks(
 
     let mut imported = 0u64;
     let mut skipped = 0u64;
+    let mut missing_files = 0u64;
     for h in 1..=manifest_height {
         // Skip blocks that already exist in the BlockStore
         if skip_existing {
@@ -299,8 +332,19 @@ fn import_archive_blocks(
         }
 
         let block_path = archive_dir.join(format!("{:010}.block", h));
-        let data = std::fs::read(&block_path)
-            .map_err(|e| format!("Failed to read block file at height {}: {}", h, e))?;
+        let data = match std::fs::read(&block_path) {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                missing_files += 1;
+                if missing_files <= 10 {
+                    warn!("[ARCHIVER] Archive file missing at height {} — skipping", h);
+                }
+                continue;
+            }
+            Err(e) => {
+                return Err(format!("Failed to read block file at height {}: {}", h, e));
+            }
+        };
 
         // Verify BLAKE3 checksum if sidecar exists
         let checksum_path = archive_dir.join(format!("{:010}.blake3", h));
@@ -350,15 +394,23 @@ fn import_archive_blocks(
         }
     }
 
+    if missing_files > 0 {
+        warn!(
+            "[ARCHIVER] {} archive files were missing and skipped",
+            missing_files
+        );
+    }
+
     if skip_existing {
         info!(
-            "[ARCHIVER] Backfill complete: {} blocks imported, {} already present",
-            imported, skipped
+            "[ARCHIVER] Backfill complete: {} blocks imported, {} already present, {} files missing",
+            imported, skipped, missing_files
         );
     } else {
         info!(
-            "[ARCHIVER] Restore complete: {} blocks imported. Run 'doli-node recover --yes' to rebuild state.",
-            imported
+            "[ARCHIVER] Restore complete: {} blocks imported, {} files missing. \
+             Run 'doli-node recover --yes' to rebuild state.",
+            imported, missing_files
         );
     }
 

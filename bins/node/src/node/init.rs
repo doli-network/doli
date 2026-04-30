@@ -400,16 +400,15 @@ impl Node {
         // a different chain entirely — irrecoverable without manual wipe.
         if let Ok(Some(block_one)) = block_store.get_block_by_height(1) {
             if block_one.header.prev_hash != genesis_hash {
-                return Err(anyhow::anyhow!(
-                    "Block store genesis mismatch!\n\
-                     Block 1 prev_hash: {}\n\
-                     Chainspec genesis:  {}\n\
-                     The block store contains blocks from a different chain.\n\
-                     Fix: wipe data directory ({}) and restart.",
-                    block_one.header.prev_hash,
-                    genesis_hash,
-                    config.data_dir.display()
-                ));
+                warn!(
+                    "Block 1 has wrong genesis (prev_hash={}, expected={}). \
+                     Deleting stale block from previous chain.",
+                    &block_one.header.prev_hash.to_string()[..16],
+                    &genesis_hash.to_string()[..16]
+                );
+                if let Err(e) = block_store.delete_block_by_height(1) {
+                    warn!("Failed to delete stale block 1: {}", e);
+                }
             }
         }
 

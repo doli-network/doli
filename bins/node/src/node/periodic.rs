@@ -109,8 +109,7 @@ impl Node {
                 tokio::task::spawn(async move {
                     let result = tokio::task::spawn_blocking(move || {
                         // --- First scan: detect gaps ---
-                        let (missing, commitment) =
-                            integrity_scan(&block_store, scan_tip);
+                        let (missing, commitment) = integrity_scan(&block_store, scan_tip);
 
                         if missing == 0 {
                             return (0u64, commitment, 0u64);
@@ -123,7 +122,8 @@ impl Node {
                                 tracing::warn!(
                                     "[INTEGRITY] {} missing blocks in 1..={} — \
                                      no archive configured, cannot auto-repair",
-                                    missing, scan_tip
+                                    missing,
+                                    scan_tip
                                 );
                                 return (missing, commitment, 0u64);
                             }
@@ -132,7 +132,9 @@ impl Node {
                         tracing::info!(
                             "[INTEGRITY] {} missing blocks in 1..={} — \
                              auto-repairing from archive {:?}",
-                            missing, scan_tip, archive_path
+                            missing,
+                            scan_tip,
+                            archive_path
                         );
 
                         // Read genesis_hash from an existing block for validation
@@ -160,10 +162,7 @@ impl Node {
                                 count
                             }
                             Err(e) => {
-                                tracing::error!(
-                                    "[INTEGRITY] Auto-repair failed: {}",
-                                    e
-                                );
+                                tracing::error!("[INTEGRITY] Auto-repair failed: {}", e);
                                 return (missing, commitment, 0u64);
                             }
                         };
@@ -176,7 +175,8 @@ impl Node {
                             tracing::warn!(
                                 "[INTEGRITY] After auto-repair: still {} missing blocks \
                                  in 1..={} (archive may be incomplete)",
-                                missing_after, scan_tip
+                                missing_after,
+                                scan_tip
                             );
                         }
 
@@ -197,7 +197,9 @@ impl Node {
                                 tracing::info!(
                                     "[INTEGRITY] Auto-repair successful: {} blocks restored, \
                                      chain complete (1..={}), commitment={:.16}",
-                                    repaired, scan_tip, commitment
+                                    repaired,
+                                    scan_tip,
+                                    commitment
                                 );
                             } else {
                                 tracing::info!(
@@ -359,10 +361,12 @@ impl Node {
                         "[ARCHIVER] Catch-up: scanning for gaps up to height {}",
                         tip
                     );
+                    let genesis_hash = self.chain_state.read().await.genesis_hash;
                     match storage::archiver::BlockArchiver::catch_up(
                         archive_dir,
                         &self.block_store,
                         tip,
+                        Some(&genesis_hash),
                     ) {
                         Ok(n) if n > 0 => info!("[ARCHIVER] Catch-up: filled {} missing blocks", n),
                         Ok(_) => info!("[ARCHIVER] Catch-up: archive complete, no gaps"),
@@ -975,59 +979,56 @@ impl Node {
 
         let block_store = self.block_store.clone();
         let archive_dir = self.archive_dir.clone();
-        let result =
-            tokio::task::spawn_blocking(move || {
-                let check = block_store.ensure_blocks_present(1, current_tip);
-                if check.is_ok() {
-                    return Ok(());
-                }
+        let result = tokio::task::spawn_blocking(move || {
+            let check = block_store.ensure_blocks_present(1, current_tip);
+            if check.is_ok() {
+                return Ok(());
+            }
 
-                // Gap detected — attempt auto-repair from archive
-                let archive_path = match &archive_dir {
-                    Some(dir) if dir.exists() => dir,
-                    _ => return check, // No archive, return original error
-                };
+            // Gap detected — attempt auto-repair from archive
+            let archive_path = match &archive_dir {
+                Some(dir) if dir.exists() => dir,
+                _ => return check, // No archive, return original error
+            };
 
-                tracing::info!(
-                    "[INTEGRITY_CHECK] Gaps detected in 1..={} — auto-repairing from archive {:?}",
-                    current_tip, archive_path
-                );
+            tracing::info!(
+                "[INTEGRITY_CHECK] Gaps detected in 1..={} — auto-repairing from archive {:?}",
+                current_tip,
+                archive_path
+            );
 
-                let genesis_hash = {
-                    let mut found = None;
-                    for h in 1..=10_000u64 {
-                        if let Ok(Some(blk)) = block_store.get_block_by_height(h) {
-                            found = Some(blk.header.genesis_hash);
-                            break;
-                        }
-                    }
-                    found
-                };
-
-                match storage::archiver::backfill_from_archive(
-                    archive_path,
-                    &block_store,
-                    genesis_hash.as_ref(),
-                ) {
-                    Ok(count) => {
-                        tracing::info!(
-                            "[INTEGRITY_CHECK] Auto-repair imported {} blocks from archive",
-                            count
-                        );
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            "[INTEGRITY_CHECK] Auto-repair from archive failed: {}",
-                            e
-                        );
-                        return check; // Return original error
+            let genesis_hash = {
+                let mut found = None;
+                for h in 1..=10_000u64 {
+                    if let Ok(Some(blk)) = block_store.get_block_by_height(h) {
+                        found = Some(blk.header.genesis_hash);
+                        break;
                     }
                 }
+                found
+            };
 
-                // Re-check after repair
-                block_store.ensure_blocks_present(1, current_tip)
-            })
-            .await;
+            match storage::archiver::backfill_from_archive(
+                archive_path,
+                &block_store,
+                genesis_hash.as_ref(),
+            ) {
+                Ok(count) => {
+                    tracing::info!(
+                        "[INTEGRITY_CHECK] Auto-repair imported {} blocks from archive",
+                        count
+                    );
+                }
+                Err(e) => {
+                    tracing::error!("[INTEGRITY_CHECK] Auto-repair from archive failed: {}", e);
+                    return check; // Return original error
+                }
+            }
+
+            // Re-check after repair
+            block_store.ensure_blocks_present(1, current_tip)
+        })
+        .await;
 
         match result {
             Ok(Ok(())) => {

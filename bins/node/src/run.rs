@@ -523,8 +523,13 @@ pub(crate) async fn run_node(
         // Catch up: archive any blocks we missed while down
         if tip > 0 {
             info!("Archiver: catching up to height {}...", tip);
-            match storage::archiver::BlockArchiver::catch_up(&archive_dir, node.block_store(), tip)
-            {
+            let genesis = node.params.genesis_hash;
+            match storage::archiver::BlockArchiver::catch_up(
+                &archive_dir,
+                node.block_store(),
+                tip,
+                Some(&genesis),
+            ) {
                 Ok(n) if n > 0 => info!("Archiver: caught up {} blocks", n),
                 Ok(_) => info!("Archiver: already up to date"),
                 Err(e) => warn!("Archiver catch-up error: {}", e),

@@ -213,6 +213,64 @@ impl BlockStore {
         Ok(deleted)
     }
 
+    /// Delete a single block at the given height from all column families.
+    ///
+    /// Used to remove stale blocks (e.g., old-chain block 1 after a genesis reset).
+    /// Returns `Ok(true)` if a block was deleted, `Ok(false)` if no block existed at that height.
+    pub fn delete_block_by_height(&self, height: u64) -> Result<bool, StorageError> {
+        let cf_height = self.db.cf_handle(CF_HEIGHT_INDEX).unwrap();
+        let cf_headers = self.db.cf_handle(CF_HEADERS).unwrap();
+        let cf_bodies = self.db.cf_handle(CF_BODIES).unwrap();
+        let cf_h2h = self.db.cf_handle(CF_HASH_TO_HEIGHT).unwrap();
+        let cf_slot = self.db.cf_handle(CF_SLOT_INDEX).unwrap();
+        let cf_tx = self.db.cf_handle(CF_TX_INDEX).unwrap();
+        let cf_addr = self.db.cf_handle(CF_ADDR_TX_INDEX).unwrap();
+
+        let hash_bytes = match self.db.get_cf(cf_height, height.to_le_bytes())? {
+            Some(b) => b,
+            None => return Ok(false),
+        };
+
+        let mut batch = rocksdb::WriteBatch::default();
+
+        if let Some(block) = self.get_block_by_height(height)? {
+            batch.delete_cf(cf_height, height.to_le_bytes());
+            batch.delete_cf(cf_h2h, &hash_bytes);
+            batch.delete_cf(cf_headers, &hash_bytes);
+            batch.delete_cf(cf_bodies, &hash_bytes);
+            batch.delete_cf(cf_slot, block.header.slot.to_le_bytes());
+
+            for tx in &block.transactions {
+                let tx_hash = tx.hash();
+                batch.delete_cf(cf_tx, tx_hash.as_bytes());
+                for output in &tx.outputs {
+                    let mut key = [0u8; 40];
+                    key[..32].copy_from_slice(output.pubkey_hash.as_bytes());
+                    key[32..].copy_from_slice(&height.to_be_bytes());
+                    batch.delete_cf(cf_addr, key);
+                }
+            }
+        } else {
+            // Height index exists but block data doesn't — clean orphan index
+            batch.delete_cf(cf_height, height.to_le_bytes());
+            batch.delete_cf(cf_h2h, &hash_bytes);
+        }
+
+        self.db.write(batch)?;
+        let hash = if hash_bytes.len() == 32 {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&hash_bytes);
+            Hash::from_bytes(arr)
+        } else {
+            Hash::ZERO
+        };
+        info!(
+            "[BLOCK_STORE] Deleted block at height {} (hash={:.16})",
+            height, hash
+        );
+        Ok(true)
+    }
+
     /// Minimum number of recent blocks that must always be retained.
     /// Set to 2x MAX_REORG_DEPTH for safety margin (matches UNDO_KEEP_DEPTH).
     const MIN_RETENTION: u64 = 2000;

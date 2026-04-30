@@ -90,7 +90,7 @@ impl NetworkParams {
                 full_bitfield_decode_height: 0,
                 rewards_epoch_list_fix_height: 0,
                 encrypted_content_activation_height: 0,
-                encrypted_content_v2_activation_height: 71_290, // MIME + royalties activate at h=71290
+                encrypted_content_v2_activation_height: 100_000, // MIME + royalties — deferred past disaster recovery
                 epoch_state_reorg_activation_height: 0,
                 // Security audit fixes (2026-04-25): all consensus-breaking fixes activate here
                 security_audit_activation_height: 27_547,
