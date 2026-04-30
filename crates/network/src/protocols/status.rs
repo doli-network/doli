@@ -46,7 +46,7 @@ pub const STATUS_PROTOCOL: &str = "/doli/status/1.0.0";
 ///       timing tautology fix, FORK_GUARD direct recovery signal.
 ///   8 — INC-I-046: Ghost producer exclusion activated on mainnet (h=18152).
 ///   9 — EncryptedContent v1: MIME content type + royalty enforcement.
-pub const CURRENT_PROTOCOL_VERSION: u32 = 9;
+pub const CURRENT_PROTOCOL_VERSION: u32 = 8;
 
 /// Minimum protocol version accepted from peers.
 ///
@@ -318,12 +318,12 @@ impl request_response::Codec for StatusCodec {
 mod m_choice1_protocol_version_tests {
     use super::*;
 
-    /// Test 6 — protocol version bump for EncryptedContent v1 (MIME + royalties).
+    /// Test 6 — protocol version bump for INC-I-046 ghost producer exclusion.
     #[test]
-    fn test_current_protocol_version_is_9() {
+    fn test_current_protocol_version_is_8() {
         assert_eq!(
-            CURRENT_PROTOCOL_VERSION, 9,
-            "CURRENT_PROTOCOL_VERSION must be 9 (v9: EncryptedContent v1 MIME + royalties)."
+            CURRENT_PROTOCOL_VERSION, 8,
+            "CURRENT_PROTOCOL_VERSION must be 8 (v8: INC-I-046 ghost producer exclusion)."
         );
     }
 
