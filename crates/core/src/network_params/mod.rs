@@ -206,7 +206,7 @@ pub struct NetworkParams {
     /// AUDIT-REWARD-003 (bond snapshot), AUDIT-PROD-001 (selection weight),
     /// AUDIT-PROD-002 (self-delegation), AUDIT-PROD-003 (delegation cleanup).
     ///
-    /// Mainnet: 71,290. Testnet: 21,450. Devnet: 0 (always active).
+    /// Mainnet: 27,547. Testnet: 21,450. Devnet: 0 (always active).
     pub security_audit_activation_height: u64,
 
     /// Height at which EncryptedContent v1 metadata (MIME + royalties) activates.
