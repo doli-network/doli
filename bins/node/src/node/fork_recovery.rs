@@ -392,7 +392,7 @@ impl Node {
                         self.epoch_state.epoch,
                     );
                     batch.put_epoch_state(&self.epoch_state.serialize());
-                    batch.put_epoch_state_version(CURRENT_PROTOCOL_VERSION);
+                    batch.put_epoch_state_version(EPOCH_STATE_FORMAT_VERSION);
                     let _ = batch.commit();
                 }
                 Err(e) => {
@@ -592,7 +592,7 @@ impl Node {
                 batch.put_epoch_producer_list(&self.epoch_state.producer_list);
                 batch.put_active_production_list(&self.epoch_state.active_list);
                 batch.put_epoch_state(&self.epoch_state.serialize());
-                batch.put_epoch_state_version(CURRENT_PROTOCOL_VERSION);
+                batch.put_epoch_state_version(EPOCH_STATE_FORMAT_VERSION);
                 let _ = batch.commit();
             }
         } // end legacy reconstruction guard

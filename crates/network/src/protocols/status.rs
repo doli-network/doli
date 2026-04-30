@@ -48,6 +48,25 @@ pub const STATUS_PROTOCOL: &str = "/doli/status/1.0.0";
 ///   9 — EncryptedContent v1: MIME content type + royalty enforcement.
 pub const CURRENT_PROTOCOL_VERSION: u32 = 8;
 
+/// Epoch state FORMAT version — completely independent from CURRENT_PROTOCOL_VERSION.
+///
+/// ONLY bump this when `EpochState` serialization format changes (new fields, removed
+/// fields, encoding changes). DO NOT bump for feature additions, activation heights,
+/// or consensus rule changes that don't affect the EpochState struct.
+///
+/// This version is persisted alongside epoch_state in state_db. On startup, if the
+/// stored format version doesn't match, the node logs a warning. Deserialization
+/// failure (not version mismatch) is the actual trigger for rebuild.
+///
+/// INC-I-054: An unnecessary CURRENT_PROTOCOL_VERSION bump (8→9) was previously
+/// used as the epoch_state version marker, causing delete_epoch_state() on every
+/// restart → non-deterministic rebuild → permanent fork. This constant decouples
+/// the two concerns.
+///
+/// History:
+///   1 — initial format (covers all protocol versions 7-9, format unchanged).
+pub const EPOCH_STATE_FORMAT_VERSION: u32 = 1;
+
 /// Minimum protocol version accepted from peers.
 ///
 /// Peers reporting a version below this are disconnected immediately.
@@ -305,7 +324,7 @@ impl request_response::Codec for StatusCodec {
 // bump). Locked 2026-04-16 as CHOICE 1 = SAME HF.
 //
 // OUTPUT CONTRACT: const CURRENT_PROTOCOL_VERSION: u32
-//   O1: value — MUST equal 9 (v9: EncryptedContent v1 MIME + royalties)
+//   O1: value — MUST equal 8 (v8: INC-I-046 ghost exclusion). See INC-I-054: do NOT bump for features that don't change EpochState format.
 // PATHS: P1 only (compile-time constant)
 // MATRIX: 1 output × 1 path = 1 assertion (Test 6)
 //

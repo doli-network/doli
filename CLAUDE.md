@@ -54,6 +54,8 @@ Two root-cause fixes stabilized the network. All other fixes were symptom mitiga
 - `apply_block()` → verify both UTXO paths match, check rollback paths mirror it, test state root convergence. Producer mutations (Register, AddBond, Exit, Slash, Withdrawal, Delegation) are DEFERRED to epoch boundary — never mid-epoch except epoch 0. Maintainer changes are immediate.
 - **bitfield encoder/decoder** → encoder order is `[epoch_state.producer_list | extra sorted by pubkey]`. ALL decoders (post_commit, rewards, RPC) MUST use the same order or indices misalign. See Full Bitfield Decode pillar.
 - **HardForkSchedule** → NEVER add entries for rolling deploys. `current_fork_id()` uses `u64::MAX`, which makes ALL entries active in fork_id immediately. Use constant gates instead.
+- **CURRENT_PROTOCOL_VERSION** → **DO NOT bump unless the EpochState serialization format actually changes.** A protocol version bump triggers `delete_epoch_state()` on every node restart (`init.rs:727`), forcing a non-deterministic rebuild from local blocks. Snap-synced nodes have incomplete block history → different rebuild results → **guaranteed fork at the next epoch boundary**. INC-I-054 proved this: an unnecessary bump (8→9) for a height-gated feature caused a permanent chain split. The version check uses `!=` (not `<`), so rollback (9→8) triggers a SECOND deletion. Use `EPOCH_STATE_FORMAT_VERSION` for epoch_state compatibility, keep `CURRENT_PROTOCOL_VERSION` for peer handshake only.
+- **activation heights** → Once activated on mainnet, an activation height is **IMMUTABLE** — it is part of the chain's consensus history. NEVER move an activation height forward (higher) after it has been crossed by the chain. INC-I-054: `security_audit_activation_height` was moved from 27,547→71,290, deactivating live security features. New features get their OWN activation height — never reuse or bundle with existing ones.
 - rewards → check `calculate_epoch_rewards()` in `rewards.rs` AND `calculate_expected_epoch_rewards()` in `validation.rs` (currently disconnected — see MEMORY.md Open Items).
 - storage serialization → every node diverges if canonical encoding changes. Requires chain reset. See `→ snapshot.rs`.
 - consensus params → programmatic in `NetworkParams::defaults()`, NOT `include_str!`. Mainnet overrides blocked. Change requires new binary on ALL nodes simultaneously.
@@ -67,7 +69,8 @@ After completing any code change, ALWAYS propose the following checklist to the 
 1. **Build gate**: `cargo build --release && cargo clippy -- -D warnings && cargo fmt --check`
 2. **Test**: `cargo test -p <affected-crate> --lib` (or full `cargo test` if cross-crate)
 3. **Version protection** (if consensus/protocol/validation changed):
-   - Bump `CURRENT_PROTOCOL_VERSION` in `crates/network/src/protocols/status.rs`
+   - **DO NOT bump `CURRENT_PROTOCOL_VERSION`** unless the `EpochState` serialization format changed (see "If You Touch" → CURRENT_PROTOCOL_VERSION). A needless bump causes `delete_epoch_state()` on every node → non-deterministic rebuild → fork (INC-I-054). Bump `EPOCH_STATE_FORMAT_VERSION` only when the struct changes.
+   - **NEVER move an activation height forward** (higher) after the chain has crossed it — this deactivates live consensus rules (INC-I-054). New features get their own activation height.
    - Consider adding a `HardForkSchedule` entry in `crates/updater/src/hardfork.rs` if the change is consensus-breaking at a future height
    - Consider bumping `MIN_PEER_PROTOCOL_VERSION` if old peers must be partitioned immediately
 4. **Documentation alignment** (MANDATORY — not optional):
@@ -148,6 +151,8 @@ After completing any code change, ALWAYS propose the following checklist to the 
 - N{i}: P2P=30300+i, RPC=8500+i, Metrics=9000+i
 
 **Directories**: `~/testnet/` — keys, seed, n1-n12, logs, bin
+
+**Logs on remote servers (mainnet/testnet)**: `journalctl` only shows systemd lifecycle events (start/stop/restart), NOT application logs. App logs are written to files — check the node's data directory for `*.log` files or the `--log-file` flag in the systemd unit. Always look at log files, not journalctl, when debugging node behavior.
 
 ## Map — Scripts (local devnet)
 

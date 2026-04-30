@@ -139,7 +139,7 @@ impl Node {
         // causing sched divergence until the next epoch boundary. Latent fork trigger
         // at 50+ producers when tier promotion reads attestation_accum[0].
         batch.put_epoch_state(&self.epoch_state.serialize());
-        batch.put_epoch_state_version(CURRENT_PROTOCOL_VERSION);
+        batch.put_epoch_state_version(EPOCH_STATE_FORMAT_VERSION);
 
         // Chain commitment: computed periodically via full scan in periodic.rs.
         // Incremental computation was removed — it corrupted on every code path
@@ -300,7 +300,7 @@ impl Node {
             );
             batch.put_epoch_bond_snapshot(&new_state.bond_snapshot, new_state.epoch);
             batch.put_epoch_state(&new_state.serialize());
-            batch.put_epoch_state_version(CURRENT_PROTOCOL_VERSION);
+            batch.put_epoch_state_version(EPOCH_STATE_FORMAT_VERSION);
 
             // Apply the new epoch state
             self.epoch_state = new_state;

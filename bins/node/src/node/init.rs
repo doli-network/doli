@@ -718,26 +718,31 @@ impl Node {
             info!("Block production enabled");
         }
 
-        // ── Epoch state version check ──
-        // If the binary's protocol version differs from the version that produced
-        // the persisted epoch_state, delete it so it gets rebuilt from blocks.
-        // This prevents reward-calculation mismatches after binary upgrades.
+        // ── Epoch state format version check ──
+        // INC-I-054: NEVER delete epoch_state based on version mismatch alone.
+        // Deletion forces rebuild_epoch_state_from_blocks(), which is non-deterministic
+        // on snap-synced nodes (incomplete block history) → guaranteed fork.
+        //
+        // Instead, trust the deserialization check below (init.rs:~747). If the format
+        // actually changed and old data can't deserialize, it falls back gracefully.
+        // If the format is compatible (which it almost always is), the data loads fine.
+        //
+        // EPOCH_STATE_FORMAT_VERSION is independent from CURRENT_PROTOCOL_VERSION.
+        // Only bump it when the EpochState struct serialization actually changes.
         let persisted_version = state_db.get_epoch_state_version();
         if let Some(pv) = persisted_version {
-            if pv != CURRENT_PROTOCOL_VERSION {
-                warn!(
-                    "[INIT] Protocol version changed ({} → {}): invalidating persisted epoch_state to force rebuild from blocks",
-                    pv, CURRENT_PROTOCOL_VERSION
+            if pv != EPOCH_STATE_FORMAT_VERSION {
+                // Log the version difference but DO NOT delete.
+                // Legacy binaries stored CURRENT_PROTOCOL_VERSION (7, 8, 9...),
+                // new binaries store EPOCH_STATE_FORMAT_VERSION (1).
+                // The EpochState format has never changed between these versions.
+                info!(
+                    "[INIT] Epoch state version marker update ({} → {}): format compatible, keeping persisted state",
+                    pv, EPOCH_STATE_FORMAT_VERSION
                 );
-                state_db.delete_epoch_state();
+                // Update the stored version to the new format version.
+                state_db.put_epoch_state_version(EPOCH_STATE_FORMAT_VERSION);
             }
-        } else if state_db.get_epoch_state().is_some() {
-            // Epoch state exists but no version marker — written by an older binary.
-            // Invalidate to be safe.
-            warn!(
-                "[INIT] Persisted epoch_state has no version marker: invalidating to force rebuild from blocks"
-            );
-            state_db.delete_epoch_state();
         }
 
         // Load complete EpochState from unified key (written by post_commit + snap sync).

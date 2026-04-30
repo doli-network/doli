@@ -789,9 +789,9 @@ impl Node {
         Ok(())
     }
 
-    /// Handle a sync request from a peer (legacy inline path, kept for reference).
-    /// Production code uses handle_sync_request_bg() in event_loop.rs instead.
-    #[allow(dead_code)]
+    /// Handle a sync request from a peer.
+    /// Called by on_sync_request() in network_events.rs (the production path).
+    /// Note: handle_sync_request_bg() in event_loop.rs is dead code.
     pub async fn handle_sync_request(
         &self,
         request: network::protocols::SyncRequest,

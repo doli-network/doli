@@ -512,7 +512,7 @@ impl Node {
     /// a persistence bug.
     pub async fn rebuild_epoch_state_from_blocks(&mut self) {
         warn!(
-            "[EPOCH_REBUILD] rebuild_epoch_state_from_blocks called — this should only fire for pre-upgrade undo data"
+            "[EPOCH_REBUILD] rebuild_epoch_state_from_blocks called — should only fire for pre-upgrade undo data or reorg without epoch_state snapshot"
         );
         let current_h = self.chain_state.read().await.best_height;
         let blocks_per_epoch = self.config.network.blocks_per_reward_epoch();
@@ -526,6 +526,36 @@ impl Node {
         }
 
         let epoch_boundary_h = epoch * blocks_per_epoch;
+
+        // INC-I-054 SAFETY CHECK: Detect incomplete block history upfront.
+        // Snap-synced nodes only have blocks from the sync floor. If block 1 is
+        // missing, the attestation scan below will produce non-deterministic results
+        // that differ from nodes with full history → guaranteed fork.
+        //
+        // When detected: skip the block scan entirely, use all active producers,
+        // and enable Light validation mode so we accept blocks we can't verify.
+        let block_store_floor = self.block_store.get_block_by_height(1).ok().flatten();
+        let lookback_start = epoch.saturating_sub(3) * blocks_per_epoch;
+        let lookback_start_block = if lookback_start > 0 {
+            self.block_store
+                .get_block_by_height(lookback_start)
+                .ok()
+                .flatten()
+        } else {
+            block_store_floor.clone()
+        };
+        let has_incomplete_history = block_store_floor.is_none() || lookback_start_block.is_none();
+        if has_incomplete_history {
+            warn!(
+                "[EPOCH_REBUILD] Incomplete block history detected (block_1={}, lookback_start_h={}={}). \
+                 Attestation scan would produce non-deterministic results — using all active producers \
+                 with Light validation mode. This is safe but suboptimal; next epoch boundary will \
+                 rebuild correctly from post_commit.",
+                block_store_floor.is_some(),
+                lookback_start,
+                lookback_start_block.is_some(),
+            );
+        }
 
         // 1. epoch_bond_snapshot: never overwrite with an older epoch.
         //    During header-first catch-up, this function is called at each epoch
@@ -609,6 +639,12 @@ impl Node {
                 || !self.epoch_state.attested_sets[2].is_empty();
 
             let mut new_list: Vec<crypto::PublicKey> = if epoch <= 1 {
+                active
+            } else if has_incomplete_history && !have_inmem_accum {
+                // INC-I-054: Block history incomplete and no in-memory accumulators.
+                // Skip block scan entirely — it would produce wrong results.
+                // Use all active producers + Light validation until next epoch boundary.
+                self.snap_sync_height = Some(current_h);
                 active
             } else if have_inmem_accum {
                 info!(
