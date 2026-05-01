@@ -14,8 +14,8 @@
     "vite": "^6.0.0"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.0.0",
-    "@tauri-apps/plugin-dialog": "^2.0.0",
-    "@tauri-apps/plugin-clipboard-manager": "^2.0.0"
+    "@tauri-apps/api": "~2.10.0",
+    "@tauri-apps/plugin-dialog": "~2.10.0",
+    "@tauri-apps/plugin-clipboard-manager": "~2.10.0"
   }
 }

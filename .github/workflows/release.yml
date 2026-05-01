@@ -141,8 +141,11 @@ jobs:
   # Users on Intel Macs should use the aarch64 .pkg (works via Rosetta).
 
   # ── Windows x86_64 ──────────────────────────────────────────
-  # NOTE: gmp-mpfr-sys does not support MSVC. This job is best-effort.
+  # DISABLED: gmp-mpfr-sys (rug → vdf) panics on MSVC with
+  # "Windows MSVC target is not supported (linking would fail)".
+  # Requires feature-gating rug behind a non-Windows flag.
   build-windows-x64:
+    if: false  # disabled until VDF crate supports MSVC
     name: Build Windows x86_64
     runs-on: windows-latest
     continue-on-error: true
@@ -309,8 +312,9 @@ jobs:
           path: gui-artifacts/*
 
   # ── GUI: Windows (.msi) ─────────────────────────────────────
-  # NOTE: gmp-mpfr-sys does not support MSVC. This job is best-effort.
+  # DISABLED: gmp-mpfr-sys (rug → vdf) panics on MSVC.
   build-gui-windows:
+    if: false  # disabled until VDF crate supports MSVC
     name: Build GUI Windows
     runs-on: windows-latest
     continue-on-error: true
