@@ -518,6 +518,29 @@ pub(crate) async fn run_node(
     // Block archiver: streams blocks to filesystem for disaster recovery
     if let Some(ref archive_dir) = archive_to {
         let archive_dir = expand_tilde_path(archive_dir);
+
+        // INC-I-055: Wipe archive directory if it contains data from a different chain.
+        // After a genesis reset in Node::new(), the block store and state_db are wiped
+        // but the archive directory was left behind. Stale archive files then poison
+        // backfill and bridge operations, requiring manual cleanup.
+        if archive_dir.exists() {
+            let node_genesis = node.params.genesis_hash.to_string();
+            let archive_genesis = storage::archiver::manifest_genesis_hash(&archive_dir);
+            if let Some(ref ag) = archive_genesis {
+                if *ag != node_genesis {
+                    warn!(
+                        "[GENESIS_RESET] Archive dir has wrong genesis (archive={:.16} node={:.16}) — wiping {:?}",
+                        ag, node_genesis, archive_dir
+                    );
+                    if let Err(e) = std::fs::remove_dir_all(&archive_dir) {
+                        warn!("[GENESIS_RESET] Failed to wipe archive dir: {}", e);
+                    } else {
+                        info!("[GENESIS_RESET] Archive directory wiped successfully");
+                    }
+                }
+            }
+        }
+
         let tip = node.best_height().await;
 
         // Catch up: archive any blocks we missed while down

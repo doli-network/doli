@@ -272,15 +272,43 @@ impl RpcContext {
     /// 2. Backfills missing blocks from the archive directory into the block store
     /// 3. Returns a summary of what was imported
     ///
+    /// Optional param: `[true]` or `{"force": true}` to replace divergent blocks
+    /// (INC-I-055: archive blocks override fork blocks via BLAKE3 comparison).
+    ///
     /// Recovery mode should be active (enterRecoveryMode) before calling this
     /// to prevent concurrent block processing during the bridge operation.
-    pub(super) async fn bridge_from_archive(&self) -> Result<Value, RpcError> {
+    pub(super) async fn bridge_from_archive(
+        &self,
+        params: Option<Value>,
+    ) -> Result<Value, RpcError> {
+        // Parse optional force parameter
+        let force = params
+            .as_ref()
+            .and_then(|p| {
+                p.get(0)
+                    .and_then(|v| v.as_bool())
+                    .or_else(|| p.get("force").and_then(|v| v.as_bool()))
+            })
+            .unwrap_or(false);
+
+        let recovery_active = self.recovery_mode.load(Ordering::Relaxed);
+
         // BC4: Warn if recovery mode is not active (race condition risk)
-        if !self.recovery_mode.load(Ordering::Relaxed) {
+        if !recovery_active {
             warn!(
                 "[BRIDGE] bridge_from_archive called without recovery mode active — \
                  concurrent block processing may interfere"
             );
+        }
+
+        // INC-I-055: force-replace requires recovery_mode. Replacing blocks while
+        // sync/fork recovery is running causes race conditions — the sync manager
+        // may be reading blocks that get replaced underneath it.
+        if force && !recovery_active {
+            return Err(RpcError::invalid_params(
+                "force=true requires recovery mode to be active (enterRecoveryMode). \
+                 Replacing blocks while sync is running risks data races.",
+            ));
         }
 
         let archive_dir = self.archive_dir.clone().ok_or_else(|| {
@@ -324,11 +352,20 @@ impl RpcContext {
             };
 
             // Step 2: BACKFILL from archive (existing idempotent function, BC5)
-            let imported = storage::archiver::backfill_from_archive(
-                &archive_dir,
-                &block_store,
-                genesis_hash.as_ref(),
-            )?;
+            // INC-I-055: force mode replaces divergent blocks via checksum comparison.
+            let imported = if force {
+                storage::archiver::force_backfill_from_archive(
+                    &archive_dir,
+                    &block_store,
+                    genesis_hash.as_ref(),
+                )?
+            } else {
+                storage::archiver::backfill_from_archive(
+                    &archive_dir,
+                    &block_store,
+                    genesis_hash.as_ref(),
+                )?
+            };
 
             Ok((imported, true))
         })
@@ -359,6 +396,236 @@ impl RpcContext {
                     "warning": format!("{}", e)
                 }))
             }
+        }
+    }
+
+    /// Repair the local archive by fetching missing blocks from a peer's RPC.
+    ///
+    /// INC-I-055: Replaces the manual tar+scp relay between seeds. Given a peer's
+    /// RPC URL, scans the local archive directory for missing .block files up to
+    /// the peer's chain tip, fetches each missing block via `getBlockRaw`, verifies
+    /// the BLAKE3 checksum, validates genesis_hash, and writes the file to the
+    /// local archive directory.
+    ///
+    /// Params: `{"rpc_url": "http://peer:8500"}` or `["http://peer:8500"]`
+    pub(super) async fn repair_archive_from_peer(&self, params: Value) -> Result<Value, RpcError> {
+        // Parse peer RPC URL
+        let peer_url = params
+            .get("rpc_url")
+            .or_else(|| params.get(0))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| RpcError::invalid_params("Missing required parameter: rpc_url"))?
+            .to_string();
+
+        let archive_dir = self.archive_dir.clone().ok_or_else(|| {
+            RpcError::internal_error(
+                "archive_dir not configured — start node with --archive-to to enable".to_string(),
+            )
+        })?;
+
+        if !archive_dir.exists() {
+            std::fs::create_dir_all(&archive_dir).map_err(|e| {
+                RpcError::internal_error(format!("Failed to create archive dir: {}", e))
+            })?;
+        }
+
+        // Get peer's chain tip to know how far to scan
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| RpcError::internal_error(format!("HTTP client error: {}", e)))?;
+
+        let peer_tip: u64 = {
+            let resp = client
+                .post(&peer_url)
+                .json(&serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "getChainInfo",
+                    "params": [],
+                    "id": 0
+                }))
+                .send()
+                .await
+                .map_err(|e| RpcError::internal_error(format!("Failed to reach peer: {}", e)))?;
+
+            let body: serde_json::Value = resp.json().await.map_err(|e| {
+                RpcError::internal_error(format!("Invalid response from peer: {}", e))
+            })?;
+
+            body.pointer("/result/height")
+                .or_else(|| body.pointer("/result/best_height"))
+                .and_then(|v| v.as_u64())
+                .ok_or_else(|| {
+                    RpcError::internal_error(
+                        "Peer did not return chain height in getChainInfo".to_string(),
+                    )
+                })?
+        };
+
+        // Read local genesis hash for validation
+        let local_genesis = {
+            let cs = self.chain_state.read().await;
+            cs.genesis_hash
+        };
+
+        // Spawn background task to fetch missing blocks
+        let archive_dir_bg = archive_dir.clone();
+        let peer_url_bg = peer_url.clone();
+
+        let result = tokio::spawn(async move {
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .map_err(|e| format!("HTTP client: {}", e))?;
+
+            let mut fetched = 0u64;
+            let mut skipped = 0u64;
+            let mut errors = 0u64;
+
+            for h in 1..=peer_tip {
+                let block_path = archive_dir_bg.join(format!("{:010}.block", h));
+                let checksum_path = archive_dir_bg.join(format!("{:010}.blake3", h));
+
+                // Skip if both .block and .blake3 exist
+                if block_path.exists() && checksum_path.exists() {
+                    skipped += 1;
+                    continue;
+                }
+
+                // Fetch from peer
+                let resp = match client
+                    .post(&peer_url_bg)
+                    .json(&serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "method": "getBlockRaw",
+                        "params": { "height": h },
+                        "id": h
+                    }))
+                    .send()
+                    .await
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        if errors < 5 {
+                            tracing::warn!("[REPAIR_ARCHIVE] HTTP error at h={}: {}", h, e);
+                        }
+                        errors += 1;
+                        continue;
+                    }
+                };
+
+                let body: serde_json::Value = match resp.json().await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        if errors < 5 {
+                            tracing::warn!("[REPAIR_ARCHIVE] JSON error at h={}: {}", h, e);
+                        }
+                        errors += 1;
+                        continue;
+                    }
+                };
+
+                let result = match body.get("result") {
+                    Some(r) => r,
+                    None => {
+                        errors += 1;
+                        continue;
+                    }
+                };
+
+                let b64_data = match result.get("block").and_then(|v| v.as_str()) {
+                    Some(s) => s,
+                    None => {
+                        errors += 1;
+                        continue;
+                    }
+                };
+
+                let expected_checksum = result.get("blake3").and_then(|v| v.as_str()).unwrap_or("");
+
+                // Decode
+                use base64::Engine;
+                let data = match base64::engine::general_purpose::STANDARD.decode(b64_data) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        tracing::warn!("[REPAIR_ARCHIVE] Base64 error at h={}: {}", h, e);
+                        errors += 1;
+                        continue;
+                    }
+                };
+
+                // Verify BLAKE3 checksum
+                let actual_checksum = crypto::hash::hash(&data).to_string();
+                if !expected_checksum.is_empty() && actual_checksum != expected_checksum {
+                    tracing::warn!("[REPAIR_ARCHIVE] BLAKE3 mismatch at h={}", h);
+                    errors += 1;
+                    continue;
+                }
+
+                // Validate genesis_hash
+                if let Some(block) = doli_core::transaction::legacy::deserialize_block_compat(&data)
+                {
+                    if block.header.genesis_hash != local_genesis {
+                        return Err(format!(
+                            "Block at h={} has wrong genesis_hash — peer is on a different chain",
+                            h
+                        ));
+                    }
+                }
+
+                // Write .block file (atomic via tmp rename)
+                let tmp_block = archive_dir_bg.join(format!("{:010}.block.tmp", h));
+                if let Err(e) = std::fs::write(&tmp_block, &data) {
+                    tracing::warn!("[REPAIR_ARCHIVE] Write error at h={}: {}", h, e);
+                    errors += 1;
+                    continue;
+                }
+                let _ = std::fs::rename(&tmp_block, &block_path);
+
+                // Write .blake3 checksum
+                let tmp_blake3 = archive_dir_bg.join(format!("{:010}.blake3.tmp", h));
+                let _ = std::fs::write(&tmp_blake3, &actual_checksum);
+                let _ = std::fs::rename(&tmp_blake3, &checksum_path);
+
+                fetched += 1;
+                if fetched.is_multiple_of(100) {
+                    tracing::info!(
+                        "[REPAIR_ARCHIVE] Progress: {}/{} fetched ({} skipped, {} errors)",
+                        h,
+                        peer_tip,
+                        skipped,
+                        errors
+                    );
+                }
+
+                // Yield every 50 blocks
+                if fetched.is_multiple_of(50) {
+                    tokio::task::yield_now().await;
+                }
+            }
+
+            tracing::info!(
+                "[REPAIR_ARCHIVE] Complete: {} fetched, {} already present, {} errors (1..={})",
+                fetched,
+                skipped,
+                errors,
+                peer_tip
+            );
+
+            Ok((fetched, skipped, errors, peer_tip))
+        })
+        .await
+        .map_err(|e| RpcError::internal_error(format!("Repair task panicked: {}", e)))?;
+
+        match result {
+            Ok((fetched, skipped, errors, tip)) => Ok(serde_json::json!({
+                "status": "ok",
+                "fetched": fetched,
+                "already_present": skipped,
+                "errors": errors,
+                "peer_tip": tip,
+            })),
+            Err(e) => Err(RpcError::internal_error(e)),
         }
     }
 }

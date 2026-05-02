@@ -103,7 +103,14 @@ impl RpcContext {
         // case fills "holes" but leaves bond_snapshot / accumulators / UTXO diverged,
         // producing a FALSE integrity signal ("chain complete") while consensus
         // state is still wrong. Prevent that here.
-        {
+        //
+        // INC-I-055: Skip when `skip_divergence_check=true`. After a genesis reset,
+        // the local tip hash will ALWAYS differ from the peer's. The per-block BLAKE3
+        // checksum verification in the fetch loop is still enforced.
+        if params.skip_divergence_check {
+            info!("Backfill: skip_divergence_check=true — bypassing tip agreement preflight");
+        }
+        if !params.skip_divergence_check {
             let client = reqwest::Client::new();
             match client
                 .post(&params.rpc_url)

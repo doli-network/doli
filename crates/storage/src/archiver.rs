@@ -219,6 +219,11 @@ fn read_manifest_height_from(dir: &Path) -> Option<u64> {
     v.get("latest_height")?.as_u64()
 }
 
+/// Read the genesis_hash from the archive manifest file.
+pub fn manifest_genesis_hash(dir: &Path) -> Option<String> {
+    read_manifest_genesis_hash(dir)
+}
+
 fn read_manifest_genesis_hash(dir: &Path) -> Option<String> {
     let manifest_path = dir.join("manifest.json");
     let data = std::fs::read_to_string(&manifest_path).ok()?;
@@ -271,7 +276,13 @@ pub fn restore_from_archive(
     block_store: &super::BlockStore,
     expected_genesis_hash: Option<&crypto::Hash>,
 ) -> Result<u64, String> {
-    import_archive_blocks(archive_dir, block_store, expected_genesis_hash, false)
+    import_archive_blocks(
+        archive_dir,
+        block_store,
+        expected_genesis_hash,
+        false,
+        false,
+    )
 }
 
 /// Backfill missing blocks from an archive directory. Returns the number of blocks imported.
@@ -283,7 +294,22 @@ pub fn backfill_from_archive(
     block_store: &super::BlockStore,
     expected_genesis_hash: Option<&crypto::Hash>,
 ) -> Result<u64, String> {
-    import_archive_blocks(archive_dir, block_store, expected_genesis_hash, true)
+    import_archive_blocks(archive_dir, block_store, expected_genesis_hash, true, false)
+}
+
+/// Force-backfill: like backfill, but also replaces existing blocks that differ
+/// from the archive (detected via BLAKE3 checksum comparison).
+///
+/// INC-I-055: "fill gaps" vs "fix forks". Normal backfill skips any height where
+/// a block exists. Force mode compares the existing block's serialized data against
+/// the archive checksum and replaces mismatches. This fixes blocks from a fork that
+/// were stored before a genesis reset.
+pub fn force_backfill_from_archive(
+    archive_dir: &Path,
+    block_store: &super::BlockStore,
+    expected_genesis_hash: Option<&crypto::Hash>,
+) -> Result<u64, String> {
+    import_archive_blocks(archive_dir, block_store, expected_genesis_hash, true, true)
 }
 
 fn import_archive_blocks(
@@ -291,6 +317,7 @@ fn import_archive_blocks(
     block_store: &super::BlockStore,
     expected_genesis_hash: Option<&crypto::Hash>,
     skip_existing: bool,
+    force_replace: bool,
 ) -> Result<u64, String> {
     let manifest_height = read_manifest_height_from(archive_dir)
         .ok_or_else(|| "No manifest.json found in archive directory".to_string())?;
@@ -320,14 +347,44 @@ fn import_archive_blocks(
     );
 
     let mut imported = 0u64;
+    let mut replaced = 0u64;
     let mut skipped = 0u64;
     let mut missing_files = 0u64;
     for h in 1..=manifest_height {
-        // Skip blocks that already exist in the BlockStore
+        // Skip or compare blocks that already exist in the BlockStore
         if skip_existing {
-            if let Ok(Some(_)) = block_store.get_block_by_height(h) {
-                skipped += 1;
-                continue;
+            if let Ok(Some(existing)) = block_store.get_block_by_height(h) {
+                if force_replace {
+                    // Force mode: compare existing block hash against archive checksum.
+                    // If they match, skip. If they differ, fall through to replace.
+                    let checksum_path = archive_dir.join(format!("{:010}.blake3", h));
+                    if checksum_path.exists() {
+                        if let Ok(existing_data) = bincode::serialize(&existing) {
+                            let existing_checksum = blake3_hex(&existing_data);
+                            let archive_checksum =
+                                std::fs::read_to_string(&checksum_path).unwrap_or_default();
+                            if existing_checksum.trim() == archive_checksum.trim() {
+                                skipped += 1;
+                                continue; // Block matches archive — skip
+                            }
+                            info!(
+                                "[ARCHIVER] Force-replacing divergent block at h={} (local={:.16} archive={:.16})",
+                                h, existing_checksum, archive_checksum.trim()
+                            );
+                            replaced += 1;
+                            // Fall through to import from archive
+                        } else {
+                            skipped += 1;
+                            continue; // Can't serialize to compare — skip
+                        }
+                    } else {
+                        skipped += 1;
+                        continue; // No checksum to compare — skip
+                    }
+                } else {
+                    skipped += 1;
+                    continue;
+                }
             }
         }
 
@@ -402,10 +459,17 @@ fn import_archive_blocks(
     }
 
     if skip_existing {
-        info!(
-            "[ARCHIVER] Backfill complete: {} blocks imported, {} already present, {} files missing",
-            imported, skipped, missing_files
-        );
+        if replaced > 0 {
+            info!(
+                "[ARCHIVER] Force-backfill complete: {} imported, {} replaced, {} present, {} missing",
+                imported, replaced, skipped, missing_files
+            );
+        } else {
+            info!(
+                "[ARCHIVER] Backfill complete: {} blocks imported, {} already present, {} files missing",
+                imported, skipped, missing_files
+            );
+        }
     } else {
         info!(
             "[ARCHIVER] Restore complete: {} blocks imported, {} files missing. \

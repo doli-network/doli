@@ -811,8 +811,15 @@ impl Node {
                             let cs = self.chain_state.read().await;
                             cs.best_hash.to_hex()
                         };
-                        let healthy =
+                        // INC-I-055: Use rolling health window instead of point-in-time.
+                        // A checkpoint is healthy if the node was healthy at ANY point
+                        // in the last CHECKPOINT_HEALTH_WINDOW_SIZE samples (~10 min).
+                        // This prevents ALL checkpoints from being tagged unhealthy
+                        // during transient peer disconnections.
+                        let point_healthy =
                             peer_count > 0 && peers_agreeing == peer_count && unique_hashes <= 1;
+                        let window_healthy = self.health_window.iter().any(|&h| h);
+                        let healthy = point_healthy || window_healthy;
                         let health = serde_json::json!({
                             "height": current_height,
                             "hash": best_hash,
@@ -821,6 +828,9 @@ impl Node {
                             "peers_agreeing": peers_agreeing,
                             "unique_chain_tips": unique_hashes,
                             "healthy": healthy,
+                            "point_healthy": point_healthy,
+                            "window_healthy": window_healthy,
+                            "window_size": self.health_window.len(),
                         });
                         let _ = std::fs::write(
                             checkpoint_dir.join("health.json"),
@@ -891,6 +901,18 @@ impl Node {
                 sync_fails, sync.sync_state_name(),
                 self.epoch_state.epoch, snap_bonds, snap_producers
             );
+
+            // INC-I-055: Update rolling health window for checkpoint tagging.
+            // A sample is "healthy" if we have peers and they agree on the chain tip.
+            {
+                let (_, peers_agreeing, unique_hashes) = sync.checkpoint_health();
+                let sample_healthy =
+                    peer_count > 0 && peers_agreeing == peer_count && unique_hashes <= 1;
+                self.health_window.push_back(sample_healthy);
+                while self.health_window.len() > CHECKPOINT_HEALTH_WINDOW_SIZE {
+                    self.health_window.pop_front();
+                }
+            }
 
             // Sync state summary — captures key sync variables for post-incident analysis.
             {
@@ -980,7 +1002,15 @@ impl Node {
         let block_store = self.block_store.clone();
         let archive_dir = self.archive_dir.clone();
         let result = tokio::task::spawn_blocking(move || {
-            let check = block_store.ensure_blocks_present(1, current_tip);
+            // INC-I-055: Start from actual lowest block, not hardcoded 1.
+            // After chain reset or snap sync, pre-floor blocks don't exist.
+            let scan_floor = block_store
+                .height_range()
+                .ok()
+                .flatten()
+                .map(|(min, _)| min)
+                .unwrap_or(1);
+            let check = block_store.ensure_blocks_present(scan_floor, current_tip);
             if check.is_ok() {
                 return Ok(());
             }
@@ -1025,8 +1055,14 @@ impl Node {
                 }
             }
 
-            // Re-check after repair
-            block_store.ensure_blocks_present(1, current_tip)
+            // Re-check after repair (re-read floor — repair may have extended it)
+            let floor = block_store
+                .height_range()
+                .ok()
+                .flatten()
+                .map(|(min, _)| min)
+                .unwrap_or(1);
+            block_store.ensure_blocks_present(floor, current_tip)
         })
         .await;
 
@@ -1071,15 +1107,27 @@ pub(crate) fn parse_checkpoint_height(name: &str) -> u64 {
         .unwrap_or(0)
 }
 
-/// Scan blocks 1..=scan_tip, returning (missing_count, commitment_hash).
+/// Scan blocks scan_floor..=scan_tip, returning (missing_count, commitment_hash).
 /// Pure block store I/O — no side effects, no state_db writes.
+///
+/// INC-I-055: Uses the block store's actual lowest height instead of hardcoded 1.
+/// After a chain reset or snap sync, blocks below the floor don't exist and
+/// should not count as "missing" (they belong to a previous chain or pre-snap era).
 fn integrity_scan(
     block_store: &std::sync::Arc<storage::BlockStore>,
     scan_tip: u64,
 ) -> (u64, crypto::Hash) {
+    // Start from the lowest block actually in the store (default to 1)
+    let scan_floor = block_store
+        .height_range()
+        .ok()
+        .flatten()
+        .map(|(min, _)| min)
+        .unwrap_or(1);
+
     let mut missing = 0u64;
     let mut commitment = crypto::Hash::default();
-    for h in 1..=scan_tip {
+    for h in scan_floor..=scan_tip {
         match block_store.get_block_by_height(h) {
             Ok(Some(blk)) => {
                 let hash = blk.hash();

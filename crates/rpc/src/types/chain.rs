@@ -295,6 +295,12 @@ fn default_mempool_limit() -> usize {
 pub struct BackfillParams {
     /// RPC URL of a peer with complete block history
     pub rpc_url: String,
+    /// Skip tip divergence preflight check (default: false).
+    /// Only set to true during disaster recovery when you KNOW the tips will
+    /// differ (e.g., after a genesis reset). Per-block BLAKE3 verification
+    /// is still enforced regardless of this flag.
+    #[serde(default)]
+    pub skip_divergence_check: bool,
 }
 
 /// Response for backfillStatus

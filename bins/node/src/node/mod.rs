@@ -236,6 +236,13 @@ pub struct Node {
     /// Toggled via enterRecoveryMode/exitRecoveryMode RPC. Non-persistent: cleared on restart.
     pub recovery_mode: Arc<AtomicBool>,
 
+    /// INC-I-055: Rolling health window for auto-checkpoint tagging.
+    /// Tracks the last CHECKPOINT_HEALTH_WINDOW_SIZE health samples (true=healthy).
+    /// A checkpoint is tagged healthy if ANY sample in the window was healthy,
+    /// preventing all checkpoints from being marked unhealthy during transient
+    /// peer disconnections. Updated every 30s in the periodic health diagnostic.
+    pub health_window: std::collections::VecDeque<bool>,
+
     /// INC-I-049: Deferred attestation-triggered block fetch.
     /// Maps block_hash → (record_time, peers_asked, source_peer).
     /// When an attestation references an unknown block, we record it here
@@ -246,6 +253,10 @@ pub struct Node {
     /// where gossip delivers the block 1-2ms after the attestation.
     pub attest_fetch_tracker: HashMap<Hash, (Instant, u8, PeerId)>,
 }
+
+/// INC-I-055: Number of health samples to track in the rolling window.
+/// At 30s per sample, 20 samples = 10 minutes of history.
+pub const CHECKPOINT_HEALTH_WINDOW_SIZE: usize = 20;
 
 /// Max connect+disconnect events per peer within PEER_CHURN_WINDOW before rate-limit kicks in.
 pub const PEER_CHURN_MAX: usize = 5;
