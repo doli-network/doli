@@ -166,11 +166,27 @@ impl RpcContext {
         let params: SendTransactionParams =
             serde_json::from_value(params).map_err(|e| RpcError::invalid_params(e.to_string()))?;
 
-        let tx_bytes = hex::decode(&params.tx)
-            .map_err(|e| RpcError::invalid_params(format!("Invalid hex: {}", e)))?;
+        let tx_bytes = hex::decode(&params.tx).map_err(|e| {
+            RpcError::with_data(
+                crate::error::codes::INVALID_PARAMS,
+                format!("Invalid hex: {}", e),
+                serde_json::json!({
+                    "error_code": "INVALID_HEX",
+                    "stage": "deserialization",
+                }),
+            )
+        })?;
 
-        let tx = Transaction::deserialize(&tx_bytes)
-            .ok_or_else(|| RpcError::invalid_params("Failed to deserialize transaction"))?;
+        let tx = Transaction::deserialize(&tx_bytes).ok_or_else(|| {
+            RpcError::with_data(
+                crate::error::codes::INVALID_PARAMS,
+                "Failed to deserialize transaction",
+                serde_json::json!({
+                    "error_code": "DESERIALIZE_FAILED",
+                    "stage": "deserialization",
+                }),
+            )
+        })?;
 
         let tx_hash = tx.hash();
 
@@ -187,22 +203,12 @@ impl RpcContext {
             if tx.is_state_only() {
                 mempool
                     .add_system_transaction(tx.clone(), current_height)
-                    .map_err(|e| match e {
-                        MempoolError::AlreadyExists => RpcError::tx_already_known(),
-                        MempoolError::Full => RpcError::mempool_full(),
-                        MempoolError::InvalidTransaction(msg) => RpcError::invalid_tx(msg),
-                        _ => RpcError::internal_error(e.to_string()),
-                    })?;
+                    .map_err(Self::mempool_error_to_rpc)?;
             } else {
                 let utxo_set = self.utxo_set.read().await;
                 mempool
                     .add_transaction(tx.clone(), &utxo_set, current_height)
-                    .map_err(|e| match e {
-                        MempoolError::AlreadyExists => RpcError::tx_already_known(),
-                        MempoolError::Full => RpcError::mempool_full(),
-                        MempoolError::InvalidTransaction(msg) => RpcError::invalid_tx(msg),
-                        _ => RpcError::internal_error(e.to_string()),
-                    })?;
+                    .map_err(Self::mempool_error_to_rpc)?;
             }
         }
 
@@ -210,5 +216,31 @@ impl RpcContext {
         (self.broadcast_tx)(tx);
 
         Ok(Value::String(tx_hash.to_hex()))
+    }
+
+    /// Convert a MempoolError to a structured RpcError with full context.
+    fn mempool_error_to_rpc(e: MempoolError) -> RpcError {
+        match e {
+            MempoolError::AlreadyExists => RpcError::with_data(
+                crate::error::codes::TX_ALREADY_KNOWN,
+                "Transaction already in mempool",
+                serde_json::json!({
+                    "error_code": "TX_ALREADY_EXISTS",
+                    "stage": "mempool",
+                }),
+            ),
+            MempoolError::Full => RpcError::with_data(
+                crate::error::codes::MEMPOOL_FULL,
+                "Mempool full",
+                serde_json::json!({
+                    "error_code": "MEMPOOL_FULL",
+                    "stage": "mempool",
+                }),
+            ),
+            _ => {
+                let data = e.to_structured_json();
+                RpcError::with_data(crate::error::codes::INVALID_TX, e.to_string(), data)
+            }
+        }
     }
 }

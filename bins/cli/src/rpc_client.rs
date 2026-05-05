@@ -38,6 +38,9 @@ struct RpcResponse<T> {
 struct RpcError {
     code: i32,
     message: String,
+    /// Structured error context for programmatic consumption.
+    #[serde(default)]
+    data: Option<serde_json::Value>,
 }
 
 /// Balance information
@@ -409,7 +412,18 @@ impl RpcClient {
             .map_err(|e| anyhow!("Failed to parse response: {}", e))?;
 
         if let Some(error) = rpc_response.error {
-            return Err(anyhow!("RPC error {}: {}", error.code, error.message));
+            return match error.data {
+                Some(data) => Err(anyhow!(
+                    "RPC error {} ({}): {}\n  detail: {}",
+                    error.code,
+                    data.get("error_code")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("UNKNOWN"),
+                    error.message,
+                    data,
+                )),
+                None => Err(anyhow!("RPC error {}: {}", error.code, error.message)),
+            };
         }
 
         rpc_response

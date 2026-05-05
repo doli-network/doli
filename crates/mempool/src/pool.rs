@@ -5,8 +5,9 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use crypto::Hash;
 use doli_core::consensus::ConsensusParams;
 use doli_core::network::Network;
-use doli_core::validation::{validate_transaction, ValidationContext};
+use doli_core::validation::{validate_transaction, ValidationContext, ValidationError};
 use doli_core::{BlockHeight, Transaction, TxType};
+use serde_json::Value;
 use storage::{Outpoint, UtxoSet};
 use thiserror::Error;
 use tracing::{debug, info, warn};
@@ -25,6 +26,9 @@ pub enum MempoolError {
 
     #[error("invalid transaction: {0}")]
     InvalidTransaction(String),
+
+    #[error("validation failed: {0}")]
+    Validation(#[from] ValidationError),
 
     #[error("fee too low: {0} < {1}")]
     FeeTooLow(u64, u64),
@@ -52,6 +56,96 @@ pub enum MempoolError {
         /// Hash of the mempool transaction that already spends this output.
         spending_tx: crypto::Hash,
     },
+}
+
+impl MempoolError {
+    /// Returns a stable, machine-readable error code.
+    pub fn error_code(&self) -> &str {
+        match self {
+            Self::AlreadyExists => "TX_ALREADY_EXISTS",
+            Self::Full => "MEMPOOL_FULL",
+            Self::InvalidTransaction(msg) => {
+                // Extract [MPTX0XX] code if present
+                if msg.starts_with("[MPTX") {
+                    if let Some(end) = msg.find(']') {
+                        return &msg[1..end];
+                    }
+                }
+                "INVALID_TRANSACTION"
+            }
+            Self::Validation(e) => e.error_code(),
+            Self::FeeTooLow(..) => "FEE_TOO_LOW",
+            Self::TooLarge(..) => "TX_TOO_LARGE",
+            Self::TooManyAncestors(..) => "TOO_MANY_ANCESTORS",
+            Self::TooManyDescendants(..) => "TOO_MANY_DESCENDANTS",
+            Self::MissingInput(..) => "MISSING_INPUT",
+            Self::DoubleSpend { .. } => "DOUBLE_SPEND",
+        }
+    }
+
+    /// Serializes this error to structured JSON for agentic consumption.
+    ///
+    /// Returns a JSON object with `error_code`, `message`, `stage`, and
+    /// variant-specific fields. Agents can match on `error_code` programmatically.
+    pub fn to_structured_json(&self) -> Value {
+        let mut obj = serde_json::json!({
+            "error_code": self.error_code(),
+            "message": self.to_string(),
+            "stage": "mempool",
+        });
+
+        let map = obj.as_object_mut().unwrap();
+
+        match self {
+            Self::AlreadyExists | Self::Full => {}
+            Self::InvalidTransaction(msg) => {
+                map.insert("detail".into(), Value::String(msg.clone()));
+            }
+            Self::Validation(e) => {
+                // Merge the full ValidationError JSON (which has all fields)
+                let val_json = e.to_structured_json();
+                if let Value::Object(val_map) = val_json {
+                    for (k, v) in val_map {
+                        if k != "message" {
+                            map.insert(k, v);
+                        }
+                    }
+                }
+                map.insert("stage".into(), Value::String("mempool_validation".into()));
+            }
+            Self::FeeTooLow(actual, minimum) => {
+                map.insert("actual_fee".into(), (*actual).into());
+                map.insert("minimum_fee".into(), (*minimum).into());
+            }
+            Self::TooLarge(size, max) => {
+                map.insert("size".into(), (*size).into());
+                map.insert("max".into(), (*max).into());
+            }
+            Self::TooManyAncestors(count, max) => {
+                map.insert("count".into(), (*count).into());
+                map.insert("max".into(), (*max).into());
+            }
+            Self::TooManyDescendants(count, max) => {
+                map.insert("count".into(), (*count).into());
+                map.insert("max".into(), (*max).into());
+            }
+            Self::MissingInput(hash, index) => {
+                map.insert("tx_hash".into(), Value::String(hash.to_hex()));
+                map.insert("output_index".into(), (*index).into());
+            }
+            Self::DoubleSpend {
+                tx_hash,
+                output_index,
+                spending_tx,
+            } => {
+                map.insert("tx_hash".into(), Value::String(tx_hash.to_hex()));
+                map.insert("output_index".into(), (*output_index).into());
+                map.insert("spending_tx".into(), Value::String(spending_tx.to_hex()));
+            }
+        }
+
+        obj
+    }
 }
 
 /// Transaction mempool
@@ -139,8 +233,7 @@ impl Mempool {
             .with_security_audit_activation_height(
                 self.network.params().security_audit_activation_height,
             );
-        validate_transaction(&tx, &ctx)
-            .map_err(|e| MempoolError::InvalidTransaction(e.to_string()))?;
+        validate_transaction(&tx, &ctx)?;
 
         // Validate input spending conditions: pubkey + signature for Normal/Bond,
         // covenant evaluation for conditioned outputs. Reject early to prevent
@@ -371,8 +464,7 @@ impl Mempool {
             .with_security_audit_activation_height(
                 self.network.params().security_audit_activation_height,
             );
-        validate_transaction(&tx, &ctx)
-            .map_err(|e| MempoolError::InvalidTransaction(e.to_string()))?;
+        validate_transaction(&tx, &ctx)?;
 
         // Make room if necessary
         while self.needs_eviction(tx_size) {

@@ -4143,6 +4143,7 @@ dependencies = [
  "crypto",
  "doli-core",
  "proptest",
+ "serde_json",
  "storage",
  "thiserror 1.0.69",
  "tokio",

@@ -1,3 +1,4 @@
+use serde_json::Value;
 use thiserror::Error;
 
 use crate::types::{Amount, BlockHeight};
@@ -340,4 +341,260 @@ pub enum ValidationError {
         /// The activation height after which public keys are mandatory.
         activation_height: u64,
     },
+}
+
+impl ValidationError {
+    /// Returns a stable, machine-readable error code for programmatic matching.
+    ///
+    /// These codes are part of the public API contract — agents and tooling
+    /// can rely on them for pattern matching without parsing human-readable strings.
+    pub fn error_code(&self) -> &'static str {
+        match self {
+            Self::GenesisHashMismatch { .. } => "GENESIS_HASH_MISMATCH",
+            Self::ForkIdMismatch { .. } => "FORK_ID_MISMATCH",
+            Self::InvalidVersion(_) => "INVALID_VERSION",
+            Self::InvalidTimestamp { .. } => "INVALID_TIMESTAMP",
+            Self::TimestampTooFuture(_) => "TIMESTAMP_TOO_FUTURE",
+            Self::InvalidSlot { .. } => "INVALID_SLOT",
+            Self::SlotNotAdvancing { .. } => "SLOT_NOT_ADVANCING",
+            Self::SlotTooFuture { .. } => "SLOT_TOO_FUTURE",
+            Self::SlotTooPast { .. } => "SLOT_TOO_PAST",
+            Self::InvalidMerkleRoot { .. } => "INVALID_MERKLE_ROOT",
+            Self::InvalidDataRoot => "INVALID_DATA_ROOT",
+            Self::InvalidVdfProof { .. } => "INVALID_VDF_PROOF",
+            Self::InvalidProducer { .. } => "INVALID_PRODUCER",
+            Self::BlockTooLarge { .. } => "BLOCK_TOO_LARGE",
+            Self::MissingCoinbase => "MISSING_COINBASE",
+            Self::InvalidCoinbase(_) => "INVALID_COINBASE",
+            Self::InvalidBlock(_) => "INVALID_BLOCK",
+            Self::InvalidTransaction(_) => "INVALID_TRANSACTION",
+            Self::DoubleSpend { .. } => "DOUBLE_SPEND",
+            Self::InsufficientFunds { .. } => "INSUFFICIENT_FUNDS",
+            Self::InvalidSignature { .. } => "INVALID_SIGNATURE",
+            Self::OutputLocked { .. } => "OUTPUT_LOCKED",
+            Self::OutputNotFound { .. } => "OUTPUT_NOT_FOUND",
+            Self::OutputAlreadySpent { .. } => "OUTPUT_ALREADY_SPENT",
+            Self::AmountOverflow { .. } => "AMOUNT_OVERFLOW",
+            Self::AmountExceedsSupply { .. } => "AMOUNT_EXCEEDS_SUPPLY",
+            Self::InvalidRegistration(_) => "INVALID_REGISTRATION",
+            Self::PubkeyHashMismatch { .. } => "PUBKEY_HASH_MISMATCH",
+            Self::InvalidBond(_) => "INVALID_BOND",
+            Self::InvalidClaim(_) => "INVALID_CLAIM",
+            Self::InvalidBondClaim(_) => "INVALID_BOND_CLAIM",
+            Self::InvalidSlash(_) => "INVALID_SLASH",
+            Self::InvalidAddBond(_) => "INVALID_ADD_BOND",
+            Self::InvalidWithdrawalRequest(_) => "INVALID_WITHDRAWAL_REQUEST",
+            Self::InvalidClaimWithdrawal(_) => "INVALID_CLAIM_WITHDRAWAL",
+            Self::InvalidMintAsset(_) => "INVALID_MINT_ASSET",
+            Self::InvalidBurnAsset(_) => "INVALID_BURN_ASSET",
+            Self::InvalidEpochReward(_) => "INVALID_EPOCH_REWARD",
+            Self::UnexpectedEpochReward => "UNEXPECTED_EPOCH_REWARD",
+            Self::MissingEpochReward { .. } => "MISSING_EPOCH_REWARD",
+            Self::EpochRewardMismatch { .. } => "EPOCH_REWARD_MISMATCH",
+            Self::InvalidMaintainerChange(_) => "INVALID_MAINTAINER_CHANGE",
+            Self::InvalidDelegation(_) => "INVALID_DELEGATION",
+            Self::InvalidProtocolActivation(_) => "INVALID_PROTOCOL_ACTIVATION",
+            Self::InsufficientFee { .. } => "INSUFFICIENT_FEE",
+            Self::InvalidPool(_) => "INVALID_POOL",
+            Self::InvalidSwap(_) => "INVALID_SWAP",
+            Self::InvalidLiquidity(_) => "INVALID_LIQUIDITY",
+            Self::InvalidFractionalization(_) => "INVALID_FRACTIONALIZATION",
+            Self::InvalidRedemption(_) => "INVALID_REDEMPTION",
+            Self::MissingPublicKey { .. } => "MISSING_PUBLIC_KEY",
+        }
+    }
+
+    /// Serializes this error to structured JSON for agentic consumption.
+    ///
+    /// Returns a JSON object with:
+    /// - `error_code`: stable machine-readable code (same as `error_code()`)
+    /// - `message`: human-readable description (same as `Display`)
+    /// - All structured fields from the variant (when available)
+    ///
+    /// Agents can match on `error_code` and read fields programmatically
+    /// without parsing the message string.
+    pub fn to_structured_json(&self) -> Value {
+        let mut obj = serde_json::json!({
+            "error_code": self.error_code(),
+            "message": self.to_string(),
+        });
+
+        let map = obj.as_object_mut().unwrap();
+
+        match self {
+            Self::GenesisHashMismatch { got, expected } => {
+                map.insert("got".into(), Value::String(got.to_string()));
+                map.insert("expected".into(), Value::String(expected.to_string()));
+            }
+            Self::ForkIdMismatch { got, expected } => {
+                map.insert("got".into(), Value::String(got.to_string()));
+                map.insert("expected".into(), Value::String(expected.to_string()));
+            }
+            Self::InvalidVersion(v) => {
+                map.insert("version".into(), (*v).into());
+            }
+            Self::InvalidTimestamp { block, expected } => {
+                map.insert("block_timestamp".into(), (*block).into());
+                map.insert("expected_minimum".into(), (*expected).into());
+            }
+            Self::TimestampTooFuture(ts) => {
+                map.insert("timestamp".into(), (*ts).into());
+            }
+            Self::InvalidSlot { got, expected } => {
+                map.insert("got".into(), (*got).into());
+                map.insert("expected".into(), (*expected).into());
+            }
+            Self::SlotNotAdvancing { got, prev } => {
+                map.insert("got".into(), (*got).into());
+                map.insert("prev".into(), (*prev).into());
+            }
+            Self::SlotTooFuture {
+                got,
+                current,
+                max_future,
+            } => {
+                map.insert("got".into(), (*got).into());
+                map.insert("current".into(), (*current).into());
+                map.insert("max_future".into(), (*max_future).into());
+            }
+            Self::SlotTooPast {
+                got,
+                current,
+                max_past,
+            } => {
+                map.insert("got".into(), (*got).into());
+                map.insert("current".into(), (*current).into());
+                map.insert("max_past".into(), (*max_past).into());
+            }
+            Self::InvalidMerkleRoot { header, computed } => {
+                map.insert("header".into(), Value::String(header.to_string()));
+                map.insert("computed".into(), Value::String(computed.to_string()));
+            }
+            Self::InvalidDataRoot => {}
+            Self::InvalidVdfProof { reason } => {
+                map.insert("reason".into(), Value::String(reason.clone()));
+            }
+            Self::InvalidProducer {
+                producer,
+                slot,
+                reason,
+            } => {
+                map.insert("producer".into(), Value::String(producer.clone()));
+                map.insert("slot".into(), (*slot).into());
+                map.insert("reason".into(), Value::String(reason.clone()));
+            }
+            Self::BlockTooLarge { size, max } => {
+                map.insert("size".into(), (*size).into());
+                map.insert("max".into(), (*max).into());
+            }
+            Self::MissingCoinbase => {}
+            Self::InvalidCoinbase(reason) => {
+                map.insert("reason".into(), Value::String(reason.clone()));
+            }
+            Self::InvalidBlock(reason) => {
+                map.insert("reason".into(), Value::String(reason.clone()));
+            }
+            Self::InvalidTransaction(reason) => {
+                map.insert("reason".into(), Value::String(reason.clone()));
+            }
+            Self::DoubleSpend {
+                tx_hash,
+                output_index,
+            } => {
+                map.insert("tx_hash".into(), Value::String(tx_hash.to_hex()));
+                map.insert("output_index".into(), (*output_index).into());
+            }
+            Self::InsufficientFunds { inputs, outputs } => {
+                map.insert("inputs".into(), (*inputs).into());
+                map.insert("outputs".into(), (*outputs).into());
+            }
+            Self::InvalidSignature { index } => {
+                map.insert("input_index".into(), (*index).into());
+            }
+            Self::OutputLocked {
+                lock_height,
+                current_height,
+            } => {
+                map.insert("lock_height".into(), (*lock_height).into());
+                map.insert("current_height".into(), (*current_height).into());
+            }
+            Self::OutputNotFound {
+                tx_hash,
+                output_index,
+            } => {
+                map.insert("tx_hash".into(), Value::String(tx_hash.to_hex()));
+                map.insert("output_index".into(), (*output_index).into());
+            }
+            Self::OutputAlreadySpent {
+                tx_hash,
+                output_index,
+            } => {
+                map.insert("tx_hash".into(), Value::String(tx_hash.to_hex()));
+                map.insert("output_index".into(), (*output_index).into());
+            }
+            Self::AmountOverflow { context } => {
+                map.insert("context".into(), Value::String(context.clone()));
+            }
+            Self::AmountExceedsSupply { amount, max } => {
+                map.insert("amount".into(), (*amount).into());
+                map.insert("max_supply".into(), (*max).into());
+            }
+            Self::InvalidRegistration(reason) => {
+                map.insert("reason".into(), Value::String(reason.clone()));
+            }
+            Self::PubkeyHashMismatch { expected, got } => {
+                map.insert("expected".into(), Value::String(expected.to_string()));
+                map.insert("got".into(), Value::String(got.to_string()));
+            }
+            Self::InvalidBond(reason)
+            | Self::InvalidClaim(reason)
+            | Self::InvalidBondClaim(reason)
+            | Self::InvalidSlash(reason)
+            | Self::InvalidAddBond(reason)
+            | Self::InvalidWithdrawalRequest(reason)
+            | Self::InvalidClaimWithdrawal(reason)
+            | Self::InvalidMintAsset(reason)
+            | Self::InvalidBurnAsset(reason)
+            | Self::InvalidEpochReward(reason)
+            | Self::InvalidMaintainerChange(reason)
+            | Self::InvalidDelegation(reason)
+            | Self::InvalidProtocolActivation(reason)
+            | Self::InvalidPool(reason)
+            | Self::InvalidSwap(reason)
+            | Self::InvalidLiquidity(reason)
+            | Self::InvalidFractionalization(reason)
+            | Self::InvalidRedemption(reason) => {
+                map.insert("reason".into(), Value::String(reason.clone()));
+            }
+            Self::UnexpectedEpochReward => {}
+            Self::MissingEpochReward { epoch } => {
+                map.insert("epoch".into(), (*epoch).into());
+            }
+            Self::EpochRewardMismatch { reason } => {
+                map.insert("reason".into(), Value::String(reason.clone()));
+            }
+            Self::InsufficientFee {
+                actual,
+                minimum,
+                base,
+                extra_bytes,
+                per_byte,
+            } => {
+                map.insert("actual_fee".into(), (*actual).into());
+                map.insert("minimum_fee".into(), (*minimum).into());
+                map.insert("base_fee".into(), (*base).into());
+                map.insert("extra_bytes".into(), (*extra_bytes).into());
+                map.insert("per_byte_rate".into(), (*per_byte).into());
+            }
+            Self::MissingPublicKey {
+                index,
+                activation_height,
+            } => {
+                map.insert("input_index".into(), (*index).into());
+                map.insert("activation_height".into(), (*activation_height).into());
+            }
+        }
+
+        obj
+    }
 }
