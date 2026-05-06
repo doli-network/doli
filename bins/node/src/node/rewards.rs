@@ -329,30 +329,17 @@ impl Node {
             if producer_info.received_delegations.is_empty() {
                 reward_outputs.push((reward, pubkey_hash));
             } else {
-                // AUDIT-REWARD-003: Use epoch bond_snapshot (deterministic) instead
-                // of live UTXO to prevent cross-node divergence from mid-epoch withdrawals.
-                // Gated by security_audit_activation_height for consensus compatibility.
-                let activation = self
-                    .config
-                    .network
-                    .params()
-                    .security_audit_activation_height;
-                let own_bonds = if epoch_end_height >= activation {
-                    bond_for(producer_info).max(1)
-                } else {
-                    let utxo = self.utxo_set.read().await;
-                    let bonds = utxo
-                        .count_bonds(&pubkey_hash, self.config.network.bond_unit())
-                        .max(1) as u64;
-                    drop(utxo);
-                    bonds
-                };
+                // INC-I-056: bond_for() now returns the effective weight from bond_snapshot
+                // (own - delegated_away + received). To split the reward correctly between
+                // producer and delegators, extract the "own" portion by subtracting received.
+                let effective_bonds = bond_for(producer_info).max(1);
                 let delegated: u64 = producer_info
                     .received_delegations
                     .iter()
                     .map(|(_, c)| *c as u64)
                     .sum();
-                let total_bonds = own_bonds + delegated;
+                let own_bonds = effective_bonds.saturating_sub(delegated).max(1);
+                let total_bonds = effective_bonds; // own + received = effective
 
                 let own_share = reward * own_bonds / total_bonds;
                 let delegated_share = reward - own_share;

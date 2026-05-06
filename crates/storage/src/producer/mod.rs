@@ -35,6 +35,9 @@ mod set_registration;
 #[cfg(test)]
 #[allow(deprecated)]
 mod tests;
+#[cfg(test)]
+#[allow(deprecated)]
+mod tests_delegation;
 mod types;
 
 // Re-export everything for identical public API

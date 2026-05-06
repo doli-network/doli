@@ -307,13 +307,16 @@ impl Node {
             if let Some(data) = tx.withdrawal_request_data() {
                 // Validate: producer exists and has enough bonds
                 if let Some(info) = producers.get_by_pubkey(&data.producer_pubkey) {
+                    // INC-I-056: Subtract delegated_bonds — cannot withdraw bonds
+                    // that are delegated. Delegator must revoke delegation first.
                     let available = info
                         .bond_count
-                        .saturating_sub(info.withdrawal_pending_count);
+                        .saturating_sub(info.withdrawal_pending_count)
+                        .saturating_sub(info.delegated_bonds);
                     if data.bond_count > available {
                         warn!(
-                            "WithdrawalRequest: not enough bonds (requested {}, available {})",
-                            data.bond_count, available
+                            "WithdrawalRequest: not enough bonds (requested {}, available {}, delegated={})",
+                            data.bond_count, available, info.delegated_bonds
                         );
                     } else {
                         // TX is on-chain (passed consensus validation). Always enqueue

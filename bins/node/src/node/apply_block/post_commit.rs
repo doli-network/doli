@@ -189,15 +189,22 @@ impl Node {
                 );
                 self.epoch_state.bond_snapshot.clone()
             } else {
-                let utxo = self.utxo_set.read().await;
                 let producers = self.producer_set.read().await;
                 let active = producers.active_producers_at_height(height);
+                let audit_activation = self
+                    .config
+                    .network
+                    .params()
+                    .security_audit_activation_height;
                 let mut snap = HashMap::new();
                 for p in &active {
                     let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, p.public_key.as_bytes());
-                    let count = utxo
-                        .count_bonds(&pubkey_hash, self.config.network.bond_unit())
-                        .max(1) as u64;
+                    // INC-I-056: Use delegation-adjusted weight instead of raw UTXO count.
+                    // selection_weight_at() subtracts delegated_bonds and adds received_delegations,
+                    // ensuring the bond snapshot reflects effective scheduling/reward weight.
+                    // Safe at epoch boundary: ProducerSet is consensus state, identical across nodes.
+                    // No-op when no delegations exist (delegated_bonds=0, received_delegations=[]).
+                    let count = p.selection_weight_at(height, audit_activation).max(1);
                     snap.insert(pubkey_hash, count);
                 }
                 let total: u64 = snap.values().sum();

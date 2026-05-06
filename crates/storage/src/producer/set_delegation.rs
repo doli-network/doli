@@ -33,10 +33,14 @@ impl ProducerSet {
         if !delegator.is_active() {
             return Err("delegator is not active".into());
         }
-        if bond_count > delegator.bond_count {
+        // INC-I-056: Available bonds = total - pending_withdrawal - already_delegated
+        let available = delegator
+            .bond_count
+            .saturating_sub(delegator.withdrawal_pending_count);
+        if bond_count > available {
             return Err(format!(
-                "insufficient bonds: has {}, delegating {}",
-                delegator.bond_count, bond_count
+                "insufficient bonds: has {}, pending_withdrawal={}, available={}, delegating {}",
+                delegator.bond_count, delegator.withdrawal_pending_count, available, bond_count
             ));
         }
         if delegator.delegated_to.is_some() {
