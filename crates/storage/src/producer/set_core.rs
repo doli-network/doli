@@ -124,8 +124,19 @@ impl ProducerSet {
                     bond_count,
                     bond_unit,
                 } => {
+                    let pubkey_hash = crypto_hash(pubkey.as_bytes());
                     if let Some(producer_info) = self.get_by_pubkey_mut(&pubkey) {
                         producer_info.apply_withdrawal(bond_count, bond_unit);
+                    }
+                    // INC-I-056: If apply_withdrawal caused auto-exit (bond_count
+                    // reached 0), clean up all delegation state. apply_withdrawal
+                    // operates on ProducerInfo and cannot do cross-producer cleanup.
+                    if self
+                        .producers
+                        .get(&pubkey_hash)
+                        .is_some_and(|p| matches!(p.status, ProducerStatus::Exited))
+                    {
+                        self.cleanup_all_delegations(&pubkey_hash);
                     }
                 }
             }

@@ -7,29 +7,6 @@ use super::types::{ProducerInfo, ProducerSet, ProducerStatus};
 use crate::StorageError;
 
 impl ProducerSet {
-    /// Clear all delegations received by a producer (called on exit/slash).
-    ///
-    /// Resets each delegator's `delegated_to` and `delegated_bonds` fields,
-    /// then clears the exiting producer's `received_delegations` list.
-    fn clear_received_delegations(&mut self, pubkey_hash: &Hash) {
-        let delegator_hashes: Vec<(Hash, u32)> = self
-            .producers
-            .get(pubkey_hash)
-            .map(|p| p.received_delegations.clone())
-            .unwrap_or_default();
-
-        for (delegator_hash, _) in &delegator_hashes {
-            if let Some(delegator) = self.producers.get_mut(delegator_hash) {
-                delegator.delegated_to = None;
-                delegator.delegated_bonds = 0;
-            }
-        }
-
-        if let Some(producer) = self.producers.get_mut(pubkey_hash) {
-            producer.received_delegations.clear();
-        }
-    }
-
     /// Process exit request for a producer (starts unbonding period)
     pub fn request_exit(
         &mut self,
@@ -52,10 +29,9 @@ impl ProducerSet {
                 );
                 info.start_unbonding(current_height);
                 self.active_cache = None;
-                // AUDIT-PROD-003: Clean up any delegations this producer received.
-                // Always call — no delegations exist before this was deployed,
-                // so no height gate needed (the function is a no-op if empty).
-                self.clear_received_delegations(&key);
+                // AUDIT-PROD-003 + INC-I-056: Clean up ALL delegation state (both
+                // incoming and outgoing) for the exiting producer.
+                self.cleanup_all_delegations(&key);
                 // Maintain unbonding index
                 self.unbonding_index
                     .entry(current_height)
@@ -160,6 +136,9 @@ impl ProducerSet {
                     info.complete_exit();
                     completed.push(info.clone());
                     self.exit_history.insert(*key, current_height);
+                    // INC-I-056: Defense-in-depth — clean any delegation state
+                    // that may have been created during the unbonding period.
+                    self.cleanup_all_delegations(key);
                 }
             }
             // Remove from index
@@ -203,8 +182,8 @@ impl ProducerSet {
         );
         info.slash(current_height);
 
-        // Clean up any delegations this producer received
-        self.clear_received_delegations(&key);
+        // INC-I-056: Clean up ALL delegation state (both incoming and outgoing)
+        self.cleanup_all_delegations(&key);
 
         // Record in exit history with current height (slashed producers lose all seniority)
         self.exit_history.insert(key, current_height);
