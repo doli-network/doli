@@ -19,6 +19,9 @@ impl ProducerSet {
     ) -> Result<(), String> {
         // AUDIT-PROD-002: Prevent self-delegation (always enforced — no
         // self-delegation transactions exist on chain prior to this fix).
+        if bond_count == 0 {
+            return Err("cannot delegate 0 bonds".into());
+        }
         if delegator_pubkey == delegatee_pubkey {
             return Err("cannot delegate bonds to self".into());
         }
