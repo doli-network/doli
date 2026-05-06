@@ -309,16 +309,31 @@ impl Node {
                 if let Some(info) = producers.get_by_pubkey(&data.producer_pubkey) {
                     // INC-I-056: Subtract delegated_bonds — cannot withdraw bonds
                     // that are delegated. Delegator must revoke delegation first.
-                    let available = info
+                    let remaining = info
                         .bond_count
-                        .saturating_sub(info.withdrawal_pending_count)
-                        .saturating_sub(info.delegated_bonds);
+                        .saturating_sub(info.withdrawal_pending_count);
+                    let available = remaining.saturating_sub(info.delegated_bonds);
                     if data.bond_count > available {
-                        warn!(
-                            "WithdrawalRequest: not enough bonds (requested {}, available {}, delegated={})",
-                            data.bond_count, available, info.delegated_bonds
-                        );
-                    } else {
+                        if info.delegated_bonds > 0 && data.bond_count == remaining {
+                            // INC-I-058: Full exit blocked by active delegation.
+                            // All remaining bonds are being withdrawn — auto-revoke
+                            // delegation so the exit can proceed at epoch boundary.
+                            info!(
+                                "WithdrawalRequest: auto-revoking delegation ({} delegated bonds) for full exit of producer {}",
+                                info.delegated_bonds,
+                                crypto_hash(data.producer_pubkey.as_bytes())
+                            );
+                            producers.queue_update(PendingProducerUpdate::RevokeDelegation {
+                                delegator: data.producer_pubkey,
+                            });
+                        } else {
+                            warn!(
+                                "WithdrawalRequest: not enough bonds (requested {}, available {}, delegated={})",
+                                data.bond_count, available, info.delegated_bonds
+                            );
+                        }
+                    }
+                    if data.bond_count <= remaining {
                         // TX is on-chain (passed consensus validation). Always enqueue
                         // the deferred update. Previous code had a redundant FIFO check
                         // here that silently dropped the update when output included
