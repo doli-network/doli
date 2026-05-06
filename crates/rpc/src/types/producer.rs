@@ -73,6 +73,28 @@ pub struct ProducerResponse {
     /// Empty string if producer registered before BLS was available.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub bls_pubkey: String,
+    /// Public key of the producer this one delegates bond weight to (hex, empty if none)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegated_to: Option<String>,
+    /// Number of bonds delegated away
+    #[serde(default)]
+    pub delegated_bonds: u32,
+    /// Delegations received from other producers
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub received_delegations: Vec<ReceivedDelegationInfo>,
+    /// Effective selection weight (own bonds - delegated + received delegations)
+    #[serde(default)]
+    pub selection_weight: u64,
+}
+
+/// A delegation received from another producer
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReceivedDelegationInfo {
+    /// Delegator's address hash (hex)
+    pub delegator_hash: String,
+    /// Number of bonds delegated
+    pub bond_count: u32,
 }
 
 /// Pending withdrawal response

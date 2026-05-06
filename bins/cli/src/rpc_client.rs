@@ -229,6 +229,29 @@ pub struct ProducerInfo {
     /// Pending epoch-deferred updates
     #[serde(default)]
     pub pending_updates: Vec<PendingUpdateInfo>,
+    /// Public key of the producer this one delegates to (hex)
+    #[serde(default)]
+    pub delegated_to: Option<String>,
+    /// Number of bonds delegated away
+    #[serde(default)]
+    pub delegated_bonds: u32,
+    /// Delegations received from other producers
+    #[serde(default)]
+    pub received_delegations: Vec<ReceivedDelegationInfo>,
+    /// Effective selection weight (own bonds - delegated + received delegations)
+    #[serde(default)]
+    pub selection_weight: u64,
+}
+
+/// A delegation received from another producer
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReceivedDelegationInfo {
+    /// Delegator's address hash (hex)
+    pub delegator_hash: String,
+    /// Number of bonds delegated
+    pub bond_count: u32,
 }
 
 fn default_bond_count() -> u32 {

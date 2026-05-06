@@ -102,6 +102,20 @@ impl RpcContext {
             .map(pending_update_to_info)
             .collect();
 
+        let delegated_to = info.delegated_to.map(|pk| hex::encode(pk.as_bytes()));
+        let delegated_bonds = info.delegated_bonds;
+        let received_delegations: Vec<ReceivedDelegationInfo> = info
+            .received_delegations
+            .iter()
+            .map(|(hash, count)| ReceivedDelegationInfo {
+                delegator_hash: hex::encode(hash.as_bytes()),
+                bond_count: *count,
+            })
+            .collect();
+        // Pass 0 for audit_activation to always use the corrected formula
+        // (subtract delegated bonds from own bonds — AUDIT-PROD-001)
+        let selection_weight = info.selection_weight_at(chain_state.best_height, 0);
+
         let response = ProducerResponse {
             public_key: params.public_key,
             address_hash: hex::encode(pubkey_hash.as_bytes()),
@@ -117,6 +131,10 @@ impl RpcContext {
             } else {
                 hex::encode(&info.bls_pubkey)
             },
+            delegated_to,
+            delegated_bonds,
+            received_delegations,
+            selection_weight,
         };
 
         serde_json::to_value(response).map_err(|e| RpcError::internal_error(e.to_string()))
@@ -184,6 +202,18 @@ impl RpcContext {
                     .map(|updates| updates.iter().map(|u| pending_update_to_info(u)).collect())
                     .unwrap_or_default();
 
+                let delegated_to = info.delegated_to.map(|pk| hex::encode(pk.as_bytes()));
+                let delegated_bonds_val = info.delegated_bonds;
+                let received_delegations: Vec<ReceivedDelegationInfo> = info
+                    .received_delegations
+                    .iter()
+                    .map(|(hash, count)| ReceivedDelegationInfo {
+                        delegator_hash: hex::encode(hash.as_bytes()),
+                        bond_count: *count,
+                    })
+                    .collect();
+                let selection_weight = info.selection_weight_at(chain_state.best_height, 0);
+
                 ProducerResponse {
                     public_key: hex::encode(info.public_key.as_bytes()),
                     address_hash: hex::encode(addr_hash.as_bytes()),
@@ -199,6 +229,10 @@ impl RpcContext {
                     } else {
                         hex::encode(&info.bls_pubkey)
                     },
+                    delegated_to,
+                    delegated_bonds: delegated_bonds_val,
+                    received_delegations,
+                    selection_weight,
                 }
             })
             .collect();
@@ -228,6 +262,10 @@ impl RpcContext {
                 } else {
                     hex::encode(&info.bls_pubkey)
                 },
+                delegated_to: None,
+                delegated_bonds: 0,
+                received_delegations: Vec::new(),
+                selection_weight: 0,
             });
         }
 

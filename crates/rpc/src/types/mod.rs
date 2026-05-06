@@ -96,6 +96,10 @@ mod tests {
             }],
             pending_updates: Vec::new(),
             bls_pubkey: String::new(),
+            delegated_to: None,
+            delegated_bonds: 0,
+            received_delegations: Vec::new(),
+            selection_weight: 1,
         };
 
         let json = serde_json::to_string(&response).unwrap();
@@ -120,6 +124,10 @@ mod tests {
             pending_withdrawals: Vec::new(),
             pending_updates: Vec::new(),
             bls_pubkey: String::new(),
+            delegated_to: None,
+            delegated_bonds: 0,
+            received_delegations: Vec::new(),
+            selection_weight: 1,
         };
 
         let json = serde_json::to_string(&response).unwrap();

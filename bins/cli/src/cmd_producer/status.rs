@@ -137,6 +137,10 @@ pub(super) async fn handle_status(
                         }
                         "exit" => println!("  - Exit producer set"),
                         "register" => println!("  + Registration pending"),
+                        "delegate_bond" => {
+                            println!("  + Delegate {} bond(s)", pu.bond_count.unwrap_or(0))
+                        }
+                        "revoke_delegation" => println!("  - Revoke delegation"),
                         other => println!("  ? {}", other),
                     }
                 }

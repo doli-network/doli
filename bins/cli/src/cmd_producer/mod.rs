@@ -1,5 +1,6 @@
 mod bonds;
 mod common;
+mod delegation;
 mod dispatch;
 mod exit;
 mod register;

@@ -7,6 +7,7 @@ use crate::rpc_client::RpcClient;
 use crate::wallet::Wallet;
 
 use super::bonds::{handle_add_bond, handle_simulate_withdrawal};
+use super::delegation::{handle_delegate, handle_delegation_status, handle_revoke_delegation};
 use super::exit::{handle_exit, handle_slash};
 use super::register::handle_register;
 use super::status::{handle_bonds, handle_list, handle_status};
@@ -68,6 +69,20 @@ pub(crate) async fn cmd_producer(
 
         ProducerCommands::Slash { block1, block2 } => {
             handle_slash(&rpc, block1, block2).await?;
+        }
+
+        ProducerCommands::Delegate { delegatee, bonds } => {
+            let wallet = Wallet::load(wallet_path)?;
+            handle_delegate(&wallet, &rpc, &delegatee, bonds).await?;
+        }
+
+        ProducerCommands::RevokeDelegation => {
+            let wallet = Wallet::load(wallet_path)?;
+            handle_revoke_delegation(&wallet, &rpc).await?;
+        }
+
+        ProducerCommands::DelegationStatus { address } => {
+            handle_delegation_status(wallet_path, &rpc, address).await?;
         }
     }
 

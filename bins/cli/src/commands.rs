@@ -889,6 +889,26 @@ pub(crate) enum ProducerCommands {
         #[arg(long)]
         block2: String,
     },
+
+    /// Delegate bond weight to another producer
+    Delegate {
+        /// Delegatee's public key (hex) or address
+        delegatee: String,
+
+        /// Number of bonds to delegate (1-100)
+        #[arg(short, long)]
+        bonds: u32,
+    },
+
+    /// Revoke active delegation (unbonding delay applies)
+    RevokeDelegation,
+
+    /// Show delegation status for a producer
+    DelegationStatus {
+        /// Public key (optional, uses wallet if not specified)
+        #[arg(short, long)]
+        address: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]

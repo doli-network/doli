@@ -617,10 +617,20 @@ fn test_delegator_can_revoke_from_offline_producer() {
 
     let mut ps = ProducerSet::new();
     let info_delegatee = ProducerInfo::new_with_bonds(
-        *kp_delegatee.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 0), 0, 5,
+        *kp_delegatee.public_key(),
+        0,
+        5 * BOND_UNIT,
+        (Hash::ZERO, 0),
+        0,
+        5,
     );
     let info_delegator = ProducerInfo::new_with_bonds(
-        *kp_delegator.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 1), 0, 5,
+        *kp_delegator.public_key(),
+        0,
+        5 * BOND_UNIT,
+        (Hash::ZERO, 1),
+        0,
+        5,
     );
     ps.register(info_delegatee, 0).unwrap();
     ps.register(info_delegator, 0).unwrap();
@@ -636,13 +646,18 @@ fn test_delegator_can_revoke_from_offline_producer() {
     assert_eq!(d.delegated_bonds, 0, "revoke must restore delegator bonds");
     assert!(d.delegated_to.is_none());
     assert_eq!(
-        d.selection_weight(), 5,
+        d.selection_weight(),
+        5,
         "delegator weight must be fully restored after revoke"
     );
 
     let e = ps.get_by_pubkey(kp_delegatee.public_key()).unwrap();
     assert!(e.received_delegations.is_empty());
-    assert_eq!(e.selection_weight(), 5, "delegatee weight back to own bonds");
+    assert_eq!(
+        e.selection_weight(),
+        5,
+        "delegatee weight back to own bonds"
+    );
 }
 
 // --- Scenario 2: Revoke after delegatee already slashed in same epoch ---
@@ -658,13 +673,16 @@ fn test_revoke_after_delegatee_slashed_same_epoch() {
     ps.register(
         ProducerInfo::new_with_bonds(*kp_a.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 0), 0, 5),
         0,
-    ).unwrap();
+    )
+    .unwrap();
     ps.register(
         ProducerInfo::new_with_bonds(*kp_d.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 1), 0, 5),
         0,
-    ).unwrap();
+    )
+    .unwrap();
 
-    ps.delegate_bonds(kp_d.public_key(), kp_a.public_key(), 3).unwrap();
+    ps.delegate_bonds(kp_d.public_key(), kp_a.public_key(), 3)
+        .unwrap();
 
     // Slash the delegatee — cleanup_all_delegations runs, clearing D's delegation
     ps.slash_producer(kp_a.public_key(), 100).unwrap();
@@ -695,13 +713,16 @@ fn test_cancel_exit_does_not_restore_cleaned_delegations() {
     ps.register(
         ProducerInfo::new_with_bonds(*kp_a.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 0), 0, 5),
         0,
-    ).unwrap();
+    )
+    .unwrap();
     ps.register(
         ProducerInfo::new_with_bonds(*kp_d.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 1), 0, 5),
         0,
-    ).unwrap();
+    )
+    .unwrap();
 
-    ps.delegate_bonds(kp_d.public_key(), kp_a.public_key(), 3).unwrap();
+    ps.delegate_bonds(kp_d.public_key(), kp_a.public_key(), 3)
+        .unwrap();
 
     // A requests exit — this cleans all delegations
     ps.request_exit(kp_a.public_key(), 100).unwrap();
@@ -722,16 +743,25 @@ fn test_cancel_exit_does_not_restore_cleaned_delegations() {
         "cancel_exit must not restore cleaned delegations"
     );
     let d = ps.get_by_pubkey(kp_d.public_key()).unwrap();
-    assert_eq!(d.delegated_bonds, 0, "cancel_exit must not restore delegator state");
+    assert_eq!(
+        d.delegated_bonds, 0,
+        "cancel_exit must not restore delegator state"
+    );
     assert!(d.delegated_to.is_none());
 
     // Weight should reflect no delegation
     assert_eq!(
-        ps.get_by_pubkey(kp_a.public_key()).unwrap().selection_weight(), 5,
+        ps.get_by_pubkey(kp_a.public_key())
+            .unwrap()
+            .selection_weight(),
+        5,
         "A's weight must be 5 (no received delegations)"
     );
     assert_eq!(
-        ps.get_by_pubkey(kp_d.public_key()).unwrap().selection_weight(), 5,
+        ps.get_by_pubkey(kp_d.public_key())
+            .unwrap()
+            .selection_weight(),
+        5,
         "D's weight must be 5 (no active delegation)"
     );
 }
@@ -749,13 +779,16 @@ fn test_reregistration_after_exit_starts_clean() {
     ps.register(
         ProducerInfo::new_with_bonds(*kp_a.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 0), 0, 5),
         0,
-    ).unwrap();
+    )
+    .unwrap();
     ps.register(
         ProducerInfo::new_with_bonds(*kp_d.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 1), 0, 5),
         0,
-    ).unwrap();
+    )
+    .unwrap();
 
-    ps.delegate_bonds(kp_d.public_key(), kp_a.public_key(), 3).unwrap();
+    ps.delegate_bonds(kp_d.public_key(), kp_a.public_key(), 3)
+        .unwrap();
 
     // D exits (cleanup runs)
     ps.request_exit(kp_d.public_key(), 100).unwrap();
@@ -768,15 +801,33 @@ fn test_reregistration_after_exit_starts_clean() {
 
     // D re-registers with fresh state via new_with_prior_exit
     let info_d2 = ProducerInfo::new_with_prior_exit(
-        *kp_d.public_key(), 200, 3 * BOND_UNIT, (Hash::ZERO, 2), 1, BOND_UNIT,
+        *kp_d.public_key(),
+        200,
+        3 * BOND_UNIT,
+        (Hash::ZERO, 2),
+        1,
+        BOND_UNIT,
     );
     ps.register(info_d2, 200).unwrap();
 
     let d = ps.get_by_pubkey(kp_d.public_key()).unwrap();
-    assert_eq!(d.delegated_bonds, 0, "re-registration must start with 0 delegated_bonds");
-    assert!(d.delegated_to.is_none(), "re-registration must start with None delegated_to");
-    assert!(d.received_delegations.is_empty(), "re-registration must start with empty received");
-    assert_eq!(d.selection_weight(), 3, "weight must reflect only own bonds");
+    assert_eq!(
+        d.delegated_bonds, 0,
+        "re-registration must start with 0 delegated_bonds"
+    );
+    assert!(
+        d.delegated_to.is_none(),
+        "re-registration must start with None delegated_to"
+    );
+    assert!(
+        d.received_delegations.is_empty(),
+        "re-registration must start with empty received"
+    );
+    assert_eq!(
+        d.selection_weight(),
+        3,
+        "weight must reflect only own bonds"
+    );
     assert!(d.has_prior_exit, "must have prior_exit flag set");
 }
 
@@ -793,11 +844,13 @@ fn test_delegate_to_unbonding_producer_succeeds() {
     ps.register(
         ProducerInfo::new_with_bonds(*kp_a.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 0), 0, 5),
         0,
-    ).unwrap();
+    )
+    .unwrap();
     ps.register(
         ProducerInfo::new_with_bonds(*kp_d.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 1), 0, 5),
         0,
-    ).unwrap();
+    )
+    .unwrap();
 
     // A enters unbonding — is_active() still true
     ps.request_exit(kp_a.public_key(), 50).unwrap();
@@ -809,14 +862,20 @@ fn test_delegate_to_unbonding_producer_succeeds() {
     // Note: request_exit already cleaned A's delegation state.
     // After exit, A's received_delegations is empty but A is still active.
     // The delegation should succeed because both are "active".
-    assert!(result.is_ok(), "delegation to unbonding producer should be allowed");
+    assert!(
+        result.is_ok(),
+        "delegation to unbonding producer should be allowed"
+    );
 
     // When A's unbonding completes, delegations should be cleaned
     let completed = ps.process_unbonding(50, 0);
     assert!(!completed.is_empty());
 
     let d = ps.get_by_pubkey(kp_d.public_key()).unwrap();
-    assert_eq!(d.delegated_bonds, 0, "must be cleaned when delegatee unbonding completes");
+    assert_eq!(
+        d.delegated_bonds, 0,
+        "must be cleaned when delegatee unbonding completes"
+    );
     assert!(d.delegated_to.is_none());
 }
 
@@ -875,7 +934,8 @@ fn test_100_delegators_reward_split_no_dust_loss() {
     assert!(
         last_reward <= normal_reward + max_deviation,
         "last delegator reward {} is suspiciously high vs normal {} (remainder handling)",
-        last_reward, normal_reward
+        last_reward,
+        normal_reward
     );
 }
 
@@ -892,14 +952,17 @@ fn test_partial_withdrawal_with_active_delegation() {
     ps.register(
         ProducerInfo::new_with_bonds(*kp_a.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 0), 0, 5),
         0,
-    ).unwrap();
+    )
+    .unwrap();
     ps.register(
         ProducerInfo::new_with_bonds(*kp_d.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 1), 0, 5),
         0,
-    ).unwrap();
+    )
+    .unwrap();
 
     // D delegates 3 bonds, has 5 total
-    ps.delegate_bonds(kp_d.public_key(), kp_a.public_key(), 3).unwrap();
+    ps.delegate_bonds(kp_d.public_key(), kp_a.public_key(), 3)
+        .unwrap();
 
     // D withdraws 1 bond (has 5 - 3 delegated = 2 available)
     // Queue withdrawal of 1 bond
@@ -916,7 +979,8 @@ fn test_partial_withdrawal_with_active_delegation() {
     assert_eq!(d.delegated_bonds, 3, "delegated_bonds unchanged");
     // selection_weight = 4 - 3 = 1 (must not underflow)
     assert_eq!(
-        d.selection_weight(), 1,
+        d.selection_weight(),
+        1,
         "weight must be 1 (4 bonds - 3 delegated), no underflow"
     );
 }
@@ -934,13 +998,16 @@ fn test_withdrawal_below_delegated_bonds_saturates_weight() {
     ps.register(
         ProducerInfo::new_with_bonds(*kp_a.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 0), 0, 5),
         0,
-    ).unwrap();
+    )
+    .unwrap();
     ps.register(
         ProducerInfo::new_with_bonds(*kp_d.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 1), 0, 5),
         0,
-    ).unwrap();
+    )
+    .unwrap();
 
-    ps.delegate_bonds(kp_d.public_key(), kp_a.public_key(), 3).unwrap();
+    ps.delegate_bonds(kp_d.public_key(), kp_a.public_key(), 3)
+        .unwrap();
 
     // Force bond_count below delegated_bonds to simulate edge case
     // (This shouldn't happen via normal paths, but test defense-in-depth)
@@ -972,25 +1039,45 @@ fn test_slash_delegatee_restores_delegator_weight_immediately() {
     ps.register(
         ProducerInfo::new_with_bonds(*kp_a.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 0), 0, 5),
         0,
-    ).unwrap();
+    )
+    .unwrap();
     ps.register(
         ProducerInfo::new_with_bonds(*kp_d.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 1), 0, 5),
         0,
-    ).unwrap();
+    )
+    .unwrap();
 
-    ps.delegate_bonds(kp_d.public_key(), kp_a.public_key(), 4).unwrap();
+    ps.delegate_bonds(kp_d.public_key(), kp_a.public_key(), 4)
+        .unwrap();
 
     // Before slash: D has weight 1 (5-4), A has weight 9 (5+4)
-    assert_eq!(ps.get_by_pubkey(kp_d.public_key()).unwrap().selection_weight(), 1);
-    assert_eq!(ps.get_by_pubkey(kp_a.public_key()).unwrap().selection_weight(), 9);
+    assert_eq!(
+        ps.get_by_pubkey(kp_d.public_key())
+            .unwrap()
+            .selection_weight(),
+        1
+    );
+    assert_eq!(
+        ps.get_by_pubkey(kp_a.public_key())
+            .unwrap()
+            .selection_weight(),
+        9
+    );
 
     // Slash A
     ps.slash_producer(kp_a.public_key(), 100).unwrap();
 
     // D's weight must be immediately restored
     let d = ps.get_by_pubkey(kp_d.public_key()).unwrap();
-    assert_eq!(d.delegated_bonds, 0, "slash must clear delegator's delegated_bonds");
-    assert_eq!(d.selection_weight(), 5, "delegator weight must be fully restored immediately");
+    assert_eq!(
+        d.delegated_bonds, 0,
+        "slash must clear delegator's delegated_bonds"
+    );
+    assert_eq!(
+        d.selection_weight(),
+        5,
+        "delegator weight must be fully restored immediately"
+    );
 
     // A is slashed — weight 0
     let a = ps.get_by_pubkey(kp_a.public_key()).unwrap();
@@ -1010,16 +1097,33 @@ fn test_minimum_delegation_economic_proportionality() {
 
     let mut ps = ProducerSet::new();
     ps.register(
-        ProducerInfo::new_with_bonds(*kp_a.public_key(), 0, 100 * BOND_UNIT, (Hash::ZERO, 0), 0, 100),
+        ProducerInfo::new_with_bonds(
+            *kp_a.public_key(),
+            0,
+            100 * BOND_UNIT,
+            (Hash::ZERO, 0),
+            0,
+            100,
+        ),
         0,
-    ).unwrap();
+    )
+    .unwrap();
     ps.register(
-        ProducerInfo::new_with_bonds(*kp_griefer.public_key(), 0, 1 * BOND_UNIT, (Hash::ZERO, 1), 0, 1),
+        ProducerInfo::new_with_bonds(
+            *kp_griefer.public_key(),
+            0,
+            BOND_UNIT,
+            (Hash::ZERO, 1),
+            0,
+            1,
+        ),
         0,
-    ).unwrap();
+    )
+    .unwrap();
 
     // Griefer delegates 1 bond to A
-    ps.delegate_bonds(kp_griefer.public_key(), kp_a.public_key(), 1).unwrap();
+    ps.delegate_bonds(kp_griefer.public_key(), kp_a.public_key(), 1)
+        .unwrap();
 
     // Simulate reward split: A has 100 own + 1 received = 101 effective
     let effective_bonds = 101u64;
@@ -1061,11 +1165,13 @@ fn test_same_epoch_delegate_then_revoke_net_zero() {
     ps.register(
         ProducerInfo::new_with_bonds(*kp_a.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 0), 0, 5),
         0,
-    ).unwrap();
+    )
+    .unwrap();
     ps.register(
         ProducerInfo::new_with_bonds(*kp_d.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 1), 0, 5),
         0,
-    ).unwrap();
+    )
+    .unwrap();
 
     // Queue: delegate 3, then revoke — FIFO order
     ps.queue_update(PendingProducerUpdate::DelegateBond {
@@ -1081,7 +1187,10 @@ fn test_same_epoch_delegate_then_revoke_net_zero() {
 
     // Net effect: no delegation
     let d = ps.get_by_pubkey(kp_d.public_key()).unwrap();
-    assert_eq!(d.delegated_bonds, 0, "delegate+revoke in same epoch = no delegation");
+    assert_eq!(
+        d.delegated_bonds, 0,
+        "delegate+revoke in same epoch = no delegation"
+    );
     assert!(d.delegated_to.is_none());
     assert_eq!(d.selection_weight(), 5);
 
@@ -1102,11 +1211,13 @@ fn test_same_epoch_revoke_then_delegate() {
     ps.register(
         ProducerInfo::new_with_bonds(*kp_a.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 0), 0, 5),
         0,
-    ).unwrap();
+    )
+    .unwrap();
     ps.register(
         ProducerInfo::new_with_bonds(*kp_d.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 1), 0, 5),
         0,
-    ).unwrap();
+    )
+    .unwrap();
 
     // Queue: revoke (no-op) then delegate
     ps.queue_update(PendingProducerUpdate::RevokeDelegation {
@@ -1145,27 +1256,30 @@ fn test_double_delegation_rejected() {
     ps.register(
         ProducerInfo::new_with_bonds(*kp_a.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 0), 0, 5),
         0,
-    ).unwrap();
+    )
+    .unwrap();
     ps.register(
         ProducerInfo::new_with_bonds(*kp_b.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 1), 0, 5),
         0,
-    ).unwrap();
+    )
+    .unwrap();
     ps.register(
         ProducerInfo::new_with_bonds(*kp_d.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 2), 0, 5),
         0,
-    ).unwrap();
+    )
+    .unwrap();
 
     // First delegation succeeds
-    ps.delegate_bonds(kp_d.public_key(), kp_a.public_key(), 2).unwrap();
+    ps.delegate_bonds(kp_d.public_key(), kp_a.public_key(), 2)
+        .unwrap();
 
     // Second delegation to different delegatee must fail
     let result = ps.delegate_bonds(kp_d.public_key(), kp_b.public_key(), 2);
+    assert!(result.is_err(), "double delegation must be rejected");
     assert!(
-        result.is_err(),
-        "double delegation must be rejected"
-    );
-    assert!(
-        result.unwrap_err().contains("already has an active delegation"),
+        result
+            .unwrap_err()
+            .contains("already has an active delegation"),
         "error message should indicate existing delegation"
     );
 
@@ -1174,7 +1288,10 @@ fn test_double_delegation_rejected() {
         .iter()
         .map(|pk| ps.get_by_pubkey(pk).unwrap().selection_weight())
         .sum();
-    assert_eq!(total, 15, "weight must be conserved after rejected double delegation");
+    assert_eq!(
+        total, 15,
+        "weight must be conserved after rejected double delegation"
+    );
 }
 
 // --- Scenario 13: Self-delegation attempt ---
@@ -1188,11 +1305,14 @@ fn test_self_delegation_rejected() {
     ps.register(
         ProducerInfo::new_with_bonds(*kp.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 0), 0, 5),
         0,
-    ).unwrap();
+    )
+    .unwrap();
 
     let result = ps.delegate_bonds(kp.public_key(), kp.public_key(), 3);
     assert!(result.is_err(), "self-delegation must be rejected");
-    assert!(result.unwrap_err().contains("cannot delegate bonds to self"));
+    assert!(result
+        .unwrap_err()
+        .contains("cannot delegate bonds to self"));
 }
 
 // --- Scenario 14: Delegate to non-existent producer ---
@@ -1206,10 +1326,14 @@ fn test_delegate_to_nonexistent_producer() {
     ps.register(
         ProducerInfo::new_with_bonds(*kp_d.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 0), 0, 5),
         0,
-    ).unwrap();
+    )
+    .unwrap();
 
     let result = ps.delegate_bonds(kp_d.public_key(), kp_ghost.public_key(), 1);
-    assert!(result.is_err(), "delegation to non-existent producer must fail");
+    assert!(
+        result.is_err(),
+        "delegation to non-existent producer must fail"
+    );
     assert!(result.unwrap_err().contains("delegatee not found"));
 }
 
@@ -1224,11 +1348,13 @@ fn test_delegate_to_exited_producer_rejected() {
     ps.register(
         ProducerInfo::new_with_bonds(*kp_a.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 0), 0, 5),
         0,
-    ).unwrap();
+    )
+    .unwrap();
     ps.register(
         ProducerInfo::new_with_bonds(*kp_d.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 1), 0, 5),
         0,
-    ).unwrap();
+    )
+    .unwrap();
 
     // Force A to Exited status
     let a_hash = crypto::hash::hash(kp_a.public_key().as_bytes());
@@ -1253,11 +1379,13 @@ fn test_delegate_zero_bonds() {
     ps.register(
         ProducerInfo::new_with_bonds(*kp_a.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 0), 0, 5),
         0,
-    ).unwrap();
+    )
+    .unwrap();
     ps.register(
         ProducerInfo::new_with_bonds(*kp_d.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 1), 0, 5),
         0,
-    ).unwrap();
+    )
+    .unwrap();
 
     // Delegate 0 bonds — should succeed but create a 0-weight entry
     let result = ps.delegate_bonds(kp_d.public_key(), kp_a.public_key(), 0);
@@ -1266,8 +1394,16 @@ fn test_delegate_zero_bonds() {
         let d = ps.get_by_pubkey(kp_d.public_key()).unwrap();
         let a = ps.get_by_pubkey(kp_a.public_key()).unwrap();
         // Verify no weight impact
-        assert_eq!(d.selection_weight(), 5, "0-bond delegation must not affect weight");
-        assert_eq!(a.selection_weight(), 5, "0-bond delegation must not affect delegatee weight");
+        assert_eq!(
+            d.selection_weight(),
+            5,
+            "0-bond delegation must not affect weight"
+        );
+        assert_eq!(
+            a.selection_weight(),
+            5,
+            "0-bond delegation must not affect delegatee weight"
+        );
     }
     // Either rejecting 0 or accepting with no effect is acceptable
 }
@@ -1283,11 +1419,13 @@ fn test_delegate_more_than_available_rejected() {
     ps.register(
         ProducerInfo::new_with_bonds(*kp_a.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 0), 0, 5),
         0,
-    ).unwrap();
+    )
+    .unwrap();
     ps.register(
         ProducerInfo::new_with_bonds(*kp_d.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 1), 0, 5),
         0,
-    ).unwrap();
+    )
+    .unwrap();
 
     let result = ps.delegate_bonds(kp_d.public_key(), kp_a.public_key(), 6);
     assert!(result.is_err(), "delegating more than bond_count must fail");
@@ -1308,23 +1446,30 @@ fn test_multiple_delegators_to_same_delegatee() {
     ps.register(
         ProducerInfo::new_with_bonds(*kp_a.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 0), 0, 5),
         0,
-    ).unwrap();
+    )
+    .unwrap();
     ps.register(
         ProducerInfo::new_with_bonds(*kp_d1.public_key(), 0, 3 * BOND_UNIT, (Hash::ZERO, 1), 0, 3),
         0,
-    ).unwrap();
+    )
+    .unwrap();
     ps.register(
         ProducerInfo::new_with_bonds(*kp_d2.public_key(), 0, 4 * BOND_UNIT, (Hash::ZERO, 2), 0, 4),
         0,
-    ).unwrap();
+    )
+    .unwrap();
     ps.register(
         ProducerInfo::new_with_bonds(*kp_d3.public_key(), 0, 2 * BOND_UNIT, (Hash::ZERO, 3), 0, 2),
         0,
-    ).unwrap();
+    )
+    .unwrap();
 
-    ps.delegate_bonds(kp_d1.public_key(), kp_a.public_key(), 2).unwrap();
-    ps.delegate_bonds(kp_d2.public_key(), kp_a.public_key(), 3).unwrap();
-    ps.delegate_bonds(kp_d3.public_key(), kp_a.public_key(), 1).unwrap();
+    ps.delegate_bonds(kp_d1.public_key(), kp_a.public_key(), 2)
+        .unwrap();
+    ps.delegate_bonds(kp_d2.public_key(), kp_a.public_key(), 3)
+        .unwrap();
+    ps.delegate_bonds(kp_d3.public_key(), kp_a.public_key(), 1)
+        .unwrap();
 
     let a = ps.get_by_pubkey(kp_a.public_key()).unwrap();
     assert_eq!(a.received_delegations.len(), 3);
@@ -1332,10 +1477,15 @@ fn test_multiple_delegators_to_same_delegatee() {
     assert_eq!(a.selection_weight(), 11);
 
     // Total bonds = 5+3+4+2 = 14, total weight should be 14
-    let total: u64 = [kp_a.public_key(), kp_d1.public_key(), kp_d2.public_key(), kp_d3.public_key()]
-        .iter()
-        .map(|pk| ps.get_by_pubkey(pk).unwrap().selection_weight())
-        .sum();
+    let total: u64 = [
+        kp_a.public_key(),
+        kp_d1.public_key(),
+        kp_d2.public_key(),
+        kp_d3.public_key(),
+    ]
+    .iter()
+    .map(|pk| ps.get_by_pubkey(pk).unwrap().selection_weight())
+    .sum();
     assert_eq!(total, 14, "weight conservation across multiple delegators");
 
     // Slash A — all 3 delegators must be cleaned
@@ -1343,7 +1493,10 @@ fn test_multiple_delegators_to_same_delegatee() {
 
     for pk in [kp_d1.public_key(), kp_d2.public_key(), kp_d3.public_key()] {
         let d = ps.get_by_pubkey(pk).unwrap();
-        assert_eq!(d.delegated_bonds, 0, "delegator must be cleaned after delegatee slash");
+        assert_eq!(
+            d.delegated_bonds, 0,
+            "delegator must be cleaned after delegatee slash"
+        );
         assert!(d.delegated_to.is_none());
     }
 }
@@ -1358,11 +1511,14 @@ fn test_revoke_with_no_active_delegation() {
     ps.register(
         ProducerInfo::new_with_bonds(*kp_d.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 0), 0, 5),
         0,
-    ).unwrap();
+    )
+    .unwrap();
 
     let result = ps.revoke_delegation(kp_d.public_key());
     assert!(result.is_err());
-    assert!(result.unwrap_err().contains("no active delegation to revoke"));
+    assert!(result
+        .unwrap_err()
+        .contains("no active delegation to revoke"));
 }
 
 // --- Scenario 20: Cleanup idempotency on non-existent producer ---
@@ -1389,11 +1545,13 @@ fn test_deferred_delegate_then_exit_same_epoch() {
     ps.register(
         ProducerInfo::new_with_bonds(*kp_a.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 0), 0, 5),
         0,
-    ).unwrap();
+    )
+    .unwrap();
     ps.register(
         ProducerInfo::new_with_bonds(*kp_d.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 1), 0, 5),
         0,
-    ).unwrap();
+    )
+    .unwrap();
 
     ps.queue_update(PendingProducerUpdate::DelegateBond {
         delegator: *kp_d.public_key(),
@@ -1410,7 +1568,10 @@ fn test_deferred_delegate_then_exit_same_epoch() {
     // Exit should have cleaned the delegation created in the same batch
     let d = ps.get_by_pubkey(kp_d.public_key()).unwrap();
     assert!(matches!(d.status, ProducerStatus::Unbonding { .. }));
-    assert_eq!(d.delegated_bonds, 0, "exit must clean delegation from same epoch");
+    assert_eq!(
+        d.delegated_bonds, 0,
+        "exit must clean delegation from same epoch"
+    );
     assert!(d.delegated_to.is_none());
 
     let a = ps.get_by_pubkey(kp_a.public_key()).unwrap();
@@ -1429,24 +1590,39 @@ fn test_delegator_exit_cleans_outgoing() {
     ps.register(
         ProducerInfo::new_with_bonds(*kp_a.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 0), 0, 5),
         0,
-    ).unwrap();
+    )
+    .unwrap();
     ps.register(
         ProducerInfo::new_with_bonds(*kp_d.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 1), 0, 5),
         0,
-    ).unwrap();
+    )
+    .unwrap();
 
-    ps.delegate_bonds(kp_d.public_key(), kp_a.public_key(), 4).unwrap();
+    ps.delegate_bonds(kp_d.public_key(), kp_a.public_key(), 4)
+        .unwrap();
 
-    assert_eq!(ps.get_by_pubkey(kp_a.public_key()).unwrap().selection_weight(), 9);
+    assert_eq!(
+        ps.get_by_pubkey(kp_a.public_key())
+            .unwrap()
+            .selection_weight(),
+        9
+    );
 
     ps.request_exit(kp_d.public_key(), 100).unwrap();
 
     // A must lose the delegated weight
     assert_eq!(
-        ps.get_by_pubkey(kp_a.public_key()).unwrap().selection_weight(), 5,
+        ps.get_by_pubkey(kp_a.public_key())
+            .unwrap()
+            .selection_weight(),
+        5,
         "delegatee must lose delegated weight when delegator exits"
     );
-    assert!(ps.get_by_pubkey(kp_a.public_key()).unwrap().received_delegations.is_empty());
+    assert!(ps
+        .get_by_pubkey(kp_a.public_key())
+        .unwrap()
+        .received_delegations
+        .is_empty());
 }
 
 // --- Scenario 23: Bidirectional delegation (A delegates to B, B delegates to A) ---
@@ -1462,24 +1638,42 @@ fn test_bidirectional_delegation() {
     ps.register(
         ProducerInfo::new_with_bonds(*kp_a.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 0), 0, 5),
         0,
-    ).unwrap();
+    )
+    .unwrap();
     ps.register(
         ProducerInfo::new_with_bonds(*kp_b.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 1), 0, 5),
         0,
-    ).unwrap();
+    )
+    .unwrap();
 
     // A delegates 2 to B, B delegates 1 to A
-    ps.delegate_bonds(kp_a.public_key(), kp_b.public_key(), 2).unwrap();
-    ps.delegate_bonds(kp_b.public_key(), kp_a.public_key(), 1).unwrap();
+    ps.delegate_bonds(kp_a.public_key(), kp_b.public_key(), 2)
+        .unwrap();
+    ps.delegate_bonds(kp_b.public_key(), kp_a.public_key(), 1)
+        .unwrap();
 
     // A: 5 own - 2 delegated + 1 received = 4
-    assert_eq!(ps.get_by_pubkey(kp_a.public_key()).unwrap().selection_weight(), 4);
+    assert_eq!(
+        ps.get_by_pubkey(kp_a.public_key())
+            .unwrap()
+            .selection_weight(),
+        4
+    );
     // B: 5 own - 1 delegated + 2 received = 6
-    assert_eq!(ps.get_by_pubkey(kp_b.public_key()).unwrap().selection_weight(), 6);
+    assert_eq!(
+        ps.get_by_pubkey(kp_b.public_key())
+            .unwrap()
+            .selection_weight(),
+        6
+    );
     // Total: 4 + 6 = 10 = original 10
     assert_eq!(
-        ps.get_by_pubkey(kp_a.public_key()).unwrap().selection_weight()
-        + ps.get_by_pubkey(kp_b.public_key()).unwrap().selection_weight(),
+        ps.get_by_pubkey(kp_a.public_key())
+            .unwrap()
+            .selection_weight()
+            + ps.get_by_pubkey(kp_b.public_key())
+                .unwrap()
+                .selection_weight(),
         10,
         "bidirectional delegation must conserve total weight"
     );
@@ -1493,9 +1687,15 @@ fn test_bidirectional_delegation() {
     assert!(a.received_delegations.is_empty());
 
     let b = ps.get_by_pubkey(kp_b.public_key()).unwrap();
-    assert_eq!(b.delegated_bonds, 0, "B's outgoing delegation to A must be cleaned");
+    assert_eq!(
+        b.delegated_bonds, 0,
+        "B's outgoing delegation to A must be cleaned"
+    );
     assert!(b.delegated_to.is_none());
-    assert!(b.received_delegations.is_empty(), "B's received from A must be cleaned");
+    assert!(
+        b.received_delegations.is_empty(),
+        "B's received from A must be cleaned"
+    );
 }
 
 // --- Scenario 24: Reward split with 0 delegated (edge case in rewards.rs) ---
@@ -1518,7 +1718,10 @@ fn test_reward_split_with_zero_delegated_bonds() {
     let staker_pool = delegated_share - delegate_fee; // 0
 
     let producer_total = own_share + delegate_fee;
-    assert_eq!(producer_total, reward, "producer gets 100% when 0 delegated");
+    assert_eq!(
+        producer_total, reward,
+        "producer gets 100% when 0 delegated"
+    );
     assert_eq!(staker_pool, 0);
 }
 
@@ -1557,30 +1760,50 @@ fn test_chain_delegation_independent() {
     ps.register(
         ProducerInfo::new_with_bonds(*kp_a.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 0), 0, 5),
         0,
-    ).unwrap();
+    )
+    .unwrap();
     ps.register(
         ProducerInfo::new_with_bonds(*kp_b.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 1), 0, 5),
         0,
-    ).unwrap();
+    )
+    .unwrap();
     ps.register(
         ProducerInfo::new_with_bonds(*kp_c.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 2), 0, 5),
         0,
-    ).unwrap();
+    )
+    .unwrap();
 
     // A delegates to B
-    ps.delegate_bonds(kp_a.public_key(), kp_b.public_key(), 3).unwrap();
+    ps.delegate_bonds(kp_a.public_key(), kp_b.public_key(), 3)
+        .unwrap();
 
     // B delegates to C — this is allowed (B has its own bonds, not forwarding A's)
-    ps.delegate_bonds(kp_b.public_key(), kp_c.public_key(), 2).unwrap();
+    ps.delegate_bonds(kp_b.public_key(), kp_c.public_key(), 2)
+        .unwrap();
 
     // Weights:
     // A: 5 - 3 = 2
     // B: 5 - 2 + 3(from A) = 6
     // C: 5 + 2(from B) = 7
     // Total: 2 + 6 + 7 = 15 = original 15
-    assert_eq!(ps.get_by_pubkey(kp_a.public_key()).unwrap().selection_weight(), 2);
-    assert_eq!(ps.get_by_pubkey(kp_b.public_key()).unwrap().selection_weight(), 6);
-    assert_eq!(ps.get_by_pubkey(kp_c.public_key()).unwrap().selection_weight(), 7);
+    assert_eq!(
+        ps.get_by_pubkey(kp_a.public_key())
+            .unwrap()
+            .selection_weight(),
+        2
+    );
+    assert_eq!(
+        ps.get_by_pubkey(kp_b.public_key())
+            .unwrap()
+            .selection_weight(),
+        6
+    );
+    assert_eq!(
+        ps.get_by_pubkey(kp_c.public_key())
+            .unwrap()
+            .selection_weight(),
+        7
+    );
 
     let total: u64 = [kp_a.public_key(), kp_b.public_key(), kp_c.public_key()]
         .iter()
@@ -1594,24 +1817,29 @@ fn test_chain_delegation_independent() {
 #[test]
 fn test_selection_weight_at_legacy_vs_audit() {
     let kp = KeyPair::generate();
-    let mut info = ProducerInfo::new_with_bonds(
-        *kp.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 0), 0, 5,
-    );
+    let mut info =
+        ProducerInfo::new_with_bonds(*kp.public_key(), 0, 5 * BOND_UNIT, (Hash::ZERO, 0), 0, 5);
     info.delegated_bonds = 3;
 
     // Legacy (audit_activation = u64::MAX): no subtraction
     assert_eq!(
-        info.selection_weight_at(100, u64::MAX), 5,
+        info.selection_weight_at(100, u64::MAX),
+        5,
         "legacy mode: delegated_bonds not subtracted"
     );
 
     // Audit active (audit_activation = 0): subtract delegated
-    assert_eq!(
-        info.selection_weight_at(100, 0), 2,
-        "audit mode: 5 - 3 = 2"
-    );
+    assert_eq!(info.selection_weight_at(100, 0), 2, "audit mode: 5 - 3 = 2");
 
     // Audit active at exact height boundary
-    assert_eq!(info.selection_weight_at(50, 50), 2, "at activation height: audit applies");
-    assert_eq!(info.selection_weight_at(49, 50), 5, "below activation: legacy");
+    assert_eq!(
+        info.selection_weight_at(50, 50),
+        2,
+        "at activation height: audit applies"
+    );
+    assert_eq!(
+        info.selection_weight_at(49, 50),
+        5,
+        "below activation: legacy"
+    );
 }
