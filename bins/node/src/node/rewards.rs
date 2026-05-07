@@ -346,9 +346,14 @@ impl Node {
                 let delegate_fee = delegated_share * DELEGATE_REWARD_PCT as u64 / 100;
                 let staker_pool = delegated_share - delegate_fee; // remainder to stakers, no dust
 
-                // Distribute staker pool to delegators, last gets remainder
+                // Distribute staker pool to delegators, last gets remainder.
+                // INC-I-061: received_delegations stores (crypto_hash(pubkey), bond_count)
+                // which is the ProducerSet internal key — NOT the wallet address. Reward
+                // outputs must use hash_with_domain(ADDRESS_DOMAIN, pubkey) to match the
+                // delegator's wallet. Look up the delegator's public key via ProducerSet.
                 let mut staker_distributed = 0u64;
                 let delegators: Vec<_> = producer_info.received_delegations.iter().collect();
+                let producers_read = self.producer_set.read().await;
                 for (i, (delegator_hash, bond_count)) in delegators.iter().enumerate() {
                     let delegator_reward = if i == delegators.len() - 1 {
                         staker_pool - staker_distributed // last delegator gets remainder
@@ -357,9 +362,17 @@ impl Node {
                     };
                     staker_distributed += delegator_reward;
                     if delegator_reward > 0 {
-                        reward_outputs.push((delegator_reward, *delegator_hash));
+                        // Look up the delegator's pubkey to compute correct wallet address
+                        let delegator_address = producers_read
+                            .get(delegator_hash)
+                            .map(|info| {
+                                hash_with_domain(ADDRESS_DOMAIN, info.public_key.as_bytes())
+                            })
+                            .unwrap_or(*delegator_hash);
+                        reward_outputs.push((delegator_reward, delegator_address));
                     }
                 }
+                drop(producers_read);
 
                 let producer_total = own_share + delegate_fee;
                 if producer_total > 0 {
