@@ -188,10 +188,16 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
     // Pool/Lending types are only exempt from the FEE check (not the balance check)
     // because DOLI flows into/out of reserves tracked in extra_data, not Output.amount.
     //
-    // Genesis Registration (0 inputs, 0 outputs): protocol-generated VDF proof, exempt.
-    let is_genesis_registration =
-        tx.tx_type == TxType::Registration && tx.inputs.is_empty() && tx.outputs.is_empty();
-    if !is_genesis_registration {
+    // State-only transactions (0 inputs, 0 outputs): exempt from balance + fee checks.
+    // - Genesis Registration: protocol-generated VDF proof
+    // - DelegateBond / RevokeDelegation: state-only delegation ops (no UTXO movement)
+    let is_state_only_tx = tx.inputs.is_empty()
+        && tx.outputs.is_empty()
+        && matches!(
+            tx.tx_type,
+            TxType::Registration | TxType::DelegateBond | TxType::RevokeDelegation
+        );
+    if !is_state_only_tx {
         let total_output = tx.total_output();
         if total_input < total_output {
             return Err(ValidationError::InsufficientFunds {

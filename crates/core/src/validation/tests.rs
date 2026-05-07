@@ -3596,3 +3596,55 @@ fn ec_creator_hash_check_gated_by_activation_height() {
         result
     );
 }
+
+// ==================== INC-I-057: Delegation Fee Exemption Tests ====================
+
+// OUTPUT CONTRACT: fn validate_transaction_with_utxos(DelegateBond)
+// O1: Result<(), ValidationError> — Ok for state-only DelegateBond with 0 inputs/outputs
+// PATHS: P1=DelegateBond (state-only, 0 fee)
+// MATRIX: O1×P1 → Ok(())
+
+/// INC-I-057: DelegateBond (state-only, 0 fee) must pass UTXO validation
+#[test]
+fn test_delegate_bond_passes_utxo_validation() {
+    use crate::transaction::{DelegateBondData, Transaction};
+
+    let delegator = crypto::KeyPair::generate();
+    let delegate = crypto::KeyPair::generate();
+    let data = DelegateBondData::new(*delegator.public_key(), *delegate.public_key(), 3);
+    let tx = Transaction::new_delegate_bond(data);
+    let ctx = test_context();
+    let utxo_provider = MockUtxoProvider::new();
+
+    let result = utxo::validate_transaction_with_utxos(&tx, &ctx, &utxo_provider);
+    assert!(
+        result.is_ok(),
+        "DelegateBond (state-only, 0 fee) should pass UTXO validation: {:?}",
+        result
+    );
+}
+
+// OUTPUT CONTRACT: fn validate_transaction_with_utxos(RevokeDelegation)
+// O1: Result<(), ValidationError> — Ok for state-only RevokeDelegation with 0 inputs/outputs
+// PATHS: P1=RevokeDelegation (state-only, 0 fee)
+// MATRIX: O1×P1 → Ok(())
+
+/// INC-I-057: RevokeDelegation (state-only, 0 fee) must pass UTXO validation
+#[test]
+fn test_revoke_delegation_passes_utxo_validation() {
+    use crate::transaction::{RevokeDelegationData, Transaction};
+
+    let delegator = crypto::KeyPair::generate();
+    let delegate = crypto::KeyPair::generate();
+    let data = RevokeDelegationData::new(*delegator.public_key(), *delegate.public_key());
+    let tx = Transaction::new_revoke_delegation(data);
+    let ctx = test_context();
+    let utxo_provider = MockUtxoProvider::new();
+
+    let result = utxo::validate_transaction_with_utxos(&tx, &ctx, &utxo_provider);
+    assert!(
+        result.is_ok(),
+        "RevokeDelegation (state-only, 0 fee) should pass UTXO validation: {:?}",
+        result
+    );
+}

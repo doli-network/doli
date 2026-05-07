@@ -1,21 +1,22 @@
-# Audit Fix Progress — Security 2026-03-30
+# Audit Fix Progress
 
-| Finding | Priority | Status | Notes |
-|---------|----------|--------|-------|
-| AUDIT-P0-001 | P0 | FIXED | `#[serde(skip)]` removed from `Input.public_key` (now in wire format). `verify_input_signature` enforces `MissingPublicKey` after `sig_verification_height`. `LegacyInputV3` handles backward compat. 6 regression tests. |
-| AUDIT-P0-002 | P0 | FIXED | RPC admin auth (bearer token + localhost bypass) + path sanitization |
-| AUDIT-P1-001 | P1 | FIXED | missed_producers: length cap, membership check, total exclusion cap |
-| AUDIT-P1-002 | P1 | FIXED | CORS: uses allowed_origins list, no more wildcard Any |
-| AUDIT-P1-003 | P1 | FIXED | SSRF: URL scheme + private IP validation in backfillFromPeer |
-| AUDIT-P1-004 | P1 | FIXED | Path traversal: reject absolute paths, ".." segments, canonicalize check |
-| AUDIT-P1-005 | P1 | SKIPPED | Mempool sig verification — P0-001 handles this at block validation level |
-| AUDIT-P2-001 | P2 | FIXED | ip_colocation_factor_threshold ENV-tunable (DOLI_IP_COLOCATION_THRESHOLD) |
-| AUDIT-P2-002 | P2 | SKIPPED | bincode limits — 16MB transport cap is sufficient defense-in-depth |
-| AUDIT-P2-003 | P2 | FIXED | Gossip batch: count cap (10K) + data-bounded pre-allocation |
-| AUDIT-P2-004 | P2 | SKIPPED | Deprecated fn — informational, needs call-site audit |
+## P1 Findings
+| ID | Description | Status |
+|----|-------------|--------|
+| AUDIT-AUTH-001 | PSBT buyer trusts partial_tx outputs without verification | PENDING |
+| AUDIT-CRYPTO-002 | PublicKey::from_bytes panics on invalid curve points | PENDING |
+| AUDIT-LOGIC-001 | CLI fee calculation diverges from tx.minimum_fee() | PENDING |
 
-## Summary
-- **9 of 14 findings fixed** (2 P0, 4 P1, 3 P2)
-- **2 skipped** (P2-002, P2-004 — low risk)
-- **3 not applicable** (P1-005 covered by P0-001, P2-002/P2-004 informational)
-- 1,695 lib tests passing, 0 failures
+## P2 Findings
+| ID | Description | Status |
+|----|-------------|--------|
+| AUDIT-AUTH-003 | creator_hash not enforced immutable (consensus) | PENDING |
+| AUDIT-INJ-001 | BPS truncation u64→u16 without bounds check | PENDING |
+| AUDIT-AUTH-002 | Sell doesn't verify wallet owns UTXO | PENDING |
+| AUDIT-CRYPTO-001 | content_key not zeroized after use | PENDING |
+| AUDIT-CFG-003 | RPC exposes wrappedKey convenience field | PENDING |
+| AUDIT-LOGIC-002 | Unchecked price + fee addition | PENDING |
+| AUDIT-CFG-001 | Offer files written world-readable | PENDING |
+| AUDIT-LOGIC-006 | No offer expiration/revocation | SKIPPED (design change) |
+| AUDIT-CRYPTO-010 | ct_len bounds check improvement | PENDING |
+| AUDIT-CFG-005 | resolve_pubkey creates intent signal | SKIPPED (inherent) |
