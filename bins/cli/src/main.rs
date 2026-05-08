@@ -34,8 +34,71 @@ mod wallet;
 use commands::{Cli, Commands};
 use common::{default_rpc_for_network, expand_tilde, prefix_for_network, ADDRESS_PREFIX};
 
+/// On Linux: detect if the user is in the 'doli' group but the group isn't active
+/// in the current session (hasn't re-logged since install). If so, re-exec the
+/// entire CLI command via `sg doli -c "..."` to activate group membership transparently.
+/// This is a no-op if: not Linux, doli group doesn't exist, user not in group,
+/// group already active, or already inside an `sg` re-exec (env guard).
+#[cfg(target_os = "linux")]
+fn maybe_reexec_with_doli_group() {
+    // Guard: don't recurse if we're already inside an sg re-exec
+    if std::env::var("DOLI_SG_REEXEC").is_ok() {
+        return;
+    }
+
+    // Only needed if /var/lib/doli exists (installed via package)
+    if !std::path::Path::new("/var/lib/doli").exists() {
+        return;
+    }
+
+    // Check if we can access the data dir already
+    let test = std::path::Path::new("/var/lib/doli/mainnet");
+    if test.exists() {
+        // Try to read it
+        if std::fs::read_dir(test).is_ok() {
+            return; // Access works, no re-exec needed
+        }
+    } else {
+        return; // Dir doesn't exist, nothing to protect
+    }
+
+    // Can't access. Check if user is assigned to doli group but it's not active
+    let user = std::env::var("USER").unwrap_or_default();
+    if user.is_empty() {
+        return;
+    }
+    let assigned = std::process::Command::new("id")
+        .args(["-Gn", &user])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.split_whitespace().any(|g| g == "doli"))
+        .unwrap_or(false);
+    if !assigned {
+        return;
+    }
+
+    // User is in doli group but can't access dir → re-exec via sg
+    let args: Vec<String> = std::env::args().collect();
+    let cmd = args.join(" ");
+    let status = std::process::Command::new("sg")
+        .args(["doli", "-c", &cmd])
+        .env("DOLI_SG_REEXEC", "1")
+        .status();
+    match status {
+        Ok(s) => std::process::exit(s.code().unwrap_or(1)),
+        Err(_) => {} // sg failed, continue without it
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    // On Linux: if the platform data dir exists but isn't accessible, and the user
+    // is in the 'doli' group but hasn't re-logged, re-exec the entire command via
+    // `sg doli` to activate group membership transparently.
+    #[cfg(target_os = "linux")]
+    maybe_reexec_with_doli_group();
+
     let cli = Cli::parse();
 
     // Resolve wallet path: -w flag > DOLI_WALLET_FILE env > paths::resolve_wallet_path()

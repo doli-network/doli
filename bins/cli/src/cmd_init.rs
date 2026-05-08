@@ -21,55 +21,6 @@ fn dir_is_writable(dir: &Path) -> bool {
     }
 }
 
-/// On Linux: check if user is in 'doli' group (assigned but not yet active in this session).
-#[cfg(target_os = "linux")]
-fn user_in_doli_group_but_inactive() -> bool {
-    // Check /etc/group for membership (assigned) vs `id -Gn` (active in session)
-    let real_user = std::env::var("USER").unwrap_or_default();
-    if real_user.is_empty() {
-        return false;
-    }
-    // Check if assigned to doli group
-    let assigned = std::process::Command::new("id")
-        .args(["-Gn", &real_user])
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.split_whitespace().any(|g| g == "doli"))
-        .unwrap_or(false);
-    if !assigned {
-        return false;
-    }
-    // Check if active in current session (groups of current process)
-    let active = std::process::Command::new("id")
-        .arg("-Gn")
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.split_whitespace().any(|g| g == "doli"))
-        .unwrap_or(false);
-    !active
-}
-
-/// Re-exec `doli init` under `sg doli` to activate group membership.
-#[cfg(target_os = "linux")]
-fn reexec_with_doli_group(force: bool, non_producer: bool) -> Result<()> {
-    let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("doli"));
-    let mut cmd = format!("{} init", exe.display());
-    if force {
-        cmd.push_str(" --force");
-    }
-    if non_producer {
-        cmd.push_str(" --non-producer");
-    }
-    println!("  Activating 'doli' group membership...");
-    println!();
-    let status = std::process::Command::new("sg")
-        .args(["doli", "-c", &cmd])
-        .status()?;
-    std::process::exit(status.code().unwrap_or(1));
-}
-
 /// Find a legacy wallet if the current wallet path doesn't exist.
 /// Returns the legacy directory containing wallet.json, or None.
 fn find_legacy_wallet(network: &str, current_wallet: &Path) -> Option<PathBuf> {
@@ -191,29 +142,22 @@ pub(crate) fn cmd_init(
     }
 
     // Check write access to data directory
+    // Note: on Linux, the global sg re-exec in main.rs handles group activation
     let data_dir = wallet_path.parent().unwrap_or(wallet_path);
     if !dir_is_writable(data_dir) {
         #[cfg(target_os = "linux")]
-        {
-            // If user is in 'doli' group but hasn't re-logged, activate via `sg`
-            if user_in_doli_group_but_inactive() {
-                return reexec_with_doli_group(force, non_producer);
-            }
-            bail!(
-                "Cannot write to {}\n\n  \
-                 Fix: add yourself to the 'doli' group and re-login:\n  \
-                   sudo usermod -aG doli $USER && newgrp doli\n  \
-                 Then retry: doli init\n",
-                data_dir.display()
-            );
-        }
+        bail!(
+            "Cannot write to {}\n\n  \
+             Fix: add yourself to the 'doli' group and re-login:\n  \
+               sudo usermod -aG doli $USER && newgrp doli\n  \
+             Then retry: doli init\n",
+            data_dir.display()
+        );
         #[cfg(not(target_os = "linux"))]
-        {
-            bail!(
-                "Cannot write to {}\n  Check directory permissions.",
-                data_dir.display()
-            );
-        }
+        bail!(
+            "Cannot write to {}\n  Check directory permissions.",
+            data_dir.display()
+        );
     }
 
     // Create the data directory if needed
