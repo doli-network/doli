@@ -189,7 +189,21 @@ async fn install_binary_sudo(binary: &[u8], target: &Path) -> Result<()> {
     let tmp = std::env::temp_dir().join("doli-update-binary");
     fs::write(&tmp, binary).await?;
 
-    // sudo cp to target
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&tmp).await?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&tmp, perms).await?;
+    }
+
+    // On Linux, overwriting a running binary with `cp` fails with "Text file busy".
+    // Fix: delete the old binary first (the running process keeps its inode open),
+    // then copy the new one to the now-free path.
+    let _ = Command::new("sudo")
+        .args(["rm", "-f", &target.to_string_lossy()])
+        .status();
+
     let cp_status = Command::new("sudo")
         .args(["cp", &tmp.to_string_lossy(), &target.to_string_lossy()])
         .status()
@@ -202,16 +216,6 @@ async fn install_binary_sudo(binary: &[u8], target: &Path) -> Result<()> {
             target,
             cp_status.code()
         )));
-    }
-
-    // sudo chmod
-    let chmod_status = Command::new("sudo")
-        .args(["chmod", "755", &target.to_string_lossy()])
-        .status()
-        .map_err(|e| UpdateError::InstallFailed(format!("sudo chmod failed: {}", e)))?;
-
-    if !chmod_status.success() {
-        warn!("sudo chmod failed, binary may not be executable");
     }
 
     // Cleanup temp

@@ -38,10 +38,10 @@ fi
 # 5. Sudoers rule for passwordless binary updates by doli user
 cat > /etc/sudoers.d/doli-update <<'SUDOERS'
 # Allow doli user to update doli binaries without password
+doli ALL=(root) NOPASSWD: /usr/bin/rm -f /usr/bin/doli-node
+doli ALL=(root) NOPASSWD: /usr/bin/rm -f /usr/bin/doli
 doli ALL=(root) NOPASSWD: /usr/bin/cp /tmp/doli-update-binary /usr/bin/doli-node
 doli ALL=(root) NOPASSWD: /usr/bin/cp /tmp/doli-update-binary /usr/bin/doli
-doli ALL=(root) NOPASSWD: /usr/bin/chmod 755 /usr/bin/doli-node
-doli ALL=(root) NOPASSWD: /usr/bin/chmod 755 /usr/bin/doli
 SUDOERS
 chmod 440 /etc/sudoers.d/doli-update
 
