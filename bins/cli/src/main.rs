@@ -82,9 +82,8 @@ fn maybe_reexec_with_doli_group() {
         .args(["doli", "-c", &cmd])
         .env("DOLI_SG_REEXEC", "1")
         .status();
-    match status {
-        Ok(s) => std::process::exit(s.code().unwrap_or(1)),
-        Err(_) => {} // sg failed, continue without it
+    if let Ok(s) = status {
+        std::process::exit(s.code().unwrap_or(1));
     }
 }
 
