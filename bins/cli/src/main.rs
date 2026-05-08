@@ -47,19 +47,16 @@ fn maybe_reexec_with_doli_group() {
     }
 
     // Only needed if /var/lib/doli exists (installed via package)
-    if !std::path::Path::new("/var/lib/doli").exists() {
+    // Note: stat on /var/lib/doli works (parent /var/lib/ is 755) even when
+    // /var/lib/doli itself is 2770 and the user can't traverse it.
+    let doli_dir = std::path::Path::new("/var/lib/doli");
+    if !doli_dir.exists() {
         return;
     }
 
-    // Check if we can access the data dir already
-    let test = std::path::Path::new("/var/lib/doli/mainnet");
-    if test.exists() {
-        // Try to read it
-        if std::fs::read_dir(test).is_ok() {
-            return; // Access works, no re-exec needed
-        }
-    } else {
-        return; // Dir doesn't exist, nothing to protect
+    // Check if we can already access the data dir
+    if std::fs::read_dir(doli_dir).is_ok() {
+        return; // Access works, no re-exec needed
     }
 
     // Can't access. Check if user is assigned to doli group but it's not active
