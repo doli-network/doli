@@ -304,15 +304,8 @@ impl Node {
         // Build attestation bitfield for presence_root / body.
         // Records which producers attested the current minute (from gossip).
         // 6 blocks per minute from different producers -> union mitigates censorship.
-        //
-        // Fallback: the first block of a new minute has an empty tracker because no
-        // attestations have been gossiped yet. Use the previous minute's data so the
-        // block still carries attestation coverage (INC-I-059).
         let current_minute = attestation_minute(current_slot);
-        let mut attested_pks = self.minute_tracker.attested_in_minute(current_minute);
-        if attested_pks.is_empty() && current_minute > 0 {
-            attested_pks = self.minute_tracker.attested_in_minute(current_minute - 1);
-        }
+        let attested_pks = self.minute_tracker.attested_in_minute(current_minute);
         let use_body_bitfield = height >= doli_core::consensus::BITFIELD_BODY_ACTIVATION_HEIGHT;
         let mut body_bitfield: Vec<u8> = Vec::new();
         let presence_root = if attested_pks.is_empty() {
@@ -584,11 +577,7 @@ impl Node {
     /// Only includes producers that have BLS sigs for this minute.
     pub fn aggregate_bls_signatures(&self, current_slot: u32) -> Vec<u8> {
         let current_minute = attestation_minute(current_slot);
-        let mut bls_sigs = self.minute_tracker.bls_sigs_for_minute(current_minute);
-        // Fallback to previous minute when current minute has no BLS sigs yet (INC-I-059)
-        if bls_sigs.is_empty() && current_minute > 0 {
-            bls_sigs = self.minute_tracker.bls_sigs_for_minute(current_minute - 1);
-        }
+        let bls_sigs = self.minute_tracker.bls_sigs_for_minute(current_minute);
         info!(
             "BLS aggregate: minute={} sigs_count={} tracker_bls_total={}",
             current_minute,
