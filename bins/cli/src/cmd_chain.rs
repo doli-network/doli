@@ -177,7 +177,7 @@ pub(crate) fn cmd_wipe(network: &str, data_dir: Option<PathBuf>, yes: bool) -> R
     let service_name = format!("doli-{}", network);
 
     // 3. Collect and display what will be wiped (BEFORE stopping anything)
-    let result = wipe_data_dir(&data_dir, false)?;
+    let result = wipe_data_dir(&data_dir, false, false)?;
     if matches!(result, WipeResult::AlreadyClean) {
         println!("Nothing to wipe — data directory is already clean.");
         return Ok(());
@@ -236,8 +236,8 @@ pub(crate) fn cmd_wipe(network: &str, data_dir: Option<PathBuf>, yes: bool) -> R
         );
     }
 
-    // 6. Execute the wipe
-    let result = wipe_data_dir(&data_dir, true)?;
+    // 6. Execute the wipe (quiet=true to suppress duplicate listing)
+    let result = wipe_data_dir(&data_dir, true, true)?;
     match result {
         WipeResult::AlreadyClean => {
             println!("Nothing to wipe — data directory is already clean.");
@@ -260,8 +260,11 @@ pub(crate) fn cmd_wipe(network: &str, data_dir: Option<PathBuf>, yes: bool) -> R
                 }
             }
 
-            // Restart the service if it was running before wipe
-            if service_active {
+            // Restart the service if it exists (was installed)
+            let service_exists =
+                std::path::Path::new(&format!("/etc/systemd/system/{}.service", service_name))
+                    .exists();
+            if service_exists {
                 println!("Restarting {} service...", service_name);
                 let started = std::process::Command::new("systemctl")
                     .args(["start", &service_name])
@@ -322,7 +325,7 @@ fn collect_deletable(dir: &Path, preserve: &[&str]) -> Vec<PathBuf> {
 
 /// Core wipe logic: scan, optionally delete, verify.
 /// Extracted for testability.
-fn wipe_data_dir(data_dir: &Path, execute: bool) -> Result<WipeResult> {
+fn wipe_data_dir(data_dir: &Path, execute: bool, quiet: bool) -> Result<WipeResult> {
     let mut found_items = collect_deletable(data_dir, WIPE_PRESERVE);
 
     // Also scan subdirectories (node1/, node2/) for multi-node setups
@@ -340,25 +343,27 @@ fn wipe_data_dir(data_dir: &Path, execute: bool) -> Result<WipeResult> {
         return Ok(WipeResult::AlreadyClean);
     }
 
-    // Display what will be deleted/preserved
-    println!("Will DELETE:");
-    for item in &found_items {
-        let suffix = if item.is_dir() { "/" } else { "" };
-        println!(
-            "  - {}{}",
-            item.strip_prefix(data_dir).unwrap_or(item).display(),
-            suffix
-        );
-    }
-    println!();
-    println!("Will PRESERVE:");
-    for name in WIPE_PRESERVE {
-        let path = data_dir.join(name);
-        if path.exists() {
-            println!("  - {}/", name);
+    // Display what will be deleted/preserved (skip on second pass)
+    if !quiet {
+        println!("Will DELETE:");
+        for item in &found_items {
+            let suffix = if item.is_dir() { "/" } else { "" };
+            println!(
+                "  - {}{}",
+                item.strip_prefix(data_dir).unwrap_or(item).display(),
+                suffix
+            );
         }
+        println!();
+        println!("Will PRESERVE:");
+        for name in WIPE_PRESERVE {
+            let path = data_dir.join(name);
+            if path.exists() {
+                println!("  - {}/", name);
+            }
+        }
+        println!();
     }
-    println!();
 
     if !execute {
         return Ok(WipeResult::DryRun);
@@ -457,7 +462,7 @@ mod wipe_tests {
         let tmp = TempDir::new().unwrap();
         create_mainnet_layout(tmp.path());
 
-        let result = wipe_data_dir(tmp.path(), true).unwrap();
+        let result = wipe_data_dir(tmp.path(), true, true).unwrap();
 
         match result {
             WipeResult::Wiped { deleted, remaining } => {
@@ -485,7 +490,7 @@ mod wipe_tests {
         let tmp = TempDir::new().unwrap();
         create_mainnet_layout(tmp.path());
 
-        let result = wipe_data_dir(tmp.path(), false).unwrap();
+        let result = wipe_data_dir(tmp.path(), false, true).unwrap();
         assert!(matches!(result, WipeResult::DryRun));
 
         // Everything must still exist
@@ -503,7 +508,7 @@ mod wipe_tests {
         fs::create_dir_all(tmp.path().join("keys")).unwrap();
         fs::write(tmp.path().join(".env"), b"x").unwrap();
 
-        let result = wipe_data_dir(tmp.path(), true).unwrap();
+        let result = wipe_data_dir(tmp.path(), true, true).unwrap();
         assert!(matches!(result, WipeResult::AlreadyClean));
     }
 
@@ -511,7 +516,7 @@ mod wipe_tests {
     #[test]
     fn test_wipe_truly_empty_dir() {
         let tmp = TempDir::new().unwrap();
-        let result = wipe_data_dir(tmp.path(), true).unwrap();
+        let result = wipe_data_dir(tmp.path(), true, true).unwrap();
         assert!(matches!(result, WipeResult::AlreadyClean));
     }
 
@@ -524,7 +529,7 @@ mod wipe_tests {
         fs::write(tmp.path().join("new_state_v5.bin"), b"data").unwrap();
         fs::create_dir_all(tmp.path().join("snapshots")).unwrap();
 
-        let result = wipe_data_dir(tmp.path(), true).unwrap();
+        let result = wipe_data_dir(tmp.path(), true, true).unwrap();
 
         match result {
             WipeResult::Wiped { deleted, remaining } => {
@@ -544,7 +549,7 @@ mod wipe_tests {
         fs::write(tmp.path().join("producer.lock"), b"pid").unwrap();
 
         // Wipe it
-        let result = wipe_data_dir(tmp.path(), true).unwrap();
+        let result = wipe_data_dir(tmp.path(), true, true).unwrap();
         match &result {
             WipeResult::Wiped { deleted, remaining } => {
                 assert_eq!(*deleted, 1);
@@ -582,7 +587,7 @@ mod wipe_tests {
         fs::write(tmp.path().join("maintainer_state.bin"), [0u8; 232]).unwrap();
         fs::write(tmp.path().join("producer.lock"), b"12345\n").unwrap();
 
-        let result = wipe_data_dir(tmp.path(), true).unwrap();
+        let result = wipe_data_dir(tmp.path(), true, true).unwrap();
 
         match result {
             WipeResult::Wiped { deleted, remaining } => {
@@ -622,7 +627,7 @@ mod wipe_tests {
         fs::write(n1_data.join("state.bin"), b"x").unwrap();
         fs::create_dir_all(n1_data.join("keys")).unwrap();
 
-        let result = wipe_data_dir(tmp.path(), true).unwrap();
+        let result = wipe_data_dir(tmp.path(), true, true).unwrap();
 
         match result {
             WipeResult::Wiped { deleted, remaining } => {
