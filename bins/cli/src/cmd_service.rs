@@ -234,31 +234,6 @@ fn cmd_install(
 ) -> Result<()> {
     check_sudo()?;
 
-    // Pre-flight: verify wallet exists before starting a service that requires it
-    if producer_key.is_none() {
-        let default_data_dir = if is_linux() {
-            format!("/var/lib/doli/{}", network)
-        } else {
-            dirs::home_dir()
-                .unwrap_or_else(|| std::path::PathBuf::from("."))
-                .join("Library/Application Support/doli")
-                .join(network)
-                .to_string_lossy()
-                .to_string()
-        };
-        let actual_dir = data_dir.as_deref().unwrap_or(&default_data_dir);
-        let wallet_path = std::path::PathBuf::from(actual_dir).join("wallet.json");
-        if !wallet_path.exists() {
-            bail!(
-                "No wallet found at {}\n\n  \
-                 The node service requires a producer wallet.\n  \
-                 Create one first:  doli init\n  \
-                 Then retry:        sudo doli service install\n",
-                wallet_path.display()
-            );
-        }
-    }
-
     if is_linux() {
         install_systemd(network, name, data_dir, producer_key, p2p_port, rpc_port)
     } else if is_macos() {
@@ -280,13 +255,9 @@ fn build_exec_args(
         args.push("--data-dir".to_string());
         args.push(dir.clone());
     }
-    // "run" subcommand and producer flags
     args.push("run".to_string());
-    args.push("--producer".to_string());
-    args.push("--yes".to_string());
-    args.push("--force-start".to_string());
 
-    // Auto-detect wallet path if --producer-key not provided
+    // Auto-detect wallet: if found → producer mode, if not → full node (sync + RPC only)
     let effective_key = if producer_key.is_some() {
         producer_key.clone()
     } else {
@@ -300,6 +271,10 @@ fn build_exec_args(
         }
     };
     if let Some(ref key) = effective_key {
+        // Producer mode: wallet found
+        args.push("--producer".to_string());
+        args.push("--yes".to_string());
+        args.push("--force-start".to_string());
         args.push("--producer-key".to_string());
         args.push(key.clone());
     }
@@ -401,8 +376,20 @@ WantedBy=multi-user.target
     println!("Starting {}...", service_name);
     run_cmd("systemctl", &["start", &service_name])?;
 
+    let is_producer = exec_args.contains(&"--producer".to_string());
     println!();
-    println!("Service {} installed and started.", service_name);
+    if is_producer {
+        println!(
+            "Service {} installed and started (producer mode).",
+            service_name
+        );
+    } else {
+        println!(
+            "Service {} installed and started (full node — sync + RPC only).",
+            service_name
+        );
+        println!("  To enable production: doli init && sudo doli service install");
+    }
     println!("  Unit file: {}", unit_path);
     println!("  Logs:      doli service logs --follow");
     println!("  Status:    doli service status --name {}", service_name);
@@ -493,8 +480,17 @@ fn install_launchd(
         ],
     )?;
 
+    let is_producer = exec_args.contains(&"--producer".to_string());
     println!();
-    println!("Service {} installed and started.", label);
+    if is_producer {
+        println!("Service {} installed and started (producer mode).", label);
+    } else {
+        println!(
+            "Service {} installed and started (full node — sync + RPC only).",
+            label
+        );
+        println!("  To enable production: doli init && doli service install");
+    }
     println!("  Plist: {}", plist_path.display());
     println!("  Logs:  tail -f {}/{}.log", log_dir, network);
     println!("  Status: doli service status");
