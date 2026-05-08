@@ -174,8 +174,28 @@ pub(crate) fn cmd_wipe(network: &str, data_dir: Option<PathBuf>, yes: bool) -> R
     println!("Data dir:  {:?}", data_dir);
     println!();
 
-    // 3. Safety: stop the service if running (Restart=always would revive it)
     let service_name = format!("doli-{}", network);
+
+    // 3. Collect and display what will be wiped (BEFORE stopping anything)
+    let result = wipe_data_dir(&data_dir, false)?;
+    if matches!(result, WipeResult::AlreadyClean) {
+        println!("Nothing to wipe — data directory is already clean.");
+        return Ok(());
+    }
+
+    // 4. Confirm: --yes flag or interactive prompt
+    if !yes {
+        print!("Wipe all chain data? [y/N]: ");
+        std::io::Write::flush(&mut std::io::stdout())?;
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        if !matches!(input.trim().to_lowercase().as_str(), "y" | "yes") {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+
+    // 5. Stop the service ONLY after user confirmed
     let service_active = std::process::Command::new("systemctl")
         .args(["is-active", "--quiet", &service_name])
         .status()
@@ -187,7 +207,6 @@ pub(crate) fn cmd_wipe(network: &str, data_dir: Option<PathBuf>, yes: bool) -> R
         let _ = std::process::Command::new("systemctl")
             .args(["stop", &service_name])
             .status();
-        // Fallback with sudo if unprivileged
         let still_active = std::process::Command::new("systemctl")
             .args(["is-active", "--quiet", &service_name])
             .status()
@@ -198,11 +217,10 @@ pub(crate) fn cmd_wipe(network: &str, data_dir: Option<PathBuf>, yes: bool) -> R
                 .args(["systemctl", "stop", &service_name])
                 .status();
         }
-        // Brief pause for process cleanup
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
 
-    // Also check for any doli-node process using this data dir
+    // Check for any doli-node process using this data dir
     let data_dir_str = data_dir.to_string_lossy().to_string();
     let is_running = std::process::Command::new("pgrep")
         .args(["-f", &format!("doli-node.*{}", data_dir_str)])
@@ -218,16 +236,13 @@ pub(crate) fn cmd_wipe(network: &str, data_dir: Option<PathBuf>, yes: bool) -> R
         );
     }
 
-    // 4. Collect, display, confirm, delete, verify
-    let result = wipe_data_dir(&data_dir, yes)?;
+    // 6. Execute the wipe
+    let result = wipe_data_dir(&data_dir, true)?;
     match result {
         WipeResult::AlreadyClean => {
             println!("Nothing to wipe — data directory is already clean.");
         }
-        WipeResult::DryRun => {
-            println!("This will delete all chain data. The node will resync from peers.");
-            println!("Run with --yes to proceed.");
-        }
+        WipeResult::DryRun => unreachable!(),
         WipeResult::Wiped { deleted, remaining } => {
             println!();
             println!("Wiped {} items.", deleted);
