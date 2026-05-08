@@ -258,12 +258,11 @@ fn build_exec_args(
     args.push("run".to_string());
 
     // Auto-detect wallet: if found → producer mode, if not → full node (sync + RPC only)
+    // Checks: explicit flag > platform default > legacy ~/.doli/{network}/
     let effective_key = if producer_key.is_some() {
         producer_key.clone()
     } else {
-        let default_data_dir = format!("/var/lib/doli/{}", network);
-        let actual_dir = data_dir.as_deref().unwrap_or(&default_data_dir);
-        let wallet_path = std::path::PathBuf::from(actual_dir).join("wallet.json");
+        let wallet_path = crate::paths::resolve_wallet_path(network, None, data_dir.as_deref());
         if wallet_path.exists() {
             Some(wallet_path.to_string_lossy().to_string())
         } else {

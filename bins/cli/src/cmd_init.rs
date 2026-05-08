@@ -1,5 +1,5 @@
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Result};
 
@@ -70,6 +70,72 @@ fn reexec_with_doli_group(force: bool, non_producer: bool) -> Result<()> {
     std::process::exit(status.code().unwrap_or(1));
 }
 
+/// Find a legacy wallet if the current wallet path doesn't exist.
+/// Returns the legacy directory containing wallet.json, or None.
+fn find_legacy_wallet(network: &str, current_wallet: &Path) -> Option<PathBuf> {
+    if current_wallet.exists() {
+        return None;
+    }
+    let home = dirs::home_dir()?;
+    let legacy_dir = home.join(".doli").join(network);
+    let legacy_wallet = legacy_dir.join("wallet.json");
+    if legacy_wallet.exists() {
+        Some(legacy_dir)
+    } else {
+        None
+    }
+}
+
+/// Migrate wallet (and seed file) from legacy dir to the new platform dir.
+fn migrate_legacy_wallet(legacy_dir: &Path, new_dir: &Path) -> Result<()> {
+    // Ensure target directory exists
+    if !new_dir.exists() {
+        std::fs::create_dir_all(new_dir)?;
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(new_dir, std::fs::Permissions::from_mode(0o2770))?;
+        }
+    }
+
+    let mut migrated = Vec::new();
+    // Copy wallet.json and any seed/key files
+    for name in &["wallet.json", "wallet.seed.txt"] {
+        let src = legacy_dir.join(name);
+        let dst = new_dir.join(name);
+        if src.exists() && !dst.exists() {
+            std::fs::copy(&src, &dst)?;
+            // Preserve appropriate permissions
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = if *name == "wallet.json" { 0o640 } else { 0o600 };
+                std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(mode))?;
+            }
+            migrated.push(*name);
+        }
+    }
+
+    if !migrated.is_empty() {
+        println!("  Migrated from {}:", legacy_dir.display());
+        for name in &migrated {
+            println!("    {} -> {}", name, new_dir.join(name).display());
+        }
+        println!();
+        println!(
+            "  The legacy directory is still at {}",
+            legacy_dir.display()
+        );
+        println!(
+            "  You can remove it after verifying: rm -rf {}",
+            legacy_dir.display()
+        );
+        println!();
+    }
+
+    Ok(())
+}
+
 pub(crate) fn cmd_init(
     network: &str,
     wallet_path: &Path,
@@ -86,6 +152,26 @@ pub(crate) fn cmd_init(
         wallet_path.parent().unwrap_or(wallet_path).display()
     );
     println!();
+
+    // Check for legacy wallet and migrate if found
+    if !wallet_path.exists() && !force {
+        let new_dir = wallet_path.parent().unwrap_or(wallet_path);
+        if let Some(legacy_dir) = find_legacy_wallet(network, wallet_path) {
+            println!("  Found legacy wallet at {}", legacy_dir.display());
+            println!();
+            migrate_legacy_wallet(&legacy_dir, new_dir)?;
+
+            // Verify migration succeeded
+            if wallet_path.exists() {
+                let wallet = Wallet::load(wallet_path)?;
+                let bech32_addr = wallet.primary_bech32_address(address_prefix());
+                println!("  Wallet migrated successfully!");
+                println!("    Address: {}", bech32_addr);
+                println!();
+                return Ok(());
+            }
+        }
+    }
 
     // Check if wallet already exists
     if wallet_path.exists() && !force {
