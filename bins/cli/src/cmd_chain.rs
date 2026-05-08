@@ -162,11 +162,7 @@ pub(crate) fn cmd_wipe(network: &str, data_dir: Option<PathBuf>, yes: bool) -> R
     // 1. Resolve data dir
     let data_dir = match data_dir {
         Some(d) => d,
-        None => {
-            let home = dirs::home_dir()
-                .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
-            home.join(".doli").join(network)
-        }
+        None => crate::paths::resolve_base_dir(network, None),
     };
 
     // 2. Verify directory exists
