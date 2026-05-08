@@ -244,7 +244,24 @@ pub(crate) fn cmd_wipe(network: &str, data_dir: Option<PathBuf>, yes: bool) -> R
                     );
                 }
             }
-            println!("Start the node to resync from peers.");
+
+            // Restart the service if it was running before wipe
+            if service_active {
+                println!("Restarting {} service...", service_name);
+                let started = std::process::Command::new("systemctl")
+                    .args(["start", &service_name])
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false);
+                if !started {
+                    let _ = std::process::Command::new("sudo")
+                        .args(["systemctl", "start", &service_name])
+                        .status();
+                }
+                println!("Node will resync from peers.");
+            } else {
+                println!("Start the node to resync from peers.");
+            }
         }
     }
 
