@@ -325,37 +325,9 @@ pub use validation::{
 // Some constants are deprecated - use NetworkParams for network-aware code
 #[allow(deprecated)]
 pub use tpop::{
-    calculate_heartbeat_score,
-    // Functions
-    calculate_presence_score,
-    can_produce_at_time,
-    rank_producers_by_presence,
-    validate_heartbeat_timing,
-    HeartbeatCollector,
-    HeartbeatError,
-    PresenceCheckpoint,
-    // Legacy trait
-    PresenceConsensus,
-    // Heartbeat types (primary API for micro-VDF)
-    PresenceHeartbeat,
-    PresenceProof,
-    ProducerPresenceState,
-    // Simplified presence state
-    SimplePresenceState,
-    SimpleProducerState,
-    SlotStats,
-    // Configuration and metrics
-    TpopConfig,
-    TpopConsensus,
-    TpopMetrics,
-    TpopMigrationConfig,
-    // Legacy core types
-    VdfLink,
-    HEARTBEAT_DEADLINE_SECS,
-    HEARTBEAT_DISCRIMINANT_BITS,
-    // Deprecated constants - use NetworkParams instead for network-aware code
-    HEARTBEAT_GRACE_PERIOD_SECS,
-    HEARTBEAT_VDF_ITERATIONS,
+    calculate_heartbeat_score, validate_heartbeat_timing, HeartbeatCollector, HeartbeatError,
+    PresenceHeartbeat, HEARTBEAT_DEADLINE_SECS, HEARTBEAT_DISCRIMINANT_BITS,
+    HEARTBEAT_GRACE_PERIOD_SECS, HEARTBEAT_VDF_ITERATIONS,
 };
 
 // Discovery module exports (producer discovery system)

@@ -2,17 +2,14 @@
 //!
 //! VDF primitives for DOLI's Proof of Time (PoT) consensus.
 //!
-//! ## Two VDF types
+//! ## VDF type
 //!
 //! | Type | Algorithm | Used for | Consensus? |
 //! |------|-----------|----------|------------|
 //! | **Hash-chain** | Iterated BLAKE3 (`heartbeat::hash_chain_vdf`) | Block production (800K iter, ~55ms) and registration (5M iter, ~30s) | **Yes** |
-//! | **Wesolowski** | Class group sequential squarings | Telemetry-only presence tracking (`tpop::presence`) | No |
 //!
 //! All consensus-critical VDF validation goes through `hash_chain_vdf` /
-//! `verify_hash_chain_vdf` in `doli_core::heartbeat`. The Wesolowski
-//! implementation (`vdf::compute`, `vdf::verify`) is only called from
-//! the telemetry presence module, which does NOT affect consensus.
+//! `verify_hash_chain_vdf` in `doli_core::heartbeat`.
 //!
 //! ## Hash-chain VDF (consensus)
 //!
@@ -23,13 +20,6 @@
 //! |-----------|-------|---------|
 //! | T_BLOCK | 800K | ~55ms anti-grinding for block production |
 //! | T_REGISTER_BASE | 5M | ~30s anti-flash-attack for registration |
-//!
-//! ## Wesolowski VDF (telemetry only)
-//!
-//! Sequential squarings in imaginary quadratic class groups with a
-//! Wesolowski proof (O(log t) verification). Used only for presence
-//! tracking in `doli_core::tpop::presence` — does not affect block
-//! validity, producer selection, or rewards.
 //!
 //! ## Time-based consensus
 //!
@@ -42,27 +32,15 @@
 #![warn(clippy::pedantic)]
 #![allow(clippy::module_name_repetitions)]
 #![allow(clippy::similar_names)]
-// Math-heavy crate: allow short variable names and some stylistic choices
-#![allow(clippy::many_single_char_names)]
 #![allow(clippy::doc_markdown)]
 #![allow(clippy::missing_errors_doc)]
-#![allow(clippy::cast_possible_truncation)]
-#![allow(clippy::redundant_closure_for_method_calls)]
-#![allow(clippy::bool_to_int_with_if)]
-#![allow(clippy::assigning_clones)]
-#![allow(clippy::manual_div_ceil)]
 #![allow(clippy::must_use_candidate)]
-#![allow(clippy::unnecessary_wraps)]
 
-pub mod class_group;
 pub mod proof;
 pub mod vdf;
 
 pub use proof::VdfProof;
-pub use vdf::{VdfError, VdfOutput, VdfParams};
-
-// Re-export class group types for advanced usage
-pub use class_group::{ClassGroupElement, ClassGroupError};
+pub use vdf::{VdfError, VdfOutput};
 
 use crypto::Hash;
 
@@ -81,63 +59,6 @@ pub const T_REGISTER_BASE: u64 = 1_000;
 
 /// Maximum VDF parameter for registration — same as base (no escalation).
 pub const T_REGISTER_CAP: u64 = 1_000;
-
-/// Size of the discriminant in bits.
-///
-/// 2048 bits provides approximately 112-bit security against the best known
-/// factoring algorithms (similar to RSA-2048).
-pub const DISCRIMINANT_BITS: usize = 2048;
-
-/// Compute a VDF.
-///
-/// This is the main entry point for VDF computation.
-///
-/// # Arguments
-/// * `input` - The 32-byte input hash
-/// * `t` - The difficulty parameter (number of squarings)
-///
-/// # Returns
-/// The VDF output and proof, or an error
-///
-/// # Example
-/// ```rust
-/// use vdf::compute;
-/// use crypto::hash::hash;
-///
-/// let input = hash(b"test");
-/// let (output, proof) = compute(&input, 10).expect("compute failed");
-/// ```
-#[inline]
-pub fn compute(input: &Hash, t: u64) -> Result<(VdfOutput, VdfProof), VdfError> {
-    vdf::compute(input, t)
-}
-
-/// Verify a VDF proof.
-///
-/// This is the main entry point for VDF verification.
-///
-/// # Arguments
-/// * `input` - The original input hash
-/// * `output` - The claimed VDF output
-/// * `proof` - The Wesolowski proof
-/// * `t` - The difficulty parameter
-///
-/// # Returns
-/// `Ok(())` if the proof is valid, `Err` otherwise
-///
-/// # Example
-/// ```rust
-/// use vdf::{compute, verify};
-/// use crypto::hash::hash;
-///
-/// let input = hash(b"test");
-/// let (output, proof) = compute(&input, 10).expect("compute failed");
-/// verify(&input, &output, &proof, 10).expect("verify failed");
-/// ```
-#[inline]
-pub fn verify(input: &Hash, output: &VdfOutput, proof: &VdfProof, t: u64) -> Result<(), VdfError> {
-    vdf::verify(input, output, proof, t)
-}
 
 /// Build a block VDF input from components.
 ///
@@ -228,13 +149,6 @@ mod tests {
     use crypto::hash::hash;
 
     #[test]
-    fn test_constants() {
-        // T_BLOCK > 0, T_REGISTER_BASE > T_BLOCK, T_REGISTER_CAP >= T_REGISTER_BASE
-        // are guaranteed by const values — checked at compile time.
-        assert_eq!(DISCRIMINANT_BITS, 2048);
-    }
-
-    #[test]
     fn test_block_input_format() {
         let prev_hash = Hash::ZERO;
         let merkle_root = Hash::ZERO;
@@ -242,8 +156,6 @@ mod tests {
         let producer = crypto::PublicKey::from_bytes([0u8; 32]);
 
         let input = block_input(&prev_hash, &merkle_root, slot, &producer);
-
-        // Verify it produces a non-zero hash
         assert!(!input.is_zero());
     }
 
@@ -256,7 +168,6 @@ mod tests {
 
         let input1 = block_input(&prev_hash, &merkle_root, slot, &producer);
         let input2 = block_input(&prev_hash, &merkle_root, slot, &producer);
-
         assert_eq!(input1, input2);
     }
 
@@ -268,7 +179,6 @@ mod tests {
 
         let input1 = block_input(&prev_hash, &merkle_root, 0, &producer);
         let input2 = block_input(&prev_hash, &merkle_root, 1, &producer);
-
         assert_ne!(input1, input2);
     }
 
@@ -279,18 +189,15 @@ mod tests {
 
         let seed1 = selection_seed(&prev_hash, slot);
         let seed2 = selection_seed(&prev_hash, slot);
-
         assert_eq!(seed1, seed2);
     }
 
     #[test]
     fn test_selection_seed_vector() {
-        // Test vector for slot 0
         let prev_hash = Hash::ZERO;
         let slot = 0u32;
 
         let seed = selection_seed(&prev_hash, slot);
-
         assert_eq!(
             seed.to_hex(),
             "f3b4b63bfa289f7b4b2f11f08cfc26bd38ccdbdd9dae33ef9b77c1fc3b96ebb2"
@@ -299,12 +206,10 @@ mod tests {
 
     #[test]
     fn test_selection_seed_slot_1() {
-        // Test vector for slot 1 (endianness check)
         let prev_hash = Hash::ZERO;
         let slot = 1u32;
 
         let seed = selection_seed(&prev_hash, slot);
-
         assert_eq!(
             seed.to_hex(),
             "ac1d2a15e55cc413c69036ba29cd08066a560a5bf152ac89a35089eae1fd6bbe"
@@ -318,43 +223,14 @@ mod tests {
 
         let input1 = registration_input(&public_key, epoch);
         let input2 = registration_input(&public_key, epoch);
-
         assert_eq!(input1, input2);
     }
 
     #[test]
     fn test_registration_difficulty_fixed() {
-        // Registration difficulty is now fixed regardless of producer count
         assert_eq!(registration_difficulty(0), T_REGISTER_BASE);
         assert_eq!(registration_difficulty(100), T_REGISTER_BASE);
         assert_eq!(registration_difficulty(1000), T_REGISTER_BASE);
         assert_eq!(registration_difficulty(1_000_000), T_REGISTER_BASE);
-    }
-
-    #[test]
-    fn test_compute_and_verify() {
-        // Use smaller discriminant for faster test
-        let params = vdf::VdfParams::with_seed(256, b"integration_test");
-        let input = hash(b"integration test");
-        let t = 5;
-
-        let (output, proof) =
-            vdf::compute_with_params(&input, t, &params).expect("compute should succeed");
-        vdf::verify_with_params(&input, &output, &proof, t, &params)
-            .expect("verify should succeed");
-    }
-
-    #[test]
-    fn test_verification_fails_with_wrong_t() {
-        // Use smaller discriminant for faster test
-        let params = vdf::VdfParams::with_seed(256, b"wrong_t_test");
-        let input = hash(b"test");
-        let t = 5;
-
-        let (output, proof) = vdf::compute_with_params(&input, t, &params).expect("compute");
-
-        // Different t should fail
-        let result = vdf::verify_with_params(&input, &output, &proof, t + 1, &params);
-        assert!(result.is_err());
     }
 }

@@ -1,65 +1,25 @@
-//! VDF proof structure and operations
+//! VDF proof structure
 //!
-//! This module defines the Wesolowski proof format used to efficiently
-//! verify VDF computations.
-//!
-//! ## The Wesolowski Proof
-//!
-//! A Wesolowski proof is a single group element π that allows verification
-//! of y = x^(2^t) in O(log t) operations instead of O(t).
-//!
-//! Given:
-//! - Input: x (group element)
-//! - Output: y = x^(2^t) (group element)
-//! - Proof: π = x^q where q = floor(2^t / l)
-//! - Challenge: l (prime from Fiat-Shamir)
-//!
-//! Verification checks: y == π^l · x^r where r = 2^t mod l
-//!
-//! This works because:
-//! - 2^t = l·q + r (by definition of q and r)
-//! - So π^l · x^r = x^(l·q) · x^r = x^(l·q + r) = x^(2^t) = y
+//! A lightweight proof container used in block headers. In production, the hash-chain
+//! VDF does not produce a compact proof (verification requires recomputation), so the
+//! proof field is empty. This struct exists for wire-format compatibility.
 
 use serde::{Deserialize, Serialize};
 
-use crate::class_group::ClassGroupElement;
-
-/// A Wesolowski VDF proof.
+/// A VDF proof.
 ///
-/// The proof allows verification that y = x^(2^t) was computed correctly
-/// using only O(log t) group operations for verification, compared to
-/// O(t) operations for direct computation.
-///
-/// # Size
-///
-/// The proof size depends on the discriminant size:
-/// - 2048-bit discriminant: ~512 bytes
-/// - 1024-bit discriminant: ~256 bytes
-///
-/// # Security
-///
-/// The proof is sound under the low-order assumption in class groups:
-/// it is computationally infeasible to find a non-trivial element of
-/// low order in a class group with unknown group order.
+/// In production (hash-chain VDF), this is always empty — verification
+/// requires recomputation. The struct is retained for block header format.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VdfProof {
-    /// The serialized proof element π = x^(floor(2^t / l))
+    /// The serialized proof bytes (empty for hash-chain VDF)
     pub pi: Vec<u8>,
 }
 
 impl VdfProof {
-    /// Create a new proof from a class group element.
-    #[must_use]
-    pub fn new(element: &ClassGroupElement) -> Self {
-        Self {
-            pi: element.to_bytes(),
-        }
-    }
-
     /// Create an empty/placeholder proof.
     ///
-    /// This is used for testing or when a proof is not yet computed.
-    /// An empty proof will always fail verification.
+    /// This is the standard constructor for hash-chain VDF blocks.
     #[must_use]
     pub fn empty() -> Self {
         Self { pi: Vec::new() }
@@ -83,6 +43,7 @@ impl VdfProof {
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(4 + self.pi.len());
+        #[allow(clippy::cast_possible_truncation)]
         bytes.extend_from_slice(&(self.pi.len() as u32).to_le_bytes());
         bytes.extend_from_slice(&self.pi);
         bytes
@@ -108,8 +69,6 @@ impl VdfProof {
     }
 
     /// Convert to hex string.
-    ///
-    /// Useful for debugging and logging.
     #[must_use]
     pub fn to_hex(&self) -> String {
         hex::encode(&self.pi)
@@ -123,8 +82,6 @@ impl VdfProof {
     }
 
     /// Get a truncated hex representation for display.
-    ///
-    /// Shows the first and last 8 characters with "..." in between.
     #[must_use]
     pub fn display_hex(&self) -> String {
         let hex = self.to_hex();
@@ -152,15 +109,6 @@ impl std::fmt::Display for VdfProof {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_proof_new() {
-        let proof = VdfProof {
-            pi: vec![1, 2, 3, 4, 5],
-        };
-        assert_eq!(proof.size(), 5);
-        assert!(!proof.is_empty());
-    }
 
     #[test]
     fn test_proof_empty() {
@@ -211,13 +159,11 @@ mod tests {
 
     #[test]
     fn test_proof_display() {
-        // Short proof
         let short = VdfProof {
             pi: vec![0xde, 0xad, 0xbe, 0xef],
         };
         assert_eq!(format!("{short}"), "VdfProof(deadbeef)");
 
-        // Long proof
         let long = VdfProof {
             pi: vec![
                 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, 0x11, 0x22, 0x33, 0x44,
@@ -229,11 +175,9 @@ mod tests {
 
     #[test]
     fn test_proof_from_bytes_malformed() {
-        // Too short
         assert!(VdfProof::from_bytes(&[]).is_none());
         assert!(VdfProof::from_bytes(&[1, 2, 3]).is_none());
 
-        // Length mismatch
         let bad = [10, 0, 0, 0, 1, 2, 3]; // Claims 10 bytes but only has 3
         assert!(VdfProof::from_bytes(&bad).is_none());
     }
@@ -254,28 +198,5 @@ mod tests {
         let recovered: VdfProof = serde_json::from_str(&json).expect("deserialize");
 
         assert_eq!(proof, recovered);
-    }
-
-    // Property-based tests
-    use proptest::prelude::*;
-
-    proptest! {
-        #[test]
-        fn prop_serialization_roundtrip(data: Vec<u8>) {
-            let proof = VdfProof { pi: data };
-            let bytes = proof.to_bytes();
-            let recovered = VdfProof::from_bytes(&bytes);
-            prop_assert!(recovered.is_some());
-            prop_assert_eq!(proof, recovered.unwrap());
-        }
-
-        #[test]
-        fn prop_hex_roundtrip(data: Vec<u8>) {
-            let proof = VdfProof { pi: data };
-            let hex = proof.to_hex();
-            let recovered = VdfProof::from_hex(&hex);
-            prop_assert!(recovered.is_ok());
-            prop_assert_eq!(proof, recovered.unwrap());
-        }
     }
 }

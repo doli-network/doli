@@ -148,7 +148,7 @@ pub struct PresenceHeartbeat {
     /// Micro-VDF output (32 bytes)
     pub vdf_output: [u8; 32],
 
-    /// Wesolowski proof for the micro-VDF
+    /// VDF proof (empty for hash-chain VDF)
     pub vdf_proof: VdfProof,
 
     /// Signature over (version || slot || prev_hash || vdf_output)

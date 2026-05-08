@@ -1,6 +1,6 @@
 [package]
 name = "doli-benchmarks"
-description = "VDF and performance benchmarks for DOLI"
+description = "Hash-chain VDF performance benchmarks for DOLI"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -15,6 +15,3 @@ path = "src/main.rs"
 vdf = { workspace = true }
 crypto = { workspace = true }
 clap = { workspace = true }
-chrono = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
