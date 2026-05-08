@@ -1595,8 +1595,10 @@ name = "doli-gui"
 version = "6.21.16"
 dependencies = [
  "anyhow",
+ "bincode",
  "crypto",
  "dirs 5.0.1",
+ "doli-core",
  "hex",
  "serde",
  "serde_json",
@@ -1607,6 +1609,7 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
+ "vdf",
  "wallet",
 ]
 

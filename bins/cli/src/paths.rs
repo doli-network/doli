@@ -84,7 +84,19 @@ fn platform_data_dir(network: &str) -> PathBuf {
             .join("Library/Application Support/doli")
             .join(network)
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(target_os = "windows")]
+    {
+        // %APPDATA%\doli\{network} (e.g. C:\Users\<user>\AppData\Roaming\doli\mainnet)
+        dirs::data_dir()
+            .unwrap_or_else(|| {
+                dirs::home_dir()
+                    .map(|h| h.join("AppData").join("Roaming"))
+                    .unwrap_or_else(|| PathBuf::from("C:\\ProgramData"))
+            })
+            .join("doli")
+            .join(network)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("/tmp"))

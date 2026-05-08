@@ -18,6 +18,11 @@ wallet = { workspace = true }
 # Cryptography (address encoding/decoding)
 crypto = { workspace = true }
 
+# Core types (registration tx, VDF, consensus constants)
+doli-core = { workspace = true }
+vdf = { workspace = true }
+bincode = { workspace = true }
+
 # Tauri framework
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"

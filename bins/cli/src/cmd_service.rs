@@ -4,6 +4,16 @@ use crate::commands::ServiceCommand;
 
 /// Entry point for `doli service <subcommand>`.
 pub(crate) fn cmd_service(network: &str, command: ServiceCommand) -> Result<()> {
+    if cfg!(target_os = "windows") {
+        bail!(
+            "The 'service' command is not yet supported on Windows.\n\
+             To run a DOLI node on Windows, start doli-node directly:\n\
+             \n  doli-node --network {} run\n\
+             \nTo run as a background service, use Windows Task Scheduler or NSSM:\n  \
+             https://nssm.cc",
+            network
+        );
+    }
     match command {
         ServiceCommand::Install {
             network: net,

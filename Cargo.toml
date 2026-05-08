@@ -85,15 +85,6 @@ clap = { version = "4.4", features = ["derive", "env"] }
 thiserror = "1.0"
 anyhow = "1.0"
 
-# Big integers (for VDF)
-# Using rug (GMP bindings) for ~10x faster BigInt operations vs pure Rust num-bigint
-# Required for VDF to complete in ~55 seconds (vs 7+ minutes with num-bigint)
-rug = { version = "1.28", features = ["integer", "serde"] }
-num-traits = "0.2"
-num-integer = "0.1"
-# Keep num-bigint for compatibility/non-performance-critical uses
-num-bigint = { version = "0.4", features = ["serde"] }
-
 # Time
 chrono = { version = "0.4", features = ["serde"] }
 
