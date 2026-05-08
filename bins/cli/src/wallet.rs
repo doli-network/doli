@@ -111,10 +111,27 @@ impl Wallet {
     /// Load wallet from file
     pub fn load(path: &Path) -> Result<Self> {
         let contents = std::fs::read_to_string(path).with_context(|| {
-            format!(
-                "wallet file not found: {}\n  Use -w to specify the wallet path, e.g.: doli -w /path/to/wallet.json <command>",
-                path.display()
-            )
+            if path.exists() {
+                format!(
+                    "cannot read wallet: {}\n  Check file permissions.",
+                    path.display()
+                )
+            } else {
+                #[cfg(target_os = "linux")]
+                {
+                    format!(
+                        "wallet not found: {}\n  Create one: doli init",
+                        path.display()
+                    )
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    format!(
+                        "wallet not found: {}\n  Use -w to specify the wallet path, e.g.: doli -w /path/to/wallet.json <command>",
+                        path.display()
+                    )
+                }
+            }
         })?;
         let wallet: Wallet = serde_json::from_str(&contents)
             .with_context(|| format!("failed to parse wallet file: {}", path.display()))?;
@@ -131,10 +148,11 @@ impl Wallet {
         let contents = serde_json::to_string_pretty(self)?;
         std::fs::write(path, &contents)?;
         // AUDIT-KEY-001: Restrict wallet file permissions (contains private keys)
+        // Mode 0640: owner rw, group read (doli service user reads via group), no world access
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o640))?;
         }
         Ok(())
     }

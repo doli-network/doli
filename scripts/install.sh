@@ -103,10 +103,11 @@ if [ "$OS" = "Linux" ]; then
     fi
 
     # 3. Create standard directories with correct ownership
-    install -d -o doli -g doli -m 0750 /var/lib/doli
-    install -d -o doli -g doli -m 0750 /var/lib/doli/mainnet
-    install -d -o doli -g doli -m 0750 /var/lib/doli/testnet
-    install -d -o doli -g doli -m 0750 /var/log/doli
+    #    Mode 2770: setgid + group-writable so doli group members can run `doli init` without sudo
+    install -d -o doli -g doli -m 2770 /var/lib/doli
+    install -d -o doli -g doli -m 2770 /var/lib/doli/mainnet
+    install -d -o doli -g doli -m 2770 /var/lib/doli/testnet
+    install -d -o doli -g doli -m 2770 /var/log/doli
 
     # 4. Install polkit rule for passwordless service control by doli group
     if [ -d /etc/polkit-1/rules.d ]; then
@@ -148,7 +149,8 @@ printf "  ${BOLD}doli${NC}      %s\n" "$(command -v doli)"
 echo ""
 echo "  Get started:"
 echo "    doli init                                         # create wallet + keys"
-echo "    doli-node run --yes                               # sync to chain tip"
+echo "    sudo doli service install                         # start node as system service"
+echo "    doli chain                                        # check sync progress"
 echo ""
 
 if [ "${NEEDS_RELOGIN}" = "1" ]; then

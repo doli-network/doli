@@ -1,10 +1,74 @@
 use std::io::Write;
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 
 use crate::common::address_prefix;
 use crate::wallet::Wallet;
+
+/// Check if the data directory is writable by the current process.
+fn dir_is_writable(dir: &Path) -> bool {
+    if !dir.exists() {
+        return dir.parent().map(dir_is_writable).unwrap_or(false);
+    }
+    let test_path = dir.join(".doli-write-test");
+    match std::fs::write(&test_path, b"") {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&test_path);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// On Linux: check if user is in 'doli' group (assigned but not yet active in this session).
+#[cfg(target_os = "linux")]
+fn user_in_doli_group_but_inactive() -> bool {
+    // Check /etc/group for membership (assigned) vs `id -Gn` (active in session)
+    let real_user = std::env::var("USER").unwrap_or_default();
+    if real_user.is_empty() {
+        return false;
+    }
+    // Check if assigned to doli group
+    let assigned = std::process::Command::new("id")
+        .args(["-Gn", &real_user])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.split_whitespace().any(|g| g == "doli"))
+        .unwrap_or(false);
+    if !assigned {
+        return false;
+    }
+    // Check if active in current session (groups of current process)
+    let active = std::process::Command::new("id")
+        .arg("-Gn")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.split_whitespace().any(|g| g == "doli"))
+        .unwrap_or(false);
+    !active
+}
+
+/// Re-exec `doli init` under `sg doli` to activate group membership.
+#[cfg(target_os = "linux")]
+fn reexec_with_doli_group(force: bool, non_producer: bool) -> Result<()> {
+    let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("doli"));
+    let mut cmd = format!("{} init", exe.display());
+    if force {
+        cmd.push_str(" --force");
+    }
+    if non_producer {
+        cmd.push_str(" --non-producer");
+    }
+    println!("  Activating 'doli' group membership...");
+    println!();
+    let status = std::process::Command::new("sg")
+        .args(["doli", "-c", &cmd])
+        .status()?;
+    std::process::exit(status.code().unwrap_or(1));
+}
 
 pub(crate) fn cmd_init(
     network: &str,
@@ -40,6 +104,32 @@ pub(crate) fn cmd_init(
         println!();
     }
 
+    // Check write access to data directory
+    let data_dir = wallet_path.parent().unwrap_or(wallet_path);
+    if !dir_is_writable(data_dir) {
+        #[cfg(target_os = "linux")]
+        {
+            // If user is in 'doli' group but hasn't re-logged, activate via `sg`
+            if user_in_doli_group_but_inactive() {
+                return reexec_with_doli_group(force, non_producer);
+            }
+            bail!(
+                "Cannot write to {}\n\n  \
+                 Fix: add yourself to the 'doli' group and re-login:\n  \
+                   sudo usermod -aG doli $USER && newgrp doli\n  \
+                 Then retry: doli init\n",
+                data_dir.display()
+            );
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            bail!(
+                "Cannot write to {}\n  Check directory permissions.",
+                data_dir.display()
+            );
+        }
+    }
+
     // Create the data directory if needed
     if let Some(parent) = wallet_path.parent() {
         if !parent.exists() {
@@ -47,7 +137,7 @@ pub(crate) fn cmd_init(
             #[cfg(target_os = "linux")]
             {
                 use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o750))?;
+                std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o2770))?;
             }
         }
     }

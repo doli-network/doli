@@ -234,6 +234,31 @@ fn cmd_install(
 ) -> Result<()> {
     check_sudo()?;
 
+    // Pre-flight: verify wallet exists before starting a service that requires it
+    if producer_key.is_none() {
+        let default_data_dir = if is_linux() {
+            format!("/var/lib/doli/{}", network)
+        } else {
+            dirs::home_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("."))
+                .join("Library/Application Support/doli")
+                .join(network)
+                .to_string_lossy()
+                .to_string()
+        };
+        let actual_dir = data_dir.as_deref().unwrap_or(&default_data_dir);
+        let wallet_path = std::path::PathBuf::from(actual_dir).join("wallet.json");
+        if !wallet_path.exists() {
+            bail!(
+                "No wallet found at {}\n\n  \
+                 The node service requires a producer wallet.\n  \
+                 Create one first:  doli init\n  \
+                 Then retry:        sudo doli service install\n",
+                wallet_path.display()
+            );
+        }
+    }
+
     if is_linux() {
         install_systemd(network, name, data_dir, producer_key, p2p_port, rpc_port)
     } else if is_macos() {
@@ -379,7 +404,7 @@ WantedBy=multi-user.target
     println!();
     println!("Service {} installed and started.", service_name);
     println!("  Unit file: {}", unit_path);
-    println!("  Logs:      journalctl -u {} -f", service_name);
+    println!("  Logs:      doli service logs --follow");
     println!("  Status:    doli service status --name {}", service_name);
 
     Ok(())
