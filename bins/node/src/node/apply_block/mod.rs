@@ -139,6 +139,9 @@ impl Node {
             let mut utxo = self.utxo_set.write().await;
             let mut producers = self.producer_set.write().await;
 
+            // INC-I-064 (P2): Snapshot total UTXO value before processing
+            let total_value_before = utxo.total_value();
+
             for (tx_index, tx) in block.transactions.iter().enumerate() {
                 // Process UTXO changes (in-memory + batch for atomic persistence)
                 self.process_transaction_utxos(
@@ -150,6 +153,7 @@ impl Node {
                     &mut batch,
                     &mut undo_spent_utxos,
                     &mut undo_created_utxos,
+                    mode,
                 )?;
 
                 // Process producer-related effects (registrations, exits, bonds, etc.)
@@ -169,6 +173,47 @@ impl Node {
                     .await
                 {
                     pending_protocol_activation_data = Some(activation);
+                }
+            }
+
+            // INC-I-064 (P2): Supply conservation invariant.
+            // The only source of new coins is the regular coinbase (Transfer
+            // type with empty inputs at tx_index 0). EpochReward redistributes
+            // existing pool UTXOs (zero-sum). All other TXs are zero-sum.
+            // If total_value changed by more than the coinbase, coins were
+            // created from nothing.
+            let total_value_after = utxo.total_value();
+            let coinbase_amount: u64 = block
+                .transactions
+                .first()
+                .filter(|tx| tx.is_coinbase())
+                .map(|tx| {
+                    tx.outputs
+                        .iter()
+                        .filter(|o| o.output_type.is_native_amount())
+                        .map(|o| o.amount)
+                        .sum()
+                })
+                .unwrap_or(0);
+
+            if total_value_after != total_value_before + coinbase_amount {
+                let delta = total_value_after as i128 - total_value_before as i128;
+                if mode == ValidationMode::Replay {
+                    warn!(
+                        "[CONSERVATION] Supply invariant violated at h={}: delta={}, expected=+{} — historical block, continuing",
+                        height, delta, coinbase_amount
+                    );
+                } else {
+                    anyhow::bail!(
+                        "[CONSERVATION_VIOLATION] Supply invariant at h={}: \
+                         total_before={} total_after={} delta={} expected_delta=+{} — \
+                         coins created or destroyed outside coinbase",
+                        height,
+                        total_value_before,
+                        total_value_after,
+                        delta,
+                        coinbase_amount
+                    );
                 }
             }
 

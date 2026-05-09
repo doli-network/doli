@@ -628,7 +628,7 @@ impl Node {
                 }
             };
 
-            if total_distributed > pool_balance {
+            if total_distributed > pool_balance && mode != ValidationMode::Replay {
                 anyhow::bail!(
                     "[ECON_EPOCH_OVERFLOW] EpochReward total {} exceeds pool balance {} at height={} — inflation attack",
                     total_distributed,
@@ -637,12 +637,9 @@ impl Node {
                 );
             }
 
-            // Fork-sensitive checks below depend on local-state rewards
-            // calculation (`calculate_epoch_rewards`) and local pool-UTXO
-            // composition. In Light mode (sync/reorg) the local state may be
-            // on a transient micro-fork or behind the canonical chain, so
-            // these comparisons can spuriously reject valid blocks. Keep them
-            // Full-only.
+            // Distribution amount check depends on local-state rewards
+            // calculation (`calculate_epoch_rewards`). In Light mode the local
+            // state may be on a transient micro-fork, so keep Full-only.
             if matches!(mode, ValidationMode::Full) {
                 // Exact match of amounts and recipients
                 let expected = self.calculate_epoch_rewards(completed_epoch).await;
@@ -679,45 +676,52 @@ impl Node {
                         total_distributed
                     );
                 }
+            }
 
-                // Post-activation: verify explicit pool UTXO inputs
-                if height >= doli_core::consensus::EPOCH_REWARD_EXPLICIT_INPUTS_HEIGHT {
-                    if epoch_tx.inputs.is_empty() {
-                        anyhow::bail!(
-                            "[ECON_EPOCH_NO_INPUTS] EpochReward at height={} (post-activation) must have explicit pool inputs",
-                            height
-                        );
-                    }
-                    // Verify inputs match the sorted pool outpoints
-                    let utxo = self.utxo_set.read().await;
-                    let pool_utxos = utxo.get_by_pubkey_hash(&pool_hash);
-                    let mut expected_inputs: Vec<(crypto::Hash, u32)> = pool_utxos
-                        .iter()
-                        .map(|(op, _)| (op.tx_hash, op.index))
-                        .collect();
-                    expected_inputs.sort();
-                    drop(utxo);
-
-                    let actual_inputs: Vec<(crypto::Hash, u32)> = epoch_tx
-                        .inputs
-                        .iter()
-                        .map(|inp| (inp.prev_tx_hash, inp.output_index))
-                        .collect();
-
-                    if actual_inputs != expected_inputs {
-                        anyhow::bail!(
-                            "[ECON_EPOCH_INPUTS_MISMATCH] EpochReward pool inputs mismatch at height={}: expected {} inputs, got {}",
-                            height,
-                            expected_inputs.len(),
-                            actual_inputs.len()
-                        );
-                    }
-                } else if !epoch_tx.inputs.is_empty() {
+            // INC-I-064: Pool input verification runs in Full + Light modes.
+            // The pool UTXO set is deterministic — comparing inputs against it
+            // is safe even during sync/reorg. Previously gated behind Full-only,
+            // which let syncing nodes accept EpochReward TXs with stale inputs.
+            // Replay mode skips: historical blocks (e.g., E362) have mismatched
+            // inputs that are part of the chain's consensus history.
+            if mode != ValidationMode::Replay
+                && height >= doli_core::consensus::EPOCH_REWARD_EXPLICIT_INPUTS_HEIGHT
+            {
+                if epoch_tx.inputs.is_empty() {
                     anyhow::bail!(
-                        "[ECON_EPOCH_PRE_INPUTS] EpochReward at height={} (pre-activation) must not have inputs",
+                        "[ECON_EPOCH_NO_INPUTS] EpochReward at height={} (post-activation) must have explicit pool inputs",
                         height
                     );
                 }
+                // Verify inputs match the sorted pool outpoints
+                let utxo = self.utxo_set.read().await;
+                let pool_utxos = utxo.get_by_pubkey_hash(&pool_hash);
+                let mut expected_inputs: Vec<(crypto::Hash, u32)> = pool_utxos
+                    .iter()
+                    .map(|(op, _)| (op.tx_hash, op.index))
+                    .collect();
+                expected_inputs.sort();
+                drop(utxo);
+
+                let actual_inputs: Vec<(crypto::Hash, u32)> = epoch_tx
+                    .inputs
+                    .iter()
+                    .map(|inp| (inp.prev_tx_hash, inp.output_index))
+                    .collect();
+
+                if actual_inputs != expected_inputs {
+                    anyhow::bail!(
+                        "[ECON_EPOCH_INPUTS_MISMATCH] EpochReward pool inputs mismatch at height={}: expected {} inputs, got {}",
+                        height,
+                        expected_inputs.len(),
+                        actual_inputs.len()
+                    );
+                }
+            } else if !epoch_tx.inputs.is_empty() {
+                anyhow::bail!(
+                    "[ECON_EPOCH_PRE_INPUTS] EpochReward at height={} (pre-activation) must not have inputs",
+                    height
+                );
             }
         } else if is_epoch_boundary && matches!(mode, ValidationMode::Full) {
             // Only enforce missing-EpochReward check in Full mode.

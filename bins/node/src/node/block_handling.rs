@@ -682,7 +682,13 @@ impl Node {
                             for (tx_index, tx) in block.transactions.iter().enumerate() {
                                 let is_reward_tx = tx_index == 0 && tx.is_reward_minting();
                                 if !is_reward_tx {
-                                    let _ = utxo.spend_transaction(tx);
+                                    // INC-I-064: Log spend failures in rebuild path
+                                    if let Err(e) = utxo.spend_transaction(tx) {
+                                        warn!(
+                                            "[REBUILD] spend_transaction failed at h={}: {} — continuing rebuild",
+                                            height, e
+                                        );
+                                    }
                                 }
                                 utxo.add_transaction(tx, height, is_reward_tx, block.header.slot)?;
                             }

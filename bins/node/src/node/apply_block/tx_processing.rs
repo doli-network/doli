@@ -15,6 +15,7 @@ impl Node {
         batch: &mut storage::BlockBatch<'_>,
         undo_spent_utxos: &mut Vec<(storage::Outpoint, storage::UtxoEntry)>,
         undo_created_utxos: &mut Vec<storage::Outpoint>,
+        mode: ValidationMode,
     ) -> Result<()> {
         let is_reward_tx = tx_index == 0 && tx.is_reward_minting();
 
@@ -79,7 +80,7 @@ impl Node {
                     .params()
                     .security_audit_activation_height,
             );
-            validation::validate_transaction_with_utxos(tx, &utxo_ctx, utxo).map_err(|e| {
+            if let Err(e) = validation::validate_transaction_with_utxos(tx, &utxo_ctx, utxo) {
                 warn!(
                     "[UTXO] FAIL h={} tx={} type={:?} inputs={} outputs={} error={}",
                     height,
@@ -89,8 +90,22 @@ impl Node {
                     tx.outputs.len(),
                     e,
                 );
-                anyhow::anyhow!("UTXO validation failed for tx {}: {}", tx.hash(), e)
-            })?;
+                // INC-I-064: Replay mode tolerates UTXO validation failures.
+                // Historical blocks (e.g., E362) have EpochReward inputs referencing
+                // already-consumed pool UTXOs that no longer exist during replay.
+                if mode == ValidationMode::Replay {
+                    warn!(
+                        "[REPLAY] UTXO validation failed at h={}: {} — historical block, continuing",
+                        height, e
+                    );
+                } else {
+                    return Err(anyhow::anyhow!(
+                        "UTXO validation failed for tx {}: {}",
+                        tx.hash(),
+                        e
+                    ));
+                }
+            }
         }
 
         // Reject outputs with duplicate unique IDs
@@ -117,7 +132,26 @@ impl Node {
             }
         }
 
-        let _ = utxo.spend_transaction(tx); // In-memory
+        // INC-I-064: Propagate spend errors. Previously `let _` silently
+        // discarded failures, allowing outputs to be created from nothing.
+        // Replay mode: tolerate failures for historical blocks (e.g., E362).
+        match utxo.spend_transaction(tx) {
+            Ok(_) => {}
+            Err(e) => {
+                if mode == ValidationMode::Replay {
+                    warn!(
+                        "[REPLAY] spend_transaction failed at h={}: {} — historical block, continuing",
+                        height, e
+                    );
+                } else {
+                    return Err(anyhow::anyhow!(
+                        "spend_transaction failed at h={}: {}",
+                        height,
+                        e
+                    ));
+                }
+            }
+        }
         utxo.add_transaction(tx, height, is_reward_tx, block_slot)?; // In-memory
 
         // Undo log: track created UTXOs
@@ -128,7 +162,23 @@ impl Node {
 
         // Batch: track the same UTXO changes for atomic persistence
         if !is_reward_tx {
-            let _ = batch.spend_transaction_utxos(tx);
+            match batch.spend_transaction_utxos(tx) {
+                Ok(_) => {}
+                Err(e) => {
+                    if mode == ValidationMode::Replay {
+                        warn!(
+                            "[REPLAY] batch spend_transaction_utxos failed at h={}: {} — continuing",
+                            height, e
+                        );
+                    } else {
+                        return Err(anyhow::anyhow!(
+                            "batch spend_transaction_utxos failed at h={}: {}",
+                            height,
+                            e
+                        ));
+                    }
+                }
+            }
         }
         batch.add_transaction_utxos(tx, height, is_reward_tx, block_slot);
 
