@@ -77,18 +77,14 @@ pub async fn register_producer(
         let producers = rpc.get_producers().await.map_err(|e| e.to_string())?;
         if let Some(p) = producers.iter().find(|p| p.public_key == pk_hex) {
             match p.status.to_lowercase().as_str() {
-                "active" => {
-                    return Err(format!(
-                        "Already registered as active producer (bonds: {}). Use add-bond to increase.",
-                        p.bond_count
-                    ))
-                }
-                "pending" => {
-                    return Err(
-                        "Registration already pending. It will activate at the next epoch boundary."
-                            .to_string(),
-                    )
-                }
+                "active" => return Err(format!(
+                    "Already registered as active producer (bonds: {}). Use add-bond to increase.",
+                    p.bond_count
+                )),
+                "pending" => return Err(
+                    "Registration already pending. It will activate at the next epoch boundary."
+                        .to_string(),
+                ),
                 _ => {} // exited/slashed — allow re-registration
             }
         }
@@ -152,8 +148,8 @@ pub async fn register_producer(
     // Build inputs
     let mut inputs: Vec<doli_core::Input> = Vec::new();
     for utxo in &selected {
-        let prev_tx_hash = Hash::from_hex(&utxo.tx_hash)
-            .ok_or_else(|| "Invalid UTXO tx_hash".to_string())?;
+        let prev_tx_hash =
+            Hash::from_hex(&utxo.tx_hash).ok_or_else(|| "Invalid UTXO tx_hash".to_string())?;
         inputs.push(doli_core::Input::new(prev_tx_hash, utxo.output_index));
     }
 
@@ -171,18 +167,16 @@ pub async fn register_producer(
     let lock_until = chain_info.best_height + blocks_per_era + 1000;
 
     // Compute hash-chain VDF proof
-    let current_epoch =
-        (chain_info.best_slot / network_params.blocks_per_reward_epoch) as u32;
+    let current_epoch = (chain_info.best_slot / network_params.blocks_per_reward_epoch) as u32;
     let vdf_input = vdf::registration_input(&producer_pubkey, current_epoch);
-    let vdf_output =
-        doli_core::tpop::heartbeat::hash_chain_vdf(&vdf_input, vdf::T_REGISTER_BASE);
+    let vdf_output = doli_core::tpop::heartbeat::hash_chain_vdf(&vdf_input, vdf::T_REGISTER_BASE);
 
     // Build BLS key + proof-of-possession
     let bls_sk = BlsSecretKey::from_hex(&bls_priv_hex)
         .map_err(|e| format!("Invalid BLS secret key: {}", e))?;
     let bls_pk = bls_sk.public_key();
-    let bls_pop = bls_sign_pop(&bls_sk, &bls_pk)
-        .map_err(|e| format!("Failed to generate BLS PoP: {}", e))?;
+    let bls_pop =
+        bls_sign_pop(&bls_sk, &bls_pk).map_err(|e| format!("Failed to generate BLS PoP: {}", e))?;
 
     // Build registration data
     let reg_data = doli_core::transaction::RegistrationData {
@@ -217,9 +211,10 @@ pub async fn register_producer(
     // Change output
     let change = total_input - required_amount - fee;
     if change > 0 {
-        let change_hash = Hash::from_hex(&pubkey_hash)
-            .ok_or_else(|| "Invalid change address".to_string())?;
-        tx.outputs.push(doli_core::Output::normal(change, change_hash));
+        let change_hash =
+            Hash::from_hex(&pubkey_hash).ok_or_else(|| "Invalid change address".to_string())?;
+        tx.outputs
+            .push(doli_core::Output::normal(change, change_hash));
     }
 
     // Sign each input
