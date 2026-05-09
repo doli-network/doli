@@ -77,10 +77,12 @@ pub async fn register_producer(
         let producers = rpc.get_producers().await.map_err(|e| e.to_string())?;
         if let Some(p) = producers.iter().find(|p| p.public_key == pk_hex) {
             match p.status.to_lowercase().as_str() {
-                "active" => return Err(format!(
+                "active" => {
+                    return Err(format!(
                     "Already registered as active producer (bonds: {}). Use add-bond to increase.",
                     p.bond_count
-                )),
+                ))
+                }
                 "pending" => return Err(
                     "Registration already pending. It will activate at the next epoch boundary."
                         .to_string(),
