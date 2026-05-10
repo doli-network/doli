@@ -6,6 +6,8 @@
 //!
 //! Start with an exact replica of what we have in production.
 //! Find the ceiling. Then optimize.
+//!
+// OUTPUT CONTRACT: N/A — test infrastructure + integration tests (INC-I-065)
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -717,31 +719,54 @@ impl TestNetwork {
                         found
                     };
 
-                    // Reset to ancestor
+                    // Rollback to ancestor using undo data directly (bypasses production guards)
                     {
                         let mut node = self.nodes[node_id].lock().await;
+                        let current_h = node.chain_state.read().await.best_height;
+                        for roll_h in (0..(current_h.saturating_sub(ancestor_h))).rev() {
+                            let h = ancestor_h + roll_h + 1;
+                            if let Some(undo) = node.state_db.get_undo(h) {
+                                let mut utxo = node.utxo_set.write().await;
+                                for outpoint in &undo.created_utxos {
+                                    utxo.remove(outpoint).ok();
+                                }
+                                for (outpoint, entry) in &undo.spent_utxos {
+                                    utxo.insert(*outpoint, entry.clone()).ok();
+                                }
+                                drop(utxo);
+                                if let Ok(restored) = bincode::deserialize::<storage::ProducerSet>(
+                                    &undo.producer_snapshot,
+                                ) {
+                                    let mut producers = node.producer_set.write().await;
+                                    *producers = restored;
+                                }
+                            }
+                        }
                         let ancestor_hash = if ancestor_h == 0 {
                             node.chain_state.read().await.genesis_hash
                         } else {
-                            let leader = self.nodes[0].lock().await;
-                            leader
-                                .block_store
+                            node.block_store
                                 .get_block_by_height(ancestor_h)
                                 .ok()
                                 .flatten()
                                 .map(|b| b.hash())
                                 .unwrap_or(node.chain_state.read().await.genesis_hash)
                         };
+                        let ancestor_slot = if ancestor_h == 0 {
+                            0u32
+                        } else {
+                            node.block_store
+                                .get_block_by_height(ancestor_h)
+                                .ok()
+                                .flatten()
+                                .map(|b| b.header.slot)
+                                .unwrap_or(ancestor_h as u32)
+                        };
                         let mut cs = node.chain_state.write().await;
                         cs.best_height = ancestor_h;
                         cs.best_hash = ancestor_hash;
-                        cs.best_slot = ancestor_h as u32;
+                        cs.best_slot = ancestor_slot;
                         drop(cs);
-                        node.sync_manager.write().await.update_local_tip(
-                            ancestor_h,
-                            ancestor_hash,
-                            ancestor_h as u32,
-                        );
                         node.cumulative_rollback_depth = 0;
                     }
 
@@ -1073,6 +1098,15 @@ impl TestNetwork {
                 async move {
                     let mut n = node.lock().await;
 
+                    // Gate 0: prev_hash linkage (Light mode skips this, but
+                    // production gossip checks it — without this, blocks with
+                    // wrong prev_hash get applied at wrong heights, corrupting
+                    // chain_state.best_slot)
+                    let best_hash = n.chain_state.read().await.best_hash;
+                    if block.header.prev_hash != best_hash {
+                        return 2u8; // rejected — prev_hash mismatch
+                    }
+
                     // Gate 1: check_producer_eligibility (gossip filter)
                     match n.check_producer_eligibility(&block).await {
                         Ok(()) => {
@@ -1221,49 +1255,61 @@ impl TestNetwork {
             // If no common ancestor found, try height 0 (genesis)
             let ancestor_h = ancestor_height.unwrap_or(0);
 
-            // Step 2: Reset behind node to ancestor state.
-            // In production, this is what snap sync or checkpoint sync does:
-            // wipe state to a known-good point, then re-apply from there.
-            // We simulate by rolling back as far as possible, then rebuilding.
+            // Step 2: Rollback to ancestor using undo data directly.
+            // Bypasses rollback_one_block's production guards (sync_manager dependency,
+            // genesis guard, cumulative depth cap) that don't apply in test context.
             {
                 let mut node = self.nodes[node_id].lock().await;
                 let current_h = node.chain_state.read().await.best_height;
-
-                // Reset chain state directly to ancestor
+                let blocks_to_rollback = current_h.saturating_sub(ancestor_h);
+                for roll_h in (0..blocks_to_rollback).rev() {
+                    let h = ancestor_h + roll_h + 1;
+                    if let Some(undo) = node.state_db.get_undo(h) {
+                        let mut utxo = node.utxo_set.write().await;
+                        for outpoint in &undo.created_utxos {
+                            utxo.remove(outpoint).ok();
+                        }
+                        for (outpoint, entry) in &undo.spent_utxos {
+                            utxo.insert(*outpoint, entry.clone()).ok();
+                        }
+                        drop(utxo);
+                        if let Ok(restored) =
+                            bincode::deserialize::<storage::ProducerSet>(&undo.producer_snapshot)
+                        {
+                            let mut producers = node.producer_set.write().await;
+                            *producers = restored;
+                        }
+                    }
+                }
+                // Reset chain_state to ancestor
+                let ancestor_hash = if ancestor_h == 0 {
+                    node.chain_state.read().await.genesis_hash
+                } else {
+                    node.block_store
+                        .get_block_by_height(ancestor_h)
+                        .ok()
+                        .flatten()
+                        .map(|b| b.hash())
+                        .unwrap_or(node.chain_state.read().await.genesis_hash)
+                };
+                let ancestor_slot = if ancestor_h == 0 {
+                    0u32
+                } else {
+                    node.block_store
+                        .get_block_by_height(ancestor_h)
+                        .ok()
+                        .flatten()
+                        .map(|b| b.header.slot)
+                        .unwrap_or(ancestor_h as u32)
+                };
                 {
                     let mut cs = node.chain_state.write().await;
                     cs.best_height = ancestor_h;
-                    // Get the ancestor's hash from leader's block store
-                    let ancestor_hash = if ancestor_h == 0 {
-                        cs.genesis_hash
-                    } else {
-                        let leader = self.nodes[0].lock().await;
-                        leader
-                            .block_store
-                            .get_block_by_height(ancestor_h)
-                            .ok()
-                            .flatten()
-                            .map(|b| b.hash())
-                            .unwrap_or(cs.genesis_hash)
-                    };
                     cs.best_hash = ancestor_hash;
-                    cs.best_slot = ancestor_h as u32;
+                    cs.best_slot = ancestor_slot;
                 }
-
-                // Reset sync manager tip to match
-                {
-                    let cs = node.chain_state.read().await;
-                    node.sync_manager.write().await.update_local_tip(
-                        cs.best_height,
-                        cs.best_hash,
-                        cs.best_slot,
-                    );
-                }
-
-                // Clear stale fork recovery state
                 node.cumulative_rollback_depth = 0;
-
-                total_rollbacks += (current_h - ancestor_h) as usize;
+                total_rollbacks += blocks_to_rollback as usize;
             }
 
             // Step 3: Apply leader's blocks from ancestor+1 to leader_height
