@@ -13,8 +13,7 @@ target/
 .DS_Store
 Thumbs.db
 
-# Claude / AI
-.claude/
+# Claude / AI (sensitive items handled by .claude/.gitignore)
 .claude.local
 .omega/
 

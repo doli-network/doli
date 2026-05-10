@@ -1,0 +1,33 @@
+# OMEGA runtime
+.omg-version
+memory.db
+memory.db-shm
+memory.db-wal
+
+# Settings (contain local paths, permissions, hooks config)
+settings.json
+settings.local.json
+
+# Agent definitions, commands, protocols, hooks, queries (OMEGA internals)
+agents/
+commands/
+db-queries/
+hooks/
+protocols/
+
+# Worktrees
+worktrees/
+
+# OS
+.DS_Store
+
+# Sensitive skills (contain server IPs, SSH credentials, usernames, ports)
+skills/doli-network/
+skills/testnet-deploy/
+skills/mainnet/
+skills/explorer/
+skills/hetzner/
+skills/producers/
+skills/guardian/
+skills/faucet/
+skills/doli-manager/
