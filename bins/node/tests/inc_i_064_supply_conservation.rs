@@ -7,20 +7,29 @@
 //! Observable outputs:
 //! 1. apply_block returns Err when spend_transaction fails (non-Replay)
 //! 2. validate_block_economics rejects mismatched pool inputs in Light mode
-//! 3. supply conservation invariant detects outputs > inputs + coinbase
+//! 3. supply conservation invariant detects inflation (total_after > total_before + coinbase)
 //! 4. Replay mode tolerates spend failures (warns, does not crash)
+//!
+//! ## INPUT PARTITIONS (value-flow mechanisms affecting total_value):
+//! - P-COINBASE: Block with coinbase only (delta = +coinbase_amount exactly)
+//! - P-FEE-TX: Block with fee-paying user TX (delta < +coinbase_amount, fees burned)
+//! - P-INFLATE: Block with inflated output (delta > +coinbase_amount, MUST reject)
+//! - P-EPOCH: Block with EpochReward TX (zero-sum redistribution)
+//! - P-BAD-SPEND: Block with non-existent UTXO input (spend_transaction fails first)
 //!
 //! ## Defects verified:
 //! - P0: `let _ = utxo.spend_transaction(tx)` — silent spend failure
 //! - P1: ECON_EPOCH_INPUTS_MISMATCH gated behind Full mode only
 //! - P2: No post-block supply conservation invariant
+//! - P2-REGRESSION: `!=` check falsely rejected fee-paying TXs (b088fb27)
 
 use crypto::{Hash, KeyPair};
 use doli_core::consensus::ConsensusParams;
-use doli_core::transaction::{Input, Output, Transaction, TxType};
+use doli_core::transaction::{Input, Output, OutputType, Transaction, TxType};
 use doli_core::validation::ValidationMode;
 use doli_core::{Block, BlockHeader};
 use doli_node::node::Node;
+use storage::{Outpoint, UtxoEntry};
 use tempfile::TempDir;
 use vdf::{VdfOutput, VdfProof};
 
@@ -281,7 +290,7 @@ async fn epoch_inputs_mismatch_fails_in_light_mode() {
 // ============================================================
 #[tokio::test]
 async fn conservation_invariant_normal_blocks_pass() {
-    // Normal blocks should pass the conservation invariant.
+    // [P-COINBASE] Normal blocks should pass the conservation invariant.
     // delta = total_after - total_before == coinbase_amount
     let (mut node, producers, _tmp) = make_node(3).await;
     let params = node.params.clone();
@@ -329,7 +338,7 @@ async fn conservation_invariant_normal_blocks_pass() {
 
 #[tokio::test]
 async fn conservation_invariant_rejects_inflated_block() {
-    // A block where outputs > inputs + coinbase should fail.
+    // [P-INFLATE / P-BAD-SPEND] A block where outputs > inputs + coinbase should fail.
     // We test this by building a block with a transfer TX that references
     // a non-existent UTXO — spend_transaction fails → outputs created without
     // corresponding input removal → conservation violation.
@@ -385,7 +394,117 @@ async fn replay_mode_tolerates_spend_failure() {
 }
 
 // ============================================================
-// TEST 5: Normal chain replay produces correct state
+// TEST 5: Fee-paying user TX must NOT trigger conservation violation
+// [P-FEE-TX] REGRESSION: the `!=` check falsely rejected blocks with fee burns
+// ============================================================
+#[tokio::test]
+async fn conservation_allows_fee_paying_user_tx() {
+    let (mut node, producers, _tmp) = make_node(3).await;
+    let params = node.params.clone();
+
+    // Apply one block to advance chain state
+    let chain = build_chain(1, 1, Hash::ZERO, &producers[0], 1, &params);
+    apply_chain(&mut node, &chain).await;
+
+    // Create a keypair to sign the spending input
+    let spender = KeyPair::generate();
+    let spender_pubkey_hash =
+        crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, spender.public_key().as_bytes());
+
+    // Seed the UTXO set with a known spendable UTXO (1000 sats) owned by spender
+    let fake_tx_hash = crypto::hash::hash(b"fake_funding_tx");
+    let fake_outpoint = Outpoint::new(fake_tx_hash, 0);
+    let fake_entry = UtxoEntry {
+        output: Output {
+            amount: 1000,
+            pubkey_hash: spender_pubkey_hash,
+            output_type: OutputType::Normal,
+            lock_until: 0,
+            extra_data: vec![],
+        },
+        height: 1,
+        is_coinbase: false,
+        is_epoch_reward: false,
+    };
+    // Insert into both in-memory UTXO set AND RocksDB state_db
+    {
+        let mut utxo = node.utxo_set.write().await;
+        utxo.insert(fake_outpoint, fake_entry.clone()).unwrap();
+    }
+    node.state_db.insert_utxo(&fake_outpoint, &fake_entry);
+
+    // Build a block with coinbase + a user TX that spends 1000 sats, outputs 999 (fee = 1 sat)
+    let prev_hash = chain[0].hash();
+    let reward = params.block_reward(2);
+    let pool_hash = doli_core::consensus::reward_pool_pubkey_hash();
+    let coinbase = Transaction::new_coinbase(reward, pool_hash, 2, 0);
+
+    let mut user_tx = Transaction {
+        version: 1,
+        tx_type: TxType::Transfer,
+        inputs: vec![Input {
+            prev_tx_hash: fake_tx_hash,
+            output_index: 0,
+            signature: crypto::Signature::default(),
+            sighash_type: doli_core::transaction::SighashType::All,
+            committed_output_count: 0,
+            public_key: Some(*spender.public_key()),
+        }],
+        outputs: vec![Output {
+            amount: 999, // fee = 1 sat (BASE_FEE burned)
+            pubkey_hash: crypto::hash::hash(b"recipient"),
+            output_type: OutputType::Normal,
+            lock_until: 0,
+            extra_data: vec![],
+        }],
+        extra_data: vec![],
+    };
+
+    // Sign the transaction input
+    let sighash = user_tx.signing_message_for_input(0);
+    user_tx.inputs[0].signature = crypto::signature::sign_hash(&sighash, spender.private_key());
+
+    let txs = vec![coinbase, user_tx];
+    let timestamp = params.genesis_time + (2 * params.slot_duration);
+    let merkle_root = doli_core::block::compute_merkle_root(&txs);
+    let genesis_hash = doli_core::chainspec::ChainSpec::devnet().genesis_hash();
+
+    let header = BlockHeader {
+        version: 2,
+        prev_hash,
+        merkle_root,
+        presence_root: Hash::ZERO,
+        genesis_hash,
+        timestamp,
+        slot: 2,
+        producer: *producers[0].public_key(),
+        vdf_output: VdfOutput {
+            value: vec![0u8; 32],
+        },
+        vdf_proof: VdfProof::empty(),
+        missed_producers: Vec::new(),
+        data_root: crypto::Hash::ZERO,
+        fork_id: crypto::Hash::ZERO,
+    };
+
+    let block_with_fee = Block::new(header, txs);
+
+    // This MUST succeed — fee-paying TXs burn value (deflationary), which is expected.
+    // Before fix: `!=` check would reject this block with CONSERVATION_VIOLATION.
+    let result = node
+        .apply_block(block_with_fee, ValidationMode::Light)
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "Block with fee-paying user TX must NOT trigger conservation violation. \
+         Fee burns are expected (deflationary). Got error: {:?}",
+        result.err()
+    );
+}
+
+// ============================================================
+// TEST 6: Normal chain replay produces correct state
 // ============================================================
 #[tokio::test]
 async fn replay_normal_chain_succeeds() {

@@ -176,12 +176,17 @@ impl Node {
                 }
             }
 
-            // INC-I-064 (P2): Supply conservation invariant.
-            // The only source of new coins is the regular coinbase (Transfer
-            // type with empty inputs at tx_index 0). EpochReward redistributes
-            // existing pool UTXOs (zero-sum). All other TXs are zero-sum.
-            // If total_value changed by more than the coinbase, coins were
-            // created from nothing.
+            // INC-I-064 (P2): Supply conservation invariant — anti-inflation check.
+            // The only source of new coins is the regular coinbase (Transfer type
+            // with empty inputs at tx_index 0). EpochReward redistributes existing
+            // pool UTXOs (zero-sum). User TXs are NET-NEGATIVE (fees are burned:
+            // inputs > outputs by at least BASE_FEE). The coinbase recaptures only
+            // the per-byte fee portion — BASE_FEE and overpayment are permanently
+            // destroyed (deflationary by design).
+            //
+            // Therefore: total_after <= total_before + coinbase_amount (always).
+            // Strict inequality when user TXs with fees exist in the block.
+            // ONLY flag inflation (>) — deflation via fees is expected.
             let total_value_after = utxo.total_value();
             let coinbase_amount: u64 = block
                 .transactions
@@ -196,18 +201,18 @@ impl Node {
                 })
                 .unwrap_or(0);
 
-            if total_value_after != total_value_before + coinbase_amount {
+            if total_value_after > total_value_before + coinbase_amount {
                 let delta = total_value_after as i128 - total_value_before as i128;
                 if mode == ValidationMode::Replay {
                     warn!(
-                        "[CONSERVATION] Supply invariant violated at h={}: delta={}, expected=+{} — historical block, continuing",
+                        "[CONSERVATION] Inflation detected at h={}: delta={}, max_expected=+{} — historical block, continuing",
                         height, delta, coinbase_amount
                     );
                 } else {
                     anyhow::bail!(
-                        "[CONSERVATION_VIOLATION] Supply invariant at h={}: \
-                         total_before={} total_after={} delta={} expected_delta=+{} — \
-                         coins created or destroyed outside coinbase",
+                        "[CONSERVATION_VIOLATION] Inflation at h={}: \
+                         total_before={} total_after={} delta={} max_expected_delta=+{} — \
+                         coins created from nothing (exceeds coinbase)",
                         height,
                         total_value_before,
                         total_value_after,
