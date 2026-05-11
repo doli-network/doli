@@ -775,16 +775,20 @@ impl Node {
             (snap, epoch)
         } else {
             let ps = producer_set.read().await;
-            let us = utxo_set.read().await;
             let cs = chain_state.read().await;
             let h = cs.best_height;
             let bpe = config.network.blocks_per_reward_epoch();
             let active = ps.active_producers_at_height(h);
+            let audit_activation = config.network.params().security_audit_activation_height;
             let mut snap = HashMap::new();
             for p in &active {
                 let pkh =
                     crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, p.public_key.as_bytes());
-                let count = us.count_bonds(&pkh, config.network.bond_unit()).max(1) as u64;
+                // INC-I-068: Use delegation-aware weight; skip weight=0
+                let count = p.selection_weight_at(h, audit_activation);
+                if count == 0 {
+                    continue;
+                }
                 snap.insert(pkh, count);
             }
             let total: u64 = snap.values().sum();
@@ -854,9 +858,12 @@ impl Node {
                 (epoch_list, active_list)
             } else {
                 let producers = producer_set.read().await;
+                let audit_act = config.network.params().security_audit_activation_height;
+                // INC-I-068: Filter fully-delegated producers (weight=0) from scheduling
                 let mut pks: Vec<PublicKey> = producers
                     .active_producers_at_height(best_h)
                     .iter()
+                    .filter(|p| p.selection_weight_at(best_h, audit_act) > 0)
                     .map(|p| p.public_key)
                     .collect();
                 pks.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));

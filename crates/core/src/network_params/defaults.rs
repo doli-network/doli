@@ -272,7 +272,6 @@ impl NetworkParams {
                 epoch_state_reorg_activation_height: 0,
                 security_audit_activation_height: 0, // Always active on devnet
                 ghost_exclusion_activation_height: 0, // Always active on devnet
-
                 // Gossip mesh: same universal config as mainnet.
                 // With --no-dht, mesh_n_high=24 keeps all devnet peers in mesh.
                 mesh_n: 12,

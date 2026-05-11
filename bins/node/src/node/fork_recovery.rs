@@ -463,15 +463,22 @@ impl Node {
                 );
                 } else {
                     // Fallback for peers on pre-v6.13.14 (no persisted bond snapshot).
-                    let us = self.utxo_set.read().await;
-                    let bond_unit = self.config.network.bond_unit();
+                    let audit_activation = self
+                        .config
+                        .network
+                        .params()
+                        .security_audit_activation_height;
                     let mut snap = std::collections::HashMap::new();
                     for p in &active {
                         let pkh = crypto::hash::hash_with_domain(
                             crypto::ADDRESS_DOMAIN,
                             p.public_key.as_bytes(),
                         );
-                        let count = us.count_bonds(&pkh, bond_unit).max(1) as u64;
+                        // INC-I-068: Use delegation-aware weight; skip weight=0
+                        let count = p.selection_weight_at(h, audit_activation);
+                        if count == 0 {
+                            continue;
+                        }
                         snap.insert(pkh, count);
                     }
                     let total: u64 = snap.values().sum();
@@ -548,14 +555,21 @@ impl Node {
                 let epoch = snap_h.checked_div(bpe).unwrap_or(0);
 
                 let producers = self.producer_set.read().await;
-                let active_producers: Vec<PublicKey> = producers
-                    .active_producers_at_height(snap_h)
+                let audit_act = self
+                    .config
+                    .network
+                    .params()
+                    .security_audit_activation_height;
+                let all_active = producers.active_producers_at_height(snap_h);
+                // INC-I-068: Filter fully-delegated producers (weight=0) from scheduling
+                let active_producers: Vec<PublicKey> = all_active
                     .iter()
+                    .filter(|p| p.selection_weight_at(snap_h, audit_act) > 0)
                     .map(|p| p.public_key)
                     .collect();
-                let registered_at: std::collections::HashMap<PublicKey, u64> = producers
-                    .active_producers_at_height(snap_h)
+                let registered_at: std::collections::HashMap<PublicKey, u64> = all_active
                     .iter()
+                    .filter(|p| p.selection_weight_at(snap_h, audit_act) > 0)
                     .map(|p| (p.public_key, p.registered_at))
                     .collect();
                 drop(producers);

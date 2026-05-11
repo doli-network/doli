@@ -576,16 +576,22 @@ impl Node {
                 self.epoch_state.bond_snapshot.values().sum::<u64>()
             );
         } else {
-            let utxo = self.utxo_set.read().await;
             let producers = self.producer_set.read().await;
             let active = producers.active_producers_at_height(epoch_boundary_h);
+            let audit_activation = self
+                .config
+                .network
+                .params()
+                .security_audit_activation_height;
             let mut snapshot = std::collections::HashMap::new();
             for p in &active {
                 let pkh =
                     crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, p.public_key.as_bytes());
-                let count = utxo
-                    .count_bonds(&pkh, self.config.network.bond_unit())
-                    .max(1) as u64;
+                // INC-I-068: Use delegation-aware weight; skip weight=0
+                let count = p.selection_weight_at(epoch_boundary_h, audit_activation);
+                if count == 0 {
+                    continue;
+                }
                 snapshot.insert(pkh, count);
             }
             let total: u64 = snapshot.values().sum();

@@ -523,7 +523,14 @@ impl Node {
     /// Create an attestation for a block and broadcast it to the network.
     ///
     /// Adds attestation weight for the finality gadget.
-    pub async fn create_and_broadcast_attestation(&self, block_hash: Hash, slot: u32, height: u64) {
+    /// Returns the attestation if one was created, or None if this node
+    /// is not an active producer or has zero weight (fully delegated).
+    pub async fn create_and_broadcast_attestation(
+        &self,
+        block_hash: Hash,
+        slot: u32,
+        height: u64,
+    ) -> Option<Attestation> {
         let (private_key, public_key, weight) = match &self.producer_key {
             Some(kp) => {
                 let pk = *kp.public_key();
@@ -540,14 +547,13 @@ impl Node {
                         )
                     })
                     .unwrap_or(0);
+                if w == 0 {
+                    return None; // Not active or fully delegated — skip attestation
+                }
                 (kp.private_key().clone(), pk, w)
             }
-            None => return, // Non-producer can't attest
+            None => return None, // Non-producer can't attest
         };
-
-        if weight == 0 {
-            return; // Not active, skip attestation
-        }
 
         let attestation = if let Some(ref bls_kp) = self.bls_key {
             Attestation::new_with_bls(
@@ -609,5 +615,7 @@ impl Node {
                 }
             }
         }
+
+        Some(attestation)
     }
 }
