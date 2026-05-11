@@ -754,6 +754,49 @@ doli-node devnet start
 pubkey_hash=$(doli -w wallet.json info | grep "Pubkey Hash (32-byte):" | sed 's/.*: //')
 ```
 
+### Producer crash-loops: "--producer requires a wallet with producer keys"
+
+**Cause:** `wallet.json` is missing from the node's `--data-dir`. This happens after a manual `rm -rf data/*` that didn't preserve wallet files, or on a newly provisioned server where wallets were never initialized.
+
+**Diagnosis:**
+```bash
+# Check if wallet exists where the service expects it
+systemctl cat doli-mainnet-{name} | grep data-dir
+# Then verify:
+ls -la /var/lib/doli/mainnet/{name}/data/wallet.json
+```
+
+**Recovery from seed phrase:**
+
+`doli restore` reads the seed from stdin and already generates a BLS key — no separate `add-bls` needed.
+
+```bash
+# 1. Stop the service
+sudo systemctl stop doli-mainnet-{name}
+
+# 2. Restore wallet (seed phrase piped via stdin to avoid shell history)
+#    If seed file uses numbered format (1. word\n2. word\n...):
+awk '{print $2}' ~/seed.txt | tr '\n' ' ' | sed 's/ *$//' | \
+  sudo -u doli doli -w /var/lib/doli/mainnet/{name}/data/wallet.json restore
+
+#    If seed phrase is plain text (space-separated words):
+echo "word1 word2 ... word24" | \
+  sudo -u doli doli -w /var/lib/doli/mainnet/{name}/data/wallet.json restore
+
+# 3. Reset systemd fail counter (needed after crash-loop hits 5-restart limit)
+sudo systemctl reset-failed doli-mainnet-{name}
+
+# 4. Start and verify
+sudo systemctl start doli-mainnet-{name}
+sleep 15
+sudo tail -5 /var/log/doli/mainnet/{name}.log
+# Look for [HEALTH] line with state="Synchronized"
+```
+
+**Multi-node servers:** Repeat for each producer, using the correct wallet path and service name.
+
+**Prevention:** Before wiping any `data/` directory, verify `wallet.json` and `producer.seed.txt` are not inside it. Back them up first if present. Use `doli wipe` instead of manual `rm -rf` — it preserves wallet files automatically.
+
 ### Node won't sync (testnet/mainnet)
 
 ```bash

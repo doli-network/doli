@@ -61,6 +61,7 @@ Two root-cause fixes stabilized the network. All other fixes were symptom mitiga
 - consensus params → programmatic in `NetworkParams::defaults()`, NOT `include_str!`. Mainnet overrides blocked. Change requires new binary on ALL nodes simultaneously.
 - rollback → undo-based rollback is first option (`node.rs:~6531`). Rebuild-from-genesis is fallback for blocks without undo data.
 - Bond `extra_data` → CLI sends `creation_slot=0`, node stamps real slot at apply. Never trust raw tx `extra_data`.
+- **data directory wipe** → **CRITICAL**: Before wiping ANY node's `data/` directory (manually or via script), ALWAYS verify that `wallet.json` and `producer.seed.txt` are NOT inside the directory being deleted. Back them up first if present. Losing wallet/seed files means the producer cannot start and keys may be unrecoverable. The standard wipe command preserves these, but manual `rm -rf data/*` does not.
 
 ## After Every Modification
 
@@ -73,6 +74,7 @@ After completing any code change, ALWAYS propose the following checklist to the 
    - **NEVER move an activation height forward** (higher) after the chain has crossed it — this deactivates live consensus rules (INC-I-054). New features get their own activation height.
    - Consider adding a `HardForkSchedule` entry in `crates/updater/src/hardfork.rs` if the change is consensus-breaking at a future height
    - Consider bumping `MIN_PEER_PROTOCOL_VERSION` if old peers must be partitioned immediately
+   - **Block content check (INC-I-062)**: If the change alters what a producer puts INTO a block (attestation bitfield, coinbase format, tx ordering, presence_root, header fields) — even without changing validation rules — it REQUIRES synchronized deploy (stop ALL nodes, then start ALL). A rolling deploy creates competing valid blocks during the mixed-version window → fork. "No activation height needed" does NOT mean "safe for rolling restart."
 4. **Documentation alignment** (MANDATORY — not optional):
    - Update specs and docs BEFORE committing. Every code change that affects behavior must have matching documentation.
    - `specs/protocol.md` — if wire format, messages, encoding, or peer behavior changed
@@ -196,6 +198,9 @@ After completing any code change, ALWAYS propose the following checklist to the 
 
 ---
 
+
+---
+
 # OMEGA Ω
 
 ## Philosophy
@@ -268,7 +273,7 @@ After completing a user's task, if they did something manually that an OMEGA com
 18. **Stupid Simple First (SSF)** — before ANY design work, state the stupidest one-sentence solution that works. Present it ALONE. Only add complexity if the user rejects it with a specific reason. Never present a menu of options. Read `.claude/protocols/anti-overengineering.md`
 19. **Modular coding enforcement** — no source file exceeds 500 lines (800 for test files). When approaching the limit, split into focused modules. Read MODULE-SIZE-BUDGET in `.claude/protocols/anti-overengineering.md`
 20. **Intellectual honesty** — if your analysis contradicts itself (claim X, find not-X), STOP and resolve before continuing. Show your work on math/logic claims. State what you don't understand before proposing solutions. Try to disprove your own hypotheses before acting on them. Max 2 inferences without verification. Read `.claude/protocols/intellectual-honesty.md`
-21. **Output Contract (all tests, all languages)** — before writing ANY test assertion, produce the Output Contract Checklist (enumerate ALL observable outputs of the function: mutable params, receiver/self, return values, persistent stores). No assertion without the checklist. No test complete until every output × path cell has an assertion. Read `.claude/protocols/output-contract.md`. Fix confidence above 0.7 requires FAIL→PASS test evidence — no exceptions, any language. **Sequence: test BEFORE fix** — in bugfix workflows, the reproduction test must exist and FAIL before any fix code is written OR any fix plan is presented to the user. Describing the fix before the test exists biases the test toward confirming the fix rather than verifying correctness
+21. **Output Contract (all tests, all languages)** — before writing ANY test assertion, produce the Output Contract Checklist: ALL outputs, ALL paths, ALL **input partitions** per path (distinct input classes with different math/logic). No test complete until every output × path × partition cell has an assertion. Read `.claude/protocols/output-contract.md`. Fix confidence above 0.7 requires FAIL→PASS test evidence — no exceptions. **Sequence: test BEFORE fix** — the reproduction test must exist and FAIL before any fix code is written OR fix plan presented. Describing the fix before the test biases the test toward confirming the fix rather than verifying correctness
 22. **Prompt refinement at intake** — every omega command that accepts a user description MUST run prompt refinement BEFORE any agent work begins. Detect and neutralize investigation-anchoring language ("in the logs", "the bug is in X"), preserve domain context (symptoms, nodes, timestamps), reframe assumed root causes as hypotheses. Display the refinement to the user. Read `.claude/protocols/prompt-refinement.md`
 
 ## Fail-Safe Controls
