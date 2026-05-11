@@ -1,27 +1,37 @@
 //! INC-I-064: Supply Conservation Tests
 //!
-//! ## OUTPUT CONTRACT CHECKLIST
-//!
-//! Function under test: `Node::apply_block()` with supply conservation fixes
+//! // OUTPUT CONTRACT: Node::apply_block() supply conservation
 //!
 //! Observable outputs:
-//! 1. apply_block returns Err when spend_transaction fails (non-Replay)
-//! 2. validate_block_economics rejects mismatched pool inputs in Light mode
-//! 3. supply conservation invariant detects inflation (total_after > total_before + coinbase)
-//! 4. Replay mode tolerates spend failures (warns, does not crash)
+//! O1. apply_block returns Err when spend_transaction fails (non-Replay)
+//! O2. validate_block_economics rejects mismatched pool inputs in Light mode
+//! O3. Replay mode tolerates spend failures (warns, does not crash)
+//! O4. Fee-paying user TXs accepted (fees burn value, deflationary by design)
+//! O5. Normal blocks produce correct UTXO accounting (delta = coinbase)
 //!
-//! ## INPUT PARTITIONS (value-flow mechanisms affecting total_value):
+//! PATHS: Full mode | Light mode | Replay mode
+//!
+//! MATRIX:
+//! O1 × Light × P-BAD-SPEND → spend_failure_propagates_in_light_mode
+//! O1 × Full × P-BAD-SPEND → spend_failure_propagates_in_full_mode
+//! O2 × Light × P-EPOCH → epoch_inputs_mismatch_fails_in_light_mode
+//! O3 × Replay × P-BAD-SPEND → replay_mode_tolerates_spend_failure
+//! O4 × Light × P-FEE-TX → conservation_allows_fee_paying_user_tx
+//! O5 × Light × P-COINBASE → conservation_invariant_normal_blocks_pass
+//! O5 × Replay × P-COINBASE → replay_normal_chain_succeeds
+//!
+//! INPUT PARTITIONS:
 //! - P-COINBASE: Block with coinbase only (delta = +coinbase_amount exactly)
 //! - P-FEE-TX: Block with fee-paying user TX (delta < +coinbase_amount, fees burned)
-//! - P-INFLATE: Block with inflated output (delta > +coinbase_amount, MUST reject)
-//! - P-EPOCH: Block with EpochReward TX (zero-sum redistribution)
 //! - P-BAD-SPEND: Block with non-existent UTXO input (spend_transaction fails first)
+//! - P-EPOCH: Block with EpochReward TX with mismatched pool inputs
 //!
-//! ## Defects verified:
-//! - P0: `let _ = utxo.spend_transaction(tx)` — silent spend failure
-//! - P1: ECON_EPOCH_INPUTS_MISMATCH gated behind Full mode only
-//! - P2: No post-block supply conservation invariant
-//! - P2-REGRESSION: `!=` check falsely rejected fee-paying TXs (b088fb27)
+//! Defects verified:
+//! - P0: `let _ = utxo.spend_transaction(tx)` — silent spend failure (FIXED)
+//! - P1: ECON_EPOCH_INPUTS_MISMATCH gated behind Full mode only (FIXED)
+//! - P2: Conservation check REMOVED (INC-I-069) — O(N) RocksDB scan 2x/block
+//!   caused CPU exhaustion on mainnet, atomicity bug corrupted UTXO state on bail.
+//!   P0+P1 provide sufficient inflation protection without the per-block scan.
 
 use crypto::{Hash, KeyPair};
 use doli_core::consensus::ConsensusParams;
@@ -286,16 +296,15 @@ async fn epoch_inputs_mismatch_fails_in_light_mode() {
 }
 
 // ============================================================
-// TEST 3: Conservation invariant catches outputs > inputs + coinbase
+// TEST 3: UTXO accounting correctness — external verification
 // ============================================================
 #[tokio::test]
-async fn conservation_invariant_normal_blocks_pass() {
-    // [P-COINBASE] Normal blocks should pass the conservation invariant.
-    // delta = total_after - total_before == coinbase_amount
+async fn utxo_accounting_correct_after_normal_blocks() {
+    // [P-COINBASE] Verify UTXO total_value delta equals coinbase for normal blocks.
+    // This is an external accounting check (not an in-apply_block invariant).
     let (mut node, producers, _tmp) = make_node(3).await;
     let params = node.params.clone();
 
-    // Build and apply 10 blocks — none should trigger conservation violation
     let chain = build_chain(1, 1, Hash::ZERO, &producers[0], 10, &params);
 
     for block in &chain {
@@ -306,14 +315,13 @@ async fn conservation_invariant_normal_blocks_pass() {
 
         node.apply_block(block.clone(), ValidationMode::Light)
             .await
-            .expect("Normal block should pass conservation invariant");
+            .expect("Normal block should succeed");
 
         let total_after = {
             let utxo = node.utxo_set.read().await;
             utxo.total_value()
         };
 
-        // Verify the delta equals exactly the coinbase amount
         let coinbase_amount: u64 = block
             .transactions
             .first()
@@ -330,37 +338,10 @@ async fn conservation_invariant_normal_blocks_pass() {
         assert_eq!(
             total_after,
             total_before + coinbase_amount,
-            "Conservation invariant: total_value delta should equal coinbase at h={}",
+            "UTXO accounting: total_value delta should equal coinbase at h={}",
             block.header.slot
         );
     }
-}
-
-#[tokio::test]
-async fn conservation_invariant_rejects_inflated_block() {
-    // [P-INFLATE / P-BAD-SPEND] A block where outputs > inputs + coinbase should fail.
-    // We test this by building a block with a transfer TX that references
-    // a non-existent UTXO — spend_transaction fails → outputs created without
-    // corresponding input removal → conservation violation.
-    //
-    // With Defect 1 fix, this fails at spend_transaction BEFORE the
-    // conservation check. Both layers protect against inflation.
-    let (mut node, producers, _tmp) = make_node(3).await;
-    let params = node.params.clone();
-
-    let chain = build_chain(1, 1, Hash::ZERO, &producers[0], 1, &params);
-    apply_chain(&mut node, &chain).await;
-
-    let prev_hash = chain[0].hash();
-    let bad_block = build_block_with_bad_spend(2, 2, prev_hash, &producers[0], &params);
-
-    // Should fail (either spend check or conservation invariant)
-    let result = node.apply_block(bad_block, ValidationMode::Full).await;
-
-    assert!(
-        result.is_err(),
-        "Block creating outputs without consuming inputs should be rejected"
-    );
 }
 
 // ============================================================
@@ -394,11 +375,11 @@ async fn replay_mode_tolerates_spend_failure() {
 }
 
 // ============================================================
-// TEST 5: Fee-paying user TX must NOT trigger conservation violation
-// [P-FEE-TX] REGRESSION: the `!=` check falsely rejected blocks with fee burns
+// TEST 5: Fee-paying user TX accepted — fees burn value (deflationary)
+// [P-FEE-TX] apply_block accepts blocks where total_after < total_before + coinbase
 // ============================================================
 #[tokio::test]
-async fn conservation_allows_fee_paying_user_tx() {
+async fn fee_paying_user_tx_accepted() {
     let (mut node, producers, _tmp) = make_node(3).await;
     let params = node.params.clone();
 
@@ -490,14 +471,13 @@ async fn conservation_allows_fee_paying_user_tx() {
     let block_with_fee = Block::new(header, txs);
 
     // This MUST succeed — fee-paying TXs burn value (deflationary), which is expected.
-    // Before fix: `!=` check would reject this block with CONSERVATION_VIOLATION.
     let result = node
         .apply_block(block_with_fee, ValidationMode::Light)
         .await;
 
     assert!(
         result.is_ok(),
-        "Block with fee-paying user TX must NOT trigger conservation violation. \
+        "Block with fee-paying user TX must succeed. \
          Fee burns are expected (deflationary). Got error: {:?}",
         result.err()
     );
@@ -508,8 +488,7 @@ async fn conservation_allows_fee_paying_user_tx() {
 // ============================================================
 #[tokio::test]
 async fn replay_normal_chain_succeeds() {
-    // Verify that normal blocks (no bugs) still replay correctly
-    // after the conservation invariant is added.
+    // Verify that normal blocks (no bugs) replay correctly.
     let (mut node, producers, _tmp) = make_node(3).await;
     let params = node.params.clone();
 
