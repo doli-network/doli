@@ -87,23 +87,20 @@ curl -sSfL https://doli.network/install.sh | sudo sh
 # 2. Create wallet + BLS key
 doli init
 
-# 3. Sync with the network
-sudo doli snap
-
-# 4. Start the node
+# 3. Start the node
 sudo doli service install
 
-# 5. Verify your node is synced
+# 4. Verify your node is synced
 doli chain
 
-# 6. Request 10.01 DOLI from the faucet
+# 5. Request 10.01 DOLI from the faucet
 #    Open a faucet request — paste your address (doli info) and doli chain output
 #    Wait ~7 minutes for the bot to process
 
-# 7. Verify you received the DOLI
+# 6. Verify you received the DOLI
 doli balance
 
-# 8. Register as producer
+# 7. Register as producer
 doli producer register --bonds 1
 ```
 
