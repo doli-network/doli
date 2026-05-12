@@ -1,6 +1,6 @@
 # DOLI
 
-**A Peer-to-Peer Electronic Cash System Based on Verifiable Time**
+**A Peer-to-Peer Electronic Cash System Built by Agents, for an Agentic Era**
 
 > Consensus weight emerges from bonded capital anchored by sequential time — not trust, not scale, and not purchasable acceleration.
 
@@ -12,10 +12,51 @@
 
 DOLI is a cryptocurrency where the scarce resource is **time** — the one resource that cannot be accumulated, parallelized, or purchased. One second passes at the same rate for an individual as for a nation-state.
 
+DOLI is built entirely by [OMEGA](https://github.com/omegacortex), a multi-agent AI workflow system where specialized agents — architect, developer, reviewer, auditor, QA — collaborate through shared institutional memory. Every line of code passes through multiple validation layers before it reaches the chain. This isn't a blockchain with an AI wrapper bolted on; it's a blockchain engineered from genesis by agents, with every design decision made for machine-readability first.
+
 - **No premine, no ICO, no treasury.** Every coin comes from block rewards.
 - **No mining pools needed.** The protocol is the pool — epoch rewards are distributed on-chain to all qualified producers.
 - **No special hardware.** Any CPU can participate. A $5/month VPS is sufficient.
 - **Equal ROI for all.** A producer with 1 bond earns the same percentage return as one with 3,000 bonds.
+
+## Agent-Native by Design
+
+Most blockchains were designed for human developers reading docs. Their errors are cryptic strings, their state is implicit, and their scheduling is opaque. Retrofitting good agent design onto a mature chain is extremely painful — Ethereum has been trying for years.
+
+DOLI was designed during the agentic transition. Every interface speaks the language agents understand: structured data, stable codes, explicit state, and deterministic timing.
+
+### Structured Errors for Self-Correction
+
+47 machine-readable error codes with structured JSON responses. When a transaction fails, agents don't parse strings — they read `error_code`, understand the failure, and self-correct:
+
+```json
+{
+  "code": -32002,
+  "message": "validation failed: insufficient funds",
+  "data": {
+    "error_code": "INSUFFICIENT_FUNDS",
+    "stage": "mempool_validation",
+    "inputs": 500,
+    "outputs": 1000
+  }
+}
+```
+
+Every error carries a **stage** field (`deserialization`, `mempool`, `mempool_validation`) so agents know exactly where in the pipeline the failure occurred.
+
+### Explicit State via UTXO Model
+
+Unlike account-based chains where agents must simulate the entire state transition to predict outcomes, DOLI's UTXO model makes every coin an individually queryable object. An agent can call `getUtxos`, select specific coins by outpoint, know the exact state before broadcasting, and get told which specific UTXO failed and why. No gas estimation guessing. No state simulation.
+
+### Deterministic Scheduling
+
+`getSlotSchedule` tells agents exactly which producer handles which slot. `getProducerSchedule` shows when a specific producer is next up. Timing is predictable, not probabilistic.
+
+### Agent-Readable Skills
+
+DOLI ships with 20 [skill files](.claude/skills/) committed to the repository — structured knowledge maps that give any AI agent deep understanding of the codebase. Each skill covers a domain (consensus, networking, storage, RPC, CLI, wallet, etc.) with indexed entry points, data flows, constraints, and patterns. An agent can grep the [SKILLS-INDEX](.claude/skills/SKILLS-INDEX.md) for any keyword and jump directly to the relevant code section.
+
+These aren't documentation written for humans to skim. They're machine-optimized navigation data: `@INDEX` headers for offset-based loading, line-range references for surgical reads, and cross-domain dependency maps. Any agent — not just OMEGA — can use them to understand, operate, debug, and extend the blockchain.
 
 ## How It Works
 
@@ -141,6 +182,8 @@ MEV and sandwich attacks are structurally impossible: the pool is a UTXO consume
 - [Architecture](docs/architecture.md) — System design and components
 - [RPC Reference](docs/rpc_reference.md) — All 45+ JSON-RPC methods
 - [CLI Reference](docs/cli.md) — Command-line wallet and node usage
+- [Agentic Readiness Report](docs/agentic-era-readiness-report.md) — How DOLI is designed for AI agents
+- [Skills Index](.claude/skills/SKILLS-INDEX.md) — Agent-optimized codebase navigation
 
 ## Networks
 
