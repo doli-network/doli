@@ -237,7 +237,8 @@ jobs:
           Copy-Item "target\${{ env.TARGET }}\release\doli-node.exe" $DIR\
           Copy-Item "target\${{ env.TARGET }}\release\doli.exe" $DIR\
           Copy-Item -Recurse ".claude\skills" "$DIR\skills"
-          Copy-Item README.md,$null $DIR\ -ErrorAction SilentlyContinue
+          Copy-Item README.md $DIR\ -ErrorAction SilentlyContinue
+          Get-ChildItem LICENSE* -ErrorAction SilentlyContinue | Copy-Item -Destination $DIR\
           Compress-Archive -Path $DIR -DestinationPath "${DIR}.zip"
         shell: pwsh
 
