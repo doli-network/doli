@@ -419,6 +419,31 @@ jobs:
           name: gui-windows
           path: gui-artifacts/*
 
+  # ── Deploy install scripts to doli.network ────────────────────
+  deploy-install-scripts:
+    name: Deploy Install Scripts
+    if: ${{ github.event_name == 'push' || inputs.skip_release == false }}
+    needs: [release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy install.sh and install.ps1 to web server
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+          DEPLOY_SSH_PORT: ${{ secrets.DEPLOY_SSH_PORT }}
+          DEPLOY_SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
+          DEPLOY_SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          echo "$DEPLOY_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          scp -i ~/.ssh/deploy_key -P "$DEPLOY_SSH_PORT" \
+            scripts/install.sh scripts/install.ps1 \
+            "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:/var/www/explorer-repo/doli.network/"
+
   # ── Create GitHub Release ─────────────────────────────────────
   release:
     name: Create Release
