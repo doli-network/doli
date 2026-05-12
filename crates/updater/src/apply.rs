@@ -369,8 +369,9 @@ pub fn install_skills_from_tarball(tarball: &[u8]) -> Result<usize> {
 
     // Clear previous skills
     if skills_dir.exists() {
-        std::fs::remove_dir_all(&skills_dir)
-            .map_err(|e| UpdateError::InstallFailed(format!("Failed to clear old skills: {}", e)))?;
+        std::fs::remove_dir_all(&skills_dir).map_err(|e| {
+            UpdateError::InstallFailed(format!("Failed to clear old skills: {}", e))
+        })?;
     }
 
     for entry in archive

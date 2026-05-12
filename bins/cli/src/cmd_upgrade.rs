@@ -155,10 +155,7 @@ pub(crate) async fn cmd_upgrade(
             let home = std::env::var("HOME")
                 .or_else(|_| std::env::var("USERPROFILE"))
                 .unwrap_or_default();
-            println!(
-                "Updated {} agent skills at {}/.doli/skills/",
-                count, home
-            );
+            println!("Updated {} agent skills at {}/.doli/skills/", count, home);
         }
         Ok(_) => {}
         Err(e) => println!("Note: could not update agent skills: {}", e),
