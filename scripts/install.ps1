@@ -64,6 +64,17 @@ try {
     Copy-Item (Join-Path $ExtractDir.FullName "doli-node.exe") $InstallDir -Force
     Copy-Item (Join-Path $ExtractDir.FullName "doli.exe") $InstallDir -Force
 
+    # Install agent skills
+    $SkillCount = 0
+    $SkillsSource = Join-Path $ExtractDir.FullName "skills"
+    $SkillsDir = Join-Path $env:USERPROFILE ".doli\skills"
+    if (Test-Path $SkillsSource) {
+        Info "Installing agent skills to $SkillsDir..."
+        if (Test-Path $SkillsDir) { Remove-Item -Path $SkillsDir -Recurse -Force }
+        Copy-Item -Path $SkillsSource -Destination $SkillsDir -Recurse
+        $SkillCount = (Get-ChildItem -Path $SkillsDir -Recurse -Filter "SKILL.md").Count
+    }
+
     # Add to PATH if not already there
     $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
     if ($machinePath -notlike "*$InstallDir*") {
@@ -134,6 +145,14 @@ try {
     Write-Host "  Check balance:"
     Write-Host "    doli balance"
     Write-Host ""
+    if ($SkillCount -gt 0) {
+        Write-Host "  Agent Skills: $SkillsDir ($SkillCount skills)" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "  AI agents (Claude Code, Cursor, etc.) can use these skills to operate"
+        Write-Host "  your DOLI node. Point your agent to:"
+        Write-Host "    $SkillsDir\SKILLS-INDEX.md"
+        Write-Host ""
+    }
     if ($machinePath -notlike "*$InstallDir*") {
         Write-Host "  NOTE: Restart your terminal for PATH changes to take effect." -ForegroundColor Yellow
         Write-Host ""

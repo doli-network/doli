@@ -330,11 +330,99 @@ pub async fn auto_apply_from_github(version: &str, signed_checksums_sha256: &str
         }
     }
 
+    // 8. Update agent skills (best-effort — skill failure never blocks node update)
+    match install_skills_from_tarball(&tarball) {
+        Ok(count) if count > 0 => info!("Updated {} agent skills", count),
+        Ok(_) => debug!("No skills found in tarball"),
+        Err(e) => warn!("Failed to update agent skills: {} (non-fatal)", e),
+    }
+
     info!(
         "Auto-apply complete: v{} installed to {:?}",
         version, target
     );
     Ok(())
+}
+
+/// Extract and install agent skills from a release tarball to ~/.doli/skills/
+///
+/// Skills are markdown files that enable AI agents to operate DOLI nodes.
+/// They live in the tarball under `*/skills/**`. This function extracts them
+/// to `~/.doli/skills/`, replacing any previously installed skills.
+///
+/// Best-effort: returns Ok(count) on success, Err on failure.
+/// Callers should treat failure as non-fatal (skills are not required for node operation).
+pub fn install_skills_from_tarball(tarball: &[u8]) -> Result<usize> {
+    use flate2::read::GzDecoder;
+    use std::io::Read;
+    use tar::Archive;
+
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map_err(|_| UpdateError::InstallFailed("Cannot determine home directory".into()))?;
+    let skills_dir = PathBuf::from(&home).join(".doli").join("skills");
+
+    // Collect skill entries from tarball
+    let decoder = GzDecoder::new(tarball);
+    let mut archive = Archive::new(decoder);
+    let mut skill_count = 0;
+
+    // Clear previous skills
+    if skills_dir.exists() {
+        std::fs::remove_dir_all(&skills_dir)
+            .map_err(|e| UpdateError::InstallFailed(format!("Failed to clear old skills: {}", e)))?;
+    }
+
+    for entry in archive
+        .entries()
+        .map_err(|e| UpdateError::InstallFailed(e.to_string()))?
+    {
+        let mut entry = entry.map_err(|e| UpdateError::InstallFailed(e.to_string()))?;
+        let path = entry
+            .path()
+            .map_err(|e| UpdateError::InstallFailed(e.to_string()))?
+            .to_path_buf();
+
+        // Match entries like "doli-v1.0.0-target/skills/core/SKILL.md"
+        let path_str = path.to_string_lossy();
+        let Some(skills_idx) = path_str.find("/skills/") else {
+            continue;
+        };
+        let relative = &path_str[skills_idx + "/skills/".len()..];
+        if relative.is_empty() {
+            continue;
+        }
+
+        let dest = skills_dir.join(relative);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| UpdateError::InstallFailed(e.to_string()))?;
+        }
+
+        // Only extract files (skip directories)
+        if entry.header().entry_type().is_file() {
+            let mut contents = Vec::new();
+            entry
+                .read_to_end(&mut contents)
+                .map_err(|e| UpdateError::InstallFailed(e.to_string()))?;
+            std::fs::write(&dest, &contents)
+                .map_err(|e| UpdateError::InstallFailed(e.to_string()))?;
+
+            if relative.ends_with("SKILL.md") {
+                skill_count += 1;
+            }
+        }
+    }
+
+    if skill_count > 0 {
+        info!(
+            "Installed {} agent skills to {}",
+            skill_count,
+            skills_dir.display()
+        );
+    }
+
+    Ok(skill_count)
 }
 
 /// Extract a named binary from a .tar.gz tarball

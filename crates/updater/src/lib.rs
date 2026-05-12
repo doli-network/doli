@@ -40,8 +40,8 @@ mod verification;
 // Re-exports: apply
 pub use apply::{
     apply_update, auto_apply_from_github, backup_current, current_binary_path,
-    extract_binary_from_tarball, extract_named_binary_from_tarball, install_binary, restart_node,
-    rollback,
+    extract_binary_from_tarball, extract_named_binary_from_tarball, install_binary,
+    install_skills_from_tarball, restart_node, rollback,
 };
 
 // Re-exports: download

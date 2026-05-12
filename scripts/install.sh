@@ -80,6 +80,26 @@ sudo install -m 755 "${DIR}/doli-node" /usr/bin/doli-node
 sudo install -m 755 "${DIR}/doli"      /usr/bin/doli
 
 # ---------------------------------------------------------------------------
+# Install agent skills to ~/.doli/skills/
+# ---------------------------------------------------------------------------
+SKILL_COUNT=0
+REAL_USER="${SUDO_USER:-$USER}"
+REAL_HOME=$(eval echo "~$REAL_USER")
+SKILLS_DIR="$REAL_HOME/.doli/skills"
+
+if [ -d "${DIR}/skills" ]; then
+    info "Installing agent skills to ${SKILLS_DIR}..."
+    rm -rf "$SKILLS_DIR"
+    mkdir -p "$SKILLS_DIR"
+    cp -r "${DIR}/skills/"* "$SKILLS_DIR/"
+    SKILL_COUNT=$(find "$SKILLS_DIR" -name "SKILL.md" | wc -l | tr -d ' ')
+    # Fix ownership if running as sudo
+    if [ -n "$SUDO_USER" ]; then
+        chown -R "$REAL_USER" "$REAL_HOME/.doli"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # Linux-only: create system user, group, directories, and polkit rule
 # ---------------------------------------------------------------------------
 NEEDS_RELOGIN=0
@@ -152,6 +172,15 @@ echo "    doli init                                         # create wallet + ke
 echo "    sudo doli service install                         # start node as system service"
 echo "    doli chain                                        # check sync progress"
 echo ""
+
+if [ "$SKILL_COUNT" -gt 0 ] 2>/dev/null; then
+    printf "  ${BOLD}Agent Skills${NC}  %s (%s skills)\n" "$SKILLS_DIR" "$SKILL_COUNT"
+    echo ""
+    echo "  AI agents (Claude Code, Cursor, etc.) can use these skills to operate"
+    echo "  your DOLI node. Point your agent to:"
+    echo "    ${SKILLS_DIR}/SKILLS-INDEX.md"
+    echo ""
+fi
 
 if [ "${NEEDS_RELOGIN}" = "1" ]; then
     echo "  ${BOLD}IMPORTANT:${NC} Log out and back in for group membership to take effect."

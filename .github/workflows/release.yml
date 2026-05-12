@@ -55,6 +55,7 @@ jobs:
           mkdir -p "$DIR"
           cp "target/${TARGET}/release/doli-node" "$DIR/"
           cp "target/${TARGET}/release/doli" "$DIR/"
+          cp -r .claude/skills "$DIR/skills"
           cp README.md LICENSE* "$DIR/" 2>/dev/null || true
           tar -czf "${DIR}.tar.gz" "$DIR"
 
@@ -119,6 +120,7 @@ jobs:
           mkdir -p "$DIR"
           cp "target/${TARGET}/release/doli-node" "$DIR/"
           cp "target/${TARGET}/release/doli" "$DIR/"
+          cp -r .claude/skills "$DIR/skills"
           cp README.md LICENSE* "$DIR/" 2>/dev/null || true
           tar -czf "${DIR}.tar.gz" "$DIR"
 
@@ -172,6 +174,7 @@ jobs:
           mkdir -p "$DIR"
           cp "target/${TARGET}/release/doli-node" "$DIR/"
           cp "target/${TARGET}/release/doli" "$DIR/"
+          cp -r .claude/skills "$DIR/skills"
           cp README.md LICENSE* "$DIR/" 2>/dev/null || true
           tar -czf "${DIR}.tar.gz" "$DIR"
 
@@ -233,6 +236,7 @@ jobs:
           New-Item -ItemType Directory -Path $DIR
           Copy-Item "target\${{ env.TARGET }}\release\doli-node.exe" $DIR\
           Copy-Item "target\${{ env.TARGET }}\release\doli.exe" $DIR\
+          Copy-Item -Recurse ".claude\skills" "$DIR\skills"
           Copy-Item README.md,$null $DIR\ -ErrorAction SilentlyContinue
           Compress-Archive -Path $DIR -DestinationPath "${DIR}.zip"
         shell: pwsh

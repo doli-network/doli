@@ -149,6 +149,21 @@ pub(crate) async fn cmd_upgrade(
         }
     }
 
+    // Update agent skills (best-effort)
+    match updater::install_skills_from_tarball(&tarball) {
+        Ok(count) if count > 0 => {
+            let home = std::env::var("HOME")
+                .or_else(|_| std::env::var("USERPROFILE"))
+                .unwrap_or_default();
+            println!(
+                "Updated {} agent skills at {}/.doli/skills/",
+                count, home
+            );
+        }
+        Ok(_) => {}
+        Err(e) => println!("Note: could not update agent skills: {}", e),
+    }
+
     // Restart only the service that owns the installed binary
     if let Some(ref svc) = service {
         restart_specific_service(svc);

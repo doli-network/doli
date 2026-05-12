@@ -137,14 +137,25 @@ build_target() {
     cp "$node_path" "$artifact_dir/$NODE_BINARY"
     cp "$cli_path" "$artifact_dir/$CLI_BINARY"
 
+    # Copy agent skills (only git-tracked, excludes sensitive gitignored skills)
+    mkdir -p "$artifact_dir/skills"
+    (cd "$PROJECT_ROOT" && git ls-files '.claude/skills/') | while IFS= read -r f; do
+        dest="$artifact_dir/skills/${f#.claude/skills/}"
+        mkdir -p "$(dirname "$dest")"
+        cp "$PROJECT_ROOT/$f" "$dest"
+    done
+    SKILL_COUNT=$(find "$artifact_dir/skills" -name "SKILL.md" | wc -l | tr -d ' ')
+    echo "  Included $SKILL_COUNT agent skills"
+
     # Create README for the release
     cat > "$artifact_dir/README.txt" << EOF
 DOLI - Version $VERSION
 Target: $target
 
-Included binaries:
+Included:
   doli-node  — Full node
   doli       — Wallet CLI
+  skills/    — Agent skills ($SKILL_COUNT skill files for AI-assisted node operation)
 
 Quick Start:
   chmod +x $NODE_BINARY $CLI_BINARY
@@ -153,8 +164,14 @@ Quick Start:
   ./$NODE_BINARY --help                 # Show all options
   ./$CLI_BINARY --help                  # Wallet commands
 
-Documentation: https://github.com/e-weil/doli/docs/running_a_node.md
-Support: https://github.com/e-weil/doli/issues
+Agent Skills:
+  The skills/ directory contains structured knowledge files that enable
+  AI agents (Claude Code, Cursor, etc.) to operate and manage DOLI nodes.
+  The installer places them at ~/.doli/skills/ — point your agent to:
+    ~/.doli/skills/SKILLS-INDEX.md
+
+Documentation: https://github.com/doli-network/doli
+Support: https://github.com/doli-network/doli/issues
 EOF
 
     # Create tarball
