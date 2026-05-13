@@ -582,7 +582,18 @@ impl Node {
                 {
                     let mut utxo = self.utxo_set.write().await;
 
-                    // Apply undo data in reverse order (highest block first)
+                    // INC-I-071: scan the rollback range and locate the first
+                    // undo entry with a non-empty producer_snapshot. Per the
+                    // sentinel semantics, empty means "ProducerSet unchanged
+                    // from h-1 to h", so the first non-empty entry going
+                    // forward from target_height+1 contains the BEFORE state
+                    // for some height in the same producer-state era as
+                    // target_height — that snapshot IS the state at
+                    // target_height.
+                    //
+                    // Apply UTXO undo in reverse (highest block first) AND
+                    // record the producer snapshot to restore from.
+                    let mut producer_snapshot_for_restore: Option<Vec<u8>> = None;
                     for h in (target_height + 1..=current_height).rev() {
                         let undo = self.state_db.get_undo(h).unwrap();
 
@@ -595,20 +606,38 @@ impl Node {
                         for (outpoint, entry) in &undo.spent_utxos {
                             utxo.insert(*outpoint, entry.clone())?;
                         }
+
+                        // Track the LOWEST height entry with a non-empty
+                        // producer_snapshot (overwrite while iterating in
+                        // reverse — the loop ends at h = target_height + 1).
+                        // That entry's BEFORE-state equals target_height's state.
+                        if !undo.producer_snapshot.is_empty() {
+                            producer_snapshot_for_restore = Some(undo.producer_snapshot.clone());
+                        }
                     }
 
-                    // Restore ProducerSet from the undo snapshot at target_height + 1
-                    // (which captured the state BEFORE that block was applied = state AT target_height)
-                    let first_undo = self.state_db.get_undo(target_height + 1).unwrap();
-                    if let Ok(restored_producers) =
-                        bincode::deserialize::<storage::ProducerSet>(&first_undo.producer_snapshot)
-                    {
-                        let mut producers = self.producer_set.write().await;
-                        *producers = restored_producers;
+                    // Restore ProducerSet from the recorded snapshot (or skip
+                    // if every entry in the range was an empty sentinel —
+                    // producers were unchanged across the whole rollback range,
+                    // so the in-memory ProducerSet is already correct).
+                    if let Some(snapshot_bytes) = producer_snapshot_for_restore {
+                        if let Ok(restored_producers) =
+                            bincode::deserialize::<storage::ProducerSet>(&snapshot_bytes)
+                        {
+                            let mut producers = self.producer_set.write().await;
+                            *producers = restored_producers;
+                        } else {
+                            warn!("Failed to deserialize producer snapshot from undo data, rebuilding from blocks");
+                            let mut producers = self.producer_set.write().await;
+                            self.rebuild_producer_set_from_blocks(&mut producers, target_height)?;
+                        }
                     } else {
-                        warn!("Failed to deserialize producer snapshot from undo data, rebuilding from blocks");
-                        let mut producers = self.producer_set.write().await;
-                        self.rebuild_producer_set_from_blocks(&mut producers, target_height)?;
+                        debug!(
+                            "[REORG] All producer_snapshot entries empty in {}..={} — \
+                             ProducerSet unchanged across rollback range, skipping restore",
+                            target_height + 1,
+                            current_height
+                        );
                     }
                 }
 
@@ -617,6 +646,11 @@ impl Node {
                 // Without this, execute_reorg leaves stale attestation accumulators from
                 // the OLD fork → wrong derive_at_boundary → wrong scheduling → persistent fork.
                 // Height-gated: consensus-breaking change (different scheduling after reorg).
+                //
+                // INC-I-071: epoch_state_snapshot is NOT covered by the empty-sentinel
+                // optimization — it is always present on every undo entry. Read once
+                // from the same height that originally produced the producer snapshot
+                // semantics (target_height + 1).
                 if current_height
                     >= self
                         .config

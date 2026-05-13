@@ -6,6 +6,29 @@ mod post_commit;
 mod state_update;
 mod tx_processing;
 
+/// Returns true if the block carries any transaction that mid-epoch mutates
+/// the `ProducerSet` (registrations, bond changes, exits, delegation changes).
+/// Used by the INC-I-071 fix to decide whether the per-block undo entry needs
+/// a full ProducerSet snapshot or can use the empty-Vec sentinel.
+///
+/// Per CLAUDE.md: producer mutations driven by these tx types are DEFERRED
+/// to the next epoch boundary, but they still mark the producer set as
+/// pending-dirty — the safe rule is to snapshot whenever such a tx is present.
+fn block_mutates_producer_set(block: &Block) -> bool {
+    block.transactions.iter().any(|tx| {
+        matches!(
+            tx.tx_type,
+            TxType::Registration
+                | TxType::Exit
+                | TxType::AddBond
+                | TxType::RequestWithdrawal
+                | TxType::ClaimWithdrawal
+                | TxType::DelegateBond
+                | TxType::RevokeDelegation
+        )
+    })
+}
+
 impl Node {
     /// Apply a block to the chain
     ///
@@ -124,10 +147,32 @@ impl Node {
             std::collections::HashSet::new();
         let dirty_exit_keys: std::collections::HashSet<Hash> = std::collections::HashSet::new();
 
-        // Undo log: snapshot ProducerSet BEFORE any mutations
-        let undo_producer_snapshot = {
+        // Undo log: snapshot ProducerSet BEFORE any mutations — but ONLY when this
+        // block could actually mutate the set. INC-I-071: per-block full snapshots
+        // caused 605 MB cf_undo bloat (892.6 KB × 2000 entries) on mainnet because
+        // ProducerSet mutations are deferred to epoch boundaries — 359/360 blocks
+        // never change it, yet were paying the full serialization cost.
+        //
+        // Sentinel semantics: producer_snapshot = Vec::new() means "ProducerSet
+        // unchanged at this height — rollback must SKIP the restore step".
+        // Backward-compatible: pre-fix undo entries with non-empty snapshots
+        // continue to deserialize and restore correctly on the legacy path.
+        let blocks_per_epoch_for_undo = self.config.network.blocks_per_reward_epoch();
+        // Epoch boundary: the block where (h-1)/E differs from h/E (e.g. h=blocks_per_epoch).
+        // At this block, `track_finality_and_apply_deferred` applies any deferred
+        // producer mutations, so the BEFORE snapshot must be captured.
+        let at_epoch_boundary =
+            blocks_per_epoch_for_undo > 0 && height.is_multiple_of(blocks_per_epoch_for_undo);
+        let has_producer_mutating_tx = block_mutates_producer_set(&block);
+        let needs_producer_snapshot = at_epoch_boundary || has_producer_mutating_tx;
+
+        let undo_producer_snapshot = if needs_producer_snapshot {
             let producers = self.producer_set.read().await;
             bincode::serialize(&*producers).unwrap_or_default()
+        } else {
+            // Empty sentinel — ProducerSet did not change at this height.
+            // Rollback path detects this and skips the restore step.
+            Vec::new()
         };
 
         // Undo log: track UTXO changes for this block
@@ -293,8 +338,11 @@ impl Node {
             .commit()
             .map_err(|e| anyhow::anyhow!("StateDb batch commit failed: {}", e))?;
 
-        // Prune old undo data (keep last MAX_REORG_DEPTH blocks)
-        const UNDO_KEEP_DEPTH: u64 = 2000; // 2x MAX_REORG_DEPTH for safety margin
+        // Prune old undo data. INC-I-071: reduced from 2000 → 360 (one epoch).
+        // MAX_CUMULATIVE_ROLLBACK is 50 — 360 is 7x that. Deepest observed reorg
+        // in 63 days of mainnet was ~10 blocks. For deeper rollbacks beyond this
+        // window, the existing rebuild_from_blocks fallback in rollback.rs is used.
+        const UNDO_KEEP_DEPTH: u64 = 360;
         if height > UNDO_KEEP_DEPTH {
             self.state_db.prune_undo_before(height - UNDO_KEEP_DEPTH);
         }

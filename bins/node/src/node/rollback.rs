@@ -90,8 +90,14 @@ impl Node {
             local_height, target_height
         );
 
+        // INC-I-071: fetch undo data ONCE and reuse for both the UTXO/Producer
+        // restore (this block) and the EpochState restore (later block). The
+        // previous code called get_undo(local_height) twice, deserializing the
+        // same RocksDB value twice per rollback.
+        let cached_undo = self.state_db.get_undo(local_height);
+
         // Try undo-based rollback first (O(1) for single block)
-        if let Some(undo) = self.state_db.get_undo(local_height) {
+        if let Some(ref undo) = cached_undo {
             info!(
                 "Undo-based rollback: reverting block at height {}",
                 local_height
@@ -110,8 +116,18 @@ impl Node {
                 }
             }
 
-            // Restore ProducerSet from undo snapshot
-            if let Ok(restored_producers) =
+            // INC-I-071: empty producer_snapshot is the sentinel meaning
+            // "ProducerSet unchanged at this height — skip restore". The
+            // in-memory ProducerSet is already correct for h-1. Legacy
+            // (pre-fix) undo entries always have a non-empty snapshot and
+            // continue to take the deserialize-and-restore path below.
+            if undo.producer_snapshot.is_empty() {
+                debug!(
+                    "[ROLLBACK] Empty producer_snapshot sentinel at h={} — \
+                     ProducerSet unchanged at this block, skipping restore",
+                    local_height
+                );
+            } else if let Ok(restored_producers) =
                 bincode::deserialize::<storage::ProducerSet>(&undo.producer_snapshot)
             {
                 let mut producers = self.producer_set.write().await;
@@ -227,7 +243,12 @@ impl Node {
         // Restore epoch scheduler state from undo data (O(1) vs O(chain) rebuild).
         // The undo snapshot was taken BEFORE apply_block, so it reflects the correct
         // scheduler state at the pre-rollback height.
-        if let Some(undo) = self.state_db.get_undo(local_height) {
+        //
+        // INC-I-071: reuse `cached_undo` from the start of this function rather
+        // than calling get_undo() again (the previous code deserialized the same
+        // RocksDB entry twice). EpochState snapshots are NOT covered by the
+        // empty-sentinel optimization — they are always present.
+        if let Some(ref undo) = cached_undo {
             if let Some(ref epoch_bytes) = undo.epoch_state_snapshot {
                 match doli_core::EpochState::deserialize(epoch_bytes) {
                     Ok(restored) => {

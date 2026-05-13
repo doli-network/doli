@@ -84,11 +84,12 @@ pub(crate) fn truncate_chain(
         ));
     }
 
-    // Check undo data availability
-    let oldest_undo = current_height.saturating_sub(2000);
+    // Check undo data availability. INC-I-071: window reduced from 2000 to 360
+    // (one epoch). Deeper rollbacks must use `recover` (replay from blocks).
+    let oldest_undo = current_height.saturating_sub(360);
     if new_tip < oldest_undo {
         return Err(anyhow!(
-            "Cannot truncate {} blocks — undo data only available for last 2000 blocks (height {} to {}). \
+            "Cannot truncate {} blocks — undo data only available for last 360 blocks (height {} to {}). \
              Max truncation: {} blocks. For deeper rollback, use 'recover'.",
             blocks_to_remove,
             oldest_undo,
@@ -143,14 +144,37 @@ pub(crate) fn truncate_chain(
     }
 
     // Restore producer set from the undo data at new_tip + 1
-    // (contains the snapshot BEFORE that block was applied = state AT new_tip)
-    if let Some(undo) = state_db.get_undo(new_tip + 1) {
-        if let Ok(restored_ps) = bincode::deserialize::<ProducerSet>(&undo.producer_snapshot) {
+    // (contains the snapshot BEFORE that block was applied = state AT new_tip).
+    //
+    // INC-I-071: empty producer_snapshot is the sentinel meaning "unchanged at
+    // this height". Scan forward from new_tip+1 through the entries being
+    // rolled back, locating the first non-empty entry — its BEFORE-state is
+    // in the same producer-state era as new_tip's, so it is the correct
+    // snapshot to restore. If every entry in the range is empty, producers
+    // were unchanged across the whole rollback range and the on-disk
+    // ProducerSet is already correct for new_tip.
+    let mut producer_snapshot_bytes: Option<Vec<u8>> = None;
+    for h in (new_tip + 1)..=current_height {
+        if let Some(undo_h) = state_db.get_undo(h) {
+            if !undo_h.producer_snapshot.is_empty() {
+                producer_snapshot_bytes = Some(undo_h.producer_snapshot);
+                break;
+            }
+        }
+    }
+
+    if let Some(bytes) = producer_snapshot_bytes {
+        if let Ok(restored_ps) = bincode::deserialize::<ProducerSet>(&bytes) {
             state_db.write_producer_set(&restored_ps)?;
             println!("Producer set restored from undo snapshot.");
         } else {
             println!("WARNING: Could not deserialize producer snapshot. Run 'recover' after startup if producers are wrong.");
         }
+    } else {
+        println!(
+            "Producer set unchanged across rollback range (all sentinel entries); \
+             on-disk producer set is already correct for new tip."
+        );
     }
 
     // Update chain state to new tip
