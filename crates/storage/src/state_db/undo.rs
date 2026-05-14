@@ -86,4 +86,40 @@ impl StateDb {
                 .compact_range_cf(cf, Some(&start[..]), Some(&end[..]));
         }
     }
+
+    /// One-shot bulk delete of cf_undo entries STRICTLY BELOW `keep_height`.
+    ///
+    /// Mirrors `prune_undo_above`. Intended for catch-up after `UNDO_KEEP_DEPTH`
+    /// is reduced — the per-block `prune_undo_before` walks forward only and
+    /// cannot reclaim historical entries below the new horizon. Idempotent.
+    /// Returns the number of entries deleted.
+    pub fn prune_undo_below(&self, keep_height: BlockHeight) -> u64 {
+        if keep_height == 0 {
+            return 0;
+        }
+        let cf = self.db.cf_handle(CF_UNDO).unwrap();
+        let mut batch = rocksdb::WriteBatch::default();
+        let mut count = 0u64;
+        for (key, _) in self
+            .db
+            .iterator_cf(cf, rocksdb::IteratorMode::Start)
+            .flatten()
+        {
+            if key.len() == 8 {
+                let h = u64::from_le_bytes(key[..8].try_into().unwrap());
+                if h < keep_height {
+                    batch.delete_cf(cf, &key);
+                    count += 1;
+                }
+            }
+        }
+        if count > 0 {
+            let _ = self.db.write(batch);
+            let start = 0u64.to_le_bytes();
+            let end = keep_height.to_le_bytes();
+            self.db
+                .compact_range_cf(cf, Some(&start[..]), Some(&end[..]));
+        }
+        count
+    }
 }

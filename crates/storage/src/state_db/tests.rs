@@ -501,3 +501,144 @@ fn test_versioned_write_has_prefix() {
     let loaded: ChainState = bincode::deserialize(payload).unwrap();
     assert_eq!(loaded.best_height, 0);
 }
+
+// ==================== INC-I-074: prune_undo_below ====================
+
+// OUTPUT CONTRACT: fn prune_undo_below(&self, keep_height: BlockHeight) -> u64
+//
+// Observable outputs (O1..On):
+//   O1: return value (u64 — number of entries deleted)
+//   O2: cf_undo contents after call
+//       (entries with height < keep_height MUST be absent;
+//        entries with height >= keep_height MUST remain unchanged)
+//   O3: no panic, no error propagation
+//       (method is infallible by design — mirrors prune_undo_above which
+//        uses `let _ = self.db.write(batch)`)
+//
+// Paths:
+//   PATH-A: keep_height == 0  -> early no-op return (matches prune_undo_before semantics)
+//   PATH-B: keep_height > 0   -> iterate cf_undo, batch-delete keys with height < keep_height
+//
+// INPUT PARTITIONS:
+//   PATH-A:
+//     P3: keep_height == 0, cf_undo has entries
+//         -> O1 = 0, O2 unchanged, O3 no panic
+//   PATH-B:
+//     P1: cf_undo has entries below AND at/above horizon (stranded scenario)
+//         -> O1 = count below, O2: entries < horizon gone, entries >= horizon kept
+//     P2: cf_undo has zero entries below the horizon (idempotent re-run scenario)
+//         -> O1 = 0, O2 unchanged, O3 no panic
+//
+// Matrix (O1 × O2 × O3) × (PATH-A×P3, PATH-B×P1, PATH-B×P2) = 9 assertions covered below.
+
+fn make_undo(marker: u8) -> super::types::UndoData {
+    super::types::UndoData {
+        spent_utxos: vec![],
+        created_utxos: vec![],
+        producer_snapshot: vec![marker],
+        epoch_state_snapshot: None,
+        chain_commitment: None,
+    }
+}
+
+#[test]
+fn prune_undo_below_bulk_deletes_stranded_entries() {
+    // PATH-B × P1: stranded scenario — most important partition.
+    let (db, _dir) = create_test_db();
+    for h in 0u64..=10 {
+        db.put_undo(h, &make_undo(h as u8));
+    }
+    // Setup sanity: all 11 entries present.
+    for h in 0u64..=10 {
+        assert!(db.get_undo(h).is_some(), "setup: entry {} missing", h);
+    }
+
+    let deleted = db.prune_undo_below(5);
+
+    // O1: return value must equal count of deleted entries.
+    assert_eq!(deleted, 5, "P1: should delete heights 0..=4 (5 entries)");
+
+    // O2: cf_undo contents — entries below horizon gone.
+    for h in 0u64..5 {
+        assert!(
+            db.get_undo(h).is_none(),
+            "P1: entry {} should be deleted (below horizon=5)",
+            h
+        );
+    }
+    // O2: cf_undo contents — entries at/above horizon untouched.
+    for h in 5u64..=10 {
+        let entry = db.get_undo(h);
+        assert!(
+            entry.is_some(),
+            "P1: entry {} should be retained (>= horizon=5)",
+            h
+        );
+        assert_eq!(
+            entry.unwrap().producer_snapshot,
+            vec![h as u8],
+            "P1: entry {} producer_snapshot must be unmodified",
+            h
+        );
+    }
+    // O3: no panic reached by getting here.
+}
+
+#[test]
+fn prune_undo_below_idempotent_when_already_clean() {
+    // PATH-B × P2: idempotent re-run scenario.
+    let (db, _dir) = create_test_db();
+    // Only insert entries at/above horizon — nothing to delete.
+    for h in 5u64..=10 {
+        db.put_undo(h, &make_undo(h as u8));
+    }
+
+    let deleted = db.prune_undo_below(5);
+
+    // O1: zero entries below horizon -> zero deletions.
+    assert_eq!(
+        deleted, 0,
+        "P2: zero entries below horizon should yield zero deletions"
+    );
+
+    // O2: cf_undo contents unchanged.
+    for h in 5u64..=10 {
+        let entry = db.get_undo(h);
+        assert!(entry.is_some(), "P2: entry {} should be retained", h);
+        assert_eq!(
+            entry.unwrap().producer_snapshot,
+            vec![h as u8],
+            "P2: entry {} must be unmodified",
+            h
+        );
+    }
+
+    // O1+O3: re-run must also be a no-op.
+    let deleted_again = db.prune_undo_below(5);
+    assert_eq!(deleted_again, 0, "P2: re-run must also yield 0");
+}
+
+#[test]
+fn prune_undo_below_zero_keep_height_is_noop() {
+    // PATH-A × P3: keep_height == 0 must be a no-op
+    // (matches prune_undo_before semantics — see undo.rs:40-42).
+    let (db, _dir) = create_test_db();
+    for h in 0u64..=3 {
+        db.put_undo(h, &make_undo(h as u8));
+    }
+
+    let deleted = db.prune_undo_below(0);
+
+    // O1: keep_height=0 must yield 0 deletions.
+    assert_eq!(deleted, 0, "P3: keep_height=0 must be a no-op");
+
+    // O2: all original entries still present.
+    for h in 0u64..=3 {
+        assert!(
+            db.get_undo(h).is_some(),
+            "P3: entry {} must be retained when keep_height=0",
+            h
+        );
+    }
+    // O3: no panic reached by getting here.
+}
