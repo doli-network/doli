@@ -10,7 +10,7 @@ use super::bonds::{handle_add_bond, handle_simulate_withdrawal};
 use super::delegation::{handle_delegate, handle_delegation_status, handle_revoke_delegation};
 use super::exit::{handle_exit, handle_slash};
 use super::register::handle_register;
-use super::status::{handle_bonds, handle_list, handle_status};
+use super::status::{handle_bonds, handle_list, handle_status, handle_vesting_summary};
 use super::withdrawal::handle_request_withdrawal;
 
 pub(crate) async fn cmd_producer(
@@ -39,6 +39,10 @@ pub(crate) async fn cmd_producer(
 
         ProducerCommands::Bonds { pubkey } => {
             handle_bonds(wallet_path, &rpc, pubkey).await?;
+        }
+
+        ProducerCommands::VestingSummary { pubkey } => {
+            handle_vesting_summary(wallet_path, &rpc, pubkey).await?;
         }
 
         ProducerCommands::List { active, format } => {

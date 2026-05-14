@@ -836,6 +836,13 @@ pub(crate) enum ProducerCommands {
         pubkey: Option<String>,
     },
 
+    /// Show vesting summary with calendar dates for penalty drops
+    VestingSummary {
+        /// Public key (optional, uses wallet if not specified)
+        #[arg(short, long)]
+        pubkey: Option<String>,
+    },
+
     /// List all producers in the network
     List {
         /// Show only active producers

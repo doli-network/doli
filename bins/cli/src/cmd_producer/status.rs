@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use anyhow::Result;
+use chrono::{Duration, Local};
 
 use super::common::format_slot_duration;
 use crate::common::address_prefix;
@@ -265,6 +266,169 @@ pub(super) async fn handle_bonds(
     }
 
     Ok(())
+}
+
+pub(super) async fn handle_vesting_summary(
+    wallet_path: &Path,
+    rpc: &RpcClient,
+    pubkey: Option<String>,
+) -> Result<()> {
+    let pk = match pubkey {
+        Some(pk) => pk,
+        None => {
+            let wallet = Wallet::load(wallet_path)?;
+            wallet.addresses()[0].public_key.clone()
+        }
+    };
+
+    let details = rpc.get_bond_details(&pk).await?;
+    let params = rpc.get_network_params().await?;
+    let slot_secs = params.slot_duration;
+    let vq = details.vesting_quarter_slots;
+    let now = Local::now();
+
+    println!(
+        "Vesting Summary ({} bonds, {})",
+        details.bond_count,
+        format_balance(details.total_staked)
+    );
+    println!("{}", "\u{2500}".repeat(50));
+
+    if details.bonds.is_empty() {
+        println!("No bonds found.");
+        return Ok(());
+    }
+
+    // Categorize bonds
+    let s = &details.summary;
+    if s.vested > 0 {
+        println!(
+            "Vested (0% penalty):   {} {}",
+            s.vested,
+            if s.vested == 1 { "bond" } else { "bonds" }
+        );
+    }
+    if s.q3 > 0 {
+        println!(
+            "Q3 (25% penalty):      {} {}",
+            s.q3,
+            if s.q3 == 1 { "bond" } else { "bonds" }
+        );
+    }
+    if s.q2 > 0 {
+        println!(
+            "Q2 (50% penalty):      {} {}",
+            s.q2,
+            if s.q2 == 1 { "bond" } else { "bonds" }
+        );
+    }
+    if s.q1 > 0 {
+        println!(
+            "Q1 (75% penalty):      {} {}",
+            s.q1,
+            if s.q1 == 1 { "bond" } else { "bonds" }
+        );
+    }
+
+    println!();
+
+    // Find the oldest bond (first penalty drop) and newest bond (last to fully vest)
+    // Bonds are sorted oldest-first
+    let oldest = &details.bonds[0];
+    let newest = &details.bonds[details.bonds.len() - 1];
+
+    // Earliest penalty drop: when the oldest bond crosses its next quarter
+    if oldest.vested {
+        println!("All bonds fully vested — withdraw anytime with 0% penalty.");
+    } else {
+        let quarters_done = oldest.age_slots / vq;
+        let next_quarter_age = (quarters_done + 1) * vq;
+        let slots_remaining = next_quarter_age.saturating_sub(oldest.age_slots);
+        let secs_remaining = slots_remaining * slot_secs;
+        let drop_date = now + Duration::seconds(secs_remaining as i64);
+        let next_penalty = match quarters_done + 1 {
+            1 => "50%",
+            2 => "25%",
+            _ => "0%",
+        };
+        println!(
+            "Earliest penalty drop: Bond #1 -> {} in {} ({})",
+            next_penalty,
+            format_duration_human(secs_remaining),
+            drop_date.format("%Y-%m-%d")
+        );
+
+        // Full vesting of oldest bond
+        let full_vest_remaining = details
+            .vesting_period_slots
+            .saturating_sub(oldest.age_slots);
+        let full_vest_secs = full_vest_remaining * slot_secs;
+        let full_vest_date = now + Duration::seconds(full_vest_secs as i64);
+        println!(
+            "Full vesting (0%):     Bond #1 -> 0% in {} ({})",
+            format_duration_human(full_vest_secs),
+            full_vest_date.format("%Y-%m-%d")
+        );
+
+        // If multiple bonds, show when the newest one fully vests
+        if details.bonds.len() > 1 && !newest.vested {
+            let newest_remaining = details
+                .vesting_period_slots
+                .saturating_sub(newest.age_slots);
+            let newest_secs = newest_remaining * slot_secs;
+            let newest_date = now + Duration::seconds(newest_secs as i64);
+            println!(
+                "                       Bond #{} -> 0% in {} ({})",
+                details.bonds.len(),
+                format_duration_human(newest_secs),
+                newest_date.format("%Y-%m-%d")
+            );
+        }
+    }
+
+    // Withdrawal impact warning
+    println!();
+    let worst_penalty = details
+        .bonds
+        .iter()
+        .map(|b| b.penalty_pct)
+        .max()
+        .unwrap_or(0);
+    if worst_penalty > 0 {
+        // Compute what they'd lose withdrawing all bonds now
+        let total_penalty: u64 = details
+            .bonds
+            .iter()
+            .map(|b| (b.amount * b.penalty_pct as u64) / 100)
+            .sum();
+        let total_net = details.total_staked - total_penalty;
+        println!(
+            "Withdrawing all now burns {} — you'd receive {} from {}.",
+            format_balance(total_penalty),
+            format_balance(total_net),
+            format_balance(details.total_staked)
+        );
+    } else {
+        println!("All bonds fully vested — withdraw anytime with 0% penalty.");
+    }
+
+    Ok(())
+}
+
+/// Format seconds as a human-readable duration with days/years
+fn format_duration_human(secs: u64) -> String {
+    let days = secs / 86400;
+    if days >= 365 {
+        let years = days / 365;
+        let remaining_days = days % 365;
+        if remaining_days > 0 {
+            format!("~{}y {}d", years, remaining_days)
+        } else {
+            format!("~{}y", years)
+        }
+    } else {
+        format!("~{}d", days)
+    }
 }
 
 pub(super) async fn handle_list(rpc: &RpcClient, active: bool, format: &str) -> Result<()> {
