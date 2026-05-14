@@ -58,6 +58,19 @@ VERSION=$(printf '%s' "$RELEASE_JSON" | grep '"tag_name"' | head -1 | sed 's/.*"
 
 info "Latest version: ${VERSION}"
 
+# Skip if already at this version. Escape hatches: --force arg or DOLI_FORCE_INSTALL=1
+# (env var preserves the `curl ... | sudo sh` one-liner — sudo sh -s -- --force for the arg).
+LATEST_BARE=${VERSION#v}
+if [ -z "${DOLI_FORCE_INSTALL:-}" ] && [ "${1:-}" != "--force" ] && command -v doli-node >/dev/null 2>&1; then
+    INSTALLED=$(doli-node --version 2>/dev/null | awk '{print $2}')
+    if [ -n "$INSTALLED" ] && [ "$INSTALLED" = "$LATEST_BARE" ]; then
+        ok "DOLI ${VERSION} already installed at $(command -v doli-node) — nothing to do"
+        echo "    Re-run with --force or DOLI_FORCE_INSTALL=1 to reinstall."
+        exit 0
+    fi
+    [ -n "$INSTALLED" ] && info "Currently installed: ${INSTALLED}, upgrading to ${LATEST_BARE}"
+fi
+
 # Always use tarball — it's the only format guaranteed to exist in every release.
 # .deb and .rpm are optional and may not be built for every version.
 FILE="doli-${VERSION}-${TARGET}.tar.gz"
