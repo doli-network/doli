@@ -211,6 +211,29 @@ DOLI uses a strict 3-level configuration hierarchy:
 
 **Priority**: Parent ENV > `.env` file > Chainspec > `consensus.rs` defaults
 
+#### Activation-height gating (consensus-shape changes)
+
+Any code change that alters a **consensus-shape input** — `active_producers` derivation, bond snapshot composition, scheduler denominator, attestation bitfield ordering, coinbase shape, header fields, or anything that two binary versions can compute differently for the same chain state — **MUST** be gated behind an activation height in `NetworkParams`. The gated branch picks legacy or new behavior based on `height >= activation_height`. The activation height is per-network and **immutable once crossed on mainnet** (see `CLAUDE.md` → "If You Touch" → activation heights).
+
+The three-question checklist before merging any such change (INC-I-075 codified this):
+1. Can any user-submittable transaction trigger this code path?
+2. Can any producer-action or attestation pattern trigger it?
+3. Is the new behavior bit-identical to the old behavior for ALL reachable inputs?
+
+If (1) or (2) is YES and (3) is NO → activation height REQUIRED. "Feature is currently unused" is never a valid skip-the-gate justification — INC-I-075 was triggered exactly by that reasoning when the first DelegateBond activated post-deploy on mainnet, exposing the ungated INC-I-068 weight=0 filter and fragmenting the mixed-version cohort across the round-robin denominator.
+
+Existing gates (mainnet values):
+- `inc_i_026_scheduler_activation_height` — pure-function scheduler (`slot % active_list.len()`)
+- `fork_id_activation_height` — block-header fork_id enforcement
+- `full_bitfield_decode_height = 14_000` — bitfield decoder [base | extra sorted]
+- `rewards_epoch_list_fix_height = 13_320` — epoch reward bitfield decoder
+- `encrypted_content_activation_height` — NFT → EncryptedContent transition
+- `encrypted_content_v2_activation_height = 100_000` — MIME + royalties v1 metadata
+- `epoch_state_reorg_activation_height = 44_246` — reorg restores epoch_state from undo
+- `security_audit_activation_height = 27_547` — AUDIT-PROD-001 / AUDIT-NFT-001 / etc.
+- `ghost_exclusion_activation_height = 18_152` — ghost producer exclusion from 2/3 floor
+- `inc_i_068_weight_filter_activation_height = 197_800` — INC-I-068 weight=0 filter (INC-I-075 fix)
+
 ### 3.5. storage
 
 **Purpose:** RocksDB-backed persistence.

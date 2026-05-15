@@ -196,16 +196,34 @@ impl Node {
                     .network
                     .params()
                     .security_audit_activation_height;
+                // INC-I-075: gate the INC-I-068 weight=0 filter behind an
+                // activation height. Pre-H: v6.21.16 behavior (insert weight
+                // clamped to 1 to avoid divide-by-zero in bond-weighted math,
+                // never skip). Post-H: v6.21.18 behavior (skip weight=0).
+                let inc_i_068_filter_activation = self
+                    .config
+                    .network
+                    .params()
+                    .inc_i_068_weight_filter_activation_height;
+                let filter_weight_zero = height >= inc_i_068_filter_activation;
                 let mut snap = HashMap::new();
                 for p in &active {
                     let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, p.public_key.as_bytes());
                     // INC-I-056: Use delegation-adjusted weight instead of raw UTXO count.
-                    // INC-I-068: Skip fully-delegated producers (weight=0) from bond snapshot.
                     let count = p.selection_weight_at(height, audit_activation);
-                    if count == 0 {
-                        continue;
+                    if filter_weight_zero {
+                        // INC-I-068 post-activation: skip fully-delegated producers.
+                        if count == 0 {
+                            continue;
+                        }
+                        snap.insert(pubkey_hash, count);
+                    } else {
+                        // INC-I-075 pre-activation: keep weight=0 producers in
+                        // the snapshot. Clamp to 1 so any consumer doing
+                        // weight-proportional math (sum, division) sees the
+                        // same nonzero value v6.21.16 produced.
+                        snap.insert(pubkey_hash, count.max(1));
                     }
-                    snap.insert(pubkey_hash, count);
                 }
                 let total: u64 = snap.values().sum();
                 info!(
@@ -233,25 +251,30 @@ impl Node {
                 snap
             };
 
-            // Active producers + registered_at for tier system
+            // Active producers + registered_at for tier system.
+            // INC-I-068 / INC-I-075: filter weight=0 only at-or-after
+            // `inc_i_068_weight_filter_activation_height`. Pre-activation:
+            // include weight=0 producers (matches v6.21.16 active_list shape
+            // so mixed-version cohorts don't fragment).
             let producers = self.producer_set.read().await;
             let audit_activation_h = self
                 .config
                 .network
                 .params()
                 .security_audit_activation_height;
-            let all_active = producers.active_producers_at_height(height);
-            // INC-I-068: Filter out fully-delegated producers (weight=0) from scheduling.
-            // They remain Active in ProducerSet but are excluded from the epoch's
-            // round-robin. Revocation restores weight > 0 → re-included next epoch.
-            let active_producers: Vec<PublicKey> = all_active
+            let inc_i_068_filter_activation = self
+                .config
+                .network
+                .params()
+                .inc_i_068_weight_filter_activation_height;
+            let eligible = producers.active_producers_for_scheduling_at_height(
+                height,
+                inc_i_068_filter_activation,
+                audit_activation_h,
+            );
+            let active_producers: Vec<PublicKey> = eligible.iter().map(|p| p.public_key).collect();
+            let registered_at: HashMap<PublicKey, u64> = eligible
                 .iter()
-                .filter(|p| p.selection_weight_at(height, audit_activation_h) > 0)
-                .map(|p| p.public_key)
-                .collect();
-            let registered_at: HashMap<PublicKey, u64> = all_active
-                .iter()
-                .filter(|p| p.selection_weight_at(height, audit_activation_h) > 0)
                 .map(|p| (p.public_key, p.registered_at))
                 .collect();
             let active_count = active_producers.len();

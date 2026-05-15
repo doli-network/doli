@@ -281,6 +281,39 @@ impl ProducerSet {
             .collect()
     }
 
+    /// INC-I-075: Active producers eligible for scheduling, with the INC-I-068
+    /// weight=0 filter gated behind an activation height.
+    ///
+    /// Pre-`inc_i_068_filter_activation` (legacy v6.21.16 behavior):
+    /// returns ALL eligible producers, including those with
+    /// `selection_weight == 0` (fully delegated). This matches the historical
+    /// mainnet behavior before INC-I-068 was deployed.
+    ///
+    /// At or after `inc_i_068_filter_activation` (current v6.21.18+ behavior):
+    /// filters out producers with `selection_weight_at == 0` so fully-delegated
+    /// producers are excluded from the round-robin scheduler and bond snapshot.
+    ///
+    /// `audit_activation` is the `security_audit_activation_height` —
+    /// gates whether `selection_weight_at` subtracts `delegated_bonds` from
+    /// own bonds (AUDIT-PROD-001). Pass `0` for "always subtract" (post-audit
+    /// behavior); pass `u64::MAX` for "never subtract" (pre-audit legacy).
+    pub fn active_producers_for_scheduling_at_height(
+        &self,
+        current_height: u64,
+        inc_i_068_filter_activation: u64,
+        audit_activation: u64,
+    ) -> Vec<&ProducerInfo> {
+        let active = self.active_producers_at_height(current_height);
+        if current_height >= inc_i_068_filter_activation {
+            active
+                .into_iter()
+                .filter(|p| p.selection_weight_at(current_height, audit_activation) > 0)
+                .collect()
+        } else {
+            active
+        }
+    }
+
     /// Pre-build the active producer cache for the given height.
     ///
     /// Call once per slot before the hot path to avoid repeated O(n) scans.

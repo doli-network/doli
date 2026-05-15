@@ -221,6 +221,29 @@ pub struct NetworkParams {
     /// Mainnet: u64::MAX (not yet activated). Testnet: 10,830. Devnet: 0.
     pub ghost_exclusion_activation_height: u64,
 
+    /// INC-I-075: Height at which the INC-I-068 weight=0 filter activates.
+    ///
+    /// Before this height: fully-delegated producers (`selection_weight == 0`)
+    /// REMAIN in `active_producers` and the bond snapshot — matches the
+    /// v6.21.16 behavior that mainnet ran before the INC-I-068 deploy.
+    /// At or after this height: weight=0 producers are filtered out — matches
+    /// the current v6.21.18+ behavior.
+    ///
+    /// INC-I-068 changed `active_producers` derivation without an activation
+    /// height. When the first DelegateBond activated on mainnet (E522), the
+    /// rolling-deploy mixed cohort disagreed on `active_list.len()`, shifting
+    /// the round-robin scheduler denominator. Different nodes produced
+    /// different blocks at the same slot → epoch-boundary fragmentation
+    /// cascade (INC-I-075). This gate restores deterministic behavior across
+    /// binary versions until every node reaches the activation height.
+    ///
+    /// Consensus-shape change — ALL nodes must run a binary containing the
+    /// same value for this field before the height arrives.
+    ///
+    /// Mainnet: 197_800. Testnet: 0 (always active; testnet never ran the
+    /// affected v6.21.16 in production). Devnet: 0 (clean chain).
+    pub inc_i_068_weight_filter_activation_height: u64,
+
     // === Gossip mesh ===
     /// Target number of peers in gossipsub mesh per topic
     pub mesh_n: usize,

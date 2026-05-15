@@ -96,6 +96,12 @@ impl NetworkParams {
                 security_audit_activation_height: 27_547,
                 // INC-I-046: Ghost exclusion activates at epoch boundary >= 18152
                 ghost_exclusion_activation_height: 18_152,
+                // INC-I-075: Re-gate the INC-I-068 weight=0 filter at a future
+                // mainnet height so the consensus-shape change activates
+                // synchronously instead of unilaterally at deploy time.
+                // Pre-H: v6.21.16 behavior (keep weight=0 in active list).
+                // Post-H: v6.21.18+ behavior (filter weight=0 out).
+                inc_i_068_weight_filter_activation_height: 197_800,
 
                 // Gossip mesh: universal config for all network sizes.
                 // mesh_n=12 keeps all peers in eager-push for networks ≤24 (mesh_n_high),
@@ -187,6 +193,9 @@ impl NetworkParams {
                 security_audit_activation_height: 21_450,
                 // INC-I-046: Ghost exclusion activates at h=10830 on testnet
                 ghost_exclusion_activation_height: 10_830,
+                // INC-I-075: Testnet never ran v6.21.16 in production — always
+                // apply the INC-I-068 filter (matches current testnet runtime).
+                inc_i_068_weight_filter_activation_height: 0,
 
                 // INC-I-015: Gossip mesh sized to max_peers for eager push to ALL
                 // connected peers. At mesh_n=12, blocks reach 12 peers immediately
@@ -272,6 +281,8 @@ impl NetworkParams {
                 epoch_state_reorg_activation_height: 0,
                 security_audit_activation_height: 0, // Always active on devnet
                 ghost_exclusion_activation_height: 0, // Always active on devnet
+                // INC-I-075: Always active on devnet (clean chain).
+                inc_i_068_weight_filter_activation_height: 0,
                 // Gossip mesh: same universal config as mainnet.
                 // With --no-dht, mesh_n_high=24 keeps all devnet peers in mesh.
                 mesh_n: 12,

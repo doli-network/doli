@@ -275,6 +275,17 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
                 defaults.ghost_exclusion_activation_height,
             )
         },
+        // INC-I-075: locked for mainnet — overriding could resurrect the
+        // INC-I-068 mixed-version cascade. Testnet/devnet may override for
+        // mixed-cohort regression testing.
+        inc_i_068_weight_filter_activation_height: if is_mainnet {
+            defaults.inc_i_068_weight_filter_activation_height
+        } else {
+            env_parse(
+                "DOLI_INC_I_068_WEIGHT_FILTER_ACTIVATION_HEIGHT",
+                defaults.inc_i_068_weight_filter_activation_height,
+            )
+        },
         // Gossip mesh (locked for mainnet - wrong values could isolate nodes)
         mesh_n: if is_mainnet {
             defaults.mesh_n
