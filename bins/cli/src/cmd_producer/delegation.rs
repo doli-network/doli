@@ -2,6 +2,7 @@ use std::path::Path;
 
 use anyhow::Result;
 use crypto::PublicKey;
+use doli_core::consensus::MAX_BONDS_PER_PRODUCER;
 use doli_core::transaction::{DelegateBondData, RevokeDelegationData, Transaction};
 
 use crate::common::address_prefix;
@@ -18,8 +19,11 @@ pub(super) async fn handle_delegate(
     println!("{:-<60}", "");
     println!();
 
-    if !(1..=100).contains(&bond_count) {
-        anyhow::bail!("Bond count must be between 1 and 100");
+    if !(1..=MAX_BONDS_PER_PRODUCER).contains(&bond_count) {
+        anyhow::bail!(
+            "Bond count must be between 1 and {}",
+            MAX_BONDS_PER_PRODUCER
+        );
     }
 
     // Parse delegatee public key
