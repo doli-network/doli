@@ -419,6 +419,37 @@ impl Node {
         // Process DelegateBond transactions — deferred to epoch boundary
         if tx.tx_type == TxType::DelegateBond {
             if let Some(data) = tx.delegate_bond_data() {
+                let params = self.config.network.params();
+
+                // INC-I-078 M2: signature verification (height-gated).
+                //
+                // Pre-`delegation_auth_activation_height`: no check, accept
+                // any DelegateBondData layout (the on-wire layer also accepts
+                // both the legacy 68-byte form and the authenticated 132-byte
+                // form; see `DelegateBondData::from_bytes`).
+                //
+                // Post-activation: the signature MUST be a valid Ed25519
+                // signature by `data.delegator` over `data.signing_message()`.
+                // Zero (default) signatures fail-closed. Invalid signature
+                // (wrong key, tampered fields, missing) → SKIPPED, same as
+                // cap rejection: tx remains in the block, no state effect,
+                // all nodes converge deterministically.
+                let auth_ok = height < params.delegation_auth_activation_height
+                    || crypto::signature::verify_hash(
+                        &data.signing_message(),
+                        &data.signature,
+                        &data.delegator,
+                    )
+                    .is_ok();
+                if !auth_ok {
+                    warn!(
+                        "DelegateBond rejected by auth at height {}: delegator={}, delegate={}",
+                        height,
+                        crypto_hash(data.delegator.as_bytes()),
+                        crypto_hash(data.delegate.as_bytes())
+                    );
+                }
+
                 // INC-I-078 primary cap check (height-gated).
                 //
                 // Pre-activation: cap field is `u64::MAX` AND/OR height is
@@ -436,7 +467,6 @@ impl Node {
                 // already over the cap at activation, every new DelegateBond
                 // targeting them is skipped here, but the existing entries
                 // remain (no forced shed).
-                let params = self.config.network.params();
                 let cap_active = height >= params.received_delegation_cap_activation_height;
                 let cap = if cap_active && params.received_delegation_cap != u64::MAX {
                     params.received_delegation_cap
@@ -444,7 +474,7 @@ impl Node {
                     0
                 };
 
-                let mut skip = false;
+                let mut cap_ok = true;
                 if cap > 0 {
                     if let Some(target) = producers.get_by_pubkey(&data.delegate) {
                         let current_total: u64 = target
@@ -463,12 +493,12 @@ impl Node {
                                 requested,
                                 cap
                             );
-                            skip = true;
+                            cap_ok = false;
                         }
                     }
                 }
 
-                if !skip {
+                if auth_ok && cap_ok {
                     producers.queue_update(PendingProducerUpdate::DelegateBond {
                         delegator: data.delegator,
                         delegate: data.delegate,
@@ -488,14 +518,36 @@ impl Node {
         // Process RevokeDelegation transactions — deferred to epoch boundary
         if tx.tx_type == TxType::RevokeDelegation {
             if let Some(data) = tx.revoke_delegation_data() {
-                producers.queue_update(PendingProducerUpdate::RevokeDelegation {
-                    delegator: data.delegator,
-                });
-                info!(
-                    "Queued RevokeDelegation for {} at height {} (deferred to epoch boundary)",
-                    crypto_hash(data.delegator.as_bytes()),
-                    height
-                );
+                let params = self.config.network.params();
+
+                // INC-I-078 M2 / constraint C7: RevokeDelegation gets the same
+                // height-gated signature treatment as DelegateBond. Otherwise
+                // an unauthenticated revoke is exactly the same zero-input
+                // forgery vector (FM-1) as the original DelegateBond exploit.
+                let auth_ok = height < params.delegation_auth_activation_height
+                    || crypto::signature::verify_hash(
+                        &data.signing_message(),
+                        &data.signature,
+                        &data.delegator,
+                    )
+                    .is_ok();
+
+                if auth_ok {
+                    producers.queue_update(PendingProducerUpdate::RevokeDelegation {
+                        delegator: data.delegator,
+                    });
+                    info!(
+                        "Queued RevokeDelegation for {} at height {} (deferred to epoch boundary)",
+                        crypto_hash(data.delegator.as_bytes()),
+                        height
+                    );
+                } else {
+                    warn!(
+                        "RevokeDelegation rejected by auth at height {}: delegator={}",
+                        height,
+                        crypto_hash(data.delegator.as_bytes())
+                    );
+                }
             }
         }
     }

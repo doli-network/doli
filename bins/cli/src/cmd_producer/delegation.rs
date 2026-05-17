@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use anyhow::Result;
-use crypto::PublicKey;
+use crypto::{hash::hash_with_domain, signature, PublicKey, ADDRESS_DOMAIN};
 use doli_core::consensus::MAX_BONDS_PER_PRODUCER;
 use doli_core::transaction::{DelegateBondData, RevokeDelegationData, Transaction};
 
@@ -110,8 +110,18 @@ pub(super) async fn handle_delegate(
     println!("  Reward split: delegatee keeps 10%, you receive 90%");
     println!();
 
-    // Build DelegateBond transaction (no inputs, no outputs)
-    let data = DelegateBondData::new(delegator_pubkey, delegatee_pubkey, bond_count);
+    // Build DelegateBond transaction (no inputs, no outputs).
+    //
+    // INC-I-078 M2: sign over HASH("DELEGATE_BOND" || delegate || bond_count)
+    // using the delegator's Ed25519 key. The on-chain validation layer is
+    // height-gated: pre-`delegation_auth_activation_height` the signature is
+    // ignored (legacy form is also accepted); post-activation, this signature
+    // is required and verified. Producing the signed form unconditionally
+    // works on both sides of the activation.
+    let mut data = DelegateBondData::new(delegator_pubkey, delegatee_pubkey, bond_count);
+    let delegator_hash = hash_with_domain(ADDRESS_DOMAIN, delegator_pubkey.as_bytes());
+    let keypair = wallet.keypair_for_pubkey_hash(&delegator_hash.to_hex())?;
+    data.signature = signature::sign_hash(&data.signing_message(), keypair.private_key());
     let tx = Transaction::new_delegate_bond(data);
 
     let tx_hex = hex::encode(tx.serialize());
@@ -193,8 +203,15 @@ pub(super) async fn handle_revoke_delegation(wallet: &Wallet, rpc: &RpcClient) -
     println!("Note: Unbonding delay applies after revocation.");
     println!();
 
-    // Build RevokeDelegation transaction (no inputs, no outputs)
-    let data = RevokeDelegationData::new(delegator_pubkey, delegate_pubkey);
+    // Build RevokeDelegation transaction (no inputs, no outputs).
+    //
+    // INC-I-078 M2: same auth scheme as DelegateBond — sign over
+    // HASH("REVOKE_DELEGATION" || delegate) with the delegator's Ed25519 key.
+    // Height-gated on the consensus side.
+    let mut data = RevokeDelegationData::new(delegator_pubkey, delegate_pubkey);
+    let delegator_hash = hash_with_domain(ADDRESS_DOMAIN, delegator_pubkey.as_bytes());
+    let keypair = wallet.keypair_for_pubkey_hash(&delegator_hash.to_hex())?;
+    data.signature = signature::sign_hash(&data.signing_message(), keypair.private_key());
     let tx = Transaction::new_revoke_delegation(data);
 
     let tx_hex = hex::encode(tx.serialize());
