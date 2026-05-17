@@ -1,3 +1,6 @@
+<!-- OUTPUT CONTRACT: N/A — protocol specification document, not a test -->
+<!-- INPUT PARTITIONS: N/A — protocol specification document -->
+
 # DOLI Protocol Specification
 
 This document provides the technical specification for implementing a DOLI-compatible node.
@@ -707,7 +710,7 @@ pub fn is_protocol_active(required: u32, active: u32) -> bool {
 
 ### 3.18 DelegateBond Transaction
 
-Delegates bond weight to a Tier 1/2 validator. The delegate receives the staker's weight for selection purposes. Rewards are split: delegate keeps 10% (`DELEGATE_REWARD_PCT`), stakers receive 90% (`STAKER_REWARD_PCT`).
+Delegates bond weight to a Tier 1/2 validator. The delegate receives the staker's weight for reward distribution (not for slot selection — see §5.3 hotfix). Rewards are split: delegate keeps 10% (`DELEGATE_REWARD_PCT`), stakers receive 90% (`STAKER_REWARD_PCT`).
 
 ```
 delegate_bond_tx = {
@@ -715,18 +718,26 @@ delegate_bond_tx = {
     type: 13,                    // TxType::DelegateBond
     inputs: [],                  // Must be empty (state-only operation)
     outputs: [],                 // Must be empty
-    extra_data: {
-        delegate_pubkey: 32 bytes,  // Public key of the delegate (Tier 1/2 validator)
-        bond_count: uint32          // Number of bonds to delegate
+    extra_data: {                // Two wire forms (INC-I-078 M2, F3-compat):
+        // Legacy form (68 B, pre `delegation_auth_activation_height`):
+        delegator_pubkey: 32 bytes,
+        delegate_pubkey:  32 bytes,
+        bond_count:       uint32_le,
+        // Authenticated form (132 B, post-activation; legacy fields PLUS):
+        signature:        64 bytes,  // Ed25519 by delegator over signing_message
     }
 }
 ```
+
+**Signing message (post-activation):** `BLAKE3("DELEGATE_BOND" || delegate_pubkey || bond_count_le)`. The delegator's pubkey is NOT in the commit — it is the verification key, including it would be redundant.
 
 **Validation rules:**
 - Delegator must be a registered producer with sufficient bonds
 - Delegate must be a registered, active Tier 1/2 validator
 - Bond count must be > 0 and <= delegator's available (undelegated) bonds
 - State-only: no UTXO inputs required (spam-protected by bond requirement)
+- **INC-I-078 M1**: at and after `received_delegation_cap_activation_height`, reject (silent skip at apply) if `delegate.received_delegations.sum() + bond_count > received_delegation_cap`. Grandfathered: existing over-cap delegates are not forced to shed.
+- **INC-I-078 M2**: at and after `delegation_auth_activation_height`, the `signature` field MUST verify against `delegator_pubkey` over the signing message above. Default (all-zero) signatures fail-closed. Pre-activation: signature ignored; both wire forms accepted.
 
 ### 3.19 RevokeDelegation Transaction
 
@@ -738,11 +749,17 @@ revoke_delegation_tx = {
     type: 14,                    // TxType::RevokeDelegation
     inputs: [],                  // Must be empty (state-only operation)
     outputs: [],                 // Must be empty
-    extra_data: {
-        delegate_pubkey: 32 bytes   // Public key of the delegate to revoke from
+    extra_data: {                // Two wire forms (INC-I-078 M2, F3-compat):
+        // Legacy form (64 B, pre `delegation_auth_activation_height`):
+        delegator_pubkey: 32 bytes,
+        delegate_pubkey:  32 bytes,
+        // Authenticated form (128 B, post-activation; legacy fields PLUS):
+        signature:        64 bytes,  // Ed25519 by delegator over signing_message
     }
 }
 ```
+
+**Signing message (post-activation):** `BLAKE3("REVOKE_DELEGATION" || delegate_pubkey)`. Same authentication scheme as DelegateBond (constraint C7 — RevokeDelegation has the same zero-input forgery vector that DelegateBond closed).
 
 State-only transaction: no UTXO inputs required (spam-protected by bond requirement).
 
@@ -966,7 +983,13 @@ A block B is valid if ALL conditions hold.
 
 4. PRODUCER (if height >= BOOTSTRAP_BLOCKS):
    B.producer == selected_producer(B.slot, active_producer_set)
-   // Note: selection uses slot % total_tickets, independent of prev_hash (Epoch Lookahead)
+   // INC-I-078 hotfix: actual production scheduler is unweighted
+   // round-robin — slot % active_producer_count — at
+   // bins/node/src/node/production/scheduling.rs:446. The
+   // bond-weighted "ticket" rotation described in 5.4 below is the
+   // LEGACY/REFERENCE model and is no longer used for slot selection.
+   // Bonds influence reward weight, attestation, and governance, NOT
+   // slot selection. Verified against the codebase 2026-05-17.
    B.producer is in active_producer_set
 
 5. VDF:
@@ -981,6 +1004,16 @@ A block B is valid if ALL conditions hold.
 ```
 
 ### 5.4 Producer Selection (Deterministic Round-Robin)
+
+> ⚠️ **Doc/code drift (INC-I-078 hotfix, 2026-05-17)**: this section described
+> the legacy bond-weighted "ticket" rotation that was the original reference
+> model. The **actual production scheduler** is the unweighted round-robin
+> `slot % active_producer_count` implemented in
+> `bins/node/src/node/production/scheduling.rs:446`. Bonds influence reward
+> weight, attestation, and governance — they do **not** influence slot
+> selection. The pseudocode below is kept for historical context (it
+> documents the original Selection design); the rule that nodes actually
+> enforce is captured in §5.3 step 4.
 
 DOLI uses **deterministic round-robin rotation**, NOT probabilistic lottery.
 

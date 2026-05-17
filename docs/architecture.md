@@ -1,3 +1,6 @@
+<!-- OUTPUT CONTRACT: N/A — architecture documentation, not a test -->
+<!-- INPUT PARTITIONS: N/A — architecture documentation -->
+
 # architecture.md - System Architecture
 
 This document describes the DOLI system architecture, component design, and data flows.
@@ -512,29 +515,39 @@ Producer Selection (deterministic round-robin)
 
 ### 5.2. Producer Selection
 
-Deterministic round-robin based on bond count from epoch bond snapshot:
+> ⚠️ **Doc/code drift (INC-I-078 hotfix, 2026-05-17)**: this section described
+> the legacy bond-weighted "ticket" rotation that was the original reference
+> model. The **actual production scheduler** is unweighted round-robin —
+> `slot % active_producer_count` — implemented in
+> `bins/node/src/node/production/scheduling.rs:446`. Bonds influence reward
+> weight, attestation, and governance — they do **not** influence slot
+> selection. INC-I-068 (filter `weight=0` producers from `active_producers`)
+> can shift the denominator when fully-delegated producers enter or leave
+> the set; that side-effect is gated by
+> `inc_i_068_weight_filter_activation_height`. The pseudocode below is kept
+> as historical context for the original design.
 
 ```python
-def select_producer(slot, epoch_bond_snapshot):
-    # epoch_bond_snapshot: Dict[PublicKey, u32] — frozen at epoch boundary from UTXO set
-    # Sort by public key for determinism
-    sorted_producers = sorted(epoch_bond_snapshot.items(), key=lambda p: p[0])
-
-    # Calculate total tickets (sum of all bond counts)
-    total_tickets = sum(count for _, count in sorted_producers)
-
-    # Deterministic ticket index
-    ticket_index = slot % total_tickets
-
-    # Find producer owning this ticket
-    accumulated = 0
-    for pubkey, bond_count in sorted_producers:
-        accumulated += bond_count
-        if ticket_index < accumulated:
-            return pubkey
+def select_producer(slot, active_producer_count):
+    # Actual production scheduler — unweighted round-robin over the
+    # active producer set at the epoch boundary.
+    return active_producer_list[slot % active_producer_count]
 ```
 
-The **epoch bond snapshot** is built at each epoch boundary by scanning the UTXO set for Bond UTXOs (`output_type=1`, `lock_until=u64::MAX`). This snapshot is frozen for the entire epoch, providing consistent scheduling even if bonds change mid-epoch.
+The **epoch bond snapshot** is still built at each epoch boundary by scanning the UTXO set for Bond UTXOs (`output_type=1`, `lock_until=u64::MAX`). It drives reward distribution and selection_weight, not slot selection.
+
+**INC-I-078 delegation guards** (separate from slot selection):
+
+- `received_delegation_cap` (per-producer, height-gated by
+  `received_delegation_cap_activation_height`): bounds the sum of
+  `received_delegations[*].1` a producer can accept via new
+  `DelegateBond` transactions. Defaults to `u64::MAX` (disabled).
+  Grandfathered: existing over-cap producers are NOT forced to shed.
+- `delegation_auth_activation_height`: post-activation, every
+  `DelegateBond` and `RevokeDelegation` must carry a valid Ed25519
+  signature by the delegator over a domain-separated commitment
+  (`BLAKE3("DELEGATE_BOND" || delegate || bond_count_le)` and
+  `BLAKE3("REVOKE_DELEGATION" || delegate)` respectively).
 
 ### 5.3. Fork Choice
 
@@ -713,6 +726,29 @@ doli
 - All transactions validated (signatures, UTXO existence)
 - All messages size-limited and rate-limited
 - Peer scoring and disconnection for misbehavior
+
+### 8.1. Slashing — Tezos-LPoS Equivalence (INC-I-078)
+
+DOLI's slashing is functionally equivalent to **Tezos LPoS slashing**: only
+the offending producer's self-bond burns. **Delegator principal is never
+slashed.** This is a structural consequence of UTXO ownership — only the
+key that owns a Bond UTXO can spend it (constraint CS1 from the
+delegation-architecture spec). A consensus-forced UTXO destruction for
+delegated bonds would be the first and only exception to this invariant
+and is explicitly NOT in the slashing path.
+
+When `slash_producer` runs for a double-signing producer:
+
+- The offender's self-bond burns and the offender is removed from the
+  active set.
+- `cleanup_all_delegations` (in
+  `crates/storage/src/producer/set_lifecycle.rs:165-178`) returns every
+  delegator's principal to them — they lose only the *weight*
+  contribution.
+
+Polkadot-NPoS / Cosmos-SDK style proportional burning of delegator
+principal does NOT port to DOLI and is removed from the
+delegation-mitigation menu (`specs/delegation-architecture.md` §7.2.1).
 
 ---
 
