@@ -329,6 +329,35 @@ pub enum ValidationError {
     #[error("invalid redemption: {0}")]
     InvalidRedemption(String),
 
+    /// INC-I-078: DelegateBond rejected because the target producer's
+    /// `received_delegations` total would exceed the per-producer cap.
+    ///
+    /// Emitted only at and after `received_delegation_cap_activation_height`.
+    /// Pre-activation, this check is bypassed.
+    #[error("delegation cap exceeded: producer={producer} current={current} requested={requested} cap={cap}")]
+    DelegationCapExceeded {
+        /// Hex pubkey hash (or "<unknown>") of the target producer.
+        producer: String,
+        /// Current sum of `received_delegations[*].1` for the target.
+        current: u64,
+        /// Bond count the rejected DelegateBond would add.
+        requested: u64,
+        /// Active cap value (`network_params.received_delegation_cap`).
+        cap: u64,
+    },
+
+    /// INC-I-078: DelegateBond or RevokeDelegation rejected because the
+    /// delegator's Ed25519 signature is missing or invalid.
+    ///
+    /// Emitted only at and after `delegation_auth_activation_height`.
+    /// Pre-activation, signatures are not checked (legacy zero-input form
+    /// accepted).
+    #[error("delegation signature invalid: {reason}")]
+    DelegationSignatureInvalid {
+        /// Human-readable description of the signature failure.
+        reason: String,
+    },
+
     /// Input is missing the required public key (post-sig-verification hard fork).
     ///
     /// After `sig_verification_height`, every input MUST include its spender's
@@ -401,6 +430,8 @@ impl ValidationError {
             Self::InvalidFractionalization(_) => "INVALID_FRACTIONALIZATION",
             Self::InvalidRedemption(_) => "INVALID_REDEMPTION",
             Self::MissingPublicKey { .. } => "MISSING_PUBLIC_KEY",
+            Self::DelegationCapExceeded { .. } => "DELEGATION_CAP_EXCEEDED",
+            Self::DelegationSignatureInvalid { .. } => "DELEGATION_SIGNATURE_INVALID",
         }
     }
 
@@ -592,6 +623,20 @@ impl ValidationError {
             } => {
                 map.insert("input_index".into(), (*index).into());
                 map.insert("activation_height".into(), (*activation_height).into());
+            }
+            Self::DelegationCapExceeded {
+                producer,
+                current,
+                requested,
+                cap,
+            } => {
+                map.insert("producer".into(), Value::String(producer.clone()));
+                map.insert("current".into(), (*current).into());
+                map.insert("requested".into(), (*requested).into());
+                map.insert("cap".into(), (*cap).into());
+            }
+            Self::DelegationSignatureInvalid { reason } => {
+                map.insert("reason".into(), Value::String(reason.clone()));
             }
         }
 

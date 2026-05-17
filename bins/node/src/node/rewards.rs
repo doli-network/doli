@@ -1268,7 +1268,18 @@ impl Node {
             let is_epoch_0 = height < epoch_len;
             let is_boundary = height > 0 && height.is_multiple_of(epoch_len);
             if is_epoch_0 || is_boundary {
-                producers.apply_pending_updates();
+                // INC-I-078: pass the height-gated received-delegation cap as
+                // the defensive layer for queued DelegateBond entries. Same
+                // logic as the main apply path in apply_block/state_update.rs.
+                let params = self.config.network.params();
+                let cap = if height >= params.received_delegation_cap_activation_height
+                    && params.received_delegation_cap != u64::MAX
+                {
+                    params.received_delegation_cap
+                } else {
+                    0
+                };
+                producers.apply_pending_updates_with_cap(cap);
             }
 
             // Process completed unbonding periods after each block

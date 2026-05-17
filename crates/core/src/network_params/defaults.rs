@@ -103,6 +103,16 @@ impl NetworkParams {
                 // Post-H: v6.21.18+ behavior (filter weight=0 out).
                 inc_i_068_weight_filter_activation_height: 197_800,
 
+                // INC-I-078: delegation concentration mitigation (approved
+                // bundle, User Gate 2026-05-17). Defaults to disabled
+                // (activation height u64::MAX, cap u64::MAX) on mainnet until
+                // the operator picks a concrete future height before deploy.
+                // BOTH heights must be set to the SAME value to ship the
+                // bundle atomically.
+                received_delegation_cap: u64::MAX,
+                received_delegation_cap_activation_height: u64::MAX,
+                delegation_auth_activation_height: u64::MAX,
+
                 // Gossip mesh: universal config for all network sizes.
                 // mesh_n=12 keeps all peers in eager-push for networks ≤24 (mesh_n_high),
                 // and scales to 1000+ nodes at ~3-4 hops with 10s slot margin.
@@ -197,6 +207,12 @@ impl NetworkParams {
                 // apply the INC-I-068 filter (matches current testnet runtime).
                 inc_i_068_weight_filter_activation_height: 0,
 
+                // INC-I-078: testnet default disabled (u64::MAX). Operator
+                // can override via env vars for cap-tuning tests.
+                received_delegation_cap: u64::MAX,
+                received_delegation_cap_activation_height: u64::MAX,
+                delegation_auth_activation_height: u64::MAX,
+
                 // INC-I-015: Gossip mesh sized to max_peers for eager push to ALL
                 // connected peers. At mesh_n=12, blocks reach 12 peers immediately
                 // and the rest via IHAVE (lazy, 1+ heartbeat delay). At 120+ nodes
@@ -283,6 +299,13 @@ impl NetworkParams {
                 ghost_exclusion_activation_height: 0, // Always active on devnet
                 // INC-I-075: Always active on devnet (clean chain).
                 inc_i_068_weight_filter_activation_height: 0,
+                // INC-I-078: devnet default disabled (u64::MAX). Tests that
+                // exercise cap/auth behavior set these explicitly via override
+                // or env vars; default mirrors mainnet so the unit tests for
+                // the feature must opt in.
+                received_delegation_cap: u64::MAX,
+                received_delegation_cap_activation_height: u64::MAX,
+                delegation_auth_activation_height: u64::MAX,
                 // Gossip mesh: same universal config as mainnet.
                 // With --no-dht, mesh_n_high=24 keeps all devnet peers in mesh.
                 mesh_n: 12,

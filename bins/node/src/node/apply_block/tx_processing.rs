@@ -419,18 +419,69 @@ impl Node {
         // Process DelegateBond transactions — deferred to epoch boundary
         if tx.tx_type == TxType::DelegateBond {
             if let Some(data) = tx.delegate_bond_data() {
-                producers.queue_update(PendingProducerUpdate::DelegateBond {
-                    delegator: data.delegator,
-                    delegate: data.delegate,
-                    bond_count: data.bond_count,
-                });
-                info!(
-                    "Queued DelegateBond ({} bonds) from {} to {} at height {} (deferred to epoch boundary)",
-                    data.bond_count,
-                    crypto_hash(data.delegator.as_bytes()),
-                    crypto_hash(data.delegate.as_bytes()),
-                    height
-                );
+                // INC-I-078 primary cap check (height-gated).
+                //
+                // Pre-activation: cap field is `u64::MAX` AND/OR height is
+                // below `received_delegation_cap_activation_height`, so the
+                // check is bypassed entirely (same as today).
+                //
+                // Post-activation: a DelegateBond whose bond_count would push
+                // the delegate's received_delegations sum over the cap is
+                // SKIPPED — the tx remains in the block but produces no state
+                // change. Determinism: every node with the same params and
+                // height reaches the same verdict, so the skip is consensus-
+                // safe without requiring block rejection.
+                //
+                // Grandfathering (spec §2.5 Option A): if the delegate is
+                // already over the cap at activation, every new DelegateBond
+                // targeting them is skipped here, but the existing entries
+                // remain (no forced shed).
+                let params = self.config.network.params();
+                let cap_active = height >= params.received_delegation_cap_activation_height;
+                let cap = if cap_active && params.received_delegation_cap != u64::MAX {
+                    params.received_delegation_cap
+                } else {
+                    0
+                };
+
+                let mut skip = false;
+                if cap > 0 {
+                    if let Some(target) = producers.get_by_pubkey(&data.delegate) {
+                        let current_total: u64 = target
+                            .received_delegations
+                            .iter()
+                            .map(|(_, c)| u64::from(*c))
+                            .sum();
+                        let requested = u64::from(data.bond_count);
+                        let new_total = current_total.saturating_add(requested);
+                        if new_total > cap {
+                            warn!(
+                                "DelegateBond rejected by cap at height {}: target={}, current={}, requested={}, cap={}",
+                                height,
+                                crypto_hash(data.delegate.as_bytes()),
+                                current_total,
+                                requested,
+                                cap
+                            );
+                            skip = true;
+                        }
+                    }
+                }
+
+                if !skip {
+                    producers.queue_update(PendingProducerUpdate::DelegateBond {
+                        delegator: data.delegator,
+                        delegate: data.delegate,
+                        bond_count: data.bond_count,
+                    });
+                    info!(
+                        "Queued DelegateBond ({} bonds) from {} to {} at height {} (deferred to epoch boundary)",
+                        data.bond_count,
+                        crypto_hash(data.delegator.as_bytes()),
+                        crypto_hash(data.delegate.as_bytes()),
+                        height
+                    );
+                }
             }
         }
 

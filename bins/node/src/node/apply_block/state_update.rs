@@ -178,11 +178,26 @@ impl Node {
                 let mut producers = self.producer_set.write().await;
                 if producers.has_pending_updates() {
                     let count = producers.pending_update_count();
-                    producers.apply_pending_updates();
+                    // INC-I-078: pass the height-gated received-delegation cap
+                    // as the defensive layer for queued DelegateBond entries.
+                    // Pre-activation OR cap==u64::MAX: `cap=0` disables the
+                    // check (matches historical behavior). The primary check
+                    // at tx_processing.rs already rejects over-cap DelegateBonds
+                    // BEFORE they reach the queue — this defensive layer
+                    // exists for the same-epoch race only (spec §2.3).
+                    let params = self.config.network.params();
+                    let cap = if height >= params.received_delegation_cap_activation_height
+                        && params.received_delegation_cap != u64::MAX
+                    {
+                        params.received_delegation_cap
+                    } else {
+                        0
+                    };
+                    producers.apply_pending_updates_with_cap(cap);
                     needs_full_producer_write = true; // Many producers may have changed
                     info!(
-                        "Applied {} deferred producer updates at height {} (epoch_0={}, boundary={})",
-                        count, height, is_epoch_0, is_boundary
+                        "Applied {} deferred producer updates at height {} (epoch_0={}, boundary={}, delegation_cap={})",
+                        count, height, is_epoch_0, is_boundary, cap
                     );
                 }
             }

@@ -77,7 +77,33 @@ impl ProducerSet {
 
     /// Apply all pending producer mutations (called at epoch boundaries).
     /// After applying, the pending queue is cleared and caches invalidated.
+    ///
+    /// Equivalent to [`Self::apply_pending_updates_with_cap`] with `cap=0`
+    /// (defensive INC-I-078 cap disabled). Kept for backward compatibility
+    /// with tests and pre-INC-I-078 paths; production callers use the
+    /// `_with_cap` variant and pass the height-gated cap value.
     pub fn apply_pending_updates(&mut self) {
+        self.apply_pending_updates_with_cap(0);
+    }
+
+    /// Same as [`Self::apply_pending_updates`] with an INC-I-078 defensive
+    /// per-producer cap on DelegateBond entries.
+    ///
+    /// `cap == 0` disables the defensive check (pre-activation behavior).
+    /// Any non-zero `cap` causes queued DelegateBond entries that would push
+    /// a delegate's `received_delegations` sum over the cap to be silently
+    /// dropped (logged at warn level by the underlying
+    /// [`Self::delegate_bonds_capped`]). Activation gating (the height
+    /// comparison) is the caller's responsibility.
+    ///
+    /// The primary check lives at the block-apply path
+    /// (`bins/node/src/node/apply_block/tx_processing.rs`) and prevents
+    /// over-cap DelegateBonds from ever being queued. This defensive layer
+    /// catches the race where two DelegateBonds targeting the same producer
+    /// pass the primary check individually but exceed the cap when their
+    /// epoch-deferred effects land together. See
+    /// `specs/delegation-architecture.md` §2.3.
+    pub fn apply_pending_updates_with_cap(&mut self, cap: u64) {
         if self.pending_updates.is_empty() {
             return;
         }
@@ -114,7 +140,13 @@ impl ProducerSet {
                     delegate,
                     bond_count,
                 } => {
-                    let _ = self.delegate_bonds(&delegator, &delegate, bond_count);
+                    // INC-I-078 defensive cap layer: routes through
+                    // `delegate_bonds_capped`. `cap == 0` matches the
+                    // historical 3-arg path (no cap enforcement). The error
+                    // result is intentionally discarded — failures here are
+                    // already logged downstream and are non-fatal at the
+                    // epoch-apply boundary.
+                    let _ = self.delegate_bonds_capped(&delegator, &delegate, bond_count, cap);
                 }
                 PendingProducerUpdate::RevokeDelegation { delegator } => {
                     let _ = self.revoke_delegation(&delegator);
