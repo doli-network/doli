@@ -786,6 +786,14 @@ impl Node {
             }
         } // end if rollback_count > 0
 
+        // INC-I-081 Bug 4 / INV-SYNC-004: clear stale finality marker if the
+        // post-rollback tip has dropped below the cached finality height.
+        // Runs even when rollback_count == 0 (no-op in that case) for safety.
+        {
+            let mut sync = self.sync_manager.write().await;
+            sync.clear_finality_if_below_tip(target_height);
+        }
+
         // Now apply the new blocks through normal path
         // Note: we skip check_producer_eligibility here because the fork blocks were
         // validated when originally produced, and re-validating against rolled-back

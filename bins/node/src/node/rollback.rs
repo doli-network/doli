@@ -226,6 +226,9 @@ impl Node {
             // "applied since rollback → behind, not forked" case and skip
             // further rollback signals.
             sync.note_rollback_completed(target_height);
+            // INC-I-081 Bug 4 / INV-SYNC-004: clear stale finality marker if
+            // the post-rollback tip has dropped below the cached finality height.
+            sync.clear_finality_if_below_tip(target_height);
         }
 
         // Atomically persist the rolled-back state via StateDb.

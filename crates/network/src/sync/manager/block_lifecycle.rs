@@ -470,6 +470,14 @@ impl SyncManager {
         &self.reorg_handler
     }
 
+    /// Clear the cached finality height if the local tip has dropped below it.
+    /// Passthrough to `ReorgHandler::clear_finality_if_below_tip` — called by
+    /// the node after any rollback completes (INC-I-081 Bug 4 / INV-SYNC-004).
+    pub fn clear_finality_if_below_tip(&mut self, new_tip_height: u64) {
+        self.reorg_handler
+            .clear_finality_if_below_tip(new_tip_height);
+    }
+
     pub fn disable_snap_sync(&mut self) {
         self.snap.threshold = u64::MAX;
     }

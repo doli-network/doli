@@ -181,6 +181,22 @@ impl ReorgHandler {
         self.last_finality_height
     }
 
+    /// If the local tip has dropped below the cached finality height, clear the
+    /// finality marker so sync can recover. Backstop for INV-SYNC-001 violations
+    /// (INC-I-081 Bug 4). The new_tip_height argument is the height of the
+    /// post-rollback local tip.
+    pub fn clear_finality_if_below_tip(&mut self, new_tip_height: u64) {
+        if let Some(finality) = self.last_finality_height {
+            if new_tip_height < finality {
+                warn!(
+                    "[FINALITY_GUARD] clearing stale last_finality_height={} after rollback to tip_h={} (INV-SYNC-004 backstop)",
+                    finality, new_tip_height
+                );
+                self.last_finality_height = None;
+            }
+        }
+    }
+
     /// Compare two chains and return which is heavier
     ///
     /// Returns:

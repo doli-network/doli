@@ -705,3 +705,82 @@ fn plan_reorg_refuses_when_ancestor_height_unknown() {
          block_weights and closure"
     );
 }
+
+// OUTPUT CONTRACT: fn ReorgHandler::clear_finality_if_below_tip(&mut self, new_tip_height: u64) -> ()
+//   Function under test: ReorgHandler::clear_finality_if_below_tip
+//   Outputs:
+//     O1: Post-call state of self.last_finality_height (Some/None) — via getter last_finality_height()
+//   Paths:
+//     P1: new_tip_below_finality (finality=100, new_tip=50) — should clear
+//     P2: new_tip_at_finality (finality=100, new_tip=100) — unchanged (boundary stay)
+//     P3: new_tip_above_finality (finality=100, new_tip=150) — unchanged
+//     P4: no_finality_set (finality=None) — no-op
+//   INPUT PARTITIONS:
+//     P1: new_tip < finality (distinct: triggers the clear path — arithmetic <)
+//     P2: new_tip == finality (distinct: boundary — arithmetic ==, must NOT clear)
+//     P3: new_tip > finality (distinct: clearly above — arithmetic >, must NOT clear)
+//     P4: finality absent (distinct: Option::None precondition, no comparison needed)
+//   MATRIX: 4 paths x 1 output = 4 cells, all reachable.
+//     P1: O1(None)    — clear_finality_if_below_tip_clears_when_tip_below_finality
+//     P2: O1(Some(100)) — clear_finality_if_below_tip_no_op_at_boundary
+//     P3: O1(Some(100)) — clear_finality_if_below_tip_no_op_above_finality
+//     P4: O1(None)    — clear_finality_if_below_tip_no_op_when_no_finality
+
+// Requirement: INV-SYNC-004 (Must)
+// Acceptance: If a rollback brings local tip below last_finality_height, the marker
+//   MUST be cleared (or recomputed) before sync resumes.
+#[test]
+fn clear_finality_if_below_tip_clears_when_tip_below_finality() {
+    let mut handler = ReorgHandler::new();
+    handler.set_last_finality_height(100);
+
+    handler.clear_finality_if_below_tip(50);
+
+    assert_eq!(
+        handler.last_finality_height(),
+        None,
+        "INV-SYNC-004: clear_finality_if_below_tip(50) must clear stale finality=100 \
+         (rollback brought tip below finality)"
+    );
+}
+
+#[test]
+fn clear_finality_if_below_tip_no_op_at_boundary() {
+    let mut handler = ReorgHandler::new();
+    handler.set_last_finality_height(100);
+
+    handler.clear_finality_if_below_tip(100);
+
+    assert_eq!(
+        handler.last_finality_height(),
+        Some(100),
+        "tip at finality boundary is NOT below — marker must be preserved"
+    );
+}
+
+#[test]
+fn clear_finality_if_below_tip_no_op_above_finality() {
+    let mut handler = ReorgHandler::new();
+    handler.set_last_finality_height(100);
+
+    handler.clear_finality_if_below_tip(150);
+
+    assert_eq!(
+        handler.last_finality_height(),
+        Some(100),
+        "tip well above finality — marker must be preserved"
+    );
+}
+
+#[test]
+fn clear_finality_if_below_tip_no_op_when_no_finality() {
+    let mut handler = ReorgHandler::new();
+    assert!(handler.last_finality_height().is_none());
+
+    handler.clear_finality_if_below_tip(50);
+
+    assert!(
+        handler.last_finality_height().is_none(),
+        "no-finality precondition stays no-finality"
+    );
+}
