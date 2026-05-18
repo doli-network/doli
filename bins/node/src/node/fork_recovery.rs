@@ -75,11 +75,16 @@ impl Node {
                 self.execute_reorg(result, trigger).await?;
             } else {
                 info!(
-                    "Fork not heavier (delta={}, fork_hash={}, our_hash={}) — keeping current chain",
+                    "Fork not heavier (delta={}, fork_hash={}, our_hash={}) — checking direct-successor fallback",
                     result.weight_delta,
                     &fork_tip.hash().to_string()[..16],
                     &current_tip.to_string()[..16],
                 );
+                if self.try_apply_direct_successor(fork_tip).await? {
+                    info!("[INC_I_081_DIRECT_APPLY] Applied non-heavier fork tip as direct successor of local tip");
+                } else {
+                    info!("Dropped non-heavier fork tip (not a direct successor)");
+                }
             }
             return Ok(());
         }
@@ -116,14 +121,30 @@ impl Node {
             }
             Some(result) => {
                 info!(
-                    "Fork not heavier (delta={}, fork_hash={}, our_hash={}) — keeping current chain",
+                    "Fork not heavier (delta={}, fork_hash={}, our_hash={}) — checking direct-successor fallback",
                     result.weight_delta,
                     &fork_tip_hash.to_string()[..16],
                     &current_tip.to_string()[..16],
                 );
+                if self
+                    .try_apply_direct_successor(recovery.blocks.last().unwrap())
+                    .await?
+                {
+                    info!("[INC_I_081_DIRECT_APPLY] Applied non-heavier fork tip as direct successor of local tip");
+                } else {
+                    info!("Dropped non-heavier fork tip (not a direct successor)");
+                }
             }
             None => {
-                warn!("Could not plan reorg from recovered fork — common ancestor not found");
+                warn!("Could not plan reorg from recovered fork — common ancestor not found; checking direct-successor fallback");
+                if self
+                    .try_apply_direct_successor(recovery.blocks.last().unwrap())
+                    .await?
+                {
+                    info!("[INC_I_081_DIRECT_APPLY] Applied recovered block as direct successor of local tip after plan_reorg failure");
+                } else {
+                    warn!("Dropped recovered block — not a direct successor of local tip");
+                }
             }
         }
 
@@ -643,5 +664,32 @@ impl Node {
         );
 
         Ok(())
+    }
+
+    /// Apply `candidate` directly if it is a direct successor of the current local tip.
+    ///
+    /// Returns Ok(true) when applied, Ok(false) when not a direct successor (caller
+    /// should handle as a fork or drop). Errors propagate from apply_block.
+    ///
+    /// INV-SYNC-003 (INC-I-081 Bug 3): used as a fallback when plan_reorg returns
+    /// no reorg but the candidate's parent is our current tip.
+    pub async fn try_apply_direct_successor(
+        &mut self,
+        candidate: &doli_core::Block,
+    ) -> anyhow::Result<bool> {
+        // INV-SYNC-003 (INC-I-081 Bug 3): only apply when candidate is a direct
+        // successor of the local tip. No reorg, no rollback — just forward apply.
+        let local_tip = self.chain_state.read().await.best_hash;
+        if candidate.header.prev_hash != local_tip {
+            return Ok(false);
+        }
+        // Apply via the standard block-apply path so all invariants (UTXO update,
+        // ProducerSet mutations, state root recompute) fire as they normally would.
+        // Use Light validation — consistent with execute_reorg (block_handling.rs)
+        // since the block comes from fork recovery (peer-provided, VDF already
+        // validated at gossip layer).
+        self.apply_block(candidate.clone(), ValidationMode::Light)
+            .await?;
+        Ok(true)
     }
 }
