@@ -549,6 +549,7 @@ impl SyncManager {
             last_rollback_local_height: self.fork.last_rollback_local_height,
             last_rollback_time: self.fork.last_rollback_time,
             in_grace_period,
+            last_finality_height: self.reorg_handler.last_finality_height(),
         };
         let action = self.recovery.classify(&ctx);
         if action != RecoveryAction::None {
@@ -593,6 +594,7 @@ impl SyncManager {
             last_rollback_local_height: self.fork.last_rollback_local_height,
             last_rollback_time: self.fork.last_rollback_time,
             in_grace_period,
+            last_finality_height: self.reorg_handler.last_finality_height(),
         };
         let action = self.recovery.classify(&ctx);
         if action != RecoveryAction::None {
