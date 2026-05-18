@@ -209,7 +209,10 @@ async fn build_epoch_boundary_block(
     let coinbase = Transaction::new_coinbase(reward, pool_hash, height, 0);
 
     // Calculate epoch rewards using the real reward logic
-    let epoch_outputs = node.calculate_epoch_rewards(completed_epoch).await;
+    let epoch_outputs = node
+        .calculate_epoch_rewards(completed_epoch)
+        .await
+        .expect("complete store in economic sim S1");
     let distributed: u64 = epoch_outputs.iter().map(|(amt, _)| *amt).sum();
 
     let mut txs = vec![coinbase];

@@ -49,7 +49,17 @@ impl Node {
                         completed_epoch, height
                     );
 
-                    let epoch_outputs = self.calculate_epoch_rewards(completed_epoch).await;
+                    let epoch_outputs = match self.calculate_epoch_rewards(completed_epoch).await {
+                        Ok(outputs) => outputs,
+                        Err(err) => {
+                            warn!(
+                                "[INC_I_081_SLOT_ABORT] Refusing to produce block at h={} for completed_epoch={}: {}. \
+                                 Skipping slot to avoid emitting epoch-boundary block without EpochReward TX.",
+                                height, completed_epoch, err
+                            );
+                            return Ok(None);
+                        }
+                    };
 
                     if !epoch_outputs.is_empty() {
                         let total_reward: u64 = epoch_outputs.iter().map(|(amt, _)| *amt).sum();

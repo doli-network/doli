@@ -642,7 +642,17 @@ impl Node {
             // state may be on a transient micro-fork, so keep Full-only.
             if matches!(mode, ValidationMode::Full) {
                 // Exact match of amounts and recipients
-                let expected = self.calculate_epoch_rewards(completed_epoch).await;
+                let expected = match self.calculate_epoch_rewards(completed_epoch).await {
+                    Ok(outputs) => outputs,
+                    Err(err) => {
+                        warn!(
+                            "[INC_I_081_VALIDATION_SKIP] Cannot validate EpochReward content at h={} for epoch={}: {}. \
+                             Skipping strict comparison (Full mode degrades to Light for this block).",
+                            height, completed_epoch, err
+                        );
+                        return Ok(());
+                    }
+                };
                 let mut expected_sorted: Vec<(u64, crypto::Hash)> = expected;
                 expected_sorted.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
 
@@ -733,7 +743,17 @@ impl Node {
             // but use checked_sub to harden against future changes to that invariant.
             let completed_epoch = (height / blocks_per_epoch).saturating_sub(1);
             if completed_epoch > 0 {
-                let expected = self.calculate_epoch_rewards(completed_epoch).await;
+                let expected = match self.calculate_epoch_rewards(completed_epoch).await {
+                    Ok(outputs) => outputs,
+                    Err(err) => {
+                        warn!(
+                            "[INC_I_081_MISSING_CHECK_SKIP] Cannot enforce missing-EpochReward check at h={} for epoch={}: {}. \
+                             Local store is incomplete — cannot prove an EpochReward was required.",
+                            height, completed_epoch, err
+                        );
+                        return Ok(());
+                    }
+                };
                 if !expected.is_empty() {
                     anyhow::bail!(
                         "[ECON_EPOCH_MISSING] epoch boundary at height={} missing EpochReward TX for epoch={} ({} qualified producers)",

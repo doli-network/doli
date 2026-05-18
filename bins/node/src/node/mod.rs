@@ -22,6 +22,8 @@ pub use init::recover_body_gaps;
 mod periodic;
 mod production;
 mod rewards;
+#[allow(unused_imports)]
+pub use rewards::IncompleteEpochStoreError;
 mod rollback;
 mod startup;
 mod tx_announcements;

@@ -1,19 +1,23 @@
-//! INC-I-061 — Delegator 90% reward sent to wrong address
+//! INC-I-061 -- Delegator 90% reward sent to wrong address
 //!
 //! Bug: calculate_epoch_rewards() uses the delegator's ProducerSet key hash
 //! (crypto_hash(pubkey)) as the reward output address, but reward outputs need
-//! hash_with_domain(ADDRESS_DOMAIN, pubkey) — the wallet address. These are
+//! hash_with_domain(ADDRESS_DOMAIN, pubkey) -- the wallet address. These are
 //! completely different hashes, so delegator rewards go to unreachable addresses.
 //!
-//! OUTPUT CONTRACT: calculate_epoch_rewards(epoch: u64) -> Vec<(u64, Hash)>
+//! OUTPUT CONTRACT: calculate_epoch_rewards(epoch: u64) -> Result<Vec<(u64, Hash)>, IncompleteEpochStoreError>
 //!   O1: Delegator 90% output address matches hash_with_domain(ADDRESS_DOMAIN, delegator_pubkey)
 //!   O2: Delegatee 10% + own share output address matches hash_with_domain(ADDRESS_DOMAIN, delegatee_pubkey)
 //!   O3: Total distributed == pool total
 //!   O4: Number of outputs == non-delegated producers + delegatees + delegators with rewards
 //!   PATHS:
-//!     P1: One delegation (A delegates to B) — verify both A's 90% and B's 10%+own
-//!     P2: No delegation — baseline, all addresses correct (regression anchor)
-//!   MATRIX: 4 outputs × 2 paths = 8 cells, all covered
+//!     P1: One delegation (A delegates to B) -- verify both A's 90% and B's 10%+own
+//!       INPUT PARTITIONS:
+//!         P1a: 4 producers, producer[0] delegates 1 bond to producer[1]
+//!     P2: No delegation -- baseline, all addresses correct (regression anchor)
+//!       INPUT PARTITIONS:
+//!         P2a: 4 producers with equal bonds, no delegation
+//!   MATRIX: 4 outputs x 2 paths = 8 cells, all covered
 
 use std::collections::HashSet;
 use std::sync::Once;
@@ -136,11 +140,11 @@ async fn seed_reward_pool(node: &Node, total_amount: u64, tag: &str) {
         .expect("insert pool UTXO failed");
 }
 
-/// P1: Delegation present — delegator 90% reward MUST go to wallet_address, not producer_set_key.
+/// P1: Delegation present -- delegator 90% reward MUST go to wallet_address, not producer_set_key.
 ///
 /// Setup: 4 producers, producer[0] delegates 1 bond to producer[1].
 /// Expected: producer[0]'s 90% share goes to wallet_address(producer[0]).
-/// Bug behavior: goes to producer_set_key(producer[0]) — a completely different hash.
+/// Bug behavior: goes to producer_set_key(producer[0]) -- a completely different hash.
 #[tokio::test]
 async fn test_delegator_reward_uses_wallet_address_not_producer_set_key() {
     let (mut node, producers, _tmp) = make_node(4).await;
@@ -173,7 +177,10 @@ async fn test_delegator_reward_uses_wallet_address_not_producer_set_key() {
     let pool_total: u64 = 50_000_000; // distributed bond-weighted
     seed_reward_pool(&node, pool_total, "test_delegation_pool").await;
 
-    let outputs = node.calculate_epoch_rewards(1).await;
+    let outputs = node
+        .calculate_epoch_rewards(1)
+        .await
+        .expect("complete store in delegation test");
 
     // Collect all output addresses
     let output_addresses: HashSet<Hash> = outputs.iter().map(|(_, h)| *h).collect();
@@ -185,7 +192,7 @@ async fn test_delegator_reward_uses_wallet_address_not_producer_set_key() {
     // Sanity: these two hashes are different (the root cause of the bug)
     assert_ne!(
         delegator_wallet, delegator_internal_key,
-        "wallet_address and producer_set_key must differ — they use different hash domains"
+        "wallet_address and producer_set_key must differ -- they use different hash domains"
     );
 
     // O1: The delegator's reward output MUST use the wallet address
@@ -204,7 +211,7 @@ async fn test_delegator_reward_uses_wallet_address_not_producer_set_key() {
     // The internal key must NOT appear (it's the bug)
     assert!(
         !output_addresses.contains(&delegator_internal_key),
-        "O1 (negative): producer_set_key hash MUST NOT appear in reward outputs — \
+        "O1 (negative): producer_set_key hash MUST NOT appear in reward outputs -- \
          this means the bug is present"
     );
 
@@ -234,7 +241,7 @@ async fn test_delegator_reward_uses_wallet_address_not_producer_set_key() {
     );
 }
 
-/// P2: No delegation — regression anchor. All addresses must be wallet addresses.
+/// P2: No delegation -- regression anchor. All addresses must be wallet addresses.
 #[tokio::test]
 async fn test_no_delegation_all_addresses_are_wallet_addresses() {
     let (mut node, producers, _tmp) = make_node(4).await;
@@ -251,7 +258,10 @@ async fn test_no_delegation_all_addresses_are_wallet_addresses() {
     let pool_total: u64 = 40_000_000;
     seed_reward_pool(&node, pool_total, "test_no_deleg_pool").await;
 
-    let outputs = node.calculate_epoch_rewards(1).await;
+    let outputs = node
+        .calculate_epoch_rewards(1)
+        .await
+        .expect("complete store in no-delegation test");
     let output_addresses: HashSet<Hash> = outputs.iter().map(|(_, h)| *h).collect();
 
     // Every output address must be a wallet address

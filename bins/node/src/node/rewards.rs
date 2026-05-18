@@ -1,5 +1,37 @@
 use super::*;
 
+/// Sentinel error returned by `calculate_epoch_rewards` when the local block_store
+/// is incomplete within the epoch window. Callers MUST treat this distinctly from
+/// `Ok(Vec::new())` (which means "no qualifying producers, pool accumulates").
+///
+/// INC-I-081: returning `Vec::new()` for both cases caused producers to emit
+/// epoch-boundary blocks without the EpochReward TX, triggering fleet-wide
+/// [ECON_EPOCH_MISSING] rejection and a sync cascade.
+#[derive(Debug, Clone)]
+pub struct IncompleteEpochStoreError {
+    pub epoch: u64,
+    pub epoch_start_height: u64,
+    pub epoch_end_height: u64,
+    pub gap_count: u64,
+    pub silent_bitfield_count: u64,
+}
+
+impl std::fmt::Display for IncompleteEpochStoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "[INCOMPLETE_EPOCH_STORE] epoch={} range={}..{} gap_count={} silent_bitfield_count={}",
+            self.epoch,
+            self.epoch_start_height,
+            self.epoch_end_height,
+            self.gap_count,
+            self.silent_bitfield_count
+        )
+    }
+}
+
+impl std::error::Error for IncompleteEpochStoreError {}
+
 impl Node {
     /// Calculate epoch rewards using on-chain attestation bitfield qualification.
     ///
@@ -12,7 +44,7 @@ impl Node {
     ///
     /// Returns a vector of (amount, pubkey_hash) tuples for the EpochReward transaction.
     ///
-    /// # FAIL-FAST SEMANTICS (M-RC9, INC-I-034, 2026-04-16)
+    /// # FAIL-FAST SEMANTICS (M-RC9, INC-I-034 → INC-I-081)
     ///
     /// This function is authoritative for EpochReward output construction. If the
     /// local block_store is incomplete within `[epoch_start, epoch_end)` — either
@@ -22,16 +54,24 @@ impl Node {
     /// with complete stores. That divergence caused the 2026-04-16 live mainnet
     /// cascade (Santiago 39600–39628 gap).
     ///
-    /// To prevent silent divergence, the function REFUSES TO PRODUCE OUTPUT when
-    /// the input is incomplete: it returns an empty `Vec<(u64, Hash)>`, which the
-    /// caller already handles as "no epoch reward distributable this epoch" (the
-    /// pool accumulates into the next epoch — identical to Tier 3 fallback at
-    /// line ~133 and the all-qualifiers-disqualified path at line ~158). The
-    /// return type is intentionally unchanged from the pre-fix version.
+    /// INC-I-081 update: the function now returns `Err(IncompleteEpochStoreError)`
+    /// when the local block_store is incomplete. Previously it returned `Vec::new()`,
+    /// which was indistinguishable from "no qualifying producers" (Tier 3 / pool
+    /// accumulates). This ambiguity caused `build_block_content` (assembly.rs) to
+    /// emit epoch-boundary blocks without the EpochReward TX, which the fleet
+    /// rejected with `[ECON_EPOCH_MISSING]`. Callers MUST handle the `Err` variant
+    /// distinctly — typically by aborting the slot (production) or degrading to
+    /// Light validation (validation_checks).
+    ///
+    /// `Ok(Vec::new())` now unambiguously means "no qualifying producers, pool
+    /// accumulates to next epoch" (Tier 3 fallback).
     ///
     /// Epoch 0 is exempt from the incompleteness check because it has no
     /// attestation data by construction (genesis epoch short-circuit).
-    pub async fn calculate_epoch_rewards(&self, epoch: u64) -> Vec<(u64, Hash)> {
+    pub async fn calculate_epoch_rewards(
+        &self,
+        epoch: u64,
+    ) -> Result<Vec<(u64, Hash)>, IncompleteEpochStoreError> {
         let blocks_per_epoch = self.config.network.blocks_per_reward_epoch();
         let epoch_start_height = epoch * blocks_per_epoch;
         let epoch_end_height = (epoch + 1) * blocks_per_epoch;
@@ -67,7 +107,7 @@ impl Node {
         };
 
         if sorted_producers.is_empty() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
 
         let producer_count = sorted_producers.len();
@@ -145,14 +185,20 @@ impl Node {
             error!(
                 "[ECON_EPOCH_DISTRIBUTION] incomplete_block_store: gap_count={} \
                  silent_bitfield_count={} — refusing to compute epoch rewards for \
-                 epoch={} (range={}..{}). Pool accumulates to next epoch.",
+                 epoch={} (range={}..{}). Returning IncompleteEpochStoreError.",
                 missing_block_count,
                 silent_bitfield_count,
                 epoch,
                 epoch_start_height,
                 epoch_end_height
             );
-            return Vec::new();
+            return Err(IncompleteEpochStoreError {
+                epoch,
+                epoch_start_height,
+                epoch_end_height,
+                gap_count: missing_block_count,
+                silent_bitfield_count,
+            });
         }
 
         // Qualify producers: attested in ≥ ATTESTATION_QUALIFICATION_THRESHOLD minutes
@@ -216,7 +262,7 @@ impl Node {
                         "Epoch {}: all producers have 0 attendance — pool accumulates to next epoch",
                         epoch
                     );
-                    return Vec::new();
+                    return Ok(Vec::new());
                 }
 
                 warn!(
@@ -241,7 +287,7 @@ impl Node {
                 "Epoch {}: no producers qualified — pool accumulates to next epoch",
                 epoch
             );
-            return Vec::new();
+            return Ok(Vec::new());
         }
 
         let disqualified_count = sorted_producers.len() - qualified.len();
@@ -271,7 +317,7 @@ impl Node {
         let qualifying_bonds: u64 = qualified.iter().map(|p| bond_for(p)).sum();
 
         if qualifying_bonds == 0 {
-            return Vec::new();
+            return Ok(Vec::new());
         }
 
         // Calculate total pool from accumulated coinbase UTXOs in the reward pool.
@@ -389,7 +435,7 @@ impl Node {
             reward_outputs[0].0 += remainder;
         }
 
-        reward_outputs
+        Ok(reward_outputs)
     }
 
     // NOTE: build_presence_commitment removed in deterministic scheduler model
