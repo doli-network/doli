@@ -355,6 +355,7 @@ impl ReorgHandler {
         current_tip: Hash,
         new_tip: Hash,
         get_parent: impl Fn(&Hash) -> Option<Hash>,
+        get_height: impl Fn(&Hash) -> Option<u64>,
     ) -> Option<ReorgResult> {
         // Build ancestor chain for current tip
         let mut current_chain = Vec::new();
@@ -421,11 +422,24 @@ impl ReorgHandler {
         // This mirrors the check in check_reorg_weighted() — without it,
         // fork recovery falls through to plan_reorg() and bypasses finality.
         if let Some(finality_height) = self.last_finality_height {
-            let ancestor_height = self
-                .block_weights
-                .get(&common_ancestor)
-                .map(|w| w.height)
-                .unwrap_or(0);
+            // INV-SYNC-002 (INC-I-081 Bug 2): block_weights is LRU-bounded and is
+            // pruned during rollback. Falling back to height=0 silently rejects
+            // every reorg whose finality is non-zero. Consult the caller-provided
+            // height lookup (typically backed by block_store.get_height_by_hash)
+            // before declining.
+            let ancestor_height = match self.block_weights.get(&common_ancestor).map(|w| w.height) {
+                Some(h) => h,
+                None => match get_height(&common_ancestor) {
+                    Some(h) => h,
+                    None => {
+                        warn!(
+                            "[ANCESTOR_UNKNOWN] plan_reorg cannot resolve height for common_ancestor={} (absent from block_weights and get_height) — declining reorg",
+                            common_ancestor
+                        );
+                        return None;
+                    }
+                },
+            };
             if ancestor_height <= finality_height {
                 warn!(
                     "FINALITY: plan_reorg rejecting reorg past finalized height {} (ancestor at {})",

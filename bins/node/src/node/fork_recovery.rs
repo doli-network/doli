@@ -89,10 +89,12 @@ impl Node {
         let reorg_result = {
             let sync = self.sync_manager.read().await;
             let store = &self.block_store;
-            sync.reorg_handler()
-                .plan_reorg(current_tip, fork_tip_hash, |hash| {
-                    store.get_header(hash).ok().flatten().map(|h| h.prev_hash)
-                })
+            sync.reorg_handler().plan_reorg(
+                current_tip,
+                fork_tip_hash,
+                |hash| store.get_header(hash).ok().flatten().map(|h| h.prev_hash),
+                |hash| store.get_height_by_hash(hash).ok().flatten(),
+            )
         };
 
         // 5. Execute reorg if fork is heavier, or if tied with lower hash

@@ -1,5 +1,26 @@
 use super::*;
 
+// OUTPUT CONTRACT: fn ReorgHandler::plan_reorg(&self, current_tip, new_tip, get_parent, get_height)
+//   Outputs:
+//     O1: return — Option<ReorgResult> (None = rejected, Some = reorg plan with rollback/new_blocks/ancestor)
+//   Paths:
+//     P1: success — common ancestor found, above finality -> Some(ReorgResult)
+//     P2: rejected_below_finality — ancestor height <= finality_height -> None
+//     P3: rejected_ancestor_unknown — ancestor not in block_weights AND get_height returns None -> None
+//     P4: no_common_ancestor — chain walk fails to find shared block -> None
+//   INPUT PARTITIONS:
+//     P1a: ancestor in block_weights (existing tests cover: test_plan_reorg_above_finality_ok)
+//     P1b: ancestor pruned from block_weights, get_height returns height above finality (BUG — INC-I-081 Bug 2)
+//     P2a: ancestor in block_weights, height <= finality (existing tests: test_plan_reorg_past_finality_rejected)
+//     P2b: ancestor pruned, get_height returns height <= finality
+//     P3a: ancestor pruned, get_height returns None
+//   MATRIX: 1 output x 5 partitions = 5 cells
+//     P1a: O1(Some)  — test_plan_reorg_above_finality_ok
+//     P1b: O1(Some)  — plan_reorg_uses_get_height_when_block_weights_pruned [FAIL test]
+//     P2a: O1(None)  — test_plan_reorg_past_finality_rejected
+//     P2b: O1(None)  — plan_reorg_refuses_when_get_height_returns_below_finality
+//     P3a: O1(None)  — plan_reorg_refuses_when_ancestor_height_unknown
+
 #[test]
 fn test_reorg_handler_creation() {
     let handler = ReorgHandler::new();
@@ -492,7 +513,7 @@ fn test_plan_reorg_past_finality_rejected() {
 
     // plan_reorg from block2 to fork_tip — common ancestor is genesis (height 0)
     // which is below finality height 1. Must be rejected.
-    let result = handler.plan_reorg(block2, fork_tip, |_| None);
+    let result = handler.plan_reorg(block2, fork_tip, |_| None, |_| None);
     assert!(
         result.is_none(),
         "plan_reorg must reject reorg past finalized height"
@@ -520,7 +541,7 @@ fn test_plan_reorg_above_finality_ok() {
 
     // plan_reorg from block2 to fork_tip — common ancestor is block1 (height 1)
     // which is above finality height 0. Should be allowed.
-    let result = handler.plan_reorg(block2, fork_tip, |_| None);
+    let result = handler.plan_reorg(block2, fork_tip, |_| None, |_| None);
     assert!(
         result.is_some(),
         "plan_reorg should allow reorg above finality"
@@ -537,4 +558,150 @@ fn test_last_finality_height_getter() {
 
     handler.set_last_finality_height(100);
     assert_eq!(handler.last_finality_height(), Some(100));
+}
+
+// =========================================================================
+// INC-I-081 Bug 2: plan_reorg ancestor-height lookup falls back to 0
+// Invariant: INV-SYNC-002
+// =========================================================================
+
+/// Requirement: INV-SYNC-002 (Must)
+/// Acceptance: plan_reorg MUST consult get_height when block_weights lacks the ancestor entry
+///
+/// P1b: ancestor pruned from block_weights, get_height returns height above finality
+/// -> plan_reorg SHOULD return Some(ReorgResult), but BUG returns None (unwrap_or(0))
+#[test]
+fn plan_reorg_uses_get_height_when_block_weights_pruned() {
+    let mut handler = ReorgHandler::new();
+
+    let genesis = Hash::ZERO;
+    let ancestor = crypto::hash::hash(b"ancestor_h60");
+    let current_tip = crypto::hash::hash(b"current_tip_h61");
+    let fork_tip = crypto::hash::hash(b"fork_tip_h61");
+
+    // Build main chain: genesis -> ancestor (h=1, w=60) -> current_tip (h=2, w=1)
+    handler.record_block_with_weight(ancestor, genesis, 60);
+    handler.record_block_with_weight(current_tip, ancestor, 1);
+
+    // Build fork: ancestor -> fork_tip (h=2, w=100) — heavier fork
+    handler.record_fork_block(fork_tip, ancestor, 100);
+
+    // Set finality at height 50 — the ancestor at "real" height 60 is above this.
+    // But after pruning, block_weights won't have the ancestor entry.
+    handler.set_last_finality_height(50);
+
+    // Simulate LRU eviction: remove ancestor from block_weights.
+    // block_parents still has it (so chain walking finds it), but block_weights
+    // does not (so the height lookup in the finality check fails).
+    handler.block_weights.remove(&ancestor);
+
+    // The get_height closure provides the "real" height: 60 (above finality=50).
+    let result = handler.plan_reorg(
+        current_tip,
+        fork_tip,
+        |_hash| None,
+        |hash| {
+            if *hash == ancestor {
+                Some(60)
+            } else {
+                None
+            }
+        },
+    );
+
+    // BUG: current code does block_weights.get(&ancestor).map(|w| w.height).unwrap_or(0)
+    // => ancestor_height = 0, which is <= finality_height=50, so it rejects.
+    // FIX: should consult get_height closure, get 60, which is > 50, and allow.
+    assert!(
+        result.is_some(),
+        "INV-SYNC-002: plan_reorg must consult get_height when block_weights lacks the ancestor \
+         entry; got None (ancestor at h=60 > finality=50 should NOT be rejected)"
+    );
+    let reorg = result.unwrap();
+    assert_eq!(
+        reorg.common_ancestor, ancestor,
+        "common ancestor should be the pruned hash"
+    );
+}
+
+/// Requirement: INV-SYNC-002 (Must)
+/// Acceptance: plan_reorg refuses reorg when get_height reports ancestor below finality
+///
+/// P2b: ancestor pruned, get_height returns height <= finality -> None (correct rejection)
+#[test]
+fn plan_reorg_refuses_when_get_height_returns_below_finality() {
+    let mut handler = ReorgHandler::new();
+
+    let genesis = Hash::ZERO;
+    let ancestor = crypto::hash::hash(b"ancestor_h50");
+    let current_tip = crypto::hash::hash(b"current_tip_below");
+    let fork_tip = crypto::hash::hash(b"fork_tip_below");
+
+    // Build chain: genesis -> ancestor -> current_tip
+    handler.record_block_with_weight(ancestor, genesis, 50);
+    handler.record_block_with_weight(current_tip, ancestor, 1);
+
+    // Build fork: ancestor -> fork_tip (heavier)
+    handler.record_fork_block(fork_tip, ancestor, 100);
+
+    // Finality at height 100 — ancestor at "real" h=50 is below
+    handler.set_last_finality_height(100);
+
+    // Prune ancestor from block_weights
+    handler.block_weights.remove(&ancestor);
+
+    let result = handler.plan_reorg(
+        current_tip,
+        fork_tip,
+        |_h| None,
+        |hash| {
+            if *hash == ancestor {
+                Some(50) // 50 <= 100 -> reject
+            } else {
+                None
+            }
+        },
+    );
+
+    assert!(
+        result.is_none(),
+        "plan_reorg should refuse reorg when get_height reports ancestor below finality \
+         (h=50 <= F=100)"
+    );
+}
+
+/// Requirement: INV-SYNC-002 (Must)
+/// Acceptance: plan_reorg refuses when ancestor height is unknown from both sources
+///
+/// P3a: ancestor pruned, get_height returns None -> None (refuse, ancestor unknown)
+#[test]
+fn plan_reorg_refuses_when_ancestor_height_unknown() {
+    let mut handler = ReorgHandler::new();
+
+    let genesis = Hash::ZERO;
+    let ancestor = crypto::hash::hash(b"ancestor_unknown");
+    let current_tip = crypto::hash::hash(b"current_tip_unk");
+    let fork_tip = crypto::hash::hash(b"fork_tip_unk");
+
+    // Build chain: genesis -> ancestor -> current_tip
+    handler.record_block_with_weight(ancestor, genesis, 60);
+    handler.record_block_with_weight(current_tip, ancestor, 1);
+
+    // Build fork: ancestor -> fork_tip
+    handler.record_fork_block(fork_tip, ancestor, 100);
+
+    // Finality at height 50
+    handler.set_last_finality_height(50);
+
+    // Prune ancestor from block_weights
+    handler.block_weights.remove(&ancestor);
+
+    // Closure also returns None — height truly unknown
+    let result = handler.plan_reorg(current_tip, fork_tip, |_h| None, |_h| None);
+
+    assert!(
+        result.is_none(),
+        "plan_reorg should refuse reorg when ancestor height is unknown from both \
+         block_weights and closure"
+    );
 }

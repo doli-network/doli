@@ -9,6 +9,12 @@
 //!   - Rate limiter (token bucket overflow, cleanup under load)
 //!   - Gossip config (mesh parameter invariants)
 
+// OUTPUT CONTRACT: fn ReorgHandler::plan_reorg (adversarial callsites)
+//   See reorg/tests.rs for the full output contract and matrix.
+//   These callsites pass |_| None for get_height (block_weights populated for all ancestors).
+// INPUT PARTITIONS: covered by reorg/tests.rs — adversarial tests exercise P4 (no common ancestor)
+//   and P2a (ancestor in block_weights, below finality).
+
 use std::time::Duration;
 
 use crypto::Hash;
@@ -219,7 +225,7 @@ fn test_plan_reorg_finality_guard() {
     handler.set_last_finality_height(2);
 
     // plan_reorg should refuse because common ancestor is genesis (height 0) < finality (2)
-    let result = handler.plan_reorg(tip, fork_tip, |_| None);
+    let result = handler.plan_reorg(tip, fork_tip, |_| None, |_| None);
     assert!(
         result.is_none(),
         "plan_reorg must reject reorg past finalized height"
@@ -702,15 +708,20 @@ fn test_plan_reorg_circular_parent_no_hang() {
     let x_hash = crypto::hash::hash(b"x");
 
     // Circular callback: fork_tip -> X -> fork_tip (cycle)
-    let result = handler.plan_reorg(hash_b, fork_tip, |h| {
-        if *h == fork_tip {
-            Some(x_hash)
-        } else if *h == x_hash {
-            Some(fork_tip)
-        } else {
-            None
-        }
-    });
+    let result = handler.plan_reorg(
+        hash_b,
+        fork_tip,
+        |h| {
+            if *h == fork_tip {
+                Some(x_hash)
+            } else if *h == x_hash {
+                Some(fork_tip)
+            } else {
+                None
+            }
+        },
+        |_| None,
+    );
 
     // Must not hang. Should return None.
     assert!(
@@ -742,7 +753,7 @@ fn test_plan_reorg_deep_fork_genesis_boundary_bug() {
     let fork_tip = prev;
 
     // Fixed: plan_reorg now includes genesis in ancestor set
-    let result = handler.plan_reorg(main_tip, fork_tip, |_| None);
+    let result = handler.plan_reorg(main_tip, fork_tip, |_| None, |_| None);
     assert!(
         result.is_some(),
         "plan_reorg should find genesis as common ancestor"
