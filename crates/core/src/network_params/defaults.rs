@@ -109,9 +109,13 @@ impl NetworkParams {
                 // the operator picks a concrete future height before deploy.
                 // BOTH heights must be set to the SAME value to ship the
                 // bundle atomically.
-                received_delegation_cap: u64::MAX,
-                received_delegation_cap_activation_height: u64::MAX,
-                delegation_auth_activation_height: u64::MAX,
+                // INC-I-078 mainnet activation: cap=3000 (= MAX_BONDS_PER_PRODUCER),
+                // both gates flip atomically at h=231_830. Cap value chosen for
+                // symmetry with the own-bonds ceiling: total influence per producer
+                // <= 2 * MAX_BONDS_PER_PRODUCER, skin-in-game floor >= 50%.
+                received_delegation_cap: 3000,
+                received_delegation_cap_activation_height: 231_830,
+                delegation_auth_activation_height: 231_830,
 
                 // Gossip mesh: universal config for all network sizes.
                 // mesh_n=12 keeps all peers in eager-push for networks ≤24 (mesh_n_high),
@@ -207,11 +211,12 @@ impl NetworkParams {
                 // apply the INC-I-068 filter (matches current testnet runtime).
                 inc_i_068_weight_filter_activation_height: 0,
 
-                // INC-I-078: testnet default disabled (u64::MAX). Operator
-                // can override via env vars for cap-tuning tests.
-                received_delegation_cap: u64::MAX,
-                received_delegation_cap_activation_height: u64::MAX,
-                delegation_auth_activation_height: u64::MAX,
+                // INC-I-078: testnet active from genesis to exercise cap+auth
+                // paths before mainnet activation (h=231_830). Cap=3000 matches
+                // mainnet; can be overridden via env vars for cap-tuning tests.
+                received_delegation_cap: 3000,
+                received_delegation_cap_activation_height: 0,
+                delegation_auth_activation_height: 0,
 
                 // INC-I-015: Gossip mesh sized to max_peers for eager push to ALL
                 // connected peers. At mesh_n=12, blocks reach 12 peers immediately
