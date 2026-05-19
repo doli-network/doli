@@ -46,6 +46,7 @@ pub use producer::{
     bootstrap_fallback_order, bootstrap_schedule_with_liveness, validate_producer_eligibility,
 };
 pub use transaction::{validate_transaction, validate_transaction_skip_registration_vdf};
+pub use tx_types::check_addbond_cap;
 pub use types::{
     RegistrationChainState, UtxoInfo, UtxoProvider, ValidationContext, ValidationMode,
 };

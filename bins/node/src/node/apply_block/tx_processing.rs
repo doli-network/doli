@@ -336,6 +336,19 @@ impl Node {
                         .collect();
 
                     let bond_unit = self.config.network.bond_unit();
+
+                    // INC-I-080: the per-producer AddBond cap is enforced at
+                    // block validation time (`validate_block_economics`,
+                    // apply_block:106) — BEFORE any UTXO/producer mutation —
+                    // so a post-activation over-cap AddBond makes the whole
+                    // block invalid and the Bond output UTXOs are never
+                    // created ("no orphan Bonds"). Pre-activation, the
+                    // historical clip-at-epoch-flush path below is preserved
+                    // unchanged (replay safety). The check cannot live here:
+                    // this pass returns `()` and runs AFTER
+                    // `process_transaction_utxos` has already mutated the
+                    // in-memory UTXO set, so a late reject would leave the
+                    // in-memory set divergent from disk.
                     producers.queue_update(PendingProducerUpdate::AddBond {
                         pubkey: add_bond_data.producer_pubkey,
                         outpoints: bond_outpoints,

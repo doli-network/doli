@@ -306,6 +306,34 @@ pub struct NetworkParams {
     /// same value to ship the bundle atomically.
     pub delegation_auth_activation_height: u64,
 
+    /// INC-I-080: Height at which the per-producer AddBond cap is enforced.
+    ///
+    /// Pre-activation: behavior is UNCHANGED — an AddBond that would push the
+    /// producer past `MAX_BONDS_PER_PRODUCER` is silently clipped at epoch
+    /// flush (`ProducerInfo::add_bonds`) and the excess Bond UTXOs are
+    /// orphaned (the historical bug; preserved for replay safety on old
+    /// blocks).
+    ///
+    /// Post-activation: such an AddBond is REJECTED at block-apply
+    /// (`validation::check_addbond_cap` → `ValidationError::AddBondCapExceeded`),
+    /// so the carrying block is invalid fleet-wide and no Bond UTXOs are ever
+    /// created. Unlike the INC-I-078 DelegateBond cap (skip-in-block), AddBond
+    /// must reject because the Bond outputs are real and a skip would still
+    /// orphan them.
+    ///
+    /// Three-question gate verdict (INC-I-075): Q1=YES (AddBond is
+    /// user-submittable), Q2=YES (producer-action triggered), Q3=NO (new
+    /// rejection of previously accepted-then-clipped txs) → activation height
+    /// REQUIRED. Once crossed, this height is immutable. No
+    /// `CURRENT_PROTOCOL_VERSION` bump (EpochState unchanged); no
+    /// `HardForkSchedule` entry (pure validation rule); rolling-deploy safe.
+    ///
+    /// Defaults: mainnet `u64::MAX` (operator pins a concrete future height in
+    /// a separate commit), testnet `0` (active from genesis), devnet
+    /// `u64::MAX` (disabled; cap tests opt in via explicit args — mirrors the
+    /// INC-I-078 devnet default).
+    pub addbond_cap_enforcement_activation_height: u64,
+
     // === Gossip mesh ===
     /// Target number of peers in gossipsub mesh per topic
     pub mesh_n: usize,

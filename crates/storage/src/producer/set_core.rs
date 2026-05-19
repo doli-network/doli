@@ -202,6 +202,29 @@ impl ProducerSet {
             .collect()
     }
 
+    /// INC-I-080: total bond count over in-flight queued `AddBond` updates
+    /// for `pubkey`.
+    ///
+    /// Each `PendingProducerUpdate::AddBond` carries `outpoints` (one entry
+    /// per Bond UTXO), so the contributed bond count is `outpoints.len()`.
+    /// Used by the height-gated AddBond cap check at block-apply to count
+    /// bonds that are queued for this producer but not yet flushed at the
+    /// epoch boundary — without this, two AddBonds in the same epoch could
+    /// each pass the cap individually yet jointly overflow it.
+    pub fn pending_addbond_count(&self, pubkey: &PublicKey) -> u32 {
+        self.pending_updates
+            .iter()
+            .filter_map(|u| match u {
+                PendingProducerUpdate::AddBond {
+                    pubkey: pk,
+                    outpoints,
+                    ..
+                } if pk == pubkey => Some(outpoints.len() as u32),
+                _ => None,
+            })
+            .sum()
+    }
+
     /// Group all pending updates by their target public key in a single O(M) pass.
     ///
     /// Use this instead of calling `pending_updates_for()` N times (which is O(N×M)).

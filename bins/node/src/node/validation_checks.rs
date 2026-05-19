@@ -743,6 +743,83 @@ impl Node {
             }
         }
 
+        // === INC-I-080: per-producer AddBond cap (height-gated) ===
+        //
+        // Enforced HERE (pre-mutation, runs in Full/Light/Replay like the
+        // EpochReward structural rule above) — NOT in the producer-effects
+        // pass, which returns `()` and runs after the UTXO set was already
+        // mutated. Rejecting at validation guarantees that an over-cap
+        // AddBond never creates Bond UTXOs ("no orphan Bonds").
+        //
+        // Pre-activation (`height < AH`): skipped entirely — the historical
+        // clip-at-epoch-flush behavior (`ProducerInfo::add_bonds`) is
+        // preserved so replaying pre-activation blocks stays bit-identical
+        // (no consensus change before the activation height).
+        //
+        // Post-activation: a block carrying an AddBond whose
+        //   current bond_count + already-queued pending AddBonds
+        //   + AddBonds earlier in THIS block + this request
+        // would exceed MAX_BONDS_PER_PRODUCER is rejected. Determinism:
+        // every node on the same params+height reaches the same verdict —
+        // consensus-safe under a rolling deploy (gate flips atomically at
+        // the activation height). Must run in ALL modes: a Light/Replay
+        // apply of a post-AH over-cap block that Full-mode rejected would
+        // diverge state (the INC-I-034 class of bug).
+        let addbond_cap_ah = self
+            .config
+            .network
+            .params()
+            .addbond_cap_enforcement_activation_height;
+        if height >= addbond_cap_ah {
+            let producers = self.producer_set.read().await;
+            // Running per-producer tally of AddBond bond counts seen earlier
+            // in THIS block — they are not yet in `pending_updates` during
+            // validation, but will all be flushed together at epoch boundary.
+            let mut in_block: std::collections::HashMap<crypto::Hash, u32> =
+                std::collections::HashMap::new();
+            for tx in block.transactions.iter() {
+                if tx.tx_type != TxType::AddBond {
+                    continue;
+                }
+                let Some(ab) = tx.add_bond_data() else {
+                    continue;
+                };
+                let pk = &ab.producer_pubkey;
+                let pk_hash = crypto_hash(pk.as_bytes());
+                let current = producers
+                    .get_by_pubkey(pk)
+                    .map(|i| i.bond_count)
+                    .unwrap_or(0);
+                let prior_in_block = in_block.get(&pk_hash).copied().unwrap_or(0);
+                let pending = producers
+                    .pending_addbond_count(pk)
+                    .saturating_add(prior_in_block);
+                // `requested` mirrors apply: the number of Bond outputs the
+                // AddBond carries (what `ProducerInfo::add_bonds` receives).
+                let requested = tx
+                    .outputs
+                    .iter()
+                    .filter(|o| o.output_type == doli_core::transaction::OutputType::Bond)
+                    .count() as u32;
+                if let Err(e) = doli_core::validation::check_addbond_cap(
+                    current,
+                    pending,
+                    requested,
+                    height,
+                    addbond_cap_ah,
+                ) {
+                    anyhow::bail!(
+                        "[{}] AddBond cap exceeded at height={} producer={}: {}",
+                        e.error_code(),
+                        height,
+                        pk_hash,
+                        e
+                    );
+                }
+                in_block.insert(pk_hash, prior_in_block.saturating_add(requested));
+            }
+        }
+
         Ok(())
     }
 

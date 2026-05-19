@@ -530,7 +530,23 @@ add_bond_tx = {
 - `bond_count` must be > 0
 - Input amount must equal `bond_count × BOND_UNIT` (plus fees)
 - Each output must be type Bond with correct amount, lock_until=u64::MAX, and 4-byte extra_data
-- Total bonds after addition must not exceed MAX_BONDS (3,000)
+- **INC-I-080**: total bonds after addition must not exceed `MAX_BONDS_PER_PRODUCER`
+  (3,000), enforced height-gated at `addbond_cap_enforcement_activation_height`.
+  - **Pre-activation** (`height < AH`): NOT enforced at validation. Historical
+    behavior is preserved — `ProducerInfo::add_bonds` silently clips the excess
+    at epoch flush and the surplus Bond UTXOs are orphaned. Kept for replay
+    safety on pre-activation blocks.
+  - **Post-activation** (`height >= AH`): a block carrying an AddBond where
+    `bond_count + in-flight pending AddBonds (incl. earlier in the same block) +
+    requested > MAX_BONDS_PER_PRODUCER` is **rejected** at block validation
+    (`validation::check_addbond_cap` → `ValidationError::AddBondCapExceeded`,
+    error code `ADDBOND_CAP_EXCEEDED`), before any state mutation, so no Bond
+    UTXOs are created. Unlike the INC-I-078 DelegateBond cap (silent skip-in-
+    block — DelegateBond has no outputs to orphan), AddBond must reject the
+    block because its Bond outputs are real UTXOs. Mainnet AH = `231_830`
+    (co-deployed with the INC-I-078 bundle); testnet `0`; devnet `u64::MAX`.
+    No `CURRENT_PROTOCOL_VERSION` bump (EpochState unchanged); no
+    `HardForkSchedule` entry (pure validation rule); rolling-deploy safe.
 
 ### 3.13 WithdrawalRequest Transaction
 

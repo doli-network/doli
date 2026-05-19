@@ -116,6 +116,12 @@ impl NetworkParams {
                 received_delegation_cap: 3000,
                 received_delegation_cap_activation_height: 231_830,
                 delegation_auth_activation_height: 231_830,
+                // INC-I-080: AddBond cap enforcement. Unscheduled sentinel in
+                // this commit; the concrete mainnet height (231_830,
+                // co-deployed with the INC-I-078 bundle) is pinned in a
+                // SEPARATE commit. u64::MAX ⇒ pre-activation clip path
+                // (today's behavior) until pinned.
+                addbond_cap_enforcement_activation_height: u64::MAX,
 
                 // Gossip mesh: universal config for all network sizes.
                 // mesh_n=12 keeps all peers in eager-push for networks ≤24 (mesh_n_high),
@@ -217,6 +223,10 @@ impl NetworkParams {
                 received_delegation_cap: 3000,
                 received_delegation_cap_activation_height: 0,
                 delegation_auth_activation_height: 0,
+                // INC-I-080: AddBond cap active from genesis on testnet to
+                // exercise the post-activation reject path before mainnet
+                // activation (h=231_830).
+                addbond_cap_enforcement_activation_height: 0,
 
                 // INC-I-015: Gossip mesh sized to max_peers for eager push to ALL
                 // connected peers. At mesh_n=12, blocks reach 12 peers immediately
@@ -311,6 +321,12 @@ impl NetworkParams {
                 received_delegation_cap: u64::MAX,
                 received_delegation_cap_activation_height: u64::MAX,
                 delegation_auth_activation_height: u64::MAX,
+                // INC-I-080: devnet default disabled (u64::MAX) — mirrors the
+                // INC-I-078 devnet rationale. Cap tests pass explicit
+                // activation heights to `check_addbond_cap` and do not depend
+                // on this default; existing devnet/test flows stay
+                // byte-identical (no surprise enforcement).
+                addbond_cap_enforcement_activation_height: u64::MAX,
                 // Gossip mesh: same universal config as mainnet.
                 // With --no-dht, mesh_n_high=24 keeps all devnet peers in mesh.
                 mesh_n: 12,

@@ -370,6 +370,28 @@ pub enum ValidationError {
         /// The activation height after which public keys are mandatory.
         activation_height: u64,
     },
+
+    /// INC-I-080: AddBond rejected because the producer's bond total
+    /// (`bond_count` + in-flight pending AddBonds + this request) would
+    /// exceed `MAX_BONDS_PER_PRODUCER`.
+    ///
+    /// Emitted only at and after `addbond_cap_enforcement_activation_height`.
+    /// Pre-activation, this check is bypassed and the historical clip-at-
+    /// epoch-flush behavior (`ProducerInfo::add_bonds`) is preserved for
+    /// replay safety. See `specs/delegation-architecture.md` (AddBond cap).
+    #[error(
+        "addbond cap exceeded: current={current} pending={pending} requested={requested} max={max}"
+    )]
+    AddBondCapExceeded {
+        /// Producer's current `bond_count`.
+        current: u32,
+        /// Sum of bond counts over the producer's in-flight pending AddBonds.
+        pending: u32,
+        /// Bond count the rejected AddBond would add.
+        requested: u32,
+        /// Active cap (`MAX_BONDS_PER_PRODUCER`).
+        max: u32,
+    },
 }
 
 impl ValidationError {
@@ -432,6 +454,7 @@ impl ValidationError {
             Self::MissingPublicKey { .. } => "MISSING_PUBLIC_KEY",
             Self::DelegationCapExceeded { .. } => "DELEGATION_CAP_EXCEEDED",
             Self::DelegationSignatureInvalid { .. } => "DELEGATION_SIGNATURE_INVALID",
+            Self::AddBondCapExceeded { .. } => "ADDBOND_CAP_EXCEEDED",
         }
     }
 
@@ -637,6 +660,17 @@ impl ValidationError {
             }
             Self::DelegationSignatureInvalid { reason } => {
                 map.insert("reason".into(), Value::String(reason.clone()));
+            }
+            Self::AddBondCapExceeded {
+                current,
+                pending,
+                requested,
+                max,
+            } => {
+                map.insert("current".into(), (*current).into());
+                map.insert("pending".into(), (*pending).into());
+                map.insert("requested".into(), (*requested).into());
+                map.insert("max".into(), (*max).into());
             }
         }
 

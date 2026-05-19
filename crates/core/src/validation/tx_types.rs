@@ -354,9 +354,62 @@ pub(super) fn validate_add_bond_data(tx: &Transaction) -> Result<(), ValidationE
 
     // Note: These validations are done at node level:
     // - Producer is registered
-    // - New total doesn't exceed MAX_BONDS_PER_PRODUCER
+    // - New total doesn't exceed MAX_BONDS_PER_PRODUCER → check_addbond_cap()
+    //   (INC-I-080, height-gated at addbond_cap_enforcement_activation_height)
     // - Bond output amount matches bond_count * BOND_UNIT
 
+    Ok(())
+}
+
+/// INC-I-080: enforce the per-producer bond cap on AddBond, height-gated.
+///
+/// Resolves the long-standing comment-only TODO above in
+/// `validate_add_bond_data` ("New total doesn't exceed
+/// MAX_BONDS_PER_PRODUCER … done at node level"). The node never actually
+/// performed it — `ProducerInfo::add_bonds` silently clipped the excess at
+/// epoch flush and discarded the orphaned Bond UTXOs (value lost, no signal).
+///
+/// * **Pre-activation** (`height < activation_height`): returns `Ok(())`
+///   unconditionally. The historical clip-at-epoch-flush behavior is
+///   preserved so replaying historical blocks stays bit-identical (no
+///   consensus change before the activation height).
+/// * **Post-activation** (`height >= activation_height`): the AddBond is
+///   rejected with [`ValidationError::AddBondCapExceeded`] when
+///   `current + pending + requested > MAX_BONDS_PER_PRODUCER`, where
+///   `pending` sums the bond counts over the producer's in-flight queued
+///   AddBonds. All arithmetic saturates (no overflow panic on adversarial
+///   inputs).
+///
+/// Three-question gate (INC-I-075): Q1=YES (AddBond is user-submittable),
+/// Q2=YES (producer-action triggered), Q3=NO (post-AH rejects txs that were
+/// previously accepted-then-clipped) ⇒ activation height REQUIRED. The gate
+/// makes every node on the same params+height reach the same verdict, so the
+/// rejection is consensus-safe under a rolling deploy.
+///
+/// Unlike the INC-I-078 DelegateBond cap (which *skips* the over-cap tx,
+/// leaving the block valid), AddBond must *reject* the carrying block: the
+/// Bond output UTXOs are real, and a skip would still orphan them. Rejection
+/// at block-apply guarantees "no orphan Bonds" post-activation.
+pub fn check_addbond_cap(
+    current: u32,
+    pending: u32,
+    requested: u32,
+    height: u64,
+    activation_height: u64,
+) -> Result<(), ValidationError> {
+    // Pre-activation gate dominates — clip path preserved (replay safety).
+    if height < activation_height {
+        return Ok(());
+    }
+    let total = current.saturating_add(pending).saturating_add(requested);
+    if total > crate::MAX_BONDS_PER_PRODUCER {
+        return Err(ValidationError::AddBondCapExceeded {
+            current,
+            pending,
+            requested,
+            max: crate::MAX_BONDS_PER_PRODUCER,
+        });
+    }
     Ok(())
 }
 
