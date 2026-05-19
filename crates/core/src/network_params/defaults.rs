@@ -116,12 +116,15 @@ impl NetworkParams {
                 received_delegation_cap: 3000,
                 received_delegation_cap_activation_height: 231_830,
                 delegation_auth_activation_height: 231_830,
-                // INC-I-080: AddBond cap enforcement. Unscheduled sentinel in
-                // this commit; the concrete mainnet height (231_830,
-                // co-deployed with the INC-I-078 bundle) is pinned in a
-                // SEPARATE commit. u64::MAX ⇒ pre-activation clip path
-                // (today's behavior) until pinned.
-                addbond_cap_enforcement_activation_height: u64::MAX,
+                // INC-I-080: AddBond cap enforcement pinned to h=231_830 —
+                // co-deployed atomically with the INC-I-078 bundle (same
+                // upgrade event, same lead-time analysis: mainnet tip 229_105
+                // at d885a449 → ~7.57h binary-distribution lead). Above the
+                // chain head (F7: NOT retroactive). Pre-231_830 the historical
+                // clip path runs; at 231_830 every upgraded node begins
+                // rejecting over-cap AddBonds in lockstep. Once crossed this
+                // height is IMMUTABLE — never move it forward (INC-I-054).
+                addbond_cap_enforcement_activation_height: 231_830,
 
                 // Gossip mesh: universal config for all network sizes.
                 // mesh_n=12 keeps all peers in eager-push for networks ≤24 (mesh_n_high),
