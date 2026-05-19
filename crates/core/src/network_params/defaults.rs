@@ -110,21 +110,31 @@ impl NetworkParams {
                 // BOTH heights must be set to the SAME value to ship the
                 // bundle atomically.
                 // INC-I-078 mainnet activation: cap=3000 (= MAX_BONDS_PER_PRODUCER),
-                // both gates flip atomically at h=231_830. Cap value chosen for
+                // both gates flip atomically at h=240_138. Cap value chosen for
                 // symmetry with the own-bonds ceiling: total influence per producer
                 // <= 2 * MAX_BONDS_PER_PRODUCER, skin-in-game floor >= 50%.
+                //
+                // Re-pin 231_830 -> 240_138 (2026-05-19): the original 231_830
+                // lead-time analysis (tip 229_105 -> 7.57h) went stale. Mainnet
+                // tip reached 231_530 before redeploy, leaving only ~300 blocks
+                // (~50 min) — too tight for a coordinated fleet deploy. The chain
+                // had NOT crossed 231_830 and NO deployed binary (v6.21.20)
+                // honors these gates yet, so moving the pin forward is the
+                // routine pre-activation case, NOT an INC-I-054 violation.
+                // 240_138 - 231_530 = 8_608 blocks ≈ 23.9h binary-distribution
+                // lead. Once the chain CROSSES 240_138 this height becomes
+                // IMMUTABLE — never move it forward thereafter (INC-I-054).
                 received_delegation_cap: 3000,
-                received_delegation_cap_activation_height: 231_830,
-                delegation_auth_activation_height: 231_830,
-                // INC-I-080: AddBond cap enforcement pinned to h=231_830 —
+                received_delegation_cap_activation_height: 240_138,
+                delegation_auth_activation_height: 240_138,
+                // INC-I-080: AddBond cap enforcement pinned to h=240_138 —
                 // co-deployed atomically with the INC-I-078 bundle (same
-                // upgrade event, same lead-time analysis: mainnet tip 229_105
-                // at d885a449 → ~7.57h binary-distribution lead). Above the
-                // chain head (F7: NOT retroactive). Pre-231_830 the historical
-                // clip path runs; at 231_830 every upgraded node begins
-                // rejecting over-cap AddBonds in lockstep. Once crossed this
-                // height is IMMUTABLE — never move it forward (INC-I-054).
-                addbond_cap_enforcement_activation_height: 231_830,
+                // upgrade event, same lead-time analysis). Above the chain head
+                // (F7: NOT retroactive). Pre-240_138 the historical clip path
+                // runs; at 240_138 every upgraded node begins rejecting
+                // over-cap AddBonds in lockstep. Once crossed this height is
+                // IMMUTABLE — never move it forward (INC-I-054).
+                addbond_cap_enforcement_activation_height: 240_138,
 
                 // Gossip mesh: universal config for all network sizes.
                 // mesh_n=12 keeps all peers in eager-push for networks ≤24 (mesh_n_high),
@@ -220,16 +230,19 @@ impl NetworkParams {
                 // apply the INC-I-068 filter (matches current testnet runtime).
                 inc_i_068_weight_filter_activation_height: 0,
 
-                // INC-I-078: testnet active from genesis to exercise cap+auth
-                // paths before mainnet activation (h=231_830). Cap=3000 matches
-                // mainnet; can be overridden via env vars for cap-tuning tests.
+                // INC-I-078: testnet gates pinned to h=109_559 (set 2026-05-19,
+                // testnet tip 109_431 → ~128 blocks / ~21 min lead) to dress-
+                // rehearse the mainnet 240_138 activation: pre-AH historical
+                // clip path runs, then cap+auth enforcement engages in lockstep
+                // at the boundary. Cap=3000 matches mainnet; env-overridable
+                // for cap-tuning tests.
                 received_delegation_cap: 3000,
-                received_delegation_cap_activation_height: 0,
-                delegation_auth_activation_height: 0,
-                // INC-I-080: AddBond cap active from genesis on testnet to
-                // exercise the post-activation reject path before mainnet
-                // activation (h=231_830).
-                addbond_cap_enforcement_activation_height: 0,
+                received_delegation_cap_activation_height: 109_559,
+                delegation_auth_activation_height: 109_559,
+                // INC-I-080: AddBond cap pinned to h=109_559 — co-activates
+                // atomically with the INC-I-078 gates so the testnet transition
+                // mirrors the mainnet upgrade event (h=240_138) exactly.
+                addbond_cap_enforcement_activation_height: 109_559,
 
                 // INC-I-015: Gossip mesh sized to max_peers for eager push to ALL
                 // connected peers. At mesh_n=12, blocks reach 12 peers immediately
