@@ -556,11 +556,23 @@ impl Node {
     /// Post-upgrade blocks carry epoch_state_snapshot in UndoData, making this
     /// function unnecessary. If this fires on a post-upgrade block, it indicates
     /// a persistence bug.
-    pub async fn rebuild_epoch_state_from_blocks(&mut self) {
+    /// Rebuild epoch scheduler state from blocks.
+    ///
+    /// `target_height` is the post-rollback/reorg chain tip height. Every caller
+    /// passes this explicitly so the function's operating height is a clear
+    /// contract — no dependency on in-memory chain_state ordering or state_db
+    /// persistence timing. (INC-I-082 Defect 2 root-cause fix.)
+    pub async fn rebuild_epoch_state_from_blocks(&mut self, target_height: u64) {
         warn!(
-            "[EPOCH_REBUILD] rebuild_epoch_state_from_blocks called — should only fire for pre-upgrade undo data or reorg without epoch_state snapshot"
+            "[EPOCH_REBUILD] rebuild_epoch_state_from_blocks called (target_height={}) — should only fire for pre-upgrade undo data or reorg without epoch_state snapshot",
+            target_height
         );
-        let current_h = self.chain_state.read().await.best_height;
+        // INC-I-082 Defect 2 root-cause fix: target_height is an explicit
+        // parameter from the caller. This eliminates the caller-ordering
+        // dependency class entirely: rollback, execute_reorg undo path, and
+        // execute_reorg legacy fallback path all pass their known target height
+        // directly. No state_db read, no in-memory chain_state read.
+        let current_h = target_height;
         let blocks_per_epoch = self.config.network.blocks_per_reward_epoch();
         if blocks_per_epoch == 0 || current_h == 0 {
             return;
@@ -629,16 +641,28 @@ impl Node {
                 .network
                 .params()
                 .security_audit_activation_height;
+            // INC-I-082 Defect 3 (bond dimension): match post_commit's height-gated
+            // logic for weight=0 filtering. Pre-INC-I-068: clamp to 1, never skip.
+            // Post-INC-I-068: skip weight=0 producers entirely.
+            let inc_i_068_activation = self
+                .config
+                .network
+                .params()
+                .inc_i_068_weight_filter_activation_height;
+            let filter_weight_zero = epoch_boundary_h >= inc_i_068_activation;
             let mut snapshot = std::collections::HashMap::new();
             for p in &active {
                 let pkh =
                     crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, p.public_key.as_bytes());
-                // INC-I-068: Use delegation-aware weight; skip weight=0
                 let count = p.selection_weight_at(epoch_boundary_h, audit_activation);
-                if count == 0 {
-                    continue;
+                if filter_weight_zero {
+                    if count == 0 {
+                        continue;
+                    }
+                    snapshot.insert(pkh, count);
+                } else {
+                    snapshot.insert(pkh, count.max(1));
                 }
-                snapshot.insert(pkh, count);
             }
             let total: u64 = snapshot.values().sum();
             warn!(
@@ -651,10 +675,29 @@ impl Node {
 
         // 2. Rebuild epoch_producer_list with attestation filtering
         //    (same logic as post_commit.rs:74-131)
+        //
+        // INC-I-082 Defect 3: Use active_producers_for_scheduling_at_height
+        // (same as post_commit) instead of active_producers_at_height, so that
+        // producers with selection_weight==0 are excluded after INC-I-068
+        // activation — matching the canonical scheduling path bit-for-bit.
         {
             let producers = self.producer_set.read().await;
+            let inc_i_068_activation = self
+                .config
+                .network
+                .params()
+                .inc_i_068_weight_filter_activation_height;
+            let audit_activation_h = self
+                .config
+                .network
+                .params()
+                .security_audit_activation_height;
             let active: Vec<crypto::PublicKey> = producers
-                .active_producers_at_height(epoch_boundary_h)
+                .active_producers_for_scheduling_at_height(
+                    epoch_boundary_h,
+                    inc_i_068_activation,
+                    audit_activation_h,
+                )
                 .iter()
                 .map(|p| p.public_key)
                 .collect();
@@ -680,41 +723,36 @@ impl Node {
             // below can read it.
             let mut scan_covered_full_epoch = false;
 
-            // Fix #6 (2026-04-15, synmgrefactor branch): if epoch_attested_set is
-            // already populated (e.g. peer transferred accumulators via snap sync,
-            // or persisted on disk from a prior run), use those directly for the
-            // 3-epoch attested lookback. The block scan below is only needed when
-            // we have NO attestation history at all (cold start on post-wipe node
-            // with no peer accumulator payload).
-            let have_inmem_accum = !self.epoch_state.attested_sets[0].is_empty()
+            // INC-I-082 P2 remediation: the `have_inmem_accum` shortcut was
+            // removed. Full-sync nodes (has_incomplete_history=false) always
+            // use the block-scan path below, which produces the canonical
+            // attestation-filtered result matching derive_at_boundary().
+            // The variable is retained (prefixed) for documentation/grep.
+            let _have_inmem_accum = !self.epoch_state.attested_sets[0].is_empty()
                 || !self.epoch_state.attested_sets[1].is_empty()
                 || !self.epoch_state.attested_sets[2].is_empty();
 
             let mut new_list: Vec<crypto::PublicKey> = if epoch <= 1 {
                 active
-            } else if has_incomplete_history && !have_inmem_accum {
-                // INC-I-054: Block history incomplete and no in-memory accumulators.
-                // Skip block scan entirely — it would produce wrong results.
-                // Use all active producers + Light validation until next epoch boundary.
+            } else if has_incomplete_history {
+                // INC-I-054 / INC-I-082 Defect 1: Block history incomplete.
+                // ALWAYS use safe-default path regardless of have_inmem_accum.
+                // Stale in-memory attested_sets (from snap-sync payload or prior
+                // run) may be from a wrong fork and can UNDER-include canonical
+                // producers, shrinking the round-robin denominator (INC-I-016 class).
+                // Light validation until next epoch boundary rebuilds correctly.
                 self.snap_sync_height = Some(current_h);
                 active
-            } else if have_inmem_accum {
-                info!(
-                    "[STARTUP] Using in-memory epoch_attested_set for filter (attested=[{},{},{}]) — no block scan needed",
-                    self.epoch_state.attested_sets[0].len(),
-                    self.epoch_state.attested_sets[1].len(),
-                    self.epoch_state.attested_sets[2].len(),
-                );
-                let mut attested: std::collections::HashSet<crypto::PublicKey> =
-                    std::collections::HashSet::new();
-                for i in 0..3 {
-                    attested.extend(&self.epoch_state.attested_sets[i]);
-                }
-                active
-                    .into_iter()
-                    .filter(|pk| attested.contains(pk))
-                    .collect()
             } else {
+                // INC-I-082 P2 remediation: removed the `have_inmem_accum`
+                // shortcut that returned `active` without attestation filtering.
+                // For full-sync nodes (has_incomplete_history=false), the block-
+                // scan path below produces the canonical attestation-filtered
+                // result that matches derive_at_boundary(). The shortcut returned
+                // a SUPERSET (all scheduling-filtered producers) which diverges
+                // from derive_at_boundary() when attested_sets are non-empty.
+                // Full history IS available here (has_incomplete_history is false),
+                // so the block scan is both safe and canonical.
                 // Fix #4A (2026-04-15, synmgrefactor branch): attestation lookback
                 // must be 3 epochs to match post_commit. Pre-fix used 1-epoch
                 // window, producing a DIFFERENT producer list than the one
@@ -821,10 +859,25 @@ impl Node {
             // (outage), not individual inactivity. Canonical BFT threshold.
             //
             // INC-I-046: ghost exclusion — same logic as derive_at_boundary.
+            //
+            // INC-I-082 Defect 3: safety floor must use the SAME scheduling-
+            // filtered set as the attestation filter above. Using the unfiltered
+            // active_producers_at_height lets weight=0 producers re-enter via
+            // the "include all" fallback, undoing the scheduling filter.
             {
                 use doli_core::consensus::GHOST_EXCLUSION_GRACE_EPOCHS;
                 let producers = self.producer_set.read().await;
-                let active_at = producers.active_producers_at_height(epoch_boundary_h);
+                let active_at = producers.active_producers_for_scheduling_at_height(
+                    epoch_boundary_h,
+                    self.config
+                        .network
+                        .params()
+                        .inc_i_068_weight_filter_activation_height,
+                    self.config
+                        .network
+                        .params()
+                        .security_audit_activation_height,
+                );
                 let active_count = active_at.len();
 
                 let ghost_exclusion_active = epoch_boundary_h

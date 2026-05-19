@@ -266,17 +266,17 @@ impl Node {
                     }
                     Err(e) => {
                         warn!("[ROLLBACK] Failed to deserialize epoch state from undo: {} — rebuilding", e);
-                        self.rebuild_epoch_state_from_blocks().await;
+                        self.rebuild_epoch_state_from_blocks(target_height).await;
                     }
                 }
             } else {
                 // Pre-upgrade undo data (no epoch_state_snapshot) — fall back to rebuild
                 info!("[ROLLBACK] No epoch state in undo (pre-upgrade block) — rebuilding");
-                self.rebuild_epoch_state_from_blocks().await;
+                self.rebuild_epoch_state_from_blocks(target_height).await;
             }
         } else {
             // No undo data at all (legacy path already handled above) — rebuild
-            self.rebuild_epoch_state_from_blocks().await;
+            self.rebuild_epoch_state_from_blocks(target_height).await;
         }
 
         // Chain commitment: invalidate on rollback. Periodic scan in periodic.rs

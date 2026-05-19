@@ -651,6 +651,21 @@ impl Node {
                 // optimization — it is always present on every undo entry. Read once
                 // from the same height that originally produced the producer snapshot
                 // semantics (target_height + 1).
+                // Update chain state to common ancestor BEFORE epoch state
+                // restore. This matches rollback_one_block()'s order and ensures
+                // in-memory state reflects the post-reorg tip for any subsequent
+                // operations. Note: rebuild_epoch_state_from_blocks() now takes
+                // an explicit target_height parameter (INC-I-082 Defect 2 root-
+                // cause fix), so it no longer reads chain_state — but updating
+                // chain_state here is still correct for the rest of the reorg
+                // flow that follows.
+                {
+                    let mut state = self.chain_state.write().await;
+                    state.best_height = target_height;
+                    state.best_hash = common_ancestor_hash;
+                    state.best_slot = common_ancestor_slot;
+                }
+
                 if current_height
                     >= self
                         .config
@@ -670,21 +685,13 @@ impl Node {
                             }
                             Err(e) => {
                                 warn!("[REORG] Failed to deserialize epoch state from undo: {} — rebuilding", e);
-                                self.rebuild_epoch_state_from_blocks().await;
+                                self.rebuild_epoch_state_from_blocks(target_height).await;
                             }
                         }
                     } else {
                         info!("[REORG] No epoch state in undo (pre-upgrade block) — rebuilding");
-                        self.rebuild_epoch_state_from_blocks().await;
+                        self.rebuild_epoch_state_from_blocks(target_height).await;
                     }
-                }
-
-                // Update chain state
-                {
-                    let mut state = self.chain_state.write().await;
-                    state.best_height = target_height;
-                    state.best_hash = common_ancestor_hash;
-                    state.best_slot = common_ancestor_slot;
                 }
             } else {
                 // Legacy fallback: rebuild from genesis (no undo data available)
@@ -744,6 +751,10 @@ impl Node {
                 }
 
                 // Legacy path: rebuild epoch_state from blocks (same activation gate).
+                // INC-I-082 P1 fix: pass target_height explicitly. This path
+                // updates chain_state in-memory (line 731) but does NOT persist
+                // to state_db before rebuild. The explicit parameter eliminates
+                // any dependency on state_db or chain_state ordering.
                 if current_height
                     >= self
                         .config
@@ -751,7 +762,7 @@ impl Node {
                         .params()
                         .epoch_state_reorg_activation_height
                 {
-                    self.rebuild_epoch_state_from_blocks().await;
+                    self.rebuild_epoch_state_from_blocks(target_height).await;
                 }
             }
 
