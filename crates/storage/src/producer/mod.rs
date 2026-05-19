@@ -38,6 +38,9 @@ mod tests;
 #[cfg(test)]
 #[allow(deprecated)]
 mod tests_delegation;
+#[cfg(test)]
+#[allow(deprecated)]
+mod tests_delegation_cap;
 mod types;
 
 // Re-export everything for identical public API

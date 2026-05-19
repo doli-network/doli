@@ -1265,18 +1265,68 @@ impl Node {
                     }
                     TxType::DelegateBond => {
                         if let Some(data) = tx.delegate_bond_data() {
-                            producers.queue_update(PendingProducerUpdate::DelegateBond {
-                                delegator: data.delegator,
-                                delegate: data.delegate,
-                                bond_count: data.bond_count,
-                            });
+                            // INC-I-078: mirror the live-apply auth+cap gate
+                            // in the rebuild path so snap-synced nodes that
+                            // replay blocks produce the same queued updates
+                            // as nodes that applied them live. Forks fall out
+                            // of any drift here (compare INC-I-054).
+                            let params = self.config.network.params();
+                            let auth_ok = height < params.delegation_auth_activation_height
+                                || crypto::signature::verify_hash(
+                                    &data.signing_message(),
+                                    &data.signature,
+                                    &data.delegator,
+                                )
+                                .is_ok();
+
+                            let cap_active =
+                                height >= params.received_delegation_cap_activation_height;
+                            let cap = if cap_active && params.received_delegation_cap != u64::MAX {
+                                params.received_delegation_cap
+                            } else {
+                                0
+                            };
+                            let mut cap_ok = true;
+                            if cap > 0 {
+                                if let Some(target) = producers.get_by_pubkey(&data.delegate) {
+                                    let current_total: u64 = target
+                                        .received_delegations
+                                        .iter()
+                                        .map(|(_, c)| u64::from(*c))
+                                        .sum();
+                                    let requested = u64::from(data.bond_count);
+                                    let new_total = current_total.saturating_add(requested);
+                                    if new_total > cap {
+                                        cap_ok = false;
+                                    }
+                                }
+                            }
+
+                            if auth_ok && cap_ok {
+                                producers.queue_update(PendingProducerUpdate::DelegateBond {
+                                    delegator: data.delegator,
+                                    delegate: data.delegate,
+                                    bond_count: data.bond_count,
+                                });
+                            }
                         }
                     }
                     TxType::RevokeDelegation => {
                         if let Some(data) = tx.revoke_delegation_data() {
-                            producers.queue_update(PendingProducerUpdate::RevokeDelegation {
-                                delegator: data.delegator,
-                            });
+                            // INC-I-078 / constraint C7: mirror live apply.
+                            let params = self.config.network.params();
+                            let auth_ok = height < params.delegation_auth_activation_height
+                                || crypto::signature::verify_hash(
+                                    &data.signing_message(),
+                                    &data.signature,
+                                    &data.delegator,
+                                )
+                                .is_ok();
+                            if auth_ok {
+                                producers.queue_update(PendingProducerUpdate::RevokeDelegation {
+                                    delegator: data.delegator,
+                                });
+                            }
                         }
                     }
                     // ProtocolActivation doesn't modify the producer set —
@@ -1314,7 +1364,18 @@ impl Node {
             let is_epoch_0 = height < epoch_len;
             let is_boundary = height > 0 && height.is_multiple_of(epoch_len);
             if is_epoch_0 || is_boundary {
-                producers.apply_pending_updates();
+                // INC-I-078: pass the height-gated received-delegation cap as
+                // the defensive layer for queued DelegateBond entries. Same
+                // logic as the main apply path in apply_block/state_update.rs.
+                let params = self.config.network.params();
+                let cap = if height >= params.received_delegation_cap_activation_height
+                    && params.received_delegation_cap != u64::MAX
+                {
+                    params.received_delegation_cap
+                } else {
+                    0
+                };
+                producers.apply_pending_updates_with_cap(cap);
             }
 
             // Process completed unbonding periods after each block

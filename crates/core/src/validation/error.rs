@@ -329,6 +329,35 @@ pub enum ValidationError {
     #[error("invalid redemption: {0}")]
     InvalidRedemption(String),
 
+    /// INC-I-078: DelegateBond rejected because the target producer's
+    /// `received_delegations` total would exceed the per-producer cap.
+    ///
+    /// Emitted only at and after `received_delegation_cap_activation_height`.
+    /// Pre-activation, this check is bypassed.
+    #[error("delegation cap exceeded: producer={producer} current={current} requested={requested} cap={cap}")]
+    DelegationCapExceeded {
+        /// Hex pubkey hash (or "<unknown>") of the target producer.
+        producer: String,
+        /// Current sum of `received_delegations[*].1` for the target.
+        current: u64,
+        /// Bond count the rejected DelegateBond would add.
+        requested: u64,
+        /// Active cap value (`network_params.received_delegation_cap`).
+        cap: u64,
+    },
+
+    /// INC-I-078: DelegateBond or RevokeDelegation rejected because the
+    /// delegator's Ed25519 signature is missing or invalid.
+    ///
+    /// Emitted only at and after `delegation_auth_activation_height`.
+    /// Pre-activation, signatures are not checked (legacy zero-input form
+    /// accepted).
+    #[error("delegation signature invalid: {reason}")]
+    DelegationSignatureInvalid {
+        /// Human-readable description of the signature failure.
+        reason: String,
+    },
+
     /// Input is missing the required public key (post-sig-verification hard fork).
     ///
     /// After `sig_verification_height`, every input MUST include its spender's
@@ -340,6 +369,28 @@ pub enum ValidationError {
         index: usize,
         /// The activation height after which public keys are mandatory.
         activation_height: u64,
+    },
+
+    /// INC-I-080: AddBond rejected because the producer's bond total
+    /// (`bond_count` + in-flight pending AddBonds + this request) would
+    /// exceed `MAX_BONDS_PER_PRODUCER`.
+    ///
+    /// Emitted only at and after `addbond_cap_enforcement_activation_height`.
+    /// Pre-activation, this check is bypassed and the historical clip-at-
+    /// epoch-flush behavior (`ProducerInfo::add_bonds`) is preserved for
+    /// replay safety. See `specs/delegation-architecture.md` (AddBond cap).
+    #[error(
+        "addbond cap exceeded: current={current} pending={pending} requested={requested} max={max}"
+    )]
+    AddBondCapExceeded {
+        /// Producer's current `bond_count`.
+        current: u32,
+        /// Sum of bond counts over the producer's in-flight pending AddBonds.
+        pending: u32,
+        /// Bond count the rejected AddBond would add.
+        requested: u32,
+        /// Active cap (`MAX_BONDS_PER_PRODUCER`).
+        max: u32,
     },
 }
 
@@ -401,6 +452,9 @@ impl ValidationError {
             Self::InvalidFractionalization(_) => "INVALID_FRACTIONALIZATION",
             Self::InvalidRedemption(_) => "INVALID_REDEMPTION",
             Self::MissingPublicKey { .. } => "MISSING_PUBLIC_KEY",
+            Self::DelegationCapExceeded { .. } => "DELEGATION_CAP_EXCEEDED",
+            Self::DelegationSignatureInvalid { .. } => "DELEGATION_SIGNATURE_INVALID",
+            Self::AddBondCapExceeded { .. } => "ADDBOND_CAP_EXCEEDED",
         }
     }
 
@@ -592,6 +646,31 @@ impl ValidationError {
             } => {
                 map.insert("input_index".into(), (*index).into());
                 map.insert("activation_height".into(), (*activation_height).into());
+            }
+            Self::DelegationCapExceeded {
+                producer,
+                current,
+                requested,
+                cap,
+            } => {
+                map.insert("producer".into(), Value::String(producer.clone()));
+                map.insert("current".into(), (*current).into());
+                map.insert("requested".into(), (*requested).into());
+                map.insert("cap".into(), (*cap).into());
+            }
+            Self::DelegationSignatureInvalid { reason } => {
+                map.insert("reason".into(), Value::String(reason.clone()));
+            }
+            Self::AddBondCapExceeded {
+                current,
+                pending,
+                requested,
+                max,
+            } => {
+                map.insert("current".into(), (*current).into());
+                map.insert("pending".into(), (*pending).into());
+                map.insert("requested".into(), (*requested).into());
+                map.insert("max".into(), (*max).into());
             }
         }
 

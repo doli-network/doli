@@ -286,6 +286,45 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
                 defaults.inc_i_068_weight_filter_activation_height,
             )
         },
+        // INC-I-078: delegation cap + auth — locked for mainnet (consensus
+        // rules; mainnet operator picks the value via a binary release, not
+        // via env). Testnet/devnet may override for mixed-cohort and
+        // cap-tuning tests.
+        received_delegation_cap: if is_mainnet {
+            defaults.received_delegation_cap
+        } else {
+            env_parse(
+                "DOLI_RECEIVED_DELEGATION_CAP",
+                defaults.received_delegation_cap,
+            )
+        },
+        received_delegation_cap_activation_height: if is_mainnet {
+            defaults.received_delegation_cap_activation_height
+        } else {
+            env_parse(
+                "DOLI_RECEIVED_DELEGATION_CAP_ACTIVATION_HEIGHT",
+                defaults.received_delegation_cap_activation_height,
+            )
+        },
+        delegation_auth_activation_height: if is_mainnet {
+            defaults.delegation_auth_activation_height
+        } else {
+            env_parse(
+                "DOLI_DELEGATION_AUTH_ACTIVATION_HEIGHT",
+                defaults.delegation_auth_activation_height,
+            )
+        },
+        // INC-I-080: mainnet locked to the compiled default (operator pins
+        // it in a separate commit); non-mainnet may override via env for
+        // cap-tuning tests.
+        addbond_cap_enforcement_activation_height: if is_mainnet {
+            defaults.addbond_cap_enforcement_activation_height
+        } else {
+            env_parse(
+                "DOLI_ADDBOND_CAP_ENFORCEMENT_ACTIVATION_HEIGHT",
+                defaults.addbond_cap_enforcement_activation_height,
+            )
+        },
         // Gossip mesh (locked for mainnet - wrong values could isolate nodes)
         mesh_n: if is_mainnet {
             defaults.mesh_n

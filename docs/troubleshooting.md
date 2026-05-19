@@ -347,6 +347,31 @@ ps aux | grep doli-node
 
 ---
 
+### 2.5. AddBond Rejected — Cap Exceeded (INC-I-080)
+
+**Symptom:** Post-activation (mainnet `height >= 231_830`), an AddBond
+transaction is rejected and the carrying block fails validation with
+`[ADDBOND_CAP_EXCEEDED] AddBond cap exceeded at height=… producer=…`.
+
+**Cause:** The producer's total bonds would exceed
+`MAX_BONDS_PER_PRODUCER` (3,000). The check sums the producer's current
+`bond_count` + in-flight pending AddBonds (including earlier ones in the
+same block) + the requested bonds. This is the intended consensus rule —
+not a fault. Pre-activation the surplus was silently clipped and the
+Bond UTXOs orphaned (the bug this fixes); post-activation the AddBond is
+rejected up-front so no value is lost.
+
+**Resolution:**
+1. Submit an AddBond whose `bond_count` keeps the running total
+   `≤ 3,000`. Check current bonds via `getProducers`.
+2. To grow influence beyond the own-bonds ceiling, use delegation
+   (subject to the separate INC-I-078 `received_delegation_cap`).
+3. If a block was rejected fleet-wide, the offending AddBond must be
+   evicted from the mempool / not re-included; the slot is simply
+   re-produced without it (deterministic across all nodes — no fork).
+
+---
+
 ## 3. Wallet Issues
 
 ### 3.1. Transaction Not Confirming

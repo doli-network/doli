@@ -11,11 +11,44 @@ impl ProducerSet {
     /// The delegator's `delegated_to` and `delegated_bonds` are set.
     /// The delegatee's `received_delegations` list is updated.
     /// Returns an error string if either producer doesn't exist or isn't active.
+    ///
+    /// Equivalent to `delegate_bonds_capped(_, _, _, 0)` — no per-producer cap
+    /// enforcement at this layer. Kept for backward compatibility with tests
+    /// and pre-INC-I-078 call sites; the production apply path now calls
+    /// `delegate_bonds_capped` with the height-gated cap value.
     pub fn delegate_bonds(
         &mut self,
         delegator_pubkey: &PublicKey,
         delegatee_pubkey: &PublicKey,
         bond_count: u32,
+    ) -> Result<(), String> {
+        self.delegate_bonds_capped(delegator_pubkey, delegatee_pubkey, bond_count, 0)
+    }
+
+    /// Same as [`Self::delegate_bonds`] with a per-producer cap on the
+    /// delegatee's total `received_delegations` sum.
+    ///
+    /// `cap == 0` disables the check (matches pre-INC-I-078 behavior). Any
+    /// non-zero `cap` rejects the delegation if
+    /// `delegatee.received_delegations.sum() + bond_count > cap`.
+    ///
+    /// This is the **defensive fallback** layer for INC-I-078 (see
+    /// `specs/delegation-architecture.md` §2.3): it catches the race where
+    /// two DelegateBonds targeting the same producer pass primary
+    /// (block-apply) validation individually but exceed the cap when their
+    /// epoch-deferred updates land. The primary check lives at the apply
+    /// path (`bins/node/src/node/apply_block/tx_processing.rs`) and rejects
+    /// over-cap DelegateBonds before they are queued.
+    ///
+    /// Activation gating (the height comparison) is the caller's
+    /// responsibility — this function only knows the cap value, not the
+    /// activation height.
+    pub fn delegate_bonds_capped(
+        &mut self,
+        delegator_pubkey: &PublicKey,
+        delegatee_pubkey: &PublicKey,
+        bond_count: u32,
+        cap: u64,
     ) -> Result<(), String> {
         // AUDIT-PROD-002: Prevent self-delegation (always enforced — no
         // self-delegation transactions exist on chain prior to this fix).
@@ -57,6 +90,28 @@ impl ProducerSet {
             .ok_or("delegatee not found")?;
         if !delegatee.is_active() {
             return Err("delegatee is not active".into());
+        }
+
+        // INC-I-078 defensive cap check.
+        //
+        // `cap == 0` means "no cap" (pre-activation, or operator left the cap
+        // disabled). Otherwise reject if `current + requested > cap`. Performed
+        // in saturating arithmetic — both summands are u64 — so we cannot
+        // wrap around. Sums over u64::MAX get clamped, which still triggers
+        // rejection if the cap is finite.
+        if cap > 0 {
+            let current_total: u64 = delegatee
+                .received_delegations
+                .iter()
+                .map(|(_, c)| u64::from(*c))
+                .sum();
+            let requested = u64::from(bond_count);
+            let new_total = current_total.saturating_add(requested);
+            if new_total > cap {
+                return Err(format!(
+                    "delegation cap exceeded: current={current_total}, requested={requested}, cap={cap}"
+                ));
+            }
         }
 
         // Apply delegation

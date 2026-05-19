@@ -244,6 +244,96 @@ pub struct NetworkParams {
     /// affected v6.21.16 in production). Devnet: 0 (clean chain).
     pub inc_i_068_weight_filter_activation_height: u64,
 
+    /// INC-I-078: Maximum total received delegated bonds per producer.
+    ///
+    /// `0` (or `u64::MAX`) = no cap. Any non-zero value is the inclusive upper
+    /// bound on the sum of `received_delegations[*].1` for a single producer.
+    /// Bounds delegation concentration without changing slot scheduling.
+    ///
+    /// Enforced as a height-gated rule via
+    /// `received_delegation_cap_activation_height`. Pre-activation: cap is not
+    /// checked (matches v6.21.x behavior — there is no limit beyond the global
+    /// `MAX_BONDS_PER_PRODUCER`). Post-activation: a DelegateBond whose
+    /// `bond_count` would push the target's total over the cap is rejected
+    /// (primary check at block-apply, defensive check at epoch-apply).
+    ///
+    /// Migration is grandfathered: producers already above the cap at
+    /// activation height are NOT forced to shed delegations; they simply
+    /// cannot receive additional ones. See `specs/delegation-architecture.md`
+    /// §2.5 (Option A).
+    pub received_delegation_cap: u64,
+
+    /// INC-I-078: Height at which `received_delegation_cap` enforcement begins.
+    ///
+    /// Pre-activation: cap is not checked (matches current mainnet behavior).
+    /// Post-activation: DelegateBond is rejected if it would push the target
+    /// producer's `received_delegations` sum above the cap.
+    ///
+    /// Three-question gate verdict: Q1=YES (DelegateBond is user-submittable),
+    /// Q3=NO (new rejections of previously-valid transactions) → activation
+    /// height REQUIRED (INC-I-075 protocol). Once crossed, this height is
+    /// immutable.
+    ///
+    /// Defaults to `u64::MAX` everywhere; the operator picks a concrete future
+    /// height before deployment. See `specs/delegation-architecture.md` §2.6 + §8.1.
+    pub received_delegation_cap_activation_height: u64,
+
+    /// INC-I-078: Height at which DelegateBond / RevokeDelegation Ed25519
+    /// signature verification begins.
+    ///
+    /// Pre-activation: both transaction types accept the legacy on-wire layout
+    /// (no signature field; zero-input txs are accepted from any submitter).
+    /// Post-activation: both transactions MUST carry a valid Ed25519 signature
+    /// from the delegator over a fixed commitment:
+    ///   DelegateBond:      HASH("DELEGATE_BOND" || delegate || bond_count)
+    ///   RevokeDelegation:  HASH("REVOKE_DELEGATION" || delegate)
+    ///
+    /// Closes the live forgery exploit (FM-1): without authentication, anyone
+    /// who can put a transaction into a block could forge a DelegateBond /
+    /// RevokeDelegation on behalf of any producer (the txs have zero inputs
+    /// and zero signature today). See `specs/delegation-architecture.md` §7.3.
+    ///
+    /// Wire format is backward-compatible: the signature is appended to the
+    /// existing `extra_data` byte layout, NOT a new tx type number (F3
+    /// compliance). Old nodes will accept and store blocks containing the new
+    /// field; validation only kicks in for nodes past the activation height.
+    ///
+    /// Three-question gate verdict: Q1=YES, Q3=NO → activation height REQUIRED.
+    /// Once crossed, this height is immutable.
+    ///
+    /// Defaults to `u64::MAX` everywhere; operator picks a concrete future
+    /// height before deployment. The cap and auth heights can co-deploy at the
+    /// same value to ship the bundle atomically.
+    pub delegation_auth_activation_height: u64,
+
+    /// INC-I-080: Height at which the per-producer AddBond cap is enforced.
+    ///
+    /// Pre-activation: behavior is UNCHANGED — an AddBond that would push the
+    /// producer past `MAX_BONDS_PER_PRODUCER` is silently clipped at epoch
+    /// flush (`ProducerInfo::add_bonds`) and the excess Bond UTXOs are
+    /// orphaned (the historical bug; preserved for replay safety on old
+    /// blocks).
+    ///
+    /// Post-activation: such an AddBond is REJECTED at block-apply
+    /// (`validation::check_addbond_cap` → `ValidationError::AddBondCapExceeded`),
+    /// so the carrying block is invalid fleet-wide and no Bond UTXOs are ever
+    /// created. Unlike the INC-I-078 DelegateBond cap (skip-in-block), AddBond
+    /// must reject because the Bond outputs are real and a skip would still
+    /// orphan them.
+    ///
+    /// Three-question gate verdict (INC-I-075): Q1=YES (AddBond is
+    /// user-submittable), Q2=YES (producer-action triggered), Q3=NO (new
+    /// rejection of previously accepted-then-clipped txs) → activation height
+    /// REQUIRED. Once crossed, this height is immutable. No
+    /// `CURRENT_PROTOCOL_VERSION` bump (EpochState unchanged); no
+    /// `HardForkSchedule` entry (pure validation rule); rolling-deploy safe.
+    ///
+    /// Defaults: mainnet `u64::MAX` (operator pins a concrete future height in
+    /// a separate commit), testnet `0` (active from genesis), devnet
+    /// `u64::MAX` (disabled; cap tests opt in via explicit args — mirrors the
+    /// INC-I-078 devnet default).
+    pub addbond_cap_enforcement_activation_height: u64,
+
     // === Gossip mesh ===
     /// Target number of peers in gossipsub mesh per topic
     pub mesh_n: usize,

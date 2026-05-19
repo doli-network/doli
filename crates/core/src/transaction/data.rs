@@ -170,10 +170,39 @@ impl AddBondData {
 
 // ==================== Bond Delegation (Tier 3 → Tier 1/2) ====================
 
+/// Domain-separated commit string for DelegateBond signatures (INC-I-078 M2).
+///
+/// Combined with `delegate` and `bond_count` (little-endian) and BLAKE3-hashed
+/// to produce the message that the delegator signs.
+pub const DELEGATE_BOND_SIGNING_DOMAIN: &[u8] = b"DELEGATE_BOND";
+
+/// Domain-separated commit string for RevokeDelegation signatures (INC-I-078 M2).
+///
+/// Combined with `delegate` and BLAKE3-hashed to produce the signing message.
+pub const REVOKE_DELEGATION_SIGNING_DOMAIN: &[u8] = b"REVOKE_DELEGATION";
+
 /// Delegate bond weight to a Tier 1/2 validator.
 ///
 /// Stored in Transaction.extra_data. The delegator's bond weight is added
 /// to the delegate's effective_weight for producer selection.
+///
+/// ## On-wire layout (INC-I-078 M2 backward-compatible)
+///
+/// Two forms are accepted by `from_bytes`, distinguished purely by length:
+///
+/// * **Legacy form (68 bytes)** — `delegator(32) || delegate(32) || bond_count(4le)`.
+///   Pre-`delegation_auth_activation_height`. `signature` is set to
+///   [`Signature::default`] (all zeros) on deserialize.
+/// * **Authenticated form (132 bytes)** — legacy fields followed by a 64-byte
+///   Ed25519 signature. Post-activation: the apply path verifies the
+///   signature against [`DelegateBondData::signing_message`] (BLAKE3 of
+///   `DELEGATE_BOND_SIGNING_DOMAIN || delegate || bond_count`).
+///
+/// `to_bytes` always emits the authenticated form. Pre-activation senders
+/// can still produce the legacy form by trimming the trailing 64 bytes (the
+/// validation layer will not reject either form below the activation
+/// height). This is F3-compliant: no new tx type number, just a longer
+/// extra_data.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DelegateBondData {
     /// Public key of the delegator (the producer delegating weight)
@@ -182,38 +211,101 @@ pub struct DelegateBondData {
     pub delegate: PublicKey,
     /// Number of bonds to delegate
     pub bond_count: u32,
+    /// Delegator's Ed25519 signature over [`signing_message`]
+    /// (INC-I-078 M2). `Signature::default()` (all-zero) when the legacy
+    /// 68-byte form was deserialized — verification of zero signatures
+    /// fails closed.
+    ///
+    /// [`signing_message`]: Self::signing_message
+    #[serde(default)]
+    pub signature: crypto::Signature,
 }
 
 impl DelegateBondData {
+    /// Length of the legacy (pre-auth) on-wire encoding.
+    pub const LEGACY_BYTES_LEN: usize = 32 + 32 + 4;
+    /// Length of the authenticated on-wire encoding (legacy + 64B signature).
+    pub const AUTHENTICATED_BYTES_LEN: usize = Self::LEGACY_BYTES_LEN + 64;
+
+    /// Create new DelegateBondData with an empty (zero) signature.
+    ///
+    /// Callers signing the data must overwrite `signature` with the result
+    /// of [`crypto::sign`] over [`Self::signing_message`].
     pub fn new(delegator: PublicKey, delegate: PublicKey, bond_count: u32) -> Self {
         Self {
             delegator,
             delegate,
             bond_count,
+            signature: crypto::Signature::default(),
         }
     }
 
-    /// Serialize to bytes for storage in extra_data
+    /// Produce the BLAKE3 hash that the delegator signs.
+    ///
+    /// Domain-separated by `DELEGATE_BOND_SIGNING_DOMAIN`; commits to
+    /// `delegate` and `bond_count`. Re-targeting (changing `delegate`) or
+    /// re-sizing (changing `bond_count`) invalidates the signature. The
+    /// `delegator` field is NOT in the commitment because the signature is
+    /// verified WITH `delegator` as the public key — including delegator in
+    /// the commitment would be redundant.
+    #[must_use]
+    pub fn signing_message(&self) -> crypto::Hash {
+        let mut buf = Vec::with_capacity(DELEGATE_BOND_SIGNING_DOMAIN.len() + 32 + 4);
+        buf.extend_from_slice(DELEGATE_BOND_SIGNING_DOMAIN);
+        buf.extend_from_slice(self.delegate.as_bytes());
+        buf.extend_from_slice(&self.bond_count.to_le_bytes());
+        crypto::hash::hash(&buf)
+    }
+
+    /// Serialize to bytes for storage in `extra_data`.
+    ///
+    /// Always emits the authenticated 132-byte form (legacy fields + 64B
+    /// signature). Senders that have not yet signed produce a zero-signature
+    /// version which will fail post-activation verification — consistent
+    /// with "missing signature = invalid".
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::new();
+        let mut bytes = Vec::with_capacity(Self::AUTHENTICATED_BYTES_LEN);
+        bytes.extend_from_slice(self.delegator.as_bytes());
+        bytes.extend_from_slice(self.delegate.as_bytes());
+        bytes.extend_from_slice(&self.bond_count.to_le_bytes());
+        bytes.extend_from_slice(self.signature.as_bytes());
+        bytes
+    }
+
+    /// Serialize to the legacy (pre-activation) 68-byte form.
+    ///
+    /// Used by tests that need to simulate a pre-activation submitter.
+    /// Production code should use [`Self::to_bytes`].
+    pub fn to_bytes_legacy(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(Self::LEGACY_BYTES_LEN);
         bytes.extend_from_slice(self.delegator.as_bytes());
         bytes.extend_from_slice(self.delegate.as_bytes());
         bytes.extend_from_slice(&self.bond_count.to_le_bytes());
         bytes
     }
 
-    /// Deserialize from bytes
+    /// Deserialize from bytes. Accepts ONLY the legacy 68-byte form or the
+    /// authenticated 132-byte form; any other length returns `None`. Partial
+    /// signatures are explicitly rejected.
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() < 68 {
-            return None;
-        }
+        let has_signature = match bytes.len() {
+            Self::AUTHENTICATED_BYTES_LEN => true,
+            Self::LEGACY_BYTES_LEN => false,
+            _ => return None,
+        };
         let delegator_bytes: [u8; 32] = bytes[0..32].try_into().ok()?;
         let delegate_bytes: [u8; 32] = bytes[32..64].try_into().ok()?;
         let bond_count = u32::from_le_bytes(bytes[64..68].try_into().ok()?);
+        let signature = if has_signature {
+            crypto::Signature::try_from_slice(&bytes[68..132]).ok()?
+        } else {
+            crypto::Signature::default()
+        };
         Some(Self {
             delegator: PublicKey::from_bytes(delegator_bytes),
             delegate: PublicKey::from_bytes(delegate_bytes),
             bond_count,
+            signature,
         })
     }
 }
@@ -221,40 +313,92 @@ impl DelegateBondData {
 /// Revoke a previously delegated bond.
 ///
 /// DELEGATION_UNBONDING_SLOTS delay applies before weight is removed.
+///
+/// See [`DelegateBondData`] for the INC-I-078 M2 wire-format and signature
+/// semantics — RevokeDelegation gets the same authentication treatment under
+/// constraint C7 (`specs/delegation-architecture.md` §7.3). Layout:
+///
+/// * **Legacy form (64 bytes)** — `delegator(32) || delegate(32)`.
+/// * **Authenticated form (128 bytes)** — legacy + 64B signature over
+///   [`RevokeDelegationData::signing_message`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RevokeDelegationData {
     /// Public key of the delegator revoking
     pub delegator: PublicKey,
     /// Public key of the delegate to revoke from
     pub delegate: PublicKey,
+    /// Delegator's Ed25519 signature over [`signing_message`]
+    /// (INC-I-078 M2). Defaults to all-zeros for the legacy form.
+    ///
+    /// [`signing_message`]: Self::signing_message
+    #[serde(default)]
+    pub signature: crypto::Signature,
 }
 
 impl RevokeDelegationData {
+    /// Length of the legacy (pre-auth) on-wire encoding.
+    pub const LEGACY_BYTES_LEN: usize = 32 + 32;
+    /// Length of the authenticated on-wire encoding (legacy + 64B signature).
+    pub const AUTHENTICATED_BYTES_LEN: usize = Self::LEGACY_BYTES_LEN + 64;
+
     pub fn new(delegator: PublicKey, delegate: PublicKey) -> Self {
         Self {
             delegator,
             delegate,
+            signature: crypto::Signature::default(),
         }
     }
 
-    /// Serialize to bytes for storage in extra_data
+    /// Produce the BLAKE3 hash that the delegator signs.
+    ///
+    /// Commits to `delegate` only — RevokeDelegationData carries no
+    /// `bond_count`. The single piece of state the delegator needs to
+    /// authenticate is "I want to revoke my delegation to this delegate".
+    #[must_use]
+    pub fn signing_message(&self) -> crypto::Hash {
+        let mut buf = Vec::with_capacity(REVOKE_DELEGATION_SIGNING_DOMAIN.len() + 32);
+        buf.extend_from_slice(REVOKE_DELEGATION_SIGNING_DOMAIN);
+        buf.extend_from_slice(self.delegate.as_bytes());
+        crypto::hash::hash(&buf)
+    }
+
+    /// Serialize to bytes for storage in `extra_data`. Always emits the
+    /// authenticated 128-byte form.
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::new();
+        let mut bytes = Vec::with_capacity(Self::AUTHENTICATED_BYTES_LEN);
+        bytes.extend_from_slice(self.delegator.as_bytes());
+        bytes.extend_from_slice(self.delegate.as_bytes());
+        bytes.extend_from_slice(self.signature.as_bytes());
+        bytes
+    }
+
+    /// Serialize to the legacy (pre-activation) 64-byte form.
+    pub fn to_bytes_legacy(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(Self::LEGACY_BYTES_LEN);
         bytes.extend_from_slice(self.delegator.as_bytes());
         bytes.extend_from_slice(self.delegate.as_bytes());
         bytes
     }
 
-    /// Deserialize from bytes
+    /// Deserialize. Accepts ONLY the legacy 64-byte form or the authenticated
+    /// 128-byte form; any other length returns `None`.
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() < 64 {
-            return None;
-        }
+        let has_signature = match bytes.len() {
+            Self::AUTHENTICATED_BYTES_LEN => true,
+            Self::LEGACY_BYTES_LEN => false,
+            _ => return None,
+        };
         let delegator_bytes: [u8; 32] = bytes[0..32].try_into().ok()?;
         let delegate_bytes: [u8; 32] = bytes[32..64].try_into().ok()?;
+        let signature = if has_signature {
+            crypto::Signature::try_from_slice(&bytes[64..128]).ok()?
+        } else {
+            crypto::Signature::default()
+        };
         Some(Self {
             delegator: PublicKey::from_bytes(delegator_bytes),
             delegate: PublicKey::from_bytes(delegate_bytes),
+            signature,
         })
     }
 }

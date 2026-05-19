@@ -1,3 +1,6 @@
+<!-- OUTPUT CONTRACT: N/A — security spec document, not a test -->
+<!-- INPUT PARTITIONS: N/A — security spec document -->
+
 # DOLI Security
 
 This document describes the security model, threat analysis, cryptographic foundations, and implementation security measures of the DOLI protocol.
@@ -321,6 +324,33 @@ Validators verify:
 - Eliminates collusion between accusers and validators
 - Removes gaming opportunities from slashing mechanism
 - Deflationary: reduces total supply
+
+#### 4.2.1 Delegator Slashing — Tezos LPoS Equivalence (INC-I-078)
+
+**DOLI delegator principal is never slashed.** Equivocation slashing
+burns only the offending producer's self-bond. This is a structural
+consequence of DOLI's UTXO ownership invariant (CS1: only the
+delegator's Ed25519 key can spend their bond UTXOs) — a
+consensus-forced UTXO destruction for delegated bonds would be the
+first and only exception to this invariant.
+
+When `slash_producer` runs, `cleanup_all_delegations` (in
+`crates/storage/src/producer/set_lifecycle.rs:165-178`) returns every
+delegator's principal to them — they lose only the *weight*
+contribution they had assigned to the slashed producer.
+
+This is functionally equivalent to **Tezos LPoS slashing** ("the
+delegate alone is slashed for the validator's misbehavior" — Tezos
+protocol manual, Adaptive Issuance & Liquid PoS). Polkadot-NPoS /
+Cosmos-SDK style proportional burning of delegator principal does NOT
+port to DOLI and is removed from the delegation-mitigation menu
+(`specs/delegation-architecture.md` §7.2.1).
+
+This is an INTENTIONAL design, not a gap. Producers and delegators
+should be aware that delegating amplifies the *governance* and
+*reward* attack surface (your weight contribution can be misused) but
+not the *capital* attack surface (your principal cannot be burned by a
+producer's misbehavior).
 
 ### 4.3 Economic Attack Costs
 

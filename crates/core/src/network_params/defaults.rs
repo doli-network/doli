@@ -103,6 +103,29 @@ impl NetworkParams {
                 // Post-H: v6.21.18+ behavior (filter weight=0 out).
                 inc_i_068_weight_filter_activation_height: 197_800,
 
+                // INC-I-078: delegation concentration mitigation (approved
+                // bundle, User Gate 2026-05-17). Defaults to disabled
+                // (activation height u64::MAX, cap u64::MAX) on mainnet until
+                // the operator picks a concrete future height before deploy.
+                // BOTH heights must be set to the SAME value to ship the
+                // bundle atomically.
+                // INC-I-078 mainnet activation: cap=3000 (= MAX_BONDS_PER_PRODUCER),
+                // both gates flip atomically at h=231_830. Cap value chosen for
+                // symmetry with the own-bonds ceiling: total influence per producer
+                // <= 2 * MAX_BONDS_PER_PRODUCER, skin-in-game floor >= 50%.
+                received_delegation_cap: 3000,
+                received_delegation_cap_activation_height: 231_830,
+                delegation_auth_activation_height: 231_830,
+                // INC-I-080: AddBond cap enforcement pinned to h=231_830 —
+                // co-deployed atomically with the INC-I-078 bundle (same
+                // upgrade event, same lead-time analysis: mainnet tip 229_105
+                // at d885a449 → ~7.57h binary-distribution lead). Above the
+                // chain head (F7: NOT retroactive). Pre-231_830 the historical
+                // clip path runs; at 231_830 every upgraded node begins
+                // rejecting over-cap AddBonds in lockstep. Once crossed this
+                // height is IMMUTABLE — never move it forward (INC-I-054).
+                addbond_cap_enforcement_activation_height: 231_830,
+
                 // Gossip mesh: universal config for all network sizes.
                 // mesh_n=12 keeps all peers in eager-push for networks ≤24 (mesh_n_high),
                 // and scales to 1000+ nodes at ~3-4 hops with 10s slot margin.
@@ -197,6 +220,17 @@ impl NetworkParams {
                 // apply the INC-I-068 filter (matches current testnet runtime).
                 inc_i_068_weight_filter_activation_height: 0,
 
+                // INC-I-078: testnet active from genesis to exercise cap+auth
+                // paths before mainnet activation (h=231_830). Cap=3000 matches
+                // mainnet; can be overridden via env vars for cap-tuning tests.
+                received_delegation_cap: 3000,
+                received_delegation_cap_activation_height: 0,
+                delegation_auth_activation_height: 0,
+                // INC-I-080: AddBond cap active from genesis on testnet to
+                // exercise the post-activation reject path before mainnet
+                // activation (h=231_830).
+                addbond_cap_enforcement_activation_height: 0,
+
                 // INC-I-015: Gossip mesh sized to max_peers for eager push to ALL
                 // connected peers. At mesh_n=12, blocks reach 12 peers immediately
                 // and the rest via IHAVE (lazy, 1+ heartbeat delay). At 120+ nodes
@@ -283,6 +317,19 @@ impl NetworkParams {
                 ghost_exclusion_activation_height: 0, // Always active on devnet
                 // INC-I-075: Always active on devnet (clean chain).
                 inc_i_068_weight_filter_activation_height: 0,
+                // INC-I-078: devnet default disabled (u64::MAX). Tests that
+                // exercise cap/auth behavior set these explicitly via override
+                // or env vars; default mirrors mainnet so the unit tests for
+                // the feature must opt in.
+                received_delegation_cap: u64::MAX,
+                received_delegation_cap_activation_height: u64::MAX,
+                delegation_auth_activation_height: u64::MAX,
+                // INC-I-080: devnet default disabled (u64::MAX) — mirrors the
+                // INC-I-078 devnet rationale. Cap tests pass explicit
+                // activation heights to `check_addbond_cap` and do not depend
+                // on this default; existing devnet/test flows stay
+                // byte-identical (no surprise enforcement).
+                addbond_cap_enforcement_activation_height: u64::MAX,
                 // Gossip mesh: same universal config as mainnet.
                 // With --no-dht, mesh_n_high=24 keeps all devnet peers in mesh.
                 mesh_n: 12,
