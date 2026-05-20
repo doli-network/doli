@@ -740,6 +740,39 @@ grep -i "produced\|block" /var/log/doli-node.log | tail -20
 
 ---
 
+## 6b. How to Diagnose a Fork in 5 Seconds
+
+**Available after workflow #346 ships (fork-diagnostic observability, Phase 1).**
+
+When a node forks or falls behind, run one command to get a full diagnostic:
+
+```bash
+# Machine-readable JSON (for agents or piping to jq)
+doli forks --last 1h
+
+# Human-readable summary (for operator audit)
+doli forks --last 1h --human
+
+# Full causal chain for the most recent fork event
+doli forks --explain
+
+# Attribution: which producer is causing the most forks?
+doli forks --by-producer
+```
+
+The `doli forks` command calls the `getForkDiagnostic` RPC, which returns a self-contained `DiagnosticBundle` with: every fork-relevant event in the time window, a typed classification (e.g., `TipRaceNatural`, `EpochBoundaryInvalid`, `RollbackLoop`, or `Unknown` with evidence), and a baseline comparison showing whether fork rate is abnormal.
+
+For agent-driven diagnosis, call the RPC directly:
+```bash
+curl -s -X POST http://127.0.0.1:8500 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"getForkDiagnostic","params":{"window_secs":3600},"id":1}' | jq .result
+```
+
+See `docs/fork_observability.md` for the full schema reference and `docs/rpc_reference.md` for the RPC specification.
+
+---
+
 ## 7. Sync Recovery & State Root Divergence
 
 ### 7.1. Recovery Order

@@ -279,8 +279,10 @@ fn rule_f_tip_race_natural(events: &[DiagnosticEvent]) -> Option<Classification>
         let fork_height = fork_ev.height;
         let latency = find_validation_duration(events, fork_height);
 
-        // Rule (e) already checked > 2000, so if we get here latency <= 2000
-        if latency > 2000 {
+        // Rule (f) per spec: validation_duration < 500ms (tight fast-race window).
+        // Middle range 500-2000ms intentionally falls through to Unknown for human
+        // escalation (rule e covers > 2000ms, this rule covers fast races only).
+        if latency >= 500 {
             continue;
         }
 
@@ -293,7 +295,7 @@ fn rule_f_tip_race_natural(events: &[DiagnosticEvent]) -> Option<Classification>
             fork_type: ForkType::TipRaceNatural,
             confidence: 0.70,
             evidence_event_ids: vec![fork_ev.event_id.clone()],
-            recommended_action: Some("none_natural_fork".to_string()),
+            recommended_action: Some("normal_operation".to_string()),
             recommended_action_args: None,
         });
     }

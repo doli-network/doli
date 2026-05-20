@@ -8,7 +8,7 @@
 |----|------|--------|-------------|-----------|-----|---------|--------|
 | M1 | Types + Ledger + Emitter Trait | COMPLETE | DONE (40 tests) | DONE (bccb1bdf) | DONE (APPROVED) | — | bccb1bdf |
 | M2 | Writer Task + Emit Sites | REWORK_DONE | DONE (29+3+2 tests) | DONE (1ffc5df8 + 32327fdc + QA-iter-1 fix) | NEEDS-REWORK iter-1 RESOLVED (EMIT-006, EMIT-007 wired + mod.rs size fixed) | — | 1ffc5df8 + 32327fdc + pending |
-| M3 | Queries + Classifier + RPC | DEV_DONE | DONE (15+17+12=44 tests) | DONE | — | — | pending-commit |
+| M3 | Queries + Classifier + RPC | QA_DONE | DONE (15+17+12=44 tests) | DONE (adc03bdd) | DONE (APPROVED — 2 non-blocking OBS) | — | adc03bdd |
 | M4 | CLI + Docs | PENDING | — | — | — | — | — |
 
 ## M1 Test Traceability

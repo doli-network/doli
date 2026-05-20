@@ -1,3 +1,8 @@
+<!--
+OUTPUT CONTRACT: N/A — specs index file (not a test file)
+INPUT PARTITIONS: N/A — specs index file (not a test file)
+-->
+
 # SPECS - Technical Specifications Index
 
 Master index for all DOLI protocol specifications.
@@ -19,6 +24,7 @@ Master index for all DOLI protocol specifications.
 |------|-------------|
 | [single-proposer-architecture.md](./single-proposer-architecture.md) | Single-Proposer-Per-Slot migration architecture - protocol v2 gating, attestation fork choice, emergency fallback, 3-phase implementation plan |
 | [gui-architecture.md](./gui-architecture.md) | GUI Desktop Application architecture - Tauri 2.x app structure, shared wallet crate, VDF feature flag, CI/CD pipeline, security model |
+| [fork-observability-architecture.md](./fork-observability-architecture.md) | Fork-diagnostic observability architecture (workflow #346) — trait-injected emitter, async writer task, separate RocksDB ledger, getForkDiagnostic RPC, deterministic classifier, 4-milestone plan. Phase 1 scope. |
 
 ## Future Interface Specifications
 
@@ -32,6 +38,7 @@ Master index for all DOLI protocol specifications.
 |------|-------------|
 | [single-proposer-requirements.md](./single-proposer-requirements.md) | Single-Proposer-Per-Slot requirements - migration from multi-rank fallback to single proposer, attestation fork choice |
 | [gui-desktop-requirements.md](./gui-desktop-requirements.md) | GUI Desktop Application requirements - Tauri 2.x cross-platform wallet with full CLI feature parity |
+| [fork-observability-requirements.md](./fork-observability-requirements.md) | Fork-diagnostic observability requirements — Phase 1: emitter, separate RocksDB ledger, getForkDiagnostic RPC, deterministic classifier, JSON-default CLI (workflow #346). Designed for agent consumption with `--human` audit rendering. |
 
 ## Improvement Specifications
 
@@ -64,6 +71,8 @@ specs/
 ├── single-proposer-requirements.md   # Single-proposer migration requirements
 ├── gui-architecture.md               # GUI Desktop Application architecture
 ├── gui-desktop-requirements.md       # GUI Desktop Application requirements
+├── fork-observability-requirements.md # Fork-diagnostic observability requirements (#346)
+├── fork-observability-architecture.md # Fork-diagnostic observability architecture (#346)
 ├── l2-settlement.md                  # L2 settlement interface (ZKSettle / ZKRollup)
 ├── improvements/
 │   ├── apply-block-modularization.md # Apply-block modularization
