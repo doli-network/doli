@@ -115,6 +115,7 @@ fn fake_peer_id() -> PeerId {
     PeerId::random()
 }
 
+#[allow(dead_code)]
 fn fake_event_id() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -509,11 +510,7 @@ async fn test_apply_block_gossip_has_peer_provenance() {
                 "received_at_ms must be populated for gossip"
             );
             let recv = received_at_ms.unwrap();
-            let delta = if recv > before_apply {
-                recv - before_apply
-            } else {
-                before_apply - recv
-            };
+            let delta = recv.abs_diff(before_apply);
             assert!(
                 delta < 5_000,
                 "received_at_ms should be close to wall clock (within 5s)"

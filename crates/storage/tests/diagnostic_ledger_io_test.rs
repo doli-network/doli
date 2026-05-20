@@ -156,7 +156,7 @@ fn test_record_and_query_range_by_kind() {
     for ev in &r {
         assert_eq!(ev.kind, EventKind::BlockApplied);
         let h = ev.height.unwrap();
-        assert!(h >= 40 && h <= 80, "height {} out of range", h);
+        assert!((40..=80).contains(&h), "height {} out of range", h);
     }
 }
 
@@ -169,7 +169,7 @@ fn test_query_recent_respects_window() {
 
     let now = now_ms();
     let ev_recent = make_event_with_ts(EventKind::BlockApplied, 100, now - 30 * 60_000);
-    let ev_old = make_event_with_ts(EventKind::BlockApplied, 50, now - 2 * 3600_000);
+    let ev_old = make_event_with_ts(EventKind::BlockApplied, 50, now - 2 * 3_600_000);
     let recent_id = ev_recent.event_id.clone();
 
     ledger.record(&ev_old).unwrap();
@@ -288,8 +288,8 @@ fn test_prune_removes_age_expired_events() {
     let ledger = DiagnosticLedger::open(dir.path()).expect("open");
 
     let now = now_ms();
-    let ev_old = make_event_with_ts(EventKind::BlockApplied, 1, now - 31 * 86400_000);
-    let ev_fresh = make_event_with_ts(EventKind::BlockApplied, 1000, now - 3600_000);
+    let ev_old = make_event_with_ts(EventKind::BlockApplied, 1, now - 31 * 86_400_000);
+    let ev_fresh = make_event_with_ts(EventKind::BlockApplied, 1000, now - 3_600_000);
     let old_id = ev_old.event_id.clone();
 
     ledger.record(&ev_old).unwrap();
@@ -418,7 +418,7 @@ fn test_prune_all_events_stale() {
     let dir = tempfile::tempdir().unwrap();
     let ledger = DiagnosticLedger::open(dir.path()).expect("open");
 
-    let ancient = now_ms() - 60 * 86400_000;
+    let ancient = now_ms() - 60 * 86_400_000;
     for i in 0..10u64 {
         ledger
             .record(&make_event_with_ts(EventKind::BlockApplied, i, ancient + i))

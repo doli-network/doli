@@ -268,6 +268,12 @@ pub struct Node {
     /// None if the ledger failed to open (graceful degradation per REQ-FORKOBS-LEDGER-009).
     #[allow(dead_code)] // Used by integration tests and M3 RPC
     pub diagnostic_ledger: Option<Arc<DiagnosticLedger>>,
+
+    /// Shutdown sender for the diagnostic writer + pruner tasks.
+    /// When the node shuts down, sending `true` tells both tasks to drain and exit.
+    /// `None` when diagnostics are disabled (ledger failed to open) or in test mode.
+    #[allow(dead_code)]
+    pub diagnostic_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
 }
 
 /// INC-I-055: Number of health samples to track in the rolling window.
@@ -383,6 +389,11 @@ impl Node {
     /// Shutdown the node
     pub async fn shutdown(&mut self) -> Result<()> {
         info!("Shutting down node...");
+
+        // Signal diagnostic writer + pruner tasks to drain and exit.
+        if let Some(ref tx) = self.diagnostic_shutdown_tx {
+            let _ = tx.send(true);
+        }
 
         // Set shutdown flag
         *self.shutdown.write().await = true;

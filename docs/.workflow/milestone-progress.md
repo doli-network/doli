@@ -7,7 +7,7 @@
 | ID | Name | Status | Test-Writer | Developer | QA | Reviewer | Commit |
 |----|------|--------|-------------|-----------|-----|---------|--------|
 | M1 | Types + Ledger + Emitter Trait | COMPLETE | DONE (40 tests) | DONE (bccb1bdf) | DONE (APPROVED) | — | bccb1bdf |
-| M2 | Writer Task + Emit Sites | TESTS_DONE | DONE (29 tests) | — | — | — | — |
+| M2 | Writer Task + Emit Sites | DEV_DONE | DONE (29+3 tests) | DONE (1ffc5df8 + 32327fdc) | — | — | 1ffc5df8 + 32327fdc |
 | M3 | Queries + Classifier + RPC | PENDING | — | — | — | — | — |
 | M4 | CLI + Docs | PENDING | — | — | — | — | — |
 
@@ -54,6 +54,16 @@
 | REQ-FORKOBS-SEC-005 | diagnostic_emit_test | test_node_with_no_config_emits_events |
 | REQ-FORKOBS-SEC-006 | diagnostic_writer_pruner_test | test_no_activation_height_added, test_no_hardfork_schedule_entry_added |
 | Emit failure graceful | diagnostic_emit_test | test_emit_failure_does_not_affect_apply_block |
+| E2E wiring (LEDGER-006) | diagnostic_e2e_test | test_e2e_event_flows_from_emit_to_ledger |
+| E2E pruning (LEDGER-004) | diagnostic_e2e_test | test_e2e_pruner_removes_old_events |
+| E2E graceful degradation (LEDGER-009) | diagnostic_e2e_test | test_e2e_node_starts_when_diagnostics_dir_unwritable |
+
+## M2 Follow-Up Notes
+- Writer task (`diagnostic_writer.rs`): drains AsyncChannelEmitter receiver in batches of 16, writes to DiagnosticLedger, emits WriterHeartbeat every 60s directly to ledger (FM-4b), drains all remaining events on shutdown.
+- Pruner task (`diagnostics_pruner.rs`): runs every 60s, reads DOLI_DIAG_RETENTION_DAYS (default 30) and DOLI_DIAG_MAX_EVENTS (default 100k) from env, calls ledger.prune().
+- Init wiring (`init.rs`): production Node::new() opens DiagnosticLedger, creates AsyncChannelEmitter(1024), spawns writer+pruner tasks via tokio::spawn with watch::channel shutdown. Falls back to NoOpEmitter on failure.
+- Test/replay constructors: unchanged (NoOpEmitter, no tasks spawned).
+- Genesis-mismatch guard at `block_handling.rs:~433` (ExtendsTip arm): PENDING REVIEWER DECISION — added in 1ffc5df8, not modified in follow-up. Reviewer will rule on keep/refactor/revert.
 
 ## Decisions in effect (from architect O1-O7)
 - O1: trait DiagnosticEmitter + AsyncChannelEmitter writer task

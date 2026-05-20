@@ -132,6 +132,7 @@ pub fn make_event_with_ts(kind: EventKind, height: u64, timestamp_ms: u64) -> Di
 }
 
 /// Build a DiagnosticEvent with a specific correlation key.
+#[allow(dead_code)]
 pub fn make_event_with_correlation(
     kind: EventKind,
     height: u64,

@@ -937,7 +937,7 @@ impl Node {
         // Capture the network before `config` is moved into Self below.
         let network_for_schedule = config.network;
 
-        Ok(Self {
+        let mut node = Self {
             config,
             params,
             block_store,
@@ -1013,7 +1013,53 @@ impl Node {
             diagnostic_emitter: Arc::new(storage::diagnostic_ledger::emitter::NoOpEmitter)
                 as Arc<dyn storage::diagnostic_ledger::emitter::DiagnosticEmitter>,
             diagnostic_ledger: None,
-        })
+            diagnostic_shutdown_tx: None,
+        };
+
+        // --- Diagnostic writer + pruner wiring (M2 follow-up) ---
+        // Attempt to open the DiagnosticLedger. On success: create AsyncChannelEmitter,
+        // spawn writer + pruner tasks. On failure: log warning, keep NoOpEmitter.
+        match DiagnosticLedger::open(&node.config.data_dir) {
+            Ok(ledger) => {
+                let ledger = Arc::new(ledger);
+                let (emitter, receiver) =
+                    storage::diagnostic_ledger::emitter::AsyncChannelEmitter::new(1024);
+                let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+                // Spawn writer task
+                let writer_ledger = ledger.clone();
+                tokio::spawn(super::diagnostic_writer::run_writer_task(
+                    receiver,
+                    writer_ledger,
+                    shutdown_rx.clone(),
+                ));
+
+                // Spawn pruner task
+                let pruner_ledger = ledger.clone();
+                tokio::spawn(super::diagnostics_pruner::run_pruner_task(
+                    pruner_ledger,
+                    shutdown_rx,
+                ));
+
+                node.diagnostic_emitter = Arc::new(emitter)
+                    as Arc<dyn storage::diagnostic_ledger::emitter::DiagnosticEmitter>;
+                node.diagnostic_ledger = Some(ledger);
+                node.diagnostic_shutdown_tx = Some(shutdown_tx);
+                info!(
+                    "[Diagnostics] Ledger opened at {:?}, writer + pruner spawned",
+                    node.config.data_dir.join("diagnostics")
+                );
+            }
+            Err(e) => {
+                warn!(
+                    "DiagnosticLedger failed to open ({:?}); diagnostics disabled",
+                    e
+                );
+                // Node continues with NoOpEmitter (graceful degradation per REQ-FORKOBS-LEDGER-009)
+            }
+        }
+
+        Ok(node)
     }
 
     /// Create a minimal Node for integration tests.
@@ -1204,6 +1250,7 @@ impl Node {
             diagnostic_emitter: Arc::new(storage::diagnostic_ledger::emitter::NoOpEmitter)
                 as Arc<dyn storage::diagnostic_ledger::emitter::DiagnosticEmitter>,
             diagnostic_ledger: None,
+            diagnostic_shutdown_tx: None,
         })
     }
 
@@ -1378,6 +1425,7 @@ impl Node {
             diagnostic_emitter: Arc::new(storage::diagnostic_ledger::emitter::NoOpEmitter)
                 as Arc<dyn storage::diagnostic_ledger::emitter::DiagnosticEmitter>,
             diagnostic_ledger: None,
+            diagnostic_shutdown_tx: None,
         })
     }
 }

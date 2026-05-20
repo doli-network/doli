@@ -33,7 +33,7 @@ use diagnostic_helpers::{make_event, now_ms};
 use storage::diagnostic_ledger::{
     types::{
         BaselineComparison, BlockProvenance, Classification, CorrelationKey, DiagnosticBundle,
-        DiagnosticHealth, EventKind, EventPayload, ForkSummary, ForkType,
+        DiagnosticHealth, EventKind, ForkSummary, ForkType,
     },
     DiagnosticLedger,
 };
