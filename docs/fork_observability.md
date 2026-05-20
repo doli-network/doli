@@ -171,3 +171,23 @@ broken epoch-boundary block (missing EpochReward) triggers classifier rule 2,
 producing an `EpochBoundaryInvalid` classification with confidence ~0.85 and
 `recommended_action=investigate_producer`. The classification is correct and
 specific without log grep.
+
+## Phase 2 — Not Yet Implemented
+
+The following capabilities are EXPLICITLY DEFERRED to a separate future workflow.
+Agents reading this doc should NOT expect these features in Phase 1:
+
+| Capability | Status | Notes |
+|------------|--------|-------|
+| Historical-log replay tool (`doli forks replay --log <file>`) | DEFERRED | Will ingest existing 1.9 GB log files offline and emit DiagnosticBundle for retroactive analysis |
+| `getFleetForkDiagnostic` cross-fleet correlation RPC | DEFERRED | Will query multiple peers and synthesize a fleet-wide view |
+| `schemars` / JSON Schema export (`docs/fork_observability_schema.json`) | DEFERRED | Will publish a machine-readable schema agents can validate against |
+| Fork honeypot debug mode | DEFERRED | Test-infra; separate workflow |
+| Pre-fork warning stream / push alerts | DEFERRED | Different observability domain (prediction vs diagnosis) |
+| Causality DAG / fork tree visualization | DEFERRED | Human UI; agents use the `caused_by_event_id` chain field instead |
+| Dashboard / explorer integration | DEFERRED | Pending stable RPC schema |
+
+**Note on `classification` field**: the RPC handler always populates `classification`
+with at least `ForkType::Unknown` when no fork-specific rules match. The JSON
+schema declares it as `Classification | null` for forward compatibility, but
+Phase 1 always returns a non-null value.
