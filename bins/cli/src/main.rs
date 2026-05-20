@@ -13,6 +13,7 @@ mod cmd_bridge;
 mod cmd_chain;
 mod cmd_channel;
 mod cmd_forks;
+mod cmd_forks_fleet;
 mod cmd_governance;
 mod cmd_guardian;
 mod cmd_init;
@@ -498,10 +499,22 @@ async fn main() -> Result<()> {
             human,
             explain,
             by_producer,
+            fleet,
             rpc,
         } => {
             let ep = rpc.as_deref().unwrap_or(&rpc_endpoint);
-            cmd_forks::cmd_forks(ep, last, human, explain, by_producer).await?;
+            if let Some(ref fleet_str) = fleet {
+                let peers = match cmd_forks_fleet::parse_fleet_arg(fleet_str) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
+                        std::process::exit(2);
+                    }
+                };
+                cmd_forks_fleet::cmd_forks_fleet(ep, peers, last, human).await?;
+            } else {
+                cmd_forks::cmd_forks(ep, last, human, explain, by_producer).await?;
+            }
         }
         Commands::Snap {
             data_dir,

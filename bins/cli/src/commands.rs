@@ -574,6 +574,10 @@ pub(crate) enum Commands {
         #[arg(long)]
         by_producer: bool,
 
+        /// Query the whole fleet: comma-separated list of peer RPC URLs
+        #[arg(long)]
+        fleet: Option<String>,
+
         /// Override RPC endpoint for this command
         #[arg(long)]
         rpc: Option<String>,
