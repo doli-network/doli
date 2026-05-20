@@ -8,7 +8,7 @@
 |----|------|--------|-------------|-----------|-----|---------|--------|
 | M1 | Types + Ledger + Emitter Trait | COMPLETE | DONE (40 tests) | DONE (bccb1bdf) | DONE (APPROVED) | — | bccb1bdf |
 | M2 | Writer Task + Emit Sites | REWORK_DONE | DONE (29+3+2 tests) | DONE (1ffc5df8 + 32327fdc + QA-iter-1 fix) | NEEDS-REWORK iter-1 RESOLVED (EMIT-006, EMIT-007 wired + mod.rs size fixed) | — | 1ffc5df8 + 32327fdc + pending |
-| M3 | Queries + Classifier + RPC | PENDING | — | — | — | — | — |
+| M3 | Queries + Classifier + RPC | DEV_DONE | DONE (15+17+12=44 tests) | DONE | — | — | pending-commit |
 | M4 | CLI + Docs | PENDING | — | — | — | — | — |
 
 ## M1 Test Traceability
@@ -73,3 +73,41 @@
 - O5: first-match-wins classifier rules; 300s temporal window for PostSnapDeadTip; "no other signals" = no fork-classified event in same correlation_key group
 - O6: extract `bins/node/src/node/diagnostics_pruner.rs` from periodic.rs
 - O7: `ulid` crate accepted as new dependency
+
+## M3 Test Traceability
+
+| Requirement | Test File | Test Function(s) |
+|-------------|-----------|-------------------|
+| REQ-FORKOBS-LEDGER-007 (Must) | diagnostic_queries_test | test_query_range_filters_by_kind, test_query_range_filters_by_height, test_query_range_respects_limit, test_query_range_empty_when_no_matches, test_query_range_kind_none_returns_all_kinds, test_query_range_after_prune_returns_only_surviving |
+| REQ-FORKOBS-LEDGER-008 (Must) | diagnostic_queries_test | test_query_recent_window_bounds, test_query_recent_orders_deterministically, test_query_recent_limit |
+| REQ-FORKOBS-SEC-003 (Must) | diagnostic_queries_test | test_query_range_limit_capped_at_10000; diagnostics_rpc_test: test_rpc_limit_capped_at_10000 |
+| REQ-FORKOBS-LEDGER-005+007 | diagnostic_queries_test | test_query_range_after_prune_returns_only_surviving |
+| REQ-FORKOBS-RPC-004 (Should) | diagnostic_queries_test | test_query_causal_chain_follows_links, test_query_causal_chain_max_depth, test_query_causal_chain_breaks_on_missing, test_query_causal_chain_self_referential_loop_does_not_infinite_loop |
+| REQ-FORKOBS-CLF-001 (Must) | diagnostic_classifier_test | test_classifier_confidence_bounded, test_classifier_evidence_event_ids_non_empty_for_specific_variant |
+| REQ-FORKOBS-CLF-002 (Must) | diagnostic_classifier_test | test_rule_g_unknown_with_evidence, test_classifier_empty_input, test_classifier_unknown_carries_evidence |
+| REQ-FORKOBS-CLF-003 (Must) | diagnostic_classifier_test | test_classifier_is_pure_function |
+| REQ-FORKOBS-CLF-004 (Should) | diagnostic_classifier_test | test_classifier_recommended_action_for_each_named_variant |
+| REQ-FORKOBS-CLF-005 (Must) | diagnostic_classifier_test | test_rule_a_producer_equivocation, test_rule_b_epoch_boundary_invalid, test_rule_c_rollback_loop, test_rule_c_three_rollbacks_not_loop, test_rule_d_post_snap_dead_tip, test_rule_d_outside_300s_window, test_rule_e_tip_race_high_latency, test_rule_f_tip_race_natural, test_rule_f_no_other_signals_definition, test_rule_g_unknown_with_evidence, test_first_match_wins_priority |
+| REQ-FORKOBS-RPC-001 (Must) | diagnostics_rpc_test | test_rpc_window_secs_filters_events, test_rpc_fork_event_id_returns_causal_chain, test_rpc_limit_capped_at_10000 |
+| REQ-FORKOBS-RPC-002 (Must) | diagnostics_rpc_test | test_rpc_returns_valid_bundle_schema_version_1, test_rpc_node_peer_id_populated, test_rpc_classification_populated_when_events_match_rule |
+| REQ-FORKOBS-RPC-003 (Must) | diagnostics_rpc_test | test_rpc_fork_summary_counts_by_producer, test_rpc_fork_summary_counts_by_event_kind, test_rpc_first_and_last_fork_height_correct |
+| REQ-FORKOBS-RPC-005 (Must) | diagnostics_rpc_test | test_rpc_returns_error_when_ledger_unavailable |
+| REQ-FORKOBS-RPC-006 (Must) | diagnostics_rpc_test | (wiring test implicit in all tests -- method callable on RpcContext) |
+| REQ-FORKOBS-SEC-002 (Must) | diagnostics_rpc_test | test_rpc_method_is_readonly |
+| REQ-FORKOBS-RETRO-003 (Must) | diagnostic_classifier_test | test_classifier_unknown_carries_evidence, test_classifier_empty_input, test_rule_g_unknown_with_evidence |
+| O5 (first-match-wins) | diagnostic_classifier_test | test_first_match_wins_priority, test_rule_f_no_other_signals_definition |
+| O5 (300s window) | diagnostic_classifier_test | test_rule_d_post_snap_dead_tip, test_rule_d_outside_300s_window |
+| Performance (LEDGER-007) | diagnostic_queries_test | test_query_efficient_prefix_scan (#[ignore]) |
+
+## M3 Developer Notes (from test-writer)
+- `crates/storage/src/diagnostic_ledger/queries.rs` must implement: `query_causal_chain(&self, start_event_id: &str, max_depth: usize) -> Result<Vec<DiagnosticEvent>, StorageError>`. The M1 `query_range` and `query_recent` stubs in mod.rs should delegate to queries.rs with the TODO(M3) replaced.
+- `crates/storage/src/diagnostic_ledger/classifier.rs` must export: `pub fn classify(events: &[DiagnosticEvent]) -> Classification`. Pure function, no I/O. 7 rules in precedence order per architecture spec.
+- `crates/rpc/src/methods/diagnostics.rs` must implement: `async fn get_fork_diagnostic(&self, params: Value) -> Result<Value, RpcError>` on RpcContext.
+- `crates/rpc/src/methods/context.rs` must gain: `pub diagnostic_ledger: Option<Arc<DiagnosticLedger>>` field and `with_diagnostic_ledger()` builder.
+- `crates/rpc/Cargo.toml` must gain dev-dependencies: `tempfile.workspace = true`, `storage = { workspace = true }`, `ulid = "1"`.
+- `crates/storage/src/diagnostic_ledger/mod.rs` must add: `pub mod classifier;` and replace TODO(M3) stubs.
+- The ForkBlockReceived payload does NOT carry `validation_duration_ms`. The classifier tests assume the developer will cross-reference with BlockApplied events at the same height for latency checks, OR add validation_duration_ms to ForkBlockReceived. The test-writer's classifier tests provide both ForkBlockReceived and BlockApplied events in the input slice.
+- RPC test `make_test_rpc_context` needs the full RpcContext dependency chain. Developer may add a `RpcContext::new_for_diagnostic_test()` or adapt the scaffolding.
+- query_range limit should be clamped at the storage layer (min(limit, 10_000)) to enforce SEC-003 before the RPC layer.
+- query_causal_chain must handle cycles (self-referential or mutual) by tracking visited event_ids.
+- The `test_query_efficient_prefix_scan` test is `#[ignore]` to avoid flakiness on CI.

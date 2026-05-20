@@ -10,6 +10,7 @@ use tokio::sync::RwLock;
 use crypto::Hash;
 use doli_core::Transaction;
 use network::SyncManager;
+use storage::diagnostic_ledger::DiagnosticLedger;
 use storage::{BlockStore, ChainState, ProducerSet, StateDb, UtxoSet};
 
 use crate::error::RpcError;
@@ -95,6 +96,8 @@ pub struct RpcContext {
     pub full_bitfield_decode_height: u64,
     /// Rewards epoch list fix activation height (network-specific)
     pub rewards_epoch_list_fix_height: u64,
+    /// Diagnostic ledger for fork observability (M3).
+    pub diagnostic_ledger: Option<Arc<DiagnosticLedger>>,
 }
 
 impl RpcContext {
@@ -151,6 +154,7 @@ impl RpcContext {
             data_dir: None,
             archive_dir: None,
             recovery_mode: Arc::new(AtomicBool::new(false)),
+            diagnostic_ledger: None,
         }
     }
 
@@ -211,6 +215,7 @@ impl RpcContext {
                 data_dir: None,
                 archive_dir: None,
                 recovery_mode: Arc::new(AtomicBool::new(false)),
+                diagnostic_ledger: None,
             }
         }
     }
@@ -317,6 +322,12 @@ impl RpcContext {
     /// Set recovery mode flag (shared with Node for anti-poisoning gate)
     pub fn with_recovery_mode(mut self, rm: Arc<AtomicBool>) -> Self {
         self.recovery_mode = rm;
+        self
+    }
+
+    /// Set diagnostic ledger for fork observability (M3)
+    pub fn with_diagnostic_ledger(mut self, ledger: Option<Arc<DiagnosticLedger>>) -> Self {
+        self.diagnostic_ledger = ledger;
         self
     }
 

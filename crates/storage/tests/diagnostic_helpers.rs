@@ -22,6 +22,7 @@ pub fn now_ms() -> u64 {
 }
 
 /// Build a minimal DiagnosticEvent with the given kind and height.
+#[allow(dead_code)]
 pub fn make_event(kind: EventKind, height: u64) -> DiagnosticEvent {
     make_event_with_ts(kind, height, now_ms())
 }

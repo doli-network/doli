@@ -19,6 +19,7 @@ mod backfill;
 mod balance;
 mod block;
 mod context;
+mod diagnostics;
 mod dispatch;
 mod governance;
 mod guardian;

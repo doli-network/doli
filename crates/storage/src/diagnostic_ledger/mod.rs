@@ -9,7 +9,9 @@
 //! methods. In production (M2), a dedicated async writer task will own the
 //! ledger and drain events from the `AsyncChannelEmitter`.
 
+pub mod classifier;
 pub mod emitter;
+pub mod queries;
 pub mod types;
 
 use std::path::Path;
@@ -87,57 +89,22 @@ impl DiagnosticLedger {
 
     /// Query recent events within a time window.
     ///
-    /// Returns events whose `timestamp_ms` falls within `[now - window_secs*1000, now]`,
+    /// Delegates to `queries::query_recent_impl`. Returns events whose
+    /// `timestamp_ms` falls within `[now - window_secs*1000, now]`,
     /// ordered oldest-first, capped by `limit`.
-    ///
-    /// // TODO(M3): Replace full-table scan with time-indexed prefix scan.
     pub fn query_recent(
         &self,
         window_secs: u64,
         limit: usize,
     ) -> Result<Vec<DiagnosticEvent>, StorageError> {
-        let cf = self
-            .db
-            .cf_handle(CF_EVENTS)
-            .ok_or_else(|| StorageError::Database("cf_events not found".into()))?;
-
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-        let cutoff_ms = now_ms.saturating_sub(window_secs * 1000);
-
-        let mut results = Vec::new();
-        let iter = self.db.iterator_cf(cf, rocksdb::IteratorMode::Start);
-        for item in iter {
-            let (_, value) = item.map_err(|e| StorageError::Database(e.to_string()))?;
-            let event = Self::deserialize_event(&value)?;
-            if event.timestamp_ms >= cutoff_ms {
-                results.push(event);
-            }
-            if results.len() >= limit {
-                break;
-            }
-        }
-        // Sort by timestamp then event_id for stable oldest-first ordering
-        results.sort_by(|a, b| {
-            a.timestamp_ms
-                .cmp(&b.timestamp_ms)
-                .then_with(|| a.event_id.cmp(&b.event_id))
-        });
-        if results.len() > limit {
-            results.truncate(limit);
-        }
-        Ok(results)
+        self.query_recent_impl(window_secs, limit)
     }
 
     /// Query events by kind and height range.
     ///
-    /// When `kind` is `Some`, only events matching that kind are returned.
-    /// When `kind` is `None`, all events in the height range are returned.
-    /// Results are ordered oldest-first, capped by `limit`.
-    ///
-    /// // TODO(M3): Replace full-table scan with prefix-seek by kind+height.
+    /// Delegates to `queries::query_range_impl`. When `kind` is `Some`,
+    /// only events matching that kind are returned. Limit is clamped to
+    /// 10,000 (REQ-FORKOBS-SEC-003).
     pub fn query_range(
         &self,
         kind: Option<EventKind>,
@@ -145,40 +112,19 @@ impl DiagnosticLedger {
         max_height: u64,
         limit: usize,
     ) -> Result<Vec<DiagnosticEvent>, StorageError> {
-        let cf = self
-            .db
-            .cf_handle(CF_EVENTS)
-            .ok_or_else(|| StorageError::Database("cf_events not found".into()))?;
+        self.query_range_impl(kind, min_height, max_height, limit)
+    }
 
-        let mut results = Vec::new();
-        let iter = self.db.iterator_cf(cf, rocksdb::IteratorMode::Start);
-        for item in iter {
-            let (_, value) = item.map_err(|e| StorageError::Database(e.to_string()))?;
-            let event = Self::deserialize_event(&value)?;
-
-            if let Some(k) = kind {
-                if event.kind != k {
-                    continue;
-                }
-            }
-            let h = event.height.unwrap_or(0);
-            if h < min_height || h > max_height {
-                continue;
-            }
-            results.push(event);
-            if results.len() >= limit {
-                break;
-            }
-        }
-        results.sort_by(|a, b| {
-            a.timestamp_ms
-                .cmp(&b.timestamp_ms)
-                .then_with(|| a.event_id.cmp(&b.event_id))
-        });
-        if results.len() > limit {
-            results.truncate(limit);
-        }
-        Ok(results)
+    /// Follow `caused_by_event_id` links from `start_event_id` up to
+    /// `max_depth` hops, returning the causal chain oldest-first.
+    ///
+    /// Cycle detection prevents infinite loops on self-referential data.
+    pub fn query_causal_chain(
+        &self,
+        start_event_id: &str,
+        max_depth: usize,
+    ) -> Result<Vec<DiagnosticEvent>, StorageError> {
+        self.query_causal_chain_impl(start_event_id, max_depth)
     }
 
     /// Prune events by age and count cap, preserving cascade-origin pins.
