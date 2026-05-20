@@ -1835,7 +1835,87 @@ doli wipe --network testnet --yes
 
 ---
 
-## 24. WHITEPAPER Operations Mapping
+
+## 24. Fork Diagnostics
+
+Query, diagnose, and replay fork events from the node's diagnostic ledger.
+
+### 24.1. Single-Node Diagnosis
+
+```bash
+# JSON output (default, last 1 hour)
+doli forks --last 1h
+
+# Human-readable output
+doli forks --last 1h --human
+
+# Show the most recent fork event's full causal chain
+doli forks --explain
+
+# Aggregate fork events by producer
+doli forks --by-producer
+
+# Custom time window
+doli forks --last 24h --human
+
+# Override RPC endpoint
+doli forks --rpc http://127.0.0.1:8501 --human
+```
+
+### 24.2. Fleet-Wide Diagnosis
+
+Query multiple peer RPCs in parallel and aggregate into a fleet diagnostic bundle:
+
+```bash
+doli forks --fleet http://127.0.0.1:8501,http://127.0.0.1:8502,http://127.0.0.1:8503 --human
+```
+
+The `--fleet` flag accepts a comma-separated list of RPC URLs (max 50, configurable
+via `DOLI_FLEET_MAX_PEERS` env). Each peer is queried via `getFleetForkDiagnostic`;
+the output shows per-peer status, fork groups (canonical/fork/undecided partitions),
+divergence points, and a fleet-wide classification.
+
+### 24.3. Offline Log Replay
+
+Replay a historical log file through the diagnostic parser and classifier. No
+running node or RPC connection required:
+
+```bash
+# Human-readable verdict
+doli forks --replay ~/testnet/logs/n10.log --human
+
+# JSON output to stdout
+doli forks --replay ~/testnet/logs/n10.log
+
+# Save bundle to file
+doli forks --replay ~/testnet/logs/n10.log --out incident_bundle.json
+
+# Both file output and human-readable stdout
+doli forks --replay ~/testnet/logs/n10.log --out bundle.json --human
+```
+
+The replay tool produces a `DiagnosticBundle` identical in shape to
+`getForkDiagnostic` but with `node_peer_id = "(log-replay)"` and baseline zeros.
+
+**Note**: `--replay` conflicts with `--fleet`, `--explain`, `--by-producer`, and
+`--rpc` (replay is fully offline).
+
+### 24.4. Options Reference
+
+| Flag | Type | Description |
+|------|------|-------------|
+| `--last <WINDOW>` | string | Time window: `1h`, `30m`, `24h` (default: `1h`) |
+| `--human` | flag | Human-readable output instead of JSON |
+| `--explain` | flag | Show the most recent fork event's causal chain |
+| `--by-producer` | flag | Aggregate fork events by producer pubkey |
+| `--fleet <URLS>` | string | Comma-separated RPC URLs for fleet query |
+| `--rpc <URL>` | string | Override RPC endpoint |
+| `--replay <FILE>` | path | Replay a historical log file offline |
+| `--out <FILE>` | path | Save replay bundle JSON to file (requires `--replay`) |
+
+---
+
+## 25. WHITEPAPER Operations Mapping
 
 | WHITEPAPER Section | CLI Command |
 |--------------------|-------------|
@@ -1859,7 +1939,7 @@ doli wipe --network testnet --yes
 
 ---
 
-## 25. Environment Variables
+## 26. Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
@@ -1872,7 +1952,7 @@ doli wipe --network testnet --yes
 
 ---
 
-## 26. Exit Codes
+## 27. Exit Codes
 
 | Code | Meaning |
 |------|---------|

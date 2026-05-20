@@ -52,6 +52,7 @@ This document describes the DOLI node JSON-RPC API.
 | **Guardian** | `createCheckpoint` | Implemented |
 | **Guardian** | `getGuardianStatus` | Implemented |
 | **Diagnostics** | `getForkDiagnostic` | Implemented |
+| **Diagnostics** | `getFleetForkDiagnostic` | Implemented |
 | **Storage** | `pruneBlocks` | Implemented |
 | **Storage** | `getStorageInfo` | Implemented |
 
@@ -2254,6 +2255,105 @@ Query fork-diagnostic events from the node's diagnostic ledger and receive a cla
 curl -s -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getForkDiagnostic","params":{"window_secs":3600},"id":1}' \
+    | jq .result
+```
+
+### `getFleetForkDiagnostic`
+
+Aggregate fork-diagnostic data across multiple peer nodes in parallel. Operator-side fleet diagnosis — invoke from your local host, not from a peer node.
+
+**Parameters:**
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `peer_rpcs` | string[] | Yes | RPC URLs to query (max 50; configurable via `DOLI_FLEET_MAX_PEERS` env) |
+| `window_secs` | u64 | No | Time window in seconds forwarded to each per-peer query (default: 3600) |
+| `limit` | u64 | No | Maximum events per peer, capped at 10,000 |
+
+**Response:** `FleetBundle`
+
+```json
+{
+    "schema_version": 1,
+    "query_timestamp_ms": 1716220800000,
+    "queried_peers": [
+        {
+            "rpc_url": "peer-0",
+            "node_peer_id": "12D3KooWPeer0",
+            "bundle": { "...DiagnosticBundle..." },
+            "error": null,
+            "query_latency_ms": 89
+        }
+    ],
+    "fleet_summary": {
+        "total_peers_queried": 3,
+        "peers_reachable": 3,
+        "peers_with_diagnostics": 3,
+        "total_fork_events_across_fleet": 15,
+        "unique_fork_groups": 1,
+        "majority_classification": "PostSnapDeadTip",
+        "minority_classifications": []
+    },
+    "fork_groups": [
+        {
+            "correlation_key": {
+                "divergence_height": 110596,
+                "canonical_hash": "1f3aabcd...",
+                "fork_hash": "8a7cef09..."
+            },
+            "peers_on_canonical": ["peer-0", "peer-1"],
+            "peers_on_fork": ["peer-2"],
+            "peers_undecided": [],
+            "representative_classification": {
+                "fork_type": "PostSnapDeadTip",
+                "confidence": 0.80,
+                "evidence_event_ids": ["01HY..."],
+                "recommended_action": "auto_recover",
+                "recommended_action_args": null
+            }
+        }
+    ],
+    "divergence_table": [
+        {
+            "height": 110596,
+            "competing_hashes": [
+                ["1f3aabcd...", ["peer-0", "peer-1"]],
+                ["8a7cef09...", ["peer-2"]]
+            ],
+            "first_seen_ms": 1716200000000,
+            "recommended_action": "auto_recover"
+        }
+    ]
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `schema_version` | Fleet bundle format version (currently 1) |
+| `query_timestamp_ms` | Wall-clock timestamp when the fleet query started |
+| `queried_peers` | Per-peer query results (`PeerStatus`); each includes bundle or error |
+| `fleet_summary` | Fleet-wide aggregates: reachable peers, total fork events, majority/minority classifications |
+| `fork_groups` | Fork events grouped by correlation key; peers partitioned into canonical/fork/undecided |
+| `divergence_table` | Heights where peers disagree on block hash, with competing hashes and recommended actions |
+
+**Timeouts:**
+- Per-peer: 5s (configurable via `DOLI_FLEET_PEER_TIMEOUT_SECS` env)
+- Total request: 30s wall-clock
+
+**Error codes:**
+- `-32602` — invalid params (too many peers exceeds `DOLI_FLEET_MAX_PEERS`, empty `peer_rpcs`, etc.)
+- `-32603` — internal error (total timeout exceeded)
+
+**Notes:**
+- RPC URLs from `peer_rpcs` are redacted to `peer-N` positional labels in the returned `FleetBundle` (PII guard — no IP addresses in output).
+- Each peer is queried via `getForkDiagnostic` in parallel; individual peer failures do not fail the whole request (the failed peer's `PeerStatus.error` field describes the failure).
+- See [`docs/fork_observability.md`](fork_observability.md) for the full schema reference.
+
+**Example:**
+```bash
+curl -s -X POST http://127.0.0.1:8500 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getFleetForkDiagnostic","params":{"peer_rpcs":["http://127.0.0.1:8501","http://127.0.0.1:8502","http://127.0.0.1:8503"],"window_secs":3600},"id":1}' \
     | jq .result
 ```
 

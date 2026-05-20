@@ -775,6 +775,40 @@ If the classification is `Unknown`, the bundle still contains structured evidenc
 - Look for repeating `RecoveryClassifyCall` events with climbing `last_applied_secs` (INC-I-083 pattern)
 - Look for `BlockRejected` at epoch boundaries (INC-I-081 pattern)
 
+### Step 4: Retrospective analysis from logs
+
+If you have a saved log file from a past incident (e.g. `~/testnet/logs/n10.log`), run:
+
+```bash
+doli forks --replay ~/testnet/logs/n10.log --human
+```
+
+This parses diagnostic events from the log file, runs the classifier, and emits a
+verdict. Use this for post-mortem analysis or when you need to understand WHY a past
+incident classified the way it did. No running node or RPC connection is required.
+
+The replay tool produces an `Unknown` verdict for novel patterns — the
+`evidence_event_ids` field still names the smoking-gun events, so it is actionable
+even without a named classification.
+
+To save the full bundle for later analysis:
+
+```bash
+doli forks --replay ~/testnet/logs/n10.log --out incident_bundle.json
+```
+
+### Step 5: Fleet-wide diagnosis
+
+If multiple nodes are affected, query the whole fleet in one shot:
+
+```bash
+doli forks --fleet http://127.0.0.1:8501,http://127.0.0.1:8502,http://127.0.0.1:8503 --human
+```
+
+This calls `getFleetForkDiagnostic`, which queries each peer's `getForkDiagnostic`
+in parallel and aggregates the results. The output shows which peers are on the
+canonical chain vs. a fork, divergence heights, and a fleet-wide classification.
+
 ### Agent-driven diagnosis (RPC directly)
 
 ```bash

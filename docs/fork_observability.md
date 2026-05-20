@@ -117,11 +117,12 @@ interface CorrelationKey {
   even when pruning by age or count, ensuring trigger events survive cascades
 - **Pruner cadence**: every 60 seconds
 
+
 ---
 
 ## RPC
 
-**Method**: `getForkDiagnostic`
+### `getForkDiagnostic` (per-node)
 
 **Params**: `{ window_secs: u64, limit?: u64, fork_event_id?: string }`
 
@@ -130,6 +131,33 @@ interface CorrelationKey {
 **Error codes**: `-32603` when the diagnostic ledger is unavailable
 
 See [docs/rpc_reference.md](rpc_reference.md) for full specification and examples.
+
+### `getFleetForkDiagnostic` (fleet-wide)
+
+**Params**: `{ peer_rpcs: string[], window_secs?: u64, limit?: u64 }`
+
+- `peer_rpcs` (required): RPC URLs to query. Max 50 (env `DOLI_FLEET_MAX_PEERS`).
+- `window_secs` (optional, default 3600): forwarded to each per-peer `getForkDiagnostic`.
+- `limit` (optional, capped at 10,000): forwarded to each per-peer query.
+
+**Returns**: `FleetBundle` — aggregates per-peer `DiagnosticBundle` results into:
+
+| Field | Description |
+|-------|-------------|
+| `schema_version` | Fleet bundle format version (currently 1) |
+| `query_timestamp_ms` | Wall-clock ms when the fleet query started |
+| `queried_peers[]` | Per-peer `PeerStatus` (redacted URL, optional bundle or error, latency) |
+| `fleet_summary` | Reachable peers, total fork events, majority/minority classifications |
+| `fork_groups[]` | Fork events grouped by `CorrelationKey`; peers partitioned into canonical/fork/undecided |
+| `divergence_table[]` | Heights where peers disagree on block hash, with recommended actions |
+
+**Timeouts**: 5s per peer (`DOLI_FLEET_PEER_TIMEOUT_SECS`), 30s total wall-clock.
+
+**Error codes**: `-32602` (too many peers / invalid params), `-32603` (total timeout).
+
+**PII guard**: `peer_rpcs` URLs are redacted to `peer-N` labels in the output. No IP addresses appear in the serialized `FleetBundle`.
+
+See [docs/rpc_reference.md](rpc_reference.md) for the full `FleetBundle` JSON example.
 
 ---
 
@@ -147,47 +175,102 @@ doli forks --explain
 
 # Attribution by producer
 doli forks --by-producer
+
+# Fleet-wide query (Phase 2a)
+doli forks --fleet http://127.0.0.1:8501,http://127.0.0.1:8502 --human
+
+# Offline replay from a historical log file (Phase 2a)
+doli forks --replay ~/testnet/logs/n10.log --human
+
+# Replay with JSON output to file
+doli forks --replay ~/testnet/logs/n10.log --out bundle.json
 ```
 
 See [docs/cli.md](cli.md) for full CLI reference.
 
 ---
 
-## Retroactive Validation
+## Replay Tool
 
-### INC-I-083 (REQ-FORKOBS-RETRO-001)
+The replay tool (`doli forks --replay <LOG_FILE>`) ingests a raw node log file
+offline, parses diagnostic events from log lines, runs the classifier, and
+outputs a `DiagnosticBundle`. No running node or RPC connection is needed.
 
-The schema captures the full `RecoveryClassifyCall` event with all 12 fields
-from `RecoveryContext`. INC-I-083's root cause (classify() coverage hole causing
-HeaderFirstSync loop) would produce an `Unknown` classification with
-`reason_unknown` pointing directly at the repeating `action_returned=HeaderFirstSync`
-pattern with climbing `last_applied_secs`. Evidence event IDs link to each
-`RecoveryClassifyCall` that shows the loop. Estimated agent diagnosis time: <60s.
+**Output bundle shape**: identical to `getForkDiagnostic` except:
+- `node_peer_id` = `"(log-replay)"`
+- `health.ledger_available` = `false`
+- `baseline` = zeros (no 24h history available from a log file)
 
-### INC-I-081 (REQ-FORKOBS-RETRO-002)
+**Recognized log patterns** (13 parsers in `crates/storage/src/diagnostic_ledger/log_replay/parsers.rs`):
 
-The schema captures `BlockRejected` events with `rejection_reason`. INC-I-081's
-broken epoch-boundary block (missing EpochReward) triggers classifier rule 2,
-producing an `EpochBoundaryInvalid` classification with confidence ~0.85 and
-`recommended_action=investigate_producer`. The classification is correct and
-specific without log grep.
+| Parser | Log pattern | EventKind |
+|--------|-------------|-----------|
+| `parse_block_applied` | `[BLOCK] Applied h=... hash=... producer=...` | `BlockApplied` |
+| `parse_block_rejected` | `Block rejected: ...` | `BlockRejected` |
+| `parse_block_reject_structured` | `[BLOCK] REJECT slot=S h=H producer=P error=R` | `BlockRejected` |
+| `parse_rollback_initiating` | `[ROLLBACK] Initiating: ...` | `RollbackStarted` |
+| `parse_rolling_back_from` | `Rolling back from h=...` | `RollbackStarted` |
+| `parse_reorg_complete` | `[REORG] Complete: ...` | `ReorgExecuted` |
+| `parse_health` | `[HEALTH] h=... s=... hash=...` | `WriterHeartbeat` |
+| `parse_stuck_sync` | `[RECOVERY] Stuck sync detected ...` | `RecoveryClassifyCall` |
+| `parse_snap_attempted` | `[SNAP] Attempting snap sync ...` | `SnapSyncAttempted` |
+| `parse_snap_completed` | `[SNAP] Completed ...` | `SnapSyncCompleted` |
+| `parse_snap_failed` | `[SNAP] Failed ...` | `SnapSyncFailed` |
+| `parse_chain_break` | `[SYNC] Chain break ...` | `ChainBreakDetected` |
+| `parse_fork_guard` | `[FORK_GUARD] ...` | `ForkBlockReceived` |
 
-## Phase 2 — Not Yet Implemented
+**Note**: `parse_block_reject_structured` was added in M4 after the INC-I-081
+fixture campaign discovered that production nodes emit `[BLOCK] REJECT slot=S h=H
+producer=P error=R` (structured format) rather than the plain-text `Block rejected:`
+format. Both parsers are active; the structured parser fires first in dispatch order.
 
-The following capabilities are EXPLICITLY DEFERRED to a separate future workflow.
-Agents reading this doc should NOT expect these features in Phase 1:
+---
+
+## Empirical Schema Validation
+
+### INC-I-083 (REQ-FORKOBS-RETRO-001) — Validated via replay fixture
+
+**Fixture**: `crates/storage/tests/fixtures/inc_i083_replay.log` (178 lines from
+real `~/testnet/logs/n10.log`, captured 2026-05-19).
+
+**Result**: Classifier verdict **Unknown** with chain-break events as evidence.
+The repeating header chain breaks during a stuck sync recovery loop have no named
+`ForkType` variant — `Unknown` with `evidence_event_ids` pointing at
+`ChainBreakDetected` events is the correct and actionable output.
+
+**Coverage gap identified**: a named variant (e.g., `HeaderRecoveryStuck` or
+`ChainBreakLoop`) is a Phase 2b candidate.
+
+### INC-I-081 (REQ-FORKOBS-RETRO-002) — Validated via replay fixture
+
+**Fixture**: `crates/storage/tests/fixtures/inc_i081_replay.log` (12 lines
+synthesized to production log format).
+
+**Result**: Classifier verdict **EpochBoundaryInvalid** (rule b, confidence 0.90).
+Schema adequate — the classifier correctly identifies the broken epoch-boundary
+block pattern without log grep.
+
+**Parser gap closed**: M4 added `parse_block_reject_structured` to handle the
+actual production `[BLOCK] REJECT` format discovered during fixture testing.
+
+---
+
+## Phase 2b — Deferred
+
+The following capabilities are explicitly deferred to future workflows:
 
 | Capability | Status | Notes |
 |------------|--------|-------|
-| Historical-log replay tool (`doli forks replay --log <file>`) | DEFERRED | Will ingest existing 1.9 GB log files offline and emit DiagnosticBundle for retroactive analysis |
-| `getFleetForkDiagnostic` cross-fleet correlation RPC | DEFERRED | Will query multiple peers and synthesize a fleet-wide view |
-| `schemars` / JSON Schema export (`docs/fork_observability_schema.json`) | DEFERRED | Will publish a machine-readable schema agents can validate against |
-| Fork honeypot debug mode | DEFERRED | Test-infra; separate workflow |
-| Pre-fork warning stream / push alerts | DEFERRED | Different observability domain (prediction vs diagnosis) |
+| `schemars` / JSON Schema export (`docs/fork_observability_schema.json`) | DEFERRED | Machine-readable schema for agent validation |
 | Causality DAG / fork tree visualization | DEFERRED | Human UI; agents use the `caused_by_event_id` chain field instead |
 | Dashboard / explorer integration | DEFERRED | Pending stable RPC schema |
+| Fork honeypot debug mode | DEFERRED | Test-infra; separate workflow |
+| Pre-fork warning stream / push alerts | DEFERRED | Different observability domain (prediction vs diagnosis) |
+| Performance optimization beyond stream-parse + parallel queries | DEFERRED | Current implementation handles 1.9 GB logs and 50-peer fleets |
+| authn/authz for the fleet RPC | DEFERRED | Currently operator-side only (no external exposure) |
+| Named `ForkType` variant for header chain-break recovery loops | DEFERRED | Currently classifies as `Unknown` — INC-I-083 is the canonical example. Candidate names: `HeaderRecoveryStuck`, `ChainBreakLoop` |
 
 **Note on `classification` field**: the RPC handler always populates `classification`
 with at least `ForkType::Unknown` when no fork-specific rules match. The JSON
 schema declares it as `Classification | null` for forward compatibility, but
-Phase 1 always returns a non-null value.
+the current implementation always returns a non-null value.
