@@ -12,6 +12,7 @@
 pub mod classifier;
 pub mod emitter;
 pub mod fleet;
+pub mod log_replay;
 pub mod queries;
 pub mod types;
 

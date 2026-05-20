@@ -18,6 +18,7 @@ serde_json.workspace = true
 bincode.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 ulid = "1"
+chrono = { workspace = true }
 
 [dev-dependencies]
 tempfile.workspace = true
