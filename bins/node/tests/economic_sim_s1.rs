@@ -367,7 +367,7 @@ async fn economic_sim_s1_baseline() {
             if completed_epoch == 0 {
                 let block = build_coinbase_block(height, slot, prev_hash, producer, &node.params);
                 prev_hash = block.hash();
-                node.apply_block(block, ValidationMode::Light)
+                node.apply_block(block, ValidationMode::Light, None)
                     .await
                     .unwrap_or_else(|e| panic!("apply_block failed at h={}: {}", height, e));
                 expected_total_minted += node.params.block_reward(height);
@@ -386,7 +386,7 @@ async fn economic_sim_s1_baseline() {
             .await;
 
             prev_hash = block.hash();
-            node.apply_block(block, ValidationMode::Light)
+            node.apply_block(block, ValidationMode::Light, None)
                 .await
                 .unwrap_or_else(|e| {
                     panic!(
@@ -560,7 +560,7 @@ async fn economic_sim_s1_baseline() {
             // Normal (non-boundary) block
             let block = build_coinbase_block(height, slot, prev_hash, producer, &node.params);
             prev_hash = block.hash();
-            node.apply_block(block, ValidationMode::Light)
+            node.apply_block(block, ValidationMode::Light, None)
                 .await
                 .unwrap_or_else(|e| panic!("apply_block failed at h={}: {}", height, e));
             expected_total_minted += node.params.block_reward(height);
@@ -606,7 +606,7 @@ async fn economic_sim_s1_smoke() {
                 // Skip epoch 0 distribution
                 let block = build_coinbase_block(height, slot, prev_hash, producer, &node.params);
                 prev_hash = block.hash();
-                node.apply_block(block, ValidationMode::Light)
+                node.apply_block(block, ValidationMode::Light, None)
                     .await
                     .unwrap_or_else(|e| panic!("apply_block failed at h={}: {}", height, e));
                 continue;
@@ -623,7 +623,7 @@ async fn economic_sim_s1_smoke() {
             .await;
 
             prev_hash = block.hash();
-            node.apply_block(block, ValidationMode::Light)
+            node.apply_block(block, ValidationMode::Light, None)
                 .await
                 .unwrap_or_else(|e| {
                     panic!(
@@ -672,7 +672,7 @@ async fn economic_sim_s1_smoke() {
         } else {
             let block = build_coinbase_block(height, slot, prev_hash, producer, &node.params);
             prev_hash = block.hash();
-            node.apply_block(block, ValidationMode::Light)
+            node.apply_block(block, ValidationMode::Light, None)
                 .await
                 .unwrap_or_else(|e| panic!("apply_block failed at h={}: {}", height, e));
         }

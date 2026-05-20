@@ -586,7 +586,10 @@ impl Node {
         // but fails apply validation), rollback + purge + return Ok so the next
         // production tick retries with a clean mempool.
         // See: testnet incident 2026-03-25, NFT token_id poisoned mempool.
-        match self.apply_block(block.clone(), ValidationMode::Light).await {
+        match self
+            .apply_block(block.clone(), ValidationMode::Light, None)
+            .await
+        {
             Ok(()) => {} // Success — proceed to broadcast
             Err(e) => {
                 warn!(

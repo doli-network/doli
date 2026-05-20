@@ -1,5 +1,7 @@
 use super::*;
+use storage::diagnostic_ledger::types::BlockProvenance;
 
+mod diagnostics;
 mod genesis_completion;
 mod governance;
 mod post_commit;
@@ -34,13 +36,20 @@ impl Node {
     ///
     /// `mode`: `Full` for gossip/production (checks MAX_PAST_SLOTS, VDF),
     ///         `Light` for sync/reorg (skips time-based checks that reject old blocks).
-    pub async fn apply_block(&mut self, block: Block, mode: ValidationMode) -> Result<()> {
+    /// `provenance`: Network origin metadata (Some for gossip, None for self-produced/replay/recovery).
+    pub async fn apply_block(
+        &mut self,
+        block: Block,
+        mode: ValidationMode,
+        provenance: Option<BlockProvenance>,
+    ) -> Result<()> {
         // Recovery mode: drop all inbound blocks silently (anti-poisoning gate).
         // Replay mode bypasses this — disaster recovery must proceed regardless.
         if mode != ValidationMode::Replay && self.recovery_mode.load(Ordering::Relaxed) {
             return Ok(());
         }
 
+        let validation_start = Instant::now();
         let block_hash = block.hash();
 
         let height = self.chain_state.read().await.best_height + 1;
@@ -102,8 +111,30 @@ impl Node {
             }
         }
 
-        self.validate_block_for_apply(&block, height, mode).await?;
-        self.validate_block_economics(&block, height, mode).await?;
+        if let Err(e) = self.validate_block_for_apply(&block, height, mode).await {
+            diagnostics::emit_block_rejected(
+                &*self.diagnostic_emitter,
+                &block,
+                block_hash,
+                height,
+                mode,
+                &provenance,
+                &e.to_string(),
+            );
+            return Err(e.into());
+        }
+        if let Err(e) = self.validate_block_economics(&block, height, mode).await {
+            diagnostics::emit_block_rejected(
+                &*self.diagnostic_emitter,
+                &block,
+                block_hash,
+                height,
+                mode,
+                &provenance,
+                &e.to_string(),
+            );
+            return Err(e);
+        }
 
         {
             let blocks_per_epoch = self.config.network.blocks_per_reward_epoch();
@@ -456,6 +487,17 @@ impl Node {
         // Note: Don't broadcast here. Blocks received from the network should not be
         // re-broadcast (they already came from the network). Locally produced blocks
         // should be broadcast explicitly by the caller (produce_block).
+
+        // Emit block_applied diagnostic event (fire-and-forget)
+        diagnostics::emit_block_applied(
+            &*self.diagnostic_emitter,
+            &block,
+            block_hash,
+            height,
+            mode,
+            &provenance,
+            validation_start.elapsed().as_millis() as u64,
+        );
 
         Ok(())
     }

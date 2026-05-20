@@ -156,7 +156,7 @@ impl TestNetwork {
         self.nodes[node_id]
             .lock()
             .await
-            .apply_block(block, ValidationMode::Light)
+            .apply_block(block, ValidationMode::Light, None)
             .await
             .map_err(|e| format!("Node {} apply_block failed: {}", node_id, e))
     }
@@ -181,7 +181,9 @@ impl TestNetwork {
                 let block = block.clone();
                 async move {
                     let mut n = node.lock().await;
-                    n.apply_block(block, ValidationMode::Light).await.is_ok()
+                    n.apply_block(block, ValidationMode::Light, None)
+                        .await
+                        .is_ok()
                 }
             })
             .collect();
@@ -209,7 +211,7 @@ impl TestNetwork {
         // Apply to the producing node first
         {
             let mut n = self.nodes[0].lock().await;
-            n.apply_block(block.clone(), ValidationMode::Light)
+            n.apply_block(block.clone(), ValidationMode::Light, None)
                 .await
                 .map_err(|e| format!("Producer apply failed: {}", e))?;
         }
@@ -678,7 +680,10 @@ impl TestNetwork {
             let mut node = self.nodes[node_id].lock().await;
 
             // Try direct apply
-            match node.apply_block(block.clone(), ValidationMode::Light).await {
+            match node
+                .apply_block(block.clone(), ValidationMode::Light, None)
+                .await
+            {
                 Ok(()) => {
                     applied_direct += 1;
                     continue;
@@ -779,7 +784,11 @@ impl TestNetwork {
                         };
                         if let Some(blk) = blk {
                             let mut node = self.nodes[node_id].lock().await;
-                            if node.apply_block(blk, ValidationMode::Light).await.is_ok() {
+                            if node
+                                .apply_block(blk, ValidationMode::Light, None)
+                                .await
+                                .is_ok()
+                            {
                                 synced_blocks += 1;
                             } else {
                                 break;
@@ -825,7 +834,9 @@ impl TestNetwork {
                 let block = block.clone();
                 async move {
                     let mut n = node.lock().await;
-                    n.apply_block(block, ValidationMode::Light).await.is_ok()
+                    n.apply_block(block, ValidationMode::Light, None)
+                        .await
+                        .is_ok()
                 }
             })
             .collect();
@@ -856,7 +867,7 @@ impl TestNetwork {
                     match n.check_producer_eligibility(&block).await {
                         Ok(()) => {
                             // Step 2: apply_block (consensus)
-                            match n.apply_block(block, ValidationMode::Light).await {
+                            match n.apply_block(block, ValidationMode::Light, None).await {
                                 Ok(()) => 0u8, // accepted
                                 Err(_) => 2u8, // rejected at apply
                             }
@@ -1111,7 +1122,7 @@ impl TestNetwork {
                     match n.check_producer_eligibility(&block).await {
                         Ok(()) => {
                             // Gate 2: apply_block
-                            match n.apply_block(block, ValidationMode::Light).await {
+                            match n.apply_block(block, ValidationMode::Light, None).await {
                                 Ok(()) => 0u8, // accepted
                                 Err(_) => 2u8, // rejected at apply (duplicate, etc)
                             }
@@ -1161,7 +1172,10 @@ impl TestNetwork {
                     if let Some(block) = block {
                         // Backfill bypasses check_producer_eligibility — it's sync, not gossip
                         let mut n = self.nodes[node_id].lock().await;
-                        if n.apply_block(block, ValidationMode::Light).await.is_ok() {
+                        if n.apply_block(block, ValidationMode::Light, None)
+                            .await
+                            .is_ok()
+                        {
                             total_backfilled += 1;
                         }
                     }
@@ -1192,7 +1206,10 @@ impl TestNetwork {
                         let mut n = self.nodes[node_id].lock().await;
                         match n.check_producer_eligibility(&block).await {
                             Ok(()) => {
-                                if n.apply_block(block, ValidationMode::Light).await.is_ok() {
+                                if n.apply_block(block, ValidationMode::Light, None)
+                                    .await
+                                    .is_ok()
+                                {
                                     total_backfilled += 1;
                                 }
                             }
@@ -1321,7 +1338,7 @@ impl TestNetwork {
                 };
                 if let Some(block) = block {
                     let mut node = self.nodes[node_id].lock().await;
-                    match node.apply_block(block, ValidationMode::Light).await {
+                    match node.apply_block(block, ValidationMode::Light, None).await {
                         Ok(()) => applied += 1,
                         Err(_) => break,
                     }

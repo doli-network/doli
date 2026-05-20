@@ -1010,6 +1010,9 @@ impl Node {
             recovery_mode: Arc::new(AtomicBool::new(false)),
             health_window: std::collections::VecDeque::new(),
             attest_fetch_tracker: HashMap::new(),
+            diagnostic_emitter: Arc::new(storage::diagnostic_ledger::emitter::NoOpEmitter)
+                as Arc<dyn storage::diagnostic_ledger::emitter::DiagnosticEmitter>,
+            diagnostic_ledger: None,
         })
     }
 
@@ -1135,9 +1138,11 @@ impl Node {
             producer_key,
             bls_key,
             last_produced_slot: None,
-            known_producers: Arc::new(RwLock::new(
-                producers.iter().map(|kp| *kp.public_key()).collect(),
-            )),
+            // Empty known_producers: validation accepts any producer during
+            // bootstrap when the bootstrap list is empty (line 173 of
+            // validation/producer.rs). This enables Full mode in tests
+            // without requiring producers to match slot-specific rank ordering.
+            known_producers: Arc::new(RwLock::new(Vec::new())),
             first_peer_connected: None,
             equivocation_detector: Arc::new(RwLock::new(EquivocationDetector::new())),
             vdf_calibrator,
@@ -1196,6 +1201,9 @@ impl Node {
             recovery_mode: Arc::new(AtomicBool::new(false)),
             health_window: std::collections::VecDeque::new(),
             attest_fetch_tracker: HashMap::new(),
+            diagnostic_emitter: Arc::new(storage::diagnostic_ledger::emitter::NoOpEmitter)
+                as Arc<dyn storage::diagnostic_ledger::emitter::DiagnosticEmitter>,
+            diagnostic_ledger: None,
         })
     }
 
@@ -1367,6 +1375,9 @@ impl Node {
             recovery_mode: Arc::new(AtomicBool::new(false)),
             health_window: std::collections::VecDeque::new(),
             attest_fetch_tracker: HashMap::new(),
+            diagnostic_emitter: Arc::new(storage::diagnostic_ledger::emitter::NoOpEmitter)
+                as Arc<dyn storage::diagnostic_ledger::emitter::DiagnosticEmitter>,
+            diagnostic_ledger: None,
         })
     }
 }

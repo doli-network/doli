@@ -220,7 +220,7 @@ impl Node {
                         let mut cache = self.fork_block_cache.write().await;
                         cache.remove(&block.hash());
                     }
-                    self.apply_block(block, ValidationMode::Full).await?;
+                    self.apply_block(block, ValidationMode::Full, None).await?;
                 }
 
                 return Ok(());
@@ -688,7 +688,7 @@ impl Node {
         // Use Light validation — consistent with execute_reorg (block_handling.rs)
         // since the block comes from fork recovery (peer-provided, VDF already
         // validated at gossip layer).
-        self.apply_block(candidate.clone(), ValidationMode::Light)
+        self.apply_block(candidate.clone(), ValidationMode::Light, None)
             .await?;
         Ok(true)
     }

@@ -5,6 +5,8 @@
 
 mod apply_block;
 mod block_handling;
+pub mod diagnostic_writer;
+pub mod diagnostics_pruner;
 mod event_loop;
 mod fork_recovery;
 mod genesis;
@@ -67,6 +69,8 @@ use network::{
 };
 use rpc::{Mempool, MempoolPolicy, RpcContext, RpcServer, RpcServerConfig, SyncStatus};
 use storage::archiver::ArchiveBlock;
+use storage::diagnostic_ledger::emitter::DiagnosticEmitter;
+use storage::diagnostic_ledger::DiagnosticLedger;
 use storage::{BlockStore, ChainState, PendingProducerUpdate, ProducerSet, StateDb, UtxoSet};
 use updater::is_using_placeholder_keys;
 
@@ -254,6 +258,16 @@ pub struct Node {
     /// Max 3 peers per hash, 30s TTL. Eliminates ~94% false-positive fetches
     /// where gossip delivers the block 1-2ms after the attestation.
     pub attest_fetch_tracker: HashMap<Hash, (Instant, u8, PeerId)>,
+
+    /// Fork-diagnostic emitter (M2). Fire-and-forget recording of diagnostic events.
+    /// Default: NoOpEmitter (graceful degradation). In tests: MockEmitter for introspection.
+    /// In production: AsyncChannelEmitter backed by diagnostic_writer task.
+    pub diagnostic_emitter: Arc<dyn DiagnosticEmitter>,
+
+    /// Diagnostic ledger (M2). Separate RocksDB at `<data_dir>/diagnostics/`.
+    /// None if the ledger failed to open (graceful degradation per REQ-FORKOBS-LEDGER-009).
+    #[allow(dead_code)] // Used by integration tests and M3 RPC
+    pub diagnostic_ledger: Option<Arc<DiagnosticLedger>>,
 }
 
 /// INC-I-055: Number of health samples to track in the rolling window.
@@ -358,6 +372,12 @@ impl Node {
 
     pub fn set_maintainer_state(&mut self, state: Arc<RwLock<storage::MaintainerState>>) {
         self.maintainer_state = Some(state);
+    }
+
+    /// Replace the diagnostic emitter (for test injection).
+    #[allow(dead_code)] // Used by integration tests
+    pub fn set_diagnostic_emitter(&mut self, emitter: Arc<dyn DiagnosticEmitter>) {
+        self.diagnostic_emitter = emitter;
     }
 
     /// Shutdown the node

@@ -143,7 +143,7 @@ async fn inc_i_071_mid_epoch_blocks_have_empty_producer_snapshot() {
     let chain_len = (blocks_per_epoch as usize) + 3;
     let chain = build_chain(1, 1, Hash::ZERO, &producers[0], chain_len, &params);
     for block in &chain {
-        node.apply_block(block.clone(), ValidationMode::Light)
+        node.apply_block(block.clone(), ValidationMode::Light, None)
             .await
             .unwrap_or_else(|e| panic!("apply_block failed at h={}: {}", block.header.slot, e));
     }
@@ -230,7 +230,7 @@ async fn inc_i_071_rollback_with_empty_snapshot_preserves_producers() {
     // Apply 5 mid-epoch blocks.
     let chain = build_chain(1, 1, Hash::ZERO, &producers[0], 5, &params);
     for block in &chain {
-        node.apply_block(block.clone(), ValidationMode::Light)
+        node.apply_block(block.clone(), ValidationMode::Light, None)
             .await
             .unwrap_or_else(|e| panic!("apply_block failed: {}", e));
     }
@@ -283,7 +283,7 @@ async fn inc_i_071_legacy_full_snapshot_still_restores() {
     // Apply 5 mid-epoch blocks.
     let chain = build_chain(1, 1, Hash::ZERO, &producers[0], 5, &params);
     for block in &chain {
-        node.apply_block(block.clone(), ValidationMode::Light)
+        node.apply_block(block.clone(), ValidationMode::Light, None)
             .await
             .unwrap_or_else(|e| panic!("apply_block failed: {}", e));
     }

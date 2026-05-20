@@ -87,7 +87,7 @@ fn build_chain(
 
 async fn apply_chain(node: &mut Node, blocks: &[Block]) {
     for block in blocks {
-        node.apply_block(block.clone(), ValidationMode::Light)
+        node.apply_block(block.clone(), ValidationMode::Light, None)
             .await
             .unwrap_or_else(|e| panic!("apply_block failed at h={}: {}", block.header.slot, e));
     }
@@ -425,7 +425,7 @@ async fn test_rollback_across_epoch_boundary() {
 
     // Apply block 4 (epoch boundary)
     let boundary_block = build_block(4, 4, chain.last().unwrap().hash(), &producers[0], &params);
-    node.apply_block(boundary_block.clone(), ValidationMode::Light)
+    node.apply_block(boundary_block.clone(), ValidationMode::Light, None)
         .await
         .unwrap();
 

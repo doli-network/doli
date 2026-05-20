@@ -89,7 +89,7 @@ fn build_chain(
 /// Apply a chain of blocks to a node with Light validation (skip VDF).
 async fn apply_chain(node: &mut Node, blocks: &[Block]) {
     for block in blocks {
-        node.apply_block(block.clone(), ValidationMode::Light)
+        node.apply_block(block.clone(), ValidationMode::Light, None)
             .await
             .unwrap_or_else(|e| panic!("apply_block failed at h={}: {}", block.header.slot, e));
     }
@@ -167,7 +167,7 @@ async fn test_cumulative_rollback_resets_on_sync() {
 
     // Apply a block via sync (not produced by us) — should reset depth
     let sync_block = build_block(12, 12, chain[10].hash(), &producers[1], &params);
-    node.apply_block(sync_block, ValidationMode::Light)
+    node.apply_block(sync_block, ValidationMode::Light, None)
         .await
         .unwrap();
 
@@ -288,7 +288,7 @@ async fn test_recovery_after_rollback_cap() {
 
     // Send a valid block via sync — should apply and reset the cap
     let sync_block = build_block(6, 6, chain[4].hash(), &producers[1], &params);
-    node.apply_block(sync_block.clone(), ValidationMode::Light)
+    node.apply_block(sync_block.clone(), ValidationMode::Light, None)
         .await
         .unwrap();
 

@@ -1,4 +1,5 @@
 use super::*;
+use storage::diagnostic_ledger::types::{DiagnosticEvent, EventKind, EventPayload};
 
 impl Node {
     /// Unconditionally roll back 1 block for fork recovery.
@@ -89,6 +90,28 @@ impl Node {
             "Rolling back from height {} to {} for fork recovery",
             local_height, target_height
         );
+
+        // Emit rollback_started diagnostic event
+        let rollback_timer = Instant::now();
+        let started_event_id = ulid::Ulid::new().to_string();
+        let _ = self.diagnostic_emitter.record(DiagnosticEvent {
+            event_id: started_event_id.clone(),
+            kind: EventKind::RollbackStarted,
+            timestamp_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0),
+            height: Some(local_height),
+            correlation_key: None,
+            caused_by_event_id: None,
+            is_cascade_origin: false,
+            payload: EventPayload::RollbackStarted {
+                from_height: local_height,
+                to_height: target_height,
+                trigger: "shallow_recovery".to_string(),
+                cumulative_depth: self.cumulative_rollback_depth + 1,
+            },
+        });
 
         // INC-I-071: fetch undo data ONCE and reuse for both the UTXO/Producer
         // restore (this block) and the EpochState restore (later block). The
@@ -290,6 +313,26 @@ impl Node {
             "[FORK] ROLLBACK_DONE h={} hash={:.8} cumulative_depth={}",
             target_height, parent_hash, self.cumulative_rollback_depth
         );
+
+        // Emit rollback_completed diagnostic event (caused_by = started event_id)
+        let _ = self.diagnostic_emitter.record(DiagnosticEvent {
+            event_id: ulid::Ulid::new().to_string(),
+            kind: EventKind::RollbackCompleted,
+            timestamp_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0),
+            height: Some(target_height),
+            correlation_key: None,
+            caused_by_event_id: Some(started_event_id),
+            is_cascade_origin: false,
+            payload: EventPayload::RollbackCompleted {
+                from_height: local_height,
+                to_height: target_height,
+                duration_ms: rollback_timer.elapsed().as_millis() as u64,
+                success: true,
+            },
+        });
 
         Ok(true)
     }

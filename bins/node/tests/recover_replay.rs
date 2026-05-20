@@ -115,7 +115,7 @@ fn build_chain(
 
 async fn apply_chain(node: &mut Node, blocks: &[Block]) {
     for block in blocks {
-        node.apply_block(block.clone(), ValidationMode::Light)
+        node.apply_block(block.clone(), ValidationMode::Light, None)
             .await
             .unwrap_or_else(|e| panic!("apply_block failed: {}", e));
     }
@@ -187,7 +187,7 @@ async fn replay_produces_identical_state() {
 
     // Phase 3: Replay all blocks using ValidationMode::Replay
     for block in &chain {
-        node.apply_block(block.clone(), ValidationMode::Replay)
+        node.apply_block(block.clone(), ValidationMode::Replay, None)
             .await
             .unwrap_or_else(|e| panic!("replay apply_block failed: {}", e));
     }
@@ -239,7 +239,7 @@ async fn replay_skips_dedup_check() {
 
     // Replay — without Replay mode, these blocks would be SKIPPED (dedup check)
     for block in &chain {
-        node.apply_block(block.clone(), ValidationMode::Replay)
+        node.apply_block(block.clone(), ValidationMode::Replay, None)
             .await
             .unwrap_or_else(|e| panic!("replay should not skip stored blocks: {}", e));
     }
@@ -276,7 +276,7 @@ async fn replay_suppresses_side_effects() {
 
     // Replay
     for block in &chain {
-        node.apply_block(block.clone(), ValidationMode::Replay)
+        node.apply_block(block.clone(), ValidationMode::Replay, None)
             .await
             .unwrap_or_else(|e| panic!("replay failed: {}", e));
     }
@@ -340,7 +340,7 @@ async fn replay_produces_undo_data() {
 
     // Replay
     for block in &chain {
-        node.apply_block(block.clone(), ValidationMode::Replay)
+        node.apply_block(block.clone(), ValidationMode::Replay, None)
             .await
             .unwrap_or_else(|e| panic!("replay failed: {}", e));
     }
@@ -372,7 +372,7 @@ async fn replay_ignores_recovery_mode_flag() {
 
     // Replay should still process blocks despite recovery_mode
     for block in &chain {
-        node.apply_block(block.clone(), ValidationMode::Replay)
+        node.apply_block(block.clone(), ValidationMode::Replay, None)
             .await
             .unwrap_or_else(|e| panic!("replay should ignore recovery_mode: {}", e));
     }

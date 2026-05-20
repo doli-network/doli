@@ -110,7 +110,7 @@ async fn test_node_can_apply_blocks() {
     // Build and apply 5 blocks
     let chain = build_chain(1, 1, genesis_hash, &producers[0], 5, &params);
     for block in &chain {
-        node.apply_block(block.clone(), ValidationMode::Light)
+        node.apply_block(block.clone(), ValidationMode::Light, None)
             .await
             .expect("apply_block failed");
     }
@@ -131,7 +131,7 @@ async fn test_node_can_rollback() {
     // Build and apply 5 blocks
     let chain = build_chain(1, 1, genesis_hash, &producers[0], 5, &params);
     for block in &chain {
-        node.apply_block(block.clone(), ValidationMode::Light)
+        node.apply_block(block.clone(), ValidationMode::Light, None)
             .await
             .unwrap();
     }

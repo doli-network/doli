@@ -44,6 +44,7 @@ sled = "0.34"      # Embedded database for signed slots tracking
 thiserror.workspace = true
 reqwest = { version = "0.11", features = ["json"] }  # HTTP client for devnet RPC checks
 base64.workspace = true
+ulid = "1"
 
 [dev-dependencies]
 tempfile.workspace = true

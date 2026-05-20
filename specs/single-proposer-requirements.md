@@ -41,7 +41,13 @@ The solution: adopt a single-proposer-per-slot model (similar to Ethereum). One 
 
 | ID | Requirement | Rationale |
 |----|------------|-----------|
-| REQ-SP-015 | Committee-based attestation | Full committee rotation is a future upgrade. Current bitfield attestation is sufficient. |
+| REQ-SP-008 (Won't) | Attestation-weighted fork choice | Deferred — not part of current workflow (#346). |
+| REQ-SP-010 (Won't) | Remove deprecated fallback window constants | Deferred — not part of current workflow (#346). |
+| REQ-SP-011 (Won't) | Attestation weight accumulation per block | Deferred — not part of current workflow (#346). |
+| REQ-SP-012 (Won't) | Epoch reward calculation handles empty slots | Deferred — not part of current workflow (#346). |
+| REQ-SP-013 (Won't) | Proposer lookahead (predictable schedule) | Deferred — not part of current workflow (#346). |
+| REQ-SP-014 (Won't) | Metrics for empty slot tracking | Deferred — not part of current workflow (#346). |
+| REQ-SP-015 (Won't) | Committee-based attestation | Full committee rotation is a future upgrade. Current bitfield attestation is sufficient. |
 | REQ-SP-016 | Proposer-builder separation | PBS is a separate concern for a future milestone. |
 
 ## Affected Files

@@ -237,7 +237,7 @@ async fn apply_plain_chain(
             params,
         );
         prev = block.hash();
-        node.apply_block(block, ValidationMode::Light)
+        node.apply_block(block, ValidationMode::Light, None)
             .await
             .unwrap_or_else(|e| panic!("plain block apply failed at h={}: {}", h, e));
     }
@@ -286,7 +286,7 @@ enum ApplyOutcome {
 }
 
 async fn try_apply(node: &mut Node, block: Block, mode: ValidationMode) -> ApplyOutcome {
-    let fut = node.apply_block(block, mode);
+    let fut = node.apply_block(block, mode, None);
     match AssertUnwindSafe(fut).catch_unwind().await {
         Ok(Ok(())) => ApplyOutcome::Ok,
         Ok(Err(e)) => ApplyOutcome::Err(e.to_string()),

@@ -447,13 +447,17 @@ async fn economic_sim_s2_smoke() {
             if ep == 0 {
                 let b = build_coinbase_block(height, slot, prev_hash, producer, &node.params);
                 prev_hash = b.hash();
-                node.apply_block(b, ValidationMode::Light).await.unwrap();
+                node.apply_block(b, ValidationMode::Light, None)
+                    .await
+                    .unwrap();
                 continue;
             }
             let (b, dist) =
                 build_epoch_boundary_block(&node, height, slot, prev_hash, producer, ep).await;
             prev_hash = b.hash();
-            node.apply_block(b, ValidationMode::Light).await.unwrap();
+            node.apply_block(b, ValidationMode::Light, None)
+                .await
+                .unwrap();
             if dist > 0 {
                 restake_pending = true;
             }
@@ -464,12 +468,16 @@ async fn economic_sim_s2_smoke() {
             let (b, _, _, _) =
                 build_restake_block(&node, height, slot, prev_hash, producer, &producers).await;
             prev_hash = b.hash();
-            node.apply_block(b, ValidationMode::Light).await.unwrap();
+            node.apply_block(b, ValidationMode::Light, None)
+                .await
+                .unwrap();
             restake_pending = false;
         } else {
             let b = build_coinbase_block(height, slot, prev_hash, producer, &node.params);
             prev_hash = b.hash();
-            node.apply_block(b, ValidationMode::Light).await.unwrap();
+            node.apply_block(b, ValidationMode::Light, None)
+                .await
+                .unwrap();
         }
     }
 }
@@ -534,7 +542,7 @@ async fn economic_sim_s2_compounding() {
             if completed_epoch == 0 {
                 let block = build_coinbase_block(height, slot, prev_hash, producer, &node.params);
                 prev_hash = block.hash();
-                node.apply_block(block, ValidationMode::Light)
+                node.apply_block(block, ValidationMode::Light, None)
                     .await
                     .unwrap_or_else(|e| panic!("apply_block h={}: {}", height, e));
                 expected_total_minted += node.params.block_reward(height);
@@ -552,7 +560,7 @@ async fn economic_sim_s2_compounding() {
             .await;
 
             prev_hash = block.hash();
-            node.apply_block(block, ValidationMode::Light)
+            node.apply_block(block, ValidationMode::Light, None)
                 .await
                 .unwrap_or_else(|e| {
                     panic!("apply_block h={} epoch={}: {}", height, completed_epoch, e)
@@ -682,7 +690,7 @@ async fn economic_sim_s2_compounding() {
             }
 
             prev_hash = block.hash();
-            node.apply_block(block, ValidationMode::Light)
+            node.apply_block(block, ValidationMode::Light, None)
                 .await
                 .unwrap_or_else(|e| panic!("apply_block (restake) h={}: {}", height, e));
 
@@ -715,7 +723,7 @@ async fn economic_sim_s2_compounding() {
         } else {
             let block = build_coinbase_block(height, slot, prev_hash, producer, &node.params);
             prev_hash = block.hash();
-            node.apply_block(block, ValidationMode::Light)
+            node.apply_block(block, ValidationMode::Light, None)
                 .await
                 .unwrap_or_else(|e| panic!("apply_block h={}: {}", height, e));
             expected_total_minted += node.params.block_reward(height);

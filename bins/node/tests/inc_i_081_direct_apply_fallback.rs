@@ -122,7 +122,7 @@ fn build_chain(
 /// Apply a chain of blocks to a node with Light validation (skip VDF).
 async fn apply_chain(node: &mut Node, blocks: &[Block]) {
     for block in blocks {
-        node.apply_block(block.clone(), ValidationMode::Light)
+        node.apply_block(block.clone(), ValidationMode::Light, None)
             .await
             .unwrap_or_else(|e| panic!("apply_block failed at h={}: {}", block.header.slot, e));
     }

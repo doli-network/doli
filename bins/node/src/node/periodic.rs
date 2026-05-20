@@ -309,7 +309,7 @@ impl Node {
             if !blocks.is_empty() {
                 info!("Applying {} pending sync blocks in order", blocks.len());
                 for block in blocks {
-                    if let Err(e) = self.apply_block(block, ValidationMode::Light).await {
+                    if let Err(e) = self.apply_block(block, ValidationMode::Light, None).await {
                         warn!("Failed to apply pending sync block: {}", e);
                         self.sync_manager.write().await.block_apply_failed();
                         break;

@@ -79,7 +79,7 @@ async fn produce_one_and_tick(
         (cs.best_height + 1, cs.best_hash)
     };
     let block = build_block(height, height as u32, prev_hash, producer, params);
-    node.apply_block(block, ValidationMode::Light)
+    node.apply_block(block, ValidationMode::Light, None)
         .await
         .unwrap_or_else(|e| panic!("apply_block failed at h={}: {}", height, e));
     node.run_periodic_tasks().await.unwrap();
