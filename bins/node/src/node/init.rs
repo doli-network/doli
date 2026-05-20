@@ -243,6 +243,7 @@ impl Node {
                 info!("[MIGRATION] Migrating to unified state_db...");
 
                 // Load chain state
+                // INC-I-084: honour chainspec file override here too — see lines 306-322.
                 let old_cs = if state_path.exists() {
                     ChainState::load(&state_path)?
                 } else {
@@ -250,6 +251,11 @@ impl Node {
                         Network::Mainnet => doli_core::chainspec::ChainSpec::mainnet(),
                         Network::Testnet => doli_core::chainspec::ChainSpec::testnet(),
                         Network::Devnet => doli_core::chainspec::ChainSpec::devnet(),
+                    };
+                    let spec = if let Some(ref override_spec) = config.chainspec {
+                        override_spec.clone()
+                    } else {
+                        spec
                     };
                     ChainState::new(spec.genesis_hash())
                 };
@@ -302,11 +308,21 @@ impl Node {
             }
         }
 
-        // Load state from StateDb (or create fresh genesis)
+        // Load state from StateDb (or create fresh genesis).
+        // INC-I-084: when a chainspec file is supplied, params.genesis_hash is updated
+        // from the file via params.apply_chainspec() above. Use the same spec source
+        // here so chain_state.genesis_hash agrees with params.genesis_hash; otherwise
+        // the ExtendsTip guard in block_handling.rs drops every legitimate block when
+        // file-derived header.genesis_hash != embedded-derived chain_state.genesis_hash.
         let canonical_spec = match config.network {
             Network::Mainnet => doli_core::chainspec::ChainSpec::mainnet(),
             Network::Testnet => doli_core::chainspec::ChainSpec::testnet(),
             Network::Devnet => doli_core::chainspec::ChainSpec::devnet(),
+        };
+        let canonical_spec = if let Some(ref spec) = config.chainspec {
+            spec.clone()
+        } else {
+            canonical_spec
         };
         let canonical_genesis_hash = canonical_spec.genesis_hash();
 
@@ -340,11 +356,18 @@ impl Node {
         let utxo_set = Arc::new(RwLock::new(utxo_set));
 
         // Validate genesis hash against embedded chainspec (detect state_db corruption).
+        // INC-I-084: honour chainspec file override here too, otherwise the recheck
+        // wipes storage on every restart of a chainspec-overridden network.
         let canonical = {
             let spec = match config.network {
                 Network::Mainnet => doli_core::chainspec::ChainSpec::mainnet(),
                 Network::Testnet => doli_core::chainspec::ChainSpec::testnet(),
                 Network::Devnet => doli_core::chainspec::ChainSpec::devnet(),
+            };
+            let spec = if let Some(ref override_spec) = config.chainspec {
+                override_spec.clone()
+            } else {
+                spec
             };
             spec.genesis_hash()
         };
