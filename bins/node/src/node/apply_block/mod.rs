@@ -4,32 +4,10 @@ use storage::diagnostic_ledger::types::BlockProvenance;
 mod diagnostics;
 mod genesis_completion;
 mod governance;
+mod helpers;
 mod post_commit;
 mod state_update;
 mod tx_processing;
-
-/// Returns true if the block carries any transaction that mid-epoch mutates
-/// the `ProducerSet` (registrations, bond changes, exits, delegation changes).
-/// Used by the INC-I-071 fix to decide whether the per-block undo entry needs
-/// a full ProducerSet snapshot or can use the empty-Vec sentinel.
-///
-/// Per CLAUDE.md: producer mutations driven by these tx types are DEFERRED
-/// to the next epoch boundary, but they still mark the producer set as
-/// pending-dirty — the safe rule is to snapshot whenever such a tx is present.
-fn block_mutates_producer_set(block: &Block) -> bool {
-    block.transactions.iter().any(|tx| {
-        matches!(
-            tx.tx_type,
-            TxType::Registration
-                | TxType::Exit
-                | TxType::AddBond
-                | TxType::RequestWithdrawal
-                | TxType::ClaimWithdrawal
-                | TxType::DelegateBond
-                | TxType::RevokeDelegation
-        )
-    })
-}
 
 impl Node {
     /// Apply a block to the chain
@@ -194,7 +172,7 @@ impl Node {
         // producer mutations, so the BEFORE snapshot must be captured.
         let at_epoch_boundary =
             blocks_per_epoch_for_undo > 0 && height.is_multiple_of(blocks_per_epoch_for_undo);
-        let has_producer_mutating_tx = block_mutates_producer_set(&block);
+        let has_producer_mutating_tx = helpers::block_mutates_producer_set(&block);
         let needs_producer_snapshot = at_epoch_boundary || has_producer_mutating_tx;
 
         let undo_producer_snapshot = if needs_producer_snapshot {

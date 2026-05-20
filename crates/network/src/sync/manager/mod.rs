@@ -24,7 +24,7 @@ pub use types::{
     SyncPipelineData, SyncState, VerifiedSnapshot,
 };
 // Re-export recovery coordinator types used by Node layer
-pub use recovery::{RecoveryAction, RecoveryEvidence};
+pub use recovery::{RecoveryAction, RecoveryContext, RecoveryEvidence};
 // Re-export pub(crate) types used by sibling modules
 pub(crate) use types::{
     ForkState, NetworkState, PeerSyncStatus, PendingRequest, SnapSyncState, SyncPipeline,

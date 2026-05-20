@@ -563,6 +563,9 @@ impl Node {
     ) -> Result<()> {
         let rollback_count = reorg_result.rollback.len();
         let new_block_count = reorg_result.new_blocks.len();
+        let old_tip_hash = self.chain_state.read().await.best_hash;
+        let weight_delta = reorg_result.weight_delta;
+        let trigger_block_hash = triggering_block.hash();
 
         info!(
             "Executing reorg: rolling back {} blocks, applying {} new blocks",
@@ -1001,10 +1004,44 @@ impl Node {
             mempool.revalidate(&utxo, height);
         }
 
-        info!(
-            "Reorg complete: now at height {}",
-            self.chain_state.read().await.best_height
-        );
+        let new_tip_height = self.chain_state.read().await.best_height;
+        let new_tip_hash = self.chain_state.read().await.best_hash;
+
+        info!("Reorg complete: now at height {}", new_tip_height);
+
+        // EMIT-006: emit reorg_executed diagnostic event (fire-and-forget)
+        {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            let _ = self.diagnostic_emitter.record(
+                storage::diagnostic_ledger::types::DiagnosticEvent {
+                    event_id: ulid::Ulid::new().to_string(),
+                    kind: storage::diagnostic_ledger::types::EventKind::ReorgExecuted,
+                    timestamp_ms: now_ms,
+                    height: Some(new_tip_height),
+                    correlation_key: Some(storage::diagnostic_ledger::types::CorrelationKey {
+                        divergence_height: Some(
+                            new_tip_height.saturating_sub(new_block_count as u64),
+                        ),
+                        canonical_hash: Some(new_tip_hash.to_hex()),
+                        fork_hash: Some(old_tip_hash.to_hex()),
+                    }),
+                    caused_by_event_id: None,
+                    is_cascade_origin: false,
+                    payload: storage::diagnostic_ledger::types::EventPayload::ReorgExecuted {
+                        old_tip_hash: old_tip_hash.to_hex(),
+                        new_tip_hash: new_tip_hash.to_hex(),
+                        rollback_depth: rollback_count as u32,
+                        applied_count: new_block_count as u32,
+                        weight_delta,
+                        trigger_block_hash: trigger_block_hash.to_hex(),
+                        trigger_from_peer_id: None, // peer info not available at reorg execution
+                    },
+                },
+            );
+        }
 
         Ok(())
     }

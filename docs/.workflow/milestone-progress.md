@@ -7,7 +7,7 @@
 | ID | Name | Status | Test-Writer | Developer | QA | Reviewer | Commit |
 |----|------|--------|-------------|-----------|-----|---------|--------|
 | M1 | Types + Ledger + Emitter Trait | COMPLETE | DONE (40 tests) | DONE (bccb1bdf) | DONE (APPROVED) | — | bccb1bdf |
-| M2 | Writer Task + Emit Sites | DEV_DONE | DONE (29+3 tests) | DONE (1ffc5df8 + 32327fdc) | — | — | 1ffc5df8 + 32327fdc |
+| M2 | Writer Task + Emit Sites | REWORK_DONE | DONE (29+3+2 tests) | DONE (1ffc5df8 + 32327fdc + QA-iter-1 fix) | NEEDS-REWORK iter-1 RESOLVED (EMIT-006, EMIT-007 wired + mod.rs size fixed) | — | 1ffc5df8 + 32327fdc + pending |
 | M3 | Queries + Classifier + RPC | PENDING | — | — | — | — | — |
 | M4 | CLI + Docs | PENDING | — | — | — | — | — |
 
@@ -42,8 +42,8 @@
 | REQ-FORKOBS-EMIT-003 | diagnostic_emit_test | test_classify_gossip_block_fork_emits_event, test_classify_gossip_block_orphan_emits_event, test_classify_gossip_block_rejected_emits_event, test_classify_gossip_block_reorg_candidate_emits_event |
 | REQ-FORKOBS-EMIT-004 | diagnostic_emit_test | test_rollback_emits_started_and_completed, test_rollback_at_genesis_emits_nothing |
 | REQ-FORKOBS-EMIT-005 | diagnostic_emit_test | test_rollback_emits_started_and_completed (caused_by_event_id assertion) |
-| REQ-FORKOBS-EMIT-006 | diagnostic_writer_pruner_test | test_reorg_executed_event_structure |
-| REQ-FORKOBS-EMIT-007 | diagnostic_writer_pruner_test | test_recovery_classify_event_has_all_11_fields |
+| REQ-FORKOBS-EMIT-006 | diagnostic_writer_pruner_test, diagnostic_emit_test | test_reorg_executed_event_structure (type), test_reorg_path_emits_reorg_executed_event_in_production (production emit) |
+| REQ-FORKOBS-EMIT-007 | diagnostic_writer_pruner_test, diagnostic_emit_test | test_recovery_classify_event_has_all_11_fields (type), test_periodic_classify_emits_recovery_classify_call_in_production (production emit) |
 | REQ-FORKOBS-EMIT-010 | diagnostic_emit_test | test_fork_event_carries_correlation_key, test_canonical_block_applied_has_empty_correlation_key |
 | REQ-FORKOBS-EMIT-011 / O4 | diagnostic_emit_test | test_apply_block_signature_includes_provenance_param, test_apply_block_gossip_has_peer_provenance, test_apply_block_self_produced_has_none_provenance, test_apply_block_reorg_replay_has_none_provenance |
 | REQ-FORKOBS-LEDGER-004 | diagnostic_writer_pruner_test | test_pruner_removes_age_expired_events |

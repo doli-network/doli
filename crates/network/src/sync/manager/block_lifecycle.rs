@@ -587,7 +587,10 @@ impl SyncManager {
     pub fn classify_and_dispatch(
         &mut self,
         shallow_rollback_count: u32,
-    ) -> super::recovery::RecoveryAction {
+    ) -> (
+        super::recovery::RecoveryAction,
+        Option<super::recovery::RecoveryContext>,
+    ) {
         use super::recovery::{RecoveryAction, RecoveryContext};
         use super::RecoveryPhase;
 
@@ -620,7 +623,12 @@ impl SyncManager {
             );
         }
         self.recovery.record_action(action);
-        action
+        let ctx_for_emit = if action != RecoveryAction::None {
+            Some(ctx)
+        } else {
+            None
+        };
+        (action, ctx_for_emit)
     }
 
     /// Report orphan gossip evidence to the RecoveryCoordinator.

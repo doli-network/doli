@@ -847,3 +847,249 @@ async fn test_event_ids_are_unique() {
         "all event_ids must be unique (ULID monotonic ordering)"
     );
 }
+
+// ============================================================
+// PHASE J — Production emit wiring for EMIT-006 and EMIT-007
+// ============================================================
+
+/// Build a chain of N blocks from a given ancestor.
+fn build_chain(
+    start_height: u64,
+    start_slot: u32,
+    prev_hash: Hash,
+    producer: &KeyPair,
+    count: usize,
+    params: &ConsensusParams,
+) -> Vec<Block> {
+    let mut blocks = Vec::with_capacity(count);
+    let mut prev = prev_hash;
+    for i in 0..count {
+        let h = start_height + i as u64;
+        let s = start_slot + i as u32;
+        let block = build_block(h, s, prev, producer, params);
+        prev = block.hash();
+        blocks.push(block);
+    }
+    blocks
+}
+
+// Requirement: REQ-FORKOBS-EMIT-006 (Must)
+// Acceptance: after a successful reorg, a reorg_executed event is emitted with correct hashes
+#[tokio::test]
+async fn test_reorg_path_emits_reorg_executed_event_in_production() {
+    let (mut node, producers, _tmp, mock) = make_node_with_mock(3).await;
+    let params = node.params.clone();
+
+    let genesis_hash = node.chain_state.read().await.best_hash;
+
+    // Build base chain: 5 blocks from genesis
+    let base = build_chain(1, 1, genesis_hash, &producers[0], 5, &params);
+    for block in &base {
+        node.apply_block(block.clone(), ValidationMode::Light, None)
+            .await
+            .unwrap();
+    }
+    assert_eq!(node.chain_state.read().await.best_height, 5);
+
+    // Build fork A: 2 blocks from base[4] (heights 6-7) — our current tip
+    let fork_a = build_chain(6, 6, base[4].hash(), &producers[0], 2, &params);
+    for block in &fork_a {
+        node.apply_block(block.clone(), ValidationMode::Light, None)
+            .await
+            .unwrap();
+    }
+    let old_tip_hash = node.chain_state.read().await.best_hash;
+    assert_eq!(node.chain_state.read().await.best_height, 7);
+
+    // Build fork B: 3 blocks from base[4] (heights 6-8) — heavier fork
+    let fork_b = build_chain(6, 20, base[4].hash(), &producers[1], 3, &params);
+
+    // Cache fork B blocks in fork_block_cache
+    {
+        let mut cache = node.fork_block_cache.write().await;
+        for block in &fork_b {
+            cache.insert(block.hash(), block.clone());
+        }
+    }
+
+    // Record fork B weights in sync manager
+    {
+        let mut sync = node.sync_manager.write().await;
+        for block in &fork_b {
+            sync.record_fork_block_weight(block.hash(), block.header.prev_hash, 1);
+        }
+    }
+
+    // Construct ReorgResult
+    let reorg_result = network::ReorgResult {
+        rollback: vec![fork_a[1].hash(), fork_a[0].hash()], // blocks to rollback
+        common_ancestor: base[4].hash(),
+        new_blocks: fork_b.iter().map(|b| b.hash()).collect(),
+        weight_delta: 1, // fork B is heavier (3 blocks vs 2)
+    };
+
+    // Execute the reorg — this is the PRODUCTION code path
+    let trigger = fork_b.last().unwrap().clone();
+    node.execute_reorg(reorg_result, trigger)
+        .await
+        .expect("execute_reorg should succeed");
+
+    // Verify: chain should now be on fork B
+    let new_tip_hash = node.chain_state.read().await.best_hash;
+    let new_tip_height = node.chain_state.read().await.best_height;
+    assert_eq!(new_tip_height, 8, "should be at height 8 after reorg");
+    assert_eq!(
+        new_tip_hash,
+        fork_b[2].hash(),
+        "tip should be fork B's last block"
+    );
+
+    // Verify EMIT-006: ReorgExecuted event was emitted in production
+    let reorg_events = events_of_kind(&mock, EventKind::ReorgExecuted);
+    assert_eq!(
+        reorg_events.len(),
+        1,
+        "exactly one reorg_executed event expected after a successful reorg"
+    );
+
+    let event = &reorg_events[0];
+    assert_eq!(
+        event.height,
+        Some(8),
+        "event height should be new tip height"
+    );
+    assert!(!event.event_id.is_empty(), "event_id must be non-empty");
+
+    match &event.payload {
+        EventPayload::ReorgExecuted {
+            old_tip_hash: old_hash,
+            new_tip_hash: new_hash,
+            rollback_depth,
+            applied_count,
+            weight_delta,
+            trigger_block_hash,
+            ..
+        } => {
+            assert_eq!(
+                *old_hash,
+                old_tip_hash.to_hex(),
+                "old_tip_hash must match pre-reorg tip"
+            );
+            assert_eq!(
+                *new_hash,
+                new_tip_hash.to_hex(),
+                "new_tip_hash must match post-reorg tip"
+            );
+            assert_eq!(*rollback_depth, 2, "rolled back 2 blocks (fork A)");
+            assert_eq!(*applied_count, 3, "applied 3 blocks (fork B)");
+            assert_eq!(*weight_delta, 1, "fork B is heavier by weight_delta=1");
+            assert!(
+                !trigger_block_hash.is_empty(),
+                "trigger_block_hash must be non-empty"
+            );
+        }
+        _ => panic!("expected ReorgExecuted payload, got {:?}", event.payload),
+    }
+
+    // Verify correlation_key is populated
+    assert!(
+        event.correlation_key.is_some(),
+        "reorg_executed should carry a correlation_key"
+    );
+    let ck = event.correlation_key.as_ref().unwrap();
+    assert!(
+        ck.divergence_height.is_some(),
+        "divergence_height should be populated"
+    );
+    assert!(ck.canonical_hash.is_some(), "canonical_hash should be set");
+    assert!(ck.fork_hash.is_some(), "fork_hash should be set (old tip)");
+}
+
+// Requirement: REQ-FORKOBS-EMIT-007 (Must)
+// Acceptance: when classify() returns non-None, recovery_classify_call event is emitted
+// with all RecoveryContext fields populated
+#[tokio::test]
+async fn test_periodic_classify_emits_recovery_classify_call_in_production() {
+    let (mut node, producers, _tmp, mock) = make_node_with_mock(2).await;
+    let params = node.params.clone();
+
+    let genesis_hash = node.chain_state.read().await.best_hash;
+
+    // Apply a block so node is at h=1 (recently synced)
+    let block1 = build_block(1, 1, genesis_hash, &producers[0], &params);
+    node.apply_block(block1.clone(), ValidationMode::Full, None)
+        .await
+        .unwrap();
+
+    // Set up sync manager so classify() returns HeaderFirstSync:
+    // - Add a peer at a higher height to create a gap
+    // - Set network_tip_height > local_height (gap > 0 and < 50)
+    {
+        let mut sync = node.sync_manager.write().await;
+        let fake_peer = PeerId::random();
+        let fake_hash = Hash::from_bytes([0x01; 32]);
+        // Add peer at height 10 so network_tip is above our local_height=1
+        sync.add_peer(fake_peer, 10, fake_hash, 10);
+        sync.update_network_tip_height(10);
+    }
+
+    // Run periodic tasks — this calls classify_and_dispatch in production
+    // The gap=9 (local=1, network=10) should trigger HeaderFirstSync (Rule 3)
+    node.run_periodic_tasks().await.unwrap();
+
+    // Verify EMIT-007: RecoveryClassifyCall event was emitted
+    let classify_events = events_of_kind(&mock, EventKind::RecoveryClassifyCall);
+    assert!(
+        !classify_events.is_empty(),
+        "at least one recovery_classify_call event expected when classify returns non-None"
+    );
+
+    let event = &classify_events[0];
+    assert_eq!(
+        event.height,
+        Some(1),
+        "event height should be local_height at time of classify"
+    );
+
+    match &event.payload {
+        EventPayload::RecoveryClassifyCall {
+            local_height,
+            network_tip_height,
+            peer_count,
+            last_applied_secs,
+            shallow_rollback_count,
+            snap_attempts,
+            in_grace_period,
+            action_returned,
+            ..
+        } => {
+            assert_eq!(*local_height, 1, "local_height should be 1");
+            assert!(
+                *network_tip_height >= 10,
+                "network_tip_height should be >= 10"
+            );
+            assert!(*peer_count >= 1, "peer_count should be >= 1");
+            assert!(
+                *last_applied_secs < 60,
+                "last_applied_secs should be small (just applied a block)"
+            );
+            assert_eq!(*shallow_rollback_count, 0, "no shallow rollbacks happened");
+            assert_eq!(*snap_attempts, 0, "no snap attempts");
+            assert!(!*in_grace_period, "not in grace period");
+            assert!(
+                action_returned.is_some(),
+                "action_returned must be populated"
+            );
+            let action_str = action_returned.as_deref().unwrap();
+            assert!(
+                action_str.contains("HeaderFirstSync") || action_str.contains("ShallowRollback"),
+                "action should be HeaderFirstSync or ShallowRollback, got: {}",
+                action_str
+            );
+        }
+        _ => panic!(
+            "expected RecoveryClassifyCall payload, got {:?}",
+            event.payload
+        ),
+    }
+}

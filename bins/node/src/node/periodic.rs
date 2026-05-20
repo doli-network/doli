@@ -603,10 +603,44 @@ impl Node {
                 }
             }
 
-            let action = {
+            let (action, recovery_ctx) = {
                 let mut sync = self.sync_manager.write().await;
                 sync.classify_and_dispatch(self.shallow_rollback_count)
             };
+
+            // EMIT-007: emit recovery_classify_call when action is non-None
+            if let Some(ref ctx) = recovery_ctx {
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                let _ =
+                    self.diagnostic_emitter
+                        .record(storage::diagnostic_ledger::types::DiagnosticEvent {
+                        event_id: ulid::Ulid::new().to_string(),
+                        kind: storage::diagnostic_ledger::types::EventKind::RecoveryClassifyCall,
+                        timestamp_ms: now_ms,
+                        height: Some(ctx.local_height),
+                        correlation_key: None,
+                        caused_by_event_id: None,
+                        is_cascade_origin: false,
+                        payload:
+                            storage::diagnostic_ledger::types::EventPayload::RecoveryClassifyCall {
+                                local_height: ctx.local_height,
+                                network_tip_height: ctx.network_tip_height,
+                                peer_count: ctx.peer_count as u32,
+                                last_applied_secs: ctx.last_applied_secs,
+                                shallow_rollback_count: ctx.shallow_rollback_count,
+                                snap_attempts: ctx.snap_attempts as u32,
+                                last_rollback_local_height: ctx.last_rollback_local_height,
+                                in_grace_period: ctx.in_grace_period,
+                                last_finality_height: ctx.last_finality_height,
+                                action_returned: Some(format!("{:?}", action)),
+                                rule_matched: None, // TODO: expose rule_matched from classifier
+                            },
+                    });
+            }
+
             match action {
                 network::RecoveryAction::None => {}
                 network::RecoveryAction::ShallowRollback { depth } => {
