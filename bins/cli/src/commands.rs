@@ -581,6 +581,14 @@ pub(crate) enum Commands {
         /// Override RPC endpoint for this command
         #[arg(long)]
         rpc: Option<String>,
+
+        /// Replay a historical log file offline (no RPC needed)
+        #[arg(long, value_name = "LOG_FILE", conflicts_with_all = ["fleet", "explain", "by_producer", "rpc"])]
+        replay: Option<std::path::PathBuf>,
+
+        /// Output file path for the replay bundle JSON (use with --replay)
+        #[arg(long, value_name = "FILE", requires = "replay")]
+        out: Option<std::path::PathBuf>,
     },
 
     /// Fast-sync: wipe chain data and download a verified state snapshot from the network

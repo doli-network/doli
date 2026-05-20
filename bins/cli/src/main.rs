@@ -14,6 +14,7 @@ mod cmd_chain;
 mod cmd_channel;
 mod cmd_forks;
 mod cmd_forks_fleet;
+mod cmd_forks_replay;
 mod cmd_governance;
 mod cmd_guardian;
 mod cmd_init;
@@ -501,19 +502,25 @@ async fn main() -> Result<()> {
             by_producer,
             fleet,
             rpc,
+            replay,
+            out,
         } => {
-            let ep = rpc.as_deref().unwrap_or(&rpc_endpoint);
-            if let Some(ref fleet_str) = fleet {
-                let peers = match cmd_forks_fleet::parse_fleet_arg(fleet_str) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        eprintln!("Error: {}", e);
-                        std::process::exit(2);
-                    }
-                };
-                cmd_forks_fleet::cmd_forks_fleet(ep, peers, last, human).await?;
+            if let Some(ref log_file) = replay {
+                cmd_forks_replay::cmd_forks_replay(log_file, out.as_deref(), human).await?;
             } else {
-                cmd_forks::cmd_forks(ep, last, human, explain, by_producer).await?;
+                let ep = rpc.as_deref().unwrap_or(&rpc_endpoint);
+                if let Some(ref fleet_str) = fleet {
+                    let peers = match cmd_forks_fleet::parse_fleet_arg(fleet_str) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            eprintln!("Error: {}", e);
+                            std::process::exit(2);
+                        }
+                    };
+                    cmd_forks_fleet::cmd_forks_fleet(ep, peers, last, human).await?;
+                } else {
+                    cmd_forks::cmd_forks(ep, last, human, explain, by_producer).await?;
+                }
             }
         }
         Commands::Snap {

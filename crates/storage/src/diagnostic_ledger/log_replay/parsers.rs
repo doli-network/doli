@@ -111,6 +111,43 @@ pub(super) fn parse_block_rejected(ts: u64, msg: &str) -> Option<DiagnosticEvent
     ))
 }
 
+/// `[BLOCK] REJECT slot=S h=H producer=P error=REASON`
+///
+/// Empirically required: real testnet logs (n10.log line 3053925) use this
+/// format for block rejections — not `Block rejected:`. Discovered during
+/// INC-I-081 fixture creation (M4). The `error=` value after `[ECON_*]` tag
+/// contains the reason including "EpochReward" when relevant.
+pub(super) fn parse_block_reject_structured(ts: u64, msg: &str) -> Option<DiagnosticEvent> {
+    if !msg.contains("[BLOCK] REJECT") {
+        return None;
+    }
+    let h = kv_u64(msg, "h");
+    let slot = kv_u32(msg, "slot").unwrap_or(0);
+    let producer = extract_kv(msg, "producer")
+        .unwrap_or("(unknown)")
+        .to_string();
+
+    // The reason starts after "error=" and runs to end of line.
+    let reason = msg
+        .find("error=")
+        .map(|idx| msg[idx + "error=".len()..].trim().to_string())
+        .unwrap_or_else(|| "(unknown)".to_string());
+
+    Some(replay_event(
+        EventKind::BlockRejected,
+        ts,
+        h,
+        EventPayload::BlockRejected {
+            slot,
+            block_hash: "(unknown)".to_string(),
+            producer_pubkey: producer,
+            from_peer_id: None,
+            rejection_reason: reason,
+            mode: "Full".to_string(),
+        },
+    ))
+}
+
 /// `[ROLLBACK] Initiating: depth=D local_h=L target_h=T gap=G
 ///  empty_headers=E shallow_count=S`
 pub(super) fn parse_rollback_initiating(ts: u64, msg: &str) -> Option<DiagnosticEvent> {

@@ -21,9 +21,10 @@ use std::path::Path;
 use super::types::DiagnosticEvent;
 
 use parsers::{
-    parse_block_applied, parse_block_rejected, parse_chain_break, parse_fork_guard, parse_health,
-    parse_reorg_complete, parse_rollback_initiating, parse_rolling_back_from, parse_snap_attempted,
-    parse_snap_completed, parse_snap_failed, parse_stuck_sync,
+    parse_block_applied, parse_block_reject_structured, parse_block_rejected, parse_chain_break,
+    parse_fork_guard, parse_health, parse_reorg_complete, parse_rollback_initiating,
+    parse_rolling_back_from, parse_snap_attempted, parse_snap_completed, parse_snap_failed,
+    parse_stuck_sync,
 };
 
 // ---------------------------------------------------------------------------
@@ -213,6 +214,10 @@ pub fn parse_line(line: &str) -> Option<DiagnosticEvent> {
         if lower.contains("snap sync failed") || lower.contains("[snap] failed") {
             return parse_snap_failed(ts, msg);
         }
+    }
+    // [BLOCK] REJECT structured format (empirically required — M4 INC-I-081)
+    if msg.contains("[BLOCK] REJECT") {
+        return parse_block_reject_structured(ts, msg);
     }
     // Block rejected (least common, check last)
     {

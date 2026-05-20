@@ -1,0 +1,12 @@
+# OUTPUT CONTRACT: N/A — fixture file
+# INPUT PARTITIONS: N/A — fixture file
+# Synthesized fixture — production-format match for INC-I-081 BlockRejected event at h=110160 (epoch boundary).
+# Format matches real tracing-subscriber output with ANSI codes from ~/testnet/logs/n10.log.
+# h=110160 is epoch boundary (110160 % 360 == 0), producer 54323cef emitted block missing EpochReward TX.
+[2m2026-05-18T15:29:50.100000Z[0m [32m INFO[0m [2mdoli_node::node::apply_block[0m[2m:[0m [BLOCK] Applied h=110159 hash=a1b2c3d4e5f6a7b8 producer=2d27fdcc slot=309599 txs=1 epoch=305
+[2m2026-05-18T15:30:00.123456Z[0m [33m WARN[0m [2mdoli_node::node::periodic[0m[2m:[0m [HEALTH] h=110159 s=309599 hash=a1b2c3d4e5f6a7b8 | peers=14 best_peer_h=110160 best_peer_s=309600 net_tip_h=110160 net_tip_s=309600 | sync_fails=0 state="Idle" | snap_epoch=306 snap_bonds=14 snap_producers=14
+[2m2026-05-18T15:30:00.500000Z[0m [33m WARN[0m [2mdoli_node::node::block_handling[0m[2m:[0m [BLOCK] REJECT slot=309600 h=110160 producer=54323cef error=[ECON_EPOCH_MISSING] epoch boundary at height=110160 missing EpochReward TX for epoch=306 (14 qualified producers) — skipping, sync will catch up
+[2m2026-05-18T15:30:01.500000Z[0m [33m WARN[0m [2mdoli_node::node::block_handling[0m[2m:[0m [BLOCK] REJECT slot=309600 h=110160 producer=54323cef error=[ECON_EPOCH_MISSING] epoch boundary at height=110160 missing EpochReward TX for epoch=306 (14 qualified producers) — skipping, sync will catch up
+[2m2026-05-18T15:30:10.000000Z[0m [33m WARN[0m [2mdoli_node::node::periodic[0m[2m:[0m [HEALTH] h=110159 s=309599 hash=a1b2c3d4e5f6a7b8 | peers=14 best_peer_h=110161 best_peer_s=309610 net_tip_h=110161 net_tip_s=309610 | sync_fails=1 state="Syncing:Headers" | snap_epoch=306 snap_bonds=14 snap_producers=14
+[2m2026-05-18T15:30:20.000000Z[0m [32m INFO[0m [2mdoli_node::node::apply_block[0m[2m:[0m [BLOCK] Applied h=110160 hash=f7e8d9c0b1a2f3e4 producer=2d27fdcc slot=309601 txs=16 epoch=306
+[2m2026-05-18T15:30:21.000000Z[0m [32m INFO[0m [2mdoli_node::node::apply_block[0m[2m:[0m [BLOCK] Applied h=110161 hash=1234abcd5678ef90 producer=b5856894 slot=309610 txs=2 epoch=306
