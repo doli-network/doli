@@ -51,6 +51,7 @@ This document describes the DOLI node JSON-RPC API.
 | **Guardian** | `resumeProduction` | Implemented |
 | **Guardian** | `createCheckpoint` | Implemented |
 | **Guardian** | `getGuardianStatus` | Implemented |
+| **Diagnostics** | `getForkDiagnostic` | Implemented |
 | **Storage** | `pruneBlocks` | Implemented |
 | **Storage** | `getStorageInfo` | Implemented |
 
@@ -2158,6 +2159,102 @@ Each auto-checkpoint writes a `health.json` file:
 curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getGuardianStatus","params":[],"id":1}'
+```
+
+---
+
+## Diagnostic Methods
+
+### `getForkDiagnostic`
+
+Query fork-diagnostic events from the node's diagnostic ledger and receive a classified `DiagnosticBundle`.
+
+**Parameters:**
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `window_secs` | u64 | Yes | Time window in seconds to query (e.g. 3600 for 1 hour) |
+| `limit` | u64 | No | Maximum number of events to return |
+| `fork_event_id` | string | No | Focus on the causal chain for a specific event (ULID) |
+
+**Response:** `DiagnosticBundle`
+
+```json
+{
+    "schema_version": 1,
+    "node_peer_id": "12D3KooWExamplePeerId",
+    "query_timestamp_ms": 1716220800000,
+    "events": [
+        {
+            "event_id": "01HY1234ABCD0001",
+            "kind": "ForkBlockReceived",
+            "timestamp_ms": 1716220750000,
+            "height": 5000,
+            "correlation_key": null,
+            "caused_by_event_id": null,
+            "is_cascade_origin": false,
+            "payload": {
+                "ForkBlockReceived": {
+                    "block_hash": "aabb...",
+                    "block_slot": 500,
+                    "block_height_estimate": 5000,
+                    "producer_pubkey": "ccdd1122...",
+                    "from_peer_id": "12D3KooWPeer...",
+                    "classification": "ForkBlock",
+                    "fork_kind": "HeightOccupied",
+                    "local_tip_hash": "eeff...",
+                    "local_tip_height": 4999
+                }
+            }
+        }
+    ],
+    "fork_summary": {
+        "fork_events_in_window": 1,
+        "by_producer": { "ccdd1122...": 1 },
+        "by_event_kind": { "ForkBlockReceived": 1 },
+        "first_fork_height": 5000,
+        "last_fork_height": 5000
+    },
+    "classification": {
+        "fork_type": "TipRaceNatural",
+        "confidence": 0.85,
+        "evidence_event_ids": ["01HY1234ABCD0001"],
+        "recommended_action": null,
+        "recommended_action_args": null
+    },
+    "baseline": {
+        "fork_events_per_hour_current": 1.0,
+        "fork_events_per_hour_24h_avg": 0.5,
+        "delta_pct": 100.0
+    },
+    "health": {
+        "ledger_available": true,
+        "events_written_total": 1042,
+        "events_dropped_total": 0,
+        "last_heartbeat_ms": 1716220799000
+    }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `schema_version` | Bundle format version (currently 1) |
+| `node_peer_id` | PeerId of the node producing this bundle |
+| `events` | Diagnostic events in the query window |
+| `fork_summary` | Aggregate fork statistics (by producer, by kind, height range) |
+| `classification` | Fork-type classification or `null` if insufficient evidence |
+| `baseline` | Rate comparison (current vs 24h average) |
+| `health` | Writer subsystem status (ledger available, dropped events) |
+
+**Error codes:**
+- `-32603` — diagnostic ledger unavailable (node started without diagnostics or DB open failed)
+
+**Example:**
+```bash
+curl -s -X POST http://127.0.0.1:8500 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getForkDiagnostic","params":{"window_secs":3600},"id":1}' \
+    | jq .result
 ```
 
 ---

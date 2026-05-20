@@ -12,6 +12,7 @@ use clap::Parser;
 mod cmd_bridge;
 mod cmd_chain;
 mod cmd_channel;
+mod cmd_forks;
 mod cmd_governance;
 mod cmd_guardian;
 mod cmd_init;
@@ -491,6 +492,16 @@ async fn main() -> Result<()> {
             yes,
         } => {
             cmd_chain::cmd_wipe(&network, data_dir, yes)?;
+        }
+        Commands::Forks {
+            last,
+            human,
+            explain,
+            by_producer,
+            rpc,
+        } => {
+            let ep = rpc.as_deref().unwrap_or(&rpc_endpoint);
+            cmd_forks::cmd_forks(ep, last, human, explain, by_producer).await?;
         }
         Commands::Snap {
             data_dir,

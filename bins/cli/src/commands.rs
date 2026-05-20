@@ -556,6 +556,29 @@ pub(crate) enum Commands {
         command: GuardianCommands,
     },
 
+    /// Fork diagnostics — query and display fork events from the node
+    Forks {
+        /// Time window for the query (e.g. "1h", "30m", "24h"); default "1h"
+        #[arg(long)]
+        last: Option<String>,
+
+        /// Human-readable output instead of JSON
+        #[arg(long)]
+        human: bool,
+
+        /// Show the most recent fork event's full causal chain
+        #[arg(long)]
+        explain: bool,
+
+        /// Aggregate fork events by producer
+        #[arg(long)]
+        by_producer: bool,
+
+        /// Override RPC endpoint for this command
+        #[arg(long)]
+        rpc: Option<String>,
+    },
+
     /// Fast-sync: wipe chain data and download a verified state snapshot from the network
     Snap {
         /// Data directory (for multi-node servers with custom paths)

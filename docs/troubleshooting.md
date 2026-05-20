@@ -742,32 +742,52 @@ grep -i "produced\|block" /var/log/doli-node.log | tail -20
 
 ## 6b. How to Diagnose a Fork in 5 Seconds
 
-**Available after workflow #346 ships (fork-diagnostic observability, Phase 1).**
+**Symptom:** Node shows "BEHIND" alert, dashboard shows height divergence, or fork monitor detects multiple chain tips.
 
-When a node forks or falls behind, run one command to get a full diagnostic:
+### Step 1: Get the verdict
 
 ```bash
-# Machine-readable JSON (for agents or piping to jq)
+doli forks --explain --human
+```
+
+This calls the `getForkDiagnostic` RPC, finds the most recent fork event, and displays a human-readable verdict with the classification (e.g., `TipRaceNatural`, `ProducerEquivocation`, `EpochBoundaryInvalid`, `RollbackLoop`, or `Unknown`), confidence score, and recommended action.
+
+### Step 2: Get the full picture
+
+```bash
+# JSON dump of all fork events in the last hour (pipe to jq for filtering)
 doli forks --last 1h
 
-# Human-readable summary (for operator audit)
+# Human-readable summary
 doli forks --last 1h --human
 
-# Full causal chain for the most recent fork event
-doli forks --explain
-
-# Attribution: which producer is causing the most forks?
+# Which producer is causing the most forks?
 doli forks --by-producer
 ```
 
-The `doli forks` command calls the `getForkDiagnostic` RPC, which returns a self-contained `DiagnosticBundle` with: every fork-relevant event in the time window, a typed classification (e.g., `TipRaceNatural`, `EpochBoundaryInvalid`, `RollbackLoop`, or `Unknown` with evidence), and a baseline comparison showing whether fork rate is abnormal.
+### Step 3: Handle Unknown classifications
 
-For agent-driven diagnosis, call the RPC directly:
+If the classification is `Unknown`, the bundle still contains structured evidence:
+
+- Check `classification.fork_type.Unknown.reason_unknown` for a description of the pattern
+- Check `classification.fork_type.Unknown.evidence_event_ids` for the specific event IDs
+- Cross-reference these event IDs in the `events` array to see the full payload
+- Look for repeating `RecoveryClassifyCall` events with climbing `last_applied_secs` (INC-I-083 pattern)
+- Look for `BlockRejected` at epoch boundaries (INC-I-081 pattern)
+
+### Agent-driven diagnosis (RPC directly)
+
 ```bash
 curl -s -X POST http://127.0.0.1:8500 \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"getForkDiagnostic","params":{"window_secs":3600},"id":1}' | jq .result
 ```
+
+**Key fields to check in the JSON response:**
+- `.classification.fork_type` — the typed verdict
+- `.fork_summary.fork_events_in_window` — event count (0 = no forks detected)
+- `.baseline.delta_pct` — positive = more forks than 24h average
+- `.health.ledger_available` — false means diagnostics DB is down
 
 See `docs/fork_observability.md` for the full schema reference and `docs/rpc_reference.md` for the RPC specification.
 

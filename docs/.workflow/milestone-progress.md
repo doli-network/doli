@@ -9,7 +9,7 @@
 | M1 | Types + Ledger + Emitter Trait | COMPLETE | DONE (40 tests) | DONE (bccb1bdf) | DONE (APPROVED) | — | bccb1bdf |
 | M2 | Writer Task + Emit Sites | REWORK_DONE | DONE (29+3+2 tests) | DONE (1ffc5df8 + 32327fdc + QA-iter-1 fix) | NEEDS-REWORK iter-1 RESOLVED (EMIT-006, EMIT-007 wired + mod.rs size fixed) | — | 1ffc5df8 + 32327fdc + pending |
 | M3 | Queries + Classifier + RPC | QA_DONE | DONE (15+17+12=44 tests) | DONE (adc03bdd) | DONE (APPROVED — 2 non-blocking OBS) | — | adc03bdd |
-| M4 | CLI + Docs | PENDING | — | — | — | — | — |
+| M4 | CLI + Docs | TESTS_WRITTEN | DONE (46 tests: 30 fail, 16 pass) | — | — | — | — |
 
 ## M1 Test Traceability
 
@@ -111,3 +111,40 @@
 - query_range limit should be clamped at the storage layer (min(limit, 10_000)) to enforce SEC-003 before the RPC layer.
 - query_causal_chain must handle cycles (self-referential or mutual) by tracking visited event_ids.
 - The `test_query_efficient_prefix_scan` test is `#[ignore]` to avoid flakiness on CI.
+
+## M4 Test Traceability
+
+| Requirement | Test File | Test Function(s) |
+|-------------|-----------|-------------------|
+| REQ-FORKOBS-CLI-001 (Must) | cmd_forks_test | test_clap_parses_forks_subcommand, test_clap_forks_has_human_flag, test_main_declares_cmd_forks_module, test_main_dispatches_forks_command, test_cmd_forks_source_exists, test_cmd_forks_exports_parse_duration, test_cmd_forks_exports_render_human, test_render_human_spec_has_section_headers, test_render_human_spec_handles_none_classification, test_render_human_spec_renders_unknown_with_evidence, test_render_human_includes_baseline_data, test_render_human_shows_health_status, test_diagnostic_bundle_json_has_required_fields, test_diagnostic_bundle_schema_version_is_1, test_empty_bundle_has_null_classification, test_classified_bundle_contains_fork_type, test_bundle_with_events_json_roundtrip, test_cmd_forks_propagates_rpc_errors, test_cmd_forks_handles_ledger_unavailable_error, test_rpc_method_name_is_get_fork_diagnostic, test_rpc_url_default_from_network, test_rpc_url_override_supported_by_cli_flags |
+| REQ-FORKOBS-CLI-002 (Must) | cmd_forks_test | test_clap_forks_has_last_flag, test_parse_duration_spec_handles_hours, test_parse_duration_spec_handles_minutes, test_parse_duration_spec_multiplies_hours_by_3600, test_parse_duration_spec_handles_seconds, test_parse_duration_rejects_invalid_input, test_cmd_forks_has_unit_tests_for_parse_duration, test_rpc_params_default_window_is_1h |
+| REQ-FORKOBS-CLI-003 (Should) | cmd_forks_test | test_clap_forks_has_explain_flag, test_explain_mode_uses_fork_event_id_param, test_explain_mode_handles_no_forks_message |
+| REQ-FORKOBS-CLI-004 (Should) | cmd_forks_test | test_clap_forks_has_by_producer_flag, test_cmd_forks_exports_aggregate_by_producer, test_by_producer_spec_sorted_desc, test_multi_producer_bundle_has_correct_counts, test_by_producer_sort_contract, test_fork_summary_by_producer_roundtrip |
+| REQ-FORKOBS-DOC-001 (Must) | cmd_forks_test | test_rpc_reference_documents_get_fork_diagnostic |
+| REQ-FORKOBS-DOC-002 (Must) | cmd_forks_test | test_troubleshooting_has_fork_diagnosis_section |
+| REQ-FORKOBS-DOC-003 (Must) | cmd_forks_test | test_fork_observability_doc_exists, test_fork_observability_doc_covers_event_kinds, test_fork_observability_doc_covers_classification_types, test_fork_observability_doc_covers_bundle_schema, test_fork_observability_doc_covers_retention_config |
+| REQ-FORKOBS-RPC-001 (Must, via CLI) | cmd_forks_test | test_rpc_method_name_is_get_fork_diagnostic |
+| REQ-FORKOBS-RPC-005 (Must, via CLI) | cmd_forks_test | test_cmd_forks_handles_ledger_unavailable_error |
+| REQ-FORKOBS-RETRO-003 (Must) | cmd_forks_test | test_unknown_classification_json_carries_evidence |
+
+## M4 Developer Notes (from test-writer)
+
+**Testing strategy**: Source-level assertion tests using `include_str!` (no new cargo deps per locked decision). Pure type-system tests using storage crate types for bundle serialization verification.
+
+**Files to CREATE**:
+- `bins/cli/src/cmd_forks.rs` (~120 LoC) — must export: `parse_duration`, `render_human`, `aggregate_by_producer`, `cmd_forks`. Stub already created at red-phase.
+- `docs/fork_observability.md` (~200 LoC) — agent-facing schema doc. Stub already created at red-phase.
+
+**Files to MODIFY**:
+- `bins/cli/src/commands.rs` — add `Forks` variant with `human: bool`, `last: Option<String>`, `explain: bool`, `by_producer: bool` fields
+- `bins/cli/src/main.rs` — add `mod cmd_forks;` and `Commands::Forks { .. } =>` match arm
+- `docs/rpc_reference.md` — add `getForkDiagnostic` entry with example
+- `docs/troubleshooting.md` — add fork diagnosis section mentioning `doli forks`
+
+**Unit tests inside cmd_forks.rs**: The developer MUST add `#[cfg(test)] mod tests` inside `cmd_forks.rs` with direct unit tests for `parse_duration` (at minimum: "1h"->3600, "30m"->1800, "24h"->86400, "5s"->5, "abc"->Err, ""->Err, "1y"->Err). The integration test `test_cmd_forks_has_unit_tests_for_parse_duration` verifies this.
+
+**render_human contract**: Must produce text with section headers "Events", "Classification", "Baseline". Must handle `classification=None` gracefully (print "no classification"). Must render `ForkType::Unknown` with `reason_unknown` + `evidence_event_ids`. Must include baseline rate data and health status.
+
+**aggregate_by_producer contract**: Must return a sorted (count desc) collection from `bundle.fork_summary.by_producer`. The `ProducerAggregate` struct (or equivalent) must have `producer_pubkey: String` and `count: u64`.
+
+**Parse duration contract**: Must handle suffixes 'h' (multiply by 3600), 'm' (multiply by 60), 's' (passthrough). Must reject invalid inputs with helpful error. Default when `--last` not provided: "1h" (3600 seconds).
