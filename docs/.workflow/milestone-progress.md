@@ -148,3 +148,38 @@
 **aggregate_by_producer contract**: Must return a sorted (count desc) collection from `bundle.fork_summary.by_producer`. The `ProducerAggregate` struct (or equivalent) must have `producer_pubkey: String` and `count: u64`.
 
 **Parse duration contract**: Must handle suffixes 'h' (multiply by 3600), 'm' (multiply by 60), 's' (passthrough). Must reject invalid inputs with helpful error. Default when `--last` not provided: "1h" (3600 seconds).
+
+---
+
+## Workflow #349 (Phase 1.5) — ChainBreakLoop classifier rule — CLOSED 2026-05-20
+
+**Branch**: `feature/fork-observability-346` (continuation, single commit on top of `87dee5e9`).
+
+**Scope** (per `docs/.workflow/prompt-chain-break-loop-rule.md`):
+- Add `ForkType::ChainBreakLoop { chain_break_count, recovery_attempts, seconds_stuck, rollback_count }` variant
+- Add rule (h) in `classifier.rs` between rules (d) and (e)/(f)
+- Two new fixture-based tests: n6 live JSON bundle + INC-I-083 historical log replay
+- Update existing INC-I-083 e2e test (was permissive Unknown OR named; now strictly ChainBreakLoop)
+- Docs sync: `docs/fork_observability.md`, `specs/fork-observability-requirements.md` (REQ-FORKOBS-CLF-006), `specs/fork-observability-architecture.md` (rule h section + FM-9*), `.claude/skills/mainnet/SKILL.md`, `.claude/skills/testnet-deploy/SKILL.md`, `docs/troubleshooting.md`, `specs/SPECS.md`
+
+**signal_d proxy decision**: The brief proposed `RecoveryClassifyCall.empty_count` as signal_d. That field does not exist on the current payload. Instead the rule counts `RecoveryClassifyCall` events themselves and surfaces them as `recovery_attempts: u32` — honestly named. A future workflow can add `empty_count` to the payload and refine the threshold without breaking the wire format. See `specs/fork-observability-architecture.md` § Workflow #349 Phase 1.5.
+
+**Three-question consensus-shape checklist (INC-I-075)**: Q1=NO (no user-submittable tx trigger), Q2=NO (no producer-action / attestation trigger — read-only over already-emitted events), Q3=YES (existing rules (a)–(g) keep their bit-identical behavior; only their position relative to (e)/(f) changes via insertion of (h) above them). **No activation height needed. Safe for rolling deploy.**
+
+**Acceptance criteria status**:
+- [x] A. `cargo test -p storage --test diagnostic_classifier_test test_rule_h_chain_break_loop_n6_live_fixture` — PASS
+- [x] B. `cargo test -p doli-cli --test fork_replay_e2e_test test_inc_i_083_replay_produces_actionable_verdict` — PASS (asserts ChainBreakLoop)
+- [x] C. All existing classifier tests (17) + new rule-h tests (5) + n6 fixture test (1) — 23 PASS, 0 FAIL
+- [ ] D. Live `doli forks --rpc <stuck-node-port> --explain --human` on n6 returns ChainBreakLoop — **deferred** (n6 is the smoking gun; restart would erase live evidence. Fixture replay provides bit-identical proof.)
+- [x] E. Existing INC-I-083 fixture test (`bins/cli/tests/fork_replay_e2e_test.rs`) updated to expect ChainBreakLoop strictly. INC-I-081 continues to expect EpochBoundaryInvalid (unchanged).
+- [x] F. Fixtures committed: `inc-n6-chain-break-loop.json` (1.4 MB), `inc-n6-stuck.log` (1.1 MB), `inc-i-083-n10.fixture` (existing), `inc-i-081-broken-producer.fixture` (existing).
+
+**Build gate**:
+- `cargo build --release` — clean
+- `cargo clippy --workspace --all-targets -- -D warnings` — clean
+- `cargo fmt --check` — clean (applied minor reformatting)
+- Full test on storage/doli-node/rpc/doli-cli — all green (no regression)
+
+**Module budget**: `crates/storage/src/diagnostic_ledger/classifier.rs` grew 366 → 479 lines (under 500 budget; no split needed).
+
+**Binary staged**: `~/testnet/bin/doli-node` and `~/testnet/bin/doli` replaced + codesigned (Darwin macOS requirement).

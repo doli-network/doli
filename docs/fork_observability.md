@@ -102,6 +102,7 @@ interface CorrelationKey {
 | `ValidationDisagreement` | Nodes disagree on block validation | Investigate validation rules divergence |
 | `RollbackLoop` | >3 rollbacks in 60 seconds | Investigate stuck recovery |
 | `SnapSyncToMinorityFork` | Snap-synced to a peer on a minority fork | Re-snap from a healthy seed |
+| `ChainBreakLoop` | Node stuck in post-snap chain-break / recovery-churn loop. Multi-modal trigger: chain_break_count > 3, OR fork/applied ratio > 10 with ≥100 fork events, OR rollback_count > 10 in 1h, OR recovery_attempts > 20. Workflow #349 (INC-I-083 / n6 2026-05-20). Variant carries `chain_break_count`, `recovery_attempts`, `seconds_stuck`, `rollback_count`. | `restart_with_resync` — stop node, wipe `<data_dir>/{blocks,state_db,utxo,diagnostics}` (preserve `wallet.json` + `producer.seed.txt`), restart with `--no-snap=false` |
 | `Unknown` | Novel pattern; carries `reason_unknown` + `evidence_event_ids` | Human review of evidence |
 
 ---
@@ -230,16 +231,39 @@ format. Both parsers are active; the structured parser fires first in dispatch o
 
 ### INC-I-083 (REQ-FORKOBS-RETRO-001) — Validated via replay fixture
 
-**Fixture**: `crates/storage/tests/fixtures/inc_i083_replay.log` (178 lines from
+**Fixture**: `crates/storage/tests/fixtures/inc-i-083-n10.fixture` (178 lines from
 real `~/testnet/logs/n10.log`, captured 2026-05-19).
 
-**Result**: Classifier verdict **Unknown** with chain-break events as evidence.
-The repeating header chain breaks during a stuck sync recovery loop have no named
-`ForkType` variant — `Unknown` with `evidence_event_ids` pointing at
-`ChainBreakDetected` events is the correct and actionable output.
+**Result (workflow #349, 2026-05-20)**: Classifier verdict **`ChainBreakLoop`**
+(rule h, confidence 0.85, recommended action `restart_with_resync`). Workflow
+#349 added rule (h), closing the coverage gap identified during workflow #347.
+The fixture trips signal (a) `chain_break_count > 3` and the verdict now
+includes structured `recommended_action_args` naming the safe wipe scope
+(preserves `wallet.json` and `producer.seed.txt`).
 
-**Coverage gap identified**: a named variant (e.g., `HeaderRecoveryStuck` or
-`ChainBreakLoop`) is a Phase 2b candidate.
+**Live corroboration**: the n6 bundle captured 2026-05-20 (`inc-n6-chain-break-loop.json`,
+1,582 fork events) classifies as `ChainBreakLoop` via signals (b), (c), and (d) —
+proving the rule fires across multi-modal evidence patterns, not just chain-break
+events.
+
+### INC-N6 (Workflow #349, 2026-05-20) — Live-captured chain-break loop
+
+**Fixture**: `crates/storage/tests/fixtures/inc-n6-chain-break-loop.json` —
+DiagnosticBundle JSON captured from live testnet n6 while it was frozen at
+h=115219 (fleet at 115269). The pre-workflow-#349 classifier mis-labelled this
+bundle as `TipRaceNatural` (confidence 0.70, recommended action
+`normal_operation`) — a confidently wrong verdict that would route operators
+away from the fix.
+
+**Result (rule h)**: `ChainBreakLoop` via signals (b) fork/applied ratio 43:1
+on 1,299 ForkBlockReceived, (c) 42 RollbackStarted in 1h window, (d) 241
+RecoveryClassifyCall in 1h window. The variant payload surfaces stuck-state
+diagnostics directly to operators.
+
+**Raw log companion**: `crates/storage/tests/fixtures/inc-n6-stuck.log`
+(1.1 MB, last hour of n6's raw stuck state) — preserved for any future
+classifier-rule research that needs a richer log-line corpus than the
+already-parsed bundle.
 
 ### INC-I-081 (REQ-FORKOBS-RETRO-002) — Validated via replay fixture
 
@@ -268,7 +292,8 @@ The following capabilities are explicitly deferred to future workflows:
 | Pre-fork warning stream / push alerts | DEFERRED | Different observability domain (prediction vs diagnosis) |
 | Performance optimization beyond stream-parse + parallel queries | DEFERRED | Current implementation handles 1.9 GB logs and 50-peer fleets |
 | authn/authz for the fleet RPC | DEFERRED | Currently operator-side only (no external exposure) |
-| Named `ForkType` variant for header chain-break recovery loops | DEFERRED | Currently classifies as `Unknown` — INC-I-083 is the canonical example. Candidate names: `HeaderRecoveryStuck`, `ChainBreakLoop` |
+| Named `ForkType` variant for header chain-break recovery loops | **CLOSED** (workflow #349, 2026-05-20) | Implemented as rule (h) `ChainBreakLoop`. INC-I-083 fixture classifies correctly; n6 live bundle classifies correctly. See "INC-I-083" and "INC-N6" entries above. |
+| `empty_count` field on `RecoveryClassifyCall` payload | DEFERRED | Workflow #349 used `recovery_attempts` (count of RecoveryClassifyCall events) as a proxy for "peers returning empty headers." A future workflow can add `empty_count: u32` to the payload and refine rule (h)'s signal_d threshold without breaking the wire format. |
 
 **Note on `classification` field**: the RPC handler always populates `classification`
 with at least `ForkType::Unknown` when no fork-specific rules match. The JSON

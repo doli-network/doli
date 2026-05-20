@@ -790,3 +790,310 @@ fn test_classifier_unknown_carries_evidence() {
         other => panic!("expected Unknown for non-matching events, got {:?}", other),
     }
 }
+
+// ===========================================================================
+// Rule (h): ChainBreakLoop -- Workflow #349 (Phase 1.5)
+// ===========================================================================
+
+fn make_chain_break_detected(slot: u32, ts: u64) -> DiagnosticEvent {
+    DiagnosticEvent {
+        event_id: ulid::Ulid::new().to_string(),
+        kind: EventKind::ChainBreakDetected,
+        timestamp_ms: ts,
+        height: None,
+        correlation_key: None,
+        caused_by_event_id: None,
+        is_cascade_origin: false,
+        payload: EventPayload::ChainBreakDetected {
+            expected_prev_hash: format!("expected_{}", slot),
+            actual_prev_hash: format!("actual_{}", slot),
+            header_slot: slot,
+            valid_so_far_count: 0,
+            from_peer_id: "12D3KooWChainBreak".to_string(),
+        },
+    }
+}
+
+// Requirement: REQ-FORKOBS-CLF-006 (Must) — signal (a) ChainBreakDetected > 3
+// Acceptance: 5 ChainBreakDetected events -> ChainBreakLoop, NOT Unknown.
+#[test]
+fn test_rule_h_chain_break_loop_signal_a_chain_breaks() {
+    let ts = now_ms();
+
+    // Five ChainBreakDetected events spread across 30 minutes -- signal (a) > 3.
+    let events: Vec<DiagnosticEvent> = (0..5)
+        .map(|i| make_chain_break_detected(218900 + i, ts + i as u64 * 60_000))
+        .collect();
+
+    let classification = classify(&events);
+
+    match &classification.fork_type {
+        ForkType::ChainBreakLoop {
+            chain_break_count, ..
+        } => {
+            assert_eq!(
+                *chain_break_count, 5,
+                "rule (h) must count all 5 ChainBreakDetected events"
+            );
+        }
+        other => panic!(
+            "expected ChainBreakLoop, got {:?} (rule h signal (a) should fire on 5 chain breaks)",
+            other
+        ),
+    }
+    assert_eq!(
+        classification.recommended_action.as_deref(),
+        Some("restart_with_resync"),
+        "ChainBreakLoop must recommend restart_with_resync"
+    );
+    assert!(
+        (classification.confidence - 0.85).abs() < 1e-9,
+        "ChainBreakLoop confidence should be 0.85, got {}",
+        classification.confidence
+    );
+    assert!(
+        !classification.evidence_event_ids.is_empty(),
+        "ChainBreakLoop must carry evidence event IDs"
+    );
+    assert!(
+        classification.recommended_action_args.is_some(),
+        "ChainBreakLoop must include structured recommended_action_args"
+    );
+}
+
+// Requirement: REQ-FORKOBS-CLF-006 (Must) — signal (b) fork/applied ratio
+// Acceptance: 150 ForkBlockReceived + 5 BlockApplied (ratio 30:1) -> ChainBreakLoop.
+//   This is the n6 pattern in miniature: many fork events, few applies, no chain breaks.
+#[test]
+fn test_rule_h_chain_break_loop_signal_b_fork_ratio() {
+    let ts = now_ms();
+
+    let mut events: Vec<DiagnosticEvent> = Vec::new();
+    // 150 ForkBlockReceived events at sparse heights, low validation latency
+    for i in 0..150u64 {
+        events.push(make_fork_block_received(
+            115_000 + i,
+            ts + i * 10_000,
+            10,
+            "stuck_node_producer",
+            None,
+        ));
+    }
+    // 5 BlockApplied events (the node is barely advancing)
+    for i in 0..5u64 {
+        let mut ev = make_block_applied(115_000 + i, ts + i * 600_000, "any_prod", "hash_x");
+        if let EventPayload::BlockApplied {
+            ref mut validation_duration_ms,
+            ..
+        } = ev.payload
+        {
+            *validation_duration_ms = 50;
+        }
+        events.push(ev);
+    }
+
+    let classification = classify(&events);
+
+    assert!(
+        matches!(classification.fork_type, ForkType::ChainBreakLoop { .. }),
+        "fork/applied ratio 30:1 with 150 fork events should classify as ChainBreakLoop, got {:?}",
+        classification.fork_type
+    );
+    assert_eq!(
+        classification.recommended_action.as_deref(),
+        Some("restart_with_resync"),
+    );
+}
+
+// Requirement: REQ-FORKOBS-CLF-006 (Must) — signal (c) rollback_count > 10 in window
+// Acceptance: 11 rollbacks spread across 30 minutes (NOT triggering rule (c) 60s loop)
+//   -> ChainBreakLoop.
+#[test]
+fn test_rule_h_chain_break_loop_signal_c_rollback_spread() {
+    let ts = now_ms();
+
+    // 11 rollbacks spread across 30 minutes -- well outside the 60s window of rule (c).
+    // Rule (c) needs >3 within 60s; rule (h) signal (c) needs >10 anywhere in the hour window.
+    let events: Vec<DiagnosticEvent> = (0..11u64)
+        .map(|i| make_rollback_started(100 + i, ts + i * 180_000))
+        .collect();
+
+    let classification = classify(&events);
+
+    assert!(
+        matches!(classification.fork_type, ForkType::ChainBreakLoop { .. }),
+        "11 rollbacks spread across 30min should classify as ChainBreakLoop (rule h sig c), got {:?}",
+        classification.fork_type
+    );
+}
+
+// Requirement: REQ-FORKOBS-CLF-006 (Must) — signal (d) recovery_attempts > 20
+// Acceptance: 21 RecoveryClassifyCall events -> ChainBreakLoop.
+#[test]
+fn test_rule_h_chain_break_loop_signal_d_recovery_churn() {
+    let ts = now_ms();
+
+    // 21 RecoveryClassifyCall events -- recovery state machine churning.
+    let events: Vec<DiagnosticEvent> = (0..21u64)
+        .map(|i| {
+            make_recovery_classify_with_action(110_367, ts + i * 1_000, "HeaderFirstSync", None)
+        })
+        .collect();
+
+    let classification = classify(&events);
+
+    match &classification.fork_type {
+        ForkType::ChainBreakLoop {
+            recovery_attempts, ..
+        } => {
+            assert_eq!(
+                *recovery_attempts, 21,
+                "must count all 21 RecoveryClassifyCall events"
+            );
+        }
+        other => panic!("expected ChainBreakLoop, got {:?}", other),
+    }
+}
+
+// Requirement: REQ-FORKOBS-CLF-006 (Must) — precedence after (d), before (e)/(f)
+// Acceptance: When PostSnapDeadTip (rule d) AND ChainBreakLoop (rule h) both match,
+//   rule (d) wins. When TipRaceNatural (rule f) AND ChainBreakLoop (rule h) both match,
+//   rule (h) wins.
+#[test]
+fn test_rule_h_precedence_after_d_before_ef() {
+    let ts = now_ms();
+
+    // Case 1: SnapSyncCompleted + recent ForkBlockReceived (rule d) + 5 chain breaks (rule h sig a)
+    //   -> rule (d) PostSnapDeadTip wins (precedence)
+    let mut events_d_wins: Vec<DiagnosticEvent> = vec![
+        make_snap_sync_completed(ts),
+        make_fork_block_received(200, ts + 100_000, 10, "aabbccdd", None),
+    ];
+    for i in 0..5u64 {
+        events_d_wins.push(make_chain_break_detected(
+            218_900 + i as u32,
+            ts + i * 1_000,
+        ));
+    }
+    let c = classify(&events_d_wins);
+    assert!(
+        matches!(c.fork_type, ForkType::PostSnapDeadTip),
+        "PostSnapDeadTip (rule d) must win over ChainBreakLoop (rule h), got {:?}",
+        c.fork_type
+    );
+
+    // Case 2: Single fast-race fork event (would match rule f) + 5 chain breaks (rule h sig a)
+    //   -> rule (h) ChainBreakLoop wins (precedence over f)
+    let mut events_h_wins: Vec<DiagnosticEvent> = vec![
+        make_fork_block_received(200, ts, 100, "fast_producer", None),
+        make_block_applied(200, ts + 1, "fast_producer", "applied_hash"),
+    ];
+    if let EventPayload::BlockApplied {
+        ref mut validation_duration_ms,
+        ..
+    } = events_h_wins[1].payload
+    {
+        *validation_duration_ms = 100;
+    }
+    for i in 0..5u64 {
+        events_h_wins.push(make_chain_break_detected(
+            218_900 + i as u32,
+            ts + i * 1_000,
+        ));
+    }
+    let c = classify(&events_h_wins);
+    assert!(
+        matches!(c.fork_type, ForkType::ChainBreakLoop { .. }),
+        "ChainBreakLoop (rule h) must win over TipRaceNatural (rule f), got {:?}",
+        c.fork_type
+    );
+}
+
+// Requirement: REQ-FORKOBS-CLF-006 (Must) — n6 live fixture acceptance criterion A
+// Acceptance: The live-captured n6 DiagnosticBundle (workflow #349, 2026-05-20) — the same
+//   data the broken classifier mis-labelled as TipRaceNatural — must classify as ChainBreakLoop.
+//
+//   Bundle stats (verified via jq):
+//   - ForkBlockReceived: 1299, BlockApplied: 30  (ratio 43:1, fires signal b)
+//   - RollbackStarted: 42                         (>10, fires signal c)
+//   - RecoveryClassifyCall: 241                   (>20, fires signal d)
+//   - ChainBreakDetected: 0                       (does not fire signal a -- emitter
+//                                                  does not yet emit on chain-break path;
+//                                                  the historical log-replay fixture does)
+#[test]
+fn test_rule_h_chain_break_loop_n6_live_fixture() {
+    // Fixture captured from live testnet n6 (workflow #349, 2026-05-20).
+    let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/inc-n6-chain-break-loop.json");
+    assert!(
+        fixture_path.exists(),
+        "n6 fixture file not found: {:?}",
+        fixture_path
+    );
+
+    let bundle_json = std::fs::read_to_string(&fixture_path).expect("read n6 fixture");
+    let bundle: storage::diagnostic_ledger::types::DiagnosticBundle =
+        serde_json::from_str(&bundle_json).expect("n6 fixture must parse as DiagnosticBundle");
+
+    let classification = classify(&bundle.events);
+
+    // Must classify as ChainBreakLoop, NOT TipRaceNatural (the bug we are fixing)
+    match &classification.fork_type {
+        ForkType::ChainBreakLoop {
+            chain_break_count,
+            recovery_attempts,
+            rollback_count,
+            seconds_stuck,
+        } => {
+            // n6 has zero ChainBreakDetected events in the bundle (emitter does not yet emit
+            // on chain-break path). Rule (h) fires via signals b/c/d.
+            assert_eq!(
+                *chain_break_count, 0,
+                "n6 bundle has no ChainBreakDetected events"
+            );
+            // Recovery churn: 241 in the original bundle, but rule (h) only counts events
+            // within the last hour. The bundle may span >1 hour, so the value can be lower.
+            assert!(
+                *recovery_attempts >= 21,
+                "n6 bundle must have >=21 RecoveryClassifyCall events in the window, got {}",
+                recovery_attempts
+            );
+            // Rollback count similarly bounded by window
+            assert!(
+                *rollback_count >= 11,
+                "n6 bundle must have >=11 RollbackStarted events in the window, got {}",
+                rollback_count
+            );
+            // Seconds_stuck is bounded by window (<=3600). Value depends on event spacing.
+            assert!(
+                *seconds_stuck <= 3600,
+                "seconds_stuck capped by 1h window, got {}",
+                seconds_stuck
+            );
+        }
+        other => panic!(
+            "n6 fixture must classify as ChainBreakLoop, got {:?} (the bug being fixed)",
+            other
+        ),
+    }
+
+    assert_eq!(
+        classification.recommended_action.as_deref(),
+        Some("restart_with_resync"),
+        "ChainBreakLoop must recommend restart_with_resync, not normal_operation"
+    );
+    assert!(
+        !classification.evidence_event_ids.is_empty(),
+        "ChainBreakLoop must carry evidence event IDs"
+    );
+    assert!(
+        classification.recommended_action_args.is_some(),
+        "recommended_action_args must include the wipe scope"
+    );
+    // Confidence bounded
+    assert!(
+        classification.confidence >= 0.0 && classification.confidence <= 1.0,
+        "confidence in [0,1], got {}",
+        classification.confidence
+    );
+}

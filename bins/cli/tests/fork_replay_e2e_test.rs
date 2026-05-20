@@ -76,17 +76,31 @@ fn test_inc_i_083_replay_produces_actionable_verdict() {
     );
 
     // ASSERTION 5: Classification verdict
+    // Workflow #349 (Phase 1.5) closed the classifier gap that left this fixture as
+    // `Unknown`. Rule (h) `ChainBreakLoop` MUST now fire on the chain-break / recovery-
+    // churn pattern (signal_a: chain_break_count > 3). REQ-FORKOBS-CLF-006 acceptance.
     match &classification.fork_type {
-        storage::diagnostic_ledger::types::ForkType::Unknown {
-            ref reason_unknown,
-            ref evidence_event_ids,
+        storage::diagnostic_ledger::types::ForkType::ChainBreakLoop {
+            chain_break_count,
+            recovery_attempts,
+            seconds_stuck,
+            rollback_count,
         } => {
-            // Verdict: Unknown is the safe/actionable answer for INC-I-083
             assert!(
-                !evidence_event_ids.is_empty(),
-                "Unknown verdict must have evidence"
+                *chain_break_count > 3,
+                "INC-I-083 fixture must trip rule (h) signal_a (chain_break_count > 3), got {}",
+                chain_break_count
             );
-            // The evidence must include the chain-break events
+            assert_eq!(
+                classification.recommended_action.as_deref(),
+                Some("restart_with_resync"),
+                "ChainBreakLoop must recommend restart_with_resync, not Unknown's None"
+            );
+            assert!(
+                classification.recommended_action_args.is_some(),
+                "ChainBreakLoop must include structured wipe-scope args"
+            );
+            // Evidence must include the chain-break events
             let chain_break_ids: Vec<String> = events
                 .iter()
                 .filter(|e| {
@@ -97,19 +111,28 @@ fn test_inc_i_083_replay_produces_actionable_verdict() {
                 })
                 .map(|e| e.event_id.clone())
                 .collect();
-            for id in &chain_break_ids {
-                assert!(
-                    evidence_event_ids.contains(id),
-                    "Unknown evidence should include chain-break event {}",
-                    id
-                );
-            }
-            println!("INC-I-083 verdict: Unknown -- reason: {}", reason_unknown);
+            assert!(
+                !chain_break_ids.is_empty(),
+                "INC-I-083 fixture should produce ChainBreakDetected events"
+            );
+            let evidence_has_chain_break = chain_break_ids
+                .iter()
+                .any(|id| classification.evidence_event_ids.contains(id));
+            assert!(
+                evidence_has_chain_break,
+                "ChainBreakLoop evidence should include at least one ChainBreakDetected event"
+            );
+            println!(
+                "INC-I-083 verdict: ChainBreakLoop {{ chain_breaks={}, recovery={}, rollbacks={}, stuck={}s }}",
+                chain_break_count, recovery_attempts, rollback_count, seconds_stuck
+            );
         }
         other => {
-            // If a named variant fires (e.g. RollbackLoop because the cleanup
-            // retries emit RollbackStarted), that's also acceptable
-            println!("INC-I-083 verdict: {:?} (schema covered it)", other);
+            panic!(
+                "Expected ChainBreakLoop after workflow #349. Got {:?}. \
+                 If rule (h) was not deployed, the classifier still has the n6 / INC-I-083 gap.",
+                other
+            );
         }
     }
 }

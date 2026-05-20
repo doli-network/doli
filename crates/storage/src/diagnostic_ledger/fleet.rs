@@ -420,6 +420,7 @@ fn fork_type_discriminant(ft: &ForkType) -> String {
         ForkType::ValidationDisagreement => "ValidationDisagreement".to_string(),
         ForkType::RollbackLoop => "RollbackLoop".to_string(),
         ForkType::SnapSyncToMinorityFork => "SnapSyncToMinorityFork".to_string(),
+        ForkType::ChainBreakLoop { .. } => "ChainBreakLoop".to_string(),
         ForkType::Unknown { .. } => "Unknown".to_string(),
     }
 }

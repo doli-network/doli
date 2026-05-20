@@ -259,6 +259,26 @@ pub enum ForkType {
     RollbackLoop,
     /// Snap-synced to a minority fork peer.
     SnapSyncToMinorityFork,
+    /// Node is stuck in a post-snap chain-break / recovery-churn loop. Local tip
+    /// is not advancing despite repeated sync attempts. Workflow #349 added this
+    /// variant to close the INC-I-083 / n6 (2026-05-20) diagnostic gap where the
+    /// classifier mis-labelled stuck nodes as `TipRaceNatural`.
+    ///
+    /// The recommended remediation is `restart_with_resync`: stop the node, wipe
+    /// `<data_dir>/{blocks,state_db,utxo,diagnostics}` (preserving `wallet.json`
+    /// and `producer.seed.txt`), and restart with snap sync enabled.
+    ChainBreakLoop {
+        /// Count of `ChainBreakDetected` events in the analysis window.
+        chain_break_count: u32,
+        /// Count of `RecoveryClassifyCall` events in the window — proxy for the
+        /// recovery state machine churning without making forward progress.
+        recovery_attempts: u32,
+        /// Seconds since the most recent `BlockApplied` event in the window
+        /// (or the window span if no `BlockApplied` is present).
+        seconds_stuck: u64,
+        /// Count of `RollbackStarted` events in the window.
+        rollback_count: u32,
+    },
     /// Novel pattern not matching any known variant.
     Unknown {
         /// Human-readable description of why classification failed.

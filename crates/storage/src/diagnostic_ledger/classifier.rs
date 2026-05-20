@@ -1,11 +1,16 @@
 //! Deterministic fork-type classifier — pure function, no I/O.
 //!
-//! `classify(events)` applies 7 rules in first-match-wins priority order:
+//! `classify(events)` applies 8 rules in first-match-wins priority order:
 //!
 //! (a) ProducerEquivocation — two BlockApplied at same height, same producer, different hash
 //! (b) EpochBoundaryInvalid — BlockRejected at epoch boundary with "EpochReward" reason
 //! (c) RollbackLoop — >3 RollbackStarted within any 60s window
 //! (d) PostSnapDeadTip — SnapSyncCompleted followed by ForkBlockReceived within 300s
+//! (h) ChainBreakLoop — node stuck in post-snap chain-break / recovery-churn loop. ANY of:
+//!     (sig_a) chain_break_count > 3; (sig_b) >100 ForkBlockReceived AND ratio fork/applied > 10;
+//!     (sig_c) >10 RollbackStarted in 1h window; (sig_d) >20 RecoveryClassifyCall in window.
+//!     Workflow #349 — fires BEFORE (e)/(f) because the n6 2026-05-20 incident proved
+//!     rule (f) confidently mis-labels stuck nodes as TipRaceNatural / normal_operation.
 //! (e) TipRaceHighLatency — ForkBlockReceived where cross-referenced BlockApplied has
 //!     validation_duration_ms > 2000   (Decision A2: cross-reference, not inline field)
 //! (f) TipRaceNatural — ForkBlockReceived with low latency AND no other fork signals
@@ -40,6 +45,9 @@ pub fn classify(events: &[DiagnosticEvent]) -> Classification {
         return c;
     }
     if let Some(c) = rule_d_post_snap_dead_tip(events) {
+        return c;
+    }
+    if let Some(c) = rule_h_chain_break_loop(events) {
         return c;
     }
     if let Some(c) = rule_e_tip_race_high_latency(events) {
@@ -337,6 +345,110 @@ fn has_other_signals(events: &[DiagnosticEvent], fork_ev: &DiagnosticEvent) -> b
             false
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Rule (h): ChainBreakLoop — Workflow #349 (Phase 1.5)
+// ---------------------------------------------------------------------------
+
+/// Analysis window for rule (h): 1 hour, in milliseconds.
+const CHAIN_BREAK_LOOP_WINDOW_MS: u64 = 3_600_000;
+
+/// Multi-modal stuck-state detector. Fires when ANY of four aggregate signals trips,
+/// indicating the node is in a chain-break / recovery-churn loop rather than a transient
+/// natural tip race. See the rule precedence section of
+/// `specs/fork-observability-architecture.md` for the design rationale.
+///
+/// Window: the most recent 1 hour ending at the slice's latest `timestamp_ms`. Keeping
+/// the reference point inside the slice preserves `classify()` purity (no system clock).
+fn rule_h_chain_break_loop(events: &[DiagnosticEvent]) -> Option<Classification> {
+    if events.is_empty() {
+        return None;
+    }
+
+    // Anchor "now" to the latest event timestamp in the slice (pure-function discipline).
+    let now_ms = events.iter().map(|e| e.timestamp_ms).max()?;
+    let window_start = now_ms.saturating_sub(CHAIN_BREAK_LOOP_WINDOW_MS);
+
+    let mut chain_break_count: u32 = 0;
+    let mut block_applied_count: u32 = 0;
+    let mut fork_block_received_count: u32 = 0;
+    let mut rollback_count: u32 = 0;
+    let mut recovery_attempts: u32 = 0;
+    let mut latest_applied_ms: Option<u64> = None;
+
+    for e in events {
+        if e.timestamp_ms < window_start {
+            continue;
+        }
+        match e.kind {
+            EventKind::ChainBreakDetected => chain_break_count += 1,
+            EventKind::BlockApplied => {
+                block_applied_count += 1;
+                latest_applied_ms =
+                    Some(latest_applied_ms.map_or(e.timestamp_ms, |t| t.max(e.timestamp_ms)));
+            }
+            EventKind::ForkBlockReceived => fork_block_received_count += 1,
+            EventKind::RollbackStarted => rollback_count += 1,
+            EventKind::RecoveryClassifyCall => recovery_attempts += 1,
+            _ => {}
+        }
+    }
+
+    // Signals (any-of). Each threshold is justified in
+    // specs/fork-observability-architecture.md § Workflow #349 Phase 1.5.
+    let signal_a = chain_break_count > 3;
+    let signal_b = fork_block_received_count > 100
+        && fork_block_received_count / block_applied_count.max(1) > 10;
+    let signal_c = rollback_count > 10;
+    let signal_d = recovery_attempts > 20;
+
+    if !(signal_a || signal_b || signal_c || signal_d) {
+        return None;
+    }
+
+    // seconds_stuck: time since the most recent BlockApplied in the window, or the
+    // window span if no BlockApplied is present.
+    let seconds_stuck = match latest_applied_ms {
+        Some(t) => now_ms.saturating_sub(t) / 1000,
+        None => now_ms.saturating_sub(window_start) / 1000,
+    };
+
+    // Evidence: up to 20 representative events from the three churn-indicator kinds.
+    // BlockApplied is excluded because its presence/absence is summarized in seconds_stuck.
+    let evidence_event_ids: Vec<String> = events
+        .iter()
+        .filter(|e| e.timestamp_ms >= window_start)
+        .filter(|e| {
+            matches!(
+                e.kind,
+                EventKind::ChainBreakDetected
+                    | EventKind::RecoveryClassifyCall
+                    | EventKind::RollbackStarted
+            )
+        })
+        .take(20)
+        .map(|e| e.event_id.clone())
+        .collect();
+
+    let recommended_action_args = serde_json::json!({
+        "approach": "stop_node + rm -rf <data_dir>/{blocks,state_db,utxo,diagnostics} + restart with --no-snap=false",
+        "preserve": ["wallet.json", "producer.seed.txt"],
+        "verify_after": "doli forks --explain --human after 10 minutes of sync",
+    });
+
+    Some(Classification {
+        fork_type: ForkType::ChainBreakLoop {
+            chain_break_count,
+            recovery_attempts,
+            seconds_stuck,
+            rollback_count,
+        },
+        confidence: 0.85,
+        evidence_event_ids,
+        recommended_action: Some("restart_with_resync".to_string()),
+        recommended_action_args: Some(recommended_action_args),
+    })
 }
 
 // ---------------------------------------------------------------------------

@@ -566,6 +566,33 @@ Rules are evaluated in listed order. First match wins. This mirrors
 | 6 | `fork_block_received` with validation_duration < 500ms AND no other signals | `TipRaceNatural` | "No other signals" = no other event with kind in {ForkBlockReceived, BlockRejected, RollbackStarted, RecoveryClassifyCall(action != None)} in same correlation_key group |
 | 7 | Otherwise | `Unknown` | reason_unknown = description of available evidence; evidence_event_ids = all event IDs in the window |
 
+### Workflow #349 Phase 1.5 — Rule (h) `ChainBreakLoop` Insertion
+
+Inserted between rules 4 and 5. Re-numbered as priority 5; rules 5–7 shift to 6–8.
+
+| Priority | Rule | ForkType | Condition |
+|----------|------|----------|-----------|
+| 5 (new)  | Multi-modal chain-break loop | `ChainBreakLoop { chain_break_count, recovery_attempts, seconds_stuck, rollback_count }` | ANY of: (a) `chain_break_count > 3`; (b) `fork_block_received_count > 100` AND `fork_block_received_count / max(block_applied_count, 1) > 10`; (c) `rollback_count > 10`; (d) `recovery_attempts > 20` |
+
+**Why this precedence position.** Rule (h) MUST fire BEFORE (e) `TipRaceHighLatency` and (f) `TipRaceNatural` because those rules iterate `ForkBlockReceived` events and match per-event timing. A node stuck in a chain-break loop emits hundreds of `ForkBlockReceived` — many with low validation latency on the local-tip-recompute path — and rule (f)'s correlation-group-locality check finds no peer signals in any single key, returning `TipRaceNatural` with confidence 0.70 + `recommended_action = normal_operation`. This is **catastrophically wrong** for a frozen node. Rule (h) inspects the **aggregate shape** of the window (cardinality, ratio, recovery-machine churn) and overrides the per-event rules. Rule (h) MUST fire AFTER (a)–(d) because those detect specific known patterns where the targeted remediation differs (e.g., PostSnapDeadTip → `investigate_snap_sync`, RollbackLoop → `investigate_recovery_params`).
+
+**signal_d proxy decision (recovery_attempts vs empty_header_count).** The Phase 1.5 brief proposed using `RecoveryClassifyCall.empty_count` as the "peers returning empty headers" signal. That field does not exist on the current payload (`crates/storage/src/diagnostic_ledger/types.rs:134-146`). Adding it would require touching the emitter, the log replayer, and the bundle schema — out of scope for a single-rule hotfix and would expand the blast radius. Instead, rule (h) counts `RecoveryClassifyCall` events themselves and surfaces them as `recovery_attempts: u32`. This is honestly named (the field measures what its name says: how many times the recovery state machine was invoked) and on the n6 fixture it gives 241 events in 1 hour — strong stuck-state signal independent of header content. A future workflow can add `empty_count` to the payload and extend rule (h) without breaking the wire-format. The variant field is intentionally **not** renamed to `empty_header_count` to avoid lying about the underlying measurement.
+
+**`seconds_stuck` calculation.** Time since the most recent `BlockApplied` in the window (or window start if zero `BlockApplied`). Computed against the latest event timestamp in the slice — keeps `classify()` pure (no `SystemTime::now()`). Agents reading the bundle can sanity-check this against `query_timestamp_ms` to detect very-old bundles.
+
+**Confidence: 0.85.** Lower than `ProducerEquivocation` (0.95) and `EpochBoundaryInvalid` (0.90) because the multi-modal trigger admits more false-positive surface than equivocation (which is bit-identical proof) or epoch-boundary rejection (which is a single matched string). Higher than `TipRaceNatural` (0.70) because the four-signal OR is a stronger combined posterior than any single-event timing rule.
+
+**recommended_action: "restart_with_resync"** with structured args naming the safe wipe scope. The CLAUDE.md "data directory wipe" rule applies: preserve `wallet.json` and `producer.seed.txt`. Args structure:
+```json
+{
+  "approach": "stop_node + rm -rf <data_dir>/{blocks,state_db,utxo,diagnostics} + restart with --no-snap=false",
+  "preserve": ["wallet.json", "producer.seed.txt"],
+  "verify_after": "doli forks --explain --human after 10 minutes of sync"
+}
+```
+
+**Why this rule does not steal from rules (a)–(d).** Rule (a) requires a producer-equivocation pattern (two distinct hashes at same height same producer); rule (h)'s aggregate signals do not encode that pattern. Rule (b) requires a specific `BlockRejected` payload with a string match; rule (h) does not consume `BlockRejected` events. Rule (c) requires >3 rollbacks within a **60-second sliding window**; rule (h)'s `rollback_count > 10` triggers on >10 rollbacks anywhere in a 1-hour window — the n6 fixture has 42 rollbacks **spread across the hour** which does not trigger (c). Rule (d) requires a `SnapSyncCompleted` followed by `ForkBlockReceived` within 300s; rule (h) does not consume `SnapSyncCompleted`. Therefore (h) only fires on the gap between (d)'s short-window detection and (e)/(f)'s per-event timing — exactly the diagnostic gap n6 and INC-I-083 demonstrated.
+
 ---
 
 ## Failure Modes Table
@@ -587,6 +614,10 @@ Rules are evaluated in listed order. First match wins. This mirrors
 | 7 | "Unknown escalates safely" | FM-7a: Unknown dominates for novel incidents | By design. Primary value is structured evidence, not classification. Agent reads evidence fields | Agent must handle Unknown as "evidence needs human review" |
 | 8 | "Retroactive validation" | FM-8a: INC-I-083 would produce Unknown | Correct triage: evidence points to recovery.rs. See INC-I-083 adequacy section | Unknown with rich evidence is the designed outcome |
 | 8 | | FM-8b: INC-I-081 maps to EpochBoundaryInvalid | Genuine win. Rule 2 fires correctly | None |
+| 9 | Workflow #349 rule (h) | FM-9a: False positive on healthy node with high block-throughput | Threshold `fork_block_received_count > 100` requires sustained mis-routed gossip; healthy nodes see <5 fork events/hr. signal_c requires >10 rollbacks/hr which a healthy node never reaches. signal_d requires >20 RecoveryClassifyCall which only triggers on chronic sync churn | Operator can confirm with raw bundle: if BlockApplied is advancing AND signals fire, escalate to design |
+| 9 | | FM-9b: Stealing events from rule (d) `PostSnapDeadTip` | Rule (h) runs AFTER rule (d) by precedence. PostSnapDeadTip's 300s window detects the early-phase signal; rule (h) catches the chronic stuck state if recovery never converges | None — explicit precedence |
+| 9 | | FM-9c: Variant field name `recovery_attempts` masks the design intent ("empty header signal") | Architecture doc documents the proxy decision (this section). Future workflow can add `empty_count` to RecoveryClassifyCall payload and extend rule (h) without breaking the variant shape (add a new field, keep existing) | Field name accurately describes what is measured |
+| 9 | | FM-9d: Confidence 0.85 too high for multi-modal trigger | Validated against n6 fixture (1582 fork events, 241 recovery calls — overwhelming signal) AND INC-I-083 fixture (5 chain breaks in 178 log lines — unambiguous). Bounds-checked: lower than equivocation (proof-grade) and epoch-invalid (string-match-grade), higher than TipRaceNatural (single-event-timing) | Operators see 0.85 → not certain, recommend verification |
 
 ---
 

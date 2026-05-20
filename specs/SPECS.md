@@ -24,7 +24,7 @@ Master index for all DOLI protocol specifications.
 |------|-------------|
 | [single-proposer-architecture.md](./single-proposer-architecture.md) | Single-Proposer-Per-Slot migration architecture - protocol v2 gating, attestation fork choice, emergency fallback, 3-phase implementation plan |
 | [gui-architecture.md](./gui-architecture.md) | GUI Desktop Application architecture - Tauri 2.x app structure, shared wallet crate, VDF feature flag, CI/CD pipeline, security model |
-| [fork-observability-architecture.md](./fork-observability-architecture.md) | Fork-diagnostic observability architecture (workflow #346) — trait-injected emitter, async writer task, separate RocksDB ledger, getForkDiagnostic RPC, deterministic classifier, 4-milestone plan. Phase 1 scope. |
+| [fork-observability-architecture.md](./fork-observability-architecture.md) | Fork-diagnostic observability architecture (workflow #346 Phase 1, #347 Phase 2a, #349 Phase 1.5) — trait-injected emitter, async writer task, separate RocksDB ledger, getForkDiagnostic RPC, deterministic classifier (8 rules incl. `ChainBreakLoop` for INC-I-083 / n6 patterns), 4-milestone plan. |
 
 ## Future Interface Specifications
 
@@ -38,7 +38,7 @@ Master index for all DOLI protocol specifications.
 |------|-------------|
 | [single-proposer-requirements.md](./single-proposer-requirements.md) | Single-Proposer-Per-Slot requirements - migration from multi-rank fallback to single proposer, attestation fork choice |
 | [gui-desktop-requirements.md](./gui-desktop-requirements.md) | GUI Desktop Application requirements - Tauri 2.x cross-platform wallet with full CLI feature parity |
-| [fork-observability-requirements.md](./fork-observability-requirements.md) | Fork-diagnostic observability requirements — Phase 1: emitter, separate RocksDB ledger, getForkDiagnostic RPC, deterministic classifier, JSON-default CLI (workflow #346). Designed for agent consumption with `--human` audit rendering. |
+| [fork-observability-requirements.md](./fork-observability-requirements.md) | Fork-diagnostic observability requirements — Phase 1: emitter, separate RocksDB ledger, getForkDiagnostic RPC, deterministic classifier, JSON-default CLI (workflow #346). Designed for agent consumption with `--human` audit rendering. REQ-FORKOBS-CLF-006 (workflow #349) adds rule (h) `ChainBreakLoop` for the INC-I-083 / n6 chain-break / recovery-churn pattern. |
 
 ## Improvement Specifications
 

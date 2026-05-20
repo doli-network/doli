@@ -750,7 +750,7 @@ grep -i "produced\|block" /var/log/doli-node.log | tail -20
 doli forks --explain --human
 ```
 
-This calls the `getForkDiagnostic` RPC, finds the most recent fork event, and displays a human-readable verdict with the classification (e.g., `TipRaceNatural`, `ProducerEquivocation`, `EpochBoundaryInvalid`, `RollbackLoop`, or `Unknown`), confidence score, and recommended action.
+This calls the `getForkDiagnostic` RPC, finds the most recent fork event, and displays a human-readable verdict with the classification (e.g., `TipRaceNatural`, `ProducerEquivocation`, `EpochBoundaryInvalid`, `RollbackLoop`, `ChainBreakLoop`, or `Unknown`), confidence score, and recommended action. `ChainBreakLoop` (workflow #349) covers the INC-I-083 / n6 (2026-05-20) post-snap chain-break / recovery-churn pattern with recommended action `restart_with_resync`.
 
 ### Step 2: Get the full picture
 
