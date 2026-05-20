@@ -14,12 +14,14 @@
 //! - `stats`: chain stats, debug endpoints, mempool transactions
 //! - `schedule`: slot and producer scheduling, attestation stats
 //! - `guardian`: seed guardian (production halt, checkpoints, status)
+//! - `diagnostics_fleet`: fleet-level fork diagnostic aggregation
 
 mod backfill;
 mod balance;
 mod block;
 mod context;
 mod diagnostics;
+mod diagnostics_fleet;
 mod dispatch;
 mod governance;
 mod guardian;
