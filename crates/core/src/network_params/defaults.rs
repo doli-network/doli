@@ -110,31 +110,38 @@ impl NetworkParams {
                 // BOTH heights must be set to the SAME value to ship the
                 // bundle atomically.
                 // INC-I-078 mainnet activation: cap=3000 (= MAX_BONDS_PER_PRODUCER),
-                // both gates flip atomically at h=240_138. Cap value chosen for
+                // both gates flip atomically at h=254_344. Cap value chosen for
                 // symmetry with the own-bonds ceiling: total influence per producer
                 // <= 2 * MAX_BONDS_PER_PRODUCER, skin-in-game floor >= 50%.
                 //
-                // Re-pin 231_830 -> 240_138 (2026-05-19): the original 231_830
-                // lead-time analysis (tip 229_105 -> 7.57h) went stale. Mainnet
-                // tip reached 231_530 before redeploy, leaving only ~300 blocks
-                // (~50 min) — too tight for a coordinated fleet deploy. The chain
-                // had NOT crossed 231_830 and NO deployed binary (v6.21.20)
-                // honors these gates yet, so moving the pin forward is the
-                // routine pre-activation case, NOT an INC-I-054 violation.
-                // 240_138 - 231_530 = 8_608 blocks ≈ 23.9h binary-distribution
-                // lead. Once the chain CROSSES 240_138 this height becomes
-                // IMMUTABLE — never move it forward thereafter (INC-I-054).
+                // Re-pin history:
+                //   231_830 -> 240_138 (2026-05-19, commit 479711b5): original
+                //   lead-time analysis went stale before redeploy; no binary
+                //   honored 231_830.
+                //   240_138 -> 254_344 (2026-05-21): same situation — the
+                //   deployed v6.21.20 fleet binary is commit 77bb3dfa, which
+                //   PREDATES all INC-I-078/INC-I-080 gate code. The chain
+                //   crossed 240_138 (tip 245_783 at re-pin), but since no
+                //   deployed node enforces the gate, the height was never
+                //   effectively activated — moving the pin forward is again
+                //   the routine pre-activation case, NOT an INC-I-054
+                //   violation (F3: no crossed-AND-honored height moved; F7:
+                //   not retroactive — 254_344 > tip 245_783).
+                //   254_344 - 245_783 = 8_561 blocks ≈ 23.8h binary-distribution
+                //   lead. Once the chain CROSSES 254_344 AND a binary honoring
+                //   it is deployed, this height becomes IMMUTABLE — never move
+                //   it forward thereafter (INC-I-054).
                 received_delegation_cap: 3000,
-                received_delegation_cap_activation_height: 240_138,
-                delegation_auth_activation_height: 240_138,
-                // INC-I-080: AddBond cap enforcement pinned to h=240_138 —
+                received_delegation_cap_activation_height: 254_344,
+                delegation_auth_activation_height: 254_344,
+                // INC-I-080: AddBond cap enforcement pinned to h=254_344 —
                 // co-deployed atomically with the INC-I-078 bundle (same
                 // upgrade event, same lead-time analysis). Above the chain head
-                // (F7: NOT retroactive). Pre-240_138 the historical clip path
-                // runs; at 240_138 every upgraded node begins rejecting
+                // (F7: NOT retroactive). Pre-254_344 the historical clip path
+                // runs; at 254_344 every upgraded node begins rejecting
                 // over-cap AddBonds in lockstep. Once crossed this height is
                 // IMMUTABLE — never move it forward (INC-I-054).
-                addbond_cap_enforcement_activation_height: 240_138,
+                addbond_cap_enforcement_activation_height: 254_344,
 
                 // Gossip mesh: universal config for all network sizes.
                 // mesh_n=12 keeps all peers in eager-push for networks ≤24 (mesh_n_high),
@@ -235,7 +242,7 @@ impl NetworkParams {
 
                 // INC-I-078: testnet delegation cap + auth co-activate at h=272
                 // (atomic with INC-I-080 AddBond cap) so the testnet transition
-                // exercises the same mainnet upgrade event (h=240_138) in one
+                // exercises the same mainnet upgrade event (h=254_344) in one
                 // boundary. Cap=3000 matches mainnet; env-overridable for tuning.
                 received_delegation_cap: 3000,
                 received_delegation_cap_activation_height: 272,
