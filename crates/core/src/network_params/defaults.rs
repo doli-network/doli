@@ -220,29 +220,29 @@ impl NetworkParams {
                 full_bitfield_decode_height: 0,
                 rewards_epoch_list_fix_height: 0,
                 encrypted_content_activation_height: 0,
-                encrypted_content_v2_activation_height: 20_690, // MIME + royalties activate at h=20690
+                // 2026-05-20: all deferred testnet gates pinned to h=272 (fresh
+                // genesis dress-rehearsal: chain currently at h≈5, ~45 min lead
+                // before co-activation). MIME + royalties.
+                encrypted_content_v2_activation_height: 272,
                 epoch_state_reorg_activation_height: 0,
-                // AUDIT-BRIDGE-001 + AUDIT-AUTH-003: activates at h=21400 on testnet
-                security_audit_activation_height: 21_450,
-                // INC-I-046: Ghost exclusion activates at h=10830 on testnet
-                ghost_exclusion_activation_height: 10_830,
+                // AUDIT-BRIDGE-001 + AUDIT-AUTH-003: co-activates at h=272.
+                security_audit_activation_height: 272,
+                // INC-I-046: Ghost exclusion co-activates at h=272.
+                ghost_exclusion_activation_height: 272,
                 // INC-I-075: Testnet never ran v6.21.16 in production — always
                 // apply the INC-I-068 filter (matches current testnet runtime).
                 inc_i_068_weight_filter_activation_height: 0,
 
-                // INC-I-078: testnet gates pinned to h=109_559 (set 2026-05-19,
-                // testnet tip 109_431 → ~128 blocks / ~21 min lead) to dress-
-                // rehearse the mainnet 240_138 activation: pre-AH historical
-                // clip path runs, then cap+auth enforcement engages in lockstep
-                // at the boundary. Cap=3000 matches mainnet; env-overridable
-                // for cap-tuning tests.
+                // INC-I-078: testnet delegation cap + auth co-activate at h=272
+                // (atomic with INC-I-080 AddBond cap) so the testnet transition
+                // exercises the same mainnet upgrade event (h=240_138) in one
+                // boundary. Cap=3000 matches mainnet; env-overridable for tuning.
                 received_delegation_cap: 3000,
-                received_delegation_cap_activation_height: 109_559,
-                delegation_auth_activation_height: 109_559,
-                // INC-I-080: AddBond cap pinned to h=109_559 — co-activates
-                // atomically with the INC-I-078 gates so the testnet transition
-                // mirrors the mainnet upgrade event (h=240_138) exactly.
-                addbond_cap_enforcement_activation_height: 109_559,
+                received_delegation_cap_activation_height: 272,
+                delegation_auth_activation_height: 272,
+                // INC-I-080: AddBond cap co-activates atomically with INC-I-078
+                // gates at h=272.
+                addbond_cap_enforcement_activation_height: 272,
 
                 // INC-I-015: Gossip mesh sized to max_peers for eager push to ALL
                 // connected peers. At mesh_n=12, blocks reach 12 peers immediately
