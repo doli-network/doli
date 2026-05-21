@@ -91,9 +91,11 @@ async fn wire_real_diagnostics(
 
     // Spawn writer task
     let writer_ledger = ledger.clone();
+    let writer_stats = storage::diagnostic_ledger::DiagnosticWriterStats::new_shared();
     tokio::spawn(doli_node::node::diagnostic_writer::run_writer_task(
         receiver,
         writer_ledger,
+        writer_stats,
         shutdown_rx.clone(),
     ));
 

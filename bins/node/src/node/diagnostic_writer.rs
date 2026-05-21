@@ -5,13 +5,13 @@
 //! remaining queued events before exiting. Emits periodic WriterHeartbeat
 //! events so the RPC (M3) can detect silent write failures (FM-4b).
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
 use storage::diagnostic_ledger::emitter::DiagnosticReceiver;
 use storage::diagnostic_ledger::types::{DiagnosticEvent, EventKind, EventPayload};
-use storage::diagnostic_ledger::DiagnosticLedger;
+use storage::diagnostic_ledger::{DiagnosticLedger, DiagnosticWriterStats};
 use tracing::{debug, info, warn};
 
 /// Maximum events to drain per batch before yielding.
@@ -28,15 +28,17 @@ const POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// Drains events from `receiver` and writes them to `ledger`. On shutdown
 /// signal, drains all remaining events before returning. Emits a
 /// `WriterHeartbeat` directly to the ledger every 60 seconds.
+///
+/// Counters are tracked on the shared `stats` handle so the RPC layer
+/// can report live values via `getDiagnosticHealth` (INC-I-087).
 pub async fn run_writer_task(
     mut receiver: DiagnosticReceiver,
     ledger: Arc<DiagnosticLedger>,
+    stats: Arc<DiagnosticWriterStats>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
     info!("[DiagnosticWriter] started");
 
-    let events_written = AtomicU64::new(0);
-    let events_dropped = AtomicU64::new(0);
     let mut heartbeat_timer = tokio::time::interval(HEARTBEAT_INTERVAL);
     // Consume the first immediate tick so the first heartbeat fires after 60s.
     heartbeat_timer.tick().await;
@@ -48,36 +50,40 @@ pub async fn run_writer_task(
             _ = shutdown.changed() => {
                 if *shutdown.borrow() {
                     debug!("[DiagnosticWriter] shutdown signal received, draining remaining events");
-                    drain_remaining(&mut receiver, &ledger, &events_written);
+                    drain_remaining(&mut receiver, &ledger, &stats);
                     info!(
                         "[DiagnosticWriter] shutdown complete (written={}, dropped={})",
-                        events_written.load(Ordering::Relaxed),
-                        events_dropped.load(Ordering::Relaxed),
+                        stats.events_written.load(Ordering::Relaxed),
+                        stats.events_dropped.load(Ordering::Relaxed),
                     );
                     return;
                 }
             }
             // Heartbeat timer fires every 60 seconds.
             _ = heartbeat_timer.tick() => {
-                write_heartbeat(&ledger, &events_written, &events_dropped);
+                write_heartbeat(&ledger, &stats);
             }
             // Poll interval — drain a batch of events.
             _ = tokio::time::sleep(POLL_INTERVAL) => {
-                drain_batch(&mut receiver, &ledger, &events_written);
+                drain_batch(&mut receiver, &ledger, &stats);
             }
         }
     }
 }
 
 /// Drain up to `BATCH_SIZE` events from the receiver and write them to the ledger.
-fn drain_batch(receiver: &mut DiagnosticReceiver, ledger: &DiagnosticLedger, written: &AtomicU64) {
+fn drain_batch(
+    receiver: &mut DiagnosticReceiver,
+    ledger: &DiagnosticLedger,
+    stats: &DiagnosticWriterStats,
+) {
     for _ in 0..BATCH_SIZE {
         match receiver.try_recv() {
             Ok(event) => {
                 if let Err(e) = ledger.record(&event) {
                     warn!("[DiagnosticWriter] failed to write event: {:?}", e);
                 } else {
-                    written.fetch_add(1, Ordering::Relaxed);
+                    stats.events_written.fetch_add(1, Ordering::Relaxed);
                 }
             }
             Err(_) => break, // channel empty
@@ -89,7 +95,7 @@ fn drain_batch(receiver: &mut DiagnosticReceiver, ledger: &DiagnosticLedger, wri
 fn drain_remaining(
     receiver: &mut DiagnosticReceiver,
     ledger: &DiagnosticLedger,
-    written: &AtomicU64,
+    stats: &DiagnosticWriterStats,
 ) {
     while let Ok(event) = receiver.try_recv() {
         if let Err(e) = ledger.record(&event) {
@@ -98,17 +104,20 @@ fn drain_remaining(
                 e
             );
         } else {
-            written.fetch_add(1, Ordering::Relaxed);
+            stats.events_written.fetch_add(1, Ordering::Relaxed);
         }
     }
 }
 
 /// Write a WriterHeartbeat event directly to the ledger (not via channel).
-fn write_heartbeat(ledger: &DiagnosticLedger, written: &AtomicU64, dropped: &AtomicU64) {
+fn write_heartbeat(ledger: &DiagnosticLedger, stats: &DiagnosticWriterStats) {
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
+
+    // Update the shared heartbeat timestamp so the RPC can report it.
+    stats.last_heartbeat_ms.store(now_ms, Ordering::Relaxed);
 
     let event = DiagnosticEvent {
         event_id: ulid::Ulid::new().to_string(),
@@ -119,8 +128,8 @@ fn write_heartbeat(ledger: &DiagnosticLedger, written: &AtomicU64, dropped: &Ato
         caused_by_event_id: None,
         is_cascade_origin: false,
         payload: EventPayload::WriterHeartbeat {
-            events_written_total: written.load(Ordering::Relaxed),
-            events_dropped_total: dropped.load(Ordering::Relaxed),
+            events_written_total: stats.events_written.load(Ordering::Relaxed),
+            events_dropped_total: stats.events_dropped.load(Ordering::Relaxed),
         },
     };
 

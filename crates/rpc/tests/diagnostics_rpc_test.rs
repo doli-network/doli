@@ -41,6 +41,18 @@
 //   P12a: fork events at h=10,25,50 -> first=10, last=50
 //
 // MATRIX: 2 output paths (Ok/Err) x 12 partitions = 12 tests
+//
+// --- INC-I-087: getDiagnosticHealth live counter values ---
+//
+// OUTPUT CONTRACT: fn get_fork_diagnostic(&self) -> health.events_written_total, health.events_dropped_total, health.last_heartbeat_ms
+//   OUTPUTS: O1=events_written_total, O2=events_dropped_total, O3=last_heartbeat_ms
+//   PATHS: P1=stats-unset(default zero), P2=stats-with-nonzero-counters, P3=stats-with-zero-counters-but-heartbeat-set
+//   MATRIX: O1xP1=0, O1xP2=N>0, O1xP3=0; O2xP1=0, O2xP2=M>0, O2xP3=0; O3xP1=None, O3xP2=Some(t>0), O3xP3=Some(t>0)
+//
+// INPUT PARTITIONS:
+//   P1a: Default DiagnosticWriterStats (all zeros) -> written=0, dropped=0, heartbeat=None
+//   P2a: Stats with events_written=42, events_dropped=3, last_heartbeat_ms=1716200000000 -> written=42, dropped=3, heartbeat=Some(1716200000000)
+//   P3a: Stats with events_written=0, events_dropped=0, last_heartbeat_ms=1716200000000 -> written=0, dropped=0, heartbeat=Some(1716200000000)
 
 // NOTE: This test file requires the developer to add to crates/rpc/Cargo.toml:
 //   [dev-dependencies]
@@ -54,12 +66,14 @@
 // The test also needs to construct an RpcContext, which requires its complex dependencies.
 // We use the existing `new_for_network` constructor with minimal stubs.
 
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use serde_json::json;
 
 use storage::diagnostic_ledger::types::{DiagnosticEvent, EventKind, EventPayload};
 use storage::diagnostic_ledger::DiagnosticLedger;
+use storage::diagnostic_ledger::DiagnosticWriterStats;
 
 // The RPC method is expected to be callable as:
 //   ctx.get_fork_diagnostic(params).await
@@ -196,6 +210,43 @@ async fn make_test_rpc_context(ledger: Option<Arc<DiagnosticLedger>>) -> rpc::Rp
     )
     .with_peer_id("12D3KooWTestNode1234567890".to_string())
     .with_diagnostic_ledger(ledger)
+}
+
+/// Create a minimal RpcContext for diagnostic tests WITH shared writer stats.
+async fn make_test_rpc_context_with_stats(
+    ledger: Option<Arc<DiagnosticLedger>>,
+    stats: Arc<DiagnosticWriterStats>,
+) -> rpc::RpcContext {
+    use tokio::sync::RwLock;
+
+    use doli_core::consensus::ConsensusParams;
+    use doli_core::network::Network;
+
+    let chain_state = Arc::new(RwLock::new(storage::ChainState::new(crypto::Hash::ZERO)));
+    let block_store = {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = Box::leak(Box::new(dir));
+        Arc::new(storage::BlockStore::open(dir.path()).unwrap())
+    };
+    let utxo_set = Arc::new(RwLock::new(storage::UtxoSet::new()));
+    let params = ConsensusParams::default();
+    let mempool = Arc::new(RwLock::new(mempool::Mempool::new(
+        mempool::MempoolPolicy::default(),
+        params.clone(),
+        Network::Devnet,
+    )));
+
+    rpc::RpcContext::new_for_network(
+        chain_state,
+        block_store,
+        utxo_set,
+        mempool,
+        params,
+        Network::Devnet,
+    )
+    .with_peer_id("12D3KooWTestNode1234567890".to_string())
+    .with_diagnostic_ledger(ledger)
+    .with_diagnostic_writer_stats(stats)
 }
 
 // ===========================================================================
@@ -602,5 +653,116 @@ async fn test_rpc_first_and_last_fork_height_correct() {
     assert_eq!(
         summary["last_fork_height"], 50,
         "last_fork_height should be 50"
+    );
+}
+
+// ===========================================================================
+// INC-I-087: getDiagnosticHealth reports live counter values
+// ===========================================================================
+
+// Requirement: INC-I-087 (Must)
+// Acceptance: health.events_written_total, events_dropped_total, last_heartbeat_ms
+//   reflect live DiagnosticWriterStats values, not hardcoded zeros.
+
+/// P1: stats-unset (default zero) -- all counters at zero
+///   O1xP1: events_written_total = 0
+///   O2xP1: events_dropped_total = 0
+///   O3xP1: last_heartbeat_ms = None (zero maps to None)
+#[tokio::test]
+async fn get_diagnostic_health_reports_live_counter_values_p1_default_zero() {
+    let (ledger, _dir) = make_test_ledger();
+    let stats = DiagnosticWriterStats::new_shared();
+    // All counters default to 0 — no mutation.
+    let ctx = make_test_rpc_context_with_stats(Some(ledger), stats).await;
+
+    let result = ctx
+        .get_fork_diagnostic(json!({"window_secs": 3600}))
+        .await
+        .expect("RPC should succeed");
+
+    let health = &result["health"];
+    assert_eq!(
+        health["events_written_total"], 0,
+        "P1: events_written_total should be 0 for default stats"
+    );
+    assert_eq!(
+        health["events_dropped_total"], 0,
+        "P1: events_dropped_total should be 0 for default stats"
+    );
+    assert!(
+        health["last_heartbeat_ms"].is_null(),
+        "P1: last_heartbeat_ms should be null (None) for default stats, got {:?}",
+        health["last_heartbeat_ms"]
+    );
+}
+
+/// P2: stats-with-nonzero-counters
+///   O1xP2: events_written_total = 42
+///   O2xP2: events_dropped_total = 3
+///   O3xP2: last_heartbeat_ms = Some(1716200000000)
+#[tokio::test]
+async fn get_diagnostic_health_reports_live_counter_values_p2_nonzero() {
+    let (ledger, _dir) = make_test_ledger();
+    let stats = DiagnosticWriterStats::new_shared();
+    stats.events_written.store(42, Ordering::Relaxed);
+    stats.events_dropped.store(3, Ordering::Relaxed);
+    stats
+        .last_heartbeat_ms
+        .store(1_716_200_000_000, Ordering::Relaxed);
+
+    let ctx = make_test_rpc_context_with_stats(Some(ledger), stats).await;
+
+    let result = ctx
+        .get_fork_diagnostic(json!({"window_secs": 3600}))
+        .await
+        .expect("RPC should succeed");
+
+    let health = &result["health"];
+    assert_eq!(
+        health["events_written_total"], 42,
+        "P2: events_written_total should be 42"
+    );
+    assert_eq!(
+        health["events_dropped_total"], 3,
+        "P2: events_dropped_total should be 3"
+    );
+    assert_eq!(
+        health["last_heartbeat_ms"], 1_716_200_000_000u64,
+        "P2: last_heartbeat_ms should be Some(1716200000000)"
+    );
+}
+
+/// P3: stats-with-zero-counters-but-heartbeat-set
+///   O1xP3: events_written_total = 0
+///   O2xP3: events_dropped_total = 0
+///   O3xP3: last_heartbeat_ms = Some(1716200000000)
+#[tokio::test]
+async fn get_diagnostic_health_reports_live_counter_values_p3_heartbeat_only() {
+    let (ledger, _dir) = make_test_ledger();
+    let stats = DiagnosticWriterStats::new_shared();
+    // Leave events_written and events_dropped at 0, but set heartbeat
+    stats
+        .last_heartbeat_ms
+        .store(1_716_200_000_000, Ordering::Relaxed);
+
+    let ctx = make_test_rpc_context_with_stats(Some(ledger), stats).await;
+
+    let result = ctx
+        .get_fork_diagnostic(json!({"window_secs": 3600}))
+        .await
+        .expect("RPC should succeed");
+
+    let health = &result["health"];
+    assert_eq!(
+        health["events_written_total"], 0,
+        "P3: events_written_total should be 0"
+    );
+    assert_eq!(
+        health["events_dropped_total"], 0,
+        "P3: events_dropped_total should be 0"
+    );
+    assert_eq!(
+        health["last_heartbeat_ms"], 1_716_200_000_000u64,
+        "P3: last_heartbeat_ms should be Some(1716200000000) even when counters are zero"
     );
 }

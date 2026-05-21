@@ -1037,6 +1037,8 @@ impl Node {
                 as Arc<dyn storage::diagnostic_ledger::emitter::DiagnosticEmitter>,
             diagnostic_ledger: None,
             diagnostic_shutdown_tx: None,
+            diagnostic_writer_stats: storage::diagnostic_ledger::DiagnosticWriterStats::new_shared(
+            ),
         };
 
         // --- Diagnostic writer + pruner wiring (M2 follow-up) ---
@@ -1051,9 +1053,11 @@ impl Node {
 
                 // Spawn writer task
                 let writer_ledger = ledger.clone();
+                let writer_stats = node.diagnostic_writer_stats.clone();
                 tokio::spawn(super::diagnostic_writer::run_writer_task(
                     receiver,
                     writer_ledger,
+                    writer_stats,
                     shutdown_rx.clone(),
                 ));
 
@@ -1274,6 +1278,8 @@ impl Node {
                 as Arc<dyn storage::diagnostic_ledger::emitter::DiagnosticEmitter>,
             diagnostic_ledger: None,
             diagnostic_shutdown_tx: None,
+            diagnostic_writer_stats: storage::diagnostic_ledger::DiagnosticWriterStats::new_shared(
+            ),
         })
     }
 
@@ -1449,6 +1455,8 @@ impl Node {
                 as Arc<dyn storage::diagnostic_ledger::emitter::DiagnosticEmitter>,
             diagnostic_ledger: None,
             diagnostic_shutdown_tx: None,
+            diagnostic_writer_stats: storage::diagnostic_ledger::DiagnosticWriterStats::new_shared(
+            ),
         })
     }
 }

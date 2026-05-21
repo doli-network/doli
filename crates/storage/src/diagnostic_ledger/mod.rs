@@ -15,6 +15,9 @@ pub mod fleet;
 pub mod log_replay;
 pub mod queries;
 pub mod types;
+pub mod writer_stats;
+
+pub use writer_stats::DiagnosticWriterStats;
 
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};

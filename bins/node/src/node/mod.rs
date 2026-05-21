@@ -70,7 +70,7 @@ use network::{
 use rpc::{Mempool, MempoolPolicy, RpcContext, RpcServer, RpcServerConfig, SyncStatus};
 use storage::archiver::ArchiveBlock;
 use storage::diagnostic_ledger::emitter::DiagnosticEmitter;
-use storage::diagnostic_ledger::DiagnosticLedger;
+use storage::diagnostic_ledger::{DiagnosticLedger, DiagnosticWriterStats};
 use storage::{BlockStore, ChainState, PendingProducerUpdate, ProducerSet, StateDb, UtxoSet};
 use updater::is_using_placeholder_keys;
 
@@ -274,6 +274,10 @@ pub struct Node {
     /// `None` when diagnostics are disabled (ledger failed to open) or in test mode.
     #[allow(dead_code)]
     pub diagnostic_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
+
+    /// Shared diagnostic writer stats (INC-I-087). Passed to both the writer task
+    /// and the RPC context so getDiagnosticHealth reports live counter values.
+    pub diagnostic_writer_stats: Arc<DiagnosticWriterStats>,
 }
 
 /// INC-I-055: Number of health samples to track in the rolling window.

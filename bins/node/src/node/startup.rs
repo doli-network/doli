@@ -362,6 +362,9 @@ impl Node {
             context = context.with_diagnostic_ledger(Some(ledger.clone()));
         }
 
+        // Wire live diagnostic writer stats for getDiagnosticHealth (INC-I-087)
+        context = context.with_diagnostic_writer_stats(self.diagnostic_writer_stats.clone());
+
         // Wire up peer info so getNetworkInfo reports real values
         if let Some(ref network) = self.network {
             let peers = network.peers_arc();

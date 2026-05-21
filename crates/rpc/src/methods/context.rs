@@ -10,7 +10,7 @@ use tokio::sync::RwLock;
 use crypto::Hash;
 use doli_core::Transaction;
 use network::SyncManager;
-use storage::diagnostic_ledger::DiagnosticLedger;
+use storage::diagnostic_ledger::{DiagnosticLedger, DiagnosticWriterStats};
 use storage::{BlockStore, ChainState, ProducerSet, StateDb, UtxoSet};
 
 use crate::error::RpcError;
@@ -98,6 +98,9 @@ pub struct RpcContext {
     pub rewards_epoch_list_fix_height: u64,
     /// Diagnostic ledger for fork observability (M3).
     pub diagnostic_ledger: Option<Arc<DiagnosticLedger>>,
+    /// Live writer stats shared with the diagnostic writer task (INC-I-087).
+    /// Default: fresh empty Arc (all zeros). In production: shared with writer task.
+    pub diagnostic_writer_stats: Arc<DiagnosticWriterStats>,
 }
 
 impl RpcContext {
@@ -155,6 +158,7 @@ impl RpcContext {
             archive_dir: None,
             recovery_mode: Arc::new(AtomicBool::new(false)),
             diagnostic_ledger: None,
+            diagnostic_writer_stats: DiagnosticWriterStats::new_shared(),
         }
     }
 
@@ -216,6 +220,7 @@ impl RpcContext {
                 archive_dir: None,
                 recovery_mode: Arc::new(AtomicBool::new(false)),
                 diagnostic_ledger: None,
+                diagnostic_writer_stats: DiagnosticWriterStats::new_shared(),
             }
         }
     }
@@ -328,6 +333,13 @@ impl RpcContext {
     /// Set diagnostic ledger for fork observability (M3)
     pub fn with_diagnostic_ledger(mut self, ledger: Option<Arc<DiagnosticLedger>>) -> Self {
         self.diagnostic_ledger = ledger;
+        self
+    }
+
+    /// Set diagnostic writer stats (INC-I-087).
+    /// Shared with the writer task so getDiagnosticHealth reports live values.
+    pub fn with_diagnostic_writer_stats(mut self, stats: Arc<DiagnosticWriterStats>) -> Self {
+        self.diagnostic_writer_stats = stats;
         self
     }
 

@@ -4,6 +4,7 @@
 //! classification, baseline, and health data. Read-only (REQ-FORKOBS-SEC-002).
 
 use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
@@ -87,12 +88,22 @@ impl RpcContext {
         // Build baseline (simplified: compare current window vs 24h)
         let baseline = build_baseline(ledger.as_ref(), window_secs, &events);
 
-        // Build health
+        // Build health from live writer stats (INC-I-087)
+        let stats = &self.diagnostic_writer_stats;
+        let written = stats.events_written.load(Ordering::Relaxed);
+        let dropped = stats.events_dropped.load(Ordering::Relaxed);
+        let heartbeat_raw = stats.last_heartbeat_ms.load(Ordering::Relaxed);
+        let last_heartbeat_ms = if heartbeat_raw == 0 {
+            None
+        } else {
+            Some(heartbeat_raw)
+        };
+
         let health = DiagnosticHealth {
             ledger_available: true,
-            events_written_total: 0,
-            events_dropped_total: 0,
-            last_heartbeat_ms: None,
+            events_written_total: written,
+            events_dropped_total: dropped,
+            last_heartbeat_ms,
         };
 
         let bundle = DiagnosticBundle {
