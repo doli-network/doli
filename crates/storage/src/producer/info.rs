@@ -313,8 +313,9 @@ impl ProducerInfo {
             return 0;
         }
 
+        let requested = bond_outpoints.len() as u32;
         let available_slots = MAX_BONDS_PER_PRODUCER.saturating_sub(self.bond_count);
-        let bonds_to_add = (bond_outpoints.len() as u32).min(available_slots);
+        let bonds_to_add = requested.min(available_slots);
 
         for outpoint in bond_outpoints.into_iter().take(bonds_to_add as usize) {
             self.additional_bonds.push(outpoint);
@@ -332,6 +333,28 @@ impl ProducerInfo {
                 self.public_key,
                 bonds_to_add,
                 self.bond_count
+            );
+        }
+
+        // INC-I-085 defense-in-depth: surface silent clip as a WARN. Pre-AH
+        // this is the historical orphan-creation signal (now observable as it
+        // happens). Post-AH this branch should be UNREACHABLE — `check_addbond_cap`
+        // rejects over-cap blocks before they apply; a WARN at that point
+        // means something bypassed validation (regression in the gate or a new
+        // caller of `add_bonds` that does not go through block-apply).
+        let dropped = requested.saturating_sub(bonds_to_add);
+        if dropped > 0 {
+            tracing::warn!(
+                "[PRODUCER] AddBond clip: pk={} requested={} added={} dropped={} \
+                 bond_count={} cap={} slot={} — dropped Bond UTXOs are orphaned \
+                 in the UTXO set with no owner in ProducerInfo (unwithdrawable).",
+                self.public_key,
+                requested,
+                bonds_to_add,
+                dropped,
+                self.bond_count,
+                MAX_BONDS_PER_PRODUCER,
+                creation_slot
             );
         }
         bonds_to_add
