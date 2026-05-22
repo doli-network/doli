@@ -309,26 +309,72 @@ Options:
       --yes                  Skip confirmation prompt
 ```
 
-**Condition examples:**
-- `multisig(2, addr1, addr2, addr3)` -- 2-of-3 multisig
-- `hashlock(hex_hash)` -- hash-locked output
-- `htlc(hex_hash, lock_height, expiry_height)` -- hash time-locked contract
-- `timelock(min_height)` -- time-locked output
-- `vesting(addr, unlock_height)` -- vesting schedule
+**Condition primitives:**
+
+| Condition | Syntax | Description |
+|-----------|--------|-------------|
+| Multisig | `multisig(threshold, addr1, addr2, ...)` | M-of-N multisig |
+| Hashlock | `hashlock(hex_hash)` | Hash-locked output |
+| HTLC | `htlc(hex_hash, lock_height, expiry_height, refund_pubkey_hash)` | Hash time-locked contract |
+| Timelock | `timelock(min_height)` | Time-locked output (spendable after height) |
+| Timelock Expiry | `timelock_expiry(max_height)` | Expires after height (refund path) |
+| Vesting | `vesting(addr, unlock_height)` | Vesting schedule |
+| Amount Guard | `amount_guard(min_amount, output_index)` | Requires spending tx output at `output_index` to have at least `min_amount` DOLI |
+| Output Type Guard | `output_type_guard(type_name, output_index)` | Requires spending tx output at `output_index` to match `type_name` |
+| Recipient Guard | `recipient_guard(addr, output_index)` | Requires spending tx output at `output_index` to pay `addr` |
+| Threshold | `threshold(n, cond1, cond2, ...)` | N-of-M condition threshold (min 2, max 5 sub-conditions) |
+
+**Composition operators:**
+- `and(cond1, cond2)` -- both conditions must be satisfied
+- `or(cond1, cond2)` -- either condition must be satisfied
+- `threshold(n, cond1, cond2, ...)` -- at least `n` of the listed conditions must be satisfied
+
+Guards can be composed with other conditions. For example, to require that a spend sends at least 500 DOLI to a specific address:
+
+```bash
+doli send doli1examp... 1000 --condition \
+  "and(amount_guard(500.0, 0), recipient_guard(doli1recvr..., 0))"
+```
+
+**`output_type_guard` accepted type names (all 15 OutputType variants):**
+
+`normal`, `bond`, `multisig`, `hashlock`, `htlc`, `vesting`, `nft`, `fungibleasset`, `bridgehtlc`, `pool`, `lpshare`, `collateral`, `lendingdeposit`, `zkrollup`, `encryptedcontent`
+
+Type names are case-insensitive.
 
 **Example:**
 ```bash
 # Send 10 DOLI
-doli -w ~/.doli/wallet.json send doli1abc... 10
+doli -w ~/.doli/wallet.json send doli1examp... 10
 
 # Send with explicit fee
-doli -w ~/.doli/wallet.json send doli1abc... 10 --fee 0.001
+doli -w ~/.doli/wallet.json send doli1examp... 10 --fee 0.001
 
 # Send with hashlock condition
-doli send doli1abc... 10 --condition "hashlock(abcd1234...)"
+doli send doli1examp... 10 --condition "hashlock(abcd1234...)"
+
+# Send with amount guard (spending tx must produce >= 500 DOLI at output 0)
+doli send doli1examp... 1000 --condition "amount_guard(500.0, 0)"
+
+# Send with output type guard (spending tx output 0 must be NFT type)
+doli send doli1examp... 5 --condition "output_type_guard(nft, 0)"
+
+# Send with recipient guard (spending tx output 0 must pay doli1recvr...)
+doli send doli1examp... 100 --condition "recipient_guard(doli1recvr..., 0)"
+
+# Send with threshold (2-of-3 conditions must be met)
+doli send doli1examp... 1000 --condition \
+  "threshold(2, amount_guard(500.0, 0), recipient_guard(doli1recvr..., 0), output_type_guard(normal, 0))"
 
 # Send without confirmation prompt
-doli send doli1abc... 10 --yes
+doli send doli1examp... 10 --yes
+```
+
+**Mainnet guard activation status:** Guard conditions are active on devnet/testnet only (`guards_activation_height = MAX` on mainnet until coordinated activation). The CLI emits a warning when constructing guard conditions on mainnet; the transaction is still broadcast but will be rejected by mainnet validators. The warning message:
+
+```
+WARNING: Guard conditions are not yet activated on mainnet (guards_activation_height = MAX).
+This transaction WILL be rejected by mainnet nodes. Use --network devnet or --network testnet.
 ```
 
 **WHITEPAPER Reference:** Section 2 (Transactions) - Transactions require valid inputs, signatures, and positive amounts.
@@ -337,19 +383,50 @@ doli send doli1abc... 10 --yes
 
 ### 2.3. Spend Conditioned UTXO
 
-Spend a covenant-conditioned UTXO by providing the witness data that satisfies the condition.
+Spend a covenant-conditioned UTXO by providing the witness data that satisfies the condition. Supports single-output (positional arguments) or multi-output (`--output` flag) modes.
 
 ```bash
-doli spend <UTXO> <TO> <AMOUNT> [OPTIONS]
+doli spend <UTXO> [<TO> <AMOUNT>] [OPTIONS]
 
 Arguments:
   <UTXO>      UTXO to spend: txhash:output_index
-  <TO>        Recipient address
-  <AMOUNT>    Amount to send (remaining goes to change)
+  <TO>        Recipient address (positional, mutually exclusive with --output)
+  <AMOUNT>    Amount to send (positional, mutually exclusive with --output)
 
 Options:
   -w, --witness <WITNESS>    Witness data to satisfy the condition (required)
-  -f, --fee <FEE>            Fee (default: auto)
+  -f, --fee <FEE>            Fee (default: 1 unit)
+  -o, --output <SPEC>        Output specification (repeatable, see below)
+      --yes                  Skip fee-overpayment confirmation prompt
+```
+
+**`--output` flag format:** `index:type:recipient:amount`
+
+Each `--output` specifies one output of the spending transaction. The flag can be repeated up to 8 times. Indices must be contiguous starting from 0, with no duplicates.
+
+**`--output` and positional `<TO>`/`<AMOUNT>` are mutually exclusive.** You must use one or the other, never both. Using both produces an error:
+
+```
+Error: Cannot use --output with positional <TO> and <AMOUNT> arguments
+```
+
+**Allowed `--output` type names (user-constructible only):**
+
+`normal`, `multisig`, `hashlock`, `htlc`, `vesting`, `nft`
+
+Protocol-internal types are rejected with a specific error:
+
+```
+Error: Output type 'bond' cannot be used in spend transactions (protocol-internal)
+```
+
+The rejected types are: `bond`, `bridgehtlc`, `pool`, `lpshare`, `collateral`, `lendingdeposit`, `zkrollup`, `encryptedcontent`, `fungibleasset`.
+
+**Fee overpayment warning:** When using `--output`, the CLI warns if the computed fee exceeds `max(1% of input value, 10000 units)`. This typically means you forgot a change output. The warning prompts for confirmation; pass `--yes` to bypass.
+
+```
+WARNING: Computed fee (50000 units) is unusually high (>1% of input or >10000 units).
+Did you forget a change output? Continue anyway? [yes/no]
 ```
 
 **Witness examples:**
@@ -357,16 +434,42 @@ Options:
 - `sign(wallet1.json, wallet2.json)` -- satisfy a multisig
 - `branch(right, preimage(hex_secret))` -- satisfy a branch condition
 
-**Example:**
+**Example (single-output, legacy):**
 ```bash
 # Spend a hashlock UTXO
-doli spend abcd1234...:0 doli1abc... 10 --witness "preimage(deadbeef...)"
+doli spend abcd1234...:0 doli1examp... 10 --witness "preimage(deadbeef...)"
 
 # Spend a multisig UTXO
-doli spend abcd1234...:0 doli1abc... 10 --witness "sign(wallet1.json, wallet2.json)"
+doli spend abcd1234...:0 doli1examp... 10 --witness "sign(wallet1.json, wallet2.json)"
+```
+
+**Example (multi-output, for guard satisfaction):**
+```bash
+# Spend a guarded UTXO with 2 outputs: payment + change
+doli spend abcd1234...:0 \
+  --output 0:normal:doli1recvr...:500 \
+  --output 1:normal:doli1chang...:499.99999 \
+  --witness "none()" \
+  --yes
+
+# Spend with NFT output to satisfy an output_type_guard
+doli spend abcd1234...:0 \
+  --output 0:nft:doli1buyer...:5 \
+  --output 1:normal:doli1chang...:94.99999 \
+  --witness "preimage(deadbeef...)"
+```
+
+**Example (error case -- non-contiguous indices):**
+```bash
+doli spend abcd1234...:0 \
+  --output 0:normal:doli1aaa...:100 \
+  --output 2:normal:doli1bbb...:50 \
+  --witness "none()"
+# Error: Output indices must be contiguous starting from 0. Missing index 1
 ```
 
 ---
+
 
 ### 2.4. Transaction History
 
@@ -1989,4 +2092,4 @@ Common pitfalls that cause silent failures or unexpected behavior:
 
 ---
 
-*Last updated: March 2026*
+*Last updated: May 2026*
