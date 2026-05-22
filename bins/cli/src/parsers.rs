@@ -2,6 +2,7 @@ use std::path::Path;
 
 use anyhow::Result;
 
+use crate::rpc_client::coins_to_units;
 use crate::wallet::Wallet;
 
 // =============================================================================
@@ -17,6 +18,10 @@ use crate::wallet::Wallet;
 ///   timelock(min_height)
 ///   timelock_expiry(max_height)
 ///   vesting(addr, unlock_height)
+///   threshold(n, cond1, cond2, ...)
+///   amount_guard(min_amount, output_index)
+///   output_type_guard(type_name, output_index)
+///   recipient_guard(addr, output_index)
 pub(crate) fn parse_condition(s: &str) -> Result<doli_core::Condition> {
     let s = s.trim();
 
@@ -34,7 +39,7 @@ pub(crate) fn parse_condition(s: &str) -> Result<doli_core::Condition> {
     let name = s[..open].trim().to_lowercase();
     let args_str = &s[open + 1..close];
 
-    // For and/or, split at top-level commas (respecting nested parentheses)
+    // For and/or/threshold, split at top-level commas (respecting nested parens)
     match name.as_str() {
         "and" => {
             let top_args = split_top_level(args_str);
@@ -54,12 +59,59 @@ pub(crate) fn parse_condition(s: &str) -> Result<doli_core::Condition> {
             let right = parse_condition(top_args[1])?;
             Ok(doli_core::Condition::Or(Box::new(left), Box::new(right)))
         }
+        // S1 CRITICAL: threshold MUST be here (top-level match using
+        // split_top_level), NOT in parse_simple_condition where flat
+        // args_str.split(',') would mangle nested sub-conditions.
+        "threshold" => parse_threshold(args_str),
         _ => {
             // Simple comma split for non-nested conditions
             let args: Vec<&str> = args_str.split(',').map(|a| a.trim()).collect();
             parse_simple_condition(&name, &args)
         }
     }
+}
+
+/// Parse a threshold condition: threshold(n, cond1, cond2, ...)
+///
+/// Uses `split_top_level` to correctly handle nested sub-conditions.
+fn parse_threshold(args_str: &str) -> Result<doli_core::Condition> {
+    let top_args = split_top_level(args_str);
+    if top_args.len() < 3 {
+        anyhow::bail!("threshold requires at least 2 conditions: threshold(n, cond1, cond2, ...)");
+    }
+
+    let n: u8 = top_args[0]
+        .trim()
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Invalid threshold: '{}' (must be u8)", top_args[0].trim()))?;
+
+    let sub_conditions: Vec<&str> = top_args[1..].to_vec();
+    let count = sub_conditions.len();
+
+    if count < 2 {
+        anyhow::bail!("threshold requires at least 2 conditions");
+    }
+    if count > doli_core::MAX_THRESHOLD_CONDITIONS {
+        anyhow::bail!(
+            "threshold has {} conditions, exceeds MAX_THRESHOLD_CONDITIONS ({})",
+            count,
+            doli_core::MAX_THRESHOLD_CONDITIONS
+        );
+    }
+    if n == 0 {
+        anyhow::bail!("threshold n must be >= 1");
+    }
+    if (n as usize) > count {
+        anyhow::bail!("threshold n ({}) exceeds condition count ({})", n, count);
+    }
+
+    let conditions: Result<Vec<doli_core::Condition>> =
+        sub_conditions.iter().map(|s| parse_condition(s)).collect();
+
+    Ok(doli_core::Condition::Threshold {
+        n,
+        conditions: conditions?,
+    })
 }
 
 /// Split a string at top-level commas, respecting nested parentheses.
@@ -95,10 +147,8 @@ fn parse_simple_condition(name: &str, args: &[&str]) -> Result<doli_core::Condit
             let threshold: u8 = args[0]
                 .parse()
                 .map_err(|_| anyhow::anyhow!("Invalid threshold: {}", args[0]))?;
-            let keys: Result<Vec<crypto::Hash>> = args[1..]
-                .iter()
-                .map(|a| resolve_to_hash(a))
-                .collect();
+            let keys: Result<Vec<crypto::Hash>> =
+                args[1..].iter().map(|a| resolve_to_hash(a)).collect();
             Ok(doli_core::Condition::multisig(threshold, keys?))
         }
         "hashlock" => {
@@ -160,8 +210,80 @@ fn parse_simple_condition(name: &str, args: &[&str]) -> Result<doli_core::Condit
                 .map_err(|_| anyhow::anyhow!("Invalid unlock_height: {}", args[1]))?;
             Ok(doli_core::Condition::vesting(pkh, height))
         }
+        "amount_guard" => {
+            if args.len() != 2 {
+                anyhow::bail!(
+                    "amount_guard requires 2 args: amount_guard(min_amount, output_index)"
+                );
+            }
+            let min_amount =
+                coins_to_units(args[0]).map_err(|e| anyhow::anyhow!("Invalid amount: {}", e))?;
+            if min_amount == 0 {
+                anyhow::bail!("min_amount must be greater than zero");
+            }
+            let output_index: u8 = args[1]
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Invalid output_index: {}", args[1]))?;
+            Ok(doli_core::Condition::amount_guard(min_amount, output_index))
+        }
+        "output_type_guard" => {
+            if args.len() != 2 {
+                anyhow::bail!(
+                    "output_type_guard requires 2 args: output_type_guard(type_name, output_index)"
+                );
+            }
+            let expected_type = parse_output_type_name(args[0])?;
+            let output_index: u8 = args[1]
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Invalid output_index: {}", args[1]))?;
+            Ok(doli_core::Condition::output_type_guard(
+                expected_type,
+                output_index,
+            ))
+        }
+        "recipient_guard" => {
+            if args.len() != 2 {
+                anyhow::bail!(
+                    "recipient_guard requires 2 args: recipient_guard(addr, output_index)"
+                );
+            }
+            let pkh = resolve_to_hash(args[0])?;
+            let output_index: u8 = args[1]
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Invalid output_index: {}", args[1]))?;
+            Ok(doli_core::Condition::recipient_guard(pkh, output_index))
+        }
         _ => anyhow::bail!(
-            "Unknown condition: '{}'. Supported: multisig, hashlock, htlc, timelock, timelock_expiry, vesting, and, or",
+            "Unknown condition: '{}'. Supported: multisig, hashlock, htlc, timelock, \
+             timelock_expiry, vesting, threshold, amount_guard, output_type_guard, \
+             recipient_guard, and, or",
+            name
+        ),
+    }
+}
+
+/// Parse an OutputType name (case-insensitive) into an OutputType variant.
+fn parse_output_type_name(name: &str) -> Result<doli_core::OutputType> {
+    match name.to_lowercase().as_str() {
+        "normal" => Ok(doli_core::OutputType::Normal),
+        "bond" => Ok(doli_core::OutputType::Bond),
+        "multisig" => Ok(doli_core::OutputType::Multisig),
+        "hashlock" => Ok(doli_core::OutputType::Hashlock),
+        "htlc" => Ok(doli_core::OutputType::HTLC),
+        "vesting" => Ok(doli_core::OutputType::Vesting),
+        "nft" => Ok(doli_core::OutputType::NFT),
+        "fungibleasset" => Ok(doli_core::OutputType::FungibleAsset),
+        "bridgehtlc" => Ok(doli_core::OutputType::BridgeHTLC),
+        "pool" => Ok(doli_core::OutputType::Pool),
+        "lpshare" => Ok(doli_core::OutputType::LPShare),
+        "collateral" => Ok(doli_core::OutputType::Collateral),
+        "lendingdeposit" => Ok(doli_core::OutputType::LendingDeposit),
+        "zkrollup" => Ok(doli_core::OutputType::ZKRollup),
+        "encryptedcontent" => Ok(doli_core::OutputType::EncryptedContent),
+        _ => anyhow::bail!(
+            "Unknown output type '{}'. Valid: normal, bond, multisig, hashlock, htlc, \
+             vesting, nft, fungibleasset, bridgehtlc, pool, lpshare, collateral, \
+             lendingdeposit, zkrollup, encryptedcontent",
             name
         ),
     }
@@ -180,6 +302,11 @@ pub(crate) fn resolve_to_hash(addr: &str) -> Result<crypto::Hash> {
 }
 
 /// Map a Condition to the appropriate OutputType.
+///
+/// NOTE: Guard conditions (AmountGuard, OutputTypeGuard, RecipientGuard) map to
+/// OutputType::Multisig. This is a known lossy mapping — display-level only.
+/// Validation reads extra_data, not output_type. A new OutputType::Guard would
+/// require a consensus change.
 pub(crate) fn condition_to_output_type(cond: &doli_core::Condition) -> doli_core::OutputType {
     match cond {
         doli_core::Condition::Multisig { .. } => doli_core::OutputType::Multisig,
@@ -278,3 +405,7 @@ pub(crate) fn parse_witness(s: &str, signing_hash: &crypto::Hash) -> Result<Vec<
 
     Ok(witness.encode())
 }
+
+#[cfg(test)]
+#[path = "parsers_tests.rs"]
+mod tests;
