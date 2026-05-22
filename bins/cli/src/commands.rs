@@ -103,11 +103,11 @@ pub(crate) enum Commands {
         /// UTXO to spend: txhash:output_index
         utxo: String,
 
-        /// Recipient address
-        to: String,
+        /// Recipient address (legacy single-output mode)
+        to: Option<String>,
 
-        /// Amount to send (remaining goes to change)
-        amount: String,
+        /// Amount to send (legacy single-output mode, remaining goes to change)
+        amount: Option<String>,
 
         /// Witness data to satisfy the condition. Examples:
         ///   preimage(hex_secret)
@@ -119,6 +119,14 @@ pub(crate) enum Commands {
         /// Fee (default: auto)
         #[arg(short, long)]
         fee: Option<String>,
+
+        /// Output spec: index:type:recipient:amount (repeatable for multi-output)
+        #[arg(long = "output")]
+        outputs: Vec<String>,
+
+        /// Skip confirmation prompts (fee warning, etc.)
+        #[arg(long)]
+        yes: bool,
     },
 
     /// Show transaction history

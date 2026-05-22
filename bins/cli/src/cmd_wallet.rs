@@ -550,17 +550,31 @@ pub(crate) async fn cmd_send(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn cmd_spend(
     wallet_path: &Path,
     rpc_endpoint: &str,
     utxo_ref: &str,
-    to: &str,
-    amount: &str,
+    to: Option<&str>,
+    amount: Option<&str>,
     witness_str: &str,
     fee: Option<String>,
+    output_specs: &[String],
+    yes: bool,
 ) -> Result<()> {
     use crypto::Hash;
     use doli_core::{Input, Output, Transaction};
+
+    // --- Mutual exclusion: --output vs positional TO/AMOUNT (S2 mitigation) ---
+    let has_outputs = !output_specs.is_empty();
+    let has_positionals = to.is_some() || amount.is_some();
+
+    if has_outputs && has_positionals {
+        anyhow::bail!("Cannot use --output with positional <TO> and <AMOUNT> arguments");
+    }
+    if !has_outputs && !has_positionals {
+        anyhow::bail!("Either provide <TO> and <AMOUNT> positionals OR use --output flags");
+    }
 
     let wallet = Wallet::load(wallet_path)?;
     let rpc = RpcClient::new(rpc_endpoint);
@@ -580,17 +594,6 @@ pub(crate) async fn cmd_spend(
         .parse()
         .map_err(|_| anyhow::anyhow!("Invalid output index: {}", parts[1]))?;
 
-    // Parse recipient
-    let recipient_hash = crypto::address::resolve(to, None)
-        .map_err(|e| anyhow::anyhow!("Invalid recipient address: {}", e))?;
-
-    // Parse amount
-    let amount_units =
-        coins_to_units(amount).map_err(|e| anyhow::anyhow!("Invalid amount: {}", e))?;
-    if amount_units == 0 {
-        anyhow::bail!("Amount must be greater than zero");
-    }
-
     // Fee
     let fee_units = if let Some(f) = &fee {
         coins_to_units(f).map_err(|e| anyhow::anyhow!("Invalid fee: {}", e))?
@@ -598,9 +601,30 @@ pub(crate) async fn cmd_spend(
         1 // Flat fee: 1 satoshi
     };
 
+    // Build outputs: legacy single-output or multi-output path
+    let outputs = if has_outputs {
+        // --- Multi-output path ---
+        let parsed: Vec<_> = output_specs
+            .iter()
+            .map(|s| parse_output_spec(s))
+            .collect::<Result<Vec<_>>>()?;
+        validate_output_specs(&parsed)?
+    } else {
+        // --- Legacy single-output path (identical to pre-change behavior) ---
+        let to_str = to.unwrap();
+        let amount_str = amount.unwrap();
+        let recipient_hash = crate::parsers::resolve_to_hash(to_str)?;
+        let amount_units =
+            coins_to_units(amount_str).map_err(|e| anyhow::anyhow!("Invalid amount: {}", e))?;
+        if amount_units == 0 {
+            anyhow::bail!("Amount must be greater than zero");
+        }
+        vec![Output::normal(amount_units, recipient_hash)]
+    };
+
     // Build transaction with single input
     let input = Input::new(prev_tx_hash, output_index);
-    let outputs = vec![Output::normal(amount_units, recipient_hash)];
+    let total_output: u64 = outputs.iter().map(|o| o.amount).sum();
     let mut tx = Transaction::new_transfer(vec![input], outputs);
 
     // Parse witness and compute signing hash (BIP-143: per-input)
@@ -619,21 +643,56 @@ pub(crate) async fn cmd_spend(
     let tx_hex = hex::encode(&tx_bytes);
     let tx_hash = tx.hash();
 
-    let recipient_display = crypto::address::encode(&recipient_hash, address_prefix())
-        .unwrap_or_else(|_| recipient_hash.to_hex());
-
+    // Print output summary before broadcast
     println!("Spending covenant UTXO:");
     println!(
         "  UTXO:    {}:{}",
         &prev_tx_hash.to_hex()[..16],
         output_index
     );
-    println!("  To:      {}", recipient_display);
-    println!("  Amount:  {} DOLI", format_balance(amount_units));
+    if has_outputs {
+        for (i, out) in tx.outputs.iter().enumerate() {
+            let addr = crypto::address::encode(&out.pubkey_hash, address_prefix())
+                .unwrap_or_else(|_| out.pubkey_hash.to_hex());
+            println!(
+                "  Output {}: {:?} {} DOLI -> {}",
+                i,
+                out.output_type,
+                format_balance(out.amount),
+                addr,
+            );
+        }
+        println!("  Total:   {} DOLI", format_balance(total_output));
+    } else {
+        let recipient_hash = tx.outputs[0].pubkey_hash;
+        let recipient_display = crypto::address::encode(&recipient_hash, address_prefix())
+            .unwrap_or_else(|_| recipient_hash.to_hex());
+        println!("  To:      {}", recipient_display);
+        println!("  Amount:  {} DOLI", format_balance(tx.outputs[0].amount));
+    }
     println!("  Fee:     {}", format_balance(fee_units));
     println!("  Witness: {}", witness_str);
     println!("  TX Hash: {}", tx_hash.to_hex());
     println!("  Size:    {} bytes", tx_bytes.len());
+
+    // Fee warning for multi-output path (S3 mitigation)
+    if has_outputs && should_warn_high_fee(total_output.saturating_add(fee_units), total_output) {
+        let computed_fee = total_output
+            .saturating_add(fee_units)
+            .saturating_sub(total_output);
+        eprintln!(
+            "WARNING: Computed fee ({} units) is unusually high (>1% of input or >10000 units). \
+Did you forget a change output? Continue anyway? [yes/no]",
+            computed_fee
+        );
+        if !yes {
+            let mut input_buf = String::new();
+            std::io::stdin().read_line(&mut input_buf)?;
+            if input_buf.trim().to_lowercase() != "yes" {
+                anyhow::bail!("Aborted by user");
+            }
+        }
+    }
 
     println!();
     println!("Broadcasting transaction...");
@@ -799,6 +858,135 @@ pub(crate) fn cmd_verify(message: &str, signature: &str, pubkey: &str) -> Result
     println!("Valid: {}", valid);
 
     Ok(())
+}
+
+/// Maximum number of outputs per spend transaction.
+const MAX_SPEND_OUTPUTS: usize = 8;
+
+/// Allowed output types in spend transactions (user-constructible only).
+/// Includes NFT per S4 mitigation (users construct NFT outputs via cmd_nft/sell.rs).
+const ALLOWED_SPEND_TYPES: &[(&str, doli_core::OutputType)] = &[
+    ("normal", doli_core::OutputType::Normal),
+    ("multisig", doli_core::OutputType::Multisig),
+    ("hashlock", doli_core::OutputType::Hashlock),
+    ("htlc", doli_core::OutputType::HTLC),
+    ("vesting", doli_core::OutputType::Vesting),
+    ("nft", doli_core::OutputType::NFT),
+];
+
+/// Protocol-internal types that CANNOT be used in spend transactions.
+const REJECTED_SPEND_TYPES: &[&str] = &[
+    "bond",
+    "bridgehtlc",
+    "pool",
+    "lpshare",
+    "collateral",
+    "lendingdeposit",
+    "zkrollup",
+    "encryptedcontent",
+    "fungibleasset",
+];
+
+/// Parse a single output spec string: "index:type:recipient:amount"
+fn parse_output_spec(spec: &str) -> Result<(u8, doli_core::OutputType, crypto::Hash, u64)> {
+    let parts: Vec<&str> = spec.splitn(4, ':').collect();
+    if parts.len() < 4 {
+        anyhow::bail!(
+            "Expected format index:type:recipient:amount, got '{}'",
+            spec
+        );
+    }
+
+    let idx: u8 = parts[0]
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Invalid output index: {}", parts[0]))?;
+
+    let type_lower = parts[1].to_lowercase();
+
+    // Check if it's a rejected protocol-internal type
+    if REJECTED_SPEND_TYPES.contains(&type_lower.as_str()) {
+        anyhow::bail!(
+            "Output type '{}' cannot be used in spend transactions (protocol-internal)",
+            parts[1]
+        );
+    }
+
+    let output_type = ALLOWED_SPEND_TYPES
+        .iter()
+        .find(|(name, _)| *name == type_lower)
+        .map(|(_, ot)| *ot)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Unknown output type '{}'. Allowed: normal, multisig, hashlock, htlc, vesting, nft",
+                parts[1]
+            )
+        })?;
+
+    let recipient_hash = crate::parsers::resolve_to_hash(parts[2])?;
+
+    let amount = coins_to_units(parts[3])
+        .map_err(|e| anyhow::anyhow!("Invalid amount '{}': {}", parts[3], e))?;
+
+    Ok((idx, output_type, recipient_hash, amount))
+}
+
+/// Validate parsed output specs: contiguous indices starting from 0, no duplicates, cap.
+fn validate_output_specs(
+    specs: &[(u8, doli_core::OutputType, crypto::Hash, u64)],
+) -> Result<Vec<doli_core::Output>> {
+    if specs.len() > MAX_SPEND_OUTPUTS {
+        anyhow::bail!(
+            "Maximum {} outputs per spend transaction (got {})",
+            MAX_SPEND_OUTPUTS,
+            specs.len()
+        );
+    }
+
+    // Sort by index
+    let mut sorted: Vec<_> = specs.to_vec();
+    sorted.sort_by_key(|(idx, _, _, _)| *idx);
+
+    // Check for duplicates and gaps
+    for (i, (idx, _, _, _)) in sorted.iter().enumerate() {
+        let expected = i as u8;
+        if *idx != expected {
+            // Is it a duplicate or a gap?
+            if i > 0 && *idx == sorted[i - 1].0 {
+                anyhow::bail!("Duplicate output index: {}", idx);
+            }
+            anyhow::bail!(
+                "Output indices must be contiguous starting from 0. Missing index {}",
+                expected
+            );
+        }
+    }
+
+    // Build outputs
+    let outputs = sorted
+        .iter()
+        .map(|(_, otype, hash, amount)| doli_core::Output {
+            output_type: *otype,
+            amount: *amount,
+            pubkey_hash: *hash,
+            lock_until: 0,
+            extra_data: Vec::new(),
+        })
+        .collect();
+
+    Ok(outputs)
+}
+
+/// Returns true when fee is unusually high and deserves a warning (S3 mitigation).
+/// Threshold: fee > max(input_amount / 100, 10_000).
+/// Uses saturating arithmetic to prevent overflow.
+fn should_warn_high_fee(input_amount: u64, total_output: u64) -> bool {
+    let fee = input_amount.saturating_sub(total_output);
+    if fee == 0 {
+        return false;
+    }
+    let one_percent = input_amount / 100;
+    let threshold = std::cmp::max(one_percent, 10_000);
+    fee > threshold
 }
 
 /// Returns true when a mainnet guard warning should be emitted.

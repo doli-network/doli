@@ -152,9 +152,21 @@ async fn main() -> Result<()> {
             amount,
             witness,
             fee,
+            outputs,
+            yes,
         } => {
-            cmd_wallet::cmd_spend(&wallet, &rpc_endpoint, &utxo, &to, &amount, &witness, fee)
-                .await?;
+            cmd_wallet::cmd_spend(
+                &wallet,
+                &rpc_endpoint,
+                &utxo,
+                to.as_deref(),
+                amount.as_deref(),
+                &witness,
+                fee,
+                &outputs,
+                yes,
+            )
+            .await?;
         }
         Commands::History { limit } => {
             cmd_wallet::cmd_history(&wallet, &rpc_endpoint, limit).await?;
