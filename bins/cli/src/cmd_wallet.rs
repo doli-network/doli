@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-use crate::common::address_prefix;
+use crate::common::{address_prefix, NETWORK};
 use crate::parsers::{condition_to_output_type, parse_condition, parse_witness};
 use crate::rpc_client::{coins_to_units, format_balance, RpcClient};
 use crate::wallet::Wallet;
@@ -477,6 +477,11 @@ pub(crate) async fn cmd_send(
     // Recipient output (with optional covenant condition)
     if let Some(cond_str) = &condition {
         let cond = parse_condition(cond_str)?;
+
+        // REQ-SDK-006: Warn when guard conditions are used on mainnet
+        if should_warn_mainnet_guards(NETWORK.get().map(|s| s.as_str()), &cond) {
+            eprintln!("WARNING: Guard conditions are not yet activated on mainnet (guards_activation_height = MAX). This transaction WILL be rejected by mainnet nodes. Use --network devnet or --network testnet.");
+        }
         let output_type = condition_to_output_type(&cond);
         let output = Output::conditioned(output_type, amount_units, recipient_hash, &cond)
             .map_err(|e| anyhow::anyhow!("Invalid condition: {}", e))?;
@@ -795,3 +800,19 @@ pub(crate) fn cmd_verify(message: &str, signature: &str, pubkey: &str) -> Result
 
     Ok(())
 }
+
+/// Returns true when a mainnet guard warning should be emitted.
+/// Guards are not yet activated on mainnet (guards_activation_height = MAX),
+/// so transactions containing guard conditions will be rejected by mainnet nodes.
+/// Follows the delegation.rs precedent: warn but do not block.
+fn should_warn_mainnet_guards(network: Option<&str>, cond: &doli_core::Condition) -> bool {
+    let is_mainnet = match network {
+        Some("devnet") | Some("testnet") => false,
+        _ => true, // unset or "mainnet" defaults to mainnet
+    };
+    is_mainnet && cond.contains_guard()
+}
+
+#[cfg(test)]
+#[path = "cmd_wallet_tests.rs"]
+mod tests;
