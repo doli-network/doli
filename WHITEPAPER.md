@@ -4,7 +4,7 @@
 
 ### A Peer-to-Peer Electronic Cash System Based on Verifiable Time
 
-**E. Weil** · weil@doli.network
+**I. Lozada** · ivan@doli.network | **A. Lozada** · antonio@doli.network
 
 ---
 
@@ -12,13 +12,19 @@
 
 We propose a peer-to-peer electronic cash system where the only resource required for consensus is time — the one resource distributed equally to all participants.
 
-Block production follows pure round-robin: every active producer receives equal block assignments regardless of stake. The protocol distributes rewards every epoch through a built-in pool — proportional to bonds, no external mining pools, no operators, no fees. Rewards compound into productive stake, creating predictable exponential growth for every participant regardless of size.
+Block production follows deterministic bond-weighted scheduling: each active producer receives block assignments proportional to their bond count. The protocol distributes rewards every epoch through a built-in pool — proportional to bonds, no external mining pools, no operators, no fees. Rewards compound into productive stake, creating predictable exponential growth for every participant regardless of size.
 
 A new producer receiving 10 DOLI can reinvest block rewards to double their stake at regular intervals. The doubling rate is identical for all participants — one bond or three thousand. Continuous presence is proven through on-chain liveness attestations — producers who are online and following the chain qualify for their share. A dynamic liveness filter excludes offline producers from the rotation and re-includes them upon attestation. No lottery. No variance. No pools. Just time.
 
 Transactions are ordered through sequential delay proofs — iterated hash computations that cannot be parallelized. No special hardware is required. Any CPU can participate in consensus. The result is a system where consensus weight emerges from time rather than trust, capital, or scale.
 
 We demonstrate that NFTs, fungible tokens, and trustless cross-chain bridges can be implemented as native UTXO output types with declarative spending conditions, without a virtual machine, without gas metering, and without trusted committees — achieving equivalent expressiveness to VM-based approaches for these use cases while maintaining bounded, predictable verification cost.
+
+The protocol was designed during the agentic transition. Errors carry stable codes and structured fields, state is explicit through the UTXO model, scheduling is deterministic and queryable, and live chain events stream over WebSocket. Autonomous tooling — AI agents that submit transactions, monitor state, and self-correct without supervision — is a first-class client, not a retrofit (Section 19).
+
+---
+
+> **This network is live.** The system described in this paper has been operational since March 2026. The source code is [open](https://github.com/doli-network/doli), the chain state is publicly verifiable through the [block explorer](https://doli.network/explorer.html), and external producers operate independently. This is not a proposal — it is documentation of a running system in its early growth phase. We welcome scrutiny, feedback, and collaboration.
 
 ---
 ## 1. Introduction
@@ -139,11 +145,16 @@ Condition := Signature(pubkey_hash)
            | And(Condition, Condition)
            | Or(Condition, Condition)
            | Threshold(n, [Condition, ...])
+           | AmountGuard(min_amount, output_index)
+           | OutputTypeGuard(expected_type, output_index)
+           | RecipientGuard(pubkey_hash, output_index)
 ```
 
 **Encoding:** Conditions are serialized into `extra_data` as a compact binary format. For basic transfers, `extra_data` is empty — the default condition is `Signature(owner)`.
 
 **Verification cost:** Every condition resolves to a fixed number of cryptographic operations (signature checks, hash comparisons, height comparisons). No loops. No recursion. No unbounded computation. Verification cost is known before execution.
+
+**Transaction introspection (guards).** The last three primitives — `AmountGuard`, `OutputTypeGuard`, `RecipientGuard` — are the only conditions that read the *spending* transaction (not just the UTXO being spent). Each inspects exactly one output of the spending tx, identified by `output_index`, and verifies one property: minimum amount, output type, or recipient pubkey_hash. They enable patterns that pure signature logic cannot: limit orders (`AmountGuard` enforces a minimum receive), anti-redirect on bridge claims (`OutputTypeGuard` forces the proceeds into a specific output shape), and conditional payments (`RecipientGuard` pins the destination). They preserve the no-loops, fixed-cost property because each guard is one field comparison.
 
 ### 3.3. Native Output Types
 
@@ -217,6 +228,7 @@ The condition is always an HTLC: `(Hashlock(h) AND Timelock(t)) OR TimelockExpir
 | Monero | 3 | Standard/Integrated | Native (Ed25519 adaptor sigs) |
 | Litecoin | 4 | Base58/Bech32 | Native (same as Bitcoin) |
 | Cardano | 5 | Bech32 | Plutus script |
+| BSC | 6 | 0x-prefixed hex | BEP-20 HTLC contract |
 
 **Atomic swap protocol:**
 
@@ -268,13 +280,17 @@ This prevents a chicken-and-egg: a Signature witness must sign a hash that does 
 
 **Without shared mutable state:**
 
-Every output is independent. Spending one output cannot affect another. There is no reentrancy, no front-running, no MEV. Transactions are fully parallelizable — validation scales linearly with cores.
+Every output is independent. Spending one output cannot affect another. There is no reentrancy. Sandwich attacks are structurally impossible (see Section 3.9). Transactions are fully parallelizable — validation scales linearly with cores.
 
 ### 3.9. Native DeFi Primitives
 
 DOLI implements core DeFi operations as native transaction types rather than VM-executed contracts. Automated market makers (CreatePool, AddLiquidity, RemoveLiquidity, Swap), lending (CreateLoan, RepayLoan, LiquidateLoan, LendingDeposit, LendingWithdraw), and NFT fractionalization (FractionalizeNft, RedeemNft) are compiled into the node binary as validated state transitions.
 
-**MEV resistance.** A swap consumes a pool UTXO atomically — two swaps against the same pool are mutually exclusive by UTXO semantics. Front-running is possible (submitting before the target), but sandwiching is not (inserting between two legs of the same trade). The UTXO model provides MEV resistance by construction, without mempool ordering games.
+**Sandwich resistance by construction.** A swap consumes a pool UTXO atomically — two swaps against the same pool are mutually exclusive by UTXO semantics, making the classic 3-tx sandwich impossible. Other MEV forms (front-running, censorship by producer, cross-pool arbitrage) remain possible and follow standard mitigations: slippage tolerance on swaps, multiple producers via stake distribution, and L2 settlement for high-frequency markets.
+
+**Known limitations.**
+- *Per-pool throughput ceiling.* Only one Swap against a given pool UTXO can land per block. High-traffic pools serialize at ~8,640 swaps/day per pool at Era 0. Sharding via multiple pool UTXOs per pair or L2 settlement is the architectural answer.
+- *No replace-by-fee.* A stuck transaction cannot be replaced by a higher-fee version. Child-pays-for-parent (CPFP) works as a partial workaround.
 
 **L2 settlement.** For applications requiring arbitrary computation, DOLI supports permissionless L2 rollup settlement via `ZKSettle` transactions that verify zero-knowledge proofs against a committed `verifying_key` in a `ZKRollup` output. Each rollup is its own trust domain — no maintainer-governed registry.
 
@@ -374,7 +390,7 @@ Input: prev_hash ∥ slot ∥ producer_key
 The network defines time as follows:
 
 ```
-GENESIS_TIME = 2026-03-19T22:31:20Z (UTC)
+GENESIS_TIME = 2026-04-22T05:58:30Z (UTC)
 ```
 
 A slot is 10 seconds. A slot number derives deterministically from the timestamp:
@@ -427,7 +443,7 @@ A block *B* is valid if:
 2. `B.timestamp <= network_time + DRIFT`
 3. `B.slot` derives correctly from `B.timestamp`
 4. `B.slot > prev_block.slot`
-5. `B.producer` is the correct round-robin selection for `B.slot` given the active set and liveness filter
+5. `B.producer` is the correct bond-weighted selection for `B.slot` given the active set and liveness filter
 6. `verify_hash_chain(preimage, B.delay_output, T) == true`
 7. All transactions in the block are valid
 
@@ -455,6 +471,8 @@ With 10-second block times and a base block size of 2 MB (doubling each era, cap
 | Avg transaction     | ~250 bytes     | ~250 bytes     | ~250 bytes     |
 | Theoretical max TPS | ~800           | ~1,600         | ~12,800        |
 | Practical TPS       | 200-400        | 400-800        | 3,000-6,000    |
+
+Practical TPS assumes an average transaction size of 500-1000 B (typical 2-in/2-out with witnesses); the theoretical ceiling assumes ~250 B (simple 1-in/1-out transfers).
 
 DOLI does not compete on raw throughput. It competes on accessibility:
 
@@ -549,7 +567,7 @@ Production frequency and epoch rewards both scale with bonds:
 | Min stake             | 10 DOLI (1 bond)         |
 | Max stake             | 30,000 DOLI (3,000 bonds) |
 | Block reward (Era 1)  | 1 DOLI                   |
-| Production frequency  | Equal per producer (round-robin) |
+| Production frequency  | Proportional to bonds (deterministic) |
 | Reward distribution   | Proportional to bonds (epoch pool) |
 
 #### Accessibility at Scale
@@ -558,11 +576,11 @@ At network maturity (500 producers, 18,000 total bonds):
 
 | Your Stake | Bonds | Blocks/Week | Income/Week | Hardware |
 |-----------|-------|-------------|-------------|----------|
-| 10 DOLI   | 1     | ~121        | ~3 DOLI     | Any CPU  |
-| 100 DOLI  | 10    | ~121        | ~34 DOLI    | Any CPU  |
-| 1,000 DOLI| 100   | ~121        | ~336 DOLI   | Any CPU  |
+| 10 DOLI   | 1     | ~3          | ~3 DOLI     | Any CPU  |
+| 100 DOLI  | 10    | ~34         | ~34 DOLI    | Any CPU  |
+| 1,000 DOLI| 100   | ~336        | ~336 DOLI   | Any CPU  |
 
-Every producer receives the same number of block assignments. Income differs only through bond-weighted epoch rewards. No mining rigs. No staking pools. No minimum hardware requirements. A $5/month VPS is sufficient.
+Both block assignments and epoch rewards scale linearly with bonds — every bonded DOLI generates the same return regardless of total stake size. No mining rigs. No staking pools. No minimum hardware requirements. A $5/month VPS is sufficient.
 
 ### 7.4. Bond Lifecycle
 
@@ -627,7 +645,7 @@ The liveness filter is deterministic: every node computes the same `EpochState` 
 
 ### 8.2. Comparison with Existing Systems
 
-Pools exist in PoW and PoS because rewards are probabilistic — variance forces small participants to delegate control to centralized operators. DOLI's pure round-robin eliminates production variance entirely — every producer gets equal block assignments. The built-in epoch reward pool (Section 10.5) distributes rewards bond-weighted to all qualified producers. External pools cannot offer a better deal.
+Pools exist in PoW and PoS because rewards are probabilistic — variance forces small participants to delegate control to centralized operators. DOLI's deterministic bond-weighted scheduling eliminates production variance entirely — every producer receives guaranteed block assignments proportional to their bonds. The built-in epoch reward pool (Section 10.5) distributes rewards bond-weighted to all qualified producers. External pools cannot offer a better deal.
 
 | System       | Selection                 | Variance | Pools | Energy        | Min Hardware    |
 |--------------|---------------------------|----------|-------|---------------|-----------------|
@@ -636,7 +654,7 @@ Pools exist in PoW and PoS because rewards are probabilistic — variance forces
 | Solana PoH   | Leader schedule (stake)   | Low      | Yes   | ~4 GWh/yr     | $10,000+ server  |
 | DOLI PoT     | Deterministic bond-weighted | **Zero** | **Built-in**| **Negligible**| **Any CPU ($5/mo)**|
 
-Solana uses Proof of History as a clock, but leader selection remains stake-weighted with probabilistic elements and requires high-performance hardware. DOLI uses the delay proof purely as a heartbeat — leader selection is a pure round-robin function of `(slot, ActiveSet(epoch), LivenessFilter)`. No hardware advantage exists. No stake advantage exists for production — only for rewards.
+Solana uses Proof of History as a clock, but leader selection remains stake-weighted with probabilistic elements and requires high-performance hardware. DOLI uses the delay proof purely as a heartbeat — leader selection is a deterministic bond-weighted function of `(slot, ActiveSet(epoch), LivenessFilter)`. No hardware advantage exists. Both production frequency and rewards scale linearly with bonds — every bonded DOLI earns the same return.
 
 **Tiered scaling path.** The protocol defines a two-tier architecture for future growth: up to 500 Tier 1 validators (block producers with full consensus participation) and up to 15,000 Tier 2 attestors (liveness attestation without block production). Delegation enables Tier 3 participants to stake without running infrastructure, with rewards split 10% to the delegate (Tier 1/2 node operator) and 90% to the staker. This tiered model preserves the accessibility of the base protocol while scaling consensus participation beyond the active producer set.
 
@@ -691,6 +709,8 @@ Rewards are not distributed per block. Instead, the protocol accumulates block r
 | 4   | 12-16 | 0.125   | 23,652,000  | 93.75%     |
 | 5   | 16-20 | 0.0625  | 24,440,400  | 96.88%     |
 | 6   | 20-24 | 0.03125 | 24,834,600  | 98.44%     |
+
+**Note on long-term emission.** Halving is implemented as an integer right-shift on the per-block reward expressed in base units (`reward >> era`). Because base units are indivisible, the low bit is discarded at each halving. From era 9 onward this introduces a small per-block precision loss (a few base units), and once `initial_reward >> era` truncates to zero the per-block reward becomes exactly zero forever — issuance ends as a discrete cliff rather than a continuing geometric tail. The total issued supply therefore caps slightly below the pure geometric-sum value of 25,228,800 DOLI shown above (difference negligible at the table's precision), and emission terminates a few eras earlier than an unbounded geometric series would suggest. This is a deterministic protocol property — every node computes the same shift, so there is no consensus implication — and is mentioned here for spec accuracy regarding long-horizon supply.
 
 ### 10.2. Epoch Reward Distribution
 
@@ -834,7 +854,7 @@ If a producer creates two different blocks for the same slot, anyone can constru
 
 - 100% of bond burned permanently
 - Immediate exclusion from producer set
-- To reactivate: new registration with `T_registration × 2`
+- To reactivate: new registration required
 
 This is the only infraction that results in slashing because it is the only one that is unambiguously intentional.
 
@@ -919,11 +939,11 @@ The system does not claim immunity from wealthy adversaries — no system can. I
 
 **Proof.** Define per epoch *e*:
 
-- *S_h(e)* = set of slots assigned to honest producers (round-robin)
-- *S_a(e)* = set of slots assigned to attacker producers (round-robin)
+- *S_h(e)* = set of slots assigned to honest producers (bond-weighted)
+- *S_a(e)* = set of slots assigned to attacker producers (bond-weighted)
 - *w(p)* = seniority weight of producer *p* ∈ [1.0, 4.0]
 
-The schedule is a pure function of `(slot, ActiveSet(epoch), LivenessFilter)` — no block content influences it. Under round-robin, each producer receives equal slot assignments: *|S_h(e)| + |S_a(e)| = total slots*, distributed uniformly.
+The schedule is a pure function of `(slot, ActiveSet(epoch), LivenessFilter)` — no block content influences it. Under bond-weighted scheduling, each bond unit receives equal slot assignments: *|S_h(e)| + |S_a(e)| = total slots*, distributed proportionally to bonds.
 
 The accumulated chain weight over *k* epochs:
 
@@ -932,7 +952,7 @@ W_h(k) = Σ_{e=1}^{k} Σ_{s ∈ S_h(e)} w(producer(s))
 W_a(k) = Σ_{e=1}^{k} Σ_{s ∈ S_a(e)} w(producer(s))
 ```
 
-Since *f < n/2*, we have *|S_a(e)| < |S_h(e)|* for all *e* (honest producers outnumber attackers, so they receive more round-robin assignments). Additionally, seniority weighting (Section 9.1) penalizes new identities: *w(new) = 1* while *w(established) ≤ 4*. Therefore *W_h(k) > W_a(k)* for all *k* ≥ 1.
+Since *f < n/2*, we have *|S_a(e)| < |S_h(e)|* for all *e* (honest producers outnumber attackers with proportionally more bond-weighted assignments). Additionally, seniority weighting (Section 9.1) penalizes new identities: *w(new) = 1* while *w(established) ≤ 4*. Therefore *W_h(k) > W_a(k)* for all *k* ≥ 1.
 
 By the Sequential Deficit theorem (12.2), the attacker cannot compensate by computing faster — the hash chain's sequential dependency prevents parallel acceleration. ∎
 
@@ -1047,11 +1067,174 @@ The choice is simple: participate in consensus with current software, or do not 
 
 ---
 
-## 19. Live Network
+## 19. Designed for Agents
+
+A new class of consumer is reading our APIs. AI agents now submit transactions, query state, and react to errors without a human in the loop. They are pattern recognizers, not protocol experts. They cannot read prose; they parse fields. They cannot guess; they need explicit state.
+
+DOLI was designed during this transition. Error clarity, deterministic timing, and machine-readable state were treated as protocol properties, not afterthoughts. Retrofitting these onto a mature chain is extremely difficult — every change risks breaking existing contracts and indexers. Building them in from genesis costs nothing.
+
+### 19.1. The Agentic Transition
+
+Most chains were designed for human developers reading documentation. Their errors are cryptic strings. Their state is implicit. Their scheduling is opaque. An agent that fails with `Error: revert` and no further information cannot self-correct. An agent that receives `INSUFFICIENT_FUNDS` with `inputs=500, outputs=1000` calculates the deficit and retries.
+
+The difference compounds. A chain that talks to agents in structured fields attracts more autonomous tooling, which produces more transaction volume, which strengthens the network. A chain that requires regular expressions over English prose does not.
+
+### 19.2. Structured Errors with Stable Codes
+
+Every error returned by a DOLI node carries:
+
+- A stable numeric `code` (JSON-RPC compatible).
+- A human-readable `message`.
+- A structured `data` field with `error_code`, `stage`, and the specific values involved.
+
+Where most chains return:
+
+```json
+{"code": -32002, "message": "validation failed: insufficient funds: inputs=500, outputs=1000"}
+```
+
+— forcing the agent to regex the message string — DOLI returns:
+
+```json
+{
+  "code": -32002,
+  "message": "validation failed: insufficient funds: inputs=500, outputs=1000",
+  "data": {
+    "error_code": "INSUFFICIENT_FUNDS",
+    "stage": "mempool_validation",
+    "inputs": 500,
+    "outputs": 1000
+  }
+}
+```
+
+The agent reads `error_code`, sees `INSUFFICIENT_FUNDS`, compares `inputs` to `outputs`, calculates the deficit, selects additional UTXOs, and retries. No string parsing. No guessing.
+
+Domain-specific RPC codes are stable and documented:
+
+| Code | Meaning | Agent action |
+|------|---------|-------------|
+| `-32000` | Block not found | Query by different identifier |
+| `-32001` | Transaction not found | Wait for confirmation |
+| `-32002` | Invalid transaction | Read `data.error_code` for specifics |
+| `-32003` | Already in mempool | Don't retry — tx is pending |
+| `-32004` | Mempool full | Back off and retry later |
+| `-32005` | UTXO not found | Refresh UTXO set |
+| `-32006` | Producer not found | Check pubkey format |
+| `-32007` | Pool not found | Verify pool exists |
+| `-32008` | Unauthorized | Provide admin token |
+
+Validation errors expose codes such as `INSUFFICIENT_FUNDS`, `OUTPUT_NOT_FOUND`, `OUTPUT_LOCKED`, `INSUFFICIENT_FEE`, `DOUBLE_SPEND`, `MISSING_PUBLIC_KEY` — each with the specific outpoints, heights, amounts, or input indices an agent needs to self-correct.
+
+### 19.3. UTXO Model: Explicit State
+
+In an account-based chain, the balance you see depends on whose pending transactions have been included since you last checked. An agent must simulate the full state transition to predict outcomes. There is no individual coin to point at.
+
+DOLI's UTXO model makes every coin an individually addressable object:
+
+- `getUtxos` returns the exact set of unspent outputs an address controls.
+- Each UTXO has a stable identity: `(tx_hash, output_index)`.
+- A transaction either consumes a specific UTXO or it does not — no shared mutable state.
+- When validation fails, the response names the specific outpoint that caused the failure.
+
+There is no gas estimation. There is no nonce race. There is no MEV reordering that changes the agent's effective balance between submission and inclusion. The state an agent reads is the state it transacts against.
+
+### 19.4. Typed Transactions
+
+DOLI exposes 27 explicit transaction types — `Transfer`, `Registration`, `AddBond`, `DelegateBond`, `RequestWithdrawal`, `ClaimWithdrawal`, `Swap`, `AddLiquidity`, `NftMint`, `BridgeLock`, and others — instead of an opaque `data` field carrying ABI-encoded calldata.
+
+Each type has its own validation rules, its own structured error responses, and a fixed cost model. An agent does not need a contract ABI to interpret a transaction; the type itself describes what the transaction does.
+
+### 19.5. Deterministic Scheduling
+
+Block production is a pure function of `(slot, bond_snapshot, liveness_filter)`. Two RPC methods let agents predict timing exactly:
+
+- `getSlotSchedule(start, end)` returns the producer assigned to every slot in a range.
+- `getProducerSchedule(pubkey, lookahead)` returns the upcoming slots a specific producer will be assigned.
+
+There is no leader auction, no MEV race, and no probabilistic selection. An agent that wants to know when its transaction will land — or whose block to listen for — reads it from the chain.
+
+### 19.6. State Introspection
+
+The node exposes 47 JSON-RPC methods covering chain state, mempool, peers, schedules, producers, bonds, DeFi pools, lending, NFTs, and storage. Several are oriented specifically at agent-driven diagnosis:
+
+- `getStateRootDebug` returns the components that make up the current state root, letting an agent localize a divergence to a specific subsystem.
+- `getUtxoDiff` surfaces the exact UTXO set difference against a peer node.
+- `getStateSnapshot` exposes the serialized `chain_state`, `utxo_set`, `producer_set`, `state_root`, `epoch_bond_snapshot`, and `epoch_accumulators` for deterministic cross-node comparison.
+- `verifyChainIntegrity` walks the rolling chain commitment and reports the first inconsistency.
+
+An agent that detects an anomaly can localize it without operator help.
+
+### 19.7. Live Event Stream
+
+A WebSocket endpoint at `/ws` emits tagged events as they happen:
+
+```json
+{"type": "NewBlock", "hash": "...", "height": 19372, "slot": 193720, "timestamp": ..., "producer": "...", "tx_count": 4}
+{"type": "NewTx",    "hash": "...", "tx_type": "Transfer", "size": 312, "fee": 100}
+```
+
+No polling. No race between confirmation and balance update. Agents that need to react to chain events do so within tens of milliseconds of block propagation.
+
+### 19.8. Observability Surface
+
+Every node exposes Prometheus metrics on `--metrics-port`: `doli_chain_height`, `doli_current_slot`, `doli_blocks_processed_total`, `doli_blocks_by_status_total`, `doli_block_processing_seconds` (histogram), `doli_transactions_by_type_total`, `doli_mempool_size`, `doli_peers_connected`, and dozens more. Application logs are emitted through the `tracing` framework as structured key-value pairs — not free-form prose.
+
+An autonomous monitoring agent can answer *"is this node healthy?"*, *"is this node on the canonical chain?"*, and *"is this node falling behind?"* by scraping numbers, not by parsing logs.
+
+### 19.9. Reproducible Diagnostics
+
+A blockchain is only as debuggable as the snapshots and rollbacks it supports. DOLI provides four reproducibility primitives an agent can use:
+
+- **Undo-based rollback.** Every applied block writes a structured undo record. Reverting a block does not require replaying from genesis.
+- **Hot RocksDB checkpoints.** `createCheckpoint` produces a consistent snapshot at the current height via hard-links, without stopping the node.
+- **Embedded binary checkpoint.** Every release binary contains a `CHECKPOINT_HEIGHT`, `CHECKPOINT_HASH`, and `CHECKPOINT_STATE_ROOT`. New nodes verify they are on the canonical chain before processing transactions.
+- **Deterministic fork recovery.** When a node detects it is on a minority chain, an internal state machine plans and executes the reorg without operator intervention. Each step is logged with the data an agent needs to reconstruct what happened.
+
+### 19.10. Scriptable CLI
+
+The `doli` CLI is designed to be driven non-interactively. Every command that requires confirmation accepts `--yes`. NFT, bridge, and governance workflows write their intermediate state as JSON files that can be inspected, signed, and combined by other tools. The CLI is the same surface used by automated tests, by external producers, and by agent harnesses — there is no separate "machine API".
+
+### 19.11. Governance Surface
+
+Protocol upgrades happen through signed votes broadcast on the same RPC surface used for transactions:
+
+- A `Vote {Approve | Veto}` carries `version`, `vote`, `producer_id`, `timestamp`, and a signature over the canonical voting message.
+- `submitVote` accepts these from any client, including agents acting on behalf of a producer.
+- A seniority-weighted veto threshold (40% of weighted stake) blocks upgrades the producer set rejects.
+- A `HardForkSchedule` lists every consensus change with its activation height — agents can predict exactly when behavior will change.
+- The node's `UpdateWatchdog` rolls back automatically if a new release crashes more than the configured threshold within its window.
+
+An agent operating a producer can monitor `getUpdateStatus`, evaluate a pending release, and vote — all without human intervention.
+
+### 19.12. Comparison
+
+| Dimension | Ethereum | DOLI |
+|-----------|----------|------|
+| Error format | ABI-encoded bytes requiring contract ABI to decode | Structured JSON with stable codes and stage info |
+| Error codes | None standard — each contract invents its own | Stable per-domain codes across the entire RPC surface |
+| Stage info | None — revert could be in any nested call | Explicit: `deserialization`, `mempool`, `mempool_validation` |
+| State model | Account-based (implicit, requires simulation) | UTXO (explicit, individually addressable) |
+| Scheduling | Probabilistic (MEV, gas auctions) | Deterministic (queryable slot schedule) |
+| Transaction format | Arbitrary calldata bytes | 27 typed transactions with fixed validation |
+| Live event stream | Provider-specific log filters | Tagged WebSocket events on every node |
+| Retrofittable? | Extremely difficult — thousands of deployed contracts | Built from genesis |
+
+### 19.13. Why This Compounds
+
+Good error design is one of the few protocol properties that becomes harder to add over time. Every existing contract, indexer, and client that depends on the current error shape constrains what a mature chain can change. Ethereum has been working on structured revert reasons for years; the cost of breaking deployed contracts dominates the design space.
+
+DOLI is in its growth phase. The structured error taxonomy, the typed transactions, the deterministic scheduling, the introspection RPCs, and the live event stream are baseline behavior — not feature flags layered on top. As autonomous tooling matures, the chain that already speaks the language agents understand has a structural advantage that does not depend on marketing.
+
+This is not a feature. It is a position.
+
+---
+
+## 20. Live Network
 
 DOLI is not a proposal. The network described in this paper is operational.
 
-As of April 2026, the mainnet is in its **growth phase** — operational with 38 registered producers across 11 geographically distributed servers. The source code is open, the chain state is publicly verifiable, and external producers operate independently. The chain underwent multiple genesis resets during bootstrap; metrics below reflect the current chain (genesis: 2026-04-16).
+As of May 2026, the mainnet is in its **growth phase** — operational with 38 registered producers across 11 geographically distributed servers. The source code is open, the chain state is publicly verifiable, and external producers operate independently. The chain underwent multiple genesis resets during bootstrap; metrics below reflect the current chain (genesis: 2026-04-22).
 
 | Metric | Value |
 |--------|-------|
@@ -1074,16 +1257,121 @@ The current producer count reflects early growth. The protocol's security proper
 - **State fingerprints**: Each block logs hashes of 7 state components for instant cross-node divergence diagnosis.
 
 ```
-Genesis:    2026-04-16 (current chain, v6.14.11 EpochState+ForkFixes)
+Genesis:    2026-04-22 (current chain)
 Consensus:  Proof of Time (delay proof heartbeat + deterministic bond-weighted scheduling)
 Status:     Live
 Source:     https://github.com/doli-network/doli
 Explorer:   https://doli.network
 ```
 
+### 20.1. Current Status & Known Limitations
+
+We believe honesty about what works and what doesn't is more valuable than a polished narrative. Here is where DOLI stands today.
+
+**Working in production:**
+
+- Block production, delay proofs, and deterministic scheduling
+- Epoch reward distribution with BLS attestation aggregation
+- Bond lifecycle: stacking, two-step withdrawal with FIFO vesting penalties
+- Cross-chain atomic swaps (HTLC) with BSC (BEP-20 USDT)
+- Liveness filter with 3-epoch lookback and safety floor
+- Weight-based fork choice with seniority
+- Producer registration with activation bonds
+- Block explorer and network monitoring dashboard
+- Marketplace for cross-chain swaps
+- Faucet for new participants (via Discord)
+- Structured JSON-RPC error taxonomy with stable codes (Section 19)
+- WebSocket live event stream at `/ws`
+- Hot RocksDB checkpoints via `createCheckpoint`
+- Prometheus metrics and structured `tracing` logs
+
+**Described in this paper but not yet live:**
+
+- Native NFTs (UniqueAsset output type) — implemented in the node, not yet used in production
+- User-issued tokens (FungibleAsset) — implemented, not yet used in production
+- Native AMM pools (CreatePool, Swap, AddLiquidity) — implemented, not yet activated
+- Lending primitives (CreateLoan, RepayLoan, LiquidateLoan) — implemented, not yet activated
+- ZK rollup settlement (ZKSettle) — designed, not yet implemented
+- Tier 2/3 scaling (attestors and delegation) — designed, not yet implemented
+- Escrow via Multisig/Threshold conditions — condition language exists, escrow pattern not yet exercised
+- Cross-chain swaps with Bitcoin, Monero, Litecoin, Cardano — protocol supports them, counterparty tooling not yet built
+
+**Known limitations:**
+
+- **Small producer set.** 38 producers is enough for operation but below the threshold where security guarantees become robust against well-funded attackers. We need more independent operators.
+- **Geographic concentration.** Most nodes run on a small number of hosting providers. Geographic and infrastructure diversity is a priority.
+- **No formal audit.** The codebase has not been audited by a third-party security firm. The source is open for anyone to review.
+- **Single-era data.** The network is in Era 1. Halving behavior, era transitions, and long-term economics are untested on mainnet.
+- **Marketplace is early.** The cross-chain swap marketplace works but has known UX limitations. CLI remains the most reliable path for swaps.
+
+We list these not as disclaimers but as invitations. Each limitation is a problem we'd welcome help solving.
+
 ---
 
-## 20. Scope
+## 21. Frequently Asked Questions
+
+**"How is this different from Solana's Proof of History?"**
+
+Solana uses iterated SHA-256 hashing as a clock — a verifiable record of time passage. But Solana's leader selection is stake-weighted and probabilistic, and running a validator requires high-end hardware (256 GB RAM, NVMe storage, high-bandwidth connectivity). DOLI uses the delay proof purely as a heartbeat; leader selection is a deterministic function of `(slot, bond_snapshot)`. Any CPU can participate. The philosophical difference: Solana optimizes for throughput at the cost of accessibility. DOLI optimizes for accessibility at the cost of throughput.
+
+**"How is this different from Ethereum?"**
+
+Ethereum uses Proof of Stake — validators lock 32 ETH (~$100K+) and are selected probabilistically to propose blocks. Execution happens on the EVM, a Turing-complete virtual machine that runs arbitrary smart contracts with gas metering. DOLI uses Proof of Time with a 10 DOLI bond (~$1 equivalent at launch) and deterministic bond-weighted scheduling. There is no virtual machine — outputs carry declarative spending conditions compiled into the node binary (Section 3). The practical differences: Ethereum requires significant capital and specialized infrastructure to validate; DOLI runs on a $5/month VPS. Ethereum's smart contracts enable arbitrary computation but introduce unbounded attack surface (reentrancy, MEV, gas manipulation); DOLI's declarative conditions have fixed verification cost and no shared mutable state. Ethereum has a mature ecosystem with thousands of applications; DOLI is in its growth phase with a focused feature set. They solve different problems at different scales.
+
+**"What prevents a wealthy attacker from buying 51% of producers?"**
+
+Capital. Each producer identity requires 10 DOLI locked as a bond (Section 12.3). Controlling 51% of producers means locking 51% of bonded capital — and risking 100% loss if caught double-producing. Additionally, new identities start with seniority weight 1.0 while established producers accumulate up to 4.0, meaning an attacker needs ~3 years before their chain weight matches honest incumbents. No consensus system is immune to a sufficiently wealthy adversary, but DOLI makes the attack expensive, slow, and detectable.
+
+**"Why should I trust a network with only 38 producers?"**
+
+You shouldn't — not blindly. You should verify. The source code is open. The chain state is publicly queryable. Every block, every transaction, every attestation is on-chain and auditable. 38 producers is an early-stage number, and we're transparent about that (Section 19.1). The security properties strengthen with every independent producer that joins. If this concerns you, the most productive response is to run a node and become producer 39.
+
+**"Is there a premine or insider allocation?"**
+
+No. Zero. The genesis block contains a single 1 DOLI coinbase transaction (Section 16.1). The founding producers bootstrapped their own bonds from block rewards earned during the first epoch — they paid for participation with work, not privilege. Every coin in circulation came from the standard emission schedule. All transactions are on-chain and verifiable.
+
+**"Has this been audited?"**
+
+Not by a third-party firm. The codebase is open source and has been reviewed internally and by community contributors, but a formal security audit has not been completed. We consider this a priority and welcome audit offers from qualified firms or independent researchers.
+
+**"What happens if the founders disappear?"**
+
+The protocol continues. Block production is deterministic — it requires no human intervention once producers are running. Epoch rewards distribute automatically. The liveness filter removes inactive producers and re-includes them when they return. The founders have no special protocol-level privileges. If every founding node went offline, the remaining producers would continue the chain. The code is open source; anyone can build and run it.
+
+**"How do I participate?"**
+
+Run a node on any VPS ($5/month is sufficient). Claim your initial 10 DOLI from the faucet on [Discord](https://discord.gg/hB3mjQmv). Register as a producer. Start earning block rewards. The full process takes less than an hour. See the [installation guide](https://doli.network/guide.html) for step-by-step instructions.
+
+**"Is DOLI suitable for AI agents and autonomous tooling?"**
+
+Yes — by design (Section 19). Every error returned by the node carries a stable numeric code, a `stage` field, and structured data. State is explicit through the UTXO model: every coin is an individually addressable object. Block production is deterministic — `getSlotSchedule` tells an agent exactly which producer handles each upcoming slot. A WebSocket endpoint emits tagged events as blocks and transactions arrive. The CLI is fully non-interactive. Protocol upgrades go through signed votes on the same RPC surface. Building these properties in from genesis costs nothing; retrofitting them onto a mature chain is extremely difficult, which is why Ethereum has been working on structured revert reasons for years.
+
+**"What if I find a bug or disagree with a design decision?"**
+
+Tell us. Open an issue on [GitHub](https://github.com/doli-network/doli), start a discussion on [Discord](https://discord.gg/hB3mjQmv), or email the maintainers directly. We are building this in public because we believe good systems emerge from honest feedback, not from closed development. Every critique that leads to an improvement makes the network stronger for everyone.
+
+---
+
+## 22. Contributing & Feedback
+
+DOLI is in its growth phase. We don't claim everything works perfectly — we claim everything is verifiable. The source code, the chain state, the emission schedule, the producer set — all of it is public and auditable.
+
+We are actively looking for:
+
+- **Independent producers** — every new operator strengthens the network's security and decentralization
+- **Security reviewers** — the codebase is open and unaudited; we welcome adversarial review
+- **Protocol feedback** — if you see a flaw in our reasoning, a better approach, or an unstated assumption, we want to hear it
+- **Application builders** — the native output types (Section 3) are designed for composability; we're interested in what people build with them
+
+This is not a finished product. It is a working system that improves through honest feedback and open collaboration. The worst response to a flaw is silence.
+
+- GitHub: [github.com/doli-network/doli](https://github.com/doli-network/doli)
+- Discord: [discord.gg/hB3mjQmv](https://discord.gg/hB3mjQmv)
+- Email: ivan@doli.network / antonio@doli.network
+
+---
+
+## 23. Scope
 
 DOLI optimizes for moving value with deterministic finality, predictable timing, and extensible spending conditions. The base layer is intentionally minimal — but extensible by design.
 
@@ -1093,7 +1381,7 @@ The difference: Bitcoin's output format was fixed in 2009. DOLI's output format 
 
 ---
 
-## 21. Conclusion
+## 24. Conclusion
 
 We have proposed a system for electronic transactions that requires no trust in institutions, no massive energy expenditure, and no capital accumulation to participate in consensus.
 
@@ -1101,7 +1389,7 @@ We started with the usual framework of coins made from digital signatures, which
 
 **Nodes vote with their time.** The network cannot be accelerated by wealth or parallelized by hardware. One hour of sequential computation is one hour, whether performed by an individual or a nation-state.
 
-**Rewards are deterministic, not probabilistic.** Every producer receives equal block assignments through pure round-robin. The protocol acts as a built-in pool, distributing epoch rewards bond-weighted on-chain to all producers who prove continuous presence through on-chain liveness attestations. External pools are unnecessary. The smallest participant receives the same percentage return as the largest.
+**Rewards are deterministic, not probabilistic.** Every producer receives guaranteed block assignments proportional to their bonds through deterministic scheduling. The protocol acts as a built-in pool, distributing epoch rewards bond-weighted on-chain to all producers who prove continuous presence through on-chain liveness attestations. External pools are unnecessary. Every bonded DOLI generates the same percentage return regardless of total stake size.
 
 The network is robust in its simplicity. Nodes work with little coordination. They do not need to be identified, since messages are not routed to any particular place and only need to be delivered on a best effort basis. Nodes can leave and rejoin the network at will, accepting the heaviest chain as proof of what happened while they were gone.
 
@@ -1111,11 +1399,13 @@ Any needed rules and incentives can be enforced with this consensus mechanism.
 
 ---
 
-**DOLI v6.16.3**
+**DOLI v6.21.18**
 
 *"Time is the only fair currency."*
 
-**E. Weil** · contact: weil@doli.network
+**I. Lozada** · ivan@doli.network | **A. Lozada** · antonio@doli.network
+
+*Last updated: May 2026*
 
 ---
 ## References
