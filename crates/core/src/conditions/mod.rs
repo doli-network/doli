@@ -37,6 +37,7 @@
 
 mod encoding;
 mod eval;
+pub mod templates;
 #[cfg(test)]
 mod tests;
 mod witness;
