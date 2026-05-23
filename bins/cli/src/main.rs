@@ -24,6 +24,7 @@ mod cmd_pool;
 mod cmd_producer;
 mod cmd_service;
 mod cmd_snap;
+mod cmd_template;
 mod cmd_token;
 mod cmd_upgrade;
 mod cmd_wallet;
@@ -542,6 +543,9 @@ async fn main() -> Result<()> {
             trust,
         } => {
             cmd_snap::cmd_snap(&cli.network, data_dir, seed, no_restart, trust).await?;
+        }
+        Commands::Template { command } => {
+            cmd_template::cmd_template(&wallet, &rpc_endpoint, command).await?;
         }
     }
 

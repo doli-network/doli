@@ -140,6 +140,13 @@ fn split_top_level(s: &str) -> Vec<&str> {
 /// Parse a simple (non-compositional) condition from name + flat args.
 fn parse_simple_condition(name: &str, args: &[&str]) -> Result<doli_core::Condition> {
     match name {
+        "signature" => {
+            if args.len() != 1 {
+                anyhow::bail!("signature requires 1 arg: addr");
+            }
+            let pkh = resolve_to_hash(args[0])?;
+            Ok(doli_core::Condition::Signature(pkh))
+        }
         "multisig" => {
             if args.len() < 3 {
                 anyhow::bail!("multisig requires at least 3 args: threshold, key1, key2");
@@ -254,7 +261,7 @@ fn parse_simple_condition(name: &str, args: &[&str]) -> Result<doli_core::Condit
             Ok(doli_core::Condition::recipient_guard(pkh, output_index))
         }
         _ => anyhow::bail!(
-            "Unknown condition: '{}'. Supported: multisig, hashlock, htlc, timelock, \
+            "Unknown condition: '{}'. Supported: signature, multisig, hashlock, htlc, timelock, \
              timelock_expiry, vesting, threshold, amount_guard, output_type_guard, \
              recipient_guard, and, or",
             name

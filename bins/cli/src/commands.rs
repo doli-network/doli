@@ -633,6 +633,12 @@ pub(crate) enum Commands {
         #[arg(long)]
         yes: bool,
     },
+
+    /// Covenant condition templates (vault, escrow, htlc, subscription, agent-allowance)
+    Template {
+        #[command(subcommand)]
+        command: TemplateCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1204,5 +1210,183 @@ pub(crate) enum ServiceCommand {
         /// Number of lines to show
         #[arg(short = 'n', long, default_value = "50")]
         lines: u32,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum TemplateCommands {
+    /// Delayed-withdrawal vault with cosigner emergency override
+    Vault {
+        /// Owner address (doli1... or hex)
+        #[arg(long)]
+        owner: String,
+
+        /// Cosigner address (doli1... or hex)
+        #[arg(long)]
+        cosigner: String,
+
+        /// Absolute block height after which owner can withdraw solo
+        #[arg(long)]
+        unlock_height: u64,
+
+        /// Broadcast the transaction directly (default: dry-run prints condition string)
+        #[arg(long)]
+        send: bool,
+
+        /// Recipient address (required with --send)
+        #[arg(long)]
+        to: Option<String>,
+
+        /// Amount to send (required with --send)
+        #[arg(long)]
+        amount: Option<String>,
+
+        /// Fee (optional, default: auto)
+        #[arg(long)]
+        fee: Option<String>,
+    },
+
+    /// Multi-party escrow with timeout refund
+    Escrow {
+        /// Comma-separated party addresses (doli1... or hex)
+        #[arg(long)]
+        parties: String,
+
+        /// Minimum signatures to release (m-of-n)
+        #[arg(long)]
+        threshold: u8,
+
+        /// Absolute block height after which refund is enabled
+        #[arg(long)]
+        timeout: u64,
+
+        /// Refund recipient address (doli1... or hex)
+        #[arg(long)]
+        refund: String,
+
+        /// Broadcast the transaction directly (default: dry-run prints condition string)
+        #[arg(long)]
+        send: bool,
+
+        /// Recipient address (required with --send)
+        #[arg(long)]
+        to: Option<String>,
+
+        /// Amount to send (required with --send)
+        #[arg(long)]
+        amount: Option<String>,
+
+        /// Fee (optional, default: auto)
+        #[arg(long)]
+        fee: Option<String>,
+    },
+
+    /// Hash-locked payment with signed refund (HTLC)
+    HtlcPayment {
+        /// BLAKE3 hash of the payment preimage (64 hex chars)
+        #[arg(long)]
+        hash: String,
+
+        /// Block height after which claim is possible
+        #[arg(long)]
+        lock: u64,
+
+        /// Block height after which refund is possible
+        #[arg(long)]
+        expiry: u64,
+
+        /// Refund recipient address (doli1... or hex)
+        #[arg(long)]
+        refund: String,
+
+        /// Broadcast the transaction directly (default: dry-run prints condition string)
+        #[arg(long)]
+        send: bool,
+
+        /// Recipient address (required with --send)
+        #[arg(long)]
+        to: Option<String>,
+
+        /// Amount to send (required with --send)
+        #[arg(long)]
+        amount: Option<String>,
+
+        /// Fee (optional, default: auto)
+        #[arg(long)]
+        fee: Option<String>,
+    },
+
+    /// Time-gated bounded payment for recurring allowances
+    Subscription {
+        /// Recipient address that must receive the payment (doli1... or hex)
+        #[arg(long)]
+        recipient: String,
+
+        /// Minimum amount the recipient must receive (DOLI notation, e.g. 500.0)
+        #[arg(long)]
+        amount: String,
+
+        /// Output index in the spending transaction to check
+        #[arg(long)]
+        output_index: u8,
+
+        /// Earliest block height the payment can be made
+        #[arg(long)]
+        start: u64,
+
+        /// Latest block height the payment can be made
+        #[arg(long)]
+        end: u64,
+
+        /// Broadcast the transaction directly (default: dry-run prints condition string)
+        #[arg(long)]
+        send: bool,
+
+        /// Recipient address for the funding output (required with --send)
+        #[arg(long)]
+        to: Option<String>,
+
+        /// Amount to fund (required with --send)
+        #[arg(long = "send-amount")]
+        send_amount: Option<String>,
+
+        /// Fee (optional, default: auto)
+        #[arg(long)]
+        fee: Option<String>,
+    },
+
+    /// Bounded delegation to an agent
+    AgentAllowance {
+        /// Agent address (doli1... or hex)
+        #[arg(long)]
+        agent: String,
+
+        /// Recipient address that must receive the payment (doli1... or hex)
+        #[arg(long)]
+        recipient: String,
+
+        /// Minimum amount the recipient must receive (DOLI notation, e.g. 100.0)
+        #[arg(long)]
+        amount: String,
+
+        /// Output index in the spending transaction to check
+        #[arg(long)]
+        output_index: u8,
+
+        /// Broadcast the transaction directly (default: dry-run prints condition string)
+        #[arg(long)]
+        send: bool,
+
+        /// Recipient address for the funding output (required with --send)
+        #[arg(long)]
+        to: Option<String>,
+
+        /// Amount to fund (required with --send)
+        #[arg(long = "send-amount")]
+        send_amount: Option<String>,
+
+        /// Fee (optional, default: auto)
+        #[arg(long)]
+        fee: Option<String>,
     },
 }
