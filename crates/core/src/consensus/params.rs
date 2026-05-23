@@ -159,7 +159,7 @@ impl ConsensusParams {
     pub fn guards_activation_height(&self, network: &Network) -> BlockHeight {
         match network {
             Network::Devnet => 0,         // Immediate on devnet
-            Network::Testnet => 0,        // Immediate on testnet
+            Network::Testnet => 17_500,   // Scheduled activation (workflow #356 transition test)
             Network::Mainnet => u64::MAX, // TBD — disabled until coordinated activation
         }
     }
