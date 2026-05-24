@@ -730,6 +730,11 @@ impl Node {
                 let state = chain_state.read().await;
                 if state.best_height > 0 {
                     sm.update_local_tip(state.best_height, state.best_hash, state.best_slot);
+                    // INC-I-089: Engage post-restart production lockout. Blocks self-production
+                    // until first canonical gossip block extends local tip OR safety timer expires.
+                    // Skipped when starting from fresh genesis (height=0) because no race exists
+                    // — the node has no prior tip to build on incorrectly.
+                    sm.engage_post_restart_lockout();
                     info!(
                         "Sync manager initialized at height {} (hash {})",
                         state.best_height,

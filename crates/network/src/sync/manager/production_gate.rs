@@ -8,6 +8,17 @@ use tracing::{debug, info, warn};
 
 use super::{ProductionAuthorization, SyncManager};
 
+/// INC-I-089: After process restart, the production gate enters
+/// `AwaitingCanonicalBlock` to prevent the producer from building on a stale
+/// local tip before observing the canonical next-height block via gossip.
+/// The gate clears on the first peer gossip block that extends local tip, OR
+/// after this many slots have elapsed since process start (safety unlock for
+/// single-producer / no-peer scenarios). The existing 60s cleanup timeout
+/// (`cleanup.rs`) serves as the safety net; this constant documents the
+/// intended semantic duration (3 slots x 10s = 30s).
+#[allow(dead_code)]
+pub const POST_RESTART_LOCKOUT_SLOTS: u32 = 3;
+
 impl SyncManager {
     // =========================================================================
     // PRODUCTION GATE - Single source of truth for block production authorization
@@ -283,20 +294,43 @@ impl SyncManager {
         self.last_resync_completed = Some(Instant::now());
     }
 
-    /// Clear the post-snap-sync production gate.
+    /// INC-I-089: Engage post-restart production lockout.
+    ///
+    /// Blocks production until the first canonical gossip block extends local tip
+    /// OR the safety timer expires (60s via cleanup.rs, semantically ~3 slots).
+    /// Called by `Node::new()` (init.rs) when `state.best_height > 0` to prevent
+    /// the producer from building on a stale local tip before confirming canonical
+    /// chain alignment via gossip.
+    ///
+    /// Skipped when starting from fresh genesis (height=0) because no race exists
+    /// — the node has no prior tip to build on incorrectly.
+    pub fn engage_post_restart_lockout(&mut self) {
+        self.recovery_phase = super::RecoveryPhase::AwaitingCanonicalBlock {
+            started: Instant::now(),
+        };
+        info!(
+            height = self.local_height,
+            "[STARTUP_GATE] Production gated: awaiting first canonical gossip block (INC-I-089)"
+        );
+    }
+
+    /// Clear the `AwaitingCanonicalBlock` production gate.
+    ///
     /// Called when a canonical gossip block has been successfully applied,
-    /// proving we're on the canonical chain.
+    /// proving we're on the canonical chain. Shared by two engage paths:
+    /// snap-sync completion (snap_sync.rs) and post-restart lockout (INC-I-089
+    /// via `engage_post_restart_lockout`).
     pub fn clear_awaiting_canonical_block(&mut self) {
         if matches!(
             self.recovery_phase,
             super::RecoveryPhase::AwaitingCanonicalBlock { .. }
         ) {
-            info!("[SNAP_SYNC] Canonical gossip block received — production gate cleared");
+            info!("[PRODUCTION_GATE] Canonical gossip block received — production gate cleared");
             self.recovery_phase = super::RecoveryPhase::Normal;
         }
     }
 
-    /// Check if we're waiting for a canonical block after snap sync.
+    /// Check if we're waiting for a canonical block (after snap sync OR after restart).
     pub fn is_awaiting_canonical_block(&self) -> bool {
         matches!(
             self.recovery_phase,

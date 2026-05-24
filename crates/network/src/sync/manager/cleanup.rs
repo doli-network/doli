@@ -554,12 +554,14 @@ impl SyncManager {
             }
         }
 
-        // INC-I-005 Fix A: AwaitingCanonicalBlock timeout.
-        // After snap sync, production is gated until a gossip block builds on
-        // our tip. If 60s pass without one (snap hash not recognized by peers,
-        // or connectivity issue), clear the gate to break the cascade loop.
-        // Without this timeout, nodes that snap-synced to an unrecognized hash
-        // are permanently stuck — the only RecoveryPhase without a fallback.
+        // INC-I-005 Fix A + INC-I-089 safety unlock: AwaitingCanonicalBlock timeout.
+        // After snap sync OR process restart (height > 0), production is gated until
+        // a gossip block builds on our tip. If 60s pass without one (snap hash not
+        // recognized by peers, connectivity issue, OR single-producer/no-peer
+        // scenario for the startup lockout), clear the gate to break the cascade
+        // loop and let production resume. Without this timeout, nodes that
+        // snap-synced to an unrecognized hash — or producers restarted without
+        // peers — are permanently stuck.
         if let super::RecoveryPhase::AwaitingCanonicalBlock { started } = self.recovery_phase {
             if started.elapsed().as_secs() > 60 {
                 warn!(
