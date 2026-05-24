@@ -334,6 +334,38 @@ pub struct NetworkParams {
     /// INC-I-078 devnet default).
     pub addbond_cap_enforcement_activation_height: u64,
 
+    /// INC-I-088 Phase 0: Height at which the 11 DeFi tx types
+    /// (CreatePool, AddLiquidity, RemoveLiquidity, Swap, CreateLoan,
+    /// RepayLoan, LiquidateLoan, LendingDeposit, LendingWithdraw,
+    /// FractionalizeNft, RedeemNft) become valid for inclusion.
+    ///
+    /// Pre-activation: every node REJECTS these txs at validation time with
+    /// `ValidationError::DefiNotActivated` (error code `DEFI_NOT_ACTIVATED`,
+    /// REQ-AGENTIC-ERRORS compliant). Mempool symmetry: pre-activation
+    /// admission also rejects, so upgraded producers never include a DeFi
+    /// tx in their blocks during a rolling deploy.
+    ///
+    /// Post-activation: the per-type structural validator runs normally.
+    /// The DeFi subsystems themselves have known semantic gaps
+    /// (`LiquidateLoan` has no oracle, `validate_create_loan` does not pin
+    /// `Collateral.pubkey_hash` to the derived loan address) — un-gating is
+    /// a separate, post-fix decision and MUST NOT be done by simply
+    /// lowering this height.
+    ///
+    /// Companion control: `OutputType::Collateral` is in
+    /// `is_conditioned()`, which freezes any pre-existing Collateral UTXO
+    /// regardless of the height of the spending tx. The two controls
+    /// together fully isolate the lending subsystem.
+    ///
+    /// Three-question gate verdict (INC-I-075): Q1=YES (DeFi txs are
+    /// user-submittable), Q2=NO (validator rejection only), Q3=NO
+    /// (accept-then-reject change) → activation height REQUIRED.
+    ///
+    /// Defaults: mainnet/testnet/devnet all `u64::MAX` (disabled). Operator
+    /// pins a concrete future height in a separate commit, and only after
+    /// the lending/AMM gaps are closed.
+    pub defi_activation_height: u64,
+
     // === Gossip mesh ===
     /// Target number of peers in gossipsub mesh per topic
     pub mesh_n: usize,

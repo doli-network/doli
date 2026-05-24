@@ -79,7 +79,8 @@ impl Node {
                     .network
                     .params()
                     .security_audit_activation_height,
-            );
+            )
+            .with_defi_activation_height(self.config.network.params().defi_activation_height);
             if let Err(e) = validation::validate_transaction_with_utxos(tx, &utxo_ctx, utxo) {
                 warn!(
                     "[UTXO] FAIL h={} tx={} type={:?} inputs={} outputs={} error={}",

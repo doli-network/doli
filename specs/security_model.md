@@ -854,7 +854,92 @@ A **canonical anchor** pins a `(height, block_hash, state_root)` tuple at compil
 - The `--auto-checkpoint` snapshot cadence on seeds
 - The hard fork schedule in `crates/updater/src/hardfork.rs`
 
-### 7.7 Operator Recovery & Slashing Protection Preservation
+### 7.7 DeFi Safety Gate — Phase 0 (INC-I-088)
+
+**Risk**: 11 DeFi transaction types — `CreatePool`, `AddLiquidity`,
+`RemoveLiquidity`, `Swap`, `CreateLoan`, `RepayLoan`, `LiquidateLoan`,
+`LendingDeposit`, `LendingWithdraw`, `FractionalizeNft`, `RedeemNft` — were
+accepted by `validate_transaction` from genesis with no activation gate. Any
+user could submit them via raw RPC at any height. Several have known
+semantic gaps that the structural validators do not catch:
+
+- `validate_liquidate_loan` performs two checks (≥ 1 input, ≥ 1 output) and
+  delegates everything else to apply_block. There is no price-oracle
+  integration in core; any actor with the liquidation TX format could drain
+  undercollateralized loans.
+- `validate_create_loan` does not pin `outputs[0].pubkey_hash` to the
+  derived loan address — a borrower could put their own pubkey_hash there
+  and later spend the `Collateral` UTXO with a single signature.
+
+Compounding risk: `OutputType::Collateral` was not in `is_conditioned()`
+(`crates/core/src/transaction/types.rs`), so the spend path used the
+single-signature branch of `verify_input_conditions`.
+
+**Defense — DeFi activation gate** (`crates/core/src/validation/transaction.rs`):
+A `defi_activation_height: u64` field on `NetworkParams` and
+`ValidationContext` (default `u64::MAX` on all networks) gates the 11 tx
+types behind one consolidated typed error:
+
+```
+ValidationError::DefiNotActivated {
+    tx_type: u32,            // TxType discriminant
+    activation_height: u64,
+    current_height: u64,
+}
+// error_code() == "DEFI_NOT_ACTIVATED"
+```
+
+Comparison is strict `<` — at `current_height == defi_activation_height`
+the gate opens. Pre-activation, every validator (block-apply, mempool
+admission, block-assembly) rejects DeFi txs identically. Cross-version
+deploy safety: mempool symmetry guarantees an upgraded producer never
+includes a DeFi tx in its block during a rolling deploy. An old producer
+could still produce a block containing a DeFi tx that an upgraded validator
+will reject — relied-upon assumption is that no DeFi traffic is in flight
+on mainnet today (verified via pre-deploy UTXO audit).
+
+**Defense — Collateral hard-freeze** (`crates/core/src/validation/utxo.rs::verify_input_conditions`):
+Before evaluating any condition tree, `verify_input_conditions` rejects
+every input whose UTXO has `OutputType::Collateral` with the stable error
+code `[ERRTX-DEFI001]`. This is deterministic — it does not depend on the
+`is_conditioned()` route, which is only probabilistically a freeze because
+`CollateralMetadata` occasionally parses as a satisfiable condition
+(`Signature(Hash::ZERO)` on the zero-pool_id construction, for example).
+`OutputType::Collateral` is also added to `is_conditioned()` as secondary
+documentation of intent. The two controls together fully freeze the
+lending subsystem until it is properly audited and un-gated.
+
+**Three-question gate verdict (INC-I-075)**:
+- Q1 (user-submittable): YES — DeFi txs are user-originated.
+- Q2 (producer-action): NO — validators reject; producers never include.
+- Q3 (bit-identical to old behavior): NO — accept → reject for the same
+  input.
+Result: activation height REQUIRED. Compliant.
+
+**Constraint compliance**:
+- C0 (no genesis reset): satisfied — new field defaults to `u64::MAX`,
+  forward-only activation.
+- C1 (INC-I-054 immutable crossed heights): N/A — NEW field, never
+  crossed.
+- C2 (CURRENT_PROTOCOL_VERSION): NOT bumped — `EpochState` unchanged.
+- C3 (HardForkSchedule entry): not added — constant gate, not consensus
+  hardfork.
+- C5 (INC-I-062 block content): rolling-deploy safe in the zero-DeFi-traffic
+  state mainnet is in today.
+
+**Residual risk**:
+- If a real Collateral UTXO exists in mainnet today, the hard-freeze
+  renders it unspendable until the DeFi subsystem is properly fixed.
+  Pre-deploy UTXO audit (output types 7, 9, 10, 11, 12) is the operator's
+  responsibility before flipping the gate.
+- The freeze does NOT remove the underlying validator gaps; un-gating
+  requires implementing the missing checks (oracle for `LiquidateLoan`,
+  `pubkey_hash = loan_addr` for `CreateLoan`) as separate consensus
+  changes, each with its own activation height.
+
+---
+
+### 7.8 Operator Recovery & Slashing Protection Preservation
 
 **Risk**: The common operator response to a poisoned or forked producer is to
 stop the node, wipe its `data/` directory, and restart (or rsync from a healthy

@@ -384,6 +384,8 @@ rejected up-front so no value is lost.
 | Node not synced | Wait for sync |
 | Invalid transaction | Check error in mempool |
 | Network congestion | Wait or increase fee |
+| DeFi tx submitted pre-activation | Check the rejection: error code `DEFI_NOT_ACTIVATED` means the 11 DeFi tx types (CreatePool, AddLiquidity, RemoveLiquidity, Swap, CreateLoan, RepayLoan, LiquidateLoan, LendingDeposit, LendingWithdraw, FractionalizeNft, RedeemNft) are still gated. Mainnet default is disabled (`u64::MAX`) under INC-I-088 Phase 0. Operator must roll out a binary that pins a concrete future activation height. |
+| Spend of pre-existing Collateral UTXO | Rejected with `[ERRTX-DEFI001]` — Collateral UTXOs are hard-frozen until the lending subsystem is audited and un-gated (INC-I-088 Phase 0). No operator-side fix; wait for the un-gate. |
 
 **Check mempool:**
 ```bash

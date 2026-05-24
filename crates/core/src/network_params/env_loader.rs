@@ -325,6 +325,18 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
                 defaults.addbond_cap_enforcement_activation_height,
             )
         },
+        // INC-I-088 Phase 0: mainnet locked (operator pins concrete future
+        // height in a separate commit, ONLY AFTER DeFi subsystem audit).
+        // Testnet/devnet may override via `DOLI_DEFI_ACTIVATION_HEIGHT` for
+        // local activation testing.
+        defi_activation_height: if is_mainnet {
+            defaults.defi_activation_height
+        } else {
+            env_parse(
+                "DOLI_DEFI_ACTIVATION_HEIGHT",
+                defaults.defi_activation_height,
+            )
+        },
         // Gossip mesh (locked for mainnet - wrong values could isolate nodes)
         mesh_n: if is_mainnet {
             defaults.mesh_n

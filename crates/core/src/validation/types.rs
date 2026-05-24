@@ -173,6 +173,12 @@ pub struct ValidationContext {
     pub encrypted_content_v2_activation_height: u64,
     /// Unified activation height for all consensus-breaking security audit fixes.
     pub security_audit_activation_height: u64,
+    /// INC-I-088 Phase 0: height at which the 11 DeFi tx types
+    /// (CreatePool, AddLiquidity, RemoveLiquidity, Swap, CreateLoan,
+    /// RepayLoan, LiquidateLoan, LendingDeposit, LendingWithdraw,
+    /// FractionalizeNft, RedeemNft) become valid for submission.
+    /// Default `u64::MAX` on all networks = DeFi disabled.
+    pub defi_activation_height: u64,
 }
 
 impl ValidationContext {
@@ -208,6 +214,7 @@ impl ValidationContext {
             encrypted_content_activation_height: u64::MAX,
             encrypted_content_v2_activation_height: u64::MAX,
             security_audit_activation_height: u64::MAX,
+            defi_activation_height: u64::MAX,
         }
     }
 
@@ -229,6 +236,13 @@ impl ValidationContext {
     #[must_use]
     pub fn with_security_audit_activation_height(mut self, height: u64) -> Self {
         self.security_audit_activation_height = height;
+        self
+    }
+
+    /// Set the DeFi activation height (INC-I-088 Phase 0 safety gate).
+    #[must_use]
+    pub fn with_defi_activation_height(mut self, height: u64) -> Self {
+        self.defi_activation_height = height;
         self
     }
 

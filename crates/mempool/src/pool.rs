@@ -232,7 +232,8 @@ impl Mempool {
             )
             .with_security_audit_activation_height(
                 self.network.params().security_audit_activation_height,
-            );
+            )
+            .with_defi_activation_height(self.network.params().defi_activation_height);
         validate_transaction(&tx, &ctx)?;
 
         // Validate input spending conditions: pubkey + signature for Normal/Bond,
@@ -463,7 +464,8 @@ impl Mempool {
             )
             .with_security_audit_activation_height(
                 self.network.params().security_audit_activation_height,
-            );
+            )
+            .with_defi_activation_height(self.network.params().defi_activation_height);
         validate_transaction(&tx, &ctx)?;
 
         // Make room if necessary

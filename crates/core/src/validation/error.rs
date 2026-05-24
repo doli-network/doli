@@ -371,6 +371,31 @@ pub enum ValidationError {
         activation_height: u64,
     },
 
+    /// INC-I-088 Phase 0: a DeFi transaction was submitted before the
+    /// `defi_activation_height` gate opens.
+    ///
+    /// Covers all 11 ungated DeFi tx types in one variant:
+    /// CreatePool, AddLiquidity, RemoveLiquidity, Swap, CreateLoan,
+    /// RepayLoan, LiquidateLoan, LendingDeposit, LendingWithdraw,
+    /// FractionalizeNft, RedeemNft.
+    ///
+    /// `tx_type` is the rejected transaction's `TxType` enum discriminant
+    /// (`u32`), so agentic consumers can identify which DeFi feature was
+    /// requested without parsing the message. `activation_height` and
+    /// `current_height` let consumers compute the wait. The stable error
+    /// code is `"DEFI_NOT_ACTIVATED"`.
+    #[error(
+        "defi not activated: tx_type={tx_type} activation_height={activation_height} current_height={current_height}"
+    )]
+    DefiNotActivated {
+        /// `TxType` discriminant (e.g. 19 = CreatePool, 22 = Swap).
+        tx_type: u32,
+        /// Configured `defi_activation_height` on the validation context.
+        activation_height: u64,
+        /// Height at which the rejection occurred.
+        current_height: u64,
+    },
+
     /// INC-I-080: AddBond rejected because the producer's bond total
     /// (`bond_count` + in-flight pending AddBonds + this request) would
     /// exceed `MAX_BONDS_PER_PRODUCER`.
@@ -455,6 +480,7 @@ impl ValidationError {
             Self::DelegationCapExceeded { .. } => "DELEGATION_CAP_EXCEEDED",
             Self::DelegationSignatureInvalid { .. } => "DELEGATION_SIGNATURE_INVALID",
             Self::AddBondCapExceeded { .. } => "ADDBOND_CAP_EXCEEDED",
+            Self::DefiNotActivated { .. } => "DEFI_NOT_ACTIVATED",
         }
     }
 
@@ -671,6 +697,15 @@ impl ValidationError {
                 map.insert("pending".into(), (*pending).into());
                 map.insert("requested".into(), (*requested).into());
                 map.insert("max".into(), (*max).into());
+            }
+            Self::DefiNotActivated {
+                tx_type,
+                activation_height,
+                current_height,
+            } => {
+                map.insert("tx_type".into(), (*tx_type).into());
+                map.insert("activation_height".into(), (*activation_height).into());
+                map.insert("current_height".into(), (*current_height).into());
             }
         }
 

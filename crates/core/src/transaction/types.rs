@@ -219,6 +219,14 @@ impl OutputType {
     /// (Fix for AUDIT-NFT-001: EncryptedContent was incorrectly listed here,
     /// causing verify_input_conditions to try condition decoding on non-condition
     /// bytes, making ALL EncryptedContent UTXOs permanently unspendable.)
+    ///
+    /// INC-I-088 Phase 0: `Collateral` IS listed here intentionally — to FREEZE
+    /// existing Collateral UTXOs. Collateral `extra_data` is `CollateralMetadata`
+    /// (not condition-prefixed); routing through the condition path means
+    /// `Condition::decode_prefix` rejects the bytes and the spend returns
+    /// `[ERRTX038]`. Combined with the DeFi activation gate (which blocks NEW
+    /// `CreateLoan` from minting fresh Collateral), this fully freezes the
+    /// lending subsystem until it is properly fixed and un-gated.
     pub fn is_conditioned(&self) -> bool {
         matches!(
             self,
@@ -229,6 +237,7 @@ impl OutputType {
                 | Self::NFT
                 | Self::FungibleAsset
                 | Self::BridgeHTLC
+                | Self::Collateral
         )
     }
 

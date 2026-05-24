@@ -85,6 +85,43 @@ pub fn validate_transaction(
         )));
     }
 
+    // 3.5 INC-I-088 Phase 0: DeFi safety gate.
+    //
+    // The 11 DeFi tx types (CreatePool, AddLiquidity, RemoveLiquidity, Swap,
+    // CreateLoan, RepayLoan, LiquidateLoan, LendingDeposit, LendingWithdraw,
+    // FractionalizeNft, RedeemNft) are NOT permitted before
+    // `defi_activation_height`. Their per-type validators have known semantic
+    // gaps (LiquidateLoan has no oracle, validate_create_loan does not pin
+    // Collateral.pubkey_hash to the derived loan_addr) and the subsystems are
+    // unreviewed. Default `u64::MAX` on all networks = always-disabled until
+    // a future binary flips the height. Comparison is strict `<` — at
+    // `current_height == defi_activation_height` the gate is open.
+    //
+    // C7 (INC-I-075 3-question checklist) verdict: Q1=YES (user-submittable),
+    // Q2=NO (validator-only), Q3=NO (accept→reject) → activation height
+    // REQUIRED. We are adding the gate. Compliant.
+    if matches!(
+        tx.tx_type,
+        TxType::CreatePool
+            | TxType::AddLiquidity
+            | TxType::RemoveLiquidity
+            | TxType::Swap
+            | TxType::CreateLoan
+            | TxType::RepayLoan
+            | TxType::LiquidateLoan
+            | TxType::LendingDeposit
+            | TxType::LendingWithdraw
+            | TxType::FractionalizeNft
+            | TxType::RedeemNft
+    ) && ctx.current_height < ctx.defi_activation_height
+    {
+        return Err(ValidationError::DefiNotActivated {
+            tx_type: tx.tx_type as u32,
+            activation_height: ctx.defi_activation_height,
+            current_height: ctx.current_height,
+        });
+    }
+
     // 4. Validate all outputs
     let total_output = validate_outputs(&tx.outputs, ctx)?;
 

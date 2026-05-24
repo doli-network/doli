@@ -143,6 +143,15 @@ impl NetworkParams {
                 // IMMUTABLE — never move it forward (INC-I-054).
                 addbond_cap_enforcement_activation_height: 254_344,
 
+                // INC-I-088 Phase 0: DeFi subsystems (AMM, lending, loan,
+                // fractionalization) gated off on mainnet. u64::MAX = never
+                // activated. Operator pins a concrete future height in a
+                // separate commit ONLY AFTER the per-type validator gaps
+                // are fixed and the subsystems are audit-clean. NEVER lower
+                // this without an explicit decision documented in
+                // specs/state-of-the-art-architecture.md.
+                defi_activation_height: u64::MAX,
+
                 // Gossip mesh: universal config for all network sizes.
                 // mesh_n=12 keeps all peers in eager-push for networks ≤24 (mesh_n_high),
                 // and scales to 1000+ nodes at ~3-4 hops with 10s slot margin.
@@ -251,6 +260,13 @@ impl NetworkParams {
                 // gates at h=272.
                 addbond_cap_enforcement_activation_height: 272,
 
+                // INC-I-088 Phase 0: DeFi gate disabled by default on testnet
+                // (mirrors mainnet). Tests that exercise the post-activation
+                // path override via the env var
+                // `DOLI_DEFI_ACTIVATION_HEIGHT` or via
+                // `ValidationContext::with_defi_activation_height`.
+                defi_activation_height: u64::MAX,
+
                 // INC-I-015: Gossip mesh sized to max_peers for eager push to ALL
                 // connected peers. At mesh_n=12, blocks reach 12 peers immediately
                 // and the rest via IHAVE (lazy, 1+ heartbeat delay). At 120+ nodes
@@ -350,6 +366,15 @@ impl NetworkParams {
                 // on this default; existing devnet/test flows stay
                 // byte-identical (no surprise enforcement).
                 addbond_cap_enforcement_activation_height: u64::MAX,
+                // INC-I-088 Phase 0: DeFi gate disabled by default on devnet
+                // (mirrors mainnet/testnet). Devnet tests that need DeFi
+                // either set `DOLI_DEFI_ACTIVATION_HEIGHT=0` in their .env or
+                // override `ValidationContext` directly. Existing tx-type
+                // unit tests live in the `#[cfg(test)]` modules of the
+                // per-type validators and call those functions directly —
+                // they do NOT go through `validate_transaction`, so the
+                // gate does not affect them.
+                defi_activation_height: u64::MAX,
                 // Gossip mesh: same universal config as mainnet.
                 // With --no-dht, mesh_n_high=24 keeps all devnet peers in mesh.
                 mesh_n: 12,

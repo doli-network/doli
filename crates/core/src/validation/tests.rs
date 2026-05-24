@@ -2204,6 +2204,11 @@ fn test_p0001_enforcement_at_exact_boundary() {
 // ==========================================================================
 
 /// Create a test context with covenants activated (height >= 2000 for Mainnet).
+///
+/// Also opens the INC-I-088 Phase 0 DeFi gate (defi_activation_height = 0) so
+/// the pre-existing FractionalizeNft / RedeemNft per-type validator tests can
+/// continue to exercise their structural rules. Production mainnet keeps the
+/// gate at `u64::MAX` until the DeFi subsystem is properly fixed and un-gated.
 fn test_context_with_covenants() -> ValidationContext {
     ValidationContext::new(
         ConsensusParams::mainnet(),
@@ -2212,6 +2217,7 @@ fn test_context_with_covenants() -> ValidationContext {
         3000,
     )
     .with_prev_block(2999, GENESIS_TIME + 29990, Hash::ZERO)
+    .with_defi_activation_height(0)
 }
 
 /// Helper: create a simple NFT output with a Signature condition.
@@ -3382,6 +3388,7 @@ fn ec009_no_sale_price_gift_accepted() {
 //   O5: Ok(()) when check is gated (height < activation)
 // PATHS: P1=creator_hash mutated, P2=royalty_bps mutated, P3=v1->v0 downgrade,
 //        P4=preserved (happy path), P5=pre-activation (gated)
+// INPUT PARTITIONS: one partition per code path enumerated above.
 // MATRIX:
 //   P1*O1=FAIL  P2*O2=FAIL  P3*O3=FAIL  P4*O4=PASS  P5*O5=PASS
 
@@ -3602,6 +3609,7 @@ fn ec_creator_hash_check_gated_by_activation_height() {
 // OUTPUT CONTRACT: fn validate_transaction_with_utxos(DelegateBond)
 // O1: Result<(), ValidationError> — Ok for state-only DelegateBond with 0 inputs/outputs
 // PATHS: P1=DelegateBond (state-only, 0 fee)
+// INPUT PARTITIONS: one partition per code path enumerated above.
 // MATRIX: O1×P1 → Ok(())
 
 /// INC-I-057: DelegateBond (state-only, 0 fee) must pass UTXO validation
@@ -3627,6 +3635,7 @@ fn test_delegate_bond_passes_utxo_validation() {
 // OUTPUT CONTRACT: fn validate_transaction_with_utxos(RevokeDelegation)
 // O1: Result<(), ValidationError> — Ok for state-only RevokeDelegation with 0 inputs/outputs
 // PATHS: P1=RevokeDelegation (state-only, 0 fee)
+// INPUT PARTITIONS: one partition per code path enumerated above.
 // MATRIX: O1×P1 → Ok(())
 
 /// INC-I-057: RevokeDelegation (state-only, 0 fee) must pass UTXO validation

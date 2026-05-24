@@ -1434,8 +1434,21 @@ Devnet (local development) → Testnet (public testing) → Mainnet (production)
 | Vesting Quarter | 3,153,600 slots (1yr) | 2,160 slots (6h) | 60 slots (10min) | Devnet only |
 | Veto Period | 5 min | 5 min | 60s | All |
 | Fallback Ranks | 2 | 2 | 2 | All |
+| DeFi Activation Height | `u64::MAX` | `u64::MAX` | `u64::MAX` | Non-mainnet (`DOLI_DEFI_ACTIVATION_HEIGHT`) |
 | Data Directory | `~/.doli/mainnet/` | `~/.doli/testnet/` | `~/.doli/devnet/` | - |
 | Config File | `.env` in data dir | `.env` in data dir | `.env` in data dir | - |
+
+**DeFi activation gate (INC-I-088 Phase 0)**: The 11 DeFi transaction types
+(`CreatePool=19`, `AddLiquidity=20`, `RemoveLiquidity=21`, `Swap=22`,
+`CreateLoan=24`, `RepayLoan=25`, `LiquidateLoan=26`, `LendingDeposit=27`,
+`LendingWithdraw=28`, `FractionalizeNft=29`, `RedeemNft=30`) are rejected
+when `current_height < defi_activation_height` with stable error code
+`DEFI_NOT_ACTIVATED`. Mainnet default is `u64::MAX` (always disabled) until
+the DeFi subsystem is audited and un-gated. Mempool, block-assembly, and
+block-apply paths all enforce identically. Pairs with the
+`OutputType::Collateral` hard-freeze in `verify_input_conditions`
+(`[ERRTX-DEFI001]`) to also block any spend of pre-existing Collateral
+UTXOs.
 
 **VDF note:** Block VDF iterations are set to 1,000 for all production networks (minimal computation). The bond requirement is the primary Sybil defense. The consensus constant `T_BLOCK = 800,000` exists but network defaults override it to 1,000 via `NetworkParams`. The consensus constant `T_REGISTER_CAP = 5,000,000` exists but is not currently applied by network defaults (reserved for future tightening).
 
