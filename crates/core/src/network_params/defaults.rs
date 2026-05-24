@@ -260,12 +260,21 @@ impl NetworkParams {
                 // gates at h=272.
                 addbond_cap_enforcement_activation_height: 272,
 
-                // INC-I-088 Phase 0: DeFi gate disabled by default on testnet
-                // (mirrors mainnet). Tests that exercise the post-activation
-                // path override via the env var
-                // `DOLI_DEFI_ACTIVATION_HEIGHT` or via
-                // `ValidationContext::with_defi_activation_height`.
-                defi_activation_height: u64::MAX,
+                // INC-I-088 Phase 0: DeFi gate pinned to h=22_171 on testnet.
+                //
+                // Chosen as a forward-only activation comfortably ahead of the
+                // running fleet tip (h≈22_058 at the time of pinning →
+                // ~113-block / ~19-min lead at 10s slots). Pre-activation
+                // exercises the DefiNotActivated reject path fleet-wide; at
+                // h=22_171 the gate opens and the per-type structural
+                // validators run — useful for testnet shake-out before any
+                // mainnet activation decision.
+                //
+                // Once the testnet chain CROSSES 22_171, this value becomes
+                // IMMUTABLE per INC-I-054 — never move it forward thereafter.
+                // Env override `DOLI_DEFI_ACTIVATION_HEIGHT` still works on
+                // non-mainnet for tests that need a different height.
+                defi_activation_height: 22_171,
 
                 // INC-I-015: Gossip mesh sized to max_peers for eager push to ALL
                 // connected peers. At mesh_n=12, blocks reach 12 peers immediately
