@@ -360,6 +360,7 @@ pub(super) fn validate_outputs(
         if output.amount == 0
             && output.output_type != OutputType::Pool
             && output.output_type != OutputType::ZKRollup
+            && output.output_type != OutputType::OraclePrice
         {
             return Err(ValidationError::InvalidTransaction(format!(
                 "[ERRTX003] output {} has zero amount (type={:?})",
@@ -699,6 +700,21 @@ pub(super) fn validate_outputs(
                         output.extra_data.len()
                     )));
                 }
+            }
+            OutputType::OraclePrice => {
+                // Phase 2.1 Oracle M5 — `OraclePrice` (OutputType=15)
+                // is a system-only UTXO created by `apply_block` at
+                // the epoch boundary (M6). User transactions cannot
+                // mint or spend one — the only legitimate writer is
+                // the in-node aggregator, which bypasses
+                // `validate_transaction` entirely (same shape as
+                // Coinbase/EpochReward direct UtxoSet mutation).
+                //
+                // Spec: specs/oracle-structural-anchored-economics.md §1.2.
+                return Err(ValidationError::InvalidTransaction(format!(
+                    "[ERRTX-ORACLE004] OraclePrice output {} cannot be user-created (system-only)",
+                    i
+                )));
             }
             OutputType::EncryptedContent => {
                 // Activation gate: reject before ENCRYPTED_CONTENT_ACTIVATION_HEIGHT

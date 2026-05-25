@@ -16,6 +16,9 @@ mod tests_delegation_auth;
 #[cfg(test)]
 mod tests_price_attestation;
 
+#[cfg(test)]
+mod tests_oracle_output;
+
 // Re-export everything for API compatibility
 pub use self::core::*;
 pub use data::*;

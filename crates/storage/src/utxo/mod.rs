@@ -11,6 +11,8 @@ mod in_memory;
 mod set;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_oracle_snapsync;
 mod types;
 
 // Re-export everything for identical public API

@@ -206,6 +206,37 @@ pub enum OutputType {
     /// extra_data layout: [ciphertext_len(4 LE) | ciphertext | wrapped_key(80) |
     ///                     nonce(12) | content_hash(32)]
     EncryptedContent = 14,
+    /// Phase 2.1 oracle aggregated price (system-only UTXO).
+    ///
+    /// Per-pair singleton UTXO created by `apply_block` at the epoch
+    /// boundary (Phase 2.1 Oracle M6 aggregator). Holds the
+    /// bond-weighted median of all valid `PriceAttestation` txs that
+    /// landed in the closing epoch. User transactions cannot create or
+    /// spend `OraclePrice` outputs — the validation arm hard-rejects
+    /// any user attempt to mint one with `[ERRTX-ORACLE004]`.
+    ///
+    /// extra_data layout (50 bytes, fixed):
+    ///   offset  0,  u64 LE       price_cents          (last aggregated)
+    ///   offset  8,  u64 LE       last_update_height   (epoch boundary)
+    ///   offset 16,  u16 LE       contributor_count    (attesters aggregated)
+    ///   offset 18,  [u8; 32]     pair_id              (asset pair id)
+    ///
+    /// Deterministic address: `BLAKE3("ORACLE_PRICE" || pair_id)` — see
+    /// [`Output::oracle_price_address`]. Mirrors the REWARD_POOL
+    /// pattern (`consensus::reward_pool_address`).
+    ///
+    /// `amount` is set to 0 (price is in `extra_data`; no DOLI is
+    /// locked). `is_native_amount = false`, `is_conditioned = false`
+    /// — the spend path is exclusively `apply_block` at the next
+    /// epoch boundary, never via signature/condition evaluation.
+    ///
+    /// Snap-sync: included in the state root via standard UtxoSet
+    /// canonical serialization (`UtxoEntry::serialize_canonical_bytes`)
+    /// — `output_type as u8 == 15` lands in the hash by the same path
+    /// every other variant takes.
+    ///
+    /// Spec: `specs/oracle-structural-anchored-economics.md` §1.2.
+    OraclePrice = 15,
 }
 
 impl OutputType {
@@ -226,6 +257,7 @@ impl OutputType {
             12 => Some(Self::LendingDeposit),
             13 => Some(Self::ZKRollup),
             14 => Some(Self::EncryptedContent),
+            15 => Some(Self::OraclePrice),
             _ => None,
         }
     }

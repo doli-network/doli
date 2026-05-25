@@ -349,6 +349,94 @@ impl Output {
         }
     }
 
+    /// Construct an `OraclePrice` system UTXO — Phase 2.1 Oracle M5.
+    ///
+    /// Per-pair singleton output created by `apply_block` at the
+    /// epoch boundary (M6 aggregator). User transactions never call
+    /// this — only the in-node epoch-boundary code path does. The
+    /// validation arm `OutputType::OraclePrice` hard-rejects any user
+    /// tx that emits one of these (`[ERRTX-ORACLE004]`).
+    ///
+    /// extra_data layout (50 bytes, fixed):
+    ///   offset  0  u64 LE   price_cents
+    ///   offset  8  u64 LE   last_update_height
+    ///   offset 16  u16 LE   contributor_count
+    ///   offset 18  [u8;32]  pair_id
+    ///
+    /// The `pubkey_hash` field is set to the deterministic system
+    /// address `oracle_price_address(pair_id)` so the UTXO is always
+    /// looked up at the same outpoint key, regardless of which
+    /// producer minted the epoch-boundary block.
+    ///
+    /// `amount = 0` (price lives in extra_data; no DOLI is locked).
+    /// `lock_until = 0` (system-spent only, not user-spendable).
+    ///
+    /// Spec: `specs/oracle-structural-anchored-economics.md` §1.2.
+    pub fn oracle_price(
+        pair_id: Hash,
+        price_cents: u64,
+        last_update_height: u64,
+        contributor_count: u16,
+    ) -> Self {
+        let mut extra_data = Vec::with_capacity(Self::ORACLE_PRICE_EXTRA_DATA_SIZE);
+        extra_data.extend_from_slice(&price_cents.to_le_bytes());
+        extra_data.extend_from_slice(&last_update_height.to_le_bytes());
+        extra_data.extend_from_slice(&contributor_count.to_le_bytes());
+        extra_data.extend_from_slice(pair_id.as_bytes());
+        debug_assert_eq!(extra_data.len(), Self::ORACLE_PRICE_EXTRA_DATA_SIZE);
+        Self {
+            output_type: OutputType::OraclePrice,
+            amount: 0,
+            pubkey_hash: Self::oracle_price_address(&pair_id),
+            lock_until: 0,
+            extra_data,
+        }
+    }
+
+    /// Fixed `extra_data` size for `OraclePrice` outputs (M5 spec §1.2).
+    ///
+    /// 8 (price_cents) + 8 (last_update_height) + 2 (contributor_count)
+    /// + 32 (pair_id) = 50 bytes.
+    pub const ORACLE_PRICE_EXTRA_DATA_SIZE: usize = 8 + 8 + 2 + 32;
+
+    /// Deterministic system address for the per-pair `OraclePrice`
+    /// UTXO. Equal to `hash_with_domain(b"ORACLE_PRICE", pair_id)`.
+    ///
+    /// Mirrors `crate::consensus::reward_pool_address()`, which uses
+    /// the same `hash_with_domain` pattern (consensus/constants.rs:44).
+    /// The domain prefix is critical: without it, any 32-byte
+    /// preimage colliding with `pair_id` would map to the same
+    /// address as some other system pool.
+    ///
+    /// Used by M6's aggregator to look up the previous epoch's
+    /// `OraclePrice` UTXO and consume-and-recreate it with the new
+    /// median.
+    pub fn oracle_price_address(pair_id: &Hash) -> Hash {
+        crypto::hash::hash_with_domain(b"ORACLE_PRICE", pair_id.as_bytes())
+    }
+
+    /// Decode the `extra_data` of an `OraclePrice` output into its
+    /// four fixed fields. Returns `None` if the output is not of
+    /// type `OraclePrice` or if `extra_data` is not exactly 50
+    /// bytes long.
+    pub fn parse_oracle_price(&self) -> Option<(u64, u64, u16, Hash)> {
+        if self.output_type != OutputType::OraclePrice
+            || self.extra_data.len() != Self::ORACLE_PRICE_EXTRA_DATA_SIZE
+        {
+            return None;
+        }
+        let price_cents = u64::from_le_bytes(self.extra_data[0..8].try_into().ok()?);
+        let last_update_height = u64::from_le_bytes(self.extra_data[8..16].try_into().ok()?);
+        let contributor_count = u16::from_le_bytes(self.extra_data[16..18].try_into().ok()?);
+        let pair_id_bytes: [u8; 32] = self.extra_data[18..50].try_into().ok()?;
+        Some((
+            price_cents,
+            last_update_height,
+            contributor_count,
+            Hash::from_bytes(pair_id_bytes),
+        ))
+    }
+
     /// Parse EncryptedContent extra_data layout.
     /// Returns (ciphertext, wrapped_key, nonce, content_hash) or None if malformed.
     #[allow(clippy::type_complexity)]

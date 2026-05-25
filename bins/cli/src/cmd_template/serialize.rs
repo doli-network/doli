@@ -122,5 +122,6 @@ fn output_type_to_name(ot: OutputType) -> &'static str {
         OutputType::LendingDeposit => "lendingdeposit",
         OutputType::ZKRollup => "zkrollup",
         OutputType::EncryptedContent => "encryptedcontent",
+        OutputType::OraclePrice => "oracleprice",
     }
 }
