@@ -102,7 +102,7 @@ mod tests {
             b[1] = 0xBB;
             b
         });
-        let pool_id = Output::compute_pool_id(&Hash::ZERO, &asset_b);
+        let pool_id = Output::compute_pool_id(&Hash::ZERO, &asset_b, 30);
 
         // Pool UTXO
         let pool_tx_hash = crypto::hash::hash(&[pool_seed, 0xAA]);
@@ -329,7 +329,7 @@ mod tests {
             b[1] = 0xBB;
             b
         });
-        let pool_id_b = Output::compute_pool_id(&Hash::ZERO, &asset_b2);
+        let pool_id_b = Output::compute_pool_id(&Hash::ZERO, &asset_b2, 30);
         let pool_tx_b = crypto::hash::hash(&[20, 0xAA]);
         let mut pool_output_b =
             Output::pool(pool_id_b, asset_b2, 5_000, 10_000, 500, 0, 100, 30, 100);
@@ -487,7 +487,7 @@ mod tests {
                 b[1] = 0xBB;
                 b
             });
-            let pool_id = Output::compute_pool_id(&Hash::ZERO, &asset_b);
+            let pool_id = Output::compute_pool_id(&Hash::ZERO, &asset_b, 30);
             let pool_tx = crypto::hash::hash(&[100 + i, 0xAA]);
             let mut pool_output =
                 Output::pool(pool_id, asset_b, 10_000, 20_000, 1000, 0, 100, 30, 100);

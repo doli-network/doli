@@ -417,7 +417,7 @@ mod tests {
     fn test_pool_output_roundtrip() {
         use crypto::Hash;
         let asset_b = Hash::from_bytes([0xBB; 32]);
-        let pool_id = crate::transaction::Output::compute_pool_id(&Hash::ZERO, &asset_b);
+        let pool_id = crate::transaction::Output::compute_pool_id(&Hash::ZERO, &asset_b, 30);
 
         let output =
             crate::transaction::Output::pool(pool_id, asset_b, 1000, 2000, 707, 0, 100, 30, 100);

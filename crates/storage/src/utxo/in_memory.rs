@@ -399,7 +399,7 @@ mod tests {
     fn test_pool_twap_accumulates_on_add_transaction() {
         let mut store = InMemoryUtxoStore::new();
         let asset_b = crypto::Hash::from_bytes([0xBB; 32]);
-        let pool_id = Output::compute_pool_id(&crypto::Hash::ZERO, &asset_b);
+        let pool_id = Output::compute_pool_id(&crypto::Hash::ZERO, &asset_b, 30);
 
         // Create pool at slot 100, cumulative=0
         let pool_output = Output::pool(pool_id, asset_b, 1000, 2000, 707, 0, 100, 30, 100);
@@ -455,7 +455,7 @@ mod tests {
     fn test_pool_twap_zero_on_first_block() {
         let mut store = InMemoryUtxoStore::new();
         let asset_b = crypto::Hash::from_bytes([0xCC; 32]);
-        let pool_id = Output::compute_pool_id(&crypto::Hash::ZERO, &asset_b);
+        let pool_id = Output::compute_pool_id(&crypto::Hash::ZERO, &asset_b, 30);
 
         // Create pool with last_update_slot=0 (CLI sends 0)
         let pool_output = Output::pool(pool_id, asset_b, 500, 500, 100, 0, 0, 30, 0);
@@ -481,7 +481,7 @@ mod tests {
         let mut store = InMemoryUtxoStore::new();
         let asset_b = crypto::Hash::from_bytes([0xBB; 32]);
         let pool_id =
-            doli_core::transaction::Output::compute_pool_id(&crypto::Hash::ZERO, &asset_b);
+            doli_core::transaction::Output::compute_pool_id(&crypto::Hash::ZERO, &asset_b, 30);
 
         let pool_output = doli_core::transaction::Output::pool(
             pool_id, asset_b, 1000, 2000, 707, 0, 100, 30, 100,
@@ -597,7 +597,7 @@ mod tests {
     fn test_unique_id_pool_via_add_transaction() {
         let mut store = InMemoryUtxoStore::new();
         let asset_b = crypto::Hash::from_bytes([0xDD; 32]);
-        let pool_id = Output::compute_pool_id(&crypto::Hash::ZERO, &asset_b);
+        let pool_id = Output::compute_pool_id(&crypto::Hash::ZERO, &asset_b, 30);
         let pool_output = Output::pool(pool_id, asset_b, 1000, 2000, 707, 0, 0, 30, 0);
 
         let tx = Transaction {
@@ -873,7 +873,7 @@ mod tests {
     fn test_pool_id_in_unique_index_after_create() {
         let mut store = InMemoryUtxoStore::new();
         let asset_b = crypto::Hash::from_bytes([0xBB; 32]);
-        let pool_id = Output::compute_pool_id(&crypto::Hash::ZERO, &asset_b);
+        let pool_id = Output::compute_pool_id(&crypto::Hash::ZERO, &asset_b, 30);
 
         let pool_output = Output::pool(pool_id, asset_b, 1000, 2000, 707, 0, 100, 30, 100);
         let tx = Transaction {
@@ -893,7 +893,7 @@ mod tests {
     fn test_pool_swap_preserves_pool_id_in_index() {
         let mut store = InMemoryUtxoStore::new();
         let asset_b = crypto::Hash::from_bytes([0xBB; 32]);
-        let pool_id = Output::compute_pool_id(&crypto::Hash::ZERO, &asset_b);
+        let pool_id = Output::compute_pool_id(&crypto::Hash::ZERO, &asset_b, 30);
 
         // Create pool
         let pool_output = Output::pool(pool_id, asset_b, 1000, 2000, 707, 0, 100, 30, 100);

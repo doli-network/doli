@@ -259,8 +259,9 @@ async fn cmd_pool_create(
         );
     }
 
-    // Compute deterministic pool ID
-    let pool_id = Output::compute_pool_id(&Hash::ZERO, &asset_b_id);
+    // Compute deterministic pool ID (D2: fee_bps is part of the identity so
+    // multiple fee tiers can co-exist per pair).
+    let pool_id = Output::compute_pool_id(&Hash::ZERO, &asset_b_id, fee_bps);
 
     // Compute initial LP shares
     let lp_shares = doli_core::compute_initial_lp_shares(doli_units, token_units);

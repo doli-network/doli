@@ -57,6 +57,26 @@ pub(crate) fn validate_create_pool(tx: &Transaction) -> Result<(), ValidationErr
         ));
     }
 
+    // D2 (AMM Foundations M2, 2026-05-25): pool_id MUST equal the
+    // canonical derivation BLAKE3(POOL_ID_DOMAIN || fee_bps_le || sort(a,b)).
+    // A forged pool_id would let an attacker mint a Pool UTXO at an
+    // arbitrary address, breaking the per-(pair, fee_bps) singleton
+    // invariant (INV-DEFI-010 generalised by M2) once the AMM apply_block
+    // consumer enforces uniqueness by pool_id at state level. We anchor
+    // the invariant at validation so the same rule fires for every node.
+    let expected_pool_id = crate::transaction::Output::compute_pool_id(
+        &crypto::Hash::ZERO,
+        &pool_meta.asset_b_id,
+        pool_meta.fee_bps,
+    );
+    if pool_meta.pool_id != expected_pool_id {
+        return Err(ValidationError::InvalidPool(format!(
+            "pool_id mismatch: declared={}, expected={} (must be BLAKE3 of \
+             POOL_ID_DOMAIN || fee_bps_le || sort(asset_a, asset_b))",
+            pool_meta.pool_id, expected_pool_id
+        )));
+    }
+
     // Second output must be LPShare
     if tx.outputs[1].output_type != OutputType::LPShare {
         return Err(ValidationError::InvalidPool(
@@ -198,7 +218,7 @@ mod tests {
 
     fn dummy_pool_tx() -> Transaction {
         let asset_b = Hash::from_bytes([0xBB; 32]);
-        let pool_id = Output::compute_pool_id(&Hash::ZERO, &asset_b);
+        let pool_id = Output::compute_pool_id(&Hash::ZERO, &asset_b, 30);
         let pool_output = Output::pool(pool_id, asset_b, 1000, 2000, 707, 0, 100, 30, 100);
         let lp_output = Output::lp_share(707, pool_id, Hash::from_bytes([0x01; 32]));
 
@@ -241,7 +261,7 @@ mod tests {
     #[test]
     fn test_create_pool_zero_reserves_fails() {
         let asset_b = Hash::from_bytes([0xBB; 32]);
-        let pool_id = Output::compute_pool_id(&Hash::ZERO, &asset_b);
+        let pool_id = Output::compute_pool_id(&Hash::ZERO, &asset_b, 30);
         let pool_output = Output::pool(pool_id, asset_b, 0, 2000, 707, 0, 100, 30, 100);
         let lp_output = Output::lp_share(707, pool_id, Hash::from_bytes([0x01; 32]));
 
@@ -259,7 +279,9 @@ mod tests {
     #[test]
     fn test_create_pool_excessive_fee_fails() {
         let asset_b = Hash::from_bytes([0xBB; 32]);
-        let pool_id = Output::compute_pool_id(&Hash::ZERO, &asset_b);
+        // fee_bps=1500 here mirrors what the Pool UTXO will stamp below; the
+        // fee-exceeds-maximum check fires before the pool_id integrity check.
+        let pool_id = Output::compute_pool_id(&Hash::ZERO, &asset_b, 1500);
         let pool_output = Output::pool(pool_id, asset_b, 1000, 2000, 707, 0, 100, 1500, 100); // 15% fee
         let lp_output = Output::lp_share(707, pool_id, Hash::from_bytes([0x01; 32]));
 
@@ -277,7 +299,7 @@ mod tests {
     #[test]
     fn test_create_pool_lp_amount_mismatch_fails() {
         let asset_b = Hash::from_bytes([0xBB; 32]);
-        let pool_id = Output::compute_pool_id(&Hash::ZERO, &asset_b);
+        let pool_id = Output::compute_pool_id(&Hash::ZERO, &asset_b, 30);
         let pool_output = Output::pool(pool_id, asset_b, 1000, 2000, 707, 0, 100, 30, 100);
         let lp_output = Output::lp_share(500, pool_id, Hash::from_bytes([0x01; 32])); // wrong: 500 != 707
 
@@ -295,7 +317,7 @@ mod tests {
     #[test]
     fn test_swap_valid() {
         let asset_b = Hash::from_bytes([0xBB; 32]);
-        let pool_id = Output::compute_pool_id(&Hash::ZERO, &asset_b);
+        let pool_id = Output::compute_pool_id(&Hash::ZERO, &asset_b, 30);
         let pool_output = Output::pool(pool_id, asset_b, 1100, 910, 707, 0, 101, 30, 100);
         let swap_output = Output::normal(90, Hash::from_bytes([0x02; 32]));
 
@@ -315,7 +337,7 @@ mod tests {
     #[test]
     fn test_swap_insufficient_inputs_fails() {
         let asset_b = Hash::from_bytes([0xBB; 32]);
-        let pool_id = Output::compute_pool_id(&Hash::ZERO, &asset_b);
+        let pool_id = Output::compute_pool_id(&Hash::ZERO, &asset_b, 30);
         let pool_output = Output::pool(pool_id, asset_b, 1100, 910, 707, 0, 101, 30, 100);
 
         let tx = Transaction {
@@ -333,7 +355,7 @@ mod tests {
         // B→A swap: tokens go in, DOLI comes out
         // The DOLI balance check is exempted for Swap TxType
         let asset_b = Hash::from_bytes([0xBB; 32]);
-        let pool_id = Output::compute_pool_id(&Hash::ZERO, &asset_b);
+        let pool_id = Output::compute_pool_id(&Hash::ZERO, &asset_b, 30);
         // Old pool: 1100 DOLI, 454M tokens
         // After b2a swap of 50M tokens: reserve_a decreases, reserve_b increases
         let new_pool = Output::pool(pool_id, asset_b, 991312418, 504669456, 707, 0, 101, 30, 100);
@@ -354,13 +376,17 @@ mod tests {
     }
 
     #[test]
-    fn test_create_pool_duplicate_same_pair_fails() {
-        // Creating two pools with the same asset pair should fail
-        // because they'd have the same pool_id
+    fn test_pool_id_deterministic_for_same_pair_and_fee() {
+        // Post-M2: pool_id is per (pair, fee_bps). Same (pair, fee_bps)
+        // tuple MUST produce the same pool_id. Different fee tiers on the
+        // same pair are intentionally distinct (covered in
+        // crates/core/tests/pool_id_fee_bps.rs::pool_id_distinct_per_fee_tier).
         let asset_b = Hash::from_bytes([0xBB; 32]);
-        let pool_id = Output::compute_pool_id(&Hash::ZERO, &asset_b);
-
-        let pool_id_2 = Output::compute_pool_id(&Hash::ZERO, &asset_b);
-        assert_eq!(pool_id, pool_id_2, "Same pair must produce same pool_id");
+        let pool_id = Output::compute_pool_id(&Hash::ZERO, &asset_b, 30);
+        let pool_id_2 = Output::compute_pool_id(&Hash::ZERO, &asset_b, 30);
+        assert_eq!(
+            pool_id, pool_id_2,
+            "same (pair, fee_bps) must produce same pool_id"
+        );
     }
 }

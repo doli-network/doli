@@ -44,7 +44,7 @@ use doli_core::validation::{self, ValidationContext, ValidationError};
 // ───────────────────────────────────────────────────────────────────────────
 fn create_pool_tx() -> Transaction {
     let asset_b = Hash::from_bytes([0xBB; 32]);
-    let pool_id = Output::compute_pool_id(&Hash::ZERO, &asset_b);
+    let pool_id = Output::compute_pool_id(&Hash::ZERO, &asset_b, 30);
     let pool_output = Output::pool(pool_id, asset_b, 1000, 2000, 707, 0, 100, 30, 100);
     let lp_output = Output::lp_share(707, pool_id, Hash::from_bytes([0x01; 32]));
     Transaction {
@@ -58,7 +58,7 @@ fn create_pool_tx() -> Transaction {
 
 fn add_liquidity_tx() -> Transaction {
     let asset_b = Hash::from_bytes([0xBB; 32]);
-    let pool_id = Output::compute_pool_id(&Hash::ZERO, &asset_b);
+    let pool_id = Output::compute_pool_id(&Hash::ZERO, &asset_b, 30);
     let pool_output = Output::pool(pool_id, asset_b, 2000, 4000, 1414, 0, 100, 30, 100);
     let lp_output = Output::lp_share(707, pool_id, Hash::from_bytes([0x02; 32]));
     Transaction {
@@ -75,7 +75,7 @@ fn add_liquidity_tx() -> Transaction {
 
 fn remove_liquidity_tx() -> Transaction {
     let asset_b = Hash::from_bytes([0xBB; 32]);
-    let pool_id = Output::compute_pool_id(&Hash::ZERO, &asset_b);
+    let pool_id = Output::compute_pool_id(&Hash::ZERO, &asset_b, 30);
     let pool_output = Output::pool(pool_id, asset_b, 500, 1000, 353, 0, 100, 30, 100);
     Transaction {
         version: 1,
@@ -91,7 +91,7 @@ fn remove_liquidity_tx() -> Transaction {
 
 fn swap_tx() -> Transaction {
     let asset_b = Hash::from_bytes([0xBB; 32]);
-    let pool_id = Output::compute_pool_id(&Hash::ZERO, &asset_b);
+    let pool_id = Output::compute_pool_id(&Hash::ZERO, &asset_b, 30);
     let pool_output = Output::pool(pool_id, asset_b, 1100, 1818, 707, 0, 100, 30, 100);
     let user_output = Output::normal(180, Hash::from_bytes([0x33; 32]));
     Transaction {

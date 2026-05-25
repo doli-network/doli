@@ -81,7 +81,12 @@ pub const POOL_VERSION: u8 = 1;
 /// Pool extra_data: 1B version + 32B pool_id + 32B asset_b_id + 8B reserve_a + 8B reserve_b + 8B total_lp + 16B cumulative_price + 4B last_slot + 2B fee_bps + 4B creation_slot + 1B status
 pub const POOL_METADATA_SIZE: usize = 116;
 /// Pool domain for deterministic ID
-pub const POOL_ID_DOMAIN: &[u8] = b"DOLI_POOL";
+/// AMM Foundations M2 (D2, 2026-05-25): domain bumped to V2 to encode the
+/// fee_bps inclusion in [`Output::compute_pool_id`]. Any pre-existing V1
+/// artifact is provably non-collidable with a V2 pool_id by domain
+/// separation. **IRREVERSIBLE** once `amm_activation_height` is ever
+/// crossed — never change.
+pub const POOL_ID_DOMAIN: &[u8] = b"DOLI_POOL_V2";
 /// Default pool fee: 0.3% = 30 basis points
 pub const POOL_DEFAULT_FEE_BPS: u16 = 30;
 /// Maximum pool fee: 10% = 1000 basis points
@@ -812,16 +817,35 @@ impl Output {
         bytes
     }
 
-    /// Compute a deterministic pool ID.
-    /// `pool_id = BLAKE3("DOLI_POOL" || min(asset_a, asset_b) || max(asset_a, asset_b))`
-    pub fn compute_pool_id(asset_a: &Hash, asset_b: &Hash) -> Hash {
+    /// Compute a deterministic pool ID for a given asset pair AND fee tier.
+    ///
+    /// AMM Foundations M2 (D2, 2026-05-25): `fee_bps` is included in the
+    /// hash so that the same asset pair can host multiple pools at
+    /// different fee tiers (e.g. 5/30/100 bps). Each (pair, fee_bps) tuple
+    /// derives to a DIFFERENT `pool_id`, generalising the per-pool
+    /// singleton invariant (INV-DEFI-010) to a per-(pair, fee_bps)
+    /// singleton.
+    ///
+    /// Canonical payload layout (PINNED — IRREVERSIBLE once
+    /// `amm_activation_height` is ever crossed):
+    ///
+    ///   `pool_id = BLAKE3(POOL_ID_DOMAIN ‖ fee_bps_le ‖ lo_asset ‖ hi_asset)`
+    ///
+    /// where `(lo_asset, hi_asset) = sort_by_raw_bytes(asset_a, asset_b)`
+    /// and `POOL_ID_DOMAIN = b"DOLI_POOL_V2"`. The asset sort makes the
+    /// function commutative in `asset_a`/`asset_b`. The V2 domain bump
+    /// guarantees domain separation from any pre-existing V1 artifact.
+    ///
+    /// Spec: `specs/defi-foundations-economics.md` §0 D2.
+    pub fn compute_pool_id(asset_a: &Hash, asset_b: &Hash, fee_bps: u16) -> Hash {
         use crypto::hash::hash_with_domain;
         let (lo, hi) = if asset_a.as_bytes() < asset_b.as_bytes() {
             (asset_a, asset_b)
         } else {
             (asset_b, asset_a)
         };
-        let mut data = Vec::with_capacity(64);
+        let mut data = Vec::with_capacity(2 + 64);
+        data.extend_from_slice(&fee_bps.to_le_bytes());
         data.extend_from_slice(lo.as_bytes());
         data.extend_from_slice(hi.as_bytes());
         hash_with_domain(POOL_ID_DOMAIN, &data)
