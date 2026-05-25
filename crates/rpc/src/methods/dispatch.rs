@@ -54,6 +54,10 @@ impl RpcContext {
             "getSwapQuote" => self.get_swap_quote(request.params).await,
             "getLoanInfo" => self.get_loan_info(request.params).await,
             "getLoanList" => self.get_loan_list(request.params).await,
+            // Phase 2.1 Oracle (M9-M11) — read-only consumers of the
+            // OraclePrice UTXO (OutputType=15) and PriceAttestation txs
+            // (TxType=16). Frozen behind oracle_activation_height = u64::MAX.
+            "getOraclePrice" => self.get_oracle_price(request.params).await,
             // Storage management
             "pruneBlocks" => self.prune_blocks(Some(request.params)).await,
             "getStorageInfo" => self.get_storage_info().await,

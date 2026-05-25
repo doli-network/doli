@@ -28,6 +28,7 @@ mod guardian;
 mod history;
 mod lending;
 mod network;
+mod oracle;
 mod pool;
 mod producer;
 mod pruning;
