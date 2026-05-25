@@ -152,6 +152,14 @@ impl NetworkParams {
                 // specs/state-of-the-art-architecture.md.
                 defi_activation_height: u64::MAX,
 
+                // Phase 2.1 Oracle (structural-anchored): u64::MAX = frozen.
+                // PriceAttestation (TxType=16) is rejected at validation and
+                // mempool until the operator pins a concrete future height,
+                // ONLY AFTER M2-M11 land + testnet activation experiment.
+                // Independent of defi_activation_height per HC-6 / INC-I-075.
+                // Spec: specs/oracle-structural-anchored-economics.md §1.10.
+                oracle_activation_height: u64::MAX,
+
                 // Gossip mesh: universal config for all network sizes.
                 // mesh_n=12 keeps all peers in eager-push for networks ≤24 (mesh_n_high),
                 // and scales to 1000+ nodes at ~3-4 hops with 10s slot margin.
@@ -267,6 +275,11 @@ impl NetworkParams {
                 // `ValidationContext::with_defi_activation_height`.
                 defi_activation_height: u64::MAX,
 
+                // Phase 2.1 Oracle: frozen by default on testnet (mirrors
+                // mainnet). Local activation experiments override via
+                // `DOLI_ORACLE_ACTIVATION_HEIGHT`.
+                oracle_activation_height: u64::MAX,
+
                 // INC-I-015: Gossip mesh sized to max_peers for eager push to ALL
                 // connected peers. At mesh_n=12, blocks reach 12 peers immediately
                 // and the rest via IHAVE (lazy, 1+ heartbeat delay). At 120+ nodes
@@ -375,6 +388,12 @@ impl NetworkParams {
                 // they do NOT go through `validate_transaction`, so the
                 // gate does not affect them.
                 defi_activation_height: u64::MAX,
+
+                // Phase 2.1 Oracle: frozen by default on devnet. Devnet tests
+                // that need the oracle live override via
+                // `DOLI_ORACLE_ACTIVATION_HEIGHT` in their .env.
+                oracle_activation_height: u64::MAX,
+
                 // Gossip mesh: same universal config as mainnet.
                 // With --no-dht, mesh_n_high=24 keeps all devnet peers in mesh.
                 mesh_n: 12,

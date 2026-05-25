@@ -31,6 +31,9 @@ mod env_loader;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod tests_oracle;
+
 pub use chainspec_loader::apply_chainspec_defaults;
 pub use env_loader::{get_default_data_dir, init_env_for_network, load_env_for_network};
 
@@ -365,6 +368,43 @@ pub struct NetworkParams {
     /// pins a concrete future height in a separate commit, and only after
     /// the lending/AMM gaps are closed.
     pub defi_activation_height: u64,
+
+    /// Activation height for the Phase 2.1 structural-anchored oracle.
+    /// At-or-after this height, `PriceAttestation` transactions (TxType=16)
+    /// become valid for inclusion, the bond-weighted median aggregation
+    /// runs at epoch boundary, and the `OraclePrice` UTXO (OutputType=15)
+    /// is consumed-and-recreated as a system singleton per asset pair.
+    ///
+    /// Pre-activation: every node REJECTS PriceAttestation txs at
+    /// validation time with `[ERRTX-ORACLE001]` (REQ-AGENTIC-ERRORS
+    /// compliant). Mempool symmetry: pre-activation admission also
+    /// rejects, so upgraded producers never include an attestation tx
+    /// in their blocks during a rolling deploy.
+    ///
+    /// Post-activation: each active bonded producer MAY submit at most
+    /// ONE attestation per epoch per pair. At the epoch-boundary block,
+    /// `apply_block()` aggregates by bond-weighted median and writes the
+    /// new `OraclePrice` UTXO at the deterministic system address
+    /// `BLAKE3("ORACLE_PRICE" || pair_id)`. A sunset trigger HALTs new
+    /// attestations when structural bond share (1-epoch lagged,
+    /// anti-dilution) drops below 55%.
+    ///
+    /// Three-question gate verdict (INC-I-075): Q1=YES (PriceAttestation
+    /// is user-submittable), Q2=YES (proposer-inclusion + epoch-boundary
+    /// aggregation), Q3=NO (new validation/state) → activation height
+    /// REQUIRED.
+    ///
+    /// HC-6 / spec §0 NEVER constraint: this height MUST remain
+    /// INDEPENDENT of `defi_activation_height`, `amm_activation_height`,
+    /// or any other. Never bundle. Never reuse.
+    ///
+    /// Defaults: mainnet/testnet/devnet all `u64::MAX` (frozen). Operator
+    /// pins a concrete future height in a separate commit, ONLY AFTER
+    /// the oracle subsystem is fully implemented (M2-M11), tested on
+    /// testnet, and audited.
+    ///
+    /// Spec: `specs/oracle-structural-anchored-economics.md` §1.10.
+    pub oracle_activation_height: u64,
 
     // === Gossip mesh ===
     /// Target number of peers in gossipsub mesh per topic
