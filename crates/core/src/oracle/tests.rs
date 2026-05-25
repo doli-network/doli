@@ -11,7 +11,10 @@
 //!   - Empty / all-zero-weight inputs return None
 //!   - LATEST per attester wins when duplicates appear
 
-use super::{bond_weighted_median, dedupe_latest_per_attester, AttestationContribution};
+use super::{
+    bond_weighted_median, compute_structural_share_bps, dedupe_latest_per_attester,
+    AttestationContribution, SUNSET_THRESHOLD_BPS,
+};
 use crypto::Hash;
 use std::collections::HashMap;
 
@@ -256,4 +259,182 @@ fn test_contributor_count_saturates_at_u16_max() {
     let result = bond_weighted_median(&a, &bs).unwrap();
     assert_eq!(result.0, 100);
     assert_eq!(result.1, u16::MAX); // O1
+}
+
+// ===========================================================================
+// M8 — Sunset trigger (compute_structural_share_bps)
+// ===========================================================================
+
+/// Build a `(bond_snapshot, registered_at)` pair from a list of
+/// `(seed, weight, registered_at_height)`. Returns the structural-
+/// hash list (the first `structural_n` entries) for sunset metric
+/// computation.
+fn build_m8_inputs(
+    entries: &[(u8, u64, u64)],
+    structural_n: usize,
+) -> (HashMap<Hash, u64>, HashMap<Hash, u64>, Vec<Hash>) {
+    let mut snapshot = HashMap::new();
+    let mut regd = HashMap::new();
+    let mut structural = Vec::new();
+    for (i, (seed, w, r)) in entries.iter().enumerate() {
+        let key = h(*seed);
+        snapshot.insert(key, *w);
+        regd.insert(key, *r);
+        if i < structural_n {
+            structural.push(key);
+        }
+    }
+    (snapshot, regd, structural)
+}
+
+// OUTPUT CONTRACT: fn compute_structural_share_bps — happy path
+//   O1: returns Some(bps) where bps = structural_bonds * 10_000 /
+//       total_eligible
+//   O2: returned bps matches expected value within rounding
+// PATHS:
+//   P1: 3 structural producers + 1 non-structural, all registered
+//       long ago (eligible) -> bps = 75% (7500)
+// INPUT PARTITIONS:
+//   part-A (P1): structural weights = [10, 20, 30] (sum 60),
+//                non-structural = [20]. total = 80. bps = 7500.
+#[test]
+fn test_sunset_share_basic_partition() {
+    let (snap, regd, struct_keys) = build_m8_inputs(
+        &[
+            (1, 10, 0), // structural N1
+            (2, 20, 0), // structural N2
+            (3, 30, 0), // structural N3
+            (4, 20, 0), // non-structural (excluded from numerator,
+                        //                  included in denominator)
+        ],
+        3,
+    );
+    // current_epoch_start = 720, blocks_per_epoch = 360 -> threshold
+    // for eligibility = registered_at <= 360. All entries registered
+    // at 0 — eligible.
+    let bps = compute_structural_share_bps(&snap, &regd, 720, 360, &struct_keys);
+    // structural = 60, total = 80, bps = 60*10000/80 = 7500.
+    assert_eq!(bps, Some(7500)); // O1+O2
+}
+
+// OUTPUT CONTRACT: at-threshold boundary
+//   O1: bps == SUNSET_THRESHOLD_BPS (5500) means sunset is NOT
+//       triggered (spec §1.8 says "structural_share < 0.55",
+//       strict inequality, so 55.00% exactly is still OK)
+#[test]
+fn test_sunset_share_exact_threshold_not_triggered() {
+    // 55% structural exactly: 11 structural at 10 each + 1
+    // non-structural at 90. total = 200, structural = 110.
+    // bps = 110 * 10_000 / 200 = 5500.
+    let mut entries: Vec<(u8, u64, u64)> = (1..=11).map(|s| (s, 10, 0)).collect();
+    entries.push((20, 90, 0));
+    let (snap, regd, struct_keys) = build_m8_inputs(&entries, 11);
+    let bps = compute_structural_share_bps(&snap, &regd, 720, 360, &struct_keys).unwrap();
+    assert_eq!(bps, 5500);
+    assert!(
+        bps >= SUNSET_THRESHOLD_BPS,
+        "5500 bps == threshold, must NOT trigger sunset (strict < gate)"
+    );
+}
+
+// OUTPUT CONTRACT: just-below threshold triggers sunset
+//   O1: bps < SUNSET_THRESHOLD_BPS when structural share is 54.99%
+#[test]
+fn test_sunset_share_just_below_threshold_triggers() {
+    // 11 structural at 10 each = 110, non-structural at 91. total =
+    // 201, bps = 110*10000/201 = 5472. Below 5500 -> sunset.
+    let mut entries: Vec<(u8, u64, u64)> = (1..=11).map(|s| (s, 10, 0)).collect();
+    entries.push((20, 91, 0));
+    let (snap, regd, struct_keys) = build_m8_inputs(&entries, 11);
+    let bps = compute_structural_share_bps(&snap, &regd, 720, 360, &struct_keys).unwrap();
+    assert!(
+        bps < SUNSET_THRESHOLD_BPS,
+        "5472 bps < 5500 threshold, MUST trigger sunset; got bps={bps}"
+    );
+}
+
+// OUTPUT CONTRACT: anti-dilution excludes young bonds
+//   O1: bonds whose registered_at > (current - blocks_per_epoch)
+//       are excluded from total_bonds_eligible
+//   O2: a sybil attacker who flash-registers 100k bonds AT the
+//       current epoch start cannot dilute structural_share
+// PATHS:
+//   Structural set is 62.7% of OLD-eligible bonds. Attacker
+//   registers 200k fresh bonds at the current epoch start. With
+//   anti-dilution, structural_share stays at 62.7%.
+#[test]
+fn test_sunset_anti_dilution_excludes_fresh_bonds() {
+    let (snap, regd, struct_keys) = build_m8_inputs(
+        &[
+            (1, 176_650, 0), // structural — registered long ago
+            (2, 105_067, 0), // non-structural, also long ago
+            // Sybil dilution: 200k bonds registered AT current
+            // epoch start = ineligible (bond_age = 0 epochs).
+            (3, 200_000, 720),
+        ],
+        1, // only entry 0 is structural
+    );
+    // current_epoch_start = 720, blocks_per_epoch = 360. Eligibility
+    // threshold = registered_at <= 360. Entries 0 (regd=0) and 1
+    // (regd=0) are eligible. Entry 2 (regd=720) is NOT eligible.
+    // structural = 176_650; total_eligible = 281_717.
+    // bps = 176_650 * 10_000 / 281_717 = 6,270 (matches the real
+    // fleet's structural share of 62.7%).
+    let bps = compute_structural_share_bps(&snap, &regd, 720, 360, &struct_keys).unwrap();
+    assert_eq!(
+        bps, 6_270,
+        "anti-dilution must keep structural at 62.7% bps despite the 200k sybil"
+    );
+    assert!(
+        bps >= SUNSET_THRESHOLD_BPS,
+        "sybil dilution must NOT trigger sunset; got bps={bps}"
+    );
+}
+
+// OUTPUT CONTRACT: 1-epoch lag through caller (orchestrator)
+//   The lag is enforced at the call site (orchestrator reads
+//   self.epoch_state.bond_snapshot BEFORE rotation, which IS the
+//   closing epoch's snapshot). This test pins that the FUNCTION
+//   accepts an arbitrary snapshot — semantic responsibility for
+//   passing the right snapshot lives with the orchestrator.
+#[test]
+fn test_sunset_function_is_pure_with_respect_to_snapshot() {
+    let (snap_a, regd, struct_keys) = build_m8_inputs(&[(1, 100, 0), (2, 100, 0)], 1);
+    let mut snap_b = snap_a.clone();
+    snap_b.insert(h(2), 200); // mutate non-structural weight
+    let bps_a = compute_structural_share_bps(&snap_a, &regd, 720, 360, &struct_keys);
+    let bps_b = compute_structural_share_bps(&snap_b, &regd, 720, 360, &struct_keys);
+    assert_ne!(
+        bps_a, bps_b,
+        "different snapshots must produce different bps — the function is pure but \
+         the orchestrator's choice of WHICH snapshot to pass matters"
+    );
+}
+
+// OUTPUT CONTRACT: empty / all-ineligible -> None
+//   O1: returns None when total_bonds_eligible == 0
+#[test]
+fn test_sunset_returns_none_when_no_eligible_bonds() {
+    // Only one entry, registered AT current epoch start =
+    // ineligible.
+    let (snap, regd, struct_keys) = build_m8_inputs(&[(1, 100, 720)], 1);
+    let bps = compute_structural_share_bps(&snap, &regd, 720, 360, &struct_keys);
+    assert_eq!(bps, None); // O1
+}
+
+// OUTPUT CONTRACT: missing registered_at entry is treated as
+//                  ineligible (conservative)
+#[test]
+fn test_sunset_missing_registered_at_is_ineligible() {
+    let mut snap = HashMap::new();
+    let mut regd = HashMap::new();
+    let struct_key = h(1);
+    snap.insert(struct_key, 100);
+    snap.insert(h(2), 100);
+    // Only registered_at[struct_key] is populated. The non-
+    // structural entry has no registered_at -> ineligible.
+    regd.insert(struct_key, 0);
+    let bps = compute_structural_share_bps(&snap, &regd, 720, 360, &[struct_key]);
+    // structural = 100, total_eligible = 100. bps = 10_000.
+    assert_eq!(bps, Some(10_000));
 }

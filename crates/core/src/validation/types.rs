@@ -189,6 +189,25 @@ pub struct ValidationContext {
     /// PriceAttestation tx), Q2=YES (producer-includable in blocks),
     /// Q3=NO (new accept paths) → activation height REQUIRED.
     pub oracle_activation_height: u64,
+    /// Phase 2.1 Oracle M8 sunset flag.
+    ///
+    /// `true` when the most recent epoch boundary's structural-share
+    /// metric fell strictly below `SUNSET_THRESHOLD_BPS` (5500 =
+    /// 55.00%). Once set, `PriceAttestation` (TxType=16) txs are
+    /// rejected with `[ERRTX-ORACLE003]` and the epoch-boundary
+    /// aggregator skips the median computation (the last committed
+    /// `OraclePrice` UTXO is left in place — readable but stale).
+    ///
+    /// The orchestrator (`bins/node/src/node/apply_block/oracle.rs`)
+    /// maintains the live boolean and the node wires it into every
+    /// `ValidationContext` construction site. Recovery requires a
+    /// binary upgrade — no on-chain governance can flip it back.
+    ///
+    /// Default `false`. Pre-activation (the default
+    /// `oracle_activation_height = u64::MAX`) this flag is never
+    /// set; the M4 validator's height gate fires first and the
+    /// sunset gate is unreachable.
+    pub oracle_sunset_triggered: bool,
 }
 
 impl ValidationContext {
@@ -226,6 +245,7 @@ impl ValidationContext {
             security_audit_activation_height: u64::MAX,
             defi_activation_height: u64::MAX,
             oracle_activation_height: u64::MAX,
+            oracle_sunset_triggered: false,
         }
     }
 
@@ -261,6 +281,13 @@ impl ValidationContext {
     #[must_use]
     pub fn with_oracle_activation_height(mut self, height: u64) -> Self {
         self.oracle_activation_height = height;
+        self
+    }
+
+    /// Set the Phase 2.1 Oracle M8 sunset flag.
+    #[must_use]
+    pub fn with_oracle_sunset_triggered(mut self, triggered: bool) -> Self {
+        self.oracle_sunset_triggered = triggered;
         self
     }
 

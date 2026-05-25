@@ -225,6 +225,17 @@ pub fn validate_transaction(
                 )));
             }
 
+            // Phase 2.1 Oracle M8 — sunset HALT. Once the structural
+            // share has fallen below `SUNSET_THRESHOLD_BPS` (5500),
+            // every node persistently rejects new attestations until
+            // a binary upgrade flips the flag back. Spec §1.8.
+            if ctx.oracle_sunset_triggered {
+                return Err(ValidationError::InvalidTransaction(format!(
+                    "[ERRTX-ORACLE003] oracle sunset triggered: threshold_bps={}",
+                    crate::oracle::SUNSET_THRESHOLD_BPS
+                )));
+            }
+
             // Structural + Rule 6 (signature). Parses extra_data into
             // PriceAttestationData; cryptographic sig check uses fields
             // from the payload itself (no `ctx` needed).

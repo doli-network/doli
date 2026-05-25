@@ -451,3 +451,50 @@ fn test_m4_structural_rejects_wrong_length_extra_data() {
 
     assert!(result.is_err(), "143-byte extra_data must reject"); // O3
 }
+
+// ---------------------------------------------------------------------------
+// M8 — Sunset HALT rejection
+// ---------------------------------------------------------------------------
+
+// OUTPUT CONTRACT: fn validate_transaction — sunset rejection
+//   O1: return — Err containing "[ERRTX-ORACLE003]" when
+//                ctx.oracle_sunset_triggered = true, even if all
+//                other M4 rules pass
+// PATHS:
+//   P1: ctx_with sunset_triggered=true, otherwise-happy attestation
+// INPUT PARTITIONS:
+//   part-A (P1): otherwise-valid happy-path attestation; flag set
+// MATRIX:
+//   P1×part-A: O1✓
+#[test]
+fn test_m8_sunset_triggered_rejects_attestation() {
+    let kp = KeyPair::generate();
+    let mut ctx = ctx_with(&kp, 360);
+    ctx = ctx.with_oracle_sunset_triggered(true);
+    let tx = signed_attestation(&kp, 360);
+
+    let result = validate_transaction(&tx, &ctx);
+
+    assert_rejected_with(result, "[ERRTX-ORACLE003]"); // O1
+}
+
+// OUTPUT CONTRACT: sunset off-by-default
+//   O1: return — Ok(()) when oracle_sunset_triggered = false
+//        (default); equivalent to happy-path which already covers
+//        this, but pinning the default-false explicitly defends
+//        against accidental default-true regressions in
+//        ValidationContext::new().
+#[test]
+fn test_m8_default_sunset_state_is_off() {
+    let kp = KeyPair::generate();
+    let ctx = ctx_with(&kp, 360);
+    // Confirm the default — IMPORTANT: this test would break if a
+    // future change defaulted oracle_sunset_triggered to true.
+    assert!(
+        !ctx.oracle_sunset_triggered,
+        "default ValidationContext must have oracle_sunset_triggered = false"
+    );
+    let tx = signed_attestation(&kp, 360);
+    let result = validate_transaction(&tx, &ctx);
+    assert!(result.is_ok()); // O1
+}

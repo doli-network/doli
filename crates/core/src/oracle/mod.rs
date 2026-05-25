@@ -177,6 +177,103 @@ pub fn dedupe_latest_per_attester(
     by_signer.into_values().collect()
 }
 
+/// Phase 2.1 Oracle sunset threshold, in basis points.
+///
+/// When the structural-bond-share metric falls strictly below this
+/// value at an epoch boundary, the oracle HALTs (spec §1.8):
+///   - New `PriceAttestation` txs are rejected with `[ERRTX-ORACLE003]`.
+///   - The aggregator skips the median computation; the last
+///     committed `OraclePrice` UTXO is left in place (readable but
+///     stale).
+///   - Recovery requires a binary upgrade — no on-chain recovery
+///     path is provided (HC-8 / spec §0 NEVER constraints).
+///
+/// 5500 bps = 55.00%. The spec calls out this exact threshold (§1.8,
+/// "Threshold: structural_share < 55%").
+pub const SUNSET_THRESHOLD_BPS: u16 = 5500;
+
+/// Compute the structural-bond-share metric, in basis points
+/// (0..=10000), against the given `bond_snapshot` and per-producer
+/// `registered_at` map.
+///
+/// Spec: `specs/oracle-structural-anchored-economics.md` §1.8.
+///
+/// Algorithm:
+/// ```text
+/// structural_bonds      = sum(bond_snapshot[k] for k in STRUCTURAL_PUBKEY_HASHES)
+/// total_bonds_eligible  = sum(bond_snapshot[k] for k where bond_age >= 1 epoch)
+/// structural_share      = structural_bonds / total_bonds_eligible
+/// ```
+///
+/// Inputs:
+///   - `bond_snapshot`: the PREVIOUS epoch's snapshot (1-epoch lag
+///     per spec §1.8 — "prevents same-epoch manipulation"). The
+///     orchestrator calls this with `self.epoch_state.bond_snapshot`
+///     BEFORE rotating into the new epoch.
+///   - `registered_at`: per-producer registration height. The
+///     orchestrator builds this from
+///     `ProducerSet::active_producers_at_height(height)`.
+///   - `current_epoch_start_height`: the height of the first block
+///     of the NEW epoch (= the boundary height the aggregator is
+///     processing).
+///   - `blocks_per_epoch`: from `NetworkParams`.
+///
+/// Returns:
+///   - `None` if `total_bonds_eligible == 0` (no eligible bonds —
+///     by spec, the oracle is non-operational, equivalent to
+///     sunset-triggered).
+///   - `Some(bps)` otherwise, where `bps` is the structural share
+///     in 1/10000 units (5500 = 55.00%). Clamped to `[0, 10000]`.
+///
+/// Anti-dilution (spec §1.8): bonds whose owning producer was
+/// registered LESS than one epoch ago are excluded from
+/// `total_bonds_eligible`. This is a producer-level filter
+/// (`bond_age` here means "owner's registration age") because
+/// `bond_snapshot` is keyed by producer pubkey-hash, not per-bond.
+/// The structural set's registrations are baked into genesis and
+/// thus always satisfy the age check.
+pub fn compute_structural_share_bps(
+    bond_snapshot: &HashMap<Hash, u64>,
+    registered_at: &HashMap<Hash, u64>,
+    current_epoch_start_height: u64,
+    blocks_per_epoch: u64,
+    structural_hashes: &[Hash],
+) -> Option<u16> {
+    let one_epoch_ago = current_epoch_start_height.saturating_sub(blocks_per_epoch);
+
+    let structural_bonds: u128 = structural_hashes
+        .iter()
+        .map(|k| bond_snapshot.get(k).copied().unwrap_or(0) as u128)
+        .sum();
+
+    let total_bonds_eligible: u128 = bond_snapshot
+        .iter()
+        .filter_map(|(k, w)| {
+            // Producer is eligible only if registered at-or-before
+            // (current_epoch_start_height - blocks_per_epoch). A
+            // missing `registered_at` entry means we cannot prove
+            // the producer is at least 1 epoch old — exclude them
+            // (conservative: anti-dilution defends harder when in
+            // doubt).
+            let regd = registered_at.get(k).copied()?;
+            if regd <= one_epoch_ago {
+                Some(*w as u128)
+            } else {
+                None
+            }
+        })
+        .sum();
+
+    if total_bonds_eligible == 0 {
+        return None;
+    }
+
+    // bps = structural * 10_000 / total. u128 arithmetic prevents
+    // overflow even at TOTAL_SUPPLY-sized weights.
+    let bps = (structural_bonds.saturating_mul(10_000)) / total_bonds_eligible;
+    Some(bps.min(10_000) as u16)
+}
+
 /// Deterministic outpoint key for the per-pair `OraclePrice` UTXO.
 ///
 /// The OraclePrice UTXO is a singleton — there is exactly one

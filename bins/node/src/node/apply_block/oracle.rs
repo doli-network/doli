@@ -26,15 +26,17 @@
 
 use super::*;
 use crypto::ADDRESS_DOMAIN;
+use doli_core::consensus::STRUCTURAL_PUBKEY_HASHES_HEX;
 use doli_core::oracle::{
-    bond_weighted_median, dedupe_latest_per_attester, oracle_price_outpoint,
-    AttestationContribution,
+    bond_weighted_median, compute_structural_share_bps, dedupe_latest_per_attester,
+    oracle_price_outpoint, AttestationContribution, SUNSET_THRESHOLD_BPS,
 };
 use doli_core::transaction::Output;
 use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 use storage::utxo::Outpoint;
 use storage::utxo::UtxoEntry;
-use tracing::info;
+use tracing::{info, warn};
 
 impl Node {
     /// Run the M6 epoch-boundary aggregator for every pair that
@@ -63,6 +65,55 @@ impl Node {
         // blocks_per_epoch)` = `[height - blocks_per_epoch, height)`.
         let closing_epoch_start = height.saturating_sub(blocks_per_epoch);
         let closing_epoch_end = height; // exclusive
+
+        // Phase 2.1 Oracle M8 — sunset check. Compute structural
+        // share against the CLOSING epoch's bond_snapshot (1-epoch
+        // lag, spec §1.8). Spec §1.8: when structural_share <
+        // SUNSET_THRESHOLD_BPS, the oracle HALTs — flip the node-
+        // wide flag (ValidationContext reads it for `[ERRTX-
+        // ORACLE003]`) and skip aggregation entirely.
+        let structural_hashes: Vec<crypto::Hash> = STRUCTURAL_PUBKEY_HASHES_HEX
+            .iter()
+            .filter_map(|hex| crypto::Hash::from_hex(hex))
+            .collect();
+        let registered_at_map = {
+            let producers = self.producer_set.read().await;
+            let active = producers.active_producers_at_height(height);
+            active
+                .iter()
+                .map(|p| {
+                    let pubkey_hash =
+                        crypto::hash::hash_with_domain(ADDRESS_DOMAIN, p.public_key.as_bytes());
+                    (pubkey_hash, p.registered_at)
+                })
+                .collect::<HashMap<crypto::Hash, u64>>()
+        };
+        let share_bps = compute_structural_share_bps(
+            &self.epoch_state.bond_snapshot,
+            &registered_at_map,
+            height,
+            blocks_per_epoch,
+            &structural_hashes,
+        );
+        let sunset_triggered = match share_bps {
+            None => true, // no eligible bonds — equivalent to sunset
+            Some(bps) => bps < SUNSET_THRESHOLD_BPS,
+        };
+        // Persist the flag for the validation path. Use Release
+        // ordering so any subsequent Acquire-load in validation
+        // observes the latest value (validate_transaction reads it
+        // via ctx.oracle_sunset_triggered, which is constructed from
+        // this atomic at every ValidationContext build site).
+        self.oracle_sunset_triggered
+            .store(sunset_triggered, Ordering::Release);
+        if sunset_triggered {
+            warn!(
+                "[ORACLE] sunset triggered at height={} epoch_boundary: share_bps={:?} \
+                 threshold_bps={} — skipping aggregation, last OraclePrice UTXO frozen",
+                height, share_bps, SUNSET_THRESHOLD_BPS
+            );
+            return;
+        }
 
         // Step 2 — scan closing-epoch blocks for PriceAttestations,
         // group by pair_id.

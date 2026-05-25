@@ -242,6 +242,22 @@ pub struct Node {
     /// Toggled via enterRecoveryMode/exitRecoveryMode RPC. Non-persistent: cleared on restart.
     pub recovery_mode: Arc<AtomicBool>,
 
+    /// Phase 2.1 Oracle M8 sunset flag — non-persistent, recomputed
+    /// at each epoch boundary from `bond_snapshot` +
+    /// `STRUCTURAL_PUBKEY_HASHES_HEX`. Wired into every
+    /// `ValidationContext` construction via
+    /// `ctx.oracle_sunset_triggered`. Pre-activation
+    /// (`oracle_activation_height = u64::MAX`) this stays `false`
+    /// because no attestations exist to drive a metric in the first
+    /// place — sunset is only reachable once the activation height
+    /// has been crossed (M4 admission opens) and producer migration
+    /// drops structural share below 55%.
+    ///
+    /// Cleared on node restart. The next epoch boundary recomputes
+    /// the metric and re-sets the flag if the chain is post-sunset
+    /// — so a restart cannot bypass sunset for more than one epoch.
+    pub oracle_sunset_triggered: Arc<AtomicBool>,
+
     /// INC-I-055: Rolling health window for auto-checkpoint tagging.
     /// Tracks the last CHECKPOINT_HEALTH_WINDOW_SIZE health samples (true=healthy).
     /// A checkpoint is tagged healthy if ANY sample in the window was healthy,

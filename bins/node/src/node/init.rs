@@ -678,11 +678,16 @@ impl Node {
             Network::Mainnet => MempoolPolicy::mainnet(),
             Network::Testnet | Network::Devnet => MempoolPolicy::testnet(),
         };
+        let oracle_sunset_triggered = Arc::new(AtomicBool::new(false));
         let mempool = Arc::new(RwLock::new(Mempool::new(
             mempool_policy,
             params.clone(),
             config.network,
         )));
+        mempool
+            .write()
+            .await
+            .share_oracle_sunset_flag(oracle_sunset_triggered.clone());
 
         // Create sync manager with default settings (2 slots/heights tolerance).
         // All networks use the same tolerance — recovery from forks is handled by
@@ -1036,6 +1041,7 @@ impl Node {
             peer_churn: HashMap::new(),
             last_integrity_check_tip: None,
             recovery_mode: Arc::new(AtomicBool::new(false)),
+            oracle_sunset_triggered: oracle_sunset_triggered.clone(),
             health_window: std::collections::VecDeque::new(),
             attest_fetch_tracker: HashMap::new(),
             diagnostic_emitter: Arc::new(storage::diagnostic_ledger::emitter::NoOpEmitter)
@@ -1154,11 +1160,16 @@ impl Node {
         let utxo_set = Arc::new(RwLock::new(UtxoSet::new()));
 
         // Real mempool
+        let oracle_sunset_triggered = Arc::new(AtomicBool::new(false));
         let mempool = Arc::new(RwLock::new(Mempool::new(
             MempoolPolicy::testnet(),
             params.clone(),
             network,
         )));
+        mempool
+            .write()
+            .await
+            .share_oracle_sunset_flag(oracle_sunset_triggered.clone());
 
         // Real sync manager
         let sync_config = SyncConfig::default();
@@ -1277,6 +1288,7 @@ impl Node {
             peer_churn: HashMap::new(),
             last_integrity_check_tip: None,
             recovery_mode: Arc::new(AtomicBool::new(false)),
+            oracle_sunset_triggered: oracle_sunset_triggered.clone(),
             health_window: std::collections::VecDeque::new(),
             attest_fetch_tracker: HashMap::new(),
             diagnostic_emitter: Arc::new(storage::diagnostic_ledger::emitter::NoOpEmitter)
@@ -1348,11 +1360,18 @@ impl Node {
         let producer_set = Arc::new(RwLock::new(ps));
         let utxo_set = Arc::new(RwLock::new(UtxoSet::new()));
 
+        let oracle_sunset_triggered = Arc::new(AtomicBool::new(false));
+
         let mempool = Arc::new(RwLock::new(Mempool::new(
             MempoolPolicy::testnet(),
             params.clone(),
             network,
         )));
+
+        mempool
+            .write()
+            .await
+            .share_oracle_sunset_flag(oracle_sunset_triggered.clone());
 
         let sync_config = SyncConfig::default();
         let sync_manager = Arc::new(RwLock::new(SyncManager::new(sync_config, genesis_hash)));
@@ -1454,6 +1473,7 @@ impl Node {
             peer_churn: HashMap::new(),
             last_integrity_check_tip: None,
             recovery_mode: Arc::new(AtomicBool::new(false)),
+            oracle_sunset_triggered: oracle_sunset_triggered.clone(),
             health_window: std::collections::VecDeque::new(),
             attest_fetch_tracker: HashMap::new(),
             diagnostic_emitter: Arc::new(storage::diagnostic_ledger::emitter::NoOpEmitter)

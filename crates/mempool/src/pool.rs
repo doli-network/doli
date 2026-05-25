@@ -174,6 +174,13 @@ pub struct Mempool {
     params: ConsensusParams,
     /// Network type
     network: Network,
+    /// Phase 2.1 Oracle M8 sunset flag — shared with the Node via
+    /// `Arc<AtomicBool>`. When the Node's epoch-boundary aggregator
+    /// flips this, every subsequent
+    /// `validate_transaction(PriceAttestation)` admission attempt
+    /// fails with `[ERRTX-ORACLE003]`. Default `false`. Wired into
+    /// every `ValidationContext` constructed inside this mempool.
+    oracle_sunset_triggered: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Mempool {
@@ -189,7 +196,19 @@ impl Mempool {
             total_size: 0,
             params,
             network,
+            oracle_sunset_triggered: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
+    }
+
+    /// Bind the mempool's M8 oracle-sunset flag to the Node's
+    /// `Arc<AtomicBool>` so the mempool's validation path sees the
+    /// same sunset state the apply_block aggregator publishes at
+    /// each epoch boundary. Called once at Node init.
+    pub fn share_oracle_sunset_flag(
+        &mut self,
+        flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        self.oracle_sunset_triggered = flag;
     }
 
     /// Create with default mainnet settings
@@ -243,7 +262,11 @@ impl Mempool {
                 self.network.params().security_audit_activation_height,
             )
             .with_defi_activation_height(self.network.params().defi_activation_height)
-            .with_oracle_activation_height(self.network.params().oracle_activation_height);
+            .with_oracle_activation_height(self.network.params().oracle_activation_height)
+            .with_oracle_sunset_triggered(
+                self.oracle_sunset_triggered
+                    .load(std::sync::atomic::Ordering::Acquire),
+            );
         validate_transaction(&tx, &ctx)?;
 
         // Validate input spending conditions: pubkey + signature for Normal/Bond,
@@ -509,7 +532,11 @@ impl Mempool {
                 self.network.params().security_audit_activation_height,
             )
             .with_defi_activation_height(self.network.params().defi_activation_height)
-            .with_oracle_activation_height(self.network.params().oracle_activation_height);
+            .with_oracle_activation_height(self.network.params().oracle_activation_height)
+            .with_oracle_sunset_triggered(
+                self.oracle_sunset_triggered
+                    .load(std::sync::atomic::Ordering::Acquire),
+            );
         validate_transaction(&tx, &ctx)?;
 
         // Make room if necessary
