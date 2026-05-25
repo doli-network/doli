@@ -194,6 +194,28 @@ pub fn validate_transaction(
         TxType::ProtocolActivation => {
             validate_protocol_activation_data(tx)?;
         }
+        TxType::PriceAttestation => {
+            // M3 (this milestone): type defined, no rules yet — reject by default.
+            // M4 will replace this arm with the full ruleset:
+            //   - height gate: `current_height < oracle_activation_height`
+            //     -> [ERRTX-ORACLE001]
+            //   - attester in `active_producers` with positive bond
+            //   - `epoch_number == current_epoch`
+            //   - pair has pool with liquidity >= MINIMUM_LIQUIDITY
+            //   - at-most-one per attester per (epoch, pair_id)
+            //     -> [ERRTX-ORACLE002]
+            //   - signature verifies over `signing_message()`
+            // Until M4 lands, this default-reject keeps the type
+            // unreachable through validation even if a node somehow
+            // produced an attestation tx (defense in depth — the
+            // primary gate is `oracle_activation_height = u64::MAX`
+            // from M1 d80f127f, set in NetworkParams).
+            //
+            // Spec: specs/oracle-structural-anchored-economics.md §1.1
+            return Err(ValidationError::InvalidTransaction(
+                "PriceAttestation (TxType=16) validation not yet implemented (M4)".to_string(),
+            ));
+        }
         TxType::CreatePool => {
             super::pool::validate_create_pool(tx)?;
         }

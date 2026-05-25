@@ -13,6 +13,9 @@ mod tests;
 #[cfg(test)]
 mod tests_delegation_auth;
 
+#[cfg(test)]
+mod tests_price_attestation;
+
 // Re-export everything for API compatibility
 pub use self::core::*;
 pub use data::*;

@@ -876,6 +876,49 @@ impl Transaction {
         }
         crate::maintainer::ProtocolActivationData::from_bytes(&self.extra_data)
     }
+
+    // ==================== Phase 2.1 Oracle: PriceAttestation ====================
+
+    /// Create a new `PriceAttestation` transaction (Phase 2.1 oracle).
+    ///
+    /// Data-only tx: empty inputs, empty outputs, payload in `extra_data`.
+    /// Same pattern as `DelegateBond`, `RemoveMaintainer`,
+    /// `ProtocolActivation`. The 144-byte payload encodes the attester's
+    /// pubkey, the observed price (cents), the asset pair id, the
+    /// epoch number, and an Ed25519 signature over
+    /// `BLAKE3(pair_id || price_cents || epoch_number)`.
+    ///
+    /// **No validation is performed here.** All rules — height-gate,
+    /// attester membership, epoch-match, pair-has-pool, duplicate per
+    /// epoch, signature verify — live in M4 (`validation::transaction`).
+    /// This constructor is purely a wire-format helper.
+    ///
+    /// Spec: `specs/oracle-structural-anchored-economics.md` §1.1.
+    pub fn new_price_attestation(data: crate::transaction::data::PriceAttestationData) -> Self {
+        Self {
+            version: 1,
+            tx_type: TxType::PriceAttestation,
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+            extra_data: data.to_bytes(),
+        }
+    }
+
+    /// Check if this is a `PriceAttestation` transaction (TxType=16).
+    pub fn is_price_attestation(&self) -> bool {
+        self.tx_type == TxType::PriceAttestation
+    }
+
+    /// Parse the `PriceAttestationData` payload from `extra_data`.
+    ///
+    /// Returns `None` if this is not a `PriceAttestation` tx OR if the
+    /// `extra_data` does not parse cleanly (wrong length, etc.).
+    pub fn price_attestation_data(&self) -> Option<crate::transaction::data::PriceAttestationData> {
+        if !self.is_price_attestation() {
+            return None;
+        }
+        crate::transaction::data::PriceAttestationData::from_bytes(&self.extra_data)
+    }
 }
 
 #[cfg(test)]

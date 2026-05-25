@@ -174,6 +174,7 @@ impl From<&Transaction> for TransactionResponse {
             doli_core::TxType::FractionalizeNft => "fractionalize_nft",
             doli_core::TxType::RedeemNft => "redeem_nft",
             doli_core::TxType::ZKSettle => "zk_settle",
+            doli_core::TxType::PriceAttestation => "price_attestation",
         };
 
         // Decode covenant witnesses from tx.extra_data (if present)

@@ -56,6 +56,25 @@ pub enum TxType {
     /// Schedules new consensus rules to activate at a future epoch boundary.
     /// All nodes switch simultaneously — deterministic, zero coordination.
     ProtocolActivation = 15,
+    /// Phase 2.1 oracle price attestation.
+    ///
+    /// Submitted by a bonded producer (the "attester") containing a price
+    /// observation for an asset pair, scoped to a single epoch. At the
+    /// epoch-boundary block, all valid attestations are aggregated by
+    /// bond-weighted median into the per-pair `OraclePrice` UTXO
+    /// (OutputType=15, introduced in M5).
+    ///
+    /// Payload (144 bytes, stored in `extra_data`): see
+    /// [`PriceAttestationData`](crate::transaction::data::PriceAttestationData).
+    ///
+    /// Inputs and outputs are EMPTY (data-only tx, same pattern as
+    /// `DelegateBond`, `RemoveMaintainer`, `ProtocolActivation`).
+    ///
+    /// Gated by `oracle_activation_height` (NetworkParams, M1 d80f127f).
+    /// Pre-activation: every node REJECTS with `[ERRTX-ORACLE001]` (M4).
+    ///
+    /// Spec: `specs/oracle-structural-anchored-economics.md` §1.1.
+    PriceAttestation = 16,
     /// Mint new units of a fungible asset (issuer-only, requires matching asset_id).
     MintAsset = 17,
     /// Burn units of a fungible asset (holder burns own tokens, provably destroyed).
@@ -118,6 +137,7 @@ impl TxType {
             13 => Some(Self::DelegateBond),
             14 => Some(Self::RevokeDelegation),
             15 => Some(Self::ProtocolActivation),
+            16 => Some(Self::PriceAttestation),
             17 => Some(Self::MintAsset),
             18 => Some(Self::BurnAsset),
             19 => Some(Self::CreatePool),

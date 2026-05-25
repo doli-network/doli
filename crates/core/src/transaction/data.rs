@@ -639,3 +639,126 @@ impl ZkRollupData {
         })
     }
 }
+
+// ==================== Phase 2.1 Oracle: PriceAttestation ====================
+
+/// Payload for `TxType::PriceAttestation` (16).
+///
+/// Submitted by a bonded producer (the "attester") containing a single
+/// price observation for an asset pair within a single epoch. At the
+/// epoch-boundary block (M6), `apply_block()` collects all valid
+/// `PriceAttestation` txs for the closing epoch, aggregates by
+/// bond-weighted median, and writes the result into the per-pair
+/// `OraclePrice` UTXO (OutputType=15, M5).
+///
+/// # Wire format (fixed-size, 144 bytes)
+///
+/// ```text
+///   offset  size  field
+///   ------  ----  -----
+///        0    32  signer_pubkey   (Ed25519 verifying key)
+///       32     8  price_cents     (u64 LE — USD cents)
+///       40    32  pair_id         (BLAKE3("ORACLE_PAIR" || pair_string))
+///       72     8  epoch_number    (u64 LE)
+///       80    64  signature       (Ed25519 sig over signing_message)
+/// ```
+///
+/// # Signing message (spec §1.1, verbatim)
+///
+/// `signing_message = BLAKE3(pair_id || price_cents.to_le_bytes() ||
+/// epoch_number.to_le_bytes())`
+///
+/// **No domain prefix.** This deviates from the existing
+/// `DelegateBondData` / `RevokeDelegationData` convention (which
+/// domain-separates) and follows the spec literally — the 5/5
+/// evaluator-approved spec text in §1.1 specifies no domain. Adding a
+/// domain prefix would silently break any external attester
+/// implementation that followed the spec.
+///
+/// `signer_pubkey` is NOT in the signing message because it IS the
+/// verifying key — including it would be redundant. `signature` cannot
+/// sign over itself. Same independence pattern as
+/// `DelegateBondData::signing_message`.
+///
+/// # Validation (M4 — not in this struct)
+///
+/// All validation rules — height-gate, attester-in-active-producers,
+/// epoch-matches-current, pair-has-pool-above-MINIMUM_LIQUIDITY,
+/// at-most-one-per-attester-per-epoch-per-pair, signature-verifies —
+/// live in `crates/core/src/validation/transaction.rs` (M4). This struct
+/// only defines the type and its serialization.
+///
+/// # Spec
+///
+/// `specs/oracle-structural-anchored-economics.md` §1.1
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PriceAttestationData {
+    /// Ed25519 public key of the attesting producer. M4 verifies this
+    /// is in `active_producers` for the current epoch with `bond > 0`.
+    pub signer_pubkey: PublicKey,
+    /// Attested price in USD cents (e.g., 150 = $1.50).
+    pub price_cents: u64,
+    /// Asset pair identifier: `BLAKE3("ORACLE_PAIR" || pair_string)`,
+    /// where `pair_string` is e.g. "DOLI/USD".
+    pub pair_id: Hash,
+    /// The epoch in which this attestation is valid. M4 rejects
+    /// stale/future attestations.
+    pub epoch_number: u64,
+    /// Ed25519 signature over `signing_message()`.
+    pub signature: Signature,
+}
+
+impl PriceAttestationData {
+    /// On-wire encoded length, in bytes: 32 + 8 + 32 + 8 + 64 = 144.
+    pub const BYTES_LEN: usize = 32 + 8 + 32 + 8 + 64;
+
+    /// Produce the BLAKE3 hash that the attester signs.
+    ///
+    /// Commits to `(pair_id, price_cents, epoch_number)`. Per spec §1.1,
+    /// NO domain prefix is applied — the message is the bare
+    /// concatenation of the three committed fields hashed under BLAKE3.
+    /// See struct-level docs for the rationale.
+    #[must_use]
+    pub fn signing_message(&self) -> Hash {
+        let mut buf = Vec::with_capacity(32 + 8 + 8);
+        buf.extend_from_slice(self.pair_id.as_bytes());
+        buf.extend_from_slice(&self.price_cents.to_le_bytes());
+        buf.extend_from_slice(&self.epoch_number.to_le_bytes());
+        crypto::hash::hash(&buf)
+    }
+
+    /// Serialize to the fixed-size 144-byte on-wire form. Stored in
+    /// `Transaction::extra_data` for `TxType::PriceAttestation` txs.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(Self::BYTES_LEN);
+        bytes.extend_from_slice(self.signer_pubkey.as_bytes());
+        bytes.extend_from_slice(&self.price_cents.to_le_bytes());
+        bytes.extend_from_slice(self.pair_id.as_bytes());
+        bytes.extend_from_slice(&self.epoch_number.to_le_bytes());
+        bytes.extend_from_slice(self.signature.as_bytes());
+        bytes
+    }
+
+    /// Deserialize from the fixed-size 144-byte on-wire form.
+    ///
+    /// Returns `None` for any other length — there is no legacy form.
+    /// Cross-type confusion (e.g., a 68-byte `DelegateBondData` legacy
+    /// payload) is rejected by the strict length check.
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() != Self::BYTES_LEN {
+            return None;
+        }
+        let signer_pubkey_bytes: [u8; 32] = bytes[0..32].try_into().ok()?;
+        let price_cents = u64::from_le_bytes(bytes[32..40].try_into().ok()?);
+        let pair_id_bytes: [u8; 32] = bytes[40..72].try_into().ok()?;
+        let epoch_number = u64::from_le_bytes(bytes[72..80].try_into().ok()?);
+        let signature = Signature::try_from_slice(&bytes[80..144]).ok()?;
+        Some(Self {
+            signer_pubkey: PublicKey::from_bytes(signer_pubkey_bytes),
+            price_cents,
+            pair_id: Hash::from_bytes(pair_id_bytes),
+            epoch_number,
+            signature,
+        })
+    }
+}

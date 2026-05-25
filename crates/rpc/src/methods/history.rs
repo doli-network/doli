@@ -158,6 +158,7 @@ impl RpcContext {
                     doli_core::TxType::FractionalizeNft => "fractionalize_nft",
                     doli_core::TxType::RedeemNft => "redeem_nft",
                     doli_core::TxType::ZKSettle => "zk_settle",
+                    doli_core::TxType::PriceAttestation => "price_attestation",
                 };
 
                 // Resolve sender addresses from inputs

@@ -64,7 +64,7 @@ fn test_tx_type_conversion() {
     assert_eq!(TxType::from_u32(13), Some(TxType::DelegateBond));
     assert_eq!(TxType::from_u32(14), Some(TxType::RevokeDelegation));
     assert_eq!(TxType::from_u32(15), Some(TxType::ProtocolActivation));
-    assert_eq!(TxType::from_u32(16), None);
+    assert_eq!(TxType::from_u32(16), Some(TxType::PriceAttestation));
     assert_eq!(TxType::from_u32(17), Some(TxType::MintAsset));
     assert_eq!(TxType::from_u32(18), Some(TxType::BurnAsset));
     assert_eq!(TxType::from_u32(19), Some(TxType::CreatePool));
@@ -651,7 +651,7 @@ fn test_protocol_activation_data_none_for_other_types() {
 #[test]
 fn test_tx_type_from_u32_protocol_activation() {
     assert_eq!(TxType::from_u32(15), Some(TxType::ProtocolActivation));
-    assert_eq!(TxType::from_u32(16), None);
+    assert_eq!(TxType::from_u32(16), Some(TxType::PriceAttestation));
     assert_eq!(TxType::from_u32(17), Some(TxType::MintAsset));
     assert_eq!(TxType::from_u32(18), Some(TxType::BurnAsset));
     assert_eq!(TxType::from_u32(19), Some(TxType::CreatePool));
