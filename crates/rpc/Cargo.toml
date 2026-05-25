@@ -34,3 +34,4 @@ doli-core = { workspace = true }
 crypto = { workspace = true }
 storage = { workspace = true }
 mempool = { workspace = true }
+vdf = { workspace = true }

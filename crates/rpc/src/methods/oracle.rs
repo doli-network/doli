@@ -122,223 +122,138 @@ impl RpcContext {
             "trust_model": ORACLE_TRUST_MODEL,
         }))
     }
+
+    /// List all PriceAttestation txs (TxType=16) for a given epoch and
+    /// pair_id. Used for transparency / audit. Spec §1.9 (M10).
+    ///
+    /// Request: `{ "epoch": <u64>, "pair_id": <64-char hex> }`.
+    ///
+    /// Response:
+    /// ```json
+    /// {
+    ///   "epoch": <echo>,
+    ///   "pair_id": <echo, 64-char hex>,
+    ///   "attestations": [
+    ///     {
+    ///       "attester_pubkey":      "<64-char hex of Ed25519 pubkey>",
+    ///       "attester_pubkey_hash": "<64-char hex of hash_with_domain(ADDRESS_DOMAIN, pubkey)>",
+    ///       "price_cents":          <u64>,
+    ///       "bond_weight":          <u64 | null>
+    ///     },
+    ///     ...
+    ///   ]
+    /// }
+    /// ```
+    ///
+    /// `bond_weight` policy (locked design decision, 2026-05-25):
+    /// `state_db.get_epoch_bond_snapshot()` returns `(snap, epoch_of_snap)`
+    /// for at most ONE epoch — the most-recently-closed one. If the
+    /// queried `epoch` matches the persisted snapshot's epoch, the
+    /// per-attester `bond_weight` comes from that snapshot. Otherwise
+    /// `bond_weight` is `null` (DOLI does not preserve historical
+    /// bond_snapshots; documented in docs/rpc_reference.md).
+    ///
+    /// Sort order: attestations are sorted ascending by
+    /// `attester_pubkey_hash` bytes, so the response is byte-identical
+    /// across repeated calls with the same chain state.
+    ///
+    /// Empty-list contract: unknown epoch (no blocks in range), future
+    /// epoch (> current chain height), and pruned-archive epochs all
+    /// return `{ ..., "attestations": [] }` — never an error, never a
+    /// panic.
+    pub(super) async fn get_oracle_attestations(&self, params: Value) -> Result<Value, RpcError> {
+        let epoch = params
+            .get("epoch")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| RpcError::invalid_params("missing 'epoch' parameter (u64)"))?;
+        let pair_id_hex = params
+            .get("pair_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| RpcError::invalid_params("missing 'pair_id' parameter"))?;
+        let pair_id = crypto::Hash::from_hex(pair_id_hex)
+            .ok_or_else(|| RpcError::invalid_params("invalid pair_id hex (expect 64-char hex)"))?;
+
+        let blocks_per_epoch = self.blocks_per_reward_epoch;
+        let start = epoch.saturating_mul(blocks_per_epoch);
+        let end_exclusive = start.saturating_add(blocks_per_epoch);
+
+        // Walk blocks for the queried epoch. For each PriceAttestation tx
+        // matching this pair_id and epoch, keep the latest occurrence per
+        // signer (defense-in-depth — M4 rule 5 already rejects duplicates
+        // within an epoch at validation time).
+        let mut latest_by_signer: std::collections::HashMap<
+            crypto::Hash,
+            (crypto::PublicKey, u64),
+        > = std::collections::HashMap::new();
+
+        for height in start..end_exclusive {
+            let block_opt = self.block_store.get_block_by_height(height).ok().flatten();
+            let Some(block) = block_opt else {
+                continue;
+            };
+            for tx in &block.transactions {
+                if !tx.is_price_attestation() {
+                    continue;
+                }
+                let Some(data) = tx.price_attestation_data() else {
+                    continue;
+                };
+                if data.pair_id != pair_id || data.epoch_number != epoch {
+                    continue;
+                }
+                let signer_hash = crypto::hash::hash_with_domain(
+                    crypto::ADDRESS_DOMAIN,
+                    data.signer_pubkey.as_bytes(),
+                );
+                latest_by_signer.insert(signer_hash, (data.signer_pubkey, data.price_cents));
+            }
+        }
+
+        // Bond-weight source: only if the persisted bond_snapshot's epoch
+        // matches the queried epoch. Otherwise bond_weight is null per
+        // the locked design (historical bond_weights not preserved).
+        let bond_snapshot_for_epoch: Option<std::collections::HashMap<crypto::Hash, u64>> = self
+            .state_db
+            .as_ref()
+            .and_then(|db| db.get_epoch_bond_snapshot())
+            .and_then(|(snap, snap_epoch)| {
+                if snap_epoch == epoch {
+                    Some(snap)
+                } else {
+                    None
+                }
+            });
+
+        let mut entries: Vec<(crypto::Hash, crypto::PublicKey, u64)> = latest_by_signer
+            .into_iter()
+            .map(|(h, (pk, p))| (h, pk, p))
+            .collect();
+        entries.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+
+        let attestations: Vec<Value> = entries
+            .into_iter()
+            .map(|(signer_hash, pubkey, price_cents)| {
+                let bond_weight: Value = bond_snapshot_for_epoch
+                    .as_ref()
+                    .and_then(|snap| snap.get(&signer_hash).copied())
+                    .map_or(Value::Null, Value::from);
+                serde_json::json!({
+                    "attester_pubkey":      hex::encode(pubkey.as_bytes()),
+                    "attester_pubkey_hash": signer_hash.to_hex(),
+                    "price_cents":          price_cents,
+                    "bond_weight":          bond_weight,
+                })
+            })
+            .collect();
+
+        Ok(serde_json::json!({
+            "epoch":        epoch,
+            "pair_id":      pair_id.to_hex(),
+            "attestations": attestations,
+        }))
+    }
 }
 
 #[cfg(test)]
-mod tests {
-    //! OUTPUT CONTRACT and INPUT PARTITIONS are documented at the top of
-    //! the parent module. Each test below pins one partition.
-
-    use super::*;
-    use std::sync::Arc;
-    use tokio::sync::RwLock;
-
-    use crypto::Hash;
-    use doli_core::network::Network;
-    use doli_core::transaction::Output;
-    use mempool::{Mempool, MempoolPolicy};
-    use storage::{BlockStore, ChainState, Outpoint, UtxoEntry, UtxoSet};
-    use tempfile::TempDir;
-
-    /// Tempdir held by the test for the BlockStore path; dropped at test
-    /// end. The `_tempdir` field keeps it alive — RpcContext does not own
-    /// it because BlockStore is opened under it.
-    struct TestCtx {
-        ctx: RpcContext,
-        utxo_set: Arc<RwLock<UtxoSet>>,
-        chain_state: Arc<RwLock<ChainState>>,
-        _tempdir: TempDir,
-    }
-
-    /// Build a minimal `RpcContext` for M9 testing. Mainnet defaults
-    /// (blocks_per_reward_epoch = 360); UTXO set is empty; chain_state at
-    /// height 0 unless mutated by the test.
-    fn build_ctx() -> TestCtx {
-        let tempdir = TempDir::new().expect("tempdir");
-        let chain_state = Arc::new(RwLock::new(ChainState::new(Hash::ZERO)));
-        let utxo_set = Arc::new(RwLock::new(UtxoSet::new()));
-        let block_store = Arc::new(BlockStore::open(tempdir.path()).expect("blockstore"));
-        let params = doli_core::consensus::ConsensusParams::default();
-        let mempool = Arc::new(RwLock::new(Mempool::new(
-            MempoolPolicy::default(),
-            params.clone(),
-            Network::Mainnet,
-        )));
-
-        let ctx = RpcContext::new_for_network(
-            chain_state.clone(),
-            block_store,
-            utxo_set.clone(),
-            mempool,
-            params,
-            Network::Mainnet,
-        );
-        TestCtx {
-            ctx,
-            utxo_set,
-            chain_state,
-            _tempdir: tempdir,
-        }
-    }
-
-    /// Insert an OraclePrice UTXO at the deterministic per-pair address
-    /// (mirrors M6's aggregator) so M9 can find it via
-    /// `oracle_price_outpoint(pair_id)`.
-    async fn insert_oracle_price(
-        utxo_set: &Arc<RwLock<UtxoSet>>,
-        pair_id: Hash,
-        price_cents: u64,
-        last_update_height: u64,
-        contributor_count: u16,
-        creation_height: u64,
-    ) {
-        let output =
-            Output::oracle_price(pair_id, price_cents, last_update_height, contributor_count);
-        let (tx_hash, index) = doli_core::oracle::oracle_price_outpoint(&pair_id);
-        let outpoint = Outpoint::new(tx_hash, index);
-        let entry = UtxoEntry {
-            output,
-            height: creation_height,
-            is_coinbase: false,
-            is_epoch_reward: false,
-        };
-        utxo_set
-            .write()
-            .await
-            .insert(outpoint, entry)
-            .expect("insert oracle price utxo");
-    }
-
-    /// Set the chain state's best height to a known value so staleness
-    /// computation is deterministic.
-    async fn set_best_height(chain_state: &Arc<RwLock<ChainState>>, height: u64) {
-        chain_state.write().await.best_height = height;
-    }
-
-    fn pair_id_fixture() -> Hash {
-        // BLAKE3("ORACLE_PAIR" || "DOLI/USD") — same shape as production
-        // but value is irrelevant; tests use bit-identical pair_id throughout.
-        crypto::hash::hash_with_domain(b"ORACLE_PAIR", b"DOLI/USD")
-    }
-
-    // ---------- partition: utxo_state = has_oracle_price + freshness fresh ----------
-    #[tokio::test]
-    async fn m9_happy_path_returns_parsed_extra_data() {
-        let t = build_ctx();
-        let pair_id = pair_id_fixture();
-
-        insert_oracle_price(&t.utxo_set, pair_id, 12_345, 1_000, 8, 1_000).await;
-        set_best_height(&t.chain_state, 1_100).await;
-
-        let params = serde_json::json!({ "pair_id": pair_id.to_hex() });
-        let resp = t
-            .ctx
-            .get_oracle_price(params)
-            .await
-            .expect("M9 happy-path Ok");
-
-        assert_eq!(resp["pair_id"].as_str().unwrap(), pair_id.to_hex());
-        assert_eq!(resp["price_cents"].as_u64().unwrap(), 12_345);
-        assert_eq!(resp["last_update_height"].as_u64().unwrap(), 1_000);
-        assert_eq!(resp["contributor_count"].as_u64().unwrap(), 8);
-        assert!(!resp["is_stale"].as_bool().unwrap());
-        assert_eq!(resp["trust_model"].as_str().unwrap(), "structural-anchored");
-    }
-
-    // ---------- partition: freshness = age > blocks_per_reward_epoch ----------
-    #[tokio::test]
-    async fn m9_is_stale_true_when_age_exceeds_epoch_width() {
-        let t = build_ctx();
-        let pair_id = pair_id_fixture();
-
-        // Mainnet blocks_per_reward_epoch = 360. age = 1000 - 100 = 900 > 360.
-        insert_oracle_price(&t.utxo_set, pair_id, 100, 100, 1, 100).await;
-        set_best_height(&t.chain_state, 1_000).await;
-
-        let params = serde_json::json!({ "pair_id": pair_id.to_hex() });
-        let resp = t.ctx.get_oracle_price(params).await.unwrap();
-        assert!(
-            resp["is_stale"].as_bool().unwrap(),
-            "age={} should be > epoch_width={}",
-            900,
-            360
-        );
-    }
-
-    // ---------- partition: freshness = age <= blocks_per_reward_epoch ----------
-    #[tokio::test]
-    async fn m9_is_stale_false_when_age_within_window() {
-        let t = build_ctx();
-        let pair_id = pair_id_fixture();
-
-        // age = 1000 - 900 = 100, well within 360-block window
-        insert_oracle_price(&t.utxo_set, pair_id, 100, 900, 1, 900).await;
-        set_best_height(&t.chain_state, 1_000).await;
-
-        let params = serde_json::json!({ "pair_id": pair_id.to_hex() });
-        let resp = t.ctx.get_oracle_price(params).await.unwrap();
-        assert!(!resp["is_stale"].as_bool().unwrap());
-    }
-
-    // ---------- partition: utxo_state = absent (pre-aggregation OR pre-activation) ----------
-    #[tokio::test]
-    async fn m9_returns_null_when_utxo_absent() {
-        let t = build_ctx();
-        let pair_id = pair_id_fixture();
-
-        let params = serde_json::json!({ "pair_id": pair_id.to_hex() });
-        let resp = t.ctx.get_oracle_price(params).await.unwrap();
-        assert!(
-            resp.is_null(),
-            "Expected null when OraclePrice UTXO is absent, got {:?}",
-            resp
-        );
-    }
-
-    // ---------- partition: trust_model byte-equality ----------
-    #[tokio::test]
-    async fn m9_trust_model_byte_equal_to_constant() {
-        let t = build_ctx();
-        let pair_id = pair_id_fixture();
-        insert_oracle_price(&t.utxo_set, pair_id, 1, 1, 1, 1).await;
-        set_best_height(&t.chain_state, 1).await;
-
-        let params = serde_json::json!({ "pair_id": pair_id.to_hex() });
-        let resp = t.ctx.get_oracle_price(params).await.unwrap();
-        assert_eq!(
-            resp["trust_model"].as_str().unwrap().as_bytes(),
-            b"structural-anchored",
-            "trust_model must be the literal string 'structural-anchored'"
-        );
-        // Locks the production const against accidental edit.
-        assert_eq!(ORACLE_TRUST_MODEL, "structural-anchored");
-    }
-
-    // ---------- partition: pair_id = malformed hex ----------
-    #[tokio::test]
-    async fn m9_malformed_pair_id_returns_invalid_params() {
-        let t = build_ctx();
-
-        let params = serde_json::json!({ "pair_id": "not-hex" });
-        let err = t
-            .ctx
-            .get_oracle_price(params)
-            .await
-            .expect_err("expected invalid_params");
-        assert_eq!(err.code, -32602, "invalid_params code expected");
-    }
-
-    // ---------- partition: pair_id = missing ----------
-    #[tokio::test]
-    async fn m9_missing_pair_id_returns_invalid_params() {
-        let t = build_ctx();
-
-        let params = serde_json::json!({});
-        let err = t
-            .ctx
-            .get_oracle_price(params)
-            .await
-            .expect_err("expected invalid_params");
-        assert_eq!(err.code, -32602);
-    }
-}
+#[path = "tests_oracle.rs"]
+mod tests;
