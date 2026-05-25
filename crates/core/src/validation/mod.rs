@@ -23,6 +23,7 @@
 
 mod block;
 mod error;
+pub mod errors_oracle;
 pub(crate) mod fractionalize;
 pub(crate) mod lending;
 /// Parallel transaction validation via dependency graph.
@@ -33,6 +34,8 @@ mod registration;
 mod rewards_legacy;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_errors_oracle;
 mod transaction;
 mod tx_types;
 mod types;
