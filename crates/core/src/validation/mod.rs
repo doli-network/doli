@@ -36,6 +36,8 @@ mod rewards_legacy;
 mod tests;
 #[cfg(test)]
 mod tests_errors_oracle;
+#[cfg(test)]
+mod tests_oracle;
 mod transaction;
 mod tx_types;
 mod types;

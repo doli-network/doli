@@ -138,7 +138,8 @@ impl Node {
                 .params()
                 .security_audit_activation_height,
         )
-        .with_defi_activation_height(self.config.network.params().defi_activation_height);
+        .with_defi_activation_height(self.config.network.params().defi_activation_height)
+        .with_oracle_activation_height(self.config.network.params().oracle_activation_height);
 
         // Apply chainspec if present
         if let Some(ref spec) = self.config.chainspec {
@@ -322,7 +323,8 @@ impl Node {
                 .params()
                 .security_audit_activation_height,
         )
-        .with_defi_activation_height(self.config.network.params().defi_activation_height);
+        .with_defi_activation_height(self.config.network.params().defi_activation_height)
+        .with_oracle_activation_height(self.config.network.params().oracle_activation_height);
 
         if let Some(ref spec) = self.config.chainspec {
             ctx.params.apply_chainspec(spec);

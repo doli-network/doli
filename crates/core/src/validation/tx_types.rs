@@ -674,6 +674,68 @@ pub(super) fn validate_delegate_bond_data(tx: &Transaction) -> Result<(), Valida
     Ok(())
 }
 
+/// Validate the structural (data-only) shape of a `PriceAttestation`
+/// (TxType=16) tx — Phase 2.1 Oracle M4.
+///
+/// Spec: `specs/oracle-structural-anchored-economics.md` §1.1.
+///
+/// Checks performed here (no `ValidationContext` access — pure data):
+///   - `tx.inputs` is empty (the tx mutates no UTXO state)
+///   - `tx.outputs` is empty (OraclePrice UTXO is created at epoch
+///     boundary by M6, not by the user tx)
+///   - `tx.extra_data` decodes as a 144-byte `PriceAttestationData`
+///   - Rule 6 (signature verifies over `signing_message()`) — verified
+///     here because the signing pubkey lives inside the payload itself.
+///
+/// Rules 1 (height gate), 2 (active producer), and 3 (epoch match)
+/// require `ValidationContext` and live in the `PriceAttestation` arm of
+/// `validate_transaction`. Rules 4 (pool liquidity) and 5 (at-most-one
+/// per epoch+pair) require UTXO + block-scope context and land at M6
+/// (`apply_block` epoch-boundary aggregator).
+pub(super) fn validate_price_attestation_data(
+    tx: &crate::transaction::Transaction,
+) -> Result<(), ValidationError> {
+    use crate::transaction::PriceAttestationData;
+
+    if !tx.inputs.is_empty() {
+        return Err(ValidationError::InvalidTransaction(
+            "price attestation must have no inputs".to_string(),
+        ));
+    }
+
+    if !tx.outputs.is_empty() {
+        return Err(ValidationError::InvalidTransaction(
+            "price attestation must have no outputs".to_string(),
+        ));
+    }
+
+    if tx.extra_data.is_empty() {
+        return Err(ValidationError::InvalidTransaction(
+            "missing price attestation data".to_string(),
+        ));
+    }
+
+    let data = PriceAttestationData::from_bytes(&tx.extra_data).ok_or_else(|| {
+        ValidationError::InvalidTransaction("invalid price attestation data format".to_string())
+    })?;
+
+    // Rule 6 (spec §1.1): signature verifies against signer_pubkey over
+    // signing_message(). Done here because the signing pubkey is part of
+    // the data payload — no `ctx` needed.
+    crypto::signature::verify_hash(
+        &data.signing_message(),
+        &data.signature,
+        &data.signer_pubkey,
+    )
+    .map_err(|e| {
+        ValidationError::InvalidTransaction(format!(
+            "price attestation signature verification failed: {e:?}"
+        ))
+    })?;
+
+    Ok(())
+}
+
 /// Validate RevokeDelegation transaction data.
 ///
 /// Structural validation:

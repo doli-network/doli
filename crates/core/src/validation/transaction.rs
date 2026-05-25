@@ -7,9 +7,9 @@ use super::registration::{validate_registration_data, validate_registration_data
 use super::tx_types::{
     validate_add_bond_data, validate_burn_asset, validate_claim_bond_data, validate_claim_data,
     validate_delegate_bond_data, validate_epoch_reward_data, validate_exit_data,
-    validate_maintainer_change_data, validate_mint_asset, validate_protocol_activation_data,
-    validate_revoke_delegation_data, validate_slash_data, validate_slash_data_skip_vdf,
-    validate_withdrawal_request_data, validate_zk_settle_structure,
+    validate_maintainer_change_data, validate_mint_asset, validate_price_attestation_data,
+    validate_protocol_activation_data, validate_revoke_delegation_data, validate_slash_data,
+    validate_slash_data_skip_vdf, validate_withdrawal_request_data, validate_zk_settle_structure,
 };
 use super::{ValidationContext, ValidationError};
 
@@ -53,7 +53,8 @@ pub fn validate_transaction(
         && !tx.is_registration()
         && !tx.is_maintainer_change()
         && !tx.is_protocol_activation()
-    // Registration/maintainer/protocol txs handle their own input validation
+        && !tx.is_price_attestation()
+    // Registration/maintainer/protocol/oracle txs handle their own input validation
     {
         return Err(ValidationError::InvalidTransaction(format!(
             "[ERRTX001] transaction must have inputs (tx_type={:?})",
@@ -77,7 +78,8 @@ pub fn validate_transaction(
         && !tx.is_registration()
         && !tx.is_maintainer_change()
         && !tx.is_protocol_activation()
-    // Registration/maintainer/protocol txs handle their own output validation
+        && !tx.is_price_attestation()
+    // Registration/maintainer/protocol/oracle txs handle their own output validation
     {
         return Err(ValidationError::InvalidTransaction(format!(
             "[ERRTX002] transaction must have outputs (tx_type={:?})",
@@ -195,26 +197,67 @@ pub fn validate_transaction(
             validate_protocol_activation_data(tx)?;
         }
         TxType::PriceAttestation => {
-            // M3 (this milestone): type defined, no rules yet — reject by default.
-            // M4 will replace this arm with the full ruleset:
-            //   - height gate: `current_height < oracle_activation_height`
-            //     -> [ERRTX-ORACLE001]
-            //   - attester in `active_producers` with positive bond
-            //   - `epoch_number == current_epoch`
-            //   - pair has pool with liquidity >= MINIMUM_LIQUIDITY
-            //   - at-most-one per attester per (epoch, pair_id)
-            //     -> [ERRTX-ORACLE002]
-            //   - signature verifies over `signing_message()`
-            // Until M4 lands, this default-reject keeps the type
-            // unreachable through validation even if a node somehow
-            // produced an attestation tx (defense in depth — the
-            // primary gate is `oracle_activation_height = u64::MAX`
-            // from M1 d80f127f, set in NetworkParams).
+            // Phase 2.1 Oracle M4 — PriceAttestation validation.
             //
-            // Spec: specs/oracle-structural-anchored-economics.md §1.1
-            return Err(ValidationError::InvalidTransaction(
-                "PriceAttestation (TxType=16) validation not yet implemented (M4)".to_string(),
-            ));
+            // Spec: specs/oracle-structural-anchored-economics.md §1.1.
+            //
+            // Rules implemented in M4 (the ctx-only + data-only subset):
+            //   1. Height gate: reject if `current_height <
+            //      oracle_activation_height` with [ERRTX-ORACLE001].
+            //   2. Attester must be in `ctx.active_producers`.
+            //   3. `epoch_number` == `reward_epoch::from_height(current_height)`.
+            //   6. Signature verifies over `signing_message()`
+            //      (delegated to `validate_price_attestation_data`).
+            //
+            // Rules deferred to M6 (require UTXO/block-scope context):
+            //   4. `pair_id` corresponds to AMM pool with liquidity
+            //      >= MINIMUM_LIQUIDITY.
+            //   5. At-most-one attestation per (attester, epoch, pair_id)
+            //      -> [ERRTX-ORACLE002].
+
+            // Rule 1 — height gate. Strict `<` (boundary equality
+            // accepts). Default `u64::MAX` -> always-off until a future
+            // binary flips the height.
+            if ctx.current_height < ctx.oracle_activation_height {
+                return Err(ValidationError::InvalidTransaction(format!(
+                    "[ERRTX-ORACLE001] oracle not activated: current_height={} activation_height={}",
+                    ctx.current_height, ctx.oracle_activation_height
+                )));
+            }
+
+            // Structural + Rule 6 (signature). Parses extra_data into
+            // PriceAttestationData; cryptographic sig check uses fields
+            // from the payload itself (no `ctx` needed).
+            validate_price_attestation_data(tx)?;
+
+            // Re-decode to access fields for rules 2 and 3. `from_bytes`
+            // is total — already succeeded above — so `unwrap` is safe
+            // (defense-in-depth: `validate_price_attestation_data`
+            // returned Ok only if the payload decoded).
+            let data = crate::transaction::PriceAttestationData::from_bytes(&tx.extra_data)
+                .expect("price attestation data must decode; checked above");
+
+            // Rule 2 — attester membership. `active_producers` is the
+            // current-epoch producer set; by construction these have
+            // positive bonds (registration enforces it). The spec
+            // wording "with active bonds" therefore reduces to a Vec
+            // membership check here.
+            if !ctx.active_producers.contains(&data.signer_pubkey) {
+                return Err(ValidationError::InvalidTransaction(
+                    "price attestation signer not in active_producers".to_string(),
+                ));
+            }
+
+            // Rule 3 — epoch match. Stale (< current) and future
+            // (> current) attestations are rejected. The attestation
+            // must commit to the epoch in which it is included.
+            let current_epoch = crate::consensus::reward_epoch::from_height(ctx.current_height);
+            if data.epoch_number != current_epoch {
+                return Err(ValidationError::InvalidTransaction(format!(
+                    "price attestation epoch_number mismatch: tx_epoch={} current_epoch={}",
+                    data.epoch_number, current_epoch
+                )));
+            }
         }
         TxType::CreatePool => {
             super::pool::validate_create_pool(tx)?;

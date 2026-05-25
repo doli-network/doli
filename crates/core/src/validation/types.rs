@@ -179,6 +179,16 @@ pub struct ValidationContext {
     /// FractionalizeNft, RedeemNft) become valid for submission.
     /// Default `u64::MAX` on all networks = DeFi disabled.
     pub defi_activation_height: u64,
+    /// Phase 2.1 Oracle: height at which `PriceAttestation` (TxType=16)
+    /// transactions become valid for submission. Strictly `<` gate —
+    /// at `current_height == oracle_activation_height` attestations are
+    /// accepted. Default `u64::MAX` on all networks = oracle disabled
+    /// (mirrors `defi_activation_height` pattern). Sourced from
+    /// `NetworkParams::oracle_activation_height` (M1, d80f127f).
+    /// Three-question gate (INC-I-075): Q1=YES (user-submittable
+    /// PriceAttestation tx), Q2=YES (producer-includable in blocks),
+    /// Q3=NO (new accept paths) → activation height REQUIRED.
+    pub oracle_activation_height: u64,
 }
 
 impl ValidationContext {
@@ -215,6 +225,7 @@ impl ValidationContext {
             encrypted_content_v2_activation_height: u64::MAX,
             security_audit_activation_height: u64::MAX,
             defi_activation_height: u64::MAX,
+            oracle_activation_height: u64::MAX,
         }
     }
 
@@ -243,6 +254,13 @@ impl ValidationContext {
     #[must_use]
     pub fn with_defi_activation_height(mut self, height: u64) -> Self {
         self.defi_activation_height = height;
+        self
+    }
+
+    /// Set the Phase 2.1 Oracle activation height (PriceAttestation gate).
+    #[must_use]
+    pub fn with_oracle_activation_height(mut self, height: u64) -> Self {
+        self.oracle_activation_height = height;
         self
     }
 
