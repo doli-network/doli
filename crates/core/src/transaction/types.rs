@@ -212,6 +212,11 @@ impl OutputType {
 
     /// Returns true if this output type uses covenant conditions in extra_data.
     ///
+    /// Conditioned outputs have `extra_data` laid out as
+    /// `[condition_bytes][type-specific metadata]`. When spent, the node
+    /// decodes the condition prefix via `Condition::decode_prefix` and
+    /// evaluates it against the witness in `tx.extra_data`.
+    ///
     /// NOTE: EncryptedContent is NOT conditioned — its extra_data layout is
     /// `[ciphertext_len | ciphertext | wrapped_key | nonce | content_hash]`,
     /// NOT a condition-prefixed encoding. It uses standard signature verification
@@ -227,6 +232,12 @@ impl OutputType {
     /// `[ERRTX038]`. Combined with the DeFi activation gate (which blocks NEW
     /// `CreateLoan` from minting fresh Collateral), this fully freezes the
     /// lending subsystem until it is properly fixed and un-gated.
+    ///
+    /// `LPShare` uses condition-prefixed layout:
+    /// `[condition_bytes][1B version][32B pool_id]`. Default constructor
+    /// attaches `Condition::Signature(owner)` so existing call sites stay
+    /// ergonomic. Custom conditions (AmountGuard, etc.) are supported via
+    /// `Output::lp_share_with_condition()`.
     pub fn is_conditioned(&self) -> bool {
         matches!(
             self,
@@ -238,6 +249,7 @@ impl OutputType {
                 | Self::FungibleAsset
                 | Self::BridgeHTLC
                 | Self::Collateral
+                | Self::LPShare
         )
     }
 

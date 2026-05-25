@@ -550,12 +550,29 @@ pub(super) fn validate_outputs(
                 }
             }
             OutputType::LPShare => {
-                if output.extra_data.len() < crate::transaction::LP_SHARE_METADATA_SIZE {
+                if output.extra_data.is_empty() {
                     return Err(ValidationError::InvalidTransaction(format!(
-                        "[ERRTX026] LPShare output {} has invalid extra_data size: {} < {}",
-                        i,
-                        output.extra_data.len(),
-                        crate::transaction::LP_SHARE_METADATA_SIZE
+                        "[ERRTX026] LPShare output {} has empty extra_data",
+                        i
+                    )));
+                }
+                // Condition prefix must decode successfully
+                let cond_len = match crate::conditions::Condition::decode_prefix(&output.extra_data)
+                {
+                    Ok((_, len)) => len,
+                    Err(e) => {
+                        return Err(ValidationError::InvalidTransaction(format!(
+                            "[ERRTX026] LPShare output {} has invalid condition prefix: {}",
+                            i, e
+                        )));
+                    }
+                };
+                // After condition prefix, must have LP_SHARE_METADATA_SIZE bytes
+                let remaining = output.extra_data.len() - cond_len;
+                if remaining < crate::transaction::LP_SHARE_METADATA_SIZE {
+                    return Err(ValidationError::InvalidTransaction(format!(
+                        "[ERRTX026] LPShare output {} has invalid extra_data: {} metadata bytes after condition (need {})",
+                        i, remaining, crate::transaction::LP_SHARE_METADATA_SIZE
                     )));
                 }
                 if output.lp_share_metadata().is_none() {

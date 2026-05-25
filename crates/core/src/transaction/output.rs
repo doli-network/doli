@@ -89,7 +89,7 @@ pub const POOL_MAX_FEE_BPS: u16 = 1000;
 
 /// LPShare metadata version
 pub const LP_SHARE_VERSION: u8 = 1;
-/// LPShare extra_data: 1B version + 32B pool_id
+/// LPShare metadata size (after condition prefix): 1B version + 32B pool_id
 pub const LP_SHARE_METADATA_SIZE: usize = 33;
 
 /// Collateral metadata version
@@ -819,10 +819,23 @@ impl Output {
         })
     }
 
-    /// Create an LP share output.
-    /// `amount` = share amount. `pool_id` links to the pool.
+    /// Create an LP share output with default `Condition::Signature(owner)`.
+    ///
+    /// `extra_data` layout: `[condition_bytes][1B version][32B pool_id]`.
+    /// The default condition wraps `Condition::Signature(owner)` so existing
+    /// call sites (CLI, pool validation, tests) stay ergonomic — the spending
+    /// path is identical to a single-sig Normal output.
+    ///
+    /// For custom conditions (AmountGuard, Timelock, etc.), use
+    /// `lp_share_with_condition()`.
     pub fn lp_share(share_amount: Amount, pool_id: Hash, owner: Hash) -> Self {
-        let mut extra_data = Vec::with_capacity(LP_SHARE_METADATA_SIZE);
+        let condition = crate::conditions::Condition::Signature(owner);
+        // encode() cannot fail for a simple Signature condition
+        let condition_bytes = condition
+            .encode()
+            .expect("Signature condition always encodes");
+        let mut extra_data = Vec::with_capacity(condition_bytes.len() + LP_SHARE_METADATA_SIZE);
+        extra_data.extend_from_slice(&condition_bytes);
         extra_data.push(LP_SHARE_VERSION);
         extra_data.extend_from_slice(pool_id.as_bytes());
         Self {
@@ -834,18 +847,59 @@ impl Output {
         }
     }
 
+    /// Create an LP share output with a custom spending condition.
+    ///
+    /// `extra_data` layout: `[condition_bytes][1B version][32B pool_id]`.
+    /// Use this for LPShares that need AmountGuard, Timelock, or other
+    /// compound conditions beyond simple signature ownership.
+    pub fn lp_share_with_condition(
+        share_amount: Amount,
+        pool_id: Hash,
+        owner: Hash,
+        condition: &crate::conditions::Condition,
+    ) -> Result<Self, crate::conditions::ConditionError> {
+        let condition_bytes = condition.encode()?;
+        let metadata_len = LP_SHARE_METADATA_SIZE;
+        if condition_bytes.len() + metadata_len > MAX_EXTRA_DATA_SIZE {
+            return Err(crate::conditions::ConditionError::EncodingTooLarge {
+                size: MAX_EXTRA_DATA_SIZE + 1,
+            });
+        }
+        let mut extra_data = Vec::with_capacity(condition_bytes.len() + metadata_len);
+        extra_data.extend_from_slice(&condition_bytes);
+        extra_data.push(LP_SHARE_VERSION);
+        extra_data.extend_from_slice(pool_id.as_bytes());
+        Ok(Self {
+            output_type: OutputType::LPShare,
+            amount: share_amount,
+            pubkey_hash: owner,
+            lock_until: 0,
+            extra_data,
+        })
+    }
+
     /// Extract LP share metadata. Returns the pool_id or None.
+    ///
+    /// Skips the condition prefix (via `Condition::decode_prefix`) then reads
+    /// `[1B version][32B pool_id]` from the remaining bytes.
     pub fn lp_share_metadata(&self) -> Option<Hash> {
-        if self.output_type != OutputType::LPShare || self.extra_data.len() < LP_SHARE_METADATA_SIZE
-        {
+        if self.output_type != OutputType::LPShare || self.extra_data.is_empty() {
             return None;
         }
-        if self.extra_data[0] != LP_SHARE_VERSION {
+        let cond_len = match crate::conditions::Condition::decode_prefix(&self.extra_data) {
+            Ok((_, len)) => len,
+            Err(_) => return None,
+        };
+        let meta = &self.extra_data[cond_len..];
+        if meta.len() < LP_SHARE_METADATA_SIZE {
+            return None;
+        }
+        if meta[0] != LP_SHARE_VERSION {
             return None;
         }
         let pool_id = Hash::from_bytes({
             let mut buf = [0u8; 32];
-            buf.copy_from_slice(&self.extra_data[1..33]);
+            buf.copy_from_slice(&meta[1..33]);
             buf
         });
         Some(pool_id)
