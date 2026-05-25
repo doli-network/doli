@@ -371,13 +371,17 @@ pub enum ValidationError {
         activation_height: u64,
     },
 
-    /// INC-I-088 Phase 0: a DeFi transaction was submitted before the
-    /// `defi_activation_height` gate opens.
+    /// INC-I-088 Phase 0: a non-AMM DeFi transaction was submitted before
+    /// the `defi_activation_height` gate opens.
     ///
-    /// Covers all 11 ungated DeFi tx types in one variant:
-    /// CreatePool, AddLiquidity, RemoveLiquidity, Swap, CreateLoan,
+    /// Covers the 7 non-AMM DeFi tx types in one variant: CreateLoan,
     /// RepayLoan, LiquidateLoan, LendingDeposit, LendingWithdraw,
     /// FractionalizeNft, RedeemNft.
+    ///
+    /// The 4 AMM tx types (CreatePool, AddLiquidity, RemoveLiquidity, Swap)
+    /// were decoupled into [`Self::AmmNotActivated`] per HC-6 / INC-I-075
+    /// (AMM Foundations M1, 2026-05-25). The two gates are independent —
+    /// each tx type routes through exactly one.
     ///
     /// `tx_type` is the rejected transaction's `TxType` enum discriminant
     /// (`u32`), so agentic consumers can identify which DeFi feature was
@@ -388,9 +392,39 @@ pub enum ValidationError {
         "defi not activated: tx_type={tx_type} activation_height={activation_height} current_height={current_height}"
     )]
     DefiNotActivated {
-        /// `TxType` discriminant (e.g. 19 = CreatePool, 22 = Swap).
+        /// `TxType` discriminant (e.g. 24 = CreateLoan, 27 = LendingDeposit).
         tx_type: u32,
         /// Configured `defi_activation_height` on the validation context.
+        activation_height: u64,
+        /// Height at which the rejection occurred.
+        current_height: u64,
+    },
+
+    /// AMM Foundations M1: an AMM transaction was submitted before the
+    /// `amm_activation_height` gate opens.
+    ///
+    /// Covers the 4 AMM tx types in one variant: CreatePool, AddLiquidity,
+    /// RemoveLiquidity, Swap.
+    ///
+    /// Independent of [`Self::DefiNotActivated`]. The two gates exist
+    /// because the AMM subsystem has a different audit/un-gating timeline
+    /// than lending + NFT-frac (HC-6 per-feature activation height
+    /// discipline; INC-I-075 three-question consensus-shape checklist:
+    /// Q1=YES user-submittable, Q2=NO validator-only, Q3=NO accept→reject
+    /// → activation height REQUIRED).
+    ///
+    /// `tx_type` is the rejected transaction's `TxType` enum discriminant
+    /// (`u32`), so agentic consumers can identify which AMM operation was
+    /// requested without parsing the message. The stable error code is
+    /// `"AMM_NOT_ACTIVATED"` ([ERRTX-AMM001]).
+    #[error(
+        "[ERRTX-AMM001] amm not activated: tx_type={tx_type} activation_height={activation_height} current_height={current_height}"
+    )]
+    AmmNotActivated {
+        /// `TxType` discriminant (19=CreatePool, 20=AddLiquidity,
+        /// 21=RemoveLiquidity, 22=Swap).
+        tx_type: u32,
+        /// Configured `amm_activation_height` on the validation context.
         activation_height: u64,
         /// Height at which the rejection occurred.
         current_height: u64,
@@ -481,6 +515,7 @@ impl ValidationError {
             Self::DelegationSignatureInvalid { .. } => "DELEGATION_SIGNATURE_INVALID",
             Self::AddBondCapExceeded { .. } => "ADDBOND_CAP_EXCEEDED",
             Self::DefiNotActivated { .. } => "DEFI_NOT_ACTIVATED",
+            Self::AmmNotActivated { .. } => "AMM_NOT_ACTIVATED",
         }
     }
 
@@ -699,6 +734,15 @@ impl ValidationError {
                 map.insert("max".into(), (*max).into());
             }
             Self::DefiNotActivated {
+                tx_type,
+                activation_height,
+                current_height,
+            } => {
+                map.insert("tx_type".into(), (*tx_type).into());
+                map.insert("activation_height".into(), (*activation_height).into());
+                map.insert("current_height".into(), (*current_height).into());
+            }
+            Self::AmmNotActivated {
                 tx_type,
                 activation_height,
                 current_height,

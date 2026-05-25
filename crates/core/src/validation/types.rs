@@ -173,12 +173,25 @@ pub struct ValidationContext {
     pub encrypted_content_v2_activation_height: u64,
     /// Unified activation height for all consensus-breaking security audit fixes.
     pub security_audit_activation_height: u64,
-    /// INC-I-088 Phase 0: height at which the 11 DeFi tx types
-    /// (CreatePool, AddLiquidity, RemoveLiquidity, Swap, CreateLoan,
-    /// RepayLoan, LiquidateLoan, LendingDeposit, LendingWithdraw,
-    /// FractionalizeNft, RedeemNft) become valid for submission.
-    /// Default `u64::MAX` on all networks = DeFi disabled.
+    /// INC-I-088 Phase 0: height at which the 7 non-AMM DeFi tx types
+    /// (CreateLoan, RepayLoan, LiquidateLoan, LendingDeposit,
+    /// LendingWithdraw, FractionalizeNft, RedeemNft) become valid for
+    /// submission. The 4 AMM tx types (CreatePool, AddLiquidity,
+    /// RemoveLiquidity, Swap) were decoupled into
+    /// [`Self::amm_activation_height`] per HC-6 / INC-I-075 (AMM
+    /// Foundations M1, 2026-05-25). Default `u64::MAX` on all networks =
+    /// non-AMM DeFi disabled.
     pub defi_activation_height: u64,
+    /// AMM Foundations M1: height at which the 4 AMM tx types
+    /// (CreatePool, AddLiquidity, RemoveLiquidity, Swap) become valid for
+    /// submission. Strictly `<` gate — at `current_height ==
+    /// amm_activation_height` AMM transactions are accepted by the gate.
+    /// Sourced from [`crate::network_params::NetworkParams::amm_activation_height`].
+    /// Independent of [`Self::defi_activation_height`] (HC-6).
+    /// Three-question gate (INC-I-075): Q1=YES (AMM txs are
+    /// user-submittable), Q2=NO (validator rejection only),
+    /// Q3=NO (accept→reject) → activation height REQUIRED.
+    pub amm_activation_height: u64,
     /// Phase 2.1 Oracle: height at which `PriceAttestation` (TxType=16)
     /// transactions become valid for submission. Strictly `<` gate —
     /// at `current_height == oracle_activation_height` attestations are
@@ -244,6 +257,7 @@ impl ValidationContext {
             encrypted_content_v2_activation_height: u64::MAX,
             security_audit_activation_height: u64::MAX,
             defi_activation_height: u64::MAX,
+            amm_activation_height: u64::MAX,
             oracle_activation_height: u64::MAX,
             oracle_sunset_triggered: false,
         }
@@ -274,6 +288,13 @@ impl ValidationContext {
     #[must_use]
     pub fn with_defi_activation_height(mut self, height: u64) -> Self {
         self.defi_activation_height = height;
+        self
+    }
+
+    /// Set the AMM activation height (AMM Foundations M1 gate).
+    #[must_use]
+    pub fn with_amm_activation_height(mut self, height: u64) -> Self {
+        self.amm_activation_height = height;
         self
     }
 

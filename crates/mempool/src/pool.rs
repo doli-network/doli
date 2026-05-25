@@ -262,6 +262,7 @@ impl Mempool {
                 self.network.params().security_audit_activation_height,
             )
             .with_defi_activation_height(self.network.params().defi_activation_height)
+            .with_amm_activation_height(self.network.params().amm_activation_height)
             .with_oracle_activation_height(self.network.params().oracle_activation_height)
             .with_oracle_sunset_triggered(
                 self.oracle_sunset_triggered
@@ -532,6 +533,7 @@ impl Mempool {
                 self.network.params().security_audit_activation_height,
             )
             .with_defi_activation_height(self.network.params().defi_activation_height)
+            .with_amm_activation_height(self.network.params().amm_activation_height)
             .with_oracle_activation_height(self.network.params().oracle_activation_height)
             .with_oracle_sunset_triggered(
                 self.oracle_sunset_triggered

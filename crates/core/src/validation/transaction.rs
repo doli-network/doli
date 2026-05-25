@@ -87,28 +87,42 @@ pub fn validate_transaction(
         )));
     }
 
-    // 3.5 INC-I-088 Phase 0: DeFi safety gate.
+    // 3.5 DeFi safety gates (split per HC-6 / INC-I-075).
     //
-    // The 11 DeFi tx types (CreatePool, AddLiquidity, RemoveLiquidity, Swap,
-    // CreateLoan, RepayLoan, LiquidateLoan, LendingDeposit, LendingWithdraw,
-    // FractionalizeNft, RedeemNft) are NOT permitted before
-    // `defi_activation_height`. Their per-type validators have known semantic
-    // gaps (LiquidateLoan has no oracle, validate_create_loan does not pin
-    // Collateral.pubkey_hash to the derived loan_addr) and the subsystems are
-    // unreviewed. Default `u64::MAX` on all networks = always-disabled until
-    // a future binary flips the height. Comparison is strict `<` — at
-    // `current_height == defi_activation_height` the gate is open.
+    // The 11 DeFi tx types are gated by TWO independent activation heights:
     //
-    // C7 (INC-I-075 3-question checklist) verdict: Q1=YES (user-submittable),
-    // Q2=NO (validator-only), Q3=NO (accept→reject) → activation height
-    // REQUIRED. We are adding the gate. Compliant.
+    //   • AMM tx types (CreatePool, AddLiquidity, RemoveLiquidity, Swap)
+    //     route through `amm_activation_height` and reject with
+    //     `AmmNotActivated` (`[ERRTX-AMM001]`). AMM Foundations M1
+    //     (2026-05-25) introduced this gate.
+    //   • Lending + NFT-frac tx types (CreateLoan, RepayLoan,
+    //     LiquidateLoan, LendingDeposit, LendingWithdraw, FractionalizeNft,
+    //     RedeemNft) continue to route through `defi_activation_height`
+    //     and reject with `DefiNotActivated`. INC-I-088 Phase 0.
+    //
+    // The two heights are INDEPENDENT: setting one to 0 must NOT open the
+    // other (HC-6 per-feature activation height discipline). The order of
+    // the two `if` blocks is irrelevant since each `matches!` is disjoint.
+    // Comparison is strict `<` — at `current_height == activation_height`
+    // the gate is open.
+    //
+    // C7 (INC-I-075 3-question checklist) for both gates: Q1=YES
+    // (user-submittable), Q2=NO (validator-only), Q3=NO (accept→reject)
+    // → activation height REQUIRED. Both gates compliant.
     if matches!(
         tx.tx_type,
-        TxType::CreatePool
-            | TxType::AddLiquidity
-            | TxType::RemoveLiquidity
-            | TxType::Swap
-            | TxType::CreateLoan
+        TxType::CreatePool | TxType::AddLiquidity | TxType::RemoveLiquidity | TxType::Swap
+    ) && ctx.current_height < ctx.amm_activation_height
+    {
+        return Err(ValidationError::AmmNotActivated {
+            tx_type: tx.tx_type as u32,
+            activation_height: ctx.amm_activation_height,
+            current_height: ctx.current_height,
+        });
+    }
+    if matches!(
+        tx.tx_type,
+        TxType::CreateLoan
             | TxType::RepayLoan
             | TxType::LiquidateLoan
             | TxType::LendingDeposit

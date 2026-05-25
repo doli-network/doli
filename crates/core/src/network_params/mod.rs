@@ -369,6 +369,37 @@ pub struct NetworkParams {
     /// the lending/AMM gaps are closed.
     pub defi_activation_height: u64,
 
+    /// AMM Foundations M1 (2026-05-25): height at which the 4 AMM tx types
+    /// (CreatePool, AddLiquidity, RemoveLiquidity, Swap) become valid for
+    /// inclusion.
+    ///
+    /// Pre-activation: every node REJECTS these txs at validation time with
+    /// `ValidationError::AmmNotActivated` (error code `AMM_NOT_ACTIVATED`,
+    /// `[ERRTX-AMM001]`, REQ-AGENTIC-ERRORS compliant). Mempool symmetry:
+    /// pre-activation admission also rejects, so upgraded producers never
+    /// include an AMM tx in their blocks during a rolling deploy.
+    ///
+    /// Post-activation: the per-type structural validator runs normally.
+    ///
+    /// HC-6 / spec §0 NEVER constraint: this height MUST remain
+    /// INDEPENDENT of `defi_activation_height`, `oracle_activation_height`,
+    /// or any other. Never bundle. Never reuse. The AMM subsystem has its
+    /// own audit/un-gating timeline distinct from lending + NFT-frac.
+    ///
+    /// Three-question gate verdict (INC-I-075): Q1=YES (AMM txs are
+    /// user-submittable), Q2=NO (validator rejection only), Q3=NO
+    /// (accept-then-reject change) → activation height REQUIRED.
+    ///
+    /// Defaults: mainnet `u64::MAX`, testnet `u64::MAX` (placeholder —
+    /// operator pins a concrete height in a separate deploy commit after
+    /// the AMM consumer code is fully implemented + audited), devnet `0`
+    /// (always-on for local development). Mainnet/testnet IMMUTABILITY
+    /// rule (INC-I-054): once crossed on mainnet, never move forward.
+    ///
+    /// Spec: `specs/defi-foundations-economics.md` §0 D1/D2 (D2 derivation
+    /// rule becomes IRREVERSIBLE once this height is ever crossed).
+    pub amm_activation_height: u64,
+
     /// Activation height for the Phase 2.1 structural-anchored oracle.
     /// At-or-after this height, `PriceAttestation` transactions (TxType=16)
     /// become valid for inclusion, the bond-weighted median aggregation

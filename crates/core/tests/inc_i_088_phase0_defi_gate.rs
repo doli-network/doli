@@ -1,6 +1,11 @@
 // OUTPUT CONTRACT: fn validate_transaction(tx: &Transaction, ctx: &ValidationContext)
 //   Outputs:
-//     O1: returned Result<(), ValidationError> for the gated 11 DeFi tx types
+//     O1: returned Result<(), ValidationError> for the gated 7 non-AMM DeFi tx types
+//         (CreateLoan, RepayLoan, LiquidateLoan, LendingDeposit, LendingWithdraw,
+//         FractionalizeNft, RedeemNft). The 4 AMM tx types (CreatePool, AddLiquidity,
+//         RemoveLiquidity, Swap) were decoupled into `amm_activation_height` (AMM
+//         Foundations M1, HC-6 discipline); AMM coverage lives in
+//         crates/core/tests/amm_activation_gate.rs.
 //     O2: returned Result<(), ValidationError> for spending an OutputType::Collateral UTXO
 //         with a single signature (via validate_transaction_with_utxos)
 //   PATHS:
@@ -18,23 +23,25 @@
 //         only probabilistically satisfiable, so the dual control is
 //         required for a guaranteed freeze.
 //   INPUT PARTITIONS:
-//     For P1 — one partition per gated tx_type (11 partitions):
-//       CreatePool, AddLiquidity, RemoveLiquidity, Swap, CreateLoan, RepayLoan,
-//       LiquidateLoan, LendingDeposit, LendingWithdraw, FractionalizeNft, RedeemNft
+//     For P1 — one partition per gated tx_type (7 partitions, post-M1):
+//       CreateLoan, RepayLoan, LiquidateLoan, LendingDeposit, LendingWithdraw,
+//       FractionalizeNft, RedeemNft
 //       Each is a distinct enum discriminant and distinct sub-validator;
 //       a regression in any single arm of the gate match would slip past
 //       partition-merged assertions.
-//     For P2 — one partition (CreatePool boundary case): current_height ==
-//       defi_activation_height. Verifies the gate uses `<` not `<=`.
+//     For P2 — one partition (CreateLoan boundary case): current_height ==
+//       defi_activation_height. Verifies the gate uses `<` not `<=`. Uses
+//       CreateLoan (not CreatePool) since CreatePool no longer routes through
+//       this gate post-M1.
 //     For P3 — one partition (Collateral UTXO + valid Ed25519 signature over
 //       signing_hash crafted to satisfy the pre-fix single-sig path). The
 //       hard-freeze rejects it regardless.
 //   MATRIX (outputs × paths × partitions):
-//     O1 × P1 × {11 tx types}     → 11 assertions  (each Err DefiNotActivated)
-//     O1 × P2 × {boundary}        → 1 assertion    (NOT DefiNotActivated at == gate)
-//     O1 × P1 × {error_code}      → 1 assertion    (stable code string)
-//     O1 × P1 × {to_structured_json}  → 1 assertion (fields present)
-//     O2 × P3 × {plain-sig spend} → 1 assertion    (rejected with [ERRTX-DEFI001])
+//     O1 × P1 × {7 non-AMM DeFi tx types} → 7 assertions  (each Err DefiNotActivated)
+//     O1 × P2 × {boundary}                → 1 assertion    (NOT DefiNotActivated at == gate)
+//     O1 × P1 × {error_code}              → 1 assertion    (stable code string)
+//     O1 × P1 × {to_structured_json}      → 1 assertion (fields present)
+//     O2 × P3 × {plain-sig spend}         → 1 assertion    (rejected with [ERRTX-DEFI001])
 //
 // Pre-fix expectation (TDD red phase, recorded for posterity): without the
 // gate and without the hard-freeze, four tests FAIL (the gate never fires,
@@ -100,69 +107,9 @@ fn post_activation_ctx(activation: u64, height: u64) -> ValidationContext {
 // (when the gate is open). Pre-activation the gate fires before any
 // per-type validator runs, so any structural shortcut survives.
 // ───────────────────────────────────────────────────────────────────────────
-fn create_pool_tx() -> Transaction {
-    let asset_b = Hash::from_bytes([0xBB; 32]);
-    let pool_id = Output::compute_pool_id(&Hash::ZERO, &asset_b);
-    let pool_output = Output::pool(pool_id, asset_b, 1000, 2000, 707, 0, 100, 30, 100);
-    let lp_output = Output::lp_share(707, pool_id, Hash::from_bytes([0x01; 32]));
-    Transaction {
-        version: 1,
-        tx_type: TxType::CreatePool,
-        inputs: vec![Input::new(Hash::from_bytes([0xFF; 32]), 0)],
-        outputs: vec![pool_output, lp_output],
-        extra_data: vec![],
-    }
-}
-
-fn add_liquidity_tx() -> Transaction {
-    let asset_b = Hash::from_bytes([0xBB; 32]);
-    let pool_id = Output::compute_pool_id(&Hash::ZERO, &asset_b);
-    let pool_output = Output::pool(pool_id, asset_b, 2000, 4000, 1414, 0, 100, 30, 100);
-    let lp_output = Output::lp_share(707, pool_id, Hash::from_bytes([0x02; 32]));
-    Transaction {
-        version: 1,
-        tx_type: TxType::AddLiquidity,
-        inputs: vec![
-            Input::new(Hash::from_bytes([0xF0; 32]), 0),
-            Input::new(Hash::from_bytes([0xF1; 32]), 0),
-        ],
-        outputs: vec![pool_output, lp_output],
-        extra_data: vec![],
-    }
-}
-
-fn remove_liquidity_tx() -> Transaction {
-    let asset_b = Hash::from_bytes([0xBB; 32]);
-    let pool_id = Output::compute_pool_id(&Hash::ZERO, &asset_b);
-    let pool_output = Output::pool(pool_id, asset_b, 500, 1000, 353, 0, 100, 30, 100);
-    Transaction {
-        version: 1,
-        tx_type: TxType::RemoveLiquidity,
-        inputs: vec![
-            Input::new(Hash::from_bytes([0xF0; 32]), 0),
-            Input::new(Hash::from_bytes([0xF1; 32]), 0),
-        ],
-        outputs: vec![pool_output],
-        extra_data: vec![],
-    }
-}
-
-fn swap_tx() -> Transaction {
-    let asset_b = Hash::from_bytes([0xBB; 32]);
-    let pool_id = Output::compute_pool_id(&Hash::ZERO, &asset_b);
-    let pool_output = Output::pool(pool_id, asset_b, 1100, 1818, 707, 0, 100, 30, 100);
-    let user_output = Output::normal(180, Hash::from_bytes([0x33; 32]));
-    Transaction {
-        version: 1,
-        tx_type: TxType::Swap,
-        inputs: vec![
-            Input::new(Hash::from_bytes([0xF0; 32]), 0),
-            Input::new(Hash::from_bytes([0xF1; 32]), 0),
-        ],
-        outputs: vec![pool_output, user_output],
-        extra_data: vec![],
-    }
-}
+// AMM tx constructors (create_pool_tx, add_liquidity_tx, remove_liquidity_tx,
+// swap_tx) live in `crates/core/tests/amm_activation_gate.rs` after the
+// M1 gate split. This file now only exercises the 7 non-AMM DeFi tx types.
 
 fn create_loan_tx() -> Transaction {
     let pool_id = Hash::from_bytes([0xAA; 32]);
@@ -256,18 +203,9 @@ fn redeem_nft_tx() -> Transaction {
 type DefiTxCtor = (&'static str, fn() -> Transaction, u32);
 
 const DEFI_TX_CTORS: &[DefiTxCtor] = &[
-    ("CreatePool", create_pool_tx, TxType::CreatePool as u32),
-    (
-        "AddLiquidity",
-        add_liquidity_tx,
-        TxType::AddLiquidity as u32,
-    ),
-    (
-        "RemoveLiquidity",
-        remove_liquidity_tx,
-        TxType::RemoveLiquidity as u32,
-    ),
-    ("Swap", swap_tx, TxType::Swap as u32),
+    // AMM tx types (CreatePool, AddLiquidity, RemoveLiquidity, Swap) moved
+    // to `amm_activation_height` (AMM Foundations M1). See
+    // `crates/core/tests/amm_activation_gate.rs` for their coverage.
     ("CreateLoan", create_loan_tx, TxType::CreateLoan as u32),
     ("RepayLoan", repay_loan_tx, TxType::RepayLoan as u32),
     (
@@ -294,8 +232,9 @@ const DEFI_TX_CTORS: &[DefiTxCtor] = &[
 ];
 
 // ───────────────────────────────────────────────────────────────────────────
-// O1 × P1 — all 11 DeFi tx types rejected pre-activation with DefiNotActivated
-// (one assertion per type so a regression in one match arm cannot hide)
+// O1 × P1 — all 7 non-AMM DeFi tx types rejected pre-activation with
+// DefiNotActivated (one assertion per type so a regression in one match arm
+// cannot hide). AMM tx types are covered in amm_activation_gate.rs (M1).
 // ───────────────────────────────────────────────────────────────────────────
 #[test]
 fn defi_tx_types_rejected_pre_activation() {
@@ -347,7 +286,7 @@ fn defi_tx_types_rejected_pre_activation() {
 #[test]
 fn defi_not_activated_error_code_is_stable() {
     let ctx = pre_activation_ctx();
-    let tx = create_pool_tx();
+    let tx = create_loan_tx();
     let err = validation::validate_transaction(&tx, &ctx).expect_err("must reject");
     assert_eq!(
         err.error_code(),
@@ -362,7 +301,7 @@ fn defi_not_activated_error_code_is_stable() {
 #[test]
 fn defi_not_activated_structured_json_exposes_fields() {
     let ctx = pre_activation_ctx();
-    let tx = swap_tx();
+    let tx = lending_deposit_tx();
     let err = validation::validate_transaction(&tx, &ctx).expect_err("must reject");
     let json = err.to_structured_json();
     assert_eq!(json["error_code"], "DEFI_NOT_ACTIVATED");
@@ -375,8 +314,8 @@ fn defi_not_activated_structured_json_exposes_fields() {
         json.get("current_height").is_some(),
         "current_height field required"
     );
-    // Specifically: Swap = 22
-    assert_eq!(json["tx_type"], 22u32);
+    // Specifically: LendingDeposit = 27
+    assert_eq!(json["tx_type"], 27u32);
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -387,9 +326,9 @@ fn defi_not_activated_structured_json_exposes_fields() {
 fn defi_tx_types_pass_gate_at_activation_boundary() {
     // Set activation at exactly current_height. Gate is `<` so this must NOT
     // return DefiNotActivated. The per-type validator may still return its own
-    // structural error (CreatePool here is valid) — that is allowed.
+    // structural error — that is allowed.
     let ctx = post_activation_ctx(10, 10);
-    let tx = create_pool_tx();
+    let tx = create_loan_tx();
     let res = validation::validate_transaction(&tx, &ctx);
     // Any other Ok/Err is acceptable here: the gate let the tx through and the
     // per-type validator's verdict is not under test. We only fail if the

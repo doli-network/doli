@@ -152,6 +152,16 @@ impl NetworkParams {
                 // specs/state-of-the-art-architecture.md.
                 defi_activation_height: u64::MAX,
 
+                // AMM Foundations M1: u64::MAX = AMM tx types frozen on
+                // mainnet. INDEPENDENT of defi_activation_height (HC-6 /
+                // INC-I-075). Operator pins a concrete future height in a
+                // separate commit ONLY AFTER the AMM consumer code (apply_block
+                // match arms, fee routing, CLI, RPC) is implemented + audited.
+                // Once crossed on mainnet this height is IMMUTABLE — never
+                // move it forward (INC-I-054). Spec:
+                // specs/defi-foundations-economics.md §0.
+                amm_activation_height: u64::MAX,
+
                 // Phase 2.1 Oracle (structural-anchored): u64::MAX = frozen.
                 // PriceAttestation (TxType=16) is rejected at validation and
                 // mempool until the operator pins a concrete future height,
@@ -275,6 +285,13 @@ impl NetworkParams {
                 // `ValidationContext::with_defi_activation_height`.
                 defi_activation_height: u64::MAX,
 
+                // AMM Foundations M1: testnet default is u64::MAX
+                // (placeholder, operator pins concrete height at deploy
+                // time per HC-6). Local activation experiments override
+                // via `DOLI_AMM_ACTIVATION_HEIGHT`. Independent of
+                // defi_activation_height (HC-6 / INC-I-075).
+                amm_activation_height: u64::MAX,
+
                 // Phase 2.1 Oracle: frozen by default on testnet (mirrors
                 // mainnet). Local activation experiments override via
                 // `DOLI_ORACLE_ACTIVATION_HEIGHT`.
@@ -388,6 +405,14 @@ impl NetworkParams {
                 // they do NOT go through `validate_transaction`, so the
                 // gate does not affect them.
                 defi_activation_height: u64::MAX,
+
+                // AMM Foundations M1: devnet default is 0 (always-on) so
+                // local AMM development can submit AMM tx types without
+                // an env override. Validation still proceeds through the
+                // per-type validator — the gate just opens. AMM apply_block
+                // consumer code (separate session) is the next dependency.
+                // Independent of defi_activation_height per HC-6.
+                amm_activation_height: 0,
 
                 // Phase 2.1 Oracle: frozen by default on devnet. Devnet tests
                 // that need the oracle live override via

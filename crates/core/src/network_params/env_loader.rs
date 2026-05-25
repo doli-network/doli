@@ -337,6 +337,15 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
                 defaults.defi_activation_height,
             )
         },
+        // AMM Foundations M1: mainnet locked at u64::MAX (placeholder).
+        // Testnet/devnet may override via `DOLI_AMM_ACTIVATION_HEIGHT` for
+        // local activation testing. Independent of defi_activation_height
+        // per HC-6 / INC-I-075.
+        amm_activation_height: if is_mainnet {
+            defaults.amm_activation_height
+        } else {
+            env_parse("DOLI_AMM_ACTIVATION_HEIGHT", defaults.amm_activation_height)
+        },
         // Phase 2.1 Oracle: mainnet locked at u64::MAX. Testnet/devnet may
         // override via `DOLI_ORACLE_ACTIVATION_HEIGHT` for local activation
         // experiments (M2-M11 implementation testing). Independent of

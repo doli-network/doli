@@ -81,6 +81,7 @@ impl Node {
                     .security_audit_activation_height,
             )
             .with_defi_activation_height(self.config.network.params().defi_activation_height)
+            .with_amm_activation_height(self.config.network.params().amm_activation_height)
             .with_oracle_activation_height(self.config.network.params().oracle_activation_height)
             .with_oracle_sunset_triggered(
                 self.oracle_sunset_triggered
