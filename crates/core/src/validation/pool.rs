@@ -3,6 +3,7 @@
 //! Structural validation only — no UTXO state needed.
 //! Invariant (x*y=k) and reserve checks happen in apply_block.
 
+use crate::consensus::MINIMUM_LIQUIDITY;
 use crate::transaction::{OutputType, Transaction, POOL_MAX_FEE_BPS};
 use crate::validation::error::ValidationError;
 
@@ -94,11 +95,29 @@ pub(crate) fn validate_create_pool(tx: &Transaction) -> Result<(), ValidationErr
         ));
     }
 
-    // LP share amount must equal total_lp_shares in pool
-    if tx.outputs[1].amount != pool_meta.total_lp_shares {
-        return Err(ValidationError::InvalidPool(
-            "LPShare amount must equal pool total_lp_shares".to_string(),
-        ));
+    // D1 (AMM Foundations M3, 2026-05-25): MINIMUM_LIQUIDITY first-deposit
+    // lock invariant. Mirrors Uniswap v2: the gap between Pool.total_lp_shares
+    // and the creator's LPShare.amount must equal exactly MINIMUM_LIQUIDITY,
+    // and those locked shares are NEVER materialised as a spendable UTXO. The
+    // threshold (1000) makes the first-deposit inflation attack 1:1 cost/payoff
+    // (Adversarial Capital A4/A7).
+    //
+    // Failure modes (both → ValidationError::AmmMinimumLiquidity):
+    //   (a) declared_total < MINIMUM_LIQUIDITY (under-minted; nothing to lock)
+    //   (b) creator_share + MINIMUM_LIQUIDITY != declared_total (creator
+    //       claims more than they paid for, OR claims less than allowed and
+    //       leaves part of the lock unaccounted; both shapes break the
+    //       proportional-minting invariant downstream).
+    let creator_share = tx.outputs[1].amount;
+    let declared_total = pool_meta.total_lp_shares;
+    if declared_total < MINIMUM_LIQUIDITY
+        || creator_share.checked_add(MINIMUM_LIQUIDITY) != Some(declared_total)
+    {
+        return Err(ValidationError::AmmMinimumLiquidity {
+            declared_total,
+            creator_share,
+            minimum_liquidity: MINIMUM_LIQUIDITY,
+        });
     }
 
     // Initial TWAP state
@@ -219,7 +238,10 @@ mod tests {
     fn dummy_pool_tx() -> Transaction {
         let asset_b = Hash::from_bytes([0xBB; 32]);
         let pool_id = Output::compute_pool_id(&Hash::ZERO, &asset_b, 30);
-        let pool_output = Output::pool(pool_id, asset_b, 1000, 2000, 707, 0, 100, 30, 100);
+        // D1: total = 707 (sqrt-style) + MINIMUM_LIQUIDITY (1000) = 1707;
+        // creator receives 707; the 1000 gap is the permanently locked
+        // first-deposit lock.
+        let pool_output = Output::pool(pool_id, asset_b, 1000, 2000, 1707, 0, 100, 30, 100);
         let lp_output = Output::lp_share(707, pool_id, Hash::from_bytes([0x01; 32]));
 
         Transaction {
@@ -298,10 +320,14 @@ mod tests {
 
     #[test]
     fn test_create_pool_lp_amount_mismatch_fails() {
+        // Post-M3 (D1): the LPShare amount must equal
+        // (total_lp_shares - MINIMUM_LIQUIDITY). Here total=1707 implies the
+        // creator must get exactly 707, but they claim 500 → reject with
+        // AmmMinimumLiquidity (creator-share-mismatch failure mode).
         let asset_b = Hash::from_bytes([0xBB; 32]);
         let pool_id = Output::compute_pool_id(&Hash::ZERO, &asset_b, 30);
-        let pool_output = Output::pool(pool_id, asset_b, 1000, 2000, 707, 0, 100, 30, 100);
-        let lp_output = Output::lp_share(500, pool_id, Hash::from_bytes([0x01; 32])); // wrong: 500 != 707
+        let pool_output = Output::pool(pool_id, asset_b, 1000, 2000, 1707, 0, 100, 30, 100);
+        let lp_output = Output::lp_share(500, pool_id, Hash::from_bytes([0x01; 32])); // wrong: 500+1000 != 1707
 
         let tx = Transaction {
             version: 1,
@@ -311,7 +337,8 @@ mod tests {
             extra_data: vec![],
         };
         let err = validate_create_pool(&tx).unwrap_err();
-        assert!(err.to_string().contains("must equal"));
+        assert!(matches!(err, ValidationError::AmmMinimumLiquidity { .. }));
+        assert!(err.to_string().contains("[ERRTX-AMM002]"));
     }
 
     #[test]

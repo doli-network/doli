@@ -302,6 +302,39 @@ pub const EPOCH_REWARD_POOL: Amount = SLOTS_PER_REWARD_EPOCH as u64 * INITIAL_RE
 /// 6 blocks = ~60 seconds at 10s slots
 pub const COINBASE_MATURITY: BlockHeight = 6;
 
+// ==================== AMM Foundations Economics ====================
+//
+// Locked-in economic invariants for the AMM subsystem. Set BEFORE
+// `amm_activation_height` is ever crossed on any network (D1, approved
+// 2026-05-25, spec `specs/defi-foundations-economics.md` §0).
+
+/// AMM Foundations D1: permanently locked LP shares on first deposit.
+///
+/// Mirrors the Uniswap v2 standard. On CreatePool, the difference between
+/// `pool_meta.total_lp_shares` and the creator's first-deposit `LPShare`
+/// amount must equal `MINIMUM_LIQUIDITY`. Those `MINIMUM_LIQUIDITY` shares
+/// are NEVER materialised as an LPShare UTXO — they live implicitly in
+/// the pool's bookkeeping forever, making the share supply unspendable in
+/// part.
+///
+/// Why 1000 (and not 1):
+///   At MINIMUM_LIQUIDITY = 1 the "first-deposit inflation attack"
+///   (Adversarial Capital A4/A7) steals up to 100% of the first real
+///   deposit by manipulating the share-to-reserve ratio with negligible
+///   capital. At MINIMUM_LIQUIDITY = 1000 the attacker MUST lock 1000
+///   units of liquidity for every 1 unit of attack potential, making the
+///   attack 1:1 cost/payoff = unprofitable. The threshold matches the
+///   Uniswap v2 deployment that has operated for years without successful
+///   inflation attacks at this threshold.
+///
+/// IMMUTABILITY: Like all activation constants, this value MUST be set
+/// before any Pool UTXO is ever created on any network. Changing it after
+/// `amm_activation_height` crosses would render existing pools either
+/// retroactively invalid (raise) or undersecured (lower).
+///
+/// Spec: `specs/defi-foundations-economics.md` §0 D1.
+pub const MINIMUM_LIQUIDITY: u64 = 1000;
+
 // ==================== Bond Stacking System ====================
 //
 // Producers stake bonds to participate in block production.

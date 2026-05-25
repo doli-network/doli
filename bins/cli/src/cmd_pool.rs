@@ -265,9 +265,18 @@ async fn cmd_pool_create(
 
     // Compute initial LP shares
     let lp_shares = doli_core::compute_initial_lp_shares(doli_units, token_units);
-    if lp_shares == 0 {
-        anyhow::bail!("Initial liquidity too small to create LP shares");
+    // D1 (AMM Foundations M3): pool must mint at least MINIMUM_LIQUIDITY shares
+    // so the validator can lock that amount permanently (Uniswap v2 semantics).
+    // Creator receives `lp_shares - MINIMUM_LIQUIDITY`; the gap is the lock.
+    if lp_shares < doli_core::consensus::MINIMUM_LIQUIDITY {
+        anyhow::bail!(
+            "Initial liquidity too small: sqrt(reserve_a * reserve_b) = {} LP shares, \
+             but {} are permanently locked on first deposit (D1). Increase deposit amounts.",
+            lp_shares,
+            doli_core::consensus::MINIMUM_LIQUIDITY
+        );
     }
+    let creator_lp_shares = lp_shares - doli_core::consensus::MINIMUM_LIQUIDITY;
 
     let from_pubkey_hash = wallet.primary_pubkey_hash();
     let from_hash =
@@ -348,7 +357,7 @@ async fn cmd_pool_create(
         0, // creation_slot will be stamped by node
     );
 
-    let lp_output = Output::lp_share(lp_shares, pool_id, from_hash);
+    let lp_output = Output::lp_share(creator_lp_shares, pool_id, from_hash);
 
     let mut outputs = vec![pool_output, lp_output];
 

@@ -186,7 +186,8 @@ fn validate_create_pool_accepts_correct_pool_id() {
     let asset_b = Hash::from_bytes([0xBB; 32]);
     let fee_bps: u16 = 30;
     let pool_id = Output::compute_pool_id(&Hash::ZERO, &asset_b, fee_bps);
-    let pool_output = Output::pool(pool_id, asset_b, 1000, 2000, 707, 0, 100, fee_bps, 100);
+    // Post-M3 D1: total = creator (707) + MINIMUM_LIQUIDITY (1000) = 1707.
+    let pool_output = Output::pool(pool_id, asset_b, 1000, 2000, 1707, 0, 100, fee_bps, 100);
     let lp_output = Output::lp_share(707, pool_id, Hash::from_bytes([0x01; 32]));
     let tx = Transaction {
         version: 1,

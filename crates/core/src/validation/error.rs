@@ -400,6 +400,32 @@ pub enum ValidationError {
         current_height: u64,
     },
 
+    /// AMM Foundations M3 (D1): a CreatePool transaction failed the
+    /// `MINIMUM_LIQUIDITY` first-deposit lock invariant.
+    ///
+    /// Triggered on EITHER of the two failure modes:
+    ///   1. Pool UTXO declares `total_lp_shares < MINIMUM_LIQUIDITY`
+    ///      (under-minted: nothing to lock).
+    ///   2. Creator's first-deposit `LPShare.amount + MINIMUM_LIQUIDITY !=
+    ///      total_lp_shares` (creator share exceeds the legal cap).
+    ///
+    /// The stable error code is `"AMM_MINIMUM_LIQUIDITY"` (log prefix
+    /// `[ERRTX-AMM002]`). Agentic consumers can read `declared_total`,
+    /// `creator_share`, and `minimum_liquidity` to compute the deficit.
+    ///
+    /// Spec: `specs/defi-foundations-economics.md` §0 D1.
+    #[error(
+        "[ERRTX-AMM002] minimum liquidity invariant violated: declared_total={declared_total} creator_share={creator_share} minimum_liquidity={minimum_liquidity}"
+    )]
+    AmmMinimumLiquidity {
+        /// Pool UTXO's declared `total_lp_shares`.
+        declared_total: u64,
+        /// First-deposit `LPShare.amount` (the creator's share).
+        creator_share: u64,
+        /// Active `MINIMUM_LIQUIDITY` constant.
+        minimum_liquidity: u64,
+    },
+
     /// AMM Foundations M1: an AMM transaction was submitted before the
     /// `amm_activation_height` gate opens.
     ///
@@ -516,6 +542,7 @@ impl ValidationError {
             Self::AddBondCapExceeded { .. } => "ADDBOND_CAP_EXCEEDED",
             Self::DefiNotActivated { .. } => "DEFI_NOT_ACTIVATED",
             Self::AmmNotActivated { .. } => "AMM_NOT_ACTIVATED",
+            Self::AmmMinimumLiquidity { .. } => "AMM_MINIMUM_LIQUIDITY",
         }
     }
 
@@ -750,6 +777,15 @@ impl ValidationError {
                 map.insert("tx_type".into(), (*tx_type).into());
                 map.insert("activation_height".into(), (*activation_height).into());
                 map.insert("current_height".into(), (*current_height).into());
+            }
+            Self::AmmMinimumLiquidity {
+                declared_total,
+                creator_share,
+                minimum_liquidity,
+            } => {
+                map.insert("declared_total".into(), (*declared_total).into());
+                map.insert("creator_share".into(), (*creator_share).into());
+                map.insert("minimum_liquidity".into(), (*minimum_liquidity).into());
             }
         }
 
