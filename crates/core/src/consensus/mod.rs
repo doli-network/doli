@@ -70,6 +70,8 @@ mod selection;
 mod stress;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_structural;
 mod vdf;
 
 // Re-export everything

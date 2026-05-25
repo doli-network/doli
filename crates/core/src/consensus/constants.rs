@@ -562,3 +562,78 @@ pub const FEE_PER_BYTE: Amount = 1;
 /// Fee divisor — makes per-byte fees 100x cheaper.
 /// `effective_rate = FEE_PER_BYTE / FEE_DIVISOR = 0.01 sats/byte`
 pub const FEE_DIVISOR: Amount = 100;
+
+// ==================== Phase 2.1 Oracle: Structural Set ====================
+
+/// BLAKE3 pubkey-hashes of the 12 N1-N12 mainnet structural producers
+/// (Ed25519 pubkey -> `hash_with_domain(b"DOLI_ADDR_V1", pubkey)`).
+///
+/// Each entry is 64 hex chars (32 bytes). The full 32-byte hash is the
+/// key used in `EpochState.bond_snapshot: HashMap<Hash, u64>`
+/// (see `bins/node/src/node/apply_block/post_commit.rs:211`).
+/// The 20-byte truncation of this hash is what producer wallets and
+/// most user-facing tooling display as the producer "address" — but
+/// the sunset metric uses the full 32-byte form for hash-map lookup.
+///
+/// # Used By (Phase 2.1 oracle sunset check, M8)
+///
+/// The sunset trigger HALTs the oracle when:
+/// ```text
+/// structural_bonds      = sum(bond_snapshot[k] for k in STRUCTURAL_PUBKEY_HASHES_HEX)
+/// total_bonds_eligible  = sum(bond_snapshot[k] for k where bond_age >= 1 epoch)
+/// structural_share      = structural_bonds / total_bonds_eligible
+/// if structural_share < 0.55:
+///     reject new PriceAttestation tx with [ERRTX-ORACLE003]
+///     freeze last OraclePrice UTXO at its current value
+/// ```
+///
+/// Per spec §1.8, the metric uses the PREVIOUS epoch's bond snapshot
+/// (1-epoch lag, anti-dilution) — bonds younger than one epoch are
+/// excluded from `total_bonds_eligible`.
+///
+/// # Rotation / Immutability
+///
+/// These hashes are baked into the binary, same as
+/// `BOOTSTRAP_MAINTAINER_KEYS_MAINNET` (`updater/src/constants.rs:37`).
+/// Rotating any of N1-N12's keys requires:
+///   1. Updating the corresponding entry here.
+///   2. Updating `BOOTSTRAP_MAINTAINER_KEYS_MAINNET` if the slot is also
+///      a maintainer (N1-N5 are dual-role).
+///   3. Updating `N1_TO_N5_PUBKEYS_HEX` in
+///      `crates/core/src/consensus/tests_structural.rs` (the
+///      cross-consistency test will fire otherwise).
+///   4. A binary upgrade for every node (no on-chain governance — HC-8
+///      / spec §0 NEVER constraints lock all oracle params as
+///      constants).
+///
+/// # Centralization Disclosure
+///
+/// This constant codifies the operator-controlled set whose collective
+/// bond share defines the oracle's trust model. The Phase 2.1 oracle
+/// is explicitly NOT a decentralized oracle — see spec §6
+/// "Centralization Disclosure" for the verbatim public language.
+///
+/// # Spec
+///
+/// `specs/oracle-structural-anchored-economics.md` §1.8
+///
+/// # Provenance (audit trail)
+///
+/// Retrieved from operator-controlled `/mainnet/<n>/keys/producer.json`
+/// on ai1 (N1-N3), ai2 (N4-N5), ai4 (N6-N8), ai5 (N9-N12). End-to-end
+/// verified against the on-disk 20-byte `address` field (= first 20
+/// bytes of the full hash here) for N1 and N12 during retrieval.
+pub const STRUCTURAL_PUBKEY_HASHES_HEX: [&str; 12] = [
+    "f66686eb8b98215ea35fd1b79f2db7622fa1e1a7c8ba4a01cf64200311ca8957", // N1
+    "573b2d67d3b7caf190a050b2af7fbe73f0854664f0ad4c4092f2523fe16bc767", // N2
+    "79567e138652800198b970861339caa43125d31fa971c9da7adf95bca9661a03", // N3
+    "467922a412378a0d2a91f3b9ad71550b54bff035ecd361ca230bcbdf3318faba", // N4
+    "03fd8449d1a378af881f777339b76c5ca9ee6e9b457a0966babb969641c87beb", // N5
+    "69290c6fa7f8f14e1322f0497083c0f1b3db10442628618d24e720860addb5cb", // N6
+    "d046f449aa22f888558f02520913ab435d090b09f23550085034440b0178f7cf", // N7
+    "9c81a24af1e69dc44a0d1802f1d6300a9d452332a8e874b3fd1dbf510241f146", // N8
+    "79e79927c6710e842f92beff5951e3b031d883ccb192b0b5196b31af4cb84f60", // N9
+    "1cc9054042a36dde8bd359578d4c2f6ee22b7b4ec73248f954860459ecb7724f", // N10
+    "467c512a3581d540f37b77d92ae0c95761714cf8a61942e07ed7eccf3e80ecc3", // N11
+    "237d319d0366938a3ed3ba1902ff68e5703cdb755908eb2babb80f9928282571", // N12
+];
