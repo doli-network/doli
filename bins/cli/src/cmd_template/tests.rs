@@ -1,57 +1,47 @@
 // ── OUTPUT CONTRACT ─────────────────────────────────────────────────
 //
-// | Function               | Input Partition                      | Path         | Expected Output                              |
-// |------------------------|--------------------------------------|--------------|----------------------------------------------|
-// | condition_to_cli_string| vault template output                | roundtrip    | parse(serialize(vault)) == vault             |
-// | condition_to_cli_string| escrow template output               | roundtrip    | parse(serialize(escrow)) == escrow           |
-// | condition_to_cli_string| htlc_payment template output         | roundtrip    | parse(serialize(htlc)) == htlc               |
-// | condition_to_cli_string| subscription template output         | roundtrip    | parse(serialize(sub)) == sub                 |
-// | condition_to_cli_string| agent_allowance template output      | roundtrip    | parse(serialize(aa)) == aa                   |
-// | condition_to_cli_string| And(timelock, hashlock)              | and          | "and(timelock(..), hashlock(..))"            |
-// | condition_to_cli_string| Or(sig, timelock)                    | or           | "or(multisig(1,..), timelock(..))"           |
-// | condition_to_cli_string| Threshold{2,[h,t,s]}                 | threshold    | "threshold(2, hashlock(..), ..)"             |
-// | condition_to_cli_string| AmountGuard standalone               | guard        | "amount_guard(5.00000000, 0)"                |
-// | condition_to_cli_string| OutputTypeGuard standalone            | guard        | "output_type_guard(normal, 0)"               |
-// | condition_to_cli_string| RecipientGuard standalone             | guard        | "recipient_guard(<hex>, 0)"                  |
-// | clap parsing           | vault with all required args         | happy        | parse succeeds                               |
-// | clap parsing           | escrow with all required args        | happy        | parse succeeds                               |
-// | clap parsing           | htlc-payment with all args           | happy        | parse succeeds                               |
-// | clap parsing           | subscription with all args           | happy        | parse succeeds                               |
-// | clap parsing           | agent-allowance with all args        | happy        | parse succeeds                               |
-// | clap parsing           | vault missing --owner                | error        | clap error about required arg                |
-// | clap parsing           | escrow missing --parties             | error        | clap error about required arg                |
-// | clap parsing           | --send without --to                  | error        | error about missing --to                     |
-// | clap parsing           | --send without --amount              | error        | error about missing --amount                 |
-// | clap parsing           | template no subcommand               | error        | clap error: subcommand required              |
-// | condition_to_cli_string| nested guards (subscription)         | nested       | parse(serialize(nested)) == nested           |
-// | condition_to_cli_string| Signature round-trip via signature()            | asymmetric   | parse(serialize(sig)) == sig                |
-// | condition_to_cli_string| TimelockExpiry standalone             | primitive    | "timelock_expiry(999)"                       |
+// | Function                | Input Partition                       | Path          | Expected Output                               |
+// |-------------------------|---------------------------------------|---------------|-----------------------------------------------|
+// | condition_to_cli_string | vault template output                 | roundtrip     | parse(serialize(vault)) == vault              |
+// | condition_to_cli_string | escrow template output                | roundtrip     | parse(serialize(escrow)) == escrow            |
+// | condition_to_cli_string | htlc_payment template output          | roundtrip     | parse(serialize(htlc)) == htlc                |
+// | condition_to_cli_string | subscription template output          | roundtrip     | parse(serialize(sub)) == sub                  |
+// | condition_to_cli_string | agent_allowance template output       | roundtrip     | parse(serialize(aa)) == aa                    |
+// | condition_to_cli_string | escrow_loan template output           | roundtrip     | parse(serialize(el)) == el                    |
+// | condition_to_cli_string | And(timelock, hashlock)               | and           | "and(timelock(..), hashlock(..))"             |
+// | condition_to_cli_string | Or(sig, timelock)                     | or            | "or(multisig(1,..), timelock(..))"            |
+// | condition_to_cli_string | Threshold{2,[h,t,s]}                  | threshold     | "threshold(2, hashlock(..), ..)"              |
+// | condition_to_cli_string | AmountGuard standalone                | guard         | "amount_guard(5.00000000, 0)"                 |
+// | condition_to_cli_string | OutputTypeGuard standalone             | guard         | "output_type_guard(normal, 0)"                |
+// | condition_to_cli_string | RecipientGuard standalone              | guard         | "recipient_guard(<hex>, 0)"                   |
+// | Cli::try_parse_from    | vault with all required args           | happy         | parse succeeds, Vault variant                 |
+// | Cli::try_parse_from    | escrow with all required args          | happy         | parse succeeds, Escrow variant                |
+// | Cli::try_parse_from    | htlc-payment with all args             | happy         | parse succeeds, HtlcPayment variant           |
+// | Cli::try_parse_from    | subscription with all args             | happy         | parse succeeds, Subscription variant          |
+// | Cli::try_parse_from    | agent-allowance with all args          | happy         | parse succeeds, AgentAllowance variant        |
+// | Cli::try_parse_from    | escrow-loan with all args              | happy         | parse succeeds, EscrowLoan variant            |
+// | Cli::try_parse_from    | vault missing --owner                  | error         | Err                                           |
+// | Cli::try_parse_from    | escrow missing --parties               | error         | Err                                           |
+// | Cli::try_parse_from    | escrow-loan missing --lender           | error         | Err                                           |
+// | Cli::try_parse_from    | template no subcommand                 | error         | Err                                           |
+// | escrow_loan template   | valid args                             | structure     | Or(And(AmtGuard,RecipGuard),And(Sig,TL))      |
+// | escrow_loan encode     | encode/decode                          | roundtrip     | decode(encode(cond)) == cond                  |
+// | evaluate(escrow_loan)  | repay >= min to lender at deadline     | repay_pass    | true                                          |
+// | evaluate(escrow_loan)  | repay < min to lender                  | repay_fail    | false                                         |
+// | evaluate(escrow_loan)  | before deadline, lender sig            | reclaim_fail  | false                                         |
+// | evaluate(escrow_loan)  | wrong recipient                        | wrong_recip   | false                                         |
+// | escrow_loan golden     | golden vector JSON                     | golden        | condition_hex + cli_string match golden       |
 //
 // ── INPUT PARTITIONS ───────────────────────────────────────────────
 //
-// Partition 1 — Template round-trips (5 templates x 1 test each):
-//   Each template function produces a distinct Condition tree shape.
-//   Serializer must handle Or, And, Multisig, Hashlock, Timelock, TimelockExpiry,
-//   AmountGuard, RecipientGuard nested in various combinations.
-//
-// Partition 2 — Composition operators (3 tests: and, or, threshold):
-//   Each operator wraps sub-conditions. Tests verify the serializer handles
-//   recursive descent and the parser handles the round-trip.
-//
-// Partition 3 — Standalone guard variants (3 tests: amount, output_type, recipient):
-//   Each guard variant serializes differently (amount uses units_to_coins,
-//   output_type uses type name mapping, recipient uses hex hash).
-//
-// Partition 4 — Clap positive parsing (5 templates):
-//   Each subcommand has distinct required args. Tests verify clap accepts
-//   well-formed invocations.
-//
-// Partition 5 — Clap error cases (5+ tests):
-//   Missing required args, missing subcommand. Tests verify clap rejects
-//   malformed invocations.
-//
-// Partition 6 — Edge cases (3 tests):
-//   Nested guards, Signature asymmetry, TimelockExpiry standalone.
+// Partition 1 — Template round-trips (6 templates x 1 test each)
+// Partition 2 — Composition operators (3 tests: and, or, threshold)
+// Partition 3 — Standalone guard variants (3 tests: amount, output_type, recipient)
+// Partition 4 — Clap positive parsing (6 templates)
+// Partition 5 — Clap error cases (7 tests)
+// Partition 6 — Edge cases (3 tests: nested, signature, timelock_expiry)
+// Partition 7 — Escrow-loan: structure, roundtrip, eval paths (6 tests)
+// Partition 8 — Golden vector (1 test)
 // ─────────────────────────────────────────────────────────────────────
 
 use super::serialize::condition_to_cli_string;
@@ -64,71 +54,58 @@ fn test_hash(val: u8) -> crypto::Hash {
     hash(&[val])
 }
 
-// ── Round-trip tests: condition_to_cli_string → parse_condition ──────
+// ── Round-trip tests ────────────────────────────────────────────────
 
 #[test]
 fn roundtrip_vault() {
-    let owner = test_hash(1);
-    let cosigner = test_hash(2);
-    let cond = doli_core::conditions::templates::vault(owner, cosigner, 1000);
+    let cond = doli_core::conditions::templates::vault(test_hash(1), test_hash(2), 1000);
     let s = condition_to_cli_string(&cond);
-    let parsed = parse_condition(&s).expect("parse should succeed");
-    assert_eq!(cond, parsed, "vault round-trip failed.\nSerialized: {}", s);
+    assert_eq!(cond, parse_condition(&s).unwrap(), "vault: {}", s);
 }
 
 #[test]
 fn roundtrip_escrow() {
     let parties: Vec<crypto::Hash> = (1..=3).map(test_hash).collect();
-    let refund = test_hash(10);
-    let cond = doli_core::conditions::templates::escrow(parties, 2, 50000, refund);
+    let cond = doli_core::conditions::templates::escrow(parties, 2, 50000, test_hash(10));
     let s = condition_to_cli_string(&cond);
-    let parsed = parse_condition(&s).expect("parse should succeed");
-    assert_eq!(cond, parsed, "escrow round-trip failed.\nSerialized: {}", s);
+    assert_eq!(cond, parse_condition(&s).unwrap(), "escrow: {}", s);
 }
 
 #[test]
 fn roundtrip_htlc_payment() {
-    let payment_hash = test_hash(1);
-    let refund = test_hash(2);
-    let cond = doli_core::conditions::templates::htlc_payment(payment_hash, 100, 200, refund);
+    let cond = doli_core::conditions::templates::htlc_payment(test_hash(1), 100, 200, test_hash(2));
     let s = condition_to_cli_string(&cond);
-    let parsed = parse_condition(&s).expect("parse should succeed");
-    assert_eq!(
-        cond, parsed,
-        "htlc_payment round-trip failed.\nSerialized: {}",
-        s
-    );
+    assert_eq!(cond, parse_condition(&s).unwrap(), "htlc: {}", s);
 }
 
 #[test]
 fn roundtrip_subscription() {
-    let recipient = test_hash(1);
     let cond =
-        doli_core::conditions::templates::subscription(recipient, 500_000_000, 0, 1000, 2000);
+        doli_core::conditions::templates::subscription(test_hash(1), 500_000_000, 0, 1000, 2000);
     let s = condition_to_cli_string(&cond);
-    let parsed = parse_condition(&s).expect("parse should succeed");
-    assert_eq!(
-        cond, parsed,
-        "subscription round-trip failed.\nSerialized: {}",
-        s
-    );
+    assert_eq!(cond, parse_condition(&s).unwrap(), "sub: {}", s);
 }
 
 #[test]
 fn roundtrip_agent_allowance() {
-    let agent = test_hash(1);
-    let recipient = test_hash(2);
-    let cond = doli_core::conditions::templates::agent_allowance(agent, recipient, 100_000_000, 0);
-    let s = condition_to_cli_string(&cond);
-    let parsed = parse_condition(&s).expect("parse should succeed");
-    assert_eq!(
-        cond, parsed,
-        "agent_allowance round-trip failed.\nSerialized: {}",
-        s
+    let cond = doli_core::conditions::templates::agent_allowance(
+        test_hash(1),
+        test_hash(2),
+        100_000_000,
+        0,
     );
+    let s = condition_to_cli_string(&cond);
+    assert_eq!(cond, parse_condition(&s).unwrap(), "aa: {}", s);
 }
 
-// ── Composition operator serialization ──────────────────────────────
+#[test]
+fn roundtrip_escrow_loan() {
+    let cond = doli_core::conditions::templates::escrow_loan(test_hash(1), 500_000_000, 10_000);
+    let s = condition_to_cli_string(&cond);
+    assert_eq!(cond, parse_condition(&s).unwrap(), "el: {}", s);
+}
+
+// ── Composition operators ───────────────────────────────────────────
 
 #[test]
 fn serialize_and_roundtrip() {
@@ -137,9 +114,8 @@ fn serialize_and_roundtrip() {
         Box::new(doli_core::Condition::Hashlock(test_hash(5))),
     );
     let s = condition_to_cli_string(&cond);
-    assert!(s.starts_with("and("), "should start with 'and(': {}", s);
-    let parsed = parse_condition(&s).expect("parse should succeed");
-    assert_eq!(cond, parsed);
+    assert!(s.starts_with("and("), "bad prefix: {}", s);
+    assert_eq!(cond, parse_condition(&s).unwrap());
 }
 
 #[test]
@@ -152,9 +128,8 @@ fn serialize_or_roundtrip() {
         Box::new(doli_core::Condition::Timelock(500)),
     );
     let s = condition_to_cli_string(&cond);
-    assert!(s.starts_with("or("), "should start with 'or(': {}", s);
-    let parsed = parse_condition(&s).expect("parse should succeed");
-    assert_eq!(cond, parsed);
+    assert!(s.starts_with("or("), "bad prefix: {}", s);
+    assert_eq!(cond, parse_condition(&s).unwrap());
 }
 
 #[test]
@@ -168,24 +143,18 @@ fn serialize_threshold_roundtrip() {
         ],
     };
     let s = condition_to_cli_string(&cond);
-    assert!(
-        s.starts_with("threshold("),
-        "should start with 'threshold(': {}",
-        s
-    );
-    let parsed = parse_condition(&s).expect("parse should succeed");
-    assert_eq!(cond, parsed);
+    assert!(s.starts_with("threshold("), "bad prefix: {}", s);
+    assert_eq!(cond, parse_condition(&s).unwrap());
 }
 
-// ── Standalone guard serialization ──────────────────────────────────
+// ── Standalone guards ───────────────────────────────────────────────
 
 #[test]
 fn serialize_amount_guard() {
     let cond = doli_core::Condition::amount_guard(500_000_000, 0);
     let s = condition_to_cli_string(&cond);
     assert_eq!(s, "amount_guard(5.00000000, 0)");
-    let parsed = parse_condition(&s).expect("parse should succeed");
-    assert_eq!(cond, parsed);
+    assert_eq!(cond, parse_condition(&s).unwrap());
 }
 
 #[test]
@@ -193,8 +162,7 @@ fn serialize_output_type_guard() {
     let cond = doli_core::Condition::output_type_guard(doli_core::OutputType::Normal, 0);
     let s = condition_to_cli_string(&cond);
     assert_eq!(s, "output_type_guard(normal, 0)");
-    let parsed = parse_condition(&s).expect("parse should succeed");
-    assert_eq!(cond, parsed);
+    assert_eq!(cond, parse_condition(&s).unwrap());
 }
 
 #[test]
@@ -203,16 +171,14 @@ fn serialize_recipient_guard() {
     let cond = doli_core::Condition::recipient_guard(h, 1);
     let s = condition_to_cli_string(&cond);
     assert!(
-        s.starts_with("recipient_guard("),
-        "should start with 'recipient_guard(': {}",
+        s.starts_with("recipient_guard(") && s.contains(", 1)"),
+        "bad: {}",
         s
     );
-    assert!(s.contains(", 1)"), "should contain output_index: {}", s);
-    let parsed = parse_condition(&s).expect("parse should succeed");
-    assert_eq!(cond, parsed);
+    assert_eq!(cond, parse_condition(&s).unwrap());
 }
 
-// ── Clap parsing: positive cases ────────────────────────────────────
+// ── Clap positive parsing ───────────────────────────────────────────
 
 #[test]
 fn clap_parse_vault_dry_run() {
@@ -226,36 +192,22 @@ fn clap_parse_vault_dry_run() {
         "bbbb000000000000000000000000000000000000000000000000000000000002",
         "--unlock-height",
         "1000",
-    ]);
-    assert!(cli.is_ok(), "vault parse failed: {:?}", cli.err());
-    if let Commands::Template { command } = &cli.unwrap().command {
-        assert!(matches!(command, TemplateCommands::Vault { .. }));
-    } else {
-        panic!("Expected Template command");
-    }
+    ])
+    .unwrap();
+    assert!(
+        matches!(&cli.command, Commands::Template { command } if matches!(command, TemplateCommands::Vault { .. }))
+    );
 }
 
 #[test]
 fn clap_parse_escrow_dry_run() {
-    let cli = Cli::try_parse_from([
-        "doli",
-        "template",
-        "escrow",
-        "--parties",
-        "aa00000000000000000000000000000000000000000000000000000000000001,bb00000000000000000000000000000000000000000000000000000000000002",
-        "--threshold",
-        "2",
-        "--timeout",
-        "50000",
-        "--refund",
-        "cc00000000000000000000000000000000000000000000000000000000000003",
-    ]);
-    assert!(cli.is_ok(), "escrow parse failed: {:?}", cli.err());
-    if let Commands::Template { command } = &cli.unwrap().command {
-        assert!(matches!(command, TemplateCommands::Escrow { .. }));
-    } else {
-        panic!("Expected Template command");
-    }
+    let cli = Cli::try_parse_from(["doli", "template", "escrow",
+        "--parties", "aa00000000000000000000000000000000000000000000000000000000000001,bb00000000000000000000000000000000000000000000000000000000000002",
+        "--threshold", "2", "--timeout", "50000",
+        "--refund", "cc00000000000000000000000000000000000000000000000000000000000003"]).unwrap();
+    assert!(
+        matches!(&cli.command, Commands::Template { command } if matches!(command, TemplateCommands::Escrow { .. }))
+    );
 }
 
 #[test]
@@ -272,13 +224,11 @@ fn clap_parse_htlc_payment_dry_run() {
         "200",
         "--refund",
         "dd00000000000000000000000000000000000000000000000000000000000004",
-    ]);
-    assert!(cli.is_ok(), "htlc-payment parse failed: {:?}", cli.err());
-    if let Commands::Template { command } = &cli.unwrap().command {
-        assert!(matches!(command, TemplateCommands::HtlcPayment { .. }));
-    } else {
-        panic!("Expected Template command");
-    }
+    ])
+    .unwrap();
+    assert!(
+        matches!(&cli.command, Commands::Template { command } if matches!(command, TemplateCommands::HtlcPayment { .. }))
+    );
 }
 
 #[test]
@@ -297,13 +247,11 @@ fn clap_parse_subscription_dry_run() {
         "1000",
         "--end",
         "2000",
-    ]);
-    assert!(cli.is_ok(), "subscription parse failed: {:?}", cli.err());
-    if let Commands::Template { command } = &cli.unwrap().command {
-        assert!(matches!(command, TemplateCommands::Subscription { .. }));
-    } else {
-        panic!("Expected Template command");
-    }
+    ])
+    .unwrap();
+    assert!(
+        matches!(&cli.command, Commands::Template { command } if matches!(command, TemplateCommands::Subscription { .. }))
+    );
 }
 
 #[test]
@@ -320,34 +268,51 @@ fn clap_parse_agent_allowance_dry_run() {
         "100.0",
         "--output-index",
         "0",
-    ]);
-    assert!(cli.is_ok(), "agent-allowance parse failed: {:?}", cli.err());
-    if let Commands::Template { command } = &cli.unwrap().command {
-        assert!(matches!(command, TemplateCommands::AgentAllowance { .. }));
-    } else {
-        panic!("Expected Template command");
-    }
+    ])
+    .unwrap();
+    assert!(
+        matches!(&cli.command, Commands::Template { command } if matches!(command, TemplateCommands::AgentAllowance { .. }))
+    );
 }
 
-// ── Clap parsing: error cases ───────────────────────────────────────
+#[test]
+fn clap_parse_escrow_loan_dry_run() {
+    let cli = Cli::try_parse_from([
+        "doli",
+        "template",
+        "escrow-loan",
+        "--lender",
+        "aaaa000000000000000000000000000000000000000000000000000000000001",
+        "--repay-amount",
+        "10.5",
+        "--deadline",
+        "50000",
+    ])
+    .unwrap();
+    assert!(
+        matches!(&cli.command, Commands::Template { command } if matches!(command, TemplateCommands::EscrowLoan { .. }))
+    );
+}
+
+// ── Clap error cases ────────────────────────────────────────────────
 
 #[test]
 fn clap_vault_missing_owner_fails() {
-    let cli = Cli::try_parse_from([
+    assert!(Cli::try_parse_from([
         "doli",
         "template",
         "vault",
         "--cosigner",
         "bbbb000000000000000000000000000000000000000000000000000000000002",
         "--unlock-height",
-        "1000",
-    ]);
-    assert!(cli.is_err(), "vault should fail without --owner");
+        "1000"
+    ])
+    .is_err());
 }
 
 #[test]
 fn clap_escrow_missing_parties_fails() {
-    let cli = Cli::try_parse_from([
+    assert!(Cli::try_parse_from([
         "doli",
         "template",
         "escrow",
@@ -356,14 +321,14 @@ fn clap_escrow_missing_parties_fails() {
         "--timeout",
         "50000",
         "--refund",
-        "cc00000000000000000000000000000000000000000000000000000000000003",
-    ]);
-    assert!(cli.is_err(), "escrow should fail without --parties");
+        "cc00000000000000000000000000000000000000000000000000000000000003"
+    ])
+    .is_err());
 }
 
 #[test]
 fn clap_htlc_missing_hash_fails() {
-    let cli = Cli::try_parse_from([
+    assert!(Cli::try_parse_from([
         "doli",
         "template",
         "htlc-payment",
@@ -372,14 +337,14 @@ fn clap_htlc_missing_hash_fails() {
         "--expiry",
         "200",
         "--refund",
-        "dd00000000000000000000000000000000000000000000000000000000000004",
-    ]);
-    assert!(cli.is_err(), "htlc-payment should fail without --hash");
+        "dd00000000000000000000000000000000000000000000000000000000000004"
+    ])
+    .is_err());
 }
 
 #[test]
 fn clap_subscription_missing_amount_fails() {
-    let cli = Cli::try_parse_from([
+    assert!(Cli::try_parse_from([
         "doli",
         "template",
         "subscription",
@@ -390,14 +355,14 @@ fn clap_subscription_missing_amount_fails() {
         "--start",
         "1000",
         "--end",
-        "2000",
-    ]);
-    assert!(cli.is_err(), "subscription should fail without --amount");
+        "2000"
+    ])
+    .is_err());
 }
 
 #[test]
 fn clap_agent_allowance_missing_agent_fails() {
-    let cli = Cli::try_parse_from([
+    assert!(Cli::try_parse_from([
         "doli",
         "template",
         "agent-allowance",
@@ -406,59 +371,234 @@ fn clap_agent_allowance_missing_agent_fails() {
         "--amount",
         "100.0",
         "--output-index",
-        "0",
-    ]);
-    assert!(cli.is_err(), "agent-allowance should fail without --agent");
+        "0"
+    ])
+    .is_err());
 }
 
-// ── Template help listing ───────────────────────────────────────────
+#[test]
+fn clap_escrow_loan_missing_lender_fails() {
+    assert!(Cli::try_parse_from([
+        "doli",
+        "template",
+        "escrow-loan",
+        "--repay-amount",
+        "10.5",
+        "--deadline",
+        "50000"
+    ])
+    .is_err());
+}
 
 #[test]
 fn clap_template_no_subcommand_fails() {
-    // `doli template` without a subcommand should fail (clap requires one)
-    let cli = Cli::try_parse_from(["doli", "template"]);
-    assert!(cli.is_err(), "template without subcommand should fail");
+    assert!(Cli::try_parse_from(["doli", "template"]).is_err());
 }
 
-// ── Additional edge cases ───────────────────────────────────────────
+// ── Edge cases ──────────────────────────────────────────────────────
 
 #[test]
 fn serialize_nested_guards_roundtrip() {
-    // Complex: And(And(RecipientGuard, AmountGuard), And(Timelock, TimelockExpiry))
     let cond =
         doli_core::conditions::templates::subscription(test_hash(1), 1_000_000, 0, 500, 1500);
     let s = condition_to_cli_string(&cond);
-    // Must be parseable
-    let parsed = parse_condition(&s).expect("nested guard parse should succeed");
-    assert_eq!(cond, parsed);
-    // Must start with and(
-    assert!(
-        s.starts_with("and("),
-        "subscription serialization should start with 'and(': {}",
-        s
-    );
+    assert!(s.starts_with("and("), "sub should start with 'and(': {}", s);
+    assert_eq!(cond, parse_condition(&s).unwrap());
 }
 
 #[test]
 fn serialize_signature_roundtrip() {
-    // Signature(h) -> signature(h) -> Signature(h)
-    let h = test_hash(99);
-    let cond = doli_core::Condition::Signature(h);
+    let cond = doli_core::Condition::Signature(test_hash(99));
     let s = condition_to_cli_string(&cond);
-    assert!(
-        s.starts_with("signature("),
-        "Signature should serialize as signature(...): {}",
-        s
-    );
-    let parsed = parse_condition(&s).expect("parse should succeed");
-    assert_eq!(cond, parsed, "Signature should round-trip exactly");
+    assert!(s.starts_with("signature("), "bad prefix: {}", s);
+    assert_eq!(cond, parse_condition(&s).unwrap());
 }
 
 #[test]
 fn serialize_timelock_expiry_roundtrip() {
     let cond = doli_core::Condition::TimelockExpiry(999);
+    assert_eq!(condition_to_cli_string(&cond), "timelock_expiry(999)");
+    assert_eq!(cond, parse_condition("timelock_expiry(999)").unwrap());
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// M4: Escrow-Loan (P7) — structure, roundtrip, eval, golden
+// ═══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn escrow_loan_template_constructs_valid_condition_tree() {
+    let lender = test_hash(1);
+    let cond = doli_core::conditions::templates::escrow_loan(lender, 1_050_000_000, 50_000);
+    match &cond {
+        doli_core::Condition::Or(repay, reclaim) => {
+            match repay.as_ref() {
+                doli_core::Condition::And(ag, rg) => {
+                    assert!(matches!(ag.as_ref(), doli_core::Condition::AmountGuard {
+                        min_amount, output_index: 0 } if *min_amount == 1_050_000_000));
+                    assert!(matches!(rg.as_ref(), doli_core::Condition::RecipientGuard {
+                        expected_pubkey_hash, output_index: 0 } if *expected_pubkey_hash == lender));
+                }
+                _ => panic!("repay should be And(AmountGuard, RecipientGuard)"),
+            }
+            match reclaim.as_ref() {
+                doli_core::Condition::And(sig, tl) => {
+                    assert!(
+                        matches!(sig.as_ref(), doli_core::Condition::Signature(h) if *h == lender)
+                    );
+                    assert!(matches!(
+                        tl.as_ref(),
+                        doli_core::Condition::Timelock(50_000)
+                    ));
+                }
+                _ => panic!("reclaim should be And(Signature, Timelock)"),
+            }
+        }
+        _ => panic!("escrow_loan should be Or"),
+    }
+    cond.validate().unwrap();
+}
+
+#[test]
+fn escrow_loan_condition_round_trip() {
+    let cond = doli_core::conditions::templates::escrow_loan(test_hash(1), 500_000_000, 10_000);
+    let encoded = cond.encode().unwrap();
+    assert_eq!(cond, doli_core::Condition::decode(&encoded).unwrap());
     let s = condition_to_cli_string(&cond);
-    assert_eq!(s, "timelock_expiry(999)");
-    let parsed = parse_condition(&s).expect("parse should succeed");
-    assert_eq!(cond, parsed);
+    assert_eq!(cond, parse_condition(&s).unwrap(), "CLI rt: {}", s);
+}
+
+#[test]
+fn escrow_loan_below_min_repayment_rejected() {
+    let lender = test_hash(1);
+    let cond = doli_core::conditions::templates::escrow_loan(lender, 1_000_000_000, 50_000);
+    let tx = doli_core::Transaction::new_transfer(
+        vec![],
+        vec![doli_core::Output::normal(500_000_000, lender)],
+    );
+    let h = test_hash(99);
+    let ctx = doli_core::conditions::EvalContext {
+        current_height: 50_001,
+        signing_hash: &h,
+        transaction: Some(&tx),
+    };
+    let w = doli_core::conditions::Witness {
+        or_branches: vec![false],
+        ..Default::default()
+    };
+    assert!(!doli_core::conditions::evaluate(&cond, &w, &ctx, &mut 0));
+}
+
+#[test]
+fn escrow_loan_correct_recipient_correct_amount_after_deadline_accepted() {
+    let lender = test_hash(1);
+    let cond = doli_core::conditions::templates::escrow_loan(lender, 1_000_000_000, 50_000);
+    let tx = doli_core::Transaction::new_transfer(
+        vec![],
+        vec![doli_core::Output::normal(1_000_000_000, lender)],
+    );
+    let h = test_hash(99);
+    let ctx = doli_core::conditions::EvalContext {
+        current_height: 50_001,
+        signing_hash: &h,
+        transaction: Some(&tx),
+    };
+    let w = doli_core::conditions::Witness {
+        or_branches: vec![false],
+        ..Default::default()
+    };
+    assert!(doli_core::conditions::evaluate(&cond, &w, &ctx, &mut 0));
+}
+
+#[test]
+fn escrow_loan_before_deadline_rejected() {
+    let lender = test_hash(1);
+    let cond = doli_core::conditions::templates::escrow_loan(lender, 1_000_000_000, 50_000);
+    let tx = doli_core::Transaction::new_transfer(vec![], vec![]);
+    let h = test_hash(99);
+    let ctx = doli_core::conditions::EvalContext {
+        current_height: 49_999,
+        signing_hash: &h,
+        transaction: Some(&tx),
+    };
+    let w = doli_core::conditions::Witness {
+        or_branches: vec![true],
+        ..Default::default()
+    };
+    assert!(!doli_core::conditions::evaluate(&cond, &w, &ctx, &mut 0));
+}
+
+#[test]
+fn escrow_loan_wrong_recipient_rejected() {
+    let lender = test_hash(1);
+    let cond = doli_core::conditions::templates::escrow_loan(lender, 1_000_000_000, 50_000);
+    let tx = doli_core::Transaction::new_transfer(
+        vec![],
+        vec![doli_core::Output::normal(1_000_000_000, test_hash(2))],
+    );
+    let h = test_hash(99);
+    let ctx = doli_core::conditions::EvalContext {
+        current_height: 50_001,
+        signing_hash: &h,
+        transaction: Some(&tx),
+    };
+    let w = doli_core::conditions::Witness {
+        or_branches: vec![false],
+        ..Default::default()
+    };
+    assert!(!doli_core::conditions::evaluate(&cond, &w, &ctx, &mut 0));
+}
+
+/// Golden vector — catches accidental wire-format changes.
+/// If this test fails, you changed the condition encoding or CLI serializer.
+#[test]
+fn escrow_loan_golden_vector() {
+    let cond = doli_core::conditions::templates::escrow_loan(test_hash(1), 1_050_000_000, 50_000);
+    let encoded = cond.encode().unwrap();
+    let condition_hex = hex::encode(&encoded);
+    let cli_string = condition_to_cli_string(&cond);
+
+    let golden_path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/cmd_template/testdata/escrow_loan_golden.json"
+    );
+    // Generate golden file if missing (first run only)
+    if !std::path::Path::new(golden_path).exists() {
+        let golden_json = serde_json::json!({
+            "lender_hash": test_hash(1).to_hex(),
+            "repay_amount": 1_050_000_000u64,
+            "deadline": 50_000u64,
+            "condition_hex": condition_hex,
+            "cli_string": cli_string,
+        });
+        std::fs::create_dir_all(std::path::Path::new(golden_path).parent().unwrap()).unwrap();
+        std::fs::write(
+            golden_path,
+            serde_json::to_string_pretty(&golden_json).unwrap(),
+        )
+        .unwrap();
+        eprintln!("Generated golden vector at {}", golden_path);
+        return; // First run: generate only
+    }
+    let golden_content = std::fs::read_to_string(golden_path)
+        .unwrap_or_else(|e| panic!("Missing golden vector at {}: {}", golden_path, e));
+    let golden: serde_json::Value =
+        serde_json::from_str(&golden_content).unwrap_or_else(|e| panic!("Bad golden JSON: {}", e));
+
+    assert_eq!(
+        golden["condition_hex"].as_str().unwrap(),
+        condition_hex,
+        "wire format break"
+    );
+    assert_eq!(
+        golden["cli_string"].as_str().unwrap(),
+        cli_string,
+        "CLI format break"
+    );
+    assert_eq!(
+        cond,
+        doli_core::Condition::decode(
+            &hex::decode(golden["condition_hex"].as_str().unwrap()).unwrap()
+        )
+        .unwrap()
+    );
 }

@@ -11,6 +11,7 @@
 //! 3. **HTLC Payment** — hash-locked payment with signed refund
 //! 4. **Subscription** — time-gated bounded payment
 //! 5. **Agent Allowance** — bounded delegation to an agent
+//! 6. **Escrow Loan** — bilateral OTC loan with guard-based repayment
 
 use crypto::Hash;
 
@@ -203,6 +204,47 @@ pub fn agent_allowance(
     )
 }
 
+/// Bilateral escrow-loan: guard-based repayment OR lender reclaim after deadline.
+///
+/// Per `specs/defi-subsystem-architecture.md` D3: a bilateral OTC loan where
+/// the borrower's collateral UTXO can be spent via two paths:
+///
+/// # Spending Paths
+///
+/// - **Repayment** (left/Or-false): spending TX pays >= `repay_amount` to
+///   `lender_hash` at output index 0. No signature needed beyond standard TX sig.
+///   Witness: `{ or_branches: [false] }`
+/// - **Lender reclaim** (right/Or-true): lender signs after `deadline_height`.
+///   Witness: `{ signatures: [lender_sig], or_branches: [true] }`
+///
+/// # Parameters
+///
+/// - `lender_hash` — pubkey hash of the lender (receives repayment or reclaims)
+/// - `repay_amount` — minimum repayment (principal + interest) in base units
+/// - `deadline_height` — block height after which lender can reclaim collateral
+///
+/// # Depth
+///
+/// Nesting depth is 2 (Or(And(.., ..), And(.., ..))). Fits within MAX_CONDITION_DEPTH=4.
+pub fn escrow_loan(
+    lender_hash: Hash,
+    repay_amount: Amount,
+    deadline_height: BlockHeight,
+) -> Condition {
+    Condition::Or(
+        // Repayment path: spending TX output[0] pays >= repay_amount to lender
+        Box::new(Condition::And(
+            Box::new(Condition::amount_guard(repay_amount, 0)),
+            Box::new(Condition::recipient_guard(lender_hash, 0)),
+        )),
+        // Lender reclaim path: lender signs after deadline
+        Box::new(Condition::And(
+            Box::new(Condition::Signature(lender_hash)),
+            Box::new(Condition::Timelock(deadline_height)),
+        )),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -232,6 +274,9 @@ mod tests {
     // | agent_allowance  | valid                  | constructor| And(And(Sig, RecipGuard), AmountGuard)               |
     // | agent_allowance  | round-trip             | enc/dec    | decode(encode(aa)) == aa                            |
     // | agent_allowance  | size + depth check     | validate   | validate() OK, size <= MAX_EXTRA_DATA_SIZE          |
+    // | escrow_loan      | typical inputs         | constructor| Or(And(AmtGuard,RecipGuard), And(Sig,Timelock))     |
+    // | escrow_loan      | round-trip             | enc/dec    | decode(encode(el)) == el                            |
+    // | escrow_loan      | size + depth check     | validate   | validate() OK, size <= MAX_EXTRA_DATA_SIZE          |
 
     // ── vault ────────────────────────────────────────────────────────────
 
@@ -494,5 +539,59 @@ mod tests {
         cond.validate().unwrap();
         let size = cond.encode().unwrap().len();
         assert!(size <= MAX_EXTRA_DATA_SIZE, "agent_allowance {size} > max");
+    }
+
+    // ── escrow_loan ─────────────────────────────────────────────────────
+
+    #[test]
+    fn escrow_loan_structure() {
+        let lender = test_hash(1);
+        let repay_amount: Amount = 1_050_000_000; // 10.5 DOLI
+        let deadline: BlockHeight = 50_000;
+
+        let cond = escrow_loan(lender, repay_amount, deadline);
+
+        // Expected: Or(And(AmountGuard, RecipientGuard), And(Signature, Timelock))
+        match cond {
+            Condition::Or(repay_path, reclaim_path) => {
+                // Left: repayment guards
+                match *repay_path {
+                    Condition::And(ref ag, ref rg) => {
+                        assert!(matches!(**ag, Condition::AmountGuard {
+                            min_amount, output_index: 0,
+                        } if min_amount == 1_050_000_000));
+                        assert!(matches!(**rg, Condition::RecipientGuard {
+                            expected_pubkey_hash, output_index: 0,
+                        } if expected_pubkey_hash == lender));
+                    }
+                    _ => panic!("repay path should be And(AmountGuard, RecipientGuard)"),
+                }
+                // Right: lender reclaim after deadline
+                match *reclaim_path {
+                    Condition::And(ref sig, ref tl) => {
+                        assert!(matches!(**sig, Condition::Signature(h) if h == lender));
+                        assert!(matches!(**tl, Condition::Timelock(50_000)));
+                    }
+                    _ => panic!("reclaim path should be And(Signature, Timelock)"),
+                }
+            }
+            _ => panic!("escrow_loan should be Or(repay, reclaim)"),
+        }
+    }
+
+    #[test]
+    fn escrow_loan_roundtrip() {
+        let cond = escrow_loan(test_hash(1), 500_000_000, 10_000);
+        let encoded = cond.encode().unwrap();
+        let decoded = Condition::decode(&encoded).unwrap();
+        assert_eq!(cond, decoded);
+    }
+
+    #[test]
+    fn escrow_loan_validates_and_fits() {
+        let cond = escrow_loan(test_hash(1), 1_000_000_000, 50_000);
+        cond.validate().unwrap();
+        let size = cond.encode().unwrap().len();
+        assert!(size <= MAX_EXTRA_DATA_SIZE, "escrow_loan {size} > max");
     }
 }

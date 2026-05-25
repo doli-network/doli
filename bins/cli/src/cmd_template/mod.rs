@@ -1,6 +1,7 @@
 mod agent_allowance;
 mod dispatch;
 mod escrow;
+mod escrow_loan;
 mod htlc_payment;
 mod serialize;
 mod subscription;

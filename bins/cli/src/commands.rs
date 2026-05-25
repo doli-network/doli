@@ -634,7 +634,7 @@ pub(crate) enum Commands {
         yes: bool,
     },
 
-    /// Covenant condition templates (vault, escrow, htlc, subscription, agent-allowance)
+    /// Covenant condition templates (vault, escrow, htlc, subscription, agent-allowance, escrow-loan)
     Template {
         #[command(subcommand)]
         command: TemplateCommands,
@@ -1384,6 +1384,37 @@ pub(crate) enum TemplateCommands {
         /// Amount to fund (required with --send)
         #[arg(long = "send-amount")]
         send_amount: Option<String>,
+
+        /// Fee (optional, default: auto)
+        #[arg(long)]
+        fee: Option<String>,
+    },
+
+    /// Bilateral escrow-loan (OTC loan with guard-based repayment)
+    EscrowLoan {
+        /// Lender address (doli1... or hex) -- receives repayment or reclaims collateral
+        #[arg(long)]
+        lender: String,
+
+        /// Minimum repayment amount, principal + interest (DOLI notation, e.g. 10.5)
+        #[arg(long)]
+        repay_amount: String,
+
+        /// Block height after which lender can reclaim collateral
+        #[arg(long)]
+        deadline: u64,
+
+        /// Broadcast the transaction directly (default: dry-run prints condition string)
+        #[arg(long)]
+        send: bool,
+
+        /// Recipient address for the collateral output (required with --send)
+        #[arg(long)]
+        to: Option<String>,
+
+        /// Collateral amount to lock (required with --send)
+        #[arg(long)]
+        amount: Option<String>,
 
         /// Fee (optional, default: auto)
         #[arg(long)]

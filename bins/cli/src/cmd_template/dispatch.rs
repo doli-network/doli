@@ -8,6 +8,7 @@ use crate::commands::TemplateCommands;
 
 use super::agent_allowance::handle_agent_allowance;
 use super::escrow::handle_escrow;
+use super::escrow_loan::handle_escrow_loan;
 use super::htlc_payment::handle_htlc_payment;
 use super::subscription::handle_subscription;
 use super::vault::{handle_vault, SendOpts};
@@ -90,6 +91,19 @@ pub(crate) async fn cmd_template(
                 build_send_opts(send, wallet_path, rpc_endpoint, &to, &send_amount, &fee)?;
             handle_agent_allowance(&agent, &recipient, &allow_amount, output_index, send_opts)
                 .await?;
+        }
+
+        TemplateCommands::EscrowLoan {
+            lender,
+            repay_amount,
+            deadline,
+            send,
+            to,
+            amount,
+            fee,
+        } => {
+            let send_opts = build_send_opts(send, wallet_path, rpc_endpoint, &to, &amount, &fee)?;
+            handle_escrow_loan(&lender, &repay_amount, deadline, send_opts).await?;
         }
     }
 
