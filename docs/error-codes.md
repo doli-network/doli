@@ -161,6 +161,20 @@ Used in `ValidationError::InvalidTransaction(String)` across `crates/core/src/va
 | `ERRTX066` | LendingWithdraw requires at least 1 input | -- |
 | `ERRTX067` | LendingWithdraw requires at least 1 output | -- |
 
+### Phase 2.1 Oracle (validation/transaction.rs, validation/tx_types.rs)
+
+All four codes are emitted only after `oracle_activation_height` has been
+crossed (default `u64::MAX` on all networks — unreachable in production
+until a future binary flips the height). Templates live in
+`crates/core/src/validation/errors_oracle.rs`.
+
+| Code | Description | Context Variables |
+|------|-------------|-------------------|
+| `ERRTX-ORACLE001` | `PriceAttestation` tx submitted before `oracle_activation_height` | `current_height`, `activation_height` |
+| `ERRTX-ORACLE002` | Duplicate attestation for `(attester, epoch, pair_id)` (RESERVED — current implementation handles dedup via silent latest-wins at the M6 aggregator; consensus-strict reject deferred) | `attester`, `epoch`, `pair_id` |
+| `ERRTX-ORACLE003` | Oracle sunset triggered (structural-bond-share fell below 5500 bps = 55.00%) | `share_bps`, threshold=5500 |
+| `ERRTX-ORACLE004` | `OraclePrice` output (type=15) cannot be user-created (system-only — apply_block at epoch boundary is the sole legitimate writer) | `output_index` |
+
 ### Block Validation (validation_checks.rs)
 
 | Code | Description | Context Variables |

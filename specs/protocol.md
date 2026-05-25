@@ -172,7 +172,7 @@ output = {
 }
 ```
 
-**Output Types (13 total):**
+**Output Types (16 total):**
 
 | ID | Type | Purpose | extra_data |
 |----|------|---------|------------|
@@ -189,10 +189,19 @@ output = {
 | 10 | LPShare | Liquidity provider share (transferable) | Pool ID |
 | 11 | Collateral | Lending collateral (locked loan collateral) | Loan metadata |
 | 12 | LendingDeposit | Lending pool deposit receipt | Deposit metadata |
+| 13 | ZKRollup | L2 committed state (verifying_key + state_root) | `ZkRollupData` (per `specs/l2-settlement.md`) |
+| 14 | EncryptedContent | Privacy-first NFT replacement | `[ciphertext_len(4 LE) | ciphertext | wrapped_key(80) | nonce(12) | content_hash(32)]` (≥128 bytes) |
+| 15 | OraclePrice | Phase 2.1 oracle aggregated price (system-only UTXO) | 50 bytes: `[price_cents(8 LE) | last_update_height(8 LE) | contributor_count(2 LE) | pair_id(32)]` |
 
 Output types 2-8 use the programmable conditions system (`crates/core/src/conditions/`)
 with composable predicates (Signature, Multisig, Hashlock, Timelock, And, Or, Threshold).
 Output types 9-12 are DeFi primitives for the AMM pool and lending systems.
+OutputType 13 (ZKRollup) is the L2 settlement commitment — see `specs/l2-settlement.md`.
+OutputType 14 (EncryptedContent) is the privacy-first NFT replacement.
+OutputType 15 (OraclePrice) is the Phase 2.1 oracle's per-pair singleton — created
+and consumed exclusively by `apply_block` at epoch boundaries (system-spent only;
+user transactions cannot mint one — validation hard-rejects with `[ERRTX-ORACLE004]`).
+See `specs/oracle-structural-anchored-economics.md` §1.2.
 
 **Bond UTXO extra_data format:**
 ```
@@ -815,7 +824,54 @@ burn_asset_tx = {
 }
 ```
 
-**Note**: TxType 16 and 23 are reserved and not used.
+### 3.21 Phase 2.1 Oracle Transactions
+
+#### PriceAttestation (type 16)
+
+Submitted by a bonded producer (the "attester") containing a price observation
+for an asset pair, scoped to a single epoch. At the epoch-boundary block,
+`apply_block` aggregates all valid attestations into the per-pair OraclePrice
+UTXO (OutputType=15) using bond-weighted median. Gated by
+`oracle_activation_height` in `NetworkParams` (default `u64::MAX` on all
+networks until a future binary flips it).
+
+```
+{
+    version: 1,
+    type: 16,                    // TxType::PriceAttestation
+    inputs: [],                  // ALWAYS empty (purely informational)
+    outputs: [],                 // ALWAYS empty (no UTXO mutation)
+    extra_data: PriceAttestationData (144 bytes)
+}
+```
+
+`extra_data` layout (144 bytes, fixed, no legacy form):
+
+```
+offset   0  signer_pubkey   [u8; 32]   Ed25519 verifying key
+offset  32  price_cents     u64 LE      attested price in USD cents
+offset  40  pair_id         [u8; 32]    BLAKE3("ORACLE_PAIR" || pair_string)
+offset  72  epoch_number    u64 LE      epoch in which attestation is valid
+offset  80  signature       [u8; 64]    Ed25519 sig over signing_message()
+```
+
+`signing_message() = BLAKE3(pair_id || price_cents.to_le_bytes() || epoch_number.to_le_bytes())`
+— no domain prefix (spec §1.1 verbatim).
+
+**Validation rules** (`validate_transaction` PriceAttestation arm):
+1. `current_height ≥ oracle_activation_height` (`[ERRTX-ORACLE001]`)
+2. M8 sunset NOT triggered (`[ERRTX-ORACLE003]`)
+3. `signer_pubkey ∈ ctx.active_producers`
+4. `epoch_number == reward_epoch::from_height(current_height)`
+5. Signature verifies over `signing_message()`
+6. Structural: no inputs, no outputs, 144-byte extra_data
+
+Rule 4 (pool-liquidity check) and the consensus-strict at-most-one-per-attester
+rule are deferred to the M6 aggregator (`bins/node/src/node/apply_block/oracle.rs`).
+The aggregator dedups latest-per-attester defensively before computing the
+median.
+
+See `specs/oracle-structural-anchored-economics.md` §1.1.
 
 ### 3.22 AMM Pool Transactions
 

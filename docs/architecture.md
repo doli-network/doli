@@ -181,7 +181,11 @@ crypto ──► wallet (shared wallet library, NO vdf/doli-core)
 26. LendingDeposit (27) - Deposit DOLI into lending pool
 27. LendingWithdraw (28) - Withdraw DOLI + interest from lending pool
 
-**Note:** TxType 16 and 23 are reserved and not used.
+**Note:** TxType 16 is `PriceAttestation` (Phase 2.1 oracle, gated by
+`oracle_activation_height` — currently `u64::MAX` on all networks, so
+unreachable in production until a future binary flips the height). TxType 23
+remains reserved and unused. See `specs/protocol.md` §3.21 and
+`specs/oracle-structural-anchored-economics.md`.
 
 ### 3.4. Configuration Hierarchy
 

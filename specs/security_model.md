@@ -864,9 +864,13 @@ user could submit them via raw RPC at any height. Several have known
 semantic gaps that the structural validators do not catch:
 
 - `validate_liquidate_loan` performs two checks (≥ 1 input, ≥ 1 output) and
-  delegates everything else to apply_block. There is no price-oracle
-  integration in core; any actor with the liquidation TX format could drain
-  undercollateralized loans.
+  delegates everything else to apply_block. The lending subsystem still has
+  no oracle consumer in core (Phase 2.3 design will wire the OraclePrice UTXO
+  in); any actor with the liquidation TX format could drain undercollateralized
+  loans. Phase 2.1 ships the oracle PROVIDER side (TxType 16 PriceAttestation +
+  OutputType 15 OraclePrice + bond-weighted median aggregator + 55% structural-
+  share sunset) — gated by `oracle_activation_height = u64::MAX` until a
+  future binary activates it. See `specs/oracle-structural-anchored-economics.md`.
 - `validate_create_loan` does not pin `outputs[0].pubkey_hash` to the
   derived loan address — a borrower could put their own pubkey_hash there
   and later spend the `Collateral` UTXO with a single signature.
