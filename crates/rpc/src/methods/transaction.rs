@@ -193,7 +193,7 @@ impl RpcContext {
         // Add to mempool — state-only txs (Exit, RequestWithdrawal, etc.) bypass
         // UTXO fee accounting since they have no inputs by design. Their spam
         // protection comes from requiring a registered producer bond.
-        {
+        let diagnostic = {
             let chain_state = self.chain_state.read().await;
             let current_height = chain_state.best_height;
             drop(chain_state);
@@ -204,18 +204,36 @@ impl RpcContext {
                 mempool
                     .add_system_transaction(tx.clone(), current_height)
                     .map_err(Self::mempool_error_to_rpc)?;
+                None
             } else {
                 let utxo_set = self.utxo_set.read().await;
-                mempool
+                let result = mempool
                     .add_transaction(tx.clone(), &utxo_set, current_height)
                     .map_err(Self::mempool_error_to_rpc)?;
+                result.diagnostic.contention.clone()
             }
-        }
+        };
 
         // Broadcast to network
         (self.broadcast_tx)(tx);
 
-        Ok(Value::String(tx_hash.to_hex()))
+        // Build response: always include hash, optionally include warnings
+        if let Some(contention) = diagnostic {
+            Ok(serde_json::json!({
+                "hash": tx_hash.to_hex(),
+                "warnings": [{
+                    "type": "POOL_CONTENTION",
+                    "competing_count": contention.competing_count,
+                    "pool_utxo": format!("{}:{}", contention.pool_utxo_tx.to_hex(), contention.pool_utxo_index),
+                    "message": format!(
+                        "Pool UTXO is contested by {} other pending transaction(s). Your TX may be deferred or fail.",
+                        contention.competing_count
+                    ),
+                }],
+            }))
+        } else {
+            Ok(Value::String(tx_hash.to_hex()))
+        }
     }
 
     /// Convert a MempoolError to a structured RpcError with full context.

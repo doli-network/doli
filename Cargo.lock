@@ -4122,6 +4122,7 @@ dependencies = [
  "crypto",
  "doli-core",
  "proptest",
+ "serde",
  "serde_json",
  "storage",
  "thiserror 1.0.69",

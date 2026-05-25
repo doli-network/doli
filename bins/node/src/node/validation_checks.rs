@@ -865,10 +865,14 @@ impl Node {
             let mut mempool = self.mempool.write().await;
             if is_state_only {
                 // State-only txs have no inputs/outputs/fees — use system tx path
-                mempool.add_system_transaction(tx.clone(), current_height)
+                mempool
+                    .add_system_transaction(tx.clone(), current_height)
+                    .map(|_| ())
             } else {
                 let utxo = self.utxo_set.read().await;
-                mempool.add_transaction(tx.clone(), &utxo, current_height)
+                mempool
+                    .add_transaction(tx.clone(), &utxo, current_height)
+                    .map(|_| ())
             }
         };
 

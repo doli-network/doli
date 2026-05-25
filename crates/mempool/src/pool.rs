@@ -12,6 +12,10 @@ use storage::{Outpoint, UtxoSet};
 use thiserror::Error;
 use tracing::{debug, info, warn};
 
+use super::contention::{
+    find_pool_input, is_pool_contention_type, AddTransactionResult, ContentionInfo,
+    MempoolDiagnostic,
+};
 use super::entry::MempoolEntry;
 use super::policy::MempoolPolicy;
 
@@ -158,6 +162,10 @@ pub struct Mempool {
     by_address: HashMap<Hash, HashSet<Hash>>,
     /// Spent outpoints in mempool
     spent_outputs: HashMap<Outpoint, Hash>,
+    /// Pool UTXO contention index: tracks which Pool outpoints are being
+    /// spent by pending AMM transactions (Swap/AddLiquidity/RemoveLiquidity).
+    /// Used to generate pre-simulation contention diagnostics.
+    pool_utxo_contention: HashMap<Outpoint, HashSet<Hash>>,
     /// Policy settings
     policy: MempoolPolicy,
     /// Total size of all transactions
@@ -176,6 +184,7 @@ impl Mempool {
             by_fee_rate: BTreeSet::new(),
             by_address: HashMap::new(),
             spent_outputs: HashMap::new(),
+            pool_utxo_contention: HashMap::new(),
             policy,
             total_size: 0,
             params,
@@ -207,7 +216,7 @@ impl Mempool {
         tx: Transaction,
         utxo_set: &UtxoSet,
         current_height: BlockHeight,
-    ) -> Result<Hash, MempoolError> {
+    ) -> Result<AddTransactionResult, MempoolError> {
         let tx_hash = tx.hash();
 
         // Check if already in mempool
@@ -367,6 +376,25 @@ impl Mempool {
             }
         }
 
+        // --- Pool UTXO contention detection (pre-simulation diagnostic) ---
+        // Detect contention BEFORE the double-spend check so we can provide
+        // a richer diagnostic when a double-spend involves a Pool UTXO.
+        let pool_outpoint = if is_pool_contention_type(tx.tx_type) {
+            find_pool_input(&tx, utxo_set)
+        } else {
+            None
+        };
+
+        let contention_info = pool_outpoint.as_ref().and_then(|op| {
+            self.pool_utxo_contention
+                .get(op)
+                .map(|competing_txs| ContentionInfo {
+                    competing_count: competing_txs.len(),
+                    pool_utxo_tx: op.tx_hash,
+                    pool_utxo_index: op.index,
+                })
+        });
+
         // Check for double-spend with mempool
         for input in &tx.inputs {
             let outpoint = Outpoint::new(input.prev_tx_hash, input.output_index);
@@ -419,6 +447,14 @@ impl Mempool {
             }
         }
 
+        // --- Update pool contention index ---
+        if let Some(op) = pool_outpoint {
+            self.pool_utxo_contention
+                .entry(op)
+                .or_default()
+                .insert(tx_hash);
+        }
+
         // Add to indexes
         self.by_fee_rate.insert((fee_rate, tx_hash));
         self.total_size += tx_size;
@@ -428,7 +464,13 @@ impl Mempool {
             "Added transaction {} to mempool (fee_rate: {})",
             tx_hash, fee_rate
         );
-        Ok(tx_hash)
+
+        Ok(AddTransactionResult {
+            tx_hash,
+            diagnostic: MempoolDiagnostic {
+                contention: contention_info,
+            },
+        })
     }
 
     /// Add a system transaction to the mempool (bypasses fee requirements)
@@ -516,6 +558,20 @@ impl Mempool {
             self.spent_outputs.remove(&outpoint);
         }
 
+        // --- Clean up pool contention index ---
+        if is_pool_contention_type(entry.tx.tx_type) {
+            // Remove this tx from any pool contention sets it appears in
+            for input in &entry.tx.inputs {
+                let outpoint = Outpoint::new(input.prev_tx_hash, input.output_index);
+                if let Some(set) = self.pool_utxo_contention.get_mut(&outpoint) {
+                    set.remove(tx_hash);
+                    if set.is_empty() {
+                        self.pool_utxo_contention.remove(&outpoint);
+                    }
+                }
+            }
+        }
+
         // Update ancestors' descendants
         for ancestor_hash in &entry.ancestors {
             if let Some(ancestor) = self.entries.get_mut(ancestor_hash) {
@@ -581,6 +637,22 @@ impl Mempool {
     /// Check if an outpoint is being spent by a mempool transaction.
     pub fn is_outpoint_spent(&self, outpoint: &Outpoint) -> bool {
         self.spent_outputs.contains_key(outpoint)
+    }
+
+    /// Get the number of pending AMM transactions contending for a Pool UTXO.
+    ///
+    /// Returns 0 if no transactions reference this outpoint in the contention index.
+    pub fn pool_contention_count(&self, outpoint: &Outpoint) -> usize {
+        self.pool_utxo_contention
+            .get(outpoint)
+            .map_or(0, |set| set.len())
+    }
+
+    /// Get the number of distinct Pool UTXO outpoints in the contention index.
+    ///
+    /// Useful for testing that non-AMM transactions don't pollute the index.
+    pub fn pool_contention_index_len(&self) -> usize {
+        self.pool_utxo_contention.len()
     }
 
     /// Get minimum fee rate for acceptance
@@ -1027,10 +1099,10 @@ mod tests {
         let (utxo_set, tx_hash, pubkey_hash) = funded_utxo(10_000);
         let tx = simple_transfer(tx_hash, 10_000, 1_000, pubkey_hash);
 
-        let hash = mempool.add_transaction(tx, &utxo_set, 100).unwrap();
+        let result = mempool.add_transaction(tx, &utxo_set, 100).unwrap();
         assert_eq!(mempool.len(), 1);
 
-        let removed = mempool.remove_transaction(&hash);
+        let removed = mempool.remove_transaction(&result.tx_hash);
         assert!(removed.is_some());
         assert_eq!(mempool.len(), 0);
         assert!(mempool.is_empty());
