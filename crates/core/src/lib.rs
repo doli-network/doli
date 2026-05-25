@@ -128,6 +128,7 @@ pub mod maintainer;
 pub mod network;
 pub mod network_params;
 pub mod nft;
+pub mod oracle;
 pub mod pool;
 pub mod presence;
 pub mod rewards;

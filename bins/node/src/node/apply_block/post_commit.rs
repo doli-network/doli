@@ -341,6 +341,18 @@ impl Node {
             batch.put_epoch_state(&new_state.serialize());
             batch.put_epoch_state_version(EPOCH_STATE_FORMAT_VERSION);
 
+            // Phase 2.1 Oracle M6 — aggregate epoch attestations into
+            // the per-pair OraclePrice UTXO. MUST run before the
+            // self.epoch_state rotation below: the aggregator depends
+            // on the CLOSING epoch's bond_snapshot, which still lives
+            // in `self.epoch_state` at this point. Gated by
+            // `oracle_activation_height` (u64::MAX on all networks
+            // until a future binary flips it) — pre-activation this is
+            // a no-op.
+            //
+            // Spec: specs/oracle-structural-anchored-economics.md §1.3.
+            self.aggregate_oracle_prices_at_epoch_boundary(height).await;
+
             // Apply the new epoch state
             self.epoch_state = new_state;
 

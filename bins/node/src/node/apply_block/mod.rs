@@ -5,6 +5,7 @@ mod diagnostics;
 mod genesis_completion;
 mod governance;
 mod helpers;
+mod oracle;
 mod post_commit;
 mod state_update;
 mod tx_processing;
