@@ -379,7 +379,10 @@ mod tests {
         let SlashingEvidence::DoubleProduction {
             block_header_1,
             block_header_2,
-        } = slash_data.evidence;
+        } = slash_data.evidence
+        else {
+            panic!("expected DoubleProduction evidence");
+        };
         assert_eq!(block_header_1.slot, 42);
         assert_eq!(block_header_2.slot, 42);
         assert_eq!(block_header_1.hash(), header1.hash());

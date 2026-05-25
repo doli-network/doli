@@ -247,7 +247,10 @@ async fn test_proof_to_slash_transaction() {
     let SlashingEvidence::DoubleProduction {
         block_header_1,
         block_header_2,
-    } = &slash_data.evidence;
+    } = &slash_data.evidence
+    else {
+        panic!("expected DoubleProduction evidence");
+    };
     assert_eq!(block_header_1.slot, slot);
     assert_eq!(block_header_2.slot, slot);
     assert_ne!(block_header_1.hash(), block_header_2.hash());

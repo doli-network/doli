@@ -73,6 +73,14 @@ pub struct ClaimBondData {
 
 /// Evidence of producer misbehavior for slashing
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(clippy::large_enum_variant)]
+// SlashProducer txs are rare (single-digit per chain lifetime so far)
+// and the size disparity reflects the irreducible weight of carrying
+// two full block headers in the DoubleProduction variant. Boxing
+// would change the in-memory ABI without saving wire bytes (bincode
+// treats `Box<T>` as `T`) and would force every consumer to chase a
+// pointer in the hot validation path. Accept the size; the lint is
+// noise here.
 pub enum SlashingEvidence {
     /// Producer created two different blocks for the same slot
     /// This is the ONLY slashable offense - it's unambiguously intentional
@@ -87,6 +95,39 @@ pub enum SlashingEvidence {
         block_header_1: crate::BlockHeader,
         /// Second block header (complete, for VDF verification)
         block_header_2: crate::BlockHeader,
+    },
+    /// Phase 2.1 Oracle: producer submitted two `PriceAttestation`
+    /// transactions with the same `(signer_pubkey, epoch_number,
+    /// pair_id)` but DIFFERENT `price_cents`.
+    ///
+    /// This is the oracle analog of double-production: the attester
+    /// has explicitly stated two contradictory prices, signed both,
+    /// and broadcast both. Like double-production, it is
+    /// unambiguously intentional (the attester signed each payload
+    /// with their private key) and incurs 100% bond burn via the
+    /// existing `calculate_slash`.
+    ///
+    /// Spec: `specs/oracle-structural-anchored-economics.md` §1.4.
+    /// Predecessor: M6 62e13291 (aggregator); the median is what the
+    /// equivocator is trying to bias, and equivocation is the only
+    /// slashable misbehavior at the oracle layer (honest deviation
+    /// from median is NOT slashable per spec §1.4 — prevents
+    /// herding).
+    ///
+    /// Validation (`validate_slash_data`, M7):
+    ///   - `attestation_1.signer_pubkey == attestation_2.signer_pubkey`
+    ///   - `attestation_1.epoch_number == attestation_2.epoch_number`
+    ///   - `attestation_1.pair_id == attestation_2.pair_id`
+    ///   - `attestation_1.price_cents != attestation_2.price_cents`
+    ///   - both signatures verify against `signer_pubkey`
+    ///   - the `signer_pubkey` matches `slash_data.producer_pubkey`
+    ///   - oracle activation height has been crossed
+    PriceAttestationEquivocation {
+        /// First conflicting attestation.
+        attestation_1: PriceAttestationData,
+        /// Second conflicting attestation (different price, same
+        /// signer/epoch/pair).
+        attestation_2: PriceAttestationData,
     },
     // Note: Invalid blocks are NOT slashable. The network simply rejects them.
     // This follows Bitcoin's philosophy: natural consequences (lost slot/reward)

@@ -233,6 +233,17 @@ pub(super) fn validate_slash_data(
                 )
             })?;
         }
+        crate::transaction::SlashingEvidence::PriceAttestationEquivocation {
+            attestation_1,
+            attestation_2,
+        } => {
+            validate_price_attestation_equivocation_evidence(
+                ctx,
+                &slash_data.producer_pubkey,
+                attestation_1,
+                attestation_2,
+            )?;
+        }
     }
 
     // Note: The following validations are done at the node level:
@@ -296,7 +307,118 @@ pub(super) fn validate_slash_data_skip_vdf(
             }
             // VDF verification skipped — already verified in parallel pre-pass
         }
+        crate::transaction::SlashingEvidence::PriceAttestationEquivocation {
+            attestation_1,
+            attestation_2,
+        } => {
+            // No VDF in PriceAttestation evidence — signatures are
+            // the proof. We always verify them; there is no "skip"
+            // shortcut equivalent for this variant.
+            validate_price_attestation_equivocation_evidence(
+                _ctx,
+                &slash_data.producer_pubkey,
+                attestation_1,
+                attestation_2,
+            )?;
+        }
     }
+    Ok(())
+}
+
+/// Validate evidence for `SlashingEvidence::PriceAttestationEquivocation`
+/// — Phase 2.1 Oracle M7. Spec §1.4.
+///
+/// Returns `Ok(())` only when ALL of the following hold:
+///   - `attestation_1.signer_pubkey == attestation_2.signer_pubkey`
+///   - `slash_data.producer_pubkey == that signer_pubkey`
+///   - `attestation_1.epoch_number == attestation_2.epoch_number`
+///   - `attestation_1.pair_id == attestation_2.pair_id`
+///   - `attestation_1.price_cents != attestation_2.price_cents`
+///     (otherwise the "two" attestations are identical — not
+///     equivocation, just a duplicate that M4 rule 5 already rejects)
+///   - both signatures verify against the shared `signer_pubkey`
+///     over each attestation's `signing_message()`
+///   - `ctx.current_height >= ctx.oracle_activation_height`
+///     (defense-in-depth — pre-activation no valid PriceAttestation
+///     can exist, but explicitly gating avoids any pathological
+///     fabricated-evidence path).
+fn validate_price_attestation_equivocation_evidence(
+    ctx: &ValidationContext,
+    producer_pubkey: &crypto::PublicKey,
+    attestation_1: &crate::transaction::PriceAttestationData,
+    attestation_2: &crate::transaction::PriceAttestationData,
+) -> Result<(), ValidationError> {
+    // Activation gate — equivocation evidence is unreachable
+    // pre-activation because M4 rejects PriceAttestation submission
+    // entirely. Re-check here for defense-in-depth.
+    if ctx.current_height < ctx.oracle_activation_height {
+        return Err(ValidationError::InvalidSlash(format!(
+            "price attestation equivocation evidence rejected: oracle not activated \
+             (current_height={} activation_height={})",
+            ctx.current_height, ctx.oracle_activation_height
+        )));
+    }
+
+    // 1. Same signer in both attestations.
+    if attestation_1.signer_pubkey != attestation_2.signer_pubkey {
+        return Err(ValidationError::InvalidSlash(
+            "price attestation equivocation: attestations have different signers".to_string(),
+        ));
+    }
+
+    // 2. Slash target matches the equivocating signer.
+    if attestation_1.signer_pubkey != *producer_pubkey {
+        return Err(ValidationError::InvalidSlash(
+            "price attestation equivocation: evidence signer does not match slash target"
+                .to_string(),
+        ));
+    }
+
+    // 3. Same epoch — equivocation is per-epoch only.
+    if attestation_1.epoch_number != attestation_2.epoch_number {
+        return Err(ValidationError::InvalidSlash(
+            "price attestation equivocation: attestations are from different epochs".to_string(),
+        ));
+    }
+
+    // 4. Same pair_id.
+    if attestation_1.pair_id != attestation_2.pair_id {
+        return Err(ValidationError::InvalidSlash(
+            "price attestation equivocation: attestations are for different pairs".to_string(),
+        ));
+    }
+
+    // 5. Different prices — otherwise it's just a duplicate, not
+    //    equivocation. (M4 rule 5 rejects duplicates at validation,
+    //    so this would not be a slashable offense anyway.)
+    if attestation_1.price_cents == attestation_2.price_cents {
+        return Err(ValidationError::InvalidSlash(
+            "price attestation equivocation: attestations have identical price_cents".to_string(),
+        ));
+    }
+
+    // 6. Both signatures must verify against the shared signer.
+    crypto::signature::verify_hash(
+        &attestation_1.signing_message(),
+        &attestation_1.signature,
+        &attestation_1.signer_pubkey,
+    )
+    .map_err(|_| {
+        ValidationError::InvalidSlash(
+            "price attestation equivocation: first attestation signature invalid".to_string(),
+        )
+    })?;
+    crypto::signature::verify_hash(
+        &attestation_2.signing_message(),
+        &attestation_2.signature,
+        &attestation_2.signer_pubkey,
+    )
+    .map_err(|_| {
+        ValidationError::InvalidSlash(
+            "price attestation equivocation: second attestation signature invalid".to_string(),
+        )
+    })?;
+
     Ok(())
 }
 

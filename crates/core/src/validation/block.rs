@@ -258,27 +258,34 @@ pub fn validate_block_with_mode(
                                     if let Ok(slash_data) =
                                         bincode::deserialize::<SlashData>(&tx.extra_data)
                                     {
-                                        let crate::transaction::SlashingEvidence::DoubleProduction {
+                                        // Only DoubleProduction evidence carries VDFs
+                                        // worth verifying in the parallel pre-pass.
+                                        // PriceAttestationEquivocation evidence (M7) is
+                                        // signature-only and is verified sequentially in
+                                        // `validate_slash_data_skip_vdf` below.
+                                        if let crate::transaction::SlashingEvidence::DoubleProduction {
                                             ref block_header_1,
                                             ref block_header_2,
-                                        } = slash_data.evidence;
-                                        if validate_vdf(block_header_1, network).is_err() {
-                                            let mut guard = err_ref.lock().unwrap();
-                                            if guard.is_none() {
-                                                *guard = Some(ValidationError::InvalidSlash(
-                                                    "invalid VDF proof in first block header"
-                                                        .to_string(),
-                                                ));
+                                        } = slash_data.evidence
+                                        {
+                                            if validate_vdf(block_header_1, network).is_err() {
+                                                let mut guard = err_ref.lock().unwrap();
+                                                if guard.is_none() {
+                                                    *guard = Some(ValidationError::InvalidSlash(
+                                                        "invalid VDF proof in first block header"
+                                                            .to_string(),
+                                                    ));
+                                                }
+                                                return;
                                             }
-                                            return;
-                                        }
-                                        if validate_vdf(block_header_2, network).is_err() {
-                                            let mut guard = err_ref.lock().unwrap();
-                                            if guard.is_none() {
-                                                *guard = Some(ValidationError::InvalidSlash(
-                                                    "invalid VDF proof in second block header"
-                                                        .to_string(),
-                                                ));
+                                            if validate_vdf(block_header_2, network).is_err() {
+                                                let mut guard = err_ref.lock().unwrap();
+                                                if guard.is_none() {
+                                                    *guard = Some(ValidationError::InvalidSlash(
+                                                        "invalid VDF proof in second block header"
+                                                            .to_string(),
+                                                    ));
+                                                }
                                             }
                                         }
                                     }

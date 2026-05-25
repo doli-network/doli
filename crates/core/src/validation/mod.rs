@@ -38,6 +38,8 @@ mod tests;
 mod tests_errors_oracle;
 #[cfg(test)]
 mod tests_oracle;
+#[cfg(test)]
+mod tests_oracle_slash;
 mod transaction;
 mod tx_types;
 mod types;

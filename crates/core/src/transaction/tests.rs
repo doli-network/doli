@@ -360,6 +360,7 @@ fn test_slash_producer_serialization() {
             assert_eq!(block_header_1.slot, 99999);
             assert_eq!(block_header_2.slot, 99999);
         }
+        SlashingEvidence::PriceAttestationEquivocation { .. } => unreachable!(),
     }
 }
 
