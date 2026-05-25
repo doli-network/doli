@@ -34,6 +34,8 @@
 //! | 0x13 | AmountGuard        | 8B min_amount (LE) + 1B output_index       |
 //! | 0x14 | OutputTypeGuard    | 1B expected_type + 1B output_index         |
 //! | 0x15 | RecipientGuard     | 32B expected_pubkey_hash + 1B output_index |
+//! | 0x16 | MaxDeltaGuard      | 2B max_change_bps (LE) + 8B reference_amount (LE) + 1B output_index |
+//! | 0x17 | ReserveRatioGuard  | 2B min_ratio_bps (LE) + 1B reserve_output_index + 1B debt_output_index |
 
 mod encoding;
 mod eval;
@@ -94,6 +96,13 @@ pub(crate) const TAG_THRESHOLD: u8 = 0x12;
 pub(crate) const TAG_AMOUNT_GUARD: u8 = 0x13;
 pub(crate) const TAG_OUTPUT_TYPE_GUARD: u8 = 0x14;
 pub(crate) const TAG_RECIPIENT_GUARD: u8 = 0x15;
+/// Tag for MaxDeltaGuard — rejects spend if output amount deviates from
+/// `reference_amount` by more than `max_change_bps` basis points.
+/// Uses integer-only arithmetic (truncation toward zero). (DeFi Foundations M2)
+pub(crate) const TAG_MAX_DELTA_GUARD: u8 = 0x16;
+/// Tag for ReserveRatioGuard — rejects spend if reserve/debt ratio falls below
+/// `min_ratio_bps`. Uses u128 internally to avoid u64 overflow. (DeFi Foundations M2)
+pub(crate) const TAG_RESERVE_RATIO_GUARD: u8 = 0x17;
 
 // =============================================================================
 // CONDITION AST
@@ -149,6 +158,28 @@ pub enum Condition {
     RecipientGuard {
         expected_pubkey_hash: Hash,
         output_index: u8,
+    },
+
+    /// Rejects spend if `|output_amount - reference_amount| / reference_amount * 10000`
+    /// exceeds `max_change_bps`. Uses integer-only arithmetic with truncation toward zero.
+    /// Rejects deterministically if `reference_amount == 0` (division by zero).
+    /// Boundary policy: PASS at exact threshold (strictly greater rejects).
+    /// Uses u128 internally to avoid overflow on the `delta * 10000` multiplication.
+    /// (DeFi Foundations M2 — AMM slippage protection)
+    MaxDeltaGuard {
+        max_change_bps: u16,
+        reference_amount: crate::types::Amount,
+        output_index: u8,
+    },
+
+    /// Rejects spend if `reserve_output.amount * 10000 / debt_output.amount`
+    /// is less than `min_ratio_bps`. Uses u128 internally to avoid u64 overflow.
+    /// Rejects deterministically if `debt == 0` (cannot compute ratio).
+    /// (DeFi Foundations M2 — lending collateral ratio enforcement)
+    ReserveRatioGuard {
+        min_ratio_bps: u16,
+        reserve_output_index: u8,
+        debt_output_index: u8,
     },
 }
 
@@ -388,6 +419,34 @@ impl Condition {
         Condition::RecipientGuard {
             expected_pubkey_hash,
             output_index,
+        }
+    }
+
+    /// Create a max-delta guard: output[index] amount must not deviate from
+    /// `reference_amount` by more than `max_change_bps` basis points.
+    pub fn max_delta_guard(
+        max_change_bps: u16,
+        reference_amount: crate::types::Amount,
+        output_index: u8,
+    ) -> Self {
+        Condition::MaxDeltaGuard {
+            max_change_bps,
+            reference_amount,
+            output_index,
+        }
+    }
+
+    /// Create a reserve-ratio guard: `reserve_output.amount * 10000 / debt_output.amount`
+    /// must be at least `min_ratio_bps`.
+    pub fn reserve_ratio_guard(
+        min_ratio_bps: u16,
+        reserve_output_index: u8,
+        debt_output_index: u8,
+    ) -> Self {
+        Condition::ReserveRatioGuard {
+            min_ratio_bps,
+            reserve_output_index,
+            debt_output_index,
         }
     }
 }

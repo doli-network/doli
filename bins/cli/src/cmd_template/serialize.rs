@@ -79,6 +79,28 @@ pub(crate) fn condition_to_cli_string(cond: &Condition) -> String {
                 output_index
             )
         }
+        Condition::MaxDeltaGuard {
+            max_change_bps,
+            reference_amount,
+            output_index,
+        } => {
+            format!(
+                "max_delta_guard({}, {}, {})",
+                max_change_bps,
+                units_to_coins(*reference_amount),
+                output_index
+            )
+        }
+        Condition::ReserveRatioGuard {
+            min_ratio_bps,
+            reserve_output_index,
+            debt_output_index,
+        } => {
+            format!(
+                "reserve_ratio_guard({}, {}, {})",
+                min_ratio_bps, reserve_output_index, debt_output_index
+            )
+        }
     }
 }
 

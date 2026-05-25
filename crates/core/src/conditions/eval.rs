@@ -162,5 +162,60 @@ pub fn evaluate(
             }
             tx.outputs[idx].pubkey_hash == *expected_pubkey_hash
         }
+
+        Condition::MaxDeltaGuard {
+            max_change_bps,
+            reference_amount,
+            output_index,
+        } => {
+            // MaxDeltaGuard: reject if |output - reference| / reference * 10000 > max_change_bps
+            // Integer-only arithmetic. Truncation toward zero.
+            // reference_amount == 0 => deterministic reject (division by zero).
+            // Uses u128 to avoid overflow on delta * 10000.
+            let tx = match ctx.transaction {
+                Some(tx) => tx,
+                None => return false,
+            };
+            let idx = *output_index as usize;
+            if idx >= tx.outputs.len() {
+                return false;
+            }
+            if *reference_amount == 0 {
+                return false;
+            }
+            let output_amount = tx.outputs[idx].amount;
+            let delta = output_amount.abs_diff(*reference_amount);
+            // delta_bps = delta * 10000 / reference_amount (integer truncation)
+            let delta_bps = (delta as u128).saturating_mul(10_000) / (*reference_amount as u128);
+            // Pass at exact boundary: reject only when strictly greater
+            delta_bps <= *max_change_bps as u128
+        }
+
+        Condition::ReserveRatioGuard {
+            min_ratio_bps,
+            reserve_output_index,
+            debt_output_index,
+        } => {
+            // ReserveRatioGuard: reject if reserve * 10000 / debt < min_ratio_bps
+            // debt == 0 => deterministic reject (cannot compute ratio).
+            // Uses u128 to avoid overflow on reserve * 10000.
+            let tx = match ctx.transaction {
+                Some(tx) => tx,
+                None => return false,
+            };
+            let res_idx = *reserve_output_index as usize;
+            let debt_idx = *debt_output_index as usize;
+            if res_idx >= tx.outputs.len() || debt_idx >= tx.outputs.len() {
+                return false;
+            }
+            let reserve = tx.outputs[res_idx].amount;
+            let debt = tx.outputs[debt_idx].amount;
+            if debt == 0 {
+                return false;
+            }
+            // ratio_bps = reserve * 10000 / debt (integer truncation)
+            let ratio_bps = (reserve as u128).saturating_mul(10_000) / (debt as u128);
+            ratio_bps >= *min_ratio_bps as u128
+        }
     }
 }

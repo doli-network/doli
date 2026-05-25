@@ -1,4 +1,61 @@
 //! Tests for the conditions module.
+//!
+//! ## OUTPUT CONTRACT — MaxDeltaGuard
+//!
+//! **Observable outputs:**
+//! - `evaluate()` returns `bool` (true = guard passes, false = guard rejects)
+//! - `encode()` returns `Result<Vec<u8>, ConditionError>` (serialized bytes)
+//! - `decode()` returns `Result<Condition, ConditionError>` (deserialized condition)
+//! - `ops_count()` returns `usize` (0 for all guards — no crypto ops)
+//! - `contains_guard()` returns `bool` (true for all guard types)
+//! - `validate()` returns `Result<(), ConditionError>`
+//!
+//! **Code paths (evaluate):**
+//! - P1: No transaction context → false
+//! - P2: Output index out of bounds → false
+//! - P3: reference_amount == 0 (division by zero) → false
+//! - P4: delta_bps > max_change_bps → false (reject)
+//! - P5: delta_bps <= max_change_bps → true (pass)
+//! - P6: delta_bps == max_change_bps (boundary) → true (pass, strictly-greater rejects)
+//!
+//! ## INPUT PARTITIONS — MaxDeltaGuard evaluate
+//!
+//! | Partition | Path | Test |
+//! |-----------|------|------|
+//! | tx=None | P1 | max_delta_guard_no_transaction |
+//! | output_index >= outputs.len() | P2 | max_delta_guard_out_of_bounds_index |
+//! | reference_amount=0 | P3 | max_delta_guard_zero_reference_amount |
+//! | output=10200, ref=10000, bps=100 (2%>1%) | P4 | max_delta_guard_rejects_above_threshold |
+//! | output=10050, ref=10000, bps=100 (0.5%<=1%) | P5 | max_delta_guard_allows_within_threshold |
+//! | output=10100, ref=10000, bps=100 (1%==1%) | P6 | max_delta_guard_exact_threshold_boundary |
+//! | output=MAX/2+1, ref=MAX/2 (overflow edge) | P5 | max_delta_guard_overflow_resistance |
+//! | output=MAX, ref=MAX, bps=0 (delta=0) | P5 | max_delta_guard_large_values_no_panic |
+//!
+//! ## OUTPUT CONTRACT — ReserveRatioGuard
+//!
+//! **Observable outputs:**
+//! - `evaluate()` returns `bool`
+//! - `encode()`/`decode()`: round-trip preserves identity
+//! - `ops_count()` → 0, `contains_guard()` → true
+//!
+//! **Code paths (evaluate):**
+//! - P1: No transaction context → false
+//! - P2: reserve or debt output index out of bounds → false
+//! - P3: debt_amount == 0 → false (cannot compute ratio)
+//! - P4: ratio_bps < min_ratio_bps → false (reject)
+//! - P5: ratio_bps >= min_ratio_bps → true (pass)
+//!
+//! ## INPUT PARTITIONS — ReserveRatioGuard evaluate
+//!
+//! | Partition | Path | Test |
+//! |-----------|------|------|
+//! | tx=None | P1 | reserve_ratio_no_transaction |
+//! | debt_output_index OOB | P2 | reserve_ratio_out_of_bounds_index |
+//! | debt=0 | P3 | reserve_ratio_zero_debt_rejects |
+//! | reserve=100, debt=100, min=15000 (100%<150%) | P4 | reserve_ratio_rejects_below_min |
+//! | reserve=200, debt=100, min=15000 (200%>150%) | P5 | reserve_ratio_allows_above_min |
+//! | reserve=150, debt=100, min=15000 (150%==150%) | P5 | reserve_ratio_exact_boundary_passes |
+//! | reserve=MAX, debt=1 (u128 overflow edge) | P5 | reserve_ratio_u128_internal_no_overflow |
 
 use crypto::hash::hash_with_domain;
 use crypto::Hash;
@@ -1236,4 +1293,541 @@ fn test_guard_ops_count() {
         0
     );
     assert_eq!(Condition::recipient_guard(dummy_hash(1), 0).ops_count(), 0);
+}
+
+// ====================================================================
+// MaxDeltaGuard tests (M2 DeFi Foundations)
+// ====================================================================
+
+#[test]
+fn max_delta_guard_rejects_above_threshold() {
+    // Guard: max_change_bps=100 (1%), reference=10000, output_index=0
+    // Output amount=10200 -> delta=200, 200*10000/10000 = 200 bps (2%) > 100 -> REJECT
+    let cond = Condition::MaxDeltaGuard {
+        max_change_bps: 100,
+        reference_amount: 10_000,
+        output_index: 0,
+    };
+    let tx = tx_with_outputs(vec![normal_output(10_200, dummy_hash(1))]);
+    let hash = dummy_hash(0);
+    let ctx = EvalContext {
+        current_height: 100,
+        signing_hash: &hash,
+        transaction: Some(&tx),
+    };
+    assert!(!evaluate(&cond, &Witness::default(), &ctx, &mut 0));
+}
+
+#[test]
+fn max_delta_guard_allows_within_threshold() {
+    // Guard: max_change_bps=100 (1%), reference=10000, output_index=0
+    // Output amount=10050 -> delta=50, 50*10000/10000 = 50 bps (0.5%) <= 100 -> PASS
+    let cond = Condition::MaxDeltaGuard {
+        max_change_bps: 100,
+        reference_amount: 10_000,
+        output_index: 0,
+    };
+    let tx = tx_with_outputs(vec![normal_output(10_050, dummy_hash(1))]);
+    let hash = dummy_hash(0);
+    let ctx = EvalContext {
+        current_height: 100,
+        signing_hash: &hash,
+        transaction: Some(&tx),
+    };
+    assert!(evaluate(&cond, &Witness::default(), &ctx, &mut 0));
+}
+
+#[test]
+fn max_delta_guard_exact_threshold_boundary() {
+    // Guard: max_change_bps=100 (1%), reference=10000, output_index=0
+    // Output amount=10100 -> delta=100, 100*10000/10000 = 100 bps -> exactly at threshold
+    // Policy: PASS at exact boundary (strictly greater rejects)
+    let cond = Condition::MaxDeltaGuard {
+        max_change_bps: 100,
+        reference_amount: 10_000,
+        output_index: 0,
+    };
+    let tx = tx_with_outputs(vec![normal_output(10_100, dummy_hash(1))]);
+    let hash = dummy_hash(0);
+    let ctx = EvalContext {
+        current_height: 100,
+        signing_hash: &hash,
+        transaction: Some(&tx),
+    };
+    assert!(evaluate(&cond, &Witness::default(), &ctx, &mut 0));
+}
+
+#[test]
+fn max_delta_guard_zero_reference_amount() {
+    // reference_amount=0 -> division by zero -> deterministic reject
+    let cond = Condition::MaxDeltaGuard {
+        max_change_bps: 100,
+        reference_amount: 0,
+        output_index: 0,
+    };
+    let tx = tx_with_outputs(vec![normal_output(100, dummy_hash(1))]);
+    let hash = dummy_hash(0);
+    let ctx = EvalContext {
+        current_height: 100,
+        signing_hash: &hash,
+        transaction: Some(&tx),
+    };
+    assert!(!evaluate(&cond, &Witness::default(), &ctx, &mut 0));
+}
+
+#[test]
+fn max_delta_guard_overflow_resistance() {
+    // reference=u64::MAX/2, output=u64::MAX/2 + 1 -> delta=1
+    // Must not panic, deterministic result.
+    // delta(1) * 10000 / (u64::MAX/2) -> very small -> should pass
+    let half_max = u64::MAX / 2;
+    let cond = Condition::MaxDeltaGuard {
+        max_change_bps: 100,
+        reference_amount: half_max,
+        output_index: 0,
+    };
+    let tx = tx_with_outputs(vec![normal_output(half_max + 1, dummy_hash(1))]);
+    let hash = dummy_hash(0);
+    let ctx = EvalContext {
+        current_height: 100,
+        signing_hash: &hash,
+        transaction: Some(&tx),
+    };
+    // delta=1, 1*10000 / half_max = 0 bps -> PASS
+    assert!(evaluate(&cond, &Witness::default(), &ctx, &mut 0));
+}
+
+#[test]
+fn max_delta_guard_large_values_no_panic() {
+    // Both at u64::MAX -> delta=0, should pass
+    let cond = Condition::MaxDeltaGuard {
+        max_change_bps: 0,
+        reference_amount: u64::MAX,
+        output_index: 0,
+    };
+    let tx = tx_with_outputs(vec![normal_output(u64::MAX, dummy_hash(1))]);
+    let hash = dummy_hash(0);
+    let ctx = EvalContext {
+        current_height: 100,
+        signing_hash: &hash,
+        transaction: Some(&tx),
+    };
+    assert!(evaluate(&cond, &Witness::default(), &ctx, &mut 0));
+}
+
+#[test]
+fn max_delta_guard_no_transaction() {
+    let cond = Condition::MaxDeltaGuard {
+        max_change_bps: 100,
+        reference_amount: 10_000,
+        output_index: 0,
+    };
+    let hash = dummy_hash(0);
+    let ctx = EvalContext {
+        current_height: 100,
+        signing_hash: &hash,
+        transaction: None,
+    };
+    assert!(!evaluate(&cond, &Witness::default(), &ctx, &mut 0));
+}
+
+#[test]
+fn max_delta_guard_out_of_bounds_index() {
+    let cond = Condition::MaxDeltaGuard {
+        max_change_bps: 100,
+        reference_amount: 10_000,
+        output_index: 5,
+    };
+    let tx = tx_with_outputs(vec![normal_output(10_000, dummy_hash(1))]);
+    let hash = dummy_hash(0);
+    let ctx = EvalContext {
+        current_height: 100,
+        signing_hash: &hash,
+        transaction: Some(&tx),
+    };
+    assert!(!evaluate(&cond, &Witness::default(), &ctx, &mut 0));
+}
+
+// ====================================================================
+// ReserveRatioGuard tests (M2 DeFi Foundations)
+// ====================================================================
+
+#[test]
+fn reserve_ratio_rejects_below_min() {
+    // min_ratio_bps=15000 (150%), reserve=100, debt=100 -> ratio=10000 bps (100%) < 15000 -> REJECT
+    let cond = Condition::ReserveRatioGuard {
+        min_ratio_bps: 15_000,
+        reserve_output_index: 0,
+        debt_output_index: 1,
+    };
+    let tx = tx_with_outputs(vec![
+        normal_output(100, dummy_hash(1)),
+        normal_output(100, dummy_hash(2)),
+    ]);
+    let hash = dummy_hash(0);
+    let ctx = EvalContext {
+        current_height: 100,
+        signing_hash: &hash,
+        transaction: Some(&tx),
+    };
+    assert!(!evaluate(&cond, &Witness::default(), &ctx, &mut 0));
+}
+
+#[test]
+fn reserve_ratio_allows_above_min() {
+    // min_ratio_bps=15000 (150%), reserve=200, debt=100 -> ratio=20000 bps (200%) >= 15000 -> PASS
+    let cond = Condition::ReserveRatioGuard {
+        min_ratio_bps: 15_000,
+        reserve_output_index: 0,
+        debt_output_index: 1,
+    };
+    let tx = tx_with_outputs(vec![
+        normal_output(200, dummy_hash(1)),
+        normal_output(100, dummy_hash(2)),
+    ]);
+    let hash = dummy_hash(0);
+    let ctx = EvalContext {
+        current_height: 100,
+        signing_hash: &hash,
+        transaction: Some(&tx),
+    };
+    assert!(evaluate(&cond, &Witness::default(), &ctx, &mut 0));
+}
+
+#[test]
+fn reserve_ratio_exact_boundary_passes() {
+    // min_ratio_bps=15000, reserve=150, debt=100 -> 150*10000/100 = 15000 -> exactly at min -> PASS
+    let cond = Condition::ReserveRatioGuard {
+        min_ratio_bps: 15_000,
+        reserve_output_index: 0,
+        debt_output_index: 1,
+    };
+    let tx = tx_with_outputs(vec![
+        normal_output(150, dummy_hash(1)),
+        normal_output(100, dummy_hash(2)),
+    ]);
+    let hash = dummy_hash(0);
+    let ctx = EvalContext {
+        current_height: 100,
+        signing_hash: &hash,
+        transaction: Some(&tx),
+    };
+    assert!(evaluate(&cond, &Witness::default(), &ctx, &mut 0));
+}
+
+#[test]
+fn reserve_ratio_zero_debt_rejects() {
+    // debt=0 -> cannot compute ratio -> deterministic reject
+    let cond = Condition::ReserveRatioGuard {
+        min_ratio_bps: 15_000,
+        reserve_output_index: 0,
+        debt_output_index: 1,
+    };
+    let tx = tx_with_outputs(vec![
+        normal_output(200, dummy_hash(1)),
+        normal_output(0, dummy_hash(2)),
+    ]);
+    let hash = dummy_hash(0);
+    let ctx = EvalContext {
+        current_height: 100,
+        signing_hash: &hash,
+        transaction: Some(&tx),
+    };
+    assert!(!evaluate(&cond, &Witness::default(), &ctx, &mut 0));
+}
+
+#[test]
+fn reserve_ratio_u128_internal_no_overflow() {
+    // reserve=u64::MAX, debt=1 -> ratio = u64::MAX * 10000 / 1
+    // Must use u128 internally or this overflows. Should not panic.
+    let cond = Condition::ReserveRatioGuard {
+        min_ratio_bps: 10_000,
+        reserve_output_index: 0,
+        debt_output_index: 1,
+    };
+    let tx = tx_with_outputs(vec![
+        normal_output(u64::MAX, dummy_hash(1)),
+        normal_output(1, dummy_hash(2)),
+    ]);
+    let hash = dummy_hash(0);
+    let ctx = EvalContext {
+        current_height: 100,
+        signing_hash: &hash,
+        transaction: Some(&tx),
+    };
+    // u64::MAX * 10000 / 1 via u128 -> huge ratio >> 10000 -> PASS
+    assert!(evaluate(&cond, &Witness::default(), &ctx, &mut 0));
+}
+
+#[test]
+fn reserve_ratio_no_transaction() {
+    let cond = Condition::ReserveRatioGuard {
+        min_ratio_bps: 15_000,
+        reserve_output_index: 0,
+        debt_output_index: 1,
+    };
+    let hash = dummy_hash(0);
+    let ctx = EvalContext {
+        current_height: 100,
+        signing_hash: &hash,
+        transaction: None,
+    };
+    assert!(!evaluate(&cond, &Witness::default(), &ctx, &mut 0));
+}
+
+#[test]
+fn reserve_ratio_out_of_bounds_index() {
+    let cond = Condition::ReserveRatioGuard {
+        min_ratio_bps: 15_000,
+        reserve_output_index: 0,
+        debt_output_index: 5, // out of bounds
+    };
+    let tx = tx_with_outputs(vec![normal_output(200, dummy_hash(1))]);
+    let hash = dummy_hash(0);
+    let ctx = EvalContext {
+        current_height: 100,
+        signing_hash: &hash,
+        transaction: Some(&tx),
+    };
+    assert!(!evaluate(&cond, &Witness::default(), &ctx, &mut 0));
+}
+
+// ====================================================================
+// Composition tests with new guards (M2 DeFi Foundations)
+// ====================================================================
+
+#[test]
+fn max_delta_inside_and_short_circuits() {
+    // And(Signature(pk), MaxDeltaGuard{max_change_bps=100, ref=10000, idx=0})
+    // Without a valid signature, should fail even if delta is within range
+    let kp = crypto::KeyPair::generate();
+    let pkh = keypair_pubkey_hash(&kp);
+
+    let cond = Condition::And(
+        Box::new(Condition::Signature(pkh)),
+        Box::new(Condition::MaxDeltaGuard {
+            max_change_bps: 100,
+            reference_amount: 10_000,
+            output_index: 0,
+        }),
+    );
+
+    let tx = tx_with_outputs(vec![normal_output(10_050, dummy_hash(1))]);
+    let hash = dummy_hash(0);
+
+    // No signature -> left side fails, short-circuits
+    let ctx = EvalContext {
+        current_height: 100,
+        signing_hash: &hash,
+        transaction: Some(&tx),
+    };
+    assert!(!evaluate(&cond, &Witness::default(), &ctx, &mut 0));
+
+    // With valid signature + delta within range -> both pass
+    let tx_hash = Hash::from_bytes([0x42; 32]);
+    let sig = crypto::signature::sign_hash(&tx_hash, kp.private_key());
+    let witness = Witness {
+        signatures: vec![WitnessSignature {
+            pubkey: *kp.public_key(),
+            signature: sig,
+        }],
+        ..Default::default()
+    };
+    let ctx_with_tx = EvalContext {
+        current_height: 100,
+        signing_hash: &tx_hash,
+        transaction: Some(&tx),
+    };
+    assert!(evaluate(&cond, &witness, &ctx_with_tx, &mut 0));
+}
+
+#[test]
+fn reserve_ratio_inside_or_one_branch_passes() {
+    // Or(ReserveRatioGuard{strict: 20000}, ReserveRatioGuard{lax: 10000})
+    // reserve=150, debt=100 -> ratio=15000
+    // strict (20000) fails, lax (10000) passes
+    let strict = Condition::ReserveRatioGuard {
+        min_ratio_bps: 20_000,
+        reserve_output_index: 0,
+        debt_output_index: 1,
+    };
+    let lax = Condition::ReserveRatioGuard {
+        min_ratio_bps: 10_000,
+        reserve_output_index: 0,
+        debt_output_index: 1,
+    };
+    let cond = Condition::Or(Box::new(strict), Box::new(lax));
+
+    let tx = tx_with_outputs(vec![
+        normal_output(150, dummy_hash(1)),
+        normal_output(100, dummy_hash(2)),
+    ]);
+    let hash = dummy_hash(0);
+    let ctx = EvalContext {
+        current_height: 100,
+        signing_hash: &hash,
+        transaction: Some(&tx),
+    };
+    // Without branch hints, tries left (fail) then right (pass)
+    assert!(evaluate(&cond, &Witness::default(), &ctx, &mut 0));
+}
+
+#[test]
+fn threshold_with_two_max_deltas() {
+    // Threshold{n: 2, conditions: [Signature(pk), MaxDelta{1%, ref=1000, idx=0},
+    //                               MaxDelta{5%, ref=1000, idx=0}]}
+    // output=1020 -> delta=20, 20*10000/1000 = 200 bps
+    // MaxDelta(1%=100 bps): 200 > 100 -> FAIL
+    // MaxDelta(5%=500 bps): 200 <= 500 -> PASS
+    // Need 2-of-3: Signature + MaxDelta(5%) = 2 -> PASS
+    let kp = crypto::KeyPair::generate();
+    let pkh = keypair_pubkey_hash(&kp);
+
+    let cond = Condition::Threshold {
+        n: 2,
+        conditions: vec![
+            Condition::Signature(pkh),
+            Condition::MaxDeltaGuard {
+                max_change_bps: 100,
+                reference_amount: 1_000,
+                output_index: 0,
+            },
+            Condition::MaxDeltaGuard {
+                max_change_bps: 500,
+                reference_amount: 1_000,
+                output_index: 0,
+            },
+        ],
+    };
+
+    let tx = tx_with_outputs(vec![normal_output(1_020, dummy_hash(1))]);
+    let tx_hash = Hash::from_bytes([0x33; 32]);
+    let sig = crypto::signature::sign_hash(&tx_hash, kp.private_key());
+    let witness = Witness {
+        signatures: vec![WitnessSignature {
+            pubkey: *kp.public_key(),
+            signature: sig,
+        }],
+        ..Default::default()
+    };
+    let ctx = EvalContext {
+        current_height: 100,
+        signing_hash: &tx_hash,
+        transaction: Some(&tx),
+    };
+    assert!(evaluate(&cond, &witness, &ctx, &mut 0));
+}
+
+// ====================================================================
+// Encoding round-trip tests for new guards (M2 DeFi Foundations)
+// ====================================================================
+
+#[test]
+fn max_delta_encoding_round_trip() {
+    // Test several parameter combinations
+    let cases: Vec<(u16, u64, u8)> = vec![
+        (100, 10_000, 0),
+        (0, 0, 0),
+        (10_000, u64::MAX, 255),
+        (5_000, 1, 3),
+        (1, 999_999_999, 7),
+    ];
+    for (bps, ref_amt, idx) in cases {
+        let cond = Condition::MaxDeltaGuard {
+            max_change_bps: bps,
+            reference_amount: ref_amt,
+            output_index: idx,
+        };
+        let encoded = cond.encode().unwrap();
+        let decoded = Condition::decode(&encoded).unwrap();
+        assert_eq!(
+            cond, decoded,
+            "round-trip failed for bps={bps}, ref={ref_amt}, idx={idx}"
+        );
+    }
+}
+
+#[test]
+fn reserve_ratio_encoding_round_trip() {
+    // Test several parameter combinations
+    let cases: Vec<(u16, u8, u8)> = vec![
+        (15_000, 0, 1),
+        (10_000, 2, 3),
+        (1, 0, 0),
+        (u16::MAX, 255, 254),
+        (10_001, 5, 7),
+    ];
+    for (bps, res_idx, debt_idx) in cases {
+        let cond = Condition::ReserveRatioGuard {
+            min_ratio_bps: bps,
+            reserve_output_index: res_idx,
+            debt_output_index: debt_idx,
+        };
+        let encoded = cond.encode().unwrap();
+        let decoded = Condition::decode(&encoded).unwrap();
+        assert_eq!(
+            cond, decoded,
+            "round-trip failed for bps={bps}, res={res_idx}, debt={debt_idx}"
+        );
+    }
+}
+
+// ====================================================================
+// New guards: ops_count, contains_guard, depth (M2 DeFi Foundations)
+// ====================================================================
+
+#[test]
+fn new_guards_ops_count_is_zero() {
+    assert_eq!(
+        Condition::MaxDeltaGuard {
+            max_change_bps: 100,
+            reference_amount: 10_000,
+            output_index: 0,
+        }
+        .ops_count(),
+        0
+    );
+    assert_eq!(
+        Condition::ReserveRatioGuard {
+            min_ratio_bps: 15_000,
+            reserve_output_index: 0,
+            debt_output_index: 1,
+        }
+        .ops_count(),
+        0
+    );
+}
+
+#[test]
+fn new_guards_are_guard_conditions() {
+    assert!(Condition::MaxDeltaGuard {
+        max_change_bps: 100,
+        reference_amount: 10_000,
+        output_index: 0,
+    }
+    .contains_guard());
+    assert!(Condition::ReserveRatioGuard {
+        min_ratio_bps: 15_000,
+        reserve_output_index: 0,
+        debt_output_index: 1,
+    }
+    .contains_guard());
+}
+
+#[test]
+fn new_guards_depth_is_zero() {
+    let cond = Condition::MaxDeltaGuard {
+        max_change_bps: 100,
+        reference_amount: 10_000,
+        output_index: 0,
+    };
+    // Leaf condition -> validate should not complain about depth
+    assert!(cond.validate().is_ok());
+
+    let cond = Condition::ReserveRatioGuard {
+        min_ratio_bps: 15_000,
+        reserve_output_index: 0,
+        debt_output_index: 1,
+    };
+    assert!(cond.validate().is_ok());
 }

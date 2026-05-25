@@ -5,8 +5,8 @@ use crypto::Hash;
 use super::{
     Condition, ConditionError, CONDITION_VERSION, MAX_CONDITION_DEPTH, MAX_CONDITION_OPS,
     MAX_MULTISIG_KEYS, MAX_THRESHOLD_CONDITIONS, TAG_AMOUNT_GUARD, TAG_AND, TAG_HASHLOCK,
-    TAG_MULTISIG, TAG_OR, TAG_OUTPUT_TYPE_GUARD, TAG_RECIPIENT_GUARD, TAG_SIGNATURE, TAG_THRESHOLD,
-    TAG_TIMELOCK, TAG_TIMELOCK_EXPIRY,
+    TAG_MAX_DELTA_GUARD, TAG_MULTISIG, TAG_OR, TAG_OUTPUT_TYPE_GUARD, TAG_RECIPIENT_GUARD,
+    TAG_RESERVE_RATIO_GUARD, TAG_SIGNATURE, TAG_THRESHOLD, TAG_TIMELOCK, TAG_TIMELOCK_EXPIRY,
 };
 
 // =============================================================================
@@ -97,6 +97,26 @@ impl Condition {
                 buf.push(TAG_RECIPIENT_GUARD);
                 buf.extend_from_slice(expected_pubkey_hash.as_bytes());
                 buf.push(*output_index);
+            }
+            Condition::MaxDeltaGuard {
+                max_change_bps,
+                reference_amount,
+                output_index,
+            } => {
+                buf.push(TAG_MAX_DELTA_GUARD);
+                buf.extend_from_slice(&max_change_bps.to_le_bytes());
+                buf.extend_from_slice(&reference_amount.to_le_bytes());
+                buf.push(*output_index);
+            }
+            Condition::ReserveRatioGuard {
+                min_ratio_bps,
+                reserve_output_index,
+                debt_output_index,
+            } => {
+                buf.push(TAG_RESERVE_RATIO_GUARD);
+                buf.extend_from_slice(&min_ratio_bps.to_le_bytes());
+                buf.push(*reserve_output_index);
+                buf.push(*debt_output_index);
             }
         }
     }
@@ -310,17 +330,55 @@ impl Condition {
                 ))
             }
 
+            TAG_MAX_DELTA_GUARD => {
+                // Payload: 2B max_change_bps (LE) + 8B reference_amount (LE) + 1B output_index = 11
+                if rest.len() < 11 {
+                    return Err(ConditionError::BufferTooShort);
+                }
+                let max_change_bps = u16::from_le_bytes(rest[..2].try_into().unwrap());
+                let reference_amount = u64::from_le_bytes(rest[2..10].try_into().unwrap());
+                let output_index = rest[10];
+                Ok((
+                    Condition::MaxDeltaGuard {
+                        max_change_bps,
+                        reference_amount,
+                        output_index,
+                    },
+                    1 + 11,
+                ))
+            }
+
+            TAG_RESERVE_RATIO_GUARD => {
+                // Payload: 2B min_ratio_bps (LE) + 1B reserve_output_index + 1B debt_output_index = 4
+                if rest.len() < 4 {
+                    return Err(ConditionError::BufferTooShort);
+                }
+                let min_ratio_bps = u16::from_le_bytes(rest[..2].try_into().unwrap());
+                let reserve_output_index = rest[2];
+                let debt_output_index = rest[3];
+                Ok((
+                    Condition::ReserveRatioGuard {
+                        min_ratio_bps,
+                        reserve_output_index,
+                        debt_output_index,
+                    },
+                    1 + 4,
+                ))
+            }
+
             _ => Err(ConditionError::UnknownTag { tag }),
         }
     }
 
     /// Returns true if this condition tree contains any guard conditions
-    /// (AmountGuard, OutputTypeGuard, RecipientGuard).
+    /// (AmountGuard, OutputTypeGuard, RecipientGuard, MaxDeltaGuard, ReserveRatioGuard).
     pub fn contains_guard(&self) -> bool {
         match self {
             Condition::AmountGuard { .. }
             | Condition::OutputTypeGuard { .. }
-            | Condition::RecipientGuard { .. } => true,
+            | Condition::RecipientGuard { .. }
+            | Condition::MaxDeltaGuard { .. }
+            | Condition::ReserveRatioGuard { .. } => true,
             Condition::And(a, b) | Condition::Or(a, b) => a.contains_guard() || b.contains_guard(),
             Condition::Threshold { conditions, .. } => {
                 conditions.iter().any(|c| c.contains_guard())
@@ -330,6 +388,7 @@ impl Condition {
     }
 
     /// Count the number of cryptographic operations (sig verifications + hash checks).
+    /// Guards are pure arithmetic checks — 0 crypto ops.
     pub fn ops_count(&self) -> usize {
         match self {
             Condition::Signature(_) => 1,
@@ -339,7 +398,9 @@ impl Condition {
             | Condition::TimelockExpiry(_)
             | Condition::AmountGuard { .. }
             | Condition::OutputTypeGuard { .. }
-            | Condition::RecipientGuard { .. } => 0,
+            | Condition::RecipientGuard { .. }
+            | Condition::MaxDeltaGuard { .. }
+            | Condition::ReserveRatioGuard { .. } => 0,
             Condition::And(a, b) | Condition::Or(a, b) => a.ops_count() + b.ops_count(),
             Condition::Threshold { conditions, .. } => {
                 conditions.iter().map(|c| c.ops_count()).sum()
@@ -357,7 +418,9 @@ impl Condition {
             | Condition::TimelockExpiry(_)
             | Condition::AmountGuard { .. }
             | Condition::OutputTypeGuard { .. }
-            | Condition::RecipientGuard { .. } => 0,
+            | Condition::RecipientGuard { .. }
+            | Condition::MaxDeltaGuard { .. }
+            | Condition::ReserveRatioGuard { .. } => 0,
             Condition::And(a, b) | Condition::Or(a, b) => 1 + a.depth().max(b.depth()),
             Condition::Threshold { conditions, .. } => {
                 1 + conditions.iter().map(|c| c.depth()).max().unwrap_or(0)

@@ -518,6 +518,26 @@ pub fn condition_to_json(cond: &doli_core::Condition) -> serde_json::Value {
             "expectedPubkeyHash": expected_pubkey_hash.to_hex(),
             "outputIndex": output_index
         }),
+        doli_core::Condition::MaxDeltaGuard {
+            max_change_bps,
+            reference_amount,
+            output_index,
+        } => json!({
+            "type": "maxDeltaGuard",
+            "maxChangeBps": max_change_bps,
+            "referenceAmount": reference_amount,
+            "outputIndex": output_index
+        }),
+        doli_core::Condition::ReserveRatioGuard {
+            min_ratio_bps,
+            reserve_output_index,
+            debt_output_index,
+        } => json!({
+            "type": "reserveRatioGuard",
+            "minRatioBps": min_ratio_bps,
+            "reserveOutputIndex": reserve_output_index,
+            "debtOutputIndex": debt_output_index
+        }),
     }
 }
 
