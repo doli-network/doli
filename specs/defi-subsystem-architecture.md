@@ -437,7 +437,7 @@ crates/core/src/
   validation/
     pool.rs            -- AMM validation (EXPANDED: full economic checks)
     lending.rs         -- DELETED (B.1 tombstoned 2026-05-26)
-    fractionalize.rs   -- TOMBSTONED (gated)
+    fractionalize.rs   -- DELETED (B.2 tombstoned 2026-05-26)
     transaction.rs     -- Dispatch + DeFi gate + amm_activation_height check
   conditions/
     templates.rs       -- ADD: overcollateralized_loan() template function
@@ -452,7 +452,7 @@ bins/cli/src/
   cmd_pool.rs          -- Pool CLI commands (existing, verified working)
   cmd_template.rs      -- ADD: escrow-loan template subcommand (W3)
 
-Status: 4 AMM TX types active (with 25/5 fee split — W2). 5 lending types TOMBSTONED (B.1). 2 NFT-frac types gated. Escrow-loan template via Transfer + conditions (W3 — NOT lending).
+Status: 4 AMM TX types active (with 25/5 fee split — W2). 5 lending types TOMBSTONED (B.1). 2 NFT-frac types TOMBSTONED (B.2). Escrow-loan template via Transfer + conditions (W3 — NOT lending).
 ```
 
 ---

@@ -173,14 +173,10 @@ pub struct ValidationContext {
     pub encrypted_content_v2_activation_height: u64,
     /// Unified activation height for all consensus-breaking security audit fixes.
     pub security_audit_activation_height: u64,
-    /// INC-I-088 Phase 0: height at which the 7 non-AMM DeFi tx types
-    /// (CreateLoan, RepayLoan, LiquidateLoan, LendingDeposit,
-    /// LendingWithdraw, FractionalizeNft, RedeemNft) become valid for
-    /// submission. The 4 AMM tx types (CreatePool, AddLiquidity,
-    /// RemoveLiquidity, Swap) were decoupled into
-    /// [`Self::amm_activation_height`] per HC-6 / INC-I-075 (AMM
-    /// Foundations M1, 2026-05-25). Default `u64::MAX` on all networks =
-    /// non-AMM DeFi disabled.
+    /// INC-I-088 Phase 0: originally gated 7 non-AMM DeFi tx types.
+    /// All 7 types are now tombstoned (lending B.1, NFT-frac B.2).
+    /// Field retained for structural compatibility with NetworkParams.
+    /// Default `u64::MAX` on all networks.
     pub defi_activation_height: u64,
     /// AMM Foundations M1: height at which the 4 AMM tx types
     /// (CreatePool, AddLiquidity, RemoveLiquidity, Swap) become valid for

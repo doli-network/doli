@@ -254,10 +254,6 @@ async fn main() -> Result<()> {
             export,
             batch_mint,
             yes,
-            fractionalize,
-            shares,
-            ticker,
-            redeem,
         } => {
             if list {
                 cmd_nft::cmd_nft_list(&wallet, &rpc_endpoint).await?;
@@ -324,22 +320,9 @@ async fn main() -> Result<()> {
                     &file,
                 )
                 .await?;
-            } else if let Some(token_id) = fractionalize {
-                let shares = shares
-                    .ok_or_else(|| anyhow::anyhow!("--shares is required for --fractionalize"))?;
-                cmd_nft::cmd_nft_fractionalize(
-                    &wallet,
-                    &rpc_endpoint,
-                    &token_id,
-                    shares,
-                    ticker.as_deref(),
-                )
-                .await?;
-            } else if let Some(token_id) = redeem {
-                cmd_nft::cmd_nft_redeem(&wallet, &rpc_endpoint, &token_id).await?;
             } else {
                 anyhow::bail!(
-                    "Specify an action: --list, --info, --mint, --transfer, --sell, --sell-sign, --buy, --from, --export, --batch-mint, --fractionalize, or --redeem\nRun 'doli nft --help' for details."
+                    "Specify an action: --list, --info, --mint, --transfer, --sell, --sell-sign, --buy, --from, --export, --batch-mint\nRun 'doli nft --help' for details."
                 );
             }
         }

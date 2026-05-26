@@ -97,13 +97,6 @@ pub const LP_SHARE_VERSION: u8 = 1;
 /// LPShare metadata size (after condition prefix): 1B version + 32B pool_id
 pub const LP_SHARE_METADATA_SIZE: usize = 33;
 
-/// Fractionalization marker byte appended to NFT extra_data ('F')
-pub const FRAC_MARKER: u8 = 0x46;
-/// Domain for deterministic fraction asset_id derivation
-pub const FRAC_DOMAIN: &[u8] = b"DOLI_FRAC";
-/// Fractionalization metadata size: 1B marker + 32B asset_id + 8B total_shares
-pub const FRAC_METADATA_SIZE: usize = 41;
-
 /// Decoded pool metadata from extra_data.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PoolMetadata {
@@ -969,80 +962,6 @@ impl Output {
             buf
         });
         Some(pool_id)
-    }
-
-    // ---- NFT Fractionalization ----
-
-    /// Returns true if this NFT output has fractionalization metadata appended.
-    pub fn is_fractionalized(&self) -> bool {
-        if self.output_type != OutputType::NFT || self.extra_data.is_empty() {
-            return false;
-        }
-        self.fractionalization_metadata().is_some()
-    }
-
-    /// Decode fractionalization metadata from a fractionalized NFT output.
-    ///
-    /// Returns `Some((fraction_asset_id, total_shares))` if the NFT carries
-    /// valid fractionalization metadata, `None` otherwise.
-    pub fn fractionalization_metadata(&self) -> Option<(Hash, u64)> {
-        if self.output_type != OutputType::NFT || self.extra_data.is_empty() {
-            return None;
-        }
-        let cond_len = match crate::conditions::Condition::decode_prefix(&self.extra_data) {
-            Ok((_, len)) => len,
-            Err(_) => return None,
-        };
-        let meta = &self.extra_data[cond_len..];
-        if meta.len() < NFT_METADATA_HEADER_SIZE + FRAC_METADATA_SIZE {
-            return None;
-        }
-        let frac_start = meta.len() - FRAC_METADATA_SIZE;
-        if meta[frac_start] != FRAC_MARKER {
-            return None;
-        }
-        let asset_id = Hash::from_bytes({
-            let mut buf = [0u8; 32];
-            buf.copy_from_slice(&meta[frac_start + 1..frac_start + 33]);
-            buf
-        });
-        let total_shares = u64::from_le_bytes({
-            let mut buf = [0u8; 8];
-            buf.copy_from_slice(&meta[frac_start + 33..frac_start + 41]);
-            buf
-        });
-        Some((asset_id, total_shares))
-    }
-
-    /// Compute the deterministic fraction asset_id for a given NFT token_id.
-    ///
-    /// `fraction_asset_id = BLAKE3("DOLI_FRAC" || token_id)`
-    pub fn fraction_asset_id(nft_token_id: &Hash) -> Hash {
-        crypto::hash::hash_with_domain(FRAC_DOMAIN, nft_token_id.as_bytes())
-    }
-
-    /// Build extra_data for a fractionalized NFT output.
-    ///
-    /// Takes the original NFT extra_data and appends fractionalization metadata.
-    pub fn build_fractionalized_extra_data(
-        original_extra_data: &[u8],
-        fraction_asset_id: &Hash,
-        total_shares: u64,
-    ) -> Vec<u8> {
-        let mut data = original_extra_data.to_vec();
-        data.push(FRAC_MARKER);
-        data.extend_from_slice(fraction_asset_id.as_bytes());
-        data.extend_from_slice(&total_shares.to_le_bytes());
-        data
-    }
-
-    /// Strip fractionalization metadata from NFT extra_data, returning the original.
-    pub fn strip_fractionalization_metadata(&self) -> Option<Vec<u8>> {
-        if !self.is_fractionalized() {
-            return None;
-        }
-        let new_len = self.extra_data.len() - FRAC_METADATA_SIZE;
-        Some(self.extra_data[..new_len].to_vec())
     }
 
     // ==================== EncryptedContent v1 (MIME + Royalties) ====================

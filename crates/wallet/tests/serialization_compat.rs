@@ -354,18 +354,17 @@ fn test_core_txtype_variant_count() {
             count += 1;
         }
     }
-    // Core has 26 variants (post B.1 tombstoning): Transfer(0), Registration(1),
+    // Core has 24 variants (post B.1+B.2 tombstoning): Transfer(0), Registration(1),
     // Exit(2), ClaimReward(3), ClaimBond(4), SlashProducer(5), Coinbase(6),
     // AddBond(7), RequestWithdrawal(8), ClaimWithdrawal(9), EpochReward(10),
     // RemoveMaintainer(11), AddMaintainer(12), DelegateBond(13),
     // RevokeDelegation(14), ProtocolActivation(15), PriceAttestation(16),
     // MintAsset(17), BurnAsset(18), CreatePool(19), AddLiquidity(20),
-    // RemoveLiquidity(21), Swap(22), FractionalizeNft(29), RedeemNft(30),
-    // ZKSettle(31)
-    // Note: discriminants 23, 24-28 are tombstoned/gaps.
+    // RemoveLiquidity(21), Swap(22), ZKSettle(31)
+    // Note: discriminants 23, 24-28, 29-30 are tombstoned/gaps.
     assert_eq!(
-        count, 26,
-        "Core TxType variant count changed from 26 to {}! Update wallet TxType to match.",
+        count, 24,
+        "Core TxType variant count changed from 24 to {}! Update wallet TxType to match.",
         count,
     );
 }

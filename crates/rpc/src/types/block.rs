@@ -166,8 +166,6 @@ impl From<&Transaction> for TransactionResponse {
             doli_core::TxType::AddLiquidity => "add_liquidity",
             doli_core::TxType::RemoveLiquidity => "remove_liquidity",
             doli_core::TxType::Swap => "swap",
-            doli_core::TxType::FractionalizeNft => "fractionalize_nft",
-            doli_core::TxType::RedeemNft => "redeem_nft",
             doli_core::TxType::ZKSettle => "zk_settle",
             doli_core::TxType::PriceAttestation => "price_attestation",
         };

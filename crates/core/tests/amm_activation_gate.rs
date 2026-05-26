@@ -2,35 +2,27 @@
 //   Outputs:
 //     O1: returned Result<(), ValidationError> for the 4 AMM tx types
 //         (CreatePool=19, AddLiquidity=20, RemoveLiquidity=21, Swap=22) against
-//         ctx.amm_activation_height (NEW gate, decoupled from defi_activation_height).
-//     O2: returned Result<(), ValidationError> for the 2 remaining non-AMM DeFi tx types
-//
-//         (FractionalizeNft, RedeemNft -- lending tombstoned B.1) against ctx.defi_activation_height (UNCHANGED).
+//         ctx.amm_activation_height.
 //   PATHS:
-//     P1: tx.tx_type ∈ AMM_TX_TYPES AND ctx.current_height < ctx.amm_activation_height
-//         → Err(ValidationError::AmmNotActivated { tx_type, activation_height, current_height })
+//     P1: tx.tx_type in AMM_TX_TYPES AND ctx.current_height < ctx.amm_activation_height
+//         -> Err(ValidationError::AmmNotActivated { tx_type, activation_height, current_height })
 //         with error_code == "AMM_NOT_ACTIVATED".
-//     P2: tx.tx_type ∈ AMM_TX_TYPES AND ctx.current_height >= ctx.amm_activation_height
-//         → MAY return Ok or a per-type validation Err, but NOT AmmNotActivated.
-//     P3: tx.tx_type ∈ NON_AMM_DEFI_TX_TYPES AND ctx.current_height < ctx.defi_activation_height
-//         → Err(ValidationError::DefiNotActivated { .. }) — INDEPENDENCE.
-//         Verified by submitting a non-AMM DeFi tx with amm_activation_height=0 +
-//         defi_activation_height=u64::MAX. Non-AMM DeFi must STILL reject (DEFI_NOT_ACTIVATED),
-//         proving the two gates are independent.
+//     P2: tx.tx_type in AMM_TX_TYPES AND ctx.current_height >= ctx.amm_activation_height
+//         -> MAY return Ok or a per-type validation Err, but NOT AmmNotActivated.
 //   INPUT PARTITIONS:
 //     P1: 4 partitions, one per AMM tx_type.
 //     P2: 1 partition, boundary case (current_height == amm_activation_height).
-//     P3: 1 partition, FractionalizeNft with amm_activation_height=0 + defi=u64::MAX.
 //   MATRIX:
-//     O1 × P1 × {4 AMM types}              → 4 assertions (each Err AmmNotActivated)
-//     O1 × P1 × {error_code}               → 1 assertion (stable "AMM_NOT_ACTIVATED")
-//     O1 × P1 × {to_structured_json}       → 1 assertion (fields present)
-//     O1 × P2 × {boundary}                 → 1 assertion (NOT AmmNotActivated at == gate)
-//     O2 × P3 × {independence}             → 1 assertion (non-AMM DeFi → DefiNotActivated
-//                                              even with amm gate open)
+//     O1 x P1 x {4 AMM types}              -> 4 assertions (each Err AmmNotActivated)
+//     O1 x P1 x {error_code}               -> 1 assertion (stable "AMM_NOT_ACTIVATED")
+//     O1 x P1 x {to_structured_json}       -> 1 assertion (fields present)
+//     O1 x P2 x {boundary}                 -> 1 assertion (NOT AmmNotActivated at == gate)
 //
-// Pre-fix expectation (TDD red phase): without the gate split + AmmNotActivated variant,
-// this file will not compile. With the split applied, all assertions pass.
+// History: Originally included O2/P3 independence tests verifying that
+// non-AMM DeFi tx types (FractionalizeNft, RedeemNft) still hit
+// DefiNotActivated when AMM gate is open. Those tx types were
+// tombstoned in B.2 (DeFi L1 Foundations Architecture, 2026-05-26),
+// making the independence tests moot. See tombstone_nft_frac_types.rs.
 
 use crypto::Hash;
 use doli_core::consensus::{ConsensusParams, GENESIS_TIME};
@@ -38,10 +30,9 @@ use doli_core::network::Network;
 use doli_core::transaction::{Input, Output, Transaction, TxType};
 use doli_core::validation::{self, ValidationContext, ValidationError};
 
-// ───────────────────────────────────────────────────────────────────────────
-// Minimal valid-shape constructors for the 4 AMM tx types + a lending tx
-// used for the independence check.
-// ───────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------
+// Minimal valid-shape constructors for the 4 AMM tx types.
+// -----------------------------------------------------------------------
 fn create_pool_tx() -> Transaction {
     let asset_b = Hash::from_bytes([0xBB; 32]);
     let pool_id = Output::compute_pool_id(&Hash::ZERO, &asset_b, 30);
@@ -106,22 +97,6 @@ fn swap_tx() -> Transaction {
     }
 }
 
-/// Non-AMM DeFi tx for independence test. Uses FractionalizeNft (still
-/// gated under defi_activation_height) since lending types were
-/// tombstoned in B.1 (2026-05-26).
-fn non_amm_defi_tx() -> Transaction {
-    Transaction {
-        version: 1,
-        tx_type: TxType::FractionalizeNft,
-        inputs: vec![Input::new(Hash::from_bytes([0xAA; 32]), 0)],
-        outputs: vec![
-            Output::normal(1, Hash::from_bytes([0x01; 32])),
-            Output::normal(1, Hash::from_bytes([0x02; 32])),
-        ],
-        extra_data: vec![],
-    }
-}
-
 type AmmTxCtor = (&'static str, fn() -> Transaction, u32);
 
 const AMM_TX_CTORS: &[AmmTxCtor] = &[
@@ -139,12 +114,10 @@ const AMM_TX_CTORS: &[AmmTxCtor] = &[
     ("Swap", swap_tx, TxType::Swap as u32),
 ];
 
-// ───────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------
 // Context builders.
-// ───────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------
 fn pre_amm_activation_ctx() -> ValidationContext {
-    // amm_activation_height = u64::MAX (default) → AMM gate fires.
-    // defi_activation_height = u64::MAX (default) → lending gate fires.
     ValidationContext::new(
         ConsensusParams::devnet(),
         Network::Devnet,
@@ -156,7 +129,6 @@ fn pre_amm_activation_ctx() -> ValidationContext {
 }
 
 fn post_amm_activation_ctx(amm_activation: u64, height: u64) -> ValidationContext {
-    // AMM gate at `amm_activation`. Defi gate left at u64::MAX (default).
     ValidationContext::new(
         ConsensusParams::devnet(),
         Network::Devnet,
@@ -168,10 +140,9 @@ fn post_amm_activation_ctx(amm_activation: u64, height: u64) -> ValidationContex
     .with_amm_activation_height(amm_activation)
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// O1 × P1 — all 4 AMM tx types rejected pre-activation with AmmNotActivated
-// (one assertion per type so a regression in one match arm cannot hide).
-// ═══════════════════════════════════════════════════════════════════════════
+// ===================================================================
+// O1 x P1 -- all 4 AMM tx types rejected pre-activation
+// ===================================================================
 #[test]
 fn amm_tx_types_rejected_pre_activation() {
     let ctx = pre_amm_activation_ctx();
@@ -216,9 +187,9 @@ fn amm_tx_types_rejected_pre_activation() {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// O1 × P1 — stable machine-parseable error_code (REQ-AGENTIC-ERRORS).
-// ═══════════════════════════════════════════════════════════════════════════
+// ===================================================================
+// O1 x P1 -- stable machine-parseable error_code (REQ-AGENTIC-ERRORS).
+// ===================================================================
 #[test]
 fn amm_not_activated_error_code_is_stable() {
     let ctx = pre_amm_activation_ctx();
@@ -231,9 +202,9 @@ fn amm_not_activated_error_code_is_stable() {
     );
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// O1 × P1 — structured JSON exposes all three fields.
-// ═══════════════════════════════════════════════════════════════════════════
+// ===================================================================
+// O1 x P1 -- structured JSON exposes all three fields.
+// ===================================================================
 #[test]
 fn amm_not_activated_structured_json_exposes_fields() {
     let ctx = pre_amm_activation_ctx();
@@ -254,94 +225,16 @@ fn amm_not_activated_structured_json_exposes_fields() {
     assert_eq!(json["tx_type"], 22u32);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// O1 × P2 — boundary: gate uses strict `<`, so height == gate is post-activation.
-// ═══════════════════════════════════════════════════════════════════════════
+// ===================================================================
+// O1 x P2 -- boundary: gate uses strict `<`, so height == gate is
+// post-activation.
+// ===================================================================
 #[test]
 fn amm_tx_types_pass_gate_at_activation_boundary() {
     let ctx = post_amm_activation_ctx(10, 10);
     let tx = create_pool_tx();
     let res = validation::validate_transaction(&tx, &ctx);
     if let Err(ValidationError::AmmNotActivated { .. }) = res {
-        panic!("gate fired AT activation height — comparison should be `<`, not `<=`")
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// O2 × P3 — INDEPENDENCE: non-AMM DeFi tx still rejected when
-// amm_activation_height=0 but defi_activation_height=u64::MAX. Verifies the
-// two gates do NOT share a code path.
-// ═══════════════════════════════════════════════════════════════════════════
-#[test]
-fn non_amm_defi_tx_still_gated_when_amm_open() {
-    let ctx = ValidationContext::new(
-        ConsensusParams::devnet(),
-        Network::Devnet,
-        GENESIS_TIME + 120,
-        1,
-    )
-    .with_prev_block(0, GENESIS_TIME, Hash::ZERO)
-    .with_sig_verification_height(0)
-    .with_amm_activation_height(0) // AMM wide open
-    .with_defi_activation_height(u64::MAX); // Lending/NFT-frac still gated
-
-    let tx = non_amm_defi_tx();
-    let res = validation::validate_transaction(&tx, &ctx);
-    match res {
-        Err(ValidationError::DefiNotActivated { tx_type, .. }) => {
-            assert_eq!(
-                tx_type,
-                TxType::FractionalizeNft as u32,
-                "Non-AMM DeFi tx must still hit DefiNotActivated, not AmmNotActivated"
-            );
-        }
-        Err(ValidationError::AmmNotActivated { .. }) => panic!(
-            "Non-AMM DeFi tx must NOT route through the AMM gate — the two gates are \
-             independent (HC-6 / INC-I-075). Got AmmNotActivated instead of DefiNotActivated."
-        ),
-        other => panic!(
-            "Non-AMM DeFi tx must be rejected with DefiNotActivated when defi gate \
-             is closed. Got: {:?}",
-            other
-        ),
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// O2 × P3 — INDEPENDENCE (reverse): AMM tx still rejected when
-// defi_activation_height=0 but amm_activation_height=u64::MAX.
-// ═══════════════════════════════════════════════════════════════════════════
-#[test]
-fn amm_tx_still_gated_when_defi_open() {
-    let ctx = ValidationContext::new(
-        ConsensusParams::devnet(),
-        Network::Devnet,
-        GENESIS_TIME + 120,
-        1,
-    )
-    .with_prev_block(0, GENESIS_TIME, Hash::ZERO)
-    .with_sig_verification_height(0)
-    .with_amm_activation_height(u64::MAX) // AMM still gated
-    .with_defi_activation_height(0); // Lending/NFT-frac wide open
-
-    let tx = create_pool_tx();
-    let res = validation::validate_transaction(&tx, &ctx);
-    match res {
-        Err(ValidationError::AmmNotActivated { tx_type, .. }) => {
-            assert_eq!(
-                tx_type,
-                TxType::CreatePool as u32,
-                "AMM tx must hit AmmNotActivated, not DefiNotActivated"
-            );
-        }
-        Err(ValidationError::DefiNotActivated { .. }) => panic!(
-            "AMM tx must NOT route through the defi gate — the two gates are \
-             independent (HC-6 / INC-I-075). Got DefiNotActivated instead of AmmNotActivated."
-        ),
-        other => panic!(
-            "AMM tx must be rejected with AmmNotActivated when AMM gate is closed. \
-             Got: {:?}",
-            other
-        ),
+        panic!("gate fired AT activation height -- comparison should be `<`, not `<=`")
     }
 }

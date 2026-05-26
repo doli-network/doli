@@ -321,14 +321,6 @@ pub enum ValidationError {
     #[error("invalid liquidity operation: {0}")]
     InvalidLiquidity(String),
 
-    /// FractionalizeNft validation failed.
-    #[error("invalid fractionalization: {0}")]
-    InvalidFractionalization(String),
-
-    /// RedeemNft validation failed.
-    #[error("invalid redemption: {0}")]
-    InvalidRedemption(String),
-
     /// INC-I-078: DelegateBond rejected because the target producer's
     /// `received_delegations` total would exceed the per-producer cap.
     ///
@@ -371,35 +363,6 @@ pub enum ValidationError {
         activation_height: u64,
     },
 
-    /// INC-I-088 Phase 0: a non-AMM DeFi transaction was submitted before
-    /// the `defi_activation_height` gate opens.
-    ///
-    /// Covers the 7 non-AMM DeFi tx types in one variant: CreateLoan,
-    /// RepayLoan, LiquidateLoan, LendingDeposit, LendingWithdraw,
-    /// FractionalizeNft, RedeemNft.
-    ///
-    /// The 4 AMM tx types (CreatePool, AddLiquidity, RemoveLiquidity, Swap)
-    /// were decoupled into [`Self::AmmNotActivated`] per HC-6 / INC-I-075
-    /// (AMM Foundations M1, 2026-05-25). The two gates are independent —
-    /// each tx type routes through exactly one.
-    ///
-    /// `tx_type` is the rejected transaction's `TxType` enum discriminant
-    /// (`u32`), so agentic consumers can identify which DeFi feature was
-    /// requested without parsing the message. `activation_height` and
-    /// `current_height` let consumers compute the wait. The stable error
-    /// code is `"DEFI_NOT_ACTIVATED"`.
-    #[error(
-        "defi not activated: tx_type={tx_type} activation_height={activation_height} current_height={current_height}"
-    )]
-    DefiNotActivated {
-        /// `TxType` discriminant (e.g. 24 = CreateLoan, 27 = LendingDeposit).
-        tx_type: u32,
-        /// Configured `defi_activation_height` on the validation context.
-        activation_height: u64,
-        /// Height at which the rejection occurred.
-        current_height: u64,
-    },
-
     /// AMM Foundations M3 (D1): a CreatePool transaction failed the
     /// `MINIMUM_LIQUIDITY` first-deposit lock invariant.
     ///
@@ -432,12 +395,10 @@ pub enum ValidationError {
     /// Covers the 4 AMM tx types in one variant: CreatePool, AddLiquidity,
     /// RemoveLiquidity, Swap.
     ///
-    /// Independent of [`Self::DefiNotActivated`]. The two gates exist
-    /// because the AMM subsystem has a different audit/un-gating timeline
-    /// than lending + NFT-frac (HC-6 per-feature activation height
-    /// discipline; INC-I-075 three-question consensus-shape checklist:
-    /// Q1=YES user-submittable, Q2=NO validator-only, Q3=NO accept→reject
-    /// → activation height REQUIRED).
+    /// The lending (B.1) and NFT-frac (B.2) tx types were tombstoned in
+    /// the DeFi L1 Foundations Architecture (2026-05-26). Their discriminants
+    /// return None from from_u32 and never reach any gate.
+    ///
     ///
     /// `tx_type` is the rejected transaction's `TxType` enum discriminant
     /// (`u32`), so agentic consumers can identify which AMM operation was
@@ -534,13 +495,10 @@ impl ValidationError {
             Self::InvalidPool(_) => "INVALID_POOL",
             Self::InvalidSwap(_) => "INVALID_SWAP",
             Self::InvalidLiquidity(_) => "INVALID_LIQUIDITY",
-            Self::InvalidFractionalization(_) => "INVALID_FRACTIONALIZATION",
-            Self::InvalidRedemption(_) => "INVALID_REDEMPTION",
             Self::MissingPublicKey { .. } => "MISSING_PUBLIC_KEY",
             Self::DelegationCapExceeded { .. } => "DELEGATION_CAP_EXCEEDED",
             Self::DelegationSignatureInvalid { .. } => "DELEGATION_SIGNATURE_INVALID",
             Self::AddBondCapExceeded { .. } => "ADDBOND_CAP_EXCEEDED",
-            Self::DefiNotActivated { .. } => "DEFI_NOT_ACTIVATED",
             Self::AmmNotActivated { .. } => "AMM_NOT_ACTIVATED",
             Self::AmmMinimumLiquidity { .. } => "AMM_MINIMUM_LIQUIDITY",
         }
@@ -703,9 +661,7 @@ impl ValidationError {
             | Self::InvalidProtocolActivation(reason)
             | Self::InvalidPool(reason)
             | Self::InvalidSwap(reason)
-            | Self::InvalidLiquidity(reason)
-            | Self::InvalidFractionalization(reason)
-            | Self::InvalidRedemption(reason) => {
+            | Self::InvalidLiquidity(reason) => {
                 map.insert("reason".into(), Value::String(reason.clone()));
             }
             Self::UnexpectedEpochReward => {}
@@ -759,15 +715,6 @@ impl ValidationError {
                 map.insert("pending".into(), (*pending).into());
                 map.insert("requested".into(), (*requested).into());
                 map.insert("max".into(), (*max).into());
-            }
-            Self::DefiNotActivated {
-                tx_type,
-                activation_height,
-                current_height,
-            } => {
-                map.insert("tx_type".into(), (*tx_type).into());
-                map.insert("activation_height".into(), (*activation_height).into());
-                map.insert("current_height".into(), (*current_height).into());
             }
             Self::AmmNotActivated {
                 tx_type,

@@ -24,7 +24,6 @@
 mod block;
 mod error;
 pub mod errors_oracle;
-pub(crate) mod fractionalize;
 /// Parallel transaction validation via dependency graph.
 pub mod parallel;
 pub(crate) mod pool;

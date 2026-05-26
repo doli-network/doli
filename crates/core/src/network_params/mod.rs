@@ -337,19 +337,10 @@ pub struct NetworkParams {
     /// INC-I-078 devnet default).
     pub addbond_cap_enforcement_activation_height: u64,
 
-    /// INC-I-088 Phase 0 / B.1 update: Height at which the remaining
-    /// non-AMM DeFi tx types (FractionalizeNft, RedeemNft) become valid.
-    ///
-    /// The 5 lending types (CreateLoan 24, RepayLoan 25, LiquidateLoan 26,
-    /// LendingDeposit 27, LendingWithdraw 28) and 2 lending output types
-    /// (Collateral 11, LendingDeposit 12) were TOMBSTONED in B.1
-    /// (DeFi L1 Foundations Architecture, 2026-05-26). Their discriminants
-    /// return None from from_u32/from_u8 and will never be reused.
-    /// The 4 AMM types were decoupled to `amm_activation_height` (M1).
-    ///
-    /// This field is kept for the 2 remaining NFT-frac types and will be
-    /// repurposed or removed when B.2 (NFT-frac tombstoning) ships.
-    ///
+    /// INC-I-088 Phase 0 / B.1+B.2 update: originally gated all non-AMM
+    /// DeFi tx types. All 7 are now tombstoned (5 lending B.1, 2 NFT-frac
+    /// B.2). Their discriminants return None from from_u32 and never reach
+    /// the validation gate. Field retained for structural compatibility.
     /// Defaults: mainnet/testnet/devnet all `u64::MAX` (disabled).
     pub defi_activation_height: u64,
 

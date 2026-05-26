@@ -77,8 +77,8 @@ fn test_tx_type_conversion() {
     assert_eq!(TxType::from_u32(26), None); // tombstoned (B.1)
     assert_eq!(TxType::from_u32(27), None); // tombstoned (B.1)
     assert_eq!(TxType::from_u32(28), None); // tombstoned (B.1)
-    assert_eq!(TxType::from_u32(29), Some(TxType::FractionalizeNft));
-    assert_eq!(TxType::from_u32(30), Some(TxType::RedeemNft));
+    assert_eq!(TxType::from_u32(29), None); // tombstoned (B.2)
+    assert_eq!(TxType::from_u32(30), None); // tombstoned (B.2)
     assert_eq!(TxType::from_u32(31), Some(TxType::ZKSettle));
     assert_eq!(TxType::from_u32(32), None);
     assert_eq!(TxType::from_u32(u32::MAX), None);
@@ -665,8 +665,8 @@ fn test_tx_type_from_u32_protocol_activation() {
     assert_eq!(TxType::from_u32(26), None); // tombstoned (B.1)
     assert_eq!(TxType::from_u32(27), None); // tombstoned (B.1)
     assert_eq!(TxType::from_u32(28), None); // tombstoned (B.1)
-    assert_eq!(TxType::from_u32(29), Some(TxType::FractionalizeNft));
-    assert_eq!(TxType::from_u32(30), Some(TxType::RedeemNft));
+    assert_eq!(TxType::from_u32(29), None); // tombstoned (B.2)
+    assert_eq!(TxType::from_u32(30), None); // tombstoned (B.2)
     assert_eq!(TxType::from_u32(31), Some(TxType::ZKSettle));
     assert_eq!(TxType::from_u32(32), None);
 }

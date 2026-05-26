@@ -89,20 +89,13 @@ pub fn validate_transaction(
 
     // 3.5 DeFi safety gates (split per HC-6 / INC-I-075).
     //
-    // The DeFi tx types are gated by TWO independent activation heights:
-    //
     //   - AMM tx types (CreatePool, AddLiquidity, RemoveLiquidity, Swap)
     //     route through `amm_activation_height` and reject with
     //     `AmmNotActivated` (`[ERRTX-AMM001]`). AMM Foundations M1.
-    //   - NFT-frac tx types (FractionalizeNft, RedeemNft) continue to
-    //     route through `defi_activation_height` and reject with
-    //     `DefiNotActivated`. INC-I-088 Phase 0.
-    //   - Lending tx types (24-28) were TOMBSTONED in B.1 (2026-05-26).
-    //     Their discriminants return None from from_u32, so they can
-    //     never reach this gate. See types.rs tombstone comment.
+    //   - Lending tx types (24-28) TOMBSTONED in B.1 (2026-05-26).
+    //   - NFT-frac tx types (29-30) TOMBSTONED in B.2 (2026-05-26).
+    //     Both sets return None from from_u32 and never reach this gate.
     //
-    // The two heights are INDEPENDENT: setting one to 0 must NOT open the
-    // other (HC-6 per-feature activation height discipline).
     // Comparison is strict `<` -- at `current_height == activation_height`
     // the gate is open.
     if matches!(
@@ -113,15 +106,6 @@ pub fn validate_transaction(
         return Err(ValidationError::AmmNotActivated {
             tx_type: tx.tx_type as u32,
             activation_height: ctx.amm_activation_height,
-            current_height: ctx.current_height,
-        });
-    }
-    if matches!(tx.tx_type, TxType::FractionalizeNft | TxType::RedeemNft)
-        && ctx.current_height < ctx.defi_activation_height
-    {
-        return Err(ValidationError::DefiNotActivated {
-            tx_type: tx.tx_type as u32,
-            activation_height: ctx.defi_activation_height,
             current_height: ctx.current_height,
         });
     }
@@ -283,12 +267,6 @@ pub fn validate_transaction(
         }
         TxType::RemoveLiquidity => {
             super::pool::validate_remove_liquidity(tx)?;
-        }
-        TxType::FractionalizeNft => {
-            super::fractionalize::validate_fractionalize_nft(tx)?;
-        }
-        TxType::RedeemNft => {
-            super::fractionalize::validate_redeem_nft(tx)?;
         }
         TxType::ZKSettle => {
             // L2 settlement — structural checks only. The ZK proof itself

@@ -106,10 +106,22 @@ pub enum TxType {
     //
     // See specs/defi-l1-foundations-architecture.md B.1 for full rationale.
     // ──────────────────────────────────────────────────────────────────
-    /// Lock an NFT and mint fungible fraction tokens
-    FractionalizeNft = 29,
-    /// Burn all fraction tokens and unlock the original NFT
-    RedeemNft = 30,
+    // ─── TOMBSTONED: discriminants 29-30 (NFT fractionalization) ───
+    // B.2 DeFi L1 Foundations Architecture (2026-05-26).
+    // These discriminants are PERMANENTLY RETIRED. DO NOT REUSE.
+    //
+    //   29 = FractionalizeNft (tombstoned)
+    //   30 = RedeemNft        (tombstoned)
+    //
+    // NFT fractionalization was removed because:
+    // - defi_activation_height = u64::MAX since inception (never activated)
+    // - No fractionalized NFT UTXOs exist on any chain
+    // - Fractionalization is composable on top of existing primitives:
+    //   Multisig + MintAsset + BurnAsset (up to 127 shareholders)
+    // - Native fractionalization deferred to Phase 3 (if ever needed)
+    //
+    // See specs/defi-l1-foundations-architecture.md B.2 for full rationale.
+    // ──────────────────────────────────────────────────────────────────
     /// L2 settlement — verify a zero-knowledge proof of an L2 state transition.
     ///
     /// Consumes exactly one `ZKRollup` output (previous committed state) and
@@ -156,8 +168,9 @@ impl TxType {
             // ── TOMBSTONED (B.1): DO NOT REUSE discriminants 24-28 ──
             // Native lending removed 2026-05-26. See comment block above.
             24..=28 => None,
-            29 => Some(Self::FractionalizeNft),
-            30 => Some(Self::RedeemNft),
+            // ── TOMBSTONED (B.2): DO NOT REUSE discriminants 29-30 ──
+            // NFT fractionalization removed 2026-05-26. See comment block above.
+            29 | 30 => None,
             31 => Some(Self::ZKSettle),
             _ => None,
         }
@@ -402,6 +415,7 @@ impl Input {
 
     /// Create a new input with AnyoneCanPay sighash type.
     /// The signature covers only this input + all outputs (not other inputs).
+    /// Used for NFT marketplace: seller signs their NFT input, buyer adds payment inputs later.
     pub fn new_anyone_can_pay(prev_tx_hash: Hash, output_index: u32) -> Self {
         Self {
             prev_tx_hash,
