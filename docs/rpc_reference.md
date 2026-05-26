@@ -55,6 +55,9 @@ This document describes the DOLI node JSON-RPC API.
 | **Diagnostics** | `getFleetForkDiagnostic` | Implemented |
 | **Storage** | `pruneBlocks` | Implemented |
 | **Storage** | `getStorageInfo` | Implemented |
+| **Oracle** (Phase 2.1) | `getOraclePrice` | Implemented — frozen pre-activation |
+| **Oracle** (Phase 2.1) | `getOracleAttestations` | Implemented — frozen pre-activation |
+| **Oracle** (Phase 2.1) | `getOracleStatus` | Implemented — frozen pre-activation |
 
 ### Not Yet Implemented
 
@@ -2431,6 +2434,144 @@ curl -X POST http://127.0.0.1:8500 \
 
 ---
 
-*API version: 1.5 (45 methods)*
+## Oracle Methods (Phase 2.1)
 
-*Last updated: March 2026*
+Spec: `specs/oracle-structural-anchored-economics.md` §1.9.
+
+All three methods are read-only consumers of the M5 `OraclePrice` UTXO
+(OutputType 15) and M3 `PriceAttestation` txs (TxType 16). They are
+**purely additive** — the RPC surface is unconditionally available, but
+the data is gated by `NetworkParams.oracle_activation_height` (= `u64::MAX`
+on every network until a real activation height is decided in a
+separate session per HC-6 / INC-I-075).
+
+Pre-activation behavior:
+- `getOraclePrice` returns `null` (no OraclePrice UTXO exists).
+- `getOracleAttestations` returns an empty list (no PriceAttestation tx
+  ever passes M4 validation).
+- `getOracleStatus` returns `active: false`.
+
+### `getOraclePrice`
+
+Read the per-pair aggregated price.
+
+**Request:** `{ "pair_id": "<64-char hex>" }` where `pair_id =
+BLAKE3("ORACLE_PAIR" || pair_string)`, e.g., `BLAKE3("ORACLE_PAIR" ||
+"DOLI/USD")`.
+
+**Response (UTXO exists):**
+```json
+{
+  "pair_id":            "<64-char hex echo>",
+  "price_cents":        150,
+  "last_update_height": 12345,
+  "contributor_count":  8,
+  "is_stale":           false,
+  "trust_model":        "structural-anchored"
+}
+```
+
+**Response (UTXO absent — pre-aggregation or pre-activation):** `null`.
+
+**Errors:** `RpcError::invalid_params` for malformed or missing
+`pair_id`.
+
+**Notes:**
+- `is_stale = (current_height - last_update_height) > MAX_STALENESS`.
+  Phase 2.1 uses `MAX_STALENESS = blocks_per_reward_epoch` (=360 on
+  mainnet/testnet, 60 on devnet). Phase 2.3 tightens via a separate
+  activation height.
+- `trust_model` is the literal byte string `"structural-anchored"`
+  (locked verbatim per spec §6 disclosure).
+
+### `getOracleAttestations`
+
+List all valid PriceAttestation txs for a given epoch and pair_id. Used
+for transparency and auditing.
+
+**Request:** `{ "epoch": <u64>, "pair_id": "<64-char hex>" }`.
+
+**Response:**
+```json
+{
+  "epoch":        1,
+  "pair_id":      "<64-char hex echo>",
+  "attestations": [
+    {
+      "attester_pubkey":      "<64-char hex of Ed25519 pubkey>",
+      "attester_pubkey_hash": "<64-char hex of hash_with_domain(ADDRESS_DOMAIN, pubkey)>",
+      "price_cents":          150,
+      "bond_weight":          1000
+    }
+  ]
+}
+```
+
+**Errors:** `RpcError::invalid_params` for malformed or missing
+`epoch` / `pair_id`.
+
+**Notes:**
+- `attester_pubkey_hash` is the bond-snapshot key form — directly
+  cross-referenceable with `getProducers`.
+- `bond_weight` is populated **only** when the queried epoch matches
+  the persisted bond_snapshot's epoch (DOLI does not preserve historical
+  bond_snapshots). For other epochs, `bond_weight` is `null`.
+- Sort order is ascending by `attester_pubkey_hash` bytes — two
+  identical queries against the same chain state return byte-identical
+  JSON.
+- Empty-list contract: unknown epoch, future epoch, pruned-archive
+  epoch, and any pair_id with no attestations all return
+  `{ ..., "attestations": [] }` — never an error, never a panic.
+- Defense-in-depth dedup: at most one entry per attester (M4 rule 5
+  already rejects same-signer duplicates at validation time).
+
+### `getOracleStatus`
+
+Surface the operational state of the Phase 2.1 oracle.
+
+**Request:** `{}` (no params).
+
+**Response:**
+```json
+{
+  "active":                    false,
+  "trust_model":               "structural-anchored",
+  "structural_share":          0.627,
+  "sunset_threshold":          0.55,
+  "sunset_triggered":          false,
+  "last_update_height":        12345,
+  "attester_count":            10,
+  "activation_height":         18446744073709551615,
+  "centralization_disclosure": "**DOLI Trust Disclosure -- Phase 2.1 Oracle**\n\n..."
+}
+```
+
+**Field semantics:**
+- `active`: `true` iff `current_height >= activation_height` AND
+  `!sunset_triggered`. Pre-activation `activation_height = u64::MAX`, so
+  `active` is `false`.
+- `structural_share`: spec §1.8 metric, 1-epoch-lagged with anti-dilution
+  filter. Computed via the same `compute_structural_share_bps` helper
+  used by the consensus sunset gate — so this value is bit-identical to
+  what the validator uses for `[ERRTX-ORACLE003]` decisions.
+- `sunset_threshold`: hardcoded `0.55` (`SUNSET_THRESHOLD_BPS / 10_000`).
+- `sunset_triggered`: `structural_share < sunset_threshold`, or `true`
+  when no eligible bonds exist (genesis or all-young producers).
+- `last_update_height`: max `last_update_height` across all OraclePrice
+  UTXOs (Phase 2.1 ships with one pair, code is pair-agnostic). `null`
+  when no OraclePrice UTXO exists.
+- `attester_count`: distinct attesters in the most-recently CLOSED
+  epoch (=`current_epoch - 1`). `0` before the first epoch closes.
+- `activation_height`: echoes
+  `NetworkParams.oracle_activation_height` (= `u64::MAX`
+  pre-activation).
+- `centralization_disclosure`: verbatim spec §6 text. A drift gate in
+  the rpc test suite asserts byte-equality between this constant and
+  the spec file; any future edit to either side without matching the
+  other breaks the build.
+
+---
+
+*API version: 1.5 (56 methods)*
+
+*Last updated: May 2026*

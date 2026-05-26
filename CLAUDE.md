@@ -55,7 +55,7 @@ Two root-cause fixes stabilized the network. All other fixes were symptom mitiga
 - **bitfield encoder/decoder** → encoder order is `[epoch_state.producer_list | extra sorted by pubkey]`. ALL decoders (post_commit, rewards, RPC) MUST use the same order or indices misalign. See Full Bitfield Decode pillar.
 - **HardForkSchedule** → NEVER add entries for rolling deploys. `current_fork_id()` uses `u64::MAX`, which makes ALL entries active in fork_id immediately. Use constant gates instead.
 - **CURRENT_PROTOCOL_VERSION** → **DO NOT bump unless the EpochState serialization format actually changes.** A protocol version bump triggers `delete_epoch_state()` on every node restart (`init.rs:727`), forcing a non-deterministic rebuild from local blocks. Snap-synced nodes have incomplete block history → different rebuild results → **guaranteed fork at the next epoch boundary**. INC-I-054 proved this: an unnecessary bump (8→9) for a height-gated feature caused a permanent chain split. The version check uses `!=` (not `<`), so rollback (9→8) triggers a SECOND deletion. Use `EPOCH_STATE_FORMAT_VERSION` for epoch_state compatibility, keep `CURRENT_PROTOCOL_VERSION` for peer handshake only.
-- **activation heights** → Once activated on mainnet, an activation height is **IMMUTABLE** — it is part of the chain's consensus history. NEVER move an activation height forward (higher) after it has been crossed by the chain. INC-I-054: `security_audit_activation_height` was moved from 27,547→71,290, deactivating live security features. New features get their OWN activation height — never reuse or bundle with existing ones. Existing gates: `inc_i_026_scheduler_activation_height`, `fork_id_activation_height`, `full_bitfield_decode_height`, `rewards_epoch_list_fix_height`, `encrypted_content_activation_height`, `encrypted_content_v2_activation_height`, `epoch_state_reorg_activation_height`, `security_audit_activation_height`, `ghost_exclusion_activation_height`, `inc_i_068_weight_filter_activation_height` (INC-I-075, mainnet=197_800), `defi_activation_height` (INC-I-088 Phase 0, mainnet=`u64::MAX` — disabled until DeFi subsystem is audited and un-gated; freezes the 11 DeFi tx types and pairs with `OutputType::Collateral` in `is_conditioned()` + `[ERRTX-DEFI001]` hard-reject in `verify_input_conditions`).
+- **activation heights** → Once activated on mainnet, an activation height is **IMMUTABLE** — it is part of the chain's consensus history. NEVER move an activation height forward (higher) after it has been crossed by the chain. INC-I-054: `security_audit_activation_height` was moved from 27,547→71,290, deactivating live security features. New features get their OWN activation height — never reuse or bundle with existing ones. Existing gates: `inc_i_026_scheduler_activation_height`, `fork_id_activation_height`, `full_bitfield_decode_height`, `rewards_epoch_list_fix_height`, `encrypted_content_activation_height`, `encrypted_content_v2_activation_height`, `epoch_state_reorg_activation_height`, `security_audit_activation_height`, `ghost_exclusion_activation_height`, `inc_i_068_weight_filter_activation_height` (INC-I-075, mainnet=197_800), `defi_activation_height` (INC-I-088 Phase 0, mainnet=`u64::MAX` — disabled until DeFi subsystem is audited and un-gated; freezes the 11 DeFi tx types and pairs with `OutputType::Collateral` in `is_conditioned()` + `[ERRTX-DEFI001]` hard-reject in `verify_input_conditions`). **Planned (not yet implemented):** `amm_activation_height`, `lending_activation_height`, `nft_frac_activation_height` (per-primitive split per the 2026-05-24 DeFi subsystem redesign — see `specs/defi-subsystem-architecture.md`; Phase 1 ships only `amm_activation_height`). **Foundations layer (approved 2026-05-25, see `specs/defi-foundations-economics.md`):** before `amm_activation_height` is set to a real value, lock D1 `MINIMUM_LIQUIDITY=1000` (`crates/core/src/consensus.rs`), D2 include `fee_bps` in `compute_pool_id` (`crates/core/src/transaction/output.rs:729`, IRREVERSIBLE post-activation), D3 AC-2 split into intra-block (0 bps structural) + cross-slot (≤50 bps documented residual), D4 AC-6 reframed as monitoring metric.
 - **Three-question consensus-shape checklist (INC-I-075)** → Before merging ANY code change that touches `active_producers`, scheduler inputs, bond snapshot, attestation bitfield encoding, coinbase shape, or any other consensus-visible computation, answer in the commit message:
   1. Can any user-submittable transaction trigger this code path?
   2. Can any producer-action or attestation pattern trigger it?
@@ -68,6 +68,7 @@ Two root-cause fixes stabilized the network. All other fixes were symptom mitiga
 - rollback → undo-based rollback is first option (`node.rs:~6531`). Rebuild-from-genesis is fallback for blocks without undo data.
 - Bond `extra_data` → CLI sends `creation_slot=0`, node stamps real slot at apply. Never trust raw tx `extra_data`.
 - **data directory wipe** → **CRITICAL**: Before wiping ANY node's `data/` directory (manually or via script), ALWAYS verify that `wallet.json` and `producer.seed.txt` are NOT inside the directory being deleted. Back them up first if present. Losing wallet/seed files means the producer cannot start and keys may be unrecoverable. The standard wipe command preserves these, but manual `rm -rf data/*` does not.
+- **Phase 2.1 oracle (`OraclePrice` UTXO + `PriceAttestation` TX + sunset)** → `oracle_activation_height = u64::MAX` on every NetworkParams variant. Code is shipped (M1-M11) but **frozen pre-activation**; pinning a real height is a SEPARATE decision-session per HC-6 / INC-I-075. Touch points: `crates/core/src/oracle/` (bond-weighted median + sunset metric), `bins/node/src/node/apply_block/oracle.rs` (epoch-boundary aggregator + sunset HALT gate), `crates/rpc/src/methods/oracle.rs` + `oracle_status.rs` (RPC trio M9-M11), `STRUCTURAL_PUBKEY_HASHES_HEX` in `consensus/constants.rs` (12 N1-N12 hashes). The §6 centralization disclosure constant in `oracle_status.rs` is byte-equal-locked to `specs/oracle-structural-anchored-economics.md` §6 by a drift-gate test (`m11_centralization_disclosure_byte_equal_to_spec`) — edits to either must match. Spec: `specs/oracle-structural-anchored-economics.md`.
 
 ## After Every Modification
 
@@ -140,7 +141,7 @@ After completing any code change, ALWAYS propose the following checklist to the 
 | UTXO set (RocksDB) | `crates/storage/src/utxo_rocks.rs` |
 | ProducerSet + bonds | `crates/storage/src/producer.rs` |
 | State root + snapshots | `crates/storage/src/snapshot.rs` |
-| RPC methods (45) | `crates/rpc/src/methods/` |
+| RPC methods (56) | `crates/rpc/src/methods/` (incl. `oracle.rs` + `oracle_status.rs` for Phase 2.1 M9-M11) |
 | Transaction mempool | `crates/mempool/src/` |
 | Auto-update + hard fork schedule | `crates/updater/src/` |
 | Block archiver | `crates/storage/src/archiver.rs` |
@@ -192,7 +193,7 @@ After completing any code change, ALWAYS propose the following checklist to the 
 |------|-------|
 | Architecture | `docs/architecture.md` |
 | Rewards system | `docs/rewards.md` |
-| RPC reference (45 methods) | `docs/rpc_reference.md` |
+| RPC reference (56 methods) | `docs/rpc_reference.md` |
 | CLI reference | `docs/cli.md` |
 | Troubleshooting | `docs/troubleshooting.md` |
 | Protocol spec | `specs/protocol.md` |
@@ -201,6 +202,12 @@ After completing any code change, ALWAYS propose the following checklist to the 
 | Drift tracker | `MEMORY.md` (auto-memory) |
 | Bug reports | `docs/legacy/bugs/` |
 | CLI issues | `CLI.md` |
+
+---
+
+
+---
+
 
 ---
 
@@ -230,20 +237,19 @@ Every workflow reads from and writes to `.omega/memory.db`. **This protocol is n
 **Full protocol reference:** Read the **@INDEX** (first 13 lines) of `.claude/protocols/memory-protocol.md` to find section line ranges, then Read ONLY needed sections with offset/limit. For cross-file lookup: `.claude/protocols/PROTOCOLS-INDEX.md`.
 
 **Core rules (always in effect):**
-- **DB Detection**: `test -f .omega/memory.db` at session/workflow start. If missing, skip memory ops gracefully.
-- **Session briefing = behavioral learnings + open incidents + active invariants**. NOT decisions, bug details, outcomes, or hotspots — those are on-demand.
-- **Briefing before action**: Every agent queries memory.db for scope-specific context (hotspots, failed approaches, findings, decisions, patterns, invariants) before starting work.
-- **Log incrementally**: Write to memory.db immediately after each significant action. Never batch for the end — context compaction loses batched entries.
+- **DB Detection**: `test -f .omega/memory.db` at start. If missing, skip memory ops.
+- **Session briefing = behavioral learnings + open incidents + active invariants**. Decisions/bug details/outcomes/hotspots are on-demand.
+- **Briefing before action**: Every agent queries memory.db for scope-specific context (hotspots, failed approaches, findings, decisions, patterns, invariants) before starting.
+- **Log incrementally**: Write to memory.db after each significant action. Never batch — context compaction loses batched entries.
 - **Self-score every action**: Rate significant actions (-1/0/+1) immediately after completing them.
 - **Track bugs as incidents**: Every bug gets an INC-{PREFIX}-NNN ticket (prefix from `user_profile.contributor_prefix`). Use `--incident` on doctor to resume. Read @INDEX of `.claude/protocols/incident-protocol.md`.
 - **Extract invariants from bugs**: Level 2+ incidents must produce an `invariants` record (INV-{DOMAIN}-NNN) + linked `regression_tests`. Level 3 also requires `monitoring_signals`. Query `v_regression_map` before modifying files with linked invariants. Read `.claude/protocols/invariant-protocol.md`.
 - **Extract behavioral learnings**: When the user corrects you or an incident reveals a reasoning flaw, extract a behavioral rule (HOW to think, not domain patterns).
-- **Close-out when done**: Verify completeness, distill lessons, extract learnings, track bugs as incidents.
-- **Pipeline tracking**: Every code-modifying `/omega-*` command registers a `workflow_runs` entry at start, updates at end. Read-only commands skip tracking.
-- **Non-pipeline work**: Informal work gets a `workflow_runs` entry with type `'manual'`.
-- **sqlite3 quoting**: ALWAYS use heredoc syntax (`<<'EOF' ... EOF`). NEVER inline single-quote wrapping — breaks `datetime('now')` due to shell quote nesting.
-- **Immediate self-correction**: When the user points out a mistake, immediately save a behavioral learning and fix. The correction target is Claude, not the user.
-- **Error tolerance**: If sqlite3 fails, log the error and continue working. Never block work for a DB failure.
+- **Close-out**: Verify completeness, distill lessons, track bugs as incidents.
+- **Pipeline tracking**: Code-modifying `/omega-*` commands register `workflow_runs` (start + end); informal work uses type `'manual'`; read-only commands skip.
+- **sqlite3 quoting**: Use heredoc (`<<'EOF' ... EOF`). Inline single-quote wrapping breaks `datetime('now')`.
+- **Self-correction**: When the user corrects you, save a behavioral learning immediately and fix.
+- **Error tolerance**: If sqlite3 fails, log and continue. Never block work for a DB failure.
 
 ## Identity
 
@@ -275,12 +281,15 @@ After completing a user's task, if they did something manually that an OMEGA com
 14. **Self-score every action** — every agent rates its own significant actions (-1/0/+1) immediately
 15. **Distill lessons from patterns** — when 3+ outcomes share a theme, distill a permanent lesson that changes future agent behavior
 16. **Read-only agents stay in their lane** — research agents (codebase-expert, functionality-analyst) NEVER offer to implement. They report findings and suggest appropriate commands
-17. **Security chain enforcement** — when a feature involves external data (multi-user, network, file ingestion), 5 agents independently verify security: Analyst (REQ-*-SEC requirements), Architect (trust boundary analysis or STOP), Test Writer (adversarial injection tests), QA (independent probing), Reviewer (injection pattern scan — automatic blocker)
+17. **Security chain enforcement** — for features touching external data (multi-user, network, file ingestion), 5 agents independently verify: Analyst (REQ-*-SEC), Architect (trust boundaries or STOP), Test Writer (injection tests), QA (probing), Reviewer (pattern scan — blocker)
 18. **Stupid Simple First (SSF)** — before ANY design work, state the stupidest one-sentence solution that works. Present it ALONE. Only add complexity if the user rejects it with a specific reason. Never present a menu of options. Read `.claude/protocols/anti-overengineering.md`
 19. **Modular coding enforcement** — no source file exceeds 500 lines (800 for test files). When approaching the limit, split into focused modules. Read MODULE-SIZE-BUDGET in `.claude/protocols/anti-overengineering.md`
 20. **Intellectual honesty** — if your analysis contradicts itself (claim X, find not-X), STOP and resolve before continuing. Show your work on math/logic claims. State what you don't understand before proposing solutions. Try to disprove your own hypotheses before acting on them. Max 2 inferences without verification. Read `.claude/protocols/intellectual-honesty.md`
-21. **Output Contract (all tests, all languages)** — before writing ANY test assertion, produce the Output Contract Checklist: ALL outputs, ALL paths, ALL **input partitions** per path (distinct input classes with different math/logic). No test complete until every output × path × partition cell has an assertion. Read `.claude/protocols/output-contract.md`. Fix confidence above 0.7 requires FAIL→PASS test evidence — no exceptions. **Sequence: test BEFORE fix** — the reproduction test must exist and FAIL before any fix code is written OR fix plan presented. Describing the fix before the test biases the test toward confirming the fix rather than verifying correctness
-22. **Prompt refinement at intake** — every omega command that accepts a user description MUST run prompt refinement BEFORE any agent work begins. Detect and neutralize investigation-anchoring language ("in the logs", "the bug is in X"), preserve domain context (symptoms, nodes, timestamps), reframe assumed root causes as hypotheses. Display the refinement to the user. Read `.claude/protocols/prompt-refinement.md`
+21. **Output Contract** — before any test assertion, produce Output Contract Checklist (outputs × paths × input partitions). Fix confidence >0.7 requires FAIL→PASS test evidence. **Test BEFORE fix** — reproduction test exists and FAILS before any fix code or fix plan. Read `.claude/protocols/output-contract.md`
+22. **Prompt refinement at intake** — every omega command with a user description MUST refine BEFORE agent work: neutralize anchoring, preserve domain context, reframe causes as hypotheses. On REGRESSION CONTEXT (commit SHA + stable/deployed), require git archeology first. Display the refinement. Read `.claude/protocols/prompt-refinement.md`
+23. **Evidence floor** — diagnostic synthesizers and root-cause agents must publish `VERDICT` (conf ≥0.95, cited evidence pointers, causal chain citations, regression check) or `PRELIMINARY` (conf <0.95, missing-evidence + resolve-by + re-dispatch). Reviewers/auditors require per-finding evidence pointers. Enforced by `evidence-floor-gate.sh`. Read `.claude/protocols/evidence-floor.md`
+24. **Path-Coverage attestation** — commits adding a new early-return guard in non-test Rust code MUST include a per-branch `Path-Coverage:` block (Q1/Q2/Q3 + test cite). Enforced by `path-coverage-gate.sh`. Read `.claude/protocols/path-coverage.md`
+25. **Communication style** — user-facing replies use BLUF + Progressive Disclosure + Cognitive Load (≤4 items/turn). Shape: 1 sentence bottom line + up to 3 sentences action + 1 question. Hold complexity in files. Read `.claude/protocols/communication-style.md`
 
 ## Fail-Safe Controls
 

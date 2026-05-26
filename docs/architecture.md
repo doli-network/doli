@@ -342,7 +342,7 @@ Existing gates (mainnet values):
 |--------|----------|
 | `server.rs` | Axum HTTP server |
 | `ws.rs` | WebSocket support |
-| `methods/` | RPC method handlers (39 methods across 16 files) |
+| `methods/` | RPC method handlers (56 methods across 18 files) |
 | `methods/dispatch.rs` | Request routing to handlers |
 | `methods/block.rs` | Block query methods |
 | `methods/balance.rs` | Balance and UTXO methods |
@@ -357,6 +357,8 @@ Existing gates (mainnet values):
 | `methods/stats.rs` | Chain statistics |
 | `methods/pool.rs` | AMM pool methods |
 | `methods/lending.rs` | Lending protocol methods |
+| `methods/oracle.rs` | Phase 2.1 oracle RPC (M9-M11: `getOraclePrice`, `getOracleAttestations`, `getOracleStatus`) |
+| `methods/oracle_status.rs` | Pure-function helpers + `CENTRALIZATION_DISCLOSURE` const |
 | `types/` | Request/response types |
 | `error.rs` | Error codes |
 
@@ -966,4 +968,85 @@ fork-monitor.sh detects issue
 
 ---
 
-*Architecture version: 2.5 — March 2026 (synced against code 2026-03-29, pass 4)*
+## 13. Phase 2.1 Oracle Subsystem
+
+Spec: `specs/oracle-structural-anchored-economics.md`.
+
+**Status:** Implemented end-to-end (M1-M11), **frozen pre-activation** —
+`NetworkParams.oracle_activation_height = u64::MAX` on every network
+variant. Pinning a real activation height is a separate decision
+session per HC-6 / INC-I-075.
+
+### 13.1 Components
+
+| Component | Location |
+|-----------|----------|
+| `PriceAttestation` TX (TxType=16) payload + accessors | `crates/core/src/transaction/data.rs` (M3 19960adb) |
+| Validation rules (height gate, attester-in-active-set, epoch match, equivocation reject, sunset gate) | `crates/core/src/validation/transaction.rs` (M4 a82da836, M7 756dfaca, M8 ab59f278) |
+| `OraclePrice` UTXO (OutputType=15) + deterministic per-pair address | `crates/core/src/transaction/output.rs` (M5 3d379ba6) |
+| Bond-weighted median + structural-share metric + sunset constant | `crates/core/src/oracle/mod.rs` (M6 62e13291, M8 ab59f278) |
+| `STRUCTURAL_PUBKEY_HASHES_HEX` constant (N1-N12 pubkey hashes) | `crates/core/src/consensus/constants.rs` (M2 13e1ccd3) |
+| Epoch-boundary aggregator + sunset HALT flag | `bins/node/src/node/apply_block/oracle.rs` (M6, M8) |
+| Equivocation slash evidence | `crates/core/src/transaction/data.rs::SlashingEvidence::PriceAttestationEquivocation` (M7) |
+| `oracle_activation_height` NetworkParams field | `crates/core/src/network_params/` (M1 d80f127f) |
+| Error code taxonomy (`ERRTX-ORACLE001/002/003`) | `crates/core/src/validation/` (ME1 214a2e39) |
+| RPC trio (`getOraclePrice`, `getOracleAttestations`, `getOracleStatus`) | `crates/rpc/src/methods/oracle.rs`, `oracle_status.rs` (M9 9fc8f1d1, M10 ee8520c2, M11 2d28c4bf) |
+
+### 13.2 Data flow
+
+```
+Producer (attester) signs PriceAttestation tx
+   → mempool (gossipsub propagation)
+   → block builder includes it in block N within epoch E
+   → apply_block validates (M4 rules 1-6, ctx.oracle_sunset_triggered gate)
+   → block N applied
+
+At epoch-boundary block (height % blocks_per_reward_epoch == 0):
+   apply_block::oracle aggregator runs:
+     1. Compute structural_share_bps over closing-epoch bond_snapshot
+        with anti-dilution filter (registered_at lag >= 1 epoch).
+     2. If share < SUNSET_THRESHOLD_BPS (5500) → set oracle_sunset_triggered
+        flag, skip aggregation, leave last OraclePrice UTXO frozen.
+     3. Else: collect all PriceAttestation txs in the closing epoch's blocks,
+        dedupe latest per signer, compute bond-weighted median per pair_id,
+        consume previous OraclePrice UTXO and create new one at
+        oracle_price_address(pair_id) = hash_with_domain(b"ORACLE_PRICE", pair_id).
+   → state root automatically reflects updated UTXO set (snap-sync safe).
+
+Equivocation (same signer + same epoch + same pair_id + different price):
+   any node can submit a SlashProducer tx (TxType=5) with both attestations
+   as PriceAttestationEquivocation evidence → 100% bond burn + permanent exclusion.
+```
+
+### 13.3 RPC surface (purely additive, read-only)
+
+| Method | Purpose |
+|--------|---------|
+| `getOraclePrice(pair_id)` | Read the per-pair aggregated price. Returns `null` when the UTXO doesn't exist (pre-activation OR pre-first-aggregation). |
+| `getOracleAttestations(epoch, pair_id)` | List all PriceAttestation txs for an epoch + pair. `bond_weight` populated only when the queried epoch matches the persisted bond_snapshot epoch. |
+| `getOracleStatus()` | Operational state: `active`, `structural_share`, `sunset_triggered`, `last_update_height`, `attester_count`, `activation_height`, and the verbatim §6 centralization disclosure. |
+
+All three are unconditionally available — the RPC surface needs no
+activation gate because the **data** is gated by the consensus path
+(no PriceAttestation tx passes validation pre-activation, no
+OraclePrice UTXO is ever created). Pre-activation responses are
+sensible empty/null/false values.
+
+### 13.4 Centralization disclosure (verbatim, spec §6)
+
+This paragraph is embedded as a `pub(super) const CENTRALIZATION_DISCLOSURE`
+in `crates/rpc/src/methods/oracle_status.rs` and returned in the
+`getOracleStatus.centralization_disclosure` field. A drift-gate test
+(`m11_centralization_disclosure_byte_equal_to_spec`) parses §6 from
+the spec file at test time and asserts byte-equality; any edit to
+either side without matching the other breaks the build.
+
+> **DOLI Trust Disclosure -- Phase 2.1 Oracle**
+>
+> DOLI's Phase 2.1 oracle price is reported by bonded producers using bond-weighted median aggregation. As of activation, the operator-controlled structural set (N1-N12) holds 62.7% of total bonded stake (176,650 of 281,717 DOLI), giving them unilateral control over the oracle median. The oracle's correctness depends on this structural majority maintaining honest behavior. The security model is operator economic alignment (176,650 DOLI at risk plus a future epoch reward stream valued at approximately 1.98M DOLI per year), NOT distributed consensus. An external attacker with the remaining 37.3% of bonds cannot manipulate the oracle under any circumstances. An automatic sunset fires when structural bond share falls below 55% -- at that point, the oracle halts and the protocol must be upgraded to either restore structural majority or transition to a decentralized attestation model. This is explicitly NOT a decentralized oracle and makes no claim to be one. Users of oracle-dependent DeFi primitives (lending, liquidation) in Phase 2.3 and beyond explicitly accept this trust model.
+>
+> During Phase 2.1, oracle attestation is funded entirely by the structural set's implicit economic alignment with DOLI value capture. No explicit emission or fee carve-out funds attestation. Oracle compensation becomes fee-funded when lending (Phase 2.3) activates and generates sufficient consumer fees.
+
+---
+
+*Architecture version: 2.6 — May 2026 (synced against code 2026-05-26; added Phase 2.1 oracle subsystem M1-M11)*
