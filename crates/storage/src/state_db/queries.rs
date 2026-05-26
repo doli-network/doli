@@ -15,7 +15,8 @@ use super::types::{
     META_ACTIVE_PRODUCTION_LIST, META_CHAIN_COMMITMENT, META_CHAIN_COMMITMENT_TIP,
     META_CHAIN_STATE, META_EPOCH_ATTESTATION_ACCUM, META_EPOCH_ATTESTED_SET,
     META_EPOCH_BLOCKS_PRODUCED, META_EPOCH_BOND_SNAPSHOT, META_EPOCH_PRODUCER_LIST,
-    META_EPOCH_STATE, META_EPOCH_STATE_VERSION, META_LAST_APPLIED, META_PENDING_UPDATES,
+    META_EPOCH_STATE, META_EPOCH_STATE_VERSION, META_LAST_APPLIED, META_ORACLE_SUNSET_STATE,
+    META_PENDING_UPDATES,
 };
 
 impl StateDb {
@@ -511,5 +512,34 @@ impl StateDb {
         let pending_updates = self.get_pending_updates();
 
         ProducerSet::from_parts(producers, exit_history, pending_updates)
+    }
+}
+
+// ==================== Oracle Sunset State (D.3) ====================
+
+impl StateDb {
+    /// Load the persisted oracle sunset state (D.3 gradient tracking).
+    ///
+    /// Returns `None` on first startup or if the key was never written
+    /// (pre-D.3 binaries). The caller should treat `None` as
+    /// `OracleSunsetState::default()` (all fields zeroed — HEALTHY).
+    pub fn get_oracle_sunset_state(&self) -> Option<doli_core::oracle::OracleSunsetState> {
+        let cf = self.db.cf_handle(CF_META).unwrap();
+        match self.db.get_cf(cf, META_ORACLE_SUNSET_STATE) {
+            Ok(Some(bytes)) => bincode::deserialize(&bytes).ok(),
+            _ => None,
+        }
+    }
+
+    /// Persist the oracle sunset state (D.3 gradient tracking).
+    ///
+    /// Written at every epoch boundary by the oracle aggregator after
+    /// the state machine transition. NOT part of the consensus state
+    /// root — local bookkeeping for restart safety.
+    pub fn put_oracle_sunset_state(&self, state: &doli_core::oracle::OracleSunsetState) {
+        let cf = self.db.cf_handle(CF_META).unwrap();
+        if let Ok(bytes) = bincode::serialize(state) {
+            let _ = self.db.put_cf(cf, META_ORACLE_SUNSET_STATE, bytes);
+        }
     }
 }

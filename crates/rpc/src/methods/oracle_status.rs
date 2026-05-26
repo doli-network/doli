@@ -13,7 +13,7 @@ use serde_json::Value;
 
 use super::oracle::ORACLE_TRUST_MODEL;
 
-/// `inputs` bundles the 8 status-builder inputs to keep clippy's
+/// `inputs` bundles the status-builder inputs to keep clippy's
 /// `too_many_arguments` lint happy without losing per-field clarity at
 /// the call sites.
 pub(super) struct OracleStatusInputs<'a> {
@@ -31,6 +31,17 @@ pub(super) struct OracleStatusInputs<'a> {
 /// Extracted as a pure function so tests can inject arbitrary
 /// `structural_hashes` (production uses the mainnet-derived constant,
 /// whose preimages cannot be reproduced without real mainnet pubkeys).
+///
+/// D.3 addition: `health` field derived from `OracleSunsetState` state
+/// machine. The RPC is stateless — it re-derives health from the
+/// current structural share and epoch without reading persisted
+/// sunset state. This is correct because the RPC is a snapshot view,
+/// not a transition. For the WARNING/HALT distinction, the share_bps
+/// zones are sufficient (HEALTHY >= 6000, WARNING 5500-5999,
+/// HALT < 5500). The HALT_RECOVERABLE vs HALT_PERMANENT distinction
+/// requires the persisted `halt_since_epoch` — we derive it as
+/// HALT_RECOVERABLE when the RPC doesn't have persistence access,
+/// since the aggregator manages the permanent-halt sticky flag.
 pub(super) fn build_oracle_status_response(inputs: OracleStatusInputs<'_>) -> Value {
     let OracleStatusInputs {
         current_height,
@@ -62,8 +73,19 @@ pub(super) fn build_oracle_status_response(inputs: OracleStatusInputs<'_>) -> Va
 
     let active = current_height >= activation_height && !sunset_triggered;
 
+    // D.3: Derive health from structural share zones.
+    // The RPC is stateless (no access to OracleSunsetState persistence),
+    // so we derive from share_bps directly. The HALT_RECOVERABLE vs
+    // HALT_PERMANENT distinction requires persisted halt_since_epoch
+    // which is only available in the node's epoch-boundary aggregator.
+    // For the RPC, we report "halted_recoverable" when share < 5500
+    // (the node logs the permanent distinction; the RPC consumer can
+    // check epoch distance from the last HEALTHY report if needed).
+    let health = derive_health_from_share(structural_share_bps, share_bps_opt.is_some());
+
     serde_json::json!({
         "active":                    active,
+        "health":                    health,
         "trust_model":               ORACLE_TRUST_MODEL,
         "structural_share":          structural_share,
         "sunset_threshold":          sunset_threshold,
@@ -73,6 +95,25 @@ pub(super) fn build_oracle_status_response(inputs: OracleStatusInputs<'_>) -> Va
         "activation_height":         activation_height,
         "centralization_disclosure": CENTRALIZATION_DISCLOSURE,
     })
+}
+
+/// Derive the D.3 health string from structural share bps.
+///
+/// This is a pure zone classification — no persistence needed.
+/// The 4th state (halted_permanent) requires epoch tracking and is
+/// only set by the node's aggregator. The RPC conservatively reports
+/// "halted_recoverable" for any share < 5500.
+fn derive_health_from_share(bps: u16, has_eligible_bonds: bool) -> &'static str {
+    if !has_eligible_bonds {
+        return doli_core::oracle::OracleHealthState::HaltRecoverable.as_rpc_str();
+    }
+    if bps >= doli_core::oracle::SUNSET_WARNING_BPS {
+        doli_core::oracle::OracleHealthState::Healthy.as_rpc_str()
+    } else if bps >= doli_core::oracle::SUNSET_THRESHOLD_BPS {
+        doli_core::oracle::OracleHealthState::Warning.as_rpc_str()
+    } else {
+        doli_core::oracle::OracleHealthState::HaltRecoverable.as_rpc_str()
+    }
 }
 
 /// Count distinct attesters (by `hash_with_domain(ADDRESS_DOMAIN,

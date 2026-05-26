@@ -18,6 +18,14 @@
 //!      and insert the new one, both keyed at the deterministic
 //!      outpoint `(oracle_price_address(pair_id), 0)`.
 //!
+//! D.3 sunset gradient (DeFi L1 Foundations M3): replaces the single-
+//! cliff sunset boolean with a 3-zone state machine (HEALTHY / WARNING
+//! / HALT). The state machine transitions are tracked via
+//! `OracleSunsetState` persisted in `state_db` (local bookkeeping,
+//! NOT consensus state root). On restart, the state is loaded from
+//! the DB; if absent (first start or pre-D.3 binary), defaults to
+//! HEALTHY (all fields None).
+//!
 //! This function MUST run BEFORE the epoch_state rotation in
 //! `post_commit_actions` (i.e., before `self.epoch_state = new_state`
 //! at the call site) — we depend on `self.epoch_state.bond_snapshot`
@@ -29,7 +37,7 @@ use crypto::ADDRESS_DOMAIN;
 use doli_core::consensus::STRUCTURAL_PUBKEY_HASHES_HEX;
 use doli_core::oracle::{
     bond_weighted_median, compute_structural_share_bps, dedupe_latest_per_attester,
-    oracle_price_outpoint, AttestationContribution, SUNSET_THRESHOLD_BPS,
+    oracle_price_outpoint, AttestationContribution,
 };
 use doli_core::transaction::Output;
 use std::collections::HashMap;
@@ -65,13 +73,10 @@ impl Node {
         // blocks_per_epoch)` = `[height - blocks_per_epoch, height)`.
         let closing_epoch_start = height.saturating_sub(blocks_per_epoch);
         let closing_epoch_end = height; // exclusive
+        let current_epoch = height / blocks_per_epoch;
 
-        // Phase 2.1 Oracle M8 — sunset check. Compute structural
-        // share against the CLOSING epoch's bond_snapshot (1-epoch
-        // lag, spec §1.8). Spec §1.8: when structural_share <
-        // SUNSET_THRESHOLD_BPS, the oracle HALTs — flip the node-
-        // wide flag (ValidationContext reads it for `[ERRTX-
-        // ORACLE003]`) and skip aggregation entirely.
+        // Phase 2.1 Oracle M8 + D.3 sunset gradient — compute
+        // structural share and advance the sunset state machine.
         let structural_hashes: Vec<crypto::Hash> = STRUCTURAL_PUBKEY_HASHES_HEX
             .iter()
             .filter_map(|hex| crypto::Hash::from_hex(hex))
@@ -95,10 +100,15 @@ impl Node {
             blocks_per_epoch,
             &structural_hashes,
         );
-        let sunset_triggered = match share_bps {
-            None => true, // no eligible bonds — equivalent to sunset
-            Some(bps) => bps < SUNSET_THRESHOLD_BPS,
-        };
+
+        // D.3: Load persisted sunset state from DB (or default if
+        // absent — first start or pre-D.3 binary). Advance the state
+        // machine, persist the result.
+        let mut sunset_state = self.state_db.get_oracle_sunset_state().unwrap_or_default();
+        let health = sunset_state.transition(share_bps, current_epoch);
+        self.state_db.put_oracle_sunset_state(&sunset_state);
+
+        let sunset_triggered = health.is_sunset_triggered();
         // Persist the flag for the validation path. Use Release
         // ordering so any subsequent Acquire-load in validation
         // observes the latest value (validate_transaction reads it
@@ -106,13 +116,41 @@ impl Node {
         // this atomic at every ValidationContext build site).
         self.oracle_sunset_triggered
             .store(sunset_triggered, Ordering::Release);
-        if sunset_triggered {
-            warn!(
-                "[ORACLE] sunset triggered at height={} epoch_boundary: share_bps={:?} \
-                 threshold_bps={} — skipping aggregation, last OraclePrice UTXO frozen",
-                height, share_bps, SUNSET_THRESHOLD_BPS
-            );
-            return;
+
+        match health {
+            doli_core::oracle::OracleHealthState::Healthy => {
+                info!(
+                    "[ORACLE] epoch boundary height={}: health=HEALTHY share_bps={:?}",
+                    height, share_bps
+                );
+            }
+            doli_core::oracle::OracleHealthState::Warning => {
+                warn!(
+                    "[ORACLE] epoch boundary height={}: health=WARNING share_bps={:?} \
+                     warning_since_epoch={:?} — aggregation continues",
+                    height, share_bps, sunset_state.warning_since_epoch
+                );
+            }
+            doli_core::oracle::OracleHealthState::HaltRecoverable => {
+                warn!(
+                    "[ORACLE] sunset HALT (recoverable) at height={}: share_bps={:?} \
+                     halt_since_epoch={:?} — skipping aggregation, may auto-recover \
+                     within {} epochs",
+                    height,
+                    share_bps,
+                    sunset_state.halt_since_epoch,
+                    doli_core::oracle::ORACLE_RECOVERY_EPOCHS
+                );
+                return;
+            }
+            doli_core::oracle::OracleHealthState::HaltPermanent => {
+                warn!(
+                    "[ORACLE] sunset HALT (PERMANENT) at height={}: share_bps={:?} \
+                     — binary upgrade required to resume oracle",
+                    height, share_bps
+                );
+                return;
+            }
         }
 
         // Step 2 — scan closing-epoch blocks for PriceAttestations,

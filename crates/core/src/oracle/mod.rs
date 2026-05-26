@@ -50,6 +50,7 @@
 //!   `crypto` crate's hashing into pure-function tests.
 
 use crypto::Hash;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// A single attester's contribution to one pair's epoch median.
@@ -185,12 +186,194 @@ pub fn dedupe_latest_per_attester(
 ///   - The aggregator skips the median computation; the last
 ///     committed `OraclePrice` UTXO is left in place (readable but
 ///     stale).
-///   - Recovery requires a binary upgrade — no on-chain recovery
-///     path is provided (HC-8 / spec §0 NEVER constraints).
 ///
 /// 5500 bps = 55.00%. The spec calls out this exact threshold (§1.8,
 /// "Threshold: structural_share < 55%").
 pub const SUNSET_THRESHOLD_BPS: u16 = 5500;
+
+/// Warning zone threshold, in basis points (D.3 sunset gradient).
+///
+/// When the structural-bond-share metric falls below this value but
+/// remains at-or-above `SUNSET_THRESHOLD_BPS`, the oracle is in the
+/// WARNING state: aggregation continues normally, but metrics/logs
+/// and `getOracleStatus` report `health: "warning"`.
+///
+/// 6000 bps = 60.00%.
+///
+/// Spec: `specs/defi-l1-foundations-architecture.md` §D.3.
+pub const SUNSET_WARNING_BPS: u16 = 6000;
+
+/// Number of consecutive epochs in HALT before the halt becomes
+/// permanent (D.3 recovery window).
+///
+/// If the structural share rises back above `SUNSET_THRESHOLD_BPS`
+/// within this many epochs after entering HALT, the oracle resumes
+/// automatically. After this window elapses with sustained low
+/// share, recovery requires a binary upgrade (existing behavior).
+///
+/// 4 epochs at 360 blocks/epoch at 10s/block = ~4 hours.
+///
+/// Spec: `specs/defi-l1-foundations-architecture.md` §D.3.
+pub const ORACLE_RECOVERY_EPOCHS: u64 = 4;
+
+/// Oracle health state, derived from structural share and epoch
+/// tracking (D.3 sunset gradient state machine).
+///
+/// The state machine replaces the previous single-cliff sunset at
+/// `SUNSET_THRESHOLD_BPS` with a 3-zone gradient:
+///
+/// | structural_share_bps | State            | Action                        |
+/// |----------------------|------------------|-------------------------------|
+/// | >= 6000              | Healthy          | Aggregate normally            |
+/// | 5500-5999            | Warning          | Aggregate, emit warning       |
+/// | < 5500 (recoverable) | HaltRecoverable | Stop aggregating, may recover |
+/// | < 5500 for >= 4 ep   | HaltPermanent   | Binary upgrade required       |
+///
+/// Spec: `specs/defi-l1-foundations-architecture.md` §D.3.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OracleHealthState {
+    /// Structural share >= `SUNSET_WARNING_BPS` (6000 bps = 60%).
+    /// Oracle fully active.
+    Healthy,
+    /// Structural share in `[SUNSET_THRESHOLD_BPS, SUNSET_WARNING_BPS)`
+    /// (5500-5999 bps). Oracle still aggregates but emits warnings.
+    Warning,
+    /// Structural share < `SUNSET_THRESHOLD_BPS` (5500 bps) for fewer
+    /// than `ORACLE_RECOVERY_EPOCHS` epochs. Oracle stops aggregating
+    /// but can auto-recover if share rises.
+    HaltRecoverable,
+    /// Structural share < `SUNSET_THRESHOLD_BPS` for >=
+    /// `ORACLE_RECOVERY_EPOCHS` epochs. Binary upgrade required.
+    HaltPermanent,
+}
+
+impl OracleHealthState {
+    /// Returns the RPC string representation of this health state.
+    pub fn as_rpc_str(&self) -> &'static str {
+        match self {
+            Self::Healthy => "healthy",
+            Self::Warning => "warning",
+            Self::HaltRecoverable => "halted_recoverable",
+            Self::HaltPermanent => "halted_permanent",
+        }
+    }
+
+    /// Whether aggregation should proceed in this state.
+    pub fn should_aggregate(&self) -> bool {
+        matches!(self, Self::Healthy | Self::Warning)
+    }
+
+    /// Whether the sunset flag should be set (reject PriceAttestation txs).
+    pub fn is_sunset_triggered(&self) -> bool {
+        matches!(self, Self::HaltRecoverable | Self::HaltPermanent)
+    }
+}
+
+/// Persisted oracle sunset state, stored in the node's StateDB as
+/// metadata keys. These fields are deterministically derivable from
+/// chain history (set at epoch boundaries based on structural share)
+/// but persisted for restart safety so the node does not need to
+/// re-scan the entire chain to determine the current health state.
+///
+/// NOT part of the consensus state root (not in ChainState canonical
+/// encoding or EpochState). Local bookkeeping only.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OracleSunsetState {
+    /// Epoch at which the oracle first entered WARNING (share < 6000).
+    /// `None` when share >= 6000 (HEALTHY).
+    pub warning_since_epoch: Option<u64>,
+    /// Epoch at which the oracle entered HALT (share < 5500).
+    /// `None` when share >= 5500 (HEALTHY or WARNING).
+    pub halt_since_epoch: Option<u64>,
+    /// Set to `true` once HALT has persisted for >=
+    /// `ORACLE_RECOVERY_EPOCHS`. Sticky: once permanent, only a
+    /// binary upgrade can clear it.
+    pub halt_permanent: bool,
+}
+
+impl OracleSunsetState {
+    /// Determine the current health state from persisted tracking
+    /// fields and the current structural share.
+    pub fn health(&self, current_epoch: u64) -> OracleHealthState {
+        if self.halt_permanent {
+            return OracleHealthState::HaltPermanent;
+        }
+        if let Some(halt_epoch) = self.halt_since_epoch {
+            let elapsed = current_epoch.saturating_sub(halt_epoch);
+            if elapsed >= ORACLE_RECOVERY_EPOCHS {
+                return OracleHealthState::HaltPermanent;
+            }
+            return OracleHealthState::HaltRecoverable;
+        }
+        if self.warning_since_epoch.is_some() {
+            return OracleHealthState::Warning;
+        }
+        OracleHealthState::Healthy
+    }
+
+    /// Advance the state machine based on the structural share at the
+    /// current epoch boundary. Returns the new health state.
+    ///
+    /// This is the core D.3 state transition function. All inputs are
+    /// integers — no floats, no walltime, fully deterministic.
+    ///
+    /// `share_bps`: `Some(bps)` from `compute_structural_share_bps`,
+    /// or `None` if no eligible bonds exist (treated as share=0).
+    pub fn transition(&mut self, share_bps: Option<u16>, current_epoch: u64) -> OracleHealthState {
+        // If already permanently halted, stay there.
+        if self.halt_permanent {
+            return OracleHealthState::HaltPermanent;
+        }
+
+        let bps = share_bps.unwrap_or(0);
+
+        if bps >= SUNSET_WARNING_BPS {
+            // HEALTHY zone: clear all tracking.
+            self.warning_since_epoch = None;
+            self.halt_since_epoch = None;
+            OracleHealthState::Healthy
+        } else if bps >= SUNSET_THRESHOLD_BPS {
+            // WARNING zone (5500-5999 bps).
+            // If we were halted and share recovered to >= 5500,
+            // check if we're within the recovery window.
+            if let Some(halt_epoch) = self.halt_since_epoch {
+                let elapsed = current_epoch.saturating_sub(halt_epoch);
+                if elapsed >= ORACLE_RECOVERY_EPOCHS {
+                    // Too late — permanent halt.
+                    self.halt_permanent = true;
+                    return OracleHealthState::HaltPermanent;
+                }
+                // Recovery: share rose back above SUNSET_THRESHOLD.
+                // Clear halt, keep warning.
+                self.halt_since_epoch = None;
+            }
+            // Set warning epoch if not already set.
+            if self.warning_since_epoch.is_none() {
+                self.warning_since_epoch = Some(current_epoch);
+            }
+            OracleHealthState::Warning
+        } else {
+            // HALT zone (< 5500 bps).
+            // Set warning if not already set.
+            if self.warning_since_epoch.is_none() {
+                self.warning_since_epoch = Some(current_epoch);
+            }
+            // Set halt epoch if not already set.
+            if self.halt_since_epoch.is_none() {
+                self.halt_since_epoch = Some(current_epoch);
+            }
+            // Check if permanent.
+            let halt_epoch = self.halt_since_epoch.unwrap();
+            let elapsed = current_epoch.saturating_sub(halt_epoch);
+            if elapsed >= ORACLE_RECOVERY_EPOCHS {
+                self.halt_permanent = true;
+                OracleHealthState::HaltPermanent
+            } else {
+                OracleHealthState::HaltRecoverable
+            }
+        }
+    }
+}
 
 /// Compute the structural-bond-share metric, in basis points
 /// (0..=10000), against the given `bond_snapshot` and per-producer

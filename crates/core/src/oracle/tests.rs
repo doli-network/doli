@@ -10,10 +10,17 @@
 //!   - Tie boundary: deterministic lower-median pick
 //!   - Empty / all-zero-weight inputs return None
 //!   - LATEST per attester wins when duplicates appear
+//!
+//! D.3 sunset gradient tests (added for DeFi L1 Foundations M3):
+//!   - Warning zone entry/exit
+//!   - Halt recoverable entry/exit
+//!   - Halt permanent after ORACLE_RECOVERY_EPOCHS
+//!   - State persistence via OracleSunsetState serde round-trip
 
 use super::{
     bond_weighted_median, compute_structural_share_bps, dedupe_latest_per_attester,
-    AttestationContribution, SUNSET_THRESHOLD_BPS,
+    AttestationContribution, OracleHealthState, OracleSunsetState, ORACLE_RECOVERY_EPOCHS,
+    SUNSET_THRESHOLD_BPS, SUNSET_WARNING_BPS,
 };
 use crypto::Hash;
 use std::collections::HashMap;
@@ -437,4 +444,227 @@ fn test_sunset_missing_registered_at_is_ineligible() {
     let bps = compute_structural_share_bps(&snap, &regd, 720, 360, &[struct_key]);
     // structural = 100, total_eligible = 100. bps = 10_000.
     assert_eq!(bps, Some(10_000));
+}
+
+// ===========================================================================
+// D.3 — Sunset gradient state machine (OracleSunsetState)
+// Spec: specs/defi-l1-foundations-architecture.md §D.3
+// ===========================================================================
+
+// OUTPUT CONTRACT: OracleSunsetState::transition — HEALTHY -> WARNING
+//   O1: share drops from 6500 to 5800 -> state becomes Warning
+//   O2: warning_since_epoch is set to the current epoch
+// PATHS:
+//   P1: fresh state, share=5800 (below WARNING threshold 6000,
+//       above SUNSET threshold 5500)
+#[test]
+fn test_warning_zone_entry() {
+    let mut state = OracleSunsetState::default();
+    // Start HEALTHY: share at 6500 bps (above warning threshold).
+    let health = state.transition(Some(6500), 10);
+    assert_eq!(health, OracleHealthState::Healthy);
+    assert_eq!(state.warning_since_epoch, None);
+
+    // Share drops to 5800 bps (below 6000, above 5500) -> WARNING.
+    let health = state.transition(Some(5800), 11);
+    assert_eq!(health, OracleHealthState::Warning);
+    assert_eq!(state.warning_since_epoch, Some(11));
+    assert_eq!(state.halt_since_epoch, None);
+    assert!(!state.halt_permanent);
+}
+
+// OUTPUT CONTRACT: OracleSunsetState::transition — WARNING -> HEALTHY
+//   O1: share rises from 5800 to 6500 -> state becomes Healthy
+//   O2: warning_since_epoch is cleared
+#[test]
+fn test_warning_zone_recovery() {
+    let mut state = OracleSunsetState::default();
+    // Enter warning zone.
+    state.transition(Some(5800), 10);
+    assert_eq!(state.warning_since_epoch, Some(10));
+
+    // Share rises back to 6500 bps (above 6000) -> HEALTHY.
+    let health = state.transition(Some(6500), 11);
+    assert_eq!(health, OracleHealthState::Healthy);
+    assert_eq!(state.warning_since_epoch, None);
+    assert_eq!(state.halt_since_epoch, None);
+}
+
+// OUTPUT CONTRACT: OracleSunsetState::transition — WARNING -> HALT_RECOVERABLE
+//   O1: share drops from 5800 to 5400 -> state becomes HaltRecoverable
+//   O2: halt_since_epoch is set
+#[test]
+fn test_halt_recoverable_entry() {
+    let mut state = OracleSunsetState::default();
+    // Enter warning zone first.
+    state.transition(Some(5800), 10);
+    assert_eq!(state.warning_since_epoch, Some(10));
+
+    // Share drops below 5500 -> HALT_RECOVERABLE.
+    let health = state.transition(Some(5400), 11);
+    assert_eq!(health, OracleHealthState::HaltRecoverable);
+    assert_eq!(state.halt_since_epoch, Some(11));
+    assert_eq!(state.warning_since_epoch, Some(10));
+    assert!(!state.halt_permanent);
+}
+
+// OUTPUT CONTRACT: OracleSunsetState::transition — HALT_RECOVERABLE -> WARNING
+//   O1: share rises from <5500 to >=5500 within recovery window -> WARNING
+//   O2: halt_since_epoch is cleared, warning_since_epoch stays
+#[test]
+fn test_halt_recovery_within_window() {
+    let mut state = OracleSunsetState::default();
+    // Enter halt at epoch 10.
+    state.transition(Some(5400), 10);
+    assert_eq!(state.halt_since_epoch, Some(10));
+
+    // Share stays low at epoch 11.
+    let health = state.transition(Some(5300), 11);
+    assert_eq!(health, OracleHealthState::HaltRecoverable);
+
+    // Share recovers to 5600 at epoch 12 (within 4-epoch window).
+    let health = state.transition(Some(5600), 12);
+    assert_eq!(health, OracleHealthState::Warning);
+    assert_eq!(state.halt_since_epoch, None);
+    // warning_since_epoch should still be set (share is in warning zone).
+    assert!(state.warning_since_epoch.is_some());
+}
+
+// OUTPUT CONTRACT: OracleSunsetState::transition — HALT_PERMANENT after 4 epochs
+//   O1: halt_since_epoch=N, current_epoch=N+4, share still <5500 -> HaltPermanent
+//   O2: halt_permanent flag set sticky
+#[test]
+fn test_halt_permanent_after_4_epochs() {
+    let mut state = OracleSunsetState::default();
+    // Enter halt at epoch 10.
+    state.transition(Some(5400), 10);
+    assert_eq!(state.halt_since_epoch, Some(10));
+
+    // Epoch 11, 12, 13: share stays below 5500.
+    for ep in 11..14 {
+        let health = state.transition(Some(5300), ep);
+        assert_eq!(
+            health,
+            OracleHealthState::HaltRecoverable,
+            "at epoch {ep}, should still be recoverable"
+        );
+    }
+
+    // Epoch 14 (= 10 + 4): 4 epochs have elapsed -> PERMANENT.
+    let health = state.transition(Some(5300), 14);
+    assert_eq!(health, OracleHealthState::HaltPermanent);
+    assert!(state.halt_permanent);
+
+    // Once permanent, even recovery of share does not help.
+    let health = state.transition(Some(9000), 15);
+    assert_eq!(health, OracleHealthState::HaltPermanent);
+    assert!(state.halt_permanent);
+}
+
+// OUTPUT CONTRACT: OracleSunsetState serde round-trip (persistence)
+//   O1: write state with halt_since_epoch set, deserialize, verify
+#[test]
+fn test_state_persistence_across_restart() {
+    let mut state = OracleSunsetState::default();
+    state.transition(Some(5800), 5); // enter warning
+    state.transition(Some(5400), 7); // enter halt
+
+    // Simulate persistence via bincode round-trip (same as StateDB).
+    let bytes = bincode::serialize(&state).expect("serialize");
+    let restored: OracleSunsetState = bincode::deserialize(&bytes).expect("deserialize");
+
+    assert_eq!(restored, state);
+    assert_eq!(restored.warning_since_epoch, Some(5));
+    assert_eq!(restored.halt_since_epoch, Some(7));
+    assert!(!restored.halt_permanent);
+
+    // After restore, the health query must return the same result.
+    assert_eq!(restored.health(8), OracleHealthState::HaltRecoverable);
+}
+
+// OUTPUT CONTRACT: OracleHealthState helper methods
+//   O1: should_aggregate() is true for Healthy and Warning only
+//   O2: is_sunset_triggered() is true for HaltRecoverable and HaltPermanent
+#[test]
+fn test_health_state_helper_methods() {
+    assert!(OracleHealthState::Healthy.should_aggregate());
+    assert!(OracleHealthState::Warning.should_aggregate());
+    assert!(!OracleHealthState::HaltRecoverable.should_aggregate());
+    assert!(!OracleHealthState::HaltPermanent.should_aggregate());
+
+    assert!(!OracleHealthState::Healthy.is_sunset_triggered());
+    assert!(!OracleHealthState::Warning.is_sunset_triggered());
+    assert!(OracleHealthState::HaltRecoverable.is_sunset_triggered());
+    assert!(OracleHealthState::HaltPermanent.is_sunset_triggered());
+}
+
+// OUTPUT CONTRACT: OracleHealthState::as_rpc_str
+//   O1: 4 states produce their documented RPC strings
+#[test]
+fn test_health_state_rpc_strings() {
+    assert_eq!(OracleHealthState::Healthy.as_rpc_str(), "healthy");
+    assert_eq!(OracleHealthState::Warning.as_rpc_str(), "warning");
+    assert_eq!(
+        OracleHealthState::HaltRecoverable.as_rpc_str(),
+        "halted_recoverable"
+    );
+    assert_eq!(
+        OracleHealthState::HaltPermanent.as_rpc_str(),
+        "halted_permanent"
+    );
+}
+
+// OUTPUT CONTRACT: direct HEALTHY -> HALT (skip warning zone)
+//   O1: share drops from 6500 to 5400 in one step -> HaltRecoverable
+//   O2: both warning_since_epoch and halt_since_epoch set
+#[test]
+fn test_direct_healthy_to_halt() {
+    let mut state = OracleSunsetState::default();
+    let health = state.transition(Some(5400), 10);
+    assert_eq!(health, OracleHealthState::HaltRecoverable);
+    assert_eq!(state.warning_since_epoch, Some(10));
+    assert_eq!(state.halt_since_epoch, Some(10));
+}
+
+// OUTPUT CONTRACT: None share_bps treated as 0 (halt zone)
+//   O1: no eligible bonds -> treated as share=0 -> enters halt
+#[test]
+fn test_none_share_enters_halt() {
+    let mut state = OracleSunsetState::default();
+    let health = state.transition(None, 10);
+    assert_eq!(health, OracleHealthState::HaltRecoverable);
+    assert_eq!(state.halt_since_epoch, Some(10));
+}
+
+// OUTPUT CONTRACT: recovery at exact boundary of recovery window
+//   O1: at epoch halt+3 (< 4), recovery is still possible
+//   O2: at epoch halt+4 (= 4), recovery is NOT possible
+#[test]
+fn test_recovery_window_boundary() {
+    // Case 1: recover at halt+3 (should succeed)
+    let mut state1 = OracleSunsetState::default();
+    state1.transition(Some(5400), 10); // halt at epoch 10
+    let health = state1.transition(Some(5600), 13); // epoch 13 = 10+3 < 10+4
+    assert_eq!(health, OracleHealthState::Warning);
+    assert_eq!(state1.halt_since_epoch, None);
+
+    // Case 2: try to recover at halt+4 (should be permanent)
+    let mut state2 = OracleSunsetState::default();
+    state2.transition(Some(5400), 10); // halt at epoch 10
+                                       // Keep share low through epochs 11-13.
+    for ep in 11..14 {
+        state2.transition(Some(5300), ep);
+    }
+    // At epoch 14, share goes up but it's too late.
+    let health = state2.transition(Some(5600), 14);
+    assert_eq!(health, OracleHealthState::HaltPermanent);
+}
+
+// OUTPUT CONTRACT: SUNSET_WARNING_BPS and ORACLE_RECOVERY_EPOCHS constants
+//   O1: values match spec
+#[test]
+fn test_constants_match_spec() {
+    assert_eq!(SUNSET_THRESHOLD_BPS, 5500);
+    assert_eq!(SUNSET_WARNING_BPS, 6000);
+    assert_eq!(ORACLE_RECOVERY_EPOCHS, 4);
 }

@@ -6,14 +6,15 @@
 //! `tests`/`tests_m11` module boundary inside the `oracle` parent.
 //!
 //! OUTPUT CONTRACT:
-//!   getOracleStatus() -> { active, trust_model, structural_share,
+//!   getOracleStatus() -> { active, health, trust_model, structural_share,
 //!                          sunset_threshold, sunset_triggered,
 //!                          last_update_height, attester_count,
 //!                          activation_height, centralization_disclosure }
 //!
 //! INPUT PARTITIONS:
 //!   activation       = { pre (u64::MAX), post }
-//!   structural_share = { >=5500 bps (active), <5500 bps (sunset_triggered) }
+//!   structural_share = { >=6000 bps (healthy), 5500-5999 (warning),
+//!                         <5500 bps (halted) }
 //!   utxo_state       = { has OraclePrice UTXO, none, multiple-pairs }
 //!   attester_window  = { current_epoch=0 (no closed),
 //!                        attestations in closed epoch,
@@ -281,6 +282,8 @@ fn m11_active_true_when_post_activation_and_structural_share_at_threshold() {
     assert_eq!(resp["last_update_height"].as_u64().unwrap(), 1_790);
     assert_eq!(resp["attester_count"].as_u64().unwrap(), 7);
     assert_eq!(resp["activation_height"].as_u64().unwrap(), 0);
+    // D.3: health should be "healthy" at 60% share.
+    assert_eq!(resp["health"].as_str().unwrap(), "healthy");
 }
 
 // ---------- partition: structural_share < 55% via inner helper ----------
@@ -315,9 +318,11 @@ fn m11_sunset_triggered_when_structural_share_below_threshold() {
         "expected structural_share=0.50, got {}",
         resp["structural_share"]
     );
+    // D.3: health should be "halted_recoverable" at 50% share.
+    assert_eq!(resp["health"].as_str().unwrap(), "halted_recoverable");
 }
 
-// ---------- partition: response has all 9 documented fields ----------
+// ---------- partition: response has all 10 documented fields ----------
 #[tokio::test]
 async fn m11_response_shape_has_all_documented_fields() {
     let t = build_m10_ctx();
@@ -325,6 +330,7 @@ async fn m11_response_shape_has_all_documented_fields() {
     let obj = resp.as_object().expect("must be JSON object");
     for field in [
         "active",
+        "health",
         "trust_model",
         "structural_share",
         "sunset_threshold",
@@ -341,4 +347,109 @@ async fn m11_response_shape_has_all_documented_fields() {
             obj.keys().collect::<Vec<_>>()
         );
     }
+}
+
+// ===========================================================================
+// D.3 — RPC health field tests
+// ===========================================================================
+
+// OUTPUT CONTRACT: health field returns "healthy" when share >= 60%
+#[test]
+fn m11_health_healthy_above_warning_threshold() {
+    let mock_struct_hash = crypto::hash::hash_with_domain(b"MOCK_STRUCT", b"N1");
+    let other_hash = crypto::hash::hash_with_domain(b"MOCK_OTHER", b"X");
+
+    // 7000 / 10000 = 70% (well above 60%)
+    let mut bond_snapshot = std::collections::HashMap::new();
+    bond_snapshot.insert(mock_struct_hash, 7_000u64);
+    bond_snapshot.insert(other_hash, 3_000u64);
+    let mut registered_at = std::collections::HashMap::new();
+    registered_at.insert(mock_struct_hash, 0u64);
+    registered_at.insert(other_hash, 0u64);
+
+    let resp = super::build_oracle_status_response(super::OracleStatusInputs {
+        current_height: 1_800,
+        activation_height: 0,
+        structural_hashes: &[mock_struct_hash],
+        registered_at: &registered_at,
+        bond_snapshot: &bond_snapshot,
+        blocks_per_epoch: 360,
+        last_update_height: None,
+        attester_count: 0,
+    });
+
+    assert_eq!(resp["health"].as_str().unwrap(), "healthy");
+}
+
+// OUTPUT CONTRACT: health field returns "warning" when share 55-59%
+#[test]
+fn m11_health_warning_in_warning_zone() {
+    let mock_struct_hash = crypto::hash::hash_with_domain(b"MOCK_STRUCT", b"N1");
+    let other_hash = crypto::hash::hash_with_domain(b"MOCK_OTHER", b"X");
+
+    // 5700 / 10000 = 57% (in warning zone: 55-59.99%)
+    let mut bond_snapshot = std::collections::HashMap::new();
+    bond_snapshot.insert(mock_struct_hash, 5_700u64);
+    bond_snapshot.insert(other_hash, 4_300u64);
+    let mut registered_at = std::collections::HashMap::new();
+    registered_at.insert(mock_struct_hash, 0u64);
+    registered_at.insert(other_hash, 0u64);
+
+    let resp = super::build_oracle_status_response(super::OracleStatusInputs {
+        current_height: 1_800,
+        activation_height: 0,
+        structural_hashes: &[mock_struct_hash],
+        registered_at: &registered_at,
+        bond_snapshot: &bond_snapshot,
+        blocks_per_epoch: 360,
+        last_update_height: None,
+        attester_count: 0,
+    });
+
+    assert_eq!(resp["health"].as_str().unwrap(), "warning");
+    // active should still be true — warning zone aggregates
+    assert!(resp["active"].as_bool().unwrap());
+    assert!(!resp["sunset_triggered"].as_bool().unwrap());
+}
+
+// OUTPUT CONTRACT: health field returns "halted_recoverable" when share < 55%
+#[test]
+fn m11_health_halted_below_sunset_threshold() {
+    let mock_struct_hash = crypto::hash::hash_with_domain(b"MOCK_STRUCT", b"N1");
+    let other_hash = crypto::hash::hash_with_domain(b"MOCK_OTHER", b"X");
+
+    // 4000 / 10000 = 40% (below 55%)
+    let mut bond_snapshot = std::collections::HashMap::new();
+    bond_snapshot.insert(mock_struct_hash, 4_000u64);
+    bond_snapshot.insert(other_hash, 6_000u64);
+    let mut registered_at = std::collections::HashMap::new();
+    registered_at.insert(mock_struct_hash, 0u64);
+    registered_at.insert(other_hash, 0u64);
+
+    let resp = super::build_oracle_status_response(super::OracleStatusInputs {
+        current_height: 1_800,
+        activation_height: 0,
+        structural_hashes: &[mock_struct_hash],
+        registered_at: &registered_at,
+        bond_snapshot: &bond_snapshot,
+        blocks_per_epoch: 360,
+        last_update_height: None,
+        attester_count: 0,
+    });
+
+    assert_eq!(resp["health"].as_str().unwrap(), "halted_recoverable");
+    assert!(!resp["active"].as_bool().unwrap());
+    assert!(resp["sunset_triggered"].as_bool().unwrap());
+}
+
+// OUTPUT CONTRACT: health returns "halted_recoverable" when no eligible bonds
+#[tokio::test]
+async fn m11_health_halted_when_no_eligible_bonds() {
+    let t = build_m10_ctx();
+    let resp = t.ctx.get_oracle_status(Value::Null).await.unwrap();
+    assert_eq!(
+        resp["health"].as_str().unwrap(),
+        "halted_recoverable",
+        "no eligible bonds -> halted_recoverable"
+    );
 }

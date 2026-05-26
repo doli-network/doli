@@ -55,6 +55,10 @@ pub(super) const META_EPOCH_STATE: &[u8] = b"epoch_state";
 pub(super) const META_EPOCH_STATE_VERSION: &[u8] = b"epoch_state_version";
 pub(super) const META_CHAIN_COMMITMENT: &[u8] = b"chain_commitment";
 pub(super) const META_CHAIN_COMMITMENT_TIP: &[u8] = b"chain_commitment_tip";
+/// D.3 oracle sunset gradient state (warning/halt epoch tracking).
+/// Persisted as bincode-serialized `OracleSunsetState`. Local
+/// bookkeeping — NOT part of the consensus state root.
+pub(super) const META_ORACLE_SUNSET_STATE: &[u8] = b"oracle_sunset_state";
 
 /// Unified state database wrapping a single RocksDB instance.
 pub struct StateDb {
