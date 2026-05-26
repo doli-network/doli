@@ -826,9 +826,106 @@ async fn test_rpc_min_max_height_filters_events_d7() {
     for ev in events {
         let h = ev["height"].as_u64().expect("event must have height");
         assert!(
-            h >= 120 && h <= 160,
+            (120..=160).contains(&h),
             "event height {} outside requested range [120, 160]",
             h
         );
     }
+}
+
+// ===========================================================================
+// INC-I-090 D5: events_dropped_total wired to emitter.dropped_count()
+// ===========================================================================
+
+// OUTPUT CONTRACT:
+//   health.events_dropped_total MUST reflect the actual emitter's dropped count,
+//   not the dead DiagnosticWriterStats.events_dropped (always 0 in production).
+//
+// PATHS:
+//   P1: emitter has 0 drops -> events_dropped_total == 0
+//   P2: emitter overflowed N times -> events_dropped_total == N
+//
+// Today FAILS because diagnostics.rs:111 reads stats.events_dropped (always 0)
+// instead of the emitter's dropped_count().
+
+/// P2: emitter ring overflowed => health.events_dropped_total reflects real count.
+///
+/// Create an AsyncChannelEmitter with cap=4, push 10 events (6 overflows),
+/// pass it to RpcContext via with_diagnostic_emitter(), call getForkDiagnostic,
+/// and assert health.events_dropped_total == 6.
+#[tokio::test]
+async fn test_d5_events_dropped_total_wired_to_emitter_dropped_count() {
+    use storage::diagnostic_ledger::emitter::{AsyncChannelEmitter, DiagnosticEmitter as _};
+
+    let (ledger, _dir) = make_test_ledger();
+    let (emitter, _rx) = AsyncChannelEmitter::new(4);
+
+    // Overflow the emitter: cap=4, push 10 => 6 drops
+    let now = now_ms();
+    for i in 0..10u64 {
+        let ev = make_fork_event(100 + i, now - (10 - i) * 1000, "aabbccdd");
+        emitter.record(ev).expect("record must succeed");
+    }
+    assert_eq!(emitter.dropped_count(), 6, "precondition: 6 drops");
+
+    // Build RPC context with emitter wired in
+    let emitter_arc: Arc<dyn storage::diagnostic_ledger::emitter::DiagnosticEmitter> =
+        Arc::new(emitter);
+    let stats = DiagnosticWriterStats::new_shared();
+    // stats.events_dropped is 0 — deliberately NOT set.
+    // If the handler reads from stats, it will report 0 (the bug).
+
+    let ctx = make_test_rpc_context_with_stats(Some(ledger), stats)
+        .await
+        .with_diagnostic_emitter(Some(emitter_arc));
+
+    let result = ctx
+        .get_fork_diagnostic(json!({"window_secs": 3600}))
+        .await
+        .expect("RPC should succeed");
+
+    let health = &result["health"];
+
+    // D5 acceptance: events_dropped_total == emitter.dropped_count() == 6
+    assert_eq!(
+        health["events_dropped_total"], 6,
+        "D5: events_dropped_total must reflect emitter.dropped_count(), not stats (got {})",
+        health["events_dropped_total"]
+    );
+}
+
+/// P1: no drops => events_dropped_total == 0 (regression: existing behavior preserved)
+#[tokio::test]
+async fn test_d5_events_dropped_total_zero_when_no_overflow() {
+    use storage::diagnostic_ledger::emitter::{AsyncChannelEmitter, DiagnosticEmitter as _};
+
+    let (ledger, _dir) = make_test_ledger();
+    let (emitter, _rx) = AsyncChannelEmitter::new(1024);
+
+    // Record a few events without overflow
+    let now = now_ms();
+    for i in 0..3u64 {
+        let ev = make_fork_event(100 + i, now - (3 - i) * 1000, "aabbccdd");
+        emitter.record(ev).expect("record must succeed");
+    }
+    assert_eq!(emitter.dropped_count(), 0, "precondition: no drops");
+
+    let emitter_arc: Arc<dyn storage::diagnostic_ledger::emitter::DiagnosticEmitter> =
+        Arc::new(emitter);
+    let stats = DiagnosticWriterStats::new_shared();
+
+    let ctx = make_test_rpc_context_with_stats(Some(ledger), stats)
+        .await
+        .with_diagnostic_emitter(Some(emitter_arc));
+
+    let result = ctx
+        .get_fork_diagnostic(json!({"window_secs": 3600}))
+        .await
+        .expect("RPC should succeed");
+
+    let health = &result["health"];
+    assert_eq!(
+        health["events_dropped_total"], 0,
+        "D5 regression: events_dropped_total must be 0 when no overflow"
+    );
 }

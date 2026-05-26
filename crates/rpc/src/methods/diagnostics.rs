@@ -105,10 +105,16 @@ impl RpcContext {
         // Build baseline (simplified: compare current window vs 24h)
         let baseline = build_baseline(ledger.as_ref(), window_secs, &events);
 
-        // Build health from live writer stats (INC-I-087)
+        // Build health from live writer stats (INC-I-087) + emitter (INC-I-090 D5)
         let stats = &self.diagnostic_writer_stats;
         let written = stats.events_written.load(Ordering::Relaxed);
-        let dropped = stats.events_dropped.load(Ordering::Relaxed);
+        // INC-I-090 D5: read dropped count from the emitter (source of truth)
+        // rather than writer_stats.events_dropped which was never incremented.
+        let dropped = self
+            .diagnostic_emitter
+            .as_ref()
+            .map(|e| e.dropped_count())
+            .unwrap_or_else(|| stats.events_dropped.load(Ordering::Relaxed));
         let heartbeat_raw = stats.last_heartbeat_ms.load(Ordering::Relaxed);
         let last_heartbeat_ms = if heartbeat_raw == 0 {
             None
