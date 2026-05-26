@@ -555,6 +555,10 @@ pub(crate) struct ForkState {
     /// `last_rollback_local_height` after 5 minutes — stale rollback state
     /// was suppressing fork detection for hours (h=27971 → h=28640, 2h gap).
     pub last_rollback_time: Option<Instant>,
+    /// D2 (INC-I-090): chain break events detected during header sync.
+    /// Drained by the node layer via `take_chain_breaks()` and emitted
+    /// as `ChainBreakDetected` diagnostic events. Capped at 32 entries.
+    pub chain_breaks: VecDeque<ChainBreakInfo>,
 }
 
 impl ForkState {
@@ -575,6 +579,7 @@ impl ForkState {
             height_fallback_attempted: false,
             last_rollback_local_height: None,
             last_rollback_time: None,
+            chain_breaks: VecDeque::new(),
         }
     }
 
@@ -616,4 +621,28 @@ pub enum ForkAction {
     RollbackOne,
     /// Node needs full genesis resync (deep fork or rollback exhausted)
     NeedsGenesisResync,
+}
+
+// ---------------------------------------------------------------------------
+// ChainBreakInfo — D2 (INC-I-090) diagnostic event data
+// ---------------------------------------------------------------------------
+
+/// Information about a chain break detected during header sync.
+///
+/// Populated by `HeaderDownloader::process_headers` when a header's
+/// `prev_hash` does not match the expected hash. The SyncManager queues
+/// these for the node layer to drain and emit as `ChainBreakDetected`
+/// diagnostic events.
+#[derive(Debug, Clone)]
+pub struct ChainBreakInfo {
+    /// The hash we expected this header's prev_hash to be.
+    pub expected_prev_hash: Hash,
+    /// The actual prev_hash from the received header.
+    pub actual_prev_hash: Hash,
+    /// The slot of the header that caused the break.
+    pub header_slot: u32,
+    /// How many headers were successfully validated before this break.
+    pub valid_so_far_count: u32,
+    /// The peer that sent the headers containing the break.
+    pub from_peer_id: PeerId,
 }

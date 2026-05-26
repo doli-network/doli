@@ -21,8 +21,8 @@ pub use equivocation::{EquivocationDetector, EquivocationProof};
 pub use fork_recovery::CompletedRecovery;
 pub use headers::HeaderDownloader;
 pub use manager::{
-    ForkAction, ProductionAuthorization, RecoveryAction, RecoveryContext, RecoveryEvidence,
-    RecoveryPhase, RecoveryReason, StuckForkAlert, SyncConfig, SyncManager, SyncPhase,
-    SyncPipelineData, SyncState, VerifiedSnapshot, MAX_CONSECUTIVE_RESYNCS,
+    ChainBreakInfo, ForkAction, ProductionAuthorization, RecoveryAction, RecoveryContext,
+    RecoveryEvidence, RecoveryPhase, RecoveryReason, StuckForkAlert, SyncConfig, SyncManager,
+    SyncPhase, SyncPipelineData, SyncState, VerifiedSnapshot, MAX_CONSECUTIVE_RESYNCS,
 };
 pub use reorg::{ReorgHandler, ReorgResult};

@@ -341,7 +341,7 @@ impl Node {
         }
 
         // Clean up sync manager and prune stale finality entries
-        {
+        let pending_chain_breaks = {
             let current_slot = {
                 let state = self.chain_state.read().await;
                 state.best_slot
@@ -363,6 +363,46 @@ impl Node {
                     peer_count = alert.peer_count,
                     "[STUCK_FORK] Recovery coordinator raised stuck-fork signal"
                 );
+            }
+
+            // D2 (INC-I-090): Drain chain break events (inside lock).
+            // Emission happens below, after the sync manager lock is dropped.
+            sync.take_chain_breaks()
+        };
+
+        // D2 (INC-I-090): Emit ChainBreakDetected for each drained chain break.
+        // Runs outside the sync manager lock to avoid holding the write guard
+        // while reading chain_state.
+        if !pending_chain_breaks.is_empty() {
+            let local_h = self.chain_state.read().await.best_height;
+            for cb in pending_chain_breaks {
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                let _ =
+                    self.diagnostic_emitter
+                        .record(storage::diagnostic_ledger::types::DiagnosticEvent {
+                        event_id: ulid::Ulid::new().to_string(),
+                        kind: storage::diagnostic_ledger::types::EventKind::ChainBreakDetected,
+                        timestamp_ms: now_ms,
+                        height: Some(local_h),
+                        correlation_key: Some(storage::diagnostic_ledger::types::CorrelationKey {
+                            divergence_height: Some(local_h),
+                            canonical_hash: None,
+                            fork_hash: None,
+                        }),
+                        caused_by_event_id: None,
+                        is_cascade_origin: false,
+                        payload:
+                            storage::diagnostic_ledger::types::EventPayload::ChainBreakDetected {
+                                expected_prev_hash: cb.expected_prev_hash.to_hex(),
+                                actual_prev_hash: cb.actual_prev_hash.to_hex(),
+                                header_slot: cb.header_slot,
+                                valid_so_far_count: cb.valid_so_far_count,
+                                from_peer_id: cb.from_peer_id.to_base58(),
+                            },
+                    });
             }
         }
 
