@@ -1044,6 +1044,7 @@ impl Node {
             diagnostic_shutdown_tx: None,
             diagnostic_writer_stats: storage::diagnostic_ledger::DiagnosticWriterStats::new_shared(
             ),
+            last_diagnostic_alerted: HashSet::new(),
         };
 
         // --- Diagnostic writer + pruner wiring (M2 follow-up) ---
@@ -1285,6 +1286,7 @@ impl Node {
             diagnostic_shutdown_tx: None,
             diagnostic_writer_stats: storage::diagnostic_ledger::DiagnosticWriterStats::new_shared(
             ),
+            last_diagnostic_alerted: HashSet::new(),
         })
     }
 
@@ -1462,6 +1464,7 @@ impl Node {
             diagnostic_shutdown_tx: None,
             diagnostic_writer_stats: storage::diagnostic_ledger::DiagnosticWriterStats::new_shared(
             ),
+            last_diagnostic_alerted: HashSet::new(),
         })
     }
 }

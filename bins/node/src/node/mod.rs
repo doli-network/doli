@@ -5,6 +5,9 @@
 
 mod apply_block;
 mod block_handling;
+pub mod diagnostic_monitor;
+#[cfg(test)]
+mod diagnostic_monitor_tests;
 pub mod diagnostic_writer;
 pub mod diagnostics_pruner;
 mod event_loop;
@@ -278,6 +281,11 @@ pub struct Node {
     /// Shared diagnostic writer stats (INC-I-087). Passed to both the writer task
     /// and the RPC context so getDiagnosticHealth reports live counter values.
     pub diagnostic_writer_stats: Arc<DiagnosticWriterStats>,
+
+    /// D4 (INC-I-090): dedup set for the in-node diagnostic monitor.
+    /// Keys are classifier-derived incident identifiers. Same incident only
+    /// logs once until the node restarts (non-persistent, intentionally).
+    pub last_diagnostic_alerted: HashSet<String>,
 }
 
 /// INC-I-055: Number of health samples to track in the rolling window.

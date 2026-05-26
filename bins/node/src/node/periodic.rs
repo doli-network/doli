@@ -963,6 +963,34 @@ impl Node {
                 );
             }
 
+            // D4 (INC-I-090): In-node automated alert consumer.
+            // Polls the local diagnostic ledger, runs classify(), and emits structured
+            // WARN-level log lines when recommended_action is actionable.
+            // Cadence: every 30s (same as the health diagnostic), satisfying the VERDICT
+            // pass-criterion: "< 60s interval".
+            if let Some(ref ledger) = self.diagnostic_ledger {
+                use super::diagnostic_monitor::{
+                    check_for_actionable_alerts, DIAGNOSTIC_MONITOR_INTERVAL_SECS,
+                };
+                let _ = DIAGNOSTIC_MONITOR_INTERVAL_SECS; // referenced for grep-ability
+                let alerts = check_for_actionable_alerts(
+                    ledger,
+                    300, // 5-minute event window
+                    &mut self.last_diagnostic_alerted,
+                );
+                for alert in &alerts {
+                    warn!(
+                        target: "diagnostic_monitor",
+                        incident_id = %alert.incident_id,
+                        fork_type = %alert.fork_type,
+                        recommended_action = %alert.recommended_action,
+                        evidence_count = alert.evidence_event_ids.len(),
+                        "[DIAGNOSTIC_MONITOR] Actionable alert: {} — {}",
+                        alert.fork_type, alert.recommended_action,
+                    );
+                }
+            }
+
             // INC-I-020/020b: STALE_TIP and FORK_1BLOCK were removed because they
             // fought with FORK_GUARD, causing rollback cascades. With INC-I-026
             // (deterministic scheduler) and fork_id, small gaps resolve via gossip;
