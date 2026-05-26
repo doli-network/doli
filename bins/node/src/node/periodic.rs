@@ -349,6 +349,21 @@ impl Node {
             let mut sync = self.sync_manager.write().await;
             sync.cleanup();
             sync.prune_finality(current_slot);
+
+            // D6 (INC-I-090): Consume stuck-fork signal every tick.
+            // signal_stuck_fork() is called by cleanup, block_apply_failed, and peers
+            // when fork evidence is detected. take_stuck_fork_signal() had ZERO
+            // non-test callers — the signal sat unread. This surfaces it immediately
+            // as a structured WARN log, complementing M2's 30s diagnostic_monitor.
+            if let Some(alert) = sync.consume_stuck_fork_signal() {
+                tracing::warn!(
+                    target: "production_gate",
+                    local_height = alert.local_height,
+                    best_peer_height = alert.best_peer_height,
+                    peer_count = alert.peer_count,
+                    "[STUCK_FORK] Recovery coordinator raised stuck-fork signal"
+                );
+            }
         }
 
         // Archive catch-up: after sync completes, backfill archive from block_store.

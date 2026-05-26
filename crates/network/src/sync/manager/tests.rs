@@ -4989,3 +4989,97 @@ mod m_rc12_full_asymmetric_blacklist_tests {
         );
     }
 }
+
+// -------------------------------------------------------------------------
+// D6 (INC-I-090): consume_stuck_fork_signal wiring tests
+//
+// Validates that the stuck-fork consumer method exists, returns context
+// when a signal is present, and returns None after consumption (dedup).
+// BEFORE the fix: consume_stuck_fork_signal() does not exist → compile fail.
+// -------------------------------------------------------------------------
+
+mod d6_stuck_fork_consumer_tests {
+    use super::*;
+
+    /// T-D6-001: consume_stuck_fork_signal returns Some when signal is set.
+    ///
+    /// OUTPUT CONTRACT:
+    ///   O1: &mut self (SyncManager) — consumes stuck_fork_signal flag
+    ///   O2: returns Option<StuckForkAlert> with context (local_height, peer_height, peer_count)
+    ///
+    /// PATHS:
+    ///   P1: Signal set → returns Some(StuckForkAlert) with correct context
+    ///   P2: Signal not set → returns None
+    ///   P3: Second call after P1 → returns None (consumed)
+    ///
+    /// .test_verified: FAIL→PASS required
+    #[test]
+    fn t_d6_001_consume_returns_some_when_signaled() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        // Set up context: local_height=100, add a peer at height 200
+        manager.update_local_tip(100, Hash::ZERO, 10);
+        let peer = PeerId::random();
+        manager.add_peer(peer, 200, Hash::ZERO, 20);
+
+        // Signal a stuck fork from Normal phase
+        manager.signal_stuck_fork();
+        assert!(
+            manager.fork.stuck_fork_signal,
+            "precondition: signal must be set"
+        );
+
+        // P1: consume returns Some with context
+        let alert = manager.consume_stuck_fork_signal();
+        assert!(alert.is_some(), "P1: must return Some when signal is set");
+        let alert = alert.unwrap();
+        assert_eq!(alert.local_height, 100, "P1: local_height must match");
+        assert_eq!(
+            alert.best_peer_height, 200,
+            "P1: best_peer_height must match"
+        );
+        assert!(
+            alert.peer_count > 0,
+            "P1: peer_count must reflect connected peers"
+        );
+
+        // P3: second call returns None (signal consumed by take)
+        let second = manager.consume_stuck_fork_signal();
+        assert!(
+            second.is_none(),
+            "P3: second call must return None (consumed)"
+        );
+    }
+
+    /// T-D6-002: consume_stuck_fork_signal returns None when no signal.
+    #[test]
+    fn t_d6_002_consume_returns_none_when_no_signal() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        // P2: no signal set → None
+        let alert = manager.consume_stuck_fork_signal();
+        assert!(
+            alert.is_none(),
+            "P2: must return None when no signal is set"
+        );
+    }
+
+    /// T-D6-003: consume_stuck_fork_signal returns None during non-Normal phases.
+    /// signal_stuck_fork() ignores the call during ResyncInProgress, so
+    /// consume must also return None.
+    #[test]
+    fn t_d6_003_consume_returns_none_during_resync() {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.recovery_phase = RecoveryPhase::ResyncInProgress;
+
+        // signal_stuck_fork ignores during ResyncInProgress
+        manager.signal_stuck_fork();
+        assert!(
+            !manager.fork.stuck_fork_signal,
+            "precondition: signal must NOT be set during resync"
+        );
+
+        let alert = manager.consume_stuck_fork_signal();
+        assert!(alert.is_none(), "must return None when signal was not set");
+    }
+}

@@ -27,6 +27,8 @@ pub use types::{
 };
 // Re-export recovery coordinator types used by Node layer
 pub use recovery::{RecoveryAction, RecoveryContext, RecoveryEvidence};
+// Re-export D6 stuck-fork consumer type used by Node layer
+pub use production_gate::StuckForkAlert;
 // Re-export pub(crate) types used by sibling modules
 pub(crate) use types::{
     ForkState, NetworkState, PeerSyncStatus, PendingRequest, SnapSyncState, SyncPipeline,

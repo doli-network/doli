@@ -22,7 +22,7 @@ pub use fork_recovery::CompletedRecovery;
 pub use headers::HeaderDownloader;
 pub use manager::{
     ForkAction, ProductionAuthorization, RecoveryAction, RecoveryContext, RecoveryEvidence,
-    RecoveryPhase, RecoveryReason, SyncConfig, SyncManager, SyncPhase, SyncPipelineData, SyncState,
-    VerifiedSnapshot, MAX_CONSECUTIVE_RESYNCS,
+    RecoveryPhase, RecoveryReason, StuckForkAlert, SyncConfig, SyncManager, SyncPhase,
+    SyncPipelineData, SyncState, VerifiedSnapshot, MAX_CONSECUTIVE_RESYNCS,
 };
 pub use reorg::{ReorgHandler, ReorgResult};
