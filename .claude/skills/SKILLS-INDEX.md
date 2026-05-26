@@ -10,7 +10,7 @@ INDEX-WARNINGS  443-455
 
 Generated: 2026-05-11
 Project: DOLI PoS blockchain — Rust, ~166K LOC, ~434 source files
-Domains mapped: 14 source code domains + 15 operational/workflow skills = 29 total skill files
+Domains mapped: 14 source code domains + 16 operational/workflow skills = 30 total skill files
 Index path: `.claude/skills/SKILLS-INDEX.md`
 
 **Quick-grep instructions:**
@@ -61,6 +61,7 @@ Index path: `.claude/skills/SKILLS-INDEX.md`
 | sync-docs | `sync-docs/SKILL.md` | Documentation alignment workflow, truth hierarchy, 8-step commit process | — |
 | test-script | `test-script/SKILL.md` | Test script management, scripts/README.md registry protocol | — |
 | skill-creator | `skill-creator/SKILL.md` | Skill creation guide, progressive disclosure design, frontmatter requirements | — |
+| observability-fork | `observability-fork/SKILL.md` | Fork detection, divergence diagnostics, diagnostic ledger, state-root debug, fleet fork RPC | RPC-CHEATSHEET.md, LEDGER-SCHEMA.md |
 
 ---
 
@@ -142,6 +143,11 @@ Line ranges reflect verified actual content positions, correcting @INDEX inaccur
 | deploy mainnet | `mainnet/SKILL.md` | full file | — |
 | `DeterministicScheduler` | `core/SKILL.md` | ENTRY-POINTS | 14-44 |
 | devnet params | `network-setup/SKILL.md` | full file | — |
+| diagnostic ledger | `observability-fork/SKILL.md` | ENTRY-POINTS / DATA-FLOW | 16-32 / 51-66 |
+| `DiagnosticLedger` | `observability-fork/SKILL.md` | ENTRY-POINTS | 16-32 |
+| `DiagnosticEvent` | `observability-fork/SKILL.md` | full file + LEDGER-SCHEMA.md | — |
+| divergence detection | `observability-fork/SKILL.md` | OPERATIONS | 34-49 |
+| divergence point | `observability-fork/SKILL.md` | OPERATIONS | 34-49 |
 | `doli init` | `cli/SKILL.md` | COMMANDS | 38-450 |
 | `doli new` | `cli/SKILL.md` | COMMANDS | 38-450 |
 | `doli producer delegate` | `delegation/SKILL.md` | full file | — |
@@ -170,7 +176,14 @@ Line ranges reflect verified actual content positions, correcting @INDEX inaccur
 |-------------------|-----------|---------|-------|
 | faucet | `faucet/SKILL.md` | full file | — |
 | fee calculation | `wallet/SKILL.md` | FUNCTIONS | 78-157 |
-| fork detection | `guardian/SKILL.md` | full index | 1-30 |
+| fork detection | `observability-fork/SKILL.md` | OPERATIONS | 34-49 |
+| fork detection (recovery) | `guardian/SKILL.md` | full index | 1-30 |
+| fork classifier | `observability-fork/SKILL.md` | DATA-FLOW / LEDGER-SCHEMA.md | 51-66 |
+| fork-monitor.sh | `observability-fork/SKILL.md` | ENTRY-POINTS | 16-32 |
+| `getForkDiagnostic` | `observability-fork/SKILL.md` | ENTRY-POINTS / RPC-CHEATSHEET.md | 16-32 |
+| `getFleetForkDiagnostic` | `observability-fork/SKILL.md` | ENTRY-POINTS / RPC-CHEATSHEET.md | 16-32 |
+| `getStateRootDebug` | `observability-fork/SKILL.md` | ENTRY-POINTS / RPC-CHEATSHEET.md | 16-32 |
+| `getUtxoDiff` | `observability-fork/SKILL.md` | ENTRY-POINTS / RPC-CHEATSHEET.md | 16-32 |
 | fork recovery | `node/SKILL.md` | FUNCTIONS | 165-307 |
 | `fork_recovery.rs` | `node/SKILL.md` | FUNCTIONS | 165-307 |
 | `ForkBlock` | `node/SKILL.md` | DATA-FLOWS | 49-99 |
