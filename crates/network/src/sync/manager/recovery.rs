@@ -305,11 +305,13 @@ impl RecoveryCoordinator {
             && ctx.shallow_rollback_count < thresholds::SHALLOW_ROLLBACK_MAX
         {
             // INV-SYNC-001 (INC-I-081): refuse to roll back past finality.
-            // For depth=1, target_height = local_height - 1. If finality is at F and
-            // target <= F, the rollback would unwind a finalized block. Abstain.
+            // For depth=1, target_height = local_height - 1. Rolling back TO
+            // finality (target == F) is legal — the finalized block is preserved.
+            // Only rolling BELOW finality (target < F) violates the invariant.
+            // INC-I-090: fixed fencepost — was `<=`, now `<`.
             if let Some(finality) = ctx.last_finality_height {
                 let target_height = ctx.local_height.saturating_sub(1);
-                if target_height <= finality {
+                if target_height < finality {
                     tracing::warn!(
                         "[FINALITY_GUARD] refusing ShallowRollback target_h={} (finality={}, local_tip={})",
                         target_height, finality, ctx.local_height
@@ -734,29 +736,32 @@ mod tests {
         assert!(c.evidence_len() <= MAX_ENTRIES);
     }
 
-    // --- INV-SYNC-001 (INC-I-081): Finality check on ShallowRollback ---------
+    // --- INV-SYNC-001 / INC-I-090: Finality check on ShallowRollback --------
     //
     // OUTPUT CONTRACT: fn RecoveryCoordinator::classify(&self, ctx: &RecoveryContext) -> RecoveryAction
     //   Outputs:
     //     O1: return RecoveryAction — the variant returned by classify()
     //   Paths (relevant to finality check, all on the ShallowRollback code path):
-    //     P1: target_at_or_below_finality — local_height - depth <= last_finality_height => None
-    //     P2: target_above_finality — local_height - depth > last_finality_height => ShallowRollback
-    //     P3: no_finality_set — last_finality_height = None => ShallowRollback (backward compat)
+    //     P1: target_below_finality   — local_height - depth < last_finality_height  => None (REFUSE)
+    //     P2: target_equals_finality  — local_height - depth == last_finality_height => ShallowRollback (INC-I-090 fix)
+    //     P3: target_above_finality   — local_height - depth > last_finality_height  => ShallowRollback
+    //     P4: no_finality_set         — last_finality_height = None                  => ShallowRollback (backward compat)
     //   INPUT PARTITIONS:
     //     P1a: target < finality (local=1001, finality=1001, depth=1 -> target=1000 < 1001)
-    //     P2a: target well above finality (local=1010, finality=1000, depth=1 -> target=1009 > 1000)
-    //     P3a: finality=None (local=100, depth=1 -> target=99, no check)
-    //   MATRIX: 1 output (O1) x 3 partitions = 3 cells
+    //     P1b: target < finality (local=1001, finality=1005, depth=1 -> target=1000 < 1005)
+    //     P2a: target == finality (local=1001, finality=1000, depth=1 -> target=1000 == 1000)
+    //     P3a: target well above finality (local=1010, finality=1000, depth=1 -> target=1009 > 1000)
+    //     P4a: finality=None (local=100, depth=1 -> target=99, no check)
+    //   MATRIX: 1 output (O1) x 5 partitions = 5 cells
     //     P1a: O1=RecoveryAction::None (asserted in classify_refuses_shallow_rollback_below_finality)
-    //     P2a: O1=RecoveryAction::ShallowRollback { depth: 1 } (asserted in classify_allows_shallow_rollback_above_finality)
-    //     P3a: O1=RecoveryAction::ShallowRollback { depth: 1 } (asserted in classify_allows_shallow_rollback_when_no_finality)
+    //     P1b: O1=RecoveryAction::None (asserted in test_finality_guard_refuses_rollback_below_finality)
+    //     P2a: O1=RecoveryAction::ShallowRollback { depth: 1 } (asserted in test_finality_guard_permits_rollback_to_finality)
+    //     P3a: O1=RecoveryAction::ShallowRollback { depth: 1 } (asserted in classify_allows_shallow_rollback_above_finality)
+    //     P4a: O1=RecoveryAction::ShallowRollback { depth: 1 } (asserted in classify_allows_shallow_rollback_when_no_finality)
 
     /// INV-SYNC-001 (INC-I-081 B2 Bug 1): classify() MUST refuse ShallowRollback
-    /// when the rollback target (local_height - depth) is at or below
-    /// last_finality_height. This is the primary FAIL test — the classifier
-    /// does NOT check finality yet, so this should return ShallowRollback
-    /// when it SHOULD return None.
+    /// when the rollback target (local_height - depth) is strictly below
+    /// last_finality_height.
     #[test]
     fn classify_refuses_shallow_rollback_below_finality() {
         let mut coord = RecoveryCoordinator::new();
@@ -775,15 +780,90 @@ mod tests {
             last_rollback_local_height: None,
             last_rollback_time: None,
             in_grace_period: false,
-            last_finality_height: Some(1001), // target = 1000 <= finality (1001) -> REFUSE
+            last_finality_height: Some(1001), // target = 1000 < finality (1001) -> REFUSE
         };
 
         let action = coord.classify(&ctx);
         assert_eq!(
             action,
             RecoveryAction::None,
-            "INV-SYNC-001: classify must refuse ShallowRollback when target_height <= \
+            "INV-SYNC-001: classify must refuse ShallowRollback when target_height < \
              last_finality_height (target=1000, finality=1001), got {:?}",
+            action
+        );
+    }
+
+    /// INC-I-090: FINALITY_GUARD fencepost — rolling back TO finality is legal.
+    ///
+    /// When target_height == finality_height, the rollback preserves the finalized
+    /// block (we land ON it, not below it). The guard must use `<` not `<=`.
+    ///
+    /// PRE-FIX: this test FAILS because `<=` refuses the legal target==finality case.
+    /// POST-FIX: this test PASSES because `<` permits it.
+    #[test]
+    fn test_finality_guard_permits_rollback_to_finality() {
+        let mut coord = RecoveryCoordinator::new();
+        for slot in 100..103 {
+            coord.report(RecoveryEvidence::OrphanGossip { slot, gap: 1 });
+        }
+
+        // local_height=1001, depth=1 -> target=1000, finality=1000
+        // target == finality: rolling back TO the finalized block is LEGAL.
+        let ctx = RecoveryContext {
+            local_height: 1001,
+            network_tip_height: 1002, // gap = 1
+            peer_count: 5,
+            last_applied_secs: 5,
+            shallow_rollback_count: 0,
+            snap_attempts: 0,
+            last_rollback_local_height: None,
+            last_rollback_time: None,
+            in_grace_period: false,
+            last_finality_height: Some(1000), // target = 1000 == finality -> ALLOW
+        };
+
+        let action = coord.classify(&ctx);
+        assert_eq!(
+            action,
+            RecoveryAction::ShallowRollback { depth: 1 },
+            "INC-I-090: rollback TO finality (target=1000, finality=1000) must be \
+             ALLOWED — the finalized block is preserved. Got {:?}",
+            action
+        );
+    }
+
+    /// INC-I-090 AC-3: confirm target STRICTLY BELOW finality is still refused.
+    ///
+    /// This is a secondary test ensuring the guard still protects against
+    /// rolling back PAST finality after the `<=` to `<` fix.
+    #[test]
+    fn test_finality_guard_refuses_rollback_below_finality() {
+        let mut coord = RecoveryCoordinator::new();
+        for slot in 100..103 {
+            coord.report(RecoveryEvidence::OrphanGossip { slot, gap: 1 });
+        }
+
+        // local_height=1001, depth=1 -> target=1000, finality=1005
+        // target < finality: rolling back BELOW the finalized block is ILLEGAL.
+        let ctx = RecoveryContext {
+            local_height: 1001,
+            network_tip_height: 1002,
+            peer_count: 5,
+            last_applied_secs: 5,
+            shallow_rollback_count: 0,
+            snap_attempts: 0,
+            last_rollback_local_height: None,
+            last_rollback_time: None,
+            in_grace_period: false,
+            last_finality_height: Some(1005), // target = 1000 < finality (1005) -> REFUSE
+        };
+
+        let action = coord.classify(&ctx);
+        assert_eq!(
+            action,
+            RecoveryAction::None,
+            "INC-I-090 AC-3: rollback BELOW finality (target=1000, finality=1005) must \
+             be REFUSED. Got {:?}",
             action
         );
     }
