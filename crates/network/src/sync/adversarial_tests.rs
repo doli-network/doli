@@ -204,6 +204,12 @@ fn test_reorg_finality_prevents_deep_reorg() {
 }
 
 /// P0: Verify plan_reorg also respects finality (defense-in-depth).
+/// NOTE (INC-I-090 AC-3): Fork chain uses a different producer (byte=1) so
+/// that fork blocks hash differently from main-chain blocks. Without this,
+/// both chains share identical blocks (same prev_hash + slot + producer) and
+/// the common ancestor is NOT genesis but a shared interior block — making
+/// the test accidentally exercise the boundary case instead of the
+/// strictly-below-finality case.
 #[test]
 fn test_plan_reorg_finality_guard() {
     let mut handler = ReorgHandler::new();
@@ -215,10 +221,14 @@ fn test_plan_reorg_finality_guard() {
         handler.record_block_with_weight(block.hash(), block.header.prev_hash, 1);
     }
 
-    // Build fork: genesis -> X -> Y
-    let (fork, fork_tip) = build_chain(genesis, 1, 2);
-    for block in &fork {
+    // Build fork: genesis -> X -> Y (different producer so hashes diverge)
+    let mut fork_prev = genesis;
+    let mut fork_tip = genesis;
+    for i in 0..2u32 {
+        let block = make_block_with_producer(fork_prev, 1 + i, 1);
         handler.record_fork_block(block.hash(), block.header.prev_hash, 100);
+        fork_prev = block.hash();
+        fork_tip = block.hash();
     }
 
     // Finalize at height 2
