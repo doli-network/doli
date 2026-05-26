@@ -17,6 +17,8 @@ mod types;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_inc_i090_d1;
 
 // Re-export all public types from types.rs
 pub use types::{

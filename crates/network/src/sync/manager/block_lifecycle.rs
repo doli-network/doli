@@ -623,11 +623,7 @@ impl SyncManager {
             );
         }
         self.recovery.record_action(action);
-        let ctx_for_emit = if action != RecoveryAction::None {
-            Some(ctx)
-        } else {
-            None
-        };
+        let ctx_for_emit = Some(ctx);
         (action, ctx_for_emit)
     }
 
