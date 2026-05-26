@@ -31,7 +31,7 @@ pub fn compute_swap(
     if dy == 0 || dy >= reserve_b {
         return None;
     }
-    let reserve_a_new = reserve_a + dx; // full dx goes in (fee stays in pool)
+    let reserve_a_new = reserve_a.checked_add(dx)?; // D.2: overflow → None
     let reserve_b_new = reserve_b - dy;
     Some((dy, reserve_a_new, reserve_b_new))
 }
@@ -371,7 +371,7 @@ mod tests {
         assert!(dy2 < expected_at_original);
     }
 
-    // ========== Group 5 — Security (2 tests) ==========
+    // ========== Group 5 — Security (3 tests) ==========
 
     #[test]
     fn test_pool_invariant_tampered_rejected() {
@@ -409,6 +409,34 @@ mod tests {
             pct_x100 > 0,
             "TWAP should show some deviation from manipulation"
         );
+    }
+
+    #[test]
+    fn test_compute_swap_overflow_returns_none() {
+        // D.2: reserve_a + dx would overflow u64 — must return None, not panic.
+        //
+        // Both reserves must be large so that dy > 0 and the function actually
+        // reaches the `reserve_a + dx` line (line 34). With small reserve_b,
+        // dy == 0 and the function returns None before the overflow site.
+        //
+        // With reserve_a = reserve_b = u64::MAX - 10, dx = 100, fee_bps = 30:
+        //   dx_eff = 99, dy = 98 (price ~1:1), then reserve_a + dx overflows.
+        //   In release/opt-level>0 builds this wraps to 89 — a silent corruption
+        //   where reserve_a drops from near-max to 89.
+        let result = compute_swap(u64::MAX - 10, u64::MAX - 10, 100, 30);
+        assert!(
+            result.is_none(),
+            "compute_swap must return None on reserve_a + dx overflow, got {:?}",
+            result
+        );
+
+        // Verify happy path is unchanged: same inputs -> same output
+        let happy = compute_swap(1000, 1000, 100, 30);
+        assert!(happy.is_some());
+        let (dy, ra_new, rb_new) = happy.unwrap();
+        assert_eq!(ra_new, 1100); // 1000 + 100
+        assert!(dy > 0 && dy < 100);
+        assert!(rb_new > 900);
     }
 
     // ========== Group 6 — Output constructors (2 tests) ==========
