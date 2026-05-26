@@ -40,6 +40,11 @@ impl RpcContext {
     ///   - `limit`: u64 (capped at 10,000)
     ///   - `kind`: String — filter by event kind name
     ///   - `min_height`, `max_height`: u64 — height range filter
+    ///
+    /// When `min_height` or `max_height` is provided, events are filtered by
+    /// height range via `query_range` instead of the default time-window scan.
+    /// This restores forensic reach for historical incidents beyond the 10k-event
+    /// cap (INC-I-090 D7).
     pub async fn get_fork_diagnostic(&self, params: Value) -> Result<Value, RpcError> {
         let ledger = self
             .diagnostic_ledger
@@ -68,10 +73,22 @@ impl RpcContext {
             .map(|l| (l as usize).min(RPC_MAX_LIMIT))
             .unwrap_or(RPC_MAX_LIMIT);
 
+        // INC-I-090 D7: parse height-range filter params
+        let min_height = params.get("min_height").and_then(|v| v.as_u64());
+        let max_height = params.get("max_height").and_then(|v| v.as_u64());
+
         // Fetch events
         let events = if let Some(ref event_id) = fork_event_id {
             ledger
                 .query_causal_chain(event_id, limit)
+                .map_err(|e| RpcError::internal_error(e.to_string()))?
+        } else if min_height.is_some() || max_height.is_some() {
+            // Height-range query: use query_range for efficient prefix scan.
+            // Default min=0 and max=u64::MAX when only one bound is provided.
+            let lo = min_height.unwrap_or(0);
+            let hi = max_height.unwrap_or(u64::MAX);
+            ledger
+                .query_range(None, lo, hi, limit)
                 .map_err(|e| RpcError::internal_error(e.to_string()))?
         } else {
             ledger

@@ -25,6 +25,7 @@
 //   P10: success -- method is read-only (no state mutation)
 //   P11: success -- node_peer_id is populated from context
 //   P12: success -- first_fork_height and last_fork_height correct
+//   P13: success -- min_height/max_height filters events by height range (D7 INC-I-090)
 //
 // INPUT PARTITIONS:
 //   P1a: default params -> full bundle with schema_version=1
@@ -39,8 +40,9 @@
 //   P10a: call method, re-read ledger -> same event count
 //   P11a: peer_id set in context -> bundle.node_peer_id matches
 //   P12a: fork events at h=10,25,50 -> first=10, last=50
+//   P13a: events at h=100..190, min_height=120 max_height=160 -> only h=120,130,140,150,160
 //
-// MATRIX: 2 output paths (Ok/Err) x 12 partitions = 12 tests
+// MATRIX: 2 output paths (Ok/Err) x 13 partitions = 13 tests
 //
 // --- INC-I-087: getDiagnosticHealth live counter values ---
 //
@@ -765,4 +767,68 @@ async fn get_diagnostic_health_reports_live_counter_values_p3_heartbeat_only() {
         health["last_heartbeat_ms"], 1_716_200_000_000u64,
         "P3: last_heartbeat_ms should be Some(1716200000000) even when counters are zero"
     );
+}
+
+// ===========================================================================
+// INC-I-090 D7: min_height/max_height filter for getForkDiagnostic
+// ===========================================================================
+
+// Requirement: INC-I-090 D7 (P0 -- forensic API height filter)
+// Acceptance: When min_height=120 and max_height=160 are provided in params,
+//   only events at heights 120, 130, 140, 150, 160 are returned.
+//   Today this test FAILS because the handler ignores height params entirely
+//   and always calls query_recent(window_secs, limit).
+// Evidence: [E13] Probe 2 -- requested {min_height:284670, max_height:284685}
+//   but got heights_seen {min:274251, max:282815}.
+#[tokio::test]
+async fn test_rpc_min_max_height_filters_events_d7() {
+    let (ledger, _dir) = make_test_ledger();
+    let now = now_ms();
+
+    // Record 10 BlockApplied events at heights 100, 110, 120, ..., 190
+    // All timestamps are recent (within the last minute) so query_recent would
+    // return ALL of them -- the only way to get 5 is via height filtering.
+    for i in 0..10u64 {
+        let height = 100 + i * 10;
+        let ev = make_block_applied(
+            height,
+            now - (10 - i) * 1000,
+            "aabbccdd",
+            &format!("hash_{}", height),
+        );
+        ledger.record(&ev).unwrap();
+    }
+
+    let ctx = make_test_rpc_context(Some(ledger)).await;
+
+    let result = ctx
+        .get_fork_diagnostic(json!({
+            "min_height": 120,
+            "max_height": 160,
+            "window_secs": 3600,
+            "limit": 1000
+        }))
+        .await
+        .expect("RPC should succeed");
+
+    let events = result["events"].as_array().expect("events is array");
+
+    // O3: return -- only events in [120, 160]
+    // Expected: exactly 5 events (heights 120, 130, 140, 150, 160)
+    assert_eq!(
+        events.len(),
+        5,
+        "min_height=120, max_height=160 should return exactly 5 events, got {}",
+        events.len()
+    );
+
+    // Every returned event must have height in [120, 160]
+    for ev in events {
+        let h = ev["height"].as_u64().expect("event must have height");
+        assert!(
+            h >= 120 && h <= 160,
+            "event height {} outside requested range [120, 160]",
+            h
+        );
+    }
 }
