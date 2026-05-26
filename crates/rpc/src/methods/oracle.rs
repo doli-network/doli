@@ -53,6 +53,9 @@ use serde_json::Value;
 use crate::error::RpcError;
 
 use super::context::RpcContext;
+use super::oracle_status::{
+    build_oracle_status_response, count_distinct_attesters_in_epoch, OracleStatusInputs,
+};
 
 /// `trust_model` field value, locked verbatim per spec §1.9 + §6.
 ///
@@ -252,8 +255,142 @@ impl RpcContext {
             "attestations": attestations,
         }))
     }
+
+    /// Surface the operational state of the Phase 2.1 oracle. Spec §1.9
+    /// (M11) + §6 (centralization disclosure).
+    ///
+    /// Request: `{}` (no params).
+    ///
+    /// Response:
+    /// ```json
+    /// {
+    ///   "active":                    <bool>,
+    ///   "trust_model":               "structural-anchored",
+    ///   "structural_share":          <f64 in [0.0, 1.0]>,
+    ///   "sunset_threshold":          0.55,
+    ///   "sunset_triggered":          <bool>,
+    ///   "last_update_height":        <u64 | null>,
+    ///   "attester_count":            <u64>,
+    ///   "activation_height":         <u64>,
+    ///   "centralization_disclosure": "<verbatim spec §6 text>"
+    /// }
+    /// ```
+    ///
+    /// Field semantics:
+    ///   - `active`: `true` iff current chain has crossed
+    ///     `oracle_activation_height` AND `sunset_triggered == false`.
+    ///     Pre-activation `oracle_activation_height = u64::MAX`, so
+    ///     `current_height < u64::MAX` always → `active = false`.
+    ///     Post-sunset (`structural_share < 0.55`) also → `active = false`.
+    ///   - `structural_share`: spec §1.8 metric. 1-epoch-lagged, anti-
+    ///     dilution-filtered. Computed via M8's
+    ///     `compute_structural_share_bps`; returned here as a fraction
+    ///     in [0.0, 1.0] (bps / 10_000). When no eligible bonds exist
+    ///     (genesis or all-young producers), returns 0.0 and
+    ///     `sunset_triggered = true` — consistent with the M8 oracle
+    ///     gate treating `None` as sunset-equivalent.
+    ///   - `sunset_threshold`: hardcoded `SUNSET_THRESHOLD_BPS / 10_000`
+    ///     = 0.55. Echoed as `f64` so clients can do direct comparison
+    ///     against `structural_share`.
+    ///   - `last_update_height`: maximum `last_update_height` across all
+    ///     `OraclePrice` UTXOs in the UTXO set, or `null` if no
+    ///     OraclePrice UTXO exists yet. Phase 2.1 has at most one pair
+    ///     (DOLI/USD), but the code is pair-agnostic for forward
+    ///     compatibility.
+    ///   - `attester_count`: distinct attesters in the most-recently
+    ///     CLOSED epoch (= `current_epoch.saturating_sub(1)`). If no
+    ///     epoch has closed yet (height < blocks_per_reward_epoch),
+    ///     returns 0.
+    ///   - `activation_height`: echoes
+    ///     `NetworkParams.oracle_activation_height` (= `u64::MAX`
+    ///     pre-activation).
+    ///   - `centralization_disclosure`: verbatim from spec §6, locked
+    ///     against drift by a test asserting byte-equality against the
+    ///     spec file.
+    pub(super) async fn get_oracle_status(&self, _params: Value) -> Result<Value, RpcError> {
+        let current_height = self.chain_state.read().await.best_height;
+        let blocks_per_epoch = self.blocks_per_reward_epoch;
+        let activation_height = self.oracle_activation_height;
+
+        // Production calls always use the mainnet-derived structural set
+        // constant. Tests use `build_status_response_inner` directly to
+        // inject mock structural_hashes (real structural pubkeys are
+        // hash preimages of a one-way function and cannot be forged).
+        let structural_hashes: Vec<crypto::Hash> =
+            doli_core::consensus::STRUCTURAL_PUBKEY_HASHES_HEX
+                .iter()
+                .filter_map(|s| crypto::Hash::from_hex(s))
+                .collect();
+
+        let registered_at: std::collections::HashMap<crypto::Hash, u64> =
+            if let Some(ps) = &self.producer_set {
+                let producers = ps.read().await;
+                producers
+                    .active_producers_at_height(current_height)
+                    .iter()
+                    .map(|p| {
+                        let h = crypto::hash::hash_with_domain(
+                            crypto::ADDRESS_DOMAIN,
+                            p.public_key.as_bytes(),
+                        );
+                        (h, p.registered_at)
+                    })
+                    .collect()
+            } else {
+                std::collections::HashMap::new()
+            };
+
+        let bond_snapshot: std::collections::HashMap<crypto::Hash, u64> = self
+            .state_db
+            .as_ref()
+            .and_then(|db| db.get_epoch_bond_snapshot())
+            .map(|(snap, _epoch)| snap)
+            .unwrap_or_default();
+
+        let last_update_height: Option<u64> = {
+            let utxo_set = self.utxo_set.read().await;
+            utxo_set
+                .iter_all()
+                .into_iter()
+                .filter_map(|(_, entry)| {
+                    if entry.output.output_type == doli_core::OutputType::OraclePrice {
+                        entry.output.parse_oracle_price().map(|(_, h, _, _)| h)
+                    } else {
+                        None
+                    }
+                })
+                .max()
+        };
+
+        let current_epoch = current_height.checked_div(blocks_per_epoch).unwrap_or(0);
+        let attester_count: u64 = if current_epoch == 0 {
+            0
+        } else {
+            let closed_epoch = current_epoch - 1;
+            count_distinct_attesters_in_epoch(
+                self.block_store.as_ref(),
+                closed_epoch,
+                blocks_per_epoch,
+            )
+        };
+
+        Ok(build_oracle_status_response(OracleStatusInputs {
+            current_height,
+            activation_height,
+            structural_hashes: &structural_hashes,
+            registered_at: &registered_at,
+            bond_snapshot: &bond_snapshot,
+            blocks_per_epoch,
+            last_update_height,
+            attester_count,
+        }))
+    }
 }
 
 #[cfg(test)]
 #[path = "tests_oracle.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests_oracle_m11.rs"]
+mod tests_m11;

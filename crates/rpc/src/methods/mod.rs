@@ -29,6 +29,7 @@ mod history;
 mod lending;
 mod network;
 mod oracle;
+mod oracle_status;
 mod pool;
 mod producer;
 mod pruning;

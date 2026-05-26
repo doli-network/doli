@@ -126,7 +126,8 @@ async fn set_best_height(chain_state: &Arc<RwLock<ChainState>>, height: u64) {
     chain_state.write().await.best_height = height;
 }
 
-fn pair_id_fixture() -> Hash {
+/// `pub(super)` — shared with `tests_m11`.
+pub(super) fn pair_id_fixture() -> Hash {
     // BLAKE3("ORACLE_PAIR" || "DOLI/USD") — same shape as production
     // but value is irrelevant; tests use bit-identical pair_id throughout.
     crypto::hash::hash_with_domain(b"ORACLE_PAIR", b"DOLI/USD")
@@ -263,14 +264,18 @@ async fn m9_missing_pair_id_returns_invalid_params() {
 
 /// Extended test context with an attached StateDb (mainnet defaults).
 /// `block_store` is exposed so tests can `put_block_canonical` blocks.
-struct M10Ctx {
-    ctx: RpcContext,
-    block_store: Arc<storage::BlockStore>,
-    state_db: Arc<StateDb>,
-    _tempdirs: Vec<TempDir>,
+///
+/// `pub(super)` — sibling M11 test module (`tests_m11`, file
+/// `tests_oracle_m11.rs`) reuses this fixture via
+/// `super::tests::M10Ctx`.
+pub(super) struct M10Ctx {
+    pub ctx: RpcContext,
+    pub block_store: Arc<storage::BlockStore>,
+    pub state_db: Arc<StateDb>,
+    pub _tempdirs: Vec<TempDir>,
 }
 
-fn build_m10_ctx() -> M10Ctx {
+pub(super) fn build_m10_ctx() -> M10Ctx {
     let block_dir = TempDir::new().expect("blockstore tempdir");
     let state_dir = TempDir::new().expect("statedb tempdir");
 
@@ -307,7 +312,9 @@ fn build_m10_ctx() -> M10Ctx {
 /// (all-zero) — the RPC handler does NOT verify signatures; that is
 /// M4's job at consensus-validation time. The handler only decodes
 /// the payload and reads its fields.
-fn make_attestation_tx(
+///
+/// `pub(super)` — shared with `tests_m11`.
+pub(super) fn make_attestation_tx(
     signer_pubkey_bytes: [u8; 32],
     pair_id: crypto::Hash,
     epoch_number: u64,
@@ -343,7 +350,8 @@ fn make_test_header(slot: u32) -> BlockHeader {
     }
 }
 
-fn insert_attestation_block(
+/// `pub(super)` — shared with `tests_m11`.
+pub(super) fn insert_attestation_block(
     block_store: &Arc<storage::BlockStore>,
     height: u64,
     txs: Vec<Transaction>,

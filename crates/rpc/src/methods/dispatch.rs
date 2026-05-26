@@ -59,6 +59,7 @@ impl RpcContext {
             // (TxType=16). Frozen behind oracle_activation_height = u64::MAX.
             "getOraclePrice" => self.get_oracle_price(request.params).await,
             "getOracleAttestations" => self.get_oracle_attestations(request.params).await,
+            "getOracleStatus" => self.get_oracle_status(request.params).await,
             // Storage management
             "pruneBlocks" => self.prune_blocks(Some(request.params)).await,
             "getStorageInfo" => self.get_storage_info().await,

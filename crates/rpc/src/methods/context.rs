@@ -96,6 +96,11 @@ pub struct RpcContext {
     pub full_bitfield_decode_height: u64,
     /// Rewards epoch list fix activation height (network-specific)
     pub rewards_epoch_list_fix_height: u64,
+    /// Phase 2.1 oracle activation height (network-specific).
+    /// `u64::MAX` in every NetworkParams variant pre-activation —
+    /// `getOracleStatus` echoes this back to clients so they can detect
+    /// pre-activation chain state via `active: false`.
+    pub oracle_activation_height: u64,
     /// Diagnostic ledger for fork observability (M3).
     pub diagnostic_ledger: Option<Arc<DiagnosticLedger>>,
     /// Live writer stats shared with the diagnostic writer task (INC-I-087).
@@ -146,6 +151,7 @@ impl RpcContext {
             vesting_quarter_slots: net_params.vesting_quarter_slots,
             full_bitfield_decode_height: net_params.full_bitfield_decode_height,
             rewards_epoch_list_fix_height: net_params.rewards_epoch_list_fix_height,
+            oracle_activation_height: net_params.oracle_activation_height,
             backfill_state: Arc::new(BackfillState {
                 running: AtomicBool::new(false),
                 imported: AtomicU64::new(0),
@@ -208,6 +214,10 @@ impl RpcContext {
                 vesting_quarter_slots: doli_core::consensus::VESTING_QUARTER_SLOTS as u64,
                 full_bitfield_decode_height: doli_core::consensus::FULL_BITFIELD_DECODE_HEIGHT,
                 rewards_epoch_list_fix_height: doli_core::consensus::REWARDS_EPOCH_LIST_FIX_HEIGHT,
+                // Phase 2.1 oracle: u64::MAX = pre-activation (frozen).
+                // The deprecated mainnet-defaults constructor mirrors
+                // NetworkParams::mainnet_defaults() which sets this to MAX.
+                oracle_activation_height: u64::MAX,
                 backfill_state: Arc::new(BackfillState {
                     running: AtomicBool::new(false),
                     imported: AtomicU64::new(0),
