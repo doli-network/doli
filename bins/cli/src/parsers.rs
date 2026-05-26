@@ -283,14 +283,12 @@ fn parse_output_type_name(name: &str) -> Result<doli_core::OutputType> {
         "bridgehtlc" => Ok(doli_core::OutputType::BridgeHTLC),
         "pool" => Ok(doli_core::OutputType::Pool),
         "lpshare" => Ok(doli_core::OutputType::LPShare),
-        "collateral" => Ok(doli_core::OutputType::Collateral),
-        "lendingdeposit" => Ok(doli_core::OutputType::LendingDeposit),
         "zkrollup" => Ok(doli_core::OutputType::ZKRollup),
         "encryptedcontent" => Ok(doli_core::OutputType::EncryptedContent),
         _ => anyhow::bail!(
             "Unknown output type '{}'. Valid: normal, bond, multisig, hashlock, htlc, \
-             vesting, nft, fungibleasset, bridgehtlc, pool, lpshare, collateral, \
-             lendingdeposit, zkrollup, encryptedcontent",
+             vesting, nft, fungibleasset, bridgehtlc, pool, lpshare, \
+             zkrollup, encryptedcontent",
             name
         ),
     }

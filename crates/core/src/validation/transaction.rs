@@ -89,26 +89,22 @@ pub fn validate_transaction(
 
     // 3.5 DeFi safety gates (split per HC-6 / INC-I-075).
     //
-    // The 11 DeFi tx types are gated by TWO independent activation heights:
+    // The DeFi tx types are gated by TWO independent activation heights:
     //
-    //   • AMM tx types (CreatePool, AddLiquidity, RemoveLiquidity, Swap)
+    //   - AMM tx types (CreatePool, AddLiquidity, RemoveLiquidity, Swap)
     //     route through `amm_activation_height` and reject with
-    //     `AmmNotActivated` (`[ERRTX-AMM001]`). AMM Foundations M1
-    //     (2026-05-25) introduced this gate.
-    //   • Lending + NFT-frac tx types (CreateLoan, RepayLoan,
-    //     LiquidateLoan, LendingDeposit, LendingWithdraw, FractionalizeNft,
-    //     RedeemNft) continue to route through `defi_activation_height`
-    //     and reject with `DefiNotActivated`. INC-I-088 Phase 0.
+    //     `AmmNotActivated` (`[ERRTX-AMM001]`). AMM Foundations M1.
+    //   - NFT-frac tx types (FractionalizeNft, RedeemNft) continue to
+    //     route through `defi_activation_height` and reject with
+    //     `DefiNotActivated`. INC-I-088 Phase 0.
+    //   - Lending tx types (24-28) were TOMBSTONED in B.1 (2026-05-26).
+    //     Their discriminants return None from from_u32, so they can
+    //     never reach this gate. See types.rs tombstone comment.
     //
     // The two heights are INDEPENDENT: setting one to 0 must NOT open the
-    // other (HC-6 per-feature activation height discipline). The order of
-    // the two `if` blocks is irrelevant since each `matches!` is disjoint.
-    // Comparison is strict `<` — at `current_height == activation_height`
+    // other (HC-6 per-feature activation height discipline).
+    // Comparison is strict `<` -- at `current_height == activation_height`
     // the gate is open.
-    //
-    // C7 (INC-I-075 3-question checklist) for both gates: Q1=YES
-    // (user-submittable), Q2=NO (validator-only), Q3=NO (accept→reject)
-    // → activation height REQUIRED. Both gates compliant.
     if matches!(
         tx.tx_type,
         TxType::CreatePool | TxType::AddLiquidity | TxType::RemoveLiquidity | TxType::Swap
@@ -120,16 +116,8 @@ pub fn validate_transaction(
             current_height: ctx.current_height,
         });
     }
-    if matches!(
-        tx.tx_type,
-        TxType::CreateLoan
-            | TxType::RepayLoan
-            | TxType::LiquidateLoan
-            | TxType::LendingDeposit
-            | TxType::LendingWithdraw
-            | TxType::FractionalizeNft
-            | TxType::RedeemNft
-    ) && ctx.current_height < ctx.defi_activation_height
+    if matches!(tx.tx_type, TxType::FractionalizeNft | TxType::RedeemNft)
+        && ctx.current_height < ctx.defi_activation_height
     {
         return Err(ValidationError::DefiNotActivated {
             tx_type: tx.tx_type as u32,
@@ -296,21 +284,6 @@ pub fn validate_transaction(
         TxType::RemoveLiquidity => {
             super::pool::validate_remove_liquidity(tx)?;
         }
-        TxType::CreateLoan => {
-            super::lending::validate_create_loan(tx)?;
-        }
-        TxType::RepayLoan => {
-            super::lending::validate_repay_loan(tx)?;
-        }
-        TxType::LiquidateLoan => {
-            super::lending::validate_liquidate_loan(tx)?;
-        }
-        TxType::LendingDeposit => {
-            super::lending::validate_lending_deposit(tx)?;
-        }
-        TxType::LendingWithdraw => {
-            super::lending::validate_lending_withdraw(tx)?;
-        }
         TxType::FractionalizeNft => {
             super::fractionalize::validate_fractionalize_nft(tx)?;
         }
@@ -380,7 +353,7 @@ pub(super) fn validate_outputs(
         // Amount must be positive.
         // Pool outputs exempt: reserves tracked in extra_data.
         // ZKRollup outputs exempt: represent committed state, not currency.
-        // Non-native types (FungibleAsset, LPShare, Collateral) carry token
+        // Non-native types (FungibleAsset, LPShare) carry token
         // units / LP shares — zero is also prohibited for them.
         if output.amount == 0
             && output.output_type != OutputType::Pool
@@ -671,38 +644,6 @@ pub(super) fn validate_outputs(
                         "[ERRTX027] LPShare output {} has invalid metadata ({} bytes extra_data)",
                         i,
                         output.extra_data.len()
-                    )));
-                }
-            }
-            OutputType::Collateral => {
-                if output.extra_data.len() < crate::transaction::COLLATERAL_METADATA_SIZE {
-                    return Err(ValidationError::InvalidTransaction(format!(
-                        "[ERRTX028] Collateral output {} has invalid extra_data size: {} < {}",
-                        i,
-                        output.extra_data.len(),
-                        crate::transaction::COLLATERAL_METADATA_SIZE
-                    )));
-                }
-                if output.collateral_metadata().is_none() {
-                    return Err(ValidationError::InvalidTransaction(format!(
-                        "[ERRTX029] Collateral output {} has invalid or undecodable metadata ({} bytes extra_data)",
-                        i, output.extra_data.len()
-                    )));
-                }
-            }
-            OutputType::LendingDeposit => {
-                if output.extra_data.len() < crate::transaction::LENDING_DEPOSIT_METADATA_SIZE {
-                    return Err(ValidationError::InvalidTransaction(format!(
-                        "[ERRTX030] LendingDeposit output {} has invalid extra_data size: {} < {}",
-                        i,
-                        output.extra_data.len(),
-                        crate::transaction::LENDING_DEPOSIT_METADATA_SIZE
-                    )));
-                }
-                if output.lending_deposit_metadata().is_none() {
-                    return Err(ValidationError::InvalidTransaction(format!(
-                        "[ERRTX031] LendingDeposit output {} has invalid or undecodable metadata ({} bytes extra_data)",
-                        i, output.extra_data.len()
                     )));
                 }
             }

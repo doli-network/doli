@@ -87,16 +87,25 @@ pub enum TxType {
     RemoveLiquidity = 21,
     /// Swap assets through a pool
     Swap = 22,
-    /// Create a collateralized loan
-    CreateLoan = 24,
-    /// Repay a loan and recover collateral
-    RepayLoan = 25,
-    /// Liquidate an undercollateralized loan
-    LiquidateLoan = 26,
-    /// Deposit DOLI into lending pool
-    LendingDeposit = 27,
-    /// Withdraw DOLI + interest from lending pool
-    LendingWithdraw = 28,
+    // ─── TOMBSTONED: discriminants 24-28 (native lending subsystem) ───
+    // B.1 DeFi L1 Foundations Architecture (2026-05-26).
+    // These discriminants are PERMANENTLY RETIRED. DO NOT REUSE.
+    //
+    //   24 = CreateLoan      (tombstoned)
+    //   25 = RepayLoan       (tombstoned)
+    //   26 = LiquidateLoan   (tombstoned)
+    //   27 = LendingDeposit  (tombstoned)
+    //   28 = LendingWithdraw (tombstoned)
+    //
+    // The native lending subsystem was removed because:
+    // - defi_activation_height = u64::MAX since inception (never activated)
+    // - No lending UTXOs exist on any chain (devnet/testnet/mainnet)
+    // - Bilateral lending is handled by the escrow-loan covenant template
+    //   (AmountGuard + RecipientGuard + Timelock on standard outputs)
+    // - Pooled lending belongs on L2 (Aave-on-L1 anti-pattern)
+    //
+    // See specs/defi-l1-foundations-architecture.md B.1 for full rationale.
+    // ──────────────────────────────────────────────────────────────────
     /// Lock an NFT and mint fungible fraction tokens
     FractionalizeNft = 29,
     /// Burn all fraction tokens and unlock the original NFT
@@ -144,11 +153,9 @@ impl TxType {
             20 => Some(Self::AddLiquidity),
             21 => Some(Self::RemoveLiquidity),
             22 => Some(Self::Swap),
-            24 => Some(Self::CreateLoan),
-            25 => Some(Self::RepayLoan),
-            26 => Some(Self::LiquidateLoan),
-            27 => Some(Self::LendingDeposit),
-            28 => Some(Self::LendingWithdraw),
+            // ── TOMBSTONED (B.1): DO NOT REUSE discriminants 24-28 ──
+            // Native lending removed 2026-05-26. See comment block above.
+            24..=28 => None,
             29 => Some(Self::FractionalizeNft),
             30 => Some(Self::RedeemNft),
             31 => Some(Self::ZKSettle),
@@ -183,10 +190,15 @@ pub enum OutputType {
     Pool = 9,
     /// Liquidity provider share (transferable)
     LPShare = 10,
-    /// Lending collateral (locked loan collateral)
-    Collateral = 11,
-    /// Lending pool deposit receipt (depositor provides DOLI, earns interest)
-    LendingDeposit = 12,
+    // ─── TOMBSTONED: discriminants 11-12 (native lending outputs) ───
+    // B.1 DeFi L1 Foundations Architecture (2026-05-26).
+    // These discriminants are PERMANENTLY RETIRED. DO NOT REUSE.
+    //
+    //   11 = Collateral      (tombstoned — was locked loan collateral)
+    //   12 = LendingDeposit  (tombstoned — was lending pool deposit receipt)
+    //
+    // See specs/defi-l1-foundations-architecture.md B.1 for full rationale.
+    // ──────────────────────────────────────────────────────────────────
     /// L2 rollup committed state (verifying_key + state_root in extra_data).
     ///
     /// Holds `amount = 0`. Consumable only by a `ZKSettle` tx with a valid
@@ -253,8 +265,9 @@ impl OutputType {
             8 => Some(Self::BridgeHTLC),
             9 => Some(Self::Pool),
             10 => Some(Self::LPShare),
-            11 => Some(Self::Collateral),
-            12 => Some(Self::LendingDeposit),
+            // ── TOMBSTONED (B.1): DO NOT REUSE discriminants 11-12 ──
+            // Native lending outputs removed 2026-05-26.
+            11 | 12 => None,
             13 => Some(Self::ZKRollup),
             14 => Some(Self::EncryptedContent),
             15 => Some(Self::OraclePrice),
@@ -277,14 +290,6 @@ impl OutputType {
     /// causing verify_input_conditions to try condition decoding on non-condition
     /// bytes, making ALL EncryptedContent UTXOs permanently unspendable.)
     ///
-    /// INC-I-088 Phase 0: `Collateral` IS listed here intentionally — to FREEZE
-    /// existing Collateral UTXOs. Collateral `extra_data` is `CollateralMetadata`
-    /// (not condition-prefixed); routing through the condition path means
-    /// `Condition::decode_prefix` rejects the bytes and the spend returns
-    /// `[ERRTX038]`. Combined with the DeFi activation gate (which blocks NEW
-    /// `CreateLoan` from minting fresh Collateral), this fully freezes the
-    /// lending subsystem until it is properly fixed and un-gated.
-    ///
     /// `LPShare` uses condition-prefixed layout:
     /// `[condition_bytes][1B version][32B pool_id]`. Default constructor
     /// attaches `Condition::Signature(owner)` so existing call sites stay
@@ -300,7 +305,6 @@ impl OutputType {
                 | Self::NFT
                 | Self::FungibleAsset
                 | Self::BridgeHTLC
-                | Self::Collateral
                 | Self::LPShare
         )
     }
@@ -321,7 +325,6 @@ impl OutputType {
                 | Self::Vesting
                 | Self::BridgeHTLC
                 | Self::NFT
-                | Self::LendingDeposit
                 | Self::EncryptedContent
         )
     }

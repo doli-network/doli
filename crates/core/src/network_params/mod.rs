@@ -337,36 +337,20 @@ pub struct NetworkParams {
     /// INC-I-078 devnet default).
     pub addbond_cap_enforcement_activation_height: u64,
 
-    /// INC-I-088 Phase 0: Height at which the 11 DeFi tx types
-    /// (CreatePool, AddLiquidity, RemoveLiquidity, Swap, CreateLoan,
-    /// RepayLoan, LiquidateLoan, LendingDeposit, LendingWithdraw,
-    /// FractionalizeNft, RedeemNft) become valid for inclusion.
+    /// INC-I-088 Phase 0 / B.1 update: Height at which the remaining
+    /// non-AMM DeFi tx types (FractionalizeNft, RedeemNft) become valid.
     ///
-    /// Pre-activation: every node REJECTS these txs at validation time with
-    /// `ValidationError::DefiNotActivated` (error code `DEFI_NOT_ACTIVATED`,
-    /// REQ-AGENTIC-ERRORS compliant). Mempool symmetry: pre-activation
-    /// admission also rejects, so upgraded producers never include a DeFi
-    /// tx in their blocks during a rolling deploy.
+    /// The 5 lending types (CreateLoan 24, RepayLoan 25, LiquidateLoan 26,
+    /// LendingDeposit 27, LendingWithdraw 28) and 2 lending output types
+    /// (Collateral 11, LendingDeposit 12) were TOMBSTONED in B.1
+    /// (DeFi L1 Foundations Architecture, 2026-05-26). Their discriminants
+    /// return None from from_u32/from_u8 and will never be reused.
+    /// The 4 AMM types were decoupled to `amm_activation_height` (M1).
     ///
-    /// Post-activation: the per-type structural validator runs normally.
-    /// The DeFi subsystems themselves have known semantic gaps
-    /// (`LiquidateLoan` has no oracle, `validate_create_loan` does not pin
-    /// `Collateral.pubkey_hash` to the derived loan address) — un-gating is
-    /// a separate, post-fix decision and MUST NOT be done by simply
-    /// lowering this height.
+    /// This field is kept for the 2 remaining NFT-frac types and will be
+    /// repurposed or removed when B.2 (NFT-frac tombstoning) ships.
     ///
-    /// Companion control: `OutputType::Collateral` is in
-    /// `is_conditioned()`, which freezes any pre-existing Collateral UTXO
-    /// regardless of the height of the spending tx. The two controls
-    /// together fully isolate the lending subsystem.
-    ///
-    /// Three-question gate verdict (INC-I-075): Q1=YES (DeFi txs are
-    /// user-submittable), Q2=NO (validator rejection only), Q3=NO
-    /// (accept-then-reject change) → activation height REQUIRED.
-    ///
-    /// Defaults: mainnet/testnet/devnet all `u64::MAX` (disabled). Operator
-    /// pins a concrete future height in a separate commit, and only after
-    /// the lending/AMM gaps are closed.
+    /// Defaults: mainnet/testnet/devnet all `u64::MAX` (disabled).
     pub defi_activation_height: u64,
 
     /// AMM Foundations M1 (2026-05-25): height at which the 4 AMM tx types

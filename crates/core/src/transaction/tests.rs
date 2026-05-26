@@ -72,11 +72,11 @@ fn test_tx_type_conversion() {
     assert_eq!(TxType::from_u32(21), Some(TxType::RemoveLiquidity));
     assert_eq!(TxType::from_u32(22), Some(TxType::Swap));
     assert_eq!(TxType::from_u32(23), None);
-    assert_eq!(TxType::from_u32(24), Some(TxType::CreateLoan));
-    assert_eq!(TxType::from_u32(25), Some(TxType::RepayLoan));
-    assert_eq!(TxType::from_u32(26), Some(TxType::LiquidateLoan));
-    assert_eq!(TxType::from_u32(27), Some(TxType::LendingDeposit));
-    assert_eq!(TxType::from_u32(28), Some(TxType::LendingWithdraw));
+    assert_eq!(TxType::from_u32(24), None); // tombstoned (B.1)
+    assert_eq!(TxType::from_u32(25), None); // tombstoned (B.1)
+    assert_eq!(TxType::from_u32(26), None); // tombstoned (B.1)
+    assert_eq!(TxType::from_u32(27), None); // tombstoned (B.1)
+    assert_eq!(TxType::from_u32(28), None); // tombstoned (B.1)
     assert_eq!(TxType::from_u32(29), Some(TxType::FractionalizeNft));
     assert_eq!(TxType::from_u32(30), Some(TxType::RedeemNft));
     assert_eq!(TxType::from_u32(31), Some(TxType::ZKSettle));
@@ -97,8 +97,8 @@ fn test_output_type_conversion() {
     assert_eq!(OutputType::from_u8(8), Some(OutputType::BridgeHTLC));
     assert_eq!(OutputType::from_u8(9), Some(OutputType::Pool));
     assert_eq!(OutputType::from_u8(10), Some(OutputType::LPShare));
-    assert_eq!(OutputType::from_u8(11), Some(OutputType::Collateral));
-    assert_eq!(OutputType::from_u8(12), Some(OutputType::LendingDeposit));
+    assert_eq!(OutputType::from_u8(11), None); // tombstoned (B.1)
+    assert_eq!(OutputType::from_u8(12), None); // tombstoned (B.1)
     assert_eq!(OutputType::from_u8(13), Some(OutputType::ZKRollup));
     assert_eq!(OutputType::from_u8(14), Some(OutputType::EncryptedContent));
     assert_eq!(OutputType::from_u8(15), Some(OutputType::OraclePrice));
@@ -660,11 +660,11 @@ fn test_tx_type_from_u32_protocol_activation() {
     assert_eq!(TxType::from_u32(21), Some(TxType::RemoveLiquidity));
     assert_eq!(TxType::from_u32(22), Some(TxType::Swap));
     assert_eq!(TxType::from_u32(23), None);
-    assert_eq!(TxType::from_u32(24), Some(TxType::CreateLoan));
-    assert_eq!(TxType::from_u32(25), Some(TxType::RepayLoan));
-    assert_eq!(TxType::from_u32(26), Some(TxType::LiquidateLoan));
-    assert_eq!(TxType::from_u32(27), Some(TxType::LendingDeposit));
-    assert_eq!(TxType::from_u32(28), Some(TxType::LendingWithdraw));
+    assert_eq!(TxType::from_u32(24), None); // tombstoned (B.1)
+    assert_eq!(TxType::from_u32(25), None); // tombstoned (B.1)
+    assert_eq!(TxType::from_u32(26), None); // tombstoned (B.1)
+    assert_eq!(TxType::from_u32(27), None); // tombstoned (B.1)
+    assert_eq!(TxType::from_u32(28), None); // tombstoned (B.1)
     assert_eq!(TxType::from_u32(29), Some(TxType::FractionalizeNft));
     assert_eq!(TxType::from_u32(30), Some(TxType::RedeemNft));
     assert_eq!(TxType::from_u32(31), Some(TxType::ZKSettle));

@@ -51,8 +51,6 @@
 //! | `getPoolList` | List all AMM pools |
 //! | `getPoolPrice` | Get pool spot price and TWAP |
 //! | `getSwapQuote` | Simulate a swap |
-//! | `getLoanInfo` | Get loan details |
-//! | `getLoanList` | List active loans |
 //! | `pauseProduction` | Pause block production (guardian) |
 //! | `resumeProduction` | Resume block production (guardian) |
 //! | `createCheckpoint` | Create RocksDB checkpoint (guardian) |

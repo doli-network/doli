@@ -118,8 +118,6 @@ fn output_type_to_name(ot: OutputType) -> &'static str {
         OutputType::BridgeHTLC => "bridgehtlc",
         OutputType::Pool => "pool",
         OutputType::LPShare => "lpshare",
-        OutputType::Collateral => "collateral",
-        OutputType::LendingDeposit => "lendingdeposit",
         OutputType::ZKRollup => "zkrollup",
         OutputType::EncryptedContent => "encryptedcontent",
         OutputType::OraclePrice => "oracleprice",

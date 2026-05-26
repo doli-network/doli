@@ -696,7 +696,7 @@ impl Transaction {
 
     /// Sum of native DOLI across all outputs.
     ///
-    /// Non-native output types (FungibleAsset, LPShare, Pool, Collateral)
+    /// Non-native output types (FungibleAsset, LPShare, Pool)
     /// store token units / LP shares / zero in `amount` and are excluded.
     pub fn total_output(&self) -> Amount {
         self.outputs

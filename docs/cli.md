@@ -338,7 +338,7 @@ doli send doli1examp... 1000 --condition \
 
 **`output_type_guard` accepted type names (all 15 OutputType variants):**
 
-`normal`, `bond`, `multisig`, `hashlock`, `htlc`, `vesting`, `nft`, `fungibleasset`, `bridgehtlc`, `pool`, `lpshare`, `collateral`, `lendingdeposit`, `zkrollup`, `encryptedcontent`
+`normal`, `bond`, `multisig`, `hashlock`, `htlc`, `vesting`, `nft`, `fungibleasset`, `bridgehtlc`, `pool`, `lpshare`, `zkrollup`, `encryptedcontent`
 
 Type names are case-insensitive.
 
@@ -376,6 +376,8 @@ doli send doli1examp... 10 --yes
 WARNING: Guard conditions are not yet activated on mainnet (guards_activation_height = MAX).
 This transaction WILL be rejected by mainnet nodes. Use --network devnet or --network testnet.
 ```
+
+**Display caveat (explorers, wallets, RPC):** A UTXO locked with guard conditions (`amount_guard`, `output_type_guard`, `recipient_guard`) inside an `and(...)` or `or(...)` composition may be displayed as `Vesting`, `HTLC`, or `Multisig` in explorers, wallets, and RPC responses. This is a display-side categorization quirk in `condition_to_output_type` (`bins/cli/src/parsers.rs:317`) — the `OutputType` tag is a lossy label, not the source of truth. Validation reads the encoded `extra_data` and enforces the actual guard conditions correctly; funds are safe. A proper fix requires a new `OutputType::Guard` variant, which is a consensus change deferred to a future workflow.
 
 **WHITEPAPER Reference:** Section 2 (Transactions) - Transactions require valid inputs, signatures, and positive amounts.
 
@@ -420,7 +422,7 @@ Protocol-internal types are rejected with a specific error:
 Error: Output type 'bond' cannot be used in spend transactions (protocol-internal)
 ```
 
-The rejected types are: `bond`, `bridgehtlc`, `pool`, `lpshare`, `collateral`, `lendingdeposit`, `zkrollup`, `encryptedcontent`, `fungibleasset`.
+The rejected types are: `bond`, `bridgehtlc`, `pool`, `lpshare`, `zkrollup`, `encryptedcontent`, `fungibleasset`.
 
 **Fee overpayment warning:** When using `--output`, the CLI warns if the computed fee exceeds `max(1% of input value, 10000 units)`. This typically means you forgot a change output. The warning prompts for confirmation; pass `--yes` to bypass.
 
@@ -1473,96 +1475,6 @@ doli pool info <POOL_ID>
 
 Arguments:
   <POOL_ID>    Pool ID (hex)
-```
-
----
-
-## 15. Lending Operations
-
-### 15.1. Deposit
-
-Deposit DOLI into a lending pool to earn interest.
-
-```bash
-doli loan deposit --pool <POOL_ID> --amount <AMOUNT> [--yes]
-```
-
----
-
-### 15.2. Withdraw
-
-Withdraw DOLI + earned interest from a lending pool.
-
-```bash
-doli loan withdraw <DEPOSIT_UTXO> [--yes]
-
-Arguments:
-  <DEPOSIT_UTXO>    LendingDeposit UTXO: txhash:output_index
-```
-
----
-
-### 15.3. Create Loan
-
-Create a collateralized loan (borrow DOLI against tokens).
-
-```bash
-doli loan create [OPTIONS]
-
-Options:
-      --pool <POOL_ID>            Lending pool ID (hex)
-      --collateral <AMOUNT>       Collateral amount (token units)
-      --borrow <AMOUNT>           Amount of DOLI to borrow
-      --interest-rate <BPS>       Interest rate in basis points (default: 500 = 5%)
-      --yes                       Skip confirmation
-```
-
----
-
-### 15.4. Repay Loan
-
-Repay a loan and recover collateral.
-
-```bash
-doli loan repay <LOAN_UTXO> [--yes]
-
-Arguments:
-  <LOAN_UTXO>    Collateral UTXO: txhash:output_index
-```
-
----
-
-### 15.5. Liquidate Loan
-
-Liquidate an undercollateralized loan.
-
-```bash
-doli loan liquidate <LOAN_UTXO> [--yes]
-
-Arguments:
-  <LOAN_UTXO>    Collateral UTXO: txhash:output_index
-```
-
----
-
-### 15.6. List Loans
-
-```bash
-doli loan list [OPTIONS]
-
-Options:
-      --borrower <ADDRESS>    Filter by borrower address (hex)
-```
-
----
-
-### 15.7. Loan Info
-
-```bash
-doli loan info <LOAN_UTXO>
-
-Arguments:
-  <LOAN_UTXO>    Collateral UTXO: txhash:output_index
 ```
 
 ---

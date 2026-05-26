@@ -880,8 +880,6 @@ const REJECTED_SPEND_TYPES: &[&str] = &[
     "bridgehtlc",
     "pool",
     "lpshare",
-    "collateral",
-    "lendingdeposit",
     "zkrollup",
     "encryptedcontent",
     "fungibleasset",

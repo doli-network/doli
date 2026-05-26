@@ -18,7 +18,6 @@ mod cmd_forks_replay;
 mod cmd_governance;
 mod cmd_guardian;
 mod cmd_init;
-mod cmd_loan;
 mod cmd_nft;
 mod cmd_pool;
 mod cmd_producer;
@@ -228,9 +227,6 @@ async fn main() -> Result<()> {
         }
         Commands::Pool { command } => {
             cmd_pool::cmd_pool(&wallet, &rpc_endpoint, command).await?;
-        }
-        Commands::Loan { command } => {
-            cmd_loan::cmd_loan(&wallet, &rpc_endpoint, command).await?;
         }
         Commands::Channel { command } => {
             cmd_channel::cmd_channel(&wallet, &rpc_endpoint, &cli.network, command).await?;

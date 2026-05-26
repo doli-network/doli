@@ -258,7 +258,7 @@ impl RocksDbUtxoStore {
 
     /// Get total native DOLI value in the UTXO set.
     ///
-    /// Non-native output types (FungibleAsset, LPShare, Pool, Collateral) are
+    /// Non-native output types (FungibleAsset, LPShare, Pool) are
     /// excluded — their `amount` field holds token units, not DOLI.
     pub fn total_value(&self) -> Amount {
         let cf = self.db.cf_handle(CF_UTXO).unwrap();
@@ -457,26 +457,6 @@ impl RocksDbUtxoStore {
         {
             if let Ok(entry) = bincode::deserialize::<UtxoEntry>(&value) {
                 if entry.output.output_type == doli_core::OutputType::Pool {
-                    if let Some(outpoint) = Outpoint::from_bytes(&key) {
-                        results.push((outpoint, entry));
-                    }
-                }
-            }
-        }
-        results
-    }
-
-    /// Get all Collateral UTXOs.
-    pub fn get_all_collateral(&self) -> Vec<(Outpoint, UtxoEntry)> {
-        let cf = self.db.cf_handle(CF_UTXO).unwrap();
-        let mut results = Vec::new();
-        for (key, value) in self
-            .db
-            .iterator_cf(cf, rocksdb::IteratorMode::Start)
-            .flatten()
-        {
-            if let Ok(entry) = bincode::deserialize::<UtxoEntry>(&value) {
-                if entry.output.output_type == doli_core::OutputType::Collateral {
                     if let Some(outpoint) = Outpoint::from_bytes(&key) {
                         results.push((outpoint, entry));
                     }

@@ -216,11 +216,6 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
                 | TxType::Swap
                 | TxType::AddLiquidity
                 | TxType::RemoveLiquidity
-                | TxType::CreateLoan
-                | TxType::RepayLoan
-                | TxType::LiquidateLoan
-                | TxType::LendingDeposit
-                | TxType::LendingWithdraw
                 | TxType::MintAsset
                 | TxType::BurnAsset
         );
@@ -986,26 +981,6 @@ fn verify_input_conditions(
     current_height: crate::types::BlockHeight,
     sig_verification_height: u64,
 ) -> Result<(), ValidationError> {
-    // INC-I-088 Phase 0: hard-freeze Collateral UTXOs.
-    //
-    // `OutputType::Collateral` is listed in `is_conditioned()` to document
-    // intent, but routing through `Condition::decode_prefix(extra_data)` is
-    // only a PROBABILISTIC freeze: `CollateralMetadata` bytes occasionally
-    // parse as a satisfiable condition (e.g. when byte 1 = 0 → TAG_SIGNATURE
-    // followed by 32 bytes that some future attacker could match). A
-    // deterministic freeze is required so existing Collateral UTXOs (if any)
-    // are unspendable until the lending subsystem is properly fixed and
-    // un-gated. Single stable error code: `[ERRTX-DEFI001]`. Companion
-    // control: the DeFi activation gate in `validate_transaction` blocks
-    // NEW `CreateLoan` from minting fresh Collateral.
-    if utxo.output.output_type == OutputType::Collateral {
-        return Err(ValidationError::InvalidTransaction(format!(
-            "[ERRTX-DEFI001] input {} references frozen Collateral UTXO \
-             (lending subsystem disabled; INC-I-088 Phase 0)",
-            input_index
-        )));
-    }
-
     if utxo.output.output_type.is_conditioned() {
         // ---- Conditioned output: evaluate condition tree ----
         let condition = crate::conditions::Condition::decode_prefix(&utxo.output.extra_data)

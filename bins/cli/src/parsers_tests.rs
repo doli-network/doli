@@ -318,8 +318,6 @@ fn output_type_guard_all_15_variants() {
         ("bridgehtlc", doli_core::OutputType::BridgeHTLC),
         ("pool", doli_core::OutputType::Pool),
         ("lpshare", doli_core::OutputType::LPShare),
-        ("collateral", doli_core::OutputType::Collateral),
-        ("lendingdeposit", doli_core::OutputType::LendingDeposit),
         ("zkrollup", doli_core::OutputType::ZKRollup),
         ("encryptedcontent", doli_core::OutputType::EncryptedContent),
     ];

@@ -45,8 +45,6 @@ This document describes the DOLI node JSON-RPC API.
 | **Pool** | `getPoolList` | Implemented |
 | **Pool** | `getPoolPrice` | Implemented |
 | **Pool** | `getSwapQuote` | Implemented |
-| **Lending** | `getLoanInfo` | Implemented |
-| **Lending** | `getLoanList` | Implemented |
 | **Guardian** | `pauseProduction` | Implemented |
 | **Guardian** | `resumeProduction` | Implemented |
 | **Guardian** | `createCheckpoint` | Implemented |
@@ -283,11 +281,6 @@ Returns transaction by its hash. Checks the mempool first, then looks up confirm
 | add_liquidity (20) | Add liquidity to AMM pool |
 | remove_liquidity (21) | Remove liquidity from AMM pool |
 | swap (22) | Swap assets through AMM pool |
-| create_loan (24) | Create collateralized loan |
-| repay_loan (25) | Repay loan and recover collateral |
-| liquidate_loan (26) | Liquidate undercollateralized loan |
-| lending_deposit (27) | Deposit DOLI into lending pool |
-| lending_withdraw (28) | Withdraw DOLI + interest from lending pool |
 
 **Example:**
 ```bash
@@ -444,8 +437,6 @@ Returns unspent transaction outputs for an address.
 | bridgeHtlc | Cross-chain bridge HTLC |
 | pool | AMM pool state output |
 | lpShare | Liquidity provider share |
-| collateral | Lending collateral |
-| lendingDeposit | Lending pool deposit |
 
 **Example:**
 ```bash
@@ -1936,109 +1927,6 @@ Simulates a swap without creating a transaction. Returns expected output amount,
 curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getSwapQuote","params":{"poolId":"abc123...","amountIn":1000000,"direction":"a2b"},"id":1}'
-```
-
----
-
-## 20. Lending Methods
-
-### getLoanInfo
-
-Returns detailed information about a loan identified by its Collateral UTXO.
-
-**Parameters:**
-| Name | Type | Description |
-|------|------|-------------|
-| txHash | string | Collateral UTXO transaction hash (hex) |
-| outputIndex | integer | Collateral UTXO output index |
-
-**Response:**
-```json
-{
-    "outpoint": {
-        "txHash": "abc123...",
-        "outputIndex": 0
-    },
-    "poolId": "abc123...",
-    "borrowerHash": "abc123...",
-    "collateralAmount": 100000000,
-    "collateralAssetId": "abc123...",
-    "principal": 50000000,
-    "interestRateBps": 500,
-    "creationSlot": 40000,
-    "liquidationRatioBps": 15000,
-    "accruedInterest": 125000,
-    "totalDebt": 50125000,
-    "elapsedSlots": 1000,
-    "ltvBps": 5012,
-    "liquidatable": false
-}
-```
-
-**Fields:**
-| Field | Description |
-|-------|-------------|
-| outpoint | Collateral UTXO outpoint (txHash + outputIndex) |
-| poolId | Lending pool ID (hex) |
-| borrowerHash | Borrower's pubkey hash (hex) |
-| collateralAmount | Collateral amount in base units |
-| collateralAssetId | Collateral asset ID (hex) |
-| principal | Original borrowed amount |
-| interestRateBps | Annual interest rate in basis points (500 = 5%) |
-| creationSlot | Slot when the loan was created |
-| liquidationRatioBps | LTV ratio at which liquidation is allowed (15000 = 150%) |
-| accruedInterest | Interest accrued since creation |
-| totalDebt | principal + accruedInterest |
-| elapsedSlots | Slots elapsed since loan creation |
-| ltvBps | Current loan-to-value ratio in basis points |
-| liquidatable | Whether the loan can be liquidated at current LTV |
-
-**Example:**
-```bash
-curl -X POST http://127.0.0.1:8500 \
-    -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","method":"getLoanInfo","params":{"txHash":"abc123...","outputIndex":0},"id":1}'
-```
-
----
-
-### getLoanList
-
-Returns all active loans (Collateral UTXOs), optionally filtered by borrower.
-
-**Parameters:**
-| Name | Type | Description |
-|------|------|-------------|
-| borrower | string | (Optional) Borrower pubkey hash (hex) to filter by |
-
-**Response:**
-```json
-[
-    {
-        "outpoint": {
-            "txHash": "abc123...",
-            "outputIndex": 0
-        },
-        "borrowerHash": "abc123...",
-        "collateralAmount": 100000000,
-        "principal": 50000000,
-        "totalDebt": 50125000,
-        "interestRateBps": 500,
-        "liquidatable": false
-    }
-]
-```
-
-**Example:**
-```bash
-curl -X POST http://127.0.0.1:8500 \
-    -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","method":"getLoanList","params":{},"id":1}'
-
-# Filter by borrower
-curl -X POST http://127.0.0.1:8500 \
-    -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","method":"getLoanList","params":{"borrower":"abc123..."},"id":1}'
 ```
 
 ---

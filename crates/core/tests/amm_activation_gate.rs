@@ -3,9 +3,9 @@
 //     O1: returned Result<(), ValidationError> for the 4 AMM tx types
 //         (CreatePool=19, AddLiquidity=20, RemoveLiquidity=21, Swap=22) against
 //         ctx.amm_activation_height (NEW gate, decoupled from defi_activation_height).
-//     O2: returned Result<(), ValidationError> for the 7 non-AMM DeFi tx types
-//         (CreateLoan, RepayLoan, LiquidateLoan, LendingDeposit, LendingWithdraw,
-//         FractionalizeNft, RedeemNft) against ctx.defi_activation_height (UNCHANGED).
+//     O2: returned Result<(), ValidationError> for the 2 remaining non-AMM DeFi tx types
+//
+//         (FractionalizeNft, RedeemNft -- lending tombstoned B.1) against ctx.defi_activation_height (UNCHANGED).
 //   PATHS:
 //     P1: tx.tx_type ∈ AMM_TX_TYPES AND ctx.current_height < ctx.amm_activation_height
 //         → Err(ValidationError::AmmNotActivated { tx_type, activation_height, current_height })
@@ -14,19 +14,19 @@
 //         → MAY return Ok or a per-type validation Err, but NOT AmmNotActivated.
 //     P3: tx.tx_type ∈ NON_AMM_DEFI_TX_TYPES AND ctx.current_height < ctx.defi_activation_height
 //         → Err(ValidationError::DefiNotActivated { .. }) — INDEPENDENCE.
-//         Verified by submitting a lending tx with amm_activation_height=0 +
-//         defi_activation_height=u64::MAX. Lending must STILL reject (DEFI_NOT_ACTIVATED),
+//         Verified by submitting a non-AMM DeFi tx with amm_activation_height=0 +
+//         defi_activation_height=u64::MAX. Non-AMM DeFi must STILL reject (DEFI_NOT_ACTIVATED),
 //         proving the two gates are independent.
 //   INPUT PARTITIONS:
 //     P1: 4 partitions, one per AMM tx_type.
 //     P2: 1 partition, boundary case (current_height == amm_activation_height).
-//     P3: 1 partition, CreateLoan with amm_activation_height=0 + defi=u64::MAX.
+//     P3: 1 partition, FractionalizeNft with amm_activation_height=0 + defi=u64::MAX.
 //   MATRIX:
 //     O1 × P1 × {4 AMM types}              → 4 assertions (each Err AmmNotActivated)
 //     O1 × P1 × {error_code}               → 1 assertion (stable "AMM_NOT_ACTIVATED")
 //     O1 × P1 × {to_structured_json}       → 1 assertion (fields present)
 //     O1 × P2 × {boundary}                 → 1 assertion (NOT AmmNotActivated at == gate)
-//     O2 × P3 × {independence}             → 1 assertion (Lending → DefiNotActivated
+//     O2 × P3 × {independence}             → 1 assertion (non-AMM DeFi → DefiNotActivated
 //                                              even with amm gate open)
 //
 // Pre-fix expectation (TDD red phase): without the gate split + AmmNotActivated variant,
@@ -106,14 +106,18 @@ fn swap_tx() -> Transaction {
     }
 }
 
-fn lending_deposit_tx() -> Transaction {
-    let pool_id = Hash::from_bytes([0xDD; 32]);
-    let depositor = Hash::from_bytes([0xEE; 32]);
+/// Non-AMM DeFi tx for independence test. Uses FractionalizeNft (still
+/// gated under defi_activation_height) since lending types were
+/// tombstoned in B.1 (2026-05-26).
+fn non_amm_defi_tx() -> Transaction {
     Transaction {
         version: 1,
-        tx_type: TxType::LendingDeposit,
-        inputs: vec![Input::new(Hash::from_bytes([0xFF; 32]), 0)],
-        outputs: vec![Output::lending_deposit(1000, pool_id, depositor, 50)],
+        tx_type: TxType::FractionalizeNft,
+        inputs: vec![Input::new(Hash::from_bytes([0xAA; 32]), 0)],
+        outputs: vec![
+            Output::normal(1, Hash::from_bytes([0x01; 32])),
+            Output::normal(1, Hash::from_bytes([0x02; 32])),
+        ],
         extra_data: vec![],
     }
 }
@@ -264,12 +268,12 @@ fn amm_tx_types_pass_gate_at_activation_boundary() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// O2 × P3 — INDEPENDENCE: lending tx (non-AMM DeFi) still rejected when
+// O2 × P3 — INDEPENDENCE: non-AMM DeFi tx still rejected when
 // amm_activation_height=0 but defi_activation_height=u64::MAX. Verifies the
 // two gates do NOT share a code path.
 // ═══════════════════════════════════════════════════════════════════════════
 #[test]
-fn lending_tx_still_gated_when_amm_open() {
+fn non_amm_defi_tx_still_gated_when_amm_open() {
     let ctx = ValidationContext::new(
         ConsensusParams::devnet(),
         Network::Devnet,
@@ -281,22 +285,22 @@ fn lending_tx_still_gated_when_amm_open() {
     .with_amm_activation_height(0) // AMM wide open
     .with_defi_activation_height(u64::MAX); // Lending/NFT-frac still gated
 
-    let tx = lending_deposit_tx();
+    let tx = non_amm_defi_tx();
     let res = validation::validate_transaction(&tx, &ctx);
     match res {
         Err(ValidationError::DefiNotActivated { tx_type, .. }) => {
             assert_eq!(
                 tx_type,
-                TxType::LendingDeposit as u32,
-                "Lending tx must still hit DefiNotActivated, not AmmNotActivated"
+                TxType::FractionalizeNft as u32,
+                "Non-AMM DeFi tx must still hit DefiNotActivated, not AmmNotActivated"
             );
         }
         Err(ValidationError::AmmNotActivated { .. }) => panic!(
-            "Lending tx must NOT route through the AMM gate — the two gates are \
+            "Non-AMM DeFi tx must NOT route through the AMM gate — the two gates are \
              independent (HC-6 / INC-I-075). Got AmmNotActivated instead of DefiNotActivated."
         ),
         other => panic!(
-            "Lending tx must be rejected with DefiNotActivated when defi gate \
+            "Non-AMM DeFi tx must be rejected with DefiNotActivated when defi gate \
              is closed. Got: {:?}",
             other
         ),
