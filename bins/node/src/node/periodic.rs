@@ -621,7 +621,11 @@ impl Node {
                         kind: storage::diagnostic_ledger::types::EventKind::RecoveryClassifyCall,
                         timestamp_ms: now_ms,
                         height: Some(ctx.local_height),
-                        correlation_key: None,
+                        correlation_key: Some(storage::diagnostic_ledger::types::CorrelationKey {
+                            divergence_height: Some(ctx.local_height),
+                            canonical_hash: None,
+                            fork_hash: None,
+                        }),
                         caused_by_event_id: None,
                         is_cascade_origin: false,
                         payload:
