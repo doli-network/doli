@@ -1,6 +1,6 @@
 use crate::block::Block;
 use crate::consensus::{BASE_FEE, FEE_PER_BYTE};
-use crate::transaction::{Input, OutputType, SighashType, Transaction, TxType};
+use crate::transaction::{Input, Output, OutputType, SighashType, Transaction, TxType};
 use crate::types::Amount;
 use crypto::Hash;
 
@@ -206,7 +206,10 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
             });
         }
 
-        // Fee check: Pool/Lending types are exempt (DOLI moves to reserves, not burned as fee).
+        // Fee check: DeFi asset types are exempt (amounts are non-native, so
+        // total_input and total_output are both 0 for native DOLI — the fee
+        // computation is inapplicable). Pool/Lending types move DOLI to
+        // reserves tracked in extra_data, not Output.amount.
         let fee_exempt = matches!(
             tx.tx_type,
             TxType::CreatePool
@@ -218,6 +221,8 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
                 | TxType::LiquidateLoan
                 | TxType::LendingDeposit
                 | TxType::LendingWithdraw
+                | TxType::MintAsset
+                | TxType::BurnAsset
         );
         if !fee_exempt {
             let actual_fee = total_input.saturating_sub(total_output);
@@ -401,14 +406,23 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
                 "genesis UTXO has invalid asset metadata".to_string(),
             ))?;
 
-        // Verify signer == genesis UTXO owner (issuer auth via witness pubkey)
-        if let Some(ref pk) = genesis_utxo.pubkey {
-            let signer_hash = crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, pk.as_bytes());
-            if signer_hash != genesis_utxo.output.pubkey_hash {
-                return Err(ValidationError::InvalidMintAsset(
-                    "only the original issuer can mint".to_string(),
-                ));
-            }
+        // Issuer authorization: input[0] MUST be the genesis UTXO that
+        // created this asset. The asset_id is derived from the genesis
+        // outpoint: BLAKE3("DOLI_ASSET" || genesis_tx_hash || output_index).
+        // If the first input's outpoint does NOT hash to the asset_id, the
+        // spender is holding a transferred copy, not the original genesis
+        // UTXO — they are not the issuer.
+        //
+        // This replaces the previous check which relied on genesis_utxo.pubkey
+        // (always None in production — UtxoSet::get_utxo returns pubkey: None
+        // for all UTXOs). The derivation check is cryptographically binding:
+        // only one outpoint in existence hashes to a given asset_id.
+        let derived_asset_id =
+            Output::compute_asset_id(&first_input.prev_tx_hash, first_input.output_index);
+        if derived_asset_id != asset_id {
+            return Err(ValidationError::InvalidMintAsset(
+                "only the original issuer can mint: input[0] is not the genesis UTXO".to_string(),
+            ));
         }
 
         // All inputs must share the same asset_id

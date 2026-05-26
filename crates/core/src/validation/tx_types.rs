@@ -606,14 +606,18 @@ pub(super) fn validate_withdrawal_request_data(tx: &Transaction) -> Result<(), V
     Ok(())
 }
 
-/// Validate a MintAsset transaction.
+/// Validate a MintAsset transaction (structural checks only -- no UTXO context).
 ///
-/// Rules:
-/// - Must have at least one input (issuer proves ownership of the asset's genesis UTXO)
-/// - All inputs must be FungibleAsset outputs with the same asset_id
-/// - All outputs must be FungibleAsset outputs with the same asset_id
-/// - sum(output amounts) >= sum(input amounts) -- the difference is the newly minted supply
-/// - The first input must be from the original issuer (creator of the genesis asset UTXO)
+/// Rules enforced here (structural):
+/// 1. Must have at least one input (issuer proves ownership of the asset's genesis UTXO)
+/// 2. Must have at least one output
+/// 3. All outputs must be FungibleAsset type with valid parseable metadata
+/// 4. All outputs must share the same asset_id (cross-output consistency)
+///
+/// Rules enforced in UTXO validation (validate_transaction_with_utxos):
+/// 5. All inputs must be FungibleAsset outputs with the same asset_id
+/// 6. input[0] must be the genesis UTXO (asset_id derivation check)
+/// 7. sum(output amounts) does not exceed total_supply cap
 pub(super) fn validate_mint_asset(tx: &Transaction) -> Result<(), ValidationError> {
     if tx.inputs.is_empty() {
         return Err(ValidationError::InvalidMintAsset(
@@ -625,13 +629,34 @@ pub(super) fn validate_mint_asset(tx: &Transaction) -> Result<(), ValidationErro
             "MintAsset requires at least one output".to_string(),
         ));
     }
-    // All outputs must be FungibleAsset type
+
+    // All outputs must be FungibleAsset type with valid parseable metadata
+    // and share the same asset_id (structural consistency).
+    let mut reference_asset_id: Option<crypto::Hash> = None;
     for (i, output) in tx.outputs.iter().enumerate() {
         if output.output_type != OutputType::FungibleAsset {
             return Err(ValidationError::InvalidMintAsset(format!(
                 "output {} must be FungibleAsset type",
                 i
             )));
+        }
+        // Verify metadata is parseable (version byte, asset_id, total_supply, ticker)
+        let (id, _, _) = output.fungible_asset_metadata().ok_or_else(|| {
+            ValidationError::InvalidMintAsset(format!(
+                "output {} has invalid or unparseable FungibleAsset metadata",
+                i
+            ))
+        })?;
+        // Cross-output asset_id consistency
+        match reference_asset_id {
+            None => reference_asset_id = Some(id),
+            Some(ref_id) if ref_id != id => {
+                return Err(ValidationError::InvalidMintAsset(format!(
+                    "output {} has asset_id {} but output 0 has {}",
+                    i, id, ref_id
+                )));
+            }
+            _ => {}
         }
     }
     Ok(())
