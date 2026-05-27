@@ -24,6 +24,8 @@
 //   P15: Evidence non-empty for named variants (cross-cutting)
 //   P16: Recommended action per named variant (cross-cutting)
 //   P17: Unknown carries all evidence event IDs (REQ-FORKOBS-RETRO-003)
+//   P18: (M6) RecoveryClassifyCall with divergence_height-only correlation_key
+//        groups with ForkBlockReceived that has divergence_height+fork_hash
 //
 // INPUT PARTITIONS:
 //   P1a: 2 BlockApplied same height same producer, different block_hash
@@ -39,8 +41,11 @@
 //   P11a: equivocation + high-latency fork together
 //   P12a: same input twice -> same output
 //   P13a: empty event slice
+//   P18a: (M6) ForkBlockReceived with divergence_height=H + fork_hash=Some("abc")
+//         + RecoveryClassifyCall with divergence_height=H + fork_hash=None
+//         -> has_other_signals returns true (divergence_height match is sufficient)
 //
-// MATRIX: 1 output (O3: return) x 17 paths = 17 tests
+// MATRIX: 1 output (O3: return) x 18 paths = 18 tests
 //   Each test asserts: fork_type, confidence range, evidence_event_ids, recommended_action
 
 mod diagnostic_helpers;
@@ -1095,5 +1100,92 @@ fn test_rule_h_chain_break_loop_n6_live_fixture() {
         classification.confidence >= 0.0 && classification.confidence <= 1.0,
         "confidence in [0,1], got {}",
         classification.confidence
+    );
+}
+
+// ===========================================================================
+// M6 (D3): RecoveryClassifyCall correlation_key grouping — INC-I-090
+// ===========================================================================
+
+// OUTPUT CONTRACT: fn has_other_signals(events, fork_ev) -> bool
+//   When a ForkBlockReceived carries correlation_key with divergence_height=H
+//   and a RecoveryClassifyCall carries correlation_key with divergence_height=H
+//   (but different fork_hash / canonical_hash — recovery doesn't know hashes),
+//   has_other_signals MUST return true. The grouping is by divergence_height,
+//   not by exact CorrelationKey equality.
+//
+// Path P18: divergence_height-only correlation match
+// Input partition P18a: ForkBlockReceived at h=284677 with
+//   divergence_height=Some(284677), fork_hash=Some("150b4a7b")
+//   + RecoveryClassifyCall at h=284677 with
+//   divergence_height=Some(284677), fork_hash=None
+//   -> classify does NOT return TipRaceNatural (has_other_signals returns true)
+
+// Requirement: INC-I-090 D3 (Must)
+// Acceptance: RecoveryClassifyCall with divergence_height-only correlation_key
+//   groups with ForkBlockReceived that has divergence_height+fork_hash.
+//   The classifier must NOT return TipRaceNatural when recovery activity
+//   at the same divergence_height exists.
+#[test]
+fn test_m6_d3_recovery_correlation_key_groups_by_divergence_height() {
+    let ts = now_ms();
+    let div_height: u64 = 284_677;
+
+    // ForkBlockReceived with full correlation_key (as emitted by block_handling.rs:209)
+    let fork_corr_key = CorrelationKey {
+        divergence_height: Some(div_height),
+        canonical_hash: None,
+        fork_hash: Some("150b4a7b".to_string()),
+    };
+    let ev_fork = make_fork_block_received(
+        div_height,
+        ts,
+        100, // low validation latency
+        "aabbccdd",
+        Some(fork_corr_key),
+    );
+
+    // RecoveryClassifyCall with divergence_height-only correlation_key
+    // (as should be emitted by periodic.rs:624 after M6 fix — recovery
+    // coordinator doesn't know fork_hash or canonical_hash)
+    let recovery_corr_key = CorrelationKey {
+        divergence_height: Some(div_height),
+        canonical_hash: None,
+        fork_hash: None,
+    };
+    let ev_recovery = make_recovery_classify_with_action(
+        div_height,
+        ts + 5_000,
+        "HeaderFirstSync",
+        Some(recovery_corr_key),
+    );
+
+    // Also include a low-latency BlockApplied so rule (f) would match if
+    // has_other_signals returned false (i.e., without the fix this would be
+    // classified as TipRaceNatural)
+    let mut ev_applied = make_block_applied(div_height, ts + 1, "aabbccdd", "canonical_hash");
+    if let EventPayload::BlockApplied {
+        ref mut validation_duration_ms,
+        ..
+    } = ev_applied.payload
+    {
+        *validation_duration_ms = 100; // low latency
+    }
+
+    let classification = classify(&[ev_fork, ev_recovery, ev_applied]);
+
+    // OUTPUT CONTRACT CHECK:
+    // With the fix, has_other_signals matches on divergence_height alone,
+    // so the RecoveryClassifyCall is seen as a signal in the fork's correlation
+    // group. Rule (f) TipRaceNatural requires NO other signals, so it must NOT
+    // match. The result should be Unknown (rule g) since no other rule fits
+    // this 3-event set.
+    assert!(
+        !matches!(classification.fork_type, ForkType::TipRaceNatural),
+        "D3 fix: ForkBlockReceived + RecoveryClassifyCall at same divergence_height \
+         (but different fork_hash) must NOT classify as TipRaceNatural. \
+         has_other_signals must match on divergence_height, not exact CorrelationKey. \
+         Got {:?}",
+        classification.fork_type
     );
 }

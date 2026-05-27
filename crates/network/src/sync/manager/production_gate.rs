@@ -576,6 +576,24 @@ impl SyncManager {
         was_signaled
     }
 
+    /// D6 (INC-I-090): Consume the stuck-fork signal and return context for logging.
+    ///
+    /// Wraps take_stuck_fork_signal() with context capture. Returns Some(StuckForkAlert)
+    /// when a signal was present (and clears it), None otherwise. The caller (periodic.rs)
+    /// uses this to emit a structured WARN log immediately, without waiting for the
+    /// 30s diagnostic_monitor cadence.
+    pub fn consume_stuck_fork_signal(&mut self) -> Option<StuckForkAlert> {
+        if self.take_stuck_fork_signal() {
+            Some(StuckForkAlert {
+                local_height: self.local_tip().0,
+                best_peer_height: self.best_peer_height(),
+                peer_count: self.peer_count(),
+            })
+        } else {
+            None
+        }
+    }
+
     /// Signal a stuck fork. Sets a flag that resolve_shallow_fork() consumes.
     /// Only sets the flag when in Normal phase — other phases have higher priority.
     pub fn signal_stuck_fork(&mut self) {
@@ -813,4 +831,20 @@ impl SyncManager {
         }
         has_close_peer
     }
+}
+
+// =========================================================================
+// D6 (INC-I-090): Stuck-fork signal consumer
+// =========================================================================
+
+/// Context returned when a stuck-fork signal is consumed.
+/// Used by the periodic task to emit a structured WARN log.
+#[derive(Clone, Debug)]
+pub struct StuckForkAlert {
+    /// Local chain height at the time the signal was consumed.
+    pub local_height: u64,
+    /// Best peer height known to the sync manager.
+    pub best_peer_height: u64,
+    /// Number of connected peers.
+    pub peer_count: usize,
 }

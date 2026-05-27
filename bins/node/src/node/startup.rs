@@ -365,6 +365,9 @@ impl Node {
         // Wire live diagnostic writer stats for getDiagnosticHealth (INC-I-087)
         context = context.with_diagnostic_writer_stats(self.diagnostic_writer_stats.clone());
 
+        // Wire emitter for dropped_count() in health RPC (INC-I-090 D5)
+        context = context.with_diagnostic_emitter(Some(self.diagnostic_emitter.clone()));
+
         // Wire up peer info so getNetworkInfo reports real values
         if let Some(ref network) = self.network {
             let peers = network.peers_arc();

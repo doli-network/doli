@@ -13,6 +13,23 @@ use tracing::{debug, info, warn};
 
 use crate::protocols::SyncRequest;
 
+/// D2 (INC-I-090): chain break info captured during header validation.
+///
+/// Contains the hashes and slot needed for the `ChainBreakDetected`
+/// diagnostic event. The peer ID is added by the caller (sync engine)
+/// since the downloader doesn't track which peer sent the headers.
+#[derive(Debug, Clone)]
+pub struct HeaderChainBreak {
+    /// The hash we expected this header's prev_hash to be.
+    pub expected: Hash,
+    /// The actual prev_hash from the received header.
+    pub actual: Hash,
+    /// The slot of the header that caused the break.
+    pub header_slot: u32,
+    /// How many headers were validated before the break in this batch.
+    pub valid_so_far: u32,
+}
+
 /// Header downloader state
 pub struct HeaderDownloader {
     /// Maximum headers per request
@@ -28,6 +45,9 @@ pub struct HeaderDownloader {
     expected_prev_hash: Option<Hash>,
     /// Total headers downloaded
     total_downloaded: usize,
+    /// D2 (INC-I-090): chain break detected in the most recent `process_headers` call.
+    /// Cleared at the start of each call; populated if a break occurs.
+    last_chain_break: Option<HeaderChainBreak>,
 }
 
 impl HeaderDownloader {
@@ -40,6 +60,7 @@ impl HeaderDownloader {
             known_hashes: HashSet::new(),
             expected_prev_hash: None,
             total_downloaded: 0,
+            last_chain_break: None,
         }
     }
 
@@ -54,13 +75,20 @@ impl HeaderDownloader {
         })
     }
 
-    /// Process received headers, returning count of valid headers
+    /// Process received headers, returning count of valid headers.
+    ///
+    /// D2 (INC-I-090): when a chain break is detected (header.prev_hash != expected),
+    /// `self.last_chain_break` is populated with the break details. The caller
+    /// should check `take_chain_break()` after this call.
     pub fn process_headers(&mut self, headers: &[BlockHeader], local_tip: Hash) -> usize {
+        // D2: clear previous chain break info
+        self.last_chain_break = None;
+
         if headers.is_empty() {
             return 0;
         }
 
-        let mut valid_count = 0;
+        let mut valid_count = 0u32;
         let mut prev_hash = self.expected_prev_hash.unwrap_or(local_tip);
 
         for header in headers {
@@ -70,6 +98,13 @@ impl HeaderDownloader {
                     "[HEADER_DEBUG] Chain break: header.prev_hash={} expected={} header_slot={} valid_so_far={}",
                     header.prev_hash, prev_hash, header.slot, valid_count
                 );
+                // D2 (INC-I-090): capture chain break info for diagnostic emission
+                self.last_chain_break = Some(HeaderChainBreak {
+                    expected: prev_hash,
+                    actual: header.prev_hash,
+                    header_slot: header.slot,
+                    valid_so_far: valid_count,
+                });
                 break;
             }
 
@@ -97,14 +132,22 @@ impl HeaderDownloader {
 
         if valid_count > 0 {
             self.expected_prev_hash = Some(prev_hash);
-            self.total_downloaded += valid_count;
+            self.total_downloaded += valid_count as usize;
             debug!(
                 "Validated {} headers, total: {}",
                 valid_count, self.total_downloaded
             );
         }
 
-        valid_count
+        valid_count as usize
+    }
+
+    /// D2 (INC-I-090): Take the chain break info from the last `process_headers` call.
+    ///
+    /// Returns `Some(HeaderChainBreak)` if a break was detected, `None` otherwise.
+    /// Consumes the break info (subsequent calls return None until the next break).
+    pub fn take_chain_break(&mut self) -> Option<HeaderChainBreak> {
+        self.last_chain_break.take()
     }
 
     /// Validate a single header
@@ -152,6 +195,7 @@ impl HeaderDownloader {
         self.validated_headers.clear();
         self.known_hashes.clear();
         self.expected_prev_hash = None;
+        self.last_chain_break = None;
         info!(
             "[HEADER_DEBUG] clear() called, expected_prev_hash=None (will use local_tip on next process)"
         );
@@ -236,5 +280,47 @@ mod tests {
 
         let valid = downloader.process_headers(&[header1, header2], genesis);
         assert_eq!(valid, 1); // Only first header is valid
+    }
+
+    /// D2 (INC-I-090): verify chain break info is captured on break.
+    #[test]
+    fn test_chain_break_captured() {
+        let mut downloader = HeaderDownloader::new(2000, Duration::from_secs(30));
+
+        let genesis = Hash::ZERO;
+        let header1 = create_test_header(genesis, 1);
+        let _hash1 = header1.hash();
+        // header2 has wrong prev_hash — points to genesis instead of hash1
+        let header2 = create_test_header(Hash::from_bytes([0xAA; 32]), 2);
+
+        let valid = downloader.process_headers(&[header1, header2], genesis);
+        assert_eq!(valid, 1);
+
+        let chain_break = downloader.take_chain_break();
+        assert!(
+            chain_break.is_some(),
+            "chain break should be captured when header.prev_hash mismatches"
+        );
+        let cb = chain_break.unwrap();
+        assert_eq!(cb.header_slot, 2);
+        assert_eq!(cb.valid_so_far, 1);
+        assert_ne!(cb.expected, cb.actual);
+    }
+
+    /// D2 (INC-I-090): no chain break on valid headers.
+    #[test]
+    fn test_no_chain_break_on_valid_headers() {
+        let mut downloader = HeaderDownloader::new(2000, Duration::from_secs(30));
+
+        let genesis = Hash::ZERO;
+        let header1 = create_test_header(genesis, 1);
+        let hash1 = header1.hash();
+        let header2 = create_test_header(hash1, 2);
+
+        let _valid = downloader.process_headers(&[header1, header2], genesis);
+        assert!(
+            downloader.take_chain_break().is_none(),
+            "no chain break should be captured for valid headers"
+        );
     }
 }

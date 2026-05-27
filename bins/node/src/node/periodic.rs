@@ -341,7 +341,7 @@ impl Node {
         }
 
         // Clean up sync manager and prune stale finality entries
-        {
+        let pending_chain_breaks = {
             let current_slot = {
                 let state = self.chain_state.read().await;
                 state.best_slot
@@ -349,6 +349,61 @@ impl Node {
             let mut sync = self.sync_manager.write().await;
             sync.cleanup();
             sync.prune_finality(current_slot);
+
+            // D6 (INC-I-090): Consume stuck-fork signal every tick.
+            // signal_stuck_fork() is called by cleanup, block_apply_failed, and peers
+            // when fork evidence is detected. take_stuck_fork_signal() had ZERO
+            // non-test callers — the signal sat unread. This surfaces it immediately
+            // as a structured WARN log, complementing M2's 30s diagnostic_monitor.
+            if let Some(alert) = sync.consume_stuck_fork_signal() {
+                tracing::warn!(
+                    target: "production_gate",
+                    local_height = alert.local_height,
+                    best_peer_height = alert.best_peer_height,
+                    peer_count = alert.peer_count,
+                    "[STUCK_FORK] Recovery coordinator raised stuck-fork signal"
+                );
+            }
+
+            // D2 (INC-I-090): Drain chain break events (inside lock).
+            // Emission happens below, after the sync manager lock is dropped.
+            sync.take_chain_breaks()
+        };
+
+        // D2 (INC-I-090): Emit ChainBreakDetected for each drained chain break.
+        // Runs outside the sync manager lock to avoid holding the write guard
+        // while reading chain_state.
+        if !pending_chain_breaks.is_empty() {
+            let local_h = self.chain_state.read().await.best_height;
+            for cb in pending_chain_breaks {
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                let _ =
+                    self.diagnostic_emitter
+                        .record(storage::diagnostic_ledger::types::DiagnosticEvent {
+                        event_id: ulid::Ulid::new().to_string(),
+                        kind: storage::diagnostic_ledger::types::EventKind::ChainBreakDetected,
+                        timestamp_ms: now_ms,
+                        height: Some(local_h),
+                        correlation_key: Some(storage::diagnostic_ledger::types::CorrelationKey {
+                            divergence_height: Some(local_h),
+                            canonical_hash: None,
+                            fork_hash: None,
+                        }),
+                        caused_by_event_id: None,
+                        is_cascade_origin: false,
+                        payload:
+                            storage::diagnostic_ledger::types::EventPayload::ChainBreakDetected {
+                                expected_prev_hash: cb.expected_prev_hash.to_hex(),
+                                actual_prev_hash: cb.actual_prev_hash.to_hex(),
+                                header_slot: cb.header_slot,
+                                valid_so_far_count: cb.valid_so_far_count,
+                                from_peer_id: cb.from_peer_id.to_base58(),
+                            },
+                    });
+            }
         }
 
         // Archive catch-up: after sync completes, backfill archive from block_store.
@@ -621,7 +676,11 @@ impl Node {
                         kind: storage::diagnostic_ledger::types::EventKind::RecoveryClassifyCall,
                         timestamp_ms: now_ms,
                         height: Some(ctx.local_height),
-                        correlation_key: None,
+                        correlation_key: Some(storage::diagnostic_ledger::types::CorrelationKey {
+                            divergence_height: Some(ctx.local_height),
+                            canonical_hash: None,
+                            fork_hash: None,
+                        }),
                         caused_by_event_id: None,
                         is_cascade_origin: false,
                         payload:
@@ -961,6 +1020,34 @@ impl Node {
                     epoch_list_len,
                     self.cumulative_rollback_depth
                 );
+            }
+
+            // D4 (INC-I-090): In-node automated alert consumer.
+            // Polls the local diagnostic ledger, runs classify(), and emits structured
+            // WARN-level log lines when recommended_action is actionable.
+            // Cadence: every 30s (same as the health diagnostic), satisfying the VERDICT
+            // pass-criterion: "< 60s interval".
+            if let Some(ref ledger) = self.diagnostic_ledger {
+                use super::diagnostic_monitor::{
+                    check_for_actionable_alerts, DIAGNOSTIC_MONITOR_INTERVAL_SECS,
+                };
+                let _ = DIAGNOSTIC_MONITOR_INTERVAL_SECS; // referenced for grep-ability
+                let alerts = check_for_actionable_alerts(
+                    ledger,
+                    300, // 5-minute event window
+                    &mut self.last_diagnostic_alerted,
+                );
+                for alert in &alerts {
+                    warn!(
+                        target: "diagnostic_monitor",
+                        incident_id = %alert.incident_id,
+                        fork_type = %alert.fork_type,
+                        recommended_action = %alert.recommended_action,
+                        evidence_count = alert.evidence_event_ids.len(),
+                        "[DIAGNOSTIC_MONITOR] Actionable alert: {} — {}",
+                        alert.fork_type, alert.recommended_action,
+                    );
+                }
             }
 
             // INC-I-020/020b: STALE_TIP and FORK_1BLOCK were removed because they

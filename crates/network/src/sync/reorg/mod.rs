@@ -322,7 +322,7 @@ impl ReorgHandler {
                         .get(&current)
                         .map(|w| w.height)
                         .unwrap_or(0);
-                    if ancestor_height <= finality_height {
+                    if ancestor_height < finality_height {
                         warn!(
                             "FINALITY: Rejecting reorg past finalized height {} (ancestor at {})",
                             finality_height, ancestor_height
@@ -456,7 +456,7 @@ impl ReorgHandler {
                     }
                 },
             };
-            if ancestor_height <= finality_height {
+            if ancestor_height < finality_height {
                 warn!(
                     "FINALITY: plan_reorg rejecting reorg past finalized height {} (ancestor at {})",
                     finality_height, ancestor_height

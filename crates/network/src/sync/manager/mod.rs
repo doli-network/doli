@@ -17,14 +17,18 @@ mod types;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_inc_i090_d1;
 
 // Re-export all public types from types.rs
 pub use types::{
-    ForkAction, ProductionAuthorization, RecoveryPhase, RecoveryReason, SyncConfig, SyncPhase,
-    SyncPipelineData, SyncState, VerifiedSnapshot,
+    ChainBreakInfo, ForkAction, ProductionAuthorization, RecoveryPhase, RecoveryReason, SyncConfig,
+    SyncPhase, SyncPipelineData, SyncState, VerifiedSnapshot,
 };
 // Re-export recovery coordinator types used by Node layer
 pub use recovery::{RecoveryAction, RecoveryContext, RecoveryEvidence};
+// Re-export D6 stuck-fork consumer type used by Node layer
+pub use production_gate::StuckForkAlert;
 // Re-export pub(crate) types used by sibling modules
 pub(crate) use types::{
     ForkState, NetworkState, PeerSyncStatus, PendingRequest, SnapSyncState, SyncPipeline,
@@ -498,5 +502,44 @@ impl SyncManager {
                 .max_by_key(|(_, status)| status.best_height)
                 .map(|(peer, _)| *peer)
         })
+    }
+
+    /// D2 (INC-I-090): Drain all pending chain break events.
+    ///
+    /// Returns the chain break info collected since the last drain.
+    /// The node layer calls this in periodic tasks and emits
+    /// `ChainBreakDetected` diagnostic events for each.
+    pub fn take_chain_breaks(&mut self) -> Vec<types::ChainBreakInfo> {
+        self.fork.chain_breaks.drain(..).collect()
+    }
+
+    /// D2 (INC-I-090): Test helper — feed headers directly through the
+    /// header downloader to trigger chain break detection.
+    ///
+    /// This bypasses the normal sync engine response flow. The caller
+    /// provides headers and the local tip hash; the downloader validates
+    /// chain linkage and records any break in `self.fork.chain_breaks`.
+    pub fn feed_headers_for_chain_break_detection(
+        &mut self,
+        peer: PeerId,
+        headers: &[doli_core::BlockHeader],
+        local_tip: crypto::Hash,
+    ) {
+        let _valid = self
+            .pipeline
+            .header_downloader
+            .process_headers(headers, local_tip);
+        if let Some(cb) = self.pipeline.header_downloader.take_chain_break() {
+            if self.fork.chain_breaks.len() >= 32 {
+                self.fork.chain_breaks.pop_front();
+            }
+            self.fork.chain_breaks.push_back(types::ChainBreakInfo {
+                expected_prev_hash: cb.expected,
+                actual_prev_hash: cb.actual,
+                header_slot: cb.header_slot,
+                valid_so_far_count: cb.valid_so_far,
+                from_peer_id: peer,
+            });
+        }
     }
 }

@@ -358,6 +358,21 @@ impl SyncManager {
             .header_downloader
             .process_headers(&headers, self.local_hash);
 
+        // D2 (INC-I-090): record chain break info for diagnostic emission
+        if let Some(cb) = self.pipeline.header_downloader.take_chain_break() {
+            use crate::sync::manager::types::ChainBreakInfo;
+            if self.fork.chain_breaks.len() >= 32 {
+                self.fork.chain_breaks.pop_front();
+            }
+            self.fork.chain_breaks.push_back(ChainBreakInfo {
+                expected_prev_hash: cb.expected,
+                actual_prev_hash: cb.actual,
+                header_slot: cb.header_slot,
+                valid_so_far_count: cb.valid_so_far,
+                from_peer_id: peer,
+            });
+        }
+
         if valid_count > 0 {
             // Successfully received valid headers — reset fork counters
             self.fork.consecutive_empty_headers = 0;

@@ -4,19 +4,21 @@ use super::*;
 //   Outputs:
 //     O1: return — Option<ReorgResult> (None = rejected, Some = reorg plan with rollback/new_blocks/ancestor)
 //   Paths:
-//     P1: success — common ancestor found, above finality -> Some(ReorgResult)
-//     P2: rejected_below_finality — ancestor height <= finality_height -> None
+//     P1: success — common ancestor found, at or above finality -> Some(ReorgResult)
+//     P2: rejected_below_finality — ancestor height < finality_height -> None
 //     P3: rejected_ancestor_unknown — ancestor not in block_weights AND get_height returns None -> None
 //     P4: no_common_ancestor — chain walk fails to find shared block -> None
 //   INPUT PARTITIONS:
-//     P1a: ancestor in block_weights (existing tests cover: test_plan_reorg_above_finality_ok)
+//     P1a: ancestor in block_weights, height > finality (existing tests: test_plan_reorg_above_finality_ok)
 //     P1b: ancestor pruned from block_weights, get_height returns height above finality (BUG — INC-I-081 Bug 2)
-//     P2a: ancestor in block_weights, height <= finality (existing tests: test_plan_reorg_past_finality_rejected)
-//     P2b: ancestor pruned, get_height returns height <= finality
+//     P1c: ancestor in block_weights, height == finality (INC-I-090 AC-3 fencepost boundary)
+//     P2a: ancestor in block_weights, height < finality (existing tests: test_plan_reorg_past_finality_rejected)
+//     P2b: ancestor pruned, get_height returns height < finality
 //     P3a: ancestor pruned, get_height returns None
-//   MATRIX: 1 output x 5 partitions = 5 cells
+//   MATRIX: 1 output x 6 partitions = 6 cells
 //     P1a: O1(Some)  — test_plan_reorg_above_finality_ok
 //     P1b: O1(Some)  — plan_reorg_uses_get_height_when_block_weights_pruned [FAIL test]
+//     P1c: O1(Some)  — plan_reorg_permits_reorg_to_finality (INC-I-090 AC-1)
 //     P2a: O1(None)  — test_plan_reorg_past_finality_rejected
 //     P2b: O1(None)  — plan_reorg_refuses_when_get_height_returns_below_finality
 //     P3a: O1(None)  — plan_reorg_refuses_when_ancestor_height_unknown
@@ -627,7 +629,7 @@ fn plan_reorg_uses_get_height_when_block_weights_pruned() {
 /// Requirement: INV-SYNC-002 (Must)
 /// Acceptance: plan_reorg refuses reorg when get_height reports ancestor below finality
 ///
-/// P2b: ancestor pruned, get_height returns height <= finality -> None (correct rejection)
+/// P2b: ancestor pruned, get_height returns height < finality -> None (correct rejection)
 #[test]
 fn plan_reorg_refuses_when_get_height_returns_below_finality() {
     let mut handler = ReorgHandler::new();
@@ -656,7 +658,7 @@ fn plan_reorg_refuses_when_get_height_returns_below_finality() {
         |_h| None,
         |hash| {
             if *hash == ancestor {
-                Some(50) // 50 <= 100 -> reject
+                Some(50) // 50 < 100 -> reject
             } else {
                 None
             }
@@ -666,7 +668,7 @@ fn plan_reorg_refuses_when_get_height_returns_below_finality() {
     assert!(
         result.is_none(),
         "plan_reorg should refuse reorg when get_height reports ancestor below finality \
-         (h=50 <= F=100)"
+         (h=50 < F=100)"
     );
 }
 
@@ -704,6 +706,114 @@ fn plan_reorg_refuses_when_ancestor_height_unknown() {
         "plan_reorg should refuse reorg when ancestor height is unknown from both \
          block_weights and closure"
     );
+}
+
+// =========================================================================
+// INC-I-090 AC-3: Fencepost boundary tests — ancestor_height == finality_height
+// Invariant: INV-SYNC-008
+//
+// The common ancestor is PRESERVED post-reorg (rollback excludes it via
+// `take_while(|h| h != &common_ancestor)`). Therefore ancestor == finality
+// preserves the finalized block and MUST be allowed. Only ancestor < finality
+// violates the finality invariant.
+// =========================================================================
+
+/// Requirement: INV-SYNC-008 (Must) / INC-I-090 AC-1
+/// Acceptance: plan_reorg MUST allow reorg when ancestor_height == finality_height
+///
+/// P1c: ancestor in block_weights, height == finality -> Some(ReorgResult)
+/// BUG: `<=` comparison rejects this case; FIX: `<` allows it.
+#[test]
+fn plan_reorg_permits_reorg_to_finality() {
+    let mut handler = ReorgHandler::new();
+
+    let genesis = Hash::ZERO;
+    let block1 = crypto::hash::hash(b"block1_fin_boundary");
+    let block2 = crypto::hash::hash(b"block2_fin_boundary");
+    let fork_tip = crypto::hash::hash(b"fork_tip_fin_boundary");
+
+    // Build main chain: genesis -> block1 (h=1) -> block2 (h=2)
+    handler.record_block_with_weight(block1, genesis, 10);
+    handler.record_block_with_weight(block2, block1, 10);
+
+    // Build fork from block1: block1 -> fork_tip (heavier)
+    handler.record_fork_block(fork_tip, block1, 100);
+
+    // Set finality at height 1 — exactly matching block1 (the common ancestor).
+    // block1 is the ancestor, and it is PRESERVED post-reorg (rollback only
+    // removes block2). So this reorg does NOT violate finality.
+    handler.set_last_finality_height(1);
+
+    let result = handler.plan_reorg(block2, fork_tip, |_| None, |_| None);
+    assert!(
+        result.is_some(),
+        "INC-I-090 AC-1: plan_reorg must allow reorg when ancestor_height == finality_height \
+         (ancestor is preserved post-reorg, finality not violated)"
+    );
+    let reorg = result.unwrap();
+    assert_eq!(reorg.common_ancestor, block1);
+    assert_eq!(reorg.rollback.len(), 1);
+    assert_eq!(reorg.rollback[0], block2);
+}
+
+/// Requirement: INV-SYNC-008 (Must) / INC-I-090 AC-2
+/// Acceptance: check_reorg_weighted MUST allow reorg when ancestor_height == finality_height
+///
+/// Same fencepost as plan_reorg, but via the gossip-driven check_reorg_weighted path.
+/// BUG: `<=` comparison rejects this case; FIX: `<` allows it.
+#[test]
+fn check_reorg_weighted_permits_reorg_to_finality() {
+    let mut handler = ReorgHandler::new();
+
+    let genesis = Hash::ZERO;
+    let block1 = crypto::hash::hash(b"block1_crw_fin");
+    let block2 = crypto::hash::hash(b"block2_crw_fin");
+
+    // Build main chain: genesis -> block1 (h=1, w=10) -> block2 (h=2, w=10)
+    // Accumulated weight at block2 = 20
+    handler.record_block_with_weight(block1, genesis, 10);
+    handler.record_block_with_weight(block2, block1, 10);
+
+    // Set finality at height 1 — exactly matching block1 (the common ancestor).
+    handler.set_last_finality_height(1);
+
+    // Create a fork block from block1 with higher weight
+    // Fork chain: genesis -> block1 (w=10) -> fork_block (w=100) = accumulated 110
+    // Current chain weight = 20, fork = 110 -> heavier -> should reorg
+    // Common ancestor = block1 at h=1 == finality_height=1 -> must be ALLOWED
+    let fork = Block {
+        header: doli_core::BlockHeader {
+            version: 1,
+            prev_hash: block1, // forks from block1 (h=1) == finality_height(1)
+            merkle_root: Hash::ZERO,
+            presence_root: Hash::ZERO,
+            genesis_hash: Hash::ZERO,
+            timestamp: 200,
+            slot: 2,
+            producer: crypto::PublicKey::from_bytes([0u8; 32]),
+            vdf_output: vdf::VdfOutput {
+                value: vec![0u8; 32],
+            },
+            vdf_proof: vdf::VdfProof { pi: vec![0u8; 32] },
+            missed_producers: Vec::new(),
+            data_root: Hash::ZERO,
+            fork_id: Hash::ZERO,
+        },
+        transactions: vec![],
+        aggregate_bls_signature: Vec::new(),
+        attestation_bitfield: Vec::new(),
+    };
+
+    let result = handler.check_reorg_weighted(&fork, block2, 100);
+    assert!(
+        result.is_some(),
+        "INC-I-090 AC-2: check_reorg_weighted must allow reorg when ancestor_height == \
+         finality_height (ancestor is preserved post-reorg, finality not violated)"
+    );
+    let reorg = result.unwrap();
+    assert_eq!(reorg.rollback.len(), 1);
+    assert_eq!(reorg.rollback[0], block2);
+    assert_eq!(reorg.common_ancestor, block1);
 }
 
 // OUTPUT CONTRACT: fn ReorgHandler::clear_finality_if_below_tip(&mut self, new_tip_height: u64) -> ()

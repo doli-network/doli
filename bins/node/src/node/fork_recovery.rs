@@ -1,4 +1,5 @@
 use super::*;
+use storage::diagnostic_ledger::types::{CorrelationKey, DiagnosticEvent, EventKind, EventPayload};
 
 impl Node {
     /// Handle a completed fork recovery — evaluate the fork chain and reorg if heavier.
@@ -264,12 +265,43 @@ impl Node {
     /// 3. Replaces local state atomically
     /// 4. Persists to StateDb
     /// 5. Seeds canonical index for post-snap header sync
+    ///
+    /// D2 (INC-I-090): emits SnapSyncAttempted at entry, SnapSyncCompleted on
+    /// success, and SnapSyncFailed at each rejection/error exit. All emissions
+    /// are fire-and-forget (`let _ = ...`).
     pub async fn apply_snap_snapshot(&mut self, snapshot: network::VerifiedSnapshot) -> Result<()> {
         // Recovery mode: block snap sync consumption (anti-poisoning gate)
         if self.recovery_mode.load(Ordering::Relaxed) {
             warn!("[RECOVERY] Snap sync blocked — node is in recovery mode");
             return Ok(());
         }
+
+        // D2: capture pre-snap local height for the SnapSyncAttempted event
+        let pre_snap_height = self.chain_state.read().await.best_height;
+        let snap_start_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+
+        // D2: emit SnapSyncAttempted at entry
+        let _ = self.diagnostic_emitter.record(DiagnosticEvent {
+            event_id: ulid::Ulid::new().to_string(),
+            kind: EventKind::SnapSyncAttempted,
+            timestamp_ms: snap_start_ms,
+            height: Some(snapshot.block_height),
+            correlation_key: Some(CorrelationKey {
+                divergence_height: Some(pre_snap_height),
+                canonical_hash: None,
+                fork_hash: None,
+            }),
+            caused_by_event_id: None,
+            is_cascade_origin: false,
+            payload: EventPayload::SnapSyncAttempted {
+                local_height: pre_snap_height,
+                target_height: snapshot.block_height,
+                source_peer_id: format!("snap_quorum_{}", snapshot.block_height),
+            },
+        });
 
         info!(
             "[SNAP_SYNC] Applying snapshot: height={}, hash={:.16}, root={:.16}",
@@ -288,6 +320,28 @@ impl Node {
                     "[SNAP_SYNC] Snapshot deserialization failed at height={}: {} — rejecting",
                     snapshot.block_height, e
                 );
+                // D2: emit SnapSyncFailed for deserialization failure
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                let _ = self.diagnostic_emitter.record(DiagnosticEvent {
+                    event_id: ulid::Ulid::new().to_string(),
+                    kind: EventKind::SnapSyncFailed,
+                    timestamp_ms: now_ms,
+                    height: Some(snapshot.block_height),
+                    correlation_key: Some(CorrelationKey {
+                        divergence_height: Some(pre_snap_height),
+                        canonical_hash: None,
+                        fork_hash: None,
+                    }),
+                    caused_by_event_id: None,
+                    is_cascade_origin: false,
+                    payload: EventPayload::SnapSyncFailed {
+                        error: format!("deserialization failed: {}", e),
+                        duration_ms: now_ms.saturating_sub(snap_start_ms),
+                    },
+                });
                 self.sync_manager.write().await.snap_fallback_to_normal();
                 return Ok(());
             }
@@ -297,6 +351,31 @@ impl Node {
                 "[SNAP_SYNC] State root mismatch! computed={}, expected={} — rejecting",
                 computed_root, snapshot.state_root
             );
+            // D2: emit SnapSyncFailed for state root mismatch
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            let _ = self.diagnostic_emitter.record(DiagnosticEvent {
+                event_id: ulid::Ulid::new().to_string(),
+                kind: EventKind::SnapSyncFailed,
+                timestamp_ms: now_ms,
+                height: Some(snapshot.block_height),
+                correlation_key: Some(CorrelationKey {
+                    divergence_height: Some(pre_snap_height),
+                    canonical_hash: None,
+                    fork_hash: None,
+                }),
+                caused_by_event_id: None,
+                is_cascade_origin: false,
+                payload: EventPayload::SnapSyncFailed {
+                    error: format!(
+                        "state root mismatch: computed={}, expected={}",
+                        computed_root, snapshot.state_root
+                    ),
+                    duration_ms: now_ms.saturating_sub(snap_start_ms),
+                },
+            });
             self.sync_manager.write().await.snap_fallback_to_normal();
             return Ok(());
         }
@@ -318,6 +397,28 @@ impl Node {
             || new_chain_state.best_height != snapshot.block_height
         {
             error!("[SNAP_SYNC] Envelope/state mismatch — rejecting",);
+            // D2: emit SnapSyncFailed for envelope mismatch
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            let _ = self.diagnostic_emitter.record(DiagnosticEvent {
+                event_id: ulid::Ulid::new().to_string(),
+                kind: EventKind::SnapSyncFailed,
+                timestamp_ms: now_ms,
+                height: Some(snapshot.block_height),
+                correlation_key: Some(CorrelationKey {
+                    divergence_height: Some(pre_snap_height),
+                    canonical_hash: None,
+                    fork_hash: None,
+                }),
+                caused_by_event_id: None,
+                is_cascade_origin: false,
+                payload: EventPayload::SnapSyncFailed {
+                    error: "envelope/state mismatch".to_string(),
+                    duration_ms: now_ms.saturating_sub(snap_start_ms),
+                },
+            });
             self.sync_manager.write().await.snap_fallback_to_normal();
             return Ok(());
         }
@@ -662,6 +763,32 @@ impl Node {
             "[SNAP_SYNC] Snapshot applied successfully — now at height {} hash={:.16}",
             snapshot.block_height, snapshot.block_hash
         );
+
+        // D2: emit SnapSyncCompleted on success
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let _ = self.diagnostic_emitter.record(DiagnosticEvent {
+            event_id: ulid::Ulid::new().to_string(),
+            kind: EventKind::SnapSyncCompleted,
+            timestamp_ms: now_ms,
+            height: Some(snapshot.block_height),
+            correlation_key: Some(CorrelationKey {
+                divergence_height: Some(pre_snap_height),
+                canonical_hash: None,
+                fork_hash: None,
+            }),
+            caused_by_event_id: None,
+            is_cascade_origin: false,
+            payload: EventPayload::SnapSyncCompleted {
+                result: format!(
+                    "applied at height {} hash={:.16}",
+                    snapshot.block_height, snapshot.block_hash
+                ),
+                duration_ms: now_ms.saturating_sub(snap_start_ms),
+            },
+        });
 
         Ok(())
     }

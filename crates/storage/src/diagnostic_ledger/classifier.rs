@@ -23,6 +23,12 @@
 //! When classifying a `ForkBlockReceived`, the classifier looks for a `BlockApplied` at the
 //! same height. If no corresponding `BlockApplied` exists, validation_duration defaults to 0
 //! (meaning "no latency signal"), so rule (e) does NOT match.
+//!
+//! Correlation grouping (INC-I-090 D3): events are grouped by `divergence_height` when
+//! present, not by exact `CorrelationKey` equality. Different emitters may populate
+//! different subsets of the key (e.g., block_handling knows `fork_hash`, recovery
+//! coordinator only knows `divergence_height`). Two events with the same
+//! `divergence_height` belong to the same fork episode regardless of hash fields.
 
 use super::types::{Classification, DiagnosticEvent, EventKind, EventPayload, ForkType};
 
@@ -311,6 +317,12 @@ fn rule_f_tip_race_natural(events: &[DiagnosticEvent]) -> Option<Classification>
 }
 
 /// Check whether the given fork event has "other signals" in its correlation group.
+///
+/// Correlation grouping uses `divergence_height` as the primary key (INC-I-090 D3).
+/// Two events belong to the same fork episode if they share the same
+/// `divergence_height`, regardless of whether `canonical_hash` or `fork_hash`
+/// differ (different emitters populate different subsets of the CorrelationKey).
+/// Events with `correlation_key = None` remain singletons per Decision D.
 fn has_other_signals(events: &[DiagnosticEvent], fork_ev: &DiagnosticEvent) -> bool {
     let signal_kinds = [
         EventKind::ForkBlockReceived,
@@ -322,12 +334,15 @@ fn has_other_signals(events: &[DiagnosticEvent], fork_ev: &DiagnosticEvent) -> b
     match &fork_ev.correlation_key {
         None => {
             // All-None correlation_key: singleton group. No other events share it.
-            // BUT we still check for other fork/recovery events with None correlation_key
-            // that are NOT the fork event itself.
             // Per Decision D: treat as singleton, so no other signals.
             false
         }
         Some(corr_key) => {
+            // Extract the divergence_height for grouping (primary correlation
+            // dimension). If the key has no divergence_height, fall back to
+            // exact equality (legacy behavior).
+            let div_height = corr_key.divergence_height;
+
             for e in events {
                 if e.event_id == fork_ev.event_id {
                     continue;
@@ -335,9 +350,17 @@ fn has_other_signals(events: &[DiagnosticEvent], fork_ev: &DiagnosticEvent) -> b
                 if !signal_kinds.contains(&e.kind) {
                     continue;
                 }
-                // Check if this event shares the same correlation_key
                 if let Some(ref other_ck) = e.correlation_key {
-                    if other_ck == corr_key {
+                    // INC-I-090 D3: match on divergence_height when both sides
+                    // have it set, rather than requiring full CorrelationKey
+                    // equality. This allows RecoveryClassifyCall events (which
+                    // only know divergence_height) to group with
+                    // ForkBlockReceived events (which also carry fork_hash).
+                    let same_group = match (div_height, other_ck.divergence_height) {
+                        (Some(h1), Some(h2)) => h1 == h2,
+                        _ => other_ck == corr_key,
+                    };
+                    if same_group {
                         return true;
                     }
                 }

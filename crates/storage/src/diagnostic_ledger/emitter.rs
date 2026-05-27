@@ -40,6 +40,14 @@ impl std::error::Error for EmitError {}
 pub trait DiagnosticEmitter: Send + Sync {
     /// Record a diagnostic event. Must be non-blocking in production.
     fn record(&self, event: DiagnosticEvent) -> Result<(), EmitError>;
+
+    /// Total events dropped due to ring-buffer overflow since start.
+    ///
+    /// Default returns 0 (NoOp/Mock emitters never drop). The
+    /// `AsyncChannelEmitter` overrides this with its internal counter.
+    fn dropped_count(&self) -> u64 {
+        0
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -161,11 +169,6 @@ impl AsyncChannelEmitter {
         let receiver = DiagnosticReceiver { buf };
         (emitter, receiver)
     }
-
-    /// Return the total number of events dropped due to buffer overflow.
-    pub fn dropped_count(&self) -> u64 {
-        self.dropped.load(Ordering::Relaxed)
-    }
 }
 
 impl DiagnosticEmitter for AsyncChannelEmitter {
@@ -178,5 +181,10 @@ impl DiagnosticEmitter for AsyncChannelEmitter {
         }
         buf.push_back(event);
         Ok(())
+    }
+
+    /// Return the total number of events dropped due to buffer overflow.
+    fn dropped_count(&self) -> u64 {
+        self.dropped.load(Ordering::Relaxed)
     }
 }
