@@ -432,6 +432,36 @@ pub const BASE_BLOCK_SIZE: usize = 2_000_000;
 /// Maximum block size cap (Era 4+) in bytes
 pub const MAX_BLOCK_SIZE_CAP: usize = 32_000_000;
 
+/// Gossipsub message-envelope overhead margin above the block payload (bytes).
+///
+/// The gossip transmit cap must exceed the raw block payload by at least the
+/// signed-message framing (signature, author key, seqno), topic string, and
+/// protobuf framing. 64 KiB is far larger than any real envelope (<1 KiB),
+/// chosen for safety. Used by the network crate's `GOSSIP_MAX_TRANSMIT_SIZE`.
+pub const GOSSIP_ENVELOPE_MARGIN: usize = 64 * 1024;
+
+// ---------------------------------------------------------------------------
+// Block builder data budgets (INC-I-091)
+//
+// These are BUILDER POLICY ONLY — not consensus. Validation still accepts any
+// block up to `max_block_size(height)`. The producer caps how full it builds a
+// block, gated by `NetworkParams::large_block_activation_height`:
+//   - Before the AH: legacy ~1 MB budget, so blocks fit the legacy 1 MiB gossip
+//     cap and propagate to not-yet-upgraded nodes (one-by-one rollout safety).
+//   - At/after the AH (once the fleet carries the raised gossip cap): ~2 MB
+//     budget → ~300 TPS.
+// ---------------------------------------------------------------------------
+
+/// Pre-AH mempool pre-selection budget (bytes). Preserves historical behavior.
+pub const LEGACY_BLOCK_SELECT_BUDGET: usize = 1_000_000;
+/// Pre-AH per-block user-data cap (bytes). Preserves historical behavior.
+pub const LEGACY_BLOCK_USER_DATA_BUDGET: usize = 1_048_576;
+/// Post-AH mempool pre-selection budget (bytes). Leaves headroom under
+/// `BASE_BLOCK_SIZE` (2 MB validation limit) for coinbase/rewards/header.
+pub const LARGE_BLOCK_SELECT_BUDGET: usize = 1_900_000;
+/// Post-AH per-block user-data cap (bytes). Matches the select budget.
+pub const LARGE_BLOCK_USER_DATA_BUDGET: usize = 1_900_000;
+
 /// Calculate max block size for a given height.
 ///
 /// Block size doubles every era (~4 years):

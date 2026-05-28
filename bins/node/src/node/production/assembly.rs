@@ -153,14 +153,29 @@ impl Node {
         // Add transactions from mempool (validate covenant conditions before inclusion)
         // REQ-PROD-001: Time-bounded block building — 60% of slot for TX validation,
         // leaving 40% for VDF, signing, and gossip broadcast.
-        // Block data budget: max 1MB of user transaction data per block.
-        // Prevents gossip latency from large NFTs (408KB NFT caused missed slots).
-        // Builder policy only — not consensus. Large txs stay in mempool for next block.
-        const MAX_BLOCK_USER_DATA: usize = 1_048_576; // 1MB
+        // Block data budget: builder policy only — NOT consensus. Large txs
+        // stay in mempool for the next block. Gated by
+        // large_block_activation_height (INC-I-091): before the AH, blocks stay
+        // ~1 MB so they fit the legacy 1 MiB gossip cap and propagate to
+        // not-yet-upgraded nodes during a one-by-one rollout; at/after the AH
+        // (once the fleet carries the raised gossip cap) blocks may grow to
+        // ~2 MB → ~300 TPS.
+        let large_block_ah = self.config.network.params().large_block_activation_height;
+        let (select_budget, max_block_user_data) = if height >= large_block_ah {
+            (
+                doli_core::consensus::LARGE_BLOCK_SELECT_BUDGET,
+                doli_core::consensus::LARGE_BLOCK_USER_DATA_BUDGET,
+            )
+        } else {
+            (
+                doli_core::consensus::LEGACY_BLOCK_SELECT_BUDGET,
+                doli_core::consensus::LEGACY_BLOCK_USER_DATA_BUDGET,
+            )
+        };
 
         let mempool_txs: Vec<Transaction> = {
             let mempool = self.mempool.read().await;
-            mempool.select_for_block(1_000_000) // Up to ~1MB of transactions per block
+            mempool.select_for_block(select_budget)
         };
         {
             let deadline = Instant::now() + Duration::from_millis(self.params.slot_duration * 600); // 60% of slot
@@ -261,16 +276,16 @@ impl Node {
                 if unique_conflict {
                     continue;
                 }
-                // Block data budget: skip tx if it would exceed 1MB of user data
+                // Block data budget: skip tx if it would exceed the gated cap
                 let tx_size: usize = tx.outputs.iter().map(|o| o.extra_data.len()).sum::<usize>()
                     + bincode::serialized_size(tx).unwrap_or(0) as usize;
-                if cumulative_user_bytes + tx_size > MAX_BLOCK_USER_DATA {
+                if cumulative_user_bytes + tx_size > max_block_user_data {
                     debug!(
                         "Block data budget: skipping tx {} ({} bytes, budget {}/{})",
                         tx.hash(),
                         tx_size,
                         cumulative_user_bytes,
-                        MAX_BLOCK_USER_DATA
+                        max_block_user_data
                     );
                     continue;
                 }

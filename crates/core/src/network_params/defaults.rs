@@ -170,6 +170,13 @@ impl NetworkParams {
                 // Spec: specs/oracle-structural-anchored-economics.md §1.10.
                 oracle_activation_height: u64::MAX,
 
+                // Large blocks (>1 MB) → ~300 TPS (INC-I-091). u64::MAX =
+                // frozen. Operator pins a concrete future height in a SEPARATE
+                // commit, ONLY AFTER the fleet carries the raised gossip cap.
+                // Builder policy (block content), not consensus. IMMUTABLE
+                // once crossed (INC-I-054).
+                large_block_activation_height: u64::MAX,
+
                 // Gossip mesh: universal config for all network sizes.
                 // mesh_n=12 keeps all peers in eager-push for networks ≤24 (mesh_n_high),
                 // and scales to 1000+ nodes at ~3-4 hops with 10s slot margin.
@@ -304,6 +311,11 @@ impl NetworkParams {
                 // `DOLI_ORACLE_ACTIVATION_HEIGHT`.
                 oracle_activation_height: 20_099,
 
+                // Large blocks (>1 MB) → ~300 TPS (INC-I-091). Testnet = 0
+                // (always-on): small controllable fleet, lighter deploy, no AH
+                // needed. Override via `DOLI_LARGE_BLOCK_ACTIVATION_HEIGHT`.
+                large_block_activation_height: 0,
+
                 // INC-I-015: Gossip mesh sized to max_peers for eager push to ALL
                 // connected peers. At mesh_n=12, blocks reach 12 peers immediately
                 // and the rest via IHAVE (lazy, 1+ heartbeat delay). At 120+ nodes
@@ -425,6 +437,11 @@ impl NetworkParams {
                 // that need the oracle live override via
                 // `DOLI_ORACLE_ACTIVATION_HEIGHT` in their .env.
                 oracle_activation_height: u64::MAX,
+
+                // Large blocks (>1 MB) → ~300 TPS (INC-I-091). Devnet = 0
+                // (always-on for local development). Override via
+                // `DOLI_LARGE_BLOCK_ACTIVATION_HEIGHT`.
+                large_block_activation_height: 0,
 
                 // Gossip mesh: same universal config as mainnet.
                 // With --no-dht, mesh_n_high=24 keeps all devnet peers in mesh.

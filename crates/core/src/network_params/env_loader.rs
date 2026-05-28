@@ -358,6 +358,16 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
                 defaults.oracle_activation_height,
             )
         },
+        // Large blocks → ~300 TPS (INC-I-091). Mainnet locked (pinned in a
+        // separate commit). Testnet/devnet may override for experiments.
+        large_block_activation_height: if is_mainnet {
+            defaults.large_block_activation_height
+        } else {
+            env_parse(
+                "DOLI_LARGE_BLOCK_ACTIVATION_HEIGHT",
+                defaults.large_block_activation_height,
+            )
+        },
         // Gossip mesh (locked for mainnet - wrong values could isolate nodes)
         mesh_n: if is_mainnet {
             defaults.mesh_n

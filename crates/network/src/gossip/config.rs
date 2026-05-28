@@ -11,6 +11,21 @@ use super::{
     PRODUCERS_TOPIC, TRANSACTIONS_TOPIC, VOTES_TOPIC,
 };
 
+/// Maximum message size that gossipsub will transmit (bytes).
+///
+/// Any block whose serialized size exceeds this value is rejected by
+/// `gossipsub.publish()` with `PublishError::MessageTooLarge`. This cap MUST
+/// be >= the largest block the network produces (`BASE_BLOCK_SIZE` for Era 0)
+/// plus envelope overhead, or consensus-valid blocks cannot propagate via
+/// gossip (INC-I-091). Sized to fit a full Era-0 block; Era 1+ blocks (>2 MB)
+/// require announce-then-fetch propagation, not a larger gossip message.
+///
+/// Production gates actual block size to ~1 MB until
+/// `NetworkParams::large_block_activation_height`, so raising this cap is a
+/// transport-only change that ships safely to all nodes ahead of the AH.
+pub const GOSSIP_MAX_TRANSMIT_SIZE: usize =
+    doli_core::consensus::BASE_BLOCK_SIZE + doli_core::consensus::GOSSIP_ENVELOPE_MARGIN;
+
 /// Maximum mesh_n value. Prevents over-meshing in very large networks.
 const MESH_N_CAP: usize = 50;
 
@@ -85,8 +100,8 @@ pub fn new_gossipsub(keypair: &Keypair, mesh: &MeshConfig) -> Result<Gossipsub, 
         // History
         .history_length(5)
         .history_gossip(3)
-        // Message size limit (1MB for blocks)
-        .max_transmit_size(1024 * 1024)
+        // Message size limit — uses named constant for testability
+        .max_transmit_size(GOSSIP_MAX_TRANSMIT_SIZE)
         // Duplicate cache time
         .duplicate_cache_time(Duration::from_secs(60))
         // Flood publish: send OUR messages to ALL peers, not just mesh.

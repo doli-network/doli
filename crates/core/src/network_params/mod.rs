@@ -412,6 +412,24 @@ pub struct NetworkParams {
     /// Spec: `specs/oracle-structural-anchored-economics.md` §1.10.
     pub oracle_activation_height: u64,
 
+    /// Activation height for large (>1 MB) blocks (INC-I-091).
+    ///
+    /// At/after this height, producers may build blocks up to ~2 MB
+    /// (`LARGE_BLOCK_SELECT_BUDGET`), unlocking ~300 TPS. Before it, blocks
+    /// stay ~1 MB (`LEGACY_BLOCK_SELECT_BUDGET`) so they fit the legacy 1 MiB
+    /// gossip cap and propagate to not-yet-upgraded nodes during a one-by-one
+    /// rollout. This is BUILDER POLICY (block content), NOT a validation rule —
+    /// validation already accepts up to `max_block_size(height)`. Laggard
+    /// nodes that miss a large block on gossip recover it via orphan-chase
+    /// over the 16 MB sync path, so they fall behind rather than fork.
+    ///
+    /// Defaults: mainnet `u64::MAX` (frozen — operator pins a concrete future
+    /// height in a SEPARATE commit, only after the fleet carries the raised
+    /// gossip cap), testnet `0` (always-on — small controllable fleet, lighter
+    /// deploy), devnet `0`. Mainnet IMMUTABILITY rule (INC-I-054): once
+    /// crossed, never move forward.
+    pub large_block_activation_height: u64,
+
     // === Gossip mesh ===
     /// Target number of peers in gossipsub mesh per topic
     pub mesh_n: usize,
