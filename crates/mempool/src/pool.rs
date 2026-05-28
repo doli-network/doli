@@ -263,6 +263,7 @@ impl Mempool {
             )
             .with_defi_activation_height(self.network.params().defi_activation_height)
             .with_amm_activation_height(self.network.params().amm_activation_height)
+            .with_inc_i_092_activation_height(self.network.params().inc_i_092_activation_height)
             .with_oracle_activation_height(self.network.params().oracle_activation_height)
             .with_oracle_sunset_triggered(
                 self.oracle_sunset_triggered
@@ -274,11 +275,32 @@ impl Mempool {
         // covenant evaluation for conditioned outputs. Reject early to prevent
         // mempool DoS with unsigned or wrongly-signed transactions.
         let sig_height = self.network.params().sig_verification_height;
+        let inc_i_092_height = self.network.params().inc_i_092_activation_height;
         for (i, input) in tx.inputs.iter().enumerate() {
             let outpoint = Outpoint::new(input.prev_tx_hash, input.output_index);
             if let Some(entry) = utxo_set.get(&outpoint) {
+                use doli_core::transaction::{OutputType, TxType};
+                // INC-I-092 RC-A: the Pool UTXO consumed as input 0 of an AMM
+                // Swap/AddLiquidity/RemoveLiquidity is authorized by the
+                // constant-product invariant (enforced in
+                // validate_transaction_with_utxos), NOT by a signature. A Pool
+                // output is non-conditioned with pubkey_hash = pool_id, so the
+                // signature path can never be satisfied. Mirror the consensus
+                // carve-out (validation/utxo.rs) so admission and block
+                // validation agree. Gated by inc_i_092_activation_height.
+                let amm_pool_input_exempt = current_height >= inc_i_092_height
+                    && i == 0
+                    && matches!(
+                        tx.tx_type,
+                        TxType::Swap | TxType::AddLiquidity | TxType::RemoveLiquidity
+                    )
+                    && entry.output.output_type == OutputType::Pool;
+
                 // Normal/Bond: verify pubkey presence + hash match + signature
-                if !entry.output.output_type.is_conditioned() && current_height >= sig_height {
+                if !entry.output.output_type.is_conditioned()
+                    && current_height >= sig_height
+                    && !amm_pool_input_exempt
+                {
                     let pk = match &input.public_key {
                         Some(pk) => pk,
                         None => {
@@ -534,6 +556,7 @@ impl Mempool {
             )
             .with_defi_activation_height(self.network.params().defi_activation_height)
             .with_amm_activation_height(self.network.params().amm_activation_height)
+            .with_inc_i_092_activation_height(self.network.params().inc_i_092_activation_height)
             .with_oracle_activation_height(self.network.params().oracle_activation_height)
             .with_oracle_sunset_triggered(
                 self.oracle_sunset_triggered

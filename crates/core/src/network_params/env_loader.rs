@@ -368,6 +368,18 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
                 defaults.large_block_activation_height,
             )
         },
+        // INC-I-092 DeFi spend-path fixes. Mainnet locked (pinned with AMM
+        // activation in a separate commit). Testnet/devnet may override for
+        // local activation testing (e.g. pin a near-current height to verify
+        // e2e this session).
+        inc_i_092_activation_height: if is_mainnet {
+            defaults.inc_i_092_activation_height
+        } else {
+            env_parse(
+                "DOLI_INC_I_092_ACTIVATION_HEIGHT",
+                defaults.inc_i_092_activation_height,
+            )
+        },
         // Gossip mesh (locked for mainnet - wrong values could isolate nodes)
         mesh_n: if is_mainnet {
             defaults.mesh_n

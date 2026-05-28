@@ -150,7 +150,26 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
         // Verify spending conditions (signature for Normal/Bond, condition evaluator for others).
         // ZKSettle authorizes spending via a ZK proof, not a signature — the
         // proof is verified after the input loop (see `verify_zk_settlement`).
-        if !(tx.tx_type == TxType::ZKSettle && utxo.output.output_type == OutputType::ZKRollup) {
+        let zk_exempt =
+            tx.tx_type == TxType::ZKSettle && utxo.output.output_type == OutputType::ZKRollup;
+
+        // INC-I-092 RC-A: the Pool UTXO consumed as input 0 of an AMM
+        // Swap/AddLiquidity/RemoveLiquidity is authorized by the constant-product
+        // invariant (enforced below in this fn), NOT by a signature. A Pool
+        // output is non-conditioned with `pubkey_hash = pool_id` (a domain hash,
+        // not a key hash), so the signature path can NEVER be satisfied — without
+        // this carve-out every pool is permanently unspendable. Gated by
+        // `inc_i_092_activation_height` so a mixed fleet does not fork: below the
+        // height the legacy (rejecting) behavior is preserved.
+        let amm_pool_input_exempt = ctx.current_height >= ctx.inc_i_092_activation_height
+            && i == 0
+            && matches!(
+                tx.tx_type,
+                TxType::Swap | TxType::AddLiquidity | TxType::RemoveLiquidity
+            )
+            && utxo.output.output_type == OutputType::Pool;
+
+        if !zk_exempt && !amm_pool_input_exempt {
             verify_input_conditions(
                 tx,
                 input,
@@ -712,6 +731,70 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
                     ));
                 }
             }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // -- CreatePool: declared reserves must be backed by net inputs (RC-B)
+    // ------------------------------------------------------------------
+    // INC-I-092 RC-B: a Pool output carries reserve_a (DOLI) and reserve_b
+    // (asset_b) in `extra_data`, NOT in `Output.amount` (amount = 0). The
+    // native DOLI-conservation check therefore never sees the declared
+    // reserves, so a CreatePool could declare reserve_a = u64::MAX while
+    // funding ~nothing — minting phantom DOLI into pool state. Enforce that the
+    // declared reserves are backed by the NET inputs the tx actually consumes:
+    //   net DOLI in     = native_input        - native_change_out      >= reserve_a
+    //   net asset_b in  = asset_b token_input - asset_b token_change   >= reserve_b
+    // Gated by inc_i_092_activation_height: below it the legacy (unchecked)
+    // behavior is preserved so a mixed fleet does not fork.
+    if tx.tx_type == TxType::CreatePool && ctx.current_height >= ctx.inc_i_092_activation_height {
+        let pool_meta = tx.outputs[0]
+            .pool_metadata()
+            .ok_or_else(|| ValidationError::InvalidPool("invalid pool metadata".to_string()))?;
+
+        // Net DOLI funded = native inputs - native change outputs.
+        // `total_input` (native) and `tx.total_output()` (native) were already
+        // summed above; their difference is the DOLI absorbed by the pool.
+        let native_change_out = tx.total_output();
+        let net_doli_in = total_input.saturating_sub(native_change_out);
+        if net_doli_in < pool_meta.reserve_a {
+            return Err(ValidationError::InvalidPool(format!(
+                "[ERRTX-AMM003] declared reserve_a {} exceeds net DOLI funded {} \
+                 (native_input={} - change={}) — reserves must be backed by inputs",
+                pool_meta.reserve_a, net_doli_in, total_input, native_change_out
+            )));
+        }
+
+        // Net asset_b funded = asset_b FungibleAsset inputs - asset_b change.
+        let mut token_in: u128 = 0;
+        for input in &tx.inputs {
+            if let Some(in_utxo) = utxo_provider.get_utxo(&input.prev_tx_hash, input.output_index) {
+                if in_utxo.output.output_type == OutputType::FungibleAsset {
+                    if let Some((asset_id, _, _)) = in_utxo.output.fungible_asset_metadata() {
+                        if asset_id == pool_meta.asset_b_id {
+                            token_in += in_utxo.output.amount as u128;
+                        }
+                    }
+                }
+            }
+        }
+        let mut token_change: u128 = 0;
+        for out in tx.outputs.iter().skip(1) {
+            if out.output_type == OutputType::FungibleAsset {
+                if let Some((asset_id, _, _)) = out.fungible_asset_metadata() {
+                    if asset_id == pool_meta.asset_b_id {
+                        token_change += out.amount as u128;
+                    }
+                }
+            }
+        }
+        let net_token_in = token_in.saturating_sub(token_change);
+        if net_token_in < pool_meta.reserve_b as u128 {
+            return Err(ValidationError::InvalidPool(format!(
+                "[ERRTX-AMM003] declared reserve_b {} exceeds net asset_b funded {} \
+                 — reserves must be backed by inputs",
+                pool_meta.reserve_b, net_token_in
+            )));
         }
     }
 

@@ -179,6 +179,13 @@ impl NetworkParams {
                 // IMMUTABLE once crossed (INC-I-054) — never move forward.
                 large_block_activation_height: 308_980,
 
+                // INC-I-092 DeFi spend-path fixes (RC-A pool-input auth, RC-B
+                // pool_create funding). FROZEN at u64::MAX: AMM is not yet
+                // activated on mainnet, so the operator pins this in the SAME
+                // window AMM is enabled — AMM goes live already-correct, no
+                // separate consensus event. IMMUTABLE once crossed (INC-I-054).
+                inc_i_092_activation_height: u64::MAX,
+
                 // Gossip mesh: universal config for all network sizes.
                 // mesh_n=12 keeps all peers in eager-push for networks ≤24 (mesh_n_high),
                 // and scales to 1000+ nodes at ~3-4 hops with 10s slot margin.
@@ -318,6 +325,14 @@ impl NetworkParams {
                 // needed. Override via `DOLI_LARGE_BLOCK_ACTIVATION_HEIGHT`.
                 large_block_activation_height: 0,
 
+                // INC-I-092 DeFi spend-path fixes. Testnet AMM is LIVE at
+                // h=20099 and the broader local net carries ~30 EXTERNAL
+                // producers (no synchronized stop-all), so the fix is gated at
+                // a near-future height with rolling-deploy lead time rather
+                // than always-on. Pinned h=23_688 (~3.4h lead from h≈22_478 at
+                // 10s slots). Override via `DOLI_INC_I_092_ACTIVATION_HEIGHT`.
+                inc_i_092_activation_height: 23_688,
+
                 // INC-I-015: Gossip mesh sized to max_peers for eager push to ALL
                 // connected peers. At mesh_n=12, blocks reach 12 peers immediately
                 // and the rest via IHAVE (lazy, 1+ heartbeat delay). At 120+ nodes
@@ -444,6 +459,10 @@ impl NetworkParams {
                 // (always-on for local development). Override via
                 // `DOLI_LARGE_BLOCK_ACTIVATION_HEIGHT`.
                 large_block_activation_height: 0,
+
+                // INC-I-092 DeFi spend-path fixes: always-on for local
+                // development (devnet is ephemeral, no rolling-deploy concern).
+                inc_i_092_activation_height: 0,
 
                 // Gossip mesh: same universal config as mainnet.
                 // With --no-dht, mesh_n_high=24 keeps all devnet peers in mesh.

@@ -217,6 +217,21 @@ pub struct ValidationContext {
     /// set; the M4 validator's height gate fires first and the
     /// sunset gate is unreachable.
     pub oracle_sunset_triggered: bool,
+    /// INC-I-092 DeFi spend-path correctness fixes activation height.
+    ///
+    /// At/after this height (strict `>=`):
+    ///   - RC-A: the Pool UTXO consumed as input 0 of a `Swap`/`AddLiquidity`/
+    ///     `RemoveLiquidity` is EXEMPT from signature verification (authorized
+    ///     by the AMM invariant, not a key). Below it the Pool input takes the
+    ///     legacy signature path (and fails `PubkeyHashMismatch` — preserved so
+    ///     a mixed fleet does not fork).
+    ///   - RC-B: `CreatePool` must back its declared `reserve_a` with net DOLI
+    ///     inputs, reject duplicate `pool_id`, and reject a zero-amount creator
+    ///     LPShare.
+    ///
+    /// Sourced from `NetworkParams::inc_i_092_activation_height`. Default
+    /// `u64::MAX` (disabled). Independent of [`Self::amm_activation_height`].
+    pub inc_i_092_activation_height: u64,
 }
 
 impl ValidationContext {
@@ -256,6 +271,7 @@ impl ValidationContext {
             amm_activation_height: u64::MAX,
             oracle_activation_height: u64::MAX,
             oracle_sunset_triggered: false,
+            inc_i_092_activation_height: u64::MAX,
         }
     }
 
@@ -305,6 +321,13 @@ impl ValidationContext {
     #[must_use]
     pub fn with_oracle_sunset_triggered(mut self, triggered: bool) -> Self {
         self.oracle_sunset_triggered = triggered;
+        self
+    }
+
+    /// Set the INC-I-092 DeFi spend-path fixes activation height (see field doc).
+    #[must_use]
+    pub fn with_inc_i_092_activation_height(mut self, height: u64) -> Self {
+        self.inc_i_092_activation_height = height;
         self
     }
 

@@ -430,6 +430,35 @@ pub struct NetworkParams {
     /// crossed, never move forward.
     pub large_block_activation_height: u64,
 
+    /// Activation height for the INC-I-092 DeFi spend-path correctness fixes.
+    ///
+    /// At/after this height (strict `>=`), three consensus-validation changes
+    /// take effect together:
+    ///   - RC-A: the Pool UTXO consumed by a `Swap`/`AddLiquidity`/
+    ///     `RemoveLiquidity` (input 0) is EXEMPT from signature verification.
+    ///     A Pool output is `pubkey_hash = pool_id` (a domain hash, not a key
+    ///     hash), so the signature path can never be satisfied — the pool was
+    ///     permanently unspendable. Authorization is the AMM invariant
+    ///     (`new_k >= old_k` + conservation, already enforced), mirroring the
+    ///     ZKRollup proof-as-signature carve-out.
+    ///   - RC-B: `CreatePool` must back its declared `reserve_a` with net DOLI
+    ///     inputs (closes the `u64::MAX` reserve inflation), reject a duplicate
+    ///     `pool_id` at validation (no silent burn), and reject a zero-amount
+    ///     creator LPShare.
+    ///
+    /// Three-question gate (INC-I-075): Q1=YES (Swap/CreatePool are
+    /// user-submittable), Q2=NO, Q3=NO (accept↔reject flips both directions)
+    /// → activation height REQUIRED. Independent of `amm_activation_height`.
+    ///
+    /// Defaults: mainnet `u64::MAX` (frozen — AMM itself is not yet activated
+    /// on mainnet; the operator pins this in the same window AMM is enabled,
+    /// so AMM goes live already-correct). testnet a concrete near-future height
+    /// (AMM is LIVE there at h=20099; ~30 external producers → no synchronized
+    /// stop-all, so a rolling-deploy gate + lead time is mandatory). devnet `0`
+    /// (ephemeral, correct from genesis). Mainnet IMMUTABILITY (INC-I-054):
+    /// once crossed, never move forward.
+    pub inc_i_092_activation_height: u64,
+
     // === Gossip mesh ===
     /// Target number of peers in gossipsub mesh per topic
     pub mesh_n: usize,
