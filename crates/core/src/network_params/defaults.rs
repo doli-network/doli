@@ -285,17 +285,24 @@ impl NetworkParams {
                 // `ValidationContext::with_defi_activation_height`.
                 defi_activation_height: u64::MAX,
 
-                // AMM Foundations M1: testnet default is u64::MAX
-                // (placeholder, operator pins concrete height at deploy
-                // time per HC-6). Local activation experiments override
-                // via `DOLI_AMM_ACTIVATION_HEIGHT`. Independent of
-                // defi_activation_height (HC-6 / INC-I-075).
-                amm_activation_height: u64::MAX,
+                // AMM Foundations M1: testnet DeFi launch pinned to
+                // h=20_099 (2026-05-28, ~28 min lead from h≈19,926 at
+                // deploy). Forward activation — above the chain head, so
+                // NO genesis reset (CLAUDE.md rule #0). Once the testnet
+                // chain crosses this height it is IMMUTABLE — never move it
+                // forward (INC-I-054). Independent of defi_activation_height
+                // (HC-6 / INC-I-075). Local experiments still override via
+                // `DOLI_AMM_ACTIVATION_HEIGHT`.
+                amm_activation_height: 20_099,
 
-                // Phase 2.1 Oracle: frozen by default on testnet (mirrors
-                // mainnet). Local activation experiments override via
+                // Phase 2.1 Oracle: testnet DeFi launch pinned to h=20_099
+                // (2026-05-28, same launch height as AMM). Forward
+                // activation — above the chain head, NO genesis reset
+                // (CLAUDE.md rule #0). Once crossed it is IMMUTABLE
+                // (INC-I-054). Independent of amm/defi heights (HC-3 / HC-6).
+                // Local experiments override via
                 // `DOLI_ORACLE_ACTIVATION_HEIGHT`.
-                oracle_activation_height: u64::MAX,
+                oracle_activation_height: 20_099,
 
                 // INC-I-015: Gossip mesh sized to max_peers for eager push to ALL
                 // connected peers. At mesh_n=12, blocks reach 12 peers immediately

@@ -29,7 +29,9 @@ use super::NetworkParams;
 static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
 // OUTPUT CONTRACT: fn NetworkParams::defaults(network) — oracle_activation_height field
-//   O1: return.oracle_activation_height — u64, u64::MAX (oracle frozen)
+//   O1: return.oracle_activation_height — u64. Mainnet/Devnet = u64::MAX
+//       (oracle frozen); Testnet = 20_099 (DeFi launch pinned 2026-05-28,
+//       forward activation above chain head — see defaults.rs).
 // PATHS:
 //   P1: Network::Mainnet
 //   P2: Network::Testnet
@@ -53,9 +55,8 @@ fn test_oracle_activation_height_defaults_to_u64_max() {
         "mainnet oracle_activation_height MUST default to u64::MAX (oracle frozen)"
     );
     assert_eq!(
-        testnet.oracle_activation_height,
-        u64::MAX,
-        "testnet oracle_activation_height MUST default to u64::MAX (oracle frozen)"
+        testnet.oracle_activation_height, 20_099,
+        "testnet oracle_activation_height MUST be 20_099 (DeFi launch pinned 2026-05-28)"
     );
     assert_eq!(
         devnet.oracle_activation_height,
