@@ -170,12 +170,14 @@ impl NetworkParams {
                 // Spec: specs/oracle-structural-anchored-economics.md §1.10.
                 oracle_activation_height: u64::MAX,
 
-                // Large blocks (>1 MB) → ~300 TPS (INC-I-091). u64::MAX =
-                // frozen. Operator pins a concrete future height in a SEPARATE
-                // commit, ONLY AFTER the fleet carries the raised gossip cap.
-                // Builder policy (block content), not consensus. IMMUTABLE
-                // once crossed (INC-I-054).
-                large_block_activation_height: u64::MAX,
+                // Large blocks (>1 MB) → ~300 TPS (INC-I-091). Mainnet pinned
+                // to h=308_980 (2026-05-28). Forward activation above the chain
+                // head — NO genesis reset (CLAUDE.md rule #0). Roll the gossip-
+                // cap binary to the full fleet BEFORE this height; laggards that
+                // miss a large block recover it via orphan-chase over the 16 MB
+                // sync path. Builder policy (block content), not consensus.
+                // IMMUTABLE once crossed (INC-I-054) — never move forward.
+                large_block_activation_height: 308_980,
 
                 // Gossip mesh: universal config for all network sizes.
                 // mesh_n=12 keeps all peers in eager-push for networks ≤24 (mesh_n_high),
