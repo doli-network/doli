@@ -422,6 +422,7 @@ Returns unspent transaction outputs for an address.
 | nft | NFT metadata: `tokenId`, `contentHash`, optional `royalty` (only for NFT outputs) |
 | asset | Fungible asset metadata: `assetId`, `totalSupply`, `ticker` (only for FungibleAsset outputs) |
 | bridge | Bridge HTLC metadata: `targetChain`, `targetChainId`, `targetAddress`, optional `counterHash` (only for BridgeHTLC outputs) |
+| poolId | Source pool id (hex) of an LP-share UTXO (only for lpShare outputs). Lets clients select LP UTXOs by pool and avoid the foreign-pool spend the node rejects with `[MPTX007]`. |
 
 **Output Types:**
 | Type | Description |

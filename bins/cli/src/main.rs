@@ -29,6 +29,7 @@ mod cmd_upgrade;
 mod cmd_wallet;
 mod commands;
 mod common;
+mod lp_select;
 mod parsers;
 mod paths;
 mod rpc_client;

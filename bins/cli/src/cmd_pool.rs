@@ -1245,23 +1245,28 @@ async fn cmd_pool_remove(
 
     let mut inputs = vec![Input::new(pool_tx_hash, pool_output_index)];
 
-    // Find LP share UTXOs to burn
+    // Find LP share UTXOs to burn — restricted to the TARGET pool. A wallet may hold
+    // LP shares from multiple pools; spending a foreign-pool LP UTXO is rejected by the
+    // node with [MPTX007] (INC-I-095). select_lp_share_utxos filters by embedded pool_id.
     let all_utxos = rpc.get_utxos(&from_pubkey_hash, false).await?;
+    let candidates: Vec<crate::lp_select::LpCandidate> = all_utxos
+        .iter()
+        .map(|u| crate::lp_select::LpCandidate {
+            output_type: u.output_type.as_str(),
+            pool_id: u.pool_id.as_deref(),
+            amount: u.amount,
+            tx_hash: u.tx_hash.as_str(),
+            output_index: u.output_index,
+        })
+        .collect();
+    let selected_lp =
+        crate::lp_select::select_lp_share_utxos(&candidates, pool_id_hex, shares_to_burn)?;
     let mut lp_total = 0u64;
-    for utxo in &all_utxos {
-        if utxo.output_type == "lpShare" && lp_total < shares_to_burn {
-            let prev_hash = Hash::from_hex(&utxo.tx_hash)
-                .ok_or_else(|| anyhow::anyhow!("Invalid LP UTXO tx_hash"))?;
-            inputs.push(Input::new(prev_hash, utxo.output_index));
-            lp_total += utxo.amount;
-        }
-    }
-    if lp_total < shares_to_burn {
-        anyhow::bail!(
-            "Insufficient LP shares. Available: {}, Required: {}",
-            lp_total,
-            shares_to_burn
-        );
+    for c in &selected_lp {
+        let prev_hash =
+            Hash::from_hex(c.tx_hash).ok_or_else(|| anyhow::anyhow!("Invalid LP UTXO tx_hash"))?;
+        inputs.push(Input::new(prev_hash, c.output_index));
+        lp_total += c.amount;
     }
 
     // Calculate fee: base + per-byte for pool output extra_data

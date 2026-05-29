@@ -38,6 +38,10 @@ pub struct UtxoResponse {
     /// Bridge HTLC metadata (only for BridgeHTLC output types)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bridge: Option<serde_json::Value>,
+    /// LP pool id (hex) — only for LPShare output types. Lets clients select LP UTXOs
+    /// by their source pool and avoid the foreign-pool spend rejected by [MPTX007] (INC-I-095).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pool_id: Option<String>,
 }
 
 /// Chain info response

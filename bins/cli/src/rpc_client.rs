@@ -84,6 +84,10 @@ pub struct Utxo {
     /// FungibleAsset metadata (assetId, totalSupply, ticker) — only for fungibleAsset outputs
     #[serde(default)]
     pub asset: Option<serde_json::Value>,
+    /// LP pool id (hex) — only for lpShare outputs. Identifies which pool this LP UTXO
+    /// belongs to, so `pool remove` never spends a foreign-pool LP UTXO (INC-I-095).
+    #[serde(default)]
+    pub pool_id: Option<String>,
 }
 
 impl Utxo {

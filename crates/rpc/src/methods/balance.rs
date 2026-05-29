@@ -158,6 +158,12 @@ impl RpcContext {
                     None
                 };
 
+                let pool_id = if entry.output.output_type == doli_core::OutputType::LPShare {
+                    entry.output.lp_share_metadata().map(|p| p.to_hex())
+                } else {
+                    None
+                };
+
                 UtxoResponse {
                     tx_hash: outpoint.tx_hash.to_hex(),
                     output_index: outpoint.index,
@@ -171,6 +177,7 @@ impl RpcContext {
                     nft,
                     asset,
                     bridge,
+                    pool_id,
                 }
             })
             .collect();
@@ -242,6 +249,12 @@ impl RpcContext {
                     None
                 };
 
+                let pool_id = if output.output_type == doli_core::OutputType::LPShare {
+                    output.lp_share_metadata().map(|p| p.to_hex())
+                } else {
+                    None
+                };
+
                 responses.push(UtxoResponse {
                     tx_hash: tx_hash_hex.clone(),
                     output_index: idx as u32,
@@ -255,6 +268,7 @@ impl RpcContext {
                     nft,
                     asset,
                     bridge: None,
+                    pool_id,
                 });
             }
         }
