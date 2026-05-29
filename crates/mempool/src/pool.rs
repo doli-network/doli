@@ -5,7 +5,9 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use crypto::Hash;
 use doli_core::consensus::ConsensusParams;
 use doli_core::network::Network;
-use doli_core::validation::{validate_transaction, ValidationContext, ValidationError};
+use doli_core::validation::{
+    validate_transaction, verify_amm_conservation, ValidationContext, ValidationError,
+};
 use doli_core::{BlockHeight, Transaction, TxType};
 use serde_json::Value;
 use storage::{Outpoint, UtxoSet};
@@ -264,6 +266,7 @@ impl Mempool {
             .with_defi_activation_height(self.network.params().defi_activation_height)
             .with_amm_activation_height(self.network.params().amm_activation_height)
             .with_inc_i_092_activation_height(self.network.params().inc_i_092_activation_height)
+            .with_inc_i_096_activation_height(self.network.params().inc_i_096_activation_height)
             .with_oracle_activation_height(self.network.params().oracle_activation_height)
             .with_oracle_sunset_triggered(
                 self.oracle_sunset_triggered
@@ -376,31 +379,97 @@ impl Mempool {
             }
         }
 
-        // Calculate fee by looking up inputs
+        // Calculate fee by looking up inputs (also collects ancestor set for CPFP)
         let (total_input, ancestors) = self.calculate_inputs(&tx, utxo_set, current_height)?;
         let total_output = tx.total_output();
 
-        if total_input < total_output {
-            return Err(MempoolError::InvalidTransaction(format!(
-                "[MPTX008] insufficient funds: input={} < output={} (deficit={})",
-                total_input,
-                total_output,
-                total_output - total_input
-            )));
-        }
+        // INC-I-096 M3 (DC-2 parity): AMM value conservation via the SAME shared
+        // function used by consensus (validation/amm.rs). Above the gate, we resolve
+        // consumed outputs and delegate ALL conservation + fee derivation to
+        // verify_amm_conservation. Below the gate: bit-identical pre-INC-I-096
+        // behavior (naive total_input < total_output).
+        let inc_i_096_height = self.network.params().inc_i_096_activation_height;
+        let is_amm_pool_tx = matches!(
+            tx.tx_type,
+            TxType::Swap | TxType::AddLiquidity | TxType::RemoveLiquidity
+        ) && !tx.inputs.is_empty()
+            && !tx.outputs.is_empty();
+        let amm_gated = is_amm_pool_tx && current_height >= inc_i_096_height;
 
-        let fee = total_input - total_output;
+        let fee = if amm_gated {
+            // Resolve consumed outputs from UTXO set (mirrors consensus
+            // utxo.rs:205-209). Order must match tx.inputs.
+            let mut consumed_outputs = Vec::with_capacity(tx.inputs.len());
+            for input in &tx.inputs {
+                let outpoint = Outpoint::new(input.prev_tx_hash, input.output_index);
+                if let Some(entry) = utxo_set.get(&outpoint) {
+                    consumed_outputs.push(entry.output.clone());
+                } else if let Some(parent_entry) = self.entries.get(&input.prev_tx_hash) {
+                    if let Some(output) = parent_entry.tx.outputs.get(input.output_index as usize) {
+                        consumed_outputs.push(output.clone());
+                    } else {
+                        return Err(MempoolError::MissingInput(
+                            input.prev_tx_hash,
+                            input.output_index,
+                        ));
+                    }
+                } else {
+                    return Err(MempoolError::MissingInput(
+                        input.prev_tx_hash,
+                        input.output_index,
+                    ));
+                }
+            }
+
+            // Delegate to the shared verify_amm_conservation (E1/E2/E3 +
+            // proportional + k-invariant + FM-S11). Parity: same function,
+            // same inputs, same outputs as consensus (FILTER-4).
+            let result = verify_amm_conservation(tx.tx_type, &consumed_outputs, &tx.outputs)
+                .map_err(|e| match e {
+                    ValidationError::InsufficientFunds { inputs, outputs } => {
+                        MempoolError::InvalidTransaction(format!(
+                            "[MPTX008] insufficient funds: input={} < output={} (deficit={})",
+                            inputs,
+                            outputs,
+                            outputs.saturating_sub(inputs)
+                        ))
+                    }
+                    other => MempoolError::Validation(other),
+                })?;
+
+            // Fee = doli_surplus (OPTION B): the DOLI left over after per-asset
+            // conservation. This is the correct AMM fee — no bespoke pool-aware
+            // calculation needed.
+            result.doli_surplus
+        } else {
+            if total_input < total_output {
+                return Err(MempoolError::InvalidTransaction(format!(
+                    "[MPTX008] insufficient funds: input={} < output={} (deficit={})",
+                    total_input,
+                    total_output,
+                    total_output - total_input
+                )));
+            }
+            total_input - total_output
+        };
         let fee_rate = fee.checked_div(tx_size as u64).unwrap_or(0);
 
-        // Require fee >= minimum_fee (base + per-byte for output extra_data)
-        let min_fee = tx.minimum_fee();
-        if fee < min_fee {
-            return Err(MempoolError::FeeTooLow(fee, min_fee));
-        }
+        // AMM pool txs are EXEMPT from the min-fee / min-fee-rate floors, mirroring
+        // consensus (validation/utxo.rs fee_exempt): their DOLI moves into/out of
+        // reserves tracked in extra_data, so the per-byte fee floor is inapplicable.
+        // Conservation is already guaranteed by verify_amm_conservation. Exempting
+        // here keeps the mempool from rejecting a tx that consensus would accept.
+        if !amm_gated {
+            // Require fee >= minimum_fee (base + per-byte for output extra_data)
+            let min_fee = tx.minimum_fee();
+            if fee < min_fee {
+                return Err(MempoolError::FeeTooLow(fee, min_fee));
+            }
 
-        // Check minimum fee rate (if configured)
-        if self.policy.min_fee_rate > 0 && fee_rate < self.policy.min_fee_rate {
-            return Err(MempoolError::FeeTooLow(fee_rate, self.policy.min_fee_rate));
+            // Check minimum fee rate (if configured)
+            if self.policy.min_fee_rate > 0 && fee_rate < self.policy.min_fee_rate {
+                return Err(MempoolError::FeeTooLow(fee_rate, self.policy.min_fee_rate));
+            }
         }
 
         // Check ancestor limits
@@ -557,6 +626,7 @@ impl Mempool {
             .with_defi_activation_height(self.network.params().defi_activation_height)
             .with_amm_activation_height(self.network.params().amm_activation_height)
             .with_inc_i_092_activation_height(self.network.params().inc_i_092_activation_height)
+            .with_inc_i_096_activation_height(self.network.params().inc_i_096_activation_height)
             .with_oracle_activation_height(self.network.params().oracle_activation_height)
             .with_oracle_sunset_triggered(
                 self.oracle_sunset_triggered
