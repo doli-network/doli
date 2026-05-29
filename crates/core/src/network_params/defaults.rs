@@ -170,14 +170,16 @@ impl NetworkParams {
                 // Spec: specs/oracle-structural-anchored-economics.md §1.10.
                 oracle_activation_height: u64::MAX,
 
-                // Large blocks (>1 MB) → ~300 TPS (INC-I-091). Mainnet pinned
-                // to h=308_980 (2026-05-28). Forward activation above the chain
-                // head — NO genesis reset (CLAUDE.md rule #0). Roll the gossip-
-                // cap binary to the full fleet BEFORE this height; laggards that
-                // miss a large block recover it via orphan-chase over the 16 MB
-                // sync path. Builder policy (block content), not consensus.
-                // IMMUTABLE once crossed (INC-I-054) — never move forward.
-                large_block_activation_height: 308_980,
+                // Large blocks (>1 MB) → ~300 TPS (INC-I-091). u64::MAX =
+                // frozen. The previous pin (h=308_980) was overtaken by the
+                // chain head (319_012 at 2026-05-29) because the gossip-cap
+                // binary was never deployed. Operator pins a concrete future
+                // height in a SEPARATE commit, ONLY AFTER the gossip-cap binary
+                // is on the full fleet (mainnet must be running a binary that
+                // knows about this gate before activation). Builder policy
+                // (block content), not consensus. IMMUTABLE once crossed
+                // (INC-I-054).
+                large_block_activation_height: u64::MAX,
 
                 // INC-I-092 DeFi spend-path fixes (RC-A pool-input auth, RC-B
                 // pool_create funding). FROZEN at u64::MAX: AMM is not yet
