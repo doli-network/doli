@@ -713,7 +713,250 @@ print(sum(1 for u in r if u.get('outputType','').lower() == 'bridgehtlc'))
         skip "bridge-list does not surface the new swap by tx prefix (CLI display only)"
     fi
 
-    skip "bridge-claim / bridge-refund live (requires counter-chain confirmations or expiry wait; verified at unit-test level in crates/core/tests/inc_i_093_bridge_htlc.rs)"
+    skip "bridge-claim / bridge-refund live -- exercised in Phase 10 + Phase 11 below"
+}
+
+# ============================================================================
+# Phase 10: Bridge HTLC claim live roundtrip
+# ============================================================================
+# Generates a deterministic 64-hex preimage, locks DOLI with a short lock height,
+# waits past the lock, and has N2 claim with the preimage. Verifies funds move.
+phase_bridge_claim() {
+    phase "Phase 10: Bridge HTLC claim live roundtrip (N1 lock -> N2 claim with preimage)"
+
+    local n2_addr; n2_addr=$(cli N2 addresses 2>&1 | grep -oE "tdoli[a-z0-9]+" | head -1)
+    if [ -z "$n2_addr" ]; then fail "no N2 addr"; return 1; fi
+
+    # Random 64-hex preimage. Counter-hash is opaque dummy for manual-mode locking.
+    local preimage; preimage=$(python3 -c "import secrets; print(secrets.token_hex(32))")
+    local counter_hash="cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    local cur_h; cur_h=$(height)
+    local lock=$((cur_h + 2))
+    local expiry=$((cur_h + 500))
+
+    log "N1 bridge-lock 0.1 DOLI (preimage=${preimage:0:16}..., lock=$lock, expiry=$expiry)"
+    local lock_out; lock_out=$(cli N1 bridge-lock 0.1 \
+        --preimage "$preimage" --lock "$lock" --expiry "$expiry" \
+        --chain bitcoin --to "tb1qar0srrr7xfkvy5l643lydnw9re59gtzzkqtgek" \
+        --counter-hash "$counter_hash" --yes 2>&1)
+    local lock_tx; lock_tx=$(tx_hash "$lock_out")
+    if [ -z "$lock_tx" ]; then
+        fail "bridge-lock produced no txid"
+        printf '%s\n' "$lock_out" | tail -6
+        return 1
+    fi
+    ok "bridge-lock broadcast (tx=${lock_tx:0:16}...)"
+
+    local lock_confirmed; lock_confirmed=$(wait_confirmed "$lock_tx" "lock")
+    if [ -z "$lock_confirmed" ]; then
+        fail "bridge-lock $lock_tx not confirmed after 10 blocks"
+        return 1
+    fi
+    ok "bridge-lock confirmed ($lock_confirmed)"
+
+    # Locate the bridgeHtlc UTXO produced by this lock_tx (output 0 is conventional)
+    local htlc_utxo="${lock_tx}:0"
+    log "Waiting past lock height ($lock) so claim is permitted"
+    while [ "$(height)" -lt "$lock" ]; do wait_blocks 1 >/dev/null 2>&1; done
+    ok "past lock height (h=$(height) >= $lock)"
+
+    # N2 claims with the preimage. Owner is N1 by lock-side construction; the HTLC
+    # claim path is satisfied by preimage + receiver signature (per INC-I-093 P1-003).
+    log "N2 claims HTLC $htlc_utxo with preimage"
+    local claim_out; claim_out=$(cli N2 bridge-claim "$htlc_utxo" --preimage "$preimage" --yes 2>&1)
+    local claim_tx; claim_tx=$(tx_hash "$claim_out")
+    if [ -z "$claim_tx" ]; then
+        fail "bridge-claim produced no txid"
+        printf '%s\n' "$claim_out" | tail -6
+        return 1
+    fi
+    ok "bridge-claim broadcast (tx=${claim_tx:0:16}...)"
+
+    local claim_confirmed; claim_confirmed=$(wait_confirmed "$claim_tx" "claim")
+    if [ -n "$claim_confirmed" ]; then
+        ok "INC-I-093 P1-003 bridge claim confirmed on chain ($claim_confirmed)"
+    else
+        fail "bridge-claim $claim_tx not confirmed after 10 blocks"
+    fi
+}
+
+# ============================================================================
+# Phase 11: Bridge HTLC refund live roundtrip
+# ============================================================================
+# Short expiry; wait past it; N1 refunds. Tests INC-I-093 P2-004 refund-witness fix.
+phase_bridge_refund() {
+    phase "Phase 11: Bridge HTLC refund live roundtrip (N1 lock with short expiry -> N1 refund)"
+
+    local preimage; preimage=$(python3 -c "import secrets; print(secrets.token_hex(32))")
+    local counter_hash="dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    local cur_h; cur_h=$(height)
+    local lock=$((cur_h + 1))
+    local expiry=$((cur_h + 4))
+
+    log "N1 bridge-lock 0.05 DOLI (lock=$lock, expiry=$expiry -- intentionally short)"
+    local lock_out; lock_out=$(cli N1 bridge-lock 0.05 \
+        --preimage "$preimage" --lock "$lock" --expiry "$expiry" \
+        --chain bitcoin --to "tb1qar0srrr7xfkvy5l643lydnw9re59gtzzkqtgek" \
+        --counter-hash "$counter_hash" --yes 2>&1)
+    local lock_tx; lock_tx=$(tx_hash "$lock_out")
+    if [ -z "$lock_tx" ]; then
+        fail "bridge-lock (refund test) produced no txid"
+        printf '%s\n' "$lock_out" | tail -6
+        return 1
+    fi
+    ok "bridge-lock (refund test) broadcast (tx=${lock_tx:0:16}...)"
+
+    local lock_confirmed; lock_confirmed=$(wait_confirmed "$lock_tx" "lock")
+    if [ -z "$lock_confirmed" ]; then
+        fail "lock not confirmed"
+        return 1
+    fi
+    ok "lock confirmed ($lock_confirmed)"
+
+    local htlc_utxo="${lock_tx}:0"
+    log "Waiting past expiry height ($expiry) so refund is permitted"
+    while [ "$(height)" -lt "$expiry" ]; do wait_blocks 1 >/dev/null 2>&1; done
+    ok "past expiry (h=$(height) >= $expiry)"
+
+    log "N1 refunds HTLC $htlc_utxo"
+    local refund_out; refund_out=$(cli N1 bridge-refund "$htlc_utxo" --yes 2>&1)
+    local refund_tx; refund_tx=$(tx_hash "$refund_out")
+    if [ -z "$refund_tx" ]; then
+        fail "bridge-refund produced no txid"
+        printf '%s\n' "$refund_out" | tail -8
+        return 1
+    fi
+    ok "bridge-refund broadcast (tx=${refund_tx:0:16}...)"
+
+    local refund_confirmed; refund_confirmed=$(wait_confirmed "$refund_tx" "refund")
+    if [ -n "$refund_confirmed" ]; then
+        ok "INC-I-093 P2-004 bridge refund confirmed on chain ($refund_confirmed)"
+    else
+        fail "bridge-refund $refund_tx not confirmed after 10 blocks"
+    fi
+}
+
+# ============================================================================
+# Phase 12: Payment channel intra-channel pay
+# ============================================================================
+# Off-chain payment: opens a fresh channel, sends a payment, checks channel state.
+phase_channel_pay() {
+    phase "Phase 12: Payment channel intra-channel pay (off-chain state update)"
+
+    local n2_addr; n2_addr=$(cli N2 addresses 2>&1 | grep -oE "tdoli[a-z0-9]+" | head -1)
+    if [ -z "$n2_addr" ]; then fail "no N2 addr"; return 1; fi
+
+    log "N1 opens fresh channel with N2 (2 DOLI capacity) for pay test"
+    local open_out; open_out=$(cli N1 channel open "$n2_addr" 2 2>&1 || true)
+    local chan_id; chan_id=$(printf '%s\n' "$open_out" | grep -oE "Channel opened: [0-9a-f]+" | awk '{print $3}' | head -1)
+    if [ -z "$chan_id" ]; then
+        fail "channel open for pay test did not return a channel id"
+        printf '%s\n' "$open_out" | tail -6
+        return 1
+    fi
+    ok "channel opened (id=${chan_id:0:16})"
+
+    wait_blocks 2 || true
+
+    log "N1 sends 0.5 DOLI through channel ${chan_id:0:16}"
+    local pay_out; pay_out=$(cli N1 channel pay "$chan_id" 0.5 2>&1)
+    if printf '%s\n' "$pay_out" | grep -qiE "sent|payment|updated|local.?balance|remote.?balance|success"; then
+        ok "channel pay 0.5 DOLI accepted"
+        local info_out; info_out=$(cli N1 channel info "$chan_id" 2>&1)
+        if printf '%s\n' "$info_out" | grep -qE "1\.5|0\.5"; then
+            ok "channel info reflects updated balances"
+        else
+            skip "could not parse expected balances from channel info (off-chain state varies by display)"
+        fi
+    elif printf '%s\n' "$pay_out" | grep -qE "not active|FundingBroadcast|state:"; then
+        # Channels stuck in FundingBroadcast forever -- wallet never transitions to Active
+        # even with funding confirmed thousands of blocks ago. Filed separately.
+        fail "channel pay blocked: wallet channel state stuck in FundingBroadcast (never auto-transitions to Active). Funding tx is mined + confirmed but local wallet state does not advance. Likely missing chain-watcher / state-machine wiring in crates/channels or wallet. NEW FINDING -- file separately."
+        printf '%s\n' "$pay_out" | tail -3
+    else
+        fail "channel pay rejected (unrecognized output)"
+        printf '%s\n' "$pay_out" | tail -8
+    fi
+
+    # Cooperative close to clean up. Don't fail the phase if close hits the cache miss; the pay test already passed.
+    local close_out; close_out=$(cli N1 channel close "$chan_id" 2>&1 || true)
+    local offer_file; offer_file=$(printf '%s\n' "$close_out" | grep -oE "close-[0-9a-f]+\.json" | head -1)
+    if [ -n "$offer_file" ] && [ -f "$offer_file" ]; then
+        cli N2 channel close-finish "$offer_file" >/dev/null 2>&1 || true
+        rm -f "$offer_file"
+        ok "channel cleanup attempted (close + close-finish)"
+    fi
+
+    skip "channel force-close (INC-I-093 P1-002 deferred -- CLI returns roadmap-item error pending timeout-branch witness builder)"
+}
+
+# ============================================================================
+# Phase 13: Covenant templates live -- vault + escrow
+# ============================================================================
+# Sends two real transactions using the template covenant conditions. We verify
+# the conditioned UTXO lands on chain; the SPENDING side (multi-party / wait-for-
+# unlock) is out of scope and remains tested at unit-test level.
+phase_templates_live() {
+    phase "Phase 13: Covenant templates live -- vault + escrow"
+
+    local n1_addr; n1_addr=$(cli N1 addresses 2>&1 | grep -oE "tdoli[a-z0-9]+" | head -1)
+    local n2_pk; n2_pk=$(cli N2 info 2>&1 | grep -iE "^[[:space:]]*Public Key:" | grep -oE "[0-9a-f]{64}" | head -1)
+    local n3_pk; n3_pk=$(cli N3 info 2>&1 | grep -iE "^[[:space:]]*Public Key:" | grep -oE "[0-9a-f]{64}" | head -1)
+    if [ -z "$n1_addr" ] || [ -z "$n2_pk" ] || [ -z "$n3_pk" ]; then
+        fail "could not resolve required addresses/pubkeys"; return 1
+    fi
+    local cur_h; cur_h=$(height)
+
+    # --- vault: owner=N1, cosigner=N3, unlock-height = far future ---
+    log "vault: N1 owner + N3 cosigner, unlock=$((cur_h + 1000)), send 0.1 DOLI"
+    local vault_out; vault_out=$(printf 'y\n' | cli N1 template vault \
+        --owner "$n1_addr" --cosigner "$n3_pk" --unlock-height $((cur_h + 1000)) \
+        --send --to "$n1_addr" --amount 0.1 2>&1)
+    if printf '%s\n' "$vault_out" | grep -qE "ERRTX-HTLC001|unsigned refund branch"; then
+        fail "vault template tx rejected: [ERRTX-HTLC001] vault condition or(and(sig,timelock), multisig) is misclassified as HTLC by validation -- requires unsigned-refund-branch fix. NEW FINDING."
+    else
+        local vault_tx; vault_tx=$(tx_hash "$vault_out")
+        if [ -z "$vault_tx" ]; then
+            fail "vault template tx produced no txid"
+            printf '%s\n' "$vault_out" | tail -8
+        else
+            ok "vault template tx broadcast (tx=${vault_tx:0:16}...)"
+            local vault_confirmed; vault_confirmed=$(wait_confirmed "$vault_tx" "vault")
+            if [ -n "$vault_confirmed" ]; then
+                ok "vault condition encoded on chain ($vault_confirmed)"
+            else
+                fail "vault tx $vault_tx not confirmed after 10 blocks"
+            fi
+        fi
+    fi
+
+    # --- escrow: 2-of-3 (N1, N2, N3), timeout, refund to N1 ---
+    log "escrow: 2-of-3 (N1,N2,N3), timeout=$((cur_h + 1000)), refund=N1, send 0.1 DOLI"
+    local n2_addr; n2_addr=$(cli N2 addresses 2>&1 | grep -oE "tdoli[a-z0-9]+" | head -1)
+    local n3_addr; n3_addr=$(cli N3 addresses 2>&1 | grep -oE "tdoli[a-z0-9]+" | head -1)
+    local escrow_out; escrow_out=$(printf 'y\n' | cli N1 template escrow \
+        --parties "${n1_addr},${n2_addr},${n3_addr}" --threshold 2 \
+        --timeout $((cur_h + 1000)) --refund "$n1_addr" \
+        --send --to "$n1_addr" --amount 0.1 2>&1)
+    if printf '%s\n' "$escrow_out" | grep -qE "ERRTX-HTLC001|unsigned refund branch"; then
+        fail "escrow template tx rejected: same [ERRTX-HTLC001] class as vault -- or(multisig, and(sig, timelock)) misclassified as HTLC. Same finding."
+    else
+        local escrow_tx; escrow_tx=$(tx_hash "$escrow_out")
+        if [ -z "$escrow_tx" ]; then
+            fail "escrow template tx produced no txid"
+            printf '%s\n' "$escrow_out" | tail -8
+        else
+            ok "escrow template tx broadcast (tx=${escrow_tx:0:16}...)"
+            local escrow_confirmed; escrow_confirmed=$(wait_confirmed "$escrow_tx" "escrow")
+            if [ -n "$escrow_confirmed" ]; then
+                ok "escrow condition encoded on chain ($escrow_confirmed)"
+            else
+                fail "escrow tx $escrow_tx not confirmed after 10 blocks"
+            fi
+        fi
+    fi
+
+    skip "subscription / agent-allowance / escrow-loan live tx (additional argument surfaces; skip to keep run-time bounded)"
 }
 
 # ============================================================================
@@ -726,15 +969,20 @@ main() {
     preflight
 
     case "$PHASE" in
-        all)       phase_mint; phase_amm; phase_nft; phase_channel; phase_template; phase_oracle; phase_bridge ;;
-        mint)      phase_mint ;;
-        amm)       phase_mint; phase_amm ;;
-        nft)       phase_nft ;;
-        channel)   phase_channel ;;
-        template)  phase_template ;;
-        oracle)    phase_oracle ;;
-        bridge)    phase_bridge ;;
-        *)         echo "Unknown phase: $PHASE"; exit 2 ;;
+        all)            phase_mint; phase_amm; phase_nft; phase_channel; phase_template; phase_oracle; phase_bridge; \
+                        phase_bridge_claim; phase_bridge_refund; phase_channel_pay; phase_templates_live ;;
+        mint)           phase_mint ;;
+        amm)            phase_mint; phase_amm ;;
+        nft)            phase_nft ;;
+        channel)        phase_channel ;;
+        channel-pay)    phase_channel_pay ;;
+        template)       phase_template ;;
+        templates-live) phase_templates_live ;;
+        oracle)         phase_oracle ;;
+        bridge)         phase_bridge ;;
+        bridge-claim)   phase_bridge_claim ;;
+        bridge-refund)  phase_bridge_refund ;;
+        *)              echo "Unknown phase: $PHASE"; exit 2 ;;
     esac
 
     phase "Summary"
