@@ -5,7 +5,7 @@ use crate::types::Amount;
 use crypto::Hash;
 
 use super::{
-    validate_transaction_skip_registration_vdf, UtxoInfo, UtxoProvider, ValidationContext,
+    amm, validate_transaction_skip_registration_vdf, UtxoInfo, UtxoProvider, ValidationContext,
     ValidationError,
 };
 
@@ -86,8 +86,20 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
         return Ok(());
     }
 
-    // Validate each input
+    // Validate each input and collect resolved outputs for AMM conservation.
     let mut total_input: Amount = 0;
+    // Collect resolved consumed outputs for AMM conservation check (M2).
+    // Only populated for AMM pool txs to avoid unnecessary allocations.
+    let is_amm_pool_tx = matches!(
+        tx.tx_type,
+        TxType::Swap | TxType::AddLiquidity | TxType::RemoveLiquidity
+    ) && !tx.inputs.is_empty()
+        && !tx.outputs.is_empty();
+    let mut consumed_outputs: Vec<Output> = if is_amm_pool_tx {
+        Vec::with_capacity(tx.inputs.len())
+    } else {
+        Vec::new()
+    };
 
     for (i, input) in tx.inputs.iter().enumerate() {
         // Validate committed_output_count
@@ -189,6 +201,12 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
                 }
             })?;
         }
+
+        // Collect resolved output for AMM conservation (reuses the UTXO we
+        // already looked up — no redundant provider call).
+        if is_amm_pool_tx {
+            consumed_outputs.push(utxo.output.clone());
+        }
     }
 
     // Verify inputs >= outputs (difference is fee).
@@ -209,7 +227,27 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
         );
     if !is_state_only_tx {
         let total_output = tx.total_output();
-        if total_input < total_output {
+
+        // INC-I-096 M2: AMM value conservation via shared verify_amm_conservation().
+        //
+        // Above the gate (height >= inc_i_096_activation_height) for AMM pool txs:
+        // delegate ALL per-asset conservation (E1 DOLI, E2 token_b, E3 LP supply),
+        // proportional binding, k-invariant, and FM-S11 asset_id cross-check to
+        // the shared function in validation/amm.rs. This REPLACES the naive
+        // `total_input < total_output` check for these txs (it would falsely
+        // reject valid RemoveLiquidity / B-to-A Swap where DOLI exits reserves).
+        //
+        // Below the gate: the naive check is preserved bit-identical for mixed-fleet
+        // safety (INV-COMPAT-001). The per-type structural checks (pool_id stable,
+        // reserves shape, k-invariant) below still run at all heights as defense-
+        // in-depth; they are harmless above the gate because amm.rs is strictly
+        // tighter.
+        if is_amm_pool_tx && ctx.current_height >= ctx.inc_i_096_activation_height {
+            // Delegate to verify_amm_conservation (E1/E2/E3 + proportional +
+            // k-invariant + FM-S11). On Ok, AMM value-flow is validated —
+            // skip the naive native conservation (it can't see reserve deltas).
+            amm::verify_amm_conservation(tx.tx_type, &consumed_outputs, &tx.outputs)?;
+        } else if total_input < total_output {
             return Err(ValidationError::InsufficientFunds {
                 inputs: total_input,
                 outputs: total_output,
@@ -541,12 +579,10 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
     }
 
     // -- Pool swap invariant and token conservation --
-    // When swapping through a pool, verify:
-    // 1. First input is a Pool UTXO (the old pool state)
-    // 2. First output is a Pool UTXO (the new pool state)
-    // 3. Constant product invariant: new_k >= old_k
-    // 4. Token conservation: tokens leaving reserves go to user output (and vice versa)
-    // 5. Pool ID must be preserved (same pool)
+    // Structural defense-in-depth checks that predate the INC-I-096 redesign.
+    // These run at ALL heights (below-gate: sole conservation guard; above-gate:
+    // secondary defense behind verify_amm_conservation). Behavior is bit-identical
+    // to the original pre-INC-I-096 code (INV-COMPAT-001).
     if tx.tx_type == TxType::Swap {
         let first_input = &tx.inputs[0];
         let old_pool_utxo = utxo_provider
@@ -630,12 +666,11 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
                 )));
             }
         } else if new_meta.reserve_b > old_meta.reserve_b {
-            // B->A swap: tokens went in, DOLI came out
+            // B->A swap: tokens went in, DOLI came out.
             let doli_out_from_pool = old_meta.reserve_a - new_meta.reserve_a;
-            // Find total Normal DOLI output to user (skip output[0] Pool, skip change)
-            // The DOLI out from reserves should appear as Normal outputs to the swapper
-            // We can't distinguish swap output from change here, but we can verify
-            // the reserve decrease is bounded: doli out <= old_reserve_a
+            // Trivial sanity: DOLI released cannot exceed total reserve_a.
+            // Full conservation is enforced by verify_amm_conservation (above gate)
+            // or by the native balance check (below gate).
             if doli_out_from_pool > old_meta.reserve_a {
                 return Err(ValidationError::InvalidSwap(
                     "DOLI output exceeds pool reserve_a".to_string(),
@@ -652,6 +687,8 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
     }
 
     // -- AddLiquidity invariant --
+    // Structural checks: pool_id preserved, reserves increased, LP supply increased.
+    // These run at ALL heights (defense-in-depth).
     if tx.tx_type == TxType::AddLiquidity {
         let first_input = &tx.inputs[0];
         let old_pool_utxo = utxo_provider
@@ -694,6 +731,11 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
     }
 
     // -- RemoveLiquidity invariant --
+    // Structural checks: pool_id preserved, reserves decreased, LP supply decreased.
+    // These run at ALL heights (defense-in-depth). The FLAWED INC-I-096 proportional
+    // binding block that derived shares_burned from attacker-declared new_total_lp
+    // (P5 drain) has been REMOVED — verify_amm_conservation handles proportional
+    // binding via E3 (LP-supply EXACT bind from consumed LPShare inputs).
     if tx.tx_type == TxType::RemoveLiquidity {
         let first_input = &tx.inputs[0];
         let old_pool_utxo = utxo_provider
