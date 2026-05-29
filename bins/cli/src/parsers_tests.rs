@@ -612,11 +612,25 @@ fn output_type_mapping_hashlock() {
 
 #[test]
 fn output_type_mapping_or() {
+    // INC-I-098: an Or with no Hashlock branch is NOT an HTLC — it maps to the generic
+    // covenant type (Multisig). Only Or trees containing a Hashlock map to HTLC.
     let cond = doli_core::Condition::Or(
         Box::new(doli_core::Condition::Timelock(1)),
         Box::new(doli_core::Condition::TimelockExpiry(2)),
     );
-    assert_eq!(condition_to_output_type(&cond), doli_core::OutputType::HTLC);
+    assert_eq!(
+        condition_to_output_type(&cond),
+        doli_core::OutputType::Multisig
+    );
+
+    let htlc = doli_core::Condition::Or(
+        Box::new(doli_core::Condition::And(
+            Box::new(doli_core::Condition::Hashlock(crypto::Hash::default())),
+            Box::new(doli_core::Condition::Timelock(1)),
+        )),
+        Box::new(doli_core::Condition::TimelockExpiry(2)),
+    );
+    assert_eq!(condition_to_output_type(&htlc), doli_core::OutputType::HTLC);
 }
 
 #[test]
@@ -641,6 +655,69 @@ fn output_type_mapping_timelocks() {
         condition_to_output_type(&doli_core::Condition::TimelockExpiry(1)),
         doli_core::OutputType::Vesting
     );
+}
+
+// ── INC-I-098 reproduction ───────────────────────────────────────────────
+// OUTPUT CONTRACT: fn condition_to_output_type(&Condition) -> OutputType
+//   O1 (return value) — the only observable output (pure fn, no params mutated).
+//   PATHS: the `Or(_, _)` arm of the match.
+// INPUT PARTITIONS for the Or arm:
+//   P1: Or that IS a real HTLC (contains a Hashlock branch) → must map to HTLC.
+//   P2: Or that is NOT an HTLC (no Hashlock: vault, escrow, escrow_loan) → must map to a
+//       non-HTLC covenant type (Multisig); tagging it HTLC mis-routes node validation into
+//       the AUDIT-BRIDGE-001 has_signed_refund rule → ERRTX-HTLC001 false rejection.
+// MATRIX: O1 × {P1, P2}. P1 = htlc_payment test; P2 = vault/escrow/escrow_loan tests.
+
+#[test]
+fn inc_i_098_vault_maps_to_non_htlc() {
+    // P2: vault = Or(And(Sig,Timelock), Multisig) — no Hashlock, must NOT be HTLC.
+    let cond = doli_core::conditions::templates::vault(
+        crypto::Hash::default(),
+        crypto::Hash::default(),
+        1000,
+    );
+    let ty = condition_to_output_type(&cond);
+    assert_ne!(
+        ty,
+        doli_core::OutputType::HTLC,
+        "vault is not an HTLC (no hashlock branch) and must not be tagged HTLC"
+    );
+    assert_eq!(ty, doli_core::OutputType::Multisig);
+}
+
+#[test]
+fn inc_i_098_htlc_payment_stays_htlc() {
+    // P1: htlc_payment = Or(And(Hashlock,Timelock), And(Sig,Expiry)) — real HTLC.
+    let cond = doli_core::conditions::templates::htlc_payment(
+        crypto::Hash::default(),
+        100,
+        200,
+        crypto::Hash::default(),
+    );
+    assert_eq!(
+        condition_to_output_type(&cond),
+        doli_core::OutputType::HTLC,
+        "true HTLCs (with a hashlock branch) must remain HTLC-tagged"
+    );
+}
+
+#[test]
+fn inc_i_098_escrow_maps_to_non_htlc() {
+    // P2: escrow = Or(Multisig, And(Sig,Expiry)) — no Hashlock.
+    let cond = doli_core::conditions::templates::escrow(
+        vec![crypto::Hash::default(), crypto::Hash::default()],
+        2,
+        500,
+        crypto::Hash::default(),
+    );
+    assert_ne!(condition_to_output_type(&cond), doli_core::OutputType::HTLC);
+}
+
+#[test]
+fn inc_i_098_escrow_loan_maps_to_non_htlc() {
+    // P2: escrow_loan = Or(And(guards), And(Sig,deadline)) — no Hashlock.
+    let cond = doli_core::conditions::templates::escrow_loan(crypto::Hash::default(), 100, 800);
+    assert_ne!(condition_to_output_type(&cond), doli_core::OutputType::HTLC);
 }
 
 #[test]

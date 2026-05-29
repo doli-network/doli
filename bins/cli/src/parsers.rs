@@ -317,8 +317,16 @@ pub(crate) fn condition_to_output_type(cond: &doli_core::Condition) -> doli_core
         doli_core::Condition::Multisig { .. } => doli_core::OutputType::Multisig,
         doli_core::Condition::Hashlock(_) => doli_core::OutputType::Hashlock,
         doli_core::Condition::Or(_, _) => {
-            // HTLC is Or(And(Hashlock, Timelock), TimelockExpiry)
-            doli_core::OutputType::HTLC
+            // A true HTLC is Or(And(Hashlock, Timelock), And(Signature, TimelockExpiry)) —
+            // its defining feature is a Hashlock branch. Other `Or` covenants (vault,
+            // escrow, escrow_loan) carry no hashlock and must NOT be tagged HTLC, or the
+            // node applies the AUDIT-BRIDGE-001 signed-refund rule and rejects them
+            // with ERRTX-HTLC001 (INC-I-098). Fall back to the generic covenant type.
+            if condition_contains_hashlock(cond) {
+                doli_core::OutputType::HTLC
+            } else {
+                doli_core::OutputType::Multisig
+            }
         }
         doli_core::Condition::And(_, _) => {
             // Vesting is And(Signature, Timelock)
@@ -335,6 +343,23 @@ pub(crate) fn condition_to_output_type(cond: &doli_core::Condition) -> doli_core
         | doli_core::Condition::RecipientGuard { .. }
         | doli_core::Condition::MaxDeltaGuard { .. }
         | doli_core::Condition::ReserveRatioGuard { .. } => doli_core::OutputType::Multisig,
+    }
+}
+
+/// Recursively check whether a condition tree contains a `Hashlock` node.
+///
+/// Used to distinguish a real HTLC (which has a hashlock claim branch) from other
+/// `Or`-shaped covenants such as vault/escrow/escrow_loan. (INC-I-098)
+fn condition_contains_hashlock(cond: &doli_core::Condition) -> bool {
+    match cond {
+        doli_core::Condition::Hashlock(_) => true,
+        doli_core::Condition::And(a, b) | doli_core::Condition::Or(a, b) => {
+            condition_contains_hashlock(a) || condition_contains_hashlock(b)
+        }
+        doli_core::Condition::Threshold { conditions, .. } => {
+            conditions.iter().any(condition_contains_hashlock)
+        }
+        _ => false,
     }
 }
 
