@@ -335,9 +335,17 @@ impl NetworkParams {
                 // than always-on. Pinned h=23_688 (~3.4h lead from h≈22_478 at
                 // 10s slots). Override via `DOLI_INC_I_092_ACTIVATION_HEIGHT`.
                 inc_i_092_activation_height: 23_688,
-                // INC-I-096 pool-aware conservation. PLACEHOLDER:
-                // operator pins concrete height in a separate commit.
-                inc_i_096_activation_height: u64::MAX,
+                // INC-I-096 pool-aware AMM value-conservation. Testnet AMM is
+                // LIVE at h=20099 (predates this fix) and the local net carries
+                // ~30 EXTERNAL producers (no synchronized stop-all), so the fix
+                // is gated at a near-future height with rolling-deploy lead time.
+                // Pinned h=27_679. Forward activation — above the chain head,
+                // NO genesis reset (CLAUDE.md rule #0); once crossed it is
+                // IMMUTABLE (INC-I-054). inc_i_096 > amm here is the documented
+                // testnet grandfather (INV-DEPLOY-002): below the gate the naive
+                // conservation rejects — never drains — AMM DOLI-outflow txs.
+                // Override via `DOLI_INC_I_096_ACTIVATION_HEIGHT`.
+                inc_i_096_activation_height: 27_679,
 
                 // INC-I-015: Gossip mesh sized to max_peers for eager push to ALL
                 // connected peers. At mesh_n=12, blocks reach 12 peers immediately
