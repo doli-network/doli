@@ -41,6 +41,7 @@ Index path: `.claude/skills/SKILLS-INDEX.md`
 | bridge | `bridge/SKILL.md` | cross-chain atomic swaps, BTC/ETH, watcher daemon, HTLC | Watcher::run, SwapRecord, SwapState | 7 source files | Largely standalone; external chain integrations |
 | mempool | `mempool/SKILL.md` | tx pool, CPFP, fee validation, replace-by-fee | Mempool::new, MempoolEntry, MempoolPolicy | 4 source files | In-memory; feeds block production |
 | testing | `testing/SKILL.md` | integration tests, e2e, fuzz, simulation, benchmarks, test utilities | TestNode, Node::new_for_test, test_two_nodes_sync_basic | 30 test files | Consumes all domain crates |
+| defi | `defi/SKILL.md` | AMM (pool/swap/add/remove), bridge HTLC live roundtrips, channel pay+close, covenant templates (vault/escrow/htlc-payment), Phase 2.1 oracle, MintAsset/NFT, covenant witness mechanics, activation gates (inc_i_092/095/096) | scripts/test_defi_e2e.sh (13 phases), cmd_pool.rs, cmd_bridge.rs, cmd_channel.rs, cmd_template/, lp_select.rs, pool_tx.rs, validation/amm.rs | cross-cutting | Consolidates AMM/bridge/channels/oracle/template DeFi knowledge gathered through INC-I-088 → INC-I-099 lineage. Includes Path-A (signature) vs Path-B (covenant witness) auth model, MPTX007/MPTX008/ERRTX-HTLC001 troubleshooting, FundingBroadcast→Active state machine, ECIES NFT transfer workaround. |
 
 ### Operational / Workflow Skills (15)
 
@@ -76,6 +77,10 @@ Line ranges reflect verified actual content positions, correcting @INDEX inaccur
 |-------------------|-----------|---------|-------|
 | `activate_feature` | `core/SKILL.md` | ACTIVATION-HEIGHTS | 362-400 |
 | activation height | `core/SKILL.md` | ACTIVATION-HEIGHTS | 362-400 |
+| AMM | `defi/SKILL.md` | CLI-SURFACE / COVENANT-MECHANICS | 43-130, 242-300 |
+| AMM activation gates | `defi/SKILL.md` | ACTIVATION-GATES | 132-170 |
+| `amm_activation_height` | `defi/SKILL.md` | ACTIVATION-GATES | 132-170 |
+| AMM balance carve-out | `defi/SKILL.md` | COVENANT-MECHANICS / INCIDENT-MAP | 242-300, 412-470 |
 | adaptor signature | `crypto/SKILL.md` | ALGORITHMS | 168-222 |
 | `apply_block` | `node/SKILL.md` | FUNCTIONS | 165-307 |
 | `apply_block` data flow | `node/SKILL.md` | DATA-FLOWS | 49-99 |
@@ -182,6 +187,8 @@ Line ranges reflect verified actual content positions, correcting @INDEX inaccur
 | fork-monitor.sh | `observability-fork/SKILL.md` | ENTRY-POINTS | 16-32 |
 | `getForkDiagnostic` | `observability-fork/SKILL.md` | ENTRY-POINTS / RPC-CHEATSHEET.md | 16-32 |
 | `getFleetForkDiagnostic` | `observability-fork/SKILL.md` | ENTRY-POINTS / RPC-CHEATSHEET.md | 16-32 |
+| FEE_TOO_LOW | `defi/SKILL.md` | KNOWN-BUGS / INCIDENT-MAP (INC-I-099) | 172-240, 412-470 |
+| FundingBroadcast (stuck) | `defi/SKILL.md` | KNOWN-BUGS / INCIDENT-MAP (INC-I-097) | 172-240, 412-470 |
 | `getStateRootDebug` | `observability-fork/SKILL.md` | ENTRY-POINTS / RPC-CHEATSHEET.md | 16-32 |
 | `getUtxoDiff` | `observability-fork/SKILL.md` | ENTRY-POINTS / RPC-CHEATSHEET.md | 16-32 |
 | fork recovery | `node/SKILL.md` | FUNCTIONS | 165-307 |
@@ -244,6 +251,12 @@ Line ranges reflect verified actual content positions, correcting @INDEX inaccur
 
 | Keyword / Concept | Skill File | Section | Lines |
 |-------------------|-----------|---------|-------|
+| MintAsset | `defi/SKILL.md` | CLI-SURFACE | 43-130 |
+| MPTX007 (covenant) | `defi/SKILL.md` | COVENANT-MECHANICS / INCIDENT-MAP | 242-300, 412-470 |
+| MPTX008 (balance) | `defi/SKILL.md` | COVENANT-MECHANICS / INCIDENT-MAP (INC-I-096) | 242-300, 412-470 |
+
+| Keyword / Concept | Skill File | Section | Lines |
+|-------------------|-----------|---------|-------|
 | `MaintainerState` | `storage/SKILL.md` | ENTRY-POINTS | 16-38 |
 | mainnet deploy | `mainnet/SKILL.md` | full file | — |
 | mainnet recovery | `guardian/SKILL.md` | full index | 1-30 |
@@ -272,6 +285,21 @@ Line ranges reflect verified actual content positions, correcting @INDEX inaccur
 | `pauseProduction` | `rpc/SKILL.md` | METHODS | 38-295 |
 | payment channel | `channels/SKILL.md` | ENTRY-POINTS | 18-32 |
 | payment channel CLI | `cli/SKILL.md` | COMMANDS | 38-450 |
+| payment channel (DeFi flows) | `defi/SKILL.md` | CLI-SURFACE / KNOWN-BUGS | 43-130, 172-240 |
+| pool (AMM) | `defi/SKILL.md` | CLI-SURFACE / TX-CONSTRUCTION | 43-130, 302-355 |
+| `pool_id` | `defi/SKILL.md` | CLI-SURFACE / COVENANT-MECHANICS | 43-130, 242-300 |
+| `pool_tx::sign_with_covenant_witnesses` | `defi/SKILL.md` | TX-CONSTRUCTION | 302-355 |
+| pool covenant witness | `defi/SKILL.md` | COVENANT-MECHANICS / TX-CONSTRUCTION | 242-300, 302-355 |
+| LP shares | `defi/SKILL.md` | CLI-SURFACE / COVENANT-MECHANICS | 43-130, 242-300 |
+| `lp_select::select_lp_share_utxos` | `defi/SKILL.md` | KNOWN-BUGS (INC-I-095) | 172-240 |
+| ERRTX-HTLC001 | `defi/SKILL.md` | KNOWN-BUGS / INCIDENT-MAP (INC-I-098) | 172-240, 412-470 |
+| covenant witness | `defi/SKILL.md` | COVENANT-MECHANICS / TX-CONSTRUCTION | 242-300, 302-355 |
+| covenant template (vault/escrow) | `defi/SKILL.md` | CLI-SURFACE / KNOWN-BUGS | 43-130, 172-240 |
+| ECIES (NFT transfer) | `defi/SKILL.md` | KNOWN-BUGS | 172-240 |
+| bridge HTLC (live) | `defi/SKILL.md` | CLI-SURFACE / LIVE-TEST-HARNESS | 43-130, 357-410 |
+| `test_defi_e2e.sh` | `defi/SKILL.md` | LIVE-TEST-HARNESS | 357-410 |
+| oracle (Phase 2.1) | `defi/SKILL.md` | CLI-SURFACE / ACTIVATION-GATES | 43-130, 132-170 |
+| `verify_amm_conservation` | `defi/SKILL.md` | COVENANT-MECHANICS / INCIDENT-MAP (INC-I-096) | 242-300, 412-470 |
 | peer scoring | `network/SKILL.md` | FUNCTIONS | 135-201 |
 | `PeerScorer` | `network/SKILL.md` | ENTRY-POINTS | 16-43 |
 | penalty transaction | `channels/SKILL.md` | FUNCTIONS | 105-195 |
