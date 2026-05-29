@@ -42,6 +42,28 @@ fn token_change_output(amount: u64, owner: Hash, asset_id: Hash) -> Result<doli_
         .map_err(|e| anyhow::anyhow!("Failed to create token change output: {:?}", e))
 }
 
+/// Compute the creator's LP share allocation on a first deposit (pool create).
+///
+/// D1 (AMM Foundations M3): the pool permanently locks `MINIMUM_LIQUIDITY` shares
+/// (Uniswap v2 semantics), so the creator receives `lp_shares - MINIMUM_LIQUIDITY`.
+/// The remainder MUST be strictly positive: at `lp_shares == MINIMUM_LIQUIDITY` the
+/// creator would receive a zero-amount LPShare output, which the node rejects after
+/// the inputs are spent — burning the creator's fee. Reject the exact boundary too,
+/// not just `lp_shares < MINIMUM_LIQUIDITY`.
+fn creator_lp_shares_on_create(lp_shares: u64) -> Result<u64> {
+    let min = doli_core::consensus::MINIMUM_LIQUIDITY;
+    if lp_shares <= min {
+        anyhow::bail!(
+            "Initial liquidity too small: sqrt(reserve_a * reserve_b) = {} LP shares, \
+             but {} are permanently locked on first deposit (D1) and the creator must \
+             receive at least 1 share. Increase deposit amounts.",
+            lp_shares,
+            min
+        );
+    }
+    Ok(lp_shares - min)
+}
+
 pub(crate) async fn cmd_pool(
     wallet_path: &Path,
     rpc_endpoint: &str,
@@ -98,7 +120,14 @@ pub(crate) async fn cmd_pool(
             .await
         }
         PoolCommands::List => cmd_pool_list(rpc_endpoint).await,
-        PoolCommands::Info { pool_id } => cmd_pool_info(rpc_endpoint, &pool_id).await,
+        PoolCommands::Info { pool_id, pool } => {
+            let id = pool_id.or(pool).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Provide a pool id: `doli pool info <POOL_ID>` or `doli pool info --pool <POOL_ID>`"
+                )
+            })?;
+            cmd_pool_info(rpc_endpoint, &id).await
+        }
     }
 }
 
@@ -263,20 +292,30 @@ async fn cmd_pool_create(
     // multiple fee tiers can co-exist per pair).
     let pool_id = Output::compute_pool_id(&Hash::ZERO, &asset_b_id, fee_bps);
 
-    // Compute initial LP shares
-    let lp_shares = doli_core::compute_initial_lp_shares(doli_units, token_units);
-    // D1 (AMM Foundations M3): pool must mint at least MINIMUM_LIQUIDITY shares
-    // so the validator can lock that amount permanently (Uniswap v2 semantics).
-    // Creator receives `lp_shares - MINIMUM_LIQUIDITY`; the gap is the lock.
-    if lp_shares < doli_core::consensus::MINIMUM_LIQUIDITY {
+    // P1-006: refuse to create a pool that already exists. A duplicate CreatePool
+    // is rejected by the node only after the deposit inputs are spent, silently
+    // burning the creator's funds. getPoolInfo returns an error when the pool does
+    // not exist (the expected case here); an Ok response means it already exists.
+    if rpc
+        .call_raw(
+            "getPoolInfo",
+            serde_json::json!({ "poolId": pool_id.to_hex() }),
+        )
+        .await
+        .is_ok()
+    {
         anyhow::bail!(
-            "Initial liquidity too small: sqrt(reserve_a * reserve_b) = {} LP shares, \
-             but {} are permanently locked on first deposit (D1). Increase deposit amounts.",
-            lp_shares,
-            doli_core::consensus::MINIMUM_LIQUIDITY
+            "A pool already exists for this asset pair at fee {} bps (pool id {}). \
+             Use `doli pool add --pool {} ...` to add liquidity instead of creating a duplicate.",
+            fee_bps,
+            pool_id.to_hex(),
+            pool_id.to_hex()
         );
     }
-    let creator_lp_shares = lp_shares - doli_core::consensus::MINIMUM_LIQUIDITY;
+
+    // Compute initial LP shares
+    let lp_shares = doli_core::compute_initial_lp_shares(doli_units, token_units);
+    let creator_lp_shares = creator_lp_shares_on_create(lp_shares)?;
 
     let from_pubkey_hash = wallet.primary_pubkey_hash();
     let from_hash =
@@ -319,9 +358,19 @@ async fn cmd_pool_create(
     let all_utxos = rpc.get_utxos(&from_pubkey_hash, false).await?;
     let (token_selected, token_total) = select_token_utxos(&all_utxos, asset_hex, token_units);
     if token_total < token_units {
+        let asset_short = &asset_hex[..16.min(asset_hex.len())];
+        // P2-011: distinguish "asset unknown / not held at all" from a partial
+        // shortfall — holding zero usually means a wrong asset ID, not a top-up.
+        if token_total == 0 {
+            anyhow::bail!(
+                "This wallet holds no units of asset {}. Verify the asset ID is correct \
+                 and that this wallet actually holds the token (`doli token list`).",
+                asset_short
+            );
+        }
         anyhow::bail!(
             "Insufficient token balance for asset {}. Available: {}, Required: {}",
-            &asset_hex[..16.min(asset_hex.len())],
+            asset_short,
             token_total,
             token_units
         );
@@ -1329,4 +1378,31 @@ async fn cmd_pool_remove(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // OUTPUT CONTRACT: fn creator_lp_shares_on_create(lp_shares: u64) -> Result<u64>
+    // O1: Err  when creator's remainder would be 0 or negative (lp_shares <= MINIMUM_LIQUIDITY)
+    // O2: Ok(lp_shares - MINIMUM_LIQUIDITY)  when remainder is strictly positive
+    // PATHS: P1 below-min, P2 exact-boundary (P0-005), P3 above-min
+    // INPUT PARTITIONS: lp_shares ∈ {min-1, min, min+1, min+N}
+    // MATRIX: 2 outputs x 4 partitions
+    #[test]
+    fn p0_005_create_rejects_zero_creator_shares() {
+        let min = doli_core::consensus::MINIMUM_LIQUIDITY;
+        // P1: below the lock floor -> error
+        assert!(creator_lp_shares_on_create(min - 1).is_err());
+        // P2 (P0-005): exactly the lock floor -> creator would get 0 shares ->
+        // must be rejected before broadcast (this is the regression).
+        assert!(
+            creator_lp_shares_on_create(min).is_err(),
+            "lp_shares == MINIMUM_LIQUIDITY must be rejected (creator would receive a zero LPShare)"
+        );
+        // P3: above the floor -> creator receives the strictly-positive remainder
+        assert_eq!(creator_lp_shares_on_create(min + 1).unwrap(), 1);
+        assert_eq!(creator_lp_shares_on_create(min + 500).unwrap(), 500);
+    }
 }

@@ -25,6 +25,20 @@ fn write_offer_file(path: &str, content: &str) -> std::io::Result<()> {
     std::fs::write(path, content)
 }
 
+/// A payment channel requires two distinct funding parties (it is a 2-of-2
+/// covenant). Opening a channel where the counterparty equals the local wallet
+/// produces a degenerate self-funded channel that locks capacity for no purpose.
+/// Reject it before any UTXO is selected.
+fn ensure_distinct_channel_parties(local: &crypto::Hash, remote: &crypto::Hash) -> Result<()> {
+    if local == remote {
+        anyhow::bail!(
+            "Cannot open a payment channel to yourself: the counterparty address \
+             matches your own wallet address. A channel requires two distinct parties."
+        );
+    }
+    Ok(())
+}
+
 pub(crate) async fn cmd_channel(
     wallet_path: &Path,
     rpc_endpoint: &str,
@@ -127,6 +141,9 @@ pub(crate) async fn cmd_channel(
 
             let local_hash = Hash::from_hex(&from_pubkey_hash)
                 .ok_or_else(|| anyhow::anyhow!("Invalid local pubkey hash"))?;
+
+            // P1-007: a channel needs two distinct parties — reject self-channels.
+            ensure_distinct_channel_parties(&local_hash, &remote_hash)?;
 
             // Build inputs with amounts for funding
             let inputs_with_amounts: Vec<(Hash, u32, u64)> = selected
@@ -530,4 +547,24 @@ pub(crate) async fn cmd_channel(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crypto::Hash;
+
+    // OUTPUT CONTRACT: fn ensure_distinct_channel_parties(local, remote) -> Result<()>
+    // O1: Err  when local == remote (self-channel)
+    // O2: Ok   when local != remote
+    // PATHS: P1 identical, P2 distinct
+    #[test]
+    fn p1_007_rejects_self_channel() {
+        let me = Hash::from_bytes([7u8; 32]);
+        let other = Hash::from_bytes([9u8; 32]);
+        // P1: counterparty == self -> rejected
+        assert!(ensure_distinct_channel_parties(&me, &me).is_err());
+        // P2: distinct parties -> accepted
+        assert!(ensure_distinct_channel_parties(&me, &other).is_ok());
+    }
 }

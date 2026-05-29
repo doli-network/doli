@@ -714,8 +714,13 @@ pub(crate) enum PoolCommands {
 
     /// Show pool info
     Info {
-        /// Pool ID (hex)
-        pool_id: String,
+        /// Pool ID (hex) — positional form
+        #[arg(value_name = "POOL_ID")]
+        pool_id: Option<String>,
+
+        /// Pool ID (hex) — flag form, for consistency with swap/add/remove
+        #[arg(long, conflicts_with = "pool_id")]
+        pool: Option<String>,
     },
 }
 
@@ -1347,4 +1352,38 @@ pub(crate) enum TemplateCommands {
         #[arg(long)]
         fee: Option<String>,
     },
+}
+
+#[cfg(test)]
+mod pool_arg_tests {
+    use super::*;
+
+    // OUTPUT CONTRACT: `doli pool info` argument parsing (P3-015)
+    // The pool id must be accepted EITHER positionally (`info <ID>`) OR via the
+    // `--pool <ID>` flag, matching `pool swap/add/remove` which all use `--pool`.
+    // PATHS: P1 positional, P2 flag, P3 both(conflict), P4 neither
+    #[derive(Parser)]
+    struct TestCli {
+        #[command(subcommand)]
+        cmd: PoolCommands,
+    }
+
+    #[test]
+    fn p3_015_pool_info_accepts_positional_or_flag() {
+        // P1: positional form
+        let pos = TestCli::try_parse_from(["doli", "info", "abcd"]);
+        assert!(pos.is_ok(), "positional `info <ID>` must parse");
+        // P2: flag form (this FAILS on the old positional-only struct -> the regression)
+        let flag = TestCli::try_parse_from(["doli", "info", "--pool", "abcd"]);
+        assert!(
+            flag.is_ok(),
+            "flag `info --pool <ID>` must parse for consistency"
+        );
+        // P3: both forms together -> conflict error
+        let both = TestCli::try_parse_from(["doli", "info", "abcd", "--pool", "ef"]);
+        assert!(
+            both.is_err(),
+            "supplying both positional and --pool must conflict"
+        );
+    }
 }

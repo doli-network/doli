@@ -19,18 +19,34 @@ pub(crate) async fn cmd_nft_list(wallet_path: &Path, rpc_endpoint: &str) -> Resu
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("Invalid UTXO response"))?;
 
+    let output_type = |u: &serde_json::Value| -> Option<String> {
+        u.get("outputType")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    };
+
     let nfts: Vec<_> = utxos
         .iter()
-        .filter(|u| u.get("outputType").and_then(|v| v.as_str()) == Some("nft"))
+        .filter(|u| output_type(u).as_deref() == Some("nft"))
         .collect();
 
-    if nfts.is_empty() {
-        println!("No NFTs found in wallet.");
+    // P3-014: `doli nft mint` produces an EncryptedContent output (private,
+    // encrypted), not an `nft` output (only batch mint uses `nft`). Include
+    // EncryptedContent UTXOs here so minted content is visible in this list.
+    let encrypted: Vec<_> = utxos
+        .iter()
+        .filter(|u| output_type(u).as_deref() == Some("encryptedContent"))
+        .collect();
+
+    if nfts.is_empty() && encrypted.is_empty() {
+        println!("No NFTs or encrypted content found in wallet.");
         return Ok(());
     }
 
-    println!("NFTs ({}):", nfts.len());
-    println!("{:-<80}", "");
+    if !nfts.is_empty() {
+        println!("NFTs ({}):", nfts.len());
+        println!("{:-<80}", "");
+    }
     for nft in &nfts {
         let tx_hash = nft.get("txHash").and_then(|v| v.as_str()).unwrap_or("?");
         let idx = nft.get("outputIndex").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -74,6 +90,45 @@ pub(crate) async fn cmd_nft_list(wallet_path: &Path, rpc_endpoint: &str) -> Resu
             if amount > 1 {
                 println!("  Value:   {}", format_balance(amount));
             }
+            println!();
+        }
+    }
+
+    if !encrypted.is_empty() {
+        println!("Encrypted content ({}):", encrypted.len());
+        println!("{:-<80}", "");
+        for ec in &encrypted {
+            let tx_hash = ec.get("txHash").and_then(|v| v.as_str()).unwrap_or("?");
+            let idx = ec.get("outputIndex").and_then(|v| v.as_u64()).unwrap_or(0);
+            let amount = ec.get("amount").and_then(|v| v.as_u64()).unwrap_or(0);
+            let meta = ec.get("encryptedContent");
+
+            let tx_prefix = if tx_hash.len() >= 16 {
+                &tx_hash[..16]
+            } else {
+                tx_hash
+            };
+            println!("  UTXO:    {}:{}", tx_prefix, idx);
+            if let Some(meta) = meta {
+                if let Some(ch) = meta.get("contentHash").and_then(|v| v.as_str()) {
+                    println!(
+                        "  Content: {} (encrypted)",
+                        &ch[..std::cmp::min(32, ch.len())]
+                    );
+                }
+                if let Some(mime) = meta.get("mimeType").and_then(|v| v.as_str()) {
+                    println!("  Type:    {}", mime);
+                }
+                if meta.get("royalty").is_some() {
+                    if let Some(bps) = meta.pointer("/royalty/bps").and_then(|v| v.as_u64()) {
+                        println!("  Royalty: {}%", bps as f64 / 100.0);
+                    }
+                }
+            }
+            if amount > 1 {
+                println!("  Value:   {}", format_balance(amount));
+            }
+            println!("  Decrypt: doli nft --export {}:{}", tx_hash, idx);
             println!();
         }
     }

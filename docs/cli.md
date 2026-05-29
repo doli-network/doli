@@ -1246,7 +1246,12 @@ doli nft --list
 doli nft -l
 ```
 
-Shows all NFTs owned by the wallet (token ID, content, UTXO reference).
+Shows all NFTs owned by the wallet (token ID, content, UTXO reference). The list
+also includes **encrypted content** items: `doli nft --mint` produces an
+EncryptedContent output (private, encrypted) rather than a plain `nft` output, so
+those items are shown in a separate "Encrypted content" section with their content
+hash, MIME type, and a `doli nft --export` decrypt hint. (Only `doli nft --batch`
+mints plain `nft` outputs.)
 
 ### 12.2. NFT Info
 
@@ -1472,10 +1477,21 @@ doli pool list
 
 ```bash
 doli pool info <POOL_ID>
+doli pool info --pool <POOL_ID>   # flag form, consistent with swap/add/remove
 
 Arguments:
-  <POOL_ID>    Pool ID (hex)
+  <POOL_ID>    Pool ID (hex) — positional form
+Options:
+  --pool <POOL_ID>   Pool ID (hex) — flag form (mutually exclusive with positional)
 ```
+
+The pool id may be given either positionally or via `--pool`, matching the
+`swap`/`add`/`remove` subcommands which use `--pool`.
+
+> Note: `pool create` refuses to create a pool that already exists for the same
+> asset pair and fee tier (a duplicate `CreatePool` would otherwise be rejected
+> on-chain *after* the deposit is spent, burning your funds). Use `pool add` to
+> deposit into an existing pool.
 
 ---
 

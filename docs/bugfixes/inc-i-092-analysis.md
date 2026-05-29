@@ -57,3 +57,52 @@ Reasoning: Spans 3 subsystems (AMM/channel/bridge) across mempool + consensus va
 1. RC-A (AMM pool-input auth exemption) — unblocks all pool spends; smallest, highest-leverage.
 2. RC-B (pool_create reserve funding + duplicate + zero-LPShare) — closes inflation.
 3. RC-C (channel/bridge covenant witness alignment) — most intricate; per-subsystem.
+
+---
+
+## Open Findings Inventory (resume 2026-05-29, RUN_ID=382)
+
+P0 consensus blockers (RC-A/RC-B) shipped in 92eff255; RC-C → INC-I-093 (0c39b031). The 11 remaining findings are ALL CLI-side (no consensus rule / block-content change → no activation height required). Node validation unchanged.
+
+⚠️ P2-008..013 detailed descriptions were never persisted (entry 874). The set below is RECONSTRUCTED by white-box audit and CONFIRMED with the user (2026-05-29).
+
+| ID | Severity | File:line | Defect | Fix | Test seam |
+|----|----------|-----------|--------|-----|-----------|
+| P0-005 | P0 | cmd_pool.rs:271 | `lp_shares < MINIMUM_LIQUIDITY` guard uses `<`; at exact boundary creator_lp_shares=0 → zero-amount LP output → node rejects, fee burned | `<` → `<=` | unit (pure boundary math) |
+| P1-006 | P1 | cmd_pool.rs:264 (create) | No pool-existence pre-check; duplicate pool_id rejected by node in apply_block, inputs consumed → silent burn | getPoolInfo pre-check; bail if pool exists | integration |
+| P1-007 | P1 | cmd_channel.rs:70 (open) | No `remote_hash != local_hash` guard → self-channel buildable | bail if peer == self | unit (extractable) |
+| P2-008 | P2 | cmd_pool_add:857-868 | Missing pool → `unwrap_or(0)` reserves → builds doomed tx | bail if pool fields absent | integration |
+| P2-009 | P2 | cmd_pool_remove:1117-1128 | Same unwrap_or(0) pool-existence gap | bail if pool fields absent | integration |
+| P2-010 | P2 | cmd_pool_add:894-901,990 | `new_shares==0` (tiny deposit) → zero-amount LP output → fee burned | bail if new_shares==0 | unit |
+| P2-011 | P2 | cmd_pool_create:238-264 | asset_b non-existence only surfaces at UTXO-selection as confusing "insufficient token" | clearer pre-check/error | integration |
+| P2-012 | P2 | cmd_channel Pay:228-279 | Mutates local store without verifying funding confirmed on-chain | warn/guard on unconfirmed funding | integration |
+| P2-013 | P2 | cmd_nft/mint.rs:34 | amount 0 silently clamped to 1 via `max(1,..)` instead of erroring | bail on 0 (explicit) | unit (extractable) |
+| P3-014 | P3 | cmd_nft/list.rs:24 | `nft list` filters outputType=='nft'; mint emits EncryptedContent → invisible | include EncryptedContent UTXOs in list (DECISION: show both) | integration |
+| P3-015 | P3 | commands.rs PoolCommands::Info | `pool info <id>` positional vs `--pool` elsewhere | accept positional OR --pool (DECISION: accept both) | unit (clap parse) |
+
+User decisions (2026-05-29): P3-014=show both in list; P3-015=accept both forms; P2 set=fix all 6 reconstructed.
+
+### Triage (resume)
+All 11 are FAST-path, localized CLI edits across cmd_pool.rs, cmd_channel.rs, cmd_nft/{mint,list}.rs, commands.rs. No DEEP investigation; root causes are read-confirmed. Deterministic seams get unit tests (P0-005, P1-007, P2-010, P2-013, P3-015); RPC-dependent guards verified via scripts/test_defi_e2e.sh on live testnet (h≈24467, past activation).
+
+---
+
+## Verification Verdict (2026-05-29, RUN_ID=382)
+
+White-box re-verification of the reconstructed P2 set found **5 of 6 were already-guarded non-bugs** — NOT fixed (no fabricated changes):
+- **P2-008/009** (add/remove missing pool): `getPoolInfo` returns RPC error -32007; `call_raw` (rpc_client.rs:437) maps any `error` field to `Err`, propagated by `?` before `unwrap_or(0)`. Clean error already.
+- **P2-010** (zero LP on add): `compute_lp_shares` (pool.rs:68-70) returns `None` on shares==0; `cmd_pool_add` `.ok_or_else()?` already errors.
+- **P2-012** (pay unconfirmed): `ChannelState::is_active` (types.rs:68) is true only for `Active`; `Open` sets `FundingBroadcast`; `Pay` bails on `!is_active`.
+- **P2-013** (nft amount 0): default `--amount="0"` (commands.rs); 0→1 dust clamp is intentional (NFT value defaults 0, protocol needs non-zero UTXO). Erroring would break the default mint.
+
+### Fixes applied (6 real defects)
+| ID | Fix | Verification |
+|----|-----|--------------|
+| P0-005 | cmd_pool.rs `creator_lp_shares_on_create`: `<` → `<=` | unit FAIL→PASS (`p0_005_create_rejects_zero_creator_shares`) |
+| P1-006 | cmd_pool_create: getPoolInfo duplicate pre-check | live testnet: re-create existing pool bails before broadcast |
+| P1-007 | cmd_channel `ensure_distinct_channel_parties` guard | unit (`p1_007_rejects_self_channel`) |
+| P2-011 | cmd_pool_create: distinct "holds 0 of asset" error | build + read |
+| P3-014 | nft list includes EncryptedContent section | live testnet: 9 encrypted items now listed |
+| P3-015 | `pool info` accepts positional OR `--pool` | unit FAIL→PASS (`p3_015_...`) + live both forms |
+
+Gates: `cargo build --release -p doli-cli` ✓, `clippy --all-targets -D warnings` ✓, `fmt --check` ✓, `cargo test -p doli-cli` 202+3 pass ✓. All changes CLI-side — no consensus rule / block-content change → no activation height. Node binary unchanged.
