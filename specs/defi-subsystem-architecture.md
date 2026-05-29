@@ -13,6 +13,20 @@ Ship AMM first, compose a bilateral **escrow-loan** template from existing coven
 
 ---
 
+## Acceptance Criteria (normative)
+
+> **AC-2a (Intra-block sandwich MEV) — PASS, structural.** Within a single block, two swaps against the same Pool UTXO are mutually exclusive by UTXO consumption semantics. Intra-block atomic 3-TX sandwich MEV is **0 bps** and cannot be expressed.
+>
+> **AC-2b (Cross-slot MEV) — PASS by honest disclosure.** Cross-slot sandwich and producer-driven reordering remain extractable as a documented residual that scales with swap-size-to-pool-depth ratio. The 30 bps round-trip swap fee makes extraction **net-unprofitable for swaps below ~0.6% of pool reserves**. At larger sizes residual MEV scales: ~39 bps at 1% of pool, ~416 bps at 5% of pool. No system claim of "MEV-free" or "≤ 5 bps MEV" is made.
+>
+> **AC-6 (Economic security ratio) — monitoring metric, not a hard cap.** The protocol publishes the ratio `R = total_active_bonds / max_pool_TVL` where `max_pool_TVL` is the largest single Pool UTXO total reserve value expressed in the same numeraire as bonds (DOLI). No transaction is rejected on the basis of `R`. When `R < 1.0`, the protocol publicly discloses that single-pool capital exceeds the bonded security budget and that economic security against pool-level capture is degraded. The `getDefiHealthMetric` RPC and a corresponding Prometheus gauge (`doli_defi_bond_to_tvl_ratio`) surface this ratio continuously.
+
+**History:** AC-2 and AC-6 were originally written as single hard thresholds ("sandwich MEV ≤ 5 bps net" and "max single-primitive loss ≤ sum(all_producer_bonds)"). Both were structurally unachievable on a UTXO PoT chain with bounded bonds — see `specs/defi-foundations-economics.md` §9 Decisions 3 & 4 and §10 Contradictions 1-3. Split + reframe accepted by user 2026-05-29.
+
+**Source of truth:** When this spec and the public-facing whitepaper disagree on AMM MEV/security wording, this AC block wins. All public docs (whitepaper EN+ES, architecture, READMEs) MUST conform.
+
+---
+
 ## The 6 Design Decisions
 
 ### D1: Oracle Architecture -- SUBTRACTED (Phase 1)
@@ -386,7 +400,7 @@ Loan closed.
 |----|------|-----------|--------|------------|--------|
 | R1 | AMM arithmetic diverges across nodes (C2) | MEDIUM | CRITICAL (chain fork) | u128 intermediates, integer-only math, deterministic rounding, comprehensive property tests (DEF-3) | Failure: INV-DEFI-001, INV-DEFI-016 |
 | R2 | Pool UTXO contention limits throughput | HIGH | MEDIUM (1 op/pool/block) | Document as inherent UTXO property. Block builder prioritizes by fee. Mempool warns on collision. | Failure: F5; Pattern: Cardano SundaeSwap analog |
-| R3 | Producer MEV on AMM swap ordering | HIGH | MEDIUM | UTXO contention prevents **intra-block atomic** sandwich (1 swap/block). **Cross-slot sandwich and producer-driven reordering remain extractable** (Economist W6). Document honestly. Monitor MEV leakage post-activation. | Failure: attack surface map; Economist: W6 |
+| R3 | Producer MEV on AMM swap ordering | HIGH | MEDIUM | Per AC-2a/AC-2b (this spec): intra-block atomic sandwich = 0 bps (structural — Pool UTXO consumption). Cross-slot residual scales with swap-size-to-pool-depth (net-unprofitable < 0.6% of pool). Documented honestly in user-facing docs; no "MEV-free"/"≤5 bps" claims. Monitor leakage post-activation. | AC-2a/2b; Economist: W6 |
 | R4 | Escrow-loan terms are rigid (no mid-term adjustment) | MEDIUM | LOW | Acceptable for Phase 1 — bilateral agreement fixed at creation. W3: this is escrow-loan, not lending; don't market as lending. | Subtractionist: Target 4 risk; Economist: W3 |
 | R5 | `guards_activation_height` not activated on mainnet | HIGH | BLOCKING | Must be lowered before AMM launch. Add to prerequisite checklist. | Radical: constraint 2 |
 | R6 | LPShare (10) NOT in `is_conditioned()` | CONFIRMED | HIGH | MUST add LPShare to `is_conditioned()` before AMM activation. Without this, LP tokens are freely spendable without condition evaluation. | Failure: F10; Verified: `types.rs` |
@@ -397,6 +411,7 @@ Loan closed.
 | R11 | Fee-split sum mismatch (W2) | LOW | CRITICAL (consensus split) | CreatePool MUST reject any pool where `fee_bps_to_lp + fee_bps_to_protocol != 30`. Both fields immutable after CreatePool. Property test the invariant. | Economist: W2; INV-DEFI-013, INV-DEFI-019 |
 | R12 | LP-vs-bond capital substitution (W8) | MEDIUM | HIGH (Era 1+) | Without W2 fee-split, LP yield strictly dominates bond yield, hollowing out validator security. W2 partly mitigates by routing 5/30 to reward pool. Full fix requires LP-as-bond design (Phase 2+). Document trilemma in `specs/tokenomics.md`. | Economist: W8 (Osmosis analog) |
 | R13 | Tokenomics document missing (W7 from economist) | CONFIRMED | HIGH | No `specs/tokenomics.md` exists; words "tokenomics", "protocol fee", "value capture" appear zero times across DeFi design artifacts. MUST publish before lowering `amm_activation_height`. | Economist: methodological note |
+| R14 | Bond-to-TVL ratio < 1.0 (pool capital exceeds bonded security) | MEDIUM (low DOLI price) | MEDIUM (economic, not safety) | Per AC-6 (this spec): publish `R = total_active_bonds / max_pool_TVL` via `getDefiHealthMetric` RPC + `doli_defi_bond_to_tvl_ratio` Prometheus gauge. No TX rejection. Disclosure when `R < 1.0`. Phase-1 numeraire uses pool's own spot price (self-referential, pre-oracle); Phase 2 oracle replaces with attested DOLI/asset_b price. | AC-6; Adversarial Capital |
 
 ---
 
@@ -558,6 +573,8 @@ Triggered only if demand exceeds 127-shareholder composition limit.
 - [ ] No wall-clock time usage (slot numbers only for all time-dependent logic)
 - [ ] Three-question checklist (C7) answered in every commit touching DeFi code
 - [ ] **Tokenomics document published** (`specs/tokenomics.md`) — MUST-DO before lowering `amm_activation_height`; documents how the 5 bps protocol fee fits into the Era 1+ security budget model
+- [ ] **AC-2a/AC-2b conformance**: public-facing docs (whitepaper EN+ES, architecture docs, READMEs) contain no "MEV-free", "sandwich-proof", or "≤ 5 bps MEV" system-wide claims; intra-block sandwich claims explicitly scoped to "atomic" / "single-block"; cross-slot residual disclosed honestly with the 0.6%-of-pool break-even
+- [ ] **AC-6 monitoring live**: `getDefiHealthMetric` RPC returns `bondToTvlRatio` + `status` + `disclosure`; Prometheus gauge `doli_defi_bond_to_tvl_ratio` registered; tests cover no-pools/bonds-only/pools-only/degraded/ok branches
 
 ---
 

@@ -60,11 +60,11 @@ Consensus rule changes, P2P/gossip, frontend/explorer, bridges, NFT-frac Phase 3
 | # | Criterion | Target | Measurement |
 |---|-----------|--------|-------------|
 | AC-1 | Oracle attack cost (if price primitive ships) | Cost to manipulate TWAP by >5% must exceed TVL × 2 | Adversarial simulation: capital required to move bond-weighted median or TWAP outside 5% band for N consecutive slots, attacker controls ≤1/3 producer stake |
-| AC-2 | Sandwich MEV per swap | Net extractable ≤ 5 bps after fees | Replay 1,000 random orderings on representative pool; attacker cross-slot profit minus 2× 30bps fees |
+| AC-2 | Sandwich MEV per swap | ~~Net extractable ≤ 5 bps after fees~~ — **SUPERSEDED 2026-05-29**: split into AC-2a (intra-block = 0 bps structural) + AC-2b (cross-slot residual scaling with swap-size-to-pool-depth, honest disclosure). See `specs/defi-foundations-economics.md` §9 D3 and `specs/defi-subsystem-architecture.md` Acceptance Criteria block. | Replay 1,000 random orderings on representative pool; attacker cross-slot profit minus 2× 30bps fees |
 | AC-3 | Failed-tx ratio under DeFi load | ≤ 1% | Testnet stress: 100 concurrent Swaps over 10 pools / 100 blocks; count mempool-valid TXs that fail at apply_block from UTXO contention |
 | AC-4 | Agent simulation accuracy | 100% bit-identical | Off-chain simulator using only RPC state reproduces post-state of 100 test TXs |
 | AC-5 | Contagion blast radius | Single pool OR single escrow position | Grep + property test: no DeFi TX writes to UTXOs not in inputs/outputs; failure on Pool A leaves Pool B byte-identical |
-| AC-6 | Insurance coverage vs shortfall | Max single-primitive loss ≤ sum(all_producer_bonds) | If max_pool_TVL > total slashable bonds, primitive needs cap |
+| AC-6 | Insurance coverage vs shortfall | ~~Max single-primitive loss ≤ sum(all_producer_bonds)~~ — **REFRAMED 2026-05-29**: monitoring metric `R = total_active_bonds / max_pool_TVL` published via `getDefiHealthMetric` RPC + `doli_defi_bond_to_tvl_ratio` Prometheus gauge. No hard cap, no TX rejection. See `specs/defi-foundations-economics.md` §9 D4 and `specs/defi-subsystem-architecture.md` Acceptance Criteria block. | If max_pool_TVL > total slashable bonds, primitive needs cap |
 | AC-7 | Governance capture cost | ≥ controlled-value-at-risk | No new mutable parameter that controls more value than capture cost |
 | AC-8 | New code surface for foundations | ≤ 800 LOC (excluding AMM Phase 1's ~1,630 LOC) | Line count |
 | AC-9 | Activation-height count added | ≤ 3 new (amm, lending, nft-frac already planned) | Count NetworkParams fields |

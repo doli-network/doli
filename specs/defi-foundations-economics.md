@@ -27,12 +27,12 @@ INPUT PARTITIONS: N/A — specification file (not a test file)
 
 ### Locked pre-activation decisions
 
-| # | Decision | Locked Value | Reversibility |
-|---|----------|--------------|---------------|
-| D1 | `MINIMUM_LIQUIDITY` | **1000** (Uniswap v2 standard) | Must be set before `amm_activation_height` |
-| D2 | `pool_id` derivation | **Include `fee_bps` in hash** (`BLAKE3("DOLI_POOL" \|\| fee_bps \|\| sorted(asset_a, asset_b))`) — ~15 LOC | IRREVERSIBLE once `amm_activation_height` crosses |
-| D3 | AC-2 sandwich MEV target | **Split** into AC-2a (intra-block = 0 bps, PASS structural) + AC-2b (cross-slot ≤ 50 bps documented residual, PASS honest disclosure) | Spec change |
-| D4 | AC-6 max-loss vs bonds | **Reframed as monitoring metric** — publish `total_bonds / max_pool_TVL` ratio; no hard TVL cap | Spec change |
+| # | Decision | Locked Value | Status | Reversibility |
+|---|----------|--------------|--------|---------------|
+| D1 | `MINIMUM_LIQUIDITY` | **1000** (Uniswap v2 standard) | LOCKED | Must be set before `amm_activation_height` |
+| D2 | `pool_id` derivation | **Include `fee_bps` in hash** (`BLAKE3("DOLI_POOL" \|\| fee_bps \|\| sorted(asset_a, asset_b))`) — ~15 LOC | LOCKED | IRREVERSIBLE once `amm_activation_height` crosses |
+| D3 | AC-2 sandwich MEV target | **Split** into AC-2a (intra-block = 0 bps, PASS structural) + AC-2b (cross-slot residual scaling with swap-size-to-pool-depth, PASS by honest disclosure) | **ACCEPTED 2026-05-29** | Spec change |
+| D4 | AC-6 max-loss vs bonds | **Reframed as monitoring metric** — publish `R = total_active_bonds / max_pool_TVL` ratio via `getDefiHealthMetric` RPC + Prometheus gauge; no hard TVL cap, no TX rejection | **ACCEPTED 2026-05-29** | Spec change |
 
 ### Permanently dropped
 - **P6 Restitution slash path** — 4/5 independent convergence on DROP. 100% slash-to-burn (EI-3) preserved.
@@ -336,21 +336,27 @@ At MINIMUM_LIQUIDITY = 1: first-deposit inflation attack steals up to 100% of fi
 
 This is irreversible once `amm_activation_height` is crossed. Changing later requires consensus migration. See Option B above.
 
-### Decision 3: AC-2 target split
+### Decision 3: AC-2 target split — **ACCEPTED 2026-05-29**
 
-**Current:** AC-2 = "sandwich MEV <= 5 bps net" (single target).
-**Proposed:** Split into:
-- AC-2a: Intra-block sandwich MEV = 0 bps (PASS -- structural, Pool UTXO singleton)
-- AC-2b: Cross-slot MEV <= 50 bps documented residual (PASS -- acknowledged)
+**Previous (pre-2026-05-29):** AC-2 = "sandwich MEV <= 5 bps net" (single target). REJECTED — Adversarial Capital demonstrated this as written FAILS (15-60 bps cross-slot for swaps > 0.6% of reserves, conf 0.90). Oracle/MEV said < 2 bps for typical swaps (conf 0.85).
 
-Evidence: Adversarial Capital demonstrated AC-2 as written is FAIL (15-60 bps cross-slot for swaps > 0.6% of reserves, conf 0.90). Oracle/MEV says < 2 bps for typical swaps (conf 0.85). See Contradiction Resolution section below.
+**Accepted split (verbatim normative wording):**
 
-### Decision 4: AC-6 reframing
+> **AC-2a (Intra-block sandwich MEV) — PASS, structural.** Within a single block, two swaps against the same Pool UTXO are mutually exclusive by UTXO consumption semantics. Intra-block atomic 3-TX sandwich MEV is **0 bps** and cannot be expressed.
+>
+> **AC-2b (Cross-slot MEV) — PASS by honest disclosure.** Cross-slot sandwich and producer-driven reordering remain extractable as a documented residual that scales with swap-size-to-pool-depth ratio. The 30 bps round-trip swap fee makes extraction **net-unprofitable for swaps below ~0.6% of pool reserves**. At larger sizes residual MEV scales: ~39 bps at 1% of pool, ~416 bps at 5% of pool. No system claim of "MEV-free" or "≤ 5 bps MEV" is made.
 
-**Current:** AC-6 = "max single-primitive loss <= sum(all_producer_bonds)" (hard cap).
-**Proposed:** Reframe as monitoring metric, not hard enforcement.
+Source: §10 Contradiction 1 (this document). All public-facing documentation (whitepapers EN+ES, architecture docs, READMEs) MUST conform to AC-2a/AC-2b wording. The phrases "MEV-free", "sandwich-proof", and "≤ 5 bps MEV" are PROHIBITED as system-wide claims.
 
-Evidence: Adversarial Capital demonstrated AC-6 is structurally violated at low DOLI price (uncapped pool TVL exceeds total bonds when P is small, conf 0.90). Setting a hard TVL cap is economically counter-productive. Recommendation: publish TVL/bonds ratio, document degraded economic security when ratio < 1.
+### Decision 4: AC-6 reframing — **ACCEPTED 2026-05-29**
+
+**Previous (pre-2026-05-29):** AC-6 = "max single-primitive loss <= sum(all_producer_bonds)" (hard cap). REJECTED — Adversarial Capital demonstrated this is structurally violated at low DOLI price (uncapped pool TVL exceeds total bonds when P is small, conf 0.90). A hard TVL cap is economically counter-productive (artificially limits AMM utility without preventing loss).
+
+**Accepted reframe (verbatim normative wording):**
+
+> **AC-6 (Economic security ratio) — monitoring metric, not a hard cap.** The protocol publishes the ratio `R = total_active_bonds / max_pool_TVL` where `max_pool_TVL` is the largest single Pool UTXO total reserve value expressed in the same numeraire as bonds (DOLI). No transaction is rejected on the basis of `R`. When `R < 1.0`, the protocol publicly discloses that single-pool capital exceeds the bonded security budget and that economic security against pool-level capture is degraded. The `getDefiHealthMetric` RPC and a corresponding Prometheus gauge (`doli_defi_bond_to_tvl_ratio`) surface this ratio continuously.
+
+Phase-1 numeraire caveat (encoded in the RPC `note` field): pre-oracle, `max_pool_TVL` is computed using the pool's own internal spot price (`tvl ≈ 2 × reserve_a`). This is self-referential by construction and is the most honest measurement available before an external price oracle exists. Phase 2 oracle activation (`oracle_activation_height`) replaces the self-referential formula with an attested DOLI/asset_b price.
 
 ---
 
@@ -369,14 +375,14 @@ Evidence: Adversarial Capital demonstrated AC-6 is structurally violated at low 
 
 **Honest disclosure:** Do NOT claim "MEV-free" or "< 5 bps MEV." State the swap-size-dependent residual with the break-even threshold.
 
-### Contradiction 2: AC-2 Target Validity
+### Contradiction 2: AC-2 Target Validity — **RESOLVED 2026-05-29**
 
-**Resolution:** Split AC-2 into AC-2a (intra-block: 0 bps, PASS structural) and AC-2b (cross-slot: <= 50 bps documented residual, PASS with honest disclosure). User must approve this reframing.
+**Resolution:** Split AC-2 into AC-2a (intra-block: 0 bps, PASS structural) and AC-2b (cross-slot residual scaling with swap-size-to-pool-depth, PASS by honest disclosure). User approved 2026-05-29. See §9 Decision 3 for normative wording.
 
-### Contradiction 3: AC-6 Target Validity
+### Contradiction 3: AC-6 Target Validity — **RESOLVED 2026-05-29**
 
 **Adversarial Capital:** AC-6 structurally violated at low DOLI price (pool TVL unbounded, total bonds bounded).
-**Resolution:** Reframe AC-6 as monitoring metric. When total_bonds / max_pool_TVL < 1, publish the ratio and document degraded economic security. User must approve.
+**Resolution:** Reframe AC-6 as monitoring metric `R = total_active_bonds / max_pool_TVL`. When `R < 1.0`, publish the ratio and document degraded economic security. No TX rejection. User approved 2026-05-29. See §9 Decision 4 for normative wording.
 
 ### Contradiction 4: Restitution Path
 
