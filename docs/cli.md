@@ -1526,6 +1526,13 @@ Arguments:
   <AMOUNT>     Amount to send in DOLI
 ```
 
+A channel must be `Active` to pay. A freshly opened channel sits in
+`FundingBroadcast` until its funding transaction confirms on-chain. `pay`
+refreshes this lazily: it queries the funding tx's confirmation count and,
+once it reaches the configured depth (testnet 1, mainnet 3), advances the
+channel to `Active` before sending. If the node is unreachable the command
+warns and leaves the channel unconfirmed (the payment is still rejected).
+
 ---
 
 ### 16.3. Close Channel (cooperative — two steps)

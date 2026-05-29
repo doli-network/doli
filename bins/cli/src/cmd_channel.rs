@@ -252,12 +252,40 @@ pub(crate) async fn cmd_channel(
             let mut store = ChannelStore::open(&store_path)?;
 
             // Find channel by prefix match
-            let ch = store
+            let mut ch = store
                 .all_channels()
                 .iter()
                 .find(|c| c.channel_id.to_hex().starts_with(&channel))
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("Channel not found: {}", channel))?;
+
+            // INC-I-097: a funded channel sits at FundingBroadcast until something
+            // observes its funding tx confirming on-chain. Nothing else does, so
+            // refresh it on demand here before the is_active() guard.
+            if ch.state == ChannelState::FundingBroadcast {
+                let chain_rpc = channels::rpc::RpcClient::new(rpc_endpoint);
+                let funding_hex = hex::encode(ch.funding_outpoint.tx_hash);
+                match chain_rpc.get_transaction_status(&funding_hex).await {
+                    Ok(status) => {
+                        let confs = status.confirmations.unwrap_or(0) as u32;
+                        if let Some(ch_mut) = store.find_mut(&ch.channel_id) {
+                            if ch_mut.try_activate(confs, config.funding_confirmations) {
+                                store.save()?;
+                            }
+                        }
+                        ch = store
+                            .find(&ch.channel_id)
+                            .cloned()
+                            .ok_or_else(|| anyhow::anyhow!("Channel disappeared"))?;
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "Warning: could not verify funding confirmation for {}: {}",
+                            ch.channel_id, e
+                        );
+                    }
+                }
+            }
 
             if !ch.state.is_active() {
                 anyhow::bail!(

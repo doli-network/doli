@@ -63,6 +63,32 @@ impl ChannelRecord {
         Ok(())
     }
 
+    /// Lazily advance a funding-broadcast channel to `Active` once its funding
+    /// transaction has reached the required confirmation depth.
+    ///
+    /// INC-I-097: nothing else in the client observes on-chain funding
+    /// confirmation, so callers (the CLI channel commands) invoke this after
+    /// querying the node for the funding tx's confirmation count. Pure and
+    /// I/O-free so the activation rule is unit-testable without a node.
+    ///
+    /// Records the observed confirmation count while in `FundingBroadcast`, and
+    /// requires at least one confirmation regardless of `required` to avoid
+    /// activating an unconfirmed channel under a misconfigured `required == 0`.
+    /// Returns `true` iff the state changed to `Active`.
+    pub fn try_activate(&mut self, confirmations: u32, required: u32) -> bool {
+        if self.state != ChannelState::FundingBroadcast {
+            return false;
+        }
+        self.funding_confirmations = confirmations;
+        self.updated_at = Utc::now();
+        if confirmations >= required.max(1) {
+            // validate_transition() permits FundingBroadcast -> Active.
+            self.transition(ChannelState::Active).is_ok()
+        } else {
+            false
+        }
+    }
+
     /// Advance the commitment number and return the new number.
     pub fn advance_commitment(&mut self) -> CommitmentNumber {
         self.commitment_number += 1;
