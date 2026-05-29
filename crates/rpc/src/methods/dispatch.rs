@@ -52,6 +52,10 @@ impl RpcContext {
             "getPoolList" => self.get_pool_list(request.params).await,
             "getPoolPrice" => self.get_pool_price(request.params).await,
             "getSwapQuote" => self.get_swap_quote(request.params).await,
+            // D4 foundations: AC-6 monitoring metric
+            // (R = total_active_bonds / max_pool_TVL). Read-only;
+            // never rejects. Spec: defi-subsystem-architecture.md AC block.
+            "getDefiHealthMetric" => self.get_defi_health_metric(request.params).await,
             // Phase 2.1 Oracle (M9-M11) — read-only consumers of the
             // OraclePrice UTXO (OutputType=15) and PriceAttestation txs
             // (TxType=16). Frozen behind oracle_activation_height = u64::MAX.

@@ -45,6 +45,7 @@ This document describes the DOLI node JSON-RPC API.
 | **Pool** | `getPoolList` | Implemented |
 | **Pool** | `getPoolPrice` | Implemented |
 | **Pool** | `getSwapQuote` | Implemented |
+| **DeFi Health** | `getDefiHealthMetric` | Implemented (D4 / AC-6) |
 | **Guardian** | `pauseProduction` | Implemented |
 | **Guardian** | `resumeProduction` | Implemented |
 | **Guardian** | `createCheckpoint` | Implemented |
@@ -1928,6 +1929,52 @@ Simulates a swap without creating a transaction. Returns expected output amount,
 curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getSwapQuote","params":{"poolId":"abc123...","amountIn":1000000,"direction":"a2b"},"id":1}'
+```
+
+---
+
+### getDefiHealthMetric
+
+D4 (foundations cycle, ACCEPTED 2026-05-29): publishes the AC-6 economic-security ratio
+`R = total_active_bonds / max_pool_TVL`. Read-only disclosure metric — never rejects
+transactions. Spec: `specs/defi-subsystem-architecture.md` Acceptance Criteria block.
+
+**Parameters:** None.
+
+**Response:**
+```json
+{
+    "totalActiveBonds": 12500000000000,
+    "maxPoolTvl": 18000000000000,
+    "maxPoolId": "abc123...",
+    "bondToTvlRatio": 0.694,
+    "status": "degraded",
+    "disclosure": "Single-pool capital exceeds bonded security budget. Economic security against pool-level capture is degraded.",
+    "note": "TVL denominated in DOLI using pool's own spot price. Pre-oracle Phase 1 — self-referential."
+}
+```
+
+**Fields:**
+| Field | Type | Description |
+|-------|------|-------------|
+| totalActiveBonds | u64 | Sum of every active Bond UTXO `amount`, base units. Saturated at `u64::MAX`. |
+| maxPoolTvl | u64 | Largest single Pool UTXO TVL in DOLI base units (Phase 1: `2 * reserve_a` using the pool's own spot price). `0` when no pools. |
+| maxPoolId | string \| null | Hex `pool_id` of the largest pool. `null` when no pools. |
+| bondToTvlRatio | number \| null | `R = totalActiveBonds / maxPoolTvl`. `null` when no pools. `0.0` when pools exist but no bonds. |
+| status | string | `"ok"` (R ≥ 1.0), `"degraded"` (R < 1.0), or `"no_pools"`. |
+| disclosure | string | Human-readable status explanation matching AC-6 wording. |
+| note | string | Phase-1 numeraire caveat: TVL is self-referential pre-oracle. Phase 2 oracle activation replaces it with an attested DOLI/asset_b price. |
+
+**Mirrored Prometheus gauges** (refreshed each periodic tick):
+- `doli_defi_total_active_bonds`
+- `doli_defi_max_pool_tvl`
+- `doli_defi_bond_to_tvl_ratio` (NaN when no pools)
+
+**Example:**
+```bash
+curl -X POST http://127.0.0.1:8500 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getDefiHealthMetric","params":{},"id":1}'
 ```
 
 ---

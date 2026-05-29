@@ -87,6 +87,20 @@ impl Node {
 
     /// Run periodic tasks
     pub async fn run_periodic_tasks(&mut self) -> Result<()> {
+        // D4 / AC-6 monitoring metric refresh.
+        //
+        // Read-only snapshot of (total_active_bonds, max_pool_TVL) → push
+        // into the three `doli_defi_*` Prometheus gauges. Hot path safety:
+        // bounded by UTXO-set iteration (same cost class as the integrity
+        // scan that runs in the same hot loop); never mutates state.
+        // Spec: `specs/defi-subsystem-architecture.md` AC block (AC-6).
+        {
+            let utxo_set = self.utxo_set.read().await;
+            let (total_active_bonds, max_pool) = utxo_set.defi_health_inputs();
+            drop(utxo_set);
+            crate::metrics::update_defi_health_metric(total_active_bonds, max_pool);
+        }
+
         // Periodic chain integrity scan: full BLAKE3(h1||h2||...||hn) every 100 blocks.
         // Always correct by construction — no incremental state to corrupt.
         // Replaces the incremental commitment which broke on every code path that

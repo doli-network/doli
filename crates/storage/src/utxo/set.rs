@@ -176,6 +176,60 @@ impl UtxoSet {
         }
     }
 
+    /// Inputs for the D4 AC-6 bond-to-TVL economic-security metric.
+    ///
+    /// Returns `(total_active_bonds, max_pool)` where:
+    ///   - `total_active_bonds` is the sum of every `OutputType::Bond` UTXO
+    ///     amount, saturated at `u64::MAX` (u128 accumulator).
+    ///   - `max_pool` is `Some((pool_id, tvl_doli))` for the pool with the
+    ///     largest DOLI-denominated TVL using the Phase-1 self-referential
+    ///     numeraire (`tvl = 2 * reserve_a`), deduplicated by `pool_id`
+    ///     (max `reserve_a` wins). `None` when no Pool UTXOs exist.
+    ///
+    /// Read-only. Never mutates state. Spec: `specs/defi-subsystem-architecture.md`
+    /// Acceptance Criteria block (AC-6) and `specs/defi-foundations-economics.md`
+    /// §9 Decision 4 (ACCEPTED 2026-05-29).
+    pub fn defi_health_inputs(&self) -> (u64, Option<(Hash, u64)>) {
+        use doli_core::OutputType;
+
+        let total_bonds_u128: u128 = self
+            .iter_all()
+            .into_iter()
+            .filter(|(_, entry)| entry.output.output_type == OutputType::Bond)
+            .map(|(_, entry)| entry.output.amount as u128)
+            .sum();
+        let total_active_bonds = if total_bonds_u128 > u64::MAX as u128 {
+            u64::MAX
+        } else {
+            total_bonds_u128 as u64
+        };
+
+        let mut best_per_id: std::collections::HashMap<Hash, u64> =
+            std::collections::HashMap::new();
+        for (_outpoint, entry) in self.get_all_pools() {
+            if let Some(meta) = entry.output.pool_metadata() {
+                let cur = best_per_id.entry(meta.pool_id).or_insert(0);
+                if meta.reserve_a > *cur {
+                    *cur = meta.reserve_a;
+                }
+            }
+        }
+        let mut best: Option<(Hash, u64)> = None;
+        for (pool_id, reserve_a) in best_per_id {
+            let tvl_u128 = (reserve_a as u128).saturating_mul(2);
+            let tvl = if tvl_u128 > u64::MAX as u128 {
+                u64::MAX
+            } else {
+                tvl_u128 as u64
+            };
+            if best.map(|(_, t)| tvl > t).unwrap_or(true) {
+                best = Some((pool_id, tvl));
+            }
+        }
+
+        (total_active_bonds, best)
+    }
+
     /// Get all UTXOs for a given pubkey hash (returns owned entries)
     pub fn get_by_pubkey_hash(&self, pubkey_hash: &Hash) -> Vec<(Outpoint, UtxoEntry)> {
         match self {

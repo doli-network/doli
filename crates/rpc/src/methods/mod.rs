@@ -20,6 +20,7 @@ mod backfill;
 mod balance;
 mod block;
 mod context;
+mod defi_health;
 mod diagnostics;
 mod diagnostics_fleet;
 mod dispatch;

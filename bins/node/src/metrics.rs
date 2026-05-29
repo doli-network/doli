@@ -211,6 +211,34 @@ lazy_static! {
     ).unwrap();
 
     // ===================
+    // DeFi Economic Security (D4 / AC-6)
+    // ===================
+
+    /// Sum of every active Bond UTXO `amount`, base units. Saturated at u64::MAX.
+    /// Spec: `specs/defi-subsystem-architecture.md` AC block (AC-6).
+    pub static ref DEFI_TOTAL_ACTIVE_BONDS: IntGauge = IntGauge::new(
+        "doli_defi_total_active_bonds",
+        "Sum of every active Bond UTXO amount (DOLI base units)."
+    ).unwrap();
+
+    /// Largest single Pool UTXO TVL in DOLI base units (Phase-1 pre-oracle:
+    /// tvl = 2 * reserve_a using the pool's own spot price).
+    /// Spec: `specs/defi-subsystem-architecture.md` AC block (AC-6).
+    pub static ref DEFI_MAX_POOL_TVL: IntGauge = IntGauge::new(
+        "doli_defi_max_pool_tvl",
+        "Largest single Pool UTXO TVL in DOLI base units (pre-oracle: 2 * reserve_a)."
+    ).unwrap();
+
+    /// R = total_active_bonds / max_pool_TVL. R < 1.0 → economic security
+    /// against single-pool capture is degraded (disclosure only, no TX
+    /// rejection). NaN when max_pool_TVL == 0.
+    /// Spec: `specs/defi-subsystem-architecture.md` AC block (AC-6, ACCEPTED 2026-05-29).
+    pub static ref DEFI_BOND_TO_TVL_RATIO: Gauge = Gauge::new(
+        "doli_defi_bond_to_tvl_ratio",
+        "AC-6 monitoring metric: total_active_bonds / max_pool_TVL. < 1.0 == degraded."
+    ).unwrap();
+
+    // ===================
     // System Metrics
     // ===================
 
@@ -264,6 +292,10 @@ pub fn register_metrics() {
     let _ = REGISTRY.register(Box::new(UTXO_SET_SIZE.clone()));
     let _ = REGISTRY.register(Box::new(STORAGE_BYTES.clone()));
 
+    let _ = REGISTRY.register(Box::new(DEFI_TOTAL_ACTIVE_BONDS.clone()));
+    let _ = REGISTRY.register(Box::new(DEFI_MAX_POOL_TVL.clone()));
+    let _ = REGISTRY.register(Box::new(DEFI_BOND_TO_TVL_RATIO.clone()));
+
     let _ = REGISTRY.register(Box::new(UPTIME_SECONDS.clone()));
     let _ = REGISTRY.register(Box::new(BUILD_INFO.clone()));
 
@@ -271,6 +303,30 @@ pub fn register_metrics() {
     BUILD_INFO
         .with_label_values(&[env!("CARGO_PKG_VERSION"), "unknown"])
         .set(1);
+}
+
+/// Update the D4 / AC-6 DeFi economic-security gauges from a UTXO snapshot.
+///
+/// `max_pool` is `None` when no Pool UTXOs exist — the ratio gauge is set to
+/// `f64::NAN` in that case so Prometheus surfaces "no value" rather than 0
+/// (avoids implying R=0 / fully-degraded when the metric is simply undefined).
+pub fn update_defi_health_metric(total_active_bonds: u64, max_pool: Option<(crypto::Hash, u64)>) {
+    DEFI_TOTAL_ACTIVE_BONDS.set(total_active_bonds as i64);
+    match max_pool {
+        Some((_pool_id, tvl)) => {
+            DEFI_MAX_POOL_TVL.set(tvl as i64);
+            let ratio = if tvl == 0 {
+                0.0
+            } else {
+                (total_active_bonds as f64) / (tvl as f64)
+            };
+            DEFI_BOND_TO_TVL_RATIO.set(ratio);
+        }
+        None => {
+            DEFI_MAX_POOL_TVL.set(0);
+            DEFI_BOND_TO_TVL_RATIO.set(f64::NAN);
+        }
+    }
 }
 
 /// HTTP handler for metrics endpoint

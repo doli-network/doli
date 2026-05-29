@@ -9,6 +9,7 @@
 //! This lib re-declares the modules needed by integration tests.
 
 pub mod config;
+pub mod metrics;
 pub mod node;
 pub mod producer;
 pub mod updater;
