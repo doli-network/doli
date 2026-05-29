@@ -280,13 +280,18 @@ This prevents a chicken-and-egg: a Signature witness must sign a hash that does 
 
 **Without shared mutable state:**
 
-Every output is independent. Spending one output cannot affect another. There is no reentrancy. Sandwich attacks are structurally impossible (see Section 3.9). Transactions are fully parallelizable — validation scales linearly with cores.
+Every output is independent. Spending one output cannot affect another. There is no reentrancy. **Atomic intra-block sandwich attacks are structurally impossible** for AMM swaps (one Swap per pool per block by UTXO consumption — see Section 3.9 for the full MEV disclosure including residual cross-slot MEV). Transactions are fully parallelizable — validation scales linearly with cores.
 
 ### 3.9. Native DeFi Primitives
 
 DOLI implements core DeFi operations as native transaction types rather than VM-executed contracts. Automated market makers (CreatePool, AddLiquidity, RemoveLiquidity, Swap), lending (CreateLoan, RepayLoan, LiquidateLoan, LendingDeposit, LendingWithdraw), and NFT fractionalization (FractionalizeNft, RedeemNft) are compiled into the node binary as validated state transitions.
 
-**Sandwich resistance by construction.** A swap consumes a pool UTXO atomically — two swaps against the same pool are mutually exclusive by UTXO semantics, making the classic 3-tx sandwich impossible. Other MEV forms (front-running, censorship by producer, cross-pool arbitrage) remain possible and follow standard mitigations: slippage tolerance on swaps, multiple producers via stake distribution, and L2 settlement for high-frequency markets.
+**MEV — honest disclosure.** The protocol does not claim to be MEV-free.
+
+- **Intra-block sandwich MEV = 0 bps, structural (AC-2a).** A swap consumes a pool UTXO atomically — two swaps against the same pool are mutually exclusive by UTXO semantics, so the classic 3-tx atomic sandwich cannot be expressed within a single block.
+- **Cross-slot MEV — documented residual (AC-2b).** Cross-slot sandwich and producer-driven reordering remain extractable. The 30 bps round-trip swap fee makes extraction **net-unprofitable for swaps below ~0.6% of pool reserves** (~$6K on a $1M pool). At larger sizes residual MEV scales with swap-size-to-pool-depth ratio: ~39 bps at 1% of pool, ~416 bps at 5% of pool. Mitigations: slippage tolerance on swaps, splitting large orders, and L2 settlement for high-frequency markets.
+
+**Economic security ratio (AC-6).** The protocol publishes `R = total_active_bonds / max_pool_TVL` continuously via the `getDefiHealthMetric` RPC and the `doli_defi_bond_to_tvl_ratio` Prometheus gauge. When `R < 1.0`, single-pool capital exceeds the bonded security budget and the protocol publicly discloses degraded economic security against pool-level capture. The ratio is a monitoring metric — no transaction is rejected on the basis of `R`. Phase-1 uses the pool's own spot price as the asset-B → DOLI numeraire (self-referential pre-oracle); Phase 2 oracle activation replaces this with an attested DOLI/asset_b price.
 
 **Known limitations.**
 - *Per-pool throughput ceiling.* Only one Swap against a given pool UTXO can land per block. High-traffic pools serialize at ~8,640 swaps/day per pool at Era 0. Sharding via multiple pool UTXOs per pair or L2 settlement is the architectural answer.
@@ -1137,7 +1142,7 @@ DOLI's UTXO model makes every coin an individually addressable object:
 - A transaction either consumes a specific UTXO or it does not — no shared mutable state.
 - When validation fails, the response names the specific outpoint that caused the failure.
 
-There is no gas estimation. There is no nonce race. There is no MEV reordering that changes the agent's effective balance between submission and inclusion. The state an agent reads is the state it transacts against.
+There is no gas estimation. There is no nonce race. For value-transfer and condition-spend transactions, the state an agent reads is the state it transacts against — there is no MEV reordering that changes effective balance. For AMM swaps, see Section 3.9 for the honest MEV residual disclosure (intra-block sandwich = 0 bps structural; cross-slot residual scales with swap size).
 
 ### 19.4. Typed Transactions
 

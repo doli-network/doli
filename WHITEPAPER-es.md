@@ -280,13 +280,18 @@ Esto previene un problema circular: un testigo de Signature debe firmar un hash 
 
 **Sin estado mutable compartido:**
 
-Cada salida es independiente. Gastar una salida no puede afectar a otra. No hay reentrancia. Los ataques sandwich son estructuralmente imposibles (ver Seccion 3.9). Las transacciones son completamente paralelizables — la validacion escala linealmente con los nucleos.
+Cada salida es independiente. Gastar una salida no puede afectar a otra. No hay reentrancia. **Los ataques sandwich atomicos intra-bloque son estructuralmente imposibles** para los swaps de AMM (un Swap por pool por bloque por consumo UTXO — ver Seccion 3.9 para la divulgacion completa del MEV incluyendo el MEV residual entre slots). Las transacciones son completamente paralelizables — la validacion escala linealmente con los nucleos.
 
 ### 3.9. Primitivos DeFi nativos
 
 DOLI implementa operaciones DeFi centrales como tipos de transaccion nativos en lugar de contratos ejecutados en una VM. Los creadores de mercado automatizados (CreatePool, AddLiquidity, RemoveLiquidity, Swap), prestamos (CreateLoan, RepayLoan, LiquidateLoan, LendingDeposit, LendingWithdraw) y fraccionalizacion de NFTs (FractionalizeNft, RedeemNft) estan compilados en el binario del nodo como transiciones de estado validadas.
 
-**Resistencia a sandwich por construccion.** Un swap consume un UTXO de pool atomicamente — dos swaps contra el mismo pool son mutuamente excluyentes por semantica UTXO, haciendo imposible el sandwich clasico de 3 transacciones. Otras formas de MEV (front-running, censura por el productor, arbitraje entre pools) siguen siendo posibles y se mitigan con metodos estandar: tolerancia de deslizamiento (slippage) en los swaps, multiples productores via distribucion de stake, y liquidacion L2 para mercados de alta frecuencia.
+**MEV — divulgacion honesta.** El protocolo no afirma estar libre de MEV.
+
+- **MEV de sandwich intra-bloque = 0 bps, estructural (AC-2a).** Un swap consume un UTXO de pool atomicamente — dos swaps contra el mismo pool son mutuamente excluyentes por semantica UTXO, por lo que el sandwich atomico clasico de 3 transacciones no puede expresarse dentro de un solo bloque.
+- **MEV entre slots — residual documentado (AC-2b).** El sandwich entre slots y el reordenamiento dirigido por el productor permanecen extraibles. La tarifa de swap de 30 bps de ida y vuelta hace que la extraccion sea **no rentable neta para swaps por debajo del ~0.6% de las reservas del pool** (~$6K en un pool de $1M). En tamanos mayores el MEV residual escala con la razon tamano-de-swap-a-profundidad-del-pool: ~39 bps al 1% del pool, ~416 bps al 5% del pool. Mitigaciones: tolerancia de deslizamiento (slippage), dividir ordenes grandes, y liquidacion L2 para mercados de alta frecuencia.
+
+**Razon de seguridad economica (AC-6).** El protocolo publica `R = bonds_activos_totales / max_pool_TVL` continuamente via el RPC `getDefiHealthMetric` y el gauge de Prometheus `doli_defi_bond_to_tvl_ratio`. Cuando `R < 1.0`, el capital de un solo pool excede el presupuesto de seguridad bondeado y el protocolo divulga publicamente seguridad economica degradada contra la captura a nivel de pool. La razon es una metrica de monitoreo — ninguna transaccion es rechazada en base a `R`. La Fase 1 usa el precio spot interno del pool como numerario asset-B → DOLI (auto-referencial pre-oraculo); la activacion del oraculo de Fase 2 lo reemplaza con un precio DOLI/asset_b atestiguado.
 
 **Limitaciones conocidas.**
 - *Techo de rendimiento por pool.* Solo un Swap contra un UTXO de pool dado puede entrar por bloque. Los pools con trafico alto se serializan en ~8,640 swaps/dia por pool en la Era 0. El sharding mediante multiples UTXOs de pool por par o la liquidacion L2 es la respuesta arquitectonica.
@@ -1135,7 +1140,7 @@ El modelo UTXO de DOLI hace que cada moneda sea un objeto direccionable individu
 - Una transaccion consume un UTXO especifico o no — sin estado mutable compartido.
 - Cuando la validacion falla, la respuesta nombra el outpoint especifico que causo la falla.
 
-No hay estimacion de gas. No hay race de nonce. No hay reordenamiento MEV que cambie el balance efectivo del agente entre la presentacion y la inclusion. El estado que un agente lee es el estado contra el cual transacciona.
+No hay estimacion de gas. No hay race de nonce. Para transacciones de transferencia de valor y de gasto-por-condicion, el estado que un agente lee es el estado contra el cual transacciona — no hay reordenamiento MEV que cambie el balance efectivo. Para swaps de AMM, ver Seccion 3.9 para la divulgacion honesta del MEV residual (sandwich intra-bloque = 0 bps estructural; residual entre slots escala con el tamano del swap).
 
 ### 19.4. Transacciones tipadas
 
