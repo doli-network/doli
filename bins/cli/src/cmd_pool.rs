@@ -1126,7 +1126,7 @@ async fn cmd_pool_remove(
     min_tokens: Option<&str>,
     yes: bool,
 ) -> Result<()> {
-    use crypto::{signature, Hash};
+    use crypto::Hash;
     use doli_core::{Input, Output, Transaction};
 
     let wallet = Wallet::load(wallet_path)?;
@@ -1268,6 +1268,8 @@ async fn cmd_pool_remove(
         inputs.push(Input::new(prev_hash, c.output_index));
         lp_total += c.amount;
     }
+    // Input layout from here: [pool(0)] [LP shares 1..1+lp_count] [DOLI fee inputs ...].
+    let lp_count = selected_lp.len();
 
     // Calculate fee: base + per-byte for pool output extra_data
     let fee_units = {
@@ -1341,11 +1343,14 @@ async fn cmd_pool_remove(
     };
 
     let keypair = wallet.primary_keypair()?;
-    for i in 0..tx.inputs.len() {
-        let signing_hash = tx.signing_message_for_input(i);
-        tx.inputs[i].signature = signature::sign_hash(&signing_hash, keypair.private_key());
-        tx.inputs[i].public_key = Some(*keypair.public_key());
-    }
+    // The LPShare inputs (indices 1..1+lp_count) are conditioned and need covenant
+    // witnesses; the node evaluates their Signature covenant from the witness, not
+    // input.signature. Without this the tx is rejected with [MPTX007] (INC-I-095).
+    // The Pool input (0, signature-exempt RC-A) and DOLI fee inputs are not conditioned.
+    let conditioned: Vec<bool> = (0..tx.inputs.len())
+        .map(|i| i >= 1 && i < 1 + lp_count)
+        .collect();
+    crate::pool_tx::sign_with_covenant_witnesses(&mut tx, &keypair, &conditioned);
 
     let tx_bytes = tx.serialize();
     let tx_hex = hex::encode(&tx_bytes);

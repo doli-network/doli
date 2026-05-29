@@ -32,6 +32,7 @@ mod common;
 mod lp_select;
 mod parsers;
 mod paths;
+mod pool_tx;
 mod rpc_client;
 mod wallet;
 
