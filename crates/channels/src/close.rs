@@ -4,10 +4,11 @@ use crypto::{Hash, KeyPair};
 use doli_core::conditions::{Witness, WitnessSignature};
 use doli_core::transaction::{Input, Output, Transaction};
 use doli_core::Amount;
+use serde::{Deserialize, Serialize};
 
 use crate::commitment::{build_delayed_claim_witness, build_penalty_witness, CommitmentPair};
 use crate::error::{ChannelError, Result};
-use crate::types::ChannelBalance;
+use crate::types::{ChannelBalance, ChannelId};
 
 /// Build a cooperative close transaction.
 ///
@@ -91,6 +92,135 @@ pub fn sign_cooperative_close(
 
     tx.set_covenant_witnesses(&[witness.encode()]);
     Ok(())
+}
+
+/// Wire version of the cooperative-close offer (one-shot two-party handoff).
+pub const COOPERATIVE_CLOSE_OFFER_VERSION: u8 = 1;
+
+/// A portable cooperative-close offer for the one-shot two-party handoff.
+///
+/// A cooperative close spends the 2-of-2 funding output and therefore needs
+/// BOTH parties' signatures. The initiator builds the close tx, signs their half
+/// over `signing_message_for_input(0)`, and emits this struct (the CLI writes it
+/// to a file). The counterparty verifies the initiator's signature, co-signs via
+/// [`sign_cooperative_close`], and broadcasts. This mirrors the NFT PSBT
+/// sell-sign / `--from` handoff — file passing is idiomatic for a one-shot close.
+///
+/// All binary fields are hex-encoded for a human-inspectable JSON file.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CooperativeCloseOffer {
+    /// Offer wire version.
+    pub version: u8,
+    /// Channel id (hex) so the counterparty can locate the channel.
+    pub channel_id: String,
+    /// Serialized close transaction (hex). Outputs are fixed by the initiator.
+    pub partial_tx: String,
+    /// Initiator's public key (hex).
+    pub initiator_pubkey: String,
+    /// Initiator's signature over `signing_message_for_input(0)` (hex).
+    pub initiator_signature: String,
+    /// Initiator's pubkey hash (hex) — used for the deterministic 2-of-2 witness sort.
+    pub initiator_pubkey_hash: String,
+    /// Counterparty (finalizer) pubkey hash (hex).
+    pub counterparty_pubkey_hash: String,
+}
+
+fn decode_pubkey(hex_str: &str) -> Result<crypto::PublicKey> {
+    let bytes =
+        hex::decode(hex_str).map_err(|_| ChannelError::Protocol("invalid pubkey hex".into()))?;
+    let arr: [u8; crypto::PUBLIC_KEY_SIZE] = bytes
+        .try_into()
+        .map_err(|_| ChannelError::Protocol("pubkey wrong length".into()))?;
+    Ok(crypto::PublicKey::from_bytes(arr))
+}
+
+fn decode_signature(hex_str: &str) -> Result<crypto::Signature> {
+    let bytes =
+        hex::decode(hex_str).map_err(|_| ChannelError::Protocol("invalid signature hex".into()))?;
+    let arr: [u8; crypto::SIGNATURE_SIZE] = bytes
+        .try_into()
+        .map_err(|_| ChannelError::Protocol("signature wrong length".into()))?;
+    Ok(crypto::Signature::from_bytes(arr))
+}
+
+/// Build a cooperative-close offer: the initiator constructs the close tx and
+/// signs their half of the 2-of-2 funding covenant. The returned offer carries
+/// everything the counterparty needs to finalize without the initiator's key.
+#[allow(clippy::too_many_arguments)]
+pub fn build_cooperative_close_offer(
+    channel_id: &ChannelId,
+    funding_tx_hash: Hash,
+    funding_output_index: u32,
+    initiator_pubkey_hash: Hash,
+    counterparty_pubkey_hash: Hash,
+    balance: &ChannelBalance,
+    capacity: Amount,
+    fee: Amount,
+    initiator_keypair: &KeyPair,
+) -> Result<CooperativeCloseOffer> {
+    let tx = build_cooperative_close(
+        funding_tx_hash,
+        funding_output_index,
+        initiator_pubkey_hash,
+        counterparty_pubkey_hash,
+        balance,
+        capacity,
+        fee,
+    )?;
+
+    let signing_hash = tx.signing_message_for_input(0);
+    let initiator_sig =
+        crypto::signature::sign_hash(&signing_hash, initiator_keypair.private_key());
+
+    Ok(CooperativeCloseOffer {
+        version: COOPERATIVE_CLOSE_OFFER_VERSION,
+        channel_id: channel_id.to_hex(),
+        partial_tx: hex::encode(tx.serialize()),
+        initiator_pubkey: hex::encode(initiator_keypair.public_key().as_bytes()),
+        initiator_signature: hex::encode(initiator_sig.as_bytes()),
+        initiator_pubkey_hash: initiator_pubkey_hash.to_hex(),
+        counterparty_pubkey_hash: counterparty_pubkey_hash.to_hex(),
+    })
+}
+
+/// Finalize a cooperative-close offer: the counterparty verifies the initiator's
+/// signature over the exact close tx (rejecting any post-signing tampering),
+/// then co-signs to produce the complete 2-of-2 covenant witness. The returned
+/// transaction is broadcast-ready.
+pub fn finalize_cooperative_close_offer(
+    offer: &CooperativeCloseOffer,
+    finisher_keypair: &KeyPair,
+) -> Result<Transaction> {
+    let tx_bytes = hex::decode(&offer.partial_tx)
+        .map_err(|_| ChannelError::Protocol("invalid partial_tx hex".into()))?;
+    let mut tx = Transaction::deserialize(&tx_bytes)
+        .ok_or_else(|| ChannelError::Protocol("malformed partial_tx".into()))?;
+
+    let initiator_pubkey = decode_pubkey(&offer.initiator_pubkey)?;
+    let initiator_sig = decode_signature(&offer.initiator_signature)?;
+    let initiator_pkh = Hash::from_hex(&offer.initiator_pubkey_hash)
+        .ok_or_else(|| ChannelError::Protocol("invalid initiator_pubkey_hash".into()))?;
+
+    // Reject tampering: the initiator must have signed THIS exact tx.
+    let signing_hash = tx.signing_message_for_input(0);
+    crypto::signature::verify_hash(&signing_hash, &initiator_sig, &initiator_pubkey)
+        .map_err(|_| ChannelError::InvalidSignature)?;
+
+    let finisher_pkh = crypto::hash::hash_with_domain(
+        crypto::ADDRESS_DOMAIN,
+        finisher_keypair.public_key().as_bytes(),
+    );
+
+    sign_cooperative_close(
+        &mut tx,
+        finisher_keypair,
+        &initiator_pubkey,
+        &initiator_sig,
+        finisher_pkh,
+        initiator_pkh,
+    )?;
+
+    Ok(tx)
 }
 
 /// Build a unilateral (force) close transaction.

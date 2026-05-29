@@ -1512,9 +1512,13 @@ Arguments:
 
 ---
 
-### 16.3. Close Channel
+### 16.3. Close Channel (cooperative — two steps)
 
-Cooperatively close a channel.
+A cooperative close spends the channel's 2-of-2 funding output, so it needs
+**both** parties' signatures. This is a one-shot PSBT-style handoff (the same
+pattern as `doli nft --sell-sign` / `--from`):
+
+1. **Initiator** builds the close tx, signs their half, and writes an offer file:
 
 ```bash
 doli channel close <CHANNEL> [OPTIONS]
@@ -1523,9 +1527,30 @@ Arguments:
   <CHANNEL>    Channel ID (hex)
 
 Options:
-  -f, --fee <FEE>    Fee for close transaction (default: auto)
-      --force         Force close (unilateral, uses latest commitment tx)
+  -f, --fee <FEE>          Fee for the close transaction (default: 1 sat)
+  -o, --out <FILE>         Offer output file (default: close-<id>.json)
+      --force              NOT SUPPORTED in this build (see note below)
 ```
+
+2. **Counterparty** verifies the initiator's signature, co-signs, and broadcasts:
+
+```bash
+doli channel close-finish <FILE>
+
+Arguments:
+  <FILE>    Path to the cooperative-close offer file from step 1
+```
+
+The offer file is written with owner-only permissions (`0600` on Unix). Only the
+channel's two funding parties can finalize it; any other wallet is rejected with
+an explanatory `[MPTX007]` message.
+
+> **`--force` (unilateral close) is not supported in this build.** DOLI settles
+> on-chain in ~10s at a flat fee, so cooperative close is the supported path.
+> Trustless unilateral force-close (pre-signed commitments, revocation,
+> penalty/watchtower — i.e. the Lightning/Raiden machinery) is a deliberate
+> roadmap item gated on a concrete use case plus economic review, not a CLI gap.
+> Passing `--force` returns a clear error pointing to the cooperative flow.
 
 ---
 
@@ -1677,6 +1702,13 @@ doli bridge-refund <UTXO> [--yes]
 Arguments:
   <UTXO>    UTXO: txhash:output_index
 ```
+
+A refund spends the HTLC's **signed-refund** branch
+(`And(Sig(refund_key), TimelockExpiry)`, per AUDIT-BRIDGE-001). It succeeds only
+when **both** hold: (1) you run it with the **creator's wallet** (the refund key
+baked into the covenant), and (2) the chain is at or past the **expiry** height.
+Otherwise the node returns an explanatory `[MPTX007]`. A claim, symmetrically,
+needs the correct preimage **and** the chain at or past the **lock** height.
 
 ---
 
@@ -1947,7 +1979,7 @@ The replay tool produces a `DiagnosticBundle` identical in shape to
 | 12. Fungible Tokens | `doli issue-token`, `doli token-info` |
 | 13. AMM Pools | `doli pool create`, `doli pool swap`, `doli pool add`, `doli pool remove` |
 | 13. Lending | `doli loan create`, `doli loan repay`, `doli loan liquidate` |
-| 13. Payment Channels | `doli channel open`, `doli channel pay`, `doli channel close` |
+| 13. Payment Channels | `doli channel open`, `doli channel pay`, `doli channel close`, `doli channel close-finish` |
 | 14. Cross-Chain Bridge | `doli bridge-swap`, `doli bridge-buy`, `doli bridge-claim` |
 | 14. Privacy (new keys) | `doli address` |
 | 15. Governance | `doli update vote`, `doli maintainer list`, `doli protocol activate` |

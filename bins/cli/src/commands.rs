@@ -743,7 +743,12 @@ pub(crate) enum ChannelCommands {
         amount: String,
     },
 
-    /// Cooperatively close a channel
+    /// Cooperatively close a channel (step 1: build & sign an offer file)
+    ///
+    /// A cooperative close spends the 2-of-2 funding output and needs BOTH
+    /// parties' signatures. This builds the close tx, signs your half, and writes
+    /// a portable offer file. Send it to the counterparty, who completes the close
+    /// with `channel close-finish <file>`.
     Close {
         /// Channel ID (hex)
         channel: String,
@@ -752,9 +757,22 @@ pub(crate) enum ChannelCommands {
         #[arg(short, long)]
         fee: Option<String>,
 
-        /// Force close (unilateral, uses latest commitment tx)
+        /// Output file for the cooperative-close offer (default: close-<id>.json)
+        #[arg(short = 'o', long = "out", value_name = "FILE")]
+        output: Option<String>,
+
+        /// Force close (unilateral) — not supported in this build (roadmap item)
         #[arg(long)]
         force: bool,
+    },
+
+    /// Finalize a cooperative close from a counterparty's offer file (step 2)
+    ///
+    /// Verifies the initiator's signature, co-signs to complete the 2-of-2
+    /// covenant witness, and broadcasts the close transaction.
+    CloseFinish {
+        /// Path to the cooperative-close offer file (from `channel close`)
+        file: String,
     },
 
     /// List all channels

@@ -7,14 +7,34 @@ use crate::common::address_prefix;
 use crate::rpc_client::{coins_to_units, format_balance, RpcClient};
 use crate::wallet::Wallet;
 
+// Write a cooperative-close offer with owner-only permissions on Unix.
+#[cfg(unix)]
+fn write_offer_file(path: &str, content: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    f.write_all(content.as_bytes())
+}
+#[cfg(not(unix))]
+fn write_offer_file(path: &str, content: &str) -> std::io::Result<()> {
+    std::fs::write(path, content)
+}
+
 pub(crate) async fn cmd_channel(
     wallet_path: &Path,
     rpc_endpoint: &str,
     network: &str,
     command: ChannelCommands,
 ) -> Result<()> {
-    use channels::close::{build_cooperative_close, build_force_close};
-    use channels::commitment::{derive_channel_seed, CommitmentPair};
+    use channels::close::{
+        build_cooperative_close_offer, finalize_cooperative_close_offer, CooperativeCloseOffer,
+    };
+    use channels::commitment::derive_channel_seed;
     use channels::config::ChannelConfig;
     use channels::funding::build_funding_tx_with_change;
     use channels::store::ChannelStore;
@@ -261,16 +281,32 @@ pub(crate) async fn cmd_channel(
         ChannelCommands::Close {
             channel,
             fee,
+            output,
             force,
         } => {
-            let wallet = Wallet::load(wallet_path)?;
-            let rpc = RpcClient::new(rpc_endpoint);
-
-            if !rpc.ping().await? {
-                anyhow::bail!("Cannot connect to node at {}", rpc_endpoint);
+            if force {
+                // Unilateral force-close requires trustless-channel machinery
+                // (pre-signed commitment exchange, revocation, penalty/watchtower)
+                // that this build intentionally does not ship. See the INC-I-093
+                // roadmap note: trustless channels are a separate, economically
+                // reviewed product decision, not a CLI gap.
+                anyhow::bail!(
+                    "Unilateral force-close is not supported in this build.\n\
+                     DOLI settles on-chain in ~10s at a flat fee, so cooperative close \
+                     is the supported path:\n\
+                     \n\
+                     \u{2022} You:          doli channel close {ch} -o close.json\n\
+                     \u{2022} Counterparty: doli channel close-finish close.json\n\
+                     \n\
+                     Trustless force-close (pre-signed commitments, penalty/watchtower) \
+                     is a roadmap item gated on a concrete use case + economic review.",
+                    ch = channel
+                );
             }
 
-            let mut store = ChannelStore::open(&store_path)?;
+            let wallet = Wallet::load(wallet_path)?;
+
+            let store = ChannelStore::open(&store_path)?;
 
             let ch = store
                 .all_channels()
@@ -293,110 +329,114 @@ pub(crate) async fn cmd_channel(
             let remote_hash = Hash::from_bytes(ch.remote_pubkey_hash);
             let funding_hash = ch.funding_outpoint.tx_hash_as_crypto();
 
-            if force {
-                // Force close: broadcast latest commitment tx
-                let keypair = wallet.primary_keypair()?;
-                let channel_seed = derive_channel_seed(&keypair, &ch.channel_id.0);
+            // Cooperative close, step 1: build the close tx and sign our half of
+            // the 2-of-2 funding covenant, then emit a portable offer file.
+            let keypair = wallet.primary_keypair()?;
+            let offer = build_cooperative_close_offer(
+                &ch.channel_id,
+                funding_hash,
+                ch.funding_outpoint.output_index,
+                local_hash,
+                remote_hash,
+                &ch.balance,
+                ch.capacity,
+                fee_units,
+                &keypair,
+            )
+            .map_err(|e| anyhow::anyhow!("Failed to build cooperative-close offer: {}", e))?;
 
-                let rpc_client = channels::rpc::RpcClient::new(rpc_endpoint);
-                let current_height = rpc_client
-                    .get_height()
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Failed to get chain height: {}", e))?;
-                let dispute_height = current_height + ch.dispute_window;
+            let out_path =
+                output.unwrap_or_else(|| format!("close-{}.json", ch.channel_id.short()));
+            let offer_json = serde_json::to_string_pretty(&offer)?;
+            write_offer_file(&out_path, &offer_json)?;
 
-                let commitment =
-                    CommitmentPair::new(ch.commitment_number, ch.balance.clone(), &channel_seed);
-
-                let mut tx = build_force_close(
-                    &commitment,
-                    funding_hash,
-                    ch.funding_outpoint.output_index,
-                    local_hash,
-                    remote_hash,
-                    dispute_height,
-                    ch.capacity,
-                    fee_units,
-                )
-                .map_err(|e| anyhow::anyhow!("Failed to build force close: {}", e))?;
-
-                // Sign
-                for i in 0..tx.inputs.len() {
-                    let signing_hash = tx.signing_message_for_input(i);
-                    tx.inputs[i].signature =
-                        signature::sign_hash(&signing_hash, keypair.private_key());
-                    tx.inputs[i].public_key = Some(*keypair.public_key());
-                }
-
-                let tx_hex = hex::encode(tx.serialize());
-                let tx_hash = tx.hash();
-
-                println!("Force closing channel {}:", ch.channel_id);
-                println!("  Dispute window: {} blocks", ch.dispute_window);
-
-                match rpc.send_transaction(&tx_hex).await {
-                    Ok(result_hash) => {
-                        println!("  Commitment TX: {}", result_hash);
-                    }
-                    Err(e) => {
-                        anyhow::bail!("Failed to broadcast: {}", e);
-                    }
-                }
-
-                let ch_mut = store
-                    .find_mut(&ch.channel_id)
-                    .ok_or_else(|| anyhow::anyhow!("Channel disappeared"))?;
-                let _ = ch_mut.transition(ChannelState::ForceClosing);
-                ch_mut.close_tx_hash = Some(tx_hash.to_hex());
+            // Mark the channel as cooperatively closing (final close happens once
+            // the counterparty co-signs and broadcasts).
+            let mut store = store;
+            if let Some(ch_mut) = store.find_mut(&ch.channel_id) {
+                let _ = ch_mut.transition(ChannelState::CooperativeClosing);
                 store.save()?;
-            } else {
-                // Cooperative close
-                let mut tx = build_cooperative_close(
-                    funding_hash,
-                    ch.funding_outpoint.output_index,
-                    local_hash,
-                    remote_hash,
-                    &ch.balance,
-                    ch.capacity,
-                    fee_units,
-                )
-                .map_err(|e| anyhow::anyhow!("Failed to build cooperative close: {}", e))?;
+            }
 
-                // Sign
-                let keypair = wallet.primary_keypair()?;
-                for i in 0..tx.inputs.len() {
-                    let signing_hash = tx.signing_message_for_input(i);
-                    tx.inputs[i].signature =
-                        signature::sign_hash(&signing_hash, keypair.private_key());
-                    tx.inputs[i].public_key = Some(*keypair.public_key());
+            println!(
+                "Cooperative close offer created for channel {}:",
+                ch.channel_id
+            );
+            println!(
+                "  Local payout:  {}",
+                format_balance(ch.balance.local.saturating_sub(fee_units))
+            );
+            println!("  Remote payout: {}", format_balance(ch.balance.remote));
+            println!("  Fee:           {}", format_balance(fee_units));
+            println!("  Saved to:      {}", out_path);
+            println!();
+            println!("Send this file to your counterparty. They complete the close with:");
+            println!("  doli channel close-finish {}", out_path);
+        }
+
+        ChannelCommands::CloseFinish { file } => {
+            let wallet = Wallet::load(wallet_path)?;
+            let rpc = RpcClient::new(rpc_endpoint);
+
+            if !rpc.ping().await? {
+                anyhow::bail!("Cannot connect to node at {}", rpc_endpoint);
+            }
+
+            let offer_json = std::fs::read_to_string(&file)
+                .map_err(|e| anyhow::anyhow!("Cannot read offer file {}: {}", file, e))?;
+            let offer: CooperativeCloseOffer = serde_json::from_str(&offer_json)
+                .map_err(|e| anyhow::anyhow!("Invalid cooperative-close offer file: {}", e))?;
+
+            // Co-sign: verifies the initiator's signature over the exact tx and
+            // completes the 2-of-2 covenant witness.
+            let keypair = wallet.primary_keypair()?;
+            let tx = finalize_cooperative_close_offer(&offer, &keypair)
+                .map_err(|e| anyhow::anyhow!("Failed to finalize cooperative close: {}", e))?;
+
+            let tx_hex = hex::encode(tx.serialize());
+            let tx_hash = tx.hash();
+
+            println!(
+                "Finalizing cooperative close for channel {}:",
+                offer.channel_id
+            );
+            println!("  Close TX: {}", tx_hash.to_hex());
+            println!();
+            println!("Broadcasting...");
+
+            match rpc.send_transaction(&tx_hex).await {
+                Ok(result_hash) => {
+                    println!("Channel closed cooperatively. TX: {}", result_hash);
                 }
-
-                let tx_hex = hex::encode(tx.serialize());
-                let tx_hash = tx.hash();
-
-                println!("Closing channel {} cooperatively:", ch.channel_id);
-                println!(
-                    "  Local payout:  {}",
-                    format_balance(ch.balance.local.saturating_sub(fee_units))
-                );
-                println!("  Remote payout: {}", format_balance(ch.balance.remote));
-                println!("  Fee:           {}", format_balance(fee_units));
-
-                match rpc.send_transaction(&tx_hex).await {
-                    Ok(result_hash) => {
-                        println!("  Close TX: {}", result_hash);
+                Err(e) => {
+                    let msg = e.to_string();
+                    if msg.contains("MPTX007") {
+                        anyhow::bail!(
+                            "Broadcast rejected [MPTX007] — the 2-of-2 funding covenant was not \
+                             satisfied.\nThis usually means the wrong wallet finalized the offer: \
+                             only the channel's two funding parties can co-sign a cooperative \
+                             close. Verify you are using the counterparty wallet for this channel.\n\
+                             (node error: {})",
+                            msg
+                        );
                     }
-                    Err(e) => {
-                        anyhow::bail!("Failed to broadcast: {}", e);
-                    }
+                    anyhow::bail!("Failed to broadcast: {}", e);
                 }
+            }
 
-                let ch_mut = store
-                    .find_mut(&ch.channel_id)
-                    .ok_or_else(|| anyhow::anyhow!("Channel disappeared"))?;
-                let _ = ch_mut.transition(ChannelState::Closed);
-                ch_mut.close_tx_hash = Some(tx_hash.to_hex());
-                store.save()?;
+            // Mark closed locally if we have a record for this channel.
+            let mut store = ChannelStore::open(&store_path)?;
+            if let Some(ch) = store
+                .all_channels()
+                .iter()
+                .find(|c| c.channel_id.to_hex() == offer.channel_id)
+                .map(|c| c.channel_id.clone())
+            {
+                if let Some(ch_mut) = store.find_mut(&ch) {
+                    let _ = ch_mut.transition(ChannelState::Closed);
+                    ch_mut.close_tx_hash = Some(tx_hash.to_hex());
+                    store.save()?;
+                }
             }
         }
 

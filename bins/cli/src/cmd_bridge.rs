@@ -55,6 +55,24 @@ fn load_swap_preimage(swap_id: &str) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+/// Turn a raw `[MPTX007]` covenant rejection into an actionable explanation.
+///
+/// MPTX007 ("covenant condition not satisfied") on a bridge claim/refund is
+/// almost always a usage issue, not a bug: claiming before the lock height, a
+/// wrong preimage, refunding before expiry, or refunding from the wrong wallet.
+/// (INC-I-093: the evaluator is correct — see crates/core/tests/inc_i_093_bridge_htlc.rs.)
+fn explain_htlc_rejection(action: &str, requirements: &str, node_err: &str) -> anyhow::Error {
+    if node_err.contains("MPTX007") {
+        anyhow::anyhow!(
+            "{action} rejected [MPTX007] — the HTLC covenant was not satisfied.\n{requirements}\n\
+             Tip: check current vs lock/expiry height with `doli bridge-status <swap_id>`.\n\
+             (node error: {node_err})"
+        )
+    } else {
+        anyhow::anyhow!("{action} failed: {node_err}")
+    }
+}
+
 /// Resolve target chain name to chain ID.
 fn resolve_chain_id(chain: &str) -> Result<u8> {
     use doli_core::transaction::{
@@ -422,8 +440,12 @@ pub(crate) async fn cmd_bridge_claim(
             println!("Counterparty can use it to claim their locked funds.");
         }
         Err(e) => {
-            println!("Error: {}", e);
-            return Err(anyhow::anyhow!("Bridge claim failed: {}", e));
+            return Err(explain_htlc_rejection(
+                "Bridge claim",
+                "A claim needs BOTH: (1) the correct preimage (it must hash to the locked \
+                 hash), and (2) current height >= lock height (claim opens after lock).",
+                &e.to_string(),
+            ));
         }
     }
 
@@ -520,12 +542,20 @@ pub(crate) async fn cmd_bridge_refund(
         vec![Output::normal(refund_amount, refund_dest)],
     );
 
+    // Refund spends the signed-refund branch: And(Sig(refund_pkh), TimelockExpiry).
+    // The signature MUST live in the COVENANT witness — covenant evaluation ignores
+    // the input.signature field for conditioned outputs (INC-I-093).
     let signing_hash = tx.signing_message_for_input(0);
-    let witness_str = "branch(right)+none()";
-    let witness_bytes = parse_witness(witness_str, &signing_hash)?;
-    tx.set_covenant_witnesses(&[witness_bytes]);
-
     let keypair = wallet.primary_keypair()?;
+    let mut witness = doli_core::Witness::default();
+    witness.or_branches.push(true); // right branch = signed refund
+    witness
+        .signatures
+        .push(doli_core::ConditionWitnessSignature {
+            pubkey: *keypair.public_key(),
+            signature: crypto::signature::sign_hash(&signing_hash, keypair.private_key()),
+        });
+    tx.set_covenant_witnesses(&[witness.encode()]);
     tx.inputs[0].signature = crypto::signature::sign_hash(&signing_hash, keypair.private_key());
     tx.inputs[0].public_key = Some(*keypair.public_key());
 
@@ -562,8 +592,13 @@ pub(crate) async fn cmd_bridge_refund(
             println!("TX Hash: {}", result_hash);
         }
         Err(e) => {
-            println!("Error: {}", e);
-            return Err(anyhow::anyhow!("Bridge refund failed: {}", e));
+            return Err(explain_htlc_rejection(
+                "Bridge refund",
+                "A refund needs BOTH: (1) your wallet to be the HTLC creator (the refund \
+                 key in the covenant), and (2) current height >= expiry height (refund \
+                 opens after expiry).",
+                &e.to_string(),
+            ));
         }
     }
 
@@ -1018,11 +1053,18 @@ pub(crate) async fn cmd_bridge_status(
                 vec![Output::normal(refund_amount, refund_dest)],
             );
 
+            // Signed-refund branch needs the signature in the covenant witness.
             let signing_hash = tx.signing_message_for_input(0);
-            let witness_bytes = parse_witness("branch(right)+none()", &signing_hash)?;
-            tx.set_covenant_witnesses(&[witness_bytes]);
-
             let keypair = wallet.primary_keypair()?;
+            let mut witness = doli_core::Witness::default();
+            witness.or_branches.push(true);
+            witness
+                .signatures
+                .push(doli_core::ConditionWitnessSignature {
+                    pubkey: *keypair.public_key(),
+                    signature: crypto::signature::sign_hash(&signing_hash, keypair.private_key()),
+                });
+            tx.set_covenant_witnesses(&[witness.encode()]);
             tx.inputs[0].signature =
                 crypto::signature::sign_hash(&signing_hash, keypair.private_key());
             tx.inputs[0].public_key = Some(*keypair.public_key());
@@ -1342,8 +1384,12 @@ pub(crate) async fn cmd_bridge_buy(
             println!("Counterparty can use it to claim their locked funds.");
         }
         Err(e) => {
-            println!("Error: {}", e);
-            return Err(anyhow::anyhow!("Bridge buy (claim) failed: {}", e));
+            return Err(explain_htlc_rejection(
+                "Bridge buy (claim)",
+                "A claim needs BOTH: (1) the correct preimage (it must hash to the locked \
+                 hash), and (2) current height >= lock height (claim opens after lock).",
+                &e.to_string(),
+            ));
         }
     }
 
