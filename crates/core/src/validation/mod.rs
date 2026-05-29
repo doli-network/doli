@@ -21,6 +21,12 @@
 //! - Input/output balance
 //! - Lock time enforcement
 
+/// AMM value-conservation validation (INC-I-096).
+///
+/// Single shared per-asset balance equations (E1 DOLI, E2 token_b, E3 LP supply),
+/// proportional reserve binding, k-invariant, and FM-S11 asset_id cross-check.
+/// Called by both consensus (M2) and mempool (M3).
+pub mod amm;
 mod block;
 mod error;
 pub mod errors_oracle;
@@ -45,6 +51,7 @@ mod utxo;
 /// Zero-knowledge proof verification for L2 settlement.
 pub mod zk;
 
+pub use amm::{verify_amm_conservation, AmmConservationResult};
 pub use block::{validate_block, validate_block_with_mode, validate_header};
 pub use error::ValidationError;
 pub use producer::{
