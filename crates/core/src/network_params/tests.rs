@@ -1,4 +1,9 @@
 //! Tests for network parameters
+//!
+//! OUTPUT CONTRACT: this module covers `NetworkParams` defaults, env overrides,
+//! chainspec loading, and (INC-I-096) the AMM-conservation activation-ordering
+//! guard. The per-function contract + INPUT PARTITIONS for the INC-I-096 guard
+//! are documented inline above its tests below.
 
 use std::sync::Mutex;
 
@@ -278,4 +283,86 @@ fn test_apply_chainspec_defaults_malformed_file() {
 
     // Should not panic, just log a warning
     apply_chainspec_defaults(&chainspec_path);
+}
+
+// === INC-I-096 INV-DEPLOY-002: AMM-conservation activation ordering ===
+//
+// OUTPUT CONTRACT: fn NetworkParams::validate_amm_conservation_ordering(&self, network) -> Result<(), String>
+//   Outputs:
+//     O1: Ok(())   — ordering safe (or AMM disabled, or testnet grandfather)
+//     O2: Err(msg) — AMM enabled before conservation on a non-testnet network
+//   PATHS:
+//     P1: amm_activation_height == u64::MAX (AMM disabled)        -> O1
+//     P2: network == Testnet (grandfathered)                      -> O1
+//     P3: inc_i_096_activation_height >  amm_activation_height     -> O2
+//     P4: inc_i_096_activation_height <= amm_activation_height     -> O1
+//   INPUT PARTITIONS:
+//     IP1: mainnet defaults (amm=MAX,inc=MAX)        -> P1 -> O1
+//     IP2: devnet  defaults (amm=0,inc=0)            -> P4 -> O1
+//     IP3: testnet defaults (amm=20_099,inc=MAX)     -> P2 -> O1 (grandfather; precondition: violated ordering)
+//     IP4: synthetic mainnet (amm=1000,inc=2000)     -> P3 -> O2
+//     IP5: synthetic mainnet (amm=2000,inc=1000)     -> P4 -> O1
+//   MATRIX:
+//     T1: O1 x P1 x IP1 -> inv_deploy_002_mainnet_defaults_ok
+//     T2: O1 x P4 x IP2 -> inv_deploy_002_devnet_defaults_ok
+//     T3: O1 x P2 x IP3 -> inv_deploy_002_testnet_grandfathered_ok
+//     T4: O2 x P3 x IP4 -> inv_deploy_002_rejects_amm_before_conservation_on_mainnet
+//     T5: O1 x P4 x IP5 -> inv_deploy_002_accepts_conservation_before_amm_on_mainnet
+
+#[test]
+fn inv_deploy_002_mainnet_defaults_ok() {
+    // mainnet: amm=u64::MAX, inc_i_096=u64::MAX → AMM disabled → guard passes.
+    let p = NetworkParams::defaults(Network::Mainnet);
+    assert!(p
+        .validate_amm_conservation_ordering(Network::Mainnet)
+        .is_ok());
+}
+
+#[test]
+fn inv_deploy_002_devnet_defaults_ok() {
+    // devnet: amm=0, inc_i_096=0 → 0 <= 0 → guard passes.
+    let p = NetworkParams::defaults(Network::Devnet);
+    assert!(p
+        .validate_amm_conservation_ordering(Network::Devnet)
+        .is_ok());
+}
+
+#[test]
+fn inv_deploy_002_testnet_grandfathered_ok() {
+    // testnet: amm=20_099 enabled, inc_i_096=u64::MAX (not yet pinned).
+    // Ordering is historically violated (AMM predates the fix) but explicitly
+    // grandfathered — below-gate conservation rejects (never drains) AMM
+    // DOLI-outflow txs, so this is safe. Guard must return Ok for Testnet.
+    let p = NetworkParams::defaults(Network::Testnet);
+    assert!(
+        p.inc_i_096_activation_height > p.amm_activation_height,
+        "precondition: testnet defaults have the historical ordering violation"
+    );
+    assert!(p
+        .validate_amm_conservation_ordering(Network::Testnet)
+        .is_ok());
+}
+
+#[test]
+fn inv_deploy_002_rejects_amm_before_conservation_on_mainnet() {
+    // Synthetic dangerous config: AMM enabled at 1000 but conservation at 2000.
+    // On a non-testnet network this MUST be rejected (would run AMM on the
+    // pre-INC-I-096 drainable conservation between h=1000 and h=2000).
+    let mut p = NetworkParams::defaults(Network::Mainnet);
+    p.amm_activation_height = 1000;
+    p.inc_i_096_activation_height = 2000;
+    assert!(p
+        .validate_amm_conservation_ordering(Network::Mainnet)
+        .is_err());
+}
+
+#[test]
+fn inv_deploy_002_accepts_conservation_before_amm_on_mainnet() {
+    // Conservation activates at/before AMM → safe → Ok.
+    let mut p = NetworkParams::defaults(Network::Mainnet);
+    p.amm_activation_height = 2000;
+    p.inc_i_096_activation_height = 1000;
+    assert!(p
+        .validate_amm_conservation_ordering(Network::Mainnet)
+        .is_ok());
 }

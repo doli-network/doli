@@ -185,6 +185,9 @@ impl NetworkParams {
                 // window AMM is enabled — AMM goes live already-correct, no
                 // separate consensus event. IMMUTABLE once crossed (INC-I-054).
                 inc_i_092_activation_height: u64::MAX,
+                // INC-I-096 pool-aware conservation. FROZEN at u64::MAX:
+                // AMM is not yet activated on mainnet.
+                inc_i_096_activation_height: u64::MAX,
 
                 // Gossip mesh: universal config for all network sizes.
                 // mesh_n=12 keeps all peers in eager-push for networks ≤24 (mesh_n_high),
@@ -332,6 +335,9 @@ impl NetworkParams {
                 // than always-on. Pinned h=23_688 (~3.4h lead from h≈22_478 at
                 // 10s slots). Override via `DOLI_INC_I_092_ACTIVATION_HEIGHT`.
                 inc_i_092_activation_height: 23_688,
+                // INC-I-096 pool-aware conservation. PLACEHOLDER:
+                // operator pins concrete height in a separate commit.
+                inc_i_096_activation_height: u64::MAX,
 
                 // INC-I-015: Gossip mesh sized to max_peers for eager push to ALL
                 // connected peers. At mesh_n=12, blocks reach 12 peers immediately
@@ -463,6 +469,8 @@ impl NetworkParams {
                 // INC-I-092 DeFi spend-path fixes: always-on for local
                 // development (devnet is ephemeral, no rolling-deploy concern).
                 inc_i_092_activation_height: 0,
+                // INC-I-096 pool-aware conservation. Always-on in devnet.
+                inc_i_096_activation_height: 0,
 
                 // Gossip mesh: same universal config as mainnet.
                 // With --no-dht, mesh_n_high=24 keeps all devnet peers in mesh.

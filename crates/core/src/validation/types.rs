@@ -232,6 +232,16 @@ pub struct ValidationContext {
     /// Sourced from `NetworkParams::inc_i_092_activation_height`. Default
     /// `u64::MAX` (disabled). Independent of [`Self::amm_activation_height`].
     pub inc_i_092_activation_height: u64,
+    /// INC-I-096: Pool-aware value conservation + proportional withdrawal
+    /// binding for AMM DOLI-outflow txs (RemoveLiquidity, Swap B-to-A).
+    ///
+    /// At/after this height, the native conservation check accounts for
+    /// Pool reserve deltas and RemoveLiquidity binds reserve withdrawals
+    /// to LP shares burned (proportional). Mempool mirrors the same.
+    ///
+    /// Sourced from `NetworkParams::inc_i_096_activation_height`. Default
+    /// `u64::MAX` (disabled). Independent of inc_i_092/amm.
+    pub inc_i_096_activation_height: u64,
 }
 
 impl ValidationContext {
@@ -272,6 +282,7 @@ impl ValidationContext {
             oracle_activation_height: u64::MAX,
             oracle_sunset_triggered: false,
             inc_i_092_activation_height: u64::MAX,
+            inc_i_096_activation_height: u64::MAX,
         }
     }
 
@@ -328,6 +339,13 @@ impl ValidationContext {
     #[must_use]
     pub fn with_inc_i_092_activation_height(mut self, height: u64) -> Self {
         self.inc_i_092_activation_height = height;
+        self
+    }
+
+    /// Set the INC-I-096 pool-aware conservation activation height (see field doc).
+    #[must_use]
+    pub fn with_inc_i_096_activation_height(mut self, height: u64) -> Self {
+        self.inc_i_096_activation_height = height;
         self
     }
 

@@ -1,7 +1,7 @@
 //! Validation rules for AMM pool transactions.
 //!
 //! Structural validation only — no UTXO state needed.
-//! Invariant (x*y=k) and reserve checks happen in apply_block.
+//! Invariant (x*y=k) and reserve checks happen in validation/utxo.rs (UTXO-context validation).
 
 use crate::consensus::MINIMUM_LIQUIDITY;
 use crate::transaction::{OutputType, Transaction, POOL_MAX_FEE_BPS};

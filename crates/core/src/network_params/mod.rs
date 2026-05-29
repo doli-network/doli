@@ -459,6 +459,28 @@ pub struct NetworkParams {
     /// once crossed, never move forward.
     pub inc_i_092_activation_height: u64,
 
+    /// INC-I-096: Pool-aware value conservation for AMM DOLI-outflow txs.
+    ///
+    /// At/after this height (strict `>=`), the native conservation check
+    /// accounts for Pool reserve deltas (reserves stored in `extra_data`,
+    /// invisible to the naive `total_input >= total_output` gate), and
+    /// RemoveLiquidity binds reserve-deltas to LP shares burned
+    /// (proportional withdrawal). Mempool mirrors the same pool-aware
+    /// conservation.
+    ///
+    /// Without this fix, ANY RemoveLiquidity or B-to-A Swap that releases
+    /// DOLI from pool reserves is falsely rejected with InsufficientFunds.
+    ///
+    /// Three-question gate (INC-I-075): Q1=YES (RemoveLiquidity/Swap are
+    /// user-submittable), Q2=NO, Q3=NO (reject->accept for valid txs)
+    /// -> activation height REQUIRED. Independent of amm/inc_i_092.
+    ///
+    /// Defaults: mainnet `u64::MAX` (co-pinned with amm_activation_height
+    /// — AMM not live), testnet `u64::MAX` (placeholder — operator pins
+    /// concrete height in separate commit), devnet `0` (always-on).
+    /// Mainnet IMMUTABILITY (INC-I-054): once crossed, never move forward.
+    pub inc_i_096_activation_height: u64,
+
     // === Gossip mesh ===
     /// Target number of peers in gossipsub mesh per topic
     pub mesh_n: usize,
@@ -485,7 +507,54 @@ impl NetworkParams {
             Network::Devnet => &DEVNET_PARAMS,
         };
 
-        lock.get_or_init(|| env_loader::load_from_env(network))
+        let params = lock.get_or_init(|| env_loader::load_from_env(network));
+        // INV-DEPLOY-002 (INC-I-096): in debug builds, fail fast if a network
+        // enables AMM before pool-aware conservation. No effect on release hot path.
+        debug_assert!(
+            params.validate_amm_conservation_ordering(network).is_ok(),
+            "{}",
+            params
+                .validate_amm_conservation_ordering(network)
+                .unwrap_err()
+        );
+        params
+    }
+
+    /// INV-DEPLOY-002 (INC-I-096): AMM must never be validated by the
+    /// pre-INC-I-096 (drainable) conservation. For every height where AMM is
+    /// active, INC-I-096 pool-aware conservation must also be active — which
+    /// holds for all heights iff
+    /// `inc_i_096_activation_height <= amm_activation_height`.
+    ///
+    /// `Network::Testnet` is grandfathered: AMM activated there (h=20_099)
+    /// before this fix existed. Below the gate the naive conservation rejects
+    /// every DOLI-releasing AMM tx (liveness-broken but NOT drainable, since
+    /// the flawed proportional-binding patch was removed), so the historical
+    /// ordering violation is safe. Pinning a concrete testnet
+    /// `inc_i_096_activation_height` is a separate operator deploy decision.
+    ///
+    /// This guard's purpose is to block a FUTURE mainnet config that would
+    /// enable AMM without the conservation fix.
+    pub fn validate_amm_conservation_ordering(&self, network: Network) -> Result<(), String> {
+        // AMM disabled on this network → nothing to guard.
+        if self.amm_activation_height == u64::MAX {
+            return Ok(());
+        }
+        // Grandfathered historical ordering (see doc) — safe because below-gate
+        // conservation rejects (never drains) AMM DOLI-outflow txs.
+        if network == Network::Testnet {
+            return Ok(());
+        }
+        if self.inc_i_096_activation_height > self.amm_activation_height {
+            return Err(format!(
+                "INV-DEPLOY-002 violated on {network:?}: amm_activation_height ({}) \
+                 enables AMM before inc_i_096_activation_height ({}) — AMM would run on \
+                 pre-INC-I-096 (drainable) conservation. Require \
+                 inc_i_096_activation_height <= amm_activation_height.",
+                self.amm_activation_height, self.inc_i_096_activation_height
+            ));
+        }
+        Ok(())
     }
 
     // === Derived parameters ===
