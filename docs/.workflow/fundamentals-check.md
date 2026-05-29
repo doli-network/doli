@@ -1,30 +1,16 @@
-# Fundamentals Check — INC-I-090 fix loop (milestone phase)
+# Fundamentals Check — INC-I-096 (Design Evaluators)
 
-This is the FIX-loop fundamentals check. The investigation-phase fundamentals already completed; VERDICT achieved conf(0.92, measured). See `docs/bugfixes/inc-i-090-observability-gap-verdict.md`.
+## Context
+Sub-agent design evaluators for INC-I-096 AMM value-conservation redesign.
+Full problem space documented in `docs/.workflow/design-brief.md`.
 
-| Item | Status | Evidence |
-|------|--------|----------|
-| Build compiles | PASS (assumed from recent commits) | Recent commit `52fe4ed3 chore(release): bump 6.22.0 -> 6.22.1` built clean; INC-I-089 fix `7d2fd5bb` shipped. Will re-verify per milestone before commit. |
-| Tests passing on baseline | N/A pre-milestone | Will run `cargo test -p storage --lib && cargo test -p rpc --lib` before M1's failing-test phase to establish baseline green. |
-| External deps reachable | N/A | All work is internal (observability subsystem). |
-| Resource/capacity bug? | NO | This is an emit-wiring + RPC-filter bug, not a resource bug. |
-| Occam's level | Level 4 (code defect — wiring) + Level 5 (architectural — missing alert consumer) | D1, D2, D3, D5, D6, D7 are code-level wiring defects. D4, D8 are infrastructure/wiring gaps. None are timing/race or resource. |
+## Fundamentals Verified
+1. **Symptom clear**: 6 defects (D1-D4, H1-H2) in AMM conservation layer across 3 enforcement sites
+2. **Not a config issue**: Structural architecture problem — declared pool state trusted without input binding
+3. **Not a deployment issue**: AMM not yet live (amm_activation_height = u64::MAX)
+4. **Root cause identified**: Per-type ad-hoc checks instead of unified conservation invariant; builder computes but validator trusts declared state
+5. **Scope bounded**: AMM value-conservation layer only (4 tx types, 3 enforcement sites, 9 checks)
 
-## Working-tree caveat (CRITICAL for milestone-runner)
-
-`git status` shows `M crates/network/src/sync/manager/recovery.rs` — UNCOMMITTED WIP, likely the underlying-fork fencepost fix related to `inc-i-090-finality-guard-analysis.md`.
-
-**Milestone-runner constraint**: every milestone in this run uses `git add <specific files>` for its fix, NEVER `git add -A` or `git add .`. The recovery.rs WIP must stay uncommitted in the user's tree across all 7 milestones. M4 (which would also touch recovery.rs) is DEFERRED until the user commits this WIP.
-
-## Quality Audit
-
-```
-━━━ FUNDAMENTALS CHECK QUALITY AUDIT ━━━
-Items with PASS + evidence: 1/5
-Items with PASS but NO evidence: 0
-Items with FAIL: 0
-Items with N/A + justification: 4 (build/test deferred to per-milestone gates; deps + capacity not applicable)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-```
-
-No blockers. Proceeding to milestone loop.
+## Verdict
+Fundamentals satisfied. Proceed with code-level design evaluation.
+(Updated by restructure evaluator — prior subtraction evaluator also verified.)
