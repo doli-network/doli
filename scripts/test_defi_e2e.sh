@@ -15,10 +15,13 @@
 #        - MintAsset tx (Phase 1)
 #        - CreatePool x2 (different fee tiers, Phase 2)
 #        - SwapPool tx (Phase 3)
-#        - AddLiquidity tx (Phase 4)
-#        - NFT MintAsset + Transfer (Phase 5)
-#        - OpenChannel tx (Phase 6)
-#   4. Wallet balance deltas in ~/testnet/keys/producer_{1..5}.json
+#        - AddLiquidity + RemoveLiquidity tx (Phase 4)
+#        - NFT MintAsset + Transfer tx (Phase 5)
+#        - OpenChannel + Cooperative Close tx (Phase 6)
+#        - HTLC-conditioned Send tx (Phase 7)
+#        - Bridge HTLC lock tx (Phase 9)
+#   4. Wallet balance deltas in ~/testnet/keys/producer_{1..2}.json
+#   5. Files written: close-<chan_id>.json (PSBT-style offer); cleaned up post-test
 #
 # Code paths (per phase, all reachable when AMM+oracle active at h >= 20099):
 #   - preflight              → assert binary + RPCs + balances
@@ -40,14 +43,22 @@
 # 2     | pool create         | fee=100 bps, same pair             | accept, distinct pool_id (D2)
 # 2     | pool create         | sub-MIN_LIQUIDITY (0.0001/1)       | reject (D1)
 # 3     | pool swap a2b       | valid amount, sufficient reserves  | reserves change, k non-decreasing
-# 4     | pool add            | proportional add from issuer       | accept
-# 5     | nft mint            | valid IPFS-style URI               | accept, owned by minter
-# 5     | nft transfer        | valid recipient address            | ownership moves to recipient
-# 6     | channel open        | valid counterparty, sufficient bal | channel visible in list
-# 7     | template surface    | help command present               | command exists in CLI
+# 4     | pool add            | proportional add from issuer       | total_lp/reserves grow
+# 4     | pool remove         | LP UTXO present, partial burn      | reserves shrink, LP UTXO consumed
+# 5     | nft mint            | valid IPFS-style URI               | confirmed via getTransaction
+# 5     | nft list            | post-mint                          | UTXO appears (P3-014 fix)
+# 5     | nft transfer        | valid recipient address            | N2 lists, N1 no longer
+# 6     | channel open        | valid counterparty, sufficient bal | channel id returned
+# 6     | channel open self   | counterparty == self               | reject pre-broadcast (P1-007)
+# 6     | channel close       | open channel                       | offer file written
+# 6     | channel close-finish| valid offer file from counterparty | close tx confirmed (INC-I-093)
+# 7     | template surface    | help on 6 kinds                    | all 6 respond
+# 7     | template htlc-pay   | live --send tx with hashlock       | tx confirmed on chain
 # 8     | getOracleStatus     | always callable                    | active=true, ah=20099
-# 8     | getOraclePrice      | no params                          | RPC responds (result OR error_null)
-# 9     | bridge-list         | empty network state                | RPC responds
+# 8     | getOraclePrice      | with valid pair_id                 | RPC responds cleanly
+# 9     | bridge-list         | any state                          | RPC responds
+# 9     | bridge-swap         | valid BTC addr, 0.05 DOLI          | swap tx confirmed
+# 9     | getUtxos bridgeHtlc | post-swap                          | bridgeHtlc UTXO present
 # ============================================================================
 #
 # Targets local testnet at ~/testnet/, producers N1-N5, RPC 8501-8505 (seed on 8500).
@@ -139,6 +150,32 @@ assert_eq() {
 
 assert_ne() {
     if [ "$2" != "$3" ]; then ok "$1"; else fail "$1: should differ but both are '$2'"; fi
+}
+
+# Extract the tx hash from a CLI command's output. Each CLI subcommand prints
+# different identifiers (asset_id, content_hash, channel_id, hashlock, etc.) so
+# we look for the explicit "TX Hash:" or "TX:" label first, falling back to the
+# LAST 64-hex token (broadcast confirmations print the tx hash last).
+tx_hash() {
+    local out="$1"
+    local h
+    # Try labeled patterns in order of specificity
+    h=$(printf '%s\n' "$out" | grep -iE "^[[:space:]]*(TX Hash|Close TX|Funding TX hash|Funding TX|TX):" | grep -oE "[0-9a-f]{64}" | tail -1)
+    if [ -n "$h" ]; then printf '%s' "$h"; return 0; fi
+    # Fallback: last 64-hex token in the output
+    printf '%s\n' "$out" | grep -oE "[0-9a-f]{64}" | tail -1
+}
+
+# Wait until a tx hash is queryable (confirmed in a block). Returns 0 + prints h=N.
+wait_confirmed() {
+    local tx="$1" label="${2:-tx}"
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        wait_blocks 1 >/dev/null 2>&1
+        local h
+        h=$(rpc getTransaction "[\"$tx\"]" | python3 -c "import sys,json; r=json.load(sys.stdin).get('result',{}) or {}; print(r.get('blockHeight') or '')" 2>/dev/null)
+        if [ -n "$h" ]; then printf 'h=%s\n' "$h"; return 0; fi
+    done
+    return 1
 }
 
 # ============================================================================
@@ -304,31 +341,71 @@ phase_amm() {
         fi
     fi
 
-    phase "Phase 4: AMM add liquidity"
+    phase "Phase 4: AMM add + remove liquidity"
+
+    log "Pre-add pool state"
+    local pre_add; pre_add=$(rpc getPoolInfo "{\"poolId\":\"$POOL_ID_30\"}")
+    local pre_lp; pre_lp=$(printf '%s\n' "$pre_add" | python3 -c "import sys,json; d=json.load(sys.stdin).get('result',{}); print(d.get('totalLp', d.get('total_lp', 0)))" 2>/dev/null)
+    log "  total_lp=$pre_lp"
 
     log "N1 adds liquidity: 1 DOLI / 100 tokens"
     local add_out; add_out=$(cli N1 pool add --pool "$POOL_ID_30" --doli 1 --tokens 100 --yes 2>&1)
-    if printf '%s\n' "$add_out" | grep -qiE "submitted|broadcast|tx"; then
+    if printf '%s\n' "$add_out" | grep -qiE "submitted|broadcast|tx|created|successfully"; then
         ok "add liquidity submitted"
     else
         fail "add liquidity failed"
         printf '%s\n' "$add_out" | tail -5
+        return 1
     fi
 
     wait_blocks 2 || true
 
-    skip "remove liquidity (LP share UTXO lookup needs separate flow)"
+    local post_add; post_add=$(rpc getPoolInfo "{\"poolId\":\"$POOL_ID_30\"}")
+    local post_lp; post_lp=$(printf '%s\n' "$post_add" | python3 -c "import sys,json; d=json.load(sys.stdin).get('result',{}); print(d.get('totalLp', d.get('total_lp', 0)))" 2>/dev/null)
+    log "  total_lp now=$post_lp"
+    if [ -n "$pre_lp" ] && [ -n "$post_lp" ] && [ "$post_lp" != "$pre_lp" ]; then
+        ok "add liquidity increased total_lp ($pre_lp -> $post_lp)"
+    else
+        # Some pool RPC implementations may not expose totalLp; fall back to reserves rising
+        local post_add_a; post_add_a=$(printf '%s\n' "$post_add" | python3 -c "import sys,json; print(json.load(sys.stdin).get('result',{}).get('reserveA',0))" 2>/dev/null)
+        if [ "$post_add_a" -gt "$pre_a" ] 2>/dev/null; then
+            ok "add liquidity grew reserve_a ($pre_a -> $post_add_a)"
+        else
+            skip "could not verify add-liquidity effect (RPC shape lacks totalLp + reserveA unchanged)"
+        fi
+    fi
+
+    # Try to remove. Known issue (2026-05-29): wallet-side LP UTXO selection does
+    # not filter by pool_id, so when N1 holds LP shares from MULTIPLE pools the
+    # wallet picks the wrong UTXO -> MPTX007 covenant condition not satisfied at
+    # mempool. Track as a separate finding; here we surface the diagnostic.
+    log "Removing 100 LP shares from POOL_ID_30 (probes wallet UTXO selection)"
+    local rm_out; rm_out=$(cli N1 pool remove --pool "$POOL_ID_30" --shares 100 --yes 2>&1)
+    if printf '%s\n' "$rm_out" | grep -qE "MPTX007|covenant condition"; then
+        fail "pool remove rejected at mempool (MPTX007 on input 1 = wrong LP UTXO selected) -- wallet LP UTXO selection does not filter by pool_id"
+    elif printf '%s\n' "$rm_out" | grep -qiE "submitted|broadcast|removed|successfully|TX Hash"; then
+        local rm_tx; rm_tx=$(tx_hash "$rm_out")
+        local rm_confirmed; rm_confirmed=$(wait_confirmed "$rm_tx" "remove")
+        if [ -n "$rm_confirmed" ]; then
+            ok "remove liquidity confirmed ($rm_confirmed)"
+        else
+            fail "remove liquidity tx $rm_tx not queryable after 10 blocks"
+        fi
+    else
+        fail "remove liquidity failed (unrecognized output)"
+        printf '%s\n' "$rm_out" | tail -5
+    fi
 }
 
 # ============================================================================
 # Phase 5: NFT
 # ============================================================================
 phase_nft() {
-    phase "Phase 5: NFT mint + transfer"
+    phase "Phase 5: NFT mint + transfer end-to-end"
 
     log "N1 mints NFT"
     local mint_out; mint_out=$(cli N1 nft --mint "ipfs://QmDefiTest$$" --amount 1 2>&1)
-    local mint_tx; mint_tx=$(printf '%s\n' "$mint_out" | grep -oE "[0-9a-f]{64}" | head -1)
+    local mint_tx; mint_tx=$(tx_hash "$mint_out")
     if [ -n "$mint_tx" ]; then
         ok "NFT mint submitted (tx=${mint_tx:0:16}...)"
     else
@@ -337,84 +414,203 @@ phase_nft() {
         return 1
     fi
 
-    wait_blocks 2 || true
-
-    # Verify on-chain (authoritative) rather than via wallet --list (cache may lag)
-    log "Verify NFT tx in chain"
-    local tx_info; tx_info=$(rpc getTransaction "[\"$mint_tx\"]")
-    local has_nft; has_nft=$(printf '%s\n' "$tx_info" | python3 -c "
-import sys, json
-d = json.load(sys.stdin).get('result', {})
-if not d: print('no_result'); sys.exit()
-# NFT outputs have outputType 'nft' or 'nonFungibleAsset'
-for out in d.get('outputs', []):
-    ot = (out.get('outputType') or out.get('output_type') or '').lower()
-    if 'nft' in ot or 'nonfungible' in ot or 'fungibleasset' in ot:
-        print('found:' + ot); break
-else:
-    print('no_nft_output')
-" 2>/dev/null)
-    if printf '%s' "$has_nft" | grep -q "found:"; then
-        ok "NFT output present on chain ($has_nft)"
+    log "Waiting for mint to confirm"
+    local confirmed; confirmed=$(wait_confirmed "$mint_tx" "mint")
+    if [ -n "$confirmed" ]; then
+        ok "NFT mint confirmed ($confirmed)"
     else
-        fail "NFT tx on chain but no NFT output detected ($has_nft)"
+        fail "NFT mint $mint_tx not queryable after 10 blocks"
+        return 1
     fi
 
-    log "Try N1 wallet --list to see if cache caught up"
+    log "N1 lists NFTs (P3-014: should include EncryptedContent mints)"
     local list_out; list_out=$(cli N1 nft --list 2>&1)
-    if printf '%s\n' "$list_out" | grep -qE "[0-9a-f]{64}:[0-9]+"; then
-        ok "N1 wallet --list shows NFT"
+    local nft_utxo; nft_utxo=$(printf '%s\n' "$list_out" | grep -oE "[0-9a-f]{64}:[0-9]+" | head -1)
+    if [ -n "$nft_utxo" ]; then
+        ok "N1 nft --list shows UTXO ($nft_utxo)"
     else
-        skip "N1 wallet --list empty (wallet UTXO indexer may not track NFTs yet)"
+        fail "nft --list empty after confirmed mint"
+        printf '%s\n' "$list_out" | head -10
+        return 1
     fi
-    skip "NFT transfer (depends on wallet indexer surfacing the UTXO)"
+
+    # Locate the SPECIFIC just-minted UTXO (mint_tx:N)
+    local fresh_utxo; fresh_utxo=$(printf '%s\n' "$list_out" | grep -oE "${mint_tx}:[0-9]+" | head -1)
+    if [ -z "$fresh_utxo" ]; then fresh_utxo="$nft_utxo"; fi
+    # NFT transfer uses ECIES encryption to the recipient's PUBKEY. The CLI can
+    # resolve a pubkey from an address only via on-chain SEND history. Producer
+    # BLS attestations don't count. Workaround: pass N3's pubkey hex directly
+    # (queryable via `doli info`).
+    local n3_pubkey; n3_pubkey=$(cli N3 info 2>&1 | grep -iE "^[[:space:]]*Public Key:" | grep -oE "[0-9a-f]{64}" | head -1)
+    if [ -z "$n3_pubkey" ]; then fail "could not read N3 pubkey from info"; return 1; fi
+    log "Transferring NFT $fresh_utxo from N1 -> N3 (via pubkey hex)"
+    local xfer_out; xfer_out=$(cli N1 nft --transfer "$fresh_utxo" --to "$n3_pubkey" 2>&1)
+    local xfer_tx; xfer_tx=$(tx_hash "$xfer_out")
+    if [ -n "$xfer_tx" ]; then
+        ok "NFT transfer submitted (tx=${xfer_tx:0:16}...)"
+    else
+        fail "NFT transfer produced no txid"
+        printf '%s\n' "$xfer_out" | tail -5
+        return 1
+    fi
+
+    log "Waiting for transfer to confirm"
+    local xfer_confirmed; xfer_confirmed=$(wait_confirmed "$xfer_tx" "transfer")
+    if [ -n "$xfer_confirmed" ]; then
+        ok "transfer confirmed ($xfer_confirmed)"
+    else
+        fail "transfer $xfer_tx not queryable after 10 blocks"
+        return 1
+    fi
+
+    # Verify N3 now lists the NFT and N1 no longer does (for THIS utxo)
+    local n3_list; n3_list=$(cli N3 nft --list 2>&1)
+    local n3_count; n3_count=$(printf '%s\n' "$n3_list" | grep -cE "[0-9a-f]{64}:[0-9]+" || true)
+    if [ "$n3_count" -ge 1 ]; then
+        ok "N3 owns $n3_count NFT(s) post-transfer"
+    else
+        fail "N3 nft --list empty after transfer"
+    fi
+
+    local n1_list_after; n1_list_after=$(cli N1 nft --list 2>&1)
+    if printf '%s\n' "$n1_list_after" | grep -q "$fresh_utxo"; then
+        fail "transferred NFT UTXO $fresh_utxo still appears in N1 list (UTXO model: should be spent)"
+    else
+        ok "N1 no longer owns $fresh_utxo (spent input)"
+    fi
 }
 
 # ============================================================================
 # Phase 6: Payment channel
 # ============================================================================
 phase_channel() {
-    phase "Phase 6: Payment channels"
+    phase "Phase 6: Payment channel open + cooperative close end-to-end"
 
     local n2_addr; n2_addr=$(cli N2 addresses 2>&1 | grep -oE "tdoli[a-z0-9]+" | head -1)
     if [ -z "$n2_addr" ]; then fail "no N2 addr"; return 1; fi
 
-    log "N1 opens channel with N2 (1 DOLI capacity) -- positional <PEER> <CAPACITY>"
+    log "N1 opens channel with N2 (1 DOLI capacity)"
     local open_out
     open_out=$(cli N1 channel open "$n2_addr" 1 2>&1 || true)
-    if printf '%s\n' "$open_out" | grep -qiE "submitted|broadcast|opened|channel.?id"; then
-        ok "channel open submitted"
+    local chan_id; chan_id=$(printf '%s\n' "$open_out" | grep -oE "Channel opened: [0-9a-f]+" | awk '{print $3}' | head -1)
+    if [ -z "$chan_id" ]; then
+        # Fallback: take first 16-hex token after a "opened|Channel" mention
+        chan_id=$(printf '%s\n' "$open_out" | grep -oE "[0-9a-f]{16,}" | head -1)
+    fi
+    if [ -n "$chan_id" ]; then
+        ok "channel open submitted (id=${chan_id:0:16})"
     else
-        skip "channel open CLI signature differs -- see docs/cli.md (output: $(printf '%s' "$open_out" | head -c 120))"
-        return 0
+        fail "channel open did not return a channel id"
+        printf '%s\n' "$open_out" | tail -8
+        return 1
     fi
 
     wait_blocks 2 || true
 
-    local ch_list; ch_list=$(cli N1 channel list 2>&1)
-    local chan_count; chan_count=$(printf '%s\n' "$ch_list" | grep -cE "channel|chan|[0-9a-f]{64}" || true)
-    if [ "$chan_count" -ge 1 ]; then
-        ok "N1 has $chan_count channel(s)"
+    # P1-007 fixed check: self-channel must be rejected pre-broadcast
+    local n1_addr; n1_addr=$(cli N1 addresses 2>&1 | grep -oE "tdoli[a-z0-9]+" | head -1)
+    local self_out; self_out=$(cli N1 channel open "$n1_addr" 1 2>&1 || true)
+    if printf '%s\n' "$self_out" | grep -qiE "cannot|self|same|distinct|rejected|error"; then
+        ok "P1-007: self-channel rejected pre-broadcast"
     else
-        fail "N1 channel list empty after open"
+        fail "P1-007 regression: self-channel was NOT rejected"
+        printf '%s\n' "$self_out" | tail -3
     fi
 
-    skip "channel pay/close (multi-party signing -- covered by stress-tester)"
+    # INC-I-093: cooperative-close PSBT handoff (close -> offer file -> close-finish)
+    log "Closing channel cooperatively (PSBT handoff)"
+    cd "$(dirname "$0")/.." >/dev/null
+    local close_out; close_out=$(cli N1 channel close "$chan_id" 2>&1)
+    local offer_file; offer_file=$(printf '%s\n' "$close_out" | grep -oE "close-[0-9a-f]+\.json" | head -1)
+    if [ -z "$offer_file" ] || [ ! -f "$offer_file" ]; then
+        # Try to locate by chan_id prefix
+        offer_file=$(ls close-${chan_id:0:16}*.json 2>/dev/null | head -1)
+    fi
+    if [ -n "$offer_file" ] && [ -f "$offer_file" ]; then
+        ok "channel close step 1 wrote offer file ($offer_file)"
+    else
+        fail "channel close did not produce a verifiable offer file"
+        printf '%s\n' "$close_out" | tail -8
+        return 1
+    fi
+
+    log "N2 finalizes the cooperative close"
+    local finish_out; finish_out=$(cli N2 channel close-finish "$offer_file" 2>&1)
+    local close_tx; close_tx=$(tx_hash "$finish_out")
+    if [ -n "$close_tx" ]; then
+        ok "channel close-finish broadcast (tx=${close_tx:0:16}...)"
+    else
+        fail "channel close-finish failed"
+        printf '%s\n' "$finish_out" | tail -8
+        return 1
+    fi
+
+    log "Waiting for close tx to confirm"
+    local close_confirmed; close_confirmed=$(wait_confirmed "$close_tx" "close")
+    if [ -n "$close_confirmed" ]; then
+        ok "INC-I-093 cooperative-close confirmed on chain ($close_confirmed)"
+    else
+        fail "close $close_tx not queryable after 10 blocks"
+    fi
+
+    # Cleanup offer file
+    rm -f "$offer_file" 2>/dev/null
 }
 
 # ============================================================================
 # Phase 7: Covenant template
 # ============================================================================
 phase_template() {
-    phase "Phase 7: Covenant template (escrow-loan)"
+    phase "Phase 7: Covenant template (htlc-payment live send)"
 
-    local tpl_out; tpl_out=$(cli N1 template escrow-loan --help 2>&1)
-    if printf '%s\n' "$tpl_out" | grep -qiE "escrow|loan|lender|borrower"; then
-        ok "escrow-loan template available in CLI"
+    # Surface check: all template subcommands exist
+    local kinds_seen=0
+    for k in vault escrow htlc-payment subscription agent-allowance escrow-loan; do
+        if cli N1 template $k --help >/dev/null 2>&1; then
+            kinds_seen=$((kinds_seen+1))
+        fi
+    done
+    if [ "$kinds_seen" -ge 6 ]; then
+        ok "all 6 covenant template kinds exposed in CLI"
     else
-        fail "escrow-loan template not exposed"
+        fail "only $kinds_seen/6 covenant template kinds responded to --help"
     fi
-    skip "live escrow-loan tx (requires guard signatures; covered by stress-tester)"
+
+    # Live tx: htlc-payment is the simplest single-output template that exercises
+    # the script path end-to-end. Refund recipient = N1 self (so we can refund post-expiry
+    # if needed). The condition is the on-chain part we care about.
+    local n2_addr; n2_addr=$(cli N2 addresses 2>&1 | grep -oE "tdoli[a-z0-9]+" | head -1)
+    local n1_addr; n1_addr=$(cli N1 addresses 2>&1 | grep -oE "tdoli[a-z0-9]+" | head -1)
+    if [ -z "$n2_addr" ] || [ -z "$n1_addr" ]; then fail "addr lookup failed"; return 1; fi
+
+    # Deterministic hashlock (we don't need to actually claim it -- we just verify the
+    # send constructs and lands on chain with the condition)
+    local hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    local cur_h; cur_h=$(height)
+    local lock=$((cur_h + 100))
+    local expiry=$((cur_h + 200))
+
+    log "N1 sends 0.1 DOLI -> N2 with htlc-payment condition (lock=$lock, expiry=$expiry)"
+    # template <kind> --send has no --yes flag; auto-confirm via stdin
+    local send_out; send_out=$(printf 'y\n' | cli N1 template htlc-payment \
+        --hash "$hash" --lock "$lock" --expiry "$expiry" --refund "$n1_addr" \
+        --send --to "$n2_addr" --amount 0.1 2>&1)
+    local send_tx; send_tx=$(tx_hash "$send_out")
+    if [ -n "$send_tx" ]; then
+        ok "htlc-payment tx broadcast (tx=${send_tx:0:16}...)"
+    else
+        fail "htlc-payment --send produced no txid"
+        printf '%s\n' "$send_out" | tail -8
+        return 1
+    fi
+
+    log "Waiting for htlc tx to confirm"
+    local hp_confirmed; hp_confirmed=$(wait_confirmed "$send_tx" "htlc")
+    if [ -n "$hp_confirmed" ]; then
+        ok "htlc-payment confirmed ($hp_confirmed) -- condition encoded on chain"
+    else
+        fail "htlc-payment $send_tx not queryable after 10 blocks"
+    fi
 }
 
 # ============================================================================
@@ -460,16 +656,64 @@ sys.exit(1)
 # Phase 9: Bridge
 # ============================================================================
 phase_bridge() {
-    phase "Phase 9: Bridge HTLC (read paths)"
+    phase "Phase 9: Bridge HTLC lock + on-chain verify"
 
     local list_out; list_out=$(cli N1 bridge-list 2>&1)
-    if printf '%s\n' "$list_out" | grep -qiE "swap|htlc|active|empty|none|0 swaps"; then
+    if printf '%s\n' "$list_out" | grep -qiE "swap|htlc|active|empty|none|0 swap|bridge"; then
         ok "bridge-list RPC responds"
     else
         fail "bridge-list failed"
         printf '%s\n' "$list_out" | tail -5
     fi
-    skip "bridge-lock live tx (involves preimage handling -- covered by stress-tester)"
+
+    # Live lock via bridge-swap (auto-generates preimage + initiates the HTLC).
+    # We do NOT attempt claim or refund -- those depend on counter-chain confirmations
+    # or block-height-based expiry waits that would stretch this script too long.
+    # The lock itself exercises the HTLC construction code path on chain.
+    log "N1 initiates bridge-swap 0.05 DOLI -> Bitcoin testnet addr"
+    local btc_addr="tb1qar0srrr7xfkvy5l643lydnw9re59gtzzkqtgek"
+    local swap_out; swap_out=$(cli N1 bridge-swap 0.05 --chain bitcoin --to "$btc_addr" 2>&1)
+    local swap_tx; swap_tx=$(tx_hash "$swap_out")
+    local preimage; preimage=$(printf '%s\n' "$swap_out" | grep -iE "preimage" | grep -oE "[0-9a-f]{64}" | head -1)
+    if [ -n "$swap_tx" ]; then
+        ok "bridge-swap broadcast (tx=${swap_tx:0:16}..., preimage captured: $([ -n \"$preimage\" ] && echo yes || echo no))"
+    else
+        fail "bridge-swap produced no txid"
+        printf '%s\n' "$swap_out" | tail -8
+        return 1
+    fi
+
+    log "Waiting for swap tx to confirm"
+    local swap_confirmed; swap_confirmed=$(wait_confirmed "$swap_tx" "swap")
+    if [ -n "$swap_confirmed" ]; then
+        ok "bridge-swap confirmed on chain ($swap_confirmed)"
+    else
+        fail "bridge-swap $swap_tx not queryable after 10 blocks"
+    fi
+
+    # Verify the bridgeHtlc UTXO is now present in N1's set
+    local n1_addr; n1_addr=$(cli N1 addresses 2>&1 | grep -oE "tdoli[a-z0-9]+" | head -1)
+    local utxos; utxos=$(rpc getUtxos "{\"address\":\"$n1_addr\"}" "$SEED_RPC")
+    local htlc_count; htlc_count=$(printf '%s\n' "$utxos" | python3 -c "
+import sys, json
+r = json.load(sys.stdin).get('result', [])
+print(sum(1 for u in r if u.get('outputType','').lower() == 'bridgehtlc'))
+" 2>/dev/null)
+    if [ -n "$htlc_count" ] && [ "$htlc_count" -ge 1 ]; then
+        ok "$htlc_count bridgeHtlc UTXO(s) live in N1 state"
+    else
+        fail "no bridgeHtlc UTXO found in N1's UTXO set"
+    fi
+
+    # Verify bridge-list now reflects the active swap
+    local list2; list2=$(cli N1 bridge-list 2>&1)
+    if printf '%s\n' "$list2" | grep -qE "${swap_tx:0:16}|active|locked"; then
+        ok "bridge-list shows the active swap"
+    else
+        skip "bridge-list does not surface the new swap by tx prefix (CLI display only)"
+    fi
+
+    skip "bridge-claim / bridge-refund live (requires counter-chain confirmations or expiry wait; verified at unit-test level in crates/core/tests/inc_i_093_bridge_htlc.rs)"
 }
 
 # ============================================================================
