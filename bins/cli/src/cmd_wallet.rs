@@ -365,12 +365,32 @@ pub(crate) async fn cmd_send(
         anyhow::bail!("Amount exceeds maximum supply (25.2M DOLI)");
     }
 
-    // Parse explicit fee if provided; otherwise auto-calculate after UTXO selection
+    // Parse explicit fee if provided; otherwise auto-calculate from the recipient output.
     let explicit_fee: Option<u64> = if let Some(f) = &fee {
         Some(coins_to_units(f).map_err(|e| anyhow::anyhow!("Invalid fee: {}", e))?)
     } else {
         None
     };
+
+    // Build the recipient output up front. Its extra_data (covenant condition) fully
+    // determines the auto fee, so it must exist before UTXO selection (INC-I-099).
+    let parsed_condition = match &condition {
+        Some(cond_str) => Some(parse_condition(cond_str)?),
+        None => None,
+    };
+    let recipient_output = if let Some(cond) = &parsed_condition {
+        // REQ-SDK-006: Warn when guard conditions are used on mainnet
+        if should_warn_mainnet_guards(NETWORK.get().map(|s| s.as_str()), cond) {
+            eprintln!("WARNING: Guard conditions are not yet activated on mainnet (guards_activation_height = MAX). This transaction WILL be rejected by mainnet nodes. Use --network devnet or --network testnet.");
+        }
+        let output_type = condition_to_output_type(cond);
+        Output::conditioned(output_type, amount_units, recipient_hash, cond)
+            .map_err(|e| anyhow::anyhow!("Invalid condition: {}", e))?
+    } else {
+        Output::normal(amount_units, recipient_hash)
+    };
+    // Auto fee matches the node's size-scaled minimum_fee (flat 1 underpaid covenants).
+    let auto_fee = auto_fee_for_outputs(std::slice::from_ref(&recipient_output));
 
     let recipient_display = crypto::address::encode(&recipient_hash, address_prefix())
         .unwrap_or_else(|_| recipient_hash.to_hex());
@@ -400,7 +420,7 @@ pub(crate) async fn cmd_send(
     }
 
     // Select UTXOs with a preliminary fee estimate, then recalculate
-    let preliminary_fee = explicit_fee.unwrap_or(1);
+    let preliminary_fee = explicit_fee.unwrap_or(auto_fee);
     let total_available: u64 = utxos.iter().map(|(u, _)| u.amount).sum();
 
     let mut selected_utxos: Vec<(crate::rpc_client::Utxo, String)> = Vec::new();
@@ -413,8 +433,8 @@ pub(crate) async fn cmd_send(
         total_input += entry.0.amount;
     }
 
-    // Flat fee: 1 satoshi per transaction
-    let fee_units = explicit_fee.unwrap_or(1);
+    // Auto fee = node minimum_fee() (size-scaled); explicit --fee overrides.
+    let fee_units = explicit_fee.unwrap_or(auto_fee);
 
     // Re-select if auto fee increased the requirement
     if explicit_fee.is_none() && total_input < amount_units + fee_units {
@@ -471,24 +491,11 @@ pub(crate) async fn cmd_send(
         inputs.push(Input::new(prev_tx_hash, utxo.output_index));
     }
 
-    // Build transaction outputs
+    // Build transaction outputs. Recipient output was built up front (INC-I-099).
     let mut outputs: Vec<Output> = Vec::new();
-
-    // Recipient output (with optional covenant condition)
+    outputs.push(recipient_output);
     if let Some(cond_str) = &condition {
-        let cond = parse_condition(cond_str)?;
-
-        // REQ-SDK-006: Warn when guard conditions are used on mainnet
-        if should_warn_mainnet_guards(NETWORK.get().map(|s| s.as_str()), &cond) {
-            eprintln!("WARNING: Guard conditions are not yet activated on mainnet (guards_activation_height = MAX). This transaction WILL be rejected by mainnet nodes. Use --network devnet or --network testnet.");
-        }
-        let output_type = condition_to_output_type(&cond);
-        let output = Output::conditioned(output_type, amount_units, recipient_hash, &cond)
-            .map_err(|e| anyhow::anyhow!("Invalid condition: {}", e))?;
-        outputs.push(output);
         println!("  Condition: {}", cond_str);
-    } else {
-        outputs.push(Output::normal(amount_units, recipient_hash));
     }
 
     // Change output always goes to primary address
@@ -985,6 +992,17 @@ fn should_warn_high_fee(input_amount: u64, total_output: u64) -> bool {
     let one_percent = input_amount / 100;
     let threshold = std::cmp::max(one_percent, 10_000);
     fee > threshold
+}
+
+/// Auto fee used when `--fee` is omitted (INC-I-099).
+///
+/// Matches the node's size-scaled `Transaction::minimum_fee()` instead of a flat 1,
+/// so covenant outputs (whose condition is encoded in `extra_data`) are not rejected
+/// with `FEE_TOO_LOW`. The fee depends only on output `extra_data` lengths, so it can
+/// be derived from the recipient output before UTXO selection (change outputs carry no
+/// extra_data and do not affect the result).
+fn auto_fee_for_outputs(outputs: &[doli_core::Output]) -> u64 {
+    doli_core::Transaction::new_transfer(Vec::new(), outputs.to_vec()).minimum_fee()
 }
 
 /// Returns true when a mainnet guard warning should be emitted.

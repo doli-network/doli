@@ -408,3 +408,75 @@ fn fee_small_input_below_floor() {
     // 1% = 1_000; max(1_000, 10_000) = 10_000; fee(9_000) <= 10_000 → no warn
     assert!(!super::should_warn_high_fee(100_000, 91_000));
 }
+
+// =============================================================================
+// TEST-099 — Auto fee matches the node's size-scaled minimum_fee (INC-I-099)
+// =============================================================================
+//
+// OUTPUT CONTRACT: fn auto_fee_for_outputs(outputs: &[Output]) -> u64
+//   O1: returned fee (u64)
+//   PATHS:
+//     P1: all outputs have empty extra_data (plain transfer)
+//     P2: an output has extra_data of exactly FEE_DIVISOR bytes (boundary → +1)
+//     P3: an output has extra_data ≥ FEE_DIVISOR bytes (covenant, e.g. escrow)
+//   MATRIX:
+//     P1 → BASE_FEE (1)                              [REQ-099-002 regression guard]
+//     P2 (100 bytes) → 1 + 100/100 = 2               [REQ-099-001 the "1 < 2" repro]
+//     P3 (250 bytes) → 1 + 250/100 = 3
+//     ALL → equals Transaction::new_transfer(vec![], outputs).minimum_fee() (node parity)
+
+#[test]
+fn auto_fee_plain_transfer_is_base_fee() {
+    // REQ-099-002: plain transfers (0 extra_data) keep the flat base fee — no regression.
+    use doli_core::Output;
+    let hash = crypto::Hash::from_bytes([0x11; 32]);
+    let outputs = vec![Output::normal(1_000, hash), Output::normal(50, hash)];
+    assert_eq!(
+        super::auto_fee_for_outputs(&outputs),
+        doli_core::consensus::BASE_FEE
+    );
+    assert_eq!(super::auto_fee_for_outputs(&outputs), 1);
+}
+
+#[test]
+fn auto_fee_covenant_output_meets_node_minimum() {
+    // REQ-099-001: the exact INC-I-099 repro. A covenant output with ≥100 extra_data
+    // bytes requires fee 2 — the old flat-1 auto fee produced "FEE_TOO_LOW: 1 < 2".
+    use doli_core::{Output, OutputType, Transaction};
+    let hash = crypto::Hash::from_bytes([0x22; 32]);
+    let recipient = Output {
+        output_type: OutputType::Multisig,
+        amount: 1_000,
+        pubkey_hash: hash,
+        lock_until: 0,
+        extra_data: vec![0u8; 100], // escrow-class condition size → byte_fee = 1
+    };
+    let change = Output::normal(25, hash); // change has empty extra_data, must not affect fee
+    let outputs = vec![recipient, change];
+
+    let fee = super::auto_fee_for_outputs(&outputs);
+    assert_eq!(fee, 2, "100-byte extra_data → 1 + 100/100 = 2");
+    // Node parity: must equal what the mempool enforces.
+    let node_min = Transaction::new_transfer(Vec::new(), outputs).minimum_fee();
+    assert_eq!(fee, node_min, "auto fee must equal node minimum_fee()");
+}
+
+#[test]
+fn auto_fee_scales_with_extra_data() {
+    // P3: 250 bytes → 1 + 250/100 = 3 (integer division).
+    use doli_core::{Output, OutputType, Transaction};
+    let hash = crypto::Hash::from_bytes([0x33; 32]);
+    let recipient = Output {
+        output_type: OutputType::Hashlock,
+        amount: 1_000,
+        pubkey_hash: hash,
+        lock_until: 0,
+        extra_data: vec![0u8; 250],
+    };
+    let outputs = vec![recipient];
+    assert_eq!(super::auto_fee_for_outputs(&outputs), 3);
+    assert_eq!(
+        super::auto_fee_for_outputs(&outputs),
+        Transaction::new_transfer(Vec::new(), outputs).minimum_fee()
+    );
+}
