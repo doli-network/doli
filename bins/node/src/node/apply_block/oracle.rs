@@ -81,17 +81,26 @@ impl Node {
             .iter()
             .filter_map(|hex| crypto::Hash::from_hex(hex))
             .collect();
+        // AUDIT-P3-003: build registered_at_map from the CLOSING-EPOCH
+        // producer_list (epoch_state) — not the live, post-deferred-mutation
+        // ProducerSet. The bond_snapshot at line 97 is from the closing
+        // epoch; using a different (newer) set for registered_at lookups
+        // misclassifies producers exited at this boundary (still in the
+        // bond_snapshot for reward purposes, but absent from the live
+        // active set), inflating the structural share metric. Both
+        // collections must come from the SAME epoch view to keep the
+        // metric coherent.
         let registered_at_map = {
             let producers = self.producer_set.read().await;
-            let active = producers.active_producers_at_height(height);
-            active
-                .iter()
-                .map(|p| {
+            let mut map: HashMap<crypto::Hash, u64> = HashMap::new();
+            for pk in &self.epoch_state.producer_list {
+                if let Some(info) = producers.get_by_pubkey(pk) {
                     let pubkey_hash =
-                        crypto::hash::hash_with_domain(ADDRESS_DOMAIN, p.public_key.as_bytes());
-                    (pubkey_hash, p.registered_at)
-                })
-                .collect::<HashMap<crypto::Hash, u64>>()
+                        crypto::hash::hash_with_domain(ADDRESS_DOMAIN, pk.as_bytes());
+                    map.insert(pubkey_hash, info.registered_at);
+                }
+            }
+            map
         };
         let share_bps = compute_structural_share_bps(
             &self.epoch_state.bond_snapshot,
