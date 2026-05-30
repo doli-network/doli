@@ -1,4 +1,8 @@
 //! Diagnostic emit helpers for apply_block — fire-and-forget event recording.
+//!
+//! Each helper short-circuits via `emitter.is_noop()` before constructing
+//! the `DiagnosticEvent` (ULID, hex, String allocations). This provides
+//! true zero-cost when diagnostics are OFF (REQ-OBS-OPTIN-006).
 
 use crypto::Hash;
 use doli_core::validation::ValidationMode;
@@ -15,6 +19,9 @@ pub(super) fn emit_block_rejected(
     provenance: &Option<BlockProvenance>,
     reason: &str,
 ) {
+    if emitter.is_noop() {
+        return;
+    }
     let _ = emitter.record(storage::diagnostic_ledger::types::DiagnosticEvent {
         event_id: ulid::Ulid::new().to_string(),
         kind: storage::diagnostic_ledger::types::EventKind::BlockRejected,
@@ -47,6 +54,9 @@ pub(super) fn emit_block_applied(
     provenance: &Option<BlockProvenance>,
     validation_duration_ms: u64,
 ) {
+    if emitter.is_noop() {
+        return;
+    }
     let applied_at_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)

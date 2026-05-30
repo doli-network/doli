@@ -176,6 +176,7 @@ async fn main() -> Result<()> {
             checkpoint_height,
             checkpoint_hash,
             recovery_mode,
+            fork_diagnostics,
         }) => {
             if bootnode {
                 // Bootnode standalone mode: UDP discovery only, no libp2p/sync/storage
@@ -225,6 +226,7 @@ async fn main() -> Result<()> {
                     checkpoint_height,
                     checkpoint_hash,
                     recovery_mode,
+                    fork_diagnostics,
                 )
                 .await?;
             }
@@ -344,6 +346,7 @@ async fn main() -> Result<()> {
                 None,  // checkpoint_height
                 None,  // checkpoint_hash
                 false, // recovery_mode
+                false, // fork_diagnostics
             )
             .await?;
         }

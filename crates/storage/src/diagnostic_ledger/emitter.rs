@@ -48,6 +48,17 @@ pub trait DiagnosticEmitter: Send + Sync {
     fn dropped_count(&self) -> u64 {
         0
     }
+
+    /// Returns `true` if this emitter is a no-op (drops all events).
+    ///
+    /// Used by emit-site helpers to short-circuit before constructing
+    /// `DiagnosticEvent` structs (ULID generation, hex encoding, String
+    /// allocation). This provides true zero-cost when diagnostics are OFF.
+    ///
+    /// Default: `false` (active emitters). `NoOpEmitter` overrides to `true`.
+    fn is_noop(&self) -> bool {
+        false
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -63,6 +74,11 @@ impl DiagnosticEmitter for NoOpEmitter {
     /// Always returns `Ok(())` without side effects.
     fn record(&self, _event: DiagnosticEvent) -> Result<(), EmitError> {
         Ok(())
+    }
+
+    /// Returns `true` — NoOpEmitter is always a no-op.
+    fn is_noop(&self) -> bool {
+        true
     }
 }
 

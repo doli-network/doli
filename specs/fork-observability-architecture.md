@@ -801,6 +801,44 @@ The following files/areas MUST NOT have decision logic changed. Emit calls
 
 ---
 
+## Opt-In Toggle (REQ-OBS-OPTIN-001 through 008)
+
+**Added**: 2026-05-30 (workflow #395)
+
+The entire fork-diagnostics subsystem is gated behind a single CLI flag:
+`--fork-diagnostics` (default: OFF).
+
+### Behavior
+
+| State | Ledger | Emitter | Writer/Pruner Tasks | RPC | CLI |
+|-------|--------|---------|---------------------|-----|-----|
+| OFF (default) | None | NoOpEmitter | Not spawned | Returns -32603 "Diagnostic ledger unavailable" | Prints friendly message, exits non-zero |
+| ON (`--fork-diagnostics`) | Opens RocksDB at `<data_dir>/diagnostics/` | AsyncChannelEmitter(1024) | Spawned | Returns DiagnosticBundle | Normal output |
+
+### Zero-Cost Emit Gating
+
+When OFF, the `NoOpEmitter` is used. Additionally, the two emit helpers in
+`apply_block/diagnostics.rs` (`emit_block_rejected`, `emit_block_applied`) check
+`emitter.is_noop()` at the top and return early before any ULID generation, hex
+encoding, or String allocation.
+
+The `is_noop()` method is a default trait method on `DiagnosticEmitter` returning
+`false`. `NoOpEmitter` overrides it to return `true`.
+
+### Structural Node Default
+
+The 15 structural local-testnet nodes (seed + n1-n12) have `--fork-diagnostics`
+added to their launchd plists via `scripts/install-local-services.sh`, preserving
+full fleet-level fork coverage. External producers are OFF by default.
+
+### No Consensus Impact
+
+This is a pure operational toggle. It does not touch UTXO, ProducerSet, ChainState,
+EpochState, block content, or validation rules. No activation height needed. No
+synchronized deploy needed. No protocol version bump.
+
+---
+
 ## Traceability Matrix
 
 | Requirement | Architecture Section | Milestone |

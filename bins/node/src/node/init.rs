@@ -1047,49 +1047,54 @@ impl Node {
             last_diagnostic_alerted: HashSet::new(),
         };
 
-        // --- Diagnostic writer + pruner wiring (M2 follow-up) ---
-        // Attempt to open the DiagnosticLedger. On success: create AsyncChannelEmitter,
-        // spawn writer + pruner tasks. On failure: log warning, keep NoOpEmitter.
-        match DiagnosticLedger::open(&node.config.data_dir) {
-            Ok(ledger) => {
-                let ledger = Arc::new(ledger);
-                let (emitter, receiver) =
-                    storage::diagnostic_ledger::emitter::AsyncChannelEmitter::new(1024);
-                let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        // --- Diagnostic writer + pruner wiring ---
+        // Gate: only open ledger + spawn tasks when --fork-diagnostics is passed.
+        // When OFF, keep the NoOpEmitter + ledger=None + shutdown_tx=None state
+        // already set above (same as the graceful-degradation fallback).
+        if node.config.fork_diagnostics {
+            match DiagnosticLedger::open(&node.config.data_dir) {
+                Ok(ledger) => {
+                    let ledger = Arc::new(ledger);
+                    let (emitter, receiver) =
+                        storage::diagnostic_ledger::emitter::AsyncChannelEmitter::new(1024);
+                    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
-                // Spawn writer task
-                let writer_ledger = ledger.clone();
-                let writer_stats = node.diagnostic_writer_stats.clone();
-                tokio::spawn(super::diagnostic_writer::run_writer_task(
-                    receiver,
-                    writer_ledger,
-                    writer_stats,
-                    shutdown_rx.clone(),
-                ));
+                    // Spawn writer task
+                    let writer_ledger = ledger.clone();
+                    let writer_stats = node.diagnostic_writer_stats.clone();
+                    tokio::spawn(super::diagnostic_writer::run_writer_task(
+                        receiver,
+                        writer_ledger,
+                        writer_stats,
+                        shutdown_rx.clone(),
+                    ));
 
-                // Spawn pruner task
-                let pruner_ledger = ledger.clone();
-                tokio::spawn(super::diagnostics_pruner::run_pruner_task(
-                    pruner_ledger,
-                    shutdown_rx,
-                ));
+                    // Spawn pruner task
+                    let pruner_ledger = ledger.clone();
+                    tokio::spawn(super::diagnostics_pruner::run_pruner_task(
+                        pruner_ledger,
+                        shutdown_rx,
+                    ));
 
-                node.diagnostic_emitter = Arc::new(emitter)
-                    as Arc<dyn storage::diagnostic_ledger::emitter::DiagnosticEmitter>;
-                node.diagnostic_ledger = Some(ledger);
-                node.diagnostic_shutdown_tx = Some(shutdown_tx);
-                info!(
-                    "[Diagnostics] Ledger opened at {:?}, writer + pruner spawned",
-                    node.config.data_dir.join("diagnostics")
-                );
+                    node.diagnostic_emitter = Arc::new(emitter)
+                        as Arc<dyn storage::diagnostic_ledger::emitter::DiagnosticEmitter>;
+                    node.diagnostic_ledger = Some(ledger);
+                    node.diagnostic_shutdown_tx = Some(shutdown_tx);
+                    info!(
+                        "[Diagnostics] Ledger opened at {:?}, writer + pruner spawned",
+                        node.config.data_dir.join("diagnostics")
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        "DiagnosticLedger failed to open ({:?}); diagnostics disabled",
+                        e
+                    );
+                    // Node continues with NoOpEmitter (graceful degradation per REQ-FORKOBS-LEDGER-009)
+                }
             }
-            Err(e) => {
-                warn!(
-                    "DiagnosticLedger failed to open ({:?}); diagnostics disabled",
-                    e
-                );
-                // Node continues with NoOpEmitter (graceful degradation per REQ-FORKOBS-LEDGER-009)
-            }
+        } else {
+            info!("[Diagnostics] Disabled (use --fork-diagnostics to activate)");
         }
 
         Ok(node)
@@ -1198,6 +1203,7 @@ impl Node {
             bootnode_enrs: Vec::new(),
             no_discv5: true,
             discv5_port: None,
+            fork_diagnostics: false,
         };
 
         Ok(Self {
@@ -1386,6 +1392,7 @@ impl Node {
             bootnode_enrs: Vec::new(),
             no_discv5: true,
             discv5_port: None,
+            fork_diagnostics: false,
         };
 
         Ok(Self {

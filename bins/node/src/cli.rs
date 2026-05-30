@@ -172,6 +172,13 @@ pub(crate) enum Commands {
         /// Exit recovery mode via RPC: exitRecoveryMode
         #[arg(long)]
         recovery_mode: bool,
+
+        /// Enable fork-diagnostics subsystem (ledger, writer, pruner, monitor).
+        /// When absent, no diagnostics directory is created, no background tasks
+        /// spawn, and diagnostic RPCs return "unavailable". Use this flag on
+        /// structural nodes for fleet-level fork observability.
+        #[arg(long)]
+        fork_diagnostics: bool,
     },
 
     /// Initialize a new data directory

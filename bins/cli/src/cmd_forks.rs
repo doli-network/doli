@@ -10,6 +10,20 @@ use storage::diagnostic_ledger::types::DiagnosticBundle;
 use crate::rpc_client::RpcClient;
 
 // ---------------------------------------------------------------------------
+// Diagnostics unavailability check (REQ-OBS-OPTIN-005)
+// ---------------------------------------------------------------------------
+
+/// Check if an RPC error indicates that diagnostics are not enabled on the node.
+/// If so, print a friendly message to stderr and exit with code 1.
+pub(crate) fn check_diagnostics_unavailable(err: &anyhow::Error) {
+    let msg = err.to_string();
+    if msg.contains("Diagnostic ledger unavailable") {
+        eprintln!("Diagnostics not enabled on this node (start the node with --fork-diagnostics to activate).");
+        std::process::exit(1);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ProducerAggregate — public struct for by-producer output
 // ---------------------------------------------------------------------------
 
@@ -218,7 +232,11 @@ pub(crate) async fn cmd_forks(
         let initial_bundle: DiagnosticBundle = client
             .call_raw("getForkDiagnostic", initial_params)
             .await
-            .map_err(|e| anyhow::anyhow!("RPC unavailable: {}", e))
+            .map_err(|e| {
+                let err = anyhow::anyhow!("RPC unavailable: {}", e);
+                check_diagnostics_unavailable(&err);
+                err
+            })
             .and_then(|v| {
                 serde_json::from_value(v)
                     .map_err(|e| anyhow::anyhow!("failed to parse bundle: {}", e))
@@ -251,7 +269,11 @@ pub(crate) async fn cmd_forks(
     let bundle: DiagnosticBundle = client
         .call_raw("getForkDiagnostic", params)
         .await
-        .map_err(|e| anyhow::anyhow!("RPC unavailable: {}", e))
+        .map_err(|e| {
+            let err = anyhow::anyhow!("RPC unavailable: {}", e);
+            check_diagnostics_unavailable(&err);
+            err
+        })
         .and_then(|v| {
             serde_json::from_value(v).map_err(|e| anyhow::anyhow!("failed to parse bundle: {}", e))
         })?;
