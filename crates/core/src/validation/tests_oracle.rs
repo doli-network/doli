@@ -498,3 +498,70 @@ fn test_m8_default_sunset_state_is_off() {
     let result = validate_transaction(&tx, &ctx);
     assert!(result.is_ok()); // O1
 }
+
+// OUTPUT CONTRACT: user-created OraclePrice output rejection
+//   O1: validate_transaction must reject any Transaction whose outputs
+//       contain an OutputType::OraclePrice — error code [ERRTX-ORACLE004]
+//   O2: rejection applies regardless of inputs / amount / extra_data
+//       (system-only invariant is unconditional)
+// PATHS / PARTITIONS:
+//   P1: Transfer tx with 1 input + 1 OraclePrice output (the canonical
+//       forge attempt)
+//   P2: Transfer tx with 0 inputs + 1 OraclePrice output (still rejected)
+// MATRIX:
+//   P1×O1✓  P1×O2✓  P2×O1✓  P2×O2✓
+// AUDIT-P3-004: production rejection at validation/transaction.rs:648-661
+// previously had zero test coverage. Tombstoning regression test ensures
+// future refactors do not accidentally remove the system-only guard.
+#[test]
+fn test_user_cannot_create_oracle_price_output() {
+    use crate::transaction::{Input, Output, OutputType, Transaction, TxType};
+    use crypto::Hash;
+
+    let kp = KeyPair::generate();
+    let ctx = ctx_with(&kp, 360);
+
+    let oracle_out = Output {
+        output_type: OutputType::OraclePrice,
+        amount: 0,
+        pubkey_hash: crypto::hash::hash(b"forged-oracle-owner"),
+        lock_until: 0,
+        extra_data: vec![0u8; 50], // matches the spec-pinned 50-byte fixed size
+    };
+
+    // P1: with an input
+    let tx_with_input = Transaction {
+        version: 1,
+        tx_type: TxType::Transfer,
+        inputs: vec![Input::new(Hash::ZERO, 0)],
+        outputs: vec![oracle_out.clone()],
+        extra_data: vec![],
+    };
+    let result = validate_transaction(&tx_with_input, &ctx);
+    assert!(
+        matches!(
+            &result,
+            Err(ValidationError::InvalidTransaction(msg)) if msg.contains("ERRTX-ORACLE004")
+        ),
+        "P1: expected ERRTX-ORACLE004 (user-created OraclePrice forbidden), got: {:?}",
+        result
+    ); // O1, O2
+
+    // P2: without an input (coinbase-shape forge attempt)
+    let tx_no_input = Transaction {
+        version: 1,
+        tx_type: TxType::Transfer,
+        inputs: vec![],
+        outputs: vec![oracle_out],
+        extra_data: vec![],
+    };
+    let result = validate_transaction(&tx_no_input, &ctx);
+    assert!(
+        matches!(
+            &result,
+            Err(ValidationError::InvalidTransaction(msg)) if msg.contains("ERRTX-ORACLE004")
+        ),
+        "P2: expected ERRTX-ORACLE004 even for input-less Transfer, got: {:?}",
+        result
+    ); // O1, O2
+}
