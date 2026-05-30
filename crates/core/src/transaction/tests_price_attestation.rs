@@ -405,3 +405,56 @@ fn test_sign_and_verify_round_trip() {
         "verify with tampered epoch_number must fail; got Ok unexpectedly"
     ); // O2
 }
+
+// OUTPUT CONTRACT: fn Transaction::is_state_only — PriceAttestation inclusion
+//   O1: return — true for TxType::PriceAttestation (AUDIT-P1-003)
+//   O2: return — true for TxType::DelegateBond (regression: existing types still state-only)
+//   O3: return — false for TxType::Transfer (regression: UTXO-bearing types remain non-state-only)
+// PATHS:
+//   P1: PriceAttestation tx — new state-only inclusion (the audited bug)
+//   P2: DelegateBond tx — pre-existing state-only type
+//   P3: Transfer tx — non-state-only baseline
+// INPUT PARTITIONS:
+//   P1: a fresh PriceAttestation built via Transaction::new_price_attestation
+//   P2: a fresh DelegateBond Transaction
+//   P3: a fresh Transfer Transaction
+// MATRIX:
+//   P1×O1✓     P2×O2✓     P3×O3✓
+#[test]
+fn test_price_attestation_is_state_only() {
+    // P1: PriceAttestation must be state-only so the mempool routes it via
+    // add_system_transaction (skipping the UTXO-input-based fee check that
+    // would otherwise reject a zero-input/zero-output tx with
+    // MempoolError::FeeTooLow). See AUDIT-P1-003 in
+    // docs/audits/security-audit-oracle-2026-05-29.md.
+    let pa = Transaction::new_price_attestation(sample_data());
+    assert!(
+        pa.is_state_only(),
+        "AUDIT-P1-003: PriceAttestation (TxType=16) must be state-only \
+         so mempool admission bypasses the input-based fee check. \
+         Was the new arm added to is_state_only() in transaction/core.rs?"
+    ); // O1
+
+    // P2: regression — pre-existing state-only types still classified as such
+    let db = Transaction {
+        version: 1,
+        tx_type: TxType::DelegateBond,
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+        extra_data: Vec::new(),
+    };
+    assert!(db.is_state_only(), "DelegateBond must remain state-only"); // O2
+
+    // P3: regression — UTXO-bearing types remain non-state-only
+    let xfer = Transaction {
+        version: 1,
+        tx_type: TxType::Transfer,
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+        extra_data: Vec::new(),
+    };
+    assert!(
+        !xfer.is_state_only(),
+        "Transfer must NOT be state-only"
+    ); // O3
+}

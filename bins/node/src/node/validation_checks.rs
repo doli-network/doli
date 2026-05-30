@@ -876,7 +876,7 @@ impl Node {
 
         // Add to mempool
         let current_height = self.chain_state.read().await.best_height;
-        let is_state_only = matches!(tx.tx_type, TxType::DelegateBond | TxType::RevokeDelegation);
+        let is_state_only = tx.is_state_only();
         let result = {
             let mut mempool = self.mempool.write().await;
             if is_state_only {

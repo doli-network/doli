@@ -471,6 +471,7 @@ impl Transaction {
                 | TxType::RevokeDelegation
                 | TxType::AddMaintainer
                 | TxType::RemoveMaintainer
+                | TxType::PriceAttestation
         )
     }
 
