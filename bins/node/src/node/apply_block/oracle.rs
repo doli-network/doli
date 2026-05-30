@@ -173,13 +173,38 @@ impl Node {
         for h in closing_epoch_start..closing_epoch_end {
             let block = match self.block_store.get_block_by_height(h) {
                 Ok(Some(b)) => b,
-                Ok(None) => continue,
-                Err(e) => {
-                    info!(
-                        "[ORACLE] aggregator: block_store miss at height {}: {} — skipping",
-                        h, e
+                // AUDIT-P1-002: abort aggregation on missing block.
+                // Pre-fix this silently `continue`d, so a snap-synced
+                // node with incomplete closing-epoch history would
+                // compute a different bond-weighted median than full-
+                // sync peers → different OraclePrice UTXO → state-root
+                // divergence (consensus fork). The OraclePrice UTXO IS
+                // part of the state root (verified by
+                // crates/storage/src/utxo/tests_oracle_snapsync.rs::
+                // test_oracle_price_changes_state_root), so the
+                // divergence would propagate via the next block apply.
+                // Safest: refuse to aggregate when input is incomplete.
+                // The aggregator is best-effort local bookkeeping below
+                // activation; aborting leaves the previous OraclePrice
+                // UTXO in place (readable, marked stale by RPC).
+                Ok(None) => {
+                    warn!(
+                        "[ORACLE] aggregator ABORT at boundary height={}: \
+                         closing-epoch block missing at h={} — skipping \
+                         aggregation to prevent snap-sync state-root \
+                         divergence (AUDIT-P1-002)",
+                        height, h
                     );
-                    continue;
+                    return;
+                }
+                Err(e) => {
+                    warn!(
+                        "[ORACLE] aggregator ABORT at boundary height={}: \
+                         block_store error at h={}: {} — skipping aggregation \
+                         (AUDIT-P1-002)",
+                        height, h, e
+                    );
+                    return;
                 }
             };
             for tx in &block.transactions {
