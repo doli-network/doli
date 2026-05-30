@@ -10,7 +10,13 @@ use storage::diagnostic_ledger::DiagnosticLedger;
 use tracing::{debug, info, warn};
 
 /// Default retention period in days.
-const DEFAULT_RETENTION_DAYS: u64 = 30;
+///
+/// INC-I-102: tightened 30 → 3 (72h). Diagnostic events are a LIVE SIGNAL,
+/// not historical evidence — keeping 30 days of D1 RecoveryClassifyCall emit
+/// (~86k events/day) contributed to memory pressure during the 2026-05-29..30
+/// ai5 OOM cascade. Operators needing longer retention can override via
+/// DOLI_DIAG_RETENTION_DAYS env var.
+const DEFAULT_RETENTION_DAYS: u64 = 3;
 
 /// Default maximum event count.
 const DEFAULT_MAX_EVENTS: usize = 100_000;
