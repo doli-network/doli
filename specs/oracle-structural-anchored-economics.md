@@ -64,7 +64,7 @@ See S6 below for the full disclosure paragraph.
 | `price_cents` | u64 | Attested price in USD cents (e.g., 150 = $1.50) |
 | `pair_id` | [u8; 32] | Asset pair identifier: `BLAKE3("ORACLE_PAIR" || pair_string)` where `pair_string` = "DOLI/USD" |
 | `epoch_number` | u64 | The epoch in which this attestation is valid |
-| `signature` | [u8; 64] | Ed25519 signature over `BLAKE3(pair_id || price_cents || epoch_number)` |
+| `signature` | [u8; 64] | Ed25519 signature over `BLAKE3(b"PRICE_ATTESTATION_V1" \|\| pair_id \|\| price_cents \|\| epoch_number)` — see AUDIT-P2-002 |
 
 **Validation rules (at `validation.rs`):**
 1. Height gate: reject if `current_height < oracle_activation_height` with error code `[ERRTX-ORACLE001]`.

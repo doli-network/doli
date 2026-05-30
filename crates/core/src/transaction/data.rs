@@ -704,17 +704,23 @@ impl ZkRollupData {
 ///       80    64  signature       (Ed25519 sig over signing_message)
 /// ```
 ///
-/// # Signing message (spec §1.1, verbatim)
+/// # Signing message (spec §1.1, post-AUDIT-P2-002)
 ///
-/// `signing_message = BLAKE3(pair_id || price_cents.to_le_bytes() ||
-/// epoch_number.to_le_bytes())`
+/// `signing_message = BLAKE3(b"PRICE_ATTESTATION_V1" || pair_id ||
+/// price_cents.to_le_bytes() || epoch_number.to_le_bytes())`
 ///
-/// **No domain prefix.** This deviates from the existing
-/// `DelegateBondData` / `RevokeDelegationData` convention (which
-/// domain-separates) and follows the spec literally — the 5/5
-/// evaluator-approved spec text in §1.1 specifies no domain. Adding a
-/// domain prefix would silently break any external attester
-/// implementation that followed the spec.
+/// **Domain-separated.** The 20-byte ASCII prefix `PRICE_ATTESTATION_V1`
+/// is committed inside the BLAKE3 preimage. This was added pre-activation
+/// (oracle_activation_height=u64::MAX, no live attesters yet) to close
+/// the AUDIT-P2-002 finding: a bare 48-byte hash without a domain tag
+/// would, in principle, allow a future `crypto::hash::hash()` of a
+/// matching-shape buffer to produce an interchangeable signing message.
+/// Length-uniqueness was the only defense pre-fix; the prefix makes the
+/// domain-separation explicit and matches the
+/// `DelegateBondData` / `RevokeDelegationData` convention.
+///
+/// MUST stay synchronized with `specs/oracle-structural-anchored-economics.md`
+/// §1.1 and with any external attester implementations.
 ///
 /// `signer_pubkey` is NOT in the signing message because it IS the
 /// verifying key — including it would be redundant. `signature` cannot
@@ -753,15 +759,25 @@ impl PriceAttestationData {
     /// On-wire encoded length, in bytes: 32 + 8 + 32 + 8 + 64 = 144.
     pub const BYTES_LEN: usize = 32 + 8 + 32 + 8 + 64;
 
+    /// AUDIT-P2-002 — domain separation tag.
+    ///
+    /// 20-byte ASCII tag prepended to the BLAKE3 preimage to prevent
+    /// cross-protocol signature reuse with any other 48-byte
+    /// `crypto::hash::hash()` of the shape `[Hash[32]||u64||u64]`.
+    /// The `_V1` suffix reserves the namespace for a future schema
+    /// change without ambiguity.
+    pub const SIGNING_DOMAIN: &'static [u8] = b"PRICE_ATTESTATION_V1";
+
     /// Produce the BLAKE3 hash that the attester signs.
     ///
-    /// Commits to `(pair_id, price_cents, epoch_number)`. Per spec §1.1,
-    /// NO domain prefix is applied — the message is the bare
-    /// concatenation of the three committed fields hashed under BLAKE3.
-    /// See struct-level docs for the rationale.
+    /// Commits to `(SIGNING_DOMAIN, pair_id, price_cents, epoch_number)`.
+    /// Post-AUDIT-P2-002, the 20-byte domain prefix prevents cross-
+    /// protocol signature reuse — see struct-level docs and
+    /// `specs/oracle-structural-anchored-economics.md` §1.1.
     #[must_use]
     pub fn signing_message(&self) -> Hash {
-        let mut buf = Vec::with_capacity(32 + 8 + 8);
+        let mut buf = Vec::with_capacity(Self::SIGNING_DOMAIN.len() + 32 + 8 + 8);
+        buf.extend_from_slice(Self::SIGNING_DOMAIN);
         buf.extend_from_slice(self.pair_id.as_bytes());
         buf.extend_from_slice(&self.price_cents.to_le_bytes());
         buf.extend_from_slice(&self.epoch_number.to_le_bytes());
