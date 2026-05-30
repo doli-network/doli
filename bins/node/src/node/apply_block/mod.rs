@@ -329,20 +329,33 @@ impl Node {
             }
         }
 
-        // Include undo data in the same atomic batch (avoids separate WAL entry)
-        let undo = storage::UndoData {
+        // AUDIT-P0-001: capture epoch_state snapshot at the PRE-rotation
+        // point (post_commit_actions rotates self.epoch_state on epoch
+        // boundaries). Build undo struct WITHOUT putting it into the
+        // batch yet — post_commit_actions may extend it (oracle
+        // aggregator appends OraclePrice UTXO mutations into
+        // undo.spent_utxos / undo.created_utxos). put_undo runs after
+        // post_commit_actions returns, so the persisted undo covers
+        // BOTH the block's normal UTXO mutations AND the per-pair
+        // OraclePrice mutations performed by the aggregator.
+        let mut undo = storage::UndoData {
             spent_utxos: undo_spent_utxos,
             created_utxos: undo_created_utxos,
             producer_snapshot: undo_producer_snapshot,
             epoch_state_snapshot: Some(self.epoch_state.serialize()),
             chain_commitment: None,
         };
-        batch.put_undo(height, &undo);
 
         // Epoch state writes go into the same batch (M5: atomic with block commit).
-        // post_commit_actions adds epoch derivation + accumulator writes to the batch.
-        self.post_commit_actions(&block, block_hash, height, &mut batch)
+        // post_commit_actions adds epoch derivation + accumulator writes to the batch,
+        // and (post AUDIT-P0-001) appends oracle UTXO mutations to `undo`.
+        self.post_commit_actions(&block, block_hash, height, &mut batch, &mut undo)
             .await;
+
+        // Persist the now-extended undo AFTER post_commit_actions completes,
+        // so rollback can revert oracle aggregator mutations alongside the
+        // block's normal UTXO changes. Single atomic batch — same WAL entry.
+        batch.put_undo(height, &undo);
 
         batch
             .commit()

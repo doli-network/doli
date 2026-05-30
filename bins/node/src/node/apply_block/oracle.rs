@@ -55,7 +55,16 @@ impl Node {
     /// BEFORE `self.epoch_state` is rotated to the new epoch — the
     /// aggregator reads the closing epoch's `bond_snapshot` from
     /// the still-current `self.epoch_state`.
-    pub(super) async fn aggregate_oracle_prices_at_epoch_boundary(&mut self, height: u64) {
+    /// `undo` (AUDIT-P0-001): for each OraclePrice UTXO this aggregator
+    /// spends, push the prior `(Outpoint, UtxoEntry)` into
+    /// `undo.spent_utxos`; for each new OraclePrice UTXO it creates,
+    /// push the `Outpoint` into `undo.created_utxos`. Rollback then
+    /// reverses these the same way as for normal txs.
+    pub(super) async fn aggregate_oracle_prices_at_epoch_boundary(
+        &mut self,
+        height: u64,
+        undo: &mut storage::UndoData,
+    ) {
         let params = self.config.network.params();
         // Strict-< gate, mirroring M4 rule 1. At
         // `current_height == oracle_activation_height` the aggregator
@@ -246,7 +255,14 @@ impl Node {
             // Step 7 — consume the previous OraclePrice UTXO if it
             // exists (first epoch has nothing to consume; remove is
             // idempotent-on-absent).
-            let _ = utxo.remove(&outpoint);
+            //
+            // AUDIT-P0-001: record the prior entry in undo.spent_utxos
+            // so rollback restores it. If absent (first epoch for this
+            // pair), no entry is recorded — rollback's "delete created"
+            // path handles the corresponding new UTXO below.
+            if let Ok(Some(prior_entry)) = utxo.remove(&outpoint) {
+                undo.spent_utxos.push((outpoint, prior_entry));
+            }
 
             // Step 6 — create new OraclePrice UTXO at the same
             // deterministic outpoint with the just-computed median.
@@ -270,6 +286,9 @@ impl Node {
                 // getOracleStatus can answer in O(1) instead of cloning
                 // the entire UTXO set via iter_all() on every call.
                 self.state_db.put_oracle_last_update_height(height);
+                // AUDIT-P0-001: record the newly-created OraclePrice
+                // outpoint in undo.created_utxos so rollback deletes it.
+                undo.created_utxos.push(outpoint);
             }
         }
     }

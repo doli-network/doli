@@ -4,12 +4,16 @@ impl Node {
     /// Actions performed around batch commit: active-list recompute, epoch snapshot,
     /// attestation, archive buffering, and websocket broadcast.
     /// Epoch state writes go into the passed batch (atomic with block commit).
+    /// `undo` parameter (AUDIT-P0-001): mutated by oracle aggregator to
+    /// record OraclePrice UTXO spent/created entries before the caller
+    /// puts the final undo into the batch.
     pub async fn post_commit_actions(
         &mut self,
         block: &Block,
         block_hash: Hash,
         height: u64,
         batch: &mut storage::BlockBatch<'_>,
+        undo: &mut storage::UndoData,
     ) {
         // Recompute whether we are in the active production list at epoch boundaries
         self.recompute_active_status(height).await;
@@ -350,8 +354,18 @@ impl Node {
             // until a future binary flips it) — pre-activation this is
             // a no-op.
             //
+            // AUDIT-P0-001: aggregator records its OraclePrice UTXO
+            // mutations into `undo` so rollback can revert them. Pre-fix
+            // the mutations were applied AFTER undo was finalized,
+            // leaving stale OraclePrice UTXOs on rollback → state-root
+            // divergence on the next block apply (the OraclePrice UTXO
+            // is part of the state root, see
+            // crates/storage/src/utxo/tests_oracle_snapsync.rs::
+            // test_oracle_price_changes_state_root).
+            //
             // Spec: specs/oracle-structural-anchored-economics.md §1.3.
-            self.aggregate_oracle_prices_at_epoch_boundary(height).await;
+            self.aggregate_oracle_prices_at_epoch_boundary(height, undo)
+                .await;
 
             // Apply the new epoch state
             self.epoch_state = new_state;
