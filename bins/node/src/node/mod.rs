@@ -261,6 +261,16 @@ pub struct Node {
     /// — so a restart cannot bypass sunset for more than one epoch.
     pub oracle_sunset_triggered: Arc<AtomicBool>,
 
+    /// AUDIT-P1-001: live snapshot of `(PublicKey, bond_weight)` for the
+    /// currently active producer set. Shared with the mempool via
+    /// `share_active_producers_weighted`; refreshed after every block
+    /// apply. Wired into every mempool-side `ValidationContext` so the
+    /// auth check at `validation/transaction.rs:242` sees the live set
+    /// instead of an empty Vec — pre-fix that broke `PriceAttestation`
+    /// admission at oracle activation.
+    pub mempool_active_producers_snapshot:
+        std::sync::Arc<std::sync::RwLock<Vec<(PublicKey, u64)>>>,
+
     /// INC-I-055: Rolling health window for auto-checkpoint tagging.
     /// Tracks the last CHECKPOINT_HEALTH_WINDOW_SIZE health samples (true=healthy).
     /// A checkpoint is tagged healthy if ANY sample in the window was healthy,
@@ -399,6 +409,33 @@ impl Node {
                     (pk, count)
                 })
                 .collect()
+        }
+    }
+
+    /// AUDIT-P1-001: refresh the mempool's shared active-producer
+    /// weighted snapshot from the live ProducerSet + epoch_state bond
+    /// snapshot. Called after every successful apply_block commit so
+    /// the mempool admission path sees the same producer set the
+    /// block-validation path sees.
+    ///
+    /// Pre-fix the mempool built every ValidationContext with
+    /// `active_producers = Vec::new()`, so the auth check at
+    /// `validation/transaction.rs:242`
+    /// (`ctx.active_producers.contains(&signer_pubkey)`) was
+    /// guaranteed-false for every PriceAttestation. With
+    /// oracle_activation_height=u64::MAX today this is masked, but
+    /// becomes a liveness blocker the instant a real height is pinned.
+    pub async fn refresh_mempool_producer_snapshot(&self, height: u64) {
+        let producers = self.producer_set.read().await;
+        let active: Vec<PublicKey> = producers
+            .active_producers_at_height(height)
+            .iter()
+            .map(|p| p.public_key)
+            .collect();
+        drop(producers);
+        let weighted = self.bond_weights_for_scheduling(active).await;
+        if let Ok(mut guard) = self.mempool_active_producers_snapshot.write() {
+            *guard = weighted;
         }
     }
 

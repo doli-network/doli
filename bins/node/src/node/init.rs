@@ -706,15 +706,25 @@ impl Node {
             triggered
         };
         let oracle_sunset_triggered = Arc::new(AtomicBool::new(initial_sunset_triggered));
+        // AUDIT-P1-001: live producer snapshot shared into the mempool.
+        // std::sync::RwLock (not tokio) because the mempool admission
+        // path is non-async. Refreshed by
+        // `refresh_mempool_producer_snapshot()` after every apply_block
+        // (see post_commit.rs). Empty at init — populated on the first
+        // refresh tick.
+        let mempool_active_producers_snapshot: std::sync::Arc<
+            std::sync::RwLock<Vec<(PublicKey, u64)>>,
+        > = std::sync::Arc::new(std::sync::RwLock::new(Vec::new()));
         let mempool = Arc::new(RwLock::new(Mempool::new(
             mempool_policy,
             params.clone(),
             config.network,
         )));
-        mempool
-            .write()
-            .await
-            .share_oracle_sunset_flag(oracle_sunset_triggered.clone());
+        {
+            let mut mp = mempool.write().await;
+            mp.share_oracle_sunset_flag(oracle_sunset_triggered.clone());
+            mp.share_active_producers_weighted(mempool_active_producers_snapshot.clone());
+        }
 
         // Create sync manager with default settings (2 slots/heights tolerance).
         // All networks use the same tolerance — recovery from forks is handled by
@@ -1069,6 +1079,7 @@ impl Node {
             last_integrity_check_tip: None,
             recovery_mode: Arc::new(AtomicBool::new(false)),
             oracle_sunset_triggered: oracle_sunset_triggered.clone(),
+            mempool_active_producers_snapshot: mempool_active_producers_snapshot.clone(),
             health_window: std::collections::VecDeque::new(),
             attest_fetch_tracker: HashMap::new(),
             diagnostic_emitter: Arc::new(storage::diagnostic_ledger::emitter::NoOpEmitter)
@@ -1189,15 +1200,19 @@ impl Node {
 
         // Real mempool
         let oracle_sunset_triggered = Arc::new(AtomicBool::new(false));
+        let mempool_active_producers_snapshot: std::sync::Arc<
+            std::sync::RwLock<Vec<(PublicKey, u64)>>,
+        > = std::sync::Arc::new(std::sync::RwLock::new(Vec::new()));
         let mempool = Arc::new(RwLock::new(Mempool::new(
             MempoolPolicy::testnet(),
             params.clone(),
             network,
         )));
-        mempool
-            .write()
-            .await
-            .share_oracle_sunset_flag(oracle_sunset_triggered.clone());
+        {
+            let mut mp = mempool.write().await;
+            mp.share_oracle_sunset_flag(oracle_sunset_triggered.clone());
+            mp.share_active_producers_weighted(mempool_active_producers_snapshot.clone());
+        }
 
         // Real sync manager
         let sync_config = SyncConfig::default();
@@ -1317,6 +1332,7 @@ impl Node {
             last_integrity_check_tip: None,
             recovery_mode: Arc::new(AtomicBool::new(false)),
             oracle_sunset_triggered: oracle_sunset_triggered.clone(),
+            mempool_active_producers_snapshot: mempool_active_producers_snapshot.clone(),
             health_window: std::collections::VecDeque::new(),
             attest_fetch_tracker: HashMap::new(),
             diagnostic_emitter: Arc::new(storage::diagnostic_ledger::emitter::NoOpEmitter)
@@ -1390,6 +1406,9 @@ impl Node {
         let utxo_set = Arc::new(RwLock::new(UtxoSet::new()));
 
         let oracle_sunset_triggered = Arc::new(AtomicBool::new(false));
+        let mempool_active_producers_snapshot: std::sync::Arc<
+            std::sync::RwLock<Vec<(PublicKey, u64)>>,
+        > = std::sync::Arc::new(std::sync::RwLock::new(Vec::new()));
 
         let mempool = Arc::new(RwLock::new(Mempool::new(
             MempoolPolicy::testnet(),
@@ -1397,10 +1416,11 @@ impl Node {
             network,
         )));
 
-        mempool
-            .write()
-            .await
-            .share_oracle_sunset_flag(oracle_sunset_triggered.clone());
+        {
+            let mut mp = mempool.write().await;
+            mp.share_oracle_sunset_flag(oracle_sunset_triggered.clone());
+            mp.share_active_producers_weighted(mempool_active_producers_snapshot.clone());
+        }
 
         let sync_config = SyncConfig::default();
         let sync_manager = Arc::new(RwLock::new(SyncManager::new(sync_config, genesis_hash)));
@@ -1503,6 +1523,7 @@ impl Node {
             last_integrity_check_tip: None,
             recovery_mode: Arc::new(AtomicBool::new(false)),
             oracle_sunset_triggered: oracle_sunset_triggered.clone(),
+            mempool_active_producers_snapshot: mempool_active_producers_snapshot.clone(),
             health_window: std::collections::VecDeque::new(),
             attest_fetch_tracker: HashMap::new(),
             diagnostic_emitter: Arc::new(storage::diagnostic_ledger::emitter::NoOpEmitter)

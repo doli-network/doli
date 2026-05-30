@@ -361,6 +361,13 @@ impl Node {
             .commit()
             .map_err(|e| anyhow::anyhow!("StateDb batch commit failed: {}", e))?;
 
+        // AUDIT-P1-001: refresh the mempool's active-producer snapshot after
+        // every block commit. Mempool admission reads this snapshot to build
+        // ValidationContext.active_producers — without this refresh,
+        // PriceAttestation auth (transaction.rs:242) would silently reject
+        // every attestation at oracle activation.
+        self.refresh_mempool_producer_snapshot(height).await;
+
         // Prune old undo data. INC-I-071: reduced from 2000 → 360 (one epoch).
         // MAX_CUMULATIVE_ROLLBACK is 50 — 360 is 7x that. Deepest observed reorg
         // in 63 days of mainnet was ~10 blocks. For deeper rollbacks beyond this

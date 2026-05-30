@@ -183,6 +183,17 @@ pub struct Mempool {
     /// fails with `[ERRTX-ORACLE003]`. Default `false`. Wired into
     /// every `ValidationContext` constructed inside this mempool.
     oracle_sunset_triggered: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// AUDIT-P1-001: active producer snapshot (pubkey_hash + bond
+    /// weight). Shared with the Node via `Arc<RwLock<...>>`; the Node
+    /// refreshes this after each block apply via
+    /// `share_active_producers_weighted`. Wired into every
+    /// `ValidationContext` constructed inside this mempool so the
+    /// auth check at `validation/transaction.rs:242`
+    /// (`ctx.active_producers.contains(signer)`) sees the live set
+    /// instead of an empty Vec — which was rejecting every
+    /// `PriceAttestation` at activation.
+    active_producers_weighted:
+        std::sync::Arc<std::sync::RwLock<Vec<(crypto::PublicKey, u64)>>>,
 }
 
 impl Mempool {
@@ -199,6 +210,7 @@ impl Mempool {
             params,
             network,
             oracle_sunset_triggered: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            active_producers_weighted: std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
         }
     }
 
@@ -211,6 +223,21 @@ impl Mempool {
         flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) {
         self.oracle_sunset_triggered = flag;
+    }
+
+    /// AUDIT-P1-001: bind the mempool's active-producer snapshot to a
+    /// `Arc<RwLock<Vec<(Hash, u64)>>>` owned by the Node. The Node
+    /// refreshes the snapshot after each block apply; mempool reads
+    /// it on every admission to build `ValidationContext`'s
+    /// `active_producers_weighted`. Pre-fix the context was constructed
+    /// with `Vec::new()`, so every `PriceAttestation`'s auth check at
+    /// `validation/transaction.rs:242` (`contains(&signer)`) was
+    /// guaranteed-false → universal rejection at oracle activation.
+    pub fn share_active_producers_weighted(
+        &mut self,
+        snapshot: std::sync::Arc<std::sync::RwLock<Vec<(crypto::PublicKey, u64)>>>,
+    ) {
+        self.active_producers_weighted = snapshot;
     }
 
     /// Create with default mainnet settings
@@ -252,6 +279,16 @@ impl Mempool {
         }
 
         // Validate transaction structure
+        // AUDIT-P1-001: pull active_producers snapshot so validate_transaction's
+        // contains-check at transaction.rs:242 sees the live set instead of
+        // an empty Vec. Snapshot may be empty pre-activation (no real
+        // producer set wired) — that is harmless because oracle_activation_height
+        // = u64::MAX rejects PriceAttestation at the height gate first.
+        let active_producers_snapshot = self
+            .active_producers_weighted
+            .read()
+            .map(|g| g.clone())
+            .unwrap_or_default();
         let ctx = ValidationContext::new(self.params.clone(), self.network, 0, current_height)
             .with_sig_verification_height(self.network.params().sig_verification_height)
             .with_encrypted_content_activation_height(
@@ -271,7 +308,8 @@ impl Mempool {
             .with_oracle_sunset_triggered(
                 self.oracle_sunset_triggered
                     .load(std::sync::atomic::Ordering::Acquire),
-            );
+            )
+            .with_producers_weighted(active_producers_snapshot);
         validate_transaction(&tx, &ctx)?;
 
         // Validate input spending conditions: pubkey + signature for Normal/Bond,
@@ -612,6 +650,15 @@ impl Mempool {
         }
 
         // Validate transaction structure (but skip UTXO checks)
+        // AUDIT-P1-001: same producer-snapshot wiring as add_transaction —
+        // state-only system txs (incl. PriceAttestation post AUDIT-P1-003)
+        // also need active_producers populated for the auth check at
+        // validation/transaction.rs:242.
+        let active_producers_snapshot = self
+            .active_producers_weighted
+            .read()
+            .map(|g| g.clone())
+            .unwrap_or_default();
         let ctx = ValidationContext::new(self.params.clone(), self.network, 0, current_height)
             .with_sig_verification_height(self.network.params().sig_verification_height)
             .with_encrypted_content_activation_height(
@@ -631,7 +678,8 @@ impl Mempool {
             .with_oracle_sunset_triggered(
                 self.oracle_sunset_triggered
                     .load(std::sync::atomic::Ordering::Acquire),
-            );
+            )
+            .with_producers_weighted(active_producers_snapshot);
         validate_transaction(&tx, &ctx)?;
 
         // Make room if necessary
