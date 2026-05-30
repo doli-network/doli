@@ -678,7 +678,34 @@ impl Node {
             Network::Mainnet => MempoolPolicy::mainnet(),
             Network::Testnet | Network::Devnet => MempoolPolicy::testnet(),
         };
-        let oracle_sunset_triggered = Arc::new(AtomicBool::new(false));
+        // AUDIT-P2-003: restore oracle sunset flag from persisted state on
+        // startup. Pre-fix this was hardcoded false, opening a window of
+        // up to one epoch where a restarted node would accept
+        // PriceAttestations that the rest of the fleet (with correct
+        // sunset state) rejects — fork risk if the restarted node is a
+        // producer. Read the persisted OracleSunsetState, compute current
+        // health at the current_epoch, and seed the atomic before any
+        // ValidationContext is built.
+        let initial_sunset_triggered = {
+            let blocks_per_epoch = config.network.blocks_per_reward_epoch();
+            let best_height = chain_state.read().await.best_height;
+            let current_epoch = if blocks_per_epoch > 0 {
+                best_height / blocks_per_epoch
+            } else {
+                0
+            };
+            let sunset_state = state_db.get_oracle_sunset_state().unwrap_or_default();
+            let triggered = sunset_state.health(current_epoch).is_sunset_triggered();
+            if triggered {
+                info!(
+                    "[ORACLE] startup: restored sunset_triggered=true \
+                     (current_epoch={}, halt_since_epoch={:?})",
+                    current_epoch, sunset_state.halt_since_epoch
+                );
+            }
+            triggered
+        };
+        let oracle_sunset_triggered = Arc::new(AtomicBool::new(initial_sunset_triggered));
         let mempool = Arc::new(RwLock::new(Mempool::new(
             mempool_policy,
             params.clone(),

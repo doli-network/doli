@@ -302,6 +302,34 @@ impl Node {
             self.rebuild_epoch_state_from_blocks(target_height).await;
         }
 
+        // AUDIT-P2-005: reset oracle_sunset_triggered to reflect the rolled-back
+        // chain's sunset state. Pre-fix the atomic retained the sunset state
+        // from the rolled-back chain, so up to one epoch of validation
+        // decisions would be made against the wrong sunset flag. The
+        // persisted OracleSunsetState is local bookkeeping (not in the
+        // state root), so we recompute health from the persisted state at
+        // the target_height's epoch. Note: OracleSunsetState reflects the
+        // most-recent aggregator run; if the rollback crosses an epoch
+        // boundary the next aggregator pass will re-derive correctly,
+        // but until then the atomic must at minimum match the persisted
+        // state at the post-rollback epoch.
+        {
+            let blocks_per_epoch = self.config.network.blocks_per_reward_epoch();
+            let target_epoch = if blocks_per_epoch > 0 {
+                target_height / blocks_per_epoch
+            } else {
+                0
+            };
+            let sunset_state = self.state_db.get_oracle_sunset_state().unwrap_or_default();
+            let triggered = sunset_state.health(target_epoch).is_sunset_triggered();
+            self.oracle_sunset_triggered
+                .store(triggered, std::sync::atomic::Ordering::Release);
+            info!(
+                "[ORACLE] rollback h={}: sunset_triggered={} (target_epoch={})",
+                target_height, triggered, target_epoch
+            );
+        }
+
         // Chain commitment: invalidate on rollback. Periodic scan in periodic.rs
         // will recompute it correctly on the next tick.
         self.state_db.delete_chain_commitment();
