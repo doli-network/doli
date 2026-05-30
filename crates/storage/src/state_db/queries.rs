@@ -15,8 +15,8 @@ use super::types::{
     META_ACTIVE_PRODUCTION_LIST, META_CHAIN_COMMITMENT, META_CHAIN_COMMITMENT_TIP,
     META_CHAIN_STATE, META_EPOCH_ATTESTATION_ACCUM, META_EPOCH_ATTESTED_SET,
     META_EPOCH_BLOCKS_PRODUCED, META_EPOCH_BOND_SNAPSHOT, META_EPOCH_PRODUCER_LIST,
-    META_EPOCH_STATE, META_EPOCH_STATE_VERSION, META_LAST_APPLIED, META_ORACLE_SUNSET_STATE,
-    META_PENDING_UPDATES,
+    META_EPOCH_STATE, META_EPOCH_STATE_VERSION, META_LAST_APPLIED,
+    META_ORACLE_LAST_UPDATE_HEIGHT, META_ORACLE_SUNSET_STATE, META_PENDING_UPDATES,
 };
 
 impl StateDb {
@@ -541,5 +541,31 @@ impl StateDb {
         if let Ok(bytes) = bincode::serialize(state) {
             let _ = self.db.put_cf(cf, META_ORACLE_SUNSET_STATE, bytes);
         }
+    }
+
+    /// AUDIT-P2-001: load the cached `last_update_height` for the
+    /// oracle status RPC. Returns `None` before the first successful
+    /// aggregator pass. NOT part of the consensus state root.
+    pub fn get_oracle_last_update_height(&self) -> Option<u64> {
+        let cf = self.db.cf_handle(CF_META).unwrap();
+        match self.db.get_cf(cf, META_ORACLE_LAST_UPDATE_HEIGHT) {
+            Ok(Some(bytes)) if bytes.len() == 8 => {
+                let mut arr = [0u8; 8];
+                arr.copy_from_slice(&bytes);
+                Some(u64::from_le_bytes(arr))
+            }
+            _ => None,
+        }
+    }
+
+    /// AUDIT-P2-001: persist the height of the last successful oracle
+    /// aggregator write. Called from the aggregator after each per-pair
+    /// `OraclePrice` UTXO insert. Replaces the previous full-UTXO-set
+    /// scan in `getOracleStatus`.
+    pub fn put_oracle_last_update_height(&self, height: u64) {
+        let cf = self.db.cf_handle(CF_META).unwrap();
+        let _ = self
+            .db
+            .put_cf(cf, META_ORACLE_LAST_UPDATE_HEIGHT, height.to_le_bytes());
     }
 }

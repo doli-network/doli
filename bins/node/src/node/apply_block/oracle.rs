@@ -241,6 +241,10 @@ impl Node {
                     "[ORACLE] aggregator: pair={} median_cents={} contributors={} height={}",
                     pair_id, median_price, contributor_count, height
                 );
+                // AUDIT-P2-001: cache last_update_height in state_db so
+                // getOracleStatus can answer in O(1) instead of cloning
+                // the entire UTXO set via iter_all() on every call.
+                self.state_db.put_oracle_last_update_height(height);
             }
         }
     }

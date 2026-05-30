@@ -118,48 +118,40 @@ fn extract_section6_disclosure(spec: &str) -> String {
     lines.join("\n")
 }
 
-// ---------- partition: last_update_height = max across OraclePrice UTXOs ----------
+// ---------- partition: last_update_height = cached value from state_db meta ----------
+// AUDIT-P2-001: getOracleStatus now reads the cached last_update_height
+// from state_db meta (META_ORACLE_LAST_UPDATE_HEIGHT), written by the
+// aggregator after each successful OraclePrice UTXO insert. This
+// replaces the previous full-UTXO-set scan (iter_all()) — an unbounded
+// DoS surface on an unauthenticated public RPC.
+//
+// The aggregator writes the HEIGHT OF THE WRITE — which by construction
+// equals the latest OraclePrice insert height (the previous max-scan
+// computed the same value, since the aggregator was the only writer).
 #[tokio::test]
-async fn m11_last_update_height_takes_max_across_pairs() {
+async fn m11_last_update_height_from_state_db_meta_cache() {
     let t = build_m10_ctx();
-    let pair_a = crypto::hash::hash_with_domain(b"ORACLE_PAIR", b"AAA/USD");
-    let pair_b = crypto::hash::hash_with_domain(b"ORACLE_PAIR", b"BBB/USD");
 
-    // Insert two OraclePrice UTXOs with different last_update_heights.
-    // M11 must report the MAX.
-    let out_a = doli_core::transaction::Output::oracle_price(pair_a, 100, 500, 3);
-    let (txh_a, idx_a) = doli_core::oracle::oracle_price_outpoint(&pair_a);
-    let out_b = doli_core::transaction::Output::oracle_price(pair_b, 200, 1200, 5);
-    let (txh_b, idx_b) = doli_core::oracle::oracle_price_outpoint(&pair_b);
-    {
-        let mut us = t.ctx.utxo_set.write().await;
-        us.insert(
-            Outpoint::new(txh_a, idx_a),
-            UtxoEntry {
-                output: out_a,
-                height: 500,
-                is_coinbase: false,
-                is_epoch_reward: false,
-            },
-        )
-        .unwrap();
-        us.insert(
-            Outpoint::new(txh_b, idx_b),
-            UtxoEntry {
-                output: out_b,
-                height: 1200,
-                is_coinbase: false,
-                is_epoch_reward: false,
-            },
-        )
-        .unwrap();
-    }
+    // Simulate aggregator writes at successive epoch boundaries:
+    // first at h=500 (for pair_a), then at h=1200 (for pair_b).
+    // The cache holds the latest write (1200).
+    t.ctx
+        .state_db
+        .as_ref()
+        .expect("state_db is wired in build_m10_ctx")
+        .put_oracle_last_update_height(500);
+    t.ctx
+        .state_db
+        .as_ref()
+        .unwrap()
+        .put_oracle_last_update_height(1200);
 
     let resp = t.ctx.get_oracle_status(Value::Null).await.unwrap();
     assert_eq!(
         resp["last_update_height"].as_u64().unwrap(),
         1200,
-        "must report max(last_update_height) across all OraclePrice UTXOs"
+        "must report the cached last_update_height (latest aggregator write); \
+         no longer derived from scanning the entire UTXO set"
     );
 }
 

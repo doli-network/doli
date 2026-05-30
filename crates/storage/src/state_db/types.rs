@@ -59,6 +59,12 @@ pub(super) const META_CHAIN_COMMITMENT_TIP: &[u8] = b"chain_commitment_tip";
 /// Persisted as bincode-serialized `OracleSunsetState`. Local
 /// bookkeeping — NOT part of the consensus state root.
 pub(super) const META_ORACLE_SUNSET_STATE: &[u8] = b"oracle_sunset_state";
+/// AUDIT-P2-001: cached `last_update_height` for the oracle status RPC.
+/// Written at every successful `OraclePrice` UTXO insert in the
+/// aggregator; read by `getOracleStatus` to avoid an unbounded full-
+/// UTXO-set scan on every unauthenticated RPC call. Stored as 8-byte
+/// little-endian u64. NOT part of the consensus state root.
+pub(super) const META_ORACLE_LAST_UPDATE_HEIGHT: &[u8] = b"oracle_last_update_height";
 
 /// Unified state database wrapping a single RocksDB instance.
 pub struct StateDb {

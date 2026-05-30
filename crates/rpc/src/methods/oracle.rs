@@ -347,20 +347,15 @@ impl RpcContext {
             .map(|(snap, _epoch)| snap)
             .unwrap_or_default();
 
-        let last_update_height: Option<u64> = {
-            let utxo_set = self.utxo_set.read().await;
-            utxo_set
-                .iter_all()
-                .into_iter()
-                .filter_map(|(_, entry)| {
-                    if entry.output.output_type == doli_core::OutputType::OraclePrice {
-                        entry.output.parse_oracle_price().map(|(_, h, _, _)| h)
-                    } else {
-                        None
-                    }
-                })
-                .max()
-        };
+        // AUDIT-P2-001: read cached `last_update_height` from state_db meta
+        // (written by the aggregator after each successful OraclePrice
+        // UTXO insert). Pre-fix this used utxo_set.iter_all() — an
+        // unbounded full-UTXO-set scan on a public unauthenticated RPC
+        // that held the UTXO read lock and blocked block application.
+        let last_update_height: Option<u64> = self
+            .state_db
+            .as_ref()
+            .and_then(|db| db.get_oracle_last_update_height());
 
         let current_epoch = current_height.checked_div(blocks_per_epoch).unwrap_or(0);
         let attester_count: u64 = if current_epoch == 0 {
