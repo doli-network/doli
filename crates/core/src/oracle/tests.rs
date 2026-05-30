@@ -668,3 +668,48 @@ fn test_constants_match_spec() {
     assert_eq!(SUNSET_WARNING_BPS, 6000);
     assert_eq!(ORACLE_RECOVERY_EPOCHS, 4);
 }
+
+// OUTPUT CONTRACT: fn dedupe_latest_per_attester — deterministic order
+//   O1: output is sorted by signer_hash (BTreeMap iteration order, NOT
+//       HashMap hash order). Guarantees bit-identical iteration across
+//       all nodes regardless of hasher seed.
+//   O2: dedup semantics preserved (last-write-wins per signer)
+// PATHS / PARTITIONS:
+//   P1: 3 distinct signers in non-sorted input order — verify output
+//       comes out sorted by signer_hash byte-order
+// MATRIX:
+//   P1×O1✓  P1×O2✓
+// AUDIT-P3-001: HashMap iteration in consensus path replaced with
+// BTreeMap. The downstream median is order-independent today but the
+// class — "future maintenance introduces an order-sensitive secondary
+// effect → silent consensus fork" — is eliminated by deterministic
+// iteration order.
+#[test]
+fn test_dedupe_latest_per_attester_output_is_sorted_by_signer_hash() {
+    let input = vec![
+        AttestationContribution {
+            signer_hash: h(7), // out-of-order on purpose
+            price_cents: 700,
+        },
+        AttestationContribution {
+            signer_hash: h(2),
+            price_cents: 200,
+        },
+        AttestationContribution {
+            signer_hash: h(5),
+            price_cents: 500,
+        },
+    ];
+    let deduped = dedupe_latest_per_attester(&input);
+    let signer_seeds: Vec<u8> = deduped.iter().map(|c| c.signer_hash.as_bytes()[0]).collect();
+    let mut expected = signer_seeds.clone();
+    expected.sort();
+    assert_eq!(
+        signer_seeds, expected,
+        "AUDIT-P3-001: dedupe output must be sorted by signer_hash \
+         (BTreeMap iteration order). HashMap order is non-deterministic \
+         across hasher seeds and would diverge if any future code path \
+         became iteration-order-sensitive."
+    ); // O1
+    assert_eq!(deduped.len(), 3); // O2 (no duplicates here, all preserved)
+}

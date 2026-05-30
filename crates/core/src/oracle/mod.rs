@@ -51,7 +51,7 @@
 
 use crypto::Hash;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// A single attester's contribution to one pair's epoch median.
 ///
@@ -171,7 +171,12 @@ pub fn bond_weighted_median(
 pub fn dedupe_latest_per_attester(
     contributions: &[AttestationContribution],
 ) -> Vec<AttestationContribution> {
-    let mut by_signer: HashMap<Hash, AttestationContribution> = HashMap::new();
+    // AUDIT-P3-001: BTreeMap (not HashMap) — deterministic iteration order
+    // by signer_hash. The downstream median is order-independent today
+    // (sort by price + commutative weight sum), but using BTreeMap
+    // eliminates the class of "future maintenance introduces an order-
+    // sensitive secondary effect → silent consensus fork".
+    let mut by_signer: BTreeMap<Hash, AttestationContribution> = BTreeMap::new();
     for c in contributions {
         by_signer.insert(c.signer_hash, *c);
     }

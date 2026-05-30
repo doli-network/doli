@@ -40,7 +40,7 @@ use doli_core::oracle::{
     oracle_price_outpoint, AttestationContribution,
 };
 use doli_core::transaction::Output;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::Ordering;
 use storage::utxo::Outpoint;
 use storage::utxo::UtxoEntry;
@@ -155,7 +155,12 @@ impl Node {
 
         // Step 2 — scan closing-epoch blocks for PriceAttestations,
         // group by pair_id.
-        let mut by_pair: HashMap<crypto::Hash, Vec<AttestationContribution>> = HashMap::new();
+        // AUDIT-P3-001: BTreeMap (not HashMap) — deterministic iteration
+        // order over pairs. Each pair mutates an independently-keyed UTXO
+        // today, so order doesn't reach state, but BTreeMap eliminates
+        // the class of future regressions where a per-pair side effect
+        // becomes order-sensitive.
+        let mut by_pair: BTreeMap<crypto::Hash, Vec<AttestationContribution>> = BTreeMap::new();
         for h in closing_epoch_start..closing_epoch_end {
             let block = match self.block_store.get_block_by_height(h) {
                 Ok(Some(b)) => b,
