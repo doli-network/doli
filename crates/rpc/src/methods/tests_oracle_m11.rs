@@ -22,6 +22,7 @@
 
 use super::tests::{build_m10_ctx, insert_attestation_block, make_attestation_tx, pair_id_fixture};
 use serde_json::Value;
+#[allow(unused_imports)]
 use storage::{Outpoint, UtxoEntry};
 
 // ---------- partition: activation = pre (u64::MAX) → active = false ----------
@@ -92,6 +93,39 @@ async fn m11_centralization_disclosure_byte_equal_to_spec() {
         disclosure, spec_disclosure,
         "centralization_disclosure must byte-equal the §6 paragraph in \
          specs/oracle-structural-anchored-economics.md (drift gate)"
+    );
+}
+
+// ---------- partition: pinned-hash third tripwire (defense-in-depth) ----------
+// AUDIT-P3-002: the byte-equal drift gate above (vs spec §6) catches
+// UNILATERAL edits to either the spec or the production constant. A
+// coordinated dual-edit (malicious or careless) updates both files
+// together and the byte-equal gate passes silently.
+//
+// Pin a BLAKE3 hash of the canonical disclosure text as a THIRD source.
+// Any change to the disclosure now requires updating three places: the
+// spec markdown, the production constant, AND this pinned hash. Code
+// review across three independent change sites is the human gate the
+// audit asked for.
+//
+// To update: rebuild the disclosure, hash it (blake3), paste hex below.
+#[tokio::test]
+async fn m11_centralization_disclosure_pinned_hash() {
+    let t = build_m10_ctx();
+    let resp = t.ctx.get_oracle_status(Value::Null).await.unwrap();
+    let disclosure = resp["centralization_disclosure"].as_str().unwrap();
+
+    const PINNED_BLAKE3_HEX: &str =
+        "289a18e0830fba7f851fea73b5577a8ba649c1fbe6690f638d01aa9daa1651c6";
+    let actual = ::crypto::hash::hash(disclosure.as_bytes()).to_hex();
+    assert_eq!(
+        actual, PINNED_BLAKE3_HEX,
+        "AUDIT-P3-002: centralization_disclosure BLAKE3 hash drifted. \
+         If you intentionally updated the disclosure text in BOTH the spec \
+         (specs/oracle-structural-anchored-economics.md §S6) AND the production \
+         constant (crates/rpc/src/methods/oracle_status.rs::CENTRALIZATION_DISCLOSURE), \
+         compute the new BLAKE3 hex and update PINNED_BLAKE3_HEX here. This \
+         three-file change set is the dual-edit defense the audit required."
     );
 }
 
