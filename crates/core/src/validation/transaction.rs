@@ -245,6 +245,19 @@ pub fn validate_transaction(
                 ));
             }
 
+            // AUDIT-P2-006 Rule 4 — `pair_id` must equal the Phase 2.1
+            // allowlist (BLAKE3("ORACLE_PAIR" || "DOLI/USD")). Phase 2.2+
+            // introduces a pair-registry that supports multiple pairs;
+            // until then, the single supported pair_id is hard-pinned.
+            if data.pair_id != crate::oracle::phase_2_1_known_pair_id() {
+                return Err(ValidationError::InvalidTransaction(format!(
+                    "[ERRTX-ORACLE005] price attestation pair_id not in Phase 2.1 allowlist: \
+                     got={} expected={} (only DOLI/USD supported pre-Phase-2.2)",
+                    data.pair_id,
+                    crate::oracle::phase_2_1_known_pair_id()
+                )));
+            }
+
             // Rule 3 — epoch match. Stale (< current) and future
             // (> current) attestations are rejected. The attestation
             // must commit to the epoch in which it is included.

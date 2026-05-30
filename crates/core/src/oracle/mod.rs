@@ -183,6 +183,26 @@ pub fn dedupe_latest_per_attester(
     by_signer.into_values().collect()
 }
 
+/// AUDIT-P2-006 — Phase 2.1 allowlist for the canonical
+/// `pair_string` used by the single supported oracle pair (DOLI/USD).
+/// Spec §S1.1 / row 65 pins `pair_id = BLAKE3("ORACLE_PAIR" || "DOLI/USD")`.
+///
+/// Rule 4 enforcement (validation/transaction.rs): a `PriceAttestation`
+/// whose `pair_id` is not equal to `phase_2_1_known_pair_id()` is
+/// rejected with `[ERRTX-ORACLE005]`. Phase 2.2+ introduces a
+/// pair-registry mechanism (separate spec); until then, the allowlist
+/// is one entry.
+pub const PHASE_2_1_PAIR_STRING: &[u8] = b"DOLI/USD";
+
+/// Recomputed BLAKE3 of `b"ORACLE_PAIR" || PHASE_2_1_PAIR_STRING` —
+/// the single pair_id accepted by the Phase 2.1 oracle Rule 4 check.
+/// Computed at call sites (BLAKE3 isn't const-eval today). See
+/// `phase_2_1_known_pair_id()`.
+#[must_use]
+pub fn phase_2_1_known_pair_id() -> Hash {
+    crypto::hash::hash_with_domain(b"ORACLE_PAIR", PHASE_2_1_PAIR_STRING)
+}
+
 /// Phase 2.1 Oracle sunset threshold, in basis points.
 ///
 /// When the structural-bond-share metric falls strictly below this

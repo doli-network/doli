@@ -65,7 +65,7 @@ fn signed_attestation(kp: &KeyPair, current_height: u64) -> Transaction {
     let mut data = PriceAttestationData {
         signer_pubkey: *kp.public_key(),
         price_cents: 100,
-        pair_id: Hash::from_bytes([0x42; 32]),
+        pair_id: crate::oracle::phase_2_1_known_pair_id(),
         epoch_number: epoch,
         signature: Signature::default(),
     };
@@ -253,7 +253,7 @@ fn test_m4_rule3_rejects_stale_epoch() {
     let mut data = PriceAttestationData {
         signer_pubkey: *kp.public_key(),
         price_cents: 100,
-        pair_id: Hash::from_bytes([0x42; 32]),
+        pair_id: crate::oracle::phase_2_1_known_pair_id(),
         epoch_number: 1, // stale by 1
         signature: Signature::default(),
     };
@@ -272,7 +272,7 @@ fn test_m4_rule3_rejects_future_epoch() {
     let mut data = PriceAttestationData {
         signer_pubkey: *kp.public_key(),
         price_cents: 100,
-        pair_id: Hash::from_bytes([0x42; 32]),
+        pair_id: crate::oracle::phase_2_1_known_pair_id(),
         epoch_number: 3, // future by 1
         signature: Signature::default(),
     };
@@ -324,7 +324,7 @@ fn test_m4_rule6_rejects_foreign_signature() {
     let mut data = PriceAttestationData {
         signer_pubkey: *kp.public_key(), // attester claims to be kp
         price_cents: 100,
-        pair_id: Hash::from_bytes([0x42; 32]),
+        pair_id: crate::oracle::phase_2_1_known_pair_id(),
         epoch_number: 1,
         signature: Signature::default(),
     };
@@ -344,7 +344,7 @@ fn test_m4_rule6_rejects_tampered_price_cents() {
     let mut data = PriceAttestationData {
         signer_pubkey: *kp.public_key(),
         price_cents: 100,
-        pair_id: Hash::from_bytes([0x42; 32]),
+        pair_id: crate::oracle::phase_2_1_known_pair_id(),
         epoch_number: 1,
         signature: Signature::default(),
     };
@@ -365,7 +365,7 @@ fn test_m4_rule6_rejects_zero_signature() {
     let data = PriceAttestationData {
         signer_pubkey: *kp.public_key(),
         price_cents: 100,
-        pair_id: Hash::from_bytes([0x42; 32]),
+        pair_id: crate::oracle::phase_2_1_known_pair_id(),
         epoch_number: 1,
         signature: Signature::default(), // never signed
     };
@@ -564,4 +564,76 @@ fn test_user_cannot_create_oracle_price_output() {
         "P2: expected ERRTX-ORACLE004 even for input-less Transfer, got: {:?}",
         result
     ); // O1, O2
+}
+
+// OUTPUT CONTRACT: Rule 4 — pair_id must equal Phase 2.1 allowlist
+//   O1: validate_transaction REJECTS a PriceAttestation with any
+//       pair_id != phase_2_1_known_pair_id() — error [ERRTX-ORACLE005]
+//   O2: validate_transaction ACCEPTS the canonical pair_id (regression
+//       coverage that the happy-path tests already exercise but pinning
+//       explicit AC for Rule 4 here too).
+// PATHS:
+//   P1: foreign pair_id (BLAKE3("ORACLE_PAIR" || "OTHER/USD"))
+//   P2: arbitrary 0x99-filled hash (truly random pair_id)
+//   P3: canonical pair_id (positive control)
+// MATRIX:
+//   P1×O1✓  P2×O1✓  P3×O2✓
+// AUDIT-P2-006: Rule 4 was previously deferred (comment in transaction.rs).
+// Phase 2.1 has one supported pair (DOLI/USD); a pair-registry mechanism
+// for Phase 2.2+ is separate work.
+#[test]
+fn test_m6_rule4_rejects_non_allowlist_pair_id() {
+    use crate::transaction::PriceAttestationData;
+    use crypto::signature::sign_hash;
+
+    let kp = KeyPair::generate();
+    let ctx = ctx_with(&kp, 360);
+
+    // P1: foreign-but-well-formed pair_id
+    let foreign = crypto::hash::hash_with_domain(b"ORACLE_PAIR", b"OTHER/USD");
+    let mut data = PriceAttestationData {
+        signer_pubkey: *kp.public_key(),
+        price_cents: 100,
+        pair_id: foreign,
+        epoch_number: 1,
+        signature: Default::default(),
+    };
+    data.signature = sign_hash(&data.signing_message(), kp.private_key());
+    let tx = crate::transaction::Transaction::new_price_attestation(data);
+    let result = validate_transaction(&tx, &ctx);
+    assert!(
+        matches!(
+            &result,
+            Err(ValidationError::InvalidTransaction(msg)) if msg.contains("ERRTX-ORACLE005")
+        ),
+        "P1: foreign pair_id must be rejected with ERRTX-ORACLE005, got: {:?}",
+        result
+    ); // O1
+
+    // P2: arbitrary hash
+    let mut data2 = PriceAttestationData {
+        signer_pubkey: *kp.public_key(),
+        price_cents: 100,
+        pair_id: Hash::from_bytes([0x99; 32]),
+        epoch_number: 1,
+        signature: Default::default(),
+    };
+    data2.signature = sign_hash(&data2.signing_message(), kp.private_key());
+    let tx2 = crate::transaction::Transaction::new_price_attestation(data2);
+    let result2 = validate_transaction(&tx2, &ctx);
+    assert!(
+        matches!(
+            &result2,
+            Err(ValidationError::InvalidTransaction(msg)) if msg.contains("ERRTX-ORACLE005")
+        ),
+        "P2: arbitrary pair_id must be rejected, got: {:?}",
+        result2
+    ); // O1
+
+    // P3: positive control — canonical pair_id accepted
+    let tx3 = signed_attestation(&kp, 360);
+    assert!(
+        validate_transaction(&tx3, &ctx).is_ok(),
+        "P3: canonical pair_id must be accepted by Rule 4"
+    ); // O2
 }
