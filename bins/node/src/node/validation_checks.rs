@@ -476,6 +476,44 @@ impl Node {
             }
         }
 
+        // AUDIT-P2-004 — Rule 5: at most ONE PriceAttestation per (attester,
+        // epoch, pair_id) per block. The aggregator's defense-in-depth
+        // `dedupe_latest_per_attester` picks the last entry per attester,
+        // which would allow a producer to flood duplicate-or-revised
+        // attestations within a single block, wasting block space and
+        // creating a last-mover advantage on revised prices. Reject the
+        // SECOND occurrence with [ERRTX-ORACLE002]. Gated by
+        // oracle_activation_height — pre-activation no PriceAttestation can
+        // reach the mempool so the check is moot today.
+        if height >= self.config.network.params().oracle_activation_height {
+            let mut seen: std::collections::HashSet<(crypto::Hash, u64, crypto::Hash)> =
+                std::collections::HashSet::new();
+            for (i, tx) in block.transactions.iter().enumerate() {
+                if !tx.is_price_attestation() {
+                    continue;
+                }
+                let Some(data) = tx.price_attestation_data() else {
+                    continue;
+                };
+                let signer_hash = crypto::hash::hash_with_domain(
+                    crypto::ADDRESS_DOMAIN,
+                    data.signer_pubkey.as_bytes(),
+                );
+                let key = (signer_hash, data.epoch_number, data.pair_id);
+                if !seen.insert(key) {
+                    anyhow::bail!(
+                        "[ERRTX-ORACLE002] duplicate PriceAttestation at block tx index {} \
+                         (attester={} epoch={} pair_id={}) — Rule 5: at most one per \
+                         (attester, epoch, pair_id) per block",
+                        i,
+                        signer_hash,
+                        data.epoch_number,
+                        data.pair_id
+                    );
+                }
+            }
+        }
+
         // Calculate extra fees from user transactions in this block.
         // Excluded from extra_fees calculation:
         // - Coinbase/EpochReward: protocol-generated, no user fees
