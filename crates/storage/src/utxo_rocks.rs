@@ -47,8 +47,16 @@ impl RocksDbUtxoStore {
         opts.set_db_write_buffer_size(32 * 1024 * 1024); // 32 MB
         opts.set_max_total_wal_size(32 * 1024 * 1024); // 32 MB
 
-        let cfs = vec![CF_UTXO, CF_UTXO_BY_PUBKEY, CF_UNIQUE_ID];
-        let db = rocksdb::DB::open_cf(&opts, path, cfs)?;
+        // INC-I-104 M1: switch to per-CF descriptors. Each CF currently gets the
+        // same options as the DB defaults; per-CF differentiation lands in M2-M4.
+        // Pattern from content_store.rs:32-36.
+        let cf_descriptors: Vec<rocksdb::ColumnFamilyDescriptor> =
+            [CF_UTXO, CF_UTXO_BY_PUBKEY, CF_UNIQUE_ID]
+                .iter()
+                .map(|name| rocksdb::ColumnFamilyDescriptor::new(*name, opts.clone()))
+                .collect();
+
+        let db = rocksdb::DB::open_cf_descriptors(&opts, path, cf_descriptors)?;
 
         // Count existing entries to initialize the atomic counter
         let cf_utxo = db.cf_handle(CF_UTXO).unwrap();

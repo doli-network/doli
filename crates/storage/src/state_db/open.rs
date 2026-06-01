@@ -32,15 +32,22 @@ impl StateDb {
         // docs/.workflow/architecture-reasoning.md and specs/rocksdb-configuration-architecture.md §state_db.
         opts.set_db_write_buffer_size(64 * 1024 * 1024); // 64 MB
 
-        let cfs = vec![
+        // INC-I-104 M1: switch to per-CF descriptors. Each CF currently gets the
+        // same options as the DB defaults; per-CF differentiation lands in M2-M4.
+        // Pattern from content_store.rs:32-36.
+        let cf_descriptors: Vec<rocksdb::ColumnFamilyDescriptor> = [
             CF_UTXO,
             CF_UTXO_BY_PUBKEY,
             CF_PRODUCERS,
             CF_EXIT_HISTORY,
             CF_META,
             CF_UNDO,
-        ];
-        let db = rocksdb::DB::open_cf(&opts, path, cfs)?;
+        ]
+        .iter()
+        .map(|name| rocksdb::ColumnFamilyDescriptor::new(*name, opts.clone()))
+        .collect();
+
+        let db = rocksdb::DB::open_cf_descriptors(&opts, path, cf_descriptors)?;
 
         // Count existing UTXO entries
         let cf_utxo = db.cf_handle(CF_UTXO).unwrap();

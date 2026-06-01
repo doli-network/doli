@@ -33,19 +33,25 @@ impl BlockStore {
         block_opts.set_bloom_filter(10.0, false);
         opts.set_block_based_table_factory(&block_opts);
 
-        let cfs = vec![
+        // INC-I-104 M1: switch to per-CF descriptors. Each CF currently gets the
+        // same options as the DB defaults; per-CF differentiation lands in M2-M4.
+        // Pattern from content_store.rs:32-36.
+        let cf_descriptors: Vec<rocksdb::ColumnFamilyDescriptor> = [
             CF_HEADERS,
             CF_BODIES,
             CF_HEIGHT_INDEX,
             CF_SLOT_INDEX,
-            CF_PRESENCE,
+            CF_PRESENCE, // C-004: deprecated but must stay in descriptor list
             CF_HASH_TO_HEIGHT,
             CF_TX_INDEX,
             CF_ADDR_TX_INDEX,
             CF_META,
-        ];
+        ]
+        .iter()
+        .map(|name| rocksdb::ColumnFamilyDescriptor::new(*name, opts.clone()))
+        .collect();
 
-        let db = rocksdb::DB::open_cf(&opts, path, cfs)?;
+        let db = rocksdb::DB::open_cf_descriptors(&opts, path, cf_descriptors)?;
 
         // One-time migrations
         let store = Self { db };
