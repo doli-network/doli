@@ -225,6 +225,130 @@ lazy_static! {
         Opts::new("doli_build_info", "Build information"),
         &["version", "commit"]
     ).unwrap();
+
+    // ===================
+    // RocksDB Metrics (per-instance, labeled by instance="block_store|state_db|utxo_store|diagnostic_ledger")
+    // ===================
+    // Properties read via `db.property_int_value(...)`. See storage::metrics for property names.
+
+    /// Current memtable bytes across all CFs (active + immutable)
+    pub static ref ROCKSDB_MEMTABLE_BYTES: IntGaugeVec = IntGaugeVec::new(
+        Opts::new("doli_rocksdb_memtable_bytes",
+            "Current memtable bytes (cur-size-all-mem-tables)"),
+        &["instance"]
+    ).unwrap();
+
+    /// Peak memtable bytes (the cap: write_buffer_size * max_write_buffer_number, summed across CFs)
+    pub static ref ROCKSDB_MEMTABLE_MAX_BYTES: IntGaugeVec = IntGaugeVec::new(
+        Opts::new("doli_rocksdb_memtable_max_bytes",
+            "Peak memtable bytes across all CFs (size-all-mem-tables)"),
+        &["instance"]
+    ).unwrap();
+
+    /// Block cache bytes in use
+    pub static ref ROCKSDB_BLOCK_CACHE_BYTES: IntGaugeVec = IntGaugeVec::new(
+        Opts::new("doli_rocksdb_block_cache_bytes", "Block cache bytes in use"),
+        &["instance"]
+    ).unwrap();
+
+    /// Block cache pinned bytes (cannot be evicted)
+    pub static ref ROCKSDB_BLOCK_CACHE_PINNED_BYTES: IntGaugeVec = IntGaugeVec::new(
+        Opts::new("doli_rocksdb_block_cache_pinned_bytes",
+            "Block cache pinned bytes (cannot be evicted)"),
+        &["instance"]
+    ).unwrap();
+
+    /// Memory used by SST index + bloom filter blocks
+    pub static ref ROCKSDB_TABLE_READERS_BYTES: IntGaugeVec = IntGaugeVec::new(
+        Opts::new("doli_rocksdb_table_readers_bytes",
+            "Memory used by SST index + bloom filter blocks"),
+        &["instance"]
+    ).unwrap();
+
+    /// Approximate live key count
+    pub static ref ROCKSDB_ESTIMATE_KEYS: IntGaugeVec = IntGaugeVec::new(
+        Opts::new("doli_rocksdb_estimate_keys", "Approximate live key count"),
+        &["instance"]
+    ).unwrap();
+
+    /// Approximate live data bytes after compaction
+    pub static ref ROCKSDB_LIVE_DATA_BYTES: IntGaugeVec = IntGaugeVec::new(
+        Opts::new("doli_rocksdb_live_data_bytes",
+            "Approximate live data bytes (estimate-live-data-size)"),
+        &["instance"]
+    ).unwrap();
+
+    /// Total SST file bytes on disk
+    pub static ref ROCKSDB_SST_TOTAL_BYTES: IntGaugeVec = IntGaugeVec::new(
+        Opts::new("doli_rocksdb_sst_total_bytes", "Total SST file bytes on disk"),
+        &["instance"]
+    ).unwrap();
+
+    /// Live SST file bytes (excludes obsolete pending deletion)
+    pub static ref ROCKSDB_SST_LIVE_BYTES: IntGaugeVec = IntGaugeVec::new(
+        Opts::new("doli_rocksdb_sst_live_bytes", "Live SST file bytes"),
+        &["instance"]
+    ).unwrap();
+
+    /// Flush jobs currently executing
+    pub static ref ROCKSDB_RUNNING_FLUSHES: IntGaugeVec = IntGaugeVec::new(
+        Opts::new("doli_rocksdb_running_flushes", "Flush jobs currently executing"),
+        &["instance"]
+    ).unwrap();
+
+    /// Compaction jobs currently executing
+    pub static ref ROCKSDB_RUNNING_COMPACTIONS: IntGaugeVec = IntGaugeVec::new(
+        Opts::new("doli_rocksdb_running_compactions",
+            "Compaction jobs currently executing"),
+        &["instance"]
+    ).unwrap();
+
+    /// Compaction pending (1=yes, 0=no)
+    pub static ref ROCKSDB_COMPACTION_PENDING: IntGaugeVec = IntGaugeVec::new(
+        Opts::new("doli_rocksdb_compaction_pending", "Compaction pending (1/0)"),
+        &["instance"]
+    ).unwrap();
+
+    /// Memtable flush pending (1=yes, 0=no)
+    pub static ref ROCKSDB_MEMTABLE_FLUSH_PENDING: IntGaugeVec = IntGaugeVec::new(
+        Opts::new("doli_rocksdb_memtable_flush_pending", "Memtable flush pending (1/0)"),
+        &["instance"]
+    ).unwrap();
+
+    /// Immutable memtables awaiting flush
+    pub static ref ROCKSDB_NUM_IMMUTABLE_MEMTABLE: IntGaugeVec = IntGaugeVec::new(
+        Opts::new("doli_rocksdb_num_immutable_memtable",
+            "Immutable memtables awaiting flush"),
+        &["instance"]
+    ).unwrap();
+
+    /// Non-zero means RocksDB is throttling writes (bytes/sec delay)
+    pub static ref ROCKSDB_ACTUAL_DELAYED_WRITE_RATE: IntGaugeVec = IntGaugeVec::new(
+        Opts::new("doli_rocksdb_actual_delayed_write_rate",
+            "Delayed write rate (0 = no throttling, >0 = throttled)"),
+        &["instance"]
+    ).unwrap();
+
+    /// Writes are stopped (1=yes, 0=no) — pending compaction has blocked all writes
+    pub static ref ROCKSDB_IS_WRITE_STOPPED: IntGaugeVec = IntGaugeVec::new(
+        Opts::new("doli_rocksdb_is_write_stopped",
+            "Writes stopped on this instance (1/0). Non-zero is critical."),
+        &["instance"]
+    ).unwrap();
+
+    /// Background errors count (compaction / flush failures)
+    pub static ref ROCKSDB_BACKGROUND_ERRORS: IntGaugeVec = IntGaugeVec::new(
+        Opts::new("doli_rocksdb_background_errors",
+            "Cumulative background errors (compaction/flush failures)"),
+        &["instance"]
+    ).unwrap();
+
+    /// SST file count per level. Labels: instance, level (0..6).
+    pub static ref ROCKSDB_FILES_AT_LEVEL: IntGaugeVec = IntGaugeVec::new(
+        Opts::new("doli_rocksdb_files_at_level",
+            "SST file count per LSM level"),
+        &["instance", "level"]
+    ).unwrap();
 }
 
 /// Register all metrics with the registry
@@ -267,10 +391,121 @@ pub fn register_metrics() {
     let _ = REGISTRY.register(Box::new(UPTIME_SECONDS.clone()));
     let _ = REGISTRY.register(Box::new(BUILD_INFO.clone()));
 
+    // RocksDB metrics
+    let _ = REGISTRY.register(Box::new(ROCKSDB_MEMTABLE_BYTES.clone()));
+    let _ = REGISTRY.register(Box::new(ROCKSDB_MEMTABLE_MAX_BYTES.clone()));
+    let _ = REGISTRY.register(Box::new(ROCKSDB_BLOCK_CACHE_BYTES.clone()));
+    let _ = REGISTRY.register(Box::new(ROCKSDB_BLOCK_CACHE_PINNED_BYTES.clone()));
+    let _ = REGISTRY.register(Box::new(ROCKSDB_TABLE_READERS_BYTES.clone()));
+    let _ = REGISTRY.register(Box::new(ROCKSDB_ESTIMATE_KEYS.clone()));
+    let _ = REGISTRY.register(Box::new(ROCKSDB_LIVE_DATA_BYTES.clone()));
+    let _ = REGISTRY.register(Box::new(ROCKSDB_SST_TOTAL_BYTES.clone()));
+    let _ = REGISTRY.register(Box::new(ROCKSDB_SST_LIVE_BYTES.clone()));
+    let _ = REGISTRY.register(Box::new(ROCKSDB_RUNNING_FLUSHES.clone()));
+    let _ = REGISTRY.register(Box::new(ROCKSDB_RUNNING_COMPACTIONS.clone()));
+    let _ = REGISTRY.register(Box::new(ROCKSDB_COMPACTION_PENDING.clone()));
+    let _ = REGISTRY.register(Box::new(ROCKSDB_MEMTABLE_FLUSH_PENDING.clone()));
+    let _ = REGISTRY.register(Box::new(ROCKSDB_NUM_IMMUTABLE_MEMTABLE.clone()));
+    let _ = REGISTRY.register(Box::new(ROCKSDB_ACTUAL_DELAYED_WRITE_RATE.clone()));
+    let _ = REGISTRY.register(Box::new(ROCKSDB_IS_WRITE_STOPPED.clone()));
+    let _ = REGISTRY.register(Box::new(ROCKSDB_BACKGROUND_ERRORS.clone()));
+    let _ = REGISTRY.register(Box::new(ROCKSDB_FILES_AT_LEVEL.clone()));
+
     // Set build info
     BUILD_INFO
         .with_label_values(&[env!("CARGO_PKG_VERSION"), "unknown"])
         .set(1);
+}
+
+/// Apply a single `RocksDbMetrics` snapshot to the per-instance gauges.
+pub fn apply_rocksdb_metrics(m: &storage::RocksDbMetrics) {
+    let inst = m.instance;
+    ROCKSDB_MEMTABLE_BYTES
+        .with_label_values(&[inst])
+        .set(m.memtable_bytes as i64);
+    ROCKSDB_MEMTABLE_MAX_BYTES
+        .with_label_values(&[inst])
+        .set(m.memtable_max_bytes as i64);
+    ROCKSDB_BLOCK_CACHE_BYTES
+        .with_label_values(&[inst])
+        .set(m.block_cache_bytes as i64);
+    ROCKSDB_BLOCK_CACHE_PINNED_BYTES
+        .with_label_values(&[inst])
+        .set(m.block_cache_pinned_bytes as i64);
+    ROCKSDB_TABLE_READERS_BYTES
+        .with_label_values(&[inst])
+        .set(m.table_readers_bytes as i64);
+    ROCKSDB_ESTIMATE_KEYS
+        .with_label_values(&[inst])
+        .set(m.estimate_keys as i64);
+    ROCKSDB_LIVE_DATA_BYTES
+        .with_label_values(&[inst])
+        .set(m.live_data_bytes as i64);
+    ROCKSDB_SST_TOTAL_BYTES
+        .with_label_values(&[inst])
+        .set(m.sst_total_bytes as i64);
+    ROCKSDB_SST_LIVE_BYTES
+        .with_label_values(&[inst])
+        .set(m.sst_live_bytes as i64);
+    ROCKSDB_RUNNING_FLUSHES
+        .with_label_values(&[inst])
+        .set(m.running_flushes as i64);
+    ROCKSDB_RUNNING_COMPACTIONS
+        .with_label_values(&[inst])
+        .set(m.running_compactions as i64);
+    ROCKSDB_COMPACTION_PENDING
+        .with_label_values(&[inst])
+        .set(m.compaction_pending as i64);
+    ROCKSDB_MEMTABLE_FLUSH_PENDING
+        .with_label_values(&[inst])
+        .set(m.mem_table_flush_pending as i64);
+    ROCKSDB_NUM_IMMUTABLE_MEMTABLE
+        .with_label_values(&[inst])
+        .set(m.num_immutable_memtable as i64);
+    ROCKSDB_ACTUAL_DELAYED_WRITE_RATE
+        .with_label_values(&[inst])
+        .set(m.actual_delayed_write_rate as i64);
+    ROCKSDB_IS_WRITE_STOPPED
+        .with_label_values(&[inst])
+        .set(m.is_write_stopped as i64);
+    ROCKSDB_BACKGROUND_ERRORS
+        .with_label_values(&[inst])
+        .set(m.background_errors as i64);
+    for (level, count) in &m.files_per_level {
+        ROCKSDB_FILES_AT_LEVEL
+            .with_label_values(&[inst, &level.to_string()])
+            .set(*count as i64);
+    }
+}
+
+/// Spawn a periodic task that scrapes RocksDB runtime properties from all
+/// 4 instances (block_store, state_db, utxo_store, diagnostic_ledger) every
+/// 15 seconds and updates the Prometheus gauges.
+///
+/// `utxo_store` may be in-memory in tests — `UtxoSet::metrics()` returns
+/// `None` in that case and the instance is silently skipped.
+/// `diagnostic_ledger` is `None` unless `--fork-diagnostics` is enabled.
+pub fn spawn_rocksdb_metrics_scraper(
+    block_store: std::sync::Arc<storage::BlockStore>,
+    state_db: std::sync::Arc<storage::StateDb>,
+    utxo_set: std::sync::Arc<tokio::sync::RwLock<storage::UtxoSet>>,
+    diagnostic_ledger: Option<std::sync::Arc<storage::diagnostic_ledger::DiagnosticLedger>>,
+) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(15));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            apply_rocksdb_metrics(&block_store.metrics());
+            apply_rocksdb_metrics(&state_db.metrics());
+            if let Some(m) = utxo_set.read().await.metrics() {
+                apply_rocksdb_metrics(&m);
+            }
+            if let Some(ref dl) = diagnostic_ledger {
+                apply_rocksdb_metrics(&dl.metrics());
+            }
+        }
+    });
 }
 
 /// HTTP handler for metrics endpoint

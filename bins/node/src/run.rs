@@ -568,6 +568,16 @@ pub(crate) async fn run_node(
         info!("Block archiver enabled");
     }
 
+    // Spawn RocksDB metrics scraper (Prometheus). Reads runtime properties
+    // from all 4 instances every 15s. Cheap (in-memory counters).
+    crate::metrics::spawn_rocksdb_metrics_scraper(
+        node.block_store.clone(),
+        node.state_db.clone(),
+        node.utxo_set.clone(),
+        node.diagnostic_ledger.clone(),
+    );
+    info!("RocksDB metrics scraper started (15s interval)");
+
     info!("Node running. Press Ctrl+C to stop.");
 
     // Run node in a separate task

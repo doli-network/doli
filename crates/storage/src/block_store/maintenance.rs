@@ -11,6 +11,11 @@ use super::types::{
 };
 
 impl BlockStore {
+    /// RocksDB runtime metrics snapshot for Prometheus export.
+    pub fn metrics(&self) -> crate::RocksDbMetrics {
+        crate::collect_db_metrics(&self.db, "block_store")
+    }
+
     /// Remove non-canonical (fork) blocks from the store.
     ///
     /// Iterates all headers and checks if each hash exists in the

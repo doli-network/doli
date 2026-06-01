@@ -17,6 +17,7 @@ impl StateDb {
         opts.create_missing_column_families(true);
         opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
         opts.set_max_open_files(256);
+        opts.enable_statistics();
         // WAL for crash recovery
         opts.set_wal_recovery_mode(rocksdb::DBRecoveryMode::PointInTime);
         // Cap total WAL size to prevent unbounded growth.
@@ -49,5 +50,10 @@ impl StateDb {
             db,
             utxo_count: AtomicU64::new(count),
         })
+    }
+
+    /// RocksDB runtime metrics snapshot for Prometheus export.
+    pub fn metrics(&self) -> crate::RocksDbMetrics {
+        crate::collect_db_metrics(&self.db, "state_db")
     }
 }

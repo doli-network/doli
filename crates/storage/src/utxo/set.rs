@@ -57,6 +57,15 @@ impl UtxoSet {
         }
     }
 
+    /// RocksDB runtime metrics snapshot for Prometheus export.
+    /// Returns `None` for in-memory backend (no RocksDB to scrape).
+    pub fn metrics(&self) -> Option<crate::RocksDbMetrics> {
+        match self {
+            UtxoSet::InMemory(_) => None,
+            UtxoSet::RocksDb(store) => Some(store.metrics()),
+        }
+    }
+
     /// Get a UTXO by outpoint (returns owned value)
     pub fn get(&self, outpoint: &Outpoint) -> Option<UtxoEntry> {
         match self {

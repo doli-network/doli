@@ -39,6 +39,7 @@ impl RocksDbUtxoStore {
         opts.create_if_missing(true);
         opts.create_missing_column_families(true);
         opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
+        opts.enable_statistics();
 
         let cfs = vec![CF_UTXO, CF_UTXO_BY_PUBKEY, CF_UNIQUE_ID];
         let db = rocksdb::DB::open_cf(&opts, path, cfs)?;
@@ -57,6 +58,11 @@ impl RocksDbUtxoStore {
             db,
             count: AtomicU64::new(count),
         })
+    }
+
+    /// RocksDB runtime metrics snapshot for Prometheus export.
+    pub fn metrics(&self) -> crate::RocksDbMetrics {
+        crate::collect_db_metrics(&self.db, "utxo_store")
     }
 
     /// Get a UTXO by outpoint (returns owned value -- RocksDB can't return references)

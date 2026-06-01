@@ -60,6 +60,7 @@ impl DiagnosticLedger {
         opts.set_db_write_buffer_size(DB_WRITE_BUFFER_BYTES as usize);
         opts.set_write_buffer_size(WRITE_BUFFER_PER_MEMTABLE);
         opts.set_max_write_buffer_number(2);
+        opts.enable_statistics();
 
         let mut block_opts = rocksdb::BlockBasedOptions::default();
         let cache = rocksdb::Cache::new_lru_cache(BLOCK_CACHE_BYTES as usize);
@@ -83,6 +84,11 @@ impl DiagnosticLedger {
     /// Returns 0 if unset (= unbounded per-CF default of 128 MB).
     pub fn db_write_buffer_size_bytes(&self) -> u64 {
         self.db_write_buffer_size_bytes
+    }
+
+    /// RocksDB runtime metrics snapshot for Prometheus export.
+    pub fn metrics(&self) -> crate::RocksDbMetrics {
+        crate::collect_db_metrics(&self.db, "diagnostic_ledger")
     }
 
     /// Compute the 25-byte composite key for a diagnostic event.
