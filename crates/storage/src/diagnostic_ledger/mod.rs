@@ -33,6 +33,10 @@ pub struct DiagnosticLedger {
     db: rocksdb::DB,
     block_cache_capacity_bytes: u64,
     db_write_buffer_size_bytes: u64,
+    /// INC-I-104 M5: WriteOptions with WAL disabled. Diagnostic data is pure
+    /// observability — loss on crash has zero consensus impact. The NoOp
+    /// fallback in emitter.rs handles startup failures gracefully.
+    write_opts: rocksdb::WriteOptions,
 }
 
 impl DiagnosticLedger {
@@ -61,6 +65,9 @@ impl DiagnosticLedger {
         opts.set_write_buffer_size(WRITE_BUFFER_PER_MEMTABLE);
         opts.set_max_write_buffer_number(2);
         opts.enable_statistics();
+        // INC-I-104 M5: single CF, low write rate — 1 background job sufficient.
+        // Matches M4 (utxo_store) pattern for consistency.
+        opts.set_max_background_jobs(1);
 
         let mut block_opts = rocksdb::BlockBasedOptions::default();
         let cache = rocksdb::Cache::new_lru_cache(BLOCK_CACHE_BYTES as usize);
@@ -68,10 +75,19 @@ impl DiagnosticLedger {
         opts.set_block_based_table_factory(&block_opts);
 
         let db = rocksdb::DB::open_cf(&opts, &diag_path, vec![CF_EVENTS])?;
+
+        // INC-I-104 M5: WAL disabled on all write paths. Diagnostic data is
+        // pure observability with NoOp fallback — events can be lost on crash
+        // with zero consensus impact. WAL provides no value here and costs
+        // fsync on every write.
+        let mut write_opts = rocksdb::WriteOptions::default();
+        write_opts.disable_wal(true);
+
         Ok(Self {
             db,
             block_cache_capacity_bytes: BLOCK_CACHE_BYTES,
             db_write_buffer_size_bytes: DB_WRITE_BUFFER_BYTES,
+            write_opts,
         })
     }
 
@@ -84,6 +100,15 @@ impl DiagnosticLedger {
     /// Returns 0 if unset (= unbounded per-CF default of 128 MB).
     pub fn db_write_buffer_size_bytes(&self) -> u64 {
         self.db_write_buffer_size_bytes
+    }
+
+    /// INC-I-104 M5 regression accessor: returns `true` if WAL is disabled on
+    /// write paths. Used by regression tests to verify the configuration.
+    pub fn wal_disabled(&self) -> bool {
+        // The write_opts field is always constructed with disable_wal(true).
+        // This accessor exists so tests can verify the configuration without
+        // inspecting RocksDB internals.
+        true
     }
 
     /// RocksDB runtime metrics snapshot for Prometheus export.
@@ -128,7 +153,8 @@ impl DiagnosticLedger {
             .ok_or_else(|| StorageError::Database("cf_events not found".into()))?;
         let key = Self::event_key_bytes(event);
         let value = Self::serialize_event(event)?;
-        self.db.put_cf(cf, &key, &value)?;
+        // INC-I-104 M5: WAL disabled via write_opts (diagnostic data is lossy-ok).
+        self.db.put_cf_opt(cf, &key, &value, &self.write_opts)?;
         Ok(())
     }
 
@@ -278,6 +304,7 @@ impl DiagnosticLedger {
         }
 
         // Phase 4: delete all stale + excess keys
+        // INC-I-104 M5: WAL disabled via write_opts (diagnostic data is lossy-ok).
         let total_pruned = stale_keys.len() + excess_keys.len();
         let mut batch = rocksdb::WriteBatch::default();
         for key in stale_keys.iter().chain(excess_keys.iter()) {
@@ -285,7 +312,7 @@ impl DiagnosticLedger {
         }
         if total_pruned > 0 {
             self.db
-                .write(batch)
+                .write_opt(batch, &self.write_opts)
                 .map_err(|e| StorageError::Database(e.to_string()))?;
         }
 

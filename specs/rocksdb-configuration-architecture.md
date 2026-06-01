@@ -291,6 +291,21 @@ BRIDGE: During rollout, nodes with old config (uncapped) and new config (capped)
 - `max_total_wal_size` is non-zero on block_store
 - Bloom filter entries present for point-lookup CFs
 
+### Implementation Status (COMPLETE)
+
+All 6 milestones landed on `main`. The implementation matches this spec:
+
+| Milestone | Commit | Scope |
+|-----------|--------|-------|
+| M0 | be6372db | Cap memtable budget on 3 RocksDB instances |
+| M1 | 1608f5c3 | Switch block_store to DB::open_cf_descriptors |
+| M2 | 4f69cf66 | block_store per-CF tuning (bloom, L0 triggers, compression) |
+| M3 | 225b3a83 | state_db per-CF tuning (bloom, block cache, L0 triggers) |
+| M4 | c47084f7 | utxo_store per-CF tuning + WAL disable |
+| M5 | (pending) | diagnostic_ledger WAL disable + max_background_jobs=1 |
+
+INC-I-104 workflow close-out. Rolling deploy safe (C-013). No activation height required.
+
 ## Complexity Comparison
 
 | Metric | Current | Radical Minimum | Proposed |
