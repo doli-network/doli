@@ -25,6 +25,7 @@ Master index for all DOLI protocol specifications.
 | [single-proposer-architecture.md](./single-proposer-architecture.md) | Single-Proposer-Per-Slot migration architecture - protocol v2 gating, attestation fork choice, emergency fallback, 3-phase implementation plan |
 | [gui-architecture.md](./gui-architecture.md) | GUI Desktop Application architecture - Tauri 2.x app structure, shared wallet crate, VDF feature flag, CI/CD pipeline, security model |
 | [fork-observability-architecture.md](./fork-observability-architecture.md) | Fork-diagnostic observability architecture (workflow #346 Phase 1, #347 Phase 2a, #349 Phase 1.5) — trait-injected emitter, async writer task, separate RocksDB ledger, getForkDiagnostic RPC, deterministic classifier (8 rules incl. `ChainBreakLoop` for INC-I-083 / n6 patterns), 4-milestone plan. |
+| [rocksdb-configuration-architecture.md](./rocksdb-configuration-architecture.md) | RocksDB configuration architecture (INC-I-104) — first-principles per-instance, per-CF configuration for 4 RocksDB instances (block_store, state_db, utxo_store, diagnostic_ledger). 19 column families with workload-derived memtable budgets, WAL caps, bloom filters, L0 trigger protection. 93% reduction in theoretical memtable ceiling. |
 
 ## Future Interface Specifications
 
@@ -63,23 +64,24 @@ Master index for all DOLI protocol specifications.
 
 ```
 specs/
-├── SPECS.md                          # <- You are here (specifications index)
-├── protocol.md                       # Full protocol specification
-├── architecture.md                   # Comprehensive architecture
-├── security_model.md                 # Complete security model
-├── single-proposer-architecture.md   # Single-proposer migration architecture
-├── single-proposer-requirements.md   # Single-proposer migration requirements
-├── gui-architecture.md               # GUI Desktop Application architecture
-├── gui-desktop-requirements.md       # GUI Desktop Application requirements
-├── fork-observability-requirements.md # Fork-diagnostic observability requirements (#346)
-├── fork-observability-architecture.md # Fork-diagnostic observability architecture (#346)
-├── l2-settlement.md                  # L2 settlement interface (ZKSettle / ZKRollup)
+├── SPECS.md                              # <- You are here (specifications index)
+├── protocol.md                           # Full protocol specification
+├── architecture.md                       # Comprehensive architecture
+├── security_model.md                     # Complete security model
+├── rocksdb-configuration-architecture.md # RocksDB configuration (INC-I-104)
+├── single-proposer-architecture.md       # Single-proposer migration architecture
+├── single-proposer-requirements.md       # Single-proposer migration requirements
+├── gui-architecture.md                   # GUI Desktop Application architecture
+├── gui-desktop-requirements.md           # GUI Desktop Application requirements
+├── fork-observability-requirements.md    # Fork-diagnostic observability requirements (#346)
+├── fork-observability-architecture.md    # Fork-diagnostic observability architecture (#346)
+├── l2-settlement.md                      # L2 settlement interface (ZKSettle / ZKRollup)
 ├── improvements/
-│   ├── apply-block-modularization.md # Apply-block modularization
-│   ├── cli-modularization.md         # CLI modularization
-│   ├── consensus-modularization.md   # Consensus modularization
-│   ├── modularization-improvement.md # General modularization
-│   └── scaling-100k-producers.md     # Scaling to 100K producers
+│   ├── apply-block-modularization.md     # Apply-block modularization
+│   ├── cli-modularization.md             # CLI modularization
+│   ├── consensus-modularization.md       # Consensus modularization
+│   ├── modularization-improvement.md     # General modularization
+│   └── scaling-100k-producers.md         # Scaling to 100K producers
 └── bugfixes/
     ├── production-gate-deadlock-analysis.md  # Production gate deadlock
     └── reward-validation-analysis.md         # Reward validation gaps
