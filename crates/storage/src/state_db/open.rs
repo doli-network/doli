@@ -26,6 +26,12 @@ impl StateDb {
         // when total WAL exceeds the limit, allowing old WAL files to be deleted.
         opts.set_max_total_wal_size(64 * 1024 * 1024); // 64 MB
 
+        // INC-I-104: cap total memtable budget across all 6 CFs.
+        // Must be >= 32 MB to accommodate snap-sync atomic_replace WriteBatch
+        // (~15-20 MB). See Failure Analyst C-002 in
+        // docs/.workflow/architecture-reasoning.md and specs/rocksdb-configuration-architecture.md §state_db.
+        opts.set_db_write_buffer_size(64 * 1024 * 1024); // 64 MB
+
         let cfs = vec![
             CF_UTXO,
             CF_UTXO_BY_PUBKEY,

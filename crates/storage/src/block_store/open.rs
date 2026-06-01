@@ -21,6 +21,13 @@ impl BlockStore {
         opts.set_max_open_files(256);
         opts.enable_statistics();
 
+        // INC-I-104: cap total memtable budget across all CFs (~7 active + 1 dead + 1 cold).
+        // Without this, db_write_buffer_size=0 means RocksDB applies no DB-level cap,
+        // allowing each CF to grow its own write_buffer_size × max_write_buffer_number
+        // independently. See specs/rocksdb-configuration-architecture.md §block_store.
+        opts.set_db_write_buffer_size(48 * 1024 * 1024); // 48 MB
+        opts.set_max_total_wal_size(48 * 1024 * 1024); // 48 MB — prevents WAL pinning by dead `presence` CF
+
         // Bloom filter: speeds up negative lookups (e.g., "does this hash exist?")
         let mut block_opts = rocksdb::BlockBasedOptions::default();
         block_opts.set_bloom_filter(10.0, false);

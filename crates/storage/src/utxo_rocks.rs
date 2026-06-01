@@ -41,6 +41,12 @@ impl RocksDbUtxoStore {
         opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
         opts.enable_statistics();
 
+        // INC-I-104: cap total memtable budget across all 3 CFs.
+        // utxo_store self-heals from state_db, so this is rebuildable storage; cap
+        // can be smaller than state_db. See specs/rocksdb-configuration-architecture.md §utxo_store.
+        opts.set_db_write_buffer_size(32 * 1024 * 1024); // 32 MB
+        opts.set_max_total_wal_size(32 * 1024 * 1024); // 32 MB
+
         let cfs = vec![CF_UTXO, CF_UTXO_BY_PUBKEY, CF_UNIQUE_ID];
         let db = rocksdb::DB::open_cf(&opts, path, cfs)?;
 
