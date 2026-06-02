@@ -147,7 +147,11 @@ impl BlockStore {
         let db = rocksdb::DB::open_cf_descriptors(&opts, path, cf_descriptors)?;
 
         // One-time migrations
-        let store = Self { db };
+        let store = Self {
+            db,
+            block_cache: cache,
+            block_cache_capacity_bytes: 32 * 1024 * 1024,
+        };
         store.migrate_hash_to_height_index();
         store.cleanup_presence_cf();
         store.migrate_tx_index();

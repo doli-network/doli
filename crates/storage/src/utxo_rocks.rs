@@ -81,6 +81,12 @@ pub struct RocksDbUtxoStore {
     /// WriteOptions with WAL disabled — utxo_store self-heals from state_db
     /// on startup (INC-I-027), so WAL provides zero correctness benefit.
     write_opts: rocksdb::WriteOptions,
+    /// Shared LRU block cache referenced by every CF. Held on the struct so
+    /// `metrics()` can query its real usage via `Cache::get_usage()` instead
+    /// of summing per-CF property reads (INC-I-106 root-cause fix).
+    block_cache: rocksdb::Cache,
+    /// Configured capacity of `block_cache` in bytes.
+    block_cache_capacity_bytes: u64,
 }
 
 impl RocksDbUtxoStore {
@@ -167,6 +173,8 @@ impl RocksDbUtxoStore {
             db,
             count: AtomicU64::new(count),
             write_opts,
+            block_cache: cache,
+            block_cache_capacity_bytes: 16 * 1024 * 1024,
         })
     }
 
@@ -180,6 +188,8 @@ impl RocksDbUtxoStore {
             "utxo_store",
             &[CF_UTXO, CF_UTXO_BY_PUBKEY, CF_UNIQUE_ID],
             DB_WRITE_BUFFER_SIZE_BYTES,
+            &self.block_cache,
+            self.block_cache_capacity_bytes,
         )
     }
 

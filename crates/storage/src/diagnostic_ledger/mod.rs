@@ -37,6 +37,10 @@ pub struct DiagnosticLedger {
     /// observability — loss on crash has zero consensus impact. The NoOp
     /// fallback in emitter.rs handles startup failures gracefully.
     write_opts: rocksdb::WriteOptions,
+    /// INC-I-106: held on the struct so `metrics()` can query the real cache
+    /// usage via `Cache::get_usage()` directly, eliminating the per-CF property
+    /// path that over-counted shared caches.
+    block_cache: rocksdb::Cache,
 }
 
 impl DiagnosticLedger {
@@ -99,6 +103,7 @@ impl DiagnosticLedger {
             block_cache_capacity_bytes: BLOCK_CACHE_BYTES,
             db_write_buffer_size_bytes: DB_WRITE_BUFFER_BYTES,
             write_opts,
+            block_cache: cache,
         })
     }
 
@@ -132,6 +137,8 @@ impl DiagnosticLedger {
             "diagnostic_ledger",
             &[CF_EVENTS],
             self.db_write_buffer_size_bytes,
+            &self.block_cache,
+            self.block_cache_capacity_bytes,
         )
     }
 

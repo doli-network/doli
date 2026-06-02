@@ -32,6 +32,8 @@ impl BlockStore {
                 CF_META,
             ],
             DB_WRITE_BUFFER_SIZE_BYTES,
+            &self.block_cache,
+            self.block_cache_capacity_bytes,
         )
     }
 

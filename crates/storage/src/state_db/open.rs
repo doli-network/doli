@@ -152,6 +152,8 @@ impl StateDb {
         Ok(Self {
             db,
             utxo_count: AtomicU64::new(count),
+            block_cache: cache,
+            block_cache_capacity_bytes: 32 * 1024 * 1024,
         })
     }
 
@@ -172,6 +174,8 @@ impl StateDb {
                 CF_UNDO,
             ],
             DB_WRITE_BUFFER_SIZE_BYTES,
+            &self.block_cache,
+            self.block_cache_capacity_bytes,
         )
     }
 }

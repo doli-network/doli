@@ -100,4 +100,11 @@ pub(super) const CF_META: &str = "meta";
 /// Block store
 pub struct BlockStore {
     pub(super) db: rocksdb::DB,
+    /// Shared LRU block cache referenced by every CF. Held on the struct so
+    /// `metrics()` can query its real usage via `Cache::get_usage()` instead
+    /// of summing per-CF property reads (INC-I-106 root-cause fix).
+    pub(super) block_cache: rocksdb::Cache,
+    /// Configured capacity of `block_cache` in bytes. rust-rocksdb 0.22 does
+    /// not expose `Cache::get_capacity`, so we remember the constructor input.
+    pub(super) block_cache_capacity_bytes: u64,
 }

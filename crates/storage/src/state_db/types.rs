@@ -65,6 +65,12 @@ pub(super) const META_CHAIN_COMMITMENT_TIP: &[u8] = b"chain_commitment_tip";
 pub struct StateDb {
     pub(super) db: rocksdb::DB,
     pub(super) utxo_count: AtomicU64,
+    /// Shared LRU block cache referenced by every CF. Held on the struct so
+    /// `metrics()` can query its real usage via `Cache::get_usage()` instead
+    /// of summing per-CF property reads (INC-I-106 root-cause fix).
+    pub(super) block_cache: rocksdb::Cache,
+    /// Configured capacity of `block_cache` in bytes.
+    pub(super) block_cache_capacity_bytes: u64,
 }
 
 /// Atomic write batch for a single block application.

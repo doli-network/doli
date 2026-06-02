@@ -23,11 +23,14 @@
 //!   don't depend on the CF — reading them from the default CF still returns
 //!   the right value).
 //! - **Block cache** (`block-cache-usage`, `block-cache-pinned-usage`,
-//!   `block-cache-capacity`): summed across ALL named CFs. When the cache is
-//!   shared (INC-I-105: all 4 DB instances now use explicit `Cache::new_lru_cache`
-//!   threaded into every CF), every CF reports the same value, so sum == first.
-//!   When per-CF caches exist, the sum correctly aggregates all caches.
-//!   Default block cache in RocksDB 8.2+ is 32 MB (not 8 MB).
+//!   `block-cache-capacity`): queried directly from the `rocksdb::Cache` handle
+//!   via `Cache::get_usage()` / `get_pinned_usage()`. INC-I-106 root-cause fix:
+//!   the per-CF property path (`rocksdb.block-cache-usage` via `property_int_value_cf`)
+//!   returns the *cache's* state, not the CF's contribution — so summing across
+//!   N CFs with a shared cache (INV-STORAGE-001) inflates the reading by N (296 MB
+//!   reported vs 32 MB actual for block_store on mainnet). The fix eliminates the
+//!   CF-property path for cache metrics entirely; the caller passes the `Cache`
+//!   handle and its configured capacity directly.
 
 use std::collections::BTreeMap;
 
@@ -49,17 +52,15 @@ pub struct RocksDbMetrics {
     /// (block_store=48 MB, state_db=64 MB, utxo_store=32 MB, diagnostic_ledger=8 MB).
     /// Use `memtable_bytes / memtable_cap_bytes` for "memtable approach-to-cap" alerts.
     pub memtable_cap_bytes: u64,
-    /// `block-cache-usage` — bytes currently in the block cache, summed across all
-    /// named CFs. With a shared cache (INV-STORAGE-001), all CFs report the same
-    /// value so the sum equals the first; with per-CF caches, the sum is the true
-    /// aggregate.
+    /// Block cache resident bytes, queried directly from `rocksdb::Cache::get_usage`.
+    /// INC-I-106: this is the cache's actual usage; per-CF property queries
+    /// would over-report by N for shared caches.
     pub block_cache_bytes: u64,
-    /// `block-cache-pinned-usage` — pinned bytes (cannot be evicted), summed across
-    /// all named CFs.
+    /// Block cache pinned bytes (cannot be evicted), queried from
+    /// `rocksdb::Cache::get_pinned_usage`.
     pub block_cache_pinned_bytes: u64,
-    /// `block-cache-capacity` — configured LRU cache capacity, read from the first
-    /// named CF. With a shared cache this is the configured
-    /// `Cache::new_lru_cache(N)` size. Added by INC-I-105.
+    /// Configured `Cache::new_lru_cache(N)` size in bytes (passed by the caller
+    /// because rust-rocksdb 0.22 does not expose `Cache::get_capacity`).
     pub block_cache_capacity: u64,
     /// `estimate-table-readers-mem` — memory used by SST index + bloom filter blocks.
     pub table_readers_bytes: u64,
@@ -113,6 +114,8 @@ pub fn collect_db_metrics(
     instance: &'static str,
     cf_names: &[&str],
     memtable_cap_bytes: u64,
+    block_cache: &rocksdb::Cache,
+    block_cache_capacity_bytes: u64,
 ) -> RocksDbMetrics {
     // DB-scoped property read (default CF).
     let prop_db = |k: &str| -> u64 { db.property_int_value(k).ok().flatten().unwrap_or(0) };
@@ -131,16 +134,6 @@ pub fn collect_db_metrics(
 
     // Sum a CF-scoped property across all named CFs.
     let sum_cf = |key: &str| -> u64 { cf_handles.iter().map(|h| prop_cf(h, key)).sum() };
-
-    // Block-cache capacity: read from the first named CF. With a shared cache
-    // (INV-STORAGE-001) this returns the configured LRU size. Falls back to
-    // the default CF read when no named CFs are available.
-    let first_cf_prop = |key: &str| -> u64 {
-        cf_handles
-            .first()
-            .map(|h| prop_cf(h, key))
-            .unwrap_or_else(|| prop_db(key))
-    };
 
     let mut files_per_level = BTreeMap::new();
     for level in 0u8..=6 {
@@ -162,13 +155,14 @@ pub fn collect_db_metrics(
         compaction_pending: sum_cf("rocksdb.compaction-pending"),
         mem_table_flush_pending: sum_cf("rocksdb.mem-table-flush-pending"),
         num_immutable_memtable: sum_cf("rocksdb.num-immutable-mem-table"),
-        // INC-I-105: block cache summed across ALL named CFs.
-        // With a shared cache (INV-STORAGE-001), every CF reports the same
-        // value, so sum == first. With per-CF caches the sum is correct.
-        block_cache_bytes: sum_cf("rocksdb.block-cache-usage"),
-        block_cache_pinned_bytes: sum_cf("rocksdb.block-cache-pinned-usage"),
-        // Capacity: read from first CF (the shared cache's configured size).
-        block_cache_capacity: first_cf_prop("rocksdb.block-cache-capacity"),
+        // INC-I-106 root-cause fix: query the Cache directly. With INV-STORAGE-001
+        // every DB instance owns ONE shared Cache referenced by all CFs, so
+        // `block-cache-usage` per CF returns the same shared value. Summing
+        // across N CFs would inflate by N (the pre-INC-I-106 regression that
+        // reported 296 MB for a 32 MB block_store cache on mainnet).
+        block_cache_bytes: block_cache.get_usage() as u64,
+        block_cache_pinned_bytes: block_cache.get_pinned_usage() as u64,
+        block_cache_capacity: block_cache_capacity_bytes,
         // DB-scoped
         running_flushes: prop_db("rocksdb.num-running-flushes"),
         running_compactions: prop_db("rocksdb.num-running-compactions"),
@@ -212,9 +206,21 @@ mod tests {
         }
 
         let cap = 16 * 1024 * 1024;
-        let m = collect_db_metrics(&db, "test_instance", &cfs, cap);
+        let cache = rocksdb::Cache::new_lru_cache(8 * 1024 * 1024);
+        let m = collect_db_metrics(&db, "test_instance", &cfs, cap, &cache, 8 * 1024 * 1024);
         assert_eq!(m.instance, "test_instance");
         assert_eq!(m.memtable_cap_bytes, cap, "cap must be reported verbatim");
+        assert_eq!(
+            m.block_cache_capacity,
+            8 * 1024 * 1024,
+            "block_cache_capacity must equal the caller-supplied value"
+        );
+        assert!(
+            m.block_cache_bytes <= m.block_cache_capacity,
+            "block_cache_bytes ({}) must not exceed capacity ({})",
+            m.block_cache_bytes,
+            m.block_cache_capacity
+        );
         assert_eq!(
             m.is_write_stopped, 0,
             "writes should not be stopped on a fresh DB"
@@ -246,12 +252,15 @@ mod tests {
         opts.create_if_missing(true);
         let db = rocksdb::DB::open(&opts, tmp.path()).unwrap();
 
-        let m = collect_db_metrics(&db, "empty", &[], 0);
+        let cache = rocksdb::Cache::new_lru_cache(4 * 1024 * 1024);
+        let m = collect_db_metrics(&db, "empty", &[], 0, &cache, 4 * 1024 * 1024);
         assert_eq!(m.instance, "empty");
         assert_eq!(m.memtable_cap_bytes, 0);
         assert_eq!(m.is_write_stopped, 0);
         assert_eq!(m.memtable_bytes, 0);
         assert_eq!(m.sst_total_bytes, 0);
+        assert_eq!(m.block_cache_capacity, 4 * 1024 * 1024);
+        assert!(m.block_cache_bytes <= m.block_cache_capacity);
     }
 
     /// Verifies that all 4 production instance labels can be applied without
