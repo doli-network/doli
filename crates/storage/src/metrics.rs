@@ -39,8 +39,15 @@ pub struct RocksDbMetrics {
     // --- Memory ---
     /// `cur-size-all-mem-tables` — current memtable bytes summed across all named CFs.
     pub memtable_bytes: u64,
-    /// `size-all-mem-tables` — peak memtable bytes (sum of `write_buffer_size * max_write_buffer_number` across CFs).
+    /// `size-all-mem-tables` — current memtable bytes summed across named CFs,
+    /// *including pinned immutable memtables*. Slightly larger than `memtable_bytes`
+    /// when pinned memtables exist. This is current usage, NOT the configured cap.
     pub memtable_max_bytes: u64,
+    /// Configured `db_write_buffer_size` — the hard cap that bounds total memtable
+    /// allocation across all CFs in this instance. Set by INC-I-104 M0
+    /// (block_store=48 MB, state_db=64 MB, utxo_store=32 MB, diagnostic_ledger=8 MB).
+    /// Use `memtable_bytes / memtable_cap_bytes` for "memtable approach-to-cap" alerts.
+    pub memtable_cap_bytes: u64,
     /// `block-cache-usage` — bytes in the block cache. Read from the first CF
     /// (accurate for shared caches; under-reports per-CF caches — see module docs).
     pub block_cache_bytes: u64,
@@ -97,6 +104,7 @@ pub fn collect_db_metrics(
     db: &rocksdb::DB,
     instance: &'static str,
     cf_names: &[&str],
+    memtable_cap_bytes: u64,
 ) -> RocksDbMetrics {
     // DB-scoped property read (default CF).
     let prop_db = |k: &str| -> u64 { db.property_int_value(k).ok().flatten().unwrap_or(0) };
@@ -133,6 +141,7 @@ pub fn collect_db_metrics(
 
     RocksDbMetrics {
         instance,
+        memtable_cap_bytes,
         // CF-scoped (sum)
         memtable_bytes: sum_cf("rocksdb.cur-size-all-mem-tables"),
         memtable_max_bytes: sum_cf("rocksdb.size-all-mem-tables"),
@@ -189,8 +198,10 @@ mod tests {
             db.put_cf(&cf_beta, k, b"value-b").unwrap();
         }
 
-        let m = collect_db_metrics(&db, "test_instance", &cfs);
+        let cap = 16 * 1024 * 1024;
+        let m = collect_db_metrics(&db, "test_instance", &cfs, cap);
         assert_eq!(m.instance, "test_instance");
+        assert_eq!(m.memtable_cap_bytes, cap, "cap must be reported verbatim");
         assert_eq!(
             m.is_write_stopped, 0,
             "writes should not be stopped on a fresh DB"
@@ -222,8 +233,9 @@ mod tests {
         opts.create_if_missing(true);
         let db = rocksdb::DB::open(&opts, tmp.path()).unwrap();
 
-        let m = collect_db_metrics(&db, "empty", &[]);
+        let m = collect_db_metrics(&db, "empty", &[], 0);
         assert_eq!(m.instance, "empty");
+        assert_eq!(m.memtable_cap_bytes, 0);
         assert_eq!(m.is_write_stopped, 0);
         assert_eq!(m.memtable_bytes, 0);
         assert_eq!(m.sst_total_bytes, 0);

@@ -7,7 +7,7 @@ use crate::StorageError;
 
 use super::types::{
     BlockStore, CF_ADDR_TX_INDEX, CF_BODIES, CF_HASH_TO_HEIGHT, CF_HEADERS, CF_HEIGHT_INDEX,
-    CF_META, CF_PRESENCE, CF_SLOT_INDEX, CF_TX_INDEX,
+    CF_META, CF_PRESENCE, CF_SLOT_INDEX, CF_TX_INDEX, DB_WRITE_BUFFER_SIZE_BYTES,
 };
 
 impl BlockStore {
@@ -31,6 +31,7 @@ impl BlockStore {
                 CF_ADDR_TX_INDEX,
                 CF_META,
             ],
+            DB_WRITE_BUFFER_SIZE_BYTES,
         )
     }
 

@@ -7,6 +7,7 @@ use crate::StorageError;
 
 use super::types::{
     StateDb, CF_EXIT_HISTORY, CF_META, CF_PRODUCERS, CF_UNDO, CF_UTXO, CF_UTXO_BY_PUBKEY,
+    DB_WRITE_BUFFER_SIZE_BYTES,
 };
 
 /// Build per-CF Options for state_db column families.
@@ -67,13 +68,15 @@ impl StateDb {
         // With 7 CFs, sparse ones (cf_producers, cf_exit_history) rarely flush,
         // pinning ALL WAL files. This forces RocksDB to flush the oldest CF
         // when total WAL exceeds the limit, allowing old WAL files to be deleted.
-        opts.set_max_total_wal_size(64 * 1024 * 1024); // 64 MB
+        opts.set_max_total_wal_size(DB_WRITE_BUFFER_SIZE_BYTES);
 
         // INC-I-104: cap total memtable budget across all 6 CFs.
         // Must be >= 32 MB to accommodate snap-sync atomic_replace WriteBatch
         // (~15-20 MB). See Failure Analyst C-002 in
         // docs/.workflow/architecture-reasoning.md and specs/rocksdb-configuration-architecture.md §state_db.
-        opts.set_db_write_buffer_size(64 * 1024 * 1024); // 64 MB
+        // DB_WRITE_BUFFER_SIZE_BYTES is shared with `metrics()` so the cap and
+        // the reported gauge can never drift.
+        opts.set_db_write_buffer_size(DB_WRITE_BUFFER_SIZE_BYTES as usize);
 
         // INC-I-104 M3: explicit background job limits.
         opts.set_max_background_jobs(2);
@@ -168,6 +171,7 @@ impl StateDb {
                 CF_META,
                 CF_UNDO,
             ],
+            DB_WRITE_BUFFER_SIZE_BYTES,
         )
     }
 }

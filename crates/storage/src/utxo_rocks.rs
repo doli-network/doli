@@ -14,6 +14,11 @@ use tracing::info;
 use crate::utxo::{Outpoint, UtxoEntry};
 use crate::StorageError;
 
+/// INC-I-104 M0: hard cap on total memtable budget. utxo_store is rebuildable
+/// (self-heals from state_db), so this can be smaller than state_db's cap.
+/// Shared between `open()` and `metrics()`.
+const DB_WRITE_BUFFER_SIZE_BYTES: u64 = 32 * 1024 * 1024;
+
 /// Column family for the primary UTXO index: outpoint -> UtxoEntry
 const CF_UTXO: &str = "utxo";
 
@@ -86,8 +91,10 @@ impl RocksDbUtxoStore {
         // INC-I-104 M0: cap total memtable budget across all 3 CFs.
         // utxo_store self-heals from state_db, so this is rebuildable storage; cap
         // can be smaller than state_db. See specs/rocksdb-configuration-architecture.md §utxo_store.
-        opts.set_db_write_buffer_size(32 * 1024 * 1024); // 32 MB
-        opts.set_max_total_wal_size(32 * 1024 * 1024); // 32 MB
+        // DB_WRITE_BUFFER_SIZE_BYTES is shared with `metrics()` so the cap and
+        // the reported gauge can never drift.
+        opts.set_db_write_buffer_size(DB_WRITE_BUFFER_SIZE_BYTES as usize);
+        opts.set_max_total_wal_size(DB_WRITE_BUFFER_SIZE_BYTES);
 
         // INC-I-104 M4: explicit background job limits.
         opts.set_max_background_jobs(1);
@@ -168,6 +175,7 @@ impl RocksDbUtxoStore {
             &self.db,
             "utxo_store",
             &[CF_UTXO, CF_UTXO_BY_PUBKEY, CF_UNIQUE_ID],
+            DB_WRITE_BUFFER_SIZE_BYTES,
         )
     }
 

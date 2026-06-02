@@ -81,6 +81,11 @@ pub(super) fn deserialize_body(
     ))
 }
 
+/// INC-I-104 M0: hard cap on total memtable budget across all CFs.
+/// Used by both `open()` (to set `db_write_buffer_size`) and `metrics()` (to
+/// report the cap so dashboards can compute approach-to-cap).
+pub(super) const DB_WRITE_BUFFER_SIZE_BYTES: u64 = 48 * 1024 * 1024;
+
 /// Column family names
 pub(super) const CF_HEADERS: &str = "headers";
 pub(super) const CF_BODIES: &str = "bodies";

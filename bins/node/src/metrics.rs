@@ -241,13 +241,26 @@ lazy_static! {
         &["instance"]
     ).unwrap();
 
-    /// Peak memtable bytes per instance — sum of (write_buffer_size *
-    /// max_write_buffer_number) across all named CFs. This is the *bound* the
-    /// INC-I-104 fix put in place. Should match the spec: 48/64/32/8 MB.
+    /// Current memtable bytes summed across named CFs, *including pinned
+    /// immutable memtables*. Slightly larger than `memtable_bytes` when
+    /// pinned memtables exist. This is CURRENT usage, NOT the configured cap.
+    /// For the cap, see `doli_rocksdb_memtable_cap_bytes`.
     pub static ref ROCKSDB_MEMTABLE_MAX_BYTES: IntGaugeVec = IntGaugeVec::new(
         Opts::new("doli_rocksdb_memtable_max_bytes",
-            "Peak memtable bytes summed across named CFs (size-all-mem-tables). \
-             Per INC-I-104 spec: block_store=50331648, state_db=67108864, utxo_store=33554432, diagnostic_ledger=8388608."),
+            "Current memtable bytes incl. pinned immutables (size-all-mem-tables). \
+             CURRENT usage, not the cap — use _memtable_cap_bytes for cap comparisons."),
+        &["instance"]
+    ).unwrap();
+
+    /// Configured `db_write_buffer_size` — the hard cap. INC-I-104 M0 values:
+    /// block_store=48 MB, state_db=64 MB, utxo_store=32 MB, diagnostic_ledger=8 MB.
+    /// Per Failure Analyst C-002, C-007, C-011 the spec requires these caps.
+    /// Use for approach-to-cap alerts: `memtable_bytes / memtable_cap_bytes > 0.9`.
+    pub static ref ROCKSDB_MEMTABLE_CAP_BYTES: IntGaugeVec = IntGaugeVec::new(
+        Opts::new("doli_rocksdb_memtable_cap_bytes",
+            "Configured db_write_buffer_size — the hard cap on total memtable allocation. \
+             Per INC-I-104 M0 spec: block_store=50331648, state_db=67108864, utxo_store=33554432, diagnostic_ledger=8388608. \
+             Alert: doli_rocksdb_memtable_bytes / doli_rocksdb_memtable_cap_bytes > 0.9 sustained 5m."),
         &["instance"]
     ).unwrap();
 
@@ -430,6 +443,7 @@ pub fn register_metrics() {
     // RocksDB metrics
     let _ = REGISTRY.register(Box::new(ROCKSDB_MEMTABLE_BYTES.clone()));
     let _ = REGISTRY.register(Box::new(ROCKSDB_MEMTABLE_MAX_BYTES.clone()));
+    let _ = REGISTRY.register(Box::new(ROCKSDB_MEMTABLE_CAP_BYTES.clone()));
     let _ = REGISTRY.register(Box::new(ROCKSDB_BLOCK_CACHE_BYTES.clone()));
     let _ = REGISTRY.register(Box::new(ROCKSDB_BLOCK_CACHE_PINNED_BYTES.clone()));
     let _ = REGISTRY.register(Box::new(ROCKSDB_TABLE_READERS_BYTES.clone()));
@@ -481,6 +495,9 @@ pub fn apply_rocksdb_metrics(state: &mut RocksDbScrapeState, m: &storage::RocksD
     ROCKSDB_MEMTABLE_MAX_BYTES
         .with_label_values(&[inst])
         .set(m.memtable_max_bytes as i64);
+    ROCKSDB_MEMTABLE_CAP_BYTES
+        .with_label_values(&[inst])
+        .set(m.memtable_cap_bytes as i64);
     ROCKSDB_BLOCK_CACHE_BYTES
         .with_label_values(&[inst])
         .set(m.block_cache_bytes as i64);

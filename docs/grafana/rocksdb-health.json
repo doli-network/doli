@@ -153,7 +153,7 @@
       "id": 10,
       "type": "timeseries",
       "title": "Memtable usage vs cap per instance",
-      "description": "INC-I-104 fix in action. memtable_bytes should stay below memtable_max_bytes (the cap).",
+      "description": "INC-I-104 fix in action. memtable_bytes should stay below memtable_cap_bytes (the configured db_write_buffer_size).",
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "gridPos": { "h": 7, "w": 12, "x": 0, "y": 12 },
       "targets": [
@@ -163,7 +163,7 @@
           "refId": "A"
         },
         {
-          "expr": "doli_rocksdb_memtable_max_bytes{instance=~\"$node\"}",
+          "expr": "doli_rocksdb_memtable_cap_bytes{instance=~\"$node\"}",
           "legendFormat": "{{instance}} — cap",
           "refId": "B"
         }

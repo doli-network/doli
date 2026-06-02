@@ -485,7 +485,9 @@ sum by (instance) (doli_rocksdb_files_at_level{level="0"}) > 30
 increase(doli_rocksdb_background_errors_total[5m]) > 0
 
 # MEDIUM — memtable near cap. Healthy under burst; concerning if sustained.
-doli_rocksdb_memtable_bytes / doli_rocksdb_memtable_max_bytes > 0.9
+# _memtable_cap_bytes is the configured db_write_buffer_size (constant per instance);
+# _memtable_max_bytes is current usage incl. pinned (varies). Use the cap for this alert.
+doli_rocksdb_memtable_bytes / doli_rocksdb_memtable_cap_bytes > 0.9
 
 # LOW — flush throughput bottleneck. Sustained > 0 means write rate exceeds flush.
 doli_rocksdb_memtable_flush_pending > 0

@@ -8,7 +8,7 @@ use crate::StorageError;
 
 use super::types::{
     deserialize_body, BlockStore, CF_ADDR_TX_INDEX, CF_BODIES, CF_HASH_TO_HEIGHT, CF_HEADERS,
-    CF_HEIGHT_INDEX, CF_META, CF_PRESENCE, CF_SLOT_INDEX, CF_TX_INDEX,
+    CF_HEIGHT_INDEX, CF_META, CF_PRESENCE, CF_SLOT_INDEX, CF_TX_INDEX, DB_WRITE_BUFFER_SIZE_BYTES,
 };
 
 /// Build per-CF Options for block_store column families.
@@ -60,8 +60,10 @@ impl BlockStore {
         opts.enable_statistics();
 
         // INC-I-104 M0: cap total memtable budget across all CFs.
-        opts.set_db_write_buffer_size(48 * 1024 * 1024); // 48 MB
-        opts.set_max_total_wal_size(48 * 1024 * 1024); // 48 MB
+        // DB_WRITE_BUFFER_SIZE_BYTES is shared with `metrics()` so the cap and
+        // the reported gauge can never drift.
+        opts.set_db_write_buffer_size(DB_WRITE_BUFFER_SIZE_BYTES as usize);
+        opts.set_max_total_wal_size(DB_WRITE_BUFFER_SIZE_BYTES);
 
         // INC-I-104 M2: explicit background job limits.
         opts.set_max_background_jobs(2);
