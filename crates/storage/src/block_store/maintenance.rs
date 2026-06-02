@@ -12,8 +12,26 @@ use super::types::{
 
 impl BlockStore {
     /// RocksDB runtime metrics snapshot for Prometheus export.
+    ///
+    /// Passes the 9 named CFs so the metrics collector aggregates across them
+    /// rather than reading the empty default CF (which would return ~0 for
+    /// CF-scoped properties like memtable_bytes, sst_total_bytes, etc.).
     pub fn metrics(&self) -> crate::RocksDbMetrics {
-        crate::collect_db_metrics(&self.db, "block_store")
+        crate::collect_db_metrics(
+            &self.db,
+            "block_store",
+            &[
+                CF_HEADERS,
+                CF_BODIES,
+                CF_HEIGHT_INDEX,
+                CF_SLOT_INDEX,
+                CF_PRESENCE,
+                CF_HASH_TO_HEIGHT,
+                CF_TX_INDEX,
+                CF_ADDR_TX_INDEX,
+                CF_META,
+            ],
+        )
     }
 
     /// Remove non-canonical (fork) blocks from the store.

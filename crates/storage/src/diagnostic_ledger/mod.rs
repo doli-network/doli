@@ -112,8 +112,10 @@ impl DiagnosticLedger {
     }
 
     /// RocksDB runtime metrics snapshot for Prometheus export.
+    ///
+    /// Passes the single named `cf_events` CF (the default CF is unused).
     pub fn metrics(&self) -> crate::RocksDbMetrics {
-        crate::collect_db_metrics(&self.db, "diagnostic_ledger")
+        crate::collect_db_metrics(&self.db, "diagnostic_ledger", &[CF_EVENTS])
     }
 
     /// Compute the 25-byte composite key for a diagnostic event.

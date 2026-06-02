@@ -153,7 +153,21 @@ impl StateDb {
     }
 
     /// RocksDB runtime metrics snapshot for Prometheus export.
+    ///
+    /// Passes the 6 named CFs so the collector aggregates across them
+    /// (the default CF is unused and would return ~0 for CF-scoped properties).
     pub fn metrics(&self) -> crate::RocksDbMetrics {
-        crate::collect_db_metrics(&self.db, "state_db")
+        crate::collect_db_metrics(
+            &self.db,
+            "state_db",
+            &[
+                CF_UTXO,
+                CF_UTXO_BY_PUBKEY,
+                CF_PRODUCERS,
+                CF_EXIT_HISTORY,
+                CF_META,
+                CF_UNDO,
+            ],
+        )
     }
 }

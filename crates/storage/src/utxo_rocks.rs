@@ -160,8 +160,15 @@ impl RocksDbUtxoStore {
     }
 
     /// RocksDB runtime metrics snapshot for Prometheus export.
+    ///
+    /// Passes the 3 named CFs so the collector aggregates across them
+    /// (the default CF is unused).
     pub fn metrics(&self) -> crate::RocksDbMetrics {
-        crate::collect_db_metrics(&self.db, "utxo_store")
+        crate::collect_db_metrics(
+            &self.db,
+            "utxo_store",
+            &[CF_UTXO, CF_UTXO_BY_PUBKEY, CF_UNIQUE_ID],
+        )
     }
 
     /// Get a UTXO by outpoint (returns owned value -- RocksDB can't return references)
