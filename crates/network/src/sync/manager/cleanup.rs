@@ -59,13 +59,16 @@ impl SyncManager {
             self.network.tip_unsupported_since = None;
         }
 
-        // Log current state for debugging
+        // Per-tick diagnostic — kept at debug! to avoid CPU burn from log volume.
+        // cleanup() runs every event-drain + every 1s timer tick; at info level this
+        // was ~25 lines/sec on busy seeds (37% of total log volume) post-INC-I-104
+        // WAL-disable. Promote to info only when debugging sync state directly.
         let pending_count = self
             .peers
             .values()
             .filter(|s| s.pending_request.is_some())
             .count();
-        info!(
+        debug!(
             "[SYNC_DEBUG] Cleanup: state={:?}, peers={}, pending_peer_requests={}, pending_requests={}",
             self.state,
             self.peers.len(),
