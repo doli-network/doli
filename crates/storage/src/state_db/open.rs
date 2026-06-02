@@ -121,10 +121,19 @@ impl StateDb {
             ),
             // One entry per block, 1-100+ KB. Cold read, highly compressible.
             // Zstd compression, 16 KB block size for large values.
-            rocksdb::ColumnFamilyDescriptor::new(
-                CF_UNDO,
-                cf_opts_state_db(&opts, &cache, 4, 2, false, 16, Zstd, 16, None, None),
-            ),
+            // INC-I-108: periodic_compaction_seconds replaces the synchronous
+            // compact_range_cf that prune_undo_before used to fire every 100
+            // blocks (~17 min), blocking the apply event loop and triggering
+            // fleet-wide CPU spikes via 4-process simultaneity on multi-producer
+            // hosts. RocksDB recompacts SSTs older than 1 hour in background
+            // threads, naturally decorrelated across processes by independent
+            // SST creation times.
+            {
+                let mut cf_undo_opts =
+                    cf_opts_state_db(&opts, &cache, 4, 2, false, 16, Zstd, 16, None, None);
+                cf_undo_opts.set_periodic_compaction_seconds(3600);
+                rocksdb::ColumnFamilyDescriptor::new(CF_UNDO, cf_undo_opts)
+            },
             // Epoch-boundary writes. Point lookup by pubkey — bloom helps.
             rocksdb::ColumnFamilyDescriptor::new(
                 CF_PRODUCERS,

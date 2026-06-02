@@ -33,9 +33,10 @@ impl StateDb {
     /// Prune undo data older than `keep_height`.
     /// Called after apply_block to keep only the last N blocks of undo data.
     ///
-    /// Deletes only the single entry that just expired (O(1) per block) instead
-    /// of scanning all entries. Compaction runs every 100 blocks to reclaim
-    /// tombstone space without rewriting the entire cf_undo SST on every block.
+    /// Deletes only the single entry that just expired (O(1) per block).
+    /// Tombstone reclamation is handled by RocksDB's `periodic_compaction_seconds`
+    /// (set on cf_undo in `open.rs`), running in background threads — not by a
+    /// synchronous `compact_range_cf` in the apply event loop. INC-I-108.
     pub fn prune_undo_before(&self, keep_height: BlockHeight) {
         if keep_height == 0 {
             return;
@@ -48,16 +49,6 @@ impl StateDb {
         let expired = keep_height - 1;
         let key = expired.to_le_bytes();
         let _ = self.db.delete_cf(cf, key);
-
-        // Compact periodically (every 100 blocks) to reclaim tombstone space.
-        // Compacting on every block rewrites the entire ~43 MB SST each time,
-        // causing massive write amplification and extra WAL entries.
-        if keep_height.is_multiple_of(100) {
-            let start = 0u64.to_le_bytes();
-            let end = keep_height.to_le_bytes();
-            self.db
-                .compact_range_cf(cf, Some(&start[..]), Some(&end[..]));
-        }
     }
 
     /// Delete all undo data above the given height (for truncation).
