@@ -1,6 +1,8 @@
 use std::process::Command;
 
 fn main() {
+    println!("cargo:rerun-if-changed=../../.git/HEAD");
+    println!("cargo:rerun-if-changed=../../.git/refs/heads");
     let hash = Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])
         .output()
