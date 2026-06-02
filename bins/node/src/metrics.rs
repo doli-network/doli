@@ -264,22 +264,38 @@ lazy_static! {
         &["instance"]
     ).unwrap();
 
-    /// Block cache resident bytes summed across all named CFs.
-    /// INC-I-105: all 4 DB instances now use explicit shared caches
-    /// (block_store=32 MB, state_db=32 MB, utxo_store=16 MB, diagnostic_ledger=4 MB).
-    /// With shared caches every CF reports the same value so sum == first.
+    /// Block cache resident bytes. INC-I-106: queried directly from
+    /// `rocksdb::Cache::get_usage()`, not summed across CFs. Shared cache per
+    /// instance: block_store=32 MB, state_db=32 MB, utxo_store=16 MB,
+    /// diagnostic_ledger=4 MB. Compare against the matching
+    /// `doli_rocksdb_block_cache_capacity_bytes{instance="…"}` for headroom.
     pub static ref ROCKSDB_BLOCK_CACHE_BYTES: IntGaugeVec = IntGaugeVec::new(
         Opts::new("doli_rocksdb_block_cache_bytes",
-            "Block cache resident bytes summed across all named CFs. \
-             Shared cache per instance (INC-I-105): block_store=32MB, state_db=32MB, utxo_store=16MB, diagnostic_ledger=4MB."),
+            "Block cache resident bytes per instance, from rocksdb::Cache::get_usage() (INC-I-106). \
+             Configured caps: block_store=32MB, state_db=32MB, utxo_store=16MB, diagnostic_ledger=4MB. \
+             Compare against doli_rocksdb_block_cache_capacity_bytes for headroom."),
         &["instance"]
     ).unwrap();
 
     /// Block cache pinned bytes — subset of cache memory that can't be evicted.
+    /// INC-I-106: queried directly from `rocksdb::Cache::get_pinned_usage()`.
     pub static ref ROCKSDB_BLOCK_CACHE_PINNED_BYTES: IntGaugeVec = IntGaugeVec::new(
         Opts::new("doli_rocksdb_block_cache_pinned_bytes",
-            "Block cache pinned bytes (cannot be evicted). \
+            "Block cache pinned bytes (cannot be evicted), from rocksdb::Cache::get_pinned_usage() (INC-I-106). \
              High ratio to _block_cache_bytes means little room for new reads."),
+        &["instance"]
+    ).unwrap();
+
+    /// Configured block-cache capacity per instance. INC-I-107: exposes the
+    /// `Cache::new_lru_cache(N)` size that the matching `_block_cache_bytes`
+    /// gauge should stay below. Use `_block_cache_bytes / _block_cache_capacity_bytes`
+    /// as the approach-to-cap signal.
+    pub static ref ROCKSDB_BLOCK_CACHE_CAPACITY_BYTES: IntGaugeVec = IntGaugeVec::new(
+        Opts::new("doli_rocksdb_block_cache_capacity_bytes",
+            "Configured shared LRU block cache capacity per instance, in bytes (INC-I-107). \
+             Set at storage open(): block_store=33554432 (32MB), state_db=33554432 (32MB), \
+             utxo_store=16777216 (16MB), diagnostic_ledger=4194304 (4MB). \
+             Alert: doli_rocksdb_block_cache_bytes / this > 0.9 sustained 5m."),
         &["instance"]
     ).unwrap();
 
@@ -447,6 +463,7 @@ pub fn register_metrics() {
     let _ = REGISTRY.register(Box::new(ROCKSDB_MEMTABLE_CAP_BYTES.clone()));
     let _ = REGISTRY.register(Box::new(ROCKSDB_BLOCK_CACHE_BYTES.clone()));
     let _ = REGISTRY.register(Box::new(ROCKSDB_BLOCK_CACHE_PINNED_BYTES.clone()));
+    let _ = REGISTRY.register(Box::new(ROCKSDB_BLOCK_CACHE_CAPACITY_BYTES.clone()));
     let _ = REGISTRY.register(Box::new(ROCKSDB_TABLE_READERS_BYTES.clone()));
     let _ = REGISTRY.register(Box::new(ROCKSDB_ESTIMATE_KEYS.clone()));
     let _ = REGISTRY.register(Box::new(ROCKSDB_LIVE_DATA_BYTES.clone()));
@@ -505,6 +522,9 @@ pub fn apply_rocksdb_metrics(state: &mut RocksDbScrapeState, m: &storage::RocksD
     ROCKSDB_BLOCK_CACHE_PINNED_BYTES
         .with_label_values(&[inst])
         .set(m.block_cache_pinned_bytes as i64);
+    ROCKSDB_BLOCK_CACHE_CAPACITY_BYTES
+        .with_label_values(&[inst])
+        .set(m.block_cache_capacity as i64);
     ROCKSDB_TABLE_READERS_BYTES
         .with_label_values(&[inst])
         .set(m.table_readers_bytes as i64);
