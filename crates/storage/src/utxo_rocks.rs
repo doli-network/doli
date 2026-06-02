@@ -97,7 +97,8 @@ impl RocksDbUtxoStore {
         opts.create_missing_column_families(true);
         opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
         opts.set_max_open_files(256);
-        opts.enable_statistics();
+        // INC-I-109 experiment: disabled (folsi canary). See state_db/open.rs.
+        // opts.enable_statistics();
 
         // INC-I-104 M0: cap total memtable budget across all 3 CFs.
         // utxo_store self-heals from state_db, so this is rebuildable storage; cap

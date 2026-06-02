@@ -23,13 +23,6 @@ impl StateDb {
         bincode::deserialize(&bytes).ok()
     }
 
-    /// Delete undo data for a block height.
-    pub fn delete_undo(&self, height: BlockHeight) {
-        let cf = self.db.cf_handle(CF_UNDO).unwrap();
-        let key = height.to_le_bytes();
-        let _ = self.db.delete_cf(cf, key);
-    }
-
     /// Prune undo data older than `keep_height`.
     /// Called after apply_block to keep only the last N blocks of undo data.
     ///

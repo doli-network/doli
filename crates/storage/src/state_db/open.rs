@@ -61,7 +61,11 @@ impl StateDb {
         opts.create_missing_column_families(true);
         opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
         opts.set_max_open_files(256);
-        opts.enable_statistics();
+        // INC-I-109 experiment: disable RocksDB statistics. perf showed
+        // StatisticsImpl::recordTick at 51.87% of compaction CPU; never consumed
+        // by application (no get_ticker/get_histogram calls). Only fed periodic
+        // LOG dumps. Folsi-only canary to test as alternative spike cause.
+        // opts.enable_statistics();
         // WAL for crash recovery
         opts.set_wal_recovery_mode(rocksdb::DBRecoveryMode::PointInTime);
         // Cap total WAL size to prevent unbounded growth.

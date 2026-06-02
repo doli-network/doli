@@ -68,7 +68,8 @@ impl DiagnosticLedger {
         opts.set_db_write_buffer_size(DB_WRITE_BUFFER_BYTES as usize);
         opts.set_write_buffer_size(WRITE_BUFFER_PER_MEMTABLE);
         opts.set_max_write_buffer_number(2);
-        opts.enable_statistics();
+        // INC-I-109 experiment: disabled (folsi canary). See state_db/open.rs.
+        // opts.enable_statistics();
         // INC-I-104 M5: single CF, low write rate — 1 background job sufficient.
         // Matches M4 (utxo_store) pattern for consistency.
         opts.set_max_background_jobs(1);
