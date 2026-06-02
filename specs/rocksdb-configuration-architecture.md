@@ -462,7 +462,58 @@ All labeled by `instance="block_store|state_db|utxo_store|diagnostic_ledger"`:
 
 - Ticker counters from `Statistics` (cache hits/misses, bloom usefulness, stall micros, WAL bytes written). These require holding the `Options` or `Statistics` object alongside the `DB` handle in each storage struct — a follow-up refactor, not blocking the immediate observability gap.
 - Per-CF property reads via `db.property_int_value_cf(cf_handle, ...)`. Same property set, finer breakdown. Adds 19× cardinality; defer until specific CF-level questions arise.
-- Grafana dashboard JSON. Operational, separate task.
+
+### PromQL recipes (alert-ready)
+
+```promql
+# CRITICAL — writes blocked. Any non-zero value on state_db or block_store
+# means consensus deadline is missing.
+doli_rocksdb_is_write_stopped > 0
+
+# HIGH — RocksDB throttling writes (level0_slowdown_writes_trigger hit).
+# Sustained > 0 for 30s on state_db means the consensus hot path is delayed.
+doli_rocksdb_actual_delayed_write_rate > 0
+
+# HIGH — L0 file count approaching stop trigger (60). Stall imminent.
+sum by (instance) (doli_rocksdb_files_at_level{level="0"}) > 50
+
+# MEDIUM — L0 file count approaching slowdown trigger (40 on hot CFs).
+sum by (instance) (doli_rocksdb_files_at_level{level="0"}) > 30
+
+# MEDIUM — new background error in the last 5 minutes (compaction/flush
+# failure). Uses the proper counter increase() — works across process restarts.
+increase(doli_rocksdb_background_errors_total[5m]) > 0
+
+# MEDIUM — memtable near cap. Healthy under burst; concerning if sustained.
+doli_rocksdb_memtable_bytes / doli_rocksdb_memtable_max_bytes > 0.9
+
+# LOW — flush throughput bottleneck. Sustained > 0 means write rate exceeds flush.
+doli_rocksdb_memtable_flush_pending > 0
+
+# LOW — pinned cache pressure. Approaching 1 means no room for new reads.
+doli_rocksdb_block_cache_pinned_bytes / doli_rocksdb_block_cache_bytes > 0.8
+
+# Observability — per-instance total bytes (capacity tracking).
+sum by (instance) (doli_rocksdb_sst_total_bytes)
+
+# Observability — per-node total RocksDB memory (memtable + block cache + table readers).
+sum (
+  doli_rocksdb_memtable_bytes
+  + doli_rocksdb_block_cache_bytes
+  + doli_rocksdb_table_readers_bytes
+)
+```
+
+### Dashboard
+
+A minimal Grafana dashboard JSON is provided at `docs/grafana/rocksdb-health.json`.
+Import via Grafana UI: **Dashboards → Import → Upload JSON file**. Three rows:
+
+1. **Write Health** — `is_write_stopped`, `actual_delayed_write_rate`, L0 files per instance, `background_errors_total` rate
+2. **Memory** — `memtable_bytes` vs `_max_bytes`, `block_cache_bytes`, `table_readers_bytes`, per-instance breakdown
+3. **Data Shape** — `sst_total_bytes`, `estimate_keys`, files per LSM level
+
+Dashboard assumes Prometheus is scraping the node `/metrics` endpoint at 15-second intervals. Adjust the `$datasource` variable to your Prometheus instance.
 
 ### Implementation overhead
 

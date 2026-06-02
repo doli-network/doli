@@ -1,0 +1,295 @@
+{
+  "title": "DOLI — RocksDB Health (INC-I-104)",
+  "uid": "doli-rocksdb-health",
+  "tags": ["doli", "rocksdb", "inc-i-104"],
+  "schemaVersion": 38,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "time": { "from": "now-1h", "to": "now" },
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": { "text": "Prometheus", "value": "Prometheus" }
+      },
+      {
+        "name": "node",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "query": "label_values(doli_rocksdb_memtable_max_bytes, instance)",
+        "regex": "",
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" },
+        "label": "RocksDB instance"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 100,
+      "type": "row",
+      "title": "Write Health (CRITICAL signals)",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+    },
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Write stopped (any instance)",
+      "description": "FM-02. Non-zero = consensus deadline missing. Alert immediately.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 1 },
+      "targets": [{
+        "expr": "max by (instance) (doli_rocksdb_is_write_stopped{instance=~\"$node\"})",
+        "legendFormat": "{{instance}}",
+        "refId": "A"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          },
+          "mappings": [
+            { "type": "value", "value": "0", "text": "OK" },
+            { "type": "value", "value": "1", "text": "STOPPED" }
+          ]
+        }
+      },
+      "options": { "colorMode": "background", "graphMode": "none", "textMode": "value_and_name" }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Throttled write rate (bytes/sec)",
+      "description": "level0_slowdown_writes_trigger hit. > 0 sustained 30s = alert.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 9, "x": 6, "y": 1 },
+      "targets": [{
+        "expr": "doli_rocksdb_actual_delayed_write_rate{instance=~\"$node\"}",
+        "legendFormat": "{{instance}}",
+        "refId": "A"
+      }],
+      "fieldConfig": { "defaults": { "unit": "Bps", "min": 0 } }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "L0 file count (stall predictor — trigger=40 on hot CFs)",
+      "description": "C-003. Rising L0 = compaction falling behind. Slowdown=40, Stop=60 on hot CFs (state_db.cf_utxo, block_store.headers/bodies).",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 9, "x": 15, "y": 1 },
+      "targets": [{
+        "expr": "sum by (instance) (doli_rocksdb_files_at_level{level=\"0\", instance=~\"$node\"})",
+        "legendFormat": "{{instance}}",
+        "refId": "A"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 30 },
+              { "color": "red", "value": 50 }
+            ]
+          },
+          "custom": { "thresholdsStyle": { "mode": "line" } },
+          "min": 0
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Background errors (rate over 5m)",
+      "description": "Compaction / flush failures. Any value > 0 = investigate.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 12, "x": 0, "y": 6 },
+      "targets": [{
+        "expr": "rate(doli_rocksdb_background_errors_total{instance=~\"$node\"}[5m])",
+        "legendFormat": "{{instance}}",
+        "refId": "A"
+      }],
+      "fieldConfig": { "defaults": { "unit": "ops", "min": 0 } }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Compaction & flush in flight",
+      "description": "Background work. Sustained > 0 plus rising L0 = falling behind.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 12, "x": 12, "y": 6 },
+      "targets": [
+        {
+          "expr": "doli_rocksdb_running_compactions{instance=~\"$node\"}",
+          "legendFormat": "{{instance}} — compactions",
+          "refId": "A"
+        },
+        {
+          "expr": "doli_rocksdb_running_flushes{instance=~\"$node\"}",
+          "legendFormat": "{{instance}} — flushes",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": { "defaults": { "min": 0 } }
+    },
+    {
+      "id": 200,
+      "type": "row",
+      "title": "Memory (memtable, cache, table readers)",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 11 }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Memtable usage vs cap per instance",
+      "description": "INC-I-104 fix in action. memtable_bytes should stay below memtable_max_bytes (the cap).",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 12 },
+      "targets": [
+        {
+          "expr": "doli_rocksdb_memtable_bytes{instance=~\"$node\"}",
+          "legendFormat": "{{instance}} — current",
+          "refId": "A"
+        },
+        {
+          "expr": "doli_rocksdb_memtable_max_bytes{instance=~\"$node\"}",
+          "legendFormat": "{{instance}} — cap",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "bytes", "min": 0 } }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Block cache & table readers",
+      "description": "Read-side memory. table_readers = SST index + bloom filter blocks.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 12 },
+      "targets": [
+        {
+          "expr": "doli_rocksdb_block_cache_bytes{instance=~\"$node\"}",
+          "legendFormat": "{{instance}} — cache",
+          "refId": "A"
+        },
+        {
+          "expr": "doli_rocksdb_table_readers_bytes{instance=~\"$node\"}",
+          "legendFormat": "{{instance}} — table readers",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "bytes", "min": 0 } }
+    },
+    {
+      "id": 12,
+      "type": "stat",
+      "title": "Per-node RocksDB resident estimate",
+      "description": "memtable + block cache + table readers, summed across all 4 instances. Spec target: ~218 MB bounded.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 12, "x": 0, "y": 19 },
+      "targets": [{
+        "expr": "sum (doli_rocksdb_memtable_bytes{instance=~\"$node\"} + doli_rocksdb_block_cache_bytes{instance=~\"$node\"} + doli_rocksdb_table_readers_bytes{instance=~\"$node\"})",
+        "legendFormat": "all instances",
+        "refId": "A"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 268435456 },
+              { "color": "red", "value": 536870912 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Immutable memtables awaiting flush",
+      "description": "Approaching max_write_buffer_number (2 on hot CFs) means stall imminent.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 12, "x": 12, "y": 19 },
+      "targets": [{
+        "expr": "doli_rocksdb_num_immutable_memtable{instance=~\"$node\"}",
+        "legendFormat": "{{instance}}",
+        "refId": "A"
+      }],
+      "fieldConfig": { "defaults": { "min": 0 } }
+    },
+    {
+      "id": 300,
+      "type": "row",
+      "title": "Data Shape",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 24 }
+    },
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "SST bytes on disk (total vs live)",
+      "description": "Big gap = obsolete files queued for delete.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 25 },
+      "targets": [
+        {
+          "expr": "doli_rocksdb_sst_total_bytes{instance=~\"$node\"}",
+          "legendFormat": "{{instance}} — total",
+          "refId": "A"
+        },
+        {
+          "expr": "doli_rocksdb_sst_live_bytes{instance=~\"$node\"}",
+          "legendFormat": "{{instance}} — live",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "bytes", "min": 0 } }
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "Estimated live keys per instance",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 25 },
+      "targets": [{
+        "expr": "doli_rocksdb_estimate_keys{instance=~\"$node\"}",
+        "legendFormat": "{{instance}}",
+        "refId": "A"
+      }],
+      "fieldConfig": { "defaults": { "min": 0 } }
+    },
+    {
+      "id": 22,
+      "type": "timeseries",
+      "title": "SST file count per LSM level (state_db.cf_utxo shape)",
+      "description": "Stack: L0 at bottom (compaction pressure indicator), L1-L6 above (shape).",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 32 },
+      "targets": [{
+        "expr": "sum by (instance, level) (doli_rocksdb_files_at_level{instance=~\"$node\"})",
+        "legendFormat": "{{instance}} — L{{level}}",
+        "refId": "A"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "stacking": { "mode": "normal", "group": "A" } },
+          "min": 0
+        }
+      }
+    }
+  ]
+}
