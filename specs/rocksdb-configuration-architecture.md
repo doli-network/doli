@@ -97,7 +97,7 @@ AC-WONT-001 through AC-WONT-004 respected: no hardware-driven sizing, no runtime
 | presence | 1 MB | 1 | NONE | 4 KB | None | 2 MB | default | default | Dead CF. Minimal allocation. Never written. |
 | meta | 1 MB | 1 | NONE | 4 KB | None | 2 MB | default | default | Cold. 1 key, written once on snap sync. |
 
-**Block cache**: 8 MB per-instance (default). Sequential reads dominate; cache has low hit rate for block_store.
+**Block cache**: 32 MB per-instance (explicit `Cache::new_lru_cache`, INC-I-105). Shared across all 9 CFs.
 
 **Bloom filter note**: block_store currently applies bloom at DB-level Options to ALL CFs (`open.rs:24-26`). The per-CF migration removes bloom from addr_tx_index (scan CF), presence (dead), and meta (1 key) by setting per-CF BlockBasedOptions without bloom on those 3 CFs, while retaining bloom on the other 6.
 
@@ -156,7 +156,7 @@ AC-WONT-001 through AC-WONT-004 respected: no hardware-driven sizing, no runtime
 | utxo_by_pubkey | 8 MB | 2 | NONE | 4 KB | Lz4 | 16 MB | 40 | 60 | Mirrors cf_utxo_by_pubkey. No bloom (scan CF, C-010). |
 | unique_id | 2 MB | 2 | 10 bits/key | 4 KB | Lz4 | 4 MB | default | default | Low cardinality (DeFi gated). Existence check on mint path. |
 
-**Block cache**: 8 MB per-instance (default). In-memory UtxoSet handles hot reads; RocksDB is persistence-only.
+**Block cache**: 16 MB per-instance (explicit `Cache::new_lru_cache`, INC-I-105). Shared across all 3 CFs.
 
 **Effective memtable ceiling**: 32 MB (capped by db_write_buffer_size). Down from 384 MB theoretical.
 
@@ -185,9 +185,9 @@ Four evaluators out of five recommended per-instance caches. The Failure Analyst
 
 | Instance | Block cache | Rationale |
 |----------|------------|-----------|
-| block_store | 8 MB (default) | Sequential reads dominate. Low cache hit rate. |
+| block_store | 32 MB (explicit, INC-I-105) | Shared across 9 CFs. |
 | state_db | 32 MB (explicit) | cf_utxo point lookups benefit from cache if not fully shadowed by in-memory UtxoSet. |
-| utxo_store | 8 MB (default) | In-memory UtxoSet handles hot reads. |
+| utxo_store | 16 MB (explicit, INC-I-105) | Shared across 3 CFs. |
 | diagnostic_ledger | 4 MB (existing) | Cold reads. |
 | **Total** | **52 MB** | |
 
@@ -214,9 +214,9 @@ Four evaluators out of five recommended per-instance caches. The Failure Analyst
 
 | Instance | Memtable cap | Block cache | WAL overhead | Total bounded |
 |----------|-------------|-------------|-------------|---------------|
-| block_store | 48 MB | 8 MB | 48 MB | 104 MB |
+| block_store | 48 MB | 32 MB | 48 MB | 128 MB |
 | state_db | 64 MB | 32 MB | 64 MB | 160 MB |
-| utxo_store | 32 MB | 8 MB | 0 (disabled) | 40 MB |
+| utxo_store | 32 MB | 16 MB | 0 (disabled) | 48 MB |
 | diagnostic_ledger | 8 MB | 4 MB | 0 (disabled) | 12 MB |
 | **Total per node** | **152 MB** | **52 MB** | **112 MB** | **316 MB** |
 
@@ -251,7 +251,7 @@ block_store (9 CFs, differentiated)        state_db (6 CFs, differentiated)
   db_write_buffer_size: 48 MB                db_write_buffer_size: 64 MB
   WAL: 48 MB cap                             WAL: 64 MB (unchanged)
   Bloom: selective (6 CFs yes, 3 no)         Bloom: cf_utxo, cf_producers, cf_exit_history
-  Block cache: 8 MB                          Block cache: 32 MB
+  Block cache: 32 MB (shared, INC-I-105)     Block cache: 32 MB
   open_cf_descriptors (per-CF options)       open_cf_descriptors (per-CF options)
   Hot CFs: 8 MB, L0 triggers raised          Hot CFs: 8-16 MB, L0 triggers raised
   Cold CFs: 1 MB                             Cold CFs: 1-2 MB
@@ -260,7 +260,7 @@ utxo_store (3 CFs, differentiated)         diagnostic_ledger (1 CF)
   db_write_buffer_size: 32 MB                db_write_buffer_size: 8 MB (unchanged)
   WAL: DISABLED                              WAL: DISABLED
   Bloom: utxo, unique_id                     Block cache: 4 MB (unchanged)
-  Block cache: 8 MB                          max_background_jobs: 1
+  Block cache: 16 MB (shared, INC-I-105)     max_background_jobs: 1
   open_cf_descriptors (per-CF options)
   Hot CFs: 8-16 MB, L0 triggers raised
 

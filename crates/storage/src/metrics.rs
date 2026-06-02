@@ -22,11 +22,12 @@
 //!   once via `property_int_value(name)` (these are DB-aggregate values that
 //!   don't depend on the CF — reading them from the default CF still returns
 //!   the right value).
-//! - **Block cache** (`block-cache-usage`, `block-cache-pinned-usage`): read
-//!   from the *first* named CF. When the cache is shared across CFs (state_db,
-//!   M3: `Cache::new_lru_cache(32 MB)` attached to all 6 CFs), every CF reports
-//!   the same value. When per-CF caches exist (block_store / utxo_store using
-//!   default 8 MB), this under-reports the aggregate; documented limitation.
+//! - **Block cache** (`block-cache-usage`, `block-cache-pinned-usage`,
+//!   `block-cache-capacity`): summed across ALL named CFs. When the cache is
+//!   shared (INC-I-105: all 4 DB instances now use explicit `Cache::new_lru_cache`
+//!   threaded into every CF), every CF reports the same value, so sum == first.
+//!   When per-CF caches exist, the sum correctly aggregates all caches.
+//!   Default block cache in RocksDB 8.2+ is 32 MB (not 8 MB).
 
 use std::collections::BTreeMap;
 
@@ -48,11 +49,18 @@ pub struct RocksDbMetrics {
     /// (block_store=48 MB, state_db=64 MB, utxo_store=32 MB, diagnostic_ledger=8 MB).
     /// Use `memtable_bytes / memtable_cap_bytes` for "memtable approach-to-cap" alerts.
     pub memtable_cap_bytes: u64,
-    /// `block-cache-usage` — bytes in the block cache. Read from the first CF
-    /// (accurate for shared caches; under-reports per-CF caches — see module docs).
+    /// `block-cache-usage` — bytes currently in the block cache, summed across all
+    /// named CFs. With a shared cache (INV-STORAGE-001), all CFs report the same
+    /// value so the sum equals the first; with per-CF caches, the sum is the true
+    /// aggregate.
     pub block_cache_bytes: u64,
-    /// `block-cache-pinned-usage` — pinned bytes (cannot be evicted). Same caveat as `block_cache_bytes`.
+    /// `block-cache-pinned-usage` — pinned bytes (cannot be evicted), summed across
+    /// all named CFs.
     pub block_cache_pinned_bytes: u64,
+    /// `block-cache-capacity` — configured LRU cache capacity, read from the first
+    /// named CF. With a shared cache this is the configured
+    /// `Cache::new_lru_cache(N)` size. Added by INC-I-105.
+    pub block_cache_capacity: u64,
     /// `estimate-table-readers-mem` — memory used by SST index + bloom filter blocks.
     pub table_readers_bytes: u64,
 
@@ -124,8 +132,9 @@ pub fn collect_db_metrics(
     // Sum a CF-scoped property across all named CFs.
     let sum_cf = |key: &str| -> u64 { cf_handles.iter().map(|h| prop_cf(h, key)).sum() };
 
-    // Block-cache properties: read from the first named CF (accurate for
-    // shared caches; documented under-reporting otherwise).
+    // Block-cache capacity: read from the first named CF. With a shared cache
+    // (INV-STORAGE-001) this returns the configured LRU size. Falls back to
+    // the default CF read when no named CFs are available.
     let first_cf_prop = |key: &str| -> u64 {
         cf_handles
             .first()
@@ -153,9 +162,13 @@ pub fn collect_db_metrics(
         compaction_pending: sum_cf("rocksdb.compaction-pending"),
         mem_table_flush_pending: sum_cf("rocksdb.mem-table-flush-pending"),
         num_immutable_memtable: sum_cf("rocksdb.num-immutable-mem-table"),
-        // Block cache (first CF; same value when shared)
-        block_cache_bytes: first_cf_prop("rocksdb.block-cache-usage"),
-        block_cache_pinned_bytes: first_cf_prop("rocksdb.block-cache-pinned-usage"),
+        // INC-I-105: block cache summed across ALL named CFs.
+        // With a shared cache (INV-STORAGE-001), every CF reports the same
+        // value, so sum == first. With per-CF caches the sum is correct.
+        block_cache_bytes: sum_cf("rocksdb.block-cache-usage"),
+        block_cache_pinned_bytes: sum_cf("rocksdb.block-cache-pinned-usage"),
+        // Capacity: read from first CF (the shared cache's configured size).
+        block_cache_capacity: first_cf_prop("rocksdb.block-cache-capacity"),
         // DB-scoped
         running_flushes: prop_db("rocksdb.num-running-flushes"),
         running_compactions: prop_db("rocksdb.num-running-compactions"),

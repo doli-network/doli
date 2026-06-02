@@ -14,10 +14,14 @@ use super::types::{
 /// Build per-CF Options for block_store column families.
 ///
 /// Each CF gets workload-appropriate tuning derived from the DB-level base
-/// options. See `specs/rocksdb-configuration-architecture.md` section block_store.
+/// options. The `cache` reference is shared (Arc-internal) across all CFs
+/// within this block_store instance — NOT shared with other DB instances (C-012).
+///
+/// See `specs/rocksdb-configuration-architecture.md` section block_store.
 #[allow(clippy::too_many_arguments)]
 fn cf_opts_block_store(
     base: &rocksdb::Options,
+    cache: &rocksdb::Cache,
     write_buffer_mb: usize,
     max_write_buffer_num: i32,
     bloom: bool,
@@ -40,6 +44,7 @@ fn cf_opts_block_store(
     }
 
     let mut bbo = rocksdb::BlockBasedOptions::default();
+    bbo.set_block_cache(cache);
     bbo.set_block_size(block_size_kb * 1024);
     if bloom {
         bbo.set_bloom_filter(10.0, false);
@@ -69,11 +74,10 @@ impl BlockStore {
         opts.set_max_background_jobs(2);
         opts.set_max_subcompactions(1);
 
-        // DB-level bloom filter (defense-in-depth: overridden per-CF below,
-        // but keeps a sane default for any future no-descriptor open path).
-        let mut block_opts = rocksdb::BlockBasedOptions::default();
-        block_opts.set_bloom_filter(10.0, false);
-        opts.set_block_based_table_factory(&block_opts);
+        // INC-I-105: explicit 32 MB LRU block cache shared across all 9 CFs.
+        // Arc-internal in rust-rocksdb — multiple BlockBasedOptions builders
+        // reference the same underlying cache. Per-instance only (C-012).
+        let cache = rocksdb::Cache::new_lru_cache(32 * 1024 * 1024);
 
         // Shorthand aliases for compression types used in the spec table.
         use rocksdb::DBCompressionType::{Lz4, None as NoCompression};
@@ -96,47 +100,47 @@ impl BlockStore {
             // Hot write + hot point-lookup
             rocksdb::ColumnFamilyDescriptor::new(
                 CF_HEADERS,
-                cf_opts_block_store(&opts, 8, 2, true, 4, Lz4, 16, Some(40), Some(60)),
+                cf_opts_block_store(&opts, &cache, 8, 2, true, 4, Lz4, 16, Some(40), Some(60)),
             ),
             // Hot write, large values
             rocksdb::ColumnFamilyDescriptor::new(
                 CF_BODIES,
-                cf_opts_block_store(&opts, 8, 2, true, 16, Lz4, 32, Some(40), Some(60)),
+                cf_opts_block_store(&opts, &cache, 8, 2, true, 16, Lz4, 32, Some(40), Some(60)),
             ),
             // Warm index
             rocksdb::ColumnFamilyDescriptor::new(
                 CF_HEIGHT_INDEX,
-                cf_opts_block_store(&opts, 4, 2, false, 4, Lz4, 8, None, None),
+                cf_opts_block_store(&opts, &cache, 4, 2, false, 4, Lz4, 8, None, None),
             ),
             // Warm index
             rocksdb::ColumnFamilyDescriptor::new(
                 CF_SLOT_INDEX,
-                cf_opts_block_store(&opts, 4, 2, false, 4, Lz4, 8, None, None),
+                cf_opts_block_store(&opts, &cache, 4, 2, false, 4, Lz4, 8, None, None),
             ),
             // C-004: deprecated CF — minimal allocation, kept in descriptor list
             rocksdb::ColumnFamilyDescriptor::new(
                 CF_PRESENCE,
-                cf_opts_block_store(&opts, 1, 1, false, 4, NoCompression, 2, None, None),
+                cf_opts_block_store(&opts, &cache, 1, 1, false, 4, NoCompression, 2, None, None),
             ),
             // Hot point-lookup
             rocksdb::ColumnFamilyDescriptor::new(
                 CF_HASH_TO_HEIGHT,
-                cf_opts_block_store(&opts, 4, 2, true, 4, Lz4, 8, None, None),
+                cf_opts_block_store(&opts, &cache, 4, 2, true, 4, Lz4, 8, None, None),
             ),
             // Warm write, cold read
             rocksdb::ColumnFamilyDescriptor::new(
                 CF_TX_INDEX,
-                cf_opts_block_store(&opts, 4, 2, true, 4, Lz4, 8, None, None),
+                cf_opts_block_store(&opts, &cache, 4, 2, true, 4, Lz4, 8, None, None),
             ),
             // Prefix-scan reads — C-010: NO bloom (bloom hurts prefix iteration)
             rocksdb::ColumnFamilyDescriptor::new(
                 CF_ADDR_TX_INDEX,
-                cf_opts_block_store(&opts, 4, 2, false, 4, Lz4, 8, None, None),
+                cf_opts_block_store(&opts, &cache, 4, 2, false, 4, Lz4, 8, None, None),
             ),
             // Cold, 1 key
             rocksdb::ColumnFamilyDescriptor::new(
                 CF_META,
-                cf_opts_block_store(&opts, 1, 1, false, 4, NoCompression, 2, None, None),
+                cf_opts_block_store(&opts, &cache, 1, 1, false, 4, NoCompression, 2, None, None),
             ),
         ];
 

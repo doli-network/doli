@@ -264,13 +264,14 @@ lazy_static! {
         &["instance"]
     ).unwrap();
 
-    /// Block cache resident bytes. For state_db (M3 shared 32 MB Cache) this
-    /// is the shared total. For block_store/utxo_store with per-CF default
-    /// caches, this is the first-CF value (under-reports aggregate).
+    /// Block cache resident bytes summed across all named CFs.
+    /// INC-I-105: all 4 DB instances now use explicit shared caches
+    /// (block_store=32 MB, state_db=32 MB, utxo_store=16 MB, diagnostic_ledger=4 MB).
+    /// With shared caches every CF reports the same value so sum == first.
     pub static ref ROCKSDB_BLOCK_CACHE_BYTES: IntGaugeVec = IntGaugeVec::new(
         Opts::new("doli_rocksdb_block_cache_bytes",
-            "Block cache resident bytes. state_db reports full shared 32 MB cache; \
-             block_store/utxo_store under-report (per-CF default caches; see metrics module docs)."),
+            "Block cache resident bytes summed across all named CFs. \
+             Shared cache per instance (INC-I-105): block_store=32MB, state_db=32MB, utxo_store=16MB, diagnostic_ledger=4MB."),
         &["instance"]
     ).unwrap();
 

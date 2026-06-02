@@ -33,10 +33,14 @@ use crate::utxo::{uid_key, UID_PREFIX_ASSET, UID_PREFIX_NFT, UID_PREFIX_POOL};
 /// Build per-CF Options for utxo_store column families.
 ///
 /// Each CF gets workload-appropriate tuning derived from the DB-level base
-/// options. See `specs/rocksdb-configuration-architecture.md` section utxo_store.
+/// options. The `cache` reference is shared (Arc-internal) across all CFs
+/// within this utxo_store instance — NOT shared with other DB instances (C-012).
+///
+/// See `specs/rocksdb-configuration-architecture.md` section utxo_store.
 #[allow(clippy::too_many_arguments)]
 fn cf_opts_utxo_store(
     base: &rocksdb::Options,
+    cache: &rocksdb::Cache,
     write_buffer_mb: usize,
     max_write_buffer_num: i32,
     bloom: bool,
@@ -59,6 +63,7 @@ fn cf_opts_utxo_store(
     }
 
     let mut bbo = rocksdb::BlockBasedOptions::default();
+    bbo.set_block_cache(cache);
     bbo.set_block_size(block_size_kb * 1024);
     if bloom {
         bbo.set_bloom_filter(10.0, false);
@@ -100,11 +105,10 @@ impl RocksDbUtxoStore {
         opts.set_max_background_jobs(1);
         opts.set_max_subcompactions(1);
 
-        // DB-level bloom filter (defense-in-depth: overridden per-CF below,
-        // but keeps a sane default for any future no-descriptor open path).
-        let mut block_opts = rocksdb::BlockBasedOptions::default();
-        block_opts.set_bloom_filter(10.0, false);
-        opts.set_block_based_table_factory(&block_opts);
+        // INC-I-105: explicit 16 MB LRU block cache shared across all 3 CFs.
+        // Arc-internal in rust-rocksdb — multiple BlockBasedOptions builders
+        // reference the same underlying cache. Per-instance only (C-012).
+        let cache = rocksdb::Cache::new_lru_cache(16 * 1024 * 1024);
 
         // Shorthand alias for compression type.
         use rocksdb::DBCompressionType::Lz4;
@@ -122,20 +126,20 @@ impl RocksDbUtxoStore {
             // C-003: L0 slowdown=40, stop=60 (MANDATORY — write_buffer shrunk from 64 MB default).
             rocksdb::ColumnFamilyDescriptor::new(
                 CF_UTXO,
-                cf_opts_utxo_store(&opts, 16, 2, true, 4, Lz4, 16, Some(40), Some(60)),
+                cf_opts_utxo_store(&opts, &cache, 16, 2, true, 4, Lz4, 16, Some(40), Some(60)),
             ),
             // Secondary index for prefix scans by pubkey hash.
             // C-010: NO bloom (bloom hurts prefix iteration).
             // C-003: L0 slowdown=40, stop=60 (MANDATORY).
             rocksdb::ColumnFamilyDescriptor::new(
                 CF_UTXO_BY_PUBKEY,
-                cf_opts_utxo_store(&opts, 8, 2, false, 4, Lz4, 16, Some(40), Some(60)),
+                cf_opts_utxo_store(&opts, &cache, 8, 2, false, 4, Lz4, 16, Some(40), Some(60)),
             ),
             // Low cardinality (DeFi gated, existence check on mint).
             // Bloom filter for point lookups (has_unique_id).
             rocksdb::ColumnFamilyDescriptor::new(
                 CF_UNIQUE_ID,
-                cf_opts_utxo_store(&opts, 2, 2, true, 4, Lz4, 4, None, None),
+                cf_opts_utxo_store(&opts, &cache, 2, 2, true, 4, Lz4, 4, None, None),
             ),
         ];
 

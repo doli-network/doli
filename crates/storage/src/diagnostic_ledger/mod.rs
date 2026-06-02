@@ -69,12 +69,23 @@ impl DiagnosticLedger {
         // Matches M4 (utxo_store) pattern for consistency.
         opts.set_max_background_jobs(1);
 
-        let mut block_opts = rocksdb::BlockBasedOptions::default();
+        // INC-I-105: explicit shared block cache threaded into every CF via
+        // open_cf_descriptors. DB::open_cf with string CF names does not
+        // propagate the DB-level table factory to named CFs, giving each CF
+        // its own default 32 MB cache instead of the intended 4 MB.
         let cache = rocksdb::Cache::new_lru_cache(BLOCK_CACHE_BYTES as usize);
-        block_opts.set_block_cache(&cache);
-        opts.set_block_based_table_factory(&block_opts);
 
-        let db = rocksdb::DB::open_cf(&opts, &diag_path, vec![CF_EVENTS])?;
+        let mut cf_opts = rocksdb::Options::default();
+        cf_opts.set_write_buffer_size(WRITE_BUFFER_PER_MEMTABLE);
+        cf_opts.set_max_write_buffer_number(2);
+        cf_opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
+        let mut bbo = rocksdb::BlockBasedOptions::default();
+        bbo.set_block_cache(&cache);
+        cf_opts.set_block_based_table_factory(&bbo);
+
+        let cf_descriptors = vec![rocksdb::ColumnFamilyDescriptor::new(CF_EVENTS, cf_opts)];
+
+        let db = rocksdb::DB::open_cf_descriptors(&opts, &diag_path, cf_descriptors)?;
 
         // INC-I-104 M5: WAL disabled on all write paths. Diagnostic data is
         // pure observability with NoOp fallback — events can be lost on crash
