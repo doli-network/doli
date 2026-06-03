@@ -104,8 +104,7 @@ impl Node {
             let mut map: HashMap<crypto::Hash, u64> = HashMap::new();
             for pk in &self.epoch_state.producer_list {
                 if let Some(info) = producers.get_by_pubkey(pk) {
-                    let pubkey_hash =
-                        crypto::hash::hash_with_domain(ADDRESS_DOMAIN, pk.as_bytes());
+                    let pubkey_hash = crypto::hash::hash_with_domain(ADDRESS_DOMAIN, pk.as_bytes());
                     map.insert(pubkey_hash, info.registered_at);
                 }
             }

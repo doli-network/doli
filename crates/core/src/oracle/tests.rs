@@ -701,7 +701,10 @@ fn test_dedupe_latest_per_attester_output_is_sorted_by_signer_hash() {
         },
     ];
     let deduped = dedupe_latest_per_attester(&input);
-    let signer_seeds: Vec<u8> = deduped.iter().map(|c| c.signer_hash.as_bytes()[0]).collect();
+    let signer_seeds: Vec<u8> = deduped
+        .iter()
+        .map(|c| c.signer_hash.as_bytes()[0])
+        .collect();
     let mut expected = signer_seeds.clone();
     expected.sort();
     assert_eq!(

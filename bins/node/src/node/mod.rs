@@ -268,8 +268,7 @@ pub struct Node {
     /// auth check at `validation/transaction.rs:242` sees the live set
     /// instead of an empty Vec — pre-fix that broke `PriceAttestation`
     /// admission at oracle activation.
-    pub mempool_active_producers_snapshot:
-        std::sync::Arc<std::sync::RwLock<Vec<(PublicKey, u64)>>>,
+    pub mempool_active_producers_snapshot: std::sync::Arc<std::sync::RwLock<Vec<(PublicKey, u64)>>>,
 
     /// INC-I-055: Rolling health window for auto-checkpoint tagging.
     /// Tracks the last CHECKPOINT_HEALTH_WINDOW_SIZE health samples (true=healthy).

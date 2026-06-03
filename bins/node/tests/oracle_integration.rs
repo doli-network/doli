@@ -105,7 +105,10 @@ async fn audit_p1_001_mempool_producer_snapshot_populates_after_refresh() {
             active.contains(pk),
             "AUDIT-P1-001: every snapshot entry pubkey must be in the active set"
         ); // O2
-        assert!(*weight > 0, "AUDIT-P1-001: every snapshot entry must have positive weight"); // O3
+        assert!(
+            *weight > 0,
+            "AUDIT-P1-001: every snapshot entry must have positive weight"
+        ); // O3
     }
 }
 
@@ -135,7 +138,9 @@ async fn audit_p1_003_price_attestation_classified_state_only() {
     let tx = Transaction::new_price_attestation(data);
 
     assert_eq!(tx.tx_type, TxType::PriceAttestation);
-    assert!(tx.is_state_only(),
+    assert!(
+        tx.is_state_only(),
         "AUDIT-P1-003: PriceAttestation must classify as state-only so mempool routes \
-         it via add_system_transaction. Was the new arm added to is_state_only()?");
+         it via add_system_transaction. Was the new arm added to is_state_only()?"
+    );
 }

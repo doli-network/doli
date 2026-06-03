@@ -453,8 +453,5 @@ fn test_price_attestation_is_state_only() {
         outputs: Vec::new(),
         extra_data: Vec::new(),
     };
-    assert!(
-        !xfer.is_state_only(),
-        "Transfer must NOT be state-only"
-    ); // O3
+    assert!(!xfer.is_state_only(), "Transfer must NOT be state-only"); // O3
 }

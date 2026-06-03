@@ -192,8 +192,7 @@ pub struct Mempool {
     /// (`ctx.active_producers.contains(signer)`) sees the live set
     /// instead of an empty Vec — which was rejecting every
     /// `PriceAttestation` at activation.
-    active_producers_weighted:
-        std::sync::Arc<std::sync::RwLock<Vec<(crypto::PublicKey, u64)>>>,
+    active_producers_weighted: std::sync::Arc<std::sync::RwLock<Vec<(crypto::PublicKey, u64)>>>,
 }
 
 impl Mempool {
