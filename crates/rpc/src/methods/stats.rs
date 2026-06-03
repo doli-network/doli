@@ -140,7 +140,7 @@ impl RpcContext {
                     entries.push((op_hex, entry_hash, detail));
                 }
             }
-            storage::UtxoSet::RocksDb(_) => {
+            storage::UtxoSet::RocksDb(..) => {
                 return Err(RpcError::internal_error(
                     "RocksDb UTXO set not supported for diff".to_string(),
                 ));

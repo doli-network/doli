@@ -352,7 +352,9 @@ impl Node {
         // Load UTXOs: scales to millions of entries via RocksDB-backed store,
         // with startup self-heal against state_db (INC-I-027 guardian-restore fix).
         // See `init_utxo_set` doc comment for the full behavior matrix.
-        let utxo_set = init_utxo_set(&config.data_dir, &state_db);
+        let mut utxo_set = init_utxo_set(&config.data_dir, &state_db);
+        // Phase 2: attach state_db so RPC-facing reads route through it
+        utxo_set.set_state_db(state_db.clone());
         let utxo_set = Arc::new(RwLock::new(utxo_set));
 
         // Validate genesis hash against embedded chainspec (detect state_db corruption).
@@ -686,11 +688,7 @@ impl Node {
         let initial_sunset_triggered = {
             let blocks_per_epoch = config.network.blocks_per_reward_epoch();
             let best_height = chain_state.read().await.best_height;
-            let current_epoch = if blocks_per_epoch > 0 {
-                best_height / blocks_per_epoch
-            } else {
-                0
-            };
+            let current_epoch = best_height.checked_div(blocks_per_epoch).unwrap_or(0);
             let sunset_state = state_db.get_oracle_sunset_state().unwrap_or_default();
             let triggered = sunset_state.health(current_epoch).is_sunset_triggered();
             if triggered {

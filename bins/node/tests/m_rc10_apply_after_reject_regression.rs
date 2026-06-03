@@ -263,7 +263,7 @@ async fn snapshot_state(node: &Node) -> StateSnapshot {
     let pool_total: u64 = pool_utxos.iter().map(|(_, e)| e.output.amount).sum();
     let total = match &*utxo {
         storage::UtxoSet::InMemory(m) => m.len(),
-        storage::UtxoSet::RocksDb(_) => node.state_db.iter_utxos().len(),
+        storage::UtxoSet::RocksDb(..) => node.state_db.iter_utxos().len(),
     };
     StateSnapshot {
         best_height: cs.best_height,

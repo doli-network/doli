@@ -315,11 +315,7 @@ impl Node {
         // state at the post-rollback epoch.
         {
             let blocks_per_epoch = self.config.network.blocks_per_reward_epoch();
-            let target_epoch = if blocks_per_epoch > 0 {
-                target_height / blocks_per_epoch
-            } else {
-                0
-            };
+            let target_epoch = target_height.checked_div(blocks_per_epoch).unwrap_or(0);
             let sunset_state = self.state_db.get_oracle_sunset_state().unwrap_or_default();
             let triggered = sunset_state.health(target_epoch).is_sunset_triggered();
             self.oracle_sunset_triggered

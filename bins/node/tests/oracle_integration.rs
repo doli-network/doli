@@ -81,10 +81,6 @@ async fn audit_p1_001_mempool_producer_snapshot_populates_after_refresh() {
     node.refresh_mempool_producer_snapshot(1).await;
 
     // Post-refresh: snapshot reflects the active producer set.
-    let snapshot = node
-        .mempool_active_producers_snapshot
-        .read()
-        .expect("snapshot lock not poisoned");
     let active = {
         let ps = node.producer_set.read().await;
         ps.active_producers_at_height(1)
@@ -92,6 +88,10 @@ async fn audit_p1_001_mempool_producer_snapshot_populates_after_refresh() {
             .map(|p| p.public_key)
             .collect::<Vec<_>>()
     };
+    let snapshot = node
+        .mempool_active_producers_snapshot
+        .read()
+        .expect("snapshot lock not poisoned");
     assert_eq!(
         snapshot.len(),
         active.len(),
