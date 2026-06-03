@@ -1910,6 +1910,12 @@ doli wipe --network testnet --yes
 
 Query, diagnose, and replay fork events from the node's diagnostic ledger.
 
+**Prerequisite**: The target node must be started with `--fork-diagnostics` to enable
+the diagnostic ledger. Without this flag, diagnostic RPCs return "Diagnostic ledger
+unavailable" and CLI commands print a friendly message directing the operator to enable
+the flag. The `--fork-diagnostics` flag is included by default in the structural
+testnet service files (seed + n1-n12) via `scripts/install-local-services.sh`.
+
 ### 24.1. Single-Node Diagnosis
 
 ```bash

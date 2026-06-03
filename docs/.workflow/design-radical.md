@@ -1,265 +1,333 @@
-# Design Evaluation: Radical Simplifier
+# Evaluator #5 -- Radical Simplifier Proposal
 
-## Analysis Lens
-First-principles minimum viable architecture for AMM value-conservation. Starting from acceptance criteria alone (VC-001..VC-009), ignoring the existing 9-check patchwork. Key question: what is the MINIMUM architecture that closes all 6 defects + token_b MUST?
+## TL;DR
+
+- The entire RocksDB memory problem is solved by adding 9 lines of configuration: `db_write_buffer_size` + `write_buffer_size` on the 3 uncapped instances, `max_total_wal_size` on the 2 that lack it, plus 1 WAL cap on diagnostic_ledger. Total node memtable budget drops from ~2.2 GB theoretical / ~450 MB observed to **56 MB hard-capped** across all 4 DBs.
+- Every parameter should be workload-derived from DOLI's actual write rate: **<50 KB/min per DB in steady state, <800 KB/s during sync burst**. A 4 MB memtable per CF fills in 80+ minutes at steady state and 5 seconds at burst. There is no workload justification for per-CF `write_buffer_size` above 4 MB.
+- Per-CF differentiation (AC-MUST-003) is satisfied by the bloom filter difference between point-lookup CFs and scan CFs. Uniform `write_buffer_size` is justified because ALL CFs have the same write rate (one block per 10s writes to all active CFs simultaneously).
 
 ## What I Don't Understand
-1. Whether the `fungible_asset_metadata()` parser can reliably extract `asset_id` from ALL token_b UTXO variants consumed in Swap/RemoveLiquidity/AddLiquidity (it skips a condition prefix; if a FungibleAsset UTXO has a malformed condition prefix, does it return None and silently skip the token?).
-2. Whether existing test infrastructure for `validate_transaction_with_utxos` can provide a `UtxoProvider` mock that covers multi-asset scenarios (the existing test file `inc_i_096_amm_conservation.rs` already does this, but I have not verified the token_b coverage depth).
-3. How the mempool's `UtxoSet` API (`utxo_set.get(&outpoint)`) differs structurally from the consensus `UtxoProvider` trait — and whether a shared function can take both as input without a wrapper trait.
-4. Whether the 25/5 bps fee split (LP vs protocol) happens at the builder layer only (CLI `cmd_pool.rs`) or whether consensus also needs to verify the protocol-fee extraction. This affects whether my conservation equation needs a protocol-fee term.
+
+1. Whether RocksDB allocates memtable arena memory for CFs that receive zero writes after open. If yes, the `presence` CF consumes ~256 KB even when empty; if no, its footprint is near zero. Either way, it's noise under a `db_write_buffer_size` cap.
+2. Whether `max_total_wal_size` interacts correctly with `db_write_buffer_size` -- specifically, does a WAL cap trigger flushes independently of the memtable budget cap? RocksDB docs suggest yes (both are flush triggers), which means the more restrictive cap dominates.
+3. The exact memory overhead of the RocksDB `Options` struct per CF. With 19 CFs across 4 DBs, fixed overhead per CF (block index, filter metadata) matters. I estimate ~100-200 KB per CF based on RocksDB internals, totaling ~2-4 MB. This is noise.
+4. How snap sync's `atomic_replace()` on state_db interacts with memtable budgets -- if it bypasses the memtable entirely (direct SST ingestion), the `db_write_buffer_size` cap is irrelevant during snap sync. If it goes through the memtable, the cap applies and may cause flush churn (acceptable).
+5. Whether the `import_from()` batch writes on utxo_store (50K entries per batch, ~5 MB each) cause write stalls with a 4 MB `write_buffer_size`. The batch goes through the memtable, which would overflow and trigger flush. With `max_write_buffer_number=2`, a second memtable absorbs writes during flush. This should work but hasn't been tested at this exact size.
+
+## CONTRADICTION NOTED
+
+The analyst's parameter table (Section 2.3) states `Bloom filter: Not set` for block_store. The code at `crates/storage/src/block_store/open.rs:24-26` clearly shows:
+```rust
+let mut block_opts = rocksdb::BlockBasedOptions::default();
+block_opts.set_bloom_filter(10.0, false);
+opts.set_block_based_table_factory(&block_opts);
+```
+Block_store DOES have a bloom filter (10 bits/key, full filter). This means AC-SHOULD-003 is already partially met. The analyst's table is wrong.
 
 ## Current State Analysis
 
-### Conservation enforcement sites (measured)
+### Measured parameters (from source code, not docs)
 
-| Site | File | Lines | What it checks |
-|------|------|-------|----------------|
-| Native conservation (pool-aware) | `utxo.rs:210-262` | 52 | DOLI input+old_reserve_a >= output+new_reserve_a |
-| Swap structural+invariant | `utxo.rs:595-702` | 107 | pool_id, asset_b, fee_bps, LP supply preserved; k-invariant; partial token conservation (A->B only); trivial B->A bound |
-| AddLiquidity structural | `utxo.rs:705-744` | 39 | pool_id, reserves increased, LP supply increased — NO input binding |
-| RemoveLiquidity structural+binding | `utxo.rs:747-854` | 107 | pool_id, reserves decreased, LP supply decreased; proportional binding (INC-I-096 gated); token output binding |
-| CreatePool RC-B | `utxo.rs:869-918` | 49 | Declared reserves backed by net inputs |
-| Mempool native conservation | `pool.rs:380-437` | 57 | Duplicates utxo.rs pool-aware conservation |
-| Mempool calculate_inputs parity | `pool.rs:926-982` | 56 | is_native_amount filter (gated) |
-| Structural validation (pool.rs) | `validation/pool.rs:1-230` | 230 | Input/output counts, output types, MINIMUM_LIQUIDITY, pool_id derivation |
+| Parameter | block_store | state_db | utxo_store | diagnostic_ledger |
+|-----------|-------------|----------|------------|-------------------|
+| CFs | 9 (8 active + 1 dead) | 6 | 3 | 1 |
+| `db_write_buffer_size` | 0 (uncapped) | 0 (uncapped) | 0 (uncapped) | 8 MB |
+| `write_buffer_size` | 64 MB (default) | 64 MB (default) | 64 MB (default) | 4 MB |
+| `max_write_buffer_number` | 2 (default) | 2 (default) | 2 (default) | 2 |
+| `max_total_wal_size` | 0 (uncapped) | 64 MB | 0 (uncapped) | not set |
+| `max_open_files` | 256 | 256 | default (unlimited) | 64 |
+| Compression | Lz4 | Lz4 | Lz4 | Lz4 |
+| Bloom filter | YES (10 bits) | No | No | No |
+| Block cache | 8 MB (default) | 8 MB (default) | 8 MB (default) | 4 MB (explicit) |
+| Per-CF options | None | None | None | None |
 
-**Total conservation logic across sites**: ~467 lines in utxo.rs + ~113 lines in mempool + ~230 lines structural = ~810 lines.
+### Write rate derivation
 
-**Number of declared-state trust points** (where attacker-controlled output fields are checked against inputs):
-- Current: 5 partial (pool_id preserved: 3 sites; reserves direction: 2; proportional binding: 1 gated; token output: 2 partial; k-invariant: 1). Each tx type has its OWN custom check with different coverage gaps.
-- D1 (blind to reserves): patched at 2 sites (mempool + consensus)
-- D2 (parity): patched at 1 site (mempool `calculate_inputs`)
-- D3 (RemoveLiquidity unbound): patched at 1 site (proportional binding)
-- D4 (Swap B->A unbound): NOT fully patched (trivial bound `doli_out_from_pool > old_meta.reserve_a`, no real input binding)
-- H2 (token_b conservation): partially patched (Swap A->B tokens_to_user==tokens_out_from_pool; RemoveLiquidity tokens_out <= actual_token_delta)
+**Steady state** (1 block per 10s = 6 blocks/min):
 
-### Structural diagnosis
+| DB | Per-block WriteBatch size | Writes/min | MB/min |
+|----|--------------------------|------------|--------|
+| block_store | ~2.3 KB (7 CFs written per block) | 6 | 0.014 |
+| state_db | ~5-8 KB (cf_utxo churn + cf_meta + cf_undo) | 6 | 0.048 |
+| utxo_store | ~4-6 KB (mirrors state_db cf_utxo) | 6 | 0.036 |
+| diagnostic_ledger | 0 (no fork events in steady state) | ~0 | 0 |
 
-The root problem is **fragmentation**: each tx type has bespoke checks scattered across utxo.rs (lines 595-918), and the mempool duplicates the DOLI conservation at a different abstraction level. Conservation is NOT a single principled equation; it is an accumulation of ad-hoc patches. This means:
+**Burst** (sync catch-up, ~100 blocks/s):
 
-1. **Adding a new AMM tx type** (e.g., concentrated liquidity) requires adding conservation checks at 3+ sites.
-2. **Verifying correctness** requires auditing 5 independent code blocks, each with its own data-extraction logic.
-3. **Parity** between mempool and consensus is maintained by manual duplication, not shared code.
+| DB | Per-second write rate |
+|----|---------------------|
+| block_store | ~230 KB/s |
+| state_db | ~800 KB/s |
+| utxo_store | ~600 KB/s |
+| diagnostic_ledger | ~0 (no fork events during sync) |
 
-## First-Principles Derivation
+**Snap sync (one-time import)**:
 
-### The Single-Equation Insight
+| DB | Batch size | Pattern |
+|----|-----------|---------|
+| state_db | `atomic_replace()` -- likely bypasses memtable (direct SST ingest) | One-shot |
+| utxo_store | 50K entries * ~100B = ~5 MB per batch | Repeated until import complete |
 
-In a UTXO model, an AMM transaction consumes a set of inputs (including the old Pool UTXO) and produces a set of outputs (including the new Pool UTXO). Three asset classes flow through an AMM tx:
+### Memtable fill times at 4 MB write_buffer_size
 
-1. **DOLI** (native): tracked in `output.amount` for Normal/Bond types AND in `pool_metadata.reserve_a` for Pool type.
-2. **token_b** (FungibleAsset): tracked in `output.amount` for FungibleAsset type AND in `pool_metadata.reserve_b` for Pool type.
-3. **LP supply**: tracked in `output.amount` for LPShare type AND in `pool_metadata.total_lp_shares` for Pool type.
+| Scenario | block_store | state_db | utxo_store |
+|----------|-------------|----------|------------|
+| Steady state | ~285 min per CF | ~83 min per CF | ~111 min per CF |
+| Burst sync | ~17s per CF | ~5s per CF | ~7s per CF |
 
-**The conservation law**: For EACH asset class independently:
-
-```
-sum(asset_in) >= sum(asset_out)
-```
-
-Where `asset_in` and `asset_out` include BOTH explicit UTXOs AND pool reserve contributions.
-
-### Per-asset balance equations
-
-Define helper functions:
-```
-doli_value(utxo) = utxo.amount if is_native_amount(utxo.output_type), 
-                   else pool_metadata.reserve_a if Pool, else 0
-token_value(utxo, asset_b_id) = utxo.amount if FungibleAsset with matching asset_id, 
-                                 else pool_metadata.reserve_b if Pool, else 0
-lp_value(utxo, pool_id) = utxo.amount if LPShare with matching pool_id, 
-                            else pool_metadata.total_lp_shares if Pool, else 0
-```
-
-Then for each AMM tx:
-```
-DOLI:    sum_inputs(doli_value) >= sum_outputs(doli_value)         ... (E1)
-token_b: sum_inputs(token_value) >= sum_outputs(token_value)       ... (E2)
-LP:      sum_inputs(lp_value) >= sum_outputs(lp_value)             ... (E3, only for Remove)
-         sum_inputs(lp_value) <= sum_outputs(lp_value)             ... (E3', only for Add)
-         sum_inputs(lp_value) == sum_outputs(lp_value)             ... (E3'', only for Swap)
-```
-
-The `>=` in E1/E2 absorbs floor-division dust (goes to pool). The difference is the implicit fee for DOLI or slippage dust for token_b.
-
-### How this kills each defect
-
-| Defect | How single-equation fixes it |
-|--------|------------------------------|
-| D1 (reserves invisible) | Pool reserves are explicitly included in `doli_value`/`token_value` sums |
-| D2 (mempool/consensus parity) | Both sites call the SAME `verify_amm_conservation()` function |
-| D3 (RemoveLiquidity unbound) | E1 bounds DOLI out: user cannot extract more DOLI than (old_reserve_a - new_reserve_a). E3 bounds shares_burned to actual LPShare inputs. Together they cap proportional withdrawal. |
-| D4 (Swap B->A unbound) | E2 bounds token_b: declared new_reserve_b increase MUST be covered by FungibleAsset inputs. E1 bounds DOLI out to reserve_a release. |
-| H1 (floor division) | `>=` (not `==`) absorbs truncation. Dust stays in pool. |
-| H2 (token_b conservation) | E2 is a first-class equation on the same footing as E1. |
-
-### Is the k-invariant still needed?
-
-**Yes.** Conservation prevents THEFT (no asset created from nothing). The k-invariant prevents VALUE LEAK via mispricing. Consider: with conservation alone, an attacker could create a Swap where `new_reserve_a = old_reserve_a + 1000` and `new_reserve_b = old_reserve_b - 999`, satisfying conservation on both sides, but the swap rate (1000 for 999) is far from the market rate (it should be ~997 with 30bps fee). The k-invariant bounds the output to the correct AMM curve.
-
-**Minimum model = 3 conservation equations (E1, E2, E3) + k-invariant for Swap.** These are independent: conservation prevents creation-from-nothing; k-invariant prevents mispricing.
-
-### Per-tx-type equations
-
-**CreatePool**: E1 (DOLI conservation: inputs fund reserve_a), E2 (token conservation: inputs fund reserve_b). LP: structural check (MINIMUM_LIQUIDITY). Already covered by RC-B + structural pool.rs.
-
-**AddLiquidity**: E1 (native_in + old_reserve_a >= native_out + new_reserve_a), E2 (token_in + old_reserve_b >= token_out + new_reserve_b), E3' (LP supply must increase; new LPShare outputs must not exceed the delta `new_total_lp - old_total_lp`).
-
-**RemoveLiquidity**: E1, E2 (with >= direction), E3 (LP_in >= LP_out; where LP_in includes LPShare inputs + old_total_lp_from_pool, LP_out includes LPShare outputs + new_total_lp_from_pool. Since there are typically no LPShare outputs, this becomes: LPShare_input_amount + old_total_lp >= new_total_lp, i.e., LP shares burned = LPShare inputs consumed).
-
-**Swap**: E1, E2, E3'' (LP supply unchanged), plus k-invariant (new_k >= old_k).
+A 4 MB memtable NEVER causes a write stall in either scenario. Flush time for 4 MB is <50ms on SSD, <500ms on HDD. With `max_write_buffer_number=2`, the overlap absorbs any flush latency.
 
 ## Proposals
 
-### P1: Single `verify_amm_conservation()` function — conf(0.65, observed)
+### P1: Uniform 4 MB write_buffer_size + 16 MB db_write_buffer_size on all 3 uncapped DBs -- conf(0.65, measured)
 
-**The proposal**: Create ONE function in `crates/core/src/validation/amm_conservation.rs` (~100-120 lines) that takes a `Transaction` + consumed UTXOs (as a slice of `(Input, Output)` pairs) and returns `Result<(), ValidationError>`. It implements E1/E2/E3 + k-invariant as described above. Both mempool and consensus call it identically.
+**Evidence**: Write rate math above. 4 MB is 80-280x the per-block write volume. 16 MB caps total memtable across all CFs in a DB, allowing 4 CFs to have full memtables simultaneously (only 2-3 are actively written per block anyway).
 
-**Evidence**:
-- Current: 5 separate check blocks in utxo.rs (354 lines) + 2 duplicated blocks in mempool pool.rs (113 lines) = 467 lines of conservation logic across 2 crates.
-- Proposed: 1 function (~120 lines) in 1 new file, called from 2 sites (mempool + utxo.rs) with ~5 lines of call-site glue each = ~130 total lines.
-- The existing `pool.rs` builder math (`compute_swap`, `compute_remove_liquidity`, `verify_invariant`) is NOT reused by this function; the conservation check is INDEPENDENT of the builder math (conservation checks balance, not correctness of AMM pricing).
+**Complexity cost**: +0 modules, +0 interfaces, +2-3 lines per uncapped DB (total 8 lines: 3 for block_store, 2 for state_db which has WAL already, 3 for utxo_store). Reduction: memtable ceiling drops from ~2,184 MB to 56 MB total (16+16+16+8).
 
-**Complexity cost**:
-- +1 new module (`amm_conservation.rs`)
-- +1 new public function (`verify_amm_conservation`)
-- -5 scattered check blocks in utxo.rs (lines 595-918 reduce to ~10 lines of delegation)
-- -2 duplicated blocks in mempool pool.rs (reduce to ~5 lines)
-- Net: +1 module, -6 scattered code blocks, -330 lines
+**Before**: block_store can allocate 9 * 64 MB * 2 = 1,152 MB of memtables.
+**After**: block_store is hard-capped at 16 MB total memtable memory.
 
-**Kill test**: What if the consumed UTXO data is not available to the mempool at the call site (mempool has `UtxoSet` not `UtxoProvider`)?
+**Kill test**: "4 MB write_buffer_size causes write stalls during sync burst."
+**Kill test result**: NOT FOUND. At 230 KB/s (block_store worst case), 4 MB fills in 17 seconds. Flush takes <50ms. With 2 buffers, the overlap comfortably absorbs the burst. Even at 10x burst (1000 blocks/s), 4 MB fills in 1.7s and flush is <50ms -- still no stall.
 
-**Kill test result**: The mempool already resolves `pool_metadata()` from its `utxo_set.get(&outpoint)` at line 404. The function signature can take `&[(Output,)]` (just the outputs of consumed UTXOs), not the full `UtxoProvider` trait. The mempool can construct this slice from its existing lookups. NOT killed.
+**Kill test 2**: "16 MB db_write_buffer_size causes forced flushes during snap sync import."
+**Kill test result**: PARTIAL CONCERN. `utxo_store.import_from()` writes 50K entries per batch (~5 MB). This exceeds 4 MB `write_buffer_size`, triggering a mid-batch memtable switch. RocksDB handles this correctly: the batch spans two memtables, and the full one flushes asynchronously. With `max_write_buffer_number=2`, a second memtable absorbs writes during flush. With 16 MB db_write_buffer_size and 3 CFs, total memory stays bounded. BUT this is theoretical analysis, not measured. Confidence capped at 0.65 for this reason.
 
-**Kill test 2**: What if the LP conservation equation (E3) for RemoveLiquidity falsely rejects legitimate transactions where the user burns LP shares from multiple LPShare UTXOs?
+**Risk**: If snap sync import writes are much larger than estimated (>16 MB in a single WriteBatch), the 16 MB cap could cause cascading flushes. Mitigated by the fact that import batches every 50K entries.
 
-**Kill test result**: The function sums ALL LPShare inputs for the matching pool_id. Multiple LPShare UTXOs are naturally summed. The consumed UTXOs are already iterated in the input loop (utxo.rs line 92). NOT killed.
+### P2: WAL cap on block_store (32 MB) and utxo_store (16 MB or disabled) -- conf(0.60, observed)
 
-**Risk**: The refactor changes the shape of error messages (new error codes), which could affect monitoring/alerting. Mitigated by preserving error type variants (InvalidSwap, InvalidLiquidity, etc.) and gating behind `inc_i_096_activation_height`.
+**Evidence**: block_store writes 14 KB/min. 32 MB of WAL = ~38 hours of writes. This is extremely generous. utxo_store self-heals from state_db, so WAL could be disabled entirely (saves I/O + memory).
 
-**Before/After**:
+**Complexity cost**: Already included in P1's line count (max_total_wal_size is one of the 3 lines per DB).
+
+**Before**: block_store and utxo_store WAL grows unbounded. Dead `presence` CF can pin WAL indefinitely.
+**After**: WAL bounded on all instances. WAL pinning by dead CFs impossible (forced flush on oldest CF when WAL exceeds cap).
+
+**Kill test**: "Disabling WAL on utxo_store causes data loss that self-heal can't recover."
+**Kill test result**: NOT FOUND. `init_utxo_set()` explicitly checks `store_len != state_len` and rebuilds from state_db. The self-heal path is tested and proven (INC-I-027 recovery). WAL loss on utxo_store means a full rebuild from state_db on next restart -- same as self-heal but triggered by crash instead of mismatch.
+
+**Kill test 2**: "32 MB WAL on block_store constrains WAL replay after crash."
+**Kill test result**: NOT FOUND. With 14 KB/min write rate, 32 MB of WAL holds ~38 hours of writes. The maximum WAL to replay is 32 MB, which takes <1 second.
+
+**Risk**: If WAL is disabled on utxo_store and the node crashes during a large import_from, the entire import must restart. Cost: minutes of startup time. Acceptable given self-heal.
+
+### P3: Bloom filter on state_db cf_utxo (10 bits/key) -- conf(0.55, inferred)
+
+**Evidence**: cf_utxo is the hottest point-lookup CF (every transaction validation). Bloom filter avoids disk reads on negative lookups. With ~10K UTXOs today (growing), the bloom filter memory cost is ~12.5 KB. The benefit is avoiding SSD reads for "does this UTXO exist?" checks that miss.
+
+**Complexity cost**: Requires per-CF options for state_db (instead of uniform). Adds ~5 lines of code to create a BlockBasedOptions with bloom filter for cf_utxo. This is the ONLY per-CF differentiation I propose -- justified by cf_utxo being the hottest read path.
+
+**Before**: state_db has no bloom filters. Negative lookups always hit disk (unless in block cache).
+**After**: cf_utxo negative lookups filtered at <1% FPR. ~12.5 KB additional memory.
+
+**Kill test**: "Most cf_utxo lookups hit block cache anyway, making bloom filter redundant."
+**Kill test result**: PLAUSIBLE. With 10K UTXOs * ~100B = ~1 MB of total UTXO data, the 8 MB block cache likely holds the entire UTXO set. If so, bloom filter provides near-zero benefit. This is why confidence is low -- the working set fits in cache today. As the chain grows and the UTXO set exceeds block cache, bloom filters become valuable. This is future-proofing, which conflicts with the radical simplifier lens.
+
+**Radical simplifier verdict**: DEFER. The working set fits in cache today. Add bloom filter when UTXO count exceeds ~50K (block cache can no longer hold all data blocks). Note it as a "should" but not "must" for this redesign.
+
+### P4: presence CF minimal memtable -- conf(0.50, inferred)
+
+**Evidence**: The `presence` CF is deprecated, cleaned on open, never written again. Under the current configuration, it allocates a 64 MB memtable slot. With `db_write_buffer_size = 16 MB`, the total is capped, but the presence CF still occupies a memtable slot that could be used by active CFs.
+
+**Complexity cost**: Requires per-CF options for block_store's presence CF. Adds ~5 lines of code.
+
+**Kill test**: "Under db_write_buffer_size = 16 MB with write_buffer_size = 4 MB, the presence CF's memtable is negligible."
+**Kill test result**: FOUND. Under the radical proposal (write_buffer_size = 4 MB), the arena for presence CF is ~512 KB. With 9 CFs, initial arena is ~4.5 MB total, well under the 16 MB cap. The presence CF's 512 KB is noise. The kill test succeeds -- this proposal adds complexity for negligible benefit.
+
+**Radical simplifier verdict**: DEAD. With uniform 4 MB write_buffer_size and 16 MB db_write_buffer_size, the presence CF's impact is ~512 KB. Not worth the per-CF options complexity. Just leave it with uniform settings.
+
+### P5: Do NOT drop utxo_store or diagnostic_ledger -- conf(0.70, observed)
+
+**Evidence**: utxo_store is the production UTXO backend (`UtxoSet::RocksDb`), opened unconditionally at startup via `init_utxo_set()`. Dropping it requires either: (a) in-memory store (RAM scales with UTXO count), or (b) routing all UTXO reads through state_db (major code change). Neither is in scope.
+
+diagnostic_ledger opens ONLY with `--fork-diagnostics` flag. It's already capped at 8 MB. Its existence costs nothing when the flag is off. When on, it's an 8 MB overhead -- negligible.
+
+**Kill test**: "utxo_store is just a redundant copy of state_db.cf_utxo and could be eliminated."
+**Kill test result**: FOUND BUT OUT OF SCOPE. Yes, it IS a redundant copy. But it's the runtime UTXO backend. Eliminating it requires architectural changes (making state_db.cf_utxo the direct UTXO provider). This is a valid long-term simplification but NOT an RocksDB configuration change -- it's an architecture change.
+
+**Radical simplifier verdict**: Keep both. Cap them properly. The configuration fix is the scope.
+
+## What an SSF (Stupid Simple First) Configuration Looks Like
+
+For each of the 3 uncapped DBs, add exactly these lines:
+
+**block_store** (+3 lines):
+```rust
+opts.set_db_write_buffer_size(16 * 1024 * 1024); // 16 MB total memtable budget
+opts.set_write_buffer_size(4 * 1024 * 1024);     // 4 MB per-CF memtable
+opts.set_max_total_wal_size(32 * 1024 * 1024);   // 32 MB WAL cap
 ```
-BEFORE: 5 check blocks in utxo.rs (354 lines) + 2 mempool blocks (113 lines)
-        Each tx type has bespoke extraction, bespoke conditions, bespoke error messages.
-        token_b partially covered. LP binding only for RemoveLiquidity.
 
-AFTER:  1 function in amm_conservation.rs (~120 lines) + 2 call sites (~10 lines each)
-        Uniform per-asset conservation for all 4 tx types.
-        token_b fully covered. LP binding for all tx types.
+**state_db** (+2 lines, WAL already set):
+```rust
+opts.set_db_write_buffer_size(16 * 1024 * 1024); // 16 MB total memtable budget
+opts.set_write_buffer_size(4 * 1024 * 1024);     // 4 MB per-CF memtable
 ```
 
-### P2: Retain structural validation in pool.rs, unmodified — conf(0.7, observed)
+**utxo_store** (+3 lines):
+```rust
+opts.set_db_write_buffer_size(16 * 1024 * 1024); // 16 MB total memtable budget
+opts.set_write_buffer_size(4 * 1024 * 1024);     // 4 MB per-CF memtable
+opts.set_max_total_wal_size(16 * 1024 * 1024);   // 16 MB WAL cap (self-heals anyway)
+```
 
-**The proposal**: The existing structural checks in `crates/core/src/validation/pool.rs` (230 lines) are ORTHOGONAL to conservation. They validate tx shape (output counts, output types, MINIMUM_LIQUIDITY, pool_id derivation). Do NOT touch them. They are correct and independent.
+**diagnostic_ledger** (+1 line, other caps already set):
+```rust
+opts.set_max_total_wal_size(8 * 1024 * 1024);    // 8 MB WAL cap
+```
 
-**Evidence**: Pool.rs checks are structural: they fire BEFORE UTXO resolution (no `UtxoProvider` needed). Conservation is a UTXO-context concern. These are separate layers. The existing pool.rs tests pass and cover the structural invariants.
+That's 9 new lines of code total. No per-CF options. No bloom filter changes. No compaction tuning. No block cache changes. No compression changes. No new abstractions. No shared cache. No CF removal.
 
-**Complexity cost**: +0 (no change).
+## Per-Instance Concrete Values
 
-**Kill test**: What if some structural check in pool.rs overlaps with the conservation function, causing double-rejection of the same invariant?
+### block_store
 
-**Kill test result**: Pool.rs checks are output-shape-only (e.g., "first output must be Pool type", "fee_bps < max", "MINIMUM_LIQUIDITY gap = 1000"). The conservation function checks value flows (sum of assets in >= sum out). Zero overlap. NOT killed.
+| Parameter | Value | Justification |
+|-----------|-------|---------------|
+| `db_write_buffer_size` | 16 MB | Caps total memtable across 9 CFs. 14 KB/min write rate; 16 MB = ~19 hours of writes. |
+| `write_buffer_size` | 4 MB | Per-CF memtable. Fills in ~285 min at steady state, ~17s at burst. Flush < 50ms. |
+| `max_write_buffer_number` | 2 (default, keep) | Overlap absorbs flush latency during burst sync. |
+| `max_total_wal_size` | 32 MB | 38 hours of WAL at steady state. Prevents WAL pinning by dead `presence` CF. |
+| Compression | Lz4 (keep) | Already set. No change needed. |
+| Bloom filter | 10 bits (keep) | Already set. No change needed. |
+| Block cache | 8 MB default (keep) | Already default. Sufficient for cold lookups. |
+| `max_open_files` | 256 (keep) | Already set. No change needed. |
+| Per-CF options | None | Uniform is justified: all CFs written at same rate (1 block per 10s). |
 
-**Risk**: None; this is the conservative choice.
+### state_db
 
-### P3: Mempool calls `verify_amm_conservation` via adapter, eliminating duplication — conf(0.6, observed)
+| Parameter | Value | Justification |
+|-----------|-------|---------------|
+| `db_write_buffer_size` | 16 MB | Caps total memtable across 6 CFs. 48 KB/min write rate. |
+| `write_buffer_size` | 4 MB | Per-CF memtable. cf_utxo fills in ~83 min steady, ~5s burst. |
+| `max_write_buffer_number` | 2 (default, keep) | Overlap for burst sync. |
+| `max_total_wal_size` | 64 MB (keep) | Already set. Adequate. |
+| Compression | Lz4 (keep) | No change. |
+| Bloom filter | None (keep for now) | Working set fits in 8 MB block cache today. Add when UTXO count > 50K. |
+| Block cache | 8 MB default (keep) | Holds entire UTXO dataset at current scale. |
+| `max_open_files` | 256 (keep) | No change. |
+| Per-CF options | None | cf_undo has larger values but same write frequency. Uniform is simpler. |
 
-**The proposal**: The mempool currently duplicates pool-aware DOLI conservation (pool.rs:380-437) and the `is_native_amount` filter (pool.rs:926-982). Instead, the mempool constructs the consumed-UTXO slice from its `UtxoSet` lookups and calls `verify_amm_conservation()`. This eliminates D2 by construction.
+### utxo_store
 
-**Evidence**: The mempool already resolves each input UTXO at line 940-961 (`utxo_set.get(&outpoint)`). It already has access to every consumed output. The only gap: the mempool gets `Utxo` (from `UtxoSet`) while consensus gets `UtxoInfo` (from `UtxoProvider`). Both contain `output: Output`. The shared function only needs `&Output`, so both callers can provide it.
+| Parameter | Value | Justification |
+|-----------|-------|---------------|
+| `db_write_buffer_size` | 16 MB | Caps total memtable across 3 CFs. 36 KB/min write rate. |
+| `write_buffer_size` | 4 MB | Per-CF memtable. Mirrors state_db write pattern. |
+| `max_write_buffer_number` | 2 (default, keep) | Overlap for burst and import_from batches. |
+| `max_total_wal_size` | 16 MB | Self-heals from state_db. WAL is nice-to-have, not critical. Small cap bounds it. Could also be disabled entirely (see P2). |
+| Compression | Lz4 (keep) | No change. |
+| Bloom filter | None | RocksDB is a durable backend; hot reads go through UtxoSet enum dispatch. |
+| Block cache | 8 MB default (keep) | No change. |
+| Per-CF options | None | All 3 CFs mirror the same write pattern. |
 
-**Complexity cost**:
-- +1 adapter pattern (mempool extracts `Vec<Output>` from its UTXO lookups)
-- -57 lines of duplicated pool-aware conservation in mempool
-- -56 lines of duplicated `is_native_amount` gating in mempool
-- Net: cleaner, but requires the mempool to resolve ALL input UTXOs upfront (it already does this in `calculate_inputs`).
+### diagnostic_ledger
 
-**Kill test**: What if the mempool's UTXO set contains parent-chain mempool entries (unconfirmed outputs) that consensus would not see?
+| Parameter | Value | Justification |
+|-----------|-------|---------------|
+| `db_write_buffer_size` | 8 MB (keep) | Already set by INC-I-102. Workload-justified: single CF, batched writes. |
+| `write_buffer_size` | 4 MB (keep) | Already set. |
+| `max_write_buffer_number` | 2 (keep) | Already set. |
+| `max_total_wal_size` | 8 MB (add) | Currently not set. Should be bounded. 8 MB is generous for observability writes. |
+| Compression | Lz4 (keep) | No change. |
+| Block cache | 4 MB (keep) | Already set. |
+| `max_open_files` | 64 (keep) | Already set. |
 
-**Kill test result**: The mempool already handles this at line 940 ("First check if output is in mempool"). The shared conservation function operates on resolved `Output` structs regardless of source (confirmed UTXO set or mempool parent). NOT killed.
+## Complexity Comparison
 
-**Risk**: The mempool currently computes `fee` as a by-product of the conservation check (line 401-427). If conservation is delegated, the fee computation needs a separate path. This is manageable: `verify_amm_conservation` returns the DOLI surplus as part of its result, which IS the fee.
+| Dimension | Current | Radical Minimum | Reduction |
+|-----------|---------|-----------------|-----------|
+| Total memtable budget per node (theoretical worst case) | ~2,184 MB | 56 MB (16+16+16+8) | **97.4% reduction** |
+| Total memtable budget per node (observed) | ~450 MB | 56 MB | **87.6% reduction** |
+| Total CFs across 4 DBs | 19 | 19 (no CF changes) | 0% |
+| Number of DB instances | 4 | 4 (no instance changes) | 0% |
+| Per-CF custom options | 0 | 0 (uniform is sufficient) | 0% |
+| Block caches | 4 separate (~28 MB total) | 4 separate (~28 MB total, unchanged) | 0% |
+| Bloom filters | 1 (block_store only) | 1 (block_store only, unchanged) | 0% |
+| Lines of code added | 0 | 9 | +9 lines |
+| WAL caps set | 1 (state_db only) | 4 (all instances) | +3 caps |
+| Total RocksDB memory ceiling (memtable + cache + WAL) | ~2,240 MB+ | ~172 MB (56 memtable + 28 cache + 88 WAL) | **92.3% reduction** |
 
-### P4: k-invariant as a sub-check within the conservation function, not separate — conf(0.55, inferred)
+## Why This Works (Acceptance Criteria Check)
 
-**The proposal**: Include the k-invariant check (`new_k >= old_k`) inside `verify_amm_conservation()` for Swap tx types, rather than leaving it as a standalone block in utxo.rs.
+### Must
 
-**Evidence**: The k-invariant is already checked in utxo.rs lines 648-655 for Swap. Moving it inside the shared function means ONE function contains ALL AMM value-safety logic. Current location: interleaved with structural checks (pool_id, asset_b, fee_bps preservation). The structural checks can remain in the shared function (they are cheap, ~5 comparisons).
+| ID | Criterion | How Radical Proposal Satisfies |
+|----|-----------|-------------------------------|
+| AC-MUST-001 | Behavior preservation | Only `Options` parameters change. No code logic, no CF structure, no write paths, no read paths modified. RocksDB Options are transparent to the application -- same data in, same data out. State root computation is unaffected. |
+| AC-MUST-002 | Bounded per-DB memory | `db_write_buffer_size` set on all 4 instances: 16+16+16+8 = 56 MB total. Every instance has an explicit nonzero cap. |
+| AC-MUST-003 | Per-CF differentiation where workload differs | **Radical position**: per-CF memtable differentiation is NOT workload-justified. ALL CFs in each DB are written at the same frequency (once per block). The existing bloom filter on block_store IS per-CF differentiation (point-lookup vs scan). If the synthesizer requires additional differentiation, adding bloom filter to state_db.cf_utxo (P3) is the highest-value option. |
+| AC-MUST-004 | WAL bounded on all instances | `max_total_wal_size` set on all 4 instances: 32+64+16+8 = 120 MB total. No WAL pinning possible. |
+| AC-MUST-005 | Diagnostic_ledger cap preserved | 8 MB cap unchanged. WAL cap added (8 MB). |
+| AC-MUST-006 | One spec, one set of values | Hardcoded constants. No env vars, no CLI flags, no runtime configuration. |
 
-**Complexity cost**: +0 (moving existing code, not adding new code).
+### Should
 
-**Kill test**: What if a future tx type (e.g., limit orders, concentrated liquidity) needs the k-invariant with different semantics?
+| ID | Criterion | Status |
+|----|-----------|--------|
+| AC-SHOULD-001 | Read-path latency preserved | Unchanged. Block cache, bloom filter, compression all unchanged. Smaller memtables mean slightly more frequent compaction but with 4 MB SST files, compaction is faster. Net: neutral or slight improvement. |
+| AC-SHOULD-002 | WAL replay < 30s | With max WAL sizes of 32/64/16/8 MB, replay of ~120 MB total takes <5 seconds on SSD, <30 seconds on HDD. |
+| AC-SHOULD-003 | Bloom filters on point-lookup CFs | Partially met (block_store already has bloom filter). state_db.cf_utxo deferred -- working set fits in cache today. |
+| AC-SHOULD-004 | Deprecated presence CF minimal | Under 4 MB uniform write_buffer_size, presence CF's arena overhead is ~512 KB. Negligible. No special handling needed. |
 
-**Kill test result**: The function dispatches on `tx.tx_type`, so future types can have their own invariant variant. The k-invariant's exact form (`new_k >= old_k`) is specific to constant-product AMMs. If a future curve type changes this, the function grows a new match arm. Acceptable. NOT killed.
+### Could
 
-**Risk**: Coupling the k-invariant with conservation could make unit testing harder. Mitigated: the function is still a pure function of (Transaction, consumed UTXOs, height).
+| ID | Criterion | Status |
+|----|-----------|--------|
+| AC-COULD-001 | Shared block cache | NOT IMPLEMENTED. Adds code complexity (shared Cache object) for ~12 MB savings. Not worth it at this scale. |
+| AC-COULD-002 | WAL disabled on rebuildable instances | PARTIALLY ADDRESSED. utxo_store WAL capped at 16 MB (could be disabled). Diagnostic_ledger WAL capped at 8 MB (could be disabled). Conservative choice: cap rather than disable, since disabling changes crash-recovery behavior. |
+| AC-COULD-003 | Compaction style differentiation | NOT IMPLEMENTED. Default level compaction is fine for all workloads. Write amplification is not a concern at <50 KB/min write rate. |
 
-### P5: Return the surplus per asset class, enabling mempool fee computation — conf(0.5, inferred)
+## Why This Might Fail
 
-**The proposal**: `verify_amm_conservation()` returns `Result<AmmConservationResult, ValidationError>` where `AmmConservationResult` contains `doli_surplus: u64` (= the implicit fee) and `token_b_surplus: u64` (= dust to pool). The mempool uses `doli_surplus` as the fee; consensus ignores it (AMM txs are fee-exempt).
+1. **Snap sync import_from writes**: The utxo_store import_from() batches of 50K entries (~5 MB) exceed the 4 MB write_buffer_size. This causes mid-batch memtable switch + flush. RocksDB handles this correctly (WriteBatch can span memtable boundaries), but there may be a transient memory spike of ~8 MB (old memtable flushing + new memtable receiving). With db_write_buffer_size = 16 MB, this is within bounds. **Mitigation**: import_from already batches at 50K entries; this caps per-batch write size.
 
-**Evidence**: The mempool currently computes fee at lines 401-427 as `(total_input + old_reserve_a) - (total_output + new_reserve_a)`. This IS the DOLI surplus from E1. If the conservation function returns this value, the mempool avoids duplicating the computation.
+2. **Large cf_undo entries**: cf_undo entries can be 100+ KB. A single large undo entry in a 4 MB memtable is fine (4 MB >> 100 KB). But if blocks become much larger (thousands of transactions), undo entries could grow to MB scale. At 4 MB write_buffer_size, a single 2 MB undo entry would fill half the memtable. **Mitigation**: DOLI's max block size is 2 MB; undo data is at most ~2x block size (inputs + outputs). A 4 MB memtable handles this.
 
-**Complexity cost**: +1 struct (`AmmConservationResult`), +0 lines net.
+3. **Chain scale growth**: At 200K blocks today, the UTXO set is small (~10K entries). At 10M blocks, the UTXO set could be millions of entries. The 8 MB block cache on state_db would no longer hold the working set. Point lookups would hit disk. Bloom filters would become essential. The configuration proposed here is correct for today's scale; it would need bloom filter additions at ~50K+ UTXOs. **This is acceptable**: tune when measured, not speculatively.
 
-**Kill test**: What if the mempool needs the fee BEFORE calling conservation (e.g., for prioritization sorting)?
+4. **Compaction pressure**: With 4 MB write_buffer_size, SST files are ~4 MB. With default level compaction and 64 MB max_bytes_for_level_base (RocksDB default), L0 holds ~16 files (4 * 4 MB), L1 holds ~64 MB, L2 holds ~640 MB. This is fine for DOLI's total dataset size at current chain height.
 
-**Kill test result**: The mempool sorts by fee_rate which requires fee. Currently, fee is computed inline (lines 401-427). The proposed function computes it as part of conservation. The mempool would call conservation first, then use the returned surplus as fee. This changes the order of operations but not the result. The mempool would reject invalid txs before sorting (which it already does). NOT killed.
+5. **Uniform write_buffer_size may be suboptimal for cf_undo**: cf_undo has large values (1-100 KB) and is write-once-read-rarely. A larger memtable (e.g., 8 MB) would reduce flush frequency. But at 1 entry per block (~10 KB average), cf_undo fills 4 MB in ~400 blocks = ~67 minutes. Flush frequency of once per hour for a cold-read CF is perfectly acceptable.
 
-**Risk**: Adding a return struct increases the API surface. Mitigated: the struct is trivial (2 fields).
+## Open Questions for Synthesizer
 
-## Complexity Comparison Table
+1. **AC-MUST-003 interpretation**: The acceptance criterion says "per-CF differentiation where workload differs." The radical position is that ALL CFs are written at the same frequency (once per block) and memtable sizing should be uniform. The difference is in VALUE SIZE (cf_undo: large, cf_exit_history: tiny) and READ PATTERN (cf_utxo: point lookup, cf_undo: rarely read). Value size affects SST file size and compaction, not memtable sizing. Read pattern affects bloom filter and block cache, not memtable sizing. If the synthesizer disagrees and requires memtable differentiation, the highest-value split is: hot CFs (cf_utxo, headers, bodies) at 4 MB vs cold CFs (cf_exit_history, presence, meta) at 1 MB. But the total savings is ~6 MB -- not worth the complexity.
 
-| Metric | Current (patch-set) | Proposed minimum (P1+P2+P3) |
-|--------|--------------------|-----------------------------|
-| Conservation enforcement sites | 3 (mempool, utxo.rs native, utxo.rs per-type) | 1 (shared function, called from 2 sites) |
-| Lines of conservation logic | ~467 (354 utxo.rs + 113 mempool) | ~130 (120 function + 10 call-site glue) |
-| Declared-state trust points | 5 partial (varying coverage by tx type) | 3 universal (E1, E2, E3 cover ALL tx types) |
-| Per-tx-type special cases | 4 bespoke blocks (Swap 107L, Add 39L, Remove 107L, Create 49L) | 1 dispatch with 4 arms (~20L each = ~80L total, inside 1 function) |
-| Mempool/consensus parity mechanism | Manual duplication (113 lines mirror) | Shared function call (guaranteed parity) |
-| token_b conservation coverage | Partial (Swap A->B: exact; Swap B->A: trivial; Remove: gated) | Full (E2 applies uniformly) |
-| LP supply conservation | RemoveLiquidity only (gated) | All 4 tx types (Create: structural; Add: increase bound; Remove: decrease bound; Swap: unchanged) |
-| k-invariant location | utxo.rs:648-655 (Swap only, inline) | Inside shared function (Swap only, same logic) |
-| New modules | 0 (patches in-place) | 1 (`amm_conservation.rs`) |
-| Functions added | 0 | 1 (`verify_amm_conservation`) |
-| Functions deleted | 0 | 0 (check blocks become delegation calls) |
-| Code blocks removed | 0 | 7 (5 in utxo.rs + 2 in mempool pool.rs) |
+2. **utxo_store WAL: cap vs disable**: The radical proposal caps at 16 MB. Disabling entirely saves ~16 MB WAL + flush I/O. The self-heal mechanism is proven (INC-I-027). The downside of disabling is: every node restart after crash requires full utxo_store rebuild from state_db, adding ~10-30 seconds to startup. Is this acceptable?
+
+3. **Bloom filter on state_db.cf_utxo**: Deferred in the radical proposal because the working set fits in 8 MB block cache. Other evaluators may disagree. The cost is ~5 lines of per-CF options code + ~12.5 KB of bloom filter memory. The benefit is future-proofing. If the synthesizer wants it, it's low-risk.
+
+4. **target_file_size_base**: RocksDB default is 64 MB. With 4 MB write_buffer_size, each flush produces a ~4 MB SST file, which is well below the 64 MB target for L1. This means L0->L1 compaction combines multiple SST files. For DOLI's tiny write rate, this doesn't matter -- compaction runs infrequently regardless.
+
+5. **max_background_jobs**: RocksDB default is 2. With 4 DB instances, that's 8 background threads for flush/compaction. On a 2-core VPS, this could cause CPU contention. Reducing to 1 per DB (4 total) would halve the thread count. But with DOLI's tiny write rate, background jobs rarely run -- contention is theoretical. Leave defaults unless measured.
 
 ## Constraints Identified
 
-1. **C10 (Pool amount=0)**: The conservation function MUST extract reserves from `pool_metadata()`, not from `output.amount`. This is already the pattern in the existing code. The function cannot assume `amount` carries reserves.
-
-2. **C8 (Floor-division dust)**: Conservation uses `>=` not `==`. This absorbs up to `(total_shares - 1) / total_shares` units of dust per asset per operation. The dust stays in the pool (benefits remaining LPs).
-
-3. **C11 (Integer determinism)**: All arithmetic is u64/u128. No floats. The conservation function must use `u128` for intermediate sums to avoid overflow when adding large reserves to large native amounts.
-
-4. **C12 (INC-I-092 RC-A preserved)**: The sig/fee exemption for AMM pool inputs at utxo.rs:164-170 is ORTHOGONAL to conservation. Do not touch it.
-
-5. **C6/C7 (Activation gating)**: The shared function takes `height` and `activation_height` as parameters. Below the gate, the existing (buggy) per-type checks remain in place. Above the gate, the shared function takes over. This preserves bit-identical behavior for blocks before the activation height.
-
-6. **Mempool UtxoSet vs consensus UtxoProvider**: The shared function must accept consumed outputs as data (e.g., `&[Output]`), not as a trait. This allows both callers (mempool via `UtxoSet`, consensus via `UtxoProvider`) to construct the input data.
-
-7. **Fee computation coupling**: The mempool needs the DOLI surplus for fee computation. The conservation function should return it (P5), or the mempool must compute it separately. Either way, the conservation check must happen before the fee is used.
-
-8. **CreatePool retains RC-B**: The existing RC-B check (utxo.rs:869-918) is subsumed by E1+E2 in the shared function. But RC-B was shipped with `inc_i_092_activation_height`. The shared function (gated at `inc_i_096`) supersedes it for heights >= inc_i_096. For heights between inc_i_092 and inc_i_096, RC-B remains active. This layering is safe.
+1. **INVARIANT: db_write_buffer_size must be > 0 on ALL instances.** This is the root cause fix. Without it, memtable memory is unbounded.
+2. **INVARIANT: max_total_wal_size must be > 0 on ALL instances.** Dead CFs can pin WAL files indefinitely without a cap.
+3. **OBSERVATION: RocksDB handles WriteBatch larger than write_buffer_size correctly.** The batch spans memtable boundaries, triggering async flush of the full memtable while a new memtable receives the remainder. This means write_buffer_size does NOT need to be >= max WriteBatch size. However, smaller write_buffer_size means more frequent memtable switches during large batches (snap sync import), which increases flush I/O.
+4. **INVARIANT: diagnostic_ledger options are ONLY relevant when --fork-diagnostics flag is passed.** The DB doesn't open otherwise. No need to optimize for the common case (flag off).
+5. **CONSTRAINT: presence CF must remain in the CF list.** Removing it breaks DB open for existing nodes with the CF on disk. The CF is already cleaned on open and never written -- its cost is negligible under a db_write_buffer_size cap.
+6. **CONSTRAINT: state_db WAL must remain enabled.** It provides crash recovery for consensus-critical data. Disabling would require snap sync on every crash -- much slower recovery.
+7. **CONSTRAINT: No code logic changes.** This is a configuration-only fix. All proposals change only RocksDB Options parameters, never the write/read paths themselves.
 
 ## Cross-Perspective Signals
 
-1. **Dead code opportunity**: If the shared conservation function subsumes the per-type blocks in utxo.rs (lines 595-918), those blocks can be gated to only run below `inc_i_096_activation_height`. Above it, they are dead. A subtractionist might propose removing them entirely after the activation height is crossed on all networks.
+1. **For the Coupling evaluator**: `utxo_store` is a full redundant copy of `state_db.cf_utxo` + `state_db.cf_utxo_by_pubkey`. Every write is duplicated. This is the highest-leverage architectural simplification opportunity -- eliminating utxo_store entirely and routing all UTXO operations through state_db would remove 1 DB instance, 3 CFs, and all dual-write synchronization concerns. But it's an architecture change, not a configuration change.
 
-2. **Pattern concern**: The existing code at utxo.rs:660-694 handles Swap directions (A->B vs B->A) with different logic. The B->A branch deliberately does NOT bind DOLI outputs to reserve_a delta (line 680-693 comment). The conservation equation E1 replaces this entirely: E1 binds DOLI output + new_reserve_a to DOLI input + old_reserve_a, regardless of direction. This is a directional coverage improvement that a coupling evaluator might want to trace through E2E tests.
+2. **For the Pattern evaluator**: The 4 DB open functions (block_store, state_db, utxo_rocks, diagnostic_ledger) share no common configuration code. Each constructs its own `Options` independently. A shared `fn default_doli_opts() -> Options` function could ensure all instances get the mandatory caps (db_write_buffer_size, write_buffer_size, max_total_wal_size) without repeating the values. With only 9 lines of new code, this is marginal -- but it would prevent future regressions where a new DB instance is opened without caps.
 
-3. **Builder math reuse**: The brief mentions that "consensus NEVER calls builder helpers". The proposed conservation function also does NOT call builder helpers (compute_swap, compute_remove_liquidity). Conservation is independent of pricing. However, VC-010 (SHOULD) asks for consensus to re-verify AMM math. This is a separate concern from conservation and could be addressed by calling `verify_invariant()` from the conservation function for Swap types (already proposed in P4).
+3. **For the Dead Code evaluator**: The `presence` CF cleanup migration in block_store runs on every startup, iterating to check if it's empty. After the first successful cleanup, subsequent starts iterate an empty CF (immediate return). This is harmless but could be gated by a marker in `meta` CF ("presence_cleaned=true").
 
-4. **Mempool contention tests**: `crates/mempool/src/contention_tests.rs` references `inc_i_096`. Any refactor of mempool conservation must update these tests.
+4. **For the Failure Mode evaluator**: `state_db.open()` counts all UTXO entries on startup via full iterator scan (line 41-47 in open.rs). Similarly, `utxo_rocks.open()` does the same (line 47-54). For large UTXO sets (millions), these startup scans could take minutes. This is NOT a RocksDB configuration issue but is worth noting as a potential startup latency concern at scale.
 
 ## Gaps
 
-1. I did not trace the apply_block path (`tx_processing.rs`, `validation_checks.rs`) in detail. The brief lists them as enforcement sites, but from my grep, their inc_i_096 references are for ValidationContext construction (passing the activation height to the validator), not for independent conservation logic. This should be verified.
-
-2. I did not examine the builder code in `bins/cli/src/cmd_pool.rs` that constructs AMM transactions. Understanding how the builder handles fee change and token change outputs would strengthen the E1/E2/E3 equations. The fee change concern (utxo.rs line 822-829) suggests that DOLI change outputs and swap proceeds are mixed in the user's Normal outputs.
-
-3. I did not verify whether the existing `pool_metadata()` parser correctly handles ALL edge cases (truncated extra_data, wrong version byte) under adversarial conditions. The conservation function relies on it returning `None` for malformed data, which would cause the `unwrap_or(0)` pattern to treat a malformed Pool UTXO as having zero reserves — potentially allowing theft if reserves are hidden by a crafted malformed pool.
-
-4. The interaction between `inc_i_096_activation_height` and `amm_activation_height` (both currently `u64::MAX` on mainnet) means the order of activation matters. If AMM activates before I-096, there is a window where the old (buggy) conservation runs. This is a deployment sequencing concern, not an architecture concern, but any redesign must ensure `inc_i_096_activation_height <= amm_activation_height` or they activate simultaneously.
+1. **No measurement of actual SST file sizes** on mainnet nodes. The write rate math is derived from code analysis, not observed RocksDB statistics. Actual compaction behavior may differ.
+2. **No measurement of block cache hit rates** on any instance. The assertion that "working set fits in 8 MB block cache" is inferred from UTXO count * entry size, not measured.
+3. **No testing of 4 MB write_buffer_size under actual sync burst**. The math says it works, but it hasn't been benchmarked.
+4. **snap sync `atomic_replace()`** interaction with the proposed memtable caps is unknown. If it bypasses the memtable (direct SST ingestion), the caps are irrelevant during snap sync. If it goes through the memtable, the 16 MB cap may cause churn.
+5. **RocksDB arena allocation behavior for empty CFs** is assumed based on documentation, not measured. The actual initial memory per CF on open may differ from the ~1/8 of write_buffer_size estimate.

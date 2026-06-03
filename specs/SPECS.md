@@ -33,6 +33,7 @@ Master index for all DOLI protocol specifications.
 | [event-subscriptions.md](./event-subscriptions.md) | Event subscriptions Phase 2.2 (PROPOSAL-ONLY, pending User Gate) — 5-evaluator convergence synthesis. Extend existing /ws with topic-filtered push (4 topics: blocks, utxo, epoch, consensus), in-memory ring buffer (100 blocks), lag-disconnect at 64, no auth, no activation height. Admin-gate pre-existing NewTx. Generic UTXO surface for oracle events. ~350 LOC. Ships in binary upgrade. |
 | [defi-l1-foundations-architecture.md](./defi-l1-foundations-architecture.md) | DeFi L1 foundations architecture (2026-05-26, PROPOSAL-ONLY, pending User Gate) -- 5-evaluator convergence synthesis. KEEP: AMM (4 tx types), Oracle (Phase 2.1), ZKSettle (L2 settlement), Conditions (5 guards + 6 templates), FungibleAsset, BridgeHTLC. TOMBSTONE: native lending (5 tx types + 2 output types, 4/5 convergence), NFT-frac (2 tx types, 3/5 convergence). 3 mandatory pre-activation fixes: MintAsset issuer auth, compute_swap overflow, oracle sunset gradient. SSF alternative presented (radical minimum: conditions + ZKSettle only). |
 | [amm-value-conservation-architecture.md](./amm-value-conservation-architecture.md) | AMM value-conservation architecture (INC-I-096, PROPOSAL-ONLY, 2026-05-29) -- 5-evaluator convergence synthesis. Single shared `verify_amm_conservation()` function with 3 per-asset balance equations (DOLI, token_b, LP supply) + k-invariant, replacing ~467 lines of fragmented conservation across 3 sites with ~130 lines in 1 new module (`validation/amm.rs`). Kills TCCR anti-pattern (Trust the Client's Computed Result) across all 4 AMM tx types. 9 hard filters from Failure Analyst, 12 invariants, 4 milestones. New findings: FM-S11 (asset_id counterfeiting), P5 (existing patch still drainable). Gated by `inc_i_096_activation_height`. |
+| [rocksdb-configuration-architecture.md](./rocksdb-configuration-architecture.md) | RocksDB configuration architecture (INC-I-104) — first-principles per-instance, per-CF configuration for 4 RocksDB instances (block_store, state_db, utxo_store, diagnostic_ledger). 19 column families with workload-derived memtable budgets, WAL caps, bloom filters, L0 trigger protection. 93% reduction in theoretical memtable ceiling. |
 
 ## Future Interface Specifications
 
@@ -73,26 +74,27 @@ Master index for all DOLI protocol specifications.
 
 ```
 specs/
-├── SPECS.md                          # <- You are here (specifications index)
-├── protocol.md                       # Full protocol specification
-├── architecture.md                   # Comprehensive architecture
-├── security_model.md                 # Complete security model
-├── state-of-the-art-architecture.md  # State-of-the-art redesign proposal
-├── single-proposer-architecture.md   # Single-proposer migration architecture
-├── single-proposer-requirements.md   # Single-proposer migration requirements
-├── gui-architecture.md               # GUI Desktop Application architecture
-├── gui-desktop-requirements.md       # GUI Desktop Application requirements
-├── fork-observability-requirements.md # Fork-diagnostic observability requirements (#346)
-├── fork-observability-architecture.md # Fork-diagnostic observability architecture (#346)
-├── sdk-templates-requirements.md     # Guard CLI parity + template SDK requirements (#356)
-├── sdk-templates-architecture.md     # Guard CLI parity + template SDK architecture (#356)
-├── l2-settlement.md                  # L2 settlement interface (ZKSettle / ZKRollup)
+├── SPECS.md                              # <- You are here (specifications index)
+├── protocol.md                           # Full protocol specification
+├── architecture.md                       # Comprehensive architecture
+├── security_model.md                     # Complete security model
+├── state-of-the-art-architecture.md      # State-of-the-art redesign proposal
+├── rocksdb-configuration-architecture.md # RocksDB configuration (INC-I-104)
+├── single-proposer-architecture.md       # Single-proposer migration architecture
+├── single-proposer-requirements.md       # Single-proposer migration requirements
+├── gui-architecture.md                   # GUI Desktop Application architecture
+├── gui-desktop-requirements.md           # GUI Desktop Application requirements
+├── fork-observability-requirements.md    # Fork-diagnostic observability requirements (#346)
+├── fork-observability-architecture.md    # Fork-diagnostic observability architecture (#346)
+├── sdk-templates-requirements.md         # Guard CLI parity + template SDK requirements (#356)
+├── sdk-templates-architecture.md         # Guard CLI parity + template SDK architecture (#356)
+├── l2-settlement.md                      # L2 settlement interface (ZKSettle / ZKRollup)
 ├── improvements/
-│   ├── apply-block-modularization.md # Apply-block modularization
-│   ├── cli-modularization.md         # CLI modularization
-│   ├── consensus-modularization.md   # Consensus modularization
-│   ├── modularization-improvement.md # General modularization
-│   └── scaling-100k-producers.md     # Scaling to 100K producers
+│   ├── apply-block-modularization.md     # Apply-block modularization
+│   ├── cli-modularization.md             # CLI modularization
+│   ├── consensus-modularization.md       # Consensus modularization
+│   ├── modularization-improvement.md     # General modularization
+│   └── scaling-100k-producers.md         # Scaling to 100K producers
 └── bugfixes/
     ├── production-gate-deadlock-analysis.md  # Production gate deadlock
     └── reward-validation-analysis.md         # Reward validation gaps

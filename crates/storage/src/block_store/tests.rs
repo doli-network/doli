@@ -570,8 +570,6 @@ fn test_clear_then_repopulate() {
 
 #[test]
 fn test_set_canonical_chain_reorg() {
-    // Insert chain A→B→C, then fork A→B'→C'→D' (longer).
-    // After set_canonical_chain(D'), height_index must point to B', C', D'.
     let (store, _dir) = create_test_store();
     let keypair = KeyPair::generate();
     let producer = *keypair.public_key();
@@ -598,107 +596,71 @@ fn test_set_canonical_chain_reorg() {
     store.put_block(&block_c, 2).unwrap();
     store.set_canonical_chain(hash_c, 2).unwrap();
 
-    // Verify canonical chain: A→B→C
     assert_eq!(store.get_hash_by_height(0).unwrap(), Some(hash_a));
     assert_eq!(store.get_hash_by_height(1).unwrap(), Some(hash_b));
     assert_eq!(store.get_hash_by_height(2).unwrap(), Some(hash_c));
 
-    // Fork: B' (child of A, different block) at height 1
-    let mut header_b2 = create_test_header(4, &producer); // Different slot → different hash
+    // Fork: B' at height 1
+    let mut header_b2 = create_test_header(4, &producer);
     header_b2.prev_hash = hash_a;
     let block_b2 = Block::new(header_b2, vec![]);
     let hash_b2 = block_b2.hash();
-    store.put_block(&block_b2, 1).unwrap(); // Store but DON'T set canonical yet
+    store.put_block(&block_b2, 1).unwrap();
 
-    // C' (child of B') at height 2
+    // C' at height 2
     let mut header_c2 = create_test_header(5, &producer);
     header_c2.prev_hash = hash_b2;
     let block_c2 = Block::new(header_c2, vec![]);
     let hash_c2 = block_c2.hash();
     store.put_block(&block_c2, 2).unwrap();
 
-    // D' (child of C') at height 3 — fork is now longer
+    // D' at height 3
     let mut header_d2 = create_test_header(6, &producer);
     header_d2.prev_hash = hash_c2;
     let block_d2 = Block::new(header_d2, vec![]);
     let hash_d2 = block_d2.hash();
     store.put_block(&block_d2, 3).unwrap();
 
-    // Reorg: set canonical chain to the fork (longer chain)
     store.set_canonical_chain(hash_d2, 3).unwrap();
 
-    // Verify: height_index now points to fork blocks
-    assert_eq!(
-        store.get_hash_by_height(0).unwrap(),
-        Some(hash_a),
-        "Height 0 unchanged (common ancestor)"
-    );
-    assert_eq!(
-        store.get_hash_by_height(1).unwrap(),
-        Some(hash_b2),
-        "Height 1 should point to B' after reorg"
-    );
-    assert_eq!(
-        store.get_hash_by_height(2).unwrap(),
-        Some(hash_c2),
-        "Height 2 should point to C' after reorg"
-    );
-    assert_eq!(
-        store.get_hash_by_height(3).unwrap(),
-        Some(hash_d2),
-        "Height 3 should point to D'"
-    );
+    assert_eq!(store.get_hash_by_height(0).unwrap(), Some(hash_a));
+    assert_eq!(store.get_hash_by_height(1).unwrap(), Some(hash_b2));
+    assert_eq!(store.get_hash_by_height(2).unwrap(), Some(hash_c2));
+    assert_eq!(store.get_hash_by_height(3).unwrap(), Some(hash_d2));
 
-    // Old blocks still accessible by hash (stored but not canonical)
     assert!(store.get_block(&hash_b).unwrap().is_some());
     assert!(store.get_block(&hash_c).unwrap().is_some());
-
-    // hash_to_height reflects canonical chain
     assert_eq!(store.get_height_by_hash(&hash_b2).unwrap(), Some(1));
     assert_eq!(store.get_height_by_hash(&hash_d2).unwrap(), Some(3));
 }
 
 #[test]
 fn set_canonical_chain_stops_at_snap_horizon() {
-    // Regression test: after snap sync seeds a canonical index at some height,
-    // set_canonical_chain must NOT walk below the snap horizon — the anchor's
-    // header was never persisted, so get_header() would return None → crash.
     let (store, _dir) = create_test_store();
     let keypair = KeyPair::generate();
     let producer = *keypair.public_key();
 
     let snap_height = 100u64;
-
-    // Simulate snap sync: seed canonical index at height 100 with a fake hash.
-    // This also writes snap_horizon = 100 to CF_META.
     let snap_hash = Hash::from_bytes([0xAA; 32]);
     store.seed_canonical_index(snap_hash, snap_height).unwrap();
+    assert_eq!(store.get_snap_horizon().unwrap(), Some(snap_height));
 
-    // Verify snap_horizon was persisted
-    let horizon = store.get_snap_horizon().unwrap();
-    assert_eq!(horizon, Some(snap_height));
-
-    // Build a block at height 101 whose prev_hash points to the snap anchor.
     let mut header_101 = create_test_header(200, &producer);
     header_101.prev_hash = snap_hash;
     let block_101 = Block::new(header_101, vec![]);
     let hash_101 = block_101.hash();
     store.put_block(&block_101, snap_height + 1).unwrap();
 
-    // Build a block at height 102 whose prev_hash points to block 101.
     let mut header_102 = create_test_header(201, &producer);
     header_102.prev_hash = hash_101;
     let block_102 = Block::new(header_102, vec![]);
     let hash_102 = block_102.hash();
     store.put_block(&block_102, snap_height + 2).unwrap();
 
-    // This MUST NOT crash. Before the fix, it would walk from height 102
-    // down to 100, try get_header(snap_hash), get None, and panic.
     store
         .set_canonical_chain(hash_102, snap_height + 2)
         .unwrap();
 
-    // Verify the canonical chain was updated for heights 101 and 102
     assert_eq!(
         store.get_hash_by_height(snap_height + 1).unwrap(),
         Some(hash_101)
@@ -707,8 +669,6 @@ fn set_canonical_chain_stops_at_snap_horizon() {
         store.get_hash_by_height(snap_height + 2).unwrap(),
         Some(hash_102)
     );
-
-    // The snap anchor entry at height 100 should still be intact
     assert_eq!(
         store.get_hash_by_height(snap_height).unwrap(),
         Some(snap_hash)
@@ -717,19 +677,17 @@ fn set_canonical_chain_stops_at_snap_horizon() {
 
 #[test]
 fn get_snap_horizon_returns_none_without_snap_sync() {
-    // Without snap sync, get_snap_horizon should return None
     let (store, _dir) = create_test_store();
     assert_eq!(store.get_snap_horizon().unwrap(), None);
 }
 
 // ============================================================
-// REQ-REDESIGN-011 — ensure_blocks_present (FORK_GUARD backfill)
+// REQ-REDESIGN-011 -- ensure_blocks_present (FORK_GUARD backfill)
 // ============================================================
 
 #[test]
 fn ensure_blocks_present_empty_range_is_ok() {
     let (store, _dir) = create_test_store();
-    // low > high: vacuous range, must succeed.
     assert!(store.ensure_blocks_present(5, 4).is_ok());
 }
 
@@ -738,12 +696,10 @@ fn ensure_blocks_present_low_zero_skips_genesis() {
     let (store, _dir) = create_test_store();
     let kp = KeyPair::generate();
     let producer = *kp.public_key();
-    // Heights 1..=2 present.
     let b1 = create_test_block(1, &producer);
     let b2 = create_test_block(2, &producer);
     store.put_block_canonical(&b1, 1).unwrap();
     store.put_block_canonical(&b2, 2).unwrap();
-    // low=0 must be tolerated — genesis (h=0) is not stored in height_index.
     assert!(store.ensure_blocks_present(0, 2).is_ok());
 }
 
@@ -769,7 +725,6 @@ fn ensure_blocks_present_reports_first_missing_height() {
         let b = create_test_block(h as u32, &producer);
         store.put_block_canonical(&b, h).unwrap();
     }
-    // Engineer a mid-chain gap by deleting heights 3..=5.
     let deleted = store.delete_blocks_above(2).unwrap();
     assert_eq!(deleted, 3);
     let err = store.ensure_blocks_present(1, 5).unwrap_err();
@@ -784,4 +739,94 @@ fn ensure_blocks_present_reports_first_missing_height() {
         "error must name FIRST missing height (3), got: {}",
         msg
     );
+}
+
+// ============================================================
+// INC-I-104 M2: per-CF tuning regression tests
+// ============================================================
+//
+// OUTPUT CONTRACT for BlockStore::open() per-CF tuning (M2):
+//   Function under test: BlockStore::open(path) -- configures per-CF Options
+//   Observable outputs:
+//     1. Return value: Result<BlockStore, StorageError> (Ok on success)
+//     2. RocksDB DB handle: all 9 CFs present with per-CF tuning applied
+//     3. Metrics (via metrics()): memtable_max_bytes bounded by db_write_buffer_size
+//     4. Side effect: DB accepts read/write operations on all CFs
+//
+//   Code paths:
+//     P1: Normal open (fresh directory) -- creates DB + all CFs
+//     P2: Reopen (existing DB) -- opens existing CFs with new options
+//
+//   INPUT PARTITIONS:
+//     I1: Fresh tempdir (P1) -- exercises CF creation with per-CF options
+//     I2: After write+read (P1) -- exercises that per-CF options don't break I/O
+//
+//   Matrix:
+//     m2_per_cf_memtable_budget_bounded: O3 x P1 x I1
+//     m2_all_nine_cfs_present:           O2 x P1 x I1
+//     m2_open_write_metrics_smoke:        O1,O4 x P1 x I2
+
+/// Verify that the DB-level memtable cap from M0 is still effective after
+/// M2's per-CF tuning. Sum of per-CF write_buffer_size * max_write_buffer_number:
+///   headers(8*2) + bodies(8*2) + height(4*2) + slot(4*2) +
+///   h2h(4*2) + tx(4*2) + addr(4*2) + presence(1*1) + meta(1*1) = 66 MB
+/// The db_write_buffer_size=48 MB caps actual usage below 66 MB.
+#[test]
+fn m2_per_cf_memtable_budget_bounded() {
+    let (store, _dir) = create_test_store();
+    let m = store.metrics();
+    // 48 MB cap + 10% overhead margin for RocksDB internal accounting
+    let cap_with_margin = (48 * 1024 * 1024) as f64 * 1.1;
+    assert!(
+        (m.memtable_max_bytes as f64) <= cap_with_margin,
+        "memtable_max_bytes={} exceeds 48 MB cap (with 10% margin={})",
+        m.memtable_max_bytes,
+        cap_with_margin as u64,
+    );
+}
+
+/// Verify all 9 CFs are present after open (C-004: presence kept).
+#[test]
+fn m2_all_nine_cfs_present() {
+    let (store, _dir) = create_test_store();
+    let cfs = [
+        "headers",
+        "bodies",
+        "height_index",
+        "slot_index",
+        "presence",
+        "hash_to_height",
+        "tx_index",
+        "addr_tx_index",
+        "meta",
+    ];
+    for cf in &cfs {
+        assert!(
+            store.db.cf_handle(cf).is_some(),
+            "CF '{}' missing after open",
+            cf
+        );
+    }
+}
+
+/// Verify block_store opens, accepts writes, and metrics are sane.
+/// This catches any per-CF option that RocksDB rejects at open time.
+#[test]
+fn m2_open_write_metrics_smoke() {
+    let (store, _dir) = create_test_store();
+    let keypair = KeyPair::generate();
+    let producer = *keypair.public_key();
+
+    // Write a block to exercise multiple CFs
+    let block = create_test_block(1, &producer);
+    store.put_block_canonical(&block, 0).unwrap();
+
+    // Read it back
+    let retrieved = store.get_block_by_height(0).unwrap();
+    assert!(retrieved.is_some());
+
+    // Metrics: writes should not be stopped and no background errors
+    let m = store.metrics();
+    assert_eq!(m.is_write_stopped, 0, "writes should not be stopped");
+    assert_eq!(m.background_errors, 0, "no background errors expected");
 }

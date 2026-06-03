@@ -297,7 +297,11 @@ pub(crate) async fn cmd_forks_fleet(
     let bundle: FleetBundle = client
         .call_raw("getFleetForkDiagnostic", params)
         .await
-        .map_err(|e| anyhow::anyhow!("RPC unavailable: {}", e))
+        .map_err(|e| {
+            let err = anyhow::anyhow!("RPC unavailable: {}", e);
+            crate::cmd_forks::check_diagnostics_unavailable(&err);
+            err
+        })
         .and_then(|v| {
             serde_json::from_value(v)
                 .map_err(|e| anyhow::anyhow!("failed to parse fleet bundle: {}", e))

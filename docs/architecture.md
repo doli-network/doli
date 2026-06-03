@@ -648,11 +648,12 @@ can prune old blocks to reclaim disk space via `pruneBlocks` RPC.
 tx_index, addr_tx_index for blocks below the cutoff height.
 
 **What is never pruned**: UTXO set, producer set, chain state metadata, undo data
-(managed separately with its own 2000-block retention).
+(managed separately with its own 100-block retention — see `UNDO_KEEP_DEPTH` in `consensus/constants.rs`).
 
 **Safety**: Minimum retention of 2000 blocks enforced at the storage layer
-(matches `UNDO_KEEP_DEPTH = 2 × MAX_REORG_DEPTH`). Pruning runs RocksDB
-compaction after deletion to actually free disk.
+(block-store `MIN_RETENTION` = 2 × `MAX_REORG_DEPTH`; independent of
+`UNDO_KEEP_DEPTH = 100` which gates per-block UTXO undo records). Pruning runs
+RocksDB compaction after deletion to actually free disk.
 
 **Archive integration**: If the node runs with `--archive-to`, block files are
 written to disk with BLAKE3 checksums. `pruneBlocks` checks archive coverage

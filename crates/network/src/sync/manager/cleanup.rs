@@ -59,13 +59,16 @@ impl SyncManager {
             self.network.tip_unsupported_since = None;
         }
 
-        // Log current state for debugging
+        // Per-tick diagnostic — kept at debug! to avoid CPU burn from log volume.
+        // cleanup() runs every event-drain + every 1s timer tick; at info level this
+        // was ~25 lines/sec on busy seeds (37% of total log volume) post-INC-I-104
+        // WAL-disable. Promote to info only when debugging sync state directly.
         let pending_count = self
             .peers
             .values()
             .filter(|s| s.pending_request.is_some())
             .count();
-        info!(
+        debug!(
             "[SYNC_DEBUG] Cleanup: state={:?}, peers={}, pending_peer_requests={}, pending_requests={}",
             self.state,
             self.peers.len(),
@@ -142,7 +145,15 @@ impl SyncManager {
             }
         }
 
-        // Remove stale peers
+        // INC-I-103 Fix 2: cap stale-peer removals per cleanup cycle. On
+        // 2026-05-30, an uncapped pass drained 22 sync peers in 660μs, leaving
+        // the node with zero sync peers and no recovery path — the refresh
+        // loop at periodic.rs:786 only walks sync.peer_ids() and cannot
+        // re-populate an emptied table. Bounding removals at
+        // max(3, peers.len()/3) lets the refresh loop update timestamps before
+        // the table drains. Defense-in-depth only; the upstream sync↔transport
+        // reconciliation gap is tracked separately as Fix 1 / RC-1.
+        let removal_cap = std::cmp::max(3, self.peers.len() / 3);
         let stale: Vec<PeerId> = self
             .peers
             .iter()
@@ -150,6 +161,7 @@ impl SyncManager {
                 now.duration_since(status.last_status_response) > self.config.stale_timeout
             })
             .map(|(peer, _)| *peer)
+            .take(removal_cap)
             .collect();
 
         for peer in stale {

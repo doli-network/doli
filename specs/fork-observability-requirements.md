@@ -226,6 +226,21 @@ Every time a DOLI node forks or falls behind, diagnosing the cause takes 2-4 hou
 
 ---
 
+## Opt-In Toggle Requirements (REQ-OBS-OPTIN, added 2026-05-30)
+
+| ID | Requirement | Priority | Status |
+|----|------------|----------|--------|
+| REQ-OBS-OPTIN-001 | Default OFF: subsystem activates only when `--fork-diagnostics` is passed | Must | Implemented |
+| REQ-OBS-OPTIN-002 | ON path is bit-identical to pre-toggle behavior | Must | Implemented |
+| REQ-OBS-OPTIN-003 | OFF state spawns no background tasks | Must | Implemented |
+| REQ-OBS-OPTIN-004 | RPCs remain registered but return error when OFF | Must | Implemented (unchanged) |
+| REQ-OBS-OPTIN-005 | CLI shows friendly message on unavailable | Should | Implemented |
+| REQ-OBS-OPTIN-006 | Emit-site helpers gated via is_noop() | Must | Implemented |
+| REQ-OBS-OPTIN-007 | Node::new_for_test() unaffected | Must | Implemented |
+| REQ-OBS-OPTIN-008 | Startup log line indicates diagnostic state | Could | Implemented |
+
+---
+
 ## Priority Summary
 
 | Priority | Count |

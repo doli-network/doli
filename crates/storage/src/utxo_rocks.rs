@@ -14,6 +14,11 @@ use tracing::info;
 use crate::utxo::{Outpoint, UtxoEntry};
 use crate::StorageError;
 
+/// INC-I-104 M0: hard cap on total memtable budget. utxo_store is rebuildable
+/// (self-heals from state_db), so this can be smaller than state_db's cap.
+/// Shared between `open()` and `metrics()`.
+const DB_WRITE_BUFFER_SIZE_BYTES: u64 = 32 * 1024 * 1024;
+
 /// Column family for the primary UTXO index: outpoint -> UtxoEntry
 const CF_UTXO: &str = "utxo";
 
@@ -25,11 +30,63 @@ const CF_UNIQUE_ID: &str = "unique_id";
 
 use crate::utxo::{uid_key, UID_PREFIX_ASSET, UID_PREFIX_NFT, UID_PREFIX_POOL};
 
+/// Build per-CF Options for utxo_store column families.
+///
+/// Each CF gets workload-appropriate tuning derived from the DB-level base
+/// options. The `cache` reference is shared (Arc-internal) across all CFs
+/// within this utxo_store instance — NOT shared with other DB instances (C-012).
+///
+/// See `specs/rocksdb-configuration-architecture.md` section utxo_store.
+#[allow(clippy::too_many_arguments)]
+fn cf_opts_utxo_store(
+    base: &rocksdb::Options,
+    cache: &rocksdb::Cache,
+    write_buffer_mb: usize,
+    max_write_buffer_num: i32,
+    bloom: bool,
+    block_size_kb: usize,
+    compression: rocksdb::DBCompressionType,
+    target_file_size_mb: u64,
+    l0_slowdown: Option<i32>,
+    l0_stop: Option<i32>,
+) -> rocksdb::Options {
+    let mut opts = base.clone();
+    opts.set_write_buffer_size(write_buffer_mb * 1024 * 1024);
+    opts.set_max_write_buffer_number(max_write_buffer_num);
+    opts.set_compression_type(compression);
+    opts.set_target_file_size_base(target_file_size_mb * 1024 * 1024);
+    if let Some(t) = l0_slowdown {
+        opts.set_level_zero_slowdown_writes_trigger(t);
+    }
+    if let Some(t) = l0_stop {
+        opts.set_level_zero_stop_writes_trigger(t);
+    }
+
+    let mut bbo = rocksdb::BlockBasedOptions::default();
+    bbo.set_block_cache(cache);
+    bbo.set_block_size(block_size_kb * 1024);
+    if bloom {
+        bbo.set_bloom_filter(10.0, false);
+    }
+    opts.set_block_based_table_factory(&bbo);
+
+    opts
+}
+
 /// RocksDB-backed UTXO store
 pub struct RocksDbUtxoStore {
     db: rocksdb::DB,
     /// Cached count to avoid full scan on len()
     count: AtomicU64,
+    /// WriteOptions with WAL disabled — utxo_store self-heals from state_db
+    /// on startup (INC-I-027), so WAL provides zero correctness benefit.
+    write_opts: rocksdb::WriteOptions,
+    /// Shared LRU block cache referenced by every CF. Held on the struct so
+    /// `metrics()` can query its real usage via `Cache::get_usage()` instead
+    /// of summing per-CF property reads (INC-I-106 root-cause fix).
+    block_cache: rocksdb::Cache,
+    /// Configured capacity of `block_cache` in bytes.
+    block_cache_capacity_bytes: u64,
 }
 
 impl RocksDbUtxoStore {
@@ -39,9 +96,61 @@ impl RocksDbUtxoStore {
         opts.create_if_missing(true);
         opts.create_missing_column_families(true);
         opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
+        opts.set_max_open_files(256);
+        // INC-I-109 experiment: disabled (folsi canary). See state_db/open.rs.
+        // opts.enable_statistics();
 
-        let cfs = vec![CF_UTXO, CF_UTXO_BY_PUBKEY, CF_UNIQUE_ID];
-        let db = rocksdb::DB::open_cf(&opts, path, cfs)?;
+        // INC-I-104 M0: cap total memtable budget across all 3 CFs.
+        // utxo_store self-heals from state_db, so this is rebuildable storage; cap
+        // can be smaller than state_db. See specs/rocksdb-configuration-architecture.md §utxo_store.
+        // DB_WRITE_BUFFER_SIZE_BYTES is shared with `metrics()` so the cap and
+        // the reported gauge can never drift.
+        opts.set_db_write_buffer_size(DB_WRITE_BUFFER_SIZE_BYTES as usize);
+        opts.set_max_total_wal_size(DB_WRITE_BUFFER_SIZE_BYTES);
+
+        // INC-I-104 M4: explicit background job limits.
+        opts.set_max_background_jobs(1);
+        opts.set_max_subcompactions(1);
+
+        // INC-I-105: explicit 16 MB LRU block cache shared across all 3 CFs.
+        // Arc-internal in rust-rocksdb — multiple BlockBasedOptions builders
+        // reference the same underlying cache. Per-instance only (C-012).
+        let cache = rocksdb::Cache::new_lru_cache(16 * 1024 * 1024);
+
+        // Shorthand alias for compression type.
+        use rocksdb::DBCompressionType::Lz4;
+
+        // INC-I-104 M4: per-CF descriptors with workload-derived tuning.
+        // Spec: specs/rocksdb-configuration-architecture.md section utxo_store.
+        //
+        // | CF              | wbuf MB | #buf | bloom | blk KB | compr | tgt MB | L0 slow | L0 stop |
+        // |-----------------|---------|------|-------|--------|-------|--------|---------|---------|
+        // | utxo            |   16    |  2   | yes   |   4    | Lz4   |   16   |   40    |   60    |
+        // | utxo_by_pubkey  |    8    |  2   | NO    |   4    | Lz4   |   16   |   40    |   60    |
+        // | unique_id       |    2    |  2   | yes   |   4    | Lz4   |    4   |  def    |  def    |
+        let cf_descriptors = vec![
+            // Hot per-tx writes + point lookups. Bloom filter for O(1) get/contains.
+            // C-003: L0 slowdown=40, stop=60 (MANDATORY — write_buffer shrunk from 64 MB default).
+            rocksdb::ColumnFamilyDescriptor::new(
+                CF_UTXO,
+                cf_opts_utxo_store(&opts, &cache, 16, 2, true, 4, Lz4, 16, Some(40), Some(60)),
+            ),
+            // Secondary index for prefix scans by pubkey hash.
+            // C-010: NO bloom (bloom hurts prefix iteration).
+            // C-003: L0 slowdown=40, stop=60 (MANDATORY).
+            rocksdb::ColumnFamilyDescriptor::new(
+                CF_UTXO_BY_PUBKEY,
+                cf_opts_utxo_store(&opts, &cache, 8, 2, false, 4, Lz4, 16, Some(40), Some(60)),
+            ),
+            // Low cardinality (DeFi gated, existence check on mint).
+            // Bloom filter for point lookups (has_unique_id).
+            rocksdb::ColumnFamilyDescriptor::new(
+                CF_UNIQUE_ID,
+                cf_opts_utxo_store(&opts, &cache, 2, 2, true, 4, Lz4, 4, None, None),
+            ),
+        ];
+
+        let db = rocksdb::DB::open_cf_descriptors(&opts, path, cf_descriptors)?;
 
         // Count existing entries to initialize the atomic counter
         let cf_utxo = db.cf_handle(CF_UTXO).unwrap();
@@ -53,10 +162,36 @@ impl RocksDbUtxoStore {
             count += 1;
         }
 
+        // INC-I-104 M4: WAL disabled on all writes.
+        // utxo_store mirrors state_db's authoritative UTXO data and self-heals
+        // from state_db on startup if counts diverge (INC-I-027 in init.rs).
+        // WAL provides zero correctness benefit when self-heal is the recovery
+        // mechanism — it only adds fsync overhead on every write.
+        let mut write_opts = rocksdb::WriteOptions::default();
+        write_opts.disable_wal(true);
+
         Ok(Self {
             db,
             count: AtomicU64::new(count),
+            write_opts,
+            block_cache: cache,
+            block_cache_capacity_bytes: 16 * 1024 * 1024,
         })
+    }
+
+    /// RocksDB runtime metrics snapshot for Prometheus export.
+    ///
+    /// Passes the 3 named CFs so the collector aggregates across them
+    /// (the default CF is unused).
+    pub fn metrics(&self) -> crate::RocksDbMetrics {
+        crate::collect_db_metrics(
+            &self.db,
+            "utxo_store",
+            &[CF_UTXO, CF_UTXO_BY_PUBKEY, CF_UNIQUE_ID],
+            DB_WRITE_BUFFER_SIZE_BYTES,
+            &self.block_cache,
+            self.block_cache_capacity_bytes,
+        )
     }
 
     /// Get a UTXO by outpoint (returns owned value -- RocksDB can't return references)
@@ -176,7 +311,7 @@ impl RocksDbUtxoStore {
         }
 
         if added > 0 {
-            self.db.write(batch)?;
+            self.db.write_opt(batch, &self.write_opts)?;
             self.count.fetch_add(added, Ordering::Relaxed);
         }
 
@@ -249,7 +384,7 @@ impl RocksDbUtxoStore {
         }
 
         if removed > 0 {
-            self.db.write(batch)?;
+            self.db.write_opt(batch, &self.write_opts)?;
             self.count.fetch_sub(removed, Ordering::Relaxed);
         }
 
@@ -509,7 +644,7 @@ impl RocksDbUtxoStore {
         {
             batch.delete_cf(cf_by_pk, &key);
         }
-        let _ = self.db.write(batch);
+        let _ = self.db.write_opt(batch, &self.write_opts);
         self.count.store(0, Ordering::Relaxed);
     }
 
@@ -540,7 +675,7 @@ impl RocksDbUtxoStore {
         idx_key.extend_from_slice(&key);
         batch.put_cf(cf_by_pk, &idx_key, [0u8]);
 
-        self.db.write(batch)?;
+        self.db.write_opt(batch, &self.write_opts)?;
         self.count.fetch_add(1, Ordering::Relaxed);
 
         Ok(())
@@ -567,7 +702,7 @@ impl RocksDbUtxoStore {
         idx_key.extend_from_slice(&key);
         batch.delete_cf(cf_by_pk, &idx_key);
 
-        self.db.write(batch)?;
+        self.db.write_opt(batch, &self.write_opts)?;
         self.count.fetch_sub(1, Ordering::Relaxed);
 
         Ok(Some(entry))
@@ -652,7 +787,7 @@ impl RocksDbUtxoStore {
 
             // Flush in batches to avoid huge memory usage
             if count.is_multiple_of(50_000) {
-                self.db.write(batch)?;
+                self.db.write_opt(batch, &self.write_opts)?;
                 batch = rocksdb::WriteBatch::default();
                 info!("[UTXO_ROCKS] Imported {} entries...", count);
             }
@@ -660,7 +795,7 @@ impl RocksDbUtxoStore {
 
         // Write remaining
         if !count.is_multiple_of(50_000) {
-            self.db.write(batch)?;
+            self.db.write_opt(batch, &self.write_opts)?;
         }
 
         self.count.store(count, Ordering::Relaxed);
@@ -900,6 +1035,123 @@ mod tests {
         {
             let store = RocksDbUtxoStore::open(dir.path()).unwrap();
             assert!(!store.has_unique_id(UID_PREFIX_NFT, &id));
+        }
+    }
+
+    // ============================================================
+    // INC-I-104 M4: per-CF tuning + WAL disable regression tests
+    // ============================================================
+    //
+    // OUTPUT CONTRACT for RocksDbUtxoStore::open() per-CF tuning (M4):
+    //   Function under test: RocksDbUtxoStore::open(path)
+    //   Observable outputs:
+    //     1. Return value: Result<RocksDbUtxoStore, StorageError> (Ok on success)
+    //     2. RocksDB DB handle: all 3 CFs present with per-CF tuning applied
+    //     3. Metrics (via metrics()): memtable_max_bytes bounded by db_write_buffer_size
+    //     4. Side effect: DB accepts read/write operations on all CFs with no-WAL writes
+    //     5. Side effect: reopen after unclean shutdown detects count divergence
+    //
+    //   Code paths:
+    //     P1: Normal open (fresh directory) -- creates DB + all CFs
+    //     P2: Reopen (existing DB) -- opens existing CFs with new options
+    //     P3: Reopen after partial write -- self-heal detects divergence
+    //
+    //   INPUT PARTITIONS:
+    //     I1: Fresh tempdir (P1) -- exercises CF creation with per-CF options
+    //     I2: After write+read (P1) -- exercises that per-CF options don't break I/O
+    //     I3: Reopen existing DB (P2) -- exercises compat with prior data
+    //
+    //   Matrix:
+    //     m4_per_cf_memtable_budget_bounded: O3 x P1 x I1
+    //     m4_all_three_cfs_present:          O2 x P1 x I1
+    //     m4_open_write_metrics_smoke:       O1,O4 x P1 x I2
+    //     m4_reopen_preserves_data:          O1 x P2 x I3
+
+    /// Verify that the DB-level memtable cap from M0 is still effective after
+    /// M4's per-CF tuning. Sum of per-CF write_buffer_size * max_write_buffer_number:
+    ///   utxo(16*2) + utxo_by_pubkey(8*2) + unique_id(2*2) = 52 MB theoretical max.
+    /// The db_write_buffer_size=32 MB caps actual usage below 52 MB.
+    #[test]
+    fn m4_per_cf_memtable_budget_bounded() {
+        let (store, _dir) = create_test_store();
+        let m = store.metrics();
+        // 32 MB cap + 10% overhead margin for RocksDB internal accounting
+        let cap_with_margin = (32 * 1024 * 1024) as f64 * 1.1;
+        assert!(
+            (m.memtable_max_bytes as f64) <= cap_with_margin,
+            "memtable_max_bytes={} exceeds 32 MB cap (with 10% margin={})",
+            m.memtable_max_bytes,
+            cap_with_margin as u64,
+        );
+    }
+
+    /// Verify all 3 CFs are present after open.
+    #[test]
+    fn m4_all_three_cfs_present() {
+        let (store, _dir) = create_test_store();
+        let cfs = [CF_UTXO, CF_UTXO_BY_PUBKEY, CF_UNIQUE_ID];
+        for cf in &cfs {
+            assert!(
+                store.db.cf_handle(cf).is_some(),
+                "CF '{}' missing after open",
+                cf
+            );
+        }
+    }
+
+    /// Verify utxo_store opens, accepts writes with no-WAL WriteOptions,
+    /// and metrics are sane. Catches any per-CF option that RocksDB rejects.
+    #[test]
+    fn m4_open_write_metrics_smoke() {
+        let (store, _dir) = create_test_store();
+        let pk_hash = crypto::hash::hash(b"m4_smoke_test");
+
+        // Write via multiple paths to exercise all write_opt call sites
+        let tx = test_coinbase_tx(42_000, pk_hash);
+        store.add_transaction(&tx, 0, true, 0).unwrap();
+        assert_eq!(store.len(), 1);
+
+        // Read it back
+        let outpoint = Outpoint::new(tx.hash(), 0);
+        assert!(store.contains(&outpoint));
+
+        // Remove it
+        let removed = store.remove(&outpoint).unwrap();
+        assert!(removed.is_some());
+        assert_eq!(store.len(), 0);
+
+        // Metrics: writes should not be stopped and no background errors
+        let m = store.metrics();
+        assert_eq!(m.is_write_stopped, 0, "writes should not be stopped");
+        assert_eq!(m.background_errors, 0, "no background errors expected");
+    }
+
+    /// Verify that data written with no-WAL WriteOptions survives a clean
+    /// close + reopen. This is expected because RocksDB flushes memtable
+    /// to SST on close. The interesting case (kill -9) is handled by the
+    /// self-heal in init.rs, which we verify exists separately.
+    #[test]
+    fn m4_reopen_preserves_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let pk_hash = crypto::hash::hash(b"m4_reopen");
+        let tx_hash;
+
+        // Write + close
+        {
+            let store = RocksDbUtxoStore::open(dir.path()).unwrap();
+            let tx = test_coinbase_tx(99_000, pk_hash);
+            tx_hash = tx.hash();
+            store.add_transaction(&tx, 5, true, 10).unwrap();
+            assert_eq!(store.len(), 1);
+        }
+
+        // Reopen
+        {
+            let store = RocksDbUtxoStore::open(dir.path()).unwrap();
+            assert_eq!(store.len(), 1);
+            let entry = store.get(&Outpoint::new(tx_hash, 0)).unwrap();
+            assert_eq!(entry.output.amount, 99_000);
+            assert_eq!(entry.height, 5);
         }
     }
 }

@@ -22,7 +22,10 @@ impl Node {
         let auth_result = {
             let mut sync_state = self.sync_manager.write().await;
             let result = sync_state.can_produce(current_slot);
-            info!(
+            // Per-tick diagnostic — kept at debug! to avoid CPU burn from log volume.
+            // try_produce_block() runs every production timer tick (1 Hz) plus event-drain
+            // escape hatch; post-INC-I-104 this was ~33% of producer log volume.
+            debug!(
                 "[NODE_PRODUCE] slot={} can_produce result: {:?}",
                 current_slot, result
             );
@@ -33,7 +36,7 @@ impl Node {
             ProductionAuthorization::Authorized => {
                 self.shallow_rollback_count = 0;
                 self.cumulative_rollback_depth = 0;
-                info!(
+                debug!(
                     "[NODE_PRODUCE] slot={} AUTHORIZED - proceeding",
                     current_slot
                 );

@@ -90,6 +90,7 @@ pub mod chain_state;
 pub mod content_store;
 pub mod diagnostic_ledger;
 pub mod maintainer;
+pub mod metrics;
 pub mod mmr;
 pub mod producer;
 pub mod snapshot;
@@ -101,6 +102,7 @@ pub mod utxo_rocks;
 pub use block_store::BlockStore;
 pub use chain_state::ChainState;
 pub use maintainer::MaintainerState;
+pub use metrics::{collect_db_metrics, RocksDbMetrics};
 #[allow(deprecated)]
 pub use producer::{
     producer_weight, producer_weight_for_network, producer_weight_precise,

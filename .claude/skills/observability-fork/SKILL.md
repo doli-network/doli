@@ -1,16 +1,17 @@
 ---
 name: observability-fork
-description: "DOLI fork observability — detect, measure, and diagnose chain divergence. Use when: fork detected, are nodes diverging, is there a fork, state root mismatch, find divergence point, compare state between nodes, reorg detection, show diagnostic events, fleet health, getForkDiagnostic, getFleetForkDiagnostic, getStateRootDebug, getUtxoDiff, fork-monitor, health-check, diagnostic ledger, fork classifier. For recovery procedures see guardian skill."
+description: "DOLI fork observability — detect, measure, and diagnose chain divergence. **Opt-in since 2026-05-30 (commit 3215a5eb): requires `--fork-diagnostics` flag on doli-node at startup.** Without it, the diagnostic ledger is not opened, writer/pruner/monitor tasks never spawn, emit helpers short-circuit on `NoOpEmitter::is_noop()` before any allocation, and `getForkDiagnostic`/`getFleetForkDiagnostic` return `Diagnostic ledger unavailable`. `getChainInfo`, `getStateRootDebug`, `getUtxoDiff`, and the `fork-monitor.sh` polling script remain unaffected — they do not depend on the diagnostic ledger. Use when: fork detected, are nodes diverging, is there a fork, state root mismatch, find divergence point, compare state between nodes, reorg detection, show diagnostic events, fleet health, getForkDiagnostic, getFleetForkDiagnostic, getStateRootDebug, getUtxoDiff, fork-monitor, health-check, diagnostic ledger, fork classifier, --fork-diagnostics, diagnostics not enabled. For recovery procedures see guardian skill."
 ---
 
 <!-- @INDEX
-ENTRY-POINTS    15-32
-OPERATIONS      34-49
-DATA-FLOW       51-66
-DEPENDENCIES    68-86
-CONSTRAINTS     88-106
-PATTERNS        108-120
+ENTRY-POINTS    17-36
+OPERATIONS      38-54
+DATA-FLOW       56-71
+DEPENDENCIES    73-91
+CONSTRAINTS     93-115
+PATTERNS        117-129
 SUPPLEMENTARY   RPC-CHEATSHEET.md (curl payloads for all methods), LEDGER-SCHEMA.md (event types, classifier rules, storage layout)
+NOTES           Subsystem is opt-in since 2026-05-30 (commit 3215a5eb). Default OFF; --fork-diagnostics required at startup. See CONSTRAINTS row "Subsystem is OPT-IN" and OPERATIONS rows "Enable the subsystem on a node" / "Confirm whether a node has diagnostics enabled". Spec: docs/improvements/fork-observability-opt-in-improvement.md.
 @/INDEX -->
 
 ## ENTRY POINTS
@@ -31,12 +32,15 @@ SUPPLEMENTARY   RPC-CHEATSHEET.md (curl payloads for all methods), LEDGER-SCHEMA
 | `classify` | `crates/storage/src/diagnostic_ledger/classifier.rs:36` | `fn classify(events: &[DiagnosticEvent]) -> Classification` | Pure function — 8 rules, first-match-wins. Returns `ForkType` + confidence + recommended_action |
 | `fork-monitor.sh` | `scripts/fork-monitor.sh:1` | `bash fork-monitor.sh [--testnet] [--loop [SECS]] [--endpoints FILE]` | Polls `getChainInfo` on all nodes, groups by `bestHash`, exits 0=OK/1=FORK/2=error |
 | `health-check.sh` | `scripts/health-check.sh:1` | `bash health-check.sh [mainnet\|testnet\|all]` | 7-check suite: RPC responding, peer count, genesis hash, height delta, peer-ID errors, service file flags. Requires `DOLI_AI{1-5}` env vars |
+| `--fork-diagnostics` CLI flag | `bins/node/src/cli.rs` (Run variant) | `doli-node run --fork-diagnostics [other args]` | Opt-in toggle for the entire diagnostic subsystem. Default OFF. Propagates: `cli.rs` → `main.rs` → `run.rs` → `NodeConfig::fork_diagnostics: bool` → `node/init.rs` gate around `DiagnosticLedger::open()` + writer + pruner spawn. Structural local-testnet nodes (seed + n1-n12) have it baked into `scripts/install-local-services.sh` plist templates |
+| `DiagnosticEmitter::is_noop` | `crates/storage/src/diagnostic_ledger/emitter.rs` | `fn is_noop(&self) -> bool { false }` (default), `true` on `NoOpEmitter` | Trait method used by emit helpers to short-circuit event construction when diagnostics are OFF. `AsyncChannelEmitter` uses default `false`. Verified by `test_noop_emitter_is_noop_true`/`test_async_channel_emitter_is_noop_false` in `bins/node/tests/diagnostic_optin_test.rs` |
 
 ## OPERATIONS
 
 | Task | Steps | Commands/Functions | Inputs | Success |
 |---|---|---|---|---|
-| **Detect fork — local devnet** | 1. Run script against devnet ports (28500-28550). 2. Interpret output. | `scripts/fork-monitor.sh` | Nodes running on 127.0.0.1:28500+ | `OK — N nodes, height=H, hash=<prefix>...` printed in green; exit 0 |
+| **Enable the subsystem on a node** | 1. Add `--fork-diagnostics` to the node's launch command. 2. Restart the node. 3. Verify by calling `getForkDiagnostic` — should return a `DiagnosticBundle` instead of "unavailable". | Launchd: edit `ProgramArguments` in the node's plist. Systemd: edit `ExecStart`. Manual: `doli-node run --fork-diagnostics …`. For local-testnet seed + n1-n12, re-run `scripts/install-local-services.sh` (templates already include the flag). | Node service file or shell launch line | Startup log shows `[Diagnostics] Ledger opened at <data_dir>/diagnostics/` instead of `[Diagnostics] Disabled (use --fork-diagnostics to activate)` |
+| **Confirm whether a node has diagnostics enabled** | 1. POST `getForkDiagnostic`. 2. If response is `{"error": {"message": "Diagnostic ledger unavailable", ...}}` → OFF. 3. If response is a `DiagnosticBundle` → ON. 4. Or grep the startup log for `[Diagnostics]`. | `curl -s -X POST http://<host>:<port> -d '{"jsonrpc":"2.0","method":"getForkDiagnostic","params":{"window_secs":60},"id":1}'` | Node RPC endpoint | Bundle returned → ON. "unavailable" → OFF. |
 | **Detect fork — local testnet** | 1. Run script against testnet ports (8500-8512). | `scripts/fork-monitor.sh --testnet` | Nodes running on 127.0.0.1:8500-8512 | Same OK output |
 | **Continuously monitor for forks** | 1. Start loop mode with optional interval. 2. Ctrl-C to stop. | `scripts/fork-monitor.sh --loop 30` | Same port range | Prints OK/FORK line every 30s |
 | **Fork confirmed — get diagnostic bundle from one node** | 1. POST `getForkDiagnostic` with a time window. 2. Inspect `classification.fork_type` + `recommended_action`. 3. Check `health.events_dropped_total` — if > 0, some events were lost. | `curl -s -X POST http://127.0.0.1:28500 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","method":"getForkDiagnostic","params":{"window_secs":3600},"id":1}'` | Node RPC URL | JSON with `schema_version:1`, `classification.fork_type` set, `fork_summary.fork_events_in_window > 0` |
@@ -90,6 +94,10 @@ SUPPLEMENTARY   RPC-CHEATSHEET.md (curl payloads for all methods), LEDGER-SCHEMA
 
 | Constraint | Type | Location | Detail |
 |---|---|---|---|
+| **Subsystem is OPT-IN** | invariant | `bins/node/src/node/init.rs` gate + `bins/node/src/config.rs` field + commit `3215a5eb` | Default OFF since 2026-05-30. `--fork-diagnostics` CLI flag required at node startup. When OFF: `diagnostic_ledger=None`, `diagnostic_emitter=NoOpEmitter`, `diagnostic_shutdown_tx=None`, no writer/pruner/monitor tasks, no `diagnostics/` RocksDB. `getForkDiagnostic`/`getFleetForkDiagnostic` stay registered in the dispatch table and return `{"code":-32603,"message":"Diagnostic ledger unavailable"}`. **Before assuming any diagnostic RPC will return data, confirm the node was started with `--fork-diagnostics`** — see OPERATIONS "Confirm whether a node has diagnostics enabled" |
+| **Emit helpers short-circuit on `is_noop()` BEFORE allocation** | invariant | `bins/node/src/node/apply_block/diagnostics.rs:22` + `:57` | `emit_block_rejected` and `emit_block_applied` call `if emitter.is_noop() { return; }` before any ULID generation, hex encoding, or String allocation. Verified by `test_noop_emitter_record_has_no_side_effects`. Hot-path cost when OFF = one virtual call + return. NEVER weaken the guard without re-running the path-coverage gate (commit `3215a5eb` Path-Coverage block). |
+| **Structural local-testnet nodes have the flag baked into their plists** | invariant | `scripts/install-local-services.sh` (seed + producer templates, lines ~82, ~149) | Re-running the install script preserves diagnostic coverage on N1-N12 + seed. Editing the generated plists by hand instead of the template will be overwritten on next reinstall. External producers (community / partner) go dark by default unless their operators opt in. |
+| **`getChainInfo`, `getStateRootDebug`, `getUtxoDiff`, `fork-monitor.sh` are NOT gated** | invariant | `crates/rpc/src/methods/stats.rs` + `scripts/fork-monitor.sh` | These do NOT depend on `diagnostic_ledger`. They continue to work whether `--fork-diagnostics` is set or not. Tip-divergence detection via `fork-monitor.sh` is the baseline fork-detection layer that survives diagnostics being off. |
 | Logs are in FILES, not journalctl | invariant | CLAUDE.md + `scripts/health-check.sh:7` | `health-check.sh` reads `tail -200 ${log_path}` from files; app logs never in journalctl |
 | `Hash::ZERO` is NOT a fork signal | security | MEMORY.md (INC-I-014) | A peer reporting `bestHash=0x000...0` is a sync state issue, not a fork. Do not react as fork. |
 | Diagnostic ledger is per-node, not consensus-bound | invariant | `diagnostic_ledger/mod.rs:1-10` | Each node's `<data_dir>/diagnostics/` is independent. Fleet view requires polling each node. No events are gossiped. |
@@ -110,7 +118,8 @@ SUPPLEMENTARY   RPC-CHEATSHEET.md (curl payloads for all methods), LEDGER-SCHEMA
 
 | Pattern | Example Location | Usage |
 |---|---|---|
-| **Diagnostic event emission in hot path** | `block_handling.rs:168-190` | `self.diagnostic_emitter.record(DiagnosticEvent{event_id: ulid::Ulid::new().to_string(), kind: EventKind::ForkBlockReceived, timestamp_ms: SystemTime::now()...})`— wrap in `let _ =` to discard result (non-blocking, fire-and-forget) |
+| **Diagnostic event emission in hot path** | `block_handling.rs:168-190` | `self.diagnostic_emitter.record(DiagnosticEvent{event_id: ulid::Ulid::new().to_string(), kind: EventKind::ForkBlockReceived, timestamp_ms: SystemTime::now()...})`— wrap in `let _ =` to discard result (non-blocking, fire-and-forget). Callers that route through `apply_block/diagnostics.rs` helpers (`emit_block_rejected`, `emit_block_applied`) get the `is_noop()` short-circuit for free; callers that emit directly skip the short-circuit and pay the allocation when diagnostics are OFF — prefer the helper pattern for new emit sites |
+| **Adding a new emit helper (zero-cost OFF semantics)** | `bins/node/src/node/apply_block/diagnostics.rs` | Open helper with `if emitter.is_noop() { return; }`, then construct the `DiagnosticEvent`, then call `let _ = emitter.record(event);`. Trait method `DiagnosticEmitter::is_noop` defaults to `false`; only `NoOpEmitter` overrides to `true`. Verified by `bins/node/tests/diagnostic_optin_test.rs::test_noop_emitter_record_has_no_side_effects`. Path-Coverage attestation required on commit (see commit `3215a5eb` for the template Q1=YES, Q2=NO, Q3=YES rationale) |
 | **CorrelationKey construction at emit site** | `block_handling.rs:209-213` | `correlation_key: Some(CorrelationKey{divergence_height: Some(fork_height), canonical_hash: None, fork_hash: Some(block_hash.to_hex())})` — always use at least one non-None field for grouping |
 | **Classifier rule structure (add a new rule)** | `classifier.rs:36-59` | Add `if let Some(c) = rule_X_new_type(events) { return c; }` in `classify()` at desired priority position. Rule function returns `Option<Classification>`. All rules are pure functions with no I/O. |
 | **RPC dispatch registration** | `dispatch.rs:73-76` | Add `"methodName" => self.handler_fn(request.params).await` to the `match` in `handle_request()`. Handler lives in `crates/rpc/src/methods/<name>.rs`. |

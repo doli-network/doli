@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};
-use doli_core::Network;
+use doli_core::{consensus, Network};
 use tracing::warn;
 
 use crate::cli::expand_tilde_path;
@@ -84,14 +84,15 @@ pub(crate) fn truncate_chain(
         ));
     }
 
-    // Check undo data availability. INC-I-071: window reduced from 2000 to 360
-    // (one epoch). Deeper rollbacks must use `recover` (replay from blocks).
-    let oldest_undo = current_height.saturating_sub(360);
+    // Check undo data availability. Window is `consensus::UNDO_KEEP_DEPTH`.
+    // Deeper rollbacks must use `recover` (replay from blocks).
+    let oldest_undo = current_height.saturating_sub(consensus::UNDO_KEEP_DEPTH);
     if new_tip < oldest_undo {
         return Err(anyhow!(
-            "Cannot truncate {} blocks — undo data only available for last 360 blocks (height {} to {}). \
+            "Cannot truncate {} blocks — undo data only available for last {} blocks (height {} to {}). \
              Max truncation: {} blocks. For deeper rollback, use 'recover'.",
             blocks_to_remove,
+            consensus::UNDO_KEEP_DEPTH,
             oldest_undo,
             current_height,
             current_height - oldest_undo

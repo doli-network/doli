@@ -7,10 +7,36 @@ use crate::StorageError;
 
 use super::types::{
     BlockStore, CF_ADDR_TX_INDEX, CF_BODIES, CF_HASH_TO_HEIGHT, CF_HEADERS, CF_HEIGHT_INDEX,
-    CF_META, CF_PRESENCE, CF_SLOT_INDEX, CF_TX_INDEX,
+    CF_META, CF_PRESENCE, CF_SLOT_INDEX, CF_TX_INDEX, DB_WRITE_BUFFER_SIZE_BYTES,
 };
 
 impl BlockStore {
+    /// RocksDB runtime metrics snapshot for Prometheus export.
+    ///
+    /// Passes the 9 named CFs so the metrics collector aggregates across them
+    /// rather than reading the empty default CF (which would return ~0 for
+    /// CF-scoped properties like memtable_bytes, sst_total_bytes, etc.).
+    pub fn metrics(&self) -> crate::RocksDbMetrics {
+        crate::collect_db_metrics(
+            &self.db,
+            "block_store",
+            &[
+                CF_HEADERS,
+                CF_BODIES,
+                CF_HEIGHT_INDEX,
+                CF_SLOT_INDEX,
+                CF_PRESENCE,
+                CF_HASH_TO_HEIGHT,
+                CF_TX_INDEX,
+                CF_ADDR_TX_INDEX,
+                CF_META,
+            ],
+            DB_WRITE_BUFFER_SIZE_BYTES,
+            &self.block_cache,
+            self.block_cache_capacity_bytes,
+        )
+    }
+
     /// Remove non-canonical (fork) blocks from the store.
     ///
     /// Iterates all headers and checks if each hash exists in the
@@ -271,8 +297,11 @@ impl BlockStore {
         Ok(true)
     }
 
-    /// Minimum number of recent blocks that must always be retained.
-    /// Set to 2x MAX_REORG_DEPTH for safety margin (matches UNDO_KEEP_DEPTH).
+    /// Minimum number of recent blocks that must always be retained in the
+    /// block_store (the on-disk archive of full block bodies). This is the
+    /// rebuild-from-blocks floor — independent of `consensus::UNDO_KEEP_DEPTH`
+    /// (which gates per-block UTXO undo records). Set to 2× `MAX_REORG_DEPTH`
+    /// (1000) for safety margin.
     const MIN_RETENTION: u64 = 2000;
 
     /// Delete all blocks below `keep_above_height` from all column families.

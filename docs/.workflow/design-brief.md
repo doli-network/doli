@@ -1,64 +1,128 @@
-# Design Brief: AMM Value-Conservation Layer (INC-I-096)
+# Design Brief — INC-I-104 RocksDB Configuration Redesign
 
-**Mode:** Proposal-only redesign (no `--fix`). **Scope:** `AMM value-conservation`. **Incident:** INC-I-096.
+## Refined Prompt (user's verbatim request, anchors already pre-empted)
 
-**⚠️ USER DIRECTION (binding for all evaluators):**
-1. **CLEAN-SLATE.** Design the AMM value-conservation architecture from FIRST PRINCIPLES. A 6-change patch-set fix already exists in the working tree (gated inert), but you must NOT anchor to it or treat it as the baseline to refine. The user explicitly rejected "refine the existing fix." Design the conservation model you would build if starting fresh. You MAY read the existing code to understand the *problem* and the *constraints*, but do not adopt the patch-set's shape as a given. The fact that per-type patching keeps unmasking sibling vulnerabilities (the "Hydra pattern") is itself evidence that the patch shape is wrong.
-2. **token_b (FungibleAsset) per-asset conservation is a hard MUST**, not a deferral. A DOLI-only conservation fix leaves token reserves drainable (SEC-LOGIC-002). Your design MUST conserve and input-bind the non-DOLI asset side too, bounded to AMM tx types (do NOT propose changing the system-wide `is_native_amount()` foundation used by all 27 tx types — that broader generalization is explicitly out of scope).
+First-principles design of the correct RocksDB configuration for the 4 RocksDB instances in doli-node: `block_store`, `state_db`, `utxo_store`, `diagnostic_ledger`. The design must reflect what these databases architecturally NEED based on workload and durability — not what fits a specific VPS. If the resulting per-node memory footprint doesn't fit a given server, that's an operational decision.
 
-## Refined Prompt
-Redesign the AMM value-conservation layer. The problem is STRUCTURAL, not a single bug. Across three enforcement sites — mempool admission, consensus validation, and apply_block — the AMM value-conservation model treats Pool UTXOs as ordinary native-amount UTXOs, and the validation pipeline trusts attacker-DECLARED pool state (new_reserve_a, new_reserve_b, new_total_lp) instead of binding it to the ACTUAL consumed transaction inputs. Successive code-level patches have each unmasked a sibling vulnerability. Propose a unified value-conservation architecture where pool reserve flows and LP supply changes are conserved and bound to inputs BY CONSTRUCTION, not by per-type ad-hoc checks.
+For each of the 4 instances, derive concrete values for:
 
-## The Problem Space (the 6 defects + 2 wildcards — these are the PROBLEM, not the fix)
-- **D1 — Conservation blind to Pool reserve release.** Native conservation at mempool (`crates/mempool/src/pool.rs:~383`, `total_input < total_output → MPTX008`) AND consensus (`crates/core/src/validation/utxo.rs:~210-217`, `→ InsufficientFunds`) is blind to Pool reserves. Pool UTXO has `output_type=Pool`, `amount=0`; reserves live in `extra_data`. `is_native_amount()` excludes Pool/LPShare/FungibleAsset. DOLI released from reserves in RemoveLiquidity / Swap B→A appears as a Normal output with NO covering native input → legitimate withdrawals falsely rejected. The bug is DIRECTIONAL: AddLiquidity and Swap A→B push DOLI INTO the pool (input>output) so they pass accidentally.
-- **D2 — Mempool/consensus parity divergence.** Mempool `calculate_inputs` (`crates/mempool/src/pool.rs:~892,~916`) sums ALL `utxo.output.amount` unconditionally (counts LPShare share-amounts and FungibleAsset as native DOLI); consensus (`utxo.rs:~185`) filters `is_native_amount()`. Mempool OVER-counts → small burns pass mempool but die at consensus/block-assembly ("silent failure: blockHeight=None forever"); large burns fail mempool loudly (MPTX008).
-- **D3 / SEC-LOGIC-001 (P0) — RemoveLiquidity unbound to inputs.** Consensus `validate_remove_liquidity` (`utxo.rs:~696-735`) checks pool_id stable, reserves decreased-or-equal, LP shares decreased — but does NOT bind doli_out/tokens_out to reserve deltas, NOR shares_burned to consumed LPShare inputs. `shares_burned = old_total_lp - new_total_lp` is computed from ATTACKER-controlled output `new_total_lp`. Declare `new_total_lp=0`, burn 1 share → proportional cap inflates to full pool → drain all reserves. The buggy conservation check was the only thing accidentally blocking this; removing it unmasks the drain.
-- **D4 / SEC-LOGIC-002 (P0) — Swap B→A unbound to token inputs.** Does not bind declared `new_reserve_b` increase to actual FungibleAsset token inputs; k-invariant trivially satisfiable with tiny `new_reserve_a`. Declare huge `new_reserve_b` + 1 token in → extract ~all `reserve_a` DOLI. Same class as INC-I-092 RC-B (which covered CreatePool ONLY).
-- **WILDCARD H1 (fix-breaking risk) — floor division.** Pool share math (`crates/core/src/validation/pool.rs` / `crates/core/src/pool.rs`, `da = shares * reserve_a / total_shares`) truncates toward zero. Any binding using EXACT equality between doli_out and reserve delta falsely rejects ~50% of legitimate removes. A correct binding must use `<=` (dust-to-pool) or replicate identical integer arithmetic in builder and validator.
-- **WILDCARD H2 (now a MUST per user) — token_b has no conservation.** FungibleAsset (token_b) has NO per-asset supply conservation anywhere; only DOLI is governed by `is_native_amount`. A DOLI-only fix leaves token_b drainable.
+- `db_write_buffer_size` (total memtable budget across all CFs)
+- `write_buffer_size` per CF (or differentiated per-CF if some CFs deserve more)
+- `max_write_buffer_number`
+- `min_write_buffer_number_to_merge`
+- `max_total_wal_size`
+- Block cache size (and whether to share one Cache across all 4 instances or keep separate)
+- `block_size`
+- Compression style (Lz4 / Zstd / None) per level and per CF
+- Compaction style (Universal / Level)
+- `max_background_jobs`, `max_subcompactions`
+- `target_file_size_base`, `max_bytes_for_level_base`
+- `level0_file_num_compaction_trigger`, `level0_slowdown_writes_trigger`, `level0_stop_writes_trigger`
+- `bloom_filter_bits_per_key` (if appropriate)
+- Any per-CF overrides
 
-## Root Pattern (why this is architectural, not 6 bugs)
-Declared pool state (`new_reserve_a/b`, `new_total_lp`) is trusted without binding to actual consumed inputs. INC-I-092 RC-B applied input-backing to CreatePool ONLY. Every patch that fixes one tx-type's binding leaves the others exploitable — a Hydra. The builder helpers in `crates/core/src/pool.rs` (~7 functions: compute_swap, compute_remove_liquidity, verify_invariant, etc.) contain the CORRECT AMM math, but consensus NEVER calls them — it does ad-hoc structural checks. Builder computes; validator trusts.
+## Hard Constraints (verbatim)
 
-## Architectural Constraints & Invariants ANY redesign MUST preserve
-- **C1 — k-invariant:** `reserve_a_after * reserve_b_after >= reserve_a_before * reserve_b_before` for Swap (fees increase k).
-- **C2 — MINIMUM_LIQUIDITY = 1000** locked permanently in first LP mint (`crates/core/src/consensus.rs`).
-- **C3 — `compute_pool_id` includes fee_bps; IRREVERSIBLE post-activation** (`crates/core/src/transaction/output.rs:~729`).
-- **C4 — Activation-height immutability:** never move a crossed height forward (INC-I-054).
-- **C5 — Mempool/consensus MUST produce identical accept/reject** (no silent-failure threshold). This is the parity requirement.
-- **C6 — INC-I-075 three-question checklist:** any consensus-visible, user-submittable change needs an activation height. INC-I-096's flip is reject→accept (and accept→reject for drains): Q1=YES, Q2=NO, Q3=NO → **a NEW `inc_i_096_activation_height` is REQUIRED** (do NOT reuse `inc_i_092_activation_height`; immutability).
-- **C7 — ~30 external producers on local net:** no synchronized stop possible; activation height + rolling-deploy lead time mandatory. Mainnet pin = `u64::MAX` (with `amm_activation_height`); testnet = future height; devnet = 0.
-- **C8 — Floor-division dust** (see H1): tolerance, not exact equality.
-- **C9 — Fee split 25/5 bps (LP/protocol):** the conservation equation must account for protocol fee extraction (value leaving the pool to the reward pool) or it will falsely reject Swaps.
-- **C10 — Pool UTXO consumed+recreated each op** (UTXO model; no in-place mutation). Pool `amount=0` is a structural given (do not propose moving reserves into `amount`).
-- **C11 — Integer-only u64/u128 truncating arithmetic** (determinism; platform-independent).
-- **C12 — INC-I-092 RC-A** (AMM Pool-input TXs exempt from fee/signature check) must be preserved.
-- **Mainnet `amm_activation_height = u64::MAX`** → AMM NOT live → NO production value at risk. Redesign can land before activation.
+- Architecture is NOT reverse-engineered from hardware. Hardware fit is downstream operational.
+- Do NOT anchor on INC-I-102's 8 MB value as the answer for the other 3 DBs. Derive each independently from workload.
+- WebSearch / WebFetch permitted; cite RocksDB sources.
+- Per-CF differentiation where workload differs (e.g., write-cold vs write-heavy CFs).
+- One spec, one set of values, one architectural commitment.
 
-## Capability Inventory (verified baseline — counted)
-- **AMM tx types (4):** CreatePool, AddLiquidity, RemoveLiquidity, Swap (A→B and B→A directions).
-- **Output types relevant (4):** Normal (native, counted), Pool (amount=0, reserves in extra_data, NOT counted), LPShare (NOT counted), FungibleAsset/token_b (NOT counted).
-- **`is_native_amount()` set:** IN = Normal/Bond/Reward/Coinbase etc.; OUT = Pool/LPShare/FungibleAsset.
-- **Existing conservation/binding checks (9 across 3 sites):** mempool native conservation; consensus native conservation; INC-I-092 RC-A fee/sig exemption; INC-I-092 RC-B CreatePool input-backing; RemoveLiquidity structural; Swap structural; Pool structural; builder-only k-invariant verify (NEVER called by consensus); apply_block duplicate-pool-id guard. Of these: 2 blind to Pool reserves, 1 covers only CreatePool, 2 structural-only, 1 builder-only.
+## Incident context
 
-## Redesign Acceptance Criteria (from analyst — REQ IDs)
-MUST: VC-001 pool-aware conservation (both sites); VC-002 mempool/consensus parity (shared logic); VC-003 RemoveLiquidity input binding (doli_out/tokens_out to reserve deltas, shares_burned to consumed LPShare — kills SEC-LOGIC-001); VC-004 Swap input binding + consensus k-invariant re-verify (kills SEC-LOGIC-002); VC-005 AddLiquidity input binding; VC-006 floor-division dust tolerance (kills H1 false-rejects); VC-007 new `inc_i_096_activation_height` gating (mainnet=u64::MAX, testnet=future, devnet=0); VC-008 preserve CreatePool RC-B; **VC-009 token_b per-asset conservation (elevated to MUST per user)**.
-SHOULD: VC-010 consensus re-verifies AMM math (reuse builder helpers or replicate); VC-011 single shared conservation function across sites; VC-012 back the ignored T10 drain test.
-WON'T (this cycle): VC-014 system-wide `is_native_amount` value-delta ledger overhaul (blast radius across all 27 tx types).
+INC-I-104 — "ai5 n9-n12 RAM growth ~8 MB/min + sync coordinator sees 1 peer while transport reports 45". Status: diagnosed. Severity: high. Domain: mainnet/network/sync.
 
-## Enforcement Sites (read these — clean-slate, but understand the terrain)
-- Mempool: `crates/mempool/src/pool.rs`
-- Consensus: `crates/core/src/validation/utxo.rs`, `crates/core/src/validation/pool.rs`, `crates/core/src/validation/types.rs`
-- Builder math: `crates/core/src/pool.rs`
-- Block assembly + apply_block: `bins/node/src/node/production/assembly.rs`, `bins/node/src/node/apply_block/tx_processing.rs`, `bins/node/src/node/validation_checks.rs`
-- Params/gating: `crates/core/src/network_params/{defaults,env_loader,mod}.rs`
-- Constants: `crates/core/src/consensus.rs`; Pool id / output: `crates/core/src/transaction/output.rs`
-- Existing fix (do NOT anchor; may skim for problem understanding): working-tree modifications + `crates/core/tests/inc_i_096_amm_conservation.rs`
+**Root cause (recorded)**: 3 of 4 RocksDB instances uncapped. Direct RocksDB LOG dump on ai5/n9 shows: `state_db`, `block_store`, `utxo_store` all have `db_write_buffer_size=0` (no total memtable budget), per-CF `write_buffer_size=67108864` (64 MB), `max_write_buffer_number=2`. Only `diagnostic_ledger` has `db_write_buffer_size=8388608` (8 MB cap from f37febcf). `block_store` and `utxo_store` also have `max_total_wal_size=0`.
 
-## Specs / prior docs
-- `specs/defi-foundations-economics.md`, `specs/defi-subsystem-architecture.md`, `specs/defi-l1-foundations-architecture.md`
-- `docs/bugfixes/inc-i-096-amm-balance-check-analysis.md`, `docs/.workflow/security-audit-inc-i-096-logic.md`
-- Full scoping: `docs/redesigns/amm-value-conservation-redesign-analysis.md`
+**Per-node natural ceiling** = sum across active CFs of `write_buffer_size × max_write_buffer_number`. ai5 plateaus at ~450 MB/node (4 × 450 = 1.8 GB on 3.7 GB box, fits). Family server fails because 6 × 450 MB = 2.7 GB > 1.9 GB total RAM; OOM during memtable warm-up.
 
-## Memory / scope
-INC_ID=INC-I-096. RUN_ID=none (proposal-only). DB: `.omega/memory.db` exists — log incident_entries during evaluation.
+## Analyst's Redesign Analysis
+
+Full document: `docs/redesigns/inc-i-104-redesign-analysis.md` (must read).
+
+**Workload inventory key findings** (19 column families total across 4 instances):
+
+### block_store (9 CFs)
+- Hot CFs: `headers`, `bodies`, `height_index`, `slot_index`, `hash_to_height` (every block, 6 blocks/min steady state, burst during sync)
+- Cold CFs: `tx_index`, `addr_tx_index` (write per block, read RPC-only)
+- Dead CF: `presence` (deprecated, cleaned on open, never written) — currently consumes 64 MB × 2 memtable budget for nothing
+- `meta` (cold): written once on snap sync only
+- WAL currently uncapped — WAL pinning by dead `presence` CF possible
+
+### state_db (6 CFs)
+- Hottest CF: `cf_utxo` (point lookups on every validation, deletes+inserts on every block; tens of millions of entries)
+- Hot CFs: `cf_utxo_by_pubkey` (mirrors cf_utxo), `cf_meta` (chain_state + canary every block)
+- Warm CFs: `cf_producers` (epoch boundary only, dirty-only writes), `cf_undo` (one entry per block, 1–100+ KB each)
+- Cold CF: `cf_exit_history` (only on producer exit)
+- WAL capped at 64 MB (only DB with WAL cap currently)
+
+### utxo_store (3 CFs)
+- Self-heals from state_db on startup (architecture doc confirms; node-heal excludes utxo_store)
+- All 3 CFs are rebuildable (no consensus criticality of its own)
+- WAL currently uncapped
+
+### diagnostic_ledger (1 CF)
+- Pure observability (NoOpEmitter fallback)
+- Async batched writes (10 events or 100ms)
+- Channel bounded at 1024 with drop-oldest
+- Currently capped at 8 MB total (INC-I-102 fix)
+
+## Durability tiering
+
+| Tier | Definition | CFs |
+|------|-----------|-----|
+| Consensus-critical | Loss → state root divergence | state_db {cf_utxo, cf_producers, cf_exit_history, cf_meta}, block_store {headers, bodies} |
+| Rebuildable | Recomputable from network or other DB | block_store secondary indexes, state_db {cf_utxo_by_pubkey, cf_undo}, utxo_store (all 3) |
+| Observability | Lossy ok, NoOp fallback | diagnostic_ledger |
+
+## Latency budgets (read paths)
+
+- `cf_utxo` point lookup: < 1ms (validation hot path)
+- WriteBatch commit: < 10ms (must fit in 10s slot)
+- `headers` lookup: < 10ms (sync responses)
+- `cf_utxo_by_pubkey` prefix scan: < 50ms (RPC)
+- Diagnostic RPC: < 500ms (debug)
+
+## Crash-recovery profile
+
+- block_store: WAL replay; alternatively network re-sync (slow)
+- state_db: WAL replay + last_applied canary; alternatively snap sync (medium)
+- utxo_store: self-heals from state_db (fast, WAL replay unnecessary)
+- diagnostic_ledger: WAL replay; lossy ok; NoOp fallback
+
+## Acceptance Criteria
+
+Full table in `docs/redesigns/inc-i-104-redesign-analysis.md` §7. Key items:
+
+- **Must**: behavior preserved (no state root change), bounded per-DB memory (db_write_buffer_size > 0 everywhere), per-CF differentiation, WAL bounded on all instances, one spec one set of values
+- **Should**: read-path latency preserved, WAL replay < 30s, bloom filters on point-lookup CFs, deprecated `presence` CF doesn't consume memtable budget
+- **Could**: shared block cache, WAL disabled on rebuildable-only instances, compaction-style differentiation per workload
+- **Won't**: hardware-driven sizing, runtime-configurable memory, jemalloc swap
+
+## Open Questions
+
+Q1 — Shared vs per-instance block cache?
+Q2 — state_db compaction style (level vs universal)?
+Q3 — block_store block cache justification?
+Q4 — diagnostic_ledger 8 MB cap workload-justified or band-aid?
+Q5 — Optimal bloom_filter_bits_per_key per CF?
+Q6 — presence CF lifecycle (keep minimal / drop / migrate)?
+Q7 — utxo_store WAL necessity (given self-heal)?
+Q8 — cf_undo memtable sizing (large values, low cardinality)?
+
+## Scope
+
+- RUN_ID: not registered (proposal-only, no `--fix`)
+- INC_ID: INC-I-104
+- Workflow: omega-redesign, parallel design evaluation (5 evaluators), no implementation
+
+## Source files (evaluators MUST read)
+
+- `crates/storage/src/block_store/open.rs` + adjacent CF defs and write paths
+- `crates/storage/src/state_db/open.rs` + adjacent CF defs and write paths
+- `crates/storage/src/utxo_store/open.rs` + adjacent CF defs and write paths
+- `crates/storage/src/diagnostic_ledger/mod.rs` (current 8 MB cap)
+- `.claude/skills/storage/SKILL.md`
+- `CLAUDE.md` "If You Touch" → storage
+- `docs/bugfixes/inc-i-104-analysis.md` and `docs/bugfixes/inc-i-104-handoff.md`

@@ -2304,7 +2304,7 @@ curl -s -X POST http://127.0.0.1:8500 \
 
 Prune old blocks below a given retention depth to reclaim disk space. Removes block headers, bodies, transaction indexes, address indexes, and slot indexes for pruned heights. Runs RocksDB compaction after deletion to actually free disk.
 
-**Safety:** Enforces a minimum retention of 2000 blocks from the chain tip (matching `UNDO_KEEP_DEPTH`). If an archive directory exists at `{data_dir}/archive/`, verifies archive coverage before pruning (advisory — pruning proceeds regardless).
+**Safety:** Enforces a minimum retention of 2000 blocks from the chain tip (block-store floor — independent of `UNDO_KEEP_DEPTH`, which gates per-block UTXO undo records at depth 100). If an archive directory exists at `{data_dir}/archive/`, verifies archive coverage before pruning (advisory — pruning proceeds regardless).
 
 **Parameters:** `[keep_last_n]` — Number of recent blocks to keep (default: 2000, minimum: 2000).
 

@@ -44,90 +44,105 @@ impl Node {
         height: u64,
         pending_protocol_activation_data: Option<(u32, u64)>,
     ) {
-        let mut state = self.chain_state.write().await;
-        state.update(block_hash, height, block.header.slot);
-        // Clear snap sync marker: block store now has at least one real block,
-        // so the next restart's integrity check will find it normally.
-        state.clear_snap_sync();
+        // Phase 1: brief write lock for chain_state metadata only.
+        // chain_state.write() is released before the expensive compute_state_root()
+        // so concurrent RPC readers (e.g. getChainInfo) are not blocked. Block-apply
+        // is serialized by the single-threaded event loop, so no concurrent writer
+        // can interleave between phases.
+        let (new_best_hash, new_best_height) = {
+            let mut state = self.chain_state.write().await;
+            state.update(block_hash, height, block.header.slot);
+            // Clear snap sync marker: block store now has at least one real block,
+            // so the next restart's integrity check will find it normally.
+            state.clear_snap_sync();
 
-        // Apply deferred protocol activation (verified during tx processing)
-        let blocks_per_epoch = self.config.network.blocks_per_reward_epoch();
-        if let Some((version, activation_epoch)) = pending_protocol_activation_data {
-            let current_epoch = height / blocks_per_epoch;
-            if activation_epoch > current_epoch && version > state.active_protocol_version {
-                state.pending_protocol_activation = Some((version, activation_epoch));
-                info!(
-                    "[PROTOCOL] Scheduled activation: v{} at epoch {} (current epoch {})",
-                    version, activation_epoch, current_epoch
-                );
-            } else {
-                warn!(
-                    "[PROTOCOL] Rejected activation: v{} at epoch {} (current v{}, epoch {})",
-                    version, activation_epoch, state.active_protocol_version, current_epoch
-                );
-            }
-        }
-
-        // Check pending protocol activation at epoch boundaries
-        if doli_core::EpochSnapshot::is_epoch_boundary_with(height, blocks_per_epoch) {
-            if let Some((version, activation_epoch)) = state.pending_protocol_activation {
+            // Apply deferred protocol activation (verified during tx processing)
+            let blocks_per_epoch = self.config.network.blocks_per_reward_epoch();
+            if let Some((version, activation_epoch)) = pending_protocol_activation_data {
                 let current_epoch = height / blocks_per_epoch;
-                if current_epoch >= activation_epoch {
-                    state.active_protocol_version = version;
-                    state.pending_protocol_activation = None;
+                if activation_epoch > current_epoch && version > state.active_protocol_version {
+                    state.pending_protocol_activation = Some((version, activation_epoch));
                     info!(
-                        "[PROTOCOL] Activated protocol version {} at epoch {} (height {})",
-                        version, current_epoch, height
+                        "[PROTOCOL] Scheduled activation: v{} at epoch {} (current epoch {})",
+                        version, activation_epoch, current_epoch
                     );
-                }
-            }
-        }
-
-        // For devnet: set genesis_timestamp from first block if not already set from chainspec
-        // When chainspec has a fixed genesis time, we MUST use it (all nodes must agree)
-        // Only fall back to deriving from block timestamp if no chainspec genesis was provided
-        if state.genesis_timestamp == 0 && height <= 1 {
-            // Check if we have a chainspec genesis time override
-            if let Some(override_time) = self.config.genesis_time_override {
-                // Use the chainspec genesis time (already set in params)
-                state.genesis_timestamp = override_time;
-                info!(
-                    "Genesis timestamp set from chainspec: {} (block {} received)",
-                    state.genesis_timestamp, height
-                );
-            } else {
-                // No chainspec override - derive from block timestamp (legacy behavior)
-                let block_timestamp = block.header.timestamp;
-                let new_genesis_time =
-                    block_timestamp - (block_timestamp % self.params.slot_duration);
-                state.genesis_timestamp = new_genesis_time;
-
-                // Also update params.genesis_time for devnet so slot calculations use synced value
-                if self.config.network == Network::Devnet
-                    && self.params.genesis_time != new_genesis_time
-                {
-                    info!(
-                        "Devnet genesis time synced from block {}: {} (was {})",
-                        height, new_genesis_time, self.params.genesis_time
-                    );
-                    self.params.genesis_time = new_genesis_time;
                 } else {
-                    info!(
-                        "Genesis timestamp set from block {}: {}",
-                        height, state.genesis_timestamp
+                    warn!(
+                        "[PROTOCOL] Rejected activation: v{} at epoch {} (current v{}, epoch {})",
+                        version, activation_epoch, state.active_protocol_version, current_epoch
                     );
                 }
             }
-        }
 
-        // Cache state root atomically: chain_state is still write-locked,
-        // utxo and producer_set were already updated earlier in apply_block.
-        // No TOCTOU race window possible.
-        let utxo = self.utxo_set.read().await;
-        let ps = self.producer_set.read().await;
-        if let Ok(root) = storage::compute_state_root(&state, &utxo, &ps) {
+            // Check pending protocol activation at epoch boundaries
+            if doli_core::EpochSnapshot::is_epoch_boundary_with(height, blocks_per_epoch) {
+                if let Some((version, activation_epoch)) = state.pending_protocol_activation {
+                    let current_epoch = height / blocks_per_epoch;
+                    if current_epoch >= activation_epoch {
+                        state.active_protocol_version = version;
+                        state.pending_protocol_activation = None;
+                        info!(
+                            "[PROTOCOL] Activated protocol version {} at epoch {} (height {})",
+                            version, current_epoch, height
+                        );
+                    }
+                }
+            }
+
+            // For devnet: set genesis_timestamp from first block if not already set from chainspec
+            // When chainspec has a fixed genesis time, we MUST use it (all nodes must agree)
+            // Only fall back to deriving from block timestamp if no chainspec genesis was provided
+            if state.genesis_timestamp == 0 && height <= 1 {
+                // Check if we have a chainspec genesis time override
+                if let Some(override_time) = self.config.genesis_time_override {
+                    // Use the chainspec genesis time (already set in params)
+                    state.genesis_timestamp = override_time;
+                    info!(
+                        "Genesis timestamp set from chainspec: {} (block {} received)",
+                        state.genesis_timestamp, height
+                    );
+                } else {
+                    // No chainspec override - derive from block timestamp (legacy behavior)
+                    let block_timestamp = block.header.timestamp;
+                    let new_genesis_time =
+                        block_timestamp - (block_timestamp % self.params.slot_duration);
+                    state.genesis_timestamp = new_genesis_time;
+
+                    // Also update params.genesis_time for devnet so slot calculations use synced value
+                    if self.config.network == Network::Devnet
+                        && self.params.genesis_time != new_genesis_time
+                    {
+                        info!(
+                            "Devnet genesis time synced from block {}: {} (was {})",
+                            height, new_genesis_time, self.params.genesis_time
+                        );
+                        self.params.genesis_time = new_genesis_time;
+                    } else {
+                        info!(
+                            "Genesis timestamp set from block {}: {}",
+                            height, state.genesis_timestamp
+                        );
+                    }
+                }
+            }
+
+            (state.best_hash, state.best_height)
+        };
+
+        // Phase 2: compute state root under read locks only.
+        // Block-apply is serialized by the event loop, so the snapshot we hash
+        // matches the metadata we just committed in Phase 1.
+        let root_result = {
+            let state = self.chain_state.read().await;
+            let utxo = self.utxo_set.read().await;
+            let ps = self.producer_set.read().await;
+            storage::compute_state_root(&state, &utxo, &ps).ok()
+        };
+
+        // Phase 3: brief write lock to publish the cached root.
+        if let Some(root) = root_result {
             let mut cache = self.cached_state_root.write().await;
-            *cache = Some((root, state.best_hash, state.best_height));
+            *cache = Some((root, new_best_hash, new_best_height));
         }
     }
 

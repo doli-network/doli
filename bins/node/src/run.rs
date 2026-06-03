@@ -42,6 +42,7 @@ pub(crate) async fn run_node(
     checkpoint_height: Option<u64>,
     checkpoint_hash: Option<String>,
     recovery_mode: bool,
+    fork_diagnostics: bool,
 ) -> Result<()> {
     // Expand tilde in all paths (shell expansion doesn't happen in Rust)
     let data_dir = expand_tilde_path(data_dir);
@@ -198,6 +199,7 @@ pub(crate) async fn run_node(
     if no_discv5 {
         info!("Discv5 UDP discovery disabled — using TCP Kademlia only");
     }
+    config.fork_diagnostics = fork_diagnostics;
 
     // Start metrics server
     let metrics_addr: std::net::SocketAddr = format!("0.0.0.0:{}", metrics_port).parse()?;
@@ -565,6 +567,16 @@ pub(crate) async fn run_node(
         tokio::spawn(async move { archiver.run().await });
         info!("Block archiver enabled");
     }
+
+    // Spawn RocksDB metrics scraper (Prometheus). Reads runtime properties
+    // from all 4 instances every 15s. Cheap (in-memory counters).
+    crate::metrics::spawn_rocksdb_metrics_scraper(
+        node.block_store.clone(),
+        node.state_db.clone(),
+        node.utxo_set.clone(),
+        node.diagnostic_ledger.clone(),
+    );
+    info!("RocksDB metrics scraper started (15s interval)");
 
     info!("Node running. Press Ctrl+C to stop.");
 

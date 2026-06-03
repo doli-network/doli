@@ -81,6 +81,11 @@ pub(super) fn deserialize_body(
     ))
 }
 
+/// INC-I-104 M0: hard cap on total memtable budget across all CFs.
+/// Used by both `open()` (to set `db_write_buffer_size`) and `metrics()` (to
+/// report the cap so dashboards can compute approach-to-cap).
+pub(super) const DB_WRITE_BUFFER_SIZE_BYTES: u64 = 48 * 1024 * 1024;
+
 /// Column family names
 pub(super) const CF_HEADERS: &str = "headers";
 pub(super) const CF_BODIES: &str = "bodies";
@@ -95,4 +100,11 @@ pub(super) const CF_META: &str = "meta";
 /// Block store
 pub struct BlockStore {
     pub(super) db: rocksdb::DB,
+    /// Shared LRU block cache referenced by every CF. Held on the struct so
+    /// `metrics()` can query its real usage via `Cache::get_usage()` instead
+    /// of summing per-CF property reads (INC-I-106 root-cause fix).
+    pub(super) block_cache: rocksdb::Cache,
+    /// Configured capacity of `block_cache` in bytes. rust-rocksdb 0.22 does
+    /// not expose `Cache::get_capacity`, so we remember the constructor input.
+    pub(super) block_cache_capacity_bytes: u64,
 }

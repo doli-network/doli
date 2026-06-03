@@ -33,6 +33,11 @@ pub struct UndoData {
     pub chain_commitment: Option<[u8; 32]>,
 }
 
+/// INC-I-104 M0: hard cap on total memtable budget across all CFs.
+/// Shared between `open()` (sets `db_write_buffer_size`) and `metrics()`.
+/// Per Failure Analyst C-002: must be >= 32 MB for snap-sync atomic_replace.
+pub(super) const DB_WRITE_BUFFER_SIZE_BYTES: u64 = 64 * 1024 * 1024;
+
 // Column family names
 pub(super) const CF_UTXO: &str = "cf_utxo";
 pub(super) const CF_UTXO_BY_PUBKEY: &str = "cf_utxo_by_pubkey";
@@ -70,6 +75,12 @@ pub(super) const META_ORACLE_LAST_UPDATE_HEIGHT: &[u8] = b"oracle_last_update_he
 pub struct StateDb {
     pub(super) db: rocksdb::DB,
     pub(super) utxo_count: AtomicU64,
+    /// Shared LRU block cache referenced by every CF. Held on the struct so
+    /// `metrics()` can query its real usage via `Cache::get_usage()` instead
+    /// of summing per-CF property reads (INC-I-106 root-cause fix).
+    pub(super) block_cache: rocksdb::Cache,
+    /// Configured capacity of `block_cache` in bytes.
+    pub(super) block_cache_capacity_bytes: u64,
 }
 
 /// Atomic write batch for a single block application.
