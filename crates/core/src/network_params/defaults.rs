@@ -152,15 +152,20 @@ impl NetworkParams {
                 // specs/state-of-the-art-architecture.md.
                 defi_activation_height: u64::MAX,
 
-                // AMM Foundations M1: u64::MAX = AMM tx types frozen on
-                // mainnet. INDEPENDENT of defi_activation_height (HC-6 /
-                // INC-I-075). Operator pins a concrete future height in a
-                // separate commit ONLY AFTER the AMM consumer code (apply_block
-                // match arms, fee routing, CLI, RPC) is implemented + audited.
-                // Once crossed on mainnet this height is IMMUTABLE — never
-                // move it forward (INC-I-054). Spec:
+                // AMM Foundations M1 — mainnet activation pinned 2026-06-03.
+                // Tip at pin time: 359_042. Lead time: 8_618 blocks
+                // (~23.9h at 10s slots) for fleet binary distribution.
+                // INDEPENDENT of defi_activation_height (HC-6 / INC-I-075).
+                // Co-activates atomically at the SAME height with:
+                //   - inc_i_092_activation_height (spend-path auth/funding)
+                //   - inc_i_096_activation_height (pool-aware conservation)
+                //   - large_block_activation_height (INC-I-091, ~300 TPS)
+                // D1 (MINIMUM_LIQUIDITY=1000), D2 (fee_bps in pool_id),
+                // D4 (getDefiHealthMetric) foundations locks are in code
+                // pre-pin. Once the chain crosses this height it is
+                // IMMUTABLE — never move it forward (INC-I-054). Spec:
                 // specs/defi-foundations-economics.md §0.
-                amm_activation_height: u64::MAX,
+                amm_activation_height: 367_660,
 
                 // Phase 2.1 Oracle (structural-anchored): u64::MAX = frozen.
                 // PriceAttestation (TxType=16) is rejected at validation and
@@ -170,26 +175,38 @@ impl NetworkParams {
                 // Spec: specs/oracle-structural-anchored-economics.md §1.10.
                 oracle_activation_height: u64::MAX,
 
-                // Large blocks (>1 MB) → ~300 TPS (INC-I-091). u64::MAX =
-                // frozen. The previous pin (h=308_980) was overtaken by the
-                // chain head (319_012 at 2026-05-29) because the gossip-cap
-                // binary was never deployed. Operator pins a concrete future
-                // height in a SEPARATE commit, ONLY AFTER the gossip-cap binary
-                // is on the full fleet (mainnet must be running a binary that
-                // knows about this gate before activation). Builder policy
-                // (block content), not consensus. IMMUTABLE once crossed
-                // (INC-I-054).
-                large_block_activation_height: u64::MAX,
+                // Large blocks (>1 MB) → ~300 TPS (INC-I-091). Mainnet
+                // activation pinned 2026-06-03 at h=367_660. Tip at pin
+                // time: 359_042. Lead time: 8_618 blocks (~23.9h).
+                //
+                // Re-pin history:
+                //   308_980 → u64::MAX (2026-05-29): gossip-cap binary
+                //   never deployed; chain (319_012) overtook the pin —
+                //   routine pre-activation un-pin, NOT an INC-I-054
+                //   violation (no honored crossed height moved).
+                //   u64::MAX → 367_660 (2026-06-03): co-activates with
+                //   AMM triplet for a single coordinated upgrade event.
+                //
+                // Builder policy (block content), not consensus rules.
+                // Once crossed IMMUTABLE (INC-I-054).
+                large_block_activation_height: 367_660,
 
                 // INC-I-092 DeFi spend-path fixes (RC-A pool-input auth, RC-B
-                // pool_create funding). FROZEN at u64::MAX: AMM is not yet
-                // activated on mainnet, so the operator pins this in the SAME
-                // window AMM is enabled — AMM goes live already-correct, no
-                // separate consensus event. IMMUTABLE once crossed (INC-I-054).
-                inc_i_092_activation_height: u64::MAX,
-                // INC-I-096 pool-aware conservation. FROZEN at u64::MAX:
-                // AMM is not yet activated on mainnet.
-                inc_i_096_activation_height: u64::MAX,
+                // pool_create funding). Mainnet activation pinned 2026-06-03
+                // at h=367_660 — co-activated atomically with
+                // amm_activation_height so AMM goes live already-correct
+                // (no separate consensus event). Tip at pin time: 359_042,
+                // lead time 8_618 blocks (~23.9h). IMMUTABLE once crossed
+                // (INC-I-054).
+                inc_i_092_activation_height: 367_660,
+                // INC-I-096 pool-aware AMM value-conservation. Mainnet
+                // activation pinned 2026-06-03 at h=367_660 — equal to
+                // amm_activation_height (INV-DEPLOY-002 satisfied:
+                // inc_i_096 ≤ amm). Pool-aware conservation engages the
+                // same block AMM tx types become valid. Tip at pin time:
+                // 359_042, lead time 8_618 blocks (~23.9h). IMMUTABLE
+                // once crossed (INC-I-054).
+                inc_i_096_activation_height: 367_660,
 
                 // Gossip mesh: universal config for all network sizes.
                 // mesh_n=12 keeps all peers in eager-push for networks ≤24 (mesh_n_high),
