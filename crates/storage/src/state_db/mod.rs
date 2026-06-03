@@ -14,6 +14,7 @@
 //! | `cf_exit_history` | pubkey_hash (32B) | exit_height (8B LE) |
 //! | `cf_meta` | string key | varies |
 //! | `cf_undo` | height (8B LE) | UndoData (bincode) |
+//! | `cf_unique_id` | prefix(1B) + id(32B) | 0x00 |
 
 mod batch;
 mod open;

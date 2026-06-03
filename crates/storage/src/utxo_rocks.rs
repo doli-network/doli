@@ -658,6 +658,35 @@ impl RocksDbUtxoStore {
             .is_some()
     }
 
+    /// Insert a unique ID into the index (for migration/test).
+    ///
+    /// Phase 1 UTXO storage consolidation: exposes the unique_id CF
+    /// write for equivalence testing against state_db.
+    pub fn add_unique_id(&self, prefix: u8, id: &Hash) {
+        let cf = self.db.cf_handle(CF_UNIQUE_ID).unwrap();
+        let _ = self.db.write_opt(
+            {
+                let mut b = rocksdb::WriteBatch::default();
+                b.put_cf(cf, uid_key(prefix, id), [0u8]);
+                b
+            },
+            &self.write_opts,
+        );
+    }
+
+    /// Remove a unique ID from the index (for migration/test).
+    pub fn remove_unique_id(&self, prefix: u8, id: &Hash) {
+        let cf = self.db.cf_handle(CF_UNIQUE_ID).unwrap();
+        let _ = self.db.write_opt(
+            {
+                let mut b = rocksdb::WriteBatch::default();
+                b.delete_cf(cf, uid_key(prefix, id));
+                b
+            },
+            &self.write_opts,
+        );
+    }
+
     /// Insert a UTXO entry directly (for migration and reorgs)
     pub fn insert(&self, outpoint: Outpoint, entry: UtxoEntry) -> Result<(), StorageError> {
         let cf_utxo = self.db.cf_handle(CF_UTXO).unwrap();

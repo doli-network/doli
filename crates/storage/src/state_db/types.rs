@@ -1,6 +1,6 @@
 //! State database types, constants, and struct definitions
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicU64;
 
 use crypto::Hash;
@@ -45,6 +45,10 @@ pub(super) const CF_PRODUCERS: &str = "cf_producers";
 pub(super) const CF_EXIT_HISTORY: &str = "cf_exit_history";
 pub(super) const CF_META: &str = "cf_meta";
 pub(super) const CF_UNDO: &str = "cf_undo";
+/// Phase 1 of UTXO storage consolidation: unique ID index for NFT/Pool/Asset
+/// uniqueness checks. Mirrors utxo_store's `unique_id` CF.
+/// Key: prefix(1B) + id(32B) -> empty. See `specs/utxo-storage-architecture.md`.
+pub(super) const CF_UNIQUE_ID: &str = "cf_unique_id";
 
 // Meta keys
 pub(super) const META_CHAIN_STATE: &[u8] = b"chain_state";
@@ -98,6 +102,12 @@ pub struct BlockBatch<'a> {
     pub(super) pending_utxos: HashMap<Outpoint, UtxoEntry>,
     /// Outpoints removed in this batch (to avoid returning spent UTXOs from pending).
     pub(super) spent_in_batch: Vec<Outpoint>,
+    /// Unique IDs added in this batch but not yet committed to disk.
+    /// Enables same-block NFT/Pool/Asset uniqueness checks without
+    /// reading from cf_unique_id (which hasn't been committed yet).
+    /// Key: (output_type_discriminant, unique_id_hash).
+    /// Phase 1 of UTXO storage consolidation (specs/utxo-storage-architecture.md).
+    pub(super) pending_unique_ids: HashSet<(u8, [u8; 32])>,
 }
 
 /// The consistency canary — stored inside the same WriteBatch as state.

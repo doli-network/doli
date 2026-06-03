@@ -6,8 +6,8 @@ use std::sync::atomic::AtomicU64;
 use crate::StorageError;
 
 use super::types::{
-    StateDb, CF_EXIT_HISTORY, CF_META, CF_PRODUCERS, CF_UNDO, CF_UTXO, CF_UTXO_BY_PUBKEY,
-    DB_WRITE_BUFFER_SIZE_BYTES,
+    StateDb, CF_EXIT_HISTORY, CF_META, CF_PRODUCERS, CF_UNDO, CF_UNIQUE_ID, CF_UTXO,
+    CF_UTXO_BY_PUBKEY, DB_WRITE_BUFFER_SIZE_BYTES,
 };
 
 /// Build per-CF Options for state_db column families.
@@ -74,7 +74,7 @@ impl StateDb {
         // when total WAL exceeds the limit, allowing old WAL files to be deleted.
         opts.set_max_total_wal_size(DB_WRITE_BUFFER_SIZE_BYTES);
 
-        // INC-I-104: cap total memtable budget across all 6 CFs.
+        // INC-I-104: cap total memtable budget across all 7 CFs.
         // Must be >= 32 MB to accommodate snap-sync atomic_replace WriteBatch
         // (~15-20 MB). See Failure Analyst C-002 in
         // docs/.workflow/architecture-reasoning.md and specs/rocksdb-configuration-architecture.md §state_db.
@@ -86,7 +86,7 @@ impl StateDb {
         opts.set_max_background_jobs(2);
         opts.set_max_subcompactions(1);
 
-        // INC-I-104 M3: explicit 32 MB LRU block cache shared across all 6 CFs.
+        // INC-I-104 M3: explicit 32 MB LRU block cache shared across all 7 CFs.
         // Arc-internal in rust-rocksdb — multiple BlockBasedOptions builders
         // reference the same underlying cache. Per-instance only (C-012).
         let cache = rocksdb::Cache::new_lru_cache(32 * 1024 * 1024);
@@ -105,6 +105,7 @@ impl StateDb {
         // | cf_undo         |    4    |  2   | no    |  16    | Zstd  |   16   |  def    |  def    |
         // | cf_producers    |    2    |  2   | YES   |   4    | Lz4   |    8   |  def    |  def    |
         // | cf_exit_history |    1    |  1   | YES   |   4    | Lz4   |    2   |  def    |  def    |
+        // | cf_unique_id    |    2    |  2   | YES   |   4    | Lz4   |    4   |  def    |  def    |
         let cf_descriptors = vec![
             // Hottest CF — point lookups on every tx validation.
             // BLOOM (10 bits/key) + L0 slowdown=40/stop=60 (C-003 MANDATORY).
@@ -148,6 +149,16 @@ impl StateDb {
                 CF_EXIT_HISTORY,
                 cf_opts_state_db(&opts, &cache, 1, 1, true, 4, Lz4, 2, None, None),
             ),
+            // Phase 1 UTXO storage consolidation: unique ID index for
+            // NFT/Pool/Asset uniqueness checks. Low cardinality (DeFi gated),
+            // point lookups only — bloom filter helps.
+            // Tuning mirrors utxo_store's unique_id CF:
+            // 2 MB write_buffer, 2 max_write_buffer_number, bloom, 4 KB block,
+            // Lz4, 4 MB target_file_size, default L0 triggers.
+            rocksdb::ColumnFamilyDescriptor::new(
+                CF_UNIQUE_ID,
+                cf_opts_state_db(&opts, &cache, 2, 2, true, 4, Lz4, 4, None, None),
+            ),
         ];
 
         let db = rocksdb::DB::open_cf_descriptors(&opts, path, cf_descriptors)?;
@@ -172,7 +183,7 @@ impl StateDb {
 
     /// RocksDB runtime metrics snapshot for Prometheus export.
     ///
-    /// Passes the 6 named CFs so the collector aggregates across them
+    /// Passes the 7 named CFs so the collector aggregates across them
     /// (the default CF is unused and would return ~0 for CF-scoped properties).
     pub fn metrics(&self) -> crate::RocksDbMetrics {
         crate::collect_db_metrics(
@@ -185,6 +196,7 @@ impl StateDb {
                 CF_EXIT_HISTORY,
                 CF_META,
                 CF_UNDO,
+                CF_UNIQUE_ID,
             ],
             DB_WRITE_BUFFER_SIZE_BYTES,
             &self.block_cache,

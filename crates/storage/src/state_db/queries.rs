@@ -8,15 +8,15 @@ use doli_core::types::{Amount, BlockHeight};
 
 use crate::chain_state::ChainState;
 use crate::producer::{PendingProducerUpdate, ProducerInfo, ProducerSet};
-use crate::utxo::{Outpoint, UtxoEntry};
+use crate::utxo::{uid_key, Outpoint, UtxoEntry};
 
 use super::types::{
-    LastApplied, StateDb, CF_EXIT_HISTORY, CF_META, CF_PRODUCERS, CF_UTXO, CF_UTXO_BY_PUBKEY,
-    META_ACTIVE_PRODUCTION_LIST, META_CHAIN_COMMITMENT, META_CHAIN_COMMITMENT_TIP,
-    META_CHAIN_STATE, META_EPOCH_ATTESTATION_ACCUM, META_EPOCH_ATTESTED_SET,
-    META_EPOCH_BLOCKS_PRODUCED, META_EPOCH_BOND_SNAPSHOT, META_EPOCH_PRODUCER_LIST,
-    META_EPOCH_STATE, META_EPOCH_STATE_VERSION, META_LAST_APPLIED, META_ORACLE_LAST_UPDATE_HEIGHT,
-    META_ORACLE_SUNSET_STATE, META_PENDING_UPDATES,
+    LastApplied, StateDb, CF_EXIT_HISTORY, CF_META, CF_PRODUCERS, CF_UNIQUE_ID, CF_UTXO,
+    CF_UTXO_BY_PUBKEY, META_ACTIVE_PRODUCTION_LIST, META_CHAIN_COMMITMENT,
+    META_CHAIN_COMMITMENT_TIP, META_CHAIN_STATE, META_EPOCH_ATTESTATION_ACCUM,
+    META_EPOCH_ATTESTED_SET, META_EPOCH_BLOCKS_PRODUCED, META_EPOCH_BOND_SNAPSHOT,
+    META_EPOCH_PRODUCER_LIST, META_EPOCH_STATE, META_EPOCH_STATE_VERSION, META_LAST_APPLIED,
+    META_ORACLE_LAST_UPDATE_HEIGHT, META_ORACLE_SUNSET_STATE, META_PENDING_UPDATES,
 };
 
 impl StateDb {
@@ -144,6 +144,196 @@ impl StateDb {
             .sum()
     }
 
+    // ==================== Phase 1: Mirrored Query Methods ====================
+    //
+    // These methods mirror their RocksDbUtxoStore counterparts and produce
+    // bit-identical results when both stores hold the same data.
+    // See specs/utxo-storage-architecture.md Phase 1.
+
+    /// Get bonded balance (sum of Bond UTXOs for this address).
+    ///
+    /// Mirrors `RocksDbUtxoStore::get_bonded_balance`.
+    pub fn get_bonded_balance(&self, pubkey_hash: &Hash) -> Amount {
+        self.get_utxos_by_pubkey(pubkey_hash)
+            .iter()
+            .filter(|(_, entry)| entry.output.output_type == doli_core::OutputType::Bond)
+            .map(|(_, entry)| entry.output.amount)
+            .sum()
+    }
+
+    /// Count bond units for this address (total bond amount / bond_unit).
+    ///
+    /// Mirrors `RocksDbUtxoStore::count_bonds`.
+    pub fn count_bonds(&self, pubkey_hash: &Hash, bond_unit: u64) -> u32 {
+        let total: u64 = self
+            .get_utxos_by_pubkey(pubkey_hash)
+            .iter()
+            .filter(|(_, entry)| entry.output.output_type == doli_core::OutputType::Bond)
+            .map(|(_, entry)| entry.output.amount)
+            .sum();
+        if let Some(count) = total.checked_div(bond_unit) {
+            count as u32
+        } else {
+            0
+        }
+    }
+
+    /// Get bond details: (outpoint, creation_slot, amount) for each Bond UTXO,
+    /// sorted by creation_slot ascending (FIFO order).
+    ///
+    /// Mirrors `RocksDbUtxoStore::get_bond_entries`.
+    pub fn get_bond_entries(
+        &self,
+        pubkey_hash: &Hash,
+    ) -> Vec<(crate::utxo::Outpoint, u32, Amount)> {
+        let mut bonds: Vec<_> = self
+            .get_utxos_by_pubkey(pubkey_hash)
+            .into_iter()
+            .filter(|(_, entry)| entry.output.output_type == doli_core::OutputType::Bond)
+            .map(|(op, entry)| {
+                let slot = entry.output.bond_creation_slot().unwrap_or(0);
+                (op, slot, entry.output.amount)
+            })
+            .collect();
+        bonds.sort_by_key(|(_, slot, _)| *slot);
+        bonds
+    }
+
+    /// Get all Pool UTXOs.
+    ///
+    /// Mirrors `RocksDbUtxoStore::get_all_pools`.
+    pub fn get_all_pools(&self) -> Vec<(Outpoint, UtxoEntry)> {
+        let cf = self.db.cf_handle(CF_UTXO).unwrap();
+        let mut results = Vec::new();
+        for (key, value) in self
+            .db
+            .iterator_cf(cf, rocksdb::IteratorMode::Start)
+            .flatten()
+        {
+            if let Ok(entry) = bincode::deserialize::<UtxoEntry>(&value) {
+                if entry.output.output_type == doli_core::OutputType::Pool {
+                    if let Some(outpoint) = Outpoint::from_bytes(&key) {
+                        results.push((outpoint, entry));
+                    }
+                }
+            }
+        }
+        results
+    }
+
+    /// Find an NFT UTXO by token ID (scans all NFT UTXOs).
+    ///
+    /// Mirrors `RocksDbUtxoStore::find_nft_by_token_id`.
+    pub fn find_nft_by_token_id(&self, token_id: &Hash) -> Option<(Outpoint, UtxoEntry)> {
+        let cf = self.db.cf_handle(CF_UTXO).unwrap();
+        for (key, value) in self
+            .db
+            .iterator_cf(cf, rocksdb::IteratorMode::Start)
+            .flatten()
+        {
+            if let Ok(entry) = bincode::deserialize::<UtxoEntry>(&value) {
+                if entry.output.output_type == doli_core::OutputType::NFT {
+                    if let Some((tid, _)) = entry.output.nft_metadata() {
+                        if &tid == token_id {
+                            if let Some(outpoint) = Outpoint::from_bytes(&key) {
+                                return Some((outpoint, entry));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Total confirmed (spendable) DOLI excluding bonds and reward pool.
+    ///
+    /// Mirrors `RocksDbUtxoStore::total_confirmed`.
+    pub fn total_confirmed(
+        &self,
+        height: BlockHeight,
+        coinbase_maturity: BlockHeight,
+        pool_pkh: &[u8; 32],
+    ) -> Amount {
+        let cf = self.db.cf_handle(CF_UTXO).unwrap();
+        let mut total: Amount = 0;
+        for (_, value) in self
+            .db
+            .iterator_cf(cf, rocksdb::IteratorMode::Start)
+            .flatten()
+        {
+            if let Ok(entry) = bincode::deserialize::<UtxoEntry>(&value) {
+                if entry.output.output_type.is_native_amount()
+                    && entry.output.output_type != doli_core::OutputType::Bond
+                    && entry.output.pubkey_hash.as_bytes() != pool_pkh
+                    && entry.is_spendable_at_with_maturity(height, coinbase_maturity)
+                {
+                    total += entry.output.amount;
+                }
+            }
+        }
+        total
+    }
+
+    /// Count unique addresses (distinct pubkey hashes) in the UTXO set.
+    ///
+    /// Mirrors `RocksDbUtxoStore::address_count`.
+    pub fn address_count(&self) -> u64 {
+        let cf_by_pk = self.db.cf_handle(CF_UTXO_BY_PUBKEY).unwrap();
+        let mut count = 0u64;
+        let mut last_prefix = [0u8; 32];
+        let mut first = true;
+
+        for item in self
+            .db
+            .iterator_cf(cf_by_pk, rocksdb::IteratorMode::Start)
+            .flatten()
+        {
+            let (key, _) = item;
+            if key.len() < 32 {
+                continue;
+            }
+            if first || key[..32] != last_prefix {
+                count += 1;
+                last_prefix.copy_from_slice(&key[..32]);
+                first = false;
+            }
+        }
+
+        count
+    }
+
+    // ==================== Unique ID Index (cf_unique_id) ====================
+    //
+    // Phase 1 UTXO storage consolidation: these methods mirror the unique_id
+    // CF from utxo_store. See specs/utxo-storage-architecture.md.
+
+    /// Check if a unique ID exists in the index.
+    ///
+    /// Mirrors `RocksDbUtxoStore::has_unique_id`.
+    pub fn has_unique_id(&self, prefix: u8, id: &Hash) -> bool {
+        let cf = self.db.cf_handle(CF_UNIQUE_ID).unwrap();
+        self.db
+            .get_cf(cf, uid_key(prefix, id))
+            .ok()
+            .flatten()
+            .is_some()
+    }
+
+    /// Insert a unique ID into the index (non-batch, for migration/test).
+    pub fn add_unique_id(&self, prefix: u8, id: &Hash) {
+        let cf = self.db.cf_handle(CF_UNIQUE_ID).unwrap();
+        let _ = self.db.put_cf(cf, uid_key(prefix, id), [0u8]);
+    }
+
+    /// Remove a unique ID from the index (non-batch, for migration/test).
+    pub fn remove_unique_id(&self, prefix: u8, id: &Hash) {
+        let cf = self.db.cf_handle(CF_UNIQUE_ID).unwrap();
+        let _ = self.db.delete_cf(cf, uid_key(prefix, id));
+    }
+
+    // ==================== Producer Queries ====================
+
     /// Get a producer by pubkey hash.
     pub fn get_producer(&self, pubkey_hash: &Hash) -> Option<ProducerInfo> {
         let cf = self.db.cf_handle(CF_PRODUCERS).unwrap();
@@ -228,8 +418,8 @@ impl StateDb {
     /// Deserialize ChainState bytes, handling format versions.
     ///
     /// Format detection:
-    /// - `0x01` prefix → versioned format (v1.0.30+), strip prefix, bincode the rest
-    /// - Anything else → legacy unversioned bincode (v1.0.28/v1.0.29)
+    /// - `0x01` prefix -> versioned format (v1.0.30+), strip prefix, bincode the rest
+    /// - Anything else -> legacy unversioned bincode (v1.0.28/v1.0.29)
     pub(super) fn deserialize_chain_state(bytes: &[u8]) -> Result<ChainState, String> {
         const FORMAT_V1: u8 = 0x01;
 

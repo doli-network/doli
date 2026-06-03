@@ -8,12 +8,12 @@ use doli_core::types::{Amount, BlockHeight};
 
 use crate::chain_state::ChainState;
 use crate::producer::{PendingProducerUpdate, ProducerInfo, ProducerSet};
-use crate::utxo::{Outpoint, UtxoEntry};
+use crate::utxo::{uid_key, Outpoint, UtxoEntry};
 use crate::StorageError;
 
 use super::types::{
     BlockBatch, LastApplied, StateDb, UndoData, CF_EXIT_HISTORY, CF_META, CF_PRODUCERS, CF_UNDO,
-    CF_UTXO, CF_UTXO_BY_PUBKEY, META_ACTIVE_PRODUCTION_LIST, META_CHAIN_COMMITMENT,
+    CF_UNIQUE_ID, CF_UTXO, CF_UTXO_BY_PUBKEY, META_ACTIVE_PRODUCTION_LIST, META_CHAIN_COMMITMENT,
     META_CHAIN_STATE, META_EPOCH_ATTESTATION_ACCUM, META_EPOCH_ATTESTED_SET,
     META_EPOCH_BLOCKS_PRODUCED, META_EPOCH_BOND_SNAPSHOT, META_EPOCH_PRODUCER_LIST,
     META_EPOCH_STATE, META_EPOCH_STATE_VERSION, META_LAST_APPLIED, META_PENDING_UPDATES,
@@ -30,6 +30,7 @@ impl StateDb {
             utxo_delta: 0,
             pending_utxos: HashMap::new(),
             spent_in_batch: Vec::new(),
+            pending_unique_ids: HashSet::new(),
         }
     }
 }
@@ -145,6 +146,40 @@ impl<'a> BlockBatch<'a> {
         }
     }
 
+    // ==================== Unique ID (Phase 1) ====================
+
+    /// Add a unique ID to the pending set for same-block uniqueness checks.
+    ///
+    /// The ID is also queued in the WriteBatch for persistence on commit.
+    /// Phase 1 of UTXO storage consolidation (specs/utxo-storage-architecture.md).
+    pub fn add_pending_unique_id(&mut self, prefix: u8, id: Hash) {
+        self.pending_unique_ids.insert((prefix, *id.as_bytes()));
+        let cf = self.db.db.cf_handle(CF_UNIQUE_ID).unwrap();
+        self.batch.put_cf(cf, uid_key(prefix, &id), [0u8]);
+    }
+
+    /// Check if a unique ID exists: first in the pending set (same-block),
+    /// then on disk (cf_unique_id).
+    ///
+    /// Phase 1 of UTXO storage consolidation (specs/utxo-storage-architecture.md).
+    pub fn has_unique_id_check(&self, prefix: u8, id: &Hash) -> bool {
+        // Check pending first (same-block insert)
+        if self.pending_unique_ids.contains(&(prefix, *id.as_bytes())) {
+            return true;
+        }
+        // Fall back to disk
+        self.db.has_unique_id(prefix, id)
+    }
+
+    /// Remove a unique ID from the batch (queued for deletion on commit).
+    pub fn remove_pending_unique_id(&mut self, prefix: u8, id: &Hash) {
+        self.pending_unique_ids.remove(&(prefix, *id.as_bytes()));
+        let cf = self.db.db.cf_handle(CF_UNIQUE_ID).unwrap();
+        self.batch.delete_cf(cf, uid_key(prefix, id));
+    }
+
+    // ==================== Producer Operations ====================
+
     /// Put a producer info record.
     pub fn put_producer(&mut self, pubkey_hash: &Hash, info: &ProducerInfo) {
         let cf = self.db.db.cf_handle(CF_PRODUCERS).unwrap();
@@ -217,7 +252,7 @@ impl<'a> BlockBatch<'a> {
         }
     }
 
-    /// Persist the epoch bond snapshot {pubkey_hash → bond_count}.
+    /// Persist the epoch bond snapshot {pubkey_hash -> bond_count}.
     pub fn put_epoch_bond_snapshot(
         &mut self,
         snapshot: &std::collections::HashMap<crypto::Hash, u64>,
