@@ -214,7 +214,7 @@ Three of four RocksDB instances in doli-node run with uncapped memtable budgets:
 
 **Q7 — utxo_store WAL necessity**: Given that `utxo_store` self-heals from `state_db` on startup (architecture doc confirms this, node-heal excludes it), is WAL needed at all? Disabling WAL on `utxo_store` would save memory (no WAL buffer) and I/O (no fsync), with the only cost being a full rebuild from state_db on crash (which happens anyway during self-heal).
 
-**Q8 — cf_undo sizing**: The `cf_undo` CF in state_db stores full rollback data (spent UTXOs, full ProducerSet snapshot, optional EpochState snapshot) per block. Individual entries can be 1-100+ KB. Pruning keeps the last 2000 blocks (UNDO_KEEP_DEPTH). This CF has very different write/value characteristics from `cf_utxo` — should it get its own memtable size, and if so, what drives the derivation?
+**Q8 — cf_undo sizing**: The `cf_undo` CF in state_db stores full rollback data (spent UTXOs, full ProducerSet snapshot, optional EpochState snapshot) per block. Individual entries can be 1-100+ KB. Pruning keeps the last 100 blocks (UNDO_KEEP_DEPTH). This CF has very different write/value characteristics from `cf_utxo` — should it get its own memtable size, and if so, what drives the derivation?
 
 ## 9. Out-of-Scope Explicit List
 

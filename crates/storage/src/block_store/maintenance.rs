@@ -297,8 +297,11 @@ impl BlockStore {
         Ok(true)
     }
 
-    /// Minimum number of recent blocks that must always be retained.
-    /// Set to 2x MAX_REORG_DEPTH for safety margin (matches UNDO_KEEP_DEPTH).
+    /// Minimum number of recent blocks that must always be retained in the
+    /// block_store (the on-disk archive of full block bodies). This is the
+    /// rebuild-from-blocks floor — independent of `consensus::UNDO_KEEP_DEPTH`
+    /// (which gates per-block UTXO undo records). Set to 2× `MAX_REORG_DEPTH`
+    /// (1000) for safety margin.
     const MIN_RETENTION: u64 = 2000;
 
     /// Delete all blocks below `keep_above_height` from all column families.

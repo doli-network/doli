@@ -347,13 +347,10 @@ impl Node {
             .commit()
             .map_err(|e| anyhow::anyhow!("StateDb batch commit failed: {}", e))?;
 
-        // Prune old undo data. INC-I-071: reduced from 2000 → 360 (one epoch).
-        // MAX_CUMULATIVE_ROLLBACK is 50 — 360 is 7x that. Deepest observed reorg
-        // in 63 days of mainnet was ~10 blocks. For deeper rollbacks beyond this
-        // window, the existing rebuild_from_blocks fallback in rollback.rs is used.
-        const UNDO_KEEP_DEPTH: u64 = 360;
-        if height > UNDO_KEEP_DEPTH {
-            self.state_db.prune_undo_before(height - UNDO_KEEP_DEPTH);
+        // Prune old undo data. See `consensus::UNDO_KEEP_DEPTH` for sizing rationale.
+        if height > consensus::UNDO_KEEP_DEPTH {
+            self.state_db
+                .prune_undo_before(height - consensus::UNDO_KEEP_DEPTH);
         }
 
         // State fingerprints: one hash per ephemeral consensus-derived state

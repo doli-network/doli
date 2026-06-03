@@ -226,6 +226,30 @@ pub const LIVENESS_WINDOW_MIN: u64 = 500;
 /// 6 blocks ≈ 60 seconds of confirmation.
 pub const SEED_CONFIRMATION_DEPTH: u64 = 6;
 
+/// Undo retention depth: number of recent blocks for which per-block undo
+/// records are kept in cf_undo. Reads:
+///   apply_block prunes anything below `tip - UNDO_KEEP_DEPTH` after each commit.
+///   Startup runs an idempotent `prune_undo_below(tip - UNDO_KEEP_DEPTH)` to
+///   reclaim entries stranded by prior, larger windows.
+///
+/// Sizing rationale (must satisfy ALL):
+///   - `MAX_CUMULATIVE_ROLLBACK = 50` (`bins/node/src/node/rollback.rs`) — hard
+///     per-session ceiling for automatic undo-based rollback.
+///   - `SHALLOW_ROLLBACK_MAX = 10` invocations of `depth: 1` from sync recovery.
+///   - Deepest observed mainnet reorg over 63 days: ~10 blocks.
+///   - Beyond this window, `execute_reorg` cleanly falls back to
+///     `rebuild_from_blocks` — no panic, no divergence.
+///
+/// 100 = 2× MAX_CUMULATIVE_ROLLBACK = 10× deepest-observed. Reducing this from
+/// the prior 360 lowered cf_undo SST size ~7→~2 MB and per-cycle auto-compaction
+/// CPU ~70%. Reducing below 50 would force rebuild-from-blocks on legitimate
+/// reorgs and is unsafe.
+///
+/// **WARNING — `bins/node/src/operations/chain.rs::truncate_chain` advertises
+/// this value to operators.** A mismatch silently turns a CLI truncate beyond
+/// this depth into a mid-rollback panic at `state_db.get_undo(...)`.
+pub const UNDO_KEEP_DEPTH: u64 = 100;
+
 /// Re-entry interval in slots. Every K slots per stale producer, that producer
 /// gets rank 0 (exclusive 2s window) to produce a block and rejoin the live rotation.
 /// K=50 → 2% overhead per stale producer. Capped at 20% total (K/5 stale max).

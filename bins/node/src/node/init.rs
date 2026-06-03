@@ -568,21 +568,18 @@ impl Node {
         }
 
         // INC-I-074 followup to INC-I-071: one-shot cleanup of stranded cf_undo
-        // entries that were retained by the pre-fix code (UNDO_KEEP_DEPTH=2000).
-        // The per-block prune_undo_before walks forward only, so it cannot reclaim
-        // the historic tail left over when the retention window shrank to 360.
-        // Runs once at startup, BEFORE network/event-loop/production. Idempotent.
-        // The depth here must match UNDO_KEEP_DEPTH in apply_block/mod.rs.
+        // entries left when the retention window was shrunk in a prior release
+        // (2000 → 360 → 100). The per-block prune_undo_before walks forward only
+        // and cannot reclaim the historic tail. Idempotent; runs at every startup.
         {
-            const UNDO_KEEP_DEPTH: u64 = 360;
             let tip_height = chain_state.best_height;
-            if tip_height > UNDO_KEEP_DEPTH {
-                let horizon = tip_height - UNDO_KEEP_DEPTH;
+            if tip_height > consensus::UNDO_KEEP_DEPTH {
+                let horizon = tip_height - consensus::UNDO_KEEP_DEPTH;
                 let deleted = state_db.prune_undo_below(horizon);
                 if deleted > 0 {
                     info!(
                         "[STARTUP] Pruned {} stranded cf_undo entries below h={} \
-                         (INC-I-071 followup, post-UNDO_KEEP_DEPTH-reduction cleanup)",
+                         (post-UNDO_KEEP_DEPTH-reduction cleanup)",
                         deleted, horizon
                     );
                 }
