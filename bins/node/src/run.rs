@@ -577,6 +577,12 @@ pub(crate) async fn run_node(
     );
     info!("RocksDB metrics scraper started (15s interval)");
 
+    // Phase 5: F1 snap-sync size monitor. Computes canonical UTXO
+    // serialization size every 60s and updates the Prometheus gauge.
+    // Alert rule: doli_utxo_canonical_size_bytes > 12 MB for 5m.
+    crate::metrics::spawn_utxo_size_monitor(node.state_db.clone());
+    info!("F1 UTXO size monitor started (60s interval)");
+
     info!("Node running. Press Ctrl+C to stop.");
 
     // Run node in a separate task

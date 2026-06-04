@@ -8,7 +8,9 @@ INPUT PARTITIONS: N/A — architecture specification file (not a test file)
 ## Status
 **Approved 2026-06-03.** Scope locked: Tier 1 + BlobDB + F1 monitor. All other tiers explicitly deferred.
 
-Phases 1-4 complete. Phase 5 (BlobDB + F1 monitor) pending.
+**All 5 phases complete.** The UTXO storage redesign is finished.
+- Phases 1-4: UTXO store elimination, read migration, write simplification, cleanup.
+- Phase 5 (2026-06-04): BlobDB on cf_utxo + F1 snap-sync size monitor.
 
 ## Decision Record
 - 5-evaluator parallel design analysis converged on **eliminate `utxo_store`** (4/5 evaluators independent).
@@ -25,7 +27,7 @@ Phases 1-4 complete. Phase 5 (BlobDB + F1 monitor) pending.
 3. **Add 9 query methods** to `state_db/queries.rs` that currently exist only on `utxo_store` (`get_bonded_balance`, `count_bonds`, `get_bond_entries`, `get_all_pools`, `get_all_collateral`, `find_nft_by_token_id`, `total_confirmed`, `address_count`, etc.).
 4. **Route all UTXO reads** through `state_db` (~40 RPC call sites, mechanical).
 5. **Remove per-tx dual-writes** at `bins/node/src/node/apply_block/tx_processing.rs:139,156`.
-6. **Delete `crates/storage/src/utxo_rocks.rs`** (1,035 lines) + self-heal in `bins/node/src/node/init.rs` + simplify `crates/storage/src/utxo/set.rs`. Net **−1,400 LOC**.
+6. **Delete `crates/storage/src/utxo_rocks.rs`** (1,035 lines) + self-heal in `bins/node/src/node/init.rs` + simplify `crates/storage/src/utxo/set.rs`. Net **-1,400 LOC**.
 7. **Enable RocksDB BlobDB** on `cf_utxo` (and `cf_utxo_by_pubkey` if helpful) — 6 config lines:
    ```
    opts.set_enable_blob_files(true);
@@ -35,8 +37,8 @@ Phases 1-4 complete. Phase 5 (BlobDB + F1 monitor) pending.
    opts.set_enable_blob_gc(true);
    opts.set_blob_gc_age_cutoff(0.25);
    ```
-8. **Increase `cf_utxo` block_size 4 KB → 16 KB.** Matches existing precedent (`block_store` `CF_BODIES`, `state_db` `cf_undo`).
-9. **Unify block cache 32 + 16 → 48 MB single pool** (entailed by #1).
+8. **Increase `cf_utxo` block_size 4 KB -> 16 KB.** Matches existing precedent (`block_store` `CF_BODIES`, `state_db` `cf_undo`).
+9. **Unify block cache 32 + 16 -> 48 MB single pool** (entailed by #1).
 10. **F1 monitor**: Prometheus gauge for UTXO canonical serialization size; alert at 12 MB (75% of `MAX_SYNC_SIZE`). Cached snapshot, not per-request.
 
 ### OUT OF SCOPE (explicitly deferred)
@@ -64,14 +66,14 @@ Phases 1-4 complete. Phase 5 (BlobDB + F1 monitor) pending.
 
 ## Implementation Phases (each independently deployable via rolling restart)
 
-**Phase 1 — Additive foundation (low risk):**
+**Phase 1 — Additive foundation (low risk): COMPLETE**
 - Step 1: Add 9 query methods to `state_db/queries.rs`.
 - Step 2: Add `cf_unique_id` to `state_db` + `pending_unique_ids` to `BlockBatch`.
 
-**Phase 2 — Read migration (medium risk):**
+**Phase 2 — Read migration (medium risk): COMPLETE**
 - Step 3: Route all UTXO reads to `state_db`. Both stores still receive writes (bridge).
 
-**Phase 3 — Write simplification (gated):**
+**Phase 3 — Write simplification (gated): COMPLETE**
 - **Step 4 (GATE: Pool TWAP equivalence test must pass)**: Remove per-tx dual-writes.
 
 **Phase 4 — Cleanup (high LOC reduction): COMPLETE**
@@ -81,14 +83,16 @@ Phases 1-4 complete. Phase 5 (BlobDB + F1 monitor) pending.
 - Obsolete tests removed: `state_db_query_equivalence_test.rs`, `phase2_read_migration_test.rs`, `inc_i_027_utxo_restore_selfheal.rs`.
 - Metrics scraper simplified: 3 instances (block_store, state_db, diagnostic_ledger).
 
-**Phase 5 — BlobDB + monitor (low risk, high impact):**
-- Step 7: Enable BlobDB on `cf_utxo` with 6 config lines.
-- Step 8: Add UTXO canonical serialization size gauge + alert at 12 MB.
+**Phase 5 — BlobDB + F1 monitor (low risk, high impact): COMPLETE**
+- Step 7: BlobDB enabled on `cf_utxo` — 6 config lines in `state_db/open.rs`. Applied ONLY to cf_utxo (not cf_utxo_by_pubkey — 1-byte values don't benefit). BlobDB is transparent to application code; on-disk layout changes only. State root invariant preserved.
+- Step 8: F1 snap-sync size monitor — `doli_utxo_canonical_size_bytes` gauge (60s cached recomputation via `UtxoSizeMonitor`). Threshold gauge `doli_utxo_canonical_size_threshold_bytes` set to `MAX_SYNC_SIZE` (16 MB). Alert rule recommended at 12 MB (75%).
+- Startup log: "RocksDB BlobDB enabled on cf_utxo (min_blob_size=4096, blob_file_size=256MB, compression=Zstd)"
+- Tests: 5 new tests — BlobDB takes-effect (.blob files appear), roundtrip (50 large UTXOs), state root invariance, F1 monitor accuracy, F1 monitor caching.
 
 ## Escalation Triggers (monitor these; act if hit)
 | Threshold | Signal | Next Action |
 |-----------|--------|-------------|
-| UTXO canonical size > 12 MB | F1 monitor alert | Start Tier 3-A chunked snap sync work (separate workstream) |
+| UTXO canonical size > 12 MB | F1 monitor alert (`doli_utxo_canonical_size_bytes > 12582912`) | Start Tier 3-A chunked snap sync work (separate workstream) |
 | `serialize_canonical` > 500 ms | `[STATE_ROOT]` log timing | Implement Tier 2-C streaming hash |
 | cf_utxo SST > 1 GB individual | RocksDB compaction logs | Re-tune BlobDB thresholds or split CF |
 | Block cache hit rate < 70% | RocksDB statistics | Re-evaluate cache size / CF split |

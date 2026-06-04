@@ -97,6 +97,7 @@ pub mod snapshot;
 pub mod state_db;
 pub mod update;
 pub mod utxo;
+pub mod utxo_size_monitor;
 
 pub use block_store::BlockStore;
 pub use chain_state::ChainState;
@@ -121,6 +122,7 @@ pub use utxo::{
     uid_key, InMemoryUtxoStore, Outpoint, UtxoEntry, UtxoSet, UID_PREFIX_ASSET, UID_PREFIX_CHANNEL,
     UID_PREFIX_NFT, UID_PREFIX_POOL,
 };
+pub use utxo_size_monitor::UtxoSizeMonitor;
 
 use std::path::Path;
 use thiserror::Error;

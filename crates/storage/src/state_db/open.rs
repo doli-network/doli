@@ -3,6 +3,8 @@
 use std::path::Path;
 use std::sync::atomic::AtomicU64;
 
+use tracing::info;
+
 use crate::StorageError;
 
 use super::types::{
@@ -110,15 +112,28 @@ impl StateDb {
         let cf_descriptors = vec![
             // Hottest CF — point lookups on every tx validation.
             // BLOOM (10 bits/key) + L0 slowdown=40/stop=60 (C-003 MANDATORY).
-            rocksdb::ColumnFamilyDescriptor::new(
-                CF_UTXO,
-                // Phase 4: block_size 4 KB -> 16 KB. Matches the value that was
-                // tuned for the former utxo_store, which served the same workload.
-                // 16 KB blocks improve sequential scan throughput (iter_utxos,
-                // serialize_canonical) while the bloom filter keeps point-lookup
-                // amplification low.
-                cf_opts_state_db(&opts, &cache, 16, 2, true, 16, Lz4, 32, Some(40), Some(60)),
-            ),
+            //
+            // Phase 5: BlobDB enabled — payload-bearing UTXOs (NFT up to 512 KB
+            // now, 8 MB by Era 4) are stored in separate .blob files instead of
+            // inline in LSM SSTs. This eliminates read amplification on point
+            // lookups (large values no longer pollute the LSM tree), reduces
+            // compaction I/O (blob files bypass normal compaction), and improves
+            // block cache efficiency (cache holds keys+pointers, not huge values).
+            // BlobDB is transparent to application code — get/put/iter work
+            // identically. Only the on-disk layout changes.
+            // Applied ONLY to cf_utxo, not cf_utxo_by_pubkey (1-byte values).
+            {
+                let mut cf_utxo_opts =
+                    cf_opts_state_db(&opts, &cache, 16, 2, true, 16, Lz4, 32, Some(40), Some(60));
+                // Phase 5 BlobDB config (6 lines):
+                cf_utxo_opts.set_enable_blob_files(true);
+                cf_utxo_opts.set_min_blob_size(4096); // >= 4 KB goes to blob files
+                cf_utxo_opts.set_blob_file_size(256 * 1024 * 1024); // 256 MB per blob file
+                cf_utxo_opts.set_blob_compression_type(rocksdb::DBCompressionType::Zstd);
+                cf_utxo_opts.set_enable_blob_gc(true);
+                cf_utxo_opts.set_blob_gc_age_cutoff(0.25);
+                rocksdb::ColumnFamilyDescriptor::new(CF_UTXO, cf_utxo_opts)
+            },
             // Hot write, prefix scan reads — NO bloom (C-010).
             // L0 slowdown=40/stop=60 (C-003 MANDATORY — shrunk from 64 MB to 8 MB).
             rocksdb::ColumnFamilyDescriptor::new(
@@ -169,6 +184,11 @@ impl StateDb {
 
         let db = rocksdb::DB::open_cf_descriptors(&opts, path, cf_descriptors)?;
 
+        info!(
+            "RocksDB BlobDB enabled on cf_utxo \
+             (min_blob_size=4096, blob_file_size=256MB, compression=Zstd)"
+        );
+
         // Count existing UTXO entries
         let cf_utxo = db.cf_handle(CF_UTXO).unwrap();
         let mut count = 0u64;
@@ -185,6 +205,18 @@ impl StateDb {
             block_cache: cache,
             block_cache_capacity_bytes: 48 * 1024 * 1024,
         })
+    }
+
+    /// Flush the cf_utxo column family to disk.
+    ///
+    /// Forces the memtable to be written as SST + blob files. Used in tests
+    /// to verify BlobDB behavior. In production, RocksDB flushes automatically
+    /// when the write buffer is full.
+    pub fn flush_cf_utxo(&self) {
+        let cf = self.db.cf_handle(CF_UTXO).unwrap();
+        let mut flush_opts = rocksdb::FlushOptions::default();
+        flush_opts.set_wait(true);
+        self.db.flush_cf_opt(cf, &flush_opts).ok();
     }
 
     /// RocksDB runtime metrics snapshot for Prometheus export.

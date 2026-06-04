@@ -211,6 +211,41 @@ lazy_static! {
     ).unwrap();
 
     // ===================
+    // F1 Snap-Sync Size Monitor (Phase 5)
+    // ===================
+    // Snap sync silently fails when the canonical UTXO set exceeds
+    // MAX_SYNC_SIZE (16 MB) in crates/network/src/protocols/sync.rs.
+    // These gauges provide early warning.
+    //
+    // Recommended Prometheus alert rule:
+    //   alert: UtxoCanonicalSizeApproachingLimit
+    //   expr: doli_utxo_canonical_size_bytes > 12582912
+    //   for: 5m
+    //   labels: { severity: warning }
+    //   annotations:
+    //     summary: "UTXO canonical size > 12 MB (75% of 16 MB snap sync limit)"
+    //     description: "New nodes will fail snap sync when size exceeds 16 MB.
+    //                   Start Tier 3-A chunked snap sync work."
+
+    /// Approximate byte size of the canonical UTXO set serialization.
+    /// Cached; recomputed at most once per 60 seconds.
+    /// Snap sync silently fails when this exceeds MAX_SYNC_SIZE (16 MB).
+    pub static ref UTXO_CANONICAL_SIZE_BYTES: IntGauge = IntGauge::new(
+        "doli_utxo_canonical_size_bytes",
+        "Approximate byte size of the canonical UTXO set serialization. \
+         Snap sync silently fails when this exceeds MAX_SYNC_SIZE (16 MB). \
+         Alert: > 12582912 (12 MB = 75% of limit) for 5m."
+    ).unwrap();
+
+    /// The snap sync wire limit (MAX_SYNC_SIZE) so dashboards can render
+    /// a relative bar without hardcoding. Set once at startup, never changes.
+    pub static ref UTXO_CANONICAL_SIZE_THRESHOLD_BYTES: IntGauge = IntGauge::new(
+        "doli_utxo_canonical_size_threshold_bytes",
+        "Snap sync wire limit (MAX_SYNC_SIZE = 16 MB). Static reference for dashboard \
+         ratio computations: doli_utxo_canonical_size_bytes / this."
+    ).unwrap();
+
+    // ===================
     // DeFi Economic Security (D4 / AC-6)
     // ===================
 
@@ -481,6 +516,12 @@ pub fn register_metrics() {
     let _ = REGISTRY.register(Box::new(UTXO_SET_SIZE.clone()));
     let _ = REGISTRY.register(Box::new(STORAGE_BYTES.clone()));
 
+    // F1 snap-sync size monitor (Phase 5)
+    let _ = REGISTRY.register(Box::new(UTXO_CANONICAL_SIZE_BYTES.clone()));
+    let _ = REGISTRY.register(Box::new(UTXO_CANONICAL_SIZE_THRESHOLD_BYTES.clone()));
+    // Set the static threshold once (MAX_SYNC_SIZE = 16 MB).
+    UTXO_CANONICAL_SIZE_THRESHOLD_BYTES.set(16 * 1024 * 1024);
+
     let _ = REGISTRY.register(Box::new(DEFI_TOTAL_ACTIVE_BONDS.clone()));
     let _ = REGISTRY.register(Box::new(DEFI_MAX_POOL_TVL.clone()));
     let _ = REGISTRY.register(Box::new(DEFI_BOND_TO_TVL_RATIO.clone()));
@@ -666,6 +707,28 @@ pub fn spawn_rocksdb_metrics_scraper(
             if let Some(ref dl) = diagnostic_ledger {
                 apply_rocksdb_metrics(&mut state, &dl.metrics());
             }
+        }
+    });
+}
+
+/// Spawn the F1 snap-sync UTXO size monitor as a background task.
+///
+/// Phase 5: computes `serialize_canonical_utxo().len()` at most once per
+/// 60 seconds and updates the `doli_utxo_canonical_size_bytes` gauge.
+/// The computation is O(UTXO count) but amortized by the 60s cache.
+///
+/// Alert rule (for Prometheus/Alertmanager — NOT enforced in code):
+///   `doli_utxo_canonical_size_bytes > 12582912` for 5m → warning
+///   (12 MB = 75% of MAX_SYNC_SIZE = 16 MB).
+pub fn spawn_utxo_size_monitor(state_db: std::sync::Arc<storage::StateDb>) {
+    let monitor = std::sync::Arc::new(storage::UtxoSizeMonitor::new(state_db));
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            let size = monitor.get_cached_size();
+            UTXO_CANONICAL_SIZE_BYTES.set(size as i64);
         }
     });
 }
