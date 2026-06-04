@@ -1036,6 +1036,8 @@ impl Node {
             diagnostic_writer_stats: storage::diagnostic_ledger::DiagnosticWriterStats::new_shared(
             ),
             last_diagnostic_alerted: HashSet::new(),
+            defi_health_refresh_counter: AtomicU64::new(0),
+            defi_health_cache: std::sync::Mutex::new(None),
         };
 
         // --- Diagnostic writer + pruner wiring ---
@@ -1295,6 +1297,8 @@ impl Node {
             diagnostic_writer_stats: storage::diagnostic_ledger::DiagnosticWriterStats::new_shared(
             ),
             last_diagnostic_alerted: HashSet::new(),
+            defi_health_refresh_counter: AtomicU64::new(0),
+            defi_health_cache: std::sync::Mutex::new(None),
         })
     }
 
@@ -1487,6 +1491,8 @@ impl Node {
             diagnostic_writer_stats: storage::diagnostic_ledger::DiagnosticWriterStats::new_shared(
             ),
             last_diagnostic_alerted: HashSet::new(),
+            defi_health_refresh_counter: AtomicU64::new(0),
+            defi_health_cache: std::sync::Mutex::new(None),
         })
     }
 }

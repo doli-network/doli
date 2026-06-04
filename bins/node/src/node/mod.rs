@@ -309,6 +309,18 @@ pub struct Node {
     /// Keys are classifier-derived incident identifiers. Same incident only
     /// logs once until the node restarts (non-persistent, intentionally).
     pub last_diagnostic_alerted: HashSet<String>,
+
+    /// INC-I-111: Counter for how many times the defi_health_inputs() scan
+    /// has actually run (cache miss). Used by integration tests to verify
+    /// the 30-second cache prevents redundant full UTXO scans.
+    pub defi_health_refresh_counter: AtomicU64,
+
+    /// INC-I-111: Cached defi_health_inputs result with TTL.
+    /// `None` = never computed. `Some((value, computed_at))` = cached.
+    /// Cache is checked at the top of the defi_health block in
+    /// `run_periodic_tasks()`; refreshed only when stale (>30s).
+    #[allow(clippy::type_complexity)]
+    pub defi_health_cache: std::sync::Mutex<Option<((u64, Option<(Hash, u64)>), Instant)>>,
 }
 
 /// INC-I-055: Number of health samples to track in the rolling window.
@@ -321,6 +333,14 @@ pub const PEER_CHURN_MAX: usize = 5;
 pub const PEER_CHURN_WINDOW: Duration = Duration::from_secs(30);
 
 impl Node {
+    /// INC-I-111: How many times the defi_health_inputs() scan has actually
+    /// run (cache misses). Zero at startup; incremented each time the cache
+    /// is stale and a real scan executes.
+    #[allow(dead_code)] // Used by integration tests (inc_i_111_defi_health_cache)
+    pub fn defi_health_refresh_count(&self) -> u64 {
+        self.defi_health_refresh_counter.load(Ordering::Relaxed)
+    }
+
     /// Set the vote forwarding channel (connects gossip votes to UpdateService)
     pub fn set_vote_tx(&mut self, tx: tokio::sync::mpsc::Sender<node_updater::VoteMessage>) {
         self.vote_tx = Some(tx);

@@ -1,5 +1,11 @@
 use super::*;
 
+/// INC-I-111 (2026-06-04): Prometheus scrape interval is 15-30s; 30s cache
+/// reduces scan load from ~120/min to ~2/min. See
+/// `crates/storage/src/utxo_size_monitor.rs` for the same pattern (F1 monitor
+/// uses 30/60s).
+const DEFI_HEALTH_CACHE_TTL: Duration = Duration::from_secs(30);
+
 impl Node {
     /// Flush pending archive blocks up to the last finalized height.
     /// Only blocks that the protocol has declared irreversible get archived.
@@ -87,17 +93,38 @@ impl Node {
 
     /// Run periodic tasks
     pub async fn run_periodic_tasks(&mut self) -> Result<()> {
-        // D4 / AC-6 monitoring metric refresh.
+        // D4 / AC-6 monitoring metric refresh (INC-I-111: 30s TTL cache).
         //
         // Read-only snapshot of (total_active_bonds, max_pool_TVL) → push
         // into the three `doli_defi_*` Prometheus gauges. Hot path safety:
         // bounded by UTXO-set iteration (same cost class as the integrity
         // scan that runs in the same hot loop); never mutates state.
         // Spec: `specs/defi-subsystem-architecture.md` AC block (AC-6).
+        //
+        // INC-I-111: cache the result for 30s to avoid 2 full RocksDB
+        // cf_utxo scans every 1s tick. 30s is sufficient for Prometheus
+        // scrape resolution (15-30s). See DEFI_HEALTH_CACHE_TTL.
         {
-            let utxo_set = self.utxo_set.read().await;
-            let (total_active_bonds, max_pool) = utxo_set.defi_health_inputs();
-            drop(utxo_set);
+            let cached = {
+                let guard = self.defi_health_cache.lock().unwrap();
+                guard
+                    .as_ref()
+                    .filter(|(_, ts)| ts.elapsed() < DEFI_HEALTH_CACHE_TTL)
+                    .map(|(v, _)| *v)
+            };
+            let (total_active_bonds, max_pool) = match cached {
+                Some(v) => v,
+                None => {
+                    let v = {
+                        let utxo_set = self.utxo_set.read().await;
+                        utxo_set.defi_health_inputs()
+                    };
+                    *self.defi_health_cache.lock().unwrap() = Some((v, Instant::now()));
+                    self.defi_health_refresh_counter
+                        .fetch_add(1, Ordering::Relaxed);
+                    v
+                }
+            };
             crate::metrics::update_defi_health_metric(total_active_bonds, max_pool);
         }
 
