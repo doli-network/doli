@@ -136,6 +136,41 @@ impl<'a> BlockBatch<'a> {
             if stamped_output.output_type == doli_core::OutputType::Bond {
                 stamped_output.extra_data = slot.to_le_bytes().to_vec();
             }
+            // Stamp Pool outputs: creation_slot, last_update_slot, TWAP accumulation
+            // (BUG-001 fix: mirror utxo_rocks::add_transaction:237-268 so both
+            // write paths produce byte-identical bytes for Pool UTXOs)
+            if stamped_output.output_type == doli_core::OutputType::Pool {
+                if let Some(mut meta) = stamped_output.pool_metadata() {
+                    if meta.creation_slot == 0 {
+                        meta.creation_slot = slot;
+                    }
+                    // Accumulate TWAP BEFORE updating last_update_slot
+                    if meta.last_update_slot > 0
+                        && slot > meta.last_update_slot
+                        && meta.reserve_b > 0
+                    {
+                        meta.cumulative_price = doli_core::update_twap(
+                            meta.cumulative_price,
+                            meta.reserve_a,
+                            meta.reserve_b,
+                            slot,
+                            meta.last_update_slot,
+                        );
+                    }
+                    meta.last_update_slot = slot;
+                    stamped_output = doli_core::transaction::Output::pool(
+                        meta.pool_id,
+                        meta.asset_b_id,
+                        meta.reserve_a,
+                        meta.reserve_b,
+                        meta.total_lp_shares,
+                        meta.cumulative_price,
+                        meta.last_update_slot,
+                        meta.fee_bps,
+                        meta.creation_slot,
+                    );
+                }
+            }
             let entry = UtxoEntry {
                 output: stamped_output,
                 height,
