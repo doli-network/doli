@@ -29,8 +29,7 @@
 //! This function MUST run BEFORE the epoch_state rotation in
 //! `post_commit_actions` (i.e., before `self.epoch_state = new_state`
 //! at the call site) — we depend on `self.epoch_state.bond_snapshot`
-//! still holding the CLOSING epoch's bond weights. The call site in
-//! `post_commit.rs` invokes this helper at the correct point.
+//! still holding the CLOSING epoch's bond weights.
 
 use super::*;
 use crypto::ADDRESS_DOMAIN;
@@ -55,6 +54,10 @@ impl Node {
     /// BEFORE `self.epoch_state` is rotated to the new epoch — the
     /// aggregator reads the closing epoch's `bond_snapshot` from
     /// the still-current `self.epoch_state`.
+    ///
+    /// Phase 3: UTXO mutations (spend prior OraclePrice, insert new
+    /// OraclePrice) go through `batch` instead of `utxo_store`.
+    ///
     /// `undo` (AUDIT-P0-001): for each OraclePrice UTXO this aggregator
     /// spends, push the prior `(Outpoint, UtxoEntry)` into
     /// `undo.spent_utxos`; for each new OraclePrice UTXO it creates,
@@ -63,6 +66,7 @@ impl Node {
     pub(super) async fn aggregate_oracle_prices_at_epoch_boundary(
         &mut self,
         height: u64,
+        batch: &mut storage::BlockBatch<'_>,
         undo: &mut storage::UndoData,
     ) {
         let params = self.config.network.params();
@@ -182,19 +186,6 @@ impl Node {
             let block = match self.block_store.get_block_by_height(h) {
                 Ok(Some(b)) => b,
                 // AUDIT-P1-002: abort aggregation on missing block.
-                // Pre-fix this silently `continue`d, so a snap-synced
-                // node with incomplete closing-epoch history would
-                // compute a different bond-weighted median than full-
-                // sync peers → different OraclePrice UTXO → state-root
-                // divergence (consensus fork). The OraclePrice UTXO IS
-                // part of the state root (verified by
-                // crates/storage/src/utxo/tests_oracle_snapsync.rs::
-                // test_oracle_price_changes_state_root), so the
-                // divergence would propagate via the next block apply.
-                // Safest: refuse to aggregate when input is incomplete.
-                // The aggregator is best-effort local bookkeeping below
-                // activation; aborting leaves the previous OraclePrice
-                // UTXO in place (readable, marked stale by RPC).
                 Ok(None) => {
                     warn!(
                         "[ORACLE] aggregator ABORT at boundary height={}: \
@@ -238,8 +229,9 @@ impl Node {
             return;
         }
 
-        // Step 3-4 — per pair: dedup, compute median, mutate UtxoSet.
-        let mut utxo = self.utxo_set.write().await;
+        // Step 3-4 — per pair: dedup, compute median, mutate via batch.
+        // Phase 3: all OraclePrice UTXO mutations go through batch
+        // (state_db WriteBatch). No utxo_store writes.
         for (pair_id, contributions) in by_pair {
             let deduped = dedupe_latest_per_attester(&contributions);
             let Some((median_price, contributor_count)) =
@@ -252,15 +244,14 @@ impl Node {
             let outpoint = Outpoint::new(synth_tx, synth_idx);
 
             // Step 7 — consume the previous OraclePrice UTXO if it
-            // exists (first epoch has nothing to consume; remove is
-            // idempotent-on-absent).
+            // exists (first epoch has nothing to consume).
             //
+            // Phase 3: read from batch overlay, spend via batch.
             // AUDIT-P0-001: record the prior entry in undo.spent_utxos
-            // so rollback restores it. If absent (first epoch for this
-            // pair), no entry is recorded — rollback's "delete created"
-            // path handles the corresponding new UTXO below.
-            if let Ok(Some(prior_entry)) = utxo.remove(&outpoint) {
+            // so rollback restores it.
+            if let Some(prior_entry) = batch.get_utxo(&outpoint) {
                 undo.spent_utxos.push((outpoint, prior_entry));
+                let _ = batch.spend_utxo(&outpoint);
             }
 
             // Step 6 — create new OraclePrice UTXO at the same
@@ -271,24 +262,18 @@ impl Node {
                 is_coinbase: false,
                 is_epoch_reward: false,
             };
-            if let Err(e) = utxo.insert(outpoint, entry) {
-                info!(
-                    "[ORACLE] aggregator: insert OraclePrice UTXO failed pair={} err={}",
-                    pair_id, e
-                );
-            } else {
-                info!(
-                    "[ORACLE] aggregator: pair={} median_cents={} contributors={} height={}",
-                    pair_id, median_price, contributor_count, height
-                );
-                // AUDIT-P2-001: cache last_update_height in state_db so
-                // getOracleStatus can answer in O(1) instead of cloning
-                // the entire UTXO set via iter_all() on every call.
-                self.state_db.put_oracle_last_update_height(height);
-                // AUDIT-P0-001: record the newly-created OraclePrice
-                // outpoint in undo.created_utxos so rollback deletes it.
-                undo.created_utxos.push(outpoint);
-            }
+            batch.add_utxo(outpoint, entry);
+            info!(
+                "[ORACLE] aggregator: pair={} median_cents={} contributors={} height={}",
+                pair_id, median_price, contributor_count, height
+            );
+            // AUDIT-P2-001: cache last_update_height in state_db so
+            // getOracleStatus can answer in O(1) instead of cloning
+            // the entire UTXO set via iter_all() on every call.
+            self.state_db.put_oracle_last_update_height(height);
+            // AUDIT-P0-001: record the newly-created OraclePrice
+            // outpoint in undo.created_utxos so rollback deletes it.
+            undo.created_utxos.push(outpoint);
         }
     }
 }

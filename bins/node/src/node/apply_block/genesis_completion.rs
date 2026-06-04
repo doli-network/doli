@@ -7,6 +7,9 @@ impl Node {
     /// Each genesis producer's coinbase reward UTXOs are consumed to back their bond,
     /// creating a proper bond-backed registration (no phantom bonds).
     ///
+    /// Phase 3: reads pool UTXOs from batch overlay, writes only to batch.
+    /// No utxo_store reads or writes.
+    ///
     /// Returns `true` if a full producer write is needed for the batch.
     pub async fn maybe_complete_genesis(
         &mut self,
@@ -40,7 +43,6 @@ impl Node {
 
         let bond_unit = self.config.network.bond_unit();
         let era = self.params.height_to_era(height);
-        let mut utxo = self.utxo_set.write().await;
         let mut producers = self.producer_set.write().await;
 
         // Clear bootstrap phantom producers — replace with real bond-backed ones
@@ -48,8 +50,9 @@ impl Node {
 
         // Consume pool UTXOs for genesis bonds.
         // All per-block coinbase went to the reward pool — draw bonds from there.
+        // Phase 3: read from batch overlay (sees prior tx effects in same block).
         let pool_hash = doli_core::consensus::reward_pool_pubkey_hash();
-        let mut pool_utxos = utxo.get_by_pubkey_hash(&pool_hash);
+        let mut pool_utxos = batch.get_utxos_by_pubkey(&pool_hash);
         pool_utxos.sort_by(|(a_op, a_entry), (b_op, b_entry)| {
             a_entry
                 .height
@@ -61,7 +64,7 @@ impl Node {
         let total_pool: u64 = pool_utxos.iter().map(|(_, e)| e.output.amount).sum();
         let total_bonds_needed = bond_unit * producer_count as u64;
         info!(
-            "Genesis bond migration: pool={} DOLI, bonds_needed={} DOLI ({} producers × {} bond)",
+            "Genesis bond migration: pool={} DOLI, bonds_needed={} DOLI ({} producers x {} bond)",
             total_pool / 100_000_000,
             total_bonds_needed / 100_000_000,
             producer_count,
@@ -75,11 +78,10 @@ impl Node {
             );
         }
 
-        // Consume all pool UTXOs (they'll be redistributed as bonds + remainder back to pool)
+        // Consume all pool UTXOs via batch (Phase 3: no utxo_store write)
         let mut pool_consumed: u64 = 0;
         for (outpoint, entry) in &pool_utxos {
             undo_spent_utxos.push((*outpoint, entry.clone()));
-            utxo.remove(outpoint)?;
             let _ = batch.spend_utxo(outpoint);
             pool_consumed += entry.output.amount;
         }
@@ -100,7 +102,7 @@ impl Node {
             // Create deterministic bond hash for tracking
             let bond_hash = hash_with_domain(b"genesis_bond", pubkey.as_bytes());
 
-            // Create Bond UTXO
+            // Create Bond UTXO via batch only (Phase 3)
             let bond_outpoint = storage::Outpoint::new(bond_hash, 0);
             let bond_entry = storage::UtxoEntry {
                 output: doli_core::transaction::Output::bond(
@@ -114,7 +116,6 @@ impl Node {
                 is_epoch_reward: false,
             };
             undo_created_utxos.push(bond_outpoint);
-            utxo.insert(bond_outpoint, bond_entry.clone())?;
             batch.add_utxo(bond_outpoint, bond_entry);
             bonds_created += bond_unit;
 
@@ -151,7 +152,7 @@ impl Node {
             }
         }
 
-        // Return remainder to pool (pool funds minus bonds)
+        // Return remainder to pool (pool funds minus bonds) via batch only
         let remainder = pool_consumed.saturating_sub(bonds_created);
         if remainder > 0 {
             let remainder_hash = hash_with_domain(b"genesis_pool_remainder", b"doli");
@@ -163,7 +164,6 @@ impl Node {
                 is_epoch_reward: false,
             };
             undo_created_utxos.push(remainder_outpoint);
-            utxo.insert(remainder_outpoint, remainder_entry.clone())?;
             batch.add_utxo(remainder_outpoint, remainder_entry);
             info!(
                 "Genesis pool remainder: {} DOLI returned to pool",

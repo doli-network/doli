@@ -1,7 +1,11 @@
 use super::*;
 
 impl Node {
-    /// Process UTXO changes for a single transaction (in-memory + batch for atomic persistence).
+    /// Process UTXO changes for a single transaction via the atomic BlockBatch.
+    ///
+    /// Phase 3: all UTXO mutations flow through `batch` (state_db WriteBatch).
+    /// `utxo_store` receives NO writes. Reads use the batch overlay which
+    /// checks pending state first, then falls through to committed state_db.
     ///
     /// Returns the transaction hash (needed for undo log tracking of created UTXOs).
     #[allow(clippy::too_many_arguments)]
@@ -11,7 +15,6 @@ impl Node {
         tx_index: usize,
         height: u64,
         block_slot: u32,
-        utxo: &mut UtxoSet,
         batch: &mut storage::BlockBatch<'_>,
         undo_spent_utxos: &mut Vec<(storage::Outpoint, storage::UtxoEntry)>,
         undo_created_utxos: &mut Vec<storage::Outpoint>,
@@ -19,11 +22,11 @@ impl Node {
     ) -> Result<()> {
         let is_reward_tx = tx_index == 0 && tx.is_reward_minting();
 
-        // Undo log: capture UTXOs BEFORE spending them
+        // Undo log: capture UTXOs BEFORE spending them (read from batch overlay)
         if !is_reward_tx {
             for input in &tx.inputs {
                 let outpoint = storage::Outpoint::new(input.prev_tx_hash, input.output_index);
-                if let Some(entry) = utxo.get(&outpoint) {
+                if let Some(entry) = batch.get_utxo(&outpoint) {
                     undo_spent_utxos.push((outpoint, entry));
                 }
             }
@@ -36,10 +39,9 @@ impl Node {
             && height < doli_core::consensus::EPOCH_REWARD_EXPLICIT_INPUTS_HEIGHT
         {
             let pool_hash = doli_core::consensus::reward_pool_pubkey_hash();
-            let pool_utxos = utxo.get_by_pubkey_hash(&pool_hash);
+            let pool_utxos = batch.get_utxos_by_pubkey(&pool_hash);
             for (outpoint, entry) in &pool_utxos {
                 undo_spent_utxos.push((*outpoint, entry.clone()));
-                utxo.remove(outpoint)?;
                 let _ = batch.spend_utxo(outpoint);
             }
             if !pool_utxos.is_empty() {
@@ -54,6 +56,7 @@ impl Node {
 
         // Validate UTXO-level spending conditions (signatures, covenant evaluation,
         // lock times, balance). Coinbase/EpochReward skip internally.
+        // Phase 3: validation reads via batch overlay (UtxoProvider impl on BlockBatch).
         if !is_reward_tx {
             let utxo_ctx = validation::ValidationContext::new(
                 ConsensusParams::for_network(self.config.network),
@@ -93,7 +96,7 @@ impl Node {
                 self.oracle_sunset_triggered
                     .load(std::sync::atomic::Ordering::Acquire),
             );
-            if let Err(e) = validation::validate_transaction_with_utxos(tx, &utxo_ctx, utxo) {
+            if let Err(e) = validation::validate_transaction_with_utxos(tx, &utxo_ctx, batch) {
                 warn!(
                     "[UTXO] FAIL h={} tx={} type={:?} inputs={} outputs={} error={}",
                     height,
@@ -121,19 +124,19 @@ impl Node {
             }
         }
 
-        // Reject outputs with duplicate unique IDs
+        // Reject outputs with duplicate unique IDs (reads via batch overlay)
         for output in &tx.outputs {
             match output.output_type {
                 doli_core::OutputType::NFT => {
                     if let Some((token_id, _)) = output.nft_metadata() {
-                        if utxo.has_unique_id(storage::UID_PREFIX_NFT, &token_id) {
+                        if batch.has_unique_id_check(storage::UID_PREFIX_NFT, &token_id) {
                             anyhow::bail!("NFT token_id {} already exists", token_id.to_hex());
                         }
                     }
                 }
                 doli_core::OutputType::Pool if tx.tx_type == TxType::CreatePool => {
                     if let Some(meta) = output.pool_metadata() {
-                        if utxo.has_unique_id(storage::UID_PREFIX_POOL, &meta.pool_id) {
+                        if batch.has_unique_id_check(storage::UID_PREFIX_POOL, &meta.pool_id) {
                             anyhow::bail!(
                                 "Pool {} already exists — cannot create duplicate",
                                 meta.pool_id.to_hex()
@@ -148,44 +151,20 @@ impl Node {
         // INC-I-064: Propagate spend errors. Previously `let _` silently
         // discarded failures, allowing outputs to be created from nothing.
         // Replay mode: tolerate failures for historical blocks (e.g., E362).
-        match utxo.spend_transaction(tx) {
-            Ok(_) => {}
-            Err(e) => {
-                if mode == ValidationMode::Replay {
-                    warn!(
-                        "[REPLAY] spend_transaction failed at h={}: {} — historical block, continuing",
-                        height, e
-                    );
-                } else {
-                    return Err(anyhow::anyhow!(
-                        "spend_transaction failed at h={}: {}",
-                        height,
-                        e
-                    ));
-                }
-            }
-        }
-        utxo.add_transaction(tx, height, is_reward_tx, block_slot)?; // In-memory
-
-        // Undo log: track created UTXOs
-        let tx_hash = tx.hash();
-        for (index, _) in tx.outputs.iter().enumerate() {
-            undo_created_utxos.push(storage::Outpoint::new(tx_hash, index as u32));
-        }
-
-        // Batch: track the same UTXO changes for atomic persistence
+        //
+        // Phase 3: spend via batch only (no utxo_store write).
         if !is_reward_tx {
             match batch.spend_transaction_utxos(tx) {
                 Ok(_) => {}
                 Err(e) => {
                     if mode == ValidationMode::Replay {
                         warn!(
-                            "[REPLAY] batch spend_transaction_utxos failed at h={}: {} — continuing",
+                            "[REPLAY] batch spend_transaction_utxos failed at h={}: {} — historical block, continuing",
                             height, e
                         );
                     } else {
                         return Err(anyhow::anyhow!(
-                            "batch spend_transaction_utxos failed at h={}: {}",
+                            "spend_transaction_utxos failed at h={}: {}",
                             height,
                             e
                         ));
@@ -193,7 +172,15 @@ impl Node {
                 }
             }
         }
+        // Phase 3: add via batch only (no utxo_store write).
+        // add_transaction_utxos also inserts unique IDs for NFT/Pool/FungibleAsset.
         batch.add_transaction_utxos(tx, height, is_reward_tx, block_slot);
+
+        // Undo log: track created UTXOs
+        let tx_hash = tx.hash();
+        for (index, _) in tx.outputs.iter().enumerate() {
+            undo_created_utxos.push(storage::Outpoint::new(tx_hash, index as u32));
+        }
 
         Ok(())
     }
@@ -448,18 +435,6 @@ impl Node {
                 let params = self.config.network.params();
 
                 // INC-I-078 M2: signature verification (height-gated).
-                //
-                // Pre-`delegation_auth_activation_height`: no check, accept
-                // any DelegateBondData layout (the on-wire layer also accepts
-                // both the legacy 68-byte form and the authenticated 132-byte
-                // form; see `DelegateBondData::from_bytes`).
-                //
-                // Post-activation: the signature MUST be a valid Ed25519
-                // signature by `data.delegator` over `data.signing_message()`.
-                // Zero (default) signatures fail-closed. Invalid signature
-                // (wrong key, tampered fields, missing) → SKIPPED, same as
-                // cap rejection: tx remains in the block, no state effect,
-                // all nodes converge deterministically.
                 let auth_ok = height < params.delegation_auth_activation_height
                     || crypto::signature::verify_hash(
                         &data.signing_message(),
@@ -477,22 +452,6 @@ impl Node {
                 }
 
                 // INC-I-078 primary cap check (height-gated).
-                //
-                // Pre-activation: cap field is `u64::MAX` AND/OR height is
-                // below `received_delegation_cap_activation_height`, so the
-                // check is bypassed entirely (same as today).
-                //
-                // Post-activation: a DelegateBond whose bond_count would push
-                // the delegate's received_delegations sum over the cap is
-                // SKIPPED — the tx remains in the block but produces no state
-                // change. Determinism: every node with the same params and
-                // height reaches the same verdict, so the skip is consensus-
-                // safe without requiring block rejection.
-                //
-                // Grandfathering (spec §2.5 Option A): if the delegate is
-                // already over the cap at activation, every new DelegateBond
-                // targeting them is skipped here, but the existing entries
-                // remain (no forced shed).
                 let cap_active = height >= params.received_delegation_cap_activation_height;
                 let cap = if cap_active && params.received_delegation_cap != u64::MAX {
                     params.received_delegation_cap
@@ -547,9 +506,7 @@ impl Node {
                 let params = self.config.network.params();
 
                 // INC-I-078 M2 / constraint C7: RevokeDelegation gets the same
-                // height-gated signature treatment as DelegateBond. Otherwise
-                // an unauthenticated revoke is exactly the same zero-input
-                // forgery vector (FM-1) as the original DelegateBond exploit.
+                // height-gated signature treatment as DelegateBond.
                 let auth_ok = height < params.delegation_auth_activation_height
                     || crypto::signature::verify_hash(
                         &data.signing_message(),

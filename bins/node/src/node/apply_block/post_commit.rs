@@ -200,10 +200,6 @@ impl Node {
                     .network
                     .params()
                     .security_audit_activation_height;
-                // INC-I-075: gate the INC-I-068 weight=0 filter behind an
-                // activation height. Pre-H: v6.21.16 behavior (insert weight
-                // clamped to 1 to avoid divide-by-zero in bond-weighted math,
-                // never skip). Post-H: v6.21.18 behavior (skip weight=0).
                 let inc_i_068_filter_activation = self
                     .config
                     .network
@@ -213,19 +209,13 @@ impl Node {
                 let mut snap = HashMap::new();
                 for p in &active {
                     let pubkey_hash = hash_with_domain(ADDRESS_DOMAIN, p.public_key.as_bytes());
-                    // INC-I-056: Use delegation-adjusted weight instead of raw UTXO count.
                     let count = p.selection_weight_at(height, audit_activation);
                     if filter_weight_zero {
-                        // INC-I-068 post-activation: skip fully-delegated producers.
                         if count == 0 {
                             continue;
                         }
                         snap.insert(pubkey_hash, count);
                     } else {
-                        // INC-I-075 pre-activation: keep weight=0 producers in
-                        // the snapshot. Clamp to 1 so any consumer doing
-                        // weight-proportional math (sum, division) sees the
-                        // same nonzero value v6.21.16 produced.
                         snap.insert(pubkey_hash, count.max(1));
                     }
                 }
@@ -256,10 +246,6 @@ impl Node {
             };
 
             // Active producers + registered_at for tier system.
-            // INC-I-068 / INC-I-075: filter weight=0 only at-or-after
-            // `inc_i_068_weight_filter_activation_height`. Pre-activation:
-            // include weight=0 producers (matches v6.21.16 active_list shape
-            // so mixed-version cohorts don't fragment).
             let producers = self.producer_set.read().await;
             let audit_activation_h = self
                 .config
@@ -355,16 +341,13 @@ impl Node {
             // a no-op.
             //
             // AUDIT-P0-001: aggregator records its OraclePrice UTXO
-            // mutations into `undo` so rollback can revert them. Pre-fix
-            // the mutations were applied AFTER undo was finalized,
-            // leaving stale OraclePrice UTXOs on rollback → state-root
-            // divergence on the next block apply (the OraclePrice UTXO
-            // is part of the state root, see
-            // crates/storage/src/utxo/tests_oracle_snapsync.rs::
-            // test_oracle_price_changes_state_root).
+            // mutations into `undo` so rollback can revert them.
+            //
+            // Phase 3: oracle UTXO mutations route through `batch`
+            // (no utxo_store writes).
             //
             // Spec: specs/oracle-structural-anchored-economics.md §1.3.
-            self.aggregate_oracle_prices_at_epoch_boundary(height, undo)
+            self.aggregate_oracle_prices_at_epoch_boundary(height, batch, undo)
                 .await;
 
             // Apply the new epoch state

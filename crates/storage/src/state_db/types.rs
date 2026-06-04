@@ -92,6 +92,12 @@ pub struct StateDb {
 /// All mutations within a block go into this batch. On `commit()`,
 /// the entire batch is written atomically. If the batch is dropped
 /// without committing, no changes are persisted.
+///
+/// Phase 3: BlockBatch is now the **sole** UTXO mutation path during
+/// `apply_block`. All reads during block application use the overlay
+/// methods (`get_utxo`, `contains_utxo`, `get_utxos_by_pubkey`,
+/// `has_unique_id_check`) which check pending state first, then fall
+/// through to committed state_db.
 pub struct BlockBatch<'a> {
     pub(super) db: &'a StateDb,
     pub(super) batch: rocksdb::WriteBatch,
@@ -108,6 +114,10 @@ pub struct BlockBatch<'a> {
     /// Key: (output_type_discriminant, unique_id_hash).
     /// Phase 1 of UTXO storage consolidation (specs/utxo-storage-architecture.md).
     pub(super) pending_unique_ids: HashSet<(u8, [u8; 32])>,
+    /// Unique IDs removed in this batch but not yet committed to disk.
+    /// Phase 3: `has_unique_id_check` must return false for IDs that were
+    /// spent in the current block, even if they still exist on disk.
+    pub(super) removed_unique_ids: HashSet<(u8, [u8; 32])>,
 }
 
 /// The consistency canary — stored inside the same WriteBatch as state.

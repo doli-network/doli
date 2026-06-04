@@ -189,19 +189,19 @@ impl Node {
         let mut undo_spent_utxos: Vec<(storage::Outpoint, storage::UtxoEntry)> = Vec::new();
         let mut undo_created_utxos: Vec<storage::Outpoint> = Vec::new();
 
-        // Apply transactions to UTXO set and process special transactions
+        // Phase 3: apply transactions via BlockBatch only (no utxo_store writes).
+        // All UTXO reads use the batch overlay (pending + committed state_db).
         {
-            let mut utxo = self.utxo_set.write().await;
+            let utxo = self.utxo_set.read().await;
             let mut producers = self.producer_set.write().await;
 
             for (tx_index, tx) in block.transactions.iter().enumerate() {
-                // Process UTXO changes (in-memory + batch for atomic persistence)
+                // Process UTXO changes via batch (Phase 3: sole write path)
                 self.process_transaction_utxos(
                     tx,
                     tx_index,
                     height,
                     block.header.slot,
-                    &mut utxo,
                     &mut batch,
                     &mut undo_spent_utxos,
                     &mut undo_created_utxos,
@@ -396,7 +396,7 @@ impl Node {
                 h(&bincode::serialize(&v).unwrap_or_default())
             };
 
-            // Vec types — order matters for consensus (index → slot).
+            // Vec types — order matters for consensus (index -> slot).
             let epl_fp = h(&bincode::serialize(
                 &self
                     .epoch_state
@@ -440,8 +440,8 @@ impl Node {
             // Fix #9 (2026-04-15, synmgrefactor): unified scheduler_root hash.
             // Single commitment over all consensus-derived scheduler state.
             // Two nodes with matching state_root but different scheduler_root
-            // have divergent schedulers — will select different producers
-            // for the same slot → fork. Detect with one grep/compare instead
+            // have divergent schedulers -- will select different producers
+            // for the same slot -> fork. Detect with one grep/compare instead
             // of seven separate component diffs.
             let scheduler_root = storage::compute_scheduler_root(
                 &self.epoch_state.bond_snapshot,

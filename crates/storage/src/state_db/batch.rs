@@ -5,10 +5,13 @@ use std::sync::atomic::Ordering;
 
 use crypto::Hash;
 use doli_core::types::{Amount, BlockHeight};
+use doli_core::validation::{UtxoInfo, UtxoProvider};
 
 use crate::chain_state::ChainState;
 use crate::producer::{PendingProducerUpdate, ProducerInfo, ProducerSet};
-use crate::utxo::{uid_key, Outpoint, UtxoEntry};
+use crate::utxo::{
+    uid_key, Outpoint, UtxoEntry, UID_PREFIX_ASSET, UID_PREFIX_NFT, UID_PREFIX_POOL,
+};
 use crate::StorageError;
 
 use super::types::{
@@ -31,6 +34,7 @@ impl StateDb {
             pending_utxos: HashMap::new(),
             spent_in_batch: Vec::new(),
             pending_unique_ids: HashSet::new(),
+            removed_unique_ids: HashSet::new(),
         }
     }
 }
@@ -60,6 +64,10 @@ impl<'a> BlockBatch<'a> {
 
     /// Spend a UTXO in the batch. Checks pending_utxos first (same-block-spend),
     /// then falls back to the committed DB.
+    ///
+    /// Phase 3: also removes unique IDs (NFT/Pool/FungibleAsset) from the
+    /// pending set and tracks them in `removed_unique_ids` so
+    /// `has_unique_id_check` returns false for spent outputs.
     pub fn spend_utxo(&mut self, outpoint: &Outpoint) -> Result<UtxoEntry, StorageError> {
         let cf_utxo = self.db.db.cf_handle(CF_UTXO).unwrap();
         let cf_by_pk = self.db.db.cf_handle(CF_UTXO_BY_PUBKEY).unwrap();
@@ -92,6 +100,9 @@ impl<'a> BlockBatch<'a> {
         idx_key.extend_from_slice(&key);
         self.batch.delete_cf(cf_by_pk, &idx_key);
 
+        // Phase 3: remove unique IDs for spent NFT/Pool/FungibleAsset outputs
+        self.remove_unique_id_for_entry(&entry);
+
         self.spent_in_batch.push(*outpoint);
         self.utxo_delta -= 1;
 
@@ -120,6 +131,7 @@ impl<'a> BlockBatch<'a> {
     /// Add all outputs of a transaction via the batch.
     ///
     /// Mirrors `UtxoSet::add_transaction` but accumulates in the WriteBatch.
+    /// Phase 3: also inserts unique IDs for NFT/Pool/FungibleAsset outputs.
     pub fn add_transaction_utxos(
         &mut self,
         tx: &doli_core::transaction::Transaction,
@@ -177,11 +189,15 @@ impl<'a> BlockBatch<'a> {
                 is_coinbase,
                 is_epoch_reward,
             };
+
+            // Phase 3: insert unique IDs for NFT/Pool/FungibleAsset outputs
+            self.add_unique_id_for_entry(&entry);
+
             self.add_utxo(outpoint, entry);
         }
     }
 
-    // ==================== Unique ID (Phase 1) ====================
+    // ==================== Unique ID (Phase 1 + Phase 3) ====================
 
     /// Add a unique ID to the pending set for same-block uniqueness checks.
     ///
@@ -189,28 +205,143 @@ impl<'a> BlockBatch<'a> {
     /// Phase 1 of UTXO storage consolidation (specs/utxo-storage-architecture.md).
     pub fn add_pending_unique_id(&mut self, prefix: u8, id: Hash) {
         self.pending_unique_ids.insert((prefix, *id.as_bytes()));
+        // If this was previously removed in the same block, un-remove it
+        self.removed_unique_ids.remove(&(prefix, *id.as_bytes()));
         let cf = self.db.db.cf_handle(CF_UNIQUE_ID).unwrap();
         self.batch.put_cf(cf, uid_key(prefix, &id), [0u8]);
     }
 
     /// Check if a unique ID exists: first in the pending set (same-block),
-    /// then on disk (cf_unique_id).
+    /// then on disk (cf_unique_id), respecting removals in this batch.
     ///
-    /// Phase 1 of UTXO storage consolidation (specs/utxo-storage-architecture.md).
+    /// Phase 3: checks `removed_unique_ids` before falling through to disk
+    /// to ensure IDs spent in the current block are not visible.
     pub fn has_unique_id_check(&self, prefix: u8, id: &Hash) -> bool {
-        // Check pending first (same-block insert)
-        if self.pending_unique_ids.contains(&(prefix, *id.as_bytes())) {
+        let key = (prefix, *id.as_bytes());
+        // Check pending adds first (same-block insert)
+        if self.pending_unique_ids.contains(&key) {
             return true;
+        }
+        // Check if removed in this batch — overrides disk
+        if self.removed_unique_ids.contains(&key) {
+            return false;
         }
         // Fall back to disk
         self.db.has_unique_id(prefix, id)
     }
 
     /// Remove a unique ID from the batch (queued for deletion on commit).
+    /// Phase 3: also tracks in `removed_unique_ids` so `has_unique_id_check`
+    /// returns false even if the ID is still on disk.
     pub fn remove_pending_unique_id(&mut self, prefix: u8, id: &Hash) {
-        self.pending_unique_ids.remove(&(prefix, *id.as_bytes()));
+        let key = (prefix, *id.as_bytes());
+        self.pending_unique_ids.remove(&key);
+        self.removed_unique_ids.insert(key);
         let cf = self.db.db.cf_handle(CF_UNIQUE_ID).unwrap();
         self.batch.delete_cf(cf, uid_key(prefix, id));
+    }
+
+    /// Phase 3 helper: extract and insert unique IDs from a UtxoEntry's output.
+    fn add_unique_id_for_entry(&mut self, entry: &UtxoEntry) {
+        match entry.output.output_type {
+            doli_core::OutputType::NFT => {
+                if let Some((token_id, _)) = entry.output.nft_metadata() {
+                    self.add_pending_unique_id(UID_PREFIX_NFT, token_id);
+                }
+            }
+            doli_core::OutputType::Pool => {
+                if let Some(meta) = entry.output.pool_metadata() {
+                    self.add_pending_unique_id(UID_PREFIX_POOL, meta.pool_id);
+                }
+            }
+            doli_core::OutputType::FungibleAsset => {
+                if let Some((asset_id, _, _)) = entry.output.fungible_asset_metadata() {
+                    self.add_pending_unique_id(UID_PREFIX_ASSET, asset_id);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Phase 3 helper: remove unique IDs when a UtxoEntry is spent.
+    fn remove_unique_id_for_entry(&mut self, entry: &UtxoEntry) {
+        match entry.output.output_type {
+            doli_core::OutputType::NFT => {
+                if let Some((token_id, _)) = entry.output.nft_metadata() {
+                    self.remove_pending_unique_id(UID_PREFIX_NFT, &token_id);
+                }
+            }
+            doli_core::OutputType::Pool => {
+                if let Some(meta) = entry.output.pool_metadata() {
+                    self.remove_pending_unique_id(UID_PREFIX_POOL, &meta.pool_id);
+                }
+            }
+            doli_core::OutputType::FungibleAsset => {
+                if let Some((asset_id, _, _)) = entry.output.fungible_asset_metadata() {
+                    self.remove_pending_unique_id(UID_PREFIX_ASSET, &asset_id);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // ==================== Phase 3: Overlay Reads ====================
+    //
+    // These methods check pending state first, then fall through to
+    // committed state_db. They enable apply_block reads to see
+    // uncommitted UTXO changes from earlier transactions in the same block.
+
+    /// Get a UTXO by outpoint. Checks pending first, then disk.
+    /// Returns None for outpoints spent in this batch.
+    pub fn get_utxo(&self, outpoint: &Outpoint) -> Option<UtxoEntry> {
+        // Check if spent in this batch
+        if self.spent_in_batch.contains(outpoint) {
+            return None;
+        }
+        // Check pending (same-block add)
+        if let Some(entry) = self.pending_utxos.get(outpoint) {
+            return Some(entry.clone());
+        }
+        // Fall through to committed DB
+        self.db.get_utxo(outpoint)
+    }
+
+    /// Check if a UTXO exists. Checks pending first, then disk.
+    /// Returns false for outpoints spent in this batch.
+    pub fn contains_utxo(&self, outpoint: &Outpoint) -> bool {
+        if self.spent_in_batch.contains(outpoint) {
+            return false;
+        }
+        if self.pending_utxos.contains_key(outpoint) {
+            return true;
+        }
+        self.db.contains_utxo(outpoint)
+    }
+
+    /// Get all UTXOs for a given pubkey hash. Merges pending adds with
+    /// disk results, excluding outpoints spent in this batch.
+    ///
+    /// Phase 3: replaces `UtxoSet::get_by_pubkey_hash` for apply_block reads.
+    pub fn get_utxos_by_pubkey(&self, pubkey_hash: &Hash) -> Vec<(Outpoint, UtxoEntry)> {
+        // Start with disk results, excluding spent-in-batch
+        let mut results: Vec<(Outpoint, UtxoEntry)> = self
+            .db
+            .get_utxos_by_pubkey(pubkey_hash)
+            .into_iter()
+            .filter(|(op, _)| !self.spent_in_batch.contains(op))
+            .collect();
+
+        // Add pending UTXOs for this pubkey (same-block adds)
+        for (op, entry) in &self.pending_utxos {
+            if &entry.output.pubkey_hash == pubkey_hash {
+                // Don't duplicate if also on disk (pending_utxos wins)
+                if !results.iter().any(|(existing, _)| existing == op) {
+                    results.push((*op, entry.clone()));
+                }
+            }
+        }
+
+        results
     }
 
     // ==================== Producer Operations ====================
@@ -454,5 +585,22 @@ impl<'a> BlockBatch<'a> {
         let pending_bytes = bincode::serialize(pending_updates).unwrap_or_default();
         self.batch
             .put_cf(cf_meta, META_PENDING_UPDATES, &pending_bytes);
+    }
+}
+
+// ==================== Phase 3: UtxoProvider for BlockBatch ====================
+//
+// Enables `validate_transaction_with_utxos` to read from the batch overlay
+// during apply_block, seeing uncommitted writes from earlier transactions
+// in the same block.
+
+impl UtxoProvider for BlockBatch<'_> {
+    fn get_utxo(&self, tx_hash: &Hash, output_index: u32) -> Option<UtxoInfo> {
+        let outpoint = Outpoint::new(*tx_hash, output_index);
+        self.get_utxo(&outpoint).map(|entry| UtxoInfo {
+            output: entry.output,
+            pubkey: None,
+            spent: false,
+        })
     }
 }
