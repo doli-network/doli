@@ -676,6 +676,21 @@ impl Node {
             }
         }
 
+        // INC-I-111: when apply has been silent >60s, force a mass peer
+        // status refresh on the next tick. Without this, peer status only
+        // refreshes every 30s and stale heights mask real gaps from the
+        // recovery classifier (the gap=0 blind spot that stalled N9 for 6
+        // minutes on 2026-06-03).
+        {
+            let last_applied = self.sync_manager.read().await.last_block_applied_secs();
+            if last_applied >= 60 {
+                self.sync_manager
+                    .write()
+                    .await
+                    .request_mass_status_refresh();
+            }
+        }
+
         // RECOVERY COORDINATOR: single authoritative dispatch for all fork/sync recovery.
         //
         // Evidence is reported based on current state, then the coordinator
@@ -694,7 +709,10 @@ impl Node {
                 if empty_headers >= 3 {
                     sync_w.report_empty_headers(PeerId::random(), gap);
                 }
-                if last_applied >= 30 && gap > 0 {
+                // INC-I-111: report StaleTip regardless of gap. Gap may
+                // appear as 0 when peer status is stale; the classifier
+                // (recovery.rs Rule 3) now handles gap=0 + stale_tip safely.
+                if last_applied >= 30 {
                     sync_w.report_stale_tip(last_applied, gap);
                 }
             }

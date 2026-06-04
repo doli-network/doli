@@ -346,7 +346,12 @@ impl RecoveryCoordinator {
         //
         // Covers "we're behind canonical" without strong fork evidence.
         let medium_gap = gap > 0 && gap < thresholds::SNAP_SYNC_GAP_MIN;
-        let stale_and_behind = stale_tip && gap > 0;
+        // INC-I-111: stale_tip without observable gap usually means peer
+        // status data is stale (peers advanced but our cached heights have
+        // not refreshed). At gap=0 HeaderFirstSync is still safe: it resets
+        // empty_headers and lets should_sync() re-try; if we are truly at
+        // tip, peers return empty headers and we go idle again.
+        let stale_and_behind = stale_tip;
         if medium_gap || stale_and_behind {
             return RecoveryAction::HeaderFirstSync;
         }
@@ -560,6 +565,31 @@ mod tests {
         let mut ctx = base_ctx();
         ctx.network_tip_height = 1003;
         ctx.last_applied_secs = 120;
+        assert_eq!(c.classify(&ctx), RecoveryAction::HeaderFirstSync);
+    }
+
+    /// INC-I-111 regression: stuck node with gap=0 must still recover.
+    ///
+    /// N9 mainnet 2026-06-03: stalled at h=359607 for 6 minutes while all 20
+    /// connected peers reported the same height (their status data was
+    /// stale). Pre-fix, `stale_and_behind` required `gap > 0`, so every
+    /// recovery rule returned None despite obvious stuck-ness. Post-fix,
+    /// StaleTip evidence alone is enough to fire HeaderFirstSync — which
+    /// resets empty_headers and lets should_sync() re-try once peer status
+    /// refreshes.
+    #[test]
+    fn stale_tip_at_gap_zero_triggers_headerfirst() {
+        let mut c = RecoveryCoordinator::new();
+        c.report(RecoveryEvidence::StaleTip {
+            last_applied_secs: 350,
+            gap: 0,
+        });
+        let mut ctx = base_ctx();
+        // local == network_tip → gap=0 (matches the N9 stuck-state).
+        ctx.network_tip_height = 1000;
+        ctx.local_height = 1000;
+        ctx.last_applied_secs = 350;
+        ctx.peer_count = 20;
         assert_eq!(c.classify(&ctx), RecoveryAction::HeaderFirstSync);
     }
 

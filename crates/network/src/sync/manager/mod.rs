@@ -21,6 +21,8 @@ mod tests;
 mod tests_inc_i090_d1;
 #[cfg(test)]
 mod tests_inc_i103;
+#[cfg(test)]
+mod tests_inc_i111;
 
 // Re-export all public types from types.rs
 pub use types::{
@@ -274,6 +276,16 @@ impl SyncManager {
     /// status requests to all peers instead of waiting 30s.
     pub fn take_needs_mass_status_refresh(&mut self) -> bool {
         std::mem::take(&mut self.needs_mass_status_refresh)
+    }
+
+    /// Request an immediate mass status refresh on the next periodic tick.
+    /// INC-I-111: called by the node layer when local apply has stalled
+    /// for over 60 seconds. Stale peer status data is the root cause of
+    /// the gap=0 blind spot: peers advance but our cached heights do not,
+    /// so the classifier sees gap=0 and returns None. Forcing a refresh
+    /// breaks the deadlock.
+    pub fn request_mass_status_refresh(&mut self) {
+        self.needs_mass_status_refresh = true;
     }
 
     // =========================================================================
