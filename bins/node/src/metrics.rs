@@ -255,7 +255,7 @@ lazy_static! {
     ).unwrap();
 
     // ===================
-    // RocksDB Metrics (per-instance, labeled by instance="block_store|state_db|utxo_store|diagnostic_ledger")
+    // RocksDB Metrics (per-instance, labeled by instance="block_store|state_db|diagnostic_ledger")
     // ===================
     // Properties read via `db.property_int_value(...)`. See storage::metrics for property names.
 
@@ -281,26 +281,25 @@ lazy_static! {
     ).unwrap();
 
     /// Configured `db_write_buffer_size` — the hard cap. INC-I-104 M0 values:
-    /// block_store=48 MB, state_db=64 MB, utxo_store=32 MB, diagnostic_ledger=8 MB.
+    /// block_store=48 MB, state_db=64 MB, diagnostic_ledger=8 MB.
     /// Per Failure Analyst C-002, C-007, C-011 the spec requires these caps.
     /// Use for approach-to-cap alerts: `memtable_bytes / memtable_cap_bytes > 0.9`.
     pub static ref ROCKSDB_MEMTABLE_CAP_BYTES: IntGaugeVec = IntGaugeVec::new(
         Opts::new("doli_rocksdb_memtable_cap_bytes",
             "Configured db_write_buffer_size — the hard cap on total memtable allocation. \
-             Per INC-I-104 M0 spec: block_store=50331648, state_db=67108864, utxo_store=33554432, diagnostic_ledger=8388608. \
+             Per INC-I-104 M0 spec: block_store=50331648, state_db=67108864, diagnostic_ledger=8388608. \
              Alert: doli_rocksdb_memtable_bytes / doli_rocksdb_memtable_cap_bytes > 0.9 sustained 5m."),
         &["instance"]
     ).unwrap();
 
     /// Block cache resident bytes. INC-I-106: queried directly from
     /// `rocksdb::Cache::get_usage()`, not summed across CFs. Shared cache per
-    /// instance: block_store=32 MB, state_db=32 MB, utxo_store=16 MB,
-    /// diagnostic_ledger=4 MB. Compare against the matching
+    /// instance: block_store=32 MB, state_db=48 MB, diagnostic_ledger=4 MB. Compare against the matching
     /// `doli_rocksdb_block_cache_capacity_bytes{instance="…"}` for headroom.
     pub static ref ROCKSDB_BLOCK_CACHE_BYTES: IntGaugeVec = IntGaugeVec::new(
         Opts::new("doli_rocksdb_block_cache_bytes",
             "Block cache resident bytes per instance, from rocksdb::Cache::get_usage() (INC-I-106). \
-             Configured caps: block_store=32MB, state_db=32MB, utxo_store=16MB, diagnostic_ledger=4MB. \
+             Configured caps: block_store=32MB, state_db=48MB, diagnostic_ledger=4MB. \
              Compare against doli_rocksdb_block_cache_capacity_bytes for headroom."),
         &["instance"]
     ).unwrap();
@@ -321,8 +320,8 @@ lazy_static! {
     pub static ref ROCKSDB_BLOCK_CACHE_CAPACITY_BYTES: IntGaugeVec = IntGaugeVec::new(
         Opts::new("doli_rocksdb_block_cache_capacity_bytes",
             "Configured shared LRU block cache capacity per instance, in bytes (INC-I-107). \
-             Set at storage open(): block_store=33554432 (32MB), state_db=33554432 (32MB), \
-             utxo_store=16777216 (16MB), diagnostic_ledger=4194304 (4MB). \
+             Set at storage open(): block_store=33554432 (32MB), state_db=50331648 (48MB), \
+             diagnostic_ledger=4194304 (4MB). \
              Alert: doli_rocksdb_block_cache_bytes / this > 0.9 sustained 5m."),
         &["instance"]
     ).unwrap();
@@ -644,16 +643,14 @@ pub fn apply_rocksdb_metrics(state: &mut RocksDbScrapeState, m: &storage::RocksD
 }
 
 /// Spawn a periodic task that scrapes RocksDB runtime properties from all
-/// 4 instances (block_store, state_db, utxo_store, diagnostic_ledger) every
+/// 3 instances (block_store, state_db, diagnostic_ledger) every
 /// 15 seconds and updates the Prometheus gauges.
 ///
-/// `utxo_store` may be in-memory in tests — `UtxoSet::metrics()` returns
-/// `None` in that case and the instance is silently skipped.
+/// Phase 4: utxo_store was deleted; state_db is the sole UTXO store.
 /// `diagnostic_ledger` is `None` unless `--fork-diagnostics` is enabled.
 pub fn spawn_rocksdb_metrics_scraper(
     block_store: std::sync::Arc<storage::BlockStore>,
     state_db: std::sync::Arc<storage::StateDb>,
-    utxo_set: std::sync::Arc<tokio::sync::RwLock<storage::UtxoSet>>,
     diagnostic_ledger: Option<std::sync::Arc<storage::diagnostic_ledger::DiagnosticLedger>>,
 ) {
     tokio::spawn(async move {
@@ -666,9 +663,6 @@ pub fn spawn_rocksdb_metrics_scraper(
             ticker.tick().await;
             apply_rocksdb_metrics(&mut state, &block_store.metrics());
             apply_rocksdb_metrics(&mut state, &state_db.metrics());
-            if let Some(m) = utxo_set.read().await.metrics() {
-                apply_rocksdb_metrics(&mut state, &m);
-            }
             if let Some(ref dl) = diagnostic_ledger {
                 apply_rocksdb_metrics(&mut state, &dl.metrics());
             }

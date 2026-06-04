@@ -1,8 +1,23 @@
+// OUTPUT CONTRACT for test_serialize_canonical_matches_between_backends (Phase 4 update):
+//   Function under test: InMemoryUtxoStore::serialize_canonical() vs StateDb::serialize_canonical_utxo()
+//   Observable outputs:
+//     O1: Vec<u8> from mem_store.serialize_canonical()
+//     O2: Vec<u8> from sdb.serialize_canonical_utxo()
+//   Code paths:
+//     P1: Both stores populated with identical entries -> O1 == O2
+//   Input partitions:
+//     I1: Two coinbase transactions with distinct heights -> bit-identical canonical bytes
+//
+// INPUT PARTITIONS:
+//   | Path | Input Partition | Expected Output |
+//   |------|-----------------|-----------------|
+//   | P1   | I1: matching coinbase txs | O1 == O2 (byte-exact) |
+
 use super::*;
 use crypto::Hash;
 use doli_core::transaction::Transaction;
 
-use crate::utxo_rocks::RocksDbUtxoStore;
+use std::sync::Arc;
 
 #[test]
 fn test_utxo_add_and_spend() {
@@ -186,6 +201,8 @@ fn test_utxo_entry_serialization_roundtrip() {
 
 #[test]
 fn test_serialize_canonical_matches_between_backends() {
+    // Phase 4: Compare InMemory vs state_db-backed canonical serialization.
+    // (Previously compared InMemory vs utxo_rocks; now state_db is the sole store.)
     let pk_hash = crypto::hash::hash(b"alice");
 
     // Create InMemory store with some entries
@@ -195,18 +212,19 @@ fn test_serialize_canonical_matches_between_backends() {
     mem_store.add_transaction(&tx1, 0, true, 0);
     mem_store.add_transaction(&tx2, 1, true, 0);
 
-    // Create RocksDB store with same entries
+    // Create state_db and populate with same entries
     let dir = tempfile::TempDir::new().unwrap();
-    let rocks_store = RocksDbUtxoStore::open(dir.path()).unwrap();
-    rocks_store.add_transaction(&tx1, 0, true, 0).unwrap();
-    rocks_store.add_transaction(&tx2, 1, true, 0).unwrap();
+    let sdb = Arc::new(crate::state_db::StateDb::open(dir.path()).unwrap());
+    for (outpoint, entry) in mem_store.iter() {
+        sdb.insert_utxo(outpoint, entry);
+    }
 
     // Canonical bytes must match
     let mem_bytes = mem_store.serialize_canonical();
-    let rocks_bytes = rocks_store.serialize_canonical();
+    let sdb_bytes = sdb.serialize_canonical_utxo();
     assert_eq!(
-        mem_bytes, rocks_bytes,
-        "Canonical serialization must match between InMemory and RocksDB backends"
+        mem_bytes, sdb_bytes,
+        "Canonical serialization must match between InMemory and state_db backends"
     );
 }
 

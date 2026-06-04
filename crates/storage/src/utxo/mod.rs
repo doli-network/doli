@@ -1,8 +1,8 @@
 //! UTXO set management
 //!
 //! Provides two backends:
-//! - `InMemoryUtxoStore`: HashMap-based (original, used for migration and testing)
-//! - `RocksDbUtxoStore`: Disk-backed via RocksDB (production, scales to millions of UTXOs)
+//! - `InMemoryUtxoStore`: HashMap-based (used for testing and snap sync deserialization)
+//! - `RocksDb(Arc<StateDb>)`: state_db-backed (production, sole UTXO store since Phase 4)
 //!
 //! The `UtxoSet` enum dispatches to the active backend. Consumers don't need
 //! to know which backend is active — all methods work identically.

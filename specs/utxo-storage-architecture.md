@@ -8,7 +8,7 @@ INPUT PARTITIONS: N/A — architecture specification file (not a test file)
 ## Status
 **Approved 2026-06-03.** Scope locked: Tier 1 + BlobDB + F1 monitor. All other tiers explicitly deferred.
 
-Implementation pending. Run `/omega-redesign --fix` (or per-phase via `/omega-new-feature`) to start the TDD milestone loop.
+Phases 1-4 complete. Phase 5 (BlobDB + F1 monitor) pending.
 
 ## Decision Record
 - 5-evaluator parallel design analysis converged on **eliminate `utxo_store`** (4/5 evaluators independent).
@@ -74,9 +74,12 @@ Implementation pending. Run `/omega-redesign --fix` (or per-phase via `/omega-ne
 **Phase 3 — Write simplification (gated):**
 - **Step 4 (GATE: Pool TWAP equivalence test must pass)**: Remove per-tx dual-writes.
 
-**Phase 4 — Cleanup (high LOC reduction):**
-- Step 5: Delete `utxo_rocks.rs`, self-heal in `init.rs`, simplify `utxo/set.rs`.
-- Step 6: Tune survivor — `cf_utxo` block_size 16 KB, unified 48 MB cache.
+**Phase 4 — Cleanup (high LOC reduction): COMPLETE**
+- Step 5: Deleted `utxo_rocks.rs`, self-heal in `init.rs`, simplified `utxo/set.rs`. Startup disk cleanup removes orphaned `utxo_store/` dirs.
+- Step 6: Tuned survivor — `cf_utxo` block_size 4 KB -> 16 KB, unified cache 32 -> 48 MB.
+- Migration tools removed: `pool_byte_diff.rs`, `pool_backfill.rs` (no longer compilable without `utxo_store`).
+- Obsolete tests removed: `state_db_query_equivalence_test.rs`, `phase2_read_migration_test.rs`, `inc_i_027_utxo_restore_selfheal.rs`.
+- Metrics scraper simplified: 3 instances (block_store, state_db, diagnostic_ledger).
 
 **Phase 5 — BlobDB + monitor (low risk, high impact):**
 - Step 7: Enable BlobDB on `cf_utxo` with 6 config lines.

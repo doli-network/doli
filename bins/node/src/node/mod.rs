@@ -16,12 +16,10 @@ mod genesis;
 mod init;
 mod network_events;
 
-// Re-export the startup UTXO init helper so integration tests can exercise it
-// in isolation (INC-I-027 regression tests). Used only through the lib target —
-// the bin target reaches this logic via `Node::new`, so the `pub use` appears
-// unused from the bin's perspective.
+// Re-export Phase 4 disk cleanup helper so integration tests can verify
+// orphan-dir removal behavior. Used only through the lib target.
 #[allow(unused_imports)]
-pub use init::init_utxo_set;
+pub use init::cleanup_orphan_utxo_store;
 #[allow(unused_imports)]
 pub use init::recover_body_gaps;
 mod periodic;

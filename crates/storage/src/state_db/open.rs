@@ -86,10 +86,11 @@ impl StateDb {
         opts.set_max_background_jobs(2);
         opts.set_max_subcompactions(1);
 
-        // INC-I-104 M3: explicit 32 MB LRU block cache shared across all 7 CFs.
+        // INC-I-104 M3: explicit LRU block cache shared across all 7 CFs.
         // Arc-internal in rust-rocksdb — multiple BlockBasedOptions builders
         // reference the same underlying cache. Per-instance only (C-012).
-        let cache = rocksdb::Cache::new_lru_cache(32 * 1024 * 1024);
+        // Phase 4: absorbs the 16 MB formerly used by utxo_store (32 + 16 = 48 MB).
+        let cache = rocksdb::Cache::new_lru_cache(48 * 1024 * 1024);
 
         // Shorthand aliases for compression types used in the spec table.
         use rocksdb::DBCompressionType::{Lz4, Zstd};
@@ -99,7 +100,7 @@ impl StateDb {
         //
         // | CF              | wbuf MB | #buf | bloom | blk KB | compr | tgt MB | L0 slow | L0 stop |
         // |-----------------|---------|------|-------|--------|-------|--------|---------|---------|
-        // | cf_utxo         |   16    |  2   | YES   |   4    | Lz4   |   32   |   40    |   60    |
+        // | cf_utxo         |   16    |  2   | YES   |  16    | Lz4   |   32   |   40    |   60    |
         // | cf_utxo_by_pk   |    8    |  2   | NO    |   4    | Lz4   |   16   |   40    |   60    |
         // | cf_meta         |    4    |  2   | no    |   4    | Lz4   |    8   |  def    |  def    |
         // | cf_undo         |    4    |  2   | no    |  16    | Zstd  |   16   |  def    |  def    |
@@ -111,7 +112,12 @@ impl StateDb {
             // BLOOM (10 bits/key) + L0 slowdown=40/stop=60 (C-003 MANDATORY).
             rocksdb::ColumnFamilyDescriptor::new(
                 CF_UTXO,
-                cf_opts_state_db(&opts, &cache, 16, 2, true, 4, Lz4, 32, Some(40), Some(60)),
+                // Phase 4: block_size 4 KB -> 16 KB. Matches the value that was
+                // tuned for the former utxo_store, which served the same workload.
+                // 16 KB blocks improve sequential scan throughput (iter_utxos,
+                // serialize_canonical) while the bloom filter keeps point-lookup
+                // amplification low.
+                cf_opts_state_db(&opts, &cache, 16, 2, true, 16, Lz4, 32, Some(40), Some(60)),
             ),
             // Hot write, prefix scan reads — NO bloom (C-010).
             // L0 slowdown=40/stop=60 (C-003 MANDATORY — shrunk from 64 MB to 8 MB).
@@ -177,7 +183,7 @@ impl StateDb {
             db,
             utxo_count: AtomicU64::new(count),
             block_cache: cache,
-            block_cache_capacity_bytes: 32 * 1024 * 1024,
+            block_cache_capacity_bytes: 48 * 1024 * 1024,
         })
     }
 

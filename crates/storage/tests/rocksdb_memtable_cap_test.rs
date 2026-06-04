@@ -1,4 +1,4 @@
-//! INC-I-104 M0 regression tests: verify all 4 RocksDB instances have
+//! INC-I-104 M0 regression tests: verify all RocksDB instances have
 //! `db_write_buffer_size > 0` (memtable budget cap) and statistics enabled.
 //!
 //! These tests open each store and verify that `metrics()` returns a valid
@@ -7,17 +7,19 @@
 //! validates that the configuration code path executes without error and
 //! that metrics collection works post-cap.
 //!
+//! Phase 4: utxo_store test (P3) removed — utxo_store was deleted.
+//! state_db is the sole UTXO store.
+//!
 //! Requirements:
 //!   AC-MUST-002 — all instances capped (verified by code review + compile)
-//!   AC-MUST-004 — WAL caps on block_store + utxo_store
+//!   AC-MUST-004 — WAL caps on block_store + state_db
 //!
 //! OUTPUT CONTRACT:
 //!   Outputs: metrics snapshot (memtable_bytes, memtable_max_bytes, instance label)
 //!   Paths:
-//!     P1: block_store open → metrics snapshot valid, statistics enabled
-//!     P2: state_db open → metrics snapshot valid, statistics enabled
-//!     P3: utxo_store open → metrics snapshot valid, statistics enabled
-//!     P4: diagnostic_ledger open → db_write_buffer_size == 8 MB, metrics valid
+//!     P1: block_store open -> metrics snapshot valid, statistics enabled
+//!     P2: state_db open -> metrics snapshot valid, statistics enabled
+//!     P4: diagnostic_ledger open -> db_write_buffer_size == 8 MB, metrics valid
 //!
 //! INPUT PARTITIONS:
 //!   Each path has one partition: fresh tempdir open with default options.
@@ -34,7 +36,7 @@ fn block_store_metrics_after_memtable_cap() {
     let m = store.metrics();
 
     assert_eq!(m.instance, "block_store");
-    // Statistics enabled → memtable allocation is tracked.
+    // Statistics enabled -> memtable allocation is tracked.
     // On a fresh DB, RocksDB allocates one write buffer per CF.
     // With 9 CFs and statistics enabled, this should be > 0.
     assert!(
@@ -57,22 +59,6 @@ fn state_db_metrics_after_memtable_cap() {
     assert!(
         m.memtable_max_bytes > 0,
         "state_db memtable_max_bytes should be > 0 (statistics enabled)"
-    );
-    assert_eq!(m.background_errors, 0);
-}
-
-/// REQ-ROCKSDB-002: utxo_store opens successfully with memtable cap and
-/// statistics are enabled.
-#[test]
-fn utxo_store_metrics_after_memtable_cap() {
-    let dir = TempDir::new().unwrap();
-    let store = storage::RocksDbUtxoStore::open(dir.path()).unwrap();
-    let m = store.metrics();
-
-    assert_eq!(m.instance, "utxo_store");
-    assert!(
-        m.memtable_max_bytes > 0,
-        "utxo_store memtable_max_bytes should be > 0 (statistics enabled)"
     );
     assert_eq!(m.background_errors, 0);
 }

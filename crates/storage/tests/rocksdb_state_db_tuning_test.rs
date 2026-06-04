@@ -1,7 +1,7 @@
 //! INC-I-104 M3 regression tests: verify state_db per-CF tuning.
 //!
 //! These tests confirm that the state_db opens correctly with workload-derived
-//! per-CF options, that the explicit 32 MB block cache is attached, and that
+//! per-CF options, that the explicit 48 MB block cache is attached, and that
 //! no write stalls occur under normal operation.
 //!
 //! OUTPUT CONTRACT:
@@ -20,7 +20,7 @@
 use tempfile::TempDir;
 
 /// REQ-ROCKSDB-M3-001: state_db opens with per-CF tuning and the explicit
-/// 32 MB block cache is attached. After writing + flushing UTXOs through
+/// 48 MB block cache is attached. After writing + flushing UTXOs through
 /// cf_utxo, block_cache_bytes must be > 0 (proves cache is wired to CFs).
 #[test]
 fn state_db_explicit_block_cache_attached() {
@@ -43,7 +43,7 @@ fn state_db_explicit_block_cache_attached() {
     assert_eq!(m.instance, "state_db");
     assert!(
         m.block_cache_bytes > 0,
-        "block_cache_bytes must be > 0 after reads — proves the explicit 32 MB \
+        "block_cache_bytes must be > 0 after reads — proves the explicit 48 MB \
          LRU cache is attached to state_db CFs. Got: {}",
         m.block_cache_bytes
     );

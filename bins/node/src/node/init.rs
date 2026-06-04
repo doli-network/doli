@@ -1,94 +1,49 @@
 use super::*;
 
-/// Initialize the UTXO set from disk, reconciling `utxo_store/` against `state_db`.
+/// Phase 4 disk cleanup: remove orphaned `utxo_store/` directory.
 ///
-/// Called by `Node::new` at startup. Kept as a free function so integration tests
-/// can exercise the startup init logic in isolation (see
-/// `bins/node/tests/inc_i_027_utxo_restore_selfheal.rs`).
+/// Prior to Phase 4, the node maintained a separate `utxo_store/` RocksDB
+/// instance alongside `state_db`. Since Phase 2, `state_db` has been the
+/// sole authoritative UTXO store. Phase 4 deletes the orphaned directory
+/// on first boot after the upgrade.
 ///
-/// ## Behavior
-///
-/// `state_db` is always authoritative — it holds the canonical UTXO set inside its
-/// own column family and is carried in every guardian checkpoint. `utxo_store/` is
-/// a separate RocksDB cache that must stay in lockstep with `state_db`.
-///
-/// Resolution matrix:
-///
-/// | `utxo_store` state | Action |
-/// |---|---|
-/// | Cannot open | Fall back to in-memory, migrate from `state_db` |
-/// | Empty, `state_db` empty | Empty store (genesis / fresh install) |
-/// | Empty, `state_db` non-empty | Migrate from `state_db` (first boot after upgrade) |
-/// | Non-empty, `len` matches `state_db` | Use as-is (normal steady state) |
-/// | Non-empty, `len` differs from `state_db` | **INC-I-027 self-heal**: clear and rebuild from `state_db` |
-///
-/// ## INC-I-027 — guardian-restore self-heal
-///
-/// Pre-fix, the non-empty branch used `utxo_store/` as-is with no comparison against
-/// `state_db`. When an operator restored `state_db + blocks` from a guardian
-/// checkpoint but left `utxo_store/` in place (the default, because the guardian
-/// never snapshotted it), the node started with mismatched local state:
-/// `state_db` at the restored height, `utxo_store/` at the pre-restore height.
-/// The node reported the correct height on RPC but silently operated on stale
-/// UTXOs, making it vulnerable to bad reorgs (2026-04-09 mainnet: ai1/ai2 reorged
-/// forward within 15 seconds of restore).
-///
-/// The fix detects `store.len() != state_db.utxo_len()`, clears `utxo_store/`, and
-/// re-migrates from `state_db.iter_utxos()` — the same authoritative loop already
-/// used for empty stores. Triggers only when the two stores are already inconsistent;
-/// zero cost in steady state.
-pub fn init_utxo_set(data_dir: &std::path::Path, state_db: &StateDb) -> UtxoSet {
-    let utxo_rocks_path = data_dir.join("utxo_store");
-    match UtxoSet::open_rocksdb(&utxo_rocks_path) {
-        Ok(mut store) => {
-            let state_len = state_db.utxo_len();
-            let store_len = store.len();
-
-            if store.is_empty() && state_len > 0 {
-                info!(
-                    "[UTXO] Migrating {} UTXOs from StateDb to RocksDB...",
-                    state_len
-                );
-                for (outpoint, entry) in state_db.iter_utxos() {
-                    let _ = store.insert(outpoint, entry);
-                }
-                info!(
-                    "[UTXO] Migration complete: {} UTXOs in RocksDB",
-                    store.len()
-                );
-            } else if !store.is_empty() && store_len != state_len {
-                // INC-I-027 self-heal: detected divergence between the two local
-                // stores. This is the guardian-restore gap — operator restored
-                // state_db from a checkpoint but left the stale utxo_store in place.
-                // state_db is authoritative; rebuild utxo_store from it.
-                warn!(
-                    "[UTXO] INC-I-027: utxo_store mismatch with state_db \
-                     (utxo_store={} state_db={}) — rebuilding from state_db (guardian-restore self-heal)",
-                    store_len, state_len
-                );
-                store.clear();
-                for (outpoint, entry) in state_db.iter_utxos() {
-                    let _ = store.insert(outpoint, entry);
-                }
-                info!(
-                    "[UTXO] INC-I-027: rebuild complete: {} UTXOs in RocksDB",
-                    store.len()
-                );
-            } else if !store.is_empty() {
-                info!("[UTXO] RocksDB store: {} UTXOs", store_len);
-            }
-            store
-        }
-        Err(e) => {
-            warn!(
-                "[UTXO] Failed to open RocksDB store: {}. Falling back to in-memory.",
+/// Idempotent: on subsequent boots the directory is gone and this is a no-op.
+/// Failure is non-fatal: logs ERROR but does NOT panic.
+pub fn cleanup_orphan_utxo_store(data_dir: &std::path::Path) {
+    let utxo_store_path = data_dir.join("utxo_store");
+    if utxo_store_path.exists() {
+        info!(
+            "[Phase 4] Removing orphaned utxo_store at {} (state_db is now the sole UTXO store)",
+            utxo_store_path.display()
+        );
+        if let Err(e) = std::fs::remove_dir_all(&utxo_store_path) {
+            error!(
+                "[Phase 4] Failed to remove orphaned utxo_store at {}: {}                  (harmless — nothing opens it, but wastes disk space)",
+                utxo_store_path.display(),
                 e
             );
-            let mut mem = storage::InMemoryUtxoStore::new();
-            for (outpoint, entry) in state_db.iter_utxos() {
-                mem.insert(outpoint, entry);
+        }
+    }
+
+    // Also clean up secondary instances from pool_byte_diff / pool_backfill tools
+    if let Ok(entries) = std::fs::read_dir(data_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with("utxo_store_secondary") {
+                info!(
+                    "[Phase 4] Removing orphaned {} at {}",
+                    name_str,
+                    entry.path().display()
+                );
+                if let Err(e) = std::fs::remove_dir_all(entry.path()) {
+                    error!(
+                        "[Phase 4] Failed to remove {}: {}",
+                        entry.path().display(),
+                        e
+                    );
+                }
             }
-            UtxoSet::InMemory(mem)
         }
     }
 }
@@ -236,10 +191,9 @@ impl Node {
         if !state_db.has_state() {
             let state_path = config.data_dir.join("chain_state.bin");
             let producers_path = config.data_dir.join("producers.bin");
-            let utxo_rocks_path = config.data_dir.join("utxo_rocks");
             let utxo_path = config.data_dir.join("utxo.bin");
 
-            if state_path.exists() || utxo_rocks_path.exists() || utxo_path.exists() {
+            if state_path.exists() || utxo_path.exists() {
                 info!("[MIGRATION] Migrating to unified state_db...");
 
                 // Load chain state
@@ -267,16 +221,8 @@ impl Node {
                     ProducerSet::new()
                 };
 
-                // Load UTXOs (priority: utxo_rocks > utxo.bin)
-                if utxo_rocks_path.exists() {
-                    let rocks = storage::RocksDbUtxoStore::open(&utxo_rocks_path)?;
-                    let entries = rocks.iter_entries();
-                    state_db.import_utxos(entries.iter().map(|(o, e)| (o, e)));
-                    info!(
-                        "[MIGRATION] Imported {} UTXOs from utxo_rocks",
-                        state_db.utxo_len()
-                    );
-                } else if utxo_path.exists() {
+                // Load UTXOs from legacy utxo.bin (utxo_rocks removed in Phase 4)
+                if utxo_path.exists() {
                     let legacy = storage::InMemoryUtxoStore::load(&utxo_path)?;
                     state_db.import_utxos(legacy.iter());
                     info!(
@@ -349,12 +295,18 @@ impl Node {
             cs
         };
 
-        // Load UTXOs: scales to millions of entries via RocksDB-backed store,
-        // with startup self-heal against state_db (INC-I-027 guardian-restore fix).
-        // See `init_utxo_set` doc comment for the full behavior matrix.
-        let mut utxo_set = init_utxo_set(&config.data_dir, &state_db);
-        // Phase 2: attach state_db so RPC-facing reads route through it
-        utxo_set.set_state_db(state_db.clone());
+        // Phase 4: state_db is the sole UTXO store. Remove orphaned utxo_store/
+        // directory from prior phases (idempotent, non-fatal on failure).
+        cleanup_orphan_utxo_store(&config.data_dir);
+
+        // Construct UTXO set backed directly by state_db (Phase 4).
+        // INC-I-027 self-heal is no longer needed — there is no second store
+        // to diverge. state_db is authoritative and always consistent.
+        let utxo_set = UtxoSet::from_state_db(state_db.clone());
+        info!(
+            "[UTXO] state_db-backed UTXO set: {} entries",
+            state_db.utxo_len()
+        );
         let utxo_set = Arc::new(RwLock::new(utxo_set));
 
         // Validate genesis hash against embedded chainspec (detect state_db corruption).

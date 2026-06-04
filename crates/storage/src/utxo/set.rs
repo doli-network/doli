@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::sync::Arc;
 
 use crypto::Hash;
@@ -11,37 +10,30 @@ use super::in_memory::InMemoryUtxoStore;
 use super::types::DEFAULT_REWARD_MATURITY;
 use super::types::{Outpoint, UtxoEntry};
 use crate::state_db::StateDb;
-use crate::utxo_rocks::RocksDbUtxoStore;
 use crate::StorageError;
 
 // ============================================================================
 // UtxoSet — enum dispatch between backends
 // ============================================================================
 
-/// UTXO set with pluggable backend (in-memory or RocksDB).
+/// UTXO set with pluggable backend (in-memory or state_db-backed).
 ///
-/// ## Phase 2 — Read Migration
+/// ## Phase 4 — state_db is sole UTXO store
 ///
-/// The `RocksDb` variant optionally holds an `Arc<StateDb>`. When present,
-/// RPC-facing read methods (balance queries, bond queries, pool listing,
-/// serialize_canonical, etc.) route through `state_db` instead of
-/// `utxo_store`. This is safe because Phase 1 proved bit-identical results.
+/// The `RocksDb` variant wraps `Arc<StateDb>` directly. The former separate
+/// `utxo_store` RocksDB instance (utxo_rocks.rs) was eliminated in Phase 4.
+/// All reads and writes route through state_db's cf_utxo column family.
 ///
-/// **Apply-block-critical reads** (`get`, `contains`, `get_by_pubkey_hash`,
-/// `has_unique_id`) remain on `utxo_store` because `utxo_store` receives
-/// immediate per-transaction writes during `process_transaction_utxos`,
-/// and reads in the same block must see those uncommitted writes.
-/// `state_db` only sees committed (post-batch) state.
+/// **Apply-block writes** go through `BlockBatch` (atomic WriteBatch per block).
+/// **Reads** during apply_block use the batch overlay (pending + committed state_db).
+/// **RPC reads** go directly to state_db.
 ///
-/// **Write methods** are unchanged — dual-write to both `utxo_store` AND
-/// `state_db` (via `BlockBatch`) is preserved. Phase 3 removes the
-/// `utxo_store` writes.
+/// The `InMemory` variant is retained for snap sync deserialization and testing.
 pub enum UtxoSet {
-    /// HashMap-based (original). Used during migration and testing.
+    /// HashMap-based. Used during snap sync deserialization and testing.
     InMemory(InMemoryUtxoStore),
-    /// RocksDB-backed (production). Durable, scales to millions of entries.
-    /// The optional `Arc<StateDb>` is the Phase 2 read-migration target.
-    RocksDb(RocksDbUtxoStore, Option<Arc<StateDb>>),
+    /// state_db-backed (production). state_db is the sole UTXO store since Phase 4.
+    RocksDb(Arc<StateDb>),
 }
 
 impl UtxoSet {
@@ -50,106 +42,95 @@ impl UtxoSet {
         UtxoSet::InMemory(InMemoryUtxoStore::new())
     }
 
-    /// Open a RocksDB-backed UTXO set at the given path.
-    /// state_db is not attached yet — call `set_state_db` after construction.
-    pub fn open_rocksdb(path: &Path) -> Result<Self, StorageError> {
-        Ok(UtxoSet::RocksDb(RocksDbUtxoStore::open(path)?, None))
-    }
-
-    /// Attach a StateDb for Phase 2 read migration.
-    ///
-    /// After this call, RPC-facing read methods on the `RocksDb` variant
-    /// route through `state_db` instead of `utxo_store`.
-    pub fn set_state_db(&mut self, state_db: Arc<StateDb>) {
-        if let UtxoSet::RocksDb(_, ref mut sdb) = self {
-            *sdb = Some(state_db);
-        }
+    /// Create a state_db-backed UTXO set (production path since Phase 4).
+    pub fn from_state_db(state_db: Arc<StateDb>) -> Self {
+        UtxoSet::RocksDb(state_db)
     }
 
     /// Load from legacy bincode file (utxo.bin). Returns InMemory backend.
-    pub fn load(path: &Path) -> Result<Self, StorageError> {
+    pub fn load(path: &std::path::Path) -> Result<Self, StorageError> {
         Ok(UtxoSet::InMemory(InMemoryUtxoStore::load(path)?))
     }
 
     /// Save to legacy bincode file. Only works for InMemory backend.
     /// RocksDB backend is already durable — this is a no-op.
-    pub fn save(&self, path: &Path) -> Result<(), StorageError> {
+    pub fn save(&self, path: &std::path::Path) -> Result<(), StorageError> {
         match self {
             UtxoSet::InMemory(store) => store.save(path),
-            UtxoSet::RocksDb(..) => Ok(()), // RocksDB is always durable
+            UtxoSet::RocksDb(..) => Ok(()), // state_db is always durable
         }
     }
 
-    /// Clear all UTXOs
+    /// Clear all UTXOs.
+    ///
+    /// For InMemory: clears the HashMap.
+    /// For RocksDb: no-op (state_db clearing is handled by `clear_and_write_genesis`).
     pub fn clear(&mut self) {
         match self {
             UtxoSet::InMemory(store) => store.clear(),
-            UtxoSet::RocksDb(store, _) => store.clear(),
+            UtxoSet::RocksDb(_) => {
+                // state_db clearing is handled by StateDb::clear_and_write_genesis.
+                // UtxoSet.clear() on the RocksDb variant is only called during
+                // genesis reset (init.rs), which immediately replaces the UtxoSet
+                // with a fresh InMemory variant anyway.
+            }
         }
     }
 
     /// RocksDB runtime metrics snapshot for Prometheus export.
     /// Returns `None` for in-memory backend (no RocksDB to scrape).
+    /// For RocksDb variant, returns state_db metrics.
     pub fn metrics(&self) -> Option<crate::RocksDbMetrics> {
         match self {
             UtxoSet::InMemory(_) => None,
-            UtxoSet::RocksDb(store, _) => Some(store.metrics()),
+            UtxoSet::RocksDb(sdb) => Some(sdb.metrics()),
         }
     }
 
-    // ==================== Apply-block-critical reads ====================
-    // These stay on utxo_store because utxo_store receives immediate
-    // per-tx writes during apply_block, and same-block reads must see them.
+    // ==================== Read methods ====================
+    // All reads route through state_db for the RocksDb variant.
 
     /// Get a UTXO by outpoint (returns owned value).
-    ///
-    /// Stays on utxo_store: used during apply_block for undo-log capture
-    /// and UTXO validation where per-tx immediate writes must be visible.
     pub fn get(&self, outpoint: &Outpoint) -> Option<UtxoEntry> {
         match self {
             UtxoSet::InMemory(store) => store.get(outpoint),
-            UtxoSet::RocksDb(store, _) => store.get(outpoint),
+            UtxoSet::RocksDb(sdb) => sdb.get_utxo(outpoint),
         }
     }
 
     /// Check if a UTXO exists.
-    ///
-    /// Stays on utxo_store: used during validation where per-tx writes
-    /// must be visible within the same block.
     pub fn contains(&self, outpoint: &Outpoint) -> bool {
         match self {
             UtxoSet::InMemory(store) => store.contains(outpoint),
-            UtxoSet::RocksDb(store, _) => store.contains(outpoint),
+            UtxoSet::RocksDb(sdb) => sdb.get_utxo(outpoint).is_some(),
         }
     }
 
     /// Get all UTXOs for a given pubkey hash (returns owned entries).
-    ///
-    /// Stays on utxo_store: used during apply_block for EpochReward pool
-    /// consumption (`tx_processing.rs:39`) where per-tx writes must be visible.
     pub fn get_by_pubkey_hash(&self, pubkey_hash: &Hash) -> Vec<(Outpoint, UtxoEntry)> {
         match self {
             UtxoSet::InMemory(store) => store.get_by_pubkey_hash(pubkey_hash),
-            UtxoSet::RocksDb(store, _) => store.get_by_pubkey_hash(pubkey_hash),
+            UtxoSet::RocksDb(sdb) => sdb.get_utxos_by_pubkey(pubkey_hash),
         }
     }
 
     /// Check if a unique ID exists in the index.
-    ///
-    /// Stays on utxo_store: used during apply_block for same-block NFT/Pool
-    /// uniqueness checking (`tx_processing.rs:129,136`). utxo_store writes
-    /// unique IDs immediately via add_transaction; state_db only writes them
-    /// via BlockBatch at commit time.
     pub fn has_unique_id(&self, prefix: u8, id: &Hash) -> bool {
         match self {
             Self::InMemory(store) => store.has_unique_id(prefix, id),
-            Self::RocksDb(store, _) => store.has_unique_id(prefix, id),
+            Self::RocksDb(sdb) => sdb.has_unique_id(prefix, id),
         }
     }
 
-    // ==================== Write methods (unchanged) ====================
+    // ==================== Write methods ====================
+    // InMemory: writes to HashMap.
+    // RocksDb: writes to state_db directly (used only for rollback undo operations).
+    // Normal apply_block writes go through BlockBatch, not through UtxoSet.
 
-    /// Add outputs from a transaction, stamping Bond UTXOs with the block slot
+    /// Add outputs from a transaction, stamping Bond UTXOs with the block slot.
+    ///
+    /// For InMemory: adds to HashMap.
+    /// For RocksDb: inserts directly into state_db (used during rollback/undo).
     pub fn add_transaction(
         &mut self,
         tx: &Transaction,
@@ -162,7 +143,27 @@ impl UtxoSet {
                 store.add_transaction(tx, height, is_coinbase, slot);
                 Ok(())
             }
-            UtxoSet::RocksDb(store, _) => store.add_transaction(tx, height, is_coinbase, slot),
+            UtxoSet::RocksDb(sdb) => {
+                // Direct write to state_db — used only in rollback paths.
+                // Normal block processing uses BlockBatch.
+                for (index, output) in tx.outputs.iter().enumerate() {
+                    let outpoint = Outpoint::new(tx.hash(), index as u32);
+                    let mut entry = UtxoEntry {
+                        output: output.clone(),
+                        height,
+                        is_coinbase,
+                        is_epoch_reward: false,
+                    };
+                    // Stamp Bond UTXOs with creation slot
+                    if entry.output.output_type == doli_core::OutputType::Bond
+                        && entry.output.extra_data.len() >= 4
+                    {
+                        entry.output.extra_data[..4].copy_from_slice(&slot.to_le_bytes());
+                    }
+                    sdb.insert_utxo(&outpoint, &entry);
+                }
+                Ok(())
+            }
         }
     }
 
@@ -170,7 +171,17 @@ impl UtxoSet {
     pub fn spend_transaction(&mut self, tx: &Transaction) -> Result<Amount, StorageError> {
         match self {
             UtxoSet::InMemory(store) => store.spend_transaction(tx),
-            UtxoSet::RocksDb(store, _) => store.spend_transaction(tx),
+            UtxoSet::RocksDb(sdb) => {
+                let mut total_spent = 0u64;
+                for input in &tx.inputs {
+                    let outpoint = Outpoint::new(input.prev_tx_hash, input.output_index);
+                    if let Some(entry) = sdb.get_utxo(&outpoint) {
+                        total_spent = total_spent.saturating_add(entry.output.amount);
+                        sdb.remove_utxo(&outpoint);
+                    }
+                }
+                Ok(total_spent)
+            }
         }
     }
 
@@ -181,7 +192,10 @@ impl UtxoSet {
                 store.insert(outpoint, entry);
                 Ok(())
             }
-            UtxoSet::RocksDb(store, _) => store.insert(outpoint, entry),
+            UtxoSet::RocksDb(sdb) => {
+                sdb.insert_utxo(&outpoint, &entry);
+                Ok(())
+            }
         }
     }
 
@@ -189,37 +203,32 @@ impl UtxoSet {
     pub fn remove(&mut self, outpoint: &Outpoint) -> Result<Option<UtxoEntry>, StorageError> {
         match self {
             UtxoSet::InMemory(store) => Ok(store.remove(outpoint)),
-            UtxoSet::RocksDb(store, _) => store.remove(outpoint),
+            UtxoSet::RocksDb(sdb) => {
+                if let Some(entry) = sdb.get_utxo(outpoint) {
+                    sdb.remove_utxo(outpoint);
+                    Ok(Some(entry))
+                } else {
+                    Ok(None)
+                }
+            }
         }
     }
 
-    // ==================== Phase 2 migrated reads ====================
-    // These route through state_db when available (RPC-only methods).
-    // InMemory variant is unchanged. RocksDb variant prefers state_db.
+    // ==================== Query methods ====================
 
     /// Get total value in the UTXO set.
-    ///
-    /// Phase 2: routes through state_db when available.
     pub fn total_value(&self) -> Amount {
         match self {
             UtxoSet::InMemory(store) => store.total_value(),
-            UtxoSet::RocksDb(store, sdb) => match sdb {
-                Some(sdb) => sdb.utxo_total_value(),
-                None => store.total_value(),
-            },
+            UtxoSet::RocksDb(sdb) => sdb.utxo_total_value(),
         }
     }
 
     /// Get number of UTXOs.
-    ///
-    /// Phase 2: routes through state_db when available.
     pub fn len(&self) -> usize {
         match self {
             UtxoSet::InMemory(store) => store.len(),
-            UtxoSet::RocksDb(store, sdb) => match sdb {
-                Some(sdb) => sdb.utxo_len(),
-                None => store.len(),
-            },
+            UtxoSet::RocksDb(sdb) => sdb.utxo_len(),
         }
     }
 
@@ -229,15 +238,10 @@ impl UtxoSet {
     }
 
     /// Total confirmed (spendable) DOLI excluding bonds and reward pool.
-    ///
-    /// Phase 2: routes through state_db when available.
     pub fn total_confirmed(&self, height: u64, coinbase_maturity: u64, pool_pkh: &[u8; 32]) -> u64 {
         match self {
             UtxoSet::InMemory(store) => store.total_confirmed(height, coinbase_maturity, pool_pkh),
-            UtxoSet::RocksDb(store, sdb) => match sdb {
-                Some(sdb) => sdb.total_confirmed(height, coinbase_maturity, pool_pkh),
-                None => store.total_confirmed(height, coinbase_maturity, pool_pkh),
-            },
+            UtxoSet::RocksDb(sdb) => sdb.total_confirmed(height, coinbase_maturity, pool_pkh),
         }
     }
 
@@ -251,21 +255,14 @@ impl UtxoSet {
     }
 
     /// Iterate all UTXOs as (Outpoint, UtxoEntry) pairs.
-    ///
-    /// Phase 2: routes through state_db when available.
     pub fn iter_all(&self) -> Vec<(Outpoint, UtxoEntry)> {
         match self {
             UtxoSet::InMemory(store) => store.iter().map(|(o, e)| (*o, e.clone())).collect(),
-            UtxoSet::RocksDb(store, sdb) => match sdb {
-                Some(sdb) => sdb.iter_utxos(),
-                None => store.iter_entries(),
-            },
+            UtxoSet::RocksDb(sdb) => sdb.iter_utxos(),
         }
     }
 
     /// Count unique addresses (pubkey hashes) in the UTXO set.
-    ///
-    /// Phase 2: routes through state_db when available.
     pub fn address_count(&self) -> u64 {
         match self {
             UtxoSet::InMemory(store) => {
@@ -273,10 +270,7 @@ impl UtxoSet {
                     store.iter().map(|(_, e)| e.output.pubkey_hash).collect();
                 addrs.len() as u64
             }
-            UtxoSet::RocksDb(store, sdb) => match sdb {
-                Some(sdb) => sdb.address_count(),
-                None => store.address_count(),
-            },
+            UtxoSet::RocksDb(sdb) => sdb.address_count(),
         }
     }
 
@@ -289,15 +283,10 @@ impl UtxoSet {
     }
 
     /// Get all active Pool UTXOs.
-    ///
-    /// Phase 2: routes through state_db when available.
     pub fn get_all_pools(&self) -> Vec<(Outpoint, UtxoEntry)> {
         match self {
             Self::InMemory(store) => store.get_all_pools(),
-            Self::RocksDb(store, sdb) => match sdb {
-                Some(sdb) => sdb.get_all_pools(),
-                None => store.get_all_pools(),
-            },
+            Self::RocksDb(sdb) => sdb.get_all_pools(),
         }
     }
 
@@ -313,7 +302,7 @@ impl UtxoSet {
     ///
     /// Read-only. Never mutates state. Spec: `specs/defi-subsystem-architecture.md`
     /// Acceptance Criteria block (AC-6) and `specs/defi-foundations-economics.md`
-    /// §9 Decision 4 (ACCEPTED 2026-05-29).
+    /// S9 Decision 4 (ACCEPTED 2026-05-29).
     pub fn defi_health_inputs(&self) -> (u64, Option<(Hash, u64)>) {
         use doli_core::OutputType;
 
@@ -362,8 +351,6 @@ impl UtxoSet {
     }
 
     /// Get spendable balance for a pubkey hash at a given height with custom maturity.
-    ///
-    /// Phase 2: routes through state_db when available.
     pub fn get_balance_with_maturity(
         &self,
         pubkey_hash: &Hash,
@@ -374,10 +361,7 @@ impl UtxoSet {
             UtxoSet::InMemory(store) => {
                 store.get_balance_with_maturity(pubkey_hash, height, maturity)
             }
-            UtxoSet::RocksDb(store, sdb) => match sdb {
-                Some(sdb) => sdb.get_balance_with_maturity(pubkey_hash, height, maturity),
-                None => store.get_balance_with_maturity(pubkey_hash, height, maturity),
-            },
+            UtxoSet::RocksDb(sdb) => sdb.get_balance_with_maturity(pubkey_hash, height, maturity),
         }
     }
 
@@ -388,8 +372,6 @@ impl UtxoSet {
     }
 
     /// Get immature balance for a pubkey hash with custom maturity.
-    ///
-    /// Phase 2: routes through state_db when available.
     pub fn get_immature_balance_with_maturity(
         &self,
         pubkey_hash: &Hash,
@@ -400,49 +382,33 @@ impl UtxoSet {
             UtxoSet::InMemory(store) => {
                 store.get_immature_balance_with_maturity(pubkey_hash, height, maturity)
             }
-            UtxoSet::RocksDb(store, sdb) => match sdb {
-                Some(sdb) => sdb.get_immature_balance_with_maturity(pubkey_hash, height, maturity),
-                None => store.get_immature_balance_with_maturity(pubkey_hash, height, maturity),
-            },
+            UtxoSet::RocksDb(sdb) => {
+                sdb.get_immature_balance_with_maturity(pubkey_hash, height, maturity)
+            }
         }
     }
 
     /// Get bonded balance (sum of Bond UTXOs for this address).
-    ///
-    /// Phase 2: routes through state_db when available.
     pub fn get_bonded_balance(&self, pubkey_hash: &Hash) -> Amount {
         match self {
             UtxoSet::InMemory(store) => store.get_bonded_balance(pubkey_hash),
-            UtxoSet::RocksDb(store, sdb) => match sdb {
-                Some(sdb) => sdb.get_bonded_balance(pubkey_hash),
-                None => store.get_bonded_balance(pubkey_hash),
-            },
+            UtxoSet::RocksDb(sdb) => sdb.get_bonded_balance(pubkey_hash),
         }
     }
 
     /// Count bond units for this address (total bond amount / bond_unit).
-    ///
-    /// Phase 2: routes through state_db when available.
     pub fn count_bonds(&self, pubkey_hash: &Hash, bond_unit: u64) -> u32 {
         match self {
             UtxoSet::InMemory(store) => store.count_bonds(pubkey_hash, bond_unit),
-            UtxoSet::RocksDb(store, sdb) => match sdb {
-                Some(sdb) => sdb.count_bonds(pubkey_hash, bond_unit),
-                None => store.count_bonds(pubkey_hash, bond_unit),
-            },
+            UtxoSet::RocksDb(sdb) => sdb.count_bonds(pubkey_hash, bond_unit),
         }
     }
 
     /// Get bond details: (outpoint, creation_slot, amount) for each Bond UTXO, FIFO-ordered.
-    ///
-    /// Phase 2: routes through state_db when available.
     pub fn get_bond_entries(&self, pubkey_hash: &Hash) -> Vec<(Outpoint, u32, Amount)> {
         match self {
             UtxoSet::InMemory(store) => store.get_bond_entries(pubkey_hash),
-            UtxoSet::RocksDb(store, sdb) => match sdb {
-                Some(sdb) => sdb.get_bond_entries(pubkey_hash),
-                None => store.get_bond_entries(pubkey_hash),
-            },
+            UtxoSet::RocksDb(sdb) => sdb.get_bond_entries(pubkey_hash),
         }
     }
 
@@ -451,15 +417,11 @@ impl UtxoSet {
     /// Both backends produce identical output for the same UTXO set:
     /// `[8-byte LE count] [sorted_key1][value1] [sorted_key2][value2] ...`
     ///
-    /// Phase 2: routes through state_db when available.
     /// Consensus-critical — Phase 1 equivalence tests proved bit-identity.
     pub fn serialize_canonical(&self) -> Vec<u8> {
         match self {
             UtxoSet::InMemory(store) => store.serialize_canonical(),
-            UtxoSet::RocksDb(store, sdb) => match sdb {
-                Some(sdb) => sdb.serialize_canonical_utxo(),
-                None => store.serialize_canonical(),
-            },
+            UtxoSet::RocksDb(sdb) => sdb.serialize_canonical_utxo(),
         }
     }
 
@@ -467,8 +429,6 @@ impl UtxoSet {
     ///
     /// Always produces an InMemory backend (sufficient for state root verification).
     /// Format: `[8-byte LE count] [36-byte outpoint][entry_bytes] ...`
-    ///
-    /// UNCHANGED in Phase 2: snap sync deserialization stays on InMemory.
     pub fn deserialize_canonical(bytes: &[u8]) -> Result<Self, StorageError> {
         if bytes.len() < 8 {
             return Err(StorageError::Serialization(format!(
@@ -506,7 +466,7 @@ impl UtxoSet {
                 )));
             }
             // Peek at extra_data length to determine total entry size
-            // 0xFFFF marker → u32 length follows (large NFTs >64KB)
+            // 0xFFFF marker -> u32 length follows (large NFTs >64KB)
             let raw_len = u16::from_le_bytes(bytes[pos + 59..pos + 61].try_into().unwrap());
             let (extra_len, header_overhead) = if raw_len == 0xFFFF {
                 if pos + 65 > bytes.len() {
@@ -544,8 +504,6 @@ impl UtxoSet {
 
     /// Find an NFT UTXO by its token ID.
     /// Returns (outpoint, utxo_entry) if found in the current UTXO set.
-    ///
-    /// Phase 2: routes through state_db when available.
     pub fn find_nft_by_token_id(&self, token_id: &Hash) -> Option<(Outpoint, UtxoEntry)> {
         use super::types::UID_PREFIX_NFT;
         match self {
@@ -565,21 +523,12 @@ impl UtxoSet {
                 }
                 None
             }
-            Self::RocksDb(store, sdb) => match sdb {
-                Some(sdb) => {
-                    // Phase 2: check state_db's unique_id index, then scan state_db
-                    if !sdb.has_unique_id(UID_PREFIX_NFT, token_id) {
-                        return None;
-                    }
-                    sdb.find_nft_by_token_id(token_id)
+            Self::RocksDb(sdb) => {
+                if !sdb.has_unique_id(UID_PREFIX_NFT, token_id) {
+                    return None;
                 }
-                None => {
-                    if !store.has_unique_id(UID_PREFIX_NFT, token_id) {
-                        return None;
-                    }
-                    store.find_nft_by_token_id(token_id)
-                }
-            },
+                sdb.find_nft_by_token_id(token_id)
+            }
         }
     }
 
@@ -594,7 +543,7 @@ impl UtxoProvider for UtxoSet {
         let outpoint = Outpoint::new(*tx_hash, output_index);
         self.get(&outpoint).map(|entry| UtxoInfo {
             output: entry.output,
-            pubkey: None, // pay-to-pubkey-hash — signature verification uses the input's pubkey
+            pubkey: None, // pay-to-pubkey-hash -- signature verification uses the input's pubkey
             spent: false, // present in UTXO set = unspent (spent entries are removed)
         })
     }
