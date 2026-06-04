@@ -165,7 +165,15 @@ impl NetworkParams {
                 // pre-pin. Once the chain crosses this height it is
                 // IMMUTABLE — never move it forward (INC-I-054). Spec:
                 // specs/defi-foundations-economics.md §0.
-                amm_activation_height: 367_660,
+                //
+                // Re-pin history:
+                //   u64::MAX → 367_660 (2026-06-03): initial pin; binary
+                //     was never deployed to the fleet before the height
+                //     was approached. No honored crossed height moved.
+                //   367_660 → 375_640 (2026-06-04): fresh pin with a new
+                //     deployable lead time. Tip at pin time: 366_960,
+                //     lead time: 8_680 blocks (~24.1h at 10s slots).
+                amm_activation_height: 375_640,
 
                 // Phase 2.1 Oracle (structural-anchored): u64::MAX = frozen.
                 // PriceAttestation (TxType=16) is rejected at validation and
@@ -176,8 +184,8 @@ impl NetworkParams {
                 oracle_activation_height: u64::MAX,
 
                 // Large blocks (>1 MB) → ~300 TPS (INC-I-091). Mainnet
-                // activation pinned 2026-06-03 at h=367_660. Tip at pin
-                // time: 359_042. Lead time: 8_618 blocks (~23.9h).
+                // activation pinned 2026-06-04 at h=375_640. Tip at pin
+                // time: 366_960. Lead time: 8_680 blocks (~24.1h).
                 //
                 // Re-pin history:
                 //   308_980 → u64::MAX (2026-05-29): gossip-cap binary
@@ -186,27 +194,42 @@ impl NetworkParams {
                 //   violation (no honored crossed height moved).
                 //   u64::MAX → 367_660 (2026-06-03): co-activates with
                 //   AMM triplet for a single coordinated upgrade event.
+                //   367_660 → 375_640 (2026-06-04): binary at 367_660
+                //   was never deployed; re-pinned with fresh deployable
+                //   lead time. No honored crossed height moved.
                 //
                 // Builder policy (block content), not consensus rules.
                 // Once crossed IMMUTABLE (INC-I-054).
-                large_block_activation_height: 367_660,
+                large_block_activation_height: 375_640,
 
                 // INC-I-092 DeFi spend-path fixes (RC-A pool-input auth, RC-B
-                // pool_create funding). Mainnet activation pinned 2026-06-03
-                // at h=367_660 — co-activated atomically with
+                // pool_create funding). Mainnet activation pinned 2026-06-04
+                // at h=375_640 — co-activated atomically with
                 // amm_activation_height so AMM goes live already-correct
-                // (no separate consensus event). Tip at pin time: 359_042,
-                // lead time 8_618 blocks (~23.9h). IMMUTABLE once crossed
+                // (no separate consensus event). Tip at pin time: 366_960,
+                // lead time 8_680 blocks (~24.1h). IMMUTABLE once crossed
                 // (INC-I-054).
-                inc_i_092_activation_height: 367_660,
+                //
+                // Re-pin history:
+                //   u64::MAX → 367_660 (2026-06-03): initial co-pin with
+                //     AMM triplet; binary never deployed.
+                //   367_660 → 375_640 (2026-06-04): fresh deployable
+                //     lead time. No honored crossed height moved.
+                inc_i_092_activation_height: 375_640,
                 // INC-I-096 pool-aware AMM value-conservation. Mainnet
-                // activation pinned 2026-06-03 at h=367_660 — equal to
+                // activation pinned 2026-06-04 at h=375_640 — equal to
                 // amm_activation_height (INV-DEPLOY-002 satisfied:
                 // inc_i_096 ≤ amm). Pool-aware conservation engages the
                 // same block AMM tx types become valid. Tip at pin time:
-                // 359_042, lead time 8_618 blocks (~23.9h). IMMUTABLE
+                // 366_960, lead time 8_680 blocks (~24.1h). IMMUTABLE
                 // once crossed (INC-I-054).
-                inc_i_096_activation_height: 367_660,
+                //
+                // Re-pin history:
+                //   u64::MAX → 367_660 (2026-06-03): initial co-pin with
+                //     AMM triplet; binary never deployed.
+                //   367_660 → 375_640 (2026-06-04): fresh deployable
+                //     lead time. No honored crossed height moved.
+                inc_i_096_activation_height: 375_640,
 
                 // Gossip mesh: universal config for all network sizes.
                 // mesh_n=12 keeps all peers in eager-push for networks ≤24 (mesh_n_high),
