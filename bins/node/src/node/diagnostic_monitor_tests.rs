@@ -60,6 +60,17 @@ mod tests {
     }
 
     /// Helper: create a RecoveryClassifyCall event at a given timestamp.
+    ///
+    /// `action_returned` is set to the Debug-format of
+    /// `RecoveryAction::ShallowRollback { depth: 1 }` (matching the
+    /// `format!("{:?}", action)` call in `periodic.rs` EMIT-007). This
+    /// value MUST be a "real" action (not "None") because rule (h)
+    /// signal_d in `classifier.rs` (INC-I-091 D1) filters out
+    /// `"None"`-action events when counting `recovery_attempts` — they
+    /// represent healthy ~1/sec no-op classifier polls, not chain-break
+    /// churn. Previously the fixture used `"None"` here, so P1/P2 never
+    /// tripped signal_d and the tests silently failed (recovery_attempts
+    /// stayed at 0 instead of crossing the >20 threshold).
     fn make_recovery_event(
         ts_ms: u64,
         height: u64,
@@ -83,7 +94,7 @@ mod tests {
                 last_rollback_local_height: None,
                 in_grace_period: false,
                 last_finality_height: Some(height.saturating_sub(10)),
-                action_returned: Some("None".to_string()),
+                action_returned: Some("ShallowRollback { depth: 1 }".to_string()),
                 rule_matched: None,
             },
         }
