@@ -1,6 +1,6 @@
 //! Tests for StateDb
 
-use super::types::{CF_META, META_CHAIN_STATE};
+use super::types::{CF_META, CF_UTXO, META_CHAIN_STATE};
 use super::*;
 use crypto::hash::hash as crypto_hash;
 use crypto::KeyPair;
@@ -387,6 +387,90 @@ fn test_serialize_canonical_utxo_deterministic() {
     assert_eq!(
         bytes1, bytes2,
         "Canonical serialization must be deterministic"
+    );
+}
+
+// OUTPUT CONTRACT: fn test_serialize_canonical_round_trip_with_corrupted_entry
+// O1: serialize_canonical_utxo() produces bytes whose header LE-count equals the
+//     number of entries actually present in the body (header/body coherence)
+// O2: UtxoSet::deserialize_canonical(serialize_canonical_utxo()) parses without
+//     STOR028/STOR030/STOR031 truncation errors, for any subset of CF_UTXO that
+//     contains undecodable bincode (RocksDB iter failure, value corruption,
+//     schema drift) — silently-dropped entries MUST also be dropped from header
+// PATHS: happy (all entries valid), corrupted (one value corrupted)
+// MATRIX: O1 × O2 across (happy, corrupted) — four cells, four assertions
+//
+// Regression for STOR028 snap-sync truncation:
+// Mainnet seeds emit canonical bytes whose header advertised N entries but body
+// emitted ≤N because serialize_canonical_utxo counted via the live utxo_len()
+// atomic while the iterator silently dropped failed entries via `.flatten()` +
+// `if let Ok(entry) = bincode::deserialize`. Every external node hit STOR028
+// at snap and fell back to header-first sync from genesis.
+#[test]
+fn test_serialize_canonical_round_trip_with_corrupted_entry() {
+    use crate::utxo::UtxoSet;
+
+    // ----- happy path -----
+    {
+        let (db, _dir) = create_test_db();
+        let pk_hash = crypto_hash(b"alice");
+        for i in 0..5u64 {
+            let tx = test_coinbase_tx(100_000 * (i + 1), pk_hash);
+            db.add_transaction(&tx, i, true, 0);
+        }
+
+        let bytes = db.serialize_canonical_utxo();
+        let header_count = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
+        assert_eq!(
+            header_count, 5,
+            "happy O1: header count must equal body entry count"
+        );
+        UtxoSet::deserialize_canonical(&bytes)
+            .expect("happy O2: round-trip must parse without truncation error");
+    }
+
+    // ----- corrupted-value path -----
+    let (db, _dir) = create_test_db();
+    let pk_hash = crypto_hash(b"alice");
+    for i in 0..5u64 {
+        let tx = test_coinbase_tx(100_000 * (i + 1), pk_hash);
+        db.add_transaction(&tx, i, true, 0);
+    }
+    assert_eq!(db.utxo_len(), 5);
+
+    // Reach into RocksDB and overwrite one CF_UTXO value with bytes that
+    // bincode::deserialize::<UtxoEntry> will reject. This simulates the
+    // production failure mode: a value present in CF_UTXO whose decode fails
+    // (RocksDB read transient failure, schema drift, or actual byte corruption).
+    let cf = db.db.cf_handle(CF_UTXO).unwrap();
+    let first_key = db
+        .db
+        .iterator_cf(cf, rocksdb::IteratorMode::Start)
+        .next()
+        .expect("at least one UTXO present")
+        .expect("iter ok")
+        .0
+        .to_vec();
+    db.db
+        .put_cf(cf, &first_key, [0xFFu8; 4])
+        .expect("overwrite with garbage");
+
+    let bytes = db.serialize_canonical_utxo();
+    let header_count = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
+
+    // Pre-fix: header=5 (utxo_len atomic), body=4 (one entry silently dropped).
+    // Post-fix: header=4, body=4. Either way header MUST match body.
+    assert_eq!(
+        header_count, 4,
+        "corrupted O1: header count must reflect body count, not the live atomic. \
+         (Pre-fix observes header=5; body emitted only 4. STOR028 follows.)"
+    );
+
+    // The wire-level invariant: the serializer's output MUST round-trip through
+    // the snap-sync deserializer without truncation errors, even when CF_UTXO
+    // contains undecodable values.
+    UtxoSet::deserialize_canonical(&bytes).expect(
+        "corrupted O2: round-trip must parse — header/body coherence is the snap-sync contract",
     );
 }
 
