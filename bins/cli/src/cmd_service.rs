@@ -282,8 +282,6 @@ fn build_exec_args(
     if let Some(ref key) = effective_key {
         // Producer mode: wallet found
         args.push("--producer".to_string());
-        args.push("--yes".to_string());
-        args.push("--force-start".to_string());
         args.push("--producer-key".to_string());
         args.push(key.clone());
     }
