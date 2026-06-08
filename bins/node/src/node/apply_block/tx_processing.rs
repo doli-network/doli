@@ -1,13 +1,12 @@
 use super::*;
 
 impl Node {
-    /// Process UTXO changes for a single transaction via the atomic BlockBatch.
+    /// Process UTXO changes for a single transaction.
     ///
-    /// Phase 3: all UTXO mutations flow through `batch` (state_db WriteBatch).
-    /// `utxo_store` receives NO writes. Reads use the batch overlay which
-    /// checks pending state first, then falls through to committed state_db.
-    ///
-    /// Returns the transaction hash (needed for undo log tracking of created UTXOs).
+    /// Dual-write: mutations are applied to both the durable `batch`
+    /// (state_db WriteBatch, atomic at commit) and the in-memory `utxo` cache
+    /// (live during apply_block so downstream readers — rewards.rs,
+    /// validation_checks.rs — see post-tx state). Both targets must succeed.
     #[allow(clippy::too_many_arguments)]
     pub fn process_transaction_utxos(
         &self,
@@ -19,6 +18,7 @@ impl Node {
         undo_spent_utxos: &mut Vec<(storage::Outpoint, storage::UtxoEntry)>,
         undo_created_utxos: &mut Vec<storage::Outpoint>,
         mode: ValidationMode,
+        utxo: &mut storage::UtxoSet,
     ) -> Result<()> {
         let is_reward_tx = tx_index == 0 && tx.is_reward_minting();
 
@@ -152,7 +152,7 @@ impl Node {
         // discarded failures, allowing outputs to be created from nothing.
         // Replay mode: tolerate failures for historical blocks (e.g., E362).
         //
-        // Phase 3: spend via batch only (no utxo_store write).
+        // Spend via batch (durable) + in-memory cache (INC-I-112).
         if !is_reward_tx {
             match batch.spend_transaction_utxos(tx) {
                 Ok(_) => {}
@@ -171,10 +171,12 @@ impl Node {
                     }
                 }
             }
+            utxo.spend_transaction(tx)?;
         }
-        // Phase 3: add via batch only (no utxo_store write).
+        // Add via batch (durable) + in-memory cache (INC-I-112).
         // add_transaction_utxos also inserts unique IDs for NFT/Pool/FungibleAsset.
         batch.add_transaction_utxos(tx, height, is_reward_tx, block_slot);
+        utxo.add_transaction(tx, height, is_reward_tx, block_slot)?;
 
         // Undo log: track created UTXOs
         let tx_hash = tx.hash();
