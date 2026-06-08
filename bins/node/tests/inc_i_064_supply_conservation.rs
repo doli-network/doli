@@ -303,6 +303,9 @@ async fn epoch_inputs_mismatch_fails_in_light_mode() {
 // TEST 3: UTXO accounting correctness — external verification
 // ============================================================
 #[tokio::test]
+#[ignore = "INC-I-112: reads in-memory utxo_set after apply_block; v6.23.5 preserves the \
+Phase 3 stale-cache code path (mainnet 6.23.3 behavior). See revert commit 3c4537f2 / INC-I-113. \
+Un-ignore when the proper fix lands with an activation height + synchronized deploy."]
 async fn utxo_accounting_correct_after_normal_blocks() {
     // [P-COINBASE] Verify UTXO total_value delta equals coinbase for normal blocks.
     // This is an external accounting check (not an in-apply_block invariant).

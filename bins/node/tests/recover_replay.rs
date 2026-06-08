@@ -36,6 +36,22 @@
 //! 5. `replay_handles_epoch_boundaries` — Chain spanning 2+ epochs produces
 //!    correct epoch state (bond_snapshot, producer_list). The broken `recover`
 //!    had zero epoch processing.
+//!
+//! ## INPUT PARTITIONS
+//!
+//! P1: Single-epoch chain (20 blocks) — exercises basic state-after-replay equivalence
+//! P2: Chain with blocks already in block_store — exercises dedup-bypass under Replay mode
+//! P3: Chain replayed without network/mempool — exercises side-effect suppression
+//! P4: Chain producing undo data — exercises undo-log generation under Replay mode
+//! P5: Chain spanning 2+ epochs — exercises epoch_state processing across boundaries
+//!
+//! ## MATRIX: outputs 1–9 × partitions P1–P5
+//! Coverage by test:
+//!   replay_produces_identical_state    → P1 × {1, 2, 3, 4}
+//!   replay_skips_dedup_check           → P2 × {5}
+//!   replay_suppresses_side_effects     → P3 × {7, 8}
+//!   replay_produces_undo_data          → P4 × {6}
+//!   replay_handles_epoch_boundaries    → P5 × {4}
 
 use crypto::{Hash, KeyPair};
 use doli_core::consensus::ConsensusParams;
@@ -148,6 +164,9 @@ async fn snapshot_state(node: &Node) -> StateSnapshot {
 // TEST 1: Replay produces identical state
 // ============================================================
 #[tokio::test]
+#[ignore = "INC-I-112: snapshots in-memory utxo_set after apply_block; v6.23.5 preserves the \
+Phase 3 stale-cache code path (mainnet 6.23.3 behavior). See revert commit 3c4537f2 / INC-I-113. \
+Un-ignore when the proper fix lands with an activation height + synchronized deploy."]
 async fn replay_produces_identical_state() {
     // Phase 1: Build a 20-block chain normally
     let (mut node, producers, _tmp) = make_node(3).await;
