@@ -189,15 +189,14 @@ impl Node {
         let mut undo_spent_utxos: Vec<(storage::Outpoint, storage::UtxoEntry)> = Vec::new();
         let mut undo_created_utxos: Vec<storage::Outpoint> = Vec::new();
 
-        // Phase 3 + INC-I-112 fix: apply transactions via BlockBatch AND in-memory UtxoSet.
-        // batch = durable write path (state_db WriteBatch). utxo = in-memory cache
-        // that downstream readers (rewards.rs, validation_checks.rs) depend on.
+        // Phase 3: apply transactions via BlockBatch only (no utxo_store writes).
+        // All UTXO reads use the batch overlay (pending + committed state_db).
         {
-            let mut utxo = self.utxo_set.write().await;
+            let utxo = self.utxo_set.read().await;
             let mut producers = self.producer_set.write().await;
 
             for (tx_index, tx) in block.transactions.iter().enumerate() {
-                // Process UTXO changes via batch + in-memory cache
+                // Process UTXO changes via batch (Phase 3: sole write path)
                 self.process_transaction_utxos(
                     tx,
                     tx_index,
@@ -207,7 +206,6 @@ impl Node {
                     &mut undo_spent_utxos,
                     &mut undo_created_utxos,
                     mode,
-                    &mut utxo,
                 )?;
 
                 // Process producer-related effects (registrations, exits, bonds, etc.)
