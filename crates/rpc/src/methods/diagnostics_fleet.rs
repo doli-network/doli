@@ -82,6 +82,13 @@ impl RpcContext {
             return Err(RpcError::invalid_params("peer_rpcs must not be empty"));
         }
 
+        // ISSUE-174 NEW-2: SSRF defense-in-depth. Reject any peer URL pointing at a
+        // private/loopback address on mainnet — a malicious admin caller could
+        // otherwise fan out internal-network probes through this method.
+        for url in &peer_rpcs {
+            super::backfill::validate_backfill_url(url, &self.network)?;
+        }
+
         let max_peers = fleet_max_peers();
         if peer_rpcs.len() > max_peers {
             return Err(RpcError::invalid_params(format!(

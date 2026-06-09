@@ -39,6 +39,10 @@ sha2 = { workspace = true }
 flate2 = { workspace = true }
 tar = { workspace = true }
 
+# Unix syscall flags (O_NOFOLLOW for staged-binary safe open — ISSUE-174 #7)
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

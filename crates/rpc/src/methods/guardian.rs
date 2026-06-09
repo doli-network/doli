@@ -417,6 +417,11 @@ impl RpcContext {
             .ok_or_else(|| RpcError::invalid_params("Missing required parameter: rpc_url"))?
             .to_string();
 
+        // ISSUE-174 NEW-1: SSRF defense-in-depth. The admin auth gate is the primary
+        // control; this rejects private/loopback targets on mainnet so a compromised
+        // admin token cannot turn the node into an internal-network probe.
+        super::backfill::validate_backfill_url(&peer_url, &self.network)?;
+
         let archive_dir = self.archive_dir.clone().ok_or_else(|| {
             RpcError::internal_error(
                 "archive_dir not configured — start node with --archive-to to enable".to_string(),

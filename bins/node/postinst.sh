@@ -36,12 +36,15 @@ POLKIT
 fi
 
 # 5. Sudoers rule for passwordless binary updates by doli user
+# ISSUE-174 #7: staging path is /var/lib/doli/update.bin (doli:doli, 2770)
+# instead of /tmp/doli-update-binary, which closed the world-writable TOCTOU
+# attack against the predictable /tmp path.
 cat > /etc/sudoers.d/doli-update <<'SUDOERS'
 # Allow doli user to update doli binaries without password
 doli ALL=(root) NOPASSWD: /usr/bin/rm -f /usr/bin/doli-node
 doli ALL=(root) NOPASSWD: /usr/bin/rm -f /usr/bin/doli
-doli ALL=(root) NOPASSWD: /usr/bin/cp /tmp/doli-update-binary /usr/bin/doli-node
-doli ALL=(root) NOPASSWD: /usr/bin/cp /tmp/doli-update-binary /usr/bin/doli
+doli ALL=(root) NOPASSWD: /usr/bin/cp /var/lib/doli/update.bin /usr/bin/doli-node
+doli ALL=(root) NOPASSWD: /usr/bin/cp /var/lib/doli/update.bin /usr/bin/doli
 SUDOERS
 chmod 440 /etc/sudoers.d/doli-update
 

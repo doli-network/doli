@@ -31,7 +31,7 @@ fn is_private_ip(ip: &IpAddr) -> bool {
 /// Primary defense is the admin auth gate; this is defense-in-depth.
 /// On mainnet: blocks private/loopback IPs. On testnet/devnet: allows them
 /// (operators need localhost backfill on single-server setups).
-fn validate_backfill_url(raw_url: &str, network: &str) -> Result<(), RpcError> {
+pub(super) fn validate_backfill_url(raw_url: &str, network: &str) -> Result<(), RpcError> {
     // Must start with http:// or https://
     let after_scheme = if let Some(rest) = raw_url.strip_prefix("http://") {
         rest

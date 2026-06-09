@@ -286,11 +286,38 @@ impl Node {
             .ok()
             .or_else(|| self.config.rpc.admin_token.clone());
 
+        // ISSUE-174 #1: trusted reverse-proxy IPs. Env var overrides config.
+        // Format: comma-separated list of IPs ("127.0.0.1,10.0.0.5").
+        let trusted_proxy_strs: Vec<String> = std::env::var("DOLI_RPC_TRUSTED_PROXIES")
+            .ok()
+            .map(|s| s.split(',').map(|p| p.trim().to_string()).collect())
+            .unwrap_or_else(|| self.config.rpc.trusted_proxies.clone());
+
+        let trusted_proxies: Vec<std::net::IpAddr> = trusted_proxy_strs
+            .iter()
+            .filter(|s| !s.is_empty())
+            .filter_map(|s| match s.parse() {
+                Ok(ip) => Some(ip),
+                Err(e) => {
+                    tracing::warn!("Ignoring invalid trusted_proxies entry {:?}: {}", s, e);
+                    None
+                }
+            })
+            .collect();
+
+        if !trusted_proxies.is_empty() {
+            tracing::info!(
+                "RPC: header-based client-IP resolution enabled for {} trusted proxies",
+                trusted_proxies.len()
+            );
+        }
+
         let rpc_config = RpcServerConfig {
             listen_addr,
             enable_cors: !self.config.rpc.allowed_origins.is_empty(),
             allowed_origins: self.config.rpc.allowed_origins.clone(),
             admin_token,
+            trusted_proxies,
         };
 
         // Create sync status callback

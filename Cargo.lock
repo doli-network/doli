@@ -7749,6 +7749,7 @@ dependencies = [
  "doli-core",
  "flate2",
  "hex",
+ "libc",
  "reqwest 0.11.27",
  "serde",
  "serde_json",

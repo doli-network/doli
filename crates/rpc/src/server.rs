@@ -43,6 +43,10 @@ pub const ADMIN_METHODS: &[&str] = &[
     "getStateSnapshot",
     "getStateRootDebug",
     "verifyChainIntegrity",
+    // ISSUE-174 NEW-1/NEW-2: outbound HTTP fetchers — unauthenticated SSRF if open.
+    // Both accept caller-supplied URLs and make HTTP POST requests on the node's behalf.
+    "repairArchiveFromPeer",
+    "getFleetForkDiagnostic",
 ];
 
 /// RPC server configuration
@@ -56,6 +60,11 @@ pub struct RpcServerConfig {
     pub allowed_origins: Vec<String>,
     /// Bearer token for admin methods. None = admin methods disabled when RPC is network-accessible.
     pub admin_token: Option<String>,
+    /// ISSUE-174 #1: IPs of trusted reverse proxies (e.g., Nginx). When the immediate
+    /// TCP peer is one of these, `X-Real-IP` / `X-Forwarded-For` is parsed to obtain
+    /// the actual client IP for the admin-network trust check. Empty (default) =
+    /// header parsing disabled, peer IP is used directly.
+    pub trusted_proxies: Vec<std::net::IpAddr>,
 }
 
 impl Default for RpcServerConfig {
@@ -69,6 +78,7 @@ impl Default for RpcServerConfig {
             enable_cors: false,
             allowed_origins: vec![],
             admin_token: None,
+            trusted_proxies: vec![],
         }
     }
 }
@@ -96,10 +106,11 @@ impl RpcServer {
 
     /// Run the server
     pub async fn run(self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // Build shared state: context + admin token
+        // Build shared state: context + admin token + trusted proxy list
         let shared = Arc::new(RpcSharedState {
             context: self.context.clone(),
             admin_token: self.config.admin_token.clone(),
+            trusted_proxies: self.config.trusted_proxies.clone(),
         });
 
         let rpc_router = Router::new()
@@ -162,6 +173,7 @@ impl RpcServer {
 struct RpcSharedState {
     context: Arc<RpcContext>,
     admin_token: Option<String>,
+    trusted_proxies: Vec<std::net::IpAddr>,
 }
 
 /// Check whether a request is authorized for an admin method.
@@ -170,6 +182,11 @@ struct RpcSharedState {
 /// - Request from loopback or private IP: admin methods allowed without token
 /// - Public IP + no token configured: admin methods DENIED
 /// - Public IP + token configured: require `Authorization: Bearer <token>`
+///
+/// ISSUE-174 #1: When the immediate TCP peer is in `trusted_proxies`, the
+/// `X-Real-IP` / `X-Forwarded-For` headers are resolved to the real client IP
+/// before the trust-network check. This closes the historical bypass where
+/// Nginx (or any reverse proxy) made every request appear as 127.0.0.1.
 fn check_admin_auth(
     shared: &RpcSharedState,
     headers: &HeaderMap,
@@ -180,10 +197,16 @@ fn check_admin_auth(
         return Ok(());
     }
 
+    // Resolve the effective client IP. If the TCP peer is one of our configured
+    // trusted reverse proxies, the proxy MUST set X-Real-IP / X-Forwarded-For
+    // and we use that. Otherwise headers are ignored — an attacker cannot forge
+    // their way to a trusted IP by setting their own X-Forwarded-For.
+    let effective_ip = resolve_client_ip(client_addr.ip(), headers, &shared.trusted_proxies);
+
     // Trusted networks: loopback (127.x) and private (RFC 1918).
     // All operator servers communicate over private IPs — these are trusted.
     // Public IPs require token auth to prevent external abuse.
-    if is_trusted_network(client_addr.ip()) {
+    if is_trusted_network(effective_ip) {
         return Ok(());
     }
 
@@ -235,6 +258,121 @@ fn is_trusted_network(ip: std::net::IpAddr) -> bool {
     match ip {
         std::net::IpAddr::V4(v4) => v4.is_loopback() || v4.is_private(),
         std::net::IpAddr::V6(v6) => v6.is_loopback(),
+    }
+}
+
+/// Resolve the effective client IP for trust-check purposes.
+///
+/// If `peer_ip` is in `trusted_proxies`, look at `X-Real-IP` first (single IP),
+/// then the LEFTMOST entry of `X-Forwarded-For` (canonical original-client position).
+/// Returns `peer_ip` unchanged when no proxy is trusted or headers are absent/invalid —
+/// an attacker reaching the node directly cannot forge a "trusted" client IP.
+fn resolve_client_ip(
+    peer_ip: std::net::IpAddr,
+    headers: &HeaderMap,
+    trusted_proxies: &[std::net::IpAddr],
+) -> std::net::IpAddr {
+    if trusted_proxies.is_empty() || !trusted_proxies.contains(&peer_ip) {
+        return peer_ip;
+    }
+
+    if let Some(real_ip) = headers
+        .get("x-real-ip")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.trim().parse::<std::net::IpAddr>().ok())
+    {
+        return real_ip;
+    }
+
+    if let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
+        if let Some(first) = xff.split(',').next() {
+            if let Ok(ip) = first.trim().parse::<std::net::IpAddr>() {
+                return ip;
+            }
+        }
+    }
+
+    peer_ip
+}
+
+#[cfg(test)]
+mod proxy_tests {
+    use super::*;
+    use axum::http::HeaderValue;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    fn ip(s: &str) -> IpAddr {
+        s.parse().unwrap()
+    }
+
+    fn headers_xff(val: &'static str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert("x-forwarded-for", HeaderValue::from_static(val));
+        h
+    }
+    fn headers_xrip(val: &'static str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert("x-real-ip", HeaderValue::from_static(val));
+        h
+    }
+
+    #[test]
+    fn no_trusted_proxies_returns_peer_ip_even_with_forged_header() {
+        // ISSUE-174 #1 regression: an attacker cannot reach a "trusted" IP just by
+        // setting X-Forwarded-For unless the operator opted in to header parsing.
+        let peer = ip("203.0.113.42");
+        let headers = headers_xff("127.0.0.1");
+        assert_eq!(resolve_client_ip(peer, &headers, &[]), peer);
+    }
+
+    #[test]
+    fn peer_not_in_trusted_proxies_returns_peer_ip() {
+        // Random public peer claims to be Nginx — must be ignored.
+        let peer = ip("203.0.113.42");
+        let headers = headers_xrip("127.0.0.1");
+        let trusted = vec![ip("127.0.0.1")];
+        assert_eq!(resolve_client_ip(peer, &headers, &trusted), peer);
+    }
+
+    #[test]
+    fn trusted_proxy_x_real_ip_takes_precedence() {
+        // Nginx is the peer (127.0.0.1) and reports the real client.
+        let peer = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let headers = headers_xrip("203.0.113.42");
+        let trusted = vec![peer];
+        assert_eq!(
+            resolve_client_ip(peer, &headers, &trusted),
+            ip("203.0.113.42")
+        );
+    }
+
+    #[test]
+    fn trusted_proxy_x_forwarded_for_leftmost_is_used() {
+        let peer = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let headers = headers_xff("198.51.100.7, 10.0.0.1");
+        let trusted = vec![peer];
+        assert_eq!(
+            resolve_client_ip(peer, &headers, &trusted),
+            ip("198.51.100.7")
+        );
+    }
+
+    #[test]
+    fn trusted_proxy_no_headers_falls_back_to_peer() {
+        // Misconfigured Nginx (not setting headers) → behavior is "trust peer",
+        // which is the same vulnerable behavior we had before. Operator must
+        // configure Nginx correctly when opting into header parsing.
+        let peer = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let trusted = vec![peer];
+        assert_eq!(resolve_client_ip(peer, &HeaderMap::new(), &trusted), peer);
+    }
+
+    #[test]
+    fn malformed_header_falls_back_to_peer() {
+        let peer = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let headers = headers_xrip("not-an-ip");
+        let trusted = vec![peer];
+        assert_eq!(resolve_client_ip(peer, &headers, &trusted), peer);
     }
 }
 

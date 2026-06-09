@@ -177,24 +177,71 @@ pub async fn install_binary(binary: &[u8], target: &Path) -> Result<()> {
     }
 }
 
+/// Path used for staging the new binary before the privileged `sudo cp`.
+///
+/// ISSUE-174 #7: previously this was `/tmp/doli-update-binary`. The world-writable
+/// `/tmp` plus a predictable filename allowed any local user to win a TOCTOU race
+/// between our `fs::write` and the `sudo cp` that follows, gaining root code execution
+/// when the auto-updater fired. The new path lives inside `/var/lib/doli/` (created
+/// mode 2770 doli:doli by the installer), and the file is opened with `O_NOFOLLOW`
+/// to defeat symlink swaps from inside the trusted `doli` group.
+const STAGED_BINARY_PATH: &str = "/var/lib/doli/update.bin";
+
 /// Install binary via sudo (fallback for root-owned paths like /usr/local/bin/)
 ///
-/// Writes binary to a temp file in /tmp/, then uses `sudo cp` + `sudo chmod`
-/// to install it to the target path. Works for any target path as long as
-/// the user has passwordless sudo (standard for `doli` group via polkit rule).
+/// Writes binary to `/var/lib/doli/update.bin` (doli:doli, 2770), then uses
+/// `sudo cp` + `sudo chmod` to install it to the target path. Works for any target
+/// path as long as the user has passwordless sudo (standard for `doli` group via
+/// polkit rule). The sudoers rule MUST list this same path; see install.sh /
+/// postinst.sh.
 async fn install_binary_sudo(binary: &[u8], target: &Path) -> Result<()> {
     use std::process::Command;
 
-    // Write to /tmp first (always writable)
-    let tmp = std::env::temp_dir().join("doli-update-binary");
-    fs::write(&tmp, binary).await?;
+    let staged = PathBuf::from(STAGED_BINARY_PATH);
 
+    // Make sure the parent dir exists. On a properly installed Linux system this
+    // was created by install.sh / postinst.sh with mode 2770 doli:doli. If we
+    // create it here as a fallback (single-user dev box), the inherited perms
+    // come from the parent. The directory ownership/mode is the operator's lever;
+    // this code does not try to fix a broken layout.
+    if let Some(parent) = staged.parent() {
+        fs::create_dir_all(parent).await.map_err(|e| {
+            UpdateError::InstallFailed(format!("Failed to create staging dir {:?}: {}", parent, e))
+        })?;
+    }
+
+    // Remove any stale staging file from a previous run before we open with
+    // O_NOFOLLOW. This narrows the symlink-swap window to a single syscall.
+    let _ = fs::remove_file(&staged).await;
+
+    // Open with O_NOFOLLOW: refuses to follow a symlink at the final path
+    // component, blocking the classic /tmp-style symlink attack.
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&tmp).await?.permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&tmp, perms).await?;
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o750)
+            .custom_flags(libc::O_NOFOLLOW);
+        let mut f = opts.open(&staged).map_err(|e| {
+            UpdateError::InstallFailed(format!("Failed to stage binary at {:?}: {}", staged, e))
+        })?;
+        f.write_all(binary).map_err(|e| {
+            UpdateError::InstallFailed(format!("Failed to write staged binary: {}", e))
+        })?;
+        f.sync_all().ok();
+
+        let mut perms = std::fs::metadata(&staged)?.permissions();
+        perms.set_mode(0o750);
+        std::fs::set_permissions(&staged, perms)?;
+    }
+    #[cfg(not(unix))]
+    {
+        fs::write(&staged, binary).await?;
     }
 
     // On Linux, overwriting a running binary with `cp` fails with "Text file busy".
@@ -205,12 +252,12 @@ async fn install_binary_sudo(binary: &[u8], target: &Path) -> Result<()> {
         .status();
 
     let cp_status = Command::new("sudo")
-        .args(["cp", &tmp.to_string_lossy(), &target.to_string_lossy()])
+        .args(["cp", &staged.to_string_lossy(), &target.to_string_lossy()])
         .status()
         .map_err(|e| UpdateError::InstallFailed(format!("sudo cp failed: {}", e)))?;
 
     if !cp_status.success() {
-        let _ = fs::remove_file(&tmp).await;
+        let _ = fs::remove_file(&staged).await;
         return Err(UpdateError::InstallFailed(format!(
             "sudo cp to {:?} failed with exit code {:?}",
             target,
@@ -218,8 +265,8 @@ async fn install_binary_sudo(binary: &[u8], target: &Path) -> Result<()> {
         )));
     }
 
-    // Cleanup temp
-    let _ = fs::remove_file(&tmp).await;
+    // Cleanup staged file
+    let _ = fs::remove_file(&staged).await;
 
     info!("Binary installed to {:?} (via sudo)", target);
     Ok(())

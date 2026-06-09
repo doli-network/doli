@@ -84,6 +84,30 @@ trap 'rm -rf "$TMPDIR"' EXIT
 info "Downloading ${FILE}..."
 $FETCH_OUT "${TMPDIR}/${FILE}" "$URL" || err "Download failed. Check ${GITHUB}/releases/tag/${VERSION}"
 
+# ISSUE-174 #3: verify SHA-256 of tarball against CHECKSUMS.txt from the same release.
+# CHECKSUMS.txt is signed and shipped by the release CI; the auto-updater already
+# verifies releases this way. We fail closed if either the file or the hash is missing.
+CHECKSUMS_URL="${GITHUB}/releases/download/${VERSION}/CHECKSUMS.txt"
+info "Verifying integrity..."
+$FETCH_OUT "${TMPDIR}/CHECKSUMS.txt" "$CHECKSUMS_URL" \
+    || err "Could not download CHECKSUMS.txt from ${CHECKSUMS_URL}. Refusing to install unverified binary."
+
+EXPECTED_HASH=$(grep " ${FILE}$" "${TMPDIR}/CHECKSUMS.txt" | awk '{print $1}' | head -1)
+[ -z "$EXPECTED_HASH" ] && err "CHECKSUMS.txt does not contain an entry for ${FILE}. Refusing to install."
+
+if command -v sha256sum >/dev/null 2>&1; then
+    ACTUAL_HASH=$(sha256sum "${TMPDIR}/${FILE}" | awk '{print $1}')
+elif command -v shasum >/dev/null 2>&1; then
+    ACTUAL_HASH=$(shasum -a 256 "${TMPDIR}/${FILE}" | awk '{print $1}')
+else
+    err "sha256sum/shasum not found — cannot verify integrity. Install coreutils or perl."
+fi
+
+if [ "$EXPECTED_HASH" != "$ACTUAL_HASH" ]; then
+    err "Checksum mismatch for ${FILE}: expected ${EXPECTED_HASH}, got ${ACTUAL_HASH}"
+fi
+ok "Checksum OK (${ACTUAL_HASH})"
+
 info "Extracting..."
 tar -xzf "${TMPDIR}/${FILE}" -C "$TMPDIR"
 DIR=$(find "$TMPDIR" -maxdepth 1 -type d -name "doli-*" | head -1)
@@ -157,14 +181,20 @@ POLKIT
     fi
 
     # 5. Sudoers rule for passwordless binary updates by doli user
-    #    The auto-updater runs as 'doli' but binaries live in /usr/local/bin/ (root-owned).
-    #    This allows `sudo cp` and `sudo chmod` on doli binaries without password prompt.
+    #    The auto-updater runs as 'doli' but binaries live in /usr/bin/ (root-owned).
+    #    This allows `sudo cp` on a fixed staging path without password prompt.
+    #
+    #    ISSUE-174 #7: the staging path lives inside /var/lib/doli (doli:doli, 2770)
+    #    instead of /tmp. /tmp is world-writable with predictable names, which
+    #    let any local user win a TOCTOU race against the sudo cp. The new
+    #    staging dir restricts pre-create access to the doli group, and the
+    #    updater opens the file with O_NOFOLLOW to defeat symlink swaps.
     cat > /etc/sudoers.d/doli-update <<'SUDOERS'
 # Allow doli user to update doli binaries without password
 doli ALL=(root) NOPASSWD: /usr/bin/rm -f /usr/bin/doli-node
 doli ALL=(root) NOPASSWD: /usr/bin/rm -f /usr/bin/doli
-doli ALL=(root) NOPASSWD: /usr/bin/cp /tmp/doli-update-binary /usr/bin/doli-node
-doli ALL=(root) NOPASSWD: /usr/bin/cp /tmp/doli-update-binary /usr/bin/doli
+doli ALL=(root) NOPASSWD: /usr/bin/cp /var/lib/doli/update.bin /usr/bin/doli-node
+doli ALL=(root) NOPASSWD: /usr/bin/cp /var/lib/doli/update.bin /usr/bin/doli
 SUDOERS
     chmod 440 /etc/sudoers.d/doli-update
     info "Installed sudoers rule for auto-update"

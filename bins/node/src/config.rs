@@ -176,6 +176,14 @@ pub struct RpcConfig {
     /// Allowed CORS origins. Empty = no cross-origin access when CORS is enabled.
     #[serde(default)]
     pub allowed_origins: Vec<String>,
+
+    /// ISSUE-174 #1: IPs of trusted reverse proxies (e.g., the Nginx instance fronting
+    /// this node). When the immediate TCP peer matches one of these, `X-Real-IP` /
+    /// `X-Forwarded-For` is parsed for the real client IP. Empty (default) =
+    /// header parsing disabled — backward compatible.
+    /// Also settable via the `DOLI_RPC_TRUSTED_PROXIES` env var (comma-separated).
+    #[serde(default)]
+    pub trusted_proxies: Vec<String>,
 }
 
 impl Default for RpcConfig {
@@ -193,6 +201,7 @@ impl RpcConfig {
             allowed_methods: vec![],
             admin_token: None,
             allowed_origins: vec![],
+            trusted_proxies: vec![],
         }
     }
 }
