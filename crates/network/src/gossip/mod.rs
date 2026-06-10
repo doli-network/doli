@@ -4,12 +4,17 @@
 
 mod config;
 mod publish;
+pub mod validation;
 
 #[cfg(test)]
 mod tests;
 
 pub use config::*;
 pub use publish::*;
+pub use validation::{
+    classify_block, classify_block_gossip, now_unix_secs, wall_clock_slot, wall_clock_slot_from,
+    STALE_BLOCK_SLOT_THRESHOLD,
+};
 
 /// GossipSub topic for new blocks
 pub const BLOCKS_TOPIC: &str = "/doli/blocks/1";

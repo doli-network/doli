@@ -1411,6 +1411,14 @@ Bootnodes are introduction points, not permanent hubs. A node needs one successf
 
 Topics do NOT include `network_id`. Network isolation is achieved via genesis hash check during status exchange (see section 8.3).
 
+**Message validation (INC-I-114):** GossipSub is configured with `validate_messages=true`. Every received message is held un-forwarded until the application calls `report_message_validation_result()` with a verdict:
+
+- **Block-body topics** (`/doli/blocks/1`, `/doli/t1/blocks/1`, `/doli/r{N}/blocks/1`): The application deserializes the message as a `Block` and applies staleness classification:
+  - `Accept` — block slot is within `STALE_BLOCK_SLOT_THRESHOLD` (6) slots of the current wall-clock slot. Forwarded to mesh peers.
+  - `Ignore` — block is stale (slot < wall_clock_slot - 6). Dropped without peer-score penalty. Prevents the dedup-cache-expiry amplification storm where old blocks were re-forwarded as fresh.
+  - `Reject` — bytes cannot be deserialized as a `Block`. P4 peer-score penalty applied to sender.
+- **All other topics** (headers, transactions, producers, votes, heartbeats, attestations): `Accept` unconditionally. These topics do not carry block-body payloads and must not be routed through block deserialization — doing so would Reject valid messages and trigger peer-score penalties on honest peers.
+
 ### 7.3 Request-Response Protocols
 
 | Protocol | Request | Response |
@@ -1435,15 +1443,23 @@ Initiator                     Responder
 
 ### 7.5 Block Propagation
 
-New blocks are propagated via GossipSub:
+New blocks are propagated via GossipSub with application-level validation:
 
 ```
-Producer                      Network
-    |                            |
-    |-- publish to /blocks ----->|
-    |                            | (gossip to all peers)
-    |                            |
+Producer                      Network                     Receiving Node
+    |                            |                             |
+    |-- publish to /blocks ----->|                             |
+    |                            |-- deliver (held) ---------> |
+    |                            |                    classify_block_gossip()
+    |                            |                    Accept/Ignore/Reject
+    |                            | <-- report_result --------- |
+    |                            | (forward if Accept)         |
+    |                            |                             |
 ```
+
+The `validate_messages=true` setting ensures that gossipsub does not auto-forward messages. Without this, after the duplicate cache expires (60s), a re-gossiped copy of a stale block would pass the dedup check and be auto-forwarded to all mesh peers, causing a fleet-wide amplification storm (INC-I-114).
+
+The staleness threshold of 6 slots (60s at SLOT_DURATION=10s) tolerates clock skew and propagation delay while filtering blocks from the INC-I-114 storm pattern (3-9 hours old). When `genesis_time` is unset (0), staleness filtering is disabled (fail-open) to prevent silent gossip death from misconfiguration.
 
 ---
 

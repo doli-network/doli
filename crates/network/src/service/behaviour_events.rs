@@ -13,12 +13,13 @@ use std::time::SystemTime;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, info, warn};
 
-use doli_core::{decode_digest, decode_producer_set, is_legacy_bincode_format, Block, BlockHeader};
+use doli_core::{decode_digest, decode_producer_set, is_legacy_bincode_format, BlockHeader};
 
 use crate::behaviour::{DoliBehaviour, DoliBehaviourEvent};
 use crate::config::NetworkConfig;
 use crate::gossip::{
-    BLOCKS_TOPIC, HEADERS_TOPIC, HEARTBEATS_TOPIC, PRODUCERS_TOPIC, TRANSACTIONS_TOPIC, VOTES_TOPIC,
+    classify_block_gossip, now_unix_secs, BLOCKS_TOPIC, HEADERS_TOPIC, HEARTBEATS_TOPIC,
+    PRODUCERS_TOPIC, TRANSACTIONS_TOPIC, VOTES_TOPIC,
 };
 use crate::peer::PeerInfo;
 use crate::peer_cache::PeerCache;
@@ -46,7 +47,7 @@ pub(super) async fn handle_behaviour_event(
     match event {
         DoliBehaviourEvent::Gossipsub(gossipsub::Event::Message {
             propagation_source,
-            message_id: _,
+            message_id,
             message,
         }) => {
             let topic = message.topic.as_str();
@@ -56,19 +57,69 @@ pub(super) async fn handle_behaviour_event(
                 topic, propagation_source
             );
 
-            match topic {
-                BLOCKS_TOPIC => {
-                    // INC-I-049: Deserialize first, then decide rate limiting.
-                    // Blocks at or beyond our best slot are candidate-next blocks
-                    // and only subject to the global rate limit (100/min), not
-                    // per-peer limits. This prevents the rate limiter from silently
-                    // dropping the ONE canonical block we need to advance.
-                    if let Some(block) = Block::deserialize(&message.data) {
+            // INC-I-114: With validate_messages=true, every message is held
+            // un-forwarded until we call report_message_validation_result().
+            // We MUST report for ALL topics or gossip propagation dies.
+            //
+            // Block-body topics get staleness classification via classify_block_gossip.
+            // P0-001: HEADERS_TOPIC is NOT a block topic — header bytes are
+            // BlockHeader-serialized (no Vec<Transaction>), so Block::deserialize
+            // fails on them. Routing headers through classify_block_gossip would
+            // Reject every header → P4 penalty on honest producers → mesh
+            // expulsion cascade (INC-I-016 shape). Headers and all other non-block
+            // topics get unconditional Accept.
+            let is_block_body_topic = topic == BLOCKS_TOPIC
+                || topic == crate::gossip::TIER1_BLOCKS_TOPIC
+                || (topic.starts_with("/doli/r") && topic.ends_with("/blocks/1"));
+
+            // P1-001: Deserialize ONCE via classify_block_gossip, which returns
+            // both the acceptance verdict and the deserialized Block (if valid).
+            // The handler reuses the returned Block instead of deserializing again.
+            if is_block_body_topic {
+                let now = now_unix_secs();
+                let (acceptance, maybe_block) = classify_block_gossip(
+                    &message.data,
+                    config.genesis_time,
+                    config.slot_duration,
+                    now,
+                );
+                let is_accepted = matches!(acceptance, gossipsub::MessageAcceptance::Accept);
+                if let Err(e) = swarm
+                    .behaviour_mut()
+                    .gossipsub
+                    .report_message_validation_result(&message_id, &propagation_source, acceptance)
+                {
+                    warn!(
+                        "[GOSSIP_VALIDATE] report failed topic={} msg_id={} err={:?}",
+                        topic, message_id, e
+                    );
+                }
+                // If the message was Ignored or Rejected, skip further processing
+                if !is_accepted {
+                    debug!(
+                        "[GOSSIP_VALIDATE] stale/invalid block on topic={} from={}",
+                        topic, propagation_source
+                    );
+                    return;
+                }
+
+                // At this point: acceptance=Accept, maybe_block=Some(block)
+                // (Accept is only returned when deserialization succeeds).
+                // Unwrap is safe — classify_block_gossip returns Some on Accept.
+                let block = match maybe_block {
+                    Some(b) => b,
+                    None => return, // defensive — cannot happen for Accept
+                };
+
+                // Dispatch to the per-topic handler using the already-deserialized block
+                match topic {
+                    BLOCKS_TOPIC => {
+                        // INC-I-049: Rate limiting for blocks. Candidate-next blocks
+                        // (at or beyond our best slot) skip per-peer limits.
                         let current_best = best_slot.load(std::sync::atomic::Ordering::Relaxed);
                         let is_candidate_next = block.header.slot >= current_best;
 
                         if is_candidate_next {
-                            // Candidate next block: skip per-peer limit, check global only
                             if !rate_limiter.check_block_global_only() {
                                 warn!(
                                     "Rate limit: dropping candidate block s={} from {} (global rate exceeded)",
@@ -77,7 +128,6 @@ pub(super) async fn handle_behaviour_event(
                                 return;
                             }
                         } else if !rate_limiter.check_block(&propagation_source) {
-                            // Old block: apply full per-peer + global rate limit
                             warn!(
                                 "Rate limit: dropping block s={} from {} (per-peer rate exceeded)",
                                 block.header.slot, propagation_source
@@ -104,16 +154,65 @@ pub(super) async fn handle_behaviour_event(
                         let _ = event_tx
                             .send(NetworkEvent::NewBlock(block, propagation_source))
                             .await;
-                    } else {
-                        // Deserialization failed — apply per-peer rate limit to
-                        // penalize peers sending garbage
-                        rate_limiter.record_block(&propagation_source, msg_size);
-                        warn!(
-                            "[GOSSIP_BLOCK] deserialize_failed from={} size={}",
-                            propagation_source, msg_size
-                        );
                     }
+                    t if t == crate::gossip::TIER1_BLOCKS_TOPIC => {
+                        if !rate_limiter.check_block(&propagation_source) {
+                            return;
+                        }
+                        rate_limiter.record_block(&propagation_source, msg_size);
+                        let recv_ts = SystemTime::now()
+                            .duration_since(SystemTime::UNIX_EPOCH)
+                            .map(|d| d.as_millis())
+                            .unwrap_or(0);
+                        info!(
+                            "[GOSSIP_BLOCK] recv_t1 s={} hash={:.8} producer={:.8} block_ts={} from={} size={} recv_ts_ms={}",
+                            block.header.slot,
+                            block.hash(),
+                            block.header.producer,
+                            block.header.timestamp,
+                            propagation_source,
+                            msg_size,
+                            recv_ts
+                        );
+                        let _ = event_tx
+                            .send(NetworkEvent::NewBlock(block, propagation_source))
+                            .await;
+                    }
+                    t if t.starts_with("/doli/r") && t.ends_with("/blocks/1") => {
+                        if !rate_limiter.check_block(&propagation_source) {
+                            return;
+                        }
+                        rate_limiter.record_block(&propagation_source, msg_size);
+                        let _ = event_tx
+                            .send(NetworkEvent::NewBlock(block, propagation_source))
+                            .await;
+                    }
+                    _ => {} // unreachable — is_block_body_topic already filtered
                 }
+
+                return; // block topics fully handled above
+            }
+
+            // Non-block topics: Accept immediately (preserve existing behavior).
+            // This covers HEADERS_TOPIC, TRANSACTIONS, PRODUCERS, VOTES,
+            // HEARTBEATS, ATTESTATIONS, and any future non-block topics.
+            if let Err(e) = swarm
+                .behaviour_mut()
+                .gossipsub
+                .report_message_validation_result(
+                    &message_id,
+                    &propagation_source,
+                    gossipsub::MessageAcceptance::Accept,
+                )
+            {
+                warn!(
+                    "[GOSSIP_VALIDATE] report failed topic={} msg_id={} err={:?}",
+                    topic, message_id, e
+                );
+            }
+
+            // Non-block topic dispatch (block topics already returned above)
+            match topic {
                 TRANSACTIONS_TOPIC => {
                     if !rate_limiter.check_transaction(&propagation_source) {
                         warn!(
@@ -281,50 +380,6 @@ pub(super) async fn handle_behaviour_event(
                         let _ = event_tx.send(NetworkEvent::NewHeader(header)).await;
                     } else {
                         warn!("Failed to deserialize header from {}", propagation_source);
-                    }
-                }
-                topic if topic == crate::gossip::TIER1_BLOCKS_TOPIC => {
-                    // Tier 1 dense-mesh block: same payload as regular blocks
-                    if !rate_limiter.check_block(&propagation_source) {
-                        return;
-                    }
-                    if let Some(block) = Block::deserialize(&message.data) {
-                        rate_limiter.record_block(&propagation_source, msg_size);
-                        let recv_ts = SystemTime::now()
-                            .duration_since(SystemTime::UNIX_EPOCH)
-                            .map(|d| d.as_millis())
-                            .unwrap_or(0);
-                        // INFO (was DEBUG): same rationale as [GOSSIP_BLOCK] recv above.
-                        info!(
-                            "[GOSSIP_BLOCK] recv_t1 s={} hash={:.8} producer={:.8} block_ts={} from={} size={} recv_ts_ms={}",
-                            block.header.slot,
-                            block.hash(),
-                            block.header.producer,
-                            block.header.timestamp,
-                            propagation_source,
-                            msg_size,
-                            recv_ts
-                        );
-                        let _ = event_tx
-                            .send(NetworkEvent::NewBlock(block, propagation_source))
-                            .await;
-                    } else {
-                        warn!(
-                            "[GOSSIP_BLOCK] t1_deserialize_failed from={} size={}",
-                            propagation_source, msg_size
-                        );
-                    }
-                }
-                topic if topic.starts_with("/doli/r") && topic.ends_with("/blocks/1") => {
-                    // Regional block (Tier 2 sharding): same payload as regular blocks
-                    if !rate_limiter.check_block(&propagation_source) {
-                        return;
-                    }
-                    if let Some(block) = Block::deserialize(&message.data) {
-                        rate_limiter.record_block(&propagation_source, msg_size);
-                        let _ = event_tx
-                            .send(NetworkEvent::NewBlock(block, propagation_source))
-                            .await;
                     }
                 }
                 _ => {}

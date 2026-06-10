@@ -872,6 +872,25 @@ curl -s -X POST http://<node>:<port> \
 - **Issues:** https://github.com/e-weil/doli/issues
 - **Community:** (add Discord/Telegram links)
 
+### Gossip Validation Misbehavior (INC-I-114)
+
+**Symptom: A gossip topic appears silently dead — no messages arrive on that topic.**
+
+**Cause:** With `validate_messages=true`, every gossipsub message is held until the application calls `report_message_validation_result()`. If the application fails to report a verdict for a topic (e.g., a new topic is added but the handler doesn't report), messages on that topic are never forwarded and the topic appears dead. This is a liveness failure, not a crash.
+
+**Diagnosis:**
+1. Check logs for `[GOSSIP_VALIDATE] report failed` — indicates the report call itself errored.
+2. Check if the topic is matched in `behaviour_events.rs` — unmatched topics fall through to the `_ => {}` wildcard, which still gets the unconditional `Accept` for non-block topics. If a new block-body topic was added without updating `is_block_body_topic`, it would get unconditional Accept (safe, but no staleness filtering).
+3. If a non-block topic was mistakenly added to the block-body topic check, its payloads would fail `Block::deserialize` and be Rejected — triggering P4 peer-score penalties on honest peers and eventually causing mesh expulsion cascades.
+
+**Resolution:** Ensure all gossip topics have a validation report path. Block-body topics (`/doli/blocks/1`, `/doli/t1/blocks/1`, `/doli/r{N}/blocks/1`) go through `classify_block_gossip()`. All other topics (headers, transactions, producers, votes, heartbeats, attestations) get unconditional `Accept`.
+
+**Symptom: Fleet-wide gossip amplification / OOM under load.**
+
+**Cause (INC-I-114):** Before the `validate_messages=true` fix, gossipsub auto-forwarded messages after dedup cache expiry (60s). Under sustained load with 2MB blocks, stale blocks were re-forwarded through the mesh, multiplying traffic exponentially. The fix holds all messages until the application explicitly accepts them, preventing stale block re-forwarding.
+
+**Diagnosis:** Look for `[GOSSIP_VALIDATE] stale/invalid block` log lines — these indicate the staleness filter is working. If absent during a storm, check that `NetworkConfig.genesis_time` is set (0 = staleness disabled, fail-open).
+
 ### Reporting Bugs
 
 Include in bug reports:
@@ -883,4 +902,4 @@ Include in bug reports:
 
 ---
 
-*Last updated: March 2026*
+*Last updated: June 2026*

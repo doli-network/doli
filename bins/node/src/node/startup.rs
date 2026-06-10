@@ -147,6 +147,11 @@ impl Node {
         network_config.listen_addr = listen_addr;
         network_config.bootstrap_nodes = self.config.bootstrap_nodes.clone();
 
+        // INC-I-114: Pass genesis time and slot duration to the network layer
+        // for wall-clock-based stale block filtering in gossipsub validation.
+        network_config.genesis_time = self.params.genesis_time;
+        network_config.slot_duration = self.params.slot_duration;
+
         // Extract PeerIds from bootstrap multiaddrs for seed release after DHT bootstrap.
         // The seed is only needed for initial peer discovery — after that, DHT takes over.
         self.seed_peer_ids = self

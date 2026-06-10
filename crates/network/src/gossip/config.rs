@@ -85,6 +85,12 @@ pub fn new_gossipsub(keypair: &Keypair, mesh: &MeshConfig) -> Result<Gossipsub, 
         .heartbeat_interval(Duration::from_secs(1))
         // Message validation
         .validation_mode(ValidationMode::Strict)
+        // INC-I-114: Application-level validation — every received message is
+        // held un-forwarded until the application calls
+        // report_message_validation_result(). This prevents stale blocks from
+        // being auto-forwarded after the dedup cache expires, which caused a
+        // fleet-wide gossip amplification storm and OOM cascade.
+        .validate_messages()
         // Message ID function
         .message_id_fn(message_id_fn)
         // Mesh parameters (from NetworkParams)
@@ -192,6 +198,59 @@ pub fn new_gossipsub(keypair: &Keypair, mesh: &MeshConfig) -> Result<Gossipsub, 
 
     let peer_score_params = PeerScoreParams {
         topics: topic_scores,
+        ip_colocation_factor_threshold: ip_colocation_threshold,
+        ..Default::default()
+    };
+    gossipsub
+        .with_peer_score(peer_score_params, PeerScoreThresholds::default())
+        .map_err(GossipError::Config)?;
+
+    Ok(gossipsub)
+}
+
+/// Create a GossipSub behaviour identical to [`new_gossipsub`] but with a
+/// custom `duplicate_cache_time`. Intended for integration tests that need
+/// short cache TTLs (e.g., 2-3s) to exercise dedup-expiry behavior without
+/// waiting 60 seconds. Production code should use [`new_gossipsub`].
+pub fn new_gossipsub_with_cache_time(
+    keypair: &Keypair,
+    mesh: &MeshConfig,
+    duplicate_cache_time: Duration,
+) -> Result<Gossipsub, GossipError> {
+    let message_id_fn = |message: &Message| {
+        let hash = crypto::hash::hash(&message.data);
+        MessageId::from(hash.as_bytes()[..20].to_vec())
+    };
+
+    let config = ConfigBuilder::default()
+        .heartbeat_interval(Duration::from_secs(1))
+        .validation_mode(ValidationMode::Strict)
+        // INC-I-114: validate_messages enabled (behavior-identical to production)
+        .validate_messages()
+        .message_id_fn(message_id_fn)
+        .mesh_n(mesh.mesh_n)
+        .mesh_n_low(mesh.mesh_n_low)
+        .mesh_n_high(mesh.mesh_n_high)
+        .mesh_outbound_min((mesh.mesh_n / 3).max(1).min(mesh.mesh_n / 2))
+        .gossip_lazy(mesh.gossip_lazy)
+        .gossip_factor(0.50)
+        .history_length(5)
+        .history_gossip(3)
+        .max_transmit_size(GOSSIP_MAX_TRANSMIT_SIZE)
+        .duplicate_cache_time(duplicate_cache_time)
+        .flood_publish(true)
+        .build()
+        .map_err(|e| GossipError::Config(e.to_string()))?;
+
+    let mut gossipsub = Gossipsub::new(MessageAuthenticity::Signed(keypair.clone()), config)
+        .map_err(|e| GossipError::Init(e.to_string()))?;
+
+    let ip_colocation_threshold: f64 = std::env::var("DOLI_IP_COLOCATION_THRESHOLD")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5.0);
+
+    let peer_score_params = PeerScoreParams {
         ip_colocation_factor_threshold: ip_colocation_threshold,
         ..Default::default()
     };

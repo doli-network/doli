@@ -64,6 +64,17 @@ pub struct NetworkConfig {
     /// Set by the node from `current_fork_id()` at startup. Used to disconnect
     /// incompatible peers at status handshake before any blocks are exchanged.
     pub fork_id: Hash,
+    /// Genesis timestamp (Unix seconds). Used by gossipsub validation to
+    /// compute the current wall-clock slot for stale block filtering (INC-I-114).
+    ///
+    /// **Default: 0 (unset).** When 0, staleness filtering is disabled (fail-open):
+    /// all deserializable blocks are Accepted regardless of slot age. A rate-limited
+    /// warning is emitted. Callers MUST set this from `NetworkParams::genesis_time`
+    /// at node startup for production staleness filtering.
+    pub genesis_time: u64,
+    /// Slot duration in seconds (default: 10). Used with `genesis_time` for
+    /// wall-clock slot computation in gossipsub validation (INC-I-114).
+    pub slot_duration: u64,
     /// Enable Discv5 UDP discovery (default: true).
     /// When enabled, runs a UDP service on `discv5_port` for stateless peer
     /// discovery. Discovered peers are fed to libp2p for TCP connections.
@@ -95,6 +106,8 @@ impl NetworkConfig {
             genesis_hash,
             no_dht: false,
             fork_id: Hash::default(),
+            genesis_time: 0,
+            slot_duration: 10,
             peer_cache_path: None,
             // Universal gossipsub mesh (same for all networks)
             mesh_n: 12,
