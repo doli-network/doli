@@ -553,8 +553,16 @@ in the INC-I-114 incident). Defense in depth:
    so libp2p drains its internal queue normally.
 3. Only block-topic sends use load-shedding. Non-block sends retain backpressure.
 4. Dropped blocks are recoverable via sync protocol (GetBlocks request-response).
+5. **Memory watchdog** (M2): a periodic sampler (5s interval) reads process RSS
+   via `/proc/self/statm` (Linux) and trips a shared `AtomicBool` when RSS
+   crosses a configurable soft threshold (`DOLI_MEMORY_WATCHDOG_BYTES`). When
+   tripped, the gossip hot path sheds ALL accepted blocks (after
+   `report_message_validation_result`, before enqueue) until memory recovers.
+   Fail-open: on non-Linux or if the sampler is unavailable, the flag stays
+   false (never sheds). Default: disabled (threshold=0).
 
-**Implementation**: `crates/network/src/service/backpressure.rs` (metrics + enqueue_or_shed).
+
+**Implementation**: `crates/network/src/service/backpressure.rs` (metrics + enqueue_or_shed), `crates/network/src/watchdog.rs` (memory watchdog).
 #### 6.1.4 Transaction Malleability Prevention
 
 Transaction hashes exclude signatures to prevent third-party modification.

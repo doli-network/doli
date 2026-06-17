@@ -84,6 +84,18 @@ pub struct NetworkConfig {
     pub discv5_port: Option<u16>,
     /// Discv5 bootnode ENR strings for UDP peer discovery.
     pub bootnode_enrs: Vec<String>,
+    /// Memory watchdog soft threshold in bytes (INC-I-114 M2).
+    ///
+    /// When process RSS reaches this value, the watchdog trips a shared flag
+    /// that causes the gossip hot path to shed ALL inbound blocks until memory
+    /// recovers. Set this BELOW the OOM ceiling (e.g., 80% of available RAM).
+    ///
+    /// **Default: 0 (disabled).** When 0, the watchdog is not constructed and
+    /// never trips. Override via `DOLI_MEMORY_WATCHDOG_BYTES` environment variable.
+    ///
+    /// On non-Linux platforms (macOS dev), the sampler returns None and the
+    /// watchdog fails open (never sheds), regardless of this value.
+    pub memory_watchdog_threshold_bytes: u64,
 }
 
 impl Default for NetworkConfig {
@@ -122,6 +134,7 @@ impl NetworkConfig {
             enable_discv5: true,
             discv5_port: None, // Default: listen_addr.port() + 1
             bootnode_enrs: Vec::new(),
+            memory_watchdog_threshold_bytes: 0, // Disabled by default
         }
     }
 

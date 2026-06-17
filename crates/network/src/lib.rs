@@ -80,6 +80,7 @@ pub mod scoring;
 pub mod service;
 pub mod sync;
 pub mod transport;
+pub mod watchdog;
 
 pub use config::NetworkConfig;
 pub use discovery::discv5_service::{Discv5Config, Discv5Service};

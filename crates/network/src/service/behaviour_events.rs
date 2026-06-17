@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -45,6 +46,7 @@ pub(super) async fn handle_behaviour_event(
     stale_peer_ids: &mut HashMap<PeerId, Instant>,
     best_slot: &Arc<std::sync::atomic::AtomicU32>,
     shed_metrics: &std::sync::Arc<super::backpressure::GossipShedMetrics>,
+    memory_shed_flag: &Arc<AtomicBool>,
 ) {
     match event {
         DoliBehaviourEvent::Gossipsub(gossipsub::Event::Message {
@@ -86,6 +88,12 @@ pub(super) async fn handle_behaviour_event(
                     now,
                 );
                 let is_accepted = matches!(acceptance, gossipsub::MessageAcceptance::Accept);
+
+                // CRITICAL: report_message_validation_result MUST be called BEFORE
+                // any early return (including the memory watchdog shed below).
+                // This preserves gossipsub propagation semantics (INV-NET-002):
+                // the validation result controls whether the message is forwarded
+                // to other peers. Skipping it would silently kill gossip propagation.
                 if let Err(e) = swarm
                     .behaviour_mut()
                     .gossipsub
@@ -101,6 +109,23 @@ pub(super) async fn handle_behaviour_event(
                     debug!(
                         "[GOSSIP_VALIDATE] stale/invalid block on topic={} from={}",
                         topic, propagation_source
+                    );
+                    return;
+                }
+
+                // INC-I-114 M2: Memory watchdog shed gate.
+                // When the watchdog has tripped (process RSS above soft threshold),
+                // shed ALL accepted gossip blocks to reduce memory pressure.
+                // This check is AFTER report_message_validation_result (so gossip
+                // propagation to other peers is preserved) but BEFORE enqueue
+                // (so the block never reaches the node's event channel or apply_block).
+                // Dropped blocks are recoverable via the sync protocol (GetBlocks).
+                if memory_shed_flag.load(Ordering::Relaxed) {
+                    shed_metrics.record_block_drop();
+                    debug!(
+                        "[MEM_WATCHDOG] Shedding block s={} from {} (memory pressure)",
+                        maybe_block.as_ref().map(|b| b.header.slot).unwrap_or(0),
+                        propagation_source
                     );
                     return;
                 }

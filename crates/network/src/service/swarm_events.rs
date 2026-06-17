@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -42,6 +43,7 @@ pub(super) async fn handle_swarm_event(
     stale_peer_ids: &mut HashMap<PeerId, Instant>,
     best_slot: &Arc<std::sync::atomic::AtomicU32>,
     shed_metrics: &std::sync::Arc<super::backpressure::GossipShedMetrics>,
+    memory_shed_flag: &Arc<AtomicBool>,
 ) {
     match event {
         SwarmEvent::ConnectionEstablished {
@@ -260,6 +262,7 @@ pub(super) async fn handle_swarm_event(
                 stale_peer_ids,
                 best_slot,
                 shed_metrics,
+                memory_shed_flag,
             )
             .await;
         }

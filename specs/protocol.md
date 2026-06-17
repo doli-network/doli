@@ -1463,6 +1463,8 @@ The staleness threshold of 6 slots (60s at SLOT_DURATION=10s) tolerates clock sk
 
 **Load-shedding event queue (INC-I-114 Part B, M1).** After staleness filtering, accepted blocks are enqueued to the node event channel via a non-blocking `try_send`. If the bounded channel is full (consumer behind), the block is dropped and counted by `GossipShedMetrics` rather than suspending the swarm task. This prevents libp2p's internal message buffer from growing unboundedly during a gossip flood. Only block-topic sends use this load-shedding path; non-block event sends (transactions, headers, votes, heartbeats, attestations) remain on their backpressure-aware `.send().await` path. Dropped blocks are recoverable via the sync protocol (GetBlocks request-response).
 
+**Memory watchdog (INC-I-114 Part B, M2).** A periodic sampler (5s interval) checks process RSS and trips a shared `AtomicBool` flag when memory crosses a configurable soft threshold (`DOLI_MEMORY_WATCHDOG_BYTES`, default 0 = disabled). When tripped, the gossip block handler sheds ALL accepted blocks after `report_message_validation_result()` but before enqueue, preventing OOM under sustained memory pressure. The watchdog fails open: on non-Linux platforms or when the sampler is unavailable, the flag stays false (never sheds). Recovery is automatic — when RSS drops below the threshold, the flag clears and normal gossip processing resumes. Implementation: `crates/network/src/watchdog.rs`.
+
 ---
 
 ## 8. Networks

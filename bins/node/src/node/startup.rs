@@ -262,6 +262,15 @@ impl Node {
         network_config.discv5_port = self.config.discv5_port;
         network_config.bootnode_enrs = self.config.bootnode_enrs.clone();
 
+        // INC-I-114 M2: Memory watchdog threshold (env var override).
+        // Default: 0 (disabled). Set DOLI_MEMORY_WATCHDOG_BYTES to enable.
+        if let Ok(val) = std::env::var("DOLI_MEMORY_WATCHDOG_BYTES") {
+            if let Ok(bytes) = val.parse::<u64>() {
+                network_config.memory_watchdog_threshold_bytes = bytes;
+                info!("[ENV] DOLI_MEMORY_WATCHDOG_BYTES={}", bytes);
+            }
+        }
+
         info!(
             "Starting network service on {} (network={}, id={})",
             listen_addr,

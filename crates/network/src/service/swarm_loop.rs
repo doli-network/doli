@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -22,6 +23,7 @@ use crate::config::NetworkConfig;
 use crate::gossip::TRANSACTIONS_TOPIC;
 use crate::peer::PeerInfo;
 use crate::rate_limit::{RateLimitConfig, RateLimiter};
+use crate::watchdog::MemoryWatchdog;
 
 use super::command_handling::handle_command;
 use super::swarm_events::handle_swarm_event;
@@ -129,11 +131,38 @@ pub(super) async fn run_swarm(
     let mut tx_flush = tokio::time::interval(Duration::from_millis(100));
     tx_flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+    // INC-I-114 M2: Memory watchdog — shed gossip blocks under memory pressure.
+    // Constructed only when threshold > 0 (i.e., explicitly enabled via config
+    // or DOLI_MEMORY_WATCHDOG_BYTES env var). When disabled, the shared flag
+    // is always false (never sheds).
+    let watchdog_threshold = config.memory_watchdog_threshold_bytes;
+    let mut watchdog: Option<MemoryWatchdog> = if watchdog_threshold > 0 {
+        let wd = MemoryWatchdog::with_real_sampler(watchdog_threshold);
+        tracing::info!(
+            "[MEM_WATCHDOG] Enabled: soft_threshold={} MB",
+            watchdog_threshold / (1024 * 1024),
+        );
+        Some(wd)
+    } else {
+        None
+    };
+
+    // Shared shed flag: read by the gossip hot path in behaviour_events.rs.
+    // When None (watchdog disabled), the flag is permanently false (never sheds).
+    let memory_shed_flag: Arc<AtomicBool> = watchdog
+        .as_ref()
+        .map(|wd| wd.shed_flag())
+        .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+
+    // Watchdog tick interval: 5 seconds. Only ticks when watchdog is active.
+    let mut watchdog_tick = tokio::time::interval(Duration::from_secs(5));
+    watchdog_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
     loop {
         tokio::select! {
             // Handle swarm events
             event = swarm.select_next_some() => {
-                handle_swarm_event(event, &mut swarm, &event_tx, &peers, &config, &peer_cache_path, &mut rate_limiter, &mut genesis_mismatch_cooldown, &mut mismatch_redial_cooldown, &mut dial_backoff, &mut eviction_cooldown, &mut bootstrap_peers, &mut stale_peer_ids, &best_slot, &shed_metrics).await;
+                handle_swarm_event(event, &mut swarm, &event_tx, &peers, &config, &peer_cache_path, &mut rate_limiter, &mut genesis_mismatch_cooldown, &mut mismatch_redial_cooldown, &mut dial_backoff, &mut eviction_cooldown, &mut bootstrap_peers, &mut stale_peer_ids, &best_slot, &shed_metrics, &memory_shed_flag).await;
             }
 
             // Handle commands — intercept BroadcastTransaction for batching
@@ -374,6 +403,14 @@ pub(super) async fn run_swarm(
                         "[GOSSIP_MESH] negative_scores={} worst_score={:.2}",
                         negative_score_count, worst_score
                     );
+                }
+            }
+
+            // INC-I-114 M2: Memory watchdog tick — sample RSS every 5s and
+            // trip/clear the shed flag on threshold crossings.
+            _ = watchdog_tick.tick(), if watchdog.is_some() => {
+                if let Some(ref mut wd) = watchdog {
+                    wd.tick();
                 }
             }
 
