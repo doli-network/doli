@@ -1465,6 +1465,9 @@ The staleness threshold of 6 slots (60s at SLOT_DURATION=10s) tolerates clock sk
 
 **Memory watchdog (INC-I-114 Part B, M2).** A periodic sampler (5s interval) checks process RSS and trips a shared `AtomicBool` flag when memory crosses a configurable soft threshold (`DOLI_MEMORY_WATCHDOG_BYTES`, default 0 = disabled). When tripped, the gossip block handler sheds ALL accepted blocks after `report_message_validation_result()` but before enqueue, preventing OOM under sustained memory pressure. The watchdog fails open: on non-Linux platforms or when the sampler is unavailable, the flag stays false (never sheds). Recovery is automatic — when RSS drops below the threshold, the flag clears and normal gossip processing resumes. Implementation: `crates/network/src/watchdog.rs`.
 
+**Construction-time hardening invariant (INV-NETWORK-002, INC-I-114 Part B, M3).** The gossipsub `Config` is validated at construction time by `assert_gossip_hardening_invariant()`. If `flood_publish=true` or `duplicate_cache_time <= 30s` (the `AGGRESSIVE_DEDUP_THRESHOLD`), then both `validate_messages=true` AND a bounded event queue must be present, or the node fails to start with a descriptive error citing INV-NETWORK-002. This compile-time gate prevents re-introduction of the aggressive-propagation-without-validation configuration that caused 5 fleet-wide incidents (INC-I-009, INC-I-014, INC-I-118, INC-I-120, INC-I-114). Implementation: `crates/network/src/gossip/config.rs`.
+
+
 ---
 
 ## 8. Networks

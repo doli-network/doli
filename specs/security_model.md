@@ -563,6 +563,9 @@ in the INC-I-114 incident). Defense in depth:
 
 
 **Implementation**: `crates/network/src/service/backpressure.rs` (metrics + enqueue_or_shed), `crates/network/src/watchdog.rs` (memory watchdog).
+
+**INV-NETWORK-002** (construction-time invariant, Level 3): Any aggressive gossip-propagation setting (`flood_publish=true` and/or `duplicate_cache_time <= 30s`) REQUIRES `validate_messages=true` AND a bounded (load-shedding) event queue. The invariant is enforced at gossipsub construction time via `assert_gossip_hardening_invariant()` — the node fails to start if either mitigation half is missing. Incident lineage: INC-I-009, INC-I-014, INC-I-118, INC-I-120, INC-I-114 (5 occurrences of the same unbounded-queue + aggressive-propagation shape). Implementation: `crates/network/src/gossip/config.rs` (`assert_gossip_hardening_invariant`, `AGGRESSIVE_DEDUP_THRESHOLD`). 7 gate tests cover all branch arms.
+
 #### 6.1.4 Transaction Malleability Prevention
 
 Transaction hashes exclude signatures to prevent third-party modification.

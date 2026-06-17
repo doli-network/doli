@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use libp2p::gossipsub::{
-    Behaviour as Gossipsub, ConfigBuilder, IdentTopic, Message, MessageAuthenticity, MessageId,
-    PeerScoreParams, PeerScoreThresholds, TopicScoreParams, ValidationMode,
+    Behaviour as Gossipsub, Config, ConfigBuilder, IdentTopic, Message, MessageAuthenticity,
+    MessageId, PeerScoreParams, PeerScoreThresholds, TopicScoreParams, ValidationMode,
 };
 use libp2p::identity::Keypair;
 
@@ -28,6 +28,114 @@ pub const GOSSIP_MAX_TRANSMIT_SIZE: usize =
 
 /// Maximum mesh_n value. Prevents over-meshing in very large networks.
 const MESH_N_CAP: usize = 50;
+
+/// Duplicate-cache-time at or below which the gossip config is considered
+/// "aggressive" for dedup purposes (INV-NETWORK-002).
+///
+/// **Rationale**: libp2p-gossipsub deduplicates messages for this window.
+/// After expiry, a re-received message is treated as new and (without
+/// `validate_messages`) auto-forwarded to every mesh peer — creating a
+/// re-forward storm that grows exponentially with the number of peers.
+///
+/// - **30s** is half the standard 60s default. At 30s or below, a stale block
+///   that arrives once per slot (10s) will escape the dedup cache within 3
+///   slots, triggering the re-forward amplification loop. Empirically, the
+///   INC-I-114 fleet-wide OOM occurred with dedup=60s because flood_publish
+///   was the aggression vector, not short dedup — but a future config with
+///   dedup <= 30s AND no validation would reproduce the same shape faster.
+/// - Values above 30s are "standard" dedup and do not independently trigger
+///   the amplification loop (messages expire too slowly to re-enter during
+///   normal gossip heartbeat cadence). However, flood_publish=true is
+///   independently aggressive regardless of dedup time.
+///
+/// The threshold is a **documented, tested constant** — changing it requires
+/// updating the boundary test and documenting the new rationale.
+pub const AGGRESSIVE_DEDUP_THRESHOLD: Duration = Duration::from_secs(30);
+
+/// Verify that a gossipsub [`Config`] satisfies INV-NETWORK-002: aggressive
+/// propagation settings require both application-level validation and a
+/// bounded event queue to prevent heap exhaustion.
+///
+/// # What is "aggressive"
+///
+/// A config is aggressive if:
+/// - `flood_publish() == true` — the node sends every locally-published
+///   message to ALL peers, not just the mesh subset, AND/OR
+/// - `duplicate_cache_time() <= AGGRESSIVE_DEDUP_THRESHOLD` — the dedup
+///   cache expires fast enough that stale messages re-enter the forwarding
+///   pipeline within a few slots.
+///
+/// # Required mitigations (both must be present)
+///
+/// 1. `validate_messages() == true` — messages are held un-forwarded until
+///    the application calls `report_message_validation_result()`. Without
+///    this, libp2p auto-forwards every received message into its internal
+///    unbounded `VecDeque`.
+/// 2. `has_bounded_queue == true` — the block ingestion path uses a bounded,
+///    load-shedding queue (M1 backpressure) so the application-side event
+///    channel cannot grow without bound.
+///
+/// # Incident lineage
+///
+/// INC-I-009 (yamux buffer explosion), INC-I-014 (RAM explosion at 103+
+/// nodes), INC-I-118 (gossip storm), INC-I-120 (gossip storm repeat),
+/// INC-I-114 (stale-block re-forward OOM cascade). All 5 incidents share
+/// the same root shape: unbounded internal queues + aggressive propagation.
+///
+/// # Errors
+///
+/// Returns `GossipError::Config` with a descriptive message naming which
+/// mitigation half is missing and citing INV-NETWORK-002.
+pub fn assert_gossip_hardening_invariant(
+    cfg: &Config,
+    has_bounded_queue: bool,
+) -> Result<(), GossipError> {
+    let aggressive =
+        cfg.flood_publish() || cfg.duplicate_cache_time() <= AGGRESSIVE_DEDUP_THRESHOLD;
+
+    if !aggressive {
+        return Ok(());
+    }
+
+    // Aggressive config — both mitigations required.
+    if !cfg.validate_messages() && !has_bounded_queue {
+        return Err(GossipError::Config(format!(
+            "INV-NETWORK-002 violation: aggressive gossip config \
+             (flood_publish={}, dedup={}s) requires BOTH validate_messages \
+             AND a bounded event queue, but NEITHER is present. Without \
+             these, libp2p auto-reforwards stale messages into an unbounded \
+             VecDeque -> heap exhaustion (INC-I-009/014/118/120/114).",
+            cfg.flood_publish(),
+            cfg.duplicate_cache_time().as_secs(),
+        )));
+    }
+
+    if !cfg.validate_messages() {
+        return Err(GossipError::Config(format!(
+            "INV-NETWORK-002 violation: aggressive gossip config \
+             (flood_publish={}, dedup={}s) requires validate_messages=true \
+             to prevent auto-forwarding of stale messages. Call \
+             .validate_messages() on the ConfigBuilder.",
+            cfg.flood_publish(),
+            cfg.duplicate_cache_time().as_secs(),
+        )));
+    }
+
+    if !has_bounded_queue {
+        return Err(GossipError::Config(format!(
+            "INV-NETWORK-002 violation: aggressive gossip config \
+             (flood_publish={}, dedup={}s) has validate_messages but \
+             requires a bounded (load-shedding) event queue to cap \
+             application-side backpressure. The block ingestion path \
+             must use a capacity-limited channel with shed-on-full \
+             (see backpressure.rs).",
+            cfg.flood_publish(),
+            cfg.duplicate_cache_time().as_secs(),
+        )));
+    }
+
+    Ok(())
+}
 
 /// Compute dynamic gossipsub mesh parameters based on expected peer count.
 ///
@@ -116,6 +224,12 @@ pub fn new_gossipsub(keypair: &Keypair, mesh: &MeshConfig) -> Result<Gossipsub, 
         .flood_publish(true)
         .build()
         .map_err(|e| GossipError::Config(e.to_string()))?;
+
+    // INV-NETWORK-002: construction-time hardening gate — fail fast if
+    // aggressive config is missing validation or bounded queue mitigations.
+    // Production passes true for has_bounded_queue because the block
+    // ingestion path uses M1 backpressure (enqueue_or_shed).
+    assert_gossip_hardening_invariant(&config, true)?;
 
     let mut gossipsub = Gossipsub::new(MessageAuthenticity::Signed(keypair.clone()), config)
         .map_err(|e| GossipError::Init(e.to_string()))?;
@@ -241,6 +355,11 @@ pub fn new_gossipsub_with_cache_time(
         .flood_publish(true)
         .build()
         .map_err(|e| GossipError::Config(e.to_string()))?;
+
+    // INV-NETWORK-002: construction-time hardening gate (same as production).
+    // Test variant also uses bounded queue (true) since integration tests
+    // exercise the same backpressure path.
+    assert_gossip_hardening_invariant(&config, true)?;
 
     let mut gossipsub = Gossipsub::new(MessageAuthenticity::Signed(keypair.clone()), config)
         .map_err(|e| GossipError::Init(e.to_string()))?;

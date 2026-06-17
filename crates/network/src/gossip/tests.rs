@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use super::*;
 
 #[test]
@@ -256,4 +258,206 @@ fn test_large_era0_block_fits_gossip_cap() {
          pass validate_block() but gossipsub.publish() would reject it with \
          PublishError::MessageTooLarge. Raise GOSSIP_MAX_TRANSMIT_SIZE.",
     );
+}
+
+// ===========================================================================
+// INV-NETWORK-002 — Gossip hardening invariant gate tests (INC-I-114 M3)
+// ===========================================================================
+//
+// INVARIANT: Any aggressive gossip-propagation setting (flood_publish=true
+// AND/OR duplicate_cache_time <= AGGRESSIVE_DEDUP_THRESHOLD) REQUIRES
+// validate_messages=true AND a bounded (load-shedding) event queue.
+// Otherwise libp2p auto-reforwards de-duplicated messages into an unbounded
+// internal event VecDeque -> heap exhaustion -> fleet-wide OOM.
+// Incident lineage: INC-I-009, INC-I-014, INC-I-118, INC-I-120, INC-I-114.
+//
+// OUTPUT CONTRACT:
+//   O1: assert_gossip_hardening_invariant returns Ok for valid configs  (bool)
+//   O2: assert_gossip_hardening_invariant returns Err for invalid configs (bool)
+// PATHS:
+//   P1: aggressive + validation + bounded -> Ok
+//   P2: aggressive + no validation        -> Err
+//   P3: aggressive + validation + unbounded -> Err
+//   P4: non-aggressive (any)              -> Ok
+//   P5: boundary at AGGRESSIVE_DEDUP_THRESHOLD -> at/below Err, above Ok
+// INPUT PARTITIONS:
+//   Pa: flood_publish=true (aggressive by flood)
+//   Pb: short dedup (aggressive by dedup)
+//   Pc: both aggressive
+//   Pd: neither aggressive
+//   Pe: threshold boundary values
+
+use libp2p::gossipsub::ConfigBuilder;
+
+/// Guard: production gossipsub config (flood_publish=true, validate_messages,
+/// dedup=60s) with a bounded queue satisfies INV-NETWORK-002.
+/// Path-Coverage: P1 (aggressive + validation + bounded -> Ok)
+#[test]
+fn production_config_satisfies_hardening_invariant() {
+    let cfg = ConfigBuilder::default()
+        .flood_publish(true)
+        .validate_messages()
+        .duplicate_cache_time(Duration::from_secs(60))
+        .build()
+        .unwrap();
+    assert!(
+        assert_gossip_hardening_invariant(&cfg, true).is_ok(),
+        "Production config must satisfy INV-NETWORK-002",
+    );
+}
+
+/// Regression trap: removing .validate_messages() while flood_publish stays
+/// on MUST fail construction. This is the exact regression that caused
+/// INC-I-114 (5th occurrence).
+/// Path-Coverage: P2 (aggressive + no validation -> Err)
+#[test]
+fn aggressive_floodpublish_without_validation_is_rejected() {
+    let cfg = ConfigBuilder::default()
+        .flood_publish(true)
+        .duplicate_cache_time(Duration::from_secs(60))
+        .build()
+        .unwrap();
+    let result = assert_gossip_hardening_invariant(&cfg, true);
+    assert!(
+        result.is_err(),
+        "flood_publish without validate_messages must fail INV-NETWORK-002"
+    );
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("INV-NETWORK-002"),
+        "error must cite the invariant ID"
+    );
+    assert!(
+        msg.contains("validate_messages"),
+        "error must name the missing half"
+    );
+}
+
+/// Short dedup cache without validation is also aggressive — the invariant
+/// catches dedup-only aggression too, not just flood_publish.
+/// Path-Coverage: P2 (aggressive + no validation -> Err), Pb (short dedup)
+#[test]
+fn aggressive_short_dedup_without_validation_is_rejected() {
+    let cfg = ConfigBuilder::default()
+        .flood_publish(false)
+        .duplicate_cache_time(AGGRESSIVE_DEDUP_THRESHOLD)
+        .build()
+        .unwrap();
+    let result = assert_gossip_hardening_invariant(&cfg, true);
+    assert!(
+        result.is_err(),
+        "short dedup without validate_messages must fail INV-NETWORK-002"
+    );
+}
+
+/// Both halves required: validate_messages alone is not enough if the bounded
+/// queue is missing. flood_publish + validate_messages + unbounded -> Err.
+/// Path-Coverage: P3 (aggressive + validation + unbounded -> Err)
+#[test]
+fn aggressive_with_validation_but_unbounded_queue_is_rejected() {
+    let cfg = ConfigBuilder::default()
+        .flood_publish(true)
+        .validate_messages()
+        .duplicate_cache_time(Duration::from_secs(60))
+        .build()
+        .unwrap();
+    let result = assert_gossip_hardening_invariant(&cfg, false);
+    assert!(
+        result.is_err(),
+        "aggressive config with unbounded queue must fail INV-NETWORK-002"
+    );
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("bounded"),
+        "error must name the missing bounded queue half"
+    );
+}
+
+/// Non-aggressive config (flood_publish=false, long dedup) should be allowed
+/// even without validation or bounded queue — the invariant must not
+/// over-constrain benign configs.
+/// Path-Coverage: P4 (non-aggressive -> Ok), Pd (neither aggressive)
+#[test]
+fn non_aggressive_without_validation_is_allowed() {
+    let cfg = ConfigBuilder::default()
+        .flood_publish(false)
+        .duplicate_cache_time(Duration::from_secs(120))
+        .build()
+        .unwrap();
+    assert!(
+        assert_gossip_hardening_invariant(&cfg, false).is_ok(),
+        "Non-aggressive config must pass INV-NETWORK-002 regardless of validation/queue",
+    );
+}
+
+/// Boundary: dedup exactly at the threshold is aggressive (<=), one second
+/// above is not. This pins the threshold semantics.
+/// Path-Coverage: P5 (boundary at threshold)
+#[test]
+fn dedup_boundary_at_threshold() {
+    // At threshold -> aggressive (requires validation + bounded)
+    let at = ConfigBuilder::default()
+        .flood_publish(false)
+        .duplicate_cache_time(AGGRESSIVE_DEDUP_THRESHOLD)
+        .validate_messages()
+        .build()
+        .unwrap();
+    assert!(
+        assert_gossip_hardening_invariant(&at, true).is_ok(),
+        "At threshold + validation + bounded must pass",
+    );
+
+    // At threshold without validation -> Err
+    let at_no_val = ConfigBuilder::default()
+        .flood_publish(false)
+        .duplicate_cache_time(AGGRESSIVE_DEDUP_THRESHOLD)
+        .build()
+        .unwrap();
+    assert!(
+        assert_gossip_hardening_invariant(&at_no_val, true).is_err(),
+        "At threshold without validation must fail",
+    );
+
+    // One second above threshold -> non-aggressive -> Ok regardless
+    let above = ConfigBuilder::default()
+        .flood_publish(false)
+        .duplicate_cache_time(AGGRESSIVE_DEDUP_THRESHOLD + Duration::from_secs(1))
+        .build()
+        .unwrap();
+    assert!(
+        assert_gossip_hardening_invariant(&above, false).is_ok(),
+        "Above threshold must be non-aggressive and pass regardless",
+    );
+}
+
+/// Both aggressive triggers active simultaneously: flood_publish + short dedup.
+/// Must require both halves.
+/// Path-Coverage: Pc (both aggressive)
+#[test]
+fn both_aggressive_triggers_require_both_halves() {
+    // Both aggressive, both mitigations -> Ok
+    let ok_cfg = ConfigBuilder::default()
+        .flood_publish(true)
+        .duplicate_cache_time(AGGRESSIVE_DEDUP_THRESHOLD)
+        .validate_messages()
+        .build()
+        .unwrap();
+    assert!(assert_gossip_hardening_invariant(&ok_cfg, true).is_ok());
+
+    // Both aggressive, missing validation -> Err
+    let no_val = ConfigBuilder::default()
+        .flood_publish(true)
+        .duplicate_cache_time(AGGRESSIVE_DEDUP_THRESHOLD)
+        .build()
+        .unwrap();
+    assert!(assert_gossip_hardening_invariant(&no_val, true).is_err());
+
+    // Both aggressive, missing bounded queue -> Err
+    let no_bound = ConfigBuilder::default()
+        .flood_publish(true)
+        .duplicate_cache_time(AGGRESSIVE_DEDUP_THRESHOLD)
+        .validate_messages()
+        .build()
+        .unwrap();
+    assert!(assert_gossip_hardening_invariant(&no_bound, false).is_err());
 }
