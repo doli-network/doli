@@ -26,6 +26,7 @@ use crate::peer_cache::PeerCache;
 use crate::rate_limit::RateLimiter;
 use crypto::PublicKey;
 
+use super::backpressure::enqueue_or_shed;
 use super::helpers::{all_addresses_routable, is_routable_address};
 use super::types::{NetworkEvent, GENESIS_MISMATCH_COOLDOWN_SECS};
 use crate::protocols::status::{CURRENT_PROTOCOL_VERSION, MIN_PEER_PROTOCOL_VERSION};
@@ -43,6 +44,7 @@ pub(super) async fn handle_behaviour_event(
     genesis_mismatch_cooldown: &mut HashMap<PeerId, Instant>,
     stale_peer_ids: &mut HashMap<PeerId, Instant>,
     best_slot: &Arc<std::sync::atomic::AtomicU32>,
+    shed_metrics: &std::sync::Arc<super::backpressure::GossipShedMetrics>,
 ) {
     match event {
         DoliBehaviourEvent::Gossipsub(gossipsub::Event::Message {
@@ -151,9 +153,11 @@ pub(super) async fn handle_behaviour_event(
                             recv_ts,
                             is_candidate_next
                         );
-                        let _ = event_tx
-                            .send(NetworkEvent::NewBlock(block, propagation_source))
-                            .await;
+                        enqueue_or_shed(
+                            event_tx,
+                            NetworkEvent::NewBlock(block, propagation_source),
+                            shed_metrics,
+                        );
                     }
                     t if t == crate::gossip::TIER1_BLOCKS_TOPIC => {
                         if !rate_limiter.check_block(&propagation_source) {
@@ -174,18 +178,22 @@ pub(super) async fn handle_behaviour_event(
                             msg_size,
                             recv_ts
                         );
-                        let _ = event_tx
-                            .send(NetworkEvent::NewBlock(block, propagation_source))
-                            .await;
+                        enqueue_or_shed(
+                            event_tx,
+                            NetworkEvent::NewBlock(block, propagation_source),
+                            shed_metrics,
+                        );
                     }
                     t if t.starts_with("/doli/r") && t.ends_with("/blocks/1") => {
                         if !rate_limiter.check_block(&propagation_source) {
                             return;
                         }
                         rate_limiter.record_block(&propagation_source, msg_size);
-                        let _ = event_tx
-                            .send(NetworkEvent::NewBlock(block, propagation_source))
-                            .await;
+                        enqueue_or_shed(
+                            event_tx,
+                            NetworkEvent::NewBlock(block, propagation_source),
+                            shed_metrics,
+                        );
                     }
                     _ => {} // unreachable — is_block_body_topic already filtered
                 }

@@ -10,7 +10,9 @@
 //! - `swarm_events` — Swarm-level event handling (connections, listen addrs)
 //! - `behaviour_events` — Behaviour-level event handling (gossip, identify, status, sync)
 //! - `command_handling` — Network command dispatch (publish, dial, request-response)
+//! - `backpressure` — Bounded load-shedding gossip event queue (INC-I-114)
 
+pub(super) mod backpressure;
 mod behaviour_events;
 mod command_handling;
 mod helpers;
@@ -45,6 +47,7 @@ use crate::transport::build_transport;
 use crypto::PublicKey;
 use libp2p::request_response::ResponseChannel;
 
+use backpressure::GossipShedMetrics;
 use helpers::{load_keypair, plan_startup_dials, save_keypair};
 use swarm_loop::run_swarm;
 
@@ -68,6 +71,9 @@ pub struct NetworkService {
     /// Updated by the node after every apply_block. Read by the network layer
     /// to exempt candidate-next blocks from per-peer rate limiting.
     best_slot: Arc<AtomicU32>,
+    /// INC-I-114: Load-shedding metrics for gossip block events.
+    /// Shared with the swarm task (writer) and exposed via getter for M2/RPC.
+    gossip_shed_metrics: Arc<GossipShedMetrics>,
 }
 
 impl NetworkService {
@@ -82,6 +88,9 @@ impl NetworkService {
         let command_buf = (config.max_peers * 4).clamp(2048, 32768);
         let (event_tx, event_rx) = mpsc::channel(event_buf);
         let (command_tx, command_rx) = mpsc::channel(command_buf);
+
+        // INC-I-114: Gossip block load-shedding metrics (shared with swarm task)
+        let gossip_shed_metrics = Arc::new(GossipShedMetrics::new());
 
         let peers = Arc::new(RwLock::new(HashMap::new()));
 
@@ -376,6 +385,7 @@ impl NetworkService {
         let config_clone = config.clone();
         let peer_cache_path = config.peer_cache_path.clone();
         let best_slot_clone = best_slot.clone();
+        let shed_metrics_clone = gossip_shed_metrics.clone();
 
         tokio::spawn(async move {
             run_swarm(
@@ -388,6 +398,7 @@ impl NetworkService {
                 discv5_events,
                 discv5_svc,
                 best_slot_clone,
+                shed_metrics_clone,
             )
             .await;
         });
@@ -403,6 +414,7 @@ impl NetworkService {
             command_tx,
             local_peer_id,
             best_slot,
+            gossip_shed_metrics,
         })
     }
 
@@ -413,6 +425,11 @@ impl NetworkService {
         self.best_slot.store(slot, Ordering::Relaxed);
     }
 
+    /// INC-I-114: Access gossip block load-shedding metrics.
+    /// Used by M2 watchdog and RPC layer to monitor drop counts.
+    pub fn gossip_shed_metrics(&self) -> Arc<GossipShedMetrics> {
+        self.gossip_shed_metrics.clone()
+    }
     /// Get the next network event
     pub async fn next_event(&mut self) -> Option<NetworkEvent> {
         self.event_rx.recv().await

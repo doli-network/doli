@@ -538,6 +538,23 @@ Token bucket rate limiting protects against DoS attacks at both per-peer and glo
 - Stale peer cleanup (max 1000 tracked peers)
 - Can be disabled for testing via config
 
+
+#### 6.1.3a Gossip Event Queue Load-Shedding (INC-I-114)
+
+Gossip block floods can back-pressure the event channel, suspending the swarm
+task and causing libp2p's internal message buffer to grow unboundedly (7.44 GB
+in the INC-I-114 incident). Defense in depth:
+
+1. **Staleness filter** (cc1b9c77): `validate_messages=true` + `classify_block_gossip()`
+   suppresses re-forwarding of stale blocks at the gossipsub validation layer.
+2. **Load-shedding enqueue** (M1): accepted blocks use `try_send` (non-blocking)
+   instead of `.send().await`. When the bounded event channel is full, the block
+   is dropped and counted by `GossipShedMetrics`. The swarm task never suspends,
+   so libp2p drains its internal queue normally.
+3. Only block-topic sends use load-shedding. Non-block sends retain backpressure.
+4. Dropped blocks are recoverable via sync protocol (GetBlocks request-response).
+
+**Implementation**: `crates/network/src/service/backpressure.rs` (metrics + enqueue_or_shed).
 #### 6.1.4 Transaction Malleability Prevention
 
 Transaction hashes exclude signatures to prevent third-party modification.

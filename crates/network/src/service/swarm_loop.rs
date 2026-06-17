@@ -39,6 +39,7 @@ pub(super) async fn run_swarm(
     mut discv5_events: Option<mpsc::Receiver<discv5::Event>>,
     discv5_service: Option<std::sync::Arc<crate::discovery::discv5_service::Discv5Service>>,
     best_slot: Arc<std::sync::atomic::AtomicU32>,
+    shed_metrics: std::sync::Arc<super::backpressure::GossipShedMetrics>,
 ) {
     // Periodic DHT refresh: re-run Kademlia bootstrap every 60s so that peers
     // discover each other through shared bootstrap nodes. Without this, a node
@@ -132,7 +133,7 @@ pub(super) async fn run_swarm(
         tokio::select! {
             // Handle swarm events
             event = swarm.select_next_some() => {
-                handle_swarm_event(event, &mut swarm, &event_tx, &peers, &config, &peer_cache_path, &mut rate_limiter, &mut genesis_mismatch_cooldown, &mut mismatch_redial_cooldown, &mut dial_backoff, &mut eviction_cooldown, &mut bootstrap_peers, &mut stale_peer_ids, &best_slot).await;
+                handle_swarm_event(event, &mut swarm, &event_tx, &peers, &config, &peer_cache_path, &mut rate_limiter, &mut genesis_mismatch_cooldown, &mut mismatch_redial_cooldown, &mut dial_backoff, &mut eviction_cooldown, &mut bootstrap_peers, &mut stale_peer_ids, &best_slot, &shed_metrics).await;
             }
 
             // Handle commands — intercept BroadcastTransaction for batching

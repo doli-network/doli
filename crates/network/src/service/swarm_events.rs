@@ -41,6 +41,7 @@ pub(super) async fn handle_swarm_event(
     bootstrap_peers: &mut HashMap<PeerId, Instant>,
     stale_peer_ids: &mut HashMap<PeerId, Instant>,
     best_slot: &Arc<std::sync::atomic::AtomicU32>,
+    shed_metrics: &std::sync::Arc<super::backpressure::GossipShedMetrics>,
 ) {
     match event {
         SwarmEvent::ConnectionEstablished {
@@ -258,6 +259,7 @@ pub(super) async fn handle_swarm_event(
                 genesis_mismatch_cooldown,
                 stale_peer_ids,
                 best_slot,
+                shed_metrics,
             )
             .await;
         }

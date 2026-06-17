@@ -1461,6 +1461,8 @@ The `validate_messages=true` setting ensures that gossipsub does not auto-forwar
 
 The staleness threshold of 6 slots (60s at SLOT_DURATION=10s) tolerates clock skew and propagation delay while filtering blocks from the INC-I-114 storm pattern (3-9 hours old). When `genesis_time` is unset (0), staleness filtering is disabled (fail-open) to prevent silent gossip death from misconfiguration.
 
+**Load-shedding event queue (INC-I-114 Part B, M1).** After staleness filtering, accepted blocks are enqueued to the node event channel via a non-blocking `try_send`. If the bounded channel is full (consumer behind), the block is dropped and counted by `GossipShedMetrics` rather than suspending the swarm task. This prevents libp2p's internal message buffer from growing unboundedly during a gossip flood. Only block-topic sends use this load-shedding path; non-block event sends (transactions, headers, votes, heartbeats, attestations) remain on their backpressure-aware `.send().await` path. Dropped blocks are recoverable via the sync protocol (GetBlocks request-response).
+
 ---
 
 ## 8. Networks
