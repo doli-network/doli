@@ -21,6 +21,13 @@ futures.workspace = true
 async-trait.workspace = true
 prost.workspace = true
 
+# INC-I-114 M2: the memory watchdog's Linux RSS sampler
+# (watchdog.rs::sample_resident_bytes_linux) calls libc::sysconf(_SC_PAGESIZE).
+# Linux-only — macOS/other platforms use the cfg(not(linux)) fail-open path and
+# do not need libc. Gated here so the dep is not pulled on non-Linux builds.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 vdf = { workspace = true }
 tempfile = { workspace = true }
