@@ -295,6 +295,79 @@ fn resolve_client_ip(
     peer_ip
 }
 
+/// Handle JSON-RPC request — manually parse body so malformed JSON returns
+/// a proper JSON-RPC error instead of Axum's default plain-text 422.
+async fn handle_rpc(
+    State(shared): State<Arc<RpcSharedState>>,
+    ConnectInfo(client_addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> impl IntoResponse {
+    // Parse JSON body manually
+    let request: JsonRpcRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(_) => {
+            let resp = JsonRpcResponse::error(serde_json::Value::Null, RpcError::parse_error());
+            return (
+                StatusCode::OK,
+                [(header::CONTENT_TYPE, "application/json")],
+                Json(resp),
+            );
+        }
+    };
+
+    // Validate JSON-RPC version
+    if request.jsonrpc != "2.0" {
+        let resp = JsonRpcResponse::error(request.id, RpcError::invalid_request());
+        return (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/json")],
+            Json(resp),
+        );
+    }
+
+    // Check admin authorization
+    if let Err(e) = check_admin_auth(&shared, &headers, &request.method, client_addr) {
+        let resp = JsonRpcResponse::error(request.id, e);
+        return (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/json")],
+            Json(resp),
+        );
+    }
+
+    let response = shared.context.handle_request(request).await;
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/json")],
+        Json(response),
+    )
+}
+
+/// Handle batch JSON-RPC requests
+#[allow(dead_code)]
+async fn handle_batch_rpc(
+    State(context): State<Arc<RpcContext>>,
+    Json(requests): Json<Vec<JsonRpcRequest>>,
+) -> impl IntoResponse {
+    let mut responses = Vec::with_capacity(requests.len());
+
+    for request in requests {
+        if request.jsonrpc != "2.0" {
+            responses.push(JsonRpcResponse::error(
+                request.id,
+                RpcError::invalid_request(),
+            ));
+            continue;
+        }
+
+        let response = context.handle_request(request).await;
+        responses.push(response);
+    }
+
+    Json(responses)
+}
+
 #[cfg(test)]
 mod proxy_tests {
     use super::*;
@@ -374,77 +447,4 @@ mod proxy_tests {
         let trusted = vec![peer];
         assert_eq!(resolve_client_ip(peer, &headers, &trusted), peer);
     }
-}
-
-/// Handle JSON-RPC request — manually parse body so malformed JSON returns
-/// a proper JSON-RPC error instead of Axum's default plain-text 422.
-async fn handle_rpc(
-    State(shared): State<Arc<RpcSharedState>>,
-    ConnectInfo(client_addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> impl IntoResponse {
-    // Parse JSON body manually
-    let request: JsonRpcRequest = match serde_json::from_slice(&body) {
-        Ok(r) => r,
-        Err(_) => {
-            let resp = JsonRpcResponse::error(serde_json::Value::Null, RpcError::parse_error());
-            return (
-                StatusCode::OK,
-                [(header::CONTENT_TYPE, "application/json")],
-                Json(resp),
-            );
-        }
-    };
-
-    // Validate JSON-RPC version
-    if request.jsonrpc != "2.0" {
-        let resp = JsonRpcResponse::error(request.id, RpcError::invalid_request());
-        return (
-            StatusCode::OK,
-            [(header::CONTENT_TYPE, "application/json")],
-            Json(resp),
-        );
-    }
-
-    // Check admin authorization
-    if let Err(e) = check_admin_auth(&shared, &headers, &request.method, client_addr) {
-        let resp = JsonRpcResponse::error(request.id, e);
-        return (
-            StatusCode::OK,
-            [(header::CONTENT_TYPE, "application/json")],
-            Json(resp),
-        );
-    }
-
-    let response = shared.context.handle_request(request).await;
-    (
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, "application/json")],
-        Json(response),
-    )
-}
-
-/// Handle batch JSON-RPC requests
-#[allow(dead_code)]
-async fn handle_batch_rpc(
-    State(context): State<Arc<RpcContext>>,
-    Json(requests): Json<Vec<JsonRpcRequest>>,
-) -> impl IntoResponse {
-    let mut responses = Vec::with_capacity(requests.len());
-
-    for request in requests {
-        if request.jsonrpc != "2.0" {
-            responses.push(JsonRpcResponse::error(
-                request.id,
-                RpcError::invalid_request(),
-            ));
-            continue;
-        }
-
-        let response = context.handle_request(request).await;
-        responses.push(response);
-    }
-
-    Json(responses)
 }
