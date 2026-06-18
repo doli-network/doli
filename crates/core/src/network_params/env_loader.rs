@@ -275,6 +275,14 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
                 defaults.ghost_exclusion_activation_height,
             )
         },
+        epoch_prune_activation_height: if is_mainnet {
+            defaults.epoch_prune_activation_height
+        } else {
+            env_parse(
+                "DOLI_EPOCH_PRUNE_ACTIVATION_HEIGHT",
+                defaults.epoch_prune_activation_height,
+            )
+        },
         // INC-I-075: locked for mainnet — overriding could resurrect the
         // INC-I-068 mixed-version cascade. Testnet/devnet may override for
         // mixed-cohort regression testing.

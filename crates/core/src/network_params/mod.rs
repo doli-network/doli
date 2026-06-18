@@ -224,6 +224,21 @@ pub struct NetworkParams {
     /// Mainnet: u64::MAX (not yet activated). Testnet: 10,830. Devnet: 0.
     pub ghost_exclusion_activation_height: u64,
 
+    /// INC-I-116: Height at which the epoch-boundary liveness prune activates.
+    /// Before: proportional 2/3 floor (relative to effective_active) overrides the
+    /// attestation filter when many producers are absent.
+    /// After: absolute MIN_PRODUCERS_FLOOR=3 replaces the proportional floor. Absent
+    /// producers are pruned from the schedule at every epoch boundary, re-included
+    /// automatically when they resume attesting (no on-chain transaction needed).
+    ///
+    /// Three-question gate (INC-I-075):
+    ///   Q1: No — no user-submittable transaction triggers this path.
+    ///   Q2: YES — attestation pattern determines which producers are scheduled.
+    ///   Q3: NO — post-activation, the scheduler produces a DIFFERENT producer_list
+    ///       for the same inputs (fewer absent producers included).
+    ///   Verdict: activation height REQUIRED.
+    pub epoch_prune_activation_height: u64,
+
     /// INC-I-075: Height at which the INC-I-068 weight=0 filter activates.
     ///
     /// Before this height: fully-delegated producers (`selection_weight == 0`)

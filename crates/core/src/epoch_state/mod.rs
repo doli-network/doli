@@ -36,6 +36,8 @@ pub struct EpochDerivationInput {
     pub registered_at: HashMap<PublicKey, u64>,
     /// INC-I-046: Ghost exclusion activation height (from NetworkParams)
     pub ghost_exclusion_activation_height: u64,
+    /// INC-I-116: Epoch prune activation height (from NetworkParams)
+    pub epoch_prune_activation_height: u64,
 }
 
 /// Block data needed by accumulate_block. Extracted from BlockHeader so
@@ -141,7 +143,7 @@ impl EpochState {
     pub fn derive_at_boundary(prev: &EpochState, input: &EpochDerivationInput) -> EpochState {
         use crate::consensus::{
             ACTIVE_PRODUCERS_CAP, GHOST_EXCLUSION_GRACE_EPOCHS, MIN_ATTESTATION_MINUTES,
-            TIER_PROMOTION_ACTIVATION_HEIGHT, TIER_SYSTEM_ACTIVATION_HEIGHT,
+            MIN_PRODUCERS_FLOOR, TIER_PROMOTION_ACTIVATION_HEIGHT, TIER_SYSTEM_ACTIVATION_HEIGHT,
         };
 
         let epoch = input.epoch;
@@ -206,19 +208,38 @@ impl EpochState {
         };
         let effective_active = active_count - ghost_count;
 
-        if new_list.len() < (effective_active * 2 / 3)
-            || (new_list.is_empty() && effective_active > 0)
-        {
-            if ghost_exclusion_active && ghost_count > 0 {
-                // Mass event — include all non-ghost producers
-                new_list = input
-                    .active_producers
-                    .iter()
-                    .filter(|pk| !is_ghost(pk))
-                    .copied()
-                    .collect();
-            } else {
-                new_list = input.active_producers.clone();
+        // INC-I-116: Gated floor logic
+        if input.height >= input.epoch_prune_activation_height {
+            // Post-activation: absolute floor (MIN_PRODUCERS_FLOOR).
+            // If the attestation-filtered set is too small, fall back to all
+            // non-ghost active producers (preserving ghost exclusion = C1).
+            if new_list.len() < MIN_PRODUCERS_FLOOR {
+                if ghost_exclusion_active && ghost_count > 0 {
+                    new_list = input
+                        .active_producers
+                        .iter()
+                        .filter(|pk| !is_ghost(pk))
+                        .copied()
+                        .collect();
+                } else {
+                    new_list = input.active_producers.clone();
+                }
+            }
+        } else {
+            // Pre-activation: VERBATIM proportional floor (byte-identical to current).
+            if new_list.len() < (effective_active * 2 / 3)
+                || (new_list.is_empty() && effective_active > 0)
+            {
+                if ghost_exclusion_active && ghost_count > 0 {
+                    new_list = input
+                        .active_producers
+                        .iter()
+                        .filter(|pk| !is_ghost(pk))
+                        .copied()
+                        .collect();
+                } else {
+                    new_list = input.active_producers.clone();
+                }
             }
         }
 

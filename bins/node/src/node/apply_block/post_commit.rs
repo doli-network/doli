@@ -305,6 +305,11 @@ impl Node {
                     .network
                     .params()
                     .ghost_exclusion_activation_height,
+                epoch_prune_activation_height: self
+                    .config
+                    .network
+                    .params()
+                    .epoch_prune_activation_height,
             };
 
             // THE canonical derivation — one function, one path, compile-time guarantee.

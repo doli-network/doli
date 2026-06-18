@@ -715,6 +715,11 @@ impl Node {
                         .network
                         .params()
                         .ghost_exclusion_activation_height,
+                    epoch_prune_activation_height: self
+                        .config
+                        .network
+                        .params()
+                        .epoch_prune_activation_height,
                 };
                 let derived = doli_core::EpochState::derive_at_boundary(&self.epoch_state, &input);
                 info!(

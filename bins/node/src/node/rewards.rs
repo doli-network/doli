@@ -916,26 +916,53 @@ impl Node {
                 };
                 let effective_active = active_count - ghost_count;
 
-                if new_list.len() < (effective_active * 2 / 3)
-                    || (new_list.is_empty() && effective_active > 0)
-                {
-                    if ghost_exclusion_active && ghost_count > 0 {
-                        warn!(
-                            "[STARTUP] Attestation filter left {}/{} (<2/3 of {} non-ghost) — including all non-ghosts (excluded {} ghosts)",
-                            new_list.len(), active_count, effective_active, ghost_count
-                        );
-                        new_list = active_at
-                            .iter()
-                            .filter(|p| !is_ghost(&p.public_key))
-                            .map(|p| p.public_key)
-                            .collect();
-                    } else {
-                        warn!(
-                            "[STARTUP] Attestation filter left {}/{} (<2/3) — mass event, including all",
-                            new_list.len(),
-                            active_count
-                        );
-                        new_list = active_at.iter().map(|p| p.public_key).collect();
+                if epoch_boundary_h >= self.config.network.params().epoch_prune_activation_height {
+                    // Post-activation: absolute floor (MIN_PRODUCERS_FLOOR)
+                    use doli_core::consensus::MIN_PRODUCERS_FLOOR;
+                    if new_list.len() < MIN_PRODUCERS_FLOOR {
+                        if ghost_exclusion_active && ghost_count > 0 {
+                            warn!(
+                                "[STARTUP] Attestation filter left {}/{} (< absolute floor {} of {} non-ghost) — including all non-ghosts (excluded {} ghosts)",
+                                new_list.len(), active_count, MIN_PRODUCERS_FLOOR, effective_active, ghost_count
+                            );
+                            new_list = active_at
+                                .iter()
+                                .filter(|p| !is_ghost(&p.public_key))
+                                .map(|p| p.public_key)
+                                .collect();
+                        } else {
+                            warn!(
+                                "[STARTUP] Attestation filter left {}/{} (< absolute floor {}) — including all",
+                                new_list.len(),
+                                active_count,
+                                MIN_PRODUCERS_FLOOR,
+                            );
+                            new_list = active_at.iter().map(|p| p.public_key).collect();
+                        }
+                    }
+                } else {
+                    // Pre-activation: VERBATIM proportional floor (byte-identical to current)
+                    if new_list.len() < (effective_active * 2 / 3)
+                        || (new_list.is_empty() && effective_active > 0)
+                    {
+                        if ghost_exclusion_active && ghost_count > 0 {
+                            warn!(
+                                "[STARTUP] Attestation filter left {}/{} (<2/3 of {} non-ghost) — including all non-ghosts (excluded {} ghosts)",
+                                new_list.len(), active_count, effective_active, ghost_count
+                            );
+                            new_list = active_at
+                                .iter()
+                                .filter(|p| !is_ghost(&p.public_key))
+                                .map(|p| p.public_key)
+                                .collect();
+                        } else {
+                            warn!(
+                                "[STARTUP] Attestation filter left {}/{} (<2/3) — mass event, including all",
+                                new_list.len(),
+                                active_count
+                            );
+                            new_list = active_at.iter().map(|p| p.public_key).collect();
+                        }
                     }
                 }
             }

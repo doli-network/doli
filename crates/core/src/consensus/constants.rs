@@ -146,6 +146,13 @@ pub const GHOST_EXCLUSION_ACTIVATION_HEIGHT: u64 = u64::MAX;
 /// needs at least 3 epochs to appear in the lookback union via the "extra" bitfield decode.
 pub const GHOST_EXCLUSION_GRACE_EPOCHS: u64 = 3;
 
+/// Absolute minimum number of producers in the epoch schedule (post epoch-prune activation).
+/// With MAX_FALLBACK_RANKS=2, 3 producers ensures every slot has 2 candidates from
+/// a pool of 3. Replaces the proportional 2/3 floor that was relative to effective_active
+/// (which included absent producers and thereby neutralized the attestation filter).
+/// INC-I-116 M1.
+pub const MIN_PRODUCERS_FLOOR: usize = 3;
+
 // ==================== Proof of Time Parameters ====================
 
 /// Slot duration in seconds.

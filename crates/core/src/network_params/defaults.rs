@@ -96,6 +96,9 @@ impl NetworkParams {
                 security_audit_activation_height: 27_547,
                 // INC-I-046: Ghost exclusion activates at epoch boundary >= 18152
                 ghost_exclusion_activation_height: 18_152,
+                // INC-I-116: frozen by default — operator pins a concrete height
+                // before deploy
+                epoch_prune_activation_height: u64::MAX,
                 // INC-I-075: Re-gate the INC-I-068 weight=0 filter at a future
                 // mainnet height so the consensus-shape change activates
                 // synchronously instead of unilaterally at deploy time.
@@ -324,6 +327,8 @@ impl NetworkParams {
                 security_audit_activation_height: 272,
                 // INC-I-046: Ghost exclusion co-activates at h=272.
                 ghost_exclusion_activation_height: 272,
+                // INC-I-116: always active on testnet
+                epoch_prune_activation_height: 0,
                 // INC-I-075: Testnet never ran v6.21.16 in production — always
                 // apply the INC-I-068 filter (matches current testnet runtime).
                 inc_i_068_weight_filter_activation_height: 0,
@@ -473,6 +478,8 @@ impl NetworkParams {
                 epoch_state_reorg_activation_height: 0,
                 security_audit_activation_height: 0, // Always active on devnet
                 ghost_exclusion_activation_height: 0, // Always active on devnet
+                // INC-I-116: always active on devnet
+                epoch_prune_activation_height: 0,
                 // INC-I-075: Always active on devnet (clean chain).
                 inc_i_068_weight_filter_activation_height: 0,
                 // INC-I-078: devnet default disabled (u64::MAX). Tests that
