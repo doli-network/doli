@@ -15,6 +15,101 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_m2;
+
+/// INC-I-116 M2: Pure function that computes the attestation-filtered + floor-adjusted
+/// producer list. Extracted from `derive_at_boundary()` so `rewards.rs` can call the
+/// same logic instead of maintaining a 100-line inline duplicate.
+///
+/// Callers are responsible for:
+/// - Deciding whether to call this function at all (epoch<=1 → skip, use all active)
+/// - Building `attested_union` from the appropriate source (epoch state lookback or block scan)
+///
+/// Returns the filtered (and possibly floor-adjusted) list, UNSORTED. The caller sorts
+/// after if needed.
+#[allow(clippy::too_many_arguments)]
+pub fn compute_live_producer_list(
+    active_producers: &[PublicKey],
+    attested_union: &HashSet<&PublicKey>,
+    registered_at: &HashMap<PublicKey, u64>,
+    blocks_per_epoch: u64,
+    epoch: u64,
+    height: u64,
+    ghost_exclusion_activation_height: u64,
+    epoch_prune_activation_height: u64,
+) -> Vec<PublicKey> {
+    use crate::consensus::{GHOST_EXCLUSION_GRACE_EPOCHS, MIN_PRODUCERS_FLOOR};
+
+    // Step 1: Attestation filter — keep only producers present in attested_union
+    let mut new_list: Vec<PublicKey> = active_producers
+        .iter()
+        .filter(|pk| attested_union.contains(pk))
+        .copied()
+        .collect();
+
+    // Step 2: Ghost identification + counting
+    let active_count = active_producers.len();
+    let ghost_exclusion_active = height >= ghost_exclusion_activation_height && epoch > 1;
+
+    let is_ghost = |pk: &PublicKey| -> bool {
+        if !ghost_exclusion_active {
+            return false;
+        }
+        if attested_union.contains(pk) {
+            return false;
+        }
+        match registered_at.get(pk) {
+            Some(&reg_height) => {
+                let reg_epoch = reg_height.checked_div(blocks_per_epoch).unwrap_or(0);
+                epoch.saturating_sub(reg_epoch) > GHOST_EXCLUSION_GRACE_EPOCHS
+            }
+            None => false, // Unknown registration: not a ghost (conservative)
+        }
+    };
+
+    let ghost_count = if ghost_exclusion_active {
+        active_producers.iter().filter(|pk| is_ghost(pk)).count()
+    } else {
+        0
+    };
+    let effective_active = active_count - ghost_count;
+
+    // Step 3: Gated floor logic
+    if height >= epoch_prune_activation_height {
+        // Post-activation: absolute floor (MIN_PRODUCERS_FLOOR).
+        // If the attestation-filtered set is too small, fall back to all
+        // non-ghost active producers (preserving ghost exclusion = C1).
+        if new_list.len() < MIN_PRODUCERS_FLOOR {
+            if ghost_exclusion_active && ghost_count > 0 {
+                new_list = active_producers
+                    .iter()
+                    .filter(|pk| !is_ghost(pk))
+                    .copied()
+                    .collect();
+            } else {
+                new_list = active_producers.to_vec();
+            }
+        }
+    } else {
+        // Pre-activation: VERBATIM proportional floor (byte-identical to current).
+        if new_list.len() < (effective_active * 2 / 3)
+            || (new_list.is_empty() && effective_active > 0)
+        {
+            if ghost_exclusion_active && ghost_count > 0 {
+                new_list = active_producers
+                    .iter()
+                    .filter(|pk| !is_ghost(pk))
+                    .copied()
+                    .collect();
+            } else {
+                new_list = active_producers.to_vec();
+            }
+        }
+    }
+
+    new_list
+}
 
 /// Parameters needed by derive_at_boundary that come from external sources
 /// (NetworkParams, ProducerSet, UtxoSet). Extracted by the caller so
@@ -142,8 +237,8 @@ impl EpochState {
     /// Returns the new epoch state for the epoch being entered.
     pub fn derive_at_boundary(prev: &EpochState, input: &EpochDerivationInput) -> EpochState {
         use crate::consensus::{
-            ACTIVE_PRODUCERS_CAP, GHOST_EXCLUSION_GRACE_EPOCHS, MIN_ATTESTATION_MINUTES,
-            MIN_PRODUCERS_FLOOR, TIER_PROMOTION_ACTIVATION_HEIGHT, TIER_SYSTEM_ACTIVATION_HEIGHT,
+            ACTIVE_PRODUCERS_CAP, MIN_ATTESTATION_MINUTES, TIER_PROMOTION_ACTIVATION_HEIGHT,
+            TIER_SYSTEM_ACTIVATION_HEIGHT,
         };
 
         let epoch = input.epoch;
@@ -151,7 +246,10 @@ impl EpochState {
         // 1. Bond snapshot
         let bond_snapshot = input.bond_counts.clone();
 
-        // 2. Attestation-filtered producer list
+        // 2. Attestation-filtered producer list + deadlock safety floor
+        //    INC-I-116 M2: delegated to compute_live_producer_list() (shared with rewards.rs).
+        //    The epoch<=1 / have_full_history checks remain here because they depend on
+        //    epoch state context that compute_live_producer_list doesn't have.
         let attested_union: HashSet<&PublicKey> =
             prev.attested_sets.iter().flat_map(|s| s.iter()).collect();
 
@@ -160,88 +258,22 @@ impl EpochState {
         } else {
             let have_full_history = !prev.attested_sets[0].is_empty();
             if have_full_history || input.height < input.snap_attestation_skip_height {
-                input
-                    .active_producers
-                    .iter()
-                    .filter(|pk| attested_union.contains(pk))
-                    .copied()
-                    .collect()
+                // Attestation data is available — delegate filtering + floor to shared function
+                compute_live_producer_list(
+                    &input.active_producers,
+                    &attested_union,
+                    &input.registered_at,
+                    input.blocks_per_epoch,
+                    epoch,
+                    input.height,
+                    input.ghost_exclusion_activation_height,
+                    input.epoch_prune_activation_height,
+                )
             } else {
                 // Empty attestation accumulators — use all active producers
                 input.active_producers.clone()
             }
         };
-
-        // 3. Deadlock safety floor: 2/3 of active producers
-        //    INC-I-046: After ghost_exclusion_activation_height, subtract ghost producers
-        //    from the denominator. A ghost = not attested in ANY of 3 lookback epochs AND
-        //    registered for > GHOST_EXCLUSION_GRACE_EPOCHS. This prevents permanently-offline
-        //    producers from inflating the floor and overriding the attestation filter.
-        let active_count = input.active_producers.len();
-        let ghost_exclusion_active =
-            input.height >= input.ghost_exclusion_activation_height && epoch > 1;
-
-        let is_ghost = |pk: &PublicKey| -> bool {
-            if !ghost_exclusion_active {
-                return false;
-            }
-            if attested_union.contains(pk) {
-                return false;
-            }
-            match input.registered_at.get(pk) {
-                Some(&reg_height) => {
-                    let reg_epoch = reg_height.checked_div(input.blocks_per_epoch).unwrap_or(0);
-                    epoch.saturating_sub(reg_epoch) > GHOST_EXCLUSION_GRACE_EPOCHS
-                }
-                None => false, // Unknown registration: not a ghost (conservative)
-            }
-        };
-
-        let ghost_count = if ghost_exclusion_active {
-            input
-                .active_producers
-                .iter()
-                .filter(|pk| is_ghost(pk))
-                .count()
-        } else {
-            0
-        };
-        let effective_active = active_count - ghost_count;
-
-        // INC-I-116: Gated floor logic
-        if input.height >= input.epoch_prune_activation_height {
-            // Post-activation: absolute floor (MIN_PRODUCERS_FLOOR).
-            // If the attestation-filtered set is too small, fall back to all
-            // non-ghost active producers (preserving ghost exclusion = C1).
-            if new_list.len() < MIN_PRODUCERS_FLOOR {
-                if ghost_exclusion_active && ghost_count > 0 {
-                    new_list = input
-                        .active_producers
-                        .iter()
-                        .filter(|pk| !is_ghost(pk))
-                        .copied()
-                        .collect();
-                } else {
-                    new_list = input.active_producers.clone();
-                }
-            }
-        } else {
-            // Pre-activation: VERBATIM proportional floor (byte-identical to current).
-            if new_list.len() < (effective_active * 2 / 3)
-                || (new_list.is_empty() && effective_active > 0)
-            {
-                if ghost_exclusion_active && ghost_count > 0 {
-                    new_list = input
-                        .active_producers
-                        .iter()
-                        .filter(|pk| !is_ghost(pk))
-                        .copied()
-                        .collect();
-                } else {
-                    new_list = input.active_producers.clone();
-                }
-            }
-        }
 
         // 4. Sort by pubkey (deterministic ordering)
         new_list.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));

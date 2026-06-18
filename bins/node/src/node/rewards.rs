@@ -692,14 +692,17 @@ impl Node {
                 .network
                 .params()
                 .security_audit_activation_height;
-            let active: Vec<crypto::PublicKey> = producers
-                .active_producers_for_scheduling_at_height(
-                    epoch_boundary_h,
-                    inc_i_068_activation,
-                    audit_activation_h,
-                )
+            let active_infos = producers.active_producers_for_scheduling_at_height(
+                epoch_boundary_h,
+                inc_i_068_activation,
+                audit_activation_h,
+            );
+            let active: Vec<crypto::PublicKey> =
+                active_infos.iter().map(|p| p.public_key).collect();
+            // INC-I-116 M2: build registered_at map for compute_live_producer_list
+            let registered_at_map: std::collections::HashMap<crypto::PublicKey, u64> = active_infos
                 .iter()
-                .map(|p| p.public_key)
+                .map(|p| (p.public_key, p.registered_at))
                 .collect();
             drop(producers);
 
@@ -774,8 +777,19 @@ impl Node {
                     std::collections::HashSet::new();
                 let mut have_full_epoch = true;
 
-                let mut sorted_for_decode = active.clone();
-                sorted_for_decode.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+                // INC-I-116 M2 Part B: gated decode-list fix.
+                // Pre-activation: keep active.clone() (preserves historical reconstruction).
+                // Post-activation: use self.epoch_state.producer_list (correct list
+                // that matches the encoder — it was set at the previous epoch boundary).
+                let sorted_for_decode = if epoch_boundary_h
+                    >= self.config.network.params().epoch_prune_activation_height
+                {
+                    self.epoch_state.producer_list.clone()
+                } else {
+                    let mut list = active.clone();
+                    list.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+                    list
+                };
 
                 let start_h = if scan_start == 0 { 1 } else { scan_start };
                 for h in start_h..scan_end {
@@ -834,10 +848,24 @@ impl Node {
 
                 let skip_height = self.config.network.params().snap_attestation_skip_height;
                 if have_full_epoch || epoch_boundary_h < skip_height {
-                    active
-                        .into_iter()
-                        .filter(|pk| attested.contains(pk))
-                        .collect()
+                    // INC-I-116 M2: delegate attestation filter + floor logic to
+                    // compute_live_producer_list (shared with derive_at_boundary).
+                    // This replaces ~100 lines of inline duplicate floor logic.
+                    let attested_refs: std::collections::HashSet<&crypto::PublicKey> =
+                        attested.iter().collect();
+                    doli_core::epoch_state::compute_live_producer_list(
+                        &active,
+                        &attested_refs,
+                        &registered_at_map,
+                        blocks_per_epoch,
+                        epoch,
+                        epoch_boundary_h,
+                        self.config
+                            .network
+                            .params()
+                            .ghost_exclusion_activation_height,
+                        self.config.network.params().epoch_prune_activation_height,
+                    )
                 } else {
                     info!(
                         "[STARTUP] Incomplete block history for last {} epoch(s) — using all {} active producers, Light validation until next epoch boundary",
@@ -852,120 +880,6 @@ impl Node {
                     active
                 }
             };
-
-            // Fix #4A (2026-04-15, synmgrefactor): deadlock safety floor
-            // tightened from 1/3 to 2/3 to match post_commit.rs:196. See that
-            // file's explanation: >1/3 un-attested is assumed to be mass event
-            // (outage), not individual inactivity. Canonical BFT threshold.
-            //
-            // INC-I-046: ghost exclusion — same logic as derive_at_boundary.
-            //
-            // INC-I-082 Defect 3: safety floor must use the SAME scheduling-
-            // filtered set as the attestation filter above. Using the unfiltered
-            // active_producers_at_height lets weight=0 producers re-enter via
-            // the "include all" fallback, undoing the scheduling filter.
-            {
-                use doli_core::consensus::GHOST_EXCLUSION_GRACE_EPOCHS;
-                let producers = self.producer_set.read().await;
-                let active_at = producers.active_producers_for_scheduling_at_height(
-                    epoch_boundary_h,
-                    self.config
-                        .network
-                        .params()
-                        .inc_i_068_weight_filter_activation_height,
-                    self.config
-                        .network
-                        .params()
-                        .security_audit_activation_height,
-                );
-                let active_count = active_at.len();
-
-                let ghost_exclusion_active = epoch_boundary_h
-                    >= self
-                        .config
-                        .network
-                        .params()
-                        .ghost_exclusion_activation_height
-                    && epoch > 1;
-
-                let attested_union: std::collections::HashSet<&crypto::PublicKey> = self
-                    .epoch_state
-                    .attested_sets
-                    .iter()
-                    .flat_map(|s| s.iter())
-                    .collect();
-
-                let is_ghost = |pk: &crypto::PublicKey| -> bool {
-                    if !ghost_exclusion_active || attested_union.contains(pk) {
-                        return false;
-                    }
-                    match active_at.iter().find(|p| &p.public_key == pk) {
-                        Some(p) => {
-                            let reg_epoch =
-                                p.registered_at.checked_div(blocks_per_epoch).unwrap_or(0);
-                            epoch.saturating_sub(reg_epoch) > GHOST_EXCLUSION_GRACE_EPOCHS
-                        }
-                        None => false,
-                    }
-                };
-
-                let ghost_count = if ghost_exclusion_active {
-                    active_at.iter().filter(|p| is_ghost(&p.public_key)).count()
-                } else {
-                    0
-                };
-                let effective_active = active_count - ghost_count;
-
-                if epoch_boundary_h >= self.config.network.params().epoch_prune_activation_height {
-                    // Post-activation: absolute floor (MIN_PRODUCERS_FLOOR)
-                    use doli_core::consensus::MIN_PRODUCERS_FLOOR;
-                    if new_list.len() < MIN_PRODUCERS_FLOOR {
-                        if ghost_exclusion_active && ghost_count > 0 {
-                            warn!(
-                                "[STARTUP] Attestation filter left {}/{} (< absolute floor {} of {} non-ghost) — including all non-ghosts (excluded {} ghosts)",
-                                new_list.len(), active_count, MIN_PRODUCERS_FLOOR, effective_active, ghost_count
-                            );
-                            new_list = active_at
-                                .iter()
-                                .filter(|p| !is_ghost(&p.public_key))
-                                .map(|p| p.public_key)
-                                .collect();
-                        } else {
-                            warn!(
-                                "[STARTUP] Attestation filter left {}/{} (< absolute floor {}) — including all",
-                                new_list.len(),
-                                active_count,
-                                MIN_PRODUCERS_FLOOR,
-                            );
-                            new_list = active_at.iter().map(|p| p.public_key).collect();
-                        }
-                    }
-                } else {
-                    // Pre-activation: VERBATIM proportional floor (byte-identical to current)
-                    if new_list.len() < (effective_active * 2 / 3)
-                        || (new_list.is_empty() && effective_active > 0)
-                    {
-                        if ghost_exclusion_active && ghost_count > 0 {
-                            warn!(
-                                "[STARTUP] Attestation filter left {}/{} (<2/3 of {} non-ghost) — including all non-ghosts (excluded {} ghosts)",
-                                new_list.len(), active_count, effective_active, ghost_count
-                            );
-                            new_list = active_at
-                                .iter()
-                                .filter(|p| !is_ghost(&p.public_key))
-                                .map(|p| p.public_key)
-                                .collect();
-                        } else {
-                            warn!(
-                                "[STARTUP] Attestation filter left {}/{} (<2/3) — mass event, including all",
-                                new_list.len(),
-                                active_count
-                            );
-                            new_list = active_at.iter().map(|p| p.public_key).collect();
-                        }
-                    }
-                }
-            }
 
             new_list.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
             info!(
