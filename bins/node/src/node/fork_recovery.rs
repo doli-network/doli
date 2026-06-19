@@ -445,11 +445,26 @@ impl Node {
 
             // Persist to StateDb
             let utxo_pairs = utxo.iter_all();
-            if let Err(e) = self
+            match self
                 .state_db
                 .atomic_replace(&cs, &ps, utxo_pairs.into_iter())
             {
-                error!("[SNAP_SYNC] StateDb atomic_replace failed: {}", e);
+                Ok(()) => {
+                    // INC-I-118: convert the in-memory snapshot UTXO set to the
+                    // state_db-backed variant. Post-snap apply_block writes UTXO
+                    // changes only to state_db (storage Phase 3 — BlockBatch is the
+                    // sole write path), so a frozen InMemory copy would stay at
+                    // snapshot-time state forever. That makes the reward-pool balance
+                    // and per-block state-root reads (both routed through
+                    // self.utxo_set) diverge from a continuous node, triggering an
+                    // [ECON_EPOCH_OVERFLOW] rejection at the first post-snap epoch
+                    // boundary. Mirrors init.rs:305 so snap-synced reads match
+                    // continuous-node reads bit-for-bit.
+                    *utxo = storage::UtxoSet::from_state_db(self.state_db.clone());
+                }
+                Err(e) => {
+                    error!("[SNAP_SYNC] StateDb atomic_replace failed: {}", e);
+                }
             }
 
             // Update sync manager local tip
