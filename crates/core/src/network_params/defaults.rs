@@ -96,9 +96,15 @@ impl NetworkParams {
                 security_audit_activation_height: 27_547,
                 // INC-I-046: Ghost exclusion activates at epoch boundary >= 18152
                 ghost_exclusion_activation_height: 18_152,
-                // INC-I-116: frozen by default — operator pins a concrete height
-                // before deploy
-                epoch_prune_activation_height: u64::MAX,
+                // INC-I-116: epoch-boundary liveness prune (absolute MIN_PRODUCERS_FLOOR
+                // instead of proportional 2/3 floor). Pinned 2026-06-21 at mainnet
+                // tip 446352, lead ~8625 blocks (~24h at 10s/blk) for a rolling
+                // fleet upgrade. The gate is evaluated only at epoch boundaries
+                // (BLOCKS_PER_REWARD_EPOCH=360), so the effective activation is the
+                // first boundary >= 454977 → height 455040 (=360*1264), identical on
+                // every node. A FUTURE AH (NOT 0) is REQUIRED so historical
+                // epoch-state rebuilds below the AH match committed chain history.
+                epoch_prune_activation_height: 454_977,
                 // INC-I-075: Re-gate the INC-I-068 weight=0 filter at a future
                 // mainnet height so the consensus-shape change activates
                 // synchronously instead of unilaterally at deploy time.
@@ -327,8 +333,14 @@ impl NetworkParams {
                 security_audit_activation_height: 272,
                 // INC-I-046: Ghost exclusion co-activates at h=272.
                 ghost_exclusion_activation_height: 272,
-                // INC-I-116: always active on testnet
-                epoch_prune_activation_height: 0,
+                // INC-I-116: epoch-boundary liveness prune. FUTURE AH for a live
+                // rolling deploy onto the already-running testnet (tip≈2800,
+                // 36 blk/epoch, ~8s/blk). h=2916 gives ~8 min lead after the
+                // rebuild+rolling-deploy completes. A future AH (NOT 0) is
+                // REQUIRED so historical epoch-state rebuilds below the AH match
+                // committed chain history — AH=0 would retroactively prune past
+                // boundaries the real chain never pruned → integrity divergence.
+                epoch_prune_activation_height: 2916,
                 // INC-I-075: Testnet never ran v6.21.16 in production — always
                 // apply the INC-I-068 filter (matches current testnet runtime).
                 inc_i_068_weight_filter_activation_height: 0,
