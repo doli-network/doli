@@ -1015,7 +1015,13 @@ fn test_no_forced_counter_oscillation() {
     );
 }
 
-/// Verify blacklist escalation doesn't force counter to 3 for small gaps.
+/// INC-I-120 (RC-2): a SUSTAINED small-gap stall where peers do not recognize
+/// our tip (≥3 — here 25 — consecutive empty headers) IS a genuine fork and MUST
+/// now signal fork recovery. This reverses the prior unconditional "small gaps
+/// never signal" behavior, which left forked nodes looping HeaderFirstSync
+/// forever (the INC-I-120 STALL / INC-I-103/104 1-block offset). The cleanup.rs
+/// guard requires ≥300s no-apply AND ≥3 empty headers — contrast
+/// `test_no_forced_counter_oscillation` (0 empty headers → still no signal).
 #[test]
 fn test_blacklist_escalation_uses_signal_not_counter() {
     let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
@@ -1068,13 +1074,16 @@ fn test_blacklist_escalation_uses_signal_not_counter() {
 
     manager.cleanup();
 
-    // With INC-I-026 + fork_id, small gaps (≤12) just clear blacklist,
-    // no fork signal. Gossip resolves small gaps.
+    // INC-I-120 (RC-2): sustained stall (310s) + small gap + 25 consecutive
+    // empty headers = peers don't recognize our tip = genuine fork. cleanup()
+    // MUST now signal fork recovery so periodic.rs can escalate to a finality-
+    // guarded ShallowRollback (previously this looped HeaderFirstSync forever).
     assert!(
-        !manager.fork.stuck_fork_signal,
-        "Blacklist escalation for small gap must NOT signal fork with deterministic scheduler"
+        manager.fork.stuck_fork_signal,
+        "Sustained small-gap stall with ≥3 empty headers must signal a stuck fork"
     );
-    // Blacklist should be cleared to allow retrying
+    // Blacklist is still cleared during the all-peers-blacklisted escalation so
+    // the rollback retry has a fresh slate of peers.
     assert!(
         manager.fork.header_blacklisted_peers.is_empty(),
         "Blacklist must be cleared after escalation"
@@ -4680,6 +4689,8 @@ mod m2_regression_tests {
 //       Post-condition: transitions to Idle (unchanged by M-RC12-full).
 //   O3: return value — Vec<Block>
 //       Post-condition: vec![] (unchanged for all Headers responses).
+// INPUT PARTITIONS: P1-P4 below — each a distinct empty-headers input class
+//   exercising a different counter/snapshot relationship.
 // PATHS covered by the four tests below:
 //   P1: first empty (counter 0 -> 1), not recently snapped, not post-snap
 //   P2: second empty (counter 1 -> 2), same pre-conditions

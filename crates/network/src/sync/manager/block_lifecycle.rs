@@ -658,6 +658,15 @@ impl SyncManager {
             });
     }
 
+    /// INC-I-120 (RC-2): Report a sustained divergent stall (stuck fork) to the
+    /// RecoveryCoordinator. Called by periodic.rs when the guarded stuck-fork
+    /// signal (raised in cleanup.rs under G3 conditions) is consumed. The
+    /// coordinator escalates this to a finality-guarded ShallowRollback.
+    pub fn report_stuck_fork(&mut self, gap: u64) {
+        self.recovery
+            .report(super::recovery::RecoveryEvidence::StuckFork { gap });
+    }
+
     pub fn reset_sync_for_rollback(&mut self) {
         if self.local_height > 0 && self.local_height <= self.confirmed_height_floor {
             let new_floor = self.local_height.saturating_sub(1);

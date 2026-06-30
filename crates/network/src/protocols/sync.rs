@@ -179,6 +179,31 @@ impl SyncRequest {
             max_count,
         }
     }
+
+    /// INC-I-120: Whether this outbound sync request is subject to the outbound
+    /// rate governor at the `NetworkCommand::RequestSync` chokepoint.
+    ///
+    /// `true`  → bulk-catchup / retry-storm classes. These are what self-
+    ///           amplified into the fleet-collapse storm and MUST be throttled.
+    /// `false` → recovery + canonical-critical classes. Throttling these is the
+    ///           INC-I-049 failure mode (a blunt limiter dropped a canonical
+    ///           block → 9-min fork). They bypass the governor entirely (G1):
+    ///           - `GetStateSnapshot` / `GetStateRoot` — snap-sync recovery
+    ///           - `GetHeadersByHeight` — post-snap canonical anchor recovery
+    ///           - `GetBlockByHash` — orphan-chase fetch of a canonical parent
+    ///           - `DirectAttestation` — causal push (not a fetch retry)
+    pub fn is_rate_governed(&self) -> bool {
+        match self {
+            SyncRequest::GetHeaders { .. }
+            | SyncRequest::GetBodies { .. }
+            | SyncRequest::GetBlockByHeight { .. } => true,
+            SyncRequest::GetBlockByHash { .. }
+            | SyncRequest::GetStateSnapshot { .. }
+            | SyncRequest::GetStateRoot { .. }
+            | SyncRequest::GetHeadersByHeight { .. }
+            | SyncRequest::DirectAttestation { .. } => false,
+        }
+    }
 }
 
 impl SyncResponse {

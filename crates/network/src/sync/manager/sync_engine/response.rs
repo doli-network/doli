@@ -109,16 +109,24 @@ impl SyncManager {
                 if matches!(self.pipeline_data, SyncPipelineData::SnapDownloading { .. }) {
                     self.handle_snap_download_error(peer);
                 } else if err.contains("busy") {
-                    // Peer is rate-limited — temporarily blacklist and retry
-                    // immediately with a different peer instead of waiting 30s
-                    // for the next cleanup tick.
+                    // INC-I-120 (KILL MECHANISM fix): cooperative backoff.
+                    //
+                    // Previously this immediately called start_sync() after a
+                    // "busy" reply. That defeated start_sync()'s own is_syncing()
+                    // guard and self-amplified into a ~40 req/s busy-retry loop
+                    // (3.5M req/node/day) under a fleet-wide fork — the mechanism
+                    // that converted a recoverable fork into fleet-wide resource
+                    // collapse.
+                    //
+                    // Now: blacklist the busy peer (short TTL) and go Idle. The
+                    // next periodic tick (≤1s) re-derives sync against a DIFFERENT
+                    // peer, and every outbound request is bounded by the Layer 1
+                    // governor at the RequestSync chokepoint. Backoff = polite
+                    // behavior; governor = hard cap.
                     self.fork
                         .header_blacklisted_peers
                         .insert(peer, Instant::now());
-                    self.set_state(SyncState::Idle, "peer_busy_retry");
-                    if self.should_sync() {
-                        self.start_sync();
-                    }
+                    self.set_state(SyncState::Idle, "peer_busy_backoff");
                 } else {
                     // Unknown error — go idle, let cleanup retry
                     self.set_state(SyncState::Idle, "sync_error");

@@ -397,13 +397,22 @@ impl Node {
             // non-test callers — the signal sat unread. This surfaces it immediately
             // as a structured WARN log, complementing M2's 30s diagnostic_monitor.
             if let Some(alert) = sync.consume_stuck_fork_signal() {
+                let gap = alert.best_peer_height.saturating_sub(alert.local_height);
                 tracing::warn!(
                     target: "production_gate",
                     local_height = alert.local_height,
                     best_peer_height = alert.best_peer_height,
                     peer_count = alert.peer_count,
-                    "[STUCK_FORK] Recovery coordinator raised stuck-fork signal"
+                    gap,
+                    "[STUCK_FORK] stuck-fork signal raised — reporting to recovery coordinator for finality-guarded rollback"
                 );
+                // INC-I-120 (RC-2 fix): wire the signal to REAL recovery. This
+                // was previously WARN-only — the signal sat unread, the unfinished
+                // half of INC-I-090. Reporting StuckFork evidence here lets the
+                // recovery coordinator (classified later in this same tick, in the
+                // RECOVERY COORDINATOR block) escalate it to a bounded,
+                // finality-guarded ShallowRollback instead of looping HeaderFirstSync.
+                sync.report_stuck_fork(gap);
             }
 
             // D2 (INC-I-090): Drain chain break events (inside lock).

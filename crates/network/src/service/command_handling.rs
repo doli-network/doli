@@ -14,6 +14,7 @@ use crate::config::NetworkConfig;
 use crate::gossip::{
     BLOCKS_TOPIC, HEADERS_TOPIC, HEARTBEATS_TOPIC, PRODUCERS_TOPIC, TRANSACTIONS_TOPIC, VOTES_TOPIC,
 };
+use crate::rate_limit::RateLimiter;
 
 use super::types::NetworkCommand;
 
@@ -22,6 +23,7 @@ pub(super) async fn handle_command(
     command: NetworkCommand,
     swarm: &mut Swarm<DoliBehaviour>,
     config: &NetworkConfig,
+    rate_limiter: &mut RateLimiter,
 ) {
     match command {
         NetworkCommand::BroadcastBlock(block) => {
@@ -74,6 +76,21 @@ pub(super) async fn handle_command(
         }
 
         NetworkCommand::RequestSync { peer_id, request } => {
+            // INC-I-120: outbound sync-request governor at the single chokepoint
+            // through which ALL outbound sync requests funnel. Only retry-storm
+            // classes are governed; recovery/canonical-critical classes bypass
+            // (guardrail G1, from INC-I-049). When the bucket is empty, DROP the
+            // request — the sync state machine re-derives it on the next tick.
+            if request.is_rate_governed() {
+                if !rate_limiter.check_sync_request(&peer_id) {
+                    debug!(
+                        "[SYNC_GOVERNOR] Dropped outbound sync request to peer={} (rate limited): {:?}",
+                        peer_id, request
+                    );
+                    return;
+                }
+                rate_limiter.record_sync_request(&peer_id);
+            }
             info!(
                 "[SYNC_DEBUG] Sending sync request to peer={}, request={:?}",
                 peer_id, request

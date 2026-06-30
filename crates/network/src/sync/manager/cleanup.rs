@@ -619,10 +619,35 @@ impl SyncManager {
                             gap,
                         });
                     }
+                } else {
+                    // INC-I-120 (RC-2 STALL fix): small-gap sustained divergent
+                    // stall. Re-enabled, but GUARDED (guardrail G3) so it fires
+                    // ONLY on a genuine fork — never on transient gossip lag,
+                    // which is why the unconditional small-gap signal was removed
+                    // originally (it over-triggered → the 14:52 cascade):
+                    //   - sustained: no block applied for >300s (outer condition)
+                    //   - small gap (<=1000): a bounded rollback can plausibly help
+                    //   - tip ∉ peer-majority: >=3 consecutive empty-header replies
+                    //     (GetHeaders(our_tip) returned 0 → peers don't have our tip)
+                    // signal_stuck_fork() additionally self-guards to Normal phase.
+                    // periodic.rs consumes the signal and reports it to the
+                    // recovery coordinator, which escalates to a finality-guarded
+                    // ShallowRollback (the action that was previously never wired —
+                    // the unfinished half of INC-I-090).
+                    if self.fork.consecutive_empty_headers >= 3 {
+                        warn!(
+                            "Stuck-fork detected: no block applied for {}s, small gap={} \
+                             (local_h={}, network_tip={}), {} consecutive empty headers — \
+                             signalling fork recovery.",
+                            stuck_secs,
+                            gap,
+                            self.local_height,
+                            self.network.network_tip_height,
+                            self.fork.consecutive_empty_headers
+                        );
+                        self.signal_stuck_fork();
+                    }
                 }
-                // Small gap: do NOT signal fork recovery. With deterministic scheduler,
-                // small gaps are gossip timing, not forks. Gossip + should_sync() will
-                // resolve them. Removed: signal_stuck_fork() for small gaps.
             }
         }
 

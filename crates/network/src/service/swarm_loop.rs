@@ -192,7 +192,7 @@ pub(super) async fn run_swarm(
                         }
                     }
                 } else {
-                    handle_command(command, &mut swarm, &config).await;
+                    handle_command(command, &mut swarm, &config, &mut rate_limiter).await;
                 }
             }
 

@@ -76,6 +76,11 @@ pub struct PeerLimits {
     pub transactions: TokenBucket,
     /// General request rate limiter
     pub requests: TokenBucket,
+    /// INC-I-120: outbound sync-request rate limiter. Governs how fast THIS node
+    /// issues sync requests (GetHeaders/GetBodies/GetBlockByHeight) to a peer.
+    /// Closes the structural gap that let a busy-retry loop self-amplify to
+    /// ~40 req/s during a fork (fleet-collapse amplification storm).
+    pub sync_requests: TokenBucket,
     /// Bandwidth rate limiter (bytes)
     pub bandwidth: TokenBucket,
     /// Last time this peer was active (for LRU eviction)
@@ -97,6 +102,10 @@ impl PeerLimits {
             requests: TokenBucket::new(
                 config.max_requests_per_second as u64 * 10,
                 config.max_requests_per_second as f64,
+            ),
+            sync_requests: TokenBucket::new(
+                config.max_sync_requests_per_second as u64 * 10,
+                config.max_sync_requests_per_second as f64,
             ),
             bandwidth: TokenBucket::new(
                 config.max_bytes_per_second * 10,
@@ -121,6 +130,12 @@ pub struct RateLimitConfig {
     pub max_txs_per_second: u32,
     /// Maximum general requests per second from a single peer
     pub max_requests_per_second: u32,
+    /// INC-I-120: Maximum OUTBOUND sync requests per second to a single peer.
+    /// Governs the rate at which this node issues GetHeaders/GetBodies/
+    /// GetBlockByHeight requests. Recovery/canonical-critical classes
+    /// (snapshot, state root, headers-by-height, block-by-hash orphan chase,
+    /// attestation) are exempt — see `SyncRequest::is_rate_governed`.
+    pub max_sync_requests_per_second: u32,
     /// Maximum bytes per second from a single peer
     pub max_bytes_per_second: u64,
     /// Whether rate limiting is enabled
@@ -133,6 +148,10 @@ impl Default for RateLimitConfig {
             max_blocks_per_minute: 10,
             max_txs_per_second: 50,
             max_requests_per_second: 20,
+            // INC-I-120: 10/s sustained per peer (burst 100) bounds the ~40 req/s
+            // self-amplified storm while leaving ample headroom for legitimate
+            // RTT-bound header-first catchup (typically <10/s per peer).
+            max_sync_requests_per_second: 10,
             max_bytes_per_second: 1_048_576, // 1 MB
             enabled: true,
         }
@@ -150,6 +169,10 @@ pub struct RateLimiter {
     global_blocks: TokenBucket,
     /// Global transaction rate limiter
     global_transactions: TokenBucket,
+    /// INC-I-120: Global outbound sync-request rate limiter (across all peers).
+    /// Backstop above the per-peer governor so a fork that stalls against many
+    /// peers at once cannot sum into a fleet-killing aggregate request rate.
+    global_sync_requests: TokenBucket,
     /// Global bandwidth rate limiter
     global_bandwidth: TokenBucket,
 }
@@ -160,6 +183,8 @@ impl RateLimiter {
         Self {
             global_blocks: TokenBucket::new(100, 100.0 / 60.0), // 100 blocks/min globally
             global_transactions: TokenBucket::new(1000, 200.0), // 200 tx/sec globally
+            // INC-I-120: 60/s sustained outbound sync requests globally (burst 300).
+            global_sync_requests: TokenBucket::new(300, 60.0),
             global_bandwidth: TokenBucket::new(
                 config.max_bytes_per_second * 100,
                 config.max_bytes_per_second as f64 * 10.0,
@@ -291,6 +316,49 @@ impl RateLimiter {
         limits.bandwidth.try_consume(size as u64);
 
         self.global_bandwidth.try_consume(size as u64);
+    }
+
+    /// INC-I-120: Check whether an OUTBOUND sync request to `peer` is permitted
+    /// by the governor (per-peer AND global sync-request buckets).
+    ///
+    /// Only the retry-storm classes pass through this gate — recovery and
+    /// canonical-critical requests are exempt at the call site via
+    /// `SyncRequest::is_rate_governed` and never reach here (guardrail G1).
+    ///
+    /// Returns `true` if a token is available in both buckets. The caller must
+    /// then call `record_sync_request` to consume the tokens. When the gate
+    /// returns `false`, the caller DROPS the request — the sync state machine
+    /// re-derives needed requests on the next tick, so a dropped request is
+    /// simply re-attempted at a governed rate (never queued, never tight-looped).
+    pub fn check_sync_request(&mut self, peer: &PeerId) -> bool {
+        if !self.config.enabled {
+            return true;
+        }
+
+        let limits = self.get_or_create_limits(peer);
+        if !limits.sync_requests.can_consume(1) {
+            debug!(peer = %peer, "Outbound sync-request rate limit exceeded (per-peer)");
+            return false;
+        }
+
+        if !self.global_sync_requests.can_consume(1) {
+            debug!("Outbound sync-request rate limit exceeded (global)");
+            return false;
+        }
+
+        true
+    }
+
+    /// INC-I-120: Record an outbound sync request to `peer`, consuming a token
+    /// from the per-peer and global sync-request buckets.
+    pub fn record_sync_request(&mut self, peer: &PeerId) {
+        if !self.config.enabled {
+            return;
+        }
+
+        let limits = self.get_or_create_limits(peer);
+        limits.sync_requests.try_consume(1);
+        self.global_sync_requests.try_consume(1);
     }
 
     /// Check if bandwidth is available from a peer

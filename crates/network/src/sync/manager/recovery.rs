@@ -92,6 +92,16 @@ pub enum RecoveryEvidence {
     /// producing them (gap > threshold). Distinct from EmptyHeaders /
     /// OrphanGossip: it's a passive observation (nothing's arriving at all).
     StaleTip { last_applied_secs: u64, gap: u64 },
+
+    /// INC-I-120 (RC-2): a SUSTAINED, genuinely-divergent small-gap stall.
+    /// Raised by `cleanup.rs` only when ALL of (≥300s no apply) AND (small gap)
+    /// AND (peers return empty headers for our tip → tip ∉ peer-majority chain)
+    /// hold — guardrail G3. Unlike `StaleTip`, this is strong fork evidence that
+    /// the classifier escalates directly to a bounded, finality-guarded
+    /// `ShallowRollback`. Without it, a forked node with a stale tip can never
+    /// satisfy Rule 1's `recently_synced()` precondition and loops
+    /// `HeaderFirstSync` forever against peers that don't recognize its tip.
+    StuckFork { gap: u64 },
 }
 
 /// What the coordinator tells the caller to do.
@@ -322,6 +332,43 @@ impl RecoveryCoordinator {
             return RecoveryAction::ShallowRollback { depth: 1 };
         }
 
+        // --- Rule 1b (INC-I-120 / RC-2): stuck-fork shallow rollback ---
+        //
+        // A node genuinely forked on a SMALL gap never satisfies Rule 1's
+        // recently_synced() precondition — its tip is stale by definition — so
+        // without this rule it loops HeaderFirstSync forever against peers that
+        // return empty headers for our tip (the INC-I-120 STALL).
+        //
+        // The StuckFork signal is raised by cleanup.rs ONLY on a sustained
+        // divergent stall (≥300s no apply + small gap + ≥3 consecutive empty
+        // headers = tip ∉ peer-majority) — guardrail G3 — so escalating to a
+        // bounded rollback here is safe. recently_synced() is intentionally NOT
+        // required: the StuckFork evidence replaces it.
+        let stuck_fork = self
+            .evidence
+            .iter()
+            .any(|(_, e)| matches!(e, RecoveryEvidence::StuckFork { .. }));
+        if stuck_fork
+            && gap > 0
+            && gap < thresholds::MINOR_FORK_GAP_MAX
+            && ctx.shallow_rollback_count < thresholds::SHALLOW_ROLLBACK_MAX
+        {
+            // INV-SYNC-001/004/008 (G2): never roll back below finality.
+            // Identical fencepost to Rule 1 — rolling TO finality is legal,
+            // only BELOW it is forbidden (strict `<`).
+            if let Some(finality) = ctx.last_finality_height {
+                let target_height = ctx.local_height.saturating_sub(1);
+                if target_height < finality {
+                    tracing::warn!(
+                        "[FINALITY_GUARD] refusing StuckFork ShallowRollback target_h={} (finality={}, local_tip={})",
+                        target_height, finality, ctx.local_height
+                    );
+                    return RecoveryAction::None;
+                }
+            }
+            return RecoveryAction::ShallowRollback { depth: 1 };
+        }
+
         // --- Rule 2: snap sync for deep fork, rollback exhausted, or large gap ---
         //
         // Evaluated BEFORE Rule 3 (header-first) because a large gap / deep
@@ -433,6 +480,100 @@ mod tests {
 
     fn fake_peer() -> PeerId {
         PeerId::random()
+    }
+
+    // --- INC-I-120 StuckFork rollback tests (Layer 2 / RC-2) ------------------
+    //
+    // OUTPUT CONTRACT: RecoveryCoordinator::classify(&ctx) -> RecoveryAction
+    //   for the StuckFork evidence path.
+    // O1: ShallowRollback{depth:1} — StuckFork present, small gap (0<gap<50),
+    //     rollback budget available, finality-safe, AND tip is stale (NOT
+    //     recently synced). This is the case Rule 1 cannot reach (it requires
+    //     recently_synced()), and is exactly the INC-I-120 STALL.
+    // O2: None — StuckFork present but a depth-1 rollback would land BELOW
+    //     finality (target_height < last_finality_height). Guardrail G2 /
+    //     INV-SYNC-001/004/008.
+    // O3: None — StuckFork present but shallow-rollback budget exhausted
+    //     (no further rollback; the coordinator escalates via other evidence).
+    //
+    // INPUT PARTITIONS:
+    //   - P1: StuckFork, gap=5, last_applied=350s (stale), finality=None,
+    //         budget free → ShallowRollback{1}
+    //   - P2: StuckFork, gap=5, local_height-1 < finality → None (G2 guard)
+    //   - P3: StuckFork, gap=5, shallow_rollback_count==MAX → None (budget)
+    //   - P4: NO StuckFork, only StaleTip on a stale forked tip → HeaderFirstSync
+    //         (regression pin: proves StuckFork evidence is what converts the
+    //         old HeaderFirstSync stall into a real rollback)
+
+    /// P1 — the STALL fix: a genuinely forked node with a stale tip (not
+    /// recently synced) escalates to a bounded ShallowRollback once the
+    /// guarded StuckFork signal is reported.
+    #[test]
+    fn stuck_fork_triggers_shallow_rollback_when_tip_is_stale() {
+        let mut c = RecoveryCoordinator::new();
+        c.report(RecoveryEvidence::StuckFork { gap: 5 });
+        let mut ctx = base_ctx();
+        ctx.network_tip_height = 1005; // gap = 5
+        ctx.last_applied_secs = 350; // > 300 → NOT recently synced
+        assert_eq!(
+            c.classify(&ctx),
+            RecoveryAction::ShallowRollback { depth: 1 },
+            "stuck fork on a small gap must roll back even when tip is stale"
+        );
+    }
+
+    /// P2 — G2: never roll back below finality, even with a StuckFork signal.
+    #[test]
+    fn stuck_fork_rollback_refused_below_finality() {
+        let mut c = RecoveryCoordinator::new();
+        c.report(RecoveryEvidence::StuckFork { gap: 5 });
+        let mut ctx = base_ctx();
+        ctx.network_tip_height = 1005;
+        ctx.last_applied_secs = 350;
+        // local_height=1000, depth-1 target=999, finality=1000 → 999 < 1000 → refuse.
+        ctx.last_finality_height = Some(1000);
+        assert_eq!(
+            c.classify(&ctx),
+            RecoveryAction::None,
+            "must refuse a rollback that would unwind a finalized block (G2)"
+        );
+    }
+
+    /// P3 — bounded: once the shallow-rollback budget is exhausted, StuckFork
+    /// alone does not keep rolling back.
+    #[test]
+    fn stuck_fork_respects_rollback_budget() {
+        let mut c = RecoveryCoordinator::new();
+        c.report(RecoveryEvidence::StuckFork { gap: 5 });
+        let mut ctx = base_ctx();
+        ctx.network_tip_height = 1005;
+        ctx.last_applied_secs = 350;
+        ctx.shallow_rollback_count = thresholds::SHALLOW_ROLLBACK_MAX;
+        assert_ne!(
+            c.classify(&ctx),
+            RecoveryAction::ShallowRollback { depth: 1 },
+            "exhausted rollback budget must not produce another ShallowRollback"
+        );
+    }
+
+    /// P4 — regression pin: WITHOUT a StuckFork signal, a stale forked tip
+    /// still resolves only to HeaderFirstSync (the old behavior that loops
+    /// forever on a fork). This is the gap StuckFork closes.
+    #[test]
+    fn stale_tip_without_stuck_fork_only_header_first() {
+        let mut c = RecoveryCoordinator::new();
+        c.report(RecoveryEvidence::StaleTip {
+            last_applied_secs: 350,
+            gap: 5,
+        });
+        let mut ctx = base_ctx();
+        ctx.network_tip_height = 1005;
+        ctx.last_applied_secs = 350;
+        assert_eq!(
+            c.classify(&ctx),
+            RecoveryAction::HeaderFirstSync,
+            "stale tip alone must NOT roll back — only the guarded StuckFork signal does"
+        );
     }
 
     // --- Gate tests -----------------------------------------------------------
