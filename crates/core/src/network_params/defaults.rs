@@ -324,37 +324,34 @@ impl NetworkParams {
                 full_bitfield_decode_height: 0,
                 rewards_epoch_list_fix_height: 0,
                 encrypted_content_activation_height: 0,
-                // 2026-05-20: all deferred testnet gates pinned to h=272 (fresh
-                // genesis dress-rehearsal: chain currently at h≈5, ~45 min lead
-                // before co-activation). MIME + royalties.
-                encrypted_content_v2_activation_height: 272,
+                // 2026-07-07 fresh-genesis redeploy: mirror mainnet activation
+                // STATE — every gate enabled on mainnet (finite AH) is set to 0
+                // here (active from genesis); gates frozen on mainnet (u64::MAX)
+                // stay frozen. MIME + royalties is enabled on mainnet (100_000).
+                encrypted_content_v2_activation_height: 0,
                 epoch_state_reorg_activation_height: 0,
-                // AUDIT-BRIDGE-001 + AUDIT-AUTH-003: co-activates at h=272.
-                security_audit_activation_height: 272,
-                // INC-I-046: Ghost exclusion co-activates at h=272.
-                ghost_exclusion_activation_height: 272,
-                // INC-I-116: epoch-boundary liveness prune. FUTURE AH for a live
-                // rolling deploy onto the already-running testnet (tip≈2800,
-                // 36 blk/epoch, ~8s/blk). h=2916 gives ~8 min lead after the
-                // rebuild+rolling-deploy completes. A future AH (NOT 0) is
-                // REQUIRED so historical epoch-state rebuilds below the AH match
-                // committed chain history — AH=0 would retroactively prune past
-                // boundaries the real chain never pruned → integrity divergence.
-                epoch_prune_activation_height: 2916,
+                // AUDIT-BRIDGE-001 + AUDIT-AUTH-003: enabled on mainnet → 0.
+                security_audit_activation_height: 0,
+                // INC-I-046: Ghost exclusion enabled on mainnet → 0.
+                ghost_exclusion_activation_height: 0,
+                // INC-I-116: epoch-boundary liveness prune. Enabled on mainnet
+                // (454_977) → 0 here. Safe on a FRESH genesis chain: there is no
+                // pre-AH history to rebuild, so AH=0 cannot retroactively prune
+                // boundaries the chain never pruned (the integrity-divergence
+                // concern only applies when zeroing an AH on a chain with history).
+                epoch_prune_activation_height: 0,
                 // INC-I-075: Testnet never ran v6.21.16 in production — always
                 // apply the INC-I-068 filter (matches current testnet runtime).
                 inc_i_068_weight_filter_activation_height: 0,
 
-                // INC-I-078: testnet delegation cap + auth co-activate at h=272
-                // (atomic with INC-I-080 AddBond cap) so the testnet transition
-                // exercises the same mainnet upgrade event (h=254_344) in one
-                // boundary. Cap=3000 matches mainnet; env-overridable for tuning.
+                // INC-I-078: delegation cap + auth enabled on mainnet (254_344)
+                // → 0 here (active from genesis). Cap=3000 matches mainnet;
+                // env-overridable for tuning.
                 received_delegation_cap: 3000,
-                received_delegation_cap_activation_height: 272,
-                delegation_auth_activation_height: 272,
-                // INC-I-080: AddBond cap co-activates atomically with INC-I-078
-                // gates at h=272.
-                addbond_cap_enforcement_activation_height: 272,
+                received_delegation_cap_activation_height: 0,
+                delegation_auth_activation_height: 0,
+                // INC-I-080: AddBond cap enabled on mainnet (254_344) → 0.
+                addbond_cap_enforcement_activation_height: 0,
 
                 // INC-I-088 Phase 0: DeFi gate disabled by default on testnet
                 // (mirrors mainnet). Tests that exercise the post-activation
@@ -363,48 +360,36 @@ impl NetworkParams {
                 // `ValidationContext::with_defi_activation_height`.
                 defi_activation_height: u64::MAX,
 
-                // AMM Foundations M1: testnet DeFi launch pinned to
-                // h=20_099 (2026-05-28, ~28 min lead from h≈19,926 at
-                // deploy). Forward activation — above the chain head, so
-                // NO genesis reset (CLAUDE.md rule #0). Once the testnet
-                // chain crosses this height it is IMMUTABLE — never move it
-                // forward (INC-I-054). Independent of defi_activation_height
-                // (HC-6 / INC-I-075). Local experiments still override via
-                // `DOLI_AMM_ACTIVATION_HEIGHT`.
-                amm_activation_height: 20_099,
+                // AMM Foundations M1: AMM is enabled on mainnet (375_640) → 0
+                // here (active from genesis on the fresh chain). Independent of
+                // defi_activation_height (HC-6 / INC-I-075). Local experiments
+                // still override via `DOLI_AMM_ACTIVATION_HEIGHT`.
+                amm_activation_height: 0,
 
-                // Phase 2.1 Oracle: testnet DeFi launch pinned to h=20_099
-                // (2026-05-28, same launch height as AMM). Forward
-                // activation — above the chain head, NO genesis reset
-                // (CLAUDE.md rule #0). Once crossed it is IMMUTABLE
-                // (INC-I-054). Independent of amm/defi heights (HC-3 / HC-6).
-                // Local experiments override via
-                // `DOLI_ORACLE_ACTIVATION_HEIGHT`.
-                oracle_activation_height: 20_099,
+                // Phase 2.1 Oracle: FROZEN on mainnet (u64::MAX — never
+                // activated) → frozen here too, mirroring mainnet state. The
+                // testnet activation experiment is not re-run on this fresh
+                // genesis; PriceAttestation (TxType=16) is rejected at validation
+                // and mempool until an operator pins a concrete future height.
+                // Local experiments override via `DOLI_ORACLE_ACTIVATION_HEIGHT`.
+                oracle_activation_height: u64::MAX,
 
                 // Large blocks (>1 MB) → ~300 TPS (INC-I-091). Testnet = 0
                 // (always-on): small controllable fleet, lighter deploy, no AH
                 // needed. Override via `DOLI_LARGE_BLOCK_ACTIVATION_HEIGHT`.
                 large_block_activation_height: 0,
 
-                // INC-I-092 DeFi spend-path fixes. Testnet AMM is LIVE at
-                // h=20099 and the broader local net carries ~30 EXTERNAL
-                // producers (no synchronized stop-all), so the fix is gated at
-                // a near-future height with rolling-deploy lead time rather
-                // than always-on. Pinned h=23_688 (~3.4h lead from h≈22_478 at
-                // 10s slots). Override via `DOLI_INC_I_092_ACTIVATION_HEIGHT`.
-                inc_i_092_activation_height: 23_688,
-                // INC-I-096 pool-aware AMM value-conservation. Testnet AMM is
-                // LIVE at h=20099 (predates this fix) and the local net carries
-                // ~30 EXTERNAL producers (no synchronized stop-all), so the fix
-                // is gated at a near-future height with rolling-deploy lead time.
-                // Pinned h=27_679. Forward activation — above the chain head,
-                // NO genesis reset (CLAUDE.md rule #0); once crossed it is
-                // IMMUTABLE (INC-I-054). inc_i_096 > amm here is the documented
-                // testnet grandfather (INV-DEPLOY-002): below the gate the naive
-                // conservation rejects — never drains — AMM DOLI-outflow txs.
-                // Override via `DOLI_INC_I_096_ACTIVATION_HEIGHT`.
-                inc_i_096_activation_height: 27_679,
+                // INC-I-092 DeFi spend-path fixes. Enabled on mainnet (375_640,
+                // co-activated with AMM) → 0 here so AMM goes live already-correct
+                // from genesis (INV-DEPLOY-002: inc_i_092 == amm == 0). Override
+                // via `DOLI_INC_I_092_ACTIVATION_HEIGHT`.
+                inc_i_092_activation_height: 0,
+                // INC-I-096 pool-aware AMM value-conservation. Enabled on mainnet
+                // (375_640, == amm) → 0 here. On a fresh chain AMM and the
+                // conservation rule engage the same block (genesis), so no
+                // grandfather window is needed (INV-DEPLOY-002: inc_i_096 <= amm,
+                // 0 <= 0). Override via `DOLI_INC_I_096_ACTIVATION_HEIGHT`.
+                inc_i_096_activation_height: 0,
 
                 // INC-I-015: Gossip mesh sized to max_peers for eager push to ALL
                 // connected peers. At mesh_n=12, blocks reach 12 peers immediately
