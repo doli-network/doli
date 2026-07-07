@@ -19,8 +19,8 @@ use doli_core::{decode_digest, decode_producer_set, is_legacy_bincode_format, Bl
 use crate::behaviour::{DoliBehaviour, DoliBehaviourEvent};
 use crate::config::NetworkConfig;
 use crate::gossip::{
-    classify_block_gossip, now_unix_secs, BLOCKS_TOPIC, HEADERS_TOPIC, HEARTBEATS_TOPIC,
-    PRODUCERS_TOPIC, TRANSACTIONS_TOPIC, VOTES_TOPIC,
+    classify_block_gossip, classify_producer_gossip, now_unix_secs, BLOCKS_TOPIC, HEADERS_TOPIC,
+    HEARTBEATS_TOPIC, PRODUCERS_TOPIC, TRANSACTIONS_TOPIC, VOTES_TOPIC,
 };
 use crate::peer::PeerInfo;
 use crate::peer_cache::PeerCache;
@@ -226,22 +226,42 @@ pub(super) async fn handle_behaviour_event(
                 return; // block topics fully handled above
             }
 
-            // Non-block topics: Accept immediately (preserve existing behavior).
-            // This covers HEADERS_TOPIC, TRANSACTIONS, PRODUCERS, VOTES,
-            // HEARTBEATS, ATTESTATIONS, and any future non-block topics.
+            // Non-block topics: Accept by default. This covers HEADERS_TOPIC,
+            // TRANSACTIONS, VOTES, HEARTBEATS, ATTESTATIONS, and any future
+            // non-block topics.
+            //
+            // INC-I-137 (INC-I-120 Layer 3): the producer-announcement topic
+            // gets a staleness gate. A full-set snapshot in which EVERY embedded
+            // announcement is older than the GSet merge-acceptance window is
+            // `Ignore`d (not re-forwarded), stopping the stale-snapshot
+            // re-forward storm. This does NOT break GSet CRDT convergence:
+            // fresh, mixed-freshness, digest, and legacy messages still
+            // Accept+forward exactly once (see classify_producer_gossip).
+            let acceptance = if topic == PRODUCERS_TOPIC {
+                classify_producer_gossip(&message.data, now_unix_secs())
+            } else {
+                gossipsub::MessageAcceptance::Accept
+            };
+            let is_accepted = matches!(acceptance, gossipsub::MessageAcceptance::Accept);
             if let Err(e) = swarm
                 .behaviour_mut()
                 .gossipsub
-                .report_message_validation_result(
-                    &message_id,
-                    &propagation_source,
-                    gossipsub::MessageAcceptance::Accept,
-                )
+                .report_message_validation_result(&message_id, &propagation_source, acceptance)
             {
                 warn!(
                     "[GOSSIP_VALIDATE] report failed topic={} msg_id={} err={:?}",
                     topic, message_id, e
                 );
+            }
+            // Stale producer snapshot: reported Ignore above (suppresses
+            // re-forward, no peer penalty) — skip local processing too, since a
+            // fully-stale set would be rejected by the GSet merge anyway.
+            if !is_accepted {
+                debug!(
+                    "[GOSSIP_VALIDATE] stale producer announcement suppressed topic={} from={}",
+                    topic, propagation_source
+                );
+                return;
             }
 
             // Non-block topic dispatch (block topics already returned above)

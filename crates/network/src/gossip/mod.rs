@@ -12,7 +12,8 @@ mod tests;
 pub use config::*;
 pub use publish::*;
 pub use validation::{
-    classify_block, classify_block_gossip, now_unix_secs, wall_clock_slot, wall_clock_slot_from,
+    classify_block, classify_block_gossip, classify_producer_gossip, now_unix_secs,
+    wall_clock_slot, wall_clock_slot_from, PRODUCER_ANNOUNCEMENT_MAX_AGE_SECS,
     STALE_BLOCK_SLOT_THRESHOLD,
 };
 

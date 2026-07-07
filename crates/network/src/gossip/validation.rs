@@ -19,7 +19,7 @@
 //! penalizing fresh blocks when the local node is behind. Lagging nodes receive
 //! history via sync request/response, never gossip.
 
-use doli_core::Block;
+use doli_core::{decode_producer_set, Block};
 use libp2p::gossipsub::MessageAcceptance;
 use tracing::warn;
 
@@ -121,6 +121,69 @@ pub fn classify_block_gossip(
     let current_slot = wall_clock_slot_from(genesis_time, slot_duration, now_unix);
     let acceptance = classify_block(&block, current_slot);
     (acceptance, Some(block))
+}
+
+/// Maximum age (in seconds) for a producer announcement to be forwarded on the
+/// producer-announcement gossip topic (`PRODUCERS_TOPIC`).
+///
+/// Aligned with the discovery layer's `MAX_ANNOUNCEMENT_AGE_SECS` (3600): the
+/// GSet merge already rejects any announcement older than one hour
+/// (`ProducerSetError::StaleAnnouncement`), so a gossip message whose *newest*
+/// announcement exceeds this age can change no node's producer set. Re-forwarding
+/// such a message accomplishes nothing but log/bandwidth amplification — the
+/// INC-I-137 / INC-I-120 Layer-3 stale-snapshot storm.
+pub const PRODUCER_ANNOUNCEMENT_MAX_AGE_SECS: u64 = 3600;
+
+/// Classify a producer-announcement gossip message for forwarding (INC-I-137).
+///
+/// Producer announcements form a grow-only CRDT (GSet). To preserve convergence,
+/// a genuinely-new announcement MUST still be forwarded exactly once. This gate
+/// therefore suppresses re-forwarding **only** for messages that no node could
+/// absorb: a decoded, non-empty `ProducerSet` in which **every** announcement is
+/// older than [`PRODUCER_ANNOUNCEMENT_MAX_AGE_SECS`] returns `Ignore` (dropped,
+/// no peer-score penalty — stale-but-honest gossip must not trigger eviction
+/// cascades, per INC-I-016).
+///
+/// Everything else fails open to `Accept`:
+/// - any announcement within the TTL — so mixed-freshness snapshots and
+///   genuinely-new producers still forward (CRDT convergence preserved);
+/// - timestamp-less formats (bloom-digest delta-sync, legacy `Vec<PublicKey>`)
+///   and bytes that do not decode as a `ProducerSet`;
+/// - empty sets;
+/// - `now_unix == 0` (clock unavailable — fail open, mirroring
+///   [`classify_block_gossip`]'s `genesis_time == 0` behavior).
+///
+/// Pure function: no I/O, no side effects.
+pub fn classify_producer_gossip(data: &[u8], now_unix: u64) -> MessageAcceptance {
+    // Fail open when the wall clock is unavailable.
+    if now_unix == 0 {
+        return MessageAcceptance::Accept;
+    }
+
+    // Only the signed `ProducerSet` format carries per-announcement timestamps.
+    // Digests, legacy bincode, and garbage do not decode here → Accept.
+    let announcements = match decode_producer_set(data) {
+        Ok(anns) if !anns.is_empty() => anns,
+        _ => return MessageAcceptance::Accept,
+    };
+
+    // Ignore only when EVERY announcement is provably stale (strictly older than
+    // the merge-acceptance window — the boundary age is treated as still-fresh,
+    // matching classify_block's inclusive threshold). A single within-TTL
+    // announcement means the message can still change a peer's GSet, so it must
+    // be forwarded to preserve convergence.
+    let all_stale = announcements.iter().all(|ann| {
+        now_unix
+            > ann
+                .timestamp
+                .saturating_add(PRODUCER_ANNOUNCEMENT_MAX_AGE_SECS)
+    });
+
+    if all_stale {
+        MessageAcceptance::Ignore
+    } else {
+        MessageAcceptance::Accept
+    }
 }
 
 /// Compute the current wall-clock slot from an explicit Unix timestamp and
