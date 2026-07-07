@@ -342,7 +342,7 @@ Existing gates (mainnet values):
 |--------|----------|
 | `server.rs` | Axum HTTP server |
 | `ws.rs` | WebSocket support |
-| `methods/` | RPC method handlers (56 methods across 18 files) |
+| `methods/` | RPC method handlers (54 methods across 16 files) |
 | `methods/dispatch.rs` | Request routing to handlers |
 | `methods/block.rs` | Block query methods |
 | `methods/balance.rs` | Balance and UTXO methods |

@@ -82,13 +82,6 @@ pub struct NodeConfig {
     /// UDP port for Discv5 discovery (default: p2p_port + 1).
     #[serde(default)]
     pub discv5_port: Option<u16>,
-
-    /// Enable fork-diagnostics subsystem (ledger, writer, pruner, monitor).
-    /// When false (default), no diagnostics directory is created, no background
-    /// tasks are spawned, and emit-site helpers short-circuit before any allocation.
-    /// Pass `--fork-diagnostics` on the CLI to activate.
-    #[serde(default)]
-    pub fork_diagnostics: bool,
 }
 
 impl Default for NodeConfig {
@@ -150,7 +143,6 @@ impl NodeConfig {
             bootnode_enrs: network.bootnode_enrs(),
             no_discv5: false,
             discv5_port: None,
-            fork_diagnostics: false,
         }
     }
 }

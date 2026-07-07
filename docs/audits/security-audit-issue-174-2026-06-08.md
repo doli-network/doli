@@ -50,7 +50,7 @@ Why this proposal anyway: Read-only audit report — no runtime impact. Per-fix 
 | ID | Finding | Severity | Evidence |
 |----|---------|----------|----------|
 | NEW-1 | `repairArchiveFromPeer` missing from `ADMIN_METHODS` → unauthenticated SSRF | **P1** | `crates/rpc/src/server.rs:31-46` vs `dispatch.rs:77`, `guardian.rs:411-630` |
-| NEW-2 | `getFleetForkDiagnostic` not in admin list, amplified SSRF risk | **P1** | `crates/rpc/src/methods/diagnostics_fleet.rs:65-178` |
+| NEW-2 | `getFleetForkDiagnostic` not in admin list, amplified SSRF risk | **P1** | RESOLVED: `getFleetForkDiagnostic` removed (fork-diagnostics subsystem deleted 2026-07-07) |
 | NEW-3 | Maintainer Ed25519 keys IDENTICAL on mainnet and testnet | **P2** | `crates/updater/src/constants.rs:37-67` — testnet key compromise = mainnet release signing |
 | NEW-4 | `install.sh` uses `doli-network/doli` repo; updater uses `e-weil/doli` — different trust roots | **P3** | `install.sh:4` vs `constants.rs:120` |
 
@@ -174,7 +174,7 @@ If a frontend marketplace references zero-address BSC contracts, that's a fronte
 
 Compare with `backfillFromPeer`, which IS in `ADMIN_METHODS` and calls `validate_backfill_url`. The asymmetry is a clear miss.
 
-**Fix:** Add `"repairArchiveFromPeer"` to `ADMIN_METHODS` and call `validate_backfill_url`. Audit `getFleetForkDiagnostic` (same pattern, NEW-2).
+**Fix:** Add `"repairArchiveFromPeer"` to `ADMIN_METHODS` and call `validate_backfill_url`. (NEW-2 `getFleetForkDiagnostic` resolved by deletion — fork-diagnostics subsystem removed 2026-07-07.)
 
 ### NEW-3: Maintainer keys identical mainnet ↔ testnet (P2)
 

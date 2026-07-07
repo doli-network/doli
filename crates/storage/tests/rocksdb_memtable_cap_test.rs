@@ -19,7 +19,6 @@
 //!   Paths:
 //!     P1: block_store open -> metrics snapshot valid, statistics enabled
 //!     P2: state_db open -> metrics snapshot valid, statistics enabled
-//!     P4: diagnostic_ledger open -> db_write_buffer_size == 8 MB, metrics valid
 //!
 //! INPUT PARTITIONS:
 //!   Each path has one partition: fresh tempdir open with default options.
@@ -60,25 +59,5 @@ fn state_db_metrics_after_memtable_cap() {
         m.memtable_max_bytes > 0,
         "state_db memtable_max_bytes should be > 0 (statistics enabled)"
     );
-    assert_eq!(m.background_errors, 0);
-}
-
-/// REQ-ROCKSDB-002: diagnostic_ledger cap preserved at 8 MB (INC-I-102).
-/// This is the only instance where we can directly query the configured
-/// cap value (via db_write_buffer_size_bytes accessor).
-#[test]
-fn diagnostic_ledger_memtable_cap_preserved() {
-    let dir = TempDir::new().unwrap();
-    let ledger = storage::diagnostic_ledger::DiagnosticLedger::open(dir.path()).unwrap();
-
-    // Direct accessor — diagnostic_ledger stores the configured value
-    assert_eq!(
-        ledger.db_write_buffer_size_bytes(),
-        8 * 1024 * 1024,
-        "diagnostic_ledger db_write_buffer_size should be 8 MB (INC-I-102)"
-    );
-
-    let m = ledger.metrics();
-    assert_eq!(m.instance, "diagnostic_ledger");
     assert_eq!(m.background_errors, 0);
 }

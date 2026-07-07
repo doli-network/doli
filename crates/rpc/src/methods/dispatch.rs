@@ -74,10 +74,6 @@ impl RpcContext {
             "exitRecoveryMode" => self.exit_recovery_mode().await,
             "bridgeFromArchive" => self.bridge_from_archive(Some(request.params)).await,
             "repairArchiveFromPeer" => self.repair_archive_from_peer(request.params).await,
-            // Fork-diagnostic observability (M3)
-            "getForkDiagnostic" => self.get_fork_diagnostic(request.params).await,
-            // Fleet-level fork diagnostic (Phase 2a M1)
-            "getFleetForkDiagnostic" => self.get_fleet_fork_diagnostic(request.params).await,
             _ => Err(RpcError::method_not_found(&request.method)),
         };
 

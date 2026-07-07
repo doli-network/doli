@@ -17,7 +17,6 @@
 //!
 //!   Paths:
 //!     P1: BlockStore::open() -> cf_opts_block_store -> BlockBasedOptions
-//!     P3: DiagnosticLedger::open() -> DB::open_cf / open_cf_descriptors
 //!
 //!   INPUT PARTITIONS:
 //!     I1: Fresh tempdir with all CFs created (configuration assertion --
@@ -55,42 +54,6 @@ fn test_block_store_shared_block_cache() {
     assert_eq!(
         m.block_cache_capacity, expected_capacity,
         "block_store block_cache_capacity should be {} (32 MB shared). Got {}.",
-        expected_capacity, m.block_cache_capacity,
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Test 3: diagnostic_ledger -- block_cache_capacity from metrics == 4 MB
-// ---------------------------------------------------------------------------
-//
-// REQ-MEM-003: diagnostic_ledger shares one explicit 4 MB block cache via
-//   open_cf_descriptors (not open_cf with string names).
-
-/// REQ-MEM-003: diagnostic_ledger reports block_cache_capacity == 4 MB.
-#[test]
-fn test_diagnostic_ledger_shared_block_cache() {
-    let dir = TempDir::new().unwrap();
-    let ledger = storage::diagnostic_ledger::DiagnosticLedger::open(dir.path()).unwrap();
-
-    // Configured capacity accessor should return 4 MB.
-    let configured = ledger.block_cache_capacity_bytes();
-    assert_eq!(
-        configured,
-        4 * 1024 * 1024,
-        "diagnostic_ledger configured block cache should be 4 MB"
-    );
-
-    let m = ledger.metrics();
-    assert_eq!(m.instance, "diagnostic_ledger");
-    assert_eq!(m.background_errors, 0);
-
-    // Actual RocksDB-level capacity must match configured value.
-    let expected_capacity: u64 = 4 * 1024 * 1024;
-    assert_eq!(
-        m.block_cache_capacity, expected_capacity,
-        "diagnostic_ledger block_cache_capacity should be {} (4 MB). Got {}. \
-         If 33554432 (32 MB), DB::open_cf is not propagating the table factory \
-         to named CFs (INC-I-105 diagnostic_ledger bug).",
         expected_capacity, m.block_cache_capacity,
     );
 }

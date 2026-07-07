@@ -41,7 +41,10 @@ The solution: adopt a single-proposer-per-slot model (similar to Ethereum). One 
 
 | ID | Requirement | Rationale |
 |----|------------|-----------|
+| REQ-SP-001 (Won't) | Single proposer selection per slot | Deferred — not part of current workflow (INC-I-116). |
+| REQ-SP-007 (Won't) | Genesis/bootstrap mode preserved | Deferred — not part of current workflow (INC-I-116). |
 | REQ-SP-008 (Won't) | Attestation-weighted fork choice | Deferred — not part of current workflow (#346). |
+| REQ-SP-009 (Won't) | Backward compatibility during transition | Deferred — not part of current workflow (INC-I-116). |
 | REQ-SP-010 (Won't) | Remove deprecated fallback window constants | Deferred — not part of current workflow (#346). |
 | REQ-SP-011 (Won't) | Attestation weight accumulation per block | Deferred — not part of current workflow (#346). |
 | REQ-SP-012 (Won't) | Epoch reward calculation handles empty slots | Deferred — not part of current workflow (#346). |

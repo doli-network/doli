@@ -157,13 +157,9 @@ fn build_chain(
 /// Apply blocks with Light validation.
 async fn apply_chain(node: &mut Node, blocks: &[Block]) {
     for block in blocks {
-        node.apply_block(
-            block.clone(),
-            doli_core::validation::ValidationMode::Light,
-            None,
-        )
-        .await
-        .unwrap_or_else(|e| panic!("apply_block failed at h={}: {}", block.header.slot, e));
+        node.apply_block(block.clone(), doli_core::validation::ValidationMode::Light)
+            .await
+            .unwrap_or_else(|e| panic!("apply_block failed at h={}: {}", block.header.slot, e));
     }
 }
 
@@ -412,7 +408,7 @@ async fn test_pre_activation_epoch_reward_drains_pool() {
     };
     let block = Block::new(header, txs);
 
-    node.apply_block(block, doli_core::validation::ValidationMode::Light, None)
+    node.apply_block(block, doli_core::validation::ValidationMode::Light)
         .await
         .expect("Pre-activation EpochReward should succeed");
 
@@ -486,7 +482,7 @@ async fn test_rollback_post_activation_restores_pool() {
         fork_id: crypto::Hash::ZERO,
     };
     let block = Block::new(header, txs);
-    node.apply_block(block, doli_core::validation::ValidationMode::Light, None)
+    node.apply_block(block, doli_core::validation::ValidationMode::Light)
         .await
         .expect("apply_block should succeed");
 

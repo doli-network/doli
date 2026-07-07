@@ -1,7 +1,4 @@
 use super::*;
-use storage::diagnostic_ledger::types::{
-    BlockProvenance, CorrelationKey, DiagnosticEvent, EventKind, EventPayload,
-};
 
 // =============================================================================
 // Block classification — pure decision logic, no side effects
@@ -164,30 +161,6 @@ impl Node {
 
         match class {
             BlockClass::Rejected(reason) => {
-                // Emit fork_block_received diagnostic event (Rejected)
-                let _ = self.diagnostic_emitter.record(DiagnosticEvent {
-                    event_id: ulid::Ulid::new().to_string(),
-                    kind: EventKind::ForkBlockReceived,
-                    timestamp_ms: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_millis() as u64)
-                        .unwrap_or(0),
-                    height: Some(block.header.slot as u64),
-                    correlation_key: None,
-                    caused_by_event_id: None,
-                    is_cascade_origin: false,
-                    payload: EventPayload::ForkBlockReceived {
-                        block_hash: block_hash.to_hex(),
-                        block_slot,
-                        block_height_estimate: None,
-                        producer_pubkey: hex::encode(block.header.producer.as_bytes()),
-                        from_peer_id: source_peer.to_base58(),
-                        classification: "Rejected".to_string(),
-                        fork_kind: None,
-                        local_tip_hash: best_hash.to_hex(),
-                        local_tip_height: best_height,
-                    },
-                });
                 debug!("[CLASSIFY] Dropping block {}: {}", block_hash, reason);
                 return Ok(());
             }
@@ -197,34 +170,6 @@ impl Node {
                 canonical_slot,
                 is_better,
             }) => {
-                // Emit fork_block_received diagnostic event (ForkBlock / HeightOccupied)
-                let _ = self.diagnostic_emitter.record(DiagnosticEvent {
-                    event_id: ulid::Ulid::new().to_string(),
-                    kind: EventKind::ForkBlockReceived,
-                    timestamp_ms: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_millis() as u64)
-                        .unwrap_or(0),
-                    height: Some(fork_height),
-                    correlation_key: Some(CorrelationKey {
-                        divergence_height: Some(fork_height),
-                        canonical_hash: None,
-                        fork_hash: Some(block_hash.to_hex()),
-                    }),
-                    caused_by_event_id: None,
-                    is_cascade_origin: false,
-                    payload: EventPayload::ForkBlockReceived {
-                        block_hash: block_hash.to_hex(),
-                        block_slot,
-                        block_height_estimate: Some(fork_height),
-                        producer_pubkey: hex::encode(block.header.producer.as_bytes()),
-                        from_peer_id: source_peer.to_base58(),
-                        classification: "ForkBlock".to_string(),
-                        fork_kind: Some("HeightOccupied".to_string()),
-                        local_tip_hash: best_hash.to_hex(),
-                        local_tip_height: best_height,
-                    },
-                });
                 // Height-occupied fork guard: discard blocks that don't extend our tip
                 // if we already have canonical chain at or above their height.
                 //
@@ -258,30 +203,6 @@ impl Node {
             }
 
             BlockClass::Orphan { need_height } => {
-                // Emit fork_block_received diagnostic event (Orphan)
-                let _ = self.diagnostic_emitter.record(DiagnosticEvent {
-                    event_id: ulid::Ulid::new().to_string(),
-                    kind: EventKind::ForkBlockReceived,
-                    timestamp_ms: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_millis() as u64)
-                        .unwrap_or(0),
-                    height: Some(need_height),
-                    correlation_key: None,
-                    caused_by_event_id: None,
-                    is_cascade_origin: false,
-                    payload: EventPayload::ForkBlockReceived {
-                        block_hash: block_hash.to_hex(),
-                        block_slot,
-                        block_height_estimate: Some(need_height),
-                        producer_pubkey: hex::encode(block.header.producer.as_bytes()),
-                        from_peer_id: source_peer.to_base58(),
-                        classification: "Orphan".to_string(),
-                        fork_kind: None,
-                        local_tip_hash: best_hash.to_hex(),
-                        local_tip_height: best_height,
-                    },
-                });
                 // Parent not in store — orphan gossip block. The sender has the
                 // missing block (they passed through our height to produce this one).
                 // Request it directly: causal, deterministic, no heuristics.
@@ -307,30 +228,6 @@ impl Node {
             }
 
             BlockClass::ForkBlock(ForkBlockKind::ReorgCandidate) => {
-                // Emit fork_block_received diagnostic event (ReorgCandidate)
-                let _ = self.diagnostic_emitter.record(DiagnosticEvent {
-                    event_id: ulid::Ulid::new().to_string(),
-                    kind: EventKind::ForkBlockReceived,
-                    timestamp_ms: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_millis() as u64)
-                        .unwrap_or(0),
-                    height: Some(best_height),
-                    correlation_key: None,
-                    caused_by_event_id: None,
-                    is_cascade_origin: false,
-                    payload: EventPayload::ForkBlockReceived {
-                        block_hash: block_hash.to_hex(),
-                        block_slot,
-                        block_height_estimate: None,
-                        producer_pubkey: hex::encode(block.header.producer.as_bytes()),
-                        from_peer_id: source_peer.to_base58(),
-                        classification: "ForkBlock".to_string(),
-                        fork_kind: Some("ReorgCandidate".to_string()),
-                        local_tip_hash: best_hash.to_hex(),
-                        local_tip_height: best_height,
-                    },
-                });
                 // Parent is in our store but block doesn't extend our tip.
                 // Cache it for potential reorg evaluation.
                 self.cache_block_with_eviction(block_hash, block.clone())
@@ -425,35 +322,11 @@ impl Node {
 
         // === ExtendsTip path: apply the block ===
 
-        // Diagnostic: genesis hash mismatch on tip-extending block.
+        // Genesis hash mismatch on tip-extending block.
         // classify_gossip_block returns ExtendsTip when prev_hash matches,
-        // even if the block carries a different genesis_hash. Emit a
-        // ForkBlockReceived(Rejected) event for observability and return
+        // even if the block carries a different genesis_hash. Return
         // early — blocks from a different chain should not be applied.
         if block.header.genesis_hash != genesis_hash {
-            let _ = self.diagnostic_emitter.record(DiagnosticEvent {
-                event_id: ulid::Ulid::new().to_string(),
-                kind: EventKind::ForkBlockReceived,
-                timestamp_ms: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as u64)
-                    .unwrap_or(0),
-                height: Some(best_height),
-                correlation_key: None,
-                caused_by_event_id: None,
-                is_cascade_origin: false,
-                payload: EventPayload::ForkBlockReceived {
-                    block_hash: block_hash.to_hex(),
-                    block_slot,
-                    block_height_estimate: None,
-                    producer_pubkey: hex::encode(block.header.producer.as_bytes()),
-                    from_peer_id: source_peer.to_base58(),
-                    classification: "Rejected".to_string(),
-                    fork_kind: None,
-                    local_tip_hash: best_hash.to_hex(),
-                    local_tip_height: best_height,
-                },
-            });
             debug!(
                 "[CLASSIFY] Dropping tip-extending block {}: genesis mismatch",
                 block_hash
@@ -475,14 +348,7 @@ impl Node {
         } else {
             ValidationMode::Full
         };
-        let gossip_provenance = Some(BlockProvenance {
-            from_peer_id: Some(source_peer.to_base58()),
-            received_at_ms: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(0),
-        });
-        if let Err(e) = self.apply_block(block, mode, gossip_provenance).await {
+        if let Err(e) = self.apply_block(block, mode).await {
             let err_str = e.to_string();
             warn!(
                 "[BLOCK] REJECT slot={} h={} producer={} error={} — skipping, sync will catch up",
@@ -522,7 +388,7 @@ impl Node {
                             cached_hash, cached_block.header.slot, drained + 1, MAX_DRAIN
                         );
                         self.fork_block_cache.write().await.remove(&cached_hash);
-                        if self.apply_block(cached_block, mode, None).await.is_err() {
+                        if self.apply_block(cached_block, mode).await.is_err() {
                             break;
                         }
                         drained += 1;
@@ -563,9 +429,6 @@ impl Node {
     ) -> Result<()> {
         let rollback_count = reorg_result.rollback.len();
         let new_block_count = reorg_result.new_blocks.len();
-        let old_tip_hash = self.chain_state.read().await.best_hash;
-        let weight_delta = reorg_result.weight_delta;
-        let trigger_block_hash = triggering_block.hash();
 
         info!(
             "Executing reorg: rolling back {} blocks, applying {} new blocks",
@@ -961,7 +824,7 @@ impl Node {
         info!("Applying {} new blocks from fork", new_blocks.len());
         let pre_reorg_height = current_height;
         for (i, block) in new_blocks.into_iter().enumerate() {
-            if let Err(e) = self.apply_block(block, ValidationMode::Light, None).await {
+            if let Err(e) = self.apply_block(block, ValidationMode::Light).await {
                 let post_height = self.chain_state.read().await.best_height;
                 error!(
                     "Reorg apply_block failed at block {}: {} — rolled back from {} to {}, \
@@ -1005,43 +868,8 @@ impl Node {
         }
 
         let new_tip_height = self.chain_state.read().await.best_height;
-        let new_tip_hash = self.chain_state.read().await.best_hash;
 
         info!("Reorg complete: now at height {}", new_tip_height);
-
-        // EMIT-006: emit reorg_executed diagnostic event (fire-and-forget)
-        {
-            let now_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(0);
-            let _ = self.diagnostic_emitter.record(
-                storage::diagnostic_ledger::types::DiagnosticEvent {
-                    event_id: ulid::Ulid::new().to_string(),
-                    kind: storage::diagnostic_ledger::types::EventKind::ReorgExecuted,
-                    timestamp_ms: now_ms,
-                    height: Some(new_tip_height),
-                    correlation_key: Some(storage::diagnostic_ledger::types::CorrelationKey {
-                        divergence_height: Some(
-                            new_tip_height.saturating_sub(new_block_count as u64),
-                        ),
-                        canonical_hash: Some(new_tip_hash.to_hex()),
-                        fork_hash: Some(old_tip_hash.to_hex()),
-                    }),
-                    caused_by_event_id: None,
-                    is_cascade_origin: false,
-                    payload: storage::diagnostic_ledger::types::EventPayload::ReorgExecuted {
-                        old_tip_hash: old_tip_hash.to_hex(),
-                        new_tip_hash: new_tip_hash.to_hex(),
-                        rollback_depth: rollback_count as u32,
-                        applied_count: new_block_count as u32,
-                        weight_delta,
-                        trigger_block_hash: trigger_block_hash.to_hex(),
-                        trigger_from_peer_id: None, // peer info not available at reorg execution
-                    },
-                },
-            );
-        }
 
         Ok(())
     }

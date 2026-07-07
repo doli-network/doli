@@ -954,7 +954,7 @@ impl Node {
         // Capture the network before `config` is moved into Self below.
         let network_for_schedule = config.network;
 
-        let mut node = Self {
+        let node = Self {
             config,
             params,
             block_store,
@@ -1029,66 +1029,9 @@ impl Node {
             mempool_active_producers_snapshot: mempool_active_producers_snapshot.clone(),
             health_window: std::collections::VecDeque::new(),
             attest_fetch_tracker: HashMap::new(),
-            diagnostic_emitter: Arc::new(storage::diagnostic_ledger::emitter::NoOpEmitter)
-                as Arc<dyn storage::diagnostic_ledger::emitter::DiagnosticEmitter>,
-            diagnostic_ledger: None,
-            diagnostic_shutdown_tx: None,
-            diagnostic_writer_stats: storage::diagnostic_ledger::DiagnosticWriterStats::new_shared(
-            ),
-            last_diagnostic_alerted: HashSet::new(),
             defi_health_refresh_counter: AtomicU64::new(0),
             defi_health_cache: std::sync::Mutex::new(None),
         };
-
-        // --- Diagnostic writer + pruner wiring ---
-        // Gate: only open ledger + spawn tasks when --fork-diagnostics is passed.
-        // When OFF, keep the NoOpEmitter + ledger=None + shutdown_tx=None state
-        // already set above (same as the graceful-degradation fallback).
-        if node.config.fork_diagnostics {
-            match DiagnosticLedger::open(&node.config.data_dir) {
-                Ok(ledger) => {
-                    let ledger = Arc::new(ledger);
-                    let (emitter, receiver) =
-                        storage::diagnostic_ledger::emitter::AsyncChannelEmitter::new(1024);
-                    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-
-                    // Spawn writer task
-                    let writer_ledger = ledger.clone();
-                    let writer_stats = node.diagnostic_writer_stats.clone();
-                    tokio::spawn(super::diagnostic_writer::run_writer_task(
-                        receiver,
-                        writer_ledger,
-                        writer_stats,
-                        shutdown_rx.clone(),
-                    ));
-
-                    // Spawn pruner task
-                    let pruner_ledger = ledger.clone();
-                    tokio::spawn(super::diagnostics_pruner::run_pruner_task(
-                        pruner_ledger,
-                        shutdown_rx,
-                    ));
-
-                    node.diagnostic_emitter = Arc::new(emitter)
-                        as Arc<dyn storage::diagnostic_ledger::emitter::DiagnosticEmitter>;
-                    node.diagnostic_ledger = Some(ledger);
-                    node.diagnostic_shutdown_tx = Some(shutdown_tx);
-                    info!(
-                        "[Diagnostics] Ledger opened at {:?}, writer + pruner spawned",
-                        node.config.data_dir.join("diagnostics")
-                    );
-                }
-                Err(e) => {
-                    warn!(
-                        "DiagnosticLedger failed to open ({:?}); diagnostics disabled",
-                        e
-                    );
-                    // Node continues with NoOpEmitter (graceful degradation per REQ-FORKOBS-LEDGER-009)
-                }
-            }
-        } else {
-            info!("[Diagnostics] Disabled (use --fork-diagnostics to activate)");
-        }
 
         Ok(node)
     }
@@ -1205,7 +1148,6 @@ impl Node {
             bootnode_enrs: Vec::new(),
             no_discv5: true,
             discv5_port: None,
-            fork_diagnostics: false,
         };
 
         Ok(Self {
@@ -1290,13 +1232,6 @@ impl Node {
             mempool_active_producers_snapshot: mempool_active_producers_snapshot.clone(),
             health_window: std::collections::VecDeque::new(),
             attest_fetch_tracker: HashMap::new(),
-            diagnostic_emitter: Arc::new(storage::diagnostic_ledger::emitter::NoOpEmitter)
-                as Arc<dyn storage::diagnostic_ledger::emitter::DiagnosticEmitter>,
-            diagnostic_ledger: None,
-            diagnostic_shutdown_tx: None,
-            diagnostic_writer_stats: storage::diagnostic_ledger::DiagnosticWriterStats::new_shared(
-            ),
-            last_diagnostic_alerted: HashSet::new(),
             defi_health_refresh_counter: AtomicU64::new(0),
             defi_health_cache: std::sync::Mutex::new(None),
         })
@@ -1409,7 +1344,6 @@ impl Node {
             bootnode_enrs: Vec::new(),
             no_discv5: true,
             discv5_port: None,
-            fork_diagnostics: false,
         };
 
         Ok(Self {
@@ -1484,13 +1418,6 @@ impl Node {
             mempool_active_producers_snapshot: mempool_active_producers_snapshot.clone(),
             health_window: std::collections::VecDeque::new(),
             attest_fetch_tracker: HashMap::new(),
-            diagnostic_emitter: Arc::new(storage::diagnostic_ledger::emitter::NoOpEmitter)
-                as Arc<dyn storage::diagnostic_ledger::emitter::DiagnosticEmitter>,
-            diagnostic_ledger: None,
-            diagnostic_shutdown_tx: None,
-            diagnostic_writer_stats: storage::diagnostic_ledger::DiagnosticWriterStats::new_shared(
-            ),
-            last_diagnostic_alerted: HashSet::new(),
             defi_health_refresh_counter: AtomicU64::new(0),
             defi_health_cache: std::sync::Mutex::new(None),
         })

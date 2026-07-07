@@ -37,7 +37,7 @@ use std::collections::BTreeMap;
 /// Snapshot of a RocksDB instance's runtime properties.
 #[derive(Debug, Clone, Default)]
 pub struct RocksDbMetrics {
-    /// Logical instance label (`block_store` | `state_db` | `diagnostic_ledger`).
+    /// Logical instance label (`block_store` | `state_db`).
     pub instance: &'static str,
 
     // --- Memory ---
@@ -49,7 +49,7 @@ pub struct RocksDbMetrics {
     pub memtable_max_bytes: u64,
     /// Configured `db_write_buffer_size` — the hard cap that bounds total memtable
     /// allocation across all CFs in this instance. Set by INC-I-104 M0
-    /// (block_store=48 MB, state_db=64 MB, diagnostic_ledger=8 MB).
+    /// (block_store=48 MB, state_db=64 MB).
     /// Use `memtable_bytes / memtable_cap_bytes` for "memtable approach-to-cap" alerts.
     pub memtable_cap_bytes: u64,
     /// Block cache resident bytes, queried directly from `rocksdb::Cache::get_usage`.
@@ -267,7 +267,7 @@ mod tests {
     /// label-cardinality issues. (Doesn't need a real DB.)
     #[test]
     fn instance_labels_are_stable() {
-        for label in ["block_store", "state_db", "diagnostic_ledger"] {
+        for label in ["block_store", "state_db"] {
             let m = RocksDbMetrics {
                 instance: label,
                 ..Default::default()

@@ -351,7 +351,7 @@ pub(crate) fn recover_chain_state(
                 .get_block_by_height(height)?
                 .ok_or_else(|| anyhow!("Block at height {} disappeared during recovery", height))?;
 
-            node.apply_block(block, ValidationMode::Replay, None)
+            node.apply_block(block, ValidationMode::Replay)
                 .await
                 .map_err(|e| anyhow!("apply_block failed at height {}: {}", height, e))?;
 

@@ -10,8 +10,6 @@ use tokio::sync::RwLock;
 use crypto::Hash;
 use doli_core::Transaction;
 use network::SyncManager;
-use storage::diagnostic_ledger::emitter::DiagnosticEmitter;
-use storage::diagnostic_ledger::{DiagnosticLedger, DiagnosticWriterStats};
 use storage::{BlockStore, ChainState, ProducerSet, StateDb, UtxoSet};
 
 use crate::error::RpcError;
@@ -102,14 +100,6 @@ pub struct RpcContext {
     /// `getOracleStatus` echoes this back to clients so they can detect
     /// pre-activation chain state via `active: false`.
     pub oracle_activation_height: u64,
-    /// Diagnostic ledger for fork observability (M3).
-    pub diagnostic_ledger: Option<Arc<DiagnosticLedger>>,
-    /// Live writer stats shared with the diagnostic writer task (INC-I-087).
-    /// Default: fresh empty Arc (all zeros). In production: shared with writer task.
-    pub diagnostic_writer_stats: Arc<DiagnosticWriterStats>,
-    /// Diagnostic emitter for reading dropped_count() (INC-I-090 D5).
-    /// Source of truth for events_dropped_total in health RPC.
-    pub diagnostic_emitter: Option<Arc<dyn DiagnosticEmitter>>,
 }
 
 impl RpcContext {
@@ -167,9 +157,6 @@ impl RpcContext {
             data_dir: None,
             archive_dir: None,
             recovery_mode: Arc::new(AtomicBool::new(false)),
-            diagnostic_ledger: None,
-            diagnostic_writer_stats: DiagnosticWriterStats::new_shared(),
-            diagnostic_emitter: None,
         }
     }
 
@@ -234,9 +221,6 @@ impl RpcContext {
                 data_dir: None,
                 archive_dir: None,
                 recovery_mode: Arc::new(AtomicBool::new(false)),
-                diagnostic_ledger: None,
-                diagnostic_writer_stats: DiagnosticWriterStats::new_shared(),
-                diagnostic_emitter: None,
             }
         }
     }
@@ -343,25 +327,6 @@ impl RpcContext {
     /// Set recovery mode flag (shared with Node for anti-poisoning gate)
     pub fn with_recovery_mode(mut self, rm: Arc<AtomicBool>) -> Self {
         self.recovery_mode = rm;
-        self
-    }
-
-    /// Set diagnostic ledger for fork observability (M3)
-    pub fn with_diagnostic_ledger(mut self, ledger: Option<Arc<DiagnosticLedger>>) -> Self {
-        self.diagnostic_ledger = ledger;
-        self
-    }
-
-    /// Set diagnostic writer stats (INC-I-087).
-    /// Shared with the writer task so getDiagnosticHealth reports live values.
-    pub fn with_diagnostic_writer_stats(mut self, stats: Arc<DiagnosticWriterStats>) -> Self {
-        self.diagnostic_writer_stats = stats;
-        self
-    }
-
-    /// Set diagnostic emitter for reading dropped_count() (INC-I-090 D5).
-    pub fn with_diagnostic_emitter(mut self, emitter: Option<Arc<dyn DiagnosticEmitter>>) -> Self {
-        self.diagnostic_emitter = emitter;
         self
     }
 

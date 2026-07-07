@@ -81,7 +81,7 @@ INPUT PARTITIONS: N/A — architecture specification file (not a test file)
 - Step 6: Tuned survivor — `cf_utxo` block_size 4 KB -> 16 KB, unified cache 32 -> 48 MB.
 - Migration tools removed: `pool_byte_diff.rs`, `pool_backfill.rs` (no longer compilable without `utxo_store`).
 - Obsolete tests removed: `state_db_query_equivalence_test.rs`, `phase2_read_migration_test.rs`, `inc_i_027_utxo_restore_selfheal.rs`.
-- Metrics scraper simplified: 3 instances (block_store, state_db, diagnostic_ledger).
+- Metrics scraper simplified: 2 instances (block_store, state_db).
 
 **Phase 5 — BlobDB + F1 monitor (low risk, high impact): COMPLETE**
 - Step 7: BlobDB enabled on `cf_utxo` — 6 config lines in `state_db/open.rs`. Applied ONLY to cf_utxo (not cf_utxo_by_pubkey — 1-byte values don't benefit). BlobDB is transparent to application code; on-disk layout changes only. State root invariant preserved.

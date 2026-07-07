@@ -74,7 +74,7 @@ async fn test_post_snap_utxo_write_visible_through_utxo_set() {
     // the snapshot source is a continuous node with RocksDb-backed reads.
     let genesis_hash = node.chain_state.read().await.best_hash;
     let block1 = build_test_block(1, 1, genesis_hash, &producers[0], &params);
-    node.apply_block(block1.clone(), ValidationMode::Full, None)
+    node.apply_block(block1.clone(), ValidationMode::Full)
         .await
         .expect("apply_block(h=1) failed");
 
@@ -169,7 +169,7 @@ async fn test_post_snap_utxo_write_visible_through_utxo_set() {
     );
     let post_snap_reward = params.block_reward(post_snap_height);
 
-    node.apply_block(post_snap_block, ValidationMode::Full, None)
+    node.apply_block(post_snap_block, ValidationMode::Full)
         .await
         .expect("apply_block(post-snap) failed");
 
@@ -206,7 +206,7 @@ async fn test_post_snap_utxo_write_visible_through_utxo_set() {
 }
 
 // ============================================================
-// Helper — mirrors bins/node/tests/diagnostic_d2_emit_test.rs
+// Helper — builds a minimal snap snapshot for testing
 // ============================================================
 
 fn build_test_block(

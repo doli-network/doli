@@ -63,3 +63,4 @@ LAUNCH_CHECKLIST.internal.md
 *.internal.md
 .omega/cortex-config.json
 .omega/.pending-imports.jsonl
+graphify-out/

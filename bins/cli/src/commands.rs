@@ -542,41 +542,6 @@ pub(crate) enum Commands {
         command: GuardianCommands,
     },
 
-    /// Fork diagnostics — query and display fork events from the node
-    Forks {
-        /// Time window for the query (e.g. "1h", "30m", "24h"); default "1h"
-        #[arg(long)]
-        last: Option<String>,
-
-        /// Human-readable output instead of JSON
-        #[arg(long)]
-        human: bool,
-
-        /// Show the most recent fork event's full causal chain
-        #[arg(long)]
-        explain: bool,
-
-        /// Aggregate fork events by producer
-        #[arg(long)]
-        by_producer: bool,
-
-        /// Query the whole fleet: comma-separated list of peer RPC URLs
-        #[arg(long)]
-        fleet: Option<String>,
-
-        /// Override RPC endpoint for this command
-        #[arg(long)]
-        rpc: Option<String>,
-
-        /// Replay a historical log file offline (no RPC needed)
-        #[arg(long, value_name = "LOG_FILE", conflicts_with_all = ["fleet", "explain", "by_producer", "rpc"])]
-        replay: Option<std::path::PathBuf>,
-
-        /// Output file path for the replay bundle JSON (use with --replay)
-        #[arg(long, value_name = "FILE", requires = "replay")]
-        out: Option<std::path::PathBuf>,
-    },
-
     /// Fast-sync: wipe chain data and download a verified state snapshot from the network
     Snap {
         /// Data directory (for multi-node servers with custom paths)

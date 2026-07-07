@@ -3,13 +3,26 @@ OUTPUT CONTRACT: N/A — architecture specification (not a test file)
 INPUT PARTITIONS: N/A — architecture specification (not a test file)
 -->
 
+━━━ RESOURCE COST — SUMMARY — NEGLIGIBLE ━━━
+Dimensions:
+  CPU:      0 (observed)
+  Memory:   0 (observed)
+  IO:       0 (observed)
+  Network:  0 (observed)
+  Disk:     0 (observed)
+  Latency:  0 (observed)
+Inevitability: AVOIDABLE
+Cheaper alternative: NONE-NEEDED
+Why this proposal anyway: Documentation-only edit removing references to deleted diagnostic_ledger subsystem
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 # RocksDB Configuration Architecture (INC-I-104)
 
 ## Executive Summary
 
-Three of four RocksDB instances in doli-node run with `db_write_buffer_size=0` (uncapped memtable budgets). Per-CF `write_buffer_size` defaults to 64 MB with `max_write_buffer_number=2`, giving a theoretical per-node ceiling of 2,312 MB across 19 column families. On constrained hosts (6 nodes on 1.9 GB), this OOM-kills during memtable warm-up.
+Three RocksDB instances in doli-node run with `db_write_buffer_size=0` (uncapped memtable budgets). Per-CF `write_buffer_size` defaults to 64 MB with `max_write_buffer_number=2`, giving a theoretical per-node ceiling of 2,312 MB across column families. On constrained hosts (6 nodes on 1.9 GB), this OOM-kills during memtable warm-up.
 
-This spec sets explicit, workload-derived configuration for all 4 instances (block_store, state_db, utxo_store, diagnostic_ledger) and all 19 column families. The total per-node RocksDB memory ceiling drops from ~2,312 MB theoretical to ~218 MB bounded. The change is non-consensus (state root computed from in-memory state, not SSTs) and deploys via rolling restart.
+This spec sets explicit, workload-derived configuration for all 3 instances (block_store, state_db, utxo_store) and their column families. The total per-node RocksDB memory ceiling drops from ~2,312 MB theoretical to ~218 MB bounded. The change is non-consensus (state root computed from in-memory state, not SSTs) and deploys via rolling restart.
 
 Five independent evaluators converged on the core fix (db_write_buffer_size > 0 everywhere, per-CF differentiation, WAL bounded). Divergence on specific values was arbitrated using the Failure Analyst's 13 hard constraints as filters.
 
@@ -20,10 +33,9 @@ Five independent evaluators converged on the core fix (db_write_buffer_size > 0 
 | ID | Criterion | How Satisfied |
 |----|-----------|---------------|
 | AC-MUST-001 | Behavior preservation | Only RocksDB Options change. No write/read paths, no data encoding, no state root computation affected. |
-| AC-MUST-002 | Bounded per-DB memory (db_write_buffer_size > 0) | Set on all 4 instances: 48 + 64 + 32 + 8 = 152 MB total memtable budget. |
+| AC-MUST-002 | Bounded per-DB memory (db_write_buffer_size > 0) | Set on all 3 instances: 48 + 64 + 32 = 144 MB total memtable budget. |
 | AC-MUST-003 | Per-CF differentiation where workload differs | open_cf_descriptors on block_store, state_db, utxo_store. Hot CFs: 8-16 MB. Cold CFs: 1 MB. |
-| AC-MUST-004 | WAL bounded on all instances | block_store: 48 MB cap. state_db: 64 MB (existing). utxo_store: WAL disabled. diagnostic_ledger: WAL disabled. |
-| AC-MUST-005 | Diagnostic_ledger cap preserved | 8 MB unchanged. Workload-justified: 240 KB/min peak = 33 min to fill. |
+| AC-MUST-004 | WAL bounded on all instances | block_store: 48 MB cap. state_db: 64 MB (existing). utxo_store: WAL disabled. |
 | AC-MUST-006 | One spec, one set of values | Hardcoded constants. No env vars, no CLI flags, no runtime config. |
 
 ### Should
@@ -40,12 +52,12 @@ Five independent evaluators converged on the core fix (db_write_buffer_size > 0 
 | ID | Criterion | Status |
 |----|-----------|--------|
 | AC-COULD-001 | Shared block cache | NOT ADOPTED. Per-instance caches. C-012 filter: sequential block_store scans evict cf_utxo hot data. |
-| AC-COULD-002 | WAL disabled on rebuildable instances | ADOPTED for utxo_store (self-heals) and diagnostic_ledger (lossy ok). |
+| AC-COULD-002 | WAL disabled on rebuildable instances | ADOPTED for utxo_store (self-heals). |
 | AC-COULD-003 | Compaction style differentiation | NOT ADOPTED. Level compaction everywhere. C-005 filter: changing requires migration. |
 
 ### Won't
 
-AC-WONT-001 through AC-WONT-004 respected: no hardware-driven sizing, no runtime config, no allocator change, no diagnostic_ledger architectural changes.
+AC-WONT-001 through AC-WONT-004 respected: no hardware-driven sizing, no runtime config, no allocator change.
 
 ## Failure Analyst Constraints Applied (C-001 through C-013)
 
@@ -57,7 +69,7 @@ AC-WONT-001 through AC-WONT-004 respected: no hardware-driven sizing, no runtime
 | C-004 | presence CF must remain in descriptor list | SATISFIED. Kept with 1 MB / 1 buffer. |
 | C-005 | Level compaction retained (no migration risk) | SATISFIED. All CFs remain level. |
 | C-006 | block_store max_total_wal_size > 0 | SATISFIED. Set to 48 MB. |
-| C-007 | db_write_buffer_size > 0 on all 4 instances | SATISFIED. 48 + 64 + 32 + 8 MB. |
+| C-007 | db_write_buffer_size > 0 on all 3 instances | SATISFIED. 48 + 64 + 32 MB. |
 | C-008 | Hot CF write_buffer_size >= 8 MB | SATISFIED. Hot CFs at 8-16 MB. |
 | C-009 | Hot CF max_write_buffer_number >= 2 | SATISFIED. All hot CFs at 2. |
 | C-010 | No full bloom on scan CFs | SATISFIED. cf_utxo_by_pubkey, addr_tx_index: no bloom. |
@@ -160,23 +172,6 @@ AC-WONT-001 through AC-WONT-004 respected: no hardware-driven sizing, no runtime
 
 **Effective memtable ceiling**: 32 MB (capped by db_write_buffer_size). Down from 384 MB theoretical.
 
-### diagnostic_ledger (1 CF)
-
-| Parameter | Value | Derivation |
-|-----------|-------|------------|
-| `db_write_buffer_size` | 8 MB | INC-I-102 cap, workload-justified: 240 KB/min peak = 33 min to fill. |
-| `write_buffer_size` | 4 MB | Existing, keep. Half of total cap. |
-| `max_write_buffer_number` | 2 | Existing, keep. |
-| `max_total_wal_size` | N/A | WAL DISABLED. Lossy ok. NoOp fallback. |
-| WAL | DISABLED | Observability data. Loss on crash has zero consensus impact. |
-| `max_background_jobs` | 1 | Single CF, low write rate. |
-| Block cache | 4 MB | Existing, keep. Cold reads (RPC debug only). |
-| `max_open_files` | 64 | Existing, keep. |
-| Bloom filter | NONE | Range scans by event_kind prefix. |
-| Compression | Lz4 | Existing, keep. |
-
-**No changes to existing values except**: WAL disabled, max_background_jobs explicitly set to 1.
-
 ## Shared Resource Decisions
 
 ### Block cache: per-instance (NOT shared)
@@ -188,8 +183,7 @@ Four evaluators out of five recommended per-instance caches. The Failure Analyst
 | block_store | 32 MB (explicit, INC-I-105) | Shared across 9 CFs. |
 | state_db | 32 MB (explicit) | cf_utxo point lookups benefit from cache if not fully shadowed by in-memory UtxoSet. |
 | utxo_store | 16 MB (explicit, INC-I-105) | Shared across 3 CFs. |
-| diagnostic_ledger | 4 MB (existing) | Cold reads. |
-| **Total** | **52 MB** | |
+| **Total** | **48 MB** | |
 
 ### Background jobs: per-instance, not global pool
 
@@ -198,8 +192,7 @@ Four evaluators out of five recommended per-instance caches. The Failure Analyst
 | state_db | 2 | Consensus-critical, highest priority. |
 | block_store | 2 | Append-heavy, needs compaction. |
 | utxo_store | 1 | Rebuildable, lower priority. |
-| diagnostic_ledger | 1 | Minimal I/O. |
-| **Total** | **6 threads** | Reasonable for 4-core machines. Background jobs are I/O-bound. |
+| **Total** | **5 threads** | Reasonable for 4-core machines. Background jobs are I/O-bound. |
 
 ### WAL: disabled on 2 instances, bounded on 2
 
@@ -208,7 +201,6 @@ Four evaluators out of five recommended per-instance caches. The Failure Analyst
 | state_db | Enabled, 64 MB cap | Consensus-critical. last_applied canary requires WAL atomicity (C-001). |
 | block_store | Enabled, 48 MB cap | Consensus-critical for headers/bodies. Prevents WAL pinning by dead CFs. |
 | utxo_store | **DISABLED** | Self-heals from state_db. WAL provides zero correctness benefit. Saves I/O. |
-| diagnostic_ledger | **DISABLED** | Lossy ok. NoOp fallback. Saves I/O. |
 
 ## Memory Budget Summary
 
@@ -217,8 +209,7 @@ Four evaluators out of five recommended per-instance caches. The Failure Analyst
 | block_store | 48 MB | 32 MB | 48 MB | 128 MB |
 | state_db | 64 MB | 32 MB | 64 MB | 160 MB |
 | utxo_store | 32 MB | 16 MB | 0 (disabled) | 48 MB |
-| diagnostic_ledger | 8 MB | 4 MB | 0 (disabled) | 12 MB |
-| **Total per node** | **152 MB** | **52 MB** | **112 MB** | **316 MB** |
+| **Total per node** | **144 MB** | **48 MB** | **112 MB** | **304 MB** |
 
 Note: WAL overhead is the maximum WAL file size, not resident memory. Actual RocksDB memory is closer to memtable + block cache + index/filter overhead = ~218 MB per node. Down from ~2,312 MB theoretical / ~450 MB observed.
 
@@ -234,10 +225,10 @@ block_store (9 CFs, ALL at 64 MB x 2)     state_db (6 CFs, ALL at 64 MB x 2)
   Block cache: 8 MB default                  Block cache: 8 MB default
   open_cf (uniform options)                  open_cf (uniform options)
 
-utxo_store (3 CFs, ALL at 64 MB x 2)      diagnostic_ledger (1 CF)
-  No db_write_buffer_size cap                db_write_buffer_size: 8 MB
-  No WAL cap                                 Block cache: 4 MB
-  Bloom: NONE                                open_cf (uniform options)
+utxo_store (3 CFs, ALL at 64 MB x 2)
+  No db_write_buffer_size cap
+  No WAL cap
+  Bloom: NONE
   Block cache: 8 MB default
   open_cf (uniform options)
 
@@ -256,11 +247,11 @@ block_store (9 CFs, differentiated)        state_db (6 CFs, differentiated)
   Hot CFs: 8 MB, L0 triggers raised          Hot CFs: 8-16 MB, L0 triggers raised
   Cold CFs: 1 MB                             Cold CFs: 1-2 MB
 
-utxo_store (3 CFs, differentiated)         diagnostic_ledger (1 CF)
-  db_write_buffer_size: 32 MB                db_write_buffer_size: 8 MB (unchanged)
-  WAL: DISABLED                              WAL: DISABLED
-  Bloom: utxo, unique_id                     Block cache: 4 MB (unchanged)
-  Block cache: 16 MB (shared, INC-I-105)     max_background_jobs: 1
+utxo_store (3 CFs, differentiated)
+  db_write_buffer_size: 32 MB
+  WAL: DISABLED
+  Bloom: utxo, unique_id
+  Block cache: 16 MB (shared, INC-I-105)
   open_cf_descriptors (per-CF options)
   Hot CFs: 8-16 MB, L0 triggers raised
 
@@ -271,11 +262,11 @@ Total bounded memtable: 152 MB per node (93% reduction)
 
 This is a configuration-only change. Non-consensus (FM-14 confirmed: state root from in-memory state, not SSTs). Deploys via rolling restart.
 
-**Step 1**: Implement per-CF options in all 4 `open()` functions. Switch from `DB::open_cf()` to `DB::open_cf_descriptors()`. Pattern already exists in `content_store.rs:32-36`.
+**Step 1**: Implement per-CF options in all 3 `open()` functions. Switch from `DB::open_cf()` to `DB::open_cf_descriptors()`. Pattern already exists in `content_store.rs:32-36`.
 
 **Step 2**: Set `db_write_buffer_size` and `max_total_wal_size` on block_store (2 lines). Set `db_write_buffer_size` on state_db (1 line, WAL already set).
 
-**Step 3**: Disable WAL on utxo_store and diagnostic_ledger writes via `WriteOptions::set_disable_wal(true)`.
+**Step 3**: Disable WAL on utxo_store writes via `WriteOptions::set_disable_wal(true)`.
 
 **Step 4**: Add bloom filters to state_db and utxo_store point-lookup CFs via per-CF `BlockBasedOptions`.
 
@@ -302,7 +293,6 @@ All 6 milestones landed on `main`. The implementation matches this spec:
 | M2 | 4f69cf66 | block_store per-CF tuning (bloom, L0 triggers, compression) |
 | M3 | 225b3a83 | state_db per-CF tuning (bloom, block cache, L0 triggers) |
 | M4 | c47084f7 | utxo_store per-CF tuning + WAL disable |
-| M5 | (pending) | diagnostic_ledger WAL disable + max_background_jobs=1 |
 
 INC-I-104 workflow close-out. Rolling deploy safe (C-013). No activation height required.
 
@@ -310,12 +300,12 @@ INC-I-104 workflow close-out. Rolling deploy safe (C-013). No activation height 
 
 | Metric | Current | Radical Minimum | Proposed |
 |--------|---------|----------------|----------|
-| Modules | 4 DB instances | 4 (unchanged) | 4 (unchanged) |
+| Modules | 3 DB instances | 3 (unchanged) | 3 (unchanged) |
 | Column families | 19 | 19 (unchanged) | 19 (unchanged) |
 | Per-CF custom options | 0 | 0 | 19 (via ColumnFamilyDescriptor) |
 | Total memtable budget | 2,312 MB | 56 MB | 152 MB |
 | Block cache total | 28 MB | 28 MB | 52 MB |
-| WAL caps set | 1 (state_db) | 4 (all) | 2 + 2 disabled |
+| WAL caps set | 1 (state_db) | 3 (all) | 2 + 1 disabled |
 | Bloom filter CFs | 9 (block_store all) | 9 (unchanged) | 12 (net +3) |
 | Lines of code added | 0 | ~9 | ~80-120 |
 | RocksDB memory ceiling/node | ~2,340+ MB | ~172 MB | ~218 MB |
@@ -323,7 +313,7 @@ INC-I-104 workflow close-out. Rolling deploy safe (C-013). No activation height 
 ## Open Issues for Implementation Phase
 
 1. **Verify utxo_store unconditional open**: Confirm from `init_utxo_set()` in `init.rs` that RocksDbUtxoStore is always opened, not only for migration.
-2. **Verify rust-rocksdb API surface**: Confirm `ColumnFamilyDescriptor`, `BlockBasedOptions::set_bloom_filter`, `WriteOptions::set_disable_wal` are available in the project's `rocksdb` crate version. `content_store.rs` and `diagnostic_ledger/mod.rs` already use these patterns.
+2. **Verify rust-rocksdb API surface**: Confirm `ColumnFamilyDescriptor`, `BlockBasedOptions::set_bloom_filter`, `WriteOptions::set_disable_wal` are available in the project's `rocksdb` crate version. `content_store.rs` already uses this pattern.
 3. **Verify `cache_index_and_filter_blocks`**: If available in the crate, set to `true` on state_db's BlockBasedOptions to prevent unbounded index/filter memory outside the block cache.
 4. **Measure atomic_replace batch size**: On a running node, log the WriteBatch byte size during snap sync to confirm it fits within the 64 MB state_db cap.
 5. **Test WAL disable on utxo_store**: Kill -9 a node after applying blocks, restart, verify self-heal completes and UTXO counts match state_db.
@@ -347,7 +337,6 @@ db_write_buffer_size > 0:  Y     Y     Y     Y     Y  -> 5/5 DEFINITE
 Per-CF differentiation:    Y     Y     Y     Y     N  -> 4/5 DEFINITE
 WAL cap on block_store:    Y     Y     Y     Y     Y  -> 5/5 DEFINITE
 WAL disable utxo_store:    Y     ~     ~     Y     N  -> 3/5 RECOMMENDED
-WAL disable diagnostic:    Y     ~     ~     Y     N  -> 3/5 RECOMMENDED
 Bloom on cf_utxo:          Y     Y     Y     Y     N  -> 4/5 DEFINITE
 Bloom on cf_producers:     Y     Y     Y     Y     -  -> 4/5 DEFINITE
 Raise L0 triggers:         -     -     -     Y     -  -> 1/5 but MANDATORY (C-003)
@@ -358,7 +347,7 @@ Rolling deploy safe:       Y     Y     Y     Y     Y  -> 5/5 LOCKED
 
 ## Definite Changes (High Convergence)
 
-- ARCHITECTURAL: Set `db_write_buffer_size` > 0 on all 4 RocksDB instances (48/64/32/8 MB)
+- ARCHITECTURAL: Set `db_write_buffer_size` > 0 on all 3 RocksDB instances (48/64/32 MB)
     Convergence: 5/5 evaluators
     Evidence: RocksDB LOG dump on ai5/n9 confirms db_write_buffer_size=0 on 3 of 4 instances (design-brief.md:36). Root cause of INC-I-104 OOM.
     Confidence: conf(0.95, converged)
@@ -396,12 +385,6 @@ Rolling deploy safe:       Y     Y     Y     Y     Y  -> 5/5 LOCKED
     Confidence: conf(0.75, converged)
     Saves I/O and WAL memory. Cost: crash recovery adds ~5-30s for self-heal instead of WAL replay.
 
-- ARCHITECTURAL: Disable WAL on diagnostic_ledger
-    Convergence: 3/5 evaluators (Sub, Failure, Pattern leans)
-    Evidence: Lossy ok (design-brief.md:68). NoOp fallback if DB fails. Consensus never reads from it.
-    Confidence: conf(0.70, converged)
-    Saves I/O. Zero consensus risk.
-
 - ARCHITECTURAL: Increase state_db block cache from 8 MB default to 32 MB explicit
     Convergence: 3/5 evaluators propose increase (Restruct 64MB shared, Pattern 128MB, Failure 32MB)
     Evidence: cf_utxo point lookups are on the < 1ms validation path. 8 MB default is small for any meaningful UTXO set. Uncertainty: in-memory UtxoSet may shadow reads.
@@ -429,13 +412,13 @@ Every RocksDB instance MUST publish a per-instance metrics snapshot via the exis
 ### How it's wired
 
 1. Each `open()` calls `opts.enable_statistics()` (cheap; required for ticker counters that will be exposed in a Phase-2 follow-up).
-2. Each storage type (`BlockStore`, `StateDb`, `RocksDbUtxoStore`, `DiagnosticLedger`) exposes a `metrics(&self) -> RocksDbMetrics` method backed by `storage::collect_db_metrics(&db, instance_label)` which reads `db.property_int_value(...)` for the property set documented in `crates/storage/src/metrics.rs`.
+2. Each storage type (`BlockStore`, `StateDb`, `RocksDbUtxoStore`) exposes a `metrics(&self) -> RocksDbMetrics` method backed by `storage::collect_db_metrics(&db, instance_label)` which reads `db.property_int_value(...)` for the property set documented in `crates/storage/src/metrics.rs`.
 3. `UtxoSet::metrics()` returns `Option<RocksDbMetrics>` — `None` for the in-memory backend (no RocksDB to scrape).
 4. `bins/node/src/metrics.rs::spawn_rocksdb_metrics_scraper(...)` is started once in `run.rs` immediately before `node.run()`. It ticks every 15 seconds and applies the snapshot to a set of Prometheus `IntGaugeVec` gauges labeled by `instance` (and `level` for `doli_rocksdb_files_at_level`).
 
 ### Exported gauges
 
-All labeled by `instance="block_store|state_db|utxo_store|diagnostic_ledger"`:
+All labeled by `instance="block_store|state_db|utxo_store"`:
 
 | Gauge | RocksDB property | Why it matters |
 |-------|------------------|----------------|
@@ -529,14 +512,13 @@ Dashboard assumes Prometheus is scraping the node `/metrics` endpoint at 15-seco
 - `cargo clippy --workspace --all-targets -- -D warnings` clean.
 - `cargo fmt --check` clean.
 - 2 new tests in `storage::metrics` (smoke test against rust-rocksdb 0.22 property names + label stability) — pass.
-- Pre-existing failures in `node::diagnostic_monitor_tests` (`p1_chain_break_loop_returns_actionable_alert`, `p2_dedup_suppresses_repeat_alerts`) are present on `main` before this change and are unrelated.
 
 ## Design Synthesis Quality Gate
 
 ```
 --- DESIGN SYNTHESIS QUALITY GATE ---
 Evaluators completed:           5/5
-Deletion convergence items:     3 (WAL disable utxo, WAL disable diag, bloom removal from 3 cold CFs)
+Deletion convergence items:     2 (WAL disable utxo, bloom removal from 3 cold CFs)
 Restructuring convergence:      2 (open_cf_descriptors, per-CF differentiation)
 Addition options presented:     0 (all arbitrated to single values per user constraint)
 Failure modes identified:       14 (FM-01 to FM-14 from Failure Analyst)

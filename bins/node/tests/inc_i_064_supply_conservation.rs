@@ -160,7 +160,7 @@ fn build_chain(
 
 async fn apply_chain(node: &mut Node, blocks: &[Block]) {
     for block in blocks {
-        node.apply_block(block.clone(), ValidationMode::Light, None)
+        node.apply_block(block.clone(), ValidationMode::Light)
             .await
             .unwrap_or_else(|e| panic!("apply_block failed: {}", e));
     }
@@ -184,9 +184,7 @@ async fn spend_failure_propagates_in_full_mode() {
     let bad_block = build_block_with_bad_spend(2, 2, prev_hash, &producers[0], &params);
 
     // Use Light mode to bypass producer scheduling (Full rejects producer first).
-    let result = node
-        .apply_block(bad_block, ValidationMode::Light, None)
-        .await;
+    let result = node.apply_block(bad_block, ValidationMode::Light).await;
 
     assert!(
         result.is_err(),
@@ -214,9 +212,7 @@ async fn spend_failure_propagates_in_light_mode() {
     let bad_block = build_block_with_bad_spend(2, 2, prev_hash, &producers[0], &params);
 
     // Light mode should ALSO fail — not just Full mode
-    let result = node
-        .apply_block(bad_block, ValidationMode::Light, None)
-        .await;
+    let result = node.apply_block(bad_block, ValidationMode::Light).await;
 
     assert!(
         result.is_err(),
@@ -290,7 +286,7 @@ async fn epoch_inputs_mismatch_fails_in_light_mode() {
 
     // Apply in Light mode — should now FAIL (was previously skipped)
     let result = node
-        .apply_block(bad_epoch_block, ValidationMode::Light, None)
+        .apply_block(bad_epoch_block, ValidationMode::Light)
         .await;
 
     assert!(
@@ -320,7 +316,7 @@ async fn utxo_accounting_correct_after_normal_blocks() {
             utxo.total_value()
         };
 
-        node.apply_block(block.clone(), ValidationMode::Light, None)
+        node.apply_block(block.clone(), ValidationMode::Light)
             .await
             .expect("Normal block should succeed");
 
@@ -372,9 +368,7 @@ async fn replay_mode_tolerates_spend_failure() {
     let bad_block = build_block_with_bad_spend(2, 2, prev_hash, &producers[0], &params);
 
     // In Replay mode, this should succeed (warn, not error)
-    let result = node
-        .apply_block(bad_block, ValidationMode::Replay, None)
-        .await;
+    let result = node.apply_block(bad_block, ValidationMode::Replay).await;
 
     assert!(
         result.is_ok(),
@@ -481,7 +475,7 @@ async fn fee_paying_user_tx_accepted() {
 
     // This MUST succeed — fee-paying TXs burn value (deflationary), which is expected.
     let result = node
-        .apply_block(block_with_fee, ValidationMode::Light, None)
+        .apply_block(block_with_fee, ValidationMode::Light)
         .await;
 
     assert!(
@@ -520,7 +514,7 @@ async fn replay_normal_chain_succeeds() {
     }
 
     for block in &chain {
-        node.apply_block(block.clone(), ValidationMode::Replay, None)
+        node.apply_block(block.clone(), ValidationMode::Replay)
             .await
             .unwrap_or_else(|e| panic!("replay failed: {}", e));
     }

@@ -224,7 +224,7 @@ async fn apply_plain_chain(
             params,
         );
         prev = block.hash();
-        node.apply_block(block, ValidationMode::Light, None)
+        node.apply_block(block, ValidationMode::Light)
             .await
             .unwrap_or_else(|e| panic!("plain block apply failed at h={}: {}", h, e));
     }

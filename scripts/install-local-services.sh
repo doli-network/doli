@@ -79,7 +79,6 @@ install_seed() {
         <string>${TESTNET_DIR}/seed/blocks</string>
         <string>--yes</string>
         <string>--no-snap-sync</string>
-        <string>--fork-diagnostics</string>
 $(for origin in "${CORS_ORIGINS[@]}"; do
   echo "        <string>--rpc-cors</string>"
   echo "        <string>${origin}</string>"
@@ -146,7 +145,6 @@ install_producer() {
         <string>/ip4/127.0.0.1/tcp/${SEED_P2P}</string>
         <string>--yes</string>
         <string>--force-start</string>
-        <string>--fork-diagnostics</string>
 $(for origin in "${CORS_ORIGINS[@]}"; do
   echo "        <string>--rpc-cors</string>"
   echo "        <string>${origin}</string>"

@@ -214,6 +214,15 @@ After completing any code change, ALWAYS propose the following checklist to the 
 
 ---
 
+
+---
+
+
+---
+
+
+---
+
 # OMEGA Ω
 
 ## Philosophy
@@ -251,6 +260,26 @@ Every workflow reads from and writes to `.omega/memory.db`. **This protocol is n
 - **Self-correction**: When the user corrects you, save a behavioral learning immediately and fix.
 - **Error tolerance**: If sqlite3 fails, log and continue. Never block work for a DB failure.
 
+### Canonical SQL — copy verbatim, do not guess columns
+
+Before composing ANY query against `.omega/memory.db`, use one of these or run `.schema TABLE` first. The full catalog (decisions, failed_approaches, bugs, findings, patterns, artifacts, hotspots, lessons, incidents, invariants) lives in `core/protocols/memory-protocol.md`.
+
+```bash
+# Start a run — INSERT and rowid capture MUST share one sqlite3 invocation (per-connection)
+RUN_ID=$(sqlite3 .omega/memory.db "INSERT INTO workflow_runs (type, description, scope) VALUES ('TYPE', 'DESCRIPTION', 'SCOPE_OR_NULL'); SELECT last_insert_rowid();")
+# Self-score an action (score ∈ {-1,0,1}; run_id may be NULL)
+sqlite3 .omega/memory.db "INSERT INTO outcomes (run_id, agent, score, domain, action, lesson) VALUES (NULL, 'AGENT', -1, 'DOMAIN', 'What I did', 'What I learned');"
+# Behavioral learning (NO score column — uses confidence + occurrences; UNIQUE on rule)
+sqlite3 .omega/memory.db "INSERT INTO behavioral_learnings (rule, context) VALUES ('THE_RULE', 'What triggered it') ON CONFLICT(rule) DO UPDATE SET occurrences = occurrences + 1, confidence = MIN(1.0, confidence + 0.1), last_reinforced = datetime('now');"
+# Close a run
+sqlite3 .omega/memory.db "UPDATE workflow_runs SET status='completed', completed_at=datetime('now') WHERE id=$RUN_ID;"
+```
+
+Column reminders that trip agents up:
+- `behavioral_learnings` has **no** `score` column — it has `confidence` (REAL) and `occurrences` (INT). `score` lives on `outcomes`.
+- `outcomes.score` is constrained to `(-1, 0, 1)` — any other value rejects.
+- Use heredoc (`<<'EOF' ... EOF`) for multi-statement scripts; inline single-quoting breaks `datetime('now')`.
+
 ## Identity
 
 The briefing hook may inject an identity block. **Full reference:** Read @INDEX of `.claude/protocols/identity.md` for section lookup.
@@ -281,15 +310,18 @@ After completing a user's task, if they did something manually that an OMEGA com
 14. **Self-score every action** — every agent rates its own significant actions (-1/0/+1) immediately
 15. **Distill lessons from patterns** — when 3+ outcomes share a theme, distill a permanent lesson that changes future agent behavior
 16. **Read-only agents stay in their lane** — research agents (codebase-expert, functionality-analyst) NEVER offer to implement. They report findings and suggest appropriate commands
-17. **Security chain enforcement** — for features touching external data (multi-user, network, file ingestion), 5 agents independently verify: Analyst (REQ-*-SEC), Architect (trust boundaries or STOP), Test Writer (injection tests), QA (probing), Reviewer (pattern scan — blocker)
-18. **Stupid Simple First (SSF)** — before ANY design work, state the stupidest one-sentence solution that works. Present it ALONE. Only add complexity if the user rejects it with a specific reason. Never present a menu of options. Read `.claude/protocols/anti-overengineering.md`
+17. **Security chain** — features touching external data: 5-agent independent verification (Analyst REQ-*-SEC, Architect trust-boundaries, Test Writer injection, QA probing, Reviewer pattern scan — blocker)
+18. **Stupid Simple First (SSF)** — before ANY design work, state the simplest one-sentence solution that resolves the root cause (fewest moving parts, never a symptom patch). Present it ALONE. Only add complexity if the user rejects it with a specific reason. Never present a menu. Read `.claude/protocols/anti-overengineering.md`
 19. **Modular coding enforcement** — no source file exceeds 500 lines (800 for test files). When approaching the limit, split into focused modules. Read MODULE-SIZE-BUDGET in `.claude/protocols/anti-overengineering.md`
-20. **Intellectual honesty** — if your analysis contradicts itself (claim X, find not-X), STOP and resolve before continuing. Show your work on math/logic claims. State what you don't understand before proposing solutions. Try to disprove your own hypotheses before acting on them. Max 2 inferences without verification. Read `.claude/protocols/intellectual-honesty.md`
+20. **Intellectual honesty** — STOP on self-contradiction. Show your work on math/logic claims. State what you don't understand before proposing. Try to disprove your own hypotheses before acting. Max 2 inferences without verification. Read `.claude/protocols/intellectual-honesty.md`
 21. **Output Contract** — before any test assertion, produce Output Contract Checklist (outputs × paths × input partitions). Fix confidence >0.7 requires FAIL→PASS test evidence. **Test BEFORE fix** — reproduction test exists and FAILS before any fix code or fix plan. Read `.claude/protocols/output-contract.md`
-22. **Prompt refinement at intake** — every omega command with a user description MUST refine BEFORE agent work: neutralize anchoring, preserve domain context, reframe causes as hypotheses. On REGRESSION CONTEXT (commit SHA + stable/deployed), require git archeology first. Display the refinement. Read `.claude/protocols/prompt-refinement.md`
-23. **Evidence floor** — diagnostic synthesizers and root-cause agents must publish `VERDICT` (conf ≥0.95, cited evidence pointers, causal chain citations, regression check) or `PRELIMINARY` (conf <0.95, missing-evidence + resolve-by + re-dispatch). Reviewers/auditors require per-finding evidence pointers. Enforced by `evidence-floor-gate.sh`. Read `.claude/protocols/evidence-floor.md`
+22. **Prompt refinement at intake** — every omega command with a user description refines BEFORE agent work (neutralize anchoring, reframe causes as hypotheses; REGRESSION CONTEXT triggers git archeology). Read `.claude/protocols/prompt-refinement.md`
+23. **Evidence floor** — diagnostic synthesizers publish `VERDICT` (conf ≥0.95, cited evidence, causal chain, regression check) or `PRELIMINARY` (conf <0.95, missing-evidence + resolve-by + re-dispatch). Per-finding evidence pointers required for reviewers/auditors. Enforced by `evidence-floor-gate.sh`. Read `.claude/protocols/evidence-floor.md`
 24. **Path-Coverage attestation** — commits adding a new early-return guard in non-test Rust code MUST include a per-branch `Path-Coverage:` block (Q1/Q2/Q3 + test cite). Enforced by `path-coverage-gate.sh`. Read `.claude/protocols/path-coverage.md`
 25. **Communication style** — user-facing replies use BLUF + Progressive Disclosure + Cognitive Load (≤4 items/turn). Shape: 1 sentence bottom line + up to 3 sentences action + 1 question. Hold complexity in files. Read `.claude/protocols/communication-style.md`
+26. **Resource cost** — every proposal (architect, design-evaluator, design-synthesizer, reviewer) carries a `━━━ RESOURCE COST` block: CPU/Memory/IO/Network/Disk/Latency + basis + Inevitability + Cheaper alternative + Why-anyway. Enforced by `resource-cost-gate.sh`. Read `.claude/protocols/resource-cost.md`
+27. **Evidence pivot** — a failed fix buys evidence, not another guess. When a shipped fix does not change the symptom, you are FORBIDDEN from editing source for another fix until you capture runtime evidence from the FAILING environment (instrument the real path → make it visible → deterministic trigger). Armed by `evidence-pivot.sh`, enforced by `pipeline-gate.sh`. Read `.claude/protocols/evidence-pivot.md`
+28. **Code graph for structural questions** — ANY dependency, blast-radius, caller/callee, or architecture-comprehension question is answered by the code graph BEFORE grep. It auto-builds/refreshes (tree-sitter AST, zero LLM) and returns typed, deduplicated dependents far cheaper than grep. Use `blast.py` (dependents), `graphify explain` (neighborhood), `graphify path` (causal chain). Grep is the fallback only when graphify cannot be provisioned. Applies to every agent and command. Read `.claude/protocols/graph-briefing.md`
 
 ## Fail-Safe Controls
 
@@ -301,7 +333,7 @@ After completing a user's task, if they did something manually that an OMEGA com
 
 **Full reference:** Read @INDEX of `.claude/protocols/context-budget.md` for section lookup.
 
-**Rules:** CLAUDE.md MUST stay under 15,000 characters. Never inline templates/SQL/procedures — put them in `core/protocols/` and reference. Never duplicate content across files. Lazy-load protocol sections via @INDEX (first N lines) then Read with offset/limit. 60% context budget per agent. Never read the entire codebase.
+**Rules:** CLAUDE.md MUST stay under 18,000 characters. Never inline templates/SQL/procedures — put them in `core/protocols/` and reference. Never duplicate content across files. Lazy-load protocol sections via @INDEX (first N lines) then Read with offset/limit. 60% context budget per agent. Never read the entire codebase.
 
 ## Traceability Chain
 ```

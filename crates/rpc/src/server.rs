@@ -43,10 +43,9 @@ pub const ADMIN_METHODS: &[&str] = &[
     "getStateSnapshot",
     "getStateRootDebug",
     "verifyChainIntegrity",
-    // ISSUE-174 NEW-1/NEW-2: outbound HTTP fetchers — unauthenticated SSRF if open.
-    // Both accept caller-supplied URLs and make HTTP POST requests on the node's behalf.
+    // ISSUE-174 NEW-1: outbound HTTP fetcher — unauthenticated SSRF if open.
+    // Accepts caller-supplied URL and makes HTTP POST request on the node's behalf.
     "repairArchiveFromPeer",
-    "getFleetForkDiagnostic",
 ];
 
 /// RPC server configuration

@@ -178,7 +178,6 @@ Events are runtime-only. They are NOT persisted to the state root. A snap-synced
 | Surface | What it provides | Usable for subscriptions? |
 |---------|-----------------|--------------------------|
 | `tokio::sync::broadcast<WsEvent>` | NewBlock + NewTx broadcast to all WS clients | YES — extend WsEvent enum |
-| Diagnostic Ledger (`storage/diagnostic_ledger/`) | BlockApplied, BlockRejected, ForkBlockReceived, RollbackStarted, etc. | INDIRECTLY — these write to RocksDB for forensics; could emit events in parallel |
 | P5 Contention Diagnostic | `MempoolDiagnostic { contention: Option<ContentionInfo> }` returned per-TX | NO — returned synchronously to submitter, not broadcast |
 | Gossip mesh metrics (swarm_loop.rs:340-346) | Periodic mesh peer counts per topic | NO — internal instrumentation |
 

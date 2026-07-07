@@ -5,11 +5,6 @@
 
 mod apply_block;
 mod block_handling;
-pub mod diagnostic_monitor;
-#[cfg(test)]
-mod diagnostic_monitor_tests;
-pub mod diagnostic_writer;
-pub mod diagnostics_pruner;
 mod event_loop;
 mod fork_recovery;
 mod genesis;
@@ -70,8 +65,6 @@ use network::{
 };
 use rpc::{Mempool, MempoolPolicy, RpcContext, RpcServer, RpcServerConfig, SyncStatus};
 use storage::archiver::ArchiveBlock;
-use storage::diagnostic_ledger::emitter::DiagnosticEmitter;
-use storage::diagnostic_ledger::{DiagnosticLedger, DiagnosticWriterStats};
 use storage::{BlockStore, ChainState, PendingProducerUpdate, ProducerSet, StateDb, UtxoSet};
 use updater::is_using_placeholder_keys;
 
@@ -285,31 +278,6 @@ pub struct Node {
     /// where gossip delivers the block 1-2ms after the attestation.
     pub attest_fetch_tracker: HashMap<Hash, (Instant, u8, PeerId)>,
 
-    /// Fork-diagnostic emitter (M2). Fire-and-forget recording of diagnostic events.
-    /// Default: NoOpEmitter (graceful degradation). In tests: MockEmitter for introspection.
-    /// In production: AsyncChannelEmitter backed by diagnostic_writer task.
-    pub diagnostic_emitter: Arc<dyn DiagnosticEmitter>,
-
-    /// Diagnostic ledger (M2). Separate RocksDB at `<data_dir>/diagnostics/`.
-    /// None if the ledger failed to open (graceful degradation per REQ-FORKOBS-LEDGER-009).
-    #[allow(dead_code)] // Used by integration tests and M3 RPC
-    pub diagnostic_ledger: Option<Arc<DiagnosticLedger>>,
-
-    /// Shutdown sender for the diagnostic writer + pruner tasks.
-    /// When the node shuts down, sending `true` tells both tasks to drain and exit.
-    /// `None` when diagnostics are disabled (ledger failed to open) or in test mode.
-    #[allow(dead_code)]
-    pub diagnostic_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
-
-    /// Shared diagnostic writer stats (INC-I-087). Passed to both the writer task
-    /// and the RPC context so getDiagnosticHealth reports live counter values.
-    pub diagnostic_writer_stats: Arc<DiagnosticWriterStats>,
-
-    /// D4 (INC-I-090): dedup set for the in-node diagnostic monitor.
-    /// Keys are classifier-derived incident identifiers. Same incident only
-    /// logs once until the node restarts (non-persistent, intentionally).
-    pub last_diagnostic_alerted: HashSet<String>,
-
     /// INC-I-111: Counter for how many times the defi_health_inputs() scan
     /// has actually run (cache miss). Used by integration tests to verify
     /// the 30-second cache prevents redundant full UTXO scans.
@@ -462,20 +430,9 @@ impl Node {
         self.maintainer_state = Some(state);
     }
 
-    /// Replace the diagnostic emitter (for test injection).
-    #[allow(dead_code)] // Used by integration tests
-    pub fn set_diagnostic_emitter(&mut self, emitter: Arc<dyn DiagnosticEmitter>) {
-        self.diagnostic_emitter = emitter;
-    }
-
     /// Shutdown the node
     pub async fn shutdown(&mut self) -> Result<()> {
         info!("Shutting down node...");
-
-        // Signal diagnostic writer + pruner tasks to drain and exit.
-        if let Some(ref tx) = self.diagnostic_shutdown_tx {
-            let _ = tx.send(true);
-        }
 
         // Set shutdown flag
         *self.shutdown.write().await = true;

@@ -28,7 +28,6 @@ futures.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-ulid = "1"
 tokio = { workspace = true, features = ["rt", "macros"] }
 doli-core = { workspace = true }
 crypto = { workspace = true }
