@@ -832,19 +832,25 @@ doli-node release sign --key producer_3.json --version v0.2.0 > sig3.json
 | **Path** | `scripts/gauntlet.sh` |
 | **Purpose** | OMEGA gauntlet runner (`.claude/protocols/system-impact.md` §GAUNTLET). Replays every failure mode DOLI has paid for — as **assertions over the live local testnet** — so "done" is a SYSTEM property, not a diff property. |
 | **What it does** | Reads active scenarios from `.omega/memory.db`; observes the running testnet over a window (RPC + windowed structured-telemetry log scan); performs ONE safe launchd node restart (GS-004); evaluates each scenario's assertions; writes its OWN result row; exits 0 iff all pass. |
-| **Execution model** | Observational + one non-destructive restart. **Never** genesis-resets, pkills, or wipes data. `GAUNTLET_NO_PERTURB=1` = pure observation. |
+| **Execution modes** | **Default** (gate): observational + one non-destructive restart — never genesis-resets, pkills, or wipes. **`--chaos`** (opt-in): genuinely INJECTS the triggers — node-down+rejoin and data-wipe+cold snap-rebuild — on the target node (data backed up first). **`GAUNTLET_NO_PERTURB=1`**: pure observation. |
+| **inj vs obs** | Output tags each scenario `[inj]` (its trigger was actively injected this run) or `[obs]` (invariant observed, trigger not created). Default: only GS-004 is `[inj]`. `--chaos`: GS-002/003/004/005/007 are `[inj]`; GS-001 (needs genesis reset) and GS-006 (needs block-crafting) stay `[obs]`. |
 | **Dependencies** | `sqlite3`, `python3`, `curl`, live testnet (`scripts/testnet.sh start all`), `scripts/gauntlet-collect.py` |
-| **Run time** | ~50-90 s (full) · ~25 s (`--quick`) |
-| **Output** | Per-scenario PASS/FAIL to stdout; result row in the runs table |
+| **Run time** | ~50-90 s default · ~25 s `--quick` · ~100-300 s `--chaos` (includes real recovery) |
+| **Output** | Per-scenario `[inj/obs]` PASS/FAIL to stdout; result row in the runs table |
 
 **Usage:**
 ```bash
-bash scripts/gauntlet.sh              # full run (45s window + safe n5 restart)
+bash scripts/gauntlet.sh              # default: 45s window + safe n5 restart (what the gate runs)
 bash scripts/gauntlet.sh --quick      # 20s window
 GAUNTLET_NO_PERTURB=1 bash scripts/gauntlet.sh   # observational only
+
+# Chaos: really stops + WIPES the target node (backed up), forces snap-rebuild, asserts recovery.
+GAUNTLET_CHAOS_CONFIRM=1 bash scripts/gauntlet.sh --chaos
 ```
 
-**Env:** `WORKFLOW_RUN_ID`, `GAUNTLET_WINDOW` (s), `GAUNTLET_RESTART_NODE` (default `n5`), `GAUNTLET_RSS_CEIL_MB` (default 800), `GAUNTLET_MIN_NODES` (default 3), `GAUNTLET_NO_PERTURB`.
+**Env:** `WORKFLOW_RUN_ID`, `GAUNTLET_WINDOW` (s), `GAUNTLET_RESTART_NODE` (default `n5`), `GAUNTLET_RSS_CEIL_MB` (default 800), `GAUNTLET_MIN_NODES` (default 3), `GAUNTLET_NO_PERTURB`. **Chaos-only:** `GAUNTLET_CHAOS_CONFIRM=1` (required), `GAUNTLET_CHAOS_DOWN_SECS` (default 25), `GAUNTLET_CHAOS_RECOVER_TIMEOUT` (default 240).
+
+> **`--chaos` safety:** local testnet only; target must be a producer node (never seed); needs ≥3 other live nodes as a recovery source; the node's `data/` is `mv`-backed-up to `~/testnet/<node>/data.bak.<ts>` before wiping (identity `node_key` + producer key live outside `data/`, untouched). Backups **accumulate** — prune with `rm -rf ~/testnet/<node>/data.bak.*` when no longer needed.
 
 **Companions:**
 - `scripts/gauntlet-collect.py` — RPC + windowed-log metrics collector (emits one JSON blob the runner asserts on).

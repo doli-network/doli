@@ -154,7 +154,7 @@ After completing any code change, ALWAYS propose the following checklist to the 
 | Install launchd services | `scripts/install-local-services.sh` — creates plists for seed + n1-n12 |
 | Start/stop/status | `scripts/testnet.sh start\|stop\|restart\|status [seed\|n1\|...\|all]` |
 | Tail logs | `scripts/testnet.sh logs [seed\|n1\|...]` |
-| System-impact gauntlet | `scripts/gauntlet.sh` — replays paid-for failure modes as assertions over the live testnet (8 scenarios); observational + one safe launchd restart, NEVER wipes/pkills. Seed: `scripts/gauntlet-seed.sql`. Gate armed by `.omega/gauntlet.conf`. |
+| System-impact gauntlet | `scripts/gauntlet.sh` — replays paid-for failure modes over the live testnet (8 scenarios). Default (gate): observational + one safe launchd restart, NEVER wipes/pkills. `--chaos` (opt-in, `GAUNTLET_CHAOS_CONFIRM=1`): genuinely injects node-down + data-wipe→snap-rebuild on the target (data backed up). Seed: `scripts/gauntlet-seed.sql`. Gate armed by `.omega/gauntlet.conf`. |
 
 **Port layout**:
 - Seed: P2P=30300, RPC=8500, Metrics=9000

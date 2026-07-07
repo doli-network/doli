@@ -46,7 +46,14 @@ RESTART_NODE="${GAUNTLET_RESTART_NODE:-n5}"
 RSS_CEIL_MB="${GAUNTLET_RSS_CEIL_MB:-800}"
 MIN_NODES="${GAUNTLET_MIN_NODES:-3}"
 NO_PERTURB="${GAUNTLET_NO_PERTURB:-0}"
-[ "${1:-}" = "--quick" ] && WINDOW=20
+CHAOS=0
+for a in "$@"; do
+  case "$a" in
+    --quick) WINDOW=20 ;;
+    --chaos) CHAOS=1 ;;
+  esac
+done
+CHAOS_RECOVERED=1   # stays 1 unless a chaos injector fails to recover the node
 
 # Assertion thresholds (scale: local testnet N≈6). Each either derives from the
 # live network or is exercised at this small N (system-impact §SCALE-SENSITIVITY).
@@ -79,8 +86,9 @@ REJOIN_FILE="$WORK/rejoin.txt"; echo "0" > "$REJOIN_FILE"
 SECONDS=0
 SHA="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 
+MODE="observe+restart"; [ "$CHAOS" = "1" ] && MODE="${C_R}CHAOS-inject${C_C}"; [ "$NO_PERTURB" = "1" ] && MODE="observe-only"
 say "${C_C}════════════════════════════════════════════════════════════${C_0}"
-say "${C_C} OMEGA GAUNTLET${C_0}  ·  sha=$SHA  window=${WINDOW}s  restart=${RESTART_NODE}"
+say "${C_C} OMEGA GAUNTLET${C_0}  ·  sha=$SHA  mode=${MODE}${C_C}  window=${WINDOW}s  target=${RESTART_NODE}"
 say "${C_C}════════════════════════════════════════════════════════════${C_0}"
 
 # ── node port map ───────────────────────────────────────────────────────────
@@ -135,36 +143,113 @@ build_nodecfg(){
   } > "$NODECFG"
 }
 
+# net tip = current max height across live nodes OTHER than the target.
+net_tip_excluding(){
+  local tgt="$1" tip=0 name nh
+  for name in $LIVE; do
+    [ "$name" = "$tgt" ] && continue
+    nh="$(height_of "$(port_of "$name")")"; [ "${nh:-0}" -gt "$tip" ] && tip="$nh"
+  done
+  echo "$tip"
+}
+
+# wait_rejoin <port> <target-name> <timeout-s> — echo seconds until the node's
+# RPC is up AND its height is within 1 of the net tip, else -1 on timeout.
+wait_rejoin(){
+  local rp="$1" tgt="$2" to="$3" t0 h tip
+  t0=$(date +%s)
+  while [ $(( $(date +%s) - t0 )) -le "$to" ]; do
+    h="$(height_of "$rp")"
+    if [ -n "$h" ] && [ "$h" != "-1" ] && [ "$h" -gt 0 ]; then
+      tip="$(net_tip_excluding "$tgt")"
+      [ "$h" -ge $(( tip - 1 )) ] && { echo $(( $(date +%s) - t0 )); return; }
+    fi
+    sleep 3
+  done
+  echo -1
+}
+
+# ── chaos injectors (opt-in --chaos; local testnet only; backed up) ──────────
+chaos_guard(){
+  [ "$RESTART_NODE" = "seed" ] && die "chaos target cannot be the seed"
+  case "$RESTART_NODE" in n[0-9]|n[0-9][0-9]) ;; *) die "chaos target must be a producer node (nN), got '$RESTART_NODE'";; esac
+  local others; others=$(echo "$LIVE" | tr ' ' '\n' | grep -vx "$RESTART_NODE" | grep -c .)
+  [ "${others:-0}" -lt 3 ] && die "chaos needs >=3 OTHER live nodes as a recovery source, found $others"
+  if [ "${GAUNTLET_CHAOS_CONFIRM:-0}" != "1" ]; then
+    die "--chaos performs DESTRUCTIVE injection (stops + WIPES $RESTART_NODE data, backed up).
+     Re-run with GAUNTLET_CHAOS_CONFIRM=1 to proceed. Local testnet only; never mainnet."
+  fi
+}
+
+# injector A — node-down + rejoin (reproduces stall / restart-recovery)
+chaos_node_down(){
+  local secs="${GAUNTLET_CHAOS_DOWN_SECS:-25}" rp; rp="$(port_of "$RESTART_NODE")"
+  say "  ${C_Y}[chaos A] node-down${C_0}: stopping $RESTART_NODE for ${secs}s (isolation/stall)"
+  "$ROOT/scripts/testnet.sh" stop "$RESTART_NODE" >/dev/null 2>&1
+  sleep "$secs"
+  say "  [chaos A] restarting $RESTART_NODE"
+  "$ROOT/scripts/testnet.sh" start "$RESTART_NODE" >/dev/null 2>&1
+  local r; r="$(wait_rejoin "$rp" "$RESTART_NODE" 120)"; echo "$r" > "$REJOIN_FILE"
+  if [ "$r" -ge 0 ]; then say "  [chaos A] rejoined in ${r}s"; else say "  ${C_R}[chaos A] did NOT rejoin in 120s${C_0}"; CHAOS_RECOVERED=0; fi
+}
+
+# injector B — data-wipe + cold snap/rebuild (reproduces snap-sync / rollback-rebuild)
+chaos_data_wipe(){
+  local rp dd ts bak; rp="$(port_of "$RESTART_NODE")"; dd="$HOME/testnet/$RESTART_NODE/data"
+  ts="$(date +%Y%m%d-%H%M%S)"; bak="$HOME/testnet/$RESTART_NODE/data.bak.$ts"
+  say "  ${C_Y}[chaos B] data-wipe${C_0}: stopping $RESTART_NODE"
+  "$ROOT/scripts/testnet.sh" stop "$RESTART_NODE" >/dev/null 2>&1
+  sleep 3
+  # safety: identity (node_key, producer key) lives OUTSIDE data/ — never touched.
+  if [ -d "$dd" ]; then mv "$dd" "$bak" && say "  [chaos B] backed up data -> $bak (reversible)"; fi
+  say "  [chaos B] cold-restarting $RESTART_NODE (must snap/rebuild from peers)"
+  "$ROOT/scripts/testnet.sh" start "$RESTART_NODE" >/dev/null 2>&1
+  local to="${GAUNTLET_CHAOS_RECOVER_TIMEOUT:-240}" r; r="$(wait_rejoin "$rp" "$RESTART_NODE" "$to")"
+  echo "$r" > "$WORK/chaos_recover.txt"
+  if [ "$r" -ge 0 ]; then say "  [chaos B] recovered (snap/rebuild) in ${r}s"; else say "  ${C_R}[chaos B] did NOT recover in ${to}s${C_0}"; CHAOS_RECOVERED=0; fi
+}
+
+# ── readiness: the net must be PRODUCING before we judge liveness ────────────
+# A freshly-booted mesh blocks production until peers>=2 (InsufficientPeers).
+# Judging GS-008 liveness on a not-yet-formed mesh is a false negative — wait
+# until the tip actually advances first (or warn and let GS-008 judge a real stall).
+say "\n${C_C}▸ readiness: confirming the network is producing${C_0}"
+net_max_height(){ local m=0 name nh; for name in $LIVE; do nh="$(height_of "$(port_of "$name")")"; [ "${nh:-0}" -gt "$m" ] && m="$nh"; done; echo "$m"; }
+R_H0="$(net_max_height)"; R_T0=$(date +%s); R_READY=0
+while [ $(( $(date +%s) - R_T0 )) -le 60 ]; do
+  R_H1="$(net_max_height)"
+  if [ "${R_H1:-0}" -gt "${R_H0:-0}" ]; then R_READY=1; say "  producing (h ${R_H0} -> ${R_H1})"; break; fi
+  sleep 5
+done
+[ "$R_READY" = 1 ] || say "  ${C_Y}tip not advancing after 60s — mesh forming or stalled; proceeding (GS-008 will judge)${C_0}"
+
 say "\n${C_C}▸ capturing baseline (log offsets + heights)${C_0}"
 build_nodecfg
 BASE_MAX=$(python3 -c "import json;d=json.load(open('$NODECFG'));print(max(n['baseline_height'] for n in d['nodes']))")
 say "  baseline max height = $BASE_MAX"
 
-# ── GS-004 perturbation: safe launchd single-node restart ───────────────────
-if [ "$NO_PERTURB" = "1" ]; then
+# ── perturbation dispatch ───────────────────────────────────────────────────
+RP="$(port_of "$RESTART_NODE")"
+if [ "$CHAOS" = "1" ]; then
+  # OPT-IN chaos: genuinely reproduce failure-mode triggers, then re-baseline so
+  # the observation window judges the RECOVERED steady state (a legitimate snap
+  # during recovery must not count as a spurious escalation).
+  say "\n${C_R}▸ CHAOS MODE — real injection on ${RESTART_NODE} (destructive, backed up)${C_0}"
+  chaos_guard
+  echo "0" > "$REJOIN_FILE"
+  chaos_node_down
+  chaos_data_wipe
+  say "  [chaos] settling 10s, then re-baselining for a clean observation window"
+  sleep 10
+  build_nodecfg   # fresh log offsets + heights AFTER recovery
+elif [ "$NO_PERTURB" = "1" ]; then
   say "\n${C_Y}▸ perturbation skipped (GAUNTLET_NO_PERTURB=1) — observational only${C_0}"
   echo "0" > "$REJOIN_FILE"
 else
   say "\n${C_C}▸ perturbation: launchd restart of ${RESTART_NODE} (non-destructive)${C_0}"
-  RP="$(port_of "$RESTART_NODE")"
   if echo "$LIVE" | grep -qw "$RESTART_NODE"; then
     "$ROOT/scripts/testnet.sh" restart "$RESTART_NODE" >/dev/null 2>&1 || say "  ${C_Y}restart command returned nonzero (continuing)${C_0}"
-    # measure rejoin: time until node RPC responds AND height within 1 of net tip
-    t0=$(date +%s); rejoin=-1
-    while [ $(( $(date +%s) - t0 )) -le 90 ]; do
-      h="$(height_of "$RP")"
-      if [ -n "$h" ] && [ "$h" != "-1" ]; then
-        # net tip = current max across other live nodes
-        tip=0
-        for name in $LIVE; do
-          [ "$name" = "$RESTART_NODE" ] && continue
-          nh="$(height_of "$(port_of "$name")")"; [ "${nh:-0}" -gt "$tip" ] && tip="$nh"
-        done
-        if [ "$h" -ge $(( tip - 1 )) ] && [ "$h" -gt 0 ]; then rejoin=$(( $(date +%s) - t0 )); break; fi
-      fi
-      sleep 3
-    done
-    echo "$rejoin" > "$REJOIN_FILE"
+    rejoin="$(wait_rejoin "$RP" "$RESTART_NODE" 90)"; echo "$rejoin" > "$REJOIN_FILE"
     if [ "$rejoin" -ge 0 ]; then say "  ${RESTART_NODE} rejoined tip in ${rejoin}s"; else say "  ${C_R}${RESTART_NODE} did NOT rejoin within 90s${C_0}"; fi
   else
     say "  ${C_Y}${RESTART_NODE} not live — skipping restart, recovery asserted observationally${C_0}"
@@ -183,9 +268,25 @@ if ! python3 "$COLLECT" "$NODECFG" > "$METRICS" 2>"$WORK/collect.err"; then
 fi
 REJOIN=$(cat "$REJOIN_FILE")
 
+# jget <python-expr on M> — M is the parsed metrics dict. None → empty string
+# (so `${x:-0}` coerces cleanly and integer comparisons never see the token None).
+jget(){ python3 -c "import json;M=json.load(open('$METRICS'));v=($1);print('' if v is None else v)" 2>/dev/null; }
+
+# ── inconclusive gate ───────────────────────────────────────────────────────
+# If the network became unhealthy DURING the run (nodes stopped, launchd booted
+# them out), that is NOT a scenario regression — it is an inconclusive run. Fail
+# loudly with a clear diagnostic instead of emitting bogus "forked" failures, and
+# do NOT write a fail result row (a fail row would falsely blame the code).
+UPC="$(jget "M['net']['up_count']")"
+if [ "${UPC:-0}" -lt "$MIN_NODES" ]; then
+  say "\n${C_R}▸ INCONCLUSIVE — network unhealthy at collection${C_0}"
+  die "only ${UPC:-0} nodes reachable when metrics were collected (need >=$MIN_NODES).
+     The testnet stopped mid-run (check: scripts/testnet.sh status). This is an
+     inconclusive run, NOT a scenario failure — no result row written. Restart the
+     testnet (scripts/testnet.sh start seed n1 n2 n3 n4 n5) and re-run."
+fi
+
 # ── assertion engine ────────────────────────────────────────────────────────
-# jget <python-expr on M> — M is the parsed metrics dict.
-jget(){ python3 -c "import json;M=json.load(open('$METRICS'));print($1)" 2>/dev/null; }
 FAIL_REASONS=""   # accumulates within a single scenario
 
 # assert <token> — returns 0 pass / 1 fail; appends human reason to FAIL_REASONS.
@@ -257,21 +358,32 @@ assert(){
   return $ok
 }
 
+# inj_tag — was this scenario's trigger actively INJECTED this run, or only OBSERVED?
+inj_tag(){
+  local sid="$1"
+  if [ "$CHAOS" = "1" ]; then
+    case "$sid" in GS-002|GS-003|GS-004|GS-005|GS-007) echo "inj";; *) echo "obs";; esac
+  elif [ "$NO_PERTURB" != "1" ]; then
+    case "$sid" in GS-004) echo "inj";; *) echo "obs";; esac
+  else echo "obs"; fi
+}
+
 # ── run scenarios ───────────────────────────────────────────────────────────
-say "\n${C_C}▸ evaluating scenarios${C_0}"
+say "\n${C_C}▸ evaluating scenarios${C_0}  ${C_Y}(inj=trigger actively injected · obs=invariant observed)${C_0}"
 TOTAL=0; PASSED=0; FAILURES_JSON="["; FJ_FIRST=1
 while IFS='|' read -r sid sname sassert; do
   [ -z "$sid" ] && continue
   TOTAL=$(( TOTAL + 1 ))
   FAIL_REASONS=""
   s_ok=1
+  tag="$(inj_tag "$sid")"
   # split CSV assertion tokens
   OLDIFS="$IFS"; IFS=','; for tok in $sassert; do IFS="$OLDIFS"; assert "$tok" || s_ok=0; IFS=','; done; IFS="$OLDIFS"
   if [ "$s_ok" = "1" ]; then
     PASSED=$(( PASSED + 1 ))
-    printf "  ${C_G}PASS${C_0} %-32s %s\n" "$sid" "$sname"
+    printf "  ${C_G}PASS${C_0} %-5s %-32s %s\n" "[$tag]" "$sid" "$sname"
   else
-    printf "  ${C_R}FAIL${C_0} %-32s %s\n" "$sid" "$sname"
+    printf "  ${C_R}FAIL${C_0} %-5s %-32s %s\n" "[$tag]" "$sid" "$sname"
     printf "       ${C_R}%s${C_0}\n" "${FAIL_REASONS# ; }"
     local_reasons="$(printf '%s' "${FAIL_REASONS# ; }" | python3 -c "import sys,json;print(json.dumps(sys.stdin.read()))")"
     [ "$FJ_FIRST" = 1 ] || FAILURES_JSON="$FAILURES_JSON,"
@@ -281,11 +393,19 @@ while IFS='|' read -r sid sname sassert; do
 done <<EOF
 $(sqlite3 -separator '|' "$DB" "SELECT scenario_id,name,assertions FROM gauntlet_scenarios WHERE status='active' ORDER BY scenario_id;")
 EOF
+# chaos injector failed to recover the node → hard fail regardless of assertions
+if [ "$CHAOS" = "1" ] && [ "$CHAOS_RECOVERED" != "1" ]; then
+  say "  ${C_R}FAIL  [inj] CHAOS-RECOVERY               target ${RESTART_NODE} did not recover after injection${C_0}"
+  [ "$FJ_FIRST" = 1 ] || FAILURES_JSON="$FAILURES_JSON,"
+  FJ_FIRST=0
+  FAILURES_JSON="$FAILURES_JSON{\"scenario\":\"CHAOS-RECOVERY\",\"reasons\":\"target ${RESTART_NODE} did not rejoin tip after down/wipe injection\"}"
+  s_ok=0; TOTAL=$(( TOTAL + 1 ))   # count as an extra failed check
+fi
 FAILURES_JSON="$FAILURES_JSON]"
 
 # ── log OWN result row (system-impact §GAUNTLET.3 — ground truth) ───────────
 DUR=$SECONDS
-if [ "$PASSED" -eq "$TOTAL" ]; then STATUS="pass"; else STATUS="fail"; fi
+if [ "$PASSED" -eq "$TOTAL" ] && { [ "$CHAOS" != "1" ] || [ "$CHAOS_RECOVERED" = "1" ]; }; then STATUS="pass"; else STATUS="fail"; fi
 WFID_SQL="NULL"; [ -n "${WORKFLOW_RUN_ID:-}" ] && WFID_SQL="$WORKFLOW_RUN_ID"
 FJ_ESCAPED="$(printf '%s' "$FAILURES_JSON" | sed "s/'/''/g")"
 sqlite3 "$DB" "INSERT INTO gauntlet_runs (run_id, status, scenarios_run, scenarios_passed, failures, duration_seconds, git_sha) VALUES ($WFID_SQL, '$STATUS', $TOTAL, $PASSED, '$FJ_ESCAPED', $DUR, '$SHA');" 2>/dev/null \
