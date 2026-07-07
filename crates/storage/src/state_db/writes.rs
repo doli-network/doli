@@ -18,12 +18,18 @@ use super::types::{
 impl StateDb {
     // ==================== Direct Write (non-batch) ====================
 
-    /// Insert a UTXO directly (for migration).
+    /// Insert a UTXO directly (for migration/recovery).
+    ///
+    /// Counter-idempotent: only increments `utxo_count` when the key is genuinely
+    /// new. Re-inserting an existing key (upsert) updates the value but does not
+    /// inflate the counter. This is critical for `recover_body_gaps()` which may
+    /// re-insert all existing UTXOs from state_db (INC-I-136).
     pub fn insert_utxo(&self, outpoint: &Outpoint, entry: &UtxoEntry) {
         let cf_utxo = self.db.cf_handle(CF_UTXO).unwrap();
         let cf_by_pk = self.db.cf_handle(CF_UTXO_BY_PUBKEY).unwrap();
 
         let key = outpoint.to_bytes();
+        let is_new = self.db.get_cf(cf_utxo, &key).ok().flatten().is_none();
         let value = bincode::serialize(entry).expect("UtxoEntry serialization");
 
         let mut batch = rocksdb::WriteBatch::default();
@@ -35,7 +41,9 @@ impl StateDb {
         batch.put_cf(cf_by_pk, &idx_key, [0u8]);
 
         self.db.write(batch).expect("RocksDB write batch");
-        self.utxo_count.fetch_add(1, Ordering::Relaxed);
+        if is_new {
+            self.utxo_count.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     /// Remove a UTXO directly (for migration/reorg).

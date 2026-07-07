@@ -5,6 +5,7 @@
 
 mod apply_block;
 mod block_handling;
+pub mod checkpoint_health;
 mod event_loop;
 mod fork_recovery;
 mod genesis;

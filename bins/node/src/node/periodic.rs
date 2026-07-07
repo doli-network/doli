@@ -898,15 +898,34 @@ impl Node {
                             let cs = self.chain_state.read().await;
                             cs.best_hash.to_hex()
                         };
+
+                        // INC-I-136 F1+F4: Compute peer-independent self-consistency.
+                        // The checkpoint is self-consistent iff the block store has
+                        // contiguous bodies and undo data is present for the rollback
+                        // window (UNDO_KEEP_DEPTH = 100 blocks).
+                        let window = doli_core::consensus::UNDO_KEEP_DEPTH;
+                        let lo = current_height.saturating_sub(window);
+                        let self_consistent =
+                            self.block_store.has_contiguous_bodies(lo, current_height)
+                                && self.state_db.has_undo_data(lo, current_height);
+                        // TODO(INC-I-136 F4): also assert epoch_state loads
+
                         // INC-I-055: Use rolling health window instead of point-in-time.
-                        // A checkpoint is healthy if the node was healthy at ANY point
-                        // in the last CHECKPOINT_HEALTH_WINDOW_SIZE samples (~10 min).
-                        // This prevents ALL checkpoints from being tagged unhealthy
-                        // during transient peer disconnections.
+                        let window_healthy = self.health_window.iter().any(|&h| h);
+
+                        // INC-I-136 F2: Use decide_checkpoint_health for the final
+                        // decision. An isolated-but-consistent node CAN produce a
+                        // healthy checkpoint. A gappy/no-undo node CANNOT.
+                        let decision = super::checkpoint_health::decide_checkpoint_health(
+                            self_consistent,
+                            peer_count,
+                            peers_agreeing,
+                            unique_hashes,
+                            window_healthy,
+                        );
+
                         let point_healthy =
                             peer_count > 0 && peers_agreeing == peer_count && unique_hashes <= 1;
-                        let window_healthy = self.health_window.iter().any(|&h| h);
-                        let healthy = point_healthy || window_healthy;
                         let health = serde_json::json!({
                             "height": current_height,
                             "hash": best_hash,
@@ -914,7 +933,9 @@ impl Node {
                             "peer_count": peer_count,
                             "peers_agreeing": peers_agreeing,
                             "unique_chain_tips": unique_hashes,
-                            "healthy": healthy,
+                            "healthy": decision.healthy,
+                            "isolated": decision.isolated,
+                            "self_consistent": decision.self_consistent,
                             "point_healthy": point_healthy,
                             "window_healthy": window_healthy,
                             "window_size": self.health_window.len(),
@@ -924,21 +945,25 @@ impl Node {
                             serde_json::to_string_pretty(&health).unwrap_or_default(),
                         );
 
-                        if healthy {
+                        if decision.healthy {
                             info!(
-                                "[AUTO_CHECKPOINT] HEALTHY at height={} ({}/{} peers agree) path={}",
+                                "[AUTO_CHECKPOINT] HEALTHY at height={} ({}/{} peers agree, isolated={}, self_consistent={}) path={}",
                                 current_height, peers_agreeing, peer_count,
+                                decision.isolated, decision.self_consistent,
                                 checkpoint_dir.display()
                             );
                         } else {
                             warn!(
-                                "[AUTO_CHECKPOINT] UNHEALTHY at height={} ({}/{} peers agree, {} tips) path={}",
+                                "[AUTO_CHECKPOINT] UNHEALTHY at height={} ({}/{} peers agree, {} tips, isolated={}, self_consistent={}) path={}",
                                 current_height, peers_agreeing, peer_count, unique_hashes,
+                                decision.isolated, decision.self_consistent,
                                 checkpoint_dir.display()
                             );
                         }
 
-                        // Rotate: keep only the last 5 checkpoints
+                        // Rotate: keep only the last 5 checkpoints,
+                        // but never evict the most-recent healthy checkpoint
+                        // (INC-I-136 F3+F5).
                         if let Ok(entries) = std::fs::read_dir(&checkpoint_base) {
                             let mut dirs: Vec<_> = entries
                                 .filter_map(|e| e.ok())
@@ -947,14 +972,36 @@ impl Node {
                             dirs.sort_by_key(|e| {
                                 parse_checkpoint_height(&e.file_name().to_string_lossy())
                             });
-                            if dirs.len() > 5 {
-                                for old in &dirs[..dirs.len() - 5] {
-                                    let _ = std::fs::remove_dir_all(old.path());
-                                    info!(
-                                        "[AUTO_CHECKPOINT] Rotated old: {}",
-                                        old.file_name().to_string_lossy()
-                                    );
-                                }
+
+                            // Build (height, healthy) aligned to dirs order.
+                            // Parse health.json per dir; default to unhealthy on
+                            // any failure (missing file, malformed JSON, missing key).
+                            let pairs: Vec<(u64, bool)> = dirs
+                                .iter()
+                                .map(|d| {
+                                    let h =
+                                        parse_checkpoint_height(&d.file_name().to_string_lossy());
+                                    let healthy =
+                                        std::fs::read_to_string(d.path().join("health.json"))
+                                            .ok()
+                                            .and_then(|s| {
+                                                serde_json::from_str::<serde_json::Value>(&s).ok()
+                                            })
+                                            .and_then(|v| v.get("healthy")?.as_bool())
+                                            .unwrap_or(false);
+                                    (h, healthy)
+                                })
+                                .collect();
+
+                            let evict_indices =
+                                super::checkpoint_health::select_checkpoint_evictions(&pairs, 5);
+                            for idx in &evict_indices {
+                                let old = &dirs[*idx];
+                                let _ = std::fs::remove_dir_all(old.path());
+                                info!(
+                                    "[AUTO_CHECKPOINT] Rotated old: {} (last healthy checkpoint protected)",
+                                    old.file_name().to_string_lossy()
+                                );
                             }
                         }
                     } else {

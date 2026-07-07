@@ -104,9 +104,15 @@ pub fn recover_body_gaps(
                      (avoiding partial mutation leak)",
                     h
                 );
-                utxo_set.clear();
-                for (outpoint, entry) in state_db.iter_utxos() {
-                    let _ = utxo_set.insert(outpoint, entry);
+                // INC-I-136: When the UtxoSet is RocksDb-backed, it IS the
+                // state_db — clear() is a no-op and re-inserting every UTXO
+                // back into itself is pointless (data-wise) and harmful
+                // (inflates the utxo_count atomic). Skip entirely.
+                if !utxo_set.is_rocksdb() {
+                    utxo_set.clear();
+                    for (outpoint, entry) in state_db.iter_utxos() {
+                        let _ = utxo_set.insert(outpoint, entry);
+                    }
                 }
                 return Ok(());
             }

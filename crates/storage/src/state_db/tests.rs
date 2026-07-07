@@ -726,3 +726,584 @@ fn prune_undo_below_zero_keep_height_is_noop() {
     }
     // O3: no panic reached by getting here.
 }
+
+// ==================== INC-I-136 M1: insert_utxo counter idempotency ====================
+//
+// OUTPUT CONTRACT: fn insert_utxo(&self, outpoint: &Outpoint, entry: &UtxoEntry)
+// Outputs:
+//   O1: self.utxo_count (AtomicU64) — incremented by 1 only when the key is NEW
+//   O2: cf_utxo (RocksDB) — key=outpoint.to_bytes(), value=bincode(entry), upsert semantics
+//   O3: cf_utxo_by_pubkey (RocksDB) — secondary index updated (pubkey_hash ++ outpoint -> 0x00)
+//   (no return value — fn returns ())
+//
+// PATHS:
+//   P1: new key — outpoint does not exist in cf_utxo before call
+//   P2: existing key (upsert) — outpoint already exists in cf_utxo before call
+//
+// INPUT PARTITIONS:
+//   P1a: single new key insert (N=1 from empty)
+//   P1b: multiple distinct new keys (N=3 from empty, exercises accumulation)
+//   P2a: re-insert same outpoint+entry (identical data, exercises the upsert-counter bug)
+//   P2b: re-insert same outpoint with different entry data (value changes, key unchanged)
+//   P2c: bulk re-insert all existing keys (rebuild scenario — exercises N doublings)
+//
+// MATRIX: 3 outputs x 5 partitions = 15 cells
+//   P1a: O1(count=1)  O2(key present, correct value)  O3(index present)
+//   P1b: O1(count=N)  O2(all N keys present)           O3(all N indexed)
+//   P2a: O1(count=N, NOT N+1)  O2(data unchanged)      O3(index unchanged)
+//   P2b: O1(count=N, NOT N+1)  O2(data updated)        O3(index present)
+//   P2c: O1(count=N, NOT 2N)   O2(all N keys present)  O3(all N indexed)
+//
+// Edge case: remove-then-reinsert — counter goes N -> N-1 -> N (not N+1)
+//
+// Requirement: REQ-GUARD-001 (Must)
+// Acceptance: insert_utxo on an existing key does not change utxo_count
+
+#[test]
+fn test_m1_counter_insert_new_key_increments() {
+    // P1a + P1b: Baseline — inserting N distinct keys must yield utxo_len() == N.
+    // This test establishes the correct behavior that must remain true after the fix.
+    let (db, _dir) = create_test_db();
+    let pk_hash = crypto_hash(b"alice");
+
+    // P1a: single insert
+    let op1 = Outpoint::new(crypto_hash(b"tx_m1_1"), 0);
+    let entry1 = UtxoEntry {
+        output: Output::normal(100_000, pk_hash),
+        height: 1,
+        is_coinbase: false,
+        is_epoch_reward: false,
+    };
+    db.insert_utxo(&op1, &entry1);
+
+    // O1: count must be 1
+    assert_eq!(db.utxo_len(), 1, "P1a O1: single insert must yield count=1");
+    // O2: data present
+    assert!(db.get_utxo(&op1).is_some(), "P1a O2: key must exist");
+    assert_eq!(
+        db.get_utxo(&op1).unwrap().output.amount,
+        100_000,
+        "P1a O2: value must match"
+    );
+    // O3: index present
+    let by_pk = db.get_utxos_by_pubkey(&pk_hash);
+    assert_eq!(by_pk.len(), 1, "P1a O3: pubkey index must have 1 entry");
+
+    // P1b: insert 2 more distinct keys (total N=3)
+    let op2 = Outpoint::new(crypto_hash(b"tx_m1_2"), 0);
+    let entry2 = UtxoEntry {
+        output: Output::normal(200_000, pk_hash),
+        height: 2,
+        is_coinbase: false,
+        is_epoch_reward: false,
+    };
+    let op3 = Outpoint::new(crypto_hash(b"tx_m1_3"), 0);
+    let entry3 = UtxoEntry {
+        output: Output::normal(300_000, pk_hash),
+        height: 3,
+        is_coinbase: false,
+        is_epoch_reward: false,
+    };
+    db.insert_utxo(&op2, &entry2);
+    db.insert_utxo(&op3, &entry3);
+
+    // O1: count must be 3
+    assert_eq!(
+        db.utxo_len(),
+        3,
+        "P1b O1: three distinct inserts must yield count=3"
+    );
+    // O2: all keys present
+    assert!(db.get_utxo(&op2).is_some(), "P1b O2: key 2 must exist");
+    assert!(db.get_utxo(&op3).is_some(), "P1b O2: key 3 must exist");
+    // O3: index has all 3
+    let by_pk = db.get_utxos_by_pubkey(&pk_hash);
+    assert_eq!(by_pk.len(), 3, "P1b O3: pubkey index must have 3 entries");
+}
+
+#[test]
+fn test_m1_counter_reinsert_same_key_does_not_increment() {
+    // P2a: ROOT CAUSE TEST — re-inserting an existing outpoint with identical data
+    // must NOT increment utxo_count. This is the primary FAIL->PASS test.
+    //
+    // Requirement: REQ-GUARD-001 (Must)
+    // Acceptance: insert_utxo on an existing key does not change utxo_count
+    let (db, _dir) = create_test_db();
+    let pk_hash = crypto_hash(b"alice");
+
+    // Insert N=3 distinct UTXOs
+    let op1 = Outpoint::new(crypto_hash(b"tx_m1_dup_1"), 0);
+    let op2 = Outpoint::new(crypto_hash(b"tx_m1_dup_2"), 0);
+    let op3 = Outpoint::new(crypto_hash(b"tx_m1_dup_3"), 0);
+    let entry1 = UtxoEntry {
+        output: Output::normal(100_000, pk_hash),
+        height: 1,
+        is_coinbase: false,
+        is_epoch_reward: false,
+    };
+    let entry2 = UtxoEntry {
+        output: Output::normal(200_000, pk_hash),
+        height: 2,
+        is_coinbase: false,
+        is_epoch_reward: false,
+    };
+    let entry3 = UtxoEntry {
+        output: Output::normal(300_000, pk_hash),
+        height: 3,
+        is_coinbase: false,
+        is_epoch_reward: false,
+    };
+    db.insert_utxo(&op1, &entry1);
+    db.insert_utxo(&op2, &entry2);
+    db.insert_utxo(&op3, &entry3);
+    assert_eq!(db.utxo_len(), 3, "setup: must have 3 UTXOs");
+
+    // Re-insert op1 with the SAME entry data
+    db.insert_utxo(&op1, &entry1);
+
+    // O1: count must still be 3, NOT 4
+    assert_eq!(
+        db.utxo_len(),
+        3,
+        "P2a O1: re-inserting existing key must NOT increment count (got {} instead of 3)",
+        db.utxo_len()
+    );
+    // O2: data unchanged
+    let got = db.get_utxo(&op1).unwrap();
+    assert_eq!(
+        got.output.amount, 100_000,
+        "P2a O2: data must be unchanged after same-data re-insert"
+    );
+    // O3: index unchanged — still 3 entries for this pubkey
+    let by_pk = db.get_utxos_by_pubkey(&pk_hash);
+    assert_eq!(
+        by_pk.len(),
+        3,
+        "P2a O3: pubkey index must still have 3 entries"
+    );
+}
+
+#[test]
+fn test_m1_counter_reinsert_same_key_different_value() {
+    // P2b: Re-insert same outpoint with DIFFERENT entry data.
+    // The counter must not increment; the data must be updated.
+    //
+    // Requirement: REQ-GUARD-001 (Must)
+    let (db, _dir) = create_test_db();
+    let pk_hash = crypto_hash(b"alice");
+
+    let op = Outpoint::new(crypto_hash(b"tx_m1_diffval"), 0);
+    let entry_v1 = UtxoEntry {
+        output: Output::normal(100_000, pk_hash),
+        height: 1,
+        is_coinbase: false,
+        is_epoch_reward: false,
+    };
+    db.insert_utxo(&op, &entry_v1);
+    assert_eq!(db.utxo_len(), 1, "setup: must have 1 UTXO");
+
+    // Re-insert with different amount (same outpoint key)
+    let entry_v2 = UtxoEntry {
+        output: Output::normal(999_000, pk_hash),
+        height: 5,
+        is_coinbase: true,
+        is_epoch_reward: false,
+    };
+    db.insert_utxo(&op, &entry_v2);
+
+    // O1: count must still be 1, NOT 2
+    assert_eq!(
+        db.utxo_len(),
+        1,
+        "P2b O1: re-inserting existing key with new value must NOT increment count (got {} instead of 1)",
+        db.utxo_len()
+    );
+    // O2: data must be the new value (RocksDB upsert semantics)
+    let got = db.get_utxo(&op).unwrap();
+    assert_eq!(
+        got.output.amount, 999_000,
+        "P2b O2: data must reflect the updated value"
+    );
+    assert_eq!(got.height, 5, "P2b O2: height must reflect the update");
+    // O3: index must still be present (1 entry for this pubkey)
+    let by_pk = db.get_utxos_by_pubkey(&pk_hash);
+    assert_eq!(
+        by_pk.len(),
+        1,
+        "P2b O3: pubkey index must still have 1 entry"
+    );
+}
+
+#[test]
+fn test_m1_rebuild_reinsert_all_existing_does_not_double_count() {
+    // P2c: REBUILD SCENARIO MIRROR — the exact pattern that triggers in
+    // recover_body_gaps() at init.rs:107-109.
+    //
+    // Open a StateDb, insert N distinct UTXOs, snapshot the count, then
+    // iterate all UTXOs and re-insert each via insert_utxo (the same call
+    // path used by recover_body_gaps). Assert count == before, NOT 2N.
+    //
+    // Requirement: REQ-GUARD-001 (Must)
+    // Acceptance: utxoCount == persisted count after rebuild
+    let (db, _dir) = create_test_db();
+    let pk_hash = crypto_hash(b"alice");
+    let bob_hash = crypto_hash(b"bob");
+
+    // Insert N=5 distinct UTXOs across two addresses
+    let ops_entries: Vec<(Outpoint, UtxoEntry)> = vec![
+        (
+            Outpoint::new(crypto_hash(b"tx_rb_1"), 0),
+            UtxoEntry {
+                output: Output::normal(100_000, pk_hash),
+                height: 1,
+                is_coinbase: false,
+                is_epoch_reward: false,
+            },
+        ),
+        (
+            Outpoint::new(crypto_hash(b"tx_rb_2"), 0),
+            UtxoEntry {
+                output: Output::normal(200_000, pk_hash),
+                height: 2,
+                is_coinbase: true,
+                is_epoch_reward: false,
+            },
+        ),
+        (
+            Outpoint::new(crypto_hash(b"tx_rb_3"), 0),
+            UtxoEntry {
+                output: Output::normal(300_000, bob_hash),
+                height: 3,
+                is_coinbase: false,
+                is_epoch_reward: false,
+            },
+        ),
+        (
+            Outpoint::new(crypto_hash(b"tx_rb_4"), 0),
+            UtxoEntry {
+                output: Output::normal(400_000, pk_hash),
+                height: 4,
+                is_coinbase: false,
+                is_epoch_reward: true,
+            },
+        ),
+        (
+            Outpoint::new(crypto_hash(b"tx_rb_5"), 0),
+            UtxoEntry {
+                output: Output::normal(500_000, bob_hash),
+                height: 5,
+                is_coinbase: false,
+                is_epoch_reward: false,
+            },
+        ),
+    ];
+
+    for (op, entry) in &ops_entries {
+        db.insert_utxo(op, entry);
+    }
+    let before = db.utxo_len();
+    assert_eq!(before, 5, "setup: must have 5 UTXOs");
+
+    // Reproduce the rebuild loop from recover_body_gaps():
+    //   for (outpoint, entry) in state_db.iter_utxos() {
+    //       let _ = utxo_set.insert(outpoint, entry);  // -> sdb.insert_utxo()
+    //   }
+    // Collect first to avoid borrow issues (same as the real code path).
+    let all_utxos: Vec<(Outpoint, UtxoEntry)> = db.iter_utxos();
+    assert_eq!(all_utxos.len(), 5, "setup: iter_utxos must return 5");
+
+    for (outpoint, entry) in &all_utxos {
+        db.insert_utxo(outpoint, entry);
+    }
+
+    // O1: count must still be 5, NOT 10 (2x)
+    assert_eq!(
+        db.utxo_len(),
+        before,
+        "P2c O1: rebuild re-insert must NOT double the count. \
+         Expected {} but got {} (exactly {}x — the INC-I-136 bug).",
+        before,
+        db.utxo_len(),
+        db.utxo_len() / before
+    );
+
+    // O2: all keys still present with correct values
+    for (op, entry) in &ops_entries {
+        let got = db
+            .get_utxo(op)
+            .expect("P2c O2: key must still exist after rebuild");
+        assert_eq!(
+            got.output.amount, entry.output.amount,
+            "P2c O2: value must be unchanged after rebuild"
+        );
+    }
+
+    // O3: pubkey indexes correct — alice has 3, bob has 2
+    let alice_utxos = db.get_utxos_by_pubkey(&pk_hash);
+    assert_eq!(
+        alice_utxos.len(),
+        3,
+        "P2c O3: alice pubkey index must have 3 entries"
+    );
+    let bob_utxos = db.get_utxos_by_pubkey(&bob_hash);
+    assert_eq!(
+        bob_utxos.len(),
+        2,
+        "P2c O3: bob pubkey index must have 2 entries"
+    );
+}
+
+#[test]
+fn test_m1_rebuild_via_utxoset_rocksdb_does_not_double_count() {
+    // Same rebuild scenario but through the UtxoSet::RocksDb wrapper —
+    // the exact call path used in init.rs:109 (`utxo_set.insert()`).
+    //
+    // Requirement: REQ-GUARD-001 (Must)
+    // Acceptance: utxoCount == persisted count after rebuild via UtxoSet
+    use crate::utxo::UtxoSet;
+    use std::sync::Arc;
+
+    let (db, _dir) = create_test_db();
+    let pk_hash = crypto_hash(b"carol");
+
+    // Insert N=4 distinct UTXOs via the StateDb directly
+    let ops: Vec<(Outpoint, UtxoEntry)> = (0..4)
+        .map(|i| {
+            let op = Outpoint::new(crypto_hash(format!("tx_us_{}", i).as_bytes()), 0);
+            let entry = UtxoEntry {
+                output: Output::normal((i as u64 + 1) * 100_000, pk_hash),
+                height: i as u64 + 1,
+                is_coinbase: false,
+                is_epoch_reward: false,
+            };
+            (op, entry)
+        })
+        .collect();
+
+    for (op, entry) in &ops {
+        db.insert_utxo(op, entry);
+    }
+    assert_eq!(db.utxo_len(), 4, "setup: must have 4 UTXOs");
+
+    // Wrap in UtxoSet::RocksDb — the production path
+    let db_arc = Arc::new(db);
+    let mut utxo_set = UtxoSet::from_state_db(db_arc.clone());
+
+    let before = utxo_set.len();
+    assert_eq!(before, 4, "setup: UtxoSet.len() must be 4");
+
+    // Reproduce recover_body_gaps() rebuild loop through UtxoSet
+    let all_utxos: Vec<(Outpoint, UtxoEntry)> = db_arc.iter_utxos();
+    for (outpoint, entry) in all_utxos {
+        utxo_set
+            .insert(outpoint, entry)
+            .expect("insert must not error");
+    }
+
+    // O1: count must still be 4, NOT 8
+    assert_eq!(
+        utxo_set.len(),
+        before,
+        "P2c via UtxoSet: rebuild re-insert must NOT double the count. \
+         Expected {} but got {} (the INC-I-136 bug via UtxoSet::insert).",
+        before,
+        utxo_set.len()
+    );
+}
+
+#[test]
+fn test_m1_counter_remove_then_reinsert_increments_correctly() {
+    // Edge case: remove a UTXO then re-insert it. The counter SHOULD
+    // go N -> N-1 -> N (not N -> N-1 -> N+1 or other).
+    // This confirms the fix does not break the legitimate new-key path
+    // after a key has been removed.
+    //
+    // Requirement: REQ-GUARD-001 (Must)
+    let (db, _dir) = create_test_db();
+    let pk_hash = crypto_hash(b"eve");
+
+    let op = Outpoint::new(crypto_hash(b"tx_m1_rmins"), 0);
+    let entry = UtxoEntry {
+        output: Output::normal(500_000, pk_hash),
+        height: 10,
+        is_coinbase: false,
+        is_epoch_reward: false,
+    };
+
+    // Insert -> count = 1
+    db.insert_utxo(&op, &entry);
+    assert_eq!(db.utxo_len(), 1, "after insert: count must be 1");
+
+    // Remove -> count = 0
+    let removed = db.remove_utxo(&op);
+    assert!(removed.is_some(), "remove must return the entry");
+    assert_eq!(db.utxo_len(), 0, "after remove: count must be 0");
+    assert!(
+        db.get_utxo(&op).is_none(),
+        "after remove: key must not exist"
+    );
+
+    // Re-insert the same outpoint (now a genuinely new key)
+    db.insert_utxo(&op, &entry);
+
+    // O1: count must be 1 (not 0, not 2)
+    assert_eq!(
+        db.utxo_len(),
+        1,
+        "after remove+reinsert: count must be 1 (key is genuinely new again)"
+    );
+    // O2: data present
+    let got = db.get_utxo(&op).unwrap();
+    assert_eq!(
+        got.output.amount, 500_000,
+        "after remove+reinsert: data must match"
+    );
+}
+
+// ============================================================
+// INC-I-136 M2: has_undo_data (undo-data availability check)
+// ============================================================
+//
+// OUTPUT CONTRACT: fn has_undo_data(&self, from: u64, to: u64) -> bool
+// Outputs:
+//   O1: return (bool) — true iff get_undo(h) is Some for all h in [from,to]
+//
+// Paths:
+//   P1: all present — every height in [from,to] has undo data
+//   P2: missing interior — at least one height in (from,to) has no undo data
+//   P3: empty range — from > to
+//   P4: single height
+//
+// INPUT PARTITIONS:
+//   P1a: dense range [5..10], all heights have undo data (happy path)
+//   P2a: range [5..10], height 7 missing (interior gap)
+//   P2b: range [5..10], height 5 missing (leading gap — first in range)
+//   P2c: range [5..10], height 10 missing (trailing gap — last in range)
+//   P3a: from=10, to=5 (inverted range → empty → true)
+//   P4a: from=7, to=7, undo present → true
+//   P4b: from=7, to=7, undo absent → false
+//
+// MATRIX: 1 output x 7 partitions = 7 cells
+//   P1a: O1(true)  ✓
+//   P2a: O1(false) ✓
+//   P2b: O1(false) ✓
+//   P2c: O1(false) ✓
+//   P3a: O1(true)  ✓
+//   P4a: O1(true)  ✓
+//   P4b: O1(false) ✓
+//
+// Requirement: REQ-GUARD-003 (Must) — F4
+// Acceptance: No healthy checkpoint with missing undo data in rollback window
+
+#[test]
+fn test_m2_undo_data_full_range_present() {
+    // P1a: all heights [5..10] have undo data → true
+    // Requirement: REQ-GUARD-003 (Must)
+    let (db, _dir) = create_test_db();
+
+    for h in 5u64..=10 {
+        db.put_undo(h, &make_undo(h as u8));
+    }
+
+    assert_eq!(
+        db.has_undo_data(5, 10),
+        true,
+        "P1a O1: all undo data present in [5..10] must return true"
+    );
+}
+
+#[test]
+fn test_m2_undo_data_interior_gap() {
+    // P2a: heights 5-10 have undo data except height 7 → false
+    // This is the core failure mode: a checkpoint whose state can't be
+    // rolled back because undo data is missing mid-window.
+    // Requirement: REQ-GUARD-003 (Must)
+    let (db, _dir) = create_test_db();
+
+    for h in 5u64..=10 {
+        if h != 7 {
+            db.put_undo(h, &make_undo(h as u8));
+        }
+    }
+
+    assert_eq!(
+        db.has_undo_data(5, 10),
+        false,
+        "P2a O1: missing undo at height 7 must return false"
+    );
+}
+
+#[test]
+fn test_m2_undo_data_leading_gap() {
+    // P2b: heights 6-10 have undo data but height 5 missing → false over [5..10]
+    // Requirement: REQ-GUARD-003 (Must)
+    let (db, _dir) = create_test_db();
+
+    for h in 6u64..=10 {
+        db.put_undo(h, &make_undo(h as u8));
+    }
+
+    assert_eq!(
+        db.has_undo_data(5, 10),
+        false,
+        "P2b O1: missing leading undo at height 5 must return false"
+    );
+}
+
+#[test]
+fn test_m2_undo_data_trailing_gap() {
+    // P2c: heights 5-9 have undo data but height 10 missing → false over [5..10]
+    // Requirement: REQ-GUARD-003 (Must)
+    let (db, _dir) = create_test_db();
+
+    for h in 5u64..=9 {
+        db.put_undo(h, &make_undo(h as u8));
+    }
+
+    assert_eq!(
+        db.has_undo_data(5, 10),
+        false,
+        "P2c O1: missing trailing undo at height 10 must return false"
+    );
+}
+
+#[test]
+fn test_m2_undo_data_empty_range() {
+    // P3a: from > to (inverted/empty range) → true
+    // Requirement: REQ-GUARD-003 (Must)
+    let (db, _dir) = create_test_db();
+
+    assert_eq!(
+        db.has_undo_data(10, 5),
+        true,
+        "P3a O1: empty range (from > to) must return true"
+    );
+}
+
+#[test]
+fn test_m2_undo_data_single_present() {
+    // P4a: from==to==7, undo present → true
+    // Requirement: REQ-GUARD-003 (Must)
+    let (db, _dir) = create_test_db();
+
+    db.put_undo(7, &make_undo(7));
+
+    assert_eq!(
+        db.has_undo_data(7, 7),
+        true,
+        "P4a O1: single height with undo present must return true"
+    );
+}
+
+#[test]
+fn test_m2_undo_data_single_absent() {
+    // P4b: from==to==7, no undo → false
+    // Requirement: REQ-GUARD-003 (Must)
+    let (db, _dir) = create_test_db();
+
+    assert_eq!(
+        db.has_undo_data(7, 7),
+        false,
+        "P4b O1: single height with no undo must return false"
+    );
+}

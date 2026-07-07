@@ -830,3 +830,178 @@ fn m2_open_write_metrics_smoke() {
     assert_eq!(m.is_write_stopped, 0, "writes should not be stopped");
     assert_eq!(m.background_errors, 0, "no background errors expected");
 }
+
+// ============================================================
+// INC-I-136 M2: has_contiguous_bodies (block-store body gap detection)
+// ============================================================
+//
+// OUTPUT CONTRACT: fn has_contiguous_bodies(&self, from: u64, to: u64) -> bool
+// Outputs:
+//   O1: return (bool) — true iff every height in [from,to] has a stored block body
+//
+// Paths:
+//   P1: full store — all heights in [from,to] have block bodies
+//   P2: missing interior height — at least one height in (from,to) has no body
+//   P3: empty range — from > to
+//   P4: single height — from == to
+//
+// INPUT PARTITIONS:
+//   P1a: dense range [1..5], all blocks present (standard happy path)
+//   P1b: single block at from==to, block present (degenerate range)
+//   P2a: 5 blocks stored at heights 1-5, height 3 deleted (interior gap)
+//   P2b: 5 blocks stored at heights 1-5, height 1 deleted (leading gap)
+//   P2c: 5 blocks stored at heights 1-5, height 5 deleted (trailing gap)
+//   P3a: from=5, to=4 (inverted range → empty → true)
+//   P4a: from=3, to=3, block present → true
+//   P4b: from=3, to=3, block absent → false
+//
+// MATRIX: 1 output x 8 partitions = 8 cells
+//   P1a: O1(true)  ✓
+//   P1b: O1(true)  ✓
+//   P2a: O1(false) ✓
+//   P2b: O1(false) ✓
+//   P2c: O1(false) ✓
+//   P3a: O1(true)  ✓
+//   P4a: O1(true)  ✓
+//   P4b: O1(false) ✓
+//
+// Requirement: REQ-GUARD-003 (Must) — F4
+// Acceptance: No healthy checkpoint can exist that fails to serve its own tip
+
+#[test]
+fn test_m2_contiguous_bodies_full_range() {
+    // P1a: all heights [1..5] present → true
+    // Requirement: REQ-GUARD-003 (Must)
+    let (store, _dir) = create_test_store();
+    let kp = KeyPair::generate();
+    let producer = *kp.public_key();
+
+    for h in 1..=5u64 {
+        let block = create_test_block(h as u32, &producer);
+        store.put_block_canonical(&block, h).unwrap();
+    }
+
+    assert_eq!(
+        store.has_contiguous_bodies(1, 5),
+        true,
+        "P1a O1: full range [1..5] with all blocks must return true"
+    );
+}
+
+#[test]
+fn test_m2_contiguous_bodies_interior_gap() {
+    // P2a: heights 1-5 present, then height 3 block deleted → false
+    // This is the core failure mode from INC-I-136: checkpoint captures
+    // a block store with a body gap.
+    // Requirement: REQ-GUARD-003 (Must)
+    let (store, _dir) = create_test_store();
+    let kp = KeyPair::generate();
+    let producer = *kp.public_key();
+
+    for h in 1..=5u64 {
+        let block = create_test_block(h as u32, &producer);
+        store.put_block_canonical(&block, h).unwrap();
+    }
+
+    // Delete blocks above height 2 to create a gap at height 3
+    // (delete_blocks_above removes heights 3, 4, 5 from height index)
+    store.delete_blocks_above(2).unwrap();
+
+    // Re-add heights 4 and 5 (height 3 stays missing)
+    let block4 = create_test_block(4, &producer);
+    store.put_block_canonical(&block4, 4).unwrap();
+    let block5 = create_test_block(5, &producer);
+    store.put_block_canonical(&block5, 5).unwrap();
+
+    assert_eq!(
+        store.has_contiguous_bodies(1, 5),
+        false,
+        "P2a O1: missing height 3 body must return false"
+    );
+}
+
+#[test]
+fn test_m2_contiguous_bodies_empty_range() {
+    // P3a: from > to (inverted/empty range) → true
+    // Requirement: REQ-GUARD-003 (Must)
+    let (store, _dir) = create_test_store();
+
+    assert_eq!(
+        store.has_contiguous_bodies(5, 4),
+        true,
+        "P3a O1: empty range (from > to) must return true"
+    );
+}
+
+#[test]
+fn test_m2_contiguous_bodies_single_present() {
+    // P4a: from==to==3, block present → true
+    // Requirement: REQ-GUARD-003 (Must)
+    let (store, _dir) = create_test_store();
+    let kp = KeyPair::generate();
+    let producer = *kp.public_key();
+
+    let block = create_test_block(3, &producer);
+    store.put_block_canonical(&block, 3).unwrap();
+
+    assert_eq!(
+        store.has_contiguous_bodies(3, 3),
+        true,
+        "P4a O1: single height with block present must return true"
+    );
+}
+
+#[test]
+fn test_m2_contiguous_bodies_single_absent() {
+    // P4b: from==to==3, no block at height 3 → false
+    // Requirement: REQ-GUARD-003 (Must)
+    let (store, _dir) = create_test_store();
+
+    assert_eq!(
+        store.has_contiguous_bodies(3, 3),
+        false,
+        "P4b O1: single height with no block must return false"
+    );
+}
+
+#[test]
+fn test_m2_contiguous_bodies_leading_gap() {
+    // P2b: heights 2-5 present but height 1 missing → false over [1..5]
+    // Requirement: REQ-GUARD-003 (Must)
+    let (store, _dir) = create_test_store();
+    let kp = KeyPair::generate();
+    let producer = *kp.public_key();
+
+    // Only store heights 2-5, leaving height 1 empty
+    for h in 2..=5u64 {
+        let block = create_test_block(h as u32, &producer);
+        store.put_block_canonical(&block, h).unwrap();
+    }
+
+    assert_eq!(
+        store.has_contiguous_bodies(1, 5),
+        false,
+        "P2b O1: missing leading height 1 must return false"
+    );
+}
+
+#[test]
+fn test_m2_contiguous_bodies_trailing_gap() {
+    // P2c: heights 1-4 present but height 5 missing → false over [1..5]
+    // Requirement: REQ-GUARD-003 (Must)
+    let (store, _dir) = create_test_store();
+    let kp = KeyPair::generate();
+    let producer = *kp.public_key();
+
+    // Only store heights 1-4, leaving height 5 empty
+    for h in 1..=4u64 {
+        let block = create_test_block(h as u32, &producer);
+        store.put_block_canonical(&block, h).unwrap();
+    }
+
+    assert_eq!(
+        store.has_contiguous_bodies(1, 5),
+        false,
+        "P2c O1: missing trailing height 5 must return false"
+    );
+}

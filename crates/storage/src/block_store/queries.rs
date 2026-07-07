@@ -208,6 +208,27 @@ impl BlockStore {
         Ok(())
     }
 
+    /// Check whether every height in `[from, to]` (inclusive) has a stored
+    /// block body.  Returns `true` when the range is fully populated, `false`
+    /// if any height is missing.  An empty range (`from > to`) returns `true`.
+    ///
+    /// Used by the checkpoint guardian (INC-I-136 M2, REQ-GUARD-003 F4) to
+    /// refuse a `healthy` tag when the block store has body gaps.
+    ///
+    /// O(to - from + 1) point lookups against the height index — no body
+    /// deserialization.
+    pub fn has_contiguous_bodies(&self, from: u64, to: u64) -> bool {
+        if from > to {
+            return true;
+        }
+        for h in from..=to {
+            if self.get_hash_by_height(h).ok().flatten().is_none() {
+                return false;
+            }
+        }
+        true
+    }
+
     /// Check if block exists
     pub fn has_block(&self, hash: &Hash) -> Result<bool, StorageError> {
         let cf_headers = self.db.cf_handle(CF_HEADERS).unwrap();

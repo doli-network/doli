@@ -71,6 +71,26 @@ impl StateDb {
         }
     }
 
+    /// Check whether every height in `[from, to]` (inclusive) has undo data.
+    /// Returns `true` iff `get_undo(h)` is `Some` for all h in `[from, to]`.
+    /// An empty range (`from > to`) returns `true`.
+    ///
+    /// Used by the checkpoint guardian (INC-I-136 M2, REQ-GUARD-003 F4) to
+    /// refuse a `healthy` tag when undo data is missing in the rollback window.
+    ///
+    /// O(to - from + 1) point lookups against cf_undo.
+    pub fn has_undo_data(&self, from: u64, to: u64) -> bool {
+        if from > to {
+            return true;
+        }
+        for h in from..=to {
+            if self.get_undo(h).is_none() {
+                return false;
+            }
+        }
+        true
+    }
+
     /// One-shot bulk delete of cf_undo entries STRICTLY BELOW `keep_height`.
     ///
     /// Mirrors `prune_undo_above`. Intended for catch-up after `UNDO_KEEP_DEPTH`
