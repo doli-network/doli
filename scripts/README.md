@@ -823,10 +823,42 @@ doli-node release sign --key producer_3.json --version v0.2.0 > sig3.json
 
 ---
 
+## System-Impact / Gauntlet Scripts
+
+### gauntlet.sh
+
+| Property | Value |
+|----------|-------|
+| **Path** | `scripts/gauntlet.sh` |
+| **Purpose** | OMEGA gauntlet runner (`.claude/protocols/system-impact.md` §GAUNTLET). Replays every failure mode DOLI has paid for — as **assertions over the live local testnet** — so "done" is a SYSTEM property, not a diff property. |
+| **What it does** | Reads active scenarios from `.omega/memory.db`; observes the running testnet over a window (RPC + windowed structured-telemetry log scan); performs ONE safe launchd node restart (GS-004); evaluates each scenario's assertions; writes its OWN result row; exits 0 iff all pass. |
+| **Execution model** | Observational + one non-destructive restart. **Never** genesis-resets, pkills, or wipes data. `GAUNTLET_NO_PERTURB=1` = pure observation. |
+| **Dependencies** | `sqlite3`, `python3`, `curl`, live testnet (`scripts/testnet.sh start all`), `scripts/gauntlet-collect.py` |
+| **Run time** | ~50-90 s (full) · ~25 s (`--quick`) |
+| **Output** | Per-scenario PASS/FAIL to stdout; result row in the runs table |
+
+**Usage:**
+```bash
+bash scripts/gauntlet.sh              # full run (45s window + safe n5 restart)
+bash scripts/gauntlet.sh --quick      # 20s window
+GAUNTLET_NO_PERTURB=1 bash scripts/gauntlet.sh   # observational only
+```
+
+**Env:** `WORKFLOW_RUN_ID`, `GAUNTLET_WINDOW` (s), `GAUNTLET_RESTART_NODE` (default `n5`), `GAUNTLET_RSS_CEIL_MB` (default 800), `GAUNTLET_MIN_NODES` (default 3), `GAUNTLET_NO_PERTURB`.
+
+**Companions:**
+- `scripts/gauntlet-collect.py` — RPC + windowed-log metrics collector (emits one JSON blob the runner asserts on).
+- `scripts/gauntlet-seed.sql` — version-controlled seed for the 8 scenario archetypes + Level-2+ incident mapping. Apply: `sqlite3 .omega/memory.db < scripts/gauntlet-seed.sql`.
+
+The gate (`.claude/hooks/gauntlet-gate.sh`) arms only when `.omega/gauntlet.conf` exists.
+
+---
+
 ## Quick Reference
 
 | Script | Nodes | Duration | Purpose |
 |--------|-------|----------|---------|
+| `gauntlet.sh` | 6 (live) | ~50-90 sec | **System-impact gauntlet (8 scenarios)** |
 | `build_release.sh` | 0 | ~10-30 min | **Build release binaries** |
 | `smoke_test_release.sh` | 1 | ~30-60 sec | **Release verification** |
 | `update.sh` | 0 | ~30 sec | **Manual binary update** |

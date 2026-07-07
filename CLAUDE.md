@@ -154,6 +154,7 @@ After completing any code change, ALWAYS propose the following checklist to the 
 | Install launchd services | `scripts/install-local-services.sh` — creates plists for seed + n1-n12 |
 | Start/stop/status | `scripts/testnet.sh start\|stop\|restart\|status [seed\|n1\|...\|all]` |
 | Tail logs | `scripts/testnet.sh logs [seed\|n1\|...]` |
+| System-impact gauntlet | `scripts/gauntlet.sh` — replays paid-for failure modes as assertions over the live testnet (8 scenarios); observational + one safe launchd restart, NEVER wipes/pkills. Seed: `scripts/gauntlet-seed.sql`. Gate armed by `.omega/gauntlet.conf`. |
 
 **Port layout**:
 - Seed: P2P=30300, RPC=8500, Metrics=9000
@@ -202,6 +203,9 @@ After completing any code change, ALWAYS propose the following checklist to the 
 | Drift tracker | `MEMORY.md` (auto-memory) |
 | Bug reports | `docs/legacy/bugs/` |
 | CLI issues | `CLI.md` |
+
+---
+
 
 ---
 
@@ -322,6 +326,7 @@ After completing a user's task, if they did something manually that an OMEGA com
 26. **Resource cost** — every proposal (architect, design-evaluator, design-synthesizer, reviewer) carries a `━━━ RESOURCE COST` block: CPU/Memory/IO/Network/Disk/Latency + basis + Inevitability + Cheaper alternative + Why-anyway. Enforced by `resource-cost-gate.sh`. Read `.claude/protocols/resource-cost.md`
 27. **Evidence pivot** — a failed fix buys evidence, not another guess. When a shipped fix does not change the symptom, you are FORBIDDEN from editing source for another fix until you capture runtime evidence from the FAILING environment (instrument the real path → make it visible → deterministic trigger). Armed by `evidence-pivot.sh`, enforced by `pipeline-gate.sh`. Read `.claude/protocols/evidence-pivot.md`
 28. **Code graph for structural questions** — ANY dependency, blast-radius, caller/callee, or architecture-comprehension question is answered by the code graph BEFORE grep. It auto-builds/refreshes (tree-sitter AST, zero LLM) and returns typed, deduplicated dependents far cheaper than grep. Use `blast.py` (dependents), `graphify explain` (neighborhood), `graphify path` (causal chain). Grep is the fallback only when graphify cannot be provisioned. Applies to every agent and command. Read `.claude/protocols/graph-briefing.md`
+29. **System impact** — "done" is a SYSTEM property, not a diff property. In projects with `.omega/gauntlet.conf`: changes in system-dynamics domains require a failure-mode matrix at briefing (query incidents/invariants by domain+tags, state behavior in each mode), a `Failure-Modes:` commit block, protection-mechanism registration (`protection_mechanisms` table), and a passing gauntlet run (real multi-node scenario suite) before the workflow can close. Enforced by `gauntlet-gate.sh`. Read `.claude/protocols/system-impact.md`
 
 ## Fail-Safe Controls
 
@@ -343,18 +348,11 @@ Discovery → Analyst (REQ-XXX-001) → Architect (module map) → Test Writer (
 ## Project Layout
 ```
 root-project/
-├── backend/              ← Backend source code
-├── frontend/             ← Frontend (if applicable)
-├── specs/                ← Technical specifications
-├── docs/                 ← Documentation
-├── CLAUDE.md             ← Workflow rules
-├── .omega/
-│   └── memory.db         ← Institutional memory (SQLite)
-└── .claude/
-    ├── agents/           ← Agent definitions
-    ├── commands/         ← Command definitions
-    ├── protocols/        ← Protocol reference files (loaded on-demand)
-    └── db-queries/       ← Query reference files
+├── backend/ frontend/    ← source code
+├── specs/  docs/         ← specifications, documentation
+├── CLAUDE.md             ← workflow rules
+├── .omega/memory.db      ← institutional memory (SQLite)
+└── .claude/              ← agents/, commands/, protocols/, db-queries/
 ```
 
 ## Conventions
