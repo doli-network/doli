@@ -351,7 +351,7 @@ mod tests {
     //     (genesis timestamp + message + genesis producers + consensus params).
     //     No branches, no external input.
     //   INPUT PARTITIONS: 1 - the function takes no arguments; the sole input is
-    //     the compiled mainnet constant set (GENESIS_TIME=1783529042 + message +
+    //     the compiled mainnet constant set (GENESIS_TIME=1783532348 + message +
     //     5 genesis producers). One partition -> one golden value.
     //   MATRIX: 1 output x 1 path x 1 partition = 1 cell -> the golden hash below.
     #[test]
@@ -360,8 +360,8 @@ mod tests {
         let hash = spec.genesis_hash();
         assert_eq!(
             hash.to_hex(),
-            // Fresh mainnet genesis (2026-07-08 redeploy, GENESIS_TIME=1783529042).
-            "18371fa5e00a093901c790c154a3cab7ec6948657d9f563481205530b1510e37",
+            // Fresh mainnet genesis (2026-07-08 redeploy, GENESIS_TIME=1783532348 = 18:39 WEST).
+            "11732409181a2a1f6617a6374bc684fc4f68fcc47619935f6cfcf92990230eba",
             "CRITICAL: Mainnet genesis hash changed! Binary incompatible with live network. Got {}",
             hash.to_hex()
         );
