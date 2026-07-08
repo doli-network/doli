@@ -333,11 +333,12 @@ fn inv_deploy_002_testnet_grandfathered_ok() {
     // Ordering is historically violated (AMM predates the fix) but explicitly
     // grandfathered — below-gate conservation rejects (never drains) AMM
     // DOLI-outflow txs, so this is safe. Guard must return Ok for Testnet.
+    // Testnet fresh-genesis redeploy (2026-07-07): amm and inc_i_096 both
+    // activate at genesis (0), so the historical ordering violation no longer
+    // exists — conservation engages the same block AMM does. Guard passes.
     let p = NetworkParams::defaults(Network::Testnet);
-    assert!(
-        p.inc_i_096_activation_height > p.amm_activation_height,
-        "precondition: testnet defaults have the historical ordering violation"
-    );
+    assert_eq!(p.amm_activation_height, 0);
+    assert_eq!(p.inc_i_096_activation_height, 0);
     assert!(p
         .validate_amm_conservation_ordering(Network::Testnet)
         .is_ok());

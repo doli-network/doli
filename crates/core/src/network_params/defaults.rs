@@ -90,12 +90,12 @@ impl NetworkParams {
                 full_bitfield_decode_height: 0,
                 rewards_epoch_list_fix_height: 0,
                 encrypted_content_activation_height: 0,
-                encrypted_content_v2_activation_height: 100_000, // MIME + royalties — deferred past disaster recovery
+                encrypted_content_v2_activation_height: 0, // Fresh genesis — MIME + royalties active from block 0
                 epoch_state_reorg_activation_height: 0,
-                // Security audit fixes (2026-04-25): all consensus-breaking fixes activate here
-                security_audit_activation_height: 27_547,
-                // INC-I-046: Ghost exclusion activates at epoch boundary >= 18152
-                ghost_exclusion_activation_height: 18_152,
+                // Security audit fixes: active from genesis on the fresh chain.
+                security_audit_activation_height: 0,
+                // INC-I-046: Ghost exclusion active from genesis on the fresh chain.
+                ghost_exclusion_activation_height: 0,
                 // INC-I-116: epoch-boundary liveness prune (absolute MIN_PRODUCERS_FLOOR
                 // instead of proportional 2/3 floor). Pinned 2026-06-21 at mainnet
                 // tip 446352, lead ~8625 blocks (~24h at 10s/blk) for a rolling
@@ -104,13 +104,13 @@ impl NetworkParams {
                 // first boundary >= 454977 → height 455040 (=360*1264), identical on
                 // every node. A FUTURE AH (NOT 0) is REQUIRED so historical
                 // epoch-state rebuilds below the AH match committed chain history.
-                epoch_prune_activation_height: 454_977,
+                epoch_prune_activation_height: 0,
                 // INC-I-075: Re-gate the INC-I-068 weight=0 filter at a future
                 // mainnet height so the consensus-shape change activates
                 // synchronously instead of unilaterally at deploy time.
                 // Pre-H: v6.21.16 behavior (keep weight=0 in active list).
                 // Post-H: v6.21.18+ behavior (filter weight=0 out).
-                inc_i_068_weight_filter_activation_height: 197_800,
+                inc_i_068_weight_filter_activation_height: 0,
 
                 // INC-I-078: delegation concentration mitigation (approved
                 // bundle, User Gate 2026-05-17). Defaults to disabled
@@ -141,8 +141,8 @@ impl NetworkParams {
                 //   it is deployed, this height becomes IMMUTABLE — never move
                 //   it forward thereafter (INC-I-054).
                 received_delegation_cap: 3000,
-                received_delegation_cap_activation_height: 254_344,
-                delegation_auth_activation_height: 254_344,
+                received_delegation_cap_activation_height: 0,
+                delegation_auth_activation_height: 0,
                 // INC-I-080: AddBond cap enforcement pinned to h=254_344 —
                 // co-deployed atomically with the INC-I-078 bundle (same
                 // upgrade event, same lead-time analysis). Above the chain head
@@ -150,7 +150,7 @@ impl NetworkParams {
                 // runs; at 254_344 every upgraded node begins rejecting
                 // over-cap AddBonds in lockstep. Once crossed this height is
                 // IMMUTABLE — never move it forward (INC-I-054).
-                addbond_cap_enforcement_activation_height: 254_344,
+                addbond_cap_enforcement_activation_height: 0,
 
                 // INC-I-088 Phase 0: DeFi subsystems (AMM, lending, loan,
                 // fractionalization) gated off on mainnet. u64::MAX = never
@@ -159,7 +159,10 @@ impl NetworkParams {
                 // are fixed and the subsystems are audit-clean. NEVER lower
                 // this without an explicit decision documented in
                 // specs/state-of-the-art-architecture.md.
-                defi_activation_height: u64::MAX,
+                // Fresh mainnet genesis (2026-07-08): activated from block 0 per
+                // operator directive. The 7 gated DeFi types remain tombstoned
+                // (cannot be constructed), so the open gate has no reachable path.
+                defi_activation_height: 0,
 
                 // AMM Foundations M1 — mainnet activation pinned 2026-06-03.
                 // Tip at pin time: 359_042. Lead time: 8_618 blocks
@@ -182,7 +185,7 @@ impl NetworkParams {
                 //   367_660 → 375_640 (2026-06-04): fresh pin with a new
                 //     deployable lead time. Tip at pin time: 366_960,
                 //     lead time: 8_680 blocks (~24.1h at 10s slots).
-                amm_activation_height: 375_640,
+                amm_activation_height: 0,
 
                 // Phase 2.1 Oracle (structural-anchored): u64::MAX = frozen.
                 // PriceAttestation (TxType=16) is rejected at validation and
@@ -209,7 +212,7 @@ impl NetworkParams {
                 //
                 // Builder policy (block content), not consensus rules.
                 // Once crossed IMMUTABLE (INC-I-054).
-                large_block_activation_height: 375_640,
+                large_block_activation_height: 0,
 
                 // INC-I-092 DeFi spend-path fixes (RC-A pool-input auth, RC-B
                 // pool_create funding). Mainnet activation pinned 2026-06-04
@@ -224,7 +227,7 @@ impl NetworkParams {
                 //     AMM triplet; binary never deployed.
                 //   367_660 → 375_640 (2026-06-04): fresh deployable
                 //     lead time. No honored crossed height moved.
-                inc_i_092_activation_height: 375_640,
+                inc_i_092_activation_height: 0,
                 // INC-I-096 pool-aware AMM value-conservation. Mainnet
                 // activation pinned 2026-06-04 at h=375_640 — equal to
                 // amm_activation_height (INV-DEPLOY-002 satisfied:
@@ -238,7 +241,7 @@ impl NetworkParams {
                 //     AMM triplet; binary never deployed.
                 //   367_660 → 375_640 (2026-06-04): fresh deployable
                 //     lead time. No honored crossed height moved.
-                inc_i_096_activation_height: 375_640,
+                inc_i_096_activation_height: 0,
 
                 // Gossip mesh: universal config for all network sizes.
                 // mesh_n=12 keeps all peers in eager-push for networks ≤24 (mesh_n_high),

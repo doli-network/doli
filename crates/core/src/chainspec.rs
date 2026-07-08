@@ -344,13 +344,24 @@ mod tests {
 
     /// Hardcoded genesis hash guard. If this fails, the binary produces a different
     /// chain identity than mainnet. Catches compiler/platform/code differences.
+    //
+    // OUTPUT CONTRACT: fn ChainSpec::mainnet().genesis_hash() -> Hash
+    //   O1: the genesis hash hex string (chain identity).
+    //   PATHS: 1 - deterministic BLAKE3 over fixed mainnet chainspec fields
+    //     (genesis timestamp + message + genesis producers + consensus params).
+    //     No branches, no external input.
+    //   INPUT PARTITIONS: 1 - the function takes no arguments; the sole input is
+    //     the compiled mainnet constant set (GENESIS_TIME=1783529042 + message +
+    //     5 genesis producers). One partition -> one golden value.
+    //   MATRIX: 1 output x 1 path x 1 partition = 1 cell -> the golden hash below.
     #[test]
     fn test_mainnet_genesis_hash_hardcoded() {
         let spec = ChainSpec::mainnet();
         let hash = spec.genesis_hash();
         assert_eq!(
             hash.to_hex(),
-            "6e2a2a823545473ae895cc68ae04a0b4576430b9deddc35db408c7fa5f686d55",
+            // Fresh mainnet genesis (2026-07-08 redeploy, GENESIS_TIME=1783529042).
+            "18371fa5e00a093901c790c154a3cab7ec6948657d9f563481205530b1510e37",
             "CRITICAL: Mainnet genesis hash changed! Binary incompatible with live network. Got {}",
             hash.to_hex()
         );
