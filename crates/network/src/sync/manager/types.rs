@@ -555,6 +555,36 @@ pub(crate) struct ForkState {
     /// `last_rollback_local_height` after 5 minutes — stale rollback state
     /// was suppressing fork detection for hours (h=27971 → h=28640, 2h gap).
     pub last_rollback_time: Option<Instant>,
+    /// INC-I-138 D5: set to `true` when a PEER-RECEIVED block is applied after
+    /// the most recent rollback; cleared to `false` on each rollback.
+    ///
+    /// **Call sites that set this flag (exhaustive):**
+    /// - Gossip `ExtendsTip` path (`block_handling.rs:368-371`): a canonical
+    ///   gossip block was applied on our tip — the rollback reconnected us.
+    /// - Reorg path (`block_handling.rs:872`): blocks applied during a reorg
+    ///   are peer-received; each reorg with `new_block_count > 0` sets it.
+    ///
+    /// **Intentional asymmetry — sync-applied blocks do NOT set this flag.**
+    /// Blocks fetched via `HeaderFirstSync` / normal block-fetch do not touch
+    /// `peer_block_applied_since_rollback`. This is by design: active sync is
+    /// already covered by the independent 30s secondary guard (`peers.rs:583-598`),
+    /// which suppresses `signal_stuck_fork` when the last apply was <30s ago.
+    /// Adding sync-path writes here would be redundant and would incorrectly arm
+    /// suppression while a sync catch-up is still in progress. Accepted per
+    /// INC-I-138 review (MINOR-2).
+    ///
+    /// Used by the suppression guard in `note_orphan_gossip_block` to
+    /// distinguish "BEHIND canonical" (peer block confirmed reconnect → suppress)
+    /// from "SELF-FORK" (only self-produced blocks since rollback → do NOT suppress,
+    /// signal stuck_fork so G3 → ShallowRollback fires).
+    ///
+    /// `false` (default/post-rollback): no peer block confirmed yet → suppression
+    /// MUST NOT fire; the node may be on a self-produced fork whose tip no peer
+    /// recognizes (INC-I-138: 21× measured suppressions → 325s stall).
+    /// `true`: at least one peer-received block applied since last rollback →
+    /// rollback reconnected us to canonical; orphan gossip means BEHIND, not
+    /// forked → suppression is correct (prevents 2026-04-15 folsi cascade).
+    pub peer_block_applied_since_rollback: bool,
     /// D2 (INC-I-090): chain break events detected during header sync.
     /// Drained by the node layer via `take_chain_breaks()` and emitted
     /// as `ChainBreakDetected` diagnostic events. Capped at 32 entries.
@@ -579,6 +609,7 @@ impl ForkState {
             height_fallback_attempted: false,
             last_rollback_local_height: None,
             last_rollback_time: None,
+            peer_block_applied_since_rollback: false,
             chain_breaks: VecDeque::new(),
         }
     }

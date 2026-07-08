@@ -706,10 +706,21 @@ impl Node {
                     return Ok(());
                 }
                 network::RecoveryAction::HeaderFirstSync => {
-                    // Trigger header-first sync by resetting empty headers,
-                    // which allows should_sync() → start_sync() on next tick.
-                    let mut sync = self.sync_manager.write().await;
-                    sync.reset_empty_headers();
+                    // INC-I-138 D2: do NOT reset consecutive_empty_headers here.
+                    //
+                    // The counter's semantic is "consecutive failures to extend from
+                    // my tip hash". Only genuine progress may clear it:
+                    //   - block_applied (block_lifecycle.rs:68): canonical block arrived
+                    //   - INC-I-012 F1 post-snap dispatch (dispatch.rs:84): height-based
+                    //     request bypasses the hash lookup, making prior empties irrelevant
+                    //
+                    // Pre-fix, resetting here on every HeaderFirstSync tick (every ~30s)
+                    // kept consecutive_empty_headers ≤ 2, making G3 (cleanup.rs:637 ≥ 3 →
+                    // signal_stuck_fork → coordinator Rule 1b → ShallowRollback) permanently
+                    // unreachable over the 325s stall (E5, INC-I-138 D2).
+                    //
+                    // should_sync() → start_sync() drives header-first sync on the next
+                    // periodic cycle independently of this counter — no reset needed here.
                 }
                 network::RecoveryAction::SnapSync => {
                     let mut sync = self.sync_manager.write().await;

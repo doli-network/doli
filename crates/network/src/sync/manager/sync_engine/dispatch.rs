@@ -127,6 +127,29 @@ impl SyncManager {
                         self.set_state(SyncState::Idle, "small_gap_wait_gossip");
                         return None;
                     }
+                    // INC-I-138 D2+D4 — Minor-fork regime guard (gap 4..MINOR_FORK_GAP_MAX).
+                    //
+                    // Naive-fix trap: removing the D2 reset (periodic.rs:712) allows the counter
+                    // to accumulate to 10, but at gap=28 the fallthrough below fires
+                    // GenesisFallbackEmptyHeaders — wiping state for a gap that ShallowRollback(1)
+                    // recovers in seconds. Regime split:
+                    //   gap ≤ 3           → gossip timing (INC-I-026, above)
+                    //   4 ≤ gap < 50      → minor-fork; G3 stuck_fork (cleanup.rs:637 ≥ 3) →
+                    //                       coordinator Rule 1b → ShallowRollback. NOT genesis-resync.
+                    //   gap ≥ 50 (snap.t) → header-first, snap, or genesis-resync remain valid.
+                    //
+                    // Both D2 and D4 must be co-deployed: D2 alone allows the counter to reach 10
+                    // at gap=28, which re-enters this block. D4 prevents gap-blind SnapSync via the
+                    // recovery coordinator. This guard prevents genesis-resync at gap=28.
+                    if gap > 3 && gap < super::super::recovery::thresholds::MINOR_FORK_GAP_MAX {
+                        debug!(
+                            "Minor-fork regime (gap={}, empties={}): awaiting G3/coordinator \
+                             ShallowRollback — skipping genesis-resync",
+                            gap, self.fork.consecutive_empty_headers
+                        );
+                        self.set_state(SyncState::Idle, "minor_fork_await_g3_coordinator");
+                        return None;
+                    }
                     info!(
                         "Genesis fallback: {} consecutive empty headers — requesting full resync",
                         self.fork.consecutive_empty_headers

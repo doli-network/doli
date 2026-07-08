@@ -255,16 +255,20 @@ impl SyncManager {
                 // not a sync failure. Incrementing sync_failures on empties
                 // causes premature snap sync escalation during shallow forks.
 
-                // Recovery Coordinator phase 2 shadow report (2026-04-15,
-                // synmgrefactor). Legacy action paths below still run; the
-                // coordinator just observes.
-                self.recovery
-                    .report(super::super::recovery::RecoveryEvidence::EmptyHeaders { peer, gap });
-
                 if gap <= 3 && self.local_height > 0 {
                     // INC-I-026 + fork_id: empty headers at gap ≤ 3 are gossip
                     // timing — NOT a fork. Gossip delivers within seconds.
                     // Do NOT rollback or escalate.
+                    //
+                    // INC-I-138 D1: Do NOT report EmptyHeaders evidence to the
+                    // Recovery Coordinator here. gap<=3 empties are benign gossip
+                    // timing; reporting them before this guard (the pre-D1 bug at
+                    // response.rs:261) polluted the 120s coordinator evidence window,
+                    // making empty_count>=10 trivially satisfiable within 120s and
+                    // feeding D4's deep_fork_confirmed at gap=28 → SnapSync (E8,
+                    // n5.log:17197, blocks 37-63 lost). The counter at :252 stays
+                    // (legacy G3 stuck-fork detection still needs it); only the
+                    // coordinator report() is suppressed for gap<=3 responses.
                     debug!(
                         "Empty headers from {} (gap={}, consecutive={}) — \
                          gossip timing, not a fork. Waiting for gossip delivery.",
@@ -273,6 +277,16 @@ impl SyncManager {
                     self.set_state(SyncState::Idle, "small_gap_wait_gossip");
                     return;
                 }
+
+                // Recovery Coordinator phase 2 shadow report (2026-04-15,
+                // synmgrefactor). Legacy action paths below still run; the
+                // coordinator just observes.
+                //
+                // INC-I-138 D1: report() is placed AFTER the gap<=3 guard above.
+                // Only gap>3 empty-header responses are genuine fork evidence and
+                // enter the coordinator's 120s evidence window.
+                self.recovery
+                    .report(super::super::recovery::RecoveryEvidence::EmptyHeaders { peer, gap });
 
                 if self.fork.consecutive_empty_headers >= 3 {
                     // Fix #2 (2026-04-15): anti-cascade rollback guard.

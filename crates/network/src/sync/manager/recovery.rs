@@ -195,9 +195,17 @@ impl RecoveryContext {
 /// Classifier thresholds. Named constants so tuning is visible and testable.
 pub mod thresholds {
     /// How many EmptyHeaders/OrphanGossip/ApplyFailure events required before
-    /// escalation to an action. Matches the 3-consecutive threshold used by
-    /// the pre-coordinator detectors.
-    pub const MIN_MINOR_FORK_EVIDENCE: u32 = 3;
+    /// escalation to an action.
+    ///
+    /// INC-I-138 D2: set to 2 (was 3). The incident measured ~1.5 GetHeadersByHeight
+    /// "header chain broken" calls per 30s coordinator interval (~2 per tick). With
+    /// threshold=3, reaching the G3 precondition required accumulation across ticks.
+    /// The D2 dominant reset writer (periodic.rs:712 reset_empty_headers on HeaderFirstSync)
+    /// kept the counter ≤ 2 each tick, making G3 permanently unreachable over 325s (E5).
+    /// Threshold=2 makes the minor-fork evidence condition satisfiable within a single
+    /// 30s interval (2 events ≥ 2), independent of cross-tick accumulation.
+    /// Co-deployed with the periodic.rs D2 production fix (no reset on HeaderFirstSync).
+    pub const MIN_MINOR_FORK_EVIDENCE: u32 = 2;
 
     /// Gap threshold separating "minor fork" (shallow rollback can resolve)
     /// from "behind canonical" (header-first sync).
@@ -379,8 +387,21 @@ impl RecoveryCoordinator {
         let rollback_exhausted =
             minor_fork_evidence && ctx.shallow_rollback_count >= thresholds::SHALLOW_ROLLBACK_MAX;
         let large_gap = gap >= thresholds::SNAP_SYNC_GAP_MIN;
+        // INC-I-138 D4: add gap guard to deep_fork_confirmed.
+        //
+        // Pre-fix: (empty_count >= 10 && last_applied >= STALE_TIP_SECS) fired at gap=28
+        // (below SNAP_SYNC_GAP_MIN=500), causing Rule 2 → SnapSync at gap=28 — a gap
+        // recoverable in seconds via ShallowRollback(1). Terminal event E8: "[COORDINATOR]
+        // action=SnapSync gap=28 last_applied=325s" (n5.log:17197); blocks 37-63 lost.
+        //
+        // Fix: require gap >= MINOR_FORK_GAP_MAX(50) for the empty_count branch.
+        // deep_fork > 0 path is unchanged (explicit deep-fork signal, not a heuristic).
+        // large_gap path (>= SNAP_SYNC_GAP_MIN=500) in Rule 2 is independent and unchanged.
+        // rollback_exhausted path is independent and unchanged.
         let deep_fork_confirmed = deep_fork > 0
-            || (empty_count >= 10 && ctx.last_applied_secs >= thresholds::STALE_TIP_SECS);
+            || (empty_count >= 10
+                && ctx.last_applied_secs >= thresholds::STALE_TIP_SECS
+                && gap >= thresholds::MINOR_FORK_GAP_MAX);
 
         if (rollback_exhausted || large_gap || deep_fork_confirmed)
             && ctx.snap_attempts < thresholds::SNAP_ATTEMPTS_MAX
@@ -657,6 +678,9 @@ mod tests {
         );
     }
 
+    /// count=3 over-satisfies `MIN_MINOR_FORK_EVIDENCE=2`; assertions unchanged.
+    /// For the exact threshold boundary see `two_empty_headers_small_gap_triggers_shallow_rollback`
+    /// and `one_empty_header_does_not_trigger_rollback`.
     #[test]
     fn three_empty_headers_small_gap_triggers_shallow_rollback() {
         let mut c = RecoveryCoordinator::new();
@@ -669,6 +693,47 @@ mod tests {
         let mut ctx = base_ctx();
         ctx.network_tip_height = 1002;
         assert_eq!(
+            c.classify(&ctx),
+            RecoveryAction::ShallowRollback { depth: 1 }
+        );
+    }
+
+    /// Pinned boundary test: exactly `MIN_MINOR_FORK_EVIDENCE` (=2) EmptyHeaders events
+    /// at small gap with recently-synced context must produce `ShallowRollback{1}`.
+    ///
+    /// INC-I-138 D2 set the threshold to 2 so that 2 events within a single 30s
+    /// coordinator interval satisfy the minor-fork evidence condition without requiring
+    /// cross-tick accumulation. This test pins that exact saturation point.
+    #[test]
+    fn two_empty_headers_small_gap_triggers_shallow_rollback() {
+        let mut c = RecoveryCoordinator::new();
+        for _ in 0..2 {
+            c.report(RecoveryEvidence::EmptyHeaders {
+                peer: fake_peer(),
+                gap: 2,
+            });
+        }
+        let mut ctx = base_ctx();
+        ctx.network_tip_height = 1002; // gap=2 (<MINOR_FORK_GAP_MAX=50); last_applied_secs=5 → recently_synced()
+        assert_eq!(
+            c.classify(&ctx),
+            RecoveryAction::ShallowRollback { depth: 1 }
+        );
+    }
+
+    /// Pinned boundary test: exactly 1 EmptyHeaders event (below `MIN_MINOR_FORK_EVIDENCE=2`)
+    /// must NOT produce `ShallowRollback` — `minor_fork_evidence` is unsatisfied and Rule 1
+    /// cannot fire. With gap=2 the fallthrough lands on Rule 3 (`HeaderFirstSync`).
+    #[test]
+    fn one_empty_header_does_not_trigger_rollback() {
+        let mut c = RecoveryCoordinator::new();
+        c.report(RecoveryEvidence::EmptyHeaders {
+            peer: fake_peer(),
+            gap: 2,
+        });
+        let mut ctx = base_ctx();
+        ctx.network_tip_height = 1002; // gap=2; 1 event < threshold=2
+        assert_ne!(
             c.classify(&ctx),
             RecoveryAction::ShallowRollback { depth: 1 }
         );

@@ -532,11 +532,29 @@ impl SyncManager {
                         .unwrap_or(false);
                     if rollback_fresh {
                         if let Some(rb_h) = self.fork.last_rollback_local_height {
-                            if self.local_height > rb_h {
+                            // INC-I-138 D5: gate suppression on peer-confirmed canonical
+                            // progress, not merely local_height > rb_h.
+                            //
+                            // BUG (measured 21×): the old check `local_height > rb_h`
+                            // fired whenever ANY block was applied after the rollback —
+                            // including self-produced fork blocks that ALL peers rejected
+                            // ("outside time window"). n5 produced h=19/20/21 on a fork
+                            // tip (rb_h=18), making local_height(21) > rb_h(18) TRUE.
+                            // Suppression fired 21× → G3/ShallowRollback starved → 325s
+                            // stall → spurious SnapSync at gap=28.
+                            //
+                            // FIX: require peer_block_applied_since_rollback=true, which
+                            // is only set by the block-handling layer (gossip/sync/reorg
+                            // paths), NOT by the self-production path. This ensures
+                            // suppression fires only when a peer-received block has
+                            // confirmed we're on the canonical chain.
+                            if self.local_height > rb_h
+                                && self.fork.peer_block_applied_since_rollback
+                            {
                                 warn!(
                                     "[SYNC] {} orphan gossip blocks (local_h={}, tip_h={}, gap={}) — \
-                                     applied since last rollback (rb_h={}) → BEHIND not forked. \
-                                     Suppressing stuck_fork signal, running normal sync.",
+                                     applied since last rollback (rb_h={}, peer_confirmed=true) \
+                                     → BEHIND not forked. Suppressing stuck_fork signal, running normal sync.",
                                     self.consecutive_orphan_gossip_blocks,
                                     self.local_height,
                                     self.network.network_tip_height,

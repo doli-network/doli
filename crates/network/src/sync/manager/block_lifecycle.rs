@@ -151,6 +151,21 @@ impl SyncManager {
             self.snap.attempts = 0;
             self.fork.header_blacklisted_peers.clear();
 
+            // INC-I-138 floor=0 race fix: the floor check at line 74 ran with
+            // state=Syncing (condition false) — floor was NOT set for the transition
+            // block. Set it now, inside the transition, so Gate 1 at production_gate.rs:674
+            // (confirmed_height_floor > 0) is true immediately after first sync.
+            //
+            // Without this fix, Gate 1 evaluates false unconditionally after snap sync
+            // or normal sync completion, allowing CoordinatorSnapEscalation to fire at
+            // any gap (E10: confirmed_height_floor=0 in INC-I-138 incident).
+            //
+            // Guard: same condition as the post-transition path at line 74 — only set
+            // when the resync counter is clear (node is in a stable, non-resyncing state).
+            if self.consecutive_resync_count == 0 && height > self.confirmed_height_floor {
+                self.confirmed_height_floor = height;
+            }
+
             // If we were in a resync, complete it now
             if matches!(self.recovery_phase, super::RecoveryPhase::ResyncInProgress) {
                 self.complete_resync();
@@ -531,6 +546,27 @@ impl SyncManager {
         // INC-I-049: Record rollback timestamp for 5-minute TTL expiry.
         // Stale rollback state suppressed fork detection for hours.
         self.fork.last_rollback_time = Some(std::time::Instant::now());
+        // INC-I-138 D5: Reset peer-confirmation gate on every rollback.
+        // The next suppression check must see a peer-received block before
+        // it can safely classify the node as BEHIND (not FORKED).
+        self.fork.peer_block_applied_since_rollback = false;
+    }
+
+    /// INC-I-138 D5: Record that a PEER-RECEIVED block was applied after the
+    /// most recent rollback.
+    ///
+    /// Called by the block-handling layer (gossip, sync download, reorg apply)
+    /// after a peer-originated block is successfully applied. NOT called from
+    /// the production path (self-produced blocks).
+    ///
+    /// When this flag is true, `note_orphan_gossip_block` can safely suppress
+    /// the stuck_fork signal: the rollback reconnected us to canonical, and
+    /// orphan gossip merely means we are BEHIND the tip. When false, the
+    /// applied blocks since rollback were self-produced forks — suppression
+    /// must NOT fire so G3 → ShallowRollback can recover (INC-I-138 incident:
+    /// flag was implicitly "always true", causing 21× suppression → 325s stall).
+    pub fn note_peer_block_applied_since_rollback(&mut self) {
+        self.fork.peer_block_applied_since_rollback = true;
     }
 
     /// Recovery Coordinator phase 2 (2026-04-15, synmgrefactor): classify

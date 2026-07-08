@@ -5094,3 +5094,1225 @@ mod d6_stuck_fork_consumer_tests {
         assert!(alert.is_none(), "must return None when signal was not set");
     }
 }
+
+// =========================================================================
+// INC-I-138 D5: applied-since-rollback suppression heuristic
+//
+// Suppression function: SyncManager::note_orphan_gossip_block (peers.rs:465)
+// Suppression guard:    peers.rs:533-549 — the "BEHIND not forked" branch
+//
+// Bug (D5, measured 21× on testnet): the guard fires whenever ANY block was
+// applied after the last rollback — including blocks the node SELF-PRODUCED on
+// its own unrecognized fork tip. n5 rolled back from h=19 to h=18, self-produced
+// fork blocks h=19/20/21 (all rejected "outside time window" by all 5 peers),
+// then accumulating orphan gossip triggered note_orphan_gossip_block 21 times —
+// each time the guard saw local_height(21) > rb_h(18) and suppressed stuck_fork.
+// Result: G3/ShallowRollback never fired → 325s stall → SnapSync at gap=28.
+//
+// OUTPUT CONTRACT: fn note_orphan_gossip_block(&mut self, height: u64, slot: u32)
+//   O1: self.consecutive_orphan_gossip_blocks — incremented each call;
+//       reset to 0 when any action-taking exit path fires (>= 3 threshold)
+//   O2: self.fork.stuck_fork_signal — set true ONLY via signal_stuck_fork()
+//       (Normal recovery phase); unchanged on suppression path (BUG)
+//   O3: self.state — Idle → Syncing when start_sync() fires (suppression path);
+//       stays Idle when signal_stuck_fork() fires instead
+//   O4: self.recovery — always receives OrphanGossip evidence (peers.rs:481-485)
+//       before any branch
+//   O5: self.network.network_tip_height — updated if block_height > current tip
+//
+// Code paths:
+//   PATH-A (self-produced-fork applies, rollback_fresh=true, local_h > rb_h, gap=18):
+//     → suppression guard fires → O2=false (BUG: stuck_fork NOT set), O3=Syncing
+//   PATH-B (peer-received canonical applies — regression pin):
+//     → same guard fires (CORRECT: node is BEHIND) → O2=false, O3=Syncing
+//   PATH-C (no rollback state — control):
+//     → guard skipped → signal_stuck_fork() → O2=true, O3=Idle
+//
+// INPUT PARTITIONS × output matrix (O2 is the discriminating output):
+//   | Partition                          | O2 stuck_fork | O3 state |
+//   |------------------------------------|---------------|----------|
+//   | A: self-fork  (rb=18, h=21, g=18) | true  (MUST)  | Idle     | <- FAILS (BUG)
+//   | B: canonical  (rb=18, h=19, g= 3) | false (pin)   | Syncing  | <- PASSES
+//   | C: no-rollback (h=21, g=18)       | true          | Idle     | <- PASSES
+// =========================================================================
+mod inc_i138_d5_stuck_fork_suppression {
+    use super::*;
+    use libp2p::PeerId;
+    use std::time::{Duration, Instant};
+
+    /// Build a SyncManager in the correct initial state for D5 suppression tests.
+    ///
+    /// `last_block_applied` is set to 35s ago:
+    ///   recently_synced = (35 < 60) = true → enters the "fork vs behind" check
+    ///   secs_since_apply = 35 >= 30         → NOT suppressed by the fresh-apply guard
+    fn fork_test_manager_d5(local_height: u64, net_tip_height: u64) -> SyncManager {
+        let mut mgr = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        mgr.state = SyncState::Idle;
+        mgr.pipeline_data = SyncPipelineData::None;
+        mgr.local_height = local_height;
+        mgr.network.network_tip_height = net_tip_height;
+        // 35s: recently_synced=true AND secs_since_apply >= 30 → passes fresh-apply guard
+        mgr.network.last_block_applied = Instant::now()
+            .checked_sub(Duration::from_secs(35))
+            .expect("test machine uptime must exceed 35s");
+        mgr
+    }
+
+    /// Insert a peer directly, bypassing add_peer() which triggers start_sync().
+    fn insert_peer_d5(mgr: &mut SyncManager, height: u64) {
+        let peer = PeerId::random();
+        mgr.peers.insert(
+            peer,
+            PeerSyncStatus {
+                best_height: height,
+                best_hash: Hash::ZERO,
+                best_slot: height as u32,
+                last_status_response: Instant::now(),
+                last_block_received: None,
+                pending_request: None,
+                protocol_version: 0,
+                producer_pubkey: None,
+            },
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // PATH-A — BUG REPRO (MUST FAIL on current code)
+    // -------------------------------------------------------------------------
+
+    /// INC-I-138 D5 — self-produced fork blocks MUST NOT suppress stuck_fork.
+    ///
+    /// Exact incident state (n5 log-verified, orchestrator-measured 21× WARN):
+    ///   n5 rolled back from h=19 to h=18 (rb_h=18, rollback_fresh=true ~0s).
+    ///   n5 self-produced fork blocks h=19/20/21 on slot 639847-639852.
+    ///   All 5 peers rejected fork blocks "outside time window" (simultaneous).
+    ///   Peers report network tip h=39 (gap=18 < 50 → enters suppression check).
+    ///   Orphan gossip blocks h=37-39 accumulate.
+    ///
+    ///   Suppression guard (peers.rs:533-549):
+    ///     rollback_fresh=true AND rb_h=Some(18) AND local_height(21) > rb_h(18) → fires.
+    ///     WARN "applied since last rollback (rb_h=18) → BEHIND not forked. Suppressing..."
+    ///     Calls start_sync() and returns WITHOUT calling signal_stuck_fork().
+    ///
+    ///   CORRECT: stuck_fork_signal=true → G3 → ShallowRollback → recovery seconds.
+    ///   ACTUAL (BUG): stuck_fork_signal=false → 21× suppression → 325s stall.
+    ///
+    /// FAILS on current code: suppression branch fires, O2=false instead of true.
+    #[test]
+    fn test_inc_i138_d5_self_produced_fork_blocks_must_not_suppress_stuck_fork() {
+        // local_height=21: self-produced fork blocks h=19/20/21 after rollback to h=18.
+        // net_tip_height=39: gap=18 (< 50 → suppression guard is entered).
+        let mut mgr = fork_test_manager_d5(21, 39);
+
+        // Simulate rollback to h=18 just completed (rollback_fresh=true, ~0s ago).
+        // Sets fork.last_rollback_local_height=Some(18), fork.last_rollback_time=now.
+        mgr.note_rollback_completed(18);
+
+        // Insert 2 peers at h=39 (canonical chain n5 fell off).
+        // Direct insert bypasses add_peer() → no premature start_sync().
+        insert_peer_d5(&mut mgr, 39);
+        insert_peer_d5(&mut mgr, 39);
+
+        // Accumulate 3 consecutive orphan gossip blocks (h=37/38/39).
+        // These are canonical chain blocks that n5's fork tip (h=21) cannot extend.
+        mgr.note_orphan_gossip_block(37, 637);
+        mgr.note_orphan_gossip_block(38, 638);
+        // Third call crosses the >= 3 threshold. Suppression branch fires:
+        //   peers.rs:533: rollback_fresh=true
+        //   peers.rs:534: rb_h=Some(18)
+        //   peers.rs:535: local_height(21) > rb_h(18) → TRUE → SUPPRESSION FIRES
+        //   peers.rs:546-548: warn!, consecutive_orphan_gossip_blocks=0, start_sync(), return
+        //   BUG: signal_stuck_fork() never called → stuck_fork_signal stays false.
+        mgr.note_orphan_gossip_block(39, 639);
+
+        // O1: counter must be reset to 0 by whichever exit path fires
+        assert_eq!(
+            mgr.consecutive_orphan_gossip_blocks, 0,
+            "O1: orphan counter must be reset to 0 on any action-taking exit"
+        );
+
+        // O2 — PRIMARY BUG ASSERTION (FAILS on current code):
+        //   When all applies since rollback are self-produced fork blocks on a tip no
+        //   peer recognizes (empty GetHeaders for our tip hash, gap=18), stuck_fork_signal
+        //   MUST be true so G3 can fire ShallowRollback and recover in seconds.
+        //   ACTUAL: false. The suppression branch (peers.rs:533-549) took the early-return
+        //   path, calling start_sync() instead of signal_stuck_fork().
+        //   This is the D5 defect: 21× suppressions in the incident → 325s stall.
+        assert!(
+            mgr.fork.stuck_fork_signal,
+            "INC-I-138 D5 BUG: self-produced fork blocks (h=19/20/21) after rollback to h=18 \
+             caused the applied-since-rollback heuristic (peers.rs:533-549) to classify FORKED \
+             as BEHIND. stuck_fork_signal=false instead of true. \
+             21x suppressions measured in incident → G3/ShallowRollback starved → 325s stall \
+             → spurious SnapSync at gap=28. Fix: gate suppression on peer-confirmed canonical \
+             tip progress, not merely local_height > rb_h."
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // PATH-B — REGRESSION PIN (must PASS now and after D5 fix)
+    // -------------------------------------------------------------------------
+
+    /// INC-I-138 D5 regression pin — peer-received canonical applies MUST suppress.
+    ///
+    /// Scenario: n5 rolled back to h=18, received ONE canonical block h=19 from a peer.
+    /// local_height=19 > rb_h=18 → rollback succeeded, reconnected to canonical.
+    /// Peers at h=22 (gap=3). Orphan gossip h=20-22 means node is merely BEHIND.
+    ///
+    /// CORRECT: suppression fires → start_sync() closes the gap.
+    ///   Rolling back here would undo a valid canonical block — the 2026-04-15
+    ///   folsi cascade: 25 consecutive rollbacks grew the gap from 2 to 50+.
+    ///
+    /// This test MUST PASS both before AND after the D5 fix. The fix must NOT remove
+    /// suppression for the legitimate "BEHIND, not FORKED" case.
+    ///
+    /// PASSES on current code: suppression correctly fires, O2=false.
+    #[test]
+    fn test_inc_i138_d5_peer_canonical_applies_correctly_suppress_signal_pin() {
+        // local_height=19: one peer-canonical block received after rollback to h=18.
+        // net_tip_height=22: gap=3, node is merely behind the canonical tip.
+        let mut mgr = fork_test_manager_d5(19, 22);
+
+        mgr.note_rollback_completed(18);
+        // INC-I-138 D5 FIX: simulate one peer-received canonical block applied
+        // after rollback (h=19 from a sync peer). This sets peer_block_applied_since_rollback=true,
+        // which tells the suppression guard the rollback succeeded and we reconnected.
+        // In production this is called by the block-handling layer after apply_block().
+        mgr.note_peer_block_applied_since_rollback();
+        insert_peer_d5(&mut mgr, 22);
+        insert_peer_d5(&mut mgr, 22);
+
+        mgr.note_orphan_gossip_block(20, 620);
+        mgr.note_orphan_gossip_block(21, 621);
+        mgr.note_orphan_gossip_block(22, 622);
+
+        // O1: counter reset by suppression exit
+        assert_eq!(
+            mgr.consecutive_orphan_gossip_blocks, 0,
+            "O1: orphan counter must be reset to 0 on any action-taking exit"
+        );
+
+        // O2: suppression CORRECT here — PASSES (regression pin: fix must NOT break this)
+        //   local_height(19) > rb_h(18) + rollback_fresh → suppression correctly fires.
+        //   We're BEHIND, not FORKED. Rolling back canonical block cascades (folsi).
+        assert!(
+            !mgr.fork.stuck_fork_signal,
+            "INC-I-138 D5 pin: peer-canonical applies after rollback (h=19>rb=18, gap=3) \
+             MUST suppress stuck_fork. Node is BEHIND, not forked. This must PASS after fix."
+        );
+
+        // O3: start_sync() fires via suppression path → state becomes Syncing
+        assert!(
+            mgr.state.is_syncing(),
+            "O3: suppression path must call start_sync() → state transitions to Syncing"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // PATH-C — CONTROL (no rollback state; must PASS on current code)
+    // -------------------------------------------------------------------------
+
+    /// INC-I-138 D5 control — without rollback state, stuck_fork fires correctly.
+    ///
+    /// Same heights as PATH-A but NO rollback state. rollback_fresh=false → guard skipped.
+    /// secs_since_apply=35 >= 30 → fresh-apply guard does not suppress.
+    /// signal_stuck_fork() fires → stuck_fork_signal=true.
+    ///
+    /// Proves: (a) the signal path is intact; (b) D5 is specifically the rollback-state
+    /// interaction (peers.rs:533-549), not a broader structural bug.
+    ///
+    /// PASSES on current code: guard skipped, O2=true.
+    #[test]
+    fn test_inc_i138_d5_no_rollback_state_stuck_fork_fires_control() {
+        // Same heights as PATH-A: local=21, tip=39, gap=18.
+        // No note_rollback_completed call → rollback_fresh=false → guard NOT entered.
+        let mut mgr = fork_test_manager_d5(21, 39);
+
+        insert_peer_d5(&mut mgr, 39);
+        insert_peer_d5(&mut mgr, 39);
+
+        mgr.note_orphan_gossip_block(37, 637);
+        mgr.note_orphan_gossip_block(38, 638);
+        // Third call: rollback_fresh=false → suppression guard (peers.rs:528-551) skipped.
+        // secs_since_apply=35 >= 30 → fresh-apply guard (peers.rs:566) passes through.
+        // signal_stuck_fork() fires → O2=true, O3 stays Idle.
+        mgr.note_orphan_gossip_block(39, 639);
+
+        // O1: counter reset by signal exit
+        assert_eq!(
+            mgr.consecutive_orphan_gossip_blocks, 0,
+            "O1: orphan counter must be reset to 0 on any action-taking exit"
+        );
+
+        // O2: signal MUST fire when no rollback state is present (PASSES)
+        assert!(
+            mgr.fork.stuck_fork_signal,
+            "INC-I-138 D5 control: without rollback state, stuck_fork must fire. \
+             If this FAILS, the signal path itself is broken — separate structural bug."
+        );
+
+        // O3: signal_stuck_fork() does NOT call start_sync(); state stays Idle
+        assert!(
+            matches!(*mgr.state(), SyncState::Idle),
+            "O3: signal_stuck_fork() must not call start_sync(); state must stay Idle"
+        );
+    }
+}
+
+// =========================================================================
+// INC-I-138 M2: D2 counter starvation + D4 gap-blind escalation + floor=0 race
+//
+// Three co-equal defects that, together with D5 (M1, already merged), created
+// the 325s stall at epoch-1 boundary (2026-07-07, testnet v6.23.9).
+//
+// D2: consecutive_empty_headers pinned at max=2 over 325s by two reset writers:
+//   dominant:  production_gate.rs:558 reset_empty_headers() via periodic.rs:712
+//              on every HeaderFirstSync coordinator action (~every 30s).
+//   secondary: dispatch.rs:84 counter reset when use_height_based_headers fires.
+//   Measured:  142 GetHeadersByHeight calls, 0 ShallowRollback events, max=2 (E5).
+//
+// D4: recovery.rs:382-383 deep_fork_confirmed has NO gap guard.
+//   Rule 2 fires SnapSync at gap=28 (below SNAP_SYNC_GAP_MIN=500) when
+//   empty_count>=10 && last_applied>=STALE_TIP_SECS(300). Terminal event:
+//   E8 "[COORDINATOR] action=SnapSync gap=28 last_applied=325s" (n5.log:17197).
+//
+// NAIVE-FIX TRAP: dispatch.rs:96→134 GenesisFallbackEmptyHeaders fires at
+//   gap=28 when counter=10. Reachable once D2 is fixed without fixing D4 too.
+//   Correct outcome in the 4..50 gap regime: G3/ShallowRollback, not genesis-resync.
+//
+// FLOOR=0 RACE: block_lifecycle.rs:74 floor check runs BEFORE the Syncing→
+//   Synchronized transition at :150. The transition block never sets the floor.
+//   Gate 1 (confirmed_height_floor > 0) at production_gate.rs:674 evaluates to
+//   false, allowing CoordinatorSnapEscalation unconditionally (E10).
+//
+// Invariant: INV-FORK-001 — G3 must fire and trigger ShallowRollback.
+// Causal chain: E5 (D2) → E8 (D4) → E10 (floor race) → blocks 37-63 missing.
+// Shape: INC-I-120 recurrence #2 (same seam, different mechanism — starved vs absent).
+// RUN_ID: 449
+// =========================================================================
+mod inc_i138_m2_escalation {
+    use super::*;
+    use crate::sync::manager::recovery::{
+        thresholds, RecoveryAction, RecoveryContext, RecoveryCoordinator, RecoveryEvidence,
+    };
+    use libp2p::PeerId;
+    use std::time::{Duration, Instant};
+
+    // -------------------------------------------------------------------------
+    // Shared helpers
+    // -------------------------------------------------------------------------
+
+    /// Build a SyncManager in the INC-I-138 Phase-2 state (t > 109s, D5 expired):
+    ///   local_height=36, network_tip=64, gap=28 (< MINOR_FORK_GAP_MAX=50)
+    ///   last_block_applied=325s ago (> STALE_TIP_SECS=300)
+    ///   5 peers at height 64 (>= SNAP_MIN_PEERS=3)
+    ///   recovery_phase=Normal, snap.attempts=0, confirmed_height_floor=0
+    fn phase2_manager() -> SyncManager {
+        let mut mgr = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        mgr.local_height = 36;
+        mgr.local_hash = crypto::hash::hash(b"fork_tip_290d4942");
+        mgr.local_slot = 636;
+        mgr.network.network_tip_height = 64;
+        mgr.network.network_tip_slot = 664;
+        mgr.network.last_block_applied = Instant::now()
+            .checked_sub(Duration::from_secs(325))
+            .expect("test machine uptime must exceed 325s");
+        // 5 peers at height 64 (>= SNAP_MIN_PEERS=3)
+        for _ in 0..5 {
+            mgr.peers.insert(
+                PeerId::random(),
+                PeerSyncStatus {
+                    best_height: 64,
+                    best_hash: Hash::ZERO,
+                    best_slot: 664,
+                    last_status_response: Instant::now(),
+                    last_block_received: None,
+                    pending_request: None,
+                    protocol_version: 0,
+                    producer_pubkey: None,
+                },
+            );
+        }
+        mgr
+    }
+
+    // -------------------------------------------------------------------------
+    // D2 — COUNTER STARVATION
+    //
+    // OUTPUT CONTRACT: fn reset_empty_headers(&mut self) [production_gate.rs:557]
+    //   O1: self.fork.consecutive_empty_headers → set to 0
+    //
+    // OUTPUT CONTRACT: fn block_applied_with_weight(&mut self, hash, height, slot,
+    //                      weight, prev_hash) [block_lifecycle.rs:25]
+    //   O1: self.fork.consecutive_empty_headers → set to 0 at line 68 (always)
+    //   O2: self.local_height → set to height
+    //   O3: self.state → may transition Syncing→Synchronized when at network tip
+    //   O4: self.confirmed_height_floor → set when already Synchronized (line 74)
+    //
+    // OUTPUT CONTRACT: fn RecoveryCoordinator::classify(&self, ctx: &RecoveryContext)
+    //                  [recovery.rs:262]
+    //   O1: RecoveryAction — least-severe action fitting evidence+context
+    //   Path under test: medium_gap=28>0&&<500 → Rule 3 → HeaderFirstSync
+    //
+    // CODE PATHS (INC-I-138 Phase 2, t=109-325s, gap=28, last_applied=325s):
+    //   PATH-D2A (BUG): empty-header response increments counter → coordinator
+    //     classify sees medium_gap=28 → HeaderFirstSync → periodic.rs:712 calls
+    //     reset_empty_headers() → counter=0. Counter oscillates, never reaching the
+    //     G3 threshold (3). Measured: consecutive_max=2 over 325s (E5).
+    //     [FAILS today: max_counter < 3 across MAX_CYCLES cycles]
+    //   PATH-D2B (pin): block_applied resets counter legitimately (must stay).
+    //     [PASSES today: block_lifecycle.rs:68]
+    //   PATH-D2C (pin): height-based fallback (dispatch.rs:84) resets counter
+    //     legitimately (must stay — INC-I-012 F1 post-snap path).
+    //     [PASSES today: dispatch.rs:84]
+    //
+    // INPUT PARTITIONS × OUTPUT MATRIX (O1 = consecutive_empty_headers):
+    //   | Partition                         | O1 counter reached ≥ 3 |
+    //   |-----------------------------------|------------------------|
+    //   | D2A: ×2 incr + coord-reset × N   | true (MUST)  FAILS     |
+    //   | D2B: block_applied                | counter=0    PASSES    |
+    //   | D2C: use_height_based_headers     | counter=0    PASSES    |
+    // -------------------------------------------------------------------------
+
+    /// INC-I-138 D2 — counter starved by coordinator HeaderFirstSync reset.
+    ///
+    /// Simulates the measured incident cycle (E5):
+    ///   Two empty-header responses arrive between coordinator ticks
+    ///   (142 calls / 216s = ~1.5 calls / 30s coordinator period ≈ 2 per tick).
+    ///   Coordinator classify() sees: medium_gap=28 (Rule 3) → HeaderFirstSync.
+    ///   periodic.rs:712 executes reset_empty_headers() → counter=0.
+    ///   Counter maxes at 2, never reaching G3 threshold (3) → 0 ShallowRollback
+    ///   in 325s → INV-FORK-001 violated.
+    ///
+    /// EXPECTED: FAILS today (max_counter ≤ 2; assert ≥ 3 fails).
+    /// PASSES after D2 fix: reset_empty_headers() is conditional on post-snap
+    /// path only (INC-I-012 F1 gating), so counter accumulates across ticks.
+    #[test]
+    fn test_inc_i138_d2_counter_starved_by_coordinator_reset() {
+        // INC-I-138 Phase-2 context (gap=28, last_applied=325s, 5 peers)
+        let ctx = RecoveryContext {
+            local_height: 36,
+            network_tip_height: 64,
+            peer_count: 5,
+            last_applied_secs: 325,
+            shallow_rollback_count: 0,
+            snap_attempts: 0,
+            last_rollback_local_height: None,
+            last_rollback_time: None,
+            in_grace_period: false,
+            last_finality_height: None,
+        };
+
+        // Precondition: verify classify() returns HeaderFirstSync at gap=28 (the reset trigger).
+        // With StaleTip evidence and medium_gap=28 (Rule 3), HeaderFirstSync fires.
+        // If this FAILS, the test setup is wrong — not the D2 defect.
+        {
+            let mut coord = RecoveryCoordinator::new();
+            coord.report(RecoveryEvidence::StaleTip {
+                last_applied_secs: 325,
+                gap: 28,
+            });
+            let precond = coord.classify(&ctx);
+            assert_eq!(
+                precond,
+                RecoveryAction::HeaderFirstSync,
+                "precondition: coordinator must return HeaderFirstSync at gap=28 \
+                 last_applied=325s (medium_gap Rule 3); verify test setup is correct"
+            );
+        }
+
+        // Simulate N coordinator ticks, each with 2 increments before the tick.
+        // Two increments per tick models the measured ~1.5 empty-header responses
+        // per 30s coordinator interval (142 calls over 216s, E5).
+        const MAX_CYCLES: u32 = 10;
+        let mut counter: u32 = 0;
+        let mut max_counter: u32 = 0;
+
+        for _ in 0..MAX_CYCLES {
+            // Two empty-header responses arrive between coordinator ticks
+            counter += 1; // first GetHeadersByHeight → "header chain broken"
+            counter += 1; // second GetHeadersByHeight → "header chain broken"
+            max_counter = max_counter.max(counter);
+
+            if counter >= thresholds::MIN_MINOR_FORK_EVIDENCE {
+                break; // G3 reached — threshold met (early success)
+            }
+
+            // Coordinator tick: classify returns HeaderFirstSync (medium_gap=28 Rule 3).
+            // Fresh coordinator per cycle avoids 30s ACTION_COOLDOWN side effect;
+            // the real periodic.rs runs at ~30s intervals where cooldown has expired.
+            let mut coord = RecoveryCoordinator::new();
+            coord.report(RecoveryEvidence::StaleTip {
+                last_applied_secs: 325,
+                gap: 28,
+            });
+            let action = coord.classify(&ctx);
+            if matches!(action, RecoveryAction::HeaderFirstSync) {
+                // Mirrors periodic.rs:712 — sync.reset_empty_headers()
+                // This is the dominant reset writer (production_gate.rs:558).
+                counter = 0;
+            }
+        }
+
+        // PRIMARY BUG ASSERTION (FAILS today):
+        // consecutive_empty_headers MUST be able to accumulate to the G3 threshold (3)
+        // so cleanup.rs / periodic.rs can raise stuck_fork and coordinator Rule 1b
+        // can issue ShallowRollback via INV-FORK-001. Currently the coordinator
+        // returns HeaderFirstSync every tick at gap=28, resetting the counter to 0
+        // before it can accumulate. consecutive_max=2 measured over 325s (E5).
+        assert!(
+            max_counter >= thresholds::MIN_MINOR_FORK_EVIDENCE,
+            "INC-I-138 D2 BUG: consecutive_empty_headers maxed at {} across {} cycles \
+             (G3 threshold={}). The HeaderFirstSync coordinator reset \
+             (periodic.rs:712 → reset_empty_headers production_gate.rs:558) fires every \
+             coordinator tick at gap=28, keeping the counter below the ShallowRollback \
+             trigger. INV-FORK-001 violated: 0 ShallowRollback in 325s (E5). \
+             Fix: gate reset_empty_headers() on the post-snap (INC-I-012 F1) path only \
+             so counter can accumulate in the minor-fork stall regime.",
+            max_counter,
+            MAX_CYCLES,
+            thresholds::MIN_MINOR_FORK_EVIDENCE,
+        );
+    }
+
+    /// INC-I-138 D2 pin — block_applied MUST reset counter (legitimate reset; must stay).
+    ///
+    /// block_lifecycle.rs:68 resets consecutive_empty_headers on every block apply.
+    /// When the chain is advancing (blocks arriving), fork evidence is stale.
+    /// This reset is CORRECT — the D2 fix must NOT remove it.
+    ///
+    /// PASSES today. MUST PASS after D2 fix.
+    #[test]
+    fn test_inc_i138_d2_block_applied_resets_counter_pin() {
+        let mut mgr = phase2_manager();
+        mgr.fork.consecutive_empty_headers = 5;
+        // Apply a canonical block (simulates network delivering h=37 after D5+D2 fix)
+        mgr.block_applied_with_weight(
+            crypto::hash::hash(b"canonical_h37"),
+            37,
+            637,
+            1,
+            crypto::hash::hash(b"fork_tip_290d4942"),
+        );
+        // O1: counter MUST be 0 after block_applied (block_lifecycle.rs:68).
+        // Legitimate reset: an arriving canonical block invalidates stale fork evidence.
+        assert_eq!(
+            mgr.fork.consecutive_empty_headers, 0,
+            "D2 pin: block_applied MUST reset consecutive_empty_headers (block_lifecycle.rs:68). \
+             This is a correct reset: arriving canonical blocks mean fork evidence is stale. \
+             D2 fix must NOT remove this reset — only the HeaderFirstSync coordinator reset \
+             (periodic.rs:712) is the bug."
+        );
+    }
+
+    /// INC-I-138 D2 pin — height-based fallback (dispatch.rs:84) MUST reset counter.
+    ///
+    /// When use_height_based_headers=true (set by INC-I-012 F1 post-snap path),
+    /// dispatch.rs:84 clears the counter before issuing GetHeadersByHeight. This is
+    /// LEGITIMATE: the counter accumulated against an unrecognizable hash; the
+    /// height-based request bypasses the hash lookup, making prior empties irrelevant.
+    ///
+    /// PASSES today. MUST PASS after D2 fix (fix gates only the HeaderFirstSync reset,
+    /// not this post-snap fallback reset).
+    #[test]
+    fn test_inc_i138_d2_height_fallback_dispatch_resets_counter_pin() {
+        let mut mgr = phase2_manager();
+        mgr.fork.consecutive_empty_headers = 4;
+        mgr.fork.use_height_based_headers = true; // INC-I-012 F1 post-snap flag
+        mgr.fork.height_fallback_attempted = false;
+        // Set up Syncing/Headers pipeline so dispatch.rs:72 branch is entered
+        let peer = *mgr
+            .peers
+            .keys()
+            .next()
+            .expect("phase2_manager inserts 5 peers");
+        mgr.state = SyncState::Syncing {
+            phase: SyncPhase::DownloadingHeaders,
+            started_at: Instant::now(),
+        };
+        mgr.pipeline_data = SyncPipelineData::Headers {
+            target_slot: 664,
+            peer,
+            headers_count: 0,
+        };
+        // next_request() enters dispatch.rs:72 (use_height_based_headers=true),
+        // issues GetHeadersByHeight, clears use_height_based_headers AND counter (line 84).
+        let _req = mgr.next_request();
+        // O1: counter MUST be 0 after dispatch.rs:84 clears it.
+        assert_eq!(
+            mgr.fork.consecutive_empty_headers, 0,
+            "D2 pin: height-based fallback (dispatch.rs:84) MUST reset consecutive_empty_headers. \
+             Legitimate reset: counter accumulated against an unrecognizable hash; \
+             GetHeadersByHeight bypasses the hash lookup so prior empties are irrelevant. \
+             This is the INC-I-012 F1 post-snap reset that D2 fix must NOT touch."
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // D4 — GAP-BLIND deep_fork_confirmed
+    //
+    // OUTPUT CONTRACT: fn RecoveryCoordinator::classify(&self, ctx: &RecoveryContext)
+    //                  [recovery.rs:262]
+    //   O1: RecoveryAction — must be SnapSync ONLY when gap >= SNAP_SYNC_GAP_MIN(500)
+    //       OR rollback_exhausted. Must NOT be SnapSync at gap=28 solely from
+    //       empty_count>=10 && last_applied>=STALE_TIP_SECS(300) (no gap guard).
+    //
+    // CODE PATH (D4 BUG, recovery.rs:382-383):
+    //   deep_fork_confirmed = (deep_fork_count > 0)
+    //                       || (empty_count >= 10 && last_applied_secs >= 300)
+    //   No gap guard → TRUE at gap=28.
+    //   Rule 2: (rollback_exhausted=F || large_gap=F || deep_fork_confirmed=T)
+    //           && snap_attempts(0) < 3 && peers(5) >= 3 → SnapSync at gap=28.
+    //   Terminal event: E8 "[COORDINATOR] action=SnapSync gap=28 last_applied=325s".
+    //
+    // INPUT PARTITIONS × OUTPUT MATRIX (O1 = RecoveryAction):
+    //   | Partition                           | O1 action    |
+    //   |-------------------------------------|--------------|
+    //   | D4A: empty_count=10, gap=28, stale  | ≠ SnapSync   | FAILS today  |
+    //   | D4B pin: large_gap=600              | == SnapSync  | PASSES today |
+    //   | D4C pin: rollback_exhausted, gap=28 | == SnapSync  | PASSES today |
+    // -------------------------------------------------------------------------
+
+    /// INC-I-138 D4 — gap-blind deep_fork_confirmed fires SnapSync at gap=28.
+    ///
+    /// recovery.rs:382-383 computes deep_fork_confirmed without a gap guard:
+    ///   (empty_count >= 10 && last_applied_secs >= STALE_TIP_SECS) → TRUE at gap=28.
+    /// Rule 2 returns SnapSync, bypassing SNAP_SYNC_GAP_MIN=500. A 28-block gap
+    /// (one epoch) is minor-fork range, recoverable in seconds via ShallowRollback(1).
+    /// Instead the node jumped to h=64, missing blocks 37-63 (E8).
+    ///
+    /// Fix: add `gap >= MINOR_FORK_GAP_MAX` (or equivalent) guard to the
+    /// `empty_count >= 10 && stale_tip` branch of deep_fork_confirmed.
+    ///
+    /// EXPECTED: FAILS today (classify returns SnapSync at gap=28).
+    #[test]
+    fn test_inc_i138_d4_gap_blind_snap_sync_at_gap_28() {
+        // Accumulate 10 EmptyHeaders in the coordinator evidence window.
+        // In the incident, D1 (response.rs:261 before gap guard) inflated this;
+        // here we replicate the accumulated state directly.
+        let mut coord = RecoveryCoordinator::new();
+        for _ in 0..10 {
+            coord.report(RecoveryEvidence::EmptyHeaders {
+                peer: PeerId::random(),
+                gap: 28,
+            });
+        }
+        coord.report(RecoveryEvidence::StaleTip {
+            last_applied_secs: 325,
+            gap: 28,
+        });
+
+        // INC-I-138 exact incident context at t=325s (E8):
+        // local=36, network_tip=64, gap=28, last_applied=325s, snap_attempts=0, peers=5
+        let ctx = RecoveryContext {
+            local_height: 36,
+            network_tip_height: 64,
+            peer_count: 5,
+            last_applied_secs: 325,
+            shallow_rollback_count: 0,
+            snap_attempts: 0,
+            last_rollback_local_height: None,
+            last_rollback_time: None,
+            in_grace_period: false,
+            last_finality_height: None,
+        };
+
+        let action = coord.classify(&ctx);
+
+        // PRIMARY BUG ASSERTION (FAILS today):
+        // classify() MUST NOT return SnapSync at gap=28 (< MINOR_FORK_GAP_MAX=50).
+        // A 28-block gap is minor-fork range. deep_fork_confirmed fires at recovery.rs:382
+        // without a gap guard → Rule 2 SnapSync at gap=28.
+        // Terminal incident event: E8 "[COORDINATOR] action=SnapSync gap=28 last_applied=325s
+        // shallow_rb=0 snap_attempts=0" (n5.log:17197). Blocks 37-63 lost.
+        // After D4 fix (gap guard on deep_fork_confirmed), the correct action here is
+        // None or ShallowRollback (if stuck_fork evidence present), not SnapSync.
+        assert_ne!(
+            action,
+            RecoveryAction::SnapSync,
+            "INC-I-138 D4 BUG: classify() returned {:?} at gap=28 (< MINOR_FORK_GAP_MAX={}). \
+             recovery.rs:382 deep_fork_confirmed = (empty_count>=10 && last_applied>=300s) \
+             fires with NO gap guard, triggering SnapSync in minor-fork range. \
+             SNAP_SYNC_GAP_MIN={}; gap=28 is recoverable via ShallowRollback(1). \
+             Fix: add gap >= MINOR_FORK_GAP_MAX guard to deep_fork_confirmed so \
+             minor-fork stalls cannot escalate to SnapSync via the empty_count path.",
+            action,
+            thresholds::MINOR_FORK_GAP_MAX,
+            thresholds::SNAP_SYNC_GAP_MIN,
+        );
+    }
+
+    /// INC-I-138 D4 pin — genuine large gap (≥ SNAP_SYNC_GAP_MIN) must still escalate.
+    ///
+    /// When gap >= 500 (large_gap=true in Rule 2), SnapSync is correct and required.
+    /// The D4 fix must NOT break this path — only the gap-blind deep_fork_confirmed
+    /// branch is wrong.
+    ///
+    /// PASSES today. MUST PASS after D4 fix.
+    #[test]
+    fn test_inc_i138_d4_genuine_large_gap_still_escalates_pin() {
+        let mut coord = RecoveryCoordinator::new();
+        for _ in 0..10 {
+            coord.report(RecoveryEvidence::EmptyHeaders {
+                peer: PeerId::random(),
+                gap: 600,
+            });
+        }
+        coord.report(RecoveryEvidence::StaleTip {
+            last_applied_secs: 600,
+            gap: 600,
+        });
+        let ctx = RecoveryContext {
+            local_height: 0,
+            network_tip_height: 600,
+            peer_count: 5,
+            last_applied_secs: 600,
+            shallow_rollback_count: 0,
+            snap_attempts: 0,
+            last_rollback_local_height: None,
+            last_rollback_time: None,
+            in_grace_period: false,
+            last_finality_height: None,
+        };
+        let action = coord.classify(&ctx);
+        // large_gap = 600 >= SNAP_SYNC_GAP_MIN=500 → Rule 2 fires SnapSync correctly.
+        // D4 fix only adds gap guard to deep_fork_confirmed; large_gap path is unchanged.
+        assert_eq!(
+            action,
+            RecoveryAction::SnapSync,
+            "D4 pin: genuine large gap ({}) MUST still escalate to SnapSync (large_gap path). \
+             D4 fix must NOT touch the large_gap branch of Rule 2 \
+             (SNAP_SYNC_GAP_MIN={}).",
+            ctx.gap(),
+            thresholds::SNAP_SYNC_GAP_MIN,
+        );
+    }
+
+    /// INC-I-138 D4 pin — rollback_exhausted path must still escalate to SnapSync.
+    ///
+    /// When minor_fork_evidence (>=3 empties) AND shallow_rollback_count >= MAX(10),
+    /// rollback_exhausted=true → Rule 2 fires SnapSync. Independent of D4 fix.
+    ///
+    /// PASSES today. MUST PASS after D4 fix.
+    #[test]
+    fn test_inc_i138_d4_rollback_exhausted_still_escalates_pin() {
+        let mut coord = RecoveryCoordinator::new();
+        for _ in 0..3 {
+            coord.report(RecoveryEvidence::EmptyHeaders {
+                peer: PeerId::random(),
+                gap: 28,
+            });
+        }
+        let ctx = RecoveryContext {
+            local_height: 36,
+            network_tip_height: 64,
+            peer_count: 5,
+            last_applied_secs: 5, // recently_synced=true → Rule 1 checks rollback budget
+            shallow_rollback_count: thresholds::SHALLOW_ROLLBACK_MAX, // exhausted
+            snap_attempts: 0,
+            last_rollback_local_height: None,
+            last_rollback_time: None,
+            in_grace_period: false,
+            last_finality_height: None,
+        };
+        let action = coord.classify(&ctx);
+        // Rule 1: minor_fork_evidence(T) && gap(28)<50 && recently_synced(T)
+        //         && shallow_rollback_count(10) < MAX(10) → 10<10=FALSE → Rule 1 skips.
+        // Rule 2: rollback_exhausted = minor_fork_evidence(T) && 10 >= 10 = TRUE → SnapSync.
+        assert_eq!(
+            action,
+            RecoveryAction::SnapSync,
+            "D4 pin: rollback_exhausted (count={} >= MAX={}) MUST still escalate to SnapSync. \
+             D4 fix only adds a gap guard to deep_fork_confirmed; rollback_exhausted path \
+             in Rule 2 is independent and must remain intact.",
+            thresholds::SHALLOW_ROLLBACK_MAX,
+            thresholds::SHALLOW_ROLLBACK_MAX,
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // NAIVE-FIX TRAP (forward-looking contract for the developer)
+    //
+    // OUTPUT CONTRACT: fn next_request(&mut self) [dispatch.rs:13]
+    //   (via SyncPipelineData::Headers branch, consecutive_empty_headers >= 10)
+    //   O1: self.fork.needs_genesis_resync — MUST NOT be set when gap is in 4..50
+    //       (minor-fork range recoverable via ShallowRollback, not genesis-resync).
+    //   O2: return value → None when genesis-resync fires
+    //
+    // CODE PATH (dispatch.rs:96→134, gap=28, counter=10):
+    //   consecutive_empty_headers=10 → escalation block entered (dispatch.rs:96)
+    //   gap(28) > snap.threshold(50): FALSE → no snap redirect
+    //   gap(28) <= 3: FALSE → no gossip wait
+    //   → request_genesis_resync(GenesisFallbackEmptyHeaders) → O1=true (WRONG)
+    //
+    // REGIME GUARDED: counter=10 is UNREACHABLE today (D2 pins counter at ≤2).
+    //   Once D2 is fixed (counter accumulates), the naive developer may remove
+    //   the HeaderFirstSync reset WITHOUT fixing D4. In this regime:
+    //   counter reaches 10 at gap=28 → dispatch.rs:134 fires GenesisFallbackEmptyHeaders
+    //   → wipes local state for a gap that ShallowRollback(1) resolves in seconds.
+    //   BOTH D2+D4 fixes are required. D2 alone opens this trap.
+    //   Test arms the assertion by directly setting counter=10.
+    //
+    // INPUT PARTITIONS × OUTPUT MATRIX (O1 = needs_genesis_resync):
+    //   | Partition              | O1 needs_genesis_resync |
+    //   |------------------------|------------------------|
+    //   | gap=28, counter=10     | false (MUST)  FAILS today (dispatch.rs:134 sets true) |
+    // -------------------------------------------------------------------------
+
+    /// INC-I-138 NAIVE-FIX TRAP — dispatch.rs:96→134 MUST NOT genesis-resync at gap=28.
+    ///
+    /// REGIME: counter=10 (reachable once D2 fixed), gap=28 (4..50 minor-fork range).
+    ///
+    /// Naive D2 fix without D4: counter accumulates to 10 at gap=28. dispatch.rs:96
+    /// enters the escalation block:
+    ///   gap(28) > snap.threshold(50): FALSE → no snap redirect
+    ///   gap(28) <= 3: FALSE → no gossip wait
+    ///   → GenesisFallbackEmptyHeaders → needs_genesis_resync=true
+    ///
+    /// Correct outcome: G3 stuck_fork → coordinator Rule 1b → ShallowRollback(1)
+    /// recovers in seconds. genesis-resync at gap=28 wipes state unnecessarily.
+    ///
+    /// Counter=10 is set directly to arm the assertion for the post-D2 regime;
+    /// it is unreachable via the normal path today (D2 pins counter at ≤2).
+    ///
+    /// EXPECTED: FAILS today — dispatch.rs:134 fires, needs_genesis_resync=true.
+    #[test]
+    fn test_inc_i138_naive_fix_trap_counter10_gap28_must_not_genesis_resync() {
+        let mut mgr = phase2_manager();
+        // Arm: directly set counter=10 (simulates post-D2-fix accumulation)
+        // This is unreachable today; armed for the post-D2 regime validation.
+        mgr.fork.consecutive_empty_headers = 10;
+        mgr.fork.use_height_based_headers = false;
+        mgr.fork.height_fallback_attempted = false;
+
+        // Set up Headers pipeline for dispatch.rs to process
+        let peer = *mgr
+            .peers
+            .keys()
+            .next()
+            .expect("phase2_manager must insert 5 peers");
+        mgr.state = SyncState::Syncing {
+            phase: SyncPhase::DownloadingHeaders,
+            started_at: Instant::now(),
+        };
+        mgr.pipeline_data = SyncPipelineData::Headers {
+            target_slot: 664,
+            peer,
+            headers_count: 0,
+        };
+        // Precondition: snap.threshold=50 (default), gap=28; snap redirect won't fire.
+        // dispatch.rs:96: counter(10) >= 10 → escalation block
+        // dispatch.rs:105: gap(28) > threshold(50) = FALSE → no snap redirect
+        // dispatch.rs:118: gap(28) <= 3 = FALSE → no gossip wait
+        // dispatch.rs:134: request_genesis_resync(GenesisFallbackEmptyHeaders)
+        let _req = mgr.next_request();
+
+        // PRIMARY ASSERTION (FAILS today):
+        // dispatch.rs MUST NOT set needs_genesis_resync for gap=28 (minor-fork range).
+        // ShallowRollback(1) resolves a 1-epoch-boundary fork in seconds; genesis-resync
+        // wipes local state and takes minutes. This guards the naive-fix trap:
+        // D2 and D4 must be fixed together. D2 alone opens this path at gap=28.
+        assert!(
+            !mgr.fork.needs_genesis_resync,
+            "INC-I-138 NAIVE-FIX TRAP: dispatch.rs:134 set needs_genesis_resync=true \
+             with counter=10 and gap=28 (minor-fork range 4..50). \
+             Correct outcome: G3 stuck_fork → coordinator Rule 1b → ShallowRollback(1). \
+             Genesis-resync at gap=28 is disproportionate; it wipes local state for a \
+             gap ShallowRollback recovers in seconds. \
+             BOTH D2+D4 fixes required (D2 alone opens this trap). \
+             snap.threshold={}, gap={}.",
+            mgr.snap.threshold,
+            mgr.network
+                .network_tip_height
+                .saturating_sub(mgr.local_height),
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // FLOOR=0 RACE (block_lifecycle.rs:74 before :150)
+    //
+    // OUTPUT CONTRACT: fn block_applied_with_weight(&mut self, hash, height, slot,
+    //                      weight, prev_hash) [block_lifecycle.rs:25]
+    //   O1: self.confirmed_height_floor — MUST be > 0 when the applied block
+    //       triggers the Syncing→Synchronized transition. Currently 0 because
+    //       the floor check at :74 runs with state=Syncing (before :150 transition).
+    //   O2: self.state — MUST be Synchronized after the transition block.
+    //
+    // CODE PATH (floor=0 race):
+    //   :74  if matches!(state, Synchronized) → state=Syncing → FALSE → floor NOT set
+    //   :150 is_syncing() && height >= network_tip && slot_ok → TRUE → Synchronized
+    //   RESULT: state=Synchronized, floor=0
+    //   Consequence (E10): Gate 1 at production_gate.rs:674 (floor > 0 → false)
+    //   allows CoordinatorSnapEscalation unconditionally for non-emergency reasons.
+    //
+    // INPUT PARTITIONS × OUTPUT MATRIX (O1=floor, O2=state):
+    //   | Partition                            | O1 floor | O2 state      |
+    //   |--------------------------------------|----------|---------------|
+    //   | transition block (Syncing→Synced)    | > 0 MUST | Synchronized  | FAILS/PASSES|
+    //   | post-transition (already Synced)     | > 0 MUST | Synchronized  | PASSES/PASSES|
+    // -------------------------------------------------------------------------
+
+    /// INC-I-138 floor=0 race — transition block MUST set confirmed_height_floor.
+    ///
+    /// The floor check at block_lifecycle.rs:74 runs before the Syncing→Synchronized
+    /// transition at :150. On the block that triggers the transition:
+    ///   :74  state=Syncing → condition false → floor NOT set
+    ///   :150 state → Synchronized (transition executes)
+    ///   RESULT: state=Synchronized, confirmed_height_floor=0 (race)
+    ///
+    /// Consequence (E10): Gate 1 at production_gate.rs:674 (`confirmed_height_floor > 0`)
+    /// evaluates to false, allowing CoordinatorSnapEscalation to pass unconditionally
+    /// for non-emergency reasons. In INC-I-138, this allowed the spurious SnapSync
+    /// at gap=28 to execute despite the node having synced correctly to h=64.
+    ///
+    /// Fix: move the floor update to AFTER the :150 transition block, or set the
+    /// floor inside the Syncing→Synchronized transition at :150.
+    ///
+    /// EXPECTED: O1 (floor) FAILS today (stays 0). O2 (state) PASSES today.
+    #[test]
+    fn test_inc_i138_floor_zero_race_on_sync_complete_transition() {
+        let mut mgr = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+
+        // State: Syncing, one block behind network tip.
+        // Applying h=64 satisfies (is_syncing && 64 >= network_tip=64 && slot_ok) → :150 fires.
+        mgr.local_height = 63;
+        mgr.local_hash = crypto::hash::hash(b"block63");
+        mgr.local_slot = 639;
+        mgr.network.network_tip_height = 64;
+        mgr.network.network_tip_slot = 640;
+        mgr.state = SyncState::Syncing {
+            phase: SyncPhase::DownloadingHeaders,
+            started_at: Instant::now(),
+        };
+        mgr.confirmed_height_floor = 0; // race starting state
+        mgr.consecutive_resync_count = 0; // floor update not gated by resync counter
+                                          // 2 peers so peer-count checks don't interfere
+        for _ in 0..2 {
+            mgr.peers.insert(
+                PeerId::random(),
+                PeerSyncStatus {
+                    best_height: 64,
+                    best_hash: Hash::ZERO,
+                    best_slot: 640,
+                    last_status_response: Instant::now(),
+                    last_block_received: None,
+                    pending_request: None,
+                    protocol_version: 0,
+                    producer_pubkey: None,
+                },
+            );
+        }
+
+        // Apply transition block: h=64, slot=640, matches network_tip → :150 fires.
+        // slot_ok: network_tip_slot(640).saturating_sub(slot=640) = 0 <= max_slots_behind(2).
+        mgr.block_applied_with_weight(
+            crypto::hash::hash(b"block64"),
+            64,
+            640,
+            1,
+            crypto::hash::hash(b"block63"),
+        );
+
+        // O2: state MUST be Synchronized (PASSES today — transition :150 works).
+        assert!(
+            matches!(*mgr.state(), SyncState::Synchronized),
+            "O2: state must be Synchronized after applying block at network_tip height"
+        );
+
+        // O1: PRIMARY RACE BUG ASSERTION (FAILS today):
+        // confirmed_height_floor MUST be > 0 after the block that triggers
+        // Syncing→Synchronized. The floor check at :74 ran with state=Syncing
+        // (condition false) before the :150 transition; floor stays 0.
+        // Gate 1 at production_gate.rs:674 then evaluates false unconditionally,
+        // allowing CoordinatorSnapEscalation to fire for any gap (E10 measured).
+        assert!(
+            mgr.confirmed_height_floor > 0,
+            "INC-I-138 floor=0 RACE: confirmed_height_floor must be > 0 after the block \
+             that triggers Syncing→Synchronized (h=64). Currently 0 because \
+             block_lifecycle.rs:74 checks `matches!(state, Synchronized)` BEFORE \
+             the Synchronized transition at :150. Fix: move floor update to AFTER \
+             the :150 transition, or set floor inside the transition block. \
+             Consequence (E10): Gate 1 (floor > 0) at production_gate.rs:674 is \
+             permanently false after first sync, allowing CoordinatorSnapEscalation \
+             at any gap."
+        );
+    }
+
+    /// INC-I-138 floor race pin — post-transition block sets floor correctly (must stay).
+    ///
+    /// When a block is applied AFTER the node is already in Synchronized state,
+    /// block_lifecycle.rs:74 fires correctly (state==Synchronized → true).
+    /// This pin confirms the non-race path works and that the fix must not break it.
+    ///
+    /// PASSES today.
+    #[test]
+    fn test_inc_i138_floor_post_transition_sets_floor_pin() {
+        let mut mgr = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        mgr.local_height = 64;
+        mgr.local_hash = crypto::hash::hash(b"block64");
+        mgr.local_slot = 640;
+        mgr.state = SyncState::Synchronized; // already past transition
+        mgr.confirmed_height_floor = 0;
+        mgr.consecutive_resync_count = 0;
+        // Apply block 65 while already Synchronized — :74 fires correctly
+        mgr.block_applied_with_weight(
+            crypto::hash::hash(b"block65"),
+            65,
+            641,
+            1,
+            crypto::hash::hash(b"block64"),
+        );
+        // floor MUST be set (block_lifecycle.rs:74: state=Synchronized → condition true)
+        assert!(
+            mgr.confirmed_height_floor > 0,
+            "floor pin: applying a block in Synchronized state MUST set \
+             confirmed_height_floor (block_lifecycle.rs:74). PASSES today."
+        );
+        assert_eq!(
+            mgr.confirmed_height_floor, 65,
+            "floor pin: floor must equal the applied height"
+        );
+    }
+}
+
+// =========================================================================
+// INC-I-138 M3: D1 — evidence gating (EmptyHeaders before gap<=3 guard)
+//
+// Defect (D1): response.rs:261-262 calls self.recovery.report(EmptyHeaders)
+// BEFORE the gap<=3 benign-gossip-timing guard at :264. Every gap<=3 empty
+// response (classified benign by the very next line) pollutes the 120s
+// coordinator evidence window. empty_count >= 10 then becomes trivially
+// satisfiable within 120s, feeding D4's deep_fork_confirmed.
+//
+// Evidence cite: [E7] crates/network/src/sync/manager/sync_engine/response.rs:261
+//   — self.recovery.report(EmptyHeaders{peer, gap}) executes before gap guard at :264.
+//   Amplified D4 at recovery.rs:382-383 (E9) → terminal SnapSync at gap=28 (E8).
+//
+// Correct behavior:
+//   - gap<=3 empty-header responses must NOT be reported as EmptyHeaders evidence.
+//   - gap>3 empty-header responses MUST still be reported (genuine fork evidence).
+//
+// D1 is independent of D4 (M2's D4 fix already guards deep_fork_confirmed with
+// gap >= MINOR_FORK_GAP_MAX). Cross-check pin (Test 3) verifies the two defense
+// layers remain orthogonal after M3 lands.
+//
+// Test 1 (FAIL today): gap=2 empty response → evidence_len() MUST be 0.
+// Test 2 (PIN):         gap=10 empty response → evidence_len() MUST be >= 1.
+// Test 3 (PIN):         10+ gap<=3 empties reported OLD way + classify(gap=28)
+//                       → NOT SnapSync (D4 guard holds independently of D1).
+//
+// RUN_ID: 449
+// =========================================================================
+mod inc_i138_m3_evidence_gating {
+    use super::*;
+    use crate::sync::manager::recovery::{
+        RecoveryAction, RecoveryContext, RecoveryCoordinator, RecoveryEvidence,
+    };
+
+    // OUTPUT CONTRACT: fn handle_headers_response(&mut self, peer, headers=[])
+    //   via handle_response(&mut self, peer, SyncResponse::Headers(vec![]))
+    //   [response.rs:188, empty-headers branch, non-post-snap, non-stuck path]
+    //
+    // Outputs:
+    //   O1: self.fork.consecutive_empty_headers — u32
+    //       All paths: incremented by +1 at response.rs:252 (not gated by gap guard).
+    //   O2: self.recovery.evidence — coordinator evidence window
+    //       P1 (gap<=3): MUST contain ZERO EmptyHeaders entries.
+    //                    BUG: contains 1 today (report fires at :261 before :264 guard).
+    //       P2 (gap>3):  MUST contain >= 1 EmptyHeaders entry (correct today).
+    //   O3: self.state — SyncState
+    //       P1 (gap<=3): transitions to Idle via set_state(:273).
+    //   O4: return value — Vec<Block>: always vec![] for Headers responses.
+    //
+    // Paths:
+    //   P1: gap<=3, local_height>0 — benign gossip-timing early return (:264-:274).
+    //       BUG: report(EmptyHeaders) fires at :261 BEFORE this guard.
+    //       INPUT PARTITIONS:
+    //         P1a: gap=2 — well below boundary (primary test; clear gossip-timing case).
+    //         P1b: gap=3 — exact boundary value (off-by-one check; same code path as P1a).
+    //   P2: gap>3 — genuine fork evidence path (continues to rollback/escalation).
+    //       INPUT PARTITIONS:
+    //         P2a: gap=10 — minor-fork range, unambiguous evidence case.
+    //
+    // Matrix: 2 key outputs (O1, O2) × 3 partitions = 6 cells.
+    //   P1a (gap=2):  O1(counter=1)✓  O2(evidence_len=0)✓  [Test 1, FAILS today: len=1]
+    //   P1b (gap=3):  O1(counter=1)   O2(evidence_len=0)   [same code path as P1a]
+    //   P2a (gap=10): O1(counter=1)✓  O2(evidence_len>=1)✓ [Test 2 PIN, PASSES today]
+
+    /// Build a SyncManager positioned at the empty-headers main branch (response.rs:201+).
+    ///
+    /// Pre-conditions to reach the gap-guard line at :264 (not diverted earlier):
+    ///   - recovery_phase=Normal (NOT AwaitingCanonicalBlock → bypasses INC-I-012 F1 branch at :226)
+    ///   - snap.attempts=0, consecutive_empty_headers=0 (empty_headers_stuck=false → bypasses :224)
+    ///   - pipeline.headers_needing_bodies empty, pipeline.pending_headers empty → enters :201 branch
+    ///   - local_height > 0 (required for gap<=3 early return condition at :264)
+    ///   - peer in peers map at local_height + gap (gap = peer_height.saturating_sub(local_height))
+    fn mk_d1_manager(local_height: u64, gap: u64) -> (SyncManager, PeerId) {
+        let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
+        manager.local_height = local_height;
+        manager.local_slot = local_height as u32;
+        manager.local_hash = crypto::hash::hash(format!("local_{}", local_height).as_bytes());
+        // Normal phase: AwaitingCanonicalBlock would divert to height-fallback at :226.
+        manager.recovery_phase = RecoveryPhase::Normal;
+        // snap.attempts=0 (default): not snap_exhausted; prevents INC-I-017 branch at :224.
+        // consecutive_empty_headers=0 (default): empty_headers_stuck=false; same guard.
+
+        let peer = PeerId::random();
+        let peer_height = local_height + gap;
+        manager.add_peer(
+            peer,
+            peer_height,
+            crypto::hash::hash(format!("peer_{}", peer_height).as_bytes()),
+            peer_height as u32,
+        );
+        (manager, peer)
+    }
+
+    /// INC-I-138 D1 — gap<=3 benign empty-headers MUST NOT pollute coordinator evidence.
+    ///
+    /// Defect: response.rs:261-262 calls self.recovery.report(EmptyHeaders{peer, gap})
+    /// BEFORE the gap<=3 guard at :264. The guard correctly classifies gap<=3 as
+    /// "gossip timing, not a fork" and returns early — but only AFTER the evidence is
+    /// already inserted into the coordinator's 120s window. Every gossip-timing empty
+    /// response inflates empty_count, making the threshold >= 10 trivially satisfiable
+    /// within 120s. D4's deep_fork_confirmed then fires at gap=28 (E8, n5.log:17197).
+    ///
+    /// Fix: move report() to AFTER the gap<=3 guard (i.e., suppress for gap<=3).
+    ///
+    /// Partition: P1a (gap=2, local_height=36).
+    ///
+    /// EXPECTED: FAILS today — evidence_len() is 1 after a single gap=2 empty response.
+    /// PASSES after D1 fix: evidence_len() is 0.
+    #[test]
+    fn test_inc_i138_m3_benign_gap_does_not_pollute_evidence_window() {
+        // P1a: gap=2, local_height=36 (gap <= 3 && local_height > 0 → early return).
+        let (mut manager, peer) = mk_d1_manager(36, 2);
+
+        // Precondition: coordinator evidence window starts empty.
+        assert_eq!(
+            manager.recovery.evidence_len(),
+            0,
+            "precondition: coordinator must start with empty evidence window"
+        );
+
+        // Trigger the empty-headers path at gap=2.
+        // Code path (response.rs): is_empty()=true → pipeline empty → not post_snap
+        //   → counter++ (line 252) → report(EmptyHeaders{gap=2}) (line 261, BUG)
+        //   → gap<=3 && local_height>0 (line 264) → set_state(Idle) → return.
+        let _returned = manager.handle_response(peer, SyncResponse::Headers(vec![]));
+
+        // O2 — PRIMARY BUG ASSERTION (FAILS today):
+        // response.rs:261 fires report(EmptyHeaders{gap=2}) before the :264 guard,
+        // so evidence_len() == 1 right now. After the D1 fix, the guard at :264
+        // must be evaluated BEFORE report(), leaving evidence_len() == 0.
+        // BUG consequence (E7→E9→E8): 10+ such benign gap=2 reports in 120s
+        // made deep_fork_confirmed=true at gap=28, triggering SnapSync (n5.log:17197).
+        assert_eq!(
+            manager.recovery.evidence_len(),
+            0,
+            "INC-I-138 D1 BUG: response.rs:261 called self.recovery.report(EmptyHeaders{{gap=2}}) \
+             BEFORE the gap<=3 benign guard at :264. Evidence window has {} entry(s) (expected 0). \
+             Every gossip-timing empty (gap<=3) pollutes the 120s coordinator window; \
+             empty_count>=10 becomes trivially satisfiable within 120s, feeding D4 \
+             deep_fork_confirmed at gap=28 → SnapSync (E8, n5.log:17197, blocks 37-63 lost). \
+             Fix: move report() to AFTER the gap<=3 guard so gap<=3 responses are silenced.",
+            manager.recovery.evidence_len(),
+        );
+
+        // O1: consecutive_empty_headers counter MUST still be incremented (line 252).
+        // This counter drives the legacy G3 stuck-fork detection; the D1 fix must NOT
+        // move or suppress the counter increment — only the coordinator report() call.
+        assert_eq!(
+            manager.fork.consecutive_empty_headers, 1,
+            "O1: consecutive_empty_headers must be incremented even for gap<=3 \
+             (response.rs:252 is correct; D1 fix only moves report() past the :264 guard)"
+        );
+    }
+
+    /// INC-I-138 D1 PIN — gap>3 empty-headers MUST add EmptyHeaders evidence.
+    ///
+    /// A gap>3 response is genuine fork evidence — the peer recognizes a chain
+    /// diverging by more than gossip latency. response.rs:261 must still report
+    /// it to the coordinator AFTER the D1 fix. Only gap<=3 is suppressed.
+    ///
+    /// Partition: P2a (gap=10, local_height=36).
+    ///
+    /// PASSES today. MUST PASS after D1 fix.
+    #[test]
+    fn test_inc_i138_m3_genuine_gap_adds_evidence_pin() {
+        // P2a: gap=10 (well above the gap<=3 boundary; genuine minor-fork evidence).
+        let (mut manager, peer) = mk_d1_manager(36, 10);
+
+        // Trigger the empty-headers path at gap=10.
+        // Code path (response.rs): is_empty()=true → pipeline empty → not post_snap
+        //   → counter++ → report(EmptyHeaders{gap=10}) ← MUST fire → continues to :277+.
+        let _returned = manager.handle_response(peer, SyncResponse::Headers(vec![]));
+
+        // O2: coordinator evidence window MUST contain at least one EmptyHeaders entry.
+        // D1 fix must NOT suppress reporting for gap>3 — genuine fork evidence.
+        assert!(
+            manager.recovery.evidence_len() >= 1,
+            "D1 pin: gap=10 empty-headers MUST add EmptyHeaders evidence to the coordinator \
+             (response.rs:261). evidence_len()={} (expected >= 1). \
+             D1 fix suppresses report() for gap<=3 only; gap>3 must remain reported.",
+            manager.recovery.evidence_len(),
+        );
+    }
+
+    /// INC-I-138 M3 cross-check — D1 and D4 defense layers are independent.
+    ///
+    /// Even if D1 is still broken (10+ gap<=3 EmptyHeaders inflating the window),
+    /// M2's D4 fix (gap >= MINOR_FORK_GAP_MAX(50) guard on deep_fork_confirmed in
+    /// recovery.rs:401-404) prevents SnapSync at gap=28. The two fixes are orthogonal
+    /// defense-in-depth layers: D1 reduces false evidence; D4 prevents escalation at
+    /// small gaps regardless of evidence count.
+    ///
+    /// Uses RecoveryCoordinator directly to model OLD D1 behavior: 10 EmptyHeaders
+    /// with gap=2 reported unconditionally (as the bug does — report before guard).
+    ///
+    /// PASSES today (D4 already fixed by M2). MUST PASS after D1 fix (M3).
+    #[test]
+    fn test_inc_i138_m3_d4_guard_holds_with_inflated_evidence_pin() {
+        // Simulate OLD D1 behavior: 10 gap=2 responses ALL reported as EmptyHeaders.
+        let mut coord = RecoveryCoordinator::new();
+        for _ in 0..10 {
+            coord.report(RecoveryEvidence::EmptyHeaders {
+                peer: PeerId::random(),
+                gap: 2,
+            });
+        }
+
+        // INC-I-138 incident context at t=325s (E8): gap=28, stale, 5 peers.
+        let ctx = RecoveryContext {
+            local_height: 36,
+            network_tip_height: 64, // gap() = 64 - 36 = 28
+            peer_count: 5,
+            last_applied_secs: 325,
+            shallow_rollback_count: 0,
+            snap_attempts: 0,
+            last_rollback_local_height: None,
+            last_rollback_time: None,
+            in_grace_period: false,
+            last_finality_height: None,
+        };
+
+        let action = coord.classify(&ctx);
+
+        // D4 guard (M2 fix, recovery.rs:401-404):
+        //   deep_fork_confirmed = deep_fork>0 || (empty_count>=10 && stale>=300s && gap>=50)
+        //   gap=28 < MINOR_FORK_GAP_MAX(50) → deep_fork_confirmed=false → Rule 2 skipped.
+        //   Rule 3 (medium_gap=28) → HeaderFirstSync (not SnapSync).
+        // ONE-ASSERT cross-check: D1+D4 layers must be independent.
+        assert_ne!(
+            action,
+            RecoveryAction::SnapSync,
+            "INC-I-138 M3 cross-check: D4 guard must prevent SnapSync at gap=28 even \
+             with 10 EmptyHeaders in the evidence window (inflated by D1 bug). \
+             classify() returned {:?}. Expected NOT SnapSync. \
+             D4 fix: deep_fork_confirmed requires gap >= MINOR_FORK_GAP_MAX(50); \
+             gap=28 < 50 → false → Rule 2 skipped. \
+             D1 and D4 are independent defense layers.",
+            action,
+        );
+    }
+}

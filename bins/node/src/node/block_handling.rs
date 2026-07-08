@@ -360,11 +360,15 @@ impl Node {
             return Ok(());
         }
 
-        // A canonical gossip block was applied on our tip — clear the post-snap gate.
-        self.sync_manager
-            .write()
-            .await
-            .clear_awaiting_canonical_block();
+        // A canonical gossip block was applied on our tip — clear the post-snap gate
+        // and record peer-confirmed canonical progress for the D5 suppression guard
+        // (INC-I-138): a peer-received block applied after a rollback means the
+        // rollback succeeded and we're BEHIND, not on a self-fork.
+        {
+            let mut sync = self.sync_manager.write().await;
+            sync.clear_awaiting_canonical_block();
+            sync.note_peer_block_applied_since_rollback();
+        }
 
         // Post-apply: recursively drain cached orphans that chain on our new tip.
         // Bounded to 50 iterations to prevent unbounded loops from malicious caches.
@@ -857,6 +861,15 @@ impl Node {
             for hash in &reorg_result.new_blocks {
                 cache.remove(hash);
             }
+        }
+
+        // INC-I-138 D5: reorg blocks are peer-received — mark peer-confirmed
+        // progress so the suppression guard can distinguish BEHIND from SELF-FORK.
+        if new_block_count > 0 {
+            self.sync_manager
+                .write()
+                .await
+                .note_peer_block_applied_since_rollback();
         }
 
         // Invalidate mempool - transactions may now be invalid
