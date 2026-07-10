@@ -11,7 +11,7 @@ Phase 2 (M8-M10, AH-gated wedge-escape) explicitly OUT of this run — separate 
 | M4 | DC-3 delete A1 redirect (keep regime guards; funnel fallthrough retained) | sync_engine/dispatch.rs A1 block | M2+M3 | COMPLETE (2026-07-10) |
 | M5 | DC-4 counter single-owner (remove dispatch.rs:84 reset, keep :83) + co-test suite | dispatch.rs:84 | M4 | COMPLETE (2026-07-10) |
 | M6 | RC-1 threshold demotion + discv5-grace h==0 gate + RC-2 emergency taxonomy sentinel | types.rs:468, decision.rs:163/177/204, production_gate.rs:741 | M5 | COMPLETE (2026-07-10) — QA PASS (6/6 ACs), review APPROVED, 5-auditor sweep PROCEED (0 M6-introduced P0/P1); tests split to tests_inc_i139_m6.rs (800-line budget); network 451/0/1 |
-| M7 | Close-out: extend INV-SYNC-011, register regression_tests + protection_mechanisms, docs, gauntlet run | memory.db, docs/ | M6 | PENDING |
+| M7 | Close-out: extend INV-SYNC-011, register regression_tests + protection_mechanisms, docs, gauntlet run | memory.db, docs/ | M6 | COMPLETE (2026-07-10) — sha 015342ed. INV-SYNC-011 extended (L3), 19 regression_tests + PM-016..019 + monitoring signal + GS-002 mapping. docs troubleshooting §7.3 + architecture §4.3. Gauntlet 7/7 non-waived PASS (row 12); GS-001 refined (absent block-1 ≠ divergence) + waived-with-evidence (pre-existing genesis-reset artifact, genesis uniform). Runs 455/456 closed; INC-I-139 resolved. |
 
 ## M4 outcome (RUN 455, 2026-07-10)
 
