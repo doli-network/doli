@@ -497,6 +497,25 @@ Producer Selection (deterministic round-robin)
 
 **Restart behavior:** On restart, the SyncManager initializes from stored ChainState (not genesis). This means sync resumes from the chain tip, avoiding re-download of already-stored blocks. As a defense-in-depth measure, `apply_block()` also rejects blocks already present in BlockStore.
 
+#### Snap-Admission Authority (single funnel, INC-I-139)
+
+Escalation to `SnapCollecting` (a full state download, not the header/body catch-up above) has **one** admission authority. Prior to INC-I-139 the `should_snap` decision re-derived the choice across three OR-terms — one an ungated bare-gap comparator — so a minor-fork wedge could snap without fork evidence. Phase 1 (RUN 455) collapsed this to a single evidence-gated funnel:
+
+```
+                  ┌─ local_height == 0  (bootstrap, Route C) ──────────────┐
+start_sync() ─────┤                                                        ├──► SnapCollecting
+   (decision.rs)  └─ needs_genesis_resync (set ONLY by                     │
+                     request_genesis_resync, evidence-gated) ──────────────┘
+                        │
+                        ├ ≥10 empty headers, gap ≥ MINOR_FORK_GAP_MAX(50)
+                        ├ explicit deep-fork signal
+                        ├ ≥3 apply failures
+                        ├ all-peers-blacklisted / height-offset signature
+                        └ gap ≥ SNAP_SYNC_GAP_MIN(500)   (forward-large-gap)
+```
+
+No bare gap-over-threshold admits snap on any path. `consecutive_empty_headers` (the evidence counter) has one owner — reset only by genuine progress/recovery writers (block apply, gap≤3 gossip-wait, valid-headers, anti-cascade, post-rollback/post-snap grace, genesis), never by a request-dispatch or admission path. Gate-1 (`production_gate.rs`) exempts only emergency ∪ forward-large-gap from the backward-wipe floor; `SNAP_SYNC_GAP_MIN(500)` is the single named gap floor, with the old threshold demoted to an enable-sentinel. Invariant: `INV-SYNC-011` (extended, all-paths). Future escalation tiers enter as new evidence feeders of this funnel — never as new transitions into `SnapCollecting`.
+
 ---
 
 ## 5. Consensus Architecture

@@ -46,6 +46,12 @@ RESTART_NODE="${GAUNTLET_RESTART_NODE:-n5}"
 RSS_CEIL_MB="${GAUNTLET_RSS_CEIL_MB:-800}"
 MIN_NODES="${GAUNTLET_MIN_NODES:-3}"
 NO_PERTURB="${GAUNTLET_NO_PERTURB:-0}"
+# Per-scenario waiver: GAUNTLET_WAIVE="GS-001 GS-00x" (space/comma separated) marks
+# a scenario as out-of-scope for THIS run — a documented environmental condition,
+# not a code regression. A waiver WITHOUT a reason is refused (no fake-green): the
+# mandatory GAUNTLET_WAIVE_REASON string is printed and persisted to the result row.
+WAIVE="${GAUNTLET_WAIVE:-}"; WAIVE="${WAIVE//,/ }"
+WAIVE_REASON="${GAUNTLET_WAIVE_REASON:-}"
 CHAOS=0
 for a in "$@"; do
   case "$a" in
@@ -71,6 +77,13 @@ EVICT_MAX=6
 C_G='\033[0;32m'; C_R='\033[0;31m'; C_Y='\033[1;33m'; C_C='\033[0;36m'; C_0='\033[0m'
 say(){ printf "%b\n" "$*"; }
 die(){ say "${C_R}$*${C_0}"; exit 3; }
+# is_waived <scenario_id> — true if the id appears in the GAUNTLET_WAIVE list.
+is_waived(){ case " $WAIVE " in *" $1 "*) return 0;; *) return 1;; esac; }
+if [ -n "$WAIVE" ] && [ -z "$WAIVE_REASON" ]; then
+  die "GAUNTLET_WAIVE=\"$WAIVE\" set without GAUNTLET_WAIVE_REASON — a waiver MUST carry
+     a documented reason (it is printed and stored in the result row). Re-run e.g.:
+     GAUNTLET_WAIVE=\"GS-001\" GAUNTLET_WAIVE_REASON=\"...evidence...\" scripts/gauntlet.sh"
+fi
 
 command -v sqlite3 >/dev/null 2>&1 || die "sqlite3 not found"
 command -v python3 >/dev/null 2>&1 || die "python3 not found"
@@ -300,8 +313,24 @@ assert(){
       local c; c=$(jget "M['net']['win_panic']")
       if [ "${c:-0}" -le "$PANIC_MAX" ]; then ok=0; else why="$c panic marker(s) in window"; fi ;;
     single-block1-hash)
-      local g b; g=$(jget "M['net']['distinct_genesis']"); b=$(jget "M['net']['distinct_block1']")
-      if [ "$g" = "1" ] && [ "$b" = "1" ]; then ok=0; else why="distinct genesis=$g block1=$b (want 1/1)"; fi ;;
+      # Genesis (block 0) uniformity stays STRICT. Block-1 uniformity is checked
+      # ONLY among nodes that actually HOLD block 1: a snap-synced node prunes
+      # historical blocks (troubleshooting §1.9) and answers "Block not found" —
+      # that is snap-pruned/absent, reported as a count, NEVER as divergence.
+      # 0 holders -> explicit SKIP (unverifiable), never a silent pass. The
+      # pruned-node count is always surfaced (no-silent-caps rule).
+      local g b hold absent
+      g=$(jget "M['net']['distinct_genesis']"); b=$(jget "M['net']['distinct_block1']")
+      hold=$(jget "M['net']['block1_holders']"); absent=$(jget "M['net']['block1_absent']")
+      if [ "$g" != "1" ]; then
+        why="distinct genesis=$g (want 1); block1 holders=$hold pruned/absent=$absent"
+      elif [ "${hold:-0}" -eq 0 ]; then
+        ok=2; why="SKIP block-1 uniformity: 0 holders ($absent snap-pruned/absent) — genesis uniform, nothing to compare"
+      elif [ "$b" = "1" ]; then
+        ok=0; INFO_REASONS="$INFO_REASONS; single-block1-hash: uniform among $hold holder(s), $absent snap-pruned/absent"
+      else
+        why="distinct block1=$b among $hold holder(s) ($absent snap-pruned/absent) — genesis uniform"
+      fi ;;
     no-spurious-escalation)
       local s r p rd; s=$(jget "M['net']['win_snap_trigger']"); r=$(jget "M['net']['recovery_mode_any']")
       p=$(jget "M['net']['production_paused_any']"); rd=$(jget "M['net']['max_rollback_depth']")
@@ -354,6 +383,7 @@ assert(){
     *)
       why="unknown assertion token '$t'" ;;
   esac
+  if [ "$ok" = "2" ]; then SKIP_REASONS="$SKIP_REASONS; $why"; return 2; fi
   if [ "$ok" -ne 0 ]; then FAIL_REASONS="$FAIL_REASONS; $t: $why"; fi
   return $ok
 }
@@ -370,21 +400,41 @@ inj_tag(){
 
 # ── run scenarios ───────────────────────────────────────────────────────────
 say "\n${C_C}▸ evaluating scenarios${C_0}  ${C_Y}(inj=trigger actively injected · obs=invariant observed)${C_0}"
-TOTAL=0; PASSED=0; FAILURES_JSON="["; FJ_FIRST=1
+TOTAL=0; PASSED=0; WAIVED=0; FAILURES_JSON="["; FJ_FIRST=1
 while IFS='|' read -r sid sname sassert; do
   [ -z "$sid" ] && continue
-  TOTAL=$(( TOTAL + 1 ))
-  FAIL_REASONS=""
-  s_ok=1
   tag="$(inj_tag "$sid")"
-  # split CSV assertion tokens
-  OLDIFS="$IFS"; IFS=','; for tok in $sassert; do IFS="$OLDIFS"; assert "$tok" || s_ok=0; IFS=','; done; IFS="$OLDIFS"
+  # ── waiver: not counted toward the pass/total gate, but printed and persisted
+  # to the result row with its mandatory reason — waived-with-evidence, not green.
+  if is_waived "$sid"; then
+    WAIVED=$(( WAIVED + 1 ))
+    printf "  ${C_Y}WAIVE${C_0} %-5s %-32s %s\n" "[$tag]" "$sid" "$sname"
+    printf "       ${C_Y}reason: %s${C_0}\n" "$WAIVE_REASON"
+    wr="$(printf '%s' "$WAIVE_REASON" | python3 -c "import sys,json;print(json.dumps(sys.stdin.read()))")"
+    [ "$FJ_FIRST" = 1 ] || FAILURES_JSON="$FAILURES_JSON,"
+    FJ_FIRST=0
+    FAILURES_JSON="$FAILURES_JSON{\"scenario\":\"$sid\",\"waived\":true,\"reason\":$wr}"
+    continue
+  fi
+  TOTAL=$(( TOTAL + 1 ))
+  FAIL_REASONS=""; SKIP_REASONS=""; INFO_REASONS=""
+  s_ok=1
+  # split CSV assertion tokens (rc=0 pass · rc=2 skip/unverifiable · else fail)
+  OLDIFS="$IFS"; IFS=','; for tok in $sassert; do IFS="$OLDIFS"
+    assert "$tok"; rc=$?
+    { [ "$rc" = "0" ] || [ "$rc" = "2" ]; } || s_ok=0
+    IFS=','
+  done; IFS="$OLDIFS"
   if [ "$s_ok" = "1" ]; then
     PASSED=$(( PASSED + 1 ))
     printf "  ${C_G}PASS${C_0} %-5s %-32s %s\n" "[$tag]" "$sid" "$sname"
+    [ -n "$SKIP_REASONS" ] && printf "       ${C_Y}skip:%s${C_0}\n" "${SKIP_REASONS# ;}"
+    [ -n "$INFO_REASONS" ] && printf "       ${C_C}note:%s${C_0}\n" "${INFO_REASONS# ;}"
   else
     printf "  ${C_R}FAIL${C_0} %-5s %-32s %s\n" "[$tag]" "$sid" "$sname"
     printf "       ${C_R}%s${C_0}\n" "${FAIL_REASONS# ; }"
+    [ -n "$SKIP_REASONS" ] && printf "       ${C_Y}skip:%s${C_0}\n" "${SKIP_REASONS# ;}"
+    [ -n "$INFO_REASONS" ] && printf "       ${C_C}note:%s${C_0}\n" "${INFO_REASONS# ;}"
     local_reasons="$(printf '%s' "${FAIL_REASONS# ; }" | python3 -c "import sys,json;print(json.dumps(sys.stdin.read()))")"
     [ "$FJ_FIRST" = 1 ] || FAILURES_JSON="$FAILURES_JSON,"
     FJ_FIRST=0
@@ -414,12 +464,13 @@ sqlite3 "$DB" "INSERT INTO gauntlet_runs (run_id, status, scenarios_run, scenari
 
 # ── summary ─────────────────────────────────────────────────────────────────
 say "${C_C}════════════════════════════════════════════════════════════${C_0}"
+WAIVE_NOTE=""; [ "${WAIVED:-0}" -gt 0 ] && WAIVE_NOTE=" · ${WAIVED} waived (${WAIVE})"
 if [ "$STATUS" = "pass" ]; then
-  say "${C_G} GAUNTLET PASS${C_0}  ${PASSED}/${TOTAL} scenarios · ${DUR}s · sha=$SHA"
+  say "${C_G} GAUNTLET PASS${C_0}  ${PASSED}/${TOTAL} scenarios${WAIVE_NOTE} · ${DUR}s · sha=$SHA"
   say "${C_C}════════════════════════════════════════════════════════════${C_0}"
   exit 0
 else
-  say "${C_R} GAUNTLET FAIL${C_0}  ${PASSED}/${TOTAL} scenarios · ${DUR}s · sha=$SHA"
+  say "${C_R} GAUNTLET FAIL${C_0}  ${PASSED}/${TOTAL} scenarios${WAIVE_NOTE} · ${DUR}s · sha=$SHA"
   say "${C_C}════════════════════════════════════════════════════════════${C_0}"
   exit 1
 fi

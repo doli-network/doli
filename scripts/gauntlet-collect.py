@@ -172,7 +172,14 @@ def main():
         "liveness_delta": (max_h - min(n["baseline_height"] for n in up if n.get("baseline_height") is not None)) if up and any(n.get("baseline_height") is not None for n in up) else None,
         "distinct_common_hash": len(common_hashes),
         "distinct_genesis": distinct(up, "genesisHash"),
+        # Block-1 uniformity is only meaningful among nodes that actually HOLD
+        # block 1. A snap-synced node prunes historical blocks (troubleshooting
+        # §1.9): getBlockByHeight(1) returns "Block not found" -> block1Hash=None.
+        # distinct_block1 counts distinct hashes among HOLDERS only (None excluded);
+        # block1_absent surfaces the pruned/absent count so nothing is hidden.
         "distinct_block1": distinct(up, "block1Hash"),
+        "block1_holders": sum(1 for n in up if n.get("block1Hash") is not None),
+        "block1_absent": sum(1 for n in up if n.get("block1Hash") is None),
         "modal_height": modal_h,
         "modal_node_count": len(modal_nodes),
         "distinct_stateroot_modal": distinct(modal_nodes, "stateRoot"),
