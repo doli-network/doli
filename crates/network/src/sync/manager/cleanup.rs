@@ -489,7 +489,7 @@ impl SyncManager {
                 .network
                 .network_tip_height
                 .saturating_sub(self.local_height);
-            if gap > self.snap.threshold && self.peers.len() >= 3 {
+            if gap > super::recovery::thresholds::SNAP_SYNC_GAP_MIN && self.peers.len() >= 3 {
                 let since_last_snap = self
                     .snap
                     .last_snap_completed

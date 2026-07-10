@@ -25,6 +25,8 @@ mod tests_inc_i103;
 mod tests_inc_i111;
 #[cfg(test)]
 mod tests_inc_i139;
+#[cfg(test)]
+mod tests_inc_i139_m6;
 
 // Re-export all public types from types.rs
 pub use types::{

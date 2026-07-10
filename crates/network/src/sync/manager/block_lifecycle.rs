@@ -497,6 +497,17 @@ impl SyncManager {
         self.snap.threshold = u64::MAX;
     }
 
+    /// Explicit enable sentinel, symmetric to `disable_snap_sync()`. Sets
+    /// `snap.threshold` to the default enabled value a normally-configured node
+    /// carries (types.rs SnapSyncState::new). Post-Phase-1 the value is dead
+    /// semantics — only `< u64::MAX` (enabled) matters, since no code reads
+    /// snap.threshold as a gap floor (RC-1); dispatch uses an explicit +10.
+    pub fn enable_snap_sync(&mut self) {
+        // 50 = default enabled sentinel — value is dead semantics post-Phase-1,
+        // only `< u64::MAX` matters. Matches SnapSyncState::new() (types.rs:468).
+        self.snap.threshold = 50;
+    }
+
     pub fn set_store_floor(&mut self, floor: u64) {
         self.snap.store_floor = floor;
     }

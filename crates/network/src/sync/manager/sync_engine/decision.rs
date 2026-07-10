@@ -174,7 +174,7 @@ impl SyncManager {
                 && !enough_peers
                 && self.snap.attempts < 3
                 && snap_allowed
-                && gap > self.snap.threshold
+                && gap > super::super::recovery::thresholds::SNAP_SYNC_GAP_MIN
             {
                 let wait_start = self
                     .snap
@@ -199,7 +199,13 @@ impl SyncManager {
             // wait for enough TCP connections before committing to header-first sync.
             // Without this, nodes N19/N22 start header-first before discv5 discovers
             // peers that could serve snap sync (5-30s for first random walk).
-            if !enough_peers && self.snap.attempts < 3 && snap_allowed && gap > self.snap.threshold
+            // RC-1c: the grace applies ONLY to an h==0 bootstrap node — post-DC-1 an
+            // h>0 node never uses snap peers, so it must never park waiting for them.
+            if self.local_height == 0
+                && !enough_peers
+                && self.snap.attempts < 3
+                && snap_allowed
+                && gap > super::super::recovery::thresholds::SNAP_SYNC_GAP_MIN
             {
                 if let Some(deadline) = self.snap.discv5_peer_grace_deadline {
                     if Instant::now() < deadline {

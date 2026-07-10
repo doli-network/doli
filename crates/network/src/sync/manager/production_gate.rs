@@ -658,6 +658,12 @@ impl SyncManager {
     ///
     /// Returns true if the request was honored, false if refused.
     pub fn request_genesis_resync(&mut self, reason: super::RecoveryReason) -> bool {
+        // RC-2 taxonomy — each RecoveryReason carries THREE ORTHOGONAL capabilities;
+        // do NOT conflate them (this conflation hid OQ-2 for four incidents):
+        //   - bypass-floor (Gate 1): emergency ∪ forward-large-gap (per DC-2).
+        //   - bypass-operator-disable (Gate 4, --no-snap-sync): emergency ONLY.
+        //   - rate/attempt limits (Gates 2,3,5): ALL reasons, NO exceptions.
+        //
         // Emergency recovery: reasons that indicate the node is critically stuck
         // and MUST snap sync regardless of user preferences (--no-snap-sync, floor).
         // These are situations where header-first sync cannot recover:
@@ -737,8 +743,11 @@ impl SyncManager {
                  (reason: {:?}). Node cannot recover via header-first.",
                 reason
             );
-            // Temporarily enable snap sync for this recovery
-            self.snap.threshold = 10;
+            // Temporarily enable snap sync for this recovery via the explicit
+            // enable sentinel (RC-2). Bit-for-bit equivalent to the former
+            // `threshold = 10`: post-RC-1 no code reads the value as a gap floor,
+            // so "enabled" is the only observable effect (< u64::MAX).
+            self.enable_snap_sync();
         }
 
         // Gate 5: Snap attempt limit
@@ -810,11 +819,11 @@ impl SyncManager {
         // If snap sync can handle this gap, don't escalate to deep fork.
         // next_request() will attempt snap sync first.
         let enough_peers = self.peers.len() >= 3;
-        if enough_peers && gap > self.snap.threshold {
+        if enough_peers && gap > super::recovery::thresholds::SNAP_SYNC_GAP_MIN {
             debug!(
-                "[DEEP_FORK] Not detected: snap sync can handle gap={} (threshold={}, peers={})",
+                "[DEEP_FORK] Not detected: snap sync can handle gap={} (snap_gap_min={}, peers={})",
                 gap,
-                self.snap.threshold,
+                super::recovery::thresholds::SNAP_SYNC_GAP_MIN,
                 self.peers.len()
             );
             return false;

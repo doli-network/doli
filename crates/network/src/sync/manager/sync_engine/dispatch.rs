@@ -254,11 +254,13 @@ impl SyncManager {
             _ => return vec![],
         };
 
-        // Only ask peers that are actually synced (height > ours + threshold).
+        // Only ask peers that are actually synced (height > ours + 10).
         // Without this filter, unsynced nodes (also at h=0) receive GetStateRoot
         // requests they can't meaningfully answer, wasting bandwidth and saturating
         // the actually-synced peers' inbound queues. (INC-I-017)
-        let min_height = self.local_height + self.snap.threshold.min(10);
+        // +10 is a peer-quality filter, not the snap gap floor — decoupled from
+        // snap.threshold (RC-1b), which is now a pure enable/disable sentinel.
+        let min_height = self.local_height + 10;
         let candidates: Vec<PeerId> = self
             .peers
             .iter()

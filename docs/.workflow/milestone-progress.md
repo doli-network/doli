@@ -10,7 +10,7 @@ Phase 2 (M8-M10, AH-gated wedge-escape) explicitly OUT of this run — separate 
 | M2+M3 | DC-2 floor-gate forward exemption + DC-1 delete Route A (ATOMIC, one commit) | production_gate.rs:666-700, sync_engine/decision.rs:164-167 | M1 | COMPLETE (2026-07-10, 622c373c) |
 | M4 | DC-3 delete A1 redirect (keep regime guards; funnel fallthrough retained) | sync_engine/dispatch.rs A1 block | M2+M3 | COMPLETE (2026-07-10) |
 | M5 | DC-4 counter single-owner (remove dispatch.rs:84 reset, keep :83) + co-test suite | dispatch.rs:84 | M4 | COMPLETE (2026-07-10) |
-| M6 | RC-1 threshold demotion + discv5-grace h==0 gate + RC-2 emergency taxonomy sentinel | types.rs:468, decision.rs:163/179/204, production_gate.rs:729 | M5 | PENDING |
+| M6 | RC-1 threshold demotion + discv5-grace h==0 gate + RC-2 emergency taxonomy sentinel | types.rs:468, decision.rs:163/177/204, production_gate.rs:741 | M5 | COMPLETE (2026-07-10) — QA PASS (6/6 ACs), review APPROVED, 5-auditor sweep PROCEED (0 M6-introduced P0/P1); tests split to tests_inc_i139_m6.rs (800-line budget); network 451/0/1 |
 | M7 | Close-out: extend INV-SYNC-011, register regression_tests + protection_mechanisms, docs, gauntlet run | memory.db, docs/ | M6 | PENDING |
 
 ## M4 outcome (RUN 455, 2026-07-10)
@@ -79,3 +79,24 @@ Phase 2 (M8-M10, AH-gated wedge-escape) explicitly OUT of this run — separate 
   (`docs/reviews/inc-i-139-M5-refactor-review.md`).
 - Deploy: rolling-safe, node-local, NO activation height (Q1 consensus RULES=NO, Q2 block CONTENT=NO).
   INV-SYNC-007 preserved.
+
+## M6 test coverage (RUN 456, test-writer, 2026-07-10)
+- RC-1/RC-2 source changes landed concurrently in the working tree (decision.rs re-homes the
+  fresh-node + discv5-grace gap comparators onto `thresholds::SNAP_SYNC_GAP_MIN` and gates the
+  discv5-grace wait on `local_height==0`; production_gate.rs:750 replaces `threshold = 10` with
+  `enable_snap_sync()` — canonical enabled sentinel = 50, `< u64::MAX` is the only observable effect).
+- M6 test set in `tests_inc_i139.rs` (8 tests, all green; REQ-SNAP-008 + RC-2 taxonomy):
+  - `m6_h_gt_0_skips_discv5_grace_proceeds_header_first` (RC-1c; genuine red vs pre-RC-1 ungated :202)
+  - `m6_rc1b_no_gap_comparator_read_of_threshold_in_decision` (RC-1b structural; genuine red vs
+    pre-RC-1 `> self.snap.threshold` at :177/:202)
+  - `m6_rc2_emergency_reenable_admits_snap_under_no_snap_sync` (RC-2 bit-for-bit backstop)
+  - `m6_rc2_forward_large_gap_not_operator_disable_exempt` (RC-2 capability ii: Gate 4 emergency-ONLY)
+  - `m6_rc2_rate_and_attempt_limits_apply_to_emergencies` (RC-2 capability iii: Gates 3/5, no exception)
+  - `m6_rc2_emergency_reenable_restores_enabled_sentinel_not_magic_10` (RC-2 exact sentinel ==50, !=10;
+    genuine red vs pre-RC-2 `threshold = 10`)
+  - `m6_rc1_fresh_node_h0_still_waits` (RC-1 bootstrap preservation, REQ-SNAP-003)
+  - `m6_rc1_exact_ceiling_gap_does_not_float_snap` (REQ-SNAP-008 gap==MINOR_FORK_GAP_MAX non-promotion)
+- Suite: `cargo test -p network --lib` = 446 passed / 0 failed / 1 ignored (pre-existing). fmt + clippy clean.
+- Traceability matrix updated (REQ-SNAP-001, REQ-SNAP-008 Test IDs filled).
+- No `#[ignore]` FAIL-by-design tests remain for M6: RC-1/RC-2 co-landed with the tests, so the
+  final tree is green. Three tests would fail against pre-M6 code (documented above) — genuine, not vacuous.
