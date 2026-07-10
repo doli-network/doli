@@ -1527,7 +1527,7 @@ fn test_inc_i017_snap_exhausted_empty_headers_triggers_height_fallback() {
         "use_height_based_headers should be set for the next dispatch"
     );
     // Counter stays at 2 (not incremented — the handler returns early).
-    // It gets reset to 0 when dispatch.rs fires the GetHeadersByHeight request.
+    // Post-DC-4 (INC-I-139 M5) the GetHeadersByHeight dispatch no longer resets the counter; it is preserved as fork evidence.
     assert_eq!(
         manager.fork.consecutive_empty_headers, 2,
         "Empty counter should NOT increment beyond pre-set value"
@@ -1583,9 +1583,13 @@ fn test_inc_i017_height_based_request_fires_before_genesis_fallback() {
         !manager.fork.use_height_based_headers,
         "Flag should be cleared after use"
     );
+    // INC-I-139 M5/DC-4: a request dispatch is NOT progress — the height-based
+    // request no longer zeroes the evidence counter. It is preserved so deep-fork
+    // evidence can still accumulate to the escalation threshold (INV-SYNC-011:
+    // only genuine block apply + the gap≤3 gossip-wait reset it).
     assert_eq!(
-        manager.fork.consecutive_empty_headers, 0,
-        "Empty counter should be reset by height-based request"
+        manager.fork.consecutive_empty_headers, 15,
+        "Post-DC-4: height-based request must PRESERVE the evidence counter, not reset it"
     );
 }
 
@@ -5601,17 +5605,20 @@ mod inc_i138_m2_escalation {
         );
     }
 
-    /// INC-I-138 D2 pin — height-based fallback (dispatch.rs:84) MUST reset counter.
+    /// INC-I-139 DC-4 pin — height-based fallback dispatch MUST PRESERVE counter.
     ///
-    /// When use_height_based_headers=true (set by INC-I-012 F1 post-snap path),
-    /// dispatch.rs:84 clears the counter before issuing GetHeadersByHeight. This is
-    /// LEGITIMATE: the counter accumulated against an unrecognizable hash; the
-    /// height-based request bypasses the hash lookup, making prior empties irrelevant.
-    ///
-    /// PASSES today. MUST PASS after D2 fix (fix gates only the HeaderFirstSync reset,
-    /// not this post-snap fallback reset).
+    /// The prior thesis (dispatch.rs:84 MUST reset the counter as the INC-I-012 F1
+    /// post-snap reset) is exactly what INC-I-139 DC-4 overturns. DC-4 determined this
+    /// dispatch-time reset was the E5 starvation writer — the same defect class D2 fixed
+    /// at periodic.rs:712: re-arming use_height_based_headers each cycle zeroed the
+    /// evidence counter, starving deep-fork escalation. It is now REMOVED; the
+    /// height-based request PRESERVES the counter. Only genuine block apply
+    /// (block_lifecycle.rs) and the bounded gap≤3 gossip-wait reset it
+    /// (INV-SYNC-011 extended, REQ-SNAP-007). The sibling pin
+    /// test_inc_i138_d2_block_applied_resets_counter_pin still covers the legitimate
+    /// block-apply reset.
     #[test]
-    fn test_inc_i138_d2_height_fallback_dispatch_resets_counter_pin() {
+    fn test_inc_i139_dc4_height_fallback_dispatch_preserves_counter_pin() {
         let mut mgr = phase2_manager();
         mgr.fork.consecutive_empty_headers = 4;
         mgr.fork.use_height_based_headers = true; // INC-I-012 F1 post-snap flag
@@ -5631,16 +5638,18 @@ mod inc_i138_m2_escalation {
             peer,
             headers_count: 0,
         };
-        // next_request() enters dispatch.rs:72 (use_height_based_headers=true),
-        // issues GetHeadersByHeight, clears use_height_based_headers AND counter (line 84).
+        // next_request() enters the height-based branch (use_height_based_headers=true)
+        // and issues GetHeadersByHeight — post-DC-4 it no longer touches the counter.
         let _req = mgr.next_request();
-        // O1: counter MUST be 0 after dispatch.rs:84 clears it.
+        // O1: post-DC-4 the counter MUST be PRESERVED (== pre-set 4). The height-based
+        // request is not progress; only block apply (block_lifecycle.rs) and the bounded
+        // gap≤3 gossip-wait reset the counter (INV-SYNC-011 extended, INC-I-139 M5).
         assert_eq!(
-            mgr.fork.consecutive_empty_headers, 0,
-            "D2 pin: height-based fallback (dispatch.rs:84) MUST reset consecutive_empty_headers. \
-             Legitimate reset: counter accumulated against an unrecognizable hash; \
-             GetHeadersByHeight bypasses the hash lookup so prior empties are irrelevant. \
-             This is the INC-I-012 F1 post-snap reset that D2 fix must NOT touch."
+            mgr.fork.consecutive_empty_headers, 4,
+            "DC-4 pin: height-based fallback dispatch MUST PRESERVE consecutive_empty_headers. \
+             INC-I-139 E5: the old dispatch-time reset (dispatch.rs:84) starved deep-fork evidence \
+             (re-arming use_height_based_headers each cycle zeroed it). Single-owner reset writers \
+             are now genuine block apply + the gap≤3 gossip-wait only."
         );
     }
 

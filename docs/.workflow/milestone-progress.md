@@ -9,7 +9,7 @@ Phase 2 (M8-M10, AH-gated wedge-escape) explicitly OUT of this run — separate 
 | M1 | Regression test suite (classes 1-8; 2, 3 & 4 FAIL-by-design against current code) | tests only | — | COMPLETE (2026-07-10) |
 | M2+M3 | DC-2 floor-gate forward exemption + DC-1 delete Route A (ATOMIC, one commit) | production_gate.rs:666-700, sync_engine/decision.rs:164-167 | M1 | COMPLETE (2026-07-10, 622c373c) |
 | M4 | DC-3 delete A1 redirect (keep regime guards; funnel fallthrough retained) | sync_engine/dispatch.rs A1 block | M2+M3 | COMPLETE (2026-07-10) |
-| M5 | DC-4 counter single-owner (remove dispatch.rs:84 reset, keep :83) + co-test suite | dispatch.rs:84 | M4 | PENDING |
+| M5 | DC-4 counter single-owner (remove dispatch.rs:84 reset, keep :83) + co-test suite | dispatch.rs:84 | M4 | COMPLETE (2026-07-10) |
 | M6 | RC-1 threshold demotion + discv5-grace h==0 gate + RC-2 emergency taxonomy sentinel | types.rs:468, decision.rs:163/179/204, production_gate.rs:729 | M5 | PENDING |
 | M7 | Close-out: extend INV-SYNC-011, register regression_tests + protection_mechanisms, docs, gauntlet run | memory.db, docs/ | M6 | PENDING |
 
@@ -48,3 +48,34 @@ Phase 2 (M8-M10, AH-gated wedge-escape) explicitly OUT of this run — separate 
 - Full `network` crate suite green: 442 passed, 0 failed, 2 ignored (class3=DC-4/M5 + 1 pre-existing). Workspace release build clean; network clippy + fmt clean. (Pre-existing workspace clippy failures in `crates/storage/src/state_db/tests.rs` — clippy::bool_assert_comparison — are unrelated and out of scope.)
 - QA: PASS (`docs/qa/sync-snap-admission-M2M3-qa-report.md`). Review: APPROVED, AUDIT-SKIP (`docs/reviews/sync-snap-admission-M2M3-redesign-review.md`).
 - Deploy: rolling-safe, node-local, NO activation height (Q1 consensus RULES=NO, Q2 block CONTENT=NO). INV-SYNC-007 preserved.
+
+## M5 outcome (RUN 455, 2026-07-10)
+- DC-4: removed the single line `self.fork.consecutive_empty_headers = 0;` at request-dispatch time
+  in `crates/network/src/sync/manager/sync_engine/dispatch.rs` (the `use_height_based_headers` branch
+  of `next_request`). Kept the adjacent `use_height_based_headers = false;` flag-clear and the bounded
+  gap<=3 gossip-wait reset. Comment reworded to cite INV-SYNC-011 + INC-I-139 E5. This was the last
+  request-dispatch/admission-path reset of the evidence counter — the E5 starvation writer.
+- TDD FAIL->PASS: de-ignored `class3_counter_not_starved_by_dispatch84_reset` (tests_inc_i139.rs).
+  RED against HEAD: "consecutive_empty_headers maxed at 1 across 15 cycles". GREEN post-DC-4:
+  the counter accumulates to >=10 across request-shape changes.
+- Pin reconciliation (DC-4 supersedes the INC-I-138 D2 carve-out per spec L136 "same defect class
+  D2 fixed at periodic.rs:712"): `test_inc_i017_height_based_request_fires_before_genesis_fallback`
+  now asserts counter PRESERVED (==15); `test_inc_i138_d2_height_fallback_dispatch_resets_counter_pin`
+  renamed `test_inc_i139_dc4_height_fallback_dispatch_preserves_counter_pin`, asserts ==4. Sibling
+  `test_inc_i138_d2_block_applied_resets_counter_pin` (block_lifecycle.rs:68 reset) untouched.
+- Single-owner writer enumeration (REQ-SNAP-007 AC — post-change, non-test src): NO request-dispatch
+  or snap-admission reset remains. Allowed: block_lifecycle.rs:68 (block apply) + dispatch.rs:118
+  (gap<=3 gossip-wait). Legitimate progress/tip-change/recovery resets (out of E5 class):
+  response.rs:400 (valid headers), response.rs:316 (anti-cascade recently_synced<60s),
+  production_gate.rs:558 (rollback tip change), production_gate.rs:620 (post-recovery grace),
+  block_lifecycle.rs:303/360 (full genesis reset).
+- Post-snap false-positive check (spec DC-4): safe without the reset — small post-snap gap is diverted
+  by regime guards (gap<=3 gossip-wait, 4..49 minor-fork park), B3 needs gap>=50, deep_fork_confirmed
+  needs >=300s staleness while the first post-snap apply lands in seconds. Co-tested by class1/class3/class5.
+- Suite: 443 passed / 0 failed / 1 ignored (the 1 ignore is pre-existing, unrelated to DC-4).
+  Release build clean; network clippy -D warnings clean; fmt --check clean. (Pre-existing storage-crate
+  clippy noise out of scope.)
+- QA: PASS (`docs/qa/inc-i-139-M5-qa-report.md`). Review: APPROVED, AUDIT-SKIP
+  (`docs/reviews/inc-i-139-M5-refactor-review.md`).
+- Deploy: rolling-safe, node-local, NO activation height (Q1 consensus RULES=NO, Q2 block CONTENT=NO).
+  INV-SYNC-007 preserved.

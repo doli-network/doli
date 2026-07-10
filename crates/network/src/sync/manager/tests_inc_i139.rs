@@ -207,7 +207,6 @@ fn class2_n1_bare_gap_51_must_not_snap() {
 /// Class 3 (REQ-SNAP-007, DC-4): under sustained empty headers the evidence
 /// counter must reach the escalation threshold despite request-shape changes.
 /// Today dispatch.rs:84 resets it unconditionally on every height-based request.
-#[ignore = "FAILS-BY-DESIGN until DC-4 lands (INC-I-139 M5)"]
 #[test]
 fn class3_counter_not_starved_by_dispatch84_reset() {
     let mut mgr = mgr_with_agreeing_peers(36, 64, 5); // gap=28

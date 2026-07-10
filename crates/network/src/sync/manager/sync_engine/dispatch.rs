@@ -78,10 +78,12 @@ impl SyncManager {
                         "[SYNC] Using GetHeadersByHeight(height={}) — post-snap hash fallback",
                         self.local_height
                     );
-                    // Clear the flag and reset empty counter — height-based request
-                    // bypasses the hash lookup, so previous empties are irrelevant.
+                    // Clear only the height-based flag; the empty-headers evidence
+                    // counter is intentionally preserved. Per INV-SYNC-011 the sole
+                    // reset writers are genuine block application (block_lifecycle.rs)
+                    // and the bounded gap≤3 gossip-wait — a request dispatch is not
+                    // evidence of progress and must not zero the counter (INC-I-139 E5).
                     self.fork.use_height_based_headers = false;
-                    self.fork.consecutive_empty_headers = 0;
                     let id = self.register_request(peer, request.clone());
                     if let Some(status) = self.peers.get_mut(&peer) {
                         status.pending_request = Some(id);
