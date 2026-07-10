@@ -89,10 +89,14 @@ impl SyncManager {
                     return Some((peer, request));
                 }
 
-                // After 10+ consecutive empty responses, peer doesn't recognize our tip.
-                // Try snap sync first (seconds) before falling back to genesis resync (hours).
-                // Only for nodes that were PREVIOUSLY SYNCED (confirmed_height_floor > 0).
-                // Fresh nodes get empty headers from thundering herd, not deep forks. (INC-I-017)
+                // After 10+ consecutive empty responses, peers don't recognize our tip.
+                // Regime-split recovery (INC-I-139 DC-3 removed the old snap-first redirect
+                // that zeroed snap.attempts and bypassed the 3-attempt limiter):
+                //   gap <= 3       -> gossip timing, wait for gossip (INC-I-026)
+                //   4 <= gap < 50  -> minor-fork park, await G3/coordinator ShallowRollback
+                //   gap >= 50      -> gated emergency funnel: request_genesis_resync(
+                //                     GenesisFallbackEmptyHeaders), which respects Gates 2/3/5
+                //                     (incl. the 3-attempt snap limiter).
                 if self.fork.consecutive_empty_headers >= 10 {
                     let best_height = self
                         .peers
@@ -101,20 +105,6 @@ impl SyncManager {
                         .max()
                         .unwrap_or(0);
                     let gap = best_height.saturating_sub(self.local_height);
-                    let enough_peers = self.peers.len() >= 3;
-                    if enough_peers && gap > self.snap.threshold && self.confirmed_height_floor > 0
-                    {
-                        info!(
-                            "[SNAP_SYNC] Deep fork with {} consecutive empty headers — \
-                             attempting snap sync before genesis resync (gap={})",
-                            self.fork.consecutive_empty_headers, gap
-                        );
-                        self.snap.attempts = 0;
-                        self.fork.consecutive_empty_headers = 0;
-                        self.set_state(SyncState::Idle, "deep_fork_snap_redirect");
-                        self.start_sync();
-                        return None;
-                    }
                     if gap <= 3 && self.local_height > 0 {
                         // INC-I-026: gap ≤ 3 is gossip timing, not a fork.
                         // Don't force rollback — let gossip resolve.

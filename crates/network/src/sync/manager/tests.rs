@@ -1631,47 +1631,6 @@ fn test_inc_i017_deep_fork_snap_redirect_blocked_for_fresh_nodes() {
     );
 }
 
-/// INC-I-017 F4: Deep fork snap redirect ALLOWED for previously synced nodes.
-/// confirmed_height_floor > 0 means the node was healthy before — it's a real fork.
-#[test]
-fn test_inc_i017_deep_fork_snap_redirect_allowed_for_synced_nodes() {
-    let genesis = Hash::ZERO;
-    let mut manager = SyncManager::new(SyncConfig::default(), genesis);
-
-    // Previously synced node now on a deep fork
-    manager.local_height = 100;
-    manager.local_hash = crypto::hash::hash(b"forked_block_100");
-    manager.local_slot = 100;
-    manager.confirmed_height_floor = 95; // Was healthy at 95
-    manager.snap.attempts = 3;
-    manager.fork.consecutive_empty_headers = 15;
-
-    let peer1 = PeerId::random();
-    let peer2 = PeerId::random();
-    let peer3 = PeerId::random();
-    manager.add_peer(peer1, 500, crypto::hash::hash(b"tip"), 500);
-    manager.add_peer(peer2, 500, crypto::hash::hash(b"tip"), 500);
-    manager.add_peer(peer3, 500, crypto::hash::hash(b"tip"), 500);
-
-    manager.state = SyncState::Syncing {
-        phase: SyncPhase::DownloadingHeaders,
-        started_at: Instant::now(),
-    };
-    manager.pipeline_data = SyncPipelineData::Headers {
-        target_slot: 500,
-        peer: peer1,
-        headers_count: 0,
-    };
-
-    let _ = manager.next_request();
-
-    // snap.attempts SHOULD be reset for previously synced nodes
-    assert_eq!(
-        manager.snap.attempts, 0,
-        "snap.attempts should be reset when confirmed_height_floor > 0 (real deep fork)"
-    );
-}
-
 // =========================================================================
 // M1: Recovery Gate + Transition Validation Tests
 // Architecture: specs/sync-recovery-architecture.md (Sections 2, 4, 6)

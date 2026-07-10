@@ -493,3 +493,69 @@ fn class8_b7_height_offset_floor_gated_refused() {
         "Class 8: refused request must not set needs_genesis_resync"
     );
 }
+
+// ===========================================================================
+// CLASS 9 — DC-3 A1 attempts-limiter bypass (REQ-SNAP-001 / REQ-SNAP-002).
+// FAILS-BY-DESIGN on HEAD; the M4 deletion of A1 lands in THIS milestone, so the
+// final state must be green → NOT #[ignore].
+//
+// The A1 deep-fork snap redirect (dispatch.rs:105-117) zeroes `snap.attempts`
+// (dispatch.rs:112) as a side effect. That reset defeats the 3-attempt limiter
+// (production_gate.rs Gate 5, :745 refuses when attempts>=3): a node that has
+// already burned 2 snap attempts has the counter wiped back to 0 every time it
+// re-enters this block, so the limiter can never fire. After DC-3 deletes A1, the
+// deep-fork empty-headers path (gap>50, empties>=10, floor>0) falls through to the
+// gated B3 emergency funnel `request_genesis_resync(GenesisFallbackEmptyHeaders)`
+// (dispatch.rs:157), which READS `snap.attempts` (Gate 5) but never RESETS it.
+//
+// OUTPUT CONTRACT: fn next_request(&mut self) [dispatch.rs:15]
+//   (Headers branch, consecutive_empty_headers>=10, use_height_based_headers=false)
+//   O1: self.snap.attempts — MUST be preserved across the deep-fork escalation
+//   PATH P1: deep-fork empty-headers, gap>50, floor>0, empties>=10 → :96 → A1(:105)
+//   INPUT PARTITION: gap=100 (>threshold 50), floor=100, empties=10, attempts=2
+//   MATRIX (O1): P1 → attempts unchanged (2). FAILS today: A1 (:112) resets to 0.
+// ===========================================================================
+
+/// Class 9 (REQ-SNAP-001/002, DC-3): the deep-fork empty-headers escalation must
+/// NOT zero `snap.attempts`. Today A1 (dispatch.rs:112) resets it to 0, defeating
+/// the 3-attempt limiter (production_gate.rs Gate 5). Post-DC-3 the path falls
+/// through to the gated B3 funnel which reads but never resets the counter.
+#[test]
+fn class9_a1_does_not_reset_snap_attempts() {
+    // gap = 200 - 100 = 100 > snap.threshold(50); 3 peers → enough_peers=true.
+    let mut mgr = mgr_with_agreeing_peers(100, 200, 3);
+    let peer = *mgr.peers.keys().next().expect("3 peers inserted");
+    mgr.confirmed_height_floor = 100; // floor>0 → A1's third condition holds.
+    mgr.fork.use_height_based_headers = false; // reach :96, not the :72 fallback.
+    mgr.fork.height_fallback_attempted = false;
+    mgr.fork.consecutive_empty_headers = 10; // >=10 triggers the escalation block.
+    mgr.snap.attempts = 2; // approaching the 3-attempt limit — the value under test.
+    mgr.state = SyncState::Syncing {
+        phase: SyncPhase::DownloadingHeaders,
+        started_at: Instant::now(),
+    };
+    mgr.pipeline_data = SyncPipelineData::Headers {
+        target_slot: 264,
+        peer,
+        headers_count: 0,
+    };
+    for s in mgr.peers.values_mut() {
+        s.pending_request = None; // no in-flight request → reach the escalation.
+    }
+
+    let _ = mgr.next_request();
+
+    // O1: snap.attempts must be preserved. A1 (dispatch.rs deep_fork_snap_redirect,
+    // :112) zeroes it, defeating the 3-attempt limiter. Post-DC-3 the deep-fork
+    // empty-headers path falls through to the gated B3 emergency funnel
+    // request_genesis_resync(GenesisFallbackEmptyHeaders), which reads snap.attempts
+    // (Gate 5) but never resets it.
+    assert_eq!(
+        mgr.snap.attempts, 2,
+        "Class 9 (DC-3): deep-fork escalation zeroed snap.attempts (observed {}, expected 2). \
+         A1 (dispatch.rs:112) resets the counter, defeating the 3-attempt limiter \
+         (production_gate.rs Gate 5). Post-DC-3 the path must fall through to the gated \
+         B3 funnel which reads but never resets snap.attempts.",
+        mgr.snap.attempts
+    );
+}
