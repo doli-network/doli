@@ -2380,6 +2380,11 @@ mod recovery_gate_tests {
     /// If a node was previously healthy at height H (confirmed_height_floor = H),
     /// resetting to genesis would violate the monotonic progress guarantee.
     /// Manual intervention is required instead.
+    ///
+    /// DC-2 (INC-I-139): forward-large-gap reasons (CoordinatorSnapEscalation,
+    /// StuckSyncLargeGap) are now floor-EXEMPT — a forward snap cannot violate the
+    /// monotonic floor. This test therefore uses CoordinatorGenesisEscalation, which
+    /// remains floor-gated, to preserve floor-refusal coverage.
     #[test]
     fn test_request_genesis_resync_refused_by_height_floor() {
         let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
@@ -2390,8 +2395,7 @@ mod recovery_gate_tests {
         manager.snap.threshold = 500;
         manager.snap.attempts = 0;
 
-        let result =
-            manager.request_genesis_resync(RecoveryReason::StuckSyncLargeGap { gap: 2000 });
+        let result = manager.request_genesis_resync(RecoveryReason::CoordinatorGenesisEscalation);
 
         assert!(
             !result,
@@ -2695,21 +2699,24 @@ mod recovery_gate_tests {
         // but it must not panic and the flag must stay true
     }
 
-    /// T-RG-009: Gate ordering — height floor checked first (fast reject).
-    /// If both height floor > 0 AND snap disabled, the height floor gate
-    /// should reject before reaching the snap gate.
+    /// T-RG-009: Gate ordering — height floor (Gate 1) checked first (fast reject).
+    /// With floor > 0 and a still-floor-gated reason, Gate 1 refuses regardless of
+    /// the snap gate. We use a floor-gated reason (CoordinatorGenesisEscalation) so
+    /// the refusal is attributable to Gate 1; the SyncConfig default snap.threshold
+    /// is 50 (snap ENABLED), so the snap gate would not block on its own.
+    ///
+    /// DC-2 (INC-I-139): forward-large-gap reasons are floor-exempt, so this test
+    /// deliberately avoids StuckSyncLargeGap to keep asserting Gate-1 refusal.
     #[test]
     fn test_request_genesis_resync_gate_ordering_floor_first() {
         let mut manager = SyncManager::new(SyncConfig::default(), Hash::ZERO);
 
-        // Both gates would reject: floor > 0 AND snap disabled
+        // Floor > 0 with a floor-gated reason → Gate 1 refuses first.
         manager.confirmed_height_floor = 100;
-        // snap.threshold is u64::MAX by default (disabled)
 
-        let result =
-            manager.request_genesis_resync(RecoveryReason::StuckSyncLargeGap { gap: 2000 });
+        let result = manager.request_genesis_resync(RecoveryReason::CoordinatorGenesisEscalation);
 
-        assert!(!result, "T-RG-009: Must be refused (either gate rejects)");
+        assert!(!result, "T-RG-009: Must be refused (Gate 1 floor rejects)");
         assert!(
             !manager.fork.needs_genesis_resync,
             "T-RG-009: Flag must remain false"
@@ -3467,10 +3474,14 @@ mod site_migration_tests {
     // === Site #8 (cleanup.rs ~483): Stuck-sync large gap ===
 
     /// T-M2-002: cleanup site "stuck sync large gap" routes through recovery gate.
-    /// REQ-SYNC-103 (Must): When confirmed_height_floor > 0, gate REFUSES.
+    /// DC-2 (INC-I-139): StuckSyncLargeGap is floor-EXEMPT — a forward snap
+    /// catch-up cannot violate the monotonic confirmed-height floor (CR-1), so a
+    /// legitimate gap>1000 stuck-sync recovery must be HONORED even when
+    /// confirmed_height_floor > 0.
     ///
-    /// Setup: gap > 1000, snap.attempts < 3, 3+ peers, stuck > 120s.
-    /// Expected: needs_genesis_resync stays FALSE.
+    /// Setup: gap > 1000, snap.attempts < 3, snap enabled (threshold=500), 3+
+    /// peers, stuck > 300s (the real stuck-sync raise threshold).
+    /// Expected: needs_genesis_resync becomes TRUE (DC-2 floor-exempt).
     #[test]
     fn test_stuck_sync_large_gap_uses_recovery_gate() {
         let mut manager = manager_with_floor_gate();
@@ -3489,8 +3500,9 @@ mod site_migration_tests {
         }
         manager.state = SyncState::Idle;
 
-        // Stuck for > 120s
-        manager.network.last_block_applied = Instant::now() - Duration::from_secs(130);
+        // Stuck for > 300s so the StuckSyncLargeGap raise path actually fires
+        // (real threshold is 300s, not 120s — pre-existing comment/code drift).
+        manager.network.last_block_applied = Instant::now() - Duration::from_secs(310);
         // Ensure the "stuck sync" path is reached, not the fork path
         manager.fork.consecutive_empty_headers = 10; // >= 3, so it won't take the small-gap path
 
@@ -3498,9 +3510,11 @@ mod site_migration_tests {
         manager.cleanup();
 
         assert!(
-            !manager.fork.needs_genesis_resync,
-            "T-M2-002: cleanup 'stuck sync large gap' site must route through recovery gate. \
-             With confirmed_height_floor={}, needs_genesis_resync must stay false.",
+            manager.fork.needs_genesis_resync,
+            "T-M2-002: DC-2 makes StuckSyncLargeGap floor-EXEMPT — a forward snap \
+             catch-up cannot violate the monotonic floor (CR-1). With gap>1000, \
+             stuck>300s, confirmed_height_floor={} > 0 and snap enabled, the recovery \
+             gate must HONOR the request (needs_genesis_resync == true).",
             manager.confirmed_height_floor
         );
     }
@@ -3748,16 +3762,14 @@ mod site_migration_tests {
     /// bypass the floor — see T-RG-001b/001c (INC-I-007).
     #[test]
     fn test_all_m2_reasons_refused_by_floor_gate() {
-        // Non-emergency reasons: still blocked by floor
+        // Non-emergency, non-forward-large-gap reasons: still blocked by floor.
         let blocked_reasons = vec![
-            RecoveryReason::StuckSyncLargeGap { gap: 2000 },
             RecoveryReason::HeightOffsetDetected { gap: 500 },
             RecoveryReason::BodyDownloadPeerError,
             RecoveryReason::RollbackDeathSpiral {
                 peak: 500,
                 current: 10,
             },
-            RecoveryReason::CoordinatorSnapEscalation,
             RecoveryReason::CoordinatorGenesisEscalation,
         ];
 
@@ -3774,6 +3786,31 @@ mod site_migration_tests {
             assert!(
                 !manager.fork.needs_genesis_resync,
                 "T-M2-009: needs_genesis_resync must stay false for {:?}",
+                reason
+            );
+        }
+
+        // DC-2 (INC-I-139): forward-large-gap reasons are floor-exempt — a FORWARD
+        // snap cannot violate the monotonic floor (CR-1). They bypass Gate 1 but NOT
+        // Gate 4 (operator disable).
+        let forward_large_gap_reasons = vec![
+            RecoveryReason::CoordinatorSnapEscalation,
+            RecoveryReason::StuckSyncLargeGap { gap: 2000 },
+        ];
+
+        for reason in forward_large_gap_reasons {
+            let mut manager = manager_with_floor_gate();
+
+            let result = manager.request_genesis_resync(reason.clone());
+
+            assert!(
+                result,
+                "T-M2-009: {:?} must be HONORED via the floor exemption (DC-2)",
+                reason
+            );
+            assert!(
+                manager.fork.needs_genesis_resync,
+                "T-M2-009: needs_genesis_resync must be true for {:?}",
                 reason
             );
         }

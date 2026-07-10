@@ -670,8 +670,20 @@ impl SyncManager {
                 | super::RecoveryReason::ApplyFailuresSnapThreshold { .. }
         );
 
-        // Gate 1: Monotonic progress floor — bypassed for emergencies
-        if self.confirmed_height_floor > 0 && !is_emergency {
+        // Forward large-gap catch-up: a previously-synced node that fell >=500 blocks
+        // behind (coordinator Rule 2 large_gap or stuck-sync). These reasons target
+        // best_height > local_height >= confirmed_height_floor — a FORWARD snap that
+        // cannot violate the monotonic floor (which guards against BACKWARD wipes,
+        // CR-1). They are floor-exempt (Gate 1) but NOT operator-disable-exempt
+        // (Gate 4): --no-snap-sync still refuses them.
+        let is_forward_large_gap = matches!(
+            reason,
+            super::RecoveryReason::CoordinatorSnapEscalation
+                | super::RecoveryReason::StuckSyncLargeGap { .. }
+        );
+
+        // Gate 1: Monotonic progress floor — bypassed for emergencies and forward large-gap.
+        if self.confirmed_height_floor > 0 && !is_emergency && !is_forward_large_gap {
             warn!(
                 "[RECOVERY] Genesis resync REFUSED: confirmed_height_floor={} \
                  (reason: {:?}). Manual intervention required.",
@@ -679,7 +691,7 @@ impl SyncManager {
             );
             return false;
         }
-        if self.confirmed_height_floor > 0 && is_emergency {
+        if self.confirmed_height_floor > 0 && (is_emergency || is_forward_large_gap) {
             warn!(
                 "[RECOVERY] Genesis resync BYPASSING floor={} for emergency recovery \
                  (reason: {:?}). Node is critically stuck.",

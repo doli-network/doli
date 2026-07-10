@@ -164,9 +164,7 @@ impl SyncManager {
             let should_snap = enough_peers
                 && self.snap.attempts < 3
                 && snap_allowed
-                && (self.local_height == 0
-                    || gap > self.snap.threshold
-                    || self.fork.needs_genesis_resync);
+                && (self.local_height == 0 || self.fork.needs_genesis_resync);
 
             // Fresh node optimization: don't start slow header-first sync.
             // Wait for 5 peers so snap sync can activate — it downloads state

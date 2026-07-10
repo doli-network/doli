@@ -158,7 +158,6 @@ fn class1_evidence_gated_snap_only_at_gap_50_plus_empties() {
 
 /// Class 2 (REQ-SNAP-002, DC-1): a bare 51-block gap with no fork evidence must
 /// NOT admit snap. Today decision.rs:168 `|| gap > self.snap.threshold` admits it.
-#[ignore = "FAILS-BY-DESIGN until DC-1 lands (INC-I-139 M3)"]
 #[test]
 fn class2_n1_bare_gap_51_must_not_snap() {
     // local=100, 3 agreeing peers at 151 → gap=51 > snap.threshold(50).
@@ -272,7 +271,6 @@ fn class3_counter_not_starved_by_dispatch84_reset() {
 /// :674 `confirmed_height_floor>0 && !is_emergency`) refuses CoordinatorSnapEscalation
 /// because it is NOT in the emergency set — proving the DC-2 forward-large-gap
 /// exemption is load-bearing once Route A (DC-1) is deleted.
-#[ignore = "FAILS-BY-DESIGN until DC-2 lands (INC-I-139 M2)"]
 #[test]
 fn class4_floor_gap500_coordinator_snap_passes_gate1() {
     let mut mgr = SyncManager::new(SyncConfig::default(), Hash::ZERO);
