@@ -177,6 +177,13 @@ systemctl --user start doli-producer
 systemctl --user status doli-producer
 ```
 
+> **Log rotation:** `doli service install` also installs a logrotate drop-in at
+> `/etc/logrotate.d/doli-{network}` that caps `/var/log/doli/{network}.log`
+> (steady-state ≈ 1.2 GB). Existing installs should re-run `sudo doli service install`
+> — or drop in the `/etc/logrotate.d/doli-{network}` file shown under
+> [troubleshooting.md §1.7 Disk full / ENOSPC](./troubleshooting.md#17-disk-full--enospc)
+> — to prevent an unbounded log from filling the disk.
+
 ---
 
 ## Step 6: Verify production

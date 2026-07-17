@@ -254,6 +254,56 @@ See [disaster-recovery.md](./disaster-recovery.md) for all recovery methods.
 
 ---
 
+### 1.7. Disk full / ENOSPC
+
+**Symptom:** The node stops or returns a clean error mentioning `ENOSPC` /
+"No space left on device" instead of crashing with a SIGABRT core-dump. This is the
+intended M1 clean-error behavior — the node fails gracefully on a full disk rather
+than aborting mid-write.
+
+**Most common cause:** an unbounded `/var/log/doli/{network}.log`. The systemd unit
+appends stdout/stderr to that single file for the life of the process; without
+rotation it grows without limit.
+
+**Reclaim space immediately:**
+```bash
+# See what is consuming the disk
+df -h /var
+du -sh /var/log/doli/* /var/lib/doli/* 2>/dev/null | sort -h | tail
+
+# Truncate the live log in place (safe under copytruncate — keeps the append fd valid)
+sudo truncate -s 0 /var/log/doli/mainnet.log
+
+# Remove old compressed rotations if present
+sudo rm -f /var/log/doli/mainnet.log.*.gz
+```
+
+**Permanent fix — log rotation (installed automatically):**
+`doli service install` now writes a logrotate drop-in at
+`/etc/logrotate.d/doli-{network}`. Steady-state disk for logs is bounded to about
+`(rotate + 1) × maxsize ≈ 1.2 GB`, plus at most one inter-rotation burst-day of
+residual (architecture §D2). Re-run `sudo doli service install` on existing hosts to
+adopt it, or drop the file in manually:
+
+```
+/var/log/doli/mainnet.log {
+    maxsize 200M
+    daily
+    rotate 5
+    copytruncate
+    compress
+    delaycompress
+    missingok
+    notifempty
+}
+```
+
+`copytruncate` is load-bearing: systemd holds the append fd open, so a rename-based
+rotation would leave the node writing to the rotated inode forever. Substitute the
+network name (`testnet`, `devnet`, ...) on both the filename and the leading path line.
+
+---
+
 ## 2. Producer Issues
 
 ### 2.1. Not Producing Blocks

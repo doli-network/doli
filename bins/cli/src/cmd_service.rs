@@ -230,6 +230,37 @@ fn launchd_plist_path(label: &str) -> std::path::PathBuf {
         .join(format!("{}.plist", label))
 }
 
+// M2 disk-guardian — logrotate drop-in (Linux only).
+// The systemd unit writes stdout/stderr with `append:/var/log/doli/{network}.log`,
+// holding the append fd for the life of the process. Rotation therefore MUST use
+// `copytruncate` (truncate in place) rather than rename — otherwise the node keeps
+// writing to the rotated inode forever. Steady-state disk is bounded to
+// ~(rotate+1)×maxsize ≈ 1.2G (architecture §D2).
+
+/// Path of the logrotate drop-in for a given network.
+fn logrotate_dropin_path(network: &str) -> String {
+    format!("/etc/logrotate.d/doli-{}", network)
+}
+
+/// Byte-exact logrotate drop-in content for a given network (architecture §D2).
+fn logrotate_dropin_content(network: &str) -> String {
+    format!(
+        "\
+/var/log/doli/{network}.log {{
+    maxsize 200M
+    daily
+    rotate 5
+    copytruncate
+    compress
+    delaycompress
+    missingok
+    notifempty
+}}
+",
+        network = network,
+    )
+}
+
 // ---------------------------------------------------------------------------
 // install
 // ---------------------------------------------------------------------------
@@ -373,6 +404,12 @@ WantedBy=multi-user.target
 
     println!("Writing service file: {}", unit_path);
     std::fs::write(&unit_path, &unit)?;
+
+    // M2 disk-guardian: write the logrotate drop-in so /var/log/doli/{network}.log
+    // is capped. Idempotent — fs::write overwrites on re-install.
+    let dropin_path = logrotate_dropin_path(network);
+    println!("Writing logrotate drop-in: {}", dropin_path);
+    std::fs::write(&dropin_path, logrotate_dropin_content(network))?;
 
     println!("Reloading systemd daemon...");
     run_cmd("systemctl", &["daemon-reload"])?;
@@ -528,6 +565,13 @@ fn cmd_uninstall(network: &str, name: Option<String>) -> Result<()> {
         if std::path::Path::new(&unit_path).exists() {
             println!("Removing {}...", unit_path);
             std::fs::remove_file(&unit_path)?;
+        }
+
+        // M2 disk-guardian: remove the logrotate drop-in (absent-file tolerated).
+        let dropin = logrotate_dropin_path(network);
+        if std::path::Path::new(&dropin).exists() {
+            println!("Removing {}...", dropin);
+            std::fs::remove_file(&dropin)?;
         }
 
         println!("Reloading systemd daemon...");
@@ -793,4 +837,82 @@ fn run_cmd(program: &str, args: &[&str]) -> Result<()> {
         bail!("Command failed: {} {}", program, args.join(" "));
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// M2 disk-guardian tests (TDD RED) — REQ-DISK-201 / REQ-DISK-203
+//
+// OUTPUT CONTRACT
+// fn logrotate_dropin_path(network: &str) -> String
+//   O1 (return): exactly "/etc/logrotate.d/doli-{network}"
+//   PATHS: pure fn, single path. PARTITIONS: network="mainnet", network="testnet".
+// fn logrotate_dropin_content(network: &str) -> String
+//   O1 (return): the byte-exact logrotate drop-in block from architecture §D2,
+//                with {network} substituted into the leading path line.
+//   PATHS: pure fn, single path. PARTITIONS: network="mainnet", network="testnet".
+//   MATRIX: O1×mainnet (byte-exact), O1×testnet (first line + path), token-presence.
+//
+// These reference two pure functions the developer must add to this module.
+// Until they exist this module FAILS TO COMPILE — that is the intended RED state.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Byte-exact expected content for network="mainnet" (architecture §D2, lines 158-168).
+    // Trailing newline after the closing brace is part of the contract (generated
+    // config files terminate with a newline).
+    const EXPECTED_MAINNET: &str = "\
+/var/log/doli/mainnet.log {
+    maxsize 200M
+    daily
+    rotate 5
+    copytruncate
+    compress
+    delaycompress
+    missingok
+    notifempty
+}
+";
+
+    // REQ-DISK-201 (Must): generated drop-in content is byte-exact for mainnet.
+    #[test]
+    fn req_disk_201_dropin_content_mainnet_is_byte_exact() {
+        assert_eq!(logrotate_dropin_content("mainnet"), EXPECTED_MAINNET);
+    }
+
+    // REQ-DISK-201 (Must): network is substituted into the leading path line,
+    // and the drop-in path is derived from the network name.
+    #[test]
+    fn req_disk_201_dropin_content_and_path_are_network_scoped() {
+        let content = logrotate_dropin_content("testnet");
+        let first_line = content.lines().next().expect("content has a first line");
+        assert_eq!(first_line, "/var/log/doli/testnet.log {");
+        assert_eq!(
+            logrotate_dropin_path("testnet"),
+            "/etc/logrotate.d/doli-testnet"
+        );
+    }
+
+    // REQ-DISK-201 (Must): every required logrotate directive token is present.
+    // `copytruncate` is load-bearing: systemd holds the append fd, so rename-based
+    // rotation would leave the process writing to the rotated inode forever.
+    #[test]
+    fn req_disk_201_dropin_content_contains_required_directives() {
+        let content = logrotate_dropin_content("mainnet");
+        for token in [
+            "maxsize 200M",
+            "rotate 5",
+            "copytruncate",
+            "compress",
+            "delaycompress",
+            "missingok",
+            "notifempty",
+        ] {
+            assert!(
+                content.contains(token),
+                "logrotate drop-in missing required directive: {token}"
+            );
+        }
+    }
 }
