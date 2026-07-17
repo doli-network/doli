@@ -32,7 +32,7 @@ fn state_db_explicit_block_cache_attached() {
     for i in 0u64..10 {
         let tx =
             doli_core::transaction::Transaction::new_coinbase(100_000 * (i + 1), pk_hash, 0, 0);
-        sdb.add_transaction(&tx, i, true, 0);
+        sdb.add_transaction(&tx, i, true, 0).unwrap();
     }
 
     // Force a read-back to populate the block cache
@@ -61,7 +61,7 @@ fn state_db_no_write_stall_under_normal_load() {
     for i in 0u64..50 {
         let tx =
             doli_core::transaction::Transaction::new_coinbase(100_000 * (i + 1), pk_hash, 0, 0);
-        sdb.add_transaction(&tx, i, true, 0);
+        sdb.add_transaction(&tx, i, true, 0).unwrap();
     }
 
     let m = sdb.metrics();
@@ -90,7 +90,7 @@ fn state_db_reopen_with_per_cf_tuning_data_survives() {
         for i in 0u64..5 {
             let tx =
                 doli_core::transaction::Transaction::new_coinbase(100_000 * (i + 1), pk_hash, 0, 0);
-            sdb.add_transaction(&tx, i, true, 0);
+            sdb.add_transaction(&tx, i, true, 0).unwrap();
         }
         assert_eq!(sdb.utxo_len(), 5);
         // DB dropped here, files flushed

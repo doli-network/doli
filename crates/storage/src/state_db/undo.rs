@@ -3,16 +3,18 @@
 use doli_core::types::BlockHeight;
 
 use super::types::{StateDb, UndoData, CF_UNDO};
+use crate::StorageError;
 
 impl StateDb {
     // ==================== Undo Log ====================
 
     /// Store undo data for a block height.
-    pub fn put_undo(&self, height: BlockHeight, undo: &UndoData) {
+    pub fn put_undo(&self, height: BlockHeight, undo: &UndoData) -> Result<(), StorageError> {
         let cf = self.db.cf_handle(CF_UNDO).unwrap();
         let key = height.to_le_bytes();
         let value = bincode::serialize(undo).expect("UndoData serialization");
-        self.db.put_cf(cf, key, value).expect("RocksDB put undo");
+        self.db.put_cf(cf, key, value)?;
+        Ok(())
     }
 
     /// Get undo data for a block height.

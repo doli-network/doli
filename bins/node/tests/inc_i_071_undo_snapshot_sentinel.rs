@@ -298,7 +298,7 @@ async fn inc_i_071_legacy_full_snapshot_still_restores() {
     let mut legacy_undo = node.state_db.get_undo(5).expect("undo present at h=5");
     legacy_undo.producer_snapshot = legacy_snapshot.clone();
     // Persist the rewritten legacy entry.
-    node.state_db.put_undo(5, &legacy_undo);
+    node.state_db.put_undo(5, &legacy_undo).unwrap();
 
     // Rollback — must take the legacy (non-empty) path and restore
     // from the full snapshot without falling back to rebuild.

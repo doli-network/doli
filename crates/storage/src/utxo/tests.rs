@@ -216,7 +216,7 @@ fn test_serialize_canonical_matches_between_backends() {
     let dir = tempfile::TempDir::new().unwrap();
     let sdb = Arc::new(crate::state_db::StateDb::open(dir.path()).unwrap());
     for (outpoint, entry) in mem_store.iter() {
-        sdb.insert_utxo(outpoint, entry);
+        sdb.insert_utxo(outpoint, entry).unwrap();
     }
 
     // Canonical bytes must match

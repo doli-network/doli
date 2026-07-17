@@ -24,7 +24,7 @@ impl StateDb {
     /// new. Re-inserting an existing key (upsert) updates the value but does not
     /// inflate the counter. This is critical for `recover_body_gaps()` which may
     /// re-insert all existing UTXOs from state_db (INC-I-136).
-    pub fn insert_utxo(&self, outpoint: &Outpoint, entry: &UtxoEntry) {
+    pub fn insert_utxo(&self, outpoint: &Outpoint, entry: &UtxoEntry) -> Result<(), StorageError> {
         let cf_utxo = self.db.cf_handle(CF_UTXO).unwrap();
         let cf_by_pk = self.db.cf_handle(CF_UTXO_BY_PUBKEY).unwrap();
 
@@ -40,20 +40,27 @@ impl StateDb {
         idx_key.extend_from_slice(&key);
         batch.put_cf(cf_by_pk, &idx_key, [0u8]);
 
-        self.db.write(batch).expect("RocksDB write batch");
+        self.db.write(batch)?;
         if is_new {
             self.utxo_count.fetch_add(1, Ordering::Relaxed);
         }
+        Ok(())
     }
 
     /// Remove a UTXO directly (for migration/reorg).
-    pub fn remove_utxo(&self, outpoint: &Outpoint) -> Option<UtxoEntry> {
+    pub fn remove_utxo(&self, outpoint: &Outpoint) -> Result<Option<UtxoEntry>, StorageError> {
         let cf_utxo = self.db.cf_handle(CF_UTXO).unwrap();
         let cf_by_pk = self.db.cf_handle(CF_UTXO_BY_PUBKEY).unwrap();
 
         let key = outpoint.to_bytes();
-        let entry_bytes = self.db.get_cf(cf_utxo, &key).ok()??;
-        let entry: UtxoEntry = bincode::deserialize(&entry_bytes).ok()?;
+        let entry_bytes = match self.db.get_cf(cf_utxo, &key).ok().flatten() {
+            Some(b) => b,
+            None => return Ok(None),
+        };
+        let entry: UtxoEntry = match bincode::deserialize(&entry_bytes).ok() {
+            Some(e) => e,
+            None => return Ok(None),
+        };
 
         let mut batch = rocksdb::WriteBatch::default();
         batch.delete_cf(cf_utxo, &key);
@@ -63,14 +70,14 @@ impl StateDb {
         idx_key.extend_from_slice(&key);
         batch.delete_cf(cf_by_pk, &idx_key);
 
-        self.db.write(batch).expect("RocksDB write batch");
+        self.db.write(batch)?;
         self.utxo_count.fetch_sub(1, Ordering::Relaxed);
 
-        Some(entry)
+        Ok(Some(entry))
     }
 
     /// Clear all UTXOs (for reorg/resync).
-    pub fn clear_utxos(&self) {
+    pub fn clear_utxos(&self) -> Result<(), StorageError> {
         let cf_utxo = self.db.cf_handle(CF_UTXO).unwrap();
         let cf_by_pk = self.db.cf_handle(CF_UTXO_BY_PUBKEY).unwrap();
 
@@ -89,8 +96,9 @@ impl StateDb {
         {
             batch.delete_cf(cf_by_pk, &key);
         }
-        let _ = self.db.write(batch);
+        self.db.write(batch)?;
         self.utxo_count.store(0, Ordering::Relaxed);
+        Ok(())
     }
 
     /// Atomically clear all CFs and write genesis ChainState in one WriteBatch.
@@ -98,7 +106,7 @@ impl StateDb {
     /// Used by force_resync_from_genesis. Never leaves the DB empty — the batch
     /// deletes old state AND writes genesis state in a single commit.
     /// Crash between "delete" and "write" is impossible because it's one batch.
-    pub fn clear_and_write_genesis(&self, genesis_cs: &ChainState) {
+    pub fn clear_and_write_genesis(&self, genesis_cs: &ChainState) -> Result<(), StorageError> {
         let cfs = [
             CF_UTXO,
             CF_UTXO_BY_PUBKEY,
@@ -131,8 +139,9 @@ impl StateDb {
         };
         batch.put_cf(cf_meta, META_LAST_APPLIED, la.to_bytes());
 
-        self.db.write(batch).expect("clear_and_write_genesis batch");
+        self.db.write(batch)?;
         self.utxo_count.store(0, Ordering::Relaxed);
+        Ok(())
     }
 
     /// Atomically replace ALL state (for reorg replay or snap sync).
@@ -298,7 +307,10 @@ impl StateDb {
     }
 
     /// Bulk import UTXOs from an iterator (for migration).
-    pub fn import_utxos<'a>(&self, entries: impl Iterator<Item = (&'a Outpoint, &'a UtxoEntry)>) {
+    pub fn import_utxos<'a>(
+        &self,
+        entries: impl Iterator<Item = (&'a Outpoint, &'a UtxoEntry)>,
+    ) -> Result<(), StorageError> {
         let cf_utxo = self.db.cf_handle(CF_UTXO).unwrap();
         let cf_by_pk = self.db.cf_handle(CF_UTXO_BY_PUBKEY).unwrap();
 
@@ -319,18 +331,19 @@ impl StateDb {
             count += 1;
 
             if count.is_multiple_of(50_000) {
-                self.db.write(batch).expect("RocksDB write batch");
+                self.db.write(batch)?;
                 batch = rocksdb::WriteBatch::default();
                 info!("[STATE_DB] Imported {} UTXO entries...", count);
             }
         }
 
         if !count.is_multiple_of(50_000) {
-            self.db.write(batch).expect("RocksDB write batch");
+            self.db.write(batch)?;
         }
 
         self.utxo_count.store(count, Ordering::Relaxed);
         info!("[STATE_DB] UTXO import complete: {} entries", count);
+        Ok(())
     }
 
     /// Iterate all UTXOs in the database.
@@ -364,7 +377,7 @@ impl StateDb {
         height: BlockHeight,
         is_coinbase: bool,
         slot: u32,
-    ) {
+    ) -> Result<(), StorageError> {
         let tx_hash = tx.hash();
         let is_epoch_reward = tx.is_epoch_reward();
         let cf_utxo = self.db.cf_handle(CF_UTXO).unwrap();
@@ -401,9 +414,10 @@ impl StateDb {
         }
 
         if added > 0 {
-            self.db.write(batch).expect("RocksDB write batch");
+            self.db.write(batch)?;
             self.utxo_count.fetch_add(added, Ordering::Relaxed);
         }
+        Ok(())
     }
 
     /// Spend inputs of a transaction directly (non-batch, for reorg rebuild).

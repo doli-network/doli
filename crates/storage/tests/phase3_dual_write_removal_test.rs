@@ -150,7 +150,7 @@ fn test_get_utxo_falls_through_to_disk() {
     let tx_hash = crypto_hash(b"committed_tx");
     let outpoint = Outpoint::new(tx_hash, 0);
     let entry = make_utxo_entry(make_normal_output(2000, pkh), 50);
-    sdb.insert_utxo(&outpoint, &entry);
+    sdb.insert_utxo(&outpoint, &entry).unwrap();
 
     let batch = sdb.begin_batch();
     assert!(batch.contains_utxo(&outpoint));
@@ -184,7 +184,7 @@ fn test_get_utxo_returns_none_for_spent_in_batch() {
     let tx_hash = crypto_hash(b"to_spend");
     let outpoint = Outpoint::new(tx_hash, 0);
     let entry = make_utxo_entry(make_normal_output(3000, pkh), 60);
-    sdb.insert_utxo(&outpoint, &entry);
+    sdb.insert_utxo(&outpoint, &entry).unwrap();
 
     let mut batch = sdb.begin_batch();
     batch.spend_utxo(&outpoint).expect("should spend");
@@ -207,8 +207,8 @@ fn test_get_utxos_by_pubkey_merges_pending_and_disk() {
     let op2 = Outpoint::new(crypto_hash(b"disk_tx2"), 0);
     let e1 = make_utxo_entry(make_normal_output(100, pkh), 10);
     let e2 = make_utxo_entry(make_normal_output(200, pkh), 20);
-    sdb.insert_utxo(&op1, &e1);
-    sdb.insert_utxo(&op2, &e2);
+    sdb.insert_utxo(&op1, &e1).unwrap();
+    sdb.insert_utxo(&op2, &e2).unwrap();
 
     let mut batch = sdb.begin_batch();
 
@@ -311,7 +311,7 @@ fn test_spend_utxo_removes_pool_unique_id() {
     let outpoint = Outpoint::new(crypto_hash(b"pool_tx"), 0);
     let entry = make_utxo_entry(pool_output, 100);
 
-    sdb.insert_utxo(&outpoint, &entry);
+    sdb.insert_utxo(&outpoint, &entry).unwrap();
     sdb.add_unique_id(UID_PREFIX_POOL, &pool_id);
 
     let mut batch = sdb.begin_batch();
@@ -393,7 +393,7 @@ fn test_blockbatch_utxo_provider_disk() {
     let tx_hash = crypto_hash(b"disk_provider_tx");
     let outpoint = Outpoint::new(tx_hash, 0);
     let entry = make_utxo_entry(make_normal_output(7000, pkh), 80);
-    sdb.insert_utxo(&outpoint, &entry);
+    sdb.insert_utxo(&outpoint, &entry).unwrap();
 
     let batch = sdb.begin_batch();
     let info = UtxoProvider::get_utxo(&batch, &tx_hash, 0)
@@ -411,7 +411,7 @@ fn test_blockbatch_utxo_provider_spent_returns_none() {
     let tx_hash = crypto_hash(b"spent_provider_tx");
     let outpoint = Outpoint::new(tx_hash, 0);
     let entry = make_utxo_entry(make_normal_output(9000, pkh), 90);
-    sdb.insert_utxo(&outpoint, &entry);
+    sdb.insert_utxo(&outpoint, &entry).unwrap();
 
     let mut batch = sdb.begin_batch();
     batch.spend_utxo(&outpoint).expect("should spend");

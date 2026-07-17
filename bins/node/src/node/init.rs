@@ -230,7 +230,7 @@ impl Node {
                 // Load UTXOs from legacy utxo.bin (utxo_rocks removed in Phase 4)
                 if utxo_path.exists() {
                     let legacy = storage::InMemoryUtxoStore::load(&utxo_path)?;
-                    state_db.import_utxos(legacy.iter());
+                    state_db.import_utxos(legacy.iter())?;
                     info!(
                         "[MIGRATION] Imported {} UTXOs from utxo.bin",
                         state_db.utxo_len()
@@ -366,7 +366,7 @@ impl Node {
             }
             // Reset chain state and UTXOs to genesis
             chain_state = ChainState::new(canonical);
-            state_db.clear_and_write_genesis(&chain_state);
+            state_db.clear_and_write_genesis(&chain_state)?;
             // Clear the in-memory UTXO set we already loaded (it's from the old chain)
             *utxo_set.write().await = UtxoSet::new();
             info!(

@@ -46,7 +46,7 @@ fn test_utxo_crud() {
     };
 
     // Insert
-    db.insert_utxo(&outpoint, &entry);
+    db.insert_utxo(&outpoint, &entry).unwrap();
     assert_eq!(db.utxo_len(), 1);
 
     // Get
@@ -63,7 +63,7 @@ fn test_utxo_crud() {
     assert_eq!(utxos.len(), 1);
 
     // Remove
-    let removed = db.remove_utxo(&outpoint).unwrap();
+    let removed = db.remove_utxo(&outpoint).unwrap().unwrap();
     assert_eq!(removed.output.amount, 500_000);
     assert_eq!(db.utxo_len(), 0);
 }
@@ -258,7 +258,7 @@ fn test_clear_and_write_genesis() {
         is_coinbase: false,
         is_epoch_reward: false,
     };
-    db.insert_utxo(&outpoint, &entry);
+    db.insert_utxo(&outpoint, &entry).unwrap();
 
     let mut cs = ChainState::new(crypto_hash(b"genesis"));
     cs.update(crypto_hash(b"block50"), 50, 100);
@@ -269,7 +269,7 @@ fn test_clear_and_write_genesis() {
 
     // Atomic clear + write genesis
     let genesis_cs = ChainState::new(crypto_hash(b"genesis"));
-    db.clear_and_write_genesis(&genesis_cs);
+    db.clear_and_write_genesis(&genesis_cs).unwrap();
 
     // DB is never empty — genesis state is there
     assert!(db.has_state());
@@ -298,7 +298,7 @@ fn test_atomic_replace() {
         is_coinbase: false,
         is_epoch_reward: false,
     };
-    db.insert_utxo(&outpoint, &entry);
+    db.insert_utxo(&outpoint, &entry).unwrap();
     db.put_chain_state(&ChainState::new(crypto::Hash::ZERO))
         .unwrap();
 
@@ -379,7 +379,7 @@ fn test_serialize_canonical_utxo_deterministic() {
 
     for i in 0..5u64 {
         let tx = test_coinbase_tx(100_000 * (i + 1), pk_hash);
-        db.add_transaction(&tx, i, true, 0);
+        db.add_transaction(&tx, i, true, 0).unwrap();
     }
 
     let bytes1 = db.serialize_canonical_utxo();
@@ -416,7 +416,7 @@ fn test_serialize_canonical_round_trip_with_corrupted_entry() {
         let pk_hash = crypto_hash(b"alice");
         for i in 0..5u64 {
             let tx = test_coinbase_tx(100_000 * (i + 1), pk_hash);
-            db.add_transaction(&tx, i, true, 0);
+            db.add_transaction(&tx, i, true, 0).unwrap();
         }
 
         let bytes = db.serialize_canonical_utxo();
@@ -434,7 +434,7 @@ fn test_serialize_canonical_round_trip_with_corrupted_entry() {
     let pk_hash = crypto_hash(b"alice");
     for i in 0..5u64 {
         let tx = test_coinbase_tx(100_000 * (i + 1), pk_hash);
-        db.add_transaction(&tx, i, true, 0);
+        db.add_transaction(&tx, i, true, 0).unwrap();
     }
     assert_eq!(db.utxo_len(), 5);
 
@@ -630,7 +630,7 @@ fn prune_undo_below_bulk_deletes_stranded_entries() {
     // PATH-B × P1: stranded scenario — most important partition.
     let (db, _dir) = create_test_db();
     for h in 0u64..=10 {
-        db.put_undo(h, &make_undo(h as u8));
+        db.put_undo(h, &make_undo(h as u8)).unwrap();
     }
     // Setup sanity: all 11 entries present.
     for h in 0u64..=10 {
@@ -674,7 +674,7 @@ fn prune_undo_below_idempotent_when_already_clean() {
     let (db, _dir) = create_test_db();
     // Only insert entries at/above horizon — nothing to delete.
     for h in 5u64..=10 {
-        db.put_undo(h, &make_undo(h as u8));
+        db.put_undo(h, &make_undo(h as u8)).unwrap();
     }
 
     let deleted = db.prune_undo_below(5);
@@ -708,7 +708,7 @@ fn prune_undo_below_zero_keep_height_is_noop() {
     // (matches prune_undo_before semantics — see undo.rs:40-42).
     let (db, _dir) = create_test_db();
     for h in 0u64..=3 {
-        db.put_undo(h, &make_undo(h as u8));
+        db.put_undo(h, &make_undo(h as u8)).unwrap();
     }
 
     let deleted = db.prune_undo_below(0);
@@ -774,7 +774,7 @@ fn test_m1_counter_insert_new_key_increments() {
         is_coinbase: false,
         is_epoch_reward: false,
     };
-    db.insert_utxo(&op1, &entry1);
+    db.insert_utxo(&op1, &entry1).unwrap();
 
     // O1: count must be 1
     assert_eq!(db.utxo_len(), 1, "P1a O1: single insert must yield count=1");
@@ -804,8 +804,8 @@ fn test_m1_counter_insert_new_key_increments() {
         is_coinbase: false,
         is_epoch_reward: false,
     };
-    db.insert_utxo(&op2, &entry2);
-    db.insert_utxo(&op3, &entry3);
+    db.insert_utxo(&op2, &entry2).unwrap();
+    db.insert_utxo(&op3, &entry3).unwrap();
 
     // O1: count must be 3
     assert_eq!(
@@ -853,13 +853,13 @@ fn test_m1_counter_reinsert_same_key_does_not_increment() {
         is_coinbase: false,
         is_epoch_reward: false,
     };
-    db.insert_utxo(&op1, &entry1);
-    db.insert_utxo(&op2, &entry2);
-    db.insert_utxo(&op3, &entry3);
+    db.insert_utxo(&op1, &entry1).unwrap();
+    db.insert_utxo(&op2, &entry2).unwrap();
+    db.insert_utxo(&op3, &entry3).unwrap();
     assert_eq!(db.utxo_len(), 3, "setup: must have 3 UTXOs");
 
     // Re-insert op1 with the SAME entry data
-    db.insert_utxo(&op1, &entry1);
+    db.insert_utxo(&op1, &entry1).unwrap();
 
     // O1: count must still be 3, NOT 4
     assert_eq!(
@@ -899,7 +899,7 @@ fn test_m1_counter_reinsert_same_key_different_value() {
         is_coinbase: false,
         is_epoch_reward: false,
     };
-    db.insert_utxo(&op, &entry_v1);
+    db.insert_utxo(&op, &entry_v1).unwrap();
     assert_eq!(db.utxo_len(), 1, "setup: must have 1 UTXO");
 
     // Re-insert with different amount (same outpoint key)
@@ -909,7 +909,7 @@ fn test_m1_counter_reinsert_same_key_different_value() {
         is_coinbase: true,
         is_epoch_reward: false,
     };
-    db.insert_utxo(&op, &entry_v2);
+    db.insert_utxo(&op, &entry_v2).unwrap();
 
     // O1: count must still be 1, NOT 2
     assert_eq!(
@@ -999,7 +999,7 @@ fn test_m1_rebuild_reinsert_all_existing_does_not_double_count() {
     ];
 
     for (op, entry) in &ops_entries {
-        db.insert_utxo(op, entry);
+        db.insert_utxo(op, entry).unwrap();
     }
     let before = db.utxo_len();
     assert_eq!(before, 5, "setup: must have 5 UTXOs");
@@ -1013,7 +1013,7 @@ fn test_m1_rebuild_reinsert_all_existing_does_not_double_count() {
     assert_eq!(all_utxos.len(), 5, "setup: iter_utxos must return 5");
 
     for (outpoint, entry) in &all_utxos {
-        db.insert_utxo(outpoint, entry);
+        db.insert_utxo(outpoint, entry).unwrap();
     }
 
     // O1: count must still be 5, NOT 10 (2x)
@@ -1081,7 +1081,7 @@ fn test_m1_rebuild_via_utxoset_rocksdb_does_not_double_count() {
         .collect();
 
     for (op, entry) in &ops {
-        db.insert_utxo(op, entry);
+        db.insert_utxo(op, entry).unwrap();
     }
     assert_eq!(db.utxo_len(), 4, "setup: must have 4 UTXOs");
 
@@ -1131,11 +1131,11 @@ fn test_m1_counter_remove_then_reinsert_increments_correctly() {
     };
 
     // Insert -> count = 1
-    db.insert_utxo(&op, &entry);
+    db.insert_utxo(&op, &entry).unwrap();
     assert_eq!(db.utxo_len(), 1, "after insert: count must be 1");
 
     // Remove -> count = 0
-    let removed = db.remove_utxo(&op);
+    let removed = db.remove_utxo(&op).unwrap();
     assert!(removed.is_some(), "remove must return the entry");
     assert_eq!(db.utxo_len(), 0, "after remove: count must be 0");
     assert!(
@@ -1144,7 +1144,7 @@ fn test_m1_counter_remove_then_reinsert_increments_correctly() {
     );
 
     // Re-insert the same outpoint (now a genuinely new key)
-    db.insert_utxo(&op, &entry);
+    db.insert_utxo(&op, &entry).unwrap();
 
     // O1: count must be 1 (not 0, not 2)
     assert_eq!(
@@ -1202,7 +1202,7 @@ fn test_m2_undo_data_full_range_present() {
     let (db, _dir) = create_test_db();
 
     for h in 5u64..=10 {
-        db.put_undo(h, &make_undo(h as u8));
+        db.put_undo(h, &make_undo(h as u8)).unwrap();
     }
 
     assert_eq!(
@@ -1222,7 +1222,7 @@ fn test_m2_undo_data_interior_gap() {
 
     for h in 5u64..=10 {
         if h != 7 {
-            db.put_undo(h, &make_undo(h as u8));
+            db.put_undo(h, &make_undo(h as u8)).unwrap();
         }
     }
 
@@ -1240,7 +1240,7 @@ fn test_m2_undo_data_leading_gap() {
     let (db, _dir) = create_test_db();
 
     for h in 6u64..=10 {
-        db.put_undo(h, &make_undo(h as u8));
+        db.put_undo(h, &make_undo(h as u8)).unwrap();
     }
 
     assert_eq!(
@@ -1257,7 +1257,7 @@ fn test_m2_undo_data_trailing_gap() {
     let (db, _dir) = create_test_db();
 
     for h in 5u64..=9 {
-        db.put_undo(h, &make_undo(h as u8));
+        db.put_undo(h, &make_undo(h as u8)).unwrap();
     }
 
     assert_eq!(
@@ -1286,7 +1286,7 @@ fn test_m2_undo_data_single_present() {
     // Requirement: REQ-GUARD-003 (Must)
     let (db, _dir) = create_test_db();
 
-    db.put_undo(7, &make_undo(7));
+    db.put_undo(7, &make_undo(7)).unwrap();
 
     assert_eq!(
         db.has_undo_data(7, 7),

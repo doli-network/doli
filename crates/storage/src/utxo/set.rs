@@ -160,7 +160,7 @@ impl UtxoSet {
                     {
                         entry.output.extra_data[..4].copy_from_slice(&slot.to_le_bytes());
                     }
-                    sdb.insert_utxo(&outpoint, &entry);
+                    sdb.insert_utxo(&outpoint, &entry)?;
                 }
                 Ok(())
             }
@@ -177,7 +177,7 @@ impl UtxoSet {
                     let outpoint = Outpoint::new(input.prev_tx_hash, input.output_index);
                     if let Some(entry) = sdb.get_utxo(&outpoint) {
                         total_spent = total_spent.saturating_add(entry.output.amount);
-                        sdb.remove_utxo(&outpoint);
+                        sdb.remove_utxo(&outpoint)?;
                     }
                 }
                 Ok(total_spent)
@@ -193,7 +193,7 @@ impl UtxoSet {
                 Ok(())
             }
             UtxoSet::RocksDb(sdb) => {
-                sdb.insert_utxo(&outpoint, &entry);
+                sdb.insert_utxo(&outpoint, &entry)?;
                 Ok(())
             }
         }
@@ -205,7 +205,7 @@ impl UtxoSet {
             UtxoSet::InMemory(store) => Ok(store.remove(outpoint)),
             UtxoSet::RocksDb(sdb) => {
                 if let Some(entry) = sdb.get_utxo(outpoint) {
-                    sdb.remove_utxo(outpoint);
+                    sdb.remove_utxo(outpoint)?;
                     Ok(Some(entry))
                 } else {
                     Ok(None)

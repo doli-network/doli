@@ -80,7 +80,7 @@ fn blobdb_takes_effect_blob_files_appear() {
     // Write a 100 KB UTXO (well above min_blob_size=4096).
     let outpoint = storage::Outpoint::new(crypto::hash::hash(b"blob-test-tx"), 0);
     let entry = large_utxo_entry(100_000, 1);
-    db.insert_utxo(&outpoint, &entry);
+    db.insert_utxo(&outpoint, &entry).unwrap();
 
     // Force a flush so the memtable is written to disk.
     db.flush_cf_utxo();
@@ -126,7 +126,7 @@ fn blobdb_roundtrip_large_utxos() {
         // Vary sizes: 5 KB to 50 KB
         let size = 5_000 + (i as usize) * 1_000;
         let entry = large_utxo_entry(size, i as u64 + 1);
-        db.insert_utxo(&outpoint, &entry);
+        db.insert_utxo(&outpoint, &entry).unwrap();
         written.push((outpoint, entry));
     }
 
@@ -176,8 +176,8 @@ fn state_root_invariance_with_blobdb() {
         } else {
             small_utxo_entry(1_000_000 + i as u64, &i.to_le_bytes(), i as u64 + 1)
         };
-        db_a.insert_utxo(&outpoint, &entry);
-        db_b.insert_utxo(&outpoint, &entry);
+        db_a.insert_utxo(&outpoint, &entry).unwrap();
+        db_b.insert_utxo(&outpoint, &entry).unwrap();
     }
 
     db_a.flush_cf_utxo();
@@ -210,7 +210,7 @@ fn f1_monitor_produces_sensible_value() {
         let tx_hash = crypto::hash::hash(&i.to_le_bytes());
         let outpoint = storage::Outpoint::new(tx_hash, 0);
         let entry = small_utxo_entry(100_000, &i.to_le_bytes(), i as u64 + 1);
-        db.insert_utxo(&outpoint, &entry);
+        db.insert_utxo(&outpoint, &entry).unwrap();
     }
 
     // Compute the expected canonical size.
@@ -240,7 +240,7 @@ fn f1_monitor_caches_value() {
         let tx_hash = crypto::hash::hash(&i.to_le_bytes());
         let outpoint = storage::Outpoint::new(tx_hash, 0);
         let entry = small_utxo_entry(50_000, &i.to_le_bytes(), i as u64 + 1);
-        db.insert_utxo(&outpoint, &entry);
+        db.insert_utxo(&outpoint, &entry).unwrap();
     }
 
     let monitor = storage::UtxoSizeMonitor::new(Arc::new(db));

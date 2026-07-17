@@ -159,6 +159,24 @@ impl From<rocksdb::Error> for StorageError {
     }
 }
 
+/// Manual `PartialEq` (the `Io` variant wraps `std::io::Error`, which is not
+/// `PartialEq`). Variants compare by payload; `Io` compares by error kind. Used
+/// by tests that assert on returned `Result` values; no runtime/serialization
+/// behavior depends on it.
+impl PartialEq for StorageError {
+    fn eq(&self, other: &Self) -> bool {
+        use StorageError::*;
+        match (self, other) {
+            (Database(a), Database(b)) => a == b,
+            (Serialization(a), Serialization(b)) => a == b,
+            (NotFound(a), NotFound(b)) => a == b,
+            (AlreadyExists(a), AlreadyExists(b)) => a == b,
+            (Io(a), Io(b)) => a.kind() == b.kind(),
+            _ => false,
+        }
+    }
+}
+
 /// Open a RocksDB database at the given path.
 ///
 /// Creates the database directory if it doesn't exist. The database

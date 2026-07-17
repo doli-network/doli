@@ -130,12 +130,12 @@ pub(crate) fn truncate_chain(
 
         // Remove UTXOs created by this block
         for outpoint in &undo.created_utxos {
-            state_db.remove_utxo(outpoint);
+            state_db.remove_utxo(outpoint)?;
         }
 
         // Restore UTXOs spent by this block
         for (outpoint, entry) in &undo.spent_utxos {
-            state_db.insert_utxo(outpoint, entry);
+            state_db.insert_utxo(outpoint, entry)?;
         }
 
         rolled_back += 1;

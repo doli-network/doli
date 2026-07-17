@@ -20,7 +20,7 @@ pub fn uid_key(prefix: u8, id: &Hash) -> [u8; 33] {
 }
 
 /// An entry in the UTXO set
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct UtxoEntry {
     /// The output
     pub output: doli_core::transaction::Output,

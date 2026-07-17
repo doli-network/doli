@@ -415,7 +415,9 @@ async fn fee_paying_user_tx_accepted() {
         let mut utxo = node.utxo_set.write().await;
         utxo.insert(fake_outpoint, fake_entry.clone()).unwrap();
     }
-    node.state_db.insert_utxo(&fake_outpoint, &fake_entry);
+    node.state_db
+        .insert_utxo(&fake_outpoint, &fake_entry)
+        .unwrap();
 
     // Build a block with coinbase + a user TX that spends 1000 sats, outputs 999 (fee = 1 sat)
     let prev_hash = chain[0].hash();

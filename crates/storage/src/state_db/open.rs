@@ -207,6 +207,40 @@ impl StateDb {
         })
     }
 
+    /// Test-only: open an EXISTING state_db at `path` as a READ-ONLY handle.
+    ///
+    /// Every subsequent write op (`db.write(batch)` / `db.put_cf`) on the
+    /// returned handle fails with a `rocksdb::Error` ("Not implemented: Not
+    /// supported operation in read only mode.") which converts to
+    /// `StorageError::Database` — reproducing the disk-write-failure class
+    /// (ENOSPC → `Err`) deterministically and portably, without a real full
+    /// disk. Used by `tests/disk_guardian_failsafe_test.rs` (REQ-DISK-101/103)
+    /// to prove the direct-write methods surface `Err` instead of aborting the
+    /// process. The DB at `path` must already exist with the standard CF set
+    /// (create one via `StateDb::open`, then drop it before reopening here).
+    /// NOT for production use.
+    #[doc(hidden)]
+    pub fn from_readonly_for_test(path: &Path) -> Result<Self, StorageError> {
+        let opts = rocksdb::Options::default();
+        let cf_names = [
+            CF_UTXO,
+            CF_UTXO_BY_PUBKEY,
+            CF_META,
+            CF_UNDO,
+            CF_PRODUCERS,
+            CF_EXIT_HISTORY,
+            CF_UNIQUE_ID,
+        ];
+        let db = rocksdb::DB::open_cf_for_read_only(&opts, path, cf_names, false)?;
+        let cache = rocksdb::Cache::new_lru_cache(8 * 1024 * 1024);
+        Ok(Self {
+            db,
+            utxo_count: AtomicU64::new(0),
+            block_cache: cache,
+            block_cache_capacity_bytes: 8 * 1024 * 1024,
+        })
+    }
+
     /// Flush the cf_utxo column family to disk.
     ///
     /// Forces the memtable to be written as SST + blob files. Used in tests

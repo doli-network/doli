@@ -33,7 +33,7 @@ Master index for all DOLI documentation.
 | [running_a_node.md](./running_a_node.md) | Node setup, operation, and **environment configuration** (.env files) |
 | [becoming_a_producer.md](./becoming_a_producer.md) | Block producer onboarding |
 | [rpc_reference.md](./rpc_reference.md) | RPC API documentation |
-| [troubleshooting.md](./troubleshooting.md) | Common issues and solutions |
+| [troubleshooting.md](./troubleshooting.md) | Common issues and solutions (disk-full/ENOSPC crash-loop + log rotation section lands with Option 1 M2 — design: `specs/disk-guardian-architecture.md`) |
 | [archiver.md](./archiver.md) | **Block archiver & seed infrastructure** - archive format, seed/relay role, block explorer, disaster recovery, RPC methods |
 | [disaster-recovery.md](./disaster-recovery.md) | Disaster recovery procedures (restore, backfill, hot backfill) |
 | [releases.md](./releases.md) | Release process, versioning, and download verification |
