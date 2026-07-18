@@ -68,13 +68,10 @@ fn test_p1a_inconsistent_isolated_is_unhealthy() {
         0,     // unique_hashes
         false, // window_healthy
     );
-    assert_eq!(
-        d.healthy, false,
-        "P1a O1: inconsistent state must be unhealthy"
-    );
-    assert_eq!(d.isolated, true, "P1a O2: peer_count==0 means isolated");
-    assert_eq!(
-        d.self_consistent, false,
+    assert!(!d.healthy, "P1a O1: inconsistent state must be unhealthy");
+    assert!(d.isolated, "P1a O2: peer_count==0 means isolated");
+    assert!(
+        !d.self_consistent,
         "P1a O3: self_consistent must echo the input"
     );
 }
@@ -91,13 +88,13 @@ fn test_p1b_inconsistent_with_agreeing_peers_is_unhealthy() {
         1,     // unique_hashes
         false, // window_healthy
     );
-    assert_eq!(
-        d.healthy, false,
+    assert!(
+        !d.healthy,
         "P1b O1: inconsistent state must be unhealthy even with peer agreement"
     );
-    assert_eq!(d.isolated, false, "P1b O2: peer_count>0 means not isolated");
-    assert_eq!(
-        d.self_consistent, false,
+    assert!(!d.isolated, "P1b O2: peer_count>0 means not isolated");
+    assert!(
+        !d.self_consistent,
         "P1b O3: self_consistent must echo the input"
     );
 }
@@ -115,13 +112,13 @@ fn test_p1c_inconsistent_with_window_healthy_is_unhealthy() {
         1,     // unique_hashes
         true,  // window_healthy
     );
-    assert_eq!(
-        d.healthy, false,
+    assert!(
+        !d.healthy,
         "P1c O1: inconsistent state must override window_healthy"
     );
-    assert_eq!(d.isolated, false, "P1c O2: peer_count>0 means not isolated");
-    assert_eq!(
-        d.self_consistent, false,
+    assert!(!d.isolated, "P1c O2: peer_count>0 means not isolated");
+    assert!(
+        !d.self_consistent,
         "P1c O3: self_consistent must echo the input"
     );
 }
@@ -144,16 +141,16 @@ fn test_p2a_consistent_isolated_no_window_is_healthy() {
         0,     // unique_hashes
         false, // window_healthy
     );
-    assert_eq!(
-        d.healthy, true,
+    assert!(
+        d.healthy,
         "P2a O1: isolated-but-consistent node MUST be tagged healthy (F2)"
     );
-    assert_eq!(
-        d.isolated, true,
+    assert!(
+        d.isolated,
         "P2a O2: peer_count==0 must report isolated=true"
     );
-    assert_eq!(
-        d.self_consistent, true,
+    assert!(
+        d.self_consistent,
         "P2a O3: self_consistent must echo the input"
     );
 }
@@ -169,16 +166,16 @@ fn test_p2b_consistent_isolated_with_window_is_healthy() {
         0,    // unique_hashes
         true, // window_healthy
     );
-    assert_eq!(
-        d.healthy, true,
+    assert!(
+        d.healthy,
         "P2b O1: isolated-but-consistent with window must be healthy"
     );
-    assert_eq!(
-        d.isolated, true,
+    assert!(
+        d.isolated,
         "P2b O2: peer_count==0 must report isolated=true"
     );
-    assert_eq!(
-        d.self_consistent, true,
+    assert!(
+        d.self_consistent,
         "P2b O3: self_consistent must echo the input"
     );
 }
@@ -199,13 +196,13 @@ fn test_p3a_consistent_full_peer_agreement() {
         1,     // unique_hashes
         false, // window_healthy (irrelevant -- point-healthy suffices)
     );
-    assert_eq!(
-        d.healthy, true,
+    assert!(
+        d.healthy,
         "P3a O1: consistent + full peer agreement = healthy"
     );
-    assert_eq!(d.isolated, false, "P3a O2: peer_count>0 means not isolated");
-    assert_eq!(
-        d.self_consistent, true,
+    assert!(!d.isolated, "P3a O2: peer_count>0 means not isolated");
+    assert!(
+        d.self_consistent,
         "P3a O3: self_consistent must echo the input"
     );
 }
@@ -220,12 +217,12 @@ fn test_p3b_consistent_minimal_peer_agreement() {
         1,     // unique_hashes
         false, // window_healthy
     );
-    assert_eq!(
-        d.healthy, true,
+    assert!(
+        d.healthy,
         "P3b O1: consistent + single peer agreement = healthy"
     );
-    assert_eq!(d.isolated, false, "P3b O2: not isolated");
-    assert_eq!(d.self_consistent, true, "P3b O3: self_consistent echoes");
+    assert!(!d.isolated, "P3b O2: not isolated");
+    assert!(d.self_consistent, "P3b O3: self_consistent echoes");
 }
 
 // ============================================================
@@ -245,12 +242,12 @@ fn test_p4a_consistent_peers_split_no_window() {
         2,     // unique_hashes
         false, // window_healthy
     );
-    assert_eq!(
-        d.healthy, false,
+    assert!(
+        !d.healthy,
         "P4a O1: consistent but peers disagree + no window = unhealthy"
     );
-    assert_eq!(d.isolated, false, "P4a O2: not isolated");
-    assert_eq!(d.self_consistent, true, "P4a O3: self_consistent echoes");
+    assert!(!d.isolated, "P4a O2: not isolated");
+    assert!(d.self_consistent, "P4a O3: self_consistent echoes");
 }
 
 #[test]
@@ -265,12 +262,12 @@ fn test_p4b_consistent_multi_tip_no_window() {
         2,     // unique_hashes
         false, // window_healthy
     );
-    assert_eq!(
-        d.healthy, false,
+    assert!(
+        !d.healthy,
         "P4b O1: multi-tip network + no window = unhealthy (possible fork)"
     );
-    assert_eq!(d.isolated, false, "P4b O2: not isolated");
-    assert_eq!(d.self_consistent, true, "P4b O3: self_consistent echoes");
+    assert!(!d.isolated, "P4b O2: not isolated");
+    assert!(d.self_consistent, "P4b O3: self_consistent echoes");
 }
 
 // ============================================================
@@ -291,12 +288,12 @@ fn test_p5a_consistent_peers_disagree_but_window_healthy() {
         2,    // unique_hashes
         true, // window_healthy
     );
-    assert_eq!(
-        d.healthy, true,
+    assert!(
+        d.healthy,
         "P5a O1: consistent + window_healthy overrides peer disagreement"
     );
-    assert_eq!(d.isolated, false, "P5a O2: not isolated");
-    assert_eq!(d.self_consistent, true, "P5a O3: self_consistent echoes");
+    assert!(!d.isolated, "P5a O2: not isolated");
+    assert!(d.self_consistent, "P5a O3: self_consistent echoes");
 }
 
 // ============================================================
@@ -307,17 +304,17 @@ fn test_p5a_consistent_peers_disagree_but_window_healthy() {
 fn test_edge_all_false_inputs() {
     // All zeros/false -- worst case: no state, no peers, no window.
     let d = decide_checkpoint_health(false, 0, 0, 0, false);
-    assert_eq!(d.healthy, false, "edge: all-false inputs must be unhealthy");
-    assert_eq!(d.isolated, true, "edge: no peers = isolated");
-    assert_eq!(d.self_consistent, false, "edge: self_consistent echoes");
+    assert!(!d.healthy, "edge: all-false inputs must be unhealthy");
+    assert!(d.isolated, "edge: no peers = isolated");
+    assert!(!d.self_consistent, "edge: self_consistent echoes");
 }
 
 #[test]
 fn test_edge_large_peer_count() {
     // Large peer count with full agreement.
     let d = decide_checkpoint_health(true, 1000, 1000, 1, false);
-    assert_eq!(d.healthy, true, "edge: 1000 agreeing peers = healthy");
-    assert_eq!(d.isolated, false, "edge: not isolated");
+    assert!(d.healthy, "edge: 1000 agreeing peers = healthy");
+    assert!(!d.isolated, "edge: not isolated");
 }
 
 #[test]
@@ -326,10 +323,7 @@ fn test_edge_peers_agreeing_exceeds_peer_count() {
     // Treat as point-healthy (all agree and more).
     let d = decide_checkpoint_health(true, 2, 5, 1, false);
     // Implementation should handle gracefully -- peers_agreeing >= peer_count = point-healthy.
-    assert_eq!(
-        d.healthy, true,
-        "edge: peers_agreeing > peer_count = healthy"
-    );
+    assert!(d.healthy, "edge: peers_agreeing > peer_count = healthy");
 }
 
 #[test]
@@ -337,8 +331,8 @@ fn test_edge_zero_unique_hashes_with_peers() {
     // unique_hashes=0 with peers. This means no hash comparison data available.
     // point_healthy requires unique_hashes <= 1, so 0 qualifies.
     let d = decide_checkpoint_health(true, 3, 3, 0, false);
-    assert_eq!(
-        d.healthy, true,
+    assert!(
+        d.healthy,
         "edge: 0 unique hashes with agreeing peers = healthy"
     );
 }

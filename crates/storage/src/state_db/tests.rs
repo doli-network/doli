@@ -1205,9 +1205,8 @@ fn test_m2_undo_data_full_range_present() {
         db.put_undo(h, &make_undo(h as u8)).unwrap();
     }
 
-    assert_eq!(
+    assert!(
         db.has_undo_data(5, 10),
-        true,
         "P1a O1: all undo data present in [5..10] must return true"
     );
 }
@@ -1226,9 +1225,8 @@ fn test_m2_undo_data_interior_gap() {
         }
     }
 
-    assert_eq!(
-        db.has_undo_data(5, 10),
-        false,
+    assert!(
+        !db.has_undo_data(5, 10),
         "P2a O1: missing undo at height 7 must return false"
     );
 }
@@ -1243,9 +1241,8 @@ fn test_m2_undo_data_leading_gap() {
         db.put_undo(h, &make_undo(h as u8)).unwrap();
     }
 
-    assert_eq!(
-        db.has_undo_data(5, 10),
-        false,
+    assert!(
+        !db.has_undo_data(5, 10),
         "P2b O1: missing leading undo at height 5 must return false"
     );
 }
@@ -1260,9 +1257,8 @@ fn test_m2_undo_data_trailing_gap() {
         db.put_undo(h, &make_undo(h as u8)).unwrap();
     }
 
-    assert_eq!(
-        db.has_undo_data(5, 10),
-        false,
+    assert!(
+        !db.has_undo_data(5, 10),
         "P2c O1: missing trailing undo at height 10 must return false"
     );
 }
@@ -1273,9 +1269,8 @@ fn test_m2_undo_data_empty_range() {
     // Requirement: REQ-GUARD-003 (Must)
     let (db, _dir) = create_test_db();
 
-    assert_eq!(
+    assert!(
         db.has_undo_data(10, 5),
-        true,
         "P3a O1: empty range (from > to) must return true"
     );
 }
@@ -1288,9 +1283,8 @@ fn test_m2_undo_data_single_present() {
 
     db.put_undo(7, &make_undo(7)).unwrap();
 
-    assert_eq!(
+    assert!(
         db.has_undo_data(7, 7),
-        true,
         "P4a O1: single height with undo present must return true"
     );
 }
@@ -1301,9 +1295,8 @@ fn test_m2_undo_data_single_absent() {
     // Requirement: REQ-GUARD-003 (Must)
     let (db, _dir) = create_test_db();
 
-    assert_eq!(
-        db.has_undo_data(7, 7),
-        false,
+    assert!(
+        !db.has_undo_data(7, 7),
         "P4b O1: single height with no undo must return false"
     );
 }

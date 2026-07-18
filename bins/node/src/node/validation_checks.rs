@@ -1091,34 +1091,11 @@ impl Node {
             }
 
             SyncRequest::GetStateRoot { block_hash: _ } => {
-                // Use cached state root to avoid race conditions.
-                // The cache is updated atomically after each apply_block, so all
-                // three components (ChainState, UTXO, ProducerSet) are guaranteed
-                // to be at the same height.
-                let cache = self.cached_state_root.read().await;
-                if let Some((root, hash, height)) = *cache {
-                    SyncResponse::StateRoot {
-                        block_hash: hash,
-                        block_height: height,
-                        state_root: root,
-                    }
-                } else {
-                    // Fallback: compute on-the-fly if cache not yet populated (pre-first-block)
-                    drop(cache);
-                    let chain_state = self.chain_state.read().await;
-                    let current_hash = chain_state.best_hash;
-                    let current_height = chain_state.best_height;
-                    let utxo_set = self.utxo_set.read().await;
-                    let ps = self.producer_set.read().await;
-                    match storage::compute_state_root(&chain_state, &utxo_set, &ps) {
-                        Ok(root) => SyncResponse::StateRoot {
-                            block_hash: current_hash,
-                            block_height: current_height,
-                            state_root: root,
-                        },
-                        Err(e) => SyncResponse::Error(format!("State root error: {}", e)),
-                    }
-                }
+                // M1 (State-Root Lazy Tier-0): memoize-on-compute seam. Serves
+                // the memo in O(1) on a best_hash-keyed hit; on cold/stale memo,
+                // recomputes the legacy root and WRITES IT BACK. Root value is
+                // byte-identical to the prior inline compute at every height.
+                self.serve_state_root().await
             }
 
             SyncRequest::GetStateSnapshot { block_hash } => {

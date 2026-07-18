@@ -36,18 +36,17 @@ pub fn compute_state_root(
     let utxo_hash = crypto::hash::hash(&utxo_bytes);
     let ps_hash = crypto::hash::hash(&ps_bytes);
 
-    // INFO so the 3 component hashes are visible in production without
-    // RUST_LOG=debug. State root divergence diagnosis is the canonical
-    // hard incident — one grep per node and you know which component
-    // (chain_state / utxo / producer_set) diverged.
-    tracing::info!(
-        "[STATE_ROOT] cs={:.16} utxo={:.16} ps={:.16} cs_bytes={} utxo_bytes={} ps_bytes={}",
-        cs_hash,
-        utxo_hash,
-        ps_hash,
+    // F-D0-2 canary seam (State-Root Lazy Tier-0, M1 / B1): emit the full
+    // per-component `[STATE_ROOT]` breadcrumb through a reusable helper. In M1
+    // this fires on every eager compute (unchanged behavior); the helper is the
+    // stable seam epoch-cadence callers use once eager compute is removed in M2.
+    log_state_root_components(
+        &cs_hash,
+        &utxo_hash,
+        &ps_hash,
         cs_bytes.len(),
         utxo_bytes.len(),
-        ps_bytes.len()
+        ps_bytes.len(),
     );
 
     let mut combined = Vec::with_capacity(96);
@@ -56,6 +55,34 @@ pub fn compute_state_root(
     combined.extend_from_slice(ps_hash.as_bytes());
 
     Ok(crypto::hash::hash(&combined))
+}
+
+/// Emit the per-component `[STATE_ROOT]` breadcrumb: the chain_state, utxo, and
+/// producer_set hashes plus their canonical byte lengths.
+///
+/// F-D0-2 canary seam (State-Root Lazy Tier-0). Logged at INFO so the three
+/// component hashes are visible in production without `RUST_LOG=debug`: state
+/// root divergence is the canonical hard incident — one grep per node reveals
+/// which component (chain_state, utxo, or producer_set) diverged. This helper is
+/// behavior-neutral (logging only) and is the stable seam for epoch-cadence
+/// callers once the eager per-block compute is removed in M2.
+pub fn log_state_root_components(
+    cs_hash: &Hash,
+    utxo_hash: &Hash,
+    ps_hash: &Hash,
+    cs_bytes_len: usize,
+    utxo_bytes_len: usize,
+    ps_bytes_len: usize,
+) {
+    tracing::info!(
+        "[STATE_ROOT] cs={:.16} utxo={:.16} ps={:.16} cs_bytes={} utxo_bytes={} ps_bytes={}",
+        cs_hash,
+        utxo_hash,
+        ps_hash,
+        cs_bytes_len,
+        utxo_bytes_len,
+        ps_bytes_len
+    );
 }
 
 /// Compute a deterministic state root with optional `H(EpochSnapshot)` inclusion.

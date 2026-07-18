@@ -25,6 +25,7 @@ mod rewards;
 pub use rewards::IncompleteEpochStoreError;
 mod rollback;
 mod startup;
+mod state_root_serve;
 mod tx_announcements;
 mod validation_checks;
 

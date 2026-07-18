@@ -881,9 +881,8 @@ fn test_m2_contiguous_bodies_full_range() {
         store.put_block_canonical(&block, h).unwrap();
     }
 
-    assert_eq!(
+    assert!(
         store.has_contiguous_bodies(1, 5),
-        true,
         "P1a O1: full range [1..5] with all blocks must return true"
     );
 }
@@ -913,9 +912,8 @@ fn test_m2_contiguous_bodies_interior_gap() {
     let block5 = create_test_block(5, &producer);
     store.put_block_canonical(&block5, 5).unwrap();
 
-    assert_eq!(
-        store.has_contiguous_bodies(1, 5),
-        false,
+    assert!(
+        !store.has_contiguous_bodies(1, 5),
         "P2a O1: missing height 3 body must return false"
     );
 }
@@ -926,9 +924,8 @@ fn test_m2_contiguous_bodies_empty_range() {
     // Requirement: REQ-GUARD-003 (Must)
     let (store, _dir) = create_test_store();
 
-    assert_eq!(
+    assert!(
         store.has_contiguous_bodies(5, 4),
-        true,
         "P3a O1: empty range (from > to) must return true"
     );
 }
@@ -944,9 +941,8 @@ fn test_m2_contiguous_bodies_single_present() {
     let block = create_test_block(3, &producer);
     store.put_block_canonical(&block, 3).unwrap();
 
-    assert_eq!(
+    assert!(
         store.has_contiguous_bodies(3, 3),
-        true,
         "P4a O1: single height with block present must return true"
     );
 }
@@ -957,9 +953,8 @@ fn test_m2_contiguous_bodies_single_absent() {
     // Requirement: REQ-GUARD-003 (Must)
     let (store, _dir) = create_test_store();
 
-    assert_eq!(
-        store.has_contiguous_bodies(3, 3),
-        false,
+    assert!(
+        !store.has_contiguous_bodies(3, 3),
         "P4b O1: single height with no block must return false"
     );
 }
@@ -978,9 +973,8 @@ fn test_m2_contiguous_bodies_leading_gap() {
         store.put_block_canonical(&block, h).unwrap();
     }
 
-    assert_eq!(
-        store.has_contiguous_bodies(1, 5),
-        false,
+    assert!(
+        !store.has_contiguous_bodies(1, 5),
         "P2b O1: missing leading height 1 must return false"
     );
 }
@@ -999,9 +993,8 @@ fn test_m2_contiguous_bodies_trailing_gap() {
         store.put_block_canonical(&block, h).unwrap();
     }
 
-    assert_eq!(
-        store.has_contiguous_bodies(1, 5),
-        false,
+    assert!(
+        !store.has_contiguous_bodies(1, 5),
         "P2c O1: missing trailing height 5 must return false"
     );
 }
