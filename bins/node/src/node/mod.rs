@@ -4,6 +4,8 @@
 // v0.2.1-test: upgrade pipeline validation
 
 mod apply_block;
+#[allow(unused_imports)]
+pub use apply_block::state_fp_sr_field;
 mod block_handling;
 pub mod checkpoint_health;
 mod event_loop;

@@ -199,7 +199,7 @@ impl HardForkSchedule {
     /// bump `CURRENT_PROTOCOL_VERSION` 3 -> 4. No call-site wiring; no
     /// retroactive state-root change.
     ///
-    /// Phase-2 responsibility (separate milestone): wire the 15 current
+    /// Phase-2 responsibility (separate milestone): wire the 6 current
     /// `storage::compute_state_root` call-sites to consult this schedule
     /// and pass `Some(H(EpochSnapshot))` at/after activation_height.
     ///
@@ -219,6 +219,15 @@ impl HardForkSchedule {
             doli_core::Network::Testnet => {
                 // Same placeholder as Mainnet — operators update after
                 // testnet activation-height decision; see for_network doc.
+                //
+                // EPOCH_SNAPSHOT_HF — PARKED. This is the orthogonal
+                // scheduler-divergence hard fork (EpochState inclusion in the
+                // state root), NOT the State-Root Lazy Tier-0 cost-redesign
+                // vehicle. The lazy redesign (M1/M2) changes only WHEN the root
+                // is computed, never its bytes, and needs no HF. This entry
+                // stays unwired: never execute its planned protocol-version bump
+                // (an unnecessary bump triggers delete_epoch_state() on restart
+                // → non-deterministic rebuild → fork; see INC-I-054).
                 schedule.add(HardForkInfo {
                     activation_height: 3_100,
                     min_version: "6.18.2".to_string(),

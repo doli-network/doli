@@ -107,6 +107,24 @@ impl Default for CompactMmr {
 /// - MMR of all UTXO hashes ever created (append-only, O(log n) per block)
 /// - Hash set of spent outpoint hashes (tracks what's been consumed)
 /// - The state root = BLAKE3(mmr_root || spent_root || cs_hash || ps_hash)
+///
+/// ── TOMBSTONE (State-Root Lazy Tier-0, M2) ───────────────────────────────────
+/// **DISQUALIFIED as a state-root mechanism. DO NOT wire this into any
+/// state-root path.** It has ZERO non-test callers and must never gain one.
+///
+/// Why it can never be the state root: its value depends on the *creation order*
+/// of every UTXO ever seen (append-only MMR) plus an XOR accumulator over every
+/// spent outpoint. Reconstructing it requires replaying the full historical
+/// UTXO stream. A snap-synced node holds only the LIVE UTXO set — it never saw
+/// the spent/created history — so it CANNOT rebuild this accumulator and would
+/// derive a different root than a from-genesis node. That breaks snap-sync
+/// quorum and violates REQ-SROOT-006 (a snap-synced node must reproduce the
+/// same state root from the live 3-state alone). The canonical state root is
+/// `storage::compute_state_root`, which hashes the live 3-state and is
+/// order-independent / history-free by construction.
+///
+/// The struct and its tests are retained ONLY so the disqualification stays
+/// documented and compiling; they are not part of any production path.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct IncrementalStateRoot {
     /// MMR of all UTXO hashes (append-only)

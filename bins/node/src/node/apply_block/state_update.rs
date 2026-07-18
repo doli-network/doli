@@ -36,7 +36,8 @@ impl Node {
     /// Update chain state after transaction processing.
     ///
     /// Handles: height/hash/slot update, snap sync clear, protocol activation,
-    /// genesis timestamp, and state root caching.
+    /// and genesis timestamp. State-root caching is NOT done here (M2): the
+    /// root is served lazily and memoized by `serve_state_root()`.
     pub async fn update_chain_state_for_block(
         &mut self,
         block: &Block,
@@ -49,7 +50,7 @@ impl Node {
         // so concurrent RPC readers (e.g. getChainInfo) are not blocked. Block-apply
         // is serialized by the single-threaded event loop, so no concurrent writer
         // can interleave between phases.
-        let (new_best_hash, new_best_height) = {
+        let (_new_best_hash, _new_best_height) = {
             let mut state = self.chain_state.write().await;
             state.update(block_hash, height, block.header.slot);
             // Clear snap sync marker: block store now has at least one real block,
@@ -129,21 +130,11 @@ impl Node {
             (state.best_hash, state.best_height)
         };
 
-        // Phase 2: compute state root under read locks only.
-        // Block-apply is serialized by the event loop, so the snapshot we hash
-        // matches the metadata we just committed in Phase 1.
-        let root_result = {
-            let state = self.chain_state.read().await;
-            let utxo = self.utxo_set.read().await;
-            let ps = self.producer_set.read().await;
-            storage::compute_state_root(&state, &utxo, &ps).ok()
-        };
-
-        // Phase 3: brief write lock to publish the cached root.
-        if let Some(root) = root_result {
-            let mut cache = self.cached_state_root.write().await;
-            *cache = Some((root, new_best_hash, new_best_height));
-        }
+        // State-Root Lazy Tier-0 (M2): the eager per-block compute+publish is
+        // REMOVED. The root is now fully lazy — computed only on
+        // `serve_state_root()` (memoized since M1) for the live GetStateRoot
+        // handler, and freshly recomputed by snap-sync build/install. Nothing on
+        // the block-apply hot path needs the eager publish.
     }
 
     /// Track block for finality and apply deferred producer updates at epoch boundaries.

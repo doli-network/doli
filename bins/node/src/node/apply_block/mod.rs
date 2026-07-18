@@ -8,6 +8,32 @@ mod post_commit;
 mod state_update;
 mod tx_processing;
 
+/// Honest `sr=` field for the per-block `[STATE_FP]` diagnostic log line
+/// (State-Root Lazy Tier-0, M2 — REQ-SROOT-008).
+///
+/// Under lazy state-root compute (M2), the memo `cached_state_root`
+/// (`Option<(root, best_hash, best_height)>`) may hold a PRIOR height's tuple
+/// (or `None`) at the moment a newly applied block is logged. Printing the
+/// memoized root unconditionally would mislabel a stale prior-height root as
+/// the current height's root — a silent divergence-diagnosis poison.
+///
+/// This keys the printed value on the JUST-APPLIED block's hash:
+/// - `None` → `"none"`
+/// - `Some((sr, best_hash, _))` with `best_hash == current_block_hash` → the
+///   16-hex prefix of `sr`
+/// - otherwise (stale/competing tuple) → `"none"`
+///
+/// The decision keys on `best_hash`, never on the height field.
+pub fn state_fp_sr_field(memo: Option<(Hash, Hash, u64)>, current_block_hash: Hash) -> String {
+    match memo {
+        Some((sr, cached_hash, _)) if cached_hash == current_block_hash => {
+            let s = sr.to_hex();
+            s[..s.len().min(16)].to_string()
+        }
+        _ => "none".to_string(),
+    }
+}
+
 impl Node {
     /// Apply a block to the chain
     ///
@@ -424,15 +450,11 @@ impl Node {
                 &self.epoch_state.blocks_produced,
             );
 
-            let state_root = self
-                .cached_state_root
-                .read()
-                .await
-                .map(|(sr, _, _)| {
-                    let s = sr.to_hex();
-                    s[..s.len().min(16)].to_string()
-                })
-                .unwrap_or_else(|| "none".to_string());
+            // Honest under lazy compute (M2, REQ-SROOT-008): only print the
+            // memoized root if its stored best_hash matches the block being
+            // logged; a stale prior-height tuple prints "none".
+            let memo_copy = *self.cached_state_root.read().await;
+            let state_root = state_fp_sr_field(memo_copy, block_hash);
 
             info!(
                 "[STATE_FP] h={} sr={} sched={:.16} bonds={:.16} epl={:.16} apl={:.16} accum={:.16} minute={:.16} bonds_n={} epl_n={} apl_n={} minute_n={}",

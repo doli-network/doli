@@ -104,7 +104,7 @@ pub fn log_state_root_components(
 /// never retroactive.
 ///
 /// Phase-1 scope (this milestone): the function is present but NOT YET WIRED
-/// at any call site. Phase-2 (separate milestone) wires the 15 current
+/// at any call site. Phase-2 (separate milestone) wires the 6 current
 /// `compute_state_root` call-sites to consult the schedule and pass
 /// `Some`/`None` accordingly.
 ///
