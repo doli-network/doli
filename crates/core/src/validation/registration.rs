@@ -1,5 +1,3 @@
-use crate::attestation::decode_attestation_bitfield;
-use crate::block::Block;
 use crate::network::Network;
 use crate::tpop::heartbeat::verify_hash_chain_vdf;
 use crate::transaction::{OutputType, RegistrationData, Transaction};
@@ -250,67 +248,6 @@ pub fn validate_registration_vdf(
             "VDF verification failed".to_string(),
         ));
     }
-
-    Ok(())
-}
-
-/// Verify the BLS aggregate attestation signature in a block.
-///
-/// Decodes the presence_root bitfield to determine which producers attested,
-/// gathers their BLS public keys from the validation context, and verifies
-/// the aggregate signature against the attestation message.
-pub(super) fn validate_bls_aggregate(
-    block: &Block,
-    ctx: &ValidationContext,
-) -> Result<(), ValidationError> {
-    // Decode aggregate signature
-    let agg_sig = crypto::BlsSignature::try_from_slice(&block.aggregate_bls_signature)
-        .map_err(|e| ValidationError::InvalidBlock(format!("invalid BLS aggregate sig: {}", e)))?;
-
-    // Decode bitfield to find which producers attested
-    // Post-BITFIELD_BODY_ACTIVATION_HEIGHT: bitfield is in block body, presence_root is BLAKE3 commitment.
-    // Pre-activation: bitfield is packed directly in presence_root.
-    #[allow(clippy::absurd_extreme_comparisons)]
-    let attested_indices = if !block.attestation_bitfield.is_empty() {
-        crate::attestation::decode_attestation_bitfield_vec(
-            &block.attestation_bitfield,
-            ctx.producer_bls_keys.len(),
-        )
-    } else if ctx.current_height < crate::consensus::BITFIELD_BODY_ACTIVATION_HEIGHT {
-        decode_attestation_bitfield(&block.header.presence_root, ctx.producer_bls_keys.len())
-    } else {
-        // Post-activation without body: skip (presence_root is BLAKE3, not bitfield)
-        vec![]
-    };
-
-    if attested_indices.is_empty() {
-        return Err(ValidationError::InvalidBlock(
-            "BLS aggregate sig present but bitfield is empty".to_string(),
-        ));
-    }
-
-    // Gather BLS pubkeys of attesting producers (skip those without BLS keys)
-    let mut bls_pubkeys: Vec<crypto::BlsPublicKey> = Vec::new();
-    for &idx in &attested_indices {
-        if idx < ctx.producer_bls_keys.len() && !ctx.producer_bls_keys[idx].is_empty() {
-            if let Ok(pk) = crypto::BlsPublicKey::try_from_slice(&ctx.producer_bls_keys[idx]) {
-                bls_pubkeys.push(pk);
-            }
-        }
-    }
-
-    if bls_pubkeys.is_empty() {
-        // No BLS-capable producers in the bitfield -- can't verify.
-        // This is a transitional state: block has aggregate sig but no BLS keys registered.
-        // Accept gracefully during migration.
-        return Ok(());
-    }
-
-    // Verify: aggregate sig must match the attestation message signed by these pubkeys
-    let msg = crypto::attestation_message(&block.hash(), block.header.slot);
-    crypto::bls_verify_aggregate(&msg, &agg_sig, &bls_pubkeys).map_err(|e| {
-        ValidationError::InvalidBlock(format!("BLS aggregate verification failed: {}", e))
-    })?;
 
     Ok(())
 }

@@ -52,7 +52,7 @@ mod utxo;
 pub mod zk;
 
 pub use amm::{verify_amm_conservation, AmmConservationResult};
-pub use block::{validate_block, validate_block_with_mode, validate_header};
+pub use block::{validate_block_with_mode, validate_header};
 pub use error::ValidationError;
 pub use producer::{
     bootstrap_fallback_order, bootstrap_schedule_with_liveness, validate_producer_eligibility,

@@ -3,7 +3,7 @@ use crate::consensus::{max_block_size, MAX_DRIFT, MAX_FUTURE_SLOTS, NETWORK_MARG
 use crate::transaction::{RegistrationData, SlashData, TxType};
 
 use super::producer::{validate_producer_eligibility, validate_vdf};
-use super::registration::{validate_bls_aggregate, validate_registration_vdf};
+use super::registration::validate_registration_vdf;
 use super::transaction::{validate_transaction, validate_transaction_skip_registration_vdf};
 use super::utxo::check_internal_double_spend;
 use super::{ValidationContext, ValidationError, ValidationMode};
@@ -96,84 +96,6 @@ pub fn validate_header(
     // historical blocks have slots far behind wall-clock. The gossip handler
     // is the correct enforcement point -- it rejects old gossip blocks before
     // they reach apply_block(), while sync/reorg paths bypass it safely.
-
-    Ok(())
-}
-
-/// Validate a complete block
-pub fn validate_block(block: &Block, ctx: &ValidationContext) -> Result<(), ValidationError> {
-    // 1. Validate header
-    validate_header(&block.header, ctx)?;
-
-    // 2. Check block size (scales with era)
-    let size = block.size();
-    let max_size = max_block_size(ctx.current_height);
-    if size > max_size {
-        return Err(ValidationError::BlockTooLarge {
-            size,
-            max: max_size,
-        });
-    }
-
-    // 3. Verify merkle root
-    if !block.verify_merkle_root() {
-        return Err(ValidationError::InvalidMerkleRoot {
-            header: block.header.merkle_root,
-            computed: block.compute_merkle_root(),
-        });
-    }
-
-    // 3.5. Verify data_root (blob commitment)
-    {
-        let mut blob_hashes: Vec<crypto::Hash> = Vec::new();
-        for tx in &block.transactions {
-            for output in &tx.outputs {
-                if output.extra_data.len() >= 4096 {
-                    let blob_hash = crypto::hash::hash(&output.extra_data);
-                    blob_hashes.push(blob_hash);
-                }
-            }
-        }
-        let expected = if blob_hashes.is_empty() {
-            crypto::Hash::ZERO
-        } else {
-            blob_hashes.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
-            let mut hasher = crypto::Hasher::new();
-            for h in &blob_hashes {
-                hasher.update(h.as_bytes());
-            }
-            hasher.finalize()
-        };
-        if block.header.data_root != expected {
-            return Err(ValidationError::InvalidDataRoot);
-        }
-    }
-
-    // 4. Validate all transactions
-    // Note: The old RewardMode-based validation is deprecated. The new weighted
-    // presence reward system uses on-demand ClaimEpochReward transactions.
-    // Blocks no longer require coinbase or automatic EpochReward transactions.
-    for tx in &block.transactions {
-        validate_transaction(tx, ctx)?;
-    }
-
-    // 5. Check for double spends within block
-    check_internal_double_spend(block)?;
-
-    // 6. Validate VDF (if not in bootstrap)
-    if !ctx.params.is_bootstrap(ctx.current_height) {
-        validate_vdf(&block.header, ctx.network)?;
-    }
-
-    // 7. Validate producer eligibility (if not in bootstrap)
-    validate_producer_eligibility(&block.header, ctx)?;
-
-    // 8. Verify BLS aggregate attestation signature (if present).
-    // Pre-BLS blocks have empty aggregate_bls_signature -- accepted.
-    // Post-BLS blocks with a signature are verified against the bitfield.
-    if !block.aggregate_bls_signature.is_empty() {
-        validate_bls_aggregate(block, ctx)?;
-    }
 
     Ok(())
 }

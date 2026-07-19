@@ -144,12 +144,6 @@ pub struct ValidationContext {
     /// Public keys with pending (epoch-deferred) registrations.
     /// Used to reject duplicate registrations before epoch activation.
     pub pending_producer_keys: Vec<crypto::PublicKey>,
-    /// BLS public keys for active producers, sorted by Ed25519 pubkey (same as bitfield order).
-    ///
-    /// Index N corresponds to the producer at sorted index N in the bitfield.
-    /// Empty Vec at index N means that producer has no BLS key (pre-BLS registration).
-    #[allow(dead_code)]
-    pub producer_bls_keys: Vec<Vec<u8>>,
     /// Epoch-frozen producer list. The scheduling denominator:
     /// `expected = epoch_producer_list[slot % epoch_producer_list.len()]`.
     /// Never changes mid-epoch.
@@ -268,7 +262,6 @@ impl ValidationContext {
             stale_bootstrap_producers: Vec::new(),
             registration_chain: RegistrationChainState::default(),
             pending_producer_keys: Vec::new(),
-            producer_bls_keys: Vec::new(),
             epoch_producer_list: Vec::new(),
             sig_verification_height: u64::MAX,
             inc_i_026_scheduler_activation_height: u64::MAX,
