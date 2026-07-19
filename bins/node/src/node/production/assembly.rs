@@ -611,54 +611,15 @@ impl Node {
         }
     }
 
-    /// Aggregate BLS signatures from minute tracker for on-chain proof.
-    /// Only includes producers that have BLS sigs for this minute.
-    pub fn aggregate_bls_signatures(&self, current_slot: u32) -> Vec<u8> {
-        let current_minute = attestation_minute(current_slot);
-        let bls_sigs = self.minute_tracker.bls_sigs_for_minute(current_minute);
-        info!(
-            "BLS aggregate: minute={} sigs_count={} tracker_bls_total={}",
-            current_minute,
-            bls_sigs.len(),
-            self.minute_tracker.bls_sig_count()
-        );
-        if bls_sigs.is_empty() {
-            Vec::new()
-        } else {
-            let sigs: Vec<crypto::BlsSignature> = bls_sigs
-                .iter()
-                .filter_map(|(_, raw)| crypto::BlsSignature::try_from_slice(raw).ok())
-                .collect();
-            if sigs.is_empty() {
-                Vec::new()
-            } else {
-                match crypto::bls_aggregate(&sigs) {
-                    Ok(agg) => agg.as_bytes().to_vec(),
-                    Err(e) => {
-                        warn!("BLS aggregation failed: {}", e);
-                        Vec::new()
-                    }
-                }
-            }
-        }
-    }
-
     /// Attest our own block for finality gadget + record in minute tracker.
     pub async fn attest_own_block(&mut self, block_hash: Hash, current_slot: u32, height: u64) {
         self.create_and_broadcast_attestation(block_hash, current_slot, height)
             .await;
         if let Some(ref kp) = self.producer_key {
+            // BLS attestation aggregate is retired (no consumer remains): record the
+            // producer's own attestation without a BLS signature.
             let minute = attestation_minute(current_slot);
-            if let Some(ref bls_kp) = self.bls_key {
-                let bls_msg = crypto::attestation_message(&block_hash, current_slot);
-                let bls_sig = crypto::bls_sign(&bls_msg, bls_kp.secret_key())
-                    .map(|s| s.as_bytes().to_vec())
-                    .unwrap_or_default();
-                self.minute_tracker
-                    .record_with_bls(*kp.public_key(), minute, bls_sig);
-            } else {
-                self.minute_tracker.record(*kp.public_key(), minute);
-            }
+            self.minute_tracker.record(*kp.public_key(), minute);
         }
     }
 }
