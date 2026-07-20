@@ -4,6 +4,7 @@
 
 mod config;
 mod publish;
+pub mod staleness;
 pub mod validation;
 
 #[cfg(test)]

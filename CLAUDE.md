@@ -132,6 +132,7 @@ After completing any code change, ALWAYS propose the following checklist to the 
 | Block + BlockBuilder | `crates/core/src/block.rs` |
 | Chainspec + genesis hash | `crates/core/src/chainspec.rs` |
 | Network/gossip | `crates/network/src/service.rs` |
+| Gossip staleness/dedup gate (INC-I-142) | `crates/network/src/gossip/staleness.rs` |
 | Status protocol + version constants | `crates/network/src/protocols/status.rs` |
 | Peer scoring (incl. IncompatibleVersion) | `crates/network/src/scoring.rs` |
 | Sync state machine | `crates/network/src/sync/manager.rs` |

@@ -19,8 +19,8 @@ use doli_core::{decode_digest, decode_producer_set, is_legacy_bincode_format, Bl
 use crate::behaviour::{DoliBehaviour, DoliBehaviourEvent};
 use crate::config::NetworkConfig;
 use crate::gossip::{
-    classify_block_gossip, classify_producer_gossip, now_unix_secs, BLOCKS_TOPIC, HEADERS_TOPIC,
-    HEARTBEATS_TOPIC, PRODUCERS_TOPIC, TRANSACTIONS_TOPIC, VOTES_TOPIC,
+    classify_block_gossip, now_unix_secs, BLOCKS_TOPIC, HEADERS_TOPIC, HEARTBEATS_TOPIC,
+    PRODUCERS_TOPIC, TRANSACTIONS_TOPIC, VOTES_TOPIC,
 };
 use crate::peer::PeerInfo;
 use crate::peer_cache::PeerCache;
@@ -44,6 +44,7 @@ pub(super) async fn handle_behaviour_event(
     rate_limiter: &mut RateLimiter,
     genesis_mismatch_cooldown: &mut HashMap<PeerId, Instant>,
     stale_peer_ids: &mut HashMap<PeerId, Instant>,
+    gossip_seen_cache: &mut crate::gossip::staleness::SeenCache,
     best_slot: &Arc<std::sync::atomic::AtomicU32>,
     shed_metrics: &std::sync::Arc<super::backpressure::GossipShedMetrics>,
     memory_shed_flag: &Arc<AtomicBool>,
@@ -70,8 +71,13 @@ pub(super) async fn handle_behaviour_event(
             // BlockHeader-serialized (no Vec<Transaction>), so Block::deserialize
             // fails on them. Routing headers through classify_block_gossip would
             // Reject every header → P4 penalty on honest producers → mesh
-            // expulsion cascade (INC-I-016 shape). Headers and all other non-block
-            // topics get unconditional Accept.
+            // expulsion cascade (INC-I-016 shape).
+            //
+            // INC-I-142 M6: every OTHER (non-block-body) subscribed re-forward-risk
+            // topic now routes through the unified `classify_gossip` staleness gate
+            // (persistent per-event-loop SeenCache, identity dedup PRIMARY) — NOT
+            // unconditional Accept. Only a genuinely-unclassified/unsubscribed topic
+            // still Accepts by default (fail-open, preserves propagation).
             let is_block_body_topic = topic == BLOCKS_TOPIC
                 || topic == crate::gossip::TIER1_BLOCKS_TOPIC
                 || (topic.starts_with("/doli/r") && topic.ends_with("/blocks/1"));
@@ -226,21 +232,23 @@ pub(super) async fn handle_behaviour_event(
                 return; // block topics fully handled above
             }
 
-            // Non-block topics: Accept by default. This covers HEADERS_TOPIC,
-            // TRANSACTIONS, VOTES, HEARTBEATS, ATTESTATIONS, and any future
-            // non-block topics.
-            //
-            // INC-I-137 (INC-I-120 Layer 3): the producer-announcement topic
-            // gets a staleness gate. A full-set snapshot in which EVERY embedded
-            // announcement is older than the GSet merge-acceptance window is
-            // `Ignore`d (not re-forwarded), stopping the stale-snapshot
-            // re-forward storm. This does NOT break GSet CRDT convergence:
-            // fresh, mixed-freshness, digest, and legacy messages still
-            // Accept+forward exactly once (see classify_producer_gossip).
-            let acceptance = if topic == PRODUCERS_TOPIC {
-                classify_producer_gossip(&message.data, now_unix_secs())
-            } else {
-                gossipsub::MessageAcceptance::Accept
+            // INC-I-142 M6: unified staleness gate (see the block comment above).
+            // Producers keep bit-identical behavior (classify_gossip's Producers arm
+            // delegates to the same classify_producer_gossip). An unclassified /
+            // unsubscribed topic fails open to Accept+forward (dispatch then no-ops)
+            // so propagation is never stalled.
+            let acceptance = match crate::gossip::staleness::GossipTopic::from_topic_str(topic) {
+                Some(topic_enum) => {
+                    let mut ctx = crate::gossip::staleness::StalenessCtx {
+                        now_unix: now_unix_secs(),
+                        genesis_time: config.genesis_time,
+                        slot_duration: config.slot_duration,
+                        best_slot: best_slot.load(std::sync::atomic::Ordering::Relaxed),
+                        seen: gossip_seen_cache,
+                    };
+                    crate::gossip::staleness::classify_gossip(topic_enum, &message.data, &mut ctx)
+                }
+                None => gossipsub::MessageAcceptance::Accept,
             };
             let is_accepted = matches!(acceptance, gossipsub::MessageAcceptance::Accept);
             if let Err(e) = swarm
@@ -253,12 +261,13 @@ pub(super) async fn handle_behaviour_event(
                     topic, message_id, e
                 );
             }
-            // Stale producer snapshot: reported Ignore above (suppresses
-            // re-forward, no peer penalty) — skip local processing too, since a
-            // fully-stale set would be rejected by the GSet merge anyway.
+            // Stale / already-seen gossip: reported Ignore above (suppresses
+            // re-forward, no peer penalty) — skip local processing too. A duplicate
+            // re-delivery carries no new information, and a fully-stale producer set
+            // would be rejected by the GSet merge anyway.
             if !is_accepted {
                 debug!(
-                    "[GOSSIP_VALIDATE] stale producer announcement suppressed topic={} from={}",
+                    "[GOSSIP_VALIDATE] stale/duplicate gossip suppressed topic={} from={}",
                     topic, propagation_source
                 );
                 return;

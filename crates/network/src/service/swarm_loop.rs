@@ -77,6 +77,17 @@ pub(super) async fn run_swarm(
     // via DHT propagation. Blocked for 24h to stop connect/disconnect spam.
     let mut stale_peer_ids: HashMap<PeerId, Instant> = HashMap::new();
 
+    // INC-I-142 M6: persistent per-event-loop gossip staleness dedup cache.
+    // MUST live for the whole loop so identity dedup spans EVERY gossip event —
+    // this is the load-bearing requirement. A per-call cache dedups nothing; the
+    // storm-closer works only across libp2p's 60–120s re-deliveries. Passed by
+    // &mut into handle_swarm_event → handle_behaviour_event, where the unified
+    // classify_gossip gate records/checks message identities.
+    let mut gossip_seen_cache = crate::gossip::staleness::SeenCache::new(
+        crate::gossip::staleness::SEEN_CACHE_TTL_SECS,
+        crate::gossip::staleness::SEEN_CACHE_CAPACITY,
+    );
+
     // INC-I-011: Eviction cooldown — recently evicted peers cannot reconnect
     // for 30 seconds, breaking the evict→reconnect→evict thrashing loop that
     // causes RAM explosion when network_nodes > max_peers.
@@ -162,7 +173,7 @@ pub(super) async fn run_swarm(
         tokio::select! {
             // Handle swarm events
             event = swarm.select_next_some() => {
-                handle_swarm_event(event, &mut swarm, &event_tx, &peers, &config, &peer_cache_path, &mut rate_limiter, &mut genesis_mismatch_cooldown, &mut mismatch_redial_cooldown, &mut dial_backoff, &mut eviction_cooldown, &mut bootstrap_peers, &mut stale_peer_ids, &best_slot, &shed_metrics, &memory_shed_flag).await;
+                handle_swarm_event(event, &mut swarm, &event_tx, &peers, &config, &peer_cache_path, &mut rate_limiter, &mut genesis_mismatch_cooldown, &mut mismatch_redial_cooldown, &mut dial_backoff, &mut eviction_cooldown, &mut bootstrap_peers, &mut stale_peer_ids, &mut gossip_seen_cache, &best_slot, &shed_metrics, &memory_shed_flag).await;
             }
 
             // Handle commands — intercept BroadcastTransaction for batching
