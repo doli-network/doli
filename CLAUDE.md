@@ -113,6 +113,7 @@ After completing any code change, ALWAYS propose the following checklist to the 
 | **run(), start_network(), start_rpc()** | `bins/node/src/node/startup.rs` |
 | **run_event_loop(), handle_network_event()** | `bins/node/src/node/event_loop.rs` |
 | **handle_new_block(), execute_reorg()** | `bins/node/src/node/block_handling.rs` |
+| **FORK_GUARD wedge-escape (INC-I-143 F2)** | `bins/node/src/node/wedge_escape.rs` |
 | **fork recovery (9 functions)** | `bins/node/src/node/fork_recovery.rs` |
 | **apply_block()** | `bins/node/src/node/apply_block.rs` |
 | **try_produce_block()** | `bins/node/src/node/production.rs` |
@@ -155,7 +156,7 @@ After completing any code change, ALWAYS propose the following checklist to the 
 | Install launchd services | `scripts/install-local-services.sh` — creates plists for seed + n1-n12 |
 | Start/stop/status | `scripts/testnet.sh start\|stop\|restart\|status [seed\|n1\|...\|all]` |
 | Tail logs | `scripts/testnet.sh logs [seed\|n1\|...]` |
-| System-impact gauntlet | `scripts/gauntlet.sh` — replays paid-for failure modes over the live testnet (8 scenarios). Default (gate): observational + one safe launchd restart, NEVER wipes/pkills. `--chaos` (opt-in, `GAUNTLET_CHAOS_CONFIRM=1`): genuinely injects node-down + data-wipe→snap-rebuild on the target (data backed up). Seed: `scripts/gauntlet-seed.sql`. Gate armed by `.omega/gauntlet.conf`. |
+| System-impact gauntlet | `scripts/gauntlet.sh` — replays paid-for failure modes over the live testnet (8 scenarios). Default (gate): observational + one safe launchd restart, NEVER wipes/pkills. `--chaos` (opt-in, `GAUNTLET_CHAOS_CONFIRM=1`): genuinely injects node-down + data-wipe→snap-rebuild on the target (data backed up). `--gs009` (opt-in, `GAUNTLET_GS009_CONFIRM=1`): GS-009 fleet rolling-restart scenario (`scripts/gauntlet-gs009.sh`) — replays INC-I-143, restarts ONLY producers n1..n12 (NEVER the seed) and asserts no stall / no sibling-fork / fleet-rejoin. Seed: `scripts/gauntlet-seed.sql`. Gate armed by `.omega/gauntlet.conf`. |
 
 **Port layout**:
 - Seed: P2P=30300, RPC=8500, Metrics=9000
@@ -193,6 +194,7 @@ After completing any code change, ALWAYS propose the following checklist to the 
 
 | What | Where |
 |------|-------|
+| **Skill index (grep-first)** | `.claude/skills/SKILLS-INDEX.md` — keyword→skill:section:line map for all 30 skills (15 code + 15 ops). Grep it before reading any skill file. |
 | Architecture | `docs/architecture.md` |
 | Rewards system | `docs/rewards.md` |
 | RPC reference (56 methods) | `docs/rpc_reference.md` |
@@ -204,6 +206,9 @@ After completing any code change, ALWAYS propose the following checklist to the 
 | Drift tracker | `MEMORY.md` (auto-memory) |
 | Bug reports | `docs/legacy/bugs/` |
 | CLI issues | `CLI.md` |
+
+---
+
 
 ---
 
@@ -321,13 +326,13 @@ After completing a user's task, if they did something manually that an OMEGA com
 20. **Intellectual honesty** — STOP on self-contradiction. Show your work on math/logic claims. State what you don't understand before proposing. Try to disprove your own hypotheses before acting. Max 2 inferences without verification. Read `.claude/protocols/intellectual-honesty.md`
 21. **Output Contract** — before any test assertion, produce Output Contract Checklist (outputs × paths × input partitions). Fix confidence >0.7 requires FAIL→PASS test evidence. **Test BEFORE fix** — reproduction test exists and FAILS before any fix code or fix plan. Read `.claude/protocols/output-contract.md`
 22. **Prompt refinement at intake** — every omega command with a user description refines BEFORE agent work (neutralize anchoring, reframe causes as hypotheses; REGRESSION CONTEXT triggers git archeology). Read `.claude/protocols/prompt-refinement.md`
-23. **Evidence floor** — diagnostic synthesizers publish `VERDICT` (conf ≥0.95, cited evidence, causal chain, regression check) or `PRELIMINARY` (conf <0.95, missing-evidence + resolve-by + re-dispatch). Per-finding evidence pointers required for reviewers/auditors. Enforced by `evidence-floor-gate.sh`. Read `.claude/protocols/evidence-floor.md`
-24. **Path-Coverage attestation** — commits adding a new early-return guard in non-test Rust code MUST include a per-branch `Path-Coverage:` block (Q1/Q2/Q3 + test cite). Enforced by `path-coverage-gate.sh`. Read `.claude/protocols/path-coverage.md`
+23. **Evidence floor** — diagnostic synthesizers publish `VERDICT` or `PRELIMINARY`; reviewers/auditors give per-finding evidence pointers. Blocking-enforced by `evidence-floor-gate.sh` (the block message states the required shape). Read `.claude/protocols/evidence-floor.md`
+24. **Path-Coverage attestation** — new early-return guards in non-test Rust need a per-branch `Path-Coverage:` commit block. Blocking-enforced by `path-coverage-gate.sh` (the block message states the format). Read `.claude/protocols/path-coverage.md`
 25. **Communication style** — user-facing replies use BLUF + Progressive Disclosure + Cognitive Load (≤4 items/turn). Shape: 1 sentence bottom line + up to 3 sentences action + 1 question. Hold complexity in files. Read `.claude/protocols/communication-style.md`
-26. **Resource cost** — every proposal (architect, design-evaluator, design-synthesizer, reviewer) carries a `━━━ RESOURCE COST` block: CPU/Memory/IO/Network/Disk/Latency + basis + Inevitability + Cheaper alternative + Why-anyway. Enforced by `resource-cost-gate.sh`. Read `.claude/protocols/resource-cost.md`
-27. **Evidence pivot** — a failed fix buys evidence, not another guess. When a shipped fix does not change the symptom, you are FORBIDDEN from editing source for another fix until you capture runtime evidence from the FAILING environment (instrument the real path → make it visible → deterministic trigger). Armed by `evidence-pivot.sh`, enforced by `pipeline-gate.sh`. Read `.claude/protocols/evidence-pivot.md`
-28. **Code graph for structural questions** — ANY dependency, blast-radius, caller/callee, or architecture-comprehension question is answered by the code graph BEFORE grep. It auto-builds/refreshes (tree-sitter AST, zero LLM) and returns typed, deduplicated dependents far cheaper than grep. Use `blast.py` (dependents), `graphify explain` (neighborhood), `graphify path` (causal chain). Grep is the fallback only when graphify cannot be provisioned. Applies to every agent and command. Read `.claude/protocols/graph-briefing.md`
-29. **System impact** — "done" is a SYSTEM property, not a diff property. In projects with `.omega/gauntlet.conf`: changes in system-dynamics domains require a failure-mode matrix at briefing (query incidents/invariants by domain+tags, state behavior in each mode), a `Failure-Modes:` commit block, protection-mechanism registration (`protection_mechanisms` table), and a passing gauntlet run (real multi-node scenario suite) before the workflow can close. Enforced by `gauntlet-gate.sh`. Read `.claude/protocols/system-impact.md`
+26. **Resource cost** — every proposal (architect, design-evaluator, design-synthesizer, reviewer) carries a `━━━ RESOURCE COST` block. Blocking-enforced by `resource-cost-gate.sh` (the block message states the required dimensions). Read `.claude/protocols/resource-cost.md`
+27. **Evidence pivot** — a failed fix buys evidence, not another guess: when a shipped fix does not move the symptom, capture runtime evidence from the FAILING environment before editing source again. Blocking-enforced by `pipeline-gate.sh` (armed by `evidence-pivot.sh`). Read `.claude/protocols/evidence-pivot.md`
+28. **Code graph for structural questions** — answer ANY dependency/blast-radius/caller-callee/architecture question from the code graph BEFORE grep (`blast.py`, `graphify explain|path`); grep is the fallback only when graphify cannot be provisioned. Blocking-enforced by `graph-first-gate.sh`. Read `.claude/protocols/graph-briefing.md`
+29. **System impact** — in projects with `.omega/gauntlet.conf`, "done" is a SYSTEM property, not a diff property: system-dynamics changes need a failure-mode matrix at briefing, a `Failure-Modes:` commit block, protection registration, and a passing gauntlet run before close. Blocking-enforced by `gauntlet-gate.sh`. Read `.claude/protocols/system-impact.md`
 
 ## Fail-Safe Controls
 

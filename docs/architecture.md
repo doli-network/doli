@@ -268,7 +268,7 @@ Existing gates (mainnet values):
 - `total_minted` - Total coins issued
 
 **Storage technologies:**
-- **BlockStore** (RocksDB): 8 column families: `headers`, `bodies`, `height_index`, `slot_index`, `presence` (deprecated, cleaned on startup), `hash_to_height`, `tx_index`, `addr_tx_index`
+- **BlockStore** (RocksDB): 8 column families: `headers`, `bodies`, `height_index`, `slot_index`, `presence` (deprecated, cleaned on startup), `hash_to_height`, `tx_index`, `addr_tx_index`. The `height_index`/`hash_to_height` canonical projection is **symmetrically maintained** (INC-I-144, INV-STORAGE-002): `set_canonical_chain` writes it on apply and purges entries above a new lower tip; `remove_canonical_entry(height, expected_hash)` de-indexes rewound heights from `rollback_one_block` and `execute_reorg`'s undo loop, in the same WriteBatch — a rewound height reads `None` (never a stale orphan) until the canonical block is applied.
 - **StateDb** (RocksDB): Unified state store with atomic WriteBatch per block. Column families (6): `cf_utxo`, `cf_utxo_by_pubkey`, `cf_producers`, `cf_exit_history`, `cf_meta`, `cf_undo`. All state changes (UTXOs, chain state, producers) committed atomically — no crash-inconsistency possible.
 - **In-memory UtxoSet**: Loaded from StateDb on startup, mutated in parallel with batch writes for fast mempool/RPC reads
 
@@ -515,6 +515,16 @@ start_sync() ─────┤                                                 
 ```
 
 No bare gap-over-threshold admits snap on any path. `consecutive_empty_headers` (the evidence counter) has one owner — reset only by genuine progress/recovery writers (block apply, gap≤3 gossip-wait, valid-headers, anti-cascade, post-rollback/post-snap grace, genesis), never by a request-dispatch or admission path. Gate-1 (`production_gate.rs`) exempts only emergency ∪ forward-large-gap from the backward-wipe floor; `SNAP_SYNC_GAP_MIN(500)` is the single named gap floor, with the old threshold demoted to an enable-sentinel. Invariant: `INV-SYNC-011` (extended, all-paths). Future escalation tiers enter as new evidence feeders of this funnel — never as new transitions into `SnapCollecting`.
+
+#### Fork-Recovery Hardening (INC-I-143)
+
+Three fork-recovery defects that turned a transient sibling split at h=108456 into a permanent fleet-wide INTEGRITY −1 were closed:
+
+- **Wedge-escape (F2, `wedge_escape.rs`).** The height-occupied FORK_GUARD used to drop a worse-slot same-height sibling PERMANENTLY, wedging a node that had finalized the worse-slot branch while the network extended the sibling. It now RETAINS the sibling and re-evaluates it through the existing reorg engine (`record_fork_block_weight → plan_reorg → execute_reorg`). Eligibility-gated against the epoch-frozen schedule before entry, requires a STRICT weight increase (no equal-weight tie-break for unsolicited gossip siblings), and only descendants whose parent is in the eligibility-validated retained set (`wedge_retained_tips`, capped at 64) may reroute from the Orphan arm. NODE-LOCAL fork choice only — no block content or validity-rule change.
+
+- **StuckFork → SiblingFetch (F3, D4).** When a StuckFork coincides with `finality == local_tip`, the INV-SYNC-008 finality guard correctly refuses a `ShallowRollback` (target = local_height−1 < finality). The old classifier then returned `RecoveryAction::None` and looped hot (454 refusals on seed1). It now emits a non-destructive `RecoveryAction::SiblingFetch { height: local_tip }` — a `GetBlockByHeight` request to up to 3 top peers — so the competing sibling is pulled in and re-evaluated by the wedge-escape path. Bounded to `SIBLING_FETCH_MAX = 3` consecutive attempts (any other concrete action resets the budget), paced by the 30s `ACTION_COOLDOWN` (~90s total), then falls through to standard escalation. The finality guard itself (strict `<`, INC-I-090) is UNCHANGED.
+
+- **Snap-admission integrity gates (F4, D1/D2).** `handle_snap_snapshot` previously logged a served-root ≠ quorum-root mismatch and accepted the snapshot anyway, and derived the install height from a single peer's current tip — how seed1 spliced a forked anchor at a −1 offset with a 45-block hole. Two admission gates now guard it: (1) the served `response_root` MUST equal the quorum-agreed root, and (2) the anchor's `(block_hash, block_height)` pair MUST be corroborated by a STATUS quorum of connected peers. A failure of either increments `snap.integrity_refusals` and falls back to an alternate peer (then header-first) rather than splicing an uncorroborated anchor — slower but correct.
 
 ---
 

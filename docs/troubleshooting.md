@@ -698,6 +698,16 @@ cp -r data_dir/checkpoints/h{HEIGHT}-{TS}/blocks data_dir/blocks
 
 ---
 
+### 4.6. Repeated `[FINALITY_GUARD] refusing ShallowRollback` Spam (INC-I-143)
+
+**Symptom:** A node wedged one block behind the network tip logs `[FINALITY_GUARD] refusing ShallowRollback target_h=… (finality=…, local_tip=…)` hundreds of times (seed1 logged 454) and never recovers. The gap stays at 1, production is stalled, and no snap or rollback ever fires.
+
+**Cause:** The node finalized one branch of a genuine sibling fork (`finality == local_tip`), so a depth-1 rollback target (`local_height − 1`) is below finality and the INV-SYNC-008 guard correctly refuses it. Pre-fix the recovery coordinator then returned `RecoveryAction::None` and re-evaluated the same unchanged state every tick — a hot refusal livelock that could not fetch the competing sibling.
+
+**Resolution:** Fixed by INC-I-143 (D4). The coordinator now emits a non-destructive `RecoveryAction::SiblingFetch { height: local_tip }` instead of `None` — a `GetBlockByHeight` request to up to 3 top peers, logged as `[FINALITY_GUARD] … INC-I-143 non-destructive SiblingFetch attempt N/3`. The fetched sibling flows through normal block handling where the wedge-escape re-evaluates it via `plan_reorg`. It is bounded to 3 consecutive attempts (~90s at the 30s cooldown), then falls through to standard escalation. If you see a handful of SiblingFetch lines followed by recovery, that is the fix working; the finality guard's strict `<` is UNCHANGED (it never rolls back below finality). Upgrade to a build carrying INC-I-143.
+
+---
+
 ## 5. Update Issues
 
 ### 5.1. Auto-Update Failed
@@ -848,6 +858,36 @@ curl -s -X POST http://<node>:<port> \
 **INC-I-139 in 5 lines:** (1) `should_snap` had three admission authorities, one an ungated bare-gap OR-term, letting a gap=51 minor-fork wedge snap with no fork evidence. (2) A dispatch-time reset zeroed the evidence counter every request, starving legitimate escalation. (3) A redirect path (A1) silently reset `snap.attempts`. (4) Phase 1 (RUN 455) consolidated to one funnel by subtraction: deleted the bare-gap term, removed the dispatch reset, deleted A1, added the Gate-1 forward-large-gap classification companion, demoted the threshold to an enable-sentinel. (5) Result: recurrence class INC-I-005/033/138 closed at the admission surface — no node snaps without corroborated evidence.
 
 Code: `decision.rs`, `dispatch.rs`, `production_gate.rs`, `recovery.rs`. Invariant: `INV-SYNC-011` (extended, all-paths).
+
+---
+
+### 7.4. Snap Snapshot Refused (`[SNAP_SYNC] F4 REFUSE`, INC-I-143)
+
+**Symptom:** A node in snap sync logs `[SNAP_SYNC] F4 REFUSE (root): response_root=… != quorum_root=…` or `[SNAP_SYNC] F4 REFUSE (height): anchor (…, h=…) corroborated by only N/M peers`, retries alternate peers, and snap completes more slowly than before (or falls back to header-first).
+
+**Cause / meaning:** This is the INC-I-143 F4 admission gate working, not an error. Before the fix, `handle_snap_snapshot` logged a served-root ≠ quorum-root mismatch at `info!` and ACCEPTED the snapshot anyway, and installed it at the serving peer's raw current-tip height. That is how seed1 spliced a forked anchor at a −1 height offset with a 45-block hole → permanent INTEGRITY −1. Two gates now guard admission: (1) the served `response_root` MUST equal the quorum-agreed root; (2) the anchor's `(block_hash, block_height)` MUST be corroborated by a STATUS quorum of connected peers. A failure of either increments `snap.integrity_refusals` and picks an alternate peer, then falls back to header-first if no alternates remain.
+
+**What to do:** A few F4 REFUSE lines followed by a successful admit from an alternate peer is normal and correct — the node refused an uncorroborated anchor and found a corroborated one. Slower-but-correct is the intended trade. Persistent refusals across many peers mean genuine fleet tip-fragmentation (no quorum best_hash) — investigate the fork itself, do NOT loosen the gate. Code: `crates/network/src/sync/manager/snap_sync.rs` (gates), `types.rs` (`integrity_refusals`).
+
+---
+
+### 7.5. `[ECON_EPOCH_INPUTS_MISMATCH]` at an Epoch Boundary (INC-I-143 D5)
+
+**Symptom:** At an epoch boundary a node halts (E302) with `[ECON_EPOCH_INPUTS_MISMATCH] EpochReward pool inputs mismatch at height=…: expected N inputs, got M (K differing outpoints). missing_from_actual (…): [outpoint:idx, …]; unexpected_in_actual (…): [outpoint:idx, …]`. The old message read only `expected 360 inputs, got 360` — equal counts, no clue what differed.
+
+**Cause / meaning:** The compare is on the SET of pool-input outpoints the EpochReward transaction consumes, not on their count. Two nodes with divergent chain histories (e.g. either side of a sibling fork) can both have 360 pool UTXOs that are DIFFERENT outpoints — the counts match while the sets diverge. The halt is a divergent-pool-view symptom of an upstream fork, not a counting bug. Pre-fix the counts-only message masked this and cost triage time (INC-I-143 §5).
+
+**What to do:** Read the `missing_from_actual` / `unexpected_in_actual` outpoint lists (bounded to 5 per side) — they name the exact UTXOs that differ, pointing at the block/epoch where the two histories forked. Fix the underlying fork/splice (see 7.4 and 4.6); the ECON halt clears once the node is on the corroborated chain. Code: `format_epoch_inputs_mismatch` in `bins/node/src/node/validation_checks.rs`.
+
+---
+
+### 7.6. Divergent `chainCommitment` With `missingCount=0` and Identical State Roots (INC-I-144)
+
+**Symptom:** Nodes in full consensus (identical tip hash, byte-identical `getStateRootDebug`) return **different** `chainCommitment` values from `verifyChainIntegrity` over the same range, each with `missingCount=0`. Spot checks show `getBlockByHeight(h)` returning a block whose slot/producer differs across nodes at some heights, and a `prevHash` linkage walk over the by-height index breaks mid-range.
+
+**Cause / meaning:** Height-index "fossils". Before the INC-I-144 fix, `height_index`/`hash_to_height` were written only on the apply path (`set_canonical_chain`); no rollback or reorg path removed entries, so `index[h]` kept the last block applied at h on *whatever branch the node was following*. The lazy self-heal (the winning branch re-applying through the range) could be permanently revoked by the INC-I-025 `snap_horizon` floor after a snap-anchor jump — freezing stale orphan segments (mainnet seed2 h7222–7227). This is a node-local index defect, NOT a consensus fork: state roots stay identical.
+
+**What to do:** Upgrade to a build carrying INC-I-144 (`remove_canonical_entry` + purge-above-tip in `set_canonical_chain`) — this prevents new fossils; heights rewound thereafter return `None` until the canonical block is applied (fail-visible-missing, self-healing). Pre-existing fossils are NOT repaired automatically: locate stale ranges by binary-searching ranged `verifyChainIntegrity` calls between nodes, then run an offline reindex on the affected node (verify canonical headers exist first). `backfillFromPeer` CANNOT fix a fossil range sandwiched below an already-correct region — its divergence finder stops at the first tip match. Code: `crates/storage/src/block_store/writes.rs`, `bins/node/src/node/rollback.rs`, `bins/node/src/node/block_handling.rs`. Invariant: `INV-STORAGE-002`. Regression: `crates/storage/tests/inc_i_144_rollback_index_fossil_test.rs`.
 
 ---
 
