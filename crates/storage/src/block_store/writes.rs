@@ -97,13 +97,37 @@ impl BlockStore {
     /// early at the common ancestor (where height_index already points
     /// to this hash), so a 10-block reorg only writes 10 entries.
     ///
-    /// This is the ONLY method that writes to height_index/hash_to_height.
-    /// Called after every block insertion that becomes the new tip.
+    /// Writes to height_index/hash_to_height via the tip-down healing walk,
+    /// and (INC-I-144) deletes above-tip fossils via the purge step below.
+    /// It is NOT the only writer of these CFs: `put_block_canonical`,
+    /// `seed_canonical_index`, and `rebuild_canonical_index` also write them,
+    /// and `remove_canonical_entry` deletes from them on the rollback/reorg
+    /// rewind paths. Called after every block insertion that becomes the new
+    /// tip.
     pub fn set_canonical_chain(&self, tip_hash: Hash, tip_height: u64) -> Result<(), StorageError> {
         let cf_height = self.db.cf_handle(CF_HEIGHT_INDEX).unwrap();
         let cf_h2h = self.db.cf_handle(CF_HASH_TO_HEIGHT).unwrap();
 
         let mut batch = rocksdb::WriteBatch::default();
+
+        // INC-I-144: purge-above-tip — the disconnect half of a symmetric
+        // SetTip (Bitcoin-Core parallel). When the canonical tip moves DOWN
+        // (reorg/rollback to a shorter branch), every height above the new tip
+        // is no longer canonical and must not retain its rolled-back orphan
+        // index entry. Forward-scan from `tip_height + 1`, deleting BOTH CFs
+        // for each occupied height, and stop at the first gap. The reverse-map
+        // delete needs the OLD hash at that height, so read it before deleting.
+        // In normal forward growth `tip_height + 1` is empty → a single lookup,
+        // zero-cost no-op. Batched with the healing writes below for atomicity.
+        let mut purged = 0u64;
+        let mut above = tip_height + 1;
+        while let Some(old_hash) = self.get_hash_by_height(above)? {
+            batch.delete_cf(cf_height, above.to_le_bytes());
+            batch.delete_cf(cf_h2h, old_hash.as_bytes());
+            purged += 1;
+            above += 1;
+        }
+
         let mut current_hash = tip_hash;
         let mut height = tip_height;
         let mut updated = 0u64;
@@ -145,18 +169,52 @@ impl BlockStore {
             height -= 1;
         }
 
-        if updated > 0 {
+        if updated > 0 || purged > 0 {
             self.db.write(batch)?;
-            if updated > 1 {
+            if updated > 1 || purged > 0 {
                 info!(
-                    "[BLOCK_STORE] Canonical chain updated: {} entries (tip={}, h={})",
+                    "[BLOCK_STORE] Canonical chain updated: {} entries, {} fossils purged (tip={}, h={})",
                     updated,
+                    purged,
                     &tip_hash.to_string()[..16],
                     tip_height
                 );
             }
         }
 
+        Ok(())
+    }
+
+    /// Remove the canonical index entry for a single rewound height, guarded on
+    /// the currently-stored hash (INC-I-144).
+    ///
+    /// Deletes `height_index[height]` ONLY IF it currently points at
+    /// `expected_hash`, and removes `hash_to_height[expected_hash]`, in one
+    /// `WriteBatch`. If the current entry does not match `expected_hash` (a
+    /// newer branch already overwrote it) or is absent, this is a no-op —
+    /// safe and idempotent.
+    ///
+    /// This is the disconnect half of the symmetric SetTip (Bitcoin-Core
+    /// parallel): it is wired into the rollback/reorg rewind paths
+    /// (`rollback_one_block`, `execute_reorg`) so a rolled-back height cannot
+    /// retain a fossil orphan entry. `set_canonical_chain`'s purge-above-tip
+    /// covers the reorg-to-lower-tip case; this covers standalone rollback
+    /// (which has no paired re-apply) and immediate reorg-apply aborts.
+    pub fn remove_canonical_entry(
+        &self,
+        height: u64,
+        expected_hash: Hash,
+    ) -> Result<(), StorageError> {
+        if let Some(current) = self.get_hash_by_height(height)? {
+            if current == expected_hash {
+                let cf_height = self.db.cf_handle(CF_HEIGHT_INDEX).unwrap();
+                let cf_h2h = self.db.cf_handle(CF_HASH_TO_HEIGHT).unwrap();
+                let mut batch = rocksdb::WriteBatch::default();
+                batch.delete_cf(cf_height, height.to_le_bytes());
+                batch.delete_cf(cf_h2h, expected_hash.as_bytes());
+                self.db.write(batch)?;
+            }
+        }
         Ok(())
     }
 

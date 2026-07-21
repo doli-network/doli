@@ -216,6 +216,18 @@ impl Node {
             state.best_slot = parent_slot;
         }
 
+        // INC-I-144: purge the height-index fossil for the rewound block in the
+        // same rollback that rewinds chain_state. Standalone rollback has NO
+        // paired re-apply (unlike a reorg, which heals via set_canonical_chain
+        // on the winning branch), so without this the rolled-back orphan at
+        // `local_height` remains a permanent fossil — get_block_by_height keeps
+        // serving it. The deleter is guarded on the stored hash, so a newer
+        // branch that already overwrote the entry is not clobbered.
+        if let Some(orphan) = self.block_store.get_hash_by_height(local_height)? {
+            self.block_store
+                .remove_canonical_entry(local_height, orphan)?;
+        }
+
         // Update sync manager: local tip + reset fork signals
         {
             let mut sync = self.sync_manager.write().await;

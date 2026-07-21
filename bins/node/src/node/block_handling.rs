@@ -782,6 +782,21 @@ impl Node {
                 }
             }
 
+            // INC-I-144: purge height-index fossils for every rewound height in
+            // the same reorg that rewinds chain_state. execute_reorg rewinds
+            // independently of rollback_one_block (its own undo loop above), so
+            // the deleter must be wired here too. set_canonical_chain's
+            // purge-above-tip re-heals when the subsequent apply succeeds, but
+            // an immediate apply abort (first fork block fails → early Ok return
+            // below) would otherwise leave the whole target_height+1..=current
+            // range as permanent fossils. Purging here converts that to
+            // fail-visible-missing. Bounded by rollback_count (reorg depth).
+            for h in (target_height + 1)..=current_height {
+                if let Some(orphan) = self.block_store.get_hash_by_height(h)? {
+                    self.block_store.remove_canonical_entry(h, orphan)?;
+                }
+            }
+
             // Rebuild producer liveness map from canonical block_store.
             // Critical: rollback does NOT undo liveness entries from fork blocks,
             // causing nodes to have divergent live_producers lists and conflicting
