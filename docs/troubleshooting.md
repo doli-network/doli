@@ -114,7 +114,8 @@ curl -X POST http://127.0.0.1:8500 \
 ```bash
 ./target/release/doli-node run \
     --bootstrap /dns4/seed1.doli.network/tcp/30300 \
-    --bootstrap /dns4/seed2.doli.network/tcp/30300
+    --bootstrap /dns4/seed2.doli.network/tcp/30300 \
+    --bootstrap /dns4/seed3.doli.network/tcp/30300
 ```
 
 ---

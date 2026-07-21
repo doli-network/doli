@@ -106,7 +106,8 @@ doli-node --network mainnet run \
     --rpc-port 8500 \
     --archive-to /mainnet/seed/blocks \
     --bootstrap /dns4/seed1.doli.network/tcp/30300 \
-    --bootstrap /dns4/seed2.doli.network/tcp/30300
+    --bootstrap /dns4/seed2.doli.network/tcp/30300 \
+    --bootstrap /dns4/seed3.doli.network/tcp/30300
 ```
 
 Key flags:
@@ -340,7 +341,8 @@ doli-node --network mainnet run \
     --rpc-bind 0.0.0.0 \
     --archive-to /path/to/archive \
     --bootstrap /dns4/seed1.doli.network/tcp/30300 \
-    --bootstrap /dns4/seed2.doli.network/tcp/30300
+    --bootstrap /dns4/seed2.doli.network/tcp/30300 \
+    --bootstrap /dns4/seed3.doli.network/tcp/30300
 ```
 
 ---

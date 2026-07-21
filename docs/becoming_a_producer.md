@@ -164,7 +164,15 @@ doli-node run \
     --network mainnet \
     --producer \
     --producer-key ~/.doli/keys/my_producer.json \
-    --bootstrap /dns4/seed1.doli.network/tcp/30300
+    --bootstrap /dns4/seed1.doli.network/tcp/30300 \
+    --bootstrap /dns4/seed2.doli.network/tcp/30300 \
+    --bootstrap /dns4/seed3.doli.network/tcp/30300
+```
+
+Bootstrap from all three seeds (seed1/seed2/seed3.doli.network) for redundancy. Alternatively, use the round-robin record that resolves to all three:
+
+```bash
+    --bootstrap /dns4/seeds.doli.network/tcp/30300
 ```
 
 ### 3.6. Verify Production

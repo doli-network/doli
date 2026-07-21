@@ -30,6 +30,7 @@ AI5="${DOLI_AI5:?Set DOLI_AI5=user@host}"    # Mainnet N9-N12 + Testnet NT6-NT12
 MN_BINARY="/mainnet/bin/doli-node"
 MN_BOOTSTRAP_1="/dns4/seed1.doli.network/tcp/30300"
 MN_BOOTSTRAP_2="/dns4/seed2.doli.network/tcp/30300"
+MN_BOOTSTRAP_3="/dns4/seed3.doli.network/tcp/30300"
 
 mn_p2p_port()     { echo $((30300 + $1)); }
 mn_rpc_port()     { echo $((8500  + $1)); }
@@ -48,9 +49,15 @@ tn_metrics_port() { echo $((19000 + $1)); }
 generate_producer_service() {
   local net="$1" binary="$2" node_num="$3" data_dir="$4" key_file="$5"
   local p2p="$6" rpc="$7" metrics="$8" boot1="$9" boot2="${10}" log_file="${11}"
+  local boot3="${12:-}"
 
   local prefix="N"
   [[ "$net" == "testnet" ]] && prefix="NT"
+
+  local bootstrap_flags=""
+  [[ -n "$boot1" ]] && bootstrap_flags+="--bootstrap ${boot1} \\"$'\n'"  "
+  [[ -n "$boot2" ]] && bootstrap_flags+="--bootstrap ${boot2} \\"$'\n'"  "
+  [[ -n "$boot3" ]] && bootstrap_flags+="--bootstrap ${boot3} \\"$'\n'"  "
 
   cat <<EOF
 [Unit]
@@ -71,9 +78,7 @@ ExecStart=${binary} \\
   --p2p-port ${p2p} \\
   --rpc-port ${rpc} --rpc-bind 0.0.0.0 \\
   --metrics-port ${metrics} \\
-  --bootstrap ${boot1} \\
-  --bootstrap ${boot2} \\
-  --yes --force-start
+  ${bootstrap_flags}--yes --force-start
 Restart=always
 RestartSec=10
 StartLimitIntervalSec=600
@@ -90,9 +95,15 @@ EOF
 generate_named_producer_service() {
   local net="$1" binary="$2" name="$3" data_dir="$4" key_file="$5"
   local p2p="$6" rpc="$7" metrics="$8" boot1="$9" boot2="${10}" log_file="${11}"
+  local boot3="${12:-}"
 
   local display_name
   display_name=$(ucfirst "$name")
+
+  local bootstrap_flags=""
+  [[ -n "$boot1" ]] && bootstrap_flags+="--bootstrap ${boot1} \\"$'\n'"  "
+  [[ -n "$boot2" ]] && bootstrap_flags+="--bootstrap ${boot2} \\"$'\n'"  "
+  [[ -n "$boot3" ]] && bootstrap_flags+="--bootstrap ${boot3} \\"$'\n'"  "
 
   cat <<EOF
 [Unit]
@@ -113,9 +124,7 @@ ExecStart=${binary} \\
   --p2p-port ${p2p} \\
   --rpc-port ${rpc} --rpc-bind 0.0.0.0 \\
   --metrics-port ${metrics} \\
-  --bootstrap ${boot1} \\
-  --bootstrap ${boot2} \\
-  --yes --force-start
+  ${bootstrap_flags}--yes --force-start
 Restart=always
 RestartSec=10
 StartLimitIntervalSec=600
@@ -229,7 +238,7 @@ install_mainnet() {
     svc=$(generate_producer_service "mainnet" "$MN_BINARY" "$N" \
       "/mainnet/n${N}/data" "/mainnet/n${N}/keys/producer.json" \
       "$(mn_p2p_port $N)" "$(mn_rpc_port $N)" "$(mn_metrics_port $N)" \
-      "$MN_BOOTSTRAP_1" "$MN_BOOTSTRAP_2" "/var/log/doli/mainnet/n${N}.log")
+      "$MN_BOOTSTRAP_1" "$MN_BOOTSTRAP_2" "/var/log/doli/mainnet/n${N}.log" "$MN_BOOTSTRAP_3")
     install_remote "$AI1" "doli-mainnet-n${N}" "$svc" "$dry_run"
   done
 
@@ -238,7 +247,7 @@ install_mainnet() {
     svc=$(generate_producer_service "mainnet" "$MN_BINARY" "$N" \
       "/mainnet/n${N}/data" "/mainnet/n${N}/keys/producer.json" \
       "$(mn_p2p_port $N)" "$(mn_rpc_port $N)" "$(mn_metrics_port $N)" \
-      "$MN_BOOTSTRAP_1" "$MN_BOOTSTRAP_2" "/var/log/doli/mainnet/n${N}.log")
+      "$MN_BOOTSTRAP_1" "$MN_BOOTSTRAP_2" "/var/log/doli/mainnet/n${N}.log" "$MN_BOOTSTRAP_3")
     install_remote "$AI2" "doli-mainnet-n${N}" "$svc" "$dry_run"
   done
 
@@ -247,7 +256,7 @@ install_mainnet() {
     svc=$(generate_producer_service "mainnet" "$MN_BINARY" "$N" \
       "/mainnet/n${N}/data" "/mainnet/n${N}/keys/producer.json" \
       "$(mn_p2p_port $N)" "$(mn_rpc_port $N)" "$(mn_metrics_port $N)" \
-      "$MN_BOOTSTRAP_1" "$MN_BOOTSTRAP_2" "/var/log/doli/mainnet/n${N}.log")
+      "$MN_BOOTSTRAP_1" "$MN_BOOTSTRAP_2" "/var/log/doli/mainnet/n${N}.log" "$MN_BOOTSTRAP_3")
     install_remote "$AI4" "doli-mainnet-n${N}" "$svc" "$dry_run"
   done
 
@@ -256,7 +265,7 @@ install_mainnet() {
     svc=$(generate_producer_service "mainnet" "$MN_BINARY" "$N" \
       "/mainnet/n${N}/data" "/mainnet/n${N}/keys/producer.json" \
       "$(mn_p2p_port $N)" "$(mn_rpc_port $N)" "$(mn_metrics_port $N)" \
-      "$MN_BOOTSTRAP_1" "$MN_BOOTSTRAP_2" "/var/log/doli/mainnet/n${N}.log")
+      "$MN_BOOTSTRAP_1" "$MN_BOOTSTRAP_2" "/var/log/doli/mainnet/n${N}.log" "$MN_BOOTSTRAP_3")
     install_remote "$AI5" "doli-mainnet-n${N}" "$svc" "$dry_run"
   done
 
@@ -264,14 +273,14 @@ install_mainnet() {
   svc=$(generate_named_producer_service "mainnet" "$MN_BINARY" "santiago" \
     "/mainnet/santiago/data" "/mainnet/santiago/keys/wallet.json" \
     30313 8513 9013 \
-    "$MN_BOOTSTRAP_1" "$MN_BOOTSTRAP_2" "/var/log/doli/mainnet/santiago.log")
+    "$MN_BOOTSTRAP_1" "$MN_BOOTSTRAP_2" "/var/log/doli/mainnet/santiago.log" "$MN_BOOTSTRAP_3")
   install_remote "$AI3" "doli-mainnet-santiago" "$svc" "$dry_run"
 
   # IVAN on ai3
   svc=$(generate_named_producer_service "mainnet" "$MN_BINARY" "ivan" \
     "/mainnet/ivan/data" "/mainnet/ivan/keys/wallet.json" \
     30314 8514 9014 \
-    "$MN_BOOTSTRAP_1" "$MN_BOOTSTRAP_2" "/var/log/doli/mainnet/ivan.log")
+    "$MN_BOOTSTRAP_1" "$MN_BOOTSTRAP_2" "/var/log/doli/mainnet/ivan.log" "$MN_BOOTSTRAP_3")
   install_remote "$AI3" "doli-mainnet-ivan" "$svc" "$dry_run"
 
   # Reload systemd
@@ -379,7 +388,7 @@ validate_mainnet() {
     svc=$(generate_producer_service "mainnet" "$MN_BINARY" "$N" \
       "/mainnet/n${N}/data" "/mainnet/n${N}/keys/producer.json" \
       "$(mn_p2p_port $N)" "$(mn_rpc_port $N)" "$(mn_metrics_port $N)" \
-      "$MN_BOOTSTRAP_1" "$MN_BOOTSTRAP_2" "/var/log/doli/mainnet/n${N}.log")
+      "$MN_BOOTSTRAP_1" "$MN_BOOTSTRAP_2" "/var/log/doli/mainnet/n${N}.log" "$MN_BOOTSTRAP_3")
     validate_service "$AI1" "doli-mainnet-n${N}" "$svc" "N${N} (ai1)"
   done
 
@@ -388,7 +397,7 @@ validate_mainnet() {
     svc=$(generate_producer_service "mainnet" "$MN_BINARY" "$N" \
       "/mainnet/n${N}/data" "/mainnet/n${N}/keys/producer.json" \
       "$(mn_p2p_port $N)" "$(mn_rpc_port $N)" "$(mn_metrics_port $N)" \
-      "$MN_BOOTSTRAP_1" "$MN_BOOTSTRAP_2" "/var/log/doli/mainnet/n${N}.log")
+      "$MN_BOOTSTRAP_1" "$MN_BOOTSTRAP_2" "/var/log/doli/mainnet/n${N}.log" "$MN_BOOTSTRAP_3")
     validate_service "$AI2" "doli-mainnet-n${N}" "$svc" "N${N} (ai2)"
   done
 
@@ -397,7 +406,7 @@ validate_mainnet() {
     svc=$(generate_producer_service "mainnet" "$MN_BINARY" "$N" \
       "/mainnet/n${N}/data" "/mainnet/n${N}/keys/producer.json" \
       "$(mn_p2p_port $N)" "$(mn_rpc_port $N)" "$(mn_metrics_port $N)" \
-      "$MN_BOOTSTRAP_1" "$MN_BOOTSTRAP_2" "/var/log/doli/mainnet/n${N}.log")
+      "$MN_BOOTSTRAP_1" "$MN_BOOTSTRAP_2" "/var/log/doli/mainnet/n${N}.log" "$MN_BOOTSTRAP_3")
     validate_service "$AI4" "doli-mainnet-n${N}" "$svc" "N${N} (ai4)"
   done
 
@@ -406,7 +415,7 @@ validate_mainnet() {
     svc=$(generate_producer_service "mainnet" "$MN_BINARY" "$N" \
       "/mainnet/n${N}/data" "/mainnet/n${N}/keys/producer.json" \
       "$(mn_p2p_port $N)" "$(mn_rpc_port $N)" "$(mn_metrics_port $N)" \
-      "$MN_BOOTSTRAP_1" "$MN_BOOTSTRAP_2" "/var/log/doli/mainnet/n${N}.log")
+      "$MN_BOOTSTRAP_1" "$MN_BOOTSTRAP_2" "/var/log/doli/mainnet/n${N}.log" "$MN_BOOTSTRAP_3")
     validate_service "$AI5" "doli-mainnet-n${N}" "$svc" "N${N} (ai5)"
   done
 
@@ -414,14 +423,14 @@ validate_mainnet() {
   svc=$(generate_named_producer_service "mainnet" "$MN_BINARY" "santiago" \
     "/mainnet/santiago/data" "/mainnet/santiago/keys/wallet.json" \
     30313 8513 9013 \
-    "$MN_BOOTSTRAP_1" "$MN_BOOTSTRAP_2" "/var/log/doli/mainnet/santiago.log")
+    "$MN_BOOTSTRAP_1" "$MN_BOOTSTRAP_2" "/var/log/doli/mainnet/santiago.log" "$MN_BOOTSTRAP_3")
   validate_service "$AI3" "doli-mainnet-santiago" "$svc" "SANTIAGO (ai3)"
 
   # IVAN on ai3
   svc=$(generate_named_producer_service "mainnet" "$MN_BINARY" "ivan" \
     "/mainnet/ivan/data" "/mainnet/ivan/keys/wallet.json" \
     30314 8514 9014 \
-    "$MN_BOOTSTRAP_1" "$MN_BOOTSTRAP_2" "/var/log/doli/mainnet/ivan.log")
+    "$MN_BOOTSTRAP_1" "$MN_BOOTSTRAP_2" "/var/log/doli/mainnet/ivan.log" "$MN_BOOTSTRAP_3")
   validate_service "$AI3" "doli-mainnet-ivan" "$svc" "IVAN (ai3)"
   echo ""
 }

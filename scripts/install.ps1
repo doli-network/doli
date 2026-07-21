@@ -103,7 +103,7 @@ try {
         Start-Sleep -Seconds 2
     }
 
-    $BinPath = "`"$InstallDir\doli-node.exe`" --network mainnet --data-dir `"$MainnetDir`" run --yes --force-start --p2p-port 30300 --rpc-port 8500 --rpc-bind 127.0.0.1 --metrics-port 9000 --bootstrap /dns4/seed1.doli.network/tcp/30300 --bootstrap /dns4/seed2.doli.network/tcp/30300"
+    $BinPath = "`"$InstallDir\doli-node.exe`" --network mainnet --data-dir `"$MainnetDir`" run --yes --force-start --p2p-port 30300 --rpc-port 8500 --rpc-bind 127.0.0.1 --metrics-port 9000 --bootstrap /dns4/seed1.doli.network/tcp/30300 --bootstrap /dns4/seed2.doli.network/tcp/30300 --bootstrap /dns4/seed3.doli.network/tcp/30300"
 
     sc.exe create $ServiceName binPath= $BinPath start= auto DisplayName= "DOLI Mainnet Node" | Out-Null
     sc.exe description $ServiceName "DOLI blockchain node — mainnet" | Out-Null

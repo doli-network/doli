@@ -138,7 +138,7 @@ Producers distributed across 5 servers. N1-N5 = maintainers + producers. N6-N12 
 | SANTIAGO | ai3 | 30313 | 8513 | 9013 | `doli-mainnet-santiago` |
 | IVAN | ai3 | 30314 | 8514 | 9014 | `doli-mainnet-ivan` |
 
-All bootstrap from `--bootstrap /dns4/seed1.doli.network/tcp/30300 --bootstrap /dns4/seed2.doli.network/tcp/30300`.
+All bootstrap from `--bootstrap /dns4/seed1.doli.network/tcp/30300 --bootstrap /dns4/seed2.doli.network/tcp/30300 --bootstrap /dns4/seed3.doli.network/tcp/30300`.
 
 Keys: `/mainnet/n{N}/keys/producer.json`. Data: `/mainnet/n{N}/data/`.
 
@@ -288,6 +288,7 @@ All producers use DNS-based bootstrap:
 ```
 --bootstrap /dns4/seed1.doli.network/tcp/30300
 --bootstrap /dns4/seed2.doli.network/tcp/30300
+--bootstrap /dns4/seed3.doli.network/tcp/30300
 ```
 
 ### Log Paths
