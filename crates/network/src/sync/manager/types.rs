@@ -452,6 +452,11 @@ pub(crate) struct SnapSyncState {
     /// to header-first sync. Prevents the 8/10 → 10/10 gap where the sync
     /// engine decides "not enough peers" before discv5 completes its first walk.
     pub discv5_peer_grace_deadline: Option<Instant>,
+    /// INC-I-143 F4: count of snap anchors refused at admission because the served
+    /// state root disagreed with the quorum root (Gate 1) or the anchor
+    /// (hash, height) was not corroborated by a STATUS quorum (Gate 2). Observability
+    /// hook for INV-SYNC-011's `snap_escalations_without_fork_evidence` signal.
+    pub integrity_refusals: u64,
 }
 
 impl SnapSyncState {
@@ -475,6 +480,7 @@ impl SnapSyncState {
             store_floor: 1, // Default: full-sync node has block 1
             last_snap_completed: None,
             discv5_peer_grace_deadline: None,
+            integrity_refusals: 0,
         }
     }
 }

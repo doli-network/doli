@@ -11,6 +11,15 @@ use crypto::Hash;
 use super::{SyncManager, SyncPhase, SyncPipelineData, SyncState, VerifiedSnapshot};
 
 impl SyncManager {
+    /// Snap admission quorum threshold: the snap floor (`self.snap.quorum`) or a
+    /// majority of connected peers, whichever is larger, capped at 5. Shared by the
+    /// state-root vote quorum and the INC-I-143 F4 anchor-height corroboration so
+    /// both admission checks use one definition.
+    fn snap_quorum(&self) -> usize {
+        let total_peers = self.peers.len();
+        std::cmp::max(self.snap.quorum, std::cmp::min(total_peers / 2 + 1, 5))
+    }
+
     /// Handle a StateRoot response: add vote and check quorum.
     /// Votes are grouped by (height, root) — peers must agree on both to form
     /// a quorum. Votes from peers too far below the target height are rejected
@@ -64,7 +73,6 @@ impl SyncManager {
         //
         // Example: 12 connected peers → quorum = max(3, 12/2+1) = 7.
         // A partition of 3 nodes can never reach 7, even if they all agree.
-        let total_peers = self.peers.len();
         // Cap quorum at 5 regardless of peer count. The uncapped formula
         // (total_peers/2+1) produces 26-31 for 50-60 peers, which is never
         // reachable within root_timeout (15s) on an active chain with 10s
@@ -72,7 +80,7 @@ impl SyncManager {
         // 5 tolerates 2 colluding attackers — the real protection is
         // compute_state_root_from_bytes() verification after download, not
         // quorum size. Safe for 1K-5K+ node networks. (INC-I-012 F4)
-        let quorum = std::cmp::max(self.snap.quorum, std::cmp::min(total_peers / 2 + 1, 5));
+        let quorum = self.snap_quorum();
 
         let votes_snapshot: Vec<(PeerId, Hash, u64, Hash)> =
             if let SyncPipelineData::SnapCollecting { votes, .. } = &self.pipeline_data {
@@ -148,62 +156,103 @@ impl SyncManager {
         epoch_accumulators_bytes: Option<Vec<u8>>,
         epoch_state_bytes: Option<Vec<u8>>,
     ) {
-        if let SyncPipelineData::SnapDownloading {
-            target_height,
-            quorum_root,
-            ..
-        } = &self.pipeline_data
-        {
-            // INC-I-004 Fix: Reject snapshots whose height is too far below the
-            // quorum target. Without this check, a peer that was in the quorum
-            // at height 2788 could send a stale snapshot at height 2481, which
-            // the node would accept — leaving it 300+ blocks behind with wrong
-            // scheduling state, unable to apply any subsequent blocks.
-            let min_acceptable = target_height.saturating_sub(100);
-            if block_height < min_acceptable {
+        // Extract the download-state evidence as copies, then drop the pipeline
+        // borrow so the admission gates below may read self.peers and take &mut self
+        // on the refuse paths.
+        let (target_height, quorum_root) = match &self.pipeline_data {
+            SyncPipelineData::SnapDownloading {
+                target_height,
+                quorum_root,
+                ..
+            } => (*target_height, *quorum_root),
+            _ => {
                 warn!(
-                    "[SNAP_SYNC] Rejecting stale snapshot from {} at height={} \
-                     (target={}, min_acceptable={}) — trying alternate peer",
-                    peer, block_height, target_height, min_acceptable
+                    "[SNAP_SYNC] Unexpected snapshot from {} — not in SnapDownloading state, ignoring",
+                    peer
                 );
-                self.handle_snap_download_error(peer);
                 return;
             }
+        };
 
-            if response_root != *quorum_root {
-                info!(
-                    "[SNAP_SYNC] Peer {} advanced since vote: response_root={:.16} != quorum_root={:.16} (height={}). Accepting — node verifies independently.",
-                    peer, response_root, quorum_root, block_height
-                );
-            }
-            info!(
-                "[SNAP_SYNC] Snapshot received from {} — height={}, storing as SnapReady (node will verify root)",
-                peer, block_height
-            );
-            self.set_syncing(
-                SyncPhase::SnapDownloading, // Keep SnapDownloading phase — SnapReady is just data
-                SyncPipelineData::SnapReady {
-                    snapshot: VerifiedSnapshot {
-                        block_hash,
-                        block_height,
-                        chain_state,
-                        utxo_set,
-                        producer_set,
-                        state_root: response_root,
-                        block_header_bytes,
-                        epoch_bond_snapshot_bytes,
-                        epoch_accumulators_bytes,
-                        epoch_state_bytes,
-                    },
-                },
-                "snap_snapshot_received",
-            );
-        } else {
+        // INC-I-004 Fix: Reject snapshots whose height is too far below the
+        // quorum target. Without this check, a peer that was in the quorum
+        // at height 2788 could send a stale snapshot at height 2481, which
+        // the node would accept — leaving it 300+ blocks behind with wrong
+        // scheduling state, unable to apply any subsequent blocks.
+        let min_acceptable = target_height.saturating_sub(100);
+        if block_height < min_acceptable {
             warn!(
-                "[SNAP_SYNC] Unexpected snapshot from {} — not in SnapDownloading state, ignoring",
-                peer
+                "[SNAP_SYNC] Rejecting stale snapshot from {} at height={} \
+                 (target={}, min_acceptable={}) — trying alternate peer",
+                peer, block_height, target_height, min_acceptable
             );
+            self.handle_snap_download_error(peer);
+            return;
         }
+
+        // INC-I-143 F4 Gate 1 (D1): admission-time integrity on the state ROOT.
+        // The served state root MUST match the quorum-agreed root. The old code
+        // logged this mismatch at info! and ACCEPTED the snapshot anyway, discarding
+        // the one independent cross-peer reference — exactly how seed1 spliced a
+        // forked anchor (diagnosis [E7]). No accept-with-warning path survives:
+        // refuse, count it, and let handle_snap_download_error pick an alternate or
+        // fall back loudly.
+        if response_root != quorum_root {
+            self.snap.integrity_refusals += 1;
+            warn!(
+                "[SNAP_SYNC] F4 REFUSE (root): response_root={:.16} != quorum_root={:.16} from {} (h={}) — refusing snapshot, trying alternate peer (refusals={})",
+                response_root, quorum_root, peer, block_height, self.snap.integrity_refusals
+            );
+            self.handle_snap_download_error(peer);
+            return;
+        }
+
+        // INC-I-143 F4 Gate 2 (D2 anchor-height): derive the install HEIGHT from the
+        // same quorum evidence that admits the anchor. The serve side hands back the
+        // peer's current-tip (best_hash, best_height) verbatim; a lone peer whose
+        // height was off by one spliced the whole fleet to a -1 offset + 45-block
+        // hole. Require a STATUS quorum of current peers to corroborate the served
+        // (block_hash, block_height) pair — the height the network associates with
+        // that hash is the height to install, never a single peer's uncorroborated
+        // claim. If quorum evidence for the height is absent, refuse the anchor.
+        let quorum = self.snap_quorum();
+        let corroborators = self
+            .peers
+            .values()
+            .filter(|s| s.best_hash == block_hash && s.best_height == block_height)
+            .count();
+        if corroborators < quorum {
+            self.snap.integrity_refusals += 1;
+            warn!(
+                "[SNAP_SYNC] F4 REFUSE (height): anchor ({:.16}, h={}) corroborated by only {}/{} peers — refusing uncorroborated height, trying alternate peer (refusals={})",
+                block_hash, block_height, corroborators, quorum, self.snap.integrity_refusals
+            );
+            self.handle_snap_download_error(peer);
+            return;
+        }
+
+        info!(
+            "[SNAP_SYNC] F4 ADMIT: anchor ({:.16}, h={}) — root matches quorum, height corroborated by {}/{} peers; storing as SnapReady (node re-verifies state root)",
+            block_hash, block_height, corroborators, quorum
+        );
+        self.set_syncing(
+            SyncPhase::SnapDownloading, // Keep SnapDownloading phase — SnapReady is just data
+            SyncPipelineData::SnapReady {
+                snapshot: VerifiedSnapshot {
+                    block_hash,
+                    block_height,
+                    chain_state,
+                    utxo_set,
+                    producer_set,
+                    state_root: response_root,
+                    block_header_bytes,
+                    epoch_bond_snapshot_bytes,
+                    epoch_accumulators_bytes,
+                    epoch_state_bytes,
+                },
+            },
+            "snap_snapshot_received",
+        );
     }
 
     /// Handle an error response while in SnapDownloading state.
