@@ -777,10 +777,8 @@ impl Node {
 
                 if actual_inputs != expected_inputs {
                     anyhow::bail!(
-                        "[ECON_EPOCH_INPUTS_MISMATCH] EpochReward pool inputs mismatch at height={}: expected {} inputs, got {}",
-                        height,
-                        expected_inputs.len(),
-                        actual_inputs.len()
+                        "{}",
+                        format_epoch_inputs_mismatch(height, &expected_inputs, &actual_inputs)
                     );
                 }
             } else if !epoch_tx.inputs.is_empty() {
@@ -1184,5 +1182,158 @@ impl Node {
         }
 
         Ok(())
+    }
+}
+
+// === INC-I-143 D5: EpochReward pool-input mismatch diagnostic ===
+
+/// Max differing outpoints reported per side in an EpochReward pool-input
+/// mismatch diagnostic. Bounds log volume so a large divergence (e.g. the
+/// 360-input mismatch seen in INC-I-143) cannot flood the log.
+const EPOCH_INPUTS_MISMATCH_SAMPLE: usize = 5;
+
+/// Build a content-aware diagnostic for an EpochReward pool-input mismatch.
+///
+/// INC-I-143 (D5): the previous message printed only the two input COUNTS,
+/// which were often EQUAL on a failure line (e.g. "expected 360 inputs, got
+/// 360") because the divergence was in outpoint IDENTITY, not cardinality.
+/// That actively misdirected diagnosis (seed2/seed3/n11 halt, 2026-07). This
+/// reports WHAT differs — the symmetric difference of the two outpoint sets —
+/// bounded to the first `EPOCH_INPUTS_MISMATCH_SAMPLE` entries per side so a
+/// large mismatch cannot flood the log.
+///
+/// Pure and deterministic: identical inputs on every node produce an identical
+/// string. It does NOT change the pass/fail decision — only the message text.
+fn format_epoch_inputs_mismatch(
+    height: u64,
+    expected: &[(crypto::Hash, u32)],
+    actual: &[(crypto::Hash, u32)],
+) -> String {
+    use std::collections::BTreeSet;
+    let expected_set: BTreeSet<(crypto::Hash, u32)> = expected.iter().copied().collect();
+    let actual_set: BTreeSet<(crypto::Hash, u32)> = actual.iter().copied().collect();
+
+    let missing: Vec<(crypto::Hash, u32)> = expected_set.difference(&actual_set).copied().collect();
+    let unexpected: Vec<(crypto::Hash, u32)> =
+        actual_set.difference(&expected_set).copied().collect();
+
+    let sample = |ops: &[(crypto::Hash, u32)]| -> String {
+        ops.iter()
+            .take(EPOCH_INPUTS_MISMATCH_SAMPLE)
+            .map(|(h, i)| format!("{}:{}", &h.to_hex()[..16], i))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+
+    format!(
+        "[ECON_EPOCH_INPUTS_MISMATCH] EpochReward pool inputs mismatch at height={}: \
+         expected {} inputs, got {} ({} differing outpoints). \
+         missing_from_actual ({}): [{}]; unexpected_in_actual ({}): [{}]",
+        height,
+        expected.len(),
+        actual.len(),
+        missing.len() + unexpected.len(),
+        missing.len(),
+        sample(&missing),
+        unexpected.len(),
+        sample(&unexpected),
+    )
+}
+
+#[cfg(test)]
+mod inc_i_143_d5_tests {
+    //! INC-I-143 D5: the EpochReward pool-input mismatch diagnostic must report
+    //! WHAT differs, not just the (often equal) input counts.
+    //!
+    //! OUTPUT CONTRACT:
+    //!   Function under test: format_epoch_inputs_mismatch(height, expected, actual)
+    //!   Output: the diagnostic String bailed at validation_checks.rs (~L779),
+    //!           post-activation EpochReward pool-input verification failure branch.
+    //! INPUT PARTITIONS:
+    //!   P1. equal-count, content-divergent sets (the INC-I-143 case) — MUST name
+    //!       the differing outpoints on BOTH sides; MUST NOT reduce to equal counts.
+    //!   P2. large divergence (>SAMPLE differing per side) — MUST bound the listing
+    //!       to SAMPLE entries per side (no log flood) while reporting true totals.
+    //!   P3. pure/deterministic — identical inputs yield an identical string.
+
+    use super::*;
+
+    fn oc(byte: u8, index: u32) -> (crypto::Hash, u32) {
+        (crypto::Hash::from_bytes([byte; 32]), index)
+    }
+
+    fn hex16(byte: u8) -> String {
+        crypto::Hash::from_bytes([byte; 32]).to_hex()[..16].to_string()
+    }
+
+    // P1: equal-count, content-divergent sets. Reproduces INC-I-143 D5 —
+    // pre-fix this printed only "expected 3 inputs, got 3" (equal counts).
+    #[test]
+    fn equal_count_divergent_sets_report_the_differing_outpoints() {
+        // Both sides have 3 inputs (EQUAL count) but differ in identity:
+        // expected = {oc1, oc2, oc3}; actual = {oc1, oc2, oc9}.
+        let expected = vec![oc(1, 0), oc(2, 0), oc(3, 0)];
+        let actual = vec![oc(1, 0), oc(2, 0), oc(9, 0)];
+
+        let msg = format_epoch_inputs_mismatch(108_720, &expected, &actual);
+
+        // Counts retained for continuity with prior tooling.
+        assert!(msg.contains("expected 3 inputs, got 3"), "msg: {msg}");
+        // The D5 fix: the differing outpoints MUST be named.
+        // oc(3) is missing-from-actual; oc(9) is unexpected-in-actual.
+        assert!(
+            msg.contains(&hex16(3)),
+            "must name missing outpoint; msg: {msg}"
+        );
+        assert!(
+            msg.contains(&hex16(9)),
+            "must name unexpected outpoint; msg: {msg}"
+        );
+        // Must NOT collapse to only-equal-counts with no identity info.
+        assert!(
+            msg.contains("differing"),
+            "msg must quantify what differs: {msg}"
+        );
+    }
+
+    // P2: large divergence is bounded — a 40-outpoint mismatch cannot flood.
+    #[test]
+    fn large_divergence_is_bounded_but_reports_true_totals() {
+        // 20 distinct expected (bytes 0..20), 20 distinct actual (bytes 20..40),
+        // zero overlap => 40 differing outpoints.
+        let expected: Vec<_> = (0u8..20).map(|b| oc(b, 0)).collect();
+        let actual: Vec<_> = (20u8..40).map(|b| oc(b, 0)).collect();
+
+        let msg = format_epoch_inputs_mismatch(1, &expected, &actual);
+
+        // True totals reported even though the listing is truncated.
+        assert!(msg.contains("40 differing"), "msg: {msg}");
+        assert!(msg.contains("missing_from_actual (20)"), "msg: {msg}");
+        assert!(msg.contains("unexpected_in_actual (20)"), "msg: {msg}");
+        // Bounded to SAMPLE (5) per side, ordered by Hash: bytes 0..5 shown,
+        // byte 5 truncated out; bytes 20..25 shown, byte 25 truncated out.
+        assert!(msg.contains(&hex16(0)), "first missing shown; msg: {msg}");
+        assert!(
+            !msg.contains(&hex16(5)),
+            "6th missing must be bounded out; msg: {msg}"
+        );
+        assert!(
+            msg.contains(&hex16(20)),
+            "first unexpected shown; msg: {msg}"
+        );
+        assert!(
+            !msg.contains(&hex16(25)),
+            "6th unexpected must be bounded out; msg: {msg}"
+        );
+    }
+
+    // P3: pure/deterministic — identical inputs => identical string.
+    #[test]
+    fn deterministic_for_identical_inputs() {
+        let expected = vec![oc(1, 0), oc(2, 1)];
+        let actual = vec![oc(1, 0), oc(7, 3)];
+        let a = format_epoch_inputs_mismatch(5, &expected, &actual);
+        let b = format_epoch_inputs_mismatch(5, &expected, &actual);
+        assert_eq!(a, b);
     }
 }
