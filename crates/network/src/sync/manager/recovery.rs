@@ -106,13 +106,25 @@ pub enum RecoveryEvidence {
 
 /// What the coordinator tells the caller to do.
 ///
-/// Ordered by severity (None < ShallowRollback < HeaderFirstSync < SnapSync <
-/// GenesisResync). The classifier always returns the LEAST severe action that
-/// fits the evidence.
+/// Ordered by severity (None < SiblingFetch < ShallowRollback < HeaderFirstSync
+/// < SnapSync < GenesisResync). The classifier always returns the LEAST severe
+/// action that fits the evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecoveryAction {
     /// No action — evidence insufficient, cooldown active, or node is healthy.
     None,
+
+    /// INC-I-143 (D4 fix): non-destructive targeted fetch of the competing
+    /// block(s) at `height` (our stuck tip height). Emitted when a StuckFork
+    /// coincides with `finality == local_tip`, so the INV-SYNC-008 finality
+    /// guard correctly refuses a `ShallowRollback` (target = local_height-1 <
+    /// finality) and the only prior action was `None` — the hot 454-refusal
+    /// livelock (seed1, INC-I-143). Instead of `None`, ask peers for the sibling
+    /// at our tip height; the fetched block flows through normal block handling
+    /// where the INC-I-139 Phase-2 wedge-escape (M2, wedge_escape.rs) retains and
+    /// re-evaluates it via plan_reorg/execute_reorg. Strictly non-destructive:
+    /// no rollback, no state wipe. Bounded by `thresholds::SIBLING_FETCH_MAX`.
+    SiblingFetch { height: u64 },
 
     /// Shallow rollback: revert `depth` blocks and retry header-first sync.
     /// Typically depth=1 (minority fork resolution).
@@ -227,6 +239,13 @@ pub mod thresholds {
     /// Stale tip threshold — last apply older than this triggers HeaderFirst
     /// at minimum, or SnapSync escalation.
     pub const STALE_TIP_SECS: u64 = 300;
+
+    /// INC-I-143 (D4 fix): max consecutive non-destructive SiblingFetch attempts
+    /// before falling through to the standard escalation. Paced by ACTION_COOLDOWN
+    /// (30s), so 3 attempts ≈ 90s of bounded fetching — enough for the competing
+    /// sibling to arrive and M2's wedge-escape to reorg, but far from the 454
+    /// hot-refusals the livelock produced.
+    pub const SIBLING_FETCH_MAX: u32 = 3;
 }
 
 /// Centralized recovery decision maker.
@@ -238,6 +257,11 @@ pub mod thresholds {
 pub struct RecoveryCoordinator {
     evidence: VecDeque<(Instant, RecoveryEvidence)>,
     last_action: Option<(Instant, RecoveryAction)>,
+    /// INC-I-143 (D4 fix): count of consecutive non-destructive SiblingFetch
+    /// actions emitted. Bounds the fetch so the finality-refused StuckFork case
+    /// cannot loop hot (the 454-refusal livelock). Reset by any other concrete
+    /// action; `None` is a no-op. Capped at `thresholds::SIBLING_FETCH_MAX`.
+    sibling_fetch_attempts: u32,
 }
 
 /// Max evidence entries retained (prevents unbounded growth under event floods).
@@ -253,6 +277,7 @@ impl RecoveryCoordinator {
         Self {
             evidence: VecDeque::new(),
             last_action: None,
+            sibling_fetch_attempts: 0,
         }
     }
 
@@ -361,20 +386,41 @@ impl RecoveryCoordinator {
             && gap < thresholds::MINOR_FORK_GAP_MAX
             && ctx.shallow_rollback_count < thresholds::SHALLOW_ROLLBACK_MAX
         {
-            // INV-SYNC-001/004/008 (G2): never roll back below finality.
-            // Identical fencepost to Rule 1 — rolling TO finality is legal,
-            // only BELOW it is forbidden (strict `<`).
-            if let Some(finality) = ctx.last_finality_height {
-                let target_height = ctx.local_height.saturating_sub(1);
-                if target_height < finality {
-                    tracing::warn!(
-                        "[FINALITY_GUARD] refusing StuckFork ShallowRollback target_h={} (finality={}, local_tip={})",
-                        target_height, finality, ctx.local_height
-                    );
-                    return RecoveryAction::None;
-                }
+            // INV-SYNC-001/004/008 (G2): never roll back below finality. Guard is
+            // UNCHANGED (strict `<`, INC-I-090) — do NOT loosen it.
+            let rollback_refused = match ctx.last_finality_height {
+                Some(finality) => ctx.local_height.saturating_sub(1) < finality,
+                None => false,
+            };
+            if !rollback_refused {
+                return RecoveryAction::ShallowRollback { depth: 1 };
             }
-            return RecoveryAction::ShallowRollback { depth: 1 };
+            // INC-I-143 (D4 fix): rollback correctly refused (finality is at/above
+            // our tip). Returning None here is the 454-refusal livelock (seed1).
+            // Take a NON-DESTRUCTIVE targeted sibling fetch instead, bounded so it
+            // cannot loop hot. After SIBLING_FETCH_MAX attempts, fall through to
+            // the standard escalation (Rule 2/3) below.
+            if self.sibling_fetch_attempts < thresholds::SIBLING_FETCH_MAX {
+                tracing::warn!(
+                    "[FINALITY_GUARD] StuckFork ShallowRollback refused (target_h={} < finality={:?}, local_tip={}); \
+                     INC-I-143 non-destructive SiblingFetch attempt {}/{}",
+                    ctx.local_height.saturating_sub(1),
+                    ctx.last_finality_height,
+                    ctx.local_height,
+                    self.sibling_fetch_attempts + 1,
+                    thresholds::SIBLING_FETCH_MAX,
+                );
+                return RecoveryAction::SiblingFetch {
+                    height: ctx.local_height,
+                };
+            }
+            tracing::warn!(
+                "[FINALITY_GUARD] StuckFork SiblingFetch budget exhausted ({}/{}); \
+                 falling through to standard escalation",
+                self.sibling_fetch_attempts,
+                thresholds::SIBLING_FETCH_MAX,
+            );
+            // fall through (no return) → Rule 2/3 escalation
         }
 
         // --- Rule 2: snap sync for deep fork, rollback exhausted, or large gap ---
@@ -443,6 +489,18 @@ impl RecoveryCoordinator {
         if action != RecoveryAction::None {
             self.last_action = Some((Instant::now(), action));
         }
+        // INC-I-143: bound the non-destructive SiblingFetch. Count consecutive
+        // fetches; any other concrete action resets the budget. `None` is a
+        // no-op so cooldown ticks do not reset the counter.
+        match action {
+            RecoveryAction::SiblingFetch { .. } => {
+                self.sibling_fetch_attempts = self.sibling_fetch_attempts.saturating_add(1);
+            }
+            RecoveryAction::None => {}
+            _ => {
+                self.sibling_fetch_attempts = 0;
+            }
+        }
     }
 
     /// Drop evidence older than EVIDENCE_TTL and cap entries at MAX_ENTRIES.
@@ -467,6 +525,13 @@ impl RecoveryCoordinator {
     #[cfg(test)]
     pub(crate) fn evidence_len(&self) -> usize {
         self.evidence.len()
+    }
+
+    /// Test-only: clear the action cooldown so the SiblingFetch attempt bound
+    /// can be exercised without ACTION_COOLDOWN masking it.
+    #[cfg(test)]
+    pub(crate) fn clear_cooldown_for_test(&mut self) {
+        self.last_action = None;
     }
 }
 
@@ -511,16 +576,24 @@ mod tests {
     //     rollback budget available, finality-safe, AND tip is stale (NOT
     //     recently synced). This is the case Rule 1 cannot reach (it requires
     //     recently_synced()), and is exactly the INC-I-120 STALL.
-    // O2: None — StuckFork present but a depth-1 rollback would land BELOW
-    //     finality (target_height < last_finality_height). Guardrail G2 /
-    //     INV-SYNC-001/004/008.
+    // O2: SiblingFetch{height:local_height} — StuckFork present but a depth-1
+    //     rollback would land BELOW finality (target_height < last_finality_height).
+    //     Guardrail G2 / INV-SYNC-001/004/008 refuses the rollback; INC-I-143 (D4)
+    //     replaces the old None livelock with a non-destructive sibling fetch.
     // O3: None — StuckFork present but shallow-rollback budget exhausted
     //     (no further rollback; the coordinator escalates via other evidence).
+    // O4: SiblingFetch{height:local_height} — INC-I-143 (D4): StuckFork present,
+    //     small gap, rollback budget free, BUT finality==local_tip so the
+    //     ShallowRollback is refused by the INV-SYNC-008 guard; instead of the
+    //     old None livelock, emit a bounded non-destructive sibling fetch.
+    //   - P5: StuckFork, gap=1, finality==local_tip → SiblingFetch (was None)
+    //   - P6: StuckFork, finality==local_tip, SIBLING_FETCH_MAX attempts reached
+    //         → NOT SiblingFetch (bounded; falls through to HeaderFirstSync)
     //
     // INPUT PARTITIONS:
     //   - P1: StuckFork, gap=5, last_applied=350s (stale), finality=None,
     //         budget free → ShallowRollback{1}
-    //   - P2: StuckFork, gap=5, local_height-1 < finality → None (G2 guard)
+    //   - P2: StuckFork, gap=5, local_height-1 < finality → SiblingFetch (D4)
     //   - P3: StuckFork, gap=5, shallow_rollback_count==MAX → None (budget)
     //   - P4: NO StuckFork, only StaleTip on a stale forked tip → HeaderFirstSync
     //         (regression pin: proves StuckFork evidence is what converts the
@@ -543,7 +616,11 @@ mod tests {
         );
     }
 
-    /// P2 — G2: never roll back below finality, even with a StuckFork signal.
+    /// P2 — INV-SYNC-008 (G2) + INC-I-143 (D4 fix): the finality guard still
+    /// REFUSES the rollback (target_height < finality, strict `<`, UNCHANGED),
+    /// but instead of the old `None` livelock it now returns a NON-DESTRUCTIVE
+    /// SiblingFetch at the tip height. The guard itself is untouched — we simply
+    /// never roll back below finality.
     #[test]
     fn stuck_fork_rollback_refused_below_finality() {
         let mut c = RecoveryCoordinator::new();
@@ -551,12 +628,12 @@ mod tests {
         let mut ctx = base_ctx();
         ctx.network_tip_height = 1005;
         ctx.last_applied_secs = 350;
-        // local_height=1000, depth-1 target=999, finality=1000 → 999 < 1000 → refuse.
+        // local_height=1000, depth-1 target=999, finality=1000 → 999 < 1000 → rollback refused.
         ctx.last_finality_height = Some(1000);
         assert_eq!(
             c.classify(&ctx),
-            RecoveryAction::None,
-            "must refuse a rollback that would unwind a finalized block (G2)"
+            RecoveryAction::SiblingFetch { height: 1000 },
+            "rollback still refused below finality (G2); D4 replaces None with a non-destructive sibling fetch"
         );
     }
 
@@ -594,6 +671,64 @@ mod tests {
             c.classify(&ctx),
             RecoveryAction::HeaderFirstSync,
             "stale tip alone must NOT roll back — only the guarded StuckFork signal does"
+        );
+    }
+
+    /// P5 — INC-I-143 (D4 fix), reproduction: a StuckFork where finality is AT
+    /// the local tip (target = local_height-1 < finality) MUST NOT return None
+    /// (the 454-refusal livelock). It returns a non-destructive SiblingFetch at
+    /// the tip height. Exact seed1 shape: local_tip==finality==108456.
+    #[test]
+    fn stuck_fork_finality_at_tip_fetches_sibling_not_none() {
+        let mut c = RecoveryCoordinator::new();
+        c.report(RecoveryEvidence::StuckFork { gap: 1 });
+        let mut ctx = base_ctx();
+        ctx.local_height = 108456;
+        ctx.network_tip_height = 108457; // gap = 1
+        ctx.last_applied_secs = 420; // stale tip
+        ctx.last_finality_height = Some(108456); // finality == local tip
+        let action = c.classify(&ctx);
+        assert_eq!(
+            action,
+            RecoveryAction::SiblingFetch { height: 108456 },
+            "D4: finality-at-tip StuckFork must fetch the competing sibling, never None"
+        );
+        assert_ne!(
+            action,
+            RecoveryAction::None,
+            "must break the 454-refusal livelock"
+        );
+    }
+
+    /// P6 — INC-I-143: SiblingFetch is bounded. After SIBLING_FETCH_MAX
+    /// consecutive fetches it stops emitting SiblingFetch (falls through to the
+    /// standard escalation), so the recovery action itself cannot loop hot.
+    #[test]
+    fn sibling_fetch_is_bounded_then_escalates() {
+        let mut c = RecoveryCoordinator::new();
+        let mut ctx = base_ctx();
+        ctx.local_height = 108456;
+        ctx.network_tip_height = 108457;
+        ctx.last_applied_secs = 420;
+        ctx.last_finality_height = Some(108456);
+        for i in 0..thresholds::SIBLING_FETCH_MAX {
+            c.report(RecoveryEvidence::StuckFork { gap: 1 });
+            let a = c.classify(&ctx);
+            assert_eq!(
+                a,
+                RecoveryAction::SiblingFetch { height: 108456 },
+                "attempt {} within budget must fetch the sibling",
+                i + 1
+            );
+            c.record_action(a);
+            c.clear_cooldown_for_test(); // isolate the attempt bound from the 30s cooldown
+        }
+        c.report(RecoveryEvidence::StuckFork { gap: 1 });
+        let after = c.classify(&ctx);
+        assert_ne!(
+            after,
+            RecoveryAction::SiblingFetch { height: 108456 },
+            "after SIBLING_FETCH_MAX attempts the fetch must stop (bounded, no hot loop)"
         );
     }
 

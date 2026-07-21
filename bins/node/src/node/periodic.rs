@@ -696,6 +696,23 @@ impl Node {
 
             match action {
                 network::RecoveryAction::None => {}
+                network::RecoveryAction::SiblingFetch { height } => {
+                    // INC-I-143 (D4 fix): non-destructive targeted fetch of the
+                    // competing sibling at our stuck tip height. Replaces the old
+                    // None-return livelock. The fetched block flows through normal
+                    // block handling where the INC-I-139 wedge-escape re-evaluates
+                    // it via plan_reorg.
+                    let requests = {
+                        let sm = self.sync_manager.read().await;
+                        sm.sibling_fetch_requests(height)
+                    };
+                    if let Some(ref network) = self.network {
+                        for (peer_id, request) in requests {
+                            let _ = network.request_sync(peer_id, request).await;
+                        }
+                    }
+                    return Ok(());
+                }
                 network::RecoveryAction::ShallowRollback { depth } => {
                     for _ in 0..depth {
                         if !self.rollback_one_block().await? {

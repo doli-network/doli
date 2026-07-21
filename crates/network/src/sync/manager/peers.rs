@@ -253,6 +253,37 @@ impl SyncManager {
         ))
     }
 
+    /// INC-I-143 (D4 fix): non-destructive sibling fetch. When the recovery
+    /// coordinator emits `RecoveryAction::SiblingFetch { height }` (a StuckFork
+    /// wedged at finality==tip, where the finality guard correctly forbids a
+    /// rollback), ask peers for the block at `height` — our OWN tip height — to
+    /// pull the competing sibling onto this node. The response flows through
+    /// normal block handling, where the INC-I-139 wedge-escape retains and
+    /// re-evaluates it via plan_reorg. Returns up to 3 (peer, request) pairs,
+    /// one per distinct peer at/above `height` with no in-flight request.
+    /// Non-destructive and idempotent (skips if a GetBlockByHeight for `height`
+    /// is already pending).
+    pub fn sibling_fetch_requests(&self, height: u64) -> Vec<(PeerId, SyncRequest)> {
+        const SIBLING_FETCH_FANOUT: usize = 3;
+        if self.pipeline.pending_requests.values().any(
+            |r| matches!(r.request, SyncRequest::GetBlockByHeight { height: h } if h == height),
+        ) {
+            return Vec::new();
+        }
+        let mut candidates: Vec<(PeerId, u64)> = self
+            .peers
+            .iter()
+            .filter(|(_, s)| s.best_height >= height && s.pending_request.is_none())
+            .map(|(pid, s)| (*pid, s.best_height))
+            .collect();
+        candidates.sort_by_key(|&(_, h)| std::cmp::Reverse(h));
+        candidates
+            .into_iter()
+            .take(SIBLING_FETCH_FANOUT)
+            .map(|(pid, _)| (pid, SyncRequest::GetBlockByHeight { height }))
+            .collect()
+    }
+
     /// Get the peer with the highest height and their best_hash.
     /// Used by stale tip recovery to request a specific missing block.
     pub fn best_peer_with_hash(&self) -> Option<(PeerId, u64, crypto::Hash)> {
