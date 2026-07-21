@@ -81,6 +81,13 @@ VALUES ('GS-008', 'scale-mismatch-smoke',
   'busy-rate-under-10pct,no-self-starvation,convergence', json('{"nodes":6}'), 'active')
 ON CONFLICT(scenario_id) DO UPDATE SET incident_ids=excluded.incident_ids, description=excluded.description, assertions=excluded.assertions, status='active';
 
+INSERT INTO gauntlet_scenarios (scenario_id, name, description, incident_ids, assertions, scale_params, status)
+VALUES ('GS-009', 'fleet-rolling-restart',
+  'Guards fleet rolling-restart safety (simultaneous STARTUP_GATE stall -> sibling fork -> permanent INTEGRITY -1). INJECTS (opt-in only, --gs009 WITH GAUNTLET_GS009_CONFIRM=1): tight-wave restarts ALL producers (n1..n12, NEVER the seed) via launchd stop/start, then ASSERTS no production stall > GS009_STALL_MAX_SLOTS (default 6), no sibling fork (>=2 distinct block hashes at one height across nodes), and full producer rejoin to the canonical tip. Perturbative like --chaos and NOT part of the default run; on any non-injected run the three assertions SKIP (never a spurious gate failure). Replays the INC-I-143 shape: a rolling producer-content deploy put many scheduled leaders behind STARTUP_GATE at once -> 34-slot stall -> competing h=108456 blocks -> INTEGRITY -1 on all 15 structural nodes.',
+  json('["INC-I-143","INC-I-062","INC-I-075","INC-I-089"]'),
+  'gs009-no-stall,gs009-no-sibling-fork,gs009-fleet-rejoin', json('{"nodes":6}'), 'active')
+ON CONFLICT(scenario_id) DO UPDATE SET incident_ids=excluded.incident_ids, description=excluded.description, assertions=excluded.assertions, status='active';
+
 COMMIT;
 
 -- ── DELIBERATELY UNMAPPED (out of system-dynamics scope) ─────────────────────
