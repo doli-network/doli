@@ -99,7 +99,7 @@ pub(crate) fn classify_gossip_block(
 
 impl Node {
     /// Insert a block into the fork cache with unified slot-sorted eviction.
-    async fn cache_block_with_eviction(&self, hash: Hash, block: Block) {
+    pub(super) async fn cache_block_with_eviction(&self, hash: Hash, block: Block) {
         let mut cache = self.fork_block_cache.write().await;
         cache.insert(hash, block);
         if cache.len() > 100 {
@@ -187,22 +187,52 @@ impl Node {
                     );
                     self.sync_manager.write().await.signal_stuck_fork();
                 } else {
+                    // INC-I-143 F2 (wedge-escape): do NOT drop the sibling
+                    // permanently. It builds on a parent we already have — retain it
+                    // and re-evaluate through the existing reorg engine so the node
+                    // can escape onto a strictly-longer sibling branch. The old code
+                    // discarded it here, wedging the node on the worse-slot block.
+                    // (INC-I-036: still no note_orphan_gossip_block — a fork block
+                    // with a known parent is not an orphan.)
                     info!(
-                        "[FORK_GUARD] Dropping fork block {} at h={} slot {} — keeping canonical slot {}",
+                        "[WEDGE_ESCAPE] Retaining fork block {} at h={} slot {} (canonical slot {}) for re-evaluation (INC-I-143)",
                         &block_hash.to_hex()[..16],
                         fork_height,
                         block_slot,
                         canonical_slot
                     );
-                    // INC-I-036: Do NOT call note_orphan_gossip_block() here.
-                    // Fork blocks with known parents are NOT orphans. Calling it
-                    // inflated the orphan counter, triggering false-positive
-                    // rollbacks after 3 fork blocks (190 rollbacks in 19 minutes).
+                    self.retain_sibling_and_try_escape(block).await?;
                 }
                 return Ok(());
             }
 
             BlockClass::Orphan { need_height } => {
+                // INC-I-143 F2 (wedge-escape): if this orphan's parent is a sibling
+                // we already retained AND eligibility-validated, it is NOT a genuine
+                // gap — the parent chain is local, not on a peer. Route it through
+                // the wedge-escape re-evaluation instead of ORPHAN_CHASE (which would
+                // request the wrong height, best_height+1).
+                //
+                // SECURITY (AUDIT-P2-001/P2-002): gate on the eligibility-VALIDATED
+                // retained set (wedge_retained_tips), NOT the raw fork_block_cache.
+                // A block that merely sits in the cache was never validated; admitting
+                // its descendant would let an attacker seed a multi-block fabricated
+                // fork through cache pollution and amplify plan_reorg into O(n^2).
+                // Requiring a validated retained parent (and capping that set's size)
+                // bounds both the seeding and the amplification. If the parent is only
+                // cached (or genuinely unknown), fall through to the UNCHANGED
+                // ORPHAN_CHASE path (Stability Pillar).
+                let parent_is_validated_retained =
+                    self.wedge_retained_tips.contains(&block.header.prev_hash);
+                if parent_is_validated_retained {
+                    info!(
+                        "[WEDGE_ESCAPE] Orphan {:.8} descends from a validated retained sibling — re-evaluating (INC-I-143)",
+                        block_hash
+                    );
+                    self.retain_sibling_and_try_escape(block).await?;
+                    return Ok(());
+                }
+
                 // Parent not in store — orphan gossip block. The sender has the
                 // missing block (they passed through our height to produce this one).
                 // Request it directly: causal, deterministic, no heuristics.

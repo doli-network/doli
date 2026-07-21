@@ -30,6 +30,7 @@ mod startup;
 mod state_root_serve;
 mod tx_announcements;
 mod validation_checks;
+mod wedge_escape;
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
@@ -205,6 +206,14 @@ pub struct Node {
     /// INC-I-014: Fork tips we've already rejected (prevents re-requesting them).
     /// Bounded to prevent memory growth: entries removed after 1000 blocks.
     pub rejected_fork_tips: HashSet<Hash>,
+    /// INC-I-143 F2 (security-hardening): hashes of sibling/descendant fork blocks
+    /// that PASSED the producer-eligibility gate and were retained by the
+    /// wedge-escape path. ONLY a block whose parent is in this set may be rerouted
+    /// from the Orphan arm into the reorg graph — this prevents arbitrary
+    /// cache-parented (unvalidated) blocks from seeding multi-block fabricated
+    /// forks (AUDIT-P2-001/P2-002). Bounded by WEDGE_RETAINED_CAP to cap
+    /// gossip-sourced descendant chain depth well below MAX_REORG_DEPTH.
+    pub wedge_retained_tips: HashSet<Hash>,
     /// Height at which snap sync was applied (for validation mode selection).
     /// Blocks at or below this height use Light validation (no full tx verification)
     /// since the state was verified by state root quorum, not replayed.

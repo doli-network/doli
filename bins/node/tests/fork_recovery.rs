@@ -501,6 +501,101 @@ async fn test_recovery_preserves_mempool() {
 }
 
 // ============================================================
+// TEST 13: INC-I-143 F2 — FORK_GUARD wedge-escape (TDD, currently FAILS)
+// ============================================================
+//
+// DEFECT (INC-I-143 / INC-I-139 Phase-2): In handle_new_block(), a same-height
+// competing sibling with a WORSE (higher) slot classifies as
+// ForkBlock(HeightOccupied{is_better:false}) and is DROPPED PERMANENTLY —
+// not cached, not recorded for reorg. Its descendants then classify as Orphan
+// with a parent that never resolves. When the sibling branch OUT-EXTENDS the
+// local kept branch, the node stays wedged on the shorter (minority) branch
+// forever.
+//
+// CORRECT (post-fix): once descendants make the sibling branch strictly
+// longer/heavier than the local kept branch, the node reorgs onto it via the
+// EXISTING reorg machinery (plan_reorg -> execute_reorg). Finality guard
+// unchanged (no attestation quorum is reached offline, so finality stays unset
+// and cannot legitimately block this reorg).
+//
+// ASSUMPTION (stated for the developer): the escape must be SYNCHRONOUS when
+// the full competing chain is already locally cached — this offline test has
+// no periodic tick and no live network, so a deferred-only stuck_fork signal
+// would NOT satisfy these assertions. The fix must provide a synchronous
+// reorg path, not only a deferred signal.
+//
+// OUTPUT CONTRACT: fn Node::handle_new_block(&mut self, block, source_peer) -> Result<()>
+//   O2: self.chain_state.best_height — must advance 6 -> 8 on wedge-escape reorg
+//   O2: self.chain_state.best_hash   — must switch A(h6) -> D2(h8) sibling tip
+//   O2: self.fork_block_cache        — dropped sibling B must be retained/re-evaluable (not lost)
+//   O4: block_store/state_db         — reorg writes sibling branch B,D1,D2 as canonical
+//   O3: return                       — Ok(())
+// PATHS:
+//   P1: ExtendsTip — block extends local tip (applied directly)
+//   P2: HeightOccupied is_better=false — competing worse-slot sibling (WEDGE; the fix path)
+//   P3: Orphan (descendant of a retained sibling) — must resolve once parent chain is present
+// INPUT PARTITIONS:
+//   P2a: sibling branch shorter/equal to kept branch — keep local, no reorg (existing behavior)
+//   P2b: sibling branch STRICTLY LONGER than kept branch — MUST reorg onto sibling (this test)
+// MATRIX: 4 outputs × (P2b partition drives the reorg cell) — the strictly-longer
+//   sibling partition is the one asserted here; it currently fails (node stuck at h=6).
+#[tokio::test]
+async fn test_inc_i143_f2_wedge_escape_reorgs_onto_longer_sibling_branch() {
+    let (mut node, producers, _tmp) = make_node(3).await;
+    let params = node.params.clone();
+    let peer = network::PeerId::random();
+
+    // 1. Base chain h=1..5 (canonical, applied directly).
+    let base = build_chain(1, 1, Hash::ZERO, &producers[0], 5, &params);
+    apply_chain(&mut node, &base).await;
+    assert_eq!(node.chain_state.read().await.best_height, 5);
+    let base_tip = base[4].hash(); // h=5
+
+    // 2. Canonical sibling A at h=6 with LOWER slot (better) — becomes local tip.
+    let block_a = build_block(6, 100, base_tip, &producers[0], &params);
+    apply_chain(&mut node, std::slice::from_ref(&block_a)).await;
+    assert_eq!(node.chain_state.read().await.best_height, 6);
+    assert_eq!(node.chain_state.read().await.best_hash, block_a.hash());
+
+    // 3. Competing sibling B at h=6 with HIGHER slot (worse than A) and its
+    //    descendants D1(h=7), D2(h=8) — the B-branch strictly out-extends A.
+    //    is_better = B.slot(200) < A.slot(100) = false  → the wedge branch.
+    //
+    // SECURITY (INC-I-143 M2 audit): the wedge-escape path now eligibility-gates
+    // every fork block against the epoch-frozen schedule (a real competing branch
+    // is built by REAL scheduled producers, not arbitrary keys). Post-genesis,
+    // validate_producer_eligibility picks effective[slot % len] from the
+    // epoch producer_list, which is the producer keys SORTED by pubkey bytes
+    // (see Node::new_for_test epoch_state.producer_list). Choose each fork block's
+    // producer = the scheduled slot leader so the gate ADMITS the branch. This is
+    // an INPUT correction only — the assertions below are unchanged.
+    let mut scheduled: Vec<&KeyPair> = producers.iter().collect();
+    scheduled.sort_by(|a, b| a.public_key().as_bytes().cmp(b.public_key().as_bytes()));
+    let leader = |slot: u32| scheduled[(slot as usize) % scheduled.len()];
+    let block_b = build_block(6, 200, base_tip, leader(200), &params);
+    let d1 = build_block(7, 201, block_b.hash(), leader(201), &params);
+    let d2 = build_block(8, 202, d1.hash(), leader(202), &params);
+
+    // 4. Feed the competing branch via the GOSSIP path, in order.
+    node.handle_new_block(block_b.clone(), peer).await.unwrap();
+    node.handle_new_block(d1.clone(), peer).await.unwrap();
+    node.handle_new_block(d2.clone(), peer).await.unwrap();
+
+    // 5. Post-fix behavior: node must reorg onto the strictly-longer sibling branch.
+    //    CURRENT code: B dropped permanently, D1/D2 orphaned → stuck at h=6/A. FAILS.
+    assert_eq!(
+        node.chain_state.read().await.best_height,
+        8,
+        "wedge-escape: node must reorg onto the longer sibling branch"
+    );
+    assert_eq!(
+        node.chain_state.read().await.best_hash,
+        d2.hash(),
+        "wedge-escape: tip must be the sibling-branch tip"
+    );
+}
+
+// ============================================================
 // TEST 12: Post-snap gossip validation mode (INC-I-010 layer 3)
 // ============================================================
 //
