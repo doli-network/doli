@@ -457,14 +457,11 @@ impl RpcContext {
                 RpcError::internal_error(format!("Invalid response from peer: {}", e))
             })?;
 
-            body.pointer("/result/height")
-                .or_else(|| body.pointer("/result/best_height"))
-                .and_then(|v| v.as_u64())
-                .ok_or_else(|| {
-                    RpcError::internal_error(
-                        "Peer did not return chain height in getChainInfo".to_string(),
-                    )
-                })?
+            parse_peer_chain_tip(&body).ok_or_else(|| {
+                RpcError::internal_error(
+                    "Peer did not return chain height in getChainInfo".to_string(),
+                )
+            })?
         };
 
         // Read local genesis hash for validation
@@ -634,3 +631,19 @@ impl RpcContext {
         }
     }
 }
+
+/// Parse the peer's chain tip out of a `getChainInfo` JSON-RPC response body.
+///
+/// INC-I-145: `getChainInfo` serializes `ChainInfoResponse` with
+/// `rename_all = "camelCase"`, so the tip lives at `/result/bestHeight`.
+/// `height`/`best_height` are kept as fallbacks for older/other peers.
+fn parse_peer_chain_tip(body: &serde_json::Value) -> Option<u64> {
+    body.pointer("/result/bestHeight")
+        .or_else(|| body.pointer("/result/height"))
+        .or_else(|| body.pointer("/result/best_height"))
+        .and_then(|v| v.as_u64())
+}
+
+#[cfg(test)]
+#[path = "tests_inc_i145.rs"]
+mod tests_inc_i145;
