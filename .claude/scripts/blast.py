@@ -35,9 +35,13 @@ def load(graph_path):
 def resolve(query, nodes):
     """Return the set of node ids the query refers to.
     Match priority: exact label/norm_label -> source_file fragment -> label substring.
-    Symbols carry a '()' suffix in labels, so match the bare and parenthesized forms."""
+    Symbols carry a '()' suffix in labels, so match the bare and parenthesized forms.
+    Methods additionally carry a leading '.' ('.apply_block()'), so match the dotted
+    forms too — without them a query for a method name misses its own node and falls
+    through to source-file matching, which answers a different question entirely."""
     q = query.lower()
-    forms = {q, q.rstrip("()"), q.rstrip("()") + "()"}
+    bare = q.strip().rstrip("()").lstrip(".")
+    forms = {q, bare, bare + "()", "." + bare, "." + bare + "()"}
     exact = {nid for nid, n in nodes.items()
              if str(n.get("label", "")).lower() in forms
              or str(n.get("norm_label", "")).lower() in forms}
@@ -81,6 +85,41 @@ def dependents(seed_ids, links, extracted_only, hops):
     return found
 
 
+# Extensions whose language has an upstream cross-file member-call resolution pass
+# (`_resolve_<lang>_member_calls` in graphify/extract.py). A receiver-method call
+# (`recv.method()`) in any OTHER language is enqueued by the extractor and then dropped
+# by the shared `is_member_call` guard with nothing to recover it — so a blast radius
+# over such a method node is a LOWER BOUND, not an answer. Measured on a Rust codebase:
+# `.apply_block()` reported 0 dependents against 68 real call sites.
+MEMBER_CALLS_RESOLVED_EXT = {".py", ".ts", ".tsx", ".js", ".jsx", ".swift", ".cpp",
+                             ".cc", ".cxx", ".hpp", ".h", ".cs", ".java", ".m", ".mm"}
+
+
+def _ext(path):
+    path = str(path)
+    return "." + path.rsplit(".", 1)[-1].lower() if "." in path.rsplit("/", 1)[-1] else ""
+
+
+def caveat(seed_ids, nodes, how):
+    """One-line caveat when the result is structurally incomplete, else None.
+
+    A blast radius that is silently a lower bound is worse than no blast radius:
+    it reads as an answer. Say so on the same line as the count."""
+    notes = []
+    if how != "exact-label":
+        notes.append(f"no exact label match — fell back to {how}, so the seed set may not be "
+                     f"the symbol you asked about; re-query with the exact label")
+    unresolved = sorted({_ext(nodes[nid].get("source_file", "")) for nid in seed_ids
+                         if str(nodes[nid].get("label", "")).startswith(".")}
+                        - MEMBER_CALLS_RESOLVED_EXT - {""})
+    if unresolved:
+        notes.append(f"seed set includes method nodes ({'/'.join(unresolved)}) — graphify does "
+                     f"not resolve cross-file receiver-method calls for this language "
+                     f"(Graphify-Labs/graphify#2234), so this count is a LOWER BOUND; "
+                     f"confirm callers with grep")
+    return "; ".join(notes) or None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("graph")
@@ -109,13 +148,17 @@ def main():
             "depth": depth,
         })
     rows.sort(key=lambda r: (r["depth"], r["where"]))
+    warning = caveat(seed, nodes, how)
 
     if a.json:
-        print(json.dumps({"query": a.query, "matched_via": how,
+        print(json.dumps({"query": a.query, "matched_via": how, "warning": warning,
                           "seed_nodes": len(seed), "dependents": rows}, indent=2))
         return
     print(f"# blast radius of '{a.query}'  (matched {len(seed)} node(s) via {how}, hops={a.hops})")
-    print(f"# {len(rows)} dependent(s)\n")
+    print(f"# {len(rows)} dependent(s)")
+    if warning:
+        print(f"# WARNING: {warning}")
+    print()
     byfile = collections.defaultdict(list)
     for r in rows:
         byfile[r["where"].split(":")[0]].append(r)
