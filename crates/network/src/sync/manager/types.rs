@@ -34,6 +34,12 @@ pub struct SyncConfig {
     pub min_peers_for_sync: usize,
     /// Stale peer timeout
     pub stale_timeout: Duration,
+    /// INC-I-147 D6 activation height, from `NetworkParams::inc_i_147_activation_height`.
+    ///
+    /// Carried here rather than as a `SyncManager::new` parameter so the existing
+    /// `SyncConfig::default()` call sites need no change. Defaults to `0` (always-on);
+    /// the node overrides it from `NetworkParams` at startup.
+    pub inc_i_147_activation_height: u64,
 }
 
 impl Default for SyncConfig {
@@ -45,6 +51,7 @@ impl Default for SyncConfig {
             request_timeout: Duration::from_secs(30),
             min_peers_for_sync: 1,
             stale_timeout: Duration::from_secs(300), // 5 minutes - peers stay active longer
+            inc_i_147_activation_height: 0,          // always-on unless overridden
         }
     }
 }

@@ -39,7 +39,11 @@ use crate::sync::manager::{
 /// Identical (height, hash) across ≥2 peers is required so `consensus_target_hash()`
 /// returns Some — otherwise `start_sync` falls back to header-first even when
 /// `should_snap` is true, which would mask the Route-A admission we are probing.
-pub(super) fn mgr_with_agreeing_peers(local_height: u64, peer_height: u64, n: usize) -> SyncManager {
+pub(super) fn mgr_with_agreeing_peers(
+    local_height: u64,
+    peer_height: u64,
+    n: usize,
+) -> SyncManager {
     let mut mgr = SyncManager::new(SyncConfig::default(), Hash::ZERO);
     mgr.local_height = local_height;
     mgr.local_slot = local_height as u32;

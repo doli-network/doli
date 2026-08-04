@@ -123,7 +123,46 @@ impl Node {
         info!("[APPLY_START] slot={} hash={}", block_slot, block_hash);
 
         // Pre-check: already known?
-        if self.block_store.get_block(&block_hash)?.is_some() {
+        //
+        // INC-I-147 D4: "we have the body" is NOT the same as "it is on our chain".
+        // `remove_canonical_entry` (storage/block_store/writes.rs:203-218) deletes only
+        // CF_HEIGHT_INDEX and CF_HASH_TO_HEIGHT on rollback/reorg — the body is left in
+        // place. A bare possession check therefore refuses a rolled-back block FOREVER,
+        // which is how a transient poison-rollback became a durable fork: the node that
+        // discarded the canonical block could never re-adopt it. MEASURED 2026-07-31:
+        // n7 logged 159 `status=already_known` refusals while stranded on the losing
+        // fork, and the layer below (apply_block/mod.rs:80-108) — which handles this
+        // case correctly — was never reached.
+        //
+        // Gated by `inc_i_147_activation_height` (Q1=NO on the merits, Q2=NO: this is
+        // node-local re-adoption and changes no block content). Pre-activation the
+        // possession check stands unchanged.
+        let already_known = if self.block_store.get_block(&block_hash)?.is_some() {
+            let inc_i_147_ah = self.config.network.params().inc_i_147_activation_height;
+            let block_height = self.block_store.get_height_by_hash(&block_hash)?;
+            match block_height {
+                // Canonical at some height: genuinely already known — no-op.
+                Some(_) => true,
+                // Body present but NOT canonical (rolled back). Post-activation, fall
+                // through and let the normal path re-adopt it.
+                None => {
+                    let post_activation = self.chain_state.read().await.best_height >= inc_i_147_ah;
+                    if post_activation {
+                        info!(
+                            "[REAPPLY] block {} has a body but no canonical entry (rolled back) — re-evaluating instead of short-circuiting (INC-I-147 D4)",
+                            block_hash
+                        );
+                        false
+                    } else {
+                        true
+                    }
+                }
+            }
+        } else {
+            false
+        };
+
+        if already_known {
             debug!("Block {} already known", block_hash);
             info!(
                 "[APPLY_END] slot={} apply_ms={} status=already_known",

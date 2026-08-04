@@ -682,7 +682,11 @@ impl Node {
         // Create sync manager with default settings (2 slots/heights tolerance).
         // All networks use the same tolerance — recovery from forks is handled by
         // auto-resync (triggered by sync failure threshold), not by loose tolerances.
-        let sync_config = SyncConfig::default();
+        let sync_config = SyncConfig {
+            // INC-I-147 D6: gate the fork-choice height-unit correction.
+            inc_i_147_activation_height: config.network.params().inc_i_147_activation_height,
+            ..SyncConfig::default()
+        };
         let sync_manager = Arc::new(RwLock::new(SyncManager::new(sync_config, genesis_hash)));
 
         // Configure bootstrap grace period from network params

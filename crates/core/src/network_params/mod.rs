@@ -496,6 +496,44 @@ pub struct NetworkParams {
     /// Mainnet IMMUTABILITY (INC-I-054): once crossed, never move forward.
     pub inc_i_096_activation_height: u64,
 
+    /// INC-I-147: fork-choice height-unit correction + rolled-back-block re-apply.
+    ///
+    /// Gates two node-local recovery defects measured on the 2026-07-31 testnet
+    /// reproduction:
+    ///
+    /// * **D6** — `ReorgHandler`'s `BlockWeight.height` is a PER-PROCESS counter
+    ///   (`real_height - init_height`), because `block_weights` is empty at process
+    ///   start so the first recorded block always gets height 1. `plan_reorg` then
+    ///   compares it against `last_finality_height`, which is a REAL chain height, so
+    ///   on any restarted or snap-synced node no reorg can ever be approved. MEASURED:
+    ///   the same block at real height 57067 was recorded as 267 by the seed
+    ///   (init 56800) and 25897 by n7 (init 31170).
+    /// * **D4** — `handle_new_block` short-circuits on a bare
+    ///   `block_store.get_block(&hash).is_some()` check. `remove_canonical_entry`
+    ///   leaves the body in place, so a rolled-back block is refused forever
+    ///   (`status=already_known`, observed 159 times on n7).
+    ///
+    /// Deploy questions (derived, INC-I-075 / CLAUDE.md):
+    /// Q1 consensus RULES — NO on the merits. `ReorgHandler`/`BlockWeight` has zero
+    /// symbol reach into validation, apply, block construction, the wire protocol or
+    /// the state root; nothing derived from it is gossiped or persisted; and the
+    /// corrected predicate is approval-monotone (`H_syn <= H_real` into a
+    /// monotone-decreasing rejection test), so it can only convert REJECT->APPROVE.
+    /// A quantity that yields two different values on two nodes for the same block
+    /// was never a consensus rule. Gated anyway as a rollout-coordination device and
+    /// because the checklist applied literally returns "required".
+    /// Q2 block CONTENT — NO. The builder never consults the reorg handler
+    /// (`production/mod.rs:131` reads `state.best_hash`), so blocks are byte-identical
+    /// and no synchronized deploy is needed.
+    /// Protocol version — NOT bumped. No `EpochState` format change; an unnecessary
+    /// bump would trigger `delete_epoch_state()` on every restart (INC-I-054).
+    ///
+    /// Defaults: mainnet `u64::MAX` (frozen pre-activation — pinning a concrete
+    /// height is a separate operator decision taken with the live tip in hand,
+    /// per the `oracle_activation_height` precedent), testnet `0`, devnet `0`.
+    /// Mainnet IMMUTABILITY (INC-I-054): once crossed, never move forward.
+    pub inc_i_147_activation_height: u64,
+
     // === Gossip mesh ===
     /// Target number of peers in gossipsub mesh per topic
     pub mesh_n: usize,

@@ -243,6 +243,14 @@ impl NetworkParams {
                 //     lead time. No honored crossed height moved.
                 inc_i_096_activation_height: 0,
 
+                // INC-I-147 fork-choice height-unit fix (D6) + rolled-back-block
+                // re-apply (D4). Frozen pre-activation: the code ships reviewable
+                // and tested, and pinning a concrete height is a separate operator
+                // decision taken with the live tip in hand (oracle_activation_height
+                // precedent). Q1=NO on the merits, Q2=NO — gated as a rollout
+                // coordination device. IMMUTABLE once crossed (INC-I-054).
+                inc_i_147_activation_height: u64::MAX,
+
                 // Gossip mesh: universal config for all network sizes.
                 // mesh_n=12 keeps all peers in eager-push for networks ≤24 (mesh_n_high),
                 // and scales to 1000+ nodes at ~3-4 hops with 10s slot margin.
@@ -394,6 +402,14 @@ impl NetworkParams {
                 // 0 <= 0). Override via `DOLI_INC_I_096_ACTIVATION_HEIGHT`.
                 inc_i_096_activation_height: 0,
 
+                // INC-I-147 D6/D4 recovery fixes. Pinned 2026-08-04 at live tip
+                // 80_544 with ~150 blocks (~15 min) of lead so the whole fleet
+                // crosses the gate together — NOT 0, which would reinterpret
+                // already-validated history under the new fork-choice rule.
+                // IMMUTABLE once crossed (INC-I-054).
+                // Override via `DOLI_INC_I_147_ACTIVATION_HEIGHT`.
+                inc_i_147_activation_height: 80_700,
+
                 // INC-I-015: Gossip mesh sized to max_peers for eager push to ALL
                 // connected peers. At mesh_n=12, blocks reach 12 peers immediately
                 // and the rest via IHAVE (lazy, 1+ heartbeat delay). At 120+ nodes
@@ -528,6 +544,8 @@ impl NetworkParams {
                 inc_i_092_activation_height: 0,
                 // INC-I-096 pool-aware conservation. Always-on in devnet.
                 inc_i_096_activation_height: 0,
+                // INC-I-147 D6/D4 recovery fixes. Always-on in devnet.
+                inc_i_147_activation_height: 0,
 
                 // Gossip mesh: same universal config as mainnet.
                 // With --no-dht, mesh_n_high=24 keeps all devnet peers in mesh.

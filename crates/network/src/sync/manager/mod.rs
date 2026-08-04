@@ -191,7 +191,7 @@ impl SyncManager {
         Self {
             pipeline: SyncPipeline::new(&config),
             pipeline_data: SyncPipelineData::None,
-            reorg_handler: ReorgHandler::new(),
+            reorg_handler: ReorgHandler::with_activation_height(config.inc_i_147_activation_height),
             config,
             state: SyncState::Idle,
             local_height: 0,

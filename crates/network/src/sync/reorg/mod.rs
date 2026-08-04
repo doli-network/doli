@@ -63,6 +63,16 @@ pub struct ReorgHandler {
     current_chain_weight: u64,
     /// Height of the last finalized block (reorgs below this are rejected).
     last_finality_height: Option<u64>,
+    /// INC-I-147 D6 activation height (`NetworkParams::inc_i_147_activation_height`).
+    ///
+    /// At or above this chain height, `plan_reorg` compares the common ancestor's
+    /// REAL chain height against `last_finality_height` instead of the per-process
+    /// `BlockWeight.height` counter. Below it, behaviour is byte-identical to the
+    /// pre-fix ordering established by `e25a9a97`.
+    ///
+    /// Defaults to `0` (always-on) so that unit tests and devnet exercise the
+    /// corrected path; the node overrides it from `NetworkParams` via `SyncConfig`.
+    inc_i_147_activation_height: u64,
 }
 
 impl ReorgHandler {
@@ -83,6 +93,20 @@ impl ReorgHandler {
             lru_order,
             current_chain_weight: 0,
             last_finality_height: None,
+            inc_i_147_activation_height: 0,
+        }
+    }
+
+    /// Create a reorg handler with an explicit INC-I-147 activation height.
+    ///
+    /// The node passes `NetworkParams::inc_i_147_activation_height` through
+    /// `SyncConfig`. `new()` keeps `0` (always-on) so existing unit tests are
+    /// unaffected — they root their chains at `Hash::ZERO`, where the per-process
+    /// offset is `0` and both branches agree anyway.
+    pub fn with_activation_height(inc_i_147_activation_height: u64) -> Self {
+        Self {
+            inc_i_147_activation_height,
+            ..Self::new()
         }
     }
 
@@ -97,7 +121,29 @@ impl ReorgHandler {
     /// weight is computed from the parent's accumulated weight plus
     /// this block's producer weight.
     pub fn record_block_with_weight(&mut self, hash: Hash, prev_hash: Hash, producer_weight: u64) {
-        self.record_block_internal(hash, prev_hash, producer_weight, true);
+        self.record_block_internal(hash, prev_hash, producer_weight, true, None);
+    }
+
+    /// Record an applied block using its REAL chain height (INC-I-147 D6).
+    ///
+    /// Prefer this over [`record_block_with_weight`] wherever the caller knows the
+    /// height. Deriving height as `parent_height + 1` from an empty `block_weights`
+    /// map yields a per-process counter (`real_height - init_height`) that is not
+    /// comparable with any chain-global height. Storing the real height fixes the unit
+    /// at the source, for every consumer of `BlockWeight.height` — including
+    /// `check_reorg_weighted`, which reads the same field with no fallback.
+    ///
+    /// Gated by `inc_i_147_activation_height`: below it, the legacy derived height is
+    /// stored so behaviour is byte-identical to the pre-fix binary.
+    pub fn record_block_with_height(
+        &mut self,
+        hash: Hash,
+        prev_hash: Hash,
+        producer_weight: u64,
+        real_height: u64,
+    ) {
+        let height = (real_height >= self.inc_i_147_activation_height).then_some(real_height);
+        self.record_block_internal(hash, prev_hash, producer_weight, true, height);
     }
 
     /// Record a fork block's weight WITHOUT updating current_chain_weight.
@@ -107,15 +153,21 @@ impl ReorgHandler {
     /// If we updated current_chain_weight here, the subsequent comparison would
     /// compare the fork against itself (delta=0) and always reject the reorg.
     pub fn record_fork_block(&mut self, hash: Hash, prev_hash: Hash, producer_weight: u64) {
-        self.record_block_internal(hash, prev_hash, producer_weight, false);
+        self.record_block_internal(hash, prev_hash, producer_weight, false, None);
     }
 
+    /// `real_height`: the block's true chain height when the caller knows it
+    /// (INC-I-147 D6). When `None`, height is derived as `parent_height + 1`, which is
+    /// only correct if the parent is itself recorded — at process start `block_weights`
+    /// is EMPTY, so the first block silently becomes height 1 and every later block
+    /// counts from there, producing `H_syn = H_real - init_height`.
     fn record_block_internal(
         &mut self,
         hash: Hash,
         prev_hash: Hash,
         producer_weight: u64,
         update_current_weight: bool,
+        real_height: Option<u64>,
     ) {
         // Calculate accumulated weight and height
         let (parent_accumulated, parent_height) = self
@@ -125,7 +177,9 @@ impl ReorgHandler {
             .unwrap_or((0, 0));
 
         let accumulated_weight = parent_accumulated.saturating_add(producer_weight);
-        let height = parent_height + 1;
+        // INC-I-147 D6: prefer the caller's real chain height; fall back to deriving
+        // from the parent (correct only when the parent is already recorded).
+        let height = real_height.unwrap_or(parent_height + 1);
 
         // Store block weight info
         self.block_weights.insert(
@@ -443,18 +497,48 @@ impl ReorgHandler {
             // every reorg whose finality is non-zero. Consult the caller-provided
             // height lookup (typically backed by block_store.get_height_by_hash)
             // before declining.
-            let ancestor_height = match self.block_weights.get(&common_ancestor).map(|w| w.height) {
-                Some(h) => h,
-                None => match get_height(&common_ancestor) {
+            // INC-I-147 D6: `BlockWeight.height` is a PER-PROCESS counter, not a chain
+            // height. `block_weights` is empty at process start, so the first block
+            // recorded always gets height 1 and every later block counts up from there:
+            //
+            //     H_syn = H_real - I,  I = (height of first recorded block) - 1
+            //
+            // `finality_height` below is a REAL chain height (set from `check_finality`).
+            // Comparing the two mixes units, and on any restarted or snap-synced node
+            // (I > finality lag) the guard can never pass — no reorg is ever approved and
+            // the node is permanently wedged on whatever fork it holds. MEASURED
+            // 2026-07-31: the same block at real height 57067 was recorded as 267 by the
+            // seed (init 56800) and 25897 by n7 (init 31170), 5.6 ms apart.
+            //
+            // `e25a9a97` guarded only the `None` arm of this lookup; the `Some` arm
+            // shadows the correct `get_height` result with the wrong-unit value.
+            let real_height = get_height(&common_ancestor);
+            let synthetic_height = self.block_weights.get(&common_ancestor).map(|w| w.height);
+
+            // Gate on the ancestor's REAL height — a genuine chain height. Deliberately
+            // NOT `finality_height`: the guard only runs when finality is `Some`, but a
+            // node that has never finalized would then never evaluate the gate at all.
+            let post_activation =
+                real_height.is_some_and(|h| h >= self.inc_i_147_activation_height);
+
+            let ancestor_height = if post_activation {
+                // Post-activation: the real chain height is authoritative.
+                real_height.expect("post_activation implies real_height.is_some()")
+            } else {
+                // Pre-activation: byte-identical to the `e25a9a97` ordering.
+                match synthetic_height {
                     Some(h) => h,
-                    None => {
-                        warn!(
-                            "[ANCESTOR_UNKNOWN] plan_reorg cannot resolve height for common_ancestor={} (absent from block_weights and get_height) — declining reorg",
-                            common_ancestor
-                        );
-                        return None;
-                    }
-                },
+                    None => match real_height {
+                        Some(h) => h,
+                        None => {
+                            warn!(
+                                "[ANCESTOR_UNKNOWN] plan_reorg cannot resolve height for common_ancestor={} (absent from block_weights and get_height) — declining reorg",
+                                common_ancestor
+                            );
+                            return None;
+                        }
+                    },
+                }
             };
             if ancestor_height < finality_height {
                 warn!(
@@ -533,3 +617,6 @@ impl Default for ReorgHandler {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod tests_inc_i_147;

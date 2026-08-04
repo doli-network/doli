@@ -30,9 +30,11 @@ impl SyncManager {
         producer_weight: u64,
         prev_hash: Hash,
     ) {
-        // Record block with weight for fork choice rule
+        // Record block with weight for fork choice rule.
+        // INC-I-147 D6: pass the REAL chain height — deriving it from the parent yields
+        // a per-process counter once the node restarts mid-chain.
         self.reorg_handler
-            .record_block_with_weight(hash, prev_hash, producer_weight);
+            .record_block_with_height(hash, prev_hash, producer_weight, height);
 
         self.local_height = height;
         self.local_hash = hash;
@@ -474,8 +476,11 @@ impl SyncManager {
     /// Seed the reorg handler with the snap sync tip so fork detection works immediately.
     /// Called once after snap sync completes — the snap tip becomes the root of recent_blocks.
     pub fn record_block_applied_after_snap(&mut self, hash: Hash, height: u64) {
+        // INC-I-147 D6: this is the snap re-arming path. Recording the snap tip with a
+        // derived height set init_height to the snap anchor, so every snap-synced node
+        // re-armed the per-process counter and could never approve a reorg afterwards.
         self.reorg_handler
-            .record_block_with_weight(hash, Hash::ZERO, 1);
+            .record_block_with_height(hash, Hash::ZERO, 1, height);
         self.local_height = height;
         self.local_hash = hash;
     }
