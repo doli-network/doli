@@ -27,6 +27,14 @@
 #     wave-restarts ALL producers (n1..n12, NEVER the seed) to replay
 #     INC-I-143 and asserts no >6-slot stall, no sibling fork, full rejoin.
 #     NOT part of the default run; see scripts/gauntlet-gs009.sh.
+#   * GS-010 (duplicate-registration poison) is opt-in AND the only scenario
+#     that WRITES TO THE CHAIN: it funds a wallet and permanently bonds a
+#     producer (bonds unwind only via request-withdrawal, up to 75% penalty).
+#     Run `--gs010` WITH GAUNTLET_GS010_CONFIRM=1; testnet only. Replays
+#     INC-I-147 and asserts poison→recovery, no non-producer wedge, fleet
+#     reconvergence, and exactly-one registration. It SKIPS cleanly when the
+#     fleet has no live UNREGISTERED producer, no funding source, or no
+#     non-producing node. See scripts/gauntlet-gs010.sh.
 #
 # Assertions key off STRUCTURED telemetry fields (gap=, rollback_depth=,
 # sync_fails=, state=) and distinct-event phrases — NEVER raw keywords that also
@@ -45,6 +53,8 @@ DB="$ROOT/.omega/memory.db"
 COLLECT="$ROOT/scripts/gauntlet-collect.py"
 GS009_LIB="$ROOT/scripts/gauntlet-gs009.sh"
 [ -f "$GS009_LIB" ] && . "$GS009_LIB"
+GS010_LIB="$ROOT/scripts/gauntlet-gs010.sh"
+[ -f "$GS010_LIB" ] && . "$GS010_LIB"
 LOG_DIR="$HOME/testnet/logs"
 LABEL_PREFIX="network.doli.testnet"
 
@@ -61,11 +71,13 @@ WAIVE="${GAUNTLET_WAIVE:-}"; WAIVE="${WAIVE//,/ }"
 WAIVE_REASON="${GAUNTLET_WAIVE_REASON:-}"
 CHAOS=0
 GS009=0
+GS010=0
 for a in "$@"; do
   case "$a" in
     --quick) WINDOW=20 ;;
     --chaos) CHAOS=1 ;;
     --gs009) GS009=1 ;;
+    --gs010) GS010=1 ;;
   esac
 done
 CHAOS_RECOVERED=1   # stays 1 unless a chaos injector fails to recover the node
@@ -252,7 +264,17 @@ say "  baseline max height = $BASE_MAX"
 
 # ── perturbation dispatch ───────────────────────────────────────────────────
 RP="$(port_of "$RESTART_NODE")"
-if [ "${GS009:-0}" = "1" ]; then
+if [ "${GS010:-0}" = "1" ]; then
+  # OPT-IN GS-010 duplicate-registration poison (perturbative AND chain-writing:
+  # funds a wallet and permanently bonds a producer). Replays INC-I-147, then
+  # re-baselines so the window judges the RECOVERED steady state.
+  say "\n${C_R}▸ GS-010 MODE — DUPLICATE-REGISTRATION POISON (writes to the chain: funds + bonds a producer)${C_0}"
+  echo "0" > "$REJOIN_FILE"
+  gs010_inject
+  say "  [gs010] settling 10s, then re-baselining for a clean observation window"
+  sleep 10
+  build_nodecfg
+elif [ "${GS009:-0}" = "1" ]; then
   # OPT-IN GS-009 fleet rolling-restart (perturbative; NEVER the seed). Replays
   # INC-I-143, then re-baselines so the window judges the RECOVERED steady state.
   say "\n${C_R}▸ GS-009 MODE — FLEET ROLLING-RESTART of all producers (n1..n12, NEVER seed)${C_0}"
@@ -400,6 +422,8 @@ assert(){
       else why="liveness_delta=$l snap=$s evictions=$e rss=${m}MB"; fi ;;
     gs009-no-stall|gs009-no-sibling-fork|gs009-fleet-rejoin)
       _gs009_assert "$t"; return $? ;;
+    gs010-poison-recovered|gs010-no-wedge|gs010-fleet-reconverge|gs010-single-registration)
+      _gs010_assert "$t"; return $? ;;
     *)
       why="unknown assertion token '$t'" ;;
   esac
@@ -412,6 +436,7 @@ assert(){
 inj_tag(){
   local sid="$1"
   if [ "${GS009:-0}" = "1" ] && [ "$sid" = "GS-009" ]; then echo "inj"; return; fi
+  if [ "${GS010:-0}" = "1" ] && [ "$sid" = "GS-010" ]; then echo "inj"; return; fi
   if [ "$CHAOS" = "1" ]; then
     case "$sid" in GS-002|GS-003|GS-004|GS-005|GS-007) echo "inj";; *) echo "obs";; esac
   elif [ "$NO_PERTURB" != "1" ]; then

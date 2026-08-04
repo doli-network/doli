@@ -156,7 +156,7 @@ After completing any code change, ALWAYS propose the following checklist to the 
 | Install launchd services | `scripts/install-local-services.sh` — creates plists for seed + n1-n12 |
 | Start/stop/status | `scripts/testnet.sh start\|stop\|restart\|status [seed\|n1\|...\|all]` |
 | Tail logs | `scripts/testnet.sh logs [seed\|n1\|...]` |
-| System-impact gauntlet | `scripts/gauntlet.sh` — replays paid-for failure modes over the live testnet (8 scenarios). Default (gate): observational + one safe launchd restart, NEVER wipes/pkills. `--chaos` (opt-in, `GAUNTLET_CHAOS_CONFIRM=1`): genuinely injects node-down + data-wipe→snap-rebuild on the target (data backed up). `--gs009` (opt-in, `GAUNTLET_GS009_CONFIRM=1`): GS-009 fleet rolling-restart scenario (`scripts/gauntlet-gs009.sh`) — replays INC-I-143, restarts ONLY producers n1..n12 (NEVER the seed) and asserts no stall / no sibling-fork / fleet-rejoin. Seed: `scripts/gauntlet-seed.sql`. Gate armed by `.omega/gauntlet.conf`. |
+| System-impact gauntlet | `scripts/gauntlet.sh` — replays paid-for failure modes over the live testnet (10 scenarios). Default (gate): observational + one safe launchd restart, NEVER wipes/pkills. `--chaos` (opt-in, `GAUNTLET_CHAOS_CONFIRM=1`): genuinely injects node-down + data-wipe→snap-rebuild on the target (data backed up). `--gs009` (opt-in, `GAUNTLET_GS009_CONFIRM=1`): GS-009 fleet rolling-restart scenario (`scripts/gauntlet-gs009.sh`) — replays INC-I-143, restarts ONLY producers n1..n12 (NEVER the seed) and asserts no stall / no sibling-fork / fleet-rejoin. `--gs010` (opt-in, `GAUNTLET_GS010_CONFIRM=1`, **testnet only — the ONLY scenario that writes to the CHAIN**: funds a wallet and permanently bonds a producer): GS-010 duplicate-registration poison (`scripts/gauntlet-gs010.sh`) — replays INC-I-147/INC-I-148 by registering a producer, WAITING for that tx to mine so the second registration funds from confirmed change (DISJOINT inputs — sharing inputs makes revalidate evict it and nothing reproduces), then asserts poison→recovery / no non-producer wedge / fleet reconvergence / exactly-one registration. Skips cleanly with no unregistered target. Seed: `scripts/gauntlet-seed.sql`. Gate armed by `.omega/gauntlet.conf`. |
 
 **Port layout**:
 - Seed: P2P=30300, RPC=8500, Metrics=9000
@@ -206,6 +206,9 @@ After completing any code change, ALWAYS propose the following checklist to the 
 | Drift tracker | `MEMORY.md` (auto-memory) |
 | Bug reports | `docs/legacy/bugs/` |
 | CLI issues | `CLI.md` |
+
+---
+
 
 ---
 
@@ -333,6 +336,7 @@ After completing a user's task, if they did something manually that an OMEGA com
 27. **Evidence pivot** — a failed fix buys evidence, not another guess: when a shipped fix does not move the symptom, capture runtime evidence from the FAILING environment before editing source again. Blocking-enforced by `pipeline-gate.sh` (armed by `evidence-pivot.sh`). Read `.claude/protocols/evidence-pivot.md`
 28. **Code graph for structural questions** — answer ANY dependency/blast-radius/caller-callee/architecture question from the code graph BEFORE grep (`blast.py`, `graphify explain|path`); grep is the fallback only when graphify cannot be provisioned. Blocking-enforced by `graph-first-gate.sh`. Read `.claude/protocols/graph-briefing.md`
 29. **System impact** — in projects with `.omega/gauntlet.conf`, "done" is a SYSTEM property, not a diff property: system-dynamics changes need a failure-mode matrix at briefing, a `Failure-Modes:` commit block, protection registration, and a passing gauntlet run before close. Blocking-enforced by `gauntlet-gate.sh`. Read `.claude/protocols/system-impact.md`
+29. **Requirements before code** — a greenfield project gets no source file until `specs/*-requirements.md` exists: run `/omega-new` or `/omega-new-feature` first. Blocking-enforced by `pipeline-gate.sh` (specs-first gate); existing codebases self-exempt on first contact
 
 ## Fail-Safe Controls
 
