@@ -422,7 +422,7 @@ assert(){
       else why="liveness_delta=$l snap=$s evictions=$e rss=${m}MB"; fi ;;
     gs009-no-stall|gs009-no-sibling-fork|gs009-fleet-rejoin)
       _gs009_assert "$t"; return $? ;;
-    gs010-poison-recovered|gs010-no-wedge|gs010-fleet-reconverge|gs010-single-registration)
+    gs010-dup-rejected|gs010-no-poison|gs010-no-wedge|gs010-fleet-reconverge|gs010-single-registration)
       _gs010_assert "$t"; return $? ;;
     *)
       why="unknown assertion token '$t'" ;;

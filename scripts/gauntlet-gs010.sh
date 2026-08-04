@@ -3,7 +3,7 @@
 # gauntlet-gs010.sh — GS-010 "duplicate-registration-poison" gauntlet scenario.
 #
 # Sourced by scripts/gauntlet.sh. Replays INC-I-147 (operator trigger:
-# INC-I-148): a duplicate `producer register` whose second submission spends
+# INC-I-148): a duplicate producer registration whose second submission spends
 # DISJOINT inputs survives the mempool, is included by a block builder, and
 # fails apply_block with "producer already has a pending registration" —
 # poisoning the block. Pre-fix this rolled the producer back BELOW its own
@@ -11,14 +11,35 @@
 # permanently wedged behind a fork-choice guard that compared a cumulative
 # WEIGHT against a block HEIGHT (the D6 unit defect).
 #
+# INJECTION IS RAW JSON-RPC, NOT THE CLI. INC-I-148 fixed
+# `doli producer register` to consult the PLURAL getProducers and REFUSE a
+# second registration for a key that already has a pending one
+# (bins/cli/src/cmd_producer/register.rs:37) — it bails BEFORE computing the
+# VDF, so no transaction is ever built. That fix is correct and is NOT weakened
+# or bypassed here. But `sendTransaction` is publicly dispatchable
+# (crates/rpc/src/methods/dispatch.rs:22), so the duplicate-registration vector
+# is still real — it only moved off the CLI and onto the wire. The CLI check is
+# UX; the genuine guard is node-side (mempool admission populating
+# ctx.pending_producer_keys, plus revalidate eviction). GS-010 therefore
+# exercises the NODE: register #2 is rebuilt from register #1's own on-chain
+# bytes by scripts/gs010_build_dup_register.py and POSTed raw.
+#
 # THE TRIGGER PRECONDITION IS THE WHOLE SCENARIO. It only reproduces when:
 #   (a) register #1 bonds LESS THAN HALF the wallet, leaving a change output, AND
-#   (b) register #1 has MINED AND CONFIRMED before #2 is submitted, so the wallet
-#       funds #2 from that confirmed change => inputs are DISJOINT.
+#   (b) register #1 has MINED AND CONFIRMED before #2 is submitted, so #2 is
+#       funded from that confirmed change => inputs are DISJOINT.
 # If both txs share inputs, Mempool::revalidate silently evicts the second
 # ~95us after the first mines and NOTHING happens — an accidental safety net
 # that masks the defect. Both submissions must also land inside ONE epoch, so
 # the first registration is still *pending* when the second is validated.
+#
+# DISJOINTNESS IS NOW STRUCTURAL, NOT INCIDENTAL. The builder funds #2 from
+# `tx1_hash:change_vout` — an output CREATED BY TX1. A transaction cannot spend
+# its own outputs, so the two input sets are disjoint by construction instead of
+# depending on wallet coin-selection happening to pick the change UTXO. The
+# builder still refuses to emit unless tx1 minted exactly one change output and
+# that outpoint is live in the node's UTXO set, so precondition (a)+(b) remain
+# enforced — they are just no longer the only thing holding the property up.
 #
 # PERTURBATIVE + OPT-IN + IRREVERSIBLE SIDE EFFECT. Unlike --chaos and --gs009
 # (which only restart/wipe node processes), this scenario writes to the CHAIN:
@@ -32,9 +53,17 @@
 # node (only non-producers retain the finality guard and can wedge — a
 # producers-only fleet recovers trivially and proves nothing).
 #
-# PASS criteria (asserted over the post-injection monitoring window):
-#   gs010-poison-recovered   — if a block was poisoned, EVERY poisoned producer
-#                              logged rollback-succeeded AND a mempool purge.
+# PASS criteria (asserted over the post-injection monitoring window). These
+# assert the POST-FIX outcome: the duplicate never enters the system at all.
+#   gs010-dup-rejected       — the raw sendTransaction was REFUSED at mempool
+#                              admission with INVALID_REGISTRATION, on the
+#                              target's node AND on a non-producing node.
+#                              Acceptance = the INC-I-147 D1 parity gap is back.
+#   gs010-no-poison          — zero [BLOCK_POISON] apply_block failures and zero
+#                              poison rollbacks fleet-wide. Pre-fix this scenario
+#                              measured 9 poisoned + 9 rolled-back nodes; post-fix
+#                              the duplicate is rejected before any builder can
+#                              see it, so the correct count is ZERO.
 #   gs010-no-wedge           — zero wedge markers (WEDGE_ESCAPE / plan_reorg
 #                              rejection / StuckFork) on NON-PRODUCING nodes.
 #   gs010-fleet-reconverge   — all live nodes agree on one tip hash, and the
@@ -50,6 +79,7 @@
 
 GS010_CLI="${GS010_CLI:-$HOME/testnet/bin/doli}"
 GS010_KEYS="${GS010_KEYS:-$HOME/testnet/keys}"
+GS010_BUILDER="${GS010_BUILDER:-$ROOT/scripts/gs010_build_dup_register.py}"
 
 # _gs010_tip_hash <port> — best block hash at a node, or "".
 _gs010_tip_hash() {
@@ -99,6 +129,40 @@ _gs010_spendable() {
     "$GS010_CLI" --network testnet --rpc "http://127.0.0.1:$(port_of "$1")" \
         --wallet "$GS010_KEYS/producer_${1#n}.json" balance 2>/dev/null \
     | awk '/Spendable:/ {gsub(/[^0-9.]/,"",$2); printf "%d", $2; exit}'
+}
+
+# _gs010_raw_send <rpc-url> <payload-file> — POST a prebuilt sendTransaction
+# body and classify the node's answer. Echoes exactly one line:
+#     accepted|<tx hash>|
+#     rejected|<error_code>|<message>
+#     unreachable||
+# `-f` is deliberately NOT passed to curl: a JSON-RPC rejection is the RESULT
+# we are measuring, and dropping the body on a non-2xx status would turn a
+# measured rejection into an indistinguishable "unreachable".
+_gs010_raw_send() {
+    local url="$1" body="$2" resp
+    [ -f "$body" ] || { echo 'unreachable||'; return; }
+    resp="$(curl -s -m 15 -X POST "$url" -H 'Content-Type: application/json' \
+            --data-binary "@$body" 2>/dev/null)"
+    if [ -z "$resp" ]; then echo 'unreachable||'; return; fi
+    printf '%s' "$resp" | python3 -c '
+import sys, json
+def clean(s):
+    return str(s).replace("|", "/").replace("\n", " ").strip()
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print("unreachable||"); raise SystemExit
+err = d.get("error")
+if err:
+    data = err.get("data") or {}
+    code = data.get("error_code") or err.get("code") or "UNKNOWN"
+    print("rejected|%s|%s" % (clean(code), clean(err.get("message", ""))))
+else:
+    res = d.get("result") or {}
+    h = res.get("hash", "") if isinstance(res, dict) else str(res)
+    print("accepted|%s|" % clean(h))
+' 2>/dev/null || echo 'unreachable||'
 }
 
 # _gs010_mark_offsets — record per-node log byte offsets so the scan window
@@ -239,11 +303,67 @@ except Exception: print('')" 2>/dev/null)"
     fi
     say "  [gs010] register #1 mined at h=${mined} — change output now confirmed (inputs will be DISJOINT)"
 
-    # ── register #2 — funds from the confirmed change ─────────────────────────
-    local tx2
-    tx2="$("$GS010_CLI" --network testnet --rpc "$trpc" --wallet "$tkey" \
-           producer register --bonds "$bonds" 2>&1 | awk '/TX Hash:/ {print $3; exit}')"
-    say "  [gs010] register #2 submitted (tx=${tx2:-none}) — awaiting builder inclusion"
+    # ── register #2 — RAW sendTransaction, rebuilt from #1's on-chain bytes ───
+    # NOT `doli producer register`: that path is closed by the INC-I-148 CLI
+    # pre-check and is no longer a duplicate-injection vector. Raw RPC still is,
+    # so this is both the honest reproduction and a test of the layer that
+    # actually guards the invariant (mempool admission).
+    if [ ! -f "$GS010_BUILDER" ]; then
+        say "  ${C_R}[gs010] builder not found at $GS010_BUILDER — cannot inject${C_0}"; return 0
+    fi
+    local build brc tx2 dupin
+    build="$(python3 "$GS010_BUILDER" --rpc "$trpc" --wallet "$tkey" \
+             --tx1 "$tx1" --height "$mined" 2>&1)"; brc=$?
+    if [ "$brc" -ne 0 ]; then
+        say "  ${C_Y}[gs010] could not build the duplicate registration — SKIPPING.${C_0}"
+        say "         ${build}"
+        return 0
+    fi
+    # Split the builder's JSON into the curl body + the fields the assertions
+    # need. Done in ONE python pass so the ~11 KB tx hex never crosses argv.
+    if ! printf '%s' "$build" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+body = {"jsonrpc": "2.0", "method": "sendTransaction",
+        "params": {"tx": d["tx_hex"]}, "id": 1}
+with open(sys.argv[1], "w") as fh:
+    json.dump(body, fh)
+with open(sys.argv[2], "w") as fh:
+    fh.write("%s\n%s\n%s\n" % (d["tx_hash"], d["input"], ",".join(d["tx1_inputs"])))
+' "$WORK/gs010_tx2_body.json" "$WORK/gs010_tx2_meta.txt" 2>/dev/null; then
+        say "  ${C_R}[gs010] builder output was not parseable — cannot inject${C_0}"; return 0
+    fi
+    tx2="$(sed -n 1p "$WORK/gs010_tx2_meta.txt")"
+    dupin="$(sed -n 2p "$WORK/gs010_tx2_meta.txt")"
+    say "  [gs010] duplicate built: tx=${tx2:-none} spending ${dupin} (tx1's OWN change ⇒ inputs DISJOINT)"
+
+    # Primary injection: the target's own node, exactly where an operator would
+    # have pointed the CLI.
+    local send1 send2 nprobe
+    send1="$(_gs010_raw_send "$trpc" "$WORK/gs010_tx2_body.json")"
+    say "  [gs010] raw sendTransaction → ${target}: ${send1}"
+
+    # Secondary probe: a NON-PRODUCING node. INC-I-147 measured the seed holding
+    # four toxic registrations for 49-102 minutes across 577 revalidate passes —
+    # a non-producer never builds a block, so it never gets the poison-block path
+    # that lets producers shed them. Only probed when the primary REFUSED, so the
+    # tx cannot have been gossiped here first and answer "already known".
+    send2='skipped||'
+    nprobe="$(echo "$nonprod" | awk '{print $1}')"
+    case "$send1" in
+        rejected*)
+            if [ -n "$nprobe" ]; then
+                send2="$(_gs010_raw_send "http://127.0.0.1:$(port_of "$nprobe")" \
+                         "$WORK/gs010_tx2_body.json")"
+                say "  [gs010] raw sendTransaction → ${nprobe} (non-producer): ${send2}"
+            fi ;;
+    esac
+
+    echo "$send1" > "$WORK/gs010_send_primary.txt"
+    echo "$send2" > "$WORK/gs010_send_secondary.txt"
+    echo "${tx2:-none}" > "$WORK/gs010_tx2_hash.txt"
+    echo "${dupin:-none}" > "$WORK/gs010_dup_input.txt"
+    say "  [gs010] injected — observing the fleet for poison / rollback / wedge"
 
     # ── monitor: convergence + poison/recovery/wedge telemetry ────────────────
     local win="${GS010_MONITOR_WINDOW:-120}" step="${GS010_SAMPLE_SECS:-10}" t0
@@ -296,27 +416,66 @@ except Exception: print('')" 2>/dev/null)"
     echo "${tbonds:-0}"     > "$WORK/gs010_bonds.txt"
     echo "$bonds"           > "$WORK/gs010_bonds_want.txt"
     touch "$WORK/gs010_injected"
-    say "  [gs010] poisoned=${poisoned} recovered=${recovered} purged=${purged} · wedge_markers=${wedge} · distinct_tips=${distinct} · bonds=${tbonds:-0}/${bonds}"
+    say "  [gs010] send=${send1} · poisoned=${poisoned} rolled_back=${recovered} purged=${purged} · wedge_markers=${wedge} · distinct_tips=${distinct} · bonds=${tbonds:-0}/${bonds}"
 }
 
 # _gs010_assert <token> — evaluate one GS-010 assertion. rc 0 pass · 1 fail ·
 # 2 skip. Appends to FAIL_REASONS / SKIP_REASONS (gauntlet.sh scope).
 _gs010_assert() {
-    local t="$1" why p r g w d b bw
+    local t="$1" why p r g w d b bw s1 s2 c1 m1 c2
     if [ ! -f "$WORK/gs010_injected" ]; then
         why="GS-010 not injected this run (needs --gs010 + GAUNTLET_GS010_CONFIRM=1, a live UNREGISTERED producer, a funding source, and a non-producing node) — perturbative, opt-in, writes to the chain"
         SKIP_REASONS="$SKIP_REASONS; $why"; return 2
     fi
     case "$t" in
-        gs010-poison-recovered)
+        gs010-dup-rejected)
+            # The duplicate must be REFUSED at mempool admission. Pre-fix,
+            # ctx.pending_producer_keys was Vec::new() at every admission site
+            # (crates/mempool/src/pool.rs:291,661), so the check at
+            # validation/registration.rs:173 was a guaranteed no-op and EVERY
+            # node accepted the duplicate — that is INC-I-147 defect D1.
+            s1="$(cat "$WORK/gs010_send_primary.txt" 2>/dev/null)"
+            s2="$(cat "$WORK/gs010_send_secondary.txt" 2>/dev/null)"
+            c1="$(printf '%s' "$s1" | cut -d'|' -f2)"; m1="$(printf '%s' "$s1" | cut -d'|' -f3)"
+            c2="$(printf '%s' "$s2" | cut -d'|' -f2)"
+            case "$s1" in
+                accepted*)
+                    FAIL_REASONS="$FAIL_REASONS; $t: the node ADMITTED the duplicate registration to its mempool (hash ${c1}) — the INC-I-147 D1 admission parity gap is open again; a block builder will select it and poison its own block"
+                    return 1 ;;
+                unreachable*)
+                    SKIP_REASONS="$SKIP_REASONS; $t: the target node did not answer the raw sendTransaction — nothing measured"
+                    return 2 ;;
+            esac
+            # Rejected — but it must be rejected for the RIGHT reason. A malformed
+            # tx, a stale fee or a spent input would also produce a rejection and
+            # would be a FALSE PASS, so an unrelated reason is INCONCLUSIVE.
+            case "$c1$m1" in
+                *INVALID_REGISTRATION*|*"pending registration"*|*"already registered"*) ;;
+                *)
+                    SKIP_REASONS="$SKIP_REASONS; $t: the duplicate was rejected but for an unrelated reason (${s1}) — the duplicate-registration guard was never reached, so this run proves nothing"
+                    return 2 ;;
+            esac
+            case "$s2" in
+                accepted*)
+                    FAIL_REASONS="$FAIL_REASONS; $t: the target's node refused the duplicate but a NON-PRODUCING node ADMITTED it (${s2}) — a non-producer never builds a block, so it holds the toxic tx until revalidate evicts it (INC-I-147: 49-102 minutes across 577 passes)"
+                    return 1 ;;
+                rejected*)
+                    case "$c2" in
+                        INVALID_REGISTRATION) return 0 ;;
+                        *) SKIP_REASONS="$SKIP_REASONS; $t: primary refused correctly, but the non-producer probe answered ${s2} — partial evidence only"
+                           return 2 ;;
+                    esac ;;
+            esac
+            return 0 ;;
+        gs010-no-poison)
+            # Post-fix the duplicate never reaches a block builder, so the honest
+            # expectation is ZERO poison and ZERO poison-rollback. A real pre-fix
+            # run measured poisoned=9 / rolled_back=9 / purged=9.
             p=$(cat "$WORK/gs010_poisoned.txt" 2>/dev/null); r=$(cat "$WORK/gs010_recovered.txt" 2>/dev/null)
             g=$(cat "$WORK/gs010_purged.txt" 2>/dev/null)
-            if [ "${p:-0}" -eq 0 ]; then
-                SKIP_REASONS="$SKIP_REASONS; $t: no block was poisoned this run (builder never included tx2 in-window) — nothing to judge"
-                return 2
-            fi
-            if [ "${r:-0}" -ge "${p:-0}" ] && [ "${g:-0}" -ge "${p:-0}" ]; then return 0
-            else FAIL_REASONS="$FAIL_REASONS; $t: ${p} node(s) poisoned but only ${r} logged rollback-succeeded and ${g} logged a mempool purge"; return 1; fi ;;
+            if [ "${p:-1}" -eq 0 ] && [ "${r:-1}" -eq 0 ]; then return 0; fi
+            FAIL_REASONS="$FAIL_REASONS; $t: ${p} node(s) logged [BLOCK_POISON] apply_block failure and ${r} rolled back (${g} purged) — the duplicate reached a block, so it was admitted somewhere despite the mempool guard"
+            return 1 ;;
         gs010-no-wedge)
             w=$(cat "$WORK/gs010_wedge.txt" 2>/dev/null)
             if [ "${w:-1}" -eq 0 ]; then return 0
@@ -328,7 +487,7 @@ _gs010_assert() {
         gs010-single-registration)
             b=$(cat "$WORK/gs010_bonds.txt" 2>/dev/null); bw=$(cat "$WORK/gs010_bonds_want.txt" 2>/dev/null)
             if [ "${b:-0}" -eq "${bw:-0}" ]; then return 0
-            else FAIL_REASONS="$FAIL_REASONS; $t: target holds ${b} bonds, expected exactly ${bw} (duplicate registration applied, or none did)"; return 1; fi ;;
+            else FAIL_REASONS="$FAIL_REASONS; $t: target holds ${b} bonds, expected exactly ${bw} (the duplicate registration applied on top of #1, or neither did)"; return 1; fi ;;
         *)
             FAIL_REASONS="$FAIL_REASONS; $t: unknown gs010 token"; return 1 ;;
     esac
