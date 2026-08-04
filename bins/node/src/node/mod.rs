@@ -274,6 +274,22 @@ pub struct Node {
     /// admission at oracle activation.
     pub mempool_active_producers_snapshot: std::sync::Arc<std::sync::RwLock<Vec<(PublicKey, u64)>>>,
 
+    /// INC-I-147 (INV-VALIDATION-001): live snapshot of
+    /// `ProducerSet::pending_registration_keys()` — producers whose
+    /// registration has been MINED but not yet flushed at the epoch
+    /// boundary. Shared with the mempool via `share_pending_producer_keys`;
+    /// refreshed alongside the active snapshot after every block apply.
+    ///
+    /// This is the exact value block validation passes to
+    /// `with_pending_producer_keys` (`validation_checks.rs:291`). Pre-fix the
+    /// mempool built every `ValidationContext` with
+    /// `pending_producer_keys = Vec::new()`, so the duplicate check at
+    /// `validation/registration.rs:173` was guaranteed-false and a second
+    /// registration for a still-pending producer was admitted by every node
+    /// and rejected by every node's block validation — poisoning the block of
+    /// whichever producer selected it.
+    pub mempool_pending_producer_keys: std::sync::Arc<std::sync::RwLock<Vec<PublicKey>>>,
+
     /// INC-I-055: Rolling health window for auto-checkpoint tagging.
     /// Tracks the last CHECKPOINT_HEALTH_WINDOW_SIZE health samples (true=healthy).
     /// A checkpoint is tagged healthy if ANY sample in the window was healthy,
@@ -423,6 +439,10 @@ impl Node {
     /// guaranteed-false for every PriceAttestation. With
     /// oracle_activation_height=u64::MAX today this is masked, but
     /// becomes a liveness blocker the instant a real height is pinned.
+    /// INC-I-147: the same refresh also republishes
+    /// `pending_registration_keys()` — read from the SAME `producer_set` guard
+    /// as the active list, so the two snapshots can never be taken from
+    /// different states of the ProducerSet.
     pub async fn refresh_mempool_producer_snapshot(&self, height: u64) {
         let producers = self.producer_set.read().await;
         let active: Vec<PublicKey> = producers
@@ -430,10 +450,14 @@ impl Node {
             .iter()
             .map(|p| p.public_key)
             .collect();
+        let pending = producers.pending_registration_keys();
         drop(producers);
         let weighted = self.bond_weights_for_scheduling(active).await;
         if let Ok(mut guard) = self.mempool_active_producers_snapshot.write() {
             *guard = weighted;
+        }
+        if let Ok(mut guard) = self.mempool_pending_producer_keys.write() {
+            *guard = pending;
         }
     }
 

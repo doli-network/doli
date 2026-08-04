@@ -314,6 +314,7 @@ Existing gates (mainnet values):
 | `pool.rs` | Transaction pool with fee-based selection |
 | `entry.rs` | Tx metadata (fee, size, time, ancestors) |
 | `policy.rs` | Fee and size policies per network |
+| `pending_registrations.rs` | Pending producer-registration key derivation (INC-I-147) |
 
 **Key behaviors:**
 - **Fee-based prioritization**: Transactions selected by descending fee rate
@@ -322,7 +323,26 @@ Existing gates (mainnet values):
 - **Dynamic fees**: Minimum fee increases when pool >90% full
 - **System transactions**: SlashProducer etc. bypass fee requirements
 - **14-day expiration**: Old transactions automatically removed
-- **Revalidation**: After chain reorg, invalid transactions are purged
+- **Revalidation**: After chain reorg, invalid transactions are purged. Registrations
+  whose producer has since become active or pending are also evicted (INC-I-147) —
+  input existence alone cannot shed a duplicate funded from disjoint inputs.
+
+**Validation parity with block validation (INV-VALIDATION-001):** the mempool builds
+its own `ValidationContext`, so any consensus field it leaves at the default makes the
+corresponding check silently evaporate at admission. Two fields are published into the
+mempool by the node and refreshed after every `apply_block`
+(`Node::refresh_mempool_producer_snapshot`):
+
+| Shared snapshot | Source | Check it makes reachable |
+|-----------------|--------|--------------------------|
+| `active_producers_weighted` | `ProducerSet::active_producers_at_height()` | duplicate registration for an ACTIVE producer; `PriceAttestation` attester auth |
+| `pending_producer_keys` | `ProducerSet::pending_registration_keys()` | duplicate registration for a producer whose registration is mined but not yet epoch-flushed |
+
+For registrations the mempool additionally unions its OWN resident registrations into
+`pending_producer_keys` — a second registration can arrive while the first is still
+unmined, which no `ProducerSet` can observe. Both are node-local admission policy: they
+do not change block validity, so a node running without them still agrees on every
+block.
 
 **Default policy (mainnet):**
 | Parameter | Value |

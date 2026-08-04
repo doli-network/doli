@@ -1329,7 +1329,15 @@ A registration is valid if:
 
 1. VDF proof verifies with `T_REGISTER(declared_epoch)`
 2. Declared epoch is current or previous
-3. Public key is not already registered
+3. Public key is not already registered — TWO separate checks, both required:
+   a. not in the ACTIVE producer set (`producer already registered`)
+   b. not in `ProducerSet::pending_updates`, i.e. a registration that is mined but
+      not yet flushed at the epoch boundary (`producer already has a pending
+      registration`). Producer mutations are epoch-deferred, so a producer stays
+      invisible to (a) for up to a full epoch after its registration mines.
+   Both checks are enforced at block validation AND at mempool admission. Admission
+   additionally treats a still-unmined registration held in the local mempool as
+   pending (node-local policy; it does not affect block validity).
 4. Bond output has correct amount and lock duration
 5. Fee is sufficient
 6. `bond_count` is in range [1, MAX_BONDS] (consensus-critical for producer selection)

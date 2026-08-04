@@ -5,6 +5,7 @@
 pub mod contention;
 mod contention_tests;
 mod entry;
+mod pending_registrations;
 mod policy;
 mod pool;
 

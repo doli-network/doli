@@ -19,6 +19,7 @@ use super::contention::{
     MempoolDiagnostic,
 };
 use super::entry::MempoolEntry;
+use super::pending_registrations;
 use super::policy::MempoolPolicy;
 
 /// Mempool errors
@@ -193,6 +194,19 @@ pub struct Mempool {
     /// instead of an empty Vec — which was rejecting every
     /// `PriceAttestation` at activation.
     active_producers_weighted: std::sync::Arc<std::sync::RwLock<Vec<(crypto::PublicKey, u64)>>>,
+    /// INC-I-147 (INV-VALIDATION-001): pubkeys with a MINED-but-not-yet
+    /// epoch-flushed registration, i.e. `ProducerSet::pending_registration_keys()`
+    /// — the exact value block validation feeds to
+    /// `with_pending_producer_keys` at
+    /// `bins/node/src/node/validation_checks.rs:291`. Shared with the Node via
+    /// `Arc<RwLock<...>>` and republished by
+    /// `refresh_mempool_producer_snapshot` after every apply_block.
+    ///
+    /// This is only HALF of "pending": a second registration can also arrive
+    /// while the first is still mempool-resident and unmined, which no
+    /// ProducerSet can see. Both halves are unioned in
+    /// `pending_registration_keys` (see `pending_registrations`).
+    pending_producer_keys: std::sync::Arc<std::sync::RwLock<Vec<crypto::PublicKey>>>,
 }
 
 impl Mempool {
@@ -210,6 +224,7 @@ impl Mempool {
             network,
             oracle_sunset_triggered: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             active_producers_weighted: std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
+            pending_producer_keys: std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
         }
     }
 
@@ -237,6 +252,57 @@ impl Mempool {
         snapshot: std::sync::Arc<std::sync::RwLock<Vec<(crypto::PublicKey, u64)>>>,
     ) {
         self.active_producers_weighted = snapshot;
+    }
+
+    /// INC-I-147: bind the mempool's pending-registration snapshot to the
+    /// `Arc<RwLock<Vec<PublicKey>>>` the Node republishes from
+    /// `ProducerSet::pending_registration_keys()` after every apply_block.
+    ///
+    /// Pre-fix, `ValidationContext::pending_producer_keys` was `Vec::new()` at
+    /// every mempool admission, so the duplicate-registration check at
+    /// `crates/core/src/validation/registration.rs:173` was a guaranteed no-op:
+    /// a second registration for a producer already sitting in
+    /// `pending_updates` was ADMITTED by every node and REJECTED by every
+    /// node's block validation, poisoning the block of whichever producer
+    /// selected it.
+    ///
+    /// Unwired (the default) the snapshot is empty, which degrades to the
+    /// mempool-resident half only — never to a false rejection.
+    pub fn share_pending_producer_keys(
+        &mut self,
+        snapshot: std::sync::Arc<std::sync::RwLock<Vec<crypto::PublicKey>>>,
+    ) {
+        self.pending_producer_keys = snapshot;
+    }
+
+    /// Node-published pending registrations (source 1). Empty when the
+    /// snapshot is unwired or the lock is poisoned — both degrade to
+    /// pre-fix behaviour for this half, never to over-rejection.
+    fn node_pending_producer_keys(&self) -> Vec<crypto::PublicKey> {
+        self.pending_producer_keys
+            .read()
+            .map(|g| g.clone())
+            .unwrap_or_default()
+    }
+
+    /// Pubkeys that already have a pending registration, as seen from the
+    /// mempool: the node-published `ProducerSet` half UNION the
+    /// mempool-resident half, excluding `exclude`.
+    ///
+    /// Computed ONLY for `TxType::Registration`. `pending_producer_keys` has
+    /// exactly one consumer — `registration.rs:173`, inside
+    /// `validate_registration_data_inner` — which is unreachable for every
+    /// other transaction type, so every other type keeps a bit-identical
+    /// `Vec::new()` and pays no traversal.
+    fn pending_keys_for(&self, tx: &Transaction, exclude: Option<&Hash>) -> Vec<crypto::PublicKey> {
+        if tx.tx_type != TxType::Registration {
+            return Vec::new();
+        }
+        pending_registrations::pending_registration_keys(
+            &self.entries,
+            &self.node_pending_producer_keys(),
+            exclude,
+        )
     }
 
     /// Create with default mainnet settings
@@ -288,6 +354,12 @@ impl Mempool {
             .read()
             .map(|g| g.clone())
             .unwrap_or_default();
+        // INC-I-147: populate pending_producer_keys so the duplicate-registration
+        // check at validation/registration.rs:173 is reachable at admission
+        // instead of evaluating Vec::new().contains(&pk) == false. `tx` is not
+        // yet in `entries` (the AlreadyExists guard above returned otherwise),
+        // so the exclusion is defensive.
+        let pending_keys = self.pending_keys_for(&tx, Some(&tx_hash));
         let ctx = ValidationContext::new(self.params.clone(), self.network, 0, current_height)
             .with_sig_verification_height(self.network.params().sig_verification_height)
             .with_encrypted_content_activation_height(
@@ -308,7 +380,8 @@ impl Mempool {
                 self.oracle_sunset_triggered
                     .load(std::sync::atomic::Ordering::Acquire),
             )
-            .with_producers_weighted(active_producers_snapshot);
+            .with_producers_weighted(active_producers_snapshot)
+            .with_pending_producer_keys(pending_keys);
         validate_transaction(&tx, &ctx)?;
 
         // Validate input spending conditions: pubkey + signature for Normal/Bond,
@@ -658,6 +731,14 @@ impl Mempool {
             .read()
             .map(|g| g.clone())
             .unwrap_or_default();
+        // INC-I-147: same pending-registration wiring as add_transaction.
+        // `Registration` is NOT state-only (`Transaction::is_state_only`
+        // excludes it — it consumes UTXO inputs for its bond), so no
+        // registration reaches this path today and the call returns
+        // `Vec::new()` for every system tx. Wired anyway so the two mempool
+        // ValidationContext sites cannot drift apart again, which is the
+        // defect class INV-VALIDATION-001 exists to close.
+        let pending_keys = self.pending_keys_for(&tx, Some(&tx_hash));
         let ctx = ValidationContext::new(self.params.clone(), self.network, 0, current_height)
             .with_sig_verification_height(self.network.params().sig_verification_height)
             .with_encrypted_content_activation_height(
@@ -678,7 +759,8 @@ impl Mempool {
                 self.oracle_sunset_triggered
                     .load(std::sync::atomic::Ordering::Acquire),
             )
-            .with_producers_weighted(active_producers_snapshot);
+            .with_producers_weighted(active_producers_snapshot)
+            .with_pending_producer_keys(pending_keys);
         validate_transaction(&tx, &ctx)?;
 
         // Make room if necessary
@@ -1083,7 +1165,7 @@ impl Mempool {
 
     /// Revalidate all transactions against current UTXO set
     /// Used after chain reorganization to remove invalid transactions
-    pub fn revalidate(&mut self, utxo_set: &UtxoSet, _current_height: BlockHeight) {
+    pub fn revalidate(&mut self, utxo_set: &UtxoSet, current_height: BlockHeight) {
         let mut to_remove = Vec::new();
 
         for (hash, entry) in &self.entries {
@@ -1105,10 +1187,72 @@ impl Mempool {
             }
         }
 
+        to_remove.extend(self.registrations_that_became_duplicates(current_height));
+
         for hash in to_remove {
             info!("Removing invalidated transaction {}", hash);
             self.remove_transaction(&hash);
         }
+    }
+
+    /// INC-I-147 (INV-VALIDATION-001, eviction half): held `Registration`
+    /// transactions whose producer has SINCE become registered or pending.
+    ///
+    /// Input existence — the only check `revalidate` performed before this —
+    /// cannot shed them: a duplicate funded from disjoint inputs keeps every
+    /// input alive indefinitely. Measured consequence: the seed held 4 toxic
+    /// registrations for 49-102 minutes across 577 revalidate passes. A
+    /// non-producer never builds a block, so it never even gets the
+    /// poison-block failure path that lets producers shed them via
+    /// `remove_registration_txs`.
+    ///
+    /// Deliberately NOT a `validate_transaction` re-run. On mainnet that would
+    /// recompute the registration hash-chain VDF (`validation/registration.rs:222`,
+    /// ~5s per registration at `vdf_register_iterations`) on every pass — 577
+    /// passes of pure CPU burn for a check whose answer cannot change with
+    /// height. Only the two consensus predicates that CAN flip between
+    /// admission and now are re-evaluated, against the same node-published
+    /// snapshots the admission path reads:
+    ///   * `registration.rs:166` — producer already active
+    ///   * `registration.rs:173` — producer already pending
+    ///
+    /// The mempool-resident half of "pending" is intentionally excluded here:
+    /// admission already prevents two registrations for one pubkey from
+    /// coexisting, and cross-checking residents against each other would evict
+    /// BOTH members of any pre-existing pair.
+    fn registrations_that_became_duplicates(&self, current_height: BlockHeight) -> Vec<Hash> {
+        let registrations: Vec<(Hash, crypto::PublicKey)> = self
+            .entries
+            .iter()
+            .filter_map(|(hash, entry)| {
+                pending_registrations::registration_key_of(&entry.tx).map(|pk| (*hash, pk))
+            })
+            .collect();
+        if registrations.is_empty() {
+            return Vec::new();
+        }
+
+        let active: Vec<crypto::PublicKey> = self
+            .active_producers_weighted
+            .read()
+            .map(|g| g.iter().map(|(pk, _)| *pk).collect())
+            .unwrap_or_default();
+        let pending = self.node_pending_producer_keys();
+
+        registrations
+            .into_iter()
+            .filter(|(_, pk)| active.contains(pk) || pending.contains(pk))
+            .map(|(hash, pk)| {
+                warn!(
+                    "INC-I-147: evicting registration {} at height {} — producer {} is \
+                     already registered or pending; block validation would reject it",
+                    hash,
+                    current_height,
+                    pk.to_hex()
+                );
+                hash
+            })
+            .collect()
     }
 }
 
