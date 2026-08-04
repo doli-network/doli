@@ -3,6 +3,7 @@ use crypto::{bls_sign_pop, signature, BlsSecretKey, Hash, PublicKey};
 use doli_core::{Input, Output, Transaction};
 
 use crate::rpc_client::{format_balance, RpcClient};
+use crate::tx_retention;
 use crate::wallet::Wallet;
 
 pub(super) async fn handle_register(
@@ -22,16 +23,31 @@ pub(super) async fn handle_register(
     }
 
     // Check if already registered or pending (WHITEPAPER: "public key is not already registered")
+    //
+    // This MUST use the PLURAL getProducers. The singular getProducer reads only
+    // the committed producer map (crates/rpc/src/methods/producer.rs:61-70,
+    // exhaustive over the 4-variant ProducerStatus — there is no `Pending`), so a
+    // Registration that has mined but still sits in `pending_updates` answers
+    // `-32006 Producer not found` and the whole check is skipped. Only
+    // getProducers surfaces it, with status "pending"
+    // (crates/rpc/src/methods/producer.rs:244-270). Registering twice inside that
+    // epoch-deferral window is what poisons the producer's next block —
+    // INC-I-147 / INC-I-148 RC-2.
     let pk_hex = &wallet.addresses()[0].public_key;
-    if let Ok(info) = rpc.get_producer(pk_hex).await {
-        match info.status.to_lowercase().as_str() {
-            "active" => {
-                anyhow::bail!("This key is already registered as an active producer (pubkey: {}, bonds: {}). Use 'doli producer add-bond' to increase your bond count.", pk_hex, info.bond_count);
+    if let Ok(producers) = rpc.get_producers(false).await {
+        if let Some(info) = producers
+            .iter()
+            .find(|p| p.public_key.eq_ignore_ascii_case(pk_hex))
+        {
+            match info.status.to_lowercase().as_str() {
+                "active" => {
+                    anyhow::bail!("This key is already registered as an active producer (pubkey: {}, bonds: {}). Use 'doli producer add-bond' to increase your bond count.", pk_hex, info.bond_count);
+                }
+                "pending" => {
+                    anyhow::bail!("This key already has a pending registration (pubkey: {}). It will activate at the next epoch boundary.", pk_hex);
+                }
+                _ => {} // exited/slashed — allow re-registration
             }
-            "pending" => {
-                anyhow::bail!("This key already has a pending registration (pubkey: {}). It will activate at the next epoch boundary.", pk_hex);
-            }
-            _ => {} // exited/slashed — allow re-registration
         }
     }
 
@@ -194,8 +210,15 @@ pub(super) async fn handle_register(
 
     match rpc.send_transaction(&tx_hex).await {
         Ok(hash) => {
+            // INV-CLI-002: a bare OK from sendTransaction is not evidence of
+            // retention. Ask the SAME node whether it still holds the tx before
+            // claiming anything about activation. INC-I-148 RC-1.
+            println!("Verifying the node retained the transaction...");
+            let retention = tx_retention::require_retained(rpc, &hash, "Registration").await?;
+
             println!("Registration submitted successfully!");
             println!("TX Hash: {}", hash);
+            println!("Retention: {}", retention.describe());
             println!();
             // Show activation epoch ETA
             if let Ok(epoch) = rpc.get_epoch_info().await {

@@ -31,6 +31,7 @@ mod parsers;
 mod paths;
 mod pool_tx;
 mod rpc_client;
+mod tx_retention;
 mod wallet;
 
 use commands::{Cli, Commands};

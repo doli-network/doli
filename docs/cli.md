@@ -574,6 +574,36 @@ doli producer register --bonds 5
 
 Registration is epoch-deferred — your producer becomes active at the next epoch boundary.
 
+**Duplicate guard.** Before building the transaction the CLI queries `getProducers` and refuses
+if the wallet key is already `active` or already has a `pending` registration. The plural method
+is used deliberately: `getProducer` (singular) only reports keys in the committed producer map,
+so a registration that has mined but not yet crossed the epoch boundary is invisible to it.
+A second registration inside that window is rejected by block validation and poisons the next
+block your producer builds (INC-I-147).
+
+**Retention verification.** `sendTransaction` returning OK only means the node accepted the
+transaction — it can be evicted moments later. After submitting, the CLI re-queries the same node
+with `getTransaction` (a short bounded poll) and only then prints the success line and the
+activation ETA:
+
+```
+Submitting registration transaction...
+Verifying the node retained the transaction...
+Registration submitted successfully!
+TX Hash: 4ac6808e...
+Retention: held in the node mempool, not yet mined
+```
+
+**Exit codes:**
+| Outcome | Exit | Output |
+|---------|------|--------|
+| Accepted and retained | 0 | success line, TX hash, retention state, activation ETA |
+| Rejected at submit | non-zero | `Error submitting registration: ...` |
+| Accepted then dropped | non-zero | `Registration was NOT retained by the node.` — no success line, no ETA |
+| Retention could not be checked | non-zero | `Registration could NOT be verified.` — query the TX hash before retrying |
+
+Never resubmit on a non-zero exit without first checking the transaction's fate.
+
 **WHITEPAPER Reference:** Section 6 (Producer Registration)
 - Requires activation bond (Section 6.2)
 - Bond stacking up to 3,000x (Section 6.3)
@@ -718,7 +748,7 @@ doli producer add-bond --count 3
 
 ### 4.6. Withdraw Bonds
 
-Withdraw bonds instantly using FIFO order (oldest first). The withdrawal transaction consumes Bond UTXOs and creates a Normal output with the net amount (after penalty). Penalty is burned via UTXO accounting (inputs - outputs = burn). Funds are available immediately in the same block.
+Withdraw bonds instantly using FIFO order (oldest first). The withdrawal transaction consumes Bond UTXOs and creates a Normal output with the net amount (after penalty). Penalty is burned via UTXO accounting (inputs - outputs = burn). There is no unbonding delay: the payout output is spendable as soon as the transaction is **mined** (the bond removal itself is epoch-deferred).
 
 ```bash
 doli producer request-withdrawal --count <COUNT> [OPTIONS]
@@ -754,6 +784,22 @@ Withdrawing 3 bonds (FIFO — oldest first):
 You receive: 27.50000000 DOLI
 Penalty burned: 2.50000000 DOLI
 ```
+
+**Retention verification.** As with `producer register`, the CLI re-queries the node with
+`getTransaction` after submitting and only reports on the payout once the node confirms it still
+holds the transaction:
+
+```
+Submitting withdrawal request...
+Verifying the node retained the transaction...
+Withdrawal submitted. TX: 7356efe0...
+Held in the node mempool — funds become spendable once this transaction is mined.
+Bonds removed at next epoch boundary (~7 minutes, Epoch 11).
+```
+
+Once mined, the last line becomes `Payout output created — funds are spendable (N confirmation(s)).`
+If the node accepted the transaction and then dropped it, the command exits non-zero with
+`Withdrawal request was NOT retained by the node.` and makes no claim about funds.
 
 ---
 

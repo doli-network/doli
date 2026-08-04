@@ -5,6 +5,7 @@ use doli_core::{Input, Transaction};
 use super::common::{compute_fifo_breakdown, display_fifo_breakdown};
 use crate::common::address_prefix;
 use crate::rpc_client::{format_balance, RpcClient};
+use crate::tx_retention::{self, Retention};
 use crate::wallet::Wallet;
 
 pub(super) async fn handle_request_withdrawal(
@@ -188,8 +189,25 @@ pub(super) async fn handle_request_withdrawal(
 
     match rpc.send_transaction(&tx_hex).await {
         Ok(hash) => {
+            // INV-CLI-002: verify the node kept the transaction before saying
+            // anything about the payout. INC-I-148.
+            println!("Verifying the node retained the transaction...");
+            let retention =
+                tx_retention::require_retained(rpc, &hash, "Withdrawal request").await?;
+
             println!("Withdrawal submitted. TX: {}", hash);
-            println!("Funds available now.");
+            // The payout is a normal output created when this transaction is
+            // MINED — "Funds available now." was false for a tx still sitting in
+            // the mempool, and outright wrong for one that was never retained.
+            match retention {
+                Retention::Mined { confirmations } => println!(
+                    "Payout output created — funds are spendable ({} confirmation(s)).",
+                    confirmations
+                ),
+                _ => println!(
+                    "Held in the node mempool — funds become spendable once this transaction is mined."
+                ),
+            }
             // Show epoch boundary ETA for bond removal
             if let Ok(epoch) = rpc.get_epoch_info().await {
                 let eta_minutes = (epoch.blocks_remaining * 10) / 60;

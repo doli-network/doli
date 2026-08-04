@@ -220,7 +220,21 @@ Returns transaction by its hash. Checks the mempool first, then looks up confirm
 |------|------|-------------|
 | hash | string | Transaction hash (hex) |
 
-**Response:**
+**Three distinguishable states.** `fee`, `blockHash`, `blockHeight` and `confirmations` are
+`skip_serializing_if = "Option::is_none"` — they are **omitted from the JSON entirely**, not
+returned as `null`. Clients MUST model them as optional or a valid response fails to parse.
+
+| State | Response | Discriminator |
+|-------|----------|---------------|
+| In mempool | result object **without** `blockHash` / `blockHeight` / `confirmations`; `fee` present | `confirmations` absent |
+| Mined | result object **with** `blockHash`, `blockHeight`, `confirmations`; `fee` present only when every input amount resolved | `confirmations` present |
+| Not held by this node | JSON-RPC error `{"code":-32001,"message":"Transaction not found","data":{"hash":"...","searched_by":"hash"}}` | error code `-32001` |
+
+`fee` is **not** a state discriminator — it is routinely present for a mempool entry and absent for
+a mined one. The answer is per-node: a transaction lives in the mempool of the node that received
+it, so retention questions must be asked of that node and no other.
+
+**Response (mined):**
 ```json
 {
     "hash": "abcd...",

@@ -43,6 +43,34 @@ struct RpcError {
     data: Option<serde_json::Value>,
 }
 
+/// JSON-RPC error code the node uses for "I do not have this transaction"
+/// (`crates/rpc/src/error.rs` → `tx_not_found_by_hash`).
+const TX_NOT_FOUND_CODE: i32 = -32001;
+
+/// A node answer that has not yet been collapsed into `Result`.
+enum RpcOutcome<R> {
+    /// The node returned a result.
+    Ok(R),
+    /// The node returned a JSON-RPC `error` object.
+    Error(RpcError),
+}
+
+/// Render a JSON-RPC error object exactly as the CLI has always surfaced it.
+fn format_rpc_error(error: &RpcError) -> anyhow::Error {
+    match &error.data {
+        Some(data) => anyhow!(
+            "RPC error {} ({}): {}\n  detail: {}",
+            error.code,
+            data.get("error_code")
+                .and_then(|v| v.as_str())
+                .unwrap_or("UNKNOWN"),
+            error.message,
+            data,
+        ),
+        None => anyhow!("RPC error {}: {}", error.code, error.message),
+    }
+}
+
 /// Balance information
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
@@ -161,7 +189,17 @@ pub struct NetworkParams {
     pub genesis_time: u64,
 }
 
-/// Transaction information
+/// Transaction information as returned by `getTransaction`.
+///
+/// This mirrors `crates/rpc/src/types/block.rs::TransactionResponse` field for
+/// field. Every field the node marks `skip_serializing_if = "Option::is_none"`
+/// MUST be `Option` + `#[serde(default)]` here, or a perfectly valid response
+/// fails to parse: an in-mempool transaction omits
+/// `blockHash`/`blockHeight`/`confirmations`, and a mined one frequently omits
+/// `fee` (it is only computed when all input amounts resolve).
+///
+/// `txType` is a STRING on the wire (`TransactionResponse::from` maps `TxType`
+/// to `"transfer"` / `"registration"` / ...), never a number.
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -170,18 +208,42 @@ pub struct TransactionInfo {
     pub hash: String,
     /// Version
     pub version: u32,
-    /// Transaction type (0=transfer, 1=registration, 2=exit)
-    pub tx_type: u32,
-    /// Block hash (if confirmed)
+    /// Transaction type ("transfer", "registration", "exit", ...)
+    pub tx_type: String,
+    /// Transaction size in bytes
+    #[serde(default)]
+    pub size: Option<usize>,
+    /// Fee (only present when the node could compute it)
+    #[serde(default)]
+    pub fee: Option<u64>,
+    /// Block hash (present only when mined)
+    #[serde(default)]
     pub block_hash: Option<String>,
-    /// Block height (if confirmed)
+    /// Block height (present only when mined)
+    #[serde(default)]
     pub block_height: Option<u64>,
-    /// Confirmations
-    pub confirmations: u64,
-    /// Timestamp
-    pub timestamp: Option<u64>,
-    /// Fee
-    pub fee: u64,
+    /// Confirmations (present only when mined — this is the mined/mempool
+    /// discriminator; `fee` is NOT, it appears in both states)
+    #[serde(default)]
+    pub confirmations: Option<u64>,
+}
+
+/// Where a node currently holds a transaction.
+///
+/// Derived from the three states `crates/rpc/src/methods/transaction.rs:16-76`
+/// can answer with — no RPC change is needed to tell them apart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TxPresence {
+    /// The node holds the transaction in its mempool, unmined.
+    Mempool,
+    /// The node has the transaction in a block.
+    Mined {
+        /// Confirmation depth reported by the node.
+        confirmations: u64,
+    },
+    /// The node answered `-32001 Transaction not found`: it has the
+    /// transaction in neither its mempool nor its block index.
+    Absent,
 }
 
 /// History entry from getHistory RPC
@@ -410,12 +472,18 @@ impl RpcClient {
             .unwrap_or_else(|_| reqwest::Client::new())
     }
 
-    /// Make an RPC call
-    async fn call<P: Serialize, R: DeserializeOwned>(
+    /// Make an RPC call and hand back the node's answer *unflattened*.
+    ///
+    /// `Err` means the node could not be asked at all (transport failure, bad
+    /// HTTP status, unparseable body). `Ok(RpcOutcome::Error)` means the node
+    /// answered and said "no". Those are materially different facts, and code
+    /// that must not guess (the retention probe) needs to tell them apart by
+    /// error code rather than by substring-matching a formatted message.
+    async fn call_inspect<P: Serialize, R: DeserializeOwned>(
         &self,
         method: &'static str,
         params: P,
-    ) -> Result<R> {
+    ) -> Result<RpcOutcome<R>> {
         let request = RpcRequest::new(method, params);
 
         let response = self
@@ -439,23 +507,25 @@ impl RpcClient {
             .map_err(|e| anyhow!("Failed to parse response: {}", e))?;
 
         if let Some(error) = rpc_response.error {
-            return match error.data {
-                Some(data) => Err(anyhow!(
-                    "RPC error {} ({}): {}\n  detail: {}",
-                    error.code,
-                    data.get("error_code")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("UNKNOWN"),
-                    error.message,
-                    data,
-                )),
-                None => Err(anyhow!("RPC error {}: {}", error.code, error.message)),
-            };
+            return Ok(RpcOutcome::Error(error));
         }
 
         rpc_response
             .result
+            .map(RpcOutcome::Ok)
             .ok_or_else(|| anyhow!("No result in response"))
+    }
+
+    /// Make an RPC call
+    async fn call<P: Serialize, R: DeserializeOwned>(
+        &self,
+        method: &'static str,
+        params: P,
+    ) -> Result<R> {
+        match self.call_inspect(method, params).await? {
+            RpcOutcome::Ok(result) => Ok(result),
+            RpcOutcome::Error(error) => Err(format_rpc_error(&error)),
+        }
     }
 
     /// Make an RPC call returning raw JSON Value (for dynamic/large responses).
@@ -607,15 +677,34 @@ impl RpcClient {
         self.call("getNetworkParams", Params {}).await
     }
 
-    /// Get transaction by hash
-    #[allow(dead_code)]
-    pub async fn get_transaction(&self, hash: &str) -> Result<TransactionInfo> {
+    /// Ask **this** node whether it still holds a transaction.
+    ///
+    /// Deliberately uses the bare `call_inspect` path, NOT
+    /// `call_with_archiver_fallback`: the fallback fires on any "not found"
+    /// message and `RpcClient::new` prepends `http://127.0.0.1:8500` to the
+    /// archiver list for every loopback endpoint, so a retention question asked
+    /// through it would be silently answered by a *different* node. A
+    /// transaction lives in the mempool of the node that received it, so only
+    /// that node's answer means anything.
+    ///
+    /// `Err` is reserved for "could not ask" — it is never evidence of a drop.
+    pub async fn get_transaction_presence(&self, hash: &str) -> Result<TxPresence> {
         #[derive(Serialize)]
         struct Params<'a> {
             hash: &'a str,
         }
 
-        self.call("getTransaction", Params { hash }).await
+        match self
+            .call_inspect::<_, TransactionInfo>("getTransaction", Params { hash })
+            .await?
+        {
+            RpcOutcome::Ok(info) => Ok(match info.confirmations {
+                Some(confirmations) => TxPresence::Mined { confirmations },
+                None => TxPresence::Mempool,
+            }),
+            RpcOutcome::Error(error) if error.code == TX_NOT_FOUND_CODE => Ok(TxPresence::Absent),
+            RpcOutcome::Error(error) => Err(format_rpc_error(&error)),
+        }
     }
 
     /// Get UTXOs for an address as raw JSON (includes NFT metadata fields)
