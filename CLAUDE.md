@@ -239,6 +239,9 @@ After completing any code change, ALWAYS propose the following checklist to the 
 
 ---
 
+
+---
+
 # OMEGA Ω
 
 ## Philosophy
@@ -332,7 +335,7 @@ After completing a user's task, if they did something manually that an OMEGA com
 20. **Intellectual honesty** — STOP on self-contradiction. Show your work on math/logic claims. State what you don't understand before proposing. Try to disprove your own hypotheses before acting. Max 2 inferences without verification. Read `.claude/protocols/intellectual-honesty.md`
 21. **Output Contract** — before any test assertion, produce Output Contract Checklist (outputs × paths × input partitions). Fix confidence >0.7 requires FAIL→PASS test evidence. **Test BEFORE fix** — reproduction test exists and FAILS before any fix code or fix plan. Read `.claude/protocols/output-contract.md`
 22. **Prompt refinement at intake** — every omega command with a user description refines BEFORE agent work (neutralize anchoring, reframe causes as hypotheses; REGRESSION CONTEXT triggers git archeology). Read `.claude/protocols/prompt-refinement.md`
-23. **Evidence floor** — diagnostic synthesizers publish `VERDICT` or `PRELIMINARY`; reviewers/auditors give per-finding evidence pointers. Blocking-enforced by `evidence-floor-gate.sh` (the block message states the required shape). **Present findings by quoting the gate-passed block verbatim, never narrating it** — blocking-enforced by `verdict-quote-gate.sh` (Stop), armed by `verdict-arm.sh`. Read `.claude/protocols/evidence-floor.md`
+23. **Evidence floor** — diagnostic synthesizers publish `VERDICT` or `PRELIMINARY`; reviewers/auditors give per-finding evidence pointers and open FINAL reports with a canonical `━━━ FINDINGS` summary block. Blocking-enforced by `evidence-floor-gate.sh` (the block message states the required shape). **Present findings by quoting the gate-passed block verbatim, never narrating it** — blocking-enforced by `verdict-quote-gate.sh` (Stop), armed by `verdict-arm.sh`. Read `.claude/protocols/evidence-floor.md`
 24. **Path-Coverage attestation** — new early-return guards in non-test Rust need a per-branch `Path-Coverage:` commit block. Blocking-enforced by `path-coverage-gate.sh` (the block message states the format). Read `.claude/protocols/path-coverage.md`
 25. **Communication style** — user-facing replies use BLUF + Progressive Disclosure + Cognitive Load (≤4 items/turn). Shape: 1 sentence bottom line + up to 3 sentences action + 1 question. Hold complexity in files. Read `.claude/protocols/communication-style.md`
 26. **Resource cost** — every proposal (architect, design-evaluator, design-synthesizer, reviewer) carries a `━━━ RESOURCE COST` block. Blocking-enforced by `resource-cost-gate.sh` (the block message states the required dimensions). Read `.claude/protocols/resource-cost.md`
