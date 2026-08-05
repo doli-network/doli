@@ -795,7 +795,7 @@ sudo tail -5 /var/log/doli/mainnet/{name}.log
 
 **Multi-node servers:** Repeat for each producer, using the correct wallet path and service name.
 
-**Prevention:** Before wiping any `data/` directory, verify `wallet.json` and `producer.seed.txt` are not inside it. Back them up first if present. Use `doli wipe` instead of manual `rm -rf` — it preserves wallet files automatically.
+**Prevention:** Before wiping any `data/` directory, verify `wallet.json` and the seed file are not inside it. Back them up first if present. Prefer `doli wipe` over manual `rm -rf` — its preserve list is `[keys, .env, wallet.json, wallet.seed.txt, node_key, config.toml]` (`WIPE_PRESERVE` in `bins/cli/src/cmd_chain.rs`). **Two gotchas: (1) `doli wipe` does NOT preserve `signed_slots.db` — back it up manually on active producers (double-sign slash risk); (2) it preserves `wallet.seed.txt`, NOT `producer.seed.txt` — if your seed is stored under that name, back it up too.** See `.claude/skills/producers/wipe-protocol.md`.
 
 ### Node won't sync (testnet/mainnet)
 

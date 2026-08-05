@@ -1,34 +1,42 @@
 # core — DOLI Core Consensus & Types
 <!-- @INDEX
-ENTRY-POINTS: lines 19-44
-DATA-FLOWS: lines 46-80
-STRUCTS: lines 82-175
-FUNCTIONS: lines 177-265
-CONSTANTS: lines 267-360
-ACTIVATION-HEIGHTS: lines 362-400
-DEPENDENCIES: lines 402-415
-CONSTRAINTS: lines 417-445
-PATTERNS: lines 447-480
+ENTRY-POINTS: lines 15-53
+OPERATIONS: lines 55-69
+DATA-FLOWS: lines 71-153
+STRUCTS: lines 155-363
+FUNCTIONS: lines 365-442
+CONSTANTS: lines 444-565
+ACTIVATION-HEIGHTS: lines 567-611
+DEPENDENCIES: lines 613-629
+CONSTRAINTS: lines 631-664
+PATTERNS: lines 666-772
 -->
 
 ## ENTRY-POINTS
 
+Crate: `doli-core` (`crates/core/`), ~109 `.rs` files, 24 top-level modules (see `lib.rs:115-138`):
+`attestation, block, chainspec, conditions, config_validation, consensus, discovery, epoch_state,
+finality, genesis, heartbeat, maintainer, network, network_params, nft, oracle, pool, presence,
+rewards, scheduler, tpop, transaction, types, validation`.
+
 Primary public API (all re-exported from `crates/core/src/lib.rs`):
 
 **Block validation** — call these to process an incoming block:
-- `validate_block(block, ctx) -> Result<(), ValidationError>` — full validation (VDF + context)
+- `validate_block(block, ctx) -> Result<(), ValidationError>` — full validation (VDF + context), `validation/block.rs`
 - `validate_block_with_mode(block, ctx, mode) -> Result<(), ValidationError>` — explicit mode
 - `validate_header(header, ctx) -> Result<(), ValidationError>` — header-only
 
 **Transaction validation:**
-- `validate_transaction(tx, ctx) -> Result<(), ValidationError>` — structural
-- `validate_transaction_with_utxos(tx, ctx, utxo_provider) -> Result<(), ValidationError>` — full with UTXO lookups
+- `validate_transaction(tx, ctx) -> Result<(), ValidationError>` — structural, `validation/transaction.rs`
+- `validate_transaction_with_utxos(tx, ctx, utxo_provider) -> Result<(), ValidationError>` — full with UTXO lookups, `validation/utxo.rs`
+- `verify_amm_conservation(...) -> AmmConservationResult` — pool-aware conservation (INC-I-096), `validation/amm.rs`
 
 **Producer scheduling:**
-- `DeterministicScheduler::new(producers)` — build scheduler from sorted producers
-- `DeterministicScheduler::select_producer(slot, rank) -> Option<&PublicKey>` — primary selection
-- `EpochState::derive_at_boundary(prev, input) -> EpochState` — ONE canonical epoch transition
-- `EpochState::accumulate_block(input)` — per-block tracking update
+- `DeterministicScheduler::new(producers)` — `scheduler.rs:106`
+- `DeterministicScheduler::select_producer(slot, rank) -> Option<&PublicKey>` — `scheduler.rs:171`
+- `EpochState::derive_at_boundary(prev, input) -> EpochState` — `epoch_state/mod.rs:238` (ONE canonical epoch transition)
+- `EpochState::accumulate_block(input)` — `epoch_state/mod.rs:205`
+- `compute_live_producer_list(...) -> Vec<PublicKey>` — `epoch_state/mod.rs:32` (shared by scheduler + rewards.rs)
 
 **Genesis:**
 - `generate_genesis_block(config: &GenesisConfig) -> Block` — `genesis.rs:189`
@@ -36,7 +44,28 @@ Primary public API (all re-exported from `crates/core/src/lib.rs`):
 - `verify_genesis_block(block, network) -> Result<(), GenesisError>` — `genesis.rs:326`
 
 **Network params (always prefer over raw constants):**
-- `NetworkParams::load(network: Network) -> &'static NetworkParams` — cached singleton
+- `NetworkParams::load(network: Network) -> &'static NetworkParams` — `network_params/mod.rs:518`, cached singleton, runs `validate_amm_conservation_ordering()` debug-assert (INV-DEPLOY-002)
+
+**Oracle (Phase 2.1, frozen pre-activation):**
+- `bond_weighted_median(attestations, bond_snapshot) -> Option<(u64, u16)>` — `oracle/mod.rs:107`
+- `compute_structural_share_bps(...) -> Option<u16>` — `oracle/mod.rs:443` (sunset metric, M8)
+- `OracleSunsetState::transition(share_bps, epoch) -> OracleHealthState` — `oracle/mod.rs:347`
+
+
+## OPERATIONS
+
+Consensus-visible procedures — how a producer builds/validates a block, how epoch rewards drain,
+how activation gates are checked.
+
+| Task | Steps | Commands/Functions | Inputs | Success |
+|------|-------|--------------------|--------|---------|
+| Build a block for a slot | 1. Look up scheduled producer via `DeterministicScheduler::select_producer(slot, rank)` 2. `BlockBuilder::new(prev_hash, prev_slot, producer)` 3. `.with_params(params).with_presence_root(bitfield_commitment).with_missed_producers(gap_list)` 4. select+add mempool txs within `max_block_size(height)` / builder policy budget 5. prepend coinbase tx 6. `.build_with_vdf(timestamp)` | `BlockBuilder::new`, `.with_presence_root`, `.build_with_vdf` (`block.rs:282+`) | prev block info, mempool txs, missed-producer gap, VDF iterations from `NetworkParams` | `Block` with valid header hash, VDF proof, merkle_root matching transactions |
+| Validate an incoming block | 1. Build `ValidationContext` with epoch-frozen producer list + all activation heights 2. `validate_block_with_mode(block, ctx, mode)` — `Full` (VDF checked) or `Light` (gap blocks post-snap) | `ValidationContext::new(...).with_epoch_producer_list(...).with_fork_id(...)`, `validate_block_with_mode` | `Block`, `ConsensusParams`, `NetworkParams` activation heights, epoch-frozen producer list | `Ok(())` or typed `ValidationError` |
+| Compute the next epoch boundary | 1. Gather `EpochDerivationInput` (active_producers, bond_counts, registered_at, ghost/prune activation heights) 2. `EpochState::derive_at_boundary(&prev, &input)` | `EpochState::derive_at_boundary` (`epoch_state/mod.rs:238`) | prev `EpochState`, bond snapshot from UTXO set at boundary height, `NetworkParams::ghost_exclusion_activation_height` / `epoch_prune_activation_height` | New `EpochState` — identical on every node given identical inputs (type-level guarantee) |
+| Distribute epoch rewards | 1. At `height % blocks_per_reward_epoch == 0`, decode all block bitfields using `epoch_state.producer_list` ordering 2. `Transaction::new_epoch_reward_coinbase(pool_inputs, distributions, height, epoch)` | encode/decode_attestation_bitfield (`attestation.rs:266+`), reward calc in `bins/node` (out of domain) | pool UTXO outpoints (`EPOCH_REWARD_EXPLICIT_INPUTS_HEIGHT` gate), qualified producer list | `EpochReward` tx (TxType=10) draining the pool, bond-weighted |
+| Submit a Phase 2.1 price attestation (frozen — `oracle_activation_height = u64::MAX` on all networks) | 1. Attester builds `PriceAttestationData` (144B) with `pair_id = phase_2_1_known_pair_id()` 2. Submit as `TxType::PriceAttestation` (16), empty inputs/outputs 3. Node rejects pre-activation with `[ERRTX-ORACLE001]` | `phase_2_1_known_pair_id()` (`oracle/mod.rs:202`), `TxType::PriceAttestation` | bonded producer status, one attestation per `(epoch, pair_id)` | Pre-activation: always rejected. Post-activation: aggregated at epoch boundary into `OraclePrice` UTXO via `bond_weighted_median` |
+| Swap/AddLiquidity/RemoveLiquidity/CreatePool (`amm_activation_height = 0` on all networks post fresh-genesis reset) | 1. Build tx with `TxType::{CreatePool,AddLiquidity,RemoveLiquidity,Swap}` 2. Validator checks `current_height >= amm_activation_height` 3. Pool-input auth exempted from signature (RC-A, `inc_i_092_activation_height`) 4. Pool-aware conservation (RC-B/INC-I-096) | `pool::compute_swap`, `compute_lp_shares`, `compute_remove_liquidity` (`pool.rs`), `validation/amm.rs::verify_amm_conservation` | reserves in Pool UTXO `extra_data`, `MINIMUM_LIQUIDITY=1000` locked on CreatePool | Pool UTXO reserves updated per x·y=k invariant, LP shares minted/burned |
+| Check whether a feature is active at a given height | 1. `NetworkParams::load(network)` 2. compare `current_height` against the specific `*_activation_height` field (NEVER a bare `consensus::` constant for network-aware code) | `NetworkParams::load`, field access | `Network`, `current_height` | Correct gate decision without cross-network leakage |
 
 
 ## DATA-FLOWS
@@ -84,6 +113,29 @@ Per-block: Transaction::new_coinbase(amount, reward_pool_pubkey_hash, height, sl
 At epoch boundary: EpochReward tx drains pool → distributes to producers bond-weighted
 ```
 
+### Phase 2.1 oracle aggregation (M6, orchestrator lives in bins/node, pure fns here)
+```
+Per epoch: collect all valid PriceAttestation txs for closing epoch
+  → dedupe_latest_per_attester(contributions) -> Vec<AttestationContribution>  [oracle/mod.rs:171]
+  → bond_weighted_median(attestations, bond_snapshot) -> Option<(median_cents, count)>  [oracle/mod.rs:107]
+  → orchestrator writes/consumes OraclePrice UTXO at oracle_price_outpoint(pair_id)  [oracle/mod.rs:508]
+Sunset check (M8, every boundary):
+  compute_structural_share_bps(bond_snapshot[prev epoch], registered_at, height, blocks_per_epoch, STRUCTURAL_PUBKEY_HASHES)
+  → OracleSunsetState::transition(share_bps, epoch) -> Healthy | Warning | HaltRecoverable | HaltPermanent
+  → share < 5500 bps (55%) HALTs new attestations; share < 5500 for >=4 epochs -> HaltPermanent (binary upgrade only)
+```
+
+### AMM pool flow (pure math in pool.rs, gates in NetworkParams)
+```
+CreatePool: reserve_a/reserve_b funded by net DOLI inputs (RC-B, inc_i_092_activation_height)
+  → MINIMUM_LIQUIDITY=1000 permanently locked, never materialized as LPShare UTXO
+Swap: pool::compute_swap(reserve_a, reserve_b, dx, fee_bps) -> (dy, new_a, new_b)
+  → Pool UTXO input EXEMPT from signature (authorized by x*y=k invariant, RC-A)
+  → validation/amm.rs::verify_amm_conservation accounts for Pool extra_data reserve deltas (INC-I-096)
+RemoveLiquidity: pool::compute_remove_liquidity(shares, reserve_a, reserve_b, total_shares)
+  → proportional withdrawal bound to LP shares burned (INC-I-096)
+```
+
 ### ValidationContext construction (node layer fills this)
 ```
 ValidationContext::new(params, network, current_time, current_height)
@@ -92,6 +144,11 @@ ValidationContext::new(params, network, current_time, current_height)
   .with_producers_weighted([(pk, weight)])   // for anti-grinding selection
   .with_fork_id(expected_hash, activation_height)
   .with_security_audit_activation_height(h)
+  .with_amm_activation_height(h)              // AMM Foundations M1
+  .with_oracle_activation_height(h)           // Phase 2.1 oracle (frozen: u64::MAX)
+  .with_oracle_sunset_triggered(bool)         // M8 sunset flag, node-maintained
+  .with_inc_i_092_activation_height(h)        // Pool-input auth + CreatePool funding
+  .with_inc_i_096_activation_height(h)        // Pool-aware conservation
 ```
 
 
@@ -125,7 +182,7 @@ Block {
 BlockBuilder { ... }  // builder pattern, block.rs:282
 ```
 
-### Transaction types (`transaction/`)
+### Transaction types (`transaction/` — split into core.rs, data.rs, output.rs, types.rs, legacy.rs)
 ```rust
 Transaction {
     version: u32,
@@ -153,6 +210,13 @@ Output {
 }
 ```
 
+### Oracle types (`oracle/mod.rs`)
+```rust
+AttestationContribution { signer_hash: Hash, price_cents: u64 }
+OracleHealthState { Healthy, Warning, HaltRecoverable, HaltPermanent }
+OracleSunsetState { warning_since_epoch: Option<u64>, halt_since_epoch: Option<u64>, halt_permanent: bool }
+```
+
 ### Epoch & scheduler state (`epoch_state/mod.rs`)
 ```rust
 EpochState {
@@ -173,6 +237,7 @@ EpochDerivationInput {
     height: u64, epoch: u64,
     registered_at: HashMap<PublicKey, u64>,
     ghost_exclusion_activation_height: u64,
+    epoch_prune_activation_height: u64,          // NEW (INC-I-116)
 }
 
 BlockAccumulationInput {
@@ -201,7 +266,7 @@ ConsensusParams {
 }
 ```
 
-### Validation types (`validation/types.rs`)
+### Validation types (`validation/types.rs`) — much larger than pre-DeFi era
 ```rust
 ValidationContext {
     params: ConsensusParams,
@@ -218,7 +283,14 @@ ValidationContext {
     expected_fork_id: Hash,
     fork_id_activation_height: u64,
     encrypted_content_activation_height: u64,
+    encrypted_content_v2_activation_height: u64,
     security_audit_activation_height: u64,
+    defi_activation_height: u64,                // NEW — INC-I-088 Phase 0 (tombstoned types, retained)
+    amm_activation_height: u64,                 // NEW — AMM Foundations M1
+    oracle_activation_height: u64,              // NEW — Phase 2.1 oracle
+    oracle_sunset_triggered: bool,              // NEW — M8 sunset flag, node-maintained
+    inc_i_092_activation_height: u64,           // NEW — pool-input auth + CreatePool funding
+    inc_i_096_activation_height: u64,           // NEW — pool-aware conservation
     ...
 }
 
@@ -228,6 +300,9 @@ ValidationMode { Full, Light, Replay }
 UtxoInfo { output: Output, pubkey: Option<PublicKey>, spent: bool }
 trait UtxoProvider { fn get_utxo(&self, tx_hash: &Hash, output_index: u32) -> Option<UtxoInfo> }
 ```
+Validation module now spans 14 files: `amm.rs, block.rs, error.rs, errors_oracle.rs, parallel.rs,
+pool.rs, producer.rs, registration.rs, rewards_legacy.rs (dead code), transaction.rs, tx_types.rs,
+types.rs, utxo.rs, zk.rs` (`validation/mod.rs:1-66`).
 
 ### Scheduler (`scheduler.rs`)
 ```rust
@@ -236,18 +311,29 @@ ScheduledProducer { pubkey: PublicKey, bond_units: u32 }
 SchedulerStats { producer_count, total_bonds, min_bonds, max_bonds, avg_bonds }
 ```
 
-### NetworkParams (`network_params/mod.rs:47`)
-Large struct — all network-tunable parameters. Key fields:
+### NetworkParams (`network_params/mod.rs:50`)
+Large struct (~65 fields) — all network-tunable parameters, split across `mod.rs` (struct + docs),
+`defaults.rs` (per-network hardcoded values), `env_loader.rs`, `chainspec_loader.rs`. Key fields:
 - `bond_unit: u64`, `slot_duration: u64`, `genesis_time: u64`
 - `vdf_iterations: u64`, `blocks_per_reward_epoch: u64`, `vesting_quarter_slots: u64`
 - All activation heights (see ACTIVATION-HEIGHTS section)
-- `max_peers: usize`, mesh gossip params
+- `max_peers: usize`, mesh gossip params (`mesh_n`, `mesh_n_low`, `mesh_n_high`, `gossip_lazy`)
+- `received_delegation_cap: u64` — max total delegated bonds per producer (INC-I-078)
 
 ### Attestation (`attestation.rs`)
 ```rust
 Attestation { block_hash, slot, height, attester, attester_weight, signature, bls_signature }
 RegionAggregate { block_hash, slot, region, attester_count, total_weight, signatures, attesters }
 MinuteAttestationTracker  // tracks per-minute attestation (60 minutes/epoch)
+```
+
+### AMM pool math (`pool.rs`) — pure integer arithmetic, no floating point
+```rust
+compute_swap(reserve_a, reserve_b, dx, fee_bps) -> Option<(dy, new_a, new_b)>       // pool.rs:13
+compute_initial_lp_shares(amount_a, amount_b) -> Amount                            // pool.rs:41, isqrt
+compute_lp_shares(amount_a, amount_b, reserve_a, reserve_b, total) -> Option<Amount> // pool.rs:47
+compute_remove_liquidity(shares, reserve_a, reserve_b, total) -> Option<(da, db)>   // pool.rs:68
+compute_twap_price(...), update_twap(...), verify_invariant(...)
 ```
 
 ### Conditions (`conditions/mod.rs`)
@@ -285,50 +371,60 @@ FinalityTracker  // tracks pending blocks, emits checkpoint when 2/3+ weight
 ### VDF input (`block.rs:100-107`)
 `BlockHeader::vdf_input() -> Hash` → `vdf::block_input(prev_hash, merkle_root, slot, producer)`
 
-### Scheduler selection (`scheduler.rs:171-185`)
+### Scheduler selection (`scheduler.rs:171-199`)
 ```
 select_producer(slot, rank):
   offset = (total_bonds * rank) / MAX_FALLBACK_RANKS
   ticket = (slot + offset) % total_bonds
   binary search ticket_boundaries → producer
 ```
-**CRITICAL**: selection.rs `select_producer_for_slot()` is DEPRECATED — use `DeterministicScheduler`.
+**CRITICAL**: `consensus::selection::select_producer_for_slot()` is DEPRECATED — use `DeterministicScheduler`.
 
-### Slot timing (`consensus/selection.rs:94-111`)
+### Slot timing (`consensus/selection.rs`)
 ```
 eligible_rank_at_ms(offset_ms) -> Option<usize>:
   rank = offset_ms / FALLBACK_TIMEOUT_MS(2000)
   if rank < MAX_FALLBACK_RANKS(2): Some(rank) else None
 ```
 
-### Withdrawal penalty (`consensus/constants.rs:371-378`)
+### Withdrawal penalty (`consensus/constants.rs:436-444`)
 ```
 withdrawal_penalty_rate_with_quarter(bond_age_slots, quarter_slots):
   quarters = bond_age_slots / quarter_slots
   0→75%, 1→50%, 2→25%, 3+→0%
 ```
 
-### Max block size (`consensus/constants.rs:414-421`)
+### Max block size (`consensus/constants.rs:509-516`)
 ```
 max_block_size(height): era = height / BLOCKS_PER_ERA; BASE_BLOCK_SIZE << era, capped at MAX_BLOCK_SIZE_CAP
-max_extra_data_size(height): BASE_EXTRA_DATA_SIZE << era, capped at MAX_EXTRA_DATA_SIZE_CAP
 ```
+Builder-policy budgets (NOT consensus rules, `consensus/constants.rs:487-495`): pre-`large_block_activation_height`
+use `LEGACY_BLOCK_SELECT_BUDGET=1_000_000`; post-activation `LARGE_BLOCK_SELECT_BUDGET=1_900_000` (~300 TPS, INC-I-091).
 
 ### Epoch state (`epoch_state/mod.rs`)
-- `EpochState::genesis()` → zeroed state for epoch 0
-- `EpochState::accumulate_block(input)` → updates attested_sets[0], attestation_accum[0], blocks_produced
-- `EpochState::derive_at_boundary(prev, input) -> EpochState` → 3-epoch lookback + 2/3 deadlock floor + tier system
+- `compute_live_producer_list(...) -> Vec<PublicKey>` — `epoch_state/mod.rs:32`, shared attestation-filter + floor logic
+- `EpochState::genesis()` → `epoch_state/mod.rs:189`, zeroed state for epoch 0
+- `EpochState::accumulate_block(input)` → `epoch_state/mod.rs:205`
+- `EpochState::derive_at_boundary(prev, input) -> EpochState` → `epoch_state/mod.rs:238` — 3-epoch lookback + floor (proportional pre-INC-I-116, absolute `MIN_PRODUCERS_FLOOR=3` post) + tier system
 - `epoch_state_hash(state) -> Hash` → for state root computation
 
 ### Attestation bitfield (`attestation.rs`)
-- `encode_attestation_bitfield(attested_indices, total_producers) -> Vec<u8>`
+- `attestation_minute(slot: u32) -> u32` — `attestation.rs:257`, `slot / SLOTS_PER_ATTESTATION_MINUTE(6)`
+- `encode_attestation_bitfield(attested_indices) -> Hash` — `attestation.rs:266`, 256-producer cap (legacy header format)
 - `decode_attestation_bitfield(bitfield, producer_list, extra) -> Vec<usize>` — order = [producer_list | extra sorted]
-- `validate_attestation_bitfield(bitfield, block, ctx) -> Result<(), AttestationError>`
-- `attestation_minute(slot: u32) -> u32` — `slot % ATTESTATION_MINUTES_PER_EPOCH(60)`
+- `attestation_minutes_per_epoch(blocks_per_epoch) -> u32` — `attestation.rs:240`, `blocks_per_epoch/6`
+- `attestation_qualification_threshold(blocks_per_epoch) -> u32` — `attestation.rs:247`, `90% of minutes` (mainnet: 54 of 60 — NOT the static 30 used by the *tier-promotion* system, which is a separate `MIN_ATTESTATION_MINUTES=30` const)
+
+### Oracle (`oracle/mod.rs`)
+- `bond_weighted_median(attestations, bond_snapshot) -> Option<(u64, u16)>` — `oracle/mod.rs:107`, 50%-crossing median, lower-median tie-break
+- `dedupe_latest_per_attester(contributions) -> Vec<AttestationContribution>` — `oracle/mod.rs:171`, BTreeMap-ordered (deterministic)
+- `compute_structural_share_bps(...) -> Option<u16>` — `oracle/mod.rs:443`, 1-epoch-lagged anti-dilution metric
+- `oracle_price_outpoint(pair_id) -> (Hash, u32)` — `oracle/mod.rs:508`, deterministic synthetic outpoint for the singleton UTXO
 
 ### Producer selection validation (`validation/producer.rs`)
 - `validate_producer_eligibility(block, ctx) -> Result<(), ValidationError>`
 - `bootstrap_fallback_order(producers, slot) -> Vec<PublicKey>` — pre-epoch scheduling
+- `bootstrap_schedule_with_liveness(...)` — liveness-aware bootstrap variant
 
 ### Conditions (`conditions/eval.rs`)
 - `evaluate(condition, witness, ctx) -> Result<(), ConditionError>` — deterministic, bounded
@@ -336,8 +432,9 @@ max_extra_data_size(height): BASE_EXTRA_DATA_SIZE << era, capped at MAX_EXTRA_DA
 ### Output constructors (`transaction/output.rs`)
 - `Output::normal(amount, pubkey_hash)`
 - `Output::bond(amount, pubkey_hash, lock_until, creation_slot)` — extra_data = creation_slot (4B LE)
-- `Output::nft(...)`, `Output::fungible_asset(...)`, `Output::pool(...)`, `Output::collateral(...)`
+- `Output::nft(...)`, `Output::fungible_asset(...)`, `Output::pool(...)`
 - `Output::encrypted_content(...)`, `Output::encrypted_content_v1(...)`
+- `Output::oracle_price_address(pair_id) -> Hash` — deterministic system address `BLAKE3("ORACLE_PRICE" || pair_id)`
 
 ### Genesis (`genesis.rs`)
 - `generate_genesis_block(config) -> Block` — `genesis.rs:189`
@@ -346,23 +443,28 @@ max_extra_data_size(height): BASE_EXTRA_DATA_SIZE << era, capped at MAX_EXTRA_DA
 
 ## CONSTANTS
 
-All from `crates/core/src/consensus/constants.rs` unless noted.
+All from `crates/core/src/consensus/constants.rs` unless noted. Module split:
+`bonds.rs, constants.rs, exit.rs, params.rs, producer_state.rs, registration.rs, reward_epoch.rs,
+selection.rs, stress.rs, vdf.rs` (`consensus/mod.rs:62-75`).
 
 **Protocol:**
 - `INITIAL_PROTOCOL_VERSION: u32 = 1` — `constants.rs:7`
-- `GENESIS_TIME: u64 = 1776837510` — `constants.rs:25` (must match chainspec.mainnet.json)
-- `PROTOCOL_VERSION: u32 = 1` — `lib.rs:348`
+- `GENESIS_TIME: u64 = 1_783_532_348` — `constants.rs:26` — **CHANGED 2026-07-08**: fresh mainnet genesis
+  reset (network loss recovery). Previously `1_776_837_510`. Must match `chainspec.mainnet.json`.
+- `PROTOCOL_VERSION: u32 = 1` — `lib.rs:330`
 
 **Time structure:**
 - `SLOT_DURATION: u64 = 10` — seconds per slot
 - `SLOTS_PER_EPOCH: u32 = 360` — 1 hour
 - `SLOTS_PER_REWARD_EPOCH: u32 = 360`
 - `BLOCKS_PER_REWARD_EPOCH: BlockHeight = 360`
-- `SLOTS_PER_ERA: BlockHeight = 12_614_400` — ~4 years
+- `SLOTS_PER_ERA: BlockHeight = 12_614_400` — ~4 years (alias `BLOCKS_PER_ERA`, `HALVING_INTERVAL`)
 - `BOOTSTRAP_BLOCKS: BlockHeight = 60_480` — ~1 week
 - `YEAR_IN_SLOTS: Slot = 3_153_600`
 - `VESTING_QUARTER_SLOTS: Slot = 3_153_600` — 1 year (mainnet)
 - `VESTING_PERIOD_SLOTS: Slot = 12_614_400` — 4 years full vest
+- `UNDO_KEEP_DEPTH: u64 = 100` — undo-record retention depth (`constants.rs:259`); truncate_chain advertises this
+- `SEED_CONFIRMATION_DEPTH: u64 = 6` — seed nodes only serve blocks this deep (`constants.rs:235`)
 
 **Economics:**
 - `INITIAL_REWARD: Amount = 100_000_000` — 1 DOLI per block
@@ -376,16 +478,26 @@ All from `crates/core/src/consensus/constants.rs` unless noted.
 - `DELEGATE_REWARD_PCT: u32 = 10`
 - `STAKER_REWARD_PCT: u32 = 90`
 
+**AMM Foundations economics (`constants.rs:337-368`, locked BEFORE `amm_activation_height` ever crosses):**
+- `MINIMUM_LIQUIDITY: u64 = 1000` — permanently locked LP shares on first CreatePool deposit (D1, anti first-deposit-inflation)
+
 **Fees:**
 - `BASE_FEE: Amount = 1` — minimum 1 satoshi
 - `FEE_PER_BYTE: Amount = 1`
 - `FEE_DIVISOR: Amount = 100` — effective rate = 0.01 sat/byte
 
 **Block sizes:**
-- `BASE_BLOCK_SIZE: usize = 2_000_000` — 2 MB era 0
+- `BASE_BLOCK_SIZE: usize = 2_000_000` — 2 MB era 0 (validation cap, unchanged)
 - `MAX_BLOCK_SIZE_CAP: usize = 32_000_000` — 32 MB era 4+
 - `BASE_EXTRA_DATA_SIZE: usize = 524_288` — 512 KB era 0
 - `MAX_EXTRA_DATA_SIZE_CAP: usize = 8_388_608` — 8 MB era 4+
+- `GOSSIP_ENVELOPE_MARGIN: usize = 64 * 1024` — gossipsub framing overhead margin, `constants.rs:473`
+
+**Builder-policy block budgets (INC-I-091, NOT consensus — `constants.rs:487-495`):**
+- `LEGACY_BLOCK_SELECT_BUDGET: usize = 1_000_000` — pre-`large_block_activation_height`
+- `LEGACY_BLOCK_USER_DATA_BUDGET: usize = 1_048_576`
+- `LARGE_BLOCK_SELECT_BUDGET: usize = 1_900_000` — post-activation, ~300 TPS
+- `LARGE_BLOCK_USER_DATA_BUDGET: usize = 1_900_000`
 
 **Timing/windows:**
 - `FALLBACK_TIMEOUT_MS: u64 = 2_000` — exclusive 2s fallback windows
@@ -407,7 +519,21 @@ All from `crates/core/src/consensus/constants.rs` unless noted.
 
 **Tier system:**
 - `ACTIVE_PRODUCERS_CAP: usize = 50` — max in round-robin
-- `MIN_ATTESTATION_MINUTES: usize = 30` — out of 60 per epoch
+- `MIN_ATTESTATION_MINUTES: usize = 30` — tier-PROMOTION threshold (out of 60/epoch). **DISTINCT** from the
+  attestation-QUALIFICATION threshold below (`attestation.rs`) — do not conflate the two systems.
+
+**Attestation (`attestation.rs`) — CORRECTED from prior skill version:**
+- `ATTESTATION_MINUTES_PER_EPOCH: u32 = 60` — mainnet default constant
+- `ATTESTATION_QUALIFICATION_THRESHOLD: u32 = 54` — **90% of 60**, mainnet default constant.
+  Per-network: `attestation_qualification_threshold(blocks_per_epoch)` computes `90% of (blocks_per_epoch/6)`
+  dynamically (testnet with 36 blocks/epoch → threshold 5 of 6 minutes). This is NOT the old
+  `usize = 30` value from the pre-DeFi skill snapshot — that number belonged to the separate
+  tier-promotion `MIN_ATTESTATION_MINUTES`.
+
+**Ghost exclusion / epoch prune / floor:**
+- `GHOST_EXCLUSION_GRACE_EPOCHS: u64 = 3`
+- `GHOST_EXCLUSION_ACTIVATION_HEIGHT: u64 = u64::MAX` — **DEPRECATED**, use `NetworkParams`
+- `MIN_PRODUCERS_FLOOR: usize = 3` — INC-I-116 absolute floor (post `epoch_prune_activation_height`), `constants.rs:155`
 
 **Inactivity leak:**
 - `INACTIVITY_LEAK_START: u64 = 360` — 1 epoch
@@ -416,86 +542,90 @@ All from `crates/core/src/consensus/constants.rs` unless noted.
 - `LIVENESS_WINDOW_MIN: u64 = 500`
 - `REENTRY_INTERVAL: u32 = 50`
 
-**Conditions constants (`conditions/mod.rs`):**
-- `CONDITION_VERSION: u8 = 1`
-- `MAX_CONDITION_OPS: usize` — DoS prevention
-- `MAX_MULTISIG_KEYS: usize`
-- `MAX_THRESHOLD_CONDITIONS: usize`
-- `MAX_WITNESS_SIZE: usize`
-- `HASHLOCK_DOMAIN: &[u8]` — domain for hash derivation
+**Phase 2.1 Oracle (`oracle/mod.rs`):**
+- `SUNSET_THRESHOLD_BPS: u16 = 5500` — 55.00%, below this new attestations HALT
+- `SUNSET_WARNING_BPS: u16 = 6000` — 60.00%, below this but ≥5500 → WARNING (no halt)
+- `ORACLE_RECOVERY_EPOCHS: u64 = 4` — consecutive halted epochs before HaltPermanent (binary upgrade only)
+- `PHASE_2_1_PAIR_STRING: &[u8] = b"DOLI/USD"` — single allowlisted pair (Phase 2.1)
+- `STRUCTURAL_PUBKEY_HASHES_HEX: [&str; 12]` — N1-N12 mainnet structural producer pubkey-hashes (`consensus/constants.rs:721-734`)
 
 **Finality (`finality.rs`):**
 - `FINALITY_THRESHOLD_PCT: u32 = 67`
 - `FINALITY_TIMEOUT_SLOTS: u32 = 3`
-
-**Attestation:**
-- `ATTESTATION_MINUTES_PER_EPOCH: usize = 60`
-- `ATTESTATION_QUALIFICATION_THRESHOLD: usize = 30` — minimum qualified minutes
 
 **Types (`types.rs`):**
 - `DECIMALS: u32 = 8`
 - `UNITS_PER_COIN: Amount = 100_000_000`
 
 **Registration (`consensus/registration.rs`):**
-- `BASE_REGISTRATION_FEE`
-- `MAX_REGISTRATION_FEE`
-- `MAX_REGISTRATIONS_PER_BLOCK`
+- `BASE_REGISTRATION_FEE`, `MAX_REGISTRATION_FEE`, `MAX_REGISTRATIONS_PER_BLOCK`
 
 **Maintainer (`maintainer.rs`):**
 - `INITIAL_MAINTAINER_COUNT`, `MAINTAINER_THRESHOLD`, `MAX_MAINTAINERS`, `MIN_MAINTAINERS`
 
-**Ghost exclusion:**
-- `GHOST_EXCLUSION_GRACE_EPOCHS: u64 = 3`
-- `GHOST_EXCLUSION_ACTIVATION_HEIGHT: u64 = u64::MAX` — **DEPRECATED**, use NetworkParams
-
 
 ## ACTIVATION-HEIGHTS
 
-All from `consensus/constants.rs`. Currently ALL = 0 (active from genesis on current chain).
-Use `NetworkParams` fields instead of these constants for network-aware code.
+**MAJOR DRIFT FROM PRIOR SKILL**: mainnet underwent a fresh genesis reset (2026-07-08, network loss
+recovery — commits `61218e90`, `db05c2c5`). ALL mainnet legacy activation heights are now `0`
+(active from genesis) EXCEPT the two below marked FROZEN. Old absolute-height values (13,320 /
+14,000 / 27,547 / 37,500 / 44,246 / 71,290 / 197,800 / 254,344 etc.) from the pre-reset chain are
+**STALE** — do not cite them for the current chain.
 
-| Constant | Value | What activates |
-|----------|-------|----------------|
-| `EPOCH_REWARD_EXPLICIT_INPUTS_HEIGHT` | 0 | EpochReward txs must have explicit pool UTXO inputs |
-| `BITFIELD_BODY_ACTIVATION_HEIGHT` | 0 | Attestation bitfield moved from header to block body |
-| `TIER_SYSTEM_ACTIVATION_HEIGHT` | 0 | Only top 50 producers enter round-robin |
-| `TIER_PROMOTION_ACTIVATION_HEIGHT` | 0 | Active list by attestation_count, not seniority |
-| `UNIQUE_COINBASE_ACTIVATION_HEIGHT` | 0 | Coinbase extra_data = height ++ slot (globally unique) |
-| `SNAP_HEADER_ACTIVATION_HEIGHT` | 0 | Snap sync includes anchor header |
-| `REWARDS_EPOCH_LIST_FIX_HEIGHT` | 0 | Reward decoding uses epoch_state.producer_list |
-| `FULL_BITFIELD_DECODE_HEIGHT` | 0 | Decodes ALL bitfield indices (base + extra) |
-| `ENCRYPTED_CONTENT_ACTIVATION_HEIGHT` | 0 | New NFT outputs rejected; EncryptedContent only |
-| `EPOCH_STATE_REORG_ACTIVATION_HEIGHT` | 0 | execute_reorg restores epoch_state from undo data |
-| `GHOST_EXCLUSION_ACTIVATION_HEIGHT` | u64::MAX | **DEPRECATED** — use `NetworkParams::ghost_exclusion_activation_height` |
+All hard-fork constants live in `consensus/constants.rs`; per-network values are `NetworkParams`
+fields (`network_params/mod.rs`, defaults in `network_params/defaults.rs`). ALWAYS prefer
+`NetworkParams` over the raw `consensus::` constant for network-aware code.
 
-NetworkParams (per-network, overrides above for active networks):
-- `sig_verification_height` — mandatory Input.public_key
-- `inc_i_026_scheduler_activation_height` — pure slot%len scheduling
-- `fork_id_activation_height` — fork_id header enforcement
-- `full_bitfield_decode_height` — mainnet: 14,000
-- `rewards_epoch_list_fix_height` — mainnet: 13,320
-- `encrypted_content_activation_height` — mainnet: 37,500
-- `epoch_state_reorg_activation_height` — mainnet: 44,246
-- `security_audit_activation_height` — mainnet: 27,547; testnet: 21,450
-- `encrypted_content_v2_activation_height` — mainnet: 71,290; testnet: 20,690
-- `ghost_exclusion_activation_height` — mainnet: u64::MAX; testnet: 10,830
+| NetworkParams field | Mainnet (fresh genesis) | Testnet | Devnet | What activates |
+|---|---|---|---|---|
+| `sig_verification_height` | 0 | 0 | 0 | Input.public_key mandatory |
+| `inc_i_026_scheduler_activation_height` | 0 | 0 | 0 | pure slot%len scheduling |
+| `fork_id_activation_height` | 0 | 0 | 0 | fork_id header enforcement |
+| `full_bitfield_decode_height` | 0 | 0 | 0 | full [base+extra] bitfield decode |
+| `rewards_epoch_list_fix_height` | 0 | 0 | 0 | epoch reward decode uses producer_list |
+| `encrypted_content_activation_height` | 0 | 0 | 0 | NFT plaintext rejected, EncryptedContent only |
+| `encrypted_content_v2_activation_height` | 0 | 0 | 0 | MIME + royalties metadata |
+| `epoch_state_reorg_activation_height` | 0 | 0 | 0 | reorg restores epoch_state from undo |
+| `security_audit_activation_height` | 0 | 0 | 0 | all 2026-04-24 audit fixes bundled |
+| `ghost_exclusion_activation_height` | 0 | 0 | 0 | ghost producers excluded from floor |
+| `epoch_prune_activation_height` | 0 | 0 | 0 | INC-I-116 absolute `MIN_PRODUCERS_FLOOR=3` |
+| `inc_i_068_weight_filter_activation_height` | 0 | 0 | 0 | selection_weight==0 producers filtered out |
+| `received_delegation_cap` / `_activation_height` | 3000 / 0 | 3000 / 0 | u64::MAX / u64::MAX | INC-I-078 delegation concentration cap |
+| `delegation_auth_activation_height` | 0 | 0 | u64::MAX | DelegateBond/RevokeDelegation Ed25519 auth |
+| `addbond_cap_enforcement_activation_height` | 0 | 0 | u64::MAX | AddBond over-cap REJECTED (not silently clipped) |
+| `defi_activation_height` | **0** (operator directive; 7 tx types tombstoned, unreachable) | u64::MAX | u64::MAX | non-AMM DeFi gate (dead — no reachable path) |
+| `amm_activation_height` | **0** | **0** | 0 | CreatePool/AddLiquidity/RemoveLiquidity/Swap valid |
+| `inc_i_092_activation_height` | **0** | **0** | 0 | Pool-input sig exemption (RC-A) + CreatePool funding (RC-B) |
+| `inc_i_096_activation_height` | **0** | **0** | 0 | Pool-aware value conservation |
+| `large_block_activation_height` | **0** | **0** | 0 | ~2MB builder budget, ~300 TPS (builder policy, not consensus) |
+| `oracle_activation_height` | **u64::MAX — FROZEN** | **u64::MAX — FROZEN** | u64::MAX | Phase 2.1 PriceAttestation (TxType=16) — code shipped M1-M11 but gate NEVER pinned; separate decision-session required (HC-6/INC-I-075) |
+
+**IMMUTABILITY (INC-I-054)**: once any height above is crossed AND honored by a deployed binary on
+mainnet, it is IMMUTABLE — never move forward. The fresh genesis reset does not violate this: the
+prior mainnet chain (with its own crossed heights) was abandoned entirely, not retroactively edited.
+
+**INV-DEPLOY-002** (`network_params/mod.rs:538-573`): `inc_i_096_activation_height` MUST be
+`<= amm_activation_height` on every network except grandfathered `Testnet` (historical exception,
+naive conservation rejected — never drained — pre-fix). Enforced by `debug_assert!` inside
+`NetworkParams::load()`.
 
 
 ## DEPENDENCIES
 
 Internal crates used by `crates/core`:
-- `crypto` — `Hash`, `PublicKey`, `PrivateKey`, `Signature`, BLS types, BLAKE3 hasher
+- `crypto` — `Hash`, `PublicKey`, `PrivateKey`, `Signature`, BLS types, BLAKE3 hasher, `hash_with_domain`
 - `vdf` — `VdfOutput`, `VdfProof`, `block_input()`
 - `serde` + `bincode` — serialization (bincode for wire, serde for JSON RPC)
 - `thiserror` — `ValidationError`, `AttestationError`, etc.
 - `proptest` — property-based tests in `types.rs`
 
 External consumers of `crates/core`:
-- `bins/node` — uses all validation + epoch_state + scheduler
-- `crates/storage` — uses Block, Transaction, Output, Hash types
+- `bins/node` — uses all validation + epoch_state + scheduler + oracle epoch-boundary orchestrator (`apply_block/oracle.rs`, out of this domain)
+- `crates/storage` — uses Block, Transaction, Output, Hash types, UtxoSet canonical serialization (incl. OutputType=15 OraclePrice)
 - `crates/network` — uses Block, Transaction, ValidationError
-- `crates/rpc` — uses block/tx types, ValidationContext
-- `crates/mempool` — uses Transaction, validate_transaction
+- `crates/rpc` — uses block/tx types, ValidationContext; `crates/rpc/src/methods/oracle.rs` + `oracle_status.rs` (M9-M11) read oracle types from this crate
+- `crates/mempool` — uses Transaction, validate_transaction, mirrors AMM/oracle activation-height gates for pre-inclusion admission
+- `crates/updater` — reads `CURRENT_PROTOCOL_VERSION`-adjacent constants for HardForkSchedule (constant gates preferred over schedule entries per CLAUDE.md)
 
 
 ## CONSTRAINTS
@@ -506,21 +636,31 @@ External consumers of `crates/core`:
 
 2. **CURRENT_PROTOCOL_VERSION must NOT be bumped** unless `EpochState` serialization format changes. Bumping triggers `delete_epoch_state()` on every node restart → non-deterministic rebuild → fork. Use `EPOCH_STATE_FORMAT_VERSION` for struct changes.
 
-3. **Activation heights are IMMUTABLE** once crossed on mainnet. Never move an active height forward (higher). New features get their OWN height.
+3. **Activation heights are IMMUTABLE** once crossed AND honored by a deployed binary on mainnet. Never move an activated height forward (higher). New features get their OWN height — see the AMM/oracle/inc_i_092/inc_i_096 quartet, each independently gated (HC-6 / INC-I-075 NEVER-bundle rule).
 
-4. **EpochState::derive_at_boundary is the ONE canonical function** for epoch transitions. No alternative implementations. Node-local state (excluded_producers etc.) MUST NOT be used as scheduling input.
+4. **EpochState::derive_at_boundary is the ONE canonical function** for epoch transitions; `compute_live_producer_list` is its shared floor/filter logic (also used by `rewards.rs`). No alternative implementations. Node-local state (excluded_producers etc.) MUST NOT be used as scheduling input.
 
 5. **Bond extra_data stamped by node**: CLI sends `creation_slot=0`, node stamps real slot at `apply_block()`. Never trust raw tx extra_data for bond creation_slot.
 
 6. **Coinbase always goes to reward_pool_pubkey_hash** (deterministic address, no private key). Only epoch boundary EpochReward tx drains it.
 
-7. **EncryptedContent is NOT conditioned**: `OutputType::is_conditioned()` returns false for EncryptedContent. Its extra_data uses `[ct_len | ciphertext | wrapped_key | nonce | content_hash]` layout, not condition-prefixed. (AUDIT-NFT-001 fix: incorrect conditioned check made EncryptedContent UTXOs unspendable.)
+7. **EncryptedContent is NOT conditioned**: `OutputType::is_conditioned()` returns false for EncryptedContent. Its extra_data uses `[ct_len | ciphertext | wrapped_key | nonce | content_hash]` layout, not condition-prefixed. (AUDIT-NFT-001 fix.)
 
 8. **HardForkSchedule NEVER used for rolling deploys**: `current_fork_id()` uses `u64::MAX`, making ALL schedule entries active immediately in fork_id. Use constant gates or NetworkParams activation heights instead.
 
 9. **Producer mutations deferred to epoch boundary** (except epoch 0 and maintainer changes, which are immediate).
 
-10. **Output::is_native_amount()** must be checked before summing amounts — Pool, LPShare, FungibleAsset, Collateral, ZKRollup store non-DOLI values in `amount`.
+10. **Output::is_native_amount()** must be checked before summing amounts — Pool, LPShare, FungibleAsset, ZKRollup store non-DOLI (or zero) values in `amount`. NOTE: `Collateral` and `LendingDeposit` (old discriminants 11,12) are TOMBSTONED — no longer valid OutputType variants; `is_native_amount()` no longer references them.
+
+11. **TxType/OutputType discriminant gaps are PERMANENT tombstones, never reuse**: TxType 23 (reserved, never assigned), 24-28 (native lending, B.1), 29-30 (NFT fractionalization, B.2). OutputType 11-12 (Collateral, LendingDeposit, B.1). `from_u32`/`from_u8` return `None` for these — reusing a tombstoned discriminant would let old un-upgraded nodes misinterpret new tx/output semantics as the old (removed) subsystem.
+
+12. **Phase 2.1 Oracle NEVER constraint**: `oracle_activation_height` MUST remain independent of `defi_activation_height` and `amm_activation_height` — never bundle, never reuse (HC-6). Same rule applies symmetrically among `amm_activation_height`, `inc_i_092_activation_height`, `inc_i_096_activation_height` — each is its own commit-able gate even when co-pinned to the same numeric height.
+
+13. **INV-DEPLOY-002**: `inc_i_096_activation_height <= amm_activation_height` on every network except the grandfathered `Testnet` historical exception. Enforced by `debug_assert!` in `NetworkParams::load()` — violating this on a NEW network config would let AMM DOLI-outflow txs run under pre-fix (drainable) conservation.
+
+14. **Pool UTXO signature exemption is height-gated, not universal**: below `inc_i_092_activation_height`, a Pool input still takes the legacy signature path and correctly FAILS (`PubkeyHashMismatch`) — this is intentional so a mixed pre/post-activation fleet does not fork. The exemption only applies at/after the gate.
+
+15. **AMM `MINIMUM_LIQUIDITY=1000` must be set before ANY Pool UTXO is ever created on ANY network** — changing it after `amm_activation_height` crosses retroactively invalidates or under-secures existing pools.
 
 
 ## PATTERNS
@@ -530,6 +670,8 @@ External consumers of `crates/core`:
 // PREFERRED (network-aware):
 let params = NetworkParams::load(network);
 if current_height >= params.security_audit_activation_height { ... }
+if current_height >= params.amm_activation_height { ... }
+if current_height >= params.oracle_activation_height { ... }   // frozen: always false today
 
 // For code without NetworkParams access:
 use doli_core::consensus::is_protocol_active;
@@ -543,6 +685,11 @@ ValidationContext::new(params, network, unix_now, block_height)
     .with_epoch_producer_list(epoch_state.active_list.clone()) // epoch-frozen!
     .with_fork_id(expected_fork_id, params.fork_id_activation_height)
     .with_security_audit_activation_height(params.security_audit_activation_height)
+    .with_amm_activation_height(params.amm_activation_height)
+    .with_oracle_activation_height(params.oracle_activation_height)
+    .with_oracle_sunset_triggered(node_tracked_sunset_bool)
+    .with_inc_i_092_activation_height(params.inc_i_092_activation_height)
+    .with_inc_i_096_activation_height(params.inc_i_096_activation_height)
     // ... other activation heights from NetworkParams
 ```
 
@@ -556,8 +703,19 @@ let input = EpochDerivationInput {
     height, epoch,
     registered_at: producer_set.registered_at_map(),
     ghost_exclusion_activation_height: params.ghost_exclusion_activation_height,
+    epoch_prune_activation_height: params.epoch_prune_activation_height,
 };
 let new_epoch_state = EpochState::derive_at_boundary(&prev_epoch_state, &input);
+```
+
+### How to run the Phase 2.1 oracle epoch-boundary aggregation (orchestrator lives in bins/node)
+```rust
+let contributions = dedupe_latest_per_attester(&raw_attestations_for_pair);
+if let Some((median_cents, count)) = bond_weighted_median(&contributions, &bond_snapshot) {
+    // write/consume OraclePrice UTXO at oracle_price_outpoint(&pair_id)
+}
+let share_bps = compute_structural_share_bps(&prev_epoch_bond_snapshot, &registered_at, height, blocks_per_epoch, &structural_hashes);
+let health = sunset_state.transition(share_bps, epoch); // Healthy | Warning | HaltRecoverable | HaltPermanent
 ```
 
 ### Slot → epoch/era conversion
@@ -573,34 +731,41 @@ let total = a.saturating_add(b);           // never plain `+` for amounts
 let fee = amount.saturating_sub(output_sum);
 ```
 
-### TxType discriminants (no gaps except 16, 23)
+### TxType discriminants (24 constructible; gaps are PERMANENT tombstones — see CONSTRAINTS #11)
 ```
 0=Transfer, 1=Registration, 2=Exit, 3=ClaimReward, 4=ClaimBond, 5=SlashProducer,
-6=Coinbase, 7=AddBond, 8=RequestWithdrawal, 9=ClaimWithdrawal(tombstone),
+6=Coinbase, 7=AddBond, 8=RequestWithdrawal, 9=ClaimWithdrawal(tombstone-but-decodable),
 10=EpochReward, 11=RemoveMaintainer, 12=AddMaintainer, 13=DelegateBond,
-14=RevokeDelegation, 15=ProtocolActivation, 17=MintAsset, 18=BurnAsset,
-19=CreatePool, 20=AddLiquidity, 21=RemoveLiquidity, 22=Swap,
-24=CreateLoan, 25=RepayLoan, 26=LiquidateLoan, 27=LendingDeposit,
-28=LendingWithdraw, 29=FractionalizeNft, 30=RedeemNft, 31=ZKSettle
-NOTE: 16 and 23 are intentionally skipped (reserved/removed)
+14=RevokeDelegation, 15=ProtocolActivation, 16=PriceAttestation (Phase 2.1 oracle, frozen),
+17=MintAsset, 18=BurnAsset, 19=CreatePool, 20=AddLiquidity, 21=RemoveLiquidity, 22=Swap,
+23=(reserved, never assigned), 24-28=TOMBSTONED (native lending, B.1),
+29-30=TOMBSTONED (NFT fractionalization, B.2), 31=ZKSettle
 ```
 
-### OutputType discriminants
+### OutputType discriminants (14 constructible; 11-12 PERMANENTLY tombstoned — B.1 lending removal)
 ```
 0=Normal, 1=Bond, 2=Multisig, 3=Hashlock, 4=HTLC, 5=Vesting,
 6=NFT, 7=FungibleAsset, 8=BridgeHTLC, 9=Pool, 10=LPShare,
-11=Collateral, 12=LendingDeposit, 13=ZKRollup, 14=EncryptedContent
-Conditioned (uses condition-prefix in extra_data): 2,3,4,5,6,7,8
-NOT conditioned (EncryptedContent=14): uses raw extra_data layout
+11-12=TOMBSTONED (was Collateral, LendingDeposit — B.1 native lending removal),
+13=ZKRollup, 14=EncryptedContent, 15=OraclePrice (Phase 2.1, system-only, amount always 0)
+Conditioned (uses condition-prefix in extra_data): 2,3,4,5,6,7,8,10(LPShare)
+NOT conditioned: EncryptedContent(14), OraclePrice(15) — system/signature paths only
 ```
 
 ### Network defaults (devnet overrides for fast testing)
 ```
-Mainnet/Testnet: SLOT_DURATION=10s, SLOTS_PER_EPOCH=360, BOND_UNIT=10 DOLI
-Devnet: slot_duration=1s, slots_per_epoch=60, bond_unit=1 DOLI, blocks_per_era=576
+Mainnet/Testnet: SLOT_DURATION=10s, SLOTS_PER_EPOCH=360, BOND_UNIT=10 DOLI (testnet: 1 DOLI)
+Devnet: slot_duration=10s (same), blocks_per_year=144 (~24min), blocks_per_reward_epoch=4 (~40s), bond_unit=1 DOLI
 ```
 
 ### Validation modes summary
 - `Full` — VDF proof verified (gossip blocks, tip of sync)
 - `Light` — VDF skipped (gap blocks after snap-sync, state root trusted by quorum)
 - `Replay` — disaster recovery, also skips dedup + recovery gate + snap height guard
+
+### AMM integer math pattern (no floating point, ever)
+```rust
+// x*y=k with basis-point fee, all u128 intermediates:
+let dx_eff = (dx as u128) * (10_000 - fee_bps as u128) / 10_000;
+let dy = ((reserve_b as u128) * dx_eff / ((reserve_a as u128) + dx_eff)) as Amount;
+```

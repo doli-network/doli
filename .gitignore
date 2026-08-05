@@ -64,3 +64,4 @@ LAUNCH_CHECKLIST.internal.md
 .omega/cortex-config.json
 .omega/.pending-imports.jsonl
 graphify-out/
+scripts/__pycache__/
