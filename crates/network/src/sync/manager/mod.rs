@@ -37,6 +37,10 @@ pub use types::{
 };
 // Re-export recovery coordinator types used by Node layer
 pub use recovery::{RecoveryAction, RecoveryContext, RecoveryEvidence};
+// INC-I-149: operational network-age evidence, consumed by the production path.
+// Deliberately distinct from Network::is_in_genesis(), which answers the
+// CONSENSUS question and must remain a pure function of height.
+pub use peers::NetworkEvidence;
 // Re-export D6 stuck-fork consumer type used by Node layer
 pub use production_gate::StuckForkAlert;
 // Re-export pub(crate) types used by sibling modules

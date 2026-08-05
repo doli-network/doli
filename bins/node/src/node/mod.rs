@@ -66,7 +66,8 @@ use network::protocols::{
 };
 use network::{
     EquivocationDetector, EquivocationProof, NetworkCommand, NetworkConfig, NetworkEvent,
-    NetworkService, PeerId, ProductionAuthorization, ReorgResult, SyncConfig, SyncManager,
+    NetworkEvidence, NetworkService, PeerId, ProductionAuthorization, ReorgResult, SyncConfig,
+    SyncManager,
 };
 use rpc::{Mempool, MempoolPolicy, RpcContext, RpcServer, RpcServerConfig, SyncStatus};
 use storage::archiver::ArchiveBlock;

@@ -49,25 +49,54 @@ impl Node {
                 // This is bootstrap-specific: seed nodes have no bootstrap config,
                 // joining nodes have bootstrap config and must wait for connection.
                 // (Sync-before-produce checks are handled globally above)
-                //
-                // Skip during genesis: all nodes are bootstrapping together from scratch,
-                // there's no existing chain to sync from and no seed to wait for.
                 let has_bootstrap_nodes = !self.config.bootstrap_nodes.is_empty();
-                if has_bootstrap_nodes && !in_genesis {
+
+                let (peer_count, best_peer_height, evidence) = {
                     let sync_state = self.sync_manager.read().await;
-                    let peer_count = sync_state.peer_count();
-                    let best_peer_height = sync_state.best_peer_height();
-                    drop(sync_state);
+                    (
+                        sync_state.peer_count(),
+                        sync_state.best_peer_height(),
+                        sync_state.network_evidence(),
+                    )
+                };
 
-                    if peer_count == 0 {
-                        // We have bootstrap nodes configured but haven't received their status yet
-                        // Wait for connection before producing to avoid chain splits
-                        debug!(
-                            "Bootstrap sync: waiting for peer status (bootstrap nodes configured but no peers yet)"
-                        );
-                        return None;
-                    }
+                // INC-I-149: NO-EVIDENCE GATE — deliberately OUTSIDE the `!in_genesis`
+                // gate below.
+                //
+                // `in_genesis` is derived from LOCAL height, which is exactly the fact a
+                // wiped data directory destroys: a producer rejoining an 84k-block chain
+                // on an empty disk is byte-identical, locally, to a node at a genuine
+                // fresh genesis. Both report height 1. No peer-derived predicate can
+                // separate them while the peer table is still empty, because
+                // `best_peer_height()` returns 0 in both cases.
+                //
+                // The one signal that DOES survive a wipe is `bootstrap_nodes`: durable
+                // configuration in which the operator stated "there is a network out
+                // there, go find it". So a node with bootstrap nodes configured and NO
+                // peer status yet must WAIT — absence of evidence is not evidence of
+                // genesis.
+                //
+                // A genuine fresh-genesis fleet is unaffected: its members connect in
+                // ~0.1s (measured), which moves them to AtGenesis, and the origin/seed
+                // node has NO bootstrap nodes so it is not gated here at all and can
+                // start the chain instantly with zero peers. Genesis liveness therefore
+                // rests on configuration, not on a timeout.
+                if has_bootstrap_nodes && evidence == NetworkEvidence::Unknown {
+                    debug!(
+                        "No-evidence gate: bootstrap nodes configured but no peer status yet \
+                         (height={}, peers=0) — waiting before producing",
+                        height
+                    );
+                    return None;
+                }
 
+                // Skip the remaining joining-node checks during genesis: all nodes are
+                // bootstrapping together from scratch, there's no existing chain to sync
+                // from and no seed to wait for. These checks either key on
+                // `best_peer_height > 0` (inert at genesis) or on tip freshness (which
+                // would stall a genuine genesis), so only the evidence gate above is
+                // safe to apply unconditionally.
+                if has_bootstrap_nodes && !in_genesis {
                     // JOINING NODE BOOTSTRAP GUARD: Ensure chain tip is fresh before producing.
                     //
                     // Problem 1: Joining nodes at height 0 may produce before receiving blocks

@@ -423,6 +423,71 @@ rejected up-front so no value is lost.
 
 ---
 
+### 2.6. Wiped Producer Mints Its Own Block 1 (INC-I-149)
+
+**Symptom:** A producer started with `--producer` on an **empty data
+directory**, joining an existing chain, builds its own `height=1` block
+about 30 s after start instead of waiting to sync. It then snap-syncs onto
+the real chain, but the self-produced block survives below the snap horizon
+as a permanent **fossil orphan**: the node disagrees with the whole fleet on
+block 1 while matching it at every other height, including the tip. Gauntlet
+GS-001 (`single-block1-hash`) reports `distinct block1=2`. Log signature:
+
+```
+[PROD_DIAG] BOOTSTRAP path: in_genesis=true active_empty=false height=1 slot=…
+Producing block for slot … at height 1
+[BLOCK_PRODUCED] hash=… height=1 parent=<genesis>
+```
+
+If peer count stays below `SNAP_MIN_PEERS` (3), the rescuing snap may be
+delayed and the node can sit at `h=1` emitting `[STUCK_FORK]` and
+`Empty headers … consecutive=N` until enough peers arrive.
+
+**Cause:** The production path used **local** height as a proxy for network
+age. An empty disk gives `best_height=0 → height=1`, which
+`is_in_genesis()` (`crates/core/src/network/economics.rs:56`) reports as
+"in genesis" — it is a pure function of local height and cannot tell "the
+network is at genesis" from "my disk is empty". The peer-aware
+behind-network guard that should have caught this
+(`bins/node/src/node/production/mod.rs`) was itself gated on `height > 1`,
+excluding the exact case its own comment described. Peer-reported height was
+already known (`best_peer_height` at the network tip roughly 30 s before
+every observed mint), so the node held the evidence and did not act on it.
+
+**Resolution:** Upgrade to a build carrying the INC-I-149 fix — the
+behind-network guard now covers `height == 1`, so a node whose peers report a
+materially higher tip defers production instead of minting. Real fresh-genesis
+bootstrap is unaffected by construction: there every peer reports height 0, so
+the guard never fires and no delay is introduced.
+
+- Pre-existing fossils are **not** repaired by the upgrade. Clear one by
+  stopping the node, wiping `data/` and letting it snap-sync again (block 1
+  then correctly reads `ABSENT`/snap-pruned). **Before any wipe, confirm
+  `wallet.json` and `producer.seed.txt` are not inside `data/`.**
+- Legacy workaround, no longer needed on a fixed binary: start the wiped node
+  **without** `--producer`, let it snap-sync, then restore the flag and
+  restart.
+- The fix has a second half: a **no-evidence gate** — a producer with
+  `bootstrap_nodes` configured and no peer status yet refuses to produce.
+  This wait has **no timeout** (deliberate: producing blind is the failure
+  mode being fixed); a producer whose bootstrap peers are all unreachable
+  waits at height 0 until one answers. `bootstrap_timeout_secs` does not
+  apply here — it lives inside the `!in_genesis` branch and cannot rescue
+  height 1.
+- Known residual: if the FIRST peer status a wiped producer receives comes
+  from a height-0 peer, evidence reads `AtGenesis` and the fossil mint is
+  still possible. During fleet-wide recovery bring seeds/synced nodes up
+  FIRST so wiped producers hear a real tip before their first slot.
+- Verify with `getBlockByHeight(1)` across the fleet: every holder must return
+  the same hash; snap-pruned nodes returning `Block not found` are expected
+  and are **not** divergence.
+
+Code: `bins/node/src/node/production/mod.rs`. Invariant: `INV-PROD-004`.
+Regression: `bins/node/tests/inc_i_149_bootstrap_mint_gate.rs`. Gauntlet:
+GS-001.
+
+---
+
 ## 3. Wallet Issues
 
 ### 3.1. Transaction Not Confirming

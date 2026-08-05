@@ -244,12 +244,12 @@ impl NetworkParams {
                 inc_i_096_activation_height: 0,
 
                 // INC-I-147 fork-choice height-unit fix (D6) + rolled-back-block
-                // re-apply (D4). Frozen pre-activation: the code ships reviewable
-                // and tested, and pinning a concrete height is a separate operator
-                // decision taken with the live tip in hand (oracle_activation_height
-                // precedent). Q1=NO on the merits, Q2=NO — gated as a rollout
+                // re-apply (D4). Q1=NO on the merits, Q2=NO — gated as a rollout
                 // coordination device. IMMUTABLE once crossed (INC-I-054).
-                inc_i_147_activation_height: u64::MAX,
+                // Pinned 2026-08-05 at live tip 120_799 (~24.2h lead, AMM-pin
+                // precedent), v6.24.1 release. Testnet has validated the rule
+                // live since 80_700.
+                inc_i_147_activation_height: 129_500,
 
                 // Gossip mesh: universal config for all network sizes.
                 // mesh_n=12 keeps all peers in eager-push for networks ≤24 (mesh_n_high),

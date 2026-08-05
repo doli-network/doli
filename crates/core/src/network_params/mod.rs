@@ -528,9 +528,9 @@ pub struct NetworkParams {
     /// Protocol version — NOT bumped. No `EpochState` format change; an unnecessary
     /// bump would trigger `delete_epoch_state()` on every restart (INC-I-054).
     ///
-    /// Defaults: mainnet `u64::MAX` (frozen pre-activation — pinning a concrete
-    /// height is a separate operator decision taken with the live tip in hand,
-    /// per the `oracle_activation_height` precedent), testnet `0`, devnet `0`.
+    /// Defaults — inc_i_147_activation_height: mainnet `129_500` (pinned
+    /// 2026-08-05 at live tip 120_799, ~24.2h lead, AMM-pin precedent, v6.24.1),
+    /// testnet `80_700` (pinned at tip 80_544, crossed — active), devnet `0`.
     /// Mainnet IMMUTABILITY (INC-I-054): once crossed, never move forward.
     pub inc_i_147_activation_height: u64,
 

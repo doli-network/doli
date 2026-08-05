@@ -171,7 +171,16 @@ impl Node {
 
         let network_height_ahead = network_tip_height > height.saturating_sub(1);
 
-        if height > 1 && network_height_ahead {
+        // INC-I-149: height 1 is INCLUDED here, not excluded. A producer starting
+        // on an empty data dir sits at best_height=0 -> height=1, which is exactly
+        // the "node at height 0" the comment above describes. Excluding it let such
+        // a node mint its own block 1 while peers reported a tip ~84k blocks ahead,
+        // leaving a permanent fossil orphan below the snap-sync horizon.
+        //
+        // Real fresh genesis is unaffected BY CONSTRUCTION: there every peer is at
+        // height 0, so network_tip_height is 0 and network_height_ahead is false.
+        // No timer, no grace period, no new state.
+        if network_height_ahead {
             let blocks_behind = network_tip_height.saturating_sub(height.saturating_sub(1));
             let max_behind: u64 = if height < 10 {
                 3 // Tight during early chain - prevent orphan forks

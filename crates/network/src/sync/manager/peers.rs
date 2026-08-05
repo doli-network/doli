@@ -10,6 +10,61 @@ use crypto::Hash;
 use super::{PeerSyncStatus, SyncManager, SyncPipelineData, SyncState};
 use crate::protocols::SyncRequest;
 
+/// INC-I-149: what we actually KNOW about the network's age, derived only from
+/// evidence that SURVIVES A DATA-DIRECTORY WIPE.
+///
+/// This exists because `Network::is_in_genesis(height)` was doing two
+/// incompatible jobs. That function answers a CONSENSUS question — "at this
+/// height, do genesis RULES apply?" — and must stay a pure function of height,
+/// because it selects the validation rule set (`validation/producer.rs`,
+/// `validation/registration.rs`) and the coinbase shape (`production/assembly.rs`).
+/// It was ALSO being used to answer an OPERATIONAL question — "is it safe for me
+/// to produce without syncing first?" — for which local height is precisely the
+/// wrong basis: a wiped disk reports height 0, exactly like a genuine genesis.
+///
+/// `NetworkEvidence` answers only the operational question. It never influences
+/// which rules apply to a block, so it cannot cause validation to diverge.
+///
+/// Precision caveat (review F-P1-002): `best_peer_height()` is
+/// `max(peer reports, network_tip_height)`, and `network_tip_height` can be
+/// seeded from LOCAL state (our own applied blocks). `AtGenesis`/`HasHistory`
+/// are therefore "best available evidence", not purely peer-derived — on the
+/// empty-disk path that motivated this enum, local state contributes 0 and the
+/// classification is effectively peer-driven. Only `Unknown` — the variant the
+/// production gate matches — is strictly "no peer STATUS received".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetworkEvidence {
+    /// No peer status has been received yet — we know nothing about the network.
+    /// **Absence of evidence is not evidence of genesis.**
+    Unknown,
+    /// Peer status has arrived and the best known height is 0 — consistent
+    /// with a genuine fresh genesis (see precision caveat above).
+    AtGenesis,
+    /// The best known height is > 0 (normally a peer report; can also be
+    /// locally seeded — see precision caveat above) — the network has history,
+    /// so an empty local disk means WE are behind, not that the chain is new.
+    /// How far behind is a separate question, bounded by magnitude in the
+    /// behind-network guard (`production/mod.rs`), not by this classification.
+    HasHistory,
+}
+
+impl SyncManager {
+    /// INC-I-149: classify what we know about the network's age.
+    ///
+    /// `peer_count()` counts peers whose STATUS has arrived (`add_peer` is called
+    /// only from `on_peer_status`), so `Unknown` genuinely means "nobody has told
+    /// us anything yet" rather than "nobody is connected at the socket level".
+    pub fn network_evidence(&self) -> NetworkEvidence {
+        if self.peer_count() == 0 {
+            NetworkEvidence::Unknown
+        } else if self.best_peer_height() > 0 {
+            NetworkEvidence::HasHistory
+        } else {
+            NetworkEvidence::AtGenesis
+        }
+    }
+}
+
 impl SyncManager {
     // =========================================================================
     // PEER MANAGEMENT
