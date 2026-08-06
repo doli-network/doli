@@ -3,6 +3,7 @@
 **Status**: PROPOSAL-ONLY (pending User Gate) · **Date**: 2026-07-09 · **INC_ID**: INC-I-139
 **Synthesis**: 5-evaluator convergence (Subtractionist, Restructurer, Pattern Matcher, Failure Analyst, Radical Simplifier)
 **Input analysis**: `docs/redesigns/sync-snap-admission-redesign-analysis.md` · **Reasoning trace**: `docs/.workflow/architecture-reasoning.md`
+**AMENDED 2026-08-06 (INC-I-152)**: admission is now **three** gated doors, not two — door (c), the bootstrap genesis window. Every "2 doors" statement below is the INC-I-139 Phase-1 shape and is superseded by [§ Amendment — INC-I-152](#amendment--inc-i-152-door-c-the-bootstrap-genesis-window).
 
 ## Problem Statement
 
@@ -78,7 +79,7 @@ No `.redesign_recurrence` flag was set at intake (this is the first formal redes
   Convergence: 5/5 (Subtractionist P1, Restructurer P1, Pattern Matcher P2, Radical P1; Failure Analyst P5 conditions it on DC-2)
   Evidence: decision.rs:164-169 (the 3-term OR); recovery.rs:389/410 (large-gap already decided by `classify()`); production_gate.rs:649-658 (funnel docstring); INC-I-139 E7/E8 (N1 snapped at gap=51 via this term). Bootstrap preserved via the retained `local_height == 0` term (Route C, decision.rs:167).
   Confidence: conf(0.9, converged)
-  After: `should_snap = enough_peers && attempts<3 && snap_allowed && (local_height==0 || needs_genesis_resync)` — 2 doors, both gated; X1 becomes a pure executor. Satisfies REQ-SNAP-001/002/010. Rolling-deploy verdict: **rolling-safe** (node-local recovery; no block content, no consensus rule; INV-SYNC-007 preserved). MUST ship with DC-2 in the same commit.
+  After: `should_snap = enough_peers && attempts<3 && snap_allowed && (local_height==0 || needs_genesis_resync)` — 2 doors, both gated; X1 becomes a pure executor. *(Amended by INC-I-152: a third gated door — the bootstrap genesis window — was added; see § Amendment.)* Satisfies REQ-SNAP-001/002/010. Rolling-deploy verdict: **rolling-safe** (node-local recovery; no block content, no consensus rule; INV-SYNC-007 preserved). MUST ship with DC-2 in the same commit.
 
   ━━━ RESOURCE COST — COST-DECLARED ━━━
   Dimensions:
@@ -151,7 +152,7 @@ No `.redesign_recurrence` flag was set at intake (this is the first formal redes
 
 ## Recommended Changes (Medium Convergence)
 
-- **ARCHITECTURAL: Demote `snap.threshold` (types.rs:468) from gap-floor to on/off sentinel — `SNAP_SYNC_GAP_MIN=500` (recovery.rs:216) becomes the single source of truth for "snap-worthy gap"; gate the discv5-grace wait (decision.rs:204) on `local_height == 0`; do NOT introduce a duplicate 500 constant.**
+- **ARCHITECTURAL: Demote `snap.threshold` (types.rs:468) from gap-floor to on/off sentinel — `SNAP_SYNC_GAP_MIN=500` (recovery.rs:216) becomes the single source of truth for "snap-worthy gap"; gate the discv5-grace wait (decision.rs:204) on `local_height == 0`; do NOT introduce a duplicate 500 constant.** *(INC-I-152 widened that gate to `local_height == 0 || in_genesis_window` — the hold must cover the whole bootstrap window, see § Amendment.)*
   Convergence: 2/5 (Subtractionist P3, Radical P4) + Pattern Matcher coupling signal (threshold read in 3 modules, mutated as an emergency side-effect)
   Evidence: after DC-1/DC-3 the only admission-relevant read is the sentinel `snap_allowed = threshold < u64::MAX` (decision.rs:163); residual gap-comparator reads (decision.rs:179, :204) are bootstrap-timing only, and :204 is not gated on h==0 — after DC-1 an h>0 node could wait pointlessly for snap peers it will never use.
   Confidence: conf(0.65, converged)
@@ -248,7 +249,7 @@ Evidence counter: 4 reset writers (block_lifecycle.rs:68 apply; dispatch.rs:84 r
 Wedge: FORK_GUARD drops competitor (block_handling.rs:202) + finality guard refuses rollback (recovery.rs:367-377) → snap is sole exit
 ```
 
-### Proposed (Definite + Recommended)
+### Proposed (Definite + Recommended) — INC-I-139 Phase 1, SUPERSEDED by the map below
 ```
 should_snap ← TWO doors: {local_height==0} ∪ {needs_genesis_resync}
   needs_genesis_resync ← request_genesis_resync (single admission authority)
@@ -259,9 +260,50 @@ Evidence counter: 1 progress reset (apply) + 1 documented bounded exception (gap
 Phase 2: FORK_GUARD reports dropped competitor → coordinator ReevaluateForkChoice (rank-1 exit) behind fork_choice_weight_tiebreak_activation_height
 ```
 
+### Current (post INC-I-152) — the shipped shape
+```
+should_snap (decision.rs start_sync) = peers>=3 && snap.attempts<3 && snap_allowed && THREE doors:
+  (a) local_height == 0                                   [bootstrap by nature]
+  (c) in_genesis_window && gap > SNAP_SYNC_GAP_MIN(500)    [bootstrap by SHAPE — INC-I-152]
+        in_genesis_window := genesis_blocks>0 && 0 < local_height <= genesis_blocks
+        genesis_blocks ← SyncConfig (init.rs) ← NetworkParams (mainnet 360 LOCKED, testnet 36, devnet 40; default 0 = OFF)
+  (b) needs_genesis_resync                                [5-gate funnel, unchanged]
+        ← request_genesis_resync (production_gate.rs) — sole setter, sole gap-based admission authority
+Bootstrap holds (fresh-node 60s wait; discv5 grace) also read (local_height==0 || in_genesis_window)
+  — same `gap > SNAP_SYNC_GAP_MIN` comparator as door (c), one comparator across the whole cluster
+Evidence counter + snap.attempts semantics: UNCHANGED (door (c) resets neither)
+```
+
+## Amendment — INC-I-152: door (c), the bootstrap genesis window
+
+**Date**: 2026-08-06 · **INC_ID**: INC-I-152 · **Status**: SHIPPED (`decision.rs`, `types.rs`, `init.rs`) · conf(0.98, measured)
+
+**What changed.** `should_snap` gains a third OR-term. Admission still requires `peers >= 3 && snap.attempts < 3 && snap_allowed`, and now takes any of:
+
+| Door | Predicate | Gate |
+|------|-----------|------|
+| (a) | `local_height == 0` | bootstrap by nature (INC-I-139 Route C, untouched) |
+| (b) | `fork.needs_genesis_resync` | 5-gate evidence funnel, sole setter `request_genesis_resync()` (untouched) |
+| **(c)** | `in_genesis_window && gap > SNAP_SYNC_GAP_MIN(500)` | bootstrap by **shape** + the same 500-block corroboration the funnel already blesses |
+
+where `in_genesis_window := config.genesis_blocks > 0 && 0 < local_height <= config.genesis_blocks`. The identical `(local_height == 0 || in_genesis_window)` term extends the two bootstrap **holds** — the fresh-node 60s wait and the discv5 grace — which park a node instead of committing it to header-first. The holds are what BUY the 3-peer snap quorum; leaving them keyed on `h == 0` would have made door (c) unreachable in the exact case it exists for.
+
+**Why (measured, not inferred).** Orphan Chase (stability pillar v6.16.1) requests the parent of any orphan from its sender. On a freshly wiped mainnet node the first gossip block from the live tip triggers it within ~10s and applies genesis blocks 1..14 — `local_height` moves 0→14 and door (a) is permanently foreclosed. The next 1s tick then commits header-first and serially walks 129,822 headers at 500 per tick ≈ 260s, **92% of a measured 4m43s wipe-to-synced wall clock** (three identical reproductions). The recovery coordinator was NOT starved — it fired an accepted `CoordinatorSnapEscalation` seven times from t≈63s — but `needs_genesis_resync` only takes effect when the session next goes Idle, and a *successfully progressing* header walk holds `Syncing:Headers` for the full 260s. Door (b) was therefore reachable but non-preemptive; door (c) is what makes the fast path win the race. Evidence: `docs/.workflow/archive-2026-08-06/inc-i-152-rerun-findings.md` (F1-F6).
+
+**Why this is not a re-opening of Route A (DC-1).** Route A was `gap > threshold` alone — a bare-gap term with no gate. Door (c) is a bootstrap-**shape** predicate CONJOINED with the same `SNAP_SYNC_GAP_MIN(500)` floor that PM-019 established as the single named gap floor. Neither conjunct admits alone: a node at `genesis_blocks + 1` with a 129k gap and 3 peers goes header-first, and an in-window node at gap 286 goes header-first. `snap.attempts < 3` remains a conjunct and door (c) never resets it. `genesis_blocks` defaults to `0`, so every construction site that does not plumb it is bit-identical to pre-INC-I-152 behavior.
+
+**Plumbing (never hardcoded).** `NetworkParams::genesis_blocks` → `SyncConfig.genesis_blocks` (`types.rs`, default `0` = window DISABLED) → set by the node at startup in `bins/node/src/node/init.rs`. Mainnet 360, testnet 36, devnet 40. The sync-side window is deliberately a separate field from the consensus predicate `Network::is_in_genesis()` (`crates/core/src/network/economics.rs:56`) whose shape it mirrors; the `genesis_blocks > 0` conjunct is logically implied by `local_height > 0` and is retained only as that shape-mirror.
+
+**Accepted residual — mainnet-bounded, off-mainnet genuinely weaker (AUDIT-P1-004).** This was reviewed and **accepted as a documented residual**, not fixed:
+
+- **Mainnet: bounded.** `genesis_blocks` is env-LOCKED at 360 (`MAINNET_LOCKED_PARAMS`, `config_validation.rs`) and no path lowers a healthy node into `[1, 360]` — rollback is finality-capped and snap install lands at the peer-corroborated tip. The population door (c) admits is exactly {freshly wiped, genuinely new} — the same population door (a) already admits. Door (c) is a fencepost repair, not a widening.
+- **Off-mainnet: weaker, by construction.** On testnet (36), devnet (40), or under a `DOLI_GENESIS_BLOCKS` override, the window is arrangeable. A chain whose TIP is `<= genesis_blocks` makes **every** node window-resident, and the `gap > 500` conjunct derives from `best_peer_height()` — a single unvalidated peer claim (`REV-149-P1-002`, `DIAG-SYNC-004`: no peer-quality threshold) — so a sybil peer can forge the second conjunct. On such a network, door (c) approximates the deleted Route A. Operators of testnet/devnet fleets must know this: **their snap admission is weaker than mainnet's**, and the difference is the lock on `genesis_blocks`, nothing in the sync layer.
+
+**Rolling-deploy verdict**: rolling-safe, per-node. Node-local strategy selection only — no block content, no consensus rule, no activation height (INC-I-075 Q1 no / Q2 no). PM-016 (registry) and INV-SYNC-011 require the text amendment below.
+
 ## Extended Invariant (draft text for INV-SYNC-011, REQ-SNAP-010)
 
-> **INV-SYNC-011 (extended, all-paths)**: The SnapCollecting transition (X1, decision.rs `start_sync`) is reachable ONLY via (a) `local_height == 0` bootstrap, or (b) `needs_genesis_resync`, which is set ONLY by `request_genesis_resync()`. Every feeder of that gate requires corroborated evidence (≥10 consecutive empty headers with gap ≥ MINOR_FORK_GAP_MAX, explicit deep-fork signal, ≥3 apply failures, all-peers-blacklisted, height-offset signature) or gap ≥ SNAP_SYNC_GAP_MIN(500). No bare-gap term admits snap on any path. `consecutive_empty_headers` is reset ONLY by genuine block application (block_lifecycle.rs) or the bounded gap≤3 gossip-wait; no request-shape change or admission path may reset it. `snap.attempts` is never reset by any admission or redirect path.
+> **INV-SYNC-011 (extended, all-paths — AMENDED by INC-I-152)**: The SnapCollecting transition (X1, decision.rs `start_sync`) is reachable ONLY via (a) `local_height == 0` bootstrap, (c) the bootstrap genesis window `0 < local_height <= SyncConfig.genesis_blocks` (plumbed from `NetworkParams`, default `0` = disabled) CONJOINED with `gap > SNAP_SYNC_GAP_MIN(500)`, or (b) `needs_genesis_resync`, which is set ONLY by `request_genesis_resync()`. Door (c) is a bootstrap-SHAPE predicate, never a bare-gap term: neither the window nor the gap admits alone, and door (c) resets neither `snap.attempts` nor `consecutive_empty_headers`. Every feeder of gate (b) requires corroborated evidence (≥10 consecutive empty headers with gap ≥ MINOR_FORK_GAP_MAX, explicit deep-fork signal, ≥3 apply failures, all-peers-blacklisted, height-offset signature) or gap ≥ SNAP_SYNC_GAP_MIN(500). No bare-gap term admits snap on any path. `consecutive_empty_headers` is reset ONLY by genuine block application (block_lifecycle.rs) or the bounded gap≤3 gossip-wait; no request-shape change or admission path may reset it. `snap.attempts` is never reset by any admission or redirect path.
 
 **Regression-test classes** (register in `regression_tests` + `v_regression_map`):
 1. **N4 wedge**: `finality == local_tip == fork-tip`, self-producing on the minority branch (INV-SYNC-010) → no snap below gap 50; evidence-gated snap only at gap≥50+empties≥10 (Phase 1); convergence without snap (Phase 2).
@@ -272,6 +314,7 @@ Phase 2: FORK_GUARD reports dropped competitor → coordinator ReevaluateForkCho
 6. **Fresh bootstrap**: h==0 snaps via Route C; INC-I-115 fresh-genesis path unaffected.
 7. **Epoch-boundary replay** of classes 1-5 (Failure Scenario 5).
 8. **B7 negative**: a minor-fork stall never satisfies `HeightOffsetDetected` (blocks_recent=false path).
+9. **INC-I-152 door (c)** (`crates/network/src/sync/manager/tests_inc_i152.rs`): in-window + gap>500 + 3 peers → snap; **negatives** past-window (`h == genesis_blocks + 1`, gap 129k) → header-first, and in-window with gap ≤ 500 → header-first; `genesis_blocks == 0` (unplumbed default) → bit-identical to pre-INC-I-152; `snap.attempts` limit still binds; both bootstrap holds park an in-window node.
 
 ## Migration Path
 
@@ -304,11 +347,13 @@ No `BRIDGE:` entries are required: Phase 1 items are the final architecture, not
 | New modules / abstractions | — | 0 | 0 Phase 1; Phase 2: +1 evidence variant, +1 action variant, +1 AH field |
 | Net LOC (admission) | — | ~ -23 | ~ -23 +10 (DC-2/RC-2); Phase 2 +15-30 |
 
+*(Post INC-I-152: `should_snap` OR-terms = 3, admission authorities still 1 — door (c) adds no new gap authority, it reuses the `SNAP_SYNC_GAP_MIN(500)` floor. Snap-floor constants still 1.)*
+
 The radical minimum IS the Phase-1 spine (its 0.9 converged confidence holds only WITH the DC-2 companion — the companion is what the Radical's kill test missed); everything beyond it is explicitly separable (M6 recommended, Phase 2 gated, O-1..O-5 optional).
 
 ## Non-Foreclosure
 
-Future escalation tiers (header-range backfill, targeted block fetch, operator-forced resync) enter as new evidence/feeders of the single funnel — never as new transitions into SnapCollecting (REQ-SNAP-009). INC-I-115 (open, fresh-genesis recovery): Route C (`local_height==0`) is untouched, and Rule 4 GenesisResync semantics are unchanged; any INC-I-115 fix slots in as a funnel feeder or a Route-C refinement, not a new admission point. O-1 (token) would make this structural if adopted.
+Future escalation tiers (header-range backfill, targeted block fetch, operator-forced resync) enter as new evidence/feeders of the single funnel — never as new transitions into SnapCollecting (REQ-SNAP-009). INC-I-115 (open, fresh-genesis recovery): Route C (`local_height==0`) is untouched, and Rule 4 GenesisResync semantics are unchanged; any INC-I-115 fix slots in as a funnel feeder or a Route-C refinement, not a new admission point. O-1 (token) would make this structural if adopted — and INC-I-152's door (c) is precisely the Route-C refinement this clause anticipated (a widening of what counts as *bootstrap*, not a new gap-based authority); under O-1 it would be a `bootstrap` constructor, not a fourth one.
 
 ## Design Synthesis Quality Gate
 

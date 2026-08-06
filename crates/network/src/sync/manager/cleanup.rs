@@ -490,11 +490,27 @@ impl SyncManager {
                 .network_tip_height
                 .saturating_sub(self.local_height);
             if gap > super::recovery::thresholds::SNAP_SYNC_GAP_MIN && self.peers.len() >= 3 {
-                let since_last_snap = self
-                    .snap
-                    .last_snap_completed
-                    .map(|t| t.elapsed().as_secs())
-                    .unwrap_or(60);
+                // AUDIT-P1-001: pace the retry on the most recent snap ACTIVITY —
+                // the last ATTEMPT or the last COMPLETION, whichever is later
+                // (most recent == smallest elapsed). This previously read
+                // `last_snap_completed.map(elapsed).unwrap_or(60)`, and that field
+                // only ever moves on SUCCESS (snap_sync.rs, take_snap_snapshot),
+                // so a node that had never completed a snap always read
+                // `60 >= 30` and got the 3-attempt cap re-armed on EVERY tick.
+                // The cap did not exist for exactly the bootstrap population it
+                // was written to protect.
+                let since_last_snap =
+                    match (self.snap.last_snap_attempt, self.snap.last_snap_completed) {
+                        (Some(a), Some(c)) => a.elapsed().min(c.elapsed()).as_secs(),
+                        (Some(t), None) | (None, Some(t)) => t.elapsed().as_secs(),
+                        // Limiter exhausted with no snap activity recorded at all.
+                        // Unreachable in production: `attempts` is only incremented
+                        // alongside a `last_snap_attempt` stamp. The cooldown is
+                        // therefore unprovable here, and it is answered in the strict
+                        // direction — refuse the re-arm rather than grant one on no
+                        // evidence.
+                        (None, None) => 0,
+                    };
                 if since_last_snap >= 30 {
                     info!(
                         "[SNAP_SYNC] Retrying snap sync: {} attempts exhausted but gap={} and {} peers available",

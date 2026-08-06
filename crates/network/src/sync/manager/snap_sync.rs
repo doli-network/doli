@@ -363,7 +363,14 @@ impl SyncManager {
     /// Fall back from snap sync to normal header-first sync.
     /// Increments the snap attempt counter; after 3 failures, snap sync is skipped.
     pub fn snap_fallback_to_normal(&mut self) {
+        // AUDIT-P1-001: the counter and its timestamp are stamped on the same
+        // line, on purpose. This is the ONLY site that increments `attempts`, so
+        // keeping the pair together makes them impossible to desynchronise —
+        // `attempts >= N` always implies a `last_snap_attempt` no older than the
+        // Nth failure, which is exactly what the retry cooldown in `cleanup()`
+        // measures.
         self.snap.attempts += 1;
+        self.snap.last_snap_attempt = Some(Instant::now());
         warn!(
             "[SNAP_SYNC] Attempt {}/3 failed, {}",
             self.snap.attempts,

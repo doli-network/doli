@@ -7,6 +7,7 @@
 //! relocation, no logic or assertion edits). See each test's own INPUT PARTITION.
 
 use crypto::Hash;
+use libp2p::PeerId;
 use std::time::{Duration, Instant};
 
 use super::tests_inc_i139::mgr_with_agreeing_peers;
@@ -21,6 +22,9 @@ use crate::sync::manager::{
 // gap-COMPARATOR read onto thresholds::SNAP_SYNC_GAP_MIN. Three consequences:
 //   RC-1c: the discv5-grace wait (decision.rs:202) must only park a FRESH node
 //          (local_height==0); post-DC-1 an h>0 node never uses snap peers.
+//          AMENDED by INC-I-152: "bootstrap-shaped" now means `h==0 ||
+//          in_genesis_window`, so the exemption is "h PAST the genesis window".
+//          TEST 1 pins the genesis_blocks==0 cell; TEST 1b the production cell.
 //   RC-1b: no `gap > self.snap.threshold` comparator read may remain in the
 //          admission region of decision.rs (only sentinel `< u64::MAX` reads).
 //   RC-2 : the emergency re-enable (production_gate.rs:741 `threshold = 10`) is
@@ -30,17 +34,30 @@ use crate::sync::manager::{
 // Spec: specs/sync-snap-admission-architecture.md RC-1 + RC-2 (~154-188).
 // ===========================================================================
 
-/// M6 TEST 1 (REQ-SNAP-008, RC-1c): an h>0 node with a future discv5-grace
-/// deadline, <3 peers and gap>threshold must NOT park in the grace-wait — post
-/// DC-1 an h>0 node never uses snap peers, so it proceeds to header-first.
+/// M6 TEST 1 (REQ-SNAP-008, RC-1c): a node with a future discv5-grace deadline,
+/// <3 peers and gap>threshold must NOT park in the grace-wait when it is not
+/// bootstrap-shaped — it proceeds to header-first.
+///
+/// CONTRACT AMENDED BY INC-I-152 (was: "an h>0 node never parks for snap peers").
+/// That absolute is no longer true in production: the bootstrap exemption is now
+/// "h PAST the genesis window", so on mainnet (`genesis_blocks=360`) this test's own
+/// h=100 node DOES park in the grace. This test still holds — and still passes —
+/// because `mgr_with_agreeing_peers` builds on `SyncConfig::default()`, i.e.
+/// `genesis_blocks == 0`, which DISABLES the window. Read it as the
+/// window-disabled cell of the contract: with no genesis window plumbed, RC-1c
+/// degenerates to the original `local_height == 0` gate and an h>0 node proceeds.
+/// The production-shaped cell (`genesis_blocks=360`, h outside the window) is
+/// pinned by the companion test immediately below.
 ///
 /// OUTPUT CONTRACT: fn start_sync(&mut self) [decision.rs:117]
 ///   O1: self.state        — MUST become Syncing (proceeded to header-first)
 ///   O2: self.pipeline_data — MUST NOT be SnapCollecting
 ///   PATH P1: local_height=100, 2 peers (<3), gap=? >threshold(50),
-///            discv5_peer_grace_deadline=Some(now+30s), snap enabled, attempts=0
-///   INPUT PARTITIONS: h>0 node reaching the discv5-grace guard (decision.rs:202)
-///   MATRIX (O1): P1 → Syncing (MUST). FAILS today: the ungated grace guard parks
+///            discv5_peer_grace_deadline=Some(now+30s), snap enabled, attempts=0,
+///            genesis_blocks=0 (SyncConfig::default → window disabled)
+///   INPUT PARTITIONS: non-bootstrap-shaped node reaching the discv5-grace guard,
+///            window DISABLED (`genesis_blocks == 0`)
+///   MATRIX (O1): P1 → Syncing (MUST). FAILED pre-M6: the ungated grace guard parked
 ///                the h>0 node in Idle (early return at decision.rs:213).
 #[test]
 fn m6_h_gt_0_skips_discv5_grace_proceeds_header_first() {
@@ -72,7 +89,86 @@ fn m6_h_gt_0_skips_discv5_grace_proceeds_header_first() {
         matches!(mgr.state, SyncState::Syncing { .. }),
         "M6 RC-1c (REQ-SNAP-008): h>0 node with a future discv5-grace deadline and \
          gap>threshold parked in the grace-wait (state={:?}) instead of proceeding \
-         to header-first. Post-RC-1c the grace guard must gate on local_height==0.",
+         to header-first. Post-RC-1c the grace guard must gate on bootstrap shape; \
+         with genesis_blocks==0 that reduces to local_height==0.",
+        mgr.state
+    );
+}
+
+/// M6 TEST 1b (RC-1c under PRODUCTION config — added by INC-I-152, review F2).
+/// The companion to TEST 1. TEST 1 can only ever exercise `genesis_blocks == 0`, so
+/// after INC-I-152 it no longer covers the shipped mainnet shape: there the grace
+/// gate is `local_height == 0 || in_genesis_window`, and the boundary that matters
+/// is the WINDOW edge, not the h==0 fencepost. This test plumbs the real mainnet
+/// window (360) and places the node OUTSIDE it (h=400) — the cell TEST 1 intended to
+/// pin ("a node that will never use snap peers must not park for them") and no
+/// longer can.
+///
+/// OUTPUT CONTRACT: fn start_sync(&mut self) [decision.rs:117]
+///   O1: self.state         — MUST become Syncing{DownloadingHeaders} (proceeded)
+///   O2: self.pipeline_data — MUST be Headers, never SnapCollecting
+///   PATH P1: genesis_blocks=360, local_height=400 (> window), 2 peers (<3),
+///            gap=800 > SNAP_SYNC_GAP_MIN(500), discv5_peer_grace_deadline
+///            =Some(now+30s), snap enabled (threshold=50), attempts=0
+///   INPUT PARTITIONS: past-window node under a PLUMBED genesis window — the
+///            production-shaped complement of TEST 1's window-disabled cell.
+///   MATRIX (O1,O2): P1 → (Syncing{DownloadingHeaders}, Headers). PASS-lock: green
+///            both pre- and post-INC-I-152, since a past-window node is excluded
+///            from both bootstrap holds in either version.
+#[test]
+fn m6_rc1c_past_genesis_window_skips_discv5_grace_proceeds_header_first() {
+    // Mainnet NetworkParams::genesis_blocks (crates/core/.../defaults.rs:46).
+    const MAINNET_GENESIS_BLOCKS: u64 = 360;
+    let local_height = 400; // strictly PAST the window
+    let peer_height = 1200; // gap = 800 > SNAP_SYNC_GAP_MIN(500)
+
+    let config = SyncConfig {
+        genesis_blocks: MAINNET_GENESIS_BLOCKS,
+        ..SyncConfig::default()
+    };
+    let mut mgr = SyncManager::new(config, Hash::ZERO);
+    mgr.local_height = local_height;
+    mgr.local_slot = local_height as u32;
+    mgr.local_hash = crypto::hash::hash(format!("local_{}", local_height).as_bytes());
+    let peer_hash = crypto::hash::hash(b"canonical_agreed_tip");
+    for _ in 0..2 {
+        mgr.add_peer(PeerId::random(), peer_height, peer_hash, peer_height as u32);
+    }
+    // Clean Idle precondition (add_peer drove start_sync during construction), then
+    // arm the grace deadline the past-window node must NOT honor.
+    mgr.fork.needs_genesis_resync = false;
+    mgr.state = SyncState::Idle;
+    mgr.pipeline_data = SyncPipelineData::None;
+    mgr.snap.attempts = 0;
+    mgr.snap.threshold = 50; // enabled sentinel
+    mgr.snap.discv5_peer_grace_deadline = Some(Instant::now() + Duration::from_secs(30));
+
+    mgr.start_sync();
+
+    // O2: a past-window node never reaches snap without needs_genesis_resync.
+    assert!(
+        !matches!(mgr.pipeline_data, SyncPipelineData::SnapCollecting { .. }),
+        "M6 RC-1c/INC-I-152: a node at h={} PAST the genesis window ({}) must not \
+         enter SnapCollecting on gap alone",
+        local_height,
+        MAINNET_GENESIS_BLOCKS
+    );
+    // O1: and it must not PARK for snap peers it will never use.
+    assert!(
+        matches!(
+            mgr.state,
+            SyncState::Syncing {
+                phase: crate::sync::manager::SyncPhase::DownloadingHeaders,
+                ..
+            }
+        ) && matches!(mgr.pipeline_data, SyncPipelineData::Headers { .. }),
+        "M6 RC-1c/INC-I-152 (production shape): a node at h={} PAST the genesis \
+         window ({}) with an armed discv5 grace, 2 peers and gap={} parked instead \
+         of proceeding to header-first (state={:?}). The INC-I-152 bootstrap holds \
+         must cover ONLY h==0 and the genesis window — never a past-window node.",
+        local_height,
+        MAINNET_GENESIS_BLOCKS,
+        peer_height - local_height,
         mgr.state
     );
 }

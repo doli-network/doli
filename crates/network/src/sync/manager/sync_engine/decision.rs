@@ -161,16 +161,41 @@ impl SyncManager {
             let gap = best_height.saturating_sub(self.local_height);
             let enough_peers = self.peers.len() >= 3;
             let snap_allowed = self.snap.threshold < u64::MAX;
+            // INC-I-152: a node whose local height is still inside the genesis window is
+            // structurally a BOOTSTRAP node, not a partially-synced one — orphan chase can
+            // walk it off h==0 within seconds of a wipe (measured: h 0→14 in ~10s), and
+            // keying snap admission strictly on h==0 then forecloses the fast path for the
+            // next ~260s of serial header walking. Mirrors Network::is_in_genesis() shape;
+            // the window value is plumbed via SyncConfig, never hardcoded here.
+            //
+            // `genesis_blocks > 0` is logically implied by the `local_height > 0` conjunct
+            // (a zero window makes `local_height <= genesis_blocks` false on its own), so it
+            // is not load-bearing. It is retained deliberately as a shape-mirror of the core
+            // predicate Network::is_in_genesis() (core/src/network/economics.rs:56), where
+            // the same guard IS load-bearing because that one admits height 0.
+            let in_genesis_window = self.config.genesis_blocks > 0
+                && self.local_height > 0
+                && self.local_height <= self.config.genesis_blocks;
+            // One comparator across the whole admission cluster: this term and BOTH
+            // bootstrap holds below read `gap > SNAP_SYNC_GAP_MIN`. A `>=` here would make
+            // gap==500 exactly admit snap at >=3 peers while <3 peers refused to park for
+            // it — an asymmetry with no justification in either direction.
             let should_snap = enough_peers
                 && self.snap.attempts < 3
                 && snap_allowed
-                && (self.local_height == 0 || self.fork.needs_genesis_resync);
+                && (self.local_height == 0
+                    || (in_genesis_window
+                        && gap > super::super::recovery::thresholds::SNAP_SYNC_GAP_MIN)
+                    || self.fork.needs_genesis_resync);
 
             // Fresh node optimization: don't start slow header-first sync.
             // Wait for 5 peers so snap sync can activate — it downloads state
             // in seconds instead of replaying 60K+ blocks over hours.
             // BUT: timeout after 60s to avoid deadlock when <5 peers are discoverable.
-            if self.local_height == 0
+            // INC-I-152: the hold is what BUYS the snap quorum, so it must cover the whole
+            // genesis window — a node orphan-chased to h>0 that commits header-first here
+            // is exactly the measured 260s walk.
+            if (self.local_height == 0 || in_genesis_window)
                 && !enough_peers
                 && self.snap.attempts < 3
                 && snap_allowed
@@ -183,14 +208,14 @@ impl SyncManager {
                 let waited = wait_start.elapsed();
                 if waited.as_secs() < 60 {
                     info!(
-                        "[SNAP_SYNC] Fresh node: waiting for {} more peer(s) for snap sync ({}/3, gap={}, waited={}s)",
-                        3 - self.peers.len(), self.peers.len(), gap, waited.as_secs()
+                        "[SNAP_SYNC] Bootstrap node (h={}): waiting for {} more peer(s) for snap sync ({}/3, gap={}, waited={}s)",
+                        self.local_height, 3 - self.peers.len(), self.peers.len(), gap, waited.as_secs()
                     );
                     return;
                 }
                 warn!(
-                    "[SNAP_SYNC] Fresh node waited {}s for 5 peers but only have {} — falling back to header-first sync",
-                    waited.as_secs(), self.peers.len()
+                    "[SNAP_SYNC] Bootstrap node (h={}) waited {}s for snap peers but only have {} — falling back to header-first sync",
+                    self.local_height, waited.as_secs(), self.peers.len()
                 );
                 self.snap.fresh_node_wait_start = None;
             }
@@ -199,9 +224,13 @@ impl SyncManager {
             // wait for enough TCP connections before committing to header-first sync.
             // Without this, nodes N19/N22 start header-first before discv5 discovers
             // peers that could serve snap sync (5-30s for first random walk).
-            // RC-1c: the grace applies ONLY to an h==0 bootstrap node — post-DC-1 an
-            // h>0 node never uses snap peers, so it must never park waiting for them.
-            if self.local_height == 0
+            // RC-1c (amended by INC-I-152): both bootstrap holds exist to BUY a snap quorum
+            // for a bootstrap-shaped node — h==0, or still inside the genesis window after
+            // orphan chase walked it off the fencepost. A node PAST the window can still
+            // reach snap, but only via an explicit `needs_genesis_resync` signal, which is
+            // evidence-driven and does not depend on parking for peers — so a past-window
+            // node must never park here.
+            if (self.local_height == 0 || in_genesis_window)
                 && !enough_peers
                 && self.snap.attempts < 3
                 && snap_allowed

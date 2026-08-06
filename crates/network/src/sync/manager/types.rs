@@ -40,6 +40,21 @@ pub struct SyncConfig {
     /// `SyncConfig::default()` call sites need no change. Defaults to `0` (always-on);
     /// the node overrides it from `NetworkParams` at startup.
     pub inc_i_147_activation_height: u64,
+    /// INC-I-152: operational bootstrap genesis window, from
+    /// `NetworkParams::genesis_blocks` (mainnet 360).
+    ///
+    /// Deliberately distinct from the consensus `Network::is_in_genesis()`: this is the
+    /// SYNC-side window inside which a node is still bootstrap-shaped, so orphan chase
+    /// applying blocks 1..N must not foreclose bootstrap snap admission.
+    ///
+    /// Read by `start_sync()` (`sync_engine/decision.rs`) as the `in_genesis_window` term
+    /// of snap admission and of the two bootstrap holds; nothing else consumes it.
+    ///
+    /// Carried here rather than as a `SyncManager::new` parameter so the existing
+    /// `SyncConfig::default()` call sites need no change. Defaults to `0` (window
+    /// DISABLED — behavior identical to pre-INC-I-152); the node overrides it from
+    /// `NetworkParams` at startup.
+    pub genesis_blocks: u64,
 }
 
 impl Default for SyncConfig {
@@ -52,6 +67,7 @@ impl Default for SyncConfig {
             min_peers_for_sync: 1,
             stale_timeout: Duration::from_secs(300), // 5 minutes - peers stay active longer
             inc_i_147_activation_height: 0,          // always-on unless overridden
+            genesis_blocks: 0,                       // window disabled unless overridden
         }
     }
 }
@@ -453,7 +469,22 @@ pub(crate) struct SnapSyncState {
     /// INC-I-012 F7: When snap sync last completed. Used to suppress peer
     /// blacklisting for empty headers within 5 minutes of snap sync — all
     /// canonical peers will return empty when local_hash is unrecognizable.
+    ///
+    /// SUCCESS time. Written at exactly one site (`take_snap_snapshot`), so it
+    /// stays `None` forever on a node that has never finished a snap.
     pub last_snap_completed: Option<Instant>,
+    /// AUDIT-P1-001: when a snap sync was last ATTEMPTED (stamped together with
+    /// every `attempts` increment in `snap_fallback_to_normal`).
+    ///
+    /// Attempt-time and completion-time are DIFFERENT quantities and the retry
+    /// cooldown in `cleanup()` needs the former. `last_snap_completed` only ever
+    /// moves on success, so for the population the 3-attempt limiter exists to
+    /// protect — freshly wiped / bootstrap nodes that have never completed a
+    /// snap — it is permanently `None` and the cooldown that reads it degenerates
+    /// to "always spent". The retry pacing is a property of the last ATTEMPT, so
+    /// this field is what paces it; `last_snap_completed` keeps its unrelated
+    /// INC-I-012 F7 blacklist-suppression job.
+    pub last_snap_attempt: Option<Instant>,
     /// Discv5 peer discovery grace: when set, the sync engine waits up to
     /// this deadline for discv5 to discover enough peers before falling back
     /// to header-first sync. Prevents the 8/10 → 10/10 gap where the sync
@@ -486,6 +517,7 @@ impl SnapSyncState {
             fresh_node_wait_start: None,
             store_floor: 1, // Default: full-sync node has block 1
             last_snap_completed: None,
+            last_snap_attempt: None,
             discv5_peer_grace_deadline: None,
             integrity_refusals: 0,
         }

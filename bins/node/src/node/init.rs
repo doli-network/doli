@@ -703,6 +703,9 @@ impl Node {
         let sync_config = SyncConfig {
             // INC-I-147 D6: gate the fork-choice height-unit correction.
             inc_i_147_activation_height: config.network.params().inc_i_147_activation_height,
+            // INC-I-152: sync-side bootstrap window, so orphan chase walking a freshly
+            // wiped node off h==0 does not foreclose bootstrap snap admission.
+            genesis_blocks: config.network.params().genesis_blocks,
             ..SyncConfig::default()
         };
         let sync_manager = Arc::new(RwLock::new(SyncManager::new(sync_config, genesis_hash)));
