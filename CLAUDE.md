@@ -13,8 +13,9 @@
 
 ## Local Development
 
-This is a local-only devnet environment. All nodes run on `127.0.0.1`.
-No remote servers (ai1/ai2/ai3), no GitHub access, no explorer API.
+**Devnet and testnet are local-only** — all nodes run on `127.0.0.1`. NEVER SSH to ai1–ai5 for
+devnet/testnet work: those hosts run **mainnet**. Mainnet is remote and is covered by the
+`mainnet` / `release` / `guardian` skills, not by this section.
 
 - **Devnet data**: `~/.doli/devnet/` (keys, chainspec, data, logs, pids)
 - **Testnet data**: `~/testnet/` (keys, seed, n1-n12, logs)
@@ -62,7 +63,7 @@ Two root-cause fixes stabilized the network. All other fixes were symptom mitiga
   3. Is the new behavior bit-identical to the old behavior for ALL reachable inputs?
 
   If (1) or (2) is YES and (3) is NO → an activation height in `NetworkParams` is REQUIRED. "Feature is currently unused" and "no producer has delegations yet" are NEVER valid justifications for skipping the gate (INC-I-075 cascade was triggered exactly by this assumption when the first DelegateBond activated post-deploy).
-- rewards → check `calculate_epoch_rewards()` in `rewards.rs` AND `calculate_expected_epoch_rewards()` in `validation.rs` (currently disconnected — see MEMORY.md Open Items).
+- rewards → distribution is `calculate_epoch_rewards()` in `bins/node/src/node/rewards.rs`; validation is `validate_block_economics()` in `bins/node/src/node/validation_checks.rs` (weighted presence model via `crate::rewards::WeightedRewardCalculator`). The old `calculate_expected_epoch_rewards()` in core validation was dead code and was **removed 2026-03-16** — see the tombstone at `crates/core/src/validation/rewards_legacy.rs`.
 - storage serialization → every node diverges if canonical encoding changes. Requires chain reset. See `→ snapshot.rs`.
 - consensus params → programmatic in `NetworkParams::defaults()`, NOT `include_str!`. Mainnet overrides blocked. Change requires new binary on ALL nodes simultaneously.
 - rollback → undo-based rollback is first option (`node.rs:~6531`). Rebuild-from-genesis is fallback for blocks without undo data.
@@ -115,8 +116,8 @@ After completing any code change, ALWAYS propose the following checklist to the 
 | **handle_new_block(), execute_reorg()** | `bins/node/src/node/block_handling.rs` |
 | **FORK_GUARD wedge-escape (INC-I-143 F2)** | `bins/node/src/node/wedge_escape.rs` |
 | **fork recovery (9 functions)** | `bins/node/src/node/fork_recovery.rs` |
-| **apply_block()** | `bins/node/src/node/apply_block.rs` |
-| **try_produce_block()** | `bins/node/src/node/production.rs` |
+| **apply_block()** | `bins/node/src/node/apply_block/` (dir) |
+| **try_produce_block(), compute_block_vdf()** | `bins/node/src/node/production/mod.rs` |
 | **check_producer_eligibility(), validate_block_*()** | `bins/node/src/node/validation_checks.rs` |
 | **calculate_epoch_rewards(), handle_equivocation()** | `bins/node/src/node/rewards.rs` |
 | **rollback_one_block()** | `bins/node/src/node/rollback.rs` |
@@ -125,23 +126,23 @@ After completing any code change, ALWAYS propose the following checklist to the 
 | **Node lib (test access)** | `bins/node/src/lib.rs` |
 | **run_periodic_tasks()** | `bins/node/src/node/periodic.rs` |
 | **genesis producer derivation** | `bins/node/src/node/genesis.rs` |
-| Constants | `crates/core/src/consensus.rs` |
-| Config/env | `crates/core/src/network_params.rs` |
+| Constants | `crates/core/src/consensus/` (dir) |
+| Config/env + activation heights | `crates/core/src/network_params/` (dir) |
 | Scheduler | `crates/core/src/scheduler.rs` |
-| Validation (5,698 lines) | `crates/core/src/validation.rs` |
-| Transactions (27 types) | `crates/core/src/transaction.rs` |
+| Validation (~11,000 lines) | `crates/core/src/validation/` (dir; VDF check in `producer.rs`) |
+| Transactions (`TxType`, 24 variants) | `crates/core/src/transaction/types.rs` |
 | Block + BlockBuilder | `crates/core/src/block.rs` |
 | Chainspec + genesis hash | `crates/core/src/chainspec.rs` |
-| Network/gossip | `crates/network/src/service.rs` |
+| Network/gossip | `crates/network/src/service/` (dir) |
 | Gossip staleness/dedup gate (INC-I-142) | `crates/network/src/gossip/staleness.rs` |
 | Status protocol + version constants | `crates/network/src/protocols/status.rs` |
 | Peer scoring (incl. IncompatibleVersion) | `crates/network/src/scoring.rs` |
-| Sync state machine | `crates/network/src/sync/manager.rs` |
-| Block storage | `crates/storage/src/block_store.rs` |
-| State DB (RocksDB) | `crates/storage/src/state_db.rs` |
-| UTXO set (in-memory) | `crates/storage/src/utxo.rs` |
-| UTXO set (RocksDB) | `crates/storage/src/utxo_rocks.rs` |
-| ProducerSet + bonds | `crates/storage/src/producer.rs` |
+| Sync state machine | `crates/network/src/sync/manager/` (dir) |
+| Block storage | `crates/storage/src/block_store/` (dir) |
+| State DB (RocksDB) | `crates/storage/src/state_db/` (dir) |
+| UTXO set (in-memory) | `crates/storage/src/utxo/in_memory.rs` |
+| UTXO set (RocksDB) | `crates/storage/src/utxo/set.rs` |
+| ProducerSet + bonds | `crates/storage/src/producer/` (dir) |
 | State root + snapshots | `crates/storage/src/snapshot.rs` |
 | RPC methods (56) | `crates/rpc/src/methods/` (incl. `oracle.rs` + `oracle_status.rs` for Phase 2.1 M9-M11) |
 | Transaction mempool | `crates/mempool/src/` |
@@ -206,6 +207,9 @@ After completing any code change, ALWAYS propose the following checklist to the 
 | Drift tracker | `MEMORY.md` (auto-memory) |
 | Bug reports | `docs/legacy/bugs/` |
 | CLI issues | `CLI.md` |
+
+---
+
 
 ---
 

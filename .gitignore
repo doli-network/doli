@@ -61,6 +61,12 @@ swap.db
 # Internal docs (contain infrastructure details)
 LAUNCH_CHECKLIST.internal.md
 *.internal.md
+
+# OMEGA workflow artifacts — agent scratch (investigation/diagnosis/conclusion reports).
+# Regenerated per run and routinely contain raw log excerpts, host IPs, and server layout.
+# NOTE: files already tracked here (see `git ls-files docs/.workflow/`) keep tracking until
+# explicitly removed with `git rm --cached`; this rule only stops NEW files being added.
+docs/.workflow/
 .omega/cortex-config.json
 .omega/.pending-imports.jsonl
 graphify-out/
