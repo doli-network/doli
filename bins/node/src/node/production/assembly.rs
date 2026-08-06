@@ -353,8 +353,15 @@ impl Node {
             // This matches the decoder in post_commit.rs exactly (indices 0..N-1).
             // New producers activated mid-epoch via deferred updates are appended
             // AFTER the frozen list (index N, N+1, ...) so existing indices stay
-            // stable. The decoder ignores indices >= epoch_producer_list.len(),
-            // which is correct — new producers enter the list at the next epoch.
+            // stable.
+            //
+            // NOTE (INC-I-154): since the v6.17.1 Full Bitfield Decode pillar
+            // (full_bitfield_decode_height), post_commit.rs DECODES those extra
+            // indices too and credits them into epoch_state — that is exactly what
+            // lets a filtered producer re-enter the schedule at the next boundary.
+            // The older claim here, that "the decoder ignores indices >=
+            // epoch_producer_list.len()", described the PRE-pillar decoder and has
+            // not been true since h=14000.
             let base_list = &self.epoch_state.producer_list;
             let base_set: HashSet<&PublicKey> = base_list.iter().collect();
 
