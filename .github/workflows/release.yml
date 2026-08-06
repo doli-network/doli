@@ -51,6 +51,7 @@ jobs:
       - name: Package tarball
         run: |
           VERSION=${GITHUB_REF#refs/tags/}
+          case "$VERSION" in refs/*) VERSION="dev-$(echo $GITHUB_SHA | cut -c1-8)";; esac
           DIR="doli-${VERSION}-${TARGET}"
           mkdir -p "$DIR"
           cp "target/${TARGET}/release/doli-node" "$DIR/"
@@ -62,6 +63,7 @@ jobs:
       - name: Build .deb
         run: |
           VERSION=${GITHUB_REF#refs/tags/}
+          case "$VERSION" in refs/*) VERSION="dev-$(echo $GITHUB_SHA | cut -c1-8)";; esac
           cargo install cargo-deb
           cargo deb -p doli-node --target $TARGET --no-build --no-strip
           DEB_FILE=$(find target/${TARGET}/debian -name '*.deb' | head -1)
@@ -70,6 +72,7 @@ jobs:
       - name: Build .rpm
         run: |
           VERSION=${GITHUB_REF#refs/tags/}
+          case "$VERSION" in refs/*) VERSION="dev-$(echo $GITHUB_SHA | cut -c1-8)";; esac
           cargo install cargo-generate-rpm
           cargo generate-rpm -p bins/node --target $TARGET
           RPM_FILE=$(find target/${TARGET}/generate-rpm -name '*.rpm' | head -1)
@@ -116,6 +119,7 @@ jobs:
       - name: Package tarball
         run: |
           VERSION=${GITHUB_REF#refs/tags/}
+          case "$VERSION" in refs/*) VERSION="dev-$(echo $GITHUB_SHA | cut -c1-8)";; esac
           DIR="doli-${VERSION}-${TARGET}"
           mkdir -p "$DIR"
           cp "target/${TARGET}/release/doli-node" "$DIR/"
@@ -127,6 +131,7 @@ jobs:
       - name: Build .deb
         run: |
           VERSION=${GITHUB_REF#refs/tags/}
+          case "$VERSION" in refs/*) VERSION="dev-$(echo $GITHUB_SHA | cut -c1-8)";; esac
           cargo install cargo-deb
           cargo deb -p doli-node --target $TARGET --no-build --no-strip
           DEB_FILE=$(find target/${TARGET}/debian -name '*.deb' | head -1)
@@ -170,6 +175,7 @@ jobs:
       - name: Package tarball
         run: |
           VERSION=${GITHUB_REF#refs/tags/}
+          case "$VERSION" in refs/*) VERSION="dev-$(echo $GITHUB_SHA | cut -c1-8)";; esac
           DIR="doli-${VERSION}-${TARGET}"
           mkdir -p "$DIR"
           cp "target/${TARGET}/release/doli-node" "$DIR/"
@@ -181,6 +187,7 @@ jobs:
       - name: Build .pkg
         run: |
           VERSION=${GITHUB_REF#refs/tags/}
+          case "$VERSION" in refs/*) VERSION="dev-$(echo $GITHUB_SHA | cut -c1-8)";; esac
           VERSION_NUM=${VERSION#v}
           mkdir -p pkg-root/usr/local/bin
           cp "target/${TARGET}/release/doli-node" pkg-root/usr/local/bin/
@@ -298,6 +305,7 @@ jobs:
       - name: Collect artifacts
         run: |
           VERSION=${GITHUB_REF#refs/tags/}
+          case "$VERSION" in refs/*) VERSION="dev-$(echo $GITHUB_SHA | cut -c1-8)";; esac
           mkdir -p gui-artifacts
           find target/release/bundle -name '*.AppImage' -exec cp {} gui-artifacts/ \; 2>/dev/null || true
           find target/release/bundle -name '*.deb' -exec cp {} gui-artifacts/ \; 2>/dev/null || true
@@ -354,6 +362,7 @@ jobs:
       - name: Collect artifacts
         run: |
           VERSION=${GITHUB_REF#refs/tags/}
+          case "$VERSION" in refs/*) VERSION="dev-$(echo $GITHUB_SHA | cut -c1-8)";; esac
           mkdir -p gui-artifacts
           find target/release/bundle -name '*.dmg' -exec cp {} gui-artifacts/ \; 2>/dev/null || true
 
@@ -475,6 +484,7 @@ jobs:
       - name: Create empty SIGNATURES.json scaffold
         run: |
           VERSION=${GITHUB_REF#refs/tags/}
+          case "$VERSION" in refs/*) VERSION="dev-$(echo $GITHUB_SHA | cut -c1-8)";; esac
           VERSION_NUM=${VERSION#v}
           CHECKSUMS_SHA256=$(sha256sum release/CHECKSUMS.txt | cut -d' ' -f1)
           cat > release/SIGNATURES.json <<SIGEOF
@@ -488,6 +498,7 @@ jobs:
       - name: Generate release notes
         run: |
           VERSION=${GITHUB_REF#refs/tags/}
+          case "$VERSION" in refs/*) VERSION="dev-$(echo $GITHUB_SHA | cut -c1-8)";; esac
           PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
 
           {
