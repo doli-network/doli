@@ -3,12 +3,12 @@
 ENTRY-POINTS       14-41
 OPERATIONS         42-58
 STRUCTS            59-98
-FUNCTIONS          99-281
-HARDFORK-SCHEDULE  282-303
-DATA-FLOWS         304-382
-DEPENDENCIES       383-405
-CONSTRAINTS        406-465
-PATTERNS           466-532
+FUNCTIONS          99-283
+HARDFORK-SCHEDULE  284-305
+DATA-FLOWS         306-415
+DEPENDENCIES       416-438
+CONSTRAINTS        439-498
+PATTERNS           499-568
 @/INDEX -->
 
 ## ENTRY-POINTS
@@ -37,7 +37,7 @@ Public API re-exported from `crates/updater/src/lib.rs` (13 files: apply, downlo
 
 **watchdog** (pub mod): `UpdateWatchdog`, `WatchdogState`
 
-NEW since 2026-05-11 scaffold: `install_skills_from_tarball` (apply.rs:402) — auto-update now also syncs `~/.doli/skills/` agent skill files from the release tarball. `STAGED_BINARY_PATH` hardened (apply.rs:188, ISSUE-174 #7) to close a TOCTOU symlink-swap root-exec vector in the sudo install fallback.
+NEW since 2026-05-11 scaffold: `install_skills_from_tarball` (apply.rs:511) — auto-update now also syncs `~/.doli/skills/` agent skill files from the release tarball. `STAGED_BINARY_PATH` hardened (apply.rs:189, ISSUE-174 #7) to close a TOCTOU symlink-swap root-exec vector in the sudo install fallback.
 
 ## OPERATIONS
 
@@ -47,9 +47,9 @@ NEW since 2026-05-11 scaffold: `install_skills_from_tarball` (apply.rs:402) — 
 | Verify a release's signatures | 1. Fetch release + on-chain maintainer keys (if node) 2. `verify_release_signatures_with_keys()` or `verify_release_signatures()` (CLI, no on-chain state) | `verify_release_signatures_with_keys(release, on_chain_keys, network)` (verification.rs:57) | `Release`, network, optional on-chain keys | `Ok(())` if ≥`REQUIRED_SIGNATURES`(3) valid sigs from allowed keys, else `InsufficientSignatures` |
 | Vote to veto/approve an update | 1. Producer builds `VoteMessage::new(version, vote, producer_id)` 2. Sign over `message_bytes()` 3. Gossip signed vote 4. Receiver: `VoteMessage::verify()` then `VoteTracker::record_vote()` | `VoteMessage::new()`/`verify()` (vote.rs:41,61), `VoteTracker::record_vote()` (vote.rs:143) | version, Vote::{Approve,Veto}, producer keypair | One vote counted per producer_id (duplicate = false, no change) |
 | Decide if an update is rejected | 1. Tally weighted votes 2. `VoteTracker::should_reject_weighted(total_weight)` (preferred) or legacy `should_reject(total_producers)` | `should_reject_weighted()` (vote.rs:193), `calculate_vote_weight()` (params.rs:100) | total active weight/count, recorded votes | `true` if veto weight/count ≥40% (`VETO_THRESHOLD_PERCENT`) |
-| Apply an approved update (automated) | 1. Veto period ends + approved 2. `auto_apply_from_github(version, signed_checksums_sha256)` 3. `UpdateWatchdog::record_update()` 4. `restart_node()` | `auto_apply_from_github()` (apply.rs:302), `restart_node()` (apply.rs:544) | version, signed checksums_sha256 (from verified SIGNATURES.json) | New binary (+ CLI + skills, best-effort) installed atomically; process re-execs |
+| Apply an approved update (automated) | 1. Veto period ends + approved 2. `auto_apply_from_github(version, signed_checksums_sha256)` 3. `UpdateWatchdog::record_update()` 4. `restart_node()` | `auto_apply_from_github()` (apply.rs:411), `restart_node()` (apply.rs:653) | version, signed checksums_sha256 (from verified SIGNATURES.json) | New binary (+ CLI + skills, best-effort) installed atomically; process re-execs |
 | Apply an update manually (legacy path) | 1. `apply_update(release, approved, veto_percent)` — checks veto/approval itself 2. downloads/hashes/backs-up/installs | `apply_update()` (apply.rs:75) | `Release`, approved bool, veto_percent | Binary installed; caller must still call `restart_node()` |
-| Roll back a bad update | 1. Detect crash loop (watchdog) or manual trigger 2. `rollback()` restores `.backup` sibling 3. `restart_node()` | `rollback()` (apply.rs:523), `UpdateWatchdog::check_and_maybe_rollback()` (watchdog.rs:95) | existing `{binary}.backup` file | Previous binary restored; watchdog state cleared so it doesn't re-trigger |
+| Roll back a bad update | 1. Detect crash loop (watchdog) or manual trigger 2. `rollback()` restores `.backup` sibling 3. `restart_node()` | `rollback()` (apply.rs:632), `UpdateWatchdog::check_and_maybe_rollback()` (watchdog.rs:95) | existing `{binary}.backup` file | Previous binary restored; watchdog state cleared so it doesn't re-trigger |
 | Detect post-update crash loop | 1. On successful update: `UpdateWatchdog::record_update(version)` before restart 2. On clean exit: `record_clean_shutdown()` 3. On next startup: `check_and_maybe_rollback()` | `UpdateWatchdog::new(data_dir, network)` (watchdog.rs:65) | data_dir, network (for `crash_window_secs`) | `Some(bad_version)` returned after `crash_threshold`(3) crashes inside the window → caller rolls back |
 | Schedule a hard fork (consensus-breaking upgrade) | 1. Add `HardForkInfo{activation_height, min_version, consensus_changes}` to `HardForkSchedule::for_network()` match arm 2. Use a far-future placeholder height 3. Before deploy, operator sets real height via `floor((current_height+7200)/360)*360` | `HardForkSchedule::for_network(network)` (hardfork.rs:208), `.add()` (hardfork.rs:61) | target network, activation height, min_version, consensus_changes | All nodes independently derive the same `fork_id()`; version-incompatible nodes stop producing at/after `activation_height` |
 | Gate block production on hard fork compliance | 1. `HardForkSchedule::for_network(network)` at startup 2. Each produce attempt: `schedule.should_stop_producing(height, current_version())` | `should_stop_producing()` (hardfork.rs:38,84) | current height, current binary version | Production paused with warning if version too old for an active fork |
@@ -109,21 +109,23 @@ NEW since 2026-05-11 scaffold: `install_skills_from_tarball` (apply.rs:402) — 
 
 `install_binary(binary, target) -> Result<()>` (apply.rs:152): atomic write (temp `.new` file + rename). Falls back to `install_binary_sudo` on `PermissionDenied`. Async.
 
-`STAGED_BINARY_PATH = "/var/lib/doli/update.bin"` (apply.rs:188): staging path for the sudo-fallback install. **Security-hardened (ISSUE-174 #7)**: previously `/tmp/doli-update-binary` — world-writable `/tmp` + predictable name allowed a local-user TOCTOU race to win root code execution when the auto-updater fired. Now lives in `/var/lib/doli/` (mode 2770 doli:doli, installer-created) and is opened with `O_NOFOLLOW` (apply.rs:229) to defeat symlink swaps.
+`STAGED_BINARY_PATH = "/var/lib/doli/update.bin"` (apply.rs:189): staging path for the sudo-fallback install. **Security-hardened (ISSUE-174 #7)**: previously `/tmp/doli-update-binary` — world-writable `/tmp` + predictable name allowed a local-user TOCTOU race to win root code execution when the auto-updater fired. Now lives in `/var/lib/doli/` (mode 2770 doli:doli, installer-created) and is opened with `O_NOFOLLOW` (apply.rs:270) to defeat symlink swaps.
 
-`install_binary_sudo(binary, target) -> Result<()>` (apply.rs:197, private): writes to `STAGED_BINARY_PATH` with mode 0o750 + `O_NOFOLLOW`, `sudo rm -f` then `sudo cp` (Linux "Text file busy" workaround for overwriting a running binary), cleans up staged file after.
+`INSTALLED_BINARY_MODE = 0o755` (apply.rs:199, `#[cfg(unix)]`): the mode every installed DOLI binary must carry, `rwxr-xr-x`. Both branches of `install_binary` install it. **INC-I-153: never lower this, and never stage below it** — see the install-path section for the full derivation.
 
-`auto_apply_from_github(version, signed_checksums_sha256) -> Result<()>` (apply.rs:302): full automated update flow (8 steps). Verifies CHECKSUMS.txt integrity against signed hash (closes TOCTOU/AUDIT-UPDATE-002), downloads tarball, verifies hash, extracts, installs doli-node, best-effort installs doli CLI, best-effort installs agent skills (`install_skills_from_tarball`, step 8). Does NOT call `restart_node()` — caller handles restart. Async.
+`install_binary_sudo(binary, target) -> Result<()>` (apply.rs:230, private): writes to `STAGED_BINARY_PATH` with mode 0o755 (`INSTALLED_BINARY_MODE`) + `O_NOFOLLOW`, `sudo rm -f` then `sudo cp` (Linux "Text file busy" workaround for overwriting a running binary), cleans up staged file, then **verifies the postcondition**: stats the installed target and returns `Err(InstallFailed)` unless `installed_mode & 0o001 != 0` (apply.rs:314-370). INC-I-153 — a zero-exit `cp` proves the bytes landed, not the mode.
 
-`install_skills_from_tarball(tarball) -> Result<usize>` (apply.rs:402): **NEW**. Extracts `*/skills/**` entries from the release tarball to `~/.doli/skills/`, clearing any previously installed skills first (`remove_dir_all`). Returns count of `SKILL.md` files installed. Best-effort — caller treats failure as non-fatal.
+`auto_apply_from_github(version, signed_checksums_sha256) -> Result<()>` (apply.rs:411): full automated update flow (8 steps). Verifies CHECKSUMS.txt integrity against signed hash (closes TOCTOU/AUDIT-UPDATE-002), downloads tarball, verifies hash, extracts, installs doli-node, best-effort installs doli CLI, best-effort installs agent skills (`install_skills_from_tarball`, step 8). Does NOT call `restart_node()` — caller handles restart. Async.
 
-`extract_named_binary_from_tarball(tarball, name) -> Result<Vec<u8>>` (apply.rs:482): finds entry by filename in `.tar.gz`. CI tarball format: `doli-node-v{version}-{triple}/{name}`.
+`install_skills_from_tarball(tarball) -> Result<usize>` (apply.rs:511): **NEW**. Extracts `*/skills/**` entries from the release tarball to `~/.doli/skills/`, clearing any previously installed skills first (`remove_dir_all`). Returns count of `SKILL.md` files installed. Best-effort — caller treats failure as non-fatal.
 
-`extract_binary_from_tarball(tarball) -> Result<Vec<u8>>` (apply.rs:518): wrapper for "doli-node".
+`extract_named_binary_from_tarball(tarball, name) -> Result<Vec<u8>>` (apply.rs:591): finds entry by filename in `.tar.gz`. CI tarball format: `doli-node-v{version}-{triple}/{name}`.
 
-`rollback() -> Result<()>` (apply.rs:523): restores from `.backup` sibling. Async.
+`extract_binary_from_tarball(tarball) -> Result<Vec<u8>>` (apply.rs:627): wrapper for "doli-node".
 
-`restart_node() -> !` (apply.rs:544): Unix: `exec()` (replaces process); Windows: spawn + exit.
+`rollback() -> Result<()>` (apply.rs:632): restores from `.backup` sibling. Async.
+
+`restart_node() -> !` (apply.rs:653): Unix: `exec()` (replaces process); Windows: spawn + exit.
 
 ### download.rs
 `download_binary(release) -> Result<Vec<u8>>` (download.rs:24): tries primary URL → GitHub CDN → fallback mirror. Async.
@@ -375,10 +377,41 @@ install_binary(binary, target):
   try fs::write(target.new) + rename  [direct, self-owned paths e.g. /mainnet/bin/]
   on PermissionDenied:
     install_binary_sudo(binary, target)
-      -> stage at /var/lib/doli/update.bin (mode 0o750, O_NOFOLLOW)
+      -> stage at /var/lib/doli/update.bin (mode 0o755, O_NOFOLLOW)
       -> sudo rm -f target; sudo cp staged target
       -> cleanup staged file
+      -> POSTCONDITION (INC-I-153): stat the INSTALLED target, and return
+         Err(InstallFailed) unless `installed_mode & 0o001 != 0`. Fail-closed.
 ```
+
+INC-I-153 — why the staged mode is `0o755` and not `0o750`:
+`sudo rm -f` unlinks the target, so `sudo cp` always takes its CREATE path and the new
+inode gets `staged_mode & ~umask`. Masking can only CLEAR bits, never add them, so the
+staged file must already carry every bit the installed binary needs. Staging at `0o750`
+can never yield o+x under any umask; systemd runs the node as `User=doli` while the
+privileged copy leaves the file `root:root`, so the service account is in the OTHER class
+and `execve` consults the other-execute bit alone → `status=203/EXEC`. This bricked a
+mainnet producer. **Never lower the staged mode below `0o755`.**
+
+Staging at `0o755` is NECESSARY BUT NOT SUFFICIENT — a site with `Defaults umask=0027`
+still installs `0o750`. sudo's effective umask (`caller | sudoers Defaults`) is not
+readable or settable through sudo, so the only trustworthy evidence is the mode on disk.
+Hence the read-back. Notes on the guard:
+- The predicate is exactly `installed_mode & 0o001 == 0` → `Err`, not `& 0o111 != 0o111`:
+  the service account is neither owner nor group, so only S_IXOTH decides `execve`, and a
+  stricter test would falsely reject e.g. `0o745`, aborting the upgrade after the target
+  was already replaced.
+- A best-effort in-process `set_permissions(target, 0o755)` runs first. It is a belt, not
+  the guarantee — on the normal path `sudo cp` left the file `root:root` and it is refused
+  EPERM; its outcome is only folded into the error message for diagnosis.
+- The guard is FAIL-CLOSED, not self-healing: it runs AFTER `sudo rm -f` + `sudo cp` have
+  already replaced the target, and no restore path exists (`rollback()` does an
+  unprivileged `fs::copy` into a root-owned dir → EACCES). It converts a SILENT brick into
+  a LOUD one; it does not prevent it. Operator recovery is the `sudo chmod 755 <target>`
+  printed in the error.
+- No new privileged verb was added. The sudoers whitelist is still exactly `rm -f` + `cp`
+  (INV-SUDOERS-EXACT); the `sudo chmod` in the error text is inert operator advice, never
+  passed to `Command`.
 
 ## DEPENDENCIES
 
@@ -446,7 +479,7 @@ TOCTOU / symlink protection (AUDIT-UPDATE-002, ISSUE-174 #7):
 - `auto_apply_from_github()` receives `signed_checksums_sha256` (the hash maintainers actually signed)
 - Re-fetches CHECKSUMS.txt and compares — mismatch = abort (possible tampered release)
 - `expected_hash` in `GithubReleaseInfo` = per-platform binary hash FROM CHECKSUMS.txt (not SHA256 of CHECKSUMS.txt itself)
-- Sudo-fallback staging path moved from world-writable `/tmp/doli-update-binary` to `/var/lib/doli/update.bin` (mode 2770 parent, 0o750 file), opened with `O_NOFOLLOW` — closes a local-user symlink-swap race that could win root code execution via the auto-updater's `sudo cp`
+- Sudo-fallback staging path moved from world-writable `/tmp/doli-update-binary` to `/var/lib/doli/update.bin` (mode 2770 parent, 0o755 file since INC-I-153 — was 0o750), opened with `O_NOFOLLOW` — closes a local-user symlink-swap race that could win root code execution via the auto-updater's `sudo cp`. The `0o750`→`0o755` widening does NOT reopen the race: both closures are the staging DIRECTORY (2770, which `other` cannot even traverse) and `O_NOFOLLOW`, neither of which depends on the file's own mode; and no write bit is granted to group or other.
 - Sudoers rule MUST reference the exact `STAGED_BINARY_PATH` string; see `install.sh`/`postinst.sh`
 
 Watchdog behavior:
@@ -457,7 +490,7 @@ Watchdog behavior:
 
 Platform identifiers: "linux-x64" | "linux-arm64" | "macos-x64" | "macos-arm64" | "unknown". Maps to Rust target triples (`platform_target_triple()`, download.rs:373) for CHECKSUMS.txt/tarball asset matching.
 
-Agent skill sync (`install_skills_from_tarball`, apply.rs:402):
+Agent skill sync (`install_skills_from_tarball`, apply.rs:511):
 - Best-effort — failure never blocks the node/CLI binary update
 - Destructive: `remove_dir_all(~/.doli/skills/)` before extracting — any locally hand-edited skill file under that path is wiped on update
 
@@ -517,15 +550,18 @@ Maintainers sign "{version}:{SHA256(CHECKSUMS.txt)}"
 -> Binary extracted from tarball
 ```
 
-Staged-binary O_NOFOLLOW pattern (apply.rs:197-273, security-critical — replicate for any future privileged-write helper):
+Staged-binary O_NOFOLLOW pattern (apply.rs:230-374, security-critical — replicate for any future privileged-write helper):
 ```
 1. create_dir_all(parent) if missing (ownership is operator's responsibility, not this code's)
 2. remove_file(staged) best-effort — narrows symlink-swap window to one syscall
-3. OpenOptions::new().write(true).create(true).truncate(true).mode(0o750).custom_flags(O_NOFOLLOW)
-4. write + sync_all + set_permissions(0o750)
+3. OpenOptions::new().write(true).create(true).truncate(true).mode(0o755).custom_flags(O_NOFOLLOW)
+4. write + sync_all + set_permissions(0o755)   [chmod(2): exact, umask-independent]
 5. sudo rm -f target; sudo cp staged target
 6. remove_file(staged) cleanup (both success and failure paths)
+7. POSTCONDITION: stat(target); Err(InstallFailed) unless mode & 0o001 != 0  [INC-I-153]
 ```
+Step 7 is the one that is easy to omit and expensive to omit: steps 1-6 all succeed on a
+host where the installed binary is not executable by the service account.
 
 Enforcement timeout safety: If `auto_apply_from_github` fails (network error, wrong tarball name), `binary_ready` stays false -> production continues with warning. If `enforcement_time + 30min` passes with old version, enforcement auto-expires. Prevents indefinite production halt from infrastructure failures.
 

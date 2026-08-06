@@ -155,12 +155,13 @@ pub async fn install_binary(binary: &[u8], target: &Path) -> Result<()> {
     // Try direct write first
     match fs::write(&temp_path, binary).await {
         Ok(()) => {
-            // Set executable permissions
+            // Set executable permissions. Same mode as the sudo fallback installs —
+            // the two branches of this function MUST agree (INC-I-153).
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
                 let mut perms = fs::metadata(&temp_path).await?.permissions();
-                perms.set_mode(0o755);
+                perms.set_mode(INSTALLED_BINARY_MODE);
                 fs::set_permissions(&temp_path, perms).await?;
             }
             // Atomic rename
@@ -187,12 +188,44 @@ pub async fn install_binary(binary: &[u8], target: &Path) -> Result<()> {
 /// to defeat symlink swaps from inside the trusted `doli` group.
 const STAGED_BINARY_PATH: &str = "/var/lib/doli/update.bin";
 
+/// Mode every installed DOLI binary must carry: `rwxr-xr-x`.
+///
+/// INC-I-153: the systemd unit runs the node as `User=doli`, while the privileged
+/// install leaves the file `root:root`. The service account is therefore neither the
+/// owner nor in the group, so `execve` is decided by the OTHER-execute bit alone.
+/// Both branches of [`install_binary`] install this same mode; nothing may install a
+/// binary whose mode is not executable by others.
+#[cfg(unix)]
+const INSTALLED_BINARY_MODE: u32 = 0o755;
+
 /// Install binary via sudo (fallback for root-owned paths like /usr/local/bin/)
 ///
-/// Writes binary to `/var/lib/doli/update.bin` (doli:doli, 2770), then uses
-/// `sudo cp` + `sudo chmod` to install it to the target path. Works for any target
-/// path as long as the user has passwordless sudo (standard for `doli` group via
-/// polkit rule). The sudoers rule MUST list this same path; see install.sh /
+/// Stages the binary at `/var/lib/doli/update.bin` (doli:doli, 2770, opened with
+/// `O_NOFOLLOW`), then installs it using the only two privileged verbs the sudoers
+/// whitelist grants: `sudo rm -f <target>` followed by `sudo cp <staged> <target>`.
+/// There is deliberately NO privileged mode change — install.sh / postinst.sh whitelist
+/// exactly two `rm -f` and two `cp` invocations, so any other privileged verb is denied
+/// on every already-deployed host.
+///
+/// Because the `rm -f` unlinks the target first, the `cp` always takes its CREATE path,
+/// where the new inode's mode is `staged_mode & ~umask` — and sudo's effective umask
+/// (`caller | sudoers Defaults umask`) is not under this process's control. Staging with
+/// the other-execute bit set is therefore NECESSARY BUT NOT SUFFICIENT, so the function
+/// ends by reading the installed mode back off disk and returning
+/// `UpdateError::InstallFailed` unless the target is executable by a user who is neither
+/// its owner nor in its group (see [`INSTALLED_BINARY_MODE`]).
+///
+/// INC-I-153: no postcondition on the installed target has ever existed here — the read-back
+/// above is the first. What `5a9414cf` deleted was a best-effort `sudo chmod 755 <target>`
+/// run after the copy, a corrective action whose failure only produced
+/// `warn!("sudo chmod failed, binary may not be executable")`; it was replaced by a mode set
+/// on the staged file BEFORE the copy. From that point the installed mode was an inherited
+/// coincidence with nothing verifying it, and `857746b6` tightening the staged mode to
+/// `0o750` silently installed a binary the service account could not exec —
+/// `status=203/EXEC` on a mainnet producer.
+///
+/// Works for any target path as long as the user has passwordless sudo (standard for the
+/// `doli` group). The sudoers rule MUST list this same staging path; see install.sh /
 /// postinst.sh.
 async fn install_binary_sudo(binary: &[u8], target: &Path) -> Result<()> {
     use std::process::Command;
@@ -216,6 +249,14 @@ async fn install_binary_sudo(binary: &[u8], target: &Path) -> Result<()> {
 
     // Open with O_NOFOLLOW: refuses to follow a symlink at the final path
     // component, blocking the classic /tmp-style symlink attack.
+    //
+    // INC-I-153: the staged mode is NOT free to choose. `sudo cp` onto the unlinked
+    // target propagates `staged_mode & ~umask`, and masking can only clear bits, never
+    // add them — so the staged file must already carry the other-execute bit that the
+    // installed binary needs (0o755, INSTALLED_BINARY_MODE). This does not weaken the
+    // ISSUE-174 closures: those are the staging DIRECTORY (/var/lib/doli, 2770 doli:doli,
+    // which "other" cannot even traverse) and O_NOFOLLOW on the open, both independent of
+    // the file's own permission bits. No write bit is granted to group or other here.
     #[cfg(unix)]
     {
         use std::io::Write;
@@ -225,7 +266,7 @@ async fn install_binary_sudo(binary: &[u8], target: &Path) -> Result<()> {
         opts.write(true)
             .create(true)
             .truncate(true)
-            .mode(0o750)
+            .mode(0o755)
             .custom_flags(libc::O_NOFOLLOW);
         let mut f = opts.open(&staged).map_err(|e| {
             UpdateError::InstallFailed(format!("Failed to stage binary at {:?}: {}", staged, e))
@@ -235,8 +276,9 @@ async fn install_binary_sudo(binary: &[u8], target: &Path) -> Result<()> {
         })?;
         f.sync_all().ok();
 
+        // chmod(2), not umask-filtered: the staged mode is exact in every environment.
         let mut perms = std::fs::metadata(&staged)?.permissions();
-        perms.set_mode(0o750);
+        perms.set_mode(0o755);
         std::fs::set_permissions(&staged, perms)?;
     }
     #[cfg(not(unix))]
@@ -265,10 +307,77 @@ async fn install_binary_sudo(binary: &[u8], target: &Path) -> Result<()> {
         )));
     }
 
-    // Cleanup staged file
+    // Cleanup staged file. From here on the target already holds the new bytes, so the
+    // staging copy is dead weight on every remaining exit, success or failure.
     let _ = fs::remove_file(&staged).await;
 
-    info!("Binary installed to {:?} (via sudo)", target);
+    // POSTCONDITION (INC-I-153). A zero-exit `cp` proves the BYTES landed; it proves
+    // nothing about the MODE they landed with. The installed mode is `staged_mode & ~umask`
+    // where umask is `caller | sudoers Defaults umask` — a value this process cannot read
+    // or set through sudo. Staging at 0o755 is necessary but not sufficient: a site with
+    // `Defaults umask=0027` still yields 0o750 and reproduces the identical brick. The only
+    // trustworthy evidence is the mode of the file on disk, so read it back and fail loudly
+    // rather than logging "Binary installed" over a target the service account cannot exec.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        // Belt: when this process owns the installed file it can correct the mode itself
+        // with chmod(2) — exact, umask-independent and needing no privilege at all. On the
+        // normal path `sudo cp` left the file root:root and this is refused with EPERM,
+        // which is exactly why it is not the guarantee. Its outcome is kept for diagnosis.
+        let self_chmod = std::fs::set_permissions(
+            target,
+            std::fs::Permissions::from_mode(INSTALLED_BINARY_MODE),
+        );
+
+        let installed_mode = std::fs::metadata(target)
+            .map_err(|e| {
+                UpdateError::InstallFailed(format!(
+                    "installed {:?} but could not stat it to verify its mode: {}",
+                    target, e
+                ))
+            })?
+            .permissions()
+            .mode()
+            & 0o7777;
+
+        // The condition is exactly S_IXOTH, nothing more. `sudo cp` leaves the file
+        // root:root while systemd runs the node as `User=doli`, so the service account
+        // falls in the OTHER class and `execve` consults the other-execute bit alone.
+        // Requiring u+x and g+x as well would reject modes the account can in fact run
+        // (a umask clearing only g+x installs 0o745, which `doli` executes fine) and
+        // would abort the upgrade after the target has already been replaced.
+        if installed_mode & 0o001 == 0 {
+            let chmod_note = match self_chmod {
+                Ok(()) => "in-process chmod reported success".to_string(),
+                Err(e) => format!("in-process chmod was refused: {}", e),
+            };
+            return Err(UpdateError::InstallFailed(format!(
+                "installed {:?} at mode {:o}: the other-execute bit (0o001) is clear, so the \
+                 file cannot be execve'd by a user who is neither its owner nor in its group \
+                 ({}). The node runs as `User=doli` under systemd while the privileged copy \
+                 leaves the file root:root, so this binary would fail to execve with \
+                 status=203/EXEC. Recover with: sudo chmod {:o} {}",
+                target,
+                installed_mode,
+                chmod_note,
+                INSTALLED_BINARY_MODE,
+                target.display()
+            )));
+        }
+
+        info!(
+            "Binary installed to {:?} (via sudo), mode {:o} verified",
+            target, installed_mode
+        );
+    }
+
+    #[cfg(not(unix))]
+    {
+        info!("Binary installed to {:?} (via sudo)", target);
+    }
+
     Ok(())
 }
 
