@@ -55,21 +55,16 @@ Two root-cause fixes stabilized the network. All other fixes were symptom mitiga
 - `apply_block()` → verify both UTXO paths match, check rollback paths mirror it, test state root convergence. Producer mutations (Register, AddBond, Exit, Slash, Withdrawal, Delegation) are DEFERRED to epoch boundary — never mid-epoch except epoch 0. Maintainer changes are immediate.
 - **bitfield encoder/decoder** → encoder order is `[epoch_state.producer_list | extra sorted by pubkey]`. ALL decoders (post_commit, rewards, RPC) MUST use the same order or indices misalign. See Full Bitfield Decode pillar.
 - **HardForkSchedule** → NEVER add entries for rolling deploys. `current_fork_id()` uses `u64::MAX`, which makes ALL entries active in fork_id immediately. Use constant gates instead.
-- **CURRENT_PROTOCOL_VERSION** → **DO NOT bump unless the EpochState serialization format actually changes.** A protocol version bump triggers `delete_epoch_state()` on every node restart (`init.rs:727`), forcing a non-deterministic rebuild from local blocks. Snap-synced nodes have incomplete block history → different rebuild results → **guaranteed fork at the next epoch boundary**. INC-I-054 proved this: an unnecessary bump (8→9) for a height-gated feature caused a permanent chain split. The version check uses `!=` (not `<`), so rollback (9→8) triggers a SECOND deletion. Use `EPOCH_STATE_FORMAT_VERSION` for epoch_state compatibility, keep `CURRENT_PROTOCOL_VERSION` for peer handshake only.
-- **activation heights** → Once activated on mainnet, an activation height is **IMMUTABLE** — it is part of the chain's consensus history. NEVER move an activation height forward (higher) after it has been crossed by the chain. INC-I-054: `security_audit_activation_height` was moved from 27,547→71,290, deactivating live security features. New features get their OWN activation height — never reuse or bundle with existing ones. Existing gates: `inc_i_026_scheduler_activation_height`, `fork_id_activation_height`, `full_bitfield_decode_height`, `rewards_epoch_list_fix_height`, `encrypted_content_activation_height`, `encrypted_content_v2_activation_height`, `epoch_state_reorg_activation_height`, `security_audit_activation_height`, `ghost_exclusion_activation_height`, `inc_i_068_weight_filter_activation_height` (INC-I-075, mainnet=197_800), `defi_activation_height` (INC-I-088 Phase 0, mainnet=`u64::MAX` — disabled until DeFi subsystem is audited and un-gated; all 7 gated types tombstoned (5 lending B.1, 2 NFT-frac B.2); field retained for structural compat). **Implemented:** `amm_activation_height` (AMM Foundations M1, shipped; mainnet=367_660 pinned 2026-06-03 at tip 359_042, lead ~23.9h; testnet=20_099; devnet=0). `lending_activation_height` and `nft_frac_activation_height` were cancelled (B.1/B.2 tombstoning). `inc_i_092_activation_height` (INC-I-092 DeFi spend-path fixes — RC-A: exempt the Pool UTXO input of Swap/AddLiquidity/RemoveLiquidity from signature, authorized by the x·y=k invariant; RC-B: CreatePool must back declared reserve_a/reserve_b with net inputs, closing the u64::MAX inflation. mainnet=367_660 (co-activated with amm so AMM goes live already-correct), testnet=23_688, devnet=0). `inc_i_096_activation_height` (pool-aware AMM value-conservation. mainnet=367_660, equal to amm per INV-DEPLOY-002; testnet=27_679, devnet=0). `large_block_activation_height` (INC-I-091 ~300 TPS large blocks. mainnet=367_660 co-activated with AMM triplet, builder policy not consensus rules; testnet=0; devnet=0). `inc_i_147_activation_height` (INC-I-147 D6 fork-choice height unit + D4 rollback re-apply; local reorg planning, not block validity. mainnet=129_500 pinned 2026-08-05 at tip 120_799, lead ~24.2h, shipped v6.24.1 — fleet must be on ≥6.24.1 before 129_500; testnet=80_700 crossed — active; devnet=0). RC-C (channel/bridge MPTX007) was NOT a consensus bug — ground-truthed in `crates/channels/tests/inc_i_092_close_covenant.rs`: a both-signed close passes; the stress-test MPTX007 was single-party usage of inherently 2-of-2/multi-party covenants. **Foundations layer (approved 2026-05-25, see `specs/defi-foundations-economics.md`):** before `amm_activation_height` is set to a real value, lock D1 `MINIMUM_LIQUIDITY=1000` (`crates/core/src/consensus.rs`), D2 include `fee_bps` in `compute_pool_id` (`crates/core/src/transaction/output.rs:729`, IRREVERSIBLE post-activation), D3 AC-2 split into intra-block (0 bps structural) + cross-slot (≤50 bps documented residual), D4 AC-6 reframed as monitoring metric.
-- **Three-question consensus-shape checklist (INC-I-075)** → Before merging ANY code change that touches `active_producers`, scheduler inputs, bond snapshot, attestation bitfield encoding, coinbase shape, or any other consensus-visible computation, answer in the commit message:
-  1. Can any user-submittable transaction trigger this code path?
-  2. Can any producer-action or attestation pattern trigger it?
-  3. Is the new behavior bit-identical to the old behavior for ALL reachable inputs?
-
-  If (1) or (2) is YES and (3) is NO → an activation height in `NetworkParams` is REQUIRED. "Feature is currently unused" and "no producer has delegations yet" are NEVER valid justifications for skipping the gate (INC-I-075 cascade was triggered exactly by this assumption when the first DelegateBond activated post-deploy).
-- rewards → distribution is `calculate_epoch_rewards()` in `bins/node/src/node/rewards.rs`; validation is `validate_block_economics()` in `bins/node/src/node/validation_checks.rs` (weighted presence model via `crate::rewards::WeightedRewardCalculator`). The old `calculate_expected_epoch_rewards()` in core validation was dead code and was **removed 2026-03-16** — see the tombstone at `crates/core/src/validation/rewards_legacy.rs`.
-- storage serialization → every node diverges if canonical encoding changes. Requires chain reset. See `→ snapshot.rs`.
-- consensus params → programmatic in `NetworkParams::defaults()`, NOT `include_str!`. Mainnet overrides blocked. Change requires new binary on ALL nodes simultaneously.
-- rollback → undo-based rollback is first option (`node.rs:~6531`). Rebuild-from-genesis is fallback for blocks without undo data.
-- Bond `extra_data` → CLI sends `creation_slot=0`, node stamps real slot at apply. Never trust raw tx `extra_data`.
-- **data directory wipe** → **CRITICAL**: Before wiping ANY node's `data/` directory (manually or via script), ALWAYS verify that `wallet.json` and `producer.seed.txt` are NOT inside the directory being deleted. Back them up first if present. Losing wallet/seed files means the producer cannot start and keys may be unrecoverable. The standard wipe command preserves these, but manual `rm -rf data/*` does not.
-- **Phase 2.1 oracle (`OraclePrice` UTXO + `PriceAttestation` TX + sunset)** → `oracle_activation_height = u64::MAX` on every NetworkParams variant. Code is shipped (M1-M11) but **frozen pre-activation**; pinning a real height is a SEPARATE decision-session per HC-6 / INC-I-075. Touch points: `crates/core/src/oracle/` (bond-weighted median + sunset metric), `bins/node/src/node/apply_block/oracle.rs` (epoch-boundary aggregator + sunset HALT gate), `crates/rpc/src/methods/oracle.rs` + `oracle_status.rs` (RPC trio M9-M11), `STRUCTURAL_PUBKEY_HASHES_HEX` in `consensus/constants.rs` (12 N1-N12 hashes). The §6 centralization disclosure constant in `oracle_status.rs` is byte-equal-locked to `specs/oracle-structural-anchored-economics.md` §6 by a drift-gate test (`m11_centralization_disclosure_byte_equal_to_spec`) — edits to either must match. Spec: `specs/oracle-structural-anchored-economics.md`.
+- **CURRENT_PROTOCOL_VERSION** → **DO NOT bump unless the EpochState serialization format actually changes** (INV-4, in every session briefing). A bump triggers `delete_epoch_state()` on restart (`init.rs:727`) → non-deterministic rebuild → fork at the next epoch boundary (INC-I-054). The check is `!=`, so rollback deletes a second time. Use `EPOCH_STATE_FORMAT_VERSION` for epoch_state; `CURRENT_PROTOCOL_VERSION` is peer handshake only.
+- **activation heights** → Once crossed on mainnet, an activation height is **IMMUTABLE** — it is consensus history. NEVER move one forward (higher) after the chain has passed it: INC-I-054 moved `security_audit_activation_height` 27,547→71,290 and deactivated live security features. New features get their OWN height — never reuse or bundle. **The pinned values are in `crates/core/src/network_params/` (code is SoT) — read them there, never from this file.** Oracle + DeFi gates are `u64::MAX` (frozen pre-activation); pinning any real height is a separate decision-session per HC-6 / INC-I-075.
+- **Three-question consensus-shape checklist (INC-I-075, INV-12)** → touching `active_producers`, scheduler inputs, bond snapshot, bitfield encoding, coinbase shape, or any consensus-visible computation? Answer in the commit message: (1) can a user-submittable tx reach this path? (2) can a producer-action or attestation pattern reach it? (3) is the new behavior bit-identical for ALL reachable inputs? **(1|2) YES + (3) NO → activation height REQUIRED.** "Currently unused" is NEVER a valid skip — that assumption caused the INC-I-075 cascade.
+- rewards → distribution `calculate_epoch_rewards()` (`node/rewards.rs`); validation `validate_block_economics()` (`node/validation_checks.rs`, weighted presence via `WeightedRewardCalculator`). The old `calculate_expected_epoch_rewards()` was dead code, removed 2026-03-16 (tombstone: `crates/core/src/validation/rewards_legacy.rs`).
+- storage serialization → changing canonical encoding diverges every node and requires a chain reset. See `snapshot.rs`.
+- consensus params → programmatic in `NetworkParams::defaults()`, NOT `include_str!`. Mainnet overrides blocked. Change requires a new binary on ALL nodes simultaneously.
+- rollback → undo-based is first choice; rebuild-from-genesis is the fallback for blocks without undo data.
+- Bond `extra_data` → CLI sends `creation_slot=0`; the node stamps the real slot at apply. Never trust raw tx `extra_data`.
+- **data directory wipe** → **CRITICAL**: before wiping any `data/` dir, verify `wallet.json` and `producer.seed.txt` are not inside it (`find <dir> -name 'wallet*' -o -name '*.seed.txt'`). Manual `rm -rf data/*` does NOT preserve them; lost keys may be unrecoverable.
+- **Phase 2.1 oracle** → shipped (M1-M11) but frozen at `oracle_activation_height = u64::MAX`. Touch points: `crates/core/src/oracle/`, `bins/node/src/node/apply_block/oracle.rs`, `crates/rpc/src/methods/oracle{,_status}.rs`. The §6 disclosure constant in `oracle_status.rs` is byte-equal-locked to the spec by `m11_centralization_disclosure_byte_equal_to_spec` — edit both or neither. Spec: `specs/oracle-structural-anchored-economics.md`.
 
 ## After Every Modification
 
@@ -77,22 +72,11 @@ After completing any code change, ALWAYS propose the following checklist to the 
 
 1. **Build gate**: `cargo build --release && cargo clippy -- -D warnings && cargo fmt --check`
 2. **Test**: `cargo test -p <affected-crate> --lib` (or full `cargo test` if cross-crate)
-3. **Version protection** (if consensus/protocol/validation changed):
-   - **DO NOT bump `CURRENT_PROTOCOL_VERSION`** unless the `EpochState` serialization format changed (see "If You Touch" → CURRENT_PROTOCOL_VERSION). A needless bump causes `delete_epoch_state()` on every node → non-deterministic rebuild → fork (INC-I-054). Bump `EPOCH_STATE_FORMAT_VERSION` only when the struct changes.
-   - **NEVER move an activation height forward** (higher) after the chain has crossed it — this deactivates live consensus rules (INC-I-054). New features get their own activation height.
-   - Consider adding a `HardForkSchedule` entry in `crates/updater/src/hardfork.rs` if the change is consensus-breaking at a future height
-   - Consider bumping `MIN_PEER_PROTOCOL_VERSION` if old peers must be partitioned immediately
-   - **Block content check (INC-I-062)**: If the change alters what a producer puts INTO a block (attestation bitfield, coinbase format, tx ordering, presence_root, header fields) — even without changing validation rules — it REQUIRES synchronized deploy (stop ALL nodes, then start ALL). A rolling deploy creates competing valid blocks during the mixed-version window → fork. "No activation height needed" does NOT mean "safe for rolling restart."
-4. **Documentation alignment** (MANDATORY — not optional):
-   - Update specs and docs BEFORE committing. Every code change that affects behavior must have matching documentation.
-   - `specs/protocol.md` — if wire format, messages, encoding, or peer behavior changed
-   - `specs/security_model.md` — if attack surface, scoring, or threat model changed
-   - `docs/architecture.md` — if crate structure or component interactions changed
-   - `docs/troubleshooting.md` — if new error conditions or failure modes added
-   - `docs/rpc_reference.md` — if RPC endpoints changed
-   - `docs/cli.md` — if CLI commands or flags changed
-   - `CLAUDE.md` code map — if new files/modules added
-   - Run `/sync-docs` for thorough alignment verification on larger changes.
+3. **Version protection** (if consensus/protocol/validation changed) — ask BOTH deploy questions:
+   - Does it change consensus RULES? → activation height required (see "If You Touch").
+   - Does it change block CONTENT (bitfield, coinbase, tx ordering, presence_root, header fields)? → **synchronized deploy** (stop ALL, then start ALL), INC-I-062 / INV-8. NO to the first does NOT imply safe for a rolling restart.
+   - Also consider: `HardForkSchedule` entry (`crates/updater/src/hardfork.rs`) for a future-height break; `MIN_PEER_PROTOCOL_VERSION` if old peers must partition immediately.
+4. **Documentation alignment** (MANDATORY) — update specs/docs BEFORE committing; run `/sync-docs` (it knows which of `specs/protocol.md`, `specs/security_model.md`, `docs/{architecture,troubleshooting,rpc_reference,cli}.md`, and the code map below apply).
 5. **Copy binary** (if deploying to testnet): `cp target/release/doli-node ~/testnet/bin/ && codesign --force --sign - ~/testnet/bin/doli-node`
 6. **Commit and push** — ALWAYS ask the user: "Ready to commit and push?" Do not skip this step. Do not assume. Always ask explicitly after every completed modification.
 7. **Deploy consideration**: testnet first, NEVER mainnet without explicit confirmation
@@ -157,7 +141,7 @@ After completing any code change, ALWAYS propose the following checklist to the 
 | Install launchd services | `scripts/install-local-services.sh` — creates plists for seed + n1-n12 |
 | Start/stop/status | `scripts/testnet.sh start\|stop\|restart\|status [seed\|n1\|...\|all]` |
 | Tail logs | `scripts/testnet.sh logs [seed\|n1\|...]` |
-| System-impact gauntlet | `scripts/gauntlet.sh` — replays paid-for failure modes over the live testnet (10 scenarios). Default (gate): observational + one safe launchd restart, NEVER wipes/pkills. `--chaos` (opt-in, `GAUNTLET_CHAOS_CONFIRM=1`): genuinely injects node-down + data-wipe→snap-rebuild on the target (data backed up). `--gs009` (opt-in, `GAUNTLET_GS009_CONFIRM=1`): GS-009 fleet rolling-restart scenario (`scripts/gauntlet-gs009.sh`) — replays INC-I-143, restarts ONLY producers n1..n12 (NEVER the seed) and asserts no stall / no sibling-fork / fleet-rejoin. `--gs010` (opt-in, `GAUNTLET_GS010_CONFIRM=1`, **testnet only — the ONLY scenario that writes to the CHAIN**: funds a wallet and permanently bonds a producer): GS-010 duplicate-registration poison (`scripts/gauntlet-gs010.sh`) — replays INC-I-147/INC-I-148 by registering a producer, WAITING for that tx to mine so the second registration funds from confirmed change (DISJOINT inputs — sharing inputs makes revalidate evict it and nothing reproduces), then asserts poison→recovery / no non-producer wedge / fleet reconvergence / exactly-one registration. Skips cleanly with no unregistered target. Seed: `scripts/gauntlet-seed.sql`. Gate armed by `.omega/gauntlet.conf`. |
+| System-impact gauntlet | `scripts/gauntlet.sh` — replays paid-for failure modes over the live testnet (10 scenarios). Default is observational + one safe launchd restart; it NEVER wipes or pkills. Destructive scenarios are opt-in behind confirm-vars: `--chaos`, `--gs009` (fleet rolling restart), `--gs010` (**testnet only — the one scenario that writes to the CHAIN**). The scenario list and required confirm-vars are in the header comment of `scripts/gauntlet.sh` and in `scripts/README.md`. Gate armed by `.omega/gauntlet.conf`. |
 
 **Port layout**:
 - Seed: P2P=30300, RPC=8500, Metrics=9000
@@ -204,42 +188,9 @@ After completing any code change, ALWAYS propose the following checklist to the 
 | Protocol spec | `specs/protocol.md` |
 | Security model | `specs/security_model.md` |
 | RPC/debug skill | `.claude/skills/doli-network/SKILL.md` |
-| Drift tracker | `MEMORY.md` (auto-memory) |
+| Drift tracker | auto-memory `MEMORY.md` (in `~/.claude/projects/<project>/memory/`, NOT the repo) |
 | Bug reports | `docs/legacy/bugs/` |
 | CLI issues | `CLI.md` |
-
----
-
-
----
-
-
----
-
-
----
-
-
----
-
-
----
-
-
----
-
-
----
-
-
----
-
-
----
-
-
----
-
 
 ---
 
