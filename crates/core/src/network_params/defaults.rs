@@ -97,19 +97,18 @@ impl NetworkParams {
                 // INC-I-046: Ghost exclusion active from genesis on the fresh chain.
                 ghost_exclusion_activation_height: 0,
                 // INC-I-116: epoch-boundary liveness prune (absolute MIN_PRODUCERS_FLOOR
-                // instead of proportional 2/3 floor). Pinned 2026-06-21 at mainnet
-                // tip 446352, lead ~8625 blocks (~24h at 10s/blk) for a rolling
-                // fleet upgrade. The gate is evaluated only at epoch boundaries
-                // (BLOCKS_PER_REWARD_EPOCH=360), so the effective activation is the
-                // first boundary >= 454977 → height 455040 (=360*1264), identical on
-                // every node. A FUTURE AH (NOT 0) is REQUIRED so historical
-                // epoch-state rebuilds below the AH match committed chain history.
+                // instead of proportional 2/3 floor). ACTIVE FROM GENESIS on the fresh
+                // chain — the 2026-07-08 genesis reset predates any block that could
+                // have been committed under the old proportional floor, so there is no
+                // historical epoch-state rebuild to stay bit-compatible with and no
+                // future AH is needed. (The earlier 455040 pin, decided 2026-06-21 at
+                // tip 446352, belonged to the PRE-RESET chain and no longer applies.)
                 epoch_prune_activation_height: 0,
-                // INC-I-075: Re-gate the INC-I-068 weight=0 filter at a future
-                // mainnet height so the consensus-shape change activates
-                // synchronously instead of unilaterally at deploy time.
-                // Pre-H: v6.21.16 behavior (keep weight=0 in active list).
-                // Post-H: v6.21.18+ behavior (filter weight=0 out).
+                // INC-I-068 / INC-I-075: filter weight=0 producers out of the active
+                // list. ACTIVE FROM GENESIS on the fresh chain — same reasoning as
+                // above: the re-gate at a future height existed to make the
+                // consensus-shape change activate synchronously on the pre-reset chain,
+                // which no longer exists. Confirmed live on mainnet by INC-I-154.
                 inc_i_068_weight_filter_activation_height: 0,
 
                 // INC-I-078: delegation concentration mitigation (approved

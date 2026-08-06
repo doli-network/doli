@@ -488,6 +488,50 @@ GS-001.
 
 ---
 
+### 2.x. A Producer Is Registered But Never Attests (INC-I-154)
+
+A bonded, `status=active` producer that emits no attestations does **not** break
+consensus — its slot is simply left empty, it earns 0 for the epoch, and the reward
+pool redistributes to the qualifiers. The operational problem is noticing.
+
+**How the chain reacts, in order:**
+
+1. Its scheduled slot is skipped once per rotation (37 producers × 10s ≈ every 6.2
+   min). The height/slot gap grows by 1 each time. The gap is a monotone counter with
+   no consumers — epochs are height-based — so growth is expected, not a fault.
+2. It falls below the attestation qualification threshold (54 of 60 minutes on
+   mainnet) and earns nothing at the epoch boundary. Its bond leaves the qualifying
+   denominator, so other producers' shares are undistorted.
+3. After **3 consecutive silent epochs** (~3h at 360 blocks/epoch) the epoch-boundary
+   attestation filter drops it from `producer_list`, and it stops being scheduled
+   entirely. Floor: the filter never takes the list below `MIN_PRODUCERS_FLOOR = 3`.
+4. It re-enters automatically on its next attestation, via the extra segment of the
+   full bitfield decode. No operator action is needed to bring it back.
+
+Nothing removes it from the `ProducerSet` involuntarily — only voluntary withdrawal
+(7-day delay) or a slash does. A dead registrant therefore stays bonded indefinitely.
+
+**Signals to watch:**
+
+| Where | Line / series | Meaning |
+|---|---|---|
+| Log | `[ATTEST_MISS] … producers=[…]` | Producers in the current schedule that missed. One line per block while any is missing. |
+| Log | `[ATTEST_ABSENT] … producers=[…]` | Active producers the 3-epoch filter already dropped and which are still silent. Once per attestation minute. |
+| Metric | `doli_attestation_missing_current{segment="scheduled"}` | Count for the first case. Alert `> 0 for 15m`. |
+| Metric | `doli_attestation_missing_current{segment="unscheduled"}` | Count for the second. Alert `> 0 for 30m` — this will not self-clear. |
+| Metric | `doli_attestation_misses_total{segment=…}` | Cumulative; use `rate()` for trend. |
+
+Before INC-I-154 the miss log covered only the scheduled segment, so step 3 above
+silenced the alarm at exactly the point the outage became long-running, and there
+were no attestation metrics at all. If you are looking at an older node, absence of
+`[ATTEST_MISS]` does **not** mean every producer is healthy.
+
+Code: `bins/node/src/node/apply_block/post_commit.rs`,
+`crates/core/src/epoch_state/mod.rs` (`compute_live_producer_list`).
+Invariant: `INV-EPOCH-004`. Alerts: `docker/monitoring/alerts/attestation.rules.yml`.
+
+---
+
 ## 3. Wallet Issues
 
 ### 3.1. Transaction Not Confirming

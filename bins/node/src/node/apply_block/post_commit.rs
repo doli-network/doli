@@ -79,28 +79,71 @@ impl Node {
                         32
                     }
                 );
-                // Log producers MISSING from the attestation bitfield (only when partial)
-                if !idx.is_empty() && idx.len() < base_len {
-                    let attested: HashSet<usize> = idx.iter().copied().collect();
-                    let missing: Vec<String> = (0..base_len)
-                        .filter(|i| !attested.contains(i))
-                        .filter_map(|i| {
-                            self.epoch_state.producer_list.get(i).map(|pk| {
-                                let h = hex::encode(pk.as_bytes());
-                                h[..8].to_string()
-                            })
-                        })
-                        .collect();
-                    if !missing.is_empty() {
-                        let minute = attestation_minute(block.header.slot);
-                        warn!(
-                            "[ATTEST_MISS] h={} minute={} missing={} producers=[{}]",
-                            height,
-                            minute,
-                            missing.len(),
-                            missing.join(",")
-                        );
-                    }
+                // INC-I-154 F2/F3: report producers MISSING from the attestation bitfield
+                // over the FULL decode universe [base | extra sorted], not just the base
+                // segment. An active producer the epoch-boundary attestation filter left
+                // out of the schedule used to be invisible here, which silenced the alarm
+                // on exactly the long-running outages it matters most for.
+                let missing = super::helpers::missing_attesters(
+                    &idx,
+                    &self.epoch_state.producer_list,
+                    &extra_pks,
+                );
+                let (scheduled_missing, unscheduled_missing): (Vec<_>, Vec<_>) =
+                    missing.iter().partition(|m| m.scheduled);
+                crate::metrics::ATTESTATION_MISSING_CURRENT
+                    .with_label_values(&["scheduled"])
+                    .set(scheduled_missing.len() as i64);
+                crate::metrics::ATTESTATION_MISSING_CURRENT
+                    .with_label_values(&["unscheduled"])
+                    .set(unscheduled_missing.len() as i64);
+                crate::metrics::ATTESTATION_MISSES_TOTAL
+                    .with_label_values(&["scheduled"])
+                    .inc_by(scheduled_missing.len() as u64);
+                crate::metrics::ATTESTATION_MISSES_TOTAL
+                    .with_label_values(&["unscheduled"])
+                    .inc_by(unscheduled_missing.len() as u64);
+
+                let names = |ms: &[&super::helpers::MissedAttestation]| {
+                    ms.iter()
+                        .map(|m| m.short_hex.as_str())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                };
+                let minute = attestation_minute(block.header.slot);
+
+                // Scheduled (base) misses cost the chain a slot, so they keep their
+                // existing per-block cadence and the existing `producers=[...]` field —
+                // downstream greps and alerts on that field are unaffected.
+                if !scheduled_missing.is_empty() {
+                    warn!(
+                        "[ATTEST_MISS] h={} minute={} missing={} producers=[{}] unscheduled_missing={}",
+                        height,
+                        minute,
+                        scheduled_missing.len(),
+                        names(&scheduled_missing),
+                        unscheduled_missing.len()
+                    );
+                }
+
+                // Unscheduled (extra-segment) absentees cost the chain nothing, but they
+                // are the ones that used to be invisible. Reported once per attestation
+                // minute rather than per block: a permanently absent registrant would
+                // otherwise emit a line every 10s forever, since nothing involuntarily
+                // removes it from the ProducerSet.
+                if !unscheduled_missing.is_empty()
+                    && block
+                        .header
+                        .slot
+                        .is_multiple_of(doli_core::attestation::SLOTS_PER_ATTESTATION_MINUTE)
+                {
+                    warn!(
+                        "[ATTEST_ABSENT] h={} minute={} absent={} producers=[{}]",
+                        height,
+                        minute,
+                        unscheduled_missing.len(),
+                        names(&unscheduled_missing)
+                    );
                 }
                 idx
             } else {

@@ -1,0 +1,67 @@
+# OUTPUT CONTRACT: N/A — fixture file (Prometheus alerting rules, not a test).
+# INPUT PARTITIONS: N/A — fixture file.
+#
+# Attestation liveness alerts — INC-I-154.
+#
+# Before these existed there was NO Prometheus series covering attestations at all
+# (0 of 55 metrics). A producer could be absent for hours and the only trace was a
+# WARN line in the node log, read by eye on a dashboard. That is how INC-I-154 was
+# found, ~40 minutes after the fact.
+#
+# Two segments, from bins/node/src/node/apply_block/post_commit.rs:
+#   scheduled   — the producer is in this epoch's producer_list, so every miss costs
+#                 the chain an empty slot once per rotation.
+#   unscheduled — the producer is active but the epoch-boundary 3-epoch attestation
+#                 filter left it out of the schedule. It costs the chain nothing, but
+#                 it is the segment that used to be completely invisible: a producer
+#                 that dies stops appearing in ATTEST_MISS once the filter drops it,
+#                 which silenced the alarm on long-running outages specifically.
+#
+# Both series are initialised to 0 at node start, so `> 0 for:` evaluates correctly
+# on a node that has never seen a miss — no absent() handling needed.
+
+groups:
+  - name: doli-attestation
+    rules:
+      - alert: DoliScheduledProducerMissingAttestations
+        expr: doli_attestation_missing_current{segment="scheduled"} > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} scheduled producer(s) not attesting on {{ $labels.instance }}"
+          description: >-
+            A producer in the current epoch schedule has missed attestations for 15
+            minutes. Each one costs one empty slot per rotation and will be dropped
+            from the schedule by the 3-epoch attestation filter within ~3 hours.
+            Identify it by grepping the node log for ATTEST_MISS — the
+            producers=[...] field names them.
+
+      - alert: DoliScheduledProducersMissingAttestationsCritical
+        expr: doli_attestation_missing_current{segment="scheduled"} > 3
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $value }} scheduled producers not attesting on {{ $labels.instance }}"
+          description: >-
+            Several scheduled producers are simultaneously silent. Beyond the slot
+            cost this erodes attestation-quorum headroom; if the filtered list falls
+            below MIN_PRODUCERS_FLOOR the boundary reverts to all active non-ghost
+            producers. Check for a fleet-wide cause (bad deploy, network partition)
+            rather than individual host outages.
+
+      - alert: DoliUnscheduledProducerAbsent
+        expr: doli_attestation_missing_current{segment="unscheduled"} > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} unscheduled producer(s) absent on {{ $labels.instance }}"
+          description: >-
+            An active, bonded producer is neither scheduled nor attesting — either it
+            never came up after onboarding, or it died and the 3-epoch filter has
+            already dropped it from the schedule. Nothing removes it from the
+            ProducerSet involuntarily (INC-I-154 F4), so this will not self-clear.
+            Identify it by grepping the node log for ATTEST_ABSENT (emitted once per
+            attestation minute).

@@ -188,6 +188,29 @@ lazy_static! {
         "Total blocks produced by this node"
     ).unwrap();
 
+    /// INC-I-154 F1: producers that did NOT attest in the most recent block carrying
+    /// attestation data. `segment="scheduled"` = member of the epoch's producer_list;
+    /// `segment="unscheduled"` = active producer the epoch-boundary attestation filter
+    /// left out of the schedule. Before this metric existed, a persistently absent
+    /// producer was observable only by reading logs by eye — and an unscheduled one was
+    /// not observable at all.
+    pub static ref ATTESTATION_MISSING_CURRENT: IntGaugeVec = IntGaugeVec::new(
+        Opts::new(
+            "doli_attestation_missing_current",
+            "Producers that did not attest in the most recent block with attestation data, by segment"
+        ),
+        &["segment"]
+    ).unwrap();
+
+    /// INC-I-154 F1: cumulative producer-block attestation misses, by segment.
+    pub static ref ATTESTATION_MISSES_TOTAL: IntCounterVec = IntCounterVec::new(
+        Opts::new(
+            "doli_attestation_misses_total",
+            "Cumulative producer-block attestation misses, by segment"
+        ),
+        &["segment"]
+    ).unwrap();
+
     /// Slot latency (time from slot start to block)
     pub static ref SLOT_LATENCY: Histogram = Histogram::with_opts(
         HistogramOpts::new("doli_slot_latency_seconds", "Time from slot start to block production")
@@ -510,6 +533,20 @@ pub fn register_metrics() {
 
     let _ = REGISTRY.register(Box::new(ACTIVE_PRODUCERS.clone()));
     let _ = REGISTRY.register(Box::new(BLOCKS_PRODUCED.clone()));
+    let _ = REGISTRY.register(Box::new(ATTESTATION_MISSING_CURRENT.clone()));
+    let _ = REGISTRY.register(Box::new(ATTESTATION_MISSES_TOTAL.clone()));
+    // INC-I-154: a labelled metric publishes NO series until a label value is first
+    // touched. Initialise both segments to 0 so the series exist from process start —
+    // otherwise a "missing > 0 for 30m" alert has nothing to evaluate on a node that
+    // has not yet seen a miss, and `absent()` handling would be required instead.
+    for segment in ["scheduled", "unscheduled"] {
+        ATTESTATION_MISSING_CURRENT
+            .with_label_values(&[segment])
+            .set(0);
+        ATTESTATION_MISSES_TOTAL
+            .with_label_values(&[segment])
+            .inc_by(0);
+    }
     let _ = REGISTRY.register(Box::new(SLOT_LATENCY.clone()));
 
     let _ = REGISTRY.register(Box::new(UTXO_SET_SIZE.clone()));
@@ -850,5 +887,28 @@ mod tests {
         let output = rt.block_on(metrics_handler());
 
         assert!(output.contains("doli_chain_height"));
+    }
+
+    /// INC-I-154 F1: attestation misses must be exported as Prometheus series, and both
+    /// segment labels must exist from process start — a `*Vec` publishes nothing until a
+    /// label value is touched, which would leave a "for 30m" alert with no series.
+    #[test]
+    fn inc_i_154_attestation_metrics_are_exported_with_both_segments() {
+        register_metrics();
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let output = rt.block_on(metrics_handler());
+
+        for series in [
+            "doli_attestation_missing_current{segment=\"scheduled\"}",
+            "doli_attestation_missing_current{segment=\"unscheduled\"}",
+            "doli_attestation_misses_total{segment=\"scheduled\"}",
+            "doli_attestation_misses_total{segment=\"unscheduled\"}",
+        ] {
+            assert!(
+                output.contains(series),
+                "missing series {series} in /metrics output:\n{output}"
+            );
+        }
     }
 }

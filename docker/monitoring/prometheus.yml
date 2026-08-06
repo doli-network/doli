@@ -3,6 +3,11 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
+# INC-I-154: attestation liveness alerting. The live mainnet stack on ai5 is
+# configured separately — applying these rules there is an operator action.
+rule_files:
+  - alerts/*.rules.yml
+
 scrape_configs:
   - job_name: 'doli-node'
     static_configs:
