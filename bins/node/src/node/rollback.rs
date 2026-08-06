@@ -144,11 +144,39 @@ impl Node {
                 local_height
             );
 
-            // Pre-check: can't rebuild from genesis without block 1.
+            // AUDIT-P1-003 (INC-I-152): prove the rebuild can COMPLETE before any
+            // state is mutated. This pre-check used to ask a single-block question
+            // — "does block 1 exist?" — while the loop below needs `1..=target_height`
+            // to be DENSE. A holed store (genesis prefix + tip present, the middle
+            // never fetched — the INC-I-152 shape) passed the block-1-only check,
+            // so control entered the mutating section: it took the UTXO write lock
+            // and replayed the surviving prefix, where `add_transaction` is a direct
+            // `state_db.insert_utxo` on the production RocksDb backend. That
+            // RESURRECTS outputs whose compensating spends live inside the hole
+            // (money from nothing, the INC-I-041 class), and the loop then aborted
+            // at the first missing height, leaving the node half-replayed with no
+            // undo of the damage. Same guard, same shape as the sibling reorg path
+            // in block_handling.rs: refuse, surface the reason, let sync backfill.
+            // Nothing is locked and no UTXO is touched on this path.
+            //
+            // `.max(1)` preserves the replaced pre-check's unconditional "block 1
+            // must exist" requirement for the `target_height == 0` case (rolling
+            // block 1 back to genesis), where the rebuild range is empty and
+            // `ensure_blocks_present` would otherwise be a no-op. The guard is
+            // therefore never weaker than the check it replaces, for any input.
+            //
             // Do NOT snap sync — it destroys the block store further.
-            // Skip the rollback and let header-first sync recover.
-            if self.block_store.get_block_by_height(1)?.is_none() {
-                warn!("Rollback: block 1 missing — cannot rebuild. Skipping rollback, header-first sync will recover.");
+            if let Err(e) = self
+                .block_store
+                .ensure_blocks_present(1, target_height.max(1))
+            {
+                warn!(
+                    "[FORK_GUARD_BACKFILL_REQUIRED] Rollback rebuild refused: block_store \
+                     incomplete over 1..={} — {}. No state mutated. Skipping rollback, \
+                     header-first sync will backfill.",
+                    target_height.max(1),
+                    e
+                );
                 return Ok(true);
             }
 

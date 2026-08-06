@@ -911,18 +911,33 @@ curl -s -X POST http://<node>:<port> \
 
 **Resolution:** Fix the code path that diverges (verify both UTXO paths in `apply_block()`), then chain reset. See `docs/architecture.md §9.1` for the dual UTXO path invariant.
 
-### 7.3. SnapSync Admission (INC-I-139)
+### 7.3. SnapSync Admission (INC-I-139, INC-I-152)
 
-**How a node escalates to snap now:** a single evidence-gated funnel. `start_sync()` (`decision.rs`) reaches `SnapCollecting` on exactly two gated doors — `local_height == 0` bootstrap, or `needs_genesis_resync` (set only by `request_genesis_resync()`). Every feeder of that gate needs corroborated evidence: ≥10 consecutive empty headers with gap ≥ `MINOR_FORK_GAP_MAX(50)`, an explicit deep-fork signal, ≥3 apply failures, all-peers-blacklisted, a height-offset signature — **or** gap ≥ `SNAP_SYNC_GAP_MIN(500)`. No bare gap-over-threshold admits snap on any path.
+**How a node escalates to snap now:** one evidence-gated funnel plus a bootstrap window. `start_sync()` (`decision.rs`) reaches `SnapCollecting` only with `peers ≥ 3`, `snap.attempts < 3`, snap enabled, AND one of **three** gated doors:
+
+- **(a)** `local_height == 0` — classic bootstrap.
+- **(c)** `0 < local_height ≤ genesis_blocks` **and** gap > `SNAP_SYNC_GAP_MIN(500)` — the bootstrap genesis window (INC-I-152). Neither conjunct admits alone.
+- **(b)** `needs_genesis_resync`, set only by `request_genesis_resync()`. Every feeder of that gate needs corroborated evidence: ≥10 consecutive empty headers with gap ≥ `MINOR_FORK_GAP_MAX(50)`, an explicit deep-fork signal, ≥3 apply failures, all-peers-blacklisted, a height-offset signature — **or** gap ≥ `SNAP_SYNC_GAP_MIN(500)`.
+
+No bare gap-over-threshold admits snap on any path. `genesis_blocks` is the network's genesis window (mainnet 360, testnet 36, devnet 40), passed from `NetworkParams` into the sync manager at startup.
 
 **When a node snaps unexpectedly, check (in order):**
 1. `consecutive_empty_headers` — is the node actually seeing sustained empty headers (real stall), or did a progress reset fail to fire? Legitimate resets: genuine block apply, gap≤3 gossip-wait, valid connecting-headers, anti-cascade, post-rollback/post-snap grace, genesis. No admission or request-dispatch path may zero it.
 2. Gap size — a snap at gap < 500 must carry full evidence (empties≥10 + fork signal). A snap at gap ≥ 500 is a legitimate forward-large-gap catch-up (Gate-1 exempts emergency ∪ forward-large-gap).
-3. `snap.attempts` — never reset by any admission/redirect path; a re-armed attempts counter signals a bug.
+3. Local height — a snap from `1 ≤ h ≤ genesis_blocks` at gap > 500 is door (c) and is expected right after a wipe. A snap from `h > genesis_blocks` must be door (b): look for the resync reason in the log.
+4. `snap.attempts` — never reset by any admission/redirect path; a re-armed attempts counter signals a bug.
+
+**What a wiped node should look like now (INC-I-152 fast path):** after `doli wipe`, the node parks briefly (`[SNAP_SYNC] Bootstrap node (h=N): waiting for … peer(s) for snap sync (k/3, gap=…)`) until 3 peers connect, then snaps and catches up — expect roughly 15-30s wipe-to-synced on mainnet, not minutes. The `h=N` in that line is **not** an error: Orphan Chase applies genesis blocks 1..N within seconds of a wipe, and door (c) is exactly what keeps the node eligible for the fast path while it does. A wiped node that instead reports `Starting sync epoch …` and sits at a low height for minutes has fallen back to header-first — that is the INC-I-152 symptom (measured: 129,822 headers at 500 per 1s tick ≈ 260s, 92% of a 4m43s wipe-to-synced). Check that the binary carries the fix and that `genesis_blocks` reached the sync manager (a `0` window disables door (c) entirely).
+
+**`Bootstrap node (h=N) waited 60s for snap peers but only have k`:** the hold timed out — fewer than 3 peers were reachable, and the node has committed to header-first. This is a peer-availability problem, not an admission problem. Check seed reachability and P2P connectivity; do not loosen the gate.
+
+> **Testnet/devnet operators — admission is weaker than mainnet's (accepted residual, AUDIT-P1-004).** On mainnet, `genesis_blocks` is env-locked at 360 and nothing lowers a healthy node into `[1, 360]`, so door (c) only ever admits freshly wiped or genuinely new nodes. On testnet (36), devnet (40), or with a `DOLI_GENESIS_BLOCKS` override, a chain whose TIP is ≤ `genesis_blocks` makes **every** node window-resident, and the `gap > 500` conjunct comes from a single peer's advertised height — an unvalidated claim a sybil peer can forge. On those networks, treat an unexplained snap on a young chain as plausible rather than impossible, and check the peer set before assuming a code defect.
 
 **INC-I-139 in 5 lines:** (1) `should_snap` had three admission authorities, one an ungated bare-gap OR-term, letting a gap=51 minor-fork wedge snap with no fork evidence. (2) A dispatch-time reset zeroed the evidence counter every request, starving legitimate escalation. (3) A redirect path (A1) silently reset `snap.attempts`. (4) Phase 1 (RUN 455) consolidated to one funnel by subtraction: deleted the bare-gap term, removed the dispatch reset, deleted A1, added the Gate-1 forward-large-gap classification companion, demoted the threshold to an enable-sentinel. (5) Result: recurrence class INC-I-005/033/138 closed at the admission surface — no node snaps without corroborated evidence.
 
-Code: `decision.rs`, `dispatch.rs`, `production_gate.rs`, `recovery.rs`. Invariant: `INV-SYNC-011` (extended, all-paths).
+**INC-I-152 in 3 lines:** (1) Keying bootstrap admission on `local_height == 0` became a fencepost bug once Orphan Chase existed — a wiped node applies genesis blocks 1..14 within ~10s, loses door (a), and commits to a ~260s header walk (92% of a measured 4m43s wipe-to-synced). (2) Door (c) treats `0 < h ≤ genesis_blocks` + gap > 500 as bootstrap-shaped, and both bootstrap holds were widened the same way so the node still parks long enough to reach a 3-peer snap quorum. (3) It is not a re-opened Route A: the window is a shape predicate conjoined with the existing 500-block floor, it resets neither `snap.attempts` nor the evidence counter, and an unplumbed `genesis_blocks = 0` is bit-identical to the old behavior.
+
+Code: `decision.rs`, `dispatch.rs`, `production_gate.rs`, `recovery.rs`, `types.rs` (`SyncConfig.genesis_blocks`), `bins/node/src/node/init.rs` (plumbing). Invariant: `INV-SYNC-011` (extended, all-paths; amended by INC-I-152). Spec: `specs/sync-snap-admission-architecture.md`.
 
 ---
 

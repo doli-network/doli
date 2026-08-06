@@ -517,15 +517,19 @@ Producer Selection (deterministic round-robin)
 
 **Restart behavior:** On restart, the SyncManager initializes from stored ChainState (not genesis). This means sync resumes from the chain tip, avoiding re-download of already-stored blocks. As a defense-in-depth measure, `apply_block()` also rejects blocks already present in BlockStore.
 
-#### Snap-Admission Authority (single funnel, INC-I-139)
+#### Snap-Admission Authority (single funnel, INC-I-139; genesis window, INC-I-152)
 
-Escalation to `SnapCollecting` (a full state download, not the header/body catch-up above) has **one** admission authority. Prior to INC-I-139 the `should_snap` decision re-derived the choice across three OR-terms — one an ungated bare-gap comparator — so a minor-fork wedge could snap without fork evidence. Phase 1 (RUN 455) collapsed this to a single evidence-gated funnel:
+Escalation to `SnapCollecting` (a full state download, not the header/body catch-up above) has **one** gap-based admission authority. Prior to INC-I-139 the `should_snap` decision re-derived the choice across three OR-terms — one an ungated bare-gap comparator — so a minor-fork wedge could snap without fork evidence. Phase 1 (RUN 455) collapsed this to a single evidence-gated funnel; INC-I-152 then repaired the bootstrap fencepost. Admission requires `peers ≥ 3 && snap.attempts < 3 && snap enabled` plus **one of three gated doors**:
 
 ```
-                  ┌─ local_height == 0  (bootstrap, Route C) ──────────────┐
-start_sync() ─────┤                                                        ├──► SnapCollecting
-   (decision.rs)  └─ needs_genesis_resync (set ONLY by                     │
-                     request_genesis_resync, evidence-gated) ──────────────┘
+                  ┌─ (a) local_height == 0  (bootstrap by nature) ─────────┐
+                  │                                                        │
+start_sync() ─────┼─ (c) 0 < local_height ≤ genesis_blocks    [INC-I-152]  ├──► SnapCollecting
+   (decision.rs)  │      AND gap > SNAP_SYNC_GAP_MIN(500)                  │
+                  │      (bootstrap by SHAPE — neither conjunct alone)     │
+                  │                                                        │
+                  └─ (b) needs_genesis_resync (set ONLY by                 │
+                         request_genesis_resync, evidence-gated) ──────────┘
                         │
                         ├ ≥10 empty headers, gap ≥ MINOR_FORK_GAP_MAX(50)
                         ├ explicit deep-fork signal
@@ -535,6 +539,12 @@ start_sync() ─────┤                                                 
 ```
 
 No bare gap-over-threshold admits snap on any path. `consecutive_empty_headers` (the evidence counter) has one owner — reset only by genuine progress/recovery writers (block apply, gap≤3 gossip-wait, valid-headers, anti-cascade, post-rollback/post-snap grace, genesis), never by a request-dispatch or admission path. Gate-1 (`production_gate.rs`) exempts only emergency ∪ forward-large-gap from the backward-wipe floor; `SNAP_SYNC_GAP_MIN(500)` is the single named gap floor, with the old threshold demoted to an enable-sentinel. Invariant: `INV-SYNC-011` (extended, all-paths). Future escalation tiers enter as new evidence feeders of this funnel — never as new transitions into `SnapCollecting`.
+
+**Door (c) — the bootstrap genesis window (INC-I-152).** Keying bootstrap admission strictly on `local_height == 0` was a fencepost bug once Orphan Chase existed: on a freshly wiped mainnet node the first gossip block triggers a parent-chase that applies genesis blocks 1..14 within ~10s, destroying `h == 0` before a 3-peer snap quorum can form. The node then committed to header-first and serially walked 129,822 headers at 500 per 1s tick — ~260s, 92% of a measured 4m43s wipe-to-synced (INC-I-152, three reproductions). Door (c) treats a node still inside the genesis window as bootstrap-**shaped**, so orphan chase can no longer foreclose the fast path. The same `(local_height == 0 || in_genesis_window)` term extends the two bootstrap **holds** — the fresh-node 60s wait and the discv5 grace — which park a node rather than commit it to header-first; those holds are what buy the snap quorum, so they must cover the whole window. The window value is plumbed, never hardcoded: `NetworkParams::genesis_blocks` → `SyncConfig.genesis_blocks` (`types.rs`; default `0` = window disabled, bit-identical to pre-INC-I-152) → set at startup in `bins/node/src/node/init.rs`. Mainnet 360, testnet 36, devnet 40.
+
+> **Accepted residual — off-mainnet admission is weaker than mainnet's (AUDIT-P1-004).** On mainnet door (c) is bounded: `genesis_blocks` is env-LOCKED at 360 and no path lowers a healthy node into `[1, 360]`, so the population it admits is exactly {freshly wiped, genuinely new} — the same population door (a) already admits. Off mainnet it is genuinely weaker: on testnet (36), devnet (40), or under a `DOLI_GENESIS_BLOCKS` override, a chain whose TIP is ≤ `genesis_blocks` makes **every** node window-resident, and the `gap > 500` conjunct is derived from `best_peer_height()` — a single unvalidated peer claim — so sybil peers can forge it. This was reviewed and accepted as a documented residual, not fixed. Operators of testnet/devnet fleets should assume the weaker guarantee; the difference is the mainnet lock on `genesis_blocks`, nothing in the sync layer.
+
+Spec: `specs/sync-snap-admission-architecture.md` (§ Amendment — INC-I-152).
 
 #### Fork-Recovery Hardening (INC-I-143)
 
