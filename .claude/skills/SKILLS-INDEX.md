@@ -248,6 +248,7 @@ Line ranges reflect verified actual content positions (15 domains re-validated 2
 | MPTX007 (covenant) | `defi/SKILL.md` | COVENANT-MECHANICS / INCIDENT-MAP | 166-196, 287-304 |
 | MPTX008 (balance) | `defi/SKILL.md` | COVENANT-MECHANICS / INCIDENT-MAP (INC-I-096) | 166-196, 287-304 |
 | `MaintainerState` | `storage/SKILL.md` | ENTRY-POINTS | 21-47 |
+| `META_REBUILD_IN_PROGRESS` (rollback constraint) | `mainnet/SKILL.md` | Step 5 rollback constraint | 137-149 |
 | mainnet deploy | `mainnet/SKILL.md` | full file | — |
 | mainnet recovery | `guardian/SKILL.md` | full index | 1-30 |
 | `Mempool` | `mempool/SKILL.md` | ENTRY-POINTS | 11-99 |
@@ -320,6 +321,7 @@ Line ranges reflect verified actual content positions (15 domains re-validated 2
 | revocation store | `channels/SKILL.md` | STRUCTS | 35-101 |
 | `RevokeDelegationData` | `delegation/SKILL.md` | full file | — |
 | rewards calculation | `node/SKILL.md` | FUNCTIONS | 178-280 |
+| rollback constraint (marker-armed node, INC-I-156) | `mainnet/SKILL.md` | Step 5 rollback constraint | 137-149 |
 | `rollback_one_block` | `node/SKILL.md` | FUNCTIONS | 178-280 |
 | RocksDB column families | `storage/SKILL.md` | COLUMN-FAMILIES | 280-342 |
 | `RpcClient` | `wallet/SKILL.md` | ENTRY-POINTS | 11-41 |
