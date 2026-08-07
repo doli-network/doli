@@ -37,8 +37,8 @@ doli address
 # Check balance
 doli balance
 
-# Check someone else's balance (note: -w is still required)
-doli -w ~/.doli/wallet.json balance --address doli1abc...
+# Check someone else's balance (no wallet needed — the address comes from the CLI)
+doli balance --address doli1abc...
 
 # Send coins (prompts for confirmation; use --yes to skip)
 doli send <recipient> <amount>
@@ -257,15 +257,21 @@ Options:
       --all                  Show per-address breakdown (all addresses in wallet)
 ```
 
+**Wallet access:** `--address` is a pure RPC lookup of the address you pass on the command line, so it
+reads **no** wallet file — it works with no wallet present, or with an unreadable one (INC-I-161). This
+matters on a producer host, where `wallet.json` is the producer signing key at mode `600`. Without
+`--address` the balance is scoped to the wallet's own addresses, so a readable wallet **is** required —
+including for `--all` on its own.
+
 **Example:**
 ```bash
-# Aggregate balance
+# Aggregate balance (requires a readable wallet)
 doli balance
 
-# Specific address
+# Specific address (no wallet read)
 doli balance -A a1b2c3d4e5f6...
 
-# Per-address breakdown
+# Per-address breakdown (requires a readable wallet)
 doli balance --all
 ```
 
@@ -1032,7 +1038,10 @@ The **pubkey hash** used for balance queries is derived from `public_key` via do
 
 ### 7.3 Querying Producer Balances
 
-**IMPORTANT:** The `-w` flag is **always required** — even when using `--address` to check someone else's balance. Without `-w`, the CLI fails with `Error: No such file or directory (os error 2)`.
+**IMPORTANT:** A wallet-scoped balance (`doli balance`, `doli balance --all`) reads the wallet file, so
+it needs `-w` whenever the wallet is not at the auto-detected path — otherwise the CLI fails with
+`wallet not found` / `cannot read wallet`. A `--address` query does **not** read the wallet at all
+(INC-I-161), so it needs neither `-w` nor read access to the producer key.
 
 ```bash
 # Query balance using a producer key file as wallet
@@ -1041,8 +1050,8 @@ doli -w /path/to/producer.json balance
 # Query from a remote node
 doli -w /path/to/producer.json -r http://127.0.0.1:8546 balance
 
-# Query a specific address — still needs -w for RPC connection
-doli -w /path/to/any_wallet.json balance --address <64-char-pubkey-hash-or-bech32>
+# Query a specific address — no wallet read, no -w needed
+doli balance --address <64-char-pubkey-hash-or-bech32>
 ```
 
 **Example — check all producers from omegacortex:**
@@ -1057,7 +1066,7 @@ done
 **Example — check an external address:**
 
 ```bash
-doli -w ~/.doli/mainnet/keys/producer_1.json balance --address doli1abc...
+doli balance --address doli1abc...
 ```
 
 ### 7.4 Sending From a Producer Wallet
@@ -1082,9 +1091,9 @@ for addr in doli1aaa... doli1bbb... doli1ccc...; do
   sleep 2
 done
 
-# Check balances for external addresses (always needs -w)
+# Check balances for external addresses (no wallet read — -w not needed)
 for addr in doli1aaa... doli1bbb...; do
-  $CLI -w $W balance --address "$addr" 2>&1
+  $CLI balance --address "$addr" 2>&1
 done
 ```
 

@@ -140,7 +140,13 @@ pub(crate) async fn cmd_balance(
     address: Option<String>,
     show_all: bool,
 ) -> Result<()> {
-    let wallet = Wallet::load(wallet_path)?;
+    // INC-I-161: load the wallet only when it is actually read. An `--address`
+    // query is a pure RPC lookup of a CLI-supplied address and needs no key
+    // material; on a producer host `wallet.json` IS the signing key (mode 600).
+    let wallet = match &address {
+        Some(_) => None,
+        None => Some(Wallet::load(wallet_path)?),
+    };
     let rpc = RpcClient::new(rpc_endpoint);
 
     // Check connection first
@@ -201,9 +207,11 @@ pub(crate) async fn cmd_balance(
             .unwrap_or_else(|_| pubkey_hash.to_hex());
         vec![(pubkey_hash.to_hex(), display)]
     } else {
+        // `wallet` is `Some` on this branch by construction (it is loaded exactly
+        // when `address` is `None`); `Option::iter` keeps that structural.
         wallet
-            .addresses()
             .iter()
+            .flat_map(|w| w.addresses())
             .filter_map(|wallet_addr| {
                 let pubkey_bytes = hex::decode(&wallet_addr.public_key).ok()?;
                 let pubkey_hash =
@@ -271,7 +279,9 @@ pub(crate) async fn cmd_balance(
     }
 
     // Show totals
-    if !show_per_address {
+    // `wallet` is `Some` whenever `show_per_address` is false: it is loaded exactly
+    // when `address` is `None`, and `show_per_address = address.is_some() || show_all`.
+    if let (false, Some(wallet)) = (show_per_address, &wallet) {
         // Default: consolidated under primary address
         let primary_display = wallet.primary_bech32_address(address_prefix());
         let label = wallet.addresses()[0].label.as_deref().unwrap_or("");
