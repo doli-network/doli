@@ -506,7 +506,8 @@ async fn replay_normal_chain_succeeds() {
     // Wipe state and replay
     {
         let mut utxo = node.utxo_set.write().await;
-        utxo.clear();
+        utxo.clear()
+            .expect("UtxoSet::clear must succeed (InMemory variant is infallible)");
     }
     {
         let mut state = node.chain_state.write().await;

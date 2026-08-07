@@ -12,7 +12,7 @@ use crate::StorageError;
 
 use super::types::{
     LastApplied, StateDb, CF_EXIT_HISTORY, CF_META, CF_PRODUCERS, CF_UTXO, CF_UTXO_BY_PUBKEY,
-    META_CHAIN_STATE, META_LAST_APPLIED, META_PENDING_UPDATES,
+    META_CHAIN_STATE, META_LAST_APPLIED, META_PENDING_UPDATES, META_REBUILD_IN_PROGRESS,
 };
 
 impl StateDb {
@@ -77,27 +77,62 @@ impl StateDb {
     }
 
     /// Clear all UTXOs (for reorg/resync).
+    ///
+    /// AUDIT-P2-002 (INC-I-156): the enumeration is `?`-checked, not
+    /// `.flatten()`-ed. A dropped iterator error would silently truncate the
+    /// delete batch to a PREFIX of the keys, return `Ok(())`, and let the
+    /// caller replay onto the surviving rows — which is the exact silent
+    /// supply inflation INC-I-156 exists to close, re-opened one layer down.
+    /// `utxo_count` is likewise only zeroed after `db.write` succeeds, so the
+    /// counter can never claim an empty set the store does not have
+    /// (INV-GUARD-001).
     pub fn clear_utxos(&self) -> Result<(), StorageError> {
         let cf_utxo = self.db.cf_handle(CF_UTXO).unwrap();
         let cf_by_pk = self.db.cf_handle(CF_UTXO_BY_PUBKEY).unwrap();
 
         let mut batch = rocksdb::WriteBatch::default();
-        for (key, _) in self
-            .db
-            .iterator_cf(cf_utxo, rocksdb::IteratorMode::Start)
-            .flatten()
-        {
+        for item in self.db.iterator_cf(cf_utxo, rocksdb::IteratorMode::Start) {
+            let (key, _) = item?;
             batch.delete_cf(cf_utxo, &key);
         }
-        for (key, _) in self
-            .db
-            .iterator_cf(cf_by_pk, rocksdb::IteratorMode::Start)
-            .flatten()
-        {
+        for item in self.db.iterator_cf(cf_by_pk, rocksdb::IteratorMode::Start) {
+            let (key, _) = item?;
             batch.delete_cf(cf_by_pk, &key);
         }
         self.db.write(batch)?;
         self.utxo_count.store(0, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// AUDIT-P1-001 (INC-I-156): arm the rebuild-in-progress marker.
+    ///
+    /// MUST be called before the `clear()` that starts a rebuild-from-genesis,
+    /// and the error MUST be propagated: an unmarked destructive wipe is the
+    /// finding.
+    /// Durability note: this is an ordinary WAL-backed write, deliberately NOT
+    /// `sync = true`. The marker and the `clear_utxos` batch that follows it go
+    /// into the SAME sequential write-ahead log, marker first, so a truncated
+    /// WAL can never replay the wipe without also replaying the marker. Paying
+    /// an fsync here would buy nothing that ordering does not already give.
+    pub fn set_rebuild_in_progress(&self, target_height: BlockHeight) -> Result<(), StorageError> {
+        let cf = self.db.cf_handle(CF_META).unwrap();
+        let started_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let mut buf = [0u8; 16];
+        buf[0..8].copy_from_slice(&target_height.to_le_bytes());
+        buf[8..16].copy_from_slice(&started_at.to_le_bytes());
+        self.db.put_cf(cf, META_REBUILD_IN_PROGRESS, buf)?;
+        Ok(())
+    }
+
+    /// AUDIT-P1-001 (INC-I-156): disarm the marker. Called ONLY after the
+    /// trailing `atomic_replace` has succeeded, i.e. once the durable set is a
+    /// complete state again.
+    pub fn clear_rebuild_in_progress(&self) -> Result<(), StorageError> {
+        let cf = self.db.cf_handle(CF_META).unwrap();
+        self.db.delete_cf(cf, META_REBUILD_IN_PROGRESS)?;
         Ok(())
     }
 

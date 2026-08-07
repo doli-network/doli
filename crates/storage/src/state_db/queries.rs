@@ -17,9 +17,19 @@ use super::types::{
     META_EPOCH_ATTESTED_SET, META_EPOCH_BLOCKS_PRODUCED, META_EPOCH_BOND_SNAPSHOT,
     META_EPOCH_PRODUCER_LIST, META_EPOCH_STATE, META_EPOCH_STATE_VERSION, META_LAST_APPLIED,
     META_ORACLE_LAST_UPDATE_HEIGHT, META_ORACLE_SUNSET_STATE, META_PENDING_UPDATES,
+    META_REBUILD_IN_PROGRESS,
 };
 
 impl StateDb {
+    /// AUDIT-P3-103 (INC-I-156): the `target_height` reported by
+    /// [`Self::get_rebuild_in_progress`] when the rebuild marker is PRESENT (or
+    /// its read FAILED) but its payload could not be decoded — i.e. the node is
+    /// halted and cannot say what it was rebuilding towards.
+    ///
+    /// `u64::MAX` cannot be a real rebuild target (it is not a reachable block
+    /// height), so it can never collide with a genuine marker.
+    pub const REBUILD_TARGET_UNKNOWN: u64 = u64::MAX;
+
     /// Create a RocksDB checkpoint (point-in-time snapshot) at the given path.
     ///
     /// Uses hard links — near-instant, near-zero extra disk space.
@@ -762,5 +772,45 @@ impl StateDb {
         let _ = self
             .db
             .put_cf(cf, META_ORACLE_LAST_UPDATE_HEIGHT, height.to_le_bytes());
+    }
+
+    /// AUDIT-P1-001 (INC-I-156): read the rebuild-in-progress marker.
+    ///
+    /// `Some((target_height, started_at_unix))` means a destructive
+    /// rebuild-from-genesis committed its `clear()` but never reached the
+    /// trailing `atomic_replace` — the durable UTXO set is a truncated subset
+    /// of the chain `chain_state` names, and no other mechanism detects that
+    /// (`BlockHeader` carries no `state_root`).
+    ///
+    /// AUDIT-P3-103 (INC-I-156): this reader FAILS CLOSED. `None` is a positive
+    /// claim that the ledger is intact, so it is returned for exactly one input
+    /// — a genuinely ABSENT key, which is the normal state of every node that
+    /// has never rebuilt. A read ERROR, or a value that is PRESENT but not the
+    /// 16-byte record [`Self::set_rebuild_in_progress`] writes, means the node
+    /// cannot PROVE it is healthy, and an unprovable claim inside a fail-closed
+    /// safety mechanism must read as ARMED: those cases return
+    /// `Some((`[`Self::REBUILD_TARGET_UNKNOWN`]`, 0))`. Previously both
+    /// collapsed into `None`, so one corrupt byte in `cf_meta` silently
+    /// un-halted a node whose `cf_utxo` was truncated.
+    ///
+    /// No version byte: a length-tagged record buys nothing the length check
+    /// does not already give — any future format of a different length already
+    /// fails closed here, and a same-length reinterpretation would defeat a
+    /// version byte too unless the byte itself changed the length.
+    pub fn get_rebuild_in_progress(&self) -> Option<(u64, u64)> {
+        let cf = self.db.cf_handle(CF_META).unwrap();
+        match self.db.get_cf(cf, META_REBUILD_IN_PROGRESS) {
+            // Absent key — the only input that proves health.
+            Ok(None) => None,
+            Ok(Some(bytes)) if bytes.len() == 16 => {
+                let mut target = [0u8; 8];
+                let mut started = [0u8; 8];
+                target.copy_from_slice(&bytes[0..8]);
+                started.copy_from_slice(&bytes[8..16]);
+                Some((u64::from_le_bytes(target), u64::from_le_bytes(started)))
+            }
+            // Present but undecodable, or unreadable: ARMED, payload unknown.
+            Ok(Some(_)) | Err(_) => Some((Self::REBUILD_TARGET_UNKNOWN, 0)),
+        }
     }
 }

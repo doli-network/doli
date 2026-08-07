@@ -1097,75 +1097,12 @@ impl Node {
             }
 
             SyncRequest::GetStateSnapshot { block_hash } => {
-                let chain_state = self.chain_state.read().await;
-                // Serve snapshot at current tip regardless of requested hash.
-                // The requesting node verifies the state root against quorum votes.
-                // Previously this rejected requests where best_hash != block_hash,
-                // causing a race condition: the peer advances between vote and
-                // download, making snap sync fail 100% of the time on active chains.
-                if chain_state.best_hash != block_hash {
-                    info!(
-                        "[SNAP_SYNC] Requested hash {} differs from tip {} — serving current tip (client verifies root)",
-                        block_hash, chain_state.best_hash
-                    );
-                }
-                let utxo_set = self.utxo_set.read().await;
-                let ps = self.producer_set.read().await;
-                match storage::StateSnapshot::create(&chain_state, &utxo_set, &ps) {
-                    Ok(snap) => {
-                        info!(
-                            "[SNAP_SYNC] Serving snapshot at height={}, size={}KB, root={}",
-                            snap.block_height,
-                            snap.total_bytes() / 1024,
-                            snap.state_root
-                        );
-                        // Option C: include anchor header so receiving node can persist it
-                        let block_header_bytes = if snap.block_height
-                            >= doli_core::consensus::SNAP_HEADER_ACTIVATION_HEIGHT
-                        {
-                            if let Ok(Some(header)) = self.block_store.get_header(&snap.block_hash)
-                            {
-                                bincode::serialize(&header).ok()
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        };
-                        let epoch_bond_snapshot_bytes =
-                            self.state_db.get_epoch_bond_snapshot().and_then(
-                                |(snap_data, epoch)| bincode::serialize(&(snap_data, epoch)).ok(),
-                            );
-                        let epoch_accumulators_bytes = self
-                            .state_db
-                            .get_attestation_accumulators()
-                            .and_then(|data| bincode::serialize(&data).ok());
-                        // M7: complete EpochState for direct transfer (no reconstruction)
-                        let epoch_state_bytes = self.state_db.get_epoch_state();
-                        info!(
-                            "[SNAP_SYNC] Sending snapshot response: h={} hash={:.16} cs={}B utxo={}B ps={}B epoch_state={}",
-                            snap.block_height,
-                            snap.block_hash,
-                            snap.chain_state_bytes.len(),
-                            snap.utxo_set_bytes.len(),
-                            snap.producer_set_bytes.len(),
-                            if epoch_state_bytes.is_some() { "included" } else { "MISSING" }
-                        );
-                        SyncResponse::StateSnapshot {
-                            block_hash: snap.block_hash,
-                            block_height: snap.block_height,
-                            chain_state: snap.chain_state_bytes,
-                            utxo_set: snap.utxo_set_bytes,
-                            producer_set: snap.producer_set_bytes,
-                            state_root: snap.state_root,
-                            block_header_bytes,
-                            epoch_bond_snapshot_bytes,
-                            epoch_accumulators_bytes,
-                            epoch_state_bytes,
-                        }
-                    }
-                    Err(e) => SyncResponse::Error(format!("Snapshot error: {}", e)),
-                }
+                // INC-I-156 / AUDIT-P1-001: moved verbatim to the
+                // `serve_state_snapshot` seam (`state_snapshot_serve.rs`), which
+                // returns a `SyncResponse` and so can be exercised without a
+                // libp2p ResponseChannel. It refuses while an interrupted
+                // rebuild-from-genesis has left the durable UTXO set truncated.
+                self.serve_state_snapshot(block_hash).await
             }
 
             SyncRequest::DirectAttestation { data } => {

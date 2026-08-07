@@ -34,6 +34,26 @@ impl Node {
             None => return Ok(()),
         };
 
+        // INC-I-156 / AUDIT-P1-001: STATE CORRUPTION CHECK.
+        // An interrupted rebuild-from-genesis left the durable UTXO set
+        // truncated at a live height. Producing on a destroyed ledger would
+        // publish blocks whose inputs this node cannot even see, so refuse.
+        // Rate-limited to once a minute, matching the two gates below.
+        if let Some(reason) = self.rebuild_halt_reason() {
+            static LAST_CORRUPT_WARNING: std::sync::atomic::AtomicU64 =
+                std::sync::atomic::AtomicU64::new(0);
+            let now_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let last = LAST_CORRUPT_WARNING.load(std::sync::atomic::Ordering::Relaxed);
+            if now_secs.saturating_sub(last) >= 60 {
+                LAST_CORRUPT_WARNING.store(now_secs, std::sync::atomic::Ordering::Relaxed);
+                tracing::error!("{}", reason);
+            }
+            return Ok(());
+        }
+
         // VERSION ENFORCEMENT CHECK
         // If an update has been approved and grace period has passed,
         // outdated nodes cannot produce blocks.

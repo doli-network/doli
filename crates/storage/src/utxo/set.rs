@@ -61,19 +61,40 @@ impl UtxoSet {
         }
     }
 
-    /// Clear all UTXOs.
+    /// Empty the UTXO set. Post-condition: after `Ok(())` the set is empty on
+    /// EITHER backend — `iter_all()` is empty, `len() == 0`, and no
+    /// pubkey-index row survives. `InMemory` clears the HashMap; `RocksDb`
+    /// delegates to [`StateDb::clear_utxos`], which deletes `cf_utxo` AND
+    /// `cf_utxo_by_pubkey` in one `WriteBatch` and resets `utxo_count` to 0
+    /// (INV-GUARD-001).
     ///
-    /// For InMemory: clears the HashMap.
-    /// For RocksDb: no-op (state_db clearing is handled by `clear_and_write_genesis`).
-    pub fn clear(&mut self) {
+    /// SCOPE: the unique-id index (`cf_unique_id` on `RocksDb`, `unique_ids` on
+    /// `InMemory` — see [`Self::has_unique_id`]) is deliberately NOT cleared by
+    /// either backend. It is not rolled back on any path (`UndoData` carries no
+    /// unique-id field), so wiping it here would make already-minted NFT/asset/
+    /// pool ids re-mintable. Individual rows ARE deleted — `BlockBatch` removes
+    /// exactly one id per spend of an id-bearing output (`spend_utxo` calls
+    /// `remove_unique_id_for_entry` at `state_db/batch.rs:104`, which reaches
+    /// `remove_pending_unique_id`'s `batch.delete_cf` at `batch.rs:236-242`) —
+    /// but that is the mint's mirror image, one id at a time, and NO path
+    /// deletes the index WHOLESALE: `StateDb::clear_utxos` (`writes.rs:89-105`)
+    /// batches deletes over `cf_utxo` and `cf_utxo_by_pubkey` only, and
+    /// `atomic_replace` likewise omits `cf_unique_id` from its `deletable_cfs`
+    /// (`writes.rs:216-221`). `clear()` must not become the first such path,
+    /// because the RocksDb replay (`insert_utxo`) does NOT write
+    /// `cf_unique_id` — only `BlockBatch` does — so a wholesale wipe here would
+    /// be unrecoverable without a full re-apply (INC-I-156 / AUDIT-P3-001,
+    /// AUDIT-P3-104).
+    ///
+    /// On `Err` nothing was written and the set is unchanged; a caller MUST NOT
+    /// proceed as if it were empty (INC-I-156 / REQ-I156-002).
+    pub fn clear(&mut self) -> Result<(), StorageError> {
         match self {
-            UtxoSet::InMemory(store) => store.clear(),
-            UtxoSet::RocksDb(_) => {
-                // state_db clearing is handled by StateDb::clear_and_write_genesis.
-                // UtxoSet.clear() on the RocksDb variant is only called during
-                // genesis reset (init.rs), which immediately replaces the UtxoSet
-                // with a fresh InMemory variant anyway.
+            UtxoSet::InMemory(store) => {
+                store.clear();
+                Ok(())
             }
+            UtxoSet::RocksDb(sdb) => sdb.clear_utxos(),
         }
     }
 

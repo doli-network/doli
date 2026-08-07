@@ -20,6 +20,8 @@ mod batch;
 mod open;
 mod queries;
 #[cfg(test)]
+mod rebuild_marker_tests;
+#[cfg(test)]
 mod tests;
 mod types;
 mod undo;

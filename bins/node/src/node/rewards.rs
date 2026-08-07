@@ -1107,6 +1107,126 @@ impl Node {
         producers: &mut ProducerSet,
         target_height: u64,
     ) -> Result<()> {
+        // INC-I-156 / AUDIT-P2 (R2): prove the replay can COMPLETE before any
+        // state is destroyed. This function used to be "destructive then
+        // fallible" — `producers.clear()` ran first and the loop below then
+        // aborted at the first missing height. On a holed store that emptied
+        // the caller's live ProducerSet and returned Err, and an emptied
+        // in-memory set becomes DURABLE on the very next applied block
+        // (apply_block/mod.rs:316-318 persists whatever the in-memory set
+        // holds). Hoisting the dense check to the FIRST statement inverts the
+        // order to "fallible then destructive" for the HEIGHT-INDEX gap class
+        // — the INC-I-152 shape, and the only failure on this path with a
+        // recorded incident — at all four call sites: rollback.rs:144 (the
+        // undo path's corrupt-snapshot fallback, the only site with no
+        // upstream guard), rollback.rs:267, block_handling.rs:739 and :910,
+        // and at any call site added later, rather than patching only the one
+        // site that happens to be exposed today.
+        //
+        // SCOPE — this NARROWS the destroy-then-abort class; it does NOT
+        // close it. The guard answers a CHEAPER question than the loop it
+        // fronts: `ensure_blocks_present` reads the height INDEX only
+        // (block_store/queries.rs:199-207 — `get_hash_by_height` per height,
+        // touching neither cf_headers nor cf_bodies), while the loop needs a
+        // BODY (`get_block_by_height` = index lookup THEN `get_block`, and
+        // `get_block` returns Ok(None) when cf_bodies has no entry for the
+        // hash — block_store/queries.rs:35-38).
+        //
+        // RESIDUAL, explicitly NOT covered by this guard: on an index-DENSE /
+        // body-ABSENT store the check returns Ok, `producers.clear()` below
+        // still runs, and the replay still aborts at its `.ok_or_else(..)?`
+        // — destroy-then-abort survives on exactly that input. The shape is
+        // production-constructible, not synthetic; THREE distinct writers
+        // produce it (AUDIT-P3-211):
+        //   1. `seed_canonical_index` (block_store/writes.rs:230-238) writes
+        //      height_index + hash_to_height + snap_horizon in one batch and
+        //      NO header and NO body — the snap-sync anchor.
+        //   2. `set_canonical_chain` (block_store/writes.rs:107-170) indexes
+        //      canonical heights on HEADER presence ALONE: the tip-down walk
+        //      reads `get_header` (:161) to follow prev_hash and writes both
+        //      index CFs (:145-146) without ever consulting cf_bodies, so any
+        //      height whose header is present and whose body is not becomes
+        //      index-dense and body-absent.
+        //   3. `put_block` (block_store/writes.rs:20-70) writes header (:31),
+        //      body (:42) and slot index (:46) as three SEPARATE, un-batched
+        //      `put_cf` calls — no WriteBatch, no atomicity. A crash or an
+        //      error return between :31 and :42 leaves a durable header with
+        //      no body.
+        // It is the same index-vs-body asymmetry the sibling note at
+        // block_handling.rs:866-871 records for the UTXO replay. Closing it
+        // needs a body-density variant of the guard or the REQ-I156-012
+        // scratch-set shape (replay into a fresh ProducerSet, published by
+        // assignment on success) — both deferred; the body-density deferral is
+        // recorded as REQ-I156-015 in §7 ("Out of scope") of
+        // docs/bugfixes/inc-i-156-p2-residual-guards-analysis.md.
+        //
+        // The range is identical to the replay loop's `1..=target_height`, so
+        // the three sites that already carry the same INC-I-152 dense guard
+        // (rollback.rs:175-187, block_handling.rs:620-637 — whose range was
+        // aligned to `target_height.max(1)` in M2 QA-1 so the two checks agree
+        // at `target_height == 0` too) see a redundant
+        // O(range) height-index scan with no header/body deserialization
+        // (block_store/queries.rs:191-192) and no behavior change. Nothing
+        // that was admitted before is refused now: the loop already failed on
+        // exactly this range, it just failed after the damage.
+        //
+        // `.max(1)` ADDS an unconditional "block 1 must exist" requirement at
+        // `target_height == 0` (rolling block 1 back to genesis). Be precise
+        // about what that is (AUDIT-P3-212): at `target_height == 0` the
+        // replay range `1..=0` is EMPTY, so the loop cannot fail and always
+        // returns Ok. Raising the guard's floor to `1..=1` therefore turns
+        // `Ok` into `Err` on a store with no block 1 — that IS a behavior
+        // change on this input, not a no-op, and it is the ONLY input on
+        // which the guard is stricter than the loop it fronts. It is
+        // deliberate: it carries forward the INC-I-152 pre-check's own
+        // block-1 requirement (rollback.rs:168-172), and it keeps this
+        // guard's range byte-identical to the two sibling guards so all
+        // three agree at `target_height == 0`. For every other input
+        // (`target_height >= 1`) the range equals the loop's exactly and
+        // nothing admitted before is refused now.
+        //
+        // Only `BlockStore`'s RocksDB height index is touched — an independent
+        // lock domain from producer_set/utxo_set/chain_state — so this cannot
+        // deadlock against the `producer_set` write guard the callers hold
+        // here. The refusal names the FIRST missing height (propagated from
+        // the guard's own message) and carries the
+        // [FORK_GUARD_BACKFILL_REQUIRED] token — the form the fleet runbook
+        // and the sibling rollback/reorg log lines key on. The token is put
+        // in BOTH the log line and the `anyhow!` text so it survives the `?`
+        // chain to whatever finally reports the error (AUDIT-P2-206); the
+        // wrapped StorageError carries only the bare `[FORK_GUARD_BACKFILL]`
+        // form (block_store/queries.rs:201-205).
+        self.block_store
+            .ensure_blocks_present(1, target_height.max(1))
+            .map_err(|e| {
+                crate::metrics::FORK_GUARD_REFUSALS
+                    .with_label_values(&["producer_rebuild"])
+                    .inc();
+                // No automatic repair exists for this precondition: the guard
+                // only reads, and `rebuild_canonical_index` — the one routine
+                // that can heal a stale height index — is reachable ONLY from
+                // the stopped-node operator CLI (`bins/node/src/main.rs:294`
+                // -> `operations::reindex_canonical_chain`). Name the command
+                // so the operator can act (AUDIT-P3-214).
+                error!(
+                    "[FORK_GUARD_BACKFILL_REQUIRED] Producer set rebuild refused: block_store \
+                     incomplete over 1..={} — {}. ProducerSet left intact, no state mutated. \
+                     Recovery: let header-first sync backfill the missing heights; if the blocks \
+                     are present on disk but the height index is stale, STOP the node and run \
+                     `doli-node reindex --data-dir <DATA_DIR>`.",
+                    target_height.max(1),
+                    e
+                );
+                anyhow::anyhow!(
+                    "[FORK_GUARD_BACKFILL_REQUIRED] Producer set rebuild refused: block_store \
+                     incomplete over 1..={} — {}. ProducerSet left intact; backfill required \
+                     before this rebuild can proceed (or, if the height index is stale, run \
+                     `doli-node reindex --data-dir <DATA_DIR>` on a stopped node).",
+                    target_height.max(1),
+                    e
+                )
+            })?;
+
         producers.clear();
         let bond_unit = self.config.network.bond_unit();
         let genesis_blocks = self.config.network.genesis_blocks();
