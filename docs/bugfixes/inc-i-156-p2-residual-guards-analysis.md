@@ -391,8 +391,23 @@ snapshot-deserialize-failure fallback at `rollback.rs:138` — has no such incid
 > ever runs.**
 
 This works because it converts the helper from "destructive then fallible" to "fallible then
-destructive", which makes destroy-then-abort impossible **by construction at all four call sites**,
-including any future one, rather than patching the one site that is currently exposed.
+destructive" **for the height-index gap class** — the INC-I-152 shape, and the only failure on this
+path with a recorded incident — at all four call sites, including any future one, rather than
+patching the one site that is currently exposed.
+
+**Scope correction (INC-I-156 M2 review F1 / AUDIT-P3-211).** An earlier draft of this section
+claimed the fix makes destroy-then-abort impossible *by construction at all four call sites*. That
+is an **overclaim** and is retracted here, at the origin. The guard NARROWS the class; it does not
+close it. `ensure_blocks_present` answers a **cheaper question** than the loop it fronts: it reads
+the height **INDEX** only (`block_store/queries.rs:199-207`, `get_hash_by_height` per height,
+touching neither `cf_headers` nor `cf_bodies`), whereas the replay loop needs a **BODY**
+(`get_block_by_height` = index lookup THEN `get_block`, and `get_block` returns `Ok(None)` when
+`cf_bodies` has no entry for the hash, `block_store/queries.rs:35-38`). On an **index-dense /
+body-absent** store the guard returns `Ok`, `producers.clear()` still runs, and the replay still
+aborts — destroy-then-abort survives on exactly that input, at all four call sites. That residual is
+production-constructible (three writers produce it — see REQ-I156-015 in §7), is not covered by any
+M2 test, and is deferred. The accurate claim is: **impossible by construction for a height-index
+gap, at all four call sites.**
 
 **Applicability verification for this call site (required by the brief — the guard is not adopted
 verbatim on faith):**
@@ -471,9 +486,35 @@ no `NetworkParams` field, no `HardForkSchedule` entry, no `CURRENT_PROTOCOL_VERS
 **Deploy Q2 — Does this change block CONTENT?** **NO.** Nothing in the diff surface reaches the
 bitfield encoder/decoder, coinbase construction, transaction ordering, `presence_root`, or any header
 field. A node whose state is correct produces byte-identical blocks before and after.
-**⇒ no synchronized deploy; a rolling restart is safe.** Mixed-fleet operation is safe: a patched and
-an unpatched node produce identical blocks unless the unpatched one has taken a legacy rebuild path,
-in which case it was already divergent.
+**⇒ no synchronized deploy; a rolling restart is safe.** Mixed-fleet operation is safe *for block
+content*: a patched and an unpatched node produce identical blocks from identical state.
+
+**Direction correction (AUDIT-P2-205).** An earlier draft of this section justified the rolling
+restart with "…unless the unpatched one has taken a legacy rebuild path, in which case it was already
+divergent." That has the asymmetry **backwards** and is retracted. The mixed-fleet delta runs the
+other way:
+
+> At `target_height == 0` — reachable on the undo branch (`rollback.rs:138`, `has_undo == true`, when
+> the producer snapshot fails to deserialize) and at the `block_handling.rs:739`/`:910` sites — the
+> `.max(1)` floor makes the **PATCHED** node check `1..=1` and return `Err` on a store with no
+> block 1, while the **UNPATCHED** node runs the empty `1..=0` loop and returns `Ok`. **The patched
+> node is the one that stops; the unpatched node completes.**
+
+This is a **fail-closed vs fail-open** difference, not a correctness inversion: what the unpatched
+node "completes" is a rebuild that leaves the ProducerSet **empty** — precisely the corruption this
+milestone exists to prevent, and one that becomes durable on the next applied block. The patched
+node's refusal is the intended outcome. But the operational consequence must be stated honestly: **on
+a rolling deploy the newly-patched nodes are the ones that can halt on this input, not the stragglers.**
+An operator who sees a node stop rebuilding immediately after upgrading is seeing the guard work, and
+the remedy is backfill (or `doli-node reindex --data-dir <DATA_DIR>` on a stopped node if the blocks
+are on disk and only the height index is stale) — not a rollback of the binary.
+
+**No `has_undo`-aware carve-out is added** (explicit decision, AUDIT-P2-205). Suppressing the guard
+when `has_undo == true` would require threading `has_undo` through
+`rebuild_producer_set_from_blocks`'s signature to all four call sites, is covered by no existing
+test, and would re-open the fail-open path on the one branch that has no other upstream guard. It is
+recorded here as a **known, accepted asymmetry** rather than carved out speculatively in a bugfix
+commit.
 
 **Explicit statement**: **no activation height, no synchronized deploy, no version bump.** Standard
 rolling restart, testnet first.
@@ -679,6 +720,25 @@ governance step), and §7 items are explicitly `Won't`.
   future incident can pick them up, and so QA does not attribute a failure there to M1/M2.
 - **chain_state ↔ `cf_utxo` inconsistency on an `Err` return from the undo branch** (REQ-I156-014):
   pre-existing (§3 R2 note), not introduced by either fix, and not reported.
+- **Body-density guard for `rebuild_producer_set_from_blocks`** (REQ-I156-015): the M2 guard is
+  **height-index-only**, so an index-dense / body-absent store still reaches `producers.clear()` and
+  still aborts in the replay (§3 R2 scope correction). Closing it needs either a body-density variant
+  of `ensure_blocks_present` (one that resolves each height to a hash and probes `cf_bodies`, paying
+  an O(range) body lookup the current guard deliberately avoids) or the REQ-I156-012 scratch-set
+  shape, which subsumes it. **Deferred, not dismissed** — the shape is production-constructible by
+  three distinct writers, all verified against `crates/storage/src/block_store/writes.rs`:
+  1. `seed_canonical_index` (`writes.rs:230-238`) — writes `height_index` + `hash_to_height` +
+     `snap_horizon` in one batch, and no header and no body. The snap-sync anchor.
+  2. `set_canonical_chain` (`writes.rs:107-170`) — indexes canonical heights on **header presence
+     alone**: the tip-down walk reads `get_header` (`:161`) to follow `prev_hash` and writes both
+     index CFs (`:145-146`) without ever consulting `cf_bodies`.
+  3. `put_block` (`writes.rs:20-70`) — writes header (`:31`), body (`:42`) and slot index (`:46`) as
+     three **separate, un-batched** `put_cf` calls. No `WriteBatch`, so a crash or error return
+     between `:31` and `:42` leaves a durable header with no body.
+
+  This bullet is the deferral target cited by the code comment in
+  `bins/node/src/node/rewards.rs` and by the `specs/engine-parts.md` entries for
+  `rebuild_producer_set_from_blocks`, `execute_reorg` and `rollback_one_block`.
 - **PM-016 re-derivation**: orchestrator-owned governance step, performed after the code fixes.
 - **FM3 fleet-wipe snap herd** (INC-I-152 entry 1561): separate incident.
 

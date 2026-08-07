@@ -246,6 +246,44 @@ lazy_static! {
     ).unwrap();
 
     // ===================
+    // Fork-Guard Backfill Refusals (INC-I-156 M2 / AUDIT-P2-206)
+    // ===================
+    // Incremented when a state-rebuild path REFUSES to run because the local
+    // block_store is not dense over the range it would have to replay, and
+    // logs `[FORK_GUARD_BACKFILL_REQUIRED]`. The refusal is the safe outcome
+    // (no state is mutated), but a node that keeps hitting it cannot rebuild
+    // its ProducerSet and makes no progress until sync backfills the gap —
+    // previously detectable only by watching chain height stall, the same
+    // detection lag that produced the INC-I-034 cascade.
+    //
+    // Recommended Prometheus alert rule:
+    //   alert: ForkGuardBackfillRequired
+    //   expr: increase(doli_fork_guard_refusals_total[15m]) > 0
+    //   for: 5m
+    //   labels: { severity: warning }
+    //   annotations:
+    //     summary: "Node refused a state rebuild — local block_store has a gap"
+    //     description: "Let header-first sync backfill the missing heights. If
+    //                   the blocks are present but the height index is stale,
+    //                   stop the node and run `doli-node reindex --data-dir <DIR>`."
+    //
+    // INSTRUMENT SCOPE — only `site="producer_rebuild"`
+    // (`rebuild_producer_set_from_blocks`) is instrumented today. The sibling
+    // refusals in `rollback.rs` and `block_handling.rs` are NOT yet counted,
+    // so a zero for any other `site` value means "not instrumented", NOT "no
+    // refusals occurred". Do not build an alert that reads absence as health
+    // until those sites also increment this counter.
+    pub static ref FORK_GUARD_REFUSALS: IntCounterVec = IntCounterVec::new(
+        Opts::new(
+            "doli_fork_guard_refusals_total",
+            "State rebuilds refused because block_store is not dense over the replay range \
+             ([FORK_GUARD_BACKFILL_REQUIRED]). Only site=\"producer_rebuild\" is instrumented; \
+             a zero for any other site means not-instrumented, not no-refusals."
+        ),
+        &["site"]
+    ).unwrap();
+
+    // ===================
     // DeFi Economic Security (D4 / AC-6)
     // ===================
 
@@ -520,6 +558,9 @@ pub fn register_metrics() {
     let _ = REGISTRY.register(Box::new(UTXO_CANONICAL_SIZE_THRESHOLD_BYTES.clone()));
     // Set the static threshold once (MAX_SYNC_SIZE = 16 MB).
     UTXO_CANONICAL_SIZE_THRESHOLD_BYTES.set(16 * 1024 * 1024);
+
+    // Fork-guard backfill refusals (INC-I-156 M2 / AUDIT-P2-206)
+    let _ = REGISTRY.register(Box::new(FORK_GUARD_REFUSALS.clone()));
 
     let _ = REGISTRY.register(Box::new(DEFI_TOTAL_ACTIVE_BONDS.clone()));
     let _ = REGISTRY.register(Box::new(DEFI_MAX_POOL_TVL.clone()));

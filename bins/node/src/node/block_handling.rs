@@ -600,23 +600,38 @@ impl Node {
             // to exactly this silent advance. If the range is incomplete,
             // refuse the switch and surface the error so sync can backfill.
             //
-            // target_height == 0 is the legitimate full-rollback-to-genesis
-            // case; ensure_blocks_present treats low=0 as a no-op so that
-            // path is unaffected.
+            // `.max(1)` keeps this range IDENTICAL to the one the hoisted
+            // dense guard inside `rebuild_producer_set_from_blocks` checks
+            // (`rewards.rs:1199-1228`) and to the sibling rollback guard
+            // (`rollback.rs:175-187`). It is not cosmetic parity: for
+            // `target_height == 0` (the legitimate full-rollback-to-genesis
+            // case) `ensure_blocks_present` returns Ok when `low > high`
+            // (`block_store/queries.rs:193-196`), so a bare `1..=target_height`
+            // is a NO-OP here while the helper's `1..=1` still refuses when
+            // block 1 is absent. That gap admitted the reorg past THIS point,
+            // armed the durable rebuild marker at :829-838 and emptied
+            // `cf_utxo` at :852 before the helper refused at :910 — whose `?`
+            // skips the disarm at :964-968 and leaves a permanent halt marker
+            // on a node an operator must then resync (INC-I-156 M2 QA F1,
+            // same defect class as AUDIT-P3-102). Checking the identical range
+            // here moves the refusal AHEAD of both mutations. Block 1 PRESENT
+            // is still admitted, so no legitimate rollback-to-genesis is
+            // refused.
             self.block_store
-                .ensure_blocks_present(1, target_height)
+                .ensure_blocks_present(1, target_height.max(1))
                 .map_err(|e| {
                     error!(
                         "[FORK_GUARD_BACKFILL_REQUIRED] Reorg refused: \
                          block_store missing canonical blocks in 1..={} — {}. \
                          chain_state.best_hash NOT advanced. Backfill required \
                          before this reorg can proceed.",
-                        target_height, e
+                        target_height.max(1),
+                        e
                     );
                     anyhow::anyhow!(
                         "[FORK_GUARD_BACKFILL_REQUIRED] block_store incomplete \
                          in range 1..={}: {}",
-                        target_height,
+                        target_height.max(1),
                         e
                     )
                 })?;
@@ -848,15 +863,20 @@ impl Node {
                         // `Ok(None)` (header or body absent) to a silent skip
                         // and then CONTINUED the loop — permanently deleting
                         // that height's outputs from the set `clear()` just
-                        // emptied. The upstream density guard at :599 cannot
-                        // prevent it: `ensure_blocks_present` checks the height
-                        // INDEX only, while this fetch needs a BODY
-                        // (`block_store/queries.rs:191-192`, `:30-38`), and
+                        // emptied. The upstream density guard at :620-637
+                        // cannot prevent it: `ensure_blocks_present` checks the
+                        // height INDEX only, while this fetch needs a BODY
+                        // (`block_store/queries.rs:191-192`, `:35-38`), and
                         // index-without-body is constructed in production by
-                        // `seed_canonical_index`. Same shape as the sibling
-                        // replay at `rollback.rs:210-219` and the ProducerSet
-                        // replay at `rewards.rs:1115-1124`, both of which
-                        // already hard-error over this identical range.
+                        // `seed_canonical_index`, `set_canonical_chain` (which
+                        // indexes on HEADER presence alone) and `put_block`
+                        // (whose header/body writes are not batched) — see
+                        // AUDIT-P3-211. Same shape as the sibling replay at
+                        // `rollback.rs:210-219` and the ProducerSet replay at
+                        // `rewards.rs:1235-1245`, both of which already
+                        // hard-error over this identical range — and the
+                        // residual the hoisted guard does NOT close, see the
+                        // SCOPE/RESIDUAL note at `rewards.rs:1126-1161`.
                         let block =
                             self.block_store
                                 .get_block_by_height(height)?
