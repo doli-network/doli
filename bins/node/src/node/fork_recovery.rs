@@ -361,6 +361,33 @@ impl Node {
                     // boundary. Mirrors init.rs:305 so snap-synced reads match
                     // continuous-node reads bit-for-bit.
                     *utxo = storage::UtxoSet::from_state_db(self.state_db.clone());
+
+                    // INC-I-156 / AUDIT-P2-101: disarm the rebuild halt.
+                    //
+                    // This arm has just replaced the ENTIRE durable set with a
+                    // snapshot whose state root was re-verified above (:296-303),
+                    // so it genuinely REPAIRS a truncation rather than laundering
+                    // one — unlike an undo-based rollback, which reconstructs
+                    // nothing, and which is why the two rebuild sites
+                    // (rollback.rs:329, block_handling.rs:951) keep their
+                    // per-call conditional disarm instead.
+                    //
+                    // Ok(()) arm ONLY: on Err nothing was installed and the halt
+                    // must survive. `atomic_replace` deliberately excludes CF_META
+                    // from its deletable_cfs (writes.rs:216-221), so without this
+                    // the marker outlives the very operation that repaired the
+                    // ledger — leaving a self-healed node production-halted and
+                    // refusing GetStateSnapshot until an operator wipes its disk.
+                    // A failed disarm is logged, never propagated: it leaves the
+                    // node halted, which is the fail-safe direction.
+                    if let Err(e) = self.state_db.clear_rebuild_in_progress() {
+                        warn!(
+                            "[SNAP_SYNC] Installed a verified snapshot but failed to clear the \
+                             rebuild-in-progress marker: {} — the node stays halted until this \
+                             is resolved",
+                            e
+                        );
+                    }
                 }
                 Err(e) => {
                     error!("[SNAP_SYNC] StateDb atomic_replace failed: {}", e);

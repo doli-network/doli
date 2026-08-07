@@ -96,6 +96,12 @@ impl Node {
         // same RocksDB value twice per rollback.
         let cached_undo = self.state_db.get_undo(local_height);
 
+        // INC-I-156 / AUDIT-P1-001: true only if THIS call armed the rebuild
+        // marker. The disarm below is the exact inverse of the arm, so an
+        // undo-based rollback — which reconstructs nothing — can never silently
+        // clear a halt raised by an earlier interrupted rebuild.
+        let mut rebuild_marker_armed = false;
+
         // Try undo-based rollback first (O(1) for single block)
         if let Some(ref undo) = cached_undo {
             info!(
@@ -186,9 +192,42 @@ impl Node {
                 Vec::new()
             };
             let bond_unit = self.config.network.bond_unit();
+
+            // INC-I-156 / AUDIT-P1-001: arm the durable rebuild marker BEFORE
+            // the wipe below commits. See the twin comment at
+            // `block_handling.rs` — same window, same watchdog trigger, same
+            // absence of any other detector. A failure to arm aborts the
+            // rollback with nothing mutated.
+            self.state_db
+                .set_rebuild_in_progress(target_height)
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "Rollback UTXO rebuild: failed to arm the rebuild-in-progress marker \
+                         — {}. No wipe attempted; state left unchanged.",
+                        e
+                    )
+                })?;
+            rebuild_marker_armed = true;
+
             {
                 let mut utxo = self.utxo_set.write().await;
-                utxo.clear();
+                // INC-I-156 R1: this now really empties the set on BOTH backends.
+                // It used to be a silent no-op on the production RocksDb variant,
+                // so the replay below stacked the rebuilt `1..=target_height` set
+                // ON TOP of the un-rolled-back one: every output created by the
+                // rolled-back range and unspent within it survived, durably
+                // (`atomic_replace` below then laundered it to disk). That is the
+                // INC-I-041 zombie-UTXO / inflation class and it violates
+                // INV-UTXO-001. A FAILED wipe must abort the rollback here with
+                // state untouched — replaying onto an un-cleared set is the defect
+                // itself, so it must never be reachable via an ignored error.
+                utxo.clear().map_err(|e| {
+                    anyhow::anyhow!(
+                        "Rollback UTXO rebuild: failed to clear the UTXO set — {}. \
+                         No replay attempted; state left unchanged.",
+                        e
+                    )
+                })?;
                 for height in 1..=target_height {
                     let block = self
                         .block_store
@@ -281,6 +320,14 @@ impl Node {
             self.state_db
                 .atomic_replace(&state, &producers, utxo_pairs.into_iter())
                 .map_err(|e| anyhow::anyhow!("StateDb atomic_replace failed: {}", e))?;
+        }
+
+        // INC-I-156 / AUDIT-P1-001: disarm ONLY here, and ONLY if this call
+        // armed it — the durable set is a complete state again.
+        if rebuild_marker_armed {
+            self.state_db
+                .clear_rebuild_in_progress()
+                .map_err(|e| anyhow::anyhow!("Rollback: failed to clear rebuild marker: {}", e))?;
         }
 
         // Restore epoch scheduler state from undo data (O(1) vs O(chain) rebuild).

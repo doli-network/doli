@@ -28,6 +28,7 @@ pub use rewards::IncompleteEpochStoreError;
 mod rollback;
 mod startup;
 mod state_root_serve;
+mod state_snapshot_serve;
 mod tx_announcements;
 mod validation_checks;
 mod wedge_escape;

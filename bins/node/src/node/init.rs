@@ -105,11 +105,17 @@ pub fn recover_body_gaps(
                     h
                 );
                 // INC-I-136: When the UtxoSet is RocksDb-backed, it IS the
-                // state_db — clear() is a no-op and re-inserting every UTXO
-                // back into itself is pointless (data-wise) and harmful
-                // (inflates the utxo_count atomic). Skip entirely.
+                // state_db — re-inserting every UTXO back into itself is
+                // pointless (data-wise) and harmful (inflates the utxo_count
+                // atomic). Skip entirely. The fence is LOAD-BEARING and stays
+                // exactly as it was: INC-I-156 made `clear()` honest on the
+                // RocksDb arm, so without this fence the branch below would now
+                // WIPE the live production UTXO set instead of no-op'ing. Inside
+                // the fence only the InMemory arm is reachable, where `clear()`
+                // is infallible — the `?` is the signature obligation, not a new
+                // failure mode.
                 if !utxo_set.is_rocksdb() {
-                    utxo_set.clear();
+                    utxo_set.clear()?;
                     for (outpoint, entry) in state_db.iter_utxos() {
                         let _ = utxo_set.insert(outpoint, entry);
                     }
@@ -313,6 +319,41 @@ impl Node {
             "[UTXO] state_db-backed UTXO set: {} entries",
             state_db.utxo_len()
         );
+
+        // INC-I-156 / AUDIT-P1-001: a rebuild marker that survived a restart
+        // means the previous process emptied `cf_utxo` durably and died before
+        // replaying it back. Nothing else in the node detects that state — the
+        // integrity check below validates `chain_state` against the BLOCK
+        // STORE only, and `BlockHeader` carries no `state_root`, so a truncated
+        // ledger is never caught at block acceptance either. Log it loudly at
+        // startup; the halt itself is enforced live by `rebuild_halt_reason()`
+        // at the production gate and the state-snapshot server, so the node
+        // still starts, still syncs, and still serves blocks — it just cannot
+        // produce or seed a peer from a ledger it knows is incomplete.
+        if let Some((target_height, started_at)) = state_db.get_rebuild_in_progress() {
+            // AUDIT-P3-103: the reader fails CLOSED, so an unreadable marker
+            // arrives here as the UNKNOWN sentinel. Report it as unknown rather
+            // than printing u64::MAX as if the marker had claimed that height.
+            let (target, started) = if target_height == storage::StateDb::REBUILD_TARGET_UNKNOWN {
+                (
+                    "UNKNOWN (marker unreadable)".to_string(),
+                    "UNKNOWN".to_string(),
+                )
+            } else {
+                (target_height.to_string(), started_at.to_string())
+            };
+            error!(
+                "[STATE_CORRUPT] Interrupted rebuild-from-genesis detected on startup \
+                 (target height {}, started at unix {}, {} UTXO entries survive). Block \
+                 production, GetStateSnapshot and GetStateRoot are REFUSED until this is \
+                 resolved. Remedy: resync this node (wipe {} and snap-sync from a healthy peer, \
+                 or restore a checkpoint taken before the rebuild).",
+                target,
+                started,
+                state_db.utxo_len(),
+                config.data_dir.display()
+            );
+        }
         let utxo_set = Arc::new(RwLock::new(utxo_set));
 
         // Validate genesis hash against embedded chainspec (detect state_db corruption).

@@ -570,6 +570,13 @@ impl Node {
         // Skip the rollback path entirely — there's nothing to undo, and calling
         // get_undo(target_height + 1) would panic because that undo doesn't exist.
         if rollback_count > 0 {
+            // INC-I-156 / AUDIT-P1-001: true only if THIS call armed the
+            // rebuild marker. The disarm below is the exact inverse of the arm,
+            // so no other operation — in particular an undo-based rollback that
+            // reconstructs nothing — can silently clear a halt raised by an
+            // earlier interrupted rebuild.
+            let mut rebuild_marker_armed = false;
+
             // Invalidate genesis producer cache if reorg crosses genesis boundary
             let genesis_blocks = self.config.network.genesis_blocks();
             if genesis_blocks > 0 && target_height <= genesis_blocks {
@@ -794,30 +801,83 @@ impl Node {
                 };
                 let bond_unit = self.config.network.bond_unit();
 
+                // INC-I-156 / AUDIT-P1-001: arm the durable rebuild marker
+                // BEFORE the wipe below commits. From here until the trailing
+                // `atomic_replace` the durable UTXO set is a truncated subset
+                // of the chain `chain_state` names, and nothing else detects
+                // that — `BlockHeader` carries no `state_root`. The window is
+                // the whole `1..=target_height` replay, held under the
+                // `chain_state` + `utxo_set` write guards that `getChainInfo`
+                // needs, which is precisely what the fleet watchdog's 5s
+                // timeout restarts into (`scripts/doli-watchdog.sh:21-25`).
+                // A failure to arm aborts the reorg with nothing mutated.
+                self.state_db
+                    .set_rebuild_in_progress(target_height)
+                    .map_err(|e| {
+                        anyhow::anyhow!(
+                            "Reorg UTXO rebuild: failed to arm the rebuild-in-progress marker \
+                             — {}. No wipe attempted; reorg aborted.",
+                            e
+                        )
+                    })?;
+                rebuild_marker_armed = true;
+
                 {
                     let mut state = self.chain_state.write().await;
                     let mut utxo = self.utxo_set.write().await;
                     state.best_height = target_height;
                     state.best_hash = common_ancestor_hash;
                     state.best_slot = common_ancestor_slot;
-                    utxo.clear();
+                    // INC-I-156 R1 (second leak site, same shape as
+                    // rollback.rs — see the comment there). Over a reorg the
+                    // leaked residual is the whole rolled-back RANGE
+                    // target+1..=current, not one block. A failed wipe must
+                    // abort the reorg: replaying onto an un-cleared set is the
+                    // defect, so the error is propagated, never swallowed.
+                    utxo.clear().map_err(|e| {
+                        anyhow::anyhow!(
+                            "Reorg UTXO rebuild: failed to clear the UTXO set — {}. \
+                             No replay attempted; reorg aborted.",
+                            e
+                        )
+                    })?;
                     for height in 1..=target_height {
-                        if let Some(block) =
-                            self.block_store.get_block_by_height(height).ok().flatten()
-                        {
-                            for (tx_index, tx) in block.transactions.iter().enumerate() {
-                                let is_reward_tx = tx_index == 0 && tx.is_reward_minting();
-                                if !is_reward_tx {
-                                    // INC-I-064: Log spend failures in rebuild path
-                                    if let Err(e) = utxo.spend_transaction(tx) {
-                                        warn!(
-                                            "[REBUILD] spend_transaction failed at h={}: {} — continuing rebuild",
-                                            height, e
-                                        );
-                                    }
+                        // INC-I-156 / AUDIT-P1-002: FAIL CLOSED. This used to be
+                        // `.ok().flatten()`, which mapped BOTH `Err` (I/O,
+                        // corrupt SST, body deserialization failure) and
+                        // `Ok(None)` (header or body absent) to a silent skip
+                        // and then CONTINUED the loop — permanently deleting
+                        // that height's outputs from the set `clear()` just
+                        // emptied. The upstream density guard at :599 cannot
+                        // prevent it: `ensure_blocks_present` checks the height
+                        // INDEX only, while this fetch needs a BODY
+                        // (`block_store/queries.rs:191-192`, `:30-38`), and
+                        // index-without-body is constructed in production by
+                        // `seed_canonical_index`. Same shape as the sibling
+                        // replay at `rollback.rs:210-219` and the ProducerSet
+                        // replay at `rewards.rs:1115-1124`, both of which
+                        // already hard-error over this identical range.
+                        let block =
+                            self.block_store
+                                .get_block_by_height(height)?
+                                .ok_or_else(|| {
+                                    anyhow::anyhow!(
+                                        "Reorg UTXO rebuild: missing block at height {}",
+                                        height
+                                    )
+                                })?;
+                        for (tx_index, tx) in block.transactions.iter().enumerate() {
+                            let is_reward_tx = tx_index == 0 && tx.is_reward_minting();
+                            if !is_reward_tx {
+                                // INC-I-064: Log spend failures in rebuild path
+                                if let Err(e) = utxo.spend_transaction(tx) {
+                                    warn!(
+                                        "[REBUILD] spend_transaction failed at h={}: {} — continuing rebuild",
+                                        height, e
+                                    );
                                 }
-                                utxo.add_transaction(tx, height, is_reward_tx, block.header.slot)?;
                             }
+                            utxo.add_transaction(tx, height, is_reward_tx, block.header.slot)?;
                         }
                         if genesis_blocks > 0 && height == genesis_blocks + 1 {
                             Self::consume_genesis_bond_utxos(
@@ -882,6 +942,14 @@ impl Node {
                 self.state_db
                     .atomic_replace(&state, &producers, utxo_pairs.into_iter())
                     .map_err(|e| anyhow::anyhow!("Reorg StateDb atomic_replace failed: {}", e))?;
+            }
+
+            // INC-I-156 / AUDIT-P1-001: disarm ONLY here, and ONLY if this call
+            // armed it — the durable set is a complete state again.
+            if rebuild_marker_armed {
+                self.state_db
+                    .clear_rebuild_in_progress()
+                    .map_err(|e| anyhow::anyhow!("Reorg: failed to clear rebuild marker: {}", e))?;
             }
 
             // Persist epoch_state to DB after atomic_replace (same gate).

@@ -74,6 +74,18 @@ pub(super) const META_ORACLE_SUNSET_STATE: &[u8] = b"oracle_sunset_state";
 /// UTXO-set scan on every unauthenticated RPC call. Stored as 8-byte
 /// little-endian u64. NOT part of the consensus state root.
 pub(super) const META_ORACLE_LAST_UPDATE_HEIGHT: &[u8] = b"oracle_last_update_height";
+/// AUDIT-P1-001 (INC-I-156): set immediately BEFORE a destructive
+/// rebuild-from-genesis wipes `cf_utxo`, deleted only after the trailing
+/// `atomic_replace` succeeds. Its presence at any later moment means the wipe
+/// committed but the replay did not finish — the durable ledger is a truncated
+/// subset of the chain the persisted `chain_state` claims.
+///
+/// Stored as 16 bytes: target height (8B LE) ‖ unix start time (8B LE).
+/// NOT part of the consensus state root. Deliberately in `CF_META`, which
+/// `atomic_replace` does not iterate-delete (`writes.rs:181-186`), so the
+/// marker survives the very operation that clears it explicitly — and survives
+/// a `systemctl restart` in the middle of the replay window.
+pub(super) const META_REBUILD_IN_PROGRESS: &[u8] = b"rebuild_in_progress";
 
 /// Unified state database wrapping a single RocksDB instance.
 pub struct StateDb {

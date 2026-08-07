@@ -190,7 +190,8 @@ async fn replay_produces_identical_state() {
     // Clear UTXO set
     {
         let mut utxo = node.utxo_set.write().await;
-        utxo.clear();
+        utxo.clear()
+            .expect("UtxoSet::clear must succeed (InMemory variant is infallible)");
     }
     // Reset producer set
     {
@@ -253,7 +254,8 @@ async fn replay_skips_dedup_check() {
     }
     {
         let mut utxo = node.utxo_set.write().await;
-        utxo.clear();
+        utxo.clear()
+            .expect("UtxoSet::clear must succeed (InMemory variant is infallible)");
     }
 
     // Replay — without Replay mode, these blocks would be SKIPPED (dedup check)
@@ -290,7 +292,8 @@ async fn replay_suppresses_side_effects() {
     }
     {
         let mut utxo = node.utxo_set.write().await;
-        utxo.clear();
+        utxo.clear()
+            .expect("UtxoSet::clear must succeed (InMemory variant is infallible)");
     }
 
     // Replay
@@ -352,7 +355,8 @@ async fn replay_produces_undo_data() {
     }
     {
         let mut utxo = node.utxo_set.write().await;
-        utxo.clear();
+        utxo.clear()
+            .expect("UtxoSet::clear must succeed (InMemory variant is infallible)");
     }
     // Clear undo data
     node.state_db.prune_undo_above(0);

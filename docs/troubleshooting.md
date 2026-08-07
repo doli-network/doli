@@ -255,6 +255,52 @@ See [disaster-recovery.md](./disaster-recovery.md) for all recovery methods.
 
 ---
 
+### 1.10. `[STATE_CORRUPT]` — Interrupted Rebuild-From-Genesis (INC-I-156)
+
+**Symptom:** the log carries `[STATE_CORRUPT] Interrupted rebuild-from-genesis detected on
+startup`, the node syncs and accepts blocks but never produces one, and peers asking it for a
+snap-sync snapshot or a state root get an error response instead of an answer.
+
+If the message says `target height UNKNOWN (marker unreadable)`, the marker key is present but
+its value could not be decoded. The read fails **closed** (INC-I-156 / AUDIT-P3-103): an
+unreadable marker is treated as armed, because a node that cannot decode its own halt marker
+cannot prove its ledger is intact. The remedy is the same.
+
+**Cause:** a deep reorg or rollback with no undo data took the legacy rebuild-from-genesis path.
+That path empties the durable UTXO set first and replays `1..=target_height` back into it, which
+takes minutes on a real chain and holds the `chain_state` + `utxo_set` write locks throughout.
+If the process is restarted inside that window — the fleet watchdog (`scripts/doli-watchdog.sh`)
+does exactly this, because its `getChainInfo` probe blocks on those locks and times out after
+5s — the node reboots at its old tip with a truncated ledger. A durable
+`rebuild_in_progress` marker is written to `CF_META` before the wipe and removed only after the
+rebuild's final `atomic_replace` succeeds, so its presence is proof the rebuild never finished.
+
+**Fix — resync the node.** The marker lives in the state DB, so it clears with the data
+directory:
+```bash
+sudo systemctl stop doli-node
+# CHECK FIRST that no wallet.json / producer.seed.txt lives inside the data dir:
+find /var/lib/doli/mainnet -name 'wallet*' -o -name '*.seed.txt'
+sudo rm -rf /var/lib/doli/mainnet/state_db /var/lib/doli/mainnet/blocks
+sudo systemctl start doli-node   # snap-syncs from a healthy peer
+```
+Restoring a checkpoint taken **before** the rebuild works too — see
+[disaster-recovery.md](./disaster-recovery.md).
+
+**A completed snap sync also clears it.** If the node reaches snap sync on its own — the likely
+outcome, since an emptied UTXO set fails every subsequent block apply and that is exactly the
+stuck-fork condition that escalates to snap sync — the install replaces the whole set with a
+root-verified snapshot and disarms the marker automatically (INC-I-156 / AUDIT-P2-101). A snap
+sync that is *rejected* (root mismatch) installs nothing and leaves the halt in place, which is
+correct.
+
+**Do not** delete the marker by hand to silence the message. It is refusing production,
+snapshot service and state-root service precisely because the ledger this node would produce
+from, hand to a bootstrapping peer, or vote with in the snap-sync quorum is incomplete — and
+nothing downstream would catch that, since block headers carry no state root.
+
+---
+
 ### 1.7. Disk full / ENOSPC
 
 **Symptom:** The node stops or returns a clean error mentioning `ENOSPC` /

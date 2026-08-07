@@ -13,6 +13,7 @@
 //! Spec: `specs/state-root-commitment-architecture.md` — Migration Path steps 1-2.
 
 use network::protocols::SyncResponse;
+use tracing::error;
 
 use super::Node;
 
@@ -30,7 +31,24 @@ impl Node {
     ///
     /// Mutual exclusion with the apply-write is provided by the single
     /// event-loop actor; no new locks are introduced.
+    ///
+    /// Refuses with `SyncResponse::Error` while `rebuild_halt_reason()` is set,
+    /// mirroring `serve_state_snapshot` (`state_snapshot_serve.rs:51-54`) —
+    /// same predicate, same refusal shape (INC-I-156 / AUDIT-P3-101).
     pub async fn serve_state_root(&self) -> SyncResponse {
+        // INC-I-156 / AUDIT-P3-101: a node whose durable UTXO set was truncated
+        // by an interrupted rebuild computes a WRONG root, and this seam feeds
+        // the snap-sync quorum tally (`snap_sync.rs:83-103`) — so a halted node
+        // would poison the vote on the very root it is already barred from
+        // serving a snapshot for. Placed BEFORE the memo fast path on purpose:
+        // the memo can still hold a root computed while the node was healthy,
+        // and arming the halt does not move `best_hash`, so a gate below the
+        // fast path would never fire.
+        if let Some(reason) = self.rebuild_halt_reason() {
+            error!("[SNAP_SYNC] Refusing GetStateRoot — {}", reason);
+            return SyncResponse::Error(reason);
+        }
+
         // Fast path: O(1) memo hit keyed on the current tip. Copy the memo tuple
         // and drop its read guard before reading chain_state (no nested guards).
         let memo = *self.cached_state_root.read().await;
