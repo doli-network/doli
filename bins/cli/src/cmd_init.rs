@@ -195,8 +195,11 @@ pub(crate) fn cmd_init(
     }
     println!("  |                                                      |");
     println!("  |  WRITE THIS DOWN AND STORE IT SAFELY.                |");
-    println!("  |  This is the ONLY way to recover your wallet.        |");
     println!("  |  It will NOT be shown again.                         |");
+    println!("  |                                                      |");
+    println!("  |  These words recover your ADDRESS and FUNDS -- they  |");
+    println!("  |  do NOT recover your producer identity. Back up the  |");
+    println!("  |  wallet file itself too. Details after setup.        |");
     println!("  +------------------------------------------------------+");
     println!();
 
@@ -265,6 +268,17 @@ pub(crate) fn cmd_init(
     println!();
     println!("  WARNING: Delete the seed file after you have written down the phrase:");
     println!("    rm {}", seed_path.display());
+    println!();
+    println!("  CRITICAL — THE 24 WORDS ARE NOT A COMPLETE PRODUCER BACKUP.");
+    println!("  They restore your address, funds and spending key, but NOT the BLS");
+    println!("  attestation key that identifies you on-chain as a producer. That key");
+    println!("  exists ONLY inside the wallet file. If you lose the file, restoring");
+    println!("  from the phrase looks correct -- right address, right balance -- but");
+    println!("  your registered producer identity is gone, recoverable only by exiting");
+    println!("  and re-registering (which burns most of your bond).");
+    println!();
+    println!("  Back up the wallet file itself, encrypted and offline:");
+    println!("    {}", wallet_path.display());
     println!();
 
     // Print next steps

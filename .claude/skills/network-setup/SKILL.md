@@ -768,7 +768,24 @@ ls -la /var/lib/doli/mainnet/{name}/data/wallet.json
 
 **Recovery from seed phrase:**
 
-`doli restore` reads the seed from stdin and already generates a BLS key — no separate `add-bls` needed.
+> ⚠️ **STOP — this does NOT recover a registered producer.** `doli restore` generates a
+> BLS attestation key, but a **new random one**, not the key committed on-chain at
+> registration. The seed phrase derives only the Ed25519 spending key. A restored
+> producer therefore comes back with the right address and balance and the WRONG
+> identity — silently, since attestation is Ed25519-only today and nothing compares the
+> loaded BLS key to the registered `blsPubkey`.
+>
+> Use this procedure only for a **non-producer** wallet, or for a producer that has not
+> yet registered. For a registered producer the only real recovery is restoring
+> `wallet.json` from backup. If no backup exists, the identity is unrecoverable except by
+> exit + re-register (~75% bond burn, seniority reset, delegations destroyed).
+>
+> Verify after any restore: `doli info` BLS public key must equal `getProducer` →
+> `blsPubkey`. If they differ, do **not** assume the node is healthy just because it syncs
+> and produces.
+
+`doli restore` reads the seed from stdin and generates a BLS key — but see the warning
+above: it is a *new* key, so no separate `add-bls` is needed and none would help.
 
 ```bash
 # 1. Stop the service

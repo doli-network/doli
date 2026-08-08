@@ -77,7 +77,15 @@ All commands support these options:
 
 Create a new wallet file with a BIP-39 seed phrase and derived Ed25519 keypair.
 
-New wallets (version 2) generate a 24-word recovery phrase. The primary key is deterministically derived from this phrase. Write down the 24 words — they are your backup. If you lose the wallet file, you can recover using these words.
+New wallets (version 2) generate a 24-word recovery phrase. The Ed25519 spending key is deterministically derived from this phrase, so the 24 words restore your address, your funds, and your ability to sign transactions.
+
+> ⚠️ **The 24 words are not a complete backup for a producer.** A wallet holds a
+> *second* keypair — the BLS attestation key that identifies a registered producer
+> on-chain — and that one is generated randomly, **not** derived from the phrase.
+> Restoring from the phrase produces a wallet with the correct address and balance
+> but a **different** BLS key than the one registered on-chain. See
+> [§1.3 Restore Wallet](#13-restore-wallet) for what that means and how to back up
+> properly.
 
 ```bash
 doli new [OPTIONS]
@@ -112,6 +120,12 @@ doli new --name my_wallet
 ```
 
 The seed phrase is written to a separate `.seed.txt` file and is **not stored in the wallet JSON**. Write down the 24 words on paper, then delete the seed file. If you lose both the wallet file and the seed words, your funds are unrecoverable.
+
+**Back up `wallet.json` itself as well** — encrypted and offline. The seed file and the
+24 words cover your funds; only the wallet file covers a producer's BLS attestation key.
+Treat the wallet file like cash: it contains your private keys in plaintext, so never put
+it in cloud storage, a shared drive, email, or a chat message, and do not change its
+permissions on a server (it is deliberately locked to the service account).
 
 Legacy wallets (version 1, e.g. existing producer keys) continue to work unchanged.
 
@@ -157,6 +171,39 @@ doli restore
 # Follow the interactive prompt to enter your 24-word seed phrase
 ```
 
+`restore` will not overwrite an existing wallet file — it exits with an error and leaves
+the file untouched. Use `-w` to restore to a different path.
+
+#### ⚠️ Restore does not recover a producer identity
+
+A wallet holds **two** keypairs, and the seed phrase only covers one of them:
+
+| Key | Restored from the 24 words? | What it controls |
+|-----|:---------------------------:|------------------|
+| Ed25519 spending key | **Yes** — deterministically derived | Your address, your funds, transaction signing |
+| BLS attestation key  | **No** — generated randomly every time | Your registered identity as a producer |
+
+So a restored wallet looks completely correct — same address, same balance, everything
+reconciles — while holding a BLS key that does **not** match the `blsPubkey` committed
+on-chain when the producer registered. Nothing warns you: the node starts, produces, and
+attests normally, because attestation currently uses only the Ed25519 key.
+
+You can check for a mismatch yourself:
+
+```bash
+doli info                       # prints this wallet's BLS public key
+# compare against the registered value:
+curl -s -X POST $RPC -d '{"jsonrpc":"2.0","id":1,"method":"getProducer","params":["<your-address>"]}' \
+  | jq -r '.result.blsPubkey'
+```
+
+If they differ, the only remedy is to **exit and re-register**, which burns roughly 75%
+of the bond (for bonds under one year), resets seniority, and destroys all delegations to
+you. There is no key-rotation transaction.
+
+**Therefore: back up `wallet.json` itself.** The 24 words are sufficient for an ordinary
+wallet and insufficient for a producer.
+
 ---
 
 ### 1.4. Add BLS Key
@@ -166,6 +213,10 @@ Add a BLS attestation key to an existing wallet. Required for producers to sign 
 ```bash
 doli add-bls
 ```
+
+> This adds a BLS key to a wallet that has none (e.g. a legacy v1 wallet). It **cannot**
+> repair a producer whose BLS key no longer matches its registration — it refuses if a key
+> is already present, and a newly generated key would not match the registered one either.
 
 ---
 
