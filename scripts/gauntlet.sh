@@ -343,6 +343,72 @@ fi
 FAIL_REASONS=""   # accumulates within a single scenario
 
 # assert <token> — returns 0 pass / 1 fail; appends human reason to FAIL_REASONS.
+# ── GS-012: a producer's wallet BLS key must match its on-chain registration ──
+# READ-ONLY: reads wallet files and queries getProducer. Writes nothing, touches
+# no service. Guards INV-KEY-001 (INC-I-162): the BLS attestation key a producer
+# signs with must be the one committed on-chain at registration.
+#
+# This is the detection that does not exist in the product. `run.rs:88` checks
+# only that a BLS key is PRESENT, never that it MATCHES, and attestation has been
+# Ed25519-only since 2026-07-19 — so a producer restored from a seed phrase by a
+# pre-fix binary runs, produces and earns while holding an identity the chain does
+# not recognise, with nothing anywhere reporting it.
+#
+# Skips (rc=2, not a pass) when the local testnet layout is absent, so this is
+# inert outside a local testnet rather than falsely green.
+_gs012_assert(){
+  local t="$1" doli keys
+  doli="$HOME/testnet/bin/doli"; [ -x "$doli" ] || doli="$PWD/target/release/doli"
+  keys="$HOME/testnet/keys"
+  if [ ! -x "$doli" ] || [ ! -d "$keys" ]; then
+    SKIP_REASONS="$SKIP_REASONS; $t: no doli binary or ~/testnet/keys (not a local testnet)"
+    return 2
+  fi
+  local rpc="http://127.0.0.1:$(port_of seed)" checked=0 mism=0 detail=""
+  local w addr wbls rbls
+  for w in "$keys"/producer_*.json; do
+    [ -f "$w" ] || continue
+    wbls="$(python3 -c "
+import json,sys
+try:
+    d=json.load(open('$w'))
+    print(d['addresses'][0].get('bls_public_key') or '')
+except Exception:
+    print('')
+" 2>/dev/null)"
+    [ -n "$wbls" ] || continue
+    addr="$("$doli" --network testnet -w "$w" info 2>/dev/null | awk '/[Aa]ddress:/{print $NF; exit}')"
+    [ -n "$addr" ] || continue
+    rbls="$(curl -s --max-time 5 -X POST "$rpc" -H 'Content-Type: application/json' \
+      -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getProducer\",\"params\":[\"$addr\"]}" \
+      | python3 -c "
+import sys,json
+try:
+    r=json.load(sys.stdin).get('result') or {}
+    print(r.get('blsPubkey') or '')
+except Exception:
+    print('')
+" 2>/dev/null)"
+    # Unregistered address -> nothing to compare; not a finding.
+    [ -n "$rbls" ] || continue
+    checked=$(( checked + 1 ))
+    if [ "$wbls" != "$rbls" ]; then
+      mism=$(( mism + 1 ))
+      detail="$detail $(basename "$w")"
+    fi
+  done
+  if [ "$checked" -eq 0 ]; then
+    SKIP_REASONS="$SKIP_REASONS; $t: no registered producer wallets found to compare"
+    return 2
+  fi
+  if [ "$mism" -gt 0 ]; then
+    FAIL_REASONS="$FAIL_REASONS; $t: ${mism}/${checked} producer wallets hold a BLS key that does NOT match their on-chain registration —$detail"
+    return 1
+  fi
+  INFO_REASONS="$INFO_REASONS; $t: ${checked} registered producer wallets verified"
+  return 0
+}
+
 assert(){
   local t="$1" ok=1 why=""
   case "$t" in
@@ -424,6 +490,8 @@ assert(){
       _gs009_assert "$t"; return $? ;;
     gs010-dup-rejected|gs010-no-poison|gs010-no-wedge|gs010-fleet-reconverge|gs010-single-registration)
       _gs010_assert "$t"; return $? ;;
+    gs012-bls-matches-registration)
+      _gs012_assert "$t"; return $? ;;
     *)
       why="unknown assertion token '$t'" ;;
   esac
