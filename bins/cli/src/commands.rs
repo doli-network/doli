@@ -140,12 +140,21 @@ pub(crate) enum Commands {
     Export {
         /// Output file path
         output: PathBuf,
+
+        /// Overwrite the output file if it already exists
+        #[arg(long)]
+        force: bool,
     },
 
     /// Import wallet
     Import {
         /// Input file path
         input: PathBuf,
+
+        /// Overwrite the active wallet if one already exists
+        /// (DANGEROUS: destroys its keys, including any BLS producer key)
+        #[arg(long)]
+        force: bool,
     },
 
     /// Show wallet info

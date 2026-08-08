@@ -77,7 +77,17 @@ All commands support these options:
 
 Create a new wallet file with a BIP-39 seed phrase and derived Ed25519 keypair.
 
-New wallets (version 2) generate a 24-word recovery phrase. The primary key is deterministically derived from this phrase. Write down the 24 words — they are your backup. If you lose the wallet file, you can recover using these words.
+New wallets (version 2) generate a 24-word recovery phrase. **Both** keypairs are
+deterministically derived from it — the Ed25519 spending key and the BLS attestation key
+used by producers — so the 24 words are a complete backup of a newly created wallet.
+
+New wallets are written as **version 3**.
+
+> ⚠️ **Version 1 and 2 wallets are different.** Before BLS keys became seed-derived, the
+> BLS key was random and no seed phrase can reproduce it. For those wallets — which
+> includes every producer registered before this change — `wallet.json` is the only copy
+> of the producer identity. Run `doli info` to see the version of any wallet. See
+> [§1.3 Restore Wallet](#13-restore-wallet).
 
 ```bash
 doli new [OPTIONS]
@@ -112,6 +122,12 @@ doli new --name my_wallet
 ```
 
 The seed phrase is written to a separate `.seed.txt` file and is **not stored in the wallet JSON**. Write down the 24 words on paper, then delete the seed file. If you lose both the wallet file and the seed words, your funds are unrecoverable.
+
+**Back up `wallet.json` itself as well** — encrypted and offline. For wallets created
+before BLS keys became seed-derived, the file is the *only* copy of a producer's BLS key.
+Treat the wallet file like cash: it contains your private keys in plaintext, so never put
+it in cloud storage, a shared drive, email, or a chat message, and do not change its
+permissions on a server (it is deliberately locked to the service account).
 
 Legacy wallets (version 1, e.g. existing producer keys) continue to work unchanged.
 
@@ -157,6 +173,47 @@ doli restore
 # Follow the interactive prompt to enter your 24-word seed phrase
 ```
 
+`restore` will not overwrite an existing wallet file — it exits with an error and leaves
+the file untouched. Use `-w` to restore to a different path.
+
+#### ⚠️ Whether restore recovers a producer identity depends on when the wallet was made
+
+A wallet holds **two** keypairs. Which of them the phrase can reproduce changed:
+
+| Key | Wallet **version 3** | Wallet **version 1 or 2** |
+|-----|:---:|:---:|
+| Ed25519 spending key | **Restored** | **Restored** |
+| BLS attestation key  | **Restored** — seed-derived | **NOT restored** — random |
+
+Run `doli info` to see which version a wallet is. It states plainly whether the
+phrase is a complete backup.
+
+For a wallet created before the change, restore looks completely correct — same address,
+same balance, everything reconciles — while holding a BLS key that does **not** match the
+`blsPubkey` committed on-chain at registration. Nothing warns you: the node starts,
+produces, and attests normally, because attestation currently uses only the Ed25519 key.
+
+**Every producer registered before this change is version 2 or lower.** You no longer have
+to guess: `doli info` reports the version and tells you directly whether your 24 words can
+restore this wallet.
+
+You can check for a mismatch yourself:
+
+```bash
+doli info                       # prints this wallet's BLS public key
+# compare against the registered value:
+curl -s -X POST $RPC -d '{"jsonrpc":"2.0","id":1,"method":"getProducer","params":["<your-address>"]}' \
+  | jq -r '.result.blsPubkey'
+```
+
+If they differ, the only remedy is to **exit and re-register**, which burns roughly 75%
+of the bond (for bonds under one year), resets seniority, and destroys all delegations to
+you. There is no key-rotation transaction.
+
+**Therefore: back up `wallet.json` itself.** For a wallet created before this change the
+phrase is insufficient for a producer; for a newly created one it is sufficient, but the
+file remains the faster and less error-prone recovery path.
+
 ---
 
 ### 1.4. Add BLS Key
@@ -166,6 +223,10 @@ Add a BLS attestation key to an existing wallet. Required for producers to sign 
 ```bash
 doli add-bls
 ```
+
+> This adds a BLS key to a wallet that has none (e.g. a legacy v1 wallet). It **cannot**
+> repair a producer whose BLS key no longer matches its registration — it refuses if a key
+> is already present, and a newly generated key would not match the registered one either.
 
 ---
 
@@ -216,12 +277,26 @@ doli export <OUTPUT>
 
 Arguments:
   <OUTPUT>    Output file path
+
+Options:
+      --force    Overwrite the output file if it already exists
 ```
 
 **Example:**
 ```bash
 doli export ~/backup/wallet-backup.json
 ```
+
+> **Will not overwrite by default.** If `<OUTPUT>` already exists, the export is
+> refused and nothing is written. This matters because a wallet that was restored
+> from a seed phrase has a *different* BLS key than the one registered on-chain
+> (see §1.9) — letting it write over a good backup would destroy the only copy of
+> the real producer key.
+>
+> For a rotating backup that deliberately reuses one filename, pass `--force`:
+> ```bash
+> doli export --force ~/backup/wallet-backup.json
+> ```
 
 ---
 
@@ -234,12 +309,50 @@ doli import <INPUT>
 
 Arguments:
   <INPUT>    Input file path
+
+Options:
+      --force    Overwrite the active wallet if one already exists
+                 (DANGEROUS: destroys its keys, including any BLS producer key)
 ```
 
 **Example:**
 ```bash
 doli import ~/backup/wallet-backup.json
 ```
+
+> **Will not overwrite by default.** The wallet is written to the active wallet path
+> (`-w`, or the network default). If a wallet already exists there, the import is
+> refused and the existing file is left untouched:
+>
+> ```
+> Refusing to overwrite existing wallet at /var/lib/doli/mainnet/wallet.json
+>   That file may be the only copy of its BLS producer key — a 24-word seed phrase
+>   does NOT restore it.
+>   Back it up first, then use a different path with -w, or --force if you really
+>   mean to replace it.
+> ```
+>
+> This guard exists because a wallet file is the **only** durable copy of a
+> producer's registered BLS attestation key. The 24-word seed phrase restores the
+> address, funds, and spending key, but **not** that BLS key — so overwriting a
+> producer's `wallet.json` destroys its on-chain identity permanently. Recovery
+> then requires exiting and re-registering, which burns roughly 75% of the bond and
+> resets seniority and delegations.
+>
+> To import somewhere else instead, point `-w` at a new path:
+> ```bash
+> doli -w ~/wallets/imported.json import ~/backup/wallet-backup.json
+> ```
+>
+> To deliberately restore a backup over a damaged or superseded wallet, pass
+> `--force`. It prints a warning naming the file it is about to replace:
+> ```bash
+> doli import --force ~/backup/wallet-backup.json
+> ```
+> **Back up the file you are about to replace first.** If it holds a registered
+> producer's BLS key, `--force` destroys that identity irreversibly.
+>
+> `doli init --force` behaves the same way for wallet creation.
 
 ---
 

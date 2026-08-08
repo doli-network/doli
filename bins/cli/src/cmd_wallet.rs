@@ -61,6 +61,11 @@ pub(crate) fn cmd_new(wallet_path: &PathBuf, name: Option<String>) -> Result<()>
     println!("  Then delete the seed file:");
     println!("    rm {}", seed_path.display());
     println!();
+    println!("  These 24 words fully recover this wallet, including its BLS");
+    println!("  attestation key -- both are derived from the phrase. Keep an");
+    println!("  encrypted offline copy of the wallet file as well:");
+    println!("    {}", wallet_path.display());
+    println!();
 
     Ok(())
 }
@@ -791,18 +796,43 @@ pub(crate) async fn cmd_history(
     Ok(())
 }
 
-pub(crate) fn cmd_export(wallet_path: &Path, output: &PathBuf) -> Result<()> {
+pub(crate) fn cmd_export(wallet_path: &Path, output: &PathBuf, force: bool) -> Result<()> {
     let wallet = Wallet::load(wallet_path)?;
-    wallet.export(output)?;
+    // INC-I-167: export refuses to overwrite by default, because a stale or
+    // phrase-restored wallet writing over a good backup destroys the only copy of
+    // the registered BLS key. `--force` is the opt-in for rotating backups that
+    // deliberately reuse one filename.
+    if force {
+        if output.exists() {
+            println!("  WARNING: --force specified. Overwriting {:?}", output);
+        }
+        wallet.export_forced(output)?;
+    } else {
+        wallet.export(output)?;
+    }
 
     println!("Wallet exported to: {:?}", output);
 
     Ok(())
 }
 
-pub(crate) fn cmd_import(wallet_path: &PathBuf, input: &PathBuf) -> Result<()> {
+pub(crate) fn cmd_import(wallet_path: &PathBuf, input: &PathBuf, force: bool) -> Result<()> {
     let wallet = Wallet::import(input)?;
-    wallet.save(wallet_path)?;
+    // INC-I-167: import refuses to overwrite the active wallet by default — that
+    // file may hold the only copy of a producer BLS key. `--force` is the opt-in
+    // for a deliberate restore-over of a damaged or superseded wallet.
+    if force {
+        if wallet_path.exists() {
+            println!(
+                "  WARNING: --force specified. Overwriting existing wallet at {:?}",
+                wallet_path
+            );
+            println!("           Its keys, including any BLS producer key, will be lost.");
+        }
+        wallet.save_forced(wallet_path)?;
+    } else {
+        wallet.save(wallet_path)?;
+    }
 
     println!("Wallet imported from: {:?}", input);
     println!("Saved to: {:?}", wallet_path);
@@ -825,6 +855,31 @@ pub(crate) fn cmd_info(wallet_path: &Path) -> Result<()> {
         println!("  BLS Key:    {}", bls_pub);
     } else {
         println!("  BLS Key:    none (run 'doli add-bls' to generate)");
+    }
+    println!();
+    // INC-I-162: state plainly whether the seed phrase is a complete backup of
+    // THIS wallet. Before the version-3 marker existed, an operator had no way to
+    // find this out, and the answer decides whether losing the file loses a
+    // registered producer identity permanently.
+    println!("Backup:");
+    if wallet.bls_is_seed_derived() {
+        println!(
+            "  Wallet version {} — both keys are derived from your 24-word phrase.",
+            wallet.version()
+        );
+        println!("  The phrase is a COMPLETE backup of this wallet.");
+    } else {
+        println!(
+            "  Wallet version {} — the BLS producer key is RANDOM, not derived",
+            wallet.version()
+        );
+        println!("  from your seed phrase. The 24 words restore your address and funds,");
+        println!("  but NOT your registered producer identity.");
+        println!("  This file is the only copy of that key. Back up the file itself.");
+        if wallet.primary_bls_public_key().is_some() {
+            println!("  To confirm a producer still matches the chain, compare the BLS Key");
+            println!("  above with getProducer -> blsPubkey for this address.");
+        }
     }
     println!();
     println!("Use the address above for sending and receiving DOLI.");

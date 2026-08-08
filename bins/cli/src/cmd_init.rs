@@ -195,8 +195,10 @@ pub(crate) fn cmd_init(
     }
     println!("  |                                                      |");
     println!("  |  WRITE THIS DOWN AND STORE IT SAFELY.                |");
-    println!("  |  This is the ONLY way to recover your wallet.        |");
     println!("  |  It will NOT be shown again.                         |");
+    println!("  |                                                      |");
+    println!("  |  These 24 words fully recover THIS wallet, including |");
+    println!("  |  the BLS producer key. Keep a wallet.json backup too.|");
     println!("  +------------------------------------------------------+");
     println!();
 
@@ -222,8 +224,16 @@ pub(crate) fn cmd_init(
         }
     }
 
-    // Save wallet
-    wallet.save(wallet_path)?;
+    // Save wallet.
+    // INC-I-167: save() refuses to overwrite an existing wallet by default. This is
+    // the one flow with explicit destructive consent — reaching here with an
+    // existing file requires --force, which already warned at :139-142 — so it is
+    // also the only caller allowed to bypass the guard.
+    if force {
+        wallet.save_forced(wallet_path)?;
+    } else {
+        wallet.save(wallet_path)?;
+    }
 
     // Also write seed phrase to a separate file (same as cmd_new)
     // Permissions: owner-only (0600) to prevent other users from reading the seed
@@ -257,6 +267,20 @@ pub(crate) fn cmd_init(
     println!();
     println!("  WARNING: Delete the seed file after you have written down the phrase:");
     println!("    rm {}", seed_path.display());
+    println!();
+    println!("  BACKUP — this wallet's 24 words are a COMPLETE backup.");
+    println!("  Both keys are derived from the phrase: the Ed25519 spending key and");
+    println!("  the BLS attestation key that identifies you on-chain as a producer.");
+    println!("  Restoring from the phrase reproduces both exactly.");
+    println!();
+    println!("  Still keep an encrypted, offline copy of the wallet file:");
+    println!("    {}", wallet_path.display());
+    println!("  It is the faster recovery path and does not depend on transcription.");
+    println!();
+    println!("  WARNING for wallets created by an EARLIER release: those have a");
+    println!("  RANDOM BLS key that the seed phrase cannot reproduce. If you are");
+    println!("  migrating an existing producer, its wallet.json is the only copy of");
+    println!("  its producer identity -- back up the file, not just the words.");
     println!();
 
     // Print next steps

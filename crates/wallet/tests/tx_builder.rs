@@ -1,3 +1,45 @@
+// OUTPUT CONTRACT: the wallet crate's transaction-construction surface —
+//   TxBuilder::build_transfer, calculate_registration_cost,
+//   calculate_withdrawal_net, vesting_penalty_pct, and the protocol constants
+//   these tests pin against doli-core.
+//
+//   O1: the built transaction shape — tx_type, input_count, output_count
+//       (the change output is present or absent, which is O1's second cell)
+//   O2: the computed scalar — bond cost, fee, net withdrawal, penalty percent
+//   O3: the constant's value — consensus-critical, must equal doli-core exactly
+//
+// PATHS:
+//   P1: build_transfer where the UTXO set must be combined and change is returned
+//   P2: registration cost for a bond count
+//   P3: registration fee across the tiered pending-count multiplier
+//   P4: vesting penalty across the quarter schedule
+//   P5: withdrawal net for a given penalty
+//   P6: TxType discriminants
+//   P7: protocol constants
+//
+// INPUT PARTITIONS (the classes that change which branch or tier runs):
+//   P1: UTXO set smaller than the amount (must combine) — the case asserted here.
+//   P3: pending count per tier — 0 (1.00x), 5 (1.50x), 100 (6.50x), 300 (cap),
+//       1000 (still capped). The cap boundary and beyond-cap are distinct classes
+//       because only they can expose a missing clamp.
+//   P4: quarter boundaries — 0, QUARTER-1, exactly QUARTER, and 4*QUARTER. The
+//       off-by-one pair around a boundary is the partition that catches a wrong
+//       comparison operator.
+//   P5: penalty 75 / 50 / 0 — the endpoints plus a midpoint.
+//   P2/P6/P7: single partition each; the value is a constant, so no input class
+//       can change the result.
+//
+// MATRIX: 3 outputs x 7 paths x their partitions. Each cell is asserted by the
+//   correspondingly named test below. O1 applies only to P1; O2 to P2-P5; O3 to
+//   P6-P7.
+//
+//   EXCEPTION — test_nf013_wallet_crate_no_vdf_dependency is OUTPUT CONTRACT: N/A
+//   and INPUT PARTITIONS: N/A. It is a dependency-absence test: the property under
+//   test is that this file COMPILES and LINKS without VDF/GMP/rug, which no
+//   runtime matrix can express. It has one path (the crate builds or it does not)
+//   and one partition (this build). Its body exists only to give the test
+//   something to execute.
+//
 //! Integration tests: Transaction builder serialization compatibility.
 //!
 //! These tests verify that transactions built by the wallet crate's TxBuilder
@@ -148,6 +190,7 @@ fn test_fr020_registration_fee_matches_protocol() {
 // Requirement: GUI-NF-013 (Must) -- VDF feature flag
 // Acceptance: wallet crate compiles without VDF/GMP
 // This test exists simply by being compilable and passing.
+// OUTPUT CONTRACT: N/A · INPUT PARTITIONS: N/A — see the file header.
 // ============================================================================
 
 #[test]
@@ -155,8 +198,16 @@ fn test_nf013_wallet_crate_no_vdf_dependency() {
     // This test compiles and runs without VDF/GMP/rug.
     // If the wallet crate accidentally depends on doli-core or vdf,
     // compilation would fail on Windows without MSYS2.
+    //
+    // INC-I-162: newly created wallets are version 3 (the BLS attestation key is
+    // derived from the seed phrase). Asserted against the constant rather than a
+    // literal, so a future format change does not break a test that is not about
+    // the format.
     let (wallet, _) = wallet::Wallet::new("no-vdf-test");
-    assert_eq!(wallet.version(), 2);
+    assert_eq!(
+        wallet.version(),
+        wallet::wallet::WALLET_VERSION_SEED_DERIVED_BLS
+    );
     // The fact that this test compiles proves the VDF dependency is absent.
 }
 
