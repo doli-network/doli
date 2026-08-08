@@ -175,3 +175,97 @@ fn inc_i_167_save_must_refuse_to_clobber_a_different_wallet() {
         "P1/O3: save-back must not be refused. stderr: {stderr_p1}"
     );
 }
+
+// OUTPUT CONTRACT: fn cmd_import(wallet_path, input, force) / cmd_export(wallet_path, output, force)
+//   bins/cli/src/cmd_wallet.rs, dispatched from bins/cli/src/main.rs.
+//   The guard in Wallet::save() (bins/cli/src/wallet.rs) is reachable from exactly
+//   two commands — import and export — so each MUST expose the `--force` opt-in
+//   that the refusal message advertises. Without it the message is a dead end and
+//   two shipped workflows have no path at all: rotating backups to a stable
+//   filename (export), and restoring a backup over a damaged wallet (import).
+//
+//   O1: destination file identity — addresses[0].public_key on disk;
+//       PRESERVED / REPLACED.
+//   O2: process exit status       — success / failure.
+//   O3: stderr                    — clap "unexpected argument" / refusal text / clean.
+//
+// PATHS: the forced counterpart of each guarded path:
+//   P4: import --force over an existing DIFFERENT wallet -> MUST replace it.
+//   P5: export --force over an existing file             -> MUST replace it.
+//   P6: export (no flag) twice to the same path          -> second MUST refuse
+//       (pins the documented `doli export ~/backup/wallet-backup.json` example
+//        as the exact workflow that needs the flag).
+//
+// INPUT PARTITIONS: one per path; the branch predicate depends only on the path
+//   terms plus the force flag, never on wallet contents, so a contents-partition
+//   is provably blind here.
+//
+// MATRIX: 3 outputs x 3 paths x 1 partition = 9 cells, all asserted below.
+//   P4 -> O1 REPLACED  / O2 success / O3 no "unexpected argument", no refusal
+//   P5 -> O1 REPLACED  / O2 success / O3 no "unexpected argument", no refusal
+//   P6 -> O1 PRESERVED / O2 failure / O3 refusal present
+#[test]
+fn inc_i_167_force_flag_restores_import_and_export_overwrite() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let victim = tmp.path().join("victim.json");
+    let source = tmp.path().join("source.json");
+    let backup = tmp.path().join("backup.json");
+
+    let out = doli(&victim, &["new"]);
+    assert!(out.status.success(), "setup: victim wallet");
+    let out = doli(&source, &["new"]);
+    assert!(out.status.success(), "setup: source wallet");
+
+    let victim_pk = primary_public_key(&victim);
+    let source_pk = primary_public_key(&source);
+    assert_ne!(victim_pk, source_pk, "setup: identities must differ");
+
+    // ---- P6: export twice to the same path — the second must refuse ----
+    let out = doli(&victim, &["export", backup.to_str().unwrap()]);
+    assert!(out.status.success(), "setup: first export must succeed");
+    let out = doli(&victim, &["export", backup.to_str().unwrap()]);
+    let stderr_p6 = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(
+        !out.status.success(),
+        "P6/O2: a second bare export over the same file must refuse"
+    );
+    assert!(
+        stderr_p6.contains("Refusing to overwrite"),
+        "P6/O3: expected the refusal. stderr: {stderr_p6}"
+    );
+
+    // ---- P5: export --force over an existing file must replace it ----
+    let out = doli(&source, &["export", "--force", backup.to_str().unwrap()]);
+    let stderr_p5 = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(
+        !stderr_p5.contains("unexpected argument"),
+        "P5/O3: `doli export --force` must be a real flag — the refusal message \
+         advertises it, so it must exist. stderr: {stderr_p5}"
+    );
+    assert!(
+        out.status.success(),
+        "P5/O2: export --force must succeed. stderr: {stderr_p5}"
+    );
+    assert_eq!(
+        primary_public_key(&backup),
+        source_pk,
+        "P5/O1: export --force must replace the destination"
+    );
+
+    // ---- P4: import --force over an existing different wallet must replace it ----
+    let out = doli(&victim, &["import", "--force", source.to_str().unwrap()]);
+    let stderr_p4 = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(
+        !stderr_p4.contains("unexpected argument"),
+        "P4/O3: `doli import --force` must be a real flag. stderr: {stderr_p4}"
+    );
+    assert!(
+        out.status.success(),
+        "P4/O2: import --force must succeed. stderr: {stderr_p4}"
+    );
+    assert_eq!(
+        primary_public_key(&victim),
+        source_pk,
+        "P4/O1: import --force must replace the active wallet"
+    );
+}

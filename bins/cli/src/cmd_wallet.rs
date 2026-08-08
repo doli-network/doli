@@ -791,18 +791,43 @@ pub(crate) async fn cmd_history(
     Ok(())
 }
 
-pub(crate) fn cmd_export(wallet_path: &Path, output: &PathBuf) -> Result<()> {
+pub(crate) fn cmd_export(wallet_path: &Path, output: &PathBuf, force: bool) -> Result<()> {
     let wallet = Wallet::load(wallet_path)?;
-    wallet.export(output)?;
+    // INC-I-167: export refuses to overwrite by default, because a stale or
+    // phrase-restored wallet writing over a good backup destroys the only copy of
+    // the registered BLS key. `--force` is the opt-in for rotating backups that
+    // deliberately reuse one filename.
+    if force {
+        if output.exists() {
+            println!("  WARNING: --force specified. Overwriting {:?}", output);
+        }
+        wallet.export_forced(output)?;
+    } else {
+        wallet.export(output)?;
+    }
 
     println!("Wallet exported to: {:?}", output);
 
     Ok(())
 }
 
-pub(crate) fn cmd_import(wallet_path: &PathBuf, input: &PathBuf) -> Result<()> {
+pub(crate) fn cmd_import(wallet_path: &PathBuf, input: &PathBuf, force: bool) -> Result<()> {
     let wallet = Wallet::import(input)?;
-    wallet.save(wallet_path)?;
+    // INC-I-167: import refuses to overwrite the active wallet by default — that
+    // file may hold the only copy of a producer BLS key. `--force` is the opt-in
+    // for a deliberate restore-over of a damaged or superseded wallet.
+    if force {
+        if wallet_path.exists() {
+            println!(
+                "  WARNING: --force specified. Overwriting existing wallet at {:?}",
+                wallet_path
+            );
+            println!("           Its keys, including any BLS producer key, will be lost.");
+        }
+        wallet.save_forced(wallet_path)?;
+    } else {
+        wallet.save(wallet_path)?;
+    }
 
     println!("Wallet imported from: {:?}", input);
     println!("Saved to: {:?}", wallet_path);

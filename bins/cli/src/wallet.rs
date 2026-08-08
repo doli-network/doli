@@ -299,6 +299,14 @@ impl Wallet {
         self.save(path)
     }
 
+    /// Export wallet, bypassing the overwrite guard (`doli export --force`).
+    ///
+    /// # Errors
+    /// Returns an error if the atomic write fails.
+    pub fn export_forced(&self, path: &Path) -> Result<()> {
+        self.save_forced(path)
+    }
+
     /// Import wallet from file
     pub fn import(path: &Path) -> Result<Self> {
         Self::load(path)

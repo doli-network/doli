@@ -156,8 +156,8 @@ impl Wallet {
                 "Refusing to overwrite existing wallet at {}\n  \
                  That file may be the only copy of its BLS producer key — a 24-word \
                  seed phrase does NOT restore it.\n  \
-                 Back it up first, then choose a different path, or force the \
-                 overwrite explicitly if you really mean to replace it.",
+                 Choose a different file, or back up and move the existing wallet \
+                 aside first.",
                 path.display()
             ));
         }

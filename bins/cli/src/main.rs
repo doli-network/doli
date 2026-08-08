@@ -171,11 +171,11 @@ async fn main() -> Result<()> {
         Commands::History { limit } => {
             cmd_wallet::cmd_history(&wallet, &rpc_endpoint, limit).await?;
         }
-        Commands::Export { output } => {
-            cmd_wallet::cmd_export(&wallet, &output)?;
+        Commands::Export { output, force } => {
+            cmd_wallet::cmd_export(&wallet, &output, force)?;
         }
-        Commands::Import { input } => {
-            cmd_wallet::cmd_import(&wallet, &input)?;
+        Commands::Import { input, force } => {
+            cmd_wallet::cmd_import(&wallet, &input, force)?;
         }
         Commands::Info => {
             cmd_wallet::cmd_info(&wallet)?;
