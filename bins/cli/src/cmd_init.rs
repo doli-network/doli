@@ -222,8 +222,16 @@ pub(crate) fn cmd_init(
         }
     }
 
-    // Save wallet
-    wallet.save(wallet_path)?;
+    // Save wallet.
+    // INC-I-167: save() refuses to overwrite an existing wallet by default. This is
+    // the one flow with explicit destructive consent — reaching here with an
+    // existing file requires --force, which already warned at :139-142 — so it is
+    // also the only caller allowed to bypass the guard.
+    if force {
+        wallet.save_forced(wallet_path)?;
+    } else {
+        wallet.save(wallet_path)?;
+    }
 
     // Also write seed phrase to a separate file (same as cmd_new)
     // Permissions: owner-only (0600) to prevent other users from reading the seed

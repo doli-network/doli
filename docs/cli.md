@@ -223,6 +223,9 @@ Arguments:
 doli export ~/backup/wallet-backup.json
 ```
 
+> **Will not overwrite.** If `<OUTPUT>` already exists, the export is refused and
+> nothing is written. Choose a new filename, or move the old backup aside first.
+
 ---
 
 ### 1.9. Import Wallet
@@ -240,6 +243,32 @@ Arguments:
 ```bash
 doli import ~/backup/wallet-backup.json
 ```
+
+> **Will not overwrite.** The wallet is written to the active wallet path (`-w`, or
+> the network default). If a wallet already exists there, the import is refused and
+> the existing file is left untouched:
+>
+> ```
+> Refusing to overwrite existing wallet at /var/lib/doli/mainnet/wallet.json
+>   That file may be the only copy of its BLS producer key — a 24-word seed phrase
+>   does NOT restore it.
+>   Back it up first, then use a different path with -w, or --force if you really
+>   mean to replace it.
+> ```
+>
+> This guard exists because a wallet file is the **only** durable copy of a
+> producer's registered BLS attestation key. The 24-word seed phrase restores the
+> address, funds, and spending key, but **not** that BLS key — so overwriting a
+> producer's `wallet.json` destroys its on-chain identity permanently. Recovery
+> then requires exiting and re-registering, which burns roughly 75% of the bond and
+> resets seniority and delegations.
+>
+> To import into a different location instead, point `-w` at a new path:
+> ```bash
+> doli -w ~/wallets/imported.json import ~/backup/wallet-backup.json
+> ```
+> The only command that will deliberately replace an existing wallet is
+> `doli init --force`, which warns first and requires the explicit flag.
 
 ---
 

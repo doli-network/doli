@@ -1,6 +1,6 @@
 //! Wallet implementation
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
 use bip39::Mnemonic;
@@ -38,6 +38,18 @@ pub struct Wallet {
     version: u32,
     /// Addresses
     addresses: Vec<WalletAddress>,
+    /// INC-I-167: the file this wallet was loaded from, if any. Runtime-only —
+    /// never serialized, so the on-disk format is unchanged and old/new binaries
+    /// read each other's wallets.
+    ///
+    /// `save()` uses it to tell a *save-back* (persisting a wallet to the file it
+    /// came from — always allowed) from a *create* (writing a wallet somewhere new
+    /// — must not clobber an existing file). Deserialization leaves this `None`,
+    /// which is deliberately the conservative value: a wallet with no known origin
+    /// gets create semantics, so forgetting to set it fails safe rather than
+    /// destructive.
+    #[serde(skip)]
+    origin: Option<PathBuf>,
 }
 
 impl Wallet {
@@ -72,6 +84,7 @@ impl Wallet {
             name: name.to_string(),
             version: 2,
             addresses: vec![primary],
+            origin: None,
         };
 
         (wallet, phrase)
@@ -105,6 +118,7 @@ impl Wallet {
             name: name.to_string(),
             version: 2,
             addresses: vec![primary],
+            origin: None,
         })
     }
 
@@ -133,26 +147,149 @@ impl Wallet {
                 }
             }
         })?;
-        let wallet: Wallet = serde_json::from_str(&contents)
+        let mut wallet: Wallet = serde_json::from_str(&contents)
             .with_context(|| format!("failed to parse wallet file: {}", path.display()))?;
+        // INC-I-167: remember where this wallet came from, so save() can allow a
+        // save-back to this same file while refusing to clobber a different one.
+        wallet.origin = Some(path.to_path_buf());
         Ok(wallet)
     }
 
-    /// Save wallet to file
+    /// Save wallet to file.
+    ///
+    /// INC-I-167: refuses to overwrite an existing file that this wallet was not
+    /// loaded from. Overwriting is opt-in via [`Wallet::save_forced`], not the
+    /// default — `wallet.json` may be the only copy of a producer's registered BLS
+    /// key, which a 24-word seed phrase does NOT restore (INC-I-162), so a silent
+    /// clobber is unrecoverable except by exit + re-register at ~75% bond burn.
+    ///
+    /// # Errors
+    /// Returns an error if `path` exists and is not this wallet's origin, or if the
+    /// underlying atomic write fails.
     pub fn save(&self, path: &Path) -> Result<()> {
-        // Create parent directory if needed
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+        if !self.is_origin(path) && path.exists() {
+            anyhow::bail!(
+                "Refusing to overwrite existing wallet at {}\n  \
+                 That file may be the only copy of its BLS producer key — a 24-word \
+                 seed phrase does NOT restore it.\n  \
+                 Back it up first, then use a different path with -w, or --force if \
+                 you really mean to replace it.",
+                path.display()
+            );
         }
+        self.write_to(path)
+    }
+
+    /// Save wallet to file, bypassing the overwrite guard.
+    ///
+    /// Only for flows that have already obtained explicit destructive consent from
+    /// the operator (`doli init --force`, which warns and requires the flag).
+    ///
+    /// # Errors
+    /// Returns an error if the atomic write fails.
+    pub fn save_forced(&self, path: &Path) -> Result<()> {
+        self.write_to(path)
+    }
+
+    /// Is `path` the file this wallet was loaded from?
+    ///
+    /// Compares literally first, then by canonical path so that equivalent
+    /// spellings (`./w.json` vs `w.json`) still count as the same file. A wallet
+    /// with no origin is never a save-back, so the answer is `false` — the
+    /// conservative direction.
+    fn is_origin(&self, path: &Path) -> bool {
+        let Some(origin) = self.origin.as_deref() else {
+            return false;
+        };
+        if origin == path {
+            return true;
+        }
+        match (origin.canonicalize(), path.canonicalize()) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        }
+    }
+
+    /// Serialize and write atomically: a fully-written temp file in the same
+    /// directory is `fsync`ed and then `rename`d over the destination.
+    ///
+    /// INC-I-167: the previous implementation used `std::fs::write`, so a crash or
+    /// full disk mid-write left a truncated wallet — losing key material with no
+    /// torn-write protection. `rename` within a directory is atomic on POSIX, so a
+    /// reader sees either the old file or the new one, never a partial one.
+    fn write_to(&self, path: &Path) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+        let dir = match path.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p,
+            _ => Path::new("."),
+        };
+        let file_name = path
+            .file_name()
+            .ok_or_else(|| anyhow!("invalid wallet path: {}", path.display()))?;
+
+        // Temp name is scoped to this process so it can never collide with, or be
+        // mistaken for, another writer's in-progress file.
+        let mut tmp_name = std::ffi::OsString::from(".");
+        tmp_name.push(file_name);
+        tmp_name.push(format!(".tmp{}", std::process::id()));
+        let tmp = dir.join(tmp_name);
+        let _ = std::fs::remove_file(&tmp); // clear a stale temp from a prior crash
 
         let contents = serde_json::to_string_pretty(self)?;
-        std::fs::write(path, &contents)?;
-        // AUDIT-KEY-001: Restrict wallet file permissions (contains private keys)
-        // Mode 0640: owner rw, group read (doli service user reads via group), no world access
+
+        let write_result = (|| -> Result<()> {
+            use std::io::Write;
+            // AUDIT-KEY-001: wallet files contain private keys. Create the temp file
+            // with its final permissions BEFORE writing, so key material is never
+            // briefly world-readable at the process umask.
+            //
+            // Mode: preserve the destination's existing mode if it has one, so a
+            // save-back never WIDENS an operator's hardened permissions (a producer
+            // wallet.json at 0600 stays 0600). New files get 0640 — owner rw, group
+            // read for the doli service user, no world access.
+            #[cfg(unix)]
+            let mut file = {
+                use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+                let mode = std::fs::metadata(path)
+                    .map(|m| m.permissions().mode() & 0o777)
+                    .unwrap_or(0o640);
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(mode)
+                    .open(&tmp)
+                    .with_context(|| format!("cannot create temp wallet file: {}", tmp.display()))?
+            };
+            #[cfg(not(unix))]
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tmp)
+                .with_context(|| format!("cannot create temp wallet file: {}", tmp.display()))?;
+
+            file.write_all(contents.as_bytes())?;
+            file.sync_all()?; // durable before the rename makes it visible
+            Ok(())
+        })();
+
+        if let Err(e) = write_result {
+            let _ = std::fs::remove_file(&tmp); // never leave key material behind
+            return Err(e);
+        }
+
+        if let Err(e) = std::fs::rename(&tmp, path) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(anyhow!("cannot write wallet to {}: {}", path.display(), e));
+        }
+
+        // Persist the directory entry so the rename survives a power loss.
         #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o640))?;
+        if let Ok(d) = std::fs::File::open(dir) {
+            let _ = d.sync_all();
         }
         Ok(())
     }
