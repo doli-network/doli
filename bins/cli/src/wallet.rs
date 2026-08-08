@@ -68,8 +68,11 @@ impl Wallet {
         let kp = KeyPair::from_seed(ed25519_seed);
         ed25519_seed.zeroize();
 
-        // Generate BLS keypair for attestation
-        let bls_kp = BlsKeyPair::generate();
+        // INC-I-162: derive the BLS attestation key from the SAME BIP-39 seed, so the
+        // 24 words restore the full producer identity and not just the spending key.
+        // Domain-separated from the Ed25519 key via BLS_KEY_INFO inside from_seed().
+        let bls_kp = BlsKeyPair::from_seed(&bip39_seed)
+            .expect("BIP-39 seed is 64 bytes, well above the KeyGen minimum");
 
         let primary = WalletAddress {
             address: kp.address().to_hex(),
@@ -103,7 +106,9 @@ impl Wallet {
         let kp = KeyPair::from_seed(ed25519_seed);
         ed25519_seed.zeroize();
 
-        let bls_kp = BlsKeyPair::generate();
+        // INC-I-162: same derivation as new(), so restoring reproduces the BLS key.
+        let bls_kp = BlsKeyPair::from_seed(&bip39_seed)
+            .expect("BIP-39 seed is 64 bytes, well above the KeyGen minimum");
 
         let primary = WalletAddress {
             address: kp.address().to_hex(),
@@ -170,8 +175,9 @@ impl Wallet {
         if !self.is_origin(path) && path.exists() {
             anyhow::bail!(
                 "Refusing to overwrite existing wallet at {}\n  \
-                 That file may be the only copy of its BLS producer key — a 24-word \
-                 seed phrase does NOT restore it.\n  \
+                 If it was created by a release before BLS keys became seed-derived, \
+                 that file is the ONLY copy of its producer identity and no seed \
+                 phrase can bring it back.\n  \
                  Back it up first, then use a different path with -w, or --force if \
                  you really mean to replace it.",
                 path.display()
@@ -679,6 +685,94 @@ mod tests {
         let (original, phrase) = Wallet::new("test");
         let restored = Wallet::from_seed_phrase("restored", &phrase).unwrap();
         assert_eq!(original.primary_public_key(), restored.primary_public_key());
+    }
+
+    // ========================================================================
+    // INC-I-162: the BLS attestation key must be a pure function of the phrase.
+    //
+    // OUTPUT CONTRACT: fn Wallet::from_seed_phrase(name, phrase) -> Result<Self>
+    //   O1: primary Ed25519 public key — must equal the original's
+    //   O2: primary BLS public key     — must equal the original's (THE DEFECT)
+    //   O3: Result                     — Ok / Err
+    // PATHS:
+    //   P1: valid phrase, same as the wallet it came from -> both keys reproduce
+    //   P2: valid phrase, restored twice                  -> both restores agree
+    //   P3: a DIFFERENT valid phrase                      -> both keys differ
+    //   P4: invalid phrase                                -> Err (covered by
+    //       test_restore_invalid_phrase)
+    // INPUT PARTITIONS: one per path. Sufficient because derivation is a pure
+    //   function of the mnemonic; wallet name and label cannot influence key
+    //   material, so partitioning on them is provably blind to the defect.
+    //   P3 is the discriminating control: without it, a constant/all-zero key
+    //   would satisfy P1 and P2 and look like a pass.
+    // MATRIX: 3 outputs x 4 paths x 1 partition; P1/P2/P3 asserted here, P4 in
+    //   test_restore_invalid_phrase.
+    //   P1 -> O1 equal    / O2 equal    / O3 Ok
+    //   P2 -> O1 equal    / O2 equal    / O3 Ok
+    //   P3 -> O1 differs  / O2 differs  / O3 Ok
+    // ========================================================================
+
+    #[test]
+    fn test_inc_i_162_bls_key_is_derived_from_seed_phrase() {
+        let (original, phrase) = Wallet::new("original");
+
+        // P1: the phrase must reproduce BOTH keys of the wallet it came from.
+        let restored = Wallet::from_seed_phrase("restored", &phrase).unwrap();
+        assert_eq!(
+            original.primary_public_key(),
+            restored.primary_public_key(),
+            "P1/O1: Ed25519 key must be derived from the phrase"
+        );
+        assert_eq!(
+            original.primary_bls_public_key(),
+            restored.primary_bls_public_key(),
+            "P1/O2: BLS key must be derived from the phrase — otherwise the 24 words \
+             are not a complete producer backup (INC-I-162)"
+        );
+
+        // P2: restoring twice must be deterministic.
+        let again = Wallet::from_seed_phrase("again", &phrase).unwrap();
+        assert_eq!(
+            restored.primary_bls_public_key(),
+            again.primary_bls_public_key(),
+            "P2/O2: restore must be deterministic across calls"
+        );
+
+        // P3: a different phrase must give different keys — proves the equality
+        // above is real derivation and not a constant.
+        let (_, other_phrase) = Wallet::new("other");
+        assert_ne!(phrase, other_phrase, "setup: phrases must differ");
+        let other = Wallet::from_seed_phrase("other", &other_phrase).unwrap();
+        assert_ne!(
+            restored.primary_public_key(),
+            other.primary_public_key(),
+            "P3/O1: different phrases must give different Ed25519 keys"
+        );
+        assert_ne!(
+            restored.primary_bls_public_key(),
+            other.primary_bls_public_key(),
+            "P3/O2: different phrases must give different BLS keys"
+        );
+    }
+
+    #[test]
+    fn test_inc_i_162_bls_key_differs_from_ed25519_key_material() {
+        // Domain separation: the BLS key is derived from the same seed as the
+        // Ed25519 key, so the two must not collapse to the same secret. Compared
+        // via PUBLIC keys only — no secret material is read or asserted on.
+        let (w, _) = Wallet::new("test");
+        let ed = w.primary_public_key();
+        let bls = w.primary_bls_public_key().expect("v2 wallet has a BLS key");
+        assert_ne!(
+            ed, bls,
+            "BLS and Ed25519 public keys must not be the same value"
+        );
+        assert_eq!(
+            ed.len(),
+            64,
+            "Ed25519 public key is 32 bytes = 64 hex chars"
+        );
+        assert_eq!(bls.len(), 96, "BLS public key is 48 bytes = 96 hex chars");
     }
 
     #[test]

@@ -768,9 +768,10 @@ ls -la /var/lib/doli/mainnet/{name}/data/wallet.json
 
 **Recovery from seed phrase:**
 
-> ⚠️ **STOP — this does NOT recover a registered producer.** `doli restore` generates a
-> BLS attestation key, but a **new random one**, not the key committed on-chain at
-> registration. The seed phrase derives only the Ed25519 spending key. A restored
+> ⚠️ **STOP for any producer registered before BLS keys became seed-derived.** For those
+> wallets `doli restore` generates a **new random** BLS key, not the one committed on-chain
+> at registration. Wallets created by the current release derive the BLS key from the
+> phrase and DO restore fully. The seed phrase derives only the Ed25519 spending key. A restored
 > producer therefore comes back with the right address and balance and the WRONG
 > identity — silently, since attestation is Ed25519-only today and nothing compares the
 > loaded BLS key to the registered `blsPubkey`.

@@ -74,8 +74,11 @@ impl Wallet {
         let kp = KeyPair::from_seed(ed25519_seed);
         ed25519_seed.zeroize();
 
-        // Generate BLS keypair for attestation
-        let bls_kp = BlsKeyPair::generate();
+        // INC-I-162: derive the BLS attestation key from the SAME BIP-39 seed, so the
+        // 24 words restore the full identity. Must stay identical to the CLI impl in
+        // bins/cli/src/wallet.rs or the two would produce different keys for one phrase.
+        let bls_kp = BlsKeyPair::from_seed(&bip39_seed)
+            .expect("BIP-39 seed is 64 bytes, well above the KeyGen minimum");
 
         let primary = WalletAddress {
             address: kp.address().to_hex(),
@@ -109,7 +112,9 @@ impl Wallet {
         let kp = KeyPair::from_seed(ed25519_seed);
         ed25519_seed.zeroize();
 
-        let bls_kp = BlsKeyPair::generate();
+        // INC-I-162: same derivation as new(), so restoring reproduces the BLS key.
+        let bls_kp = BlsKeyPair::from_seed(&bip39_seed)
+            .expect("BIP-39 seed is 64 bytes, well above the KeyGen minimum");
 
         let primary = WalletAddress {
             address: kp.address().to_hex(),
@@ -154,8 +159,9 @@ impl Wallet {
         if !self.is_origin(path) && path.exists() {
             return Err(anyhow!(
                 "Refusing to overwrite existing wallet at {}\n  \
-                 That file may be the only copy of its BLS producer key — a 24-word \
-                 seed phrase does NOT restore it.\n  \
+                 If it was created by a release before BLS keys became seed-derived, \
+                 that file is the ONLY copy of its producer identity and no seed \
+                 phrase can bring it back.\n  \
                  Choose a different file, or back up and move the existing wallet \
                  aside first.",
                 path.display()
@@ -712,14 +718,29 @@ mod tests {
     }
 
     #[test]
-    fn test_fr002_restore_generates_new_bls_key() {
+    fn test_fr002_restore_derives_the_same_bls_key() {
+        // INC-I-162: this test previously asserted the OPPOSITE — that restore
+        // produced a DIFFERENT BLS key, because BlsKeyPair::generate() drew from
+        // OsRng and ignored the mnemonic. That behaviour meant the 24 words were
+        // not a complete backup for a registered producer, and the test pinned the
+        // defect in place rather than catching it. Inverted, not deleted, so the
+        // change of contract is visible in history.
         let (original, phrase) = Wallet::new("original");
         let restored = Wallet::from_seed_phrase("restored", &phrase).unwrap();
-        // BLS keys are random, not derived -- so they should differ
-        assert_ne!(
+        assert_eq!(
             original.primary_bls_public_key().unwrap(),
             restored.primary_bls_public_key().unwrap(),
-            "BLS key is randomly generated on restore, not derived from seed"
+            "BLS key must be derived from the seed phrase, not randomly generated"
+        );
+
+        // Discriminating control: a different phrase must still give a different
+        // key, otherwise a constant would satisfy the assertion above.
+        let (_, other_phrase) = Wallet::new("other");
+        let other = Wallet::from_seed_phrase("other", &other_phrase).unwrap();
+        assert_ne!(
+            restored.primary_bls_public_key().unwrap(),
+            other.primary_bls_public_key().unwrap(),
+            "different phrases must derive different BLS keys"
         );
     }
 

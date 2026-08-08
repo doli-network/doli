@@ -61,9 +61,9 @@ pub(crate) fn cmd_new(wallet_path: &PathBuf, name: Option<String>) -> Result<()>
     println!("  Then delete the seed file:");
     println!("    rm {}", seed_path.display());
     println!();
-    println!("  NOTE: the 24 words restore your address, funds and spending key --");
-    println!("  but NOT a BLS attestation key. If you ever register this wallet as a");
-    println!("  producer, back up the wallet file itself as well:");
+    println!("  These 24 words fully recover this wallet, including its BLS");
+    println!("  attestation key -- both are derived from the phrase. Keep an");
+    println!("  encrypted offline copy of the wallet file as well:");
     println!("    {}", wallet_path.display());
     println!();
 

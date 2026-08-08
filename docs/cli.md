@@ -77,15 +77,15 @@ All commands support these options:
 
 Create a new wallet file with a BIP-39 seed phrase and derived Ed25519 keypair.
 
-New wallets (version 2) generate a 24-word recovery phrase. The Ed25519 spending key is deterministically derived from this phrase, so the 24 words restore your address, your funds, and your ability to sign transactions.
+New wallets (version 2) generate a 24-word recovery phrase. **Both** keypairs are
+deterministically derived from it — the Ed25519 spending key and the BLS attestation key
+used by producers — so the 24 words are a complete backup of a newly created wallet.
 
-> ⚠️ **The 24 words are not a complete backup for a producer.** A wallet holds a
-> *second* keypair — the BLS attestation key that identifies a registered producer
-> on-chain — and that one is generated randomly, **not** derived from the phrase.
-> Restoring from the phrase produces a wallet with the correct address and balance
-> but a **different** BLS key than the one registered on-chain. See
-> [§1.3 Restore Wallet](#13-restore-wallet) for what that means and how to back up
-> properly.
+> ⚠️ **This is not true of wallets created by earlier releases.** Before BLS keys became
+> seed-derived, the BLS key was generated randomly and no seed phrase can reproduce it.
+> For those wallets — which includes every producer registered before this change —
+> `wallet.json` is the only copy of the producer identity. See
+> [§1.3 Restore Wallet](#13-restore-wallet).
 
 ```bash
 doli new [OPTIONS]
@@ -121,8 +121,8 @@ doli new --name my_wallet
 
 The seed phrase is written to a separate `.seed.txt` file and is **not stored in the wallet JSON**. Write down the 24 words on paper, then delete the seed file. If you lose both the wallet file and the seed words, your funds are unrecoverable.
 
-**Back up `wallet.json` itself as well** — encrypted and offline. The seed file and the
-24 words cover your funds; only the wallet file covers a producer's BLS attestation key.
+**Back up `wallet.json` itself as well** — encrypted and offline. For wallets created
+before BLS keys became seed-derived, the file is the *only* copy of a producer's BLS key.
 Treat the wallet file like cash: it contains your private keys in plaintext, so never put
 it in cloud storage, a shared drive, email, or a chat message, and do not change its
 permissions on a server (it is deliberately locked to the service account).
@@ -174,19 +174,23 @@ doli restore
 `restore` will not overwrite an existing wallet file — it exits with an error and leaves
 the file untouched. Use `-w` to restore to a different path.
 
-#### ⚠️ Restore does not recover a producer identity
+#### ⚠️ Whether restore recovers a producer identity depends on when the wallet was made
 
-A wallet holds **two** keypairs, and the seed phrase only covers one of them:
+A wallet holds **two** keypairs. Which of them the phrase can reproduce changed:
 
-| Key | Restored from the 24 words? | What it controls |
-|-----|:---------------------------:|------------------|
-| Ed25519 spending key | **Yes** — deterministically derived | Your address, your funds, transaction signing |
-| BLS attestation key  | **No** — generated randomly every time | Your registered identity as a producer |
+| Key | Wallet created by **this release or later** | Wallet created by an **earlier release** |
+|-----|:---:|:---:|
+| Ed25519 spending key | **Restored** — always was | **Restored** |
+| BLS attestation key  | **Restored** — now seed-derived | **NOT restored** — was random |
 
-So a restored wallet looks completely correct — same address, same balance, everything
-reconciles — while holding a BLS key that does **not** match the `blsPubkey` committed
-on-chain when the producer registered. Nothing warns you: the node starts, produces, and
-attests normally, because attestation currently uses only the Ed25519 key.
+For a wallet created before the change, restore looks completely correct — same address,
+same balance, everything reconciles — while holding a BLS key that does **not** match the
+`blsPubkey` committed on-chain at registration. Nothing warns you: the node starts,
+produces, and attests normally, because attestation currently uses only the Ed25519 key.
+
+**Every producer registered before this change is in that category**, and the wallet file
+does not record which case it is — so if you are unsure, assume the older behaviour and
+verify.
 
 You can check for a mismatch yourself:
 
@@ -201,8 +205,9 @@ If they differ, the only remedy is to **exit and re-register**, which burns roug
 of the bond (for bonds under one year), resets seniority, and destroys all delegations to
 you. There is no key-rotation transaction.
 
-**Therefore: back up `wallet.json` itself.** The 24 words are sufficient for an ordinary
-wallet and insufficient for a producer.
+**Therefore: back up `wallet.json` itself.** For a wallet created before this change the
+phrase is insufficient for a producer; for a newly created one it is sufficient, but the
+file remains the faster and less error-prone recovery path.
 
 ---
 
