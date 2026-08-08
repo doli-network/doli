@@ -81,10 +81,12 @@ New wallets (version 2) generate a 24-word recovery phrase. **Both** keypairs ar
 deterministically derived from it — the Ed25519 spending key and the BLS attestation key
 used by producers — so the 24 words are a complete backup of a newly created wallet.
 
-> ⚠️ **This is not true of wallets created by earlier releases.** Before BLS keys became
-> seed-derived, the BLS key was generated randomly and no seed phrase can reproduce it.
-> For those wallets — which includes every producer registered before this change —
-> `wallet.json` is the only copy of the producer identity. See
+New wallets are written as **version 3**.
+
+> ⚠️ **Version 1 and 2 wallets are different.** Before BLS keys became seed-derived, the
+> BLS key was random and no seed phrase can reproduce it. For those wallets — which
+> includes every producer registered before this change — `wallet.json` is the only copy
+> of the producer identity. Run `doli info` to see the version of any wallet. See
 > [§1.3 Restore Wallet](#13-restore-wallet).
 
 ```bash
@@ -178,19 +180,22 @@ the file untouched. Use `-w` to restore to a different path.
 
 A wallet holds **two** keypairs. Which of them the phrase can reproduce changed:
 
-| Key | Wallet created by **this release or later** | Wallet created by an **earlier release** |
+| Key | Wallet **version 3** | Wallet **version 1 or 2** |
 |-----|:---:|:---:|
-| Ed25519 spending key | **Restored** — always was | **Restored** |
-| BLS attestation key  | **Restored** — now seed-derived | **NOT restored** — was random |
+| Ed25519 spending key | **Restored** | **Restored** |
+| BLS attestation key  | **Restored** — seed-derived | **NOT restored** — random |
+
+Run `doli info` to see which version a wallet is. It states plainly whether the
+phrase is a complete backup.
 
 For a wallet created before the change, restore looks completely correct — same address,
 same balance, everything reconciles — while holding a BLS key that does **not** match the
 `blsPubkey` committed on-chain at registration. Nothing warns you: the node starts,
 produces, and attests normally, because attestation currently uses only the Ed25519 key.
 
-**Every producer registered before this change is in that category**, and the wallet file
-does not record which case it is — so if you are unsure, assume the older behaviour and
-verify.
+**Every producer registered before this change is version 2 or lower.** You no longer have
+to guess: `doli info` reports the version and tells you directly whether your 24 words can
+restore this wallet.
 
 You can check for a mismatch yourself:
 

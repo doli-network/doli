@@ -14,6 +14,20 @@ use crypto::{
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroize;
 
+/// Wallet format version written by this crate.
+///
+/// History of the `version` field:
+/// - `1` — legacy. Both keys random. No seed phrase.
+/// - `2` — the Ed25519 spending key is derived from the BIP-39 seed. The BLS
+///   attestation key is still random, so the phrase does NOT restore a producer
+///   identity (INC-I-162).
+/// - `3` — BOTH keys are derived from the BIP-39 seed. The phrase is a complete
+///   backup.
+///
+/// Marker only. Nothing gates behaviour on it and every version loads. Must stay
+/// identical to the CLI constant in `bins/cli/src/wallet.rs` (GUI-NF-008).
+pub const WALLET_VERSION_SEED_DERIVED_BLS: u32 = 3;
+
 /// A wallet address with optional label.
 /// Matches the CLI's WalletAddress struct exactly for format compatibility (GUI-NF-008).
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -34,14 +48,13 @@ pub struct WalletAddress {
     pub bls_public_key: Option<String>,
 }
 
-/// Wallet file format.
-/// Version 1 = legacy (random key), Version 2 = BIP-39 derived key.
+/// Wallet file format. See [`WALLET_VERSION_SEED_DERIVED_BLS`] for the version history.
 /// Matches the CLI's Wallet struct exactly for format compatibility (GUI-NF-008).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Wallet {
     /// Wallet name
     name: String,
-    /// Version (1 = legacy, 2 = BIP-39 derived key)
+    /// Format version. See [`WALLET_VERSION_SEED_DERIVED_BLS`].
     version: u32,
     /// Addresses
     addresses: Vec<WalletAddress>,
@@ -91,7 +104,7 @@ impl Wallet {
 
         let wallet = Self {
             name: name.to_string(),
-            version: 2,
+            version: WALLET_VERSION_SEED_DERIVED_BLS,
             addresses: vec![primary],
             origin: None,
         };
@@ -100,7 +113,7 @@ impl Wallet {
     }
 
     /// Restore a wallet from a BIP-39 seed phrase.
-    /// Derives identical Ed25519 key as `new()`. Generates new BLS keypair.
+    /// Derives BOTH keys from the phrase, identically to `new()` (INC-I-162).
     pub fn from_seed_phrase(name: &str, phrase: &str) -> Result<Self> {
         let mnemonic: Mnemonic = phrase
             .parse()
@@ -127,7 +140,7 @@ impl Wallet {
 
         Ok(Self {
             name: name.to_string(),
-            version: 2,
+            version: WALLET_VERSION_SEED_DERIVED_BLS,
             addresses: vec![primary],
             origin: None,
         })
@@ -288,6 +301,15 @@ impl Wallet {
     }
 
     /// Get wallet name.
+    /// Is this wallet's BLS attestation key derived from its seed phrase?
+    ///
+    /// `false` for version 1 and 2 wallets, whose BLS key was drawn from `OsRng`
+    /// and cannot be reproduced from the 24 words (INC-I-162).
+    #[must_use]
+    pub fn bls_is_seed_derived(&self) -> bool {
+        self.version >= WALLET_VERSION_SEED_DERIVED_BLS
+    }
+
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -446,7 +468,7 @@ mod tests {
     #[test]
     fn test_fr001_new_wallet_is_version_2() {
         let (wallet, _) = Wallet::new("test");
-        assert_eq!(wallet.version(), 2);
+        assert_eq!(wallet.version(), WALLET_VERSION_SEED_DERIVED_BLS);
     }
 
     #[test]
@@ -1178,7 +1200,7 @@ mod tests {
         wallet.generate_address(Some("second")).unwrap();
 
         assert_eq!(wallet.name(), "my-wallet");
-        assert_eq!(wallet.version(), 2);
+        assert_eq!(wallet.version(), WALLET_VERSION_SEED_DERIVED_BLS);
         assert_eq!(wallet.addresses().len(), 2);
         assert!(wallet.has_bls_key());
     }

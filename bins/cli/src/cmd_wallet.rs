@@ -857,6 +857,31 @@ pub(crate) fn cmd_info(wallet_path: &Path) -> Result<()> {
         println!("  BLS Key:    none (run 'doli add-bls' to generate)");
     }
     println!();
+    // INC-I-162: state plainly whether the seed phrase is a complete backup of
+    // THIS wallet. Before the version-3 marker existed, an operator had no way to
+    // find this out, and the answer decides whether losing the file loses a
+    // registered producer identity permanently.
+    println!("Backup:");
+    if wallet.bls_is_seed_derived() {
+        println!(
+            "  Wallet version {} — both keys are derived from your 24-word phrase.",
+            wallet.version()
+        );
+        println!("  The phrase is a COMPLETE backup of this wallet.");
+    } else {
+        println!(
+            "  Wallet version {} — the BLS producer key is RANDOM, not derived",
+            wallet.version()
+        );
+        println!("  from your seed phrase. The 24 words restore your address and funds,");
+        println!("  but NOT your registered producer identity.");
+        println!("  This file is the only copy of that key. Back up the file itself.");
+        if wallet.primary_bls_public_key().is_some() {
+            println!("  To confirm a producer still matches the chain, compare the BLS Key");
+            println!("  above with getProducer -> blsPubkey for this address.");
+        }
+    }
+    println!();
     println!("Use the address above for sending and receiving DOLI.");
 
     Ok(())

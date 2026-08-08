@@ -657,9 +657,9 @@ cp ~/backup/wallet.json ~/.doli/wallet.json
 
 **If no backup, but you have the 24-word seed phrase:**
 - `doli restore` always recovers your **address, funds, and spending key**
-- Whether it recovers a producer's **BLS attestation key** depends on when the wallet was
-  created: wallets made by this release or later derive it from the phrase; wallets made
-  by earlier releases used a random key that no phrase can reproduce
+- Whether it recovers a producer's **BLS attestation key** depends on the wallet version.
+  Version 3 derives it from the phrase. Version 1 and 2 used a random key that no phrase
+  can reproduce. Run `doli info` to see the version
 - In the older case the restored wallet looks correct (same address, same balance) but its
   BLS key will not match the `blsPubkey` registered on-chain, and nothing warns you
 - **Every producer registered before this change is in the older case**
@@ -679,8 +679,8 @@ roughly 75% of the bond burned (bonds under one year), seniority reset, all dele
 destroyed. There is no key-rotation transaction.
 
 **Prevention:**
-- Always backup `~/.doli/wallet.json` — for pre-change wallets **the seed phrase is not a
-  substitute for it**
+- Always backup `~/.doli/wallet.json` — for version 1 and 2 wallets **the seed phrase is
+  not a substitute for it**
 - Encrypt the backup and keep it offline; it holds private keys in plaintext
 - Store backups in multiple secure locations
 - Do not widen the wallet file's permissions on a server — it is deliberately locked to

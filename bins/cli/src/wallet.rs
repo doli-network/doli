@@ -10,6 +10,22 @@ use crypto::{
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroize;
 
+/// Wallet format version written by this binary.
+///
+/// History of the `version` field:
+/// - `1` — legacy. Both keys random. No seed phrase.
+/// - `2` — the Ed25519 spending key is derived from the BIP-39 seed. The BLS
+///   attestation key is still random, so the phrase does NOT restore a producer
+///   identity (INC-I-162).
+/// - `3` — BOTH keys are derived from the BIP-39 seed. The phrase is a complete
+///   backup.
+///
+/// The version is a marker only. Nothing gates behaviour on it, and every version
+/// loads and works. It exists so that tooling and operators can tell whether a
+/// given wallet's phrase can restore its producer identity, which is otherwise
+/// impossible to determine from the file.
+pub const WALLET_VERSION_SEED_DERIVED_BLS: u32 = 3;
+
 /// A wallet address with optional label
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WalletAddress {
@@ -34,7 +50,7 @@ pub struct WalletAddress {
 pub struct Wallet {
     /// Wallet name
     name: String,
-    /// Version (1 = legacy, 2 = BIP-39 derived key)
+    /// Format version. See [`WALLET_VERSION_SEED_DERIVED_BLS`].
     version: u32,
     /// Addresses
     addresses: Vec<WalletAddress>,
@@ -85,7 +101,7 @@ impl Wallet {
 
         let wallet = Self {
             name: name.to_string(),
-            version: 2,
+            version: WALLET_VERSION_SEED_DERIVED_BLS,
             addresses: vec![primary],
             origin: None,
         };
@@ -94,7 +110,7 @@ impl Wallet {
     }
 
     /// Restore a wallet from a BIP-39 seed phrase.
-    /// Uses the same derivation as `new()`: first 32 bytes of BIP-39 seed → Ed25519 key.
+    /// Derives BOTH keys from the phrase, identically to `new()` (INC-I-162).
     pub fn from_seed_phrase(name: &str, phrase: &str) -> Result<Self> {
         let mnemonic: Mnemonic = phrase
             .parse()
@@ -121,7 +137,7 @@ impl Wallet {
 
         Ok(Self {
             name: name.to_string(),
-            version: 2,
+            version: WALLET_VERSION_SEED_DERIVED_BLS,
             addresses: vec![primary],
             origin: None,
         })
@@ -173,14 +189,29 @@ impl Wallet {
     /// underlying atomic write fails.
     pub fn save(&self, path: &Path) -> Result<()> {
         if !self.is_origin(path) && path.exists() {
+            // Read the destination's own version so the warning is specific instead
+            // of hedged. A version-2 wallet holds a random BLS key that no phrase can
+            // reproduce; a version-3 wallet is fully recoverable from its 24 words.
+            // If the file cannot be read, say so rather than guess.
+            let risk = match Self::load(path) {
+                Ok(dest) if dest.bls_is_seed_derived() => {
+                    "That wallet is version 3, so its 24-word phrase can restore it.".to_string()
+                }
+                Ok(dest) => format!(
+                    "That wallet is version {}: its BLS producer key is RANDOM and no \
+                     seed phrase can restore it. This file is the only copy.",
+                    dest.version
+                ),
+                Err(_) => "That file could not be read to check its version — treat it \
+                           as irreplaceable."
+                    .to_string(),
+            };
             anyhow::bail!(
-                "Refusing to overwrite existing wallet at {}\n  \
-                 If it was created by a release before BLS keys became seed-derived, \
-                 that file is the ONLY copy of its producer identity and no seed \
-                 phrase can bring it back.\n  \
+                "Refusing to overwrite existing wallet at {}\n  {}\n  \
                  Back it up first, then use a different path with -w, or --force if \
                  you really mean to replace it.",
-                path.display()
+                path.display(),
+                risk
             );
         }
         self.write_to(path)
@@ -316,6 +347,22 @@ impl Wallet {
     /// Import wallet from file
     pub fn import(path: &Path) -> Result<Self> {
         Self::load(path)
+    }
+
+    /// Get the wallet format version. See [`WALLET_VERSION_SEED_DERIVED_BLS`].
+    #[must_use]
+    pub fn version(&self) -> u32 {
+        self.version
+    }
+
+    /// Is this wallet's BLS attestation key derived from its seed phrase?
+    ///
+    /// `false` for version 1 and 2 wallets, whose BLS key was drawn from `OsRng`
+    /// and cannot be reproduced from the 24 words (INC-I-162). For those wallets
+    /// `wallet.json` is the only copy of the producer identity.
+    #[must_use]
+    pub fn bls_is_seed_derived(&self) -> bool {
+        self.version >= WALLET_VERSION_SEED_DERIVED_BLS
     }
 
     /// Get wallet name
@@ -510,7 +557,7 @@ mod tests {
     fn test_new_wallet_v2_returns_seed_phrase() {
         let (wallet, phrase) = Wallet::new("test");
         assert_eq!(wallet.name(), "test");
-        assert_eq!(wallet.version, 2);
+        assert_eq!(wallet.version, WALLET_VERSION_SEED_DERIVED_BLS);
         assert_eq!(phrase.split_whitespace().count(), 24);
         assert_eq!(wallet.addresses().len(), 1);
     }
@@ -752,6 +799,55 @@ mod tests {
             restored.primary_bls_public_key(),
             other.primary_bls_public_key(),
             "P3/O2: different phrases must give different BLS keys"
+        );
+    }
+
+    // ========================================================================
+    // INC-I-162: the wallet version must record WHETHER the BLS key is
+    // seed-derived, so tooling and operators can tell the two cases apart.
+    //
+    // OUTPUT CONTRACT: fn Wallet::bls_is_seed_derived(&self) -> bool
+    //   O1: the boolean
+    //   O2: the `version` field written to disk
+    // PATHS:
+    //   P1: wallet built by new()/from_seed_phrase() -> version 3, true
+    //   P2: wallet deserialized with version 2       -> false
+    //   P3: wallet deserialized with version 1       -> false
+    // INPUT PARTITIONS: one per path — the version integer fully determines the
+    //   answer, so no other input class can change it.
+    // MATRIX: 2 outputs x 3 paths x 1 partition = 6 cells, all asserted.
+    // ========================================================================
+
+    #[test]
+    fn test_inc_i_162_version_marks_seed_derived_bls() {
+        // P1: freshly created and freshly restored wallets are version 3.
+        let (w, phrase) = Wallet::new("test");
+        assert_eq!(w.version, WALLET_VERSION_SEED_DERIVED_BLS);
+        assert!(w.bls_is_seed_derived(), "P1: new() must be seed-derived");
+        let r = Wallet::from_seed_phrase("r", &phrase).unwrap();
+        assert_eq!(r.version, WALLET_VERSION_SEED_DERIVED_BLS);
+        assert!(
+            r.bls_is_seed_derived(),
+            "P1: from_seed_phrase() must be seed-derived"
+        );
+
+        // P2: a version-2 wallet on disk had a RANDOM BLS key. Its phrase cannot
+        // reproduce that key, so the answer must be false.
+        let mut json = serde_json::to_value(&w).unwrap();
+        json["version"] = serde_json::json!(2);
+        let v2: Wallet = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(v2.version, 2);
+        assert!(
+            !v2.bls_is_seed_derived(),
+            "P2: a version-2 wallet must NOT claim its BLS key is seed-derived"
+        );
+
+        // P3: legacy version-1 wallets likewise.
+        json["version"] = serde_json::json!(1);
+        let v1: Wallet = serde_json::from_value(json).unwrap();
+        assert!(
+            !v1.bls_is_seed_derived(),
+            "P3: a version-1 wallet must NOT claim its BLS key is seed-derived"
         );
     }
 
