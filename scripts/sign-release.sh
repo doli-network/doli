@@ -23,7 +23,7 @@ set -euo pipefail
 
 VERSION="${1:?Usage: $0 <version> (e.g., 1.1.10)}"
 VERSION_BARE="${VERSION#v}"  # strip leading 'v' if present
-REPO="e-weil/doli"
+REPO="doli-network/doli"
 
 # --- Locate doli CLI ---
 DOLI="${DOLI_CLI:-}"

@@ -1,6 +1,6 @@
 //! Binary download and verification
 //!
-//! Downloads DOLI binaries from GitHub Releases (primary) or fallback mirror.
+//! Downloads DOLI binaries from GitHub Releases.
 //! GitHub Releases provides:
 //! - Global CDN for fast downloads
 //! - High availability (99.9%+ uptime)
@@ -9,7 +9,7 @@
 
 use crate::{
     platform_identifier, MaintainerSignature, Release, ReleaseMetadata, Result, SignaturesFile,
-    UpdateError, FALLBACK_MIRROR, GITHUB_RELEASES_URL,
+    UpdateError, GITHUB_RELEASES_URL,
 };
 use doli_core::network::Network;
 use sha2::{Digest, Sha256};
@@ -20,7 +20,6 @@ use tracing::{debug, info, warn};
 /// Tries sources in order:
 /// 1. Primary URL from release.binary_url_template
 /// 2. GitHub Releases (CDN)
-/// 3. Fallback mirror
 pub async fn download_binary(release: &Release) -> Result<Vec<u8>> {
     let platform = platform_identifier();
     let url = release.binary_url_template.replace("{platform}", platform);
@@ -36,19 +35,12 @@ pub async fn download_binary(release: &Release) -> Result<Vec<u8>> {
         GITHUB_RELEASES_URL, release.version, platform
     ));
 
-    // Fallback mirror
-    urls_to_try.push(format!(
-        "{}/v{}/doli-node-{}",
-        FALLBACK_MIRROR, release.version, platform
-    ));
-
     let mut last_error = None;
 
     for (i, url) in urls_to_try.iter().enumerate() {
         let source = match i {
             0 => "primary",
-            1 => "GitHub",
-            _ => "fallback",
+            _ => "GitHub",
         };
         debug!("Trying download from {} ({})", source, url);
 
@@ -109,7 +101,6 @@ pub fn verify_hash(binary: &[u8], expected_hash: &str) -> Result<()> {
 /// Tries sources in order:
 /// 1. Custom URL (if provided)
 /// 2. GitHub API (gets latest release tag, then downloads release.json)
-/// 3. Fallback mirror (legacy releases.doli.network/latest.json)
 pub async fn fetch_latest_release(
     custom_url: Option<&str>,
     network: Option<Network>,
@@ -147,23 +138,6 @@ pub async fn fetch_latest_release(
         }
         Err(e) => {
             warn!("GitHub API check failed: {}", e);
-        }
-    }
-
-    // Fallback to legacy mirror
-    let fallback_url = format!("{}/latest.json", FALLBACK_MIRROR);
-    debug!("Trying fallback mirror: {}", fallback_url);
-
-    match fetch_release_from_url(&fallback_url).await {
-        Ok(release) => {
-            if let Some(filtered) = filter_release_by_network(release, network) {
-                info!("Found release v{} from fallback mirror", filtered.version);
-                return Ok(Some(filtered));
-            }
-            return Ok(None);
-        }
-        Err(e) => {
-            warn!("Fallback mirror failed: {}", e);
         }
     }
 

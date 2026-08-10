@@ -31,7 +31,7 @@ The testnet has been relaunched with accelerated epoch parameters for faster tes
 ### 1. Build DOLI
 
 ```bash
-git clone https://github.com/e-weil/doli.git
+git clone https://github.com/doli-network/doli.git
 cd doli
 nix develop
 cargo build --release
@@ -141,7 +141,7 @@ curl -L https://nixos.org/nix/install | sh -s -- --daemon
 exec $SHELL
 
 # Build DOLI
-git clone https://github.com/e-weil/doli.git
+git clone https://github.com/doli-network/doli.git
 cd doli
 nix develop --command cargo build --release
 ```
@@ -315,4 +315,4 @@ Community and partner nodes.
 
 ## Contact
 
-- GitHub: [github.com/e-weil/doli](https://github.com/e-weil/doli)
+- GitHub: [github.com/doli-network/doli](https://github.com/doli-network/doli)

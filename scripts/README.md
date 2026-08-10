@@ -770,8 +770,8 @@ DOLI_TEST_KEYS=1 ./scripts/test_12node_governance.sh
 ./scripts/update.sh v1.0.1
 
 # Via curl (no clone required)
-curl -L https://raw.githubusercontent.com/e-weil/doli/main/scripts/update.sh | bash
-curl -L https://raw.githubusercontent.com/e-weil/doli/main/scripts/update.sh | bash -s v1.0.1
+curl -L https://raw.githubusercontent.com/doli-network/doli/main/scripts/update.sh | bash
+curl -L https://raw.githubusercontent.com/doli-network/doli/main/scripts/update.sh | bash -s v1.0.1
 ```
 
 **Features:**

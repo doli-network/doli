@@ -19,7 +19,7 @@
 
 set -euo pipefail
 
-REPO="e-weil/doli"
+REPO="doli-network/doli"
 BINARY_NAME="doli-node"
 
 # --- Argument parsing ---

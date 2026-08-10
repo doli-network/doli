@@ -115,15 +115,24 @@ pub fn get_maintainer_keys(network: Network) -> Vec<&'static str> {
 /// Default update check interval: 6 hours
 pub const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 3600);
 
-/// GitHub repository for releases (primary source)
-/// Using author's personal repo for authenticity (like torvalds/linux, antirez/redis)
-pub const GITHUB_REPO: &str = "e-weil/doli";
+/// GitHub repository for releases (primary source).
+///
+/// INVARIANT (INC-I-157): the release origin MUST name a namespace the project
+/// actually controls. These constants are the root of trust for every
+/// auto-update and every `doli upgrade` on every host, so whoever owns the
+/// namespace owns the binaries every operator installs.
+///
+/// This previously pointed at an abandoned personal namespace (unregistered,
+/// HTTP 404) and only kept working because of a GitHub rename-redirect. A
+/// rename-redirect is NOT a security boundary: it lapses the instant the
+/// abandoned namespace is re-registered by anyone else, silently handing the
+/// update channel to whoever claims it. Never re-point these at a namespace
+/// outside the project's control, and never rely on a redirect to reach one.
+/// See docs/bugfixes/inc-i-157-installer-integrity-analysis.md.
+pub const GITHUB_REPO: &str = "doli-network/doli";
 
 /// GitHub API URL for latest release
-pub const GITHUB_API_URL: &str = "https://api.github.com/repos/e-weil/doli/releases/latest";
+pub const GITHUB_API_URL: &str = "https://api.github.com/repos/doli-network/doli/releases/latest";
 
 /// GitHub releases download base URL
-pub const GITHUB_RELEASES_URL: &str = "https://github.com/e-weil/doli/releases/download";
-
-/// Fallback update server (if GitHub is unreachable)
-pub const FALLBACK_MIRROR: &str = "https://releases.doli.network";
+pub const GITHUB_RELEASES_URL: &str = "https://github.com/doli-network/doli/releases/download";

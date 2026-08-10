@@ -12,7 +12,7 @@ version = "6.24.1"
 edition = "2021"
 authors = ["DOLI Network <doli@doli.network>"]
 license = "MIT"
-repository = "https://github.com/e-weil/doli"
+repository = "https://github.com/doli-network/doli"
 homepage = "https://www.doli.network"
 rust-version = "1.85"
 

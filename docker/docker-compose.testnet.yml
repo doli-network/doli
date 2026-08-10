@@ -3,7 +3,7 @@
 
 services:
   doli-node:
-    image: ghcr.io/e-weil/doli-node:latest
+    image: ghcr.io/doli-network/doli-node:latest
     build:
       context: ..
       dockerfile: docker/Dockerfile
