@@ -263,6 +263,17 @@ impl NetworkParams {
                 // IMMUTABLE once crossed (INC-I-054).
                 maintainer_derivation_activation_height: 172_000,
 
+                // INC-I-173 state-only fee gate: the exemption becomes the ONE
+                // exhaustive TxType::allows_empty_io() authority, so
+                // AddMaintainer/RemoveMaintainer can finally be mined.
+                // Q1=YES, Q2=YES, Q3=NO ⇒ activation height REQUIRED.
+                // NOT PINNED IN M1 — fail-closed; real value pinned at release
+                // vs live tip + external auto-update window. Pinning a guess now
+                // would become IMMUTABLE the moment the chain crossed it
+                // (INC-I-054), and ~30 external auto-update producers cannot be
+                // stopped for a synchronized restart.
+                inc_i_173_activation_height: u64::MAX,
+
                 // INC-I-172 M2 review F3. Mainnet keeps the historical
                 // hardcoded precondition (INITIAL_MAINTAINER_COUNT = 5), so the
                 // seed path is byte-identical to M2 as reviewed. Mainnet runs
@@ -438,6 +449,36 @@ impl NetworkParams {
                 // Override via `DOLI_MAINTAINER_DERIVATION_ACTIVATION_HEIGHT`.
                 maintainer_derivation_activation_height: 127_200,
 
+                // INC-I-173 state-only fee gate. Strictly ABOVE the INC-I-172
+                // derivation gate (127_200): the newly mineable maintainer txs
+                // must not land before the trust root they mutate is derived.
+                // NOT 0 — that would reinterpret already-validated testnet
+                // history under the new predicate. IMMUTABLE once crossed
+                // (INC-I-054).
+                // Override via `DOLI_INC_I_173_ACTIVATION_HEIGHT`.
+                //
+                // Re-pin history:
+                //   u64::MAX → 130_400 (2026-08-10): initial pin. Live testnet
+                //     tip at pin time: 129_619. Measured block rate:
+                //     10.02 s/block (1000-block sample, timestamps
+                //     1786365479 → 1786375499). Lead time: 781 blocks
+                //     ≈ 2.17 hours — enough for the whole local fleet to cross
+                //     the gate together.
+                //   130_400 → 133_000 (2026-08-10): QA ISSUE-001. Live testnet
+                //     tip at re-pin time: 130_291. Measured block rate:
+                //     10.00 s/block (1000-block sample, heights 129_286 →
+                //     130_286, timestamps 1786372169 → 1786382169). New lead
+                //     time: 2_709 blocks ≈ 7.53 hours. REASON: the testnet
+                //     kept producing throughout M1, so the initial 2.17-hour
+                //     lead decayed to ~120 blocks (≈20 min) BEFORE the change
+                //     was ever deployed. A height crossed by an un-upgraded
+                //     fleet nullifies the mixed-fleet purpose of the gate and
+                //     would freeze a wrong value permanently (INC-I-054). The
+                //     new lead must cover the remainder of M1 (review +
+                //     security audit + commit) PLUS the M2 testnet deploy —
+                //     which is why ~2 hours was not enough.
+                inc_i_173_activation_height: 133_000,
+
                 // INC-I-172 M2 review F3. Unchanged from the historical
                 // hardcoded precondition (INITIAL_MAINTAINER_COUNT = 5): the
                 // local testnet runs 12 producers + seeds, so the precondition
@@ -585,6 +626,9 @@ impl NetworkParams {
                 // Always active on devnet — fresh genesis each run, no history
                 // to reinterpret.
                 maintainer_derivation_activation_height: 0,
+                // INC-I-173 state-only fee gate. Always active on devnet —
+                // fresh genesis each run, no history to reinterpret.
+                inc_i_173_activation_height: 0,
 
                 // INC-I-172 M2 review F3. `scripts/launch_testnet.sh` boots a
                 // TWO-producer devnet. With the historical hardcoded 5 the root

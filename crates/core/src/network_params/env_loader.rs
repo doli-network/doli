@@ -434,6 +434,18 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
                 defaults.maintainer_derivation_activation_height,
             )
         },
+        // INC-I-173 state-only fee gate (TxType::allows_empty_io authority).
+        // Mainnet LOCKED — an .env override here would let a single operator
+        // move a consensus gate that changes block CONTENT and fork itself off
+        // the network.
+        inc_i_173_activation_height: if is_mainnet {
+            defaults.inc_i_173_activation_height
+        } else {
+            env_parse(
+                "DOLI_INC_I_173_ACTIVATION_HEIGHT",
+                defaults.inc_i_173_activation_height,
+            )
+        },
         // INC-I-172 M2 review F3. Deliberately NOT env-overridable on ANY
         // network: the seed precondition is a scale assumption, and the point of
         // moving it into NetworkParams was to make it visible per network in one

@@ -91,6 +91,13 @@ impl Node {
             .with_inc_i_096_activation_height(
                 self.config.network.params().inc_i_096_activation_height,
             )
+            // INC-I-173: MUST be set at BOTH this apply site and the builder site
+            // in production/assembly.rs. Forgetting THIS half is the dangerous
+            // one: the wired builder produces a block this unwired path rejects
+            // (spec F2, both-or-neither).
+            .with_inc_i_173_activation_height(
+                self.config.network.params().inc_i_173_activation_height,
+            )
             .with_oracle_activation_height(self.config.network.params().oracle_activation_height)
             .with_oracle_sunset_triggered(
                 self.oracle_sunset_triggered

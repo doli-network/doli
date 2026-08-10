@@ -591,6 +591,49 @@ pub struct NetworkParams {
     /// Mainnet IMMUTABILITY (INC-I-054): once crossed, never move forward.
     pub maintainer_derivation_activation_height: u64,
 
+    /// INC-I-173: state-only fee/balance exemption derived from ONE exhaustive
+    /// `TxType::allows_empty_io()` authority instead of a hand-maintained list.
+    ///
+    /// The fee gate in `validation/utxo.rs` carried its own 3-type `matches!`
+    /// (`Registration | DelegateBond | RevokeDelegation`) that had drifted from
+    /// every other "state-only" definition in the tree. `AddMaintainer` and
+    /// `RemoveMaintainer` are 0-in/0-out, are admitted to the mempool, are
+    /// relayed and have fully implemented apply handlers — but the block builder
+    /// skipped them every slot and every node rejected a block containing one.
+    /// The governance transactions INC-I-172 exists to make usable could never
+    /// be mined.
+    ///
+    /// At/after this height (strict `>=`) the exemption is
+    /// `Transaction::is_zero_flow()` = 0 inputs AND 0 outputs AND
+    /// `TxType::allows_empty_io()`, whose true-set is curated by AUTHORIZATION:
+    /// `{Registration, DelegateBond, RevokeDelegation, AddMaintainer,
+    /// RemoveMaintainer}`. `Exit` and `SlashProducer` share the same wire shape
+    /// but their apply handlers authenticate nobody, so they stay excluded
+    /// (constraint C1) and are routed to their own incidents. Below the height
+    /// the legacy 3-type expression is retained character-identical
+    /// (INV-COMPAT-001) so a mixed fleet cannot fork.
+    ///
+    /// Deploy questions (INC-I-075 three-question checklist): Q1 **YES**
+    /// (`AddMaintainer`/`RemoveMaintainer` are user-submittable via RPC
+    /// `submitMaintainerChange`), Q2 **YES** (`SlashProducer` is node-generated
+    /// on equivocation and reaches the same classification path), Q3 **NO** (a
+    /// block containing a 0-fee `AddMaintainer` flips REJECT → ACCEPT) ⇒
+    /// **ACTIVATION HEIGHT REQUIRED**. Block CONTENT changes above the gate, so
+    /// the height converts a synchronized-deploy requirement into a
+    /// fleet-upgrade deadline. Protocol version NOT bumped (no `EpochState`
+    /// format change; INC-I-054). **CONSTANT GATE, never a `HardForkSchedule`
+    /// entry** — `current_fork_id` evaluates the schedule at `u64::MAX`, which
+    /// would activate the entry immediately and partition a rolling deploy.
+    ///
+    /// Defaults — inc_i_173_activation_height: mainnet `u64::MAX` (fail-closed;
+    /// the real value is pinned at release against the live tip plus the
+    /// external auto-update window, per the M4 sequencing in the spec), testnet
+    /// `133_000` (re-pinned 2026-08-10 at live tip 130_291, 2_709 blocks
+    /// ≈ 7.53 h of lead at a measured 10.00 s/block; see the re-pin history in
+    /// `defaults.rs`), devnet `0`.
+    /// Mainnet IMMUTABILITY (INC-I-054): once crossed, never move forward.
+    pub inc_i_173_activation_height: u64,
+
     /// How many registered producers must exist before the maintainer trust root
     /// is seeded at all (INC-I-172 M2 review F3).
     ///

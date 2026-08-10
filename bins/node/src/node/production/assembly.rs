@@ -216,6 +216,13 @@ impl Node {
             .with_inc_i_096_activation_height(
                 self.config.network.params().inc_i_096_activation_height,
             )
+            // INC-I-173: MUST be set at BOTH this builder site and the apply site
+            // in apply_block/tx_processing.rs. If only the builder is wired, the
+            // apply path keeps the u64::MAX default and rejects the very block
+            // this node just produced — a self-fork (spec F2, both-or-neither).
+            .with_inc_i_173_activation_height(
+                self.config.network.params().inc_i_173_activation_height,
+            )
             .with_oracle_activation_height(self.config.network.params().oracle_activation_height)
             .with_oracle_sunset_triggered(
                 self.oracle_sunset_triggered
