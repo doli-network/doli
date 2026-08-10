@@ -1367,7 +1367,7 @@ doli update vote --approve --version <VERSION>
 doli update vote --veto --version <VERSION>
 ```
 
-**WHITEPAPER Reference:** Section 15 (Governance) - 40% weighted veto threshold.
+**WHITEPAPER Reference:** Section 15 (Governance). Note: the code implements a 40% veto threshold by producer HEAD COUNT — one active producer, one vote. The weighted variant the WHITEPAPER describes was never reachable from production code and was deleted in INC-I-172.
 
 ### 10.4 View Vote Status
 
@@ -1915,6 +1915,8 @@ Options:
       --yes                         Skip confirmation
       --doli-node-path <PATH>       Custom path to doli-node binary
       --service <NAME>              Restart only this systemd service
+      --data-dir <PATH>             Node data directory holding maintainer_state.bin
+                                    (default: the platform node data dir)
 ```
 
 **Example:**
@@ -1925,6 +1927,41 @@ doli upgrade --yes
 # Upgrade to specific version
 doli upgrade --version v1.1.12 --yes
 ```
+
+### 18.1. Which keys authorise the install
+
+`doli upgrade` runs as root and refuses to install a release that is not signed by the
+trust root of THIS host. It resolves that root from `<data-dir>/maintainer_state.bin`,
+the same file the node uses, and prints the provenance before installing:
+
+```
+Trust root: OnChain (5 key(s), threshold 3, mainnet) from /var/lib/doli/mainnet
+```
+
+- `OnChain` — the host's on-chain maintainer set is authoritative.
+- `Bootstrap` — the host has never established an on-chain set (fresh install). The
+  compile-time keys are used. If you see this on a node that was previously synced, its
+  data directory was wiped or `maintainer_state.bin` was deleted.
+- If the file exists but cannot be decoded, the command ABORTS. It never falls back to
+  the compiled keys.
+
+### 18.2. `--network` is NOT a security boundary (known gap)
+
+`--network` selects which compile-time key array is used when — and only when — this host
+has no on-chain maintainer set. **It does not bind a signature to a network.** Two facts,
+both current:
+
+1. The mainnet and testnet bootstrap key arrays are **byte-identical**
+   (`crates/updater/src/constants.rs`).
+2. The signed release message is `{version}:{sha256(CHECKSUMS.txt)}` — it carries **no
+   network term**.
+
+So a signature produced for a testnet release verifies against the mainnet root, and vice
+versa. Do not treat `--network` as a control that prevents cross-network release replay;
+it does not, and no other mechanism does either today. Closing this requires putting the
+network into the signed bytes, which invalidates every already-published
+`SIGNATURES.json` and therefore needs its own coordinated rollout (INC-I-172
+AUDIT-P2-012, deferred).
 
 ---
 

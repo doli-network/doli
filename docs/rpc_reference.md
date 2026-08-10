@@ -1015,7 +1015,15 @@ curl -X POST http://127.0.0.1:8500 \
 
 ### getMaintainerSet
 
-Returns the current maintainer set. Since v1.1.15, reads from the persisted `MaintainerState` (bootstrapped from the first 5 registered producers, then governed via on-chain `MaintainerAdd`/`MaintainerRemove` transactions). Falls back to ad-hoc derivation if `MaintainerState` is not yet available.
+Returns the current maintainer set. Since v1.1.15, reads from the persisted `MaintainerState` (bootstrapped from the first registered producers, then governed via on-chain `MaintainerAdd`/`MaintainerRemove` transactions). Falls back to a derivation from the producer registry if `MaintainerState` is not attached.
+
+**Read `source` and `enforced` before comparing two nodes.**
+
+- `source: "on-chain"`, `enforced: true` — this **is** the root the node enforces for governance and the one the updater installs against. Only these responses are comparable across nodes.
+- `source: "derived"`, `enforced: false` — **advisory**. No `MaintainerState` is attached, so nothing here is enforced by anyone; it is what the seed *would* produce from the current producer registry. Below `maintainer_derivation_activation_height` the node's own seed still uses the frozen HashMap-ordered stable sort, so the enforced membership may differ from the canonical ordering shown here. The response carries an `advisory_note` saying which of the two cases applies.
+- `source: "none"`, `enforced: false` — neither a `MaintainerState` nor a `ProducerSet` is attached.
+
+INC-I-172: the `derived` branch used to be a fourth, ungated derivation (`all_producers()` — a `HashMap` walk — plus a stable sort on `registered_at` plus `take(5)`). Because every genesis producer ties at `registered_at == 0`, two honest nodes on the same chain printed **different** `maintainers` arrays. It now uses the canonical total order `(registered_at, pubkey_bytes)`, so the array is deterministic — but it is still advisory, and cross-node comparison is only meaningful when `source` is `on-chain` on both.
 
 **Parameters:** None
 
@@ -1035,16 +1043,18 @@ Returns the current maintainer set. Since v1.1.15, reads from the persisted `Mai
     "min_maintainers": 3,
     "initial_maintainer_count": 5,
     "last_change_block": 500,
-    "source": "on-chain"
+    "source": "on-chain",
+    "enforced": true,
+    "maintainer_derivation_activation_height": 172000
 }
 ```
 
 **Source values:**
-| Value | Description |
-|-------|-------------|
-| `on-chain` | Read from persisted `MaintainerState` (bootstrapped or governed) |
-| `derived` | Fallback: ad-hoc derivation from producer registry (pre-v1.1.15 behavior) |
-```
+| Value | `enforced` | Description |
+|-------|-----------|-------------|
+| `on-chain` | `true` | Read from the persisted `MaintainerState`. The root the node actually enforces. |
+| `derived` | `false` | Advisory. Canonical `(registered_at, pubkey_bytes)` derivation from the producer registry; carries `advisory_note`. |
+| `none` | `false` | No `MaintainerState` and no `ProducerSet` attached; nothing can be reported. |
 
 **Example:**
 ```bash

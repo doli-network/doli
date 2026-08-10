@@ -236,6 +236,11 @@ pub(crate) enum Commands {
         /// Restart only this systemd service (e.g. doli-mainnet-node3)
         #[arg(long)]
         service: Option<String>,
+
+        /// Node data directory holding maintainer_state.bin — the on-chain trust root
+        /// this install is verified against (default: the platform node data dir).
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
     },
 
     /// Release management commands (maintainer signing)

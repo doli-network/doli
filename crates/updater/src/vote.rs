@@ -1,7 +1,14 @@
 //! Veto voting system
 //!
-//! Producers can vote to veto any proposed update during the 7-day period.
+//! Producers can vote to veto any proposed update during the veto period
+//! (`VETO_PERIOD`, or the network-specific `UpdateParams::veto_period_secs`).
 //! If >= 40% of active producers veto, the update is rejected.
+//!
+//! Veto counting is by HEAD COUNT. The seniority-weighted variant that used to live
+//! here was never reachable from production code — its only callers were `#[cfg(test)]`
+//! — while four documents and one log line told operators a "7-day seniority-weighted
+//! veto" was protecting them. It was deleted in INC-I-172 M1 (F8) so the code and the
+//! documentation say the same thing.
 
 use crypto::{PublicKey, Signature as CryptoSignature};
 use serde::{Deserialize, Serialize};
@@ -82,8 +89,7 @@ impl VoteMessage {
 
 /// Tracks votes for a specific release
 ///
-/// Supports both count-based and weight-based veto calculations.
-/// Weight-based voting gives more power to senior producers (anti-Sybil).
+/// Veto calculation is count-based: one registered producer, one vote.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VoteTracker {
     /// Version being tracked
@@ -94,11 +100,6 @@ pub struct VoteTracker {
 
     /// Set of producer IDs that have approved
     approvals: HashSet<String>,
-
-    /// Weight of each producer (by ID)
-    /// If empty, falls back to count-based calculation
-    #[serde(default)]
-    producer_weights: std::collections::HashMap<String, u64>,
 }
 
 impl Default for VoteTracker {
@@ -114,27 +115,7 @@ impl VoteTracker {
             version,
             vetos: HashSet::new(),
             approvals: HashSet::new(),
-            producer_weights: std::collections::HashMap::new(),
         }
-    }
-
-    /// Create a vote tracker with weighted voting
-    ///
-    /// # Arguments
-    /// - `version`: The release version being voted on
-    /// - `weights`: Map of producer IDs to their seniority weights
-    pub fn with_weights(version: String, weights: std::collections::HashMap<String, u64>) -> Self {
-        Self {
-            version,
-            vetos: HashSet::new(),
-            approvals: HashSet::new(),
-            producer_weights: weights,
-        }
-    }
-
-    /// Set producer weights for weighted voting
-    pub fn set_weights(&mut self, weights: std::collections::HashMap<String, u64>) {
-        self.producer_weights = weights;
     }
 
     /// Record a vote from a producer
@@ -167,9 +148,7 @@ impl VoteTracker {
         self.vetos.len() + self.approvals.len()
     }
 
-    /// Calculate if update should be rejected (count-based, legacy)
-    ///
-    /// Prefer `should_reject_weighted` for Sybil-resistant voting.
+    /// Calculate if the update should be rejected: veto head count >= 40% of producers.
     pub fn should_reject(&self, total_producers: usize) -> bool {
         if total_producers == 0 {
             return false;
@@ -179,57 +158,12 @@ impl VoteTracker {
         veto_percent >= crate::VETO_THRESHOLD_PERCENT as usize
     }
 
-    /// Calculate if update should be rejected using weighted voting
-    ///
-    /// Uses producer seniority weights for anti-Sybil resistance.
-    /// A whale with many new nodes has less voting power than
-    /// established producers.
-    ///
-    /// # Arguments
-    /// - `total_weight`: Total weight of all active producers
-    ///
-    /// # Returns
-    /// `true` if veto weight >= 40% of total weight
-    pub fn should_reject_weighted(&self, total_weight: u64) -> bool {
-        if total_weight == 0 {
-            return false;
-        }
-
-        let veto_weight = self.veto_weight();
-        let veto_percent = (veto_weight * 100) / total_weight;
-        veto_percent >= crate::VETO_THRESHOLD_PERCENT as u64
-    }
-
-    /// Get the total weight of veto votes
-    pub fn veto_weight(&self) -> u64 {
-        self.vetos
-            .iter()
-            .map(|id| self.producer_weights.get(id).copied().unwrap_or(1))
-            .sum()
-    }
-
-    /// Get the total weight of approval votes
-    pub fn approval_weight(&self) -> u64 {
-        self.approvals
-            .iter()
-            .map(|id| self.producer_weights.get(id).copied().unwrap_or(1))
-            .sum()
-    }
-
-    /// Get current veto percentage (count-based, legacy)
+    /// Get current veto percentage
     pub fn veto_percent(&self, total_producers: usize) -> u8 {
         if total_producers == 0 {
             return 0;
         }
         ((self.vetos.len() * 100) / total_producers) as u8
-    }
-
-    /// Get current veto percentage (weight-based)
-    pub fn veto_percent_weighted(&self, total_weight: u64) -> u8 {
-        if total_weight == 0 {
-            return 0;
-        }
-        ((self.veto_weight() * 100) / total_weight) as u8
     }
 
     /// Get the version being tracked
@@ -281,78 +215,5 @@ mod tests {
 
         let bytes = msg.message_bytes();
         assert!(bytes.starts_with(b"1.0.0:veto:"));
-    }
-
-    #[test]
-    fn test_weighted_voting() {
-        // Set up weights: senior producers have more weight
-        let mut weights = std::collections::HashMap::new();
-        weights.insert("senior1".to_string(), 4); // 4-year veteran
-        weights.insert("senior2".to_string(), 3); // 3-year veteran
-        weights.insert("junior1".to_string(), 1); // New producer
-        weights.insert("junior2".to_string(), 1); // New producer
-        weights.insert("junior3".to_string(), 1); // New producer
-
-        let mut tracker = VoteTracker::with_weights("1.0.0".into(), weights);
-
-        // Total weight = 4 + 3 + 1 + 1 + 1 = 10
-
-        // Junior votes veto (weight 1)
-        tracker.record_vote("junior1".into(), Vote::Veto);
-        assert_eq!(tracker.veto_weight(), 1);
-        assert!(!tracker.should_reject_weighted(10)); // 10% < 40%
-
-        // Another junior votes veto (total weight 2)
-        tracker.record_vote("junior2".into(), Vote::Veto);
-        assert_eq!(tracker.veto_weight(), 2);
-        assert!(!tracker.should_reject_weighted(10)); // 20% < 40%
-
-        // Senior producer votes veto (weight 4, total 6)
-        tracker.record_vote("senior1".into(), Vote::Veto);
-        assert_eq!(tracker.veto_weight(), 6);
-        assert!(tracker.should_reject_weighted(10)); // 60% >= 40%
-    }
-
-    #[test]
-    fn test_weighted_vs_count_difference() {
-        // Scenario: 1 senior (weight 4) vs 3 juniors (weight 1 each)
-        let mut weights = std::collections::HashMap::new();
-        weights.insert("senior".to_string(), 4);
-        weights.insert("junior1".to_string(), 1);
-        weights.insert("junior2".to_string(), 1);
-        weights.insert("junior3".to_string(), 1);
-
-        let mut tracker = VoteTracker::with_weights("1.0.0".into(), weights);
-        let total_weight = 7; // 4 + 1 + 1 + 1
-        let total_count = 4;
-
-        // Senior vetoes alone
-        tracker.record_vote("senior".into(), Vote::Veto);
-
-        // Count-based: 1/4 = 25% - NOT rejected
-        assert!(!tracker.should_reject(total_count));
-
-        // Weight-based: 4/7 = 57% - REJECTED
-        assert!(tracker.should_reject_weighted(total_weight));
-
-        // This is the anti-Sybil protection: a whale's 3 new nodes
-        // can't outvote a single established producer
-    }
-
-    #[test]
-    fn test_veto_percent_weighted() {
-        let mut weights = std::collections::HashMap::new();
-        weights.insert("p1".to_string(), 2);
-        weights.insert("p2".to_string(), 3);
-        weights.insert("p3".to_string(), 5);
-
-        let mut tracker = VoteTracker::with_weights("1.0.0".into(), weights);
-        let total_weight = 10;
-
-        tracker.record_vote("p1".into(), Vote::Veto);
-        assert_eq!(tracker.veto_percent_weighted(total_weight), 20);
-
-        tracker.record_vote("p2".into(), Vote::Veto);
-        assert_eq!(tracker.veto_percent_weighted(total_weight), 50);
     }
 }

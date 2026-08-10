@@ -9,13 +9,21 @@ use crate::test_keys::{should_use_test_keys, test_maintainer_pubkeys};
 // Constants - Simple, fixed, no exceptions
 // ============================================================================
 
-/// Veto period: 5 minutes for ALL updates (early network; target: 7 days)
+/// Veto period: 5 minutes for ALL updates.
+///
+/// This is the CONFIGURED value and the one the code enforces. Nothing in this
+/// repository implements a "7-day veto" — do not describe one in docs, log lines or
+/// operator-facing text (INC-I-172 F8/G4). Network-specific overrides live in
+/// `UpdateParams::veto_period_secs`; report that value, never a literal.
 pub const VETO_PERIOD: Duration = Duration::from_secs(5 * 60);
 
 /// Grace period after approval: 1 epoch (~1h) to update before enforcement
 pub const GRACE_PERIOD: Duration = Duration::from_secs(3600);
 
-/// Veto threshold: 40% of active producers (weighted by seniority)
+/// Veto threshold: 40% of active producers, by HEAD COUNT.
+///
+/// There is no seniority weighting: the weighted-veto machinery was never reachable
+/// from production code and was deleted in INC-I-172 M1 (F8).
 ///
 /// Why 40% instead of 33%:
 /// - 33% allows a $44K early attacker to block governance for 4 years
@@ -25,15 +33,23 @@ pub const GRACE_PERIOD: Duration = Duration::from_secs(3600);
 /// Note: This must match VETO_THRESHOLD_PERCENT in doli-storage
 pub const VETO_THRESHOLD_PERCENT: u8 = 40;
 
-/// Required maintainer signatures: 3 of 5
+/// Required maintainer signatures for the BOOTSTRAP trust root: 3 DISTINCT signers of 5.
+///
+/// This is the threshold of `TrustRoot::bootstrap` only. An on-chain root carries and
+/// uses its own `MaintainerSet::threshold`.
 pub const REQUIRED_SIGNATURES: usize = 3;
 
 /// Bootstrap maintainer public keys for mainnet (Ed25519, hex-encoded)
 ///
 /// N1-N5 are both **producers AND maintainers** on mainnet (dual role).
 /// N6-N12 are producers only — they produce blocks but cannot sign releases.
-/// These keys are used as fallback for release signature verification (3-of-5)
-/// before on-chain state is available. Once synced, on-chain keys take precedence.
+///
+/// These keys are the trust root ONLY for a node that has never established an
+/// on-chain maintainer set, and for the CLI, which has no chain state to read.
+/// They are NOT a fallback (INC-I-172 F1): once a node has an on-chain set, that set
+/// is authoritative, and an on-chain set that exists and is empty or sub-threshold
+/// FAILS CLOSED — verification refuses rather than returning here. Only
+/// `TrustRoot::bootstrap` may read this array.
 pub const BOOTSTRAP_MAINTAINER_KEYS_MAINNET: [&str; 5] = [
     // N1 — producer + maintainer
     "202047256a8072a8b8f476691b9a5ae87710cc545e8707ca9fe0c803c3e6d3df",
@@ -51,8 +67,11 @@ pub const BOOTSTRAP_MAINTAINER_KEYS_MAINNET: [&str; 5] = [
 ///
 /// NT1-NT5 are both **producers AND maintainers** on testnet (dual role).
 /// NT6-NT12 are producers only — they produce blocks but cannot sign releases.
-/// These keys are used as fallback for release signature verification (3-of-5)
-/// before on-chain state is available. Once synced, on-chain keys take precedence.
+///
+/// Same rule as the mainnet array: this is the trust root ONLY for a node that has
+/// never established an on-chain maintainer set, and for the CLI. It is not a
+/// fallback, and an empty or sub-threshold on-chain root never reaches it
+/// (INC-I-172 F1).
 pub const BOOTSTRAP_MAINTAINER_KEYS_TESTNET: [&str; 5] = [
     // NT1 — producer + maintainer
     "202047256a8072a8b8f476691b9a5ae87710cc545e8707ca9fe0c803c3e6d3df",
@@ -66,7 +85,26 @@ pub const BOOTSTRAP_MAINTAINER_KEYS_TESTNET: [&str; 5] = [
     "3047e96b13276dd92ef5eb2d6396e66c29909217f11f8c0544ea7d76a76c7602",
 ];
 
-/// Get the bootstrap maintainer keys for a specific network
+/// Get the bootstrap maintainer keys for a specific network.
+///
+/// # This selection is NOT a cross-network security boundary (AUDIT-P2-012)
+///
+/// Two facts, both current and both verifiable above:
+///
+/// 1. [`BOOTSTRAP_MAINTAINER_KEYS_MAINNET`] and [`BOOTSTRAP_MAINTAINER_KEYS_TESTNET`] are
+///    **byte-identical** — same five hex strings, same order.
+/// 2. The signed release message is `"{version}:{sha256(CHECKSUMS.txt)}"`
+///    (`verification.rs`). It carries **no network term**.
+///
+/// Therefore a signature produced for a TESTNET release is a valid authorization for the
+/// same version on MAINNET, and vice versa. Threading `network` through
+/// `doli upgrade` / `doli-node upgrade` selects a key ARRAY; it binds nothing. Do not
+/// describe `--network` as preventing cross-network replay in code comments, operator
+/// output or docs — see `docs/cli.md` §18.2, which states the gap explicitly.
+///
+/// Closing it requires putting the network into the signed bytes, which invalidates every
+/// already-published `SIGNATURES.json` and so needs its own coordinated rollout. Deferred
+/// out of INC-I-172 M1 (no activation height, no flag-day).
 pub fn bootstrap_maintainer_keys(network: Network) -> &'static [&'static str; 5] {
     match network {
         Network::Mainnet => &BOOTSTRAP_MAINTAINER_KEYS_MAINNET,

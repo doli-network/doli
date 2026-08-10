@@ -1,8 +1,8 @@
 //! Update application and rollback
 
 use crate::{
-    current_timestamp, download_binary, verify_hash, veto_deadline, veto_period_ended, Release,
-    Result, UpdateError, VETO_THRESHOLD_PERCENT,
+    current_timestamp, verify_release_with_trust_root, veto_deadline, veto_period_ended, Release,
+    Result, TrustRoot, UpdateError, VETO_THRESHOLD_PERCENT,
 };
 use std::path::{Path, PathBuf};
 use tokio::fs;
@@ -54,34 +54,44 @@ pub async fn backup_current() -> Result<PathBuf> {
 /// This function:
 /// 1. **SECURITY CHECK**: Verifies veto period has ended
 /// 2. **SECURITY CHECK**: Verifies update was approved (not rejected)
-/// 3. Downloads the new binary
-/// 4. Verifies the hash
-/// 5. Backs up the current binary
-/// 6. Installs the new binary
-/// 7. Sets executable permissions
+/// 3. **SECURITY CHECK**: Re-verifies the staged release against the CURRENT trust root
+/// 4. Delegates download + install to [`auto_apply_from_github`], which binds the
+///    signed CHECKSUMS.txt hash to the tarball it actually installs
 ///
 /// # Arguments
 /// * `release` - The release to apply
+/// * `first_notified_at` - NODE-LOCAL timestamp at which this node first observed the
+///   release. The veto window is measured from here, never from the unsigned
+///   `release.published_at` (INC-I-172 F7(b)).
 /// * `approved` - Whether the update was approved by the community
 /// * `veto_percent` - The percentage of veto votes (if known)
+/// * `root` - The CURRENT release-verification trust root. **Required, not optional.**
+///   This was the fifth install path and it performed no signature check at all
+///   (INC-I-172 F2): a pending update staged before a key rotation and applied by hand
+///   installed under the revoked signers, and revocation that cannot reach the manual
+///   apply path is not revocation. Taking the root as a parameter is what makes
+///   omission impossible — a caller cannot forget an argument the compiler demands.
 ///
 /// # Security
 /// Updates can ONLY be applied after:
-/// - The 7-day veto period has ended
+/// - The configured veto period (`VETO_PERIOD`) has ended
 /// - The community has NOT rejected it (< 40% veto)
+/// - The staged release still verifies against the root resolved AT THIS MOMENT
 ///
 /// This prevents producers from applying potentially malicious updates
 /// before the community has a chance to review and veto.
 pub async fn apply_update(
     release: &Release,
+    first_notified_at: u64,
     approved: bool,
     veto_percent: Option<u8>,
+    root: &TrustRoot,
 ) -> Result<()> {
     info!("Attempting to apply update to version {}", release.version);
 
     // SECURITY CHECK 1: Veto period must be over
-    if !veto_period_ended(release) {
-        let deadline = veto_deadline(release);
+    if !veto_period_ended(first_notified_at) {
+        let deadline = veto_deadline(first_notified_at);
         let remaining_secs = deadline.saturating_sub(current_timestamp());
         let remaining_hours = remaining_secs / 3600;
 
@@ -118,23 +128,41 @@ pub async fn apply_update(
         return Err(UpdateError::NotApproved);
     }
 
+    // SECURITY CHECK 3 (INC-I-172 F2): re-verify against the CURRENT trust root.
+    // A pending update is restored from `pending_update.json` across any number of
+    // restarts, so the root that authorised it may since have been rotated. This is
+    // the same gate `UpdateService::auto_apply` performs; both must exist or the
+    // manual command is a bypass of the automatic one.
+    let distinct_signers = verify_release_with_trust_root(release, root).inspect_err(|e| {
+        error!(
+            "Refusing to apply v{}: the staged release does not verify against the current {} \
+             trust root ({} keys, threshold {}): {}",
+            release.version,
+            root.provenance(),
+            root.keys().len(),
+            root.threshold(),
+            e
+        );
+    })?;
+
     info!(
-        "Security checks passed. Applying update to version {}",
+        "Security checks passed ({} distinct signer(s) under the {} trust root). Applying \
+         update to version {}",
+        distinct_signers,
+        root.provenance(),
         release.version
     );
 
-    // 1. Download
-    let binary = download_binary(release).await?;
-
-    // 2. Verify hash
-    verify_hash(&binary, &release.binary_sha256)?;
-
-    // 3. Backup current
-    let _backup = backup_current().await?;
-
-    // 4. Install new binary
-    let current = current_binary_path()?;
-    install_binary(&binary, &current).await?;
+    // Download + install through the SAME artifact-bound path the auto-updater uses.
+    //
+    // `release.binary_sha256` is sha256(CHECKSUMS.txt) — the value the maintainer
+    // signatures cover (`SignaturesFile::checksums_sha256`), NOT the hash of any
+    // binary. The code this replaced called `verify_hash(&binary, &release.binary_sha256)`,
+    // comparing a downloaded binary against the hash of a text file: two different
+    // objects, so the check could never pass for a GitHub-sourced release. Routing
+    // through `auto_apply_from_github` fixes the operand and closes the chain
+    // signatures → CHECKSUMS.txt → per-platform hash → tarball.
+    auto_apply_from_github(&release.version, &release.binary_sha256).await?;
 
     info!("Update to {} applied successfully", release.version);
     info!("Node will restart to apply changes");
@@ -487,7 +515,7 @@ pub async fn auto_apply_from_github(version: &str, signed_checksums_sha256: &str
     }
 
     // 8. Update agent skills (best-effort — skill failure never blocks node update)
-    match install_skills_from_tarball(&tarball) {
+    match crate::skills::install_skills_from_tarball(&tarball) {
         Ok(count) if count > 0 => info!("Updated {} agent skills", count),
         Ok(_) => debug!("No skills found in tarball"),
         Err(e) => warn!("Failed to update agent skills: {} (non-fatal)", e),
@@ -498,88 +526,6 @@ pub async fn auto_apply_from_github(version: &str, signed_checksums_sha256: &str
         version, target
     );
     Ok(())
-}
-
-/// Extract and install agent skills from a release tarball to ~/.doli/skills/
-///
-/// Skills are markdown files that enable AI agents to operate DOLI nodes.
-/// They live in the tarball under `*/skills/**`. This function extracts them
-/// to `~/.doli/skills/`, replacing any previously installed skills.
-///
-/// Best-effort: returns Ok(count) on success, Err on failure.
-/// Callers should treat failure as non-fatal (skills are not required for node operation).
-pub fn install_skills_from_tarball(tarball: &[u8]) -> Result<usize> {
-    use flate2::read::GzDecoder;
-    use std::io::Read;
-    use tar::Archive;
-
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .map_err(|_| UpdateError::InstallFailed("Cannot determine home directory".into()))?;
-    let skills_dir = PathBuf::from(&home).join(".doli").join("skills");
-
-    // Collect skill entries from tarball
-    let decoder = GzDecoder::new(tarball);
-    let mut archive = Archive::new(decoder);
-    let mut skill_count = 0;
-
-    // Clear previous skills
-    if skills_dir.exists() {
-        std::fs::remove_dir_all(&skills_dir).map_err(|e| {
-            UpdateError::InstallFailed(format!("Failed to clear old skills: {}", e))
-        })?;
-    }
-
-    for entry in archive
-        .entries()
-        .map_err(|e| UpdateError::InstallFailed(e.to_string()))?
-    {
-        let mut entry = entry.map_err(|e| UpdateError::InstallFailed(e.to_string()))?;
-        let path = entry
-            .path()
-            .map_err(|e| UpdateError::InstallFailed(e.to_string()))?
-            .to_path_buf();
-
-        // Match entries like "doli-v1.0.0-target/skills/core/SKILL.md"
-        let path_str = path.to_string_lossy();
-        let Some(skills_idx) = path_str.find("/skills/") else {
-            continue;
-        };
-        let relative = &path_str[skills_idx + "/skills/".len()..];
-        if relative.is_empty() {
-            continue;
-        }
-
-        let dest = skills_dir.join(relative);
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| UpdateError::InstallFailed(e.to_string()))?;
-        }
-
-        // Only extract files (skip directories)
-        if entry.header().entry_type().is_file() {
-            let mut contents = Vec::new();
-            entry
-                .read_to_end(&mut contents)
-                .map_err(|e| UpdateError::InstallFailed(e.to_string()))?;
-            std::fs::write(&dest, &contents)
-                .map_err(|e| UpdateError::InstallFailed(e.to_string()))?;
-
-            if relative.ends_with("SKILL.md") {
-                skill_count += 1;
-            }
-        }
-    }
-
-    if skill_count > 0 {
-        info!(
-            "Installed {} agent skills to {}",
-            skill_count,
-            skills_dir.display()
-        );
-    }
-
-    Ok(skill_count)
 }
 
 /// Extract a named binary from a .tar.gz tarball

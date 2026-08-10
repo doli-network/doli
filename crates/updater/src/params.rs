@@ -4,7 +4,6 @@ use doli_core::network::Network;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-use crate::types::Release;
 use crate::util::current_timestamp;
 
 // ============================================================================
@@ -89,53 +88,29 @@ impl UpdateParams {
         Duration::from_secs(self.crash_window_secs)
     }
 
-    /// Calculate vote weight based on bonds staked and producer seniority.
-    ///
-    /// weight = bond_count × seniority_multiplier
-    /// seniority_multiplier = 1.0 + min(years, 4) × 0.75
-    ///
-    /// This balances economic stake (bonds) with time commitment (seniority).
-    /// A whale with 100 bonds registered yesterday gets 100 × 1.0 = 100,
-    /// while 25 veterans at 4 years get 25 × 4.0 = 100 — equal power.
-    pub fn calculate_vote_weight(&self, bond_count: u32, blocks_active: u64) -> f64 {
-        let years = blocks_active as f64 / self.seniority_step_blocks as f64;
-        let capped_years = years.min(4.0);
-        let seniority_multiplier = 1.0 + capped_years * 0.75;
-        bond_count as f64 * seniority_multiplier
-    }
-
-    /// Calculate seniority multiplier only (for display purposes).
-    pub fn seniority_multiplier(&self, blocks_active: u64) -> f64 {
-        let years = blocks_active as f64 / self.seniority_step_blocks as f64;
-        let capped_years = years.min(4.0);
-        1.0 + capped_years * 0.75
-    }
-
-    /// Check if a producer is old enough to vote
-    pub fn is_eligible_to_vote(&self, blocks_since_registration: u64) -> bool {
-        blocks_since_registration >= self.min_voting_age_blocks
-    }
-
-    /// Get veto deadline for a release
-    pub fn veto_deadline(&self, release: &Release) -> u64 {
-        release.published_at + self.veto_period_secs
+    /// Get veto deadline, measured from the node-local `first_notified_at` (F7(b)).
+    /// `saturating_add` (AUDIT-P2-013): `first_notified_at` comes from unauthenticated
+    /// node-local JSON, and a wrapping add would place the deadline in the PAST.
+    pub fn veto_deadline(&self, first_notified_at: u64) -> u64 {
+        first_notified_at.saturating_add(self.veto_period_secs)
     }
 
     /// Get grace period deadline (when enforcement begins)
-    pub fn grace_period_deadline(&self, release: &Release) -> u64 {
-        self.veto_deadline(release) + self.grace_period_secs
+    pub fn grace_period_deadline(&self, first_notified_at: u64) -> u64 {
+        self.veto_deadline(first_notified_at)
+            .saturating_add(self.grace_period_secs)
     }
 
-    /// Check if veto period has ended for a release
-    pub fn veto_period_ended(&self, release: &Release) -> bool {
-        current_timestamp() >= self.veto_deadline(release)
+    /// Check if the veto period has ended, relative to when this node first saw the release.
+    pub fn veto_period_ended(&self, first_notified_at: u64) -> bool {
+        current_timestamp() >= self.veto_deadline(first_notified_at)
     }
 
     /// Check if we're in the grace period (after approval, before enforcement)
-    pub fn in_grace_period(&self, release: &Release) -> bool {
+    pub fn in_grace_period(&self, first_notified_at: u64) -> bool {
         let now = current_timestamp();
-        let veto_end = self.veto_deadline(release);
-        let grace_end = self.grace_period_deadline(release);
+        let veto_end = self.veto_deadline(first_notified_at);
+        let grace_end = self.grace_period_deadline(first_notified_at);
         now >= veto_end && now < grace_end
     }
 }

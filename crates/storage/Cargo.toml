@@ -24,3 +24,7 @@ tempfile.workspace = true
 vdf = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
 regex = "1"
+# umask control for the AUDIT-P2-014 file-mode test: a restrictive ambient umask would
+# mask the defect and make the assertion vacuous.
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"

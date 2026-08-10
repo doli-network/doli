@@ -11,7 +11,7 @@
 3. [Governance and Voting System](#3-governance-and-voting-system)
 4. [Sybil Resistance Analysis](#4-sybil-resistance-analysis)
 5. [Complete Update Timeline](#5-complete-update-timeline)
-6. [Automatic Rollback System](#6-automatic-rollback-system)
+6. [Rollback (MANUAL — the automatic system is NOT implemented)](#6-rollback-manual--the-automatic-system-is-not-implemented)
 7. [Hard Fork Support](#7-hard-fork-support)
 8. [Security Model](#8-security-model)
 9. [CLI Command Reference](#9-cli-command-reference)
@@ -31,8 +31,8 @@ The DOLI auto-update system is a decentralized, cryptographically secure mechani
 - **Emergent maintainers**: First 5 registered producers automatically become maintainers (no hardcoding)
 - **On-chain maintainer management**: Add/remove maintainers via 3/5 multisig transactions
 - **Transparent updates**: All releases publicly signed and verifiable on-chain
-- **Seniority-weighted voting**: 40% threshold to veto, weighted by producer tenure (max 4x at 4 years)
-- **Automatic application**: Updates applied after veto period with automatic rollback on failure
+- **Count-based veto voting**: 40% of ACTIVE PRODUCERS can veto an update (one producer, one vote — no seniority or stake weighting; see section 3)
+- **Automatic application**: Updates applied after the veto period. There is NO automatic rollback on failure — see section 6
 - **Multi-signature releases**: 3/5 maintainer signatures required for any release
 - **Version enforcement**: Outdated producers paused from block production after grace period
 - **Hard fork support**: Optional upgrade-at-height mechanism for breaking protocol changes
@@ -49,11 +49,8 @@ The DOLI auto-update system is a decentralized, cryptographically secure mechani
 │ MAX_MAINTAINERS                │ 5         │ Maximum maintainer count                │
 │ VETO_PERIOD                    │ 5 min *   │ Time for producers to vote on updates   │
 │ GRACE_PERIOD                   │ 2 min *   │ Time after approval before enforcement  │
-│ VETO_THRESHOLD_PERCENT         │ 40%       │ Weighted percentage needed to reject    │
+│ VETO_THRESHOLD_PERCENT         │ 40%       │ % of ACTIVE PRODUCERS needed to reject  │
 │ CHECK_INTERVAL                 │ 10 min *  │ How often nodes check for updates       │
-│ MAX_SENIORITY_MULTIPLIER       │ 4x        │ Maximum vote weight for seniors         │
-│ SENIORITY_MATURITY_YEARS       │ 4         │ Years to reach maximum seniority        │
-│ MIN_VOTING_AGE_DAYS            │ 30        │ Minimum days as producer to vote        │
 │ CRASH_THRESHOLD                │ 3         │ Consecutive crashes before rollback     │
 └────────────────────────────────┴───────────┴─────────────────────────────────────────┘
 ```
@@ -130,9 +127,57 @@ pub fn derive_maintainer_set(chain: &Blockchain) -> MaintainerSet {
 }
 ```
 
+The pseudocode above is the DESIGN. `crates/core/src/maintainer/derivation.rs` holds two
+derivations, and **the node calls only one of them**:
+
+* **`derive_canonical_maintainer_set` — the one the node actually calls.** It seats the
+  first 5 producer registrations under the **canonical total order
+  `(registered_at ASC, pubkey_bytes ASC)`** — not reader-enumeration order — so two nodes
+  seating from the same producer set seat byte-identical keys. Its input is the **live
+  `ProducerSet`**, not block history. At and above
+  `maintainer_derivation_activation_height` the seed is **one-shot**
+  (`maintainer_seed_is_done`, `bins/node/src/node/periodic.rs`); after the first seed the
+  root changes only through governance transactions applied in `governance.rs`.
+* **`derive_maintainer_set` — the replay-complete derivation.** Genesis seed plus every
+  governance action up to height `H`, read through a `BlockchainReader`. It is a correct
+  pure function and is covered by tests, but as of M2 it has **zero production callers**
+  (`grep -rn derive_maintainer_set bins crates --include="*.rs"` returns only the
+  `crates/core/src/lib.rs` re-export and test files). Wiring it into the node needs a real
+  `BlockchainReader` over the block store; that is **M3 work, not done**.
+
+**Operational consequence — do NOT delete `maintainer_state.bin` on a node whose chain is
+intact.** Because the one-shot guard is a function of that file alone, an absent file
+re-arms the seed and the node re-bootstraps from **live producer state at the current
+height**. A maintainer key that governance legitimately REMOVED comes back, silently, with
+no warning. This is measured, not theoretical (INC-I-172 M2 QA report, PROBE-1:
+`removed_key_back=true`). It is **not a regression** — before M2 the root was re-derived on
+*every* block, which was equal or worse — but it is an open residual, tracked as **R1** in
+`docs/.workflow/inc-i-172-M3-scope.md`.
+
+What DOES converge today:
+
+| Recovery path | Converges? | Why |
+|---|---|---|
+| Full data-dir wipe + **full resync from genesis** | YES | Every block is re-applied, so `process_transaction_governance` re-executes the whole governance history |
+| Delete `maintainer_state.bin` only, chain intact | **NO** | Re-seeds from live producer state — R1 |
+| Full data-dir wipe + **snap sync** | **NO** | Governance below the snapshot floor is never replayed, and the node does not fail closed — R3 |
+
+REQ-172-010 ("the trust root SHOULD be derivable from block history alone, **without
+trusting `maintainer_state.bin`**") is therefore **M2 partial**, not closed. REQ-172-005's
+convergence criterion holds for the full-sync and backfill paths only.
+
 ### 2.4 Maintainer Management Transactions
 
 After bootstrap, the maintainer set can be modified via special transactions requiring 3/5 multisig:
+
+> **INC-I-172 M2 — "3 of 5" means 3 DISTINCT signers.** Before M2 the verifier counted
+> signature ENTRIES, so three copies of ONE maintainer key satisfied a 3-of-5 threshold
+> (AUDIT-P0-010). At and above `maintainer_derivation_activation_height`
+> (mainnet `172_000`, testnet `127_200`, devnet `0`) each maintainer contributes at most
+> one to the count. Below that height the historical entry-counting result is reproduced
+> exactly, because activation acceptance is consensus history. Independently of the gate,
+> a set that is empty or carries a zero threshold now authorizes **nothing** at any
+> height (AUDIT-P1-010 / FM-02).
 
 #### 2.4.1 Remove Maintainer
 
@@ -201,17 +246,28 @@ The maintainer set is persisted as `MaintainerState` in `maintainer_state.bin` i
 
 ```
 MaintainerState {
+    version: u32,                // On-disk format tag, serialized FIRST (MAINTAINER_STATE_VERSION)
     set: MaintainerSet,          // Current members, threshold, last_updated
     last_derived_height: u64,    // Block height at which this was last modified
 }
 ```
 
 **Lifecycle:**
-1. On startup: loaded from disk (or default empty)
-2. On epoch boundary: bootstrapped from first 5 producers (one-time, if not yet bootstrapped)
+1. On startup: loaded from disk. A MISSING file is a fresh node (empty default). A file
+   that does not decode, or carries an unknown `version`, is a FATAL startup error that
+   names the file — never a silent empty trust root (INC-I-172 F5).
+2. On each applied block: the genesis seed is attempted from the first 5 producers.
+   At and above `maintainer_derivation_activation_height` it is **ONE-SHOT** — it fires
+   only while the root has never been seeded (`members` empty AND
+   `last_derived_height == 0`) and uses the canonical total order. Below that height the
+   historical behavior is preserved: the seed re-fires whenever the set has fewer than 5
+   members, which silently REVERTED a successful `RemoveMaintainer` on the next block
+   (~10 s). That is the AUDIT-P1-013 defect M2 closes forward-only; it is not fixed
+   retroactively because the root decides `ProtocolActivation` acceptance, which is
+   consensus-visible.
 3. On MaintainerAdd/Remove tx: updated immediately, persisted to disk
-4. On release verification: `maintainer_keys_fn` reads members from `MaintainerState`
-5. Pre-bootstrap fallback: empty set → network-specific `BOOTSTRAP_MAINTAINER_KEYS_{MAINNET,TESTNET}` used by UpdateService
+4. On release verification: `maintainer_trust_root_fn` resolves a `TrustRoot` from
+   `MaintainerState` (`bins/node/src/updater/trust_root_wiring.rs`)
 
 **Key lookup is O(1)** — reads 3-5 members, regardless of producer count.
 
@@ -224,101 +280,89 @@ UpdateService checks for new release (every check_interval)
     ↓
 Downloads SIGNATURES.json (3+ signatures)
     ↓
-maintainer_keys_fn() called:
-    ├─ MaintainerState bootstrapped? → Return on-chain member keys
-    └─ Not bootstrapped (empty)?     → Return empty → fallback to BOOTSTRAP_MAINTAINER_KEYS_{MAINNET,TESTNET}
+maintainer_trust_root_fn() resolves the TrustRoot (INC-I-172 F1):
+    ├─ members non-empty                       → TrustRoot::on_chain(members, set.threshold)
+    ├─ members empty AND last_derived_height=0 → TrustRoot::bootstrap(network)
+    │                                            (this node NEVER had an on-chain set)
+    └─ members empty AND last_derived_height>0 → TrustRoot::on_chain(vec![], threshold)
+                                                 → UNUSABLE → FAILS CLOSED.
+                                                 There is NO fallback to the compiled keys.
     ↓
-verify_release_signatures_with_keys():
-    For each signature in SIGNATURES.json:
-        1. Is signing key in allowed_keys? → If not, skip
-        2. Ed25519 verify(message, signature, pubkey)
-        3. Count valid signatures
+verify_release_with_trust_root():
+    1. root.is_usable()? (threshold >= 1 AND keys.len() >= threshold)
+       → if not: error! + UpdateError::TrustRootUnavailable. STOP. No fallback.
+    2. DISTINCT-SIGNER count (covenant k-of-n shape, conditions/eval.rs):
+       for each key in root.keys():
+           for each signature entry: if it matches this key and verifies → +1, break
+       (three entries from ONE key therefore count as ONE signer)
     ↓
-    valid_count >= REQUIRED_SIGNATURES (3)? → Verified ✓
+    valid_count >= root.threshold()? → Verified ✓ else InsufficientSignatures
 ```
+
+The same `TrustRoot` is re-resolved and re-checked immediately before install — by
+`UpdateService::auto_apply` on the automatic path and by `apply_update`, which takes the
+root as a **required parameter**, on the manual `doli-node update apply` path (F2). A key
+revoked during the veto period therefore invalidates an already-staged update on both
+paths instead of authorising it (F7(a)). Revocation that cannot reach the manual apply
+is not revocation.
+
+### 2.x Artifact binding (INC-I-172 F1)
+
+A valid signature proves the maintainers signed *something*. It does not say **what is
+being installed**. Every path that writes a binary therefore calls
+`verify_release_artifact` (`crates/updater/src/install_gate.rs`), which checks four links
+and blocks on any break:
+
+| Link | Check |
+|---|---|
+| L1 | `SIGNATURES.json.version` equals the release tag being installed (modulo a leading `v`) |
+| L2 | `SIGNATURES.json.checksums_sha256` equals `sha256(the CHECKSUMS.txt actually fetched)` — recomputed from the bytes, never read from a derived field |
+| L3 | distinct valid signers ≥ `root.threshold()` |
+| L4 | `sha256(tarball)` equals the per-platform hash parsed from **that** verified CHECKSUMS.txt |
+
+Without L1 and L2 the check is circular: both operands of the signed message
+`"{version}:{checksums_sha256}"` would be read out of the same file that carries the
+signatures, so a verbatim copy of any past genuine `SIGNATURES.json` would authorise an
+arbitrary tarball while every other check still passed.
 
 ---
 
 ## 3. Governance and Voting System
 
-The governance model uses seniority-weighted voting to balance democratic participation with Sybil resistance. This ensures that established, long-term participants have proportionally more influence while still allowing newcomers to participate meaningfully.
+> **Corrected 2026-08-10 (INC-I-172 F8).** Everything this section previously
+> described as "seniority-weighted voting" — a bond x seniority weight, a 4-year
+> multiplier curve, a 30-day minimum voting age, and vote changing — was never
+> reachable from production code. The functions existed but their only callers were
+> `#[cfg(test)]`. They were deleted so the code and this document agree. What is
+> written below is what the code does.
 
-### 3.1 Seniority-Weighted Voting
+Veto voting is **count-based**: one registered producer, one vote. There is no
+seniority weighting, no bond weighting and no minimum voting age.
 
-Unlike simple count-based voting (1 producer = 1 vote), DOLI uses seniority weighting that rewards long-term commitment to the network.
-
-#### 3.1.1 Weight Calculation
-
-```
-vote_weight = bond_count * seniority_multiplier
-seniority_multiplier = 1.0 + min(years_as_producer, 4) * 0.75
-
-Examples (1 bond):
-┌─────────────────────────┬────────────────────────────────┬───────────────────┐
-│ Producer Age            │ Seniority Multiplier           │ Weight (1 bond)   │
-├─────────────────────────┼────────────────────────────────┼───────────────────┤
-│ New producer (0 years)  │ 1.0 + 0 * 0.75 = 1.00x        │ 1.00              │
-│ 1 year producer         │ 1.0 + 1 * 0.75 = 1.75x        │ 1.75              │
-│ 2 year producer         │ 1.0 + 2 * 0.75 = 2.50x        │ 2.50              │
-│ 3 year producer         │ 1.0 + 3 * 0.75 = 3.25x        │ 3.25              │
-│ 4+ year producer        │ 1.0 + 4 * 0.75 = 4.00x        │ 4.00              │
-└─────────────────────────┴────────────────────────────────┴───────────────────┘
-
-Example: 10-bond producer at 2 years = 10 * 2.50 = 25.0 weight
-```
-
-**Key insight**: After 4 years, all producers reach the same maximum seniority multiplier. The seniority advantage is temporary, not permanent. This prevents oligarchy while still providing meaningful Sybil resistance during the network's growth phase.
-
-#### 3.1.2 Relationship with Bond Units
-
-The voting weight combines **stake** (bond count) with **time** (seniority multiplier). Both factors matter:
-
-| Factor | Role | Implication |
-|--------|------|-------------|
-| Bond count | Economic stake | More bonds = more weight (linear) |
-| Seniority multiplier | Time commitment | 1.0x to 4.0x over 4 years |
-
-This means a whale with 100 bonds registered yesterday gets 100 * 1.0 = 100 weight, while 25 veterans at 4 years each with 1 bond get 25 * 4.0 = 100 weight -- equal power. Both economic and time commitment contribute to governance influence.
-
-#### 3.1.3 Minimum Voting Age
-
-To prevent flash Sybil attacks, producers must be active for at least **30 days** before their votes count. This creates a significant cost barrier: an attacker would need to fund and maintain fake producers for a month before gaining any voting power.
-
-#### 3.1.4 Veto Threshold Calculation
+### 3.1 Veto Threshold Calculation
 
 ```
-veto_weight  = sum(vote_weight for each veto vote)
-total_weight = sum(vote_weight for all eligible producers)
-veto_percent = (veto_weight * 100) / total_weight
+veto_count      = number of DISTINCT producers that voted VETO
+total_producers = number of active producers
+veto_percent    = (veto_count * 100) / total_producers
 
 if veto_percent >= 40%: REJECTED
 if veto_percent <  40%: APPROVED
 ```
 
-**Example with 10 producers (mixed seniority):**
+Implemented by `VoteTracker::should_reject` / `veto_percent`
+(`crates/updater/src/vote.rs`) and `calculate_veto_result`
+(`crates/updater/src/verification.rs`). `VETO_THRESHOLD_PERCENT` is 40.
 
-```
-┌────────────┬───────┬────────┬─────────┬──────────────┐
-│ Producer   │ Years │ Weight │ Vote    │ Contribution │
-├────────────┼───────┼────────┼─────────┼──────────────┤
-│ Producer A │ 5     │ 4.00x  │ VETO    │ 4.00         │
-│ Producer B │ 3     │ 3.25x  │ VETO    │ 3.25         │
-│ Producer C │ 2     │ 2.50x  │ APPROVE │ 0            │
-│ Producer D │ 2     │ 2.50x  │ APPROVE │ 0            │
-│ Producer E │ 1     │ 1.75x  │ VETO    │ 1.75         │
-│ Producer F │ 1     │ 1.75x  │ APPROVE │ 0            │
-│ Producer G │ 0.5   │ 1.375x │ APPROVE │ 0            │
-│ Producer H │ 0.5   │ 1.375x │ APPROVE │ 0            │
-│ Producer I │ 0.1   │ 1.075x │ VETO    │ 1.075        │
-│ Producer J │ 0.1   │ 1.075x │ APPROVE │ 0            │
-└────────────┴───────┴────────┴─────────┴──────────────┘
+**Example with 10 active producers:** 4 producers vote VETO -> 40% -> REJECTED.
+3 producers vote VETO -> 30% -> APPROVED. Producers that do not vote count as
+neither: the denominator is the ACTIVE PRODUCER count, not the votes cast, so
+abstaining has the same effect as approving.
 
-Total weight: 20.625
-Veto weight:  10.075 (A + B + E + I)
-Veto percent: 10.075 / 20.625 * 100 = 48.8%
+### 3.1.1 Sybil resistance, honestly stated
 
-Result: 48.8% >= 40% → REJECTED
-```
+The only barrier to acquiring a veto vote is the bond required to register as a
+producer. There is no time-based barrier in code. Do not budget risk against one.
 
 ### 3.2 Vote Lifecycle
 
@@ -343,11 +387,9 @@ pub enum Vote {
 
 #### 3.2.2 Vote Changing
 
-Unlike count-based systems, producers **CAN change their vote** during the veto period. This allows reaction to new information (e.g., discovery of a backdoor in the update).
-
-- Each new vote from the same producer replaces their previous vote
-- Only the latest vote (by timestamp) counts at deadline
-- All vote history is preserved for transparency
+**Not supported.** `VoteTracker::record_vote` returns `false` and keeps the first
+vote if a producer has already voted either way. A producer that votes APPROVE and
+then discovers a problem cannot switch to VETO. Vote deliberately.
 
 #### 3.2.3 Offline Producers
 
@@ -355,7 +397,7 @@ Producers that are offline (not producing blocks) can still vote. The voting sys
 
 - Maintenance windows don't forfeit voting rights
 - Network issues don't disenfranchise producers
-- Only the 30-day minimum age matters, not current online status
+- There is no minimum producer age; any producer the node recognises as active can vote
 
 #### 3.2.4 Vote Finalization
 
@@ -365,46 +407,32 @@ Votes are counted at the exact moment the veto period expires. The result is det
 
 ## 4. Sybil Resistance Analysis
 
-The combination of bond requirements, seniority weighting, and minimum voting age creates strong Sybil resistance.
+> **Corrected 2026-08-10 (INC-I-172 F8).** The analysis that used to live here priced
+> the attack against a seniority-weighted vote and a 30-day minimum voting age. Neither
+> exists in code. The corrected analysis is below and it is weaker — that is the point
+> of correcting it.
 
-### 4.1 Attack Cost Analysis
+### 4.1 What actually resists a Sybil veto
 
-```
-┌──────────────────────────┬──────────────────────┬───────────────────┬─────────────────────┐
-│ Attack Vector            │ Cost                 │ Effectiveness     │ Mitigation          │
-├──────────────────────────┼──────────────────────┼───────────────────┼─────────────────────┤
-│ Register many producers  │ N × bond amount      │ Low (1x weight)   │ Bond requirement    │
-│ Flash Sybil (same day)   │ N × bond             │ Zero              │ 30-day minimum age  │
-│ Sustained Sybil (1 mo)   │ N × bond × 30 days   │ Low (1.0x weight) │ Seniority weighting │
-│ Long-term Sybil (4 yrs)  │ N × bond × 4 years   │ Equal to veterans │ Time prohibitive    │
-└──────────────────────────┴──────────────────────┴───────────────────┴─────────────────────┘
-```
+One barrier: the bond required to register a producer. To reach the 40% veto threshold
+an attacker must register enough producers to hold 40% of the ACTIVE producer count and
+bond each of them. Registration also has to survive `ACTIVATION_DELAY` before the
+producer is active. There is no seniority multiplier and no minimum voting age, so a
+producer bonded today has exactly the same veto power as one bonded four years ago.
 
-### 4.2 Why This Works
+### 4.2 What does NOT resist it
 
-1. **Economic barrier**: Each fake producer requires a real bond deposit
-2. **Time barrier**: 30-day minimum before any voting power
-3. **Asymmetric power**: Veterans have 4x the voting power of newcomers
-4. **Convergence**: After 4 years, legitimate producers reach parity
+- **Seniority weighting** — deleted; never executed.
+- **30-day minimum voting age** — `is_eligible_to_vote` had zero callers; deleted.
+- **A 7-day review window** — the veto period is `VETO_PERIOD` (5 minutes) or the
+  network-specific `UpdateParams::veto_period_secs`. Report the configured value.
 
-**Critical point**: To block a legitimate security update, an attacker would need 40% of the total weighted voting power. With seniority weighting, this requires either massive capital (many producers) or multi-year planning (few high-weight producers). Both are impractical for most attack scenarios.
+### 4.3 The real ceiling on this control
 
-### 4.3 The 4-Year Convergence
-
-```
-Year 0   Year 1   Year 2   Year 3   Year 4   Year 5+
-  │        │        │        │        │        │
-  ▼        ▼        ▼        ▼        ▼        ▼
- 1.0x    1.75x    2.50x    3.25x    4.00x    4.00x
-  │        │        │        │        │        │
-  └────────┴────────┴────────┴────────┴────────┘
-              Seniority advantage period
-                                       │
-                                       ▼
-                              All producers equal
-```
-
-The "privilege" of early adopters has an expiration date. After 4 years, anyone who joined can match the voting power of the founders. This is NOT a permanent oligarchy.
+The veto protects against a maintainer quorum publishing an update the community
+rejects *in the window it is given*. It does not protect against a compromised
+maintainer quorum publishing a release that the community has no time to review, and
+it never protected against a whale: bonding is the only cost.
 
 ### 4.4 Maintainer vs Producer Governance
 
@@ -421,7 +449,7 @@ The "privilege" of early adopters has an expiration date. After 4 years, anyone 
 │                                                                                 │
 │  PRODUCERS (unlimited)                                                          │
 │  ├── Role: Review and veto releases                                             │
-│  ├── Power: 40% weighted vote to reject                                         │
+│  ├── Power: 40% of active producers vote to reject (head count)                 │
 │  ├── Selection: Anyone who bonds and registers                                  │
 │  └── Cannot: Propose releases (only react)                                      │
 │                                                                                 │
@@ -455,7 +483,7 @@ The "privilege" of early adopters has an expiration date. After 4 years, anyone 
 │  └── Real-time veto percentage displayed on all nodes                           │
 │                                                                                 │
 │  T+5min: RESOLUTION *                                                            │
-│  ├── Weighted votes tallied at exact deadline                                   │
+│  ├── Veto head count tallied at exact deadline                                  │
 │  ├── If veto >= 40%: Update REJECTED, discarded                                 │
 │  └── If veto <  40%: Update APPROVED, grace period begins                       │
 │                                                                                 │
@@ -522,7 +550,6 @@ The notification content changes based on the current state:
 ║                                                                  ║
 ║  YOUR PRODUCER                                                   ║
 ║  Your vote:   NOT VOTED YET                                      ║
-║  Your weight: 2.5x (2 years seniority)                           ║
 ║                                                                  ║
 ╠══════════════════════════════════════════════════════════════════╣
 ║  To veto:    doli-node update vote --veto --key <key.json>       ║
@@ -614,13 +641,25 @@ The notification content changes based on the current state:
 
 ---
 
-## 6. Automatic Rollback System
+## 6. Rollback (MANUAL — the automatic system is NOT implemented)
 
-A critical addition to ensure network stability: automatic rollback when updates cause node failures.
+> **STATUS: NOT IMPLEMENTED (INC-I-172 M1 security audit, AUDIT-P1-014).**
+> Everything in 6.1-6.3 below is a DESIGN, not a description of running code.
+> `crates/updater/src/watchdog.rs` exists but has **zero production callers**: nothing in
+> `bins/node` or `bins/cli` constructs `UpdateWatchdog` or calls
+> `check_and_maybe_rollback()`, and `UpdateConfig::auto_rollback` is written in three
+> places and read in none. **No DOLI node rolls back automatically.** If a release
+> crashes a node, the node stays down until an operator intervenes on that host — and
+> auto-update is enabled by default, so a bad release reaches the fleet unattended.
+>
+> What DOES exist: `apply_update` writes `{binary}.backup` before installing, and
+> `doli-node update rollback` restores it. That is the whole rollback story today, and
+> it is manual. See 6.5.
 
-### 6.1 Crash Detection Watchdog
+### 6.1 Crash Detection Watchdog (DESIGN — not wired)
 
-The node process is monitored by a lightweight watchdog that detects repeated crashes after an update:
+The design monitors the node process with a lightweight watchdog that detects repeated
+crashes after an update. **No such monitoring runs today.**
 
 ```rust
 pub struct UpdateWatchdog {
@@ -639,13 +678,13 @@ impl UpdateWatchdog {
 }
 ```
 
-### 6.2 Rollback Trigger Conditions
+### 6.2 Rollback Trigger Conditions (DESIGN — not wired)
 
 1. Node crashes **3+ times** within 1 hour of update application
 2. Node fails to reach sync within 5 minutes of restart
 3. Node fails health checks (RPC unresponsive, peers disconnected)
 
-### 6.3 Rollback Process
+### 6.3 Rollback Process (DESIGN — not wired)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
@@ -679,13 +718,32 @@ impl UpdateWatchdog {
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 6.4 Post-Rollback Behavior
+### 6.4 Post-Rollback Behavior (DESIGN — not wired)
 
 - Node continues operating on previous version
 - Update marked as "failed locally" (not network-wide rejection)
 - Operator notified via logs and optional webhook
 - Manual intervention required to retry update
 - Node can still produce blocks (if previous version meets requirements)
+
+### 6.5 What actually happens today
+
+1. `apply_update` copies the running binary to `{binary}.backup` before installing.
+2. If the new release is bad, **nothing detects it**. The node crash-loops or misbehaves
+   until an operator notices.
+3. The operator rolls back by hand:
+
+   ```bash
+   systemctl stop doli-mainnet-nodeN
+   cp ~/.doli/doli-node.backup $(which doli-node)
+   systemctl start doli-mainnet-nodeN
+   ```
+
+   or `doli-node update rollback`, which does the same restore.
+4. `--no-auto-rollback` is accepted for backward compatibility and does nothing.
+
+Wiring the watchdog is tracked as remediation for AUDIT-P1-014; until it lands, do not
+plan an upgrade on the assumption that a bad release self-heals.
 
 ---
 
@@ -801,8 +859,8 @@ fn on_block_applied(&mut self, block: &Block) {
 │ Key compromise     │ Attacker signs          │ Community can veto      │ Medium       │
 │ (3 keys)           │ releases                │ within veto period      │              │
 ├────────────────────┼─────────────────────────┼─────────────────────────┼──────────────┤
-│ Sybil veto         │ Block legitimate        │ Seniority weighting     │ Low          │
-│ attack             │ updates                 │ + bond + 30-day min     │              │
+│ Sybil veto         │ Block legitimate        │ Registration bond ONLY  │ Medium       │
+│ attack             │ updates                 │ (no weighting, no age)  │              │
 ├────────────────────┼─────────────────────────┼─────────────────────────┼──────────────┤
 │ Fake maintainer    │ Claim maintainer        │ On-chain verification   │ None         │
 │                    │ status                  │ from blockchain         │              │
@@ -829,20 +887,19 @@ fn on_block_applied(&mut self, block: &Block) {
 │  └── On-chain maintainer verification                                           │
 │                                                                                 │
 │  Layer 2: GOVERNANCE                                                            │
-│  ├── 40% weighted veto threshold                                                │
+│  ├── 40% veto threshold, by producer head count                                 │
 │  ├── Mandatory veto review period (5 min early network *)                       │
-│  ├── Vote changing allowed (react to new info)                                  │
+│  ├── One vote per producer, first vote is final                                 │
 │  └── Transparent maintainer set (derived from chain)                            │
 │                                                                                 │
 │  Layer 3: ECONOMIC                                                              │
 │  ├── Bond requirement for producers                                             │
-│  ├── Seniority weighting (max 4x)                                               │
-│  └── 30-day minimum voting age                                                  │
+│  └── (no seniority weighting, no minimum voting age — deleted INC-I-172)        │
 │                                                                                 │
 │  Layer 4: OPERATIONAL                                                           │
-│  ├── Automatic rollback on failure                                              │
-│  ├── Backup preservation before update                                          │
-│  └── Health monitoring and alerting                                             │
+│  ├── Backup preservation before update (the ONLY one of these implemented)      │
+│  ├── Automatic rollback on failure — NOT IMPLEMENTED (AUDIT-P1-014, see §6)     │
+│  └── Health monitoring and alerting — NOT IMPLEMENTED                           │
 │                                                                                 │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -851,18 +908,33 @@ fn on_block_applied(&mut self, block: &Block) {
 
 ## 9. CLI Command Reference
 
-DOLI has two distinct upgrade paths:
+DOLI has three upgrade paths:
 
 | Path | Binary | Purpose | Signatures required? |
 |------|--------|---------|---------------------|
-| **Operator upgrade** | `doli upgrade` | Manual, operator-driven. Downloads from GitHub, installs both `doli` + `doli-node`, restarts a service. | No (warning only) |
+| **Operator upgrade** | `doli upgrade` | Manual, operator-driven. Downloads from GitHub, installs both `doli` + `doli-node`, restarts a service. | **Yes — install ABORTS on failure** (INC-I-172 F6) |
 | **Auto-update** | `doli-node update` | Autonomous. Node checks for updates, verifies 3/5 maintainer sigs, respects veto period, applies automatically. | Yes (3/5 required) |
+| **Legacy node upgrade** | `doli-node upgrade` | Manual. Downloads from GitHub and installs `doli-node` only. | **No — checksum only, NO signature check** |
 
 Use `doli upgrade` for planned rolling upgrades. Use `doli-node update` / auto-update for autonomous operation.
 
+> **All five install paths are gated.** `doli upgrade`, `doli-node upgrade`,
+> `doli-node update apply`, `apply_update` and the auto-updater each verify maintainer
+> signatures **bound to the artifact** before anything is extracted, backed up or
+> written, and each aborts on failure or on an absent `SIGNATURES.json`.
+>
+> On a **producer host, prefer `doli-node upgrade`**: it resolves the trust root from
+> that host's on-chain `maintainer_state.bin` (INC-I-172 F3). The `doli` CLI can only
+> use the compile-time bootstrap root — it is not the node host and has no chain state.
+
 ### 9.1 Operator Upgrade (`doli upgrade`)
 
-The preferred method for planned upgrades. Downloads the release tarball from GitHub, verifies SHA-256 checksum, installs both `doli` and `doli-node` binaries via atomic rename, and restarts the specified systemd service.
+For planned upgrades from a machine that is not a node. Downloads the release tarball
+from GitHub, **verifies maintainer signatures from `SIGNATURES.json` bound to that exact
+tarball (§2.x L1-L4) and aborts before installing anything if any link breaks or the file
+is absent**, installs both `doli` and `doli-node` binaries via atomic rename, and
+restarts the specified systemd service. Its trust root is the compile-time bootstrap
+set.
 
 ```bash
 # Upgrade to latest version
@@ -888,7 +960,7 @@ sudo /opt/doli/target/release/doli upgrade --yes --service doli-mainnet-node4
 | `--service <SERVICE>` | Recommended | Systemd service to restart. **Critical** on multi-node servers (omegacortex has N1+N2+N6) |
 
 **How it works:**
-1. Fetches release metadata from GitHub (`e-weil/doli`)
+1. Fetches release metadata from GitHub (`doli-network/doli`)
 2. Downloads platform tarball (auto-detects linux x86_64 / darwin aarch64)
 3. Verifies SHA-256 checksum from `CHECKSUMS.txt`
 4. Checks maintainer signatures (informational warning — does **not** block the upgrade)
@@ -976,7 +1048,7 @@ doli-node run --network mainnet --no-auto-update
 # Notify only (check but don't apply)
 doli-node run --network mainnet --update-notify-only
 
-# Disable automatic rollback
+# Accepted but a NO-OP: no automatic rollback exists (AUDIT-P1-014, see section 6)
 doli-node run --network mainnet --no-auto-rollback
 
 # Full production setup
@@ -1134,13 +1206,14 @@ doli-node run \
 ┌─────────────────────────────────┬─────────────────────────────────────────────┐
 │ Component                       │ Path                                        │
 ├─────────────────────────────────┼─────────────────────────────────────────────┤
-│ Maintainer set management       │ crates/core/src/maintainer.rs               │
+│ Maintainer set management       │ crates/core/src/maintainer/                 │
 │ Maintainer transactions         │ crates/core/src/transaction.rs              │
 │ Maintainer validation           │ crates/core/src/validation.rs               │
 │ Core updater library            │ crates/updater/src/lib.rs                   │
-│ Seniority voting                │ crates/updater/src/params.rs                │
+│ Network-aware update params     │ crates/updater/src/params.rs                │
+│ Release trust root (fail-closed)│ crates/updater/src/trust_root.rs            │
 │ Vote tracking                   │ crates/updater/src/vote.rs                  │
-│ Watchdog (rollback)             │ crates/updater/src/watchdog.rs              │
+│ Watchdog (rollback) NOT WIRED   │ crates/updater/src/watchdog.rs              │
 │ Hard fork logic                 │ crates/updater/src/hardfork.rs              │
 │ Binary download                 │ crates/updater/src/download.rs              │
 │ Binary verification             │ crates/updater/src/verification.rs          │
@@ -1175,14 +1248,6 @@ pub struct MaintainerChangeData {
     pub reason: Option<String>,
 }
 
-/// Producer seniority for voting
-pub struct ProducerSeniority {
-    pub pubkey: PublicKey,
-    pub registration_height: u64,
-    pub years_active: f64,
-    pub vote_weight: f64,
-}
-
 /// Release metadata
 pub struct Release {
     pub version: String,
@@ -1201,7 +1266,7 @@ pub struct HardForkInfo {
     pub consensus_changes: Vec<String>,
 }
 
-/// Update watchdog state
+/// Update watchdog state — NOT WIRED, zero production callers (AUDIT-P1-014, see §6)
 pub struct UpdateWatchdog {
     pub last_update_version: Option<String>,
     pub last_update_time: Option<u64>,
@@ -1231,18 +1296,12 @@ pub const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 3600);       // 6 h
 // Thresholds
 pub const VETO_THRESHOLD_PERCENT: u8 = 40;
 
-// Seniority
-pub const MAX_SENIORITY_MULTIPLIER: f64 = 4.0;
-pub const SENIORITY_MATURITY_YEARS: f64 = 4.0;
-pub const MIN_VOTING_AGE_DAYS: u64 = 30;
-
 // Rollback
 pub const CRASH_THRESHOLD: u32 = 3;
 pub const CRASH_WINDOW: Duration = Duration::from_secs(3600);             // 1 hour
 
 // Distribution
-pub const GITHUB_API_URL: &str = "https://api.github.com/repos/e-weil/doli/releases/latest";
-pub const FALLBACK_MIRROR: &str = "https://releases.doli.network";
+pub const GITHUB_API_URL: &str = "https://api.github.com/repos/doli-network/doli/releases/latest";
 ```
 
 ---
@@ -1262,10 +1321,10 @@ pub const FALLBACK_MIRROR: &str = "https://releases.doli.network";
 │ Update mechanism    │ BIP        │ EIP +      │ Foundation │ Auto-update     │
 │                     │ process    │ hard fork  │ push       │ + veto          │
 ├─────────────────────┼────────────┼────────────┼────────────┼─────────────────┤
-│ Voting system       │ Miner      │ None       │ None       │ Seniority-      │
-│                     │ signaling  │ (social)   │            │ weighted        │
+│ Voting system       │ Miner      │ None       │ None       │ Producer head   │
+│                     │ signaling  │ (social)   │            │ count           │
 ├─────────────────────┼────────────┼────────────┼────────────┼─────────────────┤
-│ Veto power          │ 95%        │ Social     │ None       │ 40% weighted    │
+│ Veto power          │ 95%        │ Social     │ None       │ 40% of active   │
 │                     │ threshold  │ consensus  │            │                 │
 ├─────────────────────┼────────────┼────────────┼────────────┼─────────────────┤
 │ Time to update      │ Months to  │ Weeks to   │ Hours      │ ~7 min *        │
@@ -1274,10 +1333,10 @@ pub const FALLBACK_MIRROR: &str = "https://releases.doli.network";
 │ Automatic apply     │ No         │ No         │ Yes        │ Yes             │
 │                     │            │            │            │ (with veto)     │
 ├─────────────────────┼────────────┼────────────┼────────────┼─────────────────┤
-│ Automatic rollback  │ No         │ No         │ No         │ Yes             │
+│ Automatic rollback  │ No         │ No         │ No         │ No (not impl.)  │
 ├─────────────────────┼────────────┼────────────┼────────────┼─────────────────┤
-│ Sybil resistance    │ Hashpower  │ Stake      │ Stake      │ Seniority +     │
-│                     │            │            │            │ bond + time     │
+│ Sybil resistance    │ Hashpower  │ Stake      │ Stake      │ Producer bond   │
+│                     │            │            │            │ only            │
 └─────────────────────┴────────────┴────────────┴────────────┴─────────────────┘
 ```
 
@@ -1286,7 +1345,7 @@ pub const FALLBACK_MIRROR: &str = "https://releases.doli.network";
 2. **Transparent transitions**: All maintainer changes are on-chain and verifiable
 3. **Democratic oversight**: Producers can veto any release
 4. **Operational efficiency**: Auto-update with rollback prevents stale nodes
-5. **Sybil resistant**: Time-weighted voting prevents plutocracy and attacks
+5. **Honest limits**: the veto is a producer head count whose only Sybil barrier is the registration bond — see section 4
 
 ---
 
@@ -1298,7 +1357,7 @@ pub const FALLBACK_MIRROR: &str = "https://releases.doli.network";
 
 ### Q: Can maintainers force an update without community consent?
 
-**No.** Even with 3/5 maintainer signatures, the community has the veto period (currently 5 minutes, target 7 days as network grows) to review and veto. If 40% of weighted voting power objects, the update is rejected. Maintainers propose; the community disposes.
+**No.** Even with 3/5 maintainer signatures, the community has the veto period (the CONFIGURED `veto_period_secs`; 5 minutes on the current network) to review and veto. If 40% of ACTIVE PRODUCERS object, the update is rejected. Maintainers propose; the community disposes. Note the honest limit: 5 minutes is not a meaningful review window, and the veto is a head count with no Sybil resistance beyond the bond.
 
 ### Q: How do I verify who the maintainers are?
 
@@ -1330,15 +1389,11 @@ If there's a vacancy (fewer than 5 maintainers), existing maintainers can add yo
 
 ### Q: What happens if my node crashes after an update?
 
-The watchdog automatically rolls back to the previous version after 3 crashes within 1 hour. You can also manually rollback with `doli-node update rollback`. Your backup is always preserved.
+There is NO automatic rollback (AUDIT-P1-014): `UpdateWatchdog` is written but never called, so nothing detects a post-update crash. Roll back manually with `doli-node update rollback`, which restores the `{binary}.backup` written before the install. Your backup is always preserved.
 
-### Q: Why is voting weight based on seniority, not stake?
+### Q: Is voting weight based on seniority?
 
-Separation of concerns:
-- **Block production** rewards capital commitment (stake)
-- **Governance** rewards long-term participation (time)
-
-This prevents wealthy newcomers from immediately controlling governance while still allowing them to earn proportional block rewards.
+No. It was documented that way for a long time, but the weighting code was never reachable from production and was deleted in INC-I-172. Every active producer has exactly one veto vote.
 
 ### Q: What's the difference between "approve" and not voting?
 
@@ -1370,15 +1425,27 @@ Yes, but it's not necessary. Hard forks can change consensus parameters, block f
 
 ## Document Information
 
-- **Version**: 3.0
-- **Last Updated**: February 2026
+- **Version**: 3.1
+- **Last Updated**: August 2026
 - **Status**: Production Specification
+
+### Changes from v3.0 (INC-I-172 M1)
+
+- ✅ Removed the seniority-weighted veto, the 4x multiplier curve, the 30-day minimum
+  voting age and vote changing. None of them executed: their only callers were tests.
+  The veto is a producer head count and always was.
+- ✅ Release verification now runs against a resolved `TrustRoot` that FAILS CLOSED.
+  An on-chain maintainer set that exists and is empty no longer falls back to the
+  compile-time bootstrap keys.
+- ✅ Signature counting is now by DISTINCT SIGNER: three entries from one key count as one.
+- ✅ Veto and grace deadlines are measured from the node-local `first_notified_at`,
+  never from the unsigned `Release::published_at`.
+- ✅ `doli upgrade` and `doli-node update verify` now ABORT on verification failure.
 
 ### Changes from v2.0
 
 - ✅ Added maintainer bootstrap system (first 5 producers)
 - ✅ Added on-chain maintainer management (Add/Remove transactions)
-- ✅ Clarified relationship between voting weight (seniority) and block production (bonds)
 - ✅ Added maintainer CLI commands and RPC endpoints
 - ✅ Added edge case handling for maintainer set
 - ✅ Updated security model for on-chain maintainer verification

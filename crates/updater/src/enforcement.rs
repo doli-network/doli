@@ -11,44 +11,63 @@ use crate::util::{current_timestamp, current_version, is_newer_version};
 // ============================================================================
 // Veto & Grace Period Free Functions
 // ============================================================================
+//
+// INC-I-172 F7(b) / api-contract §8 G1. Every deadline below is measured from a
+// NODE-LOCAL reference timestamp — the moment THIS node first observed the release,
+// persisted as `PendingUpdate::first_notified_at`.
+//
+// They used to be measured from `Release::published_at`, which arrives inside the
+// release metadata, is NOT covered by the signed message (`verification.rs` signs
+// only `"{version}:{binary_sha256}"`) and is defaulted to 0 by `download.rs` when
+// absent or unparseable. A publisher who forged or simply omitted that field decided
+// how long the community got to object: a past value ended the veto window before the
+// first poll, a future value stalled a security update indefinitely. `published_at`
+// may still be DISPLAYED as release metadata; it is no longer an input to any deadline.
 
-/// Get the deadline timestamp for when veto period ends
-pub fn veto_deadline(release: &Release) -> u64 {
-    release.published_at + VETO_PERIOD.as_secs()
+/// Deadline for the veto period, measured from the node-local
+/// `first_notified_at` timestamp.
+///
+/// `saturating_add` (AUDIT-P2-013): `first_notified_at` is read from unauthenticated
+/// node-local JSON, so a value near `u64::MAX` is representable. A wrapping add there
+/// would produce a deadline in the PAST and install the update on the next tick — the
+/// same fail-open outcome as the zeroed field, reached from the opposite end of the
+/// range. Saturating keeps the deadline at "never", which refuses.
+pub fn veto_deadline(first_notified_at: u64) -> u64 {
+    first_notified_at.saturating_add(VETO_PERIOD.as_secs())
 }
 
-/// Check if veto period has ended
-pub fn veto_period_ended(release: &Release) -> bool {
-    current_timestamp() >= veto_deadline(release)
+/// Check if the veto period has ended, relative to when this node first saw the release.
+pub fn veto_period_ended(first_notified_at: u64) -> bool {
+    current_timestamp() >= veto_deadline(first_notified_at)
 }
 
 /// Grace period deadline (when enforcement begins)
 ///
 /// Uses mainnet defaults. For network-aware timing, use `UpdateParams::grace_period_deadline`.
-pub fn grace_period_deadline(release: &Release) -> u64 {
-    veto_deadline(release) + GRACE_PERIOD.as_secs()
+pub fn grace_period_deadline(first_notified_at: u64) -> u64 {
+    veto_deadline(first_notified_at).saturating_add(GRACE_PERIOD.as_secs())
 }
 
 /// Grace period deadline with network-specific timing
-pub fn grace_period_deadline_for_network(release: &Release, network: Network) -> u64 {
+pub fn grace_period_deadline_for_network(first_notified_at: u64, network: Network) -> u64 {
     let params = UpdateParams::for_network(network);
-    params.grace_period_deadline(release)
+    params.grace_period_deadline(first_notified_at)
 }
 
 /// Check if we're in the grace period (after approval, before enforcement)
 ///
 /// Uses mainnet defaults. For network-aware timing, use `UpdateParams::in_grace_period`.
-pub fn in_grace_period(release: &Release) -> bool {
+pub fn in_grace_period(first_notified_at: u64) -> bool {
     let now = current_timestamp();
-    let veto_end = veto_deadline(release);
-    let grace_end = grace_period_deadline(release);
+    let veto_end = veto_deadline(first_notified_at);
+    let grace_end = grace_period_deadline(first_notified_at);
     now >= veto_end && now < grace_end
 }
 
 /// Check if we're in the grace period with network-specific timing
-pub fn in_grace_period_for_network(release: &Release, network: Network) -> bool {
+pub fn in_grace_period_for_network(first_notified_at: u64, network: Network) -> bool {
     let params = UpdateParams::for_network(network);
-    params.in_grace_period(release)
+    params.in_grace_period(first_notified_at)
 }
 
 // ============================================================================
@@ -78,9 +97,12 @@ pub struct VersionEnforcement {
 impl VersionEnforcement {
     /// Create enforcement for an approved release (using mainnet defaults)
     ///
+    /// `first_notified_at` is the node-local timestamp at which THIS node first saw
+    /// the release. It is deliberately not read from the release (F7(b)).
+    ///
     /// For network-aware timing, use `from_approved_release_with_params` instead.
-    pub fn from_approved_release(release: &Release) -> Self {
-        let enforcement_time = veto_deadline(release) + GRACE_PERIOD.as_secs();
+    pub fn from_approved_release(release: &Release, first_notified_at: u64) -> Self {
+        let enforcement_time = veto_deadline(first_notified_at) + GRACE_PERIOD.as_secs();
         Self {
             min_version: release.version.clone(),
             enforcement_time,
@@ -92,8 +114,12 @@ impl VersionEnforcement {
     /// Create enforcement for an approved release with network-specific timing
     ///
     /// This is the preferred method when you have access to network context.
-    pub fn from_approved_release_with_params(release: &Release, params: &UpdateParams) -> Self {
-        let enforcement_time = params.grace_period_deadline(release);
+    pub fn from_approved_release_with_params(
+        release: &Release,
+        first_notified_at: u64,
+        params: &UpdateParams,
+    ) -> Self {
+        let enforcement_time = params.grace_period_deadline(first_notified_at);
         Self {
             min_version: release.version.clone(),
             enforcement_time,

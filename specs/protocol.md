@@ -1827,22 +1827,70 @@ If absent, the release targets all networks (backward compatibility).
 
 ### 10.2 Verification
 
-Maintainer keys for signature verification are derived from on-chain state:
-the first 5 registered producers (sorted by registration height) form the
-maintainer set. If on-chain state is unavailable (pre-sync, CLI), bootstrap
-keys hardcoded in `BOOTSTRAP_MAINTAINER_KEYS` are used as fallback.
+Verification runs against a **resolved trust root** — keys, the threshold they must
+meet, and where they came from — never against a bare key list. There is **no fallback
+to the compiled bootstrap keys** (INC-I-172 F1): an empty or sub-threshold on-chain root
+**fails closed** and refuses every release.
+
+**Trust-root resolution** (`bins/node/src/updater/trust_root_wiring.rs`, the only place
+in the node that makes this decision):
+
+| on-chain `members` | `last_derived_height` | resolved root |
+|---|---|---|
+| non-empty | any | `OnChain(members, set.threshold)` — authoritative |
+| empty | `0` | `Bootstrap(BOOTSTRAP_MAINTAINER_KEYS, REQUIRED_SIGNATURES)` — this node has never established an on-chain set (fresh install) |
+| empty | `> 0` | `OnChain([], threshold)` — the set existed and was emptied. **Unusable; refuses.** This is the attack case, not a fresh node. |
+
+A root that cannot be read at all (lock contention, unreadable
+`maintainer_state.bin`) resolves to an unusable `OnChain` root or is fatal at startup.
+"I could not check" is never "it is fine".
 
 ```
-// Key selection
-if on_chain_keys is non-empty:
-    allowed_keys = on_chain_keys    // First 5 registered producers
-else:
-    allowed_keys = BOOTSTRAP_MAINTAINER_KEYS
+// Verification, given a resolved root
+if root.threshold < 1 OR count(root.keys) < root.threshold:
+    REFUSE (TrustRootUnavailable)      // never falls back to BOOTSTRAP_MAINTAINER_KEYS
 
-message = version + ":" + binary_sha256
-valid_sigs = count(verify(message, sig, key) for sig in signatures where key in allowed_keys)
-release_valid = valid_sigs >= 3
+message = version + ":" + binary_sha256      // binary_sha256 = sha256(CHECKSUMS.txt)
+
+// DISTINCT-SIGNER count: outer loop over the ROOT's keys, inner loop over the
+// release's signature entries, break on the first valid entry for that key.
+// N signature entries produced by ONE key therefore count as 1.
+valid_signers = 0
+for key in root.keys:
+    for sig in signatures:
+        if sig.public_key == key (ASCII case-insensitive) AND verify(message, sig, key):
+            valid_signers += 1
+            break
+
+release_valid = valid_signers >= root.threshold   // NOT a hardcoded 3
 ```
+
+`root.threshold` is `MaintainerSet.threshold` for an `OnChain` root and
+`REQUIRED_SIGNATURES` for a `Bootstrap` one.
+
+**Artifact binding.** A valid signature proves the maintainers signed *something*; it
+does not say *what* is being installed. Every install path additionally binds the
+signature to the artifact before writing anything (INC-I-172 F1,
+`crates/updater/src/install_gate.rs`). All four links are checked and any break blocks:
+
+```
+L1  SIGNATURES.json .version          == the release TAG being installed (modulo "v")
+L2  SIGNATURES.json .checksums_sha256 == sha256(the CHECKSUMS.txt actually fetched)
+L3  distinct valid signers            >= root.threshold        (the loop above)
+L4  sha256(tarball)                   == the per-platform hash parsed from THAT CHECKSUMS.txt
+```
+
+Without L1/L2 the check is circular — both message operands would come from the same
+file that carries the signatures, so a verbatim copy of any past genuine
+`SIGNATURES.json` would authorise an arbitrary binary.
+
+**Where each root applies:**
+
+| Path | Root |
+|---|---|
+| node auto-update (`UpdateService`) | resolved per check; re-verified again immediately before install |
+| `doli-node upgrade` / `update verify` / `update apply` | resolved from this host's `maintainer_state.bin` |
+| `doli upgrade` (CLI) | `Bootstrap` — the CLI is not the node host and has no chain state |
 
 ### 10.3 Veto Voting
 
@@ -1859,22 +1907,26 @@ Only active producers can vote. Votes propagate via gossip.
 
 ### 10.4 Veto Calculation
 
-Votes are weighted by bond count (from epoch bond snapshot) × seniority:
+Veto is a **head count**. There is no seniority multiplier and no bond weighting: the
+weighted machinery described here previously (`calculate_vote_weight`,
+`seniority_multiplier`, `VoteTracker::*_weighted`) had no non-test callers and was
+deleted in INC-I-172 F8. `crates/updater/src/verification.rs::calculate_veto_result`:
 
 ```
-seniority_multiplier = 1.0 + min(years_active, 4) × 0.75
-bond_count = epoch_bond_snapshot[producer_pubkey]  // derived from UTXO set
-vote_weight = bond_count × seniority_multiplier
-
-total_veto_weight = sum(vote_weight for each VETO vote)
-total_weight = sum(vote_weight for each active producer)
-veto_percent = (total_veto_weight * 100) / total_weight
+veto_percent = (veto_count * 100) / total_producers   // 0 when total_producers == 0
 
 if veto_percent >= 40:
     update REJECTED
 else:
-    update APPROVED after veto period (5 min early network*)
+    update APPROVED after the veto period
 ```
+
+The veto period is the **configured** `UpdateConfig::veto_period_secs` (default
+`VETO_PERIOD`), not a literal "7 days", and it is measured from
+`PendingUpdate::first_notified_at` — the node-local moment this node first observed the
+release. It is never measured from `Release::published_at`, which is attacker-supplied
+and unsigned; a forged value would collapse the window to zero (INC-I-172 F7(b)).
+Because the reference point is node-local, a mixed fleet simply has per-node windows.
 
 ### 10.5 Production Gating
 

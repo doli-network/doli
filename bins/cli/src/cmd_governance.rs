@@ -20,22 +20,37 @@ pub(crate) async fn cmd_release_sign(
     version: &str,
     key_path: Option<PathBuf>,
 ) -> Result<()> {
+    // INC-I-172 M2, AUDIT-P0-011. Validate BEFORE the wallet is unlocked and before the
+    // network is touched. A release signature is raw bytes over `"{version}:{hash}"`, and
+    // the maintainer governance families sign `"add:{pubkey_hex}"`,
+    // `"remove:{pubkey_hex}"` and `"activate:{version}:{epoch}"` — the same
+    // interpolation, no domain tag on either side — so a free-form `--version` lets one
+    // signing command mint a governance authorization for a different intent. The `v`
+    // strip now happens inside the validator, so `--version vadd` cannot slip past it.
+    // Same implementation as `doli-node release sign`: a second, separately-maintained
+    // copy of this decision is how the compiled keys stayed authoritative on the
+    // `doli upgrade` path after the node path was fixed (AUDIT-P1-012).
+    let version_bare = updater::validate_release_version(version)?;
+
     // Load wallet/key
     let key_file = key_path.as_deref().unwrap_or(wallet_path);
     let w = Wallet::load(key_file)?;
     let keypair = w.primary_keypair()?;
     let pubkey_hex = keypair.public_key().to_hex();
 
-    let version_bare = version.strip_prefix('v').unwrap_or(version);
-
     // Download CHECKSUMS.txt from GitHub and compute its SHA-256
     println!("Fetching CHECKSUMS.txt for v{}...", version_bare);
-    let (_checksums_content, checksums_sha256) = updater::download_checksums_txt(version_bare)
+    let (_checksums_content, checksums_sha256) = updater::download_checksums_txt(&version_bare)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to fetch CHECKSUMS.txt: {}", e))?;
 
+    // The second operand of the same message. Validated even though it is computed
+    // locally, so the shape assumption holds at the point of interpolation rather than
+    // at the point of origin.
+    let checksums_sha256 = updater::validate_release_hash(&checksums_sha256)?;
+
     // Sign "version:checksums_sha256"
-    let sig = updater::sign_release_hash(&keypair, version_bare, &checksums_sha256);
+    let sig = updater::sign_release_hash(&keypair, &version_bare, &checksums_sha256);
 
     // Output JSON signature block
     let output = serde_json::json!({
@@ -419,7 +434,14 @@ pub(crate) async fn cmd_update(
                 println!("  systemctl restart doli-mainnet-nodeN");
             } else {
                 println!("No backup binary found at {}", backup.display());
-                println!("The watchdog automatically rolls back after 3 crashes.");
+                // INC-I-172 AUDIT-P1-014: this used to tell the operator "the watchdog
+                // automatically rolls back after 3 crashes". No watchdog runs —
+                // `UpdateWatchdog` has zero production callers — so that sentence sent an
+                // operator whose node was crash-looping away to wait for a rescue that
+                // never comes.
+                println!("Rollback is MANUAL: there is no automatic post-update rollback.");
+                println!("A backup is written by an update, so its absence means this node");
+                println!("has not applied one. Reinstall the previous release by hand.");
                 println!("Use 'doli update status' to check the current update state.");
             }
         }

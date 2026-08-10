@@ -3,9 +3,12 @@
 //! Simple, transparent auto-updates with community veto power.
 //!
 //! # Rules (no exceptions)
-//! - ALL updates: 2-epoch veto period (configurable per network)
-//! - 40% of producers can veto any update
-//! - 3 of 5 maintainer signatures required per network (via SIGNATURES.json in GitHub Releases)
+//! - ALL updates: 2-epoch veto period (configurable per network), counted from the
+//!   NODE-LOCAL moment this node first observed the release — never from the
+//!   unsigned `Release::published_at` (INC-I-172 F7(b))
+//! - 40% of producers can veto any update (head count; there is no weighted veto)
+//! - 3 of 5 DISTINCT maintainer signatures required per network (via SIGNATURES.json
+//!   in GitHub Releases), checked against a resolved [`TrustRoot`] that fails closed
 //!
 //! # Flow
 //! 1. Release published on GitHub (CI creates CHECKSUMS.txt)
@@ -32,7 +35,11 @@ pub mod watchdog;
 // Domain modules
 mod constants;
 mod enforcement;
+mod install_gate;
 mod params;
+mod release_args;
+mod skills;
+mod trust_root;
 mod types;
 mod util;
 mod verification;
@@ -40,9 +47,12 @@ mod verification;
 // Re-exports: apply
 pub use apply::{
     apply_update, auto_apply_from_github, backup_current, current_binary_path,
-    extract_binary_from_tarball, extract_named_binary_from_tarball, install_binary,
-    install_skills_from_tarball, restart_node, rollback,
+    extract_binary_from_tarball, extract_named_binary_from_tarball, install_binary, restart_node,
+    rollback,
 };
+
+// Re-exports: skills
+pub use skills::{install_skills_from_tarball, install_skills_into, skill_entry_path_is_safe};
 
 // Re-exports: download
 pub use download::{
@@ -83,10 +93,20 @@ pub use enforcement::{
     ProductionBlocked, VersionEnforcement,
 };
 
+// Re-exports: trust_root
+pub use trust_root::{TrustRoot, TrustRootProvenance};
+
+// Re-exports: install_gate
+pub use install_gate::verify_release_artifact;
+
+// Re-exports: release_args (INC-I-172 M2, AUDIT-P0-011 — every release-signing entry
+// point must validate through THESE, before any signing message is interpolated)
+pub use release_args::{validate_release_hash, validate_release_version};
+
 // Re-exports: verification
 pub use verification::{
     calculate_veto_result, sign_release_hash, verify_release_signatures,
-    verify_release_signatures_with_keys,
+    verify_release_with_trust_root,
 };
 
 // Re-exports: hardfork
@@ -135,10 +155,18 @@ mod tests {
         assert_eq!(result.veto_percent, 50);
         assert!(!result.approved);
 
-        // Edge case: no producers
+        // Edge case: producer count UNKNOWN (AUDIT-P1-015). A zero denominator is not
+        // "nobody vetoed" — it is "the electorate is unknown", which is what
+        // `try_read().unwrap_or(0)` produced on ordinary lock contention. It must NOT
+        // approve.
         let result = calculate_veto_result(0, 0);
         assert_eq!(result.veto_percent, 0);
-        assert!(result.approved);
+        assert!(!result.approved);
+
+        // ...and it must not approve when votes WERE cast either: this is the shape that
+        // turned any number of vetoes into "0% — APPROVED".
+        let result = calculate_veto_result(99, 0);
+        assert!(!result.approved);
     }
 
     #[test]
@@ -152,85 +180,6 @@ mod tests {
             "unknown"
         ]
         .contains(&platform));
-    }
-
-    #[test]
-    fn test_vote_weight_bonds_times_seniority() {
-        let params = UpdateParams::for_network(doli_core::network::Network::Devnet);
-        // Devnet: seniority_step_blocks = 144 (1 "year")
-
-        // 1 bond, 0 years → 1.0 × 1.0 = 1.0
-        let w = params.calculate_vote_weight(1, 0);
-        assert!((w - 1.0).abs() < 0.001, "1 bond, 0 years: got {}", w);
-
-        // 10 bonds, 0 years → 10.0 × 1.0 = 10.0
-        let w = params.calculate_vote_weight(10, 0);
-        assert!((w - 10.0).abs() < 0.001, "10 bonds, 0 years: got {}", w);
-
-        // 1 bond, 1 year (144 blocks on devnet) → 1.0 × 1.75 = 1.75
-        let w = params.calculate_vote_weight(1, params.seniority_step_blocks);
-        assert!((w - 1.75).abs() < 0.001, "1 bond, 1 year: got {}", w);
-
-        // 2 bonds, 4 years (576 blocks on devnet) → 2.0 × 4.0 = 8.0
-        let w = params.calculate_vote_weight(2, params.seniority_maturity_blocks);
-        assert!((w - 8.0).abs() < 0.001, "2 bonds, 4 years: got {}", w);
-
-        // 10 bonds, 4 years → 10.0 × 4.0 = 40.0
-        let w = params.calculate_vote_weight(10, params.seniority_maturity_blocks);
-        assert!((w - 40.0).abs() < 0.001, "10 bonds, 4 years: got {}", w);
-
-        // Seniority caps at 4 years (4.0x) even after 10 years
-        let w = params.calculate_vote_weight(1, params.seniority_step_blocks * 10);
-        assert!(
-            (w - 4.0).abs() < 0.001,
-            "1 bond, 10 years (capped): got {}",
-            w
-        );
-    }
-
-    #[test]
-    fn test_vote_weight_as_u64_for_tracker() {
-        let params = UpdateParams::for_network(doli_core::network::Network::Devnet);
-
-        // Weights stored as u64 with 100x multiplier for 2-decimal precision
-        let w = params.calculate_vote_weight(1, 0);
-        assert_eq!((w * 100.0) as u64, 100); // 1.0 × 100
-
-        let w = params.calculate_vote_weight(10, 0);
-        assert_eq!((w * 100.0) as u64, 1000); // 10.0 × 100
-
-        let w = params.calculate_vote_weight(2, params.seniority_maturity_blocks);
-        assert_eq!((w * 100.0) as u64, 800); // 8.0 × 100
-
-        let w = params.calculate_vote_weight(10, params.seniority_maturity_blocks);
-        assert_eq!((w * 100.0) as u64, 4000); // 40.0 × 100
-    }
-
-    #[test]
-    fn test_vote_weight_veto_with_bonds() {
-        use crate::vote::{Vote, VoteTracker};
-        let params = UpdateParams::for_network(doli_core::network::Network::Devnet);
-
-        // Scenario: 5 genesis producers (1 bond, ~24 blocks active) + 1 whale (10 bonds, new)
-        let mut weights = std::collections::HashMap::new();
-        for i in 0..5 {
-            let w = params.calculate_vote_weight(1, 24); // ~0.125 years
-            weights.insert(format!("genesis_{}", i), (w * 100.0) as u64);
-        }
-        let whale_w = params.calculate_vote_weight(10, 1);
-        weights.insert("whale".to_string(), (whale_w * 100.0) as u64);
-
-        let total_weight: u64 = weights.values().sum();
-        let mut tracker = VoteTracker::with_weights("99.0.0".into(), weights);
-
-        // Whale alone vetoes — should exceed 40%
-        tracker.record_vote("whale".into(), Vote::Veto);
-        assert!(
-            tracker.should_reject_weighted(total_weight),
-            "Whale (10 bonds) should be able to veto alone (weight {}/{})",
-            tracker.veto_weight(),
-            total_weight
-        );
     }
 
     #[test]
@@ -250,19 +199,5 @@ mod tests {
         let pubkey = crypto::PublicKey::from_hex(&sig.public_key).unwrap();
         let signature = crypto::Signature::from_hex(&sig.signature).unwrap();
         assert!(crypto::signature::verify(message, &signature, &pubkey).is_ok());
-    }
-
-    #[test]
-    fn test_seniority_multiplier() {
-        let params = UpdateParams::for_network(doli_core::network::Network::Devnet);
-
-        assert!((params.seniority_multiplier(0) - 1.0).abs() < 0.001);
-        assert!((params.seniority_multiplier(params.seniority_step_blocks) - 1.75).abs() < 0.001);
-        assert!(
-            (params.seniority_multiplier(params.seniority_step_blocks * 2) - 2.5).abs() < 0.001
-        );
-        assert!(
-            (params.seniority_multiplier(params.seniority_maturity_blocks) - 4.0).abs() < 0.001
-        );
     }
 }

@@ -146,7 +146,7 @@ crypto ──► wallet (shared wallet library, NO vdf/doli-core)
 | `config_validation.rs` | Configuration validation rules |
 | `finality.rs` | Finality gadget types |
 | `heartbeat.rs` | Heartbeat message types |
-| `maintainer.rs` | Maintainer governance types |
+| `maintainer/` | Maintainer governance types (`set`, `data`, `derivation`) |
 | `nft.rs` | NFT types and validation |
 | `presence.rs` | Presence tracking types |
 | `rewards.rs` | Reward calculation tests |
@@ -388,25 +388,27 @@ block.
 
 | Module | Function |
 |--------|----------|
-| `constants.rs` | Bootstrap maintainer keys (per network), GitHub repo URL, fallback mirror |
+| `constants.rs` | Bootstrap maintainer keys (per network), GitHub repo/API/releases URLs (owned namespace, INC-I-157) |
 | `params.rs` | `UpdateParams` — network-aware timing (veto/grace/check intervals from NetworkParams) |
 | `types.rs` | Release, UpdateConfig, MaintainerSignature, VoteResult |
 | `download.rs` | Fetch releases from GitHub, download binaries, verify SHA-256 hashes |
-| `verification.rs` | Ed25519 release signature verification (3/5 maintainer threshold), veto calculation |
-| `vote.rs` | VoteTracker — seniority-weighted vote counting (bonds x seniority multiplier) |
+| `trust_root.rs` | `TrustRoot` — resolved release-verification root (keys + threshold + provenance); an empty or sub-threshold on-chain root FAILS CLOSED (INC-I-172 F1) |
+| `verification.rs` | Ed25519 release signature verification against a `TrustRoot`, counting DISTINCT SIGNERS; veto calculation |
+| `vote.rs` | VoteTracker — count-based veto tally (one active producer, one vote) |
 | `apply.rs` | Binary swap (backup, install, restart), auto-apply from GitHub |
 | `enforcement.rs` | Version enforcement — pauses production if outdated after grace period |
-| `watchdog.rs` | Crash detection — 3 crashes within crash_window triggers automatic rollback |
+| `watchdog.rs` | Crash detection + rollback — **NOT WIRED**, zero production callers (INC-I-172 AUDIT-P1-014) |
 | `hardfork.rs` | Compile-time hard fork schedule — stops production when binary is too old for an activated fork height |
 | `test_keys.rs` | Test maintainer keys for devnet (DOLI_TEST_KEYS=1) |
 
 **Features:**
-- Download from GitHub releases (with fallback mirror at `releases.doli.network`)
+- Download from GitHub releases (`doli-network/doli`) — no fallback mirror (removed in INC-I-157)
 - 3/5 maintainer Ed25519 signatures required per release
 - Veto period (5 min early network; target 7 days)
-- 40% seniority-weighted veto threshold
+- 40% veto threshold by producer head count (no seniority or stake weighting; the weighted variant was deleted in INC-I-172 — it never executed)
+- Veto and grace deadlines measured from the node-local `first_notified_at`, never from the unsigned `Release::published_at`
 - SHA-256 hash verification
-- Automatic rollback on 3 crashes within crash window
+- Automatic rollback on 3 crashes within crash window — **NOT IMPLEMENTED**; rollback is manual (`doli-node update rollback`)
 - Version enforcement: outdated producers paused after grace period
 - Hard fork schedule: compile-time `(activation_height, min_version)` pairs checked every production tick
 - Network-layer version enforcement: status handshake rejects peers below `MIN_PEER_PROTOCOL_VERSION`

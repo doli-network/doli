@@ -464,7 +464,26 @@ impl Node {
         if let Some(ref pending) = self.pending_update {
             let pending = pending.clone();
             let producer_set = self.producer_set.clone();
+            // INC-I-172 F1: surface the trust root the node would actually verify a
+            // release against, so an operator can see an empty-set / fail-closed
+            // condition from `getUpdateStatus` instead of only from the log.
+            let maintainer_state = self.maintainer_state.clone();
+            let network = self.config.network;
             context = context.with_update_status(move || {
+                let trust_root = maintainer_state.as_ref().and_then(|ms| {
+                    ms.try_read()
+                        .ok()
+                        .map(|state| node_updater::resolve_trust_root(&state, network))
+                });
+                let trust_root_json = match trust_root {
+                    Some(root) => serde_json::json!({
+                        "provenance": root.provenance().to_string(),
+                        "keys": root.keys().len(),
+                        "threshold": root.threshold(),
+                        "usable": root.is_usable(),
+                    }),
+                    None => serde_json::json!(null),
+                };
                 let pending_guard = pending.try_read();
                 match pending_guard {
                     Ok(guard) => match guard.as_ref() {
@@ -473,8 +492,8 @@ impl Node {
                                 .try_read()
                                 .map(|set| set.active_count())
                                 .unwrap_or(0);
-                            let veto_active =
-                                !p.approved && !node_updater::veto_period_ended(&p.release);
+                            let veto_active = !p.approved
+                                && !node_updater::veto_period_ended(p.first_notified_at);
                             serde_json::json!({
                                 "pending_update": {
                                     "version": p.release.version,
@@ -491,20 +510,23 @@ impl Node {
                                     "active": e.active,
                                     "min_version": e.min_version,
                                 })),
+                                "trust_root": trust_root_json,
                             })
                         }
                         None => serde_json::json!({
                             "pending_update": null,
                             "veto_period_active": false,
                             "veto_count": 0,
-                            "veto_percent": 0.0
+                            "veto_percent": 0.0,
+                            "trust_root": trust_root_json
                         }),
                     },
                     Err(_) => serde_json::json!({
                         "pending_update": null,
                         "veto_period_active": false,
                         "veto_count": 0,
-                        "veto_percent": 0.0
+                        "veto_percent": 0.0,
+                        "trust_root": trust_root_json
                     }),
                 }
             });

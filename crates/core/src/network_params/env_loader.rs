@@ -38,8 +38,23 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
         } else {
             env_parse("DOLI_GENESIS_TIME", defaults.genesis_time)
         },
-        veto_period_secs: env_parse("DOLI_VETO_PERIOD_SECS", defaults.veto_period_secs),
-        grace_period_secs: env_parse("DOLI_GRACE_PERIOD_SECS", defaults.grace_period_secs),
+        // LOCKED for mainnet (INC-I-172 M1, AUDIT-P3-012). These were the only two
+        // update-timing parameters not wrapped in the `is_mainnet` lock their neighbours
+        // use. `.env` is read from the DATA DIRECTORY, so anything that can write there —
+        // the same reach as `maintainer_state.bin` — could set
+        // `DOLI_VETO_PERIOD_SECS=0` and collapse the mainnet veto window to nothing,
+        // making the next approved release auto-install on the following tick with no
+        // opportunity for producers to object.
+        veto_period_secs: if is_mainnet {
+            defaults.veto_period_secs // LOCKED for mainnet
+        } else {
+            env_parse("DOLI_VETO_PERIOD_SECS", defaults.veto_period_secs)
+        },
+        grace_period_secs: if is_mainnet {
+            defaults.grace_period_secs // LOCKED for mainnet
+        } else {
+            env_parse("DOLI_GRACE_PERIOD_SECS", defaults.grace_period_secs)
+        },
         bootstrap_grace_period_secs: if is_mainnet {
             defaults.bootstrap_grace_period_secs // LOCKED for mainnet
         } else {
@@ -407,6 +422,23 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
                 defaults.inc_i_147_activation_height,
             )
         },
+        // INC-I-172 M2 maintainer trust-root derivation, governance counter and
+        // ProtocolActivation fail-close. Mainnet LOCKED — an .env override here
+        // would let a single operator move the trust-root gate and fork itself
+        // off the network, or re-open the producer-key fallback that F4 closes.
+        maintainer_derivation_activation_height: if is_mainnet {
+            defaults.maintainer_derivation_activation_height
+        } else {
+            env_parse(
+                "DOLI_MAINTAINER_DERIVATION_ACTIVATION_HEIGHT",
+                defaults.maintainer_derivation_activation_height,
+            )
+        },
+        // INC-I-172 M2 review F3. Deliberately NOT env-overridable on ANY
+        // network: the seed precondition is a scale assumption, and the point of
+        // moving it into NetworkParams was to make it visible per network in one
+        // audited place rather than tunable per host.
+        maintainer_seed_min_producers: defaults.maintainer_seed_min_producers,
         // Gossip mesh (locked for mainnet - wrong values could isolate nodes)
         mesh_n: if is_mainnet {
             defaults.mesh_n

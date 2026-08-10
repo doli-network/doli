@@ -1,14 +1,22 @@
-//! Background update service — check loop, vote processing, state transitions.
+//! Background update service — state transitions and the install gate.
+//!
+//! The update-poll and vote-intake methods live in the child module `checks`
+//! (`service_checks.rs`) to keep this file inside the 500-line module budget.
+//! `check_veto_status` and `auto_apply` stay HERE: they are the install-gating
+//! decisions INC-I-172 M1 changed, and the regression tests anchor on this file.
+
+#[path = "service_checks.rs"]
+mod checks;
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, RwLock};
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 use updater::{
-    auto_apply_from_github, calculate_veto_result, current_version, fetch_latest_release,
-    is_newer_version, restart_node, verify_release_signatures_with_keys, UpdateConfig,
-    VersionEnforcement, Vote, VoteMessage, VoteTracker, VETO_THRESHOLD_PERCENT,
+    auto_apply_from_github, calculate_veto_result, current_version, is_newer_version, restart_node,
+    verify_release_with_trust_root, TrustRoot, UpdateConfig, VersionEnforcement, VoteMessage,
+    VETO_THRESHOLD_PERCENT,
 };
 
 use super::notifications::{
@@ -112,9 +120,9 @@ impl UpdateService {
     /// Run the update service
     pub async fn run(
         mut self,
-        producer_count_fn: impl Fn() -> usize + Send + Sync + 'static,
-        is_producer_fn: impl Fn(&str) -> bool + Send + Sync + 'static,
-        maintainer_keys_fn: impl Fn() -> Vec<String> + Send + Sync + 'static,
+        producer_count_fn: impl Fn() -> Option<usize> + Send + Sync + 'static,
+        is_producer_fn: impl Fn(&str) -> Option<bool> + Send + Sync + 'static,
+        maintainer_keys_fn: impl Fn() -> TrustRoot + Send + Sync + 'static,
     ) {
         if !self.config.enabled {
             info!("Auto-updates disabled");
@@ -156,145 +164,22 @@ impl UpdateService {
 
                 // Check veto period status and show periodic reminders
                 _ = vote_ticker.tick() => {
-                    self.check_veto_status(&producer_count_fn).await;
+                    self.check_veto_status(&producer_count_fn, &maintainer_keys_fn).await;
                     self.maybe_show_reminder(&producer_count_fn).await;
                 }
             }
         }
     }
 
-    /// Show periodic reminder notification if enough time has passed
-    async fn maybe_show_reminder(&self, producer_count_fn: &impl Fn() -> usize) {
-        let pending = self.pending.read().await;
-        if let Some(ref p) = *pending {
-            let now = updater::current_timestamp();
-            let last = *self.last_notification.read().await;
-
-            if now - last >= NOTIFICATION_INTERVAL_SECS {
-                let total = producer_count_fn();
-                display_update_notification(p, total);
-                *self.last_notification.write().await = now;
-            }
-        }
-    }
-
-    /// Check for available updates
-    async fn check_for_updates(
-        &mut self,
-        producer_count_fn: &impl Fn() -> usize,
-        maintainer_keys_fn: &impl Fn() -> Vec<String>,
-    ) {
-        debug!("Checking for updates...");
-
-        let release =
-            match fetch_latest_release(self.config.custom_url.as_deref(), Some(self.network)).await
-            {
-                Ok(Some(r)) => r,
-                Ok(None) => {
-                    debug!("No release info available");
-                    return;
-                }
-                Err(e) => {
-                    warn!("Failed to check for updates: {}", e);
-                    return;
-                }
-            };
-
-        // Check if newer than current
-        if !is_newer_version(&release.version, current_version()) {
-            debug!("Already on latest version ({})", current_version());
-            return;
-        }
-
-        // Check if we already have this pending
-        {
-            let pending = self.pending.read().await;
-            if let Some(ref p) = *pending {
-                if p.release.version == release.version {
-                    debug!("Update {} already pending", release.version);
-                    return;
-                }
-            }
-        }
-
-        // Verify signatures using on-chain maintainer keys (falls back to bootstrap keys)
-        let on_chain_keys = maintainer_keys_fn();
-        if let Err(e) = verify_release_signatures_with_keys(&release, &on_chain_keys, self.network)
-        {
-            error!("Release {} has invalid signatures: {}", release.version, e);
-            return;
-        }
-
-        info!(
-            "New update available: {} -> {} (veto period: 7 days)",
-            current_version(),
-            release.version
-        );
-        info!("Changelog: {}", release.changelog);
-
-        // Start veto period
-        let vote_tracker = VoteTracker::new(release.version.clone());
-        let now = updater::current_timestamp();
-
-        let new_pending = PendingUpdate {
-            release,
-            vote_tracker,
-            first_notified_at: now,
-            approved: false,
-            enforcement: None,
-        };
-
-        // Save to disk for persistence across restarts
-        if let Err(e) = new_pending.save(&self.data_dir) {
-            error!("Failed to save pending update to disk: {}", e);
-        }
-
-        // Show mandatory notification
-        let total = producer_count_fn();
-        display_update_notification(&new_pending, total);
-        *self.last_notification.write().await = now;
-
-        let mut pending = self.pending.write().await;
-        *pending = Some(new_pending);
-
-        if self.config.notify_only {
-            info!("Notify-only mode: update will not be applied automatically");
-        }
-    }
-
-    /// Handle an incoming vote
-    async fn handle_vote(&self, vote_msg: VoteMessage, is_producer_fn: &impl Fn(&str) -> bool) {
-        // Verify this is from an active producer
-        if !is_producer_fn(&vote_msg.producer_id) {
-            debug!("Ignoring vote from non-producer: {}", vote_msg.producer_id);
-            return;
-        }
-
-        let mut pending = self.pending.write().await;
-        if let Some(ref mut p) = *pending {
-            if p.release.version == vote_msg.version
-                && p.vote_tracker
-                    .record_vote(vote_msg.producer_id.clone(), vote_msg.vote)
-            {
-                info!(
-                    "Recorded {} vote from {}",
-                    if vote_msg.vote == Vote::Veto {
-                        "VETO"
-                    } else {
-                        "APPROVE"
-                    },
-                    &vote_msg.producer_id[..16]
-                );
-                // Persist vote tracker to disk
-                if let Err(e) = p.save(&self.data_dir) {
-                    warn!("Failed to save vote state: {}", e);
-                }
-            }
-        }
-    }
-
     /// Check if veto period has ended and transition to grace period or reject
-    async fn check_veto_status(&mut self, producer_count_fn: &impl Fn() -> usize) {
+    ///
+    /// Every deadline here is measured from `PendingUpdate::first_notified_at`, the
+    /// node-local moment this node first saw the release (INC-I-172 F7(b)).
+    async fn check_veto_status(
+        &mut self,
+        producer_count_fn: &impl Fn() -> Option<usize>,
+        maintainer_keys_fn: &impl Fn() -> TrustRoot,
+    ) {
         // First, check for state transitions
         let transition = {
             let pending = self.pending.read().await;
@@ -311,19 +196,47 @@ impl UpdateService {
                         None
                     }
                 } else {
-                    // Check veto period using config-aware timing
-                    let veto_deadline = p.release.published_at + self.config.veto_period_secs;
+                    // Check veto period using config-aware timing, measured from the
+                    // node-local first_notified_at.
+                    // saturating_add (AUDIT-P2-013): a wrapping add on a value read from
+                    // unauthenticated node-local JSON would put the deadline in the past.
+                    let veto_deadline = p
+                        .first_notified_at
+                        .saturating_add(self.config.veto_period_secs);
                     let veto_ended = updater::current_timestamp() >= veto_deadline;
 
                     if veto_ended {
-                        // Veto period ended - check result
-                        let total = producer_count_fn();
-                        let result = calculate_veto_result(p.vote_tracker.veto_count(), total);
-
-                        if result.approved {
-                            Some(UpdateTransition::Approved(result))
-                        } else {
-                            Some(UpdateTransition::Rejected(result))
+                        // Veto period ended - check result.
+                        //
+                        // AUDIT-P1-015: an UNKNOWN producer count takes NO transition at
+                        // all. `producer_count_fn` is a non-blocking `try_read` on a lock
+                        // the block-application path writes constantly, so `None` is
+                        // ordinary contention — and the electorate size is the
+                        // denominator of the veto percentage. Substituting 0 for it made
+                        // `0 < 40` APPROVE, converting any number of veto votes into
+                        // "approved" with no attacker action. Neither approving NOR
+                        // rejecting is correct on an unknown count: this tick is skipped
+                        // and the decision is retaken on the next one, 60 s later.
+                        match producer_count_fn() {
+                            Some(total) => {
+                                let result =
+                                    calculate_veto_result(p.vote_tracker.veto_count(), total);
+                                if result.approved {
+                                    Some(UpdateTransition::Approved(result))
+                                } else {
+                                    Some(UpdateTransition::Rejected(result))
+                                }
+                            }
+                            None => {
+                                warn!(
+                                    "Veto period for {} has ended but the active producer count \
+                                     could not be read (lock held). Taking NO decision this tick \
+                                     — an unknown electorate size is not a 0% veto. Retrying in \
+                                     60s.",
+                                    p.release.version
+                                );
+                                None
+                            }
                         }
                     } else {
                         // Still in veto period
@@ -351,11 +264,13 @@ impl UpdateService {
                             self.config.grace_period_secs
                         );
 
-                        // Mark as approved and set enforcement (config-aware timing)
+                        // Mark as approved and set enforcement (config-aware timing,
+                        // measured from the node-local first_notified_at).
                         p.approved = true;
-                        let enforcement_time = p.release.published_at
-                            + self.config.veto_period_secs
-                            + self.config.grace_period_secs;
+                        let enforcement_time = p
+                            .first_notified_at
+                            .saturating_add(self.config.veto_period_secs)
+                            .saturating_add(self.config.grace_period_secs);
                         p.enforcement = Some(VersionEnforcement {
                             min_version: p.release.version.clone(),
                             enforcement_time,
@@ -381,7 +296,7 @@ impl UpdateService {
                 // Auto-apply if enabled (not notify_only)
                 if !self.config.notify_only {
                     if let Some(version) = version_to_apply {
-                        self.auto_apply(&version).await;
+                        self.auto_apply(&version, maintainer_keys_fn).await;
                     }
                 }
             }
@@ -436,7 +351,7 @@ impl UpdateService {
 
                 if !self.config.notify_only {
                     if let Some(version) = version_to_apply {
-                        self.auto_apply(&version).await;
+                        self.auto_apply(&version, maintainer_keys_fn).await;
                     }
                 }
             }
@@ -454,7 +369,7 @@ impl UpdateService {
     /// On failure, logs the error and continues running the old version.
     /// The enforcement mechanism will block production until the operator
     /// manually applies the update.
-    async fn auto_apply(&self, version: &str) {
+    async fn auto_apply(&self, version: &str, maintainer_keys_fn: &impl Fn() -> TrustRoot) {
         info!(
             "Auto-applying approved update v{} (current: v{})...",
             version,
@@ -464,13 +379,39 @@ impl UpdateService {
         // Extract the signed checksums hash from the pending release.
         // This is SHA256(CHECKSUMS.txt) that was verified against maintainer signatures.
         // Passing it to auto_apply_from_github closes the TOCTOU window (AUDIT-UPDATE-002).
-        let signed_checksums_sha256 = {
+        let staged_release = {
             let pending = self.pending.read().await;
-            pending
-                .as_ref()
-                .map(|p| p.release.binary_sha256.clone())
-                .unwrap_or_default()
+            pending.as_ref().map(|p| p.release.clone())
         };
+        let Some(staged_release) = staged_release else {
+            warn!("Auto-apply for v{version} aborted: no pending release is staged");
+            return;
+        };
+
+        // INC-I-172 F7(a): RE-VERIFY against the CURRENT trust root, immediately
+        // before install. The pending update may have been staged before a veto
+        // period and restored from disk across any number of restarts (see
+        // `UpdateService::new`), so the root that authorised it may since have been
+        // rotated. Revocation that cannot reach an in-flight update is not revocation.
+        let trust_root = maintainer_keys_fn();
+        if let Err(e) = verify_release_with_trust_root(&staged_release, &trust_root) {
+            error!(
+                "Auto-apply for v{} ABORTED: the staged release no longer verifies against the \
+                 current {} trust root ({} keys, threshold {}): {}. Dropping the pending update.",
+                version,
+                trust_root.provenance(),
+                trust_root.keys().len(),
+                trust_root.threshold(),
+                e
+            );
+            let mut pending = self.pending.write().await;
+            *pending = None;
+            if let Err(e) = PendingUpdate::remove(&self.data_dir) {
+                warn!("Failed to remove pending_update.json: {}", e);
+            }
+            return;
+        }
+        let signed_checksums_sha256 = staged_release.binary_sha256.clone();
 
         match auto_apply_from_github(version, &signed_checksums_sha256).await {
             Ok(()) => {
@@ -516,9 +457,9 @@ pub fn spawn_update_service(
     config: UpdateConfig,
     data_dir: PathBuf,
     network: doli_core::network::Network,
-    producer_count_fn: impl Fn() -> usize + Send + Sync + 'static,
-    is_producer_fn: impl Fn(&str) -> bool + Send + Sync + 'static,
-    maintainer_keys_fn: impl Fn() -> Vec<String> + Send + Sync + 'static,
+    producer_count_fn: impl Fn() -> Option<usize> + Send + Sync + 'static,
+    is_producer_fn: impl Fn(&str) -> Option<bool> + Send + Sync + 'static,
+    maintainer_keys_fn: impl Fn() -> TrustRoot + Send + Sync + 'static,
 ) -> (
     mpsc::Sender<VoteMessage>,
     Arc<RwLock<Option<PendingUpdate>>>,

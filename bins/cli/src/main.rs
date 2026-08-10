@@ -32,6 +32,7 @@ mod paths;
 mod pool_tx;
 mod rpc_client;
 mod tx_retention;
+mod upgrade_restart;
 mod wallet;
 
 use commands::{Cli, Commands};
@@ -216,8 +217,19 @@ async fn main() -> Result<()> {
             yes,
             doli_node_path,
             service,
+            data_dir,
         } => {
-            cmd_upgrade::cmd_upgrade(version, yes, doli_node_path, service).await?;
+            // The trust root follows --network. Parse strictly: an unrecognised
+            // network must not silently fall through to the mainnet keys.
+            //
+            // AUDIT-P2-012: `--network` selects a compiled key ARRAY, and the mainnet and
+            // testnet arrays are byte-identical while the signed message carries no
+            // network term — so this flag does not bind a signature to a network. It is
+            // not a control. See `cmd_upgrade`'s doc comment.
+            let network: doli_core::Network =
+                cli.network.parse().map_err(|e| anyhow::anyhow!("{}", e))?;
+            cmd_upgrade::cmd_upgrade(version, yes, doli_node_path, service, data_dir, network)
+                .await?;
         }
         Commands::Release { command } => {
             cmd_governance::cmd_release(&wallet, command).await?;

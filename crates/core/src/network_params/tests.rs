@@ -367,3 +367,95 @@ fn inv_deploy_002_accepts_conservation_before_amm_on_mainnet() {
         .validate_amm_conservation_ordering(Network::Mainnet)
         .is_ok());
 }
+
+// ============================================================================
+// INC-I-172 M1 security audit, AUDIT-P3-012 — the update-timing params must be
+// LOCKED on mainnet, like every one of their neighbours.
+//
+// THE DEFECT this locks shut: `veto_period_secs` and `grace_period_secs` were the only
+// update-timing parameters not wrapped in the `is_mainnet` lock. `.env` is read from the
+// DATA DIRECTORY, so anything that can write there — the same reach as
+// `maintainer_state.bin` — could set `DOLI_VETO_PERIOD_SECS=0` on mainnet and collapse
+// the veto window to nothing, making the next approved release install on the following
+// 60 s tick with no opportunity for producers to object.
+//
+// OUTPUT CONTRACT: `env_loader::load_from_env(network)`
+//   O1: return.veto_period_secs
+//   O2: return.grace_period_secs
+//   O3: process env DOLI_VETO_PERIOD_SECS / DOLI_GRACE_PERIOD_SECS — restored
+// PATHS:
+//   P1: is_mainnet == true   -> env IGNORED, defaults returned
+//   P2: is_mainnet == false  -> env HONOURED (devnet must stay fast for testing)
+// INPUT PARTITIONS: the attack value `0` (the veto window an attacker wants) on P1, and
+//   a distinctive non-default on P2. P2 is the control: without it, a `load_from_env`
+//   that returned defaults unconditionally would satisfy P1 and prove nothing.
+// ============================================================================
+
+/// AUDIT-P3-012. RED before the fix.
+/// [P1 -> O1, O2, O3]
+#[test]
+fn audit_p3_012_mainnet_ignores_veto_and_grace_env_overrides() {
+    let _lock = ENV_MUTEX.lock().unwrap();
+    let original_veto = std::env::var("DOLI_VETO_PERIOD_SECS");
+    let original_grace = std::env::var("DOLI_GRACE_PERIOD_SECS");
+
+    // The attack value: a zero-length veto window.
+    std::env::set_var("DOLI_VETO_PERIOD_SECS", "0");
+    std::env::set_var("DOLI_GRACE_PERIOD_SECS", "0");
+
+    let observed = super::env_loader::load_from_env(Network::Mainnet);
+    let defaults = NetworkParams::defaults(Network::Mainnet);
+
+    // O3: restore BEFORE asserting so a failure does not leak process state.
+    match original_veto {
+        Ok(v) => std::env::set_var("DOLI_VETO_PERIOD_SECS", v),
+        Err(_) => std::env::remove_var("DOLI_VETO_PERIOD_SECS"),
+    }
+    match original_grace {
+        Ok(v) => std::env::set_var("DOLI_GRACE_PERIOD_SECS", v),
+        Err(_) => std::env::remove_var("DOLI_GRACE_PERIOD_SECS"),
+    }
+
+    assert_eq!(
+        observed.veto_period_secs, defaults.veto_period_secs,
+        "mainnet MUST ignore DOLI_VETO_PERIOD_SECS. A data-dir .env setting it to 0 \
+         collapses the mainnet veto window and auto-installs the next approved release \
+         on the following tick (AUDIT-P3-012)"
+    );
+    assert_eq!(
+        observed.grace_period_secs, defaults.grace_period_secs,
+        "mainnet MUST ignore DOLI_GRACE_PERIOD_SECS, for the same reason"
+    );
+    assert!(
+        defaults.veto_period_secs > 0,
+        "the mainnet default veto period must be non-zero, or the lock protects nothing"
+    );
+}
+
+/// AUDIT-P3-012. GREEN-lock (control).
+/// Acceptance: non-mainnet networks still honour the override — devnet's accelerated
+/// timing is what makes the update path testable at all.
+/// [P2 -> O1, O2, O3]
+#[test]
+fn audit_p3_012_non_mainnet_still_honours_veto_and_grace_env_overrides() {
+    let _lock = ENV_MUTEX.lock().unwrap();
+    let original_veto = std::env::var("DOLI_VETO_PERIOD_SECS");
+    let original_grace = std::env::var("DOLI_GRACE_PERIOD_SECS");
+
+    std::env::set_var("DOLI_VETO_PERIOD_SECS", "77");
+    std::env::set_var("DOLI_GRACE_PERIOD_SECS", "88");
+
+    let observed = super::env_loader::load_from_env(Network::Devnet);
+
+    match original_veto {
+        Ok(v) => std::env::set_var("DOLI_VETO_PERIOD_SECS", v),
+        Err(_) => std::env::remove_var("DOLI_VETO_PERIOD_SECS"),
+    }
+    match original_grace {
+        Ok(v) => std::env::set_var("DOLI_GRACE_PERIOD_SECS", v),
+        Err(_) => std::env::remove_var("DOLI_GRACE_PERIOD_SECS"),
+    }
+
+    assert_eq!(observed.veto_period_secs, 77);
+    assert_eq!(observed.grace_period_secs, 88);
+}

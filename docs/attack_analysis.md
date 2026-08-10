@@ -4,11 +4,20 @@ This document analyzes potential attack vectors against the DOLI protocol and ex
 
 ## Overview
 
+> **CORRECTION 2026-08-10 (INC-I-172 F8).** Every claim in this document that a
+> **VOTE** is weighted by seniority is FALSE and always was. The weighting functions
+> (`calculate_vote_weight`, `seniority_multiplier`, `is_eligible_to_vote`,
+> `VoteTracker::*_weighted`) existed in `crates/updater` but their only callers were
+> `#[cfg(test)]`; they were deleted. **Veto voting is a head count: one active
+> producer, one vote, no minimum age.** Claims about *chain-selection* weight and
+> *bond* weight are a different quantity and are out of scope of this correction —
+> verify them against the code before relying on them.
+
 DOLI implements multiple anti-Sybil mechanisms:
 
-1. **Weight by Seniority** - Producer weight increases with time active (1-4 years)
+1. ~~**Weight by Seniority**~~ — **DOES NOT EXIST for voting** (see the correction above)
 2. **Chained VDF Registration** - Sequential registration prevents parallel attacks
-3. **Maturity Cooldown on Exit** - Producers who exit lose all accumulated seniority
+3. ~~**Maturity Cooldown on Exit**~~ — no voting seniority exists to lose
 4. **40% Veto Threshold** - Higher threshold makes governance attacks more expensive
 5. **Bond Stacking with Anti-Whale Cap** - Max 100 bonds (100,000 DOLI) per producer
 6. **Deterministic Round-Robin** - No lottery variance, guaranteed proportional allocation
@@ -39,12 +48,10 @@ An attacker with significant capital attempts to instantly gain majority control
 - Attacker can only register one node per registration-processing window
 - At one registration per block, 200 registrations takes 200 blocks (~3.3 hours)
 
-**Weight by Seniority** nullifies instant influence:
-- All 200 new nodes start with weight 1
-- Existing producers with 1-4 years tenure have weights 2-4
-- Even with 200 nodes, attacker's total weight is only 200
-- 50 senior producers (4 years) have total weight 200
-- Veto threshold is 40% of *weight*, not *count*
+~~**Weight by Seniority** nullifies instant influence~~ — **this defense does not
+exist** (INC-I-172 F8). The veto threshold is 40% of the ACTIVE PRODUCER COUNT, and
+200 newly-activated nodes carry 200 votes. Chained VDF registration above is the only
+thing slowing this attack down, and it slows it by hours, not years.
 
 ### Result
 Attack fails because:
@@ -57,34 +64,41 @@ Attack fails because:
 ## Attack Vector 2: Long-Term Sybil Infiltration
 
 ### Description
-An attacker slowly registers nodes over several years to accumulate enough seniority weight to dominate voting.
+An attacker registers nodes to accumulate enough producer VOTES to dominate the veto. (This section previously assumed a seniority weight; there is none — see the note below.)
+
+> **Corrected 2026-08-10 (INC-I-172 F8).** There is no seniority weighting and no
+> minimum voting age in code — the functions existed but were only ever called from
+> tests, and were deleted. A producer bonded today carries exactly the same veto vote
+> as one bonded four years ago, so "slow infiltration" buys the attacker nothing that
+> fast registration does not. The analysis below is corrected accordingly and the
+> defense is weaker than it was documented to be.
 
 ### Attack Scenario
-1. Attacker registers 50 nodes over 4 years (slow infiltration)
-2. After 4 years, each node has weight 4 (total: 200 weight)
-3. Attacker attempts to push malicious update
-4. Network has 100 other producers with varying weights
+1. Attacker registers N nodes and bonds each one
+2. Each node waits out `ACTIVATION_DELAY` and becomes an active producer
+3. Attacker's N producers each carry one veto vote
+4. Attacker vetoes a legitimate security update
 
 ### Defenses
 
-**Economic Cost** makes attack expensive:
+**Economic Cost** — the only barrier:
 - Bond requirement: 1000 DOLI per node (Era 0)
-- 50 nodes × 1000 DOLI = 50,000 DOLI locked for 4 years
-- Bond decreases over time but still significant
+- To reach the 40% veto threshold the attacker must hold 40% of the ACTIVE producer
+  count and bond every one of them
+- Bond decreases over time, so this barrier weakens as the network matures
 
-**Distributed Veto Power**:
-- 100 honest producers with average weight 2.5 = 250 total weight
-- Attacker's 200 weight is only 44% of total (200/450)
-- Veto threshold at 40% requires attacker to control significant weight
-- Any suspicious activity triggers community response
+**No time barrier**:
+- There is NO 30-day minimum voting age (`is_eligible_to_vote` had zero callers)
+- There is NO seniority multiplier
+- Registration plus `ACTIVATION_DELAY` is the whole waiting cost
 
 **Network Growth**:
-- Over 4 years, honest producer count likely grows
-- Early entrants have equal seniority advantage
-- Attack cost increases as network grows
+- The attacker's required node count scales with the active producer count, so growth
+  raises the absolute cost
 
 ### Result
-Attack requires massive sustained capital investment with uncertain outcome. Economic incentives favor honest participation.
+The attack costs 40% of the active producer count in bonds, available immediately after
+activation. Do not describe this as requiring "years of infiltration".
 
 ---
 
@@ -94,7 +108,7 @@ Attack requires massive sustained capital investment with uncertain outcome. Eco
 Producer registers, votes for malicious proposal, then exits before consequences materialize.
 
 ### Attack Scenario
-1. Producer registers and gains seniority
+1. Producer registers and becomes active
 2. Producer votes to approve malicious software update
 3. Producer immediately initiates exit
 4. Malicious update causes damage
@@ -102,10 +116,10 @@ Producer registers, votes for malicious proposal, then exits before consequences
 
 ### Defenses
 
-**Maturity Cooldown on Exit**:
+**Unbonding delay** (there is no maturity cooldown on VOTING):
 - Exit history is permanently recorded
-- Re-registering producers start fresh at weight 1
-- All accumulated seniority is lost
+- Re-registering producers get the same single vote as anyone else — there is no
+  seniority to lose, because seniority never affected voting
 - 7-day unbonding period gives time to detect malicious votes
 
 **Exit History Tracking**:
@@ -137,12 +151,11 @@ Attacker coordinates multiple compromised producers to vote, exit, and re-regist
 - Sequential requirement breaks coordination
 - Months to rebuild presence
 
-**Permanent Seniority Loss**:
-- Each re-registration starts at weight 1
-- 30 producers × weight 1 = only 30 total weight
-- Existing honest producers maintain higher weights
+**No seniority to lose** (corrected, INC-I-172 F8):
+- Every active producer carries one vote regardless of registration age
+- Re-registration therefore costs the attacker only the bond and `ACTIVATION_DELAY`
 
-**7-Day Unbonding Window**:
+**7-Day Unbonding Window** (the UNBONDING period, not the veto period):
 - Community has 7 days to analyze suspicious voting
 - Time to implement countermeasures
 - Social/economic consequences can be applied
@@ -227,7 +240,7 @@ Attacker attempts to push malicious software update by manipulating the veto pro
 
 ### Defenses
 
-**Veto Period** (5 min early network; target 7 days):
+**Veto Period** (the CONFIGURED `veto_period_secs`; 5 minutes on the current network):
 - Time for community review
 - Code audits can identify malicious changes
 - Any producer can trigger veto investigation
@@ -243,7 +256,7 @@ Attacker attempts to push malicious software update by manipulating the veto pro
 - Key rotation procedures in place
 
 ### Result
-Malicious updates require compromising maintainer keys AND avoiding detection for 7 days. Defense in depth makes success unlikely.
+Malicious updates require compromising a maintainer quorum AND avoiding detection for the CONFIGURED veto period. Honest limit: that period is 5 minutes today, which is not a meaningful review window — do not price this defense as a 7-day one.
 
 ---
 
@@ -399,7 +412,7 @@ The anti-whale cap combined with deterministic allocation ensures:
 
 | Attack Vector | Primary Defense | Secondary Defense | Effectiveness |
 |--------------|-----------------|-------------------|---------------|
-| Whale Instant Takeover | Chained VDF | Weight by Seniority | High |
+| Whale Instant Takeover | Chained VDF | (no vote weighting — see correction at top) | Medium |
 | Long-Term Sybil | Economic Cost | Distributed Veto | Medium-High |
 | Hit-and-Run Voting | Maturity Cooldown | Exit History | High |
 | Coordinated Rapid Exit | Chained Registration | Unbonding Period | High |
@@ -416,9 +429,9 @@ The anti-whale cap combined with deterministic allocation ensures:
 
 1. **Run honest nodes** - Economic incentives favor honesty
 2. **Monitor veto proposals** - Participate in governance
-3. **Maintain long-term presence** - Seniority increases influence
+3. **Maintain an active producer** - an active producer is what carries a veto vote (seniority does not increase influence; there is no weighting)
 4. **Report suspicious activity** - Help protect the network
-5. **Review software updates** - Use the 7-day veto period
+5. **Review software updates** - use the configured veto period (5 minutes on the current network)
 
 ---
 

@@ -250,6 +250,26 @@ impl NetworkParams {
                 // live since 80_700.
                 inc_i_147_activation_height: 129_500,
 
+                // INC-I-172 M2 maintainer trust-root derivation. Gates the
+                // one-shot genesis seed (F2), the canonical
+                // (registered_at, pubkey_bytes) ordering (F2), the
+                // distinct-signer k-of-n governance counter (F3) and the
+                // ProtocolActivation fail-close (F4). Q1=YES, Q2=YES, Q3=NO
+                // ⇒ activation height REQUIRED. Pinned 2026-08-10 at live tip
+                // 162_727 (verified via getChainInfo): 9_273 blocks ≈ 25.8h of
+                // lead at 10s slots, matching the INC-I-147 / AMM pin
+                // precedent. The height is in the FUTURE at pin time, so no
+                // already-executed ProtocolActivation is reinterpreted.
+                // IMMUTABLE once crossed (INC-I-054).
+                maintainer_derivation_activation_height: 172_000,
+
+                // INC-I-172 M2 review F3. Mainnet keeps the historical
+                // hardcoded precondition (INITIAL_MAINTAINER_COUNT = 5), so the
+                // seed path is byte-identical to M2 as reviewed. Mainnet runs
+                // 30+ registered producers, so the precondition has always been
+                // satisfied here.
+                maintainer_seed_min_producers: crate::maintainer::INITIAL_MAINTAINER_COUNT,
+
                 // Gossip mesh: universal config for all network sizes.
                 // mesh_n=12 keeps all peers in eager-push for networks ≤24 (mesh_n_high),
                 // and scales to 1000+ nodes at ~3-4 hops with 10s slot margin.
@@ -409,6 +429,22 @@ impl NetworkParams {
                 // Override via `DOLI_INC_I_147_ACTIVATION_HEIGHT`.
                 inc_i_147_activation_height: 80_700,
 
+                // INC-I-172 M2 maintainer trust-root derivation. Pinned
+                // 2026-08-10 at live testnet tip 126_801 with ~400 blocks
+                // (~1h) of lead so the whole local fleet crosses the gate
+                // together — NOT 0, which would reinterpret already-validated
+                // governance history under the new derivation.
+                // IMMUTABLE once crossed (INC-I-054).
+                // Override via `DOLI_MAINTAINER_DERIVATION_ACTIVATION_HEIGHT`.
+                maintainer_derivation_activation_height: 127_200,
+
+                // INC-I-172 M2 review F3. Unchanged from the historical
+                // hardcoded precondition (INITIAL_MAINTAINER_COUNT = 5): the
+                // local testnet runs 12 producers + seeds, so the precondition
+                // clears, and keeping 5 makes the testnet seed path
+                // byte-identical to M2 as reviewed.
+                maintainer_seed_min_producers: crate::maintainer::INITIAL_MAINTAINER_COUNT,
+
                 // INC-I-015: Gossip mesh sized to max_peers for eager push to ALL
                 // connected peers. At mesh_n=12, blocks reach 12 peers immediately
                 // and the rest via IHAVE (lazy, 1+ heartbeat delay). At 120+ nodes
@@ -545,6 +581,21 @@ impl NetworkParams {
                 inc_i_096_activation_height: 0,
                 // INC-I-147 D6/D4 recovery fixes. Always-on in devnet.
                 inc_i_147_activation_height: 0,
+                // INC-I-172 M2 maintainer trust-root derivation.
+                // Always active on devnet — fresh genesis each run, no history
+                // to reinterpret.
+                maintainer_derivation_activation_height: 0,
+
+                // INC-I-172 M2 review F3. `scripts/launch_testnet.sh` boots a
+                // TWO-producer devnet. With the historical hardcoded 5 the root
+                // never seeded, and because the devnet gate is 0 the F4
+                // fail-close then rejected every ProtocolActivation forever
+                // while an empty set also refused every AddMaintainer that
+                // could have repaired it — an absorbing dead-end on the one
+                // network where the update path is testable at all. 2 restores
+                // exactly the pre-M2 devnet behavior: a 2-member root with
+                // calculate_threshold(2) == 2.
+                maintainer_seed_min_producers: 2,
 
                 // Gossip mesh: same universal config as mainnet.
                 // With --no-dht, mesh_n_high=24 keeps all devnet peers in mesh.

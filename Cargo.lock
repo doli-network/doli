@@ -6536,6 +6536,7 @@ dependencies = [
  "chrono",
  "crypto",
  "doli-core",
+ "libc",
  "regex",
  "rocksdb",
  "serde",

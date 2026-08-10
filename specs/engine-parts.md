@@ -1193,7 +1193,7 @@ All items are marked deprecated — use DeterministicScheduler for consensus-cri
 - fn Network::min_voting_age_secs — minimum producer registration age before voting
 - fn Network::min_voting_age_blocks — min_voting_age_secs converted to blocks
 - fn Network::update_check_interval_secs — interval between auto-update checks
-- fn Network::crash_window_secs — window for crash counting that triggers rollback
+- fn Network::crash_window_secs — window for crash counting that would trigger rollback; NOT a live control (the watchdog is unwired, AUDIT-P1-014)
 - fn Network::crash_threshold — hardcoded 3 for all networks
 - fn Network::veto_period_blocks — veto_period_secs / slot_duration
 
@@ -1762,7 +1762,7 @@ Note: struct PresenceHeartbeat (not Heartbeat) in the tpop module; this is diffe
 
 ---
 
-### Maintainer Governance (`crates/core/src/maintainer.rs`)
+### Maintainer Governance (`crates/core/src/maintainer/`)
 
 #### Constants
 - const INITIAL_MAINTAINER_COUNT: usize = 5 — number of initial maintainers bootstrapped from first N registrations
@@ -2603,13 +2603,13 @@ NOTE: UpdateService, PendingUpdate, and spawn_update_service() are NOT in this c
 - Release — version, binary_sha256, binary_url_template, changelog, published_at, signatures, target_networks
 - MaintainerSignature — public_key (hex), signature (hex)
 - SignaturesFile — version, checksums_sha256, signatures
-- UpdateConfig — enabled, notify_only, auto_rollback, check_interval_secs, veto_period_secs, grace_period_secs, custom_url; Default: enabled=true, notify_only=false, auto_rollback=true
+- UpdateConfig — enabled, notify_only, auto_rollback, check_interval_secs, veto_period_secs, grace_period_secs, custom_url; Default: enabled=true, notify_only=false, auto_rollback=true. NOTE: `auto_rollback` is INERT — written by `--no-auto-rollback`, read by nothing (INC-I-172 AUDIT-P1-014)
 - GithubReleaseInfo — version, tarball_url, expected_hash, changelog; fetched directly from GitHub API
 - VoteResult — total_producers, veto_count, veto_percent, approved
 - UpdateError — 11 variants: InsufficientSignatures, InvalidSignature, HashMismatch, DownloadFailed, InstallFailed, Network, Io, Json, VetoPeriodActive, RejectedByVeto, NotApproved
 
 ### Download & Verification
-- fetch_latest_release() — fetch from custom URL → GitHub API → fallback mirror; filters by network target
+- fetch_latest_release() — fetch from custom URL → GitHub API; filters by network target
 - fetch_github_release() — fetch specific or latest release from GitHub API; downloads CHECKSUMS.txt + parses hash for current platform
 - download_from_url() — raw HTTP GET download with 5-minute timeout
 - download_signatures_json() — download SIGNATURES.json for a version; returns None if not found
@@ -2657,7 +2657,7 @@ NOTE: UpdateService, PendingUpdate, and spawn_update_service() are NOT in this c
 - CHECK_INTERVAL = 21,600s (6 hours)
 
 ### Watchdog
-- UpdateWatchdog — crash detection and automatic rollback; new(data_dir, network), record_update(), record_clean_shutdown(), check_and_maybe_rollback(), clear()
+- UpdateWatchdog — crash detection and automatic rollback; new(data_dir, network), record_update(), record_clean_shutdown(), check_and_maybe_rollback(), clear(). **NOT WIRED**: zero production callers, so no automatic rollback occurs on any node (INC-I-172 AUDIT-P1-014)
 - WatchdogState — last_update_version, last_update_time, crash_timestamps, clean_shutdown; load(), save()
 - DEFAULT_CRASH_THRESHOLD — private constant (3); exposed via UpdateParams::crash_threshold field
 

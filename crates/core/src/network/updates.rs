@@ -47,19 +47,24 @@ impl Network {
         self.params().update_check_interval_secs
     }
 
-    /// Get crash detection window for automatic rollback (in seconds)
+    /// Crash-detection window, in seconds, for the UNWIRED update watchdog.
     ///
-    /// If the node crashes multiple times within this window after an update,
-    /// the watchdog will automatically rollback to the previous version.
+    /// NOT A LIVE CONTROL (INC-I-172 M1, AUDIT-P1-014). This value is only read by
+    /// `updater::watchdog::UpdateWatchdog`, which has zero production callers, so nothing
+    /// on a running node counts crashes and nothing rolls back automatically. Changing it
+    /// changes no behaviour. See that module's header before citing it anywhere.
     ///
     /// Configurable via `DOLI_CRASH_WINDOW_SECS` environment variable.
     pub fn crash_window_secs(&self) -> u64 {
         self.params().crash_window_secs
     }
 
-    /// Get number of crashes within crash_window that trigger automatic rollback
+    /// Crashes within `crash_window_secs` that WOULD trigger a rollback.
+    ///
+    /// NOT A LIVE CONTROL — same reason as [`Network::crash_window_secs`].
     pub fn crash_threshold(&self) -> u32 {
-        // Same for all networks - 3 crashes triggers rollback
+        // Same for all networks - 3 crashes would trigger rollback, if the watchdog
+        // were wired.
         3
     }
 

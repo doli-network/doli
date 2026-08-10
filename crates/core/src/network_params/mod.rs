@@ -121,7 +121,9 @@ pub struct NetworkParams {
     pub min_voting_age_secs: u64,
     /// Update check interval in seconds
     pub update_check_interval_secs: u64,
-    /// Crash window for automatic rollback in seconds
+    /// Crash window in seconds for the UNWIRED update watchdog.
+    /// NOT a live control — `updater::watchdog` has zero production callers, so no
+    /// automatic rollback exists (INC-I-172 AUDIT-P1-014).
     pub crash_window_secs: u64,
     /// Maximum registrations per block
     pub max_registrations_per_block: u32,
@@ -533,6 +535,93 @@ pub struct NetworkParams {
     /// testnet `80_700` (pinned at tip 80_544, crossed — active), devnet `0`.
     /// Mainnet IMMUTABILITY (INC-I-054): once crossed, never move forward.
     pub inc_i_147_activation_height: u64,
+
+    /// INC-I-172 M2: maintainer trust-root derivation, governance counter and
+    /// `ProtocolActivation` fail-close.
+    ///
+    /// ONE constant gate covering four behaviors that all decide which
+    /// governance transactions take effect (full rationale in
+    /// `specs/maintainer-trust-root-architecture.md` §F2/§F3/§F4):
+    ///
+    /// * **F2 one-shot seed** — the root was re-derived from live producer state
+    ///   on EVERY applied block, so a successful `RemoveMaintainer` was reverted
+    ///   ~10 s later. Above the gate the genesis seed fires only once.
+    /// * **F2 canonical derivation** — `all_producers()` is a `HashMap::values()`
+    ///   walk and every genesis producer ties at `registered_at == 0`, so a stable
+    ///   sort picked a random 5-subset. Above the gate the order is the TOTAL
+    ///   order `(registered_at, pubkey_bytes)`.
+    /// * **F3 distinct-signer counter** — `verify_multisig` counted signature
+    ///   ENTRIES, so three copies of ONE key cleared a "3-of-5" threshold
+    ///   (AUDIT-P0-010). Above the gate: distinct signers only.
+    /// * **F4 fail-close** — an unusable on-chain root silently reverted
+    ///   `ProtocolActivation` to PRODUCER-KEY authority. Above the gate it fails
+    ///   closed.
+    ///
+    /// Deploy questions (INC-I-075 three-question checklist): Q1 **YES**
+    /// (`AddMaintainer`/`RemoveMaintainer`/`ProtocolActivation` are all
+    /// user-submittable and all four behaviors above change which of them take
+    /// effect), Q2 **YES** (producer `registered_at` is an input), Q3 **NO** ⇒
+    /// **ACTIVATION HEIGHT REQUIRED**. Block CONTENT unchanged
+    /// (tx/coinbase/header shapes untouched) ⇒ no synchronized deploy. Protocol
+    /// version NOT bumped (no `EpochState` format change; INC-I-054).
+    /// **CONSTANT GATE, never a `HardForkSchedule` entry** — `current_fork_id`
+    /// evaluates the schedule at `u64::MAX`, which would activate the entry
+    /// immediately and partition a rolling deploy.
+    ///
+    /// **Precision on Q1 (corrected 2026-08-10, INC-I-172 M2 QA OBS-004).** A
+    /// `ProtocolActivation` accept/reject divergence is **NOT** state-root-visible
+    /// *today*, so "activation acceptance is consensus-visible" — the reason first
+    /// written here — was WRONG as stated. Two facts:
+    /// `ChainState::serialize_canonical` (`crates/storage/src/chain_state.rs`) is a
+    /// fixed 140-byte buffer that contains neither `active_protocol_version` nor
+    /// `pending_protocol_activation`, and `is_protocol_active`
+    /// (`crates/core/src/consensus/constants.rs`) has zero production callers, so
+    /// `active_protocol_version` currently gates nothing. The gate is kept anyway,
+    /// and that is the RIGHT call: `active_protocol_version` exists precisely to be
+    /// read by a future consensus rule, and the moment anything reads it the claim
+    /// becomes true retroactively over history this gate already governs.
+    /// "Currently unused" is never a valid skip (INC-I-075, INV-12).
+    ///
+    /// Defaults — maintainer_derivation_activation_height: mainnet `172_000`
+    /// (pinned 2026-08-10 at live tip 162_727 via `getChainInfo`, ~9_273 blocks
+    /// ≈ 25.8 h of lead at 10 s slots, matching the INC-I-147 / AMM pin
+    /// precedent), testnet `127_200` (pinned at live tip 126_801, ~400 blocks),
+    /// devnet `0`. Because the mainnet height is in the FUTURE at pin time, no
+    /// already-executed `ProtocolActivation` is reinterpreted.
+    /// Mainnet IMMUTABILITY (INC-I-054): once crossed, never move forward.
+    pub maintainer_derivation_activation_height: u64,
+
+    /// How many registered producers must exist before the maintainer trust root
+    /// is seeded at all (INC-I-172 M2 review F3).
+    ///
+    /// `Node::maybe_bootstrap_maintainer_set` returns early while
+    /// `all_producers().len()` is below this number. It was the hardcoded
+    /// constant [`crate::maintainer::INITIAL_MAINTAINER_COUNT`] (5), which is a
+    /// SCALE ASSUMPTION with no derivation from observed network size, and on a
+    /// network with fewer than five producers it made the trust root
+    /// permanently empty. Combined with devnet's
+    /// `maintainer_derivation_activation_height == 0` and the F4 fail-close, an
+    /// empty root is an ABSORBING state: `ProtocolActivation` fails closed
+    /// forever and `AddMaintainer` cannot rescue it either, because
+    /// `MaintainerSet::is_authorizable()` is false on an empty set. The repo's
+    /// own devnet (`scripts/launch_testnet.sh`) runs TWO producers, so M2 killed
+    /// governance there outright.
+    ///
+    /// This is NOT the seat count: the seed always seats at most
+    /// `INITIAL_MAINTAINER_COUNT` keys. It is only the "enough producers to
+    /// start" precondition.
+    ///
+    /// Defaults: mainnet and testnet `INITIAL_MAINTAINER_COUNT` (5) — the
+    /// pre-existing value, so both are byte-identical to M2 as reviewed; devnet
+    /// `2`, which restores exactly the pre-M2 devnet behavior (a 2-producer
+    /// devnet derived a 2-member set with `calculate_threshold(2) == 2`).
+    ///
+    /// **Not an activation height and not consensus-gated.** It changes only
+    /// WHEN a node-local file is first written, and mainnet/testnet keep the old
+    /// value, so no pre-activation history is reinterpreted on any live network.
+    /// It is deliberately NOT env-overridable: the whole point is that the
+    /// assumption is visible per network in one audited place.
+    pub maintainer_seed_min_producers: usize,
 
     // === Gossip mesh ===
     /// Target number of peers in gossipsub mesh per topic

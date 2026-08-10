@@ -89,6 +89,7 @@ pub mod block_store;
 pub mod chain_state;
 pub mod content_store;
 pub mod maintainer;
+mod maintainer_wellformed;
 pub mod metrics;
 pub mod mmr;
 pub mod producer;
@@ -100,7 +101,7 @@ pub mod utxo_size_monitor;
 
 pub use block_store::BlockStore;
 pub use chain_state::ChainState;
-pub use maintainer::MaintainerState;
+pub use maintainer::{MaintainerState, MAINTAINER_STATE_VERSION};
 pub use metrics::{collect_db_metrics, RocksDbMetrics};
 #[allow(deprecated)]
 pub use producer::{
@@ -151,6 +152,41 @@ pub enum StorageError {
     /// File system I/O error
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+
+    /// A persisted node-local file carries an on-disk format version this binary
+    /// does not understand (INC-I-172 F5).
+    ///
+    /// Fail closed: never degrade an unreadable security-relevant file to a default
+    /// value. The message names the file so an operator can act on it.
+    #[error(
+        "{file}: unsupported on-disk format version (found {found}, expected {expected}) — \
+         refusing to load; migrate or remove this file deliberately"
+    )]
+    UnsupportedFormatVersion {
+        file: String,
+        found: String,
+        expected: u32,
+    },
+
+    /// A persisted node-local file decoded cleanly but carries a value that no live
+    /// code path can produce (INC-I-172 M2, AUDIT-P1-019).
+    ///
+    /// Format discrimination — magic, version tag, a bincode body that parses — is not
+    /// authenticity. `maintainer_state.bin` is unsigned and attacker-writable given
+    /// data-dir access, and it is the sole `ProtocolActivation` authority above the
+    /// maintainer-derivation gate, so "it parsed" must not mean "it is authority".
+    /// Fail closed and do NOT repair: a silently repaired set is still an
+    /// attacker-chosen set, just under a different threshold.
+    #[error(
+        "{file}: the persisted {subject} is not well formed — {defect}. No live code path \
+         produces this value, so the file was written by hand or corrupted. Refusing to \
+         load it as authority; inspect or remove this file deliberately."
+    )]
+    MalformedPersistedValue {
+        file: String,
+        subject: &'static str,
+        defect: String,
+    },
 }
 
 impl From<rocksdb::Error> for StorageError {
@@ -172,6 +208,30 @@ impl PartialEq for StorageError {
             (NotFound(a), NotFound(b)) => a == b,
             (AlreadyExists(a), AlreadyExists(b)) => a == b,
             (Io(a), Io(b)) => a.kind() == b.kind(),
+            (
+                UnsupportedFormatVersion {
+                    file: fa,
+                    found: na,
+                    expected: ea,
+                },
+                UnsupportedFormatVersion {
+                    file: fb,
+                    found: nb,
+                    expected: eb,
+                },
+            ) => fa == fb && na == nb && ea == eb,
+            (
+                MalformedPersistedValue {
+                    file: fa,
+                    subject: sa,
+                    defect: da,
+                },
+                MalformedPersistedValue {
+                    file: fb,
+                    subject: sb,
+                    defect: db,
+                },
+            ) => fa == fb && sa == sb && da == db,
             _ => false,
         }
     }

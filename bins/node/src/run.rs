@@ -421,44 +421,44 @@ pub(crate) async fn run_node(
     };
     let producer_set = Arc::new(RwLock::new(producer_set));
 
-    // Create closures for update service with actual producer registry
+    // Closures for the update service, reading the live producer registry.
+    //
+    // Both return an OPTION, and the `None` arm means "I could not check", never a
+    // value (INC-I-172 M1, AUDIT-P1-015). These are non-blocking `try_read`s on the
+    // producer set — a lock the block-application path takes for writing constantly —
+    // so contention is ORDINARY, not exceptional. Collapsing it into `0` / `false` made
+    // the update service compute a 0% veto and APPROVE: any number of veto votes became
+    // "approved", with no attacker action required.
     let producers_for_count = producer_set.clone();
-    let producer_count_fn = move || {
-        // Use try_read to avoid blocking, fall back to 0 if locked
+    let producer_count_fn = move || -> Option<usize> {
         producers_for_count
             .try_read()
+            .ok()
             .map(|set| set.active_count())
-            .unwrap_or(0)
     };
 
     let producers_for_check = producer_set.clone();
-    let is_producer_fn = move |pubkey_hex: &str| {
-        if let Ok(pubkey) = PublicKey::from_hex(pubkey_hex) {
-            producers_for_check
-                .try_read()
-                .map(|set| {
-                    set.get_by_pubkey(&pubkey)
-                        .map(|p| p.is_active())
-                        .unwrap_or(false)
-                })
+    let is_producer_fn = move |pubkey_hex: &str| -> Option<bool> {
+        // A malformed key is a DEFINITE answer ("not a producer"), not a failure to
+        // read: `Some(false)`. Only lock contention yields `None`.
+        let Ok(pubkey) = PublicKey::from_hex(pubkey_hex) else {
+            return Some(false);
+        };
+        producers_for_check.try_read().ok().map(|set| {
+            set.get_by_pubkey(&pubkey)
+                .map(|p| p.is_active())
                 .unwrap_or(false)
-        } else {
-            false
-        }
+        })
     };
 
-    // Load on-chain maintainer set from disk (or default empty).
-    // Shared between: maintainer_keys_fn (UpdateService), Node (apply_block), RPC.
-    // Bootstrapped from first 5 producers at epoch boundary in Node::apply_block.
-    let maintainer_state = Arc::new(RwLock::new(
-        storage::MaintainerState::load(&data_dir).unwrap_or_default(),
-    ));
-    // Return empty → updater falls back to network-specific bootstrap maintainer keys.
-    // On-chain ProducerInfo stores BLAKE3 pubkey hashes, not raw Ed25519 keys,
-    // so MaintainerState members can't be used for signature verification.
-    // TODO: Store raw Ed25519 keys on-chain to enable dynamic maintainer key lookup.
-    let _ms_for_keys = maintainer_state.clone();
-    let maintainer_keys_fn = move || -> Vec<String> { Vec::new() };
+    // Load the on-chain maintainer set from disk, then resolve the release-verification
+    // trust root from it. Both live in `crate::updater::trust_root_wiring`; a load error
+    // is FATAL (INC-I-172 F5) and resolution FAILS CLOSED (F1).
+    let maintainer_state = Arc::new(RwLock::new(crate::updater::load_maintainer_state(
+        &data_dir,
+    )?));
+    let maintainer_keys_fn =
+        crate::updater::maintainer_trust_root_fn(maintainer_state.clone(), network);
 
     // Spawn update service with real producer registry
     let (vote_tx, pending_update) = crate::updater::spawn_update_service(

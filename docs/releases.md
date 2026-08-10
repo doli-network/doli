@@ -52,12 +52,12 @@ DOLI provides pre-built binaries for the following platforms:
 
 ### GitHub Releases
 
-All releases are published to: https://github.com/e-weil/doli/releases
+All releases are published to: https://github.com/doli-network/doli/releases
 
 ```bash
 # Download latest release (Linux x64 static)
-VERSION=$(curl -s https://api.github.com/repos/e-weil/doli/releases/latest | grep tag_name | cut -d'"' -f4)
-curl -LO "https://github.com/e-weil/doli/releases/download/${VERSION}/doli-${VERSION}-x86_64-unknown-linux-musl.tar.gz"
+VERSION=$(curl -s https://api.github.com/repos/doli-network/doli/releases/latest | grep tag_name | cut -d'"' -f4)
+curl -LO "https://github.com/doli-network/doli/releases/download/${VERSION}/doli-${VERSION}-x86_64-unknown-linux-musl.tar.gz"
 
 # Extract
 tar xzf doli-${VERSION}-x86_64-unknown-linux-musl.tar.gz
@@ -72,18 +72,18 @@ The easiest way to install or update:
 
 ```bash
 # Install latest version
-curl -L https://raw.githubusercontent.com/e-weil/doli/main/scripts/update.sh | bash
+curl -L https://raw.githubusercontent.com/doli-network/doli/main/scripts/update.sh | bash
 
 # Install specific version
-curl -L https://raw.githubusercontent.com/e-weil/doli/main/scripts/update.sh | bash -s v1.0.0
+curl -L https://raw.githubusercontent.com/doli-network/doli/main/scripts/update.sh | bash -s v1.0.0
 ```
 
 ### Docker Images
 
 ```bash
 # Pull from GitHub Container Registry
-docker pull ghcr.io/e-weil/doli-node:latest
-docker pull ghcr.io/e-weil/doli-node:v1.0.0
+docker pull ghcr.io/doli-network/doli-node:latest
+docker pull ghcr.io/doli-network/doli-node:v1.0.0
 ```
 
 ---
@@ -98,7 +98,7 @@ Each release includes checksum files:
 
 ```bash
 # Download checksums
-curl -LO https://github.com/e-weil/doli/releases/download/v1.0.0/SHA256SUMS.txt
+curl -LO https://github.com/doli-network/doli/releases/download/v1.0.0/SHA256SUMS.txt
 
 # Verify
 sha256sum -c SHA256SUMS.txt --ignore-missing
@@ -123,10 +123,10 @@ cat SHA256SUMS.txt | grep x86_64-unknown-linux-musl
 
 ```bash
 # Check image digest
-docker inspect ghcr.io/e-weil/doli-node:v1.0.0 --format='{{.RepoDigests}}'
+docker inspect ghcr.io/doli-network/doli-node:v1.0.0 --format='{{.RepoDigests}}'
 
 # Pull by digest (immutable)
-docker pull ghcr.io/e-weil/doli-node@sha256:<digest>
+docker pull ghcr.io/doli-network/doli-node@sha256:<digest>
 ```
 
 ---
@@ -203,6 +203,45 @@ doli-v1.0.0-x86_64-unknown-linux-musl/
 - [ ] Release notes reviewed
 - [ ] SIGNATURES.json signed by 3/5 maintainers (see [auto_update_system.md](./auto_update_system.md))
 - [ ] SIGNATURES.json uploaded to release artifacts
+- [ ] **BLOCKING — maintainer-rotation ordering checked** (see
+      [Maintainer rotation: mandatory release ordering](#maintainer-rotation-mandatory-release-ordering)
+      below). Violating this order stops auto-update on every node in the fleet.
+
+---
+
+## Maintainer rotation: mandatory release ordering
+
+**This section is a hard ordering constraint, not advice. Read it before any release that
+carries a maintainer-set change, and before any release that crosses
+`maintainer_derivation_activation_height`.**
+
+The trust-root containment guard added in INC-I-172 M1 refuses **any** on-chain maintainer set
+whose members differ from the compiled bootstrap five: `TrustRoot::resolve` returns an empty
+on-chain root, `is_usable()` is false, and **every release is refused on every host**. Before
+INC-I-172 M2 that never latched, because an on-chain rotation reverted within one block. M2 makes
+a rotation **durable**, so the refusal becomes durable too.
+
+### The required order
+
+1. **Ship the containment lift first.** The height-aware `TrustRoot::resolve` (INC-I-172 R4) must
+   be released, and **fleet adoption confirmed**, BEFORE mainnet crosses
+   `maintainer_derivation_activation_height`.
+2. **Then, and only then, submit the first `AddMaintainer` / `RemoveMaintainer`.** Do not submit a
+   rotation transaction while any node still runs a binary without the lift.
+
+### What breaks if the order is violated
+
+The instant the first rotation succeeds above the gate, **every node stops accepting any release** —
+including the external auto-updating producers that cannot be reached by SSH. The binary that lifts
+the containment then has to be delivered through the channel the rotation just closed. Recovery is
+manual, host by host. An adversary holding the current quorum can trigger this deliberately with one
+transaction: a cheap, fleet-wide, unattended denial of the security-patch pipeline.
+
+It is **fail-closed**, so it is not a key-compromise hole. It is an operational trap, and it fires on
+the exact action the maintainer-rotation work exists to enable.
+
+Detail and evidence: `docs/.workflow/inc-i-172-M3-scope.md` §R4 and §R6; finding **AUDIT-P1-017** in
+`docs/.workflow/security-audit-report-M2.md`.
 
 ---
 
@@ -236,7 +275,7 @@ If a release causes issues:
 
 ```bash
 # Download previous version
-curl -LO https://github.com/e-weil/doli/releases/download/v1.0.0/doli-v1.0.0-x86_64-unknown-linux-musl.tar.gz
+curl -LO https://github.com/doli-network/doli/releases/download/v1.0.0/doli-v1.0.0-x86_64-unknown-linux-musl.tar.gz
 
 # Stop node
 sudo systemctl stop doli-node
