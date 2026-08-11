@@ -1045,7 +1045,9 @@ INC-I-172: the `derived` branch used to be a fourth, ungated derivation (`all_pr
     "last_change_block": 500,
     "source": "on-chain",
     "enforced": true,
-    "maintainer_derivation_activation_height": 172000
+    "maintainer_derivation_activation_height": 172000,
+    "maintainer_set_digest": "f99d3e79....",
+    "genesis_hash": "0000...."
 }
 ```
 
@@ -1055,6 +1057,46 @@ INC-I-172: the `derived` branch used to be a fourth, ungated derivation (`all_pr
 | `on-chain` | `true` | Read from the persisted `MaintainerState`. The root the node actually enforces. |
 | `derived` | `false` | Advisory. Canonical `(registered_at, pubkey_bytes)` derivation from the producer registry; carries `advisory_note`. |
 | `none` | `false` | No `MaintainerState` and no `ProducerSet` attached; nothing can be reported. |
+
+**Compare `maintainer_set_digest`, NOT the `maintainers` array.** (INC-I-173 M3 / AUDIT-P1-003.)
+
+| Field | Present on | Meaning |
+|-------|-----------|---------|
+| `maintainer_set_digest` | `on-chain`, `derived` | 64 hex. `BLAKE3_256("DOLI-MAINTAINER-SET-V1" \|\| genesis_hash \|\| threshold_le_u64 \|\| member pubkeys sorted ASCENDING by raw bytes)`. One scalar identifying the trust root on this chain. |
+| `genesis_hash` | all three branches, including `none` | 64 hex. The chain this node believes it is on. Published on every branch, including `none`, because chain identity must be knowable even when no maintainer root can be reported. It is the term that makes the digest chain-specific: two chains holding identical member lists produce different digests. |
+
+**What the digest covers is exactly what a release signature is checked against**: the
+chain, the `threshold` and the members. Two nodes that accept the same release signatures
+always return the same digest; two nodes that would accept different ones never do. The
+digest binds **no other term**, and that is deliberate — two terms that a node can differ
+on WITHOUT differing on its trust root are excluded:
+
+- **Member ORDER.** Measured on the local testnet on 2026-08-10: nodes `8500` and `8501`
+  returned the five keys as `5432…, effe…, 2d27…, 2020…, 3047…` while node `8502` returned
+  the *same five keys* as `2d27…, 3047…, 2020…, 5432…, effe…`. An operator diffing the raw
+  `maintainers` arrays there sees a mismatch that does not exist. That insertion-order
+  nondeterminism (AUDIT-P3-014) is what the sorted digest neutralises, so a divergence
+  check must compare the digest, **not** the `maintainers` array.
+- **`last_change_block` (`last_updated`).** It is node-local — it lives in
+  `maintainer_state.bin`, outside the state root — and it was measured divergent across the
+  live testnet fleet at an *identical* tip: node `8512` reported `last_change_block =
+  88289` while 12 peers reported `1`, all at tip 134,682, all holding the same five members
+  and the same threshold. Those 13 nodes install exactly the same releases, so binding this
+  term would make the digest report a fleet-wide mismatch that does not exist on the trust
+  root. It is still published verbatim as `last_change_block` — compare it separately when
+  you want the rotation history, but a digest MATCH with differing `last_change_block` is
+  **not** a divergence.
+
+So: a changed MEMBER, a changed `threshold` or a different `genesis_hash` each change the
+digest; member order and `last_change_block` do not. The `none` branch publishes
+`genesis_hash` and NO digest — there is no set to digest.
+
+The same value is written to the node log after every applied rotation, on a fixed grep
+anchor, so the fleet can be correlated without an RPC round trip to each host:
+
+```
+[MAINTAINER] MAINTAINER_SET_DIGEST=<64 hex> members=5 threshold=3 last_updated=500 height=500
+```
 
 **Example:**
 ```bash

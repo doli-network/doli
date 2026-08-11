@@ -375,6 +375,11 @@ impl Mempool {
             .with_amm_activation_height(self.network.params().amm_activation_height)
             .with_inc_i_092_activation_height(self.network.params().inc_i_092_activation_height)
             .with_inc_i_096_activation_height(self.network.params().inc_i_096_activation_height)
+            // INC-I-173 M3 / AUDIT-P3-003. Node-local ADMISSION policy: without
+            // this the mempool holds u64::MAX and so evaluates the fee gate on
+            // its frozen pre-activation branch, admitting a transaction shape
+            // that apply_block (which IS wired) would then reject.
+            .with_inc_i_173_activation_height(self.network.params().inc_i_173_activation_height)
             .with_oracle_activation_height(self.network.params().oracle_activation_height)
             .with_oracle_sunset_triggered(
                 self.oracle_sunset_triggered
@@ -732,12 +737,31 @@ impl Mempool {
             .map(|g| g.clone())
             .unwrap_or_default();
         // INC-I-147: same pending-registration wiring as add_transaction.
-        // `Registration` is NOT state-only (`Transaction::is_state_only`
-        // excludes it — it consumes UTXO inputs for its bond), so no
-        // registration reaches this path today and the call returns
-        // `Vec::new()` for every system tx. Wired anyway so the two mempool
-        // ValidationContext sites cannot drift apart again, which is the
-        // defect class INV-VALIDATION-001 exists to close.
+        //
+        // CORRECTED 2026-08-11 (INC-I-173 M3 review iteration 1, REV-173-M3-004).
+        // This comment used to say "`Registration` is NOT state-only
+        // (`Transaction::is_state_only` excludes it), so no registration reaches
+        // this path today" — and INC-I-173 M3 DELETED `is_state_only`. Routing is
+        // now SHAPE-based (`Transaction::is_zero_flow`: 0-in AND 0-out AND
+        // `TxType::allows_empty_io`), and `Registration` IS in `allows_empty_io`
+        // (`crates/core/src/transaction/types.rs:184`). So a 0-in/0-out
+        // `Registration` DOES reach this path — the fourth F4 routing delta, and
+        // the only one that moves TOWARD more free relay.
+        //
+        // It is bounded, not unbounded. Such a transaction survives the
+        // `validate_transaction` call below ONLY inside the genesis window:
+        // `validate_registration` takes its no-inputs/no-outputs branch under
+        // `ctx.network.is_in_genesis(height)` (`validation/registration.rs:37-63`,
+        // `height <= genesis_blocks`, `network/economics.rs:56-59`), and post-genesis
+        // `registration.rs:67-71` rejects it with "registration must have inputs for
+        // bond". Mainnet and testnet are far past their genesis windows, so the delta
+        // is unreachable there; on a fresh chain the mandatory VDF proof in
+        // `RegistrationData` bounds any amplification. Do NOT re-derive this as
+        // "registrations cannot reach the system lane".
+        //
+        // The pending-key wiring below is therefore no longer vacuous on this path,
+        // which is exactly why it was wired: so the two mempool ValidationContext
+        // sites cannot drift apart, the defect class INV-VALIDATION-001 exists to close.
         let pending_keys = self.pending_keys_for(&tx, Some(&tx_hash));
         let ctx = ValidationContext::new(self.params.clone(), self.network, 0, current_height)
             .with_sig_verification_height(self.network.params().sig_verification_height)
@@ -754,6 +778,11 @@ impl Mempool {
             .with_amm_activation_height(self.network.params().amm_activation_height)
             .with_inc_i_092_activation_height(self.network.params().inc_i_092_activation_height)
             .with_inc_i_096_activation_height(self.network.params().inc_i_096_activation_height)
+            // INC-I-173 M3 / AUDIT-P3-003. Node-local ADMISSION policy: without
+            // this the mempool holds u64::MAX and so evaluates the fee gate on
+            // its frozen pre-activation branch, admitting a transaction shape
+            // that apply_block (which IS wired) would then reject.
+            .with_inc_i_173_activation_height(self.network.params().inc_i_173_activation_height)
             .with_oracle_activation_height(self.network.params().oracle_activation_height)
             .with_oracle_sunset_triggered(
                 self.oracle_sunset_triggered

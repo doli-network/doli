@@ -86,7 +86,17 @@ impl RpcContext {
     /// and above the gate, and reports whether that order is the one in force at
     /// the current height.
     pub(super) async fn get_maintainer_set(&self) -> Result<Value, RpcError> {
-        use doli_core::maintainer::{INITIAL_MAINTAINER_COUNT, MAX_MAINTAINERS, MIN_MAINTAINERS};
+        use doli_core::maintainer::{
+            maintainer_set_digest, INITIAL_MAINTAINER_COUNT, MAX_MAINTAINERS, MIN_MAINTAINERS,
+        };
+
+        // INC-I-173 M3a / F6 (AUDIT-P1-003). `genesis_hash` is published on EVERY
+        // branch, including `none` — the chain identity is always knowable, and it
+        // is what makes the digest a per-CHAIN answer.
+        // `maintainer_set_digest` is published wherever a set exists, so an
+        // operator can compare two nodes' trust roots with ONE scalar instead of
+        // diffing member lists.
+        let genesis_hash = self.params.genesis_hash;
 
         // Read from on-chain MaintainerState if available
         if let Some(ms) = &self.maintainer_state {
@@ -113,7 +123,10 @@ impl RpcContext {
                 "source": "on-chain",
                 "enforced": true,
                 "maintainer_derivation_activation_height":
-                    self.maintainer_derivation_activation_height
+                    self.maintainer_derivation_activation_height,
+                "maintainer_set_digest":
+                    hex::encode(maintainer_set_digest(&state.set, genesis_hash.as_bytes())),
+                "genesis_hash": genesis_hash.to_hex()
             }));
         }
 
@@ -121,12 +134,17 @@ impl RpcContext {
         let producer_set = match &self.producer_set {
             Some(ps) => ps,
             None => {
+                // NO `maintainer_set_digest` here: there is no set to digest, and a
+                // digest over an absent set is a value that invites a comparison it
+                // cannot support. `genesis_hash` IS published — chain identity is
+                // always knowable.
                 return Ok(serde_json::json!({
                     "maintainers": [],
                     "threshold": 0,
                     "member_count": 0,
                     "source": "none",
                     "enforced": false,
+                    "genesis_hash": genesis_hash.to_hex(),
                     "advisory_note": "No MaintainerState and no ProducerSet are attached to \
                                       this RPC context; no maintainer root can be reported."
                 }));
@@ -183,6 +201,9 @@ impl RpcContext {
             "source": "derived",
             "enforced": false,
             "maintainer_derivation_activation_height": activation_height,
+            "maintainer_set_digest":
+                hex::encode(maintainer_set_digest(&derived, genesis_hash.as_bytes())),
+            "genesis_hash": genesis_hash.to_hex(),
             "advisory_note": advisory_note
         }))
     }

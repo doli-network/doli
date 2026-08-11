@@ -476,7 +476,7 @@
 - fn Transaction::is_delegate_bond — TxType::DelegateBond
 - fn Transaction::is_revoke_delegation — TxType::RevokeDelegation
 - fn Transaction::is_protocol_activation — TxType::ProtocolActivation
-- fn Transaction::is_state_only — true for Exit, ClaimReward, ClaimBond, SlashProducer, DelegateBond, RevokeDelegation, AddMaintainer, RemoveMaintainer (no UTXO inputs by design)
+- fn Transaction::is_state_only — **DELETED in INC-I-173 M3 (F4 / AUDIT-P3-002).** Its doc contract ("no UTXO inputs by design") was false: `ClaimReward` and `ClaimBond` carry OUTPUTS, and the list omitted `Registration`. Mempool/relay routing now uses `Transaction::is_zero_flow()`, which is SHAPE-based (0 inputs AND 0 outputs AND `TxType::allows_empty_io`). Callers: `crates/rpc/src/methods/transaction.rs`, `bins/node/src/node/validation_checks.rs`.
 
 #### Transaction extra_data parsers
 - fn Transaction::epoch_reward_data — parse EpochRewardData; None if wrong tx_type

@@ -26,6 +26,8 @@ impl Node {
             .params()
             .maintainer_derivation_activation_height;
 
+        let genesis_hash = self.params.genesis_hash;
+
         // Process MaintainerAdd transactions — applied immediately (governance, not epoch-deferred)
         if tx.tx_type == TxType::AddMaintainer {
             if let Some(maintainer_state) = &self.maintainer_state {
@@ -51,6 +53,7 @@ impl Node {
                                     data.target.to_hex(),
                                     height
                                 );
+                                Self::log_maintainer_set_digest(&ms.set, &genesis_hash, height);
                             }
                             Err(e) => warn!("[MAINTAINER] Add failed: {}", e),
                         }
@@ -87,6 +90,7 @@ impl Node {
                                     data.target.to_hex(),
                                     height
                                 );
+                                Self::log_maintainer_set_digest(&ms.set, &genesis_hash, height);
                             }
                             Err(e) => warn!("[MAINTAINER] Remove failed: {}", e),
                         }
@@ -151,6 +155,29 @@ impl Node {
         }
 
         None
+    }
+
+    /// INC-I-173 M3 / F6 (AUDIT-P1-003) — publish the chain-derived maintainer-set
+    /// digest on a FIXED, greppable token after every applied rotation.
+    ///
+    /// `MAINTAINER_SET_DIGEST` is the grep anchor. It lets an operator correlate
+    /// "do we hold the same release-verification trust root?" across the fleet from
+    /// LOGS ALONE, without shipping member lists around and without an RPC round
+    /// trip to every host. The same value is served by `getMaintainerSet`.
+    fn log_maintainer_set_digest(
+        set: &doli_core::MaintainerSet,
+        genesis_hash: &crypto::Hash,
+        height: u64,
+    ) {
+        let digest = doli_core::maintainer::maintainer_set_digest(set, genesis_hash.as_bytes());
+        info!(
+            "[MAINTAINER] MAINTAINER_SET_DIGEST={} members={} threshold={} last_updated={} height={}",
+            hex::encode(digest),
+            set.member_count(),
+            set.threshold,
+            set.last_updated,
+            height
+        );
     }
 
     /// Derive an ad-hoc MaintainerSet from producers.

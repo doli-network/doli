@@ -14,13 +14,21 @@
 
 # State-Only Fee-Gate Architecture (INC-I-173)
 
-> **Status: M1 IMPLEMENTED (F1+F2+F3). F4–F7 and Options A–E remain PROPOSAL.**
+> **Status: M1 LANDED (F1+F2+F3, commit `32e0a650`). M3a IMPLEMENTED IN THE WORKING TREE,
+> PENDING COMMIT (F4+F5+F6+F7 only) — review iteration 1 applied 2026-08-11.
+> Options A–E remain PROPOSAL. Option E was built in the full M3 and then WITHDRAWN before
+> commit — see its section below.**
+>
+> One label for one body of work: the six-item milestone is called **M3** and was SUPERSEDED;
+> what is in the tree is **M3a**, its four-item reduction. Where this spec says "M3" without
+> the suffix it means the superseded six-item milestone.
 > This spec synthesizes five independent design evaluations (subtraction, restructure, patterns,
 > failures, radical) plus the analyst's redesign analysis. Author: design-synthesizer. Date: 2026-08-10.
 > Branch: `bugfix/inc-i-173-state-only-fee-gate`. Incident: INC-I-173 (open).
 > Reasoning trace: `docs/.workflow/architecture-reasoning.md`.
 >
-> **M1 landed 2026-08-10** on branch `bugfix/inc-i-173-state-only-fee-gate` (base `b5f68bba`).
+> **M1 LANDED 2026-08-10** as commit `32e0a650` on branch
+> `bugfix/inc-i-173-state-only-fee-gate` (base `b5f68bba`).
 > Shipped: `TxType::allows_empty_io()` (`transaction/types.rs`, 24-arm exhaustive match, no `_` arm),
 > `Transaction::is_zero_flow()` (`transaction/core.rs`), `inc_i_173_activation_height` on
 > `NetworkParams` (`network_params/{mod,defaults,env_loader}.rs`, mainnet env-locked) and on
@@ -31,6 +39,41 @@
 > real mainnet value is decided at M4 per the Activation Plan below).**
 > Evidence: `docs/.workflow/inc-i-173-M1-dev-green-evidence.txt` (55/55 M1 tests, clippy/fmt clean).
 > NOT shipped in M1: F4, F5, F6, F7 (M3) and every Option A–E.
+>
+> **M3a IMPLEMENTED IN THE WORKING TREE 2026-08-11, PENDING COMMIT** on the same branch
+> (base `32e0a650`, which is `HEAD` — nothing of M3a is committed yet). The six-item M3 was
+> SUPERSEDED: its rotation journal and its Option E anti-replay were reverted to `32e0a650`
+> before review. In the tree:
+> * **F5** — `MAX_MAINTAINER_CHANGE_EXTRA_DATA_BYTES = 1024`,
+>   `MAX_MAINTAINER_CHANGE_SIGNATURES = MAX_MAINTAINERS` (5),
+>   `MAX_MAINTAINER_CHANGE_REASON_BYTES = 256` in `crates/core/src/maintainer/mod.rs`;
+>   `validate_maintainer_change_data(tx, ctx)` enforces them at and above the EXISTING
+>   `inc_i_173_activation_height`, with the SIZE cap evaluated BEFORE `from_bytes` so
+>   bincode never sees an attacker-sized buffer. Below the gate the four historical
+>   checks are inert (retroactive vacuity — no block below the gate can carry either
+>   type, which is the INC-I-173 bug itself).
+> * **F6** — `maintainer_set_digest(set, genesis_hash)` leaf fn
+>   (`crates/core/src/maintainer/digest.rs`); published by `getMaintainerSet` on BOTH
+>   the on-chain and derived branches (with `genesis_hash` on all three branches, and
+>   NO digest on the `none` branch), and logged by the apply path on the fixed grep
+>   anchor `MAINTAINER_SET_DIGEST=`. The preimage is
+>   `BLAKE3_256("DOLI-MAINTAINER-SET-V1" || genesis_hash || threshold_le_u64 ||
+>   members sorted ASCENDING)` — exactly the terms `verify_multisig` consults.
+>   **`last_updated` is EXCLUDED** (review iteration 1 / F2): it is node-local, outside
+>   the state root, and was measured divergent across 13 testnet nodes at an identical
+>   tip holding the same members and threshold, so binding it made the digest report a
+>   mismatch for an aligned fleet. It is still published as `last_change_block`.
+> * **F4** — `Transaction::is_state_only()` DELETED; both production callers
+>   (`rpc/methods/transaction.rs`, `node/validation_checks.rs`) route on `is_zero_flow()`.
+>   `.with_inc_i_173_activation_height(...)` wired into the four remaining
+>   `ValidationContext` sites (AUDIT-P3-003).
+> * **F7** — cross-list total test over all 24 `TxType` variants, probing L1/L2
+>   BEHAVIOURALLY. L1/L2 are character-identical.
+> * **Option E — built, then WITHDRAWN before commit.** Its binding term was node-local and
+>   divergent; a correct one is consensus-visible and owes its own activation height. Not in M3a.
+> Evidence: `docs/.workflow/inc-i-173-M3-implementation.md` (the superseded six-item M3) and
+> `docs/.workflow/inc-i-173-M3a-implementation.md` (the reduction + review iteration 1).
+> Review: `docs/reviews/inc-i-173-M3a-reduction-review.md` — code APPROVED.
 
 ## Problem Statement
 
@@ -249,9 +292,40 @@ Confidence: conf(0.70, converged).
 
 What changes architecturally: routing asks the transaction its actual shape instead of consulting a
 9-entry list with a false name. `ClaimReward`/`ClaimBond` (they have outputs) stop being system-routed →
-the free-relay eviction path closes. NOTE: this is **node-local mempool/routing policy, not consensus** —
+the free-relay eviction path closes.
+
+**CORRECTED 2026-08-11 (M3 QA iteration 1, OBS-2) — "stop being system-routed" UNDERSTATES it.**
+The phrase reads as "they now pay a fee". They do not. Both types are structurally required to have
+**0 inputs and exactly 1 positive output** (`validate_claim_data` / `validate_claim_bond_data`,
+`crates/core/src/validation/tx_types.rs:52-140`), so in the normal lane `total_input (0) < total_output`
+always holds and the mempool rejects them **unconditionally** — measured, not inferred:
+`[MPTX008] insufficient funds: input=0 < output=…`. There is no fee that makes them admissible.
+
+This has **no live impact and is not a regression**, because both types are dead in the tree:
+`Transaction::new_claim_reward` / `new_claim_bond` have zero non-test callers, no CLI command and no RPC
+method constructs either, and `bins/node/src/node/apply_block/` has **no handler for either type** — so
+they were never mineable in the first place. Recorded here so that whoever revives them knows the normal
+lane will not accept them as-shaped and that reviving them needs an apply handler plus a shape decision,
+not merely a fee.
+
+NOTE: this is **node-local mempool/routing policy, not consensus** —
 it takes effect fleet-wide on restart and MUST NOT be folded into the F2 activation height (constraint
 C4-pattern). REQ-173-012 (fix the doc) is retired by deletion.
+
+#### F4 routing deltas — the COMPLETE list (corrected 2026-08-11, M3 review iteration 1)
+
+Derived from the two set definitions, not from the earlier reports. OLD lane test = `tx_type ∈
+is_state_only` (9 arms, shape ignored). NEW lane test = `0-in ∧ 0-out ∧ tx_type ∈ allows_empty_io`
+(`crates/core/src/transaction/types.rs:184-188`).
+
+| Type | Delta | Notes |
+|---|---|---|
+| `Exit`, `SlashProducer` | LOSE the 0-fee system lane | Silent limbo → loud, type-specific mempool rejection. Improvement. |
+| `ClaimReward`, `ClaimBond` | LOSE the system lane | Rejected **unconditionally** by the normal lane (`[MPTX008]`), not "now pay a fee" — see the OBS-2 correction above. Zero production constructors, no `apply_block` handler: never mineable. |
+| `PriceAttestation` | LOSES the system lane | No live impact: `oracle_activation_height = u64::MAX` on every network. |
+| `DelegateBond`, `RevokeDelegation` | **none** | INERT: `validate_delegate_bond_data` (`crates/core/src/validation/tx_types.rs:849-859`) rejects any input or output, so a valid one is always 0-in/0-out and never changes lane. |
+| **`Registration`, 0-in/0-out** | **GAINS the system lane** | **REV-173-M3-004 / F4, added this iteration.** The only delta moving toward MORE free relay. `is_state_only` excluded it; `allows_empty_io` includes it. Reachable ONLY inside the genesis window — `validation/registration.rs:37-63` takes the no-inputs branch under `is_in_genesis`, and post-genesis `:67-71` rejects with "registration must have inputs for bond". Mainnet and testnet are far past theirs. On a fresh chain the mandatory VDF proof bounds amplification. Correct on both branches; no behaviour change recommended. The stale comment in `crates/mempool/src/pool.rs` that denied this — citing the deleted `is_state_only` — was corrected in the same iteration. |
+| `RequestWithdrawal` | **none** | **REV-173-M3-007 / F7, removed this iteration.** Previously listed as a delta; it was **never in `is_state_only`**, so it was already on the normal lane at base. Its QA probe rejection (`InvalidWithdrawalRequest`) is real, but it is type-specific validation, not an M3 routing change. |
 
 ━━━ RESOURCE COST — COST-DECLARED ━━━
 Dimensions:
@@ -389,12 +463,33 @@ Evidence: Subtractionist P5 (conf 0.52), Restructurer P3 (conf 0.60) (2/5). `add
 signature + spend-tracking. Blocked by an undocumented mempool/utxo lock-order question (Subtractionist
 Unknown #3). conf(0.55, observed). Scope note: non-consensus cleanup, own change.
 
-**Option E — Bind governance authorizations to chain + height (anti-replay).** *[low-evidence]*
-Evidence: Failure Analyst P4 (conf 0.55). `MaintainerChangeData::signing_message` = `"add:<hex>"` /
-`"remove:<hex>"` with no nonce/height/chain-id/expiry (`maintainer/data.rs:46-49`); a `remove:X`
-signature replayed after a legitimate re-add is not inert (FM-5). Changes the signed message → CLI /
-external-signer flow changes (couples with REQ-173-015 CLI sig truncation). conf(0.55, observed). Scope
-note: strong candidate for the maintainer-governance follow-up incident.
+**Option E — Bind governance authorizations to chain + state (anti-replay). BUILT, THEN WITHDRAWN.
+Still a PROPOSAL; not shipped.**
+Originally filed *[low-evidence]* from Failure Analyst P4 (conf 0.55); promoted to a DECISION by the
+M1 security audit, which raised the same defect independently as **AUDIT-P1-004** (3/5 converged,
+conf 0.85) and **AUDIT-P2-002**.
+
+The defect is real and stands. The current `signing_message` is `"add:<hex>"` / `"remove:<hex>"` with
+no nonce, height, chain id, expiry or set version — a permanent BEARER TOKEN. It also collides
+byte-for-byte with the release-signing family, so one `release sign` invocation with attacker-chosen
+arguments mints a maintainer-seat authorization (AUDIT-P0-011). **None of that is fixed by M3a.**
+
+**Why the built version was withdrawn.** The shipped-then-reverted format bound the authorization to
+`MaintainerSet::last_updated` — a NODE-LOCAL value outside the state root (INC-I-172). The M3
+security audit measured it divergent across the live testnet fleet at an identical tip: RPC 8512
+reported `last_change_block = 88289` while twelve peers reported `1`. A binding that differs per host
+makes one authorization valid on some nodes and silently skipped on others, which is a worse failure
+than the replay it was meant to stop — it is INC-I-173's own silent-limbo class, relocated.
+
+**What a correct version needs.** The binding term must be CONSENSUS-VISIBLE, so every node computes
+the same value at the same height. That makes it a consensus change, and therefore it owes its OWN
+activation height — it cannot ride `inc_i_173_activation_height`, which is already committed and
+already crossed on testnet. It also cannot be justified by the retroactive-vacuity argument used for
+F5, because that argument only covers predicates that are inert below the gate.
+
+**Disposition.** Tracked in its own incident. `reason`-in-the-signed-message (AUDIT-P2-002) and the
+release-signing domain collision (AUDIT-P0-011) travel with it: both are properties of the same
+message format, and splitting them would ship a second partial format.
 
 ## Constraints (from Failure Analyst — KILL filters, plus Restructurer/Pattern/Radical filters)
 
@@ -415,9 +510,12 @@ Any chosen path MUST satisfy these. C1–C4 are hard kills; a proposal that viol
 - **C5 (cost bound).** Any newly-exempt type needs a consensus bound on `extra_data.len()` and attacker-
   sized `Vec`s. Addressed by F5.
 - **C6 (state divergence).** A newly-exempt type mutating out-of-state-root state (`MaintainerState`) must
-  declare reorg / snap-sync behavior. Addressed by F6 (minimum option c).
-- **C7 (replay).** 0-input txs have no replay protection and authorizations have no expiry. Addressed by
-  Option E; flagged as open risk if E is deferred.
+  declare reorg / snap-sync behavior. Addressed by F6 (minimum option c) for OBSERVABILITY only — the
+  digest makes divergence visible, it does not repair it. The reorg gap itself is INC-I-174.
+- **C7 (replay).** 0-input txs have no replay protection and authorizations have no expiry. **NOT addressed
+  by M3a — this is the flagged open risk, now realised.** Option E was the intended answer and was
+  withdrawn (see its section); the bearer-token `signing_message` is unchanged on this branch. M3a's
+  scope is the DoS bound (F5) and observability (F6), neither of which is a replay defence.
 - **C8 (test-mode Full).** Below-the-gate bit-identity tests (REQ-173-003) MUST run in `ValidationMode::Full`
   — `Replay` silently swallows validation errors (INC-I-064). Folded into the test plan.
 - **C9 (sequencing).** Pinning the height is necessary, not sufficient: no newly-exempt tx may sit in any
@@ -467,6 +565,28 @@ New TxType compiles cleanly while being wrong in up to six places.  (INC-I-057, 
 ## Migration Path
 
 Testnet-first. The change is rolling-restart safe below the gate and a fleet-upgrade deadline at the gate.
+
+> ### ⚠ STATUS 2026-08-11 — THE TESTNET GATE IS ALREADY CROSSED (REV-173-M3-001 / F1)
+>
+> **Measured: live testnet `bestHeight` = 134,159 on v6.24.1, agreed across RPC `8500`/`8501`/`8502`,
+> against `inc_i_173_activation_height = 133_000` (`crates/core/src/network_params/defaults.rs:480`).**
+> Crossed by ~1,159 blocks and still climbing at ~10 s/block. Mainnet is `u64::MAX` and devnet is `0`
+> — **both unaffected; this is testnet-only.** The sentence above ("rolling-restart safe below the
+> gate") is still true as written, but testnet is no longer below the gate. Concretely:
+>
+> - **The staged-activation safety property is GONE on testnet until M2 re-pins above the then-current
+>   tip.** On testnet the M1/M3 consensus wiring becomes active the moment the binary lands, not at a
+>   future scheduled height.
+> - **Deploying to testnet therefore requires a SYNCHRONIZED stop-all/start-all, not a rolling
+>   restart** (INV-8 / INC-I-062): a new-binary producer could immediately mine a 0-in/0-out
+>   `AddMaintainer` that old-binary nodes reject, forking the fleet mid-restart.
+> - **History is NOT invalidated.** Above the gate the new predicate is strictly MORE permissive — the
+>   same three types plus `AddMaintainer` / `RemoveMaintainer` — so no block valid under the old rules
+>   becomes invalid, and the running v6.24.1 binary has no knowledge of this height at all.
+> - **M2 MUST re-pin the testnet height above the tip at deploy time and MUST re-verify the tip
+>   immediately before pinning** — the same discipline that produced the `130_400 → 133_000` re-pin,
+>   for the same reason (a 2.17 h lead decayed to ~20 min before deploy). Re-pinning is M2's decision;
+>   no activation-height VALUE was changed when this note was written.
 
 1. **M1 — land the consensus core (F1+F2+F3) + tests, testnet-value AH.** Ship binaries to the local
    testnet with `inc_i_173_activation_height` set to a NEAR-FUTURE testnet height (idiom: devnet=0,
@@ -555,7 +675,10 @@ Follow the established idiom (Pattern Matcher, `utxo.rs:245` twin already in the
    then `130_400 → 133_000` (QA ISSUE-001: the testnet kept producing during M1, so the initial
    `2.17 h` lead decayed to ~120 blocks ≈ 20 min before the change was ever deployed; a height
    crossed by an un-upgraded fleet nullifies the mixed-fleet purpose of the gate and freezes a
-   wrong value permanently, INC-I-054). Live testnet tip at re-pin time `130_291`, measured rate
+   wrong value permanently, INC-I-054). **`130_291` below is the tip AT RE-PIN TIME (2026-08-10) — a
+   historical record, NOT the current tip. As of 2026-08-11 the live testnet tip is `134_159` and the
+   gate is CROSSED; see the STATUS box under "Migration Path".** Live testnet tip at re-pin time
+   `130_291`, measured rate
    `10.00 s/block` (1000-block sample, heights `129_286 → 130_286`, timestamps
    `1786372169 → 1786382169`), lead `2_709 blocks ≈ 7.53 h` — enough to cover the remainder of M1
    (review + security audit + commit) plus the M2 testnet deploy — and strictly above the

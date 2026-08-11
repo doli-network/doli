@@ -736,8 +736,28 @@ pub(super) fn validate_epoch_reward_data(tx: &Transaction) -> Result<(), Validat
 ///
 /// Note: Signature verification and maintainer set state checks are done
 /// at the node level where we have access to the current maintainer set.
-pub(super) fn validate_maintainer_change_data(tx: &Transaction) -> Result<(), ValidationError> {
-    use crate::maintainer::MaintainerChangeData;
+///
+/// # INC-I-173 M3 / F5 — payload bounds (AUDIT-P1-001)
+///
+/// At and above `ctx.inc_i_173_activation_height` three bounds apply, in this
+/// exact order:
+///
+/// 1. `extra_data` byte length, checked **before** `from_bytes` so bincode
+///    never sees an attacker-sized buffer;
+/// 2. the signature-entry count;
+/// 3. the `reason` BYTE length.
+///
+/// Below the gate the four historical checks apply verbatim, with no bound at
+/// all. That inertness is the retroactive-vacuity guarantee that lets F5 ride
+/// the EXISTING `inc_i_173_activation_height` rather than costing a new one.
+pub(super) fn validate_maintainer_change_data(
+    tx: &Transaction,
+    ctx: &ValidationContext,
+) -> Result<(), ValidationError> {
+    use crate::maintainer::{
+        MaintainerChangeData, MAX_MAINTAINER_CHANGE_EXTRA_DATA_BYTES,
+        MAX_MAINTAINER_CHANGE_REASON_BYTES, MAX_MAINTAINER_CHANGE_SIGNATURES,
+    };
 
     // Maintainer changes must have no inputs (state-only operation)
     if !tx.inputs.is_empty() {
@@ -760,12 +780,50 @@ pub(super) fn validate_maintainer_change_data(tx: &Transaction) -> Result<(), Va
         ));
     }
 
+    // F5 bound 1 — the SIZE cap, BEFORE the decoder. Above the gate only.
+    if ctx.current_height >= ctx.inc_i_173_activation_height
+        && tx.extra_data.len() > MAX_MAINTAINER_CHANGE_EXTRA_DATA_BYTES
+    {
+        return Err(ValidationError::InvalidMaintainerChange(format!(
+            "maintainer change extra_data size {} exceeds max {}",
+            tx.extra_data.len(),
+            MAX_MAINTAINER_CHANGE_EXTRA_DATA_BYTES
+        )));
+    }
+
     // Try to deserialize maintainer change data
-    let _change_data = MaintainerChangeData::from_bytes(&tx.extra_data).ok_or_else(|| {
+    let change_data = MaintainerChangeData::from_bytes(&tx.extra_data).ok_or_else(|| {
         ValidationError::InvalidMaintainerChange(
             "invalid maintainer change data format".to_string(),
         )
     })?;
+
+    if ctx.current_height >= ctx.inc_i_173_activation_height {
+        // F5 bound 2 — the signature-entry count. Entry number
+        // MAX_MAINTAINERS + 1 can never add a distinct signer.
+        if change_data.signatures.len() > MAX_MAINTAINER_CHANGE_SIGNATURES {
+            return Err(ValidationError::InvalidMaintainerChange(format!(
+                "maintainer change signature count {} exceeds max {}",
+                change_data.signatures.len(),
+                MAX_MAINTAINER_CHANGE_SIGNATURES
+            )));
+        }
+
+        // F5 bound 3 — the reason BYTE length. Never `chars().count()`:
+        // `reason` is attacker-chosen free text on a FEE-EXEMPT transaction, so
+        // the unit that must be bounded is the unit the chain pays for — bytes
+        // written and re-read on every future sync. A 256-`char` cap admits a
+        // 1024-byte payload.
+        if let Some(reason) = &change_data.reason {
+            if reason.len() > MAX_MAINTAINER_CHANGE_REASON_BYTES {
+                return Err(ValidationError::InvalidMaintainerChange(format!(
+                    "maintainer change reason length {} exceeds max {}",
+                    reason.len(),
+                    MAX_MAINTAINER_CHANGE_REASON_BYTES
+                )));
+            }
+        }
+    }
 
     // Note: The following validations are done at the node level:
     // - Current maintainer set exists and is valid

@@ -109,6 +109,12 @@ impl Node {
         .with_producers_weighted(weighted)
         .with_bootstrap_producers(bootstrap_producers)
         .with_bootstrap_liveness(live_bp, stale_bp)
+        // INC-I-173 M3 / AUDIT-P3-003. This path is HEADER-ONLY, so the fee gate
+        // is unreachable from here and wiring it changes nothing today. It is
+        // wired anyway so that all four ValidationContext builders carry the same
+        // field set: a context that is silently weaker than its siblings is how
+        // INV-VALIDATION-001 gets violated the next time this path grows.
+        .with_inc_i_173_activation_height(self.config.network.params().inc_i_173_activation_height)
         .with_epoch_producer_list(if self.epoch_state.active_list.is_empty() {
             self.epoch_state.producer_list.clone()
         } else {
@@ -302,6 +308,30 @@ impl Node {
             },
         )
         .with_sig_verification_height(self.config.network.params().sig_verification_height)
+        // INC-I-173 M3 / AUDIT-P3-003. CONSENSUS PATH, and this wiring is a
+        // DIVERGENCE FIX, not a cosmetic one. Left unwired this context holds
+        // u64::MAX while `apply_block/tx_processing.rs` is wired, so ABOVE the
+        // gate the two paths DISAGREE: one rejects a block carrying a maintainer
+        // transaction that the other accepts. It is consensus-visible above the
+        // gate and needs no NEW height because it rides the same already-committed
+        // `inc_i_173_activation_height`.
+        //
+        // CORRECTED 2026-08-11 (M3 review iteration 1, REV-173-M3-001). This
+        // comment used to add "which no network has crossed". That is FALSE for
+        // testnet: the gate is 133_000 and the live testnet tip measured
+        // 134_159 (v6.24.1, agreed across RPC 8500/8501/8502). **On testnet this
+        // wiring becomes active the moment the binary lands, not at a future
+        // scheduled height**, so the testnet deploy is a SYNCHRONIZED
+        // stop-all-then-start-all, never a rolling restart (INV-8 / INC-I-062):
+        // a new-binary producer could immediately mine an `AddMaintainer` that
+        // old-binary nodes reject. Mainnet (u64::MAX) and devnet (0) are
+        // unaffected. History is NOT invalidated: above the gate the predicate is
+        // strictly MORE permissive (the frozen three plus AddMaintainer /
+        // RemoveMaintainer), so no block valid under the old rules becomes
+        // invalid, and the running binary has no knowledge of this height at all.
+        // M2 must re-pin the testnet height above the then-current tip and
+        // re-verify the tip immediately before pinning.
+        .with_inc_i_173_activation_height(self.config.network.params().inc_i_173_activation_height)
         .with_inc_i_026_scheduler_activation_height(
             self.config
                 .network
@@ -912,11 +942,15 @@ impl Node {
 
         // Add to mempool
         let current_height = self.chain_state.read().await.best_height;
-        let is_state_only = tx.is_state_only();
+        // INC-I-173 M3 / F4 (AUDIT-P3-002). SHAPE-based routing: the 0-fee system
+        // lane is for transactions that are genuinely 0-in/0-out AND whose type is
+        // authorized to exist in that shape. See the same note at the RPC
+        // admission site in `crates/rpc/src/methods/transaction.rs`.
+        let is_zero_flow = tx.is_zero_flow();
         let result = {
             let mut mempool = self.mempool.write().await;
-            if is_state_only {
-                // State-only txs have no inputs/outputs/fees — use system tx path
+            if is_zero_flow {
+                // Zero-flow txs have no inputs/outputs/fees — use system tx path
                 mempool
                     .add_system_transaction(tx.clone(), current_height)
                     .map(|_| ())

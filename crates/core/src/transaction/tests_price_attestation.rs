@@ -420,22 +420,37 @@ fn test_sign_and_verify_round_trip() {
 //   P3: a fresh Transfer Transaction
 // MATRIX:
 //   P1×O1✓     P2×O2✓     P3×O3✓
+/// INC-I-173 M3 / F4 (AUDIT-P3-002) — UPDATED, not deleted.
+///
+/// `Transaction::is_state_only()` was DELETED. Mempool routing now uses
+/// `is_zero_flow()`, which is SHAPE-based: the 0-fee system lane requires
+/// 0 inputs AND 0 outputs AND a type authorized to exist in that shape
+/// (`TxType::allows_empty_io`). The old predicate routed on TYPE alone and its
+/// doc contract ("has no UTXO inputs by design") was false on three counts.
+///
+/// BEHAVIOURAL DELTA, stated rather than discovered later: `PriceAttestation`
+/// LOSES system routing, because `allows_empty_io` is false for it. There is no
+/// live impact — `oracle_activation_height` is `u64::MAX` on every network, so
+/// no `PriceAttestation` can be mined anywhere. Reclassifying it `true` is spec
+/// Option B and is explicitly NOT in M3 scope; it is its own decision, because
+/// `allows_empty_io`'s true-set is curated by AUTHORIZATION, not wire shape.
+///
+/// RENAMED at review iteration 1 (M3a / F7) from
+/// `test_price_attestation_is_state_only`, which asserted the OPPOSITE of what
+/// it said after the F4 update. Traceability: AUDIT-P3-002.
 #[test]
-fn test_price_attestation_is_state_only() {
-    // P1: PriceAttestation must be state-only so the mempool routes it via
-    // add_system_transaction (skipping the UTXO-input-based fee check that
-    // would otherwise reject a zero-input/zero-output tx with
-    // MempoolError::FeeTooLow). See AUDIT-P1-003 in
-    // docs/audits/security-audit-oracle-2026-05-29.md.
+fn price_attestation_is_not_zero_flow() {
+    // P1: PriceAttestation is 0-in/0-out but its TYPE is not exempt, so it is
+    // NOT zero-flow and does NOT take the 0-fee system lane.
     let pa = Transaction::new_price_attestation(sample_data());
     assert!(
-        pa.is_state_only(),
-        "AUDIT-P1-003: PriceAttestation (TxType=16) must be state-only \
-         so mempool admission bypasses the input-based fee check. \
-         Was the new arm added to is_state_only() in transaction/core.rs?"
+        !pa.is_zero_flow(),
+        "INC-I-173 M3 / F4: PriceAttestation is not in TxType::allows_empty_io, so \
+         it must NOT be zero-flow. If this fires, the exempt type list was widened \
+         without an activation-height decision (spec Option B, out of M3 scope)."
     ); // O1
 
-    // P2: regression — pre-existing state-only types still classified as such
+    // P2: DelegateBond IS exempt, and at the exempt SHAPE it is zero-flow.
     let db = Transaction {
         version: 1,
         tx_type: TxType::DelegateBond,
@@ -443,9 +458,12 @@ fn test_price_attestation_is_state_only() {
         outputs: Vec::new(),
         extra_data: Vec::new(),
     };
-    assert!(db.is_state_only(), "DelegateBond must remain state-only"); // O2
+    assert!(
+        db.is_zero_flow(),
+        "DelegateBond is an exempt type and this is the exempt shape"
+    ); // O2
 
-    // P3: regression — UTXO-bearing types remain non-state-only
+    // P3: Transfer is not exempt at any shape.
     let xfer = Transaction {
         version: 1,
         tx_type: TxType::Transfer,
@@ -453,5 +471,22 @@ fn test_price_attestation_is_state_only() {
         outputs: Vec::new(),
         extra_data: Vec::new(),
     };
-    assert!(!xfer.is_state_only(), "Transfer must NOT be state-only"); // O3
+    assert!(!xfer.is_zero_flow(), "Transfer must NOT be zero-flow"); // O3
+
+    // P4: the MINT GUARD (constraint C2) — exemption is a property of
+    // (type AND shape), never of type alone. An exempt type carrying a value
+    // OUTPUT is not zero-flow, which is precisely what the deleted type-only
+    // predicate could not express.
+    let db_with_output = Transaction {
+        version: 1,
+        tx_type: TxType::DelegateBond,
+        inputs: Vec::new(),
+        outputs: vec![crate::transaction::Output::normal(1, crypto::Hash::ZERO)],
+        extra_data: Vec::new(),
+    };
+    assert!(
+        !db_with_output.is_zero_flow(),
+        "C2 MINT GUARD: an exempt TYPE carrying a value output must not be \
+         zero-flow — exemption is (type AND shape)"
+    ); // O4
 }
