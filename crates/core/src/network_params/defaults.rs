@@ -477,7 +477,19 @@ impl NetworkParams {
                 //     new lead must cover the remainder of M1 (review +
                 //     security audit + commit) PLUS the M2 testnet deploy —
                 //     which is why ~2 hours was not enough.
-                inc_i_173_activation_height: 133_000,
+                //   133_000 → 137_000 (2026-08-11): M2 staged testnet deploy.
+                //     133_000 was crossed (live tip 136_295) but was NEVER
+                //     enforced by any deployed node — the fleet ran v6.24.1,
+                //     which has no inc_i_173 gate — so moving it now changes
+                //     nothing any node ever acted on (NOT an INC-I-054
+                //     violation). Block rate ~10 s/block; new lead ~700 blocks
+                //     ≈ 1.9 h, covering the build + synchronized restart.
+                //   137_000 → 136_431 (2026-08-11): shortened lead per operator
+                //     request for a faster staged test. Still un-crossed and
+                //     un-enforced at re-pin (live tip ~136_37x); synchronized
+                //     stop-all/start-all deploy, so instant-on if the tip
+                //     overtakes it during the rebuild is still fork-safe.
+                inc_i_173_activation_height: 136_431,
 
                 // INC-I-172 M2 review F3. Unchanged from the historical
                 // hardcoded precondition (INITIAL_MAINTAINER_COUNT = 5): the
