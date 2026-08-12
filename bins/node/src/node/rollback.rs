@@ -96,6 +96,14 @@ impl Node {
         // same RocksDB value twice per rollback.
         let cached_undo = self.state_db.get_undo(local_height);
 
+        // INC-I-174: decide the maintainer trust-root rewind NOW, while the block at
+        // `local_height` is still reachable through the height index — the fossil purge
+        // below (`remove_canonical_entry`) makes it unreadable. Pure reads; the mutation
+        // happens in `commit_maintainer_rewind` after `atomic_replace`. Deliberately
+        // OUTSIDE the `cached_undo` branch: the maintainer record is keyed independently
+        // of `UndoData`, so it is still restorable on the rebuild-from-genesis fallback.
+        let maintainer_plan = self.plan_maintainer_rewind(local_height, local_height);
+
         // INC-I-156 / AUDIT-P1-001: true only if THIS call armed the rebuild
         // marker. The disarm below is the exact inverse of the arm, so an
         // undo-based rollback — which reconstructs nothing — can never silently
@@ -321,6 +329,25 @@ impl Node {
                 .atomic_replace(&state, &producers, utxo_pairs.into_iter())
                 .map_err(|e| anyhow::anyhow!("StateDb atomic_replace failed: {}", e))?;
         }
+
+        // INC-I-174: rewind the maintainer trust root. Placed HERE — after
+        // `atomic_replace` has durably committed the chain rewind — on purpose.
+        // AUDIT-P1-201 (open, P1) records that this function already abandons a durable
+        // half-applied UTXO undo when a step between the UTXO mutation and
+        // `atomic_replace` errors; putting the `ms.save()` inside that window would add
+        // one more durable side effect to the non-atomic sequence and WIDEN the recorded
+        // gap. Above it, an earlier abort simply leaves the trust root untouched, which
+        // is correct: the chain did not rewind, so the root must not either.
+        //
+        // REQ-174-005 AC-3 — it runs BEFORE the rebuild-marker clear below, not after.
+        // The clear propagates its error with `?`, so ordering it first opened a route by
+        // which the chain rewind was already durable while the trust root still carried
+        // the dropped rotation, with NO `MAINTAINER_REWIND_UNRESTORED` line and no counter
+        // increment. AC-3 forbids that without qualification. The commit has no dependency
+        // on the marker, so moving it up is free. `execute_reorg` carries the identical
+        // ordering — them drifting is the INC-I-040 shape this milestone exists to avoid.
+        self.commit_maintainer_rewind(maintainer_plan, target_height)
+            .await;
 
         // INC-I-156 / AUDIT-P1-001: disarm ONLY here, and ONLY if this call
         // armed it — the durable set is a complete state again.

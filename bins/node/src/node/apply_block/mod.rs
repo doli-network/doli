@@ -182,6 +182,11 @@ impl Node {
             Vec::new()
         };
 
+        // INC-I-174 (REQ-174-001): snapshot the maintainer trust root BEFORE the
+        // transaction loop and only for a block carrying a rotation, so a block with TWO
+        // rotations records the state before the FIRST. See `maintainer_rewind/mod.rs`.
+        let undo_maintainer_snapshot = self.capture_maintainer_undo(&block).await;
+
         // Undo log: track UTXO changes for this block
         let mut undo_spent_utxos: Vec<(storage::Outpoint, storage::UtxoEntry)> = Vec::new();
         let mut undo_created_utxos: Vec<storage::Outpoint> = Vec::new();
@@ -353,6 +358,17 @@ impl Node {
         // so rollback can revert oracle aggregator mutations alongside the
         // block's normal UTXO changes. Single atomic batch — same WAL entry.
         batch.put_undo(height, &undo);
+
+        // INC-I-174: same WriteBatch, separate key family. A block can never commit with
+        // its rotation applied and no way to undo it; see the append-hostility note on
+        // `storage::UndoData` for why this is not a sixth field there. NOTE the asymmetry
+        // with `batch.put_undo` above: that one is UNCONDITIONAL and so always overwrites
+        // the stale record at a re-applied height; this one is not, so a record from a
+        // branch a later reorg abandoned SURVIVES. The fossil is neutralized on the READ
+        // side — see `plan_maintainer_rewind`, "The BLOCK decides, never the record alone".
+        if let Some(ref snapshot) = undo_maintainer_snapshot {
+            batch.put_maintainer_undo(height, snapshot);
+        }
 
         batch
             .commit()

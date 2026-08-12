@@ -34,10 +34,51 @@
 >   **M2 shipped PARTIAL against F2/F-6/F-7** — see the amendments in §F2, §Failure Filters
 >   (F-7) and §Proposed Architecture, and the scope file
 >   `docs/.workflow/inc-i-172-M3-scope.md`. Summary: the replay derivation exists but has no
->   production callers (**R1**), reorg has no maintainer undo (**R2**), and snap-only nodes do
->   NOT fail closed (**R3**). None is a regression against pre-M2 behavior.
+>   production callers (**R1**), reorg had no maintainer undo (**R2**, now CLOSED — see the
+>   next bullet), and snap-only nodes do NOT fail closed (**R3**). None is a regression
+>   against pre-M2 behavior.
+> * **R2 CLOSED by INC-I-174 M1 (2026-08-11).** Reorg now HAS a maintainer undo. The
+>   pre-block trust root is recorded in a separate 9-byte-prefixed `cf_undo` key family
+>   (`crates/storage/src/state_db/undo.rs`, `MaintainerUndoSnapshot`) — `UndoData` itself is
+>   byte-unchanged, so no re-encode and no state-root effect. Both rewind loops call the
+>   same two functions in `bins/node/src/node/maintainer_rewind/` (plan = pure reads, run
+>   early; commit = mutate, run after `atomic_replace`), so `rollback_one_block` and
+>   `execute_reorg` cannot drift (INC-I-040). A rewind that CANNOT restore keeps the live
+>   root and announces on the `MAINTAINER_REWIND_UNRESTORED` anchor with a machine-readable
+>   `reason=` sub-token, and increments `maintainer_rewind_unrestored_count`. **R1 and R3
+>   remain OPEN.**
+> * **The record is authority for a BLOCK, never for a HEIGHT (`AUDIT-P1-001`, SYS-001).**
+>   `MaintainerUndoSnapshot` carries a `MUND` magic, a `u16` version, the `block_hash` it was
+>   captured for, and the `maintainer_set_digest` of the set it holds. `plan_maintainer_rewind`
+>   routes every candidate through `maintainer_rewind/binding.rs::check_snapshot_binding`,
+>   which refuses on any of the three before promoting to `Restore`. This is required because
+>   the planner resolves its block through `CF_HEIGHT_INDEX`, and `put_block_canonical`
+>   (`backfillFromPeer`, `doli-node restore`, the archiver, `rebuild_canonical_index`)
+>   rewrites that index with no `apply_block` and no record refresh — so a routine operator
+>   recovery, with no data-dir write, could otherwise install this host's own former set
+>   (under INC-I-175, the publicly leaked bootstrap five) through the `info!` SUCCESS exit.
+>   The record is node-local: no activation height, no `*_VERSION` bump, no new column family.
+>   Defence in depth: snap-sync `install_snapshot` calls `prune_undo_above(block_height)` on
+>   its success arm so a chain replacement cannot leave records describing the chain it
+>   replaced. `validate_persisted_set` is unchanged and remains ONE function shared by the
+>   load and restore paths — the load path has no block, so it cannot ask this question.
+> * **The binding is STALENESS/DRIFT detection, NOT tamper detection (`AUDIT-P3-401`).** All
+>   three checks run on PUBLIC, UNKEYED inputs: `MUND`/`1` are compiled constants, the
+>   `block_hash` comparand is recomputed from a block in the same data dir as the record, and
+>   `maintainer_set_digest` is `BLAKE3(domain ‖ genesis_hash ‖ threshold ‖ sorted members)`
+>   with no node secret. It therefore detects a FOSSIL record, a record for a DIFFERENT
+>   BLOCK, a record from ANOTHER CHAIN, a member list edited in place after capture, and a
+>   record from a different BINARY GENERATION — which is exactly the `AUDIT-P1-001` class,
+>   reachable with NO data-dir write. It does NOT detect an actor who can WRITE the data dir:
+>   that actor recomputes a matching `block_hash` and `set_digest` in one BLAKE3 call. The
+>   residual is ACCEPTED because the same access rewrites `maintainer_state.bin` — the LIVE
+>   root, documented as unsigned and attacker-writable (`crates/storage/src/lib.rs`,
+>   `StorageError::MalformedPersistedValue`) — a strictly shorter path to the same authority.
+>   Do not describe this as authentication, tamper-proofing or integrity protection against
+>   an attacker, and do not retire another control (notably the `TrustRoot::resolve` M1
+>   containment guard) on the strength of the record.
 > * **M3 (Layer 3)** — F7's replay-domain binding on governance messages, plus residuals
->   **R1**, **R2**, **R3** from M2. NOT implemented. Scope:
+>   **R1** and **R3** from M2 (**R2** is closed, see above). NOT implemented. Scope:
 >   `docs/.workflow/inc-i-172-M3-scope.md`.
 > * Option A (weight hatch) and Option C (cold-key role separation) remain user decisions.
 
@@ -204,13 +245,17 @@ no longer reset the root because it is no longer producer-order-derived post-see
 >   `maintainer_state.bin` on a node with an intact chain re-seeds the root and can re-arm a
 >   governance-removed key (measured: M2 QA PROBE-1). REQ-172-010 is **M2 partial**.
 >   Residual **R1**.
-> * **F-6 ROLLBACK PARITY is likewise still open.** M2 makes the root mutable and therefore
->   reorg-exposed; `bins/node/src/node/rollback.rs` has no maintainer-state undo.
->   Residual **R2**.
+> * **F-6 ROLLBACK PARITY was likewise open at M2.** M2 makes the root mutable and therefore
+>   reorg-exposed; `bins/node/src/node/rollback.rs` had no maintainer-state undo.
+>   Residual **R2** — **CLOSED by INC-I-174 M1 (2026-08-11)**: `rollback_one_block` and
+>   `execute_reorg` both plan the rewind before purging the height index and commit it after
+>   `atomic_replace`, restoring `set` AND `last_derived_height` from a `cf_undo` snapshot, or
+>   announcing on `MAINTAINER_REWIND_UNRESTORED` when they cannot. See
+>   `bins/node/src/node/maintainer_rewind/`.
 >
 > None of the three is a regression against pre-M2 behavior, which is why they do not block
 > the M2 activation height. All three are scoped in
-> `docs/.workflow/inc-i-172-M3-scope.md`.
+> `docs/.workflow/inc-i-172-M3-scope.md`; **R2 is now closed, R1 and R3 remain open.**
 
 ━━━ RESOURCE COST — COST-DECLARED ━━━
 Dimensions:
@@ -522,7 +567,25 @@ rejection rules, not tradeoffs.
 - **F-5 FAIL CLOSED, NEVER TO LEAKED CONSTANTS** — empty/sub-threshold root fails verification (F1
   satisfies); behavior for `len(root) < REQUIRED_SIGNATURES` stated explicitly (F3 reconciles thresholds).
 - **F-6 ROLLBACK PARITY** — every trust-root mutation needs a rollback inverse or must derive from state
-  rollback already restores (today: zero matches in rollback.rs/fork_recovery.rs/block_handling.rs).
+  rollback already restores (at M2: zero matches in rollback.rs/fork_recovery.rs/block_handling.rs).
+  > **SATISFIED 2026-08-11 by INC-I-174 M1 — residual R2 closed.** The rollback inverse now
+  > exists. `rollback.rs` and `block_handling.rs` each call
+  > `Node::plan_maintainer_rewind` (pure reads, before the height index is purged) and
+  > `Node::commit_maintainer_rewind` (mutates, after `atomic_replace`) from
+  > `bins/node/src/node/maintainer_rewind/`. One shared pair of functions, deliberately, so
+  > the two independent rewind loops cannot drift — that drift is the INC-I-040 precedent.
+  > The inverse restores `set` and `last_derived_height` together; restoring the set alone
+  > would leave the one-shot seed armed. When no snapshot can undo a rotation in the range,
+  > the live root is KEPT and the divergence is announced on `MAINTAINER_REWIND_UNRESTORED`
+  > with a `reason=` sub-token that separates "cannot prove" (`block_unreadable`) from
+  > "provably diverged". `fork_recovery.rs` needs no match because it owns no rewind loop —
+  > every rewind it triggers delegates to `Node::execute_reorg` (`fork_recovery.rs:75`,
+  > `:120`), which carries the rewind. Note that the rebuild-from-genesis fallback in
+  > `rollback.rs:239-270` replays UTXO and producer state ONLY (`utxo.spend_transaction` /
+  > `utxo.add_transaction` then `rebuild_producer_set_from_blocks`) and never calls
+  > `process_transaction_governance`, so `AddMaintainer` / `RemoveMaintainer` are NOT
+  > replayed there; the maintainer rewind is what covers that path, which is why
+  > `plan_maintainer_rewind` is called OUTSIDE the `cached_undo` branch.
 - **F-7 SNAP-SYNC/WIPE CONVERGENCE, STATED** — full-sync/backfill replay; snap-only nodes fail closed until
   Option D (F2 states this).
   > **AMENDED 2026-08-10 after M2 shipped — code is the source of truth (CLAUDE.md).** The
@@ -658,8 +721,9 @@ Governance (AH-gated, Layer 2):
 >   `ProducerSet` state. Residual **R1**.
 > * `Sync: … snap-only fail closed` — snap-only nodes do NOT fail closed; they seed from the
 >   snapshot's producer set. Residual **R3**.
-> * Rollback parity (F-6) is unimplemented: a governance mutation from a reorged-out block
->   persists above the gate. Residual **R2**.
+> * Rollback parity (F-6) was unimplemented at M2: a governance mutation from a reorged-out
+>   block persisted above the gate. Residual **R2** — **CLOSED by INC-I-174 M1
+>   (2026-08-11)**; the line now IS what the code does. See F-6 in *Failure Filters*.
 >
 > The rest of the block — one canonical totally-ordered derivation, one-shot seed,
 > `ProtocolActivation` fail-close, versioned fail-closed decoder — shipped as drawn.

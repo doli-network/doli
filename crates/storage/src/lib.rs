@@ -102,6 +102,15 @@ pub mod utxo_size_monitor;
 pub use block_store::BlockStore;
 pub use chain_state::ChainState;
 pub use maintainer::{MaintainerState, MAINTAINER_STATE_VERSION};
+/// The well-formedness gate every persisted maintainer set must clear before it can
+/// become this host's release-verification trust root.
+///
+/// Re-exported (INC-I-174, REQ-174-SEC-001) because `cf_undo` is a SECOND on-disk route
+/// to that authority: the maintainer rewind in `bins/node/src/node/maintainer_rewind/`
+/// must run the SAME function `MaintainerState::load` runs. A second copy of the policy
+/// would drift, and a drifted restore gate is a silent way back in for exactly the shapes
+/// AUDIT-P1-019 closed on the load path.
+pub use maintainer_wellformed::validate_persisted_set;
 pub use metrics::{collect_db_metrics, RocksDbMetrics};
 #[allow(deprecated)]
 pub use producer::{
@@ -116,7 +125,7 @@ pub use producer::{
 pub use snapshot::{
     compute_scheduler_root, compute_state_root, compute_state_root_from_bytes, StateSnapshot,
 };
-pub use state_db::{BlockBatch, LastApplied, StateDb, UndoData};
+pub use state_db::{BlockBatch, LastApplied, MaintainerUndoSnapshot, StateDb, UndoData};
 pub use update::UpdateState;
 pub use utxo::{
     uid_key, InMemoryUtxoStore, Outpoint, UtxoEntry, UtxoSet, UID_PREFIX_ASSET, UID_PREFIX_CHANNEL,

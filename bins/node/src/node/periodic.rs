@@ -184,7 +184,19 @@ impl Node {
     ///   persisted field, so `MAINTAINER_STATE_VERSION` does not move.
     /// * Pre-activation the answer is the historical `len >= 5`, which is what
     ///   makes the re-derivation reachable on every block. Frozen for replay.
-    fn maintainer_seed_is_done(state: &storage::MaintainerState, one_shot: bool) -> bool {
+    ///
+    /// `pub(in crate::node)` and not private: `commit_maintainer_rewind`
+    /// (`maintainer_rewind/commit.rs`) must refuse to install any snapshot that would
+    /// leave this predicate FALSE, because the seed it arms runs on the very next applied
+    /// block. It used to spell the post-activation form out inline, which was correct only
+    /// above the gate — mainnet's gate is 172_000 and mainnet is below it, so a restored
+    /// set of 1..4 members re-armed the seed while the rewind reported success (INC-I-174
+    /// reviewer F2). One function, no copy: the same argument that keeps
+    /// `storage::validate_persisted_set` shared between the load and the rewind gate.
+    pub(in crate::node) fn maintainer_seed_is_done(
+        state: &storage::MaintainerState,
+        one_shot: bool,
+    ) -> bool {
         if one_shot {
             !state.set.members.is_empty() || state.last_derived_height != 0
         } else {

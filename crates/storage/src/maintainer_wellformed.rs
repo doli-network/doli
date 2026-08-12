@@ -58,7 +58,15 @@ use crate::StorageError;
 ///
 /// Refuse, never repair. A deduplicated or threshold-corrected set is still an
 /// ATTACKER-CHOSEN member list installed as this host's authority.
-pub(crate) fn validate_persisted_set(path: &Path, set: &MaintainerSet) -> Result<(), StorageError> {
+///
+/// INC-I-174 (REQ-174-SEC-001) promoted this from `pub(crate)` to `pub` and re-exported
+/// it at the crate root. `cf_undo` is now a second on-disk route by which bytes become
+/// the trust root — the maintainer rewind in `bins/node/src/node/maintainer_rewind/`
+/// restores a [`MaintainerSet`] from an undo record — and that route runs THIS function,
+/// not a copy. `path` is only a label for the error message, so a caller whose source is
+/// not a filesystem path may pass a descriptive pseudo-path such as
+/// `cf_undo:maintainer_snapshot`.
+pub fn validate_persisted_set(path: &Path, set: &MaintainerSet) -> Result<(), StorageError> {
     let malformed = |defect: String| StorageError::MalformedPersistedValue {
         file: path.display().to_string(),
         subject: "maintainer set",

@@ -1060,6 +1060,8 @@ impl Node {
             signed_slots_db,
             shallow_rollback_count: 0,
             cumulative_rollback_depth: 0,
+            maintainer_rewind_count: 0,
+            maintainer_rewind_unrestored_count: 0,
             seen_blocks_for_slot: std::collections::HashSet::new(),
             epoch_state: doli_core::EpochState {
                 epoch: initial_bond_epoch,
@@ -1265,6 +1267,8 @@ impl Node {
             // --- Fork recovery state: ALL REAL ---
             shallow_rollback_count: 0,
             cumulative_rollback_depth: 0,
+            maintainer_rewind_count: 0,
+            maintainer_rewind_unrestored_count: 0,
             seen_blocks_for_slot: HashSet::new(),
             epoch_state: doli_core::EpochState {
                 producer_list: {
@@ -1463,6 +1467,8 @@ impl Node {
             signed_slots_db: None,
             shallow_rollback_count: 0,
             cumulative_rollback_depth: 0,
+            maintainer_rewind_count: 0,
+            maintainer_rewind_unrestored_count: 0,
             seen_blocks_for_slot: HashSet::new(),
             epoch_state: doli_core::EpochState {
                 producer_list: epoch_producer_list,

@@ -14,7 +14,15 @@
 //! | `cf_exit_history` | pubkey_hash (32B) | exit_height (8B LE) |
 //! | `cf_meta` | string key | varies |
 //! | `cf_undo` | height (8B LE) | UndoData (bincode) |
+//! | `cf_undo` | 0x4D ++ height (9B) | MaintainerUndoSnapshot (bincode) — INC-I-174 |
 //! | `cf_unique_id` | prefix(1B) + id(32B) | 0x00 |
+//!
+//! The two `cf_undo` families are distinguished by key LENGTH, so they can never
+//! collide at any height. INC-I-174 chose this over a sixth field on `UndoData`
+//! (which would make every pre-upgrade entry undecodable — bincode is
+//! non-self-describing) and over a new column family (which a downgraded binary
+//! could not open at all, because RocksDB requires every existing CF to be listed
+//! at open time).
 
 mod batch;
 mod open;
@@ -27,4 +35,4 @@ mod types;
 mod undo;
 mod writes;
 
-pub use types::{BlockBatch, LastApplied, StateDb, UndoData};
+pub use types::{BlockBatch, LastApplied, MaintainerUndoSnapshot, StateDb, UndoData};

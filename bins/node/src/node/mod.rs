@@ -12,6 +12,7 @@ mod event_loop;
 mod fork_recovery;
 mod genesis;
 mod init;
+mod maintainer_rewind;
 mod network_events;
 
 // Re-export Phase 4 disk cleanup helper so integration tests can verify
@@ -150,6 +151,12 @@ pub struct Node {
     /// Tracks how far we've rolled back in total. Capped at MAX_CUMULATIVE_ROLLBACK (50)
     /// to prevent cascading rollbacks from reaching genesis.
     pub cumulative_rollback_depth: u32,
+    /// INC-I-174 (REQ-174-010). Semantics AND the REQ-174-010 metrics-surface status:
+    /// `maintainer_rewind/mod.rs`, "Counter semantics". In-process only.
+    pub maintainer_rewind_count: u64,
+    /// INC-I-174 (REQ-174-005/010). Semantics: `maintainer_rewind/mod.rs`, "Counter
+    /// semantics". In-process only — see the note on `maintainer_rewind_count`.
+    pub maintainer_rewind_unrestored_count: u64,
     /// Slots for which we've seen a block via gossip (not yet applied to block_store).
     /// Used by rank 1 to avoid producing a competing block when rank 0 already produced
     /// but the block hasn't been applied to disk yet. Cleaned periodically.
