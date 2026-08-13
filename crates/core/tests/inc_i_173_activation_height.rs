@@ -98,7 +98,21 @@ const DEVNET_GATE: u64 = 0;
 /// flow above the gate this cycle, with enough lead for the whole local fleet
 /// to cross together. NOT `0` — `0` would reinterpret already-validated testnet
 /// history under the new predicate.
-const TESTNET_GATE: u64 = 133_000;
+///
+/// RE-PINNED to `136_431` by INC-I-173 M2 (commit `7f917e7a`): the original
+/// `133_000` was overtaken by the live testnet tip before the fleet crossed it,
+/// so the gate was moved forward while still un-crossed and therefore not yet
+/// consensus history. That commit changed `network_params/defaults.rs` alone
+/// and left this constant behind, so this file asserted `133_000` against a
+/// code value of `136_431` and had been red ever since. Code is the source of
+/// truth (CLAUDE.md); the constant is corrected here to match
+/// `crates/core/src/network_params/defaults.rs:492`.
+///
+/// Moving a crossed-AND-enforced height is forbidden (INV-PARAMS-001 /
+/// INC-I-054). This re-pin predates crossing, so it is legal — and it is now
+/// history: the testnet gate at `136_431` HAS been crossed (tip 146_711 at
+/// 2026-08-12), so this value must never be moved again.
+const TESTNET_GATE: u64 = 136_431;
 
 /// Mainnet: NOT PINNED IN M1. See the module header.
 const MAINNET_GATE: u64 = u64::MAX;
@@ -124,7 +138,7 @@ fn req_173_005_testnet_gate_is_pinned_near_future_and_is_not_a_no_op() {
     let p = NetworkParams::defaults(Network::Testnet);
     let h = p.inc_i_173_activation_height;
 
-    assert_eq!(h, TESTNET_GATE, "O1: the testnet gate is pinned at 133_000");
+    assert_eq!(h, TESTNET_GATE, "O1: the testnet gate is pinned at 136_431");
     assert_ne!(
         h, 0,
         "O1: a testnet gate of 0 would reinterpret already-validated testnet \
