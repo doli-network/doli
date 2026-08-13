@@ -187,7 +187,22 @@ pub fn derive_maintainer_set<R: BlockchainReader>(
         match action {
             ReplayAction::Change(MaintainerChange::Add(data)) => {
                 // Verify under the rule in force AT `height`, not today's rule.
-                let message = data.signing_message(true);
+                //
+                // INC-I-176 M1a (F14): routed through the ONE owned constructor
+                // (`authmsg`) instead of re-deriving the format at this call
+                // site. BIT-IDENTICAL to `data.signing_message(true)`, which is
+                // now itself a delegate to the same function — no wire change,
+                // no behaviour change, and the two arms can no longer drift
+                // apart independently.
+                //
+                // The gate does not exist until M2, when this line becomes
+                // `signing_message_at(genesis, true, &data.target,
+                // valid_before, height, auth_binding_activation_height)`.
+                // `valid_before` arrives there as a PLAIN PARAMETER: the
+                // payload carries no such field, and will not until M2.5 adds
+                // it behind its own activation height and format
+                // discriminator. Do not read it off `data` before then.
+                let message = super::signing_message_legacy(true, &data.target);
                 if maintainer_set.verify_multisig_at(
                     &data.signatures,
                     &message,
@@ -199,8 +214,10 @@ pub fn derive_maintainer_set<R: BlockchainReader>(
             }
             ReplayAction::Change(MaintainerChange::Remove(data)) => {
                 // Verify signatures (excluding the target) under the rule in
-                // force AT `height`.
-                let message = data.signing_message(false);
+                // force AT `height`. INC-I-176 M1a (F14): see the `Add` arm —
+                // same owned constructor, same bit-identical bytes, same M2
+                // migration point, same parameter-not-field note.
+                let message = super::signing_message_legacy(false, &data.target);
                 if maintainer_set.verify_multisig_excluding_at(
                     &data.signatures,
                     &message,

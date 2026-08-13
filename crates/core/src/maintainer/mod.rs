@@ -60,6 +60,7 @@
 //! `getMaintainerSet` RPC fallback was a fourth until the same review routed it
 //! onto [`derive_canonical_maintainer_set`].
 
+mod authmsg;
 mod data;
 mod derivation;
 mod digest;
@@ -68,6 +69,11 @@ mod set;
 #[cfg(test)]
 mod tests;
 
+pub use authmsg::{
+    signing_message, signing_message_at, signing_message_legacy, signing_message_preimage,
+    GOLDEN_AUTH_DIGEST_HEX, GOLDEN_AUTH_GENESIS_HASH, GOLDEN_AUTH_IS_ADD, GOLDEN_AUTH_PREIMAGE_HEX,
+    GOLDEN_AUTH_TARGET_PUBKEY, GOLDEN_AUTH_VALID_BEFORE,
+};
 pub use data::{MaintainerChangeData, ProtocolActivationData};
 pub use derivation::{
     derive_canonical_maintainer_set, derive_maintainer_set, BlockchainReader, MaintainerChange,
