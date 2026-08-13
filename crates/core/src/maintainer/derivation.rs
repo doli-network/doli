@@ -145,6 +145,12 @@ pub fn derive_canonical_maintainer_set(
 /// **Zero production callers today.** Wiring this into the seed path (so that a
 /// missing `maintainer_state.bin` replays instead of re-bootstrapping) is
 /// INC-I-172 M3 / R1 — see `docs/.workflow/inc-i-172-M3-scope.md`.
+///
+/// That is a LOAD-BEARING fact, not a note: both signature arms below still build
+/// the INC-I-176 LEGACY message unconditionally, so a production caller would make
+/// this function disagree with the gated apply path above #22. It is enforced by
+/// `crates/core/tests/inc_i_176_m2_derivation_tripwire.rs`, which fails when a
+/// production caller appears while the arms are still legacy.
 pub fn derive_maintainer_set<R: BlockchainReader>(
     reader: &R,
     up_to_height: u64,
@@ -195,9 +201,37 @@ pub fn derive_maintainer_set<R: BlockchainReader>(
                 // no behaviour change, and the two arms can no longer drift
                 // apart independently.
                 //
-                // The gate does not exist until M2, when this line becomes
-                // `signing_message_at(genesis, true, &data.target,
-                // valid_before, height, auth_binding_activation_height)`.
+                // INC-I-176 M2 SHIPPED THE GATE (#22,
+                // `inc_i_176_auth_binding_activation_height`) AND THIS LINE DID
+                // NOT MOVE. An earlier version of this comment said M2 would
+                // convert it; that was wrong and is corrected here (QA F2 /
+                // GAP-176-M2-02). M2 wired the ONE production verifier, in
+                // `bins/node/src/node/apply_block/governance.rs`. This site
+                // stays on the LEGACY arm.
+                //
+                // Why that is not a live defect, and what would make it one:
+                // `derive_maintainer_set` has ZERO production callers. The
+                // production paths (`crates/rpc/src/methods/governance.rs`,
+                // `bins/node/src/node/periodic.rs`,
+                // `crates/updater/src/trust_root.rs`) all call the DIFFERENT
+                // function `derive_canonical_maintainer_set`, which seats by
+                // registration order and verifies no signatures. Give this
+                // function a production caller while this line is still legacy
+                // and a replay-derived root would ACCEPT the legacy message and
+                // REJECT the bound one above #22 — disagreeing with the apply
+                // path, which is the trust-root fragmentation #22 exists to
+                // avoid. CLAUDE.md's INC-I-075 lesson is explicit that
+                // "currently unused" is never a reason to skip a gate, so the
+                // reachability premise is not left as prose: it is enforced by
+                // `crates/core/tests/inc_i_176_m2_derivation_tripwire.rs`,
+                // which FAILS the moment a production caller appears.
+                //
+                // Converting this site is REQ-176-041, marked WON'T THIS RUN in
+                // `docs/.workflow/milestone-progress.md`. Do not wire it here as
+                // a drive-by. When it is done it becomes
+                // `signing_message_at(genesis, true, &data.target, valid_before,
+                // height, auth_binding_activation_height)` and needs a genesis
+                // hash threaded in, which this leaf module does not have today.
                 // `valid_before` arrives there as a PLAIN PARAMETER: the
                 // payload carries no such field, and will not until M2.5 adds
                 // it behind its own activation height and format
@@ -215,8 +249,11 @@ pub fn derive_maintainer_set<R: BlockchainReader>(
             ReplayAction::Change(MaintainerChange::Remove(data)) => {
                 // Verify signatures (excluding the target) under the rule in
                 // force AT `height`. INC-I-176 M1a (F14): see the `Add` arm —
-                // same owned constructor, same bit-identical bytes, same M2
-                // migration point, same parameter-not-field note.
+                // same owned constructor, same bit-identical bytes, same
+                // parameter-not-field note. It is ALSO still on the LEGACY arm
+                // after M2 for the same reason, is covered by the same tripwire,
+                // and is the same deferred REQ-176-041: a conversion that fixed
+                // only the `Add` arm would leave this one unbound.
                 let message = super::signing_message_legacy(false, &data.target);
                 if maintainer_set.verify_multisig_excluding_at(
                     &data.signatures,

@@ -18,6 +18,23 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
     // For mainnet, enforce locked parameters
     let is_mainnet = matches!(network, Network::Mainnet);
 
+    // INC-I-172 M2 maintainer trust-root derivation, governance counter and
+    // ProtocolActivation fail-close (#20). Mainnet LOCKED — an .env override here
+    // would let a single operator move the trust-root gate and fork itself off the
+    // network, or re-open the producer-key fallback that F4 closes.
+    //
+    // Hoisted out of the struct literal because INC-I-176's #22 must be ordered
+    // against the EFFECTIVE (post-override) value of this height, not against the
+    // compiled default — see `ordering::enforce_auth_binding_above_derivation`.
+    let maintainer_derivation_activation_height = if is_mainnet {
+        defaults.maintainer_derivation_activation_height
+    } else {
+        env_parse(
+            "DOLI_MAINTAINER_DERIVATION_ACTIVATION_HEIGHT",
+            defaults.maintainer_derivation_activation_height,
+        )
+    };
+
     NetworkParams {
         // Networking (configurable for all networks)
         default_p2p_port: env_parse("DOLI_P2P_PORT", defaults.default_p2p_port),
@@ -422,18 +439,8 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
                 defaults.inc_i_147_activation_height,
             )
         },
-        // INC-I-172 M2 maintainer trust-root derivation, governance counter and
-        // ProtocolActivation fail-close. Mainnet LOCKED — an .env override here
-        // would let a single operator move the trust-root gate and fork itself
-        // off the network, or re-open the producer-key fallback that F4 closes.
-        maintainer_derivation_activation_height: if is_mainnet {
-            defaults.maintainer_derivation_activation_height
-        } else {
-            env_parse(
-                "DOLI_MAINTAINER_DERIVATION_ACTIVATION_HEIGHT",
-                defaults.maintainer_derivation_activation_height,
-            )
-        },
+        // INC-I-172 M2 (#20). Computed above so #22 can be ordered against it.
+        maintainer_derivation_activation_height,
         // INC-I-173 state-only fee gate (TxType::allows_empty_io authority).
         // Mainnet LOCKED — an .env override here would let a single operator
         // move a consensus gate that changes block CONTENT and fork itself off
@@ -444,6 +451,27 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
             env_parse(
                 "DOLI_INC_I_173_ACTIVATION_HEIGHT",
                 defaults.inc_i_173_activation_height,
+            )
+        },
+        // INC-I-176 M2 maintainer-authorization message binding (#22). Mainnet
+        // LOCKED — an .env override here would let a single operator move the
+        // gate that decides WHICH BYTES authorize a maintainer change, and so
+        // hold a maintainer trust root — the updater's binary-install trust root
+        // — that no peer agrees with.
+        //
+        // On testnet/devnet the override is accepted only if it preserves the
+        // SECURITY-CRITICAL `#22 >= #20` ordering (M2 review F4). A violating
+        // value is refused at error!, never applied, and never fatal.
+        inc_i_176_auth_binding_activation_height: if is_mainnet {
+            defaults.inc_i_176_auth_binding_activation_height
+        } else {
+            super::ordering::enforce_auth_binding_above_derivation(
+                env_parse(
+                    "DOLI_INC_I_176_AUTH_BINDING_ACTIVATION_HEIGHT",
+                    defaults.inc_i_176_auth_binding_activation_height,
+                ),
+                defaults.inc_i_176_auth_binding_activation_height,
+                maintainer_derivation_activation_height,
             )
         },
         // INC-I-172 M2 review F3. Deliberately NOT env-overridable on ANY

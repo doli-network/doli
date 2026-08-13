@@ -191,6 +191,80 @@ pub fn signing_message_legacy(is_add: bool, target: &PublicKey) -> Vec<u8> {
     format!("{}:{}", action, target.to_hex()).into_bytes()
 }
 
+/// The `valid_before` M2 feeds to [`signing_message_at`] at the production
+/// governance site.
+///
+/// [`super::MaintainerChangeData`] **carries no `valid_before` field until
+/// M2.5**, so M2 has nothing real to pass and feeds this sentinel instead.
+///
+/// `u64::MAX` means *never expires*, which is **exactly today's unbounded
+/// semantics**. That is the whole reason it was chosen: M2 therefore cannot
+/// WEAKEN the expiry axis (AUDIT-P1-004) while it strictly improves the
+/// domain-tag (AUDIT-P0-011) and chain-identity (AUDIT-P1-016) axes. A sentinel
+/// of `0` would read as *already expired* under M3's `height >= valid_before`
+/// rule and would make every maintainer change above the gate unauthorizable —
+/// a governance lock-out, not a security fix.
+///
+/// # Why this needs no second activation height
+///
+/// At M2.5 the verifier's rule becomes
+/// `payload.valid_before().unwrap_or(MAINTAINER_AUTH_VALID_BEFORE_UNSET)`, keyed
+/// on M2.5's EXPLICIT payload version discriminator — which lives IN THE
+/// TRANSACTION BYTES, not on height. Every payload written above #22 before M2.5
+/// ships is a v1 (frozen-shape) payload, and v1 maps to this sentinel, so an
+/// M2.5 binary re-validating such a block recomputes a **bit-identical** 32-byte
+/// message. Historical re-validation is unchanged by M2.5, so no second
+/// activation height is needed **for the message form**. The gate M2.5 does still
+/// need is for EMISSION of the v2 wire shape (an old binary hard-rejects an
+/// unknown shape at the pre-existing, height-ungated fatal decode in
+/// `crates/core/src/validation/tx_types.rs`), and M2.5 needs that gate regardless
+/// of what M2 does.
+///
+/// The sentinel is therefore TRANSITIONAL and, on the planned schedule, never
+/// binds in production: `inc_i_176_auth_binding_activation_height` is pinned far
+/// enough out that M2.5 is deployed fleet-wide before the chain crosses it. If
+/// M2.5 slips and the chain crosses #22 with only the M2 binary deployed, the
+/// sentinel becomes load-bearing and M2.5 must take its OWN height #23 for
+/// emission — re-pinning #22 upward is permitted only while it is UNCROSSED
+/// (INV-PARAMS-001 / INC-I-054 forbid moving a crossed height).
+///
+/// # Carry-forward for M2.5 — v1/v2 aliasing, and where the remedy MUST live
+///
+/// A v2 payload that chose `valid_before == u64::MAX` produces a message
+/// IDENTICAL to a v1 payload's sentinel message, so one signature is
+/// interchangeable between the two shapes. Both mean "never expires", so there is
+/// no privilege delta *today* — but once M3 enforces expiry, an archived v1
+/// authorization repackaged into a v2 payload carries "never expires" past the
+/// rule M3 exists to impose, on every authorization ever signed under the
+/// sentinel.
+///
+/// **The remedy is a VERIFIER obligation, not an emitter one** (M2 review F2).
+/// An earlier draft of this comment said M2.5/M4 should refuse to EMIT the
+/// sentinel in a v2 payload and claimed that "makes the sentinel unique to v1".
+/// **That was FALSE.** `AddMaintainer` / `RemoveMaintainer` are user-submittable
+/// via RPC `submitMaintainerChange`, so the payload bytes are ATTACKER-SUPPLIED
+/// and never pass through our emitter. Emission policy is not verification
+/// policy. This module already records the same lesson for a sibling field —
+/// `sendTransaction` accepts any signature ordering off the wire (security audit
+/// F3) — and it applies here unchanged.
+///
+/// Two ways to close it, in order of preference:
+///
+/// 1. **PREFERRED — structural.** Put the format/version discriminator INSIDE the
+///    SIGNED bytes at M2.5. Then a v1 message and a v2 message cannot be equal for
+///    ANY input, and the aliasing is impossible by construction rather than by
+///    policy. Nothing an attacker submits can produce a collision, so no rule has
+///    to be remembered later.
+/// 2. **MINIMUM — verifier rejection.** If the discriminator stays outside the
+///    signed bytes, the VERIFIER MUST reject a v2 payload carrying
+///    `valid_before == MAINTAINER_AUTH_VALID_BEFORE_UNSET`. A verifier rejection is
+///    a control because an attacker cannot route around it; "we will not emit it"
+///    is not.
+///
+/// An emitter-side refusal is still worth keeping as defence in depth. It is NOT
+/// the remedy.
+pub const MAINTAINER_AUTH_VALID_BEFORE_UNSET: u64 = u64::MAX;
+
 /// Height-gated message selection — the ONLY form consensus paths may use once
 /// M2 lands.
 ///

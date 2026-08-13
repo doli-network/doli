@@ -274,6 +274,36 @@ impl NetworkParams {
                 // stopped for a synchronized restart.
                 inc_i_173_activation_height: u64::MAX,
 
+                // INC-I-176 M2 maintainer-authorization message binding (#22):
+                // at/above this height the signed bytes become the domain-tagged,
+                // genesis-bound, expiry-carrying BLAKE3 digest instead of
+                // `format!("{}:{}", action, target_hex)`. That is the MECHANISM
+                // that closes AUDIT-P0-011 (release-signature collision) and
+                // AUDIT-P1-016 (cross-network replay), and it takes effect
+                // FORWARD-ONLY at and above #22 — never below it.
+                // Q1=YES, Q2=NO, Q3=NO ⇒ activation height REQUIRED.
+                //
+                // ON MAINNET #22 IS UNPINNED, SO NEITHER DEFECT IS CLOSED HERE
+                // (audit AUDIT-P1-102). `u64::MAX` is BOTH, and both must always
+                // be said together: fail-CLOSED against premature activation (no
+                // height can be crossed by accident, no history is reinterpreted,
+                // the value stays freely re-pinnable), and fail-OPEN for the
+                // defects themselves — the legacy colliding message stays in force
+                // at every mainnet height, so AUDIT-P0-011 and AUDIT-P1-016 remain
+                // OPEN on mainnet until a real height is pinned at M4. Today the
+                // bound arm executes on DEVNET ONLY; testnet activates at 300_000
+                // (measured tip 156_149 on 2026-08-13, uncrossed).
+                //
+                // NOT PINNED IN M2 — the same posture INC-I-173 M1 used for #21.
+                // The real value is pinned at release against the live tip plus
+                // the external auto-update window. Pinning a guess now would
+                // become IMMUTABLE the moment the chain crossed it (INC-I-054),
+                // and ~30 external auto-update producers cannot be stopped for a
+                // synchronized restart.
+                // REV-176-M1a-001 ordering: u64::MAX >= #20 (172_000) ✓ and
+                // u64::MAX <= #21 (u64::MAX) ✓ — both halves hold here.
+                inc_i_176_auth_binding_activation_height: u64::MAX,
+
                 // INC-I-172 M2 review F3. Mainnet keeps the historical
                 // hardcoded precondition (INITIAL_MAINTAINER_COUNT = 5), so the
                 // seed path is byte-identical to M2 as reviewed. Mainnet runs
@@ -491,6 +521,51 @@ impl NetworkParams {
                 //     overtakes it during the rebuild is still fork-safe.
                 inc_i_173_activation_height: 136_431,
 
+                // INC-I-176 M2 maintainer-authorization message binding (#22).
+                // Pinned 2026-08-13 at a MEASURED live testnet tip of 154_399
+                // (read-only `getChainInfo` against the local testnet on
+                // 127.0.0.1): a lead of 145_601 blocks ≈ 16.9 days at
+                // SLOT_DURATION = 10s (8_640 blocks/day), i.e. ~2026-08-30.
+                // NOT YET IN FORCE (audit AUDIT-P1-102): the gate is UNCROSSED —
+                // re-measured tip 156_149 at 2026-08-13T18:47Z — so on testnet the
+                // legacy colliding message is still what every node verifies, and
+                // AUDIT-P0-011 / AUDIT-P1-016 stay OPEN here until the chain
+                // reaches 300_000. M2 ships the mechanism; the height decides when
+                // it takes effect, forward-only.
+                // NOT 0 — that would reinterpret already-validated testnet
+                // history (the real add_maintainer mined at block 136_690, txid
+                // 62a3bfbd…) under a message form no archived signature covers.
+                // NOT u64::MAX — that would make the binding unreachable on the
+                // one network where the governance path is testable.
+                // IMMUTABLE once crossed (INC-I-054).
+                // Override via `DOLI_INC_I_176_AUTH_BINDING_ACTIVATION_HEIGHT`.
+                //
+                // The margin is deliberately generous rather than minimal because
+                // the cost is asymmetric: too small and the M2
+                // MAINTAINER_AUTH_VALID_BEFORE_UNSET sentinel becomes load-bearing
+                // in production, forcing M2.5 to take its own height #23; too
+                // large costs only a re-pin, which is free while the height is
+                // UNCROSSED. The lead is sized so M2.5 (v2 payload emission), M3
+                // (the expiry check) and M4 (the signer) all land BEFORE the chain
+                // crosses #22.
+                //
+                // REV-176-M1a-001 ordering, both halves stated:
+                //   LOWER  300_000 >= #20 (127_200) ✓ — the chain-bound message
+                //     never arrives before the distinct-signer counter.
+                //   UPPER  300_000 <= #21 (136_431) ✗ — **UNSATISFIABLE and
+                //     ACCEPTED.** #21 was crossed at 136_431 while the tip is
+                //     154_399, and a crossed activation height is IMMUTABLE
+                //     (INV-PARAMS-001 / INC-I-054), so no value above the tip can
+                //     satisfy it and any value below the tip would be retroactive.
+                //     The residual — testnet already carries an unbound,
+                //     domain-unseparated maintainer authorization at block 136_690
+                //     — is accepted because the local testnet runs exclusively on
+                //     127.0.0.1 and is unreachable from the internet, so the
+                //     AUDIT-P0-011 collision has no remote attacker surface there.
+                //     Pinned as a VISIBLE exception by
+                //     `rev_176_m1a_001_testnet_upper_half_is_an_accepted_unsatisfiable_residual`.
+                inc_i_176_auth_binding_activation_height: 300_000,
+
                 // INC-I-172 M2 review F3. Unchanged from the historical
                 // hardcoded precondition (INITIAL_MAINTAINER_COUNT = 5): the
                 // local testnet runs 12 producers + seeds, so the precondition
@@ -641,6 +716,45 @@ impl NetworkParams {
                 // INC-I-173 state-only fee gate. Always active on devnet —
                 // fresh genesis each run, no history to reinterpret.
                 inc_i_173_activation_height: 0,
+                // INC-I-176 M2 maintainer-authorization message binding (#22).
+                // 20, NOT 0. User-decided 2026-08-13; see the section "DEVNET
+                // EXEMPTION from the `#22 <= #21` half" in
+                // `specs/maintainer-authorization-architecture.md`.
+                //
+                // REV-176-M1a-001 ordering, both halves stated:
+                //   LOWER  20 >= #20 (0) ✓ — UNCONDITIONAL on every network. The
+                //     chain-bound message never arrives before the distinct-signer
+                //     counter, so AUDIT-P1-016's binding is never live while
+                //     AUDIT-P0-010's entry-counting defect is re-armed underneath.
+                //   UPPER  20 <= #21 (0) ✗ — **EXEMPTED ON DEVNET ONLY.** That half
+                //     exists to close the window [#21, #22) in which maintainer
+                //     transactions are MINEABLE but UNBOUND. The window is a threat
+                //     only to a chain with persistent history and value; devnet has
+                //     neither (fresh genesis every run, local-only, no adversary).
+                //     Devnet-only — mainnet and testnet stay bound by both halves,
+                //     subject to the testnet residual recorded above.
+                //
+                // Why 20 and not 0, and not u64::MAX:
+                //   NOT 0 — the five fenced INC-I-174 node suites operate at block
+                //     heights 0-7. At 0 they would be ABOVE the gate and would need
+                //     the bound message they do not build: MEASURED 15 failures
+                //     across six node suites, with a positive control (u64::MAX ⇒
+                //     all 29 green). At 20 they sit entirely below the gate, take
+                //     the legacy arm, and pass UNMODIFIED.
+                //   NOT u64::MAX — devnet is the only network where the bound arm is
+                //     reachable at all (mainnet u64::MAX, testnet 300_000 far above
+                //     the tip). Above height 20 the bound arm actually executes, so
+                //     M3 and M4 are developed against real code instead of the
+                //     legacy arm only.
+                // Corollary, recorded because the audit found it overclaimed
+                // elsewhere (AUDIT-P1-102): DEVNET IS THE ONLY SURFACE ON WHICH
+                // THE AUDIT-P0-011 / AUDIT-P1-016 CLOSURE IS LIVE TODAY. On both
+                // live networks the bound arm is unreachable at the current tip,
+                // so M2's closure is a mechanism that is wired, not a defect that
+                // is already shut.
+                // Pinned as a VISIBLE exception by the devnet ordering tests in
+                // `crates/core/tests/inc_i_176_m2_ordering.rs`.
+                inc_i_176_auth_binding_activation_height: 20,
 
                 // INC-I-172 M2 review F3. `scripts/launch_testnet.sh` boots a
                 // TWO-producer devnet. With the historical hardcoded 5 the root
