@@ -150,6 +150,7 @@ impl NetworkParams {
                 // over-cap AddBonds in lockstep. Once crossed this height is
                 // IMMUTABLE — never move it forward (INC-I-054).
                 addbond_cap_enforcement_activation_height: 0,
+                withdrawal_holdings_gate_activation_height: u64::MAX,
 
                 // INC-I-088 Phase 0: DeFi subsystems (AMM, lending, loan,
                 // fractionalization) gated off on mainnet. u64::MAX = never
@@ -423,6 +424,7 @@ impl NetworkParams {
                 delegation_auth_activation_height: 0,
                 // INC-I-080: AddBond cap enabled on mainnet (254_344) → 0.
                 addbond_cap_enforcement_activation_height: 0,
+                withdrawal_holdings_gate_activation_height: 230_000,
 
                 // INC-I-088 Phase 0: DeFi gate disabled by default on testnet
                 // (mirrors mainnet). Tests that exercise the post-activation
@@ -674,6 +676,7 @@ impl NetworkParams {
                 // on this default; existing devnet/test flows stay
                 // byte-identical (no surprise enforcement).
                 addbond_cap_enforcement_activation_height: u64::MAX,
+                withdrawal_holdings_gate_activation_height: 20,
                 // INC-I-088 Phase 0: DeFi gate disabled by default on devnet
                 // (mirrors mainnet/testnet). Devnet tests that need DeFi
                 // either set `DOLI_DEFI_ACTIVATION_HEIGHT=0` in their .env or

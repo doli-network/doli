@@ -34,6 +34,11 @@ Used in `bins/node/src/node/validation_checks.rs::validate_block_economics()`.
 | `ECON_EPOCH_INPUTS_MISMATCH` | EpochReward pool inputs don't match expected outpoints | Reject block |
 | `ECON_EPOCH_PRE_INPUTS` | Pre-activation EpochReward should not have inputs | Reject block |
 | `ECON_EPOCH_MISSING` | Epoch boundary block is missing required EpochReward TX | Reject block |
+| `ECON_WITHDRAWAL_OVER_HOLDINGS` | RequestWithdrawal requests more bonds than the producer's allowance (INC-I-180, gated at `withdrawal_holdings_gate_activation_height`) | Reject block |
+| `ECON_WITHDRAWAL_UNKNOWN_PRODUCER` | RequestWithdrawal names a producer the ProducerSet has never seen (INC-I-180, same gate) | Reject block |
+| `ECON_WITHDRAWAL_BOND_COUNT_MISMATCH` | RequestWithdrawal fails `owned == all` (**exclusivity**, every shape), where `all` counts the inputs resolving, in the pre-block UTXO set, to a `Bond` output and `owned` counts the subset **owned by the named producer** (`hash_with_domain(ADDRESS_DOMAIN, producer_pubkey)`); or, for a **partial** withdrawal (`bond_count < allowance`, or `bond_count == 0`), fails `bond_count == owned`. Foreign Bond UTXOs neither count toward the declared total nor may ride along, since apply spends every input while only the named producer's ledger moves. A **full exit** (`bond_count == allowance && bond_count > 0`) is governed by `ECON_WITHDRAWAL_INCOMPLETE_DRAIN` instead (INC-I-180, same gate) | Reject block |
+| `ECON_WITHDRAWAL_INCOMPLETE_DRAIN` | A **full-exit** RequestWithdrawal (`bond_count == allowance && bond_count > 0`) does not spend every Bond UTXO the named producer owns in the pre-block UTXO set. The epoch flush clamps `bond_count` to 0 and auto-exits the producer whatever the declared number was, so any Bond UTXO left unspent would stay spendable with no ledger behind it (INC-I-180, same gate) | Reject block |
+| `ECON_WITHDRAWAL_SAME_BLOCK_INPUT` | A RequestWithdrawal spends an outpoint created by an earlier transaction of the same block. Block validation resolves inputs against the pre-block UTXO view only, so such an input is invisible to both Bond counters while apply spends it — refusing it is what makes the pre-block view exhaustive and the exclusivity rule complete (INC-I-180, same gate) | Reject block |
 
 ## FORK -- Fork Recovery
 

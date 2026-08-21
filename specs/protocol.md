@@ -597,6 +597,82 @@ withdrawal_request_tx = {
 - `net_amount = sum(bond_amounts) - sum(penalties)`
 - Penalty = `sum(inputs) - sum(outputs)` (burned, not redistributed)
 - Bond count update takes effect at next epoch boundary (PendingProducerUpdate)
+- **INC-I-180**: the requested `bond_count` must not exceed the producer's bond
+  holdings, enforced height-gated at `withdrawal_holdings_gate_activation_height`.
+  - **Pre-activation** (`height < AH`): NOT enforced. Historical behavior is
+    preserved — `process_transaction_producer_effects` silently skips the
+    deferred `PendingProducerUpdate::RequestWithdrawal` on shortfall, *after*
+    `process_transaction_utxos` already spent every Bond UTXO input. The
+    producer keeps selection weight with no bonds behind it (mainnet n11:
+    434 unbacked weight units). Kept for replay safety.
+  - **Post-activation** (`height >= AH`): a block carrying a RequestWithdrawal
+    is **rejected** at block validation (`Node::validate_block_economics`),
+    before any state mutation, so no Bond UTXO is ever spent, when any of:
+    - `bond_count > allowance` — `ECON_WITHDRAWAL_OVER_HOLDINGS`. The allowance
+      is `bond_count + pending AddBonds + AddBonds earlier in the same block
+      − withdrawal_pending_count − bonds charged by Exits and RequestWithdrawals
+      earlier in the same block`, saturating. An `Exit` charges the producer's
+      whole `bond_count` because the apply layer bumps `withdrawal_pending_count`
+      for it immediately; the apply layer re-reads an unchanged `bond_count` per
+      `Exit`, so two Exits for one producer charge it twice and the allowance
+      reproduces that.
+    - the producer is not in the ProducerSet — `ECON_WITHDRAWAL_UNKNOWN_PRODUCER`.
+    - any input references a transaction at a **lower index in the same block** —
+      `ECON_WITHDRAWAL_SAME_BLOCK_INPUT`. Block validation resolves inputs
+      against the **pre-block** UTXO view, which every node computes identically
+      at this height and which `validate_block_economics` holds no write batch
+      over. An outpoint created earlier in the same block is therefore invisible
+      to the Bond counters below while `process_transaction_utxos` spends it
+      anyway, so it is refused rather than counted. This is what makes the
+      pre-block view **exhaustive** for withdrawal inputs, and the exclusivity
+      rule below complete rather than partial (AUDIT-P1-006).
+    - the transaction fails `owned == all`, where `all` is the number of inputs
+      that resolve, in the pre-block UTXO set, to a `Bond` output and `owned` is
+      the subset of those whose `pubkey_hash` equals
+      `hash_with_domain(ADDRESS_DOMAIN, producer_pubkey)` — the address at which
+      Registration, AddBond and genesis all create Bond outputs —
+      `ECON_WITHDRAWAL_BOND_COUNT_MISMATCH`. This **exclusivity** rule runs
+      before the shape split below and applies to every shape. Without the
+      **owner** binding a transaction signed by producer `A`, spending `A`'s own
+      Bond UTXOs, may name producer `B`: `A` loses the UTXOs, `B` loses the
+      weight, and `A` keeps unbacked selection weight. Without the
+      **exclusivity** half an actor holding both keys declares `B`'s true count
+      and adds `A`'s Bond UTXOs as riders — `process_transaction_utxos` spends
+      all of them, and only `B`'s ledger moves (AUDIT-P1-001). The Bond lock is
+      bypassed for this transaction type, so ownership is not otherwise checked.
+    - the transaction fails the rule for its **shape**. A request declaring the
+      producer's whole allowance (`bond_count == allowance && bond_count > 0`)
+      is a **full exit**: `apply_withdrawal` drives `bond_count` to 0 and the
+      auto-exit fires whatever the declared number was, so the ledger can never
+      outlive its bonds and the obligation moves to the UTXO side — the
+      transaction must spend EVERY Bond UTXO the producer owns in the pre-block
+      view (`owned == utxo.get_bond_entries(addr)`), else
+      `ECON_WITHDRAWAL_INCOMPLETE_DRAIN`. Any other request is a **partial** and
+      keeps the strict `bond_count == owned` binding, else
+      `ECON_WITHDRAWAL_BOND_COUNT_MISMATCH`: the allowance bounds the declared
+      count from above only, so an under-declared partial would destroy every
+      Bond input while removing one bond of weight. The full-exit branch is the
+      permanent in-band remedy for a producer whose ledger already disagrees with
+      its Bond UTXOs — it can always zero the ledger and retire (AUDIT-P1-002).
+
+    The apply-layer enqueue accepts exactly the same allowance, and the
+    reorg/rollback replay (`rebuild_producer_set_from_blocks`) mirrors the
+    in-flight AddBond term under the same height gate, so live apply and replay
+    queue the same updates. The admission rules (the `Exit` charge, the
+    same-block-input refusal, the exclusivity rule and the shape split) are NOT
+    mirrored in the replay: it reads blocks that are already canonical.
+    The gate is evaluated **before** the EpochReward section of
+    `validate_block_economics`, so its verdict is identical in Full, Light and
+    Replay mode. That section returns `Ok(())` early in Full mode
+    (`INC_I_081_MISSING_CHECK_SKIP`) whenever the local store cannot prove an
+    EpochReward was owed — the normal state of a freshly snap-synced node — and
+    a rule placed after it would be enforced in Light/Replay only. The INC-I-080
+    AddBond cap remains **after** that early return, unchanged: it is enforced
+    from height 0 on mainnet and testnet, so running it in a case where it never
+    ran would change the verdict of already-canonical blocks.
+    Mainnet AH = `u64::MAX` (frozen — pinning is a separate decision session);
+    testnet `230_000`; devnet `20`. No `CURRENT_PROTOCOL_VERSION` bump
+    (EpochState unchanged); no `HardForkSchedule` entry; rolling-deploy safe.
 
 **Note:** TxType 9 (ClaimWithdrawal) is reserved but unused — withdrawal is instant.
 

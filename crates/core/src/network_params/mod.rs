@@ -327,9 +327,7 @@ pub struct NetworkParams {
     /// Three-question gate verdict: Q1=YES, Q3=NO → activation height REQUIRED.
     /// Once crossed, this height is immutable.
     ///
-    /// Defaults to `u64::MAX` everywhere; operator picks a concrete future
-    /// height before deployment. The cap and auth heights can co-deploy at the
-    /// same value to ship the bundle atomically.
+    /// Defaults: mainnet `0`, testnet `0`, devnet `u64::MAX`.
     pub delegation_auth_activation_height: u64,
 
     /// INC-I-080: Height at which the per-producer AddBond cap is enforced.
@@ -354,11 +352,13 @@ pub struct NetworkParams {
     /// `CURRENT_PROTOCOL_VERSION` bump (EpochState unchanged); no
     /// `HardForkSchedule` entry (pure validation rule); rolling-deploy safe.
     ///
-    /// Defaults: mainnet `u64::MAX` (operator pins a concrete future height in
-    /// a separate commit), testnet `0` (active from genesis), devnet
-    /// `u64::MAX` (disabled; cap tests opt in via explicit args — mirrors the
-    /// INC-I-078 devnet default).
+    /// Defaults: mainnet `0`, testnet `0`, devnet `u64::MAX` (cap tests opt in).
     pub addbond_cap_enforcement_activation_height: u64,
+
+    /// INC-I-180: at and above this height a `RequestWithdrawal` exceeding the
+    /// producer's bond holdings invalidates the block (`validate_block_economics`,
+    /// pre-mutation; apply mirrors it). m/t/d: `u64::MAX` / `230_000` / `20`. IMMUTABLE.
+    pub withdrawal_holdings_gate_activation_height: u64,
 
     /// INC-I-088 Phase 0 / B.1+B.2 update: originally gated all non-AMM
     /// DeFi tx types. All 7 are now tombstoned (5 lending B.1, 2 NFT-frac

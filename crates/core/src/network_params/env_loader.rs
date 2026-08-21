@@ -365,6 +365,16 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
                 defaults.addbond_cap_enforcement_activation_height,
             )
         },
+        // INC-I-180: mainnet locked to the compiled default (pinning a real
+        // height is a separate decision session); non-mainnet may override.
+        withdrawal_holdings_gate_activation_height: if is_mainnet {
+            defaults.withdrawal_holdings_gate_activation_height
+        } else {
+            env_parse(
+                "DOLI_WITHDRAWAL_HOLDINGS_GATE_ACTIVATION_HEIGHT",
+                defaults.withdrawal_holdings_gate_activation_height,
+            )
+        },
         // INC-I-088 Phase 0: mainnet locked (operator pins concrete future
         // height in a separate commit, ONLY AFTER DeFi subsystem audit).
         // Testnet/devnet may override via `DOLI_DEFI_ACTIVATION_HEIGHT` for
