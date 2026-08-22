@@ -77,12 +77,10 @@ impl RpcContext {
         let utxo_bond_amount: u64 = utxo_bonds.iter().map(|(_, _, amt)| *amt).sum();
         drop(utxo_set);
 
-        // Use UTXO values when available, fall back to ProducerInfo (genesis)
-        let effective_bond_count = if utxo_bond_count > 0 {
-            utxo_bond_count
-        } else {
-            info.bond_count
-        };
+        // INC-I-180: bondCount is UTXO-derived and MUST NOT mask a divergence —
+        // a producer with ProducerSet weight but zero Bond UTXOs (the n11 shape)
+        // must report bondCount 0, with the ProducerSet count in its own field.
+        let effective_bond_count = utxo_bond_count;
         let effective_bond_amount = if utxo_bond_amount > 0 {
             utxo_bond_amount
         } else {
@@ -122,6 +120,7 @@ impl RpcContext {
             registration_height: info.registered_at,
             bond_amount: effective_bond_amount,
             bond_count: effective_bond_count,
+            producer_set_bond_count: info.bond_count,
             status: status.to_string(),
             era,
             pending_withdrawals,
@@ -183,11 +182,8 @@ impl RpcContext {
                 );
                 let utxo_bond_count = utxo_set.count_bonds(&addr_hash, self.bond_unit);
                 let utxo_bond_amount = utxo_set.get_bonded_balance(&addr_hash);
-                let effective_bond_count = if utxo_bond_count > 0 {
-                    utxo_bond_count
-                } else {
-                    info.bond_count
-                };
+                // INC-I-180: bondCount is UTXO-derived and MUST NOT mask a divergence.
+                let effective_bond_count = utxo_bond_count;
                 let effective_bond_amount = if utxo_bond_amount > 0 {
                     utxo_bond_amount
                 } else {
@@ -220,6 +216,7 @@ impl RpcContext {
                     registration_height: info.registered_at,
                     bond_amount: effective_bond_amount,
                     bond_count: effective_bond_count,
+                    producer_set_bond_count: info.bond_count,
                     status: status.to_string(),
                     era,
                     pending_withdrawals,
@@ -250,6 +247,7 @@ impl RpcContext {
                 registration_height: info.registered_at,
                 bond_amount: info.bond_amount,
                 bond_count: info.bond_count,
+                producer_set_bond_count: info.bond_count,
                 status: "pending".to_string(),
                 era,
                 pending_withdrawals: Vec::new(),

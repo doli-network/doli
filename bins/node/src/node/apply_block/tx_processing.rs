@@ -429,8 +429,12 @@ impl Node {
                             // a live shortfall again. Below the gate it is the
                             // historical warn-only path: Bond UTXOs gone,
                             // weight kept.
-                            warn!(
-                                "WithdrawalRequest: not enough bonds (requested {}, available {}, delegated={})",
+                            // INC-I-180 REQ-I180-004: an alertable event, not only
+                            // a WARN — a Bond-UTXO/ProducerSet divergence applied
+                            // here (below the gate) leaves unbacked weight and must
+                            // be visible to fleet monitoring.
+                            error!(
+                                "WithdrawalRequest: not enough bonds (requested {}, available {}, delegated={}) — unbacked producer weight will result",
                                 data.bond_count, available, delegated
                             );
                         }

@@ -599,6 +599,11 @@ withdrawal_request_tx = {
 - Bond count update takes effect at next epoch boundary (PendingProducerUpdate)
 - **INC-I-180**: the requested `bond_count` must not exceed the producer's bond
   holdings, enforced height-gated at `withdrawal_holdings_gate_activation_height`.
+  A conforming client derives the allowance from the ProducerSet
+  (`selectionWeight − Σ receivedDelegations + delegatedBonds − withdrawal_pending_count`),
+  never from the UTXO-derived bond count, and refuses to emit when the two ledgers
+  disagree (the DOLI CLI does this as of INC-I-180 M3; RPC exposes the ProducerSet
+  count as `producerSetBondCount` distinct from the UTXO-derived `bondCount`).
   - **Pre-activation** (`height < AH`): NOT enforced. Historical behavior is
     preserved — `process_transaction_producer_effects` silently skips the
     deferred `PendingProducerUpdate::RequestWithdrawal` on shortfall, *after*

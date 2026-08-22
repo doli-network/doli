@@ -57,8 +57,12 @@ pub struct ProducerResponse {
     pub registration_height: u64,
     /// Bond amount (total)
     pub bond_amount: u64,
-    /// Number of bonds staked
+    /// Number of bonds staked (UTXO-derived; the honest on-chain Bond UTXO count)
     pub bond_count: u32,
+    /// ProducerSet-derived bond count (INC-I-180). `bond_count` is UTXO-derived;
+    /// when the two diverge the operator must SEE it. Additive, never masks.
+    #[serde(default)]
+    pub producer_set_bond_count: u32,
     /// Status (active, unbonding, exited, slashed)
     pub status: String,
     /// Current era

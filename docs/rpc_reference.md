@@ -617,6 +617,7 @@ Returns all producers in the network.
         "registrationHeight": 100000,
         "bondAmount": 50000000000,
         "bondCount": 5,
+        "producerSetBondCount": 5,
         "status": "active",
         "era": 0,
         "pendingWithdrawals": [],
@@ -633,14 +634,15 @@ Returns all producers in the network.
 | addressHash | Address hash derived from pubkey -- use this for `getBalance` lookups |
 | registrationHeight | Block height when registration was applied |
 | bondAmount | Total bond amount in base units (from UTXO set) |
-| bondCount | Number of bonds staked (from UTXO set) |
+| bondCount | Number of bonds staked, UTXO-derived (count of Bond UTXOs). **INC-I-180:** no longer falls back to the ProducerSet count, so a producer with weight but zero Bond UTXOs honestly reports `0`. |
+| producerSetBondCount | Bond count from the ProducerSet ledger (`info.bond_count`). **INC-I-180:** additive field; when it exceeds `bondCount` the producer holds unbacked selection weight (the n11 shape), detectable from RPC alone. |
 | status | Producer status (see below) |
 | era | Current era number |
 | pendingWithdrawals | Array of pending withdrawals (always empty -- withdrawals are instant) |
 | pendingUpdates | Array of pending epoch-deferred updates (register, exit, add_bond, etc.) |
 | blsPubkey | BLS12-381 public key for attestation (hex, empty string if not set) |
 
-**Note:** `bondCount` and `bondAmount` are derived from the UTXO set (count/sum of Bond UTXOs for the producer's pubkey_hash). They reflect the current live state, not the epoch snapshot used for scheduling. Producers with pending registrations appear with status `"pending"`.
+**Note:** `bondCount` and `bondAmount` are derived from the UTXO set (count/sum of Bond UTXOs for the producer's pubkey_hash). They reflect the current live state, not the epoch snapshot used for scheduling. `producerSetBondCount` reports the ProducerSet ledger count instead; compare the two (via `getBondDetails.bondCount` for the pure UTXO count) to detect a producer whose selection weight is not backed by Bond UTXOs (INC-I-180). Producers with pending registrations appear with status `"pending"`.
 
 **Example:**
 ```bash
@@ -668,6 +670,7 @@ Returns information about a specific producer.
     "registrationHeight": 100000,
     "bondAmount": 50000000000,
     "bondCount": 5,
+    "producerSetBondCount": 5,
     "status": "active",
     "era": 0,
     "pendingWithdrawals": [],
@@ -676,7 +679,7 @@ Returns information about a specific producer.
 }
 ```
 
-**Note:** `bondCount` and `bondAmount` are derived from the UTXO set. `RequestWithdrawal` (TxType 8) processes instantly with FIFO vesting penalty (per-bond quarter-based). `ClaimWithdrawal` (TxType 9) is reserved/unused (tombstone for wire compat).
+**Note:** `bondCount` and `bondAmount` are derived from the UTXO set; `producerSetBondCount` (INC-I-180) reports the ProducerSet ledger count so a divergence (unbacked weight) is visible from RPC alone. `RequestWithdrawal` (TxType 8) processes instantly with FIFO vesting penalty (per-bond quarter-based). `ClaimWithdrawal` (TxType 9) is reserved/unused (tombstone for wire compat).
 
 **Status values:**
 | Status | Description |

@@ -886,6 +886,13 @@ doli producer request-withdrawal --count 2
 doli producer request-withdrawal --count 2 --destination doli1abc...
 ```
 
+**INC-I-180:** the CLI derives the withdrawable allowance from the **ProducerSet**
+(`selectionWeight − Σ receivedDelegations + delegatedBonds`, minus pending
+withdrawals), **aborts** if that disagrees with the wallet's Bond-UTXO count (a
+ledger mismatch — retry after the next epoch boundary flushes pending bond
+changes), prints both numbers before submitting, and selects Bond inputs by
+**count**, not by value. `doli producer exit` applies the same guard for a full drain.
+
 **Output shows FIFO breakdown before submitting:**
 ```
 Your bonds (5 total):

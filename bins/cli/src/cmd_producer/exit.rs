@@ -6,6 +6,10 @@ use super::common::{compute_fifo_breakdown, display_fifo_breakdown};
 use crate::common::address_prefix;
 use crate::rpc_client::{format_balance, RpcClient};
 use crate::wallet::Wallet;
+use doli_cli::producer_ledger::{
+    max_withdrawable, producer_set_allowance, select_bond_inputs_by_count,
+    withdrawal_ledger_mismatch,
+};
 
 pub(super) async fn handle_exit(wallet: &Wallet, rpc: &RpcClient, force: bool) -> Result<()> {
     println!("Producer Exit");
@@ -32,11 +36,30 @@ pub(super) async fn handle_exit(wallet: &Wallet, rpc: &RpcClient, force: bool) -
 
     // Fetch per-bond details for FIFO breakdown
     let details = rpc.get_bond_details(&pk).await?;
-    let available = details.bond_count - details.withdrawal_pending_count;
+    // INC-I-180: allowance from the ProducerSet, and abort on a ledger mismatch.
+    let received_total: u64 = producer_info
+        .received_delegations
+        .iter()
+        .map(|d| d.bond_count as u64)
+        .sum();
+    let allowance_p = producer_set_allowance(
+        producer_info.selection_weight,
+        received_total,
+        producer_info.delegated_bonds as u64,
+    );
+    if withdrawal_ledger_mismatch(details.bond_count as u64, allowance_p) {
+        anyhow::bail!(
+            "Ledger mismatch: wallet shows {} Bond UTXO(s) but the ProducerSet allowance is {}. \
+             Aborting exit — retry after the next epoch boundary.",
+            details.bond_count,
+            allowance_p
+        );
+    }
+    let available = max_withdrawable(allowance_p, details.withdrawal_pending_count as u64);
     if available == 0 {
         anyhow::bail!("All bonds already have pending withdrawals");
     }
-    let withdraw_count = available; // withdraw ALL available bonds
+    let withdraw_count = available as u32; // withdraw ALL available bonds
 
     // Show bond inventory
     let s = &details.summary;
@@ -117,16 +140,16 @@ pub(super) async fn handle_exit(wallet: &Wallet, rpc: &RpcClient, force: bool) -
         );
     }
 
+    // AUDIT-P2-003: bind selection to COUNT, not value — emit exactly `withdraw_count` Bond inputs.
+    let bond_amounts: Vec<u64> = bond_utxos.iter().map(|u| u.amount).collect();
+    let selected_idx = select_bond_inputs_by_count(&bond_amounts, withdraw_count)
+        .map_err(|e| anyhow::anyhow!(e))?;
     let mut bond_inputs: Vec<Input> = Vec::new();
-    let mut bond_input_total = 0u64;
-    for utxo in &bond_utxos {
-        if bond_input_total >= required_bond_value {
-            break;
-        }
+    for &i in &selected_idx {
+        let utxo = &bond_utxos[i];
         let prev_tx_hash = Hash::from_hex(&utxo.tx_hash)
             .ok_or_else(|| anyhow::anyhow!("Invalid Bond UTXO tx_hash"))?;
         bond_inputs.push(Input::new(prev_tx_hash, utxo.output_index));
-        bond_input_total += utxo.amount;
     }
 
     // Select a normal UTXO to cover the tx fee

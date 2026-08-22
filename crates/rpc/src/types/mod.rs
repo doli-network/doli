@@ -86,6 +86,7 @@ mod tests {
             registration_height: 100,
             bond_amount: 1_000_000_000,
             bond_count: 1,
+            producer_set_bond_count: 1,
             status: "unbonding".to_string(),
             era: 0,
             pending_withdrawals: vec![PendingWithdrawalResponse {
@@ -119,6 +120,7 @@ mod tests {
             registration_height: 100,
             bond_amount: 1_000_000_000,
             bond_count: 1,
+            producer_set_bond_count: 1,
             status: "active".to_string(),
             era: 0,
             pending_withdrawals: Vec::new(),
