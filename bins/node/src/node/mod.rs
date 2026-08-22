@@ -11,6 +11,8 @@ pub mod checkpoint_health;
 mod event_loop;
 mod fork_recovery;
 mod genesis;
+mod holdings;
+use holdings::holdings_of_every_producer;
 mod init;
 mod maintainer_rewind;
 mod network_events;
@@ -299,6 +301,9 @@ pub struct Node {
     /// whichever producer selected it.
     pub mempool_pending_producer_keys: std::sync::Arc<std::sync::RwLock<Vec<PublicKey>>>,
 
+    pub mempool_producer_holdings:
+        std::sync::Arc<std::sync::RwLock<Vec<(PublicKey, mempool::ProducerHoldings)>>>,
+
     /// INC-I-055: Rolling health window for auto-checkpoint tagging.
     /// Tracks the last CHECKPOINT_HEALTH_WINDOW_SIZE health samples (true=healthy).
     /// A checkpoint is tagged healthy if ANY sample in the window was healthy,
@@ -460,6 +465,7 @@ impl Node {
             .map(|p| p.public_key)
             .collect();
         let pending = producers.pending_registration_keys();
+        let holdings = holdings_of_every_producer(&producers);
         drop(producers);
         let weighted = self.bond_weights_for_scheduling(active).await;
         if let Ok(mut guard) = self.mempool_active_producers_snapshot.write() {
@@ -467,6 +473,9 @@ impl Node {
         }
         if let Ok(mut guard) = self.mempool_pending_producer_keys.write() {
             *guard = pending;
+        }
+        if let Ok(mut guard) = self.mempool_producer_holdings.write() {
+            *guard = holdings;
         }
     }
 

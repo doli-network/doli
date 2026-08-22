@@ -265,15 +265,6 @@ impl Node {
             .await?;
         let needs_full_producer_write = needs_full_producer_write || genesis_needs_full_write;
 
-        // Remove transactions from mempool and prune any with now-spent inputs
-        {
-            let mut mempool = self.mempool.write().await;
-            mempool.remove_for_block(&block.transactions);
-            let utxo = self.utxo_set.read().await;
-            let height = self.chain_state.read().await.best_height;
-            mempool.revalidate(&utxo, height);
-        }
-
         // Get producer's effective weight for fork choice rule
         let producer_weight = {
             let producers = self.producer_set.read().await;
@@ -380,6 +371,17 @@ impl Node {
         // PriceAttestation auth (transaction.rs:242) would silently reject
         // every attestation at oracle activation.
         self.refresh_mempool_producer_snapshot(height).await;
+
+        // Prune the mempool. ORDER IS LOAD-BEARING (INC-I-180 M2): run BEFORE
+        // the refresh above and `revalidate`'s fallback snapshot is guaranteed
+        // one block stale — the exact state it exists to shed.
+        {
+            let mut mempool = self.mempool.write().await;
+            mempool.remove_for_block(&block.transactions);
+            let utxo = self.utxo_set.read().await;
+            let height = self.chain_state.read().await.best_height;
+            mempool.revalidate(&utxo, height);
+        }
 
         // Prune old undo data. See `consensus::UNDO_KEEP_DEPTH` for sizing rationale.
         if height > consensus::UNDO_KEEP_DEPTH {

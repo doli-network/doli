@@ -658,12 +658,36 @@ withdrawal_request_tx = {
     The apply-layer enqueue accepts exactly the same allowance, and the
     reorg/rollback replay (`rebuild_producer_set_from_blocks`) mirrors the
     in-flight AddBond term under the same height gate, so live apply and replay
-    queue the same updates. The admission rules (the `Exit` charge, the
-    same-block-input refusal, the exclusivity rule and the shape split) are NOT
-    mirrored in the replay: it reads blocks that are already canonical.
-    The gate is evaluated **before** the EpochReward section of
-    `validate_block_economics`, so its verdict is identical in Full, Light and
-    Replay mode. That section returns `Ok(())` early in Full mode
+    queue the same updates. **INC-I-180 M2 (AUDIT-P1-004)**: the replay also
+    mirrors the live auto-revoke — a full exit blocked by an active delegation
+    queues `PendingProducerUpdate::RevokeDelegation` before the withdrawal
+    (INC-I-058). That branch is not itself height-gated in live apply, only the
+    in-flight term inside its allowance is, so the mirror inherits the same
+    height-dependence and needs no gate of its own. Without it a reorg through
+    such a block leaves `received_delegations` un-revoked, and that field is
+    inside `serialize_canonical()` — the rebuilt and live nodes would then
+    disagree on the producer-set contribution to the state root. The admission
+    rules (the `Exit` charge, the same-block-input refusal, the exclusivity rule
+    and the shape split) are NOT mirrored in the replay: it reads blocks that
+    are already canonical.
+
+    **Mode split (INC-I-180 M2 / S3).** The gate is evaluated **before** the
+    EpochReward section of `validate_block_economics`, so no early return can
+    make it mode-dependent by accident. Its verdict is identical in **Full and
+    Light**, the two admission modes gossip-received blocks reach.
+    `ValidationMode::Replay` — reached only by the operator `recover`/reindex
+    tool — carves out the rules whose every term is read from the pre-block
+    UTXO view, which a replay legitimately sees degraded (INC-I-064): the
+    unknown-producer rule, the exclusivity rule and both shape rules `warn!`
+    with `[REPLAY_SKIP]` and skip that transaction instead of failing the
+    block. `ECON_WITHDRAWAL_OVER_HOLDINGS` (reads the ProducerSet allowance
+    only) and `ECON_WITHDRAWAL_SAME_BLOCK_INPUT` (reads the block's own earlier
+    transaction hashes, which a replay has in full) stay **strict in all three
+    modes**. The skipped transaction still charges the allowance, or the
+    strict allowance rule would drift for a later withdrawal by the same
+    producer in the same block. Without this carve-out the reindex aborts on
+    the first already-canonical block whose Bond inputs are not yet resolvable.
+    The EpochReward section returns `Ok(())` early in Full mode
     (`INC_I_081_MISSING_CHECK_SKIP`) whenever the local store cannot prove an
     EpochReward was owed — the normal state of a freshly snap-synced node — and
     a rule placed after it would be enforced in Light/Replay only. The INC-I-080
@@ -673,6 +697,87 @@ withdrawal_request_tx = {
     Mainnet AH = `u64::MAX` (frozen — pinning is a separate decision session);
     testnet `230_000`; devnet `20`. No `CURRENT_PROTOCOL_VERSION` bump
     (EpochState unchanged); no `HardForkSchedule` entry; rolling-deploy safe.
+
+  - **Admission and selection parity (INC-I-180 M2, INV-VALIDATION-001 /
+    INV-PROD-003).** A consensus rule with no mempool and no builder
+    counterpart turns an ordinary user mistake into free block poison: the
+    transaction never confirms, so no fee is paid and no input is spent, yet
+    every producer that selects it burns a block build. Both layers therefore
+    apply the same rules, height-gated on the same AH and strict no-ops below
+    it. Neither is consensus: skipping at selection yields a valid subset
+    block, and refusing admission keeps a transaction out of one node's
+    mempool only.
+    - **Block builder** (`bins/node/src/node/production/withdrawal_holdings.rs`)
+      applies the whole table — including the same-block-input refusal and the
+      in-block `AddBond`/`Exit`/`RequestWithdrawal` accounting carried across
+      the selection loop — and **skips** an offending transaction, exactly like
+      the NFT/Pool unique-id checks. The builder and the mempool compute the
+      allowance through `ProducerHoldings::allowance_with`
+      (`crates/mempool/src/holdings.rs`). The gate does NOT call it: it holds
+      the reference expression inline in `validate_block_economics`, because
+      routing consensus validation through the mempool crate would invert the
+      layering. Those two transcriptions are locked by the two
+      `inc_i180_m2_the_gate_allowance_equals_the_shared_function*` rows, eight
+      allowance shapes in total, which require the allowance the gate REPORTS
+      to equal `allowance_with` on the terms the same message echoes.
+      The lock is load-bearing: the terms saturate, so a second order silently
+      raises one layer's allowance above the other's when
+      `withdrawal_pending > bond_count + pending_addbond` AND the block carries
+      an earlier same-producer `AddBond` — the deficit alone is not enough,
+      because with `in_block_addbond = 0` both orders clamp to the same 0.
+      **The lock covers R1 only.** Every row declares `allowance + 1` and so
+      bails at R1 by construction; the unknown-producer, exclusivity, shape and
+      same-block-input rules are transcribed once per layer with no equivalent
+      term-exact lock, and unifying them is the routed residual
+      (`FIND-I180-M2-TRANSCRIPTION-001`). The builder's refusal is
+      never a build failure, never an abort, and it never evicts from the
+      mempool. It resolves producer holdings under the
+      producer guard and releases it before taking the UTXO guard, so only one
+      of the two is ever held: `apply_block` takes utxo→producers while
+      `rollback` takes producers→utxo, and holding both here would join those
+      orders. The builder never constructs `[partial(P), full-exit(P)]` in one
+      block — that pair is unsatisfiable at any input set, because the owned
+      Bond UTXO count is memoised over the pre-block view while the allowance
+      shrinks as the block is walked.
+    - **Mempool** (`crates/mempool/src/withdrawal_holdings.rs`) applies the
+      subset decidable from a single transaction against current state: the
+      unknown-producer, allowance, exclusivity and shape rules. The
+      same-block-input rule is not checkable there and is deliberately absent.
+      Admission does not evaluate the block's in-block terms; it **substitutes
+      mempool-wide state** for them. `in_block_addbond` is zero, and
+      `in_block_withdrawn` is replaced by `in_mempool_withdrawn` — the bonds
+      every same-producer `RequestWithdrawal` this mempool holds already claims
+      (`pool.rs`, `count_residents = true`). The general rule follows: admission
+      can OVER-reject only when the substitute RAISES the block's allowance
+      (`in_block_addbond → 0`) or EXCEEDS the block's debit
+      (`in_mempool_withdrawn > in_block_withdrawn`, since a block need not carry
+      the residents). It can also UNDER-reject — the absent R4, and any block
+      debit larger than this mempool's residents — which the builder and the
+      gate still catch; only the over-rejection direction is a liveness cost.
+      This is a rule, not an
+      enumeration: `[AddBond(P, +n), RequestWithdrawal(P, d)]` with `d` above
+      the flushed allowance is one instance, and a resident
+      `RequestWithdrawal(P, d1)` that drops the admission allowance far enough
+      to push a second `RequestWithdrawal(P, d2)` out of R2's partial branch and
+      into its full-exit branch is another — with no `AddBond` anywhere.
+      Every such over-rejection is bounded until the resident confirms **or
+      expires** (14-day mempool age), and costs no fee, no input and no block;
+      then the operator resubmits. The resident charge is deliberate — it keeps
+      this mempool from ever offering a builder the `[partial(P), full-exit(P)]`
+      pair (SEC-FIXVERIFY2-001). `revalidate` re-evaluates and
+      **evicts** a held withdrawal the ledger has moved out from under, which
+      input-existence alone can never shed. Holdings are resolved from the
+      node's live `ProducerSet` (non-blocking `try_read`), falling back to a
+      published snapshot while that handle is contended, and the rules do not
+      run at all when neither is wired — or when the snapshot is wired but
+      EMPTY, which is no answer rather than "not a producer". That snapshot is
+      refreshed once per
+      APPLIED block and is **not** refreshed by rollback, reorg, fork recovery
+      or snapshot install, so after a rewind of depth N it is up to N blocks
+      stale until the next block is applied. Both staleness directions are
+      non-safety: the live handle is tried first, and a stale answer that
+      over-rejects costs one resubmission while one that under-rejects is still
+      caught by the builder and by the gate.
 
 **Note:** TxType 9 (ClaimWithdrawal) is reserved but unused — withdrawal is instant.
 

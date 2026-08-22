@@ -63,6 +63,36 @@
 //!   R1,R2,R3,R4 × PR1 × IP-R1 → req_i180_001_rebuild_matches_live_with_addbond_in_flight
 //!   R1,R3,R4    × PR2 × IP-R2 → req_i180_003_rebuild_keeps_the_legacy_skip_with_nothing_in_flight
 //!
+//! ---------------------------------------------------------------------------
+//! M2 / S5 EXTENSION — AUDIT-P1-004 (the rebuild arm omits the auto-revoke)
+//! ---------------------------------------------------------------------------
+//! `rewards.rs` contains ZERO occurrences of `delegated_bonds` and its
+//! `RequestWithdrawal` arm has no `RevokeDelegation` branch, while the live arm
+//! (`apply_block/tx_processing.rs:382-437`) reads `info.delegated_bonds` at :382
+//! and queues `PendingProducerUpdate::RevokeDelegation` at :415 (INC-I-058).
+//! For `bond_count=10, delegated_bonds=5, RequestWithdrawal(p,10)`: live queues
+//! `[RevokeDelegation, RequestWithdrawal]`, rebuild queues only the withdrawal.
+//! `set_persistence.rs:82-100` puts `received_delegations` and the whole
+//! `ProducerInfo` IN the state root, so after a reorg through such a block the
+//! rebuilt and the live node differ in the state root. INC-I-054 shape.
+//! (`rewards.rs:1460-1472` is the separate `TxType::RevokeDelegation` arm from
+//! the INC-I-078 mirror — NOT the auto-revoke.)
+//!
+//! Added outputs for that extension:
+//!   R5: `delegated_bonds` on the delegator and `received_delegations` on the
+//!       delegate, post-flush.
+//!   R6: `ProducerSet::serialize_canonical()` — the exact bytes the state root
+//!       is computed over.
+//! Added path:
+//!   PR3: replay of a FULL EXIT whose allowance is blocked by an active
+//!        delegation.
+//! Added partition:
+//!   IP-R3D Registration(A,10) @41, Registration(B,1) @42,
+//!          DelegateBond(A→B,5) @43, epoch flush @44,
+//!          RequestWithdrawal(A,10) @46.
+//!   R1,R5,R6 × PR3 × IP-R3D
+//!        → audit_p1_004_rebuild_matches_live_for_a_delegated_full_exit
+//!
 //! NO PRE-ACTIVATION ROW EXISTS, and that is a property of devnet, not an
 //! omission: the devnet gate is pinned to h=20 while the earliest height at
 //! which any producer can exist in a rebuilt set is `genesis_blocks + 1` = 41
@@ -342,5 +372,169 @@ async fn req_i180_003_rebuild_keeps_the_legacy_skip_with_nothing_in_flight() {
         state_of(&live_flushed, &tpk),
         (N11_BONDS, ProducerStatus::Active, N11_BONDS as u64),
         "R3: the legacy outcome, unchanged — the producer keeps its 433 bonds"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PR3 / IP-R3D — M2 / S5 · AUDIT-P1-004 · the delegated full exit
+// ═══════════════════════════════════════════════════════════════════════════
+
+const DELEGATE_REG_H: u64 = 42;
+const DELEGATE_H: u64 = 43;
+const A_BONDS: u32 = 10;
+const DELEGATED: u32 = 5;
+
+/// The canonical chain for the delegated full exit. A registers 10 bonds, B
+/// registers 1, A delegates 5 to B, the epoch boundary at h=44 flushes all
+/// three, and A then requests a withdrawal of ALL 10 at h=46.
+async fn seed_delegation_chain() -> (Node, KeyPair, KeyPair, Vec<(u64, Block)>, TempDir) {
+    let (node, node_kp, temp) = make_node().await;
+    let unit = node.config.network.bond_unit();
+    let producer = *node_kp.public_key();
+
+    let a = KeyPair::generate();
+    let b = KeyPair::generate();
+    let (apk, bpk) = (*a.public_key(), *b.public_key());
+
+    let mut delegate_data = doli_core::transaction::DelegateBondData::new(apk, bpk, DELEGATED);
+    delegate_data.signature =
+        crypto::signature::sign_hash(&delegate_data.signing_message(), a.private_key());
+
+    let mut blocks: Vec<(u64, Block)> = Vec::new();
+    for height in 1..=WITHDRAW_H {
+        let txs = if height == REG_H {
+            vec![Transaction::new_registration(
+                Vec::new(),
+                apk,
+                unit * u64::from(A_BONDS),
+                u64::MAX,
+                A_BONDS,
+            )]
+        } else if height == DELEGATE_REG_H {
+            vec![Transaction::new_registration(
+                Vec::new(),
+                bpk,
+                unit,
+                u64::MAX,
+                1,
+            )]
+        } else if height == DELEGATE_H {
+            vec![Transaction::new_delegate_bond(delegate_data.clone())]
+        } else if height == WITHDRAW_H {
+            let dest = crypto::hash::hash(b"inc-i-180-delegated-exit-destination");
+            vec![Transaction::new_request_withdrawal(
+                Vec::new(),
+                apk,
+                A_BONDS,
+                dest,
+                1,
+            )]
+        } else {
+            Vec::new()
+        };
+        let block = chain_block(&node, height, producer, txs);
+        node.block_store
+            .put_block_canonical(&block, height)
+            .expect("fixture: put_block_canonical");
+        blocks.push((height, block));
+    }
+    node.block_store
+        .ensure_blocks_present(1, WITHDRAW_H)
+        .expect("fixture: the store must be DENSE over the replay range");
+
+    (node, a, b, blocks, temp)
+}
+
+fn revoke_count(ps: &ProducerSet, pk: &PublicKey) -> usize {
+    ps.pending_updates_for(pk)
+        .iter()
+        .filter(|u| matches!(u, PendingProducerUpdate::RevokeDelegation { .. }))
+        .count()
+}
+
+/// R1,R5,R6 × PR3 × IP-R3D — **RED today (AUDIT-P1-004).**
+///
+/// A reorg through a delegated full exit leaves the rebuilt node with a
+/// delegation the live node revoked. `received_delegations` and the whole
+/// `ProducerInfo` are inside `serialize_canonical()`, so the two nodes then
+/// disagree on the producer-set contribution to the state root.
+#[tokio::test]
+async fn audit_p1_004_rebuild_matches_live_for_a_delegated_full_exit() {
+    let (node, a, b, blocks, _t) = seed_delegation_chain().await;
+    let (apk, bpk) = (*a.public_key(), *b.public_key());
+
+    let mut rebuilt = ProducerSet::new();
+    node.rebuild_producer_set_from_blocks(&mut rebuilt, WITHDRAW_H)
+        .expect("a dense store must rebuild");
+    let live = live_replay(&node, &blocks);
+
+    // Harness: the delegation must actually be in effect at the withdrawal, or
+    // the auto-revoke branch is never reached and the test proves nothing.
+    assert_eq!(
+        live.get_by_pubkey(&apk).map(|i| i.delegated_bonds),
+        Some(DELEGATED),
+        "harness: A must hold {DELEGATED} delegated bonds when the withdrawal is applied"
+    );
+    assert_eq!(
+        rebuilt.get_by_pubkey(&apk).map(|i| i.delegated_bonds),
+        Some(DELEGATED),
+        "harness: the rebuild must reach the same delegation state before the withdrawal"
+    );
+
+    // R1 — the queued-update sets themselves.
+    assert_eq!(
+        revoke_count(&rebuilt, &apk),
+        revoke_count(&live, &apk),
+        "AUDIT-P1-004: live apply queues RevokeDelegation for a full exit blocked \
+         by an active delegation (tx_processing.rs:415, INC-I-058) and the reorg \
+         rebuild does not — rewards.rs has zero occurrences of `delegated_bonds`. \
+         rebuilt={:?} live={:?}",
+        rebuilt.pending_updates_for(&apk),
+        live.pending_updates_for(&apk)
+    );
+    assert_eq!(
+        revoke_count(&live, &apk),
+        1,
+        "R1: sanity — the LIVE reference must actually queue the auto-revoke, \
+         otherwise the comparison above is empty-equals-empty"
+    );
+    assert_eq!(
+        queued_withdrawals(&rebuilt, &apk),
+        queued_withdrawals(&live, &apk),
+        "R1: both paths must queue the withdrawal itself"
+    );
+
+    let mut rebuilt_flushed = rebuilt;
+    let mut live_flushed = live;
+    rebuilt_flushed.apply_pending_updates_with_cap(0);
+    live_flushed.apply_pending_updates_with_cap(0);
+
+    // R5 — the delegation fields the state root carries.
+    assert_eq!(
+        rebuilt_flushed
+            .get_by_pubkey(&apk)
+            .map(|i| i.delegated_bonds),
+        live_flushed.get_by_pubkey(&apk).map(|i| i.delegated_bonds),
+        "R5: the delegator's `delegated_bonds` must agree after the flush"
+    );
+    assert_eq!(
+        rebuilt_flushed
+            .get_by_pubkey(&bpk)
+            .map(|i| i.received_delegations.clone()),
+        live_flushed
+            .get_by_pubkey(&bpk)
+            .map(|i| i.received_delegations.clone()),
+        "R5: the delegate's `received_delegations` must agree after the flush — \
+         this field feeds selection_weight and therefore the scheduler"
+    );
+
+    // R6 — the exact bytes the state root is computed over.
+    assert_eq!(
+        rebuilt_flushed.serialize_canonical(),
+        live_flushed.serialize_canonical(),
+        "R6: `serialize_canonical()` (set_persistence.rs:78-113) is the producer-set \
+         contribution to the state root and it carries the full ProducerInfo. A node \
+         that reorgs through this block ends up with a different state root than one \
+         that applied it live — INC-I-054 shape."
     );
 }

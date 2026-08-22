@@ -315,6 +315,8 @@ Existing gates (mainnet values):
 | `entry.rs` | Tx metadata (fee, size, time, ancestors) |
 | `policy.rs` | Fee and size policies per network |
 | `pending_registrations.rs` | Pending producer-registration key derivation (INC-I-147) |
+| `holdings.rs` | Producer-holdings channel: live `ProducerSet` handle + published snapshot (INC-I-180) |
+| `withdrawal_holdings.rs` | Single-tx withdrawal rules against current state (INC-I-180) |
 
 **Key behaviors:**
 - **Fee-based prioritization**: Transactions selected by descending fee rate
@@ -325,24 +327,83 @@ Existing gates (mainnet values):
 - **14-day expiration**: Old transactions automatically removed
 - **Revalidation**: After chain reorg, invalid transactions are purged. Registrations
   whose producer has since become active or pending are also evicted (INC-I-147) —
-  input existence alone cannot shed a duplicate funded from disjoint inputs.
+  input existence alone cannot shed a duplicate funded from disjoint inputs. Above
+  `withdrawal_holdings_gate_activation_height`, a held `RequestWithdrawal` the ledger
+  has moved out from under is evicted too (INC-I-180): its Bond UTXOs stay alive until
+  it confirms, so input existence can never shed it either.
 
 **Validation parity with block validation (INV-VALIDATION-001):** the mempool builds
 its own `ValidationContext`, so any consensus field it leaves at the default makes the
-corresponding check silently evaporate at admission. Two fields are published into the
-mempool by the node and refreshed after every `apply_block`
-(`Node::refresh_mempool_producer_snapshot`):
+corresponding check silently evaporate at admission. Three fields are published into the
+mempool by the node and refreshed once per APPLIED block
+(`Node::refresh_mempool_producer_snapshot`, called from `apply_block` only):
 
 | Shared snapshot | Source | Check it makes reachable |
 |-----------------|--------|--------------------------|
 | `active_producers_weighted` | `ProducerSet::active_producers_at_height()` | duplicate registration for an ACTIVE producer; `PriceAttestation` attester auth |
 | `pending_producer_keys` | `ProducerSet::pending_registration_keys()` | duplicate registration for a producer whose registration is mined but not yet epoch-flushed |
+| `producer_holdings` | every producer's `bond_count`, pending AddBonds, `withdrawal_pending_count` | the INC-I-180 withdrawal-holdings rules (unknown producer, allowance, Bond-input exclusivity, full-exit vs partial shape) |
 
 For registrations the mempool additionally unions its OWN resident registrations into
 `pending_producer_keys` — a second registration can arrive while the first is still
-unmined, which no `ProducerSet` can observe. Both are node-local admission policy: they
-do not change block validity, so a node running without them still agrees on every
-block.
+unmined, which no `ProducerSet` can observe. Withdrawals do the same with bonds already
+claimed by same-producer withdrawals resident in the mempool. All of these are
+node-local admission policy: they do not change block validity, so a node running
+without them still agrees on every block.
+
+`producer_holdings` is a fallback, not the primary source. The mempool reads the node's
+live `ProducerSet` through a non-blocking `try_read` and consults the published snapshot
+only while that handle is write-contended — a snapshot is refreshed after `apply_block`,
+so a withdrawal admitted BETWEEN two blocks would otherwise be decided against holdings
+the same node's own builder and gate will not use. On the APPLY path the refresh is
+published BEFORE the `revalidate` pass that may fall back to it, so that pass never
+decides against a snapshot from the previous block.
+
+**The snapshot is NOT bounded to one block of staleness.** The refresh has exactly one
+call site, inside `apply_block`. Of the ten `ProducerSet` write-guard acquisitions in the
+node, only the three under `apply_block/` are followed by a republish; the other seven —
+rollback (x3), the snap-sync snapshot install in `fork_recovery`, and `execute_reorg` (x3)
+— are not, and `execute_reorg`'s own `revalidate` has no preceding refresh. After a rewind
+of depth N the snapshot is up to N blocks stale until the next block is applied. Both
+staleness directions are non-safety:
+the live handle is tried first, and both failure directions are caught downstream —
+over-rejection costs one resubmission, under-rejection is still caught by the builder and
+by consensus.
+
+With neither source wired — or with the snapshot wired but still EMPTY, which is the state
+every constructor except `Node::new` leaves it in until the first applied block — the rules
+do not run. Absence from a POPULATED snapshot means "not a registered producer"; absence
+from an empty one is no answer at all, and treating it as an answer would make every
+producer read as unregistered and reject. Over-rejection at admission is censorship, while
+under-rejection is still caught by the builder and by consensus.
+
+**Builder parity (INV-PROD-003, INC-I-180 M2):** `production/withdrawal_holdings.rs`
+applies the SAME rules during transaction selection, including the rules the mempool
+cannot see (same-block inputs, and the in-block `AddBond`/`Exit`/`RequestWithdrawal`
+accounting carried across the loop). The refusal is a skip, never a build failure and
+never an abort, and the builder never evicts from the mempool. The builder computes the
+allowance through `ProducerHoldings::allowance_with`, the function the mempool also calls.
+The gate does not call it — it holds a second transcription of the same five terms inline,
+because routing consensus validation through the mempool crate would invert the layering.
+The two are locked by the two `inc_i180_m2_the_gate_allowance_equals_the_shared_function*`
+rows, eight shapes in total, which require the allowance the gate reports to equal
+`allowance_with`: the terms saturate, so a second order silently raises one layer's
+allowance above the other's. That lock covers the allowance rule (R1) ONLY — every row
+declares `allowance + 1` and bails there. The unknown-producer, exclusivity, shape and
+same-block-input rules are transcribed once per layer with no equivalent lock; unifying
+them is the routed residual `FIND-I180-M2-TRANSCRIPTION-001`.
+
+Admission is not contained in builder-skip. It does not evaluate the block's terms at all;
+it substitutes mempool-wide state for them — `in_block_addbond` is zero, and
+`in_block_withdrawn` is replaced by the bonds every same-producer `RequestWithdrawal` this
+mempool already holds. So admission can OVER-reject only when the substitute raises the
+block's allowance (`in_block_addbond → 0`) or exceeds the block's debit, which happens for
+any resident withdrawal the block does not carry — with an ample allowance neither
+substitution rejects anything. That is the general rule, not a list of
+shapes: `[AddBond(P, +n), RequestWithdrawal(P, d)]` is one instance, and a resident
+withdrawal that pushes a second one into the full-exit branch is another with no `AddBond`
+in it. Every such over-rejection is bounded until the resident confirms **or expires**
+(14-day mempool age), and costs no fee and no input.
 
 **Default policy (mainnet):**
 | Parameter | Value |

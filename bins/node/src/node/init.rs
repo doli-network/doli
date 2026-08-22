@@ -713,6 +713,12 @@ impl Node {
         // published on the same tick as the active snapshot.
         let mempool_pending_producer_keys: std::sync::Arc<std::sync::RwLock<Vec<PublicKey>>> =
             std::sync::Arc::new(std::sync::RwLock::new(Vec::new()));
+        // INC-I-180 M2 / S2: withdrawal-allowance terms, republished on the
+        // same tick. The live `producer_set` handle below is what the mempool
+        // reads first; this answers only while that handle is write-contended.
+        let mempool_producer_holdings: std::sync::Arc<
+            std::sync::RwLock<Vec<(PublicKey, mempool::ProducerHoldings)>>,
+        > = std::sync::Arc::new(std::sync::RwLock::new(Vec::new()));
         let mempool = Arc::new(RwLock::new(Mempool::new(
             mempool_policy,
             params.clone(),
@@ -723,6 +729,8 @@ impl Node {
             mp.share_oracle_sunset_flag(oracle_sunset_triggered.clone());
             mp.share_active_producers_weighted(mempool_active_producers_snapshot.clone());
             mp.share_pending_producer_keys(mempool_pending_producer_keys.clone());
+            mp.share_producer_holdings(mempool_producer_holdings.clone());
+            mp.share_producer_set(producer_set.clone());
         }
         // INC-I-147: seed the pending snapshot from the loaded ProducerSet.
         // Unlike the active snapshot (which needs `bond_weights_for_scheduling`
@@ -732,9 +740,15 @@ impl Node {
         // until its next applied block — a restart is exactly when a duplicate
         // is most likely to be re-submitted.
         {
-            let pending = producer_set.read().await.pending_registration_keys();
+            let guard_ps = producer_set.read().await;
+            let pending = guard_ps.pending_registration_keys();
+            let holdings = holdings_of_every_producer(&guard_ps);
+            drop(guard_ps);
             if let Ok(mut guard) = mempool_pending_producer_keys.write() {
                 *guard = pending;
+            }
+            if let Ok(mut guard) = mempool_producer_holdings.write() {
+                *guard = holdings;
             }
         }
 
@@ -1103,6 +1117,7 @@ impl Node {
             oracle_sunset_triggered: oracle_sunset_triggered.clone(),
             mempool_active_producers_snapshot: mempool_active_producers_snapshot.clone(),
             mempool_pending_producer_keys: mempool_pending_producer_keys.clone(),
+            mempool_producer_holdings: mempool_producer_holdings.clone(),
             health_window: std::collections::VecDeque::new(),
             attest_fetch_tracker: HashMap::new(),
             defi_health_refresh_counter: AtomicU64::new(0),
@@ -1180,6 +1195,9 @@ impl Node {
         // published on the same tick as the active snapshot.
         let mempool_pending_producer_keys: std::sync::Arc<std::sync::RwLock<Vec<PublicKey>>> =
             std::sync::Arc::new(std::sync::RwLock::new(Vec::new()));
+        let mempool_producer_holdings: std::sync::Arc<
+            std::sync::RwLock<Vec<(PublicKey, mempool::ProducerHoldings)>>,
+        > = std::sync::Arc::new(std::sync::RwLock::new(Vec::new()));
         let mempool = Arc::new(RwLock::new(Mempool::new(
             MempoolPolicy::testnet(),
             params.clone(),
@@ -1190,6 +1208,8 @@ impl Node {
             mp.share_oracle_sunset_flag(oracle_sunset_triggered.clone());
             mp.share_active_producers_weighted(mempool_active_producers_snapshot.clone());
             mp.share_pending_producer_keys(mempool_pending_producer_keys.clone());
+            mp.share_producer_holdings(mempool_producer_holdings.clone());
+            mp.share_producer_set(producer_set.clone());
         }
 
         // Real sync manager
@@ -1315,6 +1335,7 @@ impl Node {
             oracle_sunset_triggered: oracle_sunset_triggered.clone(),
             mempool_active_producers_snapshot: mempool_active_producers_snapshot.clone(),
             mempool_pending_producer_keys: mempool_pending_producer_keys.clone(),
+            mempool_producer_holdings: mempool_producer_holdings.clone(),
             health_window: std::collections::VecDeque::new(),
             attest_fetch_tracker: HashMap::new(),
             defi_health_refresh_counter: AtomicU64::new(0),
@@ -1391,6 +1412,10 @@ impl Node {
         let mempool_pending_producer_keys: std::sync::Arc<std::sync::RwLock<Vec<PublicKey>>> =
             std::sync::Arc::new(std::sync::RwLock::new(Vec::new()));
 
+        let mempool_producer_holdings: std::sync::Arc<
+            std::sync::RwLock<Vec<(PublicKey, mempool::ProducerHoldings)>>,
+        > = std::sync::Arc::new(std::sync::RwLock::new(Vec::new()));
+
         let mempool = Arc::new(RwLock::new(Mempool::new(
             MempoolPolicy::testnet(),
             params.clone(),
@@ -1402,6 +1427,8 @@ impl Node {
             mp.share_oracle_sunset_flag(oracle_sunset_triggered.clone());
             mp.share_active_producers_weighted(mempool_active_producers_snapshot.clone());
             mp.share_pending_producer_keys(mempool_pending_producer_keys.clone());
+            mp.share_producer_holdings(mempool_producer_holdings.clone());
+            mp.share_producer_set(producer_set.clone());
         }
 
         let sync_config = SyncConfig::default();
@@ -1510,6 +1537,7 @@ impl Node {
             oracle_sunset_triggered: oracle_sunset_triggered.clone(),
             mempool_active_producers_snapshot: mempool_active_producers_snapshot.clone(),
             mempool_pending_producer_keys: mempool_pending_producer_keys.clone(),
+            mempool_producer_holdings: mempool_producer_holdings.clone(),
             health_window: std::collections::VecDeque::new(),
             attest_fetch_tracker: HashMap::new(),
             defi_health_refresh_counter: AtomicU64::new(0),

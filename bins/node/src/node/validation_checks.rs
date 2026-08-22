@@ -747,6 +747,17 @@ impl Node {
                         // pass queues nothing for it, so admitting the block
                         // would spend Bond UTXOs with zero producer-set effect.
                         let Some(info) = producers.get_by_pubkey(pk) else {
+                            // S3/F2: the reindex tool rebuilds the ProducerSet
+                            // as it walks, so "registered here" is not knowable
+                            // from a partially-rebuilt set (INC-I-064 shape).
+                            if mode == ValidationMode::Replay {
+                                warn!(
+                                    "[REPLAY_SKIP] RequestWithdrawal at height={} names \
+                                     unregistered producer={} ({} bonds)",
+                                    height, pk_hash, wd.bond_count
+                                );
+                                continue;
+                            }
                             anyhow::bail!(
                                 "[ECON_WITHDRAWAL_UNKNOWN_PRODUCER] RequestWithdrawal at height={} \
                                  for unregistered producer={} ({} bonds)",
@@ -807,6 +818,22 @@ impl Node {
                                 chained.prev_tx_hash,
                                 chained.output_index
                             );
+                        }
+                        // S3/F2: every term of R3 and of both R2 shapes is read
+                        // from the pre-block UTXO view, which Replay
+                        // legitimately sees degraded. R1 and R4 above read the
+                        // ProducerSet and the block itself, so they stay strict
+                        // in all three modes. The allowance charge below still
+                        // runs, or R1 would drift for later withdrawals.
+                        if mode == ValidationMode::Replay {
+                            warn!(
+                                "[REPLAY_SKIP] RequestWithdrawal at height={} producer={} \
+                                 — UTXO-bound rules not evaluated in Replay",
+                                height, pk_hash
+                            );
+                            in_block_withdrawn
+                                .insert(pk_hash, prior_wd.saturating_add(wd.bond_count));
+                            continue;
                         }
                         let (bond_inputs, all_bond_inputs) =
                             bond_inputs_by_tx.get(&tx_index).copied().unwrap_or((0, 0));

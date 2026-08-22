@@ -3,6 +3,7 @@ use super::*;
 mod assembly;
 mod gates;
 mod scheduling;
+mod withdrawal_holdings;
 
 impl Node {
     // NOTE: try_broadcast_heartbeat removed in deterministic scheduler model

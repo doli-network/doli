@@ -19,8 +19,10 @@ use super::contention::{
     MempoolDiagnostic,
 };
 use super::entry::MempoolEntry;
+use super::holdings::HoldingsSources;
 use super::pending_registrations;
 use super::policy::MempoolPolicy;
+use super::withdrawal_holdings;
 
 /// Mempool errors
 #[derive(Debug, Error)]
@@ -207,6 +209,11 @@ pub struct Mempool {
     /// ProducerSet can see. Both halves are unioned in
     /// `pending_registration_keys` (see `pending_registrations`).
     pending_producer_keys: std::sync::Arc<std::sync::RwLock<Vec<crypto::PublicKey>>>,
+    /// INC-I-180 M2 (INV-VALIDATION-001, S2): the producer-holdings channels
+    /// the post-AH withdrawal rules are evaluated against. Unwired, every
+    /// lookup is `Unavailable` and the rules do not run — pre-fix admission,
+    /// bit-identical.
+    producer_holdings: HoldingsSources,
 }
 
 impl Mempool {
@@ -225,6 +232,7 @@ impl Mempool {
             oracle_sunset_triggered: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             active_producers_weighted: std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
             pending_producer_keys: std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
+            producer_holdings: HoldingsSources::default(),
         }
     }
 
@@ -273,6 +281,70 @@ impl Mempool {
         snapshot: std::sync::Arc<std::sync::RwLock<Vec<crypto::PublicKey>>>,
     ) {
         self.pending_producer_keys = snapshot;
+    }
+
+    /// INC-I-180 M2 / S2: bind the node-published holdings snapshot. Absence
+    /// from the snapshot IS the R0 condition, so an embedder that wires this
+    /// must publish EVERY registered producer.
+    pub fn share_producer_holdings(&mut self, snapshot: super::holdings::HoldingsSnapshot) {
+        self.producer_holdings.snapshot = Some(snapshot);
+    }
+
+    /// INC-I-180 M2 / S2: bind the node's live `ProducerSet`, which takes
+    /// precedence over the snapshot.
+    ///
+    /// The snapshot alone cannot carry this check: a node publishes it after
+    /// `apply_block`, so a withdrawal admitted between two blocks is decided
+    /// against holdings that the same node's builder and gate will not use.
+    /// Read with `try_read`, so a contended set falls through to the snapshot
+    /// rather than blocking an admission call site behind an apply writer.
+    pub fn share_producer_set(
+        &mut self,
+        producers: std::sync::Arc<tokio::sync::RwLock<storage::ProducerSet>>,
+    ) {
+        self.producer_holdings.live = Some(producers);
+    }
+
+    /// INC-I-180 M2 / S2: the post-AH withdrawal rules, against current state.
+    ///
+    /// `in_mempool_withdrawn` mirrors the gate's `in_block_withdrawn` over the
+    /// transactions this mempool already holds, which is what keeps
+    /// `[partial(P), full-exit(P)]` — unsatisfiable in ONE block at any input
+    /// set (SEC-FIXVERIFY2-001) — from being assembled out of this mempool.
+    fn withdrawal_holdings_verdict(
+        &self,
+        tx: &Transaction,
+        utxo_set: &UtxoSet,
+        current_height: BlockHeight,
+        count_residents: bool,
+    ) -> Result<(), String> {
+        if tx.tx_type != TxType::RequestWithdrawal
+            || current_height
+                < self
+                    .network
+                    .params()
+                    .withdrawal_holdings_gate_activation_height
+        {
+            return Ok(());
+        }
+        let Some(wd) = tx.withdrawal_request_data() else {
+            return Ok(());
+        };
+        let resident = if count_residents {
+            withdrawal_holdings::resident_withdrawn(
+                self.entries.values().map(|e| &e.tx),
+                &wd.producer_pubkey,
+            )
+        } else {
+            0
+        };
+        withdrawal_holdings::check(
+            tx,
+            utxo_set,
+            self.producer_holdings.lookup(&wd.producer_pubkey),
+            resident,
+            current_height,
+        )
     }
 
     /// Node-published pending registrations (source 1). Empty when the
@@ -493,6 +565,13 @@ impl Mempool {
                 }
             }
         }
+
+        // INC-I-180 M2 / S2: refuse post-AH what `validate_block_economics`
+        // refuses. Placed after the signature checks so an unsigned withdrawal
+        // still reports as one, and before fee work so a rejected one costs
+        // nothing more.
+        self.withdrawal_holdings_verdict(&tx, utxo_set, current_height, true)
+            .map_err(MempoolError::InvalidTransaction)?;
 
         // Calculate fee by looking up inputs (also collects ancestor set for CPFP)
         let (total_input, ancestors) = self.calculate_inputs(&tx, utxo_set, current_height)?;
@@ -1208,6 +1287,21 @@ impl Mempool {
                     // Input no longer exists - likely spent in new canonical chain
                     valid = false;
                     break;
+                }
+            }
+
+            // INC-I-180 M2 / S2 (OBS-001): input existence cannot shed a
+            // withdrawal the ledger moved out from under — its Bond UTXOs stay
+            // alive until the withdrawal itself confirms, so it is re-offered
+            // to the builder every slot until it expires. Residents are counted
+            // as 0 here: cross-checking them against each other would evict
+            // BOTH members of a legitimate pre-existing pair (INC-I-147).
+            if valid {
+                if let Err(reason) =
+                    self.withdrawal_holdings_verdict(tx, utxo_set, current_height, false)
+                {
+                    warn!("INC-I-180: evicting withdrawal {} — {}", hash, reason);
+                    valid = false;
                 }
             }
 

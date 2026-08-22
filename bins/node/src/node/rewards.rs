@@ -1392,6 +1392,28 @@ impl Node {
                                     .bond_count
                                     .saturating_add(in_flight)
                                     .saturating_sub(info.withdrawal_pending_count);
+                                // AUDIT-P1-004: live apply auto-revokes an
+                                // active delegation that blocks a FULL exit
+                                // (tx_processing.rs, INC-I-058). That branch is
+                                // NOT height-gated — only `in_flight` is — so
+                                // it inherits both forms of `available` and
+                                // needs no gate of its own. Without the mirror a
+                                // reorg through such a block leaves
+                                // `received_delegations` un-revoked, and that
+                                // field is inside `serialize_canonical()`:
+                                // rebuilt and live nodes then disagree on the
+                                // state root (INC-I-054 shape).
+                                let delegated = info.delegated_bonds;
+                                if delegated > 0
+                                    && data.bond_count == available
+                                    && data.bond_count > available.saturating_sub(delegated)
+                                {
+                                    producers.queue_update(
+                                        PendingProducerUpdate::RevokeDelegation {
+                                            delegator: data.producer_pubkey,
+                                        },
+                                    );
+                                }
                                 if data.bond_count <= available {
                                     if let Some(producer) =
                                         producers.get_by_pubkey_mut(&data.producer_pubkey)
