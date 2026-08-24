@@ -204,4 +204,4 @@ MIT
 
 *"Time is the only fair currency."*
 
-D. Guanipa &middot; [daniel@doli.network](mailto:daniel@doli.network) | I. Lozada &middot; [ivan@doli.network](mailto:ivan@doli.network) | A. Lozada &middot; [antonio@doli.network](mailto:antonio@doli.network)
+L. Lozada &middot; [luis@omegacortex.ai](mailto:luis@omegacortex.ai) | I. Lozada &middot; [ivan@omegacortex.ai](mailto:ivan@omegacortex.ai) | A. Lozada &middot; [antonio@omegacortex.ai](mailto:antonio@omegacortex.ai)
