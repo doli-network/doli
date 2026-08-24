@@ -424,7 +424,7 @@ impl NetworkParams {
                 delegation_auth_activation_height: 0,
                 // INC-I-080: AddBond cap enabled on mainnet (254_344) → 0.
                 addbond_cap_enforcement_activation_height: 0,
-                withdrawal_holdings_gate_activation_height: 230_000,
+                withdrawal_holdings_gate_activation_height: 15_087, // re-pinned 2026-08-24 for fresh testnet genesis (tip ~15006); was 230_000
 
                 // INC-I-088 Phase 0: DeFi gate disabled by default on testnet
                 // (mirrors mainnet). Tests that exercise the post-activation
@@ -479,7 +479,7 @@ impl NetworkParams {
                 // governance history under the new derivation.
                 // IMMUTABLE once crossed (INC-I-054).
                 // Override via `DOLI_MAINTAINER_DERIVATION_ACTIVATION_HEIGHT`.
-                maintainer_derivation_activation_height: 127_200,
+                maintainer_derivation_activation_height: 15_087, // re-pinned 2026-08-24 for fresh testnet genesis (tip ~15006); was 127_200
 
                 // INC-I-173 state-only fee gate. Strictly ABOVE the INC-I-172
                 // derivation gate (127_200): the newly mineable maintainer txs
@@ -521,7 +521,7 @@ impl NetworkParams {
                 //     un-enforced at re-pin (live tip ~136_37x); synchronized
                 //     stop-all/start-all deploy, so instant-on if the tip
                 //     overtakes it during the rebuild is still fork-safe.
-                inc_i_173_activation_height: 136_431,
+                inc_i_173_activation_height: 15_087, // re-pinned 2026-08-24 for fresh testnet genesis (tip ~15006); was 136_431
 
                 // INC-I-176 M2 maintainer-authorization message binding (#22).
                 // Pinned 2026-08-13 at a MEASURED live testnet tip of 154_399
@@ -566,7 +566,7 @@ impl NetworkParams {
                 //     AUDIT-P0-011 collision has no remote attacker surface there.
                 //     Pinned as a VISIBLE exception by
                 //     `rev_176_m1a_001_testnet_upper_half_is_an_accepted_unsatisfiable_residual`.
-                inc_i_176_auth_binding_activation_height: 300_000,
+                inc_i_176_auth_binding_activation_height: 15_087, // re-pinned 2026-08-24 for fresh testnet genesis (tip ~15006); was 300_000. All four INC-I-172/173/176/180 testnet gates share 15_087; #22>=#20 and #22<=#21 both hold at equality.
 
                 // INC-I-172 M2 review F3. Unchanged from the historical
                 // hardcoded precondition (INITIAL_MAINTAINER_COUNT = 5): the

@@ -87,9 +87,24 @@
 use doli_core::network_params::NetworkParams;
 use doli_core::Network;
 
-/// Brief F5: measured against a local testnet tip of 215_847 on 2026-08-20,
-/// leaving roughly seven days of headroom.
-const TESTNET_GATE: u64 = 230_000;
+/// Brief F5 originally pinned this at 230_000, measured against a local testnet
+/// tip of 215_847 on 2026-08-20.
+///
+/// RE-PINNED 2026-08-24 → 15_087. The local testnet took a FRESH GENESIS on
+/// 2026-08-22: the chain restarted at height 0, which stranded every gate
+/// pinned for the OLD chain (127_200 / 136_431 / 230_000 / 300_000) weeks in
+/// the future and left four finished features dormant. All four
+/// INC-I-172/173/176/180 testnet gates were re-pinned together to this single
+/// height, measured against a live tip of ~15_006.
+///
+/// The chain has since crossed it (tip > 16_000), so 15_087 is now consensus
+/// history on THIS testnet chain. Per INC-I-054 it must never be raised again:
+/// moving a crossed height forward deactivates live consensus rules.
+const TESTNET_GATE: u64 = 15_087;
+
+/// The live testnet tip measured when `TESTNET_GATE` was re-pinned. The gate had
+/// to sit ABOVE this, or it would have been crossed the moment the binary landed.
+const TESTNET_TIP_AT_PIN: u64 = 15_006;
 
 /// Brief F5. Small enough that devnet reaches the post-activation arm at once,
 /// large enough to leave a pre-activation band for replay-parity tests.
@@ -115,7 +130,7 @@ fn req_i180_003_testnet_gate_is_pinned_near_future() {
     let p = NetworkParams::defaults(Network::Testnet);
     let h = p.withdrawal_holdings_gate_activation_height;
 
-    assert_eq!(h, TESTNET_GATE, "O1: the testnet gate is pinned at 230_000");
+    assert_eq!(h, TESTNET_GATE, "O1: the testnet gate is pinned at 15_087");
     assert_ne!(
         h, 0,
         "O1: 0 would activate retroactively from genesis and re-validate every \
@@ -128,7 +143,7 @@ fn req_i180_003_testnet_gate_is_pinned_near_future() {
          never be verified on a live network before mainnet pinning"
     );
     assert!(
-        h > 215_847,
+        h > TESTNET_TIP_AT_PIN,
         "O1: the gate must sit ABOVE the tip measured when it was chosen, or it \
          is already crossed the moment the binary lands"
     );
@@ -158,26 +173,47 @@ fn req_i180_003_devnet_gate_leaves_a_pre_activation_band() {
 
 // ──────────────────────── O3 — dedicated, not bundled ─────────────────────
 
-/// O3 × IP-B — read on TESTNET, where every compared gate is a real height.
-/// (On devnet several gates legitimately share `0` or `20`, so the comparison
-/// carries no information there.)
+/// O3 × IP-B — read on TESTNET. (On devnet several gates legitimately share `0`
+/// or `20`, and on mainnet INC-I-173 and #22 are both `u64::MAX`, so the
+/// comparison carries no information on either.)
+///
+/// SCOPE NARROWED 2026-08-24. The genesis reset re-pinned INC-I-172/173/176/180
+/// to one shared testnet height (see `TESTNET_GATE`), so pairwise distinctness
+/// among those four is no longer observable on testnet either — the same blind
+/// spot devnet and mainnet already have. Asserting it would only assert that the
+/// re-pin had not happened.
+///
+/// What REMAINS observable is the anti-pattern this test exists to catch: the
+/// withdrawal gate bundled onto a height belonging to an unrelated rule that is
+/// ALREADY CROSSED (`addbond_cap` and `delegation_auth` are both `0` on
+/// testnet). Bundling there would retroactively change the withdrawal rule
+/// across every historical block — the INC-I-054 shape. Those two stay strict.
 #[test]
 fn req_i180_003_the_gate_is_dedicated_and_not_bundled() {
     let p = NetworkParams::defaults(Network::Testnet);
     let h = p.withdrawal_holdings_gate_activation_height;
 
-    assert_ne!(
-        h, p.inc_i_176_auth_binding_activation_height,
-        "O3: gate #22 (maintainer auth binding) is a different feature"
-    );
-    assert_ne!(
-        h, p.inc_i_173_activation_height,
-        "O3: the state-only fee gate is a different feature"
-    );
-    assert_ne!(
-        h, p.maintainer_derivation_activation_height,
-        "O3: gate #20 is a different feature"
-    );
+    // The genesis-reset cohort: these may collide with `h`, but ONLY at the one
+    // documented post-reset height. Any OTHER shared value is a real bundling
+    // bug and still fails here.
+    for (feature, sibling) in [
+        (
+            "gate #22 (maintainer auth binding)",
+            p.inc_i_176_auth_binding_activation_height,
+        ),
+        ("the state-only fee gate", p.inc_i_173_activation_height),
+        ("gate #20", p.maintainer_derivation_activation_height),
+    ] {
+        assert!(
+            sibling != h || h == TESTNET_GATE,
+            "O3: {} is a different feature. It may share the withdrawal gate \
+             ONLY at the documented post-genesis-reset height {}, got {}",
+            feature,
+            TESTNET_GATE,
+            sibling
+        );
+    }
+
     assert_ne!(
         h, p.addbond_cap_enforcement_activation_height,
         "O3: the INC-I-080 AddBond cap is the SIBLING rule, not the same rule. \
@@ -224,14 +260,21 @@ fn req_i180_003_no_existing_activation_height_was_moved() {
         m.maintainer_derivation_activation_height, 172_000,
         "O2 mainnet"
     );
+    // Deliberately a literal, NOT `TESTNET_GATE`: this guard must stay
+    // INDEPENDENT of the withdrawal gate. If it tracked `TESTNET_GATE`, a future
+    // re-pin of that constant would silently drag gate #20 along — which is the
+    // exact "just reuse the nearest gate" edit this test exists to block.
     assert_eq!(
-        t.maintainer_derivation_activation_height, 127_200,
-        "O2 testnet"
+        t.maintainer_derivation_activation_height, 15_087,
+        "O2 testnet — re-pinned 127_200 → 15_087 by the 2026-08-22 genesis reset"
     );
     assert_eq!(d.maintainer_derivation_activation_height, 0, "O2 devnet");
 
     assert_eq!(m.inc_i_173_activation_height, u64::MAX, "O2 mainnet");
-    assert_eq!(t.inc_i_173_activation_height, 136_431, "O2 testnet");
+    assert_eq!(
+        t.inc_i_173_activation_height, 15_087,
+        "O2 testnet — re-pinned 136_431 → 15_087 by the 2026-08-22 genesis reset"
+    );
     assert_eq!(d.inc_i_173_activation_height, 0, "O2 devnet");
 
     assert_eq!(
@@ -240,8 +283,8 @@ fn req_i180_003_no_existing_activation_height_was_moved() {
         "O2 mainnet"
     );
     assert_eq!(
-        t.inc_i_176_auth_binding_activation_height, 300_000,
-        "O2 testnet"
+        t.inc_i_176_auth_binding_activation_height, 15_087,
+        "O2 testnet — re-pinned 300_000 → 15_087 by the 2026-08-22 genesis reset"
     );
     assert_eq!(d.inc_i_176_auth_binding_activation_height, 20, "O2 devnet");
 }

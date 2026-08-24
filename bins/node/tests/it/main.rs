@@ -12,6 +12,7 @@
 //! `.claude/hooks/test-binary-gate.sh` enforces the layout.
 
 mod inc_i_180_allowance_parity;
+mod inc_i_180_apply_block_utxo_destruction;
 mod inc_i_180_builder_parity;
 mod inc_i_180_common;
 mod inc_i_180_drain_everything;
