@@ -150,7 +150,7 @@ impl NetworkParams {
                 // over-cap AddBonds in lockstep. Once crossed this height is
                 // IMMUTABLE — never move it forward (INC-I-054).
                 addbond_cap_enforcement_activation_height: 0,
-                withdrawal_holdings_gate_activation_height: u64::MAX,
+                withdrawal_holdings_gate_activation_height: 301_020,
 
                 // INC-I-088 Phase 0: DeFi subsystems (AMM, lending, loan,
                 // fractionalization) gated off on mainnet. u64::MAX = never

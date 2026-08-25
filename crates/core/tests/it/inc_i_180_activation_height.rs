@@ -78,7 +78,7 @@
 //!         read on all three networks (O2 regression guard)
 //!
 //! MATRIX
-//!   O1×P1×IP-A → req_i180_003_mainnet_gate_is_frozen_and_not_pinned_in_m1
+//!   O1×P1×IP-A → req_i180_003_mainnet_gate_is_pinned_above_the_measured_tip
 //!   O1×P2×IP-A → req_i180_003_testnet_gate_is_pinned_near_future
 //!   O1×P3×IP-A → req_i180_003_devnet_gate_leaves_a_pre_activation_band
 //!   O3   ×IP-B → req_i180_003_the_gate_is_dedicated_and_not_bundled
@@ -112,15 +112,37 @@ const DEVNET_GATE: u64 = 20;
 
 // ───────────────────────────── O1 — the new field ─────────────────────────
 
-/// O1 × P1 × IP-A
+/// The mainnet pin, chosen 2026-08-25 against a MEASURED live tip of 292_388 —
+/// 8_632 blocks of lead time, about 24 h at the 10 s slot. External producers
+/// are upgraded MANUALLY for this release, so that window is the operator-chased
+/// adoption budget: a node still on an older binary at this height forks.
+const MAINNET_GATE: u64 = 301_020;
+
+/// The live mainnet tip measured when `MAINNET_GATE` was chosen.
+const MAINNET_TIP_AT_PIN: u64 = 292_388;
+
+/// O1 × P1 × IP-A — mainnet is now PINNED (was `u64::MAX` through M1-M3).
 #[test]
-fn req_i180_003_mainnet_gate_is_frozen_and_not_pinned_in_m1() {
+fn req_i180_003_mainnet_gate_is_pinned_above_the_measured_tip() {
     let p = NetworkParams::defaults(Network::Mainnet);
-    assert_eq!(
-        p.withdrawal_holdings_gate_activation_height,
+    let h = p.withdrawal_holdings_gate_activation_height;
+
+    assert_eq!(h, MAINNET_GATE, "O1: mainnet is pinned at 301_020");
+    assert!(
+        h > MAINNET_TIP_AT_PIN,
+        "O1: the pin must sit ABOVE the tip measured when it was chosen, or the \
+         rule activates retroactively on blocks already in the chain"
+    );
+    assert_ne!(
+        h, 0,
+        "O1: 0 would re-validate every historical block under the new rule — \
+         the INC-I-054 shape"
+    );
+    assert_ne!(
+        h,
         u64::MAX,
-        "O1: mainnet stays frozen in M1. Pinning is a later decision session; \
-         a crossed height is immutable and could never be corrected"
+        "O1: u64::MAX leaves mainnet unprotected — the state this pin exists to \
+         leave behind"
     );
 }
 
