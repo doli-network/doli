@@ -39,6 +39,20 @@ pub const BLS_PUBLIC_KEY_SIZE: usize = 48;
 /// BLS12-381 signature size in bytes (compressed G2 point).
 pub const BLS_SIGNATURE_SIZE: usize = 96;
 
+/// Domain separator for deriving a BLS key from a wallet seed (INC-I-162).
+///
+/// Passed as `key_info` to BLS `KeyGen` so that a BLS key derived from a BIP-39
+/// seed is independent of any other key derived from that same seed. Changing this
+/// value changes every derived key, so it is effectively frozen once any wallet has
+/// been created with it.
+pub const BLS_KEY_INFO: &[u8] = b"DOLI-BLS-ATTESTATION-KEY-v1";
+
+/// Minimum input keying material for BLS `KeyGen`, in bytes.
+///
+/// draft-irtf-cfrg-bls-signature §2.3 requires IKM of at least 32 bytes so the
+/// derived scalar carries full entropy.
+pub const BLS_KEY_GEN_MIN_IKM: usize = 32;
+
 /// Domain Separation Tag for DOLI attestation signing.
 ///
 /// Follows the hash-to-curve convention (RFC 9380) used by Ethereum's BLS spec.
@@ -242,6 +256,34 @@ impl BlsSecretKey {
         let sk = SecretKey::key_gen(&ikm, &[]).expect("key_gen with 32 bytes always succeeds");
         ikm.zeroize();
         Self(sk.to_bytes())
+    }
+
+    /// Derive a BLS keypair deterministically from seed bytes (INC-I-162).
+    ///
+    /// `seed` is used as the input keying material for the standard BLS12-381
+    /// `KeyGen` (draft-irtf-cfrg-bls-signature §2.3, the `hkdf_mod_r` construction
+    /// also specified by EIP-2333) — the same function [`generate`] already uses,
+    /// differing only in where the IKM comes from. The same seed therefore always
+    /// yields the same key, which is what makes a BIP-39 phrase a complete backup.
+    ///
+    /// [`BLS_KEY_INFO`] is passed as `key_info` to domain-separate this key from
+    /// any other key derived from the same seed (notably the wallet's Ed25519
+    /// spending key). `KeyGen` is an HKDF construction, so the derived scalar is
+    /// one-way in the IKM and reusing the seed across schemes is not a hazard.
+    ///
+    /// Note this is NOT `from_bytes`: raw seed bytes interpreted directly as a
+    /// scalar would exceed the group order `r` for roughly 55% of inputs. `KeyGen`
+    /// reduces correctly and never fails for valid-length IKM.
+    ///
+    /// # Errors
+    /// Returns [`BlsError::InvalidSecretKey`] if `seed` is shorter than 32 bytes,
+    /// which `KeyGen` requires for the output to carry full entropy.
+    pub fn from_seed(seed: &[u8]) -> Result<Self, BlsError> {
+        if seed.len() < BLS_KEY_GEN_MIN_IKM {
+            return Err(BlsError::InvalidSecretKey);
+        }
+        let sk = SecretKey::key_gen(seed, BLS_KEY_INFO).map_err(|_| BlsError::InvalidSecretKey)?;
+        Ok(Self(sk.to_bytes()))
     }
 
     /// Create from raw bytes with scalar validation.
@@ -464,6 +506,19 @@ impl BlsKeyPair {
     pub fn from_secret_key(secret: BlsSecretKey) -> Self {
         let public = secret.public_key();
         Self { secret, public }
+    }
+
+    /// Derive a key pair deterministically from seed bytes (INC-I-162).
+    ///
+    /// Wraps [`BlsSecretKey::from_seed`]: the same seed always yields the same key
+    /// pair, which is what lets a BIP-39 phrase restore a producer's attestation
+    /// identity and not merely its spending key.
+    ///
+    /// # Errors
+    /// Returns [`BlsError::InvalidSecretKey`] if `seed` is shorter than
+    /// [`BLS_KEY_GEN_MIN_IKM`] bytes.
+    pub fn from_seed(seed: &[u8]) -> Result<Self, BlsError> {
+        Ok(Self::from_secret_key(BlsSecretKey::from_seed(seed)?))
     }
 
     /// Get a reference to the secret key.
@@ -869,6 +924,99 @@ mod tests {
         let kp = BlsKeyPair::generate();
         let pop = kp.proof_of_possession().unwrap();
         bls_verify_pop(kp.public_key(), &pop).unwrap();
+    }
+
+    // ========================================================================
+    // INC-I-162: deterministic derivation from seed bytes.
+    //
+    // OUTPUT CONTRACT: fn BlsKeyPair::from_seed(seed: &[u8]) -> Result<Self, BlsError>
+    //   O1: derived public key — value, and equality across calls
+    //   O2: Result             — Ok / Err(InvalidSecretKey)
+    // PATHS:
+    //   P1: seed length >= BLS_KEY_GEN_MIN_IKM  -> Ok, deterministic
+    //   P2: seed length <  BLS_KEY_GEN_MIN_IKM  -> Err
+    // INPUT PARTITIONS (P1): (a) two calls, same seed -> same key; (b) two
+    //   different seeds -> different keys; (c) seed differing in ONE bit ->
+    //   different key. (c) is the partition that catches a derivation which
+    //   silently truncates or ignores part of the IKM — (a) and (b) alone would
+    //   pass even if only the first byte were used.
+    //   P2 partitions: 31 bytes (boundary), and empty.
+    // MATRIX: 2 outputs x 2 paths x {3,2} partitions = 10 cells, all asserted.
+    // ========================================================================
+
+    #[test]
+    fn test_inc_i_162_from_seed_is_deterministic() {
+        let seed = [7u8; 64];
+        let a = BlsKeyPair::from_seed(&seed).unwrap();
+        let b = BlsKeyPair::from_seed(&seed).unwrap();
+        assert_eq!(
+            a.public_key(),
+            b.public_key(),
+            "P1a: same seed must derive the same key"
+        );
+    }
+
+    #[test]
+    fn test_inc_i_162_from_seed_differs_per_seed() {
+        let a = BlsKeyPair::from_seed(&[1u8; 64]).unwrap();
+        let b = BlsKeyPair::from_seed(&[2u8; 64]).unwrap();
+        assert_ne!(
+            a.public_key(),
+            b.public_key(),
+            "P1b: different seeds must derive different keys"
+        );
+
+        // P1c: a single flipped bit in the LAST byte must change the key. This is
+        // the assertion that fails if the derivation ignores or truncates the tail
+        // of the IKM.
+        let mut s1 = [9u8; 64];
+        let mut s2 = [9u8; 64];
+        s2[63] ^= 0x01;
+        let k1 = BlsKeyPair::from_seed(&s1).unwrap();
+        let k2 = BlsKeyPair::from_seed(&s2).unwrap();
+        assert_ne!(
+            k1.public_key(),
+            k2.public_key(),
+            "P1c: every byte of the seed must feed the derivation"
+        );
+        s1.zeroize();
+        s2.zeroize();
+    }
+
+    #[test]
+    fn test_inc_i_162_from_seed_rejects_short_ikm() {
+        // P2: below the KeyGen minimum the derived scalar would not carry full
+        // entropy, so this must be an error rather than a weak key.
+        assert!(
+            BlsKeyPair::from_seed(&[0u8; BLS_KEY_GEN_MIN_IKM - 1]).is_err(),
+            "P2: 31-byte IKM must be rejected at the boundary"
+        );
+        assert!(
+            BlsKeyPair::from_seed(&[]).is_err(),
+            "P2: empty IKM must be rejected"
+        );
+        assert!(
+            BlsKeyPair::from_seed(&[0u8; BLS_KEY_GEN_MIN_IKM]).is_ok(),
+            "P1: exactly the minimum must be accepted (boundary is inclusive)"
+        );
+    }
+
+    #[test]
+    fn test_inc_i_162_derived_key_is_usable_for_pop() {
+        // The whole point of deriving this key is that a restored producer can
+        // still prove possession, so exercise the real registration predicate.
+        let seed = [42u8; 64];
+        let kp = BlsKeyPair::from_seed(&seed).unwrap();
+        let pop = kp.proof_of_possession().unwrap();
+        bls_verify_pop(kp.public_key(), &pop).expect("derived key must produce a valid PoP");
+
+        // And a PoP from a different seed must NOT verify against this key.
+        let other = BlsKeyPair::from_seed(&[43u8; 64]).unwrap();
+        let other_pop = other.proof_of_possession().unwrap();
+        assert!(
+            bls_verify_pop(kp.public_key(), &other_pop).is_err(),
+            "PoP from a different seed must not verify"
+        );
     }
 
     #[test]

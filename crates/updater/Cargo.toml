@@ -46,3 +46,6 @@ libc = "0.2"
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+# Integration tests build hostile tarballs to exercise the AUDIT-P2-010 entry guards.
+flate2 = { workspace = true }
+tar = { workspace = true }

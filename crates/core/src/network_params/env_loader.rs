@@ -18,6 +18,23 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
     // For mainnet, enforce locked parameters
     let is_mainnet = matches!(network, Network::Mainnet);
 
+    // INC-I-172 M2 maintainer trust-root derivation, governance counter and
+    // ProtocolActivation fail-close (#20). Mainnet LOCKED — an .env override here
+    // would let a single operator move the trust-root gate and fork itself off the
+    // network, or re-open the producer-key fallback that F4 closes.
+    //
+    // Hoisted out of the struct literal because INC-I-176's #22 must be ordered
+    // against the EFFECTIVE (post-override) value of this height, not against the
+    // compiled default — see `ordering::enforce_auth_binding_above_derivation`.
+    let maintainer_derivation_activation_height = if is_mainnet {
+        defaults.maintainer_derivation_activation_height
+    } else {
+        env_parse(
+            "DOLI_MAINTAINER_DERIVATION_ACTIVATION_HEIGHT",
+            defaults.maintainer_derivation_activation_height,
+        )
+    };
+
     NetworkParams {
         // Networking (configurable for all networks)
         default_p2p_port: env_parse("DOLI_P2P_PORT", defaults.default_p2p_port),
@@ -38,8 +55,23 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
         } else {
             env_parse("DOLI_GENESIS_TIME", defaults.genesis_time)
         },
-        veto_period_secs: env_parse("DOLI_VETO_PERIOD_SECS", defaults.veto_period_secs),
-        grace_period_secs: env_parse("DOLI_GRACE_PERIOD_SECS", defaults.grace_period_secs),
+        // LOCKED for mainnet (INC-I-172 M1, AUDIT-P3-012). These were the only two
+        // update-timing parameters not wrapped in the `is_mainnet` lock their neighbours
+        // use. `.env` is read from the DATA DIRECTORY, so anything that can write there —
+        // the same reach as `maintainer_state.bin` — could set
+        // `DOLI_VETO_PERIOD_SECS=0` and collapse the mainnet veto window to nothing,
+        // making the next approved release auto-install on the following tick with no
+        // opportunity for producers to object.
+        veto_period_secs: if is_mainnet {
+            defaults.veto_period_secs // LOCKED for mainnet
+        } else {
+            env_parse("DOLI_VETO_PERIOD_SECS", defaults.veto_period_secs)
+        },
+        grace_period_secs: if is_mainnet {
+            defaults.grace_period_secs // LOCKED for mainnet
+        } else {
+            env_parse("DOLI_GRACE_PERIOD_SECS", defaults.grace_period_secs)
+        },
         bootstrap_grace_period_secs: if is_mainnet {
             defaults.bootstrap_grace_period_secs // LOCKED for mainnet
         } else {
@@ -333,6 +365,16 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
                 defaults.addbond_cap_enforcement_activation_height,
             )
         },
+        // INC-I-180: mainnet locked to the compiled default (pinning a real
+        // height is a separate decision session); non-mainnet may override.
+        withdrawal_holdings_gate_activation_height: if is_mainnet {
+            defaults.withdrawal_holdings_gate_activation_height
+        } else {
+            env_parse(
+                "DOLI_WITHDRAWAL_HOLDINGS_GATE_ACTIVATION_HEIGHT",
+                defaults.withdrawal_holdings_gate_activation_height,
+            )
+        },
         // INC-I-088 Phase 0: mainnet locked (operator pins concrete future
         // height in a separate commit, ONLY AFTER DeFi subsystem audit).
         // Testnet/devnet may override via `DOLI_DEFI_ACTIVATION_HEIGHT` for
@@ -407,6 +449,46 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
                 defaults.inc_i_147_activation_height,
             )
         },
+        // INC-I-172 M2 (#20). Computed above so #22 can be ordered against it.
+        maintainer_derivation_activation_height,
+        // INC-I-173 state-only fee gate (TxType::allows_empty_io authority).
+        // Mainnet LOCKED — an .env override here would let a single operator
+        // move a consensus gate that changes block CONTENT and fork itself off
+        // the network.
+        inc_i_173_activation_height: if is_mainnet {
+            defaults.inc_i_173_activation_height
+        } else {
+            env_parse(
+                "DOLI_INC_I_173_ACTIVATION_HEIGHT",
+                defaults.inc_i_173_activation_height,
+            )
+        },
+        // INC-I-176 M2 maintainer-authorization message binding (#22). Mainnet
+        // LOCKED — an .env override here would let a single operator move the
+        // gate that decides WHICH BYTES authorize a maintainer change, and so
+        // hold a maintainer trust root — the updater's binary-install trust root
+        // — that no peer agrees with.
+        //
+        // On testnet/devnet the override is accepted only if it preserves the
+        // SECURITY-CRITICAL `#22 >= #20` ordering (M2 review F4). A violating
+        // value is refused at error!, never applied, and never fatal.
+        inc_i_176_auth_binding_activation_height: if is_mainnet {
+            defaults.inc_i_176_auth_binding_activation_height
+        } else {
+            super::ordering::enforce_auth_binding_above_derivation(
+                env_parse(
+                    "DOLI_INC_I_176_AUTH_BINDING_ACTIVATION_HEIGHT",
+                    defaults.inc_i_176_auth_binding_activation_height,
+                ),
+                defaults.inc_i_176_auth_binding_activation_height,
+                maintainer_derivation_activation_height,
+            )
+        },
+        // INC-I-172 M2 review F3. Deliberately NOT env-overridable on ANY
+        // network: the seed precondition is a scale assumption, and the point of
+        // moving it into NetworkParams was to make it visible per network in one
+        // audited place rather than tunable per host.
+        maintainer_seed_min_producers: defaults.maintainer_seed_min_producers,
         // Gossip mesh (locked for mainnet - wrong values could isolate nodes)
         mesh_n: if is_mainnet {
             defaults.mesh_n

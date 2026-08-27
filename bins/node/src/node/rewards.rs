@@ -1355,11 +1355,65 @@ impl Node {
                     }
                     TxType::RequestWithdrawal => {
                         if let Some(data) = tx.withdrawal_request_data() {
-                            // During rebuild, validate and queue the withdrawal
+                            // INC-I-180: mirror the live-apply enqueue condition
+                            // (tx_processing.rs, RequestWithdrawal arm), which
+                            // gains the in-flight AddBond term at
+                            // `withdrawal_holdings_gate_activation_height`. The
+                            // two formulas were identical before that fix; a
+                            // rebuild that keeps the old one queues 0 where live
+                            // queues 1, and a reorg through such a range leaves
+                            // a different ProducerSet — different active_list,
+                            // different scheduler, fork (see the INC-I-078 note
+                            // below; compare INC-I-054). Below the gate
+                            // `in_flight` is 0, so pre-activation replay stays
+                            // bit-identical.
+                            //
+                            // The other two INC-I-180 rules are deliberately NOT
+                            // mirrored here: charging the allowance for an `Exit`
+                            // and binding the declared count to the Bond UTXOs
+                            // destroyed are BLOCK-ADMISSION rules, and this
+                            // replay reads blocks that are already canonical. The
+                            // Exit arm above already bumps
+                            // `withdrawal_pending_count` exactly as live does, so
+                            // its QUEUE effect is in parity untouched.
+                            let in_flight = if height
+                                >= self
+                                    .config
+                                    .network
+                                    .params()
+                                    .withdrawal_holdings_gate_activation_height
+                            {
+                                producers.pending_addbond_count(&data.producer_pubkey)
+                            } else {
+                                0
+                            };
                             if let Some(info) = producers.get_by_pubkey(&data.producer_pubkey) {
                                 let available = info
                                     .bond_count
+                                    .saturating_add(in_flight)
                                     .saturating_sub(info.withdrawal_pending_count);
+                                // AUDIT-P1-004: live apply auto-revokes an
+                                // active delegation that blocks a FULL exit
+                                // (tx_processing.rs, INC-I-058). That branch is
+                                // NOT height-gated — only `in_flight` is — so
+                                // it inherits both forms of `available` and
+                                // needs no gate of its own. Without the mirror a
+                                // reorg through such a block leaves
+                                // `received_delegations` un-revoked, and that
+                                // field is inside `serialize_canonical()`:
+                                // rebuilt and live nodes then disagree on the
+                                // state root (INC-I-054 shape).
+                                let delegated = info.delegated_bonds;
+                                if delegated > 0
+                                    && data.bond_count == available
+                                    && data.bond_count > available.saturating_sub(delegated)
+                                {
+                                    producers.queue_update(
+                                        PendingProducerUpdate::RevokeDelegation {
+                                            delegator: data.producer_pubkey,
+                                        },
+                                    );
+                                }
                                 if data.bond_count <= available {
                                     if let Some(producer) =
                                         producers.get_by_pubkey_mut(&data.producer_pubkey)

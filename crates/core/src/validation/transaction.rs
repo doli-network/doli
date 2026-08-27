@@ -168,10 +168,10 @@ pub fn validate_transaction(
             validate_epoch_reward_data(tx)?;
         }
         TxType::RemoveMaintainer => {
-            validate_maintainer_change_data(tx)?;
+            validate_maintainer_change_data(tx, ctx)?;
         }
         TxType::AddMaintainer => {
-            validate_maintainer_change_data(tx)?;
+            validate_maintainer_change_data(tx, ctx)?;
         }
         TxType::DelegateBond => {
             validate_delegate_bond_data(tx)?;

@@ -80,7 +80,14 @@ pub struct UpdateConfig {
     /// Only notify, don't apply (default: false)
     pub notify_only: bool,
 
-    /// Enable automatic rollback on update failures (default: true)
+    /// NOT WIRED — read by nothing (INC-I-172 M1, AUDIT-P1-014).
+    ///
+    /// Set from `--no-auto-rollback` and defaulted to `true`, but no code path reads it:
+    /// [`crate::watchdog::UpdateWatchdog`] has zero production callers, so there is no
+    /// automatic post-update rollback to enable or disable. The field is retained so the
+    /// long-standing CLI flag keeps parsing — removing the flag would fail startup on
+    /// every systemd unit that carries it — and it is named here so nobody reports it as
+    /// a live control. Rollback today is manual only (`doli-node update rollback`).
     pub auto_rollback: bool,
 
     /// Check interval in seconds (default: 6 hours)
@@ -116,6 +123,40 @@ pub enum UpdateError {
     #[error("Insufficient signatures: {found}/{required}")]
     InsufficientSignatures { found: usize, required: usize },
 
+    /// The resolved trust root cannot authorise anything (INC-I-172 F1).
+    ///
+    /// Returned when the root has fewer keys than its own threshold, or a
+    /// threshold of zero. This is a FAIL-CLOSED outcome: verification refuses
+    /// rather than falling back to the compile-time bootstrap keys.
+    #[error(
+        "Trust root unavailable: {provenance} root has {keys} key(s) for a threshold of {threshold} \
+         — refusing to verify (no fallback to compiled bootstrap keys)"
+    )]
+    TrustRootUnavailable {
+        provenance: String,
+        keys: usize,
+        threshold: usize,
+    },
+
+    /// The SIGNATURES.json presented for an install does not describe the artifact
+    /// that is about to be installed (INC-I-172 F1).
+    ///
+    /// A maintainer signature covers `"{version}:{sha256(CHECKSUMS.txt)}"`. If those
+    /// two operands are read back out of the same SIGNATURES.json that carries the
+    /// signatures, the check is circular: a verbatim copy of ANY past genuine
+    /// SIGNATURES.json verifies, while an unrelated tarball is installed. This error
+    /// is what a broken link in that chain returns; it must always BLOCK.
+    #[error(
+        "Signature/artifact binding FAILED on `{field}`: SIGNATURES.json says {signed}, but the \
+         release being installed has {actual}. A genuine maintainer signature over a DIFFERENT \
+         release authorises nothing here — refusing to install."
+    )]
+    ArtifactBindingMismatch {
+        field: &'static str,
+        signed: String,
+        actual: String,
+    },
+
     #[error("Invalid signature from maintainer {0}")]
     InvalidSignature(String),
 
@@ -148,6 +189,30 @@ pub enum UpdateError {
 
     #[error("Update not yet approved")]
     NotApproved,
+
+    /// An operator-supplied release-signing argument does not have the shape the
+    /// signing message assumes (INC-I-172 M2, AUDIT-P0-011).
+    ///
+    /// A release signature is raw Ed25519 over `"{version}:{hash}"`, and the maintainer
+    /// governance families sign `"add:{pubkey_hex}"`, `"remove:{pubkey_hex}"` and
+    /// `"activate:{version}:{epoch}"` — the same interpolation, no domain tag on either
+    /// side. Free-form arguments therefore let ONE release-signing invocation mint a
+    /// governance authorization for an entirely different intent. This error is what a
+    /// mis-shaped argument returns; it must always BLOCK, before any signing.
+    #[error(
+        "Refusing to sign: `--{field}` must be {expected}, but got `{value}`. A release \
+         signature is raw bytes over \"{{version}}:{{hash}}\", and maintainer governance \
+         authorizations use the SAME shape (\"add:<64-hex pubkey>\", \"remove:<64-hex \
+         pubkey>\", \"activate:<version>:<epoch>\"). An argument outside the expected \
+         shape can make one signing command produce a valid authorization for a \
+         different action (INC-I-172 AUDIT-P0-011) — check where these arguments came \
+         from before retrying."
+    )]
+    InvalidSigningArgument {
+        field: &'static str,
+        expected: &'static str,
+        value: String,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, UpdateError>;

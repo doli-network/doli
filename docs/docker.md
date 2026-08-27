@@ -10,7 +10,7 @@ Run a DOLI node using Docker for easy deployment and management.
 
 ```bash
 # Pull the latest image
-docker pull ghcr.io/e-weil/doli-node:latest
+docker pull ghcr.io/doli-network/doli-node:latest
 
 # Run a mainnet node
 docker run -d \
@@ -18,14 +18,14 @@ docker run -d \
   -p 30300:30300 \
   -p 8500:8500 \
   -v doli-data:/data \
-  ghcr.io/e-weil/doli-node:latest
+  ghcr.io/doli-network/doli-node:latest
 ```
 
 ### Build and Run Locally
 
 ```bash
 # Clone the repository
-git clone https://github.com/e-weil/doli.git
+git clone https://github.com/doli-network/doli.git
 cd doli
 
 # Build the image
@@ -376,7 +376,7 @@ docker compose -f docker/docker-compose.yml up -d
 
 ```bash
 # Pull latest image
-docker pull ghcr.io/e-weil/doli-node:latest
+docker pull ghcr.io/doli-network/doli-node:latest
 
 # Recreate container with new image
 docker compose -f docker/docker-compose.yml up -d --force-recreate
@@ -386,13 +386,13 @@ docker compose -f docker/docker-compose.yml up -d --force-recreate
 
 ```bash
 # Pull specific version
-docker pull ghcr.io/e-weil/doli-node:v1.2.0
+docker pull ghcr.io/doli-network/doli-node:v1.2.0
 
 # Update compose file or run directly
 docker run -d \
   --name doli-node \
   ... \
-  ghcr.io/e-weil/doli-node:v1.2.0
+  ghcr.io/doli-network/doli-node:v1.2.0
 ```
 
 ---

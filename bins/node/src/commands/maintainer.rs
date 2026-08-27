@@ -62,19 +62,26 @@ pub(crate) async fn handle_maintainer_command(
                             }
                         } else {
                             println!(
-                                "║  No producers registered yet. Using bootstrap keys.        ║"
+                                "║  No producers registered yet.                              ║"
                             );
                         }
                     }
                     Err(_) => {
-                        println!("║  Could not load producer data. Using bootstrap keys.        ║");
+                        println!("║  Could not load producer data.                              ║");
                     }
                 }
             } else {
-                println!("║  No producer data found. Using bootstrap keys.                ║");
+                println!("║  No producer data found.                                      ║");
             }
 
-            // Always show bootstrap keys as reference
+            // Always show bootstrap keys as reference.
+            //
+            // They are NOT a fallback (INC-I-172 F1): they are the trust root ONLY for a
+            // node that has never established an on-chain maintainer set. Once a set
+            // exists, that set is authoritative, and a set that exists and is empty or
+            // sub-threshold FAILS CLOSED — verification refuses rather than coming back
+            // here. The old "fallback before sync" wording described the deleted
+            // behaviour and is what made the compiled keys look permanently reachable.
             println!("║                                                                  ║");
             let net_label = match network {
                 Network::Mainnet => "mainnet",
@@ -82,9 +89,11 @@ pub(crate) async fn handle_maintainer_command(
                 Network::Devnet => "devnet",
             };
             println!(
-                "║  Bootstrap keys ({}, fallback before sync):              ║",
+                "║  Bootstrap keys ({}, used only until an on-chain set exists): ║",
                 net_label
             );
+            println!("║  They are NOT a fallback: an on-chain set that is empty or   ║");
+            println!("║  sub-threshold fails closed and does NOT return here.        ║");
             for (i, key) in updater::bootstrap_maintainer_keys(network)
                 .iter()
                 .enumerate()

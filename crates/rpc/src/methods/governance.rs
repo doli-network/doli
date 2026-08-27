@@ -65,10 +65,38 @@ impl RpcContext {
 
     /// Get current maintainer set
     ///
-    /// Returns the maintainer set derived from the blockchain.
-    /// First 5 registered producers become maintainers automatically.
+    /// Two shapes, distinguished by the `source` field:
+    ///
+    /// * `"on-chain"` — the node's persisted `MaintainerState`. This IS the root
+    ///   the node enforces for governance and the one the updater installs
+    ///   against. `enforced: true`.
+    /// * `"derived"` — no `MaintainerState` is attached, so the set is computed
+    ///   from the producer set. **Advisory** (`enforced: false`): it is what the
+    ///   seed WOULD produce, not what any node is enforcing.
+    ///
+    /// INC-I-172 M2 review F4. The `derived` branch used to be a FOURTH
+    /// derivation: `all_producers()` (a `HashMap::values()` walk) plus a STABLE
+    /// `sort_by_key(registered_at)` plus `take(5)` — the exact shape M2 froze as
+    /// pre-activation-only, still live at every height here. Because every
+    /// genesis producer ties at `registered_at == 0`, two honest nodes on the
+    /// same chain printed different `maintainers` arrays, so the operator
+    /// runbook's "compare `getMaintainerSet` against a known-good node" produced
+    /// false mismatches. It now routes through
+    /// `derive_canonical_maintainer_set`, the same total order the node uses at
+    /// and above the gate, and reports whether that order is the one in force at
+    /// the current height.
     pub(super) async fn get_maintainer_set(&self) -> Result<Value, RpcError> {
-        use doli_core::maintainer::{INITIAL_MAINTAINER_COUNT, MAX_MAINTAINERS, MIN_MAINTAINERS};
+        use doli_core::maintainer::{
+            maintainer_set_digest, INITIAL_MAINTAINER_COUNT, MAX_MAINTAINERS, MIN_MAINTAINERS,
+        };
+
+        // INC-I-173 M3a / F6 (AUDIT-P1-003). `genesis_hash` is published on EVERY
+        // branch, including `none` — the chain identity is always knowable, and it
+        // is what makes the digest a per-CHAIN answer.
+        // `maintainer_set_digest` is published wherever a set exists, so an
+        // operator can compare two nodes' trust roots with ONE scalar instead of
+        // diffing member lists.
+        let genesis_hash = self.params.genesis_hash;
 
         // Read from on-chain MaintainerState if available
         if let Some(ms) = &self.maintainer_state {
@@ -92,51 +120,91 @@ impl RpcContext {
                 "min_maintainers": MIN_MAINTAINERS,
                 "initial_maintainer_count": INITIAL_MAINTAINER_COUNT,
                 "last_change_block": state.set.last_updated,
-                "source": "on-chain"
+                "source": "on-chain",
+                "enforced": true,
+                "maintainer_derivation_activation_height":
+                    self.maintainer_derivation_activation_height,
+                "maintainer_set_digest":
+                    hex::encode(maintainer_set_digest(&state.set, genesis_hash.as_bytes())),
+                "genesis_hash": genesis_hash.to_hex()
             }));
         }
 
-        // Fallback: derive ad-hoc from producer set (pre-bootstrap or no MaintainerState)
+        // Fallback: no MaintainerState is attached. ADVISORY only.
         let producer_set = match &self.producer_set {
             Some(ps) => ps,
             None => {
+                // NO `maintainer_set_digest` here: there is no set to digest, and a
+                // digest over an absent set is a value that invites a comparison it
+                // cannot support. `genesis_hash` IS published — chain identity is
+                // always knowable.
                 return Ok(serde_json::json!({
                     "maintainers": [],
                     "threshold": 0,
                     "member_count": 0,
-                    "source": "none"
+                    "source": "none",
+                    "enforced": false,
+                    "genesis_hash": genesis_hash.to_hex(),
+                    "advisory_note": "No MaintainerState and no ProducerSet are attached to \
+                                      this RPC context; no maintainer root can be reported."
                 }));
             }
         };
 
+        let height = self.chain_state.read().await.best_height;
         let producers = producer_set.read().await;
-        let mut sorted_producers = producers.all_producers();
-        sorted_producers.sort_by_key(|p| p.registered_at);
 
-        let maintainers: Vec<_> = sorted_producers
-            .into_iter()
-            .take(INITIAL_MAINTAINER_COUNT)
-            .map(|p| {
+        // Canonical TOTAL order (registered_at, pubkey_bytes), identical to the
+        // node's own derivation at and above the gate — so two honest nodes on
+        // the same chain print the same array.
+        let all = producers.all_producers();
+        let candidates: Vec<(crypto::PublicKey, u64)> = all
+            .iter()
+            .map(|p| (p.public_key, p.registered_at))
+            .collect();
+        let derived = doli_core::maintainer::derive_canonical_maintainer_set(&candidates, height);
+
+        let maintainers: Vec<_> = derived
+            .members
+            .iter()
+            .map(|pk| {
+                let info = all.iter().find(|p| p.public_key == *pk);
                 serde_json::json!({
-                    "pubkey": p.public_key.to_hex(),
-                    "registered_at_block": p.registered_at,
-                    "is_active_producer": p.is_active()
+                    "pubkey": pk.to_hex(),
+                    "registered_at_block": info.map(|p| p.registered_at),
+                    "is_active_producer": info.map(|p| p.is_active())
                 })
             })
             .collect();
 
-        let member_count = maintainers.len();
-        let threshold = doli_core::maintainer::MaintainerSet::calculate_threshold(member_count);
+        let activation_height = self.maintainer_derivation_activation_height;
+        let advisory_note = if height >= activation_height {
+            "ADVISORY. No MaintainerState is attached to this node, so nothing here is \
+             enforced. The ordering shown is the canonical (registered_at, pubkey_bytes) \
+             order the node uses at and above maintainer_derivation_activation_height."
+        } else {
+            "ADVISORY. No MaintainerState is attached to this node, so nothing here is \
+             enforced. This chain is BELOW maintainer_derivation_activation_height, where \
+             the node's own seed still uses the frozen HashMap-ordered stable sort, so the \
+             enforced membership may differ from this canonical ordering. Compare nodes \
+             only when source is \"on-chain\" on both."
+        };
 
         Ok(serde_json::json!({
             "maintainers": maintainers,
-            "threshold": threshold,
-            "member_count": member_count,
+            "threshold": derived.threshold,
+            "member_count": derived.members.len(),
             "max_maintainers": MAX_MAINTAINERS,
             "min_maintainers": MIN_MAINTAINERS,
             "initial_maintainer_count": INITIAL_MAINTAINER_COUNT,
             "last_change_block": 0,
-            "source": "derived"
+            "source": "derived",
+            "enforced": false,
+            "maintainer_derivation_activation_height": activation_height,
+            "maintainer_set_digest":
+                hex::encode(maintainer_set_digest(&derived, genesis_hash.as_bytes())),
+            "genesis_hash": genesis_hash.to_hex(),
+            "advisory_note": advisory_note
         }))
     }
 

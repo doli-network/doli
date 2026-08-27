@@ -37,8 +37,8 @@ doli address
 # Check balance
 doli balance
 
-# Check someone else's balance (note: -w is still required)
-doli -w ~/.doli/wallet.json balance --address doli1abc...
+# Check someone else's balance (no wallet needed — the address comes from the CLI)
+doli balance --address doli1abc...
 
 # Send coins (prompts for confirmation; use --yes to skip)
 doli send <recipient> <amount>
@@ -77,7 +77,17 @@ All commands support these options:
 
 Create a new wallet file with a BIP-39 seed phrase and derived Ed25519 keypair.
 
-New wallets (version 2) generate a 24-word recovery phrase. The primary key is deterministically derived from this phrase. Write down the 24 words — they are your backup. If you lose the wallet file, you can recover using these words.
+New wallets (version 2) generate a 24-word recovery phrase. **Both** keypairs are
+deterministically derived from it — the Ed25519 spending key and the BLS attestation key
+used by producers — so the 24 words are a complete backup of a newly created wallet.
+
+New wallets are written as **version 3**.
+
+> ⚠️ **Version 1 and 2 wallets are different.** Before BLS keys became seed-derived, the
+> BLS key was random and no seed phrase can reproduce it. For those wallets — which
+> includes every producer registered before this change — `wallet.json` is the only copy
+> of the producer identity. Run `doli info` to see the version of any wallet. See
+> [§1.3 Restore Wallet](#13-restore-wallet).
 
 ```bash
 doli new [OPTIONS]
@@ -112,6 +122,12 @@ doli new --name my_wallet
 ```
 
 The seed phrase is written to a separate `.seed.txt` file and is **not stored in the wallet JSON**. Write down the 24 words on paper, then delete the seed file. If you lose both the wallet file and the seed words, your funds are unrecoverable.
+
+**Back up `wallet.json` itself as well** — encrypted and offline. For wallets created
+before BLS keys became seed-derived, the file is the *only* copy of a producer's BLS key.
+Treat the wallet file like cash: it contains your private keys in plaintext, so never put
+it in cloud storage, a shared drive, email, or a chat message, and do not change its
+permissions on a server (it is deliberately locked to the service account).
 
 Legacy wallets (version 1, e.g. existing producer keys) continue to work unchanged.
 
@@ -157,6 +173,47 @@ doli restore
 # Follow the interactive prompt to enter your 24-word seed phrase
 ```
 
+`restore` will not overwrite an existing wallet file — it exits with an error and leaves
+the file untouched. Use `-w` to restore to a different path.
+
+#### ⚠️ Whether restore recovers a producer identity depends on when the wallet was made
+
+A wallet holds **two** keypairs. Which of them the phrase can reproduce changed:
+
+| Key | Wallet **version 3** | Wallet **version 1 or 2** |
+|-----|:---:|:---:|
+| Ed25519 spending key | **Restored** | **Restored** |
+| BLS attestation key  | **Restored** — seed-derived | **NOT restored** — random |
+
+Run `doli info` to see which version a wallet is. It states plainly whether the
+phrase is a complete backup.
+
+For a wallet created before the change, restore looks completely correct — same address,
+same balance, everything reconciles — while holding a BLS key that does **not** match the
+`blsPubkey` committed on-chain at registration. Nothing warns you: the node starts,
+produces, and attests normally, because attestation currently uses only the Ed25519 key.
+
+**Every producer registered before this change is version 2 or lower.** You no longer have
+to guess: `doli info` reports the version and tells you directly whether your 24 words can
+restore this wallet.
+
+You can check for a mismatch yourself:
+
+```bash
+doli info                       # prints this wallet's BLS public key
+# compare against the registered value:
+curl -s -X POST $RPC -d '{"jsonrpc":"2.0","id":1,"method":"getProducer","params":["<your-address>"]}' \
+  | jq -r '.result.blsPubkey'
+```
+
+If they differ, the only remedy is to **exit and re-register**, which burns roughly 75%
+of the bond (for bonds under one year), resets seniority, and destroys all delegations to
+you. There is no key-rotation transaction.
+
+**Therefore: back up `wallet.json` itself.** For a wallet created before this change the
+phrase is insufficient for a producer; for a newly created one it is sufficient, but the
+file remains the faster and less error-prone recovery path.
+
 ---
 
 ### 1.4. Add BLS Key
@@ -166,6 +223,10 @@ Add a BLS attestation key to an existing wallet. Required for producers to sign 
 ```bash
 doli add-bls
 ```
+
+> This adds a BLS key to a wallet that has none (e.g. a legacy v1 wallet). It **cannot**
+> repair a producer whose BLS key no longer matches its registration — it refuses if a key
+> is already present, and a newly generated key would not match the registered one either.
 
 ---
 
@@ -216,12 +277,26 @@ doli export <OUTPUT>
 
 Arguments:
   <OUTPUT>    Output file path
+
+Options:
+      --force    Overwrite the output file if it already exists
 ```
 
 **Example:**
 ```bash
 doli export ~/backup/wallet-backup.json
 ```
+
+> **Will not overwrite by default.** If `<OUTPUT>` already exists, the export is
+> refused and nothing is written. This matters because a wallet that was restored
+> from a seed phrase has a *different* BLS key than the one registered on-chain
+> (see §1.9) — letting it write over a good backup would destroy the only copy of
+> the real producer key.
+>
+> For a rotating backup that deliberately reuses one filename, pass `--force`:
+> ```bash
+> doli export --force ~/backup/wallet-backup.json
+> ```
 
 ---
 
@@ -234,12 +309,50 @@ doli import <INPUT>
 
 Arguments:
   <INPUT>    Input file path
+
+Options:
+      --force    Overwrite the active wallet if one already exists
+                 (DANGEROUS: destroys its keys, including any BLS producer key)
 ```
 
 **Example:**
 ```bash
 doli import ~/backup/wallet-backup.json
 ```
+
+> **Will not overwrite by default.** The wallet is written to the active wallet path
+> (`-w`, or the network default). If a wallet already exists there, the import is
+> refused and the existing file is left untouched:
+>
+> ```
+> Refusing to overwrite existing wallet at /var/lib/doli/mainnet/wallet.json
+>   That file may be the only copy of its BLS producer key — a 24-word seed phrase
+>   does NOT restore it.
+>   Back it up first, then use a different path with -w, or --force if you really
+>   mean to replace it.
+> ```
+>
+> This guard exists because a wallet file is the **only** durable copy of a
+> producer's registered BLS attestation key. The 24-word seed phrase restores the
+> address, funds, and spending key, but **not** that BLS key — so overwriting a
+> producer's `wallet.json` destroys its on-chain identity permanently. Recovery
+> then requires exiting and re-registering, which burns roughly 75% of the bond and
+> resets seniority and delegations.
+>
+> To import somewhere else instead, point `-w` at a new path:
+> ```bash
+> doli -w ~/wallets/imported.json import ~/backup/wallet-backup.json
+> ```
+>
+> To deliberately restore a backup over a damaged or superseded wallet, pass
+> `--force`. It prints a warning naming the file it is about to replace:
+> ```bash
+> doli import --force ~/backup/wallet-backup.json
+> ```
+> **Back up the file you are about to replace first.** If it holds a registered
+> producer's BLS key, `--force` destroys that identity irreversibly.
+>
+> `doli init --force` behaves the same way for wallet creation.
 
 ---
 
@@ -257,15 +370,21 @@ Options:
       --all                  Show per-address breakdown (all addresses in wallet)
 ```
 
+**Wallet access:** `--address` is a pure RPC lookup of the address you pass on the command line, so it
+reads **no** wallet file — it works with no wallet present, or with an unreadable one (INC-I-161). This
+matters on a producer host, where `wallet.json` is the producer signing key at mode `600`. Without
+`--address` the balance is scoped to the wallet's own addresses, so a readable wallet **is** required —
+including for `--all` on its own.
+
 **Example:**
 ```bash
-# Aggregate balance
+# Aggregate balance (requires a readable wallet)
 doli balance
 
-# Specific address
+# Specific address (no wallet read)
 doli balance -A a1b2c3d4e5f6...
 
-# Per-address breakdown
+# Per-address breakdown (requires a readable wallet)
 doli balance --all
 ```
 
@@ -767,6 +886,13 @@ doli producer request-withdrawal --count 2
 doli producer request-withdrawal --count 2 --destination doli1abc...
 ```
 
+**INC-I-180:** the CLI derives the withdrawable allowance from the **ProducerSet**
+(`selectionWeight − Σ receivedDelegations + delegatedBonds`, minus pending
+withdrawals), **aborts** if that disagrees with the wallet's Bond-UTXO count (a
+ledger mismatch — retry after the next epoch boundary flushes pending bond
+changes), prints both numbers before submitting, and selects Bond inputs by
+**count**, not by value. `doli producer exit` applies the same guard for a full drain.
+
 **Output shows FIFO breakdown before submitting:**
 ```
 Your bonds (5 total):
@@ -1032,7 +1158,10 @@ The **pubkey hash** used for balance queries is derived from `public_key` via do
 
 ### 7.3 Querying Producer Balances
 
-**IMPORTANT:** The `-w` flag is **always required** — even when using `--address` to check someone else's balance. Without `-w`, the CLI fails with `Error: No such file or directory (os error 2)`.
+**IMPORTANT:** A wallet-scoped balance (`doli balance`, `doli balance --all`) reads the wallet file, so
+it needs `-w` whenever the wallet is not at the auto-detected path — otherwise the CLI fails with
+`wallet not found` / `cannot read wallet`. A `--address` query does **not** read the wallet at all
+(INC-I-161), so it needs neither `-w` nor read access to the producer key.
 
 ```bash
 # Query balance using a producer key file as wallet
@@ -1041,8 +1170,8 @@ doli -w /path/to/producer.json balance
 # Query from a remote node
 doli -w /path/to/producer.json -r http://127.0.0.1:8546 balance
 
-# Query a specific address — still needs -w for RPC connection
-doli -w /path/to/any_wallet.json balance --address <64-char-pubkey-hash-or-bech32>
+# Query a specific address — no wallet read, no -w needed
+doli balance --address <64-char-pubkey-hash-or-bech32>
 ```
 
 **Example — check all producers from omegacortex:**
@@ -1057,7 +1186,7 @@ done
 **Example — check an external address:**
 
 ```bash
-doli -w ~/.doli/mainnet/keys/producer_1.json balance --address doli1abc...
+doli balance --address doli1abc...
 ```
 
 ### 7.4 Sending From a Producer Wallet
@@ -1082,9 +1211,9 @@ for addr in doli1aaa... doli1bbb... doli1ccc...; do
   sleep 2
 done
 
-# Check balances for external addresses (always needs -w)
+# Check balances for external addresses (no wallet read — -w not needed)
 for addr in doli1aaa... doli1bbb...; do
-  $CLI -w $W balance --address "$addr" 2>&1
+  $CLI balance --address "$addr" 2>&1
 done
 ```
 
@@ -1245,7 +1374,7 @@ doli update vote --approve --version <VERSION>
 doli update vote --veto --version <VERSION>
 ```
 
-**WHITEPAPER Reference:** Section 15 (Governance) - 40% weighted veto threshold.
+**WHITEPAPER Reference:** Section 15 (Governance). Note: the code implements a 40% veto threshold by producer HEAD COUNT — one active producer, one vote. The weighted variant the WHITEPAPER describes was never reachable from production code and was deleted in INC-I-172.
 
 ### 10.4 View Vote Status
 
@@ -1793,6 +1922,8 @@ Options:
       --yes                         Skip confirmation
       --doli-node-path <PATH>       Custom path to doli-node binary
       --service <NAME>              Restart only this systemd service
+      --data-dir <PATH>             Node data directory holding maintainer_state.bin
+                                    (default: the platform node data dir)
 ```
 
 **Example:**
@@ -1803,6 +1934,41 @@ doli upgrade --yes
 # Upgrade to specific version
 doli upgrade --version v1.1.12 --yes
 ```
+
+### 18.1. Which keys authorise the install
+
+`doli upgrade` runs as root and refuses to install a release that is not signed by the
+trust root of THIS host. It resolves that root from `<data-dir>/maintainer_state.bin`,
+the same file the node uses, and prints the provenance before installing:
+
+```
+Trust root: OnChain (5 key(s), threshold 3, mainnet) from /var/lib/doli/mainnet
+```
+
+- `OnChain` — the host's on-chain maintainer set is authoritative.
+- `Bootstrap` — the host has never established an on-chain set (fresh install). The
+  compile-time keys are used. If you see this on a node that was previously synced, its
+  data directory was wiped or `maintainer_state.bin` was deleted.
+- If the file exists but cannot be decoded, the command ABORTS. It never falls back to
+  the compiled keys.
+
+### 18.2. `--network` is NOT a security boundary (known gap)
+
+`--network` selects which compile-time key array is used when — and only when — this host
+has no on-chain maintainer set. **It does not bind a signature to a network.** Two facts,
+both current:
+
+1. The mainnet and testnet bootstrap key arrays are **byte-identical**
+   (`crates/updater/src/constants.rs`).
+2. The signed release message is `{version}:{sha256(CHECKSUMS.txt)}` — it carries **no
+   network term**.
+
+So a signature produced for a testnet release verifies against the mainnet root, and vice
+versa. Do not treat `--network` as a control that prevents cross-network release replay;
+it does not, and no other mechanism does either today. Closing this requires putting the
+network into the signed bytes, which invalidates every already-published
+`SIGNATURES.json` and therefore needs its own coordinated rollout (INC-I-172
+AUDIT-P2-012, deferred).
 
 ---
 

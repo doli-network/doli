@@ -453,26 +453,30 @@ impl Transaction {
         bincode::deserialize(&self.extra_data).ok()
     }
 
-    /// Returns true if this transaction type has no UTXO inputs by design.
+    /// Returns true if this transaction moves NO value and its type is authorized
+    /// to exist in that shape — i.e. it is exempt from the balance and fee checks.
     ///
-    /// State-only txs (Exit, RequestWithdrawal, etc.) operate on producer state
-    /// and are spam-protected by requiring a registered producer bond. They bypass
-    /// UTXO-based fee accounting in the mempool.
+    /// INC-I-173 (spec F1). This is the predicate the consensus fee gate in
+    /// `validation/utxo.rs` evaluates above `inc_i_173_activation_height`. It
+    /// replaces a hand-maintained 3-type `matches!` that had drifted from every
+    /// other "state-only" list in the tree, which is why `AddMaintainer` and
+    /// `RemoveMaintainer` could be relayed but never mined.
     ///
-    /// Registration and AddBond are NOT state-only — they consume UTXO inputs.
-    pub fn is_state_only(&self) -> bool {
-        matches!(
-            self.tx_type,
-            TxType::Exit
-                | TxType::ClaimReward
-                | TxType::ClaimBond
-                | TxType::SlashProducer
-                | TxType::DelegateBond
-                | TxType::RevokeDelegation
-                | TxType::AddMaintainer
-                | TxType::RemoveMaintainer
-                | TxType::PriceAttestation
-        )
+    /// The `inputs.is_empty() && outputs.is_empty()` conjunct is constraint C2 —
+    /// the MINT GUARD. It lives HERE, not at the call site, so that a widened
+    /// type list can never on its own let a transaction with a value output skip
+    /// the balance check. Exemption is a property of (type AND shape), never of
+    /// type alone.
+    ///
+    /// The type half is [`TxType::allows_empty_io`], an exhaustive match with no
+    /// `_` arm whose true-set is curated by AUTHORIZATION rather than wire shape:
+    /// `Exit` and `SlashProducer` have exactly this shape but their apply handlers
+    /// accept an actor identity without verifying a signature, so they are
+    /// classified `false` (constraint C1) and routed to their own incidents.
+    ///
+    /// Spec: `specs/state-only-fee-gate-architecture.md` F1/F3, constraints C1/C2.
+    pub fn is_zero_flow(&self) -> bool {
+        self.inputs.is_empty() && self.outputs.is_empty() && self.tx_type.allows_empty_io()
     }
 
     /// Compute the transaction hash

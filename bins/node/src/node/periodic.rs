@@ -29,9 +29,29 @@ impl Node {
         }
     }
 
-    /// Bootstrap the maintainer set from the first 5 registered producers.
-    /// Called once at the epoch boundary where the 5th producer is first available.
-    /// After bootstrap, maintainer membership only changes via MaintainerAdd/Remove txs.
+    /// Seed the maintainer set from the first 5 registered producers.
+    ///
+    /// Reached from `apply_block/state_update.rs` on every applied block. Whether
+    /// that is a one-shot genesis seed or a per-block re-derivation is decided by
+    /// `NetworkParams::maintainer_derivation_activation_height` (INC-I-172 M2, F2):
+    ///
+    /// * **`height >= activation_height`** — ONE-SHOT. The seed fires only while
+    ///   the root has never been seeded (`members.is_empty()` AND
+    ///   `last_derived_height == 0`), and the ordering is the canonical total
+    ///   order. `members.is_empty()` is a sound "never seeded" test because
+    ///   governance can never empty the set: `can_remove()` requires
+    ///   `len > MIN_MAINTAINERS`. No new persisted field, therefore no
+    ///   `MAINTAINER_STATE_VERSION` bump.
+    /// * **`height < activation_height`** — the historical behavior, preserved
+    ///   byte-for-byte: guarded by `is_fully_bootstrapped()` (`len >= 5`), which
+    ///   re-derives the root from live producer state on EVERY block and reverts
+    ///   a successful `RemoveMaintainer` in ~10 s (AUDIT-P1-013 / FM-01). It is
+    ///   preserved because the root decides `ProtocolActivation` acceptance, which
+    ///   is consensus-visible: a node that holds a different root at a historical
+    ///   height disagrees with the fleet about which activations took effect.
+    ///
+    /// After the seed, maintainer membership only changes via
+    /// `AddMaintainer` / `RemoveMaintainer` transactions.
     pub async fn maybe_bootstrap_maintainer_set(&self, height: u64) {
         use doli_core::maintainer::INITIAL_MAINTAINER_COUNT;
 
@@ -40,32 +60,62 @@ impl Node {
             None => return,
         };
 
-        // Already bootstrapped?
+        // Chain-derived block height vs the constant gate — never a per-process
+        // counter (INV-SYNC-012).
+        let params = self.config.network.params();
+        let activation_height = params.maintainer_derivation_activation_height;
+        let one_shot = height >= activation_height;
+
+        // Already seeded? (post-activation) / already bootstrapped? (pre-activation)
         {
             let state = maintainer_state.read().await;
-            if state.set.is_fully_bootstrapped() {
+            if Self::maintainer_seed_is_done(&state, one_shot) {
                 return;
             }
         }
 
-        // Need at least INITIAL_MAINTAINER_COUNT producers to bootstrap
+        // Need enough registered producers to bootstrap.
+        //
+        // INC-I-172 M2 review F3: this precondition was the hardcoded
+        // `INITIAL_MAINTAINER_COUNT` (5). That is a SCALE ASSUMPTION, and on a
+        // network with fewer producers it left the root permanently empty —
+        // which above the gate is an ABSORBING dead-end (`ProtocolActivation`
+        // fails closed and an empty set cannot authorize the `AddMaintainer`
+        // that would repair it). Mainnet and testnet keep 5, so their seed path
+        // is byte-identical; devnet uses 2, matching `scripts/launch_testnet.sh`.
+        let seed_min = params.maintainer_seed_min_producers;
         let producers = self.producer_set.read().await;
-        let mut sorted: Vec<_> = producers.all_producers().into_iter().cloned().collect();
-        if sorted.len() < INITIAL_MAINTAINER_COUNT {
+        let all: Vec<_> = producers.all_producers().into_iter().cloned().collect();
+        if all.len() < seed_min {
             return;
         }
 
-        // Take the first 5 by registration height (deterministic)
-        sorted.sort_by_key(|p| p.registered_at);
-        let bootstrap_keys: Vec<_> = sorted
-            .into_iter()
-            .take(INITIAL_MAINTAINER_COUNT)
-            .map(|p| p.public_key)
-            .collect();
+        let bootstrap_keys: Vec<_> = if one_shot {
+            // ONE canonical derivation: total order (registered_at, pubkey_bytes).
+            // `crates/core` keeps its no-edge-to-`storage` boundary, so the
+            // ProducerInfo -> (public_key, registered_at) map happens here (C-R4).
+            let candidates: Vec<(crypto::PublicKey, u64)> = all
+                .iter()
+                .map(|p| (p.public_key, p.registered_at))
+                .collect();
+            doli_core::maintainer::derive_canonical_maintainer_set(&candidates, height).members
+        } else {
+            // PRE-ACTIVATION ONLY: HashMap-ordered `all_producers()` plus a STABLE
+            // sort on `registered_at`. Non-deterministic across nodes whenever more
+            // than five producers tie at the same height (AUDIT-P3-014); frozen
+            // because it is consensus history below the gate.
+            let mut sorted = all;
+            sorted.sort_by_key(|p| p.registered_at);
+            sorted
+                .into_iter()
+                .take(INITIAL_MAINTAINER_COUNT)
+                .map(|p| p.public_key)
+                .collect()
+        };
 
         let mut state = maintainer_state.write().await;
         // Double-check under write lock
-        if state.set.is_fully_bootstrapped() {
+        if Self::maintainer_seed_is_done(&state, one_shot) {
             return;
         }
 
@@ -79,8 +129,37 @@ impl Node {
             warn!("Failed to persist maintainer state: {}", e);
         }
 
+        // INC-I-172 M2 review F9 — OBSERVABILITY ONLY, no control-flow change.
+        //
+        // Above the gate the seed is ONE-SHOT, so reaching this line means the
+        // node held NO trust root at all. On a chain that had already passed the
+        // gate that combination has exactly one production cause: the trust-root
+        // file went missing (`rm maintainer_state.bin`), and the re-seed comes
+        // from LIVE producer state, re-arming any key governance removed (R1).
+        // PM-172-02 halts the node on a CORRUPTED file but says nothing about a
+        // DELETED one, i.e. the louder response was reserved for the harder
+        // attack; this closes the observability half of that asymmetry. The real
+        // fix — replay instead of re-seed — is M3/R1.
+        if one_shot {
+            error!(
+                "[MAINTAINER] Seeding the trust root at height {} which is AT OR ABOVE \
+                 maintainer_derivation_activation_height {}. Above the gate the seed is \
+                 ONE-SHOT, so this node held NO trust root. On a chain that had already \
+                 passed the gate this is the deleted-`maintainer_state.bin` re-seed path \
+                 (INC-I-172 R1): the root is rebuilt from LIVE producer state, so a \
+                 maintainer key that governance REMOVED is re-armed for binary installs. \
+                 Cross-check with `getMaintainerSet` on a known-good node before trusting \
+                 auto-update on this host. Benign ONLY on a chain whose gate was open from \
+                 genesis (devnet), where this is the first and only seed.",
+                height, activation_height
+            );
+        }
+
         info!(
-            "Bootstrapped maintainer set from first {} producers at height {} (keys: {})",
+            "Bootstrapped maintainer set from {} producers (precondition: {}, max seats: {}) \
+             at height {} (keys: {})",
+            bootstrap_keys.len(),
+            seed_min,
             INITIAL_MAINTAINER_COUNT,
             height,
             bootstrap_keys
@@ -89,6 +168,40 @@ impl Node {
                 .collect::<Vec<_>>()
                 .join(", ")
         );
+    }
+
+    /// Has the genesis seed already happened?
+    ///
+    /// INC-I-172 M2 (F2). `one_shot` is `height >= maintainer_derivation_activation_height`.
+    ///
+    /// * Post-activation the answer is "has this root EVER been seeded?" — the
+    ///   seed must never fire a second time, or a `RemoveMaintainer` is reverted
+    ///   on the next block. `members.is_empty()` is sound as a never-seeded test
+    ///   because governance cannot empty the set (`can_remove()` requires
+    ///   `len > MIN_MAINTAINERS`). `last_derived_height != 0` additionally keeps
+    ///   an emptied-but-stamped root (the M1 `TrustRoot` "attack case") failing
+    ///   closed instead of re-seeding to the genesis five. Neither term is a new
+    ///   persisted field, so `MAINTAINER_STATE_VERSION` does not move.
+    /// * Pre-activation the answer is the historical `len >= 5`, which is what
+    ///   makes the re-derivation reachable on every block. Frozen for replay.
+    ///
+    /// `pub(in crate::node)` and not private: `commit_maintainer_rewind`
+    /// (`maintainer_rewind/commit.rs`) must refuse to install any snapshot that would
+    /// leave this predicate FALSE, because the seed it arms runs on the very next applied
+    /// block. It used to spell the post-activation form out inline, which was correct only
+    /// above the gate — mainnet's gate is 172_000 and mainnet is below it, so a restored
+    /// set of 1..4 members re-armed the seed while the rewind reported success (INC-I-174
+    /// reviewer F2). One function, no copy: the same argument that keeps
+    /// `storage::validate_persisted_set` shared between the load and the rewind gate.
+    pub(in crate::node) fn maintainer_seed_is_done(
+        state: &storage::MaintainerState,
+        one_shot: bool,
+    ) -> bool {
+        if one_shot {
+            !state.set.members.is_empty() || state.last_derived_height != 0
+        } else {
+            state.set.is_fully_bootstrapped()
+        }
     }
 
     /// Run periodic tasks

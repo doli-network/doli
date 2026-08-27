@@ -61,6 +61,11 @@ pub(crate) fn cmd_new(wallet_path: &PathBuf, name: Option<String>) -> Result<()>
     println!("  Then delete the seed file:");
     println!("    rm {}", seed_path.display());
     println!();
+    println!("  These 24 words fully recover this wallet, including its BLS");
+    println!("  attestation key -- both are derived from the phrase. Keep an");
+    println!("  encrypted offline copy of the wallet file as well:");
+    println!("    {}", wallet_path.display());
+    println!();
 
     Ok(())
 }
@@ -140,7 +145,13 @@ pub(crate) async fn cmd_balance(
     address: Option<String>,
     show_all: bool,
 ) -> Result<()> {
-    let wallet = Wallet::load(wallet_path)?;
+    // INC-I-161: load the wallet only when it is actually read. An `--address`
+    // query is a pure RPC lookup of a CLI-supplied address and needs no key
+    // material; on a producer host `wallet.json` IS the signing key (mode 600).
+    let wallet = match &address {
+        Some(_) => None,
+        None => Some(Wallet::load(wallet_path)?),
+    };
     let rpc = RpcClient::new(rpc_endpoint);
 
     // Check connection first
@@ -201,9 +212,11 @@ pub(crate) async fn cmd_balance(
             .unwrap_or_else(|_| pubkey_hash.to_hex());
         vec![(pubkey_hash.to_hex(), display)]
     } else {
+        // `wallet` is `Some` on this branch by construction (it is loaded exactly
+        // when `address` is `None`); `Option::iter` keeps that structural.
         wallet
-            .addresses()
             .iter()
+            .flat_map(|w| w.addresses())
             .filter_map(|wallet_addr| {
                 let pubkey_bytes = hex::decode(&wallet_addr.public_key).ok()?;
                 let pubkey_hash =
@@ -271,7 +284,9 @@ pub(crate) async fn cmd_balance(
     }
 
     // Show totals
-    if !show_per_address {
+    // `wallet` is `Some` whenever `show_per_address` is false: it is loaded exactly
+    // when `address` is `None`, and `show_per_address = address.is_some() || show_all`.
+    if let (false, Some(wallet)) = (show_per_address, &wallet) {
         // Default: consolidated under primary address
         let primary_display = wallet.primary_bech32_address(address_prefix());
         let label = wallet.addresses()[0].label.as_deref().unwrap_or("");
@@ -781,18 +796,43 @@ pub(crate) async fn cmd_history(
     Ok(())
 }
 
-pub(crate) fn cmd_export(wallet_path: &Path, output: &PathBuf) -> Result<()> {
+pub(crate) fn cmd_export(wallet_path: &Path, output: &PathBuf, force: bool) -> Result<()> {
     let wallet = Wallet::load(wallet_path)?;
-    wallet.export(output)?;
+    // INC-I-167: export refuses to overwrite by default, because a stale or
+    // phrase-restored wallet writing over a good backup destroys the only copy of
+    // the registered BLS key. `--force` is the opt-in for rotating backups that
+    // deliberately reuse one filename.
+    if force {
+        if output.exists() {
+            println!("  WARNING: --force specified. Overwriting {:?}", output);
+        }
+        wallet.export_forced(output)?;
+    } else {
+        wallet.export(output)?;
+    }
 
     println!("Wallet exported to: {:?}", output);
 
     Ok(())
 }
 
-pub(crate) fn cmd_import(wallet_path: &PathBuf, input: &PathBuf) -> Result<()> {
+pub(crate) fn cmd_import(wallet_path: &PathBuf, input: &PathBuf, force: bool) -> Result<()> {
     let wallet = Wallet::import(input)?;
-    wallet.save(wallet_path)?;
+    // INC-I-167: import refuses to overwrite the active wallet by default — that
+    // file may hold the only copy of a producer BLS key. `--force` is the opt-in
+    // for a deliberate restore-over of a damaged or superseded wallet.
+    if force {
+        if wallet_path.exists() {
+            println!(
+                "  WARNING: --force specified. Overwriting existing wallet at {:?}",
+                wallet_path
+            );
+            println!("           Its keys, including any BLS producer key, will be lost.");
+        }
+        wallet.save_forced(wallet_path)?;
+    } else {
+        wallet.save(wallet_path)?;
+    }
 
     println!("Wallet imported from: {:?}", input);
     println!("Saved to: {:?}", wallet_path);
@@ -815,6 +855,31 @@ pub(crate) fn cmd_info(wallet_path: &Path) -> Result<()> {
         println!("  BLS Key:    {}", bls_pub);
     } else {
         println!("  BLS Key:    none (run 'doli add-bls' to generate)");
+    }
+    println!();
+    // INC-I-162: state plainly whether the seed phrase is a complete backup of
+    // THIS wallet. Before the version-3 marker existed, an operator had no way to
+    // find this out, and the answer decides whether losing the file loses a
+    // registered producer identity permanently.
+    println!("Backup:");
+    if wallet.bls_is_seed_derived() {
+        println!(
+            "  Wallet version {} — both keys are derived from your 24-word phrase.",
+            wallet.version()
+        );
+        println!("  The phrase is a COMPLETE backup of this wallet.");
+    } else {
+        println!(
+            "  Wallet version {} — the BLS producer key is RANDOM, not derived",
+            wallet.version()
+        );
+        println!("  from your seed phrase. The 24 words restore your address and funds,");
+        println!("  but NOT your registered producer identity.");
+        println!("  This file is the only copy of that key. Back up the file itself.");
+        if wallet.primary_bls_public_key().is_some() {
+            println!("  To confirm a producer still matches the chain, compare the BLS Key");
+            println!("  above with getProducer -> blsPubkey for this address.");
+        }
     }
     println!();
     println!("Use the address above for sending and receiving DOLI.");

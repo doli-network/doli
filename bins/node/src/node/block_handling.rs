@@ -674,6 +674,19 @@ impl Node {
                 .map(|b| b.header.slot)
                 .unwrap_or(0);
 
+            // INC-I-174: decide the maintainer trust-root rewind NOW, while every block
+            // in the rolled-back range is still reachable through the height index — the
+            // fossil purge below (`remove_canonical_entry`) makes them unreadable. Pure
+            // reads; the mutation happens in `commit_maintainer_rewind` after
+            // `atomic_replace`. THE SAME two functions `rollback_one_block` calls: this
+            // is an independent rollback loop, and INC-I-040 is the precedent for a fix
+            // that lands in `rollback.rs` alone and leaves this path broken.
+            //
+            // Deliberately OUTSIDE the `has_undo` branch: the maintainer record is keyed
+            // independently of `UndoData`, so it survives — and is still restorable —
+            // even when the range drops to the legacy rebuild.
+            let maintainer_plan = self.plan_maintainer_rewind(target_height + 1, current_height);
+
             // Undo-based rollback: apply undo data in reverse from current_height to target_height+1.
             // This is O(rollback_depth) instead of O(chain_height).
             // Fallback: if undo data is missing (pre-undo blocks), use legacy rebuild.
@@ -963,6 +976,21 @@ impl Node {
                     .atomic_replace(&state, &producers, utxo_pairs.into_iter())
                     .map_err(|e| anyhow::anyhow!("Reorg StateDb atomic_replace failed: {}", e))?;
             }
+
+            // INC-I-174: rewind the maintainer trust root — same helper, same placement
+            // rule as `rollback_one_block` (after `atomic_replace`, so the trust-root
+            // write is never added to the AUDIT-P1-201 half-applied window). It MUST run
+            // before the new branch's blocks are applied below, or a winning branch that
+            // re-mines the same rotation hits `Err(AlreadyMaintainer)` — membership is
+            // idempotent, `last_updated` is not — and `last_change_block` keeps naming a
+            // block that is no longer on any chain (REQ-174-007).
+            //
+            // REQ-174-005 AC-3 — and it runs BEFORE the rebuild-marker clear below, whose
+            // `?` would otherwise return with the chain rewind already durable and the
+            // trust root still carrying the dropped rotation, announcing nothing. Kept
+            // byte-for-byte in the same order as `rollback_one_block` (INC-I-040).
+            self.commit_maintainer_rewind(maintainer_plan, target_height)
+                .await;
 
             // INC-I-156 / AUDIT-P1-001: disarm ONLY here, and ONLY if this call
             // armed it — the durable set is a complete state again.

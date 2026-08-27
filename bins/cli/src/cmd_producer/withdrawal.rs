@@ -7,6 +7,10 @@ use crate::common::address_prefix;
 use crate::rpc_client::{format_balance, RpcClient};
 use crate::tx_retention::{self, Retention};
 use crate::wallet::Wallet;
+use doli_cli::producer_ledger::{
+    max_withdrawable, producer_set_allowance, select_bond_inputs_by_count,
+    withdrawal_ledger_mismatch,
+};
 
 pub(super) async fn handle_request_withdrawal(
     wallet: &Wallet,
@@ -40,8 +44,29 @@ pub(super) async fn handle_request_withdrawal(
     let pk = wallet.addresses()[0].public_key.clone();
     let details = rpc.get_bond_details(&pk).await?;
 
-    let available = details.bond_count - details.withdrawal_pending_count;
-    if count > available {
+    // INC-I-180: derive the allowance from the ProducerSet, not the UTXO ledger.
+    let info = rpc.get_producer(&pk).await?;
+    let received_total: u64 = info
+        .received_delegations
+        .iter()
+        .map(|d| d.bond_count as u64)
+        .sum();
+    let allowance_p = producer_set_allowance(
+        info.selection_weight,
+        received_total,
+        info.delegated_bonds as u64,
+    );
+    if withdrawal_ledger_mismatch(details.bond_count as u64, allowance_p) {
+        anyhow::bail!(
+            "Ledger mismatch: wallet shows {} Bond UTXO(s) but the ProducerSet allowance is {}. \
+             The node would reject or misapply this withdrawal. Aborting — retry after the next \
+             epoch boundary flushes pending bond changes.",
+            details.bond_count,
+            allowance_p
+        );
+    }
+    let available = max_withdrawable(allowance_p, details.withdrawal_pending_count as u64);
+    if count as u64 > available {
         anyhow::bail!(
             "--count must be between 1 and {} (your available bonds)",
             available
@@ -51,6 +76,10 @@ pub(super) async fn handle_request_withdrawal(
     // Show bond inventory
     let s = &details.summary;
     println!("Your bonds ({} total):", details.bond_count);
+    println!(
+        "Ledger check — UTXO bonds: {}, ProducerSet allowance: {}",
+        details.bond_count, allowance_p
+    );
     if s.vested > 0 {
         println!("  {} bonds — vested (0% penalty)", s.vested);
     }
@@ -119,17 +148,16 @@ pub(super) async fn handle_request_withdrawal(
         );
     }
 
-    // Select Bond UTXOs to cover bond_count x bond_unit (any order)
+    // AUDIT-P2-003: bind selection to COUNT, not value — emit exactly `count` Bond inputs.
+    let bond_amounts: Vec<u64> = bond_utxos.iter().map(|u| u.amount).collect();
+    let selected_idx =
+        select_bond_inputs_by_count(&bond_amounts, count).map_err(|e| anyhow::anyhow!(e))?;
     let mut bond_inputs: Vec<Input> = Vec::new();
-    let mut bond_input_total = 0u64;
-    for utxo in &bond_utxos {
-        if bond_input_total >= required_bond_value {
-            break;
-        }
+    for &i in &selected_idx {
+        let utxo = &bond_utxos[i];
         let prev_tx_hash = Hash::from_hex(&utxo.tx_hash)
             .ok_or_else(|| anyhow::anyhow!("Invalid Bond UTXO tx_hash"))?;
         bond_inputs.push(Input::new(prev_tx_hash, utxo.output_index));
-        bond_input_total += utxo.amount;
     }
 
     // Select a normal UTXO to cover the tx fee

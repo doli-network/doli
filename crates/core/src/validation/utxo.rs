@@ -219,12 +219,33 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
     // State-only transactions (0 inputs, 0 outputs): exempt from balance + fee checks.
     // - Genesis Registration: protocol-generated VDF proof
     // - DelegateBond / RevokeDelegation: state-only delegation ops (no UTXO movement)
-    let is_state_only_tx = tx.inputs.is_empty()
-        && tx.outputs.is_empty()
-        && matches!(
-            tx.tx_type,
-            TxType::Registration | TxType::DelegateBond | TxType::RevokeDelegation
-        );
+    //
+    // INC-I-173: the list below is hand-maintained and had drifted from every
+    // other "state-only" definition in the tree, so AddMaintainer /
+    // RemoveMaintainer (0-in/0-out, mempool-admitted, relayed, apply handlers
+    // implemented) could never be mined. Above the gate the decision moves to
+    // the ONE exhaustive `TxType::allows_empty_io()` authority wrapped by
+    // `Transaction::is_zero_flow()`, which keeps the 0-in/0-out conjunct
+    // non-bypassable (C2, the mint guard) and adds a new tx type as a BUILD
+    // failure instead of a silent defect. The exempt set is curated by
+    // AUTHORIZATION, so `Exit` / `SlashProducer` stay out (C1).
+    //
+    // Below the gate the original expression is retained CHARACTER-IDENTICAL —
+    // it is frozen consensus history (INV-COMPAT-001), and ~30 external
+    // auto-update producers run mixed versions across that whole range.
+    // The height is the BLOCK's height from the context (C4), and the gate lives
+    // here — inside the shared validator — so builder/apply parity holds by
+    // construction (INV-PROD-003). Twin idiom at inc_i_096 below.
+    let is_state_only_tx = if ctx.current_height >= ctx.inc_i_173_activation_height {
+        tx.is_zero_flow()
+    } else {
+        tx.inputs.is_empty()
+            && tx.outputs.is_empty()
+            && matches!(
+                tx.tx_type,
+                TxType::Registration | TxType::DelegateBond | TxType::RevokeDelegation
+            )
+    };
     if !is_state_only_tx {
         let total_output = tx.total_output();
 

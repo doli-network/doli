@@ -1,11 +1,29 @@
-//! Update watchdog — detects post-update crashes and auto-rolls back.
+//! Update watchdog — post-update crash detection and rollback.
 //!
-//! After an update is applied, the watchdog monitors for crashes within
-//! a configurable window. If crash_threshold crashes occur within
-//! crash_window_secs, the watchdog triggers an automatic rollback.
+//! # NOT WIRED. This module has ZERO production callers. (INC-I-172 M1, AUDIT-P1-014)
 //!
-//! At 150K nodes, this works because each node independently monitors
-//! its own crash history — no coordination needed.
+//! Nothing in `bins/node` or `bins/cli` constructs an [`UpdateWatchdog`], calls
+//! [`UpdateWatchdog::record_update`], [`UpdateWatchdog::record_clean_shutdown`] or
+//! [`UpdateWatchdog::check_and_maybe_rollback`], and `UpdateConfig::auto_rollback` is
+//! written in three places and read in none. **No automatic post-update rollback happens
+//! on any DOLI node today.** If a release crashes a node, the node stays down until an
+//! operator intervenes per host — and auto-update is enabled by default.
+//!
+//! This notice is deliberate. INC-I-172 M1 exists to retire documented-but-absent
+//! controls, and it would be self-defeating to leave the largest one in the update system
+//! reading as if it were live. The code is kept (rather than deleted) because wiring it is
+//! a real remediation someone will want; it is NOT kept because it is doing anything.
+//!
+//! Do not cite this module, `--no-auto-rollback`, `crash_window_secs` or `crash_threshold`
+//! as a live control in docs, operator output or a security argument until a caller
+//! exists. Manual rollback ([`crate::rollback`]) is the only rollback there is.
+//!
+//! ## Design intent, for whoever wires it
+//!
+//! After an update is applied, the watchdog monitors for crashes within a configurable
+//! window. If `crash_threshold` crashes occur within `crash_window_secs`, it triggers a
+//! rollback. At 150K nodes this works because each node independently monitors its own
+//! crash history — no coordination needed.
 
 use doli_core::network::Network;
 use serde::{Deserialize, Serialize};
@@ -96,10 +114,7 @@ impl UpdateWatchdog {
         let mut state = WatchdogState::load(&self.data_dir);
 
         // No update recorded — nothing to watch
-        let update_version = match &state.last_update_version {
-            Some(v) => v.clone(),
-            None => return None,
-        };
+        let update_version = state.last_update_version.clone()?;
 
         // Last shutdown was clean — update is stable, clear crash history
         if state.clean_shutdown {

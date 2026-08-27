@@ -49,7 +49,7 @@ Master index for all DOLI documentation.
 |------|-------------|
 | [manifesto.md](./manifesto.md) | Project philosophy and principles |
 | [roadmap.md](./roadmap.md) | Development roadmap and milestones |
-| [auto_update_system.md](./auto_update_system.md) | Complete auto-update system - maintainer keys, voting, binary replacement |
+| [auto_update_system.md](./auto_update_system.md) | Complete auto-update system - fail-closed TrustRoot release verification (INC-I-172 F1), distinct-signer 3-of-5, node-local veto/grace timing, count-based 40% producer veto (the seniority-weighted veto was deleted in INC-I-172 F8), binary replacement, rollback |
 
 ## Testing & Research
 
@@ -57,7 +57,7 @@ Master index for all DOLI documentation.
 |------|-------------|
 | [whitepaper_test_plan.md](./whitepaper_test_plan.md) | Complete test plan for ALL WHITEPAPER functionalities |
 | [battle_test.md](./battle_test.md) | Battle testing scenarios and results |
-| [attack_analysis.md](./attack_analysis.md) | Security analysis and attack vectors |
+| [attack_analysis.md](./attack_analysis.md) | Security analysis and attack vectors. Carries a correction banner (INC-I-172 F8): every claim that a VETO vote is seniority-weighted is false; the veto is a producer head count whose only Sybil barrier is the registration bond |
 | [extreme_devnet_600.md](./extreme_devnet_600.md) | Extreme network testing results |
 
 ## Redesign Analysis
@@ -73,6 +73,9 @@ Master index for all DOLI documentation.
 | [redesigns/sync-snap-admission-redesign-analysis.md](./redesigns/sync-snap-admission-redesign-analysis.md) | SnapSync admission analyst scoping (INC-I-139) -- capability inventory (1 chokepoint X1, 3-term OR guard, 7 funnel feeders B1-B7, 1 redirect A1), BRITTLE verdict 4/5, 12 requirements (REQ-SNAP-001..012), zero-margin coupling (threshold==MINOR_FORK_GAP_MAX==50), 4 open questions. Input to `specs/sync-snap-admission-architecture.md`. |
 | [redesigns/state-root-redesign-analysis.md](./redesigns/state-root-redesign-analysis.md) | State-root / 3-state commitment analyst scoping -- verified the root is NOT block-consensus-validated (no BlockHeader field, zero comparisons; snap-sync quorum anchor + diagnostics only), corrected call-site count 15->6, identified the dominant cost as the full CF_UTXO scan + deserialize + re-serialize + alloc (state_db/queries.rs:473) not BLAKE3, ~15-21x headroom vs the 16 MB metric. 10 requirements (REQ-SROOT-001..010). Input to `specs/state-root-commitment-architecture.md`. |
 | [redesigns/attestation-verification-redesign-analysis.md](./redesigns/attestation-verification-redesign-analysis.md) | Attestation/vote verification scaling analyst scoping (INC-I-141) -- falsified the premise (per-block O(N) attestation verify does NOT exist on the live path; BLS aggregate verify is unreachable dead code; producer_bls_keys never populated), located the real O(N) term on the gossip-receive path (per-attestation Ed25519, off block critical path), 9 requirements (REQ-ATT-001..009). NOTE: its §1.2 topic claim (VOTES_TOPIC) is WRONG -- live topic is ATTESTATION_TOPIC (corrected in the spec). Input to `specs/attestation-gossip-scaling-architecture.md`. |
+| [redesigns/maintainer-trust-root-redesign-analysis.md](./redesigns/maintainer-trust-root-redesign-analysis.md) | Maintainer / update-signing trust-root analyst scoping (INC-I-172) -- verified-claims table (5 corrections: veto is 5min not 7 days, unweighted not seniority-weighted, run.rs BLAKE3 blocker FALSE, no replay-from-genesis derivation, no consensus signature check), capability inventory (24 TxTypes, MaintainerSet 14 methods, 4 updater verify fns), veto-math verdict (compromised quorum defeats veto but NOT via seniority), F1 quorum already fully public (5/5, ~138 days), MoSCoW REQ-172-001..019. Input to `specs/maintainer-trust-root-architecture.md`. |
+| [redesigns/state-only-fee-gate-redesign-analysis.md](./redesigns/state-only-fee-gate-redesign-analysis.md) | State-only tx fee-gate analyst scoping (INC-I-173) -- confirmed the 3-type utxo.rs:222 list is narrower than is_state_only() (9), so AddMaintainer/RemoveMaintainer + SlashProducer + ProtocolActivation are admitted/relayed but never mineable; 4 corrections (naive is_state_only() swap breaks genesis Registration; ProtocolActivation dies earlier at mempool FeeTooLow; ClaimReward/ClaimBond fail the balance check not the fee check -> conjunct is the mint guard; SlashProducer is node-generated and the highest-severity casualty). Root cause = drift between 5 hand-maintained lists (INC-I-057 precedent, ungated). INV-12 = activation height REQUIRED. 18 requirements (REQ-173-001..018), BRITTLE verdict. Input to `specs/state-only-fee-gate-architecture.md`. |
+| [redesigns/maintainer-authorization-redesign-analysis.md](./redesigns/maintainer-authorization-redesign-analysis.md) | Maintainer authorization analyst scoping (INC-I-176) -- verified capability inventory, the ONE verification site (governance.rs:39,75, Option-return non-fatal), the shared-validator structural-only check (tx_types.rs:753), unauthenticated RPC, byte-identical mainnet/testnet key arrays, INV-12 = activation height REQUIRED (#22), BRITTLE 3/5, acceptance criteria REQ-176-NNN. Input to `specs/maintainer-authorization-architecture.md` (5-evaluator convergence synthesis, PROPOSAL-ONLY). |
 
 ## Legacy
 

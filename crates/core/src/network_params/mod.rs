@@ -28,11 +28,17 @@ use crate::Network;
 mod chainspec_loader;
 mod defaults;
 mod env_loader;
+mod ordering;
 #[cfg(test)]
 mod tests;
 
 #[cfg(test)]
 mod tests_oracle;
+
+/// INC-I-176 M2 review F4 — the `#22 >= #20` ordering on the RUNTIME (env-loaded)
+/// path, which `defaults()`-based tests cannot observe.
+#[cfg(test)]
+mod tests_ordering;
 
 pub use chainspec_loader::apply_chainspec_defaults;
 pub use env_loader::{get_default_data_dir, init_env_for_network, load_env_for_network};
@@ -121,7 +127,9 @@ pub struct NetworkParams {
     pub min_voting_age_secs: u64,
     /// Update check interval in seconds
     pub update_check_interval_secs: u64,
-    /// Crash window for automatic rollback in seconds
+    /// Crash window in seconds for the UNWIRED update watchdog.
+    /// NOT a live control — `updater::watchdog` has zero production callers, so no
+    /// automatic rollback exists (INC-I-172 AUDIT-P1-014).
     pub crash_window_secs: u64,
     /// Maximum registrations per block
     pub max_registrations_per_block: u32,
@@ -319,9 +327,7 @@ pub struct NetworkParams {
     /// Three-question gate verdict: Q1=YES, Q3=NO → activation height REQUIRED.
     /// Once crossed, this height is immutable.
     ///
-    /// Defaults to `u64::MAX` everywhere; operator picks a concrete future
-    /// height before deployment. The cap and auth heights can co-deploy at the
-    /// same value to ship the bundle atomically.
+    /// Defaults: mainnet `0`, testnet `0`, devnet `u64::MAX`.
     pub delegation_auth_activation_height: u64,
 
     /// INC-I-080: Height at which the per-producer AddBond cap is enforced.
@@ -346,11 +352,13 @@ pub struct NetworkParams {
     /// `CURRENT_PROTOCOL_VERSION` bump (EpochState unchanged); no
     /// `HardForkSchedule` entry (pure validation rule); rolling-deploy safe.
     ///
-    /// Defaults: mainnet `u64::MAX` (operator pins a concrete future height in
-    /// a separate commit), testnet `0` (active from genesis), devnet
-    /// `u64::MAX` (disabled; cap tests opt in via explicit args — mirrors the
-    /// INC-I-078 devnet default).
+    /// Defaults: mainnet `0`, testnet `0`, devnet `u64::MAX` (cap tests opt in).
     pub addbond_cap_enforcement_activation_height: u64,
+
+    /// INC-I-180: at and above this height a `RequestWithdrawal` exceeding the
+    /// producer's bond holdings invalidates the block (`validate_block_economics`,
+    /// pre-mutation; apply mirrors it). m/t/d: `u64::MAX` / `230_000` / `20`. IMMUTABLE.
+    pub withdrawal_holdings_gate_activation_height: u64,
 
     /// INC-I-088 Phase 0 / B.1+B.2 update: originally gated all non-AMM
     /// DeFi tx types. All 7 are now tombstoned (5 lending B.1, 2 NFT-frac
@@ -533,6 +541,265 @@ pub struct NetworkParams {
     /// testnet `80_700` (pinned at tip 80_544, crossed — active), devnet `0`.
     /// Mainnet IMMUTABILITY (INC-I-054): once crossed, never move forward.
     pub inc_i_147_activation_height: u64,
+
+    /// INC-I-172 M2: maintainer trust-root derivation, governance counter and
+    /// `ProtocolActivation` fail-close.
+    ///
+    /// ONE constant gate covering four behaviors that all decide which
+    /// governance transactions take effect (full rationale in
+    /// `specs/maintainer-trust-root-architecture.md` §F2/§F3/§F4):
+    ///
+    /// * **F2 one-shot seed** — the root was re-derived from live producer state
+    ///   on EVERY applied block, so a successful `RemoveMaintainer` was reverted
+    ///   ~10 s later. Above the gate the genesis seed fires only once.
+    /// * **F2 canonical derivation** — `all_producers()` is a `HashMap::values()`
+    ///   walk and every genesis producer ties at `registered_at == 0`, so a stable
+    ///   sort picked a random 5-subset. Above the gate the order is the TOTAL
+    ///   order `(registered_at, pubkey_bytes)`.
+    /// * **F3 distinct-signer counter** — `verify_multisig` counted signature
+    ///   ENTRIES, so three copies of ONE key cleared a "3-of-5" threshold
+    ///   (AUDIT-P0-010). Above the gate: distinct signers only.
+    /// * **F4 fail-close** — an unusable on-chain root silently reverted
+    ///   `ProtocolActivation` to PRODUCER-KEY authority. Above the gate it fails
+    ///   closed.
+    ///
+    /// Deploy questions (INC-I-075 three-question checklist): Q1 **YES**
+    /// (`AddMaintainer`/`RemoveMaintainer`/`ProtocolActivation` are all
+    /// user-submittable and all four behaviors above change which of them take
+    /// effect), Q2 **YES** (producer `registered_at` is an input), Q3 **NO** ⇒
+    /// **ACTIVATION HEIGHT REQUIRED**. Block CONTENT unchanged
+    /// (tx/coinbase/header shapes untouched) ⇒ no synchronized deploy. Protocol
+    /// version NOT bumped (no `EpochState` format change; INC-I-054).
+    /// **CONSTANT GATE, never a `HardForkSchedule` entry** — `current_fork_id`
+    /// evaluates the schedule at `u64::MAX`, which would activate the entry
+    /// immediately and partition a rolling deploy.
+    ///
+    /// **Precision on Q1 (corrected 2026-08-10, INC-I-172 M2 QA OBS-004).** A
+    /// `ProtocolActivation` accept/reject divergence is **NOT** state-root-visible
+    /// *today*, so "activation acceptance is consensus-visible" — the reason first
+    /// written here — was WRONG as stated. Two facts:
+    /// `ChainState::serialize_canonical` (`crates/storage/src/chain_state.rs`) is a
+    /// fixed 140-byte buffer that contains neither `active_protocol_version` nor
+    /// `pending_protocol_activation`, and `is_protocol_active`
+    /// (`crates/core/src/consensus/constants.rs`) has zero production callers, so
+    /// `active_protocol_version` currently gates nothing. The gate is kept anyway,
+    /// and that is the RIGHT call: `active_protocol_version` exists precisely to be
+    /// read by a future consensus rule, and the moment anything reads it the claim
+    /// becomes true retroactively over history this gate already governs.
+    /// "Currently unused" is never a valid skip (INC-I-075, INV-12).
+    ///
+    /// Defaults — maintainer_derivation_activation_height: mainnet `172_000`
+    /// (pinned 2026-08-10 at live tip 162_727 via `getChainInfo`, ~9_273 blocks
+    /// ≈ 25.8 h of lead at 10 s slots, matching the INC-I-147 / AMM pin
+    /// precedent), testnet `127_200` (pinned at live tip 126_801, ~400 blocks),
+    /// devnet `0`. Because the mainnet height is in the FUTURE at pin time, no
+    /// already-executed `ProtocolActivation` is reinterpreted.
+    /// Mainnet IMMUTABILITY (INC-I-054): once crossed, never move forward.
+    pub maintainer_derivation_activation_height: u64,
+
+    /// INC-I-173: state-only fee/balance exemption derived from ONE exhaustive
+    /// `TxType::allows_empty_io()` authority instead of a hand-maintained list.
+    ///
+    /// The fee gate in `validation/utxo.rs` carried its own 3-type `matches!`
+    /// (`Registration | DelegateBond | RevokeDelegation`) that had drifted from
+    /// every other "state-only" definition in the tree. `AddMaintainer` and
+    /// `RemoveMaintainer` are 0-in/0-out, are admitted to the mempool, are
+    /// relayed and have fully implemented apply handlers — but the block builder
+    /// skipped them every slot and every node rejected a block containing one.
+    /// The governance transactions INC-I-172 exists to make usable could never
+    /// be mined.
+    ///
+    /// At/after this height (strict `>=`) the exemption is
+    /// `Transaction::is_zero_flow()` = 0 inputs AND 0 outputs AND
+    /// `TxType::allows_empty_io()`, whose true-set is curated by AUTHORIZATION:
+    /// `{Registration, DelegateBond, RevokeDelegation, AddMaintainer,
+    /// RemoveMaintainer}`. `Exit` and `SlashProducer` share the same wire shape
+    /// but their apply handlers authenticate nobody, so they stay excluded
+    /// (constraint C1) and are routed to their own incidents. Below the height
+    /// the legacy 3-type expression is retained character-identical
+    /// (INV-COMPAT-001) so a mixed fleet cannot fork.
+    ///
+    /// Deploy questions (INC-I-075 three-question checklist): Q1 **YES**
+    /// (`AddMaintainer`/`RemoveMaintainer` are user-submittable via RPC
+    /// `submitMaintainerChange`), Q2 **YES** (`SlashProducer` is node-generated
+    /// on equivocation and reaches the same classification path), Q3 **NO** (a
+    /// block containing a 0-fee `AddMaintainer` flips REJECT → ACCEPT) ⇒
+    /// **ACTIVATION HEIGHT REQUIRED**. Block CONTENT changes above the gate, so
+    /// the height converts a synchronized-deploy requirement into a
+    /// fleet-upgrade deadline. Protocol version NOT bumped (no `EpochState`
+    /// format change; INC-I-054). **CONSTANT GATE, never a `HardForkSchedule`
+    /// entry** — `current_fork_id` evaluates the schedule at `u64::MAX`, which
+    /// would activate the entry immediately and partition a rolling deploy.
+    ///
+    /// Defaults — inc_i_173_activation_height: mainnet `u64::MAX` (fail-closed;
+    /// the real value is pinned at release against the live tip plus the
+    /// external auto-update window, per the M4 sequencing in the spec), testnet
+    /// `133_000` (re-pinned 2026-08-10 at live tip 130_291, 2_709 blocks
+    /// ≈ 7.53 h of lead at a measured 10.00 s/block; see the re-pin history in
+    /// `defaults.rs`), devnet `0`.
+    /// Mainnet IMMUTABILITY (INC-I-054): once crossed, never move forward.
+    pub inc_i_173_activation_height: u64,
+
+    /// INC-I-176 M2 (#22): WHICH MESSAGE a maintainer signs to authorize an
+    /// `AddMaintainer` / `RemoveMaintainer`.
+    ///
+    /// Read at the single NON-FATAL apply site
+    /// `bins/node/src/node/apply_block/governance.rs`, in the `AddMaintainer` and
+    /// `RemoveMaintainer` arms ONLY. `ProtocolActivation` (`activate:{v}:{e}`,
+    /// `maintainer/data.rs`) is **UNTOUCHED but NOT CLEARED** (AUDIT-P1-101): same
+    /// collision class, same 5-key root, no genesis binding, no expiry, ungated at
+    /// every height. It needs its own milestone and its own activation height — do
+    /// NOT wire #22 into it.
+    ///
+    /// ```text
+    /// height <  #22  ->  signing_message_legacy(is_add, target)
+    ///                    = format!("{}:{}", "add"|"remove", target.to_hex())
+    /// height >= #22  ->  signing_message(genesis_hash, is_add, target,
+    ///                                    MAINTAINER_AUTH_VALID_BEFORE_UNSET)
+    ///                    = BLAKE3_256(b"DOLI-MAINTAINER-CHANGE-V1" || genesis
+    ///                                 || is_add || target || valid_before_le)
+    /// ```
+    ///
+    /// It is the MECHANISM that closes **AUDIT-P0-011** (release-signature
+    /// collision: the release family is `format!("{}:{}", version, binary_sha256)`,
+    /// so `--version add --hash <target-hex>` is BYTE-IDENTICAL to a legacy
+    /// maintainer authorization and a maintainer who signs a release approval mints
+    /// a permanent seat) and **AUDIT-P1-016** (cross-network replay: the mainnet and
+    /// testnet `BOOTSTRAP_MAINTAINER_KEYS_*` arrays have been byte-identical, so
+    /// membership alone never distinguished the networks and a testnet signature
+    /// authorized the same change on mainnet).
+    ///
+    /// **FORWARD-ONLY at and above #22, and NOT yet in force on either live
+    /// network** (AUDIT-P1-102): mainnet #22 is UNPINNED, so both defects stay
+    /// **OPEN** there until M4 pins a height; testnet activates at `300_000`
+    /// (uncrossed); devnet at `20` is the only surface executing the bound arm
+    /// today. `u64::MAX` is fail-CLOSED against premature activation **and**
+    /// fail-OPEN for the defect — neither half may be quoted alone. Full statement:
+    /// "M2 CLAIM SCOPE" in `specs/maintainer-authorization-architecture.md`.
+    ///
+    /// **CONSTANT GATE, never a `HardForkSchedule` entry** — `current_fork_id`
+    /// evaluates the schedule at `u64::MAX`, which would make the entry active in
+    /// `fork_id` IMMEDIATELY and partition a rolling deploy (CLAUDE.md "If You
+    /// Touch" / INV-8).
+    ///
+    /// **IMMUTABLE once crossed** (INV-PARAMS-001 / INC-I-054).
+    ///
+    /// # Binding ordering — REV-176-M1a-001
+    ///
+    /// * `#22 >= maintainer_derivation_activation_height` (#20). SECURITY-CRITICAL
+    ///   and it holds on all three networks. Below #20 the historical
+    ///   ENTRY-COUNTING multisig counter is in force, where three signature entries
+    ///   from ONE key clear a 3-of-5 threshold. A #22 below #20 would open a band
+    ///   in which the stronger, chain-bound message is verified by the weaker,
+    ///   pre-INC-I-172 counter — AUDIT-P1-016's binding live while AUDIT-P0-010's
+    ///   defect is re-armed underneath it. The stronger message must never arrive
+    ///   before the stronger counter.
+    /// * `#22 <= inc_i_173_activation_height` (#21), which is the gate that made
+    ///   `AddMaintainer` / `RemoveMaintainer` MINEABLE at all. Ordered this way,
+    ///   nothing is ever mined under the unbound legacy message on that network.
+    ///   It holds on MAINNET only, and each of the two breaks is recorded:
+    ///   **On DEVNET this second bound is EXEMPTED** (`20 <= 0` is false;
+    ///   user-decided 2026-08-13, see "DEVNET EXEMPTION from the `#22 <= #21` half"
+    ///   in `specs/maintainer-authorization-architecture.md`). The window it closes
+    ///   — mineable but unbound authorizations — threatens only a chain with
+    ///   persistent history and value, and devnet has neither: fresh genesis every
+    ///   run, local-only, no adversary. Only this half is exempted; the `>= #20`
+    ///   half above is UNCONDITIONAL on every network, including devnet
+    ///   (`20 >= 0`). The exemption is devnet-only and must never be generalised.
+    ///   **On testnet this second bound is UNSATISFIABLE and is ACCEPTED**: #21 is
+    ///   `136_431` and it has been CROSSED — the measured live tip is `154_399`
+    ///   (read-only `getChainInfo` against the local testnet on `127.0.0.1`,
+    ///   2026-08-13) — and a crossed height is consensus history that may never be
+    ///   moved. No value above the tip can satisfy `#22 <= 136_431`, and pinning
+    ///   #22 at or below `136_431` would make it retroactive, which is strictly
+    ///   worse. The accepted residual is the unbound `add_maintainer` already in
+    ///   testnet history at block 136_690; the local testnet runs exclusively on
+    ///   `127.0.0.1` and is unreachable from the internet, so the AUDIT-P0-011
+    ///   collision has no remote attacker surface there. Mainnet carries no such
+    ///   residual: both #21 and #22 are `u64::MAX`.
+    ///
+    /// # Deploy questions
+    ///
+    /// INC-I-075 three-question checklist: Q1 **YES** (`AddMaintainer` /
+    /// `RemoveMaintainer` are user-submittable via RPC `submitMaintainerChange`),
+    /// Q2 **NO** for this path, Q3 **NO** (above the gate a signature over the
+    /// legacy bytes stops verifying and one over the bound bytes starts verifying)
+    /// ⇒ **ACTIVATION HEIGHT REQUIRED**. Block CONTENT: **NO** — the maintainer set
+    /// is node-local and is not in the state root (INC-I-172), and this site is
+    /// NON-FATAL, so no synchronized stop-all deploy is required; a fleet that
+    /// straddles #22 risks trust-root fragmentation, not a chain fork. Protocol
+    /// version NOT bumped (no `EpochState` format change; INC-I-054).
+    ///
+    /// **THAT "NO" IS SCOPED TO M2's MESSAGE-SELECTION CHANGE ALONE, AND THE PLAN
+    /// FALSIFIES IT LATER (M2 review F3).** The milestone plan attaches **M2.5's v2
+    /// wire-shape EMISSION to this SAME height**. A v2 payload is a bincode shape an
+    /// M2-or-older binary cannot decode, and the decode at
+    /// `crates/core/src/validation/tx_types.rs:809` is FATAL and height-UNGATED — so
+    /// once M2.5 attaches, crossing #22 becomes a **block-content event that DOES
+    /// require a synchronized deploy**, and the whole fleet must already be on the
+    /// M2.5+ binary BEFORE #22 is crossed. Re-read this answer at M2.5; do not quote
+    /// the "NO" above once a v2 emitter exists. If M2.5 cannot land before #22 is
+    /// crossed, it must take its OWN height #23 instead of sharing this one.
+    ///
+    /// **ROLLOUT PREREQUISITE, NOT A DEFECT IN M2 (M2 review F1 / audit AUDIT-P1-103).**
+    /// The first successful rotation this gate makes possible trips the still-live,
+    /// UNGATED containment at `crates/updater/src/trust_root.rs:155-169`, which refuses
+    /// EVERY release install once the maintainer set differs from the compiled bootstrap
+    /// five. The rotation therefore disables auto-update on exactly the nodes that apply
+    /// it. That containment must be removed or gated as part of M4 / the INC-I-175 key
+    /// rotation, and there is currently NO code-level interlock enforcing that order.
+    ///
+    /// Defaults — inc_i_176_auth_binding_activation_height: mainnet `u64::MAX`
+    /// (UNPINNED in M2, fail-closed against premature activation while leaving the
+    /// collision itself OPEN on mainnet — the same posture `inc_i_173_activation_height`
+    /// shipped with, and freely re-pinnable at release once the live tip and the
+    /// external auto-update window are re-verified; a literal invented today would
+    /// become IMMUTABLE the moment the chain crossed it), testnet `300_000`
+    /// (re-measured tip `156_149` on 2026-08-13T18:47Z, margin `143_851` blocks;
+    /// at the MEASURED rate of 10.63 s/block ≈ 94% slot fill that is ≈ 17.7 days,
+    /// projected crossing ~2026-08-30 — the earlier "16.1% fill" figure was a chain
+    /// LIFETIME average and understated the crossing risk ~6x, so it is superseded;
+    /// sized so M2.5, M3 and M4 all land before the chain
+    /// crosses it), devnet `20` — NOT `0`: at `0` the five fenced INC-I-174 node
+    /// suites (block heights 0-7) would sit ABOVE the gate and need a bound message
+    /// they do not build (MEASURED: 15 failures across six node suites), and at
+    /// `u64::MAX` the bound arm would be unreachable on the ONE network that can
+    /// execute it, leaving M3/M4 developed against the legacy arm only. See the
+    /// devnet EXEMPTION under "Binding ordering" above.
+    /// Mainnet IMMUTABILITY (INC-I-054): once crossed, never move forward.
+    pub inc_i_176_auth_binding_activation_height: u64,
+
+    /// How many registered producers must exist before the maintainer trust root
+    /// is seeded at all (INC-I-172 M2 review F3).
+    ///
+    /// `Node::maybe_bootstrap_maintainer_set` returns early while
+    /// `all_producers().len()` is below this number. It was the hardcoded
+    /// constant [`crate::maintainer::INITIAL_MAINTAINER_COUNT`] (5), which is a
+    /// SCALE ASSUMPTION with no derivation from observed network size, and on a
+    /// network with fewer than five producers it made the trust root
+    /// permanently empty. Combined with devnet's
+    /// `maintainer_derivation_activation_height == 0` and the F4 fail-close, an
+    /// empty root is an ABSORBING state: `ProtocolActivation` fails closed
+    /// forever and `AddMaintainer` cannot rescue it either, because
+    /// `MaintainerSet::is_authorizable()` is false on an empty set. The repo's
+    /// own devnet (`scripts/launch_testnet.sh`) runs TWO producers, so M2 killed
+    /// governance there outright.
+    ///
+    /// This is NOT the seat count: the seed always seats at most
+    /// `INITIAL_MAINTAINER_COUNT` keys. It is only the "enough producers to
+    /// start" precondition.
+    ///
+    /// Defaults: mainnet and testnet `INITIAL_MAINTAINER_COUNT` (5) — the
+    /// pre-existing value, so both are byte-identical to M2 as reviewed; devnet
+    /// `2`, which restores exactly the pre-M2 devnet behavior (a 2-producer
+    /// devnet derived a 2-member set with `calculate_threshold(2) == 2`).
+    ///
+    /// **Not an activation height and not consensus-gated.** It changes only
+    /// WHEN a node-local file is first written, and mainnet/testnet keep the old
+    /// value, so no pre-activation history is reinterpreted on any live network.
+    /// It is deliberately NOT env-overridable: the whole point is that the
+    /// assumption is visible per network in one audited place.
+    pub maintainer_seed_min_producers: usize,
 
     // === Gossip mesh ===
     /// Target number of peers in gossipsub mesh per topic

@@ -1136,7 +1136,7 @@ crates/wallet/
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://github.com/e-weil/doli/releases/latest/download/latest.json"
+        "https://github.com/doli-network/doli/releases/latest/download/latest.json"
       ],
       "dialog": true,
       "pubkey": ""

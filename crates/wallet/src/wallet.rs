@@ -4,7 +4,7 @@
 //! This module is extracted from `bins/cli/src/wallet.rs` to be shared between
 //! the CLI and GUI. The wallet file format is identical.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
 use bip39::Mnemonic;
@@ -13,6 +13,20 @@ use crypto::{
 };
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroize;
+
+/// Wallet format version written by this crate.
+///
+/// History of the `version` field:
+/// - `1` — legacy. Both keys random. No seed phrase.
+/// - `2` — the Ed25519 spending key is derived from the BIP-39 seed. The BLS
+///   attestation key is still random, so the phrase does NOT restore a producer
+///   identity (INC-I-162).
+/// - `3` — BOTH keys are derived from the BIP-39 seed. The phrase is a complete
+///   backup.
+///
+/// Marker only. Nothing gates behaviour on it and every version loads. Must stay
+/// identical to the CLI constant in `bins/cli/src/wallet.rs` (GUI-NF-008).
+pub const WALLET_VERSION_SEED_DERIVED_BLS: u32 = 3;
 
 /// A wallet address with optional label.
 /// Matches the CLI's WalletAddress struct exactly for format compatibility (GUI-NF-008).
@@ -34,17 +48,28 @@ pub struct WalletAddress {
     pub bls_public_key: Option<String>,
 }
 
-/// Wallet file format.
-/// Version 1 = legacy (random key), Version 2 = BIP-39 derived key.
+/// Wallet file format. See [`WALLET_VERSION_SEED_DERIVED_BLS`] for the version history.
 /// Matches the CLI's Wallet struct exactly for format compatibility (GUI-NF-008).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Wallet {
     /// Wallet name
     name: String,
-    /// Version (1 = legacy, 2 = BIP-39 derived key)
+    /// Format version. See [`WALLET_VERSION_SEED_DERIVED_BLS`].
     version: u32,
     /// Addresses
     addresses: Vec<WalletAddress>,
+    /// INC-I-167: the file this wallet was loaded from, if any. Runtime-only —
+    /// `#[serde(skip)]` keeps the on-disk format byte-compatible with the CLI
+    /// (GUI-NF-008) and with older binaries.
+    ///
+    /// `save()` uses it to tell a *save-back* (persisting a wallet to the file it
+    /// came from — always allowed) from a *create* (writing a wallet somewhere new
+    /// — must not clobber an existing file). Deserialization leaves this `None`,
+    /// which is deliberately the conservative value: a wallet with no known origin
+    /// gets create semantics, so forgetting to set it fails safe rather than
+    /// destructive.
+    #[serde(skip)]
+    origin: Option<PathBuf>,
 }
 
 impl Wallet {
@@ -62,8 +87,11 @@ impl Wallet {
         let kp = KeyPair::from_seed(ed25519_seed);
         ed25519_seed.zeroize();
 
-        // Generate BLS keypair for attestation
-        let bls_kp = BlsKeyPair::generate();
+        // INC-I-162: derive the BLS attestation key from the SAME BIP-39 seed, so the
+        // 24 words restore the full identity. Must stay identical to the CLI impl in
+        // bins/cli/src/wallet.rs or the two would produce different keys for one phrase.
+        let bls_kp = BlsKeyPair::from_seed(&bip39_seed)
+            .expect("BIP-39 seed is 64 bytes, well above the KeyGen minimum");
 
         let primary = WalletAddress {
             address: kp.address().to_hex(),
@@ -76,15 +104,16 @@ impl Wallet {
 
         let wallet = Self {
             name: name.to_string(),
-            version: 2,
+            version: WALLET_VERSION_SEED_DERIVED_BLS,
             addresses: vec![primary],
+            origin: None,
         };
 
         (wallet, phrase)
     }
 
     /// Restore a wallet from a BIP-39 seed phrase.
-    /// Derives identical Ed25519 key as `new()`. Generates new BLS keypair.
+    /// Derives BOTH keys from the phrase, identically to `new()` (INC-I-162).
     pub fn from_seed_phrase(name: &str, phrase: &str) -> Result<Self> {
         let mnemonic: Mnemonic = phrase
             .parse()
@@ -96,7 +125,9 @@ impl Wallet {
         let kp = KeyPair::from_seed(ed25519_seed);
         ed25519_seed.zeroize();
 
-        let bls_kp = BlsKeyPair::generate();
+        // INC-I-162: same derivation as new(), so restoring reproduces the BLS key.
+        let bls_kp = BlsKeyPair::from_seed(&bip39_seed)
+            .expect("BIP-39 seed is 64 bytes, well above the KeyGen minimum");
 
         let primary = WalletAddress {
             address: kp.address().to_hex(),
@@ -109,8 +140,9 @@ impl Wallet {
 
         Ok(Self {
             name: name.to_string(),
-            version: 2,
+            version: WALLET_VERSION_SEED_DERIVED_BLS,
             addresses: vec![primary],
+            origin: None,
         })
     }
 
@@ -118,18 +150,143 @@ impl Wallet {
     pub fn load(path: &Path) -> Result<Self> {
         let contents = std::fs::read_to_string(path)
             .with_context(|| format!("wallet file not found: {}", path.display()))?;
-        let wallet: Wallet = serde_json::from_str(&contents)
+        let mut wallet: Wallet = serde_json::from_str(&contents)
             .with_context(|| format!("failed to parse wallet file: {}", path.display()))?;
+        // INC-I-167: remember where this wallet came from, so save() can allow a
+        // save-back to this same file while refusing to clobber a different one.
+        wallet.origin = Some(path.to_path_buf());
         Ok(wallet)
     }
 
     /// Save wallet to a JSON file. Creates parent directories if needed.
+    ///
+    /// INC-I-167: refuses to overwrite an existing file that this wallet was not
+    /// loaded from. Overwriting is opt-in via [`Wallet::save_forced`], not the
+    /// default — a wallet file may be the only copy of a producer's registered BLS
+    /// key, which a 24-word seed phrase does NOT restore (INC-I-162).
+    ///
+    /// # Errors
+    /// Returns an error if `path` exists and is not this wallet's origin, or if the
+    /// underlying atomic write fails.
     pub fn save(&self, path: &Path) -> Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+        if !self.is_origin(path) && path.exists() {
+            return Err(anyhow!(
+                "Refusing to overwrite existing wallet at {}\n  \
+                 If it was created by a release before BLS keys became seed-derived, \
+                 that file is the ONLY copy of its producer identity and no seed \
+                 phrase can bring it back.\n  \
+                 Choose a different file, or back up and move the existing wallet \
+                 aside first.",
+                path.display()
+            ));
         }
+        self.write_to(path)
+    }
+
+    /// Save wallet to a JSON file, bypassing the overwrite guard.
+    ///
+    /// Only for flows that have already obtained explicit destructive consent from
+    /// the operator.
+    ///
+    /// # Errors
+    /// Returns an error if the atomic write fails.
+    pub fn save_forced(&self, path: &Path) -> Result<()> {
+        self.write_to(path)
+    }
+
+    /// Is `path` the file this wallet was loaded from?
+    ///
+    /// Compares literally first, then by canonical path so equivalent spellings
+    /// still count as the same file. A wallet with no origin is never a save-back,
+    /// so the answer is `false` — the conservative direction.
+    fn is_origin(&self, path: &Path) -> bool {
+        let Some(origin) = self.origin.as_deref() else {
+            return false;
+        };
+        if origin == path {
+            return true;
+        }
+        match (origin.canonicalize(), path.canonicalize()) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        }
+    }
+
+    /// Serialize and write atomically: a fully-written temp file in the same
+    /// directory is `fsync`ed and then `rename`d over the destination.
+    ///
+    /// INC-I-167: the previous implementation used `std::fs::write` and set no
+    /// permissions at all, so a crash mid-write truncated the wallet and a new file
+    /// landed at the process umask (commonly 0644 — world-readable private keys).
+    fn write_to(&self, path: &Path) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+        let dir = match path.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p,
+            _ => Path::new("."),
+        };
+        let file_name = path
+            .file_name()
+            .ok_or_else(|| anyhow!("invalid wallet path: {}", path.display()))?;
+
+        let mut tmp_name = std::ffi::OsString::from(".");
+        tmp_name.push(file_name);
+        tmp_name.push(format!(".tmp{}", std::process::id()));
+        let tmp = dir.join(tmp_name);
+        let _ = std::fs::remove_file(&tmp); // clear a stale temp from a prior crash
+
         let contents = serde_json::to_string_pretty(self)?;
-        std::fs::write(path, contents)?;
+
+        let write_result = (|| -> Result<()> {
+            use std::io::Write;
+            // Create the temp file with its final permissions BEFORE writing, so key
+            // material is never briefly world-readable at the process umask.
+            // Mode: preserve the destination's existing mode so a save-back never
+            // WIDENS hardened permissions; new files get 0600 (owner-only) because
+            // this file holds private keys and nothing reads it via group.
+            #[cfg(unix)]
+            let mut file = {
+                use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+                let mode = std::fs::metadata(path)
+                    .map(|m| m.permissions().mode() & 0o777)
+                    .unwrap_or(0o600);
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(mode)
+                    .open(&tmp)
+                    .with_context(|| format!("cannot create temp wallet file: {}", tmp.display()))?
+            };
+            #[cfg(not(unix))]
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tmp)
+                .with_context(|| format!("cannot create temp wallet file: {}", tmp.display()))?;
+
+            file.write_all(contents.as_bytes())?;
+            file.sync_all()?; // durable before the rename makes it visible
+            Ok(())
+        })();
+
+        if let Err(e) = write_result {
+            let _ = std::fs::remove_file(&tmp); // never leave key material behind
+            return Err(e);
+        }
+
+        if let Err(e) = std::fs::rename(&tmp, path) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(anyhow!("cannot write wallet to {}: {}", path.display(), e));
+        }
+
+        // Persist the directory entry so the rename survives a power loss.
+        #[cfg(unix)]
+        if let Ok(d) = std::fs::File::open(dir) {
+            let _ = d.sync_all();
+        }
         Ok(())
     }
 
@@ -144,6 +301,15 @@ impl Wallet {
     }
 
     /// Get wallet name.
+    /// Is this wallet's BLS attestation key derived from its seed phrase?
+    ///
+    /// `false` for version 1 and 2 wallets, whose BLS key was drawn from `OsRng`
+    /// and cannot be reproduced from the 24 words (INC-I-162).
+    #[must_use]
+    pub fn bls_is_seed_derived(&self) -> bool {
+        self.version >= WALLET_VERSION_SEED_DERIVED_BLS
+    }
+
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -302,7 +468,7 @@ mod tests {
     #[test]
     fn test_fr001_new_wallet_is_version_2() {
         let (wallet, _) = Wallet::new("test");
-        assert_eq!(wallet.version(), 2);
+        assert_eq!(wallet.version(), WALLET_VERSION_SEED_DERIVED_BLS);
     }
 
     #[test]
@@ -311,6 +477,126 @@ mod tests {
         assert_eq!(wallet.addresses().len(), 1);
         // Ed25519 public key is 32 bytes = 64 hex chars
         assert_eq!(wallet.primary_public_key().len(), 64);
+    }
+
+    // ========================================================================
+    // INC-I-167: save() must be fail-safe — refuse to clobber a different wallet.
+    //
+    // OUTPUT CONTRACT: fn Wallet::save(&self, path: &Path) -> Result<()>
+    //   O1: destination file identity (addresses[0].public_key on disk)
+    //       — PRESERVED / REPLACED / CREATED
+    //   O2: Result — Ok / Err
+    //   O3: error message — contains "Refusing to overwrite" / absent
+    // PATHS (by: does `path` exist? x is `path` this wallet's origin?):
+    //   P1 save-back  — exists, IS origin      -> MUST overwrite
+    //   P2 create     — absent                 -> MUST create
+    //   P3 cross-path — exists, NOT origin     -> MUST refuse
+    // INPUT PARTITIONS: one per path. Sufficient because the branch predicate is
+    //   determined entirely by the two path terms; wallet CONTENTS cannot change
+    //   which branch is taken, so a contents-partition is provably blind here.
+    //   P3's partition is the realistic one: destination holds a different, valid,
+    //   key-bearing wallet.
+    // MATRIX: 3 outputs x 3 paths x 1 partition = 9 cells.
+    //   P1 -> O1 PRESERVED(+1 addr) / O2 Ok  / O3 absent
+    //   P2 -> O1 CREATED            / O2 Ok  / O3 absent   (covered by
+    //         test_fr001_wallet_save_and_load_roundtrip and _creates_parent_dirs)
+    //   P3 -> O1 PRESERVED          / O2 Err / O3 present
+    // ========================================================================
+
+    #[test]
+    fn test_inc_i_167_save_refuses_to_clobber_a_different_wallet() {
+        let dir = TempDir::new().unwrap();
+        let victim_path = dir.path().join("victim.json");
+        let source_path = dir.path().join("source.json");
+
+        let (victim, _) = Wallet::new("victim");
+        victim.save(&victim_path).unwrap();
+        let (source, _) = Wallet::new("source");
+        source.save(&source_path).unwrap();
+
+        let victim_pk = Wallet::load(&victim_path)
+            .unwrap()
+            .primary_public_key()
+            .to_string();
+
+        // P3: a wallet whose origin is source_path must not be able to write over
+        // victim_path — that file may hold the only copy of a producer BLS key.
+        let imported = Wallet::import(&source_path).unwrap();
+        let result = imported.save(&victim_path);
+
+        // O2 x P3
+        let err = result.expect_err("P3/O2: save() must refuse to overwrite a different wallet");
+        // O3 x P3
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Refusing to overwrite"),
+            "P3/O3: refusal must explain itself. got: {msg}"
+        );
+        // O1 x P3 — the victim must be untouched.
+        assert_eq!(
+            Wallet::load(&victim_path).unwrap().primary_public_key(),
+            victim_pk,
+            "P3/O1: the existing wallet must be preserved on refusal"
+        );
+    }
+
+    #[test]
+    fn test_inc_i_167_save_back_to_own_origin_is_allowed() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("wallet.json");
+
+        let (wallet, _) = Wallet::new("test");
+        wallet.save(&path).unwrap();
+
+        // P1: load then mutate then save back to the SAME file — this is how every
+        // legitimate wallet mutation persists and must keep working.
+        let mut loaded = Wallet::load(&path).unwrap();
+        let pk = loaded.primary_public_key().to_string();
+        loaded.generate_address(Some("second")).unwrap();
+        loaded
+            .save(&path)
+            .expect("P1/O2: save-back to own origin must be allowed");
+
+        let reloaded = Wallet::load(&path).unwrap();
+        assert_eq!(
+            reloaded.addresses().len(),
+            2,
+            "P1/O1: mutation must persist"
+        );
+        assert_eq!(
+            reloaded.primary_public_key(),
+            pk,
+            "P1/O1: primary identity must be preserved"
+        );
+    }
+
+    #[test]
+    fn test_inc_i_167_origin_is_not_serialized_and_defaults_to_none() {
+        // `origin` is #[serde(skip)], so a wallet parsed from JSON must come back
+        // with origin=None and therefore get CREATE semantics (refuse to clobber).
+        // This pins the fail-safe direction of the default: INC-I-159 was a skipped
+        // field whose default silently enabled the WRONG behavior.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("wallet.json");
+        let other = dir.path().join("other.json");
+
+        let (wallet, _) = Wallet::new("test");
+        wallet.save(&path).unwrap();
+        let (o, _) = Wallet::new("other");
+        o.save(&other).unwrap();
+
+        let json = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !json.contains("origin"),
+            "origin must never reach the wallet file — on-disk format must stay \
+             byte-compatible with the CLI (GUI-NF-008)"
+        );
+
+        let parsed: Wallet = serde_json::from_str(&json).unwrap();
+        assert!(
+            parsed.save(&other).is_err(),
+            "a deserialized wallet has no origin, so it must refuse to overwrite"
+        );
     }
 
     #[test]
@@ -454,14 +740,29 @@ mod tests {
     }
 
     #[test]
-    fn test_fr002_restore_generates_new_bls_key() {
+    fn test_fr002_restore_derives_the_same_bls_key() {
+        // INC-I-162: this test previously asserted the OPPOSITE — that restore
+        // produced a DIFFERENT BLS key, because BlsKeyPair::generate() drew from
+        // OsRng and ignored the mnemonic. That behaviour meant the 24 words were
+        // not a complete backup for a registered producer, and the test pinned the
+        // defect in place rather than catching it. Inverted, not deleted, so the
+        // change of contract is visible in history.
         let (original, phrase) = Wallet::new("original");
         let restored = Wallet::from_seed_phrase("restored", &phrase).unwrap();
-        // BLS keys are random, not derived -- so they should differ
-        assert_ne!(
+        assert_eq!(
             original.primary_bls_public_key().unwrap(),
             restored.primary_bls_public_key().unwrap(),
-            "BLS key is randomly generated on restore, not derived from seed"
+            "BLS key must be derived from the seed phrase, not randomly generated"
+        );
+
+        // Discriminating control: a different phrase must still give a different
+        // key, otherwise a constant would satisfy the assertion above.
+        let (_, other_phrase) = Wallet::new("other");
+        let other = Wallet::from_seed_phrase("other", &other_phrase).unwrap();
+        assert_ne!(
+            restored.primary_bls_public_key().unwrap(),
+            other.primary_bls_public_key().unwrap(),
+            "different phrases must derive different BLS keys"
         );
     }
 
@@ -899,7 +1200,7 @@ mod tests {
         wallet.generate_address(Some("second")).unwrap();
 
         assert_eq!(wallet.name(), "my-wallet");
-        assert_eq!(wallet.version(), 2);
+        assert_eq!(wallet.version(), WALLET_VERSION_SEED_DERIVED_BLS);
         assert_eq!(wallet.addresses().len(), 2);
         assert!(wallet.has_bls_key());
     }

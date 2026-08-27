@@ -180,8 +180,18 @@ Column Families:
 │                       #   Simplified: {public_key, registered_at, status, seniority_weight}
 │                       #   Bond data derived from UTXO set (no bond fields in ProducerInfo)
 ├── cf_exit_history     # pubkey_hash (32B) → exit_height (8B LE)
-├── cf_undo             # height (8B LE) → UndoData (bincode)
+├── cf_undo             # TWO key families, distinguished by key LENGTH:
+│                       # height (8B LE)        → UndoData (bincode)
 │                       #   Stores rollback data per block for O(depth) reorgs
+│                       # 0x4D ++ height (9B)   → MaintainerUndoSnapshot (bincode)
+│                       #   INC-I-174. The maintainer trust root BEFORE a block that
+│                       #   carries AddMaintainer/RemoveMaintainer. Written only for
+│                       #   such a block — absence is the "unchanged" sentinel.
+│                       #   Node-local, NOT in the state root, no activation height.
+│                       #   Separate key family rather than a sixth UndoData field:
+│                       #   bincode is non-self-describing, so appending a field makes
+│                       #   every pre-upgrade entry undecodable, which get_undo reports
+│                       #   as None and every caller reads as "no undo data".
 └── cf_meta             # string key → varies
     ├── "chain_state"       → ChainState (bincode)
     ├── "pending_updates"   → Vec<PendingProducerUpdate> (bincode)

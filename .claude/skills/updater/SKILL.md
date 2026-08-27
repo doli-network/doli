@@ -1,19 +1,19 @@
 # updater — DOLI Auto-Update & Governance
 <!-- @INDEX
-ENTRY-POINTS       14-41
-OPERATIONS         42-58
-STRUCTS            59-98
-FUNCTIONS          99-283
-HARDFORK-SCHEDULE  284-305
-DATA-FLOWS         306-415
-DEPENDENCIES       416-438
-CONSTRAINTS        439-498
-PATTERNS           499-568
+ENTRY-POINTS       14-45
+OPERATIONS         46-63
+STRUCTS            64-103
+FUNCTIONS          104-286
+HARDFORK-SCHEDULE  287-308
+DATA-FLOWS         309-441
+DEPENDENCIES       442-465
+CONSTRAINTS        466-525
+PATTERNS           526-593
 @/INDEX -->
 
 ## ENTRY-POINTS
 
-Public API re-exported from `crates/updater/src/lib.rs` (13 files: apply, download, vote, enforcement, verification, hardfork, params, types, constants, util, test_keys, watchdog — 12 modules + lib.rs).
+Public API re-exported from `crates/updater/src/lib.rs` (14 files: apply, download, vote, enforcement, verification, install_gate, trust_root, hardfork, params, types, constants, util, test_keys, watchdog — 13 modules + lib.rs).
 
 **apply**: `apply_update`, `auto_apply_from_github`, `backup_current`, `current_binary_path`, `extract_binary_from_tarball`, `extract_named_binary_from_tarball`, `install_binary`, `install_skills_from_tarball`, `restart_node`, `rollback`
 
@@ -23,19 +23,23 @@ Public API re-exported from `crates/updater/src/lib.rs` (13 files: apply, downlo
 
 **enforcement**: `check_production_allowed`, `grace_period_deadline`, `grace_period_deadline_for_network`, `in_grace_period`, `in_grace_period_for_network`, `veto_deadline`, `veto_period_ended`, `ProductionBlocked`, `VersionEnforcement`
 
-**verification**: `calculate_veto_result`, `sign_release_hash`, `verify_release_signatures`, `verify_release_signatures_with_keys`
+**verification**: `calculate_veto_result`, `sign_release_hash`, `verify_release_signatures`, `verify_release_with_trust_root`
+
+**install_gate**: `verify_release_artifact` — the artifact-bound install gate (INC-I-172 F1)
+
+**trust_root**: `TrustRoot`, `TrustRootProvenance`
 
 **hardfork**: `HardForkInfo`, `HardForkSchedule`
 
 **params**: `UpdateParams`
 
-**constants**: `assert_production_keys`, `bootstrap_maintainer_keys`, `get_maintainer_keys`, `is_using_placeholder_keys`, `BOOTSTRAP_MAINTAINER_KEYS_MAINNET`, `BOOTSTRAP_MAINTAINER_KEYS_TESTNET`, `CHECK_INTERVAL`, `FALLBACK_MIRROR`, `GITHUB_API_URL`, `GITHUB_RELEASES_URL`, `GITHUB_REPO`, `GRACE_PERIOD`, `REQUIRED_SIGNATURES`, `VETO_PERIOD`, `VETO_THRESHOLD_PERCENT`
+**constants**: `assert_production_keys`, `bootstrap_maintainer_keys`, `get_maintainer_keys`, `is_using_placeholder_keys`, `BOOTSTRAP_MAINTAINER_KEYS_MAINNET`, `BOOTSTRAP_MAINTAINER_KEYS_TESTNET`, `CHECK_INTERVAL`, `GITHUB_API_URL`, `GITHUB_RELEASES_URL`, `GITHUB_REPO`, `GRACE_PERIOD`, `REQUIRED_SIGNATURES`, `VETO_PERIOD`, `VETO_THRESHOLD_PERCENT`
 
 **util**: `current_timestamp`, `current_version`, `is_newer_version`, `platform_identifier`
 
 **test_keys**: `create_test_release_signatures`, `should_use_test_keys`, `sign_with_test_key`, `test_maintainer_pubkeys`, `TestMaintainerKey`, `TEST_MAINTAINER_KEYS`
 
-**watchdog** (pub mod): `UpdateWatchdog`, `WatchdogState`
+**watchdog** (pub mod): `UpdateWatchdog`, `WatchdogState` — **NOT WIRED**: zero production callers; no node rolls back automatically (INC-I-172 AUDIT-P1-014). `UpdateConfig::auto_rollback` and `--no-auto-rollback` are inert.
 
 NEW since 2026-05-11 scaffold: `install_skills_from_tarball` (apply.rs:511) — auto-update now also syncs `~/.doli/skills/` agent skill files from the release tarball. `STAGED_BINARY_PATH` hardened (apply.rs:189, ISSUE-174 #7) to close a TOCTOU symlink-swap root-exec vector in the sudo install fallback.
 
@@ -44,13 +48,14 @@ NEW since 2026-05-11 scaffold: `install_skills_from_tarball` (apply.rs:511) — 
 | Task | Steps | Commands/Functions | Inputs | Success |
 |------|-------|--------------------|--------|---------|
 | Sign a release as maintainer | 1. Build binary+tarball, compute CHECKSUMS.txt 2. `sign_release_hash(keypair, version, checksums_sha256)` 3. Collect 3-of-5 sigs into SIGNATURES.json 4. Upload to GitHub Release | `sign_release_hash()` (verification.rs:27), CLI `doli release sign` | maintainer keypair, version, binary_sha256/checksums_sha256 | SIGNATURES.json with ≥3 valid `MaintainerSignature` entries |
-| Verify a release's signatures | 1. Fetch release + on-chain maintainer keys (if node) 2. `verify_release_signatures_with_keys()` or `verify_release_signatures()` (CLI, no on-chain state) | `verify_release_signatures_with_keys(release, on_chain_keys, network)` (verification.rs:57) | `Release`, network, optional on-chain keys | `Ok(())` if ≥`REQUIRED_SIGNATURES`(3) valid sigs from allowed keys, else `InsufficientSignatures` |
+| Verify a release's signatures | 1. Resolve the `TrustRoot` (node service: `maintainer_trust_root_fn`; node commands: `command_trust_root(data_dir, network)`; CLI: `resolve_upgrade_trust_root(data_dir, network)` — the CLI reads THIS host's `maintainer_state.bin` too since INC-I-172 AUDIT-P1-012, and reaches `TrustRoot::bootstrap` only when the host is genuinely unbootstrapped) 2. `verify_release_with_trust_root()` — or the shim `verify_release_signatures()` which resolves the bootstrap root for you | `verify_release_with_trust_root(release, &root)` (verification.rs) | `Release`, `&TrustRoot` | `Ok(distinct_signers: usize)` if DISTINCT valid signers ≥ `root.threshold()`; `TrustRootUnavailable` if the root is empty/sub-threshold (FAILS CLOSED, never falls back to compiled keys); else `InsufficientSignatures` |
+| Authorise an INSTALL from a downloaded tarball | `verify_release_artifact()` — signature check PLUS artifact binding. Never hand-roll a `Release` out of `SIGNATURES.json` fields and verify that: both operands would come from the file under test (INC-I-172 F1) | `verify_release_artifact(&release_info, &tarball, &sf, &root)` (install_gate.rs) | `&GithubReleaseInfo`, tarball bytes, `&SignaturesFile`, `&TrustRoot` | `Ok(distinct_signers)`, or `ArtifactBindingMismatch{field}` / `InsufficientSignatures` / `TrustRootUnavailable` / `HashMismatch` |
 | Vote to veto/approve an update | 1. Producer builds `VoteMessage::new(version, vote, producer_id)` 2. Sign over `message_bytes()` 3. Gossip signed vote 4. Receiver: `VoteMessage::verify()` then `VoteTracker::record_vote()` | `VoteMessage::new()`/`verify()` (vote.rs:41,61), `VoteTracker::record_vote()` (vote.rs:143) | version, Vote::{Approve,Veto}, producer keypair | One vote counted per producer_id (duplicate = false, no change) |
-| Decide if an update is rejected | 1. Tally weighted votes 2. `VoteTracker::should_reject_weighted(total_weight)` (preferred) or legacy `should_reject(total_producers)` | `should_reject_weighted()` (vote.rs:193), `calculate_vote_weight()` (params.rs:100) | total active weight/count, recorded votes | `true` if veto weight/count ≥40% (`VETO_THRESHOLD_PERCENT`) |
-| Apply an approved update (automated) | 1. Veto period ends + approved 2. `auto_apply_from_github(version, signed_checksums_sha256)` 3. `UpdateWatchdog::record_update()` 4. `restart_node()` | `auto_apply_from_github()` (apply.rs:411), `restart_node()` (apply.rs:653) | version, signed checksums_sha256 (from verified SIGNATURES.json) | New binary (+ CLI + skills, best-effort) installed atomically; process re-execs |
-| Apply an update manually (legacy path) | 1. `apply_update(release, approved, veto_percent)` — checks veto/approval itself 2. downloads/hashes/backs-up/installs | `apply_update()` (apply.rs:75) | `Release`, approved bool, veto_percent | Binary installed; caller must still call `restart_node()` |
-| Roll back a bad update | 1. Detect crash loop (watchdog) or manual trigger 2. `rollback()` restores `.backup` sibling 3. `restart_node()` | `rollback()` (apply.rs:632), `UpdateWatchdog::check_and_maybe_rollback()` (watchdog.rs:95) | existing `{binary}.backup` file | Previous binary restored; watchdog state cleared so it doesn't re-trigger |
-| Detect post-update crash loop | 1. On successful update: `UpdateWatchdog::record_update(version)` before restart 2. On clean exit: `record_clean_shutdown()` 3. On next startup: `check_and_maybe_rollback()` | `UpdateWatchdog::new(data_dir, network)` (watchdog.rs:65) | data_dir, network (for `crash_window_secs`) | `Some(bad_version)` returned after `crash_threshold`(3) crashes inside the window → caller rolls back |
+| Decide if an update is rejected | 1. Tally veto HEAD COUNT 2. `VoteTracker::should_reject(total_producers)` | `should_reject()` (vote.rs) | active producer count, recorded votes | `true` if veto count ≥40% (`VETO_THRESHOLD_PERCENT`). There is NO weighted variant — deleted in INC-I-172 (it never executed) |
+| Apply an approved update (automated) | 1. Veto period ends + approved 2. `auto_apply_from_github(version, signed_checksums_sha256)` 3. ~~`UpdateWatchdog::record_update()`~~ (NOT WIRED — no caller exists) 4. `restart_node()` | `auto_apply_from_github()` (apply.rs:411), `restart_node()` (apply.rs:653) | version, signed checksums_sha256 (from verified SIGNATURES.json) | New binary (+ CLI + skills, best-effort) installed atomically; process re-execs |
+| Apply an update manually (`doli-node update apply`) | 1. `apply_update(release, first_notified_at, approved, veto_percent, &root)` — checks veto, approval, THEN re-verifies against the CURRENT root 2. delegates to `auto_apply_from_github`, which binds the signed CHECKSUMS.txt hash to the tarball | `apply_update()` (apply.rs), root from `command_trust_root(data_dir, network)` | `Release`, NODE-LOCAL `first_notified_at`, approved bool, veto_percent, **`&TrustRoot` (required)** | Binary installed; caller must still call `restart_node()`. `--force` waives community APPROVAL only — never maintainer authority (INC-I-172 F2) |
+| Roll back a bad update | 1. Manual trigger ONLY — crash-loop detection is NOT wired (AUDIT-P1-014) 2. `rollback()` restores `.backup` sibling 3. `restart_node()` | `rollback()` (apply.rs:632); ~~`UpdateWatchdog::check_and_maybe_rollback()`~~ has no caller | existing `{binary}.backup` file | Previous binary restored |
+| Detect post-update crash loop — **NOT IMPLEMENTED, design only** | 1. On successful update: `UpdateWatchdog::record_update(version)` before restart 2. On clean exit: `record_clean_shutdown()` 3. On next startup: `check_and_maybe_rollback()` | `UpdateWatchdog::new(data_dir, network)` (watchdog.rs:65) | data_dir, network (for `crash_window_secs`) | `Some(bad_version)` WOULD be returned after `crash_threshold`(3) crashes inside the window — but nothing calls it, so nothing rolls back (AUDIT-P1-014) |
 | Schedule a hard fork (consensus-breaking upgrade) | 1. Add `HardForkInfo{activation_height, min_version, consensus_changes}` to `HardForkSchedule::for_network()` match arm 2. Use a far-future placeholder height 3. Before deploy, operator sets real height via `floor((current_height+7200)/360)*360` | `HardForkSchedule::for_network(network)` (hardfork.rs:208), `.add()` (hardfork.rs:61) | target network, activation height, min_version, consensus_changes | All nodes independently derive the same `fork_id()`; version-incompatible nodes stop producing at/after `activation_height` |
 | Gate block production on hard fork compliance | 1. `HardForkSchedule::for_network(network)` at startup 2. Each produce attempt: `schedule.should_stop_producing(height, current_version())` | `should_stop_producing()` (hardfork.rs:38,84) | current height, current binary version | Production paused with warning if version too old for an active fork |
 | Enforce a minimum version on producers | 1. `VersionEnforcement::from_approved_release_with_params()` after approval 2. background download sets `binary_ready` 3. each block: `check_production_allowed(Some(&enforcement))` | `check_production_allowed()` (enforcement.rs:176) | `VersionEnforcement`, current running version | `Err(ProductionBlocked)` only if enforced+overdue+binary_ready+not timed out; else `Ok(())` |
@@ -68,11 +73,11 @@ NEW since 2026-05-11 scaffold: `install_skills_from_tarball` (apply.rs:511) — 
 
 `UpdateConfig` (`types.rs:76`): enabled, notify_only, auto_rollback, check_interval_secs, veto_period_secs, grace_period_secs, custom_url. Default: enabled=true, notify_only=false, auto_rollback=true, check_interval=6h, veto_period=5min, grace_period=1h.
 
-`UpdateError` (`types.rs:115`): InsufficientSignatures, InvalidSignature, HashMismatch, DownloadFailed, InstallFailed, Network(reqwest), Io, Json, VetoPeriodActive {remaining_hours, message}, RejectedByVeto {veto_percent, threshold}, NotApproved.
+`UpdateError` (`types.rs`): InsufficientSignatures {found, required}, **TrustRootUnavailable {provenance, keys, threshold}** (INC-I-172 fail-closed), InvalidSignature, HashMismatch, DownloadFailed, InstallFailed, Network(reqwest), Io, Json, VetoPeriodActive {remaining_hours, message}, RejectedByVeto {veto_percent, threshold}, NotApproved.
 
 `VoteResult` (`types.rs:157`): total_producers, veto_count, veto_percent: u8, approved: bool.
 
-`UpdateParams` (`params.rs:32`): veto_period_secs, grace_period_secs, min_voting_age_secs, min_voting_age_blocks, check_interval_secs, crash_window_secs, crash_threshold: u32, seniority_maturity_blocks, seniority_step_blocks, network: Network. Build via `UpdateParams::for_network(network)`. Also carries its own `veto_deadline`/`grace_period_deadline`/`veto_period_ended`/`in_grace_period` methods (params.rs:120-140) mirroring the free functions in `enforcement.rs` but network-parametrized.
+`UpdateParams` (`params.rs`): veto_period_secs, grace_period_secs, min_voting_age_secs, min_voting_age_blocks, check_interval_secs, crash_window_secs, crash_threshold: u32, seniority_maturity_blocks, seniority_step_blocks, network: Network. Build via `UpdateParams::for_network(network)`. Also carries its own `veto_deadline`/`grace_period_deadline`/`veto_period_ended`/`in_grace_period` methods mirroring the free functions in `enforcement.rs` but network-parametrized. **All four take a NODE-LOCAL `first_notified_at: u64`, not a `&Release`** (INC-I-172 F7b). The seniority fields are inert: `calculate_vote_weight`/`seniority_multiplier`/`is_eligible_to_vote` were deleted.
 
 `VersionEnforcement` (`enforcement.rs:66`): min_version, enforcement_time: u64, active: bool, binary_ready: bool. Production blocked only when binary_ready=true AND enforcement time passed AND version too old AND not timed out.
 
@@ -92,7 +97,7 @@ NEW since 2026-05-11 scaffold: `install_skills_from_tarball` (apply.rs:511) — 
 
 `WatchdogState` (`watchdog.rs:17`): last_update_version: Option<String>, last_update_time: Option<u64>, crash_timestamps: Vec<u64>, clean_shutdown: bool.
 
-`GithubReleaseInfo` (`download.rs:355`): version, tarball_url, expected_hash (per-platform binary hash from CHECKSUMS.txt), checksums_sha256 (SHA-256 of the CHECKSUMS.txt file itself), changelog.
+`GithubReleaseInfo` (`download.rs:329`): version, tarball_url, expected_hash (per-platform binary hash from CHECKSUMS.txt), checksums_sha256 (SHA-256 of the CHECKSUMS.txt file itself), changelog.
 
 `TestMaintainerKey` (`test_keys.rs:16`): public_key: String, private_key: String.
 
@@ -128,30 +133,34 @@ NEW since 2026-05-11 scaffold: `install_skills_from_tarball` (apply.rs:511) — 
 `restart_node() -> !` (apply.rs:653): Unix: `exec()` (replaces process); Windows: spawn + exit.
 
 ### download.rs
-`download_binary(release) -> Result<Vec<u8>>` (download.rs:24): tries primary URL → GitHub CDN → fallback mirror. Async.
+`download_binary(release) -> Result<Vec<u8>>` (download.rs:23): tries primary URL → GitHub CDN. No fallback mirror (removed in INC-I-157). Async.
 
-`download_from_url(url) -> Result<Vec<u8>>` (download.rs:72): HTTP GET with 5-min timeout. Async.
+`download_from_url(url) -> Result<Vec<u8>>` (download.rs:64): HTTP GET with 5-min timeout. Async.
 
-`verify_hash(binary, expected_hash) -> Result<()>` (download.rs:91): SHA-256, case-insensitive hex compare.
+`verify_hash(binary, expected_hash) -> Result<()>` (download.rs:83): SHA-256, case-insensitive hex compare.
 
-`fetch_latest_release(custom_url, network) -> Result<Option<Release>>` (download.rs:113): custom URL → GitHub API → fallback mirror. Filters by target_networks via `filter_release_by_network` (download.rs:177, private). Async.
+`fetch_latest_release(custom_url, network) -> Result<Option<Release>>` (download.rs:104): custom URL → GitHub API. No fallback mirror (removed in INC-I-157). Filters by target_networks via `filter_release_by_network` (download.rs:151, private). Async.
 
-`fetch_from_github() -> Result<Option<Release>>` (download.rs:205, private): builds a `Release` directly from GitHub Release assets (CHECKSUMS.txt + optional SIGNATURES.json + optional metadata.json) — no release.json needed.
+`fetch_from_github() -> Result<Option<Release>>` (download.rs:179, private): builds a `Release` directly from GitHub Release assets (CHECKSUMS.txt + optional SIGNATURES.json + optional metadata.json) — no release.json needed.
 
-`fetch_github_release(version: Option<&str>) -> Result<GithubReleaseInfo>` (download.rs:390): fetches a specific version (or latest) from GitHub API, downloads CHECKSUMS.txt, parses per-platform hash via `platform_target_triple()` (download.rs:373, private). Async.
+`fetch_github_release(version: Option<&str>) -> Result<GithubReleaseInfo>` (download.rs:364): fetches a specific version (or latest) from GitHub API, downloads CHECKSUMS.txt, parses per-platform hash via `platform_target_triple()` (download.rs:347, private). Async.
 
-`download_signatures_json(version) -> Result<Option<SignaturesFile>>` (download.rs:547): fetches SIGNATURES.json from GitHub Releases. Returns `None` on 404. Async.
+`download_signatures_json(version) -> Result<Option<SignaturesFile>>` (download.rs:521): fetches SIGNATURES.json from GitHub Releases. Returns `None` on 404. Async.
 
-`download_checksums_txt(version) -> Result<(String, String)>` (download.rs:570): fetches CHECKSUMS.txt, returns (content, sha256). Async.
+`download_checksums_txt(version) -> Result<(String, String)>` (download.rs:544): fetches CHECKSUMS.txt, returns (content, sha256). Async.
 
-`parse_iso8601_timestamp(s) -> Option<u64>` (download.rs:496, private): hand-rolled parser for GitHub's `"YYYY-MM-DDThh:mm:ssZ"` format — no chrono dependency.
+`parse_iso8601_timestamp(s) -> Option<u64>` (download.rs:470, private): hand-rolled parser for GitHub's `"YYYY-MM-DDThh:mm:ssZ"` format — no chrono dependency.
 
 ### verification.rs
 `sign_release_hash(keypair, version, binary_sha256) -> MaintainerSignature` (verification.rs:27): signs "{version}:{sha256}". Ed25519.
 
-`verify_release_signatures(release, network) -> Result<()>` (verification.rs:48): uses bootstrap keys only. Convenience for CLI contexts without on-chain state.
+`verify_release_signatures(release, network) -> Result<()>` (verification.rs): shim — resolves `TrustRoot::bootstrap(network)` and delegates. For CLI contexts with no on-chain state.
 
-`verify_release_signatures_with_keys(release, on_chain_keys, network) -> Result<()>` (verification.rs:57): if on_chain_keys non-empty uses those, else falls back to bootstrap keys. Needs 3-of-5 valid signatures.
+`verify_release_with_trust_root(release, &TrustRoot) -> Result<usize>` (verification.rs): THE signature entry point; returns the DISTINCT-signer count on success (print THAT, never `REQUIRED_SIGNATURES`). (1) `!root.is_usable()` → `error!` + `TrustRootUnavailable`, STOP — no fallback to compiled keys. (2) DISTINCT-SIGNER count using the covenant k-of-n shape (outer loop over `root.keys()`, inner over signature entries, `break` on first valid) — 3 entries from 1 key count as 1. Key comparison is ASCII case-insensitive (F10). (3) `valid >= root.threshold()`.
+
+`verify_release_artifact(&GithubReleaseInfo, tarball, &SignaturesFile, &TrustRoot) -> Result<usize>` (install_gate.rs): THE install entry point, and what every path that WRITES a binary must call. Checks four links, any break blocks: L1 `sf.version` == the release tag (modulo `v`); L2 `sf.checksums_sha256` == `sha256(release_info.checksums_body)` — recomputed from the BYTES, not read from the `checksums_sha256` field; L3 `verify_release_with_trust_root`; L4 `sha256(tarball)` == the per-platform hash parsed from THOSE verified bytes. Without L1/L2 the signature check is circular and a replayed genuine SIGNATURES.json authorises any tarball (INC-I-172 F1).
+
+`TrustRoot` (trust_root.rs): `bootstrap(network)` (keys = compiled array, threshold = `REQUIRED_SIGNATURES`, provenance `Bootstrap`) / `on_chain(keys, threshold)` (provenance `OnChain`, empty is representable and fails closed) / `keys()` / `threshold()` / `provenance()` / `is_usable()` = `threshold >= 1 && keys.len() >= threshold`.
 
 `calculate_veto_result(veto_count, total_producers) -> VoteResult` (verification.rs:149): veto_percent = count*100/total (0 if total=0). approved = veto_percent < 40.
 
@@ -183,26 +192,20 @@ NEW since 2026-05-11 scaffold: `install_skills_from_tarball` (apply.rs:511) — 
 ### params.rs
 `UpdateParams::for_network(network) -> Self` (params.rs:57): all timing fields derived from `network.*()` methods on `doli_core::Network`.
 
-`UpdateParams::calculate_vote_weight(bond_count: u32, blocks_active: u64) -> f64` (params.rs:100): bond_count * (1.0 + min(years,4) * 0.75). years = blocks_active / seniority_step_blocks. Stored as (weight * 100) as u64 in VoteTracker for 2-decimal precision.
+`calculate_vote_weight` / `seniority_multiplier` / `is_eligible_to_vote`: **DELETED** (INC-I-172 F8). They had only `#[cfg(test)]` callers; the weighted veto never executed. Do not reintroduce them without a caller.
 
-`UpdateParams::seniority_multiplier(blocks_active) -> f64` (params.rs:108): standalone multiplier without bonds.
-
-`UpdateParams::is_eligible_to_vote(blocks_since_registration) -> bool` (params.rs:115).
-
-`UpdateParams::veto_deadline/grace_period_deadline/veto_period_ended/in_grace_period` (params.rs:120,125,130,135): network-parametrized duplicates of the `enforcement.rs` free functions — use these when a `UpdateParams` is already in scope.
+`UpdateParams::veto_deadline/grace_period_deadline/veto_period_ended/in_grace_period(first_notified_at: u64)`: network-parametrized duplicates of the `enforcement.rs` free functions — use these when an `UpdateParams` is already in scope. They take the NODE-LOCAL first-observed timestamp, never a `&Release`.
 
 ### vote.rs
-`VoteTracker::new(version)` / `VoteTracker::with_weights(version, weights)` (vote.rs:112,126).
+`VoteTracker::new(version)`. (`with_weights`/`set_weights` were deleted — INC-I-172 F8.)
 
 `VoteTracker::record_vote(producer_id, vote) -> bool` (vote.rs:143): false if already voted (one vote per producer, no change).
 
 `VoteTracker::veto_count()/approval_count()/total_votes()` (vote.rs:156,161,166).
 
-`VoteTracker::should_reject(total_producers) -> bool` (vote.rs:173): count-based, legacy.
+`VoteTracker::should_reject(total_producers) -> bool`: the ONLY rejection test. Veto head count ≥ 40%.
 
-`VoteTracker::should_reject_weighted(total_weight) -> bool` (vote.rs:193): weight-based anti-Sybil. Preferred method.
-
-`VoteTracker::veto_weight()/approval_weight()/veto_percent(total_producers)/veto_percent_weighted(total_weight)` (vote.rs:204,212,220,228).
+`VoteTracker::veto_percent(total_producers) -> u8`. (`should_reject_weighted`, `veto_weight`, `approval_weight`, `veto_percent_weighted` were deleted — INC-I-172 F8.)
 
 `VoteTracker::version()/veto_producers()` (vote.rs:236,241).
 
@@ -312,10 +315,13 @@ GitHub Release published
 -> Maintainers: doli release sign -> SIGNATURES.json uploaded
 -> Node polls GitHub API (every 6h via check_interval)
 -> fetch_latest_release() -> Release struct built
--> verify_release_signatures_with_keys() [3-of-5 Ed25519]
--> Veto period begins (published_at + VETO_PERIOD)
+-> maintainer_trust_root_fn() -> TrustRoot (fails closed if empty/sub-threshold)
+-> verify_release_with_trust_root() [k distinct Ed25519 signers]
+-> Veto period begins (first_notified_at + VETO_PERIOD)  <- NODE-LOCAL, not published_at
 -> Producers vote via VoteMessage (signed, gossipped)
--> VoteTracker.should_reject_weighted() at deadline
+-> VoteTracker.should_reject() at deadline
+-> Before install: RE-verify against the CURRENT TrustRoot (auto_apply AND apply_update,
+   which now takes `&TrustRoot` as a required parameter — INC-I-172 F2); drop if revoked
 -> If < 40% veto: approved
 -> Grace period: veto_deadline + GRACE_PERIOD
 -> auto_apply_from_github(version, signed_checksums_sha256)
@@ -360,15 +366,35 @@ UpdateService detects approved release
        -> blocks only if: should_enforce() AND !version_meets_requirement() AND binary_ready AND not timed out (30min)
 ```
 
-Signature Verification Key Selection:
+Trust-Root Selection (INC-I-172 F1 — resolved ONCE at the composition root,
+`bins/node/src/updater/trust_root_wiring.rs::resolve_trust_root`):
 ```
-verify_release_signatures_with_keys(release, on_chain_keys, network):
-  if on_chain_keys.is_empty():
-    keys = bootstrap_maintainer_keys(network)  [compile-time static]
-  else:
-    keys = on_chain_keys  [first 5 registered producers on-chain]
-  count valid Ed25519 sigs from known keys
-  require >= REQUIRED_SIGNATURES (3)
+members non-empty                        -> TrustRoot::on_chain(members, set.threshold)
+members empty AND last_derived_height==0 -> TrustRoot::bootstrap(network)   [never had a set]
+members empty AND last_derived_height>0  -> TrustRoot::on_chain(vec![], t)  [FAILS CLOSED]
+maintainer_state lock unavailable        -> TrustRoot::on_chain(vec![], 3)  [FAILS CLOSED]
+
+operator command (doli-node upgrade/update verify/update apply)
+                                         -> command_trust_root(data_dir, network)  [F3: reads
+                                            this host's maintainer_state.bin, Err is FATAL]
+doli CLI (bins/cli)                      -> TrustRoot::bootstrap(network)  [not the node host]
+
+verify_release_with_trust_root(release, &root):
+  if !root.is_usable(): error! + TrustRootUnavailable   <- NO fallback to compiled keys
+  for key in root.keys():                                <- DISTINCT signers, covenant shape
+      for sig in release.signatures: if matches && verifies { valid += 1; break }
+  require valid >= root.threshold()
+```
+
+Install-Gate Binding (INC-I-172 F1 — `crates/updater/src/install_gate.rs`). Every path
+that WRITES a binary goes through this; a signature check alone is not a gate:
+```
+verify_release_artifact(&release_info, tarball, &sf, &root):
+  L1 sf.version            == release_info.version (modulo leading "v")  else ArtifactBindingMismatch
+  L2 sf.checksums_sha256   == sha256(release_info.checksums_body)        else ArtifactBindingMismatch
+       ^ recomputed from BYTES; the checksums_sha256 FIELD is never trusted
+  L3 verify_release_with_trust_root(Release{sf.version, sf.checksums_sha256, sf.signatures}, root)
+  L4 sha256(tarball)       == platform_tarball_hash(release_info.checksums_body)  else HashMismatch
 ```
 
 Binary Install Path Selection:
@@ -434,17 +460,20 @@ Network timing (veto_period_secs, grace_period_secs, seniority_step_blocks, etc.
 
 **Used by** (per CLAUDE.md code map; exact call sites not re-verified this session — `rg`/glob unavailable in-session, cross-check with grep before relying on line numbers):
 - `bins/node/` — production loop consults `HardForkSchedule::should_stop_producing()` and `check_production_allowed()` before producing a block; startup/init calls `assert_production_keys()`; periodic task polls `fetch_latest_release()` / drives the veto→grace→apply→watchdog pipeline; graceful shutdown calls `UpdateWatchdog::record_clean_shutdown()`.
-- `bins/cli/` — `doli release sign` (wraps `sign_release_hash`), `doli upgrade` (shows signature/veto status via `download_signatures_json`/`calculate_veto_result`), `doli-node update apply` (manual `apply_update`/`auto_apply_from_github` trigger per banner text in `enforcement.rs:153` / `apply.rs` docstrings).
+- `bins/cli/` — `doli release sign` (wraps `sign_release_hash`); `doli upgrade` GATES the install on maintainer signatures (`download_signatures_json` → `verify_release_signatures`, `bins/cli/src/cmd_upgrade.rs:87-120`) and returns `Err` before extract/install on failure, on a verification error, or when `SIGNATURES.json` is absent (INC-I-172 F6) — it does NOT merely display status, and `calculate_veto_result` has no CLI caller; `doli-node update apply` (manual `apply_update`/`auto_apply_from_github` trigger per banner text in `enforcement.rs:153` / `apply.rs` docstrings).
+- **NOT verified anywhere:** `doli-node upgrade` (`bins/node/src/commands/misc.rs::handle_upgrade_command`) downloads and installs with a checksum check only — no maintainer signature verification. Do not treat it as an equivalent of `doli upgrade`.
 
 ## CONSTRAINTS
 
 Governance rules (no exceptions):
-- ALL updates require veto period (configurable, currently 5 min; target 7 days mainnet — module doc at lib.rs:5-16 still says "7-day"/"2 epochs", constants.rs:12 comment says "early network")
-- 40% producer veto threshold (weighted by bonds x seniority)
+- ALL updates require a veto period (configurable, currently 5 min). Report the CONFIGURED value; there is no 7-day period anywhere in code.
+- 40% producer veto threshold, by HEAD COUNT (no bond or seniority weighting)
+- The veto window is measured from the NODE-LOCAL `first_notified_at`, never from `Release::published_at` (unsigned, attacker-supplied)
+- Verification FAILS CLOSED: an empty or sub-threshold on-chain trust root refuses, it never falls back to the compiled bootstrap keys
 - 3-of-5 maintainer signatures required (Ed25519)
 - `REQUIRED_SIGNATURES = 3` (constants.rs:29)
 - `VETO_THRESHOLD_PERCENT = 40` (constants.rs:26)
-- `VETO_PERIOD = 5 * 60s` (constants.rs:13) — early network, target 7 days
+- `VETO_PERIOD = 5 * 60s` (constants.rs) — the enforced value
 - `GRACE_PERIOD = 3600s` (constants.rs:16)
 - `CHECK_INTERVAL = 6 * 3600s` (constants.rs:116)
 
@@ -453,18 +482,16 @@ Production blocking rules (enforcement.rs:176):
 - Download failure -> warn + allow production (network must not halt for infra failure)
 - `ENFORCEMENT_TIMEOUT_SECS = 30 * 60` (enforcement.rs:62)
 
-Vote weight formula (params.rs:100):
-- weight = bond_count * (1.0 + min(years,4) * 0.75)
-- Seniority caps at 4 years (max multiplier 4.0x)
-- Step: 1 year = seniority_step_blocks blocks (Devnet=144, production via Network)
-- Stored as (weight * 100) as u64 in VoteTracker (2-decimal precision)
-- Anti-Sybil: 100 new bonds = 100x1.0=100; 25 four-year veterans = 25x4.0=100
+Vote weight formula: **THERE IS NONE.** One active producer, one veto vote. The
+bond x seniority formula was documented for years but only ever ran in tests; it was
+deleted in INC-I-172 F8. The only Sybil barrier on the veto is the registration bond.
 
 Maintainer keys:
 - Mainnet: N1-N5 are both producers AND maintainers (dual role)
 - Testnet: NT1-NT5 are both producers AND maintainers
 - N6-N12 / NT6-NT12: producers only, cannot sign releases
-- Bootstrap keys are static fallback; on-chain keys (first 5 registered producers) take precedence once synced
+- Bootstrap keys are **NOT a fallback.** They are used only by a root resolved as `Bootstrap` — a node that has NEVER established an on-chain set (`members` empty AND `last_derived_height == 0`), and the `doli` CLI, which is not the node host. An on-chain set that exists and is empty resolves to an unusable `OnChain` root and REFUSES; it never degrades to the compiled keys (INC-I-172 F1). See `:450` and the resolution table in `bins/node/src/updater/trust_root_wiring.rs`.
+- `doli-node upgrade` / `update verify` / `update apply` resolve the ON-CHAIN root from this host's `maintainer_state.bin` via `command_trust_root(data_dir, network)` (INC-I-172 F3) — they do not use the compiled keys
 - `is_using_placeholder_keys()` must return false before mainnet launch
 - `assert_production_keys(network)` panics on placeholder; call during node init
 
@@ -488,7 +515,7 @@ Watchdog behavior:
 - Clean shutdown clears crash history -> no false rollback
 - After rollback, state cleared -> no re-trigger
 
-Platform identifiers: "linux-x64" | "linux-arm64" | "macos-x64" | "macos-arm64" | "unknown". Maps to Rust target triples (`platform_target_triple()`, download.rs:373) for CHECKSUMS.txt/tarball asset matching.
+Platform identifiers: "linux-x64" | "linux-arm64" | "macos-x64" | "macos-arm64" | "unknown". Maps to Rust target triples (`platform_target_triple()`, download.rs:347) for CHECKSUMS.txt/tarball asset matching.
 
 Agent skill sync (`install_skills_from_tarball`, apply.rs:511):
 - Best-effort — failure never blocks the node/CLI binary update
@@ -502,8 +529,8 @@ Network-aware timing: Always use `UpdateParams::for_network(network)` instead of
 
 Key selection:
 ```
-In running node (has on-chain state): verify_release_signatures_with_keys(release, &on_chain_keys, network)
-In CLI (no on-chain state):           verify_release_signatures(release, network)  // bootstrap keys
+In running node (has on-chain state): verify_release_with_trust_root(release, &maintainer_trust_root_fn()())
+In CLI (no on-chain state):           verify_release_signatures(release, network)  // TrustRoot::bootstrap(network)
 In devnet tests:                      DOLI_TEST_KEYS=1 -> get_maintainer_keys(Devnet) returns test keys
 ```
 
@@ -525,13 +552,11 @@ Adding a new hard fork (hardfork.rs:208):
 6. If the entry is load-bearing for a test contract (like M-Choice1), keep the marker words in consensus_changes text
 ```
 
-VoteTracker weight storage:
+VoteTracker usage (head count — no weights, INC-I-172 F8):
 ```
-let w = params.calculate_vote_weight(bond_count, blocks_active);
-let weight_u64 = (w * 100.0) as u64;  // 100x multiplier for 2-decimal precision
-weights.insert(producer_id, weight_u64);
-let tracker = VoteTracker::with_weights(version, weights);
-tracker.should_reject_weighted(total_weight)  // uses same scale
+let mut tracker = VoteTracker::new(version);
+tracker.record_vote(producer_id, Vote::Veto);   // false if that producer already voted
+tracker.should_reject(active_producer_count)    // true if veto count >= 40%
 ```
 
 Test keys activation (devnet CI only):
@@ -565,4 +590,4 @@ host where the installed binary is not executable by the service account.
 
 Enforcement timeout safety: If `auto_apply_from_github` fails (network error, wrong tarball name), `binary_ready` stays false -> production continues with warning. If `enforcement_time + 30min` passes with old version, enforcement auto-expires. Prevents indefinite production halt from infrastructure failures.
 
-GitHub repo: `e-weil/doli` (constants.rs:120). API: `https://api.github.com/repos/e-weil/doli/releases/latest`. Fallback: `https://releases.doli.network`.
+GitHub repo: `doli-network/doli` (constants.rs:132). API: `https://api.github.com/repos/doli-network/doli/releases/latest`. No fallback mirror — the dangling `releases.doli.network` fallback was removed in INC-I-157 (it fed `binary_url_template`, which `download_binary` tries FIRST, so a dangling name there was a hijack primitive).

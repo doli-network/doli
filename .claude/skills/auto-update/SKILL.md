@@ -1,10 +1,34 @@
 ---
 name: auto-update
-description: Use this skill when implementing, fixing, or completing the DOLI auto-update system. Covers maintainer governance, seniority+stake weighted voting, watchdog/rollback, hard fork support, storage persistence, CLI commands, and E2E testing. Triggers on "auto-update", "update system", "maintainer", "governance", "veto", "seniority", "watchdog", "hard fork", "rollback".
+description: Historic implementation plan for the DOLI auto-update system (maintainer governance, watchdog/rollback, hard fork support, storage persistence, CLI commands, E2E testing). PARTLY SUPERSEDED by INC-I-172 M1 - the seniority/stake weighted voting it describes was deleted; the veto is a head count and release verification goes through a fail-closed TrustRoot. Read the banner at the top before acting. Triggers on "auto-update", "update system", "maintainer", "governance", "veto", "watchdog", "hard fork", "rollback".
 version: 1.0.0
 ---
 
 # DOLI Auto-Update Implementation Skill
+
+> ## ⛔ SUPERSEDED IN PART — READ BEFORE USING (INC-I-172 M1, 2026-08-10)
+>
+> **Do NOT implement milestone M1 ("Vote Weight = Bonds × Seniority") from this file.**
+> The weighted-veto machinery it describes was written, never wired to any production
+> caller, and **deleted** in INC-I-172 M1 (finding F8). Re-adding it would restore dead
+> code plus a false operator-facing claim.
+>
+> Corrections that override the sections below:
+> - **Veto voting is a HEAD COUNT.** One active producer, one vote. No bond weighting,
+>   no seniority multiplier, no minimum voting age. `calculate_vote_weight`,
+>   `seniority_multiplier`, `is_eligible_to_vote`, `VoteTracker::with_weights`,
+>   `set_weights`, `should_reject_weighted`, `veto_weight`, `approval_weight`,
+>   `veto_percent_weighted` no longer exist.
+> - **Release verification goes through a `TrustRoot`** (`crates/updater/src/trust_root.rs`)
+>   and FAILS CLOSED. An on-chain maintainer set that exists and is empty does NOT fall
+>   back to the compiled bootstrap keys. `verify_release_signatures_with_keys` is gone;
+>   use `verify_release_with_trust_root`.
+> - **Signature counting is by DISTINCT SIGNER.** Three entries from one key count as one.
+> - **Veto/grace deadlines key off the node-local `first_notified_at`**, never
+>   `Release::published_at`.
+>
+> Authoritative current reference: `.claude/skills/updater/SKILL.md` and
+> `docs/auto_update_system.md`.
 
 ## Architecture Overview
 
@@ -12,10 +36,10 @@ The auto-update system enables transparent, community-governed binary updates wi
 
 ```
 Flow: Release published → Veto period → Voting → Approved/Rejected → Grace period → Enforcement
-      (3/5 maintainer sigs)  (5 min early*)    (bonds+seniority weighted)    (2 min early*)
+      (3/5 distinct sigs)    (5 min, node-local) (producer head count)       (2 min early*)
 ```
 
-### Core Principle: Vote Weight = Staked Bonds × Seniority Multiplier
+### ~~Core Principle: Vote Weight = Staked Bonds × Seniority Multiplier~~ (DELETED — INC-I-172 F8; the veto is a head count)
 
 A producer's governance power combines economic stake (skin in the game) with time commitment (loyalty). Neither alone is sufficient — a whale with 100 bonds registered yesterday should not outweigh a veteran with 2 bonds who has been securing the network for 3 years.
 
@@ -48,12 +72,12 @@ This means a Sybil attacker creating 100 fresh 1-bond producers gets weight 100 
 | `UpdateParams` | `crates/updater/src/lib.rs` | 195-300 | Network-aware params, veto/grace periods |
 | `Release`, `MaintainerSignature` | `crates/updater/src/lib.rs` | 307-340 | Release struct with signatures |
 | `VersionEnforcement` | `crates/updater/src/lib.rs` | 422-470 | Enforcement deadline calculation |
-| `VoteTracker` (weighted) | `crates/updater/src/vote.rs` | Full file | Weighted veto/approval, `should_reject_weighted()` |
+| `VoteTracker` (count-based) | `crates/updater/src/vote.rs` | Full file | Veto/approval head count, `should_reject(total_producers)`. The weighted variant was deleted (INC-I-172 F8). |
 | `VoteMessage` | `crates/updater/src/vote.rs` | 21-85 | Signed vote messages |
 | `apply_update`, `backup_current`, `rollback` | `crates/updater/src/apply.rs` | Full file | Binary apply/backup/rollback |
 | `download_binary`, `verify_hash` | `crates/updater/src/download.rs` | Full file | Download and hash verify |
 | `test_keys` | `crates/updater/src/test_keys.rs` | Full file | Devnet test maintainer keys |
-| `MaintainerSet` | `crates/core/src/maintainer.rs` | Full 716 lines | Full implementation with multisig |
+| `MaintainerSet` | `crates/core/src/maintainer/set.rs` | Full module | Distinct-signer multisig + `_legacy`/`_at` height gate (INC-I-172 M2) |
 | `TxType::AddMaintainer/RemoveMaintainer` | `crates/core/src/transaction.rs` | Types 11,12 | Transaction types defined |
 | Maintainer tx validation | `crates/core/src/validation.rs` | 1783+ | Structural validation |
 | Network params | `crates/core/src/network_params.rs` | 375-415 | All update timing params |
@@ -73,8 +97,8 @@ This means a Sybil attacker creating 100 fresh 1-bond producers gets weight 100 
 ### ✅ PREVIOUSLY MISSING — Now implemented
 | Component | Location | Notes |
 |-----------|----------|-------|
-| `calculate_vote_weight()` | `crates/updater/src/lib.rs:241` | Uses `bond_count × seniority_multiplier` |
-| `watchdog.rs` | `crates/updater/src/watchdog.rs` | Crash detection and auto-rollback |
+| ~~`calculate_vote_weight()`~~ | DELETED (INC-I-172 F8) | Never had a production caller |
+| `watchdog.rs` | `crates/updater/src/watchdog.rs` | Crash detection and auto-rollback — **CODE EXISTS, NOT WIRED**: zero production callers, so no node rolls back automatically (INC-I-172 AUDIT-P1-014) |
 | `hardfork.rs` | `crates/updater/src/hardfork.rs` | Upgrade-at-height mechanism |
 | `storage/maintainer.rs` | `crates/storage/src/maintainer.rs` | Persist maintainer set |
 | `storage/update.rs` | `crates/storage/src/update.rs` | Persist update state, votes |
@@ -93,9 +117,15 @@ This means a Sybil attacker creating 100 fresh 1-bond producers gets weight 100 
 
 ## Implementation Milestones (execute in order)
 
-### M1: Vote Weight = Bonds × Seniority
+### ~~M1: Vote Weight = Bonds × Seniority~~ — OBSOLETE, DO NOT IMPLEMENT
 
-**Goal:** Change vote weight from seniority-only to bonds × seniority.
+**Status: cancelled by INC-I-172 M1 (F8).** The functions below were deleted because
+nothing outside `#[cfg(test)]` ever called them, while four documents told operators a
+weighted veto was protecting them. Implementing this milestone would reintroduce both
+the dead code and the false claim. The rest of this section is kept only as a record of
+what was removed.
+
+**Original goal (cancelled):** Change vote weight from seniority-only to bonds × seniority.
 
 **File: `crates/updater/src/lib.rs`**
 
@@ -163,7 +193,12 @@ NetworkEvent::NewVote(vote_data) => {
 
 ---
 
-### M3: Watchdog and Auto-Rollback
+### M3: Watchdog and Auto-Rollback — **NOT DELIVERED**
+
+> **STATUS (INC-I-172 M1 audit, AUDIT-P1-014):** the file below was written but never
+> wired. `UpdateWatchdog` has zero production callers and `UpdateConfig::auto_rollback`
+> is read nowhere, so **no automatic post-update rollback happens on any node**. Treat
+> this section as an unimplemented plan, not as a description of running code.
 
 **Goal:** Detect crashes after update and auto-rollback.
 
@@ -648,7 +683,7 @@ DOLI_UPDATE_CHECK_INTERVAL_SECS=5  # Check every 5s
 - ✅ `bonds × seniority_multiplier` — balances stake and commitment
 - ✅ Deterministic maintainer derivation from genesis (any node can verify)
 - ✅ Persistent vote state (survives restart)
-- ✅ Watchdog with automatic rollback (no operator needed)
+- ⛔ Watchdog with automatic rollback (no operator needed) — **NOT IMPLEMENTED**; the watchdog has zero callers, rollback is manual only (AUDIT-P1-014)
 - ✅ Hard fork activation by height (deterministic across all nodes)
 - ✅ Network-parameterized timing (fast devnet, production mainnet)
 - ✅ All operations scale to 150K producers
@@ -667,7 +702,7 @@ DOLI_UPDATE_CHECK_INTERVAL_SECS=5  # Check every 5s
 - [ ] `scripts/test_update_veto.sh` — 3/5 veto rejects update (real nodes, 60s veto period)
 - [ ] `scripts/test_update_approve.sh` — 1/5 veto approves update, enforcement activates after 30s grace
 - [ ] `scripts/test_vote_weights.sh` — whale (10 bonds) outweighs 5 genesis producers combined
-- [ ] `scripts/test_rollback.sh` — 3 crashes in 60s triggers automatic rollback (no manual intervention)
+- [ ] `scripts/test_rollback.sh` — 3 crashes in 60s triggers automatic rollback (no manual intervention) — **CANNOT PASS TODAY**: the watchdog is not wired (AUDIT-P1-014)
 - [ ] `scripts/test_hard_fork.sh` — old-version node stops at activation height
 - [ ] Votes persist across node restart (kill node, restart, votes still counted)
 - [ ] CLI commands (`doli update status`, `doli update vote`, `doli maintainer list`) work against running devnet

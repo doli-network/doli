@@ -14,10 +14,12 @@
 //!     every successful block apply (otherwise
 //!     `PriceAttestation` admission rejects every signer at oracle
 //!     activation).
-//!   - AUDIT-P1-003: `Transaction::is_state_only()` must classify
-//!     `PriceAttestation` as state-only so the mempool routes it via
-//!     `add_system_transaction` (otherwise the fee check rejects it
-//!     for having zero inputs).
+//!   - AUDIT-P1-003: the mempool ROUTING classification of
+//!     `PriceAttestation`. INC-I-173 M3 / F4 replaced the type-based
+//!     `Transaction::is_state_only()` with the shape-based
+//!     `is_zero_flow()`, and `PriceAttestation` is NOT in
+//!     `TxType::allows_empty_io`, so it no longer takes the 0-fee
+//!     system lane. See the updated test below for the full delta.
 //!
 //! The AUDIT-P0-001 rollback test, AUDIT-P1-002 missing-block test,
 //! and AUDIT-P2-004 dedup test require an end-to-end driver that
@@ -112,20 +114,36 @@ async fn audit_p1_001_mempool_producer_snapshot_populates_after_refresh() {
     }
 }
 
-// OUTPUT CONTRACT: Transaction::is_state_only — PriceAttestation routing
-//   O1: PriceAttestation.is_state_only() is true (mempool routes via
-//       add_system_transaction, bypassing input-based fee check)
+// OUTPUT CONTRACT: Transaction::is_zero_flow — PriceAttestation routing
+//   O1: PriceAttestation.is_zero_flow() is FALSE (the mempool does NOT
+//       route it via add_system_transaction)
 // PATHS:
 //   P1: a fresh PriceAttestation tx
 // INPUT PARTITIONS:
 //   P1: PriceAttestation built via Transaction::new_price_attestation
 // MATRIX: P1×O1✓
 //
-// AUDIT-P1-003: this test pins the routing classification from the
-// node-level perspective. Without it, the audit's liveness blocker
-// (fee=0 < BASE_FEE=1 → FeeTooLow) returns.
+// INC-I-173 M3 / F4 (AUDIT-P3-002) — UPDATED, not deleted. This test
+// previously asserted `is_state_only() == true`. That predicate is
+// DELETED: it routed on TYPE alone, so ClaimReward/ClaimBond — which
+// carry OUTPUTS — took the 0-fee lane and gave free relay that
+// evict_lowest_fee then used to push out legitimate 0-fee governance
+// transactions (FM-10). Routing is now SHAPE-based.
+//
+// DELTA: PriceAttestation loses system routing, because
+// TxType::allows_empty_io is false for it. NO LIVE IMPACT —
+// oracle_activation_height is u64::MAX on every network, so no
+// PriceAttestation can be mined anywhere. Reclassifying it `true` is
+// spec Option B and is explicitly OUT of M3 scope: allows_empty_io's
+// true-set is curated by AUTHORIZATION, not by wire shape, so widening
+// it is its own decision with its own activation-height question.
+//
+// RENAMED at review iteration 1 (M3a / F7) from
+// `audit_p1_003_price_attestation_classified_state_only`, which asserted the
+// OPPOSITE of what its name said after the F4 update. Traceability:
+// AUDIT-P1-003 (kept in the name) and AUDIT-P3-002 (this comment block).
 #[tokio::test]
-async fn audit_p1_003_price_attestation_classified_state_only() {
+async fn audit_p1_003_price_attestation_is_not_system_routed() {
     let kp = crypto::KeyPair::generate();
     let mut data = PriceAttestationData {
         signer_pubkey: *kp.public_key(),
@@ -139,8 +157,15 @@ async fn audit_p1_003_price_attestation_classified_state_only() {
 
     assert_eq!(tx.tx_type, TxType::PriceAttestation);
     assert!(
-        tx.is_state_only(),
-        "AUDIT-P1-003: PriceAttestation must classify as state-only so mempool routes \
-         it via add_system_transaction. Was the new arm added to is_state_only()?"
+        tx.inputs.is_empty() && tx.outputs.is_empty(),
+        "setup: a PriceAttestation is 0-in/0-out, so only the TYPE half of \
+         is_zero_flow can decide its routing"
+    );
+    assert!(
+        !tx.is_zero_flow(),
+        "INC-I-173 M3 / F4: PriceAttestation is NOT in TxType::allows_empty_io, so it \
+         must NOT take the 0-fee system lane. If this fires, the exempt type list was \
+         widened without the activation-height decision that widening requires \
+         (spec Option B, out of M3 scope)."
     );
 }

@@ -200,7 +200,14 @@ impl RpcContext {
 
             let mut mempool = self.mempool.write().await;
 
-            if tx.is_state_only() {
+            // INC-I-173 M3 / F4 (AUDIT-P3-002). Routing is SHAPE-based, not
+            // type-based: the 0-fee system lane is for transactions that are
+            // genuinely 0-in/0-out AND whose type is authorized to exist in that
+            // shape. The deleted `is_state_only()` routed on TYPE alone, so
+            // `ClaimReward` / `ClaimBond` — which carry outputs — took the 0-fee
+            // lane and gave free relay that `evict_lowest_fee` then used to push
+            // out legitimate 0-fee governance transactions (FM-10).
+            if tx.is_zero_flow() {
                 mempool
                     .add_system_transaction(tx.clone(), current_height)
                     .map_err(Self::mempool_error_to_rpc)?;

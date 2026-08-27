@@ -1,6 +1,6 @@
 //! Binary download and verification
 //!
-//! Downloads DOLI binaries from GitHub Releases (primary) or fallback mirror.
+//! Downloads DOLI binaries from GitHub Releases.
 //! GitHub Releases provides:
 //! - Global CDN for fast downloads
 //! - High availability (99.9%+ uptime)
@@ -9,7 +9,7 @@
 
 use crate::{
     platform_identifier, MaintainerSignature, Release, ReleaseMetadata, Result, SignaturesFile,
-    UpdateError, FALLBACK_MIRROR, GITHUB_RELEASES_URL,
+    UpdateError, GITHUB_RELEASES_URL,
 };
 use doli_core::network::Network;
 use sha2::{Digest, Sha256};
@@ -20,7 +20,6 @@ use tracing::{debug, info, warn};
 /// Tries sources in order:
 /// 1. Primary URL from release.binary_url_template
 /// 2. GitHub Releases (CDN)
-/// 3. Fallback mirror
 pub async fn download_binary(release: &Release) -> Result<Vec<u8>> {
     let platform = platform_identifier();
     let url = release.binary_url_template.replace("{platform}", platform);
@@ -36,19 +35,12 @@ pub async fn download_binary(release: &Release) -> Result<Vec<u8>> {
         GITHUB_RELEASES_URL, release.version, platform
     ));
 
-    // Fallback mirror
-    urls_to_try.push(format!(
-        "{}/v{}/doli-node-{}",
-        FALLBACK_MIRROR, release.version, platform
-    ));
-
     let mut last_error = None;
 
     for (i, url) in urls_to_try.iter().enumerate() {
         let source = match i {
             0 => "primary",
-            1 => "GitHub",
-            _ => "fallback",
+            _ => "GitHub",
         };
         debug!("Trying download from {} ({})", source, url);
 
@@ -109,7 +101,6 @@ pub fn verify_hash(binary: &[u8], expected_hash: &str) -> Result<()> {
 /// Tries sources in order:
 /// 1. Custom URL (if provided)
 /// 2. GitHub API (gets latest release tag, then downloads release.json)
-/// 3. Fallback mirror (legacy releases.doli.network/latest.json)
 pub async fn fetch_latest_release(
     custom_url: Option<&str>,
     network: Option<Network>,
@@ -147,23 +138,6 @@ pub async fn fetch_latest_release(
         }
         Err(e) => {
             warn!("GitHub API check failed: {}", e);
-        }
-    }
-
-    // Fallback to legacy mirror
-    let fallback_url = format!("{}/latest.json", FALLBACK_MIRROR);
-    debug!("Trying fallback mirror: {}", fallback_url);
-
-    match fetch_release_from_url(&fallback_url).await {
-        Ok(release) => {
-            if let Some(filtered) = filter_release_by_network(release, network) {
-                info!("Found release v{} from fallback mirror", filtered.version);
-                return Ok(Some(filtered));
-            }
-            return Ok(None);
-        }
-        Err(e) => {
-            warn!("Fallback mirror failed: {}", e);
         }
     }
 
@@ -352,8 +326,16 @@ async fn fetch_release_from_url(url: &str) -> Result<Release> {
 }
 
 /// Release info fetched directly from GitHub API (no release.json needed)
+///
+/// INVARIANT (INC-I-172 F1): `checksums_body`, `checksums_sha256` and `expected_hash`
+/// MUST all be derived from ONE download of CHECKSUMS.txt for `version`. The install
+/// gate (`crate::install_gate::verify_release_artifact`) re-derives the other two from
+/// `checksums_body` rather than trusting them, so the whole chain
+/// signature → CHECKSUMS.txt → tarball is anchored on a single byte buffer. Any future
+/// producer of this struct that fetches the body twice re-opens the TOCTOU window.
 pub struct GithubReleaseInfo {
-    /// Semantic version (without 'v' prefix)
+    /// Semantic version (without 'v' prefix), taken from the release TAG — never from
+    /// SIGNATURES.json.
     pub version: String,
     /// Direct download URL for the platform tarball
     pub tarball_url: String,
@@ -365,8 +347,35 @@ pub struct GithubReleaseInfo {
     /// Used to verify CHECKSUMS.txt integrity against the signed hash,
     /// closing the TOCTOU window (AUDIT-UPDATE-002).
     pub checksums_sha256: String,
+    /// The raw bytes of the CHECKSUMS.txt that produced the two hashes above.
+    ///
+    /// Carried so the install gate can recompute both itself: a caller-supplied
+    /// `checksums_sha256` that is never checked against real bytes is exactly the
+    /// unbound operand F1 is about.
+    pub checksums_body: Vec<u8>,
     /// Release changelog (body from GitHub)
     pub changelog: String,
+}
+
+/// Parse the SHA-256 of the current platform's tarball out of a CHECKSUMS.txt body.
+///
+/// Single definition on purpose: the install gate re-parses the hash from the
+/// CHECKSUMS.txt it just proved the maintainers signed, and it must select the same
+/// line `fetch_github_release` did or the two would disagree about which artifact the
+/// release names for this platform.
+pub(crate) fn platform_tarball_hash(checksums_text: &str) -> Result<String> {
+    let triple = platform_target_triple();
+    checksums_text
+        .lines()
+        .find(|line| line.contains(triple) && line.contains(".tar.gz"))
+        .and_then(|line| line.split_whitespace().next())
+        .map(|h| h.to_string())
+        .ok_or_else(|| {
+            UpdateError::DownloadFailed(format!(
+                "No checksum for platform {} in CHECKSUMS.txt",
+                triple
+            ))
+        })
 }
 
 /// Map platform_identifier() to Rust target triple for asset matching
@@ -450,17 +459,7 @@ pub async fn fetch_github_release(version: Option<&str>) -> Result<GithubRelease
     let checksums_text = String::from_utf8_lossy(&checksums_body);
 
     let triple = platform_target_triple();
-    let expected_hash = checksums_text
-        .lines()
-        .find(|line| line.contains(triple) && line.contains(".tar.gz"))
-        .and_then(|line| line.split_whitespace().next())
-        .ok_or_else(|| {
-            UpdateError::DownloadFailed(format!(
-                "No checksum for platform {} in CHECKSUMS.txt",
-                triple
-            ))
-        })?
-        .to_string();
+    let expected_hash = platform_tarball_hash(&checksums_text)?;
 
     // Find tarball asset for current platform
     let tarball_url = assets
@@ -487,6 +486,7 @@ pub async fn fetch_github_release(version: Option<&str>) -> Result<GithubRelease
         tarball_url,
         expected_hash,
         checksums_sha256,
+        checksums_body,
         changelog,
     })
 }

@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicU64;
 
 use crypto::Hash;
+use doli_core::maintainer::MaintainerSet;
 use serde::{Deserialize, Serialize};
 
 use crate::utxo::{Outpoint, UtxoEntry};
@@ -12,6 +13,22 @@ use crate::utxo::{Outpoint, UtxoEntry};
 ///
 /// Stored in `cf_undo` keyed by block height. Enables O(rollback_depth) reorgs
 /// instead of O(chain_height) rebuild-from-genesis.
+///
+/// ## This encoding is APPEND-HOSTILE. Do not add a field.
+///
+/// Bincode is non-self-describing: field order and arity are implied by the type,
+/// never carried in the bytes. Appending a field therefore makes every entry written
+/// by the previous binary fail to decode, and `StateDb::get_undo` maps that failure to
+/// `None` — the same value it returns for "this height was never written". The node
+/// then silently takes the rebuild-from-genesis fallback
+/// (`bins/node/src/node/rollback.rs`, AUDIT-P1-003 / INC-I-156 territory) and
+/// `execute_reorg`'s `all(|h| get_undo(h).is_some())` gate closes for the WHOLE rewind
+/// range, for up to `UNDO_KEEP_DEPTH` blocks after each node's restart.
+///
+/// INC-I-174 M1 needed a per-height maintainer snapshot and deliberately did **not**
+/// add it here. It lives in a separate `cf_undo` record under a distinct key prefix
+/// ([`MaintainerUndoSnapshot`], `state_db/undo.rs`), which leaves this encoding
+/// byte-identical and every pre-upgrade entry readable.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UndoData {
     /// UTXOs that were spent by this block (restore on rollback).
@@ -24,13 +41,183 @@ pub struct UndoData {
     pub producer_snapshot: Vec<u8>,
     /// Serialized EpochState snapshot BEFORE this block was applied.
     /// Enables O(1) rollback of scheduler state instead of rebuilding from blocks.
-    /// None for blocks created before this field was added (backward compat).
+    ///
+    /// CORRECTED (INC-I-174 M1, measured). This field used to be documented as
+    /// "None for blocks created before this field was added (backward compat)".
+    /// That claim is FALSE and the `#[serde(default)]` below cannot deliver it:
+    /// `#[serde(default)]` only fires for a self-describing format that can report a
+    /// MISSING FIELD, and bincode reports EOF instead. An undo entry written before
+    /// this field existed does NOT decode under today's `UndoData` — it decodes to an
+    /// `Err`, which `get_undo` turns into `None`, which every caller reads as
+    /// "no undo data at this height".
+    ///
+    /// Measured by `crates/storage/tests/inc_i_174_undo_schema.rs`
+    /// (`req_174_004_the_existing_serde_default_backward_compat_claim_is_measured`).
+    /// The attribute is kept only because removing it would change nothing on the wire;
+    /// it must never again be cited as a licence to append a field. See the type-level
+    /// note above.
     #[serde(default)]
     pub epoch_state_snapshot: Option<Vec<u8>>,
-    /// Legacy field — kept for backward compat deserialization of existing undo data.
+    /// Legacy field — retained so the field arity of this struct does not move.
     /// Chain commitment is now computed via periodic full scan, not incrementally.
+    /// The `#[serde(default)]` here carries the same false promise as the one above:
+    /// it does NOT make an older entry readable. Retained, not relied on.
     #[serde(default)]
     pub chain_commitment: Option<[u8; 32]>,
+}
+
+/// The maintainer trust root as it stood BEFORE a block that rotates it.
+///
+/// INC-I-174. The maintainer set is the auto-updater's release-verification trust root.
+/// It is node-local — never gossiped, never hashed, absent from
+/// `ChainState::serialize_canonical` — so it is NOT part of the consensus state root and
+/// this record needs no activation height. But it IS mutated by `AddMaintainer` /
+/// `RemoveMaintainer` transactions, and before this record existed nothing could undo
+/// that mutation: a reorg that dropped the rotation left the node's install authority
+/// permanently diverged from the canonical chain, in memory and on disk.
+///
+/// ## Why this is a SEPARATE `cf_undo` record and not a field on [`UndoData`]
+///
+/// See the append-hostility note on [`UndoData`]. Adding a sixth field there would have
+/// made every pre-upgrade `cf_undo` entry undecodable, silently dropping rollbacks into
+/// the rebuild-from-genesis fallback and closing the reorg gate for up to
+/// `UNDO_KEEP_DEPTH` blocks per node. Keyed separately, the two encodings evolve
+/// independently and no existing entry is disturbed.
+///
+/// ## Sizing
+///
+/// At most `MAX_MAINTAINERS` (5) × 32 B of keys plus two integers — roughly 200 B,
+/// four orders of magnitude below the `ProducerSet` snapshot whose per-block write
+/// caused the INC-I-071 605 MB `cf_undo` bloat. The record is nevertheless written
+/// ONLY for a block that carries a rotation: absence is the "unchanged at this height"
+/// sentinel and costs zero bytes.
+///
+/// ## Every field matters
+///
+/// `last_derived_height` is not decoration. `Node::maintainer_seed_is_done`
+/// (`bins/node/src/node/periodic.rs`) reads "never seeded" as
+/// `members.is_empty() && last_derived_height == 0`, and the seed is driven on EVERY
+/// applied block. A restore that dropped `last_derived_height` to 0 with an empty set
+/// would re-arm the one-shot bootstrap, which re-derives the root from LIVE producer
+/// state and RE-ARMS ANY KEY GOVERNANCE REMOVED — the INC-I-172 R1 hazard, strictly
+/// worse than the divergence this record exists to fix.
+///
+/// ## Why the record is SELF-DESCRIBING and BOUND (AUDIT-P1-001 / SYS-001)
+///
+/// The first shape of this record carried only `set` + `last_derived_height`, and the
+/// rewind path authorized it by its KEY — "a snapshot exists at height `h`, and the block
+/// now at `h` carries a rotation, therefore restore it". The five-lens M1 security audit
+/// converged on that as one structural property (SYS-001): *a new authority record is
+/// trusted for its POSITION, never for its CONTENT-authenticity or its BINDING to the
+/// block it describes.*
+///
+/// It is not a theoretical gap. `plan_maintainer_rewind` reads the block through
+/// `get_block_by_height` → `CF_HEIGHT_INDEX`, and `BlockStore::put_block_canonical`
+/// rewrites that index WITHOUT going through `apply_block` and WITHOUT refreshing this
+/// record — on `backfillFromPeer` (an online RPC), `doli-node restore`, the archiver, and
+/// `rebuild_canonical_index`. After any of those, a legitimate operator recovery can leave
+/// a DIFFERENT, rotation-carrying block at `h` while the record below it still describes
+/// the abandoned one. The position check then passes and a member list that exists on NO
+/// canonical chain — under INC-I-175, one still holding the publicly leaked bootstrap keys
+/// — installs through the SUCCESS exit.
+///
+/// So the record now answers three questions about ITSELF, and the reader
+/// (`bins/node/src/node/maintainer_rewind/binding.rs`) checks all three before a restore:
+///
+/// * [`Self::magic`] + [`Self::version`] — *was this written by a binary of this
+///   generation?* A record from another key family, a truncated value, or a future format
+///   is refused instead of being decoded into plausible-looking members.
+/// * [`Self::block_hash`] — *is this the record for THIS block?* This is the
+///   AUDIT-P1-001 closer, and it holds whatever rewrote the canonical index, because it
+///   compares the record against the block itself rather than against the index that
+///   pointed at it.
+/// * [`Self::set_digest`] — *does the member list still match the one this record was
+///   filed with?* Recomputed from `set` and the chain's genesis hash on the restore path,
+///   so a set edited in place on disk, or a record lifted from another chain, no longer
+///   matches its own record.
+///
+/// ## What the three checks do NOT do (AUDIT-P3-401)
+///
+/// They are **staleness and drift detection, not tamper detection.** All three inputs are
+/// PUBLIC and none is keyed: `magic`/`version` are compiled constants, `block_hash` is
+/// readable from the same data dir the record lives in, and `maintainer_set_digest` is
+/// `BLAKE3(domain ‖ genesis_hash ‖ threshold ‖ sorted members)` with no node secret. So the
+/// checks detect a FOSSIL record (left behind by an abandoned branch or a rewritten height
+/// index), a record from ANOTHER CHAIN, a record for a DIFFERENT BLOCK, a record whose
+/// member list was edited in place after capture, and a record written by a different
+/// BINARY GENERATION. They do NOT detect deliberate tampering by an actor who can write the
+/// data dir: that actor edits the member list and recomputes a matching `block_hash` and
+/// `set_digest` in one BLAKE3 call, and the record verifies.
+///
+/// That residual is ACCEPTED, not overlooked. The same write access reaches
+/// `maintainer_state.bin` directly — `crates/storage/src/lib.rs`
+/// [`crate::StorageError::MalformedPersistedValue`] documents that file as unsigned and
+/// attacker-writable given data-dir access, and it is the LIVE trust root rather than an
+/// undo record consulted only across a rewind. Editing it is a strictly shorter path to the
+/// same authority, so this record is not the control standing between that actor and the
+/// trust root, and a keyed MAC here would move nothing. Do not read these checks as
+/// authentication, tamper-proofing or integrity protection against an attacker, and do not
+/// retire another control (for example the `TrustRoot::resolve` containment guard) on the
+/// strength of them.
+///
+/// None of this is consensus-visible: the record stays node-local, so there is no
+/// activation height, no `*_VERSION` bump and no new column family. Changing the shape is
+/// safe on the wire because the 9-byte `0x4D` key family was introduced by INC-I-174 M1
+/// itself and has exactly two writers, both new — unlike [`UndoData`], no pre-upgrade
+/// entry exists to be broken.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MaintainerUndoSnapshot {
+    /// Format magic — always [`MaintainerUndoSnapshot::MAGIC`].
+    pub magic: [u8; 4],
+    /// Format version — always [`MaintainerUndoSnapshot::VERSION`].
+    pub version: u16,
+    /// Hash of the block this record was captured FOR — the binding that makes the
+    /// record authority for a BLOCK rather than for a HEIGHT.
+    pub block_hash: Hash,
+    /// `maintainer_set_digest(set, genesis_hash)` as computed at capture time.
+    ///
+    /// Stored as raw bytes so `crates/storage` gains no dependency edge on the digest
+    /// module: the node computes it at capture and recomputes it at restore.
+    pub set_digest: [u8; 32],
+    /// The member list and threshold as they stood before the block.
+    pub set: MaintainerSet,
+    /// `MaintainerState::last_derived_height` as it stood before the block.
+    pub last_derived_height: u64,
+}
+
+impl MaintainerUndoSnapshot {
+    /// ASCII `MUND`. Four bytes, so a value that is not one of these records — a
+    /// truncated write, a foreign key family, a hand-edited blob — fails to decode or
+    /// fails this check instead of yielding a plausible member list.
+    pub const MAGIC: [u8; 4] = *b"MUND";
+
+    /// Version 1 is the INC-I-174 M1 shape. A reader refuses anything else rather than
+    /// guessing: this record decides which binary the host installs, so "decode what you
+    /// can" is the wrong failure direction.
+    pub const VERSION: u16 = 1;
+
+    /// Stamp a new record with the current header. The ONLY constructor used in
+    /// production, so `magic`/`version` cannot be forgotten at a capture site.
+    pub fn new(
+        block_hash: Hash,
+        set_digest: [u8; 32],
+        set: MaintainerSet,
+        last_derived_height: u64,
+    ) -> Self {
+        Self {
+            magic: Self::MAGIC,
+            version: Self::VERSION,
+            block_hash,
+            set_digest,
+            set,
+            last_derived_height,
+        }
+    }
+
+    /// True when the header names this exact format generation.
+    pub fn header_is_valid(&self) -> bool {
+        self.magic == Self::MAGIC && self.version == Self::VERSION
+    }
 }
 
 /// INC-I-104 M0: hard cap on total memtable budget across all CFs.

@@ -476,7 +476,7 @@
 - fn Transaction::is_delegate_bond — TxType::DelegateBond
 - fn Transaction::is_revoke_delegation — TxType::RevokeDelegation
 - fn Transaction::is_protocol_activation — TxType::ProtocolActivation
-- fn Transaction::is_state_only — true for Exit, ClaimReward, ClaimBond, SlashProducer, DelegateBond, RevokeDelegation, AddMaintainer, RemoveMaintainer (no UTXO inputs by design)
+- fn Transaction::is_state_only — **DELETED in INC-I-173 M3 (F4 / AUDIT-P3-002).** Its doc contract ("no UTXO inputs by design") was false: `ClaimReward` and `ClaimBond` carry OUTPUTS, and the list omitted `Registration`. Mempool/relay routing now uses `Transaction::is_zero_flow()`, which is SHAPE-based (0 inputs AND 0 outputs AND `TxType::allows_empty_io`). Callers: `crates/rpc/src/methods/transaction.rs`, `bins/node/src/node/validation_checks.rs`.
 
 #### Transaction extra_data parsers
 - fn Transaction::epoch_reward_data — parse EpochRewardData; None if wrong tx_type
@@ -1193,7 +1193,7 @@ All items are marked deprecated — use DeterministicScheduler for consensus-cri
 - fn Network::min_voting_age_secs — minimum producer registration age before voting
 - fn Network::min_voting_age_blocks — min_voting_age_secs converted to blocks
 - fn Network::update_check_interval_secs — interval between auto-update checks
-- fn Network::crash_window_secs — window for crash counting that triggers rollback
+- fn Network::crash_window_secs — window for crash counting that would trigger rollback; NOT a live control (the watchdog is unwired, AUDIT-P1-014)
 - fn Network::crash_threshold — hardcoded 3 for all networks
 - fn Network::veto_period_blocks — veto_period_secs / slot_duration
 
@@ -1762,7 +1762,7 @@ Note: struct PresenceHeartbeat (not Heartbeat) in the tpop module; this is diffe
 
 ---
 
-### Maintainer Governance (`crates/core/src/maintainer.rs`)
+### Maintainer Governance (`crates/core/src/maintainer/`)
 
 #### Constants
 - const INITIAL_MAINTAINER_COUNT: usize = 5 — number of initial maintainers bootstrapped from first N registrations
@@ -1990,7 +1990,9 @@ Note: struct PresenceHeartbeat (not Heartbeat) in the tpop module; this is diffe
 ### State DB
 - `StateDb` — unified RocksDB state database; 6 column families: `cf_utxo`, `cf_utxo_by_pubkey`, `cf_producers`, `cf_exit_history`, `cf_meta`, `cf_undo`
 - `BlockBatch<'a>` — atomic write batch for a single block application; fields: db ref, rocksdb::WriteBatch, utxo_delta (i64), pending_utxos (HashMap), spent_in_batch (Vec)
-- `UndoData` — per-block undo data for rollback; fields: `spent_utxos: Vec<(Outpoint, UtxoEntry)>`, `created_utxos: Vec<Outpoint>`, `producer_snapshot: Vec<u8>`, `epoch_state_snapshot: Option<Vec<u8>>`
+- `UndoData` — per-block undo data for rollback; fields: `spent_utxos: Vec<(Outpoint, UtxoEntry)>`, `created_utxos: Vec<Outpoint>`, `producer_snapshot: Vec<u8>`, `epoch_state_snapshot: Option<Vec<u8>>`. **Byte-unchanged by INC-I-174** — see `MaintainerUndoSnapshot`
+- `MaintainerUndoSnapshot` (INC-I-174) — pre-block maintainer trust root for a rewind; fields: `magic: [u8; 4]` (always `MUND`), `version: u16` (always `1`), `block_hash: Hash`, `set_digest: [u8; 32]`, `set: MaintainerSet`, `last_derived_height: u64`. Constructed ONLY through `MaintainerUndoSnapshot::new`, so a capture site cannot forget the header. The first four fields are the `AUDIT-P1-001` / SYS-001 fix: the record used to be authorized by its POSITION (a record exists at `h`, the block at `h` carries a rotation), and `plan_maintainer_rewind` resolves that block through `CF_HEIGHT_INDEX` — an index `BlockStore::put_block_canonical` rewrites with no `apply_block` and no record refresh on four production paths (`backfillFromPeer`, `doli-node restore`, the archiver, `rebuild_canonical_index`). A legitimate operator recovery could therefore leave a different rotation-carrying block at `h` and install the stale record through the SUCCESS exit. `bins/node/src/node/maintainer_rewind/binding.rs::check_snapshot_binding` now checks header → `block_hash == block.hash()` → recomputed `maintainer_set_digest(set, genesis_hash)` before any promotion to `Restore`; each failure takes the existing `Unrestorable` exit under its own `reason=` token (`snapshot_header_invalid`, `snapshot_block_mismatch`, `snapshot_digest_mismatch`). The three checks are STALENESS/DRIFT detection, NOT tamper detection (`AUDIT-P3-401`): every input is public and unkeyed (compiled magic/version, a `block_hash` recomputed from a block in the same data dir, and a digest over a public genesis hash with no node secret), so they catch a fossil record, a record for another block, a record from another chain, an in-place member-list edit and a foreign binary generation — but NOT a writer with data-dir access, who recomputes both fields in one BLAKE3 call. That residual is accepted: the same access rewrites `maintainer_state.bin`, the LIVE root, which `StorageError::MalformedPersistedValue` already documents as unsigned and attacker-writable. The shared `storage::validate_persisted_set` gate is deliberately NOT changed — the load path has no block, so it cannot ask this question. Stored in `cf_undo` under its OWN 9-byte key family (`MAINTAINER_UNDO_KEY_PREFIX` `0x4D` `'M'` + 8-byte height **LE**, matching the `UndoData` key's own `to_le_bytes()`), NOT inside `UndoData`: appending a field to `UndoData` would make every pre-upgrade bincode entry undecodable, and `bincode` has no field-presence marker to distinguish "old entry" from "corrupt entry". The endianness is load-bearing: LE keys do NOT sort by height, so neither pruner can range-seek — `prune_undo_above` and `prune_undo_below` iterate the whole CF and decode each key through the single shape decoder `undo_key_height`. Written only for blocks that carry an `AddMaintainer` / `RemoveMaintainer` (INC-I-071 `cf_undo` bloat discipline); absent otherwise. Absence is NEVER read as "this height changed nothing", and presence is never read as authority on its own: the rewind planner asks the BLOCK at that height, because a record left behind by an abandoned branch survives at a height the replacement branch re-uses without a rotation (`put_undo` is unconditional, `put_maintainer_undo` is not, and the only reaper walks the tail 100 blocks behind). Node-local, so it has no state-root effect
+- `StateDb::put_maintainer_undo(height, snapshot)` / `StateDb::get_maintainer_undo(height)` / `StateDb::delete_maintainer_undo(height)` and `BlockBatch::put_maintainer_undo(height, snapshot)` (the production writer, so the record lands in the same WriteBatch as the block) — the `MaintainerUndoSnapshot` key family; `get` returns `None` for both "no record" and a decode failure, which the rewind planner resolves by reading the block body
 - `LastApplied` — consistency canary stored in same WriteBatch as state; fields: `height: u64`, `hash: Hash`, `slot: u32`; serialized as 44-byte LE array
 - `StateDb::open(path)` — opens or creates unified state DB with 6 CFs; LZ4 compression; WAL PointInTime recovery
 - `StateDb::begin_batch()` — creates a new empty BlockBatch for atomic writes
@@ -2603,13 +2605,13 @@ NOTE: UpdateService, PendingUpdate, and spawn_update_service() are NOT in this c
 - Release — version, binary_sha256, binary_url_template, changelog, published_at, signatures, target_networks
 - MaintainerSignature — public_key (hex), signature (hex)
 - SignaturesFile — version, checksums_sha256, signatures
-- UpdateConfig — enabled, notify_only, auto_rollback, check_interval_secs, veto_period_secs, grace_period_secs, custom_url; Default: enabled=true, notify_only=false, auto_rollback=true
+- UpdateConfig — enabled, notify_only, auto_rollback, check_interval_secs, veto_period_secs, grace_period_secs, custom_url; Default: enabled=true, notify_only=false, auto_rollback=true. NOTE: `auto_rollback` is INERT — written by `--no-auto-rollback`, read by nothing (INC-I-172 AUDIT-P1-014)
 - GithubReleaseInfo — version, tarball_url, expected_hash, changelog; fetched directly from GitHub API
 - VoteResult — total_producers, veto_count, veto_percent, approved
 - UpdateError — 11 variants: InsufficientSignatures, InvalidSignature, HashMismatch, DownloadFailed, InstallFailed, Network, Io, Json, VetoPeriodActive, RejectedByVeto, NotApproved
 
 ### Download & Verification
-- fetch_latest_release() — fetch from custom URL → GitHub API → fallback mirror; filters by network target
+- fetch_latest_release() — fetch from custom URL → GitHub API; filters by network target
 - fetch_github_release() — fetch specific or latest release from GitHub API; downloads CHECKSUMS.txt + parses hash for current platform
 - download_from_url() — raw HTTP GET download with 5-minute timeout
 - download_signatures_json() — download SIGNATURES.json for a version; returns None if not found
@@ -2657,7 +2659,7 @@ NOTE: UpdateService, PendingUpdate, and spawn_update_service() are NOT in this c
 - CHECK_INTERVAL = 21,600s (6 hours)
 
 ### Watchdog
-- UpdateWatchdog — crash detection and automatic rollback; new(data_dir, network), record_update(), record_clean_shutdown(), check_and_maybe_rollback(), clear()
+- UpdateWatchdog — crash detection and automatic rollback; new(data_dir, network), record_update(), record_clean_shutdown(), check_and_maybe_rollback(), clear(). **NOT WIRED**: zero production callers, so no automatic rollback occurs on any node (INC-I-172 AUDIT-P1-014)
 - WatchdogState — last_update_version, last_update_time, crash_timestamps, clean_shutdown; load(), save()
 - DEFAULT_CRASH_THRESHOLD — private constant (3); exposed via UpdateParams::crash_threshold field
 

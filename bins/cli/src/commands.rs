@@ -140,12 +140,21 @@ pub(crate) enum Commands {
     Export {
         /// Output file path
         output: PathBuf,
+
+        /// Overwrite the output file if it already exists
+        #[arg(long)]
+        force: bool,
     },
 
     /// Import wallet
     Import {
         /// Input file path
         input: PathBuf,
+
+        /// Overwrite the active wallet if one already exists
+        /// (DANGEROUS: destroys its keys, including any BLS producer key)
+        #[arg(long)]
+        force: bool,
     },
 
     /// Show wallet info
@@ -227,6 +236,11 @@ pub(crate) enum Commands {
         /// Restart only this systemd service (e.g. doli-mainnet-node3)
         #[arg(long)]
         service: Option<String>,
+
+        /// Node data directory holding maintainer_state.bin — the on-chain trust root
+        /// this install is verified against (default: the platform node data dir).
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
     },
 
     /// Release management commands (maintainer signing)

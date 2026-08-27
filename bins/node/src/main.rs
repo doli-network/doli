@@ -301,7 +301,7 @@ async fn main() -> Result<()> {
             commands::handle_release_command(action).await?;
         }
         Some(Commands::Upgrade { version, yes }) => {
-            commands::handle_upgrade_command(version, yes).await?;
+            commands::handle_upgrade_command(version, yes, network, &data_dir).await?;
         }
         Some(Commands::CheckpointInfo) => {
             use doli_core::consensus::{CHECKPOINT_HASH, CHECKPOINT_HEIGHT, CHECKPOINT_STATE_ROOT};

@@ -182,6 +182,11 @@ impl Node {
             Vec::new()
         };
 
+        // INC-I-174 (REQ-174-001): snapshot the maintainer trust root BEFORE the
+        // transaction loop and only for a block carrying a rotation, so a block with TWO
+        // rotations records the state before the FIRST. See `maintainer_rewind/mod.rs`.
+        let undo_maintainer_snapshot = self.capture_maintainer_undo(&block).await;
+
         // Undo log: track UTXO changes for this block
         let mut undo_spent_utxos: Vec<(storage::Outpoint, storage::UtxoEntry)> = Vec::new();
         let mut undo_created_utxos: Vec<storage::Outpoint> = Vec::new();
@@ -259,15 +264,6 @@ impl Node {
             )
             .await?;
         let needs_full_producer_write = needs_full_producer_write || genesis_needs_full_write;
-
-        // Remove transactions from mempool and prune any with now-spent inputs
-        {
-            let mut mempool = self.mempool.write().await;
-            mempool.remove_for_block(&block.transactions);
-            let utxo = self.utxo_set.read().await;
-            let height = self.chain_state.read().await.best_height;
-            mempool.revalidate(&utxo, height);
-        }
 
         // Get producer's effective weight for fork choice rule
         let producer_weight = {
@@ -354,6 +350,17 @@ impl Node {
         // block's normal UTXO changes. Single atomic batch — same WAL entry.
         batch.put_undo(height, &undo);
 
+        // INC-I-174: same WriteBatch, separate key family. A block can never commit with
+        // its rotation applied and no way to undo it; see the append-hostility note on
+        // `storage::UndoData` for why this is not a sixth field there. NOTE the asymmetry
+        // with `batch.put_undo` above: that one is UNCONDITIONAL and so always overwrites
+        // the stale record at a re-applied height; this one is not, so a record from a
+        // branch a later reorg abandoned SURVIVES. The fossil is neutralized on the READ
+        // side — see `plan_maintainer_rewind`, "The BLOCK decides, never the record alone".
+        if let Some(ref snapshot) = undo_maintainer_snapshot {
+            batch.put_maintainer_undo(height, snapshot);
+        }
+
         batch
             .commit()
             .map_err(|e| anyhow::anyhow!("StateDb batch commit failed: {}", e))?;
@@ -364,6 +371,17 @@ impl Node {
         // PriceAttestation auth (transaction.rs:242) would silently reject
         // every attestation at oracle activation.
         self.refresh_mempool_producer_snapshot(height).await;
+
+        // Prune the mempool. ORDER IS LOAD-BEARING (INC-I-180 M2): run BEFORE
+        // the refresh above and `revalidate`'s fallback snapshot is guaranteed
+        // one block stale — the exact state it exists to shed.
+        {
+            let mut mempool = self.mempool.write().await;
+            mempool.remove_for_block(&block.transactions);
+            let utxo = self.utxo_set.read().await;
+            let height = self.chain_state.read().await.best_height;
+            mempool.revalidate(&utxo, height);
+        }
 
         // Prune old undo data. See `consensus::UNDO_KEEP_DEPTH` for sizing rationale.
         if height > consensus::UNDO_KEEP_DEPTH {

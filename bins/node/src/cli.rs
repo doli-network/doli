@@ -61,7 +61,9 @@ pub(crate) enum Commands {
         #[arg(long)]
         update_notify_only: bool,
 
-        /// Disable automatic rollback on update failures
+        /// NO-OP: no automatic rollback exists (INC-I-172 AUDIT-P1-014). Accepted so
+        /// existing service units keep starting; rollback is manual only
+        /// (`doli-node update rollback`).
         #[arg(long)]
         no_auto_rollback: bool,
 

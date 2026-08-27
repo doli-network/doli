@@ -91,6 +91,13 @@ impl Node {
             .with_inc_i_096_activation_height(
                 self.config.network.params().inc_i_096_activation_height,
             )
+            // INC-I-173: MUST be set at BOTH this apply site and the builder site
+            // in production/assembly.rs. Forgetting THIS half is the dangerous
+            // one: the wired builder produces a block this unwired path rejects
+            // (spec F2, both-or-neither).
+            .with_inc_i_173_activation_height(
+                self.config.network.params().inc_i_173_activation_height,
+            )
             .with_oracle_activation_height(self.config.network.params().oracle_activation_height)
             .with_oracle_sunset_triggered(
                 self.oracle_sunset_triggered
@@ -370,38 +377,74 @@ impl Node {
             if let Some(data) = tx.withdrawal_request_data() {
                 // Validate: producer exists and has enough bonds
                 if let Some(info) = producers.get_by_pubkey(&data.producer_pubkey) {
+                    let held = info.bond_count;
+                    let withdrawal_pending = info.withdrawal_pending_count;
+                    let delegated = info.delegated_bonds;
+                    // INC-I-180: post-activation the allowance adds in-flight
+                    // (queued, unflushed) AddBonds so this enqueue accepts
+                    // EXACTLY what `validate_block_economics` accepted. Below
+                    // the gate `in_flight` is 0, which leaves the historical
+                    // arithmetic bit-identical for replay.
+                    let in_flight = if height
+                        >= self
+                            .config
+                            .network
+                            .params()
+                            .withdrawal_holdings_gate_activation_height
+                    {
+                        producers.pending_addbond_count(&data.producer_pubkey)
+                    } else {
+                        0
+                    };
                     // INC-I-056: Subtract delegated_bonds — cannot withdraw bonds
                     // that are delegated. Delegator must revoke delegation first.
-                    let remaining = info
-                        .bond_count
-                        .saturating_sub(info.withdrawal_pending_count);
-                    let available = remaining.saturating_sub(info.delegated_bonds);
+                    let remaining = held
+                        .saturating_add(in_flight)
+                        .saturating_sub(withdrawal_pending);
+                    let available = remaining.saturating_sub(delegated);
                     if data.bond_count > available {
-                        if info.delegated_bonds > 0 && data.bond_count == remaining {
+                        if delegated > 0 && data.bond_count == remaining {
                             // INC-I-058: Full exit blocked by active delegation.
                             // All remaining bonds are being withdrawn — auto-revoke
                             // delegation so the exit can proceed at epoch boundary.
                             info!(
                                 "WithdrawalRequest: auto-revoking delegation ({} delegated bonds) for full exit of producer {}",
-                                info.delegated_bonds,
+                                delegated,
                                 crypto_hash(data.producer_pubkey.as_bytes())
                             );
                             producers.queue_update(PendingProducerUpdate::RevokeDelegation {
                                 delegator: data.producer_pubkey,
                             });
                         } else {
-                            warn!(
-                                "WithdrawalRequest: not enough bonds (requested {}, available {}, delegated={})",
-                                data.bond_count, available, info.delegated_bonds
+                            // INC-I-180: post-activation the gate computes the
+                            // allowance from the SAME terms `remaining` uses —
+                            // including the bonds an earlier `Exit` in this
+                            // block charges (QA-1 / ISSUE-001) — so this branch
+                            // is reached only via the delegation case
+                            // (`available < remaining`), which does not block
+                            // the enqueue below. Only `Exit` and
+                            // `RequestWithdrawal` touch `withdrawal_pending_
+                            // count` mid-block; if a third tx type ever does,
+                            // the gate must charge for it or this warn becomes
+                            // a live shortfall again. Below the gate it is the
+                            // historical warn-only path: Bond UTXOs gone,
+                            // weight kept.
+                            // INC-I-180 REQ-I180-004: an alertable event, not only
+                            // a WARN — a Bond-UTXO/ProducerSet divergence applied
+                            // here (below the gate) leaves unbacked weight and must
+                            // be visible to fleet monitoring.
+                            error!(
+                                "WithdrawalRequest: not enough bonds (requested {}, available {}, delegated={}) — unbacked producer weight will result",
+                                data.bond_count, available, delegated
                             );
                         }
                     }
                     if data.bond_count <= remaining {
-                        // TX is on-chain (passed consensus validation). Always enqueue
-                        // the deferred update. Previous code had a redundant FIFO check
-                        // here that silently dropped the update when output included
-                        // accumulated rewards, causing permanent ProducerSet inconsistency.
-                        // See: N12 testnet incident 2026-03-26.
+                        // INC-I-180: post-activation this enqueue is guaranteed
+                        // by `validate_block_economics`, which admits a block
+                        // only if every RequestWithdrawal in it is within the
+                        // same allowance. Below the gate the enqueue is
+                        // conditional and a shortfall is silently skipped.
 
                         // Increment pending count (prevents double-withdrawal in same epoch)
                         if let Some(producer) = producers.get_by_pubkey_mut(&data.producer_pubkey) {

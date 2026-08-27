@@ -16,7 +16,12 @@ use updater::{current_version, VETO_THRESHOLD_PERCENT};
 /// - Veto period: Shows countdown and how to veto
 /// - Grace period: Shows update approved, countdown to enforcement
 /// - Enforcement: Shows production paused, how to update
-pub fn display_update_notification(pending: &PendingUpdate, total_producers: usize) {
+///
+/// `total_producers` is an OPTION because the caller reads it with a non-blocking
+/// `try_read` on the live producer set (AUDIT-P1-015). `None` means "the electorate size
+/// could not be read", and it is rendered as `?` — never as `0`, which would tell an
+/// operator that a 40%-vetoed release stands at 0%.
+pub fn display_update_notification(pending: &PendingUpdate, total_producers: Option<usize>) {
     // Check which phase we're in
     if let Some(ref enforcement) = pending.enforcement {
         if enforcement.should_enforce() {
@@ -36,11 +41,18 @@ pub fn display_update_notification(pending: &PendingUpdate, total_producers: usi
     let days = pending.days_remaining();
     let hours = pending.hours_remaining();
     let veto_count = pending.vote_tracker.veto_count();
-    let veto_pct = pending.vote_tracker.veto_percent(total_producers);
-    let veto_color = if veto_pct >= VETO_THRESHOLD_PERCENT {
-        RED
-    } else {
-        GREEN
+    // "?" when the producer set could not be read: an unknown denominator is not 0%.
+    let (veto_pct, veto_pct_text, total_text) = match total_producers {
+        Some(total) => {
+            let pct = pending.vote_tracker.veto_percent(total);
+            (Some(pct), pct.to_string(), total.to_string())
+        }
+        None => (None, "?".to_string(), "?".to_string()),
+    };
+    let veto_color = match veto_pct {
+        Some(pct) if pct >= VETO_THRESHOLD_PERCENT => RED,
+        Some(_) => GREEN,
+        None => YELLOW,
     };
 
     // Prominent banner
@@ -74,7 +86,7 @@ pub fn display_update_notification(pending: &PendingUpdate, total_producers: usi
     );
     eprintln!(
         "{}║{}  Current vetos: {}{}/{} ({}%){}                                {}║{}",
-        YELLOW, RESET, veto_color, veto_count, total_producers, veto_pct, RESET, YELLOW, RESET
+        YELLOW, RESET, veto_color, veto_count, total_text, veto_pct_text, RESET, YELLOW, RESET
     );
     eprintln!(
         "{}║{}  Threshold to reject: {}%                                    {}║{}",
@@ -113,7 +125,7 @@ pub fn display_update_notification(pending: &PendingUpdate, total_producers: usi
     // Log to tracing as well
     info!(
         "Update v{} pending - {} days {}h remaining - {}/{} vetos ({}%)",
-        pending.release.version, days, hours, veto_count, total_producers, veto_pct
+        pending.release.version, days, hours, veto_count, total_text, veto_pct_text
     );
 }
 

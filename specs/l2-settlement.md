@@ -47,7 +47,7 @@ The primitives for ZK settlement exist in the current codebase. This is not a pr
 | Extensible `OutputType` (`u8` repr) | `crates/core/src/transaction/types.rs:125-154` | 13 variants defined (0–12, contiguous). Slot **13** is the next available value. |
 | Extensible `TxType` (`u32` repr) with deliberate gaps | `crates/core/src/transaction/types.rs:7-85` | 29 variants defined. Gaps at 16, 23, and 31+ are reserved. Slot **31** is the next clean value. |
 | Consensus / tx-validation layer separation | `crates/core/src/validation/` | `validate_header()`, `validate_vdf()`, and `validate_producer_eligibility()` contain zero references to `tx_type`. Adding a TX type does not touch the consensus engine. |
-| Hard-fork activation without genesis reset | `crates/core/src/maintainer.rs:345-380` | `ProtocolActivationData { protocol_version, activation_epoch, signatures }` schedules future activations via 3-of-5 maintainer multisig. On-chain verification lives in `bins/node/src/node/apply_block/governance.rs:80`. |
+| Hard-fork activation without genesis reset | `crates/core/src/maintainer/data.rs` | `ProtocolActivationData { protocol_version, activation_epoch, signatures }` schedules future activations via 3-of-5 maintainer multisig. On-chain verification lives in `bins/node/src/node/apply_block/governance.rs:80`. |
 | `data_root` blob commitment already active | `crates/core/src/validation/block.rs:113-137` | Any output with `extra_data.len() >= 4096` is folded into the header's `data_root`. ZK proofs inherit this commitment automatically. |
 
 These are working, tested, production-deployed primitives. L2 settlement is not a new architecture — it is a minimal extension of an architecture the designers already built for this use case.
@@ -412,7 +412,7 @@ The verifier crate (Plonky2, Arkworks, etc.) is third-party code in the consensu
 - `crates/core/src/transaction/output.rs:11-40` — `BASE_EXTRA_DATA_SIZE`, `max_extra_data_size()`, era growth
 - `crates/core/src/transaction/types.rs:7-154` — `TxType`, `OutputType` enums and `from_*` converters
 - `crates/core/src/transaction/core.rs:853-878` — `ProtocolActivation` tx constructors
-- `crates/core/src/maintainer.rs:340-389` — `ProtocolActivationData` struct and signing message
+- `crates/core/src/maintainer/data.rs` — `ProtocolActivationData` struct and signing message
 - `crates/core/src/validation/block.rs:12-166` — `validate_header`, `validate_block`, `data_root` commitment path
 - `crates/core/src/validation/transaction.rs:27-194` — `validate_transaction` dispatch table
 - `crates/core/src/validation/producer.rs:12,200` — `validate_vdf`, `validate_producer_eligibility`

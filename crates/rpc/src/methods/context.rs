@@ -100,6 +100,11 @@ pub struct RpcContext {
     /// `getOracleStatus` echoes this back to clients so they can detect
     /// pre-activation chain state via `active: false`.
     pub oracle_activation_height: u64,
+    /// INC-I-172 maintainer trust-root derivation activation height
+    /// (network-specific). `getMaintainerSet` echoes it and uses it to say
+    /// whether its `derived` fallback matches the rule the node actually
+    /// enforces at the current height (M2 review F4).
+    pub maintainer_derivation_activation_height: u64,
 }
 
 impl RpcContext {
@@ -146,6 +151,8 @@ impl RpcContext {
             full_bitfield_decode_height: net_params.full_bitfield_decode_height,
             rewards_epoch_list_fix_height: net_params.rewards_epoch_list_fix_height,
             oracle_activation_height: net_params.oracle_activation_height,
+            maintainer_derivation_activation_height: net_params
+                .maintainer_derivation_activation_height,
             backfill_state: Arc::new(BackfillState {
                 running: AtomicBool::new(false),
                 imported: AtomicU64::new(0),
@@ -210,6 +217,12 @@ impl RpcContext {
                 // The deprecated mainnet-defaults constructor mirrors
                 // NetworkParams::mainnet_defaults() which sets this to MAX.
                 oracle_activation_height: u64::MAX,
+                // INC-I-172: read from NetworkParams rather than hardcoded, so
+                // an R5 forward re-pin of the mainnet height cannot leave this
+                // deprecated mainnet-defaults constructor behind. The field is
+                // env-LOCKED on mainnet, so `load` returns the pinned default.
+                maintainer_derivation_activation_height: NetworkParams::load(Network::Mainnet)
+                    .maintainer_derivation_activation_height,
                 backfill_state: Arc::new(BackfillState {
                     running: AtomicBool::new(false),
                     imported: AtomicU64::new(0),

@@ -564,4 +564,4 @@ sqlite3 /home/ilozada/repos/doli-swap-bot/swap.db "SELECT * FROM orders ORDER BY
 
 - **Website:** https://doli.network
 - **Email:** weil@doli.network
-- **GitHub:** https://github.com/e-weil/doli
+- **GitHub:** https://github.com/doli-network/doli

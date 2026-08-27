@@ -4,7 +4,7 @@
 
 $ErrorActionPreference = "Stop"
 
-$Repo = "e-weil/doli"
+$Repo = "doli-network/doli"
 $GitHub = "https://github.com/$Repo"
 $Api = "https://api.github.com/repos/$Repo/releases/latest"
 $Target = "x86_64-pc-windows-msvc"

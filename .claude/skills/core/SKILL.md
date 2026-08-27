@@ -560,8 +560,17 @@ selection.rs, stress.rs, vdf.rs` (`consensus/mod.rs:62-75`).
 **Registration (`consensus/registration.rs`):**
 - `BASE_REGISTRATION_FEE`, `MAX_REGISTRATION_FEE`, `MAX_REGISTRATIONS_PER_BLOCK`
 
-**Maintainer (`maintainer.rs`):**
+**Maintainer (`maintainer/` — directory module since INC-I-172 M2: `mod`/`set`/`data`/`derivation`):**
 - `INITIAL_MAINTAINER_COUNT`, `MAINTAINER_THRESHOLD`, `MAX_MAINTAINERS`, `MIN_MAINTAINERS`
+- Gated on `NetworkParams::maintainer_derivation_activation_height` (mainnet `172_000`,
+  testnet `127_200`, devnet `0`): distinct-signer k-of-n via `verify_multisig_at`, one-shot
+  genesis seed, canonical order `(registered_at, pubkey_bytes)`, `ProtocolActivation`
+  fail-close. Below the gate the pre-M2 entry-counting behavior is reproduced verbatim.
+- `MaintainerSet::is_authorizable` (empty / zero-threshold refusal) is **UNGATED** — applies
+  at every height.
+- `derive_maintainer_set` is replay-complete but has **ZERO production callers**; the node
+  seeds via `derive_canonical_maintainer_set` over the live `ProducerSet`
+  (`bins/node/src/node/periodic.rs`). Do not claim a node replays governance history.
 
 
 ## ACTIVATION-HEIGHTS

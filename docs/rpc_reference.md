@@ -617,6 +617,7 @@ Returns all producers in the network.
         "registrationHeight": 100000,
         "bondAmount": 50000000000,
         "bondCount": 5,
+        "producerSetBondCount": 5,
         "status": "active",
         "era": 0,
         "pendingWithdrawals": [],
@@ -633,14 +634,15 @@ Returns all producers in the network.
 | addressHash | Address hash derived from pubkey -- use this for `getBalance` lookups |
 | registrationHeight | Block height when registration was applied |
 | bondAmount | Total bond amount in base units (from UTXO set) |
-| bondCount | Number of bonds staked (from UTXO set) |
+| bondCount | Number of bonds staked, UTXO-derived (count of Bond UTXOs). **INC-I-180:** no longer falls back to the ProducerSet count, so a producer with weight but zero Bond UTXOs honestly reports `0`. |
+| producerSetBondCount | Bond count from the ProducerSet ledger (`info.bond_count`). **INC-I-180:** additive field; when it exceeds `bondCount` the producer holds unbacked selection weight (the n11 shape), detectable from RPC alone. |
 | status | Producer status (see below) |
 | era | Current era number |
 | pendingWithdrawals | Array of pending withdrawals (always empty -- withdrawals are instant) |
 | pendingUpdates | Array of pending epoch-deferred updates (register, exit, add_bond, etc.) |
 | blsPubkey | BLS12-381 public key for attestation (hex, empty string if not set) |
 
-**Note:** `bondCount` and `bondAmount` are derived from the UTXO set (count/sum of Bond UTXOs for the producer's pubkey_hash). They reflect the current live state, not the epoch snapshot used for scheduling. Producers with pending registrations appear with status `"pending"`.
+**Note:** `bondCount` and `bondAmount` are derived from the UTXO set (count/sum of Bond UTXOs for the producer's pubkey_hash). They reflect the current live state, not the epoch snapshot used for scheduling. `producerSetBondCount` reports the ProducerSet ledger count instead; compare the two (via `getBondDetails.bondCount` for the pure UTXO count) to detect a producer whose selection weight is not backed by Bond UTXOs (INC-I-180). Producers with pending registrations appear with status `"pending"`.
 
 **Example:**
 ```bash
@@ -668,6 +670,7 @@ Returns information about a specific producer.
     "registrationHeight": 100000,
     "bondAmount": 50000000000,
     "bondCount": 5,
+    "producerSetBondCount": 5,
     "status": "active",
     "era": 0,
     "pendingWithdrawals": [],
@@ -676,7 +679,7 @@ Returns information about a specific producer.
 }
 ```
 
-**Note:** `bondCount` and `bondAmount` are derived from the UTXO set. `RequestWithdrawal` (TxType 8) processes instantly with FIFO vesting penalty (per-bond quarter-based). `ClaimWithdrawal` (TxType 9) is reserved/unused (tombstone for wire compat).
+**Note:** `bondCount` and `bondAmount` are derived from the UTXO set; `producerSetBondCount` (INC-I-180) reports the ProducerSet ledger count so a divergence (unbacked weight) is visible from RPC alone. `RequestWithdrawal` (TxType 8) processes instantly with FIFO vesting penalty (per-bond quarter-based). `ClaimWithdrawal` (TxType 9) is reserved/unused (tombstone for wire compat).
 
 **Status values:**
 | Status | Description |
@@ -1015,7 +1018,15 @@ curl -X POST http://127.0.0.1:8500 \
 
 ### getMaintainerSet
 
-Returns the current maintainer set. Since v1.1.15, reads from the persisted `MaintainerState` (bootstrapped from the first 5 registered producers, then governed via on-chain `MaintainerAdd`/`MaintainerRemove` transactions). Falls back to ad-hoc derivation if `MaintainerState` is not yet available.
+Returns the current maintainer set. Since v1.1.15, reads from the persisted `MaintainerState` (bootstrapped from the first registered producers, then governed via on-chain `MaintainerAdd`/`MaintainerRemove` transactions). Falls back to a derivation from the producer registry if `MaintainerState` is not attached.
+
+**Read `source` and `enforced` before comparing two nodes.**
+
+- `source: "on-chain"`, `enforced: true` — this **is** the root the node enforces for governance and the one the updater installs against. Only these responses are comparable across nodes.
+- `source: "derived"`, `enforced: false` — **advisory**. No `MaintainerState` is attached, so nothing here is enforced by anyone; it is what the seed *would* produce from the current producer registry. Below `maintainer_derivation_activation_height` the node's own seed still uses the frozen HashMap-ordered stable sort, so the enforced membership may differ from the canonical ordering shown here. The response carries an `advisory_note` saying which of the two cases applies.
+- `source: "none"`, `enforced: false` — neither a `MaintainerState` nor a `ProducerSet` is attached.
+
+INC-I-172: the `derived` branch used to be a fourth, ungated derivation (`all_producers()` — a `HashMap` walk — plus a stable sort on `registered_at` plus `take(5)`). Because every genesis producer ties at `registered_at == 0`, two honest nodes on the same chain printed **different** `maintainers` arrays. It now uses the canonical total order `(registered_at, pubkey_bytes)`, so the array is deterministic — but it is still advisory, and cross-node comparison is only meaningful when `source` is `on-chain` on both.
 
 **Parameters:** None
 
@@ -1035,15 +1046,59 @@ Returns the current maintainer set. Since v1.1.15, reads from the persisted `Mai
     "min_maintainers": 3,
     "initial_maintainer_count": 5,
     "last_change_block": 500,
-    "source": "on-chain"
+    "source": "on-chain",
+    "enforced": true,
+    "maintainer_derivation_activation_height": 172000,
+    "maintainer_set_digest": "f99d3e79....",
+    "genesis_hash": "0000...."
 }
 ```
 
 **Source values:**
-| Value | Description |
-|-------|-------------|
-| `on-chain` | Read from persisted `MaintainerState` (bootstrapped or governed) |
-| `derived` | Fallback: ad-hoc derivation from producer registry (pre-v1.1.15 behavior) |
+| Value | `enforced` | Description |
+|-------|-----------|-------------|
+| `on-chain` | `true` | Read from the persisted `MaintainerState`. The root the node actually enforces. |
+| `derived` | `false` | Advisory. Canonical `(registered_at, pubkey_bytes)` derivation from the producer registry; carries `advisory_note`. |
+| `none` | `false` | No `MaintainerState` and no `ProducerSet` attached; nothing can be reported. |
+
+**Compare `maintainer_set_digest`, NOT the `maintainers` array.** (INC-I-173 M3 / AUDIT-P1-003.)
+
+| Field | Present on | Meaning |
+|-------|-----------|---------|
+| `maintainer_set_digest` | `on-chain`, `derived` | 64 hex. `BLAKE3_256("DOLI-MAINTAINER-SET-V1" \|\| genesis_hash \|\| threshold_le_u64 \|\| member pubkeys sorted ASCENDING by raw bytes)`. One scalar identifying the trust root on this chain. |
+| `genesis_hash` | all three branches, including `none` | 64 hex. The chain this node believes it is on. Published on every branch, including `none`, because chain identity must be knowable even when no maintainer root can be reported. It is the term that makes the digest chain-specific: two chains holding identical member lists produce different digests. |
+
+**What the digest covers is exactly what a release signature is checked against**: the
+chain, the `threshold` and the members. Two nodes that accept the same release signatures
+always return the same digest; two nodes that would accept different ones never do. The
+digest binds **no other term**, and that is deliberate — two terms that a node can differ
+on WITHOUT differing on its trust root are excluded:
+
+- **Member ORDER.** Measured on the local testnet on 2026-08-10: nodes `8500` and `8501`
+  returned the five keys as `5432…, effe…, 2d27…, 2020…, 3047…` while node `8502` returned
+  the *same five keys* as `2d27…, 3047…, 2020…, 5432…, effe…`. An operator diffing the raw
+  `maintainers` arrays there sees a mismatch that does not exist. That insertion-order
+  nondeterminism (AUDIT-P3-014) is what the sorted digest neutralises, so a divergence
+  check must compare the digest, **not** the `maintainers` array.
+- **`last_change_block` (`last_updated`).** It is node-local — it lives in
+  `maintainer_state.bin`, outside the state root — and it was measured divergent across the
+  live testnet fleet at an *identical* tip: node `8512` reported `last_change_block =
+  88289` while 12 peers reported `1`, all at tip 134,682, all holding the same five members
+  and the same threshold. Those 13 nodes install exactly the same releases, so binding this
+  term would make the digest report a fleet-wide mismatch that does not exist on the trust
+  root. It is still published verbatim as `last_change_block` — compare it separately when
+  you want the rotation history, but a digest MATCH with differing `last_change_block` is
+  **not** a divergence.
+
+So: a changed MEMBER, a changed `threshold` or a different `genesis_hash` each change the
+digest; member order and `last_change_block` do not. The `none` branch publishes
+`genesis_hash` and NO digest — there is no set to digest.
+
+The same value is written to the node log after every applied rotation, on a fixed grep
+anchor, so the fleet can be correlated without an RPC round trip to each host:
+
+```
+[MAINTAINER] MAINTAINER_SET_DIGEST=<64 hex> members=5 threshold=3 last_updated=500 height=500
 ```
 
 **Example:**

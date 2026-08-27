@@ -229,6 +229,15 @@ The user decides at the gate.
 
 **Required documentation hotfix**: Add a comment or doc note confirming: "Governance vote weight uses self-bonds only -- specifically to prevent delegation-amplified governance capture."
 
+> **CORRECTION 2026-08-10 (INC-I-172 M1, F8).** `calculate_vote_weight` no longer
+> exists: it, `seniority_multiplier` and `is_eligible_to_vote` were deleted from
+> `crates/updater/src/params.rs` because their only callers were `#[cfg(test)]` — the
+> weighted veto never executed. The CONCLUSION of Q5 is unchanged and in fact
+> strengthened: the veto is a head count over ACTIVE PRODUCERS, so delegation weight
+> is not, and never was, an input to governance. The Sybil-dominance figures above are
+> historical and no longer hold — there is no weighting to dominate with, and the only
+> Sybil barrier is the registration bond. See `docs/auto_update_system.md` §3-§4.
+
 ---
 
 ## 6. Documentation Hotfixes

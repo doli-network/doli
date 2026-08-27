@@ -15,12 +15,13 @@ use crate::utxo::{
 use crate::StorageError;
 
 use super::types::{
-    BlockBatch, LastApplied, StateDb, UndoData, CF_EXIT_HISTORY, CF_META, CF_PRODUCERS, CF_UNDO,
-    CF_UNIQUE_ID, CF_UTXO, CF_UTXO_BY_PUBKEY, META_ACTIVE_PRODUCTION_LIST, META_CHAIN_COMMITMENT,
-    META_CHAIN_STATE, META_EPOCH_ATTESTATION_ACCUM, META_EPOCH_ATTESTED_SET,
+    BlockBatch, LastApplied, MaintainerUndoSnapshot, StateDb, UndoData, CF_EXIT_HISTORY, CF_META,
+    CF_PRODUCERS, CF_UNDO, CF_UNIQUE_ID, CF_UTXO, CF_UTXO_BY_PUBKEY, META_ACTIVE_PRODUCTION_LIST,
+    META_CHAIN_COMMITMENT, META_CHAIN_STATE, META_EPOCH_ATTESTATION_ACCUM, META_EPOCH_ATTESTED_SET,
     META_EPOCH_BLOCKS_PRODUCED, META_EPOCH_BOND_SNAPSHOT, META_EPOCH_PRODUCER_LIST,
     META_EPOCH_STATE, META_EPOCH_STATE_VERSION, META_LAST_APPLIED, META_PENDING_UPDATES,
 };
+use super::undo::MAINTAINER_UNDO_KEY_PREFIX;
 
 // ==================== Batch Creation ====================
 
@@ -474,6 +475,24 @@ impl<'a> BlockBatch<'a> {
         let cf = self.db.db.cf_handle(CF_UNDO).unwrap();
         let key = height.to_le_bytes();
         let value = bincode::serialize(undo).expect("UndoData serialization");
+        self.batch.put_cf(cf, key, &value);
+    }
+
+    /// Add the pre-block maintainer trust root for a height into this batch (INC-I-174).
+    ///
+    /// Called ONLY for a block that carries an `AddMaintainer` / `RemoveMaintainer`;
+    /// absence of the record is the "unchanged at this height" sentinel. Goes into the
+    /// SAME `WriteBatch` as the block commit, so a crash can never leave a block applied
+    /// with no way to undo its rotation.
+    ///
+    /// Separate key family, NOT a field on [`UndoData`] — see the append-hostility note
+    /// on that type.
+    pub fn put_maintainer_undo(&mut self, height: u64, snapshot: &MaintainerUndoSnapshot) {
+        let cf = self.db.db.cf_handle(CF_UNDO).unwrap();
+        let mut key = [0u8; 9];
+        key[0] = MAINTAINER_UNDO_KEY_PREFIX;
+        key[1..].copy_from_slice(&height.to_le_bytes());
+        let value = bincode::serialize(snapshot).expect("MaintainerUndoSnapshot serialization");
         self.batch.put_cf(cf, key, &value);
     }
 

@@ -32,10 +32,10 @@ Download and run in under a minute:
 
 ```bash
 # Download latest release (Linux x64)
-curl -LO https://github.com/e-weil/doli/releases/latest/download/doli-latest-x86_64-unknown-linux-musl.tar.gz
+curl -LO https://github.com/doli-network/doli/releases/latest/download/doli-latest-x86_64-unknown-linux-musl.tar.gz
 
 # Or use the install script
-curl -L https://raw.githubusercontent.com/e-weil/doli/main/scripts/update.sh | bash
+curl -L https://raw.githubusercontent.com/doli-network/doli/main/scripts/update.sh | bash
 
 # Verify installation
 doli-node --version
@@ -52,12 +52,12 @@ doli-node --version
 | macOS Intel | `doli-{version}-x86_64-apple-darwin.tar.gz` |
 | macOS Apple Silicon | `doli-{version}-aarch64-apple-darwin.tar.gz` |
 
-Download from: https://github.com/e-weil/doli/releases
+Download from: https://github.com/doli-network/doli/releases
 
 **Verify checksums:**
 ```bash
 # Download checksum file
-curl -LO https://github.com/e-weil/doli/releases/latest/download/CHECKSUMS.txt
+curl -LO https://github.com/doli-network/doli/releases/latest/download/CHECKSUMS.txt
 
 # Verify
 sha256sum -c CHECKSUMS.txt --ignore-missing
@@ -74,7 +74,7 @@ docker run -d \
   -p 30300:30300 \
   -p 8500:8500 \
   -v doli-data:/data \
-  ghcr.io/e-weil/doli-node:latest
+  ghcr.io/doli-network/doli-node:latest
 
 # Testnet
 docker run -d \
@@ -83,7 +83,7 @@ docker run -d \
   -p 40300:40300 \
   -p 18500:18500 \
   -v doli-testnet-data:/data \
-  ghcr.io/e-weil/doli-node:latest
+  ghcr.io/doli-network/doli-node:latest
 
 # View logs
 docker logs -f doli-node
@@ -93,7 +93,7 @@ docker logs -f doli-node
 
 ```bash
 # Clone repository (for compose files)
-git clone https://github.com/e-weil/doli.git
+git clone https://github.com/doli-network/doli.git
 cd doli
 
 # Start mainnet node
@@ -121,7 +121,7 @@ source ~/.cargo/env
 sudo apt install build-essential pkg-config libssl-dev libgmp-dev librocksdb-dev
 
 # Clone and build (--release is MANDATORY)
-git clone https://github.com/e-weil/doli.git
+git clone https://github.com/doli-network/doli.git
 cd doli
 cargo build --release
 
@@ -134,7 +134,7 @@ sudo cp target/release/doli-node target/release/doli /usr/local/bin/
 **Using Nix (for development):**
 
 ```bash
-git clone https://github.com/e-weil/doli.git
+git clone https://github.com/doli-network/doli.git
 cd doli
 nix develop
 cargo build --release
@@ -711,7 +711,7 @@ doli-node checkpoint-info         # Print checkpoint constants compiled into bin
 --no-dht                          # Disable DHT discovery
 --relay-server                    # Enable relay server mode for NAT traversal
 --no-auto-update                  # Disable auto-updates
---no-auto-rollback                # Disable automatic rollback on update failures
+--no-auto-rollback                # NO-OP: no automatic rollback exists (see docs/auto_update_system.md section 6)
 --update-notify-only              # Notify only, don't apply updates
 --force-start                     # Skip duplicate key detection (DANGEROUS)
 --yes                             # Skip interactive confirmations

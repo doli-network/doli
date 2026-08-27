@@ -388,6 +388,20 @@ impl Node {
                             e
                         );
                     }
+
+                    // INC-I-174 / AUDIT-P1-001 defence in depth. A chain replacement must
+                    // not leave undo records describing the chain it replaced. `put_undo`
+                    // is unconditional so stale `UndoData` is overwritten on re-apply, but
+                    // `put_maintainer_undo` is written ONLY for a rotation-carrying block,
+                    // so a maintainer record above the new tip survives until some later
+                    // reorg reads it. `prune_undo_above` covers both key families.
+                    // Preferred over adding `CF_UNDO` to `atomic_replace`'s
+                    // `deletable_cfs`: that list is walked by the two rebuild sites too,
+                    // so it would erase the WHOLE undo log and widen the set of inputs
+                    // reaching the rebuild-from-genesis fallback — which the REQ-174-004
+                    // decision forbids. Belt and braces only: the record's `block_hash`
+                    // binding (`maintainer_rewind/binding.rs`) is the actual fix.
+                    self.state_db.prune_undo_above(snapshot.block_height);
                 }
                 Err(e) => {
                     error!("[SNAP_SYNC] StateDb atomic_replace failed: {}", e);

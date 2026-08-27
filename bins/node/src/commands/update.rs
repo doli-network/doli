@@ -8,6 +8,19 @@ use crate::cli::UpdateCommands;
 use crate::keys::load_producer_key;
 use crate::updater;
 
+/// Truncate to at most `max` CHARACTERS.
+///
+/// INC-I-172 M1, AUDIT-P3-010. `&s[..16]` is a BYTE index, and every string truncated in
+/// this file comes from SIGNATURES.json / release metadata fetched from the release
+/// origin. A byte length check (`s.len() >= 16`) does not make the slice safe: if byte 16
+/// lands inside a multi-byte UTF-8 sequence the index panics, and the operator's
+/// `doli-node update verify` aborts on an attacker-chosen input instead of printing a
+/// verdict. Fail-closed in outcome, but it denies the operator the very command they
+/// reach for when the automatic path starts refusing.
+fn truncate_chars(s: &str, max: usize) -> String {
+    s.chars().take(max).collect()
+}
+
 pub(crate) async fn handle_update_command(
     action: UpdateCommands,
     data_dir: &Path,
@@ -140,7 +153,23 @@ pub(crate) async fn handle_update_command(
             // the community has had time to review.
             let approved_or_forced = pending.approved || force;
 
-            match updater::apply_update(&pending.release, approved_or_forced, None).await {
+            // INC-I-172 F2/F3: this arm was a fifth install path with NO signature
+            // verification at all. The root is resolved from this host's on-chain
+            // maintainer set at the moment of apply, and `apply_update` now demands it,
+            // so a pending update staged before a key rotation can no longer be
+            // installed by hand under the revoked signers. `--force` waives community
+            // APPROVAL; it does not waive maintainer authority.
+            let root = updater::command_trust_root(data_dir, network)?;
+
+            match updater::apply_update(
+                &pending.release,
+                pending.first_notified_at,
+                approved_or_forced,
+                None,
+                &root,
+            )
+            .await
+            {
                 Ok(()) => {
                     println!();
                     println!(
@@ -368,10 +397,10 @@ pub(crate) async fn handle_update_command(
                         "║  Version: {}                                                     ║",
                         release.version
                     );
-                    if release.binary_sha256.len() >= 16 {
+                    if !release.binary_sha256.is_empty() {
                         println!(
                             "║  SHA256:  {}...                                                  ║",
-                            &release.binary_sha256[..16]
+                            truncate_chars(&release.binary_sha256, 16)
                         );
                     }
                     println!(
@@ -381,21 +410,45 @@ pub(crate) async fn handle_update_command(
                         "║  MAINTAINER SIGNATURES                                           ║"
                     );
 
-                    match updater::verify_release_signatures(&release, network) {
-                        Ok(()) => {
+                    // INC-I-172 F3: verify against the ON-CHAIN maintainer set held on
+                    // this host, not the compiled bootstrap keys. This command is
+                    // scriptable (`doli-node update verify vX && doli upgrade`), so
+                    // telling an operator that a release signed by REVOKED keys
+                    // verifies is load-bearing, not cosmetic.
+                    let root = updater::command_trust_root(data_dir, network)?;
+                    match updater::verify_release_with_trust_root(&release, &root) {
+                        Ok(distinct_signers) => {
                             for sig in &release.signatures {
-                                if sig.public_key.len() >= 16 {
+                                if !sig.public_key.is_empty() {
                                     println!(
                                         "║  ✓ {}...                                              ║",
-                                        &sig.public_key[..16]
+                                        truncate_chars(&sig.public_key, 16)
                                     );
                                 }
                             }
                             println!("║                                                                  ║");
-                            println!("║  ✅ Release signatures verified (3/5 threshold met)             ║");
+                            // Report the DISTINCT signers actually found, not a literal
+                            // "3/5": the printed number must move when the evidence does
+                            // (QA OBS-001).
+                            println!(
+                                "║  ✅ Verified: {} distinct signature(s), threshold {} ({})        ║",
+                                distinct_signers,
+                                root.threshold(),
+                                root.provenance()
+                            );
                         }
                         Err(e) => {
+                            // INC-I-172 F6: `update verify` must FAIL, not print a red
+                            // cross and exit 0. An operator scripting
+                            // `doli-node update verify vX && doli upgrade` would
+                            // otherwise be told an unverified release checked out.
                             println!("║  ❌ Verification failed: {}                                      ║", e);
+                            println!("╚══════════════════════════════════════════════════════════════════╝");
+                            return Err(anyhow::anyhow!(
+                                "release v{} failed maintainer signature verification: {}",
+                                release.version,
+                                e
+                            ));
                         }
                     }
                     println!(

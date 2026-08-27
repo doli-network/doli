@@ -655,14 +655,36 @@ curl http://127.0.0.1:8500
 cp ~/backup/wallet.json ~/.doli/wallet.json
 ```
 
-**If no backup:**
+**If no backup, but you have the 24-word seed phrase:**
+- `doli restore` always recovers your **address, funds, and spending key**
+- Whether it recovers a producer's **BLS attestation key** depends on the wallet version.
+  Version 3 derives it from the phrase. Version 1 and 2 used a random key that no phrase
+  can reproduce. Run `doli info` to see the version
+- In the older case the restored wallet looks correct (same address, same balance) but its
+  BLS key will not match the `blsPubkey` registered on-chain, and nothing warns you
+- **Every producer registered before this change is in the older case**
+
+**If no backup and no seed phrase:**
 - Funds are permanently lost
 - There is no recovery mechanism
 - This is by design (immutability)
 
+**Producers — verify after any restore:**
+```bash
+doli info    # this wallet's BLS public key
+# must equal getProducer -> blsPubkey for your address
+```
+If they differ, the producer identity is gone. The only remedy is exit + re-register:
+roughly 75% of the bond burned (bonds under one year), seniority reset, all delegations
+destroyed. There is no key-rotation transaction.
+
 **Prevention:**
-- Always backup `~/.doli/wallet.json`
+- Always backup `~/.doli/wallet.json` — for version 1 and 2 wallets **the seed phrase is
+  not a substitute for it**
+- Encrypt the backup and keep it offline; it holds private keys in plaintext
 - Store backups in multiple secure locations
+- Do not widen the wallet file's permissions on a server — it is deliberately locked to
+  the service account
 - Consider hardware wallet integration (future)
 
 ---
@@ -728,6 +750,31 @@ cd <DATA_DIR>/data
 rm -rf state_db blocks utxo_store maintainer_state.bin producer_gset.bin peers.cache
 sudo systemctl start doli-node
 ```
+
+> **INC-I-172: `maintainer_state.bin` is the install trust root, not just a cache.**
+> Delete it **only** as part of the full wipe above — never on its own. A node that loses
+> that file while its chain is intact does NOT replay governance history; it re-seeds the
+> maintainer set from **live producer state**, which brings back any maintainer key that
+> governance removed (residual R1, `docs/.workflow/inc-i-172-M3-scope.md`). The full wipe
+> above is safe **if the node then full-syncs from genesis** (every block is re-applied, so
+> governance re-executes). If it **snap-syncs** instead, it seeds from the snapshot's
+> producer set and can hold a stale root without any warning (residual R3). After a snap
+> sync on a chain whose maintainer set has been rotated, verify the root with
+> `getMaintainerSet` against a known-good node before trusting auto-update on that host.
+>
+> **Compare `getMaintainerSet` only when `"source": "on-chain"` on BOTH nodes.** A
+> `"source": "derived"` response is advisory (`"enforced": false`): no `MaintainerState` is
+> attached to that node, so the array is what the seed *would* produce from the producer
+> registry, not what anything enforces. Below `maintainer_derivation_activation_height` the
+> node's own seed also uses a different ordering than the derived response, so a `derived`
+> vs `on-chain` comparison can report a mismatch that does not exist. Every non-`on-chain`
+> response carries an `advisory_note` field saying so.
+>
+> **If a node logs `[MAINTAINER] Seeding the trust root at height N which is AT OR ABOVE
+> maintainer_derivation_activation_height`** on a chain that had already passed that height,
+> its `maintainer_state.bin` went missing and the root was rebuilt from live producer state.
+> Treat that host's auto-update as untrusted until the root is cross-checked against a
+> known-good node (residual R1).
 
 ### 4.3. Consensus-Critical Fork (Network-Wide Split)
 
@@ -1066,7 +1113,7 @@ Code: `decision.rs`, `dispatch.rs`, `production_gate.rs`, `recovery.rs`, `types.
 ### Resources
 
 - **Documentation:** This repository's docs folder
-- **Issues:** https://github.com/e-weil/doli/issues
+- **Issues:** https://github.com/doli-network/doli/issues
 - **Community:** (add Discord/Telegram links)
 
 ### Gossip Validation Misbehavior (INC-I-114)

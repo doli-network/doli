@@ -175,6 +175,40 @@ impl TxType {
             _ => None,
         }
     }
+
+    /// INC-I-173 — the ONE owner of "may this type be 0-in/0-out AND fee/balance exempt?".
+    /// Curated by AUTHORIZATION (does the apply handler verify the actor?), never by wire
+    /// shape. MUST stay exhaustive with NO `_` arm: an unclassified `TxType` fails the build.
+    pub const fn allows_empty_io(self) -> bool {
+        match self {
+            Self::Registration => true,
+            Self::DelegateBond => true,
+            Self::RevokeDelegation => true,
+            Self::AddMaintainer => true,
+            Self::RemoveMaintainer => true,
+            // C1/F3: ExitData has no signature; validate_exit_data does no crypto check.
+            Self::Exit => false,
+            // C1/F3: reporter_signature has zero verification readers; the VDF is public.
+            Self::SlashProducer => false,
+            Self::Transfer => false,
+            Self::ClaimReward => false,
+            Self::ClaimBond => false,
+            Self::Coinbase => false,
+            Self::AddBond => false,
+            Self::RequestWithdrawal => false,
+            Self::ClaimWithdrawal => false,
+            Self::EpochReward => false,
+            Self::ProtocolActivation => false,
+            Self::PriceAttestation => false,
+            Self::MintAsset => false,
+            Self::BurnAsset => false,
+            Self::CreatePool => false,
+            Self::AddLiquidity => false,
+            Self::RemoveLiquidity => false,
+            Self::Swap => false,
+            Self::ZKSettle => false,
+        }
+    }
 }
 
 /// Output type

@@ -597,6 +597,192 @@ withdrawal_request_tx = {
 - `net_amount = sum(bond_amounts) - sum(penalties)`
 - Penalty = `sum(inputs) - sum(outputs)` (burned, not redistributed)
 - Bond count update takes effect at next epoch boundary (PendingProducerUpdate)
+- **INC-I-180**: the requested `bond_count` must not exceed the producer's bond
+  holdings, enforced height-gated at `withdrawal_holdings_gate_activation_height`.
+  A conforming client derives the allowance from the ProducerSet
+  (`selectionWeight − Σ receivedDelegations + delegatedBonds − withdrawal_pending_count`),
+  never from the UTXO-derived bond count, and refuses to emit when the two ledgers
+  disagree (the DOLI CLI does this as of INC-I-180 M3; RPC exposes the ProducerSet
+  count as `producerSetBondCount` distinct from the UTXO-derived `bondCount`).
+  - **Pre-activation** (`height < AH`): NOT enforced. Historical behavior is
+    preserved — `process_transaction_producer_effects` silently skips the
+    deferred `PendingProducerUpdate::RequestWithdrawal` on shortfall, *after*
+    `process_transaction_utxos` already spent every Bond UTXO input. The
+    producer keeps selection weight with no bonds behind it (mainnet n11:
+    434 unbacked weight units). Kept for replay safety.
+  - **Post-activation** (`height >= AH`): a block carrying a RequestWithdrawal
+    is **rejected** at block validation (`Node::validate_block_economics`),
+    before any state mutation, so no Bond UTXO is ever spent, when any of:
+    - `bond_count > allowance` — `ECON_WITHDRAWAL_OVER_HOLDINGS`. The allowance
+      is `bond_count + pending AddBonds + AddBonds earlier in the same block
+      − withdrawal_pending_count − bonds charged by Exits and RequestWithdrawals
+      earlier in the same block`, saturating. An `Exit` charges the producer's
+      whole `bond_count` because the apply layer bumps `withdrawal_pending_count`
+      for it immediately; the apply layer re-reads an unchanged `bond_count` per
+      `Exit`, so two Exits for one producer charge it twice and the allowance
+      reproduces that.
+    - the producer is not in the ProducerSet — `ECON_WITHDRAWAL_UNKNOWN_PRODUCER`.
+    - any input references a transaction at a **lower index in the same block** —
+      `ECON_WITHDRAWAL_SAME_BLOCK_INPUT`. Block validation resolves inputs
+      against the **pre-block** UTXO view, which every node computes identically
+      at this height and which `validate_block_economics` holds no write batch
+      over. An outpoint created earlier in the same block is therefore invisible
+      to the Bond counters below while `process_transaction_utxos` spends it
+      anyway, so it is refused rather than counted. This is what makes the
+      pre-block view **exhaustive** for withdrawal inputs, and the exclusivity
+      rule below complete rather than partial (AUDIT-P1-006).
+    - the transaction fails `owned == all`, where `all` is the number of inputs
+      that resolve, in the pre-block UTXO set, to a `Bond` output and `owned` is
+      the subset of those whose `pubkey_hash` equals
+      `hash_with_domain(ADDRESS_DOMAIN, producer_pubkey)` — the address at which
+      Registration, AddBond and genesis all create Bond outputs —
+      `ECON_WITHDRAWAL_BOND_COUNT_MISMATCH`. This **exclusivity** rule runs
+      before the shape split below and applies to every shape. Without the
+      **owner** binding a transaction signed by producer `A`, spending `A`'s own
+      Bond UTXOs, may name producer `B`: `A` loses the UTXOs, `B` loses the
+      weight, and `A` keeps unbacked selection weight. Without the
+      **exclusivity** half an actor holding both keys declares `B`'s true count
+      and adds `A`'s Bond UTXOs as riders — `process_transaction_utxos` spends
+      all of them, and only `B`'s ledger moves (AUDIT-P1-001). The Bond lock is
+      bypassed for this transaction type, so ownership is not otherwise checked.
+    - the transaction fails the rule for its **shape**. A request declaring the
+      producer's whole allowance (`bond_count == allowance && bond_count > 0`)
+      is a **full exit**: `apply_withdrawal` drives `bond_count` to 0 and the
+      auto-exit fires whatever the declared number was, so the ledger can never
+      outlive its bonds and the obligation moves to the UTXO side — the
+      transaction must spend EVERY Bond UTXO the producer owns in the pre-block
+      view (`owned == utxo.get_bond_entries(addr)`), else
+      `ECON_WITHDRAWAL_INCOMPLETE_DRAIN`. Any other request is a **partial** and
+      keeps the strict `bond_count == owned` binding, else
+      `ECON_WITHDRAWAL_BOND_COUNT_MISMATCH`: the allowance bounds the declared
+      count from above only, so an under-declared partial would destroy every
+      Bond input while removing one bond of weight. The full-exit branch is the
+      permanent in-band remedy for a producer whose ledger already disagrees with
+      its Bond UTXOs — it can always zero the ledger and retire (AUDIT-P1-002).
+
+    The apply-layer enqueue accepts exactly the same allowance, and the
+    reorg/rollback replay (`rebuild_producer_set_from_blocks`) mirrors the
+    in-flight AddBond term under the same height gate, so live apply and replay
+    queue the same updates. **INC-I-180 M2 (AUDIT-P1-004)**: the replay also
+    mirrors the live auto-revoke — a full exit blocked by an active delegation
+    queues `PendingProducerUpdate::RevokeDelegation` before the withdrawal
+    (INC-I-058). That branch is not itself height-gated in live apply, only the
+    in-flight term inside its allowance is, so the mirror inherits the same
+    height-dependence and needs no gate of its own. Without it a reorg through
+    such a block leaves `received_delegations` un-revoked, and that field is
+    inside `serialize_canonical()` — the rebuilt and live nodes would then
+    disagree on the producer-set contribution to the state root. The admission
+    rules (the `Exit` charge, the same-block-input refusal, the exclusivity rule
+    and the shape split) are NOT mirrored in the replay: it reads blocks that
+    are already canonical.
+
+    **Mode split (INC-I-180 M2 / S3).** The gate is evaluated **before** the
+    EpochReward section of `validate_block_economics`, so no early return can
+    make it mode-dependent by accident. Its verdict is identical in **Full and
+    Light**, the two admission modes gossip-received blocks reach.
+    `ValidationMode::Replay` — reached only by the operator `recover`/reindex
+    tool — carves out the rules whose every term is read from the pre-block
+    UTXO view, which a replay legitimately sees degraded (INC-I-064): the
+    unknown-producer rule, the exclusivity rule and both shape rules `warn!`
+    with `[REPLAY_SKIP]` and skip that transaction instead of failing the
+    block. `ECON_WITHDRAWAL_OVER_HOLDINGS` (reads the ProducerSet allowance
+    only) and `ECON_WITHDRAWAL_SAME_BLOCK_INPUT` (reads the block's own earlier
+    transaction hashes, which a replay has in full) stay **strict in all three
+    modes**. The skipped transaction still charges the allowance, or the
+    strict allowance rule would drift for a later withdrawal by the same
+    producer in the same block. Without this carve-out the reindex aborts on
+    the first already-canonical block whose Bond inputs are not yet resolvable.
+    The EpochReward section returns `Ok(())` early in Full mode
+    (`INC_I_081_MISSING_CHECK_SKIP`) whenever the local store cannot prove an
+    EpochReward was owed — the normal state of a freshly snap-synced node — and
+    a rule placed after it would be enforced in Light/Replay only. The INC-I-080
+    AddBond cap remains **after** that early return, unchanged: it is enforced
+    from height 0 on mainnet and testnet, so running it in a case where it never
+    ran would change the verdict of already-canonical blocks.
+    Mainnet AH = `u64::MAX` (frozen — pinning is a separate decision session);
+    testnet `230_000`; devnet `20`. No `CURRENT_PROTOCOL_VERSION` bump
+    (EpochState unchanged); no `HardForkSchedule` entry; rolling-deploy safe.
+
+  - **Admission and selection parity (INC-I-180 M2, INV-VALIDATION-001 /
+    INV-PROD-003).** A consensus rule with no mempool and no builder
+    counterpart turns an ordinary user mistake into free block poison: the
+    transaction never confirms, so no fee is paid and no input is spent, yet
+    every producer that selects it burns a block build. Both layers therefore
+    apply the same rules, height-gated on the same AH and strict no-ops below
+    it. Neither is consensus: skipping at selection yields a valid subset
+    block, and refusing admission keeps a transaction out of one node's
+    mempool only.
+    - **Block builder** (`bins/node/src/node/production/withdrawal_holdings.rs`)
+      applies the whole table — including the same-block-input refusal and the
+      in-block `AddBond`/`Exit`/`RequestWithdrawal` accounting carried across
+      the selection loop — and **skips** an offending transaction, exactly like
+      the NFT/Pool unique-id checks. The builder and the mempool compute the
+      allowance through `ProducerHoldings::allowance_with`
+      (`crates/mempool/src/holdings.rs`). The gate does NOT call it: it holds
+      the reference expression inline in `validate_block_economics`, because
+      routing consensus validation through the mempool crate would invert the
+      layering. Those two transcriptions are locked by the two
+      `inc_i180_m2_the_gate_allowance_equals_the_shared_function*` rows, eight
+      allowance shapes in total, which require the allowance the gate REPORTS
+      to equal `allowance_with` on the terms the same message echoes.
+      The lock is load-bearing: the terms saturate, so a second order silently
+      raises one layer's allowance above the other's when
+      `withdrawal_pending > bond_count + pending_addbond` AND the block carries
+      an earlier same-producer `AddBond` — the deficit alone is not enough,
+      because with `in_block_addbond = 0` both orders clamp to the same 0.
+      **The lock covers R1 only.** Every row declares `allowance + 1` and so
+      bails at R1 by construction; the unknown-producer, exclusivity, shape and
+      same-block-input rules are transcribed once per layer with no equivalent
+      term-exact lock, and unifying them is the routed residual
+      (`FIND-I180-M2-TRANSCRIPTION-001`). The builder's refusal is
+      never a build failure, never an abort, and it never evicts from the
+      mempool. It resolves producer holdings under the
+      producer guard and releases it before taking the UTXO guard, so only one
+      of the two is ever held: `apply_block` takes utxo→producers while
+      `rollback` takes producers→utxo, and holding both here would join those
+      orders. The builder never constructs `[partial(P), full-exit(P)]` in one
+      block — that pair is unsatisfiable at any input set, because the owned
+      Bond UTXO count is memoised over the pre-block view while the allowance
+      shrinks as the block is walked.
+    - **Mempool** (`crates/mempool/src/withdrawal_holdings.rs`) applies the
+      subset decidable from a single transaction against current state: the
+      unknown-producer, allowance, exclusivity and shape rules. The
+      same-block-input rule is not checkable there and is deliberately absent.
+      Admission does not evaluate the block's in-block terms; it **substitutes
+      mempool-wide state** for them. `in_block_addbond` is zero, and
+      `in_block_withdrawn` is replaced by `in_mempool_withdrawn` — the bonds
+      every same-producer `RequestWithdrawal` this mempool holds already claims
+      (`pool.rs`, `count_residents = true`). The general rule follows: admission
+      can OVER-reject only when the substitute RAISES the block's allowance
+      (`in_block_addbond → 0`) or EXCEEDS the block's debit
+      (`in_mempool_withdrawn > in_block_withdrawn`, since a block need not carry
+      the residents). It can also UNDER-reject — the absent R4, and any block
+      debit larger than this mempool's residents — which the builder and the
+      gate still catch; only the over-rejection direction is a liveness cost.
+      This is a rule, not an
+      enumeration: `[AddBond(P, +n), RequestWithdrawal(P, d)]` with `d` above
+      the flushed allowance is one instance, and a resident
+      `RequestWithdrawal(P, d1)` that drops the admission allowance far enough
+      to push a second `RequestWithdrawal(P, d2)` out of R2's partial branch and
+      into its full-exit branch is another — with no `AddBond` anywhere.
+      Every such over-rejection is bounded until the resident confirms **or
+      expires** (14-day mempool age), and costs no fee, no input and no block;
+      then the operator resubmits. The resident charge is deliberate — it keeps
+      this mempool from ever offering a builder the `[partial(P), full-exit(P)]`
+      pair (SEC-FIXVERIFY2-001). `revalidate` re-evaluates and
+      **evicts** a held withdrawal the ledger has moved out from under, which
+      input-existence alone can never shed. Holdings are resolved from the
+      node's live `ProducerSet` (non-blocking `try_read`), falling back to a
+      published snapshot while that handle is contended, and the rules do not
+      run at all when neither is wired — or when the snapshot is wired but
+      EMPTY, which is no answer rather than "not a producer". That snapshot is
+      refreshed once per
+      APPLIED block and is **not** refreshed by rollback, reorg, fork recovery
+      or snapshot install, so after a rewind of depth N it is up to N blocks
+      stale until the next block is applied. Both staleness directions are
+      non-safety: the live handle is tried first, and a stale answer that
+      over-rejects costs one resubmission while one that under-rejects is still
+      caught by the builder and by the gate.
 
 **Note:** TxType 9 (ClaimWithdrawal) is reserved but unused — withdrawal is instant.
 
@@ -1827,22 +2013,70 @@ If absent, the release targets all networks (backward compatibility).
 
 ### 10.2 Verification
 
-Maintainer keys for signature verification are derived from on-chain state:
-the first 5 registered producers (sorted by registration height) form the
-maintainer set. If on-chain state is unavailable (pre-sync, CLI), bootstrap
-keys hardcoded in `BOOTSTRAP_MAINTAINER_KEYS` are used as fallback.
+Verification runs against a **resolved trust root** — keys, the threshold they must
+meet, and where they came from — never against a bare key list. There is **no fallback
+to the compiled bootstrap keys** (INC-I-172 F1): an empty or sub-threshold on-chain root
+**fails closed** and refuses every release.
+
+**Trust-root resolution** (`bins/node/src/updater/trust_root_wiring.rs`, the only place
+in the node that makes this decision):
+
+| on-chain `members` | `last_derived_height` | resolved root |
+|---|---|---|
+| non-empty | any | `OnChain(members, set.threshold)` — authoritative |
+| empty | `0` | `Bootstrap(BOOTSTRAP_MAINTAINER_KEYS, REQUIRED_SIGNATURES)` — this node has never established an on-chain set (fresh install) |
+| empty | `> 0` | `OnChain([], threshold)` — the set existed and was emptied. **Unusable; refuses.** This is the attack case, not a fresh node. |
+
+A root that cannot be read at all (lock contention, unreadable
+`maintainer_state.bin`) resolves to an unusable `OnChain` root or is fatal at startup.
+"I could not check" is never "it is fine".
 
 ```
-// Key selection
-if on_chain_keys is non-empty:
-    allowed_keys = on_chain_keys    // First 5 registered producers
-else:
-    allowed_keys = BOOTSTRAP_MAINTAINER_KEYS
+// Verification, given a resolved root
+if root.threshold < 1 OR count(root.keys) < root.threshold:
+    REFUSE (TrustRootUnavailable)      // never falls back to BOOTSTRAP_MAINTAINER_KEYS
 
-message = version + ":" + binary_sha256
-valid_sigs = count(verify(message, sig, key) for sig in signatures where key in allowed_keys)
-release_valid = valid_sigs >= 3
+message = version + ":" + binary_sha256      // binary_sha256 = sha256(CHECKSUMS.txt)
+
+// DISTINCT-SIGNER count: outer loop over the ROOT's keys, inner loop over the
+// release's signature entries, break on the first valid entry for that key.
+// N signature entries produced by ONE key therefore count as 1.
+valid_signers = 0
+for key in root.keys:
+    for sig in signatures:
+        if sig.public_key == key (ASCII case-insensitive) AND verify(message, sig, key):
+            valid_signers += 1
+            break
+
+release_valid = valid_signers >= root.threshold   // NOT a hardcoded 3
 ```
+
+`root.threshold` is `MaintainerSet.threshold` for an `OnChain` root and
+`REQUIRED_SIGNATURES` for a `Bootstrap` one.
+
+**Artifact binding.** A valid signature proves the maintainers signed *something*; it
+does not say *what* is being installed. Every install path additionally binds the
+signature to the artifact before writing anything (INC-I-172 F1,
+`crates/updater/src/install_gate.rs`). All four links are checked and any break blocks:
+
+```
+L1  SIGNATURES.json .version          == the release TAG being installed (modulo "v")
+L2  SIGNATURES.json .checksums_sha256 == sha256(the CHECKSUMS.txt actually fetched)
+L3  distinct valid signers            >= root.threshold        (the loop above)
+L4  sha256(tarball)                   == the per-platform hash parsed from THAT CHECKSUMS.txt
+```
+
+Without L1/L2 the check is circular — both message operands would come from the same
+file that carries the signatures, so a verbatim copy of any past genuine
+`SIGNATURES.json` would authorise an arbitrary binary.
+
+**Where each root applies:**
+
+| Path | Root |
+|---|---|
+| node auto-update (`UpdateService`) | resolved per check; re-verified again immediately before install |
+| `doli-node upgrade` / `update verify` / `update apply` | resolved from this host's `maintainer_state.bin` |
+| `doli upgrade` (CLI) | `Bootstrap` — the CLI is not the node host and has no chain state |
 
 ### 10.3 Veto Voting
 
@@ -1859,22 +2093,26 @@ Only active producers can vote. Votes propagate via gossip.
 
 ### 10.4 Veto Calculation
 
-Votes are weighted by bond count (from epoch bond snapshot) × seniority:
+Veto is a **head count**. There is no seniority multiplier and no bond weighting: the
+weighted machinery described here previously (`calculate_vote_weight`,
+`seniority_multiplier`, `VoteTracker::*_weighted`) had no non-test callers and was
+deleted in INC-I-172 F8. `crates/updater/src/verification.rs::calculate_veto_result`:
 
 ```
-seniority_multiplier = 1.0 + min(years_active, 4) × 0.75
-bond_count = epoch_bond_snapshot[producer_pubkey]  // derived from UTXO set
-vote_weight = bond_count × seniority_multiplier
-
-total_veto_weight = sum(vote_weight for each VETO vote)
-total_weight = sum(vote_weight for each active producer)
-veto_percent = (total_veto_weight * 100) / total_weight
+veto_percent = (veto_count * 100) / total_producers   // 0 when total_producers == 0
 
 if veto_percent >= 40:
     update REJECTED
 else:
-    update APPROVED after veto period (5 min early network*)
+    update APPROVED after the veto period
 ```
+
+The veto period is the **configured** `UpdateConfig::veto_period_secs` (default
+`VETO_PERIOD`), not a literal "7 days", and it is measured from
+`PendingUpdate::first_notified_at` — the node-local moment this node first observed the
+release. It is never measured from `Release::published_at`, which is attacker-supplied
+and unsigned; a forged value would collapse the window to zero (INC-I-172 F7(b)).
+Because the reference point is node-local, a mixed fleet simply has per-node windows.
 
 ### 10.5 Production Gating
 
