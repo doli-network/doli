@@ -114,10 +114,7 @@ impl UpdateWatchdog {
         let mut state = WatchdogState::load(&self.data_dir);
 
         // No update recorded — nothing to watch
-        let update_version = match &state.last_update_version {
-            Some(v) => v.clone(),
-            None => return None,
-        };
+        let update_version = state.last_update_version.clone()?;
 
         // Last shutdown was clean — update is stable, clear crash history
         if state.clean_shutdown {
