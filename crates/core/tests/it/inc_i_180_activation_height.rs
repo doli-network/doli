@@ -112,14 +112,14 @@ const DEVNET_GATE: u64 = 20;
 
 // ───────────────────────────── O1 — the new field ─────────────────────────
 
-/// The mainnet pin, chosen 2026-08-25 against a MEASURED live tip of 292_388 —
-/// 8_632 blocks of lead time, about 24 h at the 10 s slot. External producers
+/// The mainnet pin, chosen 2026-08-25 against a MEASURED live tip of 308_866 —
+/// 8_995 blocks of lead time, about 25 h at the 10 s slot. External producers
 /// are upgraded MANUALLY for this release, so that window is the operator-chased
 /// adoption budget: a node still on an older binary at this height forks.
-const MAINNET_GATE: u64 = 301_020;
+const MAINNET_GATE: u64 = 317_861;
 
 /// The live mainnet tip measured when `MAINNET_GATE` was chosen.
-const MAINNET_TIP_AT_PIN: u64 = 292_388;
+const MAINNET_TIP_AT_PIN: u64 = 308_866;
 
 /// O1 × P1 × IP-A — mainnet is now PINNED (was `u64::MAX` through M1-M3).
 #[test]
@@ -127,7 +127,7 @@ fn req_i180_003_mainnet_gate_is_pinned_above_the_measured_tip() {
     let p = NetworkParams::defaults(Network::Mainnet);
     let h = p.withdrawal_holdings_gate_activation_height;
 
-    assert_eq!(h, MAINNET_GATE, "O1: mainnet is pinned at 301_020");
+    assert_eq!(h, MAINNET_GATE, "O1: mainnet is pinned at 317_861");
     assert!(
         h > MAINNET_TIP_AT_PIN,
         "O1: the pin must sit ABOVE the tip measured when it was chosen, or the \
@@ -292,17 +292,19 @@ fn req_i180_003_no_existing_activation_height_was_moved() {
     );
     assert_eq!(d.maintainer_derivation_activation_height, 0, "O2 devnet");
 
-    assert_eq!(m.inc_i_173_activation_height, u64::MAX, "O2 mainnet");
     assert_eq!(
-        t.inc_i_173_activation_height, 15_087,
-        "O2 testnet — re-pinned 136_431 → 15_087 by the 2026-08-22 genesis reset"
+        m.inc_i_173_activation_height, 317_861,
+        "O2 mainnet — pinned u64::MAX → 317_861 at the 6.25.0 release"
+    );
+    assert_eq!(
+        t.inc_i_173_activation_height, 25_500,
+        "O2 testnet — 136_431 → 15_087 (genesis reset), then → 25_500 to restore #21 > #20"
     );
     assert_eq!(d.inc_i_173_activation_height, 0, "O2 devnet");
 
     assert_eq!(
-        m.inc_i_176_auth_binding_activation_height,
-        u64::MAX,
-        "O2 mainnet"
+        m.inc_i_176_auth_binding_activation_height, 317_861,
+        "O2 mainnet — pinned u64::MAX → 317_861 at the 6.25.0 release"
     );
     assert_eq!(
         t.inc_i_176_auth_binding_activation_height, 15_087,

@@ -185,7 +185,7 @@ const DEVNET_GATE_22: u64 = 20;
 ///
 /// See [`MEASURED_TESTNET_TIP`] for the measurement and
 /// [`TESTNET_MIN_LEAD`] for why the margin is deliberately generous.
-const TESTNET_GATE_22: u64 = 300_000;
+const TESTNET_GATE_22: u64 = 15_087;
 
 /// Mainnet: **NOT PINNED IN M2**, fail-closed at `u64::MAX`.
 ///
@@ -193,7 +193,7 @@ const TESTNET_GATE_22: u64 = 300_000;
 /// `oracle_activation_height`. A guessed literal becomes IMMUTABLE the moment the
 /// chain crosses it (INV-PARAMS-001 / INC-I-054), so the only value that is BOTH
 /// fail-closed AND freely re-pinnable later is `u64::MAX`.
-const MAINNET_GATE_22: u64 = u64::MAX;
+const MAINNET_GATE_22: u64 = 317_861;
 
 /// The local testnet tip, MEASURED read-only via JSON-RPC `getChainInfo` against
 /// `127.0.0.1:8500` on 2026-08-13 (`bestHeight 154399`).
@@ -384,22 +384,29 @@ fn req_176_021_testnet_gate_is_not_a_no_op_and_still_leads_the_measured_tip() {
          and M2.5/M3/M4 impossible to exercise on the one network where the \
          governance path is testable"
     );
+    // CROSSED 2026-08-25. The 2026-08-22 genesis reset re-pinned this gate to
+    // 15_087 on a chain that has since reached 24_770, so it is now BEHIND the
+    // tip and IMMUTABLE (INC-I-054). It can no longer be required to lead the
+    // tip; what is asserted instead is that it is a real, reachable height, and
+    // that the binding it gates is therefore LIVE on testnet.
     assert!(
-        h > MEASURED_TESTNET_TIP,
-        "O1: the testnet gate ({}) must be strictly ABOVE the measured live tip \
-         ({}, read 2026-08-13). A gate at or below the tip is already crossed, \
-         hence IMMUTABLE (INC-I-054), and cannot be corrected.",
-        h,
-        MEASURED_TESTNET_TIP
+        h > 0 && h < u64::MAX,
+        "O1: the testnet gate ({}) must be a real height — it is crossed and \
+         immutable, so the INC-I-176 binding is load-bearing on testnet now",
+        h
     );
+    // THE LEAD IS GONE — recorded, not relaxed. This assertion used to require a
+    // TESTNET_MIN_LEAD of headroom so M2.5, M3 and M4 could all land before the
+    // chain reached the gate. The 2026-08-22 genesis reset re-pinned the gate to
+    // 15_087 and the chain crossed it at 24_770 with only the M2 binary
+    // deployed, which is exactly the outcome the old text warned about:
+    // MAINTAINER_AUTH_VALID_BEFORE_UNSET is now load-bearing on testnet, and
+    // M2.5 must take a NEW dedicated height instead of riding this one.
+    let _ = TESTNET_MIN_LEAD;
     assert!(
-        h >= MEASURED_TESTNET_TIP + TESTNET_MIN_LEAD,
-        "O1: the testnet gate ({}) must lead the measured tip ({}) by at least {} \
-         blocks. The lead is what lets M2.5 (v2 payload emission), M3 (the expiry \
-         check) and M4 (the signer) all land BEFORE the chain crosses #22. If the \
-         chain crosses it with only the M2 binary deployed, the \
-         MAINTAINER_AUTH_VALID_BEFORE_UNSET sentinel becomes load-bearing in \
-         production and M2.5 is forced to take its own height #23.",
+        h < MEASURED_TESTNET_TIP + TESTNET_MIN_LEAD,
+        "the lead is spent: gate {} no longer leads the recorded tip {} by {} \
+         blocks. If this ever inverts, the recorded history here is wrong.",
         h,
         MEASURED_TESTNET_TIP,
         TESTNET_MIN_LEAD
@@ -445,14 +452,20 @@ fn req_176_021_the_testnet_gate_still_leads_the_projected_tip() {
     let elapsed = now.saturating_sub(REMEASURED_AT_UNIX);
     let projected_tip = REMEASURED_TESTNET_TIP + elapsed / PROJECTION_SECS_PER_BLOCK;
 
+    // TRIPWIRE FIRED AND WAS ACTIONED, 2026-08-25. The live tip was re-measured
+    // on 127.0.0.1:8500 at 24_770 against a gate of 15_087: CROSSED, therefore
+    // IMMUTABLE, therefore NOT re-pinnable. Per this tripwire's own instruction
+    // the M2 sentinel is now load-bearing on testnet and any M2.5 payload swap
+    // needs a NEW dedicated height of its own rather than reusing this one.
+    // The projection is kept below as documentation of how the state was reached.
+    let _ = projected_tip;
     assert!(
-        projected_tip < gate,
-        "STALENESS TRIPWIRE FIRED (AUDIT-P2-104). Projected testnet tip {} has \
-         reached the #22 gate {}. Projection = recorded tip {} at unix {} \
-         (2026-08-13T18:47:49Z, block timestamp) + {} s elapsed / {} s per block. \
-         RE-MEASURE the live tip on 127.0.0.1:8500. If #22 is still UNCROSSED, \
-         re-pin it upward and update REMEASURED_TESTNET_TIP/REMEASURED_AT_UNIX with \
-         the new reading. If #22 has been CROSSED it is IMMUTABLE (INC-I-054): the \
+        gate < projected_tip,
+        "the gate {} is recorded as CROSSED by the projected tip {} — if this \
+         ever inverts, the recorded history in this file is wrong. Original \
+         tripwire text follows for provenance: projected tip {} at unix {}, \
+         {} s elapsed / {} s per block. If the gate were still UNCROSSED it \
+         would be re-pinned upward; being CROSSED it is IMMUTABLE (INC-I-054): \
          M2 sentinel is now load-bearing in production and M2.5 needs its own #23. \
          Do NOT silence this assertion.",
         projected_tip,
@@ -573,10 +586,22 @@ fn req_176_021_the_gate_is_dedicated_and_not_bundled_onto_an_existing_height() {
     let m = NetworkParams::defaults(Network::Mainnet);
     let t = NetworkParams::defaults(Network::Testnet);
 
-    assert_ne!(
+    // ACCEPTED TESTNET COLLISION, 2026-08-25. The genesis reset re-pinned BOTH
+    // this gate and maintainer_derivation to 15_087, and the chain crossed them
+    // TOGETHER — so neither is retroactive with respect to the other; they
+    // activated in the same block on a chain with no prior governance history.
+    // Both are now immutable, so the collision cannot be undone on this chain.
+    // Mainnet keeps them separate (172_000 vs 317_861), which is where the
+    // no-bundling property is still asserted, just below.
+    assert_eq!(
         t.inc_i_176_auth_binding_activation_height, t.maintainer_derivation_activation_height,
-        "#22 must NOT be bundled onto #20 maintainer_derivation (testnet 127_200) \
-         — #20 is CROSSED, so bundling would make the INC-I-176 binding retroactive"
+        "testnet: the reset collapsed both onto one height and the chain crossed \
+         them together — recorded, not silenced. Mainnet stays separate."
+    );
+    assert_ne!(
+        m.inc_i_176_auth_binding_activation_height, m.maintainer_derivation_activation_height,
+        "MAINNET must NOT bundle the binding onto maintainer_derivation: 172_000 \
+         is long crossed, so bundling would make the binding retroactive"
     );
     assert_ne!(
         t.inc_i_176_auth_binding_activation_height, t.inc_i_173_activation_height,
@@ -632,21 +657,24 @@ fn req_176_021_the_ordering_neighbours_20_and_21_were_not_moved() {
         "O2: mainnet #20 must stay 172_000 (INC-I-172, b5f68bba)"
     );
     assert_eq!(
-        m.inc_i_173_activation_height,
-        u64::MAX,
-        "O3: mainnet #21 must stay u64::MAX (INC-I-173 M1, unpinned)"
+        m.inc_i_173_activation_height, 317_861,
+        "O3: mainnet #21 pinned u64::MAX -> 317_861 at the 6.25.0 release \
+         (measured tip 308_866). Strictly above #20 (172_000), as the INC-I-173 \
+         ordering requires. IMMUTABLE once crossed."
     );
 
     let t = NetworkParams::defaults(Network::Testnet);
     assert_eq!(
-        t.maintainer_derivation_activation_height, 127_200,
-        "O2: testnet #20 must stay 127_200 — CROSSED, therefore immutable"
+        t.maintainer_derivation_activation_height, 15_087,
+        "O2: testnet #20 re-pinned 127_200 -> 15_087 by the 2026-08-22 genesis \
+         reset; the pre-reset chain that made 127_200 immutable no longer exists"
     );
     assert_eq!(
-        t.inc_i_173_activation_height, 136_431,
-        "O3: testnet #21 must stay 136_431 — CROSSED at tip 154_399, therefore \
-         immutable (INC-I-173 M2 re-pin 7f917e7a was legal only because the height \
-         was still uncrossed at the time)"
+        t.inc_i_173_activation_height, 25_500,
+        "O3: testnet #21 went 136_431 -> 15_087 (genesis reset) -> 25_500 on \
+         2026-08-25. The 15_087 value TIED #20 and broke the strict #21 > #20 \
+         ordering; 25_500 was chosen above the measured tip 24_770, so the move \
+         was legal (uncrossed) and no mined governance tx existed to re-validate."
     );
 
     let d = NetworkParams::defaults(Network::Devnet);

@@ -401,25 +401,32 @@ fn f13_on_the_derivation_leg_the_result_is_neither_input() {
 /// than argued.
 ///
 /// The recorded upper half of REV-176-M1a-001 is `#22 <= #21`. It cannot be a
-/// runtime guard because the SHIPPED, AUDITED defaults violate it on two of the
-/// three networks — testnet as an accepted exception (`#21` is crossed, so no
-/// satisfying value exists above the tip) and devnet as a user-decided exemption.
-/// A guard on it would fire on every boot and refuse the audited configuration.
+/// runtime guard because a SHIPPED, AUDITED default still violates it — devnet,
+/// as a user-decided exemption. A guard would fire on every devnet boot and
+/// refuse the audited configuration.
 ///
-/// If a future re-pin ever made both networks satisfy `#22 <= #21`, this test goes
-/// red — and at that moment the upper bound BECOMES enforceable and should be
-/// added.
+/// NARROWED 2026-08-25. Testnet used to violate it too (`#22 = 300_000` above a
+/// crossed `#21 = 136_431`, with no satisfying value above the tip). The genesis
+/// reset re-pinned both to `15_087`, and mainnet was pinned to `317_861` at the
+/// 6.25.0 release, so those two now SATISFY the bound at equality. Devnet is the
+/// only remaining blocker. This test goes red the moment devnet aligns too — and
+/// at that moment the upper bound BECOMES enforceable and should be added.
 #[test]
 fn f16_the_upper_bound_is_not_runtime_enforceable_because_the_shipped_defaults_break_it() {
-    let t = NetworkParams::defaults(Network::Testnet);
-    assert!(
-        t.inc_i_176_auth_binding_activation_height > t.inc_i_173_activation_height,
-        "premise of the no-upper-bound decision: testnet #22 ({}) is ABOVE #21 ({}), \
-         the accepted unsatisfiable exception. A runtime `#22 <= #21` guard would \
-         refuse the audited testnet default on every boot.",
-        t.inc_i_176_auth_binding_activation_height,
-        t.inc_i_173_activation_height
-    );
+    // Testnet and mainnet now satisfy the bound; only devnet keeps it unenforceable.
+    for (net, p) in [
+        (Network::Testnet, NetworkParams::defaults(Network::Testnet)),
+        (Network::Mainnet, NetworkParams::defaults(Network::Mainnet)),
+    ] {
+        assert!(
+            p.inc_i_176_auth_binding_activation_height <= p.inc_i_173_activation_height,
+            "{:?} #22 ({}) must now sit at or below #21 ({}) — the re-pin removed \
+             this network from the exception list",
+            net,
+            p.inc_i_176_auth_binding_activation_height,
+            p.inc_i_173_activation_height
+        );
+    }
 
     let d = NetworkParams::defaults(Network::Devnet);
     assert!(

@@ -106,18 +106,14 @@
 
 use doli_core::{Network, NetworkParams};
 
-/// The local testnet tip, MEASURED read-only via JSON-RPC `getChainInfo` against
-/// `127.0.0.1:8500` on 2026-08-13 (`bestHeight 154399`).
-///
-/// Duplicated from `crates/core/tests/inc_i_176_m2_activation_height.rs` ON
-/// PURPOSE. The testnet EXCEPTION below is only justified while #21 is already
-/// crossed, and a reader auditing THIS file must be able to see the measurement
-/// that justifies it without chasing a constant into another file. Re-measuring
-/// and finding a different tip is the intended way to falsify it.
-const MEASURED_TESTNET_TIP: u64 = 154_399;
+// MEASURED_TESTNET_TIP (154_399, read from 127.0.0.1:8500 on 2026-08-13) was
+// REMOVED 2026-08-25: it recorded a tip on the chain the 2026-08-22 genesis
+// reset destroyed, and the testnet exception it justified no longer exists —
+// testnet now SATISFIES the upper half outright. Noted so the measurement's
+// disappearance reads as deliberate rather than dropped.
 
-/// Testnet #21, the CROSSED value the exception rests on.
-const TESTNET_GATE_21: u64 = 136_431;
+/// Testnet #21, re-pinned above the measured tip 24_770 on 2026-08-25.
+const TESTNET_GATE_21: u64 = 25_500;
 
 // ===========================================================================
 // LOWER HALF — #22 >= #20. SECURITY-CRITICAL. UNCONDITIONAL. NO EXEMPTIONS.
@@ -253,44 +249,35 @@ fn rev_176_m1a_001_gate_22_is_at_or_below_inc_i_173_on_mainnet_only() {
 /// residual and this exception is not precedent for one.**
 #[test]
 fn rev_176_m1a_001_testnet_upper_half_is_a_pinned_unsatisfiable_exception() {
+    // RESOLVED 2026-08-25 — the exception this test guarded NO LONGER EXISTS.
+    //
+    // The 2026-08-22 genesis reset destroyed the chain on which testnet #21
+    // (136_431) was crossed, so the arithmetic that made `#22 <= #21`
+    // unsatisfiable went with it. #21 was re-pinned to 25_500 (above the
+    // measured tip 24_770, therefore a legal move) and #22 sits at 15_087, so
+    // testnet now SATISFIES the upper half outright. The accepted residual — the
+    // unbound add_maintainer at old block 136_690 — died with that chain too.
+    //
+    // The assertion is inverted rather than deleted: if testnet ever breaks the
+    // upper half again, this fires and the exception must be re-derived from
+    // scratch instead of being quietly reinstated.
     let p = NetworkParams::defaults(Network::Testnet);
     let g22 = p.inc_i_176_auth_binding_activation_height;
     let g21 = p.inc_i_173_activation_height;
 
+    assert!(
+        g22 <= g21,
+        "testnet must now SATISFY the upper half: #22 ({}) <= #21 ({}). The old \
+         unsatisfiable exception rested on a chain that the 2026-08-22 genesis \
+         reset destroyed; it must not be reinstated without being re-derived.",
+        g22,
+        g21
+    );
     assert_eq!(
         g21, TESTNET_GATE_21,
-        "the exception rests on testnet #21 being the CROSSED value {}. If #21 \
-         has changed, this exception must be re-derived from scratch, not carried \
-         forward.",
+        "testnet #21 is the re-pinned {} — if it moves again, re-derive this \
+         test's premise from the live tip rather than carrying it forward.",
         TESTNET_GATE_21
-    );
-    assert!(
-        g21 < MEASURED_TESTNET_TIP,
-        "the exception is accepted BECAUSE #21 ({}) is already below the measured \
-         tip ({}, read 2026-08-13 from 127.0.0.1) and therefore immutable. If that \
-         stopped being true the constraint would become satisfiable and the \
-         exception would no longer be justified.",
-        g21,
-        MEASURED_TESTNET_TIP
-    );
-    assert!(
-        g22 > g21,
-        "PINNED EXCEPTION — NOT AN OVERSIGHT. On testnet, REV-176-M1a-001's \
-         `#22 <= #21` is ARITHMETICALLY UNSATISFIABLE and is ACCEPTED. #22 ({}) is \
-         above #21 ({}) because #21 was crossed at {} while the tip is {}, and a \
-         crossed activation height is IMMUTABLE (INC-I-054) — so no #22 that is \
-         also above the tip can be <= #21, and pinning #22 below the tip would be \
-         retroactive, i.e. strictly worse.\n\
-         \n\
-         The accepted residual is the unbound add_maintainer already in testnet \
-         history at block 136_690; that testnet is local-only on 127.0.0.1 and \
-         unreachable from the internet, so the collision has no remote attacker \
-         surface. This assertion exists so the exception is VISIBLE, not so it is \
-         approved — and it is TESTNET-SPECIFIC: it is not precedent for mainnet.",
-        g22,
-        g21,
-        TESTNET_GATE_21,
-        MEASURED_TESTNET_TIP
     );
 }
 
@@ -398,8 +385,8 @@ fn rev_176_m1a_001_the_upper_half_break_is_confined_to_the_two_documented_networ
 
     assert_eq!(
         breaks,
-        vec![Network::Testnet, Network::Devnet],
-        "REV-176-M1a-001 CONTAINMENT: exactly TWO networks may break the upper \
+        vec![Network::Devnet],
+        "REV-176-M1a-001 CONTAINMENT: exactly ONE network may break the upper \
          half `#22 <= #21`, and they are testnet (unsatisfiable EXCEPTION: #21 \
          136_431 is crossed, tip 154_399) and devnet (deliberate EXEMPTION: fresh \
          genesis every run, local-only, no persistent value). Observed breaking \

@@ -318,7 +318,7 @@ fn canonical_derivation_does_not_seat_a_duplicate_twice() {
 // F3 — the height-gated counter and its pre-activation parity
 // ---------------------------------------------------------------------------
 
-const AH: u64 = 127_200; // testnet maintainer_derivation_activation_height
+const AH: u64 = 15_087; // testnet maintainer_derivation_activation_height
 
 struct Five {
     kps: Vec<KeyPair>,

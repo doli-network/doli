@@ -150,7 +150,7 @@ impl NetworkParams {
                 // over-cap AddBonds in lockstep. Once crossed this height is
                 // IMMUTABLE — never move it forward (INC-I-054).
                 addbond_cap_enforcement_activation_height: 0,
-                withdrawal_holdings_gate_activation_height: 301_020,
+                withdrawal_holdings_gate_activation_height: 317_861,
 
                 // INC-I-088 Phase 0: DeFi subsystems (AMM, lending, loan,
                 // fractionalization) gated off on mainnet. u64::MAX = never
@@ -268,12 +268,12 @@ impl NetworkParams {
                 // exhaustive TxType::allows_empty_io() authority, so
                 // AddMaintainer/RemoveMaintainer can finally be mined.
                 // Q1=YES, Q2=YES, Q3=NO ⇒ activation height REQUIRED.
-                // NOT PINNED IN M1 — fail-closed; real value pinned at release
-                // vs live tip + external auto-update window. Pinning a guess now
-                // would become IMMUTABLE the moment the chain crossed it
-                // (INC-I-054), and ~30 external auto-update producers cannot be
-                // stopped for a synchronized restart.
-                inc_i_173_activation_height: u64::MAX,
+                // PINNED 2026-08-25 at release: measured live tip 308_866,
+                // 8_995 blocks (~25 h) of manual-upgrade lead time. Ordering
+                // REV-176-M1a-001 requires #22 <= #21; both sit at 317_861, so
+                // the authorization binding is in force at the same block the
+                // first governance tx can be mined. IMMUTABLE once crossed.
+                inc_i_173_activation_height: 317_861,
 
                 // INC-I-176 M2 maintainer-authorization message binding (#22):
                 // at/above this height the signed bytes become the domain-tagged,
@@ -284,26 +284,25 @@ impl NetworkParams {
                 // FORWARD-ONLY at and above #22 — never below it.
                 // Q1=YES, Q2=NO, Q3=NO ⇒ activation height REQUIRED.
                 //
-                // ON MAINNET #22 IS UNPINNED, SO NEITHER DEFECT IS CLOSED HERE
-                // (audit AUDIT-P1-102). `u64::MAX` is BOTH, and both must always
-                // be said together: fail-CLOSED against premature activation (no
-                // height can be crossed by accident, no history is reinterpreted,
-                // the value stays freely re-pinnable), and fail-OPEN for the
-                // defects themselves — the legacy colliding message stays in force
-                // at every mainnet height, so AUDIT-P0-011 and AUDIT-P1-016 remain
-                // OPEN on mainnet until a real height is pinned at M4. Today the
-                // bound arm executes on DEVNET ONLY; testnet activates at 300_000
-                // (measured tip 156_149 on 2026-08-13, uncrossed).
+                // AUDIT-P1-102 status: while #22 was `u64::MAX` this gate was
+                // fail-CLOSED against premature activation but fail-OPEN for the
+                // defects themselves — the legacy colliding message stayed in
+                // force at every mainnet height, leaving AUDIT-P0-011 and
+                // AUDIT-P1-016 OPEN. Pinning below CLOSES both, but only FROM
+                // 317_861: every mainnet block beneath it keeps the legacy
+                // message, so archived signatures stay verifiable and no history
+                // is reinterpreted. Below that height both defects remain live,
+                // which is why the upgrade window matters.
                 //
-                // NOT PINNED IN M2 — the same posture INC-I-173 M1 used for #21.
-                // The real value is pinned at release against the live tip plus
-                // the external auto-update window. Pinning a guess now would
-                // become IMMUTABLE the moment the chain crossed it (INC-I-054),
-                // and ~30 external auto-update producers cannot be stopped for a
-                // synchronized restart.
-                // REV-176-M1a-001 ordering: u64::MAX >= #20 (172_000) ✓ and
-                // u64::MAX <= #21 (u64::MAX) ✓ — both halves hold here.
-                inc_i_176_auth_binding_activation_height: u64::MAX,
+                // PINNED 2026-08-25 at release: measured live tip 308_866,
+                // 8_995 blocks (~25 h) of manual-upgrade lead time. Activating
+                // this at or before #21 is what stops AddMaintainer/
+                // RemoveMaintainer becoming mineable while their authorizations
+                // are still replayable — the INC-I-175 surface. External
+                // producers are upgraded MANUALLY for this release.
+                // REV-176-M1a-001 ordering: 317_861 >= #20 (172_000) ✓ and
+                // 317_861 <= #21 (317_861) ✓ — both halves hold at equality.
+                inc_i_176_auth_binding_activation_height: 317_861,
 
                 // INC-I-172 M2 review F3. Mainnet keeps the historical
                 // hardcoded precondition (INITIAL_MAINTAINER_COUNT = 5), so the
@@ -521,7 +520,7 @@ impl NetworkParams {
                 //     un-enforced at re-pin (live tip ~136_37x); synchronized
                 //     stop-all/start-all deploy, so instant-on if the tip
                 //     overtakes it during the rebuild is still fork-safe.
-                inc_i_173_activation_height: 15_087, // re-pinned 2026-08-24 for fresh testnet genesis (tip ~15006); was 136_431
+                inc_i_173_activation_height: 25_500, // re-pinned 2026-08-25: 15_087 tied #20 and broke the strict #21 > #20 ordering; measured tip 24_770
 
                 // INC-I-176 M2 maintainer-authorization message binding (#22).
                 // Pinned 2026-08-13 at a MEASURED live testnet tip of 154_399
@@ -566,7 +565,7 @@ impl NetworkParams {
                 //     AUDIT-P0-011 collision has no remote attacker surface there.
                 //     Pinned as a VISIBLE exception by
                 //     `rev_176_m1a_001_testnet_upper_half_is_an_accepted_unsatisfiable_residual`.
-                inc_i_176_auth_binding_activation_height: 15_087, // re-pinned 2026-08-24 for fresh testnet genesis (tip ~15006); was 300_000. All four INC-I-172/173/176/180 testnet gates share 15_087; #22>=#20 and #22<=#21 both hold at equality.
+                inc_i_176_auth_binding_activation_height: 15_087, // re-pinned 2026-08-24 for fresh testnet genesis (tip ~15006); was 300_000. #22>=#20 holds at equality (both 15_087); #22<=#21 holds strictly (#21=25_500).
 
                 // INC-I-172 M2 review F3. Unchanged from the historical
                 // hardcoded precondition (INITIAL_MAINTAINER_COUNT = 5): the

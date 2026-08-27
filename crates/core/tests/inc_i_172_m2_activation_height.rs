@@ -67,7 +67,7 @@ use doli_core::{Network, NetworkParams};
 const MAINNET_TIP_AT_PIN_TIME: u64 = 162_727;
 
 const MAINNET_GATE: u64 = 172_000;
-const TESTNET_GATE: u64 = 127_200;
+const TESTNET_GATE: u64 = 15_087;
 
 const ENV_VAR: &str = "DOLI_MAINTAINER_DERIVATION_ACTIVATION_HEIGHT";
 

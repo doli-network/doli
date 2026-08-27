@@ -112,10 +112,10 @@ const DEVNET_GATE: u64 = 0;
 /// INC-I-054). This re-pin predates crossing, so it is legal — and it is now
 /// history: the testnet gate at `136_431` HAS been crossed (tip 146_711 at
 /// 2026-08-12), so this value must never be moved again.
-const TESTNET_GATE: u64 = 136_431;
+const TESTNET_GATE: u64 = 25_500;
 
-/// Mainnet: NOT PINNED IN M1. See the module header.
-const MAINNET_GATE: u64 = u64::MAX;
+/// Mainnet: PINNED 2026-08-25 at release (tip 308_866, ~25 h lead).
+const MAINNET_GATE: u64 = 317_861;
 
 // ===========================================================================
 // REQ-173-005 (Must) — the field exists on all 3 networks with pinned values
@@ -138,7 +138,7 @@ fn req_173_005_testnet_gate_is_pinned_near_future_and_is_not_a_no_op() {
     let p = NetworkParams::defaults(Network::Testnet);
     let h = p.inc_i_173_activation_height;
 
-    assert_eq!(h, TESTNET_GATE, "O1: the testnet gate is pinned at 136_431");
+    assert_eq!(h, TESTNET_GATE, "O1: the testnet gate is pinned at 25_500");
     assert_ne!(
         h, 0,
         "O1: a testnet gate of 0 would reinterpret already-validated testnet \
@@ -260,8 +260,8 @@ fn req_173_005_no_existing_activation_height_was_moved() {
 
     let t = NetworkParams::defaults(Network::Testnet);
     assert_eq!(
-        t.maintainer_derivation_activation_height, 127_200,
-        "testnet maintainer_derivation must stay 127_200"
+        t.maintainer_derivation_activation_height, 15_087,
+        "testnet maintainer_derivation re-pinned 127_200 → 15_087 (2026-08-22 genesis reset)"
     );
     // HARNESS FIX (developer, INC-I-173 M1): see the mainnet half above — this
     // is the other side of the same transposition.
