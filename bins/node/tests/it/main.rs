@@ -22,3 +22,4 @@ mod inc_i_180_in_block_parity;
 mod inc_i_180_rebuild_parity;
 mod inc_i_180_replay_mode;
 mod inc_i_180_withdrawal_holdings_gate;
+mod tied_fork_finality;
