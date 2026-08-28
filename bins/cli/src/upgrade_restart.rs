@@ -4,6 +4,21 @@
 //! Nothing here makes a trust decision: `cmd_upgrade` has already verified maintainer
 //! signatures and installed the binary before any of this runs.
 
+use doli_cli::upgrade_systemd_plan::{systemd_restart_plan, SystemdStep};
+
+/// Run a systemd plan under `sudo`. Steps with `required == false` run with their exit
+/// status discarded; the return value is whether the required step succeeded.
+fn run_systemd_plan(steps: &[SystemdStep]) -> bool {
+    let mut ok = false;
+    for step in steps {
+        let status = std::process::Command::new("sudo").args(&step.args).status();
+        if step.required {
+            ok = matches!(status, Ok(s) if s.success());
+        }
+    }
+    ok
+}
+
 /// Find the path to an installed doli-node binary
 pub(crate) fn find_doli_node_path() -> Option<std::path::PathBuf> {
     // Tier 1: Check running doli-node process to find its binary path
@@ -60,15 +75,13 @@ pub(crate) fn find_doli_node_path() -> Option<std::path::PathBuf> {
 /// Restart a specific systemd service by name
 pub(crate) fn restart_specific_service(service: &str) {
     println!("Restarting service: {}", service);
-    let result = std::process::Command::new("sudo")
-        .args(["systemctl", "restart", service])
-        .status();
-    match result {
-        Ok(s) if s.success() => println!("  Restarted {}.", service),
-        _ => println!(
-            "  Failed to restart {}. Run: sudo systemctl restart {}",
-            service, service
-        ),
+    if run_systemd_plan(&systemd_restart_plan(service)) {
+        println!("  Restarted {}.", service);
+    } else {
+        println!(
+            "  Failed to restart {}. Run: sudo systemctl reset-failed {} && sudo systemctl restart {}",
+            service, service, service
+        );
     }
 }
 
@@ -168,18 +181,14 @@ fn try_restart_systemd(installed_path: Option<&std::path::Path>) -> bool {
     let mut any_ok = false;
     for unit in &units {
         println!("Restarting service: {}", unit);
-        let result = std::process::Command::new("sudo")
-            .args(["systemctl", "restart", unit])
-            .status();
-        match result {
-            Ok(s) if s.success() => {
-                println!("  Restarted {}.", unit);
-                any_ok = true;
-            }
-            _ => println!(
-                "  Failed to restart {}. Run: sudo systemctl restart {}",
-                unit, unit
-            ),
+        if run_systemd_plan(&systemd_restart_plan(unit)) {
+            println!("  Restarted {}.", unit);
+            any_ok = true;
+        } else {
+            println!(
+                "  Failed to restart {}. Run: sudo systemctl reset-failed {} && sudo systemctl restart {}",
+                unit, unit, unit
+            );
         }
     }
     any_ok
