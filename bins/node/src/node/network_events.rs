@@ -330,31 +330,53 @@ impl Node {
             if let SyncRequest::DirectAttestation { ref data } = request {
                 if let Some(att) = doli_core::Attestation::from_bytes(data) {
                     if att.verify().is_ok() {
-                        let minute = doli_core::attestation::attestation_minute(att.slot);
-                        if att.bls_signature.is_empty() {
-                            self.minute_tracker.record(att.attester, minute);
-                        } else {
-                            self.minute_tracker.record_with_bls(
-                                att.attester,
-                                minute,
-                                att.bls_signature.clone(),
-                            );
-                        }
-                        info!(
-                            "[DIRECT_ATTEST_RECV] registered attestation from {:.8} for slot {}",
-                            att.attester, att.slot
-                        );
-
-                        // INC-I-049: If attestation references unknown block at height+1,
-                        // fetch it. This recovers from rate-limiter drops.
-                        self.maybe_fetch_attested_block(&att.block_hash, peer_id)
-                            .await;
+                        self.record_direct_attestation(att, peer_id).await;
                     }
                 }
             }
             self.handle_sync_request(request, channel).await?;
         }
         Ok(())
+    }
+
+    /// Register an inbound `DirectAttestation` (attendance) and trigger deferred
+    /// block fetch. Extracted from `on_sync_request` so the INC-I-192 membership
+    /// gate is unit-testable without a libp2p `ResponseChannel`.
+    pub(crate) async fn record_direct_attestation(
+        &mut self,
+        att: doli_core::Attestation,
+        peer_id: PeerId,
+    ) {
+        // INC-I-192 / Seam A [F1]: only ProducerSet members may grow the attendance
+        // tracker. Membership (`is_some`) — NOT weight — is the admission test, so a
+        // fully-delegated active producer still attends (INV-ATTEST-001).
+        let height = self.best_height().await;
+        let is_member = {
+            let producers = self.producer_set.read().await;
+            self.derive_attester_weight(&producers, &att.attester, height)
+                .is_some()
+        };
+        if !is_member {
+            debug!(
+                "[DIRECT_ATTEST] dropping attestation from non-producer {:.8}",
+                att.attester
+            );
+            return;
+        }
+        let minute = doli_core::attestation::attestation_minute(att.slot);
+        if att.bls_signature.is_empty() {
+            self.minute_tracker.record(att.attester, minute);
+        } else {
+            self.minute_tracker
+                .record_with_bls(att.attester, minute, att.bls_signature.clone());
+        }
+        info!(
+            "[DIRECT_ATTEST_RECV] registered attestation from {:.8} for slot {}",
+            att.attester, att.slot
+        );
+        // INC-I-049: If the attestation references an unknown block, fetch it.
+        self.maybe_fetch_attested_block(&att.block_hash, peer_id)
+            .await;
     }
 
     /// Handle a sync response: process returned blocks and check for snap snapshots.
@@ -537,21 +559,43 @@ impl Node {
         if let Some(attestation) = doli_core::Attestation::from_bytes(&data) {
             if attestation.verify().is_ok() {
                 // Only accept attestations for blocks we know are canonical
-                match self.block_store.get_height_by_hash(&attestation.block_hash) {
-                    Ok(Some(_)) => {} // Block exists in our store — proceed
-                    _ => {
-                        // INC-I-049: Unknown block — try to fetch it if it's
-                        // at height+1 (candidate next block).
-                        self.maybe_fetch_attested_block(&attestation.block_hash, source_peer)
-                            .await;
-                        return;
-                    }
+                // Only accept attestations for blocks we know are canonical, and
+                // capture that block's LOCAL height for authority derivation.
+                let local_height =
+                    match self.block_store.get_height_by_hash(&attestation.block_hash) {
+                        Ok(Some(h)) => h,
+                        _ => {
+                            // INC-I-049: Unknown block — try to fetch it if it's
+                            // at height+1 (candidate next block).
+                            self.maybe_fetch_attested_block(&attestation.block_hash, source_peer)
+                                .await;
+                            return;
+                        }
+                    };
+
+                // INC-I-191 / Seam A [F1]: DERIVE the attester's authority from the
+                // LOCAL ProducerSet — the wire's self-declared `attester_weight` is
+                // never trusted. A non-member is dropped outright.
+                let derived = {
+                    let producers = self.producer_set.read().await;
+                    self.derive_attester_weight(&producers, &attestation.attester, local_height)
+                };
+                let Some(weight) = derived else {
+                    debug!(
+                        "[FINALITY_GATE] dropping attestation from non-producer {:.8}",
+                        attestation.attester
+                    );
+                    return;
+                };
+
+                // Finality numerator: only a positive locally-derived weight counts.
+                if weight > 0 {
+                    let mut sync = self.sync_manager.write().await;
+                    sync.add_attestation_weight(&attestation.block_hash, weight);
+                    drop(sync);
                 }
 
-                let mut sync = self.sync_manager.write().await;
-                sync.add_attestation_weight(&attestation.block_hash, attestation.attester_weight);
-                drop(sync);
-
+                // Attendance: a member attends regardless of weight (INV-ATTEST-001).
                 let minute = attestation_minute(attestation.slot);
                 if attestation.bls_signature.is_empty() {
                     self.minute_tracker.record(attestation.attester, minute);

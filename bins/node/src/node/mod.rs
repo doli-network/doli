@@ -4,6 +4,8 @@
 // v0.2.1-test: upgrade pipeline validation
 
 mod apply_block;
+#[cfg(test)]
+mod attestation_authority_tests;
 #[allow(unused_imports)]
 pub use apply_block::state_fp_sr_field;
 mod block_handling;
@@ -397,6 +399,28 @@ impl Node {
     #[allow(dead_code)]
     pub async fn best_hash(&self) -> crypto::Hash {
         self.chain_state.read().await.best_hash
+    }
+
+    /// Derive an attester's authority from the LOCAL ProducerSet (Seam A, [F1]).
+    /// `None` = not a producer-set member (reject; never trust the wire's
+    /// self-declared weight). `Some(w)` = member with locally-derived selection
+    /// weight, which may be 0 for a fully-delegated active producer (INV-ATTEST-001,
+    /// so attendance admission uses `.is_some()`, not `w > 0`).
+    pub(crate) fn derive_attester_weight(
+        &self,
+        producers: &ProducerSet,
+        attester: &PublicKey,
+        height: u64,
+    ) -> Option<u64> {
+        producers.get_by_pubkey(attester).map(|p| {
+            p.selection_weight_at(
+                height,
+                self.config
+                    .network
+                    .params()
+                    .security_audit_activation_height,
+            )
+        })
     }
 
     /// Compute bond weights for scheduling from epoch snapshot (or UTXO fallback for epoch 0).
