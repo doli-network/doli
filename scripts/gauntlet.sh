@@ -409,6 +409,64 @@ except Exception:
   return 0
 }
 
+# ── GS-013: a producer's ProducerSet bond ledger must not outlive its Bond UTXOs ──
+# READ-ONLY: one getProducers query. Writes nothing, touches no service. Guards
+# INV-BOND-001 (INC-I-180): the ProducerSet bond_count P drives selection weight,
+# but the Bond UTXOs U are what actually collateralise it. When P > U the producer
+# is scheduled on weight backed by nothing.
+#
+# This is the detection that did not exist. Mainnet n11 ran for ~73,000 blocks at
+# P=444 / U=10 — 434 unbacked units, 1.9% of fleet weight — and nothing anywhere
+# reported it. It surfaced only because a human went looking.
+#
+# U > P is NOT a finding: the hourly auto-bond cron creates a Bond UTXO faster than
+# the ProducerSet reflects it, and the next epoch boundary flushes it. Only P > U is
+# unbacked weight. Producers carrying a pending update are mid-flush and excluded —
+# the n11 shape is P > U with NOTHING queued, which never self-resolves.
+_gs013_assert(){
+  local t="$1" rpc="http://127.0.0.1:$(port_of seed)" out
+  out="$(curl -s --max-time 10 -X POST "$rpc" -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"getProducers","params":[]}' \
+    | python3 -c "
+import sys, json
+try:
+    r = json.load(sys.stdin).get('result') or {}
+except Exception:
+    print('ERR'); raise SystemExit
+ps = r.get('producers') if isinstance(r, dict) and 'producers' in r else r
+if not isinstance(ps, list):
+    print('ERR'); raise SystemExit
+bad = []
+for x in ps:
+    P = x.get('producerSetBondCount', 0) or 0
+    U = x.get('bondCount', 0) or 0
+    # a queued mutation means mid-flush, not unbacked weight
+    if x.get('pendingUpdates'):
+        continue
+    if P > U:
+        bad.append('%s(P=%d,U=%d,w=%s)' % (x.get('publicKey','?')[:12], P, U, x.get('selectionWeight')))
+print('%d %d %s' % (len(ps), len(bad), ' '.join(bad)))
+" 2>/dev/null)"
+  if [ -z "$out" ] || [ "$out" = "ERR" ]; then
+    SKIP_REASONS="$SKIP_REASONS; $t: getProducers unreachable or unparseable at $rpc"
+    return 2
+  fi
+  local checked bad detail
+  checked="$(echo "$out" | awk '{print $1}')"
+  bad="$(echo "$out" | awk '{print $2}')"
+  detail="$(echo "$out" | cut -d' ' -f3-)"
+  if [ "${checked:-0}" -eq 0 ]; then
+    SKIP_REASONS="$SKIP_REASONS; $t: producer set is empty — nothing to compare"
+    return 2
+  fi
+  if [ "${bad:-0}" -gt 0 ]; then
+    FAIL_REASONS="$FAIL_REASONS; $t: ${bad}/${checked} producers hold ProducerSet weight with no Bond UTXOs behind it — $detail"
+    return 1
+  fi
+  INFO_REASONS="$INFO_REASONS; $t: ${checked} producers verified, no unbacked selection weight"
+  return 0
+}
+
 assert(){
   local t="$1" ok=1 why=""
   case "$t" in
@@ -492,6 +550,8 @@ assert(){
       _gs010_assert "$t"; return $? ;;
     gs012-bls-matches-registration)
       _gs012_assert "$t"; return $? ;;
+    gs013-no-unbacked-weight)
+      _gs013_assert "$t"; return $? ;;
     *)
       why="unknown assertion token '$t'" ;;
   esac
