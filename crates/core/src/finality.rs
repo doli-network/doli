@@ -12,6 +12,12 @@ use serde::{Deserialize, Serialize};
 /// Percentage of total weight required for finality (67%).
 pub const FINALITY_THRESHOLD_PCT: u32 = 67;
 
+/// Minimum locally-applied descendant depth before a pending block may finalize
+/// (INC-I-190 D1 [F2]). A block at height `h` finalizes only once the node has
+/// applied a descendant at height `>= h + CONFIRMATION_DEPTH`, eliminating the
+/// depth-0 instant self-finality that made the wedge irreversible.
+pub const CONFIRMATION_DEPTH: u64 = 2;
+
 /// Number of slots to wait before timing out pending finality.
 pub const FINALITY_TIMEOUT_SLOTS: u32 = 3;
 
@@ -119,9 +125,13 @@ impl FinalityTracker {
 
     /// Check if any pending blocks have reached finality.
     ///
+    /// A block finalizes only when it has BOTH >= `FINALITY_THRESHOLD_PCT` weight
+    /// AND a locally-applied descendant at depth >= `CONFIRMATION_DEPTH`
+    /// (`applied_tip_height >= block.height + CONFIRMATION_DEPTH`).
+    ///
     /// Returns the newly finalized checkpoint if one was found.
     /// Removes all pending blocks at or below the finalized height.
-    pub fn check_finality(&mut self) -> Option<FinalityCheckpoint> {
+    pub fn check_finality(&mut self, applied_tip_height: u64) -> Option<FinalityCheckpoint> {
         // Find the highest-height block that meets the threshold
         let mut best: Option<usize> = None;
 
@@ -130,7 +140,11 @@ impl FinalityTracker {
                 continue;
             }
             let pct = pending.attestation_weight * 100 / pending.total_weight;
-            if pct >= FINALITY_THRESHOLD_PCT as u64 {
+            // INC-I-190 D1 [F2]: require a locally-applied descendant at depth
+            // >= CONFIRMATION_DEPTH — no depth-0 instant self-finality.
+            let has_confirmation_depth =
+                applied_tip_height >= pending.height.saturating_add(CONFIRMATION_DEPTH);
+            if pct >= FINALITY_THRESHOLD_PCT as u64 && has_confirmation_depth {
                 match best {
                     Some(bi) if pending.height > self.pending[bi].height => {
                         best = Some(i);
@@ -240,11 +254,11 @@ mod tests {
 
         // Block 1 gets 50% weight — not enough
         tracker.add_attestation_weight(h1, 50);
-        assert!(tracker.check_finality().is_none());
+        assert!(tracker.check_finality(102).is_none());
 
         // Block 1 reaches 67% — finalized
         tracker.add_attestation_weight(h1, 17);
-        let cp = tracker.check_finality();
+        let cp = tracker.check_finality(102);
         assert!(cp.is_some());
         let cp = cp.unwrap();
         assert_eq!(cp.block_hash, h1);
@@ -268,7 +282,7 @@ mod tests {
         let h = make_hash(1);
         tracker.track_block(h, 100, 10, 100);
         tracker.add_attestation_weight(h, 70);
-        tracker.check_finality();
+        tracker.check_finality(102);
 
         assert!(tracker.is_at_or_below_finalized(99));
         assert!(tracker.is_at_or_below_finalized(100));
@@ -298,10 +312,53 @@ mod tests {
         assert_eq!(tracker.pending.len(), 1);
         assert_eq!(tracker.pending[0].attestation_weight, 70);
 
-        // Should reach finality immediately
-        let cp = tracker.check_finality();
+        // Should reach finality once depth-2 is satisfied
+        let cp = tracker.check_finality(102);
         assert!(cp.is_some());
         assert_eq!(cp.unwrap().block_hash, h);
+    }
+
+    // OUTPUT CONTRACT (per .claude/protocols/output-contract.md):
+    //   Output: FinalityTracker::check_finality(applied_tip_height) -> Option<checkpoint>
+    //           + self.last_finalized side effect.
+    // INPUT PARTITIONS (67% weight held constant):
+    //   - applied_tip == block.height        (depth 0) => None
+    //   - applied_tip == block.height + 1     (depth 1) => None
+    //   - applied_tip >= block.height + 2     (depth 2) => Some(checkpoint)
+    #[test]
+    fn test_no_depth0_self_finality() {
+        // INC-I-190 D1 [F2]: a 67% block must NOT finalize at depth 0/1.
+        let mut tracker = FinalityTracker::new();
+        let h = make_hash(1);
+        tracker.track_block(h, 100, 10, 100);
+        tracker.add_attestation_weight(h, 67); // 67% weight, no descendants yet
+
+        assert!(
+            tracker.check_finality(100).is_none(),
+            "depth-0 must not finalize"
+        );
+        assert!(
+            tracker.check_finality(101).is_none(),
+            "depth-1 must not finalize"
+        );
+        let cp = tracker.check_finality(102);
+        assert!(cp.is_some(), "depth-2 must finalize");
+        assert_eq!(cp.unwrap().height, 100);
+    }
+
+    #[test]
+    fn test_normal_finality_at_depth2_no_liveness_regression() {
+        // A block with 67% AND >= 2 applied descendants finalizes normally.
+        let mut tracker = FinalityTracker::new();
+        let h = make_hash(1);
+        tracker.track_block(h, 200, 20, 100);
+        tracker.add_attestation_weight(h, 67);
+        let cp = tracker.check_finality(202); // depth 2
+        assert!(
+            cp.is_some(),
+            "67% + depth 2 must finalize (no liveness stall)"
+        );
+        assert_eq!(cp.unwrap().height, 200);
     }
 
     #[test]
