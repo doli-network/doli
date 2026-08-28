@@ -591,7 +591,11 @@ impl Node {
                 // Finality numerator: only a positive locally-derived weight counts.
                 if weight > 0 {
                     let mut sync = self.sync_manager.write().await;
-                    sync.add_attestation_weight(&attestation.block_hash, weight);
+                    sync.add_attestation_weight(
+                        &attestation.block_hash,
+                        attestation.attester,
+                        weight,
+                    );
                     drop(sync);
                 }
 

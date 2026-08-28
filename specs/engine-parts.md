@@ -2354,7 +2354,7 @@ Note: struct PresenceHeartbeat (not Heartbeat) in the tpop module; this is diffe
 - `SyncManager::block_production(reason)` / `SyncManager::unblock_production()` — explicit production gate
 - `SyncManager::start_resync()` / `SyncManager::complete_resync()` — resync lifecycle
 - `SyncManager::request_genesis_resync(reason)` — gated genesis resync; 5 guards (floor, concurrent recovery, rate limit, snap availability, snap attempts); emergency reasons bypass guards 1 and 4
-- `SyncManager::track_block_for_finality(hash, height, slot, weight)` / `SyncManager::add_attestation_weight(block_hash, weight)` — finality tracking
+- `SyncManager::track_block_for_finality(hash, height, slot, weight)` / `SyncManager::add_attestation_weight(block_hash, attester, weight)` — finality tracking
 - `SyncManager::signal_stuck_fork()` / `SyncManager::take_stuck_fork_signal()` — stuck fork signal
 - `SyncManager::block_applied_with_weight(hash, height, slot, weight, prev_hash)` — full block-applied update; maintains confirmed_height_floor
 - `SyncManager::block_apply_failed()` — tracks apply failures; at ≥3 triggers fork signal or genesis resync
@@ -2439,7 +2439,7 @@ Note: struct PresenceHeartbeat (not Heartbeat) in the tpop module; this is diffe
 - `SyncManager::can_produce(current_slot)` — multi-layer production authorization; 3 active checks
 - `SyncManager::block_production(reason)` / `SyncManager::unblock_production()` — explicit gate
 - `SyncManager::start_resync()` / `SyncManager::complete_resync()` / `SyncManager::is_resync_in_progress()` — resync lifecycle
-- `SyncManager::track_block_for_finality(hash, height, slot, weight)` / `SyncManager::add_attestation_weight(block_hash, weight)` / `SyncManager::prune_finality(current_slot)` / `SyncManager::last_finalized_height()` — finality tracking
+- `SyncManager::track_block_for_finality(hash, height, slot, weight)` / `SyncManager::add_attestation_weight(block_hash, attester, weight)` / `SyncManager::prune_finality(current_slot)` / `SyncManager::last_finalized_height()` — finality tracking
 - `SyncManager::signal_stuck_fork()` / `SyncManager::take_stuck_fork_signal()` — stuck fork signal (Normal phase only)
 - `SyncManager::request_genesis_resync(reason)` — gated genesis resync entry point; returns bool (honored or refused)
 - `SyncManager::configure_production_gate(grace_secs, max_slots_behind)` / `set_min_peers_for_production(min)` / `set_bootstrap_grace_period_secs(secs)` — configuration

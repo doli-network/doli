@@ -497,9 +497,14 @@ impl SyncManager {
     }
 
     /// Add attestation weight to a pending block.
-    pub fn add_attestation_weight(&mut self, block_hash: &crypto::Hash, weight: u64) {
+    pub fn add_attestation_weight(
+        &mut self,
+        block_hash: &crypto::Hash,
+        attester: crypto::PublicKey,
+        weight: u64,
+    ) {
         self.finality_tracker
-            .add_attestation_weight(*block_hash, weight);
+            .add_attestation_weight(*block_hash, attester, weight);
         // Re-check finality against the locally-applied tip (depth-2 gate).
         self.finalize_if_ready(self.local_height);
     }

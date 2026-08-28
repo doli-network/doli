@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use crypto::Hash;
+use crypto::{Hash, PublicKey};
 use serde::{Deserialize, Serialize};
 
 /// Percentage of total weight required for finality (67%).
@@ -50,8 +50,14 @@ struct PendingBlock {
     block_hash: Hash,
     height: u64,
     slot: u32,
-    attestation_weight: u64,
+    attesters: HashMap<PublicKey, u64>,
     total_weight: u64,
+}
+
+impl PendingBlock {
+    fn numerator(&self) -> u64 {
+        self.attesters.values().copied().sum()
+    }
 }
 
 /// Maximum number of early attestations to buffer before any block is tracked.
@@ -64,9 +70,9 @@ pub struct FinalityTracker {
     pub last_finalized: Option<FinalityCheckpoint>,
     /// Blocks awaiting sufficient attestation weight.
     pending: Vec<PendingBlock>,
-    /// Buffered attestation weight for blocks not yet tracked.
-    /// When `track_block()` is called, any buffered weight is applied.
-    early_attestations: HashMap<Hash, u64>,
+    /// Buffered attestation weight for blocks not yet tracked, keyed by attester.
+    /// When `track_block()` is called, any buffered per-attester weight is applied.
+    early_attestations: HashMap<Hash, HashMap<PublicKey, u64>>,
 }
 
 impl FinalityTracker {
@@ -87,13 +93,13 @@ impl FinalityTracker {
         }
 
         // Check for any buffered early attestations
-        let early_weight = self.early_attestations.remove(&hash).unwrap_or(0);
+        let early = self.early_attestations.remove(&hash).unwrap_or_default();
 
         self.pending.push(PendingBlock {
             block_hash: hash,
             height,
             slot,
-            attestation_weight: early_weight,
+            attesters: early,
             total_weight,
         });
     }
@@ -102,19 +108,22 @@ impl FinalityTracker {
     ///
     /// If the block is not yet tracked, the weight is buffered and will be
     /// applied when `track_block()` is called.
-    pub fn add_attestation_weight(&mut self, block_hash: Hash, weight: u64) {
+    pub fn add_attestation_weight(&mut self, block_hash: Hash, attester: PublicKey, weight: u64) {
         for pending in &mut self.pending {
             if pending.block_hash == block_hash {
-                pending.attestation_weight = pending.attestation_weight.saturating_add(weight);
+                pending.attesters.insert(attester, weight);
                 return;
             }
         }
 
-        // Block not yet tracked — buffer the attestation
-        let entry = self.early_attestations.entry(block_hash).or_insert(0);
-        *entry = entry.saturating_add(weight);
+        // Block not yet tracked — buffer the attestation, deduped by attester
+        self.early_attestations
+            .entry(block_hash)
+            .or_default()
+            .insert(attester, weight);
 
-        // Evict oldest entry if buffer is full (simple size cap)
+        // Evict an arbitrary block-hash entry if buffer is full (size cap on
+        // the number of distinct block hashes buffered)
         if self.early_attestations.len() > MAX_EARLY_ATTESTATIONS {
             // Remove an arbitrary entry (HashMap iteration order)
             if let Some(&key) = self.early_attestations.keys().next() {
@@ -139,7 +148,7 @@ impl FinalityTracker {
             if pending.total_weight == 0 {
                 continue;
             }
-            let pct = pending.attestation_weight * 100 / pending.total_weight;
+            let pct = pending.numerator() * 100 / pending.total_weight;
             // INC-I-190 D1 [F2]: require a locally-applied descendant at depth
             // >= CONFIRMATION_DEPTH — no depth-0 instant self-finality.
             let has_confirmation_depth =
@@ -163,7 +172,7 @@ impl FinalityTracker {
                 block_hash: p.block_hash,
                 height: p.height,
                 slot: p.slot,
-                attestation_weight: p.attestation_weight,
+                attestation_weight: p.numerator(),
                 total_weight: p.total_weight,
             };
 
@@ -201,9 +210,14 @@ impl Default for FinalityTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crypto::PublicKey;
 
     fn make_hash(seed: u8) -> Hash {
         crypto::hash::hash(&[seed])
+    }
+
+    fn make_pubkey(seed: u8) -> PublicKey {
+        PublicKey::from_bytes([seed; 32])
     }
 
     #[test]
@@ -253,11 +267,11 @@ mod tests {
         tracker.track_block(h2, 101, 11, 100);
 
         // Block 1 gets 50% weight — not enough
-        tracker.add_attestation_weight(h1, 50);
+        tracker.add_attestation_weight(h1, make_pubkey(101), 50);
         assert!(tracker.check_finality(102).is_none());
 
-        // Block 1 reaches 67% — finalized
-        tracker.add_attestation_weight(h1, 17);
+        // Block 1 reaches 67% — a SECOND producer adds 17 (50 + 17 = 67).
+        tracker.add_attestation_weight(h1, make_pubkey(102), 17);
         let cp = tracker.check_finality(102);
         assert!(cp.is_some());
         let cp = cp.unwrap();
@@ -281,7 +295,7 @@ mod tests {
 
         let h = make_hash(1);
         tracker.track_block(h, 100, 10, 100);
-        tracker.add_attestation_weight(h, 70);
+        tracker.add_attestation_weight(h, make_pubkey(1), 70);
         tracker.check_finality(102);
 
         assert!(tracker.is_at_or_below_finalized(99));
@@ -304,13 +318,13 @@ mod tests {
         let h = make_hash(1);
 
         // Attestation arrives before block is tracked
-        tracker.add_attestation_weight(h, 70);
+        tracker.add_attestation_weight(h, make_pubkey(1), 70);
         assert!(tracker.pending.is_empty());
 
         // Now track the block — buffered weight should be applied
         tracker.track_block(h, 100, 10, 100);
         assert_eq!(tracker.pending.len(), 1);
-        assert_eq!(tracker.pending[0].attestation_weight, 70);
+        assert_eq!(tracker.pending[0].numerator(), 70);
 
         // Should reach finality once depth-2 is satisfied
         let cp = tracker.check_finality(102);
@@ -331,7 +345,7 @@ mod tests {
         let mut tracker = FinalityTracker::new();
         let h = make_hash(1);
         tracker.track_block(h, 100, 10, 100);
-        tracker.add_attestation_weight(h, 67); // 67% weight, no descendants yet
+        tracker.add_attestation_weight(h, make_pubkey(1), 67); // 67% weight, no descendants yet
 
         assert!(
             tracker.check_finality(100).is_none(),
@@ -352,7 +366,7 @@ mod tests {
         let mut tracker = FinalityTracker::new();
         let h = make_hash(1);
         tracker.track_block(h, 200, 20, 100);
-        tracker.add_attestation_weight(h, 67);
+        tracker.add_attestation_weight(h, make_pubkey(1), 67);
         let cp = tracker.check_finality(202); // depth 2
         assert!(
             cp.is_some(),
@@ -370,5 +384,55 @@ mod tests {
 
         tracker.prune_old_pending(12); // slot 5 + 3 = 8 < 12, slot 10 + 3 = 13 >= 12
         assert_eq!(tracker.pending.len(), 2);
+    }
+
+    // OUTPUT CONTRACT (M3 [F1-dedup], per .claude/protocols/output-contract.md):
+    //   Output: PendingBlock::numerator() = attesters.values().sum(); FinalityCheckpoint.attestation_weight.
+    // INPUT PARTITIONS (dedup by attester):
+    //   - same attester, N deliveries          => numerator = that attester's weight (counted once)
+    //   - K distinct attesters, weight w each   => numerator = K*w, always <= total_weight
+    //   - echo/re-broadcast of a counted attester => numerator unchanged
+    #[test]
+    fn test_duplicate_attester_counts_once() {
+        // M3 [F1-dedup]: same authenticated attester delivered 3x counts ONCE.
+        let mut tracker = FinalityTracker::new();
+        let h = make_hash(1);
+        let a = make_pubkey(9);
+        tracker.track_block(h, 100, 10, 5); // total_weight = 5
+        tracker.add_attestation_weight(h, a, 1);
+        tracker.add_attestation_weight(h, a, 1);
+        tracker.add_attestation_weight(h, a, 1);
+        assert_eq!(
+            tracker.pending[0].numerator(),
+            1,
+            "same attester delivered 3x must count once, not 3"
+        );
+    }
+
+    #[test]
+    fn test_numerator_never_exceeds_total() {
+        // M3 [F1-dedup]: 5 producers each weight 1 (total 5); one attests twice.
+        let mut tracker = FinalityTracker::new();
+        let h = make_hash(2);
+        tracker.track_block(h, 100, 10, 5);
+        let attesters: Vec<PublicKey> = (0..5u8).map(make_pubkey).collect();
+        for a in &attesters {
+            tracker.add_attestation_weight(h, *a, 1);
+        }
+        // Echo: one producer attests a second time.
+        tracker.add_attestation_weight(h, attesters[0], 1);
+        assert_eq!(
+            tracker.pending[0].numerator(),
+            5,
+            "numerator must equal distinct producer weight, never 6"
+        );
+        let cp = tracker
+            .check_finality(102)
+            .expect("100% weight + depth 2 must finalize");
+        assert!(
+            cp.attestation_weight <= cp.total_weight,
+            "numerator must never exceed total_weight"
+        );
+        assert_eq!(cp.attestation_weight, 5);
     }
 }

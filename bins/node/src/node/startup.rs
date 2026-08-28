@@ -618,7 +618,7 @@ impl Node {
         // Add our own weight to finality tracker
         {
             let mut sync = self.sync_manager.write().await;
-            sync.add_attestation_weight(&block_hash, weight);
+            sync.add_attestation_weight(&block_hash, public_key, weight);
         }
 
         // Broadcast to network via gossip
