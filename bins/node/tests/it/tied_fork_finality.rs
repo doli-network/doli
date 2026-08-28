@@ -171,7 +171,12 @@ fn build_b_branch(
 /// LOCAL ProducerSet (Seam A / F1) and feeds add_attestation_weight, so the
 /// finality numerator reaches 100% of total network weight (>= the 67% threshold).
 /// Nothing is spoofed — these are the real genesis producers.
-async fn attest_all_producers_for(node: &mut Node, producers: &[KeyPair], block: &Block, height: u64) {
+async fn attest_all_producers_for(
+    node: &mut Node,
+    producers: &[KeyPair],
+    block: &Block,
+    height: u64,
+) {
     let peer = network::PeerId::random();
     for p in producers {
         let att = Attestation::new(
@@ -182,7 +187,10 @@ async fn attest_all_producers_for(node: &mut Node, producers: &[KeyPair], block:
             p.private_key(),
             *p.public_key(),
         );
-        assert!(att.verify().is_ok(), "attestation must be validly self-signed");
+        assert!(
+            att.verify().is_ok(),
+            "attestation must be validly self-signed"
+        );
         node.on_new_attestation(att.to_bytes(), peer).await;
     }
 }
@@ -401,6 +409,12 @@ fn test_inc_i190_finality_checkpoint_absent_at_depth0_present_at_depth2() {
     let cp = tracker
         .check_finality(8)
         .expect("depth 2: A must finalize (>=67% + depth-2 descendant)");
-    assert_eq!(cp.height, 6, "the checkpoint that would wedge the tie is at h=6");
-    assert!(cp.is_finalized(), "checkpoint must be at/above the 67% threshold");
+    assert_eq!(
+        cp.height, 6,
+        "the checkpoint that would wedge the tie is at h=6"
+    );
+    assert!(
+        cp.is_finalized(),
+        "checkpoint must be at/above the 67% threshold"
+    );
 }

@@ -163,6 +163,7 @@ fn test_derive_at_boundary_epoch_1() {
         registered_at: HashMap::new(),
         ghost_exclusion_activation_height: u64::MAX,
         epoch_prune_activation_height: u64::MAX,
+        inc_i_190_floor_bound_activation_height: u64::MAX,
     };
 
     let new_state = EpochState::derive_at_boundary(&prev, &input);
@@ -205,6 +206,7 @@ fn test_derive_at_boundary_attestation_filter() {
         registered_at: HashMap::new(),
         ghost_exclusion_activation_height: u64::MAX,
         epoch_prune_activation_height: u64::MAX,
+        inc_i_190_floor_bound_activation_height: u64::MAX,
     };
 
     let new_state = EpochState::derive_at_boundary(&prev, &input);
@@ -243,6 +245,7 @@ fn test_derive_deadlock_safety_floor() {
         registered_at: HashMap::new(),
         ghost_exclusion_activation_height: u64::MAX,
         epoch_prune_activation_height: u64::MAX,
+        inc_i_190_floor_bound_activation_height: u64::MAX,
     };
 
     let new_state = EpochState::derive_at_boundary(&prev, &input);
@@ -277,6 +280,7 @@ fn test_derive_empty_accum_uses_all_producers() {
         registered_at: HashMap::new(),
         ghost_exclusion_activation_height: u64::MAX,
         epoch_prune_activation_height: u64::MAX,
+        inc_i_190_floor_bound_activation_height: u64::MAX,
     };
 
     let new_state = EpochState::derive_at_boundary(&prev, &input);
@@ -317,6 +321,7 @@ fn test_derive_accumulator_rotation() {
         registered_at: HashMap::new(),
         ghost_exclusion_activation_height: u64::MAX,
         epoch_prune_activation_height: u64::MAX,
+        inc_i_190_floor_bound_activation_height: u64::MAX,
     };
 
     let new_state = EpochState::derive_at_boundary(&prev, &input);
@@ -464,6 +469,7 @@ fn test_ghost_exclusion_prevents_deadlock_floor_override() {
         registered_at,
         ghost_exclusion_activation_height: 0,
         epoch_prune_activation_height: u64::MAX,
+        inc_i_190_floor_bound_activation_height: u64::MAX,
     };
 
     let new_state = EpochState::derive_at_boundary(&prev, &input);
@@ -516,6 +522,7 @@ fn test_ghost_exclusion_inactive_before_activation() {
         registered_at,
         ghost_exclusion_activation_height: u64::MAX, // ghost exclusion OFF
         epoch_prune_activation_height: u64::MAX,
+        inc_i_190_floor_bound_activation_height: u64::MAX,
     };
 
     let new_state = EpochState::derive_at_boundary(&prev, &input);
@@ -565,6 +572,7 @@ fn test_ghost_exclusion_grace_period_for_new_registrations() {
         registered_at,
         ghost_exclusion_activation_height: 0,
         epoch_prune_activation_height: u64::MAX,
+        inc_i_190_floor_bound_activation_height: u64::MAX,
     };
 
     let new_state = EpochState::derive_at_boundary(&prev, &input);
@@ -623,6 +631,7 @@ fn test_ghost_exclusion_mass_event_saves_real_producers() {
         registered_at,
         ghost_exclusion_activation_height: 0,
         epoch_prune_activation_height: u64::MAX,
+        inc_i_190_floor_bound_activation_height: u64::MAX,
     };
 
     let new_state = EpochState::derive_at_boundary(&prev, &input);
@@ -686,6 +695,7 @@ fn test_pre_activation_floor_is_identical_to_current_behavior() {
         registered_at,
         ghost_exclusion_activation_height: u64::MAX, // ghost exclusion OFF for this test
         epoch_prune_activation_height: u64::MAX,     // prune DISABLED (pre-activation)
+        inc_i_190_floor_bound_activation_height: u64::MAX,
     };
 
     let new_state = EpochState::derive_at_boundary(&prev, &input);
@@ -748,6 +758,7 @@ fn test_post_activation_prunes_absent_producers() {
         registered_at,
         ghost_exclusion_activation_height: u64::MAX,
         epoch_prune_activation_height: 0, // prune ACTIVE from genesis
+        inc_i_190_floor_bound_activation_height: u64::MAX,
     };
 
     let new_state = EpochState::derive_at_boundary(&prev, &input);
@@ -814,6 +825,7 @@ fn test_post_activation_absolute_floor_fires() {
         registered_at,
         ghost_exclusion_activation_height: u64::MAX,
         epoch_prune_activation_height: 0, // prune ACTIVE
+        inc_i_190_floor_bound_activation_height: u64::MAX,
     };
 
     let new_state = EpochState::derive_at_boundary(&prev, &input);
@@ -884,6 +896,7 @@ fn test_pruned_producer_reappears_on_attestation() {
         registered_at: registered_at.clone(),
         ghost_exclusion_activation_height: u64::MAX,
         epoch_prune_activation_height: 0, // prune ACTIVE
+        inc_i_190_floor_bound_activation_height: u64::MAX,
     };
 
     let state_n1 = EpochState::derive_at_boundary(&prev_n, &input_n1);
@@ -919,6 +932,7 @@ fn test_pruned_producer_reappears_on_attestation() {
         registered_at,
         ghost_exclusion_activation_height: u64::MAX,
         epoch_prune_activation_height: 0,
+        inc_i_190_floor_bound_activation_height: u64::MAX,
     };
 
     let state_n2 = EpochState::derive_at_boundary(&prev_n1, &input_n2);
@@ -978,6 +992,7 @@ fn test_post_activation_zero_attested_uses_fallback() {
         registered_at,
         ghost_exclusion_activation_height: u64::MAX,
         epoch_prune_activation_height: 0, // prune ACTIVE
+        inc_i_190_floor_bound_activation_height: u64::MAX,
     };
 
     let new_state = EpochState::derive_at_boundary(&prev, &input);

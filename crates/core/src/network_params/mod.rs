@@ -247,6 +247,19 @@ pub struct NetworkParams {
     ///   Verdict: activation height REQUIRED.
     pub epoch_prune_activation_height: u64,
 
+    /// INC-I-190 (F3/D2): Height at which the `MIN_PRODUCERS_FLOOR` fallback becomes
+    /// cap-bounded. Before: the fallback admits the whole registry uncapped (84 producers
+    /// on 2026-08-27, against `ACTIVE_PRODUCERS_CAP` = 50). After: the previous epoch's
+    /// list, else the seniority-ordered active set, always truncated to the cap.
+    ///
+    /// Three-question gate (INC-I-075):
+    ///   Q1: No — no user-submittable transaction reaches this path.
+    ///   Q2: YES — a coordinated attestation blackout drives the filter below the floor.
+    ///   Q3: NO — post-activation the same inputs yield a shorter `producer_list`,
+    ///       which is also the bitfield encoder order.
+    ///   Verdict: activation height REQUIRED.
+    pub inc_i_190_floor_bound_activation_height: u64,
+
     /// INC-I-075: Height at which the INC-I-068 weight=0 filter activates.
     ///
     /// Before this height: fully-delegated producers (`selection_weight == 0`)

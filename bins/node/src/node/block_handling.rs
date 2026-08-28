@@ -412,7 +412,12 @@ impl Node {
         // producers instead of the attestation-filtered subset. Full validation would
         // reject valid gossip blocks (slot%N divergence). Use Light mode until the next
         // epoch boundary rebuilds the list correctly and clears snap_sync_height.
-        let mode = if self.snap_sync_height.is_some() {
+        // INC-I-190 M4: floor_fallback_window is the same divergence, sourced from the
+        // startup rebuild instead of snap sync (AUDIT-P1-501). RESIDUAL: Light is broader
+        // than that divergence needs, but narrowing it to eligibility-only re-arms the
+        // Full-only strict EpochReward check (validation_checks.rs:1033), which decodes
+        // the bitfield against the SAME divergent list — valid epoch blocks would bail.
+        let mode = if self.snap_sync_height.is_some() || self.floor_fallback_window {
             ValidationMode::Light
         } else {
             ValidationMode::Full

@@ -16,100 +16,12 @@ use serde::{Deserialize, Serialize};
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_floor;
+#[cfg(test)]
 mod tests_m2;
 
-/// INC-I-116 M2: Pure function that computes the attestation-filtered + floor-adjusted
-/// producer list. Extracted from `derive_at_boundary()` so `rewards.rs` can call the
-/// same logic instead of maintaining a 100-line inline duplicate.
-///
-/// Callers are responsible for:
-/// - Deciding whether to call this function at all (epoch<=1 → skip, use all active)
-/// - Building `attested_union` from the appropriate source (epoch state lookback or block scan)
-///
-/// Returns the filtered (and possibly floor-adjusted) list, UNSORTED. The caller sorts
-/// after if needed.
-#[allow(clippy::too_many_arguments)]
-pub fn compute_live_producer_list(
-    active_producers: &[PublicKey],
-    attested_union: &HashSet<&PublicKey>,
-    registered_at: &HashMap<PublicKey, u64>,
-    blocks_per_epoch: u64,
-    epoch: u64,
-    height: u64,
-    ghost_exclusion_activation_height: u64,
-    epoch_prune_activation_height: u64,
-) -> Vec<PublicKey> {
-    use crate::consensus::{GHOST_EXCLUSION_GRACE_EPOCHS, MIN_PRODUCERS_FLOOR};
-
-    // Step 1: Attestation filter — keep only producers present in attested_union
-    let mut new_list: Vec<PublicKey> = active_producers
-        .iter()
-        .filter(|pk| attested_union.contains(pk))
-        .copied()
-        .collect();
-
-    // Step 2: Ghost identification + counting
-    let active_count = active_producers.len();
-    let ghost_exclusion_active = height >= ghost_exclusion_activation_height && epoch > 1;
-
-    let is_ghost = |pk: &PublicKey| -> bool {
-        if !ghost_exclusion_active {
-            return false;
-        }
-        if attested_union.contains(pk) {
-            return false;
-        }
-        match registered_at.get(pk) {
-            Some(&reg_height) => {
-                let reg_epoch = reg_height.checked_div(blocks_per_epoch).unwrap_or(0);
-                epoch.saturating_sub(reg_epoch) > GHOST_EXCLUSION_GRACE_EPOCHS
-            }
-            None => false, // Unknown registration: not a ghost (conservative)
-        }
-    };
-
-    let ghost_count = if ghost_exclusion_active {
-        active_producers.iter().filter(|pk| is_ghost(pk)).count()
-    } else {
-        0
-    };
-    let effective_active = active_count - ghost_count;
-
-    // Step 3: Gated floor logic
-    if height >= epoch_prune_activation_height {
-        // Post-activation: absolute floor (MIN_PRODUCERS_FLOOR).
-        // If the attestation-filtered set is too small, fall back to all
-        // non-ghost active producers (preserving ghost exclusion = C1).
-        if new_list.len() < MIN_PRODUCERS_FLOOR {
-            if ghost_exclusion_active && ghost_count > 0 {
-                new_list = active_producers
-                    .iter()
-                    .filter(|pk| !is_ghost(pk))
-                    .copied()
-                    .collect();
-            } else {
-                new_list = active_producers.to_vec();
-            }
-        }
-    } else {
-        // Pre-activation: VERBATIM proportional floor (byte-identical to current).
-        if new_list.len() < (effective_active * 2 / 3)
-            || (new_list.is_empty() && effective_active > 0)
-        {
-            if ghost_exclusion_active && ghost_count > 0 {
-                new_list = active_producers
-                    .iter()
-                    .filter(|pk| !is_ghost(pk))
-                    .copied()
-                    .collect();
-            } else {
-                new_list = active_producers.to_vec();
-            }
-        }
-    }
-
-    new_list
-}
+pub mod floor;
+pub use floor::{compute_live_producer_list, FloorOutcome};
 
 /// Parameters needed by derive_at_boundary that come from external sources
 /// (NetworkParams, ProducerSet, UtxoSet). Extracted by the caller so
@@ -133,6 +45,8 @@ pub struct EpochDerivationInput {
     pub ghost_exclusion_activation_height: u64,
     /// INC-I-116: Epoch prune activation height (from NetworkParams)
     pub epoch_prune_activation_height: u64,
+    /// INC-I-190: Floor-fallback cap-bound activation height (from NetworkParams)
+    pub inc_i_190_floor_bound_activation_height: u64,
 }
 
 /// Block data needed by accumulate_block. Extracted from BlockHeader so
@@ -235,7 +149,24 @@ impl EpochState {
     ///
     /// `prev` is the epoch state from the just-completed epoch (self).
     /// Returns the new epoch state for the epoch being entered.
+    ///
+    /// Discards the `FloorOutcome`. Every production caller uses
+    /// [`Self::derive_at_boundary_with_outcome`] instead — dropping the outcome is
+    /// what made the snap-sync path miss its floor fallback (REV-I190-M4-F6).
     pub fn derive_at_boundary(prev: &EpochState, input: &EpochDerivationInput) -> EpochState {
+        Self::derive_at_boundary_with_outcome(prev, input).0
+    }
+
+    /// As [`Self::derive_at_boundary`], plus the floor branch this derivation took.
+    ///
+    /// The outcome is NOT consensus state and never enters `EpochState` (no
+    /// serialization change). It is returned so the node layer can bound the lifetime
+    /// of its producer-list divergence mitigation to the lifetime of the fallback
+    /// without re-testing the floor predicate (INC-I-190 M4 / AUDIT-P1-501).
+    pub fn derive_at_boundary_with_outcome(
+        prev: &EpochState,
+        input: &EpochDerivationInput,
+    ) -> (EpochState, FloorOutcome) {
         use crate::consensus::{
             ACTIVE_PRODUCERS_CAP, MIN_ATTESTATION_MINUTES, TIER_PROMOTION_ACTIVATION_HEIGHT,
             TIER_SYSTEM_ACTIVATION_HEIGHT,
@@ -253,13 +184,17 @@ impl EpochState {
         let attested_union: HashSet<&PublicKey> =
             prev.attested_sets.iter().flat_map(|s| s.iter()).collect();
 
+        // The branch the floor stage took. Both non-delegating arms below are
+        // fallback-free by construction, so they leave it NotTriggered.
+        let mut floor_outcome = FloorOutcome::NotTriggered;
+
         let mut new_list: Vec<PublicKey> = if epoch <= 1 {
             input.active_producers.clone()
         } else {
             let have_full_history = !prev.attested_sets[0].is_empty();
             if have_full_history || input.height < input.snap_attestation_skip_height {
                 // Attestation data is available — delegate filtering + floor to shared function
-                compute_live_producer_list(
+                let (list, outcome) = compute_live_producer_list(
                     &input.active_producers,
                     &attested_union,
                     &input.registered_at,
@@ -268,7 +203,11 @@ impl EpochState {
                     input.height,
                     input.ghost_exclusion_activation_height,
                     input.epoch_prune_activation_height,
-                )
+                    input.inc_i_190_floor_bound_activation_height,
+                    Some(&prev.producer_list),
+                );
+                floor_outcome = outcome;
+                list
             } else {
                 // Empty attestation accumulators — use all active producers
                 input.active_producers.clone()
@@ -341,15 +280,18 @@ impl EpochState {
             prev.attestation_accum[1].clone(),
         ];
 
-        EpochState {
-            epoch,
-            bond_snapshot,
-            producer_list: new_list,
-            active_list,
-            attested_sets,
-            attestation_accum,
-            blocks_produced: HashMap::new(),
-        }
+        (
+            EpochState {
+                epoch,
+                bond_snapshot,
+                producer_list: new_list,
+                active_list,
+                attested_sets,
+                attestation_accum,
+                blocks_produced: HashMap::new(),
+            },
+            floor_outcome,
+        )
     }
 
     /// Serialize to deterministic bytes for persistence/transfer.
