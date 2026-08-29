@@ -7,6 +7,10 @@ use crate::types::*;
 
 use super::context::RpcContext;
 
+#[cfg(test)]
+#[path = "tests_inc_i195_broadcast.rs"]
+mod tests_inc_i195_broadcast;
+
 impl RpcContext {
     /// Submit a vote for a pending update (governance veto system)
     pub(super) async fn submit_vote(&self, params: Value) -> Result<Value, RpcError> {
@@ -272,11 +276,33 @@ impl RpcContext {
             chain_state.best_height
         };
 
-        // Submit to mempool (maintainer txs are state-only, no UTXO inputs)
-        let mut mempool = self.mempool.write().await;
-        mempool
-            .add_system_transaction(tx, current_height)
-            .map_err(|e| RpcError::internal_error(format!("mempool error: {}", e)))?;
+        // Submit to mempool (maintainer txs are state-only, no UTXO inputs).
+        // The lock is scoped so it is released before the broadcast below,
+        // mirroring `submit_transaction` (transaction.rs).
+        {
+            let mut mempool = self.mempool.write().await;
+            mempool
+                .add_system_transaction(tx.clone(), current_height)
+                .map_err(|e| RpcError::internal_error(format!("mempool error: {}", e)))?;
+        }
+
+        // INC-I-195 — RELAY. Without this the transaction never leaves the node
+        // that received the RPC, so any non-producer endpoint accepts it and
+        // then silently never mines it. Mainnet seeds run `--relay-server`
+        // without `--producer` and are the endpoint an operator reaches for, so
+        // the INC-I-175 maintainer rotation would report success and never
+        // apply (MEASURED on the local testnet 2026-08-29: accepted by the
+        // seed, set unchanged ~36 blocks later; the same transactions applied
+        // in 4-5 blocks each against a producer).
+        //
+        // Relaying is safe on the receiving side because a maintainer change is
+        // 0-in/0-out: `handle_new_transaction`
+        // (`bins/node/src/node/validation_checks.rs:1253-1259`) routes
+        // `is_zero_flow()` transactions to the SAME `add_system_transaction`
+        // lane this handler used. No new admission rule is introduced, and this
+        // is transport only — it changes no consensus rule and no block
+        // content, so it needs no activation height.
+        (self.broadcast_tx)(tx);
 
         Ok(serde_json::json!({
             "status": "accepted",
