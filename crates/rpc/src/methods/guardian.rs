@@ -393,7 +393,7 @@ impl RpcContext {
                     "blocks_imported": 0,
                     "archive_found": true,
                     "commitment_deleted": true,
-                    "warning": format!("{}", e)
+                    "warning": e.to_string()
                 }))
             }
         }

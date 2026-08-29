@@ -144,28 +144,21 @@ impl ForkRecoveryTracker {
         // alternate peer and retry. This prevents a single slow/disconnected
         // peer from stalling the entire 120s recovery session.
         if recovery.pending {
-            if let Some(sent_at) = recovery.request_sent_at {
-                if sent_at.elapsed() > REQUEST_TIMEOUT {
-                    if let Some(next_peer) = recovery.alternate_peers.pop() {
-                        warn!(
-                            "Fork recovery: request to {} timed out after {}s — failing over to {}",
-                            recovery.peer,
-                            sent_at.elapsed().as_secs(),
-                            next_peer
-                        );
-                        recovery.peer = next_peer;
-                        recovery.pending = false;
-                        // Fall through to send new request below
-                    } else {
-                        // No alternates left — let the session timeout handle it
-                        return None;
-                    }
-                } else {
-                    return None; // Still waiting, not timed out yet
-                }
-            } else {
-                return None;
+            let sent_at = recovery.request_sent_at?;
+            if sent_at.elapsed() <= REQUEST_TIMEOUT {
+                return None; // Still waiting, not timed out yet
             }
+            // No alternates left (`?` = None) — let the session timeout handle it
+            let next_peer = recovery.alternate_peers.pop()?;
+            warn!(
+                "Fork recovery: request to {} timed out after {}s — failing over to {}",
+                recovery.peer,
+                sent_at.elapsed().as_secs(),
+                next_peer
+            );
+            recovery.peer = next_peer;
+            recovery.pending = false;
+            // Fall through to send new request below
         }
         recovery.pending = true;
         recovery.request_sent_at = Some(Instant::now());
