@@ -353,11 +353,28 @@ impl Node {
                     .network
                     .params()
                     .epoch_prune_activation_height,
+                inc_i_190_floor_bound_activation_height: self
+                    .config
+                    .network
+                    .params()
+                    .inc_i_190_floor_bound_activation_height,
             };
 
             // THE canonical derivation — one function, one path, compile-time guarantee.
-            let new_state =
-                doli_core::EpochState::derive_at_boundary(&self.epoch_state, &derivation_input);
+            let (new_state, floor_outcome) = doli_core::EpochState::derive_at_boundary_with_outcome(
+                &self.epoch_state,
+                &derivation_input,
+            );
+
+            if floor_outcome != doli_core::epoch_state::FloorOutcome::NotTriggered {
+                warn!(
+                    "[FLOOR_BOUND] Floor fallback fired at epoch boundary: branch={:?} scheduled={} height={} epoch={}",
+                    floor_outcome,
+                    new_state.producer_list.len(),
+                    height,
+                    epoch
+                );
+            }
 
             info!(
                 "[EPOCH] Frozen producer list for epoch {}: {} producers, active_list={} (was: {} producers)",
@@ -411,7 +428,18 @@ impl Node {
                     "[SNAP_SYNC] Epoch boundary reached — switching gossip validation to Full mode"
                 );
                 self.snap_sync_height = None;
+                // REV-I190-M4-F6: this boundary pinned our snap-derived list via
+                // preference (a), so the divergence outlives the snap window. Hand it
+                // to the floor window instead of dropping straight to Full.
+                if floor_outcome == doli_core::epoch_state::FloorOutcome::PreviousEpochList {
+                    self.floor_fallback_window = true;
+                }
             }
+
+            // INC-I-190 M4 (AUDIT-P1-501): the divergence is pinned by preference (a)
+            // consuming our producer_list, so the window lives exactly as long as that
+            // — and no longer than FLOOR_FALLBACK_WINDOW_MAX_BOUNDARIES.
+            self.advance_floor_window(floor_outcome, epoch, height);
         }
 
         // Per-block attestation: sign chain tip for finality gadget + record in tracker.

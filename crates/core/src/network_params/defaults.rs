@@ -104,6 +104,14 @@ impl NetworkParams {
                 // future AH is needed. (The earlier 455040 pin, decided 2026-06-21 at
                 // tip 446352, belonged to the PRE-RESET chain and no longer applies.)
                 epoch_prune_activation_height: 0,
+                // INC-I-190 F3: cap-bound the MIN_PRODUCERS_FLOOR fallback.
+                // Pinned 332_664 on 2026-08-29 (user decision-session per HC-6 /
+                // INC-I-075): mainnet tip 323_680 measured read-only at pin time
+                // (~25h lead at ~10s slots). IMMUTABLE once the chain crosses it —
+                // never move a crossed AH (INC-I-054). The whole fleet AND the
+                // external auto-update population must run >= this binary BEFORE
+                // 332_664, or the gate activates on a mixed fleet.
+                inc_i_190_floor_bound_activation_height: 332_664,
                 // INC-I-068 / INC-I-075: filter weight=0 producers out of the active
                 // list. ACTIVE FROM GENESIS on the fresh chain — same reasoning as
                 // above: the re-gate at a future height existed to make the
@@ -411,6 +419,18 @@ impl NetworkParams {
                 // boundaries the chain never pruned (the integrity-divergence
                 // concern only applies when zeroing an AH on a chain with history).
                 epoch_prune_activation_height: 0,
+                // INC-I-190 F3: cap-bound the MIN_PRODUCERS_FLOOR fallback.
+                // Re-pinned 2026-08-28 (AUDIT-P1-502). The first pin, 52_000, was set
+                // against a measured tip of 51_498; re-measurement gave 51_756 at 23:20
+                // and 51_861 at 23:38 — ~378 blocks/h (~9.5 s/block) — so 52_000 would
+                // have been crossed BEFORE the binary was deployed, making the gate a
+                // retroactive rule change (INC-I-054 class) and forking a rolling
+                // deploy. 58_000 is ~6_100 blocks / ~16 h of headroom from tip 51_861.
+                // The long headroom costs nothing: DOLI_INC_I_190_FLOOR_BOUND_ACTIVATION_HEIGHT
+                // is honored on non-mainnet, so the AH-crossing test forces the
+                // crossing at any height on the local nodes.
+                // Never move it once crossed.
+                inc_i_190_floor_bound_activation_height: 58_000,
                 // INC-I-075: Testnet never ran v6.21.16 in production — always
                 // apply the INC-I-068 filter (matches current testnet runtime).
                 inc_i_068_weight_filter_activation_height: 0,
@@ -660,6 +680,10 @@ impl NetworkParams {
                 ghost_exclusion_activation_height: 0, // Always active on devnet
                 // INC-I-116: always active on devnet
                 epoch_prune_activation_height: 0,
+                // INC-I-190 F3: cap-bound the MIN_PRODUCERS_FLOOR fallback.
+                // Active from genesis — devnet has no sealed history to stay
+                // bit-compatible with.
+                inc_i_190_floor_bound_activation_height: 0,
                 // INC-I-075: Always active on devnet (clean chain).
                 inc_i_068_weight_filter_activation_height: 0,
                 // INC-I-078: devnet default disabled (u64::MAX). Tests that

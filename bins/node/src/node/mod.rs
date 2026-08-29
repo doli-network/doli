@@ -4,11 +4,14 @@
 // v0.2.1-test: upgrade pipeline validation
 
 mod apply_block;
+#[cfg(test)]
+mod attestation_authority_tests;
 #[allow(unused_imports)]
 pub use apply_block::state_fp_sr_field;
 mod block_handling;
 pub mod checkpoint_health;
 mod event_loop;
+mod floor_window;
 mod fork_recovery;
 mod genesis;
 mod holdings;
@@ -229,6 +232,15 @@ pub struct Node {
     /// Blocks at or below this height use Light validation (no full tx verification)
     /// since the state was verified by state root quorum, not replayed.
     pub snap_sync_height: Option<u64>,
+    /// INC-I-190 M4 (AUDIT-P1-501): a rebuild or snap derivation took a floor
+    /// fallback, so our `producer_list` may differ from the fleet's. While set,
+    /// gossip blocks are validated in `Light` mode. Lifetime is decided per
+    /// boundary by `floor_window::on_boundary`. Node-local, never persisted,
+    /// never a consensus input.
+    pub floor_fallback_window: bool,
+    /// Consecutive floor-pinned boundaries the open window has survived. Bounded
+    /// by `FLOOR_FALLBACK_WINDOW_MAX_BOUNDARIES`. Node-local, never persisted.
+    pub floor_fallback_boundaries: u8,
     /// INC-I-012: Rate limiter for sync requests processed per interval.
     /// Reset each production timer tick. Prevents sync I/O from starving production.
     pub sync_requests_this_interval: u32,
@@ -397,6 +409,28 @@ impl Node {
     #[allow(dead_code)]
     pub async fn best_hash(&self) -> crypto::Hash {
         self.chain_state.read().await.best_hash
+    }
+
+    /// Derive an attester's authority from the LOCAL ProducerSet (Seam A, [F1]).
+    /// `None` = not a producer-set member (reject; never trust the wire's
+    /// self-declared weight). `Some(w)` = member with locally-derived selection
+    /// weight, which may be 0 for a fully-delegated active producer (INV-ATTEST-001,
+    /// so attendance admission uses `.is_some()`, not `w > 0`).
+    pub(crate) fn derive_attester_weight(
+        &self,
+        producers: &ProducerSet,
+        attester: &PublicKey,
+        height: u64,
+    ) -> Option<u64> {
+        producers.get_by_pubkey(attester).map(|p| {
+            p.selection_weight_at(
+                height,
+                self.config
+                    .network
+                    .params()
+                    .security_audit_activation_height,
+            )
+        })
     }
 
     /// Compute bond weights for scheduling from epoch snapshot (or UTXO fallback for epoch 0).

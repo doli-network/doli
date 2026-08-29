@@ -44,6 +44,7 @@ fn derive_producer_list(
         registered_at,
         ghost_exclusion_activation_height: ghost_ah,
         epoch_prune_activation_height: prune_ah,
+        inc_i_190_floor_bound_activation_height: u64::MAX,
     };
     EpochState::derive_at_boundary(&prev, &input).producer_list
 }
@@ -75,7 +76,7 @@ fn assert_extraction_matches(
         prune_ah,
     );
     let attested_union: HashSet<&PublicKey> = attested.iter().collect();
-    let result = compute_live_producer_list(
+    let (result, _) = compute_live_producer_list(
         active,
         &attested_union,
         registered_at,
@@ -84,6 +85,8 @@ fn assert_extraction_matches(
         height,
         ghost_ah,
         prune_ah,
+        u64::MAX,
+        None,
     );
     let mut sorted = result.clone();
     sorted.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
@@ -322,6 +325,7 @@ fn test_decode_list_pre_act_identity() {
         registered_at: reg,
         ghost_exclusion_activation_height: u64::MAX,
         epoch_prune_activation_height: u64::MAX,
+        inc_i_190_floor_bound_activation_height: u64::MAX,
     };
     let state = EpochState::derive_at_boundary(&prev, &input);
 
@@ -361,6 +365,7 @@ fn test_decode_list_post_act_divergence() {
         registered_at: reg,
         ghost_exclusion_activation_height: u64::MAX,
         epoch_prune_activation_height: 0,
+        inc_i_190_floor_bound_activation_height: u64::MAX,
     };
     let state = EpochState::derive_at_boundary(&prev, &input);
 
@@ -421,6 +426,7 @@ fn test_filter08_tier_cap_floor_passes() {
         registered_at: reg,
         ghost_exclusion_activation_height: u64::MAX,
         epoch_prune_activation_height: u64::MAX,
+        inc_i_190_floor_bound_activation_height: u64::MAX,
     };
     let state = EpochState::derive_at_boundary(&prev, &input);
 
@@ -472,6 +478,7 @@ fn test_filter08_tier_cap_active_diverges() {
         registered_at: reg,
         ghost_exclusion_activation_height: u64::MAX,
         epoch_prune_activation_height: u64::MAX,
+        inc_i_190_floor_bound_activation_height: u64::MAX,
     };
     let state = EpochState::derive_at_boundary(&prev, &input);
 
@@ -506,7 +513,18 @@ fn test_edge_empty_active() {
     let reg: HashMap<PublicKey, u64> = HashMap::new();
     let expected = derive_producer_list(vec![], &[], reg.clone(), 360, 5, 1800, u64::MAX, u64::MAX);
     assert!(expected.is_empty());
-    let result = compute_live_producer_list(&[], &au, &reg, 360, 5, 1800, u64::MAX, u64::MAX);
+    let (result, _) = compute_live_producer_list(
+        &[],
+        &au,
+        &reg,
+        360,
+        5,
+        1800,
+        u64::MAX,
+        u64::MAX,
+        u64::MAX,
+        None,
+    );
     assert!(result.is_empty());
 }
 
@@ -548,7 +566,8 @@ fn test_edge_single_producer() {
     let expected = derive_producer_list(vec![pk], &[pk], reg.clone(), 360, 5, 1800, u64::MAX, 0);
     assert!(expected.contains(&pk));
     let au: HashSet<&PublicKey> = [&pk].into();
-    let result = compute_live_producer_list(&[pk], &au, &reg, 360, 5, 1800, u64::MAX, 0);
+    let (result, _) =
+        compute_live_producer_list(&[pk], &au, &reg, 360, 5, 1800, u64::MAX, 0, u64::MAX, None);
     assert!(result.contains(&pk));
 }
 

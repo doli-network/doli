@@ -598,17 +598,9 @@ impl Node {
             Some(kp) => {
                 let pk = *kp.public_key();
                 let producers = self.producer_set.read().await;
-                let w = producers
-                    .get_by_pubkey(&pk)
-                    .map(|p| {
-                        p.selection_weight_at(
-                            height,
-                            self.config
-                                .network
-                                .params()
-                                .security_audit_activation_height,
-                        )
-                    })
+                // Seam A [F1]: reuse the shared local-ProducerSet authority helper.
+                let w = self
+                    .derive_attester_weight(&producers, &pk, height)
                     .unwrap_or(0);
                 if w == 0 {
                     return None; // Not active or fully delegated — skip attestation
@@ -626,7 +618,7 @@ impl Node {
         // Add our own weight to finality tracker
         {
             let mut sync = self.sync_manager.write().await;
-            sync.add_attestation_weight(&block_hash, weight);
+            sync.add_attestation_weight(&block_hash, public_key, weight);
         }
 
         // Broadcast to network via gossip

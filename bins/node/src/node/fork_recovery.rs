@@ -676,14 +676,35 @@ impl Node {
                         .network
                         .params()
                         .epoch_prune_activation_height,
+                    inc_i_190_floor_bound_activation_height: self
+                        .config
+                        .network
+                        .params()
+                        .inc_i_190_floor_bound_activation_height,
                 };
-                let derived = doli_core::EpochState::derive_at_boundary(&self.epoch_state, &input);
+                let (derived, floor_outcome) =
+                    doli_core::EpochState::derive_at_boundary_with_outcome(
+                        &self.epoch_state,
+                        &input,
+                    );
                 info!(
                     "[SNAP_SYNC] Derived epoch state: epoch={} producers={} active={}",
                     derived.epoch,
                     derived.producer_list.len(),
                     derived.active_list.len()
                 );
+                // REV-I190-M4-F6: mid-epoch snap height, so a fallback here pins a list no
+                // peer computed. snap_sync_height alone expires after one boundary.
+                if floor_outcome != doli_core::epoch_state::FloorOutcome::NotTriggered {
+                    warn!(
+                        "[FLOOR_BOUND] Floor fallback fired during snap-sync derivation: branch={:?} scheduled={} h={} — Light validation until a boundary derives without it",
+                        floor_outcome,
+                        derived.producer_list.len(),
+                        snap_h
+                    );
+                    self.floor_fallback_window = true;
+                    self.floor_fallback_boundaries = 0;
+                }
                 self.epoch_state = derived;
 
                 // Persist the derived state

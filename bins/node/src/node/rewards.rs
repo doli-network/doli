@@ -853,19 +853,44 @@ impl Node {
                     // This replaces ~100 lines of inline duplicate floor logic.
                     let attested_refs: std::collections::HashSet<&crypto::PublicKey> =
                         attested.iter().collect();
-                    doli_core::epoch_state::compute_live_producer_list(
-                        &active,
-                        &attested_refs,
-                        &registered_at_map,
-                        blocks_per_epoch,
-                        epoch,
-                        epoch_boundary_h,
-                        self.config
-                            .network
-                            .params()
-                            .ghost_exclusion_activation_height,
-                        self.config.network.params().epoch_prune_activation_height,
-                    )
+                    // INC-I-190 F3: prev = None — this path has no previous epoch state,
+                    // and the in-memory one is node-local (INV-EPOCH-002). Residual +
+                    // rationale: docs/bugfixes/inc-i-190-f3-floor-bound-analysis.md §Design point.
+                    let (rebuilt, floor_outcome) =
+                        doli_core::epoch_state::compute_live_producer_list(
+                            &active,
+                            &attested_refs,
+                            &registered_at_map,
+                            blocks_per_epoch,
+                            epoch,
+                            epoch_boundary_h,
+                            self.config
+                                .network
+                                .params()
+                                .ghost_exclusion_activation_height,
+                            self.config.network.params().epoch_prune_activation_height,
+                            self.config
+                                .network
+                                .params()
+                                .inc_i_190_floor_bound_activation_height,
+                            None,
+                        );
+                    if matches!(
+                        floor_outcome,
+                        doli_core::epoch_state::FloorOutcome::BoundedActiveSet
+                            | doli_core::epoch_state::FloorOutcome::PreviousEpochList
+                    ) {
+                        info!(
+                            "[STARTUP] INC-I-190 bounded floor fallback fired during rebuild ({} producers) — our list may differ from the network's, Light validation until a boundary derives without the fallback",
+                            rebuilt.len()
+                        );
+                        // AUDIT-P1-501: the divergence survives every boundary that
+                        // takes the fallback again, so this window is NOT the
+                        // one-boundary snap_sync_height window; post_commit clears it
+                        // on the first FloorOutcome::NotTriggered derivation.
+                        self.floor_fallback_window = true;
+                    }
+                    rebuilt
                 } else {
                     info!(
                         "[STARTUP] Incomplete block history for last {} epoch(s) — using all {} active producers, Light validation until next epoch boundary",

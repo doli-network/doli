@@ -490,14 +490,29 @@ impl SyncManager {
     ) {
         self.finality_tracker
             .track_block(hash, height, slot, total_weight);
+        // INC-I-190 D1 [F2]: this newly applied block is a descendant that may
+        // satisfy the depth-2 confirmation for a pending ancestor. `height` is
+        // the applied tip (block_applied_with_weight has not yet run this apply).
+        self.finalize_if_ready(height);
     }
 
     /// Add attestation weight to a pending block.
-    pub fn add_attestation_weight(&mut self, block_hash: &crypto::Hash, weight: u64) {
+    pub fn add_attestation_weight(
+        &mut self,
+        block_hash: &crypto::Hash,
+        attester: crypto::PublicKey,
+        weight: u64,
+    ) {
         self.finality_tracker
-            .add_attestation_weight(*block_hash, weight);
-        // Check if this triggers finality
-        if let Some(checkpoint) = self.finality_tracker.check_finality() {
+            .add_attestation_weight(*block_hash, attester, weight);
+        // Re-check finality against the locally-applied tip (depth-2 gate).
+        self.finalize_if_ready(self.local_height);
+    }
+
+    /// Finalize the best pending block if it has BOTH 67% weight and a
+    /// locally-applied descendant at depth >= CONFIRMATION_DEPTH.
+    fn finalize_if_ready(&mut self, applied_tip_height: u64) {
+        if let Some(checkpoint) = self.finality_tracker.check_finality(applied_tip_height) {
             info!(
                 "FINALITY: Block {} finalized at height {} (attestation {}/{})",
                 checkpoint.block_hash,

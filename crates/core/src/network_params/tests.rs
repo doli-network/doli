@@ -459,3 +459,166 @@ fn audit_p3_012_non_mainnet_still_honours_veto_and_grace_env_overrides() {
     assert_eq!(observed.veto_period_secs, 77);
     assert_eq!(observed.grace_period_secs, 88);
 }
+
+// ===========================================================================
+// INC-I-190 F3 / REQ-AUTH-012.1 + .2 — the floor-bound activation height
+//
+// OUTPUT CONTRACT
+//   O1 NetworkParams::defaults(net).inc_i_190_floor_bound_activation_height
+//   O2 load_from_env(net).inc_i_190_floor_bound_activation_height
+//   O3 staleness/no-op properties of the testnet pin
+// PATHS   mainnet arm (locked to defaults) | non-mainnet arm (env_parse)
+// INPUT PARTITIONS  IP-M mainnet | IP-T testnet | IP-D devnet; env unset | env set
+// ===========================================================================
+
+/// Pinned 2026-08-29 in the user decision-session (HC-6); tip 323_680 at pin.
+const FLOOR_BOUND_MAINNET: u64 = 332_664;
+/// Re-pinned 2026-08-28 (AUDIT-P1-502) after the 52_000 pin was overtaken.
+const FLOOR_BOUND_TESTNET: u64 = 58_000;
+/// Devnet is always above the gate, matching every other INC gate's devnet arm.
+const FLOOR_BOUND_DEVNET: u64 = 0;
+/// Testnet tip measured by read-only `getChainInfo` on 2026-08-28 23:38 WEST, when
+/// the gate was re-pinned. Frozen on purpose: it records WHAT WAS MEASURED, so the
+/// assertion below is a floor the pin can never sink under, not a live chain probe.
+const FLOOR_BOUND_TESTNET_TIP_AT_PIN: u64 = 51_861;
+/// Mainnet tip measured by read-only `getChainInfo` on 2026-08-29 01:45 UTC, when
+/// the mainnet gate was pinned in its decision-session. Same FLOOR semantics as
+/// the testnet constant above: it records WHAT WAS MEASURED at pin time only.
+const FLOOR_BOUND_MAINNET_TIP_AT_PIN: u64 = 323_680;
+
+/// REQ-AUTH-012.1 — O1 x {IP-M, IP-T, IP-D}.
+#[test]
+fn req_auth_012_1_floor_bound_gate_pinned_per_network() {
+    assert_eq!(
+        NetworkParams::defaults(Network::Mainnet).inc_i_190_floor_bound_activation_height,
+        FLOOR_BOUND_MAINNET,
+        "O1/IP-M: mainnet gate pinned at 332_664 (2026-08-29 decision-session) — \
+         IMMUTABLE the moment the chain crosses it (INC-I-054)"
+    );
+    assert_eq!(
+        NetworkParams::defaults(Network::Testnet).inc_i_190_floor_bound_activation_height,
+        FLOOR_BOUND_TESTNET,
+        "O1/IP-T: testnet is pinned at 58_000"
+    );
+    assert_eq!(
+        NetworkParams::defaults(Network::Devnet).inc_i_190_floor_bound_activation_height,
+        FLOOR_BOUND_DEVNET,
+        "O1/IP-D: devnet activates from genesis"
+    );
+}
+
+/// REQ-AUTH-012.1 — O3 x IP-T: the pin is neither a no-op nor retroactive, and is
+/// its own field rather than a bundle onto a neighbouring gate (INV-PARAMS-001).
+///
+/// SCOPE (REV-I190-M4-F11 / SEC-FIXVERIFY-003): this is a FLOOR, not a liveness
+/// check. A unit test cannot read the live chain, so it can only prove the pin was
+/// above the tip AT PIN TIME. It stays green after the chain overtakes the gate.
+/// The live control is the pre-deploy tip re-measurement in the M4 deploy checklist.
+#[test]
+fn req_auth_012_1_floor_bound_testnet_gate_is_above_the_tip_it_was_measured_against() {
+    let t = NetworkParams::defaults(Network::Testnet);
+    let h = t.inc_i_190_floor_bound_activation_height;
+
+    assert!(
+        h > FLOOR_BOUND_TESTNET_TIP_AT_PIN,
+        "O3: the gate ({}) must be strictly above the tip it was measured against ({}) — \
+         a gate crossed before the binary is deployed is a RETROACTIVE consensus rule \
+         change and forks a rolling deploy (AUDIT-P1-502 / INC-I-054). NOTE: both sides \
+         are compile-time constants, so a GREEN result does NOT mean the live tip is \
+         still below the gate — re-measure with getChainInfo immediately before deploy",
+        h,
+        FLOOR_BOUND_TESTNET_TIP_AT_PIN
+    );
+    assert_ne!(h, 0, "O3: a testnet gate of 0 reinterprets sealed history");
+    assert_ne!(
+        h,
+        u64::MAX,
+        "O3: u64::MAX makes the fix unreachable on testnet"
+    );
+    assert_ne!(
+        h, t.epoch_prune_activation_height,
+        "O3: the floor-bound gate must not be bundled onto epoch_prune"
+    );
+    assert_ne!(
+        h, t.ghost_exclusion_activation_height,
+        "O3: the floor-bound gate must not be bundled onto ghost_exclusion"
+    );
+    assert_ne!(
+        h, t.maintainer_derivation_activation_height,
+        "O3: the floor-bound gate must not be bundled onto maintainer_derivation"
+    );
+}
+
+/// REQ-AUTH-012.1 — O3 x IP-M: twin of the testnet FLOOR above — proves the
+/// mainnet pin was strictly above the tip it was measured against, is not 0, not
+/// u64::MAX, and is not bundled onto a neighbouring gate (INV-PARAMS-001). Both
+/// sides are compile-time constants: a GREEN result does NOT mean the live tip is
+/// still below the gate — re-measure with getChainInfo immediately before deploy.
+#[test]
+fn req_auth_012_1_floor_bound_mainnet_gate_is_above_the_tip_it_was_measured_against() {
+    let m = NetworkParams::defaults(Network::Mainnet);
+    let h = m.inc_i_190_floor_bound_activation_height;
+
+    assert!(
+        h > FLOOR_BOUND_MAINNET_TIP_AT_PIN,
+        "O3/IP-M: the mainnet gate ({}) must be strictly above the tip it was \
+         measured against ({}) — a gate crossed before the fleet is deployed is a \
+         RETROACTIVE consensus rule change (AUDIT-P1-502 / INC-I-054)",
+        h,
+        FLOOR_BOUND_MAINNET_TIP_AT_PIN
+    );
+    assert_ne!(
+        h, 0,
+        "O3/IP-M: a mainnet gate of 0 reinterprets sealed history"
+    );
+    assert_ne!(
+        h,
+        u64::MAX,
+        "O3/IP-M: u64::MAX would mean the pin never happened"
+    );
+    assert_ne!(
+        h, m.epoch_prune_activation_height,
+        "O3/IP-M: the floor-bound gate must not be bundled onto epoch_prune"
+    );
+    assert_ne!(
+        h, m.ghost_exclusion_activation_height,
+        "O3/IP-M: the floor-bound gate must not be bundled onto ghost_exclusion"
+    );
+    assert_ne!(
+        h, m.maintainer_derivation_activation_height,
+        "O3/IP-M: the floor-bound gate must not be bundled onto maintainer_derivation"
+    );
+}
+
+/// REQ-AUTH-012.2 — O2 x {IP-M, IP-T, IP-D}: non-mainnet honours the env override
+/// (the AH-crossing test forces the crossing locally); mainnet ignores it.
+#[test]
+fn req_auth_012_2_floor_bound_env_override_off_mainnet_only() {
+    let _lock = ENV_MUTEX.lock().unwrap();
+    let original = std::env::var("DOLI_INC_I_190_FLOOR_BOUND_ACTIVATION_HEIGHT");
+
+    std::env::set_var("DOLI_INC_I_190_FLOOR_BOUND_ACTIVATION_HEIGHT", "7");
+    let testnet = super::env_loader::load_from_env(Network::Testnet);
+    let devnet = super::env_loader::load_from_env(Network::Devnet);
+    let mainnet = super::env_loader::load_from_env(Network::Mainnet);
+
+    match original {
+        Ok(v) => std::env::set_var("DOLI_INC_I_190_FLOOR_BOUND_ACTIVATION_HEIGHT", v),
+        Err(_) => std::env::remove_var("DOLI_INC_I_190_FLOOR_BOUND_ACTIVATION_HEIGHT"),
+    }
+
+    assert_eq!(
+        testnet.inc_i_190_floor_bound_activation_height, 7,
+        "O2/IP-T: testnet must honour the override — the AH-crossing validation \
+         forces the crossing on the local nodes"
+    );
+    assert_eq!(
+        devnet.inc_i_190_floor_bound_activation_height, 7,
+        "O2/IP-D: devnet must honour the override"
+    );
+    assert_eq!(
+        mainnet.inc_i_190_floor_bound_activation_height, FLOOR_BOUND_MAINNET,
+        "O2/IP-M: mainnet must IGNORE the override — an env-settable consensus gate \
+         lets a single operator fork mainnet"
+    );
+}

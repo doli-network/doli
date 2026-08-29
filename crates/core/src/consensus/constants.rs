@@ -154,6 +154,12 @@ pub const GHOST_EXCLUSION_GRACE_EPOCHS: u64 = 3;
 /// INC-I-116 M1.
 pub const MIN_PRODUCERS_FLOOR: usize = 3;
 
+/// NOT CONSENSUS. Node-local cap on how many consecutive floor-triggering epoch
+/// boundaries the INC-I-190 Light-validation window may survive before the node
+/// forces itself back to Full. Never activation-gated, never persisted, never a
+/// derivation input — nodes may disagree on it without forking.
+pub const FLOOR_FALLBACK_WINDOW_MAX_BOUNDARIES: u8 = 2;
+
 // ==================== Proof of Time Parameters ====================
 
 /// Slot duration in seconds.
