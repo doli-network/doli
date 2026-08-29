@@ -105,9 +105,13 @@ impl NetworkParams {
                 // tip 446352, belonged to the PRE-RESET chain and no longer applies.)
                 epoch_prune_activation_height: 0,
                 // INC-I-190 F3: cap-bound the MIN_PRODUCERS_FLOOR fallback.
-                // Mainnet stays frozen — pinning a real height is a separate
-                // decision-session (HC-6 / INC-I-075).
-                inc_i_190_floor_bound_activation_height: u64::MAX,
+                // Pinned 332_664 on 2026-08-29 (user decision-session per HC-6 /
+                // INC-I-075): mainnet tip 323_680 measured read-only at pin time
+                // (~25h lead at ~10s slots). IMMUTABLE once the chain crosses it —
+                // never move a crossed AH (INC-I-054). The whole fleet AND the
+                // external auto-update population must run >= this binary BEFORE
+                // 332_664, or the gate activates on a mixed fleet.
+                inc_i_190_floor_bound_activation_height: 332_664,
                 // INC-I-068 / INC-I-075: filter weight=0 producers out of the active
                 // list. ACTIVE FROM GENESIS on the fresh chain — same reasoning as
                 // above: the re-gate at a future height existed to make the
