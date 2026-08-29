@@ -379,6 +379,14 @@ pub(crate) enum MaintainerCommands {
         /// Reason for removal (optional)
         #[arg(long)]
         reason: Option<String>,
+
+        /// Chain height the authorization is FOR (INC-I-176 #22).
+        ///
+        /// Selects WHICH bytes are signed: the legacy message below
+        /// `inc_i_176_auth_binding_activation_height`, the genesis-bound
+        /// message at or above it. Use the current tip from `getChainInfo`.
+        #[arg(long)]
+        height: u64,
     },
 
     /// Propose adding a new maintainer (requires 3/5 multisig)
@@ -390,6 +398,14 @@ pub(crate) enum MaintainerCommands {
         /// Path to maintainer key file for signing
         #[arg(long)]
         key: PathBuf,
+
+        /// Chain height the authorization is FOR (INC-I-176 #22).
+        ///
+        /// Selects WHICH bytes are signed: the legacy message below
+        /// `inc_i_176_auth_binding_activation_height`, the genesis-bound
+        /// message at or above it. Use the current tip from `getChainInfo`.
+        #[arg(long)]
+        height: u64,
     },
 
     /// Sign a pending maintainer change proposal
