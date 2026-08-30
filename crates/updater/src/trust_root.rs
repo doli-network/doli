@@ -11,7 +11,6 @@
 //! keys, an empty on-chain root is representable, and only the composition root
 //! (`bins/node/src/updater/trust_root_wiring.rs`) may choose `bootstrap`.
 
-use std::collections::BTreeSet;
 use std::fmt;
 
 use doli_core::network::Network;
@@ -109,12 +108,11 @@ impl TrustRoot {
     /// decision is how the compiled keys stayed authoritative on the `doli upgrade` path
     /// after the node path was fixed — AUDIT-P1-012.
     ///
-    /// | on-chain members                     | `last_derived_height` | resolution |
-    /// |--------------------------------------|-----------------------|------------|
-    /// | non-empty, == the chain-derived five | any                   | `OnChain`, authoritative |
-    /// | non-empty, != the chain-derived five | any                   | `OnChain`, EMPTY → fails closed (M1 containment) |
-    /// | empty                                | 0                     | `Bootstrap` (never bootstrapped — REQ-172-005) |
-    /// | empty                                | > 0                   | `OnChain`, EMPTY → fails closed (the attack case) |
+    /// | on-chain members | `last_derived_height` | resolution |
+    /// |------------------|-----------------------|------------|
+    /// | non-empty        | any                   | `OnChain`, authoritative, carries those keys |
+    /// | empty            | 0                     | `Bootstrap` (never bootstrapped — REQ-172-005) |
+    /// | empty            | > 0                   | `OnChain`, EMPTY → fails closed (the attack case) |
     ///
     /// It never returns `Bootstrap` for a host that HAS an on-chain set. "I could not
     /// use it" must not become "use the leaked compiled keys".
@@ -125,50 +123,19 @@ impl TrustRoot {
         network: Network,
     ) -> Self {
         if !keys.is_empty() {
-            // ── M1 CONTAINMENT (AUDIT-P0-010) ───────────────────────────────────────
-            // M1 promotes the on-chain `MaintainerSet` to the SOLE binary-install trust
-            // root, with the compiled-constants fallback deleted. The governance
-            // multisig guarding mutations of that set counts signature ENTRIES, not
-            // DISTINCT signers (`doli_core::maintainer::MaintainerSet::verify_multisig`
-            // / `verify_multisig_excluding`), so three byte-identical copies of ONE
-            // valid Ed25519 signature satisfy a 3-of-5. Unguarded, one maintainer key
-            // rewrites the install root of the whole fleet, permanently and unattended.
+            // Any non-empty on-chain membership is authoritative — it is NOT compared
+            // against the compiled array. Reaching a given membership already required
+            // `threshold` DISTINCT on-chain maintainer signatures
+            // (`MaintainerSet::count_distinct_signers`, routed by `verify_multisig_at`
+            // at and above `maintainer_derivation_activation_height`).
             //
-            // The root fix is in that counter and is consensus-visible: a
-            // user-submittable AddMaintainer/RemoveMaintainer tx reaches it and
-            // `ProtocolActivation` acceptance depends on it (INV-12 Q1 YES / Q2 YES /
-            // Q3 NO), so it requires an activation height — which M1 does not have.
+            // The INC-I-172 M1 containment that compared against the compiled five was
+            // deleted here by INC-I-196: it outlived its stated exit condition and turned
+            // the INC-I-175 rotation into a fleet-wide refusal of every release.
             //
-            // What IS node-local is the LINK from that counter to install authority,
-            // and the link is exactly this function: nothing on a consensus path calls
-            // it. So M1 severs the link instead of fixing the counter — an on-chain set
-            // is install-authoritative only while it is still the chain-derived
-            // bootstrap five. Any mutation, legitimate or forged, fails CLOSED.
-            //
-            // M2: DELETE this guard when the distinct-signer governance counter
-            // activates at its activation height. Until then a legitimate rotation also
-            // refuses, and that is the accepted cost: M1 cannot tell a legitimate
-            // rotation from one forged with duplicate signatures, because the code that
-            // would tell them apart is the code being deferred. (AUDIT-P1-013
-            // independently shows an on-chain rotation cannot survive a single block
-            // today, so this guard removes no capability that exists.)
-            if !is_chain_derived_bootstrap_set(&keys, network) {
-                error!(
-                    "TRUST_ROOT_CONTAINED: the on-chain maintainer set ({} key(s), threshold {}, \
-                     derived at height {}) is NOT the chain-derived bootstrap set for {:?}. \
-                     Release verification will refuse every release on this host until the set \
-                     matches again. It will NOT fall back to the compiled bootstrap keys. Until \
-                     the distinct-signer governance multisig activates (INC-I-172 M2), a mutated \
-                     maintainer set cannot be told apart from one forged with duplicate \
-                     signatures from a single key (AUDIT-P0-010), so it is refused.",
-                    keys.len(),
-                    threshold,
-                    last_derived_height,
-                    network
-                );
-                return Self::on_chain(Vec::new(), threshold);
-            }
-
+            // NOT relaxed, and must stay that way: an emptied set fails closed, a
+            // sub-threshold root is unusable, and `Bootstrap` is reachable ONLY through
+            // the never-bootstrapped branch below.
             debug!(
                 "Release trust root: on-chain maintainer set ({} keys, threshold {}, derived at \
                  height {})",
@@ -220,35 +187,4 @@ impl TrustRoot {
             Self::on_chain(Vec::new(), threshold)
         }
     }
-}
-
-/// Is this on-chain membership still exactly the chain-derived bootstrap five?
-///
-/// Compared as a SET of lowercase hex keys: order-insensitive and case-insensitive
-/// (`PublicKey::to_hex` is lowercase, but nothing enforces that on a hand-written file).
-///
-/// Why order-insensitive, precisely (updated 2026-08-10, INC-I-172 M2): member order is
-/// not a stable property, so it must not gate installs. **Below**
-/// `maintainer_derivation_activation_height` the chain derivation stable-sorts a
-/// `HashMap` iteration with no pubkey tiebreak (AUDIT-P3-014), which is outright
-/// non-deterministic across nodes. **At and above** the gate,
-/// `derive_canonical_maintainer_set` imposes the total order
-/// `(registered_at, pubkey_bytes)` and IS deterministic — but a set-based comparison is
-/// still the correct shape here: this function has no chain height available (it is
-/// called from both `doli upgrade` and the node's updater service), so it cannot know
-/// which side of the gate produced the set it is reading, and a persisted
-/// `maintainer_state.bin` may have been seeded before the crossing.
-///
-/// The comparison target is [`bootstrap_maintainer_keys`], which on mainnet and testnet is
-/// byte-identical to the first five genesis producers — exactly what
-/// `Node::maybe_bootstrap_maintainer_set` derives from the chain. On a bootstrap-mode
-/// chain (devnet) it is not, so a devnet host with a derived set resolves an unusable root
-/// and does not auto-update: fail-closed, and devnet has no signed releases.
-fn is_chain_derived_bootstrap_set(keys: &[String], network: Network) -> bool {
-    let expected: BTreeSet<String> = bootstrap_maintainer_keys(network)
-        .iter()
-        .map(|k| k.to_ascii_lowercase())
-        .collect();
-    let found: BTreeSet<String> = keys.iter().map(|k| k.to_ascii_lowercase()).collect();
-    found == expected
 }

@@ -38,18 +38,16 @@
 //   P2: data dir holds no maintainer_state.bin         -> Bootstrap (REQ-172-005)
 //   P3: data dir holds an EMPTIED set (derived once)   -> OnChain, unusable (fail closed)
 //   P4: data dir holds an undecodable file             -> Err (fatal, never a default)
-//   P5: data dir holds a MUTATED on-chain set          -> OnChain, unusable
-//       (AUDIT-P0-010 M1 containment; see inc_i_172_trust_root_containment_test.rs)
+//   P5: data dir holds a ROTATED on-chain set          -> OnChain, that set's keys, USABLE
+//       (INC-I-196; see inc_i_172_trust_root_containment_test.rs)
 //
 // INPUT PARTITIONS:
 //   I1: an on-chain set that does NOT contain any compiled bootstrap key — the case
 //       that separates "reads the file" from "reads the constants". A set that happened
-//       to contain them would make both implementations look identical.
-//       NOTE (AUDIT-P0-010): the M1 containment accepts an on-chain set ONLY while it is
-//       still the chain-derived bootstrap five, so I1 can no longer be a USABLE root.
-//       The discriminator moved rather than disappeared, and is now stronger: on input
-//       I1 a `TrustRoot::bootstrap` implementation returns five compiled keys and a
-//       usable root, while the fixed code returns NO keys and refuses.
+//       to contain them would make both implementations look identical. On I1 a
+//       `TrustRoot::bootstrap` implementation returns the five COMPILED keys, while the
+//       correct code returns the file's OWN keys; both are usable, so the discriminator
+//       is WHICH keys came back, not whether the root authorises.
 // ============================================================================
 
 use doli_core::maintainer::MaintainerSet;
@@ -105,31 +103,44 @@ fn f3_operator_commands_use_the_on_chain_set_on_this_host() {
     );
 }
 
-/// REQ-172-001 (Must), REQ-172-011 (Must). RED before the AUDIT-P0-010 containment.
-/// Acceptance: on a host whose on-chain set is NOT the chain-derived five, the operator
-/// commands refuse — they must not silently reach the compiled constants. This is the
-/// input on which "reads the file" and "reads the constants" differ most: the constants
-/// would yield five keys and a usable root.
+/// REQ-172-001 (Must), REQ-196-001 (Must).
+/// Acceptance: on a host whose on-chain set differs from the compiled array, the operator
+/// commands use THAT set — and still never reach the compiled constants. This is the input
+/// on which "reads the file" and "reads the constants" differ most, so it is the one that
+/// tells the two implementations apart.
+///
+/// The usability assertion INVERTED at INC-I-196: the M1 containment refused this shape,
+/// which turned the INC-I-175 rotation into a fleet-wide refusal of every release. The
+/// no-compiled-keys discriminator below is unchanged and must stay.
 /// [P5, I1 -> O1, O2]
 #[test]
-fn f3_a_mutated_on_chain_set_never_degrades_to_the_compiled_keys() {
+fn f3_a_rotated_on_chain_set_is_used_and_never_degrades_to_the_compiled_keys() {
     let dir = tempfile::tempdir().unwrap();
     let members = vec![pubkey(101), pubkey(102), pubkey(103)];
     let mut state = storage::MaintainerState::default();
     state
-        .update(MaintainerSet::with_members(members, 2), 4242, dir.path())
+        .update(
+            MaintainerSet::with_members(members.clone(), 2),
+            4242,
+            dir.path(),
+        )
         .expect("writing the on-chain set must succeed");
 
     let root = command_trust_root(dir.path(), Network::Mainnet)
         .expect("a readable maintainer_state.bin must resolve");
 
     assert_eq!(root.provenance(), TrustRootProvenance::OnChain);
+    let expected: Vec<String> = members.iter().map(|m| m.to_hex()).collect();
+    assert_eq!(
+        root.keys(),
+        expected.as_slice(),
+        "the operator commands must use the on-chain members verbatim"
+    );
     assert!(
-        !root.is_usable(),
-        "a maintainer set that is no longer the chain-derived five is exactly the state \
-         ONE maintainer key can reach through the entry-counting governance multisig \
-         (AUDIT-P0-010). It must authorise no install until the M2 distinct-signer \
-         counter activates."
+        root.is_usable(),
+        "reaching this on-chain membership already required `threshold` DISTINCT \
+         maintainer signatures (count_distinct_signers, live at and above the derivation \
+         activation height). Refusing it is the INC-I-196 brick, not a containment."
     );
 
     // The discriminator: no compiled bootstrap key may authorise anything here.
@@ -137,7 +148,8 @@ fn f3_a_mutated_on_chain_set_never_degrades_to_the_compiled_keys() {
         assert!(
             !root.keys().iter().any(|k| k.eq_ignore_ascii_case(compiled)),
             "a compiled bootstrap key ({}...) is inside the resolved root. A release \
-             signed by the leaked constants would be accepted on this host.",
+             signed by the compiled constants would be accepted on a host that has its \
+             own on-chain set.",
             &compiled[..16.min(compiled.len())]
         );
     }

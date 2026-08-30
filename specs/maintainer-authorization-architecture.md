@@ -104,8 +104,10 @@ produced.
    "when M3 lands domain separation, this test MUST flip to asserting NO collision." **INC-I-176 is that M3.**
    A single `doli sign`-style release-signing operation could mint a maintainer seat. This is more severe
    than the incident's recorded "replay only" framing and is treated as a first-class defect.
-2. **Cross-network replay — MEASURED.** `BOOTSTRAP_MAINTAINER_KEYS_MAINNET` and `_TESTNET`
-   (`crates/updater/src/constants.rs:53` vs `:75`) are byte-identical; `signing_message` binds no chain id.
+2. **Cross-network replay — MEASURED (arrays since diverged).** `BOOTSTRAP_MAINTAINER_KEYS_MAINNET` and
+   `_TESTNET` (`crates/updater/src/constants.rs`) were byte-identical when this was measured; the INC-I-196
+   cutover made them disjoint. The defect is unchanged, because it never depended on the arrays matching:
+   `signing_message` binds no chain id.
    A testnet-minted `add:` blob is byte-valid on mainnet. Note the Subtractionist correction: the *live
    authorization* verifier reads the on-chain `MaintainerSet` (seeded from the producer set), so the real
    Era-1 mechanism is **producer-key reuse across networks**, and "just change the keys" is NOT a zero-code

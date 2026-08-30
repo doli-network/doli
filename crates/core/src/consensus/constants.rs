@@ -694,12 +694,12 @@ pub const FEE_DIVISOR: Amount = 100;
 ///
 /// # Rotation / Immutability
 ///
-/// These hashes are baked into the binary, same as
-/// `BOOTSTRAP_MAINTAINER_KEYS_MAINNET` (`updater/src/constants.rs:37`).
-/// Rotating any of N1-N12's keys requires:
+/// These hashes are baked into the binary. Rotating any of N1-N12's keys
+/// requires:
 ///   1. Updating the corresponding entry here.
-///   2. Updating `BOOTSTRAP_MAINTAINER_KEYS_MAINNET` if the slot is also
-///      a maintainer (N1-N5 are dual-role).
+///   2. NOT touching `BOOTSTRAP_MAINTAINER_KEYS_MAINNET` — the dual
+///      producer+maintainer role ended at the INC-I-175 rotation and the
+///      two key sets must stay disjoint.
 ///   3. Updating `N1_TO_N5_PUBKEYS_HEX` in
 ///      `crates/core/src/consensus/tests_structural.rs` (the
 ///      cross-consistency test will fire otherwise).

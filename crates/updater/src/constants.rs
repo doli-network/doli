@@ -41,8 +41,13 @@ pub const REQUIRED_SIGNATURES: usize = 3;
 
 /// Bootstrap maintainer public keys for mainnet (Ed25519, hex-encoded)
 ///
-/// N1-N5 are both **producers AND maintainers** on mainnet (dual role).
-/// N6-N12 are producers only — they produce blocks but cannot sign releases.
+/// M1-M5 are **signing-only**: never registered as producers, never bonded. Do NOT
+/// re-couple the roles — that separation is what keeps double-production slashing
+/// (`force_remove_maintainer`) unable to drive the set below `MIN_MAINTAINERS`.
+///
+/// Seated on-chain by the INC-I-175 rotation at h=331_457; this array is the matching
+/// compiled cutover. It replaces five keys whose private halves are public in this
+/// repository's history and cannot be recalled.
 ///
 /// These keys are the trust root ONLY for a node that has never established an
 /// on-chain maintainer set, and for the CLI, which has no chain state to read.
@@ -51,16 +56,11 @@ pub const REQUIRED_SIGNATURES: usize = 3;
 /// FAILS CLOSED — verification refuses rather than returning here. Only
 /// `TrustRoot::bootstrap` may read this array.
 pub const BOOTSTRAP_MAINTAINER_KEYS_MAINNET: [&str; 5] = [
-    // N1 — producer + maintainer
-    "202047256a8072a8b8f476691b9a5ae87710cc545e8707ca9fe0c803c3e6d3df",
-    // N2 — producer + maintainer
-    "effe88fefb6d992a1329277a1d49c7296d252bbc368319cb4bc061119926272b",
-    // N3 — producer + maintainer
-    "54323cefd0eabac89b2a2198c95a8f261598c341a8e579a05e26322325c48c2b",
-    // N4 — producer + maintainer
-    "2d27fdcc6a240b76ecaea64ad05c9b70d1adad90b6f9c43e8cbbbc0f1ab04116",
-    // N5 — producer + maintainer
-    "3047e96b13276dd92ef5eb2d6396e66c29909217f11f8c0544ea7d76a76c7602",
+    "d07ec4ec146245e0ce31800ba2cf98b9fc649aa7a4021a09e8534a7764033f8d",
+    "25c24110d98f2a34c37bab8fede0791d3de1281ca499a30fb7ff5223cdb0e23c",
+    "2559a47ee898f8bb9a38d90573dcca2195a97a7c787b5712ba62102e225b9e0d",
+    "e477c1f245612f7351f66ce7936e4ffa1e0afef26a12f90f3a86ed3544ca5b8c",
+    "3fd5be3de8285140a461b12dbd7d14ce0d026b5e369e38daebf89f6f7cbc0245",
 ];
 
 /// Bootstrap maintainer public keys for testnet (Ed25519, hex-encoded)
@@ -89,15 +89,13 @@ pub const BOOTSTRAP_MAINTAINER_KEYS_TESTNET: [&str; 5] = [
 ///
 /// # This selection is NOT a cross-network security boundary (AUDIT-P2-012)
 ///
-/// Two facts, both current and both verifiable above:
+/// The signed release message is `"{version}:{sha256(CHECKSUMS.txt)}"`
+/// (`verification.rs`). It carries **no network term**.
 ///
-/// 1. [`BOOTSTRAP_MAINTAINER_KEYS_MAINNET`] and [`BOOTSTRAP_MAINTAINER_KEYS_TESTNET`] are
-///    **byte-identical** — same five hex strings, same order.
-/// 2. The signed release message is `"{version}:{sha256(CHECKSUMS.txt)}"`
-///    (`verification.rs`). It carries **no network term**.
-///
-/// Therefore a signature produced for a TESTNET release is a valid authorization for the
-/// same version on MAINNET, and vice versa. Threading `network` through
+/// The two arrays diverged with the INC-I-196 mainnet cutover, so an identical-key
+/// signature is no longer automatic — but divergence is NOT the boundary. Any holder of a
+/// testnet key still authorizes a MAINNET release on any host resolving the testnet array,
+/// and a signer present in both arrays crosses freely. Threading `network` through
 /// `doli upgrade` / `doli-node upgrade` selects a key ARRAY; it binds nothing. Do not
 /// describe `--network` as preventing cross-network replay in code comments, operator
 /// output or docs — see `docs/cli.md` §18.2, which states the gap explicitly.

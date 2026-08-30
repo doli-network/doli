@@ -75,8 +75,12 @@
 >   root, documented as unsigned and attacker-writable (`crates/storage/src/lib.rs`,
 >   `StorageError::MalformedPersistedValue`) — a strictly shorter path to the same authority.
 >   Do not describe this as authentication, tamper-proofing or integrity protection against
->   an attacker, and do not retire another control (notably the `TrustRoot::resolve` M1
->   containment guard) on the strength of the record.
+>   an attacker, and do not retire another control on the strength of the record.
+>   **UPDATE (INC-I-196):** the `TrustRoot::resolve` M1 containment guard named here as an
+>   example has since been DELETED — but not "on the strength of the record". It was
+>   retired because its own stated exit condition was met: the distinct-signer governance
+>   counter activated at `maintainer_derivation_activation_height` (mainnet 172_000). The
+>   caution above still stands for every other control.
 > * **M3 (Layer 3)** — F7's replay-domain binding on governance messages, plus residuals
 >   **R1** and **R3** from M2 (**R2** is closed, see above). NOT implemented. Scope:
 >   `docs/.workflow/inc-i-172-M3-scope.md`.
@@ -414,8 +418,10 @@ Why this proposal anyway: an advisory verify that installs anyway is not a contr
 Convergence: patterns P4/CA-2/A6/A8, failures F-10/F-12/F-13/FM-08/FM-09/FM-12, radical P1 #5,
 subtraction (V4).
 Evidence: `crates/core/src/maintainer.rs:323-326,376-382` bind no domain (`"add:{hex}"`,
-`"activate:{v}:{epoch}"`); mainnet/testnet key arrays byte-identical (`constants.rs:37-48` vs `:56-67`) ⇒
-testnet signature = mainnet authorization (FM-12). `crates/updater/src/verification.rs:62` signs only
+`"activate:{v}:{epoch}"`); the signed release message carries no network term, so a testnet signature is a
+mainnet authorization wherever that signer is in the resolved array (FM-12). The mainnet/testnet key arrays
+were byte-identical when this was written; INC-I-196 made them disjoint, which narrows FM-12 without
+closing it — F7 stays open. `crates/updater/src/verification.rs:62` signs only
 `"{version}:{binary_sha256}"`; `service.rs:316` uses unsigned `published_at` (`download.rs:206-209`
 `.unwrap_or(0)`) to set the veto deadline (FM-09). `service.rs:55` restores a pending update with no
 re-verification (FM-08). The domain-separation API already exists at
