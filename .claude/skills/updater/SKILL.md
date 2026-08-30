@@ -487,9 +487,9 @@ bond x seniority formula was documented for years but only ever ran in tests; it
 deleted in INC-I-172 F8. The only Sybil barrier on the veto is the registration bond.
 
 Maintainer keys:
-- Mainnet: N1-N5 are both producers AND maintainers (dual role)
-- Testnet: NT1-NT5 are both producers AND maintainers
-- N6-N12 / NT6-NT12: producers only, cannot sign releases
+- Mainnet: **maintainers are signing-only wallets, NOT producers.** The INC-I-175 rotation (h=331_457) retired the N1-N5 dual role; the compiled array and the on-chain set both hold five keys that are never registered as producers and never bonded. Keep them decoupled — that separation is what stops double-production slashing from driving the maintainer set below `MIN_MAINTAINERS`.
+- Testnet: NT1-NT5 are still both producers AND maintainers
+- N1-N12 / NT6-NT12: producers; on mainnet none of them can sign releases
 - Bootstrap keys are **NOT a fallback.** They are used only by a root resolved as `Bootstrap` — a node that has NEVER established an on-chain set (`members` empty AND `last_derived_height == 0`), and the `doli` CLI, which is not the node host. An on-chain set that exists and is empty resolves to an unusable `OnChain` root and REFUSES; it never degrades to the compiled keys (INC-I-172 F1). See `:450` and the resolution table in `bins/node/src/updater/trust_root_wiring.rs`.
 - `doli-node upgrade` / `update verify` / `update apply` resolve the ON-CHAIN root from this host's `maintainer_state.bin` via `command_trust_root(data_dir, network)` (INC-I-172 F3) — they do not use the compiled keys
 - `is_using_placeholder_keys()` must return false before mainnet launch

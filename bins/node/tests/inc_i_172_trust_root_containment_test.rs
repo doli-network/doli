@@ -1,18 +1,29 @@
-// INC-I-172 M1 security audit, AUDIT-P0-010 — the M1 CONTAINMENT.
-// REQ-172-001 (Must), REQ-172-011 (Must).
+// INC-I-196 — the M1 CONTAINMENT IS DELETED. This file now pins its replacement.
+// REQ-172-001 (Must), REQ-172-005 (Must), REQ-172-011 (Must), REQ-196-001 (Must).
 //
-// WHY THIS FILE EXISTS. M1 promotes the on-chain `MaintainerSet` to the SOLE
-// binary-install trust root and deletes the compiled-constants fallback. The governance
-// multisig that guards mutations of that set counts signature ENTRIES, not DISTINCT
-// signers (`crates/core/src/maintainer.rs::verify_multisig`), so three byte-identical
-// copies of ONE valid Ed25519 signature satisfy a 3-of-5 and ONE key rewrites the
-// install root of the whole fleet, permanently and unattended.
+// WHY THIS FILE CHANGED. INC-I-172 M1 made an on-chain maintainer set
+// install-authoritative ONLY while it was still byte-equal to the compiled bootstrap
+// five. That guard was always explicitly temporary — its own comment read "M2: DELETE
+// this guard when the distinct-signer governance counter activates at its activation
+// height."
 //
-// The root fix is in that counter and is consensus-visible (a user-submittable
-// AddMaintainer tx reaches it; `ProtocolActivation` acceptance depends on it), so it
-// needs an activation height and belongs to M2. What is node-local — and what this file
-// pins — is the LINK from that counter to install authority. It lives entirely in
-// `resolve_trust_root`, which has zero consensus consumers.
+// That counter is live. `MaintainerSet::count_distinct_signers`
+// (`crates/core/src/maintainer/set.rs:130`) counts each member at most once, and
+// `verify_multisig_at` routes to it whenever `height >= activation_height`. On mainnet
+// that height is `maintainer_derivation_activation_height = 172_000`
+// (`crates/core/src/network_params/defaults.rs:273`), crossed ~159k blocks ago. The
+// premise the guard rested on — "a mutated set cannot be told apart from one forged with
+// duplicate signatures from a single key" — has been FALSE since h=172,000.
+//
+// Leaving the guard in place cost an outage: the INC-I-175 mainnet key rotation
+// (h=331,442 -> 331,457, verified BY that distinct-signer counter) made the on-chain set
+// differ from the compiled array, so every host holding `maintainer_state.bin` resolved a
+// ZERO-KEY trust root and refused every release regardless of how it was signed.
+//
+// So the contract inverts: a mutated on-chain set is now the AUTHORITY, because reaching
+// that state already required `threshold` DISTINCT maintainer signatures on-chain. What
+// does NOT change is the fail-closed half — see
+// `both_empty_set_paths_still_fail_closed_or_bootstrap`.
 //
 // ============================================================================
 // OUTPUT CONTRACT
@@ -31,30 +42,29 @@
 //                        logged is already in O1..O4.
 //
 //   O1: provenance  — must NEVER become Bootstrap on a host that HAS an on-chain set.
-//   O2: keys        — empty when contained; exactly the five when accepted.
-//   O3: threshold   — carried verbatim from the set (M2 reconciles it, api-contract G5).
+//   O2: keys        — exactly the on-chain members; empty ONLY on the emptied-set path.
+//   O3: threshold   — carried verbatim from the set (api-contract G5).
 //   O4: is_usable() — the single bit that decides whether a release can install.
 //
-// CODE PATHS (of `resolve_trust_root`):
-//   P1: members == the chain-derived bootstrap five   -> OnChain, USABLE
-//   P2: members != the chain-derived five (mutated)   -> OnChain, NOT usable [CONTAINMENT]
-//   P3: members empty, last_derived_height == 0       -> Bootstrap, usable (REQ-172-005)
-//   P4: members empty, last_derived_height > 0        -> OnChain, NOT usable
+// CODE PATHS (of `resolve_trust_root`), AFTER the containment is deleted:
+//   P1: members non-empty                        -> OnChain, USABLE, carries its members
+//   P2: members empty, last_derived_height == 0   -> Bootstrap, usable (REQ-172-005)
+//   P3: members empty, last_derived_height > 0    -> OnChain, EMPTY, NOT usable
 //
-// INPUT PARTITIONS on P2 — every shape the defective ENTRY counter can produce:
-//   I1: one member SWAPPED           (Remove+Add from a single key — the P0 sequence)
-//   I2: one member REMOVED           (a lone RemoveMaintainer, set of 4)
-//   I3: one member ADDED             (a lone AddMaintainer, set of 6)
-//   I4: ALL members attacker-held    (the end state of the takeover)
-//   I5: a SINGLE attacker member     (the AUDIT-P1-010 empty-set/zero-signature outcome)
-//   I6: the five, REORDERED          -> must still be ACCEPTED (P1). The derivation
-//                                       stable-sorts a HashMap iteration with no pubkey
-//                                       tiebreak (AUDIT-P3-014), so member ORDER is not
-//                                       a security property and must not gate installs.
-//   I7: the five, UPPERCASE hex      -> must still be ACCEPTED (P1). Nothing enforces
-//                                       lowercase on a hand-written file.
-//   Network partition: Mainnet and Testnet both have a compiled five; asserted on both
-//   so the guard cannot be keyed to one network by accident.
+// INPUT PARTITIONS on P1 — the same shapes the deleted guard refused, now accepted
+// because each one requires `threshold` distinct on-chain signers to reach:
+//   I1: one member SWAPPED        (Remove+Add — one step of a rotation)
+//   I2: one member REMOVED        (set of 4; governance floor is MIN_MAINTAINERS=3)
+//   I3: one member ADDED          (set of 6)
+//   I4: ALL FIVE members replaced (the completed INC-I-175 rotation — the live mainnet
+//                                  state as of h=331,457)
+//   I5: the five, REORDERED       -> accepted (order was never a security property)
+//   I6: the five, UPPERCASE hex   -> accepted (nothing enforces lowercase on disk)
+//   Network partition: asserted on Mainnet and Testnet so the behaviour cannot be keyed
+//   to one network by accident.
+//
+// DELIBERATELY NOT ASSERTED HERE — a below-floor set (1 or 2 members). It is unreachable
+// today and is tracked separately; see `a_below_floor_set_is_structurally_unreachable`.
 // ============================================================================
 
 use doli_core::maintainer::MaintainerSet;
@@ -66,10 +76,10 @@ fn attacker_key(seed: u8) -> crypto::PublicKey {
     crypto::PrivateKey::from_bytes([seed; 32]).public_key()
 }
 
-/// The five keys `Node::maybe_bootstrap_maintainer_set` derives from the chain on
-/// mainnet and testnet — byte-identical to the compiled bootstrap array by construction
-/// (`crates/core/src/genesis.rs:90`).
-fn chain_derived_five(network: Network) -> Vec<crypto::PublicKey> {
+/// The five keys the compiled bootstrap array carries for `network`. After the INC-I-196
+/// cutover this is the ROTATED five on mainnet, not the genesis producers — the two are no
+/// longer the same thing, which is the whole point of INC-I-175.
+fn compiled_five(network: Network) -> Vec<crypto::PublicKey> {
     updater::bootstrap_maintainer_keys(network)
         .iter()
         .map(|k| crypto::PublicKey::from_hex(k).expect("a compiled bootstrap key must be hex"))
@@ -84,47 +94,56 @@ fn state_with(members: Vec<crypto::PublicKey>, height: u64) -> storage::Maintain
     }
 }
 
+fn assert_authoritative(root: &updater::TrustRoot, members: &[crypto::PublicKey], label: &str) {
+    assert_eq!(
+        root.provenance(),
+        TrustRootProvenance::OnChain,
+        "{label}: a host WITH an on-chain set must resolve OnChain — becoming Bootstrap \
+         would hand authority back to the compiled keys (the F1 defect)"
+    );
+    assert!(
+        root.is_usable(),
+        "{label}: reaching this on-chain state already required `threshold` DISTINCT \
+         maintainer signatures (count_distinct_signers, live since the derivation \
+         activation height). Refusing it is an OUTAGE, not a containment — that is \
+         exactly the INC-I-196 fleet-wide brick."
+    );
+    let expected: Vec<String> = members.iter().map(|m| m.to_hex()).collect();
+    assert_eq!(
+        root.keys(),
+        expected.as_slice(),
+        "{label}: the root must carry the on-chain members verbatim"
+    );
+}
+
 /// REQ-172-001 (Must). GREEN-lock.
-/// Acceptance: the untouched, chain-derived maintainer set is still install-authoritative
-/// on both networks. The containment must not brick the honest path.
-/// [P1, I6-negative -> O1, O2, O3, O4]
+/// Acceptance: an on-chain set equal to the compiled five is install-authoritative.
+/// [P1 -> O1, O2, O3, O4]
 #[test]
-fn the_chain_derived_five_is_still_a_usable_on_chain_root() {
+fn a_set_matching_the_compiled_five_is_a_usable_on_chain_root() {
     for network in [Network::Mainnet, Network::Testnet] {
-        let members = chain_derived_five(network);
+        let members = compiled_five(network);
         let state = state_with(members.clone(), 4242);
 
         let root = resolve_trust_root(&state, network);
 
-        assert_eq!(
-            root.provenance(),
-            TrustRootProvenance::OnChain,
-            "{network:?}: an intact on-chain set must stay the authority"
-        );
-        assert!(
-            root.is_usable(),
-            "{network:?}: the honest set must still authorise releases — a containment \
-             that refuses everything is an outage, not a fix"
-        );
-        let expected: Vec<String> = members.iter().map(|m| m.to_hex()).collect();
-        assert_eq!(root.keys(), expected.as_slice());
+        assert_authoritative(&root, &members, &format!("{network:?}"));
         assert_eq!(
             root.threshold(),
             state.set.threshold,
-            "{network:?}: the root carries the set's own threshold (api-contract G5 \
-             defers reconciliation to M2)"
+            "{network:?}: the root carries the set's own threshold (api-contract G5)"
         );
     }
 }
 
-/// REQ-172-011 (Must). RED before the containment.
-/// Acceptance: a maintainer set that is no longer the chain-derived five authorises
-/// NOTHING. This is the AUDIT-P0-010 outcome — the state one maintainer key can reach
-/// today through the entry-counting multisig — and it must not become install authority.
-/// [P2, I1/I2/I3/I4/I5 -> O1, O2, O4]
+/// REQ-196-001 (Must). **THE REPRODUCTION TEST — RED before the fix.**
+/// Acceptance: an on-chain set that DIFFERS from the compiled array is the authority and
+/// carries its own keys. Before the fix every shape below resolved to a zero-key root and
+/// refused all releases; I4 is the live mainnet state that bricked the fleet.
+/// [P1, I1/I2/I3/I4 -> O1, O2, O4]
 #[test]
-fn a_set_that_is_not_the_chain_derived_five_authorises_nothing() {
-    let five = chain_derived_five(Network::Mainnet);
+fn a_rotated_on_chain_set_is_authoritative_and_carries_its_own_keys() {
+    let five = compiled_five(Network::Mainnet);
 
     let mut swapped = five.clone(); // I1
     swapped[0] = attacker_key(200);
@@ -135,85 +154,59 @@ fn a_set_that_is_not_the_chain_derived_five_authorises_nothing() {
     let mut added = five.clone(); // I3
     added.push(attacker_key(201));
 
-    let all_attacker: Vec<_> = (210u8..215).map(attacker_key).collect(); // I4
-    let lone_attacker = vec![attacker_key(220)]; // I5
+    let fully_rotated: Vec<_> = (210u8..215).map(attacker_key).collect(); // I4
 
     for (label, members) in [
         ("one member swapped", swapped),
         ("one member removed", removed),
         ("one member added", added),
-        ("every member attacker-held", all_attacker),
-        ("a single attacker member", lone_attacker),
+        ("all five rotated (the INC-I-175 end state)", fully_rotated),
     ] {
-        let state = state_with(members, 9_000);
+        let state = state_with(members.clone(), 331_457);
         let root = resolve_trust_root(&state, Network::Mainnet);
 
-        assert_eq!(
-            root.provenance(),
-            TrustRootProvenance::OnChain,
-            "{label}: the contained root must stay OnChain — becoming Bootstrap would \
-             hand authority back to the leaked compiled keys (the F1 defect)"
-        );
-        assert!(
-            !root.is_usable(),
-            "{label}: M1 makes this set the SOLE install authority, and the multisig \
-             guarding it counts signature ENTRIES not distinct signers — so one key can \
-             produce exactly this state. It must authorise nothing until the M2 \
-             distinct-signer counter activates (AUDIT-P0-010)."
-        );
-        assert!(
-            root.keys().is_empty(),
-            "{label}: a contained root must carry no keys at all"
-        );
+        assert_authoritative(&root, &members, label);
     }
 }
 
 /// REQ-172-011 (Must).
-/// Acceptance: the containment compares MEMBERSHIP, not encoding. Member order is not a
-/// security property (the derivation has no pubkey tiebreak — AUDIT-P3-014) and hex case
-/// is not either, so neither may flip a healthy fleet to "refuse every release".
-/// [P1, I6, I7 -> O4]
+/// Acceptance: resolution reads MEMBERSHIP, not encoding. Neither member order nor hex
+/// case may change which keys a host trusts.
+/// [P1, I5, I6 -> O2, O4]
 #[test]
-fn the_containment_is_insensitive_to_member_order_and_hex_case() {
-    let mut reordered = chain_derived_five(Network::Mainnet);
+fn resolution_is_insensitive_to_member_order_and_hex_case() {
+    let mut reordered = compiled_five(Network::Mainnet);
     reordered.reverse();
-    let root = resolve_trust_root(&state_with(reordered, 7), Network::Mainnet);
-    assert!(
-        root.is_usable(),
-        "member ORDER must not gate installs: the chain derivation stable-sorts a \
-         HashMap iteration with no pubkey tiebreak, so the order is not stable and a \
-         reordering would be an availability bug across the whole fleet"
-    );
+    let root = resolve_trust_root(&state_with(reordered.clone(), 7), Network::Mainnet);
+    assert_authoritative(&root, &reordered, "reordered members");
 
-    // The same five, hand-written in uppercase hex. Built through the string form
-    // because `PublicKey::to_hex` always lowercases.
-    let upper: Vec<String> = updater::bootstrap_maintainer_keys(Network::Mainnet)
+    // The same five, hand-written in uppercase hex. Built through the string form because
+    // `PublicKey::to_hex` always lowercases.
+    let members: Vec<crypto::PublicKey> = updater::bootstrap_maintainer_keys(Network::Mainnet)
         .iter()
-        .map(|k| k.to_ascii_uppercase())
+        .map(|k| {
+            crypto::PublicKey::from_hex(&k.to_ascii_uppercase())
+                .expect("uppercase hex must still decode")
+        })
         .collect();
-    let members: Vec<crypto::PublicKey> = upper
-        .iter()
-        .map(|k| crypto::PublicKey::from_hex(k).expect("uppercase hex must still decode"))
-        .collect();
-    assert!(
-        resolve_trust_root(&state_with(members, 7), Network::Mainnet).is_usable(),
-        "hex CASE must not gate installs"
-    );
+    let root = resolve_trust_root(&state_with(members.clone(), 7), Network::Mainnet);
+    assert_authoritative(&root, &members, "uppercase hex members");
 }
 
-/// REQ-172-005 (Must). GREEN-lock.
-/// Acceptance: the containment does not touch the two empty-set paths. A never-bootstrapped
-/// node keeps the bootstrap root (or a fresh install could never be upgraded); a set that
-/// EXISTED and is now empty still fails closed.
-/// [P3, P4 -> O1, O4]
+/// REQ-172-005 (Must), REQ-172-011 (Must). **REGRESSION LOCK — do not weaken.**
+/// Acceptance: deleting the containment must not touch either empty-set path. A
+/// never-bootstrapped node keeps the bootstrap root (or a fresh install could never be
+/// upgraded); a set that EXISTED and is now empty still fails closed and must NEVER
+/// degrade to the compiled keys.
+/// [P2, P3 -> O1, O4]
 #[test]
-fn the_containment_leaves_both_empty_set_paths_unchanged() {
+fn both_empty_set_paths_still_fail_closed_or_bootstrap() {
     let fresh = storage::MaintainerState::default();
     let root = resolve_trust_root(&fresh, Network::Mainnet);
     assert_eq!(root.provenance(), TrustRootProvenance::Bootstrap);
     assert!(root.is_usable(), "a fresh node must still be upgradable");
 
-    let mut emptied = state_with(chain_derived_five(Network::Mainnet), 4242);
+    let mut emptied = state_with(compiled_five(Network::Mainnet), 4242);
     emptied.set.members.clear();
     let root = resolve_trust_root(&emptied, Network::Mainnet);
     assert_eq!(
@@ -221,5 +214,49 @@ fn the_containment_leaves_both_empty_set_paths_unchanged() {
         TrustRootProvenance::OnChain,
         "a set derived at a real height and now empty is the attack case, not a fresh node"
     );
-    assert!(!root.is_usable());
+    assert!(
+        !root.is_usable(),
+        "an emptied set must authorise nothing — and must NOT fall back to the compiled \
+         bootstrap keys (INC-I-172 F1)"
+    );
+    assert!(root.keys().is_empty());
+}
+
+/// REQ-196-002 (Should). Documents what the deleted containment was INCIDENTALLY
+/// protecting, and why nothing replaces it here.
+///
+/// `TrustRoot::is_usable()` is `threshold >= 1 && keys.len() >= threshold`, and
+/// `MaintainerSet::calculate_threshold(1) == 1`. So a ONE-member on-chain set would
+/// resolve to a usable 1-of-1 install root. The containment refused that shape as a side
+/// effect of refusing every non-bootstrap shape.
+///
+/// It is not reachable:
+///   * governance removal is floored — `can_remove()` is `members.len() > MIN_MAINTAINERS`
+///     (`set.rs:65`, MIN_MAINTAINERS = 3), so `RemoveMaintainer` stops at 3 members;
+///   * the ONLY sub-floor path is `ReplayAction::Slash` -> `force_remove_maintainer`
+///     (`crates/core/src/maintainer/derivation.rs:269`), which fires on double-production
+///     slashing and therefore requires a maintainer to ALSO be a bonded producer.
+///
+/// INC-I-175 severed exactly that dual role: M1-M5 are signing-only wallets, never
+/// registered as producers and never bonded. So the slash path cannot target them.
+///
+/// This test pins the floor it depends on. If MIN_MAINTAINERS drops, or a maintainer is
+/// ever also registered as a producer, the 1-of-1 shape becomes reachable and this
+/// decision must be revisited.
+#[test]
+fn a_below_floor_set_is_structurally_unreachable() {
+    assert_eq!(
+        doli_core::maintainer::MIN_MAINTAINERS,
+        3,
+        "the governance removal floor is what keeps a 1-of-1 install root unreachable"
+    );
+
+    let mut three = compiled_five(Network::Mainnet);
+    three.truncate(3);
+    let set = MaintainerSet::with_members(three, 1);
+    assert!(
+        !set.can_remove(),
+        "governance must not be able to remove below MIN_MAINTAINERS — if it can, a \
+         below-floor trust root is reachable without any slashing"
+    );
 }

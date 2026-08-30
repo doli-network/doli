@@ -179,14 +179,93 @@ fn is_test_file(rel: &str) -> bool {
         || file.starts_with("test_")
 }
 
-/// Drop the trailing inline `#[cfg(test)]` module, which by this repo's
-/// convention is the last item in a source file. Anything before it is
-/// production code.
+/// Drop the first inline `#[cfg(test)]` module BODY and everything after it.
+/// Anything before is production code.
+///
+/// A `#[cfg(test)]` that introduces a body-less declaration — `mod x;`, with or
+/// without intervening attributes such as `#[path = "..."]` — is SKIPPED, because
+/// the code after it is still production code. Cutting there hides the rest of the
+/// file from the scan (INC-I-197).
+///
+/// Discriminator: from the attribute, whichever of `;` or `{` comes first. `;`
+/// first means a declaration; `{` first means a body, so cut. Neither means the
+/// file ends here and cutting is safe.
 fn strip_inline_test_module(src: &str) -> &str {
-    match src.find("#[cfg(test)]") {
-        Some(i) => &src[..i],
-        None => src,
+    let mut from = 0usize;
+    while let Some(rel) = src[from..].find("#[cfg(test)]") {
+        let at = from + rel;
+        let rest = &src[at..];
+        let semi = rest.find(';');
+        let brace = rest.find('{');
+        match (semi, brace) {
+            // `mod x;` before any body — a declaration. Keep scanning past it.
+            (Some(s), Some(b)) if s < b => from = at + s + 1,
+            (Some(s), None) => from = at + s + 1,
+            // A body opens first (or nothing follows): this is the inline module.
+            _ => return &src[..at],
+        }
     }
+    src
+}
+
+/// INC-I-197. The scanner's own parsing assumption, asserted rather than assumed.
+///
+/// `strip_inline_test_module` used to cut at the FIRST `#[cfg(test)]`, on the
+/// convention that an inline test module is the last item in a file. A
+/// `#[cfg(test)] #[path = "..."] mod x;` DECLARATION breaks that: it is legal, it
+/// sits near the top, and it has no body, so everything after it is still
+/// production code. `crates/rpc/src/methods/governance.rs:10` gained exactly that
+/// in 5a06535a, which silently hid lines 10-313 — including a real
+/// `derive_canonical_maintainer_set` call — and killed the positive control below.
+///
+/// A scanner that parses Rust by string truncation must pin its own assumptions,
+/// or a legal code layout elsewhere in the tree turns the whole tripwire vacuous.
+#[test]
+fn strip_inline_test_module_keeps_code_after_a_bodyless_test_mod_declaration() {
+    // The governance.rs shape: attribute, path attribute, declaration, then code.
+    let src = "use x;\n\
+               #[cfg(test)]\n\
+               #[path = \"tests_foo.rs\"]\n\
+               mod tests_foo;\n\
+               \n\
+               fn production_caller() { derive_canonical_maintainer_set(); }\n";
+    assert!(
+        strip_inline_test_module(src).contains("derive_canonical_maintainer_set"),
+        "a body-less `mod x;` declaration must NOT hide the rest of the file — that \
+         is the INC-I-197 blind spot that made the positive control read 1 instead of 2"
+    );
+
+    // The convention this function was written for must still work: a trailing
+    // inline module WITH a body is still cut, so its contents are not scanned.
+    let trailing = "fn production() {}\n\
+                    #[cfg(test)]\n\
+                    mod tests {\n\
+                        fn t() { derive_canonical_maintainer_set(); }\n\
+                    }\n";
+    assert!(
+        !strip_inline_test_module(trailing).contains("derive_canonical_maintainer_set"),
+        "an inline bodied test module must still be stripped, or test-only calls \
+         would be reported as production callers"
+    );
+
+    // Both shapes in one file: the declaration is skipped, the bodied module cuts.
+    let both = "#[cfg(test)]\n\
+                #[path = \"tests_a.rs\"]\n\
+                mod tests_a;\n\
+                fn production() { KEEP_ME(); }\n\
+                #[cfg(test)]\n\
+                mod tests_b {\n\
+                    fn t() { DROP_ME(); }\n\
+                }\n";
+    let kept = strip_inline_test_module(both);
+    assert!(
+        kept.contains("KEEP_ME"),
+        "production code between the two must survive"
+    );
+    assert!(
+        !kept.contains("DROP_ME"),
+        "the bodied module must still be cut"
+    );
 }
 
 /// Strip `//` line comments so a doc comment naming the symbol is not counted as

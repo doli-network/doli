@@ -606,3 +606,119 @@ fn f10_uppercase_hex_public_keys_still_match_the_root() {
         "all three distinct signers must still be counted after the case change"
     );
 }
+
+// ============================================================================
+// INC-I-196 — GOLDEN PIN on the COMPILED bootstrap trust root.
+// REQ-196-003 (Must), REQ-196-004 (Must).
+//
+// `BOOTSTRAP_MAINTAINER_KEYS_MAINNET` is install authority for every host with no
+// on-chain maintainer set: a fresh install, a wiped data dir, and every CLI invocation,
+// which has no chain state to read. Editing it changes who may install a binary on those
+// hosts and leaves no on-chain trace. Pinning it byte-for-byte forces the next such change
+// to be a reviewed diff rather than an altered line in a constants block.
+//
+// OUTPUT CONTRACT (extends the file header).
+//   Under test : `bootstrap_maintainer_keys(Network)`, `TrustRoot::bootstrap(Network)`
+//   Outputs    : O6 the five hex strings in order; O7 the resulting root's keys /
+//                threshold / usability. No mutable params, no I/O, no side channel.
+//   Code paths : P7 Mainnet, P8 Testnet, P9 Devnet (shares the testnet array).
+//   Partitions : none — the only input is the network discriminant, so the partitions
+//                ARE the code paths.
+// ============================================================================
+
+/// The five signing-only wallets seated on mainnet by the INC-I-175 rotation
+/// (h=331_442 -> 331_457), verified live: digest `11415830f31db7f6…`, threshold 3.
+const MAINNET_GOLDEN: [&str; 5] = [
+    "d07ec4ec146245e0ce31800ba2cf98b9fc649aa7a4021a09e8534a7764033f8d",
+    "25c24110d98f2a34c37bab8fede0791d3de1281ca499a30fb7ff5223cdb0e23c",
+    "2559a47ee898f8bb9a38d90573dcca2195a97a7c787b5712ba62102e225b9e0d",
+    "e477c1f245612f7351f66ce7936e4ffa1e0afef26a12f90f3a86ed3544ca5b8c",
+    "3fd5be3de8285140a461b12dbd7d14ce0d026b5e369e38daebf89f6f7cbc0245",
+];
+
+/// Retired keys whose PRIVATE halves are in this repository's history at
+/// `testnet/keys/producer_{1..5}.json` and cannot be recalled.
+const RETIRED_AND_PUBLICLY_COMPROMISED: [&str; 5] = [
+    "202047256a8072a8b8f476691b9a5ae87710cc545e8707ca9fe0c803c3e6d3df",
+    "effe88fefb6d992a1329277a1d49c7296d252bbc368319cb4bc061119926272b",
+    "54323cefd0eabac89b2a2198c95a8f261598c341a8e579a05e26322325c48c2b",
+    "2d27fdcc6a240b76ecaea64ad05c9b70d1adad90b6f9c43e8cbbbc0f1ab04116",
+    "3047e96b13276dd92ef5eb2d6396e66c29909217f11f8c0544ea7d76a76c7602",
+];
+
+/// REQ-196-003 (Must).
+/// Acceptance: the compiled mainnet array is exactly the rotated five, in order.
+/// [P7 -> O6]
+#[test]
+fn req_196_003_compiled_mainnet_trust_root_is_the_rotated_five() {
+    assert_eq!(
+        bootstrap_maintainer_keys(Network::Mainnet),
+        &MAINNET_GOLDEN,
+        "the compiled mainnet bootstrap trust root changed. This array decides who may \
+         install a binary on any host with no on-chain maintainer set — every fresh \
+         install, every wiped data dir, every CLI invocation. Change it only as a \
+         deliberate, reviewed key rotation, and seat the same keys on-chain."
+    );
+}
+
+/// REQ-196-004 (Must). **The one that must never regress.**
+/// Acceptance: no compiled array on any network carries a key with a public private half.
+/// [P7, P8, P9 -> O6]
+#[test]
+fn req_196_004_no_network_ships_a_publicly_compromised_key() {
+    for network in [Network::Mainnet, Network::Testnet, Network::Devnet] {
+        for key in bootstrap_maintainer_keys(network) {
+            assert!(
+                !RETIRED_AND_PUBLICLY_COMPROMISED.contains(&key.to_ascii_lowercase().as_str()),
+                "{network:?}: compiled bootstrap key {key} has a PUBLIC private half \
+                 (testnet/keys/producer_*.json). A host resolving this array can be made \
+                 to install an attacker-signed binary — the INC-I-175 auto-update RCE \
+                 path. It must never be reintroduced on any network."
+            );
+        }
+    }
+}
+
+/// REQ-196-003 (Must).
+/// Acceptance: the golden array is what `TrustRoot::bootstrap` actually hands the verifier,
+/// and that root is usable at 3-of-5. Pins the constant to its CONSUMER — a correct
+/// constant reached through a broken constructor authorises nothing.
+/// [P7 -> O7]
+#[test]
+fn req_196_003_bootstrap_root_carries_the_golden_keys_and_is_usable() {
+    let root = TrustRoot::bootstrap(Network::Mainnet);
+
+    assert_eq!(root.provenance(), TrustRootProvenance::Bootstrap);
+    assert_eq!(root.keys(), MAINNET_GOLDEN.as_slice());
+    assert_eq!(root.threshold(), REQUIRED_SIGNATURES);
+    assert!(
+        root.is_usable(),
+        "a fresh install must stay upgradable — an unusable bootstrap root means a new \
+         node can never be updated"
+    );
+}
+
+/// REQ-196-003 (Should).
+/// Acceptance: the mainnet and testnet arrays are DISJOINT after the cutover.
+///
+/// Deliberately NOT asserted as a security boundary. The signed message is
+/// `"{version}:{sha256(CHECKSUMS.txt)}"` and carries no network term, so a signature made
+/// for one network still verifies on the other wherever that signer appears in the
+/// resolved array. Disjointness narrows who can cross; it does not close the crossing.
+/// [P7, P8 -> O6]
+#[test]
+fn req_196_003_mainnet_and_testnet_no_longer_share_a_signer() {
+    let mainnet: Vec<String> = bootstrap_maintainer_keys(Network::Mainnet)
+        .iter()
+        .map(|k| k.to_ascii_lowercase())
+        .collect();
+
+    for key in bootstrap_maintainer_keys(Network::Testnet) {
+        assert!(
+            !mainnet.contains(&key.to_ascii_lowercase()),
+            "testnet bootstrap key {key} is ALSO a mainnet key. The signed message carries \
+             no network term, so that signer can authorise a mainnet release with a \
+             testnet signature. Keep the two arrays disjoint."
+        );
+    }
+}

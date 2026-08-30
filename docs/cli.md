@@ -1955,20 +1955,21 @@ Trust root: OnChain (5 key(s), threshold 3, mainnet) from /var/lib/doli/mainnet
 ### 18.2. `--network` is NOT a security boundary (known gap)
 
 `--network` selects which compile-time key array is used when — and only when — this host
-has no on-chain maintainer set. **It does not bind a signature to a network.** Two facts,
-both current:
+has no on-chain maintainer set. **It does not bind a signature to a network.** The reason
+is unchanged: the signed release message is `{version}:{sha256(CHECKSUMS.txt)}` — it
+carries **no network term**.
 
-1. The mainnet and testnet bootstrap key arrays are **byte-identical**
-   (`crates/updater/src/constants.rs`).
-2. The signed release message is `{version}:{sha256(CHECKSUMS.txt)}` — it carries **no
-   network term**.
+The two bootstrap key arrays were byte-identical until the INC-I-196 mainnet cutover and
+are now disjoint (`crates/updater/src/constants.rs`). That narrows who can replay across
+networks; it does not close the gap. Verification asks only "is this signer in the
+resolved array?", so any holder of a testnet bootstrap key still authorizes a **mainnet**
+release on any host that resolves the testnet array, and any signer appearing in both
+arrays crosses freely in either direction.
 
-So a signature produced for a testnet release verifies against the mainnet root, and vice
-versa. Do not treat `--network` as a control that prevents cross-network release replay;
-it does not, and no other mechanism does either today. Closing this requires putting the
-network into the signed bytes, which invalidates every already-published
-`SIGNATURES.json` and therefore needs its own coordinated rollout (INC-I-172
-AUDIT-P2-012, deferred).
+Do not treat `--network` — or the arrays being disjoint — as a control that prevents
+cross-network release replay. Closing this requires putting the network into the signed
+bytes, which invalidates every already-published `SIGNATURES.json` and therefore needs its
+own coordinated rollout (INC-I-172 AUDIT-P2-012, deferred).
 
 ---
 

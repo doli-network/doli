@@ -95,33 +95,39 @@ fn the_chain_derived_five_resolves_to_a_usable_on_chain_root() {
     }
 }
 
-/// REQ-172-011 (Must). RED before the AUDIT-P0-010 containment.
-/// Acceptance: a maintainer set that is no longer the chain-derived five authorises
-/// nothing on the CLI path either — and never degrades to the compiled keys. This is the
-/// state ONE maintainer key can reach today through the entry-counting governance
-/// multisig.
+/// REQ-172-011 (Must), REQ-196-001 (Must).
+/// Acceptance: a rotated maintainer set is authoritative on the CLI path and carries its
+/// own keys — and still never degrades to the compiled keys.
+///
+/// This assertion INVERTED at INC-I-196. `doli upgrade` re-resolves on every invocation,
+/// so the M1 containment made it the FIRST thing to break after the INC-I-175 rotation:
+/// `Insufficient signatures: 0/3` against a zero-key root, on a correctly signed release.
 /// [P2 -> O1, O2, O3]
 #[test]
-fn a_mutated_set_authorises_nothing_and_never_becomes_bootstrap() {
+fn a_rotated_set_is_authoritative_and_never_becomes_bootstrap() {
     for network in [Network::Mainnet, Network::Testnet] {
         let mut keys = chain_derived_five(network);
-        keys[0] = "11".repeat(32); // one maintainer swapped for an attacker key
+        keys[0] = "11".repeat(32); // one maintainer swapped — one step of a rotation
 
-        let root = TrustRoot::resolve(keys, 3, 4242, network);
+        let root = TrustRoot::resolve(keys.clone(), 3, 4242, network);
 
         assert_eq!(
             root.provenance(),
             TrustRootProvenance::OnChain,
-            "{network:?}: a contained root must stay OnChain — becoming Bootstrap hands \
+            "{network:?}: an on-chain root must stay OnChain — becoming Bootstrap hands \
              authority back to the publicly exposed compiled keys"
         );
-        assert!(
-            !root.is_usable(),
-            "{network:?}: `doli upgrade` runs as ROOT. A maintainer set reachable from a \
-             single key via the entry-counting multisig (AUDIT-P0-010) must not authorise \
-             a binary install until the M2 distinct-signer counter activates."
+        assert_eq!(
+            root.keys(),
+            keys.as_slice(),
+            "{network:?}: the CLI must verify against the host's own on-chain members"
         );
-        assert!(root.keys().is_empty());
+        assert!(
+            root.is_usable(),
+            "{network:?}: reaching this membership already required `threshold` DISTINCT \
+             on-chain maintainer signatures. Refusing it is what bricked `doli upgrade` \
+             fleet-wide after the INC-I-175 rotation (INC-I-196)."
+        );
     }
 }
 

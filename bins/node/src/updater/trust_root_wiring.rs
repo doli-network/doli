@@ -146,8 +146,7 @@ mod tests {
         assert!(root.is_usable());
     }
 
-    /// The chain-derived bootstrap five, as `PublicKey`s — the one membership the M1
-    /// containment accepts.
+    /// The compiled bootstrap five, as `PublicKey`s.
     fn chain_derived_five(network: Network) -> Vec<crypto::PublicKey> {
         updater::bootstrap_maintainer_keys(network)
             .iter()
@@ -170,21 +169,22 @@ mod tests {
         assert!(root.is_usable());
     }
 
-    /// AUDIT-P0-010 M1 containment: a set that is NOT the chain-derived five authorises
-    /// nothing, and never degrades to the compiled bootstrap keys.
+    /// INC-I-196: a rotated set is the authority and carries its own keys. The M1
+    /// containment emptied this root, which bricked auto-update fleet-wide.
     #[test]
-    fn a_mutated_on_chain_set_is_contained_and_authorises_nothing() {
+    fn a_rotated_on_chain_set_is_authoritative_and_carries_its_own_keys() {
         let mut members = chain_derived_five(Network::Mainnet);
-        members[0] = pubkey(200); // one maintainer swapped — the AUDIT-P0-010 outcome
+        members[0] = pubkey(200); // one maintainer swapped — one step of a rotation
         let state = storage::MaintainerState {
             version: storage::MAINTAINER_STATE_VERSION,
-            set: MaintainerSet::with_members(members, 10),
+            set: MaintainerSet::with_members(members.clone(), 10),
             last_derived_height: 10,
         };
         let root = resolve_trust_root(&state, Network::Mainnet);
         assert_eq!(root.provenance(), TrustRootProvenance::OnChain);
-        assert!(!root.is_usable());
-        assert!(root.keys().is_empty());
+        assert!(root.is_usable());
+        let expected: Vec<String> = members.iter().map(|m| m.to_hex()).collect();
+        assert_eq!(root.keys(), expected.as_slice());
     }
 
     #[test]
