@@ -283,7 +283,7 @@ jobs:
           key: gui-linux-x64
 
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^2"
+        run: cargo install tauri-cli --version "^2" --locked
 
       - name: Build frontend
         working-directory: bins/gui/src-ui
@@ -340,7 +340,7 @@ jobs:
           key: gui-macos-arm64
 
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^2"
+        run: cargo install tauri-cli --version "^2" --locked
 
       - name: Build frontend
         working-directory: bins/gui/src-ui
@@ -396,7 +396,7 @@ jobs:
           key: gui-windows-x64
 
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^2"
+        run: cargo install tauri-cli --version "^2" --locked
 
       - name: Build frontend
         working-directory: bins/gui/src-ui
