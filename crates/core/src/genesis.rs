@@ -137,9 +137,10 @@ pub fn mainnet_genesis_producers() -> Vec<(PublicKey, u32)> {
 
 /// Testnet genesis producers (pubkey hex, bond_count)
 ///
-/// NT1-NT5 are both **producers AND maintainers** (dual role, 3-of-5 release signing).
-/// NT6-NT12 register on-chain after genesis as producers only.
-/// Keys for NT1-NT5 match BOOTSTRAP_MAINTAINER_KEYS_TESTNET in `crates/updater/src/lib.rs`.
+/// NT1-NT12 are producers ONLY. NT1-NT5 were also the release-signing maintainers until
+/// the INC-I-196 testnet rotation moved that role to five signing-only wallets, so these
+/// keys are NO LONGER `BOOTSTRAP_MAINTAINER_KEYS_TESTNET` — do not re-couple the two.
+/// NT6-NT12 register on-chain after genesis.
 /// Synthetic bond outpoints (Hash::ZERO) - cannot unbond.
 pub const TESTNET_GENESIS_PRODUCERS: &[(&str, u32)] = &[
     (

@@ -442,13 +442,14 @@ fn audit_p1_003_digest_is_independent_of_last_updated() {
 
 /// AUDIT-P1-003 (Must) — the digest DIFFERS across networks.
 ///
-/// `bootstrap_maintainer_keys` returns a BYTE-IDENTICAL array for mainnet and
-/// testnet (`crates/updater/src/constants.rs:53-86`, and its own doc says the
-/// selection "is NOT a cross-network security boundary"). So a maintainer-set
-/// digest that omitted the genesis hash would be IDENTICAL on mainnet and
-/// testnet for the bootstrap five, and an operator comparing a mainnet node
-/// against a testnet node would see a match. The genesis hash is what makes the
-/// digest a per-CHAIN answer.
+/// The digest must separate chains on the GENESIS HASH, never on key material.
+/// `bootstrap_maintainer_keys` once returned a byte-identical array for mainnet and
+/// testnet; the arrays are disjoint since the INC-I-175/196 rotations, but that is a
+/// property of today's constants, not of the digest, and its own doc still says the
+/// selection "is NOT a cross-network security boundary". Any set that ever appears on
+/// both chains — including a hand-built one, as here — would digest IDENTICALLY without
+/// the genesis hash, and an operator comparing a mainnet node against a testnet node
+/// would see a match. The genesis hash is what makes the digest a per-CHAIN answer.
 #[test]
 fn audit_p1_003_digest_differs_across_genesis_hashes() {
     let members = five_members();

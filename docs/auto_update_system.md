@@ -61,10 +61,12 @@ The DOLI auto-update system is a decentralized, cryptographically secure mechani
 
 ## 2. Maintainer Bootstrap System
 
-Unlike other blockchains that hardcode maintainer keys in configuration files, DOLI derives its maintainer set directly from the blockchain. The first 5 registered producers automatically become maintainers. Each network has its own independent maintainer set:
+Unlike other blockchains that hardcode maintainer keys in configuration files, DOLI derives its maintainer set directly from the blockchain. Each network has its own independent maintainer set, and a host that has one uses it — the compiled arrays below are read ONLY by a host that has never established an on-chain set, plus the CLI. They are not a fallback (INC-I-172 F1).
 
-- **Mainnet**: N1-N5 are producers AND maintainers. N6-N12 are producers only.
-- **Testnet**: NT1-NT5 are producers AND maintainers. NT6-NT12 are producers only.
+**Maintainers are NOT producers on either network.** Genesis seeded the set from the first 5 registered producers, but both networks have since rotated it to five signing-only wallets — mainnet under INC-I-175/196 at h=331_457, testnet under INC-I-196. The old keys' private halves are committed at `testnet/keys/producer_{1..5}.json`, so anyone with the repository could have signed a release for a host resolving them. Do not re-couple the producer and maintainer roles.
+
+- **Mainnet**: N1-N12 are producers only. Maintainers are 5 separate signing-only keys.
+- **Testnet**: NT1-NT12 are producers only. Maintainers are 5 separate signing-only keys.
 
 Bootstrap keys are hardcoded per-network in `BOOTSTRAP_MAINTAINER_KEYS_MAINNET` and `BOOTSTRAP_MAINTAINER_KEYS_TESTNET` (`crates/updater/src/constants.rs`).
 

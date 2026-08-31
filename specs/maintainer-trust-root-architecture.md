@@ -81,6 +81,15 @@
 >   retired because its own stated exit condition was met: the distinct-signer governance
 >   counter activated at `maintainer_derivation_activation_height` (mainnet 172_000). The
 >   caution above still stands for every other control.
+> * **Compiled bootstrap arrays rotated (INC-I-175 Phase 5 / INC-I-196).** Both
+>   `BOOTSTRAP_MAINTAINER_KEYS_MAINNET` and `BOOTSTRAP_MAINTAINER_KEYS_TESTNET` now carry
+>   signing-only wallets whose private halves are held outside this repository. Neither array
+>   is the genesis producer five any more: mainnet cut over at h=331_457, testnet followed and
+>   is compiled-only (the testnet on-chain maintainer set is `testnet/keys/producer_{508..512}`,
+>   also tracked, so it could not be reused). The two arrays are DISJOINT — which narrows FM-12
+>   (§F7) without closing it, because the signed message still carries no network term.
+>   `req_196_004_no_network_ships_a_publicly_compromised_key`
+>   (`crates/updater/tests/trust_root_fail_closed.rs`) is the standing guard.
 > * **M3 (Layer 3)** — F7's replay-domain binding on governance messages, plus residuals
 >   **R1** and **R3** from M2 (**R2** is closed, see above). NOT implemented. Scope:
 >   `docs/.workflow/inc-i-172-M3-scope.md`.
@@ -93,6 +102,9 @@ keys are compromised — a public leak (INC-I-170) or a future server hack — w
 without a synchronized fleet redeploy**. Assume the current 5 maintainer keys are ALREADY compromised
 when the fix ships: all 5 private keys are byte-identical to committed
 `testnetlinux/keys/producer_{1..5}.json` (analyst F1, INC-I-170 12/12 proof), and `REQUIRED_SIGNATURES=3`.
+That premise was the state of BOTH compiled arrays until the INC-I-175/196 rotations; it no longer
+describes either one (see Implementation status). It is retained because it is the problem this
+architecture was built to solve, and the rotation is the exercise of that capability, not its retirement.
 
 The root cause is architectural, not a single bug: no crate owns "who are the maintainers"; the on-chain
 trust root exists but is never read (`run.rs:461` returns `Vec::new()`); the effective root is 5
