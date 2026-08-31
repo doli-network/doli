@@ -437,10 +437,10 @@ async fn audit_p1_003_published_digest_is_independent_of_last_change_block() {
 
 /// AUDIT-P1-003 (Must) — the digest DIFFERS across networks for the same set.
 ///
-/// `bootstrap_maintainer_keys` is byte-identical for mainnet and testnet
-/// (`crates/updater/src/constants.rs:53-86`), so without `genesis_hash` in the
-/// preimage an operator comparing a mainnet node against a testnet node sees a
-/// false MATCH on the bootstrap five.
+/// The same member list can exist on both chains — it did verbatim while
+/// `bootstrap_maintainer_keys` was byte-identical across networks, and it can recur at
+/// any time because nothing forbids it. Without `genesis_hash` in the preimage an
+/// operator comparing a mainnet node against a testnet node then sees a false MATCH.
 #[tokio::test]
 async fn audit_p1_003_published_digest_differs_between_mainnet_and_testnet() {
     let set = MaintainerSet {

@@ -2664,8 +2664,8 @@ NOTE: UpdateService, PendingUpdate, and spawn_update_service() are NOT in this c
 - DEFAULT_CRASH_THRESHOLD — private constant (3); exposed via UpdateParams::crash_threshold field
 
 ### Bootstrap Keys
-- BOOTSTRAP_MAINTAINER_KEYS_MAINNET — 5 Ed25519 hex public keys (mainnet N1–N5)
-- BOOTSTRAP_MAINTAINER_KEYS_TESTNET — 5 Ed25519 hex public keys (testnet NT1–NT5)
+- BOOTSTRAP_MAINTAINER_KEYS_MAINNET — 5 Ed25519 hex public keys; signing-only wallets, NOT N1–N5 (rotated INC-I-175/196)
+- BOOTSTRAP_MAINTAINER_KEYS_TESTNET — 5 Ed25519 hex public keys; signing-only wallets, NOT NT1–NT5 (rotated INC-I-196)
 - bootstrap_maintainer_keys(network) — returns network-specific array
 - is_using_placeholder_keys(network) — true if any key starts with "00000000" (must be false before mainnet launch)
 - assert_production_keys(network) — panics on placeholder keys; call during node init

@@ -278,8 +278,12 @@ Dedicated archive+relay seed nodes for network entry and block archival.
 Each network has its own set of 5 maintainer keys (3-of-5 threshold for release signing).
 Hardcoded in binary at `crates/updater/src/constants.rs` for security.
 
-- **Mainnet**: N1-N5 are producers AND maintainers. N6-N12 are producers only.
-- **Testnet**: NT1-NT5 are producers AND maintainers. NT6-NT12 are producers only.
+Maintainers are **NOT** producers. Both networks rotated the role away from the genesis
+five (mainnet INC-I-175/196 at h=331_457, testnet INC-I-196) because the old keys' private
+halves are committed at `testnet/keys/producer_{1..5}.json`.
+
+- **Mainnet**: N1-N12 are producers only. Maintainers are 5 separate signing-only keys.
+- **Testnet**: NT1-NT12 are producers only. Maintainers are 5 separate signing-only keys.
 
 ---
 

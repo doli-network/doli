@@ -65,24 +65,21 @@ pub const BOOTSTRAP_MAINTAINER_KEYS_MAINNET: [&str; 5] = [
 
 /// Bootstrap maintainer public keys for testnet (Ed25519, hex-encoded)
 ///
-/// NT1-NT5 are both **producers AND maintainers** on testnet (dual role).
-/// NT6-NT12 are producers only — they produce blocks but cannot sign releases.
+/// **Signing-only wallets.** They are not producers and are not testnet genesis
+/// producers. Do NOT re-couple the roles: the previous array WAS NT1-NT5, whose private
+/// halves are committed at `testnet/keys/producer_{1..5}.json`, so any reader of this
+/// repository could sign a release that a host resolving this array would install.
 ///
 /// Same rule as the mainnet array: this is the trust root ONLY for a node that has
 /// never established an on-chain maintainer set, and for the CLI. It is not a
 /// fallback, and an empty or sub-threshold on-chain root never reaches it
 /// (INC-I-172 F1).
 pub const BOOTSTRAP_MAINTAINER_KEYS_TESTNET: [&str; 5] = [
-    // NT1 — producer + maintainer
-    "202047256a8072a8b8f476691b9a5ae87710cc545e8707ca9fe0c803c3e6d3df",
-    // NT2 — producer + maintainer
-    "effe88fefb6d992a1329277a1d49c7296d252bbc368319cb4bc061119926272b",
-    // NT3 — producer + maintainer
-    "54323cefd0eabac89b2a2198c95a8f261598c341a8e579a05e26322325c48c2b",
-    // NT4 — producer + maintainer
-    "2d27fdcc6a240b76ecaea64ad05c9b70d1adad90b6f9c43e8cbbbc0f1ab04116",
-    // NT5 — producer + maintainer
-    "3047e96b13276dd92ef5eb2d6396e66c29909217f11f8c0544ea7d76a76c7602",
+    "f53aa197f35c4a9be03b38b3d9b3b265d0b5e73ee6de2deb9459bd57097c4f9b",
+    "b655a415e2fbada433537340f489dc150c485f68efccc018382ec60bccd4ad92",
+    "b49d860d7b1f2a6b0d7d01ba710ed7d3bc75b698803dcc5bec0252bfcdf67229",
+    "35ecc3e1c2467be8c4f888b4bf559e02f3ad8021ed667a34af258276ad685dd7",
+    "3158868a93c8c96601703e2f9b75ef04a6ce5894ee5d69e25cc67b677ee6ecd9",
 ];
 
 /// Get the bootstrap maintainer keys for a specific network.
