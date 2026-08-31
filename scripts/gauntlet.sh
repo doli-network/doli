@@ -36,12 +36,21 @@
 #     reconvergence, and exactly-one registration. It SKIPS cleanly when the
 #     fleet has no live UNREGISTERED producer, no funding source, or no
 #     non-producing node. See scripts/gauntlet-gs010.sh.
+#   * GS-014 (governance relay from a non-producer) is opt-in AND writes to the
+#     CHAIN: it removes a maintainer and re-adds the SAME key, both submitted to
+#     a node PROVEN to carry no --producer flag. Run `--gs014` WITH
+#     GAUNTLET_GS014_CONFIRM=1; testnet only. Replays INC-I-195 (accepted by a
+#     relay endpoint, silently never mined) and asserts the change actually
+#     reaches a producer and applies. STATE-NEUTRAL: a completed run ends on the
+#     digest it started from. It SKIPS cleanly when no non-producer endpoint is
+#     live, the set is not an enforced on-chain set, or it has fewer than 4
+#     members. See scripts/gauntlet-gs014.sh.
 #
 # Assertions key off STRUCTURED telemetry fields (gap=, rollback_depth=,
 # sync_fails=, state=) and distinct-event phrases — NEVER raw keywords that also
 # appear in per-second telemetry (the word "rollback" logs ~1/sec at depth 0).
 #
-# Usage:  bash scripts/gauntlet.sh [--quick]
+# Usage:  bash scripts/gauntlet.sh [--quick] [--chaos|--gs009|--gs010|--gs014]
 # Env:    WORKFLOW_RUN_ID, GAUNTLET_WINDOW (s, default 45), GAUNTLET_RESTART_NODE
 #         (default n5), GAUNTLET_RSS_CEIL_MB (default 800), GAUNTLET_MIN_NODES
 #         (default 3), GAUNTLET_NO_PERTURB (1=skip restart).
@@ -56,6 +65,8 @@ GS009_LIB="$ROOT/scripts/gauntlet-gs009.sh"
 [ -f "$GS009_LIB" ] && . "$GS009_LIB"
 GS010_LIB="$ROOT/scripts/gauntlet-gs010.sh"
 [ -f "$GS010_LIB" ] && . "$GS010_LIB"
+GS014_LIB="$ROOT/scripts/gauntlet-gs014.sh"
+[ -f "$GS014_LIB" ] && . "$GS014_LIB"
 LOG_DIR="$HOME/testnet/logs"
 LABEL_PREFIX="network.doli.testnet"
 
@@ -73,12 +84,14 @@ WAIVE_REASON="${GAUNTLET_WAIVE_REASON:-}"
 CHAOS=0
 GS009=0
 GS010=0
+GS014=0
 for a in "$@"; do
   case "$a" in
     --quick) WINDOW=20 ;;
     --chaos) CHAOS=1 ;;
     --gs009) GS009=1 ;;
     --gs010) GS010=1 ;;
+    --gs014) GS014=1 ;;
   esac
 done
 CHAOS_RECOVERED=1   # stays 1 unless a chaos injector fails to recover the node
@@ -265,7 +278,17 @@ say "  baseline max height = $BASE_MAX"
 
 # ── perturbation dispatch ───────────────────────────────────────────────────
 RP="$(port_of "$RESTART_NODE")"
-if [ "${GS010:-0}" = "1" ]; then
+if [ "${GS014:-0}" = "1" ]; then
+  # OPT-IN GS-014 governance relay from a NON-PRODUCER endpoint (perturbative AND
+  # chain-writing: two maintainer governance transactions). Replays INC-I-195,
+  # then re-baselines so the window judges the RECOVERED steady state.
+  say "\n${C_R}▸ GS-014 MODE — GOVERNANCE RELAY FROM A NON-PRODUCER (writes to the chain: remove + re-add a maintainer)${C_0}"
+  echo "0" > "$REJOIN_FILE"
+  gs014_inject
+  say "  [gs014] settling 10s, then re-baselining for a clean observation window"
+  sleep 10
+  build_nodecfg
+elif [ "${GS010:-0}" = "1" ]; then
   # OPT-IN GS-010 duplicate-registration poison (perturbative AND chain-writing:
   # funds a wallet and permanently bonds a producer). Replays INC-I-147, then
   # re-baselines so the window judges the RECOVERED steady state.
@@ -553,6 +576,8 @@ assert(){
       _gs012_assert "$t"; return $? ;;
     gs013-no-unbacked-weight)
       _gs013_assert "$t"; return $? ;;
+    gs014-relay-accepted|gs014-applies-from-non-producer|gs014-set-restored|gs014-fleet-agrees-on-set)
+      _gs014_assert "$t"; return $? ;;
     *)
       why="unknown assertion token '$t'" ;;
   esac
@@ -566,6 +591,7 @@ inj_tag(){
   local sid="$1"
   if [ "${GS009:-0}" = "1" ] && [ "$sid" = "GS-009" ]; then echo "inj"; return; fi
   if [ "${GS010:-0}" = "1" ] && [ "$sid" = "GS-010" ]; then echo "inj"; return; fi
+  if [ "${GS014:-0}" = "1" ] && [ "$sid" = "GS-014" ]; then echo "inj"; return; fi
   if [ "$CHAOS" = "1" ]; then
     case "$sid" in GS-002|GS-003|GS-004|GS-005|GS-007) echo "inj";; *) echo "obs";; esac
   elif [ "$NO_PERTURB" != "1" ]; then
