@@ -509,9 +509,8 @@ impl StateDb {
         match self.db.get_cf(cf, META_EPOCH_PRODUCER_LIST) {
             Ok(Some(bytes)) if bytes.len() >= 32 && bytes.len() % 32 == 0 => {
                 let mut keys = Vec::with_capacity(bytes.len() / 32);
-                for chunk in bytes.chunks_exact(32) {
-                    let arr: [u8; 32] = chunk.try_into().unwrap();
-                    keys.push(crypto::PublicKey::from_bytes(arr));
+                for arr in bytes.as_chunks::<32>().0 {
+                    keys.push(crypto::PublicKey::from_bytes(*arr));
                 }
                 Some(keys)
             }
@@ -527,9 +526,8 @@ impl StateDb {
         match self.db.get_cf(cf, META_ACTIVE_PRODUCTION_LIST) {
             Ok(Some(bytes)) if bytes.len() >= 32 && bytes.len() % 32 == 0 => {
                 let mut keys = Vec::with_capacity(bytes.len() / 32);
-                for chunk in bytes.chunks_exact(32) {
-                    let arr: [u8; 32] = chunk.try_into().unwrap();
-                    keys.push(crypto::PublicKey::from_bytes(arr));
+                for arr in bytes.as_chunks::<32>().0 {
+                    keys.push(crypto::PublicKey::from_bytes(*arr));
                 }
                 Some(keys)
             }

@@ -34,20 +34,17 @@ impl SyncManager {
                 // Without this, we keep sending requests to a dead peer forever —
                 // they silently fail, time out, and the node stalls at 0 pending requests.
                 if !self.peers.contains_key(&peer) {
-                    if let Some(new_peer) = self.best_peer() {
-                        warn!(
-                            "[SYNC] Header peer {} lost (evicted) — switching to {}",
-                            peer, new_peer
-                        );
-                        peer = new_peer;
-                        if let SyncPipelineData::Headers {
-                            peer: ref mut p, ..
-                        } = &mut self.pipeline_data
-                        {
-                            *p = new_peer;
-                        }
-                    } else {
-                        return None;
+                    let new_peer = self.best_peer()?;
+                    warn!(
+                        "[SYNC] Header peer {} lost (evicted) — switching to {}",
+                        peer, new_peer
+                    );
+                    peer = new_peer;
+                    if let SyncPipelineData::Headers {
+                        peer: ref mut p, ..
+                    } = &mut self.pipeline_data
+                    {
+                        *p = new_peer;
                     }
                 }
 
