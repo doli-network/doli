@@ -969,6 +969,25 @@ pub(crate) enum ReleaseCommands {
         #[arg(long)]
         key: Option<PathBuf>,
     },
+
+    /// Verify a release manifest against this host's maintainer trust root
+    ///
+    /// Checks SIGNATURES.json against CHECKSUMS.txt: version binding, checksums
+    /// binding, and k-of-n distinct signers. Exits non-zero on any failure.
+    Verify {
+        /// Release version to verify (e.g., v6.26.3)
+        #[arg(long)]
+        version: String,
+
+        /// Directory holding SIGNATURES.json + CHECKSUMS.txt. Required for a DRAFT
+        /// release: the unauthenticated GitHub API cannot see one.
+        #[arg(long)]
+        dir: Option<PathBuf>,
+
+        /// Node data directory used to resolve the on-chain maintainer set
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]

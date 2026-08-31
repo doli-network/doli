@@ -231,9 +231,20 @@ async fn main() -> Result<()> {
             cmd_upgrade::cmd_upgrade(version, yes, doli_node_path, service, data_dir, network)
                 .await?;
         }
-        Commands::Release { command } => {
-            cmd_governance::cmd_release(&wallet, command).await?;
-        }
+        Commands::Release { command } => match command {
+            // `Verify` needs the network + trust root and no wallet; every other
+            // release subcommand signs with the wallet.
+            commands::ReleaseCommands::Verify {
+                version,
+                dir,
+                data_dir,
+            } => {
+                let network: doli_core::Network =
+                    cli.network.parse().map_err(|e| anyhow::anyhow!("{}", e))?;
+                cmd_upgrade::cmd_release_verify(version, dir, data_dir, network).await?;
+            }
+            signing => cmd_governance::cmd_release(&wallet, signing).await?,
+        },
         Commands::Protocol { command } => {
             cmd_governance::cmd_protocol(&wallet, &rpc_endpoint, command).await?;
         }

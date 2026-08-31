@@ -174,7 +174,9 @@ doli-v1.0.0-x86_64-unknown-linux-musl/
 3. **GitHub Actions automatically:**
    - Builds binaries for all platforms
    - Builds multi-arch Docker images
-   - Creates GitHub Release with artifacts and empty SIGNATURES.json scaffold
+   - Creates the GitHub Release **as a DRAFT** with artifacts and an empty
+     SIGNATURES.json scaffold (INC-I-202: a draft is invisible to the unauthenticated
+     API, so no node and no `doli upgrade` can reach an unsigned release)
    - Generates release notes from commits
 
 4. **Sign the release (after CI completes):**
@@ -191,6 +193,38 @@ doli-v1.0.0-x86_64-unknown-linux-musl/
    #   4. Verify with: gh release download vX.Y.Z --pattern SIGNATURES.json
    ```
 
+5. **Publish the draft (only after signing):**
+   ```bash
+   ./scripts/publish-release.sh X.Y.Z
+   ```
+   The script downloads SIGNATURES.json + CHECKSUMS.txt from the draft, refuses a
+   missing, malformed, or sub-threshold manifest by name and count, runs
+   `doli release verify --version vX.Y.Z --dir <tmp>` against this host's maintainer
+   trust root, and only then runs `gh release edit vX.Y.Z --draft=false --latest`.
+   On success it also strips the CI unsigned-draft banner from the release notes
+   before promoting; a failed verification never touches the notes. Any failure
+   leaves the release a draft. Never promote by hand.
+
+6. **Monitor that the newest release stays healthy (recurring, read-only):**
+   ```bash
+   ./scripts/monitor-release-signed.sh
+   ```
+   Single predicate: the newest `v*` tag (version-sorted) has a **published**
+   (non-draft) GitHub release whose signatures **verify**. Exit code 0 means
+   healthy; any non-zero exit names the tag and the fix (`sign-release.sh` or
+   `publish-release.sh`). It never writes to any release — safe to run from
+   cron or by hand. Two env vars: `DOLI_CLI` (doli binary path) and `REPO_DIR`
+   (repo whose tags to read; defaults to this checkout).
+
+   Suggested cron line (**not installed by this repo** — no crontab entry is
+   added and no remote host is touched):
+   ```
+   */15 * * * * cd /path/to/doli && ./scripts/monitor-release-signed.sh || echo "release unhealthy" | mail -s "DOLI release alert" you@example.com
+   ```
+   Edit a crontab with `crontab -e`, interactively. **Never** pipe
+   `crontab -l` through `sed` to edit it — an empty `sed` output silently
+   wipes the whole crontab.
+
 ### Release Checklist
 
 - [ ] All tests passing on main branch
@@ -203,6 +237,8 @@ doli-v1.0.0-x86_64-unknown-linux-musl/
 - [ ] Release notes reviewed
 - [ ] SIGNATURES.json signed by 3/5 maintainers (see [auto_update_system.md](./auto_update_system.md))
 - [ ] SIGNATURES.json uploaded to release artifacts
+- [ ] **BLOCKING — draft promoted with `./scripts/publish-release.sh X.Y.Z`**, never with
+      a hand-run `gh release edit --draft=false` (INC-I-202)
 - [ ] **BLOCKING — maintainer-rotation ordering checked** (see
       [Maintainer rotation: mandatory release ordering](#maintainer-rotation-mandatory-release-ordering)
       below). Violating this order stops auto-update on every node in the fleet.

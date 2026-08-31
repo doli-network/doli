@@ -10,7 +10,7 @@
 //! was supposed to backstop.
 //!
 //! [`verify_release_artifact`] closes the chain end to end. Every link is checked here,
-//! in one function, so the two operator paths (`doli upgrade`, `doli-node upgrade`)
+//! in one place, so the two operator paths (`doli upgrade`, `doli-node upgrade`)
 //! cannot drift apart:
 //!
 //! ```text
@@ -41,50 +41,41 @@ fn normalize_version(version: &str) -> &str {
     version.trim().trim_start_matches('v')
 }
 
-/// Authorize the install of `tarball` for `release_info` under `root`.
+/// L1+L2+L3 over a release manifest with no tarball in hand (INC-I-202 M2, REQ-202-005).
 ///
-/// Returns the number of DISTINCT maintainer signers that satisfied the root, so an
-/// operator-facing caller can report what was actually verified.
-///
-/// # Why each link is here
+/// `version` is the authoritative release TAG and `checksums_body` the raw CHECKSUMS.txt
+/// bytes fetched under it. Returns the number of DISTINCT maintainer signers.
 ///
 /// - **L1 (version).** Without it, a genuine SIGNATURES.json from release *A* is
 ///   accepted while release *B* is installed — a downgrade or a cross-release replay.
-///   The authoritative version is the release TAG (`GithubReleaseInfo::version`),
-///   which is what the tarball and CHECKSUMS.txt were fetched under.
 /// - **L2 (checksums hash).** This is the operand the maintainers actually signed. It
 ///   must equal the hash of the CHECKSUMS.txt bytes in hand, otherwise the signature
 ///   covers a file nobody is going to read.
 /// - **L3 (signatures).** Distinct-signer k-of-n against a fail-closed [`TrustRoot`].
-/// - **L4 (tarball).** The artifact must be the one the just-verified CHECKSUMS.txt
-///   names for this platform. Parsed from the verified bytes rather than taken from
-///   `release_info.expected_hash`, so no caller can substitute a different operand.
 ///
-/// The order is deliberate: cheap bindings first, then the signature check, then the
-/// hash of a possibly large tarball. Every branch returns `Err`; none warns and
-/// continues.
-pub fn verify_release_artifact(
-    release_info: &GithubReleaseInfo,
-    tarball: &[u8],
+/// Every branch returns `Err`; none warns and continues.
+pub fn verify_release_manifest(
+    version: &str,
+    checksums_body: &[u8],
     signatures: &SignaturesFile,
     root: &TrustRoot,
 ) -> Result<usize> {
     // ---- L1: the signed version must be the version being installed ----------
-    if normalize_version(&signatures.version) != normalize_version(&release_info.version) {
+    if normalize_version(&signatures.version) != normalize_version(version) {
         error!(
             "Refusing to install v{}: SIGNATURES.json is for v{}. A genuine signature over a \
              different release is a replay, not an authorisation (INC-I-172 F1).",
-            release_info.version, signatures.version
+            version, signatures.version
         );
         return Err(UpdateError::ArtifactBindingMismatch {
             field: "version",
             signed: signatures.version.clone(),
-            actual: release_info.version.clone(),
+            actual: version.to_string(),
         });
     }
 
     // ---- L2: the signed CHECKSUMS.txt hash must be the hash of the bytes fetched ----
-    let actual_checksums_sha256 = sha256_hex(&release_info.checksums_body);
+    let actual_checksums_sha256 = sha256_hex(checksums_body);
     if !signatures
         .checksums_sha256
         .eq_ignore_ascii_case(&actual_checksums_sha256)
@@ -93,7 +84,7 @@ pub fn verify_release_artifact(
             "Refusing to install v{}: the maintainer signatures cover CHECKSUMS.txt {} but the \
              CHECKSUMS.txt fetched for this release hashes to {}. The signed file is not the file \
              the artifact hash comes from (INC-I-172 F1).",
-            release_info.version, signatures.checksums_sha256, actual_checksums_sha256
+            version, signatures.checksums_sha256, actual_checksums_sha256
         );
         return Err(UpdateError::ArtifactBindingMismatch {
             field: "checksums_sha256",
@@ -103,9 +94,8 @@ pub fn verify_release_artifact(
     }
 
     // ---- L3: enough DISTINCT maintainer signatures over that bound pair ------
-    // The message operands are now proven to describe the artifact, so signing them
-    // is signing the install. `sf`'s own strings are used verbatim to reproduce the
-    // publisher's message byte-for-byte (L1 only pinned them modulo the `v` prefix).
+    // `sf`'s own strings reproduce the publisher's message byte-for-byte: L1 only
+    // pinned them modulo the `v` prefix.
     let sig_release = Release {
         version: signatures.version.clone(),
         binary_sha256: signatures.checksums_sha256.clone(),
@@ -115,13 +105,39 @@ pub fn verify_release_artifact(
         published_at: 0,
         target_networks: Vec::new(),
     };
-    let distinct_signers = verify_release_with_trust_root(&sig_release, root)?;
+    verify_release_with_trust_root(&sig_release, root)
+}
+
+/// Authorize the install of `tarball` for `release_info` under `root`.
+///
+/// L1-L3 are [`verify_release_manifest`] — ONE implementation, shared with the publish
+/// gate so the two cannot drift. L4 lives here: the artifact must be what the
+/// just-verified CHECKSUMS.txt names for this platform, parsed from the verified bytes
+/// rather than from `release_info.expected_hash`, so no caller can substitute a
+/// different operand.
+///
+/// Returns the number of DISTINCT maintainer signers, so an operator-facing caller can
+/// report what was actually verified. The order is deliberate: cheap bindings first, then
+/// the signature check, then the hash of a possibly large tarball.
+pub fn verify_release_artifact(
+    release_info: &GithubReleaseInfo,
+    tarball: &[u8],
+    signatures: &SignaturesFile,
+    root: &TrustRoot,
+) -> Result<usize> {
+    let distinct_signers = verify_release_manifest(
+        &release_info.version,
+        &release_info.checksums_body,
+        signatures,
+        root,
+    )?;
 
     // ---- L4: the artifact must be what the verified CHECKSUMS.txt names -------
     let checksums_text = String::from_utf8_lossy(&release_info.checksums_body);
     let expected_tarball_hash = platform_tarball_hash(&checksums_text)?;
     verify_hash(tarball, &expected_tarball_hash)?;
 
+    let actual_checksums_sha256 = sha256_hex(&release_info.checksums_body);
     info!(
         "Install authorised for v{}: {} distinct signer(s) under the {} trust root, \
          CHECKSUMS.txt {} bound to the signatures, tarball bound to CHECKSUMS.txt",
@@ -143,6 +159,39 @@ fn sha256_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constants::BOOTSTRAP_MAINTAINER_KEYS_MAINNET;
+
+    // REQ-202-004 — Decision: an Ok here means the publish gate authorises the exact zero-signature manifest shape CI actually published.
+    #[test]
+    fn verify_release_manifest_refuses_a_zero_entry_manifest() {
+        let body = b"deadbeef  doli-node-v6.26.3-linux-x86_64.tar.gz\n";
+        let sf = SignaturesFile {
+            version: "6.26.3".to_string(),
+            checksums_sha256: sha256_hex(body),
+            signatures: Vec::new(),
+        };
+        let root = TrustRoot::on_chain(
+            BOOTSTRAP_MAINTAINER_KEYS_MAINNET
+                .iter()
+                .map(|k| (*k).to_string())
+                .collect(),
+            3,
+        );
+
+        let err = verify_release_manifest("v6.26.3", body, &sf, &root)
+            .expect_err("a 0-entry manifest must never verify");
+
+        assert!(
+            matches!(
+                err,
+                UpdateError::InsufficientSignatures {
+                    found: 0,
+                    required: 3
+                }
+            ),
+            "expected InsufficientSignatures 0/3, got {err}"
+        );
+    }
 
     #[test]
     fn version_normalisation_strips_only_a_leading_v() {

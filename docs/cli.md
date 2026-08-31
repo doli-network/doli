@@ -1989,6 +1989,35 @@ Options:
 
 ---
 
+### 19.2. Release Verify
+
+Verify a release manifest against this host's maintainer trust root. Runs the same
+version binding, CHECKSUMS.txt binding, and k-of-n distinct-signer checks that gate
+`doli upgrade`, installs nothing, and exits non-zero on any failure (INC-I-202).
+
+```bash
+doli release verify [OPTIONS] --version <VERSION>
+
+Options:
+      --version <VERSION>    Release version to verify (e.g., v6.26.3)
+      --dir <DIR>            Directory holding SIGNATURES.json + CHECKSUMS.txt.
+                             Required for a DRAFT release: the unauthenticated
+                             GitHub API cannot see one.
+      --data-dir <DATA_DIR>  Node data directory used to resolve the on-chain
+                             maintainer set (default: the platform data dir for
+                             --network; falls back to the compiled bootstrap root)
+```
+
+The trust root line printed first names the provenance (`OnChain` or `Bootstrap`), the
+key count, and the threshold. The success line reports the DISTINCT signer count that
+was actually found, never the threshold constant.
+
+`scripts/publish-release.sh <version>` is the operator entry point: it downloads the
+draft release assets, runs this command over them, and only then promotes the release
+with `gh release edit --draft=false --latest`.
+
+---
+
 ## 20. Protocol Activation
 
 ### 20.1. Protocol Sign

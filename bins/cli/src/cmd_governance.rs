@@ -11,6 +11,8 @@ pub(crate) async fn cmd_release(wallet_path: &Path, command: ReleaseCommands) ->
         ReleaseCommands::Sign { version, key } => {
             cmd_release_sign(wallet_path, &version, key).await?;
         }
+        // Dispatched in main.rs: verification needs a trust root, not the wallet.
+        ReleaseCommands::Verify { .. } => anyhow::bail!("release verify: routed in main.rs"),
     }
     Ok(())
 }
