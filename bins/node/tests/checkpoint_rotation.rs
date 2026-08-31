@@ -8,8 +8,13 @@
 //! (because '5' > '4' in ASCII), so old checkpoints survived and new ones were
 //! immediately deleted after creation. This test reproduces that exact scenario.
 
+// INC-I-198: this file needs exactly ONE thing from the harness —
+// `TestNetwork::new(3, 3)`. It used to get it with `mod test_network;`, which
+// compiled all 25 test_network tests into this binary and ran them a SECOND
+// time. The harness now lives in `tests/common/mod.rs`, a subdirectory module
+// that cargo does not treat as a test target, so nothing is duplicated.
 #[allow(dead_code)]
-mod test_network;
+mod common;
 
 use crypto::KeyPair;
 use doli_core::consensus::ConsensusParams;
@@ -178,7 +183,7 @@ async fn test_checkpoint_rotation_keeps_highest_not_lexicographic() {
 /// blocks across the digit boundary, verifies checkpoints are correct.
 #[tokio::test]
 async fn test_checkpoint_rotation_with_gossip_network() {
-    let net = test_network::TestNetwork::new(3, 3).await;
+    let net = common::TestNetwork::new(3, 3).await;
 
     // Enable auto-checkpoint on node 0 (the "seed")
     {
