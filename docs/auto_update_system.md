@@ -972,7 +972,9 @@ sudo /opt/doli/target/release/doli upgrade --yes --service doli-mainnet-node4
 
 **Note:** If the binary is already at the target version, `doli upgrade` prints "Already up to date" and exits without restarting the service. To restart a service with an already-updated binary, use `sudo systemctl restart <service>` directly.
 
-For the full per-server command reference and upgrade sequence, see the ops runbook (`.claude/skills/doli-ops/SKILL.md`, Section 3.8).
+For the full per-server command reference and the fleet upgrade sequence, see
+`.claude/skills/release/SKILL.md` (post-tag release sequence + per-node binary map) and
+`.claude/skills/mainnet/SKILL.md` (mainnet deploy, confirmation gates).
 
 ### 9.2 Auto-Update Management (`doli-node update`)
 

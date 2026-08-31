@@ -786,40 +786,99 @@ curl -L https://raw.githubusercontent.com/doli-network/doli/main/scripts/update.
 
 ---
 
-### publish_release.sh
+### sign-release.sh
+
+| Property | Value |
+|----------|-------|
+| **Path** | `scripts/sign-release.sh` |
+| **Purpose** | Collect the 3-of-5 maintainer quorum and upload SIGNATURES.json to the draft release |
+| **What it does** | Verifies the release + CHECKSUMS.txt exist, signs with 3 rotated maintainer keys, assembles SIGNATURES.json, uploads it |
+| **Dependencies** | `gh` CLI (authenticated), `jq`, `doli` CLI, maintainer keys |
+| **Run time** | ~10 seconds |
+
+**Usage:**
+```bash
+./scripts/sign-release.sh X.Y.Z    # accepts X.Y.Z or vX.Y.Z
+```
+
+**Environment variables:**
+- `KEY_DIR` - maintainer key directory (default: `~/.ssh/doli`)
+- `KEY_1` / `KEY_2` / `KEY_3` - individual key paths (default: `$KEY_DIR/maintainer-{1,2,3}.json`)
+- `DOLI_CLI` - doli binary path (default: `./target/release/doli`, else `doli` on PATH)
+
+**Prerequisites:**
+- `gh auth login` completed
+- Rotated maintainer keys present (post-INC-I-175); the pre-rotation key files committed under `testnet/keys/` are LEAKED and must never be used
+
+---
+
+### publish-release.sh
+
+| Property | Value |
+|----------|-------|
+| **Path** | `scripts/publish-release.sh` |
+| **Purpose** | Verify a draft release's signatures and, only on success, promote it to public/`Latest` |
+| **What it does** | Downloads SIGNATURES.json + CHECKSUMS.txt, refuses a missing/malformed/sub-threshold manifest by name and count, runs `doli release verify`, strips the CI unsigned-draft banner, runs `gh release edit --draft=false --latest` |
+| **Dependencies** | `gh` CLI (authenticated), `jq`, `doli` CLI |
+| **Run time** | ~10 seconds |
+
+**Usage:**
+```bash
+./scripts/publish-release.sh X.Y.Z
+```
+
+**Environment variables:**
+- `THRESHOLD` - minimum valid signatures (default: `3`)
+- `DOLI_CLI` - doli binary path
+
+Any failure leaves the release a draft. Never promote with a hand-run `gh release edit --draft=false`.
+
+---
+
+### monitor-release-signed.sh
+
+| Property | Value |
+|----------|-------|
+| **Path** | `scripts/monitor-release-signed.sh` |
+| **Purpose** | Standing read-only check: the newest `v*` tag has a published release that verifies |
+| **What it does** | Version-sorts tags, reads the newest release's draft state and manifest, runs `doli release verify` |
+| **Dependencies** | `gh` CLI (authenticated), `jq`, `doli` CLI, `git` |
+| **Run time** | ~5 seconds |
+
+**Usage:**
+```bash
+./scripts/monitor-release-signed.sh
+```
+
+**Environment variables:**
+- `DOLI_CLI` - doli binary path
+- `REPO_DIR` - repo whose tags to read (default: this checkout)
+- `REPO` - GitHub `owner/name` (default: `doli-network/doli`)
+
+Exit 0 means healthy. Non-zero names the tag and the fix command. It never mutates a release.
+
+---
+
+### publish_release.sh — **LEGACY / SUPERSEDED (INC-I-202)**
+
+**Do not use.** Superseded by the three-command sequence below. This script builds the old
+`release.json` shape and predates the draft-then-promote pipeline and the INC-I-175 key rotation.
 
 | Property | Value |
 |----------|-------|
 | **Path** | `scripts/publish_release.sh` |
-| **Purpose** | Combine maintainer signatures and upload release.json to GitHub Release |
+| **Status** | **LEGACY — superseded by `sign-release.sh` + `publish-release.sh`** |
+| **Purpose** | (historic) Combine maintainer signatures and upload release.json to GitHub Release |
 | **What it does** | Validates signatures, downloads CHECKSUMS.txt, builds release.json, uploads via `gh` CLI |
 | **Dependencies** | `gh` CLI (authenticated), `jq`, `doli-node` (for signing) |
 | **Run time** | ~30 seconds (after GH Actions completes) |
 
-**Usage:**
+**Use this instead:**
 ```bash
-# Sign with each maintainer key (on separate machines)
-doli-node release sign --key producer_1.json --version v0.2.0 > sig1.json
-doli-node release sign --key producer_2.json --version v0.2.0 > sig2.json
-doli-node release sign --key producer_3.json --version v0.2.0 > sig3.json
-
-# Combine and upload
-./scripts/publish_release.sh v0.2.0 sig1.json sig2.json sig3.json
+./scripts/sign-release.sh X.Y.Z          # 1. collect the 3-of-5 quorum
+doli release verify --version vX.Y.Z     # 2. verify against the maintainer trust root
+./scripts/publish-release.sh X.Y.Z       # 3. promote the draft (verifies again first)
 ```
-
-**What it does:**
-1. Validates all signature files (JSON format, public_key + signature fields)
-2. Waits for GitHub release to be published (polls up to 10 minutes)
-3. Downloads CHECKSUMS.txt from the release
-4. Extracts the canonical hash (linux-x64-musl binary)
-5. Fetches release notes from GitHub
-6. Combines all signatures into `release.json`
-7. Uploads `release.json` to the GitHub release
-
-**Prerequisites:**
-- `gh auth login` completed
-- GitHub Actions release workflow finished for the version
-- At least 3 signature files from `doli-node release sign`
 
 ---
 
@@ -868,7 +927,10 @@ The gate (`.claude/hooks/gauntlet-gate.sh`) arms only when `.omega/gauntlet.conf
 | `build_release.sh` | 0 | ~10-30 min | **Build release binaries** |
 | `smoke_test_release.sh` | 1 | ~30-60 sec | **Release verification** |
 | `update.sh` | 0 | ~30 sec | **Manual binary update** |
-| `publish_release.sh` | 0 | ~30 sec | **Combine sigs & upload release.json** |
+| `sign-release.sh` | 0 | ~10 sec | **Collect the 3/5 maintainer quorum onto a draft release** |
+| `publish-release.sh` | 0 | ~10 sec | **Verify signatures, then promote the draft to public** |
+| `monitor-release-signed.sh` | 0 | ~5 sec | **Check the newest tag is published and verifies** |
+| `publish_release.sh` | 0 | ~30 sec | ~~Combine sigs & upload release.json~~ **LEGACY (INC-I-202)** |
 | `generate_chainspec.sh` | 0 | Instant | **Generate chainspec from wallet files** |
 | `deploy_producers.sh` | N | Interactive | **Deploy N producers interactively** |
 | `launch_testnet.sh` | 2 | Interactive | Basic devnet |

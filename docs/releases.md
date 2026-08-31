@@ -54,6 +54,10 @@ DOLI provides pre-built binaries for the following platforms:
 
 All releases are published to: https://github.com/doli-network/doli/releases
 
+A version appears here only after it has been signed and promoted. If the tag exists but the
+download 404s, the release is still an unsigned draft — see
+[Release Process (For Maintainers)](#release-process-for-maintainers).
+
 ```bash
 # Download latest release (Linux x64 static)
 VERSION=$(curl -s https://api.github.com/repos/doli-network/doli/releases/latest | grep tag_name | cut -d'"' -f4)
@@ -179,18 +183,32 @@ doli-v1.0.0-x86_64-unknown-linux-musl/
      API, so no node and no `doli upgrade` can reach an unsigned release)
    - Generates release notes from commits
 
-4. **Sign the release (after CI completes):**
+   **The release is not done here.** Until step 5 promotes it, the draft is invisible to the
+   unauthenticated GitHub API: it is not public, `releases/latest` does not return it, and no
+   node and no `doli upgrade` can download it. Steps 4-6 are mandatory.
+
+4. **Sign the release (BLOCKING — after CI completes):**
+
+   Signing keys are the rotated maintainer wallets (INC-I-175), stored on the signing host at
+   `~/.ssh/doli/maintainer-1.json`, `~/.ssh/doli/maintainer-2.json`,
+   `~/.ssh/doli/maintainer-3.json` (3 of the 5-key quorum).
+
    ```bash
-   # Option A: If gh CLI is on the signing machine
+   # Option A: gh CLI and the keys are on the same machine
    ./scripts/sign-release.sh X.Y.Z
 
-   # Option B: Split workflow (keys on omegacortex, gh on Mac)
-   # See .claude/skills/doli-ops/SKILL.md Section 4.6 for full procedure
-   # Summary:
-   #   1. SSH to omegacortex, sign with producer keys 1-3 using doli release sign
-   #   2. SCP the assembled SIGNATURES.json to Mac
-   #   3. gh release delete-asset + upload from Mac
-   #   4. Verify with: gh release download vX.Y.Z --pattern SIGNATURES.json
+   # Option B: keys and gh CLI live on different machines
+   #   B1. Keys elsewhere on the same host tree — point the script at them:
+   KEY_DIR=/path/to/keys ./scripts/sign-release.sh X.Y.Z
+   #       or per key: KEY_1=... KEY_2=... KEY_3=... ./scripts/sign-release.sh X.Y.Z
+   #   B2. No gh on the key host — sign there, then move the assembled manifest:
+   #       scp <keyhost>:SIGNATURES.json .
+   #       gh release upload vX.Y.Z SIGNATURES.json --clobber
+   ```
+
+   Then verify before promoting:
+   ```bash
+   doli release verify --version vX.Y.Z
    ```
 
 5. **Publish the draft (only after signing):**
@@ -227,21 +245,26 @@ doli-v1.0.0-x86_64-unknown-linux-musl/
 
 ### Release Checklist
 
+A strict sequence. Do not tick an item before every item above it is ticked.
+
 - [ ] All tests passing on main branch
 - [ ] Version bumped in Cargo.toml
 - [ ] CHANGELOG.md updated (if maintained)
-- [ ] Tag created and pushed
-- [ ] GitHub Actions workflow completed
-- [ ] Binaries tested on target platforms
-- [ ] Docker images verified
-- [ ] Release notes reviewed
-- [ ] SIGNATURES.json signed by 3/5 maintainers (see [auto_update_system.md](./auto_update_system.md))
-- [ ] SIGNATURES.json uploaded to release artifacts
-- [ ] **BLOCKING — draft promoted with `./scripts/publish-release.sh X.Y.Z`**, never with
-      a hand-run `gh release edit --draft=false` (INC-I-202)
 - [ ] **BLOCKING — maintainer-rotation ordering checked** (see
       [Maintainer rotation: mandatory release ordering](#maintainer-rotation-mandatory-release-ordering)
       below). Violating this order stops auto-update on every node in the fleet.
+- [ ] Tag created and pushed
+- [ ] GitHub Actions workflow completed — release exists as a **DRAFT** (not public yet)
+- [ ] Binaries tested on target platforms
+- [ ] Docker images verified
+- [ ] Release notes reviewed
+- [ ] **BLOCKING — release signed** with `./scripts/sign-release.sh X.Y.Z` (3/5 maintainer
+      quorum, keys at `~/.ssh/doli/maintainer-{1,2,3}.json`), SIGNATURES.json uploaded to the
+      draft, and verified with `doli release verify --version vX.Y.Z`
+      (see [auto_update_system.md](./auto_update_system.md))
+- [ ] **BLOCKING — draft promoted with `./scripts/publish-release.sh X.Y.Z`**, never with
+      a hand-run `gh release edit --draft=false` (INC-I-202)
+- [ ] Confirmed healthy with `./scripts/monitor-release-signed.sh` (exit 0)
 
 ---
 
@@ -337,4 +360,4 @@ Planned security improvements:
 
 ---
 
-*Last updated: March 2026*
+*Last updated: August 2026*

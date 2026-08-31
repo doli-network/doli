@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # publish_release.sh — Combine maintainer signatures and upload release.json
 #
+# LEGACY — superseded by scripts/publish-release.sh (INC-I-202)
+#
 # Usage:
 #   ./scripts/publish_release.sh <version> <sig1.json> <sig2.json> <sig3.json> [sig4.json] [sig5.json]
 #
@@ -31,7 +33,7 @@ if [ $# -lt 4 ]; then
     echo "  $0 v0.2.0 sig_producer1.json sig_producer2.json sig_producer3.json"
     echo ""
     echo "Generate signature files with:"
-    echo "  doli-node release sign --key ~/.doli/mainnet/keys/producer_1.json --version v0.2.0 > sig_producer1.json"
+    echo "  doli-node release sign --key ~/.ssh/doli/maintainer-1.json --version v0.2.0 > sig_maintainer1.json"
     exit 1
 fi
 

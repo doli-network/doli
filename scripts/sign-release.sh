@@ -15,7 +15,7 @@
 #
 # What it does:
 #   1. Verifies the GitHub Release and CHECKSUMS.txt exist
-#   2. Signs with producer keys 1, 2, 3 (3/5 quorum)
+#   2. Signs with maintainer keys 1, 2, 3 (3/5 quorum)
 #   3. Assembles SIGNATURES.json
 #   4. Uploads to the GitHub Release
 
