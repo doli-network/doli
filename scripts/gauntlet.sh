@@ -25,7 +25,8 @@
 #   * GS-009 (fleet rolling-restart) is an ADDITIONAL opt-in perturbation,
 #     gated like chaos: run `--gs009` WITH GAUNTLET_GS009_CONFIRM=1. It
 #     wave-restarts ALL producers (n1..n12, NEVER the seed) to replay
-#     INC-I-143 and asserts no >6-slot stall, no sibling fork, full rejoin.
+#     INC-I-143 and asserts no >6-slot stall, no sibling fork, full rejoin,
+#     and a still-usable OnChain release trust root (INC-I-196).
 #     NOT part of the default run; see scripts/gauntlet-gs009.sh.
 #   * GS-010 (duplicate-registration poison) is opt-in AND the only scenario
 #     that WRITES TO THE CHAIN: it funds a wallet and permanently bonds a
@@ -544,7 +545,7 @@ assert(){
       e=$(jget "M['net']['win_evictions']"); m=$(jget "M['net']['max_rss_mb']")
       if [ "${l:-0}" -ge "$LIVENESS_MIN" ] && [ "${s:-0}" -le "$SNAP_TRIGGER_MAX" ] && [ "${e:-0}" -le "$EVICT_MAX" ] && [ "${m:-0}" -lt "$RSS_CEIL_MB" ]; then ok=0
       else why="liveness_delta=$l snap=$s evictions=$e rss=${m}MB"; fi ;;
-    gs009-no-stall|gs009-no-sibling-fork|gs009-fleet-rejoin)
+    gs009-no-stall|gs009-no-sibling-fork|gs009-fleet-rejoin|gs009-trust-root-provenance)
       _gs009_assert "$t"; return $? ;;
     gs010-dup-rejected|gs010-no-poison|gs010-no-wedge|gs010-fleet-reconverge|gs010-single-registration)
       _gs010_assert "$t"; return $? ;;
