@@ -1,10 +1,81 @@
 ---
 name: release
-description: Build, distribute, and deploy binaries to mainnet fleet. Covers per-node binary layout, MD5 verification, and correct replacement procedure.
+description: Cut, sign, and publish a DOLI release, and deploy binaries to the mainnet fleet. Covers the post-tag draft -> sign -> verify -> promote -> confirm sequence (sign-release.sh, doli release verify, publish-release.sh, monitor-release-signed.sh), plus per-node binary layout, MD5 verification, and correct replacement procedure.
 user_invocable: true
 ---
 
 # DOLI Release — Binary Build & Deploy
+
+## BLOCKING: Post-Tag Release Sequence (INC-I-202)
+
+A "release" here means two independent things. (a) **Publishing the signed GitHub release** — this
+is what auto-updating external producers consume. (b) **The manual per-node binary deploy** in the
+rest of this file. Neither substitutes for the other: a published release does not move the fleet
+binaries, and a fleet deploy does not give external producers anything to update to.
+
+Run these six steps in this order. Do not stop early.
+
+| # | Step | Command |
+|---|------|---------|
+| 1 | Tag + push | `git tag vX.Y.Z && git push origin main --tags` |
+| 2 | CI builds | (automatic — creates the release as a **DRAFT**) |
+| 3 | **SIGN** | `./scripts/sign-release.sh X.Y.Z` |
+| 4 | **VERIFY** | `doli release verify --version vX.Y.Z` |
+| 5 | **PROMOTE** | `./scripts/publish-release.sh X.Y.Z` |
+| 6 | **CONFIRM** | `./scripts/monitor-release-signed.sh` |
+
+**1. Tag + push**
+
+```bash
+git tag vX.Y.Z && git push origin main --tags
+```
+
+**2. CI builds all 7 artifacts and creates the GitHub Release as a DRAFT**
+
+A draft is invisible to the unauthenticated GitHub API. At this point the release is **NOT public**
+and **NOT reachable by any node**: no `doli upgrade` and no auto-updating producer can see it. CI
+also injects an "UNSIGNED DRAFT" banner into the notes and writes a "Release ... created as DRAFT"
+job step summary. A tag alone publishes nothing.
+
+**3. SIGN — collect the 3-of-5 maintainer quorum**
+
+```bash
+./scripts/sign-release.sh X.Y.Z
+```
+
+Keys are the rotated maintainer wallets at `~/.ssh/doli/maintainer-{1,2,3}.json`. Override the
+location with `KEY_DIR`, or individual files with `KEY_1` / `KEY_2` / `KEY_3`. `DOLI_CLI` overrides
+the CLI path (default `./target/release/doli`, else `doli` on PATH). The script assembles
+SIGNATURES.json and uploads it to the draft. It accepts `X.Y.Z` or `vX.Y.Z`.
+
+**4. VERIFY — the same check the node runs**
+
+```bash
+doli release verify --version vX.Y.Z
+```
+
+Add `--dir <path>` to verify a local manifest directory. This resolves against this host's
+maintainer trust root.
+
+**5. PROMOTE — script only**
+
+```bash
+./scripts/publish-release.sh X.Y.Z
+```
+
+Downloads SIGNATURES.json + CHECKSUMS.txt from the draft, refuses a missing, malformed, or
+sub-threshold manifest by name and count (`THRESHOLD` default 3), runs `doli release verify`, and
+only on success strips the CI banner and runs `gh release edit vX.Y.Z --draft=false --latest`. Any
+failure leaves it a draft. **Never** promote with a hand-run `gh release edit --draft=false`.
+
+**6. CONFIRM — read-only standing check**
+
+```bash
+./scripts/monitor-release-signed.sh
+```
+
+Asserts the newest `v*` tag (version-sorted) has a published release that verifies. Env:
+`DOLI_CLI`, `REPO_DIR`, `REPO`. It never mutates a release — safe from cron.
 
 ## CRITICAL: Per-Node Binary Layout
 
@@ -144,3 +215,6 @@ ssh doli-server-nano "sudo systemctl stop doli-mainnet && sudo cp /tmp/doli-node
 5. **Seeds before producers** on servers that run both
 6. **Stop ALL services** on a server before replacing (shared binary → "Text file busy")
 7. **Always use `systemctl stop/start`** — never `kill`/`pkill`
+8. **A tag alone publishes nothing** — CI leaves the release a DRAFT that no node can reach; steps 3-6 above are mandatory (INC-I-202)
+9. **Never promote by hand** — only `./scripts/publish-release.sh X.Y.Z` may clear the draft flag; a hand-run `gh release edit --draft=false` skips verification
+10. **Never sign with the leaked pre-rotation producer key files** committed under `testnet/keys/` (INC-I-175) — their private halves are public; signing keys are the rotated wallets at `~/.ssh/doli/maintainer-{1,2,3}.json`

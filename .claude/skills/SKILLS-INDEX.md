@@ -1,9 +1,9 @@
 <!-- @INDEX
 MANIFEST        24-64
-KEYWORD-MAP     67-393
-COVERAGE        397-426
-CROSS-REFS      430-499
-INDEX-WARNINGS  503-532
+KEYWORD-MAP     68-401
+COVERAGE        405-434
+CROSS-REFS      438-507
+INDEX-WARNINGS  511-539
 @/INDEX -->
 
 # SKILLS-INDEX — DOLI Master Skill Manifest
@@ -56,7 +56,7 @@ Index path: `.claude/skills/SKILLS-INDEX.md`
 | auto-update | `auto-update/SKILL.md` | Auto-update implementation guide, vote weight formula, devnet E2E test scripts | — |
 | network-setup | `network-setup/SKILL.md` | Node setup, devnet/testnet/mainnet parameters, DHT rules, producer activation lifecycle | — |
 | testnet-deploy | `testnet-deploy/SKILL.md` | Testnet binary deploy (ai1/ai3), compilation on ai2, MD5 verification checklist | — |
-| release | `release/SKILL.md` | Per-node binary layout map for all servers, deploy procedure one-liners | — |
+| release | `release/SKILL.md` | Release signing + publication: post-tag `draft -> sign -> verify -> promote -> confirm` sequence (`sign-release.sh`, `doli release verify`, `publish-release.sh`, `monitor-release-signed.sh`); per-node binary layout map for all servers, deploy procedure one-liners | — |
 | explorer | `explorer/SKILL.md` | explorer.doli.network, PRODUCER_KEYS/NODES config, auto-bond script | — |
 | hetzner | `hetzner/SKILL.md` | Hetzner VPS manager, server types/prices, cloud-init provisioning | — |
 | sync-docs | `sync-docs/SKILL.md` | Documentation alignment workflow, truth hierarchy, 8-step commit process | — |
@@ -154,6 +154,7 @@ Line ranges reflect verified actual content positions (15 domains re-validated 2
 | `doli producer delegate` | `delegation/SKILL.md` | full file | — |
 | `doli producer register` | `cli/SKILL.md` | OPERATIONS | 48-159 |
 | documentation sync | `sync-docs/SKILL.md` | full file | — |
+| draft release | `release/SKILL.md` | full file | — |
 
 ### E
 
@@ -255,6 +256,7 @@ Line ranges reflect verified actual content positions (15 domains re-validated 2
 | `MempoolEntry` | `mempool/SKILL.md` | ENTRY-POINTS | 11-99 |
 | `MerkleTree` | `crypto/SKILL.md` | ENTRY-POINTS | 11-70 |
 | mint asset | `cli/SKILL.md` | OPERATIONS | 48-159 |
+| `monitor-release-signed.sh` | `release/SKILL.md` | full file | — |
 
 ### N
 
@@ -308,7 +310,9 @@ Line ranges reflect verified actual content positions (15 domains re-validated 2
 | `ProducerSet::new` | `storage/SKILL.md` | ENTRY-POINTS | 21-47 |
 | producer onboarding | `producers/SKILL.md` | full index | — |
 | producer registration | `cli/SKILL.md` | OPERATIONS | 48-159 |
+| promote draft release | `release/SKILL.md` | full file | — |
 | `ProtocolActivation` | `core/SKILL.md` | ACTIVATION-HEIGHTS | 567-611 |
+| `publish-release.sh` | `release/SKILL.md` | full file | — |
 
 ### R
 
@@ -317,6 +321,7 @@ Line ranges reflect verified actual content positions (15 domains re-validated 2
 | `RateLimiter` | `network/SKILL.md` | ENTRY-POINTS | 12-53 |
 | recover chain state | `node/SKILL.md` | ENTRY-POINTS | 13-50 |
 | recovery mode | `guardian/SKILL.md` | full index | 1-30 |
+| release signing | `release/SKILL.md` | full file | — |
 | restore wallet | `cli/SKILL.md` | OPERATIONS | 48-159 |
 | revocation store | `channels/SKILL.md` | STRUCTS | 35-101 |
 | `RevokeDelegationData` | `delegation/SKILL.md` | full file | — |
@@ -338,6 +343,7 @@ Line ranges reflect verified actual content positions (15 domains re-validated 2
 | `select_producer` | `core/SKILL.md` | ENTRY-POINTS | 15-53 |
 | `sendTransaction` | `rpc/SKILL.md` | METHODS | 55-162 |
 | serialization formats | `storage/SKILL.md` | SERIALIZATION | 733-774 |
+| `sign-release.sh` | `release/SKILL.md` | full file | — |
 | `sign_release_hash` | `updater/SKILL.md` | ENTRY-POINTS | 14-45 |
 | skill creation | `skill-creator/SKILL.md` | full file | — |
 | snap sync | `network/SKILL.md` | DATA-FLOW | 66-77 |

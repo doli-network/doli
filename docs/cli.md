@@ -1191,6 +1191,9 @@ doli balance --address doli1abc...
 
 ### 7.4 Sending From a Producer Wallet
 
+These are producer **wallets** for balance/send, not the maintainer release-signing keys — those
+are the rotated wallets at `~/.ssh/doli/maintainer-{1,2,3}.json` (see `docs/releases.md`).
+
 Producer keys are full wallets. You can send coins directly (sends immediately, no confirmation):
 
 ```bash

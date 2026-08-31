@@ -63,6 +63,17 @@ Note: the M2 acceptance text above names v6.26.2. The tests and fixtures are anc
 v6.26.3 (both tags now carry a hand-signed 3-entry manifest); the criterion is unchanged in
 substance.
 
+## M3 traceability matrix (filled by the developer, run 540)
+
+| Req | Test | Implementation Module |
+|-----|------|-----------------------|
+| REQ-202-006 | `scripts/test_release_docs.sh` S1-S7 (19 assertions) | `BLOCKING: Post-Tag Release Sequence (INC-I-202)` + `Rules` 8-10 @ `.claude/skills/release/SKILL.md`; steps 3-6 + `Release Checklist` + `Downloading Releases` note @ `docs/releases.md`; `sign-release.sh` / `publish-release.sh` / `monitor-release-signed.sh` entries + legacy demotion @ `scripts/README.md`; `| release |` manifest row + 6 keyword rows @ `.claude/skills/SKILLS-INDEX.md` |
+
+Green evidence (run 540): `test_release_docs.sh` 19 PASS / 0 FAIL / exit 0 (was 10/9/exit 1).
+Regression guards held: `test_sign_release.sh` 11/0, `test_publish_release.sh` 25/0,
+`test_monitor_release_signed.sh` 11/0, `cargo test -p updater --lib` 32/0,
+`cargo test -p doli-cli --lib` 9/0.
+
 ## M2.5 traceability matrix (test writer, run 540 — RED, no implementation yet)
 
 | Req | Test | Implementation Module (not yet written) |

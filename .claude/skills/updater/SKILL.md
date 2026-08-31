@@ -310,9 +310,13 @@ CLAUDE.md Rule #0: Activation heights are IMMUTABLE once crossed. Never move the
 
 Normal Update Flow:
 ```
-GitHub Release published
+Version tag pushed
 -> CI creates CHECKSUMS.txt + tarball per platform (+ agent skills)
--> Maintainers: doli release sign -> SIGNATURES.json uploaded
+-> CI creates the GitHub Release as a DRAFT (INC-I-202): unreachable by any node
+-> Maintainers: scripts/sign-release.sh <version> (doli release sign x3)
+   -> SIGNATURES.json uploaded to the draft
+-> scripts/publish-release.sh <version>: verifies, then promotes (--draft=false --latest)
+-> GitHub Release published
 -> Node polls GitHub API (every 6h via check_interval)
 -> fetch_latest_release() -> Release struct built
 -> maintainer_trust_root_fn() -> TrustRoot (fails closed if empty/sub-threshold)
