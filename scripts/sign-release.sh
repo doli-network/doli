@@ -10,7 +10,7 @@
 # Prerequisites:
 #   - GitHub Release with CHECKSUMS.txt must exist (created by CI)
 #   - doli CLI binary built at target/release/doli (or in PATH)
-#   - Producer key files at ~/.doli/mainnet/keys/producer_{1..5}.json
+#   - Maintainer key files at ~/.ssh/doli/maintainer-{1,2,3}.json (rotated post-INC-I-175)
 #   - gh CLI authenticated
 #
 # What it does:
@@ -39,15 +39,15 @@ if [[ -z "$DOLI" ]]; then
 fi
 echo "Using doli CLI: $DOLI"
 
-# --- Key paths (sign with 3 of 5 for quorum) ---
-KEY_DIR="${KEY_DIR:-$HOME/.doli/mainnet/keys}"
-KEYS=("$KEY_DIR/producer_1.json" "$KEY_DIR/producer_2.json" "$KEY_DIR/producer_3.json")
+# --- Key paths (sign with 3 of 5 for quorum; rotated post-INC-I-175) ---
+KEY_DIR="${KEY_DIR:-$HOME/.ssh/doli}"
+KEYS=("${KEY_1:-$KEY_DIR/maintainer-1.json}" "${KEY_2:-$KEY_DIR/maintainer-2.json}" "${KEY_3:-$KEY_DIR/maintainer-3.json}")
 
 # Verify keys exist
 for key in "${KEYS[@]}"; do
     if [[ ! -f "$key" ]]; then
         echo "ERROR: Key file not found: $key"
-        echo "Set KEY_DIR to override (default: ~/.doli/mainnet/keys/)"
+        echo "Set KEY_DIR or KEY_1/KEY_2/KEY_3 to override (default: $HOME/.ssh/doli/maintainer-1.json etc.)"
         exit 1
     fi
 done
@@ -80,13 +80,16 @@ for i in "${!KEYS[@]}"; do
     key="${KEYS[$i]}"
     idx=$((i + 1))
     echo ""
-    echo "--- Signing with producer_${idx} ($(basename "$key")) ---"
+    echo "--- Signing with maintainer_${idx} ($(basename "$key")) ---"
 
-    # doli release sign outputs JSON to stdout, status to stderr
-    sig_json=$("$DOLI" -w "$key" release sign --version "v${VERSION_BARE}" --key "$key" 2>/dev/null)
+    # doli release sign may print a status preamble before the JSON object on stdout
+    raw_output=$("$DOLI" -w "$key" release sign --version "v${VERSION_BARE}" --key "$key" 2>/dev/null)
+    sig_json=$(printf '%s\n' "$raw_output" | sed -n '/^{/,/^}/p')
 
-    if [[ -z "$sig_json" ]]; then
-        echo "ERROR: Failed to sign with $key"
+    if [[ -z "$sig_json" ]] || ! printf '%s\n' "$sig_json" | jq -e . >/dev/null 2>&1; then
+        echo "ERROR: Signer produced no valid JSON object for $(basename "$key")"
+        echo "Received:"
+        printf '%s\n' "$raw_output" | head -5
         exit 1
     fi
 
