@@ -299,6 +299,81 @@ pub(crate) async fn cmd_upgrade(
     Ok(())
 }
 
+/// `doli release verify` — judge a release manifest and install nothing (INC-I-202 M2).
+///
+/// The exit code IS the verdict, so `scripts/publish-release.sh` can gate promotion on
+/// it. The trust root is resolved exactly as `doli upgrade` resolves it, so the publish
+/// gate answers the same question the fleet will ask at install time.
+pub(crate) async fn cmd_release_verify(
+    version: String,
+    dir: Option<PathBuf>,
+    data_dir: Option<PathBuf>,
+    network: doli_core::Network,
+) -> Result<()> {
+    let data_dir = match data_dir {
+        Some(d) => d,
+        None => crate::paths::resolve_base_dir(network.name(), None),
+    };
+    let root = resolve_upgrade_trust_root(&data_dir, network)?;
+    println!(
+        "Trust root: {} ({} key(s), threshold {}, {}) from {}",
+        root.provenance(),
+        root.keys().len(),
+        root.threshold(),
+        network,
+        data_dir.display()
+    );
+
+    let distinct_signers = match dir {
+        // A DRAFT release is invisible to the unauthenticated GitHub API, so the publish
+        // gate hands over the directory it already downloaded.
+        Some(d) => doli_cli::cmd_release_verify::verify_manifest_dir(&d, &version, &root)?,
+        None => {
+            let release = updater::fetch_github_release(Some(&version))
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to fetch release v{}: {}", version, e))?;
+            // "I could not check" is not "it is fine": an unreachable or absent
+            // SIGNATURES.json is a hard refusal, never a pass.
+            let sf = updater::download_signatures_json(&release.version)
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "Could not retrieve SIGNATURES.json for v{}: {}. Refusing to report an \
+                         unverified release as verified.",
+                        release.version,
+                        e
+                    )
+                })?
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Release v{} has no SIGNATURES.json. An unsigned release is not a \
+                         verified release.",
+                        release.version
+                    )
+                })?;
+            updater::verify_release_manifest(&release.version, &release.checksums_body, &sf, &root)
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "Maintainer verification FAILED for v{} on {}: {}.",
+                        release.version,
+                        network,
+                        e
+                    )
+                })?
+        }
+    };
+
+    // The count actually found, never the threshold constant (QA OBS-001).
+    println!(
+        "Verified: {} distinct maintainer signature(s) for v{} (threshold {}, {} trust root)",
+        distinct_signers,
+        version.trim_start_matches('v'),
+        root.threshold(),
+        root.provenance()
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod inc_i_199_trust_root_advice_tests {
     use super::*;

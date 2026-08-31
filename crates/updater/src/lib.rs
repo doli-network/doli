@@ -97,7 +97,7 @@ pub use enforcement::{
 pub use trust_root::{TrustRoot, TrustRootProvenance};
 
 // Re-exports: install_gate
-pub use install_gate::verify_release_artifact;
+pub use install_gate::{verify_release_artifact, verify_release_manifest};
 
 // Re-exports: release_args (INC-I-172 M2, AUDIT-P0-011 — every release-signing entry
 // point must validate through THESE, before any signing message is interpolated)

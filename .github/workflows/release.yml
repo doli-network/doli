@@ -502,6 +502,14 @@ jobs:
           PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
 
           {
+            echo '<!-- DOLI-UNSIGNED-DRAFT-WARNING:BEGIN -->'
+            echo '> **UNSIGNED DRAFT.** This release has not yet been verified against the maintainer trust root.'
+            echo '>'
+            echo '> No node, no `doli upgrade`, and no unauthenticated GitHub API call can reach this release while it is a draft.'
+            echo '> It becomes visible only after `scripts/sign-release.sh <version>` then `scripts/publish-release.sh <version>` run.'
+            echo '> This banner is removed automatically on promotion.'
+            echo '<!-- DOLI-UNSIGNED-DRAFT-WARNING:END -->'
+            echo ""
             echo "## What's Changed"
             echo ""
 
@@ -579,7 +587,20 @@ jobs:
         with:
           body_path: RELEASE_NOTES.md
           files: release/*
-          draft: false
+          # DRAFT until signed (INC-I-202, REQ-202-004): an unsigned release must be
+          # unreachable. scripts/publish-release.sh promotes it after verifying.
+          draft: true
           prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') || contains(github.ref, 'rc') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Draft release reminder
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          case "$VERSION" in refs/*) VERSION="dev-$(echo $GITHUB_SHA | cut -c1-8)";; esac
+          {
+            echo "### Release $VERSION created as DRAFT"
+            echo ""
+            echo "This release is a DRAFT. It is not reachable by any node or doli upgrade yet."
+            echo "Run scripts/sign-release.sh ${VERSION#v} then scripts/publish-release.sh ${VERSION#v} to verify and publish it."
+          } >> "$GITHUB_STEP_SUMMARY"
