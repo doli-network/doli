@@ -10,7 +10,7 @@ use doli_core::Block;
 
 use super::super::bodies::BodyDownloader;
 use super::super::headers::HeaderDownloader;
-use super::{ForkAction, SyncManager, SyncState};
+use super::{SyncManager, SyncState};
 
 impl SyncManager {
     /// Mark a block as applied (legacy - uses weight 1)
@@ -406,11 +406,6 @@ impl SyncManager {
         self.reorg_handler.current_weight()
     }
 
-    /// Handle a potential chain reorganization (legacy - no weight check)
-    pub fn handle_new_block(&mut self, block: Block) -> Option<Vec<Hash>> {
-        self.reorg_handler.check_reorg(&block, self.local_hash)
-    }
-
     /// Handle a potential chain reorganization with weight-based fork choice
     ///
     /// Returns a ReorgResult only if the new chain is heavier than our current chain.
@@ -522,20 +517,6 @@ impl SyncManager {
         self.snap.store_floor
     }
 
-    /// Recommend a fork recovery action.
-    /// Delegates to ForkState::recommend_action() — centralizes fork decision logic.
-    /// Called by Node::resolve_shallow_fork() to decide the recovery strategy.
-    pub fn recommend_fork_action(
-        &self,
-        gap: u64,
-        consecutive_rollbacks: u32,
-        max_rollback_depth: u32,
-        best_peer: Option<PeerId>,
-    ) -> ForkAction {
-        self.fork
-            .recommend_action(gap, consecutive_rollbacks, max_rollback_depth, best_peer)
-    }
-
     /// Get the peak height ever reached by this node.
     /// Used by reorg validation to prevent accepting reorgs
     /// that roll back too far from the peak.
@@ -583,48 +564,6 @@ impl SyncManager {
     /// flag was implicitly "always true", causing 21× suppression → 325s stall).
     pub fn note_peer_block_applied_since_rollback(&mut self) {
         self.fork.peer_block_applied_since_rollback = true;
-    }
-
-    /// Recovery Coordinator phase 2 (2026-04-15, synmgrefactor): classify
-    /// current evidence + context and log what action the coordinator would
-    /// take. Called from the periodic task loop. Legacy detector→action
-    /// paths still own the real dispatch. Divergence between this log and
-    /// the actual action taken is the validation signal for the phase 3
-    /// flip to authoritative.
-    pub fn shadow_classify_recovery(&self, peer_count: usize) {
-        use super::recovery::RecoveryAction;
-        use super::RecoveryPhase;
-
-        let in_grace_period = !matches!(self.recovery_phase, RecoveryPhase::Normal);
-        let ctx = super::recovery::RecoveryContext {
-            local_height: self.local_height,
-            network_tip_height: self.network.network_tip_height,
-            peer_count,
-            last_applied_secs: self.network.last_block_applied.elapsed().as_secs(),
-            // `shallow_rollback_count` lives on Node, not SyncManager.
-            // Acceptable to pass 0 for shadow mode — phase 3 can wire it
-            // through if needed.
-            shallow_rollback_count: 0,
-            snap_attempts: self.snap.attempts,
-            last_rollback_local_height: self.fork.last_rollback_local_height,
-            last_rollback_time: self.fork.last_rollback_time,
-            in_grace_period,
-            last_finality_height: self.reorg_handler.last_finality_height(),
-        };
-        let action = self.recovery.classify(&ctx);
-        if action != RecoveryAction::None {
-            tracing::info!(
-                "[COORDINATOR] shadow action={:?} gap={} last_applied={}s peers={} \
-                 last_rb_h={:?} snap_attempts={} grace={}",
-                action,
-                ctx.gap(),
-                ctx.last_applied_secs,
-                ctx.peer_count,
-                ctx.last_rollback_local_height,
-                ctx.snap_attempts,
-                ctx.in_grace_period,
-            );
-        }
     }
 
     /// Recovery Coordinator phase 3 (M2): authoritative classify + dispatch.

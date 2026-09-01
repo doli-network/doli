@@ -4416,47 +4416,6 @@ mod m2_regression_tests {
         );
     }
 
-    /// P0: ForkState.recommend_action handles all edge cases.
-    #[test]
-    fn test_adversarial_fork_action_edge_cases() {
-        use super::ForkState;
-
-        // Deep fork (10+ empty headers) -> genesis resync
-        let mut fork = ForkState::new();
-        fork.consecutive_empty_headers = 10;
-        let action = fork.recommend_action(5, 0, 12, Some(PeerId::random()));
-        assert!(matches!(action, ForkAction::NeedsGenesisResync));
-
-        // needs_genesis_resync flag overrides everything
-        let mut fork2 = ForkState::new();
-        fork2.needs_genesis_resync = true;
-        let action2 = fork2.recommend_action(0, 0, 12, None);
-        assert!(matches!(action2, ForkAction::NeedsGenesisResync));
-
-        // Gap > max_rollback_depth escalates
-        let fork3 = ForkState::new();
-        let action3 = fork3.recommend_action(100, 0, 12, Some(PeerId::random()));
-        assert!(matches!(action3, ForkAction::NeedsGenesisResync));
-
-        // Shallow fork with < 3 empty headers -> None
-        let mut fork4 = ForkState::new();
-        fork4.consecutive_empty_headers = 2;
-        let action4 = fork4.recommend_action(5, 0, 12, Some(PeerId::random()));
-        assert!(matches!(action4, ForkAction::None));
-
-        // Shallow fork with >= 3 empty headers and rollbacks < max -> rollback
-        let mut fork5 = ForkState::new();
-        fork5.consecutive_empty_headers = 3;
-        let action5 = fork5.recommend_action(5, 0, 12, Some(PeerId::random()));
-        assert!(matches!(action5, ForkAction::RollbackOne));
-
-        // Exhausted rollbacks
-        let mut fork6 = ForkState::new();
-        fork6.consecutive_empty_headers = 3;
-        let action6 = fork6.recommend_action(5, 12, 12, Some(PeerId::random()));
-        assert!(matches!(action6, ForkAction::None));
-    }
-
     /// P2: SyncPipelineData.is_snap_syncing for all variants.
     #[test]
     fn test_adversarial_pipeline_data_snap_syncing() {
@@ -6304,7 +6263,7 @@ mod inc_i138_m3_evidence_gating {
         let action = coord.classify(&ctx);
 
         // D4 guard (M2 fix, recovery.rs:401-404):
-        //   deep_fork_confirmed = deep_fork>0 || (empty_count>=10 && stale>=300s && gap>=50)
+        //   deep_fork_confirmed = empty_count>=10 && stale>=300s && gap>=50
         //   gap=28 < MINOR_FORK_GAP_MAX(50) → deep_fork_confirmed=false → Rule 2 skipped.
         //   Rule 3 (medium_gap=28) → HeaderFirstSync (not SnapSync).
         // ONE-ASSERT cross-check: D1+D4 layers must be independent.

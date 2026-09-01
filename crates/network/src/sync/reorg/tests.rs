@@ -73,7 +73,7 @@ fn test_no_reorg_on_tip() {
     let block = Block::new(header, vec![]);
 
     // No reorg needed since it builds on current tip
-    assert!(handler.check_reorg(&block, hash1).is_none());
+    assert!(handler.check_reorg_weighted(&block, hash1, 1).is_none());
 }
 
 #[test]

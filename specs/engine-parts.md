@@ -769,7 +769,6 @@
 - const HALVING_INTERVAL: BlockHeight = SLOTS_PER_ERA — alias
 - const BOOTSTRAP_BLOCKS: BlockHeight = 60_480 — bootstrap phase duration (~1 week)
 - const LIVENESS_WINDOW_MIN: u64 = 500 — minimum liveness window for stale detection
-- const SEED_CONFIRMATION_DEPTH: u64 = 6 — seed nodes serve blocks this many deep
 - const REENTRY_INTERVAL: u32 = 50 — slots between re-entry opportunities for stale producers
 - const INACTIVITY_LEAK_START: u64 = 360 — missed slots before inactivity leak begins (1 epoch)
 - const INACTIVITY_LEAK_RATE: u64 = 10 — effective bond decay rate per epoch (10%)
@@ -2344,7 +2343,6 @@ Note: struct PresenceHeartbeat (not Heartbeat) in the tpop module; this is diffe
   - `PostRecoveryGrace { started: Instant, blocks_applied: u32 }` — grace period; clears at 10 blocks applied
   - `AwaitingCanonicalBlock { started: Instant }` — snap sync complete; 60s timeout enforced by cleanup()
 - `RecoveryReason` — **7** variants: `AllPeersBlacklistedDeepFork`, `StuckSyncLargeGap { gap }`, `HeightOffsetDetected { gap }`, `GenesisFallbackEmptyHeaders`, `BodyDownloadPeerError`, `ApplyFailuresSnapThreshold { gap }`, `RollbackDeathSpiral { peak, current }`
-- `ForkAction` — 3 variants: `None`, **`RollbackOne`** (not ShallowRollback), **`NeedsGenesisResync`** (not DeepResync)
 - `VerifiedSnapshot` — verified snap sync state for node application; carries all state bytes + epoch data
 - `MAX_CONSECUTIVE_RESYNCS: u32` = 5 — max consecutive force-resyncs before requiring manual intervention
 - `PeerSyncStatus` — per-peer sync status: best_height, best_hash, best_slot, last_status_response, last_block_received, pending_request, protocol_version, producer_pubkey
@@ -2364,7 +2362,6 @@ Note: struct PresenceHeartbeat (not Heartbeat) in the tpop module; this is diffe
 - `SyncManager::add_peer(peer, height, hash, slot)` / `SyncManager::update_peer(...)` / `SyncManager::remove_peer(peer)` — peer management
 - `SyncManager::note_orphan_gossip_block(height, slot)` — tracks orphan gossip blocks; at ≥3 triggers batch sync or stuck_fork_signal
 - `SyncManager::checkpoint_health()` — returns (total_peers, agreeing_peers, unique_chain_tips) for fork diagnosis
-- `SyncManager::recommend_fork_action(gap, consecutive_rollbacks, max_rollback_depth)` — returns ForkAction via ForkState
 - `SyncManager::take_needs_mass_status_refresh()` — consumed once when peer count rises from 0 to non-zero
 - `SyncManager::next_request()` / `SyncManager::handle_response(peer, response)` / `SyncManager::get_blocks_to_apply()` — sync engine dispatch
 
@@ -2425,7 +2422,7 @@ Note: struct PresenceHeartbeat (not Heartbeat) in the tpop module; this is diffe
 
 ### Sync — Recovery Coordinator
 - `RecoveryCoordinator` — centralized recovery decision maker; holds rolling evidence window (VecDeque, max 256 entries, 120s TTL) and last-action cooldown (5s)
-- `RecoveryEvidence` — **5** variants: `EmptyHeaders { peer, gap }`, `OrphanGossip { slot, gap }`, `ApplyFailure { height }`, `DeepForkSuspected { empty, gap }`, `StaleTip { last_applied_secs, gap }`
+- `RecoveryEvidence` — **5** variants: `EmptyHeaders { peer, gap }`, `OrphanGossip { slot, gap }`, `ApplyFailure { height }`, `StaleTip { last_applied_secs, gap }`, `StuckFork { gap }`
 - `RecoveryAction` — **5** variants (ordered by severity): `None`, `ShallowRollback { depth }`, `HeaderFirstSync`, `SnapSync`, `GenesisResync`
 - `RecoveryContext` — node-wide snapshot for classifier: local_height, network_tip_height, peer_count, last_applied_secs, shallow_rollback_count, snap_attempts, last_rollback_local_height, in_grace_period
 - `RecoveryContext::gap()` / `applied_since_rollback()` / `recently_synced()` — classifier helpers
@@ -2816,7 +2813,7 @@ NOTE: UpdateService, PendingUpdate, and spawn_update_service() are NOT in this c
 - handle_sync_request() — **LIVE sync-request handler** (`validation_checks.rs`); dispatched from `on_sync_request()`; handles 8 SyncRequest variants. GetStateSnapshot delegates to `serve_state_snapshot()` (`state_snapshot_serve.rs`; M7 epoch_state_bytes included; refuses with `SyncResponse::Error` while `rebuild_halt_reason()` is set — INC-I-156 AUDIT-P1-001). GetStateRoot delegates to `serve_state_root()` (State-Root Lazy Tier-0: lazy compute + memoize-on-serve; refuses with `SyncResponse::Error` while `rebuild_halt_reason()` is set — INC-I-156 AUDIT-P3-101 — with the check placed BEFORE the memo fast path, since the memo can hold a root computed while the node was still healthy and arming the halt does not move `best_hash`). NOTE: both `handle_sync_request_bg()` (event_loop.rs) and the older inline `handle_sync_request` variants marked `#[allow(dead_code)]` are DEAD — this delegating handler is the sole production path.
 
 ### Periodic Tasks
-- run_periodic_tasks() — 24 ordered sub-tasks: (1) startup block-store integrity scan, (2) stale seen_blocks_for_slot eviction (keep last 10 slots), (3) ordered sync-block application, (4) snap snapshot consumption, (5) sync manager cleanup + prune_finality, (6) archive catch-up, (7) mempool.expire_old(), (8) fork recovery polling, (9) fork recovery max-depth warning, (10) bootstrap redial with exponential backoff (capped 60s) when peer_count==0, (11) discv5 seed fallback (reconnect TCP seeds after 60s of 0 peers), (12) stale chain detection (3-slot threshold): redial+DHT or request status from up to 10 peers; infected-node recovery (height<10 resets backoff), (13) silence pull (30s no block → catch_up_request), (14) active fork detection: minority fork rollback in stuck mode (>120s + minority) or normal mode with epoch cooldown (max 1 correction per 360 blocks via last_active_fork_correction_height), (15) resolve_shallow_fork(), (16) deep fork detection warning, (17) snap batch requests, (18) next_request() dispatch, (19) periodic status refresh (2s bootstrap / 30s normal, capped at 5 or 20 peers), (20) port reachability warning (one-shot, mainnet producers), (21) auto-checkpoint with health tagging and rotation (keep last 5, numeric sort by height), (22) 30s health diagnostic ([HEALTH] + [SYNC_STATE] log lines, shadow_classify_recovery), (23) seed release (disconnect seeds after 5+ DHT peers + blocks), (24) maybe_run_integrity_check()
+- run_periodic_tasks() — 24 ordered sub-tasks: (1) startup block-store integrity scan, (2) stale seen_blocks_for_slot eviction (keep last 10 slots), (3) ordered sync-block application, (4) snap snapshot consumption, (5) sync manager cleanup + prune_finality, (6) archive catch-up, (7) mempool.expire_old(), (8) fork recovery polling, (9) fork recovery max-depth warning, (10) bootstrap redial with exponential backoff (capped 60s) when peer_count==0, (11) discv5 seed fallback (reconnect TCP seeds after 60s of 0 peers), (12) stale chain detection (3-slot threshold): redial+DHT or request status from up to 10 peers; infected-node recovery (height<10 resets backoff), (13) silence pull (30s no block → catch_up_request), (14) active fork detection: minority fork rollback in stuck mode (>120s + minority) or normal mode with epoch cooldown (max 1 correction per 360 blocks via last_active_fork_correction_height), (15) resolve_shallow_fork(), (16) deep fork detection warning, (17) snap batch requests, (18) next_request() dispatch, (19) periodic status refresh (2s bootstrap / 30s normal, capped at 5 or 20 peers), (20) port reachability warning (one-shot, mainnet producers), (21) auto-checkpoint with health tagging and rotation (keep last 5, numeric sort by height), (22) 30s health diagnostic ([HEALTH] + [SYNC_STATE] log lines), (23) seed release (disconnect seeds after 5+ DHT peers + blocks), (24) maybe_run_integrity_check()
 - flush_finalized_to_archive() — drains pending_archive up to last_finalized_height(); no-op if no finality checkpoint yet
 - maybe_bootstrap_maintainer_set() — one-shot bootstrap of MaintainerSet from first INITIAL_MAINTAINER_COUNT (5) producers sorted by registered_at; persists to disk; no-op if already bootstrapped or fewer than 5 producers
 - maybe_run_integrity_check() — pub(crate); checks should_run_integrity_check predicate; spawns blocking block_store.ensure_blocks_present(1, tip); logs [INTEGRITY_CHECK] INFO on success or CRITICAL on gap; updates last_integrity_check_tip

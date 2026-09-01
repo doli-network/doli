@@ -89,7 +89,7 @@ pub use rate_limit::{RateLimitConfig, RateLimiter};
 pub use scoring::{Infraction, PeerScore, PeerScorer, PeerScorerConfig, ScorerStats};
 pub use service::{NetworkCommand, NetworkError, NetworkEvent, NetworkService};
 pub use sync::{
-    ChainBreakInfo, EquivocationDetector, EquivocationProof, ForkAction, NetworkEvidence,
+    ChainBreakInfo, EquivocationDetector, EquivocationProof, NetworkEvidence,
     ProductionAuthorization, RecoveryAction, RecoveryContext, RecoveryEvidence, RecoveryPhase,
     RecoveryReason, ReorgResult, StuckForkAlert, SyncConfig, SyncManager, SyncPhase,
     SyncPipelineData, SyncState, VerifiedSnapshot, MAX_CONSECUTIVE_RESYNCS,

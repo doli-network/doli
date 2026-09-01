@@ -82,12 +82,6 @@ pub enum RecoveryEvidence {
     /// etc). Repeated ApplyFailure suggests divergent state vs the network.
     ApplyFailure { height: u64 },
 
-    /// Combined signal: many empty headers + significant gap + peers ahead.
-    /// Explicit variant so detectors that already synthesize this can report
-    /// once instead of forcing the classifier to re-synthesize from finer-
-    /// grained variants.
-    DeepForkSuspected { empty: u32, gap: u64 },
-
     /// We have not applied a block in `last_applied_secs` despite the network
     /// producing them (gap > threshold). Distinct from EmptyHeaders /
     /// OrphanGossip: it's a passive observation (nothing's arriving at all).
@@ -325,7 +319,6 @@ impl RecoveryCoordinator {
         let empty_count = self.count(|e| matches!(e, RecoveryEvidence::EmptyHeaders { .. }));
         let orphan_count = self.count(|e| matches!(e, RecoveryEvidence::OrphanGossip { .. }));
         let apply_fails = self.count(|e| matches!(e, RecoveryEvidence::ApplyFailure { .. }));
-        let deep_fork = self.count(|e| matches!(e, RecoveryEvidence::DeepForkSuspected { .. }));
         let stale_tip = self
             .evidence
             .iter()
@@ -441,13 +434,11 @@ impl RecoveryCoordinator {
         // action=SnapSync gap=28 last_applied=325s" (n5.log:17197); blocks 37-63 lost.
         //
         // Fix: require gap >= MINOR_FORK_GAP_MAX(50) for the empty_count branch.
-        // deep_fork > 0 path is unchanged (explicit deep-fork signal, not a heuristic).
         // large_gap path (>= SNAP_SYNC_GAP_MIN=500) in Rule 2 is independent and unchanged.
         // rollback_exhausted path is independent and unchanged.
-        let deep_fork_confirmed = deep_fork > 0
-            || (empty_count >= 10
-                && ctx.last_applied_secs >= thresholds::STALE_TIP_SECS
-                && gap >= thresholds::MINOR_FORK_GAP_MAX);
+        let deep_fork_confirmed = empty_count >= 10
+            && ctx.last_applied_secs >= thresholds::STALE_TIP_SECS
+            && gap >= thresholds::MINOR_FORK_GAP_MAX;
 
         if (rollback_exhausted || large_gap || deep_fork_confirmed)
             && ctx.snap_attempts < thresholds::SNAP_ATTEMPTS_MAX
@@ -941,18 +932,6 @@ mod tests {
         let c = RecoveryCoordinator::new();
         let mut ctx = base_ctx();
         ctx.network_tip_height = 1600;
-        assert_eq!(c.classify(&ctx), RecoveryAction::SnapSync);
-    }
-
-    #[test]
-    fn deep_fork_suspected_triggers_snap() {
-        let mut c = RecoveryCoordinator::new();
-        c.report(RecoveryEvidence::DeepForkSuspected {
-            empty: 15,
-            gap: 100,
-        });
-        let mut ctx = base_ctx();
-        ctx.network_tip_height = 1100;
         assert_eq!(c.classify(&ctx), RecoveryAction::SnapSync);
     }
 

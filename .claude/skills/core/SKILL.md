@@ -464,7 +464,6 @@ selection.rs, stress.rs, vdf.rs` (`consensus/mod.rs:62-75`).
 - `VESTING_QUARTER_SLOTS: Slot = 3_153_600` — 1 year (mainnet)
 - `VESTING_PERIOD_SLOTS: Slot = 12_614_400` — 4 years full vest
 - `UNDO_KEEP_DEPTH: u64 = 100` — undo-record retention depth (`constants.rs:259`); truncate_chain advertises this
-- `SEED_CONFIRMATION_DEPTH: u64 = 6` — seed nodes only serve blocks this deep (`constants.rs:235`)
 
 **Economics:**
 - `INITIAL_REWARD: Amount = 100_000_000` — 1 DOLI per block

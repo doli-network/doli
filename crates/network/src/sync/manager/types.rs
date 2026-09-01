@@ -525,7 +525,7 @@ impl SnapSyncState {
 }
 
 // ---------------------------------------------------------------------------
-// ForkState / ForkAction
+// ForkState
 // ---------------------------------------------------------------------------
 
 /// Fork detection and recovery state.
@@ -658,45 +658,6 @@ impl ForkState {
             chain_breaks: VecDeque::new(),
         }
     }
-
-    /// Recommend a fork recovery action based on current state.
-    /// The Node calls this from resolve_shallow_fork() and executes the returned action.
-    ///
-    /// Recovery levels (M1 redesign):
-    /// 1. RollbackOne — shallow fork, up to max_rollback_depth blocks
-    /// 2. NeedsGenesisResync — deep fork (10+ empty headers) or gap > rollback depth
-    pub fn recommend_action(
-        &self,
-        gap: u64,
-        consecutive_rollbacks: u32,
-        max_rollback_depth: u32,
-        _best_peer: Option<PeerId>,
-    ) -> ForkAction {
-        // Deep fork or exhausted rollbacks: need snap sync
-        if self.consecutive_empty_headers >= 10 || self.needs_genesis_resync {
-            return ForkAction::NeedsGenesisResync;
-        }
-        // Gap too large for rollback: escalate to snap sync
-        if gap > max_rollback_depth as u64 {
-            return ForkAction::NeedsGenesisResync;
-        }
-        // Shallow fork: rollback one block
-        if consecutive_rollbacks < max_rollback_depth && self.consecutive_empty_headers >= 3 {
-            return ForkAction::RollbackOne;
-        }
-        ForkAction::None
-    }
-}
-
-/// Recommended action when a fork is detected.
-/// ForkState decides, Node executes.
-pub enum ForkAction {
-    /// No action needed
-    None,
-    /// Rollback one block (shallow fork, gap <= 12)
-    RollbackOne,
-    /// Node needs full genesis resync (deep fork or rollback exhausted)
-    NeedsGenesisResync,
 }
 
 // ---------------------------------------------------------------------------

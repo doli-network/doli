@@ -36,8 +36,8 @@ mod tests_inc_i152_p1_001;
 
 // Re-export all public types from types.rs
 pub use types::{
-    ChainBreakInfo, ForkAction, ProductionAuthorization, RecoveryPhase, RecoveryReason, SyncConfig,
-    SyncPhase, SyncPipelineData, SyncState, VerifiedSnapshot,
+    ChainBreakInfo, ProductionAuthorization, RecoveryPhase, RecoveryReason, SyncConfig, SyncPhase,
+    SyncPipelineData, SyncState, VerifiedSnapshot,
 };
 // Re-export recovery coordinator types used by Node layer
 pub use recovery::{RecoveryAction, RecoveryContext, RecoveryEvidence};

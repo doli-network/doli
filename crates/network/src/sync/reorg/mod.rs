@@ -293,14 +293,6 @@ impl ReorgHandler {
         false
     }
 
-    /// Check if a new block triggers a reorganization (legacy - no weight check)
-    ///
-    /// Prefer `check_reorg_weighted` for weight-based fork choice.
-    pub fn check_reorg(&self, block: &Block, current_tip: Hash) -> Option<Vec<Hash>> {
-        self.check_reorg_weighted(block, current_tip, 1)
-            .map(|result| result.rollback)
-    }
-
     /// Check if a new block triggers a reorganization with weight-based fork choice
     ///
     /// This implements the "heaviest chain wins" rule. A reorg only happens if:

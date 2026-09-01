@@ -235,11 +235,6 @@ pub const BOOTSTRAP_BLOCKS: BlockHeight = 60_480;
 /// every producer gets ~3 primary opportunities before being classified stale.
 pub const LIVENESS_WINDOW_MIN: u64 = 500;
 
-/// Seed confirmation depth: seed nodes only serve blocks this many blocks deep.
-/// Prevents fork propagation to syncing peers. At 1 block/slot (~10s per slot),
-/// 6 blocks ≈ 60 seconds of confirmation.
-pub const SEED_CONFIRMATION_DEPTH: u64 = 6;
-
 /// Undo retention depth: number of recent blocks for which per-block undo
 /// records are kept in cf_undo. Reads:
 ///   apply_block prunes anything below `tip - UNDO_KEEP_DEPTH` after each commit.
