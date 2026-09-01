@@ -511,8 +511,20 @@ impl SyncManager {
 
     /// Finalize the best pending block if it has BOTH 67% weight and a
     /// locally-applied descendant at depth >= CONFIRMATION_DEPTH.
+    ///
+    /// INC-I-204 M5: `enforce_monotonic` is gated on
+    /// `inc_i_204_fork_choice_activation_height` — above it `check_finality` may not
+    /// pick a candidate at or below `last_finalized`, and `set_last_finality_height`
+    /// takes `max()`. INV-FINALITY-001 clause (1) requires both and neither was
+    /// enforced. `checkpoint.block_hash` is no longer discarded: it is the ancestry
+    /// guard's input, read back through `fork_choice_finality()`.
     fn finalize_if_ready(&mut self, applied_tip_height: u64) {
-        if let Some(checkpoint) = self.finality_tracker.check_finality(applied_tip_height) {
+        let enforce_monotonic =
+            applied_tip_height >= self.reorg_handler.fork_choice_activation_height();
+        if let Some(checkpoint) = self
+            .finality_tracker
+            .check_finality(applied_tip_height, enforce_monotonic)
+        {
             info!(
                 "FINALITY: Block {} finalized at height {} (attestation {}/{})",
                 checkpoint.block_hash,

@@ -26,4 +26,4 @@ pub use manager::{
     SyncManager, SyncPhase, SyncPipelineData, SyncState, VerifiedSnapshot, WedgeReason,
     FORCE_REORG_MAX_HEIGHT_SPAN, FORCE_REORG_TTL_SECS, MAX_CONSECUTIVE_RESYNCS,
 };
-pub use reorg::{ReorgHandler, ReorgObservations, ReorgResult};
+pub use reorg::{ForkChoiceFinality, ReorgHandler, ReorgObservations, ReorgResult, WeightVerdict};

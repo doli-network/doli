@@ -24,6 +24,15 @@ pub struct ReorgObservations {
     pub pre_activation_record_height: u64,
     /// `plan_reorg`'s finality comparison took the pre-INC-I-147 branch.
     pub pre_activation_plan_reorg_finality: u64,
+    /// INC-I-204 M5: the unified authority decided (weight or finality arm).
+    pub fork_choice_unified_entries: u64,
+    /// INC-I-204 M5: the unified finality rule refused a reorg.
+    pub fork_choice_unified_rejects: u64,
+    /// INC-I-204 M5: a fork-choice site took the pre-activation branch. With both
+    /// live networks at `u64::MAX` this is the dormant-window canary (REQ-FORK-014).
+    pub pre_activation_fork_choice: u64,
+    /// INC-I-204 M5: `record_fork_block_with_height` stored a REAL chain height.
+    pub record_fork_block_real_height: u64,
 }
 
 /// Interior-mutable backing store: `check_reorg_weighted` and `plan_reorg` take
@@ -36,6 +45,10 @@ pub(crate) struct ReorgCounters {
     pub(crate) plan_reorg_finality_rejects: AtomicU64,
     pub(crate) pre_activation_record_height: AtomicU64,
     pub(crate) pre_activation_plan_reorg_finality: AtomicU64,
+    pub(crate) fork_choice_unified_entries: AtomicU64,
+    pub(crate) fork_choice_unified_rejects: AtomicU64,
+    pub(crate) pre_activation_fork_choice: AtomicU64,
+    pub(crate) record_fork_block_real_height: AtomicU64,
 }
 
 impl ReorgCounters {
@@ -48,6 +61,12 @@ impl ReorgCounters {
             pre_activation_record_height: self.pre_activation_record_height.load(Ordering::Relaxed),
             pre_activation_plan_reorg_finality: self
                 .pre_activation_plan_reorg_finality
+                .load(Ordering::Relaxed),
+            fork_choice_unified_entries: self.fork_choice_unified_entries.load(Ordering::Relaxed),
+            fork_choice_unified_rejects: self.fork_choice_unified_rejects.load(Ordering::Relaxed),
+            pre_activation_fork_choice: self.pre_activation_fork_choice.load(Ordering::Relaxed),
+            record_fork_block_real_height: self
+                .record_fork_block_real_height
                 .load(Ordering::Relaxed),
         }
     }

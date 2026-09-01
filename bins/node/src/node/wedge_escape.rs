@@ -96,10 +96,20 @@ impl Node {
         // b. Record the block into the reorg handler so plan_reorg can accumulate
         //    weight/height for the competing branch (fork block: no current-weight
         //    mutation).
+        // INC-I-204 M5: `BlockHeader` carries no height, so the sibling's REAL chain
+        // height is its parent's stored height plus one — chain-derived, never the
+        // per-process counter (INV-SYNC-012).
+        let sibling_height = self
+            .block_store
+            .get_height_by_hash(&block.header.prev_hash)
+            .ok()
+            .flatten()
+            .map_or(height, |h| h.saturating_add(1));
         self.sync_manager.write().await.record_fork_block_weight(
             fork_tip_hash,
             block.header.prev_hash,
             weight,
+            sibling_height,
         );
 
         // c. Cache the body (execute_reorg fetches new-block bodies from here).
@@ -120,16 +130,24 @@ impl Node {
         // deep (up to 1000-ancestor) plan_reorg walk. If the sibling branch cannot
         // out-weight our current tip, a reorg is impossible under the strict-weight
         // rule below — skip the walk entirely and retain the block for later.
+        // INC-I-204 M5: the verdict now comes from the ONE authority
+        // (`ReorgHandler::weigh_branches`). Below the fork-choice activation height it
+        // reproduces this door's pre-M5 rule exactly — `fork_w <= our_w` gives up.
         let current_tip = self.chain_state.read().await.best_hash;
-        let (fork_weight, our_weight) = {
+        let (fork_weight, our_weight, verdict) = {
             let sync = self.sync_manager.read().await;
+            let finality = sync.fork_choice_finality();
             let rh = sync.reorg_handler();
             (
                 rh.chain_weight(&fork_tip_hash),
                 rh.chain_weight(&current_tip),
+                rh.weigh_branches(&current_tip, &fork_tip_hash, finality),
             )
         };
-        if fork_weight <= our_weight {
+        if matches!(
+            verdict,
+            network::WeightVerdict::Lighter | network::WeightVerdict::TieKeep
+        ) {
             record_wedge_escape_outcome(WedgeOutcome::CannotOutweigh.reason());
             info!(
                 "[WEDGE_ESCAPE] Sibling {:.8} cannot out-weight tip (fork_w={} <= our_w={}) — retained, signaling recovery (INC-I-143)",
@@ -151,6 +169,7 @@ impl Node {
                 fork_tip_hash,
                 |h| store.get_header(h).ok().flatten().map(|hd| hd.prev_hash),
                 |h| store.get_height_by_hash(h).ok().flatten(),
+                sync.fork_choice_finality(),
             )
         };
 

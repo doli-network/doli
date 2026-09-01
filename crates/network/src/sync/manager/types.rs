@@ -40,6 +40,10 @@ pub struct SyncConfig {
     /// `SyncConfig::default()` call sites need no change. Defaults to `0` (always-on);
     /// the node overrides it from `NetworkParams` at startup.
     pub inc_i_147_activation_height: u64,
+    /// INC-I-204 M5 fork-choice activation height, from
+    /// `NetworkParams::inc_i_204_fork_choice_activation_height`. Defaults to
+    /// `u64::MAX` (dormant); the node overrides it at startup.
+    pub inc_i_204_fork_choice_activation_height: u64,
     /// INC-I-152: operational bootstrap genesis window, from
     /// `NetworkParams::genesis_blocks` (mainnet 360).
     ///
@@ -67,6 +71,7 @@ impl Default for SyncConfig {
             min_peers_for_sync: 1,
             stale_timeout: Duration::from_secs(300), // 5 minutes - peers stay active longer
             inc_i_147_activation_height: 0,          // always-on unless overridden
+            inc_i_204_fork_choice_activation_height: u64::MAX, // dormant unless overridden
             genesis_blocks: 0,                       // window disabled unless overridden
         }
     }

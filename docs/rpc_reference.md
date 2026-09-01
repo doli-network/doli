@@ -51,6 +51,7 @@ This document describes the DOLI node JSON-RPC API.
 | **Guardian** | `createCheckpoint` | Implemented |
 | **Guardian** | `getGuardianStatus` | Implemented |
 | **Guardian** | `forceReorgTo` | Implemented — admin-gated, single-shot (INC-I-204 M4.1) |
+| **Chain** | `getForkChoiceVersion` | Implemented — read-only fork-choice readiness probe (INC-I-204 M5) |
 | **Storage** | `pruneBlocks` | Implemented |
 | **Storage** | `getStorageInfo` | Implemented |
 | **Oracle** (Phase 2.1) | `getOraclePrice` | Implemented — frozen pre-activation |
@@ -2221,6 +2222,37 @@ curl -X POST http://127.0.0.1:8500 \
 | `plan_refused` | No common ancestor, or the reorg depth bound was hit | spent |
 | `reorg_did_not_land` | The reorg was attempted and the tip did not move (e.g. a missing intermediate body) | spent |
 | `expired` | The TTL or the height span ended the directive before it decided | spent |
+
+---
+
+### `getForkChoiceVersion`
+
+Report which fork-choice rule this node runs at its current tip. Read-only, not
+admin-gated. This is the fleet-readiness probe: poll every node BEFORE pinning
+`inc_i_204_fork_choice_activation_height` on a network, and confirm every one of them
+answers with a `result` (an old binary answers `method_not_found`).
+
+**Parameters:** none.
+
+**Returns:**
+
+| Field | Meaning |
+|---|---|
+| `version` | `1` = the pre-M5 rules; `2` = the single `fork_choice` authority |
+| `activationHeight` | This node's compiled/overridden gate. `u64::MAX` (18446744073709551615) means FROZEN |
+| `active` | `true` iff `localHeight >= activationHeight` |
+| `localHeight` | The node's applied tip height |
+
+Mainnet and testnet ship at `u64::MAX`, so every live node answers
+`version: 1, active: false` until a height is pinned by an explicit user decision.
+Devnet activates from genesis.
+
+**Example:**
+```bash
+curl -s -X POST http://127.0.0.1:8500 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getForkChoiceVersion","params":[],"id":1}'
+```
 
 ---
 

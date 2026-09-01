@@ -139,6 +139,7 @@ impl Chain {
             self.fork_tip,
             |x| parents.get(x).copied(),
             |x| heights.get(x).copied(),
+            network::ForkChoiceFinality::default(),
         )
     }
 
@@ -238,7 +239,15 @@ fn pin_check_reorg_weighted_rejects_strictly_lighter_chain() {
     // A sibling off a1 carrying weight 1: 10 + 1 = 11 < current 20.
     let light = block_on(a1, 9);
     assert!(
-        handler.check_reorg_weighted(&light, a2, 1).is_none(),
+        handler
+            .check_reorg_weighted(
+                &light,
+                a2,
+                1,
+                |_| None,
+                network::ForkChoiceFinality::default()
+            )
+            .is_none(),
         "O2: a strictly lighter chain is rejected before the finality block is reached"
     );
 }
@@ -262,7 +271,15 @@ fn pin_check_reorg_weighted_finality_uses_unwrap_or_zero() {
     // M5 will delete — M0 must leave it exactly as it is.
     let heavy = block_on(a1, 9);
     assert!(
-        handler.check_reorg_weighted(&heavy, a2, 30).is_none(),
+        handler
+            .check_reorg_weighted(
+                &heavy,
+                a2,
+                30,
+                |_| None,
+                network::ForkChoiceFinality::default()
+            )
+            .is_none(),
         "O2/P5: the synthetic ancestor height (1) is below finality (5), so the \
          reorg is refused. INV-SYNC-012's known-remaining site, unchanged by M0."
     );
@@ -274,7 +291,15 @@ fn pin_check_reorg_weighted_finality_uses_unwrap_or_zero() {
     permissive.record_block_with_weight(a2, a1, 10);
     permissive.set_last_finality_height(1);
     assert!(
-        permissive.check_reorg_weighted(&heavy, a2, 30).is_some(),
+        permissive
+            .check_reorg_weighted(
+                &heavy,
+                a2,
+                30,
+                |_| None,
+                network::ForkChoiceFinality::default()
+            )
+            .is_some(),
         "O2/P5 contrast: at finality == synthetic height the same fork is APPROVED"
     );
 }

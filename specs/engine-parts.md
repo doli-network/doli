@@ -1349,8 +1349,8 @@ All items are marked deprecated — use DeterministicScheduler for consensus-cri
 - fn FinalityTracker::new — create new finality tracker
 - fn FinalityTracker::track_block — start tracking a new block for finality; applies buffered early attestations
 - fn FinalityTracker::add_attestation_weight — add attestation weight to a pending block
-- fn FinalityTracker::check_finality — check if any pending blocks have reached finality; returns highest finalized checkpoint
-- fn FinalityTracker::is_at_or_below_finalized — check if a given height is at or below last finalized height
+- fn FinalityTracker::check_finality(applied_tip_height, enforce_monotonic) — INC-I-204 M5: `enforce_monotonic` (gated on `inc_i_204_fork_choice_activation_height`) refuses any candidate at or below `last_finalized.height`; without it a lower block re-finalizes and moves finality DOWN
+- fn FinalityTracker::is_at_or_below_finalized — `<=`; the "already covered by finality" predicate. NOT the rewind/fork-choice guard (that is strict `<`, INV-SYNC-008); deliberately unwired (INC-I-204 M5 trap T1)
 - fn FinalityTracker::prune_old_pending — prune pending blocks older than a given slot
 
 #### Constants
@@ -2413,12 +2413,18 @@ Note: struct PresenceHeartbeat (not Heartbeat) in the tpop module; this is diffe
 - `BlockWeight` — per-block metadata: `prev_hash`, `producer_weight`, `accumulated_weight`, `height`
 - `ReorgResult` — reorg plan output: `rollback: Vec<Hash>`, `common_ancestor: Hash`, `new_blocks: Vec<Hash>`, `weight_delta: i64`
 - `ReorgHandler::record_block_with_weight(hash, prev_hash, weight)` — records a chain block; updates current_chain_weight
-- `ReorgHandler::record_fork_block(hash, prev_hash, weight)` — records competing fork block WITHOUT updating current_chain_weight
-- `ReorgHandler::should_reorg_by_weight_with_tiebreak(new_tip, current_tip)` — true if new_tip heavier, or equal weight with lower hash
-- `ReorgHandler::check_reorg_weighted(block, current_tip, weight)` — full fork choice; enforces finality guard; returns Option<ReorgResult>
-- `ReorgHandler::plan_reorg(current_tip, new_tip, get_parent, get_height)` — builds full reorg plan; enforces finality guard on common ancestor. Thin wrapper over `plan_reorg_inner(.., finality_override=false)`
-- `ReorgHandler::plan_reorg_operator(current_tip, new_tip, get_parent, get_height)` — INC-I-204 M4.1 / REQ-FORK-012: the audited operator variant, `plan_reorg_inner(.., finality_override=true)`. The ONLY caller that crosses the finality MARKER. Depth (`MAX_REORG_DEPTH`), no-common-ancestor and unresolvable-ancestor-height vetoes still bind; planning is pure — the marker is read, never written. Automatic callers must never reach it
-- `ReorgHandler::set_last_finality_height(height)` — updates finality boundary; reorgs at or below this height are rejected
+- `ReorgHandler::record_fork_block(hash, prev_hash, weight)` — records competing fork block WITHOUT updating current_chain_weight; thin `(.., None)` delegate
+- `ReorgHandler::record_fork_block_with_height(hash, prev_hash, weight, real_height)` — INC-I-204 M5 (Contradiction 2): at/above `inc_i_204_fork_choice_activation_height` stores the REAL chain height; below it the legacy `parent_height + 1`
+- `ReorgHandler::with_activation_heights(inc_i_147, inc_i_204_fork_choice)` — both gates, from `SyncConfig`. `new()` = `(0, u64::MAX)`
+- `ReorgHandler::weigh_branches(our_tip, cand_tip, finality) -> WeightVerdict` — INC-I-204 M5: THE branch-weight rule for every door. Heavier / Lighter; on an exact tie `TieKeep` below the gate (the pre-M5 wedge-escape rule) and `TieSwitch` iff the candidate hash is lower at/above it. Gate input is `finality.local_tip_height`
+- `ForkChoiceFinality { finalized_height, finalized_hash, local_tip_height }` — the derived finality view; `effective_finality() = min(checkpoint, local_tip)`. Built by `SyncManager::fork_choice_finality()`
+- `WeightVerdict` — `Heavier | TieSwitch | TieKeep | Lighter`
+- `ReorgHandler::should_reorg_by_weight_with_tiebreak(new_tip, current_tip)` — true if new_tip heavier, or equal weight with lower hash AND weight > 0. ZERO production callers; deleted in M6
+- `ReorgHandler::check_reorg_weighted(block, current_tip, weight, get_height, finality)` — full fork choice; at/above the M5 gate the finality guard reads the ancestor's REAL height from `get_height` and requires the branch to contain `finality.finalized_hash`; below it, the pre-M5 mirror + `BlockWeight.height` comparison verbatim
+- `ReorgHandler::plan_reorg(current_tip, new_tip, get_parent, get_height, finality)` — builds full reorg plan; same two-regime finality rule. Thin wrapper over `plan_reorg_inner(.., finality_override=false)`
+- `ReorgHandler::plan_reorg_operator(current_tip, new_tip, get_parent, get_height, finality)` — INC-I-204 M4.1 / REQ-FORK-012: the audited operator variant, `plan_reorg_inner(.., finality_override=true)`. The ONLY caller that crosses the finality refusal in either regime. Depth (`MAX_REORG_DEPTH`), no-common-ancestor and unresolvable-ancestor-height vetoes still bind; planning is pure. Automatic callers must never reach it
+- `ReorgHandler::set_last_finality_height(height)` — updates finality boundary; reorgs strictly below it are rejected. INC-I-204 M5: `max()`-based at/above the gate (INV-FINALITY-001 clause 1), bare assignment below it
+- `ReorgHandler::clear_finality_if_below_tip(tip)` — the pre-M5 erasure backstop; a NO-OP at/above the M5 gate, where `effective_finality` performs the release by clamping (brief S12). Field + method survive as bytes; M6 deletes them
 - `ReorgHandler::compare_chains(chain_a_tip, chain_b_tip)` — Ordering by accumulated weight
 - `ReorgHandler::clear()` / `set_current_weight(weight)` / `get_block_weight(hash)` / `knows_block(hash)` / `get_parent(hash)` — accessors
 - `MAX_REORG_DEPTH` = 1,000 — maximum depth for reorg ancestor search

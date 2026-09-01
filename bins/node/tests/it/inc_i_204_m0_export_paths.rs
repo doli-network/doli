@@ -327,7 +327,15 @@ fn d5_finality_probe_counts_entries_and_rejects_separately() {
     rejecting.record_block_with_weight(a2, a1, 10);
     rejecting.set_last_finality_height(5);
     assert!(
-        rejecting.check_reorg_weighted(&heavy, a2, 30).is_none(),
+        rejecting
+            .check_reorg_weighted(
+                &heavy,
+                a2,
+                30,
+                |_| None,
+                network::ForkChoiceFinality::default()
+            )
+            .is_none(),
         "decision pin: the reject itself is unchanged (see network decision pins)"
     );
     let obs = rejecting.observations();
@@ -348,7 +356,15 @@ fn d5_finality_probe_counts_entries_and_rejects_separately() {
     accepting.record_block_with_weight(a2, a1, 10);
     accepting.set_last_finality_height(1);
     assert!(
-        accepting.check_reorg_weighted(&heavy, a2, 30).is_some(),
+        accepting
+            .check_reorg_weighted(
+                &heavy,
+                a2,
+                30,
+                |_| None,
+                network::ForkChoiceFinality::default()
+            )
+            .is_some(),
         "decision pin: the approval itself is unchanged"
     );
     let obs = accepting.observations();
@@ -376,7 +392,13 @@ fn d5_finality_probe_reaches_the_exported_registry() {
     handler.record_block_with_weight(a1, Hash::ZERO, 10);
     handler.record_block_with_weight(a2, a1, 10);
     handler.set_last_finality_height(5);
-    let _ = handler.check_reorg_weighted(&heavy, a2, 30);
+    let _ = handler.check_reorg_weighted(
+        &heavy,
+        a2,
+        30,
+        |_| None,
+        network::ForkChoiceFinality::default(),
+    );
 
     let mut state = ReorgScrapeState::new();
     apply_reorg_observations(&mut state, &handler.observations());

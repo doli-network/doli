@@ -616,12 +616,37 @@ lazy_static! {
     ).unwrap();
 }
 
+lazy_static! {
+    /// INC-I-204 M5. With mainnet and testnet frozen at u64::MAX these counters plus
+    /// `getForkChoiceVersion` are the ONLY evidence the unified authority works
+    /// (REQ-FORK-014 dormant-window canary). Its own `lazy_static!` block: the main
+    /// one is at the macro recursion limit.
+    pub static ref FORK_CHOICE_POST_ACTIVATION: IntCounterVec = IntCounterVec::new(
+        Opts::new(
+            "doli_fork_choice_post_activation_total",
+            "INC-I-204 M5 unified fork-choice authority events at or above the \
+             activation height, by site."
+        ),
+        &["site"]
+    ).unwrap();
+}
+
 /// Every `site` value `FORK_GUARD_REFUSALS` is written with.
 pub const FORK_GUARD_SITES: [&str; 3] = ["producer_rebuild", "rollback_rebuild", "reorg_execute"];
 
 /// Every `gate` value `PRE_ACTIVATION_BRANCH` is written with.
-const PRE_ACTIVATION_GATES: [&str; 2] =
-    ["inc_i_147_record_height", "inc_i_147_plan_reorg_finality"];
+const PRE_ACTIVATION_GATES: [&str; 3] = [
+    "inc_i_147_record_height",
+    "inc_i_147_plan_reorg_finality",
+    "inc_i_204_fork_choice",
+];
+
+/// Every `site` value `FORK_CHOICE_POST_ACTIVATION` is written with.
+const FORK_CHOICE_POST_ACTIVATION_SITES: [&str; 3] = [
+    "unified_entry",
+    "unified_reject",
+    "record_fork_block_real_height",
+];
 
 /// Every `site` value `REORG_FINALITY_PROBE` is written with.
 const FINALITY_PROBE_SITES: [&str; 2] = ["check_reorg_weighted", "plan_reorg"];
@@ -735,6 +760,12 @@ pub fn register_metrics() {
                 .with_label_values(&[site, outcome])
                 .inc_by(0);
         }
+    }
+    let _ = REGISTRY.register(Box::new(FORK_CHOICE_POST_ACTIVATION.clone()));
+    for site in FORK_CHOICE_POST_ACTIVATION_SITES {
+        FORK_CHOICE_POST_ACTIVATION
+            .with_label_values(&[site])
+            .inc_by(0);
     }
 
     let _ = REGISTRY.register(Box::new(DEFI_TOTAL_ACTIVE_BONDS.clone()));
@@ -879,6 +910,30 @@ pub fn apply_reorg_observations(
         &["inc_i_147_plan_reorg_finality"],
         o.pre_activation_plan_reorg_finality,
         last.pre_activation_plan_reorg_finality,
+    );
+    inc_delta(
+        &PRE_ACTIVATION_BRANCH,
+        &["inc_i_204_fork_choice"],
+        o.pre_activation_fork_choice,
+        last.pre_activation_fork_choice,
+    );
+    inc_delta(
+        &FORK_CHOICE_POST_ACTIVATION,
+        &["unified_entry"],
+        o.fork_choice_unified_entries,
+        last.fork_choice_unified_entries,
+    );
+    inc_delta(
+        &FORK_CHOICE_POST_ACTIVATION,
+        &["unified_reject"],
+        o.fork_choice_unified_rejects,
+        last.fork_choice_unified_rejects,
+    );
+    inc_delta(
+        &FORK_CHOICE_POST_ACTIVATION,
+        &["record_fork_block_real_height"],
+        o.record_fork_block_real_height,
+        last.record_fork_block_real_height,
     );
     state.last = *o;
 }

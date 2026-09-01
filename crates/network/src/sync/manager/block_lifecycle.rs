@@ -410,13 +410,37 @@ impl SyncManager {
     ///
     /// Returns a ReorgResult only if the new chain is heavier than our current chain.
     /// This implements "heaviest chain wins" fork choice rule.
+    ///
+    /// `get_height` resolves a hash to its REAL chain height. `crates/network` has no
+    /// `doli-storage` dependency, so the block-store lookup arrives as a closure from
+    /// `bins/node` (INC-I-204 M5 / INV-SYNC-012).
     pub fn handle_new_block_weighted(
         &mut self,
         block: Block,
         producer_weight: u64,
+        get_height: impl Fn(&Hash) -> Option<u64>,
     ) -> Option<super::super::reorg::ReorgResult> {
-        self.reorg_handler
-            .check_reorg_weighted(&block, self.local_hash, producer_weight)
+        let finality = self.fork_choice_finality();
+        self.reorg_handler.check_reorg_weighted(
+            &block,
+            self.local_hash,
+            producer_weight,
+            get_height,
+            finality,
+        )
+    }
+
+    /// The derived finality view every fork-choice door reads (INC-I-204 M5).
+    ///
+    /// Sourced from `FinalityTracker.last_finalized` — height AND hash, the hash
+    /// `finalize_if_ready` used to discard — plus the local applied tip.
+    pub fn fork_choice_finality(&self) -> super::super::reorg::ForkChoiceFinality {
+        let cp = self.finality_tracker.last_finalized.as_ref();
+        super::super::reorg::ForkChoiceFinality {
+            finalized_height: cp.map(|c| c.height),
+            finalized_hash: cp.map(|c| c.block_hash),
+            local_tip_height: self.local_height,
+        }
     }
 
     // =========================================================================
@@ -463,9 +487,18 @@ impl SyncManager {
 
     /// Record a fork block's weight in reorg_handler WITHOUT updating local chain tip.
     /// Used during fork recovery to populate weights before plan_reorg.
-    pub fn record_fork_block_weight(&mut self, hash: Hash, prev_hash: Hash, weight: u64) {
+    /// `real_height` is the fork block's true chain height (INC-I-204 M5,
+    /// Contradiction 2): both callers hold the `Block`, so they pass
+    /// `block.header.height` instead of letting the map derive `parent_height + 1`.
+    pub fn record_fork_block_weight(
+        &mut self,
+        hash: Hash,
+        prev_hash: Hash,
+        weight: u64,
+        real_height: u64,
+    ) {
         self.reorg_handler
-            .record_fork_block(hash, prev_hash, weight);
+            .record_fork_block_with_height(hash, prev_hash, weight, real_height);
     }
 
     /// Seed the reorg handler with the snap sync tip so fork detection works immediately.

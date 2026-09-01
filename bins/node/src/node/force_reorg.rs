@@ -126,6 +126,7 @@ impl Node {
                         .or_else(|| store.get_header(h).ok().flatten().map(|hd| hd.prev_hash))
                 },
                 |h| store.get_height_by_hash(h).ok().flatten(),
+                sync.fork_choice_finality(),
             )
         };
         let Some(plan) = plan else {

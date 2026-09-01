@@ -324,8 +324,14 @@ fn t1_plan_reorg_still_refuses_below_finality_for_automatic_callers() {
     // Common ancestor c1 is at h=1; finality at 2 puts it BELOW.
     rh.set_last_finality_height(2);
     assert!(
-        rh.plan_reorg(tip, fork_tip, parent_of, &height_of)
-            .is_none(),
+        rh.plan_reorg(
+            tip,
+            fork_tip,
+            parent_of,
+            &height_of,
+            crate::sync::ForkChoiceFinality::default()
+        )
+        .is_none(),
         "V5 UNCHANGED: an automatic caller must still be refused when the common \
          ancestor (h=1) is below the finalized height (2)"
     );
@@ -341,7 +347,13 @@ fn t1_plan_reorg_still_permits_an_ancestor_exactly_at_finality() {
 
     rh.set_last_finality_height(1);
     let plan = rh
-        .plan_reorg(tip, fork_tip, parent_of, &height_of)
+        .plan_reorg(
+            tip,
+            fork_tip,
+            parent_of,
+            &height_of,
+            crate::sync::ForkChoiceFinality::default(),
+        )
         .expect("LB-2 fencepost: ancestor height == finality height is LEGAL (strict `<`)");
     assert_eq!(
         plan.common_ancestor,
@@ -362,15 +374,27 @@ fn the_operator_variant_is_the_only_caller_that_crosses_the_marker() {
 
     // Same handler, same inputs, same instant: the automatic door is shut...
     assert!(
-        rh.plan_reorg(tip, fork_tip, parent_of, &height_of)
-            .is_none(),
+        rh.plan_reorg(
+            tip,
+            fork_tip,
+            parent_of,
+            &height_of,
+            crate::sync::ForkChoiceFinality::default()
+        )
+        .is_none(),
         "precondition: the automatic caller is refused, so the operator plan below \
          cannot be passing for a trivial reason"
     );
 
     // ...and the audited operator door is the one that opens.
     let plan = rh
-        .plan_reorg_operator(tip, fork_tip, parent_of, &height_of)
+        .plan_reorg_operator(
+            tip,
+            fork_tip,
+            parent_of,
+            &height_of,
+            crate::sync::ForkChoiceFinality::default(),
+        )
         .expect("REQ-FORK-012: the operator variant must cross the finality MARKER");
     assert_eq!(plan.common_ancestor, h("c1"));
     assert_eq!(
@@ -402,8 +426,14 @@ fn the_operator_variant_bypasses_only_the_finality_marker() {
 
     // V3: a hash with no ancestry into our chain has no common ancestor.
     assert!(
-        rh.plan_reorg_operator(tip, h("unrelated"), parent_of, &height_of)
-            .is_none(),
+        rh.plan_reorg_operator(
+            tip,
+            h("unrelated"),
+            parent_of,
+            &height_of,
+            crate::sync::ForkChoiceFinality::default()
+        )
+        .is_none(),
         "V3 still binds: no common ancestor means no plan, whoever asked"
     );
 }

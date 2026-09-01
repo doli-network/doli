@@ -258,6 +258,10 @@ impl NetworkParams {
                 // precedent), v6.24.1 release. Testnet has validated the rule
                 // live since 80_700.
                 inc_i_147_activation_height: 129_500,
+                // INC-I-204 M5 single fork-choice authority (#23). FROZEN at
+                // u64::MAX: pinning a real mainnet height is a separate user
+                // decision-session (HC-6 shape). Never bundled onto #16.
+                inc_i_204_fork_choice_activation_height: u64::MAX,
 
                 // INC-I-172 M2 maintainer trust-root derivation. Gates the
                 // one-shot genesis seed (F2), the canonical
@@ -490,6 +494,12 @@ impl NetworkParams {
                 // IMMUTABLE once crossed (INC-I-054).
                 // Override via `DOLI_INC_I_147_ACTIVATION_HEIGHT`.
                 inc_i_147_activation_height: 80_700,
+                // INC-I-204 M5 single fork-choice authority (#23). FROZEN at
+                // u64::MAX: the spec requires the gate above both tips with an
+                // auto-update convergence margin and names neither, so no value
+                // is derivable. Arm the testnet rehearsal via
+                // `DOLI_INC_I_204_FORK_CHOICE_ACTIVATION_HEIGHT`.
+                inc_i_204_fork_choice_activation_height: u64::MAX,
 
                 // INC-I-172 M2 maintainer trust-root derivation. Pinned
                 // 2026-08-10 at live testnet tip 126_801 with ~400 blocks
@@ -735,6 +745,10 @@ impl NetworkParams {
                 inc_i_096_activation_height: 0,
                 // INC-I-147 D6/D4 recovery fixes. Always-on in devnet.
                 inc_i_147_activation_height: 0,
+                // INC-I-204 M5 single fork-choice authority. Always-on in devnet,
+                // mirroring the gate it supersedes. Fork choice is not block
+                // content, so 0 is not a genesis reset.
+                inc_i_204_fork_choice_activation_height: 0,
                 // INC-I-172 M2 maintainer trust-root derivation.
                 // Always active on devnet — fresh genesis each run, no history
                 // to reinterpret.

@@ -317,10 +317,12 @@ impl Node {
                 };
 
                 let reorg_result = {
-                    self.sync_manager
-                        .write()
-                        .await
-                        .handle_new_block_weighted(block.clone(), producer_weight)
+                    let store = &self.block_store;
+                    self.sync_manager.write().await.handle_new_block_weighted(
+                        block.clone(),
+                        producer_weight,
+                        |h| store.get_height_by_hash(h).ok().flatten(),
+                    )
                 };
 
                 if let Some(reorg_result) = reorg_result {
