@@ -184,6 +184,9 @@ impl Node {
                 .block_store
                 .ensure_blocks_present(1, target_height.max(1))
             {
+                crate::metrics::FORK_GUARD_REFUSALS
+                    .with_label_values(&["rollback_rebuild"])
+                    .inc();
                 warn!(
                     "[FORK_GUARD_BACKFILL_REQUIRED] Rollback rebuild refused: block_store \
                      incomplete over 1..={} — {}. No state mutated. Skipping rollback, \

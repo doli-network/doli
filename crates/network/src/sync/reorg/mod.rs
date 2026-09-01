@@ -18,6 +18,10 @@ use crypto::Hash;
 use doli_core::Block;
 use tracing::{debug, info, warn};
 
+mod observe;
+pub use observe::ReorgObservations;
+use observe::{bump, ReorgCounters};
+
 /// Maximum depth for reorg detection (must handle network partitions up to ~2.7 hours)
 const MAX_REORG_DEPTH: usize = 1000;
 
@@ -73,6 +77,9 @@ pub struct ReorgHandler {
     /// Defaults to `0` (always-on) so that unit tests and devnet exercise the
     /// corrected path; the node overrides it from `NetworkParams` via `SyncConfig`.
     inc_i_147_activation_height: u64,
+    /// INC-I-204 M0 observation counters. Written alongside decisions, never read
+    /// by one; `bins/node` scrapes them into Prometheus.
+    counters: ReorgCounters,
 }
 
 impl ReorgHandler {
@@ -94,6 +101,7 @@ impl ReorgHandler {
             current_chain_weight: 0,
             last_finality_height: None,
             inc_i_147_activation_height: 0,
+            counters: ReorgCounters::default(),
         }
     }
 
@@ -142,7 +150,11 @@ impl ReorgHandler {
         producer_weight: u64,
         real_height: u64,
     ) {
-        let height = (real_height >= self.inc_i_147_activation_height).then_some(real_height);
+        let post_activation = real_height >= self.inc_i_147_activation_height;
+        if !post_activation {
+            bump(&self.counters.pre_activation_record_height);
+        }
+        let height = post_activation.then_some(real_height);
         self.record_block_internal(hash, prev_hash, producer_weight, true, height);
     }
 
@@ -371,12 +383,14 @@ impl ReorgHandler {
 
                 // Finality check: never reorg past the last finalized block
                 if let Some(finality_height) = self.last_finality_height {
+                    bump(&self.counters.check_reorg_finality_entries);
                     let ancestor_height = self
                         .block_weights
                         .get(&current)
                         .map(|w| w.height)
                         .unwrap_or(0);
                     if ancestor_height < finality_height {
+                        bump(&self.counters.check_reorg_finality_rejects);
                         warn!(
                             "FINALITY: Rejecting reorg past finalized height {} (ancestor at {})",
                             finality_height, ancestor_height
@@ -492,6 +506,7 @@ impl ReorgHandler {
         // This mirrors the check in check_reorg_weighted() — without it,
         // fork recovery falls through to plan_reorg() and bypasses finality.
         if let Some(finality_height) = self.last_finality_height {
+            bump(&self.counters.plan_reorg_finality_entries);
             // INV-SYNC-002 (INC-I-081 Bug 2): block_weights is LRU-bounded and is
             // pruned during rollback. Falling back to height=0 silently rejects
             // every reorg whose finality is non-zero. Consult the caller-provided
@@ -520,6 +535,9 @@ impl ReorgHandler {
             // node that has never finalized would then never evaluate the gate at all.
             let post_activation =
                 real_height.is_some_and(|h| h >= self.inc_i_147_activation_height);
+            if !post_activation {
+                bump(&self.counters.pre_activation_plan_reorg_finality);
+            }
 
             let ancestor_height = if post_activation {
                 // Post-activation: the real chain height is authoritative.
@@ -541,6 +559,7 @@ impl ReorgHandler {
                 }
             };
             if ancestor_height < finality_height {
+                bump(&self.counters.plan_reorg_finality_rejects);
                 warn!(
                     "FINALITY: plan_reorg rejecting reorg past finalized height {} (ancestor at {})",
                     finality_height, ancestor_height
@@ -601,6 +620,11 @@ impl ReorgHandler {
     /// Get parent of a block
     pub fn get_parent(&self, hash: &Hash) -> Option<Hash> {
         self.block_parents.get(hash).copied()
+    }
+
+    /// INC-I-204 M0: snapshot of this handler's observation counters.
+    pub fn observations(&self) -> ReorgObservations {
+        self.counters.snapshot()
     }
 
     /// Get number of tracked blocks

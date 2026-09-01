@@ -290,20 +290,65 @@ lazy_static! {
     //                   the blocks are present but the height index is stale,
     //                   stop the node and run `doli-node reindex --data-dir <DIR>`."
     //
-    // INSTRUMENT SCOPE — only `site="producer_rebuild"`
-    // (`rebuild_producer_set_from_blocks`) is instrumented today. The sibling
-    // refusals in `rollback.rs` and `block_handling.rs` are NOT yet counted,
-    // so a zero for any other `site` value means "not instrumented", NOT "no
-    // refusals occurred". Do not build an alert that reads absence as health
-    // until those sites also increment this counter.
+    // INSTRUMENT SCOPE — every FORK_GUARD refusal path increments (INC-I-204 M0):
+    //   producer_rebuild  rewards.rs        rebuild_producer_set_from_blocks
+    //   rollback_rebuild  rollback.rs       rollback_one_block, no-undo fallback
+    //   reorg_execute     block_handling.rs execute_reorg, both preconditions
+    // All three series are zero-initialised in register_metrics(), so a zero is a
+    // measured "no refusals" and an absent series means the exporter is broken.
     pub static ref FORK_GUARD_REFUSALS: IntCounterVec = IntCounterVec::new(
         Opts::new(
             "doli_fork_guard_refusals_total",
-            "State rebuilds refused because block_store is not dense over the replay range \
-             ([FORK_GUARD_BACKFILL_REQUIRED]). Only site=\"producer_rebuild\" is instrumented; \
-             a zero for any other site means not-instrumented, not no-refusals."
+            "State rebuilds and reorgs refused because block_store is not dense over the \
+             replay range ([FORK_GUARD_BACKFILL_REQUIRED]). Every refusal path increments: \
+             site=producer_rebuild, rollback_rebuild, reorg_execute."
         ),
         &["site"]
+    ).unwrap();
+
+    // ===================
+    // Fork lifecycle (INC-I-204 M0 — observability only)
+    // ===================
+
+    /// Distinct chain tips across our tip plus connected peers, from
+    /// `SyncManager::checkpoint_health()`. 1 = the fleet agrees; 0 = no peers,
+    /// i.e. no evidence either way. Sustained > 1 is the INC-I-204 wedge witness.
+    pub static ref UNIQUE_CHAIN_TIPS: IntGauge = IntGauge::new(
+        "doli_unique_chain_tips",
+        "Distinct chain tips across our tip plus connected peers. 1 = the fleet agrees, \
+         0 = no connected peers (no evidence)."
+    ).unwrap();
+
+    /// FORK_GUARD wedge-escape decisions, one series per reason.
+    pub static ref WEDGE_ESCAPE_OUTCOMES: IntCounterVec = IntCounterVec::new(
+        Opts::new(
+            "doli_wedge_escape_outcomes_total",
+            "FORK_GUARD wedge-escape decisions, by reason: cannot_outweigh, plan_refused, \
+             not_heavier, reorg, reorg_did_not_land."
+        ),
+        &["reason"]
+    ).unwrap();
+
+    /// Executions of a pre-activation branch of an activation-height gate — the
+    /// dormant-window canary REQ-FORK-014 asks for.
+    pub static ref PRE_ACTIVATION_BRANCH: IntCounterVec = IntCounterVec::new(
+        Opts::new(
+            "doli_pre_activation_branch_total",
+            "Executions of a pre-activation (known-legacy) branch of an activation-height \
+             gate. Non-zero on a network past that height means the gate is misconfigured."
+        ),
+        &["gate"]
+    ).unwrap();
+
+    /// Finality-guard comparisons reached and refused, by site. Measures the
+    /// INV-SYNC-012 reject rate M5's deletion decision depends on.
+    pub static ref REORG_FINALITY_PROBE: IntCounterVec = IntCounterVec::new(
+        Opts::new(
+            "doli_reorg_finality_probe_total",
+            "Finality-guard comparisons reached (outcome=entry) and refused (outcome=reject), \
+             by site: check_reorg_weighted, plan_reorg."
+        ),
+        &["site", "outcome"]
     ).unwrap();
 
     // ===================
@@ -539,6 +584,16 @@ lazy_static! {
     ).unwrap();
 }
 
+/// Every `site` value `FORK_GUARD_REFUSALS` is written with.
+pub const FORK_GUARD_SITES: [&str; 3] = ["producer_rebuild", "rollback_rebuild", "reorg_execute"];
+
+/// Every `gate` value `PRE_ACTIVATION_BRANCH` is written with.
+const PRE_ACTIVATION_GATES: [&str; 2] =
+    ["inc_i_147_record_height", "inc_i_147_plan_reorg_finality"];
+
+/// Every `site` value `REORG_FINALITY_PROBE` is written with.
+const FINALITY_PROBE_SITES: [&str; 2] = ["check_reorg_weighted", "plan_reorg"];
+
 /// Register all metrics with the registry
 pub fn register_metrics() {
     let _ = REGISTRY.register(Box::new(BLOCKS_PROCESSED.clone()));
@@ -599,6 +654,32 @@ pub fn register_metrics() {
     // Fork-guard backfill refusals (INC-I-156 M2 / AUDIT-P2-206)
     let _ = REGISTRY.register(Box::new(FORK_GUARD_REFUSALS.clone()));
 
+    // Fork lifecycle (INC-I-204 M0)
+    let _ = REGISTRY.register(Box::new(UNIQUE_CHAIN_TIPS.clone()));
+    let _ = REGISTRY.register(Box::new(WEDGE_ESCAPE_OUTCOMES.clone()));
+    let _ = REGISTRY.register(Box::new(PRE_ACTIVATION_BRANCH.clone()));
+    let _ = REGISTRY.register(Box::new(REORG_FINALITY_PROBE.clone()));
+    // INC-I-154 again: zero-initialise every label value, or the family publishes
+    // no series and an alert on an untouched site has nothing to evaluate.
+    for site in FORK_GUARD_SITES {
+        FORK_GUARD_REFUSALS.with_label_values(&[site]).inc_by(0);
+    }
+    for outcome in crate::node::wedge_outcome::ALL_WEDGE_OUTCOMES {
+        WEDGE_ESCAPE_OUTCOMES
+            .with_label_values(&[outcome.reason()])
+            .inc_by(0);
+    }
+    for gate in PRE_ACTIVATION_GATES {
+        PRE_ACTIVATION_BRANCH.with_label_values(&[gate]).inc_by(0);
+    }
+    for site in FINALITY_PROBE_SITES {
+        for outcome in ["entry", "reject"] {
+            REORG_FINALITY_PROBE
+                .with_label_values(&[site, outcome])
+                .inc_by(0);
+        }
+    }
+
     let _ = REGISTRY.register(Box::new(DEFI_TOTAL_ACTIVE_BONDS.clone()));
     let _ = REGISTRY.register(Box::new(DEFI_MAX_POOL_TVL.clone()));
     let _ = REGISTRY.register(Box::new(DEFI_BOND_TO_TVL_RATIO.clone()));
@@ -655,6 +736,95 @@ pub fn update_defi_health_metric(total_active_bonds: u64, max_pool: Option<(cryp
             DEFI_MAX_POOL_TVL.set(0);
             DEFI_BOND_TO_TVL_RATIO.set(f64::NAN);
         }
+    }
+}
+
+/// Publish the fleet-divergence gauge. `tips == 0` means no connected peers.
+pub fn update_unique_chain_tips(tips: usize) {
+    UNIQUE_CHAIN_TIPS.set(tips as i64);
+}
+
+/// Count one wedge-escape decision. `reason` comes from `WedgeOutcome::reason()`.
+pub fn record_wedge_escape_outcome(reason: &str) {
+    WEDGE_ESCAPE_OUTCOMES.with_label_values(&[reason]).inc();
+}
+
+/// Cumulative FORK_GUARD refusals across every instrumented site.
+///
+/// Feeds the observability-only `WedgeAlarm`; no decision path reads it.
+pub fn fork_guard_refusals_total() -> u64 {
+    FORK_GUARD_SITES
+        .iter()
+        .map(|site| FORK_GUARD_REFUSALS.with_label_values(&[site]).get())
+        .sum()
+}
+
+/// Last-seen `ReorgObservations`, retained across scrapes: a Prometheus counter
+/// can only `inc_by(delta)`, never `set()`. Same shape as `RocksDbScrapeState`.
+#[derive(Default)]
+pub struct ReorgScrapeState {
+    last: network::sync::ReorgObservations,
+}
+
+impl ReorgScrapeState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+/// Carry one `ReorgHandler` observation snapshot into Prometheus.
+///
+/// `crates/network` has no `prometheus` dependency, so the handler keeps plain
+/// atomics and this is the scrape seam — the `apply_rocksdb_metrics` pattern.
+pub fn apply_reorg_observations(
+    state: &mut ReorgScrapeState,
+    o: &network::sync::ReorgObservations,
+) {
+    let last = state.last;
+    inc_delta(
+        &REORG_FINALITY_PROBE,
+        &["check_reorg_weighted", "entry"],
+        o.check_reorg_finality_entries,
+        last.check_reorg_finality_entries,
+    );
+    inc_delta(
+        &REORG_FINALITY_PROBE,
+        &["check_reorg_weighted", "reject"],
+        o.check_reorg_finality_rejects,
+        last.check_reorg_finality_rejects,
+    );
+    inc_delta(
+        &REORG_FINALITY_PROBE,
+        &["plan_reorg", "entry"],
+        o.plan_reorg_finality_entries,
+        last.plan_reorg_finality_entries,
+    );
+    inc_delta(
+        &REORG_FINALITY_PROBE,
+        &["plan_reorg", "reject"],
+        o.plan_reorg_finality_rejects,
+        last.plan_reorg_finality_rejects,
+    );
+    inc_delta(
+        &PRE_ACTIVATION_BRANCH,
+        &["inc_i_147_record_height"],
+        o.pre_activation_record_height,
+        last.pre_activation_record_height,
+    );
+    inc_delta(
+        &PRE_ACTIVATION_BRANCH,
+        &["inc_i_147_plan_reorg_finality"],
+        o.pre_activation_plan_reorg_finality,
+        last.pre_activation_plan_reorg_finality,
+    );
+    state.last = *o;
+}
+
+/// Advance a counter series by the positive delta only; a handler replaced at
+/// runtime restarts from 0 and Prometheus handles the reset itself.
+fn inc_delta(family: &IntCounterVec, labels: &[&str], now: u64, last: u64) {
+    if now > last {
+        family.with_label_values(labels).inc_by(now - last);
     }
 }
 

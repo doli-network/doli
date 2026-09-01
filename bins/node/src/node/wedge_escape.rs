@@ -1,4 +1,6 @@
 use super::*;
+use crate::metrics::record_wedge_escape_outcome;
+use crate::node::wedge_outcome::{classify_wedge_plan, WedgeOutcome};
 
 // =============================================================================
 // INC-I-143 F2 — FORK_GUARD wedge-escape
@@ -128,6 +130,7 @@ impl Node {
             )
         };
         if fork_weight <= our_weight {
+            record_wedge_escape_outcome(WedgeOutcome::CannotOutweigh.reason());
             info!(
                 "[WEDGE_ESCAPE] Sibling {:.8} cannot out-weight tip (fork_w={} <= our_w={}) — retained, signaling recovery (INC-I-143)",
                 fork_tip_hash, fork_weight, our_weight
@@ -155,6 +158,12 @@ impl Node {
         // lower-hash tie-break stays in the PEER-DOWNLOADED fork_recovery.rs path;
         // it must NOT apply to unsolicited single-gossip siblings, or an attacker
         // can hash-grind an equal-weight competitor to displace the committed tip.
+        // INC-I-204 M0: name the branch before taking it. The match below is the
+        // live selection, unchanged; the classifier only labels it.
+        record_wedge_escape_outcome(
+            classify_wedge_plan(fork_weight, our_weight, reorg_result.as_ref()).reason(),
+        );
+
         match reorg_result {
             Some(result) if result.weight_delta > 0 => {
                 info!(
@@ -169,6 +178,7 @@ impl Node {
                 // actually move to the sibling, signal the periodic peer-download
                 // recovery so it can complete the escape.
                 if self.chain_state.read().await.best_hash != fork_tip_hash {
+                    record_wedge_escape_outcome(WedgeOutcome::ReorgDidNotLand.reason());
                     warn!(
                         "[WEDGE_ESCAPE] Heavier sibling {:.8} did not land (missing body) — signaling fork recovery (INC-I-143)",
                         fork_tip_hash
@@ -176,12 +186,21 @@ impl Node {
                     self.sync_manager.write().await.signal_stuck_fork();
                 }
             }
-            _ => {
+            Some(_) => {
                 // Not strictly heavier: keep the block retained (already cached +
                 // recorded) and signal so the periodic recovery path can pull the
                 // rest of the branch from peers and complete the escape.
                 info!(
                     "[WEDGE_ESCAPE] Sibling {:.8} retained (not strictly heavier) — signaling fork recovery (INC-I-143)",
+                    fork_tip_hash
+                );
+                self.sync_manager.write().await.signal_stuck_fork();
+            }
+            None => {
+                // A guard STOPPED the reorg — a different diagnosis from the arm
+                // above, and the one INC-I-204 needed (INC-I-204 M0 D3).
+                info!(
+                    "[WEDGE_ESCAPE] Sibling {:.8} retained (plan_reorg refused: finality guard, unknown ancestor, or reorg depth) — signaling fork recovery (INC-I-143)",
                     fork_tip_hash
                 );
                 self.sync_manager.write().await.signal_stuck_fork();

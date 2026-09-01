@@ -1187,6 +1187,38 @@ impl Node {
                 while self.health_window.len() > CHECKPOINT_HEALTH_WINDOW_SIZE {
                     self.health_window.pop_front();
                 }
+
+                // INC-I-204 M0: export the fleet-divergence gauge and judge the
+                // wedge window. Observation only — nothing here steers sync.
+                crate::metrics::update_unique_chain_tips(unique_hashes);
+                crate::metrics::apply_reorg_observations(
+                    &mut self.reorg_scrape_state,
+                    &sync.reorg_handler().observations(),
+                );
+                let verdict = self.wedge_alarm.observe(super::wedge_alarm::WedgeSample {
+                    at_secs: now_secs,
+                    tip_height: cs.best_height,
+                    refusals_total: crate::metrics::fork_guard_refusals_total(),
+                    unique_chain_tips: unique_hashes,
+                    best_peer_height: best_peer_h,
+                });
+                if let super::wedge_alarm::WedgeVerdict::Wedged {
+                    stalled_secs,
+                    refusals_in_window,
+                    unique_chain_tips,
+                } = verdict
+                {
+                    warn!(
+                        "[WEDGE_ALARM] Tip {} stalled {}s with {} FORK_GUARD refusals in window \
+                         and {} chain tips in the fleet (best_peer_h={}). INC-I-204 signature — \
+                         see docs/redesigns/fork-lifecycle-redesign-analysis.md",
+                        cs.best_height,
+                        stalled_secs,
+                        refusals_in_window,
+                        unique_chain_tips,
+                        best_peer_h
+                    );
+                }
             }
 
             // Sync state summary — captures key sync variables for post-incident analysis.

@@ -25,4 +25,4 @@ pub use manager::{
     RecoveryContext, RecoveryEvidence, RecoveryPhase, RecoveryReason, StuckForkAlert, SyncConfig,
     SyncManager, SyncPhase, SyncPipelineData, SyncState, VerifiedSnapshot, MAX_CONSECUTIVE_RESYNCS,
 };
-pub use reorg::{ReorgHandler, ReorgResult};
+pub use reorg::{ReorgHandler, ReorgObservations, ReorgResult};

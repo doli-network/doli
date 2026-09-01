@@ -37,7 +37,9 @@ mod state_root_serve;
 mod state_snapshot_serve;
 mod tx_announcements;
 mod validation_checks;
+pub mod wedge_alarm;
 mod wedge_escape;
+pub mod wedge_outcome;
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
@@ -322,6 +324,14 @@ pub struct Node {
     /// preventing all checkpoints from being marked unhealthy during transient
     /// peer disconnections. Updated every 30s in the periodic health diagnostic.
     pub health_window: std::collections::VecDeque<bool>,
+
+    /// INC-I-204 M0: rolling wedge detector, fed by the 30s health tick. Its
+    /// verdict is logged for the operator and read by no decision path.
+    pub wedge_alarm: wedge_alarm::WedgeAlarm,
+
+    /// INC-I-204 M0: last-seen `ReorgObservations`, so the plain network-side
+    /// counters can be carried into Prometheus as counter deltas.
+    pub reorg_scrape_state: crate::metrics::ReorgScrapeState,
 
     /// INC-I-049: Deferred attestation-triggered block fetch.
     /// Maps block_hash → (record_time, peers_asked, source_peer).

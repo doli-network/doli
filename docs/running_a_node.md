@@ -491,6 +491,17 @@ Key metrics available at `http://127.0.0.1:9000/metrics`:
 | `doli_transactions_received_total` | Total transactions received |
 | `doli_mempool_size` | Current mempool size |
 | `doli_sync_progress` | Sync progress (0-1) |
+| `doli_fork_guard_refusals_total{site}` | State rebuilds/reorgs refused for a non-dense block store. Sites: `producer_rebuild`, `rollback_rebuild`, `reorg_execute` |
+| `doli_unique_chain_tips` | Distinct chain tips across our tip plus peers. 1 = fleet agrees, 0 = no peers |
+| `doli_wedge_escape_outcomes_total{reason}` | Wedge-escape decisions: `cannot_outweigh`, `plan_refused`, `not_heavier`, `reorg`, `reorg_did_not_land` |
+| `doli_pre_activation_branch_total{gate}` | Executions of a pre-activation branch of an activation-height gate |
+| `doli_reorg_finality_probe_total{site,outcome}` | Finality-guard comparisons reached (`entry`) and refused (`reject`) |
+
+All label values are zero-initialised at start-up, so a zero is a measured "no
+events" and an absent series means the exporter is broken. A sustained
+`doli_unique_chain_tips > 1` with a flat `doli_chain_height` and climbing
+`doli_fork_guard_refusals_total` is the INC-I-204 wedge signature; the node logs
+`[WEDGE_ALARM]` when it detects that shape itself.
 
 ### 7.3. Grafana Dashboard
 
