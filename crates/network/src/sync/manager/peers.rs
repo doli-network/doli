@@ -7,6 +7,7 @@ use tracing::{debug, info, warn};
 
 use crypto::Hash;
 
+use super::branch_verdict::{classify_branch, BranchVerdict};
 use super::{PeerSyncStatus, SyncManager, SyncPipelineData, SyncState};
 use crate::protocols::SyncRequest;
 
@@ -95,6 +96,8 @@ impl SyncManager {
             },
         );
 
+        self.record_branch_verdict(peer, height, hash);
+
         // NETWORK TIP FROM PEER STATUS: Update network tip based on peer claims
         // This is critical for production gating - even if we haven't received the
         // actual block via gossip yet, knowing that a peer claims a higher height
@@ -131,6 +134,7 @@ impl SyncManager {
             status.best_hash = hash;
             status.best_slot = slot;
             status.last_status_response = Instant::now();
+            self.record_branch_verdict(peer, height, hash);
         }
 
         // Also update network tip from peer status (same as add_peer)
@@ -164,6 +168,7 @@ impl SyncManager {
     /// Remove a peer
     pub fn remove_peer(&mut self, peer: &PeerId) {
         self.peers.remove(peer);
+        self.peer_branch_verdicts.remove(peer);
 
         // FIX: Recompute network_tip_height from remaining peers + local height.
         // Without this, a peer that briefly reported an inflated height (e.g.,
@@ -447,25 +452,16 @@ impl SyncManager {
                 continue;
             }
             counted += 1;
-            // Look up our canonical hash at the peer's reported height
-            let our_hash_at_peer_height = self
-                .recent_canonical_hashes
-                .iter()
-                .find(|(h, _)| *h == status.best_height)
-                .map(|(_, hash)| *hash);
-
-            match our_hash_at_peer_height {
-                Some(our_hash) if our_hash == status.best_hash => {
-                    // Peer is on our chain, just behind our tip
-                    agreeing += 1;
-                }
-                Some(_) => {
-                    // Same height, different hash = real fork
-                    divergent_hashes.insert(status.best_hash);
-                }
-                None => {
-                    // Peer's height not in our ring buffer (>200 blocks behind
-                    // or ahead of us). Conservative: count as not agreeing.
+            match classify_branch(
+                &self.recent_canonical_hashes,
+                status.best_height,
+                status.best_hash,
+            ) {
+                // Peer is on our chain, just behind our tip.
+                Some(BranchVerdict::Agreeing) => agreeing += 1,
+                // Same height different hash = real fork; unclassifiable (>200
+                // behind or ahead of us) counts as not agreeing, conservatively.
+                Some(BranchVerdict::Divergent) | None => {
                     divergent_hashes.insert(status.best_hash);
                 }
             }

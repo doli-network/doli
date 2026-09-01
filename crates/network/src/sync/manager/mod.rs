@@ -7,6 +7,7 @@
 //! 4. Applies blocks to local chain
 
 mod block_lifecycle;
+mod branch_verdict;
 mod cleanup;
 mod peers;
 mod production_gate;
@@ -33,6 +34,8 @@ mod tests_inc_i143;
 mod tests_inc_i152;
 #[cfg(test)]
 mod tests_inc_i152_p1_001;
+#[cfg(test)]
+mod tests_inc_i204_m2;
 
 // Re-export all public types from types.rs
 pub use types::{
@@ -62,6 +65,7 @@ use tracing::{debug, info, warn};
 use crypto::Hash;
 
 use super::reorg::ReorgHandler;
+use branch_verdict::BranchVerdict;
 
 /// Maximum consecutive force-resyncs before giving up.
 /// After this many failed resyncs, the node stops retrying and requires
@@ -82,6 +86,9 @@ pub struct SyncManager {
     local_slot: u32,
     /// Peer sync statuses
     peers: HashMap<PeerId, PeerSyncStatus>,
+    /// INC-I-204 M2: last branch verdict observed per peer, with the time it was
+    /// recorded. Read by `best_peer` to prefer sources last seen on our chain.
+    peer_branch_verdicts: HashMap<PeerId, (BranchVerdict, Instant)>,
     /// Sync pipeline: headers, bodies, blocks, requests, downloaders, epoch counter
     pub(crate) pipeline: SyncPipeline,
     /// Pipeline data: operational data for the current sync phase.
@@ -206,6 +213,7 @@ impl SyncManager {
             local_hash: genesis_hash,
             local_slot: 0,
             peers: HashMap::new(),
+            peer_branch_verdicts: HashMap::new(),
             // Production gate defaults
             production_blocked: None,
             recovery_phase: RecoveryPhase::Normal,

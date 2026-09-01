@@ -2359,9 +2359,11 @@ Note: struct PresenceHeartbeat (not Heartbeat) in the tpop module; this is diffe
 - `SyncManager::reset_local_state(genesis_hash)` — full genesis reset; respects confirmed_height_floor (monotonic progress floor)
 - `SyncManager::confirmed_height_floor()` — INC-I-005 Fix C: monotonic floor preventing infinite snap-sync death spirals
 - `SyncManager::cleanup()` — periodic maintenance: stale peer removal, stuck sync detection, snap collecting/downloading timeouts, header blacklist expiry, height offset detection, network tip decay
-- `SyncManager::add_peer(peer, height, hash, slot)` / `SyncManager::update_peer(...)` / `SyncManager::remove_peer(peer)` — peer management
+- `SyncManager::add_peer(peer, height, hash, slot)` / `SyncManager::update_peer(...)` / `SyncManager::remove_peer(peer)` — peer management; add/update also record the peer's branch verdict, remove drops it
+- `branch_verdict::classify_branch(ring, peer_height, peer_hash)` — INC-I-204 M2: `Agreeing` / `Divergent` / `None` (unclassifiable) against `recent_canonical_hashes`; shared by `checkpoint_health()` and the per-peer verdict recorded in `peer_branch_verdicts`
 - `SyncManager::note_orphan_gossip_block(height, slot)` — tracks orphan gossip blocks; at ≥3 triggers batch sync or stuck_fork_signal
 - `SyncManager::checkpoint_health()` — returns (total_peers, agreeing_peers, unique_chain_tips) for fork diagnosis
+- `SyncManager::is_on_our_branch(peer)` — fresh (`BRANCH_VERDICT_TTL` = 300s, tied to `SyncConfig::stale_timeout`) `Agreeing` verdict; `best_peer()` prefers such peers and falls back to the full eligible set when none qualify (trap T4)
 - `SyncManager::take_needs_mass_status_refresh()` — consumed once when peer count rises from 0 to non-zero
 - `SyncManager::next_request()` / `SyncManager::handle_response(peer, response)` / `SyncManager::get_blocks_to_apply()` — sync engine dispatch
 
