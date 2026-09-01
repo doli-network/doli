@@ -45,6 +45,14 @@
 #     digest it started from. It SKIPS cleanly when no non-producer endpoint is
 #     live, the set is not an enforced on-chain set, or it has fewer than 4
 #     members. See scripts/gauntlet-gs014.sh.
+#   * GS-015 (release published and signed) is OBSERVATIONAL and READ-ONLY: it
+#     runs in the DEFAULT gate, is NOT opt-in and has NO confirm-var. It queries
+#     the GitHub release API and this local repo only — never the chain, never a
+#     node, never a mutating gh/doli subcommand. Replays INC-I-202 (v6.26.2
+#     published with a 0-entry SIGNATURES.json, refused 0/3 by every fail-closed
+#     `doli upgrade`) and asserts the newest tag is published+verified and that
+#     release.yml still drafts releases. It SKIPS — never fails — when `gh` is
+#     absent, logged out or offline. See scripts/gauntlet-gs015.sh.
 #
 # Assertions key off STRUCTURED telemetry fields (gap=, rollback_depth=,
 # sync_fails=, state=) and distinct-event phrases — NEVER raw keywords that also
@@ -67,6 +75,9 @@ GS010_LIB="$ROOT/scripts/gauntlet-gs010.sh"
 [ -f "$GS010_LIB" ] && . "$GS010_LIB"
 GS014_LIB="$ROOT/scripts/gauntlet-gs014.sh"
 [ -f "$GS014_LIB" ] && . "$GS014_LIB"
+GS015_LIB="$ROOT/scripts/gauntlet-gs015.sh"
+# shellcheck source=/dev/null
+[ -f "$GS015_LIB" ] && . "$GS015_LIB"
 LOG_DIR="$HOME/testnet/logs"
 LABEL_PREFIX="network.doli.testnet"
 
@@ -578,6 +589,8 @@ assert(){
       _gs013_assert "$t"; return $? ;;
     gs014-relay-accepted|gs014-applies-from-non-producer|gs014-set-restored|gs014-fleet-agrees-on-set)
       _gs014_assert "$t"; return $? ;;
+    gs015-newest-release-published-and-signed|gs015-workflow-drafts-releases)
+      _gs015_assert "$t"; return $? ;;
     *)
       why="unknown assertion token '$t'" ;;
   esac
