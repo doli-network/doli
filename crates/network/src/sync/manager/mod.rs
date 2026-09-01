@@ -9,6 +9,7 @@
 mod block_lifecycle;
 mod branch_verdict;
 mod cleanup;
+pub mod force_reorg;
 mod peers;
 mod production_gate;
 pub mod recovery;
@@ -42,6 +43,8 @@ mod tests_inc_i204_m3;
 mod tests_inc_i204_m3_rungs;
 #[cfg(test)]
 mod tests_inc_i204_m3_traps;
+#[cfg(test)]
+mod tests_inc_i204_m41;
 
 // Re-export all public types from types.rs
 pub use types::{
@@ -50,6 +53,8 @@ pub use types::{
 };
 // Re-export recovery coordinator types used by Node layer
 pub use recovery::{RecoveryAction, RecoveryContext, RecoveryEvidence, WedgeReason};
+// INC-I-204 M4.1: the operator escape directive, consumed by the Node layer.
+pub use force_reorg::{ForceReorgPoll, FORCE_REORG_MAX_HEIGHT_SPAN, FORCE_REORG_TTL_SECS};
 // INC-I-149: operational network-age evidence, consumed by the production path.
 // Deliberately distinct from Network::is_in_genesis(), which answers the
 // CONSENSUS question and must remain a pure function of height.
@@ -204,6 +209,10 @@ pub struct SyncManager {
     /// (ACTIVE_FORK_DETECT, resolve_shallow_fork, DEEP_FORK_DETECT) have
     /// been replaced by this single classify→execute dispatch.
     pub(crate) recovery: recovery::RecoveryCoordinator,
+
+    /// INC-I-204 M4.1 / REQ-FORK-012: the armed `forceReorgTo` directive.
+    /// Memory-only by construction — never serialized, never persisted.
+    force_reorg: Option<force_reorg::ForceReorgDirective>,
 }
 
 impl SyncManager {
@@ -257,6 +266,7 @@ impl SyncManager {
             consecutive_orphan_gossip_blocks: 0,
             needs_mass_status_refresh: false,
             recovery: recovery::RecoveryCoordinator::new(),
+            force_reorg: None,
         }
     }
 

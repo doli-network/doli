@@ -206,6 +206,10 @@ impl Node {
 
     /// Run periodic tasks
     pub async fn run_periodic_tasks(&mut self) -> Result<()> {
+        // INC-I-204 M4.1 / REQ-FORK-012: the audited operator wedge escape. A
+        // no-op unless an operator armed `forceReorgTo` on this node.
+        self.try_consume_force_reorg().await;
+
         // D4 / AC-6 monitoring metric refresh (INC-I-111: 30s TTL cache).
         //
         // Read-only snapshot of (total_active_bonds, max_pool_TVL) → push

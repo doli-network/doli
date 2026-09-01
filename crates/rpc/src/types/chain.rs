@@ -321,3 +321,12 @@ pub struct BackfillStatusResponse {
     /// Error message if backfill failed
     pub error: Option<String>,
 }
+
+// ==================== Fork escape (INC-I-204 M4.1) ====================
+
+/// Parameters for forceReorgTo
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ForceReorgToParams {
+    /// Hash of the branch tip to adopt (64 hex characters)
+    pub hash: String,
+}

@@ -89,10 +89,11 @@ pub use rate_limit::{RateLimitConfig, RateLimiter};
 pub use scoring::{Infraction, PeerScore, PeerScorer, PeerScorerConfig, ScorerStats};
 pub use service::{NetworkCommand, NetworkError, NetworkEvent, NetworkService};
 pub use sync::{
-    ChainBreakInfo, EquivocationDetector, EquivocationProof, NetworkEvidence,
+    ChainBreakInfo, EquivocationDetector, EquivocationProof, ForceReorgPoll, NetworkEvidence,
     ProductionAuthorization, RecoveryAction, RecoveryContext, RecoveryEvidence, RecoveryPhase,
     RecoveryReason, ReorgResult, StuckForkAlert, SyncConfig, SyncManager, SyncPhase,
-    SyncPipelineData, SyncState, VerifiedSnapshot, WedgeReason, MAX_CONSECUTIVE_RESYNCS,
+    SyncPipelineData, SyncState, VerifiedSnapshot, WedgeReason, FORCE_REORG_MAX_HEIGHT_SPAN,
+    FORCE_REORG_TTL_SECS, MAX_CONSECUTIVE_RESYNCS,
 };
 
 // Re-export libp2p types that are part of our public API

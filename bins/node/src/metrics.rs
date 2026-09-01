@@ -332,6 +332,19 @@ lazy_static! {
         &["reason"]
     ).unwrap();
 
+    /// INC-I-204 M4.1: outcomes of the audited `forceReorgTo` operator escape,
+    /// one series per outcome. Non-zero on anything but `executed` means an
+    /// operator asked for a rescue the node refused.
+    pub static ref FORCE_REORG_OUTCOMES: IntCounterVec = IntCounterVec::new(
+        Opts::new(
+            "doli_force_reorg_outcomes_total",
+            "forceReorgTo decisions by outcome: executed, expired, uncorroborated, \
+             unknown_target, plan_refused, same_branch, ineligible, \
+             reorg_did_not_land."
+        ),
+        &["outcome"]
+    ).unwrap();
+
     /// Executions of a pre-activation branch of an activation-height gate — the
     /// dormant-window canary REQ-FORK-014 asks for.
     pub static ref PRE_ACTIVATION_BRANCH: IntCounterVec = IntCounterVec::new(
@@ -662,6 +675,8 @@ pub fn register_metrics() {
     let _ = REGISTRY.register(Box::new(WEDGE_ESCAPE_OUTCOMES.clone()));
     let _ = REGISTRY.register(Box::new(PRE_ACTIVATION_BRANCH.clone()));
     let _ = REGISTRY.register(Box::new(REORG_FINALITY_PROBE.clone()));
+    // INC-I-204 M4.1: the operator escape counter.
+    let _ = REGISTRY.register(Box::new(FORCE_REORG_OUTCOMES.clone()));
     // INC-I-154 again: zero-initialise every label value, or the family publishes
     // no series and an alert on an untouched site has nothing to evaluate.
     for site in FORK_GUARD_SITES {
@@ -677,6 +692,13 @@ pub fn register_metrics() {
     for reason in network::WedgeReason::ALL {
         WEDGE_ESCAPE_OUTCOMES
             .with_label_values(&[reason.label()])
+            .inc_by(0);
+    }
+    // INC-I-204 M4.1: zero-init every escape outcome, or the first refusal in a
+    // live incident produces a series no alert rule was ever able to bind.
+    for outcome in crate::node::ForceReorgOutcome::ALL {
+        FORCE_REORG_OUTCOMES
+            .with_label_values(&[outcome.label()])
             .inc_by(0);
     }
     for gate in PRE_ACTIVATION_GATES {
@@ -752,6 +774,12 @@ pub fn update_defi_health_metric(total_active_bonds: u64, max_pool: Option<(cryp
 /// Publish the fleet-divergence gauge. `tips == 0` means no connected peers.
 pub fn update_unique_chain_tips(tips: usize) {
     UNIQUE_CHAIN_TIPS.set(tips as i64);
+}
+
+/// Count one `forceReorgTo` decision. `outcome` comes from
+/// `ForceReorgOutcome::label()`.
+pub fn record_force_reorg_outcome(outcome: &str) {
+    FORCE_REORG_OUTCOMES.with_label_values(&[outcome]).inc();
 }
 
 /// Count one wedge-escape decision. `reason` comes from `WedgeOutcome::reason()`.

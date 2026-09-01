@@ -46,6 +46,9 @@ pub const ADMIN_METHODS: &[&str] = &[
     // ISSUE-174 NEW-1: outbound HTTP fetcher — unauthenticated SSRF if open.
     // Accepts caller-supplied URL and makes HTTP POST request on the node's behalf.
     "repairArchiveFromPeer",
+    // INC-I-204 M4.1 / REQ-FORK-012: retracts applied state across the finality
+    // marker on operator authority. Never reachable without the bearer token.
+    "forceReorgTo",
 ];
 
 /// RPC server configuration
@@ -445,5 +448,57 @@ mod proxy_tests {
         let headers = headers_xrip("not-an-ip");
         let trusted = vec![peer];
         assert_eq!(resolve_client_ip(peer, &headers, &trusted), peer);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ADMIN_METHODS;
+
+    /// INC-I-204 M4.1. REQ-FORK-012 — Decision: a failure means `forceReorgTo` is
+    /// reachable without the admin bearer token, so anyone who can reach the RPC
+    /// port can retract a finalized block — a strictly worse door than the LB-4
+    /// bypass this milestone replaces.
+    #[test]
+    fn force_reorg_to_is_admin_gated() {
+        assert!(
+            ADMIN_METHODS.contains(&"forceReorgTo"),
+            "`forceReorgTo` retracts applied state across the finality marker. \
+             `check_admin_auth` is the ONLY auth surface that exists, and it acts \
+             solely on ADMIN_METHODS membership — an absent entry is an open door."
+        );
+    }
+
+    /// REQ-FORK-012 — Decision: a failure means adding the new entry silently
+    /// dropped an existing one, quietly un-gating a method that halts production,
+    /// deletes data, or makes outbound requests on the node's behalf.
+    #[test]
+    fn the_admin_gate_is_only_ever_widened() {
+        for method in [
+            "pauseProduction",
+            "resumeProduction",
+            "createCheckpoint",
+            "pruneBlocks",
+            "backfillFromPeer",
+            "enterRecoveryMode",
+            "exitRecoveryMode",
+            "bridgeFromArchive",
+            "getUtxoDiff",
+            "getStateSnapshot",
+            "getStateRootDebug",
+            "verifyChainIntegrity",
+            "repairArchiveFromPeer",
+        ] {
+            assert!(
+                ADMIN_METHODS.contains(&method),
+                "`{method}` was admin-gated before INC-I-204 M4.1 and must stay gated"
+            );
+        }
+
+        let mut seen: Vec<&str> = ADMIN_METHODS.to_vec();
+        seen.sort_unstable();
+        let len = seen.len();
+        seen.dedup();
+        assert_eq!(len, seen.len(), "ADMIN_METHODS must not contain duplicates");
     }
 }

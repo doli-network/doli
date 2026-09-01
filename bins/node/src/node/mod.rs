@@ -12,6 +12,8 @@ mod block_handling;
 pub mod checkpoint_health;
 mod event_loop;
 mod floor_window;
+mod force_reorg;
+pub use force_reorg::ForceReorgOutcome;
 mod fork_recovery;
 mod genesis;
 mod holdings;

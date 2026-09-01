@@ -433,6 +433,34 @@ impl ReorgHandler {
         get_parent: impl Fn(&Hash) -> Option<Hash>,
         get_height: impl Fn(&Hash) -> Option<u64>,
     ) -> Option<ReorgResult> {
+        self.plan_reorg_inner(current_tip, new_tip, get_parent, get_height, false)
+    }
+
+    /// INC-I-204 M4.1 / REQ-FORK-012: the audited operator door.
+    ///
+    /// Identical to `plan_reorg` except that the finality MARKER on
+    /// `last_finality_height` no longer refuses the plan. Every other veto still
+    /// binds: `MAX_REORG_DEPTH`, no-common-ancestor, and the unresolvable-ancestor
+    /// refusal. Planning stays pure — the marker is read, never written.
+    /// Automatic callers must never reach this variant.
+    pub fn plan_reorg_operator(
+        &self,
+        current_tip: Hash,
+        new_tip: Hash,
+        get_parent: impl Fn(&Hash) -> Option<Hash>,
+        get_height: impl Fn(&Hash) -> Option<u64>,
+    ) -> Option<ReorgResult> {
+        self.plan_reorg_inner(current_tip, new_tip, get_parent, get_height, true)
+    }
+
+    fn plan_reorg_inner(
+        &self,
+        current_tip: Hash,
+        new_tip: Hash,
+        get_parent: impl Fn(&Hash) -> Option<Hash>,
+        get_height: impl Fn(&Hash) -> Option<u64>,
+        finality_override: bool,
+    ) -> Option<ReorgResult> {
         // Build ancestor chain for current tip
         let mut current_chain = Vec::new();
         let mut hash = current_tip;
@@ -551,12 +579,20 @@ impl ReorgHandler {
                 }
             };
             if ancestor_height < finality_height {
-                bump(&self.counters.plan_reorg_finality_rejects);
+                if !finality_override {
+                    bump(&self.counters.plan_reorg_finality_rejects);
+                    warn!(
+                        "FINALITY: plan_reorg rejecting reorg past finalized height {} (ancestor at {})",
+                        finality_height, ancestor_height
+                    );
+                    return None;
+                }
+                // INC-I-204 M4.1 / REQ-FORK-012: the operator door. The marker is
+                // crossed for this one planned reorg and left intact.
                 warn!(
-                    "FINALITY: plan_reorg rejecting reorg past finalized height {} (ancestor at {})",
-                    finality_height, ancestor_height
+                    "[FORCE_REORG] operator plan crosses the finality MARKER: finalized={} ancestor={} new_tip={}",
+                    finality_height, ancestor_height, new_tip
                 );
-                return None;
             }
         }
 

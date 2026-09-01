@@ -74,6 +74,8 @@ impl RpcContext {
             "exitRecoveryMode" => self.exit_recovery_mode().await,
             "bridgeFromArchive" => self.bridge_from_archive(Some(request.params)).await,
             "repairArchiveFromPeer" => self.repair_archive_from_peer(request.params).await,
+            // INC-I-204 M4.1 — audited operator wedge escape (admin-gated).
+            "forceReorgTo" => self.force_reorg_to(request.params).await,
             _ => Err(RpcError::method_not_found(&request.method)),
         };
 

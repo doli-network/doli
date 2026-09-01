@@ -26,4 +26,8 @@ mod inc_i_204_m0_common;
 mod inc_i_204_m0_export_paths;
 mod inc_i_204_m0_fork_guard_sites;
 mod inc_i_204_m0_wedge_alarm;
+mod inc_i_204_m41_common;
+mod inc_i_204_m41_metrics;
+mod inc_i_204_m41_refusals;
+mod inc_i_204_m41_rescue;
 mod tied_fork_finality;
