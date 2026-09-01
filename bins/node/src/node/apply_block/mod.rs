@@ -283,9 +283,12 @@ impl Node {
             block.header.prev_hash,
         );
 
-        // Reset cumulative rollback depth — a successful block application means
-        // the chain is advancing, so any prior rollback sequence is resolved.
+        // Reset both rollback budgets — a successful block application means the
+        // chain is advancing, so any prior rollback sequence is resolved. INC-I-204
+        // M3: `shallow_rollback_count` moved here from the producer-only production
+        // gate so seeds and producers spend and refill the same budget.
         self.cumulative_rollback_depth = 0;
+        self.shallow_rollback_count = 0;
 
         // INC-I-049: Update shared best_slot for network rate limiter exemption.
         // The network layer uses this to exempt candidate-next blocks from

@@ -23,6 +23,6 @@ pub use headers::HeaderDownloader;
 pub use manager::{
     ChainBreakInfo, NetworkEvidence, ProductionAuthorization, RecoveryAction, RecoveryContext,
     RecoveryEvidence, RecoveryPhase, RecoveryReason, StuckForkAlert, SyncConfig, SyncManager,
-    SyncPhase, SyncPipelineData, SyncState, VerifiedSnapshot, MAX_CONSECUTIVE_RESYNCS,
+    SyncPhase, SyncPipelineData, SyncState, VerifiedSnapshot, WedgeReason, MAX_CONSECUTIVE_RESYNCS,
 };
 pub use reorg::{ReorgHandler, ReorgObservations, ReorgResult};

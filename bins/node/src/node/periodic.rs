@@ -828,7 +828,10 @@ impl Node {
                 }
                 network::RecoveryAction::ShallowRollback { depth } => {
                     for _ in 0..depth {
-                        if !self.rollback_one_block().await? {
+                        // INC-I-204 M3: only a rollback that actually mutated state
+                        // spends the budget. A refusal that changed nothing used to
+                        // report success and burn a rung anyway.
+                        if self.rollback_one_block().await? != RollbackOutcome::RolledBack {
                             break;
                         }
                         self.shallow_rollback_count += 1;
@@ -857,10 +860,38 @@ impl Node {
                     sync.request_genesis_resync(network::RecoveryReason::CoordinatorSnapEscalation);
                 }
                 network::RecoveryAction::GenesisResync => {
+                    // INC-I-204 M3 BRIDGE: `CoordinatorGenesisEscalation` is in neither
+                    // the emergency nor the forward-large-gap set of Gate 1
+                    // (production_gate.rs), so this rung refused ITSELF on every node
+                    // with confirmed_height_floor > 0. Transitional until O5 deletes
+                    // the variant.
                     let mut sync = self.sync_manager.write().await;
-                    sync.request_genesis_resync(
-                        network::RecoveryReason::CoordinatorGenesisEscalation,
+                    sync.request_genesis_resync(network::RecoveryReason::CoordinatorSnapEscalation);
+                }
+                network::RecoveryAction::Wedged { reason } => {
+                    // INC-I-204 M3 (REQ-FORK-010): the ladder's one named terminal.
+                    // Alarm, then fetch the competing branch by hash and let validated
+                    // fork choice decide. No rollback, no wipe, no branch decision here.
+                    crate::metrics::record_wedge_escape_outcome(reason.label());
+                    let (requests, unique_tips) = {
+                        let sm = self.sync_manager.read().await;
+                        (sm.wedge_evidence_requests(), sm.checkpoint_health().2)
+                    };
+                    // This arm returns early, past the periodic gauge publish below.
+                    // The wedge witness must move on the very tick the node wedges.
+                    crate::metrics::update_unique_chain_tips(unique_tips);
+                    warn!(
+                        "[WEDGED] reason={} — chain retained and still served; \
+                         {} competing-branch fetch(es) issued, fork choice decides",
+                        reason.label(),
+                        requests.len()
                     );
+                    if let Some(ref network) = self.network {
+                        for (peer_id, request) in requests {
+                            let _ = network.request_sync(peer_id, request).await;
+                        }
+                    }
+                    return Ok(());
                 }
             }
         }

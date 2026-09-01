@@ -52,6 +52,7 @@ use doli_core::consensus::ConsensusParams;
 use doli_core::validation::ValidationMode;
 use doli_core::{Block, BlockHeader, Transaction};
 use doli_node::node::Node;
+use doli_node::node::RollbackOutcome;
 use tempfile::TempDir;
 use vdf::{VdfOutput, VdfProof};
 
@@ -160,7 +161,8 @@ async fn rolled_back_block_can_be_re_applied() {
     let rolled = node
         .rollback_one_block()
         .await
-        .expect("setup: rollback_one_block errored");
+        .expect("setup: rollback_one_block errored")
+        == RollbackOutcome::RolledBack;
     assert!(rolled, "setup: rollback_one_block should report success");
     assert_eq!(
         node.chain_state.read().await.best_height,

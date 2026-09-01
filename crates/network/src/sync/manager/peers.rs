@@ -344,6 +344,42 @@ impl SyncManager {
             .collect()
     }
 
+    /// INC-I-204 M3 (REQ-FORK-010): the `Wedged` terminal's only action. Ask up to
+    /// 3 peers for the TIP BLOCK of each distinct competing branch they advertise,
+    /// by hash. The bodies flow through normal block handling, where the wedge
+    /// escape re-evaluates them via `plan_reorg` — so validated fork choice decides
+    /// the branch, never this function (B-F1). Read-only: nothing is rolled back,
+    /// wiped or replaced, and our own chain keeps being served.
+    pub fn wedge_evidence_requests(&self) -> Vec<(PeerId, SyncRequest)> {
+        const WEDGE_EVIDENCE_FANOUT: usize = 3;
+        let mut branches: Vec<crypto::Hash> = Vec::new();
+        let mut out: Vec<(PeerId, SyncRequest)> = Vec::new();
+        for (peer, state) in self.peers.iter() {
+            let hash = state.best_hash;
+            if hash == self.local_hash
+                || hash == crypto::Hash::ZERO
+                || state.pending_request.is_some()
+                || branches.contains(&hash)
+            {
+                continue;
+            }
+            if self
+                .pipeline
+                .pending_requests
+                .values()
+                .any(|r| matches!(r.request, SyncRequest::GetBlockByHash { hash: h } if h == hash))
+            {
+                continue;
+            }
+            branches.push(hash);
+            out.push((*peer, SyncRequest::GetBlockByHash { hash }));
+            if out.len() >= WEDGE_EVIDENCE_FANOUT {
+                break;
+            }
+        }
+        out
+    }
+
     /// Get the peer with the highest height and their best_hash.
     /// Used by stale tip recovery to request a specific missing block.
     pub fn best_peer_with_hash(&self) -> Option<(PeerId, u64, crypto::Hash)> {

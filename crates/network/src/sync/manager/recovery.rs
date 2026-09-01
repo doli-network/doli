@@ -32,12 +32,14 @@
 //! ordering is:
 //!
 //! 1. Grace period active → None (recovery suppressed by another path)
-//! 2. Recent rollback + apply succeeded → None (we're behind, not forked)
+//! 2. Recent rollback + apply succeeded → HeaderFirstSync (behind, not forked)
 //! 3. Cooldown active → None (just took an action, give it time)
-//! 4. Few-block minor fork evidence + recently synced → ShallowRollback(1)
-//! 5. Medium gap OR stale tip → HeaderFirstSync
-//! 6. Deep fork OR rollback exhausted OR large gap → SnapSync
+//! 4. Minor-fork / stuck-fork evidence in the small-gap band → ShallowRollback(1),
+//!    or, when the finality guard refuses it, the bounded SiblingFetch probe
+//! 5. Large gap (or an uncorroborated deep fork) → SnapSync — behind-ness only
+//! 6. Medium gap OR stale tip, on a tip peers still accept → HeaderFirstSync
 //! 7. Apply failures exhausted AND snap exhausted → GenesisResync
+//! 8. Terminal (INC-I-204 M3): confirmed fork with no actionable rung → Wedged
 //!
 //! # Design constraints
 //!
@@ -100,9 +102,9 @@ pub enum RecoveryEvidence {
 
 /// What the coordinator tells the caller to do.
 ///
-/// Ordered by severity (None < SiblingFetch < ShallowRollback < HeaderFirstSync
-/// < SnapSync < GenesisResync). The classifier always returns the LEAST severe
-/// action that fits the evidence.
+/// Ordered by severity (None < Wedged < SiblingFetch < ShallowRollback <
+/// HeaderFirstSync < SnapSync < GenesisResync). The classifier always returns
+/// the LEAST severe action that fits the evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecoveryAction {
     /// No action — evidence insufficient, cooldown active, or node is healthy.
@@ -136,6 +138,41 @@ pub enum RecoveryAction {
     /// Last resort: reset local state to genesis and re-sync from scratch.
     /// Only when snap sync has also failed.
     GenesisResync,
+
+    /// INC-I-204 M3 (REQ-FORK-010): the ladder's ONE named absorbing state. The
+    /// node is on a confirmed fork and no rung can act. Non-lossy: it keeps its
+    /// block history, keeps serving its chain, and only FETCHES the competing
+    /// branch so validated fork choice — never this action — decides (B-F1).
+    Wedged { reason: WedgeReason },
+}
+
+/// Why the ladder ran out of actionable rungs. A metric label, never a payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WedgeReason {
+    /// The finality guard correctly refuses every depth-1 rollback (LB-1).
+    FinalityConflict,
+    /// `SHALLOW_ROLLBACK_MAX` spent with no apply since (LB-7).
+    RollbackBudgetExhausted,
+    /// Confirmed fork outside the rollback band, or every budget spent.
+    NoActionableRung,
+}
+
+impl WedgeReason {
+    /// Every reason, so the metric family can zero-initialise one series each.
+    pub const ALL: [WedgeReason; 3] = [
+        WedgeReason::FinalityConflict,
+        WedgeReason::RollbackBudgetExhausted,
+        WedgeReason::NoActionableRung,
+    ];
+
+    /// The `reason` label value for `doli_wedge_escape_outcomes_total`.
+    pub fn label(&self) -> &'static str {
+        match self {
+            WedgeReason::FinalityConflict => "finality_conflict",
+            WedgeReason::RollbackBudgetExhausted => "rollback_budget_exhausted",
+            WedgeReason::NoActionableRung => "no_actionable_rung",
+        }
+    }
 }
 
 /// Everything the classifier needs to read from the node to decide an action.
@@ -323,122 +360,64 @@ impl RecoveryCoordinator {
             .evidence
             .iter()
             .any(|(_, e)| matches!(e, RecoveryEvidence::StaleTip { .. }));
-
-        let gap = ctx.gap();
-
-        // --- Rule 1: shallow rollback for minor fork with recent apply ---
-        //
-        // Evidence: >= 3 empty headers OR orphan gossip blocks.
-        // Preconditions: small gap AND recently synced AND rollback budget
-        // not exhausted.
-        let minor_fork_evidence = empty_count >= thresholds::MIN_MINOR_FORK_EVIDENCE
-            || orphan_count >= thresholds::MIN_MINOR_FORK_EVIDENCE;
-
-        if minor_fork_evidence
-            && gap > 0
-            && gap < thresholds::MINOR_FORK_GAP_MAX
-            && ctx.recently_synced()
-            && ctx.shallow_rollback_count < thresholds::SHALLOW_ROLLBACK_MAX
-        {
-            // INV-SYNC-001 (INC-I-081): refuse to roll back past finality.
-            // For depth=1, target_height = local_height - 1. Rolling back TO
-            // finality (target == F) is legal — the finalized block is preserved.
-            // Only rolling BELOW finality (target < F) violates the invariant.
-            // INC-I-090: fixed fencepost — was `<=`, now `<`.
-            if let Some(finality) = ctx.last_finality_height {
-                let target_height = ctx.local_height.saturating_sub(1);
-                if target_height < finality {
-                    tracing::warn!(
-                        "[FINALITY_GUARD] refusing ShallowRollback target_h={} (finality={}, local_tip={})",
-                        target_height, finality, ctx.local_height
-                    );
-                    return RecoveryAction::None;
-                }
-            }
-            return RecoveryAction::ShallowRollback { depth: 1 };
-        }
-
-        // --- Rule 1b (INC-I-120 / RC-2): stuck-fork shallow rollback ---
-        //
-        // A node genuinely forked on a SMALL gap never satisfies Rule 1's
-        // recently_synced() precondition — its tip is stale by definition — so
-        // without this rule it loops HeaderFirstSync forever against peers that
-        // return empty headers for our tip (the INC-I-120 STALL).
-        //
-        // The StuckFork signal is raised by cleanup.rs ONLY on a sustained
-        // divergent stall (≥300s no apply + small gap + ≥3 consecutive empty
-        // headers = tip ∉ peer-majority) — guardrail G3 — so escalating to a
-        // bounded rollback here is safe. recently_synced() is intentionally NOT
-        // required: the StuckFork evidence replaces it.
         let stuck_fork = self
             .evidence
             .iter()
             .any(|(_, e)| matches!(e, RecoveryEvidence::StuckFork { .. }));
-        if stuck_fork
-            && gap > 0
-            && gap < thresholds::MINOR_FORK_GAP_MAX
-            && ctx.shallow_rollback_count < thresholds::SHALLOW_ROLLBACK_MAX
-        {
-            // INV-SYNC-001/004/008 (G2): never roll back below finality. Guard is
-            // UNCHANGED (strict `<`, INC-I-090) — do NOT loosen it.
-            let rollback_refused = match ctx.last_finality_height {
-                Some(finality) => ctx.local_height.saturating_sub(1) < finality,
-                None => false,
-            };
-            if !rollback_refused {
-                return RecoveryAction::ShallowRollback { depth: 1 };
+
+        let gap = ctx.gap();
+        let minor_fork_evidence = empty_count >= thresholds::MIN_MINOR_FORK_EVIDENCE
+            || orphan_count >= thresholds::MIN_MINOR_FORK_EVIDENCE;
+        let minor_band = gap > 0 && gap < thresholds::MINOR_FORK_GAP_MAX;
+        let rollback_budget = ctx.shallow_rollback_count < thresholds::SHALLOW_ROLLBACK_MAX;
+
+        // INC-I-204 M3 (REQ-FORK-010): the wedge shape. G3 corroborated that our tip
+        // is off the peer-majority chain AND nothing has applied since. A fork is not
+        // behind-ness, so this shape closes every rung that replaces local state
+        // (LB-5, trap T8) and every rung that cannot extend from a rejected tip (C3).
+        let wedged_shape = stuck_fork && ctx.last_applied_secs >= thresholds::STALE_TIP_SECS;
+
+        // INV-SYNC-001/004/008 (INC-I-081, INC-I-090 fencepost): depth-1 target is
+        // local_height-1. Landing ON finality is legal; landing BELOW it is not.
+        // Strict `<` is load-bearing (LB-1, LB-2) — never loosen it to `<=`.
+        let rollback_refused = match ctx.last_finality_height {
+            Some(finality) => ctx.local_height.saturating_sub(1) < finality,
+            None => false,
+        };
+
+        // --- Rule 1: minor fork with a recent apply ---
+        if minor_fork_evidence && minor_band && ctx.recently_synced() && rollback_budget {
+            if rollback_refused {
+                return self.on_rollback_refused(ctx, wedged_shape);
             }
-            // INC-I-143 (D4 fix): rollback correctly refused (finality is at/above
-            // our tip). Returning None here is the 454-refusal livelock (seed1).
-            // Take a NON-DESTRUCTIVE targeted sibling fetch instead, bounded so it
-            // cannot loop hot. After SIBLING_FETCH_MAX attempts, fall through to
-            // the standard escalation (Rule 2/3) below.
-            if self.sibling_fetch_attempts < thresholds::SIBLING_FETCH_MAX {
-                tracing::warn!(
-                    "[FINALITY_GUARD] StuckFork ShallowRollback refused (target_h={} < finality={:?}, local_tip={}); \
-                     INC-I-143 non-destructive SiblingFetch attempt {}/{}",
-                    ctx.local_height.saturating_sub(1),
-                    ctx.last_finality_height,
-                    ctx.local_height,
-                    self.sibling_fetch_attempts + 1,
-                    thresholds::SIBLING_FETCH_MAX,
-                );
-                return RecoveryAction::SiblingFetch {
-                    height: ctx.local_height,
-                };
-            }
-            tracing::warn!(
-                "[FINALITY_GUARD] StuckFork SiblingFetch budget exhausted ({}/{}); \
-                 falling through to standard escalation",
-                self.sibling_fetch_attempts,
-                thresholds::SIBLING_FETCH_MAX,
-            );
-            // fall through (no return) → Rule 2/3 escalation
+            return RecoveryAction::ShallowRollback { depth: 1 };
         }
 
-        // --- Rule 2: snap sync for deep fork, rollback exhausted, or large gap ---
+        // --- Rule 1b (INC-I-120 / RC-2): stuck fork, no recent apply ---
         //
-        // Evaluated BEFORE Rule 3 (header-first) because a large gap / deep
-        // fork signal must not be intercepted by the medium-gap header-first
-        // path. Severity ordering: SnapSync is more invasive than
-        // HeaderFirstSync, but when the evidence clearly points to "cannot
-        // catch up via headers" we must escalate.
-        let rollback_exhausted =
-            minor_fork_evidence && ctx.shallow_rollback_count >= thresholds::SHALLOW_ROLLBACK_MAX;
+        // A node genuinely forked on a SMALL gap never satisfies Rule 1's
+        // recently_synced() precondition — its tip is stale by definition. The
+        // G3-guarded StuckFork signal replaces that precondition.
+        if stuck_fork && minor_band && rollback_budget {
+            if rollback_refused {
+                return self.on_rollback_refused(ctx, wedged_shape);
+            }
+            return RecoveryAction::ShallowRollback { depth: 1 };
+        }
+
+        // --- Rule 2: snap sync — for BEHIND-ness, never for a fork (LB-5) ---
+        //
+        // Evaluated BEFORE Rule 3 so a genuine large gap is not intercepted by the
+        // medium-gap header-first path. INC-I-204 M3 / trap T8: a spent rollback
+        // budget is a statement about a BUDGET, not evidence the node is behind, and
+        // INC-I-138 D4's gap guard let a growing fork gap buy a snapshot — so a
+        // corroborated fork now closes both, leaving only the honest large-gap door.
         let large_gap = gap >= thresholds::SNAP_SYNC_GAP_MIN;
-        // INC-I-138 D4: add gap guard to deep_fork_confirmed.
-        //
-        // Pre-fix: (empty_count >= 10 && last_applied >= STALE_TIP_SECS) fired at gap=28
-        // (below SNAP_SYNC_GAP_MIN=500), causing Rule 2 → SnapSync at gap=28 — a gap
-        // recoverable in seconds via ShallowRollback(1). Terminal event E8: "[COORDINATOR]
-        // action=SnapSync gap=28 last_applied=325s" (n5.log:17197); blocks 37-63 lost.
-        //
-        // Fix: require gap >= MINOR_FORK_GAP_MAX(50) for the empty_count branch.
-        // large_gap path (>= SNAP_SYNC_GAP_MIN=500) in Rule 2 is independent and unchanged.
-        // rollback_exhausted path is independent and unchanged.
+        let rollback_exhausted = minor_fork_evidence && !rollback_budget && !stuck_fork;
         let deep_fork_confirmed = empty_count >= 10
             && ctx.last_applied_secs >= thresholds::STALE_TIP_SECS
-            && gap >= thresholds::MINOR_FORK_GAP_MAX;
+            && gap >= thresholds::MINOR_FORK_GAP_MAX
+            && !stuck_fork;
 
         if (rollback_exhausted || large_gap || deep_fork_confirmed)
             && ctx.snap_attempts < thresholds::SNAP_ATTEMPTS_MAX
@@ -449,29 +428,69 @@ impl RecoveryCoordinator {
 
         // --- Rule 3: header-first sync for medium gap or stale tip ---
         //
-        // Covers "we're behind canonical" without strong fork evidence.
+        // Covers "we're behind canonical" without strong fork evidence. INC-I-111:
+        // stale_tip at gap=0 still fires — peer status may simply be stale.
+        // C3: header-first cannot extend from a tip peers reject, so emitting it in
+        // the wedge shape arms a 30s cooldown for an action that performs nothing.
         let medium_gap = gap > 0 && gap < thresholds::SNAP_SYNC_GAP_MIN;
-        // INC-I-111: stale_tip without observable gap usually means peer
-        // status data is stale (peers advanced but our cached heights have
-        // not refreshed). At gap=0 HeaderFirstSync is still safe: it resets
-        // empty_headers and lets should_sync() re-try; if we are truly at
-        // tip, peers return empty headers and we go idle again.
-        let stale_and_behind = stale_tip;
-        if medium_gap || stale_and_behind {
+        if (medium_gap || stale_tip) && !wedged_shape {
             return RecoveryAction::HeaderFirstSync;
         }
 
         // --- Rule 4: last-resort genesis resync ---
         //
-        // Only when apply keeps failing AND snap has also exhausted. This
-        // should be very rare — it wipes local state.
+        // Only when apply keeps failing AND snap has also exhausted. It wipes state.
         let truly_stuck = apply_fails >= 5 && ctx.last_applied_secs >= 600;
         let snap_exhausted = ctx.snap_attempts >= thresholds::SNAP_ATTEMPTS_MAX;
         if truly_stuck && snap_exhausted {
             return RecoveryAction::GenesisResync;
         }
 
+        // --- Terminal: the ladder's one named absorbing state (REQ-FORK-010) ---
+        if wedged_shape {
+            let reason = if rollback_refused {
+                WedgeReason::FinalityConflict
+            } else if !rollback_budget {
+                WedgeReason::RollbackBudgetExhausted
+            } else {
+                WedgeReason::NoActionableRung
+            };
+            return RecoveryAction::Wedged { reason };
+        }
+
         RecoveryAction::None
+    }
+
+    /// The single decision taken when the finality guard refuses a depth-1
+    /// rollback, shared by Rule 1 and Rule 1b (INC-I-204 M3: one decision, one
+    /// copy — the INC-I-143 fix previously reached only one of two copies).
+    /// The guard is untouched; only the response to it is named.
+    fn on_rollback_refused(&self, ctx: &RecoveryContext, wedged_shape: bool) -> RecoveryAction {
+        let target = ctx.local_height.saturating_sub(1);
+        if !wedged_shape {
+            tracing::warn!(
+                "[FINALITY_GUARD] refusing ShallowRollback target_h={} (finality={:?}, local_tip={})",
+                target, ctx.last_finality_height, ctx.local_height
+            );
+            return RecoveryAction::None;
+        }
+        if self.sibling_fetch_attempts < thresholds::SIBLING_FETCH_MAX {
+            tracing::warn!(
+                "[FINALITY_GUARD] ShallowRollback refused (target_h={} < finality={:?}, \
+                 local_tip={}); non-destructive SiblingFetch attempt {}/{}",
+                target,
+                ctx.last_finality_height,
+                ctx.local_height,
+                self.sibling_fetch_attempts + 1,
+                thresholds::SIBLING_FETCH_MAX,
+            );
+            return RecoveryAction::SiblingFetch {
+                height: ctx.local_height,
+            };
+        }
+        RecoveryAction::Wedged {
+            reason: WedgeReason::FinalityConflict,
+        }
     }
 
     /// Notify the coordinator that the caller executed `action`. Starts the
@@ -480,14 +499,15 @@ impl RecoveryCoordinator {
         if action != RecoveryAction::None {
             self.last_action = Some((Instant::now(), action));
         }
-        // INC-I-143: bound the non-destructive SiblingFetch. Count consecutive
-        // fetches; any other concrete action resets the budget. `None` is a
-        // no-op so cooldown ticks do not reset the counter.
+        // INC-I-143 + INC-I-204 M3: bound the probe across the whole LADDER, not one
+        // lap. Only a rung that replaces or extends local state refills the budget;
+        // `None` and the `Wedged` terminal act on nothing the probe could redo, so a
+        // fall-through into them must not hand the probe a fresh budget every tick.
         match action {
             RecoveryAction::SiblingFetch { .. } => {
                 self.sibling_fetch_attempts = self.sibling_fetch_attempts.saturating_add(1);
             }
-            RecoveryAction::None => {}
+            RecoveryAction::None | RecoveryAction::Wedged { .. } => {}
             _ => {
                 self.sibling_fetch_attempts = 0;
             }

@@ -628,11 +628,11 @@ impl Node {
 
                 // Rollback the partial state change
                 match self.rollback_one_block().await {
-                    Ok(true) => {
+                    Ok(super::RollbackOutcome::RolledBack) => {
                         info!("[BLOCK_POISON] Rollback succeeded");
                     }
-                    Ok(false) => {
-                        warn!("[BLOCK_POISON] Rollback not possible (no undo data)");
+                    Ok(super::RollbackOutcome::RefusedNoMutation) => {
+                        warn!("[BLOCK_POISON] Rollback refused — no state was mutated");
                     }
                     Err(rb_err) => {
                         error!(

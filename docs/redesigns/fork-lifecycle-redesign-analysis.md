@@ -507,7 +507,7 @@ menu.
 | REQ-FORK-007 | Must | INV-8 | | | |
 | REQ-FORK-008 | Must | — (failed-approach filter) | | | |
 | REQ-FORK-009 | Should | INV-SYNC-012, INV-FINALITY-001 | | | |
-| REQ-FORK-010 | Should | INV-FORK-001, INV-SYNC-006 | | | |
+| REQ-FORK-010 | Should | INV-FORK-001, INV-SYNC-006 | `tests_inc_i204_m3.rs` (4: `m3_incident_shape_*`, `c6_every_cell_*`, `c6_enumeration_is_not_vacuous_*`, `m3_wedged_is_exitable_*`); `tests_inc_i204_m3_rungs.rs` (5: `rung_rule1_*`, `rung_rule1b_*`, `rung_rule2_*`, `rung_rule3_*`, `rung_rule4_*`); `tests_inc_i204_m3_traps.rs` (13: `t1_*` x2, `t5_*`, `t6_*`, `t8_*`, `t11_*`, `c3_*` x2, `inv_sync_006_*` x2, `b_f1_*`, `m3_classify_*`, `m3_cell_fixtures_*`) — 22 total, 9 RED pre-fix; ledger in `docs/.workflow/test-plan-M3.md` | M3 | `crates/network/src/sync/manager/recovery.rs`, `bins/node/src/node/periodic.rs` |
 | REQ-FORK-011 | Should | INV-SYNC-006/007 | | | |
 | REQ-FORK-012 | Must | INV-PROD-002 (sequencing caveat) | | | |
 | REQ-FORK-013 | Should | INV-SYNC-005 (deferred), INV-SYNC-009 | | | |

@@ -92,7 +92,7 @@ pub use sync::{
     ChainBreakInfo, EquivocationDetector, EquivocationProof, NetworkEvidence,
     ProductionAuthorization, RecoveryAction, RecoveryContext, RecoveryEvidence, RecoveryPhase,
     RecoveryReason, ReorgResult, StuckForkAlert, SyncConfig, SyncManager, SyncPhase,
-    SyncPipelineData, SyncState, VerifiedSnapshot, MAX_CONSECUTIVE_RESYNCS,
+    SyncPipelineData, SyncState, VerifiedSnapshot, WedgeReason, MAX_CONSECUTIVE_RESYNCS,
 };
 
 // Re-export libp2p types that are part of our public API

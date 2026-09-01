@@ -32,6 +32,7 @@ mod rewards;
 #[allow(unused_imports)]
 pub use rewards::IncompleteEpochStoreError;
 mod rollback;
+pub use rollback::RollbackOutcome;
 mod startup;
 mod state_root_serve;
 mod state_snapshot_serve;

@@ -10,7 +10,7 @@
 //! OUTPUT CONTRACT
 //!   Functions under test:
 //!     F1 `Node::rebuild_producer_set_from_blocks(&self, &mut ProducerSet, u64) -> Result<()>`
-//!     F2 `Node::rollback_one_block(&mut self) -> Result<bool>`
+//!     F2 `Node::rollback_one_block(&mut self) -> Result<RollbackOutcome>`
 //!     F3 `Node::execute_reorg(&mut self, ReorgResult, Block) -> Result<()>`
 //!     F4 `metrics::register_metrics()` (the HELP text it publishes)
 //!   OBSERVABLE OUTPUTS asserted:
@@ -18,7 +18,7 @@
 //!     O2: exported series `doli_fork_guard_refusals_total{site="rollback_rebuild"}` > 0
 //!     O3: exported series `doli_fork_guard_refusals_total{site="reorg_execute"}` > 0
 //!     O4: exported HELP text of `doli_fork_guard_refusals_total`
-//!     O5: the refusal itself — `Err` / `Ok(true)` with the
+//!     O5: the refusal itself — `Err` / `Ok(RefusedNoMutation)` with the
 //!         `[FORK_GUARD_BACKFILL_REQUIRED]` decision UNCHANGED (M0 is observability
 //!         only; LB-1 says the refusal is the hero)
 //!   CODE PATHS:
@@ -46,6 +46,7 @@ use crypto::Hash;
 use doli_core::validation::ValidationMode;
 use doli_node::metrics::FORK_GUARD_REFUSALS;
 use doli_node::node::Node;
+use doli_node::node::RollbackOutcome;
 use network::ReorgResult;
 use storage::ProducerSet;
 use tempfile::TempDir;
@@ -230,11 +231,15 @@ async fn d1_rollback_rebuild_refusal_reaches_the_exported_registry() {
         .await
         .expect("rollback_one_block must not error on the refusal path");
 
-    // O5 — the DECISION is pinned: rollback.rs:190 returns Ok(true) after refusing.
-    // M0 counts this branch; it must not change it.
-    assert!(
+    // O5 — the DECISION is pinned: the guard refuses and mutates nothing. M0 counted
+    // this branch without changing it; INC-I-204 M3 kept the decision identical and
+    // changed only what it REPORTS — `Ok(true)` (indistinguishable from a real
+    // rollback) became `RefusedNoMutation`, so the caller stops burning a
+    // rollback-budget rung on a no-op.
+    assert_eq!(
         outcome,
-        "O5: the refusal path still returns Ok(true) — M0 must not alter the decision"
+        RollbackOutcome::RefusedNoMutation,
+        "O5: the refusal path must mutate nothing and SAY so"
     );
 
     assert!(

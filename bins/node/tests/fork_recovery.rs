@@ -12,6 +12,7 @@ use doli_core::consensus::ConsensusParams;
 use doli_core::validation::ValidationMode;
 use doli_core::{Block, BlockHeader, Transaction};
 use doli_node::node::Node;
+use doli_node::node::RollbackOutcome;
 use tempfile::TempDir;
 use vdf::{VdfOutput, VdfProof};
 
@@ -159,7 +160,7 @@ async fn test_cumulative_rollback_resets_on_sync() {
 
     // Rollback 49 times (just under cap of 50)
     for i in 0..49 {
-        let ok = node.rollback_one_block().await.unwrap();
+        let ok = node.rollback_one_block().await.unwrap() == RollbackOutcome::RolledBack;
         assert!(ok, "rollback {} should succeed", i);
     }
     assert_eq!(node.cumulative_rollback_depth, 49);
@@ -179,7 +180,7 @@ async fn test_cumulative_rollback_resets_on_sync() {
     );
 
     // Verify we can rollback again (not capped)
-    let ok = node.rollback_one_block().await.unwrap();
+    let ok = node.rollback_one_block().await.unwrap() == RollbackOutcome::RolledBack;
     assert!(ok, "rollback after depth reset should succeed");
 }
 
@@ -205,7 +206,7 @@ async fn test_recovery_from_20_block_fork() {
 
     // Recovery: rollback 20 fork blocks
     for _ in 0..20 {
-        let ok = node.rollback_one_block().await.unwrap();
+        let ok = node.rollback_one_block().await.unwrap() == RollbackOutcome::RolledBack;
         assert!(ok, "rollback should succeed");
     }
     assert_eq!(node.chain_state.read().await.best_height, 10);
@@ -276,14 +277,14 @@ async fn test_recovery_after_rollback_cap() {
 
     // Rollback exactly 50 times (hit the cap)
     for i in 0..50 {
-        let ok = node.rollback_one_block().await.unwrap();
+        let ok = node.rollback_one_block().await.unwrap() == RollbackOutcome::RolledBack;
         assert!(ok, "rollback {} should succeed", i);
     }
     assert_eq!(node.cumulative_rollback_depth, 50);
     assert_eq!(node.chain_state.read().await.best_height, 5);
 
     // 51st rollback should be refused (cap reached)
-    let refused = node.rollback_one_block().await.unwrap();
+    let refused = node.rollback_one_block().await.unwrap() == RollbackOutcome::RolledBack;
     assert!(!refused, "rollback should be refused after cap");
 
     // Send a valid block via sync — should apply and reset the cap
@@ -299,7 +300,7 @@ async fn test_recovery_after_rollback_cap() {
     );
 
     // Now rollback should work again
-    let ok = node.rollback_one_block().await.unwrap();
+    let ok = node.rollback_one_block().await.unwrap() == RollbackOutcome::RolledBack;
     assert!(ok, "rollback after cap reset should succeed");
 }
 
@@ -363,7 +364,7 @@ async fn test_recovery_under_load() {
 
     // Rollback all 50 fork blocks
     for i in 0..50 {
-        let ok = node.rollback_one_block().await.unwrap();
+        let ok = node.rollback_one_block().await.unwrap() == RollbackOutcome::RolledBack;
         assert!(ok, "rollback {} should succeed", i);
     }
     assert_eq!(node.chain_state.read().await.best_height, 10);

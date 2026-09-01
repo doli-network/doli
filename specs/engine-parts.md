@@ -2423,16 +2423,17 @@ Note: struct PresenceHeartbeat (not Heartbeat) in the tpop module; this is diffe
 - `MAX_REORG_DEPTH` = 1,000 — maximum depth for reorg ancestor search
 
 ### Sync — Recovery Coordinator
-- `RecoveryCoordinator` — centralized recovery decision maker; holds rolling evidence window (VecDeque, max 256 entries, 120s TTL) and last-action cooldown (5s)
+- `RecoveryCoordinator` — centralized recovery decision maker; holds rolling evidence window (VecDeque, max 256 entries, 120s TTL), last-action cooldown (30s) and the `sibling_fetch_attempts` probe budget
 - `RecoveryEvidence` — **5** variants: `EmptyHeaders { peer, gap }`, `OrphanGossip { slot, gap }`, `ApplyFailure { height }`, `StaleTip { last_applied_secs, gap }`, `StuckFork { gap }`
-- `RecoveryAction` — **5** variants (ordered by severity): `None`, `ShallowRollback { depth }`, `HeaderFirstSync`, `SnapSync`, `GenesisResync`
-- `RecoveryContext` — node-wide snapshot for classifier: local_height, network_tip_height, peer_count, last_applied_secs, shallow_rollback_count, snap_attempts, last_rollback_local_height, in_grace_period
+- `RecoveryAction` — **7** variants (ordered by severity): `None`, `Wedged { reason }`, `SiblingFetch { height }`, `ShallowRollback { depth }`, `HeaderFirstSync`, `SnapSync`, `GenesisResync`
+- `WedgeReason` — **3** variants + `ALL` + `label()`: `FinalityConflict`, `RollbackBudgetExhausted`, `NoActionableRung`. INC-I-204 M3: the ladder's one named, non-lossy absorbing state; its only action is a read-only competing-branch fetch (`SyncManager::wedge_evidence_requests()`) — validated fork choice decides the branch, never the terminal (B-F1)
+- `RecoveryContext` — node-wide snapshot for classifier: local_height, network_tip_height, peer_count, last_applied_secs, shallow_rollback_count, snap_attempts, last_rollback_local_height, last_rollback_time, in_grace_period, last_finality_height
 - `RecoveryContext::gap()` / `applied_since_rollback()` / `recently_synced()` — classifier helpers
 - `RecoveryCoordinator::report(evidence)` — appends evidence to rolling window; prunes stale entries
-- `RecoveryCoordinator::classify(ctx)` — pure read; evaluates 4 ordered rules; respects grace period, applied_since_rollback, and cooldown gates; returns RecoveryAction
-- `RecoveryCoordinator::record_action(action)` — starts cooldown timer after caller executes action
-- Threshold constants (mod thresholds): `MIN_MINOR_FORK_EVIDENCE=3`, `MINOR_FORK_GAP_MAX=50`, `SNAP_SYNC_GAP_MIN=500`, `SHALLOW_ROLLBACK_MAX=10`, `SNAP_ATTEMPTS_MAX=3`, `SNAP_MIN_PEERS=3`, `STALE_TIP_SECS=300`
-- Note: RecoveryCoordinator is fully implemented and tested; currently in shadow/logging mode (phase-2 wiring deferred)
+- `RecoveryCoordinator::classify(ctx)` — pure read; gates on grace period / applied_since_rollback / cooldown, then evaluates Rule 1 + 1b (small-gap rollback, or `on_rollback_refused`'s bounded `SiblingFetch` when the finality guard refuses), Rule 2 (snap — large gap only once a fork is corroborated), Rule 3 (header-first, suppressed on a tip peers reject — C3), Rule 4 (genesis resync), then the `Wedged` terminal; every cell of the state space terminates or returns `None` (REQ-FORK-010, C-6)
+- `RecoveryCoordinator::record_action(action)` — starts cooldown timer; `None` and `Wedged` are non-acting, so neither refills the `SiblingFetch` budget
+- Threshold constants (mod thresholds): `MIN_MINOR_FORK_EVIDENCE=2`, `MINOR_FORK_GAP_MAX=50`, `SNAP_SYNC_GAP_MIN=500`, `SHALLOW_ROLLBACK_MAX=10`, `SNAP_ATTEMPTS_MAX=3`, `SNAP_MIN_PEERS=3`, `STALE_TIP_SECS=300`, `SIBLING_FETCH_MAX=3`
+- Note: authoritative since M2 — `SyncManager::classify_and_dispatch()` builds the context and `periodic.rs` executes the returned action
 
 ### Sync — Production Gate
 - `SyncManager::can_produce(current_slot)` — multi-layer production authorization; 3 active checks

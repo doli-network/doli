@@ -30,7 +30,7 @@
 //! OUTPUT CONTRACT:
 //! ===========================================================================
 //! FUNCTION UNDER TEST
-//!   R1: `Node::rollback_one_block(&mut self) -> Result<bool>`
+//!   R1: `Node::rollback_one_block(&mut self) -> Result<RollbackOutcome>`
 //!   (observed after `Node::apply_block` has applied a block carrying a governance tx,
 //!    i.e. through the real `process_transaction_governance` site)
 //!
@@ -99,6 +99,7 @@ use doli_core::transaction::TxType;
 use doli_core::validation::ValidationMode;
 use doli_core::{Block, BlockHeader, MaintainerSet, Transaction};
 use doli_node::node::Node;
+use doli_node::node::RollbackOutcome;
 use storage::MaintainerState;
 use tempfile::TempDir;
 use tokio::sync::RwLock;
@@ -340,7 +341,8 @@ async fn req_174_002_rollback_undoes_an_add_maintainer_rotation() {
     assert_eq!(after.last_updated, 4, "harness: rotation stamped at h=4");
 
     // ---- the rewind ----
-    let rolled = node.rollback_one_block().await.expect("rollback errored");
+    let rolled =
+        node.rollback_one_block().await.expect("rollback errored") == RollbackOutcome::RolledBack;
     assert!(rolled, "O8: the rollback must have happened");
     assert_eq!(
         node.chain_state.read().await.best_height,
@@ -427,7 +429,10 @@ async fn req_174_002_rollback_undoes_a_remove_maintainer_rotation() {
     assert!(!after.members.contains(&victim), "harness: victim removed");
 
     // ---- the rewind ----
-    assert!(node.rollback_one_block().await.expect("rollback errored"));
+    assert_eq!(
+        node.rollback_one_block().await.expect("rollback errored"),
+        RollbackOutcome::RolledBack
+    );
     assert_eq!(node.chain_state.read().await.best_height, 3, "O7");
 
     let restored = root(&node).await;
@@ -465,7 +470,10 @@ async fn req_174_002_rollback_across_a_block_with_no_rotation_is_a_no_op() {
     let before_digest = digest(&node, &before);
     let before_disk = std::fs::read(tmp.path().join("maintainer_state.bin")).ok();
 
-    assert!(node.rollback_one_block().await.expect("rollback errored"));
+    assert_eq!(
+        node.rollback_one_block().await.expect("rollback errored"),
+        RollbackOutcome::RolledBack
+    );
     assert_eq!(node.chain_state.read().await.best_height, 3, "O7");
 
     let after = root(&node).await;
@@ -506,7 +514,10 @@ async fn req_174_002_ac4_a_restore_must_not_re_arm_the_one_shot_seed() {
     let rot = build_block(4, 4, prev, &producers[0], &params, vec![tx]);
     apply(&mut node, &rot).await;
 
-    assert!(node.rollback_one_block().await.expect("rollback errored"));
+    assert_eq!(
+        node.rollback_one_block().await.expect("rollback errored"),
+        RollbackOutcome::RolledBack
+    );
 
     {
         let state = node.maintainer_state.as_ref().unwrap().read().await;
@@ -586,7 +597,10 @@ async fn req_174_sec_001_an_empty_undo_snapshot_is_refused_and_announced() {
     );
 
     // ---- the rewind ----
-    assert!(node.rollback_one_block().await.expect("rollback errored"));
+    assert_eq!(
+        node.rollback_one_block().await.expect("rollback errored"),
+        RollbackOutcome::RolledBack
+    );
     assert_eq!(
         node.chain_state.read().await.best_height,
         0,
@@ -677,7 +691,10 @@ async fn req_174_006_restart_after_rollback_reloads_the_rewound_set_from_disk() 
         "harness: rotation applied"
     );
 
-    assert!(node.rollback_one_block().await.expect("rollback errored"));
+    assert_eq!(
+        node.rollback_one_block().await.expect("rollback errored"),
+        RollbackOutcome::RolledBack
+    );
 
     // "Restart": re-read the file exactly as `Node::new` does.
     let reloaded = on_disk(&tmp);

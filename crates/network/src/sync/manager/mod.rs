@@ -36,6 +36,12 @@ mod tests_inc_i152;
 mod tests_inc_i152_p1_001;
 #[cfg(test)]
 mod tests_inc_i204_m2;
+#[cfg(test)]
+mod tests_inc_i204_m3;
+#[cfg(test)]
+mod tests_inc_i204_m3_rungs;
+#[cfg(test)]
+mod tests_inc_i204_m3_traps;
 
 // Re-export all public types from types.rs
 pub use types::{
@@ -43,7 +49,7 @@ pub use types::{
     SyncPipelineData, SyncState, VerifiedSnapshot,
 };
 // Re-export recovery coordinator types used by Node layer
-pub use recovery::{RecoveryAction, RecoveryContext, RecoveryEvidence};
+pub use recovery::{RecoveryAction, RecoveryContext, RecoveryEvidence, WedgeReason};
 // INC-I-149: operational network-age evidence, consumed by the production path.
 // Deliberately distinct from Network::is_in_genesis(), which answers the
 // CONSENSUS question and must remain a pure function of height.

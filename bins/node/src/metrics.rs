@@ -319,12 +319,15 @@ lazy_static! {
          0 = no connected peers (no evidence)."
     ).unwrap();
 
-    /// FORK_GUARD wedge-escape decisions, one series per reason.
+    /// FORK_GUARD wedge-escape decisions plus recovery-ladder wedge terminals,
+    /// one series per reason.
     pub static ref WEDGE_ESCAPE_OUTCOMES: IntCounterVec = IntCounterVec::new(
         Opts::new(
             "doli_wedge_escape_outcomes_total",
-            "FORK_GUARD wedge-escape decisions, by reason: cannot_outweigh, plan_refused, \
-             not_heavier, reorg, reorg_did_not_land."
+            "Wedge decisions by reason. FORK_GUARD escape: cannot_outweigh, plan_refused, \
+             not_heavier, reorg, reorg_did_not_land. Recovery-ladder terminal (INC-I-204 \
+             M3, non-zero means the ladder ran out of actionable rungs): finality_conflict, \
+             rollback_budget_exhausted, no_actionable_rung."
         ),
         &["reason"]
     ).unwrap();
@@ -667,6 +670,13 @@ pub fn register_metrics() {
     for outcome in crate::node::wedge_outcome::ALL_WEDGE_OUTCOMES {
         WEDGE_ESCAPE_OUTCOMES
             .with_label_values(&[outcome.reason()])
+            .inc_by(0);
+    }
+    // INC-I-204 M3: same zero-init for the recovery-ladder terminal, or an alert on
+    // a node that has never wedged has no series to evaluate.
+    for reason in network::WedgeReason::ALL {
+        WEDGE_ESCAPE_OUTCOMES
+            .with_label_values(&[reason.label()])
             .inc_by(0);
     }
     for gate in PRE_ACTIVATION_GATES {

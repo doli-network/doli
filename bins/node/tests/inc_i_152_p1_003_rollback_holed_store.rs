@@ -49,13 +49,13 @@
 //!
 //! ==================== OUTPUT CONTRACT ====================
 //!
-//! FUNCTION UNDER TEST: `Node::rollback_one_block(&mut self) -> Result<bool>`
+//! FUNCTION UNDER TEST: `Node::rollback_one_block(&mut self) -> Result<RollbackOutcome>`
 //!   (`bins/node/src/node/rollback.rs:10`; branch under test = the legacy
 //!    no-undo-data fallback at lines 140-202)
 //!
 //! OBSERVABLE OUTPUTS (full enumeration — receiver mutations, return value,
 //! persistent-store writes):
-//!   O1: return value — `Result<bool>`.
+//!   O1: return value — `Result<RollbackOutcome>`.
 //!   O2: `self.utxo_set` (receiver mutation + persistent `state_db` cf_utxo write on
 //!       the RocksDb variant). **THE load-bearing output.** Observed two ways: a named
 //!       CANARY outpoint (created inside the surviving prefix, spent inside the hole)
@@ -86,7 +86,7 @@
 //!   P1a | O1 not-a-post-mutation error | O2 canary still spent + bytes identical
 //!       | O3 unchanged | O4 unchanged | O5 entry still present | O6 tip still 20
 //!       -> `inc_i_152_p1_003_holed_store_rollback_must_not_mutate_utxo_set`   [RED]
-//!   P1b | O1 Ok(true) | O2 non-empty + canary correctly still spent
+//!   P1b | O1 Ok(RolledBack) | O2 non-empty + canary correctly still spent
 //!       | O3 best_height == 19 | O4 rebuilt | O5 entry at 20 removed | O6 tip == 19
 //!       -> `inc_i_152_p1_003_dense_store_rollback_still_rebuilds`       [PASS-LOCK]
 //!   P1c | O1 refusal | O2 canary still spent + bytes identical | O3 unchanged
@@ -106,7 +106,7 @@
 //!   forbid the degenerate "fix" of refusing every rollback.
 //!
 //! O1 NOTE (deliberately under-constrained): whether the post-fix refusal surfaces as
-//! `Ok(true)` (like the block-1 pre-check it replaces) or `Err` (like
+//! `Ok(RefusedNoMutation)` (INC-I-204 M3's distinct outcome) or `Err` (like
 //! `[FORK_GUARD_BACKFILL_REQUIRED]`) is the implementer's call — both are honest. What
 //! this file pins: the error, if any, must NOT be the mid-rebuild error raised from
 //! INSIDE the mutation section, and O2..O6 must be untouched.
@@ -119,6 +119,7 @@ use doli_core::transaction::{Input, Output, OutputType, Transaction, TxType};
 use doli_core::validation::ValidationMode;
 use doli_core::{Block, BlockHeader, Network};
 use doli_node::node::Node;
+use doli_node::node::RollbackOutcome;
 use storage::{Outpoint, UtxoEntry};
 use tempfile::TempDir;
 use vdf::{VdfOutput, VdfProof};
@@ -364,7 +365,7 @@ fn assert_refused_without_touching_state(
     scenario: &str,
     pre: &StateFingerprint,
     post: &StateFingerprint,
-    result: &anyhow::Result<bool>,
+    result: &anyhow::Result<RollbackOutcome>,
 ) {
     // ---- O2a: the resurrection canary. THE assertion. ----
     assert!(
@@ -399,7 +400,7 @@ fn assert_refused_without_touching_state(
     );
 
     // ---- O1: the refusal must not be the mid-rebuild error. ----
-    // Post-fix the refusal may be Ok(true) or Err; what it may NEVER be is the error
+    // Post-fix the refusal may be Ok(RefusedNoMutation) or Err; what it may NEVER be is the error
     // raised from INSIDE the mutation section, which is itself proof that the loop ran.
     if let Err(e) = result {
         let msg = e.to_string();
@@ -699,7 +700,7 @@ async fn inc_i_152_p1_003_dense_store_rollback_still_rebuilds() {
         "P1b / O1: a rollback over a DENSE block store must NOT error — a fix for \
          AUDIT-P1-003 that refuses this case has traded a data-corruption bug for a \
          liveness bug",
-    );
+    ) == RollbackOutcome::RolledBack;
     assert!(
         rolled,
         "P1b / O1: rollback_one_block must report success (true) over a dense store"

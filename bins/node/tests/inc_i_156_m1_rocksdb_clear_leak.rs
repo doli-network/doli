@@ -56,7 +56,7 @@
 //!
 //! ==================== OUTPUT CONTRACT ====================
 //!
-//! OUTPUT CONTRACT: fn rollback_one_block(&mut self) -> Result<bool>
+//! OUTPUT CONTRACT: fn rollback_one_block(&mut self) -> Result<RollbackOutcome>
 //!   (`bins/node/src/node/rollback.rs:10`, `pub async`. It takes NO `target_height`
 //!    argument — `local_height` is read from `sync_manager.local_tip()` at rollback.rs:11-14
 //!    and `target_height = local_height - 1` is derived at rollback.rs:38. Branch under
@@ -64,7 +64,7 @@
 //!
 //! OUTPUTS — full enumeration (receiver mutations through interior mutability, return
 //! value, persistent-store writes; there are no `&mut` params — the receiver carries all):
-//!   O1: return value `Result<bool>` — Ok(true) = rolled back, Ok(false) = refused at a
+//!   O1: return value `Result<RollbackOutcome>` — RolledBack, or RefusedNoMutation at a
 //!       precondition, Err = failed.
 //!   O2: `self.utxo_set` (RwLock receiver mutation) AND, because the variant is
 //!       `RocksDb(Arc<StateDb>)`, the PERSISTENT `cf_utxo` / `cf_utxo_by_pubkey` column
@@ -119,14 +119,14 @@
 //!         not tolerated — see that test's doc comment. REQ-I156-007.
 //!
 //! MATRIX — 8 outputs × 4 partitions = 32 cells:
-//!   P2a: O1 Ok(true) | O2 == canonical(target), created(tip) ABSENT | O3 h=TARGET, hash=parent
+//!   P2a: O1 RolledBack | O2 == canonical(target), created(tip) ABSENT | O3 h=TARGET, hash=parent
 //!        | O4 non-empty & serializable | O5 tip entry removed | O6 tip == TARGET
 //!        | O7 utxo_count == iter_all().len() | O8 is_rocksdb()
 //!        -> `inc_i_156_req003_legacy_rollback_must_not_leak_rolled_back_block_outputs` [RED]
 //!   P2b: same 8 cells, plus the restored-spend assertion inside that test.  [RED, same fn]
-//!   P2c: O1 Ok(true) | O2 == canonical(target) byte-exact | O3..O8 as P2a
+//!   P2c: O1 RolledBack | O2 == canonical(target) byte-exact | O3..O8 as P2a
 //!        -> `inc_i_156_req003_oracle_clear_utxos_then_replay_reproduces_canonical` [PASS-LOCK]
-//!   P1a: O1 Ok(true) | O2 utxo component byte-identical to canonical(TARGET)
+//!   P1a: O1 RolledBack | O2 utxo component byte-identical to canonical(TARGET)
 //!        | O3 h=TARGET + chain_state canonical [0..44] and [52..140] restored, with the
 //!          pre-existing `total_work` drift at offset 44..52 PINNED (see that test's doc)
 //!        | O4 producer component byte-identical to its TARGET value
@@ -142,14 +142,15 @@
 //!   P2c and P1a PASS pre-fix and must keep passing post-fix; together they forbid the two
 //!   degenerate "fixes" (refuse every legacy rollback; break the undo path).
 //!
-//! O1 NOTE: `Ok(true)` is asserted rather than merely `is_ok()` because the legacy branch's
-//! holed-store refusal ALSO returns `Ok(true)` (rollback.rs:180) — only the combination of
-//! `Ok(true)` AND the O3 height change proves the rebuild actually ran.
+//! O1 NOTE: `RolledBack` is asserted rather than merely `is_ok()` because before INC-I-204 M3
+//! the legacy branch's holed-store refusal returned the SAME value as success — only the
+//! combination of the outcome AND the O3 height change proved the rebuild actually ran.
 
 mod inc_i_156_m1_harness;
 
 use crypto::Hash;
 use doli_node::node::Node;
+use doli_node::node::RollbackOutcome;
 use inc_i_156_m1_harness as h;
 use storage::Outpoint;
 use tempfile::TempDir;
@@ -454,10 +455,10 @@ async fn inc_i_156_req003_legacy_rollback_must_not_leak_rolled_back_block_output
             "REQ-I156-003 / O1: rollback_one_block must not error on a DENSE store with the \
              RocksDb backend — got {e}"
         )
-    });
+    }) == RollbackOutcome::RolledBack;
     assert!(
         rolled,
-        "REQ-I156-003 / O1: rollback_one_block must report Ok(true)"
+        "REQ-I156-003 / O1: rollback_one_block must report Ok(RolledBack)"
     );
 
     // ---- O2, read back from the PERSISTENT store (AQ-5). THE assertions. ----
@@ -598,8 +599,9 @@ async fn inc_i_156_req003_oracle_clear_utxos_then_replay_reproduces_canonical() 
     let rolled = node
         .rollback_one_block()
         .await
-        .expect("ORACLE / O1: the rollback must complete");
-    assert!(rolled, "ORACLE / O1: rollback must report Ok(true)");
+        .expect("ORACLE / O1: the rollback must complete")
+        == RollbackOutcome::RolledBack;
+    assert!(rolled, "ORACLE / O1: rollback must report Ok(RolledBack)");
 
     let persisted = h::persisted_utxo_content(&node);
     assert_eq!(
@@ -677,10 +679,11 @@ async fn inc_i_156_req007_undo_based_rollback_state_root_unchanged() {
     let rolled = node
         .rollback_one_block()
         .await
-        .expect("REQ-I156-007 / O1: an undo-based rollback must not error");
+        .expect("REQ-I156-007 / O1: an undo-based rollback must not error")
+        == RollbackOutcome::RolledBack;
     assert!(
         rolled,
-        "REQ-I156-007 / O1: rollback_one_block must report Ok(true)"
+        "REQ-I156-007 / O1: rollback_one_block must report Ok(RolledBack)"
     );
 
     let (root_after, cs_after, ps_after, utxo_canonical_after, total_minted_after) = {

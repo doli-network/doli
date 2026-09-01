@@ -1,13 +1,24 @@
 use super::*;
 
+/// What `rollback_one_block` actually did (INC-I-204 M3).
+///
+/// The FORK_GUARD_BACKFILL refusal used to return `Ok(true)` — a success that
+/// mutated nothing — so the caller burned a rollback-budget rung and logged
+/// "rollback succeeded" for a no-op.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RollbackOutcome {
+    /// One block was undone: chain state, UTXO set and producer set all moved.
+    RolledBack,
+    /// Refused before any mutation (at genesis, cap reached, or a gapped store).
+    RefusedNoMutation,
+}
+
 impl Node {
-    /// Unconditionally roll back 1 block for fork recovery.
+    /// Roll back 1 block for fork recovery.
     ///
-    /// No preconditions — it just rolls back. Called by the RecoveryCoordinator
-    /// dispatch in periodic.rs when ShallowRollback action is classified.
-    ///
-    /// Returns `Ok(true)` if rollback succeeded, `Ok(false)` if at height 0.
-    pub async fn rollback_one_block(&mut self) -> Result<bool> {
+    /// Called by the RecoveryCoordinator dispatch in periodic.rs on a
+    /// `ShallowRollback` action, and by the production BLOCK_POISON arm.
+    pub async fn rollback_one_block(&mut self) -> Result<RollbackOutcome> {
         let local_height = {
             let sync = self.sync_manager.read().await;
             sync.local_tip().0
@@ -32,7 +43,7 @@ impl Node {
         }
 
         if local_height == 0 {
-            return Ok(false);
+            return Ok(RollbackOutcome::RefusedNoMutation);
         }
 
         let target_height = local_height - 1;
@@ -47,7 +58,7 @@ impl Node {
                  Manual intervention required (recover --yes).",
                 local_height
             );
-            return Ok(false);
+            return Ok(RollbackOutcome::RefusedNoMutation);
         }
 
         // Fix 4: Cap cumulative rollback depth at 50 blocks.
@@ -61,7 +72,7 @@ impl Node {
                  too deep for rollback recovery. Waiting for sync or manual intervention.",
                 self.cumulative_rollback_depth, MAX_CUMULATIVE_ROLLBACK
             );
-            return Ok(false);
+            return Ok(RollbackOutcome::RefusedNoMutation);
         }
 
         // Invalidate genesis producer cache if rollback crosses genesis boundary
@@ -80,7 +91,7 @@ impl Node {
                 Some(parent_block) => (parent_block.hash(), parent_block.header.slot),
                 None => {
                     error!("Cannot rollback: no block at height {}", target_height);
-                    return Ok(false);
+                    return Ok(RollbackOutcome::RefusedNoMutation);
                 }
             }
         };
@@ -194,7 +205,7 @@ impl Node {
                     target_height.max(1),
                     e
                 );
-                return Ok(true);
+                return Ok(RollbackOutcome::RefusedNoMutation);
             }
 
             let genesis_producers = if genesis_blocks > 0 && target_height > genesis_blocks {
@@ -432,6 +443,6 @@ impl Node {
             target_height, parent_hash, self.cumulative_rollback_depth
         );
 
-        Ok(true)
+        Ok(RollbackOutcome::RolledBack)
     }
 }

@@ -6,6 +6,31 @@
 //!
 //! Every fork recovery field (cumulative_rollback_depth, epoch_state) is the
 //! REAL field from the production Node. No mocks. No shortcuts.
+//!
+//! OUTPUT CONTRACT — `fn Node::rollback_one_block(&mut self) -> Result<RollbackOutcome>`
+//!   O1 mutable params: none beyond `&mut self`.
+//!   O2 receiver mutation: `chain_state.best_height/best_hash/best_slot`, `utxo_set`,
+//!      `producer_set`, `state_db` (undo consumed, epoch_state restored),
+//!      `block_store` height index, `cumulative_rollback_depth` (+1 on success),
+//!      `cached_genesis_producers` (invalidated across the genesis boundary).
+//!   O3 return value: `RollbackOutcome` — `RolledBack` iff O2 happened,
+//!      `RefusedNoMutation` iff nothing in O2 changed. INC-I-204 M3 made these two
+//!      distinguishable; the refusal used to return the same value as success.
+//!   O4 persistent store: RocksDB batch (atomic with O2).  O5 statics: none.
+//!   O6 events: `[ROLLBACK]` / `[FORK_GUARD_BACKFILL_REQUIRED]` tracing +
+//!      `doli_fork_guard_refusals_total{site="rollback_rebuild"}`.
+//!   PATHS: R1 height 0 → RefusedNoMutation. R2 target==0 from an established chain
+//!          → RefusedNoMutation. R3 cumulative cap reached → RefusedNoMutation.
+//!          R4 no block at target height → RefusedNoMutation. R5 gapped block store
+//!          on the rebuild path → RefusedNoMutation. R6 undo-based or rebuild-based
+//!          rollback committed → RolledBack.
+//!   INPUT PARTITIONS: IP-A a 5-block chain applied through the real apply path,
+//!     undo data present, depth 0 → R6, asserted in
+//!     `test_rollback_one_block_decrements_height`. R1-R5 are refusal paths guarded
+//!     by INV-SYNC-002 / INC-I-152 and are covered by the storage-layer suites.
+//!   MATRIX: O2 × O3 for IP-A — the height moves 5 → 4, `cumulative_rollback_depth`
+//!     moves 0 → 1, and O3 is `RolledBack`; all three are asserted together so a
+//!     no-op that reported success cannot pass.
 
 use super::*;
 use tempfile::TempDir;
@@ -139,7 +164,7 @@ async fn test_node_can_rollback() {
 
     // Rollback 1 block
     let rolled = node.rollback_one_block().await.unwrap();
-    assert!(rolled);
+    assert_eq!(rolled, crate::node::RollbackOutcome::RolledBack);
     assert_eq!(node.chain_state.read().await.best_height, 4);
     assert_eq!(node.cumulative_rollback_depth, 1);
 }
