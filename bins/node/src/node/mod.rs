@@ -35,6 +35,8 @@ mod rewards;
 pub use rewards::IncompleteEpochStoreError;
 mod rollback;
 pub use rollback::RollbackOutcome;
+mod rollback_authority;
+pub use rollback_authority::RollbackAuthority;
 mod startup;
 mod state_root_serve;
 mod state_snapshot_serve;

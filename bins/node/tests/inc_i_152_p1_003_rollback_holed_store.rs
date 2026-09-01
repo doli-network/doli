@@ -663,7 +663,9 @@ async fn inc_i_152_p1_003_holed_store_rollback_must_not_mutate_utxo_set() {
     // Drive the REAL entry point. The Result is captured, never unwrapped: pre-fix it
     // is `Err`, and unwrapping here would abort the test before the assertion that
     // actually matters (O2) ever runs.
-    let result = node.rollback_one_block().await;
+    let result = node
+        .rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved { depth: 1 })
+        .await;
 
     let post = fingerprint(&node, CHAIN_LEN, &canary).await;
     assert_refused_without_touching_state("P1a HOLED", &pre, &post, &result);
@@ -696,11 +698,15 @@ async fn inc_i_152_p1_003_dense_store_rollback_still_rebuilds() {
     );
 
     // O1 — the rollback must complete.
-    let rolled = node.rollback_one_block().await.expect(
-        "P1b / O1: a rollback over a DENSE block store must NOT error — a fix for \
+    let rolled = node
+        .rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved { depth: 1 })
+        .await
+        .expect(
+            "P1b / O1: a rollback over a DENSE block store must NOT error — a fix for \
          AUDIT-P1-003 that refuses this case has traded a data-corruption bug for a \
          liveness bug",
-    ) == RollbackOutcome::RolledBack;
+        )
+        == RollbackOutcome::RolledBack;
     assert!(
         rolled,
         "P1b / O1: rollback_one_block must report success (true) over a dense store"
@@ -794,7 +800,9 @@ async fn inc_i_152_p1_003_missing_block_one_still_refuses() {
         "precondition: the UTXO set must be populated before the rollback"
     );
 
-    let result = node.rollback_one_block().await;
+    let result = node
+        .rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved { depth: 1 })
+        .await;
 
     let post = fingerprint(&node, CHAIN_LEN, &canary).await;
     assert_refused_without_touching_state("P1c NO-BLK1", &pre, &post, &result);

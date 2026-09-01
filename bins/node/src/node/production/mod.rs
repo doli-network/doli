@@ -2,6 +2,7 @@ use super::*;
 
 mod assembly;
 mod gates;
+mod poison;
 mod scheduling;
 mod withdrawal_holdings;
 
@@ -612,61 +613,13 @@ impl Node {
             block_hash, height, current_slot, block.header.prev_hash
         );
 
-        // Apply the block locally with try-apply pattern.
-        // If apply_block fails (e.g., toxic mempool TX passed builder validation
-        // but fails apply validation), rollback + purge + return Ok so the next
-        // production tick retries with a clean mempool.
-        // See: testnet incident 2026-03-25, NFT token_id poisoned mempool.
+        // Apply the block locally with try-apply pattern. A toxic mempool TX that
+        // passed builder validation but fails apply validation is contained by the
+        // poison arm, which purges the block's TXs and only rewinds a block this
+        // node actually applied (INC-I-204 M4.2 / REQ-FORK-002).
         match self.apply_block(block.clone(), ValidationMode::Light).await {
             Ok(()) => {} // Success — proceed to broadcast
-            Err(e) => {
-                warn!(
-                    "[BLOCK_POISON] apply_block failed on self-produced block at h={}: {}. \
-                     Rolling back and purging toxic TXs from mempool.",
-                    height, e
-                );
-
-                // Rollback the partial state change
-                match self.rollback_one_block().await {
-                    Ok(super::RollbackOutcome::RolledBack) => {
-                        info!("[BLOCK_POISON] Rollback succeeded");
-                    }
-                    Ok(super::RollbackOutcome::RefusedNoMutation) => {
-                        warn!("[BLOCK_POISON] Rollback refused — no state was mutated");
-                    }
-                    Err(rb_err) => {
-                        error!(
-                            "[BLOCK_POISON] Rollback failed: {}. Manual intervention needed.",
-                            rb_err
-                        );
-                        return Err(e);
-                    }
-                }
-
-                // Purge ALL mempool TXs that were in the failed block.
-                // The toxic TX is among them — purge all to guarantee removal.
-                // Valid TXs will re-propagate via gossip and enter the next block.
-                {
-                    let mut mempool = self.mempool.write().await;
-                    let before = mempool.len();
-                    for tx in &block.transactions {
-                        mempool.remove_transaction(&tx.hash());
-                    }
-                    let after = mempool.len();
-                    if before != after {
-                        warn!(
-                            "[BLOCK_POISON] Purged {} TXs from mempool (block had {} TXs). \
-                             Next tick will build a clean block.",
-                            before - after,
-                            block.transactions.len()
-                        );
-                    }
-                }
-
-                // Return Ok so the event loop doesn't trigger additional purge logic.
-                // Next production tick will retry with a clean mempool.
-                return Ok(());
-            }
+            Err(e) => return self.handle_failed_self_apply(&block, height, e).await,
         }
 
         // NOTE: Do NOT call note_block_received_via_gossip() here.

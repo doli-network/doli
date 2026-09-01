@@ -537,7 +537,9 @@ async fn inc_i156_005_rollback_corrupt_snapshot_over_holed_store_must_not_destro
 
     let before = ProducerContent::live(&node).await;
 
-    let result = node.rollback_one_block().await;
+    let result = node
+        .rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved { depth: 1 })
+        .await;
 
     // O3 — the caller propagates the rebuild's `Err` either way (`?` at rollback.rs:144).
     let err = result.expect_err(
@@ -751,7 +753,7 @@ async fn inc_i156_007_dense_store_guarded_legacy_rollback_still_completes() {
     );
 
     let rolled = node
-        .rollback_one_block()
+        .rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved { depth: 1 })
         .await
         .expect("REQ-I156-007 / O3: a dense-store legacy rollback must not error")
         == RollbackOutcome::RolledBack;

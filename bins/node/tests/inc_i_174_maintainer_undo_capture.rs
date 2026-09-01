@@ -407,7 +407,11 @@ async fn req_174_001_a_rotation_that_fails_verification_leaves_the_root_untouche
     }
 
     assert_eq!(
-        node.rollback_one_block().await.expect("rollback"),
+        node.rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved {
+            depth: 1
+        })
+        .await
+        .expect("rollback"),
         RollbackOutcome::RolledBack
     );
     assert_eq!(
@@ -557,7 +561,11 @@ async fn req_174_sec_001_a_snapshot_the_gate_refuses_never_becomes_the_trust_roo
 
     let unrestored_before = node.maintainer_rewind_unrestored_count;
     assert_eq!(
-        node.rollback_one_block().await.expect("rollback"),
+        node.rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved {
+            depth: 1
+        })
+        .await
+        .expect("rollback"),
         RollbackOutcome::RolledBack
     );
 
@@ -643,7 +651,11 @@ async fn req_174_005_a_rewind_with_no_usable_snapshot_is_counted_not_silent() {
 
     let before = node.maintainer_rewind_unrestored_count;
     assert_eq!(
-        node.rollback_one_block().await.expect("rollback"),
+        node.rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved {
+            depth: 1
+        })
+        .await
+        .expect("rollback"),
         RollbackOutcome::RolledBack
     );
 
@@ -687,7 +699,11 @@ async fn req_174_010_a_successful_maintainer_rewind_is_counted() {
 
     let before = node.maintainer_rewind_count;
     assert_eq!(
-        node.rollback_one_block().await.expect("rollback"),
+        node.rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved {
+            depth: 1
+        })
+        .await
+        .expect("rollback"),
         RollbackOutcome::RolledBack
     );
     assert_eq!(

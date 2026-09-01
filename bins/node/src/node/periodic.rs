@@ -835,7 +835,11 @@ impl Node {
                         // INC-I-204 M3: only a rollback that actually mutated state
                         // spends the budget. A refusal that changed nothing used to
                         // report success and burn a rung anyway.
-                        if self.rollback_one_block().await? != RollbackOutcome::RolledBack {
+                        if self
+                            .rollback_one_block(RollbackAuthority::CoordinatorApproved { depth })
+                            .await?
+                            != RollbackOutcome::RolledBack
+                        {
                             break;
                         }
                         self.shallow_rollback_count += 1;

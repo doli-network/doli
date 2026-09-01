@@ -600,6 +600,22 @@ lazy_static! {
     ).unwrap();
 }
 
+// Its own block: the one above is at the `lazy_static!` recursion limit.
+lazy_static! {
+    /// INC-I-204 M4.2: what the production poison arm did with a self-produced
+    /// block that `apply_block` rejected. `tip_kept` is the containment outcome.
+    pub static ref POISON_CONTAINMENT: IntCounterVec = IntCounterVec::new(
+        Opts::new(
+            "doli_poison_containment_total",
+            "Self-produced blocks that failed apply_block, by what the poison arm did: \
+             tip_kept (the published tip was NOT retracted), rolled_back (the failed \
+             block was the local tip and was undone), rollback_failed (mid-rewind \
+             error — manual intervention)."
+        ),
+        &["outcome"]
+    ).unwrap();
+}
+
 /// Every `site` value `FORK_GUARD_REFUSALS` is written with.
 pub const FORK_GUARD_SITES: [&str; 3] = ["producer_rebuild", "rollback_rebuild", "reorg_execute"];
 
@@ -609,6 +625,9 @@ const PRE_ACTIVATION_GATES: [&str; 2] =
 
 /// Every `site` value `REORG_FINALITY_PROBE` is written with.
 const FINALITY_PROBE_SITES: [&str; 2] = ["check_reorg_weighted", "plan_reorg"];
+
+/// Every `outcome` value `POISON_CONTAINMENT` is written with.
+const POISON_CONTAINMENT_OUTCOMES: [&str; 3] = ["tip_kept", "rolled_back", "rollback_failed"];
 
 /// Register all metrics with the registry
 pub fn register_metrics() {
@@ -703,6 +722,12 @@ pub fn register_metrics() {
     }
     for gate in PRE_ACTIVATION_GATES {
         PRE_ACTIVATION_BRANCH.with_label_values(&[gate]).inc_by(0);
+    }
+    // INC-I-204 M4.2: same zero-init, so `tip_kept` is bindable before the first
+    // contained poison arm ever runs.
+    let _ = REGISTRY.register(Box::new(POISON_CONTAINMENT.clone()));
+    for outcome in POISON_CONTAINMENT_OUTCOMES {
+        POISON_CONTAINMENT.with_label_values(&[outcome]).inc_by(0);
     }
     for site in FINALITY_PROBE_SITES {
         for outcome in ["entry", "reject"] {

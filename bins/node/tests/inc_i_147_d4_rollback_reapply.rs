@@ -159,7 +159,7 @@ async fn rolled_back_block_can_be_re_applied() {
 
     // The poison rollback: discard our own tip.
     let rolled = node
-        .rollback_one_block()
+        .rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved { depth: 1 })
         .await
         .expect("setup: rollback_one_block errored")
         == RollbackOutcome::RolledBack;

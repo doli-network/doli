@@ -1021,7 +1021,7 @@ grep -i "produced\|block" /var/log/doli-node.log | tail -20
 
 When a node falls out of sync or produces a fork:
 
-1. **rollback_one_block()** — first option on all networks. Uses undo data (O(1)) if available, rebuild-from-genesis as fallback.
+1. **rollback_one_block(authority)** — first option on all networks. Uses undo data (O(1)) if available, rebuild-from-genesis as fallback. The caller must name its authority: recovery paths pass `RollbackAuthority::CoordinatorApproved { depth }` and are unguarded; the production poison arm passes `RollbackAuthority::ProductionSelfApply { failed_height }` and is refused with `RefusedNotAuthorized` unless the failed block is the local tip (INC-I-204 M4.2).
 2. **Snap sync** — only as fallback if rollback fails repeatedly. Quorum: `max(3, tip_eligible_peers/2 + 1)`.
 3. **Genesis mismatch peers** — get 1-hour silent cooldown (won't attempt sync from them).
 

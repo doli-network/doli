@@ -655,7 +655,11 @@ async fn req_174_007_a_re_mined_rotation_stamps_the_new_canonical_height() {
 
     // The DROP, made explicit.
     assert_eq!(
-        node.rollback_one_block().await.expect("rollback errored"),
+        node.rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved {
+            depth: 1
+        })
+        .await
+        .expect("rollback errored"),
         RollbackOutcome::RolledBack
     );
     assert_eq!(node.chain_state.read().await.best_height, 3, "O7");
@@ -738,7 +742,9 @@ async fn req_174_007_two_nodes_at_the_same_tip_agree_on_last_change_block() {
     apply(&mut reorged, &rot).await;
     assert_eq!(
         reorged
-            .rollback_one_block()
+            .rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved {
+                depth: 1
+            })
             .await
             .expect("rollback errored"),
         RollbackOutcome::RolledBack

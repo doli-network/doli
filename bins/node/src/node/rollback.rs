@@ -11,6 +11,10 @@ pub enum RollbackOutcome {
     RolledBack,
     /// Refused before any mutation (at genesis, cap reached, or a gapped store).
     RefusedNoMutation,
+    /// Refused before any mutation because the caller's authority does not cover
+    /// this rewind (INC-I-204 M4.2): a self-apply failure at a height that is not
+    /// the local tip, i.e. a block this node never applied and never published.
+    RefusedNotAuthorized,
 }
 
 impl Node {
@@ -18,10 +22,18 @@ impl Node {
     ///
     /// Called by the RecoveryCoordinator dispatch in periodic.rs on a
     /// `ShallowRollback` action, and by the production BLOCK_POISON arm.
-    pub async fn rollback_one_block(&mut self) -> Result<RollbackOutcome> {
+    pub async fn rollback_one_block(
+        &mut self,
+        authority: RollbackAuthority,
+    ) -> Result<RollbackOutcome> {
         let local_height = {
             let sync = self.sync_manager.read().await;
             sync.local_tip().0
+        };
+
+        let (authority_label, requested_depth) = match authority {
+            RollbackAuthority::CoordinatorApproved { depth } => ("coordinator_approved", depth),
+            RollbackAuthority::ProductionSelfApply { .. } => ("production_self_apply", 1),
         };
 
         // Log all context that led to this rollback being initiated.
@@ -32,7 +44,9 @@ impl Node {
             let best_peer_h = sync.best_peer_height();
             let gap = best_peer_h.saturating_sub(local_height);
             info!(
-                "[ROLLBACK] Initiating: depth={} local_h={} target_h={} gap={} empty_headers={} shallow_count={}",
+                "[ROLLBACK] Initiating: authority={} requested_depth={} depth={} local_h={} target_h={} gap={} empty_headers={} shallow_count={}",
+                authority_label,
+                requested_depth,
                 self.cumulative_rollback_depth + 1,
                 local_height,
                 local_height.saturating_sub(1),
@@ -40,6 +54,21 @@ impl Node {
                 empty_headers,
                 self.shallow_rollback_count
             );
+        }
+
+        // INC-I-204 M4.2 / REQ-FORK-002: `apply_block` runs BEFORE broadcast, so a
+        // self-apply failure at a height above the tip would rewind the PARENT —
+        // this node's already-published, possibly-finalized block. Refuse before
+        // any mutation and before the budget moves.
+        if let RollbackAuthority::ProductionSelfApply { failed_height } = authority {
+            if local_height != failed_height {
+                warn!(
+                    "[ROLLBACK] Refused: production self-apply failure at h={} is not the \
+                     local tip h={} — nothing this node applied, so nothing to undo.",
+                    failed_height, local_height
+                );
+                return Ok(RollbackOutcome::RefusedNotAuthorized);
+            }
         }
 
         if local_height == 0 {
@@ -329,7 +358,13 @@ impl Node {
             sync.note_rollback_completed(target_height);
             // INC-I-081 Bug 4 / INV-SYNC-004: clear stale finality marker if
             // the post-rollback tip has dropped below the cached finality height.
-            sync.clear_finality_if_below_tip(target_height);
+            // INC-I-204 M4.2 / INV-FINALITY-001 (trap T12): never on the production
+            // path. The guard above pins `target == failed_height - 1` while the
+            // marker is at most `failed_height - 2`, so this call is already a no-op
+            // there — skipping it seals the clause against a future edit.
+            if !matches!(authority, RollbackAuthority::ProductionSelfApply { .. }) {
+                sync.clear_finality_if_below_tip(target_height);
+            }
         }
 
         // Atomically persist the rolled-back state via StateDb.

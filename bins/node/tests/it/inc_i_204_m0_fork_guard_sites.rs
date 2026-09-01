@@ -227,7 +227,7 @@ async fn d1_rollback_rebuild_refusal_reaches_the_exported_registry() {
 
     let before = refusals_at("rollback_rebuild");
     let outcome = node
-        .rollback_one_block()
+        .rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved { depth: 1 })
         .await
         .expect("rollback_one_block must not error on the refusal path");
 

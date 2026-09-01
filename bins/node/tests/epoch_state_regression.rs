@@ -260,8 +260,11 @@ async fn test_undo_data_roundtrip_preserves_epoch_state() {
     );
 
     // Rollback block 2
-    let rolled_back =
-        node.rollback_one_block().await.expect("rollback failed") == RollbackOutcome::RolledBack;
+    let rolled_back = node
+        .rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved { depth: 1 })
+        .await
+        .expect("rollback failed")
+        == RollbackOutcome::RolledBack;
     assert!(rolled_back, "rollback should succeed");
 
     // O1+O4: epoch_state hash matches pre-block-2 state
@@ -438,8 +441,11 @@ async fn test_rollback_across_epoch_boundary() {
     );
 
     // Rollback the boundary block
-    let rolled_back =
-        node.rollback_one_block().await.expect("rollback failed") == RollbackOutcome::RolledBack;
+    let rolled_back = node
+        .rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved { depth: 1 })
+        .await
+        .expect("rollback failed")
+        == RollbackOutcome::RolledBack;
     assert!(rolled_back);
 
     // O1: epoch reverts

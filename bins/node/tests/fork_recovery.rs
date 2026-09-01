@@ -135,7 +135,11 @@ async fn test_fork_recovery_with_divergent_bonds() {
 
     // Revert fork_a (5 blocks)
     for _ in 0..5 {
-        node.rollback_one_block().await.unwrap();
+        node.rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved {
+            depth: 1,
+        })
+        .await
+        .unwrap();
     }
     assert_eq!(node.chain_state.read().await.best_height, 10);
 
@@ -160,7 +164,13 @@ async fn test_cumulative_rollback_resets_on_sync() {
 
     // Rollback 49 times (just under cap of 50)
     for i in 0..49 {
-        let ok = node.rollback_one_block().await.unwrap() == RollbackOutcome::RolledBack;
+        let ok = node
+            .rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved {
+                depth: 1,
+            })
+            .await
+            .unwrap()
+            == RollbackOutcome::RolledBack;
         assert!(ok, "rollback {} should succeed", i);
     }
     assert_eq!(node.cumulative_rollback_depth, 49);
@@ -180,7 +190,11 @@ async fn test_cumulative_rollback_resets_on_sync() {
     );
 
     // Verify we can rollback again (not capped)
-    let ok = node.rollback_one_block().await.unwrap() == RollbackOutcome::RolledBack;
+    let ok = node
+        .rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved { depth: 1 })
+        .await
+        .unwrap()
+        == RollbackOutcome::RolledBack;
     assert!(ok, "rollback after depth reset should succeed");
 }
 
@@ -206,7 +220,13 @@ async fn test_recovery_from_20_block_fork() {
 
     // Recovery: rollback 20 fork blocks
     for _ in 0..20 {
-        let ok = node.rollback_one_block().await.unwrap() == RollbackOutcome::RolledBack;
+        let ok = node
+            .rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved {
+                depth: 1,
+            })
+            .await
+            .unwrap()
+            == RollbackOutcome::RolledBack;
         assert!(ok, "rollback should succeed");
     }
     assert_eq!(node.chain_state.read().await.best_height, 10);
@@ -253,7 +273,11 @@ async fn test_recovery_with_scheduler_divergence() {
 
     // Rollback fork
     for _ in 0..5 {
-        node.rollback_one_block().await.unwrap();
+        node.rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved {
+            depth: 1,
+        })
+        .await
+        .unwrap();
     }
 
     // Apply canonical chain despite bond snapshot divergence
@@ -277,14 +301,24 @@ async fn test_recovery_after_rollback_cap() {
 
     // Rollback exactly 50 times (hit the cap)
     for i in 0..50 {
-        let ok = node.rollback_one_block().await.unwrap() == RollbackOutcome::RolledBack;
+        let ok = node
+            .rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved {
+                depth: 1,
+            })
+            .await
+            .unwrap()
+            == RollbackOutcome::RolledBack;
         assert!(ok, "rollback {} should succeed", i);
     }
     assert_eq!(node.cumulative_rollback_depth, 50);
     assert_eq!(node.chain_state.read().await.best_height, 5);
 
     // 51st rollback should be refused (cap reached)
-    let refused = node.rollback_one_block().await.unwrap() == RollbackOutcome::RolledBack;
+    let refused = node
+        .rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved { depth: 1 })
+        .await
+        .unwrap()
+        == RollbackOutcome::RolledBack;
     assert!(!refused, "rollback should be refused after cap");
 
     // Send a valid block via sync — should apply and reset the cap
@@ -300,7 +334,11 @@ async fn test_recovery_after_rollback_cap() {
     );
 
     // Now rollback should work again
-    let ok = node.rollback_one_block().await.unwrap() == RollbackOutcome::RolledBack;
+    let ok = node
+        .rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved { depth: 1 })
+        .await
+        .unwrap()
+        == RollbackOutcome::RolledBack;
     assert!(ok, "rollback after cap reset should succeed");
 }
 
@@ -321,7 +359,11 @@ async fn test_no_refork_after_recovery() {
     apply_chain(&mut node, &fork).await;
 
     for _ in 0..5 {
-        node.rollback_one_block().await.unwrap();
+        node.rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved {
+            depth: 1,
+        })
+        .await
+        .unwrap();
     }
 
     let canonical = build_chain(11, 11, base[9].hash(), &producers[1], 5, &params);
@@ -364,7 +406,13 @@ async fn test_recovery_under_load() {
 
     // Rollback all 50 fork blocks
     for i in 0..50 {
-        let ok = node.rollback_one_block().await.unwrap() == RollbackOutcome::RolledBack;
+        let ok = node
+            .rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved {
+                depth: 1,
+            })
+            .await
+            .unwrap()
+            == RollbackOutcome::RolledBack;
         assert!(ok, "rollback {} should succeed", i);
     }
     assert_eq!(node.chain_state.read().await.best_height, 10);
@@ -426,13 +474,28 @@ async fn test_multiple_nodes_recover_independently() {
 
     // Each node recovers independently
     for _ in 0..5 {
-        node1.rollback_one_block().await.unwrap();
+        node1
+            .rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved {
+                depth: 1,
+            })
+            .await
+            .unwrap();
     }
     for _ in 0..7 {
-        node2.rollback_one_block().await.unwrap();
+        node2
+            .rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved {
+                depth: 1,
+            })
+            .await
+            .unwrap();
     }
     for _ in 0..3 {
-        node3.rollback_one_block().await.unwrap();
+        node3
+            .rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved {
+                depth: 1,
+            })
+            .await
+            .unwrap();
     }
 
     apply_chain(&mut node1, &canonical).await;
@@ -489,7 +552,11 @@ async fn test_recovery_preserves_mempool() {
 
     // Rollback fork
     for _ in 0..3 {
-        node.rollback_one_block().await.unwrap();
+        node.rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved {
+            depth: 1,
+        })
+        .await
+        .unwrap();
     }
 
     // Mempool should still have transactions (they weren't included in any block)

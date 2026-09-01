@@ -341,8 +341,11 @@ async fn req_174_002_rollback_undoes_an_add_maintainer_rotation() {
     assert_eq!(after.last_updated, 4, "harness: rotation stamped at h=4");
 
     // ---- the rewind ----
-    let rolled =
-        node.rollback_one_block().await.expect("rollback errored") == RollbackOutcome::RolledBack;
+    let rolled = node
+        .rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved { depth: 1 })
+        .await
+        .expect("rollback errored")
+        == RollbackOutcome::RolledBack;
     assert!(rolled, "O8: the rollback must have happened");
     assert_eq!(
         node.chain_state.read().await.best_height,
@@ -430,7 +433,11 @@ async fn req_174_002_rollback_undoes_a_remove_maintainer_rotation() {
 
     // ---- the rewind ----
     assert_eq!(
-        node.rollback_one_block().await.expect("rollback errored"),
+        node.rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved {
+            depth: 1
+        })
+        .await
+        .expect("rollback errored"),
         RollbackOutcome::RolledBack
     );
     assert_eq!(node.chain_state.read().await.best_height, 3, "O7");
@@ -471,7 +478,11 @@ async fn req_174_002_rollback_across_a_block_with_no_rotation_is_a_no_op() {
     let before_disk = std::fs::read(tmp.path().join("maintainer_state.bin")).ok();
 
     assert_eq!(
-        node.rollback_one_block().await.expect("rollback errored"),
+        node.rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved {
+            depth: 1
+        })
+        .await
+        .expect("rollback errored"),
         RollbackOutcome::RolledBack
     );
     assert_eq!(node.chain_state.read().await.best_height, 3, "O7");
@@ -515,7 +526,11 @@ async fn req_174_002_ac4_a_restore_must_not_re_arm_the_one_shot_seed() {
     apply(&mut node, &rot).await;
 
     assert_eq!(
-        node.rollback_one_block().await.expect("rollback errored"),
+        node.rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved {
+            depth: 1
+        })
+        .await
+        .expect("rollback errored"),
         RollbackOutcome::RolledBack
     );
 
@@ -598,7 +613,11 @@ async fn req_174_sec_001_an_empty_undo_snapshot_is_refused_and_announced() {
 
     // ---- the rewind ----
     assert_eq!(
-        node.rollback_one_block().await.expect("rollback errored"),
+        node.rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved {
+            depth: 1
+        })
+        .await
+        .expect("rollback errored"),
         RollbackOutcome::RolledBack
     );
     assert_eq!(
@@ -692,7 +711,11 @@ async fn req_174_006_restart_after_rollback_reloads_the_rewound_set_from_disk() 
     );
 
     assert_eq!(
-        node.rollback_one_block().await.expect("rollback errored"),
+        node.rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved {
+            depth: 1
+        })
+        .await
+        .expect("rollback errored"),
         RollbackOutcome::RolledBack
     );
 

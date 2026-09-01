@@ -163,7 +163,7 @@ async fn test_node_can_rollback() {
     assert_eq!(node.chain_state.read().await.best_height, 5);
 
     // Rollback 1 block
-    let rolled = node.rollback_one_block().await.unwrap();
+    let rolled = node.rollback_one_block(crate::node::RollbackAuthority::CoordinatorApproved { depth: 1 }).await.unwrap();
     assert_eq!(rolled, crate::node::RollbackOutcome::RolledBack);
     assert_eq!(node.chain_state.read().await.best_height, 4);
     assert_eq!(node.cumulative_rollback_depth, 1);

@@ -30,4 +30,6 @@ mod inc_i_204_m41_common;
 mod inc_i_204_m41_metrics;
 mod inc_i_204_m41_refusals;
 mod inc_i_204_m41_rescue;
+mod inc_i_204_m42_poison_containment;
+mod inc_i_204_m42_poison_contract_pins;
 mod tied_fork_finality;

@@ -447,7 +447,9 @@ async fn inc_i_156_req003_legacy_rollback_must_not_leak_rolled_back_block_output
     }
 
     // ---- Drive the REAL entry point. ----
-    let result = node.rollback_one_block().await;
+    let result = node
+        .rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved { depth: 1 })
+        .await;
 
     // ---- O1 ----
     let rolled = result.unwrap_or_else(|e| {
@@ -597,7 +599,7 @@ async fn inc_i_156_req003_oracle_clear_utxos_then_replay_reproduces_canonical() 
     );
 
     let rolled = node
-        .rollback_one_block()
+        .rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved { depth: 1 })
         .await
         .expect("ORACLE / O1: the rollback must complete")
         == RollbackOutcome::RolledBack;
@@ -677,7 +679,7 @@ async fn inc_i_156_req007_undo_based_rollback_state_root_unchanged() {
     assert_store_is_dense(&node);
 
     let rolled = node
-        .rollback_one_block()
+        .rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved { depth: 1 })
         .await
         .expect("REQ-I156-007 / O1: an undo-based rollback must not error")
         == RollbackOutcome::RolledBack;

@@ -290,7 +290,11 @@ async fn req_174_002_ac4_b_a_partial_restore_below_the_derivation_gate_is_refuse
     );
 
     assert_eq!(
-        node.rollback_one_block().await.expect("rollback errored"),
+        node.rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved {
+            depth: 1
+        })
+        .await
+        .expect("rollback errored"),
         RollbackOutcome::RolledBack
     );
     assert_eq!(node.chain_state.read().await.best_height, 1, "O7");
@@ -347,7 +351,11 @@ async fn req_174_002_ac4_b_control_the_same_partial_restore_above_the_gate_is_in
     );
 
     assert_eq!(
-        node.rollback_one_block().await.expect("rollback errored"),
+        node.rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved {
+            depth: 1
+        })
+        .await
+        .expect("rollback errored"),
         RollbackOutcome::RolledBack
     );
     assert_eq!(node.chain_state.read().await.best_height, 1, "O7");
@@ -407,7 +415,11 @@ async fn req_174_005_an_unreadable_block_in_the_rewind_range_is_counted_not_sile
     );
 
     assert_eq!(
-        node.rollback_one_block().await.expect("rollback errored"),
+        node.rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved {
+            depth: 1
+        })
+        .await
+        .expect("rollback errored"),
         RollbackOutcome::RolledBack
     );
     assert_eq!(node.chain_state.read().await.best_height, 2, "O7");
@@ -446,7 +458,11 @@ async fn req_174_005_control_a_readable_range_with_no_rotation_is_a_silent_no_op
     }
 
     assert_eq!(
-        node.rollback_one_block().await.expect("rollback errored"),
+        node.rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved {
+            depth: 1
+        })
+        .await
+        .expect("rollback errored"),
         RollbackOutcome::RolledBack
     );
     assert_eq!(node.chain_state.read().await.best_height, 2, "O7");
@@ -482,7 +498,11 @@ async fn req_174_005_a_failed_persist_is_rolled_back_counted_and_announced() {
     );
 
     assert_eq!(
-        node.rollback_one_block().await.expect("rollback errored"),
+        node.rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved {
+            depth: 1
+        })
+        .await
+        .expect("rollback errored"),
         RollbackOutcome::RolledBack
     );
 
