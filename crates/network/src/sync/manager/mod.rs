@@ -45,6 +45,10 @@ mod tests_inc_i204_m3_rungs;
 mod tests_inc_i204_m3_traps;
 #[cfg(test)]
 mod tests_inc_i204_m41;
+#[cfg(test)]
+mod tests_inc_i204_m6;
+#[cfg(test)]
+mod tests_inc_i204_m6_census;
 
 // Re-export all public types from types.rs
 pub use types::{

@@ -287,12 +287,15 @@ sudo systemctl start doli-node   # snap-syncs from a healthy peer
 Restoring a checkpoint taken **before** the rebuild works too — see
 [disaster-recovery.md](./disaster-recovery.md).
 
-**A completed snap sync also clears it.** If the node reaches snap sync on its own — the likely
-outcome, since an emptied UTXO set fails every subsequent block apply and that is exactly the
-stuck-fork condition that escalates to snap sync — the install replaces the whole set with a
-root-verified snapshot and disarms the marker automatically (INC-I-156 / AUDIT-P2-101). A snap
-sync that is *rejected* (root mismatch) installs nothing and leaves the halt in place, which is
-correct.
+**A completed snap sync also clears it**, but the node will no longer reach one on its own from
+a fork. Since INC-I-204 M6 the recovery classifier admits snap sync only at
+`gap >= SNAP_SYNC_GAP_MIN` (500 blocks behind); no amount of fork evidence, apply failures or
+empty-header responses admits it below that gap. A corroborated fork now terminates in
+`[WEDGED] reason=...` — non-lossy, the node keeps its block history — and the operator exit is
+the audited `forceReorgTo` RPC, not a snap. If a snap sync does occur (genuine behind-ness, a
+bootstrap, or the operator flag), the install replaces the whole set with a root-verified
+snapshot and disarms the marker automatically (INC-I-156 / AUDIT-P2-101). A snap sync that is
+*rejected* (root mismatch) installs nothing and leaves the halt in place, which is correct.
 
 **Do not** delete the marker by hand to silence the message. It is refusing production,
 snapshot service and state-root service precisely because the ledger this node would produce

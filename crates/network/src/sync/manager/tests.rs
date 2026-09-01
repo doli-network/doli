@@ -5752,14 +5752,14 @@ mod inc_i138_m2_escalation {
         );
     }
 
-    /// INC-I-138 D4 pin — rollback_exhausted path must still escalate to SnapSync.
-    ///
-    /// When minor_fork_evidence (>=3 empties) AND shallow_rollback_count >= MAX(10),
-    /// rollback_exhausted=true → Rule 2 fires SnapSync. Independent of D4 fix.
-    ///
-    /// PASSES today. MUST PASS after D4 fix.
+    /// SUPERSEDED by INC-I-204 M6 (D1, REQ-FORK-004). This pinned `SnapSync` for the
+    /// `rollback_exhausted` trigger at gap=28. M6 deletes that trigger: a spent
+    /// rollback budget is a statement about a BUDGET, not evidence of behind-ness.
+    /// Reversed in place (a sibling of `recovery.rs`'s
+    /// `shallow_rollback_exhausted_no_longer_escalates_to_snap`), so the behaviour
+    /// change is visible in the diff rather than deleted from the record.
     #[test]
-    fn test_inc_i138_d4_rollback_exhausted_still_escalates_pin() {
+    fn test_inc_i138_d1_rollback_exhausted_no_longer_escalates_pin() {
         let mut coord = RecoveryCoordinator::new();
         for _ in 0..3 {
             coord.report(RecoveryEvidence::EmptyHeaders {
@@ -5782,15 +5782,16 @@ mod inc_i138_m2_escalation {
         let action = coord.classify(&ctx);
         // Rule 1: minor_fork_evidence(T) && gap(28)<50 && recently_synced(T)
         //         && shallow_rollback_count(10) < MAX(10) → 10<10=FALSE → Rule 1 skips.
-        // Rule 2: rollback_exhausted = minor_fork_evidence(T) && 10 >= 10 = TRUE → SnapSync.
+        // Rule 2 (M6): large_gap = 28 >= 500 = FALSE → skipped; no other trigger remains.
+        // Rule 3: medium_gap(28) && !wedged_shape → HeaderFirstSync, a non-lossy rung.
         assert_eq!(
             action,
-            RecoveryAction::SnapSync,
-            "D4 pin: rollback_exhausted (count={} >= MAX={}) MUST still escalate to SnapSync. \
-             D4 fix only adds a gap guard to deep_fork_confirmed; rollback_exhausted path \
-             in Rule 2 is independent and must remain intact.",
+            RecoveryAction::HeaderFirstSync,
+            "INC-I-204 M6 (D1): rollback_exhausted (count={} >= MAX={}) must NOT reach a \
+             history-destroying rung at gap=28. Snap admission is gap >= {} only.",
             thresholds::SHALLOW_ROLLBACK_MAX,
             thresholds::SHALLOW_ROLLBACK_MAX,
+            thresholds::SNAP_SYNC_GAP_MIN,
         );
     }
 

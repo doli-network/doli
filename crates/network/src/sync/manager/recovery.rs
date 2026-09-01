@@ -36,9 +36,10 @@
 //! 3. Cooldown active → None (just took an action, give it time)
 //! 4. Minor-fork / stuck-fork evidence in the small-gap band → ShallowRollback(1),
 //!    or, when the finality guard refuses it, the bounded SiblingFetch probe
-//! 5. Large gap (or an uncorroborated deep fork) → SnapSync — behind-ness only
+//! 5. Large gap (>= SNAP_SYNC_GAP_MIN) → SnapSync — behind-ness only (M6)
 //! 6. Medium gap OR stale tip, on a tip peers still accept → HeaderFirstSync
-//! 7. Apply failures exhausted AND snap exhausted → GenesisResync
+//! 7. Apply failures exhausted AND snap exhausted, outside the wedge shape →
+//!    GenesisResync
 //! 8. Terminal (INC-I-204 M3): confirmed fork with no actionable rung → Wedged
 //!
 //! # Design constraints
@@ -408,18 +409,13 @@ impl RecoveryCoordinator {
         // --- Rule 2: snap sync — for BEHIND-ness, never for a fork (LB-5) ---
         //
         // Evaluated BEFORE Rule 3 so a genuine large gap is not intercepted by the
-        // medium-gap header-first path. INC-I-204 M3 / trap T8: a spent rollback
-        // budget is a statement about a BUDGET, not evidence the node is behind, and
-        // INC-I-138 D4's gap guard let a growing fork gap buy a snapshot — so a
-        // corroborated fork now closes both, leaving only the honest large-gap door.
+        // medium-gap header-first path. INC-I-204 M6 (REQ-FORK-004): the
+        // `rollback_exhausted` and `deep_fork_confirmed` triggers are deleted — snap
+        // admission is now gap >= SNAP_SYNC_GAP_MIN only, so no fork evidence pattern
+        // can reach a history-destroying action below it.
         let large_gap = gap >= thresholds::SNAP_SYNC_GAP_MIN;
-        let rollback_exhausted = minor_fork_evidence && !rollback_budget && !stuck_fork;
-        let deep_fork_confirmed = empty_count >= 10
-            && ctx.last_applied_secs >= thresholds::STALE_TIP_SECS
-            && gap >= thresholds::MINOR_FORK_GAP_MAX
-            && !stuck_fork;
 
-        if (rollback_exhausted || large_gap || deep_fork_confirmed)
+        if large_gap
             && ctx.snap_attempts < thresholds::SNAP_ATTEMPTS_MAX
             && ctx.peer_count >= thresholds::SNAP_MIN_PEERS
         {
@@ -440,9 +436,11 @@ impl RecoveryCoordinator {
         // --- Rule 4: last-resort genesis resync ---
         //
         // Only when apply keeps failing AND snap has also exhausted. It wipes state.
+        // INC-I-204 M6 (REQ-FORK-004): closed in the wedge shape — a corroborated fork
+        // falls through to the Wedged terminal instead of buying a state wipe.
         let truly_stuck = apply_fails >= 5 && ctx.last_applied_secs >= 600;
         let snap_exhausted = ctx.snap_attempts >= thresholds::SNAP_ATTEMPTS_MAX;
-        if truly_stuck && snap_exhausted {
+        if truly_stuck && snap_exhausted && !wedged_shape {
             return RecoveryAction::GenesisResync;
         }
 
@@ -885,8 +883,16 @@ mod tests {
         );
     }
 
+    /// SUPERSEDED by INC-I-204 M6 (D1). This test previously pinned `SnapSync` for a
+    /// spent rollback budget at a MINOR gap. M6 deletes the `rollback_exhausted`
+    /// trigger: a spent budget is a statement about a BUDGET, not evidence of
+    /// behind-ness. The expectation is reversed in place, not removed, so the
+    /// behaviour change is visible in the diff.
+    ///
+    /// REQ-FORK-004 — Decision: a failure here reveals that fork evidence plus an
+    /// exhausted rollback budget still reaches a history-destroying rung below gap 500.
     #[test]
-    fn shallow_rollback_exhausted_escalates_to_snap() {
+    fn shallow_rollback_exhausted_no_longer_escalates_to_snap() {
         let mut c = RecoveryCoordinator::new();
         for _ in 0..3 {
             c.report(RecoveryEvidence::OrphanGossip { slot: 1, gap: 3 });
@@ -894,7 +900,18 @@ mod tests {
         let mut ctx = base_ctx();
         ctx.network_tip_height = 1003;
         ctx.shallow_rollback_count = thresholds::SHALLOW_ROLLBACK_MAX;
-        assert_eq!(c.classify(&ctx), RecoveryAction::SnapSync);
+        let action = c.classify(&ctx);
+        assert_ne!(
+            action,
+            RecoveryAction::SnapSync,
+            "REQ-FORK-004 (M6 D1): a spent shallow-rollback budget at gap=3 must not \
+             escalate to SnapSync — only gap >= SNAP_SYNC_GAP_MIN may."
+        );
+        assert_ne!(
+            action,
+            RecoveryAction::GenesisResync,
+            "REQ-FORK-004 (M6 D1): nor to any other history-destroying rung."
+        );
     }
 
     // --- Rule 2: header-first sync --------------------------------------------

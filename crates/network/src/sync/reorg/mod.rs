@@ -403,3 +403,6 @@ mod tests_m5_finality_authority;
 
 #[cfg(test)]
 mod tests_m5_dormant_window;
+
+#[cfg(test)]
+mod tests_m6_mirror_pin;
