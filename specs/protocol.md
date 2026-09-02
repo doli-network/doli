@@ -568,11 +568,19 @@ add_bond_tx = {
     This is builder policy, not a consensus rule. The builder carries the same
     block-local `in_block` tally the gate does, so its expression is the gate's
     expression term for term and it cannot drop a transaction that would have
-    sat in the valid block it is assembling. (Mempool admission, which has no
-    block context, drops the `in_block` term and therefore rejects a strict
-    subset of what the gate rejects.)
-    It is gated on the same `addbond_cap_enforcement_activation_height`, and
-    when no holdings source can answer it fails OPEN (packs, as before).
+    sat in the valid block it is assembling. Mempool `add_transaction` and
+    `revalidate` call the SAME `addbond_cap_verdict` (via
+    `Mempool::addbond_holdings_verdict`, `crates/mempool/src/pool.rs`) with the
+    `in_block` term at 0, because a mempool has no block context: an over-cap
+    AddBond is refused at submission with `MempoolError::InvalidTransaction`
+    carrying `[ADDBOND_CAP_EXCEEDED]`, and one that BECOMES over-cap while
+    resident is evicted on the next revalidate so its inputs are released back
+    to the submitter. Dropping the `in_block` term can only lower the total, so
+    admission rejects a strict subset of what the gate rejects and can never
+    refuse a transaction a valid block could carry.
+    All three are gated on the same `addbond_cap_enforcement_activation_height`,
+    and when no holdings source can answer they fail OPEN (pack/admit, as
+    before).
 
 ### 3.13 WithdrawalRequest Transaction
 
