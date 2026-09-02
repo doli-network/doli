@@ -494,12 +494,12 @@ impl NetworkParams {
                 // IMMUTABLE once crossed (INC-I-054).
                 // Override via `DOLI_INC_I_147_ACTIVATION_HEIGHT`.
                 inc_i_147_activation_height: 80_700,
-                // INC-I-204 M5 single fork-choice authority (#23). FROZEN at
-                // u64::MAX: the spec requires the gate above both tips with an
-                // auto-update convergence margin and names neither, so no value
-                // is derivable. Arm the testnet rehearsal via
-                // `DOLI_INC_I_204_FORK_CHOICE_ACTIVATION_HEIGHT`.
-                inc_i_204_fork_choice_activation_height: u64::MAX,
+                // INC-I-204 M5 single fork-choice authority (#23). Pinned
+                // 2026-09-02 by user decision at live tip 87_934 (thin ~13 min
+                // lead accepted; tie parity below the gate bounds the window).
+                // IMMUTABLE once crossed (INC-I-054).
+                // Override via `DOLI_INC_I_204_FORK_CHOICE_ACTIVATION_HEIGHT`.
+                inc_i_204_fork_choice_activation_height: 88_014,
 
                 // INC-I-172 M2 maintainer trust-root derivation. Pinned
                 // 2026-08-10 at live testnet tip 126_801 with ~400 blocks
