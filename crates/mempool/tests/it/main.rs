@@ -10,3 +10,4 @@
 //! `.claude/hooks/test-binary-gate.sh` enforces the layout.
 
 mod inc_i_180_admission_parity;
+mod inc_i_203_addbond_cap;

@@ -19,6 +19,8 @@ use storage::{Outpoint, ProducerSet, UtxoSet};
 #[derive(Default)]
 pub(super) struct WithdrawalParity {
     active: bool,
+    /// INC-I-203: the AddBond arm's own gate. Independent of `active`.
+    addbond_ah: u64,
     height: u64,
     holdings: HashMap<PublicKey, ProducerHoldings>,
     in_block_addbond: HashMap<PublicKey, u32>,
@@ -28,9 +30,10 @@ pub(super) struct WithdrawalParity {
 }
 
 impl WithdrawalParity {
-    pub(super) fn new(active: bool, height: u64) -> Self {
+    pub(super) fn new(active: bool, addbond_ah: u64, height: u64) -> Self {
         Self {
             active,
+            addbond_ah,
             height,
             ..Self::default()
         }
@@ -40,11 +43,22 @@ impl WithdrawalParity {
         self.active
     }
 
+    /// INC-I-203 REQ-BOND-005. Gated only by its own height; inheriting
+    /// `active` would silence it on every band the INC-I-180 gate predates.
+    pub(super) fn addbond_active(&self) -> bool {
+        self.height >= self.addbond_ah
+    }
+
+    /// Either arm needs the producer guard read and the in-block tally kept.
+    fn any_active(&self) -> bool {
+        self.active || self.addbond_active()
+    }
+
     /// Resolve every producer the candidate set names, under the producer guard
     /// alone. The selection loop then runs under the UTXO guard alone: one lock
     /// at a time, which is what keeps this off the apply/rollback lock cycle.
     pub(super) fn load(&mut self, producers: &ProducerSet, txs: &[Transaction]) {
-        if !self.active {
+        if !self.any_active() {
             return;
         }
         for tx in txs {
@@ -53,6 +67,7 @@ impl WithdrawalParity {
                     tx.withdrawal_request_data().map(|d| d.producer_pubkey)
                 }
                 TxType::Exit => tx.exit_data().map(|d| d.public_key),
+                TxType::AddBond => tx.add_bond_data().map(|d| d.producer_pubkey),
                 _ => None,
             };
             let Some(pk) = named else { continue };
@@ -67,6 +82,9 @@ impl WithdrawalParity {
 
     /// `Err` means the assembled block would be rejected — the caller skips.
     pub(super) fn allow(&mut self, tx: &Transaction, utxo: &UtxoSet) -> Result<(), String> {
+        if tx.tx_type == TxType::AddBond {
+            return self.allow_add_bond(tx);
+        }
         if !self.active || tx.tx_type != TxType::RequestWithdrawal {
             return Ok(());
         }
@@ -129,10 +147,32 @@ impl WithdrawalParity {
         Ok(())
     }
 
+    /// INC-I-203 REQ-BOND-001. A producer the ProducerSet does not carry has
+    /// no entry here, and the gate reads its `bond_count` as 0, so a missing
+    /// entry is `Unavailable` (fail open) — never the withdrawal arm's
+    /// `[ECON_WITHDRAWAL_UNKNOWN_PRODUCER]`, which would over-reject.
+    fn allow_add_bond(&self, tx: &Transaction) -> Result<(), String> {
+        let Some(ab) = tx.add_bond_data() else {
+            return Ok(());
+        };
+        let pk = ab.producer_pubkey;
+        let lookup = match self.holdings.get(&pk).copied() {
+            Some(h) => HoldingsLookup::Found(h),
+            None => HoldingsLookup::Unavailable,
+        };
+        mempool::addbond_cap::addbond_cap_verdict(
+            tx,
+            &lookup,
+            self.in_block_addbond.get(&pk).copied().unwrap_or(0),
+            self.height,
+            self.addbond_ah,
+        )
+    }
+
     /// Record a transaction that WAS selected. Mirrors the gate's per-type
     /// accounting, including its `+=` on repeated Exits for one producer.
     pub(super) fn accept(&mut self, tx: &Transaction) {
-        if !self.active {
+        if !self.any_active() {
             return;
         }
         self.earlier_hashes.insert(tx.hash());
