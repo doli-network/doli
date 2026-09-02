@@ -88,6 +88,13 @@ VALUES ('GS-009', 'fleet-rolling-restart',
   'gs009-no-stall,gs009-no-sibling-fork,gs009-fleet-rejoin,gs009-trust-root-provenance', json('{"nodes":6}'), 'active')
 ON CONFLICT(scenario_id) DO UPDATE SET incident_ids=excluded.incident_ids, description=excluded.description, assertions=excluded.assertions, status='active';
 
+INSERT INTO gauntlet_scenarios (scenario_id, name, description, incident_ids, assertions, scale_params, runner, status)
+VALUES ('GS-015', 'newest-release-published-and-signed',
+  'Guards the release-delivery path (CI published a release whose SIGNATURES.json held 0 entries, so every fail-closed `doli upgrade` refused it with "Insufficient signatures: 0/3" and nothing in the repo noticed). ASSERTS (observational, READ-ONLY, no confirm-var, part of the default run): the newest v* tag has a PUBLIC (non-draft) GitHub release that `doli release verify` accepts against the maintainer trust root (delegated to scripts/monitor-release-signed.sh), and .github/workflows/release.yml still carries the `draft: true` gate on its release-creation step -- the one thing keeping an unsigned CI artifact unreachable, whose revert is otherwise silent. It reads the GitHub release API and this local repo only: never the chain, never a node, never a mutating gh/doli subcommand. NOT AUTO-INJECTED: reproducing the trigger means publishing a real unsigned release. Preflighted on gh (present + authenticated), jq, git, a v* tag and a resolvable doli CLI -- any one absent SKIPs (rc 2), never FAILs, because a false FAIL is how a scenario earns a standing waiver and stops guarding anything. Library: scripts/gauntlet-gs015.sh; tests: scripts/test_gauntlet_gs015.sh.',
+  json('["INC-I-202"]'),
+  'gs015-newest-release-published-and-signed,gs015-workflow-drafts-releases', json('{"nodes":0,"read_only":true}'), 'gauntlet.sh', 'active')
+ON CONFLICT(scenario_id) DO UPDATE SET incident_ids=excluded.incident_ids, description=excluded.description, assertions=excluded.assertions, runner=excluded.runner, status='active';
+
 COMMIT;
 
 -- ── DELIBERATELY UNMAPPED (out of system-dynamics scope) ─────────────────────
