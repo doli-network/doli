@@ -758,6 +758,11 @@ impl Node {
         let sync_config = SyncConfig {
             // INC-I-147 D6: gate the fork-choice height-unit correction.
             inc_i_147_activation_height: config.network.params().inc_i_147_activation_height,
+            // INC-I-204 M5: gate the single fork-choice authority.
+            inc_i_204_fork_choice_activation_height: config
+                .network
+                .params()
+                .inc_i_204_fork_choice_activation_height,
             // INC-I-152: sync-side bootstrap window, so orphan chase walking a freshly
             // wiped node off h==0 does not foreclose bootstrap snap admission.
             genesis_blocks: config.network.params().genesis_blocks,
@@ -1121,6 +1126,8 @@ impl Node {
             mempool_pending_producer_keys: mempool_pending_producer_keys.clone(),
             mempool_producer_holdings: mempool_producer_holdings.clone(),
             health_window: std::collections::VecDeque::new(),
+            wedge_alarm: super::wedge_alarm::WedgeAlarm::new(Default::default()),
+            reorg_scrape_state: crate::metrics::ReorgScrapeState::new(),
             attest_fetch_tracker: HashMap::new(),
             defi_health_refresh_counter: AtomicU64::new(0),
             defi_health_cache: std::sync::Mutex::new(None),
@@ -1341,6 +1348,8 @@ impl Node {
             mempool_pending_producer_keys: mempool_pending_producer_keys.clone(),
             mempool_producer_holdings: mempool_producer_holdings.clone(),
             health_window: std::collections::VecDeque::new(),
+            wedge_alarm: super::wedge_alarm::WedgeAlarm::new(Default::default()),
+            reorg_scrape_state: crate::metrics::ReorgScrapeState::new(),
             attest_fetch_tracker: HashMap::new(),
             defi_health_refresh_counter: AtomicU64::new(0),
             defi_health_cache: std::sync::Mutex::new(None),
@@ -1545,6 +1554,8 @@ impl Node {
             mempool_pending_producer_keys: mempool_pending_producer_keys.clone(),
             mempool_producer_holdings: mempool_producer_holdings.clone(),
             health_window: std::collections::VecDeque::new(),
+            wedge_alarm: super::wedge_alarm::WedgeAlarm::new(Default::default()),
+            reorg_scrape_state: crate::metrics::ReorgScrapeState::new(),
             attest_fetch_tracker: HashMap::new(),
             defi_health_refresh_counter: AtomicU64::new(0),
             defi_health_cache: std::sync::Mutex::new(None),

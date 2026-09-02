@@ -73,7 +73,15 @@ fn test_no_reorg_on_tip() {
     let block = Block::new(header, vec![]);
 
     // No reorg needed since it builds on current tip
-    assert!(handler.check_reorg(&block, hash1).is_none());
+    assert!(handler
+        .check_reorg_weighted(
+            &block,
+            hash1,
+            1,
+            |_| None,
+            crate::sync::ForkChoiceFinality::default()
+        )
+        .is_none());
 }
 
 #[test]
@@ -109,7 +117,13 @@ fn test_detect_reorg() {
 
     // Fork block has weight=5, so fork chain has accumulated weight = 1 + 5 = 6
     // Current chain has weight 2, so fork is heavier -> should reorg
-    let result = handler.check_reorg_weighted(&block, hash2, 5);
+    let result = handler.check_reorg_weighted(
+        &block,
+        hash2,
+        5,
+        |_| None,
+        crate::sync::ForkChoiceFinality::default(),
+    );
     assert!(result.is_some());
 
     let reorg_result = result.unwrap();
@@ -190,7 +204,13 @@ fn test_weight_based_fork_choice_rejects_lighter_chain() {
 
     // Fork with weight 50 (total 150) should be rejected
     // Our chain has weight 300, fork would have 100 + 50 = 150
-    let result = handler.check_reorg_weighted(&fork_block, hash2, 50);
+    let result = handler.check_reorg_weighted(
+        &fork_block,
+        hash2,
+        50,
+        |_| None,
+        crate::sync::ForkChoiceFinality::default(),
+    );
     assert!(result.is_none(), "Should reject lighter fork");
 }
 
@@ -226,7 +246,13 @@ fn test_weight_based_fork_choice_accepts_heavier_chain() {
 
     // Fork with weight 200 (total 300) should be accepted
     // Our chain has weight 150, fork would have 100 + 200 = 300
-    let result = handler.check_reorg_weighted(&fork_block, hash2, 200);
+    let result = handler.check_reorg_weighted(
+        &fork_block,
+        hash2,
+        200,
+        |_| None,
+        crate::sync::ForkChoiceFinality::default(),
+    );
     assert!(result.is_some(), "Should accept heavier fork");
 
     let reorg = result.unwrap();
@@ -288,7 +314,13 @@ fn test_equal_weight_tiebreak_by_hash() {
     let fork_hash = fork_block.hash();
 
     // Equal weight: tie-break by hash
-    let result = handler.check_reorg_weighted(&fork_block, hash2, 1);
+    let result = handler.check_reorg_weighted(
+        &fork_block,
+        hash2,
+        1,
+        |_| None,
+        crate::sync::ForkChoiceFinality::default(),
+    );
 
     // One of the two hashes must be "lower" — the tie-breaker picks it
     if fork_hash.as_bytes() < hash2.as_bytes() {
@@ -379,7 +411,13 @@ fn test_reorg_past_finality_rejected() {
         attestation_bitfield: Vec::new(),
     };
 
-    let result = handler.check_reorg_weighted(&fork, block2, 100);
+    let result = handler.check_reorg_weighted(
+        &fork,
+        block2,
+        100,
+        |_| None,
+        crate::sync::ForkChoiceFinality::default(),
+    );
     assert!(result.is_none(), "Reorg past finality should be rejected");
 }
 
@@ -421,7 +459,13 @@ fn test_reorg_after_finality_ok() {
         attestation_bitfield: Vec::new(),
     };
 
-    let result = handler.check_reorg_weighted(&fork, block2, 100);
+    let result = handler.check_reorg_weighted(
+        &fork,
+        block2,
+        100,
+        |_| None,
+        crate::sync::ForkChoiceFinality::default(),
+    );
     assert!(result.is_some(), "Reorg above finality should be allowed");
 }
 
@@ -487,7 +531,13 @@ fn test_fork_block_recording_does_not_corrupt_current_weight() {
         aggregate_bls_signature: Vec::new(),
         attestation_bitfield: Vec::new(),
     };
-    let result = handler.check_reorg_weighted(&fork_block, our_tip, 500);
+    let result = handler.check_reorg_weighted(
+        &fork_block,
+        our_tip,
+        500,
+        |_| None,
+        crate::sync::ForkChoiceFinality::default(),
+    );
     assert!(
         result.is_some(),
         "Heavier fork should trigger reorg after correct weight tracking"
@@ -515,7 +565,13 @@ fn test_plan_reorg_past_finality_rejected() {
 
     // plan_reorg from block2 to fork_tip — common ancestor is genesis (height 0)
     // which is below finality height 1. Must be rejected.
-    let result = handler.plan_reorg(block2, fork_tip, |_| None, |_| None);
+    let result = handler.plan_reorg(
+        block2,
+        fork_tip,
+        |_| None,
+        |_| None,
+        crate::sync::ForkChoiceFinality::default(),
+    );
     assert!(
         result.is_none(),
         "plan_reorg must reject reorg past finalized height"
@@ -543,7 +599,13 @@ fn test_plan_reorg_above_finality_ok() {
 
     // plan_reorg from block2 to fork_tip — common ancestor is block1 (height 1)
     // which is above finality height 0. Should be allowed.
-    let result = handler.plan_reorg(block2, fork_tip, |_| None, |_| None);
+    let result = handler.plan_reorg(
+        block2,
+        fork_tip,
+        |_| None,
+        |_| None,
+        crate::sync::ForkChoiceFinality::default(),
+    );
     assert!(
         result.is_some(),
         "plan_reorg should allow reorg above finality"
@@ -609,6 +671,7 @@ fn plan_reorg_uses_get_height_when_block_weights_pruned() {
                 None
             }
         },
+        crate::sync::ForkChoiceFinality::default(),
     );
 
     // BUG: current code does block_weights.get(&ancestor).map(|w| w.height).unwrap_or(0)
@@ -663,6 +726,7 @@ fn plan_reorg_refuses_when_get_height_returns_below_finality() {
                 None
             }
         },
+        crate::sync::ForkChoiceFinality::default(),
     );
 
     assert!(
@@ -699,7 +763,13 @@ fn plan_reorg_refuses_when_ancestor_height_unknown() {
     handler.block_weights.remove(&ancestor);
 
     // Closure also returns None — height truly unknown
-    let result = handler.plan_reorg(current_tip, fork_tip, |_h| None, |_h| None);
+    let result = handler.plan_reorg(
+        current_tip,
+        fork_tip,
+        |_h| None,
+        |_h| None,
+        crate::sync::ForkChoiceFinality::default(),
+    );
 
     assert!(
         result.is_none(),
@@ -744,7 +814,13 @@ fn plan_reorg_permits_reorg_to_finality() {
     // removes block2). So this reorg does NOT violate finality.
     handler.set_last_finality_height(1);
 
-    let result = handler.plan_reorg(block2, fork_tip, |_| None, |_| None);
+    let result = handler.plan_reorg(
+        block2,
+        fork_tip,
+        |_| None,
+        |_| None,
+        crate::sync::ForkChoiceFinality::default(),
+    );
     assert!(
         result.is_some(),
         "INC-I-090 AC-1: plan_reorg must allow reorg when ancestor_height == finality_height \
@@ -804,7 +880,13 @@ fn check_reorg_weighted_permits_reorg_to_finality() {
         attestation_bitfield: Vec::new(),
     };
 
-    let result = handler.check_reorg_weighted(&fork, block2, 100);
+    let result = handler.check_reorg_weighted(
+        &fork,
+        block2,
+        100,
+        |_| None,
+        crate::sync::ForkChoiceFinality::default(),
+    );
     assert!(
         result.is_some(),
         "INC-I-090 AC-2: check_reorg_weighted must allow reorg when ancestor_height == \

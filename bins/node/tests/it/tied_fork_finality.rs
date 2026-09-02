@@ -396,18 +396,18 @@ fn test_inc_i190_finality_checkpoint_absent_at_depth0_present_at_depth2() {
 
     // IP1: depth 0 (applied tip == A's height) => NO checkpoint (F2 escape-enabler).
     assert!(
-        tracker.check_finality(6).is_none(),
+        tracker.check_finality(6, false).is_none(),
         "depth 0: F2 must NOT create a checkpoint for A (no depth-0 self-finality)"
     );
     // IP2: depth 1 => still NO checkpoint.
     assert!(
-        tracker.check_finality(7).is_none(),
+        tracker.check_finality(7, false).is_none(),
         "depth 1: F2 must NOT create a checkpoint for A"
     );
     // IP3: depth 2 => checkpoint at h=6 (the lock the pre-F2 depth-0 rule created
     // the instant A crossed 67%).
     let cp = tracker
-        .check_finality(8)
+        .check_finality(8, false)
         .expect("depth 2: A must finalize (>=67% + depth-2 descendant)");
     assert_eq!(
         cp.height, 6,

@@ -55,6 +55,7 @@ use doli_core::consensus::ConsensusParams;
 use doli_core::validation::ValidationMode;
 use doli_core::{Block, BlockHeader, Transaction};
 use doli_node::node::Node;
+use doli_node::node::RollbackOutcome;
 use tempfile::TempDir;
 use vdf::{VdfOutput, VdfProof};
 
@@ -247,9 +248,10 @@ async fn inc_i_071_rollback_with_empty_snapshot_preserves_producers() {
     // With post-fix code, the rollback must explicitly SKIP the restore
     // for empty snapshots — leaving the in-memory ProducerSet untouched.
     let rolled = node
-        .rollback_one_block()
+        .rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved { depth: 1 })
         .await
-        .expect("rollback_one_block failed");
+        .expect("rollback_one_block failed")
+        == RollbackOutcome::RolledBack;
     assert!(rolled, "rollback_one_block returned false unexpectedly");
 
     // After rolling back a mid-epoch block, ProducerSet must be byte-equal
@@ -303,9 +305,10 @@ async fn inc_i_071_legacy_full_snapshot_still_restores() {
     // Rollback — must take the legacy (non-empty) path and restore
     // from the full snapshot without falling back to rebuild.
     let rolled = node
-        .rollback_one_block()
+        .rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved { depth: 1 })
         .await
-        .expect("rollback_one_block on legacy undo failed");
+        .expect("rollback_one_block on legacy undo failed")
+        == RollbackOutcome::RolledBack;
     assert!(rolled, "rollback_one_block returned false on legacy undo");
 
     let cs = node.chain_state.read().await;

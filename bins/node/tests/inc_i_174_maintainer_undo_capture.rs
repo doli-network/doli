@@ -111,6 +111,7 @@ use doli_core::transaction::TxType;
 use doli_core::validation::ValidationMode;
 use doli_core::{Block, BlockHeader, MaintainerSet, Transaction};
 use doli_node::node::Node;
+use doli_node::node::RollbackOutcome;
 use storage::state_db::MaintainerUndoSnapshot;
 use storage::MaintainerState;
 use tempfile::TempDir;
@@ -405,7 +406,14 @@ async fn req_174_001_a_rotation_that_fails_verification_leaves_the_root_untouche
         );
     }
 
-    assert!(node.rollback_one_block().await.expect("rollback"));
+    assert_eq!(
+        node.rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved {
+            depth: 1
+        })
+        .await
+        .expect("rollback"),
+        RollbackOutcome::RolledBack
+    );
     assert_eq!(
         root(&node).await,
         before,
@@ -552,7 +560,14 @@ async fn req_174_sec_001_a_snapshot_the_gate_refuses_never_becomes_the_trust_roo
         .expect("put_maintainer_undo");
 
     let unrestored_before = node.maintainer_rewind_unrestored_count;
-    assert!(node.rollback_one_block().await.expect("rollback"));
+    assert_eq!(
+        node.rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved {
+            depth: 1
+        })
+        .await
+        .expect("rollback"),
+        RollbackOutcome::RolledBack
+    );
 
     let after = root(&node).await;
     assert_ne!(
@@ -635,7 +650,14 @@ async fn req_174_005_a_rewind_with_no_usable_snapshot_is_counted_not_silent() {
     );
 
     let before = node.maintainer_rewind_unrestored_count;
-    assert!(node.rollback_one_block().await.expect("rollback"));
+    assert_eq!(
+        node.rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved {
+            depth: 1
+        })
+        .await
+        .expect("rollback"),
+        RollbackOutcome::RolledBack
+    );
 
     assert_eq!(
         node.maintainer_rewind_unrestored_count,
@@ -676,7 +698,14 @@ async fn req_174_010_a_successful_maintainer_rewind_is_counted() {
     apply(&mut node, &rot).await;
 
     let before = node.maintainer_rewind_count;
-    assert!(node.rollback_one_block().await.expect("rollback"));
+    assert_eq!(
+        node.rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved {
+            depth: 1
+        })
+        .await
+        .expect("rollback"),
+        RollbackOutcome::RolledBack
+    );
     assert_eq!(
         node.maintainer_rewind_count,
         before + 1,

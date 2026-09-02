@@ -7,7 +7,9 @@
 //! 4. Applies blocks to local chain
 
 mod block_lifecycle;
+mod branch_verdict;
 mod cleanup;
+pub mod force_reorg;
 mod peers;
 mod production_gate;
 pub mod recovery;
@@ -33,14 +35,30 @@ mod tests_inc_i143;
 mod tests_inc_i152;
 #[cfg(test)]
 mod tests_inc_i152_p1_001;
+#[cfg(test)]
+mod tests_inc_i204_m2;
+#[cfg(test)]
+mod tests_inc_i204_m3;
+#[cfg(test)]
+mod tests_inc_i204_m3_rungs;
+#[cfg(test)]
+mod tests_inc_i204_m3_traps;
+#[cfg(test)]
+mod tests_inc_i204_m41;
+#[cfg(test)]
+mod tests_inc_i204_m6;
+#[cfg(test)]
+mod tests_inc_i204_m6_census;
 
 // Re-export all public types from types.rs
 pub use types::{
-    ChainBreakInfo, ForkAction, ProductionAuthorization, RecoveryPhase, RecoveryReason, SyncConfig,
-    SyncPhase, SyncPipelineData, SyncState, VerifiedSnapshot,
+    ChainBreakInfo, ProductionAuthorization, RecoveryPhase, RecoveryReason, SyncConfig, SyncPhase,
+    SyncPipelineData, SyncState, VerifiedSnapshot,
 };
 // Re-export recovery coordinator types used by Node layer
-pub use recovery::{RecoveryAction, RecoveryContext, RecoveryEvidence};
+pub use recovery::{RecoveryAction, RecoveryContext, RecoveryEvidence, WedgeReason};
+// INC-I-204 M4.1: the operator escape directive, consumed by the Node layer.
+pub use force_reorg::{ForceReorgPoll, FORCE_REORG_MAX_HEIGHT_SPAN, FORCE_REORG_TTL_SECS};
 // INC-I-149: operational network-age evidence, consumed by the production path.
 // Deliberately distinct from Network::is_in_genesis(), which answers the
 // CONSENSUS question and must remain a pure function of height.
@@ -62,6 +80,7 @@ use tracing::{debug, info, warn};
 use crypto::Hash;
 
 use super::reorg::ReorgHandler;
+use branch_verdict::BranchVerdict;
 
 /// Maximum consecutive force-resyncs before giving up.
 /// After this many failed resyncs, the node stops retrying and requires
@@ -82,6 +101,9 @@ pub struct SyncManager {
     local_slot: u32,
     /// Peer sync statuses
     peers: HashMap<PeerId, PeerSyncStatus>,
+    /// INC-I-204 M2: last branch verdict observed per peer, with the time it was
+    /// recorded. Read by `best_peer` to prefer sources last seen on our chain.
+    peer_branch_verdicts: HashMap<PeerId, (BranchVerdict, Instant)>,
     /// Sync pipeline: headers, bodies, blocks, requests, downloaders, epoch counter
     pub(crate) pipeline: SyncPipeline,
     /// Pipeline data: operational data for the current sync phase.
@@ -191,6 +213,10 @@ pub struct SyncManager {
     /// (ACTIVE_FORK_DETECT, resolve_shallow_fork, DEEP_FORK_DETECT) have
     /// been replaced by this single classify→execute dispatch.
     pub(crate) recovery: recovery::RecoveryCoordinator,
+
+    /// INC-I-204 M4.1 / REQ-FORK-012: the armed `forceReorgTo` directive.
+    /// Memory-only by construction — never serialized, never persisted.
+    force_reorg: Option<force_reorg::ForceReorgDirective>,
 }
 
 impl SyncManager {
@@ -199,13 +225,17 @@ impl SyncManager {
         Self {
             pipeline: SyncPipeline::new(&config),
             pipeline_data: SyncPipelineData::None,
-            reorg_handler: ReorgHandler::with_activation_height(config.inc_i_147_activation_height),
+            reorg_handler: ReorgHandler::with_activation_heights(
+                config.inc_i_147_activation_height,
+                config.inc_i_204_fork_choice_activation_height,
+            ),
             config,
             state: SyncState::Idle,
             local_height: 0,
             local_hash: genesis_hash,
             local_slot: 0,
             peers: HashMap::new(),
+            peer_branch_verdicts: HashMap::new(),
             // Production gate defaults
             production_blocked: None,
             recovery_phase: RecoveryPhase::Normal,
@@ -243,6 +273,7 @@ impl SyncManager {
             consecutive_orphan_gossip_blocks: 0,
             needs_mass_status_refresh: false,
             recovery: recovery::RecoveryCoordinator::new(),
+            force_reorg: None,
         }
     }
 

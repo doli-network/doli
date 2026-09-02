@@ -92,6 +92,7 @@ use doli_core::transaction::TxType;
 use doli_core::validation::ValidationMode;
 use doli_core::{Block, BlockHeader, MaintainerSet, Transaction};
 use doli_node::node::Node;
+use doli_node::node::RollbackOutcome;
 use network::sync::ReorgResult;
 use storage::MaintainerState;
 use tempfile::TempDir;
@@ -653,7 +654,14 @@ async fn req_174_007_a_re_mined_rotation_stamps_the_new_canonical_height() {
     assert_eq!(root(&node).await.last_updated, 4, "harness: stamped at h=4");
 
     // The DROP, made explicit.
-    assert!(node.rollback_one_block().await.expect("rollback errored"));
+    assert_eq!(
+        node.rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved {
+            depth: 1
+        })
+        .await
+        .expect("rollback errored"),
+        RollbackOutcome::RolledBack
+    );
     assert_eq!(node.chain_state.read().await.best_height, 3, "O7");
 
     // Winning branch: a filler block at h=4, then the SAME rotation re-mined at h=5.
@@ -732,10 +740,15 @@ async fn req_174_007_two_nodes_at_the_same_tip_agree_on_last_change_block() {
         vec![maintainer_tx(true, newcomer.public_key(), &signers)],
     );
     apply(&mut reorged, &rot).await;
-    assert!(reorged
-        .rollback_one_block()
-        .await
-        .expect("rollback errored"));
+    assert_eq!(
+        reorged
+            .rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved {
+                depth: 1
+            })
+            .await
+            .expect("rollback errored"),
+        RollbackOutcome::RolledBack
+    );
 
     // Both now advance on the SAME canonical block at h=4.
     let canonical = build_block(4, 444, prev, &producers[1], &params, vec![]);

@@ -105,6 +105,10 @@ pub struct RpcContext {
     /// whether its `derived` fallback matches the rule the node actually
     /// enforces at the current height (M2 review F4).
     pub maintainer_derivation_activation_height: u64,
+    /// INC-I-204 M5 fork-choice activation height (network-specific).
+    /// `getForkChoiceVersion` echoes it so the guardian can confirm fleet
+    /// readiness BEFORE the height is crossed.
+    pub inc_i_204_fork_choice_activation_height: u64,
 }
 
 impl RpcContext {
@@ -153,6 +157,8 @@ impl RpcContext {
             oracle_activation_height: net_params.oracle_activation_height,
             maintainer_derivation_activation_height: net_params
                 .maintainer_derivation_activation_height,
+            inc_i_204_fork_choice_activation_height: net_params
+                .inc_i_204_fork_choice_activation_height,
             backfill_state: Arc::new(BackfillState {
                 running: AtomicBool::new(false),
                 imported: AtomicU64::new(0),
@@ -223,6 +229,8 @@ impl RpcContext {
                 // env-LOCKED on mainnet, so `load` returns the pinned default.
                 maintainer_derivation_activation_height: NetworkParams::load(Network::Mainnet)
                     .maintainer_derivation_activation_height,
+                inc_i_204_fork_choice_activation_height: NetworkParams::load(Network::Mainnet)
+                    .inc_i_204_fork_choice_activation_height,
                 backfill_state: Arc::new(BackfillState {
                     running: AtomicBool::new(false),
                     imported: AtomicU64::new(0),

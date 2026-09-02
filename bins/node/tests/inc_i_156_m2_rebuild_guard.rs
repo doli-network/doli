@@ -81,7 +81,7 @@
 //!   I2: O1 ✓  O2 n/r  O3 ✓ (message text)  O4 -
 //!   I3: O1 ✓  O2 n/r  O3 ✓  O4 ✓
 //!   I4: O1 ✓  O2 ✓    O3 ✓  O4 ✓
-//!   I5: O1 ✓  O2 n/r  O3 ✓ (caller's `Ok(true)` + landed height)  O4 ✓
+//!   I5: O1 ✓  O2 n/r  O3 ✓ (caller's `Ok(RolledBack)` + landed height)  O4 ✓
 //!   I6: O1 ✓  O2 n/r  O3 ✓  O4 -
 //!   I7: O1 ✓  O2 n/r  O3 ✓  O4 -
 //!
@@ -107,6 +107,7 @@ mod inc_i_156_m1_harness;
 use inc_i_156_m1_harness as h;
 
 use doli_node::node::Node;
+use doli_node::node::RollbackOutcome;
 use storage::ProducerSet;
 use tempfile::TempDir;
 
@@ -536,7 +537,9 @@ async fn inc_i156_005_rollback_corrupt_snapshot_over_holed_store_must_not_destro
 
     let before = ProducerContent::live(&node).await;
 
-    let result = node.rollback_one_block().await;
+    let result = node
+        .rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved { depth: 1 })
+        .await;
 
     // O3 — the caller propagates the rebuild's `Err` either way (`?` at rollback.rs:144).
     let err = result.expect_err(
@@ -724,8 +727,8 @@ async fn inc_i156_007_dense_store_rebuild_happy_path_unchanged() {
 /// the evidence that the now-redundant second scan changes nothing observable: the rollback
 /// must still COMPLETE.
 ///
-/// The discriminator matters. `rollback.rs:180-187` returns `Ok(true)` on REFUSAL as well, so
-/// `Ok(true)` alone cannot distinguish "rolled back" from "refused and skipped". The landed
+/// The discriminator matters. Before INC-I-204 M3 the guard's REFUSAL also returned `Ok(true)`, so
+/// the return value alone could not distinguish "rolled back" from "refused and skipped". The landed
 /// `best_height` / `best_hash` are what separate them, so both are asserted — component-wise,
 /// per this file's REQ-I156-007 caveat (`total_work` drift is out of scope; see the module
 /// doc and the M1 pin).
@@ -750,15 +753,16 @@ async fn inc_i156_007_dense_store_guarded_legacy_rollback_still_completes() {
     );
 
     let rolled = node
-        .rollback_one_block()
+        .rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved { depth: 1 })
         .await
-        .expect("REQ-I156-007 / O3: a dense-store legacy rollback must not error");
+        .expect("REQ-I156-007 / O3: a dense-store legacy rollback must not error")
+        == RollbackOutcome::RolledBack;
     assert!(
         rolled,
-        "REQ-I156-007 / O3: `rollback_one_block` must report Ok(true)"
+        "REQ-I156-007 / O3: `rollback_one_block` must report Ok(RolledBack)"
     );
 
-    // The discriminator: Ok(true) is ALSO what the guard's refusal returns.
+    // Second discriminator, kept after M3 made the return value itself honest.
     let (height_after, hash_after) = {
         let cs = node.chain_state.read().await;
         (cs.best_height, cs.best_hash)
@@ -767,7 +771,7 @@ async fn inc_i156_007_dense_store_guarded_legacy_rollback_still_completes() {
         (height_after, hash_after),
         (TARGET_HEIGHT, target_hash),
         "REQ-I156-007 / O3: the rollback must have COMPLETED, not been refused. \
-         `rollback.rs:180-187` also returns Ok(true) when the INC-I-152 guard fires, so the \
+         the INC-I-152 guard fires on the same branch, so the \
          landed (best_height, best_hash) is the only discriminator. Landing anywhere else \
          means the now-redundant in-helper scan is refusing a store the caller's identical \
          scan already admitted."

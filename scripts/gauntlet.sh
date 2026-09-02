@@ -45,12 +45,34 @@
 #     digest it started from. It SKIPS cleanly when no non-producer endpoint is
 #     live, the set is not an enforced on-chain set, or it has fewer than 4
 #     members. See scripts/gauntlet-gs014.sh.
+#   * GS-015 (release published and signed) is OBSERVATIONAL and READ-ONLY: it
+#     runs in the DEFAULT gate, is NOT opt-in and has NO confirm-var. It queries
+#     the GitHub release API and this local repo only — never the chain, never a
+#     node, never a mutating gh/doli subcommand. Replays INC-I-202 (v6.26.2
+#     published with a 0-entry SIGNATURES.json, refused 0/3 by every fail-closed
+#     `doli upgrade`) and asserts the newest tag is published+verified and that
+#     release.yml still drafts releases. It SKIPS — never fails — when `gh` is
+#     absent, logged out or offline. See scripts/gauntlet-gs015.sh.
+#   * GS-016 (finality-wedge operator escape, the C-12 live drill) is opt-in AND
+#     mutates ONE live node's chain: it names the fleet's branch for a wedged
+#     node via `forceReorgTo`, which retracts that node's applied blocks across
+#     the finality MARKER and re-applies the fleet's branch. Run `--gs016` WITH
+#     GAUNTLET_GS016_CONFIRM=1; testnet only. Replays INC-I-190 (13/27 nodes at
+#     tip == finality, whose only exits were the unaudited poison bypass and
+#     history-destroying snap sync) and asserts the node landed on the
+#     operator-named branch, no NEW verifyChainIntegrity gap range
+#     (REQ-FORK-011), no snap sync, and no poison-arm rollback. It REFUSES
+#     below h=80,700 (trap T10: the pre-activation plan_reorg branch mainnet no
+#     longer runs would decide the drill) and SKIPS cleanly when the fleet does
+#     not expose forceReorgTo or no node is in the wedge cell. STATE-NEUTRAL for
+#     the fleet — the rescued node converges onto the branch every other node
+#     already holds. See scripts/gauntlet-gs016.sh.
 #
 # Assertions key off STRUCTURED telemetry fields (gap=, rollback_depth=,
 # sync_fails=, state=) and distinct-event phrases — NEVER raw keywords that also
 # appear in per-second telemetry (the word "rollback" logs ~1/sec at depth 0).
 #
-# Usage:  bash scripts/gauntlet.sh [--quick] [--chaos|--gs009|--gs010|--gs014]
+# Usage:  bash scripts/gauntlet.sh [--quick] [--chaos|--gs009|--gs010|--gs014|--gs016]
 # Env:    WORKFLOW_RUN_ID, GAUNTLET_WINDOW (s, default 45), GAUNTLET_RESTART_NODE
 #         (default n5), GAUNTLET_RSS_CEIL_MB (default 800), GAUNTLET_MIN_NODES
 #         (default 3), GAUNTLET_NO_PERTURB (1=skip restart).
@@ -67,6 +89,11 @@ GS010_LIB="$ROOT/scripts/gauntlet-gs010.sh"
 [ -f "$GS010_LIB" ] && . "$GS010_LIB"
 GS014_LIB="$ROOT/scripts/gauntlet-gs014.sh"
 [ -f "$GS014_LIB" ] && . "$GS014_LIB"
+GS015_LIB="$ROOT/scripts/gauntlet-gs015.sh"
+# shellcheck source=/dev/null
+[ -f "$GS015_LIB" ] && . "$GS015_LIB"
+GS016_LIB="$ROOT/scripts/gauntlet-gs016.sh"
+[ -f "$GS016_LIB" ] && . "$GS016_LIB"
 LOG_DIR="$HOME/testnet/logs"
 LABEL_PREFIX="network.doli.testnet"
 
@@ -85,6 +112,7 @@ CHAOS=0
 GS009=0
 GS010=0
 GS014=0
+GS016=0
 for a in "$@"; do
   case "$a" in
     --quick) WINDOW=20 ;;
@@ -92,6 +120,7 @@ for a in "$@"; do
     --gs009) GS009=1 ;;
     --gs010) GS010=1 ;;
     --gs014) GS014=1 ;;
+    --gs016) GS016=1 ;;
   esac
 done
 CHAOS_RECOVERED=1   # stays 1 unless a chaos injector fails to recover the node
@@ -278,7 +307,17 @@ say "  baseline max height = $BASE_MAX"
 
 # ── perturbation dispatch ───────────────────────────────────────────────────
 RP="$(port_of "$RESTART_NODE")"
-if [ "${GS014:-0}" = "1" ]; then
+if [ "${GS016:-0}" = "1" ]; then
+  # OPT-IN GS-016 finality-wedge operator escape (C-12 live drill). Mutates ONE
+  # wedged node's chain across the finality MARKER via forceReorgTo, then
+  # re-baselines so the window judges the RECOVERED steady state.
+  say "\n${C_R}▸ GS-016 MODE — FINALITY-WEDGE OPERATOR ESCAPE (mutates one node's chain: forceReorgTo across the finality marker)${C_0}"
+  echo "0" > "$REJOIN_FILE"
+  gs016_inject
+  say "  [gs016] settling 10s, then re-baselining for a clean observation window"
+  sleep 10
+  build_nodecfg
+elif [ "${GS014:-0}" = "1" ]; then
   # OPT-IN GS-014 governance relay from a NON-PRODUCER endpoint (perturbative AND
   # chain-writing: two maintainer governance transactions). Replays INC-I-195,
   # then re-baselines so the window judges the RECOVERED steady state.
@@ -578,6 +617,10 @@ assert(){
       _gs013_assert "$t"; return $? ;;
     gs014-relay-accepted|gs014-applies-from-non-producer|gs014-set-restored|gs014-fleet-agrees-on-set)
       _gs014_assert "$t"; return $? ;;
+    gs015-newest-release-published-and-signed|gs015-workflow-drafts-releases)
+      _gs015_assert "$t"; return $? ;;
+    gs016-escape-lands-on-named-branch|gs016-no-new-gap-after-escape|gs016-no-snap-sync-in-window|gs016-no-poison-bypass-in-window)
+      _gs016_assert "$t"; return $? ;;
     *)
       why="unknown assertion token '$t'" ;;
   esac
@@ -592,6 +635,7 @@ inj_tag(){
   if [ "${GS009:-0}" = "1" ] && [ "$sid" = "GS-009" ]; then echo "inj"; return; fi
   if [ "${GS010:-0}" = "1" ] && [ "$sid" = "GS-010" ]; then echo "inj"; return; fi
   if [ "${GS014:-0}" = "1" ] && [ "$sid" = "GS-014" ]; then echo "inj"; return; fi
+  if [ "${GS016:-0}" = "1" ] && [ "$sid" = "GS-016" ]; then echo "inj"; return; fi
   if [ "$CHAOS" = "1" ]; then
     case "$sid" in GS-002|GS-003|GS-004|GS-005|GS-007) echo "inj";; *) echo "obs";; esac
   elif [ "$NO_PERTURB" != "1" ]; then

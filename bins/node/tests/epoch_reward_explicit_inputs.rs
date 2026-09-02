@@ -494,7 +494,9 @@ async fn test_rollback_post_activation_restores_pool() {
     assert_eq!(pool_after_apply, 0);
 
     // Rollback: should restore all consumed pool UTXOs (7 old + 1 coinbase = 8).
-    node.rollback_one_block().await.unwrap();
+    node.rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved { depth: 1 })
+        .await
+        .unwrap();
 
     let pool_after_rollback = {
         let utxo = node.utxo_set.read().await;

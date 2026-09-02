@@ -91,3 +91,17 @@ checks plus all 3 of S7's checks pass because they assert properties the M2 gate
 guarantees (verified promotion happens; a failed verify already blocks any `gh release edit`)
 — S7 is a regression guard against a future banner-stripping bug jumping ahead of the
 verification gate, not a fact this milestone changes.
+
+## GS-015 traceability matrix (developer)
+
+| Req | Test | Implementation Module |
+|-----|------|-----------------------|
+| REQ-202-GS015 | `scripts/test_gauntlet_gs015.sh` S1-S10 (21 assertions) | `_gs015_assert` / `_gs015_release_check` / `_gs015_workflow_check` @ `scripts/gauntlet-gs015.sh`; source + `assert()` dispatch @ `scripts/gauntlet.sh`; scenario docs @ `scripts/README.md` |
+
+GREEN evidence: `test_gauntlet_gs015.sh` 21 PASS / 0 FAIL / exit 0 (was 0/21, exit 1).
+Baselines held: `test_sign_release.sh` 11/11, `test_publish_release.sh` 25/25,
+`test_monitor_release_signed.sh` 11/11, `test_release_docs.sh` 19/19 — all exit 0.
+The scenario delegates the newest-tag predicate to `scripts/monitor-release-signed.sh`
+(REQ-202-008) rather than re-implementing it, behind a `gh`/`doli` preflight that SKIPs
+so an offline host never reads as a release defect. `inj_tag()` needs no entry: every
+branch already falls through to `*) obs`, which is correct for an observational scenario.

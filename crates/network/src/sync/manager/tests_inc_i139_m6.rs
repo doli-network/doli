@@ -182,11 +182,20 @@ fn m6_rc1c_past_genesis_window_skips_discv5_grace_proceeds_header_first() {
 ///   [production_gate.rs:660]
 ///   O1: return bool                       — MUST be true (all gates pass)
 ///   O2: self.fork.needs_genesis_resync    — MUST be set (needs_genesis_resync()==true)
-///   O3: self.snap.threshold               — MUST be enabled (< u64::MAX) after the call
+///   O3: self.snap.threshold — SUPERSEDED by INC-I-204 M6 (D1 of the M6 brief §2 D4):
+///       was "MUST be enabled (< u64::MAX)"; now MUST stay u64::MAX. Gate 4's
+///       emergency `enable_snap_sync()` is deleted — the request is still HONORED
+///       (O1/O2 unchanged, INC-I-139 anti-deadlock preserved), but the recovery runs
+///       the header-first `reset_state_only` path that preserves block data instead
+///       of overriding an operator who passed --no-snap-sync.
 ///   PATH P1: threshold=u64::MAX (disabled), floor=0, attempts=0, phase=Normal,
 ///            reason=GenesisFallbackEmptyHeaders (emergency set)
-///   INPUT PARTITIONS: --no-snap-sync + emergency reason → Gate 4 re-enables snap
-///   MATRIX: P1 → (true, set, enabled). PASSES today AND post-RC-2 (bit-for-bit).
+///   INPUT PARTITIONS: --no-snap-sync + emergency reason → Gate 4 honors, no re-enable
+///   MATRIX: P1 → (true, set, still-disabled). O1/O2 pass today; O3 is RED pre-M6.
+///
+/// REQ-FORK-004 — Decision: a failure here reveals that an emergency still silently
+/// re-enables snap sync against an explicit --no-snap-sync, turning a non-lossy
+/// recovery into a state-replacing one.
 #[test]
 fn m6_rc2_emergency_reenable_admits_snap_under_no_snap_sync() {
     let mut mgr = SyncManager::new(SyncConfig::default(), Hash::ZERO);
@@ -215,13 +224,15 @@ fn m6_rc2_emergency_reenable_admits_snap_under_no_snap_sync() {
         mgr.needs_genesis_resync(),
         "M6 RC-2 (REQ-SNAP-008): honored emergency must set needs_genesis_resync"
     );
-    // O3: snap is now ENABLED. Assert the enabled sentinel, NOT the literal 10 —
-    // RC-2 replaces `threshold = 10` with an explicit enable sentinel and this
-    // backstop must stay green across that bit-for-bit swap.
-    assert!(
-        mgr.snap.threshold < u64::MAX,
-        "M6 RC-2 (REQ-SNAP-008): emergency re-enable must leave snap ENABLED \
-         (threshold < u64::MAX); observed {}",
+    // O3: SUPERSEDED by INC-I-204 M6 (REQ-FORK-004). Was `threshold < u64::MAX`.
+    // Gate 4's emergency `enable_snap_sync()` is deleted: the operator's
+    // --no-snap-sync survives the emergency, and the honored request runs the
+    // header-first path that preserves block data.
+    assert_eq!(
+        mgr.snap.threshold,
+        u64::MAX,
+        "INC-I-204 M6 (REQ-FORK-004): the honored emergency must NOT re-enable snap \
+         sync under --no-snap-sync; observed threshold {}",
         mgr.snap.threshold
     );
 }
@@ -373,17 +384,19 @@ fn m6_rc2_rate_and_attempt_limits_apply_to_emergencies() {
 /// dead gap-floor semantics, but the literal 10 must be gone.
 ///
 /// OUTPUT CONTRACT: fn request_genesis_resync(&mut self, reason) -> bool
-///   O1: self.snap.threshold — == fresh-manager enabled sentinel (50); != 10; < u64::MAX
-///   PATH P1: threshold==u64::MAX, emergency reason, gates pass → Gate 4 re-enable
-///   INPUT PARTITIONS: disabled snap + emergency reason → Gate 4 re-enable
-///   MATRIX: P1 → threshold == enabled_sentinel(50). PASS-lock (today AND future).
+///   O1: self.snap.threshold — SUPERSEDED by INC-I-204 M6 (REQ-FORK-004): was
+///       "== fresh-manager enabled sentinel (50)". With Gate 4's emergency re-enable
+///       deleted there is no re-enable to inspect, so the anti-magic-10 half of this
+///       contract is now discharged by the threshold staying at the disabled
+///       sentinel. The literal 10 must still never appear.
+///   PATH P1: threshold==u64::MAX, emergency reason, gates pass → Gate 4 honors
+///   INPUT PARTITIONS: disabled snap + emergency reason → no re-enable
+///   MATRIX: P1 → threshold == u64::MAX and != 10. RED pre-M6 on the equality.
+///
+/// REQ-FORK-004 — Decision: a failure here reveals that Gate 4 still writes a
+/// snap-enabled sentinel over an operator's --no-snap-sync.
 #[test]
 fn m6_rc2_emergency_reenable_restores_enabled_sentinel_not_magic_10() {
-    // The canonical "snap enabled" sentinel = a fresh manager's default threshold.
-    let enabled_sentinel = SyncManager::new(SyncConfig::default(), Hash::ZERO)
-        .snap
-        .threshold;
-
     let mut mgr = SyncManager::new(SyncConfig::default(), Hash::ZERO);
     mgr.local_height = 100;
     mgr.disable_snap_sync(); // threshold = u64::MAX (--no-snap-sync)
@@ -394,17 +407,20 @@ fn m6_rc2_emergency_reenable_restores_enabled_sentinel_not_magic_10() {
 
     let _ = mgr.request_genesis_resync(RecoveryReason::GenesisFallbackEmptyHeaders);
 
-    // O1: the magic literal 10 is gone; the enable is the canonical enabled sentinel.
+    // O1: the magic literal 10 is gone (RC-2), and after INC-I-204 M6 no enabled
+    // sentinel is written at all — the disabled sentinel survives the emergency.
     assert_ne!(
         mgr.snap.threshold, 10,
-        "M6 RC-2 (sentinel): emergency re-enable must NOT set the magic literal 10 \
-         (the old OQ-2 minor-fork-hole value); RC-2 replaced it with an explicit sentinel."
+        "M6 RC-2 (sentinel): the magic literal 10 (the old OQ-2 minor-fork-hole value) \
+         must never be written."
     );
     assert_eq!(
-        mgr.snap.threshold, enabled_sentinel,
-        "M6 RC-2 (sentinel): emergency re-enable must restore the canonical enabled \
-         sentinel ({}), matching enable_snap_sync(). Observed {}",
-        enabled_sentinel, mgr.snap.threshold
+        mgr.snap.threshold,
+        u64::MAX,
+        "INC-I-204 M6 (REQ-FORK-004), superseding RC-2: Gate 4's emergency \
+         enable_snap_sync() is deleted, so --no-snap-sync must still hold after the \
+         honored request. Observed {}",
+        mgr.snap.threshold
     );
 }
 
