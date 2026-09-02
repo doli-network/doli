@@ -1,6 +1,8 @@
 //! Pure producer-ledger arithmetic for withdrawal/exit (INC-I-180 M3,
 //! REQ-I180-005 / AUDIT-P2-003). No I/O; unit- and integration-testable.
 
+use doli_core::consensus::MAX_BONDS_PER_PRODUCER;
+
 /// ProducerSet allowance P: own bonds recovered by inverting the selection
 /// weight. selection_weight = own - delegated_away + received, so
 /// own = selection_weight + delegated_away - received.
@@ -38,4 +40,23 @@ pub fn select_bond_inputs_by_count(
             bond_utxo_amounts.len()
         ))
     }
+}
+
+/// AddBond admission for the CLI (INC-I-203 M3, REQ-BOND-007). `pending` comes
+/// from the caller's `ProducerInfo.pending_updates`; headroom is
+/// `MAX_BONDS_PER_PRODUCER - bond_count - pending`. Saturating throughout: a
+/// hostile or malformed RPC count must refuse, never overflow.
+pub fn addbond_headroom_check(bond_count: u32, pending: u32, requested: u32) -> Result<(), String> {
+    let total = bond_count.saturating_add(pending).saturating_add(requested);
+    if total <= MAX_BONDS_PER_PRODUCER {
+        return Ok(());
+    }
+    let headroom = MAX_BONDS_PER_PRODUCER
+        .saturating_sub(bond_count)
+        .saturating_sub(pending);
+    Err(format!(
+        "Bond cap exceeded: current={bond_count} pending={pending} requested={requested} \
+         cap={MAX_BONDS_PER_PRODUCER}. You may still add {headroom} bond(s). \
+         Re-run with --count {headroom} or less; to grow beyond the cap, use delegation."
+    ))
 }

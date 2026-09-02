@@ -861,6 +861,28 @@ Options:
 doli producer add-bond --count 3
 ```
 
+**Cap headroom check (INC-I-203).** A producer may hold at most
+`MAX_BONDS_PER_PRODUCER` (3,000) bonds. The CLI reads the producer's current
+`bondCount` and its pending epoch-deferred `add_bond` updates from
+`getProducers`, and refuses the request **before** signing when
+`current + pending + requested` would exceed the cap. The refusal exits
+non-zero; no UTXO is selected, nothing is signed, and no transaction is
+submitted:
+
+```
+Bond cap exceeded: current=2999 pending=0 requested=4 cap=3000.
+You may still add 1 bond(s). Re-run with --count 1 or less;
+to grow beyond the cap, use delegation.
+```
+
+A request that exactly fills the cap still succeeds
+(`--count 1` at `current=2999`). Pending AddBonds already count against the
+headroom, so two calls in the same epoch cannot straddle the cap. The node
+enforces the same limit independently — `sendTransaction` refuses an over-cap
+AddBond with `[ADDBOND_CAP_EXCEEDED]` (see `docs/troubleshooting.md` §2.5) — so
+an older CLI is still blocked at the node; this check only moves the refusal
+earlier, before the operator's funds are touched.
+
 **WHITEPAPER Reference:** Section 6.3 (Bond Stacking) - More bonds = more block production slots in deterministic rotation.
 
 ---
