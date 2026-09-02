@@ -140,12 +140,32 @@ impl FinalityTracker {
     ///
     /// Returns the newly finalized checkpoint if one was found.
     /// Removes all pending blocks at or below the finalized height.
-    pub fn check_finality(&mut self, applied_tip_height: u64) -> Option<FinalityCheckpoint> {
+    ///
+    /// `enforce_monotonic` (INC-I-204 M5, gated on
+    /// `NetworkParams::inc_i_204_fork_choice_activation_height`): when `true`, a
+    /// candidate at or below `last_finalized.height` is skipped, so finality can
+    /// only ever move up. INV-FINALITY-001 clause (1). When `false` the pre-M5
+    /// behaviour runs verbatim: the prune at the end of this function only removes
+    /// what was pending at that instant, so a block tracked afterwards at a LOWER
+    /// height could win and move `last_finalized` DOWN — reachable on ordinary
+    /// paths, because `track_block` runs for every applied block and reorg / snap /
+    /// backfill re-apply blocks below the tip.
+    pub fn check_finality(
+        &mut self,
+        applied_tip_height: u64,
+        enforce_monotonic: bool,
+    ) -> Option<FinalityCheckpoint> {
         // Find the highest-height block that meets the threshold
         let mut best: Option<usize> = None;
+        let floor = enforce_monotonic
+            .then(|| self.last_finalized.as_ref().map(|c| c.height))
+            .flatten();
 
         for (i, pending) in self.pending.iter().enumerate() {
             if pending.total_weight == 0 {
+                continue;
+            }
+            if floor.is_some_and(|f| pending.height <= f) {
                 continue;
             }
             let pct = pending.numerator() * 100 / pending.total_weight;
@@ -188,6 +208,14 @@ impl FinalityTracker {
     }
 
     /// Check if a given block hash is at or below the last finalized height.
+    ///
+    /// INC-I-204 M5: this is the "already covered by finality, nothing to do"
+    /// predicate and its comparison is `<=`. It is NOT the rewind / fork-choice
+    /// guard, whose comparison is STRICT `<` — rolling back TO the finalized
+    /// height preserves the finalized block and is legal (INV-SYNC-008; a `<=`
+    /// guard there blocks legal boundary forks for the whole finality window,
+    /// measured as INC-I-090). Wiring this predicate into that door is trap T1
+    /// and was rejected. It is deliberately left unwired.
     pub fn is_at_or_below_finalized(&self, height: u64) -> bool {
         self.last_finalized
             .as_ref()
@@ -268,11 +296,11 @@ mod tests {
 
         // Block 1 gets 50% weight — not enough
         tracker.add_attestation_weight(h1, make_pubkey(101), 50);
-        assert!(tracker.check_finality(102).is_none());
+        assert!(tracker.check_finality(102, false).is_none());
 
         // Block 1 reaches 67% — a SECOND producer adds 17 (50 + 17 = 67).
         tracker.add_attestation_weight(h1, make_pubkey(102), 17);
-        let cp = tracker.check_finality(102);
+        let cp = tracker.check_finality(102, false);
         assert!(cp.is_some());
         let cp = cp.unwrap();
         assert_eq!(cp.block_hash, h1);
@@ -296,7 +324,7 @@ mod tests {
         let h = make_hash(1);
         tracker.track_block(h, 100, 10, 100);
         tracker.add_attestation_weight(h, make_pubkey(1), 70);
-        tracker.check_finality(102);
+        tracker.check_finality(102, false);
 
         assert!(tracker.is_at_or_below_finalized(99));
         assert!(tracker.is_at_or_below_finalized(100));
@@ -327,7 +355,7 @@ mod tests {
         assert_eq!(tracker.pending[0].numerator(), 70);
 
         // Should reach finality once depth-2 is satisfied
-        let cp = tracker.check_finality(102);
+        let cp = tracker.check_finality(102, false);
         assert!(cp.is_some());
         assert_eq!(cp.unwrap().block_hash, h);
     }
@@ -348,14 +376,14 @@ mod tests {
         tracker.add_attestation_weight(h, make_pubkey(1), 67); // 67% weight, no descendants yet
 
         assert!(
-            tracker.check_finality(100).is_none(),
+            tracker.check_finality(100, false).is_none(),
             "depth-0 must not finalize"
         );
         assert!(
-            tracker.check_finality(101).is_none(),
+            tracker.check_finality(101, false).is_none(),
             "depth-1 must not finalize"
         );
-        let cp = tracker.check_finality(102);
+        let cp = tracker.check_finality(102, false);
         assert!(cp.is_some(), "depth-2 must finalize");
         assert_eq!(cp.unwrap().height, 100);
     }
@@ -367,7 +395,7 @@ mod tests {
         let h = make_hash(1);
         tracker.track_block(h, 200, 20, 100);
         tracker.add_attestation_weight(h, make_pubkey(1), 67);
-        let cp = tracker.check_finality(202); // depth 2
+        let cp = tracker.check_finality(202, false); // depth 2
         assert!(
             cp.is_some(),
             "67% + depth 2 must finalize (no liveness stall)"
@@ -427,7 +455,7 @@ mod tests {
             "numerator must equal distinct producer weight, never 6"
         );
         let cp = tracker
-            .check_finality(102)
+            .check_finality(102, false)
             .expect("100% weight + depth 2 must finalize");
         assert!(
             cp.attestation_weight <= cp.total_weight,

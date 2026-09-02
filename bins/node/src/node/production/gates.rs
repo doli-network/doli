@@ -34,7 +34,11 @@ impl Node {
 
         match auth_result {
             ProductionAuthorization::Authorized => {
-                self.shallow_rollback_count = 0;
+                // INC-I-204 M3: `shallow_rollback_count` is NOT reset here. This arm
+                // runs only on producers, so the budget refilled every authorized slot
+                // on a producer and never on a seed — the same rung looked live on one
+                // and dead on the other. Both now reset on a successful apply
+                // (`apply_block`), which is the condition the budget actually measures.
                 self.cumulative_rollback_depth = 0;
                 debug!(
                     "[NODE_PRODUCE] slot={} AUTHORIZED - proceeding",

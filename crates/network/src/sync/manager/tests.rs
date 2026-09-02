@@ -4416,47 +4416,6 @@ mod m2_regression_tests {
         );
     }
 
-    /// P0: ForkState.recommend_action handles all edge cases.
-    #[test]
-    fn test_adversarial_fork_action_edge_cases() {
-        use super::ForkState;
-
-        // Deep fork (10+ empty headers) -> genesis resync
-        let mut fork = ForkState::new();
-        fork.consecutive_empty_headers = 10;
-        let action = fork.recommend_action(5, 0, 12, Some(PeerId::random()));
-        assert!(matches!(action, ForkAction::NeedsGenesisResync));
-
-        // needs_genesis_resync flag overrides everything
-        let mut fork2 = ForkState::new();
-        fork2.needs_genesis_resync = true;
-        let action2 = fork2.recommend_action(0, 0, 12, None);
-        assert!(matches!(action2, ForkAction::NeedsGenesisResync));
-
-        // Gap > max_rollback_depth escalates
-        let fork3 = ForkState::new();
-        let action3 = fork3.recommend_action(100, 0, 12, Some(PeerId::random()));
-        assert!(matches!(action3, ForkAction::NeedsGenesisResync));
-
-        // Shallow fork with < 3 empty headers -> None
-        let mut fork4 = ForkState::new();
-        fork4.consecutive_empty_headers = 2;
-        let action4 = fork4.recommend_action(5, 0, 12, Some(PeerId::random()));
-        assert!(matches!(action4, ForkAction::None));
-
-        // Shallow fork with >= 3 empty headers and rollbacks < max -> rollback
-        let mut fork5 = ForkState::new();
-        fork5.consecutive_empty_headers = 3;
-        let action5 = fork5.recommend_action(5, 0, 12, Some(PeerId::random()));
-        assert!(matches!(action5, ForkAction::RollbackOne));
-
-        // Exhausted rollbacks
-        let mut fork6 = ForkState::new();
-        fork6.consecutive_empty_headers = 3;
-        let action6 = fork6.recommend_action(5, 12, 12, Some(PeerId::random()));
-        assert!(matches!(action6, ForkAction::None));
-    }
-
     /// P2: SyncPipelineData.is_snap_syncing for all variants.
     #[test]
     fn test_adversarial_pipeline_data_snap_syncing() {
@@ -5793,14 +5752,14 @@ mod inc_i138_m2_escalation {
         );
     }
 
-    /// INC-I-138 D4 pin — rollback_exhausted path must still escalate to SnapSync.
-    ///
-    /// When minor_fork_evidence (>=3 empties) AND shallow_rollback_count >= MAX(10),
-    /// rollback_exhausted=true → Rule 2 fires SnapSync. Independent of D4 fix.
-    ///
-    /// PASSES today. MUST PASS after D4 fix.
+    /// SUPERSEDED by INC-I-204 M6 (D1, REQ-FORK-004). This pinned `SnapSync` for the
+    /// `rollback_exhausted` trigger at gap=28. M6 deletes that trigger: a spent
+    /// rollback budget is a statement about a BUDGET, not evidence of behind-ness.
+    /// Reversed in place (a sibling of `recovery.rs`'s
+    /// `shallow_rollback_exhausted_no_longer_escalates_to_snap`), so the behaviour
+    /// change is visible in the diff rather than deleted from the record.
     #[test]
-    fn test_inc_i138_d4_rollback_exhausted_still_escalates_pin() {
+    fn test_inc_i138_d1_rollback_exhausted_no_longer_escalates_pin() {
         let mut coord = RecoveryCoordinator::new();
         for _ in 0..3 {
             coord.report(RecoveryEvidence::EmptyHeaders {
@@ -5823,15 +5782,16 @@ mod inc_i138_m2_escalation {
         let action = coord.classify(&ctx);
         // Rule 1: minor_fork_evidence(T) && gap(28)<50 && recently_synced(T)
         //         && shallow_rollback_count(10) < MAX(10) → 10<10=FALSE → Rule 1 skips.
-        // Rule 2: rollback_exhausted = minor_fork_evidence(T) && 10 >= 10 = TRUE → SnapSync.
+        // Rule 2 (M6): large_gap = 28 >= 500 = FALSE → skipped; no other trigger remains.
+        // Rule 3: medium_gap(28) && !wedged_shape → HeaderFirstSync, a non-lossy rung.
         assert_eq!(
             action,
-            RecoveryAction::SnapSync,
-            "D4 pin: rollback_exhausted (count={} >= MAX={}) MUST still escalate to SnapSync. \
-             D4 fix only adds a gap guard to deep_fork_confirmed; rollback_exhausted path \
-             in Rule 2 is independent and must remain intact.",
+            RecoveryAction::HeaderFirstSync,
+            "INC-I-204 M6 (D1): rollback_exhausted (count={} >= MAX={}) must NOT reach a \
+             history-destroying rung at gap=28. Snap admission is gap >= {} only.",
             thresholds::SHALLOW_ROLLBACK_MAX,
             thresholds::SHALLOW_ROLLBACK_MAX,
+            thresholds::SNAP_SYNC_GAP_MIN,
         );
     }
 
@@ -6304,7 +6264,7 @@ mod inc_i138_m3_evidence_gating {
         let action = coord.classify(&ctx);
 
         // D4 guard (M2 fix, recovery.rs:401-404):
-        //   deep_fork_confirmed = deep_fork>0 || (empty_count>=10 && stale>=300s && gap>=50)
+        //   deep_fork_confirmed = empty_count>=10 && stale>=300s && gap>=50
         //   gap=28 < MINOR_FORK_GAP_MAX(50) → deep_fork_confirmed=false → Rule 2 skipped.
         //   Rule 3 (medium_gap=28) → HeaderFirstSync (not SnapSync).
         // ONE-ASSERT cross-check: D1+D4 layers must be independent.

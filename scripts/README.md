@@ -911,10 +911,24 @@ GAUNTLET_CHAOS_CONFIRM=1 bash scripts/gauntlet.sh --chaos
 
 > **`--chaos` safety:** local testnet only; target must be a producer node (never seed); needs ≥3 other live nodes as a recovery source; the node's `data/` is `mv`-backed-up to `~/testnet/<node>/data.bak.<ts>` before wiping (identity `node_key` + producer key live outside `data/`, untouched). Backups **accumulate** — prune with `rm -rf ~/testnet/<node>/data.bak.*` when no longer needed.
 
+**Opt-in scenarios (never part of a default run).** Each needs BOTH its `--flag` AND its confirm-var, is testnet-only, and SKIPs cleanly — never fails spuriously — when the fleet cannot host it.
+
+| Scenario | Flag | Confirm-var | What it does | Writes? |
+|----------|------|-------------|--------------|---------|
+| GS-009 fleet-rolling-restart | `--gs009` | `GAUNTLET_GS009_CONFIRM=1` | Wave-restarts ALL producers (`n1..n12`, never the seed) via launchd; replays INC-I-143. | No (lifecycle only) |
+| GS-010 duplicate-registration-poison | `--gs010` | `GAUNTLET_GS010_CONFIRM=1` | Funds a wallet and **permanently bonds a producer** (bonds unwind only via request-withdrawal); replays INC-I-147. | **Chain** |
+| GS-014 governance-relay-from-non-producer | `--gs014` | `GAUNTLET_GS014_CONFIRM=1` | Removes a maintainer and re-adds the SAME key through a proven non-producer RPC; replays INC-I-195. State-neutral. | **Chain** |
+| GS-016 finality-wedge-operator-escape (C-12) | `--gs016` | `GAUNTLET_GS016_CONFIRM=1` | Names the fleet's branch for a wedged node via `forceReorgTo`, retracting that node's blocks across the finality marker; replays INC-I-190. **Refuses below h=80,700** (trap T10). State-neutral for the fleet. | **One node's chain** |
+
+```bash
+GAUNTLET_GS016_CONFIRM=1 bash scripts/gauntlet.sh --gs016   # C-12 wedge-escape drill
+```
+
 **Companions:**
 - `scripts/gauntlet-collect.py` — RPC + windowed-log metrics collector (emits one JSON blob the runner asserts on).
-- `scripts/gauntlet-seed.sql` — version-controlled seed for the 8 scenario archetypes + Level-2+ incident mapping. Apply: `sqlite3 .omega/memory.db < scripts/gauntlet-seed.sql`.
+- `scripts/gauntlet-seed.sql` — version-controlled seed for the scenario archetypes + Level-2+ incident mapping. Apply: `sqlite3 .omega/memory.db < scripts/gauntlet-seed.sql`.
 - `scripts/gauntlet-gs015.sh` — GS-015 "release published and signed" (INC-I-202). Sourced by the runner and registered in `scripts/gauntlet-seed.sql`; **observational, read-only, part of the DEFAULT run, no confirm-var**. It queries GitHub and this local repo only — never the chain, never a node, never a mutating `gh`/`doli` subcommand. Two assertions: the newest `v*` tag has a public, threshold-verified release (delegated to `scripts/monitor-release-signed.sh`), and the release-creation step of `.github/workflows/release.yml` still carries the `draft: true` gate (read inside that step, so a stray `draft: true` in another job cannot satisfy it). **Requires an authenticated `gh`, plus `jq`, `git`, a `v*` tag and an executable `doli` CLI:** when any one is missing — `gh` logged out or offline, a stale `DOLI_CLI`, a tagless or shallow checkout — it **SKIPs, never FAILs**, so a workstation or CI runner is never mistaken for a broken release. Env: `GS015_REPO_DIR`, `GS015_MONITOR`, `GS015_WORKFLOW`. Tests: `scripts/test_gauntlet_gs015.sh`.
+- `scripts/gauntlet-gs009.sh` · `gauntlet-gs010.sh` · `gauntlet-gs014.sh` · `gauntlet-gs016.sh` — the opt-in scenario bodies, sourced by the runner.
 
 The gate (`.claude/hooks/gauntlet-gate.sh`) arms only when `.omega/gauntlet.conf` exists.
 

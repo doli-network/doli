@@ -317,10 +317,12 @@ impl Node {
                 };
 
                 let reorg_result = {
-                    self.sync_manager
-                        .write()
-                        .await
-                        .handle_new_block_weighted(block.clone(), producer_weight)
+                    let store = &self.block_store;
+                    self.sync_manager.write().await.handle_new_block_weighted(
+                        block.clone(),
+                        producer_weight,
+                        |h| store.get_height_by_hash(h).ok().flatten(),
+                    )
                 };
 
                 if let Some(reorg_result) = reorg_result {
@@ -625,6 +627,11 @@ impl Node {
             self.block_store
                 .ensure_blocks_present(1, target_height.max(1))
                 .map_err(|e| {
+                    // One increment per logical refusal: the error! and the
+                    // anyhow! below are the same closure, run once.
+                    crate::metrics::FORK_GUARD_REFUSALS
+                        .with_label_values(&["reorg_execute"])
+                        .inc();
                     error!(
                         "[FORK_GUARD_BACKFILL_REQUIRED] Reorg refused: \
                          block_store missing canonical blocks in 1..={} — {}. \
@@ -651,6 +658,11 @@ impl Node {
                 match self.block_store.get_block_by_height(target_height)? {
                     Some(b) => Some(b),
                     None => {
+                        // Disjoint from the guard above: reachable only when
+                        // ensure_blocks_present returned Ok.
+                        crate::metrics::FORK_GUARD_REFUSALS
+                            .with_label_values(&["reorg_execute"])
+                            .inc();
                         error!(
                             "[FORK_GUARD_BACKFILL_REQUIRED] Reorg refused: \
                              common ancestor at h={} missing from block_store \

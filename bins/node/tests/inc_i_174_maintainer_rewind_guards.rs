@@ -76,6 +76,7 @@ use doli_core::transaction::TxType;
 use doli_core::validation::ValidationMode;
 use doli_core::{Block, BlockHeader, MaintainerSet, Network, Transaction};
 use doli_node::node::Node;
+use doli_node::node::RollbackOutcome;
 use storage::MaintainerState;
 use tempfile::TempDir;
 use tokio::sync::RwLock;
@@ -288,7 +289,14 @@ async fn req_174_002_ac4_b_a_partial_restore_below_the_derivation_gate_is_refuse
         "harness: the whole partition is 'tip is BELOW the derivation gate'"
     );
 
-    assert!(node.rollback_one_block().await.expect("rollback errored"));
+    assert_eq!(
+        node.rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved {
+            depth: 1
+        })
+        .await
+        .expect("rollback errored"),
+        RollbackOutcome::RolledBack
+    );
     assert_eq!(node.chain_state.read().await.best_height, 1, "O7");
 
     let after = root(&node).await;
@@ -342,7 +350,14 @@ async fn req_174_002_ac4_b_control_the_same_partial_restore_above_the_gate_is_in
         "harness: Devnet's gate is 0, so every height is at or above it"
     );
 
-    assert!(node.rollback_one_block().await.expect("rollback errored"));
+    assert_eq!(
+        node.rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved {
+            depth: 1
+        })
+        .await
+        .expect("rollback errored"),
+        RollbackOutcome::RolledBack
+    );
     assert_eq!(node.chain_state.read().await.best_height, 1, "O7");
 
     let after = root(&node).await;
@@ -399,7 +414,14 @@ async fn req_174_005_an_unreadable_block_in_the_rewind_range_is_counted_not_sile
         "harness: the hole must actually exist, or this asserts nothing"
     );
 
-    assert!(node.rollback_one_block().await.expect("rollback errored"));
+    assert_eq!(
+        node.rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved {
+            depth: 1
+        })
+        .await
+        .expect("rollback errored"),
+        RollbackOutcome::RolledBack
+    );
     assert_eq!(node.chain_state.read().await.best_height, 2, "O7");
 
     assert_eq!(
@@ -435,7 +457,14 @@ async fn req_174_005_control_a_readable_range_with_no_rotation_is_a_silent_no_op
         apply(&mut node, &b).await;
     }
 
-    assert!(node.rollback_one_block().await.expect("rollback errored"));
+    assert_eq!(
+        node.rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved {
+            depth: 1
+        })
+        .await
+        .expect("rollback errored"),
+        RollbackOutcome::RolledBack
+    );
     assert_eq!(node.chain_state.read().await.best_height, 2, "O7");
 
     assert_eq!(root(&node).await.members, before.members, "control: O1");
@@ -468,7 +497,14 @@ async fn req_174_005_a_failed_persist_is_rolled_back_counted_and_announced() {
         "harness: the persist target must be unwritable, or this asserts nothing"
     );
 
-    assert!(node.rollback_one_block().await.expect("rollback errored"));
+    assert_eq!(
+        node.rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved {
+            depth: 1
+        })
+        .await
+        .expect("rollback errored"),
+        RollbackOutcome::RolledBack
+    );
 
     assert_eq!(
         root(&node).await.members,

@@ -782,6 +782,33 @@ pub struct NetworkParams {
     /// Mainnet IMMUTABILITY (INC-I-054): once crossed, never move forward.
     pub inc_i_176_auth_binding_activation_height: u64,
 
+    /// INC-I-204 M5 fork-choice unification activation height (#23).
+    ///
+    /// At and above this chain height ONE `fork_choice` authority decides every
+    /// branch comparison: `ReorgHandler::weigh_branches` (strictly heavier wins,
+    /// an exact tie goes to the lower block hash), the finality guard reads the
+    /// common ancestor's REAL height from the block store and requires the
+    /// candidate branch to CONTAIN the finalized hash, `record_fork_block` stores
+    /// the real chain height, and both finality operands become monotone. Below
+    /// it every one of those paths is byte-identical to the pre-M5 binary.
+    ///
+    /// INV-12: Q1 (user tx) **NO** — fork choice consumes blocks and weights.
+    /// Q2 (producer/attestation) **YES** — a producer publishing a competing block
+    /// at the same height creates the input. Q3 (bit-identical) **NO** above the
+    /// height. (1|2) YES + (3) NO ⇒ **ACTIVATION HEIGHT REQUIRED**, CHOICE class.
+    /// Block CONTENT: **NO** — nothing on these paths reaches the block builder,
+    /// header/body serialization, the bitfield codec, coinbase construction, tx
+    /// ordering or `presence_root`, so INV-8 synchronized deploy is NOT triggered
+    /// and the binary rolls.
+    ///
+    /// Defaults — mainnet `u64::MAX` and testnet `u64::MAX`: both FROZEN. Pinning
+    /// a real height on either is a separate user decision-session; the spec names
+    /// no height and no convergence margin, so no value is derivable. Devnet `0`,
+    /// mirroring the devnet arm of the gate it supersedes
+    /// (`inc_i_147_activation_height`). Never bundled onto any existing gate.
+    /// Mainnet IMMUTABILITY (INC-I-054): once crossed, never move forward.
+    pub inc_i_204_fork_choice_activation_height: u64,
+
     /// How many registered producers must exist before the maintainer trust root
     /// is seeded at all (INC-I-172 M2 review F3).
     ///

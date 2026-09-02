@@ -15,8 +15,17 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crypto::Hash;
+use tracing::warn;
+
+#[cfg(test)]
 use doli_core::Block;
-use tracing::{debug, info, warn};
+
+mod doors;
+mod fork_choice;
+mod observe;
+pub use fork_choice::{ForkChoiceFinality, WeightVerdict};
+pub use observe::ReorgObservations;
+use observe::{bump, ReorgCounters};
 
 /// Maximum depth for reorg detection (must handle network partitions up to ~2.7 hours)
 const MAX_REORG_DEPTH: usize = 1000;
@@ -73,6 +82,16 @@ pub struct ReorgHandler {
     /// Defaults to `0` (always-on) so that unit tests and devnet exercise the
     /// corrected path; the node overrides it from `NetworkParams` via `SyncConfig`.
     inc_i_147_activation_height: u64,
+    /// INC-I-204 M5 fork-choice activation height
+    /// (`NetworkParams::inc_i_204_fork_choice_activation_height`).
+    ///
+    /// At or above it ONE authority decides every branch comparison. Below it every
+    /// door keeps its pre-M5 path verbatim. `new()` defaults it to `u64::MAX`
+    /// (dormant) so pre-existing tests keep exercising the pre-activation branch.
+    inc_i_204_fork_choice_activation_height: u64,
+    /// INC-I-204 M0 observation counters. Written alongside decisions, never read
+    /// by one; `bins/node` scrapes them into Prometheus.
+    counters: ReorgCounters,
 }
 
 impl ReorgHandler {
@@ -94,6 +113,8 @@ impl ReorgHandler {
             current_chain_weight: 0,
             last_finality_height: None,
             inc_i_147_activation_height: 0,
+            inc_i_204_fork_choice_activation_height: u64::MAX,
+            counters: ReorgCounters::default(),
         }
     }
 
@@ -104,10 +125,27 @@ impl ReorgHandler {
     /// unaffected — they root their chains at `Hash::ZERO`, where the per-process
     /// offset is `0` and both branches agree anyway.
     pub fn with_activation_height(inc_i_147_activation_height: u64) -> Self {
+        Self::with_activation_heights(inc_i_147_activation_height, u64::MAX)
+    }
+
+    /// Create a reorg handler with both gate heights (INC-I-204 M5).
+    ///
+    /// The node passes `NetworkParams::inc_i_147_activation_height` and
+    /// `NetworkParams::inc_i_204_fork_choice_activation_height` through `SyncConfig`.
+    pub fn with_activation_heights(
+        inc_i_147_activation_height: u64,
+        inc_i_204_fork_choice_activation_height: u64,
+    ) -> Self {
         Self {
             inc_i_147_activation_height,
+            inc_i_204_fork_choice_activation_height,
             ..Self::new()
         }
+    }
+
+    /// The M5 fork-choice activation height this handler was built with.
+    pub fn fork_choice_activation_height(&self) -> u64 {
+        self.inc_i_204_fork_choice_activation_height
     }
 
     /// Record a block that we've applied (legacy - uses weight 1)
@@ -142,7 +180,11 @@ impl ReorgHandler {
         producer_weight: u64,
         real_height: u64,
     ) {
-        let height = (real_height >= self.inc_i_147_activation_height).then_some(real_height);
+        let post_activation = real_height >= self.inc_i_147_activation_height;
+        if !post_activation {
+            bump(&self.counters.pre_activation_record_height);
+        }
+        let height = post_activation.then_some(real_height);
         self.record_block_internal(hash, prev_hash, producer_weight, true, height);
     }
 
@@ -154,6 +196,29 @@ impl ReorgHandler {
     /// compare the fork against itself (delta=0) and always reject the reorg.
     pub fn record_fork_block(&mut self, hash: Hash, prev_hash: Hash, producer_weight: u64) {
         self.record_block_internal(hash, prev_hash, producer_weight, false, None);
+    }
+
+    /// Record a fork block using its REAL chain height (INC-I-204 M5, Contradiction 2).
+    ///
+    /// Gated by `inc_i_204_fork_choice_activation_height` exactly as
+    /// [`Self::record_block_with_height`] is gated by INC-I-147: the gate input is the
+    /// REAL height argument, and below the gate the legacy derived height is stored so
+    /// the write is indistinguishable from [`Self::record_fork_block`].
+    pub fn record_fork_block_with_height(
+        &mut self,
+        hash: Hash,
+        prev_hash: Hash,
+        producer_weight: u64,
+        real_height: u64,
+    ) {
+        let post_activation = self.fork_choice_active(real_height);
+        if post_activation {
+            bump(&self.counters.record_fork_block_real_height);
+        } else {
+            bump(&self.counters.pre_activation_fork_choice);
+        }
+        let height = post_activation.then_some(real_height);
+        self.record_block_internal(hash, prev_hash, producer_weight, false, height);
     }
 
     /// `real_height`: the block's true chain height when the caller knows it
@@ -226,7 +291,19 @@ impl ReorgHandler {
     }
 
     /// Update the last finality height. Reorgs below this height are rejected.
+    ///
+    /// INC-I-204 M5 / INV-FINALITY-001 clause (1): at and above the fork-choice gate
+    /// this takes `max()`, so a checkpoint that moved DOWN (reachable whenever a
+    /// reorg, snap or backfill re-applies blocks below the tip) can no longer lower
+    /// the guard. Below the gate it stays the pre-M5 bare assignment.
     pub fn set_last_finality_height(&mut self, height: u64) {
+        if self.fork_choice_active(height) {
+            let next = self
+                .last_finality_height
+                .map_or(height, |cur| cur.max(height));
+            self.last_finality_height = Some(next);
+            return;
+        }
         self.last_finality_height = Some(height);
     }
 
@@ -239,7 +316,16 @@ impl ReorgHandler {
     /// finality marker so sync can recover. Backstop for INV-SYNC-001 violations
     /// (INC-I-081 Bug 4). The new_tip_height argument is the height of the
     /// post-rollback local tip.
+    ///
+    /// INC-I-204 M5 brief S12: above the fork-choice gate the mirror is no longer an
+    /// authority and this erasure route is a no-op — the successor
+    /// `ForkChoiceFinality::effective_finality` performs the same release by clamping
+    /// to the local tip, with no erasable state. The field and this method survive as
+    /// BYTES so the dormant window stays byte-identical; M6 deletes them.
     pub fn clear_finality_if_below_tip(&mut self, new_tip_height: u64) {
+        if self.fork_choice_active(new_tip_height) {
+            return;
+        }
         if let Some(finality) = self.last_finality_height {
             if new_tip_height < finality {
                 warn!(
@@ -249,326 +335,6 @@ impl ReorgHandler {
                 self.last_finality_height = None;
             }
         }
-    }
-
-    /// Compare two chains and return which is heavier
-    ///
-    /// Returns:
-    /// - `Ordering::Greater` if chain A is heavier
-    /// - `Ordering::Less` if chain B is heavier
-    /// - `Ordering::Equal` if they have equal weight
-    pub fn compare_chains(&self, chain_a_tip: &Hash, chain_b_tip: &Hash) -> std::cmp::Ordering {
-        let weight_a = self.chain_weight(chain_a_tip);
-        let weight_b = self.chain_weight(chain_b_tip);
-        weight_a.cmp(&weight_b)
-    }
-
-    /// Check if we should reorg to a new chain based on weight,
-    /// with deterministic tie-breaking by block hash.
-    ///
-    /// When two chains have equal weight (common on devnet where all
-    /// producers have weight=1), uses the lower block hash as a
-    /// tie-breaker to ensure all nodes converge to the same chain.
-    pub fn should_reorg_by_weight_with_tiebreak(&self, new_tip: &Hash, current_tip: &Hash) -> bool {
-        let new_weight = self.chain_weight(new_tip);
-        if new_weight > self.current_chain_weight {
-            return true;
-        }
-        if new_weight == self.current_chain_weight && new_weight > 0 {
-            // Deterministic tie-break: lower hash wins
-            return new_tip.as_bytes() < current_tip.as_bytes();
-        }
-        false
-    }
-
-    /// Check if a new block triggers a reorganization (legacy - no weight check)
-    ///
-    /// Prefer `check_reorg_weighted` for weight-based fork choice.
-    pub fn check_reorg(&self, block: &Block, current_tip: Hash) -> Option<Vec<Hash>> {
-        self.check_reorg_weighted(block, current_tip, 1)
-            .map(|result| result.rollback)
-    }
-
-    /// Check if a new block triggers a reorganization with weight-based fork choice
-    ///
-    /// This implements the "heaviest chain wins" rule. A reorg only happens if:
-    /// 1. The new block doesn't build on our current tip
-    /// 2. We can find a common ancestor
-    /// 3. The new chain would be heavier than our current chain
-    ///
-    /// # Arguments
-    /// * `block` - The new block being considered
-    /// * `current_tip` - Our current chain tip hash
-    /// * `block_producer_weight` - The producer's effective weight for this block
-    ///
-    /// # Returns
-    /// `Some(ReorgResult)` if we should reorg, `None` otherwise
-    pub fn check_reorg_weighted(
-        &self,
-        block: &Block,
-        current_tip: Hash,
-        block_producer_weight: u64,
-    ) -> Option<ReorgResult> {
-        let prev_hash = block.header.prev_hash;
-        let block_hash = block.hash();
-
-        // If block builds on current tip, no reorg needed
-        if prev_hash == current_tip {
-            return None;
-        }
-
-        // If we haven't seen the parent, we can't detect reorg
-        if !self.recent_blocks.contains(&prev_hash) {
-            debug!("Unknown parent {} for block {}", prev_hash, block_hash);
-            return None;
-        }
-
-        // Calculate the weight of the new chain (parent weight + this block)
-        let parent_weight = self.chain_weight(&prev_hash);
-        let new_chain_weight = parent_weight.saturating_add(block_producer_weight);
-
-        // Weight-based fork choice with deterministic tie-breaking.
-        // Strictly lighter chains are always rejected.
-        if new_chain_weight < self.current_chain_weight {
-            debug!(
-                "Ignoring fork: new_weight={} < current_weight={}",
-                new_chain_weight, self.current_chain_weight,
-            );
-            return None;
-        }
-
-        // Equal weight: deterministic tie-break by block hash (lower wins).
-        // INC-I-012: Without this, ALL equal-weight gossip blocks are rejected
-        // and fall through to slow fork recovery (serialized, 10s/tick). On
-        // young networks where all producers have weight=1, this creates fork
-        // storms that accumulate faster than recovery can resolve them.
-        // Deterministic hash tie-breaking ensures all nodes converge to the
-        // same chain without any recovery overhead.
-        if new_chain_weight == self.current_chain_weight {
-            if block_hash.as_bytes() >= current_tip.as_bytes() {
-                debug!(
-                    "Ignoring fork: equal weight={}, block hash >= current tip (deterministic tie-break)",
-                    new_chain_weight,
-                );
-                return None;
-            }
-            debug!(
-                "Equal-weight tie-break: block {} < tip {} — switching chain",
-                block_hash, current_tip,
-            );
-        }
-
-        // Find common ancestor and build rollback list
-        let mut to_rollback = Vec::new();
-        let mut current = current_tip;
-
-        for _ in 0..MAX_REORG_DEPTH {
-            if current == prev_hash {
-                // Found common ancestor
-                if to_rollback.is_empty() {
-                    return None; // No reorg needed
-                }
-
-                // Finality check: never reorg past the last finalized block
-                if let Some(finality_height) = self.last_finality_height {
-                    let ancestor_height = self
-                        .block_weights
-                        .get(&current)
-                        .map(|w| w.height)
-                        .unwrap_or(0);
-                    if ancestor_height < finality_height {
-                        warn!(
-                            "FINALITY: Rejecting reorg past finalized height {} (ancestor at {})",
-                            finality_height, ancestor_height
-                        );
-                        return None;
-                    }
-                }
-
-                let weight_delta = new_chain_weight as i64 - self.current_chain_weight as i64;
-
-                info!(
-                    "Reorg to heavier chain: rolling back {} blocks, weight_delta=+{}",
-                    to_rollback.len(),
-                    weight_delta
-                );
-
-                return Some(ReorgResult {
-                    rollback: to_rollback,
-                    common_ancestor: current,
-                    new_blocks: vec![block_hash],
-                    weight_delta,
-                });
-            }
-
-            if let Some(&parent) = self.block_parents.get(&current) {
-                to_rollback.push(current);
-                current = parent;
-            } else {
-                // Can't trace back further
-                break;
-            }
-        }
-
-        warn!(
-            "Could not find common ancestor for block {} (searched {} blocks)",
-            block.hash(),
-            MAX_REORG_DEPTH
-        );
-
-        None
-    }
-
-    /// Plan a reorganization from current chain to new chain
-    pub fn plan_reorg(
-        &self,
-        current_tip: Hash,
-        new_tip: Hash,
-        get_parent: impl Fn(&Hash) -> Option<Hash>,
-        get_height: impl Fn(&Hash) -> Option<u64>,
-    ) -> Option<ReorgResult> {
-        // Build ancestor chain for current tip
-        let mut current_chain = Vec::new();
-        let mut hash = current_tip;
-        let mut current_ancestors = HashSet::new();
-
-        for _ in 0..MAX_REORG_DEPTH {
-            current_ancestors.insert(hash);
-            current_chain.push(hash);
-
-            if let Some(parent) = self
-                .block_parents
-                .get(&hash)
-                .copied()
-                .or_else(|| get_parent(&hash))
-            {
-                if parent.is_zero() {
-                    // Include genesis in ancestor set so forks sharing
-                    // only genesis as common ancestor can be resolved
-                    current_ancestors.insert(parent);
-                    break;
-                }
-                hash = parent;
-            } else {
-                break;
-            }
-        }
-
-        // Build ancestor chain for new tip and find common ancestor
-        let mut new_chain = Vec::new();
-        let mut hash = new_tip;
-        let mut common_ancestor = None;
-
-        for _ in 0..MAX_REORG_DEPTH {
-            if current_ancestors.contains(&hash) {
-                common_ancestor = Some(hash);
-                break;
-            }
-
-            new_chain.push(hash);
-
-            if let Some(parent) = self
-                .block_parents
-                .get(&hash)
-                .copied()
-                .or_else(|| get_parent(&hash))
-            {
-                if parent.is_zero() {
-                    // Check if genesis is the common ancestor
-                    if current_ancestors.contains(&parent) {
-                        common_ancestor = Some(parent);
-                    }
-                    break;
-                }
-                hash = parent;
-            } else {
-                break;
-            }
-        }
-
-        let common_ancestor = common_ancestor?;
-
-        // Finality check: never reorg past the last finalized block.
-        // This mirrors the check in check_reorg_weighted() — without it,
-        // fork recovery falls through to plan_reorg() and bypasses finality.
-        if let Some(finality_height) = self.last_finality_height {
-            // INV-SYNC-002 (INC-I-081 Bug 2): block_weights is LRU-bounded and is
-            // pruned during rollback. Falling back to height=0 silently rejects
-            // every reorg whose finality is non-zero. Consult the caller-provided
-            // height lookup (typically backed by block_store.get_height_by_hash)
-            // before declining.
-            // INC-I-147 D6: `BlockWeight.height` is a PER-PROCESS counter, not a chain
-            // height. `block_weights` is empty at process start, so the first block
-            // recorded always gets height 1 and every later block counts up from there:
-            //
-            //     H_syn = H_real - I,  I = (height of first recorded block) - 1
-            //
-            // `finality_height` below is a REAL chain height (set from `check_finality`).
-            // Comparing the two mixes units, and on any restarted or snap-synced node
-            // (I > finality lag) the guard can never pass — no reorg is ever approved and
-            // the node is permanently wedged on whatever fork it holds. MEASURED
-            // 2026-07-31: the same block at real height 57067 was recorded as 267 by the
-            // seed (init 56800) and 25897 by n7 (init 31170), 5.6 ms apart.
-            //
-            // `e25a9a97` guarded only the `None` arm of this lookup; the `Some` arm
-            // shadows the correct `get_height` result with the wrong-unit value.
-            let real_height = get_height(&common_ancestor);
-            let synthetic_height = self.block_weights.get(&common_ancestor).map(|w| w.height);
-
-            // Gate on the ancestor's REAL height — a genuine chain height. Deliberately
-            // NOT `finality_height`: the guard only runs when finality is `Some`, but a
-            // node that has never finalized would then never evaluate the gate at all.
-            let post_activation =
-                real_height.is_some_and(|h| h >= self.inc_i_147_activation_height);
-
-            let ancestor_height = if post_activation {
-                // Post-activation: the real chain height is authoritative.
-                real_height.expect("post_activation implies real_height.is_some()")
-            } else {
-                // Pre-activation: byte-identical to the `e25a9a97` ordering.
-                match synthetic_height {
-                    Some(h) => h,
-                    None => match real_height {
-                        Some(h) => h,
-                        None => {
-                            warn!(
-                                "[ANCESTOR_UNKNOWN] plan_reorg cannot resolve height for common_ancestor={} (absent from block_weights and get_height) — declining reorg",
-                                common_ancestor
-                            );
-                            return None;
-                        }
-                    },
-                }
-            };
-            if ancestor_height < finality_height {
-                warn!(
-                    "FINALITY: plan_reorg rejecting reorg past finalized height {} (ancestor at {})",
-                    finality_height, ancestor_height
-                );
-                return None;
-            }
-        }
-
-        // Find rollback blocks (from current tip to common ancestor)
-        let rollback: Vec<Hash> = current_chain
-            .into_iter()
-            .take_while(|h| h != &common_ancestor)
-            .collect();
-
-        // New blocks are in reverse order (need to apply from ancestor to tip)
-        new_chain.reverse();
-
-        // Calculate weight delta
-        let current_weight = self.chain_weight(&current_tip);
-        let new_weight = self.chain_weight(&new_tip);
-        let weight_delta = new_weight as i64 - current_weight as i64;
-
-        Some(ReorgResult {
-            rollback,
-            common_ancestor,
-            new_blocks: new_chain,
-            weight_delta,
-        })
     }
 
     /// Clear all tracked blocks
@@ -603,6 +369,11 @@ impl ReorgHandler {
         self.block_parents.get(hash).copied()
     }
 
+    /// INC-I-204 M0: snapshot of this handler's observation counters.
+    pub fn observations(&self) -> ReorgObservations {
+        self.counters.snapshot()
+    }
+
     /// Get number of tracked blocks
     pub fn tracked_count(&self) -> usize {
         self.recent_blocks.len()
@@ -620,3 +391,18 @@ mod tests;
 
 #[cfg(test)]
 mod tests_inc_i_147;
+
+#[cfg(test)]
+mod tests_m5_common;
+
+#[cfg(test)]
+mod tests_m5_fork_choice;
+
+#[cfg(test)]
+mod tests_m5_finality_authority;
+
+#[cfg(test)]
+mod tests_m5_dormant_window;
+
+#[cfg(test)]
+mod tests_m6_mirror_pin;

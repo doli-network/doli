@@ -119,9 +119,13 @@ fn class1_n4_wedge_parks_no_snap_below_gap_50() {
     );
 }
 
-/// Class 1b (REQ-SNAP-002): evidence-gated snap only at gap≥50 + empties≥10 + stale.
+/// SUPERSEDED by INC-I-204 M6 (D1, REQ-FORK-004). This pinned the
+/// `deep_fork_confirmed` trigger (empties≥10 + stale + gap≥50) escalating to
+/// `SnapSync`. M6 deletes that trigger — snap admission is `gap >= SNAP_SYNC_GAP_MIN`
+/// only — so gap=55 now lands on the non-lossy `HeaderFirstSync` rung. Reversed in
+/// place so the behaviour change is visible in the diff.
 #[test]
-fn class1_evidence_gated_snap_only_at_gap_50_plus_empties() {
+fn class1_deep_fork_evidence_at_gap_55_no_longer_admits_snap() {
     let mut coord = RecoveryCoordinator::new();
     for _ in 0..10 {
         coord.report(RecoveryEvidence::EmptyHeaders {
@@ -138,13 +142,14 @@ fn class1_evidence_gated_snap_only_at_gap_50_plus_empties() {
 
     let action = coord.classify(&c);
 
-    // O1/IP2: deep_fork_confirmed = empty≥10 && stale≥300 && gap≥50 → Rule 2 SnapSync.
+    // O1/IP2 (M6): deep_fork_confirmed is deleted; large_gap = 55 >= 500 is FALSE,
+    // so Rule 2 does not fire and Rule 3's medium_gap lands HeaderFirstSync.
     assert_eq!(
         action,
-        RecoveryAction::SnapSync,
-        "Class 1: corroborated evidence at gap={} (≥{}) must escalate to SnapSync",
+        RecoveryAction::HeaderFirstSync,
+        "INC-I-204 M6 (D1): fork evidence at gap={} (< {}) must NOT buy a snapshot",
         c.gap(),
-        thresholds::MINOR_FORK_GAP_MAX
+        thresholds::SNAP_SYNC_GAP_MIN
     );
 }
 

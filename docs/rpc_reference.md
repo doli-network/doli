@@ -50,6 +50,8 @@ This document describes the DOLI node JSON-RPC API.
 | **Guardian** | `resumeProduction` | Implemented |
 | **Guardian** | `createCheckpoint` | Implemented |
 | **Guardian** | `getGuardianStatus` | Implemented |
+| **Guardian** | `forceReorgTo` | Implemented — admin-gated, single-shot (INC-I-204 M4.1) |
+| **Chain** | `getForkChoiceVersion` | Implemented — read-only fork-choice readiness probe (INC-I-204 M5) |
 | **Storage** | `pruneBlocks` | Implemented |
 | **Storage** | `getStorageInfo` | Implemented |
 | **Oracle** (Phase 2.1) | `getOraclePrice` | Implemented — frozen pre-activation |
@@ -2166,6 +2168,90 @@ Each auto-checkpoint writes a `health.json` file:
 curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"getGuardianStatus","params":[],"id":1}'
+```
+
+### `forceReorgTo`
+
+Arm a single-shot, audited reorganization onto the branch tip named by the operator. This is the replacement for the unaudited poison-rollback bypass (LB-4) and is the only supported way out of a `tip == finality` wedge that does not destroy history.
+
+**Admin-gated.** `forceReorgTo` is in `ADMIN_METHODS` and requires the bearer token (loopback and RFC-1918 callers are auto-trusted, as for `pauseProduction`).
+
+The call does not perform a reorg. It arms a directive that the node evaluates on its next periodic tick. The directive is:
+
+- **memory-only** — never written to the state DB, the config, or any file. A restart erases it.
+- **expiring** — it dies after `FORCE_REORG_TTL_SECS` (300s) of wall clock, or once the local tip has advanced more than `FORCE_REORG_MAX_HEIGHT_SPAN` (50) blocks past the height it was armed at.
+- **single-shot** — spent on the first evaluation that reaches a decision. Arming again replaces the pending directive; there is never more than one.
+- **corroboration-gated** — refused unless the DISTINCT block producers of the target branch hold at least two thirds of the local `ProducerSet` weight. The evidence is the branch's own signed block headers joined to the local producer set; no peer-advertised quantity is consulted.
+- **eligibility-gated** — refused unless every block on the target branch was produced by its deterministically-scheduled slot leader.
+
+It crosses the finality **marker** (`ReorgHandler.last_finality_height`) under audit — this is the capability the wedge escape exists for, and the reason the call is admin-only and counted. It never mutates the `FinalityTracker` (the monotone record of what the node finalized), never invokes snap sync, and never discards the losing branch's block bodies.
+
+**Parameters:** `{ "hash": "<64 hex characters>" }` — the branch tip to adopt.
+
+**Response:**
+```json
+{
+    "status": "armed",
+    "target": "9f2c...e41a",
+    "ttlSeconds": 300,
+    "maxHeightSpan": 50,
+    "message": "Single-shot force reorg armed. ..."
+}
+```
+
+A malformed or missing hash returns `invalid_params` (-32602) and arms nothing.
+
+**Example:**
+```bash
+curl -X POST http://127.0.0.1:8500 \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $DOLI_ADMIN_TOKEN" \
+    -d '{"jsonrpc":"2.0","method":"forceReorgTo","params":{"hash":"<branch tip hash>"},"id":1}'
+```
+
+**Observing the outcome.** Arming is not the result. Read the decision from the
+`doli_force_reorg_outcomes_total{outcome=..}` counter, or from the `[FORCE_REORG]` log lines. Outcomes:
+
+| Outcome | Meaning | Directive |
+|---|---|---|
+| `executed` | The node landed on the named branch tip | spent |
+| `same_branch` | The target is already on our canonical chain | spent |
+| `unknown_target` | The node holds no body for that hash yet | retained (arm-ahead is supported) |
+| `uncorroborated` | Branch producers hold less than 2/3 of local producer weight | spent |
+| `ineligible` | A branch block was produced by an unscheduled producer | spent |
+| `plan_refused` | No common ancestor, or the reorg depth bound was hit | spent |
+| `reorg_did_not_land` | The reorg was attempted and the tip did not move (e.g. a missing intermediate body) | spent |
+| `expired` | The TTL or the height span ended the directive before it decided | spent |
+
+---
+
+### `getForkChoiceVersion`
+
+Report which fork-choice rule this node runs at its current tip. Read-only, not
+admin-gated. This is the fleet-readiness probe: poll every node BEFORE pinning
+`inc_i_204_fork_choice_activation_height` on a network, and confirm every one of them
+answers with a `result` (an old binary answers `method_not_found`).
+
+**Parameters:** none.
+
+**Returns:**
+
+| Field | Meaning |
+|---|---|
+| `version` | `1` = the pre-M5 rules; `2` = the single `fork_choice` authority |
+| `activationHeight` | This node's compiled/overridden gate. `u64::MAX` (18446744073709551615) means FROZEN |
+| `active` | `true` iff `localHeight >= activationHeight` |
+| `localHeight` | The node's applied tip height |
+
+Mainnet and testnet ship at `u64::MAX`, so every live node answers
+`version: 1, active: false` until a height is pinned by an explicit user decision.
+Devnet activates from genesis.
+
+**Example:**
+```bash
+curl -s -X POST http://127.0.0.1:8500 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getForkChoiceVersion","params":[],"id":1}'
 ```
 
 ---

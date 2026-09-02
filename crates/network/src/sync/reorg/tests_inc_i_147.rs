@@ -153,6 +153,7 @@ fn plan_reorg_uses_real_ancestor_height_not_per_process_counter() {
         f.fork_tip,
         |h| f.parents.get(h).copied(),
         |h| f.heights.get(h).copied(),
+        crate::sync::ForkChoiceFinality::default(),
     );
 
     assert!(

@@ -287,12 +287,15 @@ sudo systemctl start doli-node   # snap-syncs from a healthy peer
 Restoring a checkpoint taken **before** the rebuild works too — see
 [disaster-recovery.md](./disaster-recovery.md).
 
-**A completed snap sync also clears it.** If the node reaches snap sync on its own — the likely
-outcome, since an emptied UTXO set fails every subsequent block apply and that is exactly the
-stuck-fork condition that escalates to snap sync — the install replaces the whole set with a
-root-verified snapshot and disarms the marker automatically (INC-I-156 / AUDIT-P2-101). A snap
-sync that is *rejected* (root mismatch) installs nothing and leaves the halt in place, which is
-correct.
+**A completed snap sync also clears it**, but the node will no longer reach one on its own from
+a fork. Since INC-I-204 M6 the recovery classifier admits snap sync only at
+`gap >= SNAP_SYNC_GAP_MIN` (500 blocks behind); no amount of fork evidence, apply failures or
+empty-header responses admits it below that gap. A corroborated fork now terminates in
+`[WEDGED] reason=...` — non-lossy, the node keeps its block history — and the operator exit is
+the audited `forceReorgTo` RPC, not a snap. If a snap sync does occur (genuine behind-ness, a
+bootstrap, or the operator flag), the install replaces the whole set with a root-verified
+snapshot and disarms the marker automatically (INC-I-156 / AUDIT-P2-101). A snap sync that is
+*rejected* (root mismatch) installs nothing and leaves the halt in place, which is correct.
 
 **Do not** delete the marker by hand to silence the message. It is refusing production,
 snapshot service and state-root service precisely because the ledger this node would produce
@@ -1021,7 +1024,7 @@ grep -i "produced\|block" /var/log/doli-node.log | tail -20
 
 When a node falls out of sync or produces a fork:
 
-1. **rollback_one_block()** — first option on all networks. Uses undo data (O(1)) if available, rebuild-from-genesis as fallback.
+1. **rollback_one_block(authority)** — first option on all networks. Uses undo data (O(1)) if available, rebuild-from-genesis as fallback. The caller must name its authority: recovery paths pass `RollbackAuthority::CoordinatorApproved { depth }` and are unguarded; the production poison arm passes `RollbackAuthority::ProductionSelfApply { failed_height }` and is refused with `RefusedNotAuthorized` unless the failed block is the local tip (INC-I-204 M4.2).
 2. **Snap sync** — only as fallback if rollback fails repeatedly. Quorum: `max(3, tip_eligible_peers/2 + 1)`.
 3. **Genesis mismatch peers** — get 1-hour silent cooldown (won't attempt sync from them).
 

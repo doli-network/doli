@@ -92,10 +92,7 @@ impl SyncManager {
                 // Regime-split recovery (INC-I-139 DC-3 removed the old snap-first redirect
                 // that zeroed snap.attempts and bypassed the 3-attempt limiter):
                 //   gap <= 3       -> gossip timing, wait for gossip (INC-I-026)
-                //   4 <= gap < 50  -> minor-fork park, await G3/coordinator ShallowRollback
-                //   gap >= 50      -> gated emergency funnel: request_genesis_resync(
-                //                     GenesisFallbackEmptyHeaders), which respects Gates 2/3/5
-                //                     (incl. the 3-attempt snap limiter).
+                //   gap > 3        -> park, await the coordinator (INC-I-204 M6)
                 if self.fork.consecutive_empty_headers >= 10 {
                     let best_height = self
                         .peers
@@ -116,37 +113,18 @@ impl SyncManager {
                         self.set_state(SyncState::Idle, "small_gap_wait_gossip");
                         return None;
                     }
-                    // INC-I-138 D2+D4 — Minor-fork regime guard (gap 4..MINOR_FORK_GAP_MAX).
-                    //
-                    // Naive-fix trap: removing the D2 reset (periodic.rs:712) allows the counter
-                    // to accumulate to 10, but at gap=28 the fallthrough below fires
-                    // GenesisFallbackEmptyHeaders — wiping state for a gap that ShallowRollback(1)
-                    // recovers in seconds. Regime split:
-                    //   gap ≤ 3           → gossip timing (INC-I-026, above)
-                    //   4 ≤ gap < 50      → minor-fork; G3 stuck_fork (cleanup.rs:637 ≥ 3) →
-                    //                       coordinator Rule 1b → ShallowRollback. NOT genesis-resync.
-                    //   gap ≥ 50 (snap.t) → header-first, snap, or genesis-resync remain valid.
-                    //
-                    // Both D2 and D4 must be co-deployed: D2 alone allows the counter to reach 10
-                    // at gap=28, which re-enters this block. D4 prevents gap-blind SnapSync via the
-                    // recovery coordinator. This guard prevents genesis-resync at gap=28.
-                    if gap > 3 && gap < super::super::recovery::thresholds::MINOR_FORK_GAP_MAX {
-                        debug!(
-                            "Minor-fork regime (gap={}, empties={}): awaiting G3/coordinator \
-                             ShallowRollback — skipping genesis-resync",
-                            gap, self.fork.consecutive_empty_headers
-                        );
-                        self.set_state(SyncState::Idle, "minor_fork_await_g3_coordinator");
-                        return None;
-                    }
-                    info!(
-                        "Genesis fallback: {} consecutive empty headers — requesting full resync",
-                        self.fork.consecutive_empty_headers
+                    // INC-I-204 M6 (REQ-FORK-004): the gap >= 50 fallthrough to
+                    // request_genesis_resync(GenesisFallbackEmptyHeaders) is deleted; the
+                    // park now covers every gap > 3. Behind-ness is decided only by the
+                    // recovery coordinator (Rule 2 still snaps at gap >= 500).
+                    // INC-I-138 D2 co-deploy still applies: this arm must not reset
+                    // consecutive_empty_headers (INV-SYNC-011).
+                    debug!(
+                        "Fork/behind regime (gap={}, empties={}): awaiting coordinator — \
+                         no dispatcher-side genesis resync",
+                        gap, self.fork.consecutive_empty_headers
                     );
-                    self.request_genesis_resync(
-                        super::super::RecoveryReason::GenesisFallbackEmptyHeaders,
-                    );
-                    self.set_state(SyncState::Idle, "genesis_resync_fallback");
+                    self.set_state(SyncState::Idle, "minor_fork_await_g3_coordinator");
                     return None;
                 }
 

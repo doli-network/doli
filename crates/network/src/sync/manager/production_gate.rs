@@ -511,8 +511,20 @@ impl SyncManager {
 
     /// Finalize the best pending block if it has BOTH 67% weight and a
     /// locally-applied descendant at depth >= CONFIRMATION_DEPTH.
+    ///
+    /// INC-I-204 M5: `enforce_monotonic` is gated on
+    /// `inc_i_204_fork_choice_activation_height` — above it `check_finality` may not
+    /// pick a candidate at or below `last_finalized`, and `set_last_finality_height`
+    /// takes `max()`. INV-FINALITY-001 clause (1) requires both and neither was
+    /// enforced. `checkpoint.block_hash` is no longer discarded: it is the ancestry
+    /// guard's input, read back through `fork_choice_finality()`.
     fn finalize_if_ready(&mut self, applied_tip_height: u64) {
-        if let Some(checkpoint) = self.finality_tracker.check_finality(applied_tip_height) {
+        let enforce_monotonic =
+            applied_tip_height >= self.reorg_handler.fork_choice_activation_height();
+        if let Some(checkpoint) = self
+            .finality_tracker
+            .check_finality(applied_tip_height, enforce_monotonic)
+        {
             info!(
                 "FINALITY: Block {} finalized at height {} (attestation {}/{})",
                 checkpoint.block_hash,
@@ -752,18 +764,11 @@ impl SyncManager {
             );
             return false;
         }
-        if self.snap.threshold == u64::MAX && is_emergency {
-            warn!(
-                "[RECOVERY] Enabling snap sync for emergency recovery \
-                 (reason: {:?}). Node cannot recover via header-first.",
-                reason
-            );
-            // Temporarily enable snap sync for this recovery via the explicit
-            // enable sentinel (RC-2). Bit-for-bit equivalent to the former
-            // `threshold = 10`: post-RC-1 no code reads the value as a gap floor,
-            // so "enabled" is the only observable effect (< u64::MAX).
-            self.enable_snap_sync();
-        }
+        // INC-I-204 M6 (REQ-FORK-004): the emergency no longer calls enable_snap_sync().
+        // The request stays HONORED (INC-I-139 anti-deadlock, above), but threshold stays
+        // u64::MAX, so decision.rs:178 snap_allowed is false and the needs_genesis_resync
+        // flag cannot admit a snapshot install (decision.rs:198) — recovery stays
+        // header-first, which is what --no-snap-sync promises.
 
         // Gate 5: Snap attempt limit
         if self.snap.attempts >= 3 {

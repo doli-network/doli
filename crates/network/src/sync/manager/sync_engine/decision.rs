@@ -96,16 +96,31 @@ impl SyncManager {
             return None;
         }
 
-        // Distribute load: pick a pseudo-random eligible peer seeded by local_height
-        // AND sync_epoch. Without sync_epoch, all nodes at the same height compute
-        // the identical index — 7 nodes at h=1 all hammer the same peer, saturating
-        // its rate limit (INC-I-017). sync_epoch varies per node (incremented each
-        // sync cycle), breaking the thundering herd.
+        // INC-I-204 M2: prefer peers whose last classifiable status put them on OUR
+        // chain. Eligible peers are ahead of us and usually unclassifiable, so an
+        // empty preferred set MUST fall back to the full eligible set — a strict
+        // filter would leave a wedged node syncing from nobody (trap T4).
+        let preferred: Vec<PeerId> = eligible
+            .iter()
+            .copied()
+            .filter(|pid| self.is_on_our_branch(pid))
+            .collect();
+        let chosen_set = if preferred.is_empty() {
+            &eligible
+        } else {
+            &preferred
+        };
+
+        // Distribute load: pick a pseudo-random peer from the chosen set, seeded by
+        // local_height AND sync_epoch. Without sync_epoch, all nodes at the same
+        // height compute the identical index — 7 nodes at h=1 all hammer the same
+        // peer, saturating its rate limit (INC-I-017). sync_epoch varies per node
+        // (incremented each sync cycle), breaking the thundering herd.
         let idx = (self.local_height as usize)
             .wrapping_mul(6364136223846793005)
             .wrapping_add(self.pipeline.sync_epoch as usize)
-            % eligible.len();
-        Some(eligible[idx])
+            % chosen_set.len();
+        Some(chosen_set[idx])
     }
 
     /// Start the sync process.

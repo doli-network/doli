@@ -115,7 +115,13 @@ fn test_reorg_weight_saturation_deterministic() {
     let _hash_b1 = block_b1.hash();
 
     // Both chains have u64::MAX accumulated weight (saturated)
-    let result = handler.check_reorg_weighted(&block_b1, hash_a1, u64::MAX);
+    let result = handler.check_reorg_weighted(
+        &block_b1,
+        hash_a1,
+        u64::MAX,
+        |_| None,
+        crate::sync::ForkChoiceFinality::default(),
+    );
 
     // BUG DOCUMENTED: Under weight saturation, the tie-break path is entered
     // but the comparison is against the PARENT's accumulated weight (u64::MAX)
@@ -150,7 +156,13 @@ fn test_reorg_handler_eviction_loses_ancestor() {
     let fork_block = make_block_with_producer(hashes[3], 4, 42);
 
     // The handler can't find the common ancestor because block 3 was evicted
-    let result = handler.check_reorg_weighted(&fork_block, prev, 100);
+    let result = handler.check_reorg_weighted(
+        &fork_block,
+        prev,
+        100,
+        |_| None,
+        crate::sync::ForkChoiceFinality::default(),
+    );
 
     // FINDING: This returns None even though the fork is heavier.
     // The handler silently ignores the fork because it can't trace back.
@@ -194,7 +206,13 @@ fn test_reorg_finality_prevents_deep_reorg() {
 
     // Try to reorg from genesis (below finality) with a heavier fork
     let fork_block = make_block_with_producer(hash_a, 2, 99);
-    let result = handler.check_reorg_weighted(&fork_block, hash_d, 1000);
+    let result = handler.check_reorg_weighted(
+        &fork_block,
+        hash_d,
+        1000,
+        |_| None,
+        crate::sync::ForkChoiceFinality::default(),
+    );
 
     // Must be rejected — common ancestor (hash_a at height 1) is below finality (height 2)
     assert!(
@@ -235,7 +253,13 @@ fn test_plan_reorg_finality_guard() {
     handler.set_last_finality_height(2);
 
     // plan_reorg should refuse because common ancestor is genesis (height 0) < finality (2)
-    let result = handler.plan_reorg(tip, fork_tip, |_| None, |_| None);
+    let result = handler.plan_reorg(
+        tip,
+        fork_tip,
+        |_| None,
+        |_| None,
+        crate::sync::ForkChoiceFinality::default(),
+    );
     assert!(
         result.is_none(),
         "plan_reorg must reject reorg past finalized height"
@@ -284,7 +308,13 @@ fn test_reorg_weight_delta_no_overflow() {
 
     // The weight_delta computation casts u64 to i64.
     // Fork is lighter — should NOT reorg regardless of overflow behavior.
-    let result = handler.check_reorg_weighted(&fork, hash_b, 1);
+    let result = handler.check_reorg_weighted(
+        &fork,
+        hash_b,
+        1,
+        |_| None,
+        crate::sync::ForkChoiceFinality::default(),
+    );
     assert!(
         result.is_none(),
         "Lighter fork should always be rejected even with large weights"
@@ -731,6 +761,7 @@ fn test_plan_reorg_circular_parent_no_hang() {
             }
         },
         |_| None,
+        crate::sync::ForkChoiceFinality::default(),
     );
 
     // Must not hang. Should return None.
@@ -763,7 +794,13 @@ fn test_plan_reorg_deep_fork_genesis_boundary_bug() {
     let fork_tip = prev;
 
     // Fixed: plan_reorg now includes genesis in ancestor set
-    let result = handler.plan_reorg(main_tip, fork_tip, |_| None, |_| None);
+    let result = handler.plan_reorg(
+        main_tip,
+        fork_tip,
+        |_| None,
+        |_| None,
+        crate::sync::ForkChoiceFinality::default(),
+    );
     assert!(
         result.is_some(),
         "plan_reorg should find genesis as common ancestor"
@@ -793,7 +830,13 @@ fn test_deterministic_tiebreak_genesis_fork_bug() {
 
     // With genesis pre-seeded, the handler can find the parent and
     // reach the weight comparison. Use weight=2 to ensure it's heavier.
-    let result = handler.check_reorg_weighted(&block2, hash1, 2);
+    let result = handler.check_reorg_weighted(
+        &block2,
+        hash1,
+        2,
+        |_| None,
+        crate::sync::ForkChoiceFinality::default(),
+    );
     assert!(
         result.is_some(),
         "check_reorg_weighted should detect heavier genesis forks now that genesis is pre-seeded"

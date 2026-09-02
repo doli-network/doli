@@ -457,6 +457,17 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
                 defaults.inc_i_147_activation_height,
             )
         },
+        // INC-I-204 M5 single fork-choice authority (#23). Mainnet LOCKED — an
+        // .env override would let one operator arm a different branch-selection
+        // rule than the rest of the network and fork itself off it.
+        inc_i_204_fork_choice_activation_height: if is_mainnet {
+            defaults.inc_i_204_fork_choice_activation_height
+        } else {
+            env_parse(
+                "DOLI_INC_I_204_FORK_CHOICE_ACTIVATION_HEIGHT",
+                defaults.inc_i_204_fork_choice_activation_height,
+            )
+        },
         // INC-I-172 M2 (#20). Computed above so #22 can be ordered against it.
         maintainer_derivation_activation_height,
         // INC-I-173 state-only fee gate (TxType::allows_empty_io authority).

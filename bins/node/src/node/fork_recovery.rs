@@ -19,17 +19,32 @@ impl Node {
         let current_height = self.chain_state.read().await.best_height;
         let current_tip = self.chain_state.read().await.best_hash;
 
-        // 1. Record fork blocks in reorg_handler with weights (forward order for correct accumulation)
+        // 1. Record fork blocks in reorg_handler with weights (forward order for correct accumulation).
+        // INC-I-204 M5: the REAL chain height of each fork block is the connection
+        // point's stored height plus its offset in the recovered chain. `BlockHeader`
+        // carries no height, so it is derived from the block store — a chain-derived
+        // height, never the per-process `BlockWeight` counter (INV-SYNC-012).
+        let fork_base_height = self
+            .block_store
+            .get_height_by_hash(&recovery.connection_point)
+            .ok()
+            .flatten()
+            .unwrap_or(current_height);
         let mut last_block_weight = 1u64;
         {
             let producers = self.producer_set.read().await;
             let mut sync = self.sync_manager.write().await;
-            for block in &recovery.blocks {
+            for (offset, block) in recovery.blocks.iter().enumerate() {
                 let weight = producers
                     .get_by_pubkey(&block.header.producer)
                     .map(|p| p.effective_weight(current_height + 1))
                     .unwrap_or(1);
-                sync.record_fork_block_weight(block.hash(), block.header.prev_hash, weight);
+                sync.record_fork_block_weight(
+                    block.hash(),
+                    block.header.prev_hash,
+                    weight,
+                    fork_base_height.saturating_add(offset as u64 + 1),
+                );
                 last_block_weight = weight;
             }
         }
@@ -46,8 +61,15 @@ impl Node {
         let fork_tip = recovery.blocks.last().unwrap();
         let simple_reorg = {
             let sync = self.sync_manager.read().await;
-            sync.reorg_handler()
-                .check_reorg_weighted(fork_tip, current_tip, last_block_weight)
+            let store = &self.block_store;
+            let finality = sync.fork_choice_finality();
+            sync.reorg_handler().check_reorg_weighted(
+                fork_tip,
+                current_tip,
+                last_block_weight,
+                |h| store.get_height_by_hash(h).ok().flatten(),
+                finality,
+            )
         };
 
         if let Some(result) = simple_reorg {
@@ -99,6 +121,7 @@ impl Node {
                 fork_tip_hash,
                 |hash| store.get_header(hash).ok().flatten().map(|h| h.prev_hash),
                 |hash| store.get_height_by_hash(hash).ok().flatten(),
+                sync.fork_choice_finality(),
             )
         };
 

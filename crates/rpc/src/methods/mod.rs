@@ -14,6 +14,8 @@
 //! - `stats`: chain stats, debug endpoints, mempool transactions
 //! - `schedule`: slot and producer scheduling, attestation stats
 //! - `guardian`: seed guardian (production halt, checkpoints, status)
+//! - `fork_choice_version`: `getForkChoiceVersion` readiness probe (INC-I-204 M5)
+//! - `fork_escape`: the audited `forceReorgTo` operator wedge escape (INC-I-204 M4.1)
 
 mod backfill;
 mod balance;
@@ -21,6 +23,8 @@ mod block;
 mod context;
 mod defi_health;
 mod dispatch;
+mod fork_choice_version;
+mod fork_escape;
 mod governance;
 mod guardian;
 mod history;

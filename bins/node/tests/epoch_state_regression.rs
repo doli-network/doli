@@ -14,6 +14,7 @@ use doli_core::consensus::ConsensusParams;
 use doli_core::validation::ValidationMode;
 use doli_core::{Block, BlockHeader, EpochState, Transaction};
 use doli_node::node::Node;
+use doli_node::node::RollbackOutcome;
 use tempfile::TempDir;
 use vdf::{VdfOutput, VdfProof};
 
@@ -259,7 +260,11 @@ async fn test_undo_data_roundtrip_preserves_epoch_state() {
     );
 
     // Rollback block 2
-    let rolled_back = node.rollback_one_block().await.expect("rollback failed");
+    let rolled_back = node
+        .rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved { depth: 1 })
+        .await
+        .expect("rollback failed")
+        == RollbackOutcome::RolledBack;
     assert!(rolled_back, "rollback should succeed");
 
     // O1+O4: epoch_state hash matches pre-block-2 state
@@ -436,7 +441,11 @@ async fn test_rollback_across_epoch_boundary() {
     );
 
     // Rollback the boundary block
-    let rolled_back = node.rollback_one_block().await.expect("rollback failed");
+    let rolled_back = node
+        .rollback_one_block(doli_node::node::RollbackAuthority::CoordinatorApproved { depth: 1 })
+        .await
+        .expect("rollback failed")
+        == RollbackOutcome::RolledBack;
     assert!(rolled_back);
 
     // O1: epoch reverts
