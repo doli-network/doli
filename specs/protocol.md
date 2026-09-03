@@ -552,10 +552,35 @@ add_bond_tx = {
     error code `ADDBOND_CAP_EXCEEDED`), before any state mutation, so no Bond
     UTXOs are created. Unlike the INC-I-078 DelegateBond cap (silent skip-in-
     block — DelegateBond has no outputs to orphan), AddBond must reject the
-    block because its Bond outputs are real UTXOs. Mainnet AH = `231_830`
-    (co-deployed with the INC-I-078 bundle); testnet `0`; devnet `u64::MAX`.
-    No `CURRENT_PROTOCOL_VERSION` bump (EpochState unchanged); no
-    `HardForkSchedule` entry (pure validation rule); rolling-deploy safe.
+    block because its Bond outputs are real UTXOs. Mainnet AH = `0`, testnet
+    `0`, devnet `u64::MAX` (`crates/core/src/network_params/defaults.rs:160,449,711`
+    — code is SoT). Mainnet was re-pinned from `254_344` to `0` by the
+    2026-07-08 fresh-genesis reset (`61218e90`, "all AH→0"), so the cap has been
+    enforced from block 0 of the current mainnet chain and the pre-activation
+    clip path is unreachable there. No `CURRENT_PROTOCOL_VERSION` bump
+    (EpochState unchanged); no `HardForkSchedule` entry (pure validation rule);
+    rolling-deploy safe.
+  - **INC-I-203 — node-local builder filter (not consensus).** The block builder
+    also evaluates `check_addbond_cap` during selection
+    (`bins/node/src/node/production/withdrawal_holdings.rs`, via
+    `mempool::addbond_cap::addbond_cap_verdict`) and SKIPS an AddBond that would
+    make the assembled block fail the gate above, logging the skip at `warn!`.
+    This is builder policy, not a consensus rule. The builder carries the same
+    block-local `in_block` tally the gate does, so its expression is the gate's
+    expression term for term and it cannot drop a transaction that would have
+    sat in the valid block it is assembling. Mempool `add_transaction` and
+    `revalidate` call the SAME `addbond_cap_verdict` (via
+    `Mempool::addbond_holdings_verdict`, `crates/mempool/src/pool.rs`) with the
+    `in_block` term at 0, because a mempool has no block context: an over-cap
+    AddBond is refused at submission with `MempoolError::InvalidTransaction`
+    carrying `[ADDBOND_CAP_EXCEEDED]`, and one that BECOMES over-cap while
+    resident is evicted on the next revalidate so its inputs are released back
+    to the submitter. Dropping the `in_block` term can only lower the total, so
+    admission rejects a strict subset of what the gate rejects and can never
+    refuse a transaction a valid block could carry.
+    All three are gated on the same `addbond_cap_enforcement_activation_height`,
+    and when no holdings source can answer they fail OPEN (pack/admit, as
+    before).
 
 ### 3.13 WithdrawalRequest Transaction
 

@@ -316,6 +316,7 @@ Existing gates (mainnet values):
 | `policy.rs` | Fee and size policies per network |
 | `pending_registrations.rs` | Pending producer-registration key derivation (INC-I-147) |
 | `holdings.rs` | Producer-holdings channel: live `ProducerSet` handle + published snapshot (INC-I-180) |
+| `addbond_cap.rs` | Shared `MAX_BONDS_PER_PRODUCER` verdict for builder, admission and revalidate (INC-I-203) |
 | `withdrawal_holdings.rs` | Single-tx withdrawal rules against current state (INC-I-180) |
 
 **Key behaviors:**

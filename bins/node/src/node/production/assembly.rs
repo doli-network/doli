@@ -187,9 +187,15 @@ impl Node {
                     .network
                     .params()
                     .withdrawal_holdings_gate_activation_height,
+            self.config
+                .network
+                .params()
+                .addbond_cap_enforcement_activation_height,
             height,
         );
-        if wd_parity.is_active() {
+        // INC-I-203: the AddBond arm has its own activation height, so the
+        // producer guard is needed when EITHER arm is live.
+        if wd_parity.is_active() || wd_parity.addbond_active() {
             let producers = self.producer_set.read().await;
             wd_parity.load(&producers, &mempool_txs);
             drop(producers);
@@ -323,7 +329,7 @@ impl Node {
                 // in-block accounting below counts only what was included.
                 if let Err(reason) = wd_parity.allow(tx, &utxo) {
                     warn!(
-                        "Skipping mempool tx {} at height {} — withdrawal-holdings gate \
+                        "Skipping mempool tx {} at height {} — holdings gate \
                          would reject the block: {}",
                         tx.hash(),
                         wd_parity.height(),

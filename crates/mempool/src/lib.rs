@@ -2,6 +2,7 @@
 //!
 //! Manages pending transactions waiting to be included in blocks.
 
+pub mod addbond_cap;
 pub mod contention;
 mod contention_tests;
 mod entry;

@@ -67,6 +67,18 @@
 #     not expose forceReorgTo or no node is in the wedge cell. STATE-NEUTRAL for
 #     the fleet — the rescued node converges onto the branch every other node
 #     already holds. See scripts/gauntlet-gs016.sh.
+#   * GS-017 (over-cap AddBond refused) is OBSERVATIONAL and chain-read-only: it
+#     runs in the DEFAULT gate, is NOT opt-in and has NO confirm-var. Replays
+#     INC-I-203 (the CLI built, signed and submitted an AddBond for 3000 bonds
+#     over a producer already holding one, and the toxic tx sat in 13 of 18
+#     mempools poisoning block assembly) and asserts the CLIENT path refuses
+#     before signing at EXACTLY headroom+1 bonds (a derived count; any count
+#     that fits is one the node ACCEPTS and would bond real funds), that no
+#     addbond is resident on 8500-8517, and that no NEW
+#     [BLOCK_POISON] ADDBOND_CAP_EXCEEDED appears past the runner's log
+#     offsets. The NODE admission path is covered by the INV-BOND-002
+#     regression tests, not by bypassing this guard. Every precondition SKIPs.
+#     See scripts/gauntlet-gs017.sh.
 #
 # Assertions key off STRUCTURED telemetry fields (gap=, rollback_depth=,
 # sync_fails=, state=) and distinct-event phrases — NEVER raw keywords that also
@@ -94,6 +106,9 @@ GS015_LIB="$ROOT/scripts/gauntlet-gs015.sh"
 [ -f "$GS015_LIB" ] && . "$GS015_LIB"
 GS016_LIB="$ROOT/scripts/gauntlet-gs016.sh"
 [ -f "$GS016_LIB" ] && . "$GS016_LIB"
+GS017_LIB="$ROOT/scripts/gauntlet-gs017.sh"
+# shellcheck source=/dev/null
+[ -f "$GS017_LIB" ] && . "$GS017_LIB"
 LOG_DIR="$HOME/testnet/logs"
 LABEL_PREFIX="network.doli.testnet"
 
@@ -621,6 +636,8 @@ assert(){
       _gs015_assert "$t"; return $? ;;
     gs016-escape-lands-on-named-branch|gs016-no-new-gap-after-escape|gs016-no-snap-sync-in-window|gs016-no-poison-bypass-in-window)
       _gs016_assert "$t"; return $? ;;
+    gs017-cli-carries-m3|gs017-cli-refuses-before-signing|gs017-no-addbond-residency|gs017-no-cap-poison-in-window)
+      _gs017_assert "$t"; return $? ;;
     *)
       why="unknown assertion token '$t'" ;;
   esac

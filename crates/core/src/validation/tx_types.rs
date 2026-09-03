@@ -535,6 +535,18 @@ pub fn check_addbond_cap(
     Ok(())
 }
 
+/// The gate's `requested` term (`validation_checks.rs:1206-1211`), factored out
+/// so mempool/builder/CLI cannot drift; consensus keeps its inline copy for now.
+pub fn count_bond_outputs(tx: &Transaction) -> u32 {
+    u32::try_from(
+        tx.outputs
+            .iter()
+            .filter(|o| o.output_type == OutputType::Bond)
+            .count(),
+    )
+    .unwrap_or(u32::MAX)
+}
+
 /// Validate withdrawal request transaction data.
 ///
 /// Structural validation for RequestWithdrawal transactions:

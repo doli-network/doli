@@ -38,7 +38,7 @@ pub(crate) fn check(
 
     let holdings = match lookup {
         HoldingsLookup::Unavailable => return Ok(()),
-        HoldingsLookup::Unregistered => {
+        HoldingsLookup::Unregistered { .. } => {
             return Err(format!(
                 "[ECON_WITHDRAWAL_UNKNOWN_PRODUCER] RequestWithdrawal at height={} for \
                  unregistered producer={} ({} bonds)",

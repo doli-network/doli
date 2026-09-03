@@ -470,6 +470,18 @@ rejected up-front so no value is lost.
    evicted from the mempool / not re-included; the slot is simply
    re-produced without it (deterministic across all nodes — no fork).
 
+**Since INC-I-203 this is handled automatically.** `sendTransaction`
+refuses an over-cap AddBond up front with `invalid transaction:
+[ADDBOND_CAP_EXCEEDED] producer=… current=… pending=… requested=… max=3000`,
+so it never enters the mempool, is never gossiped, and never spends the
+submitter's funding UTXO. An AddBond that was legal when admitted and became
+over-cap afterwards (an earlier AddBond flushed at the epoch boundary) is
+evicted on the next `revalidate` — logged as `INC-I-203: evicting AddBond
+<hash> — …` — which releases its inputs so `getUtxos` and Spendable recover
+within a block instead of staying frozen until `max_age`. Both refuse to act
+when no producer-holdings source can answer, so a node with an unwired
+snapshot behaves exactly as before.
+
 ---
 
 ### 2.6. Wiped Producer Mints Its Own Block 1 (INC-I-149)

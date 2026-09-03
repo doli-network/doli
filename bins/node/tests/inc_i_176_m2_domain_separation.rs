@@ -64,18 +64,19 @@
 //!   P-NONFATAL  a refusal warns and skips; the node stays usable
 //!   P-PA        the `ProtocolActivation` arm — INVARIANT across #22
 //!
-//! INPUT PARTITIONS
-//!   IP-X1 add signed over RELEASE-SIGNING bytes, h = 299_999 -> seat minted
-//!   IP-X2 the same, h = 300_000                              -> refused
+//! INPUT PARTITIONS (heights DERIVED from the shipped testnet params at run
+//! time, never re-typed as literals — see `gate_22`. Shipped #22 today: 15_087.)
+//!   IP-X1 add signed over RELEASE-SIGNING bytes, h = #22 - 1 -> seat minted
+//!   IP-X2 the same, h = #22                                  -> refused
 //!   IP-X3 the bound message vs release-signing messages for five plausible
 //!         `version` strings                                  -> disjoint, and
 //!         disjoint BY LENGTH (32 bytes vs >= 66), so the separation is structural
 //!         rather than an enumeration of one attack string
-//!   IP-N1 legacy-signed add at h = 300_000, then a bound-signed add at the SAME
+//!   IP-N1 legacy-signed add at h = #22, then a bound-signed add at the SAME
 //!         height on the SAME node                            -> refused, then applied
-//!   IP-D1 bound-signed add at h = 300_000, then read the file back
-//!   IP-P1 ProtocolActivation, genuine 3-distinct quorum, h = 299_999 -> accepted
-//!   IP-P2 the same at h = 300_000                                    -> accepted
+//!   IP-D1 bound-signed add at h = #22, then read the file back
+//!   IP-P1 ProtocolActivation, genuine 3-distinct quorum, h = #22 - 1 -> accepted
+//!   IP-P2 the same at h = #22                                        -> accepted
 //!
 //! MATRIX
 //!   O2 x {IP-X1, IP-X2, IP-N1} = 4 cells
@@ -108,12 +109,61 @@ mod inc_i_176_m2_common;
 use crypto::KeyPair;
 use doli_core::maintainer::{signing_message_legacy, ProtocolActivationData};
 use doli_core::transaction::TxType;
-use doli_core::Transaction;
+use doli_core::{Network, Transaction};
 use inc_i_176_m2_common::{
     bound_message, change_tx, make_node, members, quorum, release_signing_message, sig, submit,
-    ACTIVATION_EPOCH, ACTIVATION_VERSION, AT_GATE, BELOW_GATE,
+    ACTIVATION_EPOCH, ACTIVATION_VERSION,
 };
 use storage::MaintainerState;
+
+// ===========================================================================
+// The gates, DERIVED — never re-typed as literals
+//
+// INC-I-203 M5 — Decision: the shipped testnet #22 was re-pinned 300_000 ->
+// 15_087 (fresh testnet genesis, 2026-08-24). The file's old `BELOW_GATE`
+// literal (299_999) is now ABOVE the shipped gate, so the AUDIT-P0-011 "below the gate"
+// row was measuring the ABOVE-gate arm: the attack was correctly rejected where
+// this test asserts frozen history must still accept it. The heights are now
+// read through `Network::Testnet.params()` — the same accessor the production
+// site uses (`governance.rs:47`) — so a re-pin moves the rows with the gate.
+//
+// The assertion SEMANTICS are unchanged: below #22 the AUDIT-P0-011 defect is
+// PRESERVED (frozen consensus history); at/above #22 it is REJECTED.
+//
+// GATE COLLISION, RECORDED NOT HIDDEN. Testnet pins #20
+// (`maintainer_derivation_activation_height`) at the SAME 15_087, so
+// `below_gate()` is below BOTH and the two gates are INSEPARABLE on this
+// network. #20 only selects signature-ENTRY counting over DISTINCT-SIGNER
+// counting; every fixture here supplies three DISTINCT valid maintainer
+// signers, for which both arms return the same verdict — proved by
+// `inc_i_176_m2_gate_wiring::req_176_022_the_gate_20_collision_cannot_explain_the_below_gate_rows`.
+// The `ProtocolActivation` scope fence additionally crosses #20's
+// authority-source branch; see the note on that test.
+// ===========================================================================
+
+/// `inc_i_176_auth_binding_activation_height` (#22) for `Network::Testnet`.
+fn gate_22() -> u64 {
+    Network::Testnet
+        .params()
+        .inc_i_176_auth_binding_activation_height
+}
+
+/// One block BELOW #22 — the legacy arm, where AUDIT-P0-011 is frozen history.
+fn below_gate() -> u64 {
+    let g = gate_22();
+    assert!(
+        g >= 1,
+        "harness: #22 is pinned at 0, so there is NO height below it. `#22 - 1` \
+         would underflow and the below-gate row would collapse onto the gate, \
+         leaving the AUDIT-P0-011 preservation half untested."
+    );
+    g - 1
+}
+
+/// EXACTLY #22 — the boundary. The comparison is `>=` (`set.rs:161`).
+fn at_gate() -> u64 {
+    gate_22()
+}
 
 // ===========================================================================
 // AUDIT-P0-011 — THE DOMAIN-SEPARATION PAYOFF, ASSERTED AT THE PRODUCTION SITE
@@ -153,7 +203,7 @@ async fn audit_p0_011_release_signing_bytes_mint_a_seat_below_the_gate_and_not_a
         let (node, maintainers, _t) = make_node(4).await;
         let signers = quorum(&maintainers);
         let tx = change_tx(true, &target, &attack_bytes, &signers);
-        submit(&node, &tx, BELOW_GATE).await;
+        submit(&node, &tx, below_gate()).await;
         assert!(
             members(&node).await.contains(&target),
             "AUDIT-P0-011, below #22: three maintainers who each believed they \
@@ -168,7 +218,7 @@ async fn audit_p0_011_release_signing_bytes_mint_a_seat_below_the_gate_and_not_a
         let (node, maintainers, _t) = make_node(4).await;
         let signers = quorum(&maintainers);
         let tx = change_tx(true, &target, &attack_bytes, &signers);
-        submit(&node, &tx, AT_GATE).await;
+        submit(&node, &tx, at_gate()).await;
         assert!(
             !members(&node).await.contains(&target),
             "AUDIT-P0-011, at #22: release-signing bytes must NO LONGER seat a \
@@ -230,7 +280,7 @@ async fn req_176_022_a_failed_verification_above_the_gate_is_non_fatal() {
         &signing_message_legacy(true, &target),
         &signers,
     );
-    let returned = submit(&node, &bad, AT_GATE).await;
+    let returned = submit(&node, &bad, at_gate()).await;
     assert_eq!(
         returned, None,
         "O1 / O6: the maintainer arms return None on BOTH acceptance and refusal. \
@@ -246,7 +296,7 @@ async fn req_176_022_a_failed_verification_above_the_gate_is_non_fatal() {
     // 2. The SAME node, the SAME height, correctly signed — still works.
     let msg = bound_message(&node, true, &target);
     let good = change_tx(true, &target, &msg, &signers);
-    assert_eq!(submit(&node, &good, AT_GATE).await, None, "O1");
+    assert_eq!(submit(&node, &good, at_gate()).await, None, "O1");
     assert!(
         members(&node).await.contains(&target),
         "O6: a refused change must leave the node fully functional — if the first \
@@ -268,7 +318,7 @@ async fn req_176_022_the_persisted_trust_root_follows_the_bound_arm() {
 
     let msg = bound_message(&node, true, &target);
     let tx = change_tx(true, &target, &msg, &signers);
-    submit(&node, &tx, AT_GATE).await;
+    submit(&node, &tx, at_gate()).await;
 
     let persisted = MaintainerState::load(&data_dir).expect("O4: the state file must be readable");
     assert!(
@@ -300,7 +350,12 @@ async fn req_176_022_the_persisted_trust_root_follows_the_bound_arm() {
 /// activation height. Do NOT wire #22 into it.
 #[tokio::test]
 async fn scope_fence_protocol_activation_is_unaffected_by_gate_22() {
-    for height in [BELOW_GATE, AT_GATE] {
+    // INC-I-203 M5 — Decision: `below_gate()` is now also below #20, where this
+    // arm picks its authority set from `is_fully_bootstrapped()` rather than
+    // fail-closed. `make_node(5)` seats INITIAL_MAINTAINER_COUNT = 5 members, so
+    // `is_fully_bootstrapped()` holds and BOTH sides resolve the SAME on-chain
+    // set — the fence still varies only #22.
+    for height in [below_gate(), at_gate()] {
         let (node, maintainers, _t) = make_node(5).await;
 
         let data = ProtocolActivationData::new(

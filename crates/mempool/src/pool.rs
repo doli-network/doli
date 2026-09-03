@@ -347,6 +347,31 @@ impl Mempool {
         )
     }
 
+    /// INC-I-203 M2: the builder's `MAX_BONDS_PER_PRODUCER` verdict, shared
+    /// (REQ-BOND-004). `in_block_prior = 0` — the mempool holds no block-local
+    /// tally — so this total is <= the gate's and it rejects a strict subset.
+    fn addbond_holdings_verdict(
+        &self,
+        tx: &Transaction,
+        current_height: BlockHeight,
+    ) -> Result<(), String> {
+        if tx.tx_type != TxType::AddBond {
+            return Ok(());
+        }
+        let Some(ab) = tx.add_bond_data() else {
+            return Ok(());
+        };
+        crate::addbond_cap::addbond_cap_verdict(
+            tx,
+            &self.producer_holdings.lookup(&ab.producer_pubkey),
+            0,
+            current_height,
+            self.network
+                .params()
+                .addbond_cap_enforcement_activation_height,
+        )
+    }
+
     /// Node-published pending registrations (source 1). Empty when the
     /// snapshot is unwired or the lock is poisoned — both degrade to
     /// pre-fix behaviour for this half, never to over-rejection.
@@ -571,6 +596,10 @@ impl Mempool {
         // still reports as one, and before fee work so a rejected one costs
         // nothing more.
         self.withdrawal_holdings_verdict(&tx, utxo_set, current_height, true)
+            .map_err(MempoolError::InvalidTransaction)?;
+
+        // INC-I-203 M2: same verdict the builder applies (REQ-BOND-004).
+        self.addbond_holdings_verdict(&tx, current_height)
             .map_err(MempoolError::InvalidTransaction)?;
 
         // Calculate fee by looking up inputs (also collects ancestor set for CPFP)
@@ -1301,6 +1330,15 @@ impl Mempool {
                     self.withdrawal_holdings_verdict(tx, utxo_set, current_height, false)
                 {
                     warn!("INC-I-180: evicting withdrawal {} — {}", hash, reason);
+                    valid = false;
+                }
+            }
+
+            // INC-I-203 M2: an AddBond the ledger moved over the cap after
+            // admission keeps every input alive, so input existence cannot shed it.
+            if valid {
+                if let Err(reason) = self.addbond_holdings_verdict(tx, current_height) {
+                    warn!("INC-I-203: evicting AddBond {} — {}", hash, reason);
                     valid = false;
                 }
             }
