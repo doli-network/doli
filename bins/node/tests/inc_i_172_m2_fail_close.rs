@@ -156,9 +156,26 @@ fn activation_message() -> Vec<u8> {
         .signing_message()
 }
 
-fn remove_tx(target: &PublicKey, signers: &[&KeyPair]) -> Transaction {
+/// INC-I-201: sign exactly what `apply_block/governance.rs` verifies at
+/// `height`. Above `inc_i_176_auth_binding_activation_height` (INC-I-176 M4,
+/// testnet 15_087 since the 2026-08-24 re-pin) the node checks the
+/// genesis-bound, domain-tagged digest; below it, the legacy message.
+/// `ABOVE_GATE` (200_000) crossed that line when the height was re-pinned
+/// from 300_000, so a legacy-signed removal was silently rejected as
+/// "insufficient signatures" and the F2 precondition (5 -> 4) never held.
+fn remove_tx(node: &Node, target: &PublicKey, signers: &[&KeyPair], height: u64) -> Transaction {
     let mut data = MaintainerChangeData::new(*target, vec![]);
-    let message = data.signing_message(false);
+    let message = doli_core::maintainer::signing_message_at(
+        node.params.genesis_hash.as_bytes(),
+        false,
+        target,
+        doli_core::maintainer::MAINTAINER_AUTH_VALID_BEFORE_UNSET,
+        height,
+        node.config
+            .network
+            .params()
+            .inc_i_176_auth_binding_activation_height,
+    );
     data.signatures = signers.iter().map(|kp| sig(kp, &message)).collect();
     Transaction {
         version: 1,
@@ -355,7 +372,7 @@ async fn seed_and_remove(node: &Node, producers: &[KeyPair], height: u64) -> Pub
         .collect();
     assert_eq!(signers.len(), 3, "setup: three distinct non-target signers");
 
-    let tx = remove_tx(&target, &signers);
+    let tx = remove_tx(node, &target, &signers, height);
     assert!(
         submit(node, &tx, height).await.is_none(),
         "setup: a RemoveMaintainer must not report a ProtocolActivation"
