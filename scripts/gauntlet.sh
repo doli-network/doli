@@ -636,7 +636,7 @@ assert(){
       _gs015_assert "$t"; return $? ;;
     gs016-escape-lands-on-named-branch|gs016-no-new-gap-after-escape|gs016-no-snap-sync-in-window|gs016-no-poison-bypass-in-window)
       _gs016_assert "$t"; return $? ;;
-    gs017-cli-refuses-before-signing|gs017-no-addbond-residency|gs017-no-cap-poison-in-window)
+    gs017-cli-carries-m3|gs017-cli-refuses-before-signing|gs017-no-addbond-residency|gs017-no-cap-poison-in-window)
       _gs017_assert "$t"; return $? ;;
     *)
       why="unknown assertion token '$t'" ;;

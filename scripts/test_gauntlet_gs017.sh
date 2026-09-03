@@ -11,10 +11,18 @@
 #                       here: no `--count` at or below the discovered headroom (such a
 #                       count is one the node ACCEPTS, bonding real funds) and no mutating
 #                       RPC method (sendTransaction/submitTransaction/broadcast), ever.
+#                       Carries the REQUEST BODY too: getMempoolTransactions must ask for the
+#                       maximum fetchable page (`"limit":500`, the RPC hard cap of
+#                       crates/rpc/src/methods/stats.rs:188) — there is no offset and no
+#                       cursor, so a smaller limit makes the sweep a silent sample.
 #   O6 registration  — the gauntlet.sh `assert` dispatch arm + the gauntlet-seed.sql
 #                       assertions column. A green suite over a library the host runner
 #                       never reaches is false assurance: the 2026-09-01 run failed GS-015
 #                       with "unknown assertion token" while its unit suite was 100% green.
+#   O7 precondition  — `gs017-cli-carries-m3`: its rc/reasons AND the gate it imposes on
+#                       gs017-cli-refuses-before-signing. GS-017 is a DEFAULT-run scenario
+#                       that fires a REAL add-bond, so an unverified CLI means the gauntlet
+#                       injects the very incident it exists to detect.
 #   PATHS:
 #     token gs017-cli-refuses-before-signing
 #       -> preflight: doli resolvable? · a producer_*.json wallet on disk? · that wallet's
@@ -27,6 +35,14 @@
 #          -> exit != 0 WITH `headroom|cap` or ADDBOND_CAP_EXCEEDED
 #             -> submitting node's getMempoolTransactions holds an `addbond` => rc 1 + O2
 #             -> holds none                                                  => rc 0 + O4
+#     token gs017-cli-carries-m3
+#       -> `<doli> --version` -> `<name> <semver> (<sha>)`; rc 0 only when
+#          `git merge-base --is-ancestor $GS017_M3_COMMIT <sha>` holds in this repo
+#          (GS017_M3_COMMIT default f250f274). No sha in the version string · sha not an
+#          object here · no git · CLI predates M3 => rc 2 + O3 naming the binary and its
+#          version string. Never rc 1, never a submit: an old CLI is not a chain defect.
+#          getNodeInfo carries no commit, so the node's M2 status is NOT determinable over
+#          RPC — the node version is recorded informationally only.
 #     token gs017-no-addbond-residency
 #       -> sweep RPC 8500..8517; a port with no RPC is tolerated, not a failure
 #       -> nothing answered   => rc 2 + O3 ; any `addbond` resident => rc 1 + O2 (names the
@@ -40,7 +56,8 @@
 #          ADDBOND_CAP_EXCEEDED past the baseline => rc 1 + O2 (names the node) ; none => rc 0 + O4
 # INPUT PARTITIONS:
 #   S1:  CLI refuses with the M3 client-side text         — O1=0, O4 non-empty, O2/O3 empty
-#   S2:  CLI refuses with the M2 node-side text           — O1=0, O4 non-empty, O2 empty
+#   S2:  RETIRED by REV-203-004 — superseded by S35: the M2 node text proves the CLI reached
+#        the node, so the M3 client guard is absent or bypassed — O1=1, O2 non-empty
 #   S3:  requested count vs a 2999 headroom               — O5 never --count <= 2999, no mutation
 #   S4:  CLI exits 0 (the pre-M3 false success)           — O1=1, O2 non-empty, O4 empty
 #   S5:  CLI exits non-zero, unrelated message            — O1=1, O2 non-empty, O4 empty
@@ -68,12 +85,39 @@
 #   S26: gauntlet.sh `assert` dispatches all three tokens — O6
 #   S27: gauntlet-seed.sql registers GS-017 active        — O6
 #   S28: `bash -n` on the library                         — parses cleanly
+#   S29: CLI version carries an M3-or-later commit        — O7 O1=0, O4 names the node version
+#   S30: CLI version predates M3                          — O7 O1=2, O3 non-empty, O2 empty
+#   S31: version string carries no `(sha)`                — O7 O1=2, O3 names binary + version
+#   S32: sha is not an object in this repo                — O7 O1=2, O3 non-empty, O2 empty
+#   S33: precondition probe is read-only                  — O5 --version only, no add-bond
+#   S34: pre-M3 CLI + the submit token                    — O7 O1=2, O5 has NO add-bond
+#   S35: M2 node text (carries `RPC error`)               — O1=1, O2 says the CLI reached the node
+#   S35b:bare [ADDBOND_CAP_EXCEEDED], no `RPC error`      — O1=1, O2 non-empty
+#   S36: message with only `capacity`/`escape`/`capture`  — O1=1 (bare `cap` no longer suffices)
+#   S37: M3 text AND `Submitting add-bond transaction`    — O1=1, O2 non-empty
+#   S38: poison past baseline in an n*.log outside NODECFG— O1=1, O2 names n5 + count + window
+#   S39: history only, 5 logs on disk, NODECFG lists 3    — O1=0, O4 names 5 logs + window
+#   S40: residency sweep page size                        — O5 every request carries limit 500
+#   S41: CLI read-back page size                          — O5 every request carries limit 500
+#   S42: getMempoolInfo.txCount 1200 > one 500 page       — O1=1, O2 names the port + remainder
+#   S43: getMempoolInfo.txCount 120 within one page       — O1=0, O4 names the observed txCount
+#   S44: addbond only in the post-window sweep            — O1=0, O5 sweeps the port twice
+#   S45: addbond only in the pre-window snapshot          — O1=0, O2 empty
+#   S46: the SAME hash in both sweeps                     — O1=1, O2 names the port and the hash
+#   S47: DIFFERENT addbond hashes in the two sweeps       — O1=0, O2 empty
+#   S48: default settle spans >= 2 slots                  — elapsed >= 20s
+#   S49: gauntlet.sh assert() routes gs017-cli-carries-m3 — O6
+#   S50: gauntlet-seed.sql registers the 4th token        — O6
 # MATRIX: 6 outputs x 28 partitions (only cells the path reaches are asserted)
 #   S1: O1 O2 O3 O4 | S2: O1 O2 O4 | S3: O5 | S4: O1 O2 O4 | S5: O1 O2 O4 | S6: O1 O2 O4
 #   S7: O1 O2 O3 O4 O5 | S8: O1 O2 O3 O5 | S9: O1 O2 O3 O4 | S10: O1 O2 O3 | S11: O5
 #   S12: O1 O2 O3 O4 | S13: O1 O2 O4 | S13b: O1 O2 | S14: O1 O2 | S15: O1 O2 O3 O4 | S16: O5
 #   S17: O1 O2 O4 | S18: O1 O2 O4 | S19: O1 O2 | S20: O1 O2 O4 | S21: O1 O2 | S22: O1 O2 O3 O4
 #   S23: O5 | S24: O1 | S25: O6 | S26: O6 | S27: O6 | S28: parse
+#   S29: O7 O1 O2 O3 O4 | S30: O7 O1 O2 O3 | S31: O7 O1 O3 | S32: O7 O1 O2 O3 | S33: O5
+#   S34: O7 O1 O2 O3 O5 | S35: O1 O2 O4 | S35b: O1 | S36: O1 | S37: O1
+#   S38: O1 O2 O4 | S39: O1 O2 O4 | S40: O5 | S41: O5 | S42: O1 O2 | S43: O1 O4
+#   S44: O1 O5 | S45: O1 O2 | S46: O1 O2 | S47: O1 O2 | S48: timing | S49: O6 | S50: O6
 #
 # TDD RED tests for scripts/gauntlet-gs017.sh, which DOES NOT EXIST YET.
 # `doli` and `curl` are stubbed on PATH and HOME is redirected into the sandbox, so every
@@ -92,8 +136,16 @@ TEST_DIR="/tmp/doli-gauntlet-gs017-test-$$"
 TOKEN_CLI="gs017-cli-refuses-before-signing"
 TOKEN_RESIDENCY="gs017-no-addbond-residency"
 TOKEN_POISON="gs017-no-cap-poison-in-window"
+TOKEN_M3="gs017-cli-carries-m3"
+
+# f250f274 is INC-I-203 M3 ("refuse add-bond beyond the remaining cap headroom before
+# signing"); 00f91933 is its parent merge, the newest commit that still ships the pre-M3 CLI.
+M3_COMMIT="f250f274"
+PRE_M3_COMMIT="00f91933"
+ABSENT_COMMIT="0badc0de"
 
 MAX_BONDS=3000
+ADDBOND_HASH="988630d9c1a24f6b"
 ADDR5="tdoli1x5f9k2m7q0w8ev3n6r4t2y8u1p5s9d3g7h2j4k6l8z0cq7v"
 PORTS="8500 8501 8502 8503 8504 8505 8506 8507 8508 8509 8510 8511 8512 8513 8514 8515 8516 8517"
 SUBMIT_PORT=8501
@@ -155,11 +207,23 @@ ck() {
 #   refuse_m2           — the M2 node-side text captured live 2026-09-02 (RPC -32002)
 #   accept              — the pre-M3 shape: built, signed, submitted, exit 0
 #   unrelated           — non-zero for a reason that has nothing to do with the cap
+#   m2_bare             — the M2 marker alone, without the `RPC error` envelope
+#   vague_cap           — non-zero text whose only `cap` match is capture/capacity/escape
+#   refuse_then_submit  — the M3 refusal text AFTER the submit line was already printed
+# DOLI_VERSION_MODE drives `--version`: m3 (default) · pre_m3 · no_sha · unknown_sha.
 write_doli_stub() {
     cat > "$1/doli" <<'DOLI_STUB'
 #!/usr/bin/env bash
 echo "doli $*" >> "${DOLI_LOG:?DOLI_LOG not set}"
 case "$*" in
+    --version|*" --version"*|*--version)
+        case "${DOLI_VERSION_MODE:-m3}" in
+            pre_m3)      echo "doli 6.26.1 (00f91933)" ;;
+            no_sha)      echo "doli 6.26.3" ;;
+            unknown_sha) echo "doli 6.26.3 (0badc0de)" ;;
+            *)           echo "doli 6.26.3 (f250f274)" ;;
+        esac
+        exit 0 ;;
     *addresses*)
         w=""; prev=""
         for a in "$@"; do
@@ -181,6 +245,16 @@ case "$*" in
             refuse_m2)
                 echo "Error: Error adding bonds: RPC error -32002 (INVALID_TRANSACTION): invalid transaction: [ADDBOND_CAP_EXCEEDED] producer=PublicKey(3047e96b) current=1 pending=0 in_block_prior=0 requested=3000 max=3000" >&2
                 exit 1 ;;
+            m2_bare)
+                echo "Error: invalid transaction: [ADDBOND_CAP_EXCEEDED] producer=PublicKey(3047e96b) current=1 pending=0 in_block_prior=0 requested=3000 max=3000" >&2
+                exit 1 ;;
+            vague_cap)
+                echo "Error: node at capture capacity, no escape route for this request" >&2
+                exit 1 ;;
+            refuse_then_submit)
+                echo "Submitting add-bond transaction..."
+                echo "Error: Bond cap exceeded: current=1 pending=0 requested=3000 cap=3000. You may still add 2999 bond(s)." >&2
+                exit 1 ;;
             *)
                 echo "Error: Bond cap exceeded: current=1 pending=0 requested=3000 cap=3000. You may still add 2999 bond(s). Re-run with --count 2999 or less; to grow beyond the cap, use delegation." >&2
                 exit 1 ;;
@@ -193,6 +267,10 @@ DOLI_STUB
 
 # `curl` stub. A port with no $RPC_DIR/<port>.up exits 7 (curl's "couldn't connect"),
 # which is how a node that is simply not running presents itself.
+# getMempoolTransactions is SEQUENCED per port: call 1 serves <port>.mempool.json, call 2+
+# serves <port>.mempool2.json when it exists, so a two-sweep settle filter sees the mempool
+# actually change across the window. Absent mempool2.json every call answers the same, which
+# is what every partition written before REV-203-007 expects.
 write_curl_stub() {
     cat > "$1/curl" <<'CURL_STUB'
 #!/usr/bin/env bash
@@ -208,8 +286,23 @@ method="$(printf '%s' "$data" | sed -n 's/.*"method"[[:space:]]*:[[:space:]]*"\(
 [ -f "${RPC_DIR:?RPC_DIR not set}/$port.up" ] || exit 7
 case "$method" in
     getMempoolTransactions)
-        body="$(cat "$RPC_DIR/$port.mempool.json" 2>/dev/null)"
+        seq=$(( $(cat "$RPC_DIR/$port.mpseq" 2>/dev/null || echo 0) + 1 ))
+        printf '%s' "$seq" > "$RPC_DIR/$port.mpseq"
+        src="$RPC_DIR/$port.mempool.json"
+        if [ "$seq" -ge 2 ] && [ -f "$RPC_DIR/$port.mempool2.json" ]; then
+            src="$RPC_DIR/$port.mempool2.json"
+        fi
+        body="$(cat "$src" 2>/dev/null)"
         printf '{"jsonrpc":"2.0","id":1,"result":%s}\n' "${body:-[]}" ;;
+    getMempoolInfo)
+        if [ -f "$RPC_DIR/$port.mempoolinfo.json" ]; then
+            printf '{"jsonrpc":"2.0","id":1,"result":%s}\n' "$(cat "$RPC_DIR/$port.mempoolinfo.json")"
+        else
+            n="$(python3 -c "import json;print(len(json.load(open('$RPC_DIR/$port.mempool.json'))))" 2>/dev/null || echo 0)"
+            printf '{"jsonrpc":"2.0","id":1,"result":{"txCount":%s,"totalSize":420,"minFeeRate":1,"maxSize":10000000,"maxCount":5000}}\n' "${n:-0}"
+        fi ;;
+    getNodeInfo)
+        printf '{"jsonrpc":"2.0","id":1,"result":{"version":"6.26.2","network":"testnet","peerId":"12D3KooWgs017","peerCount":7,"platform":"linux","arch":"x86_64"}}\n' ;;
     getProducers)
         body="$(cat "$RPC_DIR/producers.json" 2>/dev/null)"
         printf '{"jsonrpc":"2.0","id":1,"result":{"producers":%s}}\n' "${body:-[]}" ;;
@@ -233,6 +326,8 @@ new_sandbox() {
     RPC_DIR="$CASE_DIR/rpc"
     DOLI_LOG="$CASE_DIR/doli.log"; CURL_LOG="$CASE_DIR/curl.log"; LOG_FILE="$CASE_DIR/run.log"
     TEST_NODECFG=""
+    DOLI_VERSION_MODE="m3"
+    TEST_SETTLE="0"
     rm -rf "$CASE_DIR"
     mkdir -p "$WORK_DIR" "$BIN_DIR" "$KEYS_DIR" "$LOGS_DIR" "$RPC_DIR" "$HOME_DIR/testnet/bin"
     : > "$DOLI_LOG"; : > "$CURL_LOG"; : > "$LOG_FILE"
@@ -262,11 +357,13 @@ rpc_up()        { : > "$RPC_DIR/$1.up"; }
 rpc_down()      { rm -f "$RPC_DIR/$1.up"; }
 mempool_empty() { echo '[]' > "$RPC_DIR/$1.mempool.json"; }
 
-mempool_addbond() {
-    cat > "$RPC_DIR/$1.mempool.json" <<MEMPOOL
-[{"hash":"988630d9c1a24f6b","txType":"addbond","size":420,"fee":1000,"feeRate":2,"addedTime":1756848000}]
+_mp_addbond_json() {
+    cat > "$1" <<MEMPOOL
+[{"hash":"$2","txType":"addbond","size":420,"fee":1000,"feeRate":2,"addedTime":1756848000}]
 MEMPOOL
 }
+
+mempool_addbond() { _mp_addbond_json "$RPC_DIR/$1.mempool.json" "${2:-$ADDBOND_HASH}"; }
 
 mempool_transfer() {
     cat > "$RPC_DIR/$1.mempool.json" <<MEMPOOL
@@ -324,16 +421,22 @@ run_assert() {
     local token="$1"
     (
         set +e
-        unset NODECFG DOLI_CLI
+        unset NODECFG DOLI_CLI GS017_M3_COMMIT GS017_SETTLE_SECS
         cd "$WORK_DIR" || exit 1
         export PATH="$BIN_DIR:/usr/bin:/bin"
         export HOME="$HOME_DIR"
         export DOLI_LOG CURL_LOG RPC_DIR
         export DOLI_ADDBOND_MODE="${DOLI_ADDBOND_MODE:-refuse_m3}"
+        export DOLI_VERSION_MODE="${DOLI_VERSION_MODE:-m3}"
+        # cwd is the sandbox, not a git worktree: the M3 ancestry check has to resolve this
+        # repo on its own (BASH_SOURCE) or from GS017_REPO, never from $PWD.
+        export GS017_REPO="$PROJECT_ROOT"
+        export GAUNTLET_WINDOW="${TEST_WINDOW:-45}"
         export GS017_KEYS_DIR="$KEYS_DIR" GS017_LOG_DIR="$LOGS_DIR"
         export GS017_PORTS="$PORTS" GS017_SEED_PORT=8500
         export GS017_OFFSETS="$CASE_DIR/offsets.txt"
         [ -n "$TEST_NODECFG" ] && export NODECFG="$TEST_NODECFG"
+        [ -n "${TEST_SETTLE:-}" ] && export GS017_SETTLE_SECS="$TEST_SETTLE"
         FAIL_REASONS=""; SKIP_REASONS=""; INFO_REASONS=""
         func="no"
         if [[ -f "$GS017_LIB" ]]; then
@@ -392,11 +495,9 @@ ck "S3 count_over_headroom: no --count at or below the 2999-bond headroom" \
    'addbond_attempted && ! fitting_count_used $((MAX_BONDS - 1))' "$(o5_detail)"
 ck "S3 count_over_headroom: no mutating RPC method invoked" '! mutating_rpc' "$(o5_detail)"
 
-# S2 — REQ-BOND-002 (Must) — Decision: M2 and M3 are separate deploys, so calling an M2-only refusal a FAIL turns the scenario red on a fleet that is already protected.
-new_sandbox "s2_cli_refuses_m2"
-DOLI_ADDBOND_MODE=refuse_m2 run_assert "$TOKEN_CLI"
-ck "S2 cli_refuses_m2_node_text: rc 0 (PASS)" '[[ "$RC" -eq 0 ]]'
-ck "S2 cli_refuses_m2_node_text: INFO non-empty, FAIL empty" '[[ -n "$R_INFO" && -z "$R_FAIL" ]]'
+# S2 — RETIRED by REV-203-004. It pinned "the M2 node-side refusal text is a PASS", which the
+# narrowed acceptance contradicts: reaching the node at all means the M3 client guard did not
+# fire, so an M3 revert would be invisible. Replaced by S35/S35b in the hardening file.
 
 # S4 — REQ-BOND-007 (Must) — Decision: exit 0 is the INC-I-203 shape (built, signed, submitted, gossiped); reading it as green certifies the defect GS-017 exists to catch.
 new_sandbox "s4_cli_exits_zero"
@@ -620,6 +721,11 @@ else
     test_result "S28 hygiene: scripts/gauntlet-gs017.sh parses under bash -n" "fail" \
         "$(bash -n "$GS017_LIB" 2>&1 | head -3 || echo "missing: $GS017_LIB")"
 fi
+
+# REV-203-003..007 cells live in a second file: this one is already at the 800-line test
+# budget of MODULE-SIZE-BUDGET, and every helper they need is defined above.
+# shellcheck source=scripts/test_gauntlet_gs017_hardening.sh
+. "$SCRIPT_DIR/test_gauntlet_gs017_hardening.sh"
 
 print_header "TEST SUMMARY"
 echo -e "  Tests Passed: ${GREEN}$TESTS_PASSED${NC}"

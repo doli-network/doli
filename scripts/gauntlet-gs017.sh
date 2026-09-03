@@ -5,22 +5,37 @@
 # Sourced by scripts/gauntlet.sh. OBSERVATIONAL, STATE-NEUTRAL, chain-read-only,
 # no confirm-var, part of the DEFAULT run.
 #
+#   gs017-cli-carries-m3 — precondition, read-only. `<doli> --version` prints
+#     `<name> <semver> (<sha>)`; rc 0 only when GS017_M3_COMMIT is an ancestor
+#     of that sha. An "unreachable --rpc" capability probe CANNOT stand in for
+#     it: the M3 guard (bins/cli/src/cmd_producer/bonds.rs:48) runs AFTER
+#     get_network_params, so a pre-M3 and an M3 CLI die at the same connection
+#     error. getNodeInfo carries no commit, so the node's M2 status is NOT
+#     determinable over RPC — the node version is recorded informationally.
 #   gs017-cli-refuses-before-signing — invokes `producer add-bond` with EXACTLY
 #     headroom+1 bonds. The count is derived, never hardcoded: any count at or
 #     below the headroom is one the node ACCEPTS, which would bond real funds on
-#     an unattended default run. Exercises the M3 CLIENT path; the node
-#     admission path is covered by the INV-BOND-002 regression tests.
-#   gs017-no-addbond-residency — no `addbond` resident in any mempool on
-#     8500-8517. A port with no RPC is tolerated, never a failure.
+#     an unattended default run. Runs ONLY when the precondition passed —
+#     GS-017 never lets a pre-M3 CLI reach a node. rc 0 demands the M3 CLIENT
+#     text with no node round-trip and no submit line.
+#   gs017-no-addbond-residency — settle-and-retry: only an addbond HASH resident
+#     in BOTH the pre- and post-window sweeps is a finding. getMempoolTransactions
+#     exposes no producer, no pubkey and no bond count, so over-cap cannot be
+#     filtered directly and one snapshot would fail on ordinary in-flight
+#     traffic. That RPC also has no offset and no cursor, so every request asks
+#     for the 500-tx hard cap and getMempoolInfo.txCount is the guard against a
+#     silent sample.
 #   gs017-no-cap-poison-in-window — no NEW `[BLOCK_POISON] ADDBOND_CAP_EXCEEDED`
-#     past the runner's per-node log byte offsets. Every log still carries
-#     pre-fix events, so only GROWTH is a finding.
+#     past a per-log byte offset. Every log still carries pre-fix events, so only
+#     GROWTH is a finding. The scan set is EVERY n*.log on disk: NODECFG stops at
+#     n12 and the fleet is 17 nodes.
 #
 # Every precondition is a SKIP (rc 2), never a FAIL: one false FAIL is how a
 # scenario earns a standing waiver and stops guarding anything.
 #
 # Env: GS017_KEYS_DIR, GS017_LOG_DIR, GS017_PORTS, GS017_SEED_PORT,
-#      GS017_MAX_BONDS, GS017_NETWORK, GS017_OFFSETS, DOLI_CLI, NODECFG.
+#      GS017_MAX_BONDS, GS017_NETWORK, GS017_OFFSETS, GS017_M3_COMMIT,
+#      GS017_REPO, GS017_SETTLE_SECS, GAUNTLET_WINDOW, DOLI_CLI, NODECFG.
 # ============================================================================
 
 GS017_MAX_BONDS="${GS017_MAX_BONDS:-3000}"
@@ -29,6 +44,24 @@ GS017_KEYS_DIR="${GS017_KEYS_DIR:-$HOME/testnet/keys}"
 GS017_LOG_DIR="${GS017_LOG_DIR:-$HOME/testnet/logs}"
 GS017_NETWORK="${GS017_NETWORK:-testnet}"
 GS017_PORTS="${GS017_PORTS:-8500 8501 8502 8503 8504 8505 8506 8507 8508 8509 8510 8511 8512 8513 8514 8515 8516 8517}"
+GS017_M3_COMMIT="${GS017_M3_COMMIT:-f250f274}"
+GS017_REPO="${GS017_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)}"
+# The RPC hard cap of crates/rpc/src/methods/stats.rs:188 — limit.min(500).
+GS017_PAGE="${GS017_PAGE:-500}"
+# 2 x SLOT_DURATION (crates/core/src/consensus/constants.rs:175).
+GS017_SETTLE_SECS="${GS017_SETTLE_SECS:-20}"
+GS017_WINDOW_SECS="${GAUNTLET_WINDOW:-45}"
+GS017_M3_OK=""
+
+# Pre-window baseline for EVERY node log, captured at SOURCE time: gauntlet.sh
+# sources this lib before it sleeps its window, so the whole run is the window.
+GS017_SRC_OFFSETS="$(
+    for _gs017_f in "$GS017_LOG_DIR"/n*.log; do
+        [ -r "$_gs017_f" ] || continue
+        printf '%s:%s\n' "$(basename "$_gs017_f" .log)" \
+            "$(wc -c < "$_gs017_f" 2>/dev/null | tr -d ' ')"
+    done
+)"
 
 # ── helpers ─────────────────────────────────────────────────────────────────
 
@@ -56,33 +89,50 @@ _gs017_doli() {
     command -v doli 2>/dev/null
 }
 
-# _gs017_addbond_count — read a getMempoolTransactions reply on stdin, echo the
-# number of resident `addbond` entries, or -1 when the reply does not parse.
-_gs017_addbond_count() {
+# _gs017_addbond_hashes — read a getMempoolTransactions reply on stdin, echo
+# 'OK[ <hash>...]' for the resident addbond entries, or 'ERR' if it did not parse.
+_gs017_addbond_hashes() {
     python3 -c "
 import sys, json
 try:
     d = json.load(sys.stdin)
     r = d.get('result', d) if isinstance(d, dict) else d
     txs = r.get('transactions', r) if isinstance(r, dict) else r
-    n = 0
-    for t in (txs if isinstance(txs, list) else []):
+    if not isinstance(txs, list):
+        raise ValueError('shape')
+    out = ['OK']
+    for t in txs:
         t = t if isinstance(t, dict) else {}
         ty = str(t.get('txType') or t.get('tx_type') or '').lower().replace('_', '')
         if ty == 'addbond':
-            n += 1
-    print(n)
+            out.append(str(t.get('hash') or 'unknown'))
+    print(' '.join(out))
 except Exception:
-    print(-1)" 2>/dev/null
+    print('ERR')" 2>/dev/null
 }
 
-# _gs017_live_ports — ports on GS017_PORTS answering JSON-RPC, space separated.
-_gs017_live_ports() {
-    local p out=""
+# _gs017_page <port> — one maximum-size mempool page, hashes only.
+_gs017_page() {
+    _gs017_rpc "$1" getMempoolTransactions "{\"limit\":$GS017_PAGE}" | _gs017_addbond_hashes
+}
+
+# _gs017_txcount <port> — getMempoolInfo.txCount, 0 when unreadable.
+_gs017_txcount() {
+    local n
+    n="$(_gs017_rpc "$1" getMempoolInfo \
+        | sed -n 's/.*"txCount"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -1)"
+    n="$(printf '%s' "${n:-0}" | tr -dc '0-9')"
+    printf '%s' "${n:-0}"
+}
+
+# _gs017_first_producer_port — lowest answering port that is not the seed.
+_gs017_first_producer_port() {
+    local p
     for p in $GS017_PORTS; do
-        _gs017_rpc "$p" getChainInfo '{}' >/dev/null 2>&1 && out="$out $p"
+        [ "$p" = "$GS017_SEED_PORT" ] && continue
+        _gs017_rpc "$p" getChainInfo '{}' >/dev/null 2>&1 && { printf '%s' "$p"; return 0; }
     done
-    printf '%s' "${out# }"
+    return 1
 }
 
 # _gs017_pick <producers-json-file> — map a wallet on disk to a live producer and
@@ -135,20 +185,67 @@ print('CAP %s %s %d' % capped if capped else 'NOMATCH')
 PY
 }
 
-# ── assertion 1: the CLI refuses before it signs ────────────────────────────
+# ── precondition: the resolved CLI carries the M3 client guard ──────────────
+
+# _gs017_m3_check <token> [quiet] — sets GS017_M3_OK to 1 (carries M3) or 0.
+# quiet=1 suppresses the informational note when called as a gate, not a token.
+_gs017_m3_check() {
+    local t="$1" quiet="${2:-0}" bin ver sha port nodever
+    GS017_M3_OK=0
+    bin="$(_gs017_doli)" || bin=""
+    if [ -z "$bin" ]; then
+        SKIP_REASONS="$SKIP_REASONS; $t: doli CLI not resolvable (DOLI_CLI, \$HOME/testnet/bin/doli, PATH) — its M3 status cannot be read"
+        return 2
+    fi
+    ver="$("$bin" --version 2>&1 | head -1)"
+    sha="$(printf '%s' "$ver" | sed -n 's/.*(\([0-9a-fA-F][0-9a-fA-F]*\)).*/\1/p')"
+    if [ -z "$sha" ]; then
+        SKIP_REASONS="$SKIP_REASONS; $t: $bin reports \"$ver\", which carries no (commit) — M3 ancestry is unreadable"
+        return 2
+    fi
+    if ! command -v git >/dev/null 2>&1; then
+        SKIP_REASONS="$SKIP_REASONS; $t: git unavailable — $bin (\"$ver\") cannot be placed against M3 $GS017_M3_COMMIT"
+        return 2
+    fi
+    if ! git -C "$GS017_REPO" rev-parse --verify --quiet "${sha}^{commit}" >/dev/null 2>&1 \
+       || ! git -C "$GS017_REPO" rev-parse --verify --quiet "${GS017_M3_COMMIT}^{commit}" >/dev/null 2>&1; then
+        SKIP_REASONS="$SKIP_REASONS; $t: $bin (\"$ver\") — $sha or M3 $GS017_M3_COMMIT is not an object in $GS017_REPO"
+        return 2
+    fi
+    if ! git -C "$GS017_REPO" merge-base --is-ancestor "$GS017_M3_COMMIT" "$sha" >/dev/null 2>&1; then
+        SKIP_REASONS="$SKIP_REASONS; $t: $bin (\"$ver\") predates M3 $GS017_M3_COMMIT — GS-017 will not let a pre-M3 CLI reach a node"
+        return 2
+    fi
+    GS017_M3_OK=1
+    [ "$quiet" = "1" ] && return 0
+    port="$(_gs017_first_producer_port)" || port=""
+    nodever="$(_gs017_rpc "${port:-$GS017_SEED_PORT}" getNodeInfo \
+        | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+    INFO_REASONS="$INFO_REASONS; $t: $bin (\"$ver\") carries M3 $GS017_M3_COMMIT; node ${port:-none} reports version ${nodever:-unknown} — getNodeInfo exposes no commit, so the node's M2 status is not determinable over RPC"
+    return 0
+}
+
+# ── assertion: the CLI refuses before it signs ──────────────────────────────
 
 _gs017_cli_check() {
-    local t="$1" bin port pick kind wallet pubkey bonds count head out msg tmp rc=0 n
+    local t="$1" bin port pick kind wallet pubkey bonds count head out msg tmp rc=0 res
     bin="$(_gs017_doli)" || bin=""
     if [ -z "$bin" ]; then
         SKIP_REASONS="$SKIP_REASONS; $t: doli CLI not resolvable (DOLI_CLI, \$HOME/testnet/bin/doli, PATH) — the client-side refusal cannot be exercised"
+        return 2
+    fi
+    if [ -z "$GS017_M3_OK" ]; then
+        _gs017_m3_check gs017-cli-carries-m3 1 || true
+    fi
+    if [ "$GS017_M3_OK" != "1" ]; then
+        SKIP_REASONS="$SKIP_REASONS; $t: precondition gs017-cli-carries-m3 did not pass for $bin — a CLI that is not proven post-M3 is never allowed to reach a node"
         return 2
     fi
     if [ -z "$(ls "$GS017_KEYS_DIR"/producer_*.json 2>/dev/null)" ]; then
         SKIP_REASONS="$SKIP_REASONS; $t: no producer_*.json wallet under $GS017_KEYS_DIR — nothing to submit with"
         return 2
     fi
-    port="$(_gs017_first_producer_port)"
+    port="$(_gs017_first_producer_port)" || port=""
     if [ -z "$port" ]; then
         SKIP_REASONS="$SKIP_REASONS; $t: no live producer RPC on ${GS017_PORTS% *} (seed $GS017_SEED_PORT excluded) — nothing to submit to"
         return 2
@@ -187,100 +284,130 @@ EOF
         FAIL_REASONS="$FAIL_REASONS; $t: add-bond --count $count exited 0 for producer ${pubkey:0:8} at bond_count=$bonds (cap $GS017_MAX_BONDS) — the CLI built, signed and submitted an over-cap AddBond: ${msg:-no output}"
         return 1
     fi
-    if ! printf '%s' "$out" | grep -Eq 'headroom|cap|ADDBOND_CAP_EXCEEDED'; then
-        FAIL_REASONS="$FAIL_REASONS; $t: add-bond --count $count exited $rc with no cap/headroom refusal — a transport error is not an admission decision: ${msg:-no output}"
+    if printf '%s' "$out" | grep -q 'Submitting add-bond transaction'; then
+        FAIL_REASONS="$FAIL_REASONS; $t: add-bond --count $count printed the submit line before exiting $rc — the guard has to refuse BEFORE signing, and this transaction was already built and sent: ${msg}"
         return 1
     fi
-    n="$(_gs017_rpc "$port" getMempoolTransactions '[]' | _gs017_addbond_count)"
-    n="$(printf '%s' "$n" | tr -dc '0-9-')"
-    if [ -n "$n" ] && [ "$n" -gt 0 ]; then
-        FAIL_REASONS="$FAIL_REASONS; $t: port $port holds $n addbond entr(ies) after the refusal — the CLI printed a refusal and submitted anyway"
+    if ! printf '%s' "$out" | grep -q 'Bond cap exceeded'; then
+        if printf '%s' "$out" | grep -q 'ADDBOND_CAP_EXCEEDED'; then
+            FAIL_REASONS="$FAIL_REASONS; $t: the only refusal is the node text [ADDBOND_CAP_EXCEEDED] — the CLI reached the node, so the M3 client guard is absent or bypassed: ${msg}"
+            return 1
+        fi
+        FAIL_REASONS="$FAIL_REASONS; $t: add-bond --count $count exited $rc with no 'Bond cap exceeded' client refusal — a transport error is not an admission decision: ${msg:-no output}"
         return 1
     fi
+    if printf '%s' "$out" | grep -q 'RPC error'; then
+        FAIL_REASONS="$FAIL_REASONS; $t: the refusal came back inside an 'RPC error' envelope — the CLI reached the node, so the M3 client guard did not fire first: ${msg}"
+        return 1
+    fi
+    res="$(_gs017_page "$port")"
+    case "$res" in
+        OK\ *)
+            FAIL_REASONS="$FAIL_REASONS; $t: port $port holds addbond${res#OK} after the refusal — the CLI printed a refusal and submitted anyway"
+            return 1 ;;
+    esac
     INFO_REASONS="$INFO_REASONS; $t: CLI refused --count $count (headroom $head +1) for producer ${pubkey:0:8} at bond_count=$bonds on port $port, no addbond resident: ${msg:-refused}"
     return 0
 }
 
-# _gs017_first_producer_port — lowest answering port that is not the seed.
-_gs017_first_producer_port() {
-    local p
-    for p in $GS017_PORTS; do
-        [ "$p" = "$GS017_SEED_PORT" ] && continue
-        _gs017_rpc "$p" getChainInfo '{}' >/dev/null 2>&1 && { printf '%s' "$p"; return 0; }
-    done
-    return 1
-}
-
-# ── assertion 2: no addbond resident anywhere on the fleet ──────────────────
+# ── assertion: no addbond SURVIVES the window anywhere on the fleet ─────────
 
 _gs017_residency_check() {
-    local t="$1" p mem n answered=0 hits=""
+    local t="$1" p res tc h answered=0 maxtc=0 over="" pre="" stuck=""
     for p in $GS017_PORTS; do
-        mem="$(_gs017_rpc "$p" getMempoolTransactions '[]')" || continue
-        [ -n "$mem" ] || continue
-        n="$(printf '%s' "$mem" | _gs017_addbond_count)"
-        n="$(printf '%s' "$n" | tr -dc '0-9-')"
-        { [ -n "$n" ] && [ "$n" -ge 0 ]; } || continue
+        res="$(_gs017_page "$p")"
+        case "$res" in OK|OK\ *) ;; *) continue ;; esac
         answered=$(( answered + 1 ))
-        [ "$n" -gt 0 ] && hits="$hits $p($n)"
+        tc="$(_gs017_txcount "$p")"
+        [ "$tc" -gt "$maxtc" ] && maxtc="$tc"
+        if [ "$tc" -gt "$GS017_PAGE" ]; then
+            over="$over $p(txCount=$tc, $(( tc - GS017_PAGE )) tx past the ${GS017_PAGE}-tx page)"
+        fi
+        for h in ${res#OK}; do pre="$pre $p:$h"; done
     done
     if [ "$answered" -eq 0 ]; then
         SKIP_REASONS="$SKIP_REASONS; $t: no node on ${GS017_PORTS%% *}-${GS017_PORTS##* } answered getMempoolTransactions — no mempool inspected"
         return 2
     fi
-    if [ -n "$hits" ]; then
-        FAIL_REASONS="$FAIL_REASONS; $t: addbond resident on port(s)$hits of $answered live mempool(s) — an AddBond one node rejected is still gossiped to the rest"
+    if [ -n "$over" ]; then
+        FAIL_REASONS="$FAIL_REASONS; $t: getMempoolTransactions is hard-capped at $GS017_PAGE with no offset and no cursor, and$over — that remainder is unfetchable, so a clean sweep here would be a sample, not a result"
         return 1
     fi
-    INFO_REASONS="$INFO_REASONS; $t: no addbond in any of $answered live mempool(s)"
+    if [ "${GS017_SETTLE_SECS:-0}" -gt 0 ]; then
+        sleep "$GS017_SETTLE_SECS"
+    fi
+    for p in $GS017_PORTS; do
+        res="$(_gs017_page "$p")"
+        case "$res" in OK|OK\ *) ;; *) continue ;; esac
+        for h in ${res#OK}; do
+            case " $pre " in *" $p:$h "*) stuck="$stuck $p:$h" ;; esac
+        done
+    done
+    if [ -n "$stuck" ]; then
+        FAIL_REASONS="$FAIL_REASONS; $t: addbond still resident after a ${GS017_SETTLE_SECS}s settle (>= 2 slots) on$stuck — an AddBond one node rejected is still gossiped and re-admitted across the fleet"
+        return 1
+    fi
+    INFO_REASONS="$INFO_REASONS; $t: no addbond survived a ${GS017_SETTLE_SECS}s settle across $answered live mempool(s); largest getMempoolInfo txCount observed $maxtc, inside the ${GS017_PAGE}-tx page"
     return 0
 }
 
-# ── assertion 3: no NEW cap poison in the observation window ────────────────
+# ── assertion: no NEW cap poison in the observation window ──────────────────
 
-# _gs017_baseline_src — nodecfg (the runner's own pre-window offsets) · offsets
-# (standalone GS017_OFFSETS file) · snapshot (no baseline, take one now).
-_gs017_baseline_src() {
-    if [ -n "${NODECFG:-}" ] && [ -r "${NODECFG:-}" ]; then echo nodecfg
-    elif [ -n "${GS017_OFFSETS:-}" ] && [ -r "${GS017_OFFSETS:-}" ]; then echo offsets
-    else echo snapshot; fi
+# _gs017_baseline — 'name|logfile|byte-offset' for EVERY readable n*.log. The
+# offset comes from GS017_OFFSETS, else NODECFG, else the source-time snapshot,
+# else 0 (a log that appeared mid-run is new in its entirety). NODECFG cannot
+# choose the scan SET: gauntlet.sh:196 builds it from `seq 1 12`.
+_gs017_baseline() {
+    GS017_SRC_OFFSETS="$GS017_SRC_OFFSETS" \
+    python3 - "$GS017_LOG_DIR" "${GS017_OFFSETS:-}" "${NODECFG:-}" <<'PY' 2>/dev/null
+import glob, json, os, sys
+logdir, offs, cfg = sys.argv[1], sys.argv[2], sys.argv[3]
+
+def pairs(text):
+    d = {}
+    for line in text.splitlines():
+        n, _, o = line.strip().partition(':')
+        if n:
+            d[n] = o or '0'
+    return d
+
+snap = pairs(os.environ.get('GS017_SRC_OFFSETS', ''))
+filep = {}
+if offs:
+    try:
+        filep = pairs(open(offs).read())
+    except Exception:
+        filep = {}
+cfgp = {}
+if cfg:
+    try:
+        for n in (json.load(open(cfg)).get('nodes') or []):
+            nm = n.get('name') or ''
+            if nm:
+                cfgp[nm] = str(n.get('offset', 0))
+    except Exception:
+        cfgp = {}
+for f in sorted(glob.glob(os.path.join(logdir, 'n*.log'))):
+    if not os.access(f, os.R_OK):
+        continue
+    nm = os.path.basename(f)[:-4]
+    print('%s|%s|%s' % (nm, f, filep.get(nm, cfgp.get(nm, snap.get(nm, '0')))))
+PY
 }
 
-# _gs017_baseline — 'name|logfile|byte-offset' per producer node.
-_gs017_baseline() {
-    local name off f
-    case "$(_gs017_baseline_src)" in
-        nodecfg)
-            python3 -c "
-import json
-try:
-    d = json.load(open('$NODECFG'))
-except Exception:
-    raise SystemExit(0)
-for n in (d.get('nodes') or []):
-    lf = n.get('logfile') or ''
-    if lf:
-        print('%s|%s|%s' % (n.get('name', ''), lf, n.get('offset', 0)))" 2>/dev/null ;;
-        offsets)
-            while IFS=: read -r name off; do
-                [ -n "$name" ] || continue
-                printf '%s|%s/%s.log|%s\n' "$name" "$GS017_LOG_DIR" "$name" "${off:-0}"
-            done < "$GS017_OFFSETS" ;;
-        *)
-            for f in "$GS017_LOG_DIR"/n*.log; do
-                [ -r "$f" ] || continue
-                name="$(basename "$f" .log)"
-                printf '%s|%s|%s\n' "$name" "$f" "$(wc -c < "$f" 2>/dev/null | tr -d ' ')"
-            done ;;
-    esac
+# _gs017_nodecfg_count — how many nodes the runner itself named, for cross-check.
+_gs017_nodecfg_count() {
+    if [ -n "${NODECFG:-}" ] && [ -r "${NODECFG:-}" ]; then
+        grep -o '"name"' "$NODECFG" 2>/dev/null | wc -l | tr -d ' '
+    else
+        printf '0'
+    fi
 }
 
 _gs017_poison_check() {
-    local t="$1" name logf off n src scanned=0 total=0 hits=""
-    src="$(_gs017_baseline_src)"
+    local t="$1" name logf off n cfg scanned=0 total=0 hits=""
     while IFS='|' read -r name logf off; do
         [ -n "$name" ] && [ -n "$logf" ] || continue
-        case "$name" in n[0-9]*) ;; *) continue ;; esac
         [ -r "$logf" ] || continue
         scanned=$(( scanned + 1 ))
         # grep -c prints 0 AND exits 1 on no match, so swallow the status and
@@ -294,21 +421,23 @@ _gs017_poison_check() {
     done <<EOF
 $(_gs017_baseline)
 EOF
+    cfg="$(_gs017_nodecfg_count)"
     if [ "$scanned" -eq 0 ]; then
-        SKIP_REASONS="$SKIP_REASONS; $t: no readable node log under $GS017_LOG_DIR — no observation window to scan"
+        SKIP_REASONS="$SKIP_REASONS; $t: no readable n*.log under $GS017_LOG_DIR — no observation window to scan"
         return 2
     fi
     if [ -n "$hits" ]; then
-        FAIL_REASONS="$FAIL_REASONS; $t: $total new [BLOCK_POISON] ADDBOND_CAP_EXCEEDED event(s) past the $src baseline on$hits — block assembly packed an over-cap AddBond again"
+        FAIL_REASONS="$FAIL_REASONS; $t: $total new [BLOCK_POISON] ADDBOND_CAP_EXCEEDED event(s) past the pre-window baseline on$hits, scanned $scanned n*.log over a ${GS017_WINDOW_SECS}s window (NODECFG named $cfg) — block assembly packed an over-cap AddBond again"
         return 1
     fi
-    INFO_REASONS="$INFO_REASONS; $t: 0 new [BLOCK_POISON] ADDBOND_CAP_EXCEEDED events past the $src baseline across $scanned node log(s)"
+    INFO_REASONS="$INFO_REASONS; $t: 0 new [BLOCK_POISON] ADDBOND_CAP_EXCEEDED events past the pre-window baseline, scanned $scanned n*.log over a ${GS017_WINDOW_SECS}s window (NODECFG named $cfg)"
     return 0
 }
 
 _gs017_assert() {
     local t="$1"
     case "$t" in
+        gs017-cli-carries-m3) _gs017_m3_check "$t"; return $? ;;
         gs017-cli-refuses-before-signing) _gs017_cli_check "$t"; return $? ;;
         gs017-no-addbond-residency) _gs017_residency_check "$t"; return $? ;;
         gs017-no-cap-poison-in-window) _gs017_poison_check "$t"; return $? ;;
@@ -320,12 +449,19 @@ _gs017_assert() {
 # ── standalone ──────────────────────────────────────────────────────────────
 # gauntlet.sh has no single-scenario filter, so running GS-017 on its own goes
 # through here. Prints the runner's own result shape (gauntlet.sh:673-682).
+# The baseline is already taken (source time); the residency settle IS the
+# observation window, and the poison scan runs after it.
 
 _gs017_main() {
     local t rc s_ok=1
     GS017_ECHO_CMD=1
+    if [ "${1:-}" = "--quick" ]; then
+        GS017_WINDOW_SECS=20
+    fi
+    GS017_SETTLE_SECS="$GS017_WINDOW_SECS"
     FAIL_REASONS=""; SKIP_REASONS=""; INFO_REASONS=""
-    for t in gs017-cli-refuses-before-signing gs017-no-addbond-residency gs017-no-cap-poison-in-window; do
+    for t in gs017-cli-carries-m3 gs017-cli-refuses-before-signing \
+             gs017-no-addbond-residency gs017-no-cap-poison-in-window; do
         _gs017_assert "$t"; rc=$?
         { [ "$rc" = "0" ] || [ "$rc" = "2" ]; } || s_ok=0
     done
@@ -342,6 +478,6 @@ _gs017_main() {
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
-    _gs017_main
+    _gs017_main "$@"
     exit $?
 fi
