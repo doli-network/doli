@@ -23,6 +23,8 @@ pub(super) struct WithdrawalParity {
     addbond_ah: u64,
     height: u64,
     holdings: HashMap<PublicKey, ProducerHoldings>,
+    /// Keys the flushed set does not carry, with their `pending_addbond_count`.
+    absent: HashMap<PublicKey, u32>,
     in_block_addbond: HashMap<PublicKey, u32>,
     in_block_withdrawn: HashMap<PublicKey, u32>,
     earlier_hashes: HashSet<Hash>,
@@ -71,11 +73,17 @@ impl WithdrawalParity {
                 _ => None,
             };
             let Some(pk) = named else { continue };
-            if self.holdings.contains_key(&pk) {
+            if self.holdings.contains_key(&pk) || self.absent.contains_key(&pk) {
                 continue;
             }
-            if let HoldingsLookup::Found(h) = mempool::holdings::of_producer_set(producers, &pk) {
-                self.holdings.insert(pk, h);
+            match mempool::holdings::of_producer_set(producers, &pk) {
+                HoldingsLookup::Found(h) => {
+                    self.holdings.insert(pk, h);
+                }
+                HoldingsLookup::Unregistered { pending_addbond } => {
+                    self.absent.insert(pk, pending_addbond);
+                }
+                HoldingsLookup::Unavailable => {}
             }
         }
     }
@@ -147,10 +155,10 @@ impl WithdrawalParity {
         Ok(())
     }
 
-    /// INC-I-203 REQ-BOND-001. A producer the ProducerSet does not carry has
-    /// no entry here, and the gate reads its `bond_count` as 0, so a missing
-    /// entry is `Unavailable` (fail open) — never the withdrawal arm's
-    /// `[ECON_WITHDRAWAL_UNKNOWN_PRODUCER]`, which would over-reject.
+    /// INC-I-203 REQ-BOND-001. `load()` takes a blocking `producer_set.read()`,
+    /// so the builder always HAS a source: a key the flushed set does not carry
+    /// is `Unregistered` and is evaluated with `current = 0`, exactly as the
+    /// gate does. `Unavailable` is left only for a key never resolved at all.
     fn allow_add_bond(&self, tx: &Transaction) -> Result<(), String> {
         let Some(ab) = tx.add_bond_data() else {
             return Ok(());
@@ -158,7 +166,10 @@ impl WithdrawalParity {
         let pk = ab.producer_pubkey;
         let lookup = match self.holdings.get(&pk).copied() {
             Some(h) => HoldingsLookup::Found(h),
-            None => HoldingsLookup::Unavailable,
+            None => match self.absent.get(&pk).copied() {
+                Some(pending_addbond) => HoldingsLookup::Unregistered { pending_addbond },
+                None => HoldingsLookup::Unavailable,
+            },
         };
         mempool::addbond_cap::addbond_cap_verdict(
             tx,

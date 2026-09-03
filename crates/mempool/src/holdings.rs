@@ -55,8 +55,9 @@ pub type HoldingsSnapshot = Arc<RwLock<Vec<(PublicKey, ProducerHoldings)>>>;
 pub enum HoldingsLookup {
     /// No source is wired, or every wired source is contended right now.
     Unavailable,
-    /// The source answered: this key is not a registered producer (R0).
-    Unregistered,
+    /// The source answered: this key is not a registered producer (R0). Carries
+    /// the gate's `pending` term, which it reads for absent keys too.
+    Unregistered { pending_addbond: u32 },
     /// The source answered with the producer's holdings.
     Found(ProducerHoldings),
 }
@@ -92,9 +93,11 @@ impl HoldingsSources {
             if guard.is_empty() {
                 return HoldingsLookup::Unavailable;
             }
+            // A snapshot cannot answer `pending` for a key it does not carry; 0
+            // keeps the filter a strict subset of the gate.
             return match guard.iter().find(|(k, _)| k == pk) {
                 Some((_, h)) => HoldingsLookup::Found(*h),
-                None => HoldingsLookup::Unregistered,
+                None => HoldingsLookup::Unregistered { pending_addbond: 0 },
             };
         }
         HoldingsLookup::Unavailable
@@ -109,6 +112,8 @@ pub fn of_producer_set(set: &ProducerSet, pk: &PublicKey) -> HoldingsLookup {
             pending_addbond: set.pending_addbond_count(pk),
             withdrawal_pending: info.withdrawal_pending_count,
         }),
-        None => HoldingsLookup::Unregistered,
+        None => HoldingsLookup::Unregistered {
+            pending_addbond: set.pending_addbond_count(pk),
+        },
     }
 }

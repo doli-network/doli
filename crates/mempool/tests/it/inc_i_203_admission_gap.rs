@@ -46,6 +46,8 @@
 //!   PA-POST  `add_transaction` on a post-AH network (testnet, AH = 0)
 //!   PA-PRE   `add_transaction` on a pre-AH network (devnet, AH = u64::MAX)
 //!   PA-BLIND `add_transaction` post-AH with no holdings answer
+//!   PA-ABSENT `add_transaction` post-AH for a key an ANSWERING source does not
+//!             carry (M6 / REV-203-001) — the R0 condition, not "no answer"
 //!   PR-OVER  `revalidate` after the snapshot moved a resident over the cap
 //!   PR-UNDER `revalidate` with the resident still inside the cap
 //!
@@ -54,6 +56,9 @@
 //!   IP-EXACT  the same sum = 3000 (the `>` boundary, must be allowed)
 //!   IP-BLIND  no source wired, and a wired-but-EMPTY snapshot
 //!   IP-MOVED  admitted at 2998, snapshot republished at 2999
+//!   IP-ABSENT-OVERSIZE  unregistered key, 0 + 0 + 3001 Bond outputs in ONE tx
+//!   IP-ABSENT-PENDING   key absent from the flushed set with 2000 outpoints
+//!                       queued in `PendingProducerUpdate::AddBond`, +1500
 //!
 //! MATRIX: (every enumerated cell has an assertion)
 //!   O1,O3,O5    × PA-POST  × IP-OVER   → req_bond_002_pool_admission_rejects…
@@ -61,6 +66,10 @@
 //!   O1,O3,O5    × PA-POST  × IP-EXACT  → req_bond_002_pool_admission_rejects…
 //!   O1,O3,O5    × PA-PRE   × IP-OVER   → req_bond_005_pool_admission_unchanged…
 //!   O1,O3       × PA-BLIND × IP-BLIND  → req_bond_006_pool_admission_fails_open…
+//!   O1,O2,O3    × PA-ABSENT × IP-ABSENT-OVERSIZE
+//!                                      → req_bond_006_pool_admission_refuses_an_oversized…
+//!   O1,O2,O3    × PA-ABSENT × IP-ABSENT-PENDING
+//!                                      → req_bond_006_pool_admission_refuses_addbond_for_a_mined…
 //!   O1,O4,O5,O6 × PR-OVER  × IP-MOVED  → req_bond_003_pool_revalidate_evicts…
 //!   O1,O4,O5,O6 × PR-UNDER × IP-EXACT  → req_bond_003_pool_revalidate_keeps…
 //!   measurement × PA-POST + PR-OVER    → inc_i_203_m2_probe_resident_over_cap…
@@ -537,4 +546,114 @@ pub(crate) fn probe_resident_over_cap_addbonds() -> usize {
     mempool.revalidate(&c.utxo, HEIGHT);
 
     resident_over_cap(&mempool, &c.snapshot)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// M6 / REV-203-001 — an ANSWER of "not a producer" is not "no answer"
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// REQ-BOND-006, REQ-BOND-002 — Decision: a failure means any funded key that is
+/// NOT a registered producer can park ONE ~150 KB AddBond carrying 3001 Bond
+/// outputs in every mempool on the network; the gate evaluates an absent key as
+/// `0 + 0 + 3001 > 3000` and rejects the block, so every leader packs it, loses
+/// the slot and re-packs it until `max_age` — a cheap persistent builder DoS.
+///
+/// **RED today.** `addbond_cap_verdict` treats `Unregistered` exactly like
+/// `Unavailable` and returns `Ok(())`.
+///
+/// The snapshot is repopulated with a DECOY key on purpose: absence from a
+/// POPULATED source is the R0 answer (`holdings.rs:86-95`), while absence from
+/// an EMPTY one is `Unavailable` and must keep failing open (the test above).
+#[test]
+fn req_bond_006_pool_admission_refuses_an_oversized_addbond_from_an_unregistered_key() {
+    let c = case(Network::Testnet, 0, CAP + 1, 0x31);
+    {
+        let mut guard = c.snapshot.write().expect("snapshot lock");
+        guard.clear();
+        guard.push((
+            *KeyPair::from_seed([0xD1; 32]).public_key(),
+            ProducerHoldings::default(),
+        ));
+    }
+    let mut mempool = wired(Network::Testnet, &c);
+
+    let err = offer(&mut mempool, &c, HEIGHT).expect_err(
+        "REV-203-001 / REQ-BOND-002: the submitter is not in the ProducerSet, so the \
+         gate reads current=0 and evaluates 0 + 0 + 3001 > 3000 — every node rejects \
+         the block that carries this transaction. Admission must refuse it here, \
+         before it is gossiped and before a leader burns a slot on it. \
+         `validate_add_bond_data` has NO per-tx bond ceiling and 3001 Bond outputs \
+         are ~150 KB, well under the 600 KB policy cap.",
+    );
+    // Decision: without the grep code the fleet cannot tell this refusal from any
+    // other mempool rejection, and the DoS stays invisible in the logs.
+    assert!(
+        err.to_string().contains("[ADDBOND_CAP_EXCEEDED]"),
+        "O2: the refusal must carry the bracketed code the fleet greps. got: {err}"
+    );
+    assert!(
+        !mempool.contains(&c.subject),
+        "O3: a refused transaction must not be resident"
+    );
+}
+
+/// REQ-BOND-006, REQ-BOND-002 — Decision: a failure means the INC-I-203 poison
+/// loop survives for the exact shape that produced it — a producer whose
+/// Register was mined mid-epoch, so it sits in `pending_updates` and is ABSENT
+/// from the flushed set, with a queued AddBond already spending its headroom.
+/// The gate counts `pending_addbond_count(pk)` for that key; admission counts
+/// nothing, admits, and every leader packs a block every node rejects.
+///
+/// **RED today.** The live `ProducerSet` handle answers `Unregistered` for this
+/// key and `addbond_cap_verdict` maps that to `Ok(())`, discarding the 2000
+/// queued outpoints the gate reads.
+#[test]
+fn req_bond_006_pool_admission_refuses_addbond_for_a_mined_but_unflushed_registration() {
+    const TAG: u8 = 0x32;
+    const QUEUED: u32 = 2_000;
+    const REQUESTED: u32 = 1_500;
+
+    let c = case(Network::Testnet, 0, REQUESTED, TAG);
+    let pk = *KeyPair::from_seed([TAG; 32]).public_key();
+
+    let mut set = storage::ProducerSet::new();
+    set.queue_update(storage::PendingProducerUpdate::AddBond {
+        pubkey: pk,
+        outpoints: (0..QUEUED)
+            .map(|i| (Hash::from_bytes([TAG ^ 0x77; 32]), i))
+            .collect(),
+        bond_unit: Network::Testnet.bond_unit(),
+        creation_slot: 0,
+    });
+    assert!(
+        set.get_by_pubkey(&pk).is_none(),
+        "harness: the key must be ABSENT from the flushed set — that is the shape \
+         `Unregistered` answers for"
+    );
+    assert_eq!(
+        set.pending_addbond_count(&pk),
+        QUEUED,
+        "harness: the gate reads this term for an absent key too \
+         (`validation_checks.rs:1197-1218`); if it is 0 the assertion below is vacuous"
+    );
+
+    let mut mempool = mempool_for(Network::Testnet);
+    mempool.share_producer_set(std::sync::Arc::new(tokio::sync::RwLock::new(set)));
+
+    let err = offer(&mut mempool, &c, HEIGHT).expect_err(
+        "REV-203-001 / INC-I-203: 0 flushed + 2000 queued + 1500 requested = 3500 > \
+         3000. `validate_block_economics` rejects the block, so admission must \
+         refuse the transaction. This is the mid-epoch registration shape that \
+         opened the incident.",
+    );
+    // Decision: if the code is missing, the poison loop is indistinguishable in the
+    // logs from an ordinary fee or funding rejection.
+    assert!(
+        err.to_string().contains("[ADDBOND_CAP_EXCEEDED]"),
+        "O2: the refusal must carry the bracketed code the fleet greps. got: {err}"
+    );
+    assert!(
+        !mempool.contains(&c.subject),
+        "O3: a refused transaction must not be resident"
+    );
 }

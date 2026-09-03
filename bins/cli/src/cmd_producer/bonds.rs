@@ -5,7 +5,7 @@ use doli_core::{Input, Output, Transaction};
 use super::common::{compute_fifo_breakdown, display_fifo_breakdown};
 use crate::rpc_client::{format_balance, RpcClient};
 use crate::wallet::Wallet;
-use doli_cli::producer_ledger::addbond_headroom_check;
+use doli_cli::producer_ledger::{addbond_current_from_rpc, addbond_headroom_check};
 
 pub(super) async fn handle_add_bond(
     wallet: &Wallet,
@@ -45,7 +45,8 @@ pub(super) async fn handle_add_bond(
         .iter()
         .filter(|u| u.update_type == "add_bond")
         .fold(0u32, |acc, u| acc.saturating_add(u.bond_count.unwrap_or(0)));
-    if let Err(msg) = addbond_headroom_check(producer.bond_count, pending, count) {
+    let current = addbond_current_from_rpc(producer.producer_set_bond_count, producer.bond_count);
+    if let Err(msg) = addbond_headroom_check(current, pending, count) {
         anyhow::bail!("{}", msg);
     }
 

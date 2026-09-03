@@ -285,6 +285,11 @@ pub struct ProducerInfo {
     /// Number of bonds staked
     #[serde(default = "default_bond_count")]
     pub bond_count: u32,
+    /// ProducerSet flush-only bond_count — the term the consensus gate reads.
+    /// `None` from a node older than this field: fall back to the UTXO-derived
+    /// `bond_count` (pre-M6 behaviour).
+    #[serde(default)]
+    pub producer_set_bond_count: Option<u32>,
     /// Status (active, unbonding, exited, slashed)
     pub status: String,
     /// Current era

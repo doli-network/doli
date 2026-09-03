@@ -63,11 +63,24 @@
 //!   O3 `Result`/`Option` discriminant — the build must succeed
 //! PATHS: PA-UNAVAILABLE (live handle write-held, published snapshot empty, so
 //!   `try_read` fails and `lookup` answers `Unavailable`);
-//!   PB-NOENTRY (the builder's blocking `read().await` cannot observe
-//!   contention without deadlocking, so its no-answer condition is an absent
-//!   `holdings` entry for a producer the ProducerSet does not carry).
-//! MATRIX: O1 × PA-UNAVAILABLE → leg A; O2,O3 × PB-NOENTRY → leg B.
+//!   PB-ABSENT (the builder's blocking `read().await` always answers, so an
+//!   absent key is `Unregistered{pending_addbond:0}` — M6 / REV-203-001 — and
+//!   `0 + 0 + 0 + 2 <= 3000` still packs, for a NEW reason).
+//! MATRIX: O1 × PA-UNAVAILABLE → leg A; O2,O3 × PB-ABSENT → leg B.
 //!   [GREEN, must stay green]
+//!
+//! OUTPUT CONTRACT: fn absent_producer_over_cap_addbonds_are_not_packed
+//! Function under test: `Node::build_block_content` (as above).
+//!   O1 returned transaction list — BOTH absent-producer AddBonds must be absent
+//!   O2 `Result`/`Option` discriminant — the refusal is a SKIP, never a build
+//!      failure and never a slot abort (INV-PROD-002)
+//! PATHS: PB-ABSENT at h >= AH.
+//! INPUT PARTITIONS:
+//!   IP-ABSENT-OVERSIZE unregistered key, one AddBond carrying 3001 Bond outputs
+//!   IP-ABSENT-PENDING  absent from the flushed set, 2000 outpoints queued in
+//!                      `PendingProducerUpdate::AddBond`, +1500 requested
+//! MATRIX: O1,O2 × PB-ABSENT × {IP-ABSENT-OVERSIZE, IP-ABSENT-PENDING} → this
+//!   test. [RED]
 //!
 //! OUTPUT CONTRACT: fn admission_expression_rejects_a_strict_subset_of_consensus
 //! Function under test: `check_addbond_cap(u32, u32, u32, u64, u64)
@@ -134,6 +147,12 @@ struct Scenario {
 /// Fund one Normal UTXO, build a `REQUESTED`-bond `AddBond` naming `kp`'s own
 /// key, sign it and offer it to the node's mempool. Returns the tx hash.
 async fn admit_add_bond(node: &Node, kp: &KeyPair, tag: u8) -> Hash {
+    admit_add_bond_n(node, kp, tag, REQUESTED).await
+}
+
+/// `admit_add_bond` with the Bond-output count under the caller's control —
+/// `requested` at the gate is that COUNT, so it is the term M6 varies.
+async fn admit_add_bond_n(node: &Node, kp: &KeyPair, tag: u8, requested: u32) -> Hash {
     let pk = *kp.public_key();
     let unit = bond_unit(node);
     let funding = Hash::from_bytes([tag; 32]);
@@ -143,7 +162,7 @@ async fn admit_add_bond(node: &Node, kp: &KeyPair, tag: u8) -> Hash {
         utxo.insert(
             storage::Outpoint::new(funding, 0),
             storage::UtxoEntry {
-                output: Output::normal(unit * REQUESTED as u64 + fee, addr(&pk)),
+                output: Output::normal(unit * requested as u64 + fee, addr(&pk)),
                 height: 1,
                 is_coinbase: false,
                 is_epoch_reward: false,
@@ -154,7 +173,7 @@ async fn admit_add_bond(node: &Node, kp: &KeyPair, tag: u8) -> Hash {
     let mut inp = Input::new(funding, 0);
     inp.public_key = Some(pk);
     let mut tx =
-        Transaction::new_add_bond(vec![inp], pk, REQUESTED, unit * REQUESTED as u64, u64::MAX);
+        Transaction::new_add_bond(vec![inp], pk, requested, unit * requested as u64, u64::MAX);
     let signing_hash = tx.signing_message_for_input(0);
     tx.inputs[0].signature = crypto::signature::sign_hash(&signing_hash, kp.private_key());
     let hash = tx.hash();
@@ -391,14 +410,14 @@ async fn below_activation_height_over_cap_addbond_is_still_packed() {
 /// uses `try_read`, so write-holding the live handle with an empty published
 /// snapshot yields `HoldingsLookup::Unavailable` and admission must not refuse.
 ///
-/// Leg B is the builder's own route. `WithdrawalParity::load` takes a BLOCKING
-/// `producer_set.read().await` (`assembly.rs:193`), so contention there would
-/// deadlock the node against itself, not produce `Unavailable`; the builder's
-/// no-answer condition is instead an absent `holdings` entry
-/// (`of_producer_set` returns `Unregistered`, which `load` does not insert).
-/// The withdrawal arm turns that into `Err` — copying it for AddBond would skip
-/// a transaction consensus ACCEPTS, since the gate reads an unknown producer's
-/// `bond_count` as `0` (`validation_checks.rs:1198`).
+/// Leg B is the builder's own route, and M6 / REV-203-001 changed its REASON.
+/// `WithdrawalParity::load` takes a BLOCKING `producer_set.read().await`
+/// (`assembly.rs:193`), so the builder has NO genuinely source-less path: it
+/// always has an answer. An absent key is therefore `Unregistered`, not
+/// `Unavailable`, and the AddBond arm must EVALUATE it as the gate does —
+/// `0 + pending_addbond(pk) + in_block_prior + requested`. This stranger has
+/// `0 + 0 + 0 + REQUESTED = 2 <= 3000`, so it still packs. The withdrawal arm
+/// keeps answering a missing entry with `[ECON_WITHDRAWAL_UNKNOWN_PRODUCER]`.
 #[tokio::test]
 async fn unavailable_holdings_fails_open_and_packs() {
     let mut sc = scenario(Network::Testnet).await;
@@ -450,16 +469,19 @@ async fn unavailable_holdings_fails_open_and_packs() {
     );
 
     // Leg B — the builder has no holdings entry for the stranger.
+    // Decision: if this flips, the AddBond arm has copied the withdrawal arm's
+    // unknown-producer refusal and now censors an in-cap AddBond from every key
+    // the ProducerSet does not carry — over-rejection the gate never asked for.
     let block = build_at(&mut sc, HEIGHT).await;
     assert!(
         contains(&block, &stranger_hash),
-        "REQ-BOND-006 FAIL-CLOSED at the builder: the ProducerSet does not carry \
-         this key, so `WithdrawalParity::load` inserts no holdings entry. The \
-         withdrawal arm answers a missing entry with \
-         [ECON_WITHDRAWAL_UNKNOWN_PRODUCER]; the AddBond arm must NOT copy it. \
-         The gate reads an unknown producer's bond_count as 0, so \
-         0 + 0 + {REQUESTED} <= {CAP} and consensus ACCEPTS this block — \
-         skipping it is over-rejection the gate never asked for."
+        "REQ-BOND-006 / REV-203-001 at the builder: the ProducerSet does not carry \
+         this key, so `load` inserts no holdings entry. That is an ANSWER \
+         (`Unregistered`), not `Unavailable` — the builder's `read().await` cannot \
+         fail to answer — and the arm must EVALUATE it the way the gate does: \
+         current 0 + pending 0 + in_block_prior 0 + {REQUESTED} <= {CAP}, so \
+         consensus ACCEPTS this block and skipping is censorship. The withdrawal \
+         arm's [ECON_WITHDRAWAL_UNKNOWN_PRODUCER] must NOT be copied here."
     );
 }
 
@@ -617,5 +639,100 @@ fn allowance_with_is_not_the_addbond_expression() {
         "the withdrawal allowance ACCEPTS the same AddBond — using allowance_with() \
          for the cap check would let over-cap AddBonds through the filter and back \
          into the block-poison path"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// M6 / REV-203-001 (Must) — the absent producer the gate still evaluates
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// REQ-BOND-001, REQ-BOND-006 — Decision: a failure means the builder still
+/// packs blocks every node rejects for a key the ProducerSet does not carry.
+/// The gate evaluates `0 + pending_addbond(pk) + in_block_prior + requested`
+/// for ANY key (`validation_checks.rs:1197-1218`), so two shapes poison a
+/// block: an unregistered key that puts 3001 Bond outputs in ONE ~150 KB
+/// AddBond (no per-tx ceiling in `validate_add_bond_data`, well under the
+/// 600 KB policy cap) — a cheap persistent builder DoS, since every leader
+/// re-packs it until `max_age` — and the INC-I-203 shape itself, a Register
+/// mined mid-epoch that is still in `pending_updates` with a queued AddBond.
+///
+/// **RED today.** `allow_add_bond` maps a missing `holdings` entry to
+/// `Unavailable`, which `addbond_cap_verdict` fails open on.
+///
+/// The node's own mempool is a DEVNET mempool (`new_for_test` builds it before
+/// `config.network` is moved), so admission is pre-AH here and both
+/// transactions become resident. Only the builder is under test.
+#[tokio::test]
+async fn absent_producer_over_cap_addbonds_are_not_packed() {
+    const OVERSIZE_TAG: u8 = 0x71;
+    const PENDING_TAG: u8 = 0x72;
+    const QUEUED: u32 = 2_000;
+    const PENDING_REQUEST: u32 = 1_500;
+
+    let mut sc = scenario(Network::Testnet).await;
+
+    let stranger = KeyPair::from_seed([OVERSIZE_TAG; 32]);
+    let oversize = admit_add_bond_n(&sc.node, &stranger, OVERSIZE_TAG, CAP + 1).await;
+
+    let unflushed = KeyPair::from_seed([PENDING_TAG; 32]);
+    let unflushed_pk = *unflushed.public_key();
+    let queued_tx = admit_add_bond_n(&sc.node, &unflushed, PENDING_TAG, PENDING_REQUEST).await;
+    let unit = bond_unit(&sc.node);
+    {
+        let mut ps = sc.node.producer_set.write().await;
+        ps.queue_update(storage::PendingProducerUpdate::AddBond {
+            pubkey: unflushed_pk,
+            outpoints: (0..QUEUED)
+                .map(|i| (Hash::from_bytes([PENDING_TAG ^ 0x77; 32]), i))
+                .collect(),
+            bond_unit: unit,
+            creation_slot: 0,
+        });
+        assert!(
+            ps.get_by_pubkey(&unflushed_pk).is_none(),
+            "harness: the key must be ABSENT from the flushed set — that is the \
+             mid-epoch registration shape"
+        );
+        assert_eq!(
+            ps.pending_addbond_count(&unflushed_pk),
+            QUEUED,
+            "harness: if this term is 0 the assertion below is vacuous"
+        );
+    }
+
+    let ah = sc
+        .node
+        .config
+        .network
+        .params()
+        .addbond_cap_enforcement_activation_height;
+    let block = build_at(&mut sc, HEIGHT).await;
+    let packed = report_over_cap_addbonds(&sc.node, &block, HEIGHT, ah).await;
+
+    // Decision: if this flips, any funded non-producer key parks one transaction
+    // that every leader on the network re-packs into a doomed block for 14 days.
+    assert!(
+        !contains(&block, &oversize),
+        "REV-203-001 (b): the builder packed an AddBond carrying {} Bond outputs \
+         from a key the ProducerSet does not carry. The gate reads current=0 and \
+         evaluates 0 + 0 + {} > {CAP}, so EVERY node rejects this block — including \
+         the builder's own Light self-apply. {packed} over-cap AddBond(s) packed.",
+        CAP + 1,
+        CAP + 1
+    );
+    // Decision: if this flips, INC-I-203's own reproduction shape still burns the
+    // slot of every producer scheduled while the registration is unflushed.
+    assert!(
+        !contains(&block, &queued_tx),
+        "REV-203-001 (a): the builder packed AddBond(+{PENDING_REQUEST}) for a key \
+         absent from the FLUSHED set that already has {QUEUED} outpoints queued in \
+         `pending_updates`. The gate counts `pending_addbond_count(pk)` for absent \
+         keys too: 0 + {QUEUED} + {PENDING_REQUEST} > {CAP}. This is the mid-epoch \
+         registration that opened the incident."
+    );
+    assert_eq!(
+        packed, 0,
+        "REQ-BOND-001: {packed} AddBond(s) in the built block are rejected by \
+         check_addbond_cap at h={HEIGHT}"
     );
 }
