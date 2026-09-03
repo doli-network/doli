@@ -40,6 +40,7 @@ mod tests {
     use doli_core::consensus::ConsensusParams;
     use doli_core::network::Network;
     use doli_core::transaction::{Input, Output, Transaction};
+    use doli_core::validation::{self, ValidationContext, ValidationError};
     use doli_core::TxType;
     use storage::{Outpoint, UtxoEntry, UtxoSet};
 
@@ -984,20 +985,88 @@ mod tests {
         }
     }
 
-    /// PARITY TEST: below inc_i_096 gate, AMM txs use naive conservation.
+    /// A `UtxoProvider` view over the same `storage::UtxoSet` the mempool reads.
+    ///
+    /// `storage::UtxoSet` does not implement `doli_core::validation::UtxoProvider`
+    /// anywhere in the tree, so the consensus entry point needs this adapter. It
+    /// is a pure lookup: it invents no entry the mempool would not see, which is
+    /// what makes the two paths comparable on ONE fixture.
+    struct UtxoSetView<'a> {
+        set: &'a UtxoSet,
+        pubkey: Option<crypto::PublicKey>,
+    }
+
+    impl doli_core::validation::UtxoProvider for UtxoSetView<'_> {
+        fn get_utxo(
+            &self,
+            tx_hash: &Hash,
+            output_index: u32,
+        ) -> Option<doli_core::validation::UtxoInfo> {
+            self.set
+                .get(&Outpoint::new(*tx_hash, output_index))
+                .map(|entry| doli_core::validation::UtxoInfo {
+                    output: entry.output.clone(),
+                    pubkey: self.pubkey,
+                    spent: false,
+                })
+        }
+    }
+
+    /// PARITY TEST (DC-2): the SAME RemoveLiquidity fixture the mempool admits
+    /// above the inc_i_096 gate must be rejected by CONSENSUS below it.
+    ///
+    /// INC-I-203 M5 — Decision: this test drove the MEMPOOL at height 25_000 on a
+    /// comment that claimed "inc_i_096 = u64::MAX". The shipped
+    /// `inc_i_096_activation_height` is `0` on all three networks, so 25_000 was
+    /// ABOVE the gate and the tx was correctly admitted where the test asserted a
+    /// rejection. The gate cannot be moved back in-process: the mempool reads
+    /// `self.network.params().inc_i_096_activation_height` (`pool.rs:614`) and
+    /// `Network::params()` caches in a process-wide `OnceLock`, so a
+    /// `DOLI_INC_I_096_ACTIVATION_HEIGHT` override would be ONE value for the whole
+    /// binary and would break the sibling tests that need the gate ACTIVE
+    /// (`inc_i_096_remove_liquidity_with_fee_change_admitted`,
+    /// `inc_i_096_fee_equals_doli_surplus`, `inc_i_096_parity_accept_reject`).
+    ///
+    /// It is therefore re-aimed at the DC-2 parity TWIN of the same branch, which
+    /// is driven by an injected context instead of a global:
+    /// `validation/utxo.rs:266` — `if is_amm_pool_tx && ctx.current_height >=
+    /// ctx.inc_i_096_activation_height { verify_amm_conservation } else if
+    /// total_input < total_output { InsufficientFunds }`.
+    ///
+    /// WHY THIS IS NOT A DUPLICATE of
+    /// `crates/core/tests/inc_i_096_amm_conservation.rs::{remove_liquidity_accepted_when_gate_active,
+    /// remove_liquidity_rejected_when_gate_inactive}`: those drive their own
+    /// fixture. This one drives the MEMPOOL'S fixture — the exact tx the sibling
+    /// tests in this module prove the mempool admits. Together they are the DC-2
+    /// parity claim on ONE shared tx: the mempool must not admit what consensus
+    /// rejects. A failure here says the two gate copies disagree for a tx the
+    /// mempool will actually relay, which is a chain-split decision, not a
+    /// restatement of the core-crate pair.
+    ///
+    /// OUTPUT CONTRACT:
+    ///   Function under test: `validation::validate_transaction_with_utxos<U: UtxoProvider>(
+    ///       &Transaction, &ValidationContext, &U) -> Result<(), ValidationError>`
+    ///   O1 (return value)    the `Result`. The ONLY observable output.
+    ///   O2 (mutable params)  NONE — `&Transaction`, `&ValidationContext`, `&U`.
+    ///   O3 (receiver mut.)   NONE — free function, no receiver.
+    ///   O4 (persistent)      NONE — no store write; the UTXO view is read-only.
+    ///   O5 (process state)   no panic. Asserted by the test completing.
+    ///   CODE PATHS  P-NAIVE  height <  #096 -> `total_input < total_output`
+    ///               P-POOL   height >= #096 -> `verify_amm_conservation`
+    ///   INPUT PARTITIONS (ONE fixture; `inc_i_096_activation_height` is the ONLY
+    ///   variable — every other ctx field, the tx and the UTXO set are identical)
+    ///     IP-G1 inc_i_096 = u64::MAX -> P-NAIVE -> Err(InsufficientFunds)
+    ///     IP-G2 inc_i_096 = 0        -> P-POOL  -> Ok
+    ///   MATRIX  O1 x {IP-G1, IP-G2} = 2 cells, both asserted, including the
+    ///   ValidationError VARIANT on IP-G1 (not merely `is_err`).
+    ///   ANTI-VACUITY  IP-G1 <-> IP-G2 differ in exactly one field. Without IP-G2,
+    ///   IP-G1's rejection could mean the fixture is simply invalid; without IP-G1,
+    ///   IP-G2's acceptance could mean the naive rule was deleted rather than gated.
     #[test]
     fn inc_i_096_below_gate_rejects_remove_liquidity() {
         use doli_core::conditions::{Witness, WitnessSignature};
         use doli_core::transaction::SighashType;
 
-        // Use Testnet where AMM is active (amm_activation_height=20_099,
-        // inc_i_092=23_688) but inc_i_096 is u64::MAX. Height 25_000 is
-        // above AMM+INC-I-092 gates but below INC-I-096.
-        let mut mempool = Mempool::new(
-            MempoolPolicy::testnet(),
-            ConsensusParams::testnet(),
-            Network::Testnet,
-        );
         let kp = test_keypair();
         let pkh = pubkey_hash();
 
@@ -1103,17 +1172,63 @@ mod tests {
         let w = build_witnesses(&tx);
         tx.set_covenant_witnesses(&w);
 
-        // Below gate (height=25_000, inc_i_096=u64::MAX): naive conservation rejects
-        let res = mempool.add_transaction(tx, &utxo_set, 25_000);
+        // ONE fixture, ONE view, TWO contexts. Every ctx field except
+        // `inc_i_096_activation_height` is identical, so the gate is the only
+        // variable. AMM and INC-I-092 are injected as ACTIVE on both rows rather
+        // than read from `NetworkParams`, so a re-pin of either cannot silently
+        // move this experiment the way it moved the height literal this test
+        // used to carry.
+        let view = UtxoSetView {
+            set: &utxo_set,
+            pubkey: Some(*kp.public_key()),
+        };
+        const HEIGHT: u64 = 25_000;
+        let ctx_with_096 = |inc_i_096: u64| {
+            ValidationContext::new(
+                ConsensusParams::testnet(),
+                Network::Testnet,
+                doli_core::consensus::GENESIS_TIME + 10 * HEIGHT,
+                HEIGHT,
+            )
+            .with_prev_block(0, doli_core::consensus::GENESIS_TIME, Hash::ZERO)
+            .with_sig_verification_height(0)
+            .with_amm_activation_height(0)
+            .with_inc_i_092_activation_height(0)
+            .with_inc_i_096_activation_height(inc_i_096)
+        };
+
+        // IP-G1 / P-NAIVE — BELOW the gate. `total_input < total_output` because
+        // the DOLI leaving the pool reserve is invisible to a sum over
+        // `Output.amount`. Preserved bit-identical for mixed-fleet safety
+        // (INV-COMPAT-001): a node that started accepting this below the gate
+        // would fork away from every peer still running the naive rule.
+        let below =
+            validation::validate_transaction_with_utxos(&tx, &ctx_with_096(u64::MAX), &view);
+        match &below {
+            Err(ValidationError::InsufficientFunds { .. }) => {}
+            other => panic!(
+                "IP-G1: below the inc_i_096 gate this RemoveLiquidity MUST be \
+                 rejected with InsufficientFunds by the naive \
+                 `total_input < total_output` rule (validation/utxo.rs:270). \
+                 Getting anything else means the gate is no longer consulted or \
+                 the frozen pre-INC-I-096 rule has changed. Got: {:?}",
+                other
+            ),
+        }
+
+        // IP-G2 / P-POOL — AT the shipped gate (0 on all three networks). The SAME
+        // fixture must now be accepted by `verify_amm_conservation`, which can see
+        // the reserve delta. Without this row, IP-G1 would also pass on a fixture
+        // that is simply malformed, and the rejection would prove nothing.
+        let above = validation::validate_transaction_with_utxos(&tx, &ctx_with_096(0), &view);
         assert!(
-            res.is_err(),
-            "Below inc_i_096 gate, RemoveLiquidity DOLI-outflow must be rejected"
-        );
-        let err_msg = format!("{}", res.unwrap_err());
-        assert!(
-            err_msg.contains("MPTX008") || err_msg.contains("insufficient funds"),
-            "Expected MPTX008 insufficient funds, got: {}",
-            err_msg
+            above.is_ok(),
+            "IP-G2: at and above the inc_i_096 gate the SAME RemoveLiquidity must \
+             be ACCEPTED by verify_amm_conservation — this is the tx the sibling \
+             mempool tests in this module prove the mempool admits. If consensus \
+             rejects what the mempool relays, the two DC-2 gate copies disagree \
+             and the mempool is feeding peers a tx that splits the chain. Got: {:?}",
+            above
         );
     }
 }

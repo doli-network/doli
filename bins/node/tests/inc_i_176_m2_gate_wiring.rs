@@ -110,16 +110,28 @@
 //!   P-BND-ACCEPT  height >= #22, signatures over the BOUND bytes    -> applied
 //!   P-BND-REJECT  height <  #22, signatures over the BOUND bytes    -> skipped
 //!
-//! INPUT PARTITIONS (network = Testnet for every row; #20 = 127_200, #22 = 300_000)
-//!   IP-W1 add,    legacy-signed, h = 299_999  -> P-LEG-ACCEPT (parity, green today)
-//!   IP-W2 add,    legacy-signed, h = 300_000  -> P-LEG-REJECT (RED today)
-//!   IP-W3 add,    bound-signed,  h = 300_000  -> P-BND-ACCEPT (RED today)
-//!   IP-W4 add,    bound-signed,  h = 299_999  -> P-BND-REJECT (green today)
-//!   IP-W5 remove, legacy-signed, h = 299_999  -> P-LEG-ACCEPT (parity, green today)
-//!   IP-W6 remove, legacy-signed, h = 300_000  -> P-LEG-REJECT (RED today)
-//!   IP-W7 remove, bound-signed,  h = 300_000  -> P-BND-ACCEPT (RED today)
-//!   IP-W8 remove, bound-signed,  h = 299_999  -> P-BND-REJECT (green today)
-//!   IP-W9 add,    bound-signed,  h = 301_000  -> P-BND-ACCEPT well above the edge
+//! INPUT PARTITIONS (network = Testnet for every row; heights are DERIVED from
+//! the shipped params at run time, never re-typed as literals — see
+//! [`gate_22`]. Shipped testnet #22 today: `15_087`.)
+//!   IP-W1 add,    legacy-signed, h = #22 - 1     -> P-LEG-ACCEPT (parity)
+//!   IP-W2 add,    legacy-signed, h = #22         -> P-LEG-REJECT
+//!   IP-W3 add,    bound-signed,  h = #22         -> P-BND-ACCEPT
+//!   IP-W4 add,    bound-signed,  h = #22 - 1     -> P-BND-REJECT
+//!   IP-W5 remove, legacy-signed, h = #22 - 1     -> P-LEG-ACCEPT (parity)
+//!   IP-W6 remove, legacy-signed, h = #22         -> P-LEG-REJECT
+//!   IP-W7 remove, bound-signed,  h = #22         -> P-BND-ACCEPT
+//!   IP-W8 remove, bound-signed,  h = #22 - 1     -> P-BND-REJECT
+//!   IP-W9 add,    bound-signed,  h = #22 + 1_000 -> P-BND-ACCEPT above the edge
+//!
+//! GATE COLLISION, RECORDED NOT HIDDEN (INC-I-203 M5). Testnet pins #20 and #22
+//! to the SAME height (`15_087`), so `#22 - 1` is below BOTH gates and no height
+//! exists that is below #22 and at/above #20 — the two gates are INSEPARABLE on
+//! this network. #20 selects entry-counting over distinct-signer counting, and
+//! every fixture here supplies three DISTINCT valid maintainer signers, for which
+//! the two #20 arms return the SAME verdict.
+//! `req_176_022_the_gate_20_collision_cannot_explain_the_below_gate_rows` proves
+//! that agreement AND proves the two arms are otherwise distinguishable, so the
+//! below-gate rows still isolate the MESSAGE as the only effective variable.
 //!
 //! MATRIX
 //!   O1 x {IP-W1..IP-W9} = 9 cells (all `None`)
@@ -127,7 +139,7 @@
 //!   O3 x {IP-W3, IP-W7} = 2 cells
 //!
 //! ANTI-VACUITY PAIRING (each pair differs in exactly ONE input)
-//!   IP-W1 <-> IP-W2  only the height (299_999 vs 300_000) — THE BOUNDARY
+//!   IP-W1 <-> IP-W2  only the height (#22 - 1 vs #22) — THE BOUNDARY
 //!   IP-W3 <-> IP-W4  only the height
 //!   IP-W1 <-> IP-W4  only which bytes were signed
 //!   IP-W2 <-> IP-W3  only which bytes were signed
@@ -150,33 +162,213 @@ mod inc_i_176_m2_common;
 
 use crypto::KeyPair;
 use doli_core::maintainer::signing_message_legacy;
-use doli_core::network_params::NetworkParams;
-use doli_core::Network;
+use doli_core::{MaintainerSet, Network};
 use inc_i_176_m2_common::{
-    bound_message, change_tx, make_node, members, quorum, submit, threshold, ABOVE_GATE, AT_GATE,
-    BELOW_GATE, TESTNET_GATE_20, TESTNET_GATE_22,
+    bound_message, change_tx, make_node, members, quorum, sig, submit, threshold,
 };
 
 // ===========================================================================
-// Harness integrity — the literals above must be the shipped ones
+// The gates, DERIVED — never re-typed as literals
+//
+// INC-I-203 M5 — Decision: the shipped testnet #22 was re-pinned 300_000 ->
+// 15_087 (fresh testnet genesis, 2026-08-24) while this file still drove
+// 299_999 / 300_000, which put BOTH rows above the moved gate and made every
+// below-gate assertion measure the wrong arm. The heights are now read through
+// `Network::Testnet.params()` — the SAME accessor the production site uses
+// (`governance.rs:47`, `self.config.network.params()`) — so a future re-pin
+// moves the experiment instead of invalidating it.
 // ===========================================================================
 
-/// The harness constants are bound to `NetworkParams`. Without this, a re-pinned
-/// #22 would leave every test below silently exercising one arm twice.
-#[test]
-fn req_176_022_harness_gate_literals_match_the_shipped_params() {
-    let p = NetworkParams::defaults(Network::Testnet);
+/// `inc_i_176_auth_binding_activation_height` (#22) for `Network::Testnet`.
+fn gate_22() -> u64 {
+    Network::Testnet
+        .params()
+        .inc_i_176_auth_binding_activation_height
+}
+
+/// `maintainer_derivation_activation_height` (#20) for `Network::Testnet`.
+fn gate_20() -> u64 {
+    Network::Testnet
+        .params()
+        .maintainer_derivation_activation_height
+}
+
+/// One block BELOW #22 — the legacy arm.
+fn below_gate() -> u64 {
+    let g = gate_22();
+    assert!(
+        g >= 1,
+        "harness: #22 is pinned at 0, so there is NO height below it. `#22 - 1` \
+         would underflow and the below-gate rows would collapse onto the gate. \
+         This suite cannot measure a boundary that has no lower side."
+    );
+    g - 1
+}
+
+/// EXACTLY #22 — the boundary. The comparison must be `>=` (`set.rs:161`), so
+/// this height takes the BOUND arm.
+fn at_gate() -> u64 {
+    gate_22()
+}
+
+/// Well above #22, to show the bound arm is not an edge artefact.
+fn above_gate() -> u64 {
+    gate_22() + 1_000
+}
+
+// ===========================================================================
+// Harness integrity — the derived heights must straddle the SHIPPED gate
+// ===========================================================================
+
+/// The harness reads the gate the RUNNING NODE reads, and the three heights
+/// straddle it. Without this, a re-pinned #22 — or a harness that stopped
+/// switching the node to Testnet — would leave every test below silently
+/// exercising one arm twice.
+///
+/// The threats this is armed against are named, and each is separately
+/// falsifiable: (a) `make_node` stops switching `config.network` to Testnet, so
+/// the derived gate belongs to a different network than the node under test;
+/// (b) `gate_22`/`gate_20` regress to a hardcoded literal or to the wrong
+/// `NetworkParams` field; (c) #22 is re-pinned to `0`, which has no lower side.
+#[tokio::test]
+async fn req_176_022_harness_gate_literals_match_the_shipped_params() {
+    // (a) THE LOAD-BEARING CHECK — the harness node's network must be the one
+    // the heights are derived from. `make_node` lives in a shared module this
+    // file does not own; if it stops switching to Testnet, the node resolves
+    // devnet's #22 = 20 while every row is driven at ~15_087, and all nine rows
+    // silently land on the bound arm.
+    let (node, _m, _t) = make_node(4).await;
     assert_eq!(
-        p.inc_i_176_auth_binding_activation_height, TESTNET_GATE_22,
-        "harness: this file drives heights {} / {} around a #22 of {}. If the \
-         shipped gate moved, both rows may now be on the same side of it and \
-         every result below is meaningless.",
-        BELOW_GATE, AT_GATE, TESTNET_GATE_22
+        node.config.network,
+        Network::Testnet,
+        "harness: the heights below are derived from Network::Testnet, but the \
+         node under test resolves its gates from `self.config.network`. If those \
+         two disagree, every row in this file is driven against a gate the node \
+         never consults."
+    );
+
+    // (b) The derived accessors must still read the shipped params, through the
+    // same path production uses. Trips on a hardcoded fallback or a wrong field.
+    let p = Network::Testnet.params();
+    assert_eq!(
+        gate_22(),
+        p.inc_i_176_auth_binding_activation_height,
+        "harness: gate_22() must READ `inc_i_176_auth_binding_activation_height` \
+         off the shipped testnet params, never a re-typed literal"
     );
     assert_eq!(
-        p.maintainer_derivation_activation_height, TESTNET_GATE_20,
-        "harness: both test heights must be above #20 so the distinct-signer \
-         counter applies on BOTH sides and the message is the only variable"
+        gate_20(),
+        p.maintainer_derivation_activation_height,
+        "harness: gate_20() must READ `maintainer_derivation_activation_height` \
+         off the shipped testnet params, never a re-typed literal"
+    );
+
+    // (c) The three heights straddle the gate, and the lower side exists.
+    assert!(
+        gate_22() >= 1,
+        "harness: #22 = {} has no height below it; the below-gate rows cannot \
+         exist and this suite would only ever measure one arm",
+        gate_22()
+    );
+    assert!(
+        below_gate() < gate_22(),
+        "harness: below_gate() {} must be STRICTLY below #22 {}",
+        below_gate(),
+        gate_22()
+    );
+    assert!(
+        at_gate() >= gate_22(),
+        "harness: at_gate() {} must be at or above #22 {}",
+        at_gate(),
+        gate_22()
+    );
+    assert!(
+        above_gate() > gate_22(),
+        "harness: above_gate() {} must be strictly above #22 {}",
+        above_gate(),
+        gate_22()
+    );
+
+    // The at/above rows must stay at or above #20 so they take the
+    // distinct-signer arm — the post-INC-I-172 semantics this file assumes.
+    // The BELOW row cannot: testnet pins #20 == #22, so no height is below #22
+    // and at/above #20. That inseparability is handled by
+    // `req_176_022_the_gate_20_collision_cannot_explain_the_below_gate_rows`.
+    assert!(
+        at_gate() >= gate_20(),
+        "harness: the at-gate rows must sit at or above #20 {} so they take the \
+         DISTINCT-SIGNER arm; at_gate() is {}",
+        gate_20(),
+        at_gate()
+    );
+}
+
+/// ANTI-CONFOUND / POSITIVE CONTROL — gate #20 cannot explain a below-gate result.
+///
+/// Testnet pins #20 and #22 to the SAME height, so `below_gate()` crosses BOTH.
+/// #20 selects `verify_multisig_legacy` (counts signature ENTRIES) over
+/// `verify_multisig` (counts DISTINCT SIGNERS). If those two could disagree for
+/// this file's fixture, every below-gate row would be explainable by #20 rather
+/// than by the message format, and the suite would prove nothing.
+///
+/// OUTPUT CONTRACT:
+///   Functions under test: `MaintainerSet::verify_multisig_legacy(&[MaintainerSignature], &[u8]) -> bool`
+///                         `MaintainerSet::verify_multisig(&[MaintainerSignature], &[u8]) -> bool`
+///   O1 (return value)   the `bool` verdict. The ONLY observable output.
+///   O2 (mutable params) NONE — both take `&self` and shared slices.
+///   O3 (receiver mut.)  NONE — neither mutates `MaintainerSet`.
+///   O4 (persistent)     NONE — no store is touched.
+///   CODE PATHS  P-AGREE   distinct signers   -> both arms accept
+///               P-DIVERGE repeated signer    -> entries accept, distinct rejects
+///   INPUT PARTITIONS (4-member set, threshold 3, one message)
+///     IP-C1 three DISTINCT maintainer signatures -> P-AGREE
+///     IP-C2 the SAME maintainer signature x3     -> P-DIVERGE
+///   MATRIX  O1 x {IP-C1, IP-C2} x {legacy arm, distinct arm} = 4 cells, all asserted.
+///   ANTI-VACUITY  IP-C1 <-> IP-C2 differ in exactly one input (signer identity).
+///   Without IP-C2, "the arms agree" would be unfalsifiable — it would also hold
+///   if the two functions were the same function.
+#[test]
+fn req_176_022_the_gate_20_collision_cannot_explain_the_below_gate_rows() {
+    let maintainers: Vec<KeyPair> = (0..4).map(|_| KeyPair::generate()).collect();
+    let set =
+        MaintainerSet::with_members(maintainers.iter().map(|kp| *kp.public_key()).collect(), 0);
+    assert_eq!(
+        set.threshold, 3,
+        "fixture: a 4-member set carries threshold 3 (`set.rs:112`)"
+    );
+
+    let target = *KeyPair::generate().public_key();
+    let msg = signing_message_legacy(true, &target);
+
+    // IP-C1 — THIS FILE'S FIXTURE: three DISTINCT signers, exactly what
+    // `quorum()` builds. Both #20 arms must return the same verdict, so crossing
+    // #20 changes nothing about any below-gate row.
+    let distinct: Vec<_> = maintainers.iter().take(3).map(|kp| sig(kp, &msg)).collect();
+    assert!(
+        set.verify_multisig_legacy(&distinct, &msg),
+        "IP-C1 / pre-#20 arm: three DISTINCT valid maintainer signatures are \
+         three ENTRIES, which meets threshold 3"
+    );
+    assert!(
+        set.verify_multisig(&distinct, &msg),
+        "IP-C1 / post-#20 arm: three DISTINCT valid maintainer signatures are \
+         three SIGNERS, which meets threshold 3. Agreeing with the line above is \
+         what licenses driving the below-gate rows across #20."
+    );
+
+    // IP-C2 — ANTI-VACUITY: the two arms are genuinely different functions.
+    // Without this row, the agreement above could just mean they are aliases.
+    let repeated: Vec<_> = (0..3).map(|_| sig(&maintainers[0], &msg)).collect();
+    assert!(
+        set.verify_multisig_legacy(&repeated, &msg),
+        "IP-C2 / pre-#20 arm counts ENTRIES: three copies of ONE signature reach \
+         threshold 3. This is AUDIT-P0-010, preserved as frozen history."
+    );
+    assert!(
+        !set.verify_multisig(&repeated, &msg),
+        "IP-C2 / post-#20 arm counts DISTINCT SIGNERS: three copies of ONE \
+         signature count as one. The two arms MUST be distinguishable, or \
+         IP-C1's agreement is vacuous and #20 remains an untested confound."
     );
 }
 
@@ -230,7 +422,7 @@ async fn req_176_022_below_the_gate_add_accepts_exactly_the_legacy_bytes() {
     );
 
     assert_eq!(
-        submit(&node, &tx, BELOW_GATE).await,
+        submit(&node, &tx, below_gate()).await,
         None,
         "O1: a maintainer change never reports a ProtocolActivation"
     );
@@ -243,7 +435,7 @@ async fn req_176_022_below_the_gate_add_accepts_exactly_the_legacy_bytes() {
          `signing_message_legacy(true, target)`. A signature over those bytes is \
          what every node on the live fleet accepts at historical heights; \
          rejecting it here forks this node's trust root away from its peers.",
-        TESTNET_GATE_22
+        gate_22()
     );
     assert!(
         after.contains(&target),
@@ -262,7 +454,7 @@ async fn req_176_022_below_the_gate_add_refuses_the_bound_bytes() {
     let msg = bound_message(&node, true, &target);
     let tx = change_tx(true, &target, &msg, &signers);
 
-    assert_eq!(submit(&node, &tx, BELOW_GATE).await, None, "O1");
+    assert_eq!(submit(&node, &tx, below_gate()).await, None, "O1");
     let after = members(&node).await;
     assert_eq!(
         after.len(),
@@ -293,7 +485,7 @@ async fn req_176_022_below_the_gate_remove_accepts_exactly_the_legacy_bytes() {
         &signers,
     );
 
-    assert_eq!(submit(&node, &tx, BELOW_GATE).await, None, "O1");
+    assert_eq!(submit(&node, &tx, below_gate()).await, None, "O1");
     let after = members(&node).await;
     assert_eq!(
         after.len(),
@@ -318,7 +510,7 @@ async fn req_176_022_below_the_gate_remove_refuses_the_bound_bytes() {
     let msg = bound_message(&node, false, &target);
     let tx = change_tx(false, &target, &msg, &signers);
 
-    assert_eq!(submit(&node, &tx, BELOW_GATE).await, None, "O1");
+    assert_eq!(submit(&node, &tx, below_gate()).await, None, "O1");
     assert_eq!(
         members(&node).await.len(),
         5,
@@ -333,7 +525,7 @@ async fn req_176_022_below_the_gate_remove_refuses_the_bound_bytes() {
 /// IP-W3, IP-W9 / O1, O2, O3 — P-BND-ACCEPT for `AddMaintainer`. **RED today.**
 #[tokio::test]
 async fn req_176_022_at_and_above_the_gate_add_accepts_exactly_the_bound_bytes() {
-    for height in [AT_GATE, ABOVE_GATE] {
+    for height in [at_gate(), above_gate()] {
         let (node, maintainers, _t) = make_node(4).await;
         let target = *KeyPair::generate().public_key();
         let signers = quorum(&maintainers);
@@ -353,7 +545,7 @@ async fn req_176_022_at_and_above_the_gate_add_accepts_exactly_the_bound_bytes()
              calls `data.signing_message(true)`, which delegates to the legacy \
              format, so this is the RED evidence for M2.",
             height,
-            TESTNET_GATE_22
+            gate_22()
         );
         assert!(
             after.contains(&target),
@@ -387,7 +579,7 @@ async fn req_176_022_at_the_gate_add_refuses_the_legacy_bytes() {
         &signers,
     );
 
-    assert_eq!(submit(&node, &tx, AT_GATE).await, None, "O1");
+    assert_eq!(submit(&node, &tx, at_gate()).await, None, "O1");
     let after = members(&node).await;
     assert_eq!(
         after.len(),
@@ -396,7 +588,7 @@ async fn req_176_022_at_the_gate_add_refuses_the_legacy_bytes() {
          bytes must no longer seat a maintainer. While it does, the unbound, \
          domain-tag-less, chain-blind authorization is still a valid bearer token \
          above the gate and M2 has changed nothing.",
-        AT_GATE
+        at_gate()
     );
     assert!(!after.contains(&target));
 }
@@ -411,7 +603,7 @@ async fn req_176_022_at_the_gate_remove_accepts_exactly_the_bound_bytes() {
     let msg = bound_message(&node, false, &target);
     let tx = change_tx(false, &target, &msg, &signers);
 
-    assert_eq!(submit(&node, &tx, AT_GATE).await, None, "O1");
+    assert_eq!(submit(&node, &tx, at_gate()).await, None, "O1");
 
     let after = members(&node).await;
     assert_eq!(
@@ -442,7 +634,7 @@ async fn req_176_022_at_the_gate_remove_refuses_the_legacy_bytes() {
         &signers,
     );
 
-    assert_eq!(submit(&node, &tx, AT_GATE).await, None, "O1");
+    assert_eq!(submit(&node, &tx, at_gate()).await, None, "O1");
     assert_eq!(
         members(&node).await.len(),
         5,
@@ -480,11 +672,11 @@ async fn req_176_022_the_boundary_is_greater_or_equal_not_greater_than() {
             &signing_message_legacy(true, &target),
             &signers,
         );
-        submit(&node, &tx, TESTNET_GATE_22 - 1).await;
+        submit(&node, &tx, below_gate()).await;
         assert!(
             members(&node).await.contains(&target),
             "BOUNDARY: height == #22 - 1 ({}) must still take the LEGACY arm",
-            TESTNET_GATE_22 - 1
+            below_gate()
         );
     }
 
@@ -499,13 +691,13 @@ async fn req_176_022_the_boundary_is_greater_or_equal_not_greater_than() {
             &signing_message_legacy(true, &target),
             &signers,
         );
-        submit(&node, &tx, TESTNET_GATE_22).await;
+        submit(&node, &tx, gate_22()).await;
         assert!(
             !members(&node).await.contains(&target),
             "BOUNDARY: height == #22 ({}) must ALREADY take the BOUND arm. The \
              comparison is `>=` (set.rs:269 / authmsg.rs:224). A `>` shifts this \
              gate one block relative to every other maintainer gate.",
-            TESTNET_GATE_22
+            gate_22()
         );
     }
 
@@ -517,7 +709,7 @@ async fn req_176_022_the_boundary_is_greater_or_equal_not_greater_than() {
         let signers = quorum(&maintainers);
         let msg = bound_message(&node, true, &target);
         let tx = change_tx(true, &target, &msg, &signers);
-        submit(&node, &tx, TESTNET_GATE_22).await;
+        submit(&node, &tx, gate_22()).await;
         assert!(
             members(&node).await.contains(&target),
             "BOUNDARY / ANTI-VACUITY: at height == #22 the BOUND bytes must be \
