@@ -79,12 +79,32 @@
 #     offsets. The NODE admission path is covered by the INV-BOND-002
 #     regression tests, not by bypassing this guard. Every precondition SKIPs.
 #     See scripts/gauntlet-gs017.sh.
+#   * GS-018 (attestation bitfield integrity) is OBSERVATIONAL, chain-read-only
+#     and testnet-only: it runs in the DEFAULT gate, is NOT opt-in and has NO
+#     confirm-var. Replays INC-I-178 (the BLS half of every attestation was
+#     carried, gossiped and stored but never verified) and asserts one
+#     presenceRoot per sampled height across every answering node, plus a
+#     post-activation aggregate check gated on the AH litmus. It NEVER reads
+#     attestationCount as a headcount (it is a popcount of the presence-root
+#     HASH) and its dual-sign token ALWAYS SKIPs: per-producer BLS emission is
+#     not observable outside the node process, and getAttestationStats.hasBls is
+#     key REGISTRATION, already true on the pre-fix build. Build detection is by
+#     CAPABILITY (doli_attestation_verify_total on /metrics), never by version.
+#     See scripts/gauntlet-gs018.sh.
+#   * GS-019 (attestation-aggregate poisoning) is opt-in (`--gs019` WITH
+#     GAUNTLET_GS019_CONFIRM=1; testnet only) and INJECTS NOTHING on this build:
+#     no submitAttestation/directAttestation/sendAttestation exists in
+#     crates/rpc/src/methods/ and the only ingress is the libp2p gossipsub topic
+#     /doli/attestations/1, which curl cannot reach, so all three assertions
+#     SKIP with `no injection path; needs a submit RPC`. The flag, confirm-var,
+#     testnet guard and $WORK/gs019_injected marker are armed for the day that
+#     RPC exists. See scripts/gauntlet-gs019.sh.
 #
 # Assertions key off STRUCTURED telemetry fields (gap=, rollback_depth=,
 # sync_fails=, state=) and distinct-event phrases — NEVER raw keywords that also
 # appear in per-second telemetry (the word "rollback" logs ~1/sec at depth 0).
 #
-# Usage:  bash scripts/gauntlet.sh [--quick] [--chaos|--gs009|--gs010|--gs014|--gs016]
+# Usage:  bash scripts/gauntlet.sh [--quick] [--chaos|--gs009|--gs010|--gs014|--gs016|--gs019]
 # Env:    WORKFLOW_RUN_ID, GAUNTLET_WINDOW (s, default 45), GAUNTLET_RESTART_NODE
 #         (default n5), GAUNTLET_RSS_CEIL_MB (default 800), GAUNTLET_MIN_NODES
 #         (default 3), GAUNTLET_NO_PERTURB (1=skip restart).
@@ -109,6 +129,12 @@ GS016_LIB="$ROOT/scripts/gauntlet-gs016.sh"
 GS017_LIB="$ROOT/scripts/gauntlet-gs017.sh"
 # shellcheck source=/dev/null
 [ -f "$GS017_LIB" ] && . "$GS017_LIB"
+GS018_LIB="$ROOT/scripts/gauntlet-gs018.sh"
+# shellcheck source=/dev/null
+[ -f "$GS018_LIB" ] && . "$GS018_LIB"
+GS019_LIB="$ROOT/scripts/gauntlet-gs019.sh"
+# shellcheck source=/dev/null
+[ -f "$GS019_LIB" ] && . "$GS019_LIB"
 LOG_DIR="$HOME/testnet/logs"
 LABEL_PREFIX="network.doli.testnet"
 
@@ -128,6 +154,7 @@ GS009=0
 GS010=0
 GS014=0
 GS016=0
+GS019=0
 for a in "$@"; do
   case "$a" in
     --quick) WINDOW=20 ;;
@@ -136,6 +163,7 @@ for a in "$@"; do
     --gs010) GS010=1 ;;
     --gs014) GS014=1 ;;
     --gs016) GS016=1 ;;
+    --gs019) GS019=1 ;;
   esac
 done
 CHAOS_RECOVERED=1   # stays 1 unless a chaos injector fails to recover the node
@@ -361,6 +389,13 @@ elif [ "${GS009:-0}" = "1" ]; then
   say "  [gs009] settling 10s, then re-baselining for a clean observation window"
   sleep 10
   build_nodecfg
+elif [ "${GS019:-0}" = "1" ]; then
+  # OPT-IN GS-019 attestation-aggregate poison. No attestation ingress is
+  # reachable from the harness on this build, so the injector delivers nothing
+  # and writes no marker; all three assertions SKIP. Listed last so --gs019
+  # never masks a destructive scenario the operator also asked for.
+  say "\n${C_Y}▸ GS-019 MODE — ATTESTATION-AGGREGATE POISON (no reachable ingress on this build: nothing is injected)${C_0}"
+  gs019_inject
 elif [ "$CHAOS" = "1" ]; then
   # OPT-IN chaos: genuinely reproduce failure-mode triggers, then re-baseline so
   # the observation window judges the RECOVERED steady state (a legitimate snap
@@ -638,6 +673,10 @@ assert(){
       _gs016_assert "$t"; return $? ;;
     gs017-cli-carries-m3|gs017-cli-refuses-before-signing|gs017-no-addbond-residency|gs017-no-cap-poison-in-window)
       _gs017_assert "$t"; return $? ;;
+    gs018-presence-root-consistent|gs018-active-producers-dual-sign|gs018-post-ah-aggregate-verifies)
+      _gs018_assert "$t"; return $? ;;
+    gs019-poison-rejected|gs019-fleet-liveness-through-poison|gs019-victim-attendance-preserved)
+      _gs019_assert "$t"; return $? ;;
     *)
       why="unknown assertion token '$t'" ;;
   esac
@@ -653,6 +692,7 @@ inj_tag(){
   if [ "${GS010:-0}" = "1" ] && [ "$sid" = "GS-010" ]; then echo "inj"; return; fi
   if [ "${GS014:-0}" = "1" ] && [ "$sid" = "GS-014" ]; then echo "inj"; return; fi
   if [ "${GS016:-0}" = "1" ] && [ "$sid" = "GS-016" ]; then echo "inj"; return; fi
+  if [ "${GS019:-0}" = "1" ] && [ "$sid" = "GS-019" ]; then echo "inj"; return; fi
   if [ "$CHAOS" = "1" ]; then
     case "$sid" in GS-002|GS-003|GS-004|GS-005|GS-007) echo "inj";; *) echo "obs";; esac
   elif [ "$NO_PERTURB" != "1" ]; then
