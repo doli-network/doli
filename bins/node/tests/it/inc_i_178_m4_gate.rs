@@ -143,14 +143,28 @@ fn req_bls_005_m4_the_gate_predicate_is_inclusive_at_the_activation_height() {
         "genesis is always pre-AH here"
     );
 
-    // The shipped default must leave the whole reachable height range pre-AH.
-    for network in [Network::Mainnet, Network::Testnet, Network::Devnet] {
+    // Mainnet and devnet ship frozen: the whole reachable height range is pre-AH.
+    for network in [Network::Mainnet, Network::Devnet] {
         let shipped = NetworkParams::defaults(network);
         assert!(
             !attestation_bls_active(&shipped, u64::MAX - 1),
             "{network:?}: the shipped gate is frozen, so no reachable height is post-AH"
         );
     }
+
+    // Testnet is PINNED (2026-09-05, v6.27.0): the shipped value is a real height and the
+    // predicate is inclusive at it. Derived from the shipped params, never a literal.
+    let testnet = NetworkParams::defaults(Network::Testnet);
+    let pin = testnet.inc_i_178_attestation_bls_activation_height;
+    assert!(pin != u64::MAX, "testnet must carry a real pinned height");
+    assert!(
+        !attestation_bls_active(&testnet, pin - 1),
+        "testnet: pin - 1 is pre-AH"
+    );
+    assert!(
+        attestation_bls_active(&testnet, pin),
+        "testnet: the pin itself is post-AH"
+    );
 }
 
 // ===========================================================================

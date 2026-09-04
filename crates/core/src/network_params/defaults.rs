@@ -504,10 +504,10 @@ impl NetworkParams {
                 // IMMUTABLE once crossed (INC-I-054).
                 // Override via `DOLI_INC_I_204_FORK_CHOICE_ACTIVATION_HEIGHT`.
                 inc_i_204_fork_choice_activation_height: 88_014,
-                // INC-I-178 M4 attestation-BLS semantics. FROZEN at u64::MAX
-                // until the rehearsal pin. Override via
-                // `DOLI_INC_I_178_ATTESTATION_BLS_ACTIVATION_HEIGHT`.
-                inc_i_178_attestation_bls_activation_height: u64::MAX,
+                // INC-I-178 attestation-BLS semantics. PINNED 112_619 on testnet
+                // (2026-09-05, v6.27.0); IMMUTABLE once crossed (INV-PARAMS-001).
+                // Override via `DOLI_INC_I_178_ATTESTATION_BLS_ACTIVATION_HEIGHT`.
+                inc_i_178_attestation_bls_activation_height: 112_619,
 
                 // INC-I-172 M2 maintainer trust-root derivation. Pinned
                 // 2026-08-10 at live testnet tip 126_801 with ~400 blocks

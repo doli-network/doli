@@ -426,8 +426,8 @@ fn req_fork_014_no_testnet_activation_height_was_moved() {
     assert_eq!(p.inc_i_096_activation_height, 0);
     assert_eq!(p.maintainer_derivation_activation_height, 15_087);
     assert_eq!(p.inc_i_173_activation_height, 25_500);
-    assert_eq!(p.inc_i_176_auth_binding_activation_height, 15_087); // INC-I-178 M4 — the BLS gate joins the ledger; frozen on every network.
-    assert_eq!(p.inc_i_178_attestation_bls_activation_height, u64::MAX);
+    assert_eq!(p.inc_i_176_auth_binding_activation_height, 15_087); // INC-I-178 — the BLS gate joins the ledger; PINNED on testnet 2026-09-05 (v6.27.0).
+    assert_eq!(p.inc_i_178_attestation_bls_activation_height, 112_619);
 }
 
 /// REQ-FORK-014 — O3 x P-Devnet.
