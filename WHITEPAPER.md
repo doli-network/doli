@@ -734,18 +734,20 @@ This produces one UTXO per producer per epoch instead of one per block — elimi
 
 Block production proves a producer was online during their assigned slots. But with deterministic scheduling, a producer knows exactly which slots are theirs and can be offline the rest of the time.
 
-To prove **continuous** presence, each producer signs a liveness attestation every minute using both Ed25519 and BLS12-381 keys:
+To prove **continuous** presence, each producer signs a liveness attestation every minute with both keys:
 
 ```
-attestation = Sign(block_hash || slot)
+Ed25519: Sign(ATTESTATION_DOMAIN || block_hash || slot)
+BLS:     Sign(block_hash)
 ```
 
-The block hash proves the producer is not just alive but actively following and validating the chain. Attestations are gossiped to the network. Each block producer commits:
+The BLS half omits the slot deliberately: every attester of a block must sign the *same* message, or the signatures never aggregate.
 
-1. A **bitfield** in the block header (`presence_root`) — one bit per producer (attested or not), supporting up to 256 producers (32 bytes)
-2. An **aggregate BLS signature** in the block body — cryptographic proof that the bitfield is honest
+Attestations are gossiped. Each producer commits a **bitfield** — one bit per producer — and an **aggregate BLS signature** in the block body, plus a 32-byte commitment (`presence_root`) in the header binding the two.
 
-The aggregate BLS signature compresses all individual attestation signatures into a single verification. A fake bit — claiming a producer attested when they didn't — causes aggregate signature verification to fail. The block is rejected.
+That pairing is verified only at and after `inc_i_178_attestation_bls_activation_height`, unset on every network today. Below it the bitfield is producer-declared and only hash-committed: the chain records the claim, not its truth. Above it, bit `i` is set only if that producer signed the parent block's hash and the aggregate covers exactly those signatures; each validator re-derives the commitment and checks it against the on-chain BLS keys of the set bits. A set bit nobody signed fails verification, and the block is rejected.
+
+Omission stays unproven: the aggregate backs every set bit but says nothing about one left at zero, so a producer can still clear the bit of a peer that did attest — a gap tracked separately.
 
 At epoch boundary, every node scans the bitfields committed in the epoch's blocks and counts per-producer attestation minutes. Each epoch spans 60 attestation minutes (one per 6 slots). Two distinct thresholds apply:
 

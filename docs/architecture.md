@@ -138,7 +138,7 @@ crypto ──► wallet (shared wallet library, NO vdf/doli-core)
 | `network_params/` | Configurable network parameters (env overrides) |
 | `discovery/` | Producer discovery (G-Set CRDT) |
 | `tpop/` | Time proof: heartbeat VDF, presence, calibration |
-| `attestation.rs` | Attestation types and bitfield encoding |
+| `attestation/` | Attestation types, bitfield codec, BLS message + parent-signature pool, presence commitment (see §5.4) |
 | `conditions/` | Programmable output conditions (covenants) |
 | `pool.rs` | AMM pool logic |
 | `lending.rs` | Lending protocol logic |
@@ -697,6 +697,160 @@ NOT producer weight. Weight is purely seniority-based.
 There is NO activity gap penalty. Producers who miss slots simply
 miss rewards - no slashing or weight reduction occurs.
 ```
+
+### 5.4. Attestation & BLS Aggregation (INC-I-178)
+
+Spec: `specs/attestation-bls-architecture.md`.
+
+**Status:** Implemented end-to-end, **frozen pre-activation** —
+`NetworkParams.inc_i_178_attestation_bls_activation_height` is `u64::MAX` on
+**mainnet, testnet AND devnet** (`crates/core/src/network_params/defaults.rs:268,510,763`).
+Devnet is frozen too because this gate changes block **CONTENT**: a devnet
+default of `0` would fork every live local chain on the next rebuild. **No
+network has a pinned height.** Pinning one is a separate user decision session
+after the Release-N soak (preconditions P1-P8 in the spec).
+
+Deploy shape, recorded on the field itself
+(`crates/core/src/network_params/mod.rs:836`): consensus RULES **YES**, block
+CONTENT **YES** (`presence_root` is hashed by `BlockHeader::hash()`), so
+INV-DEPLOY-001 **synchronized deploy** applies and an activation height is
+REQUIRED (INV-12: Q1 YES, Q2 YES, Q3 NO). Forward-only; once crossed on mainnet
+the height is IMMUTABLE (INC-I-054). The env override
+`DOLI_INC_I_178_ATTESTATION_BLS_ACTIVATION_HEIGHT` is honoured on non-mainnet
+only — mainnet is LOCKED to the default (`network_params/env_loader.rs:474-481`).
+
+#### 5.4.1 Two regimes
+
+| | Below the AH (today, every network) | At/after the AH |
+|---|---|---|
+| Bit `i` means | `universe[i]` attended the minute | `universe[i]` signed **this block's parent hash** |
+| `presence_root` preimage | `BLAKE3(bitfield)` | `BLAKE3( u32le(len bitfield) ‖ bitfield ‖ u32le(len aggregate) ‖ aggregate )` (`attestation/commitment.rs`) |
+| Zero attesters | `Hash::ZERO` sentinel (`node/attestation/commit.rs:190-192`) | canonical empty commitment `presence_commitment(&[], &[])` — a REAL hash, never `Hash::ZERO` |
+| Accepted body width | pre-AH tolerant arm (`node/attestation/width.rs:36`) | exactly `ceil(universe_len / 8)` |
+| Aggregate verification | none | mandatory (§5.4.3) |
+
+Below the AH every gated path is **byte-identical to the 6.26.x binary**, and the
+validator module is inert — its entry point returns before it touches a counter.
+Both halves of the post-AH preimage are length-prefixed, so no byte can move
+across the split without changing the commitment. `presence_root` is a
+commitment **hash**; it is never itself decoded into producer indices.
+
+#### 5.4.2 Attester universe
+
+`attestation_universe(base, active)` (`crates/core/src/attestation/universe.rs`)
+returns `[base (order preserved, never re-sorted) | (active \ base) sorted by
+pubkey bytes]`, duplicate-free — a key repeated in `base`, or present in both
+slices, keeps only its FIRST `base` position. It is pure: the caller supplies
+`active`; no height, no storage. Invariant: `universe[..base.len()] == base`.
+At/after the AH the encoder, the stray-bit validator and `post_commit` all index
+against this **one** universe (the rewards and schedule decoders still carry
+their own widths).
+
+#### 5.4.3 Data flow
+
+```
+Attester (a ProducerSet member) dual-signs the block it saw:
+  Ed25519 over (ATTESTATION_DOMAIN ‖ block_hash ‖ slot)  — UNCHANGED from 6.26.x
+  BLS     over the 32-byte attested block hash and NOTHING else (no slot),
+          DST `crypto::ATTESTATION_DST`, distinct from the proof-of-possession DST
+          (`crates/core/src/attestation/message.rs::bls_attest_msg`)
+  Wire: Attestation.bls_signature is 96 bytes, #[serde(default)], EMPTY for
+        pre-BLS attestations — the mixed-fleet bridge.
+   │
+   ▼ gossip
+Ingress (`bins/node/src/node/attestation/ingress.rs`)
+  1. Attendance is recorded FIRST and is Ed25519-authenticated: a ProducerSet
+     member attends whatever the BLS verdict is, and regardless of weight
+     (INV-ATTEST-001).
+  2. BlsAttestVerdict (`ingress.rs:16`):
+       Valid   → parent-signature pool, first-seen only; bumps
+                 doli_attestation_bls_valid_total +
+                 doli_attestation_bls_valid_attester_total{attester};
+                 DEBUG line `[ATTEST_INGEST] valid bls attester=… parent=… sig_len=…`
+       Empty   → no BLS half carried            → dropped silently, no penalty
+       NoKey   → no on-chain BLS key            → dropped silently, no penalty
+       Invalid → warn `[ATTEST_INGEST] unverifiable BLS half from … relayed by …`
+                 + infraction InvalidBlsAttestation (-10), RECORD-ONLY: it never
+                 disconnects, because acting on the score would partition the
+                 fleet on ONE misconfigured producer (INV-NETWORK-002).
+   │
+   ▼ parent-signature pool (`crates/core/src/attestation/pool.rs`)
+Builder (`bins/node/src/node/attestation/commit.rs:151-155`,
+         `bins/node/src/node/production/assembly.rs:397-430`)
+  bit i set  ⇔  universe[i] has a pooled signature over the PARENT block hash
+  aggregate  =  exactly those signatures, in index order
+  zero pooled signatures ⇒ canonical empty commitment (`bls_aggregate` rejects an
+                           empty set, and a producer holding none must still build)
+  → `[ATTEST_ENCODE] h= base_list= universe= attested= body_bytes= pool_parents= pool_sigs=`
+   │
+   ▼ block
+Validator (`bins/node/src/node/attestation/verify.rs`) — ONE call site, in
+`validate_block_for_apply`, AFTER the VDF / eligibility checks.
+`decide_attestation(...)` in EXACT order:
+  1. presence_root != presence_commitment(bitfield, aggregate) → `root_mismatch`
+     (unconditional, empty bitfield included — the commitment needs no universe,
+     so it is the one check a divergent node can still make)
+  2. universe divergent → SkippedLight; the pairing is skipped, the ROOT was
+     already checked. Light = gap blocks after snap sync; Replay = own-store recovery.
+  3. no bit SET (bits, not length — an honest-width all-zero bitfield carries no
+     claim): the aggregate must be empty, else `aggregate_nonempty_for_empty_bitfield`
+  4. a set-bit key fails to resolve → `missing_bls_key`
+  5. BlsSignature::try_from_slice(aggregate) fails → `aggregate_invalid`
+  6. crypto::bls_verify_aggregate(bls_attest_msg(parent_hash), sig, keys) fails
+     → `aggregate_invalid`
+  Failure: ValidationError::AttestationVerifyFailed { reason }, error code
+  `ATTESTATION_VERIFY_FAILED` (`crates/core/src/validation/error.rs:451,522`),
+  log `[ATTEST_VERIFY] reject h=… hash=… reason=… ah=…`.
+   │
+   ▼ apply_block
+post_commit (`bins/node/src/node/apply_block/post_commit.rs`) decodes the BODY
+bitfield against the same universe and records attendance
+(`[ATTEST_DECODE]`, the index-parity partner of `[ATTEST_ENCODE]`)
+   │
+   ▼ epoch boundary
+Rewards (`bins/node/src/node/rewards.rs:135`) treat
+`pr.is_zero() || is_canonical_empty_attendance_at(...)` as COMPLETE attendance —
+post-AH an empty bitfield under the canonical empty root means everyone attended.
+```
+
+#### 5.4.4 Module map
+
+| Module | Function |
+|--------|----------|
+| `crates/core/src/attestation/mod.rs` | Module root and re-exports |
+| `crates/core/src/attestation/message.rs` | `Attestation` wire struct; `bls_attest_msg(block_hash)` — the frozen BLS preimage |
+| `crates/core/src/attestation/bitfield.rs` | Bitfield encode/decode and stray-bit validation |
+| `crates/core/src/attestation/tracker.rs` | Per-minute attendance tracking |
+| `crates/core/src/attestation/pool.rs` | Parent-signature pool (first-seen BLS halves, keyed by parent hash) |
+| `crates/core/src/attestation/universe.rs` | `attestation_universe(base, active)` — the single index space (§5.4.2) |
+| `crates/core/src/attestation/commitment.rs` | `presence_commitment(bitfield, aggregate)` — the post-AH `presence_root` preimage |
+| `bins/node/src/node/attestation/mod.rs` | Node-side module root |
+| `bins/node/src/node/attestation/ingress.rs` | Gossip ingress, attendance, `BlsAttestVerdict`, peer scoring |
+| `bins/node/src/node/attestation/commit.rs` | Builder-side bitfield + aggregate + `presence_root`; canonical-empty predicate |
+| `bins/node/src/node/attestation/keys.rs` | On-chain BLS key resolution for set bits |
+| `bins/node/src/node/attestation/verify.rs` | `decide_attestation(...)` — the post-AH validator |
+| `bins/node/src/node/attestation/width.rs` | `bitfield_width_accepted_at` — accepted body width per regime |
+
+#### 5.4.5 Metrics
+
+Emitted from `bins/node/src/metrics.rs:644-728`.
+
+| Series | Type | Labels | Emitted where |
+|--------|------|--------|---------------|
+| `doli_attestation_verify_total` | counter | — | every post-AH verify decision |
+| `doli_attestation_verify_rejected_total` | counter | `reason` | one of the four reason strings in §5.4.3 |
+| `doli_attestation_verify_skipped_light_total` | counter | — | Light/replay pairing skip (step 2) |
+| `doli_attestation_bitfield_fill_ratio` | gauge | — | set bits / universe width; zero width ⇒ `0.0`, never `NaN` |
+| `doli_attestation_bls_valid_total` | counter | — | zero-initialised capability marker |
+| `doli_attestation_bls_valid_attester_total` | counter | `attester` (first 8 hex of the pubkey) | first-seen valid BLS half per attester |
+
+Pre-existing and unchanged: `doli_attestation_missing_current{segment}`,
+`doli_attestation_misses_total{segment}`.
+
+**Known gap:** the aggregate proves that every **set** bit is backed by a real
+signature. It proves nothing about a bit left at **zero**, so omission honesty
+(a producer clearing bits to deny rewards) is out of scope — REQ-BLS-019, the
+largest open attestation risk.
 
 ---
 

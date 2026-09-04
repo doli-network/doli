@@ -415,13 +415,15 @@ def calculate_epoch_rewards(epoch, current_height):
     # Get active producers at epoch start, sorted by pubkey
     sorted_producers = get_active_producers_sorted(epoch_start)
 
-    # Scan blocks in epoch, decode presence_root attestation bitfields
+    # Scan blocks in epoch, decoding the block BODY attestation bitfield.
+    # header.presence_root is a 32-byte commitment HASH (see 4.6), not a
+    # decodable bitfield: it only signals that a block carries attestations.
     attested_minutes = {}  # producer_index -> set of attested minutes
     for h in range(epoch_start, epoch_end):
         block = block_store.get(h)
         if block and block.presence_root != ZERO:
             minute = attestation_minute(block.slot)
-            indices = decode_attestation_bitfield(block.presence_root, len(sorted_producers))
+            indices = decode_attestation_bitfield(block.attestation_bitfield, len(sorted_producers))
             for idx in indices:
                 attested_minutes.setdefault(idx, set()).add(minute)
 
@@ -1123,7 +1125,10 @@ block_header = {
     version:       uint32,       // Currently 2
     prev_hash:     32 bytes,     // Hash of previous block header
     merkle_root:   32 bytes,     // Merkle root of transactions
-    presence_root: 32 bytes,     // Presence commitment hash (ZERO in deterministic model)
+    presence_root: 32 bytes,     // Attestation commitment over the block body (see 4.6):
+                                 //   Hash::ZERO when no producer attended;
+                                 //   below the BLS activation height BLAKE3(attestation_bitfield);
+                                 //   at/after it presence_commitment(bitfield, aggregate)
     genesis_hash:  32 bytes,     // Chain identity: BLAKE3(genesis_time || network_id || slot_duration || message)
     timestamp:     uint64,       // Unix timestamp (seconds)
     slot:          uint32,       // Derived from timestamp
@@ -1152,13 +1157,26 @@ genesis_hash = BLAKE3(
 block = {
     header:                  BlockHeader,
     transactions:            transaction[],
-    aggregate_bls_signature: bytes       // BLS aggregate sig over attestation bitfield (empty for pre-BLS blocks)
+    attestation_bitfield:    bytes,      // Attestation bitfield, body-stored, no producer cap
+    aggregate_bls_signature: bytes       // BLS aggregate over the attested PARENT block hash
 }
 ```
 
-The `aggregate_bls_signature` field stores the aggregated BLS signatures of producers whose bits are set in the attestation bitfield (stored in `header.presence_root` for v2+ blocks). Empty for pre-BLS blocks (backward compatibility). Stored in body (not header) to keep header hash stable.
+The attestation bitfield lives in the **body** as `block.attestation_bitfield`
+(`crates/core/src/block.rs:176`): a variable-length byte string with no producer cap. The header's
+`presence_root` is a 32-byte commitment **hash** over that body data and is never decoded into
+producer indices.
 
-**Note:** In the deterministic scheduler model, presence commitments are not used for consensus. The `presence_root` field in the header is retained for backward compatibility and is `Hash::ZERO` in the deterministic model. For v2+ blocks, it may contain an attestation commitment (Merkle root of RegionAggregates).
+`aggregate_bls_signature` (`crates/core/src/block.rs:167`) is the BLS aggregate over the attested
+**parent** block hash. It is always empty below `inc_i_178_attestation_bls_activation_height`; at
+and above that height it aggregates the signatures of exactly the keys whose bits are set in
+`attestation_bitfield`, in index order. Both fields sit in the body, not the header, so the header
+stays fixed-size.
+
+**Note:** `presence_root` is consensus-bearing. `BlockHeader::hash()` hashes it, so it is block
+CONTENT. It carries `Hash::ZERO` only when no producer attended, and a real commitment hash
+otherwise. The previously documented `RegionAggregates` construction was never implemented and
+does not exist in the code. Section 4.6 specifies both regimes.
 
 ### 4.3 Block Hash
 
@@ -1176,7 +1194,9 @@ block_hash = HASH(
 )
 ```
 
-Note: The `vdf_proof` is NOT included in the block hash. The presence_root and genesis_hash are always included (presence_root is Hash::ZERO in deterministic scheduler model).
+Note: The `vdf_proof` is NOT included in the block hash. `presence_root` and `genesis_hash` are
+always included, which makes the attestation commitment block CONTENT: `presence_root` is
+`Hash::ZERO` only when no producer attended, and a real commitment hash otherwise (see 4.6).
 
 ### 4.4 Merkle Root
 
@@ -1211,6 +1231,145 @@ vdf_input = HASH("DOLI_VDF_BLOCK_V1" || prev_hash || merkle_root || slot || prod
 // producer     = 32 bytes
 // Total: 117 bytes before hashing
 ```
+
+### 4.6 Attestation Commitment (`presence_root`)
+
+`presence_root` commits to the body's `attestation_bitfield` and, at and after the activation
+height, to `aggregate_bls_signature` as well. It is a hash, never a decodable bitfield. Two regimes
+are separated by `inc_i_178_attestation_bls_activation_height`
+(`crates/core/src/network_params/mod.rs:836`), which is `u64::MAX` — frozen — on mainnet, testnet
+and devnet today.
+
+#### 4.6.1 The attestation message
+
+```
+bls_attest_msg(block_hash) = block_hash      // the 32 attested bytes, and nothing else
+domain separator           = crypto::ATTESTATION_DST   // distinct from the proof-of-possession DST
+```
+
+`crates/core/src/attestation/message.rs`. The BLS preimage is the 32-byte attested block hash
+alone — **no slot**. Every attester on one block must sign the identical message or the signatures
+never aggregate, and a verifier must be able to rebuild the message from the block alone.
+
+#### 4.6.2 Attestation wire format
+
+| Field | Type | Note |
+|-------|------|------|
+| `block_hash` | Hash | block being attested |
+| `slot` | uint32 | slot of the attested block |
+| `height` | uint64 | |
+| `attester` | PublicKey | |
+| `attester_weight` | uint64 | |
+| `signature` | Ed25519 | over `ATTESTATION_DOMAIN ‖ block_hash ‖ slot` — **unchanged** from 6.26.x |
+| `bls_signature` | 96 bytes | serde-default; **empty is tolerated** from pre-BLS binaries |
+
+This is dual-signing, not a replacement: the Ed25519 signature and its preimage are byte-identical
+to 6.26.x, and `bls_signature` is an additive second half.
+
+#### 4.6.3 Ingress verification
+
+`bins/node/src/node/attestation/ingress.rs`. Attendance is recorded **first** and is
+Ed25519-authenticated: a ProducerSet member attends whatever the BLS verdict is, and regardless of
+weight.
+
+| Verdict | Effect |
+|---------|--------|
+| `Valid` | signature pooled under the attested parent hash (first-seen only) |
+| `Empty` (no BLS half carried) | dropped, no penalty — the mixed-fleet bridge |
+| `NoKey` (no on-chain BLS key) | dropped, no penalty |
+| `Invalid` | attendance still recorded; peer scored `InvalidBlsAttestation`, −10 |
+
+`InvalidBlsAttestation` is **record-only and never disconnects** in this release: acting on the
+score would let one misconfigured producer partition the fleet.
+
+#### 4.6.4 Below the activation height (every network today)
+
+Every gated path is byte-identical to 6.26.x:
+
+- bit `N` means "index `N` attended the minute";
+- `presence_root = BLAKE3(attestation_bitfield)`;
+- an empty attester set keeps the `Hash::ZERO` sentinel (`attestation/commit.rs:190-192`);
+- body width: the tolerant pre-activation arm accepts every width the current guard tolerates
+  (`attestation/width.rs:36`).
+
+#### 4.6.5 At and after the activation height
+
+**Universe order** (`crates/core/src/attestation/universe.rs`):
+
+```
+universe = [ base (order preserved, never re-sorted) | (active \ base) sorted by pubkey bytes ]
+```
+
+`base` is the epoch producer list. The universe is duplicate-free — a key present in both slices
+keeps only its first `base` position — and `universe[..base.len()] == base`. The encoder, the
+stray-bit validator and `post_commit` all index against this one universe.
+
+**Bit semantics and the aggregate** (`attestation/commit.rs:151-155`,
+`production/assembly.rs:397-430`): bit `i` is set **iff `universe[i]` has a pooled signature over
+the PARENT block hash**, no longer "this key attended the minute". The aggregate covers exactly
+those signatures, in index order.
+
+**Commitment preimage** (`crates/core/src/attestation/commitment.rs`):
+
+```
+presence_root = BLAKE3(
+    u32le(len(attestation_bitfield))    || attestation_bitfield ||
+    u32le(len(aggregate_bls_signature)) || aggregate_bls_signature
+)
+```
+
+Both parts are length-prefixed, so no byte can move across the split without changing the
+commitment. This is unconditional: empty/empty hashes to a real value, never the `Hash::ZERO`
+sentinel.
+
+**Body width** (`attestation/width.rs`): the only accepted width is `ceil(universe_len / 8)` bytes.
+The width rule runs **in addition to** the stray-bit validator, never instead of it — it sees
+lengths, not padding and stray-bit content.
+
+**Canonical empty** (`attestation/commit.rs:134-141`): a zero-attester block carries
+`presence_commitment(&[], &[])`, not `Hash::ZERO` — a producer holding no pooled signatures must
+still be able to build. An empty bitfield under that root means **complete attendance**. Rewards
+treat it as complete attendance (`bins/node/src/node/rewards.rs:135`); the RPC schedule does not
+count such a block as one "with attestations" (`crates/rpc/src/methods/schedule.rs:300-304`).
+
+**Validation order** (`bins/node/src/node/attestation/verify.rs`, called from
+`validate_block_for_apply` after the VDF and eligibility checks):
+
+| # | Check | Failure |
+|---|-------|---------|
+| 1 | `presence_root == presence_commitment(bitfield, aggregate)` | `root_mismatch` |
+| 2 | universe divergent (Light: gap blocks after snap sync; Replay: own-store recovery) | pairing **skipped**, the root was already checked |
+| 3 | no bit set (bits, not length) ⇒ the aggregate must be empty | `aggregate_nonempty_for_empty_bitfield` |
+| 4 | resolve a BLS key for every set bit | `missing_bls_key` |
+| 5 | parse the aggregate signature | `aggregate_invalid` |
+| 6 | `bls_verify_aggregate(bls_attest_msg(parent_hash), sig, keys)` | `aggregate_invalid` |
+
+Check 1 is unconditional, empty bitfield included: the commitment needs no universe, so it is the
+one check a divergent node can still make. A failure raises
+`ValidationError::AttestationVerifyFailed { reason }`, error code **`ATTESTATION_VERIFY_FAILED`**
+(`crates/core/src/validation/error.rs:451,522`). Below the activation height the module is inert.
+
+#### 4.6.6 Activation height
+
+| Network | `inc_i_178_attestation_bls_activation_height` |
+|---------|-----------------------------------------------|
+| Mainnet | `u64::MAX` — frozen; env override **refused** |
+| Testnet | `u64::MAX` — frozen |
+| Devnet | `u64::MAX` — frozen |
+
+`crates/core/src/network_params/defaults.rs:268,510,763`. Devnet is frozen too **because this gate
+changes block CONTENT**: `presence_root` is hashed by `BlockHeader::hash()`, so an unfrozen
+devnet default would fork every live local chain on the next rebuild. On non-mainnet the height may be
+overridden with `DOLI_INC_I_178_ATTESTATION_BLS_ACTIVATION_HEIGHT`
+(`crates/core/src/network_params/env_loader.rs:474-481`); mainnet is locked and always takes the
+default.
+
+**No network has a pinned height.** Pinning one is a separate release and a separate user
+decision-session, gated on preconditions **P1–P8** in `specs/attestation-bls-architecture.md`.
+
+Deploy shape: consensus RULES **yes**, block CONTENT **yes** ⇒ **synchronized deploy**
+(INV-DEPLOY-001) — stop all nodes, then start all nodes. Activation is forward-only, and once
+crossed the height is immutable consensus history (INC-I-054).
 
 ---
 
@@ -1484,11 +1643,23 @@ registration_tx = {
         prev_registration_hash: 32 bytes,  // Chain to previous registration
         sequence_number: uint64,           // Monotonic counter
         bond_count: uint32,                // Initial bond count at registration
-        bls_pubkey: 48 bytes,              // BLS12-381 public key for aggregate attestations (optional, default empty)
-        bls_pop: 96 bytes                  // BLS proof-of-possession over bls_pubkey (optional, default empty)
+        bls_pubkey: 48 bytes,              // BLS12-381 public key for aggregate attestations (MANDATORY, non-empty)
+        bls_pop: 96 bytes                  // BLS proof-of-possession over bls_pubkey (MANDATORY, non-empty)
     }
 }
 ```
+
+`bls_pubkey` and `bls_pop` are **required on every registration path** — they are not
+optional and have no activation-height gate. `crates/core/src/validation/registration.rs:47,144`
+rejects an empty `bls_pubkey`, `:52,149` rejects an empty `bls_pop`, and `validate_bls_pop()`
+(`registration.rs:259`) then verifies the proof of possession against the key. A producer
+therefore cannot exist on-chain without a BLS key.
+
+No `TxType` among the 24 rotates a BLS key. `bls_pubkey` is written only at `Registration`
+apply, at genesis completion and during a `ProducerSet` rebuild, so key loss today means
+`Exit` plus a fresh `Registration`, which forfeits `registered_at` seniority. Whether to add
+a rotation transaction before the attestation-BLS height is pinned is open decision **O5** /
+precondition **P4** in `specs/attestation-bls-architecture.md`.
 
 ### 6.2 Bond Amount
 
