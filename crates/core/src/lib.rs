@@ -129,7 +129,6 @@ pub mod network_params;
 pub mod nft;
 pub mod oracle;
 pub mod pool;
-pub mod presence;
 pub mod rewards;
 pub mod scheduler;
 pub mod tpop;
@@ -142,7 +141,7 @@ pub use attestation::{
     decode_attestation_bitfield, decode_attestation_bitfield_vec, encode_attestation_bitfield,
     encode_attestation_bitfield_vec, validate_attestation_bitfield,
     validate_attestation_bitfield_vec, Attestation, AttestationError, MinuteAttestationTracker,
-    RegionAggregate, ATTESTATION_MINUTES_PER_EPOCH, ATTESTATION_QUALIFICATION_THRESHOLD,
+    ParentSignaturePool, ATTESTATION_MINUTES_PER_EPOCH, ATTESTATION_QUALIFICATION_THRESHOLD,
 };
 pub use block::{Block, BlockBuilder, BlockHeader};
 pub use conditions::{
@@ -227,9 +226,6 @@ pub use epoch_state::{epoch_state_hash, BlockAccumulationInput, EpochDerivationI
 
 // Block-height based reward epoch utilities
 pub use consensus::reward_epoch;
-
-// Presence commitment for weighted presence rewards
-pub use presence::PresenceCommitment;
 
 // Weighted presence reward calculation
 pub use rewards::{

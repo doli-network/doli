@@ -55,13 +55,6 @@ pub fn reward_pool_pubkey_hash() -> crypto::Hash {
 /// Consensus-breaking — all nodes must update before this height.
 pub const EPOCH_REWARD_EXPLICIT_INPUTS_HEIGHT: u64 = 0;
 
-/// Bitfield body activation height.
-/// Before this height: attestation bitfield stored in `presence_root` (header), capped at 256 producers.
-/// After this height: attestation bitfield stored in `block.attestation_bitfield` (body), no cap.
-/// `presence_root` becomes `BLAKE3(attestation_bitfield)` as a commitment.
-/// Consensus-breaking — all nodes must update before this height.
-pub const BITFIELD_BODY_ACTIVATION_HEIGHT: u64 = 0;
-
 /// Tier system activation height.
 /// Before this height: all producers participate in round-robin (current behavior).
 /// After this height: only the first ACTIVE_PRODUCERS_CAP producers (by registered_at)

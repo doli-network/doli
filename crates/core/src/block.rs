@@ -133,7 +133,7 @@ impl BlockHeader {
     }
 
     /// For version >= 2 blocks, `presence_root` contains the attestation commitment
-    /// (Merkle root of RegionAggregates from the previous slot).
+    /// (Merkle root of the previous slot's attestations).
     ///
     /// Returns `None` for version 1 blocks where presence_root is unused.
     pub fn attestation_commitment(&self) -> Option<Hash> {
@@ -162,7 +162,7 @@ pub struct Block {
     /// Stored in body (not header) to keep header hash stable.
     #[serde(default)]
     pub aggregate_bls_signature: Vec<u8>,
-    /// Attestation bitfield (post-BITFIELD_BODY_ACTIVATION_HEIGHT).
+    /// Attestation bitfield (body-stored, no producer cap).
     ///
     /// Variable-length bitfield: ceil(producer_count / 8) bytes.
     /// Bit N = 1 means producer at index N (sorted by pubkey) attested.

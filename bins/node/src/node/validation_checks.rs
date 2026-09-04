@@ -419,9 +419,7 @@ impl Node {
         // After activation: body bitfield present, presence_root = BLAKE3(body).
         // If bitfield is empty but presence_root is non-zero, that's the legacy path
         // which is still valid (presence_root can be used as direct bitfield pre-activation).
-        if height >= doli_core::consensus::BITFIELD_BODY_ACTIVATION_HEIGHT
-            && !block.attestation_bitfield.is_empty()
-        {
+        if !block.attestation_bitfield.is_empty() {
             // Verify commitment: presence_root must equal BLAKE3(attestation_bitfield)
             let expected = crypto::hash::hash(&block.attestation_bitfield);
             if block.header.presence_root != expected {

@@ -14,6 +14,7 @@
 mod inc_i_178_m0_attestation_lock;
 mod inc_i_178_m0_block_identity;
 mod inc_i_178_m0_common;
+mod inc_i_178_m1_ingest;
 mod inc_i_180_allowance_parity;
 mod inc_i_180_apply_block_utxo_destruction;
 mod inc_i_180_builder_parity;

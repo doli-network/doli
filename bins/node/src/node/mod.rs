@@ -71,9 +71,8 @@ use doli_core::types::UNITS_PER_COIN;
 use doli_core::validation;
 use doli_core::validation::ValidationMode;
 use doli_core::{
-    attestation_minute, decode_attestation_bitfield, encode_attestation_bitfield, AdaptiveGossip,
-    Attestation, Block, BlockHeader, MinuteAttestationTracker, Network, ProducerAnnouncement,
-    ProducerGSet, Transaction,
+    attestation_minute, AdaptiveGossip, Attestation, Block, BlockHeader, MinuteAttestationTracker,
+    Network, ParentSignaturePool, ProducerAnnouncement, ProducerGSet, Transaction,
 };
 use network::protocols::{
     SyncRequest, SyncResponse, CURRENT_PROTOCOL_VERSION, EPOCH_STATE_FORMAT_VERSION,
@@ -222,6 +221,9 @@ pub struct Node {
     /// In-memory tracker for minute attestations received via gossip.
     /// Used by block producer to build the presence_root bitfield.
     pub minute_tracker: MinuteAttestationTracker,
+    /// Bounded pool of gossiped BLS attestation signatures, keyed by the
+    /// attested parent hash.
+    pub parent_sig_pool: ParentSignaturePool,
     // NOTE: epoch_attestation_accum, epoch_blocks_produced_accum, and
     // epoch_attested_set are now inside epoch_state: EpochState.
     /// INC-I-014: Fork tips we've already rejected (prevents re-requesting them).

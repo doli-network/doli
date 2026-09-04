@@ -364,11 +364,10 @@ impl Node {
             return;
         }
         let minute = doli_core::attestation::attestation_minute(att.slot);
-        if att.bls_signature.is_empty() {
-            self.minute_tracker.record(att.attester, minute);
-        } else {
-            self.minute_tracker
-                .record_with_bls(att.attester, minute, att.bls_signature.clone());
+        self.minute_tracker.record(att.attester, minute);
+        if let Ok(sig) = <[u8; 96]>::try_from(att.bls_signature.as_slice()) {
+            self.parent_sig_pool
+                .insert(att.block_hash, att.attester, sig);
         }
         info!(
             "[DIRECT_ATTEST_RECV] registered attestation from {:.8} for slot {}",
@@ -601,14 +600,10 @@ impl Node {
 
                 // Attendance: a member attends regardless of weight (INV-ATTEST-001).
                 let minute = attestation_minute(attestation.slot);
-                if attestation.bls_signature.is_empty() {
-                    self.minute_tracker.record(attestation.attester, minute);
-                } else {
-                    self.minute_tracker.record_with_bls(
-                        attestation.attester,
-                        minute,
-                        attestation.bls_signature.clone(),
-                    );
+                self.minute_tracker.record(attestation.attester, minute);
+                if let Ok(sig) = <[u8; 96]>::try_from(attestation.bls_signature.as_slice()) {
+                    self.parent_sig_pool
+                        .insert(attestation.block_hash, attestation.attester, sig);
                 }
 
                 self.flush_finalized_to_archive().await;

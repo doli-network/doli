@@ -62,8 +62,6 @@ impl Node {
                         &block.attestation_bitfield,
                         decode_len,
                     )
-                } else if height < doli_core::consensus::BITFIELD_BODY_ACTIVATION_HEIGHT {
-                    decode_attestation_bitfield(&block.header.presence_root, decode_len)
                 } else {
                     vec![]
                 };
@@ -447,16 +445,7 @@ impl Node {
             .await;
         if let Some(ref kp) = self.producer_key {
             let minute = attestation_minute(block.header.slot);
-            if let Some(ref bls_kp) = self.bls_key {
-                let bls_msg = crypto::attestation_message(&block_hash, block.header.slot);
-                let bls_sig = crypto::bls_sign(&bls_msg, bls_kp.secret_key())
-                    .map(|s| s.as_bytes().to_vec())
-                    .unwrap_or_default();
-                self.minute_tracker
-                    .record_with_bls(*kp.public_key(), minute, bls_sig);
-            } else {
-                self.minute_tracker.record(*kp.public_key(), minute);
-            }
+            self.minute_tracker.record(*kp.public_key(), minute);
         }
 
         // Buffer block for archiving (will be flushed when finalized)

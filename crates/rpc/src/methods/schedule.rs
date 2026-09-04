@@ -209,9 +209,7 @@ impl RpcContext {
     /// Scans all blocks in the current epoch, decodes presence_root bitfields,
     /// and reports per-producer attestation minute counts.
     pub(super) async fn get_attestation_stats(&self) -> Result<Value, RpcError> {
-        use doli_core::attestation::{
-            attestation_minute, attestation_qualification_threshold, decode_attestation_bitfield,
-        };
+        use doli_core::attestation::{attestation_minute, attestation_qualification_threshold};
         use doli_core::consensus::reward_epoch;
 
         let blocks_per_epoch = self.blocks_per_reward_epoch;
@@ -301,14 +299,11 @@ impl RpcContext {
                     blocks_with_attestations += 1;
                     let slot = block.header.slot;
                     let minute = attestation_minute(slot);
-                    #[allow(clippy::absurd_extreme_comparisons)]
                     let indices = if !block.attestation_bitfield.is_empty() {
                         doli_core::decode_attestation_bitfield_vec(
                             &block.attestation_bitfield,
                             producer_count,
                         )
-                    } else if h < doli_core::consensus::BITFIELD_BODY_ACTIVATION_HEIGHT {
-                        decode_attestation_bitfield(&pr, producer_count)
                     } else {
                         // Post-activation without body: skip
                         vec![]

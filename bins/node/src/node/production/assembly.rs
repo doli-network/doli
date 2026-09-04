@@ -4,8 +4,8 @@ impl Node {
     /// Build block content: coinbase, epoch rewards, genesis VDF registration, mempool txs,
     /// attestation bitfield, and header. Returns `None` if build failed (slot monotonicity
     /// violation or slot boundary crossed during assembly).
-    /// Returns (header, transactions, body_bitfield) where body_bitfield is non-empty
-    /// only for post-BITFIELD_BODY_ACTIVATION_HEIGHT blocks.
+    /// Returns (header, transactions, body_bitfield) where body_bitfield holds the
+    /// attestation bits and `presence_root` holds their BLAKE3 commitment.
     pub async fn build_block_content(
         &mut self,
         prev_hash: Hash,
@@ -387,7 +387,6 @@ impl Node {
         // 6 blocks per minute from different producers -> union mitigates censorship.
         let current_minute = attestation_minute(current_slot);
         let attested_pks = self.minute_tracker.attested_in_minute(current_minute);
-        let use_body_bitfield = height >= doli_core::consensus::BITFIELD_BODY_ACTIVATION_HEIGHT;
         let mut body_bitfield: Vec<u8> = Vec::new();
         let presence_root = if attested_pks.is_empty() {
             Hash::ZERO
@@ -444,16 +443,11 @@ impl Node {
                 extra.len(),
                 attested_indices.len(),
                 total_len,
-                use_body_bitfield
+                true
             );
-            if use_body_bitfield {
-                body_bitfield =
-                    doli_core::encode_attestation_bitfield_vec(&attested_indices, total_len);
-                Hash::from_bytes(*crypto::hash::hash(&body_bitfield).as_bytes())
-            } else {
-                // Pre-activation: bitfield packed into presence_root (capped at 256)
-                encode_attestation_bitfield(&attested_indices)
-            }
+            body_bitfield =
+                doli_core::encode_attestation_bitfield_vec(&attested_indices, total_len);
+            Hash::from_bytes(*crypto::hash::hash(&body_bitfield).as_bytes())
         };
         let builder = builder.with_presence_root(presence_root);
 

@@ -140,9 +140,6 @@ impl Node {
                             &block.attestation_bitfield,
                             producer_count,
                         )
-                    } else if h < doli_core::consensus::BITFIELD_BODY_ACTIVATION_HEIGHT {
-                        // Pre-activation: presence_root IS the raw bitfield
-                        decode_attestation_bitfield(&block.header.presence_root, producer_count)
                     } else {
                         // Post-activation without body (snap sync gap or header-only
                         // store). M-RC9: record as incomplete instead of silently
@@ -815,11 +812,6 @@ impl Node {
                                     &blk.attestation_bitfield,
                                     sorted_for_decode.len(),
                                 )
-                            } else if h < doli_core::consensus::BITFIELD_BODY_ACTIVATION_HEIGHT {
-                                doli_core::attestation::decode_attestation_bitfield(
-                                    &blk.header.presence_root,
-                                    sorted_for_decode.len(),
-                                )
                             } else {
                                 // Post-activation without body: skip
                                 vec![]
@@ -1015,11 +1007,6 @@ impl Node {
                         let indices = if !blk.attestation_bitfield.is_empty() {
                             doli_core::decode_attestation_bitfield_vec(
                                 &blk.attestation_bitfield,
-                                sorted_for_decode.len(),
-                            )
-                        } else if h < doli_core::consensus::BITFIELD_BODY_ACTIVATION_HEIGHT {
-                            doli_core::attestation::decode_attestation_bitfield(
-                                &blk.header.presence_root,
                                 sorted_for_decode.len(),
                             )
                         } else {
