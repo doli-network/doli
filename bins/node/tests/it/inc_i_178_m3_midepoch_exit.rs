@@ -52,6 +52,9 @@ use crate::inc_i_178_m0_common::{
 /// death-spiral shape v6.17.1 was written to end.
 #[tokio::test]
 async fn inc_i_178_m3_midepoch_exit_rejects_an_honest_block() {
+    // exclusive window: the P2 half of this test writes the global
+    // attestation-verify counters (M5 INC-I-178 fix).
+    let _guard = crate::inc_i_178_m5_common::counter_lock().await;
     let (mut node, producers, _tmp) = make_node(N_REALISTIC).await;
     let height = safe_build_height(&node);
     // Gate-derived, and set BEFORE the build: the reproduction needs the legacy

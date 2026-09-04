@@ -224,6 +224,9 @@ fn req_bls_005_m4_below_the_gate_the_root_is_still_blake3_of_the_bitfield() {
 /// unbound aggregate or rejected outright, and the producer cannot tell which.
 #[tokio::test]
 async fn req_bls_003_m4_the_validator_expects_the_commitment_for_an_empty_aggregate() {
+    // exclusive window: both validate calls below run post-AH and write the
+    // global attestation-verify counters (M5 INC-I-178 fix).
+    let _guard = crate::inc_i_178_m5_common::counter_lock().await;
     let (mut node, producers, _tmp) = make_node(N_SMALL).await;
     let height = safe_build_height(&node);
     node.inc_i_178_attestation_bls_activation_height = height + 1;
@@ -257,12 +260,18 @@ async fn req_bls_003_m4_the_validator_expects_the_commitment_for_an_empty_aggreg
     let verdict = node
         .validate_block_for_apply(&legacy_block, height, ValidationMode::Light)
         .await;
-    assert!(
-        err_text(&verdict).contains("presence_root mismatch"),
-        "above the gate the legacy root must not validate against an empty aggregate; \
-         got {:?}",
-        err_text(&verdict)
-    );
+    // INC-I-178 M5 re-scope: the post-AH root reject moved from
+    // validation_checks.rs into verify.rs, so it now arrives as a labelled variant.
+    match &verdict {
+        Err(e @ doli_core::validation::ValidationError::AttestationVerifyFailed { reason, .. }) => {
+            assert_eq!(reason, "root_mismatch");
+            assert_eq!(e.error_code(), "ATTESTATION_VERIFY_FAILED");
+        }
+        other => panic!(
+            "above the gate the legacy root must not validate against an empty aggregate; \
+             got {other:?}"
+        ),
+    }
 
     // The same body re-committed under the post-AH rule validates.
     let mut post_block = legacy_block.clone();

@@ -421,13 +421,15 @@ impl Node {
         if !block.attestation_bitfield.is_empty() {
             let ah = self.inc_i_178_attestation_bls_activation_height;
             let bf = &block.attestation_bitfield;
-            let expected =
-                commit::block_presence_root_at(ah, height, bf, &block.aggregate_bls_signature);
-            if block.header.presence_root != expected {
-                return Err(validation::ValidationError::InvalidTransaction(format!(
-                    "presence_root mismatch: expected {}, got {}",
-                    expected, block.header.presence_root,
-                )));
+            if height < ah {
+                let expected =
+                    commit::block_presence_root_at(ah, height, bf, &block.aggregate_bls_signature);
+                if block.header.presence_root != expected {
+                    return Err(validation::ValidationError::InvalidTransaction(format!(
+                        "presence_root mismatch: expected {}, got {}",
+                        expected, block.header.presence_root,
+                    )));
+                }
             }
             let active: Vec<crypto::PublicKey> = {
                 let producers = self.producer_set.read().await;
@@ -453,7 +455,10 @@ impl Node {
                 e
             );
             e
-        })
+        })?;
+
+        // INC-I-178 D7 (M5): runs AFTER the VDF/eligibility/size checks (C8/F11).
+        self.verify_block_attestation(block, height, mode).await
     }
 
     /// Validate block economics — prevents inflation and reward theft.

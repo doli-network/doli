@@ -631,6 +631,60 @@ lazy_static! {
     ).unwrap();
 }
 
+// Its own block: the ones above are at the `lazy_static!` recursion limit.
+lazy_static! {
+    /// INC-I-178 M5: every post-AH block that REACHES the D7 verifier.
+    ///
+    /// INSTRUMENT SCOPE — the ONE write site is
+    /// `node/attestation/verify.rs::verify_block_attestation`, incremented once
+    /// before any decision. `total == accepted + rejected + skipped_light`, so an
+    /// unchanged `total` is the witness that the verifier never ran (a block that
+    /// failed a cheaper check first, or a height below the activation height).
+    pub static ref ATTESTATION_VERIFY_TOTAL: IntCounter = IntCounter::new(
+        "doli_attestation_verify_total",
+        "Blocks that reached the INC-I-178 post-activation attestation verifier."
+    ).unwrap();
+
+    /// INC-I-178 M5: post-AH attestation rejects, by reason.
+    ///
+    /// INSTRUMENT SCOPE — every reject arm of
+    /// `node/attestation/verify.rs::verify_block_attestation` increments exactly
+    /// one series:
+    ///   root_mismatch                          header presence_root != commitment
+    ///   aggregate_invalid                      bad length or failed pairing
+    ///   aggregate_nonempty_for_empty_bitfield  no bit set, aggregate carried
+    ///   missing_bls_key                        set bit with no usable on-chain key
+    /// All four are zero-initialised in register_metrics(), so a zero is a measured
+    /// "no rejections" and an absent series means the exporter is broken.
+    pub static ref ATTESTATION_VERIFY_REJECTED: IntCounterVec = IntCounterVec::new(
+        Opts::new(
+            "doli_attestation_verify_rejected_total",
+            "INC-I-178 post-activation attestation rejects by reason: root_mismatch, \
+             aggregate_invalid, aggregate_nonempty_for_empty_bitfield, missing_bls_key."
+        ),
+        &["reason"]
+    ).unwrap();
+
+    /// INC-I-178 M5: post-AH blocks whose pairing was skipped as divergent-universe.
+    ///
+    /// INSTRUMENT SCOPE — the ONE write site is the Light / snap-sync skip arm of
+    /// `node/attestation/verify.rs::verify_block_attestation`
+    /// (`mode != Full || snap_sync_height.is_some()`). The root check still runs.
+    pub static ref ATTESTATION_VERIFY_SKIPPED_LIGHT: IntCounter = IntCounter::new(
+        "doli_attestation_verify_skipped_light_total",
+        "Post-activation blocks whose aggregate pairing was skipped because the local \
+         attestation universe is known-divergent (non-Full mode, or snap-synced)."
+    ).unwrap();
+}
+
+/// Every `reason` value `ATTESTATION_VERIFY_REJECTED` is written with.
+pub const ATTESTATION_VERIFY_REASONS: [&str; 4] = [
+    "root_mismatch",
+    "aggregate_invalid",
+    "aggregate_nonempty_for_empty_bitfield",
+    "missing_bls_key",
+];
+
 /// Every `site` value `FORK_GUARD_REFUSALS` is written with.
 pub const FORK_GUARD_SITES: [&str; 3] = ["producer_rebuild", "rollback_rebuild", "reorg_execute"];
 
@@ -796,6 +850,16 @@ pub fn register_metrics() {
     let _ = REGISTRY.register(Box::new(ROCKSDB_IS_WRITE_STOPPED.clone()));
     let _ = REGISTRY.register(Box::new(ROCKSDB_BACKGROUND_ERRORS_TOTAL.clone()));
     let _ = REGISTRY.register(Box::new(ROCKSDB_FILES_AT_LEVEL.clone()));
+
+    // INC-I-178 M5 attestation verifier (INC-I-187: registered AND written).
+    let _ = REGISTRY.register(Box::new(ATTESTATION_VERIFY_TOTAL.clone()));
+    let _ = REGISTRY.register(Box::new(ATTESTATION_VERIFY_REJECTED.clone()));
+    let _ = REGISTRY.register(Box::new(ATTESTATION_VERIFY_SKIPPED_LIGHT.clone()));
+    for reason in ATTESTATION_VERIFY_REASONS {
+        ATTESTATION_VERIFY_REJECTED
+            .with_label_values(&[reason])
+            .inc_by(0);
+    }
 
     // Set build info
     BUILD_INFO
