@@ -13,17 +13,20 @@
 #     verdict driven by it is driven by hash entropy. A block carrying an
 #     aggregateBlsSig is not a defect either — its presence IS the AH-crossed
 #     litmus, so it is recorded, never failed on.
-#   gs018-active-producers-dual-sign — ALWAYS SKIPs on this build. REQ-BLS-006
-#     AC-2 wants "100% of active producers emit BLS-signed attestations" and that
-#     number is not observable from outside the node process: the ingress VALID
-#     path (attestation/ingress.rs:84-87) logs nothing at any level, no metric
-#     carries a producer label, no RPC exposes parent_sig_pool, and
-#     getAttestationStats.hasBls is BLS-key REGISTRATION — already true for all 7
-#     producers on the OLD build. "0 unverifiable-BLS warnings therefore 5/5
-#     dual-signing" is a false green and is refused. The SKIP carries the two
-#     numbers that DO measure: the denominator (getProducers rows with
-#     status=="active", never the node count) and how many nodes carry the
-#     INC-I-178 build.
+#   gs018-active-producers-dual-sign — REQ-BLS-006 AC-2, "100% of active
+#     producers emit BLS-signed attestations". Observable since INC-I-178 M7.5:
+#     the ingress VALID arm publishes doli_attestation_bls_valid_total
+#     (fleet-wide, first-seen halves only) and
+#     doli_attestation_bls_valid_attester_total{attester="<8 hex>"}, whose label
+#     joins to a getProducers row by pubkey prefix. The denominator is the chain's
+#     status=="active" rows, NEVER the node count. If NO node exposes the
+#     fleet-wide series the fleet is below M7.5 and this SKIPs — the key is the
+#     ABSENCE of the emission signal, never a version string, because M7.5 bumps
+#     no version. An empty fleet-wide label union also SKIPs: a node restarted
+#     seconds ago has ingested nothing, and a zero-length observation window must
+#     never manufacture a red gauntlet. It FAILs only when the capability is
+#     present, at least one attester has been observed, and some ACTIVE producer
+#     still carries no series — that producer is not dual-signing.
 #   gs018-post-ah-aggregate-verifies — gated on the AH litmus, since the
 #     activation height is u64::MAX on every network and no RPC exposes it:
 #     doli_attestation_verify_total > 0, OR getAttestationStats.blocksWithBls > 0,
@@ -34,7 +37,8 @@
 #
 # Build detection is by CAPABILITY, never by version: the INC-I-178 build reports
 # `6.26.3`, byte-identical to the fleet it replaces. The marker is the presence of
-# the series `doli_attestation_verify_total` on /metrics.
+# the series `doli_attestation_verify_total` on /metrics; the M7.5 dual-sign check
+# uses its own, later marker, `doli_attestation_bls_valid_total`.
 #
 # Every precondition (RPC down, python3 missing, non-testnet fleet) is a SKIP
 # (rc 2) with a written SKIP_REASONS entry, never a FAIL: gauntlet.sh:684-689
@@ -57,6 +61,8 @@ GS018_NETWORK="${GS018_NETWORK:-testnet}"
 GS018_TIMEOUT="${GS018_TIMEOUT:-5}"
 GS018_WINDOW_SECS="${GAUNTLET_WINDOW:-45}"
 GS018_VERIFY_SERIES="doli_attestation_verify_total"
+GS018_BLS_VALID_SERIES="doli_attestation_bls_valid_total"
+GS018_BLS_ATTESTER_SERIES="doli_attestation_bls_valid_attester_total"
 
 GS018_PROBED=0
 GS018_UP=""
@@ -128,6 +134,42 @@ try:
     print("%d %d" % (act, len(ps)))
 except Exception:
     print("ERR")' 2>/dev/null
+}
+
+# _gs018_active_pubkeys — stdin getProducers reply, stdout the full lowercase
+# public key of every status=="active" row, one per line. This is the AC-2
+# denominator's identity list; the node count is never a substitute for it.
+_gs018_active_pubkeys() {
+    python3 -c '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    r = d.get("result", d) if isinstance(d, dict) else d
+    ps = r.get("producers", r) if isinstance(r, dict) else r
+    if not isinstance(ps, list):
+        raise ValueError("shape")
+    for p in ps:
+        if not isinstance(p, dict):
+            continue
+        if str(p.get("status", "")).lower() != "active":
+            continue
+        k = p.get("publicKey") or p.get("public_key") or ""
+        if k:
+            print(str(k).lower())
+except Exception:
+    pass' 2>/dev/null
+}
+
+# _gs018_attester_labels — stdin /metrics body, stdout the `attester` label of
+# every doli_attestation_bls_valid_attester_total sample ABOVE zero. A sample at
+# 0 is not an observation of dual-signing, so it is not counted.
+_gs018_attester_labels() {
+    awk -v s="$GS018_BLS_ATTESTER_SERIES" '
+        index($0, s "{") != 1 { next }
+        $NF + 0 <= 0 { next }
+        match($0, /attester="[^"]*"/) {
+            print tolower(substr($0, RSTART + 10, RLENGTH - 11))
+        }' 2>/dev/null
 }
 
 # _gs018_new_build_count — nodes exposing the INC-I-178 capability marker.
@@ -272,20 +314,56 @@ EOF
 }
 
 _gs018_dual_check() {
-    local t="$1" p body counts active="unknown" registered="unknown" builds warns
+    local t="$1" p k pre body counts nodes
+    local active="unknown" registered="unknown" pubkeys="" named=0
+    local capable=0 labels="" matched="" missing="" m=0
     for p in $GS018_UP; do
         body="$(_gs018_rpc "$p" getProducers '{"active_only": false}')"
         [ -n "$body" ] || continue
         counts="$(printf '%s' "$body" | _gs018_producer_counts)"
-        case "$counts" in
-            ERR|"") continue ;;
-            *) active="${counts%% *}"; registered="${counts##* }"; break ;;
+        case "$counts" in ERR|"") continue ;; esac
+        active="${counts%% *}"; registered="${counts##* }"
+        pubkeys="$(printf '%s' "$body" | _gs018_active_pubkeys)"
+        break
+    done
+    named="$(printf '%s' "$pubkeys" | wc -w | tr -d ' ')"
+    nodes="$(printf '%s' "$GS018_METRICS_PORTS" | wc -w | tr -d ' ')"
+    if [ "$active" = "unknown" ] || [ "$active" -eq 0 ] || [ "$named" -ne "$active" ]; then
+        SKIP_REASONS="$SKIP_REASONS; $t: the AC-2 denominator is not readable — getProducers gave $active active row(s) of $registered registered but $named usable public key(s); the node count is never a substitute for the chain's active set"
+        return 2
+    fi
+
+    for p in $GS018_METRICS_PORTS; do
+        body="$(_gs018_metrics "$p")"
+        [ -n "$body" ] || continue
+        printf '%s\n' "$body" | grep -qE "^${GS018_BLS_VALID_SERIES}([[:space:]{]|\$)" || continue
+        capable=$(( capable + 1 ))
+        labels="$labels $(printf '%s\n' "$body" | _gs018_attester_labels | tr '\n' ' ')"
+    done
+    if [ "$capable" -eq 0 ]; then
+        SKIP_REASONS="$SKIP_REASONS; $t: no node of $nodes exposes $GS018_BLS_VALID_SERIES on /metrics, so the per-producer BLS-emission signal is ABSENT and this fleet is below INC-I-178 M7.5 — dual-signing stays unobservable per producer and no verdict is possible. Keyed on the signal's absence, never on a version string: M7.5 bumps no version and the series is zero-initialised at process start, so a running M7.5 node always exposes it. $(_gs018_new_build_count) node(s) do carry the earlier M5 marker $GS018_VERIFY_SERIES, which separates a pre-M7.5 INC-I-178 fleet from a fleet with no INC-I-178 build at all. Denominator: $active active producer(s) of $registered chain-registered"
+        return 2
+    fi
+
+    labels="$(printf '%s' "$labels" | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' ')"
+    if [ -z "$labels" ]; then
+        SKIP_REASONS="$SKIP_REASONS; $t: $capable of $nodes node(s) expose $GS018_BLS_VALID_SERIES, but $GS018_BLS_ATTESTER_SERIES carries no series above 0 anywhere in the fleet — no verifying BLS half has been ingested yet, so there is no observation window (a node restarted seconds ago has counted nothing) and a zero-length window must never be read as 'nobody dual-signs'. Denominator: $active active producer(s) of $registered chain-registered"
+        return 2
+    fi
+
+    for k in $pubkeys; do
+        pre="$(printf '%.8s' "$k")"
+        case " $labels" in
+            *" $pre "*) matched="$matched $pre"; m=$(( m + 1 )) ;;
+            *) missing="$missing $pre" ;;
         esac
     done
-    builds="$(_gs018_new_build_count)"
-    warns="$(_gs018_new_warn_count)"
-    SKIP_REASONS="$SKIP_REASONS; $t: BLS dual-signing is NOT observable per producer on this build — the attestation ingress valid path logs nothing at any level, no metric carries a producer label, no RPC exposes parent_sig_pool, and getAttestationStats.hasBls is BLS-key REGISTRATION (already true on the old build), so it cannot stand in for emission; needs a per-producer BLS-emission signal (a labelled counter or a positive ingress log line). Denominator: $active active producers of $registered chain-registered (getProducers status==active, never the node count). Build: $builds of $(printf '%s' "$GS018_METRICS_PORTS" | wc -w | tr -d ' ') nodes expose $GS018_VERIFY_SERIES. Window: $warns new unverifiable-BLS-half warning(s) over ~${GS018_WINDOW_SECS}s — informational only, that line fires solely on a relayed INVALID half, so its absence proves nothing"
-    return 2
+    if [ "$m" -lt "$active" ]; then
+        FAIL_REASONS="$FAIL_REASONS; $t: only $m of $active active producer(s) emit a verifying BLS half ($GS018_BLS_ATTESTER_SERIES) — no series for$missing. Those producers are not dual-signing, which is REQ-BLS-006 AC-2 failing; pinning the activation height now would strip them from every aggregate. Observed over $capable of $nodes node(s) carrying $GS018_BLS_VALID_SERIES; denominator from the chain (getProducers status==active), never the node count. $(_gs018_new_warn_count) unverifiable-BLS-half warning(s) over ~${GS018_WINDOW_SECS}s, which separates a producer that emits nothing from one whose half does not verify"
+        return 1
+    fi
+    INFO_REASONS="$INFO_REASONS; $t: $m/$active active producer(s) emit a verifying BLS half —$matched. Denominator from the chain (getProducers status==active, $registered registered), never the node count; union read over $capable of $nodes node(s) exposing $GS018_BLS_VALID_SERIES"
+    return 0
 }
 
 _gs018_postah_check() {

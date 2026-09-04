@@ -9,6 +9,8 @@ use super::*;
 use crypto::{bls_verify, BlsPublicKey, BlsSignature, BLS_SIGNATURE_SIZE};
 use doli_core::attestation::bls_attest_msg;
 
+use crate::metrics::{ATTESTATION_BLS_VALID_BY_ATTESTER, ATTESTATION_BLS_VALID_TOTAL};
+
 /// Outcome of checking the BLS half of one attestation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BlsAttestVerdict {
@@ -82,8 +84,23 @@ impl Node {
 
         match self.bls_verdict(att, &onchain_bls_key) {
             BlsAttestVerdict::Valid(sig) => {
-                self.parent_sig_pool
-                    .insert(att.block_hash, att.attester, sig);
+                if self
+                    .parent_sig_pool
+                    .insert(att.block_hash, att.attester, sig)
+                {
+                    let attester_hex = att.attester.to_hex();
+                    let attester = &attester_hex[..8];
+                    ATTESTATION_BLS_VALID_TOTAL.inc();
+                    ATTESTATION_BLS_VALID_BY_ATTESTER
+                        .with_label_values(&[attester])
+                        .inc();
+                    info!(
+                        "[ATTEST_INGEST] valid bls attester={} parent={} sig_len={}",
+                        attester,
+                        &att.block_hash.to_hex()[..8],
+                        sig.len()
+                    );
+                }
             }
             BlsAttestVerdict::Invalid => {
                 // Release N records and logs only. A producer whose BLS key does not

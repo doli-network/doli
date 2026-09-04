@@ -693,6 +693,42 @@ lazy_static! {
     ).unwrap();
 }
 
+// Its own block: the ones above are at the `lazy_static!` recursion limit.
+lazy_static! {
+    /// INC-I-178 M7.5 (REQ-BLS-006 AC-2): first-seen verifying BLS halves, fleet-wide.
+    ///
+    /// INSTRUMENT SCOPE — the ONE write site is the `BlsAttestVerdict::Valid` arm of
+    /// `node/attestation/ingress.rs::ingest_attestation`, and only when
+    /// `ParentSignaturePool::insert` reports the (parent, attester) pair as first
+    /// seen; counting every relay would measure gossip fan-out, not attesters.
+    /// Zero-initialised in register_metrics(): its ABSENCE from /metrics is GS-018's
+    /// marker for "this node predates M7.5", so absence must never also mean
+    /// "registered but nothing seen yet".
+    pub static ref ATTESTATION_BLS_VALID_TOTAL: IntCounter = IntCounter::new(
+        "doli_attestation_bls_valid_total",
+        "INC-I-178 first-seen verifying BLS attestation halves pooled at the ingress."
+    ).unwrap();
+
+    /// INC-I-178 M7.5 (REQ-BLS-006 AC-2): which producers actually dual-sign.
+    ///
+    /// INSTRUMENT SCOPE — the same ONE write site as `ATTESTATION_BLS_VALID_TOTAL`.
+    /// The label is the first 8 hex characters of the attester's Ed25519 public key,
+    /// which is what GS-018 joins to a getProducers row by prefix. CARDINALITY —
+    /// `ingest_attestation` drops non-members before the BLS verdict is ever
+    /// computed, so the label space is bounded by the chain-registered ProducerSet
+    /// (7 on this testnet), never by what a peer sends. Not zero-initialisable:
+    /// label values are discovered, so an absent series here is expected and is
+    /// never a build marker.
+    pub static ref ATTESTATION_BLS_VALID_BY_ATTESTER: IntCounterVec = IntCounterVec::new(
+        Opts::new(
+            "doli_attestation_bls_valid_attester_total",
+            "INC-I-178 first-seen verifying BLS attestation halves by attester: the \
+             first 8 hex characters of the producer's Ed25519 public key."
+        ),
+        &["attester"]
+    ).unwrap();
+}
+
 /// Every `reason` value `ATTESTATION_VERIFY_REJECTED` is written with.
 pub const ATTESTATION_VERIFY_REASONS: [&str; 4] = [
     "root_mismatch",
@@ -880,6 +916,11 @@ pub fn register_metrics() {
     // INC-I-178 M6 C11 coverage: a series from process start, not from first build.
     let _ = REGISTRY.register(Box::new(ATTESTATION_BITFIELD_FILL_RATIO.clone()));
     ATTESTATION_BITFIELD_FILL_RATIO.set(0.0);
+
+    // INC-I-178 M7.5: the zero-init is GS-018's capability marker (REQ-BLS-007).
+    let _ = REGISTRY.register(Box::new(ATTESTATION_BLS_VALID_TOTAL.clone()));
+    ATTESTATION_BLS_VALID_TOTAL.inc_by(0);
+    let _ = REGISTRY.register(Box::new(ATTESTATION_BLS_VALID_BY_ATTESTER.clone()));
 
     // Set build info
     BUILD_INFO

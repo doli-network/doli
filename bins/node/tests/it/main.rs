@@ -30,6 +30,7 @@ mod inc_i_178_m6_replay;
 mod inc_i_178_m6_replay_fixture;
 mod inc_i_178_m6_replay_harness;
 mod inc_i_178_m6_width;
+mod inc_i_178_m75_ingress_signal;
 mod inc_i_180_allowance_parity;
 mod inc_i_180_apply_block_utxo_destruction;
 mod inc_i_180_builder_parity;
