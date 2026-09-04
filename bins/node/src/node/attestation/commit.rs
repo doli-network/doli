@@ -210,6 +210,18 @@ fn legacy_commitment(universe: &[PublicKey], attested: &[PublicKey]) -> Attestat
     }
 }
 
+/// Publish the C11 coverage of a commitment: set bits over the universe width.
+/// A zero-width universe is `0.0`, never the `NaN` that `0/0` yields in an f64
+/// gauge and that every downstream aggregation would propagate.
+pub fn record_bitfield_fill_ratio(set_bits: usize, universe_len: usize) {
+    let ratio = if universe_len == 0 {
+        0.0
+    } else {
+        set_bits as f64 / universe_len as f64
+    };
+    crate::metrics::ATTESTATION_BITFIELD_FILL_RATIO.set(ratio);
+}
+
 pub fn build_attestation_commitment_at(
     ah: u64,
     height: u64,
@@ -218,11 +230,18 @@ pub fn build_attestation_commitment_at(
     pool: &ParentSignaturePool,
     parent: &Hash,
 ) -> AttestationCommitment {
-    if height >= ah {
+    let commitment = if height >= ah {
         pooled_commitment(universe, pool, parent)
     } else {
         legacy_commitment(universe, attested)
-    }
+    };
+    let set_bits = commitment
+        .bitfield
+        .iter()
+        .map(|b| b.count_ones() as usize)
+        .sum();
+    record_bitfield_fill_ratio(set_bits, universe.len());
+    commitment
 }
 
 #[allow(dead_code)]

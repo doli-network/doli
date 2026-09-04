@@ -36,6 +36,8 @@ use crate::inc_i_204_m0_common::{encode_registry, exported_value};
 const FAMILY_TOTAL: &str = "doli_attestation_verify_total";
 const FAMILY_REJECTED: &str = "doli_attestation_verify_rejected_total";
 const FAMILY_SKIPPED: &str = "doli_attestation_verify_skipped_light_total";
+/// INC-I-178 M6 / C11: the fallback-rate series that must be registered beside them.
+const FAMILY_FILL_RATIO: &str = "doli_attestation_bitfield_fill_ratio";
 
 const N_SIGNERS: usize = 8;
 
@@ -100,6 +102,29 @@ async fn req_bls_007_counters_are_registered_and_written() {
         "O5: the value must move in the RENDERED exposition, not only on the handle. \
          Registered-but-never-collected is the INC-I-187 failure ({before_exported} -> \
          {after_exported})"
+    );
+}
+
+/// REQ-BLS-010 (Must) — INC-I-178 M6 sibling. Decision: a failure means the C11 fallback
+/// series joins the 28 `doli_*` metrics INC-I-187 found registered and never written. The
+/// registry check has to live beside the verify counters because they are the SAME
+/// exposition: an operator correlating "verifier ran" against "coverage collapsed" needs
+/// both families present from process start, not from first write.
+#[tokio::test]
+async fn req_bls_010_m6_the_fill_ratio_family_is_registered_beside_the_verify_counters() {
+    let _guard = counter_lock().await;
+    let text = encode_registry();
+    for family in [FAMILY_TOTAL, FAMILY_SKIPPED, FAMILY_FILL_RATIO] {
+        assert!(
+            text.contains(family),
+            "{family} is not published by register_metrics()"
+        );
+    }
+    assert!(
+        exported_value(FAMILY_FILL_RATIO, &[]).is_some(),
+        "{FAMILY_FILL_RATIO} must render a series from process start (the zero-initialised \
+         FORK_GUARD_REFUSALS pattern), or an alert on attestation coverage evaluates \
+         nothing until coverage has already collapsed"
     );
 }
 

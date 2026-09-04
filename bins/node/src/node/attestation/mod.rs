@@ -6,6 +6,7 @@ pub mod commit;
 pub(crate) mod ingress;
 pub(crate) mod keys;
 pub(crate) mod verify;
+pub mod width;
 
 impl Node {
     /// Build the attestation this node broadcasts (INC-I-178 D3, the ONE egress).

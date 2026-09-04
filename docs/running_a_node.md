@@ -497,6 +497,7 @@ Key metrics available at `http://127.0.0.1:9000/metrics`:
 | `doli_pre_activation_branch_total{gate}` | Executions of a pre-activation branch of an activation-height gate |
 | `doli_reorg_finality_probe_total{site,outcome}` | Finality-guard comparisons reached (`entry`) and refused (`reject`) |
 | `doli_force_reorg_outcomes_total{outcome}` | `forceReorgTo` operator-escape decisions: `executed`, `expired`, `uncorroborated`, `unknown_target`, `plan_refused`, `same_branch`, `ineligible`, `reorg_did_not_land` |
+| `doli_attestation_bitfield_fill_ratio` | Attestation coverage of the last block this node built: set bitfield bits over the attestation universe width. 0.0 = the empty-commitment fallback (no usable attestation signatures), 1.0 = full coverage |
 
 All label values are zero-initialised at start-up, so a zero is a measured "no
 events" and an absent series means the exporter is broken. A sustained

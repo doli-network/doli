@@ -459,13 +459,13 @@ pass = satisfied by construction · mit = mitigated by the named change · open 
 | C8 | pairing after VDF/eligibility/size cap | n/a | n/a | n/a | n/a | n/a | pass (cheap check stays early) | **pass** | n/a | n/a | n/a |
 | C9 | unambiguous preimage; unconditional empty rule | n/a | n/a | n/a | n/a | n/a | **pass** | pass | n/a | n/a | pass |
 | C10 | builder selects exact `(hash, slot)` pair | n/a | pass (keyed by hash) | pass | n/a | n/a | n/a | n/a | n/a | **dissolved** | n/a |
-| C11 | producer without a valid aggregate still produces; fallback rate-observed | n/a | pass (empty pool ⇒ empty bitfield) | n/a | n/a | n/a | pass (canonical empty) | **open** → M4 metric + M5 chaos test | n/a | n/a | n/a |
+| C11 | producer without a valid aggregate still produces; fallback rate-observed | n/a | pass (empty pool ⇒ empty bitfield) | n/a | n/a | n/a | pass (canonical empty) | **closed (M6)** — chaos test `inc_i_178_m6_chaos.rs`; rate observed by `doli_attestation_bitfield_fill_ratio` | n/a | n/a | n/a |
 | C12 | no verification result in EpochState | n/a | **pass** (node-local) | n/a | n/a | n/a | n/a | **pass** | pass | n/a | n/a |
 | C13 | rebuild never verifies aggregates; routes through C4 fn | n/a | n/a | n/a | n/a | **pass** | n/a | pass | n/a | n/a | n/a |
 | C14 | finality never reads the bitfield | pass | pass (pool ≠ finality map) | pass | pass | n/a | n/a | pass | n/a | n/a | n/a |
 | C15 | dual-signing ships before the pin; fleet adoption proven | n/a | n/a | **pass** | n/a | n/a | n/a | n/a | **pass** (two-release) | pass (frozen at N) | n/a |
 | C16 | AH margin from measured auto-update telemetry | n/a | n/a | n/a | n/a | n/a | n/a | n/a | **open** → Preconditions | n/a | n/a |
-| C17 | REQ-BLS-009 replay includes a degraded epoch | n/a | n/a | n/a | n/a | n/a | n/a | n/a | **open** → M5 | n/a | n/a |
+| C17 | REQ-BLS-009 replay includes a degraded epoch | n/a | n/a | n/a | n/a | n/a | n/a | n/a | **closed (M6)** — synthetic healthy + degraded, `inc_i_178_m6_replay.rs` | n/a | n/a |
 | C18 | cache is liveness above N≈200; measure bulk sync before pin | n/a | n/a | n/a | n/a | n/a | n/a | mit (X8: measured 9.1 ms at N=1000) | **open** → x86 bench precondition | n/a | n/a |
 | C19 | `.is_some()` membership at BOTH ingresses survives | n/a | n/a | n/a | **pass** (one body) | n/a | n/a | n/a | n/a | n/a | n/a |
 | C20 | bound the per-parent store to a small window | n/a | **pass** (K=8) | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
@@ -560,7 +560,7 @@ GATE      inc_i_178_attestation_bls_activation_height  (mainnet u64::MAX | testn
 | P2 | GS-012 (`scripts/gauntlet.sh:424`, wallet-vs-chain key match) at 100 % on testnet AND mainnet | not run in this cycle |
 | P3 | Release-N soak: every ACTIVE producer observed emitting a verifying 96-byte BLS attestation for ≥ 1 epoch (the only proof the operator holds the secret) | requires Release N |
 | P4 | Key-rotation decision recorded (O5): rotation TxType shipped, or written acceptance that key loss = permanent removal | open |
-| P5 | REQ-BLS-009 replay over ≥ 1 healthy AND ≥ 1 degraded testnet epoch (C17): qualifier delta = 0 or explained at BOTH thresholds (54/60 rewards, 30/60 demotion) | harness not built |
+| P5 | REQ-BLS-009 replay over ≥ 1 healthy AND ≥ 1 degraded testnet epoch (C17): qualifier delta = 0 or explained at BOTH thresholds (54/60 rewards, 30/60 demotion) | built (M6): `bins/node/tests/it/inc_i_178_m6_replay*.rs`, synthetic healthy delta = {} at both thresholds, degraded Reward54 delta = one producer sitting exactly on the threshold. Real testnet capture is M7. |
 | P6 | AH margin from measured auto-update convergence (C16) | no telemetry cited |
 | P7 | Bulk-sync verify cost measured on x86 fleet hardware (C18; bench is ARM64) | ARM64 only |
 | P8 | Every `bls_pubkey` write path is PoP-covered or copies a PoP-verified key: `genesis_completion.rs:134`, `rewards.rs:1302,1550` (Pattern Matcher C6 gap) | unverified |

@@ -677,6 +677,22 @@ lazy_static! {
     ).unwrap();
 }
 
+// Its own block: the ones above are at the `lazy_static!` recursion limit.
+lazy_static! {
+    /// INC-I-178 M6 (C11): attestation coverage of the block this node last built.
+    ///
+    /// INSTRUMENT SCOPE — the ONE write site is
+    /// `node/attestation/commit.rs::record_bitfield_fill_ratio`, called from
+    /// `build_attestation_commitment_at` on both sides of the gate. Zero-initialised
+    /// in register_metrics(), so 0.0 is a measured "no coverage" (the C11
+    /// empty-commitment fallback) and an absent series means the exporter is broken.
+    pub static ref ATTESTATION_BITFIELD_FILL_RATIO: Gauge = Gauge::new(
+        "doli_attestation_bitfield_fill_ratio",
+        "INC-I-178 attestation coverage of the last block built here: set bitfield bits \
+         over the attestation universe width. 0.0 == the C11 fallback, 1.0 == full."
+    ).unwrap();
+}
+
 /// Every `reason` value `ATTESTATION_VERIFY_REJECTED` is written with.
 pub const ATTESTATION_VERIFY_REASONS: [&str; 4] = [
     "root_mismatch",
@@ -860,6 +876,10 @@ pub fn register_metrics() {
             .with_label_values(&[reason])
             .inc_by(0);
     }
+
+    // INC-I-178 M6 C11 coverage: a series from process start, not from first build.
+    let _ = REGISTRY.register(Box::new(ATTESTATION_BITFIELD_FILL_RATIO.clone()));
+    ATTESTATION_BITFIELD_FILL_RATIO.set(0.0);
 
     // Set build info
     BUILD_INFO

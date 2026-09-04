@@ -1,5 +1,5 @@
 use super::*;
-use crate::node::attestation::commit;
+use crate::node::attestation::{commit, width};
 
 impl Node {
     /// Check producer eligibility for a received gossip block.
@@ -438,7 +438,9 @@ impl Node {
             };
             let base = &self.epoch_state.producer_list;
             let producer_count = commit::stray_bit_universe_width_at(ah, height, base, &active);
-            if !doli_core::validate_attestation_bitfield_vec(bf, producer_count) {
+            if !width::bitfield_width_accepted_at(bf.len(), producer_count, height, &ah)
+                || !doli_core::validate_attestation_bitfield_vec(bf, producer_count)
+            {
                 return Err(validation::ValidationError::InvalidTransaction(
                     "attestation_bitfield has bits set beyond producer_count".to_string(),
                 ));
