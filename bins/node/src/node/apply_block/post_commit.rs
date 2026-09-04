@@ -33,7 +33,8 @@ impl Node {
                 height >= self.config.network.params().full_bitfield_decode_height;
             let base_len = self.epoch_state.producer_list.len();
 
-            // Build full decode list [base | extra sorted] when needed
+            // Decode universe: [base | extra sorted] pre-AH, the canonical
+            // universe at and above inc_i_178_attestation_bls_activation_height.
             let (decode_len, extra_pks) = if use_full_decode && has_attestation_data {
                 let producers = self.producer_set.read().await;
                 let all_active: Vec<crypto::PublicKey> = producers
@@ -42,16 +43,15 @@ impl Node {
                     .map(|p| p.public_key)
                     .collect();
                 drop(producers);
-                let base_set: HashSet<&crypto::PublicKey> =
-                    self.epoch_state.producer_list.iter().collect();
-                let mut extra: Vec<crypto::PublicKey> = all_active
-                    .iter()
-                    .filter(|pk| !base_set.contains(pk))
-                    .copied()
-                    .collect();
-                extra.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
-                let total = base_len + extra.len();
-                (total, extra)
+                let universe = crate::node::attestation::commit::post_commit_universe_at(
+                    self.inc_i_178_attestation_bls_activation_height,
+                    height,
+                    &self.epoch_state.producer_list,
+                    &all_active,
+                );
+                let extra: Vec<crypto::PublicKey> =
+                    universe.iter().skip(base_len).copied().collect();
+                (universe.len(), extra)
             } else {
                 (base_len, Vec::new())
             };
@@ -416,8 +416,9 @@ impl Node {
             // Apply the new epoch state
             self.epoch_state = new_state;
 
-            // Reset minute tracker for the new epoch
+            // Reset epoch-scoped attestation scratch for the new epoch.
             self.minute_tracker.reset();
+            self.parent_sig_pool.clear();
 
             // INC-I-010 layer 3: epoch_producer_list is now rebuilt with
             // attestation filtering — end the post-snap Light-mode window.

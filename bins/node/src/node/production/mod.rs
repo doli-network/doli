@@ -596,14 +596,10 @@ impl Node {
 
         // Use the transactions from the builder — same list used for merkle root computation.
         // No duplicate transaction assembly needed.
-        // BLS attestation aggregate is retired (no consumer remains): emit empty.
-        // The block field is kept for serialization back-compat.
-        let aggregate_bls_signature: Vec<u8> = Vec::new();
-
         let block = Block {
             header: final_header,
             transactions,
-            aggregate_bls_signature,
+            aggregate_bls_signature: std::mem::take(&mut self.last_built_aggregate),
             attestation_bitfield: body_bitfield,
         };
 

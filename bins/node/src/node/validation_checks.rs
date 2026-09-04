@@ -1,4 +1,5 @@
 use super::*;
+use crate::node::attestation::commit;
 
 impl Node {
     /// Check producer eligibility for a received gossip block.
@@ -414,29 +415,28 @@ impl Node {
         // Input.public_key is part of the bincode wire format (#[serde(skip)] removed).
         // sig_verification_height=0 on all networks: enforce from genesis.
 
-        // Attestation bitfield body validation (post-activation).
-        // Before activation: bitfield packed in presence_root, body must be empty.
-        // After activation: body bitfield present, presence_root = BLAKE3(body).
-        // If bitfield is empty but presence_root is non-zero, that's the legacy path
-        // which is still valid (presence_root can be used as direct bitfield pre-activation).
+        // Attestation body (INC-I-178 D5/D6). Pre-AH the commitment is
+        // BLAKE3(bitfield) and the stray-bit denominator is active_at(h); post-AH a
+        // carried aggregate is bound too and the denominator is the universe width.
         if !block.attestation_bitfield.is_empty() {
-            // Verify commitment: presence_root must equal BLAKE3(attestation_bitfield)
-            let expected = crypto::hash::hash(&block.attestation_bitfield);
+            let ah = self.inc_i_178_attestation_bls_activation_height;
+            let bf = &block.attestation_bitfield;
+            let expected =
+                commit::block_presence_root_at(ah, height, bf, &block.aggregate_bls_signature);
             if block.header.presence_root != expected {
                 return Err(validation::ValidationError::InvalidTransaction(format!(
-                    "presence_root mismatch: expected BLAKE3(attestation_bitfield)={}, got {}",
+                    "presence_root mismatch: expected {}, got {}",
                     expected, block.header.presence_root,
                 )));
             }
-            // Verify no stray bits beyond producer count
-            let producers = self.producer_set.read().await;
-            let active = producers.active_producers_at_height(height);
-            let producer_count = active.len();
-            drop(producers);
-            if !doli_core::validate_attestation_bitfield_vec(
-                &block.attestation_bitfield,
-                producer_count,
-            ) {
+            let active: Vec<crypto::PublicKey> = {
+                let producers = self.producer_set.read().await;
+                let a = producers.active_producers_at_height(height);
+                a.iter().map(|p| p.public_key).collect()
+            };
+            let base = &self.epoch_state.producer_list;
+            let producer_count = commit::stray_bit_universe_width_at(ah, height, base, &active);
+            if !doli_core::validate_attestation_bitfield_vec(bf, producer_count) {
                 return Err(validation::ValidationError::InvalidTransaction(
                     "attestation_bitfield has bits set beyond producer_count".to_string(),
                 ));

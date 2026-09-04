@@ -468,6 +468,17 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
                 defaults.inc_i_204_fork_choice_activation_height,
             )
         },
+        // INC-I-178 M4 attestation-BLS semantics. Mainnet LOCKED — an .env
+        // override would arm new block CONTENT on one node while the rest of
+        // the fleet is still on the old rules.
+        inc_i_178_attestation_bls_activation_height: if is_mainnet {
+            defaults.inc_i_178_attestation_bls_activation_height
+        } else {
+            env_parse(
+                "DOLI_INC_I_178_ATTESTATION_BLS_ACTIVATION_HEIGHT",
+                defaults.inc_i_178_attestation_bls_activation_height,
+            )
+        },
         // INC-I-172 M2 (#20). Computed above so #22 can be ordered against it.
         maintainer_derivation_activation_height,
         // INC-I-173 state-only fee gate (TxType::allows_empty_io authority).

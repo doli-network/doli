@@ -1,4 +1,5 @@
 use super::*;
+use crate::node::attestation::commit;
 
 impl Node {
     /// Build block content: coinbase, epoch rewards, genesis VDF registration, mempool txs,
@@ -382,32 +383,18 @@ impl Node {
             return Ok(None);
         }
 
-        // Build attestation bitfield for presence_root / body.
-        // Records which producers attested the current minute (from gossip).
-        // 6 blocks per minute from different producers -> union mitigates censorship.
+        // Attestation body + presence_root (INC-I-178 D5/D6). Pre-AH the bits are
+        // minute attendance over `[base | extra sorted]`; post-AH they are the
+        // parent-signature pool projected onto the canonical universe.
+        let ah = self.inc_i_178_attestation_bls_activation_height;
         let current_minute = attestation_minute(current_slot);
-        let attested_pks = self.minute_tracker.attested_in_minute(current_minute);
-        let mut body_bitfield: Vec<u8> = Vec::new();
-        let presence_root = if attested_pks.is_empty() {
-            Hash::ZERO
-        } else {
-            // Use epoch_producer_list as the BASE for bitfield encoding.
-            // This matches the decoder in post_commit.rs exactly (indices 0..N-1).
-            // New producers activated mid-epoch via deferred updates are appended
-            // AFTER the frozen list (index N, N+1, ...) so existing indices stay
-            // stable.
-            //
-            // NOTE (INC-I-154): since the v6.17.1 Full Bitfield Decode pillar
-            // (full_bitfield_decode_height), post_commit.rs DECODES those extra
-            // indices too and credits them into epoch_state — that is exactly what
-            // lets a filtered producer re-enter the schedule at the next boundary.
-            // The older claim here, that "the decoder ignores indices >=
-            // epoch_producer_list.len()", described the PRE-pillar decoder and has
-            // not been true since h=14000.
-            let base_list = &self.epoch_state.producer_list;
-            let base_set: HashSet<&PublicKey> = base_list.iter().collect();
-
-            // Find new producers not in epoch_producer_list (activated mid-epoch)
+        let attested: Vec<PublicKey> = self
+            .minute_tracker
+            .attested_in_minute(current_minute)
+            .into_iter()
+            .copied()
+            .collect();
+        let universe = if height >= ah || !attested.is_empty() {
             let producers = self.producer_set.read().await;
             let all_active: Vec<PublicKey> = producers
                 .active_producers_at_height(height)
@@ -415,41 +402,33 @@ impl Node {
                 .map(|p| p.public_key)
                 .collect();
             drop(producers);
-
-            let mut extra: Vec<&PublicKey> = all_active
-                .iter()
-                .filter(|pk| !base_set.contains(pk))
-                .collect();
-            extra.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
-
-            // Full encode list: frozen list + new producers appended at end
-            let total_len = base_list.len() + extra.len();
-
-            // Map attesting pubkeys to indices
-            let mut attested_indices = Vec::new();
-            for pk in &attested_pks {
-                if let Some(idx) = base_list.iter().position(|p| p == *pk) {
-                    attested_indices.push(idx);
-                } else if let Some(idx) = extra.iter().position(|p| *p == *pk) {
-                    attested_indices.push(base_list.len() + idx);
-                }
-            }
-            // INFO to make encoder/decoder parity diagnosable in production.
-            // See [ATTEST_DECODE] in apply_block/post_commit.rs for rationale.
-            info!(
-                "[ATTEST_ENCODE] h={} base_list={} extra={} attested={} total_len={} body={}",
-                height,
-                base_list.len(),
-                extra.len(),
-                attested_indices.len(),
-                total_len,
-                true
-            );
-            body_bitfield =
-                doli_core::encode_attestation_bitfield_vec(&attested_indices, total_len);
-            Hash::from_bytes(*crypto::hash::hash(&body_bitfield).as_bytes())
+            commit::encoder_universe_at(ah, height, &self.epoch_state.producer_list, &all_active)
+        } else {
+            Vec::new()
         };
-        let builder = builder.with_presence_root(presence_root);
+        let commitment = commit::build_attestation_commitment_at(
+            ah,
+            height,
+            &universe,
+            &attested,
+            &self.parent_sig_pool,
+            &prev_hash,
+        );
+        // Encoder/decoder index parity stays diagnosable from this line paired with
+        // [ATTEST_DECODE] in apply_block/post_commit.rs.
+        info!(
+            "[ATTEST_ENCODE] h={} base_list={} universe={} attested={} body_bytes={} pool_parents={} pool_sigs={}",
+            height,
+            self.epoch_state.producer_list.len(),
+            universe.len(),
+            attested.len(),
+            commitment.bitfield.len(),
+            self.parent_sig_pool.parent_count(),
+            self.parent_sig_pool.total_signatures()
+        );
+        let body_bitfield = commitment.bitfield;
+        self.last_built_aggregate = commitment.aggregate;
+        let builder = builder.with_presence_root(commitment.presence_root);
 
         // Compute missed_producers: which producers were scheduled for skipped slots?
         //
@@ -660,8 +639,7 @@ impl Node {
         self.create_and_broadcast_attestation(block_hash, current_slot, height)
             .await;
         if let Some(ref kp) = self.producer_key {
-            // BLS attestation aggregate is retired (no consumer remains): record the
-            // producer's own attestation without a BLS signature.
+            // Attendance only: the BLS half is pooled by the attestation ingress.
             let minute = attestation_minute(current_slot);
             self.minute_tracker.record(*kp.public_key(), minute);
         }

@@ -65,9 +65,12 @@ impl From<&Block> for BlockResponse {
     fn from(block: &Block) -> Self {
         let pr_hex = block.header.presence_root.to_hex();
         let pr_is_zero = block.header.presence_root == crypto::Hash::ZERO;
+        // Post-AH a zero-attester block carries the canonical empty commitment.
+        let no_attesters =
+            pr_is_zero || block.header.presence_root == doli_core::presence_commitment(&[], &[]);
 
         // Count set bits in presence_root
-        let att_count = if pr_is_zero {
+        let att_count = if no_attesters {
             0u32
         } else {
             block

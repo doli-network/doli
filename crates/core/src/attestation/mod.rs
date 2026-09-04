@@ -6,6 +6,7 @@
 //! by the attested parent hash.
 
 pub mod bitfield;
+pub mod commitment;
 pub mod message;
 pub mod pool;
 pub mod tracker;
@@ -18,6 +19,7 @@ pub use bitfield::{
     validate_attestation_bitfield_vec, ATTESTATION_MINUTES_PER_EPOCH,
     ATTESTATION_QUALIFICATION_THRESHOLD, SLOTS_PER_ATTESTATION_MINUTE,
 };
+pub use commitment::presence_commitment;
 pub use message::{bls_attest_msg, Attestation, AttestationError};
 pub use pool::ParentSignaturePool;
 pub use tracker::MinuteAttestationTracker;

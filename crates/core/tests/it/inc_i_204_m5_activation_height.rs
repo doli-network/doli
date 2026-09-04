@@ -179,6 +179,72 @@ fn req_fork_014_devnet_activates_from_genesis() {
 }
 
 // ===========================================================================
+// INC-I-178 M4 — the attestation-BLS gate joins this ledger (D8).
+//
+// It lives here, not in its own file, because this file IS the per-network literal
+// ledger: a gate that is pinned anywhere but recorded nowhere is how INC-I-054 moved
+// a crossed height without anyone noticing.
+// ===========================================================================
+
+/// The env var name for the INC-I-178 gate, derived from its field name exactly as
+/// [`ENV_VAR`] is derived from the INC-I-204 one.
+const BLS_ENV_VAR: &str = "DOLI_INC_I_178_ATTESTATION_BLS_ACTIVATION_HEIGHT";
+
+/// REQ-BLS-005 — Decision: a failure means the attestation-BLS rules (new bit
+/// semantics, a new `presence_root` preimage inside `BlockHeader::hash()`, new
+/// rejection paths) are LIVE on some network without the pin decision-session that
+/// D8 and CLAUDE.md require. On mainnet that is a chain split against ~30 external
+/// auto-update producers with no stop-all; on testnet it burns the rehearsal; on
+/// devnet it forks every running local chain on the next rebuild, because devnet
+/// nodes keep their data directory across binaries.
+#[test]
+fn req_bls_005_m4_the_attestation_bls_gate_is_frozen_on_every_network() {
+    for network in [Network::Mainnet, Network::Testnet, Network::Devnet] {
+        assert_eq!(
+            NetworkParams::defaults(network).inc_i_178_attestation_bls_activation_height,
+            u64::MAX,
+            "{network:?}: FROZEN at u64::MAX. Pinning is a separate decision-session \
+             gated on preconditions P1-P8 (specs/attestation-bls-architecture.md). \
+             Devnet is frozen too, unlike inc_i_204: the BLS change alters block \
+             CONTENT, so a devnet default of 0 forks every live local chain."
+        );
+    }
+}
+
+/// REQ-BLS-005 — Decision: a failure means the new gate is an alias of, or was bundled
+/// onto, a height the chain has already crossed. Moving the attestation-BLS gate would
+/// then move a crossed gate with it — the INC-I-054 shape. Both frozen-at-u64::MAX
+/// values make plain equality useless here, so independence is demonstrated by MOVING
+/// one field and reading the others.
+#[test]
+fn req_bls_005_m4_the_attestation_bls_gate_is_a_distinct_independently_settable_field() {
+    let mut probe = NetworkParams::defaults(Network::Mainnet);
+    let fork_choice_before = probe.inc_i_204_fork_choice_activation_height;
+    let inc_147_before = probe.inc_i_147_activation_height;
+    let oracle_before = probe.oracle_activation_height;
+
+    probe.inc_i_178_attestation_bls_activation_height = 4_243;
+
+    assert_eq!(
+        probe.inc_i_178_attestation_bls_activation_height, 4_243,
+        "the new gate must be settable"
+    );
+    assert_eq!(
+        probe.inc_i_204_fork_choice_activation_height, fork_choice_before,
+        "INV-PARAMS-001: moving the BLS gate must not move the fork-choice gate"
+    );
+    assert_eq!(
+        probe.inc_i_147_activation_height, inc_147_before,
+        "INV-PARAMS-001: inc_i_147 is CROSSED on mainnet (129_500) and must not move"
+    );
+    assert_eq!(
+        probe.oracle_activation_height, oracle_before,
+        "INV-PARAMS-001: the other u64::MAX gate must not be the same field wearing \
+         two names — both are frozen, so only a write proves they are distinct"
+    );
+}
+
+// ===========================================================================
 // ANTI-BUNDLING — INV-PARAMS-001 / INC-I-054.
 // ===========================================================================
 
@@ -329,7 +395,8 @@ fn req_fork_014_no_mainnet_activation_height_was_moved() {
     assert_eq!(p.inc_i_096_activation_height, 0);
     assert_eq!(p.maintainer_derivation_activation_height, 172_000);
     assert_eq!(p.inc_i_173_activation_height, 317_861);
-    assert_eq!(p.inc_i_176_auth_binding_activation_height, 317_861);
+    assert_eq!(p.inc_i_176_auth_binding_activation_height, 317_861); // INC-I-178 M4 — the BLS gate joins the ledger; frozen on every network.
+    assert_eq!(p.inc_i_178_attestation_bls_activation_height, u64::MAX);
 }
 
 /// REQ-FORK-014 — O3 x P-Testnet.
@@ -359,7 +426,8 @@ fn req_fork_014_no_testnet_activation_height_was_moved() {
     assert_eq!(p.inc_i_096_activation_height, 0);
     assert_eq!(p.maintainer_derivation_activation_height, 15_087);
     assert_eq!(p.inc_i_173_activation_height, 25_500);
-    assert_eq!(p.inc_i_176_auth_binding_activation_height, 15_087);
+    assert_eq!(p.inc_i_176_auth_binding_activation_height, 15_087); // INC-I-178 M4 — the BLS gate joins the ledger; frozen on every network.
+    assert_eq!(p.inc_i_178_attestation_bls_activation_height, u64::MAX);
 }
 
 /// REQ-FORK-014 — O3 x P-Devnet.
@@ -389,7 +457,8 @@ fn req_fork_014_no_devnet_activation_height_was_moved() {
     assert_eq!(p.inc_i_096_activation_height, 0);
     assert_eq!(p.maintainer_derivation_activation_height, 0);
     assert_eq!(p.inc_i_173_activation_height, 0);
-    assert_eq!(p.inc_i_176_auth_binding_activation_height, 20);
+    assert_eq!(p.inc_i_176_auth_binding_activation_height, 20); // INC-I-178 M4 — the BLS gate joins the ledger; frozen on every network.
+    assert_eq!(p.inc_i_178_attestation_bls_activation_height, u64::MAX);
 }
 
 // ===========================================================================
@@ -406,16 +475,37 @@ fn req_fork_014_no_devnet_activation_height_was_moved() {
 /// a process-wide `OnceLock`, so the var must be set before the FIRST load of either
 /// network in this binary. See the module header — nothing else in the `it` binary may
 /// call `load`.
+///
+/// INC-I-178 M4 — REQ-BLS-005 — Decision: the same two halves for
+/// `DOLI_INC_I_178_ATTESTATION_BLS_ACTIVATION_HEIGHT`. A failure of its ANTI-VACUITY
+/// half means the testnet rehearsal cannot arm the BLS gate without a code change; a
+/// failure of its LOCK half means one operator can arm new block-content rules on
+/// mainnet from a `.env` file, and every block that node builds is rejected by the rest
+/// of the fleet (or worse, accepted by a minority that shares the file).
+/// It rides in THIS function rather than its own because `NetworkParams::load` caches
+/// per network in a process-wide `OnceLock`: a second `load` caller in this binary would
+/// race, and whichever ran first would silently void the other's override.
 #[test]
 fn the_env_override_is_locked_on_mainnet_and_honoured_elsewhere() {
     // Neither network's default, so neither branch can pass by coincidence.
     const SENTINEL: &str = "9";
+    const BLS_SENTINEL: &str = "11";
     let original = std::env::var(ENV_VAR);
+    let bls_original = std::env::var(BLS_ENV_VAR);
     std::env::set_var(ENV_VAR, SENTINEL);
+    std::env::set_var(BLS_ENV_VAR, BLS_SENTINEL);
 
-    let mainnet = NetworkParams::load(Network::Mainnet).inc_i_204_fork_choice_activation_height;
-    let devnet = NetworkParams::load(Network::Devnet).inc_i_204_fork_choice_activation_height;
-    let testnet = NetworkParams::load(Network::Testnet).inc_i_204_fork_choice_activation_height;
+    let mainnet_params = NetworkParams::load(Network::Mainnet);
+    let devnet_params = NetworkParams::load(Network::Devnet);
+    let testnet_params = NetworkParams::load(Network::Testnet);
+
+    let mainnet = mainnet_params.inc_i_204_fork_choice_activation_height;
+    let devnet = devnet_params.inc_i_204_fork_choice_activation_height;
+    let testnet = testnet_params.inc_i_204_fork_choice_activation_height;
+
+    let bls_mainnet = mainnet_params.inc_i_178_attestation_bls_activation_height;
+    let bls_devnet = devnet_params.inc_i_178_attestation_bls_activation_height;
+    let bls_testnet = testnet_params.inc_i_178_attestation_bls_activation_height;
 
     // Restore BEFORE asserting so a failure cannot leak process state into the rest of
     // the binary.
@@ -423,6 +513,29 @@ fn the_env_override_is_locked_on_mainnet_and_honoured_elsewhere() {
         Ok(v) => std::env::set_var(ENV_VAR, v),
         Err(_) => std::env::remove_var(ENV_VAR),
     }
+    match bls_original {
+        Ok(v) => std::env::set_var(BLS_ENV_VAR, v),
+        Err(_) => std::env::remove_var(BLS_ENV_VAR),
+    }
+
+    assert_eq!(
+        bls_devnet, 11,
+        "REQ-BLS-005 ANTI-VACUITY: {BLS_ENV_VAR} must be honoured on devnet. If this \
+         fails the variable is not wired and the mainnet lock below is meaningless."
+    );
+    assert_eq!(
+        bls_testnet, 11,
+        "REQ-BLS-005 ANTI-VACUITY: honoured on testnet — this is how the testnet \
+         rehearsal arms the attestation-BLS gate without a code change"
+    );
+    assert_eq!(
+        bls_mainnet,
+        u64::MAX,
+        "REQ-BLS-005 THE LOCK: mainnet stays at the compiled u64::MAX. An override here \
+         would let one operator switch on new bit semantics and a new presence_root \
+         preimage — block CONTENT, inside BlockHeader::hash() — while the rest of \
+         mainnet is still on the old rules."
+    );
 
     assert_eq!(
         devnet, 9,

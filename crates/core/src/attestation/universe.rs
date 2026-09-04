@@ -4,10 +4,9 @@
 //! re-sorted. Every encoder/decoder pair must share this order (Full Bitfield
 //! Decode pillar, v6.17.1) or indices misalign.
 //!
-//! No production caller in M3 by design: the encoder, the stray-bit validator,
-//! `post_commit` and the rewards/schedule decoders adopt it in M4 behind
-//! `inc_i_178_attestation_bls_activation_height` — unifying their five decode
-//! widths is consensus-visible (REQ-BLS-014, INV-DEPLOY-001).
+//! The encoder, the stray-bit validator and `post_commit` use it at and above
+//! `inc_i_178_attestation_bls_activation_height` (M4); the rewards and schedule
+//! decoders still carry their own widths.
 
 use crypto::PublicKey;
 use std::collections::HashSet;

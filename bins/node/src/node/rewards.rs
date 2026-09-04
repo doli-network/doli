@@ -1,4 +1,5 @@
 use super::*;
+use crate::node::attestation::commit;
 
 /// Sentinel error returned by `calculate_epoch_rewards` when the local block_store
 /// is incomplete within the epoch window. Callers MUST treat this distinctly from
@@ -112,8 +113,7 @@ impl Node {
 
         let producer_count = sorted_producers.len();
 
-        // Scan all blocks in epoch, decode presence_root bitfield, track attested minutes per producer
-        // Key: producer index → set of attestation minutes they were attested in
+        // Producer index → the attestation minutes it was attested in.
         let mut attested_minutes: HashMap<usize, HashSet<u32>> = HashMap::new();
 
         // M-RC9 (INC-I-034): track any form of incompleteness in the block_store
@@ -125,11 +125,14 @@ impl Node {
         let mut missing_block_count: u64 = 0;
         let mut silent_bitfield_count: u64 = 0;
 
+        let ah = self.inc_i_178_attestation_bls_activation_height;
         for h in epoch_start_height..epoch_end_height {
             match self.block_store.get_block_by_height(h) {
                 Ok(Some(block)) => {
-                    // Skip blocks with zero presence_root (no attestation data)
-                    if block.header.presence_root.is_zero() {
+                    let pr = &block.header.presence_root;
+                    let bf = &block.attestation_bitfield;
+                    // No attestation data: the zero sentinel, or the post-AH canonical empty.
+                    if pr.is_zero() || commit::is_canonical_empty_attendance_at(ah, h, pr, bf) {
                         continue;
                     }
 
@@ -141,10 +144,7 @@ impl Node {
                             producer_count,
                         )
                     } else {
-                        // Post-activation without body (snap sync gap or header-only
-                        // store). M-RC9: record as incomplete instead of silently
-                        // dropping. presence_root is BLAKE3 hash, NOT a bitfield —
-                        // decoding it produces garbage indices.
+                        // M-RC9: no body to decode — incomplete, never decode the root.
                         silent_bitfield_count += 1;
                         vec![]
                     };

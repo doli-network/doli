@@ -1,8 +1,16 @@
 //! INC-I-178 M3 — REQ-BLS-014 (Must): the five live decode sites do NOT agree.
 //!
 //! These tests assert INEQUALITY, so they are GREEN on the current tree the
-//! moment `attestation_universe` exists. M4 flips them to assert EQUALITY behind
-//! `inc_i_178_attestation_bls_activation_height`; grep this file by name.
+//! moment `attestation_universe` exists.
+//!
+//! M4 SPLIT. This file keeps the PRE-AH half — the recorded five-site widths
+//! `[50, 44, 45, 45, 49]`, which must stay true below
+//! `inc_i_178_attestation_bls_activation_height` or the rolling deploy is a
+//! consensus change. The POST-AH half (encoder == post_commit == stray-bit
+//! denominator, one width) lives in `bins/node/tests/it/inc_i_178_m4_gate.rs`
+//! (`req_bls_014_m4_post_ah_one_width_replaces_the_recorded_disagreement`),
+//! because the three gate-parameterised site helpers are node-side symbols and
+//! `crates/core` tests cannot reach `doli_node`.
 //!
 //! OUTPUT CONTRACT
 //!

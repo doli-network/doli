@@ -2,9 +2,10 @@
 //!
 //! # Deterministic Scheduler Model
 //!
-//! Blocks no longer contain presence commitments. The deterministic scheduler
-//! selects producers based on bond count, and 100% of the block reward goes
-//! to the producer who creates the block.
+//! The deterministic scheduler selects producers by bond count and 100% of the
+//! block reward goes to the producer. Blocks still carry an attestation
+//! commitment: `header.presence_root` commits to the body bitfield, and at and
+//! above `inc_i_178_attestation_bls_activation_height` to the BLS aggregate too.
 
 use crypto::{Hash, Hasher, PublicKey};
 use serde::{Deserialize, Serialize};
@@ -23,10 +24,12 @@ pub struct BlockHeader {
     pub prev_hash: Hash,
     /// Merkle root of transactions
     pub merkle_root: Hash,
-    /// Legacy presence root field (always Hash::ZERO in deterministic scheduler model)
+    /// Commitment to the block's attestation body, hashed by [`BlockHeader::hash`].
     ///
-    /// This field is retained for backward compatibility with block hash calculation.
-    /// In the deterministic scheduler model, presence commitments are no longer used.
+    /// `Hash::ZERO` when no producer attended. Below
+    /// `inc_i_178_attestation_bls_activation_height` it is
+    /// `BLAKE3(attestation_bitfield)`; at and above it is
+    /// `presence_commitment(attestation_bitfield, aggregate_bls_signature)`.
     #[serde(default)]
     pub presence_root: Hash,
     /// Chain identity — BLAKE3 hash of genesis parameters (timestamp, network, slot_duration, message).
@@ -155,20 +158,20 @@ pub struct Block {
     pub header: BlockHeader,
     /// Block transactions
     pub transactions: Vec<Transaction>,
-    /// BLS aggregate signature over the attestation bitfield (96 bytes).
+    /// BLS aggregate over the attested parent hash (96 bytes), or empty.
     ///
-    /// Aggregates the BLS signatures of all producers whose bits are set in
-    /// `header.presence_root`. Empty for pre-BLS blocks (backward compat).
-    /// Stored in body (not header) to keep header hash stable.
+    /// At and above `inc_i_178_attestation_bls_activation_height` it aggregates
+    /// the signatures of exactly the keys whose bits are set in
+    /// `attestation_bitfield`. Always empty below that height.
     #[serde(default)]
     pub aggregate_bls_signature: Vec<u8>,
     /// Attestation bitfield (body-stored, no producer cap).
     ///
-    /// Variable-length bitfield: ceil(producer_count / 8) bytes.
-    /// Bit N = 1 means producer at index N (sorted by pubkey) attested.
-    /// No 256-producer cap (unlike the old header-packed format).
-    /// `header.presence_root = BLAKE3(attestation_bitfield)` commits to this data.
-    /// Empty for pre-activation blocks (backward compat via serde default).
+    /// Variable-length bitfield: ceil(universe_len / 8) bytes, indexed against
+    /// `[epoch producer_list | (active \ list) sorted by pubkey]`. Below
+    /// `inc_i_178_attestation_bls_activation_height` bit N means "index N
+    /// attended the minute"; at and above it means "index N BLS-signed this
+    /// block's parent". Empty when nobody attested.
     #[serde(default)]
     pub attestation_bitfield: Vec<u8>,
 }

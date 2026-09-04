@@ -2,6 +2,7 @@
 
 use super::*;
 
+pub mod commit;
 pub(crate) mod ingress;
 
 impl Node {

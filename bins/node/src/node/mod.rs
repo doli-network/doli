@@ -4,7 +4,7 @@
 // v0.2.1-test: upgrade pipeline validation
 
 mod apply_block;
-mod attestation;
+pub mod attestation;
 #[cfg(test)]
 mod attestation_authority_tests;
 #[allow(unused_imports)]
@@ -225,6 +225,12 @@ pub struct Node {
     /// Bounded pool of gossiped BLS attestation signatures, keyed by the
     /// attested parent hash.
     pub parent_sig_pool: ParentSignaturePool,
+    /// INC-I-178 M4 gate, copied from `config.network.params()` at construction.
+    /// Settable so tests can drive both sides; production never writes it.
+    pub inc_i_178_attestation_bls_activation_height: u64,
+    /// Aggregate emitted by the most recent `build_block_content`, consumed by
+    /// `try_produce_block` when it assembles the block body.
+    pub last_built_aggregate: Vec<u8>,
     /// Per-peer record of attestations relayed with an unverifiable BLS half.
     /// Release N records only — no peer is acted on from this score.
     pub bls_ingress_scorer: PeerScorer,

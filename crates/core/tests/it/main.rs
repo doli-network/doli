@@ -12,6 +12,7 @@
 //! `.claude/hooks/test-binary-gate.sh` enforces the layout.
 
 mod inc_i_178_m2_message;
+mod inc_i_178_m4_commitment;
 mod inc_i_180_activation_height;
 mod inc_i_204_m5_activation_height;
 mod inc_i_204_m5_finality_comparator;

@@ -8,6 +8,10 @@ use crate::types::*;
 
 use super::context::RpcContext;
 
+#[cfg(test)]
+#[path = "tests_inc_i178_m4_attestation_stats.rs"]
+mod tests_inc_i178_m4_attestation_stats;
+
 impl RpcContext {
     /// Build the active producer set with UTXO-derived bond weights.
     ///
@@ -292,10 +296,12 @@ impl RpcContext {
         let mut per_producer_minutes: HashMap<usize, HashSet<u32>> = HashMap::new();
 
         let scan_start = epoch_start.max(1);
+        // Post-AH a zero-attester block carries the canonical empty commitment.
+        let canonical_empty = doli_core::presence_commitment(&[], &[]);
         for h in scan_start..=current_height {
             if let Ok(Some(block)) = self.block_store.get_block_by_height(h) {
                 let pr = block.header.presence_root;
-                if pr != crypto::Hash::ZERO {
+                if pr != crypto::Hash::ZERO && pr != canonical_empty {
                     blocks_with_attestations += 1;
                     let slot = block.header.slot;
                     let minute = attestation_minute(slot);
