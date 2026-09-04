@@ -12,7 +12,7 @@
 //!     O2 `doli_attestation_bls_valid_attester_total{attester="<8 hex>"}`
 //!        (IntCounterVec) — the per-producer series AC-2 needs, label = the first
 //!        8 hex characters of the attester's Ed25519 pubkey
-//!     O3 one `info!` line carrying the frozen grep literal
+//!     O3 one `debug!` line carrying the frozen grep literal (M7.6 level)
 //!     O4 `self.parent_sig_pool` — unchanged M2 contract, asserted only as the
 //!        anti-vacuity witness that the Valid arm actually ran
 //!     O5 return value / mutable params / persistent store — unchanged by M7.5
@@ -511,26 +511,28 @@ fn req_bls_006_the_attester_label_must_be_sliced_not_precision_formatted() {
 // F2 — the instrument and the probe cannot drift apart
 // ===========================================================================
 
-/// REQ-BLS-007 — Decision: GS-018 and any on-call operator grep this exact literal
-/// at info level. Reworded text, or the same text at `debug!`, is a silent probe
-/// break: nodes run at info, so a `debug!` line exists in the source, passes review,
-/// and emits nothing in production — the M7.5 signal would be shipped and invisible.
+/// REQ-BLS-007 — Decision: the fleet runs `--log-level info`, so `debug!` takes this
+/// line's production rate to zero — that is the point of M7.6; a louder macro puts the
+/// per-node log volume back on ~30 rolling-deployed mainnet nodes. The literal stays
+/// frozen for an operator who raises the level, and the PRODUCTION signal is the
+/// counter pair the two tests below assert.
 #[test]
-fn req_bls_007_the_valid_arm_emits_the_grep_literal_at_info_level() {
+fn req_bls_007_the_valid_arm_emits_the_grep_literal_at_debug_level() {
     let src = code_only(&read(INGRESS_RS));
     let at = src.find(VALID_LOG_LITERAL).unwrap_or_else(|| {
         panic!("{INGRESS_RS} does not contain the frozen literal `{VALID_LOG_LITERAL}`")
     });
     let head = &src[..at];
-    let info = head
-        .rfind("info!(")
-        .expect("the literal must be emitted by an `info!` invocation");
-    for quieter in ["debug!(", "trace!(", "warn!(", "error!("] {
-        if let Some(other) = head.rfind(quieter) {
+    let debug = head
+        .rfind("debug!(")
+        .expect("the literal must be emitted by a `debug!` invocation");
+    for other in ["info!(", "warn!(", "error!(", "trace!("] {
+        if let Some(at_other) = head.rfind(other) {
             assert!(
-                info > other,
-                "the valid-bls line is emitted by `{quieter}`, not `info!`. Production nodes \
-                 run at info, so the signal would exist in source and never in a log file"
+                debug > at_other,
+                "the valid-bls line is emitted by `{other}`, not `debug!`. A louder macro \
+                 restores the per-node log volume M7.6 removes; a quieter one hides the frozen \
+                 literal from an operator who raises the level to debug"
             );
         }
     }

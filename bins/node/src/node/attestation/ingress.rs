@@ -94,7 +94,7 @@ impl Node {
                     ATTESTATION_BLS_VALID_BY_ATTESTER
                         .with_label_values(&[attester])
                         .inc();
-                    info!(
+                    debug!(
                         "[ATTEST_INGEST] valid bls attester={} parent={} sig_len={}",
                         attester,
                         &att.block_hash.to_hex()[..8],

@@ -22,7 +22,10 @@
 #     status=="active" rows, NEVER the node count. If NO node exposes the
 #     fleet-wide series the fleet is below M7.5 and this SKIPs — the key is the
 #     ABSENCE of the emission signal, never a version string, because M7.5 bumps
-#     no version. An empty fleet-wide label union also SKIPs: a node restarted
+#     no version. Two further states SKIP. Fewer than GS018_MIN_NODES capable
+#     nodes (M7.6): a union read over a partially scraped fleet is not a fleet
+#     observation, and mid-rolling-deploy it reports unscraped dual-signers as
+#     "not dual-signing". An empty fleet-wide label union: a node restarted
 #     seconds ago has ingested nothing, and a zero-length observation window must
 #     never manufacture a red gauntlet. It FAILs only when the capability is
 #     present, at least one attester has been observed, and some ACTIVE producer
@@ -342,6 +345,11 @@ _gs018_dual_check() {
     done
     if [ "$capable" -eq 0 ]; then
         SKIP_REASONS="$SKIP_REASONS; $t: no node of $nodes exposes $GS018_BLS_VALID_SERIES on /metrics, so the per-producer BLS-emission signal is ABSENT and this fleet is below INC-I-178 M7.5 — dual-signing stays unobservable per producer and no verdict is possible. Keyed on the signal's absence, never on a version string: M7.5 bumps no version and the series is zero-initialised at process start, so a running M7.5 node always exposes it. $(_gs018_new_build_count) node(s) do carry the earlier M5 marker $GS018_VERIFY_SERIES, which separates a pre-M7.5 INC-I-178 fleet from a fleet with no INC-I-178 build at all. Denominator: $active active producer(s) of $registered chain-registered"
+        return 2
+    fi
+
+    if [ "$capable" -lt "$GS018_MIN_NODES" ]; then
+        SKIP_REASONS="$SKIP_REASONS; $t: only $capable of $nodes node(s) expose $GS018_BLS_VALID_SERIES, below the GS018_MIN_NODES floor of $GS018_MIN_NODES — a label union read over fewer nodes is one node's view, not a fleet observation. During a ROLLING deploy the scraped subset IS the upgraded subset, so a thin union reports every unscraped dual-signer as 'not dual-signing' and manufactures a false FAIL against producers that are in fact emitting. The sibling gs018-presence-root-consistent SKIPs below the same floor for the same reason. Denominator: $active active producer(s) of $registered chain-registered"
         return 2
     fi
 
