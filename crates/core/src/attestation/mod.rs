@@ -9,6 +9,7 @@ pub mod bitfield;
 pub mod message;
 pub mod pool;
 pub mod tracker;
+pub mod universe;
 
 pub use bitfield::{
     attestation_minute, attestation_minutes_per_epoch, attestation_qualification_threshold,
@@ -20,3 +21,4 @@ pub use bitfield::{
 pub use message::{bls_attest_msg, Attestation, AttestationError};
 pub use pool::ParentSignaturePool;
 pub use tracker::MinuteAttestationTracker;
+pub use universe::attestation_universe;

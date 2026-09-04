@@ -138,8 +138,8 @@ pub mod validation;
 
 pub use attestation::{
     attestation_minute, attestation_minutes_per_epoch, attestation_qualification_threshold,
-    decode_attestation_bitfield, decode_attestation_bitfield_vec, encode_attestation_bitfield,
-    encode_attestation_bitfield_vec, validate_attestation_bitfield,
+    attestation_universe, decode_attestation_bitfield, decode_attestation_bitfield_vec,
+    encode_attestation_bitfield, encode_attestation_bitfield_vec, validate_attestation_bitfield,
     validate_attestation_bitfield_vec, Attestation, AttestationError, MinuteAttestationTracker,
     ParentSignaturePool, ATTESTATION_MINUTES_PER_EPOCH, ATTESTATION_QUALIFICATION_THRESHOLD,
 };
