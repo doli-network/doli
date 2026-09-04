@@ -610,10 +610,8 @@ impl Node {
             None => return None, // Non-producer can't attest
         };
 
-        // BLS attestation aggregate is retired (no consumer remains). Emit an
-        // Ed25519-only attestation; the `bls_signature` field stays empty.
         let attestation =
-            Attestation::new(block_hash, slot, height, weight, &private_key, public_key);
+            self.sign_attestation(block_hash, slot, height, weight, &private_key, public_key);
 
         // Add our own weight to finality tracker
         {

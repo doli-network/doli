@@ -16,13 +16,14 @@
 //!     O5 mutable params — NONE (`data` and `source_peer` are by value)
 //!     O6 persistent store writes — the archive flush only; no block/UTXO write
 //!   Paths (network_events.rs:558-619):
-//!     P1 member attester, known canonical block, 96-byte BLS -> O2 set, O3 set
+//!     P1 member attester, known canonical block, VERIFIED 96-byte BLS -> O2, O3 set
 //!     P2 member attester, known canonical block, EMPTY BLS   -> O2 set, O3 UNTOUCHED
 //!     P3 member attester, known block, malformed-length BLS  -> O2 set, O3 UNTOUCHED
 //!     P4 NON-member attester, known block, 96-byte BLS       -> O2 UNTOUCHED, O3 UNTOUCHED
 //!   INPUT PARTITIONS:
 //!     P1a a single member attester
-//!     P1b two member attesters under ONE parent (the fan-out the aggregate needs)
+//!     P1b two member attesters under ONE parent (the fan-out the aggregate needs),
+//!         each with its OWN on-chain BLS key, so the pool holds two distinct sigs
 //!     P2a the Release-N mixed-fleet bridge: an old binary sends no BLS bytes at all
 //!     P3a 48 bytes — the G1 length, not the G2 length the pool stores
 //!     P4a a freshly generated key that is in no ProducerSet (C19 attester bound)
@@ -43,11 +44,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crypto::KeyPair;
+use crypto::{BlsKeyPair, KeyPair};
 use doli_core::Attestation;
 
 use crate::inc_i_178_m0_common::{
-    assemble, build_via_production, make_node, safe_build_height, N_SMALL,
+    assemble, build_via_production, dual, make_node, register_bls, safe_build_height, N_SMALL,
 };
 
 fn repo_root() -> PathBuf {
@@ -165,29 +166,43 @@ fn signed(kp: &KeyPair, hash: crypto::Hash, slot: u32, height: u64, bls: Vec<u8>
     att.to_bytes()
 }
 
-// REQ-BLS-012 — Decision: this is the only production write into the pool; if it
-// is absent or keyed on anything but the parent hash, M4's encoder finds nothing
-// and the aggregate is permanently empty.
+/// Since M2's D4 ingress the pool is authenticated: each attester publishes an
+/// on-chain `bls_pubkey` and signs `bls_attest_msg(&hash)`, so the bytes are
+/// VERIFIED before they are pooled. The parent-keying contract below is
+/// unchanged — only the road into the pool now runs through the `Valid` verdict.
+// REQ-BLS-012 — Decision: this is the only production write into the pool; if it is absent or keyed on anything but the parent hash, M4's encoder finds nothing and the aggregate is permanently empty.
 #[tokio::test]
 async fn m1_d2_ingest_records_attendance_and_files_the_signature_under_the_parent() {
     let (mut node, producers, _tmp) = make_node(N_SMALL).await;
     let (hash, slot, height) = canonical_block(&mut node).await;
     let minute = doli_core::attestation::attestation_minute(slot);
 
-    let sig_a = [0xA5u8; 96];
-    let sig_b = [0x5Au8; 96];
     let (a, b) = (&producers[3], &producers[7]);
+    let (bls_a, bls_b) = (BlsKeyPair::generate(), BlsKeyPair::generate());
+    register_bls(&node, a.public_key(), &bls_a).await;
+    register_bls(&node, b.public_key(), &bls_b).await;
 
-    node.on_new_attestation(
-        signed(a, hash, slot, height, sig_a.to_vec()),
-        network::PeerId::random(),
-    )
-    .await;
-    node.on_new_attestation(
-        signed(b, hash, slot, height, sig_b.to_vec()),
-        network::PeerId::random(),
-    )
-    .await;
+    let att_a = dual(a, &bls_a, hash, slot, height);
+    let att_b = dual(b, &bls_b, hash, slot, height);
+    let sig_a: [u8; 96] = att_a
+        .bls_signature
+        .clone()
+        .try_into()
+        .expect("a signed attestation carries 96 G2 bytes");
+    let sig_b: [u8; 96] = att_b
+        .bls_signature
+        .clone()
+        .try_into()
+        .expect("a signed attestation carries 96 G2 bytes");
+    assert_ne!(
+        sig_a, sig_b,
+        "two attesters must not be filed under one signature"
+    );
+
+    node.on_new_attestation(att_a.to_bytes(), network::PeerId::random())
+        .await;
+    node.on_new_attestation(att_b.to_bytes(), network::PeerId::random())
+        .await;
 
     let attended = node.minute_tracker.attested_in_minute(minute);
     assert!(

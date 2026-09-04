@@ -4,6 +4,7 @@
 // v0.2.1-test: upgrade pipeline validation
 
 mod apply_block;
+mod attestation;
 #[cfg(test)]
 mod attestation_authority_tests;
 #[allow(unused_imports)]
@@ -79,8 +80,8 @@ use network::protocols::{
 };
 use network::{
     EquivocationDetector, EquivocationProof, NetworkCommand, NetworkConfig, NetworkEvent,
-    NetworkEvidence, NetworkService, PeerId, ProductionAuthorization, ReorgResult, SyncConfig,
-    SyncManager,
+    NetworkEvidence, NetworkService, PeerId, PeerScorer, PeerScorerConfig, ProductionAuthorization,
+    ReorgResult, SyncConfig, SyncManager,
 };
 use rpc::{Mempool, MempoolPolicy, RpcContext, RpcServer, RpcServerConfig, SyncStatus};
 use storage::archiver::ArchiveBlock;
@@ -224,6 +225,9 @@ pub struct Node {
     /// Bounded pool of gossiped BLS attestation signatures, keyed by the
     /// attested parent hash.
     pub parent_sig_pool: ParentSignaturePool,
+    /// Per-peer record of attestations relayed with an unverifiable BLS half.
+    /// Release N records only — no peer is acted on from this score.
+    pub bls_ingress_scorer: PeerScorer,
     // NOTE: epoch_attestation_accum, epoch_blocks_produced_accum, and
     // epoch_attested_set are now inside epoch_state: EpochState.
     /// INC-I-014: Fork tips we've already rejected (prevents re-requesting them).
@@ -426,28 +430,6 @@ impl Node {
     #[allow(dead_code)]
     pub async fn best_hash(&self) -> crypto::Hash {
         self.chain_state.read().await.best_hash
-    }
-
-    /// Derive an attester's authority from the LOCAL ProducerSet (Seam A, [F1]).
-    /// `None` = not a producer-set member (reject; never trust the wire's
-    /// self-declared weight). `Some(w)` = member with locally-derived selection
-    /// weight, which may be 0 for a fully-delegated active producer (INV-ATTEST-001,
-    /// so attendance admission uses `.is_some()`, not `w > 0`).
-    pub(crate) fn derive_attester_weight(
-        &self,
-        producers: &ProducerSet,
-        attester: &PublicKey,
-        height: u64,
-    ) -> Option<u64> {
-        producers.get_by_pubkey(attester).map(|p| {
-            p.selection_weight_at(
-                height,
-                self.config
-                    .network
-                    .params()
-                    .security_audit_activation_height,
-            )
-        })
     }
 
     /// Compute bond weights for scheduling from epoch snapshot (or UTXO fallback for epoch 0).

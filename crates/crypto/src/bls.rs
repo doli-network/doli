@@ -700,19 +700,6 @@ pub fn bls_verify_aggregate(
     Ok(())
 }
 
-/// Build the attestation message that producers sign.
-///
-/// Format: `block_hash || slot (4 bytes BE)`
-///
-/// Same structure as Ed25519 attestations for consistency.
-#[must_use]
-pub fn attestation_message(block_hash: &crate::Hash, slot: u32) -> Vec<u8> {
-    let mut msg = Vec::with_capacity(36);
-    msg.extend_from_slice(block_hash.as_bytes());
-    msg.extend_from_slice(&slot.to_be_bytes());
-    msg
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -862,20 +849,11 @@ mod tests {
     }
 
     #[test]
-    fn test_attestation_message_format() {
-        let hash = crate::hash::hash(b"block data");
-        let msg = attestation_message(&hash, 42);
-        assert_eq!(msg.len(), 36); // 32 (hash) + 4 (slot)
-        assert_eq!(&msg[32..], &42u32.to_be_bytes());
-    }
-
-    #[test]
     fn test_attestation_sign_verify_flow() {
         let kp = BlsKeyPair::generate();
         let block_hash = crate::hash::hash(b"block 123");
-        let slot = 42u32;
 
-        let msg = attestation_message(&block_hash, slot);
+        let msg = block_hash.as_bytes().to_vec();
         let sig = bls_sign(&msg, kp.secret_key()).unwrap();
         bls_verify(&msg, &sig, kp.public_key()).unwrap();
     }
@@ -885,7 +863,7 @@ mod tests {
         // Simulate 12 producers attesting the same block
         let producers: Vec<BlsKeyPair> = (0..12).map(|_| BlsKeyPair::generate()).collect();
         let block_hash = crate::hash::hash(b"block at slot 100");
-        let msg = attestation_message(&block_hash, 100);
+        let msg = block_hash.as_bytes().to_vec();
 
         // Each producer signs
         let sigs: Vec<BlsSignature> = producers

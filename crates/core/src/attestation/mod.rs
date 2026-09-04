@@ -17,6 +17,6 @@ pub use bitfield::{
     validate_attestation_bitfield_vec, ATTESTATION_MINUTES_PER_EPOCH,
     ATTESTATION_QUALIFICATION_THRESHOLD, SLOTS_PER_ATTESTATION_MINUTE,
 };
-pub use message::{Attestation, AttestationError};
+pub use message::{bls_attest_msg, Attestation, AttestationError};
 pub use pool::ParentSignaturePool;
 pub use tracker::MinuteAttestationTracker;

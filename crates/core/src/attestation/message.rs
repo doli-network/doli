@@ -4,6 +4,17 @@ use crypto::{bls_sign, BlsKeyPair};
 use crypto::{signature, Hash, PrivateKey, PublicKey, Signature, ATTESTATION_DOMAIN};
 use serde::{Deserialize, Serialize};
 
+/// The BLS attestation preimage: the attested block hash and nothing else.
+///
+/// Frozen by INC-I-178 R1 (REQ-BLS-001). No slot: every attester on one block must
+/// sign the SAME message or their signatures never aggregate, and any verifier must
+/// be able to rebuild the message from the block alone. Domain separation is
+/// `crypto::ATTESTATION_DST`, which is distinct from the proof-of-possession DST.
+#[must_use]
+pub fn bls_attest_msg(block_hash: &Hash) -> [u8; 32] {
+    *block_hash.as_bytes()
+}
+
 /// A single attestation from one producer for a specific block.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Attestation {
@@ -64,6 +75,11 @@ impl Attestation {
     }
 
     /// Create and sign a new attestation with both Ed25519 and BLS signatures.
+    ///
+    /// The Ed25519 half is byte-identical to [`Attestation::new`] so an un-upgraded
+    /// peer still verifies it; the BLS half signs [`bls_attest_msg`]. A BLS signing
+    /// error is returned, never swallowed: only the egress may decide to ship the
+    /// Ed25519-only attestation anyway.
     pub fn new_with_bls(
         block_hash: Hash,
         slot: u32,
@@ -72,26 +88,15 @@ impl Attestation {
         private_key: &PrivateKey,
         public_key: PublicKey,
         bls_key: &BlsKeyPair,
-    ) -> Self {
-        let msg = Self::signing_bytes(block_hash, slot);
-        let sig = signature::sign_with_domain(ATTESTATION_DOMAIN, &msg, private_key);
+    ) -> Result<Self, crypto::BlsError> {
+        let bls_signature = bls_sign(&bls_attest_msg(&block_hash), bls_key.secret_key())?
+            .as_bytes()
+            .to_vec();
 
-        // BLS signs the attestation message: block_hash || slot
-        let bls_msg = crypto::attestation_message(&block_hash, slot);
-        let bls_bytes = match bls_sign(&bls_msg, bls_key.secret_key()) {
-            Ok(sig) => sig.as_bytes().to_vec(),
-            Err(_) => Vec::new(), // Graceful fallback — Ed25519 still works
-        };
-
-        Self {
-            block_hash,
-            slot,
-            height,
-            attester: public_key,
-            attester_weight: weight,
-            signature: sig,
-            bls_signature: bls_bytes,
-        }
+        Ok(Self {
+            bls_signature,
+            ..Self::new(block_hash, slot, height, weight, private_key, public_key)
+        })
     }
 
     /// Verify the attestation signature.

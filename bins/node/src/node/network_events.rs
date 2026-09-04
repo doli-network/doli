@@ -342,32 +342,20 @@ impl Node {
     /// Register an inbound `DirectAttestation` (attendance) and trigger deferred
     /// block fetch. Extracted from `on_sync_request` so the INC-I-192 membership
     /// gate is unit-testable without a libp2p `ResponseChannel`.
-    pub(crate) async fn record_direct_attestation(
+    ///
+    /// Authority is derived at the LOCAL tip: this path has no attested-block height.
+    pub async fn record_direct_attestation(
         &mut self,
         att: doli_core::Attestation,
         peer_id: PeerId,
     ) {
-        // INC-I-192 / Seam A [F1]: only ProducerSet members may grow the attendance
-        // tracker. Membership (`is_some`) — NOT weight — is the admission test, so a
-        // fully-delegated active producer still attends (INV-ATTEST-001).
         let height = self.best_height().await;
-        let is_member = {
-            let producers = self.producer_set.read().await;
-            self.derive_attester_weight(&producers, &att.attester, height)
-                .is_some()
-        };
-        if !is_member {
-            debug!(
-                "[DIRECT_ATTEST] dropping attestation from non-producer {:.8}",
-                att.attester
-            );
+        if self
+            .ingest_attestation(&att, height, peer_id)
+            .await
+            .is_none()
+        {
             return;
-        }
-        let minute = doli_core::attestation::attestation_minute(att.slot);
-        self.minute_tracker.record(att.attester, minute);
-        if let Ok(sig) = <[u8; 96]>::try_from(att.bls_signature.as_slice()) {
-            self.parent_sig_pool
-                .insert(att.block_hash, att.attester, sig);
         }
         info!(
             "[DIRECT_ATTEST_RECV] registered attestation from {:.8} for slot {}",
@@ -572,18 +560,12 @@ impl Node {
                         }
                     };
 
-                // INC-I-191 / Seam A [F1]: DERIVE the attester's authority from the
-                // LOCAL ProducerSet — the wire's self-declared `attester_weight` is
-                // never trusted. A non-member is dropped outright.
-                let derived = {
-                    let producers = self.producer_set.read().await;
-                    self.derive_attester_weight(&producers, &attestation.attester, local_height)
-                };
-                let Some(weight) = derived else {
-                    debug!(
-                        "[FINALITY_GATE] dropping attestation from non-producer {:.8}",
-                        attestation.attester
-                    );
+                // Membership, attendance and the BLS verdict are the shared body's (D4);
+                // authority is derived at the attested block's LOCAL height.
+                let Some(weight) = self
+                    .ingest_attestation(&attestation, local_height, source_peer)
+                    .await
+                else {
                     return;
                 };
 
@@ -596,14 +578,6 @@ impl Node {
                         weight,
                     );
                     drop(sync);
-                }
-
-                // Attendance: a member attends regardless of weight (INV-ATTEST-001).
-                let minute = attestation_minute(attestation.slot);
-                self.minute_tracker.record(attestation.attester, minute);
-                if let Ok(sig) = <[u8; 96]>::try_from(attestation.bls_signature.as_slice()) {
-                    self.parent_sig_pool
-                        .insert(attestation.block_hash, attestation.attester, sig);
                 }
 
                 self.flush_finalized_to_archive().await;

@@ -6,16 +6,17 @@
 //!
 //! `build_via_production` drives the REAL builder (`assembly.rs`), so every
 //! bitfield under test is the one a node would gossip, not a hand-rolled copy.
-//! Consumers: `inc_i_178_m0_attestation_lock`, `inc_i_178_m0_block_identity`.
+//! Consumers: `inc_i_178_m0_attestation_lock`, `inc_i_178_m0_block_identity`,
+//! `inc_i_178_m1_ingest`, `inc_i_178_m2_ingress`.
 
 #![allow(dead_code)] // each consumer uses a subset
 
 use std::collections::HashSet;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crypto::{Hash, KeyPair, PublicKey};
+use crypto::{BlsKeyPair, Hash, KeyPair, PublicKey};
 use doli_core::transaction::Transaction;
-use doli_core::{Block, BlockHeader};
+use doli_core::{Attestation, Block, BlockHeader};
 use doli_node::node::Node;
 use tempfile::TempDir;
 use vdf::{VdfOutput, VdfProof};
@@ -196,4 +197,28 @@ pub fn sample_header(fork_id: Hash) -> BlockHeader {
         data_root: crypto::hash::hash(b"m0-data"),
         fork_id,
     }
+}
+
+/// Publish `bls` as the attester's ON-CHAIN key, the way registration would.
+/// Every ingress test that needs the `Valid` verdict goes through here.
+pub async fn register_bls(node: &Node, pk: &PublicKey, bls: &BlsKeyPair) {
+    let mut ps = node.producer_set.write().await;
+    ps.get_by_pubkey_mut(pk)
+        .expect("attester must be a ProducerSet member")
+        .bls_pubkey = bls.public_key().as_bytes().to_vec();
+}
+
+/// One attestation signed on BOTH halves: Ed25519 over the envelope, BLS over
+/// `bls_attest_msg(&hash)` — the preimage the ingress rebuilds to verify.
+pub fn dual(kp: &KeyPair, bls: &BlsKeyPair, hash: Hash, slot: u32, height: u64) -> Attestation {
+    Attestation::new_with_bls(
+        hash,
+        slot,
+        height,
+        1,
+        kp.private_key(),
+        *kp.public_key(),
+        bls,
+    )
+    .expect("dual signing must succeed")
 }
