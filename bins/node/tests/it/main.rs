@@ -11,6 +11,9 @@
 //! the ~60 legacy top-level files stay where they are until they are migrated.
 //! `.claude/hooks/test-binary-gate.sh` enforces the layout.
 
+mod inc_i_178_m0_attestation_lock;
+mod inc_i_178_m0_block_identity;
+mod inc_i_178_m0_common;
 mod inc_i_180_allowance_parity;
 mod inc_i_180_apply_block_utxo_destruction;
 mod inc_i_180_builder_parity;
