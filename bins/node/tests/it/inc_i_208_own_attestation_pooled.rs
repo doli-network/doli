@@ -12,7 +12,9 @@
 //! attestation bitfield, its own component in the aggregate, therefore `presence_root`,
 //! which is inside `BlockHeader::hash()`. That is block CONTENT, so INV-DEPLOY-001 and
 //! CLAUDE.md require an activation height: `inc_i_208_own_attestation_activation_height`
-//! on `NetworkParams`, frozen at `u64::MAX` on Mainnet, Testnet and Devnet.
+//! on `NetworkParams`. This harness runs on a Devnet node (`new_for_test`), where the
+//! gate stays frozen at `u64::MAX`; INC-I-208 M3 pinned Mainnet (409_000) and Testnet
+//! (118_500) separately, 2026-09-05.
 //!
 //! covers: bins/node/src/node/startup.rs (the gated egress),
 //! bins/node/src/node/production/assembly.rs (the `attest_own_block` caller),
@@ -32,6 +34,8 @@
 //! and the weight stays non-zero.
 
 // OUTPUT CONTRACT: fn create_and_broadcast_attestation(block_hash, slot, height)
+// INPUT PARTITIONS: KEY x GATE below; this harness runs a Devnet node (`new_for_test`),
+// so the gate stays u64::MAX here regardless of the Mainnet/Testnet pins (INC-I-208 M3).
 // OUTPUTS:
 //   O1 (return): Option<Attestation> — Ed25519 half always, BLS half when bls_key is Some
 //   O2 (receiver): self.parent_sig_pool — (block_hash, own_pubkey) -> 96-byte BLS half.

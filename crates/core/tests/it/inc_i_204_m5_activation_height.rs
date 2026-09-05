@@ -16,19 +16,18 @@
 //! the input) and Q3 is NO above the height, so an activation height is REQUIRED.
 //! `tests_m5_red_witness.rs` W1/W1b measure the divergence that makes Q3 NO.
 //!
-//! WHY MAINNET IS `u64::MAX` AND TESTNET IS PINNED. Mainnet is frozen by HC-6 shape:
-//! pinning a real height is a separate user decision-session. Testnet WAS frozen for
-//! the same reason the file originally recorded — the architecture spec named neither
-//! a height nor a margin — but that decision was TAKEN, not deferred, in commit
-//! `5b326fe9` (INC-I-203 M5 updates these tests to the new truth):
+//! WHY TESTNET WAS PINNED FIRST, THEN MAINNET. Testnet WAS frozen for the reason the
+//! file originally recorded — the architecture spec named neither a height nor a margin
+//! — but that decision was TAKEN, not deferred, in commit `5b326fe9`:
 //!
 //!   "User decision 2026-09-02 at live tip 87,934 ... gate crossed unanimously at
 //!    h=88,021 (18/18 hash-identical) and live-validated at h=88,054-88,055 ...
-//!    88,014 is now IMMUTABLE consensus history on testnet (INC-I-054 rule).
-//!    Mainnet stays u64::MAX — pinning it is a separate decision-session."
+//!    88,014 is now IMMUTABLE consensus history on testnet (INC-I-054 rule)."
 //!
-//! The pin is FORWARD-ONLY: 88_014 was chosen ABOVE the live tip 87_934, never
-//! retroactively from a height the chain had already passed (CLAUDE.md #0 / INC-I-054).
+//! INC-I-208 M3 — a SEPARATE user decision, 2026-09-05, pinned mainnet at 409_000
+//! (alongside the INC-I-178 and INC-I-208 gates, all three to the same height). Both
+//! pins are FORWARD-ONLY (CLAUDE.md #0): 88_014 was chosen ABOVE the live tip 87_934,
+//! never retroactively from a height the chain had already passed (INC-I-054).
 //! Devnet is `0`, mirroring the devnet arm of the gate it supersedes
 //! (`inc_i_147_activation_height`, `defaults.rs:737`). Fork choice is not block content,
 //! so devnet `0` is not a genesis reset (CLAUDE.md #0).
@@ -75,19 +74,20 @@ const ENV_VAR: &str = "DOLI_INC_I_204_FORK_CHOICE_ACTIVATION_HEIGHT";
 // O1 — the per-network values. Brief S2.
 // ===========================================================================
 
-/// REQ-FORK-014 — Decision: a failure means the new fork-choice rule is LIVE on mainnet
-/// without a user decision-session ever happening; every mainnet node would start
-/// answering weight ties differently from every node still on the old binary, splitting
-/// the chain at the first tie.
+// INC-I-208 M3 — Decision: renamed from `req_fork_014_mainnet_is_frozen_at_u64_max`; the
+// 2026-09-05 user decision pinned mainnet at 409_000, so the old name asserted a freeze
+// that no longer exists.
+/// REQ-FORK-014 — Decision: a failure means the pinned mainnet height moved off 409_000.
+/// Once crossed, an activation height is IMMUTABLE consensus history (INC-I-054 /
+/// INV-PARAMS-001) — the literal below is the tripwire against moving it either way.
 #[test]
-fn req_fork_014_mainnet_is_frozen_at_u64_max() {
+fn req_fork_014_mainnet_is_pinned_at_409_000() {
     assert_eq!(
         NetworkParams::defaults(Network::Mainnet).inc_i_204_fork_choice_activation_height,
-        u64::MAX,
-        "O1 x P-Mainnet: FROZEN. Pinning a real mainnet height is a separate user \
-         decision-session (HC-6 shape, brief S2). A test-writer, an architect or a \
-         developer choosing a mainnet height here is the failure mode this pin exists \
-         to make loud."
+        409_000,
+        "O1 x P-Mainnet: PINNED 2026-09-05. Moving this off 409_000 either re-activates \
+         the new fork-choice rule retroactively or unpins a height the fleet is about to \
+         (or has already started to) converge on."
     );
 }
 
@@ -103,19 +103,20 @@ const TESTNET_PINNED_GATE: u64 = 88_014;
 // `req_fork_014_testnet_is_frozen_at_u64_max_because_no_height_is_derivable`; the
 // decision the old name deferred was TAKEN in `5b326fe9`, so the old name asserted a
 // freeze that no longer exists and the test failed on the shipped params.
+// INC-I-208 M3 — Decision: renamed from
+// `..._and_mainnet_stays_frozen`; the 2026-09-05 decision pinned mainnet at 409_000, so
+// "stays frozen" no longer holds. Both pins are IMMUTABLE once crossed (INC-I-054).
 /// REQ-FORK-014 — Decision: a failure means the testnet fork-choice gate moved off the
-/// height testnet ALREADY CROSSED at h=88,021. That height is immutable consensus
-/// history (INC-I-054): moving it re-selects every block testnet produced since the
-/// crossing under a rule that was not the one in force, and re-opens the mixed-version
-/// window that the unanimous crossing closed. Mainnet must stay frozen in the same
-/// breath — a shared edit that pins mainnet "while we are here" is the HC-6 failure.
+/// height testnet ALREADY CROSSED at h=88,021, OR the mainnet pin moved off 409_000. Both
+/// are IMMUTABLE consensus history / a settled decision-session; moving either re-selects
+/// blocks under a rule that was not the one in force at production time.
 ///
 /// Verbatim rationale from `5b326fe9`: "User decision 2026-09-02 at live tip 87,934 ...
 /// gate crossed unanimously at h=88,021 (18/18 hash-identical) and live-validated at
 /// h=88,054-88,055 ... 88,014 is now IMMUTABLE consensus history on testnet (INC-I-054
-/// rule). Mainnet stays u64::MAX — pinning it is a separate decision-session."
+/// rule)." Mainnet was pinned separately, 2026-09-05, at 409_000.
 #[test]
-fn req_fork_014_testnet_is_pinned_at_the_crossed_height_and_mainnet_stays_frozen() {
+fn req_fork_014_testnet_is_pinned_at_the_crossed_height_and_mainnet_is_pinned_at_409_000() {
     let t = NetworkParams::defaults(Network::Testnet).inc_i_204_fork_choice_activation_height;
 
     assert_eq!(
@@ -152,13 +153,14 @@ fn req_fork_014_testnet_is_pinned_at_the_crossed_height_and_mainnet_stays_frozen
         TESTNET_TIP_AT_PIN
     );
 
-    // Mainnet is the counterparty: the testnet decision must NOT have carried mainnet
-    // with it. Without this cell, pinning both networks in one edit passes silently.
+    // Mainnet is the counterparty: it carries its OWN pin, 409_000, decided separately on
+    // 2026-09-05. Without this cell, testnet drifting onto the mainnet value (or vice
+    // versa) passes silently.
     assert_eq!(
         NetworkParams::defaults(Network::Mainnet).inc_i_204_fork_choice_activation_height,
-        u64::MAX,
-        "O1 x P-Mainnet: the testnet pin is a TESTNET decision. Mainnet stays u64::MAX \
-         — pinning it is a separate decision-session (HC-6)."
+        409_000,
+        "O1 x P-Mainnet: PINNED 2026-09-05 at 409_000, independently of the testnet pin \
+         above. IMMUTABLE once crossed (INC-I-054)."
     );
 }
 
@@ -190,38 +192,40 @@ fn req_fork_014_devnet_activates_from_genesis() {
 /// [`ENV_VAR`] is derived from the INC-I-204 one.
 const BLS_ENV_VAR: &str = "DOLI_INC_I_178_ATTESTATION_BLS_ACTIVATION_HEIGHT";
 
+// INC-I-208 M3 — Decision: renamed from
+// `..._is_frozen_on_mainnet_and_devnet_and_pinned_on_testnet`; the 2026-09-05 decision
+// pinned mainnet too, so devnet alone stays frozen now.
 /// REQ-BLS-005 — Decision: a failure means the attestation-BLS rules (new bit
 /// semantics, a new `presence_root` preimage inside `BlockHeader::hash()`, new
 /// rejection paths) moved on some network without the decision-session that D8 and
-/// CLAUDE.md require. Mainnet/devnet must stay FROZEN: mainnet is a chain split
-/// against ~30 external auto-update producers with no stop-all, devnet forks every
-/// running local chain on the next rebuild. Testnet is PINNED at 112_619
-/// (`fbc9730d`, v6.27.0, 2026-09-05) and the chain has crossed it, so per
-/// INV-PARAMS-001 / INC-I-054 that height is IMMUTABLE consensus history: the
-/// literal below is the tripwire against moving it, in either direction.
+/// CLAUDE.md require. Devnet must stay FROZEN — it forks every running local chain on
+/// the next rebuild. Mainnet (409_000, 2026-09-05) and testnet (112_619, `fbc9730d`,
+/// v6.27.0) are both PINNED and CROSSED-or-about-to-cross, so per INV-PARAMS-001 /
+/// INC-I-054 both heights are IMMUTABLE once crossed: the literals below are the
+/// tripwire against moving either, in either direction.
 #[test]
-fn req_bls_005_m4_the_attestation_bls_gate_is_frozen_on_mainnet_and_devnet_and_pinned_on_testnet() {
+fn req_bls_005_m4_the_attestation_bls_gate_is_pinned_on_mainnet_and_testnet_and_frozen_on_devnet() {
     for (network, expected) in [
-        (Network::Mainnet, u64::MAX),
+        (Network::Mainnet, 409_000),
         (Network::Testnet, 112_619),
         (Network::Devnet, u64::MAX),
     ] {
         assert_eq!(
             NetworkParams::defaults(network).inc_i_178_attestation_bls_activation_height,
             expected,
-            "{network:?}: expected {expected}. Frozen networks stay u64::MAX — pinning \
-             one is a separate decision-session gated on preconditions P1-P8 \
-             (specs/attestation-bls-architecture.md). Testnet's 112_619 is CROSSED and \
-             therefore immutable; moving it deactivates live rules (the INC-I-054 shape)."
+            "{network:?}: expected {expected}. Devnet stays u64::MAX. Mainnet's 409_000 \
+             and testnet's 112_619 are IMMUTABLE once crossed (INC-I-054); moving either \
+             deactivates live rules or activates them retroactively."
         );
     }
 }
 
 /// REQ-BLS-005 — Decision: a failure means the new gate is an alias of, or was bundled
 /// onto, a height the chain has already crossed. Moving the attestation-BLS gate would
-/// then move a crossed gate with it — the INC-I-054 shape. Both frozen-at-u64::MAX
-/// values make plain equality useless here, so independence is demonstrated by MOVING
-/// one field and reading the others.
+/// then move a crossed gate with it — the INC-I-054 shape. Mainnet's BLS and
+/// fork-choice gates now share one pinned value (409_000), so plain equality is
+/// useless here; independence is demonstrated by MOVING one field and reading the
+/// others.
 #[test]
 fn req_bls_005_m4_the_attestation_bls_gate_is_a_distinct_independently_settable_field() {
     let mut probe = NetworkParams::defaults(Network::Mainnet);
@@ -267,7 +271,7 @@ fn req_fork_014_the_gate_is_not_bundled_onto_inc_i_147() {
 
     assert_ne!(
         m.inc_i_204_fork_choice_activation_height, m.inc_i_147_activation_height,
-        "mainnet: u64::MAX must not collapse onto 129_500 (crossed)"
+        "mainnet: the pinned 409_000 must not collapse onto 129_500 (crossed)"
     );
     // INC-I-203 M5 — Decision: was `assert_eq!(mainnet, testnet)` recording that the two
     // frozen networks legitimately agreed. `5b326fe9` pinned testnet at 88_014 while
@@ -297,14 +301,13 @@ fn req_fork_014_the_gate_is_not_bundled_onto_inc_i_147() {
         t.inc_i_204_fork_choice_activation_height,
         t.inc_i_147_activation_height
     );
-    // The two live networks now DIFFER (mainnet frozen at u64::MAX, testnet pinned at
-    // 88_014) and that difference is the record of a deliberate testnet-only decision —
-    // not a copy-paste and not a half-finished edit that forgot mainnet.
+    // The two networks are pinned to DIFFERENT heights (mainnet 409_000, testnet 88_014)
+    // decided in separate sessions — a shared value here means one pin leaked into the
+    // other's decision.
     assert_ne!(
         m.inc_i_204_fork_choice_activation_height, t.inc_i_204_fork_choice_activation_height,
-        "mainnet is frozen (u64::MAX) and testnet is pinned (88_014); a shared value \
-         means either mainnet was pinned without its own decision-session (HC-6) or \
-         testnet was unpinned off crossed consensus history (INC-I-054)"
+        "mainnet is pinned at 409_000 and testnet at 88_014, from separate \
+         decision-sessions; a shared value means one leaked into the other"
     );
 }
 
@@ -401,8 +404,9 @@ fn req_fork_014_no_mainnet_activation_height_was_moved() {
     assert_eq!(p.inc_i_096_activation_height, 0);
     assert_eq!(p.maintainer_derivation_activation_height, 172_000);
     assert_eq!(p.inc_i_173_activation_height, 317_861);
-    assert_eq!(p.inc_i_176_auth_binding_activation_height, 317_861); // INC-I-178 M4 — the BLS gate joins the ledger; frozen on every network.
-    assert_eq!(p.inc_i_178_attestation_bls_activation_height, u64::MAX);
+    assert_eq!(p.inc_i_176_auth_binding_activation_height, 317_861);
+    // INC-I-208 M3 — pinned 2026-09-05, IMMUTABLE once crossed (INC-I-054).
+    assert_eq!(p.inc_i_178_attestation_bls_activation_height, 409_000);
 }
 
 /// REQ-FORK-014 — O3 x P-Testnet.
@@ -463,7 +467,8 @@ fn req_fork_014_no_devnet_activation_height_was_moved() {
     assert_eq!(p.inc_i_096_activation_height, 0);
     assert_eq!(p.maintainer_derivation_activation_height, 0);
     assert_eq!(p.inc_i_173_activation_height, 0);
-    assert_eq!(p.inc_i_176_auth_binding_activation_height, 20); // INC-I-178 M4 — the BLS gate joins the ledger; frozen on every network.
+    assert_eq!(p.inc_i_176_auth_binding_activation_height, 20);
+    // INC-I-208 M3 — devnet stays frozen; mainnet+testnet are pinned (INC-I-054).
     assert_eq!(p.inc_i_178_attestation_bls_activation_height, u64::MAX);
 }
 
@@ -534,10 +539,11 @@ fn the_env_override_is_locked_on_mainnet_and_honoured_elsewhere() {
         "REQ-BLS-005 ANTI-VACUITY: honoured on testnet — this is how the testnet \
          rehearsal arms the attestation-BLS gate without a code change"
     );
+    // INC-I-208 M3 — the compiled default moved to 409_000 (pinned, IMMUTABLE once
+    // crossed); the LOCK property under test is unchanged — env must not override it.
     assert_eq!(
-        bls_mainnet,
-        u64::MAX,
-        "REQ-BLS-005 THE LOCK: mainnet stays at the compiled u64::MAX. An override here \
+        bls_mainnet, 409_000,
+        "REQ-BLS-005 THE LOCK: mainnet stays at the compiled 409_000. An override here \
          would let one operator switch on new bit semantics and a new presence_root \
          preimage — block CONTENT, inside BlockHeader::hash() — while the rest of \
          mainnet is still on the old rules."
@@ -553,9 +559,10 @@ fn the_env_override_is_locked_on_mainnet_and_honoured_elsewhere() {
         "ANTI-VACUITY: honoured on testnet too — this is how the testnet rehearsal will \
          arm the gate once a height is chosen, without a code change"
     );
+    // INC-I-208 M3 — the compiled default moved to 409_000 (pinned, IMMUTABLE once
+    // crossed); the LOCK property under test is unchanged — env must not override it.
     assert_eq!(
-        mainnet,
-        u64::MAX,
+        mainnet, 409_000,
         "THE LOCK: mainnet activation heights are locked to the compiled default \
          (env_loader.rs:483-494 is the template). An override here would let one \
          operator arm a different fork-choice rule than the rest of the network."

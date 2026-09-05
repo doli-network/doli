@@ -1,5 +1,7 @@
-//! INC-I-208 M2 — `inc_i_208_own_attestation_activation_height`: its per-network values
+//! INC-I-208 M3 — `inc_i_208_own_attestation_activation_height`: its per-network values
 //! and its independence from every existing gate.
+//!
+// covers: crates/core/src/network_params/defaults.rs, Cargo.toml, Cargo.lock, inc_i_204_m5_activation_height
 //!
 //! Requirement: **REQ-208-006** (Must). The behaviour the gate withholds is measured in
 //! `bins/node/tests/it/inc_i_208_own_attestation_pooled.rs`; this file pins only the
@@ -20,8 +22,9 @@
 //! WHY DEVNET IS FROZEN TOO. Unlike `inc_i_204_fork_choice_activation_height`, which is
 //! `0` on devnet because fork choice is not block content, this gate IS block content: a
 //! devnet default of `0` forks every live local chain on the next rebuild, because devnet
-//! nodes keep their data directory across binaries. All three networks are `u64::MAX`;
-//! pinning any of them is a separate decision-session (HC-6 shape).
+//! nodes keep their data directory across binaries. Devnet stays `u64::MAX`. INC-I-208
+//! M3 pinned mainnet (409_000) and testnet (118_500), 2026-09-05; those heights are
+//! IMMUTABLE once crossed (INC-I-054).
 //!
 //! PROCESS-WIDE HAZARD: this module deliberately calls only `NetworkParams::defaults`,
 //! never `NetworkParams::load`. `load` caches per network in a process-wide `OnceLock`
@@ -42,7 +45,7 @@
 //        absent channels are declared rather than left unmentioned.)
 //       PATHS: P-Mainnet, P-Testnet, P-Devnet (the three struct literals in defaults.rs).
 //   MATRIX:
-//       O1 x {P-Mainnet, P-Testnet, P-Devnet} -> u64::MAX          [frozen test]
+//       O1 x P-Mainnet -> 409_000, x P-Testnet -> 118_500, x P-Devnet -> u64::MAX
 //       O2,O3,O4 x P-Mainnet after writing O1 -> unmoved           [independence test]
 //   INPUT PARTITIONS: the independence test writes a SENTINEL that is neither `0`,
 //   `u64::MAX`, nor any shipped gate value, so an alias cannot pass by coincidence.
@@ -56,34 +59,40 @@ use doli_core::Network;
 /// can pass because two fields happen to share a value.
 const SENTINEL: u64 = 208_208;
 
-/// REQ-208-006 — Decision: a failure means the own-attestation pooling rules are LIVE on
-/// some network with no pin decision-session. On mainnet that is a chain split against
-/// ~30 external auto-update producers with no stop-all; on testnet it burns the
-/// rehearsal; on devnet a default of `0` forks every live local chain on the next
-/// rebuild, because the change alters block CONTENT (`presence_root`) and devnet nodes
-/// keep their data directory across binaries.
+// INC-I-208 M3 — Decision: renamed from `..._is_frozen_on_every_network`; the
+// 2026-09-05 user decision pinned mainnet and testnet, so devnet alone stays frozen.
+/// REQ-208-006 — Decision: a failure means a pinned height moved, OR devnet's freeze was
+/// lifted with no decision-session. Once crossed, an activation height is IMMUTABLE
+/// consensus history (INC-I-054 / INV-PARAMS-001) — the literals below are the tripwire.
+/// Devnet stays frozen: a default off `u64::MAX` forks every live local chain on the
+/// next rebuild, because the change alters block CONTENT (`presence_root`) and devnet
+/// nodes keep their data directory across binaries.
 #[test]
-fn req_208_006_the_own_attestation_gate_is_frozen_on_every_network() {
-    for network in [Network::Mainnet, Network::Testnet, Network::Devnet] {
+fn req_208_006_the_own_attestation_gate_is_pinned_on_mainnet_and_testnet_and_frozen_on_devnet() {
+    for (network, expected) in [
+        (Network::Mainnet, 409_000),
+        (Network::Testnet, 118_500),
+        (Network::Devnet, u64::MAX),
+    ] {
         assert_eq!(
             NetworkParams::defaults(network).inc_i_208_own_attestation_activation_height,
-            u64::MAX,
-            "{network:?}: FROZEN at u64::MAX. Pooling its own BLS half changes the bit \
+            expected,
+            "{network:?}: expected {expected}. Pooling its own BLS half changes the bit \
              this producer sets, the aggregate it publishes and therefore presence_root \
-             inside BlockHeader::hash() — block CONTENT, so INV-DEPLOY-001 applies and \
-             pinning a height is a separate decision-session. Devnet is frozen for the \
-             same reason as the INC-I-178 gate and unlike inc_i_204: a devnet default of \
-             0 forks every live local chain on the next rebuild."
+             inside BlockHeader::hash() — block CONTENT, so INV-DEPLOY-001 applies. \
+             Mainnet/testnet are PINNED and IMMUTABLE once crossed (INC-I-054); devnet \
+             stays frozen for the same reason as the INC-I-178 gate."
         );
     }
 }
 
 /// REQ-208-006 — Decision: a failure means the new gate is an alias of, or was bundled
 /// onto, a gate the chain has already crossed — moving the own-attestation gate would
-/// then move `inc_i_178_attestation_bls_activation_height` (PINNED on testnet at 112_619)
+/// then move `inc_i_178_attestation_bls_activation_height` (PINNED on mainnet at 409_000)
 /// or `inc_i_147_activation_height` (CROSSED on mainnet at 129_500) with it. That is the
-/// INC-I-054 shape exactly. Frozen values make plain equality useless here, so
-/// independence is demonstrated by WRITING one field and reading the others.
+/// INC-I-054 shape exactly. Both neighbours share the SAME pinned value on mainnet, so
+/// plain equality is useless here; independence is demonstrated by WRITING one field and
+/// reading the others.
 #[test]
 fn req_208_006_the_own_attestation_gate_is_a_distinct_independently_settable_field() {
     let mut probe = NetworkParams::defaults(Network::Mainnet);

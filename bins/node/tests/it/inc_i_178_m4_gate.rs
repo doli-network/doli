@@ -143,28 +143,34 @@ fn req_bls_005_m4_the_gate_predicate_is_inclusive_at_the_activation_height() {
         "genesis is always pre-AH here"
     );
 
-    // Mainnet and devnet ship frozen: the whole reachable height range is pre-AH.
-    for network in [Network::Mainnet, Network::Devnet] {
+    // Devnet ships frozen: the whole reachable height range is pre-AH. IMMUTABLE once
+    // crossed applies only where a real height exists — devnet has none (INC-I-054).
+    let devnet = NetworkParams::defaults(Network::Devnet);
+    assert!(
+        !attestation_bls_active(&devnet, u64::MAX - 1),
+        "Devnet: the shipped gate is frozen, so no reachable height is post-AH"
+    );
+
+    // Mainnet (409_000) and testnet (112_619) are PINNED (2026-09-05, v6.28.0 / v6.27.0):
+    // both shipped values are real heights and the predicate is inclusive at each. Both
+    // are IMMUTABLE once crossed (INC-I-054). Derived from the shipped params, never a
+    // literal.
+    for network in [Network::Mainnet, Network::Testnet] {
         let shipped = NetworkParams::defaults(network);
+        let pin = shipped.inc_i_178_attestation_bls_activation_height;
         assert!(
-            !attestation_bls_active(&shipped, u64::MAX - 1),
-            "{network:?}: the shipped gate is frozen, so no reachable height is post-AH"
+            pin != u64::MAX,
+            "{network:?} must carry a real pinned height"
+        );
+        assert!(
+            !attestation_bls_active(&shipped, pin - 1),
+            "{network:?}: pin - 1 is pre-AH"
+        );
+        assert!(
+            attestation_bls_active(&shipped, pin),
+            "{network:?}: the pin itself is post-AH"
         );
     }
-
-    // Testnet is PINNED (2026-09-05, v6.27.0): the shipped value is a real height and the
-    // predicate is inclusive at it. Derived from the shipped params, never a literal.
-    let testnet = NetworkParams::defaults(Network::Testnet);
-    let pin = testnet.inc_i_178_attestation_bls_activation_height;
-    assert!(pin != u64::MAX, "testnet must carry a real pinned height");
-    assert!(
-        !attestation_bls_active(&testnet, pin - 1),
-        "testnet: pin - 1 is pre-AH"
-    );
-    assert!(
-        attestation_bls_active(&testnet, pin),
-        "testnet: the pin itself is post-AH"
-    );
 }
 
 // ===========================================================================
