@@ -40,7 +40,7 @@ async fn make_node(n_producers: usize) -> (Node, Vec<KeyPair>, TempDir) {
 /// P1: Active producer with weight > 0 attests successfully.
 #[tokio::test]
 async fn active_producer_with_bonds_attests() {
-    let (node, producers, _tmp) = make_node(3).await;
+    let (mut node, producers, _tmp) = make_node(3).await;
     let block_hash = Hash::from_bytes([1u8; 32]);
 
     let result = node
@@ -67,7 +67,7 @@ async fn active_producer_with_bonds_attests() {
 /// 0% attestation in explorer when they shouldn't be expected to attest).
 #[tokio::test]
 async fn fully_delegated_producer_does_not_attest() {
-    let (node, producers, _tmp) = make_node(3).await;
+    let (mut node, producers, _tmp) = make_node(3).await;
     let block_hash = Hash::from_bytes([2u8; 32]);
 
     // Simulate full bond delegation: set delegated_bonds = bond_count

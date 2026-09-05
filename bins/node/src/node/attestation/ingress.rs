@@ -126,7 +126,11 @@ impl Node {
     }
 
     /// Check the BLS half against the attester's on-chain key. Never mutates.
-    fn bls_verdict(&self, att: &Attestation, onchain_bls_key: &[u8]) -> BlsAttestVerdict {
+    pub(crate) fn bls_verdict(
+        &self,
+        att: &Attestation,
+        onchain_bls_key: &[u8],
+    ) -> BlsAttestVerdict {
         if att.bls_signature.is_empty() {
             return BlsAttestVerdict::Empty;
         }
