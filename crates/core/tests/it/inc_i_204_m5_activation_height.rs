@@ -192,21 +192,27 @@ const BLS_ENV_VAR: &str = "DOLI_INC_I_178_ATTESTATION_BLS_ACTIVATION_HEIGHT";
 
 /// REQ-BLS-005 — Decision: a failure means the attestation-BLS rules (new bit
 /// semantics, a new `presence_root` preimage inside `BlockHeader::hash()`, new
-/// rejection paths) are LIVE on some network without the pin decision-session that
-/// D8 and CLAUDE.md require. On mainnet that is a chain split against ~30 external
-/// auto-update producers with no stop-all; on testnet it burns the rehearsal; on
-/// devnet it forks every running local chain on the next rebuild, because devnet
-/// nodes keep their data directory across binaries.
+/// rejection paths) moved on some network without the decision-session that D8 and
+/// CLAUDE.md require. Mainnet/devnet must stay FROZEN: mainnet is a chain split
+/// against ~30 external auto-update producers with no stop-all, devnet forks every
+/// running local chain on the next rebuild. Testnet is PINNED at 112_619
+/// (`fbc9730d`, v6.27.0, 2026-09-05) and the chain has crossed it, so per
+/// INV-PARAMS-001 / INC-I-054 that height is IMMUTABLE consensus history: the
+/// literal below is the tripwire against moving it, in either direction.
 #[test]
-fn req_bls_005_m4_the_attestation_bls_gate_is_frozen_on_every_network() {
-    for network in [Network::Mainnet, Network::Testnet, Network::Devnet] {
+fn req_bls_005_m4_the_attestation_bls_gate_is_frozen_on_mainnet_and_devnet_and_pinned_on_testnet() {
+    for (network, expected) in [
+        (Network::Mainnet, u64::MAX),
+        (Network::Testnet, 112_619),
+        (Network::Devnet, u64::MAX),
+    ] {
         assert_eq!(
             NetworkParams::defaults(network).inc_i_178_attestation_bls_activation_height,
-            u64::MAX,
-            "{network:?}: FROZEN at u64::MAX. Pinning is a separate decision-session \
-             gated on preconditions P1-P8 (specs/attestation-bls-architecture.md). \
-             Devnet is frozen too, unlike inc_i_204: the BLS change alters block \
-             CONTENT, so a devnet default of 0 forks every live local chain."
+            expected,
+            "{network:?}: expected {expected}. Frozen networks stay u64::MAX — pinning \
+             one is a separate decision-session gated on preconditions P1-P8 \
+             (specs/attestation-bls-architecture.md). Testnet's 112_619 is CROSSED and \
+             therefore immutable; moving it deactivates live rules (the INC-I-054 shape)."
         );
     }
 }
