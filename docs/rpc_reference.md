@@ -177,10 +177,30 @@ Returns block by its hash.
     "size": 1234,
     "presenceRoot": "abc123...",
     "aggregateBlsSig": "abc123...",
-    "attestationCount": 8,
+    "attestationCount": 129,
     "presence": { ... }
 }
 ```
+
+**Attestation fields** (`crates/rpc/src/types/block.rs:61,70-109`). All three are
+`skip_serializing_if = "Option::is_none"` — when absent they are **omitted from the JSON
+entirely**, not returned as `null`.
+
+| Field | Description |
+|-------|-------------|
+| presenceRoot | Hex of `header.presence_root`. **Omitted** when the root is `Hash::ZERO`. It is a commitment **hash**, not a bitfield — it is never decoded into producer indices. Below `inc_i_178_attestation_bls_activation_height` its preimage is `BLAKE3(bitfield)`; at/after that height it is `BLAKE3( u32le(len bitfield) ‖ bitfield ‖ u32le(len aggregate) ‖ aggregate )`. |
+| aggregateBlsSig | Hex of the body aggregate BLS signature. **Omitted** when the body aggregate is empty. |
+| attestationCount | **NOT an attester headcount.** See the warning below. **Omitted** when `presenceRoot` is `Hash::ZERO` **or** equals the canonical empty commitment `presence_commitment(&[], &[])`. |
+
+> ⚠️ **`attestationCount` is not a headcount.** It is the **popcount of the 32 bytes of the
+> `presence_root` HASH** — `presence_root.as_bytes().iter().map(count_ones).sum()`
+> (`crates/rpc/src/types/block.rs:70-83`). A hash is uniformly random, so this value sits near
+> 128 for any block that has a non-sentinel root, whether one producer attested or fifty. **Any
+> verdict driven by this field is driven by hash entropy, not by attestation.** Its only sound
+> reading is the boolean "the root is neither `Hash::ZERO` nor the canonical empty commitment".
+> For a real per-producer count use `getAttestationStats`, which decodes the block **body**
+> bitfield. The gauntlet scenario GS-018 (`scripts/README.md`) states the same rule and
+> deliberately never reads `attestationCount` as a headcount.
 
 **Example:**
 ```bash
@@ -1341,7 +1361,12 @@ curl -X POST http://127.0.0.1:8500 \
 
 ### getAttestationStats
 
-Returns attestation statistics for the current epoch. Scans all blocks in the current epoch, decodes presence_root bitfields, and reports per-producer attestation minute counts. Used to determine which producers qualify for epoch rewards.
+Returns attestation statistics for the current epoch. Scans all blocks in the current epoch, decodes the **body** attestation bitfield of each counted block, and reports per-producer attestation minute counts. Used to determine which producers qualify for epoch rewards.
+
+> **`presence_root` is a commitment hash, not a bitfield.** It is never decoded into producer
+> indices. This method reads `block.attestation_bitfield` from the block **body**
+> (`crates/rpc/src/methods/schedule.rs:306-315`); `presence_root` is used only as the
+> has-attestations discriminator described under `blocksWithAttestations` below.
 
 **Parameters:** None
 
@@ -1375,7 +1400,7 @@ Returns attestation statistics for the current epoch. Scans all blocks in the cu
 | epochStart | First block height of the current epoch |
 | currentHeight | Current chain height |
 | blocksInEpoch | Number of blocks produced so far in this epoch |
-| blocksWithAttestations | Blocks containing presence_root attestation data |
+| blocksWithAttestations | Blocks counted as carrying attestation data. A block counts **only** when `presence_root != Hash::ZERO` **and** `presence_root != presence_commitment(&[], &[])` (`crates/rpc/src/methods/schedule.rs:300-304`). A post-activation **canonical-empty** block — zero attesters, so the header carries the canonical empty commitment instead of the `Hash::ZERO` sentinel — is deliberately NOT counted. See the note below. |
 | blocksWithBls | Blocks containing aggregate BLS signatures |
 | currentMinute | Current attestation minute within the epoch |
 | producers | Per-producer attestation breakdown |
@@ -1386,7 +1411,24 @@ Returns attestation statistics for the current epoch. Scans all blocks in the cu
 | producers[].qualified | Whether the producer meets the attestation threshold |
 | producers[].hasBls | Whether the producer has a registered BLS key |
 
-**Note:** Producers are sorted by public key bytes (same order as the attestation bitfield). A producer without a BLS key (`hasBls: false`) cannot sign attestations and will not qualify for epoch rewards.
+**Note:** Producers are sorted by public key bytes (same order as the attestation bitfield).
+
+**Note — `hasBls: false` is not a disqualification below the activation height.** Ingress records
+attendance FIRST, authenticated by the **Ed25519** half, and a ProducerSet member attends whatever
+the BLS verdict is (INV-ATTEST-001, `bins/node/src/node/attestation/ingress.rs`). So below
+`inc_i_178_attestation_bls_activation_height` a producer with no on-chain BLS key still accrues
+`attestedMinutes`. At/after that height a bit can only be set for a producer whose on-chain BLS key
+resolves — a missing key then means the producer is never counted as an attester.
+
+**Note — canonical-empty blocks and the two regimes.** `inc_i_178_attestation_bls_activation_height`
+is `u64::MAX` on mainnet, testnet AND devnet today, so every network is in the **pre-activation**
+regime and a zero-attester block still carries the `Hash::ZERO` sentinel. At/after that height a
+zero-attester block instead carries the **canonical empty commitment** `presence_commitment(&[], &[])`,
+which is a real hash and not the sentinel. `blocksWithAttestations` filters BOTH values out, so a
+post-activation canonical-empty block is reported as a block *without* attestations even though the
+consensus layer reads that same root as **complete** attendance
+(`bins/node/src/node/rewards.rs:135`). Do not derive an attendance rate from
+`blocksWithAttestations / blocksInEpoch` across an activation boundary.
 
 **Example:**
 ```bash

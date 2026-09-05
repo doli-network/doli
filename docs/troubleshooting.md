@@ -593,6 +593,138 @@ Invariant: `INV-EPOCH-004`. Alerts: `docker/monitoring/alerts/attestation.rules.
 
 ---
 
+### 2.7. Blocks Rejected With `ATTESTATION_VERIFY_FAILED` (INC-I-178)
+
+A block whose header commitment and body attestation data disagree is rejected with
+`ValidationError::AttestationVerifyFailed { reason }`, error code
+**`ATTESTATION_VERIFY_FAILED`**. The check runs at ONE call site, in
+`validate_block_for_apply`, **after** the VDF and eligibility checks, so a block that
+reaches this error already passed proof-of-time and producer eligibility.
+
+**This error cannot fire below the activation height.** The validator module is inert
+below `inc_i_178_attestation_bls_activation_height`; its entry point returns before it
+touches a counter. That height is `u64::MAX` on mainnet, testnet AND devnet today, so
+seeing this reason on a shipped network means the height was pinned by a newer binary.
+
+**The four reasons, in the order the validator decides them:**
+
+1. **`root_mismatch`** — `presence_root != presence_commitment(bitfield, aggregate)`.
+   The header commitment does not bind the body it arrived with. Checked
+   unconditionally, empty bitfield included: the commitment needs no producer universe,
+   so it is the one check a divergent node can still make. Cause is almost always a
+   truncated, re-ordered or substituted body, not a key problem.
+2. **`aggregate_nonempty_for_empty_bitfield`** — no bit is SET (bits, not length: an
+   honest-width all-zero bitfield carries no claim), so the only legal aggregate is the
+   empty one, and this block carries a non-empty aggregate.
+3. **`missing_bls_key`** — a SET bit names a producer with no usable on-chain BLS key,
+   so the verifier cannot build the key set the aggregate must verify against.
+4. **`aggregate_invalid`** — either the aggregate bytes do not parse as a BLS signature,
+   or `bls_verify_aggregate` fails: the aggregate is not a signature over **the parent
+   block hash** by exactly the set-bit producers. Note the post-activation semantics —
+   bit `i` means "`universe[i]` signed THIS block's parent", not "attended the minute".
+
+**What to check, in order:**
+
+1. **BLS key match.** Run gauntlet scenario **GS-012** (`gs012-bls-matches-registration`, `scripts/gauntlet.sh:459`). A
+   producer whose wallet BLS key differs from its registered `bls_pubkey` produces halves
+   that never verify, and no `TxType` rotates a BLS key — recovery is `Exit` plus a fresh
+   `Registration`, which loses `registered_at` seniority.
+2. **Mixed-fleet window.** During a rolling deploy some peers run the pre-activation
+   binary and some the post-activation one. The two build different `presence_root`
+   preimages for the same block, so `root_mismatch` is the expected symptom of a rolling
+   restart. This gate changes block CONTENT, so INV-DEPLOY-001 applies: **stop ALL, then
+   start ALL**. A rolling restart across this height is not supported.
+3. **Light / snap-sync mode.** When the node's producer universe diverges from the
+   block's — gap blocks after snap sync, or own-store replay — the pairing is **skipped**
+   and counted in `doli_attestation_verify_skipped_light_total`. The root commitment is
+   still checked, so `root_mismatch` remains reachable in this mode while the other three
+   reasons do not. A node showing only skips is not verifying aggregates yet; it starts
+   after the next epoch rebuild.
+
+**Signals to watch:**
+
+| Where | Line / series | Meaning |
+|---|---|---|
+| Log | `[ATTEST_VERIFY] reject h=… hash=… reason=… ah=…` | The rejection itself. `reason` is one of the four strings above; `ah` echoes the activation height in force. |
+| Log | `[ATTEST_ENCODE] h= base_list= universe= attested= body_bytes= pool_parents= pool_sigs=` | Builder side. Pairs with `[ATTEST_DECODE]` in `post_commit` for index-parity debugging — compare `universe` on both ends first. |
+| Metric | `doli_attestation_verify_rejected_total{reason}` | Cumulative per reason. Alert on any non-zero rate. |
+| Metric | `doli_attestation_verify_skipped_light_total` | Pairing skips. High and rising with zero `verify_total` growth means the node is not verifying aggregates at all. |
+| Metric | `doli_attestation_verify_total` | Every post-activation verify decision. Zero on a post-activation chain means the node is running a pre-activation binary. |
+| Metric | `doli_attestation_bitfield_fill_ratio` | Gauge: set bits / universe width. Zero width reports `0.0`, never `NaN`. |
+
+Code: `bins/node/src/node/attestation/verify.rs` (`decide_attestation`),
+`crates/core/src/validation/error.rs:451,522`,
+`crates/core/src/attestation/commitment.rs`. Gauntlet: GS-018.
+
+---
+
+### 2.8. Is This Producer Dual-Signing? (INC-I-178)
+
+Every attestation carries two signatures: the **Ed25519** half, unchanged from 6.26.x,
+and a 96-byte **BLS** half. The BLS field is `#[serde(default)]` and is **empty** for
+pre-BLS attestations, which is the bridge that lets a mixed fleet interoperate. So
+"registered a BLS key" and "actually emits a verifying BLS half" are different facts,
+and only the second one matters before an activation height is pinned.
+
+**Do not use the log line as the production probe.** `[ATTEST_INGEST] valid bls
+attester=… parent=… sig_len=…` is emitted at **debug** level — INC-I-178 M7.6 dropped it
+from `info` to save roughly 140 MB/day/node at mainnet scale. On a normally-configured
+node it is not written at all.
+
+**The production probe is the counter pair:**
+
+1. `doli_attestation_bls_valid_total` — the **capability marker**. It is
+   zero-initialised, so its mere presence on `/metrics` proves the node runs a build with
+   BLS ingress verification. Absence means an older binary; a zero value means the build
+   is new but no valid half has arrived yet. Build detection must be by capability, never
+   by version string.
+2. `doli_attestation_bls_valid_attester_total{attester="<first 8 hex>"}` — one series per
+   attester whose BLS half verified. The label is the first 8 hex characters of the
+   attester's Ed25519 public key.
+
+**Three traps when reading these counters:**
+
+1. **They reset on restart.** A zero for a producer that was restarted 30 seconds ago is
+   not evidence of silence.
+2. **The label set is first-seen only.** A series appears when that attester's first
+   valid half arrives at that node; it is not re-published per gossip round, and the
+   value counts first-seen halves, not gossip fan-out.
+3. **One node under-reports.** Gossip fan-out is partial, so any single node sees only
+   the attesters that reached it. You must **UNION the label sets across every node's
+   `/metrics` port** in the fleet, then join by pubkey **prefix** to `getProducers` with
+   `status == "active"`. Reading one node and calling the result fleet coverage is a
+   false negative.
+
+**The failure side.** A relayed half that does not verify produces
+`[ATTEST_INGEST] unverifiable BLS half from … relayed by … (score …)` at **warn** level
+and records the `InvalidBlsAttestation` infraction, **−10**. That score is
+**record-only: it never disconnects the peer.** Acting on it would let ONE misconfigured
+producer partition the fleet through the mesh-expulsion cascade (INV-NETWORK-002). The
+absence of this warning is **not** evidence that everyone is dual-signing — it fires only
+on a relayed INVALID half, and a producer that emits nothing at all produces no warning.
+Likewise `getAttestationStats.hasBls` is BLS-key **registration**, not emission, and was
+already true fleet-wide on the pre-INC-I-178 build.
+
+**Signals to watch:**
+
+| Where | Line / series | Meaning |
+|---|---|---|
+| Metric | `doli_attestation_bls_valid_total` | Capability marker plus fleet-wide count of first-seen valid halves. |
+| Metric | `doli_attestation_bls_valid_attester_total{attester}` | Per-attester dual-signing evidence. Union across the fleet's `/metrics` ports before drawing a conclusion. |
+| Log (warn) | `[ATTEST_INGEST] unverifiable BLS half from … relayed by … (score …)` | A half arrived and failed verification. Separates "emits nothing" from "emits something bad". |
+| Log (debug) | `[ATTEST_INGEST] valid bls attester=… parent=… sig_len=…` | Only with debug logging enabled. Not a production probe. |
+| RPC | `getProducers` `status == "active"` | The denominator to join the counter label set against. |
+
+Silently dropped, with **no penalty**: an attestation carrying no BLS half at all
+(mixed-fleet bridge) and one from a producer with no on-chain BLS key. Neither leaves a
+trace, which is exactly why the counters — not the logs — are the coverage measurement.
+
+Code: `bins/node/src/node/attestation/ingress.rs` (`BlsAttestVerdict`),
+`bins/node/src/metrics.rs:644-728`. Gauntlet: GS-018
+(`gs018-active-producers-dual-sign`, REQ-BLS-006 AC-2).
+
+---
+
 ## 3. Wallet Issues
 
 ### 3.1. Transaction Not Confirming

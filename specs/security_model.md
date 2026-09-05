@@ -626,10 +626,15 @@ pub struct RegistrationData {
     pub prev_registration_hash: Hash,  // Chain to previous registration
     pub sequence_number: u64,          // Monotonic counter
     pub bond_count: u32,               // On-chain bond count (consensus-critical)
-    pub bls_pubkey: Vec<u8>,           // BLS12-381 public key (48 bytes, optional)
-    pub bls_pop: Vec<u8>,              // BLS proof-of-possession (96 bytes, optional)
+    pub bls_pubkey: Vec<u8>,           // BLS12-381 public key (48 bytes, MANDATORY)
+    pub bls_pop: Vec<u8>,              // BLS proof-of-possession (96 bytes, MANDATORY)
 }
 ```
+
+**BLS keys are mandatory, not optional.** Both registration paths reject an empty `bls_pubkey`
+and an empty `bls_pop`, then run `validate_bls_pop` on the pair
+(`crates/core/src/validation/registration.rs:46-57` and `:143-154`). A producer cannot register
+without a proof-of-possession-backed BLS key.
 
 **Anti-Parallel Attack**:
 - Each registration references previous registration's hash
@@ -1035,6 +1040,38 @@ following invariants enforced in tooling rather than operator discipline:
   unavailable. These fallbacks are annotated to preserve `signed_slots.db`
   and wipe `utxo_store/` alongside `state_db/` and `blocks/`, matching the
   script's invariants.
+
+### 7.9 Attestation Aggregate — Conditional Guarantee (Post-Activation-Height Only)
+
+**Risk**: The BLS aggregate is read as a general "the bitfield is honest" proof. It is neither
+that, nor active on any network today: `inc_i_178_attestation_bls_activation_height` is `u64::MAX`
+on mainnet, testnet and devnet (`crates/core/src/network_params/defaults.rs:268,510,763`). Below
+that height no aggregate is built or verified, so nothing in this subsection is yet in force.
+
+**What the aggregate proves once a height is pinned**: every bit **set** in the block body's
+`attestation_bitfield` is backed by a real BLS signature over the attested parent block hash.
+
+**What it does not prove**:
+
+- **Omission honesty is out of scope** (REQ-BLS-019, explicit). A set bit is proven; a bit left at
+  **zero** proves nothing. A producer can still clear bits to deny rewards, or to push a rival
+  below the 54/60 reward threshold. This is the largest open attestation risk.
+- **Light and snap-sync nodes skip the pairing** until the next epoch rebuild. They still verify
+  the `presence_root` commitment, but not the aggregate itself.
+
+**Mitigations**:
+
+- **Aggregate poisoning is neutralised at ingress.** An unverifiable BLS half never enters the
+  parent-signature pool, so it can never reach an aggregate
+  (`bins/node/src/node/attestation/ingress.rs`).
+
+**Residual risk**:
+
+- **Key mismatch is permanent exclusion until a rotation TxType exists.** No `TxType` among the 24
+  rotates a BLS key; `bls_pubkey` is written only at Registration apply, genesis completion and
+  rebuild. Losing the BLS key means `Exit` plus a fresh `Registration`, forfeiting `registered_at`
+  seniority under INC-I-193 tiering. Key rotation is an open decision (O5) and a pinning
+  precondition (P4) in `specs/attestation-bls-architecture.md`.
 
 ---
 

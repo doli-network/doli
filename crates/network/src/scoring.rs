@@ -29,6 +29,8 @@ pub enum Infraction {
     MalformedMessage,
     /// Peer is running an incompatible protocol version
     IncompatibleVersion { their_version: u32 },
+    /// Peer relayed an attestation whose BLS half does not verify
+    InvalidBlsAttestation,
 }
 
 impl Infraction {
@@ -42,6 +44,7 @@ impl Infraction {
             Infraction::Duplicate => -5,
             Infraction::MalformedMessage => -30,
             Infraction::IncompatibleVersion { .. } => -200,
+            Infraction::InvalidBlsAttestation => -10,
         }
     }
 }
@@ -233,6 +236,17 @@ impl PeerScorer {
         let score = self.get_or_create_score(peer);
         score.record_infraction(Infraction::IncompatibleVersion { their_version });
         warn!(peer = %peer, their_version, score = score.value, "Recorded incompatible version");
+    }
+
+    /// Record an attestation whose BLS half failed verification (-10 points).
+    ///
+    /// Sized so that one relayed forgery is never ejecting: honest peers relay the
+    /// bad half of a misconfigured producer, so a high per-event cost would partition
+    /// the mesh (INV-NETWORK-002).
+    pub fn record_invalid_bls_attestation(&mut self, peer: &PeerId) {
+        let score = self.get_or_create_score(peer);
+        score.record_infraction(Infraction::InvalidBlsAttestation);
+        debug!(peer = %peer, score = score.value, "Recorded invalid BLS attestation half");
     }
 
     /// Record a duplicate message from a peer (-5 points)

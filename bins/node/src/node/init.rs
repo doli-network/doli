@@ -1045,6 +1045,10 @@ impl Node {
         // Capture the network before `config` is moved into Self below.
         let network_for_schedule = config.network;
 
+        let bls_activation_height = config
+            .network
+            .params()
+            .inc_i_178_attestation_bls_activation_height;
         let node = Self {
             config,
             params,
@@ -1109,6 +1113,10 @@ impl Node {
             archive_caught_up: false,
             ws_sender: Arc::new(RwLock::new(None)),
             minute_tracker: MinuteAttestationTracker::new(),
+            parent_sig_pool: ParentSignaturePool::new(),
+            inc_i_178_attestation_bls_activation_height: bls_activation_height,
+            last_built_aggregate: Vec::new(),
+            bls_ingress_scorer: PeerScorer::new(PeerScorerConfig::default()),
             rejected_fork_tips: HashSet::new(),
             wedge_retained_tips: HashSet::new(),
             snap_sync_height: None,
@@ -1260,6 +1268,10 @@ impl Node {
             discv5_port: None,
         };
 
+        let bls_activation_height = config
+            .network
+            .params()
+            .inc_i_178_attestation_bls_activation_height;
         Ok(Self {
             config,
             params,
@@ -1331,6 +1343,10 @@ impl Node {
             archive_caught_up: true,
             ws_sender: Arc::new(RwLock::new(None)),
             minute_tracker: MinuteAttestationTracker::new(),
+            parent_sig_pool: ParentSignaturePool::new(),
+            inc_i_178_attestation_bls_activation_height: bls_activation_height,
+            last_built_aggregate: Vec::new(),
+            bls_ingress_scorer: PeerScorer::new(PeerScorerConfig::default()),
             rejected_fork_tips: HashSet::new(),
             wedge_retained_tips: HashSet::new(),
             snap_sync_height: None,
@@ -1476,6 +1492,10 @@ impl Node {
             discv5_port: None,
         };
 
+        let bls_activation_height = config
+            .network
+            .params()
+            .inc_i_178_attestation_bls_activation_height;
         Ok(Self {
             config,
             params,
@@ -1537,6 +1557,10 @@ impl Node {
             archive_caught_up: true,
             ws_sender: Arc::new(RwLock::new(None)),
             minute_tracker: MinuteAttestationTracker::new(),
+            parent_sig_pool: ParentSignaturePool::new(),
+            inc_i_178_attestation_bls_activation_height: bls_activation_height,
+            last_built_aggregate: Vec::new(),
+            bls_ingress_scorer: PeerScorer::new(PeerScorerConfig::default()),
             rejected_fork_tips: HashSet::new(),
             wedge_retained_tips: HashSet::new(),
             snap_sync_height: None,

@@ -5,12 +5,12 @@ OPERATIONS      72-92
 DATA-FLOW       94-112
 DEPENDENCIES    114-145
 CONSTRAINTS     147-185
-PATTERNS        187-273
+PATTERNS        187-282
 @/INDEX -->
 
 ## ENTRY POINTS
 
-Crate root: `crates/crypto/src/lib.rs:1`. Pure leaf crate — zero internal `doli-*` dependencies, no async runtime, no consensus/node types. Re-exports at `lib.rs:63-70,109`: `Hash`, `Hasher`, `hash_with_domain`, `KeyPair`, `PrivateKey`, `PublicKey`, `Address`, `Signature`, `BlsKeyPair`, `BlsPublicKey` (alias of `BlsPublicKeyWrapped`), `BlsSecretKey`, `BlsSignature`, `bls_sign`, `bls_verify`, `bls_aggregate`, `bls_verify_aggregate`, `bls_sign_pop`, `bls_verify_pop`, `attestation_message`, `BlsError`, `BLS_PUBLIC_KEY_SIZE`, `BLS_SIGNATURE_SIZE`, `BLS_ATTESTATION_DST`.
+Crate root: `crates/crypto/src/lib.rs:1`. Pure leaf crate — zero internal `doli-*` dependencies, no async runtime, no consensus/node types. Re-exports at `lib.rs:63-70,109`: `Hash`, `Hasher`, `hash_with_domain`, `KeyPair`, `PrivateKey`, `PublicKey`, `Address`, `Signature`, `BlsKeyPair`, `BlsPublicKey` (alias of `BlsPublicKeyWrapped`), `BlsSecretKey`, `BlsSignature`, `bls_sign`, `bls_verify`, `bls_aggregate`, `bls_verify_aggregate`, `bls_sign_pop`, `bls_verify_pop`, `BlsError`, `BLS_PUBLIC_KEY_SIZE`, `BLS_SIGNATURE_SIZE` (`lib.rs:63-70`). `attestation_message` and `BLS_ATTESTATION_DST` are NOT re-exported — the former was deleted (INC-I-178 M2 R1); the DST constant is `bls::ATTESTATION_DST` (`bls.rs:60`).
 
 Module map:
 
@@ -209,18 +209,27 @@ verify_with_domain(TX_DOMAIN, &tx_bytes, &sig, public_key)?;
 ```
 Location: `signature.rs:269,334`.
 
-### BLS attestation flow (production)
+### BLS attestation flow (shipped, enforced only at/after the activation height)
 ```rust
-use crypto::{attestation_message, bls_sign, bls_aggregate, bls_verify_aggregate};
-// Each producer signs:
-let msg = attestation_message(&block_hash, slot);
-let sig = bls_sign(&msg, secret_key)?;
-// Block producer aggregates all sigs:
+use crypto::{bls_sign, bls_aggregate, bls_verify_aggregate};
+use doli_core::attestation::bls_attest_msg;
+// Each attester signs the 32-byte attested block hash ALONE (no slot):
+let msg = bls_attest_msg(&block_hash);          // attestation/message.rs
+let sig = bls_sign(&msg, secret_key)?;          // DST = ATTESTATION_DST
+// The next block's producer aggregates the signatures it pooled for its PARENT:
 let agg = bls_aggregate(&sigs)?;
-// Validators verify:
-bls_verify_aggregate(&msg, &agg, &pubkeys)?;
+// Validators verify against the set-bit producers' on-chain keys:
+bls_verify_aggregate(&bls_attest_msg(&parent_hash), &agg, &pubkeys)?;
 ```
-Location: `bls.rs:654,522,595,621`.
+Location: `bls.rs:60` (`ATTESTATION_DST`), `577` (`bls_sign`), `650` (`bls_aggregate`),
+`676` (`bls_verify_aggregate`); message in `crates/core/src/attestation/message.rs`.
+
+`crypto::attestation_message` (the old block-hash-**plus-slot** form) was **DELETED** (INC-I-178
+M2 R1) — the BLS preimage is the block hash and nothing else, or attesters would not aggregate.
+The Ed25519 half still signs `ATTESTATION_DOMAIN ‖ block_hash ‖ slot` and is unchanged.
+This flow is wired into consensus validation only **at and after**
+`inc_i_178_attestation_bls_activation_height`, which is `u64::MAX` on mainnet, testnet and
+devnet today; below it the verifier module is inert.
 
 ### Address resolution (CLI/RPC)
 ```rust

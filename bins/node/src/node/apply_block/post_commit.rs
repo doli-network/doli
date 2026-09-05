@@ -33,7 +33,8 @@ impl Node {
                 height >= self.config.network.params().full_bitfield_decode_height;
             let base_len = self.epoch_state.producer_list.len();
 
-            // Build full decode list [base | extra sorted] when needed
+            // Decode universe: [base | extra sorted] pre-AH, the canonical
+            // universe at and above inc_i_178_attestation_bls_activation_height.
             let (decode_len, extra_pks) = if use_full_decode && has_attestation_data {
                 let producers = self.producer_set.read().await;
                 let all_active: Vec<crypto::PublicKey> = producers
@@ -42,16 +43,15 @@ impl Node {
                     .map(|p| p.public_key)
                     .collect();
                 drop(producers);
-                let base_set: HashSet<&crypto::PublicKey> =
-                    self.epoch_state.producer_list.iter().collect();
-                let mut extra: Vec<crypto::PublicKey> = all_active
-                    .iter()
-                    .filter(|pk| !base_set.contains(pk))
-                    .copied()
-                    .collect();
-                extra.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
-                let total = base_len + extra.len();
-                (total, extra)
+                let universe = crate::node::attestation::commit::post_commit_universe_at(
+                    self.inc_i_178_attestation_bls_activation_height,
+                    height,
+                    &self.epoch_state.producer_list,
+                    &all_active,
+                );
+                let extra: Vec<crypto::PublicKey> =
+                    universe.iter().skip(base_len).copied().collect();
+                (universe.len(), extra)
             } else {
                 (base_len, Vec::new())
             };
@@ -62,8 +62,6 @@ impl Node {
                         &block.attestation_bitfield,
                         decode_len,
                     )
-                } else if height < doli_core::consensus::BITFIELD_BODY_ACTIVATION_HEIGHT {
-                    decode_attestation_bitfield(&block.header.presence_root, decode_len)
                 } else {
                     vec![]
                 };
@@ -418,8 +416,9 @@ impl Node {
             // Apply the new epoch state
             self.epoch_state = new_state;
 
-            // Reset minute tracker for the new epoch
+            // Reset epoch-scoped attestation scratch for the new epoch.
             self.minute_tracker.reset();
+            self.parent_sig_pool.clear();
 
             // INC-I-010 layer 3: epoch_producer_list is now rebuilt with
             // attestation filtering — end the post-snap Light-mode window.
@@ -447,16 +446,7 @@ impl Node {
             .await;
         if let Some(ref kp) = self.producer_key {
             let minute = attestation_minute(block.header.slot);
-            if let Some(ref bls_kp) = self.bls_key {
-                let bls_msg = crypto::attestation_message(&block_hash, block.header.slot);
-                let bls_sig = crypto::bls_sign(&bls_msg, bls_kp.secret_key())
-                    .map(|s| s.as_bytes().to_vec())
-                    .unwrap_or_default();
-                self.minute_tracker
-                    .record_with_bls(*kp.public_key(), minute, bls_sig);
-            } else {
-                self.minute_tracker.record(*kp.public_key(), minute);
-            }
+            self.minute_tracker.record(*kp.public_key(), minute);
         }
 
         // Buffer block for archiving (will be flushed when finalized)

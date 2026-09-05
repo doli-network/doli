@@ -1,5 +1,7 @@
 use super::*;
 
+use crate::node::attestation::ingress::BlsAttestVerdict;
+
 impl Node {
     /// Run the node
     pub async fn run(&mut self) -> Result<()> {
@@ -589,12 +591,12 @@ impl Node {
     /// Returns the attestation if one was created, or None if this node
     /// is not an active producer or has zero weight (fully delegated).
     pub async fn create_and_broadcast_attestation(
-        &self,
+        &mut self,
         block_hash: Hash,
         slot: u32,
         height: u64,
     ) -> Option<Attestation> {
-        let (private_key, public_key, weight) = match &self.producer_key {
+        let (private_key, public_key, weight, onchain_bls_key) = match &self.producer_key {
             Some(kp) => {
                 let pk = *kp.public_key();
                 let producers = self.producer_set.read().await;
@@ -605,15 +607,37 @@ impl Node {
                 if w == 0 {
                     return None; // Not active or fully delegated — skip attestation
                 }
-                (kp.private_key().clone(), pk, w)
+                let onchain_bls_key = producers
+                    .get_by_pubkey(&pk)
+                    .map(|p| p.bls_pubkey.clone())
+                    .unwrap_or_default();
+                (kp.private_key().clone(), pk, w, onchain_bls_key)
             }
             None => return None, // Non-producer can't attest
         };
 
-        // BLS attestation aggregate is retired (no consumer remains). Emit an
-        // Ed25519-only attestation; the `bls_signature` field stays empty.
         let attestation =
-            Attestation::new(block_hash, slot, height, weight, &private_key, public_key);
+            self.sign_attestation(block_hash, slot, height, weight, &private_key, public_key);
+
+        // Block CONTENT: pooling our own half sets our own bit, so it is gated
+        // (REQ-208-005). Pool only what verifies on-chain (REQ-208-002).
+        if height
+            >= self
+                .config
+                .network
+                .params()
+                .inc_i_208_own_attestation_activation_height
+        {
+            match self.bls_verdict(&attestation, &onchain_bls_key) {
+                BlsAttestVerdict::Valid(sig) => {
+                    self.parent_sig_pool.insert(block_hash, public_key, sig);
+                }
+                BlsAttestVerdict::Invalid => {
+                    warn!("[ATTEST_EGRESS] own BLS half does not verify against the on-chain key — check the BLS key config");
+                }
+                BlsAttestVerdict::Empty | BlsAttestVerdict::NoKey => {}
+            }
+        }
 
         // Add our own weight to finality tracker
         {

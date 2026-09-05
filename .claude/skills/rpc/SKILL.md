@@ -6,7 +6,7 @@ METHODS: lines 55-162
 DATA-FLOWS: lines 164-197
 DEPENDENCIES: lines 199-221
 CONSTRAINTS: lines 223-257
-PATTERNS: lines 259-315
+PATTERNS: lines 259-314
 -->
 
 ## ENTRY-POINTS
@@ -95,7 +95,7 @@ PATTERNS: lines 259-315
 
 **`getSlotSchedule`** (line 44) — `{from_slot,count}` (count max 360, default 20) → upcoming slot→producer assignments. Bond-weighted via `select_producer_for_slot()`.
 **`getProducerSchedule`** (line 98) — `{public_key}` → assigned/produced slot counts, fill_rate, weekly_earnings, doubling_weeks.
-**`getAttestationStats`** (line 211) — none → per-producer attestation-minute stats for current epoch. Decodes presence_root bitfields across **three decode eras** (see CONSTRAINTS).
+**`getAttestationStats`** (line 211) — none → per-producer attestation-minute stats for current epoch. Decodes the **body** attestation bit array across **three decode eras** (see CONSTRAINTS). `presence_root` is a commitment hash, never decoded into indices — it is only the has-attestations discriminator, and `schedule.rs:300-304` skips both `Hash::ZERO` and the canonical-empty commitment `presence_commitment(&[],&[])`, so a post-activation zero-attester block is NOT counted in `blocks_with_attestations`.
 
 ### History Method (`crates/rpc/src/methods/history.rs`)
 

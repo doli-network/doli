@@ -2,14 +2,14 @@
 <!-- @INDEX
 ENTRY-POINTS: lines 15-53
 OPERATIONS: lines 55-69
-DATA-FLOWS: lines 71-153
-STRUCTS: lines 155-363
-FUNCTIONS: lines 365-442
-CONSTANTS: lines 444-565
-ACTIVATION-HEIGHTS: lines 567-611
-DEPENDENCIES: lines 613-629
-CONSTRAINTS: lines 631-664
-PATTERNS: lines 666-772
+DATA-FLOWS: lines 71-162
+STRUCTS: lines 164-372
+FUNCTIONS: lines 374-451
+CONSTANTS: lines 453-582
+ACTIVATION-HEIGHTS: lines 584-628
+DEPENDENCIES: lines 630-646
+CONSTRAINTS: lines 648-681
+PATTERNS: lines 683-788
 -->
 
 ## ENTRY-POINTS
@@ -59,7 +59,7 @@ how activation gates are checked.
 
 | Task | Steps | Commands/Functions | Inputs | Success |
 |------|-------|--------------------|--------|---------|
-| Build a block for a slot | 1. Look up scheduled producer via `DeterministicScheduler::select_producer(slot, rank)` 2. `BlockBuilder::new(prev_hash, prev_slot, producer)` 3. `.with_params(params).with_presence_root(bitfield_commitment).with_missed_producers(gap_list)` 4. select+add mempool txs within `max_block_size(height)` / builder policy budget 5. prepend coinbase tx 6. `.build_with_vdf(timestamp)` | `BlockBuilder::new`, `.with_presence_root`, `.build_with_vdf` (`block.rs:282+`) | prev block info, mempool txs, missed-producer gap, VDF iterations from `NetworkParams` | `Block` with valid header hash, VDF proof, merkle_root matching transactions |
+| Build a block for a slot | 1. Look up scheduled producer via `DeterministicScheduler::select_producer(slot, rank)` 2. `BlockBuilder::new(prev_hash, prev_slot, producer)` 3. `.with_params(params).with_presence_root(presence_commitment).with_missed_producers(gap_list)` 4. select+add mempool txs within `max_block_size(height)` / builder policy budget 5. prepend coinbase tx 6. `.build_with_vdf(timestamp)` | `BlockBuilder::new`, `.with_presence_root`, `.build_with_vdf` (`block.rs:282+`) | prev block info, mempool txs, missed-producer gap, VDF iterations from `NetworkParams` | `Block` with valid header hash, VDF proof, merkle_root matching transactions |
 | Validate an incoming block | 1. Build `ValidationContext` with epoch-frozen producer list + all activation heights 2. `validate_block_with_mode(block, ctx, mode)` — `Full` (VDF checked) or `Light` (gap blocks post-snap) | `ValidationContext::new(...).with_epoch_producer_list(...).with_fork_id(...)`, `validate_block_with_mode` | `Block`, `ConsensusParams`, `NetworkParams` activation heights, epoch-frozen producer list | `Ok(())` or typed `ValidationError` |
 | Compute the next epoch boundary | 1. Gather `EpochDerivationInput` (active_producers, bond_counts, registered_at, ghost/prune activation heights) 2. `EpochState::derive_at_boundary(&prev, &input)` | `EpochState::derive_at_boundary` (`epoch_state/mod.rs:238`) | prev `EpochState`, bond snapshot from UTXO set at boundary height, `NetworkParams::ghost_exclusion_activation_height` / `epoch_prune_activation_height` | New `EpochState` — identical on every node given identical inputs (type-level guarantee) |
 | Distribute epoch rewards | 1. At `height % blocks_per_reward_epoch == 0`, decode all block bitfields using `epoch_state.producer_list` ordering 2. `Transaction::new_epoch_reward_coinbase(pool_inputs, distributions, height, epoch)` | encode/decode_attestation_bitfield (`attestation.rs:266+`), reward calc in `bins/node` (out of domain) | pool UTXO outpoints (`EPOCH_REWARD_EXPLICIT_INPUTS_HEIGHT` gate), qualified producer list | `EpochReward` tx (TxType=10) draining the pool, bond-weighted |
@@ -74,11 +74,20 @@ how activation gates are checked.
 ```
 Producer: BlockBuilder::new(prev_hash, prev_slot, producer)
   .with_params(ConsensusParams)
-  .with_presence_root(bitfield_commitment)   // BLAKE3(attestation_bitfield)
+  .with_presence_root(presence_commitment)   // commitment HASH, never decoded into indices
   .with_missed_producers(vec![...])          // on-chain liveness
   .add_transaction(coinbase_tx)              // first tx = coinbase to reward pool
   .build_with_vdf(timestamp) -> Block
 ```
+
+`presence_root` is a commitment HASH, not a bit array, and is never decoded into producer
+indices. Its preimage depends on `inc_i_178_attestation_bls_activation_height` — `u64::MAX` on
+mainnet, testnet AND devnet today, so **no network is pinned**:
+- below the height: `BLAKE3(attestation_bitfield)`, and zero attesters keeps the `Hash::ZERO`
+  sentinel — byte-identical to the 6.26.x binary
+- at/after: `BLAKE3( u32le(len bits) ‖ bits ‖ u32le(len agg) ‖ agg )` over the body bit array and
+  the aggregate BLS signature (`attestation/commitment.rs::presence_commitment`); zero attesters
+  yields the canonical empty commitment — a REAL hash, NOT `Hash::ZERO`
 
 ### Slot selection (scheduler)
 ```
@@ -160,7 +169,7 @@ BlockHeader {
     version: u32,           // v2 = genesis_hash added
     prev_hash: Hash,
     merkle_root: Hash,
-    presence_root: Hash,    // BLAKE3(attestation_bitfield) post-BITFIELD_BODY; Hash::ZERO legacy
+    presence_root: Hash,    // commitment hash; preimage is AH-dependent (see DATA-FLOWS)
     genesis_hash: Hash,     // chain identity; missing = Hash::ZERO (rejected by validation)
     timestamp: u64,
     slot: Slot,             // u32
@@ -176,7 +185,7 @@ Block {
     header: BlockHeader,
     transactions: Vec<Transaction>,
     aggregate_bls_signature: Vec<u8>,   // 96 bytes, empty for pre-BLS
-    attestation_bitfield: Vec<u8>,      // post-BITFIELD_BODY_ACTIVATION_HEIGHT
+    attestation_bitfield: Vec<u8>,      // attestation bits; accepted width per `attestation/width.rs`
 }
 
 BlockBuilder { ... }  // builder pattern, block.rs:282

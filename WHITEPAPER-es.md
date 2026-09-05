@@ -734,18 +734,20 @@ Esto produce un UTXO por productor por epoch en lugar de uno por bloque — elim
 
 La produccion de bloques demuestra que un productor estuvo en linea durante sus slots asignados. Pero con programacion determinista, un productor podria anticipar sus slots y estar fuera de linea el resto del tiempo.
 
-Para demostrar presencia **continua**, cada productor firma una attestation de actividad cada minuto usando ambas claves Ed25519 y BLS12-381:
+Para demostrar presencia **continua**, cada productor firma una attestation cada minuto con sus dos claves:
 
 ```
-attestation = Sign(block_hash || slot)
+Ed25519: Sign(ATTESTATION_DOMAIN || block_hash || slot)
+BLS:     Sign(block_hash)
 ```
 
-El hash del bloque demuestra que el productor no solo esta vivo sino que activamente sigue y valida la cadena. Las attestations se difunden por gossip a la red. Cada productor de bloques registra:
+La mitad BLS omite el slot a proposito: todo atestiguador de un bloque debe firmar el *mismo* mensaje, o las firmas nunca se agregan.
 
-1. Un **bitfield** en la cabecera del bloque (`presence_root`) — un bit por productor (atestiguado o no), soportando hasta 256 productores (32 bytes)
-2. Una **firma BLS agregada** en el cuerpo del bloque — prueba criptografica de que el bitfield es honesto
+Las attestations se difunden por gossip. Cada productor registra un **bitfield** — un bit por productor — y una **firma BLS agregada** en el cuerpo del bloque, mas un compromiso de 32 bytes (`presence_root`) en la cabecera que enlaza ambos.
 
-La firma BLS agregada comprime todas las firmas individuales de attestation en una sola verificacion. Un bit falso — afirmando que un productor atestiguó cuando no lo hizo — causa que la verificacion de la firma agregada falle. El bloque es rechazado.
+Ese enlace solo se verifica a partir de `inc_i_178_attestation_bls_activation_height`, hoy sin fijar en ninguna red. Por debajo, el bitfield lo declara el productor y solo queda comprometido por hash: la cadena registra la afirmacion, no su veracidad. Por encima, el bit `i` se pone solo si ese productor firmo el hash del bloque padre y el agregado cubre exactamente esas firmas; cada validador vuelve a derivar el compromiso y lo verifica contra las claves BLS en cadena de los bits puestos. Un bit puesto que nadie firmo hace fallar la verificacion, y el bloque es rechazado.
+
+La omision queda sin demostrar: el agregado respalda cada bit puesto pero no dice nada de uno dejado en cero, asi que un productor todavia puede borrar el bit de un par que si atestiguo — una brecha que se rastrea aparte.
 
 En el limite de epoch, cada nodo escanea los bitfields registrados en los bloques del epoch y cuenta los minutos de attestation por productor. Cada epoch abarca 60 minutos de attestation (uno por cada 6 slots). Dos umbrales distintos aplican:
 

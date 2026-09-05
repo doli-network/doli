@@ -1,11 +1,11 @@
 //! INC-I-204 M6 — finality-mirror PINS. The mirror is NOT deleted (design brief §5
-//! R1: `inc_i_204_fork_choice_activation_height` is `u64::MAX` on mainnet, so the
-//! below-gate path — which reads the mirror as its finality authority — is still
-//! the only live path on mainnet; testnet has been pinned at 88,014 since
-//! 5b326fe9, 2026-09-02). These tests make the future deletion a mechanical,
-//! test-covered step: the tripwire at the bottom fires the moment NO real network
-//! still needs the below-gate path (trap T12: deleting earlier leaves the
-//! still-frozen network with no finality height at all).
+//! R1: `inc_i_204_fork_choice_activation_height` is pinned at 409_000 on mainnet
+//! but not yet crossed, so the below-gate path — which reads the mirror as its
+//! finality authority — is still the live path there; testnet pinned 88,014 in
+//! 5b326fe9, 2026-09-02, and has crossed it). These tests make the future
+//! deletion a mechanical, test-covered step: the tripwire at the bottom fires the
+//! moment NO real network still needs the below-gate path (trap T12: deleting
+//! earlier leaves the not-yet-crossed network with no finality height at all).
 //!
 //! OUTPUT CONTRACT — `fn ReorgHandler::set_last_finality_height(&mut self, u64)`
 //!   O1 mutable params: none.  O2 receiver mutation: `last_finality_height` — read
@@ -222,53 +222,46 @@ fn m6_pin_finality_guard_backstop_still_clears_after_a_rollback_below_tip() {
 // The precondition that makes the mirror deletion premature
 // ===========================================================================
 
-/// REQ-FORK-004 (brief §5 R1) — Decision: a failure here reveals that EVERY real
-/// network now pins a real fork-choice activation height, which is the exact
-/// condition under which the finality-mirror bytes, `with_activation_height`
-/// (singular) and `should_reorg_by_weight_with_tiebreak` become deletable. While
-/// ANY real network is still frozen at `u64::MAX`, its below-gate path is that
-/// network's only live path and deleting the mirror would leave its nodes with no
-/// finality height at all (trap T12) — so the tripwire must NOT fire on the first
-/// pin alone. Testnet pinned 88,014 in 5b326fe9 (2026-09-02); this test tripped on
-/// that pin while mainnet was still frozen, contradicting its own T12 rationale,
-/// and was re-scoped on 2026-09-03 (INC-I-203 CI-green pass) to the real
-/// precondition. The pinned/frozen split is asserted explicitly so a silent
-/// revert of either state is caught.
+/// REQ-FORK-004 (brief §5 R1) — Decision: a failure here reveals that NO real
+/// network still runs the below-gate path, which is the exact condition under
+/// which the finality-mirror bytes, `with_activation_height` (singular) and
+/// `should_reorg_by_weight_with_tiebreak` become deletable. A pin alone is not
+/// that condition: between the pin landing and the height being crossed, the
+/// below-gate path is still the live path on that network, and deleting the
+/// mirror would leave its nodes with no finality height at all (trap T12).
+/// Testnet pinned 88,014 in 5b326fe9 (2026-09-02) and has crossed it; mainnet
+/// pinned 409,000 in v6.28.0 (INC-I-208 M3, 2026-09-05) and has NOT crossed it
+/// (tip 383,239 at pin time). Flipping `MAINNET_204_PIN_CROSSED` once mainnet
+/// passes 409,000 IS the deletion work order. Both pins are asserted explicitly
+/// so a silent revert or retroactive move of either is caught (INC-I-054).
 #[test]
-fn m6_pin_fork_choice_gate_is_still_dormant_on_mainnet_and_testnet() {
-    let real_networks = [Network::Mainnet, Network::Testnet];
-    let heights: Vec<(Network, u64)> = real_networks
-        .iter()
-        .map(|n| {
-            (
-                *n,
-                NetworkParams::defaults(*n).inc_i_204_fork_choice_activation_height,
-            )
-        })
-        .collect();
-
-    // Decision: a failure here means testnet's pin was reverted or zeroed — either
-    // a retroactive activation (CLAUDE.md #0) or a silent unpin; both are consensus
-    // history and must never move (INC-I-054).
+fn m6_pin_the_below_gate_path_is_still_live_until_every_pin_is_crossed() {
+    // Consensus history: once crossed, an activation height is IMMUTABLE
+    // (INV-PARAMS-001), so these literals are the tripwire.
     let testnet = NetworkParams::defaults(Network::Testnet).inc_i_204_fork_choice_activation_height;
-    assert!(
-        testnet != 0 && testnet != u64::MAX,
-        "brief §5 R1 / 5b326fe9: testnet must stay pinned at a real, non-zero \
-         inc_i_204_fork_choice_activation_height (got {testnet})"
+    assert_eq!(
+        testnet, 88_014,
+        "brief §5 R1 / 5b326fe9: testnet stays pinned at the crossed height 88_014 \
+         (got {testnet}); moving it is a retroactive activation (CLAUDE.md #0)"
     );
 
-    // Decision: a failure here means mainnet was pinned. That is a deliberate,
-    // separate decision-session (two-release order); when it happens, the assertion
-    // below it is the one that turns into the deletion work order.
     let mainnet = NetworkParams::defaults(Network::Mainnet).inc_i_204_fork_choice_activation_height;
-    let any_still_frozen = heights.iter().any(|(_, h)| *h == u64::MAX);
+    assert_eq!(
+        mainnet, 409_000,
+        "INC-I-208 M3: mainnet stays pinned at 409_000 (got {mainnet})"
+    );
+
+    // Testnet is past 88,014. Mainnet is not past 409,000 — flip this when it is.
+    const TESTNET_204_PIN_CROSSED: bool = true;
+    const MAINNET_204_PIN_CROSSED: bool = false;
+    let every_pin_crossed = TESTNET_204_PIN_CROSSED && MAINNET_204_PIN_CROSSED;
 
     // The real tripwire: fires only once NO real network runs the below-gate path.
     assert!(
-        any_still_frozen,
-        "brief §5 R1: every real network now pins a real \
-         inc_i_204_fork_choice_activation_height ({heights:?}; mainnet={mainnet}). The \
-         mirror-deletion precondition is met — delete ReorgHandler.last_finality_height, \
+        !every_pin_crossed,
+        "brief §5 R1: every real network has CROSSED its \
+         inc_i_204_fork_choice_activation_height (testnet {testnet}, mainnet {mainnet}). \
+         The mirror-deletion precondition is met — delete ReorgHandler.last_finality_height, \
          with_activation_height (singular) and should_reorg_by_weight_with_tiebreak, and \
          move the pins in this file onto ForkChoiceFinality."
     );

@@ -655,3 +655,142 @@ async fn test_santiago_cascade_replay_mainnet_scale() {
     let err = result.unwrap_err();
     eprintln!("[M-RC9 test C] Err as expected: {}", err);
 }
+
+// ============================================================
+// TEST D -- INC-I-178 M4: the post-AH canonical-empty commitment
+// ============================================================
+//
+// REQ-BLS-004 (Must). This binary runs a 36-block epoch (threshold = 5 of 6
+// minutes), so it is the only place where "credits no attendance" is observable
+// through `calculate_epoch_rewards`: the shared `tests/it` binary inherits
+// devnet's 4-block epoch, where the threshold is 0 and everyone qualifies.
+//
+// OUTPUT CONTRACT coverage: the post-AH empty-body path
+//   O1: Ok(outputs) -- a zero-pooled block must not abort the epoch
+//   O2: outputs == the Hash::ZERO fast-path baseline, element for element
+//   O3: the short producer is absent from BOTH -- no minute is credited
+// PATHS: variant root = Hash::ZERO (baseline) | variant root = canonical empty
+
+/// A block with an EMPTY body bitfield and a caller-chosen `presence_root`.
+fn build_empty_body_block(
+    height: u64,
+    slot: u32,
+    prev_hash: Hash,
+    producer: &KeyPair,
+    presence_root: Hash,
+    params: &ConsensusParams,
+) -> Block {
+    let mut block = build_block_with_bitfield(height, slot, prev_hash, producer, &[], 0, params);
+    block.attestation_bitfield = Vec::new();
+    block.header.presence_root = presence_root;
+    block
+}
+
+/// Epoch 0 fully attested, then epoch 1 shaped so ONE producer sits exactly one
+/// minute below the threshold: minutes 0..3 attest everyone (4 each), minute 4
+/// attests everyone but sorted-0 (the rest reach 5), minute 5 is an empty body
+/// carrying `variant_root`. A minute credited by that last bucket would lift
+/// sorted-0 to 5 and change the qualifier set.
+async fn populate_epoch1_with_one_short_producer(
+    node: &Node,
+    producers: &[KeyPair],
+    variant_root: Hash,
+    params: &ConsensusParams,
+) {
+    assert_eq!(
+        MINUTES_PER_EPOCH, 6,
+        "the bucket arithmetic below is anchored to 6 minutes per epoch"
+    );
+    let n = producers.len();
+    let all: Vec<usize> = (0..n).collect();
+    let all_but_short: Vec<usize> = (1..n).collect();
+
+    let mut prev = node.chain_state.read().await.best_hash;
+    for h in 0..EPOCH_LEN {
+        let block = build_block_with_full_bitfield(
+            h,
+            h as u32,
+            prev,
+            &producers[h as usize % n],
+            n,
+            params,
+        );
+        prev = block.hash();
+        put_canonical(node, &block, h);
+    }
+
+    let slots_per_minute = EPOCH_LEN / MINUTES_PER_EPOCH as u64;
+    for offset in 0..EPOCH_LEN {
+        let h = EPOCH_LEN + offset;
+        let bucket = offset / slots_per_minute;
+        let producer = &producers[h as usize % n];
+        let block = if bucket == MINUTES_PER_EPOCH as u64 - 1 {
+            build_empty_body_block(h, h as u32, prev, producer, variant_root, params)
+        } else if bucket == MINUTES_PER_EPOCH as u64 - 2 {
+            build_block_with_bitfield(h, h as u32, prev, producer, &all_but_short, n, params)
+        } else {
+            build_block_with_bitfield(h, h as u32, prev, producer, &all, n, params)
+        };
+        prev = block.hash();
+        put_canonical(node, &block, h);
+    }
+}
+
+/// REQ-BLS-004 (Must) -- Decision: a failure means the post-AH canonical-empty
+/// commitment is not handled exactly as the `Hash::ZERO` fast path handles it. Either
+/// it aborts the whole epoch's distribution (a fleet-wide reward halt caused by an
+/// honest zero-pooled block), or it credits attendance nobody earned and pays a
+/// producer that missed the threshold.
+#[tokio::test]
+async fn inc_i_178_m4_post_ah_canonical_empty_credits_no_attendance() {
+    let (mut node, producers, _tmp) = make_node(NUM_PRODUCERS_SMALL).await;
+    let params = node.params.clone();
+    // Gate-derived: epoch 1 starts at EPOCH_LEN, so the whole window is post-AH.
+    node.inc_i_178_attestation_bls_activation_height = EPOCH_LEN;
+
+    let pool_total: u64 = 60_000_000;
+    seed_reward_pool(&node, pool_total, "inc_i_178_m4_pool").await;
+
+    let short_pkh = producer_pkh(&producers[sorted_producer_order(&producers)[0]]);
+
+    // Baseline: the Hash::ZERO sentinel — the behaviour the new arm must copy.
+    populate_epoch1_with_one_short_producer(&node, &producers, Hash::ZERO, &params).await;
+    let baseline = node
+        .calculate_epoch_rewards(1)
+        .await
+        .expect("the Hash::ZERO fast path never aborts");
+    assert_eq!(
+        baseline.len(),
+        NUM_PRODUCERS_SMALL - 1,
+        "fixture: exactly one producer must sit below threshold {}, or the comparison \
+         below cannot detect a spurious credit",
+        QUAL_THRESHOLD
+    );
+    assert!(
+        !pkh_set(&baseline).contains(&short_pkh),
+        "fixture: the short producer must be excluded in the baseline"
+    );
+
+    // The canonical empty must land in exactly the same place.
+    populate_epoch1_with_one_short_producer(
+        &node,
+        &producers,
+        doli_core::presence_commitment(&[], &[]),
+        &params,
+    )
+    .await;
+    let got = node
+        .calculate_epoch_rewards(1)
+        .await
+        .expect("O1: post-AH a zero-pooled block must not abort the epoch");
+
+    assert_eq!(
+        got, baseline,
+        "O2: the canonical empty must distribute exactly what the Hash::ZERO fast path \
+         distributes"
+    );
+    assert!(
+        !pkh_set(&got).contains(&short_pkh),
+        "O3: an empty body credits no minute, so the short producer stays unqualified"
+    );
+}

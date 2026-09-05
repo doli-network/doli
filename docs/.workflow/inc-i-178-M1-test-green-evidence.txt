@@ -1,0 +1,141 @@
+INC-I-178 M1 — GREEN EVIDENCE (run 544)
+branch feature/inc-i-178-attestation-bls
+scope D1 + D2 + R2 + R3 + R4
+
+=======================================================================
+1. cargo build --release
+=======================================================================
+    Finished `release` profile [optimized] target(s) in 1m 51s
+RESULT: PASS (0 errors, 0 warnings)
+
+=======================================================================
+2. cargo clippy --workspace --all-targets -- -D warnings
+=======================================================================
+    Finished `dev` profile [optimized + debuginfo] target(s)
+RESULT: PASS (0 errors, 0 warnings)
+
+=======================================================================
+3. cargo fmt --all  &&  cargo fmt --check
+=======================================================================
+RESULT: PASS (no diff)
+
+=======================================================================
+4. M1 core tests
+=======================================================================
+$ cargo test -p doli-core --test inc_i_178_m1_pool
+running 13 tests
+test m1_pool_empty_pool_yields_no_signature_for_any_parent ... ok
+test m1_pool_insert_then_read_back_returns_the_exact_96_bytes ... ok
+test m1_pool_clear_returns_it_to_the_empty_state ... ok
+test m1_pool_default_is_the_same_empty_pool_as_new ... ok
+test m1_pool_eviction_drops_every_signature_of_the_evicted_parent ... ok
+test m1_pool_identical_resend_is_idempotent_and_reports_not_stored ... ok
+test m1_pool_never_overwrites_an_existing_parent_attester_entry ... ok
+test m1_pool_keeps_exactly_the_newest_eight_parents_and_evicts_the_oldest ... ok
+test m1_pool_retouching_a_parent_does_not_renew_it_in_the_window ... ok
+test m1_pool_same_attester_under_two_parents_is_retained_independently ... ok
+test m1_pool_stores_signatures_inline_as_fixed_96_byte_arrays ... ok
+test m1_pool_two_attesters_under_one_parent_are_both_retained ... ok
+test m1_pool_total_stored_bytes_are_bounded_by_k_times_n_times_96 ... ok
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
+$ cargo test -p doli-core --test inc_i_178_m1_subtraction
+running 12 tests
+test m1_r4_public_api_is_reachable_from_both_paths ... ok
+test m1_d1_tracker_struct_declares_exactly_one_field ... ok
+test m1_tracker_reset_empties_the_attendance_map_completely ... ok
+test m1_tracker_attendance_is_a_function_of_the_attested_map_alone ... ok
+test m1_tracker_fingerprint_of_a_fixed_attendance_set_is_unchanged ... ok
+test m1_r3_bitfield_body_activation_height_constant_is_gone ... ok
+test m1_r2_presence_module_and_its_exports_are_gone ... ok
+test m1_m0_golden_store_is_byte_identical ... ok
+test m1_d1_the_dead_bls_store_symbols_are_gone_from_the_attestation_module ... ok
+test m1_deferred_codec_and_new_with_bls_survive_the_deletions ... ok
+test m1_r4_module_is_split_and_every_file_is_under_the_line_budget ... ok
+test m1_all_seven_attestation_fields_and_the_block_aggregate_survive ... ok
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
+=======================================================================
+5. M1 node ingest tests
+=======================================================================
+$ cargo test -p doli-node --test it inc_i_178_m1
+running 8 tests
+test inc_i_178_m1_ingest::m1_d1_post_commit_no_longer_signs_or_writes_the_dead_store ... ok
+test inc_i_178_m1_ingest::m1_d1_neither_ingest_site_calls_record_with_bls ... ok
+test inc_i_178_m1_ingest::m1_r3_the_empty_bitfield_bypass_and_its_error_survive_untouched ... ok
+test inc_i_178_m1_ingest::m1_r3_no_production_code_references_the_deleted_constant ... ok
+test inc_i_178_m1_ingest::m1_d2_a_non_member_attester_reaches_neither_attendance_nor_the_pool ... ok
+test inc_i_178_m1_ingest::m1_d2_a_wrong_length_bls_blob_is_dropped_without_costing_attendance ... ok
+test inc_i_178_m1_ingest::m1_d2_an_empty_bls_signature_still_earns_attendance_and_never_enters_the_pool ... ok
+test inc_i_178_m1_ingest::m1_d2_ingest_records_attendance_and_files_the_signature_under_the_parent ... ok
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 140 filtered out
+
+M1 TOTAL: 33 passed / 0 failed
+
+=======================================================================
+6. Regression targets (all must stay green)
+=======================================================================
+cargo test -p doli-core --test inc_i_178_m0_bitfield_baseline
+  test result: ok. 31 passed; 0 failed; 1 ignored
+cargo test -p doli-node --test it inc_i_178_m0
+  test result: ok. 11 passed; 0 failed; 0 ignored; 137 filtered out
+cargo test -p doli-node --lib attestation_authority
+  test result: ok. 3 passed; 0 failed; 0 ignored; 75 filtered out
+cargo test -p doli-node --test delegated_bond_attestation
+  test result: ok. 2 passed; 0 failed; 0 ignored
+cargo test -p doli-node --test m_rc9_silent_vec_regression
+  test result: ok. 3 passed; 0 failed; 0 ignored
+cargo test -p doli-core --lib
+  test result: ok. 978 passed; 0 failed; 0 ignored
+cargo test -p rpc --lib            (the crate is `rpc`, not `doli-rpc`)
+  test result: ok. 71 passed; 0 failed; 0 ignored
+
+REGRESSION TOTAL: 1099 passed / 0 failed
+
+=======================================================================
+7. M0 golden store byte identity
+=======================================================================
+$ shasum -a 256 crates/core/tests/fixtures/attestation_baseline_vectors.json
+91c5c9614e3eb225ea52f19dee41e2b433b853a0d09dc7eda650528af5094e29
+PINNED  91c5c9614e3eb225ea52f19dee41e2b433b853a0d09dc7eda650528af5094e29
+RESULT: MATCH
+
+=======================================================================
+8. bash .claude/scripts/m1-probe.sh
+=======================================================================
+DEAD_SYMBOLS=0
+LEGACY_ARMS=0
+SURFACE_LOC=626
+MAX_MODULE_LOC=218
+
+BEFORE (same probe logic replayed against HEAD = a76dbaa9, the M0 commit):
+DEAD_SYMBOLS=9
+LEGACY_ARMS=5
+SURFACE_LOC=1501
+MAX_MODULE_LOC=798
+
+=======================================================================
+9. File sizes — crates/core/src/attestation/ (R4 budget < 500)
+=======================================================================
+  22  crates/core/src/attestation/mod.rs
+ 164  crates/core/src/attestation/message.rs
+ 218  crates/core/src/attestation/bitfield.rs
+ 118  crates/core/src/attestation/tracker.rs
+ 104  crates/core/src/attestation/pool.rs
+ 626  total
+
+Files that were already over budget MUST NOT grow (every M1 edit is a deletion):
+  bins/node/src/node/rewards.rs            1586 -> 1573
+  bins/node/src/node/validation_checks.rs  1614 -> 1612
+  bins/node/src/node/production/assembly.rs 675 -> 669
+  bins/node/src/node/apply_block/post_commit.rs 487 -> 476
+  crates/rpc/src/methods/schedule.rs         411 -> 406
+  bins/node/src/node/network_events.rs       793 -> 788
+
+=======================================================================
+10. Supplementary: full workspace suite (beyond the required gate list)
+=======================================================================
+$ cargo test --workspace
+exit code 0
+185 test binaries
+4050 passed / 0 failed / 32 ignored

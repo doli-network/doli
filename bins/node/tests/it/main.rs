@@ -11,6 +11,27 @@
 //! the ~60 legacy top-level files stay where they are until they are migrated.
 //! `.claude/hooks/test-binary-gate.sh` enforces the layout.
 
+mod inc_i_178_m0_attestation_lock;
+mod inc_i_178_m0_block_identity;
+mod inc_i_178_m0_common;
+mod inc_i_178_m1_ingest;
+mod inc_i_178_m2_ingress;
+mod inc_i_178_m3_midepoch_exit;
+mod inc_i_178_m4_commit;
+mod inc_i_178_m4_gate;
+mod inc_i_178_m4_preimage;
+mod inc_i_178_m4_rewards_empty;
+mod inc_i_178_m5_common;
+mod inc_i_178_m5_light_and_ordering;
+mod inc_i_178_m5_observability;
+mod inc_i_178_m5_verify;
+mod inc_i_178_m6_chaos;
+mod inc_i_178_m6_replay;
+mod inc_i_178_m6_replay_fixture;
+mod inc_i_178_m6_replay_harness;
+mod inc_i_178_m6_width;
+mod inc_i_178_m75_ingress_signal;
+mod inc_i_178_m76_probe_source;
 mod inc_i_180_allowance_parity;
 mod inc_i_180_apply_block_utxo_destruction;
 mod inc_i_180_builder_parity;
@@ -33,4 +54,5 @@ mod inc_i_204_m41_refusals;
 mod inc_i_204_m41_rescue;
 mod inc_i_204_m42_poison_containment;
 mod inc_i_204_m42_poison_contract_pins;
+mod inc_i_208_own_attestation_pooled;
 mod tied_fork_finality;

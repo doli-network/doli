@@ -212,7 +212,7 @@ undo.epoch_state_snapshot: always present, deserialize → self.epoch_state
 `production/assembly.rs:9` `build_block_content()` — coinbase+epoch-reward+genesis-VDF+mempool+bitfield assembly; `large_block_activation_height` gates block-data budget (LEGACY vs LARGE_BLOCK budgets)
 `production/assembly.rs:507` `drain_pending_events()` — non-blocking network-channel drain before VDF
 `production/assembly.rs:556` `compute_block_vdf()` — hash-chain VDF, calibrated iterations, devnet placeholder
-`production/assembly.rs:616` `aggregate_bls_signatures()`
+`production/assembly.rs:389` attestation-BLS commitment — the old `aggregate_bls_signatures` helper was DELETED (INC-I-178); the builder now calls `commit::build_attestation_commitment_at()`, which sets bit `i` iff `universe[i]` has a pooled signature over the PARENT hash and aggregates exactly those. Gated by `inc_i_178_attestation_bls_activation_height` (`u64::MAX` on every network today); below it the pre-M4 path is byte-identical. The BLS half is pooled by the attestation ingress, not built here.
 `production/assembly.rs:647` `attest_own_block()`
 
 ### Rewards (`rewards.rs`)

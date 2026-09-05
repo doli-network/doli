@@ -631,6 +631,112 @@ lazy_static! {
     ).unwrap();
 }
 
+// Its own block: the ones above are at the `lazy_static!` recursion limit.
+lazy_static! {
+    /// INC-I-178 M5: every post-AH block that REACHES the D7 verifier.
+    ///
+    /// INSTRUMENT SCOPE — the ONE write site is
+    /// `node/attestation/verify.rs::verify_block_attestation`, incremented once
+    /// before any decision. `total == accepted + rejected + skipped_light`, so an
+    /// unchanged `total` is the witness that the verifier never ran (a block that
+    /// failed a cheaper check first, or a height below the activation height).
+    pub static ref ATTESTATION_VERIFY_TOTAL: IntCounter = IntCounter::new(
+        "doli_attestation_verify_total",
+        "Blocks that reached the INC-I-178 post-activation attestation verifier."
+    ).unwrap();
+
+    /// INC-I-178 M5: post-AH attestation rejects, by reason.
+    ///
+    /// INSTRUMENT SCOPE — every reject arm of
+    /// `node/attestation/verify.rs::verify_block_attestation` increments exactly
+    /// one series:
+    ///   root_mismatch                          header presence_root != commitment
+    ///   aggregate_invalid                      bad length or failed pairing
+    ///   aggregate_nonempty_for_empty_bitfield  no bit set, aggregate carried
+    ///   missing_bls_key                        set bit with no usable on-chain key
+    /// All four are zero-initialised in register_metrics(), so a zero is a measured
+    /// "no rejections" and an absent series means the exporter is broken.
+    pub static ref ATTESTATION_VERIFY_REJECTED: IntCounterVec = IntCounterVec::new(
+        Opts::new(
+            "doli_attestation_verify_rejected_total",
+            "INC-I-178 post-activation attestation rejects by reason: root_mismatch, \
+             aggregate_invalid, aggregate_nonempty_for_empty_bitfield, missing_bls_key."
+        ),
+        &["reason"]
+    ).unwrap();
+
+    /// INC-I-178 M5: post-AH blocks whose pairing was skipped as divergent-universe.
+    ///
+    /// INSTRUMENT SCOPE — the ONE write site is the Light / snap-sync skip arm of
+    /// `node/attestation/verify.rs::verify_block_attestation`
+    /// (`mode != Full || snap_sync_height.is_some()`). The root check still runs.
+    pub static ref ATTESTATION_VERIFY_SKIPPED_LIGHT: IntCounter = IntCounter::new(
+        "doli_attestation_verify_skipped_light_total",
+        "Post-activation blocks whose aggregate pairing was skipped because the local \
+         attestation universe is known-divergent (non-Full mode, or snap-synced)."
+    ).unwrap();
+}
+
+// Its own block: the ones above are at the `lazy_static!` recursion limit.
+lazy_static! {
+    /// INC-I-178 M6 (C11): attestation coverage of the block this node last built.
+    ///
+    /// INSTRUMENT SCOPE — the ONE write site is
+    /// `node/attestation/commit.rs::record_bitfield_fill_ratio`, called from
+    /// `build_attestation_commitment_at` on both sides of the gate. Zero-initialised
+    /// in register_metrics(), so 0.0 is a measured "no coverage" (the C11
+    /// empty-commitment fallback) and an absent series means the exporter is broken.
+    pub static ref ATTESTATION_BITFIELD_FILL_RATIO: Gauge = Gauge::new(
+        "doli_attestation_bitfield_fill_ratio",
+        "INC-I-178 attestation coverage of the last block built here: set bitfield bits \
+         over the attestation universe width. 0.0 == the C11 fallback, 1.0 == full."
+    ).unwrap();
+}
+
+// Its own block: the ones above are at the `lazy_static!` recursion limit.
+lazy_static! {
+    /// INC-I-178 M7.5 (REQ-BLS-006 AC-2): first-seen verifying BLS halves, fleet-wide.
+    ///
+    /// INSTRUMENT SCOPE — the ONE write site is the `BlsAttestVerdict::Valid` arm of
+    /// `node/attestation/ingress.rs::ingest_attestation`, and only when
+    /// `ParentSignaturePool::insert` reports the (parent, attester) pair as first
+    /// seen; counting every relay would measure gossip fan-out, not attesters.
+    /// Zero-initialised in register_metrics(): its ABSENCE from /metrics is GS-018's
+    /// marker for "this node predates M7.5", so absence must never also mean
+    /// "registered but nothing seen yet".
+    pub static ref ATTESTATION_BLS_VALID_TOTAL: IntCounter = IntCounter::new(
+        "doli_attestation_bls_valid_total",
+        "INC-I-178 first-seen verifying BLS attestation halves pooled at the ingress."
+    ).unwrap();
+
+    /// INC-I-178 M7.5 (REQ-BLS-006 AC-2): which producers actually dual-sign.
+    ///
+    /// INSTRUMENT SCOPE — the same ONE write site as `ATTESTATION_BLS_VALID_TOTAL`.
+    /// The label is the first 8 hex characters of the attester's Ed25519 public key,
+    /// which is what GS-018 joins to a getProducers row by prefix. CARDINALITY —
+    /// `ingest_attestation` drops non-members before the BLS verdict is ever
+    /// computed, so the label space is bounded by the chain-registered ProducerSet
+    /// (7 on this testnet), never by what a peer sends. Not zero-initialisable:
+    /// label values are discovered, so an absent series here is expected and is
+    /// never a build marker.
+    pub static ref ATTESTATION_BLS_VALID_BY_ATTESTER: IntCounterVec = IntCounterVec::new(
+        Opts::new(
+            "doli_attestation_bls_valid_attester_total",
+            "INC-I-178 first-seen verifying BLS attestation halves by attester: the \
+             first 8 hex characters of the producer's Ed25519 public key."
+        ),
+        &["attester"]
+    ).unwrap();
+}
+
+/// Every `reason` value `ATTESTATION_VERIFY_REJECTED` is written with.
+pub const ATTESTATION_VERIFY_REASONS: [&str; 4] = [
+    "root_mismatch",
+    "aggregate_invalid",
+    "aggregate_nonempty_for_empty_bitfield",
+    "missing_bls_key",
+];
+
 /// Every `site` value `FORK_GUARD_REFUSALS` is written with.
 pub const FORK_GUARD_SITES: [&str; 3] = ["producer_rebuild", "rollback_rebuild", "reorg_execute"];
 
@@ -796,6 +902,25 @@ pub fn register_metrics() {
     let _ = REGISTRY.register(Box::new(ROCKSDB_IS_WRITE_STOPPED.clone()));
     let _ = REGISTRY.register(Box::new(ROCKSDB_BACKGROUND_ERRORS_TOTAL.clone()));
     let _ = REGISTRY.register(Box::new(ROCKSDB_FILES_AT_LEVEL.clone()));
+
+    // INC-I-178 M5 attestation verifier (INC-I-187: registered AND written).
+    let _ = REGISTRY.register(Box::new(ATTESTATION_VERIFY_TOTAL.clone()));
+    let _ = REGISTRY.register(Box::new(ATTESTATION_VERIFY_REJECTED.clone()));
+    let _ = REGISTRY.register(Box::new(ATTESTATION_VERIFY_SKIPPED_LIGHT.clone()));
+    for reason in ATTESTATION_VERIFY_REASONS {
+        ATTESTATION_VERIFY_REJECTED
+            .with_label_values(&[reason])
+            .inc_by(0);
+    }
+
+    // INC-I-178 M6 C11 coverage: a series from process start, not from first build.
+    let _ = REGISTRY.register(Box::new(ATTESTATION_BITFIELD_FILL_RATIO.clone()));
+    ATTESTATION_BITFIELD_FILL_RATIO.set(0.0);
+
+    // INC-I-178 M7.5: the zero-init is GS-018's capability marker (REQ-BLS-007).
+    let _ = REGISTRY.register(Box::new(ATTESTATION_BLS_VALID_TOTAL.clone()));
+    ATTESTATION_BLS_VALID_TOTAL.inc_by(0);
+    let _ = REGISTRY.register(Box::new(ATTESTATION_BLS_VALID_BY_ATTESTER.clone()));
 
     // Set build info
     BUILD_INFO

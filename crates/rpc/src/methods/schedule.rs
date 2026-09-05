@@ -8,6 +8,10 @@ use crate::types::*;
 
 use super::context::RpcContext;
 
+#[cfg(test)]
+#[path = "tests_inc_i178_m4_attestation_stats.rs"]
+mod tests_inc_i178_m4_attestation_stats;
+
 impl RpcContext {
     /// Build the active producer set with UTXO-derived bond weights.
     ///
@@ -209,9 +213,7 @@ impl RpcContext {
     /// Scans all blocks in the current epoch, decodes presence_root bitfields,
     /// and reports per-producer attestation minute counts.
     pub(super) async fn get_attestation_stats(&self) -> Result<Value, RpcError> {
-        use doli_core::attestation::{
-            attestation_minute, attestation_qualification_threshold, decode_attestation_bitfield,
-        };
+        use doli_core::attestation::{attestation_minute, attestation_qualification_threshold};
         use doli_core::consensus::reward_epoch;
 
         let blocks_per_epoch = self.blocks_per_reward_epoch;
@@ -294,21 +296,20 @@ impl RpcContext {
         let mut per_producer_minutes: HashMap<usize, HashSet<u32>> = HashMap::new();
 
         let scan_start = epoch_start.max(1);
+        // Post-AH a zero-attester block carries the canonical empty commitment.
+        let canonical_empty = doli_core::presence_commitment(&[], &[]);
         for h in scan_start..=current_height {
             if let Ok(Some(block)) = self.block_store.get_block_by_height(h) {
                 let pr = block.header.presence_root;
-                if pr != crypto::Hash::ZERO {
+                if pr != crypto::Hash::ZERO && pr != canonical_empty {
                     blocks_with_attestations += 1;
                     let slot = block.header.slot;
                     let minute = attestation_minute(slot);
-                    #[allow(clippy::absurd_extreme_comparisons)]
                     let indices = if !block.attestation_bitfield.is_empty() {
                         doli_core::decode_attestation_bitfield_vec(
                             &block.attestation_bitfield,
                             producer_count,
                         )
-                    } else if h < doli_core::consensus::BITFIELD_BODY_ACTIVATION_HEIGHT {
-                        decode_attestation_bitfield(&pr, producer_count)
                     } else {
                         // Post-activation without body: skip
                         vec![]

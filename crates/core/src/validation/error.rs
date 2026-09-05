@@ -438,6 +438,24 @@ pub enum ValidationError {
         /// Active cap (`MAX_BONDS_PER_PRODUCER`).
         max: u32,
     },
+
+    /// [ERRBLS-001] post-AH attestation body failed verification (INC-I-178 D7).
+    ///
+    /// `reason` is one of the four stable labels the node also publishes as the
+    /// `reason` dimension of `doli_attestation_verify_rejected_total`:
+    /// `root_mismatch`, `aggregate_invalid`,
+    /// `aggregate_nonempty_for_empty_bitfield`, `missing_bls_key`.
+    #[error(
+        "[ERRBLS-001] attestation verify failed: reason={reason} height={height} activation_height={activation_height}"
+    )]
+    AttestationVerifyFailed {
+        /// Stable reason label; also the Prometheus `reason` label value.
+        reason: String,
+        /// Height of the rejected block.
+        height: u64,
+        /// `inc_i_178_attestation_bls_activation_height` in force.
+        activation_height: u64,
+    },
 }
 
 impl ValidationError {
@@ -501,6 +519,7 @@ impl ValidationError {
             Self::AddBondCapExceeded { .. } => "ADDBOND_CAP_EXCEEDED",
             Self::AmmNotActivated { .. } => "AMM_NOT_ACTIVATED",
             Self::AmmMinimumLiquidity { .. } => "AMM_MINIMUM_LIQUIDITY",
+            Self::AttestationVerifyFailed { .. } => "ATTESTATION_VERIFY_FAILED",
         }
     }
 
@@ -733,6 +752,15 @@ impl ValidationError {
                 map.insert("declared_total".into(), (*declared_total).into());
                 map.insert("creator_share".into(), (*creator_share).into());
                 map.insert("minimum_liquidity".into(), (*minimum_liquidity).into());
+            }
+            Self::AttestationVerifyFailed {
+                reason,
+                height,
+                activation_height,
+            } => {
+                map.insert("reason".into(), Value::String(reason.clone()));
+                map.insert("height".into(), (*height).into());
+                map.insert("activation_height".into(), (*activation_height).into());
             }
         }
 

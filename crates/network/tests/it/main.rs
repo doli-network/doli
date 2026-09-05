@@ -11,4 +11,5 @@
 //! the legacy top-level files stay where they are until they are migrated.
 //! `.claude/hooks/test-binary-gate.sh` enforces the layout.
 
+mod inc_i_178_m2_scoring;
 mod inc_i_204_m0_decision_pins;
