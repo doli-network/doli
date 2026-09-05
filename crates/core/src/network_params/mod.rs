@@ -811,29 +811,31 @@ pub struct NetworkParams {
 
     /// INC-I-178 M4 attestation-BLS activation height.
     ///
-    /// At and above this chain height a bitfield bit means "this key BLS-signed
-    /// THIS block's parent" instead of "this key attended the minute"; the
-    /// encoder, the stray-bit validator and `post_commit` all index against ONE
-    /// canonical `[base | extra sorted]` universe; `presence_root` uses the
-    /// length-prefixed `presence_commitment(bitfield, aggregate)` preimage; and
-    /// the aggregate is assembled from the parent-signature pool. Below it every
-    /// one of those paths is byte-identical to the pre-M4 binary.
-    ///
-    /// INV-12: Q1 (user tx) **YES** — a `Registration` changes `active_at(h)`,
-    /// which is a universe input. Q2 (producer/attestation) **YES** — every
-    /// block. Q3 (bit-identical) **NO** above the height. (1|2) YES + (3) NO
-    /// ⇒ **ACTIVATION HEIGHT REQUIRED**.
-    /// Rules: **YES**. Block CONTENT: **YES** — `presence_root` is hashed by
-    /// `BlockHeader::hash()`, so INV-DEPLOY-001 synchronized deploy applies.
-    ///
-    /// Defaults — mainnet, testnet AND devnet all `u64::MAX`: FROZEN. Devnet is
-    /// frozen too, unlike #23: this gate changes block CONTENT, so a devnet
-    /// default of 0 forks every live local chain on the next rebuild. Pinning a
-    /// real height on any network is a separate user decision-session after the
-    /// Release-N soak and preconditions P1-P8
-    /// (`specs/attestation-bls-architecture.md`). Never bundled onto any gate.
-    /// Forward-only. Mainnet IMMUTABILITY (INC-I-054): once crossed, never move.
+    /// At and above it a bitfield bit means "this key BLS-signed THIS block's
+    /// parent" instead of "attended the minute", every indexer shares ONE `[base
+    /// | extra sorted]` universe, `presence_root` uses the length-prefixed
+    /// `presence_commitment(bitfield, aggregate)` preimage, and the aggregate
+    /// comes from the parent-signature pool. Below it every path is byte-
+    /// identical to the pre-M4 binary. INV-12: Q1 **YES** (`Registration` moves
+    /// `active_at(h)`), Q2 **YES** (every block), Q3 **NO** above it ⇒ ACTIVATION
+    /// HEIGHT REQUIRED. Block CONTENT **YES**, so INV-DEPLOY-001 synchronized
+    /// deploy applies. Values live in `defaults.rs` (SoT); pinning one is a
+    /// separate user decision-session after the Release-N soak and preconditions
+    /// P1-P8 (`specs/attestation-bls-architecture.md`). Never bundled onto any
+    /// gate. Forward-only. Mainnet IMMUTABILITY (INC-I-054): never move it.
     pub inc_i_178_attestation_bls_activation_height: u64,
+
+    /// INC-I-208 own-attestation activation height.
+    ///
+    /// At and above it the egress pools the BLS half it signed, after checking
+    /// it against the on-chain `bls_pubkey`; below it, nothing. Block CONTENT
+    /// **YES** (own bit, own aggregate component, therefore `presence_root`), so
+    /// INV-DEPLOY-001 / INV-8 / INC-I-062 make the deploy SYNCHRONIZED (stop ALL,
+    /// then start ALL), never rolling. All three networks `u64::MAX` = FROZEN,
+    /// devnet too because 0 forks every live local chain on the next rebuild;
+    /// pinning one is a separate user decision-session. Forward-only. Mainnet
+    /// IMMUTABILITY (INC-I-054): once crossed, never move.
+    pub inc_i_208_own_attestation_activation_height: u64,
 
     /// How many registered producers must exist before the maintainer trust root
     /// is seeded at all (INC-I-172 M2 review F3).

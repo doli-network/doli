@@ -11,11 +11,28 @@ else, but never keeps a copy. Since AH 112,619 attendance bits are built only fr
 misses the bit of its own builder. Nothing is unsafe — one producer per block loses credit for one block. Fix:
 keep the copy, but only after checking it against the key that producer published on-chain.
 
-## 1. Deploy answer — CONFIRMED at file:line
+## 1. Deploy answer — ACTIVATION HEIGHT REQUIRED, SYNCHRONIZED DEPLOY
 
-**Consensus RULES change? NO. Block CONTENT change? YES. Rolling deploy? SAFE.**
-The validator is a *predicate over the carried body*, never a recomputation of the builder's pool. No
-"expected bitfield" comparison exists anywhere. The three checks a block's attestation body faces:
+**Consensus RULES change? NO. Block CONTENT change? YES. ⇒ activation height REQUIRED, and the deploy
+is SYNCHRONIZED (stop ALL, then start ALL) — never rolling.**
+
+The gate is `inc_i_208_own_attestation_activation_height` on `NetworkParams`
+(`crates/core/src/network_params/mod.rs`), **frozen at `u64::MAX` on mainnet, testnet AND devnet**
+(`defaults.rs`). Frozen means the egress pools nothing and block content is unchanged on every network
+until a height is pinned; pinning one is a separate user decision-session. Devnet is frozen for the same
+reason as the INC-I-178 gate: a devnet default of `0` forks every live local chain on the next rebuild.
+Forward-only, and once crossed on mainnet the height is immutable (INC-I-054).
+
+**M1 (`c38fb2af`) shipped this ungated, and testnet ran it ungated on 2026-09-05.** The INC-I-211 fork
+that followed was caused by restart *timing*, but the deploy **mode** was a rule violation independent of
+that outcome: INV-DEPLOY-001 requires an activation height for any change to what a producer emits, and
+CLAUDE.md rule #0b requires the synchronized stop-all/start-all for block-content changes.
+
+The evidence below remains accurate as a description of what the *verifiers* do — it is retained because
+the acceptance paths are worth knowing — but it does **not** bear on the deploy decision. INV-DEPLOY-001
+gates block-content changes even when every verifier accepts them, because a rolling window puts two
+honest producers on different binaries emitting **different bytes for the same height**. The three checks
+a block's attestation body faces:
 
 | Check | Site | Effect of one extra legitimately-signed bit |
 |---|---|---|
@@ -25,23 +42,20 @@ The validator is a *predicate over the carried body*, never a recomputation of t
 
 Set-bit keys come from the chain, not the sender: `attestation/keys.rs:22-26`
 (`producers.get_by_pubkey(&pk).bls_pubkey`; `Err(pk)` if empty/invalid → `REASON_MISSING_BLS_KEY`).
-Acceptance depends only on carried bytes + on-chain keys, so un-upgraded nodes accept upgraded builders'
-blocks and vice versa. The post-AH bitfield is **already** builder-local and non-deterministic across nodes;
-the fix does not introduce that, it makes the builder's own contribution truthful.
 
 **Three-question checklist (INC-I-075 / INV-12)**
 1. **User-submittable tx reaches this path? NO** — no `TxType` writes `parent_sig_pool`; it is fed only by
    `ingest_attestation` (`ingress.rs:88`) and, after the fix, by own signing.
 2. **Producer-action / attestation pattern reaches it? YES** — attestations are producer-generated and the
    change alters which bit the local builder sets.
-3. **Bit-identical for all reachable inputs?** Split precisely. **VALIDATION of any input: YES** —
-   `decide_attestation`, `verify_block_attestation`, `set_bit_bls_pubkeys` and `validation_checks.rs:421-448`
-   are untouched; same block bytes ⇒ same verdict before and after. **The builder's OUTPUT: NO** — an
-   upgraded builder emits a superset bitfield and a different aggregate.
+3. **Bit-identical for all reachable inputs? NO** — for the builder's **OUTPUT**. An upgraded builder emits
+   a superset bitfield, a different aggregate and therefore a different `presence_root`, a field inside
+   `BlockHeader::hash()`. (Validation of a *fixed* input is unchanged — `decide_attestation`,
+   `verify_block_attestation`, `set_bit_bls_pubkeys` and `validation_checks.rs:421-448` are untouched — but
+   Q3 is asked of the whole consensus-visible computation, and the output half answers NO.)
 
-**Verdict: no activation height.** INV-12 gates *divergent validation of the same input*, which does not
-occur. What changes is freely-chosen, already-node-local block content that every existing verifier accepts
-bit-identically. Rolling deploy; no synchronized stop-all.
+**(1|2) YES + (3) NO ⇒ ACTIVATION HEIGHT REQUIRED.** Answering Q3 only for validation, and treating
+verifier acceptance as proof of rolling safety, is precisely the reasoning that let M1 ship ungated.
 
 ## 2. Architecture Context
 
@@ -149,6 +163,8 @@ BLS pubkey into the test ProducerSet** (`producer_set.write().await` → `get_by
 | REQ-208-002 | A mismatching/unregistered local key is NOT pooled, is logged, does not panic, does not suppress the broadcast | Must | - [ ] `Invalid`/`NoKey`/`Empty` ⇒ pool unchanged<br>- [ ] At most one WARN per node run<br>- [ ] Gossip + direct send still happen<br>- [ ] Still returns `Some(attestation)` |
 | REQ-208-003 | Existing egress contract preserved | Must | - [ ] `None` for weight 0 and non-producer<br>- [ ] INV-ATTEST-001 tests green<br>- [ ] Both production call sites compile unchanged |
 | REQ-208-004 | The false comment at `assembly.rs:640` is corrected | Should | - [ ] No comment claims the ingress pools the own BLS half |
+| REQ-208-005 | The M1 pooling is gated: it runs **iff** `height >= inc_i_208_own_attestation_activation_height` (inclusive) | Must | - [ ] Below the gate: no verdict call, no pool insert, pool total 0<br>- [ ] At the gate (`u64::MAX`): pooled, total 1<br>- [ ] `Some(attestation)` with a 96-byte BLS half on BOTH sides<br>- [ ] Finality weight, gossip and `[DIRECT_ATTEST]` unchanged on BOTH sides |
+| REQ-208-006 | The gate is a distinct `NetworkParams` field, frozen at `u64::MAX` on mainnet, testnet and devnet | Must | - [ ] `defaults(network)` returns `u64::MAX` for all three<br>- [ ] Writing it moves no other activation height<br>- [ ] Mainnet ignores the env var; testnet/devnet honour `DOLI_INC_I_208_OWN_ATTESTATION_ACTIVATION_HEIGHT` |
 
 **Detailed AC — REQ-208-001**: given a test node whose local BLS pubkey **is** registered on-chain, when
 `create_and_broadcast_attestation(block_hash, slot, height)` returns, then
@@ -170,10 +186,12 @@ the on-chain `bls_pubkey` at its `Vec::new()` default and asserts the pool stays
 **Traceability**
 | ID | Priority | Test IDs | Architecture Section | Implementation Module |
 |---|---|---|---|---|
-| REQ-208-001 | Must | `egress_pools_own_bls_half_when_onchain_key_matches` (RED) | §2 Egress/Pool, §3 seam | `node/startup.rs`, `node/attestation/ingress.rs` |
-| REQ-208-002 | Must | `egress_does_not_pool_when_onchain_key_differs` | §3 risk | `node/startup.rs` |
-| REQ-208-003 | Must | `egress_does_not_pool_when_onchain_key_is_unregistered`, `active_producer_with_bonds_attests`, `fully_delegated_producer_does_not_attest` | §2 INV-ATTEST-001 | `node/startup.rs`, `tests/delegated_bond_attestation.rs` |
-| REQ-208-004 | Should | n/a (doc) | §2 contract absence | `node/production/assembly.rs` |
+| REQ-208-001 | Must | `req_208_005_at_the_gate_the_egress_pools_its_own_bls_half` | §2 Egress/Pool, §3 seam | `create_and_broadcast_attestation` @ `bins/node/src/node/startup.rs`, `bls_verdict` @ `bins/node/src/node/attestation/ingress.rs` |
+| REQ-208-002 | Must | `egress_does_not_pool_when_onchain_key_differs` | §3 risk | `create_and_broadcast_attestation` @ `bins/node/src/node/startup.rs` |
+| REQ-208-003 | Must | `egress_does_not_pool_when_onchain_key_is_unregistered`, `active_producer_with_bonds_attests`, `fully_delegated_producer_does_not_attest` | §2 INV-ATTEST-001 | `create_and_broadcast_attestation` @ `bins/node/src/node/startup.rs` |
+| REQ-208-004 | Should | n/a (doc) | §2 contract absence | `attest_own_block` @ `bins/node/src/node/production/assembly.rs` |
+| REQ-208-005 | Must | `req_208_005_below_the_gate_the_egress_does_not_pool_its_own_bls_half`, `req_208_005_at_the_gate_the_egress_pools_its_own_bls_half` | §1 Deploy answer | `create_and_broadcast_attestation` @ `bins/node/src/node/startup.rs` |
+| REQ-208-006 | Must | `req_208_006_the_own_attestation_gate_is_frozen_on_every_network`, `req_208_006_the_own_attestation_gate_is_a_distinct_independently_settable_field` | §1 Deploy answer | `NetworkParams::inc_i_208_own_attestation_activation_height` @ `crates/core/src/network_params/{mod,defaults,env_loader}.rs` |
 
 ## 5. Impact, assumptions, gaps
 **Affected**: `node/startup.rs` — verify+pool step, likely `&self → &mut self`, **risk medium** (INV-ATTEST-001
@@ -196,6 +214,12 @@ blocks already produced since AH 112,619 (consensus history, immutable); mainnet
 `inc_i_178_attestation_bls_activation_height` (separate decision session, HC-6).
 
 ## Triage Verdict
+
+> **SUPERSEDED IN PART (M2).** The block below is the verbatim triage record and is kept unedited.
+> Its "no activation height … accepted bit-identically by upgraded and un-upgraded nodes alike"
+> clause is **WRONG** and is what M2 exists to correct: see §1. Verifier acceptance is not a deploy
+> argument — INV-DEPLOY-001 gates on what the builder EMITS.
+
 ```
 ━━━ TRIAGE VERDICT ━━━
 Path: FAST
@@ -213,7 +237,7 @@ and the reproduction test needs a ProducerSet mutation no existing test performs
 ```
 
 ## Milestones
-**M1 — Pool the own attestation behind on-chain-key verification, and correct the comment** (only milestone).
+**M1 — Pool the own attestation behind on-chain-key verification, and correct the comment.**
 Files: `bins/node/src/node/startup.rs` (verify+pool after signing; `&self` → `&mut self`);
 `bins/node/src/node/attestation/ingress.rs` (`fn bls_verdict` → `pub(crate) fn`, body unchanged);
 `bins/node/src/node/production/assembly.rs` (comment at :640);
@@ -224,3 +248,16 @@ Covers REQ-208-001 … REQ-208-004.
 Tests: `bins/node/tests/it/inc_i_208_own_attestation_pooled.rs` (module of `bins/node/tests/it/main.rs` —
 `test-binary-gate.sh` refuses new top-level `bins/node/tests/*.rs` targets). Run:
 `cargo test -p doli-node --test it inc_i_208_own_attestation_pooled`.
+
+**M2 — Gate the M1 egress behind an activation height** (INV-DEPLOY-001; M1 shipped without one).
+Files: `crates/core/src/network_params/mod.rs` (the field
+`inc_i_208_own_attestation_activation_height`); `crates/core/src/network_params/defaults.rs`
+(`u64::MAX` on mainnet, testnet and devnet — no height pinned anywhere);
+`crates/core/src/network_params/env_loader.rs` (mainnet LOCKED, testnet/devnet override via
+`DOLI_INC_I_208_OWN_ATTESTATION_ACTIVATION_HEIGHT`); `bins/node/src/node/startup.rs` (the
+`bls_verdict`/pool block runs only when `height >= …_activation_height`, inclusive);
+`bins/node/src/node/production/assembly.rs` (comment). Covers REQ-208-005 and REQ-208-006.
+
+Tests: `crates/core/tests/it/inc_i_208_activation_height.rs` (params surface) plus the two gate
+partitions in `bins/node/tests/it/inc_i_208_own_attestation_pooled.rs`. Run:
+`cargo test -p doli-core --test it inc_i_208` and `cargo test -p doli-node --test it inc_i_208`.

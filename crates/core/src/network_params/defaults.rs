@@ -266,6 +266,7 @@ impl NetworkParams {
                 // block CONTENT changes, so pinning is a separate user
                 // decision-session after the Release-N soak.
                 inc_i_178_attestation_bls_activation_height: u64::MAX,
+                inc_i_208_own_attestation_activation_height: u64::MAX,
 
                 // INC-I-172 M2 maintainer trust-root derivation. Gates the
                 // one-shot genesis seed (F2), the canonical
@@ -508,6 +509,7 @@ impl NetworkParams {
                 // (2026-09-05, v6.27.0); IMMUTABLE once crossed (INV-PARAMS-001).
                 // Override via `DOLI_INC_I_178_ATTESTATION_BLS_ACTIVATION_HEIGHT`.
                 inc_i_178_attestation_bls_activation_height: 112_619,
+                inc_i_208_own_attestation_activation_height: u64::MAX,
 
                 // INC-I-172 M2 maintainer trust-root derivation. Pinned
                 // 2026-08-10 at live testnet tip 126_801 with ~400 blocks
@@ -761,6 +763,7 @@ impl NetworkParams {
                 // even here: it changes block CONTENT, so 0 would fork every
                 // live local devnet chain on the next rebuild.
                 inc_i_178_attestation_bls_activation_height: u64::MAX,
+                inc_i_208_own_attestation_activation_height: u64::MAX,
                 // INC-I-172 M2 maintainer trust-root derivation.
                 // Always active on devnet — fresh genesis each run, no history
                 // to reinterpret.

@@ -639,7 +639,7 @@ impl Node {
         self.create_and_broadcast_attestation(block_hash, current_slot, height)
             .await;
         if let Some(ref kp) = self.producer_key {
-            // Attendance only: the BLS half is pooled by the attestation ingress.
+            // Attendance only: at/above the INC-I-208 gate the egress pools its own verified half.
             let minute = attestation_minute(current_slot);
             self.minute_tracker.record(*kp.public_key(), minute);
         }

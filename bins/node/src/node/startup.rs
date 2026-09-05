@@ -619,15 +619,24 @@ impl Node {
         let attestation =
             self.sign_attestation(block_hash, slot, height, weight, &private_key, public_key);
 
-        // Pool only what verifies against the on-chain key (REQ-208-002).
-        match self.bls_verdict(&attestation, &onchain_bls_key) {
-            BlsAttestVerdict::Valid(sig) => {
-                self.parent_sig_pool.insert(block_hash, public_key, sig);
+        // Block CONTENT: pooling our own half sets our own bit, so it is gated
+        // (REQ-208-005). Pool only what verifies on-chain (REQ-208-002).
+        if height
+            >= self
+                .config
+                .network
+                .params()
+                .inc_i_208_own_attestation_activation_height
+        {
+            match self.bls_verdict(&attestation, &onchain_bls_key) {
+                BlsAttestVerdict::Valid(sig) => {
+                    self.parent_sig_pool.insert(block_hash, public_key, sig);
+                }
+                BlsAttestVerdict::Invalid => {
+                    warn!("[ATTEST_EGRESS] own BLS half does not verify against the on-chain key — check the BLS key config");
+                }
+                BlsAttestVerdict::Empty | BlsAttestVerdict::NoKey => {}
             }
-            BlsAttestVerdict::Invalid => {
-                warn!("[ATTEST_EGRESS] own BLS half does not verify against the on-chain key — check the BLS key config");
-            }
-            BlsAttestVerdict::Empty | BlsAttestVerdict::NoKey => {}
         }
 
         // Add our own weight to finality tracker

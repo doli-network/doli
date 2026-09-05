@@ -479,6 +479,16 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
                 defaults.inc_i_178_attestation_bls_activation_height,
             )
         },
+        // INC-I-208 own-attestation pooling at the egress. Mainnet LOCKED for
+        // the same reason as #178 — it changes block CONTENT.
+        inc_i_208_own_attestation_activation_height: if is_mainnet {
+            defaults.inc_i_208_own_attestation_activation_height
+        } else {
+            env_parse(
+                "DOLI_INC_I_208_OWN_ATTESTATION_ACTIVATION_HEIGHT",
+                defaults.inc_i_208_own_attestation_activation_height,
+            )
+        },
         // INC-I-172 M2 (#20). Computed above so #22 can be ordered against it.
         maintainer_derivation_activation_height,
         // INC-I-173 state-only fee gate (TxType::allows_empty_io authority).
