@@ -524,59 +524,6 @@ fn test_add_bonds_with_creation_slot() {
     assert_eq!(info.bond_entries[4].creation_slot, 5000);
 }
 
-/// Test calculate_withdrawal FIFO order (oldest first)
-#[test]
-fn test_calculate_withdrawal_fifo_order() {
-    let keypair = KeyPair::generate();
-    let mut info = ProducerInfo::new(
-        *keypair.public_key(),
-        0,
-        2 * BOND_UNIT,
-        (Hash::ZERO, 0),
-        0,
-        BOND_UNIT,
-    );
-
-    // Add 3 more bonds at a later slot
-    let later_slot = VESTING_QUARTER_SLOTS + 1000;
-    let outpoints = vec![(Hash::ZERO, 1), (Hash::ZERO, 2), (Hash::ZERO, 3)];
-    info.add_bonds(outpoints, BOND_UNIT, later_slot);
-
-    // Calculate withdrawal of 2 bonds well past full vesting (4 years)
-    let fully_vested_slot = 4 * VESTING_QUARTER_SLOTS + 1;
-    let (net, penalty) = info.calculate_withdrawal(2, fully_vested_slot).unwrap();
-    assert_eq!(net, 2 * BOND_UNIT);
-    assert_eq!(penalty, 0);
-}
-
-/// Test withdrawal with mixed-age penalties
-#[test]
-fn test_withdrawal_mixed_age_penalties() {
-    let keypair = KeyPair::generate();
-    let mut info = ProducerInfo::new(
-        *keypair.public_key(),
-        0,
-        5 * BOND_UNIT,
-        (Hash::ZERO, 0),
-        0,
-        BOND_UNIT,
-    );
-
-    // Add 2 bonds at 2*Q slots (will be in Q3 at check time)
-    let outpoints = vec![(Hash::ZERO, 1), (Hash::ZERO, 2)];
-    info.add_bonds(outpoints, BOND_UNIT, 2 * VESTING_QUARTER_SLOTS);
-
-    // Check at slot = 3*Q
-    let check_slot = 3 * VESTING_QUARTER_SLOTS;
-
-    // Withdraw 6 bonds: 5 at slot 0 (age 3Q = vested) + 1 at slot 2Q (age 1Q = 50% penalty)
-    let (net, penalty) = info.calculate_withdrawal(6, check_slot).unwrap();
-    // 5 vested bonds: 5 * BOND_UNIT * 100% = 5 * BOND_UNIT
-    // 1 Q2 bond:      1 * BOND_UNIT * 50% = 0.5 * BOND_UNIT net, 0.5 * BOND_UNIT penalty
-    assert_eq!(net, 5 * BOND_UNIT + BOND_UNIT / 2);
-    assert_eq!(penalty, BOND_UNIT / 2);
-}
-
 /// Test apply_withdrawal reduces bond_count
 #[test]
 fn test_apply_withdrawal_reduces_bond_count() {
@@ -600,46 +547,6 @@ fn test_apply_withdrawal_reduces_bond_count() {
     assert_eq!(info.bond_amount, 7 * BOND_UNIT);
 }
 
-/// Test withdrawal insufficient bonds
-#[test]
-fn test_withdrawal_insufficient_bonds() {
-    let keypair = KeyPair::generate();
-    let info = ProducerInfo::new(
-        *keypair.public_key(),
-        0,
-        3 * BOND_UNIT,
-        (Hash::ZERO, 0),
-        0,
-        BOND_UNIT,
-    );
-
-    // Requesting more than available
-    assert!(info.calculate_withdrawal(5, 1000).is_none());
-}
-
-/// Test withdrawal_pending_count prevents double-withdrawal
-#[test]
-fn test_withdrawal_pending_prevents_double() {
-    let keypair = KeyPair::generate();
-    let mut info = ProducerInfo::new(
-        *keypair.public_key(),
-        0,
-        5 * BOND_UNIT,
-        (Hash::ZERO, 0),
-        0,
-        BOND_UNIT,
-    );
-
-    // First withdrawal: 3 bonds
-    info.withdrawal_pending_count = 3;
-
-    // Available = 5 - 3 = 2. Requesting 3 should fail.
-    assert!(info.calculate_withdrawal(3, 1000).is_none());
-
-    // Requesting 2 should succeed (2 available)
-    assert!(info.calculate_withdrawal(2, 1000).is_some());
-}
-
 /// Test withdrawal_pending_count resets after apply_withdrawal
 #[test]
 fn test_withdrawal_pending_resets_at_epoch() {
@@ -659,46 +566,6 @@ fn test_withdrawal_pending_resets_at_epoch() {
     // After apply_withdrawal, pending count is decremented
     assert_eq!(info.withdrawal_pending_count, 0);
     assert_eq!(info.bond_count, 3);
-}
-
-/// Test all bonds vested → zero penalty
-#[test]
-fn test_withdrawal_all_vested_zero_penalty() {
-    let keypair = KeyPair::generate();
-    let info = ProducerInfo::new(
-        *keypair.public_key(),
-        0,
-        5 * BOND_UNIT,
-        (Hash::ZERO, 0),
-        0,
-        BOND_UNIT,
-    );
-
-    // All bonds at slot 0, check at > VESTING_PERIOD
-    let (net, penalty) = info
-        .calculate_withdrawal(5, VESTING_PERIOD_SLOTS + 1)
-        .unwrap();
-    assert_eq!(net, 5 * BOND_UNIT);
-    assert_eq!(penalty, 0);
-}
-
-/// Test all bonds in Q1 → max penalty (75%)
-#[test]
-fn test_withdrawal_all_q1_max_penalty() {
-    let keypair = KeyPair::generate();
-    let info = ProducerInfo::new(
-        *keypair.public_key(),
-        1000,
-        3 * BOND_UNIT,
-        (Hash::ZERO, 0),
-        0,
-        BOND_UNIT,
-    );
-
-    // Bonds at slot 1000, check at slot 1100 (age 100 = Q1)
-    let (net, penalty) = info.calculate_withdrawal(3, 1100).unwrap();
-    assert_eq!(penalty, 3 * BOND_UNIT * 75 / 100);
-    assert_eq!(net, 3 * BOND_UNIT * 25 / 100);
 }
 
 /// Test full withdrawal lifecycle: add at different times, withdraw subset, verify remaining
@@ -726,14 +593,6 @@ fn test_full_withdrawal_lifecycle() {
 
     assert_eq!(info.bond_count, 7);
     assert_eq!(info.bond_entries.len(), 7);
-
-    // Withdraw 4 bonds at slot just past full vesting for slot-0 bonds
-    let check_slot = VESTING_PERIOD_SLOTS + 1;
-    let (net, penalty) = info.calculate_withdrawal(4, check_slot).unwrap();
-    // Slot 0 bonds: age = VESTING_PERIOD+1 → 4 quarters → vested (0%) — 3 bonds
-    // mid_slot bonds: age = VESTING_PERIOD+1 - 2*Q = 2*Q+1 → 2 quarters → Q3 (25%) — 1 bond
-    assert_eq!(net, 3 * BOND_UNIT + BOND_UNIT * 75 / 100);
-    assert_eq!(penalty, BOND_UNIT * 25 / 100);
 
     // Apply the withdrawal
     info.withdrawal_pending_count = 4;

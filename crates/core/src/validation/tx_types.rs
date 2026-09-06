@@ -610,10 +610,10 @@ pub(super) fn validate_withdrawal_request_data(tx: &Transaction) -> Result<(), V
         ));
     }
 
-    // Note: These validations are done at node level:
-    // - Producer is registered
-    // - Producer has enough bonds to withdraw
-    // - Output amount <= FIFO net calculation
+    // Node level checks: producer is registered, producer has enough bonds.
+    // The payout amount bound is NOT enforced here and is NOT enforced anywhere
+    // today (INC-I-171); from M4 it is enforced at block validation, gated by
+    // inc_i_171_vesting_penalty_activation_height.
 
     Ok(())
 }

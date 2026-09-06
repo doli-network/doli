@@ -2,47 +2,12 @@
 
 use crypto::Hash;
 use crypto::PublicKey;
-use doli_core::consensus::{
-    withdrawal_penalty_rate_with_quarter, BOND_UNIT as CORE_BOND_UNIT, MAX_BONDS_PER_PRODUCER,
-    VESTING_QUARTER_SLOTS,
-};
+use doli_core::consensus::{BOND_UNIT as CORE_BOND_UNIT, MAX_BONDS_PER_PRODUCER};
 use doli_core::network::Network;
 
 use super::constants::*;
 use super::seniority::*;
 use super::types::{ActivityStatus, ProducerInfo, ProducerStatus, StoredBondEntry};
-
-/// Calculate FIFO withdrawal from UTXO-derived bond entries.
-///
-/// `bonds` must be sorted by creation_slot ascending (oldest first) —
-/// as returned by `UtxoSet::get_bond_entries()`.
-///
-/// Returns `Some((net_payout, total_penalty))` or `None` if count exceeds available.
-pub fn calculate_withdrawal_from_bonds(
-    bonds: &[(crate::utxo::Outpoint, u32, u64)],
-    count: u32,
-    current_slot: u32,
-    quarter_slots: u64,
-) -> Option<(u64, u64)> {
-    if count == 0 || count as usize > bonds.len() {
-        return None;
-    }
-
-    let mut total_net: u64 = 0;
-    let mut total_penalty: u64 = 0;
-
-    for &(_, creation_slot, amount) in bonds.iter().take(count as usize) {
-        let age = (current_slot as u64).saturating_sub(creation_slot as u64) as u32;
-        let penalty_pct =
-            doli_core::consensus::withdrawal_penalty_rate_with_quarter(age, quarter_slots as u32);
-        let penalty = (amount * penalty_pct as u64) / 100;
-        let net = amount - penalty;
-        total_net += net;
-        total_penalty += penalty;
-    }
-
-    Some((total_net, total_penalty))
-}
 
 impl ProducerInfo {
     /// Create a new active producer with a single bond
@@ -433,46 +398,6 @@ impl ProducerInfo {
                 })
                 .collect();
         }
-    }
-
-    /// Calculate FIFO withdrawal amounts without mutating state.
-    ///
-    /// Returns `(net_amount, penalty_amount)` for withdrawing `count` oldest bonds.
-    /// Returns `None` if not enough bonds available (considering pending withdrawals).
-    /// Uses the mainnet vesting quarter (VESTING_QUARTER_SLOTS).
-    pub fn calculate_withdrawal(&self, count: u32, current_slot: u32) -> Option<(u64, u64)> {
-        self.calculate_withdrawal_with_quarter(count, current_slot, VESTING_QUARTER_SLOTS as u64)
-    }
-
-    /// Calculate FIFO withdrawal amounts with a custom quarter duration.
-    ///
-    /// Network-aware: pass `network_params.vesting_quarter_slots` for correct penalties.
-    pub fn calculate_withdrawal_with_quarter(
-        &self,
-        count: u32,
-        current_slot: u32,
-        quarter_slots: u64,
-    ) -> Option<(u64, u64)> {
-        let available = self
-            .bond_count
-            .saturating_sub(self.withdrawal_pending_count);
-        if count == 0 || count > available {
-            return None;
-        }
-
-        let mut total_net: u64 = 0;
-        let mut total_penalty: u64 = 0;
-
-        for entry in self.bond_entries.iter().take(count as usize) {
-            let age = (current_slot as u64).saturating_sub(entry.creation_slot as u64) as u32;
-            let penalty_pct = withdrawal_penalty_rate_with_quarter(age, quarter_slots as u32);
-            let penalty = (entry.amount * penalty_pct as u64) / 100;
-            let net = entry.amount - penalty;
-            total_net += net;
-            total_penalty += penalty;
-        }
-
-        Some((total_net, total_penalty))
     }
 
     /// Apply a withdrawal at epoch boundary: remove oldest `count` entries.

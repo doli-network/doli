@@ -51,7 +51,6 @@ pub use constants::{
     INACTIVITY_THRESHOLD, MAX_WEIGHT, MIN_WEIGHT, REACTIVATION_THRESHOLD, SLOTS_PER_YEAR,
     VETO_BOND_AMOUNT, VETO_THRESHOLD_PERCENT,
 };
-pub use info::calculate_withdrawal_from_bonds;
 #[allow(deprecated)]
 pub use seniority::{
     producer_weight, producer_weight_for_network, producer_weight_precise,
