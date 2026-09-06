@@ -14,7 +14,8 @@ use std::collections::{HashMap, HashSet};
 use crypto::{Hash, PublicKey};
 use doli_core::transaction::{OutputType, Transaction, TxType};
 use mempool::{HoldingsLookup, ProducerHoldings};
-use storage::{Outpoint, ProducerSet, UtxoSet};
+use storage::producer::resolve_withdrawal_inputs;
+use storage::{ProducerSet, UtxoSet};
 
 #[derive(Default)]
 pub(super) struct WithdrawalParity {
@@ -129,7 +130,8 @@ impl WithdrawalParity {
         }
 
         let owner = crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, pk.as_bytes());
-        let (bond_inputs, all_bond_inputs) = bond_input_split(tx, utxo, &owner);
+        let resolved = resolve_withdrawal_inputs(tx, utxo, &owner);
+        let (bond_inputs, all_bond_inputs) = (resolved.owned_bonds, resolved.all_bonds);
         if all_bond_inputs != bond_inputs {
             return Err(format!(
                 "[ECON_WITHDRAWAL_BOND_COUNT_MISMATCH] {bond_inputs} of {all_bond_inputs} \
@@ -240,21 +242,4 @@ impl WithdrawalParity {
     pub(super) fn height(&self) -> u64 {
         self.height
     }
-}
-
-fn bond_input_split(tx: &Transaction, utxo: &UtxoSet, owner: &Hash) -> (u32, u32) {
-    let (mut owned, mut all_bonds) = (0u32, 0u32);
-    for inp in &tx.inputs {
-        let Some(entry) = utxo.get(&Outpoint::new(inp.prev_tx_hash, inp.output_index)) else {
-            continue;
-        };
-        if entry.output.output_type != OutputType::Bond {
-            continue;
-        }
-        all_bonds = all_bonds.saturating_add(1);
-        if entry.output.pubkey_hash == *owner {
-            owned = owned.saturating_add(1);
-        }
-    }
-    (owned, all_bonds)
 }

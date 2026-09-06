@@ -17,4 +17,4 @@ deletes them. Verified with `git grep` over `bins/*/src` and `crates/*/src`
 | build_attestation_commitment | bins/node/src/node/attestation/commit.rs | test-infra | Same `&NetworkParams` overload role (F5); `build_attestation_commitment_at` is the production path called from `assembly.rs`. |
 | penalized_bond_net | crates/core/src/validation/vesting.rs | M4 | Wired by the node-side enforcement pass. |
 | check_withdrawal_payout_bound | crates/core/src/validation/vesting.rs | M4 | Wired by the node-side enforcement pass. |
-| WithdrawalBondExtraDataMalformed | crates/core/src/validation/error.rs | M3 | INV-VEST-013 fail-closed Bond `extra_data` decoding is its only caller. |
+| WithdrawalBondExtraDataMalformed | crates/core/src/validation/error.rs | M4 | pre-activation byte-identity: the resolver records malformed inputs, the gated M4 check raises the error |

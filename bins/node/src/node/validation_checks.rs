@@ -666,23 +666,15 @@ impl Node {
                                     .unwrap_or(u32::MAX)
                             });
                         }
-                        let (mut owned, mut all_bonds) = (0u32, 0u32);
-                        for inp in &tx.inputs {
-                            let Some(entry) = utxo
-                                .get(&storage::Outpoint::new(inp.prev_tx_hash, inp.output_index))
-                            else {
-                                continue;
-                            };
-                            if entry.output.output_type != doli_core::transaction::OutputType::Bond
-                            {
-                                continue;
-                            }
-                            all_bonds = all_bonds.saturating_add(1);
-                            if owner == Some(entry.output.pubkey_hash) {
-                                owned = owned.saturating_add(1);
-                            }
-                        }
-                        (i, (owned, all_bonds))
+                        // `owner == None` matched no Bond in the inline scan this
+                        // call replaces, so `owned` is 0 there while `all_bonds`,
+                        // which no owner argument can change, still counts them all.
+                        let probe = owner
+                            .unwrap_or_else(|| crypto::hash::hash(b"inc-i-171-m3-unnamed-owner"));
+                        let resolved =
+                            storage::producer::resolve_withdrawal_inputs(tx, &utxo, &probe);
+                        let owned = owner.map_or(0, |_| resolved.owned_bonds);
+                        (i, (owned, resolved.all_bonds))
                     })
                     .collect()
             };

@@ -261,9 +261,11 @@ Tier: `age = block_slot.saturating_sub(creation_slot)`; `quarters = age / quarte
 **Resolver layer — `crates/storage/src/producer/withdrawal_inputs.rs`:**
 
 ```rust
-pub struct WithdrawalInputs { pub owned_bonds: u32, pub all_bonds: u32, pub spent_bonds: Vec<(u64, u32)>, pub non_bond_total: u64 }
+pub struct WithdrawalInputs { pub owned_bonds: u32, pub all_bonds: u32, pub spent_bonds: Vec<(u64, Option<u32>)>, pub non_bond_total: u64, pub malformed_bond_inputs: Vec<(usize, usize)> }
 pub fn resolve_withdrawal_inputs(tx: &Transaction, utxo: &UtxoSet, owner: &Hash) -> WithdrawalInputs; // one utxo.get per input, math-free
 ```
+
+The resolver runs below the activation height too, so it is infallible: a Bond `extra_data` that is not 4 bytes decodes to `None` and is recorded in `malformed_bond_inputs`, and only the gated M4 check raises `WithdrawalBondExtraDataMalformed`.
 
 **Rule:** `payout <= sum penalized_bond_net(spent Bond inputs) + sum(non-Bond inputs)` (OQ-2). Honest CLI slack >= 1 base unit at every tier (trace section 8). Over-burn accepted. A reorg re-mining across a quarter boundary into an earlier slot can reject deterministically — tx returns to mempool, never a fork.
 
@@ -332,13 +334,13 @@ No `BRIDGE:` entries: below the AH every path is byte-identical. Pinning is a se
 
 ## Deploy Shape
 
-- **Consensus RULES change? YES** (Q1 yes, Q2 yes, Q3 no) => own AH + paired disable; never bundled onto `withdrawal_holdings_gate_activation_height` (301_020, crossed).
+- **Consensus RULES change? YES** (Q1 yes, Q2 yes, Q3 no) => own AH + paired disable; never bundled onto `withdrawal_holdings_gate_activation_height` (317_861 (mainnet; `defaults.rs:161`), crossed).
 - **Block CONTENT change? NO** => rolling deploy safe while frozen; fleet fully upgraded before any pinned height.
 
 ## Preconditions for Pinning (gates, not decisions)
 
 **Testnet:** T1 M1-M5 merged; INV-VEST-007 replay to tip. T2 the live testnet has ONLY genesis bonds (all 0%) — rehearse AddBond -> RequestWithdrawal at Q1..Q4 (quarter = 6 h), honest and patched CLIs. T3 zero honest would-rejects across >= 1 quarter boundary and >= 1 reorg. T4 `DOLI_VESTING_QUARTER_SLOTS` lock on all 18 nodes. T5 pin >= 24 h above the tip.
-**Mainnet:** PC-1 INC-I-170 n11 retirement complete — its ~4,348 DOLI exit would face 75% (genesis bonds are Q1 until about 2027-07-22). PC-2 bond census via `getBondDetails` on every producer + slot/height ratio. PC-3 `vesting_quarter_slots` env-locked everywhere + zero guard shipped. PC-4 no bundling onto 301_020. PC-5 all ~30 auto-update producers on the release; one seed at a time; >= 24 h lead. PC-6 testnet T1-T5 complete.
+**Mainnet:** PC-1 INC-I-170 n11 retirement complete — its ~4,348 DOLI exit would face 75% (genesis bonds are Q1 until about 2027-07-22). PC-2 bond census via `getBondDetails` on every producer + slot/height ratio. PC-3 `vesting_quarter_slots` env-locked everywhere + zero guard shipped. PC-4 no bundling onto 317_861 (mainnet; `defaults.rs:161`). PC-5 all ~30 auto-update producers on the release; one seed at a time; >= 24 h lead. PC-6 testnet T1-T5 complete.
 **Incidents opened from this run:** (a) **INC-I-212** — `StoredBondEntry.creation_slot` mixes HEIGHT (`producer/info.rs:74,430`) and SLOT (`tx_processing.rs:363`); not on the consensus path of this design. (b) **INC-I-213** — `twap_equivalence_test.rs:65-73` transcribes the deleted `utxo_rocks.rs` logic and calls no production function, so it cannot fail on a stamping regression; replace it per INV-VEST-010. **Refuted (verification 2026-09-05):** the suspected `utxo/set.rs:182` length hazard. The in-place write is guarded by `extra_data.len() >= 4` (`set.rs:179-182`, no panic), and `[ERRTX007]` (`validation/transaction.rs:418-424`) rejects any Bond `extra_data.len() != 4` ungated in all modes, so the three write paths are byte-identical for every input a validated block can carry. The only ingress that bypasses ERRTX007 is snap sync (`fork_recovery.rs:319`), covered by INV-VEST-013 (fail closed).
 
 ## Complexity Comparison

@@ -42,6 +42,7 @@ mod tests_delegation;
 #[allow(deprecated)]
 mod tests_delegation_cap;
 mod types;
+mod withdrawal_inputs;
 
 // Re-export everything for identical public API
 #[allow(deprecated)]
@@ -61,3 +62,4 @@ pub use types::{
     ActivityStatus, PendingProducerUpdate, ProducerInfo, ProducerSet, ProducerStatus,
     StoredBondEntry,
 };
+pub use withdrawal_inputs::{resolve_withdrawal_inputs, WithdrawalInputs};
