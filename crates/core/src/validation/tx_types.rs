@@ -611,9 +611,9 @@ pub(super) fn validate_withdrawal_request_data(tx: &Transaction) -> Result<(), V
     }
 
     // Node level checks: producer is registered, producer has enough bonds.
-    // The payout amount bound is NOT enforced here and is NOT enforced anywhere
-    // today (INC-I-171); from M4 it is enforced at block validation, gated by
-    // inc_i_171_vesting_penalty_activation_height.
+    // The payout amount bound is NOT enforced here: the ONE implementation is
+    // `validation::vesting::check_withdrawal_payout_bound`, called at block
+    // validation and gated by inc_i_171_vesting_penalty_activation_height.
 
     Ok(())
 }

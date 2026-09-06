@@ -136,7 +136,7 @@ fn m1_r3_no_production_code_references_the_deleted_constant() {
 // unupgraded producer builds — a fleet-wide liveness stop, not a bug.
 #[test]
 fn m1_r3_the_empty_bitfield_bypass_and_its_error_survive_untouched() {
-    let src = read("bins/node/src/node/validation_checks.rs");
+    let src = read("bins/node/src/node/validation_checks/mod.rs");
     assert!(
         src.contains("!block.attestation_bitfield.is_empty()"),
         "M4-owned: the empty-bitfield bypass guard was removed early"

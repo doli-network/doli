@@ -654,7 +654,7 @@ async fn req_i180_001_epoch_boundary_missing_epochreward_skip_intact() {
 /// cap block is ever moved above the early return.
 #[test]
 fn inc_i_080_addbond_cap_stays_below_the_epoch_reward_return() {
-    const SRC: &str = include_str!("../../src/node/validation_checks.rs");
+    const SRC: &str = include_str!("../../src/node/validation_checks/mod.rs");
 
     let gate_block = SRC
         .find("=== INC-I-180: withdrawal-holdings gate")

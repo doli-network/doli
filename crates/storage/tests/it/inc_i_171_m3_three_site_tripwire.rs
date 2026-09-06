@@ -4,14 +4,16 @@
 //! of four files. The only output is the assertion verdict.
 //! INPUT PARTITIONS: duplicated-copies-present (red, today: `bond_input_split` is defined at
 //! crates/mempool/src/withdrawal_holdings.rs:120 and bins/node/src/node/production/withdrawal_holdings.rs:245,
-//! and the third copy is INLINE at bins/node/src/node/validation_checks.rs:669-684) vs
+//! and the third copy is INLINE at the node withdrawal pass, since M4 in
+//! bins/node/src/node/validation_checks/withdrawal_economics.rs) vs
 //! single-resolver (green, after M3).
 //!
 //! REQ-VEST-008 — Decision: reveals whether a later edit re-forked the withdrawal bond scan into
 //! per-site copies again, which is exactly how mempool, builder and validation drifted to three
 //! different verdicts for one transaction.
 
-const VALIDATION_CHECKS: &str = include_str!("../../../../bins/node/src/node/validation_checks.rs");
+const VALIDATION_CHECKS: &str =
+    include_str!("../../../../bins/node/src/node/validation_checks/withdrawal_economics.rs");
 const MEMPOOL_HOLDINGS: &str =
     include_str!("../../../../crates/mempool/src/withdrawal_holdings.rs");
 const PRODUCTION_HOLDINGS: &str =
@@ -38,8 +40,9 @@ fn req_vest_008_bond_input_split_is_deleted_from_both_copies() {
 fn req_vest_008_all_three_sites_call_the_one_resolver() {
     assert!(
         VALIDATION_CHECKS.contains("resolve_withdrawal_inputs"),
-        "REQ-VEST-008: bins/node/src/node/validation_checks.rs must call \
-         resolve_withdrawal_inputs — its bond scan is INLINE at :669-684 today, the copy that \
+        "REQ-VEST-008: the node withdrawal pass \
+         (bins/node/src/node/validation_checks/withdrawal_economics.rs) must call \
+         resolve_withdrawal_inputs — its bond scan was INLINE before M3, the copy that \
          has no name and therefore no way to drift visibly"
     );
     assert!(
