@@ -270,6 +270,12 @@ impl NetworkParams {
                 // same height as #178 by design (BLS without the own bit ships
                 // the M1 defect). IMMUTABLE once crossed.
                 inc_i_208_own_attestation_activation_height: 409_000,
+                // INC-I-171 vesting-penalty payout bound. FROZEN at u64::MAX
+                // (unpinned): pinning it is a separate user decision-session.
+                // Own gate, never bundled. IMMUTABLE once crossed (INC-I-054).
+                inc_i_171_vesting_penalty_activation_height: u64::MAX,
+                // Paired kill-switch; u64::MAX = never disabled.
+                inc_i_171_vesting_penalty_disable_height: u64::MAX,
 
                 // INC-I-172 M2 maintainer trust-root derivation. Gates the
                 // one-shot genesis seed (F2), the canonical
@@ -515,6 +521,11 @@ impl NetworkParams {
                 // INC-I-208 own-attestation pooling. PINNED 118_500 on testnet
                 // (rehearsal crossing, 2026-09-05, v6.28.0); IMMUTABLE once crossed.
                 inc_i_208_own_attestation_activation_height: 118_500,
+                // INC-I-171 vesting-penalty payout bound. FROZEN at u64::MAX
+                // (unpinned) on testnet too; pinning is a separate decision.
+                inc_i_171_vesting_penalty_activation_height: u64::MAX,
+                // Paired kill-switch; u64::MAX = never disabled.
+                inc_i_171_vesting_penalty_disable_height: u64::MAX,
 
                 // INC-I-172 M2 maintainer trust-root derivation. Pinned
                 // 2026-08-10 at live testnet tip 126_801 with ~400 blocks
@@ -769,6 +780,11 @@ impl NetworkParams {
                 // live local devnet chain on the next rebuild.
                 inc_i_178_attestation_bls_activation_height: u64::MAX,
                 inc_i_208_own_attestation_activation_height: u64::MAX,
+                // INC-I-171 vesting-penalty payout bound. FROZEN at u64::MAX
+                // even here: 0 would reinterpret every live local chain.
+                inc_i_171_vesting_penalty_activation_height: u64::MAX,
+                // Paired kill-switch; u64::MAX = never disabled.
+                inc_i_171_vesting_penalty_disable_height: u64::MAX,
                 // INC-I-172 M2 maintainer trust-root derivation.
                 // Always active on devnet — fresh genesis each run, no history
                 // to reinterpret.

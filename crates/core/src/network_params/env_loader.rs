@@ -209,12 +209,10 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
             env_parse("DOLI_NETWORK_MARGIN_MS", defaults.network_margin_ms)
         },
 
-        // Vesting (locked for mainnet — consensus critical)
-        vesting_quarter_slots: if is_mainnet {
-            defaults.vesting_quarter_slots // LOCKED for mainnet
-        } else {
-            env_parse("DOLI_VESTING_QUARTER_SLOTS", defaults.vesting_quarter_slots)
-        },
+        // Vesting: LOCKED on EVERY network (INC-I-171 / INV-VEST-006). The
+        // quarter selects the penalty tier, which is consensus input once the
+        // vesting rule is armed — one operator's .env must not shift it.
+        vesting_quarter_slots: defaults.vesting_quarter_slots,
 
         // AUDIT-CLI-001: Hard fork activation heights are LOCKED for mainnet.
         // Overriding these via .env on mainnet could disable signature verification
@@ -487,6 +485,25 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
             env_parse(
                 "DOLI_INC_I_208_OWN_ATTESTATION_ACTIVATION_HEIGHT",
                 defaults.inc_i_208_own_attestation_activation_height,
+            )
+        },
+        // INC-I-171 vesting-penalty payout bound. Mainnet LOCKED: it decides
+        // whether a withdrawal block is valid.
+        inc_i_171_vesting_penalty_activation_height: if is_mainnet {
+            defaults.inc_i_171_vesting_penalty_activation_height
+        } else {
+            env_parse(
+                "DOLI_INC_I_171_VESTING_PENALTY_ACTIVATION_HEIGHT",
+                defaults.inc_i_171_vesting_penalty_activation_height,
+            )
+        },
+        // Paired kill-switch, mainnet LOCKED for the same reason.
+        inc_i_171_vesting_penalty_disable_height: if is_mainnet {
+            defaults.inc_i_171_vesting_penalty_disable_height
+        } else {
+            env_parse(
+                "DOLI_INC_I_171_VESTING_PENALTY_DISABLE_HEIGHT",
+                defaults.inc_i_171_vesting_penalty_disable_height,
             )
         },
         // INC-I-172 M2 (#20). Computed above so #22 can be ordered against it.

@@ -15,3 +15,6 @@ deletes them. Verified with `git grep` over `bins/*/src` and `crates/*/src`
 | post_commit_universe | bins/node/src/node/attestation/commit.rs | test-infra | Same `&NetworkParams` overload role (F3); `post_commit_universe_at` is the production path called from `apply_block/post_commit.rs`. |
 | stray_bit_universe_width | bins/node/src/node/attestation/commit.rs | test-infra | Same `&NetworkParams` overload role (F4); `stray_bit_universe_width_at` is the production path called from `validation_checks.rs`. |
 | build_attestation_commitment | bins/node/src/node/attestation/commit.rs | test-infra | Same `&NetworkParams` overload role (F5); `build_attestation_commitment_at` is the production path called from `assembly.rs`. |
+| penalized_bond_net | crates/core/src/validation/vesting.rs | M4 | Wired by the node-side enforcement pass. |
+| check_withdrawal_payout_bound | crates/core/src/validation/vesting.rs | M4 | Wired by the node-side enforcement pass. |
+| WithdrawalBondExtraDataMalformed | crates/core/src/validation/error.rs | M3 | INV-VEST-013 fail-closed Bond `extra_data` decoding is its only caller. |

@@ -192,6 +192,10 @@ fn req_fork_014_devnet_activates_from_genesis() {
 /// [`ENV_VAR`] is derived from the INC-I-204 one.
 const BLS_ENV_VAR: &str = "DOLI_INC_I_178_ATTESTATION_BLS_ACTIVATION_HEIGHT";
 
+/// INC-I-171 M2 — the vesting quarter override. Not an activation height, but the same
+/// lock question, and it must be exercised through the same single `load` caller.
+const VESTING_ENV_VAR: &str = "DOLI_VESTING_QUARTER_SLOTS";
+
 // INC-I-208 M3 — Decision: renamed from
 // `..._is_frozen_on_mainnet_and_devnet_and_pinned_on_testnet`; the 2026-09-05 decision
 // pinned mainnet too, so devnet alone stays frozen now.
@@ -496,15 +500,27 @@ fn req_fork_014_no_devnet_activation_height_was_moved() {
 /// It rides in THIS function rather than its own because `NetworkParams::load` caches
 /// per network in a process-wide `OnceLock`: a second `load` caller in this binary would
 /// race, and whichever ran first would silently void the other's override.
+///
+/// INC-I-171 M2 — REQ-VEST-006 — Decision: `DOLI_VESTING_QUARTER_SLOTS` is LOCKED on
+/// every network from M2, not mainnet-only as at `env_loader.rs:212-217`. A failure
+/// means one operator can shift the penalty tier from a `.env` file; once the vesting
+/// rule is armed that node computes a different payout ceiling from its peers and
+/// accepts or rejects blocks nobody else does — a split with no code change and no
+/// deploy. It rides here for the same `OnceLock` reason as the BLS half; the structural
+/// half lives in `inc_i_171_m2_activation_height.rs`.
 #[test]
 fn the_env_override_is_locked_on_mainnet_and_honoured_elsewhere() {
     // Neither network's default, so neither branch can pass by coincidence.
     const SENTINEL: &str = "9";
     const BLS_SENTINEL: &str = "11";
+    // Not mainnet's 3_153_600, testnet's 2_160 or devnet's 60 — asserted below.
+    const VESTING_SENTINEL: &str = "7777";
     let original = std::env::var(ENV_VAR);
     let bls_original = std::env::var(BLS_ENV_VAR);
+    let vesting_original = std::env::var(VESTING_ENV_VAR);
     std::env::set_var(ENV_VAR, SENTINEL);
     std::env::set_var(BLS_ENV_VAR, BLS_SENTINEL);
+    std::env::set_var(VESTING_ENV_VAR, VESTING_SENTINEL);
 
     let mainnet_params = NetworkParams::load(Network::Mainnet);
     let devnet_params = NetworkParams::load(Network::Devnet);
@@ -518,6 +534,12 @@ fn the_env_override_is_locked_on_mainnet_and_honoured_elsewhere() {
     let bls_devnet = devnet_params.inc_i_178_attestation_bls_activation_height;
     let bls_testnet = testnet_params.inc_i_178_attestation_bls_activation_height;
 
+    let vesting_loaded = [
+        (Network::Mainnet, mainnet_params.vesting_quarter_slots),
+        (Network::Testnet, testnet_params.vesting_quarter_slots),
+        (Network::Devnet, devnet_params.vesting_quarter_slots),
+    ];
+
     // Restore BEFORE asserting so a failure cannot leak process state into the rest of
     // the binary.
     match original {
@@ -527,6 +549,26 @@ fn the_env_override_is_locked_on_mainnet_and_honoured_elsewhere() {
     match bls_original {
         Ok(v) => std::env::set_var(BLS_ENV_VAR, v),
         Err(_) => std::env::remove_var(BLS_ENV_VAR),
+    }
+    match vesting_original {
+        Ok(v) => std::env::set_var(VESTING_ENV_VAR, v),
+        Err(_) => std::env::remove_var(VESTING_ENV_VAR),
+    }
+
+    // INC-I-171 M2 / REQ-VEST-006. Compared against the CONSTRUCTOR, never a literal:
+    // INC-I-201 and INC-I-209 were both stale-test-literal failures.
+    for (network, loaded) in vesting_loaded {
+        let compiled = NetworkParams::defaults(network).vesting_quarter_slots;
+        assert_ne!(
+            compiled, 7_777,
+            "{network:?} anti-vacuity: the sentinel must differ from the compiled default"
+        );
+        assert_eq!(
+            loaded, compiled,
+            "REQ-VEST-006 THE LOCK: {VESTING_ENV_VAR} must not move \
+             vesting_quarter_slots on {network:?}. It selects the penalty tier, so an \
+             override lets one node compute a different payout ceiling from its peers."
+        );
     }
 
     assert_eq!(
