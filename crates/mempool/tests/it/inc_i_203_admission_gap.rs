@@ -24,9 +24,9 @@
 //! OUTPUT CONTRACT: fn add_transaction(...)  /  fn revalidate(...)
 //! ===========================================================================
 //! Functions under test:
-//!   `Mempool::add_transaction(&mut self, Transaction, &UtxoSet, BlockHeight)
+//!   `Mempool::add_transaction(&mut self, Transaction, &UtxoSet, BlockHeight, Slot)
 //!        -> Result<AddTransactionResult, MempoolError>`
-//!   `Mempool::revalidate(&mut self, &UtxoSet, BlockHeight)`
+//!   `Mempool::revalidate(&mut self, &UtxoSet, BlockHeight, Slot)`
 //!
 //! Both take `&mut self`, so the receiver is an output:
 //!   O1  the `add_transaction` accept/reject verdict
@@ -186,7 +186,7 @@ fn republish(case: &Case, bond_count: u32) {
 
 fn offer(mempool: &mut Mempool, case: &Case, height: u64) -> Result<(), MempoolError> {
     mempool
-        .add_transaction(case.tx.clone(), &case.utxo, height)
+        .add_transaction(case.tx.clone(), &case.utxo, height, 1)
         .map(|_| ())
 }
 
@@ -350,7 +350,7 @@ fn req_bond_005_pool_admission_unchanged_below_activation_height() {
 
     // And it must survive revalidate on the same band.
     republish(&c, CAP);
-    mempool.revalidate(&c.utxo, HEIGHT);
+    mempool.revalidate(&c.utxo, HEIGHT, 1);
     assert!(
         mempool.contains(&c.subject),
         "REQ-BOND-005: eviction is height-gated too. Below the AH nothing may be \
@@ -401,7 +401,7 @@ fn req_bond_006_pool_admission_fails_open_when_holdings_unavailable() {
     assert!(mempool.contains(&c.subject), "O3");
 
     // And revalidate must not shed it either.
-    mempool.revalidate(&c.utxo, HEIGHT);
+    mempool.revalidate(&c.utxo, HEIGHT, 1);
     assert!(
         mempool.contains(&c.subject),
         "REQ-BOND-006: eviction must fail open on the same terms as admission"
@@ -452,7 +452,7 @@ fn req_bond_003_pool_revalidate_evicts_a_resident_addbond_that_became_over_cap()
         "harness: the input must still exist so input-existence cannot evict"
     );
 
-    mempool.revalidate(&c.utxo, HEIGHT);
+    mempool.revalidate(&c.utxo, HEIGHT, 1);
 
     // O4
     assert!(
@@ -499,7 +499,7 @@ fn req_bond_003_pool_revalidate_keeps_a_resident_addbond_still_within_cap() {
 
     // The snapshot moves, but DOWNWARD — the producer exited some bonds.
     republish(&c, 10);
-    mempool.revalidate(&c.utxo, HEIGHT);
+    mempool.revalidate(&c.utxo, HEIGHT, 1);
 
     assert!(
         mempool.contains(&c.subject),
@@ -521,7 +521,7 @@ fn req_bond_003_pool_revalidate_keeps_a_resident_addbond_still_within_cap() {
 
     // The exact boundary must survive too: 2998 + 2 = 3000 is not `> 3000`.
     republish(&c, CAP - 2);
-    mempool.revalidate(&c.utxo, HEIGHT);
+    mempool.revalidate(&c.utxo, HEIGHT, 1);
     assert!(
         mempool.contains(&c.subject),
         "OVER-EVICTION at the boundary: filling the cap exactly is legal"
@@ -542,8 +542,8 @@ pub(crate) fn probe_resident_over_cap_addbonds() -> usize {
     let c = case(Network::Testnet, CAP - 1, 2, 0x29);
     let mut mempool = wired(Network::Testnet, &c);
 
-    let _ = mempool.add_transaction(c.tx.clone(), &c.utxo, HEIGHT);
-    mempool.revalidate(&c.utxo, HEIGHT);
+    let _ = mempool.add_transaction(c.tx.clone(), &c.utxo, HEIGHT, 1);
+    mempool.revalidate(&c.utxo, HEIGHT, 1);
 
     resident_over_cap(&mempool, &c.snapshot)
 }

@@ -2485,7 +2485,7 @@ Note: struct PresenceHeartbeat (not Heartbeat) in the tpop module; this is diffe
   - `MissingInput(Hash, u32)` — input outpoint does not exist in UTXO set or pool
   - `DoubleSpend { tx_hash: Hash, output_index: u32, spending_tx: Hash }` — outpoint already claimed by mempool tx
 - `Mempool::new(policy, params, network)` / `Mempool::mainnet()` / `Mempool::testnet()` — constructors
-- `Mempool::add_transaction(tx, utxo_set, current_height)` — full admission path: duplicate → size → structural → signature/covenant → fee → ancestor limit → double-spend → eviction → CPFP ancestor wiring; returns tx hash
+- `Mempool::add_transaction(tx, utxo_set, current_height, current_slot)` — full admission path: duplicate → size → structural → signature/covenant → fee → ancestor limit → double-spend → eviction → CPFP ancestor wiring; returns tx hash. `current_slot` raises `Mempool::slot_watermark`, and that watermark — not the call's slot — is the INC-I-171 vesting bound's evaluation input (skipped while the watermark is 0)
 - `Mempool::add_system_transaction(tx, current_height)` — bypass fee/UTXO for state-only txs (e.g. SlashProducer); still validates structure; inserts at fee_rate=0
 - `Mempool::remove_transaction(tx_hash)` — removes entry; cleans all indexes and cross-links; returns removed entry
 - `Mempool::remove_for_block(transactions)` — remove confirmed transactions
@@ -2501,7 +2501,7 @@ Note: struct PresenceHeartbeat (not Heartbeat) in the tpop module; this is diffe
 - `Mempool::calculate_unconfirmed_balance(pubkey_hash, utxo_set)` — returns (incoming, outgoing) amounts across all mempool txs
 - `Mempool::get_unconfirmed_balance(pubkey_hash, utxo_set)` — returns signed net unconfirmed balance (incoming - outgoing)
 - `Mempool::expire_old()` — remove transactions older than policy.max_age (evict_lowest_fee helper; called externally)
-- `Mempool::revalidate(utxo_set, current_height)` — post-reorg cleanup; re-validates all entries against new UTXO set
+- `Mempool::revalidate(utxo_set, current_height, current_slot)` — post-reorg cleanup; re-validates all entries against new UTXO set. Raises the slot watermark but does NOT evaluate the vesting bound, so a reorg cannot evict an honest withdrawal on it (INV-VEST-011)
 
 ---
 ---

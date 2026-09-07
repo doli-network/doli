@@ -270,6 +270,8 @@ The *payout* problem is localized. T6 (unbonding/ClaimWithdrawal) is a separate,
 | Requirement | Priority | Test IDs | Architecture section | Implementation module |
 |---|---|---|---|---|
 | REQ-VEST-001 … 007 | Must | (test-writer) | (architect) | (developer) |
-| REQ-VEST-008 … 010 | Should | (test-writer) | (architect) | (developer) |
-| REQ-VEST-011, 012 | Could | (test-writer) | (architect) | (developer) |
+| REQ-VEST-008 | Should | `bins/node/tests/inc_i_171_m5_vesting_build.rs` (9), `crates/mempool/tests/inc_i_171_m5_vesting_admission.rs` (8) | `specs/vesting-penalty-consensus-architecture.md` M5 | `vesting_bound_verdict` @ `crates/mempool/src/vesting_bound.rs`; `Mempool::withdrawal_verdict` @ `crates/mempool/src/pool.rs`; `WithdrawalParity::allow_vesting` @ `bins/node/src/node/production/withdrawal_holdings.rs` |
+| REQ-VEST-009, 010 | Should | (test-writer) | (architect) | (developer) |
+| REQ-VEST-011 | Could | `crates/mempool/tests/inc_i_171_m5_vesting_admission.rs` (B6-B8), `bins/node/tests/inc_i_171_m5_vesting_build.rs` (A3) | `specs/vesting-penalty-consensus-architecture.md` M5 | `Mempool::slot_watermark` @ `crates/mempool/src/pool.rs` — non-regressing, and the vesting bound's evaluation input at admission (never the call's slot) |
+| REQ-VEST-012 | Could | (test-writer) | (architect) | (developer) |
 | REQ-VEST-013 … 015 | Won't | N/A (deferred) | N/A | N/A |

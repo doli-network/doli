@@ -75,3 +75,7 @@ post_install_script = "bins/node/postinst.sh"
 [[test]]
 name = "inc_i_171_m4_vesting_bound"
 path = "tests/inc_i_171_m4_vesting_bound.rs"
+
+[[test]]
+name = "inc_i_171_m5_vesting_build"
+path = "tests/inc_i_171_m5_vesting_build.rs"

@@ -14,11 +14,14 @@
 
 use crypto::PublicKey;
 use doli_core::{BlockHeight, Transaction};
-use storage::producer::resolve_withdrawal_inputs;
+use storage::producer::WithdrawalInputs;
 use storage::UtxoSet;
 
 use crate::holdings::HoldingsLookup;
 
+/// `resolved` is the caller's single `resolve_withdrawal_inputs` pass, shared
+/// with the INC-I-171 vesting arm (INV-VEST-008).
+///
 /// `in_mempool_withdrawn` stands in for the gate's `in_block_withdrawn`: bonds
 /// already claimed by same-producer withdrawals this mempool holds. Pass 0 to
 /// evaluate a resident transaction on its own (`revalidate`), which is what
@@ -26,6 +29,7 @@ use crate::holdings::HoldingsLookup;
 pub(crate) fn check(
     tx: &Transaction,
     utxo: &UtxoSet,
+    resolved: &WithdrawalInputs,
     lookup: HoldingsLookup,
     in_mempool_withdrawn: u32,
     height: BlockHeight,
@@ -66,7 +70,6 @@ pub(crate) fn check(
     }
 
     let owner = address_of(&pk);
-    let resolved = resolve_withdrawal_inputs(tx, utxo, &owner);
     let (bond_inputs, all_bond_inputs) = (resolved.owned_bonds, resolved.all_bonds);
     let mismatch = || {
         format!(

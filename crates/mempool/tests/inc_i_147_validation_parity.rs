@@ -269,7 +269,7 @@ enum Verdict {
 }
 
 fn mempool_verdict(mempool: &mut Mempool, tx: &Transaction, utxo_set: &UtxoSet) -> Verdict {
-    match mempool.add_transaction(tx.clone(), utxo_set, HEIGHT) {
+    match mempool.add_transaction(tx.clone(), utxo_set, HEIGHT, 1) {
         Ok(_) => Verdict::Accept,
         Err(MempoolError::Validation(e)) => Verdict::Reject(e.to_string()),
         Err(other) => Verdict::Reject(other.to_string()),
@@ -333,13 +333,13 @@ fn duplicate_registration_rejected_at_admission() {
     // Partition 1 — first registration is valid and must be admitted. This also proves
     // the harness builds a well-formed registration (bond, lock, BLS PoP, chain fields).
     mempool
-        .add_transaction(reg1.clone(), &utxo_set, HEIGHT)
+        .add_transaction(reg1.clone(), &utxo_set, HEIGHT, 1)
         .expect("registration #1 must be admitted (harness self-check)");
     assert!(mempool.contains(&reg1.hash()));
 
     // Partition 2 — P now has an accepted-but-not-active registration. A second one is
     // rejected by block validation (registration.rs:173); admission MUST agree.
-    let result = mempool.add_transaction(reg2.clone(), &utxo_set, HEIGHT);
+    let result = mempool.add_transaction(reg2.clone(), &utxo_set, HEIGHT, 1);
 
     // O1
     let err = result.err().unwrap_or_else(|| {
@@ -457,7 +457,7 @@ fn mempool_and_apply_agree_on_every_registration_verdict() {
         let reg2 = registration_tx(f2, &bls);
 
         mempool
-            .add_transaction(reg1, &utxo_set, HEIGHT)
+            .add_transaction(reg1, &utxo_set, HEIGHT, 1)
             .expect("registration #1 must be admitted (harness self-check)");
 
         let producers = producer_set_with_pending_registration(pk);
@@ -524,7 +524,7 @@ fn revalidate_evicts_registration_that_became_duplicate() {
 
     // Legitimately admitted: at this instant P has no registration anywhere.
     mempool
-        .add_transaction(reg.clone(), &utxo_set, HEIGHT)
+        .add_transaction(reg.clone(), &utxo_set, HEIGHT, 1)
         .expect("registration must be admitted while no other registration exists");
     assert!(mempool.contains(&reg_hash));
 
@@ -543,7 +543,7 @@ fn revalidate_evicts_registration_that_became_duplicate() {
         );
     }
 
-    mempool.revalidate(&utxo_set, HEIGHT);
+    mempool.revalidate(&utxo_set, HEIGHT, 1);
 
     // O3
     assert!(
@@ -603,7 +603,7 @@ fn legitimate_registration_admitted_and_survives_revalidate() {
 
     // O1
     mempool
-        .add_transaction(reg1.clone(), &utxo_set, HEIGHT)
+        .add_transaction(reg1.clone(), &utxo_set, HEIGHT, 1)
         .expect(
             "OVER-REJECTION: a first-time registration with nothing pending and nothing \
              active was refused admission. The INC-I-147 fix must reject duplicates, not \
@@ -629,7 +629,7 @@ fn legitimate_registration_admitted_and_survives_revalidate() {
 
     // O1
     mempool
-        .add_transaction(reg2.clone(), &utxo_set, HEIGHT)
+        .add_transaction(reg2.clone(), &utxo_set, HEIGHT, 1)
         .expect(
             "OVER-REJECTION: producer #2's first registration was refused because producer \
          #1 has a pending registration. `pending_producer_keys` is consumed by a \
@@ -658,7 +658,7 @@ fn legitimate_registration_admitted_and_survives_revalidate() {
         }
     }
 
-    mempool.revalidate(&utxo_set, HEIGHT);
+    mempool.revalidate(&utxo_set, HEIGHT, 1);
 
     // O3
     assert!(

@@ -236,7 +236,7 @@ mod tests {
         let (utxo_set, pool_tx, funding_tx, pool_id) = setup_pool_utxos(1, 50_000);
 
         let tx = build_swap_tx(pool_tx, funding_tx, 0, pool_id, 1);
-        let result = mempool.add_transaction(tx, &utxo_set, 100);
+        let result = mempool.add_transaction(tx, &utxo_set, 100, 100);
 
         assert!(result.is_ok(), "Swap should be accepted: {:?}", result);
         let res = result.unwrap();
@@ -266,12 +266,12 @@ mod tests {
             .unwrap();
 
         let tx1 = build_swap_tx(pool_tx, funding_tx, 0, pool_id, 2);
-        let res1 = mempool.add_transaction(tx1, &utxo_set, 100);
+        let res1 = mempool.add_transaction(tx1, &utxo_set, 100, 100);
         assert!(res1.is_ok());
         assert!(res1.unwrap().diagnostic.contention.is_none());
 
         let tx2 = build_swap_tx(pool_tx, funding_tx2, 0, pool_id, 2);
-        let res2 = mempool.add_transaction(tx2, &utxo_set, 100);
+        let res2 = mempool.add_transaction(tx2, &utxo_set, 100, 100);
         assert!(
             res2.is_err(),
             "Second swap should be rejected as double-spend"
@@ -292,7 +292,7 @@ mod tests {
         let (utxo_set, pool_tx, funding_tx, pool_id) = setup_pool_utxos(3, 200_000);
 
         let tx1 = build_swap_tx(pool_tx, funding_tx, 0, pool_id, 3);
-        let res1 = mempool.add_transaction(tx1, &utxo_set, 100);
+        let res1 = mempool.add_transaction(tx1, &utxo_set, 100, 100);
         assert!(res1.is_ok(), "Swap should be accepted: {:?}", res1);
         assert!(res1.unwrap().diagnostic.contention.is_none());
 
@@ -307,7 +307,7 @@ mod tests {
         let (mut utxo_set, pool_tx, funding_tx, pool_id) = setup_pool_utxos(4, 100_000);
 
         let tx1 = build_swap_tx(pool_tx, funding_tx, 0, pool_id, 4);
-        let res1 = mempool.add_transaction(tx1, &utxo_set, 100);
+        let res1 = mempool.add_transaction(tx1, &utxo_set, 100, 100);
         assert!(res1.is_ok());
 
         // Second tx: AddLiquidity on the same pool — double-spend on pool UTXO
@@ -338,7 +338,7 @@ mod tests {
             .unwrap();
 
         let tx2 = build_add_liquidity_tx(pool_tx, funding_tx2, token_tx2, pool_id, 4);
-        let res2 = mempool.add_transaction(tx2, &utxo_set, 100);
+        let res2 = mempool.add_transaction(tx2, &utxo_set, 100, 100);
         assert!(res2.is_err());
 
         let pool_outpoint = Outpoint::new(pool_tx, 0);
@@ -385,12 +385,12 @@ mod tests {
             .unwrap();
 
         let tx_a = build_swap_tx(pool_tx_a, funding_tx_a, 0, pool_id_a, 10);
-        let res_a = mempool.add_transaction(tx_a, &utxo_set, 100);
+        let res_a = mempool.add_transaction(tx_a, &utxo_set, 100, 100);
         assert!(res_a.is_ok(), "Pool A swap should be accepted: {:?}", res_a);
         assert!(res_a.unwrap().diagnostic.contention.is_none());
 
         let tx_b = build_swap_tx(pool_tx_b, funding_tx_b, 0, pool_id_b, 20);
-        let res_b = mempool.add_transaction(tx_b, &utxo_set, 100);
+        let res_b = mempool.add_transaction(tx_b, &utxo_set, 100, 100);
         assert!(res_b.is_ok(), "Pool B swap should be accepted: {:?}", res_b);
         assert!(
             res_b.unwrap().diagnostic.contention.is_none(),
@@ -406,7 +406,7 @@ mod tests {
 
         let tx = build_swap_tx(pool_tx, funding_tx, 0, pool_id, 6);
         let tx_hash = tx.hash();
-        let res = mempool.add_transaction(tx, &utxo_set, 100);
+        let res = mempool.add_transaction(tx, &utxo_set, 100, 100);
         assert!(res.is_ok(), "Swap should be accepted: {:?}", res);
 
         let pool_outpoint = Outpoint::new(pool_tx, 0);
@@ -433,7 +433,7 @@ mod tests {
             )
             .unwrap();
         let tx2 = build_swap_tx(pool_tx, funding_tx2, 0, pool_id, 6);
-        let res2 = mempool.add_transaction(tx2, &utxo_set, 100);
+        let res2 = mempool.add_transaction(tx2, &utxo_set, 100, 100);
         assert!(res2.is_ok());
         assert!(res2.unwrap().diagnostic.contention.is_none());
     }
@@ -465,7 +465,7 @@ mod tests {
         );
         sign_tx(&mut tx);
 
-        let result = mempool.add_transaction(tx, &utxo_set, 100);
+        let result = mempool.add_transaction(tx, &utxo_set, 100, 100);
         assert!(result.is_ok());
 
         let res = result.unwrap();
@@ -551,7 +551,7 @@ mod tests {
         for &(pool_tx, pool_id, seed) in &pools {
             let funding1 = crypto::hash::hash(&[seed, 0xF0]);
             let tx1 = build_swap_tx(pool_tx, funding1, 0, pool_id, seed);
-            let res1 = mempool.add_transaction(tx1, &utxo_set, 100);
+            let res1 = mempool.add_transaction(tx1, &utxo_set, 100, 100);
             if let Ok(r) = res1 {
                 total_accepted += 1;
                 if r.diagnostic.contention.is_some() {
@@ -561,7 +561,7 @@ mod tests {
 
             let funding2 = crypto::hash::hash(&[seed, 0xF1]);
             let tx2 = build_swap_tx(pool_tx, funding2, 0, pool_id, seed);
-            let _res2 = mempool.add_transaction(tx2, &utxo_set, 100);
+            let _res2 = mempool.add_transaction(tx2, &utxo_set, 100, 100);
         }
 
         let fp_rate = if total_accepted > 0 {
@@ -707,7 +707,7 @@ mod tests {
         let w = build_witnesses(&tx);
         tx.set_covenant_witnesses(&w);
 
-        let res = mempool.add_transaction(tx, &utxo_set, 100);
+        let res = mempool.add_transaction(tx, &utxo_set, 100, 100);
         assert!(
             res.is_ok(),
             "INC-I-096: RemoveLiquidity releasing DOLI must be admitted. Got: {:?}",
@@ -843,7 +843,7 @@ mod tests {
         let w = build_witnesses(&tx);
         tx.set_covenant_witnesses(&w);
 
-        let res = mempool.add_transaction(tx, &utxo_set, 100);
+        let res = mempool.add_transaction(tx, &utxo_set, 100, 100);
         assert!(res.is_ok(), "Mempool must admit: {:?}", res);
 
         let tx_hash = res.unwrap().tx_hash;

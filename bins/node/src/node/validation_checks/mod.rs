@@ -958,7 +958,10 @@ impl Node {
         }
 
         // Add to mempool
-        let current_height = self.chain_state.read().await.best_height;
+        let (current_height, current_slot) = {
+            let chain_state = self.chain_state.read().await;
+            (chain_state.best_height, chain_state.best_slot)
+        };
         // INC-I-173 M3 / F4 (AUDIT-P3-002). SHAPE-based routing: the 0-fee system
         // lane is for transactions that are genuinely 0-in/0-out AND whose type is
         // authorized to exist in that shape. See the same note at the RPC
@@ -974,7 +977,7 @@ impl Node {
             } else {
                 let utxo = self.utxo_set.read().await;
                 mempool
-                    .add_transaction(tx.clone(), &utxo, current_height)
+                    .add_transaction(tx.clone(), &utxo, current_height, current_slot)
                     .map(|_| ())
             }
         };
