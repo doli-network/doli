@@ -48,7 +48,7 @@ Five evaluators (Subtractionist, Restructurer, Pattern Matcher, Failure Analyst,
 
 Native DOLI IS burned, in two paths (both 100%, no recipient):
 
-1. **RequestWithdrawal vesting penalties.** Source: `crates/core/src/consensus/exit.rs:8-10, 100-118`. Penalty schedule: Y1 75%, Y2 50%, Y3 25%, Y4+ 0%. Penalty destination: `PenaltyDestination::Burn`. Penalty amount disappears from supply.
+1. **RequestWithdrawal vesting penalties.** Source: `crates/core/src/consensus/constants.rs` (`withdrawal_penalty_rate_with_quarter`, the tier ladder) and `crates/core/src/validation/vesting.rs` (`penalized_bond_net`, `check_withdrawal_payout_bound`, the consensus predicate). Penalty schedule: Y1 75%, Y2 50%, Y3 25%, Y4+ 0%. The burn is **by omission**: the payout is a single `Normal` output and `Σ inputs − Σ outputs` is never credited to the coinbase or to any address, so the difference leaves supply. Enforcement: consensus from `inc_i_171_vesting_penalty_activation_height` (`bins/node/src/node/validation_checks/withdrawal_economics.rs`), **frozen at `u64::MAX` on every network** — below that height the penalty is a CLI-side convention only. NOTE: `crates/core/src/consensus/exit.rs` (`calculate_exit`, `ExitTerms`, `PenaltyDestination::Burn`) is **dead code** — zero non-test callers; deletion deferred. Do not cite it as the live source.
 2. **Slashing on equivocation / double-sign.** Source: `crates/core/src/consensus/exit.rs:130-147`. `SlashResult.burned_amount = 100% of bond`; producer permanently excluded. Slashed bond disappears from supply.
 
 **Net effect:** DOLI supply is monotonically non-decreasing from issuance only; burns from penalties/slashing make actual circulating supply LESS THAN cumulative issuance. The chain has a deflationary backstop tied to producer misbehavior.
@@ -63,7 +63,7 @@ Native DOLI IS burned, in two paths (both 100%, no recipient):
 |--------|--------|------------------------|-------|
 | Block subsidy (coinbase) | LIVE | `bins/node/src/node/rewards.rs` (`calculate_epoch_rewards`); reward-pool address derived in `crates/core/src/consensus/constants.rs:43-45` (`reward_pool_pubkey_hash()`) | Pool drained at epoch boundary, distributed bond-weighted to qualified producers. Era 0 inflow: 3,153,600 DOLI/year. |
 | Producer bond slashing | LIVE | `crates/core/src/consensus/exit.rs:130-147` (SlashProducer, type 5) | **NOT an inflow — 100% burned** (`SlashResult.burned_amount`). Net effect: deflationary, supply leaves the system. |
-| Bond withdrawal vesting penalty | LIVE | `crates/core/src/consensus/exit.rs:8-10, 100-118` (RequestWithdrawal, type 8) | **NOT an inflow — 100% burned** (`PenaltyDestination::Burn`). Y1 75% / Y2 50% / Y3 25% / Y4+ 0%. Deflationary. |
+| Bond withdrawal vesting penalty | LIVE (CLI-side); consensus-enforced from `inc_i_171_vesting_penalty_activation_height` (frozen `u64::MAX`) | `crates/core/src/validation/vesting.rs` (`penalized_bond_net`, `check_withdrawal_payout_bound`) + `bins/node/src/node/validation_checks/withdrawal_economics.rs` (RequestWithdrawal, type 8) | **NOT an inflow — 100% burned**, by omission: `Σ inputs − Σ outputs` is credited to nobody. Y1 75% / Y2 50% / Y3 25% / Y4+ 0%. Deflationary. `consensus/exit.rs` is dead code, not the source. |
 | **AMM protocol fee (5 bps)** | **PROPOSED (W2)** | `specs/defi-subsystem-architecture.md` § Fee Split | Phase 1 deliverable. Routes to canonical reward-pool address `BLAKE3("REWARD_POOL"\|\|"doli")` — **same address used by existing epoch coinbase**. Becomes the first non-subsidy producer revenue stream. |
 | Future: Phase 2 lending interest spread | DEFERRED | N/A | If/when native lending ships, protocol can take a spread on interest |
 | Future: Phase 3 NFT-frac mint/redeem fees | DEFERRED | N/A | |
@@ -78,7 +78,7 @@ Native DOLI IS burned, in two paths (both 100%, no recipient):
 | Sink | Status | Authoritative code path | Notes |
 |------|--------|------------------------|-------|
 | Producer epoch rewards | LIVE | `bins/node/src/node/rewards.rs` | Bond-weighted distribution to qualified producers; reduces pool to zero each epoch |
-| Bond unbonding (with vesting penalty) | LIVE | `crates/core/src/transaction.rs` (RequestWithdrawal, type 8) + `crates/core/src/consensus/exit.rs:100-118` | 7-day delay + vesting penalty. **Penalty = BURNED** (PenaltyDestination::Burn). Principal returns to holder. |
+| Bond unbonding (with vesting penalty) | LIVE | `crates/core/src/transaction/types.rs` (RequestWithdrawal, type 8) + `crates/core/src/validation/vesting.rs` | Vesting penalty per bond age. **Penalty = BURNED** by omission — never credited to the coinbase. Penalized net returns to the holder. Payout ceiling is consensus from `inc_i_171_vesting_penalty_activation_height` (frozen `u64::MAX`); CLI-only below it. |
 | LP yield (AMM, 25 bps) | PROPOSED (Phase 1) | `specs/defi-subsystem-architecture.md` § D4 | Implicit via K-increase; not a TX-visible outflow |
 | Future: Lending borrower interest | DEFERRED | N/A | Goes to lenders + protocol spread |
 | Slash → burn | LIVE | `crates/core/src/consensus/exit.rs:130-147` (SlashProducer, type 5) | Net outflow — slashed bonds 100% disappear from supply |
@@ -199,7 +199,7 @@ Without W2 protocol fee, LP capture 100% of DEX growth, bond captures 0%. Strict
 | # | Decision | Status | Owner | Deadline |
 |---|----------|--------|-------|----------|
 | T1 | Confirm halving schedule + cumulative supply curve | **RESOLVED IN CODE** — `consensus/constants.rs:205-212`, `consensus/params.rs:223-230`, test `test_supply_converges`. 4-yr eras, 63 halvings, 25.2M cap. | — | — |
-| T2 | Confirm bond-vesting-penalty routing | **RESOLVED IN CODE** — `consensus/exit.rs:100-118`. Penalty = 100% BURN. | — | — |
+| T2 | Confirm bond-vesting-penalty routing | **ROUTING RESOLVED IN CODE** — penalty = 100% BURN, by omission: `Σ inputs − Σ outputs` on a `RequestWithdrawal` is credited to no address. **ENFORCEMENT NOT YET LIVE** — the payout ceiling (`validation/vesting.rs::check_withdrawal_payout_bound`) is gated on `inc_i_171_vesting_penalty_activation_height`, frozen at `u64::MAX` on all three networks; below it the penalty is a CLI convention a patched client can ignore (INC-I-171). `consensus/exit.rs` is dead code. | Architect + Economist | Before pinning the activation height |
 | T3 | Adopt "fee fields immutable post-CreatePool" as default policy | **DECISION-PENDING** — not implemented yet (no fee fields exist on Pool today). Ratify with W2 PR. | Architect + Economist | Before W2 ships in M2 |
 | T4 | Compute + publish Era 1 break-even AMM volume target | **DECISION-PENDING** — formula in § 6; needs target DOLI price + producer-count snapshot | Economist | Before lowering `amm_activation_height` |
 | T5 | LP-as-bond design (Cosmos/Osmosis pattern) | **DEFERRED** — Phase 2+; no code today | Architect | When Phase 2 redesign starts |

@@ -375,6 +375,53 @@ Unlike capital-based systems, time cannot be:
 
 This creates a fundamental limit on how fast identities can be created, regardless of financial resources.
 
+### 4.5 Withdrawal Payout Bound — Vesting Penalty (INC-I-171)
+
+**Risk**: the bond vesting penalty (Y1 75% / Y2 50% / Y3 25% / Y4+ 0%) is
+subtracted by the CLI when it builds a `RequestWithdrawal`, and nothing above
+the transaction's structural checks ever re-derived it. A patched client can
+emit a `RequestWithdrawal` whose single `Normal` output pays **100% of the Bond
+UTXO inputs** at any bond age; the block is accepted and the penalty is never
+burned. The whole four-year commitment is unenforced against an adversary who
+does not run the official binary.
+
+**Defense — the payout bound** (`crates/core/src/validation/vesting.rs`):
+`check_withdrawal_payout_bound` rejects a block whose `RequestWithdrawal` pays
+more than `Σ penalized_bond_net(spent Bond inputs) + Σ non-Bond input value`,
+error code `ECON_WITHDRAWAL_PAYOUT_EXCEEDS_NET`. Bond age is
+`block.header.slot − creation_slot` from the **node-stamped** `extra_data`, so
+the tier is a function of the block under validation and not of the submitter's
+claim, the chain tip, or a wall clock. Paying less is allowed — the rule is a
+ceiling, so it can never reject an honest withdrawal.
+
+**Fail-closed**: a Bond input whose `extra_data` does not decode to a
+`creation_slot` is refused with `ECON_WITHDRAWAL_BOND_EXTRA_DATA_MALFORMED`
+rather than defaulted. An unknown age must never read as fully vested, which is
+the direction that would pay 100%. A `vesting_quarter_slots` outside
+`1..=u32::MAX` is refused with `ECON_VESTING_QUARTER_INVALID`, and the
+activation gate is evaluated **before** that config check so a dormant rule
+cannot turn one node's misconfiguration into block rejections at every height.
+
+**Three-site parity**: mempool admission (`crates/mempool/src/vesting_bound.rs`),
+the block builder (`bins/node/src/node/production/withdrawal_holdings.rs`) and
+block validation (`bins/node/src/node/validation_checks/withdrawal_economics.rs`)
+all reach their verdict through the single core predicate above. A rule enforced
+only at validation would turn an ordinary user mistake into free block poison —
+the transaction never confirms, so no fee is paid and no input is spent, yet
+every producer that selects it burns a block build. Admission additionally
+evaluates at a **non-regressing slot watermark** and never evicts on a vesting
+error, so a reorg cannot censor an honest in-flight withdrawal.
+
+**Residual risk**: `inc_i_171_vesting_penalty_activation_height` is `u64::MAX`
+on mainnet, testnet and devnet
+(`crates/core/src/network_params/defaults.rs:276,526,785`). **Nothing above is
+enforced today.** Until a height is pinned, the penalty remains a client-side
+convention and the attack described under *Risk* is live. Full-mode nodes
+already count the verdict they *would* reach in
+`doli_vesting_would_reject_total{code}`, which is evidence for choosing that
+height but is not itself a defense. Pinning it changes consensus rules and is a
+separate decision session.
+
 ---
 
 ## 5. Consensus Security

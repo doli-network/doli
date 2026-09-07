@@ -327,7 +327,6 @@ DOLI_UNBONDING_PERIOD=30
 | `DOLI_BLOCKS_PER_REWARD_EPOCH` | 360 | Testnet/Devnet |
 | `DOLI_COINBASE_MATURITY` | 6 | Testnet/Devnet |
 | `DOLI_SLOTS_PER_REWARD_EPOCH` | 360 | Testnet/Devnet |
-| `DOLI_VESTING_QUARTER_SLOTS` | 3,153,600 | Testnet/Devnet |
 | `DOLI_MIN_VOTING_AGE_SECS` | 2,592,000 (30 days) | All networks |
 | `DOLI_UPDATE_CHECK_INTERVAL_SECS` | 600 (10 min) | All networks |
 | `DOLI_REGISTRATION_BASE_FEE` | 100,000 (0.001 DOLI) | All networks |
@@ -374,13 +373,24 @@ For security, the following parameters are **locked for mainnet** and cannot be 
 - `DOLI_INACTIVITY_THRESHOLD` - Inactivity detection
 - `DOLI_AUTOMATIC_GENESIS_BOND` - Genesis bond amount
 - `DOLI_GENESIS_BLOCKS` - Open registration period
-- `DOLI_VESTING_QUARTER_SLOTS` - Vesting schedule
 - `DOLI_FALLBACK_TIMEOUT_MS` - Fallback producer timing
 - `DOLI_MAX_FALLBACK_RANKS` - Fallback producer count
 - `DOLI_NETWORK_MARGIN_MS` - Clock drift tolerance
 - `DOLI_MESH_N`, `DOLI_MESH_N_LOW`, `DOLI_MESH_N_HIGH`, `DOLI_GOSSIP_LAZY` - Gossip mesh
 
 Attempting to override these on mainnet will use the hardcoded values silently.
+
+**Removed (INC-I-171 M2):** `DOLI_VESTING_QUARTER_SLOTS` no longer exists on ANY network.
+`vesting_quarter_slots` is read from `NetworkParams` only — mainnet 3,153,600, testnet 2,160,
+devnet 60 (`crates/core/src/network_params/defaults.rs:75,409,699`). The quarter selects the
+withdrawal penalty tier, which is consensus input once the INC-I-171 vesting bound is armed,
+so one operator's `.env` must not shift it. Setting the variable now has no effect
+(`crates/core/src/network_params/env_loader.rs:215`).
+
+Both INC-I-171 activation heights ARE overridable on non-mainnet and locked on mainnet:
+`DOLI_INC_I_171_VESTING_PENALTY_ACTIVATION_HEIGHT` and
+`DOLI_INC_I_171_VESTING_PENALTY_DISABLE_HEIGHT`
+(`crates/core/src/network_params/env_loader.rs:490-508`), both defaulting to `u64::MAX`.
 
 ### 5.5. Configuration Precedence
 

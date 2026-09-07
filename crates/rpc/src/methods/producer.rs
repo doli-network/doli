@@ -276,6 +276,11 @@ impl RpcContext {
 
         let quarter = self.vesting_quarter_slots;
         let period = 4 * quarter;
+        // The ladder divides by the quarter unguarded; 0 resolves to the worst tier.
+        let tier_quarter = u32::try_from(quarter)
+            .ok()
+            .filter(|q| *q > 0)
+            .unwrap_or(u32::MAX);
 
         let params: GetBondDetailsParams =
             serde_json::from_value(params).map_err(|e| RpcError::invalid_params(e.to_string()))?;
@@ -313,7 +318,12 @@ impl RpcContext {
             .iter()
             .map(|(_, creation_slot, amount)| {
                 let age = (current_slot as u64).saturating_sub(*creation_slot as u64);
-                let penalty = withdrawal_penalty_rate_with_quarter(age as u32, quarter as u32);
+                // ADVISORY: consensus charges this bound at block.header.slot
+                // (bins/node/src/node/validation_checks/withdrawal_economics.rs); here it is the tip.
+                let penalty = withdrawal_penalty_rate_with_quarter(
+                    u32::try_from(age).unwrap_or(u32::MAX),
+                    tier_quarter,
+                );
                 BondEntryResponse {
                     creation_slot: *creation_slot,
                     amount: *amount,
@@ -348,8 +358,10 @@ impl RpcContext {
             .first()
             .map(|(_, cs, _)| (current_slot as u64).saturating_sub(*cs as u64))
             .unwrap_or(0);
-        let overall_penalty =
-            withdrawal_penalty_rate_with_quarter(oldest_age as u32, quarter as u32);
+        let overall_penalty = withdrawal_penalty_rate_with_quarter(
+            u32::try_from(oldest_age).unwrap_or(u32::MAX),
+            tier_quarter,
+        );
         let all_vested = utxo_bonds
             .iter()
             .all(|(_, cs, _)| (current_slot as u64).saturating_sub(*cs as u64) >= period);

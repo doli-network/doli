@@ -771,6 +771,20 @@ withdrawal_request_tx = {
       block — that pair is unsatisfiable at any input set, because the owned
       Bond UTXO count is memoised over the pre-block view while the allowance
       shrinks as the block is walked.
+
+      **INC-I-171 vesting arm.** The builder also applies the vesting payout
+      bound of §3.13, on its own activation height, by calling the SAME
+      `mempool::vesting_bound::vesting_bound_verdict` the mempool calls, which
+      calls the core `check_withdrawal_payout_bound` — one predicate at all
+      three sites, no second transcription and so no `allowance_with` split to
+      lock. The window and the evaluation slot are carried on a `VestingGate`
+      built once per block (`quarter_slots`, activation and disable read off
+      `NetworkParams`; `bins/node/src/node/production/withdrawal_holdings.rs`).
+      It evaluates at **exactly the slot the block is being built for** —
+      production aborts if the slot boundary is crossed mid-build, so that slot
+      is the `block.header.slot` the gate will later read, and builder and gate
+      cannot reach different tiers for the same block. An offending transaction
+      is **skipped**: never a build failure, never an abort, never an eviction.
     - **Mempool** (`crates/mempool/src/withdrawal_holdings.rs`) applies the
       subset decidable from a single transaction against current state: the
       unknown-producer, allowance, exclusivity and shape rules. The
@@ -811,6 +825,85 @@ withdrawal_request_tx = {
       over-rejects costs one resubmission while one that under-rejects is still
       caught by the builder and by the gate.
 
+      **INC-I-171 vesting arm.** Admission calls the same
+      `vesting_bound_verdict` and **refuses** the transaction, so a payout no
+      block could ever carry is never held. It evaluates at a **non-regressing
+      slot watermark** — the highest slot ever handed to `add_transaction` or
+      `revalidate` (`crates/mempool/src/pool.rs`) — and not at the call's slot.
+      The tier ladder is monotone non-decreasing in bond age, so a lower slot
+      yields a lower bound; evaluating at a slot that went backwards after a
+      reorg would make admission STRICTER than the block gate and censor honest
+      in-flight withdrawals. A watermark of `0` means no slot has ever arrived
+      and the vesting check is **skipped** — the builder still gates.
+      `revalidate` does NOT run the vesting arm, so a vesting `Err` can never
+      reach its evict-on-`Err` loop: **no reorg evicts a withdrawal for a
+      vesting reason.**
+
+- **INC-I-171**: the payout of a `RequestWithdrawal` must not exceed the
+  **penalized net** of the Bond UTXOs it spends, enforced height-gated at
+  `inc_i_171_vesting_penalty_activation_height`.
+  - **Pre-activation** (`height < AH`): NOT enforced. The vesting penalty is a
+    **client-side convention only** — the honest CLI subtracts it, but a patched
+    client can emit a `RequestWithdrawal` whose single output pays 100% of the
+    Bond inputs and every node accepts the block. That gap is exactly what
+    INC-I-171 recorded.
+  - **Post-activation** (`height >= AH` and `height <` the disable height): a
+    block carrying a `RequestWithdrawal` is **rejected** at block validation
+    (`Node::check_withdrawal_economics`,
+    `bins/node/src/node/validation_checks/withdrawal_economics.rs`), before any
+    state mutation, when
+    `payout > Σ penalized_bond_net(spent Bond inputs) + Σ non-Bond input value`
+    — `ECON_WITHDRAWAL_PAYOUT_EXCEEDS_NET`. `payout` is the sum of the
+    transaction's outputs, which `validate_withdrawal_request_data` has already
+    restricted to exactly one `Normal` output. Paying **less** (over-burning) is
+    allowed; the rule is a ceiling, not an equality.
+  - The ceiling is computed over the transaction's **OWN** inputs only, by the
+    single core predicate `check_withdrawal_payout_bound`
+    (`crates/core/src/validation/vesting.rs`). No other transaction in the block
+    contributes a term, so the rule is **order-independent**.
+  - Each bond's age is `block.header.slot − creation_slot`, where `creation_slot`
+    is the **node-stamped** 4-byte LE value in the Bond UTXO's `extra_data` and
+    `block.header.slot` is the slot of the block under validation — never the
+    chain tip, never a wall clock. The age selects a tier through the same
+    `withdrawal_penalty_rate_with_quarter` ladder the **Vesting Schedule**
+    tables below describe, and the penalty is truncated **before** the subtraction
+    (`amount − amount × pct / 100`), so 101 base units at the 75% tier net 26,
+    not 25. A net-first node would reject every honest Q1 withdrawal.
+  - A Bond input whose `extra_data` does not decode to a `creation_slot` fails
+    **CLOSED** — `ECON_WITHDRAWAL_BOND_EXTRA_DATA_MALFORMED`. An unknown age must
+    never read as fully vested.
+  - A `vesting_quarter_slots` of `0` or above `u32::MAX` is refused with
+    `ECON_VESTING_QUARTER_INVALID`. The **activation gate is checked first**, so a
+    dormant rule never reads that configuration; validating it first would turn
+    one node's bad configuration into block rejections at every height.
+  - A paired `inc_i_171_vesting_penalty_disable_height` closes the window: the
+    rule is live on exactly `[activation, disable)`.
+  - **Mode split.** Full and Light are strict. `ValidationMode::Replay` — reached
+    only by the operator `recover`/reindex tool — `warn!`s with `[REPLAY_SKIP]`
+    and skips the transaction instead of failing the block, for the same
+    INC-I-064 reason as the INC-I-180 UTXO-bound rules: it reads the pre-block
+    UTXO view, which a reindex legitimately sees degraded.
+  - Below the activation height a Full-mode node still evaluates the same
+    predicate **observe-only** and counts the verdict it would have reached, in
+    `doli_vesting_would_reject_total{code}` against
+    `doli_vesting_shadow_evaluated_total`. The shadow never changes a verdict.
+
+  **INC-I-171 activation heights**
+
+  | Network | `inc_i_171_vesting_penalty_activation_height` | `inc_i_171_vesting_penalty_disable_height` |
+  |---------|-----------------------------------------------|---------------------------------------------|
+  | Mainnet | `u64::MAX` — frozen; env override **refused** | `u64::MAX` — frozen; env override **refused** |
+  | Testnet | `u64::MAX` — frozen | `u64::MAX` — frozen |
+  | Devnet | `u64::MAX` — frozen | `u64::MAX` — frozen |
+
+  `crates/core/src/network_params/defaults.rs:276,278` (mainnet), `:526,528`
+  (testnet), `:785,787` (devnet). On non-mainnet both may be overridden with
+  `DOLI_INC_I_171_VESTING_PENALTY_ACTIVATION_HEIGHT` and
+  `DOLI_INC_I_171_VESTING_PENALTY_DISABLE_HEIGHT`
+  (`crates/core/src/network_params/env_loader.rs:490-508`); mainnet is locked and
+  always takes the default, because these two heights decide whether a withdrawal
+  block is valid.
+
 **Note:** TxType 9 (ClaimWithdrawal) is reserved but unused — withdrawal is instant.
 
 **Vesting Schedule (Early Withdrawal Penalties):**
@@ -837,7 +930,13 @@ Bond vesting is network-differentiated:
 | Q3 (12-18 hours) | 25% burned | 75% returned |
 | Q4+ (18+ hours) | 0% (fully vested) | 100% returned |
 
-Testnet `vesting_quarter_slots = 2,160` via `NetworkParams`. Devnet configurable via `DOLI_VESTING_QUARTER_SLOTS`.
+`vesting_quarter_slots` comes from `NetworkParams` and is **env-locked on every
+network** — mainnet `3,153,600` (`consensus::VESTING_QUARTER_SLOTS`), testnet `2,160`,
+devnet `60` (`crates/core/src/network_params/defaults.rs:75,409,699`). The
+`DOLI_VESTING_QUARTER_SLOTS` override was **removed** in INC-I-171 M2
+(`crates/core/src/network_params/env_loader.rs:215`): the quarter selects the penalty
+tier, which is consensus input once the vesting rule of §3.13 is armed, so one
+operator's `.env` must not shift it.
 
 Penalty calculation uses FIFO order — oldest Bond UTXOs are consumed first,
 ensuring bonds that have vested longer incur lower penalties. The `creation_slot`
@@ -1518,6 +1617,9 @@ Producers can stake multiple bonds (1-3,000) to increase their block production 
 
 **FIFO Withdrawal:** When withdrawing bonds, the oldest bonds are withdrawn first.
 This ensures fair vesting calculation - bonds that have vested longer incur lower penalties.
+FIFO is the **CLI's selection choice**, not a consensus rule: the INC-I-171 payout bound
+(§3.13) is order-independent — it sums `penalized_bond_net` over the Bond inputs the
+transaction actually spends, so any order that spends the same set yields the same ceiling.
 
 ### 5.4.2 Sequential Fallback Windows
 

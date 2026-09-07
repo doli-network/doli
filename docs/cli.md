@@ -770,6 +770,12 @@ Bonds: 10 (100.00000000 DOLI):
 
 Each bond tier shows time remaining until the oldest bond in that tier graduates to the next tier (lower penalty).
 
+The tier shown is computed with `withdrawal_penalty_rate_with_quarter` — the SAME core
+ladder consensus uses — never from a node-supplied penalty field, and the net amount with
+`doli_core::validation::vesting::penalized_bond_net`, the SAME function the consensus payout
+bound sums. The display evaluates at the slot the node reported (the chain tip), so a tier
+can graduate between this display and the block that carries the withdrawal.
+
 **Rewards:** Pooled epoch distribution — coinbase goes to reward pool, EpochReward tx distributes bond-weighted shares at epoch boundaries. No manual claim needed.
 
 **WHITEPAPER Reference:** Section 7.2 (Deterministic Rewards) - All producers earn identical ROI percentage.
@@ -924,6 +930,20 @@ withdrawals), **aborts** if that disagrees with the wallet's Bond-UTXO count (a
 ledger mismatch — retry after the next epoch boundary flushes pending bond
 changes), prints both numbers before submitting, and selects Bond inputs by
 **count**, not by value. `doli producer exit` applies the same guard for a full drain.
+
+**INC-I-171:** the payout printed below is computed with
+`doli_core::validation::vesting::penalized_bond_net` — the SAME core function the consensus
+payout bound sums — so what the CLI builds **equals** the bound, one implementation of the
+ladder rather than two. The CLI evaluates at the tip slot the node reported and consensus at
+`block.header.slot`; the penalty is non-increasing in bond age, so the block's bound can only
+be equal or looser, and an honest CLI-built withdrawal is accepted at every tier.
+
+From `inc_i_171_vesting_penalty_activation_height` a hand-crafted transaction claiming a
+higher payout than that bound is **rejected** at block validation with
+`ECON_WITHDRAWAL_PAYOUT_EXCEEDS_NET`, and a Bond input with undecodable `extra_data` with
+`ECON_WITHDRAWAL_BOND_EXTRA_DATA_MALFORMED`. That height is `u64::MAX` on every network
+today, so the penalty is still a client-side convention below it — see
+`specs/protocol.md` §3.13.
 
 **Output shows FIFO breakdown before submitting:**
 ```

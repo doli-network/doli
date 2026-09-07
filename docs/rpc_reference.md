@@ -803,6 +803,23 @@ field (4 bytes LE). No separate bond registry is consulted.
 | Q3 | 12-18h | 25% |
 | Q4+ | 18h+ | 0% |
 
+**Advisory, not consensus (INC-I-171).** `penaltyPct` — and the quarter it implies
+in `summary` and in each per-bond entry — is computed with
+`doli_core::consensus::withdrawal_penalty_rate_with_quarter`, the SAME tier ladder
+the consensus payout bound uses. The two differ in **evaluation slot**: this method
+evaluates at the chain tip (`chain_state.best_slot`), while consensus evaluates each
+bond against `block.header.slot` of the block carrying the withdrawal
+(`bins/node/src/node/validation_checks/withdrawal_economics.rs`). A tier read here
+can therefore be one tier ahead of the tier a withdrawal is actually judged at.
+Treat this response as advisory.
+
+From `inc_i_171_vesting_penalty_activation_height` consensus rejects a block whose
+`RequestWithdrawal` pays more than the penalized net of the Bond UTXOs it spends
+(`ECON_WITHDRAWAL_PAYOUT_EXCEEDS_NET`, `specs/protocol.md` §3.13). That height is
+`u64::MAX` on every network today, so the bound is not enforced yet. This response
+carries no net-payout field; the payout is computed by the client that builds the
+transaction.
+
 **Example:**
 ```bash
 curl -X POST http://127.0.0.1:8500 \

@@ -852,6 +852,54 @@ signature. It proves nothing about a bit left at **zero**, so omission honesty
 (a producer clearing bits to deny rewards) is out of scope — REQ-BLS-019, the
 largest open attestation risk.
 
+### 5.5. Vesting Payout Bound (INC-I-171)
+
+A `RequestWithdrawal` pays out the bond principal minus the vesting penalty for
+each bond's age. The CLI has always subtracted that penalty; consensus has not
+re-derived it. INC-I-171 adds the bound as a height-gated consensus rule,
+computed by ONE core predicate and reached from three sites — mempool admission,
+the block builder and block validation — so the three cannot drift.
+
+```
+mempool::add_transaction (slot watermark, never a regressed slot)
+   │  vesting_bound_verdict → REFUSE
+   ▼
+production::assembly (VestingGate::at(current_slot, network))
+   │  vesting_bound_verdict → SKIP the tx, never a build failure
+   ▼  broadcast
+validation_checks::check_withdrawal_economics (block.header.slot)
+   │  vesting_payout_verdict → REJECT the block, pre-mutation
+   ▼
+all three call doli_core::validation::vesting::check_withdrawal_payout_bound
+```
+
+The builder aborts if the slot boundary is crossed mid-build, so the slot it
+evaluates at is the `block.header.slot` validation later reads. `revalidate`
+does not run the vesting arm, so no reorg evicts a withdrawal for a vesting
+reason. Rule window is `[inc_i_171_vesting_penalty_activation_height,
+inc_i_171_vesting_penalty_disable_height)`; both are `u64::MAX` on every
+network, so the rule is inert today and Full-mode nodes only *observe* it.
+Full rules and error codes: `specs/protocol.md` §3.13.
+
+#### 5.5.1 Module map
+
+| Module | Function |
+|--------|----------|
+| `crates/core/src/validation/vesting.rs` | `penalized_bond_net`, `check_withdrawal_payout_bound` — the single consensus predicate |
+| `crates/core/src/consensus/constants.rs` | `withdrawal_penalty_rate_with_quarter` — the 75/50/25/0 tier ladder |
+| `crates/mempool/src/vesting_bound.rs` | `vesting_bound_verdict` — the shared mempool/builder wrapper |
+| `crates/mempool/src/pool.rs` | `slot_watermark` — non-regressing evaluation slot for admission |
+| `bins/node/src/node/production/withdrawal_holdings.rs` | `VestingGate` — window + evaluation slot for the builder |
+| `bins/node/src/node/validation_checks/mod.rs` | `validate_block_economics` and the rest of the block-validation checks |
+| `bins/node/src/node/validation_checks/withdrawal_economics.rs` | `check_withdrawal_economics`, `vesting_payout_verdict`, `vesting_shadow_observe` — INC-I-180 holdings + INC-I-171 bound over one pre-block UTXO scan |
+
+#### 5.5.2 Metrics
+
+| Series | Type | Labels | Emitted where |
+|--------|------|--------|---------------|
+| `doli_vesting_shadow_evaluated_total` | counter | — | every below-activation Full-mode `RequestWithdrawal` observed |
+| `doli_vesting_would_reject_total` | counter | `code` | the shadow verdict's `error_code()`; label set is pre-declared, so a withdrawal flood cannot grow the series |
+
 ---
 
 ## 6. Storage Schema
@@ -1083,6 +1131,7 @@ Code that exists but is never called — kept for serialization backward compati
 | `PresenceScore` scoring | `consensus.rs` | Orphaned — scheduler uses `DeterministicScheduler` |
 | `Block::total_fees()` | `block.rs` | Always returns 0 |
 | `blocks_produced`, `pending_rewards` in ProducerInfo | `producer.rs` | Vestigial from Pull/Claim model |
+| `calculate_exit`, `calculate_exit_with_quarter`, `ExitTerms`, `PenaltyDestination` | `crates/core/src/consensus/exit.rs` | Zero non-test callers (only the `consensus/mod.rs` + `lib.rs` re-exports and `consensus/tests.rs`). The live vesting-penalty source is `crates/core/src/validation/vesting.rs` (§5.5). Deletion deferred. |
 
 ---
 
