@@ -72,30 +72,33 @@ pub(crate) fn find_doli_node_path() -> Option<std::path::PathBuf> {
     None
 }
 
-/// Restart a specific systemd service by name
-pub(crate) fn restart_specific_service(service: &str) {
+/// Restart a specific systemd service by name. Returns whether it came back.
+pub(crate) fn restart_specific_service(service: &str) -> bool {
     println!("Restarting service: {}", service);
     if run_systemd_plan(&systemd_restart_plan(service)) {
         println!("  Restarted {}.", service);
+        true
     } else {
         println!(
             "  Failed to restart {}. Run: sudo systemctl reset-failed {} && sudo systemctl restart {}",
             service, service, service
         );
+        false
     }
 }
 
 /// Detect and restart the doli-node service that owns the installed binary.
 /// If `installed_path` is provided, only restart the service whose ExecStart
 /// references that path. Otherwise fall back to process detection.
+/// Returns whether some tier reported a successful restart.
 pub(crate) fn restart_doli_service(
     #[allow(unused_variables)] installed_path: Option<&std::path::Path>,
-) {
+) -> bool {
     // Tier 1: systemd (Linux) — find and restart only the owning service
     #[cfg(target_os = "linux")]
     {
         if try_restart_systemd(installed_path) {
-            return;
+            return true;
         }
     }
 
@@ -103,16 +106,17 @@ pub(crate) fn restart_doli_service(
     #[cfg(target_os = "macos")]
     {
         if try_restart_launchd() {
-            return;
+            return true;
         }
     }
 
     // Tier 3: Process fallback (all platforms)
     if try_restart_process() {
-        return;
+        return true;
     }
 
     println!("No doli-node service or process found. Restart manually if needed.");
+    false
 }
 
 /// Tier 1: Detect and restart doli-node via systemd.

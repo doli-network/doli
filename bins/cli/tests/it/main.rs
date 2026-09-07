@@ -10,3 +10,5 @@ mod inc_i_180_withdrawal_guard;
 mod inc_i_188_upgrade_reset_failed_test;
 mod inc_i_203_addbond_headroom;
 mod inc_i_214_release_sign_verify;
+mod inc_i_215_fixture;
+mod inc_i_215_from_staged;

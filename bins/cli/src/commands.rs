@@ -241,6 +241,13 @@ pub(crate) enum Commands {
         /// this install is verified against (default: the platform node data dir).
         #[arg(long)]
         data_dir: Option<PathBuf>,
+
+        #[arg(
+            long,
+            value_name = "DIR",
+            help = "Install a release the node staged into <DIR> (data_dir/updates) after re-verifying it against the on-chain trust root"
+        )]
+        from_staged: Option<PathBuf>,
     },
 
     /// Release management commands (maintainer signing)

@@ -37,6 +37,8 @@ tokio = { version = "1.35", features = ["rt-multi-thread", "macros"] }
 
 [dev-dependencies]
 tempfile.workspace = true
+tar.workspace = true
+flate2.workspace = true
 
 [package.metadata.deb]
 maintainer = "DOLI Network <doli@doli.network>"
