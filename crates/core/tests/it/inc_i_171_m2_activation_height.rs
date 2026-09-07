@@ -52,17 +52,18 @@ const SENTINEL: u64 = 171_171;
 const ENV_LOADER_RS: &str = include_str!("../../src/network_params/env_loader.rs");
 
 /// REQ-VEST-003 / INV-PARAMS-002 — Decision: a failure says a gate shipped in a state
-/// the network did not decide. Mainnet and devnet ship DORMANT (`u64::MAX`): the rule
-/// rejects blocks, and on mainnet the height becomes immutable consensus history the
+/// the network did not decide. Devnet ships DORMANT (`u64::MAX`): the rule rejects
+/// blocks, and on mainnet the height becomes immutable consensus history the
 /// instant it is crossed (INC-I-054); a devnet default of `0` would arm the rule against
 /// every local chain that keeps its data directory. Testnet is PINNED at 133_640
-/// (2026-09-07, ~19 min above tip 133_525 by user decision) — the literal below asserts
+/// (2026-09-07, ~19 min above tip 133_525) and mainnet at 418_000 (2026-09-07, ~49 h
+/// above tip 400_175), both by user decision — the literals below assert
 /// the value `NetworkParams::defaults(Testnet)` actually returns, never a copy from a doc.
 /// The paired disable height stays dormant everywhere.
 #[test]
-fn req_vest_003_vesting_gate_dormant_on_mainnet_and_devnet_pinned_on_testnet() {
+fn req_vest_003_vesting_gate_pinned_on_mainnet_and_testnet_dormant_on_devnet() {
     for (network, expected) in [
-        (Network::Mainnet, u64::MAX),
+        (Network::Mainnet, 418_000),
         (Network::Testnet, 133_640),
         (Network::Devnet, u64::MAX),
     ] {
