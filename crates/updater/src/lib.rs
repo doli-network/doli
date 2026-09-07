@@ -27,7 +27,9 @@
 // Existing sub-modules
 mod apply;
 mod download;
+mod extract;
 pub mod hardfork;
+mod restart;
 pub mod test_keys;
 mod vote;
 pub mod watchdog;
@@ -35,10 +37,12 @@ pub mod watchdog;
 // Domain modules
 mod constants;
 mod enforcement;
+mod fetch_verified;
 mod install_gate;
 mod params;
 mod release_args;
 mod skills;
+mod staging;
 mod trust_root;
 mod types;
 mod util;
@@ -46,9 +50,21 @@ mod verification;
 
 // Re-exports: apply
 pub use apply::{
-    apply_update, auto_apply_from_github, backup_current, current_binary_path,
-    extract_binary_from_tarball, extract_named_binary_from_tarball, install_binary, restart_node,
-    rollback,
+    apply_update, auto_apply_from_github, backup_current, current_binary_path, install_binary,
+};
+
+// Re-exports: extract / restart (split out of apply.rs for the module budget, INC-I-215)
+pub use extract::{extract_binary_from_tarball, extract_named_binary_from_tarball};
+pub use restart::{restart_node, rollback};
+
+// Re-exports: fetch_verified (the fetch/verify prefix the staged path shares, INC-I-215)
+pub use fetch_verified::{fetch_verified_release, VerifiedRelease};
+
+// Re-exports: staging (the {data_dir}/updates handoff, INC-I-215)
+pub use staging::{
+    read_staged, stage_release, staged_ready_version, staging_dir, target_dir_is_writable,
+    StagedRelease, READY_MARKER, STAGED_CHECKSUMS, STAGED_SIGNATURES, STAGED_TARBALL,
+    STAGING_SUBDIR,
 };
 
 // Re-exports: skills
@@ -97,7 +113,9 @@ pub use enforcement::{
 pub use trust_root::{TrustRoot, TrustRootProvenance};
 
 // Re-exports: install_gate
-pub use install_gate::{verify_release_artifact, verify_release_manifest};
+pub use install_gate::{
+    verify_release_artifact, verify_release_artifact_bytes, verify_release_manifest,
+};
 
 // Re-exports: release_args (INC-I-172 M2, AUDIT-P0-011 — every release-signing entry
 // point must validate through THESE, before any signing message is interpolated)

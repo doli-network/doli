@@ -23,6 +23,7 @@ mod cmd_snap;
 mod cmd_template;
 mod cmd_token;
 mod cmd_upgrade;
+mod cmd_upgrade_staged;
 mod cmd_wallet;
 mod commands;
 mod common;
@@ -218,6 +219,7 @@ async fn main() -> Result<()> {
             doli_node_path,
             service,
             data_dir,
+            from_staged,
         } => {
             // The trust root follows --network. Parse strictly: an unrecognised
             // network must not silently fall through to the mainnet keys.
@@ -228,6 +230,17 @@ async fn main() -> Result<()> {
             // not a control. See `cmd_upgrade`'s doc comment.
             let network: doli_core::Network =
                 cli.network.parse().map_err(|e| anyhow::anyhow!("{}", e))?;
+            if let Some(dir) = from_staged {
+                return cmd_upgrade_staged::cmd_upgrade_from_staged(
+                    dir,
+                    yes,
+                    doli_node_path,
+                    service,
+                    data_dir,
+                    network,
+                )
+                .await;
+            }
             cmd_upgrade::cmd_upgrade(version, yes, doli_node_path, service, data_dir, network)
                 .await?;
         }

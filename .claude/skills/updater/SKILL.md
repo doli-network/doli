@@ -1,14 +1,14 @@
 # updater — DOLI Auto-Update & Governance
 <!-- @INDEX
-ENTRY-POINTS       14-45
-OPERATIONS         46-63
-STRUCTS            64-103
-FUNCTIONS          104-286
-HARDFORK-SCHEDULE  287-308
-DATA-FLOWS         309-441
-DEPENDENCIES       442-465
-CONSTRAINTS        466-525
-PATTERNS           526-593
+ENTRY-POINTS       14-61
+OPERATIONS         62-79
+STRUCTS            80-119
+FUNCTIONS          120-302
+HARDFORK-SCHEDULE  303-324
+DATA-FLOWS         325-494
+DEPENDENCIES       495-518
+CONSTRAINTS        519-610
+PATTERNS           611-678
 @/INDEX -->
 
 ## ENTRY-POINTS
@@ -25,7 +25,9 @@ Public API re-exported from `crates/updater/src/lib.rs` (14 files: apply, downlo
 
 **verification**: `calculate_veto_result`, `sign_release_hash`, `verify_release_signatures`, `verify_release_with_trust_root`
 
-**install_gate**: `verify_release_artifact` — the artifact-bound install gate (INC-I-172 F1)
+**install_gate**: `verify_release_artifact`, `verify_release_artifact_bytes`, `verify_release_manifest` — the artifact-bound install gate (INC-I-172 F1). `verify_release_artifact_bytes` is L1–L4 over bytes already in hand, with no `GithubReleaseInfo`; it is what the staged path calls.
+
+**staging** (INC-I-215): `staging_dir`, `target_dir_is_writable`, `staged_ready_version`, `stage_release`, `read_staged`, `StagedRelease`, `STAGING_SUBDIR`("updates"), `READY_MARKER`("ready"), `STAGED_TARBALL`("release.tar.gz"), `STAGED_CHECKSUMS`("CHECKSUMS.txt"), `STAGED_SIGNATURES`("SIGNATURES.json")
 
 **trust_root**: `TrustRoot`, `TrustRootProvenance`
 
@@ -42,6 +44,20 @@ Public API re-exported from `crates/updater/src/lib.rs` (14 files: apply, downlo
 **watchdog** (pub mod): `UpdateWatchdog`, `WatchdogState` — **NOT WIRED**: zero production callers; no node rolls back automatically (INC-I-172 AUDIT-P1-014). `UpdateConfig::auto_rollback` and `--no-auto-rollback` are inert.
 
 NEW since 2026-05-11 scaffold: `install_skills_from_tarball` (apply.rs:511) — auto-update now also syncs `~/.doli/skills/` agent skill files from the release tarball. `STAGED_BINARY_PATH` hardened (apply.rs:189, ISSUE-174 #7) to close a TOCTOU symlink-swap root-exec vector in the sudo install fallback.
+
+**Staged-upgrade module map (INC-I-215).** The install is split across two binaries and two
+privilege levels. Read the side you are changing:
+
+| Module | Side | Role |
+|--------|------|------|
+| `crates/updater/src/staging.rs` | shared | `target_dir_is_writable` (probe + remove, ANY error = false), `stage_release` (tmp → fsync → rename, `ready` LAST), `read_staged` (refuses a marker/manifest version mismatch), marker constants |
+| `crates/updater/src/fetch_verified.rs` | shared | `fetch_verified_release` — the one fetch+bind step both the in-process and the staged path call |
+| `crates/updater/src/extract.rs` | shared | `extract_binary_from_tarball`, `extract_named_binary_from_tarball` |
+| `crates/updater/src/restart.rs` | shared | `restart_node` |
+| `bins/node/src/updater/staged_apply.rs` | node, unprivileged | `already_staged` short-circuit, `install_target_is_writable`, `stage_for_privileged_install`. Owns no pending-state and no process lifecycle — both stay in `service.rs`. |
+| `bins/node/src/updater/preflight.rs` | node, unprivileged | `helper_unit_watches` (matches unit CONTENT, not name), `preflight_verdict`, `report_install_target` — one verdict per process start |
+| `bins/cli/src/cmd_upgrade_staged.rs` | CLI, root | `doli upgrade --from-staged` — re-verify, install, restart, and the marker clean-up |
+| `bins/cli/src/cmd_service_helper_units.rs` | CLI, root | Renders/installs/removes `{service}-upgrade.path` + `.service`; `refresh_helper_units_if_root` back-fills already-deployed hosts on the next root `doli upgrade` |
 
 ## OPERATIONS
 
@@ -341,6 +357,39 @@ Version tag pushed
 -> restart_node() [exec() on Unix]
 ```
 
+Staged Handoff (INC-I-215) — taken instead of the in-process install when the node cannot
+write its own install target. Branches out of `auto_apply` in `bins/node/src/updater/service.rs`
+AFTER the re-verify against the current trust root:
+```
+[node, unprivileged]
+already_staged(data_dir, version)?           <- ready marker names the SAME version
+  -> yes: log + return (NO fetch; the cycle is idempotent)
+install_target_is_writable()?                <- current_binary_path + target_dir_is_writable
+  -> true:  fall through to auto_apply_from_github (in-process install, unchanged)
+  -> false: stage_for_privileged_install()
+              -> fetch_verified_release(version, signed_checksums_sha256)
+              -> stage_release(<data_dir>/updates, version, tarball, checksums_body, manifest)
+                   release.tar.gz / CHECKSUMS.txt / SIGNATURES.json, each tmp->fsync->rename
+                   `ready` renamed in LAST (content = version)
+              -> return; the node NEVER restarts itself on this path
+  (a staging ERROR falls through to auto_apply_from_github; on an unwritable target that
+   attempt fails into the same Err arm one redundant download later)
+
+[root, systemd]
+{service}-upgrade.path  PathExists=<data_dir>/updates/ready
+  -> {service}-upgrade.service (Type=oneshot)
+       ExecStart=<cli> --network <net> upgrade --from-staged <data_dir>/updates
+                 --data-dir <data_dir> --service <service> --yes
+  -> cmd_upgrade_from_staged:
+       read_staged()                       [marker version == manifest version, else refuse]
+       resolve_upgrade_trust_root(data_dir, network)   [decode failure ABORTS, no fallback]
+       verify_release_artifact_bytes()     [FULL L1-L4, threshold from TrustRoot::threshold()]
+       is_newer_version(staged, current)?  [else refuse — no downgrade]
+       extract_binary_from_tarball()       [root extracts; the staged operand was the TARBALL]
+       target_dir_is_writable(node_target)? [else refuse, naming `sudo doli upgrade --from-staged`]
+       back_up(<target>.backup) -> install_binary -> best-effort CLI install -> restart
+```
+
 Crash Detection / Rollback:
 ```
 Node starts -> UpdateWatchdog.check_and_maybe_rollback()
@@ -480,6 +529,38 @@ Governance rules (no exceptions):
 - `VETO_PERIOD = 5 * 60s` (constants.rs) — the enforced value
 - `GRACE_PERIOD = 3600s` (constants.rs:16)
 - `CHECK_INTERVAL = 6 * 3600s` (constants.rs:116)
+
+Staged-handoff rules (INC-I-215, no exceptions):
+- **THE STAGED ARTIFACT IS THE TARBALL.** Never stage an extracted ELF. The signature chain
+  is `SIGNATURES.json -> sha256(CHECKSUMS.txt) -> per-platform hash -> release.tar.gz`; an
+  extracted binary is covered by NOTHING, so it leaves the root installer with no operand to
+  re-verify. Root extracts inside its own process, after L4 passes (INV-REL-001).
+- The node's verification is NOT inherited. `doli upgrade --from-staged` re-resolves the
+  trust root from `<data-dir>/maintainer_state.bin` and re-runs the FULL L1–L4 gate over the
+  bytes on disk. The staging directory is a trust boundary: unprivileged writer, verifying
+  root consumer.
+- `target_dir_is_writable` probes by creating and removing a uniquely named file. ANY error
+  answers `false` — EROFS (read-only mount) and EACCES (sandboxed unit) arrive through
+  different `ErrorKind`s, so matching on one kind misses the other.
+- `ready` is published LAST and only by rename. A watcher firing on it must never be able to
+  see a partial handoff.
+- **Clean-up contract — every exit disarms the marker.** The `.path` unit triggers on
+  `PathExists=`, so a `ready` left in place retriggers the oneshot until `TriggerLimit` fails
+  the unit:
+
+  | Outcome | Action on the staging dir | Exit |
+  |---------|---------------------------|------|
+  | Installed + restarted | `remove_dir_all` (falls back to `ready.installed` if removal fails) | 0 |
+  | Installed, restart failed | `ready` -> `ready.installed`, files kept | non-zero |
+  | ANY refusal | `ready` -> `ready.rejected`, files kept as evidence, NOTHING installed | non-zero |
+
+- A refusal must leave the installed binaries byte-identical (INC-I-153). No refusal path
+  touches the target.
+- `helper_unit_watches` matches on unit CONTENT (`PathExists=<marker>`), never on unit name:
+  custom `--name` services and multi-node hosts install helper units under arbitrary names.
+- `{service}-upgrade.service` carries NO `[Install]` section — it is path-triggered and must
+  never be boot-enabled — and no sandboxing directives, because writing `/usr/bin` is its
+  entire purpose.
 
 Production blocking rules (enforcement.rs:176):
 - Blocked only when ALL true: enforcement_time passed + old version + binary_ready=true + elapsed < 30min

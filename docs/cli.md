@@ -1979,6 +1979,8 @@ Options:
       --service <NAME>              Restart only this systemd service
       --data-dir <PATH>             Node data directory holding maintainer_state.bin
                                     (default: the platform node data dir)
+      --from-staged <DIR>           Install a release the node staged into <DIR>
+                                    (normally <data-dir>/updates) after re-verifying it
 ```
 
 **Example:**
@@ -2025,6 +2027,56 @@ Do not treat `--network` — or the arrays being disjoint — as a control that 
 cross-network release replay. Closing this requires putting the network into the signed
 bytes, which invalidates every already-published `SIGNATURES.json` and therefore needs its
 own coordinated rollout (INC-I-172 AUDIT-P2-012, deferred).
+
+### 18.3. `--from-staged <DIR>` — install a release the node staged
+
+A node whose unit cannot write the install directory does not install its own updates. It
+verifies the release and stages it under `<data-dir>/updates`. This command is the
+privileged half: run it as root to install what the node staged.
+
+```bash
+sudo doli --network mainnet upgrade \
+  --from-staged /var/lib/doli/mainnet/updates \
+  --data-dir /var/lib/doli/mainnet \
+  --service doli-mainnet --yes
+```
+
+`--network` is a global flag and must precede the `upgrade` subcommand. The command is
+non-interactive: it never prompts, and it exits non-zero on any refusal.
+
+It trusts nothing in `<DIR>` on sight. In order it:
+
+1. Reads `ready`, `release.tar.gz`, `CHECKSUMS.txt` and `SIGNATURES.json` from `<DIR>`,
+   and refuses when the `ready` version and the manifest version disagree.
+2. Resolves the trust root from `<data-dir>/maintainer_state.bin` and prints its
+   provenance, key count, threshold and `last_derived_height`. A file that exists but
+   cannot be decoded ABORTS — it never falls back to the compiled keys.
+3. Re-runs the full L1–L4 release gate over the staged bytes, with the threshold read
+   from that trust root, and prints the DISTINCT signer count found.
+4. Refuses a staged version that is not newer than the running CLI.
+5. Refuses when the `doli-node` target directory is not writable, and names the fix.
+
+Then it backs the target up as `<target>.backup`, installs `doli-node`, installs the
+`doli` CLI when the tarball carries one and its own target is writable, and restarts the
+service.
+
+**Clean-up contract** — every exit disarms the `ready` marker so the watcher unit cannot
+retrigger:
+
+| Outcome | `<DIR>` | Exit |
+|---------|---------|------|
+| Installed and restarted | removed | 0 |
+| Installed, restart failed | `ready` → `ready.installed`, files kept | non-zero |
+| Any refusal (nothing installed) | `ready` → `ready.rejected`, files kept as evidence | non-zero |
+
+A refusal leaves the installed binaries byte-identical.
+
+When the target is not writable the command prints:
+
+```
+Cannot write /usr/bin/doli-node: its directory is not writable by this process.
+  Try: sudo doli upgrade --from-staged /var/lib/doli/mainnet/updates --yes
+```
 
 ---
 
@@ -2124,11 +2176,30 @@ Options:
       --rpc-port <PORT>            RPC listen port
 ```
 
+On Linux this also writes, reloads and enables two root helper units next to the node
+unit, named after the resolved service name (default `doli-{network}`):
+
+| Unit | Role |
+|------|------|
+| `{service}-upgrade.path` | Watches `PathExists=<data-dir>/updates/ready`, triggers the unit below. Enabled at boot. |
+| `{service}-upgrade.service` | `Type=oneshot`, runs `doli --network <net> upgrade --from-staged <data-dir>/updates --data-dir <data-dir> --service <service> --yes` as root. Path-triggered only, never boot-enabled. |
+
+So a mainnet host with the default name gets `doli-mainnet-upgrade.path` and
+`doli-mainnet-upgrade.service`. Without them a sandboxed node stages every approved
+update and nothing ever installs it.
+
+Hosts installed before this existed get the pair on their next **root** `doli upgrade`:
+it rewrites both units when `/etc/systemd/system/{service}.service` is present and the
+content differs, then reloads and enables the watcher. Re-running `doli service install`
+is also safe — both writes are plain overwrites.
+
 ### 21.2. Uninstall Service
 
 ```bash
 doli service uninstall [--name <NAME>]
 ```
+
+This also disables and deletes `{service}-upgrade.path` and `{service}-upgrade.service`.
 
 ### 21.3. Start/Stop/Restart
 

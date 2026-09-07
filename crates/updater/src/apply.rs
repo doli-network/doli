@@ -1,5 +1,7 @@
 //! Update application and rollback
 
+use crate::extract::{extract_binary_from_tarball, extract_named_binary_from_tarball};
+use crate::fetch_verified::fetch_verified_release;
 use crate::{
     current_timestamp, verify_release_with_trust_root, veto_deadline, veto_period_ended, Release,
     Result, TrustRoot, UpdateError, VETO_THRESHOLD_PERCENT,
@@ -49,37 +51,15 @@ pub async fn backup_current() -> Result<PathBuf> {
     Ok(backup)
 }
 
-/// Apply an update
-///
-/// This function:
-/// 1. **SECURITY CHECK**: Verifies veto period has ended
-/// 2. **SECURITY CHECK**: Verifies update was approved (not rejected)
-/// 3. **SECURITY CHECK**: Re-verifies the staged release against the CURRENT trust root
-/// 4. Delegates download + install to [`auto_apply_from_github`], which binds the
-///    signed CHECKSUMS.txt hash to the tarball it actually installs
+/// Apply an update: veto period ended, community approved, and the release re-verified
+/// against the CURRENT trust root, then download + install via [`auto_apply_from_github`].
 ///
 /// # Arguments
-/// * `release` - The release to apply
-/// * `first_notified_at` - NODE-LOCAL timestamp at which this node first observed the
-///   release. The veto window is measured from here, never from the unsigned
-///   `release.published_at` (INC-I-172 F7(b)).
-/// * `approved` - Whether the update was approved by the community
-/// * `veto_percent` - The percentage of veto votes (if known)
-/// * `root` - The CURRENT release-verification trust root. **Required, not optional.**
-///   This was the fifth install path and it performed no signature check at all
-///   (INC-I-172 F2): a pending update staged before a key rotation and applied by hand
-///   installed under the revoked signers, and revocation that cannot reach the manual
-///   apply path is not revocation. Taking the root as a parameter is what makes
-///   omission impossible — a caller cannot forget an argument the compiler demands.
-///
-/// # Security
-/// Updates can ONLY be applied after:
-/// - The configured veto period (`VETO_PERIOD`) has ended
-/// - The community has NOT rejected it (< 40% veto)
-/// - The staged release still verifies against the root resolved AT THIS MOMENT
-///
-/// This prevents producers from applying potentially malicious updates
-/// before the community has a chance to review and veto.
+/// * `first_notified_at` - NODE-LOCAL time this node first observed the release. The veto
+///   window is measured from here, never from the unsigned `published_at` (INC-I-172 F7(b)).
+/// * `root` - The CURRENT release-verification trust root. **Required, not optional**: a
+///   pending update staged before a key rotation used to install under the revoked signers
+///   (INC-I-172 F2), and an argument the compiler demands cannot be forgotten.
 pub async fn apply_update(
     release: &Release,
     first_notified_at: u64,
@@ -411,68 +391,22 @@ async fn install_binary_sudo(binary: &[u8], target: &Path) -> Result<()> {
 
 /// Auto-apply an approved update from GitHub
 ///
-/// This is called by the UpdateService after an update is approved (veto period
-/// passed without rejection). It bypasses the veto/approval checks in `apply_update()`
-/// because those were already verified by the UpdateService.
+/// Called by the UpdateService once an update is approved, so the veto/approval checks of
+/// `apply_update()` are already done. Fetch + verification live in
+/// [`fetch_verified_release`]; this function extracts, backs up and installs.
 ///
-/// # Arguments
-/// * `version` - Semantic version string (e.g., "1.0.27")
-/// * `signed_checksums_sha256` - SHA-256 hash of CHECKSUMS.txt that was verified
-///   against maintainer signatures. This anchors the entire chain of trust:
-///   signatures → CHECKSUMS.txt hash → per-platform binary hash → tarball.
-///   Without this parameter, re-fetching CHECKSUMS.txt creates a TOCTOU window
-///   where a compromised GitHub release could serve different content after
-///   signature verification. (Fix for AUDIT-UPDATE-002)
+/// `signed_checksums_sha256` is the SHA-256 of CHECKSUMS.txt the maintainer signatures
+/// cover. It anchors the chain signatures -> CHECKSUMS.txt -> per-platform hash -> tarball.
 ///
-/// Steps:
-/// 1. Fetch release info from GitHub (to get tarball URL + CHECKSUMS.txt)
-/// 2. Verify CHECKSUMS.txt integrity against signed hash (closes TOCTOU)
-/// 3. Parse per-platform binary hash from CHECKSUMS.txt
-/// 4. Download the tarball
-/// 5. Verify tarball hash against per-platform hash
-/// 6. Extract doli-node binary
-/// 7. Backup current binary
-/// 8. Install new binary via atomic rename
-///
-/// Does NOT call `restart_node()` — the caller is responsible for that
-/// (because it needs to clean up state before exec()).
+/// Does NOT call `restart_node()` — the caller cleans up state before exec().
 pub async fn auto_apply_from_github(version: &str, signed_checksums_sha256: &str) -> Result<()> {
     info!("Auto-applying approved update v{}...", version);
 
-    // 1. Fetch release info (gets tarball URL + CHECKSUMS.txt content)
-    let release_info = crate::fetch_github_release(Some(version)).await?;
-
-    // 2. SECURITY: Verify the freshly-fetched CHECKSUMS.txt matches what was signed.
-    //    This closes the TOCTOU window (AUDIT-UPDATE-002): signatures were verified
-    //    against `signed_checksums_sha256` earlier; we must ensure the CHECKSUMS.txt
-    //    we just fetched produces the same hash.
-    //    Note: `release_info.checksums_sha256` is computed by `fetch_github_release()`
-    //    as SHA256 of the downloaded CHECKSUMS.txt file.
-    if !release_info
-        .checksums_sha256
-        .eq_ignore_ascii_case(signed_checksums_sha256)
-    {
-        error!(
-            "CHECKSUMS.txt integrity failure: signed={}, fetched={}. \
-             Possible TOCTOU attack — GitHub release may have been modified after signing.",
-            signed_checksums_sha256, release_info.checksums_sha256
-        );
-        return Err(UpdateError::HashMismatch {
-            expected: signed_checksums_sha256.to_string(),
-            actual: release_info.checksums_sha256.clone(),
-        });
-    }
-    info!("CHECKSUMS.txt integrity verified against signed hash");
-
-    // 3. Download tarball
-    info!("Downloading v{} tarball...", version);
-    let tarball = crate::download_from_url(&release_info.tarball_url).await?;
-
-    // 4. Verify tarball hash against the per-platform hash from CHECKSUMS.txt
-    //    (AUDIT-UPDATE-005 fix: `expected_hash` is the per-platform binary hash
-    //    parsed from CHECKSUMS.txt, NOT SHA256(CHECKSUMS.txt) itself)
-    crate::verify_hash(&tarball, &release_info.expected_hash)?;
-    info!("Tarball checksum verified for v{}", version);
+    // 1-3. Fetch the release, bind CHECKSUMS.txt to the signed hash, download and
+    //      hash-check the tarball.
+    let tarball = fetch_verified_release(version, signed_checksums_sha256)
+        .await?
+        .tarball;
 
     // 4. Extract doli-node binary
     let binary = extract_binary_from_tarball(&tarball)?;
@@ -528,111 +462,6 @@ pub async fn auto_apply_from_github(version: &str, signed_checksums_sha256: &str
     Ok(())
 }
 
-/// Extract a named binary from a .tar.gz tarball
-///
-/// CI produces tarballs like `doli-node-v0.1.0-x86_64-unknown-linux-gnu.tar.gz`
-/// containing entries like `doli-node-v0.1.0-x86_64-unknown-linux-gnu/doli-node`
-/// and `doli-node-v0.1.0-x86_64-unknown-linux-gnu/doli`.
-/// This function decompresses and finds the entry matching `name`.
-pub fn extract_named_binary_from_tarball(tarball: &[u8], name: &str) -> Result<Vec<u8>> {
-    use flate2::read::GzDecoder;
-    use std::io::Read;
-    use tar::Archive;
-
-    let decoder = GzDecoder::new(tarball);
-    let mut archive = Archive::new(decoder);
-
-    for entry in archive
-        .entries()
-        .map_err(|e| UpdateError::InstallFailed(e.to_string()))?
-    {
-        let mut entry = entry.map_err(|e| UpdateError::InstallFailed(e.to_string()))?;
-        let path = entry
-            .path()
-            .map_err(|e| UpdateError::InstallFailed(e.to_string()))?;
-
-        if path.file_name().map(|n| n == name).unwrap_or(false) {
-            let mut bytes = Vec::new();
-            entry
-                .read_to_end(&mut bytes)
-                .map_err(|e| UpdateError::InstallFailed(e.to_string()))?;
-            info!("Extracted {} binary ({} bytes)", name, bytes.len());
-            return Ok(bytes);
-        }
-    }
-
-    Err(UpdateError::InstallFailed(format!(
-        "{} binary not found in tarball",
-        name
-    )))
-}
-
-/// Extract the doli-node binary from a .tar.gz tarball
-///
-/// Convenience wrapper around `extract_named_binary_from_tarball` for "doli-node".
-pub fn extract_binary_from_tarball(tarball: &[u8]) -> Result<Vec<u8>> {
-    extract_named_binary_from_tarball(tarball, "doli-node")
-}
-
-/// Rollback to the backup binary
-pub async fn rollback() -> Result<()> {
-    let current = current_binary_path()?;
-    let backup = backup_path()?;
-
-    if !backup.exists() {
-        error!("No backup found at {:?}", backup);
-        return Err(UpdateError::InstallFailed("No backup available".into()));
-    }
-
-    warn!("Rolling back to previous version");
-
-    // Restore from backup
-    fs::copy(&backup, &current).await?;
-
-    info!("Rollback completed");
-    Ok(())
-}
-
-/// Restart the node process
-///
-/// This function does not return - it replaces the current process
-pub fn restart_node() -> ! {
-    info!("Restarting node...");
-
-    let current = match current_binary_path() {
-        Ok(p) => p,
-        Err(e) => {
-            error!("Failed to get binary path for restart: {}", e);
-            std::process::exit(1);
-        }
-    };
-
-    // Get current args (skip the program name)
-    let args: Vec<String> = std::env::args().skip(1).collect();
-
-    // On Unix, use exec to replace the process
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        let err = std::process::Command::new(&current).args(&args).exec();
-        // exec only returns on error
-        error!("Failed to restart: {}", err);
-        std::process::exit(1);
-    }
-
-    // On Windows, spawn new process and exit
-    #[cfg(windows)]
-    {
-        match std::process::Command::new(&current).args(&args).spawn() {
-            Ok(_) => std::process::exit(0),
-            Err(e) => {
-                error!("Failed to restart: {}", e);
-                std::process::exit(1);
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -645,55 +474,5 @@ mod tests {
 
         let result = backup_path();
         assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_tarball_contains_both_binaries() {
-        // Build a minimal tarball with both doli-node and doli entries
-        use flate2::write::GzEncoder;
-        use flate2::Compression;
-
-        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-        {
-            let mut builder = tar::Builder::new(&mut encoder);
-
-            let node_content = b"fake-doli-node-binary";
-            let mut header = tar::Header::new_gnu();
-            header.set_size(node_content.len() as u64);
-            header.set_mode(0o755);
-            header.set_cksum();
-            builder
-                .append_data(
-                    &mut header,
-                    "doli-v1.0.0-x86_64-unknown-linux-gnu/doli-node",
-                    &node_content[..],
-                )
-                .unwrap();
-
-            let cli_content = b"fake-doli-cli-binary";
-            let mut header = tar::Header::new_gnu();
-            header.set_size(cli_content.len() as u64);
-            header.set_mode(0o755);
-            header.set_cksum();
-            builder
-                .append_data(
-                    &mut header,
-                    "doli-v1.0.0-x86_64-unknown-linux-gnu/doli",
-                    &cli_content[..],
-                )
-                .unwrap();
-
-            builder.finish().unwrap();
-        }
-        let tarball = encoder.finish().unwrap();
-
-        // Both binaries must be extractable
-        let node = extract_named_binary_from_tarball(&tarball, "doli-node");
-        assert!(node.is_ok(), "doli-node must be in tarball");
-        assert_eq!(node.unwrap(), b"fake-doli-node-binary");
-
-        let cli = extract_named_binary_from_tarball(&tarball, "doli");
-        assert!(cli.is_ok(), "doli CLI must be in tarball");
-        assert_eq!(cli.unwrap(), b"fake-doli-cli-binary");
     }
 }

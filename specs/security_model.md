@@ -16,6 +16,7 @@ This document describes the security model, threat analysis, cryptographic found
    - 6.1 [Network Layer Security](#61-network-layer-security) (Equivocation Detection, Peer Scoring, Rate Limiting, TX Malleability)
    - 6.2 [Consensus Security Implementations](#62-consensus-security-implementations) (Anti-Sybil, Anti-Grinding)
    - 6.3-6.7 [Code Security](#63-constant-time-operations) (Constant-Time, Overflow, Validation, Memory, Serialization)
+   - 6.8 [Staged Upgrade Trust Boundary](#68-staged-upgrade-trust-boundary) (unprivileged writer, verifying root consumer)
 7. [Known Limitations](#7-known-limitations)
 8. [Audit Trail](#8-audit-trail)
 9. [Responsible Disclosure](#9-responsible-disclosure)
@@ -837,6 +838,64 @@ impl Transaction {
     }
 }
 ```
+
+### 6.8 Staged Upgrade Trust Boundary
+
+`{data_dir}/updates/` is a **trust boundary**. The unprivileged node process writes it; a
+root process reads it and installs from it. The two are different principals, so nothing
+in that directory is trusted on sight.
+
+| Side | Principal | Role |
+|------|-----------|------|
+| `bins/node/src/updater/staged_apply.rs` | node service account, sandboxed unit | **Untrusted writer.** Stages a release it verified but cannot install. |
+| `bins/cli/src/cmd_upgrade_staged.rs` (`doli upgrade --from-staged`) | root, `Type=oneshot` unit | **Verifying consumer.** Re-derives every conclusion from the bytes on disk. |
+
+**Verification runs inside the root process.** The node's verification is not inherited.
+`doli upgrade --from-staged` resolves the trust root from this host's
+`{data_dir}/maintainer_state.bin` — a decode failure ABORTS and never falls back to the
+compiled bootstrap keys — and re-runs the full **L1–L4** gate over the staged bytes:
+
+```text
+  L1  SIGNATURES.json version   == the version the `ready` marker names
+  L2  sf.checksums_sha256       == sha256(the staged CHECKSUMS.txt)
+  L3  threshold DISTINCT maintainer signatures over "{version}:{checksums_sha256}"
+  L4  sha256(release.tar.gz)    == the per-platform hash parsed from THAT CHECKSUMS.txt
+```
+
+The threshold is read from `TrustRoot::threshold()`, never hard-coded: a 5-member on-chain
+maintainer set requires **3-of-5** distinct signers, a 4-member set 3, and an empty or
+sub-threshold root is not usable at all (fail-closed). L3 counts DISTINCT signers, so one
+key signing repeatedly cannot reach the threshold.
+
+**The staged operand is the signed tarball, never an extracted binary.** The signature
+chain terminates at `release.tar.gz`; an extracted ELF is covered by nothing and would
+leave the root side with no verifiable operand. Root extracts inside its own process, after
+L4 passes.
+
+**The `ExecStart` is fixed and never interpolates staged content.**
+`{service}-upgrade.service` is rendered once at `doli service install` time from the
+resolved service name, network, data directory and CLI path. Its `ExecStart` is a literal
+`<cli> --network <net> upgrade --from-staged <dir> --data-dir <dir> --service <unit> --yes`.
+Nothing an attacker can write into `{data_dir}/updates/` reaches the command line, so a
+hostile staging directory cannot change what root executes — only what root refuses. The
+`.path` unit matches only `PathExists=` on the `ready` marker.
+
+**Additional bounds on the root side:**
+
+- `ready` is created only by rename, after every other staged file is fsynced and renamed
+  into place. A watcher that fires on it never observes a partial handoff.
+- A `ready` whose version disagrees with `SIGNATURES.json` is refused before any signature
+  work.
+- A staged version that is not newer than the installed one is refused, so a stale staging
+  directory cannot reinstall an older build.
+- A refusal installs nothing: the existing binaries stay byte-identical, and the marker is
+  renamed to **`ready.rejected`** — evidence is preserved, the trigger is disarmed. A
+  sub-threshold, tampered or replayed staging directory therefore parks as
+  `ready.rejected` and never becomes an install.
+
+**Residual exposure.** Anyone who can write `{data_dir}/updates/` can force root to spend
+one verification pass per write. They cannot cause an install: the write is not a
+signature, and the threshold is enforced on the reading side.
 
 ---
 

@@ -1110,6 +1110,78 @@ cargo build --release
 
 ---
 
+### 5.3. Node Never Upgrades Itself — Install Target Not Writable (INC-I-215)
+
+**Symptom.** One of these, in the node's **log file**:
+
+```
+Auto-apply failed for v6.29.0: IO error: Read-only file system (os error 30). Node continues with v6.28.0. Will retry on next check cycle.
+```
+
+```
+UPDATE_TARGET_NOT_WRITABLE: auto-update cannot install /usr/bin/doli-node because that directory is not writable by this process, and no helper unit watches the staging handoff. This node will never upgrade itself. Fix: run `sudo doli service install`.
+```
+
+The first repeats once per check cycle. The second is a WARN printed **once per process
+start**.
+
+**Where to look.** The node's log file, not `journalctl` — `journalctl` carries only
+systemd lifecycle events (start / stop / restart), never application logs. Find the path
+in the unit's `--log-file` flag or under the data directory.
+
+```bash
+grep -m1 UPDATE_TARGET_NOT_WRITABLE /var/log/doli/mainnet.log
+```
+
+**Cause.** The node unit runs sandboxed and cannot write the directory holding
+`doli-node` (`ProtectSystem=strict`, a read-only mount, or a non-root `User=`). The
+node still fetches and verifies each approved release, but it **stages** it instead of
+installing it. Without the root helper units nothing picks the staged release up.
+
+**Check what is staged:**
+```bash
+ls -l /var/lib/doli/mainnet/updates/
+cat  /var/lib/doli/mainnet/updates/ready          # the staged version
+```
+Expect `ready`, `release.tar.gz`, `CHECKSUMS.txt`, `SIGNATURES.json`.
+
+**Fix — install the helper units once (root):**
+```bash
+sudo doli service install --network mainnet        # writes + enables the helper pair
+# or, on a host you are upgrading by hand anyway:
+sudo doli upgrade                                  # refreshes the helper units as a side effect
+```
+
+Confirm, then restart the node so the INFO verdict replaces the WARN:
+```bash
+systemctl is-enabled doli-mainnet-upgrade.path
+systemctl cat doli-mainnet-upgrade.service | grep ExecStart
+```
+
+**Install a staged release right now, without waiting:**
+```bash
+sudo doli --network mainnet upgrade \
+  --from-staged /var/lib/doli/mainnet/updates \
+  --data-dir /var/lib/doli/mainnet --service doli-mainnet --yes
+```
+
+**Reading the evidence after a refusal.** A refused handoff installs nothing and renames
+the marker, so the watcher cannot retrigger:
+
+| File in `updates/` | Meaning |
+|--------------------|---------|
+| `ready` | A staged release is waiting for the helper. |
+| `ready.rejected` | The staged release was REFUSED — signature, version or writability. Nothing was installed; the binaries are unchanged. |
+| `ready.installed` | The binary was installed but the service did not restart. Restart the unit by hand. |
+
+For a rejection, re-run the command above by hand: it prints the trust-root provenance and
+the exact refusal reason. Then delete the directory before the next cycle:
+```bash
+sudo rm -rf /var/lib/doli/mainnet/updates
+```
+
+---
+
 ## 6. Diagnostic Commands
 
 ### Quick Health Check
