@@ -13,14 +13,14 @@ is what auto-updating external producers consume. (b) **The manual per-node bina
 rest of this file. Neither substitutes for the other: a published release does not move the fleet
 binaries, and a fleet deploy does not give external producers anything to update to.
 
-Run these six steps in this order. Do not stop early.
+Run these six steps in this order. Do not stop early. No step publishes before verification.
 
 | # | Step | Command |
 |---|------|---------|
 | 1 | Tag + push | `git tag vX.Y.Z && git push origin main --tags` |
 | 2 | CI builds | (automatic — creates the release as a **DRAFT**) |
 | 3 | **SIGN** | `./scripts/sign-release.sh X.Y.Z` |
-| 4 | **VERIFY** | `doli release verify --version vX.Y.Z` |
+| 4 | **VERIFY** (optional) | `doli release verify --version vX.Y.Z --dir <path> --trust-root bootstrap` |
 | 5 | **PROMOTE** | `./scripts/publish-release.sh X.Y.Z` |
 | 6 | **CONFIRM** | `./scripts/monitor-release-signed.sh` |
 
@@ -37,25 +37,27 @@ and **NOT reachable by any node**: no `doli upgrade` and no auto-updating produc
 also injects an "UNSIGNED DRAFT" banner into the notes and writes a "Release ... created as DRAFT"
 job step summary. A tag alone publishes nothing.
 
-**3. SIGN — collect the 3-of-5 maintainer quorum**
+**3. SIGN — collect the 3-of-5 maintainer quorum on the draft**
 
 ```bash
 ./scripts/sign-release.sh X.Y.Z
 ```
 
-Keys are the rotated maintainer wallets at `~/.ssh/doli/maintainer-{1,2,3}.json`. Override the
-location with `KEY_DIR`, or individual files with `KEY_1` / `KEY_2` / `KEY_3`. `DOLI_CLI` overrides
-the CLI path (default `./target/release/doli`, else `doli` on PATH). The script assembles
-SIGNATURES.json and uploads it to the draft. It accepts `X.Y.Z` or `vX.Y.Z`.
+The script downloads CHECKSUMS.txt from the draft with authenticated `gh`, then passes that local
+file to every signer with `--checksums`. It assembles SIGNATURES.json and uploads it to the draft.
+The release stays a draft throughout — signing never promotes anything. Keys are the rotated
+maintainer wallets at `~/.ssh/doli/maintainer-{1,2,3}.json`; override the location with `KEY_DIR`,
+or individual files with `KEY_1` / `KEY_2` / `KEY_3`. `DOLI_CLI` overrides the CLI path (default
+`./target/release/doli`, else `doli` on PATH). It accepts `X.Y.Z` or `vX.Y.Z`. If a signer fails,
+its own error text and the name of the failing key are printed and nothing is uploaded.
 
-**4. VERIFY — the same check the node runs**
+**4. VERIFY — optional manual check (step 5 runs the same check itself)**
 
 ```bash
-doli release verify --version vX.Y.Z
+doli release verify --version vX.Y.Z --dir <path> --trust-root bootstrap
 ```
 
-Add `--dir <path>` to verify a local manifest directory. This resolves against this host's
-maintainer trust root.
+`--dir` points at a directory holding SIGNATURES.json + CHECKSUMS.txt.
 
 **5. PROMOTE — script only**
 
@@ -64,9 +66,10 @@ maintainer trust root.
 ```
 
 Downloads SIGNATURES.json + CHECKSUMS.txt from the draft, refuses a missing, malformed, or
-sub-threshold manifest by name and count (`THRESHOLD` default 3), runs `doli release verify`, and
-only on success strips the CI banner and runs `gh release edit vX.Y.Z --draft=false --latest`. Any
-failure leaves it a draft. **Never** promote with a hand-run `gh release edit --draft=false`.
+sub-threshold manifest by name and count (`THRESHOLD` default 3), runs
+`doli release verify --dir <downloaded> --trust-root bootstrap`, and only on success strips the CI
+banner and runs `gh release edit vX.Y.Z --draft=false --prerelease=false --latest`. Any failure
+leaves it a draft. **Never** promote with a hand-run `gh release edit --draft=false`.
 
 **6. CONFIRM — read-only standing check**
 
@@ -74,8 +77,18 @@ failure leaves it a draft. **Never** promote with a hand-run `gh release edit --
 ./scripts/monitor-release-signed.sh
 ```
 
-Asserts the newest `v*` tag (version-sorted) has a published release that verifies. Env:
-`DOLI_CLI`, `REPO_DIR`, `REPO`. It never mutates a release — safe from cron.
+Asserts the newest `v*` tag (version-sorted) has a published release that verifies, using the same
+inputs as step 5. Env: `DOLI_CLI`, `REPO_DIR`, `REPO`. It never mutates a release — safe from cron.
+
+**Why these flags**
+
+A draft has no public asset download URL, so the signer cannot fetch CHECKSUMS.txt itself; it must
+be handed the local file the authenticated `gh` already pulled. A host's on-chain maintainer
+snapshot can be stale — the verify banner prints its `last_derived_height` so you can see it — and
+`--trust-root bootstrap` judges against the compiled maintainer keys instead, which is what stops a
+correctly signed release reporting 0/3. Auto-update reads `/releases/latest`, which a prerelease
+never reaches, so clearing the draft flag alone leaves the release invisible to producers.
+
 
 ## CRITICAL: Per-Node Binary Layout
 

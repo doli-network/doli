@@ -968,6 +968,11 @@ pub(crate) enum ReleaseCommands {
         /// Path to producer key file (overrides -w wallet)
         #[arg(long)]
         key: Option<PathBuf>,
+
+        /// Local CHECKSUMS.txt to hash instead of downloading it. Required for a DRAFT
+        /// release: the unauthenticated download URL cannot see one.
+        #[arg(long)]
+        checksums: Option<PathBuf>,
     },
 
     /// Verify a release manifest against this host's maintainer trust root
@@ -987,6 +992,11 @@ pub(crate) enum ReleaseCommands {
         /// Node data directory used to resolve the on-chain maintainer set
         #[arg(long)]
         data_dir: Option<PathBuf>,
+
+        /// Override the judging trust root. Only `bootstrap` is accepted: it bypasses
+        /// the on-chain maintainer set and judges against the compiled keys.
+        #[arg(long)]
+        trust_root: Option<String>,
     },
 }
 

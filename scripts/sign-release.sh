@@ -15,9 +15,10 @@
 #
 # What it does:
 #   1. Verifies the GitHub Release and CHECKSUMS.txt exist
-#   2. Signs with maintainer keys 1, 2, 3 (3/5 quorum)
-#   3. Assembles SIGNATURES.json
-#   4. Uploads to the GitHub Release
+#   2. Downloads CHECKSUMS.txt and feeds it to each signer via --checksums
+#   3. Signs with maintainer keys 1, 2, 3 (3/5 quorum)
+#   4. Assembles SIGNATURES.json
+#   5. Uploads to the GitHub Release (the release stays a DRAFT — INC-I-202)
 
 set -euo pipefail
 
@@ -71,6 +72,16 @@ if ! gh release view "v${VERSION_BARE}" --repo "$REPO" --json assets -q '.assets
 fi
 echo "CHECKSUMS.txt found in release."
 
+# --- Download CHECKSUMS.txt: the signed payload, and the hash for the manifest ---
+echo ""
+echo "=== Downloading CHECKSUMS.txt ==="
+TMPDIR=$(mktemp -d)
+trap 'rm -rf "$TMPDIR"' EXIT
+gh release download "v${VERSION_BARE}" --repo "$REPO" --pattern "CHECKSUMS.txt" --dir "$TMPDIR"
+CHECKSUMS_FILE="$TMPDIR/CHECKSUMS.txt"
+CHECKSUMS_SHA256=$(shasum -a 256 "$CHECKSUMS_FILE" | awk '{print $1}')
+echo "CHECKSUMS.txt SHA-256: $CHECKSUMS_SHA256"
+
 # --- Sign with each key ---
 echo ""
 echo "=== Signing v${VERSION_BARE} with 3 maintainer keys ==="
@@ -82,8 +93,16 @@ for i in "${!KEYS[@]}"; do
     echo ""
     echo "--- Signing with maintainer_${idx} ($(basename "$key")) ---"
 
+    # --checksums hands the signer the bytes gh already fetched with authentication:
+    # a draft's public asset URL 404s, so the CLI cannot fetch them itself.
+    # `if !` keeps set -e from aborting before the failing key can be named.
+    if ! raw_output=$("$DOLI" -w "$key" release sign --version "v${VERSION_BARE}" \
+        --key "$key" --checksums "$CHECKSUMS_FILE"); then
+        echo "ERROR: signer failed for maintainer_${idx} ($(basename "$key")); its own output is above." >&2
+        exit 1
+    fi
+
     # doli release sign may print a status preamble before the JSON object on stdout
-    raw_output=$("$DOLI" -w "$key" release sign --version "v${VERSION_BARE}" --key "$key" 2>/dev/null)
     sig_json=$(printf '%s\n' "$raw_output" | sed -n '/^{/,/^}/p')
 
     if [[ -z "$sig_json" ]] || ! printf '%s\n' "$sig_json" | jq -e . >/dev/null 2>&1; then
@@ -96,14 +115,6 @@ for i in "${!KEYS[@]}"; do
     SIGNATURES+=("$sig_json")
     echo "  Signed successfully."
 done
-
-# --- Download CHECKSUMS.txt SHA-256 (for the assembled file) ---
-echo ""
-echo "=== Downloading CHECKSUMS.txt to compute hash ==="
-TMPDIR=$(mktemp -d)
-gh release download "v${VERSION_BARE}" --repo "$REPO" --pattern "CHECKSUMS.txt" --dir "$TMPDIR"
-CHECKSUMS_SHA256=$(shasum -a 256 "$TMPDIR/CHECKSUMS.txt" | awk '{print $1}')
-echo "CHECKSUMS.txt SHA-256: $CHECKSUMS_SHA256"
 
 # --- Assemble SIGNATURES.json ---
 echo ""
@@ -150,6 +161,3 @@ echo "=== Done! ==="
 echo "SIGNATURES.json uploaded to https://github.com/$REPO/releases/tag/v${VERSION_BARE}"
 echo ""
 echo "Nodes will auto-detect this release and apply after the veto period."
-
-# Cleanup
-rm -rf "$TMPDIR"

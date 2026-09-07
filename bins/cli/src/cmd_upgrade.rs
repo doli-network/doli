@@ -309,19 +309,41 @@ pub(crate) async fn cmd_release_verify(
     dir: Option<PathBuf>,
     data_dir: Option<PathBuf>,
     network: doli_core::Network,
+    trust_root: Option<String>,
 ) -> Result<()> {
     let data_dir = match data_dir {
         Some(d) => d,
         None => crate::paths::resolve_base_dir(network.name(), None),
     };
-    let root = resolve_upgrade_trust_root(&data_dir, network)?;
+    // Best-effort: the on-chain height is reported for staleness, never used to judge.
+    // The `None` arm below re-reads the same file fatally, so this cannot mask a failure.
+    let on_chain_height = match storage::MaintainerState::load(&data_dir) {
+        Ok(state) => state.last_derived_height.to_string(),
+        Err(_) => "unavailable".to_string(),
+    };
+    let root = match trust_root.as_deref() {
+        None => resolve_upgrade_trust_root(&data_dir, network)?,
+        Some("bootstrap") => {
+            println!(
+                "BYPASS: --trust-root bootstrap ignores this host's on-chain maintainer root \
+                 and judges the manifest against the compiled bootstrap keys."
+            );
+            updater::TrustRoot::bootstrap(network)
+        }
+        Some(other) => anyhow::bail!(
+            "release verify: --trust-root accepts only `bootstrap`, got `{}`. Omit the flag \
+             to use this host's on-chain maintainer root.",
+            other
+        ),
+    };
     println!(
-        "Trust root: {} ({} key(s), threshold {}, {}) from {}",
+        "Trust root: {} ({} key(s), threshold {}, {}) from {} (on-chain last_derived_height {})",
         root.provenance(),
         root.keys().len(),
         root.threshold(),
         network,
-        data_dir.display()
+        data_dir.display(),
+        on_chain_height
     );
 
     let distinct_signers = match dir {
