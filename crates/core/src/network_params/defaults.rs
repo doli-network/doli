@@ -270,10 +270,14 @@ impl NetworkParams {
                 // same height as #178 by design (BLS without the own bit ships
                 // the M1 defect). IMMUTABLE once crossed.
                 inc_i_208_own_attestation_activation_height: 409_000,
-                // INC-I-171 vesting-penalty payout bound. FROZEN at u64::MAX
-                // (unpinned): pinning it is a separate user decision-session.
-                // Own gate, never bundled. IMMUTABLE once crossed (INC-I-054).
-                inc_i_171_vesting_penalty_activation_height: u64::MAX,
+                // INC-I-171 vesting-penalty payout bound. PINNED 418_000 on mainnet
+                // (user decision 2026-09-07; tip 400_175 at 11:53Z, ~49 h lead, one day
+                // after the 409_000 pins of #178/#204/#208). Own gate, never bundled.
+                // IMMUTABLE once crossed (INC-I-054). Every producer must run v6.29.0+
+                // before this height: an older binary accepts a full-value withdrawal
+                // block the fleet rejects. Precondition PC-1 (INC-I-170 n11 retirement)
+                // is NOT met at pin time — its exit after 418_000 faces the Q1 tier.
+                inc_i_171_vesting_penalty_activation_height: 418_000,
                 // Paired kill-switch; u64::MAX = never disabled.
                 inc_i_171_vesting_penalty_disable_height: u64::MAX,
 

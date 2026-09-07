@@ -816,7 +816,7 @@ Treat this response as advisory.
 From `inc_i_171_vesting_penalty_activation_height` consensus rejects a block whose
 `RequestWithdrawal` pays more than the penalized net of the Bond UTXOs it spends
 (`ECON_WITHDRAWAL_PAYOUT_EXCEEDS_NET`, `specs/protocol.md` §3.13). That height is
-pinned at 133_640 on testnet (2026-09-07); `u64::MAX` on mainnet and devnet, so the bound is enforced on testnet from that height and not yet elsewhere. This response
+pinned at 133_640 on testnet and 418_000 on mainnet (both 2026-09-07); `u64::MAX` on devnet, so the bound is enforced on testnet from that height and not yet elsewhere. This response
 carries no net-payout field; the payout is computed by the client that builds the
 transaction.
 

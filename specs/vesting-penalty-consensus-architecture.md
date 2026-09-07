@@ -17,11 +17,11 @@
 
 Design-synthesizer output, `/omega-redesign` proposal-only, 2026-09-05. Inputs: `docs/.workflow/design-*.md` (5 evaluators), `docs/redesigns/vesting-penalty-consensus-redesign-analysis.md`. Trace with parity math, unit arithmetic and the spot-check log: `docs/.workflow/architecture-reasoning.md`.
 
-**Status:** APPROVED 2026-09-06; IMPLEMENTED M1-M7 on `fix/inc-i-171-vesting-penalty-consensus` 2026-09-07 (suite 4252 green). **Testnet pinned at 133_640 on 2026-09-07 by user decision, ahead of preconditions T2-T3** — the four-tier rehearsal and the shadow-counter soak run AFTER activation on testnet; mainnet and devnet stay `u64::MAX` and mainnet pinning remains gated by PC-1..PC-6.
+**Status:** APPROVED 2026-09-06; IMPLEMENTED M1-M7 on `fix/inc-i-171-vesting-penalty-consensus` 2026-09-07 (suite 4252 green). **Testnet pinned at 133_640 on 2026-09-07 by user decision, ahead of preconditions T2-T3** — the four-tier rehearsal and the shadow-counter soak run AFTER activation on testnet; devnet stays `u64::MAX`. **Mainnet pinned at 418_000 on 2026-09-07 by user decision (tip 400_175, ~49 h lead), with PC-1 (INC-I-170 n11 retirement) NOT met at pin time and PC-2/PC-5 (bond census, fleet fully on v6.29.0+) still to be executed before the height.**
 
 ## Summary
 
-**SSF:** reject any block in which a `RequestWithdrawal` output exceeds `sum penalized_bond_net(spent Bond inputs) + sum(non-Bond inputs)`, computed from the node-stamped Bond `extra_data` slot in the pre-block UTXO view, inside the INC-I-180 input pass the node already runs, behind `inc_i_171_vesting_penalty_activation_height` (pinned at 133_640 on testnet (2026-09-07); `u64::MAX` on mainnet and devnet).
+**SSF:** reject any block in which a `RequestWithdrawal` output exceeds `sum penalized_bond_net(spent Bond inputs) + sum(non-Bond inputs)`, computed from the node-stamped Bond `extra_data` slot in the pre-block UTXO view, inside the INC-I-180 input pass the node already runs, behind `inc_i_171_vesting_penalty_activation_height` (pinned at 133_640 on testnet and 418_000 on mainnet (both 2026-09-07); `u64::MAX` on devnet).
 
 The Radical minimum (same arithmetic in core `validate_transaction_with_utxos`) scores conf(0.45) after filtering vs conf(0.80) here — no SSF override. Measured: the core site runs after `producer_set.write()` at apply (`apply_block/mod.rs:198` then `:202`), is Replay-muted (`tx_processing.rs:119-123`), and the mempool never calls it (`pool.rs:487`). Its claim that the node site re-resolves under a second guard is false: the INC-I-180 pass resolves every input under one guard (`validation_checks.rs:640-684`).
 
