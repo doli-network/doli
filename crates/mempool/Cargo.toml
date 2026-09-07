@@ -19,3 +19,7 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+
+[[test]]
+name = "inc_i_171_m5_vesting_admission"
+path = "tests/inc_i_171_m5_vesting_admission.rs"

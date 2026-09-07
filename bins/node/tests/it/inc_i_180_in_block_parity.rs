@@ -260,9 +260,9 @@ async fn scenario(held: u32, exits: usize, add: u32, declared: u32, owned: u32) 
     {
         let utxo = node.utxo_set.read().await;
         let mut mp = node.mempool.write().await;
-        mp.add_transaction(addbond.clone(), &utxo, POST_AH)
+        mp.add_transaction(addbond.clone(), &utxo, POST_AH, 1)
             .expect("fixture: the AddBond must be admitted");
-        mp.add_transaction(withdrawal.clone(), &utxo, POST_AH)
+        mp.add_transaction(withdrawal.clone(), &utxo, POST_AH, 1)
             .expect("fixture: the withdrawal must be admitted at the PRE-Exit ledger");
     }
     let moved = ledger_after_exits(&node, &pk, held, exits).await;
@@ -460,7 +460,7 @@ async fn inc_i180_m2_an_in_block_exit_never_splits_builder_from_gate() {
     {
         let utxo = node.utxo_set.read().await;
         let mut mp = node.mempool.write().await;
-        mp.add_transaction(withdrawal.clone(), &utxo, POST_AH)
+        mp.add_transaction(withdrawal.clone(), &utxo, POST_AH, 1)
             .expect("fixture: partial withdrawal admitted against allowance 4");
         mp.add_system_transaction(exit.clone(), POST_AH)
             .expect("fixture: a zero-flow Exit routes through add_system_transaction");
@@ -525,9 +525,9 @@ async fn inc_i180_m2_admission_over_rejects_the_addbond_window() {
     let admitted = {
         let utxo = node.utxo_set.read().await;
         let mut mp = node.mempool.write().await;
-        mp.add_transaction(addbond.clone(), &utxo, POST_AH)
+        mp.add_transaction(addbond.clone(), &utxo, POST_AH, 1)
             .expect("fixture: the AddBond itself is admissible");
-        mp.add_transaction(withdrawal.clone(), &utxo, POST_AH)
+        mp.add_transaction(withdrawal.clone(), &utxo, POST_AH, 1)
             .map(|_| ())
             .map_err(|e| e.to_string())
     };
@@ -572,7 +572,7 @@ async fn inc_i180_m2_the_operator_resubmits_once_the_addbond_flushes() {
     let admitted = {
         let utxo = node.utxo_set.read().await;
         let mut mp = node.mempool.write().await;
-        mp.add_transaction(withdrawal, &utxo, POST_AH)
+        mp.add_transaction(withdrawal, &utxo, POST_AH, 1)
             .map(|_| ())
             .map_err(|e| e.to_string())
     };
@@ -605,7 +605,7 @@ async fn inc_i180_m2_admission_reject_implies_gate_reject_without_a_credit() {
     let admitted = {
         let utxo = node.utxo_set.read().await;
         let mut mp = node.mempool.write().await;
-        mp.add_transaction(withdrawal.clone(), &utxo, POST_AH)
+        mp.add_transaction(withdrawal.clone(), &utxo, POST_AH, 1)
             .map(|_| ())
             .map_err(|e| e.to_string())
     };

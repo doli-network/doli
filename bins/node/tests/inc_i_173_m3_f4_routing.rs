@@ -107,7 +107,7 @@ use doli_core::transaction::{
 const TX_CORE_SRC: &str = include_str!("../../../crates/core/src/transaction/core.rs");
 const RPC_TX_SRC: &str = include_str!("../../../crates/rpc/src/methods/transaction.rs");
 const MEMPOOL_POOL_SRC: &str = include_str!("../../../crates/mempool/src/pool.rs");
-const VALIDATION_CHECKS_SRC: &str = include_str!("../src/node/validation_checks.rs");
+const VALIDATION_CHECKS_SRC: &str = include_str!("../src/node/validation_checks/mod.rs");
 
 /// Count occurrences of `needle` in the NON-COMMENT lines of `src`.
 ///

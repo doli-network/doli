@@ -40,7 +40,7 @@ Epoch boundary: pool drained → rewards distributed bond-weighted to qualified 
 
 **Data flow**: Block → `apply_block()` → writes to in-memory state AND disk batch atomically → state root cached. On restart, disk → in-memory. Both paths MUST produce identical state.
 
-**Bond lifecycle**: Register (creates Bond UTXOs) → ACTIVATION_DELAY (10 blocks) → scheduled for production → earn epoch rewards → RequestWithdrawal (FIFO, vesting penalty, 7-day delay) → ClaimWithdrawal. Bonds are UTXOs with `output_type=Bond`, `lock_until=MAX`, `extra_data=creation_slot`.
+**Bond lifecycle**: Register (creates Bond UTXOs) → ACTIVATION_DELAY (10 blocks) → scheduled for production → earn epoch rewards → RequestWithdrawal (FIFO chosen by the CLI; payout is instant; the vesting penalty is a consensus payout bound enforced from `inc_i_171_vesting_penalty_activation_height` — pinned at 133_640 on testnet (2026-09-07); `u64::MAX` on mainnet and devnet — INC-I-171; `ClaimWithdrawal=9` is a wire tombstone; the 7-day `UNBONDING_PERIOD` governs producer Exit unbonding via `process_unbonding`, not withdrawals). Bonds are UTXOs with `output_type=Bond`, `lock_until=MAX`, `extra_data=creation_slot`.
 
 ## Stability Pillars (read `docs/postmortems/2026-04-17-attestation-stability-pillars.md`)
 
@@ -58,7 +58,7 @@ Two root-cause fixes stabilized the network. All other fixes were symptom mitiga
 - **CURRENT_PROTOCOL_VERSION** → **DO NOT bump unless the EpochState serialization format actually changes** (INV-4, in every session briefing). A bump triggers `delete_epoch_state()` on restart (`init.rs:727`) → non-deterministic rebuild → fork at the next epoch boundary (INC-I-054). The check is `!=`, so rollback deletes a second time. Use `EPOCH_STATE_FORMAT_VERSION` for epoch_state; `CURRENT_PROTOCOL_VERSION` is peer handshake only.
 - **activation heights** → Once crossed on mainnet, an activation height is **IMMUTABLE** — it is consensus history. NEVER move one forward (higher) after the chain has passed it: INC-I-054 moved `security_audit_activation_height` 27,547→71,290 and deactivated live security features. New features get their OWN height — never reuse or bundle. **The pinned values are in `crates/core/src/network_params/` (code is SoT) — read them there, never from this file.** Oracle + DeFi gates are `u64::MAX` (frozen pre-activation); pinning any real height is a separate decision-session per HC-6 / INC-I-075.
 - **Three-question consensus-shape checklist (INC-I-075, INV-12)** → touching `active_producers`, scheduler inputs, bond snapshot, bitfield encoding, coinbase shape, or any consensus-visible computation? Answer in the commit message: (1) can a user-submittable tx reach this path? (2) can a producer-action or attestation pattern reach it? (3) is the new behavior bit-identical for ALL reachable inputs? **(1|2) YES + (3) NO → activation height REQUIRED.** "Currently unused" is NEVER a valid skip — that assumption caused the INC-I-075 cascade.
-- rewards → distribution `calculate_epoch_rewards()` (`node/rewards.rs`); validation `validate_block_economics()` (`node/validation_checks.rs`, weighted presence via `WeightedRewardCalculator`). The old `calculate_expected_epoch_rewards()` was dead code, removed 2026-03-16 (tombstone: `crates/core/src/validation/rewards_legacy.rs`).
+- rewards → distribution `calculate_epoch_rewards()` (`node/rewards.rs`); validation `validate_block_economics()` (`node/validation_checks/` dir, weighted presence via `WeightedRewardCalculator`; the RequestWithdrawal payout bound lives in `validation_checks/withdrawal_economics.rs`). The old `calculate_expected_epoch_rewards()` was dead code, removed 2026-03-16 (tombstone: `crates/core/src/validation/rewards_legacy.rs`).
 - storage serialization → changing canonical encoding diverges every node and requires a chain reset. See `snapshot.rs`.
 - consensus params → programmatic in `NetworkParams::defaults()`, NOT `include_str!`. Mainnet overrides blocked. Change requires a new binary on ALL nodes simultaneously.
 - rollback → undo-based is first choice; rebuild-from-genesis is the fallback for blocks without undo data.
@@ -102,7 +102,8 @@ After completing any code change, ALWAYS propose the following checklist to the 
 | **fork recovery (9 functions)** | `bins/node/src/node/fork_recovery.rs` |
 | **apply_block()** | `bins/node/src/node/apply_block/` (dir) |
 | **try_produce_block(), compute_block_vdf()** | `bins/node/src/node/production/mod.rs` |
-| **check_producer_eligibility(), validate_block_*()** | `bins/node/src/node/validation_checks.rs` |
+| **check_producer_eligibility(), validate_block_*()** | `bins/node/src/node/validation_checks/` (dir) |
+| **Withdrawal payout bound (INC-I-171) + INC-I-180 holdings gate** | `bins/node/src/node/validation_checks/withdrawal_economics.rs`; pure predicate `crates/core/src/validation/vesting.rs`; resolver `crates/storage/src/producer/withdrawal_inputs.rs`; mempool/builder wrapper `crates/mempool/src/vesting_bound.rs` |
 | **calculate_epoch_rewards(), handle_equivocation()** | `bins/node/src/node/rewards.rs` |
 | **rollback_one_block()** | `bins/node/src/node/rollback.rs` |
 | **Fork recovery integration tests (11)** | `bins/node/tests/fork_recovery.rs` |

@@ -181,7 +181,7 @@ async fn admit_add_bond_n(node: &Node, kp: &KeyPair, tag: u8, requested: u32) ->
         let utxo = node.utxo_set.read().await;
         let mut mempool = node.mempool.write().await;
         mempool
-            .add_transaction(tx, &utxo, HEIGHT)
+            .add_transaction(tx, &utxo, HEIGHT, 1)
             .expect("fixture: the AddBond must be ADMITTED — admission has no cap arm");
     }
     hash
@@ -452,7 +452,7 @@ async fn unavailable_holdings_fails_open_and_packs() {
         let utxo = sc.node.utxo_set.read().await;
         let mut mempool = sc.node.mempool.write().await;
         mempool
-            .add_transaction(tx, &utxo, HEIGHT)
+            .add_transaction(tx, &utxo, HEIGHT, 1)
             .map(|_| ())
             .map_err(|e| e.to_string())
     };

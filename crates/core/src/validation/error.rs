@@ -456,6 +456,49 @@ pub enum ValidationError {
         /// `inc_i_178_attestation_bls_activation_height` in force.
         activation_height: u64,
     },
+
+    /// INC-I-171: a `RequestWithdrawal` pays out more than the penalized net of
+    /// the Bond inputs it spends plus its non-Bond input value.
+    ///
+    /// Emitted only inside
+    /// `[inc_i_171_vesting_penalty_activation_height, ..._disable_height)`.
+    #[error(
+        "withdrawal payout exceeds vested net: payout={payout} bound={bound} bond_inputs={bond_inputs} non_bond_value={non_bond_value}"
+    )]
+    WithdrawalPayoutExceedsVestedNet {
+        /// Value the withdrawal pays out.
+        payout: u64,
+        /// Ceiling: penalized net of the spent Bonds + `non_bond_value`.
+        bound: u64,
+        /// COUNT of spent Bond inputs, not their value.
+        bond_inputs: u32,
+        /// Non-Bond input total that widened the ceiling.
+        non_bond_value: u64,
+    },
+
+    /// INC-I-171: `vesting_quarter_slots` is not a usable divisor.
+    ///
+    /// Zero would panic the penalty ladder's divide; above `u32::MAX` it does
+    /// not fit [`crate::types::Slot`]. Checked after the activation gate, so a
+    /// dormant rule never reads the value.
+    #[error("vesting quarter invalid: quarter_slots={quarter_slots}")]
+    VestingQuarterInvalid {
+        /// The rejected value, as configured.
+        quarter_slots: u64,
+    },
+
+    /// INC-I-171: a spent Bond input's `extra_data` does not decode to a
+    /// `creation_slot`, so its age is unknown.
+    ///
+    /// Fail-closed (INV-VEST-013): an undecodable age is never read as fully
+    /// vested. Unwired at M2; M3 is the only caller.
+    #[error("withdrawal bond extra_data malformed: input_index={input_index} len={len}")]
+    WithdrawalBondExtraDataMalformed {
+        /// Index of the offending input within the transaction.
+        input_index: u32,
+        /// Byte length actually found.
+        len: usize,
+    },
 }
 
 impl ValidationError {
@@ -520,6 +563,11 @@ impl ValidationError {
             Self::AmmNotActivated { .. } => "AMM_NOT_ACTIVATED",
             Self::AmmMinimumLiquidity { .. } => "AMM_MINIMUM_LIQUIDITY",
             Self::AttestationVerifyFailed { .. } => "ATTESTATION_VERIFY_FAILED",
+            Self::WithdrawalPayoutExceedsVestedNet { .. } => "ECON_WITHDRAWAL_PAYOUT_EXCEEDS_NET",
+            Self::VestingQuarterInvalid { .. } => "ECON_VESTING_QUARTER_INVALID",
+            Self::WithdrawalBondExtraDataMalformed { .. } => {
+                "ECON_WITHDRAWAL_BOND_EXTRA_DATA_MALFORMED"
+            }
         }
     }
 
@@ -761,6 +809,24 @@ impl ValidationError {
                 map.insert("reason".into(), Value::String(reason.clone()));
                 map.insert("height".into(), (*height).into());
                 map.insert("activation_height".into(), (*activation_height).into());
+            }
+            Self::WithdrawalPayoutExceedsVestedNet {
+                payout,
+                bound,
+                bond_inputs,
+                non_bond_value,
+            } => {
+                map.insert("payout".into(), (*payout).into());
+                map.insert("bound".into(), (*bound).into());
+                map.insert("bond_inputs".into(), (*bond_inputs).into());
+                map.insert("non_bond_value".into(), (*non_bond_value).into());
+            }
+            Self::VestingQuarterInvalid { quarter_slots } => {
+                map.insert("quarter_slots".into(), (*quarter_slots).into());
+            }
+            Self::WithdrawalBondExtraDataMalformed { input_index, len } => {
+                map.insert("input_index".into(), (*input_index).into());
+                map.insert("len".into(), (*len).into());
             }
         }
 

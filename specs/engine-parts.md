@@ -2103,12 +2103,12 @@ Note: struct PresenceHeartbeat (not Heartbeat) in the tpop module; this is diffe
 - `ProducerInfo::is_active()` / `ProducerInfo::can_produce()` — true if Active or Unbonding
 - `ProducerInfo::selection_weight()` — own bonds + received_delegations bonds (0 if not active)
 - `ProducerInfo::add_bonds(outpoints, amount_per_bond, creation_slot)` — adds bonds up to MAX cap
-- `ProducerInfo::calculate_withdrawal_with_quarter(count, current_slot, quarter_slots)` — FIFO net + penalty
+- (removed in INC-I-171 M1, `6ae62400`) `ProducerInfo::calculate_withdrawal{,_with_quarter}` — the consensus penalty is `crates/core/src/validation/vesting.rs::penalized_bond_net` / `check_withdrawal_payout_bound`; spent-input resolution is `crates/storage/src/producer/withdrawal_inputs.rs::resolve_withdrawal_inputs`
 - `ProducerInfo::apply_withdrawal(count, bond_unit)` — removes oldest bond_entries; auto-exits if all withdrawn
 - `ProducerInfo::activity_status_for_network(height, network)` — returns ActivityStatus
 - `producer_weight_for_network(registered_at, current_height, network)` — discrete yearly seniority steps 1/2/3/4
 - `total_weight_for_network(producers, current_height, network)` — sum of weights of active producers
-- `calculate_withdrawal_from_bonds(bonds, count, current_slot, quarter_slots)` — FIFO withdrawal from UTXO-derived bond entries
+- (removed in INC-I-171 M1) `calculate_withdrawal_from_bonds` — it enumerated storage (backend-order dependent); consensus now folds over the transaction's own inputs
 
 ### Snapshot
 - `StateSnapshot` — serialized state ready for snap sync transfer; fields: `block_hash`, `block_height`, `chain_state_bytes`, `utxo_set_bytes`, `producer_set_bytes`, `state_root`
@@ -2485,7 +2485,7 @@ Note: struct PresenceHeartbeat (not Heartbeat) in the tpop module; this is diffe
   - `MissingInput(Hash, u32)` — input outpoint does not exist in UTXO set or pool
   - `DoubleSpend { tx_hash: Hash, output_index: u32, spending_tx: Hash }` — outpoint already claimed by mempool tx
 - `Mempool::new(policy, params, network)` / `Mempool::mainnet()` / `Mempool::testnet()` — constructors
-- `Mempool::add_transaction(tx, utxo_set, current_height)` — full admission path: duplicate → size → structural → signature/covenant → fee → ancestor limit → double-spend → eviction → CPFP ancestor wiring; returns tx hash
+- `Mempool::add_transaction(tx, utxo_set, current_height, current_slot)` — full admission path: duplicate → size → structural → signature/covenant → fee → ancestor limit → double-spend → eviction → CPFP ancestor wiring; returns tx hash. `current_slot` raises `Mempool::slot_watermark`, and that watermark — not the call's slot — is the INC-I-171 vesting bound's evaluation input (skipped while the watermark is 0)
 - `Mempool::add_system_transaction(tx, current_height)` — bypass fee/UTXO for state-only txs (e.g. SlashProducer); still validates structure; inserts at fee_rate=0
 - `Mempool::remove_transaction(tx_hash)` — removes entry; cleans all indexes and cross-links; returns removed entry
 - `Mempool::remove_for_block(transactions)` — remove confirmed transactions
@@ -2501,7 +2501,7 @@ Note: struct PresenceHeartbeat (not Heartbeat) in the tpop module; this is diffe
 - `Mempool::calculate_unconfirmed_balance(pubkey_hash, utxo_set)` — returns (incoming, outgoing) amounts across all mempool txs
 - `Mempool::get_unconfirmed_balance(pubkey_hash, utxo_set)` — returns signed net unconfirmed balance (incoming - outgoing)
 - `Mempool::expire_old()` — remove transactions older than policy.max_age (evict_lowest_fee helper; called externally)
-- `Mempool::revalidate(utxo_set, current_height)` — post-reorg cleanup; re-validates all entries against new UTXO set
+- `Mempool::revalidate(utxo_set, current_height, current_slot)` — post-reorg cleanup; re-validates all entries against new UTXO set. Raises the slot watermark but does NOT evaluate the vesting bound, so a reorg cannot evict an honest withdrawal on it (INV-VEST-011)
 
 ---
 ---

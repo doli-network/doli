@@ -196,6 +196,7 @@ impl RpcContext {
         let diagnostic = {
             let chain_state = self.chain_state.read().await;
             let current_height = chain_state.best_height;
+            let current_slot = chain_state.best_slot;
             drop(chain_state);
 
             let mut mempool = self.mempool.write().await;
@@ -215,7 +216,7 @@ impl RpcContext {
             } else {
                 let utxo_set = self.utxo_set.read().await;
                 let result = mempool
-                    .add_transaction(tx.clone(), &utxo_set, current_height)
+                    .add_transaction(tx.clone(), &utxo_set, current_height, current_slot)
                     .map_err(Self::mempool_error_to_rpc)?;
                 result.diagnostic.contention.clone()
             }

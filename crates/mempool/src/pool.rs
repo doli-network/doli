@@ -10,6 +10,7 @@ use doli_core::validation::{
 };
 use doli_core::{BlockHeight, Transaction, TxType};
 use serde_json::Value;
+use storage::producer::resolve_withdrawal_inputs;
 use storage::{Outpoint, UtxoSet};
 use thiserror::Error;
 use tracing::{debug, info, warn};
@@ -179,6 +180,9 @@ pub struct Mempool {
     params: ConsensusParams,
     /// Network type
     network: Network,
+    /// INC-I-171 M5 (INV-VEST-011): highest slot this mempool was ever handed.
+    /// Never regresses, so a reorg cannot walk the pool's notion of time back.
+    slot_watermark: u32,
     /// Phase 2.1 Oracle M8 sunset flag — shared with the Node via
     /// `Arc<AtomicBool>`. When the Node's epoch-boundary aggregator
     /// flips this, every subsequent
@@ -229,6 +233,7 @@ impl Mempool {
             total_size: 0,
             params,
             network,
+            slot_watermark: 0,
             oracle_sunset_triggered: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             active_producers_weighted: std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
             pending_producer_keys: std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
@@ -311,39 +316,74 @@ impl Mempool {
     /// transactions this mempool already holds, which is what keeps
     /// `[partial(P), full-exit(P)]` — unsatisfiable in ONE block at any input
     /// set (SEC-FIXVERIFY2-001) — from being assembled out of this mempool.
-    fn withdrawal_holdings_verdict(
+    /// `vesting_lane` is true only on the admission lane; `revalidate` passes
+    /// false so no vesting `Err` can reach its evict-on-`Err` loop
+    /// (INV-VEST-011). The bound reads `slot_watermark`, not the call's slot.
+    fn withdrawal_verdict(
         &self,
         tx: &Transaction,
         utxo_set: &UtxoSet,
         current_height: BlockHeight,
+        vesting_lane: bool,
         count_residents: bool,
     ) -> Result<(), String> {
-        if tx.tx_type != TxType::RequestWithdrawal
-            || current_height
-                < self
-                    .network
-                    .params()
-                    .withdrawal_holdings_gate_activation_height
-        {
+        if tx.tx_type != TxType::RequestWithdrawal {
             return Ok(());
         }
         let Some(wd) = tx.withdrawal_request_data() else {
             return Ok(());
         };
-        let resident = if count_residents {
-            withdrawal_holdings::resident_withdrawn(
-                self.entries.values().map(|e| &e.tx),
-                &wd.producer_pubkey,
-            )
+        let params = self.network.params();
+        let holdings_open = current_height >= params.withdrawal_holdings_gate_activation_height;
+        // INV-VEST-011: the watermark, never the call slot. A slot that went
+        // backwards must not turn an in-flight honest withdrawal into a
+        // rejection; watermark 0 means none ever arrived, so the builder gates.
+        let vesting_slot = if vesting_lane {
+            Some(self.slot_watermark()).filter(|s| *s != 0)
         } else {
-            0
+            None
         };
-        withdrawal_holdings::check(
+        if vesting_lane && vesting_slot.is_none() {
+            debug!(
+                "INC-I-171: vesting bound skipped for {} — watermark is 0",
+                tx.hash()
+            );
+        }
+        if !holdings_open && vesting_slot.is_none() {
+            return Ok(());
+        }
+        // INV-VEST-008: ONE resolution feeds both arms.
+        let owner = withdrawal_holdings::address_of(&wd.producer_pubkey);
+        let resolved = resolve_withdrawal_inputs(tx, utxo_set, &owner);
+        if holdings_open {
+            let resident = if count_residents {
+                withdrawal_holdings::resident_withdrawn(
+                    self.entries.values().map(|e| &e.tx),
+                    &wd.producer_pubkey,
+                )
+            } else {
+                0
+            };
+            withdrawal_holdings::check(
+                tx,
+                utxo_set,
+                &resolved,
+                self.producer_holdings.lookup(&wd.producer_pubkey),
+                resident,
+                current_height,
+            )?;
+        }
+        let Some(slot) = vesting_slot else {
+            return Ok(());
+        };
+        crate::vesting_bound::vesting_bound_verdict(
             tx,
-            utxo_set,
-            self.producer_holdings.lookup(&wd.producer_pubkey),
-            resident,
+            &resolved,
+            slot,
             current_height,
+            params.vesting_quarter_slots,
+            params.inc_i_171_vesting_penalty_activation_height,
+            params.inc_i_171_vesting_penalty_disable_height,
         )
     }
 
@@ -402,6 +442,13 @@ impl Mempool {
         )
     }
 
+    /// INC-I-171 M5 (INV-VEST-011): the highest slot handed to
+    /// `add_transaction` / `revalidate`, and the vesting bound's evaluation
+    /// input — a regressed slot never tightens the bound.
+    pub fn slot_watermark(&self) -> u32 {
+        self.slot_watermark
+    }
+
     /// Create with default mainnet settings
     pub fn mainnet() -> Self {
         Self::new(
@@ -420,13 +467,18 @@ impl Mempool {
         )
     }
 
-    /// Add a transaction to the mempool
+    /// Add a transaction to the mempool.
+    ///
+    /// `current_slot` feeds the INC-I-171 vesting bound and raises the
+    /// watermark before any early return (INV-VEST-011).
     pub fn add_transaction(
         &mut self,
         tx: Transaction,
         utxo_set: &UtxoSet,
         current_height: BlockHeight,
+        current_slot: u32,
     ) -> Result<AddTransactionResult, MempoolError> {
+        self.slot_watermark = self.slot_watermark.max(current_slot);
         let tx_hash = tx.hash();
 
         // Check if already in mempool
@@ -595,7 +647,9 @@ impl Mempool {
         // refuses. Placed after the signature checks so an unsigned withdrawal
         // still reports as one, and before fee work so a rejected one costs
         // nothing more.
-        self.withdrawal_holdings_verdict(&tx, utxo_set, current_height, true)
+        // INC-I-171 M5 rides the same call (REQ-VEST-008): one input resolution,
+        // two independently gated arms.
+        self.withdrawal_verdict(&tx, utxo_set, current_height, true, true)
             .map_err(MempoolError::InvalidTransaction)?;
 
         // INC-I-203 M2: same verdict the builder applies (REQ-BOND-004).
@@ -1302,7 +1356,13 @@ impl Mempool {
 
     /// Revalidate all transactions against current UTXO set
     /// Used after chain reorganization to remove invalid transactions
-    pub fn revalidate(&mut self, utxo_set: &UtxoSet, current_height: BlockHeight) {
+    pub fn revalidate(
+        &mut self,
+        utxo_set: &UtxoSet,
+        current_height: BlockHeight,
+        current_slot: u32,
+    ) {
+        self.slot_watermark = self.slot_watermark.max(current_slot);
         let mut to_remove = Vec::new();
 
         for (hash, entry) in &self.entries {
@@ -1327,7 +1387,7 @@ impl Mempool {
             // BOTH members of a legitimate pre-existing pair (INC-I-147).
             if valid {
                 if let Err(reason) =
-                    self.withdrawal_holdings_verdict(tx, utxo_set, current_height, false)
+                    self.withdrawal_verdict(tx, utxo_set, current_height, false, false)
                 {
                     warn!("INC-I-180: evicting withdrawal {} — {}", hash, reason);
                     valid = false;
@@ -1500,7 +1560,7 @@ mod tests {
         let (utxo_set, tx_hash, pubkey_hash) = funded_utxo(10_000);
         let tx = simple_transfer(tx_hash, 10_000, 1_000, pubkey_hash);
 
-        let result = mempool.add_transaction(tx, &utxo_set, 100);
+        let result = mempool.add_transaction(tx, &utxo_set, 100, 100);
         assert!(result.is_ok());
         assert_eq!(mempool.len(), 1);
         assert!(!mempool.is_empty());
@@ -1512,8 +1572,10 @@ mod tests {
         let (utxo_set, tx_hash, pubkey_hash) = funded_utxo(10_000);
         let tx = simple_transfer(tx_hash, 10_000, 1_000, pubkey_hash);
 
-        mempool.add_transaction(tx.clone(), &utxo_set, 100).unwrap();
-        let result = mempool.add_transaction(tx, &utxo_set, 100);
+        mempool
+            .add_transaction(tx.clone(), &utxo_set, 100, 100)
+            .unwrap();
+        let result = mempool.add_transaction(tx, &utxo_set, 100, 100);
         assert!(matches!(result, Err(MempoolError::AlreadyExists)));
     }
 
@@ -1525,7 +1587,7 @@ mod tests {
         let dest = crypto::hash::hash(b"dest");
         let tx = simple_transfer(fake_hash, 5_000, 500, dest);
 
-        let result = mempool.add_transaction(tx, &utxo_set, 100);
+        let result = mempool.add_transaction(tx, &utxo_set, 100, 100);
         assert!(matches!(result, Err(MempoolError::MissingInput(_, _))));
     }
 
@@ -1541,7 +1603,7 @@ mod tests {
         );
         sign_tx(&mut tx);
 
-        let result = mempool.add_transaction(tx, &utxo_set, 100);
+        let result = mempool.add_transaction(tx, &utxo_set, 100, 100);
         assert!(matches!(result, Err(MempoolError::InvalidTransaction(_))));
     }
 
@@ -1556,7 +1618,7 @@ mod tests {
             vec![Output::normal(9_000, pubkey_hash)],
         );
         sign_tx(&mut tx1);
-        mempool.add_transaction(tx1, &utxo_set, 100).unwrap();
+        mempool.add_transaction(tx1, &utxo_set, 100, 100).unwrap();
 
         // Second tx tries to spend the same UTXO
         let dest2 = crypto::hash::hash(b"other_dest");
@@ -1565,7 +1627,7 @@ mod tests {
             vec![Output::normal(8_000, dest2)],
         );
         sign_tx(&mut tx2);
-        let result = mempool.add_transaction(tx2, &utxo_set, 100);
+        let result = mempool.add_transaction(tx2, &utxo_set, 100, 100);
         assert!(matches!(result, Err(MempoolError::DoubleSpend { .. })));
     }
 
@@ -1575,7 +1637,7 @@ mod tests {
         let (utxo_set, tx_hash, pubkey_hash) = funded_utxo(10_000);
         let tx = simple_transfer(tx_hash, 10_000, 1_000, pubkey_hash);
 
-        let result = mempool.add_transaction(tx, &utxo_set, 100).unwrap();
+        let result = mempool.add_transaction(tx, &utxo_set, 100, 100).unwrap();
         assert_eq!(mempool.len(), 1);
 
         let removed = mempool.remove_transaction(&result.tx_hash);
@@ -1590,7 +1652,9 @@ mod tests {
         let (utxo_set, tx_hash, pubkey_hash) = funded_utxo(10_000);
         let tx = simple_transfer(tx_hash, 10_000, 1_000, pubkey_hash);
 
-        mempool.add_transaction(tx.clone(), &utxo_set, 100).unwrap();
+        mempool
+            .add_transaction(tx.clone(), &utxo_set, 100, 100)
+            .unwrap();
         assert_eq!(mempool.len(), 1);
 
         mempool.remove_for_block(&[tx]);
@@ -1622,7 +1686,7 @@ mod tests {
                 )
                 .unwrap();
             let tx = simple_transfer(tx_hash, 50_000, 5_000, pubkey_hash);
-            mempool.add_transaction(tx, &utxo_set, 100).unwrap();
+            mempool.add_transaction(tx, &utxo_set, 100, 100).unwrap();
         }
 
         assert_eq!(mempool.len(), 2);
@@ -1666,7 +1730,9 @@ mod tests {
         );
         sign_tx(&mut parent_tx);
         let parent_hash = parent_tx.hash();
-        mempool.add_transaction(parent_tx, &utxo_set, 100).unwrap();
+        mempool
+            .add_transaction(parent_tx, &utxo_set, 100, 100)
+            .unwrap();
 
         // Child tx: high fee (fee = 50_000)
         let mut child_tx = Transaction::new_transfer(
@@ -1675,7 +1741,9 @@ mod tests {
         );
         sign_tx(&mut child_tx);
         let child_hash = child_tx.hash();
-        mempool.add_transaction(child_tx, &utxo_set, 100).unwrap();
+        mempool
+            .add_transaction(child_tx, &utxo_set, 100, 100)
+            .unwrap();
 
         // Verify CPFP: child's effective_fee_rate includes ancestor package
         let child_entry = mempool.get(&child_hash).unwrap();
@@ -1697,7 +1765,7 @@ mod tests {
             vec![Output::normal(9_000, other)],
         );
         sign_tx(&mut tx);
-        mempool.add_transaction(tx, &utxo_set, 100).unwrap();
+        mempool.add_transaction(tx, &utxo_set, 100, 100).unwrap();
 
         // Original address should show outgoing
         let (incoming, outgoing) = mempool.calculate_unconfirmed_balance(&pubkey_hash, &utxo_set);
@@ -1715,12 +1783,12 @@ mod tests {
         let (utxo_set, tx_hash, pubkey_hash) = funded_utxo(10_000);
         let tx = simple_transfer(tx_hash, 10_000, 1_000, pubkey_hash);
 
-        mempool.add_transaction(tx, &utxo_set, 100).unwrap();
+        mempool.add_transaction(tx, &utxo_set, 100, 100).unwrap();
         assert_eq!(mempool.len(), 1);
 
         // Revalidate against an empty UTXO set (simulates reorg removing the UTXO)
         let empty_utxo = UtxoSet::new();
-        mempool.revalidate(&empty_utxo, 200);
+        mempool.revalidate(&empty_utxo, 200, 200);
         assert_eq!(mempool.len(), 0);
     }
 
@@ -1763,7 +1831,7 @@ mod tests {
         };
         sign_tx(&mut tx);
 
-        let result = mempool.add_transaction(tx, &utxo_set, 100);
+        let result = mempool.add_transaction(tx, &utxo_set, 100, 100);
         assert!(
             matches!(result, Err(MempoolError::FeeTooLow(0, 1))),
             "Mempool should reject tx with fee 0 when minimum is 1: {:?}",
@@ -1810,7 +1878,7 @@ mod tests {
         };
         sign_tx(&mut tx);
 
-        let result = mempool.add_transaction(tx, &utxo_set, 100);
+        let result = mempool.add_transaction(tx, &utxo_set, 100, 100);
         assert!(
             result.is_ok(),
             "Mempool should accept tx with sufficient per-byte fee: {:?}",
@@ -1846,7 +1914,7 @@ mod tests {
         );
         sign_tx(&mut tx);
 
-        let result = mempool.add_transaction(tx, &utxo_set, 100);
+        let result = mempool.add_transaction(tx, &utxo_set, 100, 100);
         assert!(
             result.is_ok(),
             "Plain transfer with fee=1 should be accepted: {:?}",

@@ -193,6 +193,7 @@ impl Node {
                 .params()
                 .addbond_cap_enforcement_activation_height,
             height,
+            super::withdrawal_holdings::VestingGate::at(current_slot, self.config.network),
         );
         // INC-I-203: the AddBond arm has its own activation height, so the
         // producer guard is needed when EITHER arm is live.

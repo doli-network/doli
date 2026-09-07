@@ -122,7 +122,7 @@ async fn test_poison_nft_purged_by_error_pattern() {
     let (mut pool, utxo_set) = setup_mempool_with_utxo(&keypair, funding_hash);
 
     let nft_tx = make_signed_nft_tx(&keypair, funding_hash);
-    pool.add_transaction(nft_tx, &utxo_set, 5000).unwrap();
+    pool.add_transaction(nft_tx, &utxo_set, 5000, 1).unwrap();
     assert_eq!(pool.len(), 1);
 
     pool.remove_by_error_pattern("NFT token_id abc123 already exists");
@@ -139,7 +139,7 @@ async fn test_poison_purge_preserves_normal_txs() {
     let (mut pool, utxo_set) = setup_mempool_with_utxo(&keypair, funding_hash);
 
     let normal_tx = make_signed_transfer(&keypair, funding_hash);
-    pool.add_transaction(normal_tx, &utxo_set, 5000).unwrap();
+    pool.add_transaction(normal_tx, &utxo_set, 5000, 1).unwrap();
     assert_eq!(pool.len(), 1);
 
     pool.remove_by_error_pattern("NFT token_id already exists");
@@ -169,7 +169,7 @@ async fn test_poison_10_purge_cycles_no_crash() {
         let _ = utxo_set.insert(Outpoint::new(funding, 0), entry);
 
         let nft_tx = make_signed_nft_tx(&keypair, funding);
-        let _ = pool.add_transaction(nft_tx, &utxo_set, 5000 + i);
+        let _ = pool.add_transaction(nft_tx, &utxo_set, 5000 + i, 1);
 
         pool.remove_by_error_pattern("NFT token_id already exists");
     }
@@ -239,7 +239,7 @@ async fn test_poison_mixed_mempool_selective_purge() {
     );
     let normal_tx = make_signed_transfer(&keypair, funding1);
     let _normal_hash = normal_tx.hash();
-    pool.add_transaction(normal_tx, &utxo_set, 5000).unwrap();
+    pool.add_transaction(normal_tx, &utxo_set, 5000, 1).unwrap();
 
     // Add an NFT TX
     let funding2 = crypto::hash::hash(b"funding_mixed_nft");
@@ -253,7 +253,7 @@ async fn test_poison_mixed_mempool_selective_purge() {
         },
     );
     let nft_tx = make_signed_nft_tx(&keypair, funding2);
-    pool.add_transaction(nft_tx, &utxo_set, 5000).unwrap();
+    pool.add_transaction(nft_tx, &utxo_set, 5000, 1).unwrap();
 
     assert_eq!(pool.len(), 2);
 
@@ -295,7 +295,7 @@ async fn test_poison_regossip_repurge() {
     let _tx_hash = nft_tx.hash();
 
     // First cycle: add + purge
-    pool.add_transaction(nft_tx.clone(), &utxo_set, 5000)
+    pool.add_transaction(nft_tx.clone(), &utxo_set, 5000, 1)
         .unwrap();
     assert_eq!(pool.len(), 1);
     pool.remove_by_error_pattern("NFT token_id already exists");
@@ -303,7 +303,7 @@ async fn test_poison_regossip_repurge() {
 
     // Second cycle: re-add (simulating gossip) — mempool may reject (spent UTXO)
     // but remove_by_error_pattern must not crash regardless
-    let _ = pool.add_transaction(nft_tx.clone(), &utxo_set, 5000);
+    let _ = pool.add_transaction(nft_tx.clone(), &utxo_set, 5000, 1);
     pool.remove_by_error_pattern("NFT token_id already exists");
     // Should be 0 or already rejected by mempool
     assert!(pool.len() <= 1);
@@ -341,7 +341,7 @@ async fn test_poison_full_lifecycle() {
     // Step 1: Add toxic TX
     let nft_tx = make_signed_nft_tx(&keypair, funding);
     let tx_hash = nft_tx.hash();
-    pool.add_transaction(nft_tx, &utxo_set, 5000).unwrap();
+    pool.add_transaction(nft_tx, &utxo_set, 5000, 1).unwrap();
     assert_eq!(pool.len(), 1);
 
     // Step 2: Simulate "already exists" error from apply_block

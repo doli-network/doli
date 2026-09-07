@@ -364,7 +364,7 @@ async fn offer_to_mempool(sc: &Scenario, at_height: u64) -> Vec<Result<(), Strin
         .iter()
         .map(|tx| {
             mempool
-                .add_transaction(tx.clone(), &utxo, at_height)
+                .add_transaction(tx.clone(), &utxo, at_height, 1)
                 .map(|_| ())
                 .map_err(|e| e.to_string())
         })

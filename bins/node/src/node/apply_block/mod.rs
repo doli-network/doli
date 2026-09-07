@@ -382,8 +382,11 @@ impl Node {
             let mut mempool = self.mempool.write().await;
             mempool.remove_for_block(&block.transactions);
             let utxo = self.utxo_set.read().await;
-            let height = self.chain_state.read().await.best_height;
-            mempool.revalidate(&utxo, height);
+            let (height, slot) = {
+                let chain_state = self.chain_state.read().await;
+                (chain_state.best_height, chain_state.best_slot)
+            };
+            mempool.revalidate(&utxo, height, slot);
         }
 
         // Prune old undo data. See `consensus::UNDO_KEEP_DEPTH` for sizing rationale.

@@ -13,12 +13,15 @@
 //! input. Admission is NOT contained in builder-skip.
 
 use crypto::PublicKey;
-use doli_core::transaction::OutputType;
 use doli_core::{BlockHeight, Transaction};
-use storage::{Outpoint, UtxoSet};
+use storage::producer::WithdrawalInputs;
+use storage::UtxoSet;
 
 use crate::holdings::HoldingsLookup;
 
+/// `resolved` is the caller's single `resolve_withdrawal_inputs` pass, shared
+/// with the INC-I-171 vesting arm (INV-VEST-008).
+///
 /// `in_mempool_withdrawn` stands in for the gate's `in_block_withdrawn`: bonds
 /// already claimed by same-producer withdrawals this mempool holds. Pass 0 to
 /// evaluate a resident transaction on its own (`revalidate`), which is what
@@ -26,6 +29,7 @@ use crate::holdings::HoldingsLookup;
 pub(crate) fn check(
     tx: &Transaction,
     utxo: &UtxoSet,
+    resolved: &WithdrawalInputs,
     lookup: HoldingsLookup,
     in_mempool_withdrawn: u32,
     height: BlockHeight,
@@ -66,7 +70,7 @@ pub(crate) fn check(
     }
 
     let owner = address_of(&pk);
-    let (bond_inputs, all_bond_inputs) = bond_input_split(tx, utxo, &owner);
+    let (bond_inputs, all_bond_inputs) = (resolved.owned_bonds, resolved.all_bonds);
     let mismatch = || {
         format!(
             "[ECON_WITHDRAWAL_BOND_COUNT_MISMATCH] RequestWithdrawal at height={} \
@@ -114,22 +118,4 @@ pub(crate) fn resident_withdrawn<'a>(
 
 pub(crate) fn address_of(pk: &PublicKey) -> crypto::Hash {
     crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, pk.as_bytes())
-}
-
-/// `(inputs resolving as Bond owned by `owner`, ALL inputs resolving as Bond)`.
-fn bond_input_split(tx: &Transaction, utxo: &UtxoSet, owner: &crypto::Hash) -> (u32, u32) {
-    let (mut owned, mut all_bonds) = (0u32, 0u32);
-    for inp in &tx.inputs {
-        let Some(entry) = utxo.get(&Outpoint::new(inp.prev_tx_hash, inp.output_index)) else {
-            continue;
-        };
-        if entry.output.output_type != OutputType::Bond {
-            continue;
-        }
-        all_bonds = all_bonds.saturating_add(1);
-        if entry.output.pubkey_hash == *owner {
-            owned = owned.saturating_add(1);
-        }
-    }
-    (owned, all_bonds)
 }

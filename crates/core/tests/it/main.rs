@@ -11,6 +11,10 @@
 //! the legacy top-level files stay where they are until they are migrated.
 //! `.claude/hooks/test-binary-gate.sh` enforces the layout.
 
+mod inc_i_171_m1_node_level_bound_tripwire;
+mod inc_i_171_m2_activation_height;
+mod inc_i_171_m2_payout_bound;
+mod inc_i_171_m2_penalty_golden;
 mod inc_i_178_m2_message;
 mod inc_i_178_m4_commitment;
 mod inc_i_180_activation_height;

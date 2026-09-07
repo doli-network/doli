@@ -837,6 +837,26 @@ pub struct NetworkParams {
     /// IMMUTABILITY (INC-I-054): once crossed, never move.
     pub inc_i_208_own_attestation_activation_height: u64,
 
+    /// INC-I-171 vesting-penalty activation height.
+    ///
+    /// At and above it a `RequestWithdrawal` payout is bounded by the penalized
+    /// net of the Bond inputs it spends; below it, nothing. Q1 **YES**
+    /// (user-submittable `RequestWithdrawal`), Q2 **YES** (producer action),
+    /// Q3 **NO** ⇒ own ACTIVATION HEIGHT REQUIRED, never bundled. CONTRAST with
+    /// #208: block CONTENT is UNCHANGED — the rule only rejects, it alters no
+    /// byte a producer emits — so a rolling deploy is safe while frozen, NOT
+    /// synchronized. Ships `u64::MAX` on every network; pinning one is a
+    /// separate user decision-session. Forward-only. Mainnet IMMUTABILITY
+    /// (INC-I-054): once crossed, never move.
+    pub inc_i_171_vesting_penalty_activation_height: u64,
+
+    /// INC-I-171 vesting-penalty disable height — the paired kill-switch.
+    ///
+    /// The rule is armed on `[activation, disable)`, so it also ships
+    /// `u64::MAX` = never disabled. A value below the activation height would
+    /// make the rule permanently unreachable.
+    pub inc_i_171_vesting_penalty_disable_height: u64,
+
     /// How many registered producers must exist before the maintainer trust root
     /// is seeded at all (INC-I-172 M2 review F3).
     ///

@@ -1093,8 +1093,11 @@ impl Node {
         {
             let mut mempool = self.mempool.write().await;
             let utxo = self.utxo_set.read().await;
-            let height = self.chain_state.read().await.best_height;
-            mempool.revalidate(&utxo, height);
+            let (height, slot) = {
+                let chain_state = self.chain_state.read().await;
+                (chain_state.best_height, chain_state.best_slot)
+            };
+            mempool.revalidate(&utxo, height, slot);
         }
 
         let new_tip_height = self.chain_state.read().await.best_height;

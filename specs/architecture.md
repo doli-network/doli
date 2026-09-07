@@ -931,7 +931,8 @@ The maintainer system (`core/maintainer.rs`, 701 lines) implements decentralized
 | `event_loop.rs` | `run_event_loop()` -- main event loop (biased select!) |
 | `network_events.rs` | `handle_network_event()` -- gossip/sync message dispatch |
 | `block_handling.rs` | `handle_new_block()`, `execute_reorg()` |
-| `validation_checks.rs` | `check_producer_eligibility()`, `validate_block_*()` |
+| `validation_checks/mod.rs` | `check_producer_eligibility()`, `validate_block_*()` |
+| `validation_checks/withdrawal_economics.rs` | `check_withdrawal_economics()` -- INC-I-180 holdings rules + INC-I-171 vesting payout bound |
 | `rewards.rs` | `calculate_epoch_rewards()`, `handle_equivocation()` |
 | `rollback.rs` | `rollback_one_block()`, `resolve_shallow_fork()` -- undo-based |
 | `fork_recovery.rs` | Fork recovery (9 functions) |

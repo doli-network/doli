@@ -61,9 +61,9 @@
 //! OUTPUT CONTRACT
 //! ---------------------------------------------------------------------------
 //! Functions under test:
-//!   `Mempool::add_transaction(&mut self, Transaction, &UtxoSet, BlockHeight)
+//!   `Mempool::add_transaction(&mut self, Transaction, &UtxoSet, BlockHeight, Slot)
 //!        -> Result<AddTransactionResult, MempoolError>`
-//!   `Mempool::revalidate(&mut self, &UtxoSet, BlockHeight)`
+//!   `Mempool::revalidate(&mut self, &UtxoSet, BlockHeight, Slot)`
 //!
 //! Both take `&mut self`, so the receiver is an output:
 //!   O1  the `add_transaction` accept/reject verdict
@@ -357,7 +357,7 @@ fn offer(mempool: &mut Mempool, case: &Case, height: u64) -> Vec<Result<(), Stri
         .iter()
         .map(|tx| {
             mempool
-                .add_transaction(tx.clone(), &case.utxo, height)
+                .add_transaction(tx.clone(), &case.utxo, height, 1)
                 .map(|_| ())
                 .map_err(|e| e.to_string())
         })
@@ -574,7 +574,7 @@ fn req_i180_003_revalidate_evicts_a_withdrawal_that_became_invalid() {
     let (mut mempool, snapshot) = wired(&c);
 
     mempool
-        .add_transaction(c.txs[0].clone(), &c.utxo, POST_AH)
+        .add_transaction(c.txs[0].clone(), &c.utxo, POST_AH, 1)
         .expect("harness: the well-formed withdrawal must be admitted");
     assert!(mempool.contains(&c.subject));
 
@@ -596,7 +596,7 @@ fn req_i180_003_revalidate_evicts_a_withdrawal_that_became_invalid() {
         );
     }
 
-    mempool.revalidate(&c.utxo, POST_AH);
+    mempool.revalidate(&c.utxo, POST_AH, 1);
 
     // O4, O5
     assert!(

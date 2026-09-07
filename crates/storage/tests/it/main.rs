@@ -10,4 +10,7 @@
 //! test output attributes. New integration tests are modules of THIS binary.
 //! `.claude/hooks/test-binary-gate.sh` enforces the layout.
 
+mod inc_i_171_m1_dead_impl_tripwire;
+mod inc_i_171_m3_three_site_tripwire;
+mod inc_i_171_m3_withdrawal_inputs;
 mod inc_i_180_withdrawal_holdings;

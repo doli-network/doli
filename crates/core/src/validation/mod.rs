@@ -48,6 +48,8 @@ mod transaction;
 mod tx_types;
 mod types;
 mod utxo;
+/// INC-I-171 vesting-penalty predicate (pure integer arithmetic, no storage types).
+pub mod vesting;
 /// Zero-knowledge proof verification for L2 settlement.
 pub mod zk;
 

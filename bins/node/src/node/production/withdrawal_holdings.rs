@@ -12,9 +12,42 @@
 use std::collections::{HashMap, HashSet};
 
 use crypto::{Hash, PublicKey};
+use doli_core::network::Network;
 use doli_core::transaction::{OutputType, Transaction, TxType};
+use mempool::vesting_bound::vesting_bound_verdict;
 use mempool::{HoldingsLookup, ProducerHoldings};
-use storage::{Outpoint, ProducerSet, UtxoSet};
+use storage::producer::{resolve_withdrawal_inputs, WithdrawalInputs};
+use storage::{ProducerSet, UtxoSet};
+use tracing::debug;
+
+/// INC-I-171 M5 — the vesting window and the slot the builder evaluates at,
+/// read once at `WithdrawalParity::new`. The empty `Default` window keeps the
+/// arm dormant for any construction that does not supply one.
+#[derive(Clone, Copy, Default)]
+pub(super) struct VestingGate {
+    slot: u32,
+    quarter_slots: u64,
+    activation: u64,
+    disable: u64,
+}
+
+impl VestingGate {
+    /// INV-VEST-007: outside the window the arm costs nothing, not even the
+    /// input resolution.
+    fn open_at(&self, height: u64) -> bool {
+        height >= self.activation && height < self.disable
+    }
+
+    pub(super) fn at(slot: u32, network: Network) -> Self {
+        let params = network.params();
+        Self {
+            slot,
+            quarter_slots: params.vesting_quarter_slots,
+            activation: params.inc_i_171_vesting_penalty_activation_height,
+            disable: params.inc_i_171_vesting_penalty_disable_height,
+        }
+    }
+}
 
 #[derive(Default)]
 pub(super) struct WithdrawalParity {
@@ -29,14 +62,17 @@ pub(super) struct WithdrawalParity {
     in_block_withdrawn: HashMap<PublicKey, u32>,
     earlier_hashes: HashSet<Hash>,
     owned_live_bonds: HashMap<Hash, u32>,
+    /// INC-I-171: independent of `active`, exactly as `addbond_ah` is.
+    vesting: VestingGate,
 }
 
 impl WithdrawalParity {
-    pub(super) fn new(active: bool, addbond_ah: u64, height: u64) -> Self {
+    pub(super) fn new(active: bool, addbond_ah: u64, height: u64, vesting: VestingGate) -> Self {
         Self {
             active,
             addbond_ah,
             height,
+            vesting,
             ..Self::default()
         }
     }
@@ -89,19 +125,63 @@ impl WithdrawalParity {
     }
 
     /// `Err` means the assembled block would be rejected — the caller skips.
+    ///
+    /// One `resolve_withdrawal_inputs` pass feeds both arms (INV-VEST-008). The
+    /// vesting arm runs whatever `active` says: its window is its own.
     pub(super) fn allow(&mut self, tx: &Transaction, utxo: &UtxoSet) -> Result<(), String> {
         if tx.tx_type == TxType::AddBond {
             return self.allow_add_bond(tx);
         }
-        if !self.active || tx.tx_type != TxType::RequestWithdrawal {
+        if tx.tx_type != TxType::RequestWithdrawal {
             return Ok(());
         }
         let Some(wd) = tx.withdrawal_request_data() else {
             return Ok(());
         };
+        if !self.active && !self.vesting.open_at(self.height) {
+            return Ok(());
+        }
         let pk = wd.producer_pubkey;
-        let declared = wd.bond_count;
+        let owner = crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, pk.as_bytes());
+        let resolved = resolve_withdrawal_inputs(tx, utxo, &owner);
+        if self.active {
+            self.allow_holdings(tx, pk, wd.bond_count, &owner, &resolved, utxo)?;
+        }
+        self.allow_vesting(tx, &resolved)
+    }
 
+    /// INC-I-171 M5 (REQ-VEST-008). A refusal is a SKIP upstream, never a bail.
+    fn allow_vesting(&self, tx: &Transaction, resolved: &WithdrawalInputs) -> Result<(), String> {
+        let verdict = vesting_bound_verdict(
+            tx,
+            resolved,
+            self.vesting.slot,
+            self.height,
+            self.vesting.quarter_slots,
+            self.vesting.activation,
+            self.vesting.disable,
+        );
+        if let Err(reason) = &verdict {
+            debug!(
+                "INC-I-171: skipping withdrawal {} at height {} — {}",
+                tx.hash(),
+                self.height,
+                reason
+            );
+        }
+        verdict
+    }
+
+    /// INC-I-180 M2 / S1, unchanged: R1/R2/R4 against the in-block tallies.
+    fn allow_holdings(
+        &mut self,
+        tx: &Transaction,
+        pk: PublicKey,
+        declared: u32,
+        owner: &Hash,
+        resolved: &WithdrawalInputs,
+        utxo: &UtxoSet,
+    ) -> Result<(), String> {
         let Some(info) = self.holdings.get(&pk).copied() else {
             return Err(format!(
                 "[ECON_WITHDRAWAL_UNKNOWN_PRODUCER] producer={pk:?}"
@@ -128,8 +208,7 @@ impl WithdrawalParity {
             );
         }
 
-        let owner = crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, pk.as_bytes());
-        let (bond_inputs, all_bond_inputs) = bond_input_split(tx, utxo, &owner);
+        let (bond_inputs, all_bond_inputs) = (resolved.owned_bonds, resolved.all_bonds);
         if all_bond_inputs != bond_inputs {
             return Err(format!(
                 "[ECON_WITHDRAWAL_BOND_COUNT_MISMATCH] {bond_inputs} of {all_bond_inputs} \
@@ -137,8 +216,8 @@ impl WithdrawalParity {
             ));
         }
         if declared == allowance && declared > 0 {
-            let owned = *self.owned_live_bonds.entry(owner).or_insert_with(|| {
-                u32::try_from(utxo.get_bond_entries(&owner).len()).unwrap_or(u32::MAX)
+            let owned = *self.owned_live_bonds.entry(*owner).or_insert_with(|| {
+                u32::try_from(utxo.get_bond_entries(owner).len()).unwrap_or(u32::MAX)
             });
             if bond_inputs != owned {
                 return Err(format!(
@@ -240,21 +319,4 @@ impl WithdrawalParity {
     pub(super) fn height(&self) -> u64 {
         self.height
     }
-}
-
-fn bond_input_split(tx: &Transaction, utxo: &UtxoSet, owner: &Hash) -> (u32, u32) {
-    let (mut owned, mut all_bonds) = (0u32, 0u32);
-    for inp in &tx.inputs {
-        let Some(entry) = utxo.get(&Outpoint::new(inp.prev_tx_hash, inp.output_index)) else {
-            continue;
-        };
-        if entry.output.output_type != OutputType::Bond {
-            continue;
-        }
-        all_bonds = all_bonds.saturating_add(1);
-        if entry.output.pubkey_hash == *owner {
-            owned = owned.saturating_add(1);
-        }
-    }
-    (owned, all_bonds)
 }

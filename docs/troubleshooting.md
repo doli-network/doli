@@ -1255,6 +1255,20 @@ Code: `decision.rs`, `dispatch.rs`, `production_gate.rs`, `recovery.rs`, `types.
 
 ---
 
+### 7.7. `[ECON_WITHDRAWAL_PAYOUT_EXCEEDS_NET]` Block or Transaction Rejected (INC-I-171)
+
+**Symptom:** a block is rejected with `[ECON_WITHDRAWAL_PAYOUT_EXCEEDS_NET] … payout=P bound=B bond_inputs=k non_bond_value=V`, or `doli producer request-withdrawal` / `submitTransaction` is refused with the same code. A sibling code `[ECON_WITHDRAWAL_BOND_EXTRA_DATA_MALFORMED]` names a spent Bond whose `extra_data` is not a 4-byte slot; `[ECON_VESTING_QUARTER_INVALID]` names a parameter fault (`vesting_quarter_slots` is 0 or above `u32::MAX`).
+
+**What it means:** from `inc_i_171_vesting_penalty_activation_height` (pinned at 133_640 on testnet (2026-09-07); `u64::MAX` on mainnet and devnet) a `RequestWithdrawal` may pay out at most the sum over its spent Bond inputs of `amount − amount×penalty%/100` (75/50/25/0 by bond age in `vesting_quarter_slots`, age = block slot − slot stamped in the Bond UTXO) plus its non-Bond inputs. A transaction built by a current `doli` CLI pays out exactly that bound; a rejection means the transaction was hand-built, built by an old client, or built against a different tip slot.
+
+**What to do:**
+1. Rebuild the withdrawal with the current CLI (`doli producer request-withdrawal`); it recomputes the bound from the live bond set.
+2. Compare `payout` with `bound` in the log line. `bound` already includes the change from non-Bond inputs; a `payout` above it by exactly the fee means the fee was carved from the wrong side.
+3. Below the activation height nothing is rejected; if you see this code there, the node is running a build with a pinned height — check `getNetworkParams`.
+4. Operators can watch `doli_vesting_would_reject_total{code=…}` and `doli_vesting_shadow_evaluated_total` (`/metrics`): the node evaluates the rule in shadow below the activation height so a pin can be preceded by a zero-would-reject soak.
+
+`ECON_WITHDRAWAL_BOND_EXTRA_DATA_MALFORMED` on a snap-synced node means a peer served a Bond UTXO that a validated block could never create (ERRTX007 blocks it). Re-sync from a canonical seed.
+
 ## 8. Getting Help
 
 ### Resources

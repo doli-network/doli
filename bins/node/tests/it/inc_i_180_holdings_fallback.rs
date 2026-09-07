@@ -84,7 +84,7 @@ async fn offer(node: &Node, tx: &Transaction) -> Result<(), String> {
     let utxo = node.utxo_set.read().await;
     let mut mempool = node.mempool.write().await;
     mempool
-        .add_transaction(tx.clone(), &utxo, POST_AH)
+        .add_transaction(tx.clone(), &utxo, POST_AH, 1)
         .map(|_| ())
         .map_err(|e| e.to_string())
 }
