@@ -2,6 +2,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
+use doli_cli::cmd_service_helper_units::refresh_helper_units_if_root;
+
 use crate::upgrade_restart::{find_doli_node_path, restart_doli_service, restart_specific_service};
 
 /// Operator advice for a failed `MaintainerState::load`, chosen by WHAT went wrong.
@@ -292,6 +294,10 @@ pub(crate) async fn cmd_upgrade(
     } else {
         restart_doli_service(installed_node_path.as_deref());
     }
+
+    // INC-I-215: already-deployed hosts have no re-install step, so this is where they
+    // gain the root helper units. No-op unless running as root on systemd.
+    refresh_helper_units_if_root(network.name(), service.as_deref(), Some(&data_dir));
 
     println!();
     println!("Upgrade to v{} complete!", release.version);

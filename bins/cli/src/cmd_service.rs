@@ -1,5 +1,7 @@
 use anyhow::{bail, Result};
 
+use doli_cli::cmd_service_helper_units as helper_units;
+
 use crate::commands::ServiceCommand;
 
 /// Entry point for `doli service <subcommand>`.
@@ -416,6 +418,12 @@ WantedBy=multi-user.target
 
     println!("Enabling {}...", service_name);
     run_cmd("systemctl", &["enable", &service_name])?;
+    // INC-I-215: the sandboxed node unit only stages releases; install the root trigger.
+    let dd = std::path::Path::new(&actual_data_dir);
+    let cli = helper_units::which_doli_cli();
+    if let Err(e) = helper_units::install_helper_units(&service_name, network, dd, &cli) {
+        println!("Warning: staged-upgrade helper units not installed: {e}");
+    }
 
     println!("Starting {}...", service_name);
     run_cmd("systemctl", &["start", &service_name])?;
@@ -566,6 +574,8 @@ fn cmd_uninstall(network: &str, name: Option<String>) -> Result<()> {
             println!("Removing {}...", unit_path);
             std::fs::remove_file(&unit_path)?;
         }
+
+        let _ = helper_units::remove_helper_units(&service_name);
 
         // M2 disk-guardian: remove the logrotate drop-in (absent-file tolerated).
         let dropin = logrotate_dropin_path(network);
