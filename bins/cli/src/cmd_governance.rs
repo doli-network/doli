@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use sha2::{Digest, Sha256};
 
 use crate::commands::{MaintainerCommands, ProtocolCommands, ReleaseCommands, UpdateCommands};
 use crate::rpc_client::RpcClient;
@@ -8,8 +9,12 @@ use crate::wallet::Wallet;
 
 pub(crate) async fn cmd_release(wallet_path: &Path, command: ReleaseCommands) -> Result<()> {
     match command {
-        ReleaseCommands::Sign { version, key } => {
-            cmd_release_sign(wallet_path, &version, key).await?;
+        ReleaseCommands::Sign {
+            version,
+            key,
+            checksums,
+        } => {
+            cmd_release_sign(wallet_path, &version, key, checksums).await?;
         }
         // Dispatched in main.rs: verification needs a trust root, not the wallet.
         ReleaseCommands::Verify { .. } => anyhow::bail!("release verify: routed in main.rs"),
@@ -21,6 +26,7 @@ pub(crate) async fn cmd_release_sign(
     wallet_path: &Path,
     version: &str,
     key_path: Option<PathBuf>,
+    checksums: Option<PathBuf>,
 ) -> Result<()> {
     // INC-I-172 M2, AUDIT-P0-011. Validate BEFORE the wallet is unlocked and before the
     // network is touched. A release signature is raw bytes over `"{version}:{hash}"`, and
@@ -40,11 +46,28 @@ pub(crate) async fn cmd_release_sign(
     let keypair = w.primary_keypair()?;
     let pubkey_hex = keypair.public_key().to_hex();
 
-    // Download CHECKSUMS.txt from GitHub and compute its SHA-256
-    println!("Fetching CHECKSUMS.txt for v{}...", version_bare);
-    let (_checksums_content, checksums_sha256) = updater::download_checksums_txt(&version_bare)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to fetch CHECKSUMS.txt: {}", e))?;
+    // The signed operand is sha256 over the CHECKSUMS.txt BYTES either way; only the
+    // source of those bytes differs. A DRAFT is invisible to the download URL, so the
+    // caller passes the file it already retrieved with an authenticated `gh`.
+    let checksums_sha256 = match checksums {
+        Some(path) => {
+            let bytes = std::fs::read(&path).map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to read CHECKSUMS.txt from {}: {}",
+                    path.display(),
+                    e
+                )
+            })?;
+            hex::encode(Sha256::digest(&bytes))
+        }
+        None => {
+            println!("Fetching CHECKSUMS.txt for v{}...", version_bare);
+            updater::download_checksums_txt(&version_bare)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to fetch CHECKSUMS.txt: {}", e))?
+                .1
+        }
+    };
 
     // The second operand of the same message. Validated even though it is computed
     // locally, so the shape assumption holds at the point of interpolation rather than

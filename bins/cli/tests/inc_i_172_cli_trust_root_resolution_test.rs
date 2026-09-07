@@ -73,7 +73,17 @@ fn cmd_upgrade_body() -> &'static str {
              against this host's on-chain trust root."
         )
     });
-    &SRC[start + SIG.len()..]
+    let tail = &SRC[start + SIG.len()..];
+    // End at the fn's own column-0 closing brace, not EOF: every item defined AFTER
+    // `cmd_upgrade` is a different call site with a different threat model.
+    match tail.find("\n}\n") {
+        Some(end) => &tail[..end],
+        None => panic!(
+            "`cmd_upgrade` has no column-0 closing brace in bins/cli/src/cmd_upgrade.rs. \
+             Re-anchor this slice — do NOT delete this test: AUDIT-P1-012 still requires \
+             `doli upgrade` to verify against this host's on-chain trust root."
+        ),
+    }
 }
 
 /// REQ-172-001 (Must). GREEN-lock.

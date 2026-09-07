@@ -238,10 +238,12 @@ async fn main() -> Result<()> {
                 version,
                 dir,
                 data_dir,
+                trust_root,
             } => {
                 let network: doli_core::Network =
                     cli.network.parse().map_err(|e| anyhow::anyhow!("{}", e))?;
-                cmd_upgrade::cmd_release_verify(version, dir, data_dir, network).await?;
+                cmd_upgrade::cmd_release_verify(version, dir, data_dir, network, trust_root)
+                    .await?;
             }
             signing => cmd_governance::cmd_release(&wallet, signing).await?,
         },
