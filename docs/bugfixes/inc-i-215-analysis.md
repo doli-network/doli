@@ -706,18 +706,21 @@ GREEN-lock: `apply_install_mode.rs`, `inc_i_172_install_gate_binding.rs`,
 `inc_i_172_apply_update_gate.rs` must stay green.
 
 ### M2 — node auto_apply branch + startup preflight (bins/node)
-Modules: `bins/node/src/updater/staged_apply.rs` (new, `#[path]` child of `service`) ·
-`bins/node/src/updater/preflight.rs` (new) · `bins/node/src/updater/service.rs` (≤ ~15 lines added).
+Modules (SHIPPED): `bins/node/src/updater/staged_apply.rs` (new, 66 lines, sibling module) ·
+`bins/node/src/updater/preflight.rs` (new, 73 lines) · `bins/node/src/updater/service.rs` (496 lines,
++18) · `bins/node/examples/inc_i_215_preflight_probe.rs` (outcome probe).
 Requirements: REQ-215-003, -004, -005, -014, -015, -016.
 RED tests (`bins/node/tests/inc_i_215_staged_apply.rs`, structural in the
 `inc_i_172_service_timing_test.rs` style + unit tests on the pure preflight helpers):
 - `auto_apply_probes_writability_before_installing` [REQ-215-001/003]
 - `auto_apply_still_contains_the_trust_root_reverification` (GREEN-lock, INC-I-172 F7(a))
 - `auto_apply_does_not_clear_pending_on_the_staging_path` [REQ-215-004]
-- `auto_apply_checks_the_ready_marker_before_fetch_github_release` [REQ-215-005]
+- `auto_apply_checks_the_ready_marker_before_fetch` [REQ-215-005]
 - `preflight_warns_once_naming_target_reason_and_fix_when_no_helper` [REQ-215-014]
 - `preflight_is_info_not_warn_when_a_helper_watches_this_staging_path` [REQ-215-014]
 - `preflight_is_silent_when_the_target_is_writable` [REQ-215-014]
+- `staging_success_emits_exactly_one_info_line` [REQ-215-015]
+- `helper_scan_tolerates_missing_or_unreadable_units_dir` [REQ-215-014]
 - `service_rs_is_within_the_module_budget` [REQ-215-016]
 
 ### M3 — CLI `doli upgrade --from-staged` (bins/cli)
@@ -877,9 +880,9 @@ Risk-weighted view
 |---|---|---|---|---|---|
 | REQ-215-001 | Must | M1, M2 | (test-writer) | §3(i) | `crates/updater/src/staging.rs` |
 | REQ-215-002 | Must | M1 | (test-writer) | §1, §3(b) | `crates/updater/src/staging.rs` |
-| REQ-215-003 | Must | M2 | (test-writer) | §2.2 | `bins/node/src/updater/staged_apply.rs` |
-| REQ-215-004 | Must | M2 | (test-writer) | §3(j) | `bins/node/src/updater/service.rs` |
-| REQ-215-005 | Must | M1, M2 | (test-writer) | §3(j) | `staging.rs` + `staged_apply.rs` |
+| REQ-215-003 | Must | M2 | `auto_apply_probes_writability_before_installing` | §2.2 | `install_target_is_writable` @ `bins/node/src/updater/staged_apply.rs` + branch @ `service.rs::auto_apply` |
+| REQ-215-004 | Must | M2 | `auto_apply_does_not_clear_pending_on_the_staging_path` | §3(j) | `service.rs::auto_apply` staging arm @ `bins/node/src/updater/service.rs` |
+| REQ-215-005 | Must | M1, M2 | `auto_apply_checks_the_ready_marker_before_fetch` | §3(j) | `already_staged` + `log_already_staged` @ `bins/node/src/updater/staged_apply.rs` |
 | REQ-215-006 | Must | M3 | (test-writer) | §3(b),(c),(d) | `bins/cli/src/cmd_upgrade_staged.rs` |
 | REQ-215-007 | Must | M3 | (test-writer) | §5 TB-1 | `cmd_upgrade_staged.rs` |
 | REQ-215-008 | Must | M3 | (test-writer) | §5 TB-1 | `cmd_upgrade_staged.rs` |
@@ -888,8 +891,8 @@ Risk-weighted view
 | REQ-215-011 | Must | M4 | (test-writer) | §3(e) | `bins/cli/src/cmd_service_helper_units.rs` |
 | REQ-215-012 | Should | M4 | (test-writer) | §3(d) | `cmd_service_helper_units.rs` |
 | REQ-215-013 | Should | M4 | (test-writer) | §3(e) | `cmd_service.rs::cmd_uninstall` |
-| REQ-215-014 | Must | M2 | (test-writer) | §3(g) | `bins/node/src/updater/preflight.rs` |
-| REQ-215-015 | Should | M1, M2 | (test-writer) | §2.5(4) | `staged_apply.rs` |
+| REQ-215-014 | Must | M2 | `preflight_warns_once_...`, `preflight_is_info_not_warn_...`, `preflight_is_silent_...`, `helper_scan_tolerates_...` | §3(g) | `helper_unit_watches` + `preflight_verdict` + `report_install_target` @ `bins/node/src/updater/preflight.rs` |
+| REQ-215-015 | Should | M1, M2 | `staging_success_emits_exactly_one_info_line` | §2.5(4) | `stage_for_privileged_install` @ `bins/node/src/updater/staged_apply.rs` |
 | REQ-215-016 | Must | M1–M4 | (test-writer) | §5 | all |
 | REQ-215-017 | Must | M1, M3 | (test-writer) | §2.3 | `install_gate.rs` |
 | REQ-215-018 | Must | M5 | n/a | §4.4 | docs/specs/skills |

@@ -23,7 +23,7 @@ use super::notifications::{
     display_enforcement_notification, display_grace_period_notification,
     display_update_notification,
 };
-use super::PendingUpdate;
+use super::{preflight, staged_apply, PendingUpdate};
 
 /// How often to show the notification reminder (every 6 hours)
 const NOTIFICATION_INTERVAL_SECS: u64 = 6 * 3600;
@@ -133,6 +133,7 @@ impl UpdateService {
             "Update service started (check interval: {}h)",
             self.config.check_interval_secs / 3600
         );
+        preflight::report_install_target(&self.data_dir);
 
         // Show notification on startup if there's a pending update
         {
@@ -376,9 +377,8 @@ impl UpdateService {
             current_version()
         );
 
-        // Extract the signed checksums hash from the pending release.
-        // This is SHA256(CHECKSUMS.txt) that was verified against maintainer signatures.
-        // Passing it to auto_apply_from_github closes the TOCTOU window (AUDIT-UPDATE-002).
+        // The maintainer-signed SHA256(CHECKSUMS.txt) of the pending release. Passing it
+        // into the install path closes the TOCTOU window (AUDIT-UPDATE-002).
         let staged_release = {
             let pending = self.pending.read().await;
             pending.as_ref().map(|p| p.release.clone())
@@ -412,6 +412,24 @@ impl UpdateService {
             return;
         }
         let signed_checksums_sha256 = staged_release.binary_sha256.clone();
+
+        if staged_apply::already_staged(&self.data_dir, version) {
+            staged_apply::log_already_staged(&self.data_dir, version);
+            return;
+        }
+        if !staged_apply::install_target_is_writable() {
+            match staged_apply::stage_for_privileged_install(
+                &self.data_dir,
+                version,
+                &signed_checksums_sha256,
+                &staged_release.signatures,
+            )
+            .await
+            {
+                Ok(_) => return,
+                Err(e) => error!("Staging v{version} failed: {e}. Trying an in-process install."),
+            }
+        }
 
         match auto_apply_from_github(version, &signed_checksums_sha256).await {
             Ok(()) => {

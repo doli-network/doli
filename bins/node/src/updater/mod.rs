@@ -15,7 +15,9 @@
 //!   window is measured from the node-local moment this node first saw the release.
 
 mod notifications;
+pub mod preflight;
 mod service;
+mod staged_apply;
 mod trust_root_wiring;
 
 use std::path::Path;
