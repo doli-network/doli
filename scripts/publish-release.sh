@@ -14,7 +14,8 @@
 #   1. Downloads SIGNATURES.json + CHECKSUMS.txt from the draft release
 #   2. Refuses on a missing, malformed, or sub-threshold manifest, naming the count
 #   3. Runs `doli release verify` against this host's maintainer trust root
-#   4. Only on success: gh release edit <tag> --draft=false --latest
+#   4. Only on success: gh release edit <tag> --draft=false --prerelease=false --latest
+#      (auto-update reads /releases/latest, which a prerelease never reaches)
 #
 # Any failure leaves the release a draft: unreachable by nodes and by `doli upgrade`.
 #
@@ -92,8 +93,9 @@ fi
 
 echo "=== Verifying $TAG against the maintainer trust root ==="
 # The draft is invisible to the unauthenticated GitHub API, so verify the bytes just
-# downloaded rather than letting the CLI fetch them again.
-if ! "$DOLI" release verify --version "$TAG" --dir "$WORKDIR"; then
+# downloaded rather than letting the CLI fetch them again. --trust-root bootstrap judges
+# against the compiled maintainer keys; this host's on-chain snapshot may be stale.
+if ! "$DOLI" release verify --version "$TAG" --dir "$WORKDIR" --trust-root bootstrap; then
     echo "REFUSING to promote $TAG: 'doli release verify' failed. The release stays a DRAFT." >&2
     exit 1
 fi
@@ -114,8 +116,9 @@ if [[ -n "$DRAFT_NOTES" ]] && grep -qF -- "$BANNER_BEGIN" <<<"$DRAFT_NOTES"; the
           if (skip == 0) print
           if (index($0, e) > 0) skip=0 }
     ' <<<"$DRAFT_NOTES" > "$STRIPPED_NOTES"
-    gh release edit "$TAG" --repo "$REPO" --notes-file "$STRIPPED_NOTES" --draft=false --latest
+    gh release edit "$TAG" --repo "$REPO" --notes-file "$STRIPPED_NOTES" \
+        --draft=false --prerelease=false --latest
 else
-    gh release edit "$TAG" --repo "$REPO" --draft=false --latest
+    gh release edit "$TAG" --repo "$REPO" --draft=false --prerelease=false --latest
 fi
 echo "Promoted $TAG: ${SIG_COUNT} maintainer signature(s) verified before publication."

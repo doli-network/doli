@@ -14,7 +14,7 @@
 # What it does:
 #   1. Finds the newest v* tag in REPO_DIR, version-sorted (never lexicographic)
 #   2. Refuses if that tag has no GitHub release, or the release is a DRAFT
-#   3. Runs `doli release verify` against this host's maintainer trust root
+#   3. Downloads SIGNATURES.json + CHECKSUMS.txt and runs `doli release verify` on them
 #   4. Exits 0 only when published AND verified. Never mutates any release.
 #
 # Suitable for cron or a one-shot manual check; exit code is the only contract.
@@ -59,7 +59,17 @@ if [[ "$IS_DRAFT" != "false" ]]; then
     exit 1
 fi
 
-if ! "$DOLI" release verify --version "$TAG"; then
+# Same verify inputs as publish-release.sh, so the two can never disagree: the bytes
+# on the release, judged against the compiled maintainer keys rather than this host's
+# possibly stale on-chain snapshot.
+WORKDIR="$(mktemp -d)"
+trap 'rm -rf "$WORKDIR"' EXIT
+if ! gh release download "$TAG" --repo "$REPO" --dir "$WORKDIR" \
+        --pattern 'SIGNATURES.json' --pattern 'CHECKSUMS.txt' --clobber; then
+    echo "WARNING: gh release download did not return every asset for $TAG." >&2
+fi
+
+if ! "$DOLI" release verify --version "$TAG" --dir "$WORKDIR" --trust-root bootstrap; then
     echo "UNHEALTHY $TAG: 'doli release verify' failed — signatures are missing or sub-threshold. Run scripts/sign-release.sh $TAG to re-sign." >&2
     exit 1
 fi
