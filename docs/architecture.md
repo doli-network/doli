@@ -458,6 +458,8 @@ in it. Every such over-rejection is bounded until the resident confirms **or exp
 | `verification.rs` | Ed25519 release signature verification against a `TrustRoot`, counting DISTINCT SIGNERS; veto calculation |
 | `vote.rs` | VoteTracker — count-based veto tally (one active producer, one vote) |
 | `apply.rs` | Binary swap (backup, install, restart), auto-apply from GitHub |
+| `install_gate.rs` | The ONE L1–L4 artifact-bound install gate, shared by every install path |
+| `staging.rs` | Staged handoff — `target_dir_is_writable`, `stage_release`, `read_staged`, marker constants (INC-I-215) |
 | `enforcement.rs` | Version enforcement — pauses production if outdated after grace period |
 | `watchdog.rs` | Crash detection + rollback — **NOT WIRED**, zero production callers (INC-I-172 AUDIT-P1-014) |
 | `hardfork.rs` | Compile-time hard fork schedule — stops production when binary is too old for an activated fork height |
@@ -474,6 +476,30 @@ in it. Every such over-rejection is bounded until the resident confirms **or exp
 - Version enforcement: outdated producers paused after grace period
 - Hard fork schedule: compile-time `(activation_height, min_version)` pairs checked every production tick
 - Network-layer version enforcement: status handshake rejects peers below `MIN_PEER_PROTOCOL_VERSION`
+
+**Privilege split (INC-I-215).** The node process and the installing process are not the
+same principal. The node unit is sandboxed and generally cannot write the directory holding
+`doli-node`, so the install runs on the root side:
+
+| Side | Code | Does |
+|------|------|------|
+| Node (unprivileged) | `bins/node/src/updater/staged_apply.rs` | Probes `target_dir_is_writable`; when false, fetches + verifies and calls `stage_release` into `{data_dir}/updates`. Never restarts anything. |
+| Node (unprivileged) | `bins/node/src/updater/preflight.rs` | One startup verdict per process: WARN `UPDATE_TARGET_NOT_WRITABLE` when the target is unwritable and no `*.path` unit watches the marker; INFO when one does. |
+| Root (systemd) | `bins/cli/src/cmd_service_helper_units.rs` | Renders and enables `{service}-upgrade.path` (watches `PathExists=<data-dir>/updates/ready`) and the `Type=oneshot` `{service}-upgrade.service`. |
+| Root (systemd) | `bins/cli/src/cmd_upgrade_staged.rs` | `doli upgrade --from-staged` — re-runs the full L1–L4 gate over the staged bytes, installs, restarts. |
+
+**Staging contract.** Each file is written as `<name>.tmp`, fsynced, then renamed into
+place; `ready` is renamed in LAST and holds the staged version. A watcher that fires on
+`ready` therefore never sees a partial handoff. The root side leaves exactly one of three
+states behind: directory removed (installed and restarted), `ready.installed` (installed,
+restart failed), or `ready.rejected` (refused, nothing installed). None of the three can
+retrigger the `.path` unit.
+
+**The staged artifact is the TARBALL, never the extracted ELF.** The signature chain is
+`SIGNATURES.json → sha256(CHECKSUMS.txt) → per-platform hash → release.tar.gz`. Nothing
+signed covers an extracted binary, so staging one would leave the root installer with
+nothing to re-verify. The root process re-verifies the tarball and extracts inside its own
+process (INV-REL-001).
 
 ---
 

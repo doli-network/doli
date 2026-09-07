@@ -26,6 +26,10 @@ version: 1.0.0
 > - **Signature counting is by DISTINCT SIGNER.** Three entries from one key count as one.
 > - **Veto/grace deadlines key off the node-local `first_notified_at`**, never
 >   `Release::published_at`.
+> - **The node is not always the installer (INC-I-215).** On a sandboxed host the node
+>   STAGES the approved release and a root helper unit installs it. See "Staged Upgrade
+>   Path" below — every "the node installs and re-execs" statement in this file is the
+>   writable-target case only.
 >
 > Authoritative current reference: `.claude/skills/updater/SKILL.md` and
 > `docs/auto_update_system.md`.
@@ -61,6 +65,52 @@ Examples:
 ```
 
 This means a Sybil attacker creating 100 fresh 1-bond producers gets weight 100 (100 × 1.0), while 25 veteran 1-bond producers at 4 years get weight 100 (25 × 4.0) — equal power with 4× fewer nodes and 4× less cost, but 4 years of proven commitment.
+
+---
+
+## Staged Upgrade Path (INC-I-215) — SHIPPED
+
+Governance is unchanged; only the INSTALL is split. After approval and the re-verify against
+the current trust root, `auto_apply` probes whether this process can write the directory
+holding `doli-node`:
+
+- **Writable** → in-process install and re-exec, exactly as before.
+- **Not writable** → the node fetches, verifies and **stages** into `{data_dir}/updates/`,
+  then returns. It never restarts anything. A root systemd pair
+  (`{service}-upgrade.path` → `{service}-upgrade.service`) runs
+  `doli upgrade --from-staged`, which re-runs the full L1–L4 gate and installs.
+
+**Staged files** — `release.tar.gz`, `CHECKSUMS.txt`, `SIGNATURES.json`, then `ready`.
+
+**Marker semantics.** `ready` holds the staged version and is renamed in LAST, so a watcher
+firing on it never sees a partial handoff. Every root exit disarms it:
+
+| Marker | State |
+|--------|-------|
+| `ready` | Staged, waiting for the privileged helper. |
+| (dir removed) | Installed and restarted. |
+| `ready.installed` | Installed, but the service did not restart. |
+| `ready.rejected` | Refused — nothing installed, binaries byte-identical, files kept as evidence. |
+
+**Idempotency.** Before each attempt the node calls `already_staged(data_dir, version)`. A
+`ready` naming the SAME version short-circuits the cycle with **no fetch and no download** —
+it only logs "Update v{} is already staged in {} — waiting for the privileged helper to
+install it". So a helper that has not run yet costs one log line per check interval, not one
+tarball per check interval.
+
+**New startup WARN.** Once per process start, when the target is unwritable AND no
+`/etc/systemd/system/*.path` unit watches the marker:
+
+```
+UPDATE_TARGET_NOT_WRITABLE: auto-update cannot install {target} because that directory is not writable by this process, and no helper unit watches the staging handoff. This node will never upgrade itself. Fix: run `sudo doli service install`.
+```
+
+When a helper IS present the same condition logs INFO instead ("the node will stage each
+approved update and the helper unit will install it"). A writable target logs nothing.
+The detector matches unit CONTENT (`PathExists=<marker>`), not unit names.
+
+**Do not "fix" this by removing the node's sandboxing.** The privilege split is the design;
+the sandbox is the reason the split exists.
 
 ---
 

@@ -1,9 +1,10 @@
 <!-- @INDEX
-MANIFEST        24-64
-KEYWORD-MAP     68-401
-COVERAGE        405-434
-CROSS-REFS      438-507
-INDEX-WARNINGS  511-539
+MANIFEST        25-68
+KEYWORD-MAP     69-410
+COVERAGE        411-443
+CROSS-REFS      444-516
+INDEX-WARNINGS  517-548
+ADDENDUM        549-567
 @/INDEX -->
 
 # SKILLS-INDEX — DOLI Master Skill Manifest
@@ -35,7 +36,7 @@ Index path: `.claude/skills/SKILLS-INDEX.md`
 | rpc | `rpc/SKILL.md` | JSON-RPC 2.0, 53 methods, HTTP POST, WebSocket, admin auth, oracle (M9-M11), DeFi health | RpcServer, RpcContext, handle_request, dispatch.rs (53-arm match) | 32 source files | HTTP on :8500 (mainnet); admin requires Bearer token from public IPs. Method count corrected 45→53 (verified against dispatch.rs 2026-07-09). New: oracle.rs/oracle_status.rs (Phase 2.1 M9-M11), defi_health.rs, repairArchiveFromPeer (post-ISSUE-174). Removed: lending.rs (tombstoned) |
 | channels | `channels/SKILL.md` | payment channels, HTLC, commitment transactions, penalty, revocation, state machine | ChannelManager::new, ChannelRecord, CommitmentPair::build_local_commitment | 24 source files | Off-chain bilateral; disputes settled on-chain. Only `cmd_channel.rs` (funding/close/store/types/commitment/try_activate) is production-wired; `ChannelManager`, `ChainMonitor`, `ChannelGraph`/router, `WatchtowerSession` are library-only, unreachable in production |
 | gui | `gui/SKILL.md` | Tauri 2.x desktop app, NodeManager, embedded node (spawned, not linked), wallet commands | main (main.rs:21), AppState::new, NodeManager::start | 13 source files | Depends on `wallet` crate at compile time — NOT on `bins/node` (spawns `doli-node` as a child process via NodeManager, no Rust link) |
-| updater | `updater/SKILL.md` | auto-update, HardForkSchedule, VoteTracker, enforcement, watchdog, skill-tarball sync | apply_update, check_production_allowed, HardForkSchedule, VoteTracker | 14 source files | Used by both node and cli binaries (now explicitly declared in DEPENDENCIES). New: `install_skills_from_tarball` (syncs `~/.doli/skills/`), hardened `STAGED_BINARY_PATH` (closes TOCTOU symlink-swap, ISSUE-174 #7) |
+| updater | `updater/SKILL.md` | auto-update, HardForkSchedule, VoteTracker, enforcement, watchdog, skill-tarball sync, staged upgrade (`--from-staged`, `ready` marker, root helper units) | apply_update, check_production_allowed, HardForkSchedule, VoteTracker, stage_release, read_staged, target_dir_is_writable | 21 source files | Used by both node and cli binaries (now explicitly declared in DEPENDENCIES). New: staged handoff for an unwritable install target (INC-I-215) — `staging.rs` + `bins/node/src/updater/{staged_apply,preflight}.rs` + `bins/cli/src/{cmd_upgrade_staged,cmd_service_helper_units}.rs`; `install_skills_from_tarball` (syncs `~/.doli/skills/`), hardened `STAGED_BINARY_PATH` (closes TOCTOU symlink-swap, ISSUE-174 #7) |
 | crypto | `crypto/SKILL.md` | BLAKE3, Ed25519, BLS12-381, Merkle, adaptor signatures, ECIES | Hash, KeyPair, BlsKeyPair, MerkleTree, Signature | 9 source files | Pure leaf — no doli-specific runtime deps. "Used By" rows in this skill are self-flagged [UNCLEAR] this session (rg/ripgrep unavailable) — see INDEX-WARNINGS |
 | wallet | `wallet/SKILL.md` | wallet file, BIP-39, TxBuilder, RpcClient, fee calculation | Wallet, TxBuilder, RpcClient, calculate_registration_cost | 12 source files | CRITICAL: `bins/cli` does NOT depend on this crate — CLI has its own parallel wallet/tx-building copy in `bins/cli/src/wallet.rs`, kept in sync manually (GUI-NF-008). Only `bins/gui` links this crate |
 | bridge | `bridge/SKILL.md` | cross-chain atomic swaps, BTC/ETH, watcher daemon, HTLC | Watcher::run, SwapRecord, SwapState | 7 source files | Largely standalone; external chain integrations. `doli_core`/`crypto` are declared Cargo deps but no direct import found in the 6 source files read this session — [UNCLEAR] possibly dead deps, verify with `cargo tree -p bridge` |
@@ -53,10 +54,10 @@ Index path: `.claude/skills/SKILLS-INDEX.md`
 | faucet | `faucet/SKILL.md` | GitHub bot faucet (ai2), hot wallet + vault (ai3), anti-abuse, refill | — |
 | guardian | `guardian/SKILL.md` | Mainnet protection, fork detection, emergency halt, checkpoint recovery, canonical anchors | reference/overview.md, procedures.md, node-heal.md, hostile-recovery.md, anchors.md, deployment.md |
 | mainnet | `mainnet/SKILL.md` | Full mainnet fleet deploy (ai1-ai5), per-service binary layout, confirmation gates | RECOVERY.md |
-| auto-update | `auto-update/SKILL.md` | Auto-update implementation guide, vote weight formula, devnet E2E test scripts | — |
+| auto-update | `auto-update/SKILL.md` | Auto-update implementation guide, vote weight formula (DELETED — head count), devnet E2E test scripts, staged upgrade path + `UPDATE_TARGET_NOT_WRITABLE` WARN (INC-I-215) | — |
 | network-setup | `network-setup/SKILL.md` | Node setup, devnet/testnet/mainnet parameters, DHT rules, producer activation lifecycle | — |
 | testnet-deploy | `testnet-deploy/SKILL.md` | Testnet binary deploy (ai1/ai3), compilation on ai2, MD5 verification checklist | — |
-| release | `release/SKILL.md` | Release signing + publication: post-tag `draft -> sign -> verify -> promote -> confirm` sequence (`sign-release.sh`, `doli release verify`, `publish-release.sh`, `monitor-release-signed.sh`); per-node binary layout map for all servers, deploy procedure one-liners | — |
+| release | `release/SKILL.md` | Release signing + publication: post-tag `draft -> sign -> verify -> promote -> confirm` sequence (`sign-release.sh`, `doli release verify`, `publish-release.sh`, `monitor-release-signed.sh`); how a signed release reaches a sandboxed `doli service install` node (staged handoff, INC-I-215); per-node binary layout map for all servers, deploy procedure one-liners | — |
 | explorer | `explorer/SKILL.md` | explorer.doli.network, PRODUCER_KEYS/NODES config, auto-bond script | — |
 | hetzner | `hetzner/SKILL.md` | Hetzner VPS manager, server types/prices, cloud-init provisioning | — |
 | sync-docs | `sync-docs/SKILL.md` | Documentation alignment workflow, truth hierarchy, 8-step commit process | — |
@@ -87,8 +88,8 @@ Line ranges reflect verified actual content positions (15 domains re-validated 2
 | atomic swap | `bridge/SKILL.md` | DATA-FLOW | 50-67 |
 | attestation bitfield | `core/SKILL.md` | DATA-FLOWS | 71-153 |
 | attestation encode/decode | `core/SKILL.md` | PATTERNS | 666-772 |
-| `auto_apply_from_github` | `updater/SKILL.md` | ENTRY-POINTS | 14-45 |
-| auto-update | `updater/SKILL.md` | ENTRY-POINTS | 14-45 |
+| `auto_apply_from_github` | `updater/SKILL.md` | ENTRY-POINTS | 14-61 |
+| auto-update | `updater/SKILL.md` | ENTRY-POINTS | 14-61 |
 | auto-update implementation | `auto-update/SKILL.md` | full file | — |
 
 ### B
@@ -123,7 +124,7 @@ Line ranges reflect verified actual content positions (15 domains re-validated 2
 | `ChannelManager` | `channels/SKILL.md` | ENTRY-POINTS | 14-34 |
 | `ChannelRecord` | `channels/SKILL.md` | STRUCTS | 35-101 |
 | `check_producer_eligibility` | `node/SKILL.md` | FUNCTIONS | 178-280 |
-| `check_production_allowed` | `updater/SKILL.md` | ENTRY-POINTS | 14-45 |
+| `check_production_allowed` | `updater/SKILL.md` | ENTRY-POINTS | 14-61 |
 | checkpoint | `guardian/SKILL.md` | full index | 1-30 |
 | `ContentStore` | `storage/SKILL.md` | ENTRY-POINTS | 21-47 |
 | `CompactMmr` / `IncrementalStateRoot` (unwired) | `storage/SKILL.md` | ENTRY-POINTS | 21-47 |
@@ -169,6 +170,7 @@ Line ranges reflect verified actual content positions (15 domains re-validated 2
 | `EpochState::derive_at_boundary` | `core/SKILL.md` | ENTRY-POINTS | 15-53 |
 | epoch rewards | `node/SKILL.md` | FUNCTIONS | 178-280 |
 | equivocation | `node/SKILL.md` | FUNCTIONS | 178-280 |
+| EROFS (`os error 30`, read-only install target) | `updater/SKILL.md` | CONSTRAINTS | 519-610 |
 | `execute_reorg` | `node/SKILL.md` | FUNCTIONS | 178-280 |
 | explorer | `explorer/SKILL.md` | full file | — |
 
@@ -182,6 +184,7 @@ Line ranges reflect verified actual content positions (15 domains re-validated 2
 | FEE_TOO_LOW | `defi/SKILL.md` | KNOWN-BUGS / INCIDENT-MAP (INC-I-099) | 143-164, 287-304 |
 | FundingBroadcast (stuck) | `defi/SKILL.md` | KNOWN-BUGS / INCIDENT-MAP (INC-I-097) | 143-164, 287-304 |
 | fresh mainnet genesis reset (2026-07-08) | `core/SKILL.md` | CONSTANTS | 444-565 |
+| from-staged (`doli upgrade --from-staged`) | `updater/SKILL.md` | DATA-FLOWS / CONSTRAINTS | 325-494, 519-610 |
 | `getStateRootDebug` | `rpc/SKILL.md` | METHODS | 55-162 |
 | `getUtxoDiff` | `rpc/SKILL.md` | METHODS | 55-162 |
 | fork recovery | `node/SKILL.md` | FUNCTIONS | 178-280 |
@@ -215,8 +218,8 @@ Line ranges reflect verified actual content positions (15 domains re-validated 2
 | Keyword / Concept | Skill File | Section | Lines |
 |-------------------|-----------|---------|-------|
 | `handle_new_block` | `node/SKILL.md` | FUNCTIONS | 178-280 |
-| hard fork | `updater/SKILL.md` | HARDFORK-SCHEDULE | 287-308 |
-| `HardForkSchedule` | `updater/SKILL.md` | HARDFORK-SCHEDULE | 287-308 |
+| hard fork | `updater/SKILL.md` | HARDFORK-SCHEDULE | 303-324 |
+| `HardForkSchedule` | `updater/SKILL.md` | HARDFORK-SCHEDULE | 303-324 |
 | Hetzner VPS | `hetzner/SKILL.md` | full file | — |
 | HTLC channels | `channels/SKILL.md` | STRUCTS | 35-101 |
 | HTLC bridge | `bridge/SKILL.md` | ENTRY-POINTS | 10-36 |
@@ -344,9 +347,10 @@ Line ranges reflect verified actual content positions (15 domains re-validated 2
 | `sendTransaction` | `rpc/SKILL.md` | METHODS | 55-162 |
 | serialization formats | `storage/SKILL.md` | SERIALIZATION | 733-774 |
 | `sign-release.sh` | `release/SKILL.md` | full file | — |
-| `sign_release_hash` | `updater/SKILL.md` | ENTRY-POINTS | 14-45 |
+| `sign_release_hash` | `updater/SKILL.md` | ENTRY-POINTS | 14-61 |
 | skill creation | `skill-creator/SKILL.md` | full file | — |
 | snap sync | `network/SKILL.md` | DATA-FLOW | 66-77 |
+| staging (`{data_dir}/updates`, `ready` marker) | `updater/SKILL.md` | DATA-FLOWS / CONSTRAINTS | 325-494, 519-610 |
 | `StateDb` | `storage/SKILL.md` | FUNCTIONS-STATEDB | 402-488 |
 | `StateDb::open` | `storage/SKILL.md` | ENTRY-POINTS | 21-47 |
 | `StateSnapshot` | `storage/SKILL.md` | FUNCTIONS-SNAPSHOT | 544-557 |
@@ -373,7 +377,9 @@ Line ranges reflect verified actual content positions (15 domains re-validated 2
 
 | Keyword / Concept | Skill File | Section | Lines |
 |-------------------|-----------|---------|-------|
-| update governance | `updater/SKILL.md` | DATA-FLOWS | 309-441 |
+| `-upgrade.path` / `-upgrade.service` (root helper units) | `updater/SKILL.md` | ENTRY-POINTS / CONSTRAINTS | 14-61, 519-610 |
+| update governance | `updater/SKILL.md` | DATA-FLOWS | 325-494 |
+| `UPDATE_TARGET_NOT_WRITABLE` (startup WARN) | `auto-update/SKILL.md` | Staged Upgrade Path | 71-116 |
 | `UpdateState` | `storage/SKILL.md` | ENTRY-POINTS | 21-47 |
 | `UtxoSet` | `storage/SKILL.md` | FUNCTIONS-UTXO | 489-521 |
 | `UtxoSet::new` / `UtxoSet::from_state_db` | `storage/SKILL.md` | ENTRY-POINTS | 21-47 |
@@ -386,8 +392,8 @@ Line ranges reflect verified actual content positions (15 domains re-validated 2
 | `validate_block` | `core/SKILL.md` | ENTRY-POINTS | 15-53 |
 | `validate_transaction` | `core/SKILL.md` | ENTRY-POINTS | 15-53 |
 | `verifyChainIntegrity` | `rpc/SKILL.md` | METHODS | 55-162 |
-| vote tracker | `updater/SKILL.md` | STRUCTS | 64-103 |
-| `VoteTracker` | `updater/SKILL.md` | STRUCTS | 64-103 |
+| vote tracker | `updater/SKILL.md` | STRUCTS | 80-119 |
+| `VoteTracker` | `updater/SKILL.md` | STRUCTS | 80-119 |
 
 ### W
 
@@ -499,7 +505,7 @@ bridge (standalone — uses DOLI node via HTTP RPC, not as a library dep; doli_c
 |---------|-----------|-------|
 | IMPROVED-BUT-INCOMPLETE | `core/SKILL.md` DEPENDENCIES (613-629) | Now lists `updater` as a consumer (improvement over prior synthesis). Still missing: `cli`, `gui` (via core directly, not just wallet), `channels`. |
 | INCORRECT | `node/SKILL.md` DEPENDENCIES (282-296) | Still states "what depends on this: ... bins/gui (GUI producer registration)". `gui/SKILL.md` DEPENDENCIES confirms gui does NOT link `bins/node` as a Rust dependency — it spawns `doli-node` as a child process (runtime, not compile-time). Same drift flagged in the 2026-05-11 synthesis, not yet fixed by the skill-writer. |
-| RESOLVED | `updater/SKILL.md` DEPENDENCIES (442-465) | Previously flagged as not declaring "used by: node, cli" — NOW FIXED. This session's refresh explicitly lists both consumers with call-site detail (caveat: exact line numbers not re-verified, rg unavailable). |
+| RESOLVED | `updater/SKILL.md` DEPENDENCIES (495-518) | Previously flagged as not declaring "used by: node, cli" — NOW FIXED. This session's refresh explicitly lists both consumers with call-site detail (caveat: exact line numbers not re-verified, rg unavailable). |
 | REVERSED | `bridge/SKILL.md` DEPENDENCIES (69-82) | Previously flagged as an undeclared-but-real `doli_core` dependency. This session's skill-writer found the OPPOSITE: `doli_core`/`crypto` ARE declared in Cargo.toml but NO import was found in any of the 6 source files read — now flagged [UNCLEAR], possibly dead dependencies. Needs `cargo tree -p bridge` or a build check to resolve. |
 | NEW-CAVEAT | `channels/SKILL.md` DEPENDENCIES (312-333) | "Used By" table asserts no other crate (node/rpc/mempool) depends on channels, but explicitly notes this was NOT exhaustively verified — Grep/Glob failed (`rg` missing) this session. |
 | NEW-CAVEAT | `crypto/SKILL.md` DEPENDENCIES (114-145) | Entire "Used By" table (9 rows) is self-flagged [UNCLEAR] — inferred from Cargo.toml workspace membership only, not verified by search, due to missing `rg` this session. |
@@ -523,7 +529,7 @@ The `rg` binary was unavailable to all 15 skill-writer agents this session (`ENO
 | `crypto/SKILL.md` | DEPENDENCIES (114-145) | All 9 "Used By" rows (core, storage, network, rpc, mempool, channels, bridge, node, cli) — inferred from Cargo.toml membership only |
 | `bridge/SKILL.md` | ENTRY-POINTS (10-36) / DEPENDENCIES (69-82) | CLI consumer call sites (`doli bridge-refund`, `cmd_bridge_status`) not located; `doli_core`/`crypto` real-usage status unclear |
 | `channels/SKILL.md` | DEPENDENCIES (312-333) | "Used by: none found" for node/rpc/mempool not exhaustively verified |
-| `updater/SKILL.md` | DEPENDENCIES (442-465) | node/cli consumer relationship confirmed structurally, but exact call-site line numbers not re-verified |
+| `updater/SKILL.md` | DEPENDENCIES (495-518) | node/cli consumer relationship confirmed structurally, but exact call-site line numbers not re-verified |
 | `mempool/SKILL.md` | DEPENDENCIES (164-182) | Node-init wiring call site for oracle-sunset/weighted-producer sharing not located |
 
 ### Coverage Gap — `doli-manager`

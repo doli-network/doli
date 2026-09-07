@@ -561,7 +561,12 @@ path consumed by a root process). Per Global Rule 17 the security requirements b
 - [ ] Restarts through `systemd_restart_plan` so `reset-failed` still precedes `restart`
       (INC-I-188).
 - [ ] Removes the staging directory **only after** a successful install + restart.
-- [ ] Requires root (EUID 0) and says `sudo doli upgrade --from-staged …` when not.
+- [ ] Gates on **target-directory writability** (`updater::target_dir_is_writable`), NOT on
+      EUID/root: EROFS and EACCES are the same refusal and a root check would pass on a
+      read-only mount. The refusal names the target and says
+      `Try: sudo doli upgrade --from-staged <DIR> [--yes]`.
+      *(CORRECTED 2026-09-07 against `bins/cli/src/cmd_upgrade_staged.rs:154-163`; the
+      original "Requires root (EUID 0)" wording never matched the shipped code.)*
 
 **REQ-215-007 (Must)** — tampered artifact refused
 - [ ] Given a staging dir whose tarball has one flipped byte, when `--from-staged` runs, then
@@ -593,7 +598,11 @@ path consumed by a root process). Per Global Rule 17 the security requirements b
 - [ ] After `sudo doli service install --network N`, `/etc/systemd/system/` contains a
       `.path` unit with `PathExists={data_dir}/updates/ready` and `Unit=` naming the helper
       `.service`, and a `.service` unit with `Type=oneshot`, no `User=` (root), and
-      `ExecStart=<doli cli path> upgrade --from-staged {data_dir}/updates --network {network}`.
+      `ExecStart=<doli cli path> --network {network} upgrade --from-staged {data_dir}/updates
+      --data-dir {data_dir} --service {service_name} --yes`.
+      *(CORRECTED 2026-09-07 against `bins/cli/src/cmd_service_helper_units.rs:65-87`:
+      `--network` is a GLOBAL clap flag on `Cli` and must PRECEDE the subcommand. The
+      original flag order does not parse.)*
 - [ ] Unit names are derived from the resolved service name so a `--name`-customised or
       multi-node host does not collide (e.g. `{service_name}-upgrade.{path,service}`).
 - [ ] The `.path` unit is enabled (`systemctl enable`) and started; the `.service` is **not**

@@ -326,6 +326,43 @@ doli-node run --no-auto-update
 
 See [auto_update_system.md](./auto_update_system.md) for details.
 
+### Delivery to a sandboxed host (staged upgrade)
+
+A node installed with `doli service install` runs under a sandboxed unit that cannot write
+the directory holding `doli-node`. It never installs its own update. The signed release
+reaches it in two halves:
+
+```
+node process (unprivileged)                    root (systemd)
+  poll GitHub every 10 min
+  → notify + veto window
+  → veto window ends, approved
+  → re-verify against the CURRENT trust root
+  → install target not writable?
+      → fetch + verify the tarball
+      → stage into <data-dir>/updates/
+        (release.tar.gz, CHECKSUMS.txt,
+         SIGNATURES.json, then `ready` LAST)
+                                        →  {service}-upgrade.path fires on
+                                           PathExists=<data-dir>/updates/ready
+                                        →  {service}-upgrade.service (oneshot, root) runs
+                                           doli --network <net> upgrade
+                                             --from-staged <data-dir>/updates ... --yes
+                                        →  re-runs the FULL L1–L4 gate over the staged
+                                           bytes against this host's on-chain trust root
+                                        →  installs doli-node, restarts the service
+                                        →  removes <data-dir>/updates
+```
+
+The node re-checks the marker before each attempt: a `ready` naming the same version
+short-circuits the cycle with no fetch, so the handoff never loops. The `ready` marker is
+written last and only by rename, so the watcher never sees a partial staging.
+
+**Operational consequence.** A hardened host deployed before this shipped has no helper
+units, so it stages every approved release and installs none. Give it ONE manual
+`sudo doli upgrade` (or `sudo doli service install`): both write and enable the helper pair
+as root, and auto-update works unattended from then on.
+
 ---
 
 ## Rollback

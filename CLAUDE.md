@@ -64,6 +64,7 @@ Two root-cause fixes stabilized the network. All other fixes were symptom mitiga
 - rollback → undo-based is first choice; rebuild-from-genesis is the fallback for blocks without undo data.
 - Bond `extra_data` → CLI sends `creation_slot=0`; the node stamps the real slot at apply. Never trust raw tx `extra_data`.
 - **data directory wipe** → **CRITICAL**: before wiping any `data/` dir, verify `wallet.json` and `producer.seed.txt` are not inside it (`find <dir> -name 'wallet*' -o -name '*.seed.txt'`). Manual `rm -rf data/*` does NOT preserve them; lost keys may be unrecoverable.
+- **updater install path** → probe target writability; an unwritable target STAGES to `{data_dir}/updates` and a root `-upgrade.path` unit installs it (INC-I-215).
 - **Phase 2.1 oracle** → shipped (M1-M11) but frozen at `oracle_activation_height = u64::MAX`. Touch points: `crates/core/src/oracle/`, `bins/node/src/node/apply_block/oracle.rs`, `crates/rpc/src/methods/oracle{,_status}.rs`. The §6 disclosure constant in `oracle_status.rs` is byte-equal-locked to the spec by `m11_centralization_disclosure_byte_equal_to_spec` — edit both or neither. Spec: `specs/oracle-structural-anchored-economics.md`.
 
 ## After Every Modification
@@ -132,6 +133,7 @@ After completing any code change, ALWAYS propose the following checklist to the 
 | RPC methods (56) | `crates/rpc/src/methods/` (incl. `oracle.rs` + `oracle_status.rs` for Phase 2.1 M9-M11) |
 | Transaction mempool | `crates/mempool/src/` |
 | Auto-update + hard fork schedule | `crates/updater/src/` |
+| Staged upgrade handoff (INC-I-215) | `crates/updater/src/staging.rs`; node `bins/node/src/updater/{staged_apply,preflight}.rs`; CLI `bins/cli/src/{cmd_upgrade_staged,cmd_service_helper_units}.rs` |
 | Block archiver | `crates/storage/src/archiver.rs` |
 | CLI | `bins/cli/src/` |
 

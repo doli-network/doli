@@ -99,6 +99,18 @@
 #     SKIP with `no injection path; needs a submit RPC`. The flag, confirm-var,
 #     testnet guard and $WORK/gs019_injected marker are armed for the day that
 #     RPC exists. See scripts/gauntlet-gs019.sh.
+#   * GS-020 (staged-upgrade handoff refusal) is OBSERVATIONAL, READ-ONLY and
+#     OFFLINE: it runs in the DEFAULT gate, is NOT opt-in and has NO confirm-var.
+#     Replays INC-I-215 (a sandboxed unit could never write /usr/bin, so the
+#     in-process updater retried forever) and asserts the two halves of the
+#     handoff: the root installer REFUSES a staging carrying zero maintainer
+#     signatures without touching the install target and parks the `ready`
+#     marker, and the node-side UPDATE_TARGET_NOT_WRITABLE signal plus the
+#     `.path` PathExists= trigger are still in the tree. It builds and deletes a
+#     scratch staging dir and never reads the chain, a node or a real unit; every
+#     CLI run is fenced behind a fake --service and inert sudo/systemctl shims.
+#     It SKIPs — never fails — with no doli CLI, no maintainer_state.bin under
+#     ~/testnet, or no scratch dir. See scripts/gauntlet-gs020.sh.
 #
 # Assertions key off STRUCTURED telemetry fields (gap=, rollback_depth=,
 # sync_fails=, state=) and distinct-event phrases — NEVER raw keywords that also
@@ -135,6 +147,9 @@ GS018_LIB="$ROOT/scripts/gauntlet-gs018.sh"
 GS019_LIB="$ROOT/scripts/gauntlet-gs019.sh"
 # shellcheck source=/dev/null
 [ -f "$GS019_LIB" ] && . "$GS019_LIB"
+GS020_LIB="$ROOT/scripts/gauntlet-gs020.sh"
+# shellcheck source=/dev/null
+[ -f "$GS020_LIB" ] && . "$GS020_LIB"
 LOG_DIR="$HOME/testnet/logs"
 LABEL_PREFIX="network.doli.testnet"
 
@@ -677,6 +692,8 @@ assert(){
       _gs018_assert "$t"; return $? ;;
     gs019-poison-rejected|gs019-fleet-liveness-through-poison|gs019-victim-attendance-preserved)
       _gs019_assert "$t"; return $? ;;
+    gs020-refuses-sub-threshold|gs020-target-untouched|gs020-marker-parked|gs020-preflight-token-present|gs020-helper-unit-rendered)
+      _gs020_assert "$t"; return $? ;;
     *)
       why="unknown assertion token '$t'" ;;
   esac

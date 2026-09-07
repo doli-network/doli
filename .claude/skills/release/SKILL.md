@@ -89,6 +89,41 @@ snapshot can be stale — the verify banner prints its `last_derived_height` so 
 correctly signed release reporting 0/3. Auto-update reads `/releases/latest`, which a prerelease
 never reaches, so clearing the draft flag alone leaves the release invisible to producers.
 
+## How a signed release reaches a `doli service install` node (INC-I-215)
+
+A host installed with `doli service install` runs the node under a sandboxed unit that cannot
+write the directory holding `doli-node`. Promoting the release is therefore NOT the last step
+on such a host — the install runs on the root side:
+
+```
+publish-release.sh promotes the release
+  -> node polls /releases/latest, verifies, veto window ends, re-verifies
+  -> node cannot write the install target
+       -> stages release.tar.gz + CHECKSUMS.txt + SIGNATURES.json + `ready`
+          into <data-dir>/updates/   (the TARBALL, never an extracted binary)
+  -> {service}-upgrade.path fires on PathExists=<data-dir>/updates/ready
+  -> {service}-upgrade.service (root, oneshot) runs
+       doli --network <net> upgrade --from-staged <data-dir>/updates ... --yes
+       -> re-runs the FULL L1-L4 gate against the host's on-chain trust root
+       -> installs doli-node, restarts the unit, removes the staging dir
+```
+
+The staged artifact is the signed tarball because the signature chain terminates there; root
+extracts after verification, inside its own process.
+
+**Release-time consequence.** A hardened host deployed before this shipped has no helper
+units: it will stage every release you publish and install none. It needs ONE manual
+`sudo doli upgrade` (or a re-run of `sudo doli service install`) — both write and enable the
+helper pair as root. Until that is done, publishing does not move that host. Check with:
+
+```bash
+ssh <host> 'systemctl is-enabled doli-mainnet-upgrade.path; ls /var/lib/doli/mainnet/updates/'
+```
+
+A `ready` sitting in `updates/` after a publish means the helper never ran. A `ready.rejected`
+means the root side REFUSED the release — re-run the `--from-staged` command by hand to see
+the reason before publishing anything else.
+
 
 ## CRITICAL: Per-Node Binary Layout
 
