@@ -375,6 +375,8 @@ Full exit from producer set:
 | Q3 (2-3 quarters) | 25% burned |
 | Q4+ (3+ quarters) | 0% (fully vested) |
 
+**Consensus enforcement (INC-I-171):** from `inc_i_171_vesting_penalty_activation_height` (frozen at `u64::MAX` on every network until it is pinned) the node rejects any block whose `RequestWithdrawal` pays out more than the sum of the penalized net of the Bond UTXOs it spends plus its non-Bond inputs (`ECON_WITHDRAWAL_PAYOUT_EXCEEDS_NET`). The age of each bond is the block slot stamped into the Bond UTXO at creation, compared with the slot of the block that carries the withdrawal. The same rule runs at mempool admission and in the block builder, so an over-paying withdrawal is refused before it is gossiped. The CLI already pays out exactly this bound; you do not need to change anything. Before the activation height the bound is not checked by the node.
+
 **Example:** If you have 3 bonds created at different times:
 - Bond 1 (created 20 hours ago): 0% penalty, receive 10 DOLI
 - Bond 2 (created 9 hours ago): 50% penalty, receive 5 DOLI

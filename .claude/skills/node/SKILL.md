@@ -232,11 +232,11 @@ undo.epoch_state_snapshot: always present, deserialize → self.epoch_state
 `fork_recovery.rs:268` `apply_snap_snapshot()` — full snapshot application incl. EpochState fast-path/legacy
 `fork_recovery.rs:697` `try_apply_direct_successor()` — INV-SYNC-003 (INC-I-081 Bug 3); applies candidate iff `prev_hash == local_tip`, Light mode
 
-### Validation glue (`validation_checks.rs`)
-`validation_checks.rs:12` `check_producer_eligibility()` — lightweight gossip pre-check (bootstrap+epoch ValidationContext)
-`validation_checks.rs:165` `validate_block_for_apply()` — full ValidationContext; Light mode uses empty bootstrap list (post-genesis deterministic scheduler only)
-`validation_checks.rs:446` `validate_block_economics()` — coinbase/EpochReward/PriceAttestation-dedup/AddBond-cap checks not expressible in `doli_core::validation` (needs UTXO/producer/block_store access); INC-I-080 per-producer AddBond cap runs in ALL modes
-`validation_checks.rs:962` `handle_sync_request()` — GetHeaders/GetBodies/GetBlockBy*/GetHeadersByHeight/GetStateRoot/GetStateSnapshot/DirectAttestation responders
+### Validation glue (`validation_checks/ (dir: mod.rs + withdrawal_economics.rs)`)
+`validation_checks/ (dir: mod.rs + withdrawal_economics.rs):12` `check_producer_eligibility()` — lightweight gossip pre-check (bootstrap+epoch ValidationContext)
+`validation_checks/ (dir: mod.rs + withdrawal_economics.rs):165` `validate_block_for_apply()` — full ValidationContext; Light mode uses empty bootstrap list (post-genesis deterministic scheduler only)
+`validation_checks/ (dir: mod.rs + withdrawal_economics.rs):446` `validate_block_economics()` — coinbase/EpochReward/PriceAttestation-dedup/AddBond-cap checks not expressible in `doli_core::validation` (needs UTXO/producer/block_store access); INC-I-080 per-producer AddBond cap runs in ALL modes
+`validation_checks/ (dir: mod.rs + withdrawal_economics.rs):962` `handle_sync_request()` — GetHeaders/GetBodies/GetBlockBy*/GetHeadersByHeight/GetStateRoot/GetStateSnapshot/DirectAttestation responders
 
 ### Genesis (`genesis.rs`)
 `genesis.rs:13` `derive_genesis_producers_from_chain()` — OnceLock-cached; falls back to hardcoded chainspec producers for snap-synced nodes

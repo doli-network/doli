@@ -918,7 +918,7 @@ A **canonical anchor** pins a `(height, block_hash, state_root)` tuple at compil
 
 **Enforcement points** (all no-op when the schedule is empty; current state for all networks):
 
-1. **Block validation (Point A)** — `validate_block_for_apply` in `bins/node/src/node/validation_checks.rs` rejects any block whose `(height, hash)` pair contradicts an anchor, emitting `ValidationError::CanonicalAnchorViolation`. Runs BEFORE VDF/producer checks so hostile blocks cost zero CPU.
+1. **Block validation (Point A)** — `validate_block_for_apply` in `bins/node/src/node/validation_checks/mod.rs` rejects any block whose `(height, hash)` pair contradicts an anchor, emitting `ValidationError::CanonicalAnchorViolation`. Runs BEFORE VDF/producer checks so hostile blocks cost zero CPU.
 2. **Reorg gate (Point B)** — `ReorgHandler::check_reorg_weighted` and `ReorgHandler::plan_reorg` in `crates/network/src/sync/reorg/mod.rs` reject any reorg whose common ancestor sits strictly below the highest anchor, regardless of accumulated chain weight.
 3. **Snap sync verification (Point C)** — `handle_snap_snapshot` in `crates/network/src/sync/manager/snap_sync.rs` rejects snapshots at or below the anchor height that don't match the anchor's `block_hash` and `state_root`, and rejects any snapshot whose height is strictly below the anchor (stale by construction).
 4. **Rollback refuse (Point D)** — `rollback_one_block` in `bins/node/src/node/rollback.rs` returns an error if a rollback would cross the anchor height, preventing corruption of the anchored state.

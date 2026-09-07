@@ -2103,12 +2103,12 @@ Note: struct PresenceHeartbeat (not Heartbeat) in the tpop module; this is diffe
 - `ProducerInfo::is_active()` / `ProducerInfo::can_produce()` — true if Active or Unbonding
 - `ProducerInfo::selection_weight()` — own bonds + received_delegations bonds (0 if not active)
 - `ProducerInfo::add_bonds(outpoints, amount_per_bond, creation_slot)` — adds bonds up to MAX cap
-- `ProducerInfo::calculate_withdrawal_with_quarter(count, current_slot, quarter_slots)` — FIFO net + penalty
+- (removed in INC-I-171 M1, `6ae62400`) `ProducerInfo::calculate_withdrawal{,_with_quarter}` — the consensus penalty is `crates/core/src/validation/vesting.rs::penalized_bond_net` / `check_withdrawal_payout_bound`; spent-input resolution is `crates/storage/src/producer/withdrawal_inputs.rs::resolve_withdrawal_inputs`
 - `ProducerInfo::apply_withdrawal(count, bond_unit)` — removes oldest bond_entries; auto-exits if all withdrawn
 - `ProducerInfo::activity_status_for_network(height, network)` — returns ActivityStatus
 - `producer_weight_for_network(registered_at, current_height, network)` — discrete yearly seniority steps 1/2/3/4
 - `total_weight_for_network(producers, current_height, network)` — sum of weights of active producers
-- `calculate_withdrawal_from_bonds(bonds, count, current_slot, quarter_slots)` — FIFO withdrawal from UTXO-derived bond entries
+- (removed in INC-I-171 M1) `calculate_withdrawal_from_bonds` — it enumerated storage (backend-order dependent); consensus now folds over the transaction's own inputs
 
 ### Snapshot
 - `StateSnapshot` — serialized state ready for snap sync transfer; fields: `block_hash`, `block_height`, `chain_state_bytes`, `utxo_set_bytes`, `producer_set_bytes`, `state_root`
