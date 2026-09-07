@@ -111,10 +111,10 @@ pub fn verify_release_manifest(
 /// Authorize the install of `tarball` for `release_info` under `root`.
 ///
 /// L1-L3 are [`verify_release_manifest`] — ONE implementation, shared with the publish
-/// gate so the two cannot drift. L4 lives here: the artifact must be what the
-/// just-verified CHECKSUMS.txt names for this platform, parsed from the verified bytes
-/// rather than from `release_info.expected_hash`, so no caller can substitute a
-/// different operand.
+/// gate so the two cannot drift. L4 is in [`verify_release_artifact_bytes`]: the artifact
+/// must be what the just-verified CHECKSUMS.txt names for this platform, parsed from the
+/// verified bytes rather than from `release_info.expected_hash`, so no caller can
+/// substitute a different operand.
 ///
 /// Returns the number of DISTINCT maintainer signers, so an operator-facing caller can
 /// report what was actually verified. The order is deliberate: cheap bindings first, then
@@ -125,23 +125,40 @@ pub fn verify_release_artifact(
     signatures: &SignaturesFile,
     root: &TrustRoot,
 ) -> Result<usize> {
-    let distinct_signers = verify_release_manifest(
+    verify_release_artifact_bytes(
         &release_info.version,
         &release_info.checksums_body,
+        tarball,
         signatures,
         root,
-    )?;
+    )
+}
+
+/// L1-L4 over bytes already in hand — the same gate, without a `GithubReleaseInfo`.
+///
+/// The staged handoff (INC-I-215) re-verifies a release read off disk, where no fetch
+/// result exists. It calls THIS, so there is one L1-L4 implementation rather than a second
+/// copy that drifts (INC-I-172 F1/F2). The threshold comes from the resolved
+/// [`TrustRoot`], never from a compile-time constant.
+pub fn verify_release_artifact_bytes(
+    version: &str,
+    checksums_body: &[u8],
+    tarball: &[u8],
+    signatures: &SignaturesFile,
+    root: &TrustRoot,
+) -> Result<usize> {
+    let distinct_signers = verify_release_manifest(version, checksums_body, signatures, root)?;
 
     // ---- L4: the artifact must be what the verified CHECKSUMS.txt names -------
-    let checksums_text = String::from_utf8_lossy(&release_info.checksums_body);
+    let checksums_text = String::from_utf8_lossy(checksums_body);
     let expected_tarball_hash = platform_tarball_hash(&checksums_text)?;
     verify_hash(tarball, &expected_tarball_hash)?;
 
-    let actual_checksums_sha256 = sha256_hex(&release_info.checksums_body);
+    let actual_checksums_sha256 = sha256_hex(checksums_body);
     info!(
         "Install authorised for v{}: {} distinct signer(s) under the {} trust root, \
          CHECKSUMS.txt {} bound to the signatures, tarball bound to CHECKSUMS.txt",
-        release_info.version,
+        version,
         distinct_signers,
         root.provenance(),
         &actual_checksums_sha256[..actual_checksums_sha256.len().min(16)]
