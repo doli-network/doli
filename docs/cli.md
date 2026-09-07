@@ -941,7 +941,7 @@ be equal or looser, and an honest CLI-built withdrawal is accepted at every tier
 From `inc_i_171_vesting_penalty_activation_height` a hand-crafted transaction claiming a
 higher payout than that bound is **rejected** at block validation with
 `ECON_WITHDRAWAL_PAYOUT_EXCEEDS_NET`, and a Bond input with undecodable `extra_data` with
-`ECON_WITHDRAWAL_BOND_EXTRA_DATA_MALFORMED`. That height is `u64::MAX` on every network
+`ECON_WITHDRAWAL_BOND_EXTRA_DATA_MALFORMED`. That height is pinned at 133_640 on testnet (2026-09-07); `u64::MAX` on mainnet and devnet
 today, so the penalty is still a client-side convention below it — see
 `specs/protocol.md` §3.13.
 

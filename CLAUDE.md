@@ -40,7 +40,7 @@ Epoch boundary: pool drained → rewards distributed bond-weighted to qualified 
 
 **Data flow**: Block → `apply_block()` → writes to in-memory state AND disk batch atomically → state root cached. On restart, disk → in-memory. Both paths MUST produce identical state.
 
-**Bond lifecycle**: Register (creates Bond UTXOs) → ACTIVATION_DELAY (10 blocks) → scheduled for production → earn epoch rewards → RequestWithdrawal (FIFO chosen by the CLI; payout is instant; the vesting penalty is a consensus payout bound enforced from `inc_i_171_vesting_penalty_activation_height`, frozen `u64::MAX` on every network — INC-I-171; `ClaimWithdrawal=9` is a wire tombstone; the 7-day `UNBONDING_PERIOD` governs producer Exit unbonding via `process_unbonding`, not withdrawals). Bonds are UTXOs with `output_type=Bond`, `lock_until=MAX`, `extra_data=creation_slot`.
+**Bond lifecycle**: Register (creates Bond UTXOs) → ACTIVATION_DELAY (10 blocks) → scheduled for production → earn epoch rewards → RequestWithdrawal (FIFO chosen by the CLI; payout is instant; the vesting penalty is a consensus payout bound enforced from `inc_i_171_vesting_penalty_activation_height` — pinned at 133_640 on testnet (2026-09-07); `u64::MAX` on mainnet and devnet — INC-I-171; `ClaimWithdrawal=9` is a wire tombstone; the 7-day `UNBONDING_PERIOD` governs producer Exit unbonding via `process_unbonding`, not withdrawals). Bonds are UTXOs with `output_type=Bond`, `lock_until=MAX`, `extra_data=creation_slot`.
 
 ## Stability Pillars (read `docs/postmortems/2026-04-17-attestation-stability-pillars.md`)
 

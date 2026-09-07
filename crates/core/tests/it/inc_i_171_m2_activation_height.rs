@@ -51,25 +51,30 @@ const SENTINEL: u64 = 171_171;
 
 const ENV_LOADER_RS: &str = include_str!("../../src/network_params/env_loader.rs");
 
-/// REQ-VEST-003 — Decision: a failure says one of the two gates shipped ARMED. The rule
-/// rejects blocks, so an unfrozen default on any network rejects live withdrawals the
-/// moment the binary rolls out — and on mainnet the height becomes immutable consensus
-/// history the instant it is crossed (INC-I-054). Devnet is frozen too: a devnet default
-/// of `0` arms the rule against every local chain that keeps its data directory.
-/// Pinning either height is a separate decision-session behind the Preconditions.
+/// REQ-VEST-003 / INV-PARAMS-002 — Decision: a failure says a gate shipped in a state
+/// the network did not decide. Mainnet and devnet ship DORMANT (`u64::MAX`): the rule
+/// rejects blocks, and on mainnet the height becomes immutable consensus history the
+/// instant it is crossed (INC-I-054); a devnet default of `0` would arm the rule against
+/// every local chain that keeps its data directory. Testnet is PINNED at 133_640
+/// (2026-09-07, ~19 min above tip 133_525 by user decision) — the literal below asserts
+/// the value `NetworkParams::defaults(Testnet)` actually returns, never a copy from a doc.
+/// The paired disable height stays dormant everywhere.
 #[test]
-fn req_vest_003_both_vesting_gates_are_frozen_on_every_network() {
-    for network in [Network::Mainnet, Network::Testnet, Network::Devnet] {
+fn req_vest_003_vesting_gate_dormant_on_mainnet_and_devnet_pinned_on_testnet() {
+    for (network, expected) in [
+        (Network::Mainnet, u64::MAX),
+        (Network::Testnet, 133_640),
+        (Network::Devnet, u64::MAX),
+    ] {
         let params = NetworkParams::defaults(network);
         assert_eq!(
-            params.inc_i_171_vesting_penalty_activation_height,
-            u64::MAX,
-            "{network:?}: the vesting-penalty rule must ship dormant"
+            params.inc_i_171_vesting_penalty_activation_height, expected,
+            "{network:?}: activation height must be exactly the decided value"
         );
         assert_eq!(
             params.inc_i_171_vesting_penalty_disable_height,
             u64::MAX,
-            "{network:?}: the paired undo must ship dormant too — a disable height below \
+            "{network:?}: the paired undo must ship dormant — a disable height below \
              the activation height would make the rule permanently unreachable"
         );
     }

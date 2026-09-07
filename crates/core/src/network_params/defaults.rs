@@ -521,9 +521,10 @@ impl NetworkParams {
                 // INC-I-208 own-attestation pooling. PINNED 118_500 on testnet
                 // (rehearsal crossing, 2026-09-05, v6.28.0); IMMUTABLE once crossed.
                 inc_i_208_own_attestation_activation_height: 118_500,
-                // INC-I-171 vesting-penalty payout bound. FROZEN at u64::MAX
-                // (unpinned) on testnet too; pinning is a separate decision.
-                inc_i_171_vesting_penalty_activation_height: u64::MAX,
+                // INC-I-171 vesting-penalty payout bound. PINNED 133_640 on testnet
+                // (deploy 2026-09-07, ~19 min after tip 133_525 at 10:06Z, user
+                // decision); IMMUTABLE once crossed. Mainnet and devnet stay u64::MAX.
+                inc_i_171_vesting_penalty_activation_height: 133_640,
                 // Paired kill-switch; u64::MAX = never disabled.
                 inc_i_171_vesting_penalty_disable_height: u64::MAX,
 
