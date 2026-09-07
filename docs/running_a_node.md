@@ -498,6 +498,8 @@ Key metrics available at `http://127.0.0.1:9000/metrics`:
 | `doli_reorg_finality_probe_total{site,outcome}` | Finality-guard comparisons reached (`entry`) and refused (`reject`) |
 | `doli_force_reorg_outcomes_total{outcome}` | `forceReorgTo` operator-escape decisions: `executed`, `expired`, `uncorroborated`, `unknown_target`, `plan_refused`, `same_branch`, `ineligible`, `reorg_did_not_land` |
 | `doli_attestation_bitfield_fill_ratio` | Attestation coverage of the last block this node built: set bitfield bits over the attestation universe width. 0.0 = the empty-commitment fallback (no usable attestation signatures), 1.0 = full coverage |
+| `doli_vesting_would_reject_total{code}` | INC-I-171 `RequestWithdrawal` transactions the vesting payout bound would have rejected below its activation height, by error code: `ECON_WITHDRAWAL_PAYOUT_EXCEEDS_NET`, `ECON_VESTING_QUARTER_INVALID`, `ECON_WITHDRAWAL_BOND_EXTRA_DATA_MALFORMED`. Observe-only: no block is rejected by it |
+| `doli_vesting_shadow_evaluated_total` | INC-I-171 `RequestWithdrawal` transactions the vesting shadow actually evaluated. A zero `doli_vesting_would_reject_total` is evidence that no honest withdrawal would be rejected **only while this counter is non-zero**; zero here means the shadow never ran. Both vesting counters are process-local and reset to 0 on restart |
 
 All label values are zero-initialised at start-up, so a zero is a measured "no
 events" and an absent series means the exporter is broken. A sustained

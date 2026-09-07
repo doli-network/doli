@@ -79,3 +79,10 @@ path = "tests/inc_i_171_m4_vesting_bound.rs"
 [[test]]
 name = "inc_i_171_m5_vesting_build"
 path = "tests/inc_i_171_m5_vesting_build.rs"
+
+# INC-I-171 M6 — the shadow counters share the M4 constraint: the vesting window
+# is armed by a process-wide env override, and `tests/it/` is one shared process
+# where another test may freeze NetworkParams first.
+[[test]]
+name = "inc_i_171_m6_shadow_counter"
+path = "tests/inc_i_171_m6_shadow_counter.rs"

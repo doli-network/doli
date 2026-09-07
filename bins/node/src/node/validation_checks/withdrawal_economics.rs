@@ -22,7 +22,12 @@ impl Node {
         let vesting_ah = params.inc_i_171_vesting_penalty_activation_height;
         let vesting_disable = params.inc_i_171_vesting_penalty_disable_height;
         let vesting_live = height >= vesting_ah && height < vesting_disable;
-        if height < withdrawal_gate_ah && !vesting_live {
+        // INC-I-171 M6 observe-only shadow. Entering the pass on this term ALONE is
+        // verdict-neutral (INV-VEST-007): the `'holdings` block breaks on its own
+        // gate below, and `vesting_payout_verdict` returns Ok while height <
+        // vesting_ah, so no arm can bail.
+        let shadow_active = mode == ValidationMode::Full && height < vesting_ah;
+        if height < withdrawal_gate_ah && !vesting_live && !shadow_active {
             return Ok(());
         }
         // Resolve input types FIRST, under the utxo guard alone, and drop it
@@ -335,11 +340,48 @@ impl Node {
                             }
                         }
                     }
+                    if let Some(resolved) = resolved.filter(|_| shadow_active) {
+                        self.vesting_shadow_observe(
+                            tx,
+                            resolved,
+                            block.header.slot,
+                            height,
+                            pk_hash,
+                        );
+                    }
                 }
                 _ => {}
             }
         }
         Ok(())
+    }
+
+    /// INC-I-171 M6: observe-only. Returns nothing — below the activation height the
+    /// verdict is whatever it was before this ran (INV-VEST-007).
+    fn vesting_shadow_observe(
+        &self,
+        tx: &Transaction,
+        resolved: &storage::producer::WithdrawalInputs,
+        block_slot: doli_core::types::Slot,
+        height: u64,
+        pk_hash: crypto::Hash,
+    ) {
+        crate::metrics::VESTING_SHADOW_EVALUATED.inc();
+        // The live gate's own predicate, forced on: one predicate, three call sites
+        // (INV-VEST-008).
+        if let Err(e) = self.vesting_payout_verdict(tx, resolved, block_slot, height, 0, u64::MAX) {
+            crate::metrics::VESTING_WOULD_REJECT
+                .with_label_values(&[e.error_code()])
+                .inc();
+            info!(
+                "[VESTING_SHADOW] [{}] RequestWithdrawal at height={} producer={} tx={}: {}",
+                e.error_code(),
+                height,
+                pk_hash,
+                tx.hash(),
+                e
+            );
+        }
     }
 
     /// INC-I-171: the payout ceiling for ONE RequestWithdrawal, read from the

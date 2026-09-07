@@ -729,6 +729,35 @@ lazy_static! {
     ).unwrap();
 }
 
+// Its own block: the ones above are at the `lazy_static!` recursion limit.
+lazy_static! {
+    /// INC-I-171 M6: RequestWithdrawal transactions the vesting payout bound WOULD
+    /// have rejected, observed below its activation height.
+    ///
+    /// INSTRUMENT SCOPE — the ONE write site outside registration is the shadow arm
+    /// of `node/validation_checks/withdrawal_economics.rs`. The label is always
+    /// `ValidationError::error_code()`, whose vesting vocabulary is the three fixed
+    /// `VESTING_WOULD_REJECT_CODES`, so a withdrawal flood cannot grow the series
+    /// count. Zero-initialised in register_metrics().
+    pub static ref VESTING_WOULD_REJECT: IntCounterVec = IntCounterVec::new(
+        Opts::new(
+            "doli_vesting_would_reject_total",
+            "INC-I-171 RequestWithdrawal transactions the vesting payout bound would have \
+             rejected below its activation height, by validation error code."
+        ),
+        &["code"]
+    ).unwrap();
+
+    /// INC-I-171 M6: RequestWithdrawal transactions the shadow evaluated, rejected or
+    /// not. Zero here means the shadow never ran, which makes a zero
+    /// `VESTING_WOULD_REJECT` evidence of nothing.
+    pub static ref VESTING_SHADOW_EVALUATED: IntCounter = IntCounter::new(
+        "doli_vesting_shadow_evaluated_total",
+        "INC-I-171 RequestWithdrawal transactions the vesting shadow evaluated below the \
+         activation height."
+    ).unwrap();
+}
+
 /// Every `reason` value `ATTESTATION_VERIFY_REJECTED` is written with.
 pub const ATTESTATION_VERIFY_REASONS: [&str; 4] = [
     "root_mismatch",
@@ -759,6 +788,14 @@ const FINALITY_PROBE_SITES: [&str; 2] = ["check_reorg_weighted", "plan_reorg"];
 
 /// Every `outcome` value `POISON_CONTAINMENT` is written with.
 const POISON_CONTAINMENT_OUTCOMES: [&str; 3] = ["tip_kept", "rolled_back", "rollback_failed"];
+
+/// Every `code` value `VESTING_WOULD_REJECT` is written with: the `error_code()` of
+/// the three `ValidationError` variants the INC-I-171 payout predicate can produce.
+const VESTING_WOULD_REJECT_CODES: [&str; 3] = [
+    "ECON_WITHDRAWAL_PAYOUT_EXCEEDS_NET",
+    "ECON_VESTING_QUARTER_INVALID",
+    "ECON_WITHDRAWAL_BOND_EXTRA_DATA_MALFORMED",
+];
 
 /// Register all metrics with the registry
 pub fn register_metrics() {
@@ -921,6 +958,15 @@ pub fn register_metrics() {
     let _ = REGISTRY.register(Box::new(ATTESTATION_BLS_VALID_TOTAL.clone()));
     ATTESTATION_BLS_VALID_TOTAL.inc_by(0);
     let _ = REGISTRY.register(Box::new(ATTESTATION_BLS_VALID_BY_ATTESTER.clone()));
+
+    // INC-I-171 M6: zero-init is what separates "zero would-rejects" from "the shadow
+    // never ran" — the T3 precondition is read off these two series.
+    let _ = REGISTRY.register(Box::new(VESTING_WOULD_REJECT.clone()));
+    let _ = REGISTRY.register(Box::new(VESTING_SHADOW_EVALUATED.clone()));
+    VESTING_SHADOW_EVALUATED.inc_by(0);
+    for code in VESTING_WOULD_REJECT_CODES {
+        VESTING_WOULD_REJECT.with_label_values(&[code]).inc_by(0);
+    }
 
     // Set build info
     BUILD_INFO
