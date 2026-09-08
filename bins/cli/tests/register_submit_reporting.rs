@@ -464,7 +464,9 @@ fn run_register(wallet: &WalletFixture, stub: &Stub) -> CliRun {
         .arg("devnet")
         .arg("--rpc")
         .arg(stub.url())
-        .args(["producer", "register", "--bonds", "1"])
+        // --yes: this harness drives the CLI non-interactively, and a bond-creating command
+        // now refuses to proceed without explicit consent (bond-lock disclosure).
+        .args(["producer", "register", "--bonds", "1", "--yes"])
         .output()
         .expect("failed to run the doli binary");
 
