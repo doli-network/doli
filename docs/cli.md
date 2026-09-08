@@ -674,7 +674,18 @@ doli producer register [OPTIONS]
 
 Options:
   -b, --bonds <BONDS>    Number of bonds to stake (1-10,000) [default: 1]
+  -y, --yes              Accept the bond lock and vesting penalty without a prompt
 ```
+
+**Bond-lock disclosure.** Before the transaction is built, the CLI prints the bond-lock notice
+— a bond is locked stake, and withdrawing it before it is fully vested destroys part of it —
+and asks for confirmation. The notice is printed **after** the duplicate guard and the balance
+check, so a run that was going to fail still fails for its own reason.
+
+`--yes` skips the **prompt**, never the **notice**: an automated caller is still told what it
+is agreeing to. Without `--yes`, a non-interactive stdin (a pipe, a cron job, `</dev/null`)
+is **not** treated as consent — the command exits non-zero and creates nothing, so a script can
+never mistake silence for a bond. Any non-interactive caller must pass `--yes`.
 
 **Bond Requirements:**
 - **Mainnet**: Each bond = 10 DOLI (minimum 1 bond)
@@ -859,7 +870,13 @@ doli producer add-bond --count <COUNT>
 
 Options:
   -c, --count <COUNT>    Number of bonds to add (1-10,000)
+  -y, --yes              Accept the bond lock and vesting penalty without a prompt
 ```
+
+**Bond-lock disclosure.** Same notice and confirmation as `producer register`, printed
+**after** the cap headroom check below, so an over-cap request still exits non-zero on
+`Bond cap exceeded` and never reaches the prompt. `--yes` skips the prompt but still prints
+the notice; a non-interactive stdin without `--yes` exits non-zero and creates nothing.
 
 **Example:**
 ```bash

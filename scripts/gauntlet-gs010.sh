@@ -280,7 +280,7 @@ except Exception: print('')" 2>/dev/null)"
     # ── register #1 ───────────────────────────────────────────────────────────
     local tx1
     tx1="$("$GS010_CLI" --network testnet --rpc "$trpc" --wallet "$tkey" \
-           producer register --bonds "$bonds" 2>&1 | awk '/TX Hash:/ {print $3; exit}')"
+           producer register --bonds "$bonds" --yes 2>&1 | awk '/TX Hash:/ {print $3; exit}')"
     if [ -z "$tx1" ]; then
         say "  ${C_R}[gs010] register #1 produced no TX hash — cannot inject${C_0}"; return 0
     fi

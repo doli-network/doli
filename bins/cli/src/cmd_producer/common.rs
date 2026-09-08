@@ -1,3 +1,6 @@
+use anyhow::Result;
+use std::io::{IsTerminal, Write};
+
 use crate::rpc_client::{format_balance, BondDetailsInfo};
 use doli_core::consensus::withdrawal_penalty_rate_with_quarter;
 use doli_core::types::Slot;
@@ -13,6 +16,61 @@ pub(crate) fn format_slot_duration(slots: u64) -> String {
     } else {
         format!("~{}m", minutes)
     }
+}
+
+/// Shown before EVERY bond-creating transaction: producer registration and add-bond.
+///
+/// Deliberately carries no block height. An operator does not need an activation number to
+/// understand that leaving early costs money, and a height in client text goes stale.
+pub(super) const BOND_LOCK_NOTICE: &str = "\
+IMPORTANT — your DOLI will be LOCKED as stake.
+
+  A bond is staked capital, not a spendable balance.
+  Withdrawing a bond before it is fully vested costs a vesting penalty:
+  part of that bond is DESTROYED and can never be recovered.
+  The penalty falls as the bond ages, and reaches 0% once fully vested.
+
+  Check the exact cost before you withdraw:
+    doli producer simulate-withdrawal --count <N>";
+
+/// Print the bond-lock notice and require explicit consent.
+///
+/// `yes` skips the PROMPT, never the NOTICE — an operator who automates is still told.
+///
+/// A closed or non-terminal stdin is NOT consent. It returns an error, so a script that never
+/// passed `--yes` fails loudly instead of believing it created a bond that was never created.
+/// Answering anything but yes is also an error: no bond exists afterwards, so a caller must
+/// never read the exit code as success.
+pub(super) fn confirm_bond_lock(yes: bool) -> Result<()> {
+    println!("{BOND_LOCK_NOTICE}");
+    println!();
+
+    if yes {
+        println!("Proceeding — vesting penalty accepted via --yes.");
+        return Ok(());
+    }
+
+    if !std::io::stdin().is_terminal() {
+        anyhow::bail!(
+            "Refusing to create a bond without confirmation: stdin is not a terminal. \
+             Re-run with --yes to confirm you accept the vesting penalty."
+        );
+    }
+
+    print!("Do you accept the vesting penalty on early withdrawal? [y/N] ");
+    std::io::stdout().flush()?;
+    let mut input = String::new();
+    if std::io::stdin().read_line(&mut input)? == 0 {
+        anyhow::bail!(
+            "Refusing to create a bond without confirmation: stdin closed before an answer. \
+             Re-run with --yes to confirm you accept the vesting penalty."
+        );
+    }
+    let answer = input.trim();
+    if !answer.eq_ignore_ascii_case("y") && !answer.eq_ignore_ascii_case("yes") {
+        anyhow::bail!("Aborted — no bond was created.");
+    }
+    Ok(())
 }
 
 /// FIFO breakdown tier: (count, penalty_pct, gross_amount, net_amount)
@@ -101,6 +159,64 @@ pub(super) fn display_fifo_breakdown(breakdown: &FifoBreakdown) {
             format_balance(total_gross),
             format_balance(breakdown.total_net),
             format_balance(breakdown.total_penalty)
+        );
+    }
+}
+
+#[cfg(test)]
+mod bond_lock_notice_tests {
+    use super::*;
+
+    // REQ-VEST-CLI (Must) — the notice must state the two facts a new producer does not know:
+    // the DOLI are LOCKED, and leaving early DESTROYS part of them.
+    #[test]
+    fn notice_states_the_lock_and_the_penalty() {
+        let n = BOND_LOCK_NOTICE.to_lowercase();
+        assert!(
+            n.contains("lock"),
+            "the notice must say the DOLI are locked"
+        );
+        assert!(n.contains("penalty"), "the notice must name the penalty");
+        assert!(
+            n.contains("destroy") || n.contains("burn"),
+            "the notice must say the penalty destroys value, not that it is refunded"
+        );
+    }
+
+    // The maintainer asked for NO activation height in the user-facing text: an operator does not
+    // need a block number to understand that leaving early costs money.
+    #[test]
+    fn notice_does_not_leak_an_activation_height() {
+        assert!(
+            !BOND_LOCK_NOTICE.contains("418"),
+            "the notice must not mention the activation height"
+        );
+        assert!(
+            !BOND_LOCK_NOTICE.to_lowercase().contains("height"),
+            "the notice must not mention a block height at all"
+        );
+    }
+
+    // --yes skips the PROMPT, never the NOTICE. An operator who automates must still be told.
+    #[test]
+    fn yes_flag_is_accepted_without_a_terminal() {
+        assert!(
+            confirm_bond_lock(true).is_ok(),
+            "--yes must proceed even with no terminal attached"
+        );
+    }
+
+    // GS-017 / deploy_producers.sh: a non-interactive caller that never passed --yes must FAIL
+    // LOUDLY. Returning Ok here is the silent-success mode: the script believes a bond was
+    // created and none was. Test stdin is not a terminal, so this exercises the real path.
+    #[test]
+    fn no_terminal_and_no_yes_flag_is_an_error_never_silent_consent() {
+        let e = confirm_bond_lock(false)
+            .expect_err("a non-interactive run without --yes must be an error, not Ok");
+        let msg = e.to_string().to_lowercase();
+        assert!(
+            msg.contains("--yes"),
+            "the error must tell the operator exactly how to proceed, got: {e}"
         );
     }
 }

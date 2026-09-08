@@ -435,7 +435,7 @@ register_producers() {
 
         echo -en "  Registering producer_$i... "
 
-        if ! $CLI_BIN -r "$RPC_ENDPOINT" -w "$wallet" producer register -b "$BOND_COUNT" >/dev/null 2>&1; then
+        if ! $CLI_BIN -r "$RPC_ENDPOINT" -w "$wallet" producer register -b "$BOND_COUNT" --yes >/dev/null 2>&1; then
             log_error "Failed to register producer_$i"
             exit 1
         fi

@@ -775,11 +775,15 @@ pub(crate) enum ChannelCommands {
 
 #[derive(Subcommand)]
 pub(crate) enum ProducerCommands {
-    /// Register as a block producer
+    /// Register as a block producer (bonds lock your DOLI; early withdrawal incurs a penalty)
     Register {
         /// Number of bonds to stake (1-10000, each bond = 1 bond_unit)
         #[arg(short, long, default_value = "1")]
         bonds: u32,
+
+        /// Accept the bond lock and vesting penalty without an interactive prompt
+        #[arg(short, long)]
+        yes: bool,
     },
 
     /// Check producer status
@@ -814,11 +818,15 @@ pub(crate) enum ProducerCommands {
         format: String,
     },
 
-    /// Add more bonds to increase stake (bond stacking)
+    /// Add more bonds to increase stake (bonds lock your DOLI; early withdrawal incurs a penalty)
     AddBond {
         /// Number of bonds to add (1-10000)
         #[arg(short, long)]
         count: u32,
+
+        /// Accept the bond lock and vesting penalty without an interactive prompt
+        #[arg(short, long)]
+        yes: bool,
     },
 
     /// Withdraw bonds instantly (FIFO, vesting penalty applies)

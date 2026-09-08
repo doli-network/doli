@@ -450,6 +450,7 @@ for i in $(seq $((NUM_GENESIS_PRODUCERS + 1)) $TOTAL_PRODUCERS); do
         --rpc "$RPC_ENDPOINT" \
         producer register \
         --bonds 1 \
+        --yes \
         2>&1 || true)
 
     if echo "$register_output" | grep -qiE "success|submitted|hash|registered"; then
