@@ -2,7 +2,7 @@ use anyhow::Result;
 use crypto::{signature, Hash, PublicKey};
 use doli_core::{Input, Output, Transaction};
 
-use super::common::{compute_fifo_breakdown, display_fifo_breakdown};
+use super::common::{compute_fifo_breakdown, confirm_bond_lock, display_fifo_breakdown};
 use crate::rpc_client::{format_balance, RpcClient};
 use crate::wallet::Wallet;
 use doli_cli::producer_ledger::{addbond_current_from_rpc, addbond_headroom_check};
@@ -13,6 +13,7 @@ pub(super) async fn handle_add_bond(
     pubkey_hash: &str,
     rpc: &RpcClient,
     count: u32,
+    yes: bool,
 ) -> Result<()> {
     println!("Add Bond");
     println!("{:-<60}", "");
@@ -56,6 +57,10 @@ pub(super) async fn handle_add_bond(
         count as u64 * bond_display
     );
     println!();
+
+    // Disclosed AFTER the cap/headroom bail above: an over-cap add-bond must keep failing fast
+    // for its own reason (INC-I-203) rather than stopping on a question it can never satisfy.
+    confirm_bond_lock(yes)?;
 
     // Get spendable normal UTXOs (exclude bonds, conditioned, NFTs, tokens, etc.)
     let utxos: Vec<_> = rpc

@@ -26,11 +26,11 @@ pub(crate) async fn cmd_producer(
     }
 
     match command {
-        ProducerCommands::Register { bonds } => {
+        ProducerCommands::Register { bonds, yes } => {
             let wallet = Wallet::load(wallet_path)?;
             let keypair = wallet.primary_keypair()?;
             let pubkey_hash = wallet.primary_pubkey_hash();
-            handle_register(&wallet, &keypair, &pubkey_hash, &rpc, bonds).await?;
+            handle_register(&wallet, &keypair, &pubkey_hash, &rpc, bonds, yes).await?;
         }
 
         ProducerCommands::Status { pubkey } => {
@@ -49,11 +49,11 @@ pub(crate) async fn cmd_producer(
             handle_list(&rpc, active, &format).await?;
         }
 
-        ProducerCommands::AddBond { count } => {
+        ProducerCommands::AddBond { count, yes } => {
             let wallet = Wallet::load(wallet_path)?;
             let keypair = wallet.primary_keypair()?;
             let pubkey_hash = wallet.primary_pubkey_hash();
-            handle_add_bond(&wallet, &keypair, &pubkey_hash, &rpc, count).await?;
+            handle_add_bond(&wallet, &keypair, &pubkey_hash, &rpc, count, yes).await?;
         }
 
         ProducerCommands::RequestWithdrawal { count, destination } => {

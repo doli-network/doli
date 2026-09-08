@@ -2,6 +2,7 @@ use anyhow::Result;
 use crypto::{bls_sign_pop, signature, BlsSecretKey, Hash, PublicKey};
 use doli_core::{Input, Output, Transaction};
 
+use super::common::confirm_bond_lock;
 use crate::rpc_client::{format_balance, RpcClient};
 use crate::tx_retention;
 use crate::wallet::Wallet;
@@ -12,6 +13,7 @@ pub(super) async fn handle_register(
     pubkey_hash: &str,
     rpc: &RpcClient,
     bonds: u32,
+    yes: bool,
 ) -> Result<()> {
     println!("Producer Registration");
     println!("{:-<60}", "");
@@ -99,6 +101,10 @@ pub(super) async fn handle_register(
             format_balance(total_available)
         );
     }
+
+    // The bond lock is disclosed AFTER the eligibility and balance checks, so a run that was
+    // going to fail anyway still fails for its own reason instead of asking a pointless question.
+    confirm_bond_lock(yes)?;
 
     // Build registration transaction
     let mut inputs: Vec<Input> = Vec::new();
