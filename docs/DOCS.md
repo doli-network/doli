@@ -32,6 +32,7 @@ Master index for all DOLI documentation.
 | [docker.md](./docker.md) | Docker deployment guide - containers, compose, and monitoring |
 | [running_a_node.md](./running_a_node.md) | Node setup, operation, and **environment configuration** (.env files) |
 | [becoming_a_producer.md](./becoming_a_producer.md) | Block producer onboarding |
+| [bls-key-recovery.md](./bls-key-recovery.md) | Operator recovery when the node's BLS attestation key does not match the on-chain key: `doli wallet import-bls` (old key still held, no transaction) or `doli producer rotate-bls` (lost/leaked key; fee-paying, effective at the next epoch boundary, requires the pinned activation height). Stub; full text lands in run 552 M11. |
 | [rpc_reference.md](./rpc_reference.md) | RPC API documentation |
 | [troubleshooting.md](./troubleshooting.md) | Common issues and solutions (disk-full/ENOSPC crash-loop + log rotation section lands with Option 1 M2 — design: `specs/disk-guardian-architecture.md`) |
 | [archiver.md](./archiver.md) | **Block archiver & seed infrastructure** - archive format, seed/relay role, block explorer, disaster recovery, RPC methods |
