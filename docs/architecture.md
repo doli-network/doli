@@ -869,6 +869,7 @@ Emitted from `bins/node/src/metrics.rs:644-728`.
 | `doli_attestation_bitfield_fill_ratio` | gauge | — | set bits / universe width; zero width ⇒ `0.0`, never `NaN` |
 | `doli_attestation_bls_valid_total` | counter | — | zero-initialised capability marker |
 | `doli_attestation_bls_valid_attester_total` | counter | `attester` (first 8 hex of the pubkey) | first-seen valid BLS half per attester |
+| `doli_producer_bls_rotation_total` | counter | — | INC-I-217: BLS key rotations installed by an epoch-boundary flush. Defined at `metrics.rs:760-775`; the one write site is the flush arm of `bins/node/src/node/apply_block/state_update.rs` |
 
 Pre-existing and unchanged: `doli_attestation_missing_current{segment}`,
 `doli_attestation_misses_total{segment}`.

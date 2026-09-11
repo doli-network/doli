@@ -195,9 +195,18 @@ typed `ValidationError` variants, not `InvalidTransaction(String)`, so
 The checks run in the order listed: structural first, the two pairing-bearing
 checks last, so a block of malformed rotations never costs a validator a pairing.
 
-`ERRTX-ROT005` is a TOMBSTONE -- it was the superseded "rotation expired" rule
-and is never emitted. `ERRTX-ROT006` is RESERVED for M7 (BLS key already in
-use, a stateful check). Neither number is reused.
+`ERRTX-ROT005` and `ERRTX-ROT006` are both NEVER EMITTED, and neither number is
+reused. `ERRTX-ROT005` is a tombstone: it was the superseded "rotation expired"
+rule. `ERRTX-ROT006` was never allocated to a code path. M7 shipped the
+key-uniqueness rule as an apply-time SKIP VERDICT, not as a transaction
+rejection.
+
+A rotation to a BLS key that another producer already holds is therefore a valid
+transaction. It enters the block, and the epoch-boundary apply skips it. The
+producer set stays byte-identical and no error code is raised. The four skip
+verdicts are `NotProducer`, `SameKey`, `AlreadyPending` and `KeyInUse`, in that
+order. They live in `crates/storage/src/producer/rotation.rs`. Section 3.24 of
+`specs/protocol.md` lists what each one means.
 
 | Code | Description | Context Variables |
 |------|-------------|-------------------|

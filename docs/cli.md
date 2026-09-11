@@ -356,6 +356,85 @@ doli import ~/backup/wallet-backup.json
 
 ---
 
+### 1.10. Import a BLS Producer Key
+
+Import a BLS producer key that you already hold into the wallet (INC-I-217
+recovery). This is a **top-level** command. It is `doli import-bls`, not
+`doli wallet import-bls`.
+
+Use it when the chain has registered a BLS key for your producer, you still hold
+that secret, but `wallet.json` no longer matches it. Nothing here reaches a
+block, a transaction or the producer set.
+
+```bash
+doli import-bls <SECRET> [OPTIONS]
+
+Arguments:
+  <SECRET>               BLS secret key, 64 hex characters
+
+Options:
+      --force            Replace an existing BLS key
+                         (DANGEROUS: no seed phrase restores what it replaces)
+      --rpc <URL>        Node RPC endpoint — compare the key with the chain
+                         before writing
+      --address <ADDR>   Wallet address whose producer registration to compare
+                         (default: primary)
+```
+
+**Example:**
+```bash
+doli -w ~/.doli/mainnet/wallet.json import-bls <64-hex-secret> \
+  --rpc http://127.0.0.1:8500
+```
+
+**Example output:**
+```
+Chain check: MATCH — getProducer -> blsPubkey equals the imported key.
+
+BLS producer key imported.
+  BLS Public Key: 8f2a...
+
+Backup:
+  Your 24-word phrase does NOT restore an imported key. This wallet
+  file is now the only copy of it — back up the file itself.
+
+Restart the node to load the imported BLS key.
+```
+
+**Behaviour:**
+
+- The secret is validated and the public key derived **in memory first**. Every
+  failure returns before the file is written, so a rejected secret leaves
+  `wallet.json` byte-identical.
+- With `--rpc`, the derived key is compared against `getProducer -> blsPubkey`
+  **before** the write. A mismatch aborts and writes nothing. A producer with no
+  `blsPubkey` on chain also aborts; re-run without `--rpc` to import anyway.
+- Without `--rpc`, the command prints the key and asks you to compare it with
+  `getProducer -> blsPubkey` yourself.
+- The key is written to the **primary** address of the wallet. `--address` only
+  chooses which address's producer registration is compared against the chain.
+- An imported key is not seed-derived, so the wallet version marker drops below
+  the seed-derived-BLS threshold.
+- The node reads the BLS key at start-up. Restart the node after the import.
+
+**Exit codes:**
+| Outcome | Exit | Output |
+|---------|------|--------|
+| Imported | 0 | `BLS producer key imported.` plus the BLS public key |
+| Wallet already holds a BLS key, no `--force` | non-zero | `This wallet already holds a BLS producer key.` — nothing written |
+| Secret is not a valid BLS scalar | non-zero | validation error — nothing written |
+| Chain check mismatch (`--rpc`) | non-zero | `Chain check FAILED — nothing was written.` |
+
+> **Back up the wallet file before you use `--force`.** No seed phrase restores
+> the key that `--force` replaces. Recovering from that loss costs an `Exit` plus
+> a fresh `Registration`, which forfeits `registered_at` seniority.
+
+Related: [1.4. Add BLS Key](#14-add-bls-key) creates a NEW key in a wallet that
+has none. [4.10. Rotate the Producer BLS Key](#410-rotate-the-producer-bls-key)
+changes the key the CHAIN holds.
+
+---
+
 ## 2. Balance & Transactions
 
 ### 2.1. Check Balance
@@ -1077,6 +1156,123 @@ doli producer slash \
 - 100% of bond burned permanently
 - Immediate exclusion from producer set
 - Only unambiguously intentional infractions are slashed
+
+---
+
+### 4.10. Rotate the Producer BLS Key
+
+Replace the producer's on-chain BLS attestation key with the BLS key that this
+wallet holds (INC-I-217). The command builds and submits a `RotateBlsKey`
+transaction (type 32). The wallet is opened READ-ONLY: a rotation changes the
+chain, never `wallet.json`.
+
+```bash
+doli producer rotate-bls [OPTIONS]
+
+Options:
+  -y, --yes    Accept the irreversible key change without an interactive prompt
+```
+
+There are no other flags. The wallet, the RPC endpoint and the network come from
+the global options, which go BEFORE the subcommand.
+
+**Preconditions.** The command refuses, before it signs anything, when:
+
+| Refusal | Message |
+|---------|---------|
+| The wallet holds no BLS key | `this wallet holds no BLS key, so there is nothing to rotate to. Add one first: doli --wallet <wallet> add-bls` |
+| The key is not a registered producer | `this key is not a registered producer, so it has no BLS key to rotate` |
+| The wallet key is already the on-chain key | `the wallet BLS key is already the key on chain — a rotation would pay a fee to change nothing` |
+| A rotation is already queued | the queued key and its effective height are printed first, then the refusal |
+| No single UTXO strictly covers the fee | `NoUtxoCoversFee`, with the fee and the largest spendable amount |
+
+The fee is `BASE_FEE + 240 * FEE_PER_BYTE / FEE_DIVISOR` = **3 base units**, the
+same formula registration uses. The command spends the SMALLEST single `Normal`
+spendable output that strictly exceeds the fee, so the one change output is never
+zero.
+
+**Example:**
+```bash
+# Interactive — prints the notice and prompts
+doli -w ~/.doli/mainnet/wallet.json producer rotate-bls
+
+# Non-interactive (scripts, no terminal)
+doli -w ~/.doli/mainnet/wallet.json producer rotate-bls --yes
+```
+
+**Example output:**
+```
+Producer BLS Key Rotation
+------------------------------------------------------------
+
+  Current BLS key: 8f2a...
+  New BLS key:     b41c...
+  Fee:             3 base units
+  Change output:   99999997 base units
+  Takes effect:    at the next epoch boundary
+
+IMPORTANT — a BLS key rotation CANNOT BE UNDONE.
+
+  The new key is queued now and installed at the next epoch boundary.
+  Until that boundary the chain still expects the OLD key, and the boundary
+  block's own attestation can be lost while the swap lands.
+  The only way back to the previous key is ANOTHER ROTATION, with another fee.
+  Keep the new BLS secret in this wallet: an attestation signed with a key the
+  chain does not hold is not counted.
+
+Rotate the BLS key now? This cannot be undone. [y/N] y
+
+Submitting the rotation transaction...
+Verifying the node retained the transaction...
+Rotation submitted.
+TX Hash: 4ac6808e...
+Retention: held in the node mempool, not yet mined
+
+  Current BLS key: 8f2a...
+  New BLS key:     b41c...
+  Fee:             3 base units
+  Change output:   99999997 base units
+  Takes effect:    height 412000 (next epoch boundary)
+Use 'doli producer status' to confirm the new key once the boundary passes.
+```
+
+**Consent.** Only `y` or `yes` is consent. Any other answer aborts with
+`Aborted — no rotation was submitted.` A non-terminal stdin is never consent: in
+a script you must pass `--yes`, or the command refuses. Every refusal path exits
+non-zero, so a caller can never read the exit code as a rotation that happened.
+
+**Activation gate.** `RotateBlsKey` is gated by
+`bls_key_rotation_activation_height`, which is `u64::MAX` on mainnet, on testnet
+and on devnet. **No RPC method exposes that height**, so the CLI cannot check the
+gate before it submits. Below the height the node rejects the transaction and the
+CLI prints the node's own text verbatim:
+
+```
+Error submitting the BLS key rotation: [ERRTX-ROT002] bls key rotation not activated: current_height=... activation_height=...
+```
+
+The text is not paraphrased, because paraphrasing it would hide the real reason.
+
+**Exit codes:**
+| Outcome | Exit | Output |
+|---------|------|--------|
+| Accepted and retained | 0 | `Rotation submitted.`, TX hash, retention state, effective height |
+| A precondition refused | non-zero | the refusal message above — nothing submitted |
+| Operator declined the prompt | non-zero | `Aborted — no rotation was submitted.` |
+| Rejected at submit | non-zero | `Error submitting the BLS key rotation: ...` |
+| Accepted then dropped, or retention not checkable | non-zero | the retention error — query the TX hash before retrying |
+
+Never resubmit on a non-zero exit without first checking the transaction's fate.
+
+**After the rotation.** The new key is QUEUED, not installed. Until the epoch
+boundary at the reported height, the chain still expects the OLD key. Check the
+queue with `getProducer`: a `pendingUpdates` entry with `updateType`
+`rotate_bls_key` carries `newBlsPubkey` and `effectiveAtHeight`. After the
+boundary, `blsPubkey` reports the new key.
+
+Related: [1.10. Import a BLS Producer Key](#110-import-a-bls-producer-key)
+repairs the WALLET when you still hold the registered secret. A rotation changes
+what the CHAIN holds, and costs a fee.
 
 ---
 

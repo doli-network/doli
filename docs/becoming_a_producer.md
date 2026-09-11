@@ -541,6 +541,69 @@ grep "VDF computed" /var/log/doli-node.log
 3. Check chain sync status
 4. Resume production
 
+### 11.4. Restored Wallet, Wrong BLS Key
+
+Your node signs each attestation with a BLS key. The chain holds one BLS key for your producer.
+The two keys must be the same key. A wallet restored from the 24-word phrase does **not** restore
+the BLS key: the phrase derives a new one. The node then starts, produces blocks, and earns no
+attestation reward.
+
+**Symptoms**
+
+| Signal | Where to look |
+|--------|---------------|
+| `[ATTEST_EGRESS] own BLS half does not verify against the on-chain key` | node log, once for each block your node attests to |
+| `attestedMinutes: 0` and `qualified: false` for your public key | `getAttestationStats` RPC |
+| Blocks are produced, but no epoch reward arrives | wallet balance |
+
+Confirm the mismatch before you act. Compare the key in the wallet with the key on the chain:
+
+```bash
+# The key the wallet holds
+doli -w /path/to/wallet.json info        # field: BLS Public Key
+
+# The key the chain holds for the same producer
+curl -s -X POST http://127.0.0.1:8500 -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getProducer","params":["<your-public-key>"]}'
+# field: result.blsPubkey
+```
+
+Equal keys mean the cause is elsewhere. Different keys mean you must repair the key.
+
+**Decision tree**
+
+| Your situation | Remedy | Cost |
+|----------------|--------|------|
+| (a) You still hold the old BLS secret (an old `wallet.json`, a backup, a `doli export` dump) | `doli import-bls <secret-hex>` | None. No transaction. Client-side only. |
+| (b) The old BLS secret is lost or leaked | `doli producer rotate-bls` | One transaction fee. Irreversible. Takes effect at the **next epoch boundary**. |
+| (c) You cannot operate the node any more | Delegate the bond to another producer | Your bond stays. The delegate earns and pays you by agreement. |
+| (d) You want a clean start | Exit, then register again | Expensive. Read the warning below. |
+
+Branch (a) is the cheapest remedy. Use it first:
+
+```bash
+doli import-bls <64-hex-characters> --rpc http://127.0.0.1:8500
+# Restart the node to load the imported key.
+```
+
+Branch (b) needs an active network gate. `bls_key_rotation_activation_height` is `u64::MAX` on
+every network today. Below that height the node refuses the transaction with `[ERRTX-ROT002]`.
+Ask the maintainers before you plan a rotation.
+
+```bash
+doli producer rotate-bls          # prompts before it signs; --yes accepts non-interactively
+```
+
+Branch (d) costs more than it looks. An Exit ends the registration, so:
+
+- Your registration date resets. You lose the seniority weight of section 7.
+- The vesting penalty of section 6.6 applies to the bonds you take out.
+- You must fund and bond again at the current bond price.
+
+Use branch (d) only when branches (a), (b) and (c) are all closed to you.
+
+Full procedure, every command, and the confirmation steps: [docs/bls-key-recovery.md](bls-key-recovery.md).
+
 ---
 
 ## 12. Governance Participation
