@@ -1,6 +1,6 @@
 //! Golden vectors freezing the persisted producer surfaces.
 //!
-//! covers: REQ-ROT-001
+//! covers: REQ-ROT-001, REQ-ROT-005
 //!
 //! Two surfaces: the serde NAME TAG of every `PendingProducerUpdate` variant
 //! (written into `producers.bin` JSON by `ProducerSet::save`/`load`) and the
@@ -11,8 +11,13 @@ use crypto::{hash::hash, Hash, KeyPair, PublicKey};
 use super::constants::BOND_UNIT;
 use super::types::{PendingProducerUpdate, ProducerInfo, ProducerSet};
 
-const PENDING_UPDATE_VARIANT_COUNT: usize = 7;
+const PENDING_UPDATE_VARIANT_COUNT: usize = 8;
 
+/// REQ-ROT-005: frozen. `PendingProducerUpdate` is NOT part of
+/// `serialize_canonical`, so appending a variant cannot move these. A diff here
+/// means `ProducerInfo` gained or lost a field — the producer contribution to
+/// the state root changed shape and the deploy is unsafe at ANY height below
+/// `bls_key_rotation_activation_height`.
 const CANONICAL_LEN: usize = 652;
 const CANONICAL_HASH_HEX: &str = "9638dad997fc8ddb24c1e122b39cf71c5b7023db52e0efb025701a73bd08099c";
 
@@ -24,7 +29,7 @@ fn h(byte: u8) -> Hash {
     Hash::from_bytes([byte; 32])
 }
 
-/// Exhaustive — NO `_` arm. An 8th variant fails the build here.
+/// Exhaustive — NO `_` arm. A 9th variant fails the build here.
 fn serde_tag(update: &PendingProducerUpdate) -> &'static str {
     match update {
         PendingProducerUpdate::Register { .. } => "Register",
@@ -34,6 +39,7 @@ fn serde_tag(update: &PendingProducerUpdate) -> &'static str {
         PendingProducerUpdate::DelegateBond { .. } => "DelegateBond",
         PendingProducerUpdate::RevokeDelegation { .. } => "RevokeDelegation",
         PendingProducerUpdate::RequestWithdrawal { .. } => "RequestWithdrawal",
+        PendingProducerUpdate::RotateBlsKey { .. } => "RotateBlsKey",
     }
 }
 
@@ -74,6 +80,14 @@ fn all_pending_updates() -> Vec<PendingProducerUpdate> {
             bond_count: 3,
             bond_unit: BOND_UNIT,
         },
+        // REQ-ROT-005: appended LAST. Serde is name-tagged, so position does not
+        // reach the wire; the position freeze is what keeps the first 7 rows of
+        // GOLDEN_JSON aligned with the first 7 variants.
+        PendingProducerUpdate::RotateBlsKey {
+            pubkey: pk(0x09),
+            new_bls_pubkey: vec![0x7Au8; 48],
+            height: 500,
+        },
     ]
 }
 
@@ -85,6 +99,7 @@ const GOLDEN_JSON: [&str; PENDING_UPDATE_VARIANT_COUNT] = [
     r#"{"DelegateBond":{"delegator":"6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf1","delegate":"8a875fff1eb38451577acd5afee405456568dd7c89e090863a0557bc7af49f17","bond_count":5}}"#,
     r#"{"RevokeDelegation":{"delegator":"ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c"}}"#,
     r#"{"RequestWithdrawal":{"pubkey":"1398f62c6d1a457c51ba6a4b5f3dbd2f69fca93216218dc8997e416bd17d93ca","bond_count":3,"bond_unit":1000000000}}"#,
+    r#"{"RotateBlsKey":{"pubkey":"fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618","new_bls_pubkey":[122,122,122,122,122,122,122,122,122,122,122,122,122,122,122,122,122,122,122,122,122,122,122,122,122,122,122,122,122,122,122,122,122,122,122,122,122,122,122,122,122,122,122,122,122,122,122,122],"height":500}}"#,
 ];
 
 /// Fixed set: insertion order is the REVERSE of sorted order, so the canonical
@@ -140,9 +155,9 @@ fn pending_producer_update_json_golden_vectors() {
     }
 }
 
-// REQ-ROT-001 — Decision: whether an 8th deferred mutation appeared without the persisted-tag freeze being revisited.
+// REQ-ROT-005 — Decision: whether a 9th deferred mutation appeared, or the rotation variant landed anywhere but last, without the persisted-tag freeze being revisited.
 #[test]
-fn exactly_seven_pending_producer_update_variants() {
+fn exactly_eight_pending_producer_update_variants() {
     let tags: Vec<&str> = all_pending_updates().iter().map(serde_tag).collect();
     assert_eq!(tags.len(), PENDING_UPDATE_VARIANT_COUNT);
     assert_eq!(
@@ -155,6 +170,7 @@ fn exactly_seven_pending_producer_update_variants() {
             "DelegateBond",
             "RevokeDelegation",
             "RequestWithdrawal",
+            "RotateBlsKey",
         ],
         "variant order or naming changed"
     );
@@ -218,4 +234,20 @@ fn serialize_canonical_is_insertion_order_independent() {
     reversed.exit_history.insert(h(0xE1), 987_654);
 
     assert_eq!(reversed.serialize_canonical(), forward);
+}
+
+// REQ-ROT-005 — Decision: whether appending the rotation variant broke the decode of a
+// queue persisted by the pre-change binary, which silently drops every in-flight deferred
+// mutation on the first restart after the upgrade.
+#[test]
+fn pre_change_queue_json_still_deserializes() {
+    let legacy = format!(
+        r#"{{"producers":{{}},"exit_history":{{}},"pending_updates":[{},{}]}}"#,
+        GOLDEN_JSON[1], GOLDEN_JSON[2]
+    );
+
+    let set: ProducerSet = serde_json::from_str(&legacy)
+        .expect("a producers.bin written before the RotateBlsKey variant existed must still load");
+    let tags: Vec<&str> = set.pending_updates.iter().map(serde_tag).collect();
+    assert_eq!(tags, vec!["Exit", "Slash"]);
 }

@@ -593,10 +593,13 @@ fn tag(u: &PendingProducerUpdate) -> &'static str {
         PendingProducerUpdate::DelegateBond { .. } => "DelegateBond",
         PendingProducerUpdate::RevokeDelegation { .. } => "RevokeDelegation",
         PendingProducerUpdate::RequestWithdrawal { .. } => "RequestWithdrawal",
+        PendingProducerUpdate::RotateBlsKey { .. } => "RotateBlsKey",
     }
 }
 
 const KEY_A: [u8; 48] = [0xA1; 48];
+/// M7's rotation target — distinct from [`KEY_A`] so "the key moved" is observable.
+const KEY_B: [u8; 48] = [0xB2; 48];
 
 fn all_pending(target: &PublicKey, other: &PublicKey) -> Vec<PendingProducerUpdate> {
     let fresh = ProducerInfo::new(*target, 0, 1_000, (crypto::hash::hash(b"rot"), 0), 0, 1_000);
@@ -630,13 +633,18 @@ fn all_pending(target: &PublicKey, other: &PublicKey) -> Vec<PendingProducerUpda
             bond_count: 1,
             bond_unit: 1_000,
         },
+        PendingProducerUpdate::RotateBlsKey {
+            pubkey: *target,
+            new_bls_pubkey: KEY_B.to_vec(),
+            height: 1,
+        },
     ]
 }
 
 // REQ-ROT-010 (Must) — Decision: a failure means the deferred producer-mutation surface
 // changed, and M7's rotation arm would be written against a set nobody enumerated.
 #[test]
-fn req_rot_010_b2_pending_producer_update_carries_exactly_7_variants() {
+fn req_rot_010_b2_pending_producer_update_carries_exactly_8_variants() {
     let target = *KeyPair::generate().public_key();
     let other = *KeyPair::generate().public_key();
     let mut distinct: Vec<&str> = all_pending(&target, &other).iter().map(tag).collect();
@@ -644,10 +652,10 @@ fn req_rot_010_b2_pending_producer_update_carries_exactly_7_variants() {
     distinct.dedup();
     assert_eq!(
         distinct.len(),
-        7,
-        "REQ-ROT-010/M4 tripwire: PendingProducerUpdate now has {} distinct variants \
-         ({distinct:?}) — if M7 added RotateBlsKey, raise this to 8 and move it to the M7 \
-         suite",
+        8,
+        "REQ-ROT-005 tripwire: PendingProducerUpdate now has {} distinct variants \
+         ({distinct:?}) — M7 added RotateBlsKey as the 8th; a 9th needs the golden-vector \
+         freeze in crates/storage/src/producer/wire_golden_tests.rs revisited first",
         distinct.len()
     );
 }
@@ -662,6 +670,12 @@ fn req_rot_010_b3_no_pending_update_variant_rewrites_a_registered_producers_bls_
 
     for update in all_pending(&target, &other) {
         let name = tag(&update);
+        // REQ-ROT-005: M7 makes RotateBlsKey the ONE deferred mutation that is SUPPOSED
+        // to rewrite the key. Its own assertions live in
+        // crates/storage/src/producer/tests_rotation.rs; here it would invert the claim.
+        if name == "RotateBlsKey" {
+            continue;
+        }
         let mut ps = ProducerSet::new();
         ps.register_genesis_producer(target, 4, 1_000)
             .expect("register target");
@@ -687,7 +701,7 @@ fn req_rot_010_b3_no_pending_update_variant_rewrites_a_registered_producers_bls_
             after.bls_pubkey,
             KEY_A.to_vec(),
             "REQ-ROT-010 B3: PendingProducerUpdate::{name} changed the BLS key of an \
-             already-registered producer"
+             already-registered producer — RotateBlsKey is the only sanctioned writer"
         );
         // O3 anti-vacuity: the variant must actually have done something, or "unchanged"
         // is free. Register is the exception — it is REFUSED for an existing key, and
@@ -708,8 +722,9 @@ fn req_rot_010_b3_no_pending_update_variant_rewrites_a_registered_producers_bls_
 
 // B3 supplement — source scan. Not a substitute for the behavioural test above.
 
-// REQ-ROT-010 (Must) — Decision: a failure means a fifth write site appeared, so the
-// behavioural enumeration above is no longer exhaustive and B3's conclusion is unsound.
+// REQ-ROT-005 (Must) — Decision: a failure means a SIXTH `.bls_pubkey =` write site
+// appeared, or M7's flush arm landed anywhere but `set_core.rs`. A second, drifting copy of
+// the arm is the apply-vs-rebuild divergence shape this scan exists to catch.
 #[test]
 fn req_rot_010_b3_registration_is_the_only_writer_of_bls_pubkey() {
     let scan = bls_scan::scan_sources(&["crates", "bins"]);
@@ -742,6 +757,10 @@ fn req_rot_010_b3_registration_is_the_only_writer_of_bls_pubkey() {
         ("bins/node/src/node/apply_block/genesis_completion.rs", 1),
         ("bins/node/src/node/apply_block/tx_processing.rs", 1),
         ("bins/node/src/node/rewards.rs", 2),
+        // M7: the epoch-boundary flush arm in `apply_pending_updates_with_cap`. It is the
+        // ONE sanctioned writer to an already-registered producer, and it must stay a
+        // single site — both apply paths reach it through `apply_pending_updates_with_cap`.
+        ("crates/storage/src/producer/set_core.rs", 1),
     ]
     .into_iter()
     .map(|(f, n)| (f.to_string(), n))
@@ -750,9 +769,9 @@ fn req_rot_010_b3_registration_is_the_only_writer_of_bls_pubkey() {
     assert_eq!(
         sites, expected,
         "REQ-ROT-010 B3 supplement: the set of production `.bls_pubkey =` write sites \
-         changed. Four are expected, all on a freshly constructed ProducerInfo: the \
+         changed. Five are expected: four on a freshly constructed ProducerInfo (the \
          Registration arm and the genesis-completion arm, each mirrored in the \
-         rebuild-from-blocks path"
+         rebuild-from-blocks path) plus M7's single epoch-boundary rotation arm"
     );
     assert_eq!(
         fresh_value_writes, 4,

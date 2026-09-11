@@ -171,6 +171,26 @@ impl ProducerSet {
                         self.cleanup_all_delegations(&pubkey_hash);
                     }
                 }
+                // INC-I-217 M7 (REQ-ROT-005): install the rotated key.
+                // UNCONDITIONAL on status (D4) — a status branch here makes the
+                // apply path and the rebuild path disagree whenever the status
+                // moved between queue and boundary. The only branch is "the
+                // producer is no longer in the map", which drains silently.
+                PendingProducerUpdate::RotateBlsKey {
+                    pubkey,
+                    new_bls_pubkey,
+                    height,
+                } => {
+                    if let Some(producer_info) = self.get_by_pubkey_mut(&pubkey) {
+                        tracing::info!(
+                            "[BLS_ROTATE] applied producer={:.8} new={:.8} h={}",
+                            crypto_hash(pubkey.as_bytes()),
+                            crypto_hash(&new_bls_pubkey),
+                            height
+                        );
+                        producer_info.bls_pubkey = new_bls_pubkey;
+                    }
+                }
             }
         }
         self.active_cache = None;
@@ -198,6 +218,7 @@ impl ProducerSet {
                 PendingProducerUpdate::DelegateBond { delegator, .. } => delegator == pubkey,
                 PendingProducerUpdate::RevokeDelegation { delegator } => delegator == pubkey,
                 PendingProducerUpdate::RequestWithdrawal { pubkey: pk, .. } => pk == pubkey,
+                PendingProducerUpdate::RotateBlsKey { pubkey: pk, .. } => pk == pubkey,
             })
             .collect()
     }
@@ -240,6 +261,7 @@ impl ProducerSet {
                 PendingProducerUpdate::DelegateBond { delegator, .. } => *delegator,
                 PendingProducerUpdate::RevokeDelegation { delegator } => *delegator,
                 PendingProducerUpdate::RequestWithdrawal { pubkey, .. } => *pubkey,
+                PendingProducerUpdate::RotateBlsKey { pubkey, .. } => *pubkey,
             };
             map.entry(pk).or_default().push(update);
         }

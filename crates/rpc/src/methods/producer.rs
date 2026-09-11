@@ -38,6 +38,10 @@ fn pending_update_to_info(update: &storage::PendingProducerUpdate) -> PendingUpd
             update_type: "withdrawal".to_string(),
             bond_count: Some(*bond_count),
         },
+        storage::PendingProducerUpdate::RotateBlsKey { .. } => PendingUpdateInfo {
+            update_type: "rotate_bls_key".to_string(),
+            bond_count: None,
+        },
     }
 }
 
