@@ -163,6 +163,25 @@ pub(crate) enum Commands {
     /// Add BLS attestation key to an existing wallet
     AddBls,
 
+    /// Import a BLS producer key you already hold (INC-I-217 recovery)
+    ImportBls {
+        /// BLS secret key, 64 hex characters
+        secret: String,
+
+        /// Replace an existing BLS key
+        /// (DANGEROUS: no seed phrase restores what it replaces)
+        #[arg(long)]
+        force: bool,
+
+        /// Node RPC endpoint — compare the key with the chain before writing
+        #[arg(long)]
+        rpc: Option<String>,
+
+        /// Wallet address whose producer registration to compare (default: primary)
+        #[arg(long)]
+        address: Option<String>,
+    },
+
     /// Sign a message
     Sign {
         /// Message to sign
