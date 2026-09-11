@@ -291,7 +291,7 @@ Security requirements **REQ-ROT-SEC-001 … REQ-ROT-SEC-010** (all Must) live in
 - [ ] Given a producer registered with BLS key A whose node holds key B, at a height above `inc_i_178_attestation_bls_activation_height`, when it signs its own attestation, then `bls_verdict` returns `BlsAttestVerdict::Invalid` and `[ATTEST_EGRESS] own BLS half does not verify against the on-chain key` is emitted.
 - [ ] Its bit is never set in any block's attestation bitfield.
 - [ ] Its attested-minute count over an epoch is 0 and it fails the 54/60 qualification (`rewards.rs:41`).
-- [ ] The test FAILS (red) before any production code for this feature exists, and the failure output is captured as `docs/.workflow/rot-M1-test-red-evidence.txt`.
+- [ ] The test FAILS (red) before any production code for this feature exists, and the failure output is captured as `docs/.workflow/inc-i-217-M1-test-red-evidence.txt`.
 
 ### REQ-ROT-011: End-to-end recovery
 - [ ] Given the REQ-ROT-010 producer, when it submits a valid rotation to key B and the next boundary passes, then `ingress.rs` returns `BlsAttestVerdict::Valid`, its bit is set in the following block, `[ATTEST_EGRESS]` stops, and its attested minutes increase.
@@ -357,7 +357,7 @@ C7's code claim **REFUTED** — `Wallet::add_bls_key()` generates, it cannot imp
 
 | ID | Name | Scope (Modules) | Scope (Requirements) | Dependencies |
 |----|------|-----------------|----------------------|--------------|
-| M1 | Reproduction test (RED) | `bins/node/tests/it/` (new), `bins/node/tests/it/mod.rs` | REQ-ROT-010 | — |
+| M1 | Reproduction test (RED) | `bins/node/tests/bls_rotation_repro.rs` (new, auto-discovered target) | REQ-ROT-010 | — |
 | M2 | Wire numbering + payload | `crates/core/src/transaction/types.rs`, `crates/core/src/transaction/data.rs`, `crates/core/tests/` | REQ-ROT-001, REQ-ROT-002, REQ-ROT-003 | M1 |
 | M3 | Crypto domains + signing messages | `crates/crypto/src/bls.rs`, `crates/crypto/src/lib.rs`, `crates/core/src/transaction/data.rs` | REQ-ROT-SEC-001, REQ-ROT-SEC-002, REQ-ROT-SEC-009 | M2 |
 | M4 | Activation height + validation | `crates/core/src/network_params/defaults.rs`, `crates/core/src/network_params/mod.rs`, `crates/core/src/validation/tx_types.rs`, `crates/core/src/validation/utxo.rs`, `crates/core/src/validation/types.rs` | REQ-ROT-004, REQ-ROT-SEC-003, REQ-ROT-SEC-004, REQ-ROT-SEC-006, REQ-ROT-SEC-007, REQ-ROT-SEC-008 | M3 |
@@ -383,7 +383,7 @@ C7's code claim **REFUTED** — `Wallet::add_bls_key()` generates, it cannot imp
 | REQ-ROT-007 | Must | (test-writer) | (architect) | `bins/node/src/node/rewards.rs` |
 | REQ-ROT-008 | Must | (test-writer) | (architect) | `crates/storage/src/producer/set_core.rs` |
 | REQ-ROT-009 | Must | (test-writer) | (architect) | `crates/mempool/src/pending_rotations.rs` |
-| REQ-ROT-010 | Must | (test-writer) | (architect) | `bins/node/tests/it/` |
+| REQ-ROT-010 | Must | `bins/node/tests/bls_rotation_repro.rs` — A: `..._a1_a2_the_mismatched_half_is_invalid_at_both_the_egress_and_the_ingress`, `..._a3_the_mismatched_producers_bit_is_never_set_in_the_bitfield`, `..._a4_the_mismatched_producer_never_qualifies_for_an_epoch_reward`, `..._a4_the_mainnet_qualification_shape_is_54_of_60`; B (M4 tripwires): `..._b1_ordinal_32_does_not_decode_today`, `..._b1_the_wire_carries_exactly_24_decodable_tx_types`, `..._b2_pending_producer_update_carries_exactly_7_variants`, `..._b3_no_pending_update_variant_rewrites_a_registered_producers_bls_key`, `..._b3_registration_is_the_only_writer_of_bls_pubkey` | (architect) | `bins/node/tests/bls_rotation_repro.rs` (M1: test only) |
 | REQ-ROT-011 | Must | (test-writer) | (architect) | `bins/node/tests/` |
 | REQ-ROT-012 | Must | (test-writer) | (architect) | `crates/rpc/src/methods/producer.rs` |
 | REQ-ROT-013 | Must | (test-writer) | (architect) | `bins/cli/src/cmd_producer/rotate.rs` |
