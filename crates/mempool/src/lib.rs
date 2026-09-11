@@ -10,6 +10,7 @@ pub mod holdings;
 mod pending_registrations;
 mod policy;
 mod pool;
+pub mod rotation_filter;
 pub mod vesting_bound;
 mod withdrawal_holdings;
 

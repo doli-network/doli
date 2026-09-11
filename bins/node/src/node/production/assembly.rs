@@ -270,6 +270,15 @@ impl Node {
                     );
                     break;
                 }
+                // INC-I-217 M6: named rotation verdict before the generic one.
+                if let Err(reason) = mempool::rotation_filter::rotation_admissible(tx, &utxo_ctx) {
+                    warn!(
+                        "Skipping mempool tx {} — rotation not admissible: {}",
+                        tx.hash(),
+                        reason
+                    );
+                    continue;
+                }
                 if let Err(e) = validation::validate_transaction_with_utxos(tx, &utxo_ctx, &*utxo) {
                     warn!(
                         "Skipping mempool tx {} — UTXO validation failed: {}",

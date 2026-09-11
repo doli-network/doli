@@ -539,6 +539,10 @@ impl Mempool {
             )
             .with_producers_weighted(active_producers_snapshot)
             .with_pending_producer_keys(pending_keys);
+        // INC-I-217 M6: the named rotation verdict runs BEFORE the generic
+        // validator, so it is the verdict and not a second opinion.
+        crate::rotation_filter::rotation_admissible(&tx, &ctx)
+            .map_err(MempoolError::InvalidTransaction)?;
         validate_transaction(&tx, &ctx)?;
 
         // Validate input spending conditions: pubkey + signature for Normal/Bond,
