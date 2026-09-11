@@ -1509,6 +1509,18 @@ impl Node {
                             }
                         }
                     }
+                    // INC-I-217 M8 (REQ-ROT-007): same gate, same
+                    // `apply_rotation` the live arm calls.
+                    TxType::RotateBlsKey => {
+                        let params = self.config.network.params();
+                        if height >= params.bls_key_rotation_activation_height {
+                            if let Some(data) =
+                                doli_core::transaction::RotateBlsData::decode(&tx.extra_data)
+                            {
+                                let _ = storage::producer::apply_rotation(producers, &data, height);
+                            }
+                        }
+                    }
                     // ProtocolActivation doesn't modify the producer set —
                     // it's processed in apply_block where chain_state is available.
                     _ => {}
