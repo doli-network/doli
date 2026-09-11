@@ -812,6 +812,14 @@ pub(crate) enum ProducerCommands {
         yes: bool,
     },
 
+    /// Rotate the producer's BLS attestation key to the one in this wallet
+    /// (irreversible; takes effect at the next epoch boundary)
+    RotateBls {
+        /// Accept the irreversible key change without an interactive prompt
+        #[arg(short, long)]
+        yes: bool,
+    },
+
     /// Check producer status
     Status {
         /// Public key (optional, uses wallet if not specified)

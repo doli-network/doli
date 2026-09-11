@@ -10,6 +10,7 @@ use super::bonds::{handle_add_bond, handle_simulate_withdrawal};
 use super::delegation::{handle_delegate, handle_delegation_status, handle_revoke_delegation};
 use super::exit::{handle_exit, handle_slash};
 use super::register::handle_register;
+use super::rotate::handle_rotate_bls;
 use super::status::{handle_bonds, handle_list, handle_status, handle_vesting_summary};
 use super::withdrawal::handle_request_withdrawal;
 
@@ -31,6 +32,11 @@ pub(crate) async fn cmd_producer(
             let keypair = wallet.primary_keypair()?;
             let pubkey_hash = wallet.primary_pubkey_hash();
             handle_register(&wallet, &keypair, &pubkey_hash, &rpc, bonds, yes).await?;
+        }
+
+        ProducerCommands::RotateBls { yes } => {
+            let wallet = Wallet::load(wallet_path)?;
+            handle_rotate_bls(&wallet, &rpc, yes).await?;
         }
 
         ProducerCommands::Status { pubkey } => {

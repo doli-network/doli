@@ -290,10 +290,14 @@ pub struct ProducerInfo {
     /// `bond_count` (pre-M6 behaviour).
     #[serde(default)]
     pub producer_set_bond_count: Option<u32>,
-    /// Status (active, unbonding, exited, slashed)
+    /// Status (active, pending, unbonding, exited, slashed)
     pub status: String,
     /// Current era
     pub era: u64,
+    /// BLS12-381 attestation key the chain holds (hex, 96 chars). Empty when the
+    /// producer registered before BLS keys existed.
+    #[serde(default)]
+    pub bls_pubkey: String,
     /// Pending withdrawals
     #[serde(default)]
     pub pending_withdrawals: Vec<PendingWithdrawalInfo>,
@@ -348,10 +352,16 @@ pub struct PendingWithdrawalInfo {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingUpdateInfo {
-    /// Update type (register, exit, add_bond, withdrawal, etc.)
+    /// Update type (register, exit, add_bond, withdrawal, rotate_bls_key, etc.)
     pub update_type: String,
     /// Bond count affected (if applicable)
     pub bond_count: Option<u32>,
+    /// Queued BLS key, lowercase hex (rotate_bls_key only; INC-I-217 M9)
+    #[serde(default)]
+    pub new_bls_pubkey: Option<String>,
+    /// Height the queue flushes this update at (rotate_bls_key only; INC-I-217 M9)
+    #[serde(default)]
+    pub effective_at_height: Option<u64>,
 }
 
 /// Bond details response (per-bond granularity)

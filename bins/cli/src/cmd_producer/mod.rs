@@ -4,6 +4,7 @@ mod delegation;
 mod dispatch;
 mod exit;
 mod register;
+mod rotate;
 mod status;
 mod withdrawal;
 
