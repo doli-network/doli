@@ -114,6 +114,16 @@ pub fn validate_block_with_mode(
     ctx: &ValidationContext,
     mode: ValidationMode,
 ) -> Result<(), ValidationError> {
+    // D6 (INC-I-217): the rotation rules precede the mode match, so a node
+    // syncing in Light/Replay and a node validating live reach the SAME verdict
+    // on the same block. Below the gate this rejects every rotation, which is
+    // the verdict an un-upgraded node that cannot decode the type also reaches.
+    for tx in &block.transactions {
+        if tx.tx_type == TxType::RotateBlsKey {
+            super::rotate_bls::rotate_stateless(tx, ctx)?;
+        }
+    }
+
     match mode {
         ValidationMode::Full => {
             // Full validation: all checks including time-based header validation and VDF.

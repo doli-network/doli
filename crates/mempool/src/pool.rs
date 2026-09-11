@@ -529,6 +529,9 @@ impl Mempool {
             // its frozen pre-activation branch, admitting a transaction shape
             // that apply_block (which IS wired) would then reject.
             .with_inc_i_173_activation_height(self.network.params().inc_i_173_activation_height)
+            .with_bls_key_rotation_activation_height(
+                self.network.params().bls_key_rotation_activation_height,
+            )
             .with_oracle_activation_height(self.network.params().oracle_activation_height)
             .with_oracle_sunset_triggered(
                 self.oracle_sunset_triggered
@@ -945,6 +948,9 @@ impl Mempool {
             // its frozen pre-activation branch, admitting a transaction shape
             // that apply_block (which IS wired) would then reject.
             .with_inc_i_173_activation_height(self.network.params().inc_i_173_activation_height)
+            .with_bls_key_rotation_activation_height(
+                self.network.params().bls_key_rotation_activation_height,
+            )
             .with_oracle_activation_height(self.network.params().oracle_activation_height)
             .with_oracle_sunset_triggered(
                 self.oracle_sunset_triggered

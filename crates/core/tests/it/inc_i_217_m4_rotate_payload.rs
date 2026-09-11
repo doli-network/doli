@@ -46,6 +46,7 @@
 
 use crypto::Hash;
 use doli_core::consensus::ConsensusParams;
+use doli_core::network_params::NetworkParams;
 use doli_core::transaction::{
     rotation_auth_digest, rotation_auth_preimage, Input, Output, RotateBlsData, Transaction,
     TxType, ROTATE_BLS_DATA_LEN,
@@ -395,9 +396,17 @@ fn req_rot_sec_009_digest_is_bound_to_the_genesis_hash() {
 // F6 — the fail-closed dispatch arm (REQ-ROT-001, architecture D6)
 // ===========================================================================
 
-// REQ-ROT-001 — Decision: whether a decodable RotateBlsKey transaction can reach a consensus path while M5's activation height and rules do not exist yet — the INC-I-075 shape.
+// REQ-ROT-001 — Decision: whether a decodable RotateBlsKey transaction can reach a consensus path
+// below its activation height — the INC-I-075 shape.
+//
+// M5 HAND-OFF (flipped 2026-09-11). M4 wrote this as a tripwire on its own blanket
+// `InvalidTransaction` reject arm, due to fire the moment M5 replaced that arm. M5 landed the gate,
+// so the assertion now names the typed refusal instead. The INVARIANT IS UNCHANGED AND STRICTER: a
+// well-formed RotateBlsKey still does not validate on shipped mainnet params, and the refusal now
+// has to prove WHY — `[ERRTX-ROT002]`, below `bls_key_rotation_activation_height`, whose shipped
+// value on every network is `u64::MAX`.
 #[test]
-fn req_rot_001_rotate_bls_key_is_rejected_until_the_m5_gate_lands() {
+fn req_rot_001_rotate_bls_key_is_rejected_below_the_m5_gate() {
     let ctx = ValidationContext::new(ConsensusParams::mainnet(), Network::Mainnet, 0, 1_000_000);
     let recipient = crypto::hash::hash(b"inc-i-217-m4-fail-closed");
 
@@ -420,9 +429,25 @@ fn req_rot_001_rotate_bls_key_is_rejected_until_the_m5_gate_lands() {
         verdict.is_err(),
         "a well-formed RotateBlsKey tx must not validate before the M5 gate exists"
     );
+    let err = verdict.expect_err("checked immediately above");
     assert!(
-        matches!(verdict, Err(ValidationError::InvalidTransaction(_))),
-        "expected InvalidTransaction from the fail-closed arm, got {verdict:?}"
+        matches!(
+            err,
+            ValidationError::RotateBlsNotActivated {
+                activation_height: u64::MAX,
+                ..
+            }
+        ),
+        "expected the typed below-gate refusal at the shipped u64::MAX height, got {err:?}"
+    );
+    assert!(
+        err.to_string().contains("[ERRTX-ROT002]"),
+        "the refusal must carry its stable code, got: {err}"
+    );
+    assert_eq!(
+        NetworkParams::defaults(Network::Mainnet).bls_key_rotation_activation_height,
+        u64::MAX,
+        "the gate this test leans on must still be frozen on mainnet"
     );
 
     // I21 non-vacuity — the byte-identical transaction retyped Transfer DOES

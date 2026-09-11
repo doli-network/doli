@@ -17,7 +17,7 @@ Every point where external, attacker-chosen bytes enter the system, and what con
 
 | # | Entry point | Attacker-controlled bytes | Consumed by | Trust level |
 |---|-------------|---------------------------|-------------|-------------|
-| TB-1 | Gossiped `RotateBlsKey` tx → mempool (`crates/mempool/src/pool.rs`) | `extra_data` (248 B), `tx_type`, `version` | stateless validation, admission | **UNTRUSTED** |
+| TB-1 | Gossiped `RotateBlsKey` tx → mempool (`crates/mempool/src/pool.rs`) | `extra_data` (240 B), `tx_type`, `version` | stateless validation, admission | **UNTRUSTED** |
 | TB-2 | `RotateBlsKey` tx inside a received block → `apply_block` | same | contextual validation, `tx_processing.rs` | **UNTRUSTED** |
 | TB-3 | Same tx replayed from the block store during `rebuild_producer_set_from_blocks` (`bins/node/src/node/rewards.rs:1117`) | same | reorg / rollback rebuild | **UNTRUSTED** (already-mined bytes are not already-validated on this path) |
 | TB-4 | `new_bls_pubkey` written into `ProducerInfo.bls_pubkey` | 48 B | `attestation/keys.rs:13-28` → `verify.rs:106` → `bls_fast_aggregate_verify` (`crates/crypto/src/bls.rs:695`) | **UNTRUSTED until REQ-ROT-SEC-002 + SEC-007 pass** |
@@ -110,7 +110,7 @@ SEC-010, not at merge time** — the gate is `u64::MAX` on every network at merg
 | REQ-ROT-SEC-004 | `new_bls_pubkey` must not equal any other producer's `bls_pubkey`, nor any pending rotation target, nor the sender's own current key. | Must | see below |
 | REQ-ROT-SEC-005 | At most one pending rotation per producer, enforced identically at mempool admission, block builder and block validation. | Must | see below |
 | REQ-ROT-SEC-006 | Sender must be a registered, non-exited, non-unbonding producer present in the producer set (or in `pending_updates` as a `Register`). | Must | see below |
-| REQ-ROT-SEC-007 | Field validation: `extra_data` exactly 248 bytes; `new_bls_pubkey` a valid 48-byte compressed G1 point in the correct subgroup, not the identity and not all-zero; `bls_pop` 96 bytes; `signature` 64 bytes. | Must | see below |
+| REQ-ROT-SEC-007 | Field validation: `extra_data` exactly 240 bytes; `new_bls_pubkey` a valid 48-byte compressed G1 point in the correct subgroup, not the identity and not all-zero; `bls_pop` 96 bytes; `signature` 64 bytes. | Must | see below |
 | REQ-ROT-SEC-008 | An invalid rotation makes the carrying **block invalid** (no skip arm). Mempool/builder parity makes this unreachable for an honest builder. | Must | see below |
 | REQ-ROT-SEC-009 | Both signed messages commit to the network genesis hash, so a testnet rotation cannot be replayed on mainnet or devnet. | Must | see below |
 | REQ-ROT-SEC-010 | A fleet-version census is a recorded **precondition on pinning** the activation height (not on merging). | Must | see below |

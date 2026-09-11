@@ -200,7 +200,6 @@ pub struct ValidationContext {
     /// rejected with `[ERRTX-ORACLE003]` and the epoch-boundary
     /// aggregator skips the median computation (the last committed
     /// `OraclePrice` UTXO is left in place — readable but stale).
-    ///
     /// The orchestrator (`bins/node/src/node/apply_block/oracle.rs`)
     /// maintains the live boolean and the node wires it into every
     /// `ValidationContext` construction site. Recovery requires a
@@ -232,7 +231,6 @@ pub struct ValidationContext {
     /// At/after this height, the native conservation check accounts for
     /// Pool reserve deltas and RemoveLiquidity binds reserve withdrawals
     /// to LP shares burned (proportional). Mempool mirrors the same.
-    ///
     /// Sourced from `NetworkParams::inc_i_096_activation_height`. Default
     /// `u64::MAX` (disabled). Independent of inc_i_092/amm.
     pub inc_i_096_activation_height: u64,
@@ -254,6 +252,8 @@ pub struct ValidationContext {
     /// [`Self::with_inc_i_173_activation_height`] stays below the gate forever,
     /// which is a liveness bug rather than a silent consensus divergence.
     pub inc_i_173_activation_height: u64,
+    /// INC-I-217 `RotateBlsKey` gate, from `NetworkParams::bls_key_rotation_activation_height`. Default `u64::MAX` (fail-closed).
+    pub bls_key_rotation_activation_height: u64,
 }
 
 impl ValidationContext {
@@ -295,6 +295,7 @@ impl ValidationContext {
             inc_i_092_activation_height: u64::MAX,
             inc_i_096_activation_height: u64::MAX,
             inc_i_173_activation_height: u64::MAX,
+            bls_key_rotation_activation_height: u64::MAX,
         }
     }
 
@@ -365,6 +366,13 @@ impl ValidationContext {
     #[must_use]
     pub fn with_inc_i_173_activation_height(mut self, height: u64) -> Self {
         self.inc_i_173_activation_height = height;
+        self
+    }
+
+    /// Set the INC-I-217 BLS key rotation activation height (see field doc).
+    #[must_use]
+    pub fn with_bls_key_rotation_activation_height(mut self, height: u64) -> Self {
+        self.bls_key_rotation_activation_height = height;
         self
     }
 

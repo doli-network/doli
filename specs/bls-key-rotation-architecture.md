@@ -150,13 +150,21 @@ blocks only. `helpers.rs:15-28` gains `| TxType::RotateBlsKey` (undo snapshot no
 ### Module 6 — block rule + mempool/builder filter
 
 `validation/block.rs`: a block containing `TxType::RotateBlsKey` at `height < AH` is **invalid**
-(`[ERRTX-ROT002]`). Above the AH, block-level consensus for the tx is ONLY the structural part of
-`rotate_stateless`: exactly 1 input, exactly 1 Normal output, `extra_data.len() == 240`
-(`[ERRTX-ROT001]`), plus the existing input-signature / spent-input / fee rules every 1-in/1-out tx
-already obeys. The cryptographic and stateful parts (point, PoP, inner signature, membership,
-uniqueness, one-pending) are NOT block-invalidating — see D3: such a tx is a valid value transfer
-whose payload is skipped at apply. `validation/transaction.rs:305` dispatch gains the arm so the
-generic validator never sees a rotation without the shape check.
+(`[ERRTX-ROT002]`). Above the AH, block-level consensus for the tx is the FULL `rotate_stateless`:
+exactly 1 input (`[ERRTX-ROT001]`), exactly 1 Normal output (`[ERRTX-ROT009]`),
+`extra_data.len() == 240` and decodable (`[ERRTX-ROT010]`), a valid non-identity G1 `new_bls_pubkey`
+(`[ERRTX-ROT004]`), `payload.producer == inputs[0].public_key` (`[ERRTX-ROT008]`), the Ed25519
+authorisation over `rotation_auth_digest` (`[ERRTX-ROT003]`) and the rotation PoP
+(`[ERRTX-ROT007]`) — plus the existing input-signature / spent-input / fee rules every 1-in/1-out tx
+already obeys. **The cryptographic parts ARE block-invalidating** (REQ-ROT-SEC-008, decision C8): if
+they were not, the crypto would never run anywhere in consensus — `rotate_stateless` is not re-run
+at apply and the apply arm checks no cryptography — and any user could install an arbitrary BLS key
+for any registered producer. `skip-at-apply` (D3) is reserved for the STATEFUL verdicts only
+(registration status, same-key, one-pending, key-in-use). The gate and the rules sit ahead of the
+`ValidationMode` match in `validate_block_with_mode`, so an un-upgraded node — which cannot decode
+the type at all — and an upgraded node reach the same verdict.
+`validation/transaction.rs:290` dispatch delegates to `rotate_stateless` so the generic validator
+never sees a rotation without the full check.
 `crates/mempool/src/rotation_filter.rs` (new, ≈50 lines): `rotation_admissible(tx, ctx) -> Result<(), String>`
 = `rotate_stateless` (full crypto, so the mempool never relays garbage) — no state, no snapshot, no
 reaper arm (no height-dependent validity exists; a spent input already evicts via `pool.rs:1372-1380`).

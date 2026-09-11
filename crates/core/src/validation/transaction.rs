@@ -288,11 +288,7 @@ pub fn validate_transaction(
             validate_zk_settle_structure(tx, ctx)?;
         }
         TxType::RotateBlsKey => {
-            // INC-I-217 M4 ships the wire type only. Until M5 adds the rules
-            // and their activation height, every rotation is invalid.
-            return Err(ValidationError::InvalidTransaction(
-                "bls key rotation is not active".to_string(),
-            ));
+            super::rotate_bls::rotate_stateless(tx, ctx)?;
         }
     }
 
