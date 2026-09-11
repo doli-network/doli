@@ -241,16 +241,19 @@ Security requirements **REQ-ROT-SEC-001 … REQ-ROT-SEC-010** (all Must) live in
 ### REQ-ROT-001: Wire numbering
 - [ ] Given the pre-change binary's `bincode::serialize` output for every existing `TxType`, when the new variant is added last, then every byte sequence is unchanged (golden-vector test — this **proves** the ordinal claim rather than asserting it; skeptic "What I don't understand" #4).
 - [ ] Given a golden block serialized before the change, when deserialized after, then it decodes identically.
-- [ ] `from_u32(23) == Some(RotateBlsKey)`; `from_u32(24..=30) == None`; `from_u32(31) == Some(ZKSettle)`; `bincode::serialize(&TxType::RotateBlsKey)` encodes ordinal 24.
+- [ ] `from_u32(23) == None`; `from_u32(24..=30) == None`; `from_u32(31) == Some(ZKSettle)`; `from_u32(32) == Some(RotateBlsKey)`; `bincode::serialize(&TxType::RotateBlsKey)` encodes ordinal 24.
+  > Superseded (architecture D1): the discriminant is **32**, not 23. 23 is ZKSettle's ordinal and stays a permanent tombstone. Declaring the variant last keeps ordinal 24 and renumbers nothing.
 
 ### REQ-ROT-002: Payload
-- [ ] Layout: `producer(32) || new_bls_pubkey(48) || expiry_height(8, LE) || bls_pop(96) || signature(64)` = **248 bytes**.
-- [ ] `to_bytes` → `from_bytes` round-trips to an equal struct for 100 random payloads.
-- [ ] `from_bytes` returns `None` for lengths 0, 247, 249 and 1024. The `producer` field is required because the tx has no inputs — no other carrier of sender identity (cf. `DelegateBondData.delegator`, `data.rs:249`).
+- [ ] Layout: `producer(32) || new_bls_pubkey(48) || bls_pop(96) || signature(64)` = **240 bytes**.
+- [ ] `encode` → `decode` round-trips to an equal struct for 100 random payloads.
+- [ ] `decode` returns `None` for lengths 0, 1, 239, 241 and 1024 — length-exact, so a trailing byte is a rejection. The `producer` field carries the sender identity the payload is verified against (cf. `DelegateBondData.delegator`, `data.rs:249`).
+  > Superseded (architecture D2): **240 bytes**, and there is **no `expiry_height` field** — the replay bind is the spending outpoint, which D2 deleted the expiry window in favour of.
 
-### REQ-ROT-003: Zero-flow classification
-- [ ] Given a 0-in/0-out rotation above `inc_i_173_activation_height`, when validated with UTXOs, then no fee or balance error.
-- [ ] Given a rotation with 1 input, or with 1 output, then rejected `[ERRTX-ROT001] rotation must have no inputs or outputs`.
+### REQ-ROT-003: Fee-paying classification
+- [ ] `TxType::RotateBlsKey.allows_empty_io() == false`; the empty-io exempt set stays at five types.
+- [ ] Given a fee-paying 1-in/1-out rotation, when validated with UTXOs, then the ordinary fee and balance rules apply unchanged.
+  > Superseded (architecture D2): rotation is **not** zero-flow. `allows_empty_io => false` and the transaction spends one input and creates one output; consuming that outpoint is what makes the authorisation single-use.
 - [ ] The below-`inc_i_173` legacy expression in `validation/utxo.rs` is **character-identical** to today (INV-COMPAT-001).
 
 ### REQ-ROT-004: Activation gate
@@ -374,23 +377,26 @@ C7's code claim **REFUTED** — `Wallet::add_bls_key()` generates, it cannot imp
 
 | Requirement ID | Priority | Test IDs | Architecture Section | Implementation Module |
 |---|---|---|---|---|
-| REQ-ROT-001 | Must | (test-writer) | (architect) | `crates/core/src/transaction/types.rs` |
-| REQ-ROT-002 | Must | (test-writer) | (architect) | `crates/core/src/transaction/data.rs` |
-| REQ-ROT-003 | Must | (test-writer) | (architect) | `crates/core/src/transaction/types.rs`, `validation/utxo.rs` |
+| REQ-ROT-001 | Must | `crates/core/src/transaction/wire_golden_tests.rs` — `bare_txtype_bincode_encoding_is_a_u32_little_endian_variant_index`, `txtype_golden_table_pins_both_numbering_surfaces`, `txtype_ordinals_are_the_contiguous_declaration_positions_zero_to_24`, `transaction_wire_layout_places_tx_type_at_byte_offset_four`, `every_txtype_round_trips_through_real_transaction_bytes`, `tombstoned_discriminants_stay_undecodable_and_32_is_rotate_bls_key`, `wire_ordinal_24_decodes_as_rotate_bls_key_and_25_does_not_decode`, `exactly_25_discriminants_are_live`; `crates/wallet/tests/serialization_compat.rs::test_core_txtype_variant_count` | D1 | M4 — `crates/core/src/transaction/types.rs` (`TxType::RotateBlsKey = 32`, `from_u32`) |
+| REQ-ROT-002 | Must | `crates/core/tests/it/inc_i_217_m4_rotate_payload.rs` — `req_rot_002_encode_produces_exactly_240_bytes`, `req_rot_002_every_field_lands_at_its_documented_offset`, `req_rot_002_non_uniform_fields_survive_a_round_trip_in_order`, `req_rot_002_decode_round_trips_every_field`, `req_rot_002_decode_rejects_every_length_but_240` | D2 | M4 — `crates/core/src/transaction/rotate_bls.rs` (`RotateBlsData`, `ROTATE_BLS_DATA_LEN`) |
+| REQ-ROT-003 | Must | `crates/core/tests/it/inc_i_217_m4_rotate_payload.rs::req_rot_003_rotate_bls_key_is_not_empty_io_exempt` | D2 | M4 — `crates/core/src/transaction/types.rs` (`allows_empty_io`); `validation/utxo.rs` unchanged |
 | REQ-ROT-004 | Must | (test-writer) | (architect) | `crates/core/src/network_params/` |
 | REQ-ROT-005 | Must | (test-writer) | (architect) | `crates/storage/src/producer/{types,set_core}.rs` |
 | REQ-ROT-006 | Must | (test-writer) | (architect) | `bins/node/src/node/apply_block/helpers.rs` |
 | REQ-ROT-007 | Must | (test-writer) | (architect) | `bins/node/src/node/rewards.rs` |
 | REQ-ROT-008 | Must | (test-writer) | (architect) | `crates/storage/src/producer/set_core.rs` |
 | REQ-ROT-009 | Must | (test-writer) | (architect) | `crates/mempool/src/pending_rotations.rs` |
-| REQ-ROT-010 | Must | `bins/node/tests/bls_rotation_repro.rs` — A: `..._a1_a2_the_mismatched_half_is_invalid_at_both_the_egress_and_the_ingress`, `..._a3_the_mismatched_producers_bit_is_never_set_in_the_bitfield`, `..._a4_the_mismatched_producer_never_qualifies_for_an_epoch_reward`, `..._a4_the_mainnet_qualification_shape_is_54_of_60`; B (M4 tripwires): `..._b1_ordinal_32_does_not_decode_today`, `..._b1_the_wire_carries_exactly_24_decodable_tx_types`, `..._b2_pending_producer_update_carries_exactly_7_variants`, `..._b3_no_pending_update_variant_rewrites_a_registered_producers_bls_key`, `..._b3_registration_is_the_only_writer_of_bls_pubkey` | (architect) | `bins/node/tests/bls_rotation_repro.rs` (M1: test only) |
+| REQ-ROT-010 | Must | `bins/node/tests/bls_rotation_repro.rs` — A: `..._a1_a2_the_mismatched_half_is_invalid_at_both_the_egress_and_the_ingress`, `..._a3_the_mismatched_producers_bit_is_never_set_in_the_bitfield`, `..._a4_the_mismatched_producer_never_qualifies_for_an_epoch_reward`, `..._a4_the_mainnet_qualification_shape_is_54_of_60`; B (flipped in M4, INC-I-217): `..._b1_ordinal_32_decodes_as_rotate_bls_key`, `..._b1_the_wire_carries_exactly_25_decodable_tx_types`, `..._b2_pending_producer_update_carries_exactly_7_variants`, `..._b3_no_pending_update_variant_rewrites_a_registered_producers_bls_key`, `..._b3_registration_is_the_only_writer_of_bls_pubkey` | (architect) | `bins/node/tests/bls_rotation_repro.rs` (M1: test only) |
 | REQ-ROT-011 | Must | (test-writer) | (architect) | `bins/node/tests/` |
 | REQ-ROT-012 | Must | (test-writer) | (architect) | `crates/rpc/src/methods/producer.rs` |
 | REQ-ROT-013 | Must | (test-writer) | (architect) | `bins/cli/src/cmd_producer/rotate.rs` |
 | REQ-ROT-014 | Should | `bins/cli/tests/it/inc_i_217_import_bls_golden.rs` — `..._import_bls_force_installs_the_key_and_never_prints_the_secret`, `..._import_bls_refuses_without_force_and_leaves_the_key_intact`, `..._import_bls_into_a_wallet_without_a_bls_key_needs_no_force`, `..._import_bls_rejects_malformed_secrets_and_leaves_the_wallet_byte_identical`, `..._info_must_not_claim_the_phrase_backs_up_an_imported_bls_key`, `..._import_bls_surface_exposes_force_rpc_and_address`; `bins/cli/src/cmd_wallet_bls_tests.rs` (inert until the developer wires it) — `..._wallet_version_seed_derived_bls_stays_three`, `..._import_bls_key_forced_installs_secret_and_derives_public`, `..._import_bls_key_clears_the_seed_derived_marker`, `..._import_bls_key_survives_save_and_load`, `..._import_bls_key_refuses_without_force_and_leaves_the_receiver_untouched`, `..._import_bls_key_into_a_wallet_without_a_key_needs_no_force`, `..._import_bls_key_rejects_malformed_secrets_before_mutating` | (architect) | `bins/cli/src/cmd_wallet_bls.rs` (new), `bins/cli/src/wallet.rs`, `bins/cli/src/commands.rs`, `bins/cli/src/main.rs` — **NOT** `crates/wallet/`: `bins/cli` does not depend on that crate, and the command is flat `doli import-bls`, not `doli wallet import-bls` |
 | REQ-ROT-015 / 016 | Should | N/A | (architect) | `specs/`, `docs/`, `docs/bugfixes/inc-i-162-wallet-bls-derivation-analysis.md` |
 | REQ-ROT-021 | Could | (test-writer) | (architect) | `crates/rpc/src/methods/producer.rs` |
-| REQ-ROT-SEC-001..010 | Must | (test-writer) | (architect) | see security document |
+| REQ-ROT-SEC-001 | Must | `crates/core/tests/it/inc_i_217_m4_rotate_payload.rs` — `req_rot_sec_001_preimage_matches_the_pinned_spec_bytes`, `req_rot_sec_001_each_preimage_field_sits_at_its_spec_offset`, `req_rot_sec_001_preimage_carries_no_length_prefix_and_no_key_kind_byte`, `req_rot_sec_001_digest_is_the_pinned_blake3_of_the_pinned_preimage`, `req_rot_sec_001_digest_commits_to_the_spending_outpoint`, `req_rot_sec_001_digest_commits_to_the_new_bls_pubkey` | D7 | M4 (encoder only) — `crates/core/src/transaction/rotate_bls.rs` (`rotation_auth_preimage`, `rotation_auth_digest`); verification is M5 |
+| REQ-ROT-SEC-002 | Must | `crates/crypto/tests/it/inc_i_217_m4_rotation_pop.rs` (8 tests, `req_rot_sec_002_*`); `crates/crypto/src/bls_rotation_tests.rs` — `req_rot_sec_002_the_three_bls_domains_are_pairwise_distinct`, `req_rot_sec_002_no_bls_domain_is_a_prefix_of_another`, `req_rot_sec_002_the_rotation_dst_is_the_pinned_byte_string` | D7 | M4 — `crates/crypto/src/bls_rotation.rs` (`ROTATE_POP_DST`, `sign_rotation_pop`, `verify_rotation_pop`) |
+| REQ-ROT-SEC-009 | Must | `crates/core/tests/it/inc_i_217_m4_rotate_payload.rs::req_rot_sec_009_digest_is_bound_to_the_genesis_hash`; `crates/crypto/tests/it/inc_i_217_m4_rotation_pop.rs::req_rot_sec_009_the_pop_is_bound_to_the_genesis_hash` | D7 | M4 (both preimages carry the genesis hash) |
+| REQ-ROT-SEC-003..008, 010 | Must | (test-writer) | (architect) | see security document — M5+ |
 
 ---
 

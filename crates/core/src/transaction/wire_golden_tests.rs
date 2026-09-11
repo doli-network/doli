@@ -5,14 +5,15 @@
 //! Surface 1 — bincode variant index ("ordinal"): the DECLARATION POSITION.
 //! Surface 2 — `#[repr(u32)]` discriminant: the `= N` literal, hashed into
 //! `signing_message` and decoded by `TxType::from_u32`.
-//! They alias only for 0..=22; `ZKSettle` is ordinal 23 / discriminant 31.
+//! They alias only for 0..=22; `ZKSettle` is ordinal 23 / discriminant 31 and
+//! `RotateBlsKey` (INC-I-217 M4) is ordinal 24 / discriminant 32.
 
 use crypto::{Hash, KeyPair, Signature};
 
 use super::*;
 
-/// `(variant, bincode ordinal, repr(u32) discriminant)` for all 24 live variants.
-const WIRE_GOLDEN: [(TxType, u32, u32); 24] = [
+/// `(variant, bincode ordinal, repr(u32) discriminant)` for all 25 live variants.
+const WIRE_GOLDEN: [(TxType, u32, u32); 25] = [
     (TxType::Transfer, 0, 0),
     (TxType::Registration, 1, 1),
     (TxType::Exit, 2, 2),
@@ -37,6 +38,7 @@ const WIRE_GOLDEN: [(TxType, u32, u32); 24] = [
     (TxType::RemoveLiquidity, 21, 21),
     (TxType::Swap, 22, 22),
     (TxType::ZKSettle, 23, 31),
+    (TxType::RotateBlsKey, 24, 32),
 ];
 
 /// Deterministic transaction: fixed seed, fixed hashes, fixed signature bytes.
@@ -83,12 +85,20 @@ fn bare_txtype_bincode_encoding_is_a_u32_little_endian_variant_index() {
     );
     assert_eq!(bincode::serialize(&TxType::Exit).unwrap(), vec![2, 0, 0, 0]);
 
-    let last = bincode::serialize(&TxType::ZKSettle).unwrap();
+    let zk = bincode::serialize(&TxType::ZKSettle).unwrap();
+    assert_eq!(zk.len(), 4);
+    assert_eq!(
+        u32::from_le_bytes(zk[..4].try_into().unwrap()),
+        23,
+        "ZKSettle is declared 24th, so its bincode index is 23 — NOT its discriminant 31"
+    );
+
+    let last = bincode::serialize(&TxType::RotateBlsKey).unwrap();
     assert_eq!(last.len(), 4);
     assert_eq!(
         u32::from_le_bytes(last[..4].try_into().unwrap()),
-        23,
-        "ZKSettle is declared 24th, so its bincode index is 23 — NOT its discriminant 31"
+        24,
+        "RotateBlsKey is declared 25th, so its bincode index is 24 — NOT its discriminant 32"
     );
 }
 
@@ -115,15 +125,15 @@ fn txtype_golden_table_pins_both_numbering_surfaces() {
 
 // REQ-ROT-001 — Decision: whether a variant was inserted or removed in the middle of the declaration list, shifting every later ordinal.
 #[test]
-fn txtype_ordinals_are_the_contiguous_declaration_positions_zero_to_23() {
+fn txtype_ordinals_are_the_contiguous_declaration_positions_zero_to_24() {
     let ordinals: Vec<u32> = WIRE_GOLDEN
         .iter()
         .map(|(v, _, _)| bincode_ordinal(*v))
         .collect();
-    let expected: Vec<u32> = (0..24).collect();
+    let expected: Vec<u32> = (0..25).collect();
     assert_eq!(
         ordinals, expected,
-        "declaration order changed: ordinals must be 0..=23 in table order"
+        "declaration order changed: ordinals must be 0..=24 in table order"
     );
 }
 
@@ -144,6 +154,15 @@ fn transaction_wire_layout_places_tx_type_at_byte_offset_four() {
         &bytes[4..8],
         &23u32.to_le_bytes(),
         "the wire slot carries the ORDINAL, not the discriminant"
+    );
+
+    tx.tx_type = TxType::RotateBlsKey;
+    let bytes = bincode::serialize(&tx).unwrap();
+    assert_eq!(&bytes[0..4], &0x1122_3344u32.to_le_bytes());
+    assert_eq!(
+        &bytes[4..8],
+        &24u32.to_le_bytes(),
+        "RotateBlsKey rides ordinal 24 on the wire, never discriminant 32"
     );
 }
 
@@ -170,9 +189,9 @@ fn every_txtype_round_trips_through_real_transaction_bytes() {
     }
 }
 
-// REQ-ROT-001 — Decision: whether discriminant 23 (the permanent tombstone) or 32 (the number M4 claims) was quietly handed to a live variant.
+// REQ-ROT-001 — Decision: whether discriminant 23 stopped being a permanent tombstone, or 32 stopped resolving to the rotation type peers must decode.
 #[test]
-fn tombstoned_and_unassigned_discriminants_stay_undecodable() {
+fn tombstoned_discriminants_stay_undecodable_and_32_is_rotate_bls_key() {
     assert_eq!(
         TxType::from_u32(23),
         None,
@@ -183,8 +202,8 @@ fn tombstoned_and_unassigned_discriminants_stay_undecodable() {
     }
     assert_eq!(TxType::from_u32(31), Some(TxType::ZKSettle));
 
-    // M4 TRIPWIRE: M4 gives RotateBlsKey discriminant 32 and MUST invert this line.
-    assert_eq!(TxType::from_u32(32), None);
+    // M4: 32 is the rotation discriminant — the one number above every tombstone.
+    assert_eq!(TxType::from_u32(32), Some(TxType::RotateBlsKey));
 
     for v in 33..=255u32 {
         assert_eq!(
@@ -196,9 +215,9 @@ fn tombstoned_and_unassigned_discriminants_stay_undecodable() {
     assert_eq!(TxType::from_u32(u32::MAX), None);
 }
 
-// REQ-ROT-001 — Decision: whether a 25th variant became decodable on the wire before M4 deliberately added one.
+// REQ-ROT-001 — Decision: whether wire ordinal 24 still resolves to RotateBlsKey, and whether a 26th variant became decodable before anyone declared one.
 #[test]
-fn wire_ordinal_24_is_not_decodable() {
+fn wire_ordinal_24_decodes_as_rotate_bls_key_and_25_does_not_decode() {
     let tx = fixture_tx(TxType::Transfer);
     let mut bytes = bincode::serialize(&tx).unwrap();
 
@@ -207,20 +226,24 @@ fn wire_ordinal_24_is_not_decodable() {
     let decoded: Transaction = bincode::deserialize(&bytes).expect("ordinal 23 decodes");
     assert_eq!(decoded.tx_type, TxType::ZKSettle);
 
-    // M4 TRIPWIRE: M4 declares RotateBlsKey last, making ordinal 24 decodable.
+    // M4 declared RotateBlsKey last, so ordinal 24 is now the live tail.
     bytes[4..8].copy_from_slice(&24u32.to_le_bytes());
+    let decoded: Transaction = bincode::deserialize(&bytes).expect("ordinal 24 decodes");
+    assert_eq!(decoded.tx_type, TxType::RotateBlsKey);
+
+    bytes[4..8].copy_from_slice(&25u32.to_le_bytes());
     assert!(
         bincode::deserialize::<Transaction>(&bytes).is_err(),
-        "wire ordinal 24 must be undecodable until M4 declares a 25th variant"
+        "wire ordinal 25 must be undecodable until a 26th variant is declared"
     );
 }
 
 // REQ-ROT-001 — Decision: whether a variant was added or removed without the numbering freeze being revisited.
 #[test]
-fn exactly_24_discriminants_are_live() {
+fn exactly_25_discriminants_are_live() {
     let live = (0..=255u32)
         .filter(|v| TxType::from_u32(*v).is_some())
         .count();
     assert_eq!(live, WIRE_GOLDEN.len(), "TxType variant count changed");
-    assert_eq!(live, 24);
+    assert_eq!(live, 25);
 }

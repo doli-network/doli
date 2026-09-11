@@ -1,9 +1,9 @@
 //! INC-I-217 M1 — REQ-ROT-010 reproduction.
 //!
 //! Group A is the SYMPTOM and is green: a producer registered with BLS key A whose
-//! node signs with key B earns nothing, permanently. Group B locks the absence of any
-//! rotation path; each of its assertions is an M4 tripwire whose message names the edit
-//! that must flip it.
+//! node signs with key B earns nothing, permanently. Group B locked the absence of any
+//! rotation path; its `TxType` assertions were flipped by M4 and now pin the rotation
+//! wire number. The `PendingProducerUpdate` assertion (b2) is still an M7 tripwire.
 //!
 //! OUTPUT CONTRACT — full matrix in `docs/.workflow/inc-i-217-M1-output-contract.md`.
 //! F1 `Node::create_and_broadcast_attestation`: O1 return, O2 `parent_sig_pool`, O3
@@ -504,21 +504,25 @@ fn req_rot_010_a4_the_mainnet_qualification_shape_is_54_of_60() {
 }
 
 // ===========================================================================
-// GROUP B — no rotation path exists. Every assertion is an M4 tripwire.
+// GROUP B — M4 SUITE. These assertions were M4 tripwires; M4 landed and they
+// are flipped here exactly as their own failure messages instructed.
+// The REMAINING GROUP B tripwire (b2, PendingProducerUpdate) belongs to M7 and
+// is deliberately left un-flipped below.
 // ===========================================================================
 
-const M4_TXTYPE: &str = "REQ-ROT-010/M4 tripwire: ordinal 32 now decodes — M4 has landed; \
-                         flip this assertion to is_some() and move it to the M4 suite";
+const M4_TXTYPE: &str = "REQ-ROT-010/M4: discriminant 32 is RotateBlsKey — if this fails, \
+                         the rotation transaction type was renumbered or removed";
 
-// REQ-ROT-010 (Must) — Decision: a failure tells the next agent that the wire surface
-// already moved, so M3's golden ordinal table would be frozen against the wrong shape.
+// REQ-ROT-010 (Must) — Decision: whether discriminant 32 still resolves to the rotation
+// type, without which every rotation payload on the wire decodes as nothing.
 #[test]
-fn req_rot_010_b1_ordinal_32_does_not_decode_today() {
-    assert!(TxType::from_u32(32).is_none(), "{M4_TXTYPE}");
+fn req_rot_010_b1_ordinal_32_decodes_as_rotate_bls_key() {
+    assert!(TxType::from_u32(32).is_some(), "{M4_TXTYPE}");
+    assert_eq!(TxType::from_u32(32), Some(TxType::RotateBlsKey));
 }
 
 /// Exhaustive, NO `_` arm: adding a `TxType` variant fails this file's BUILD, which is
-/// the loudest form an M4 tripwire can take.
+/// the loudest form a wire-numbering tripwire can take.
 fn ordinal(t: TxType) -> u32 {
     match t {
         TxType::Transfer => 0,
@@ -545,6 +549,7 @@ fn ordinal(t: TxType) -> u32 {
         TxType::RemoveLiquidity => 21,
         TxType::Swap => 22,
         TxType::ZKSettle => 31,
+        TxType::RotateBlsKey => 32,
     }
 }
 
@@ -552,7 +557,7 @@ fn ordinal(t: TxType) -> u32 {
 // under an existing name; M3's wire freeze would lock a surface nobody reviewed, and a
 // moved ordinal silently re-maps every serialized transaction on disk and on the wire.
 #[test]
-fn req_rot_010_b1_the_wire_carries_exactly_24_decodable_tx_types() {
+fn req_rot_010_b1_the_wire_carries_exactly_25_decodable_tx_types() {
     let mut live: Vec<u32> = Vec::new();
     for v in 0u32..=255 {
         if let Some(t) = TxType::from_u32(v) {
@@ -566,15 +571,15 @@ fn req_rot_010_b1_the_wire_carries_exactly_24_decodable_tx_types() {
     }
     assert_eq!(
         live.len(),
-        24,
-        "REQ-ROT-010/M4 tripwire: the decodable TxType count changed to {} ({live:?}) — if \
-         M4 added RotateBlsKey, raise this to 25 and move it to the M4 suite",
+        25,
+        "REQ-ROT-010/M4: the decodable TxType count changed to {} ({live:?}) — a variant was \
+         added or removed without the numbering freeze being revisited",
         live.len()
     );
     assert_eq!(
         live.last(),
-        Some(&31),
-        "REQ-ROT-010: 31 (ZKSettle) is the highest live ordinal, so 32 is the next free one"
+        Some(&32),
+        "REQ-ROT-010/M4: 32 (RotateBlsKey) is now the highest live discriminant"
     );
 }
 

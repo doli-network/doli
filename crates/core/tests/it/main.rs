@@ -21,3 +21,4 @@ mod inc_i_180_activation_height;
 mod inc_i_204_m5_activation_height;
 mod inc_i_204_m5_finality_comparator;
 mod inc_i_208_activation_height;
+mod inc_i_217_m4_rotate_payload;

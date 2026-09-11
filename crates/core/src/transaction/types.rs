@@ -136,6 +136,11 @@ pub enum TxType {
     ///
     /// See `specs/l2-settlement.md` for the full interface specification.
     ZKSettle = 31,
+    /// Rotate a producer's BLS attestation key (INC-I-217).
+    ///
+    /// Declared LAST: bincode ordinal 24, `as u32` discriminant 32. Discriminant
+    /// 32 is the first number above the 23-30 tombstone band.
+    RotateBlsKey = 32,
 }
 
 impl TxType {
@@ -171,6 +176,7 @@ impl TxType {
             // NFT fractionalization removed 2026-05-26. See comment block above.
             29 | 30 => None,
             31 => Some(Self::ZKSettle),
+            32 => Some(Self::RotateBlsKey),
             _ => None,
         }
     }
@@ -206,6 +212,8 @@ impl TxType {
             Self::RemoveLiquidity => false,
             Self::Swap => false,
             Self::ZKSettle => false,
+            // D2: fee-paying 1-in/1-out; the spent outpoint is the replay bind.
+            Self::RotateBlsKey => false,
         }
     }
 }

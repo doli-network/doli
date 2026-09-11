@@ -63,7 +63,7 @@ pub const ATTESTATION_DST: &[u8] = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_DOLI
 ///
 /// Used at registration to prove ownership of a BLS secret key.
 /// Different DST prevents cross-domain signature reuse.
-const POP_DST: &[u8] = b"BLS_POP_BLS12381G2_XMD:SHA-256_SSWU_RO_DOLI_POP_V1";
+pub(crate) const POP_DST: &[u8] = b"BLS_POP_BLS12381G2_XMD:SHA-256_SSWU_RO_DOLI_POP_V1";
 
 /// Errors from BLS operations.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -167,7 +167,7 @@ impl BlsPublicKeyWrapped {
     }
 
     /// Convert to the internal blst type.
-    fn to_blst(self) -> Result<BlstPublicKey, BlsError> {
+    pub(crate) fn to_blst(self) -> Result<BlstPublicKey, BlsError> {
         BlstPublicKey::from_bytes(&self.0).map_err(|_| BlsError::InvalidPublicKey)
     }
 }
@@ -347,7 +347,7 @@ impl BlsSecretKey {
     }
 
     /// Get the internal blst `SecretKey`.
-    fn to_blst(&self) -> SecretKey {
+    pub(crate) fn to_blst(&self) -> SecretKey {
         SecretKey::from_bytes(&self.0).expect("validated on construction")
     }
 }
@@ -429,7 +429,7 @@ impl BlsSignature {
     }
 
     /// Convert to the internal blst type.
-    fn to_blst(&self) -> Result<Signature, BlsError> {
+    pub(crate) fn to_blst(&self) -> Result<Signature, BlsError> {
         Signature::from_bytes(&self.0).map_err(|_| BlsError::InvalidSignature)
     }
 }

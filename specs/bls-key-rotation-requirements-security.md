@@ -104,9 +104,9 @@ SEC-010, not at merge time** — the gate is `u64::MAX` on every network at merg
 
 | ID | Requirement | Priority | Acceptance Criteria |
 |----|-------------|----------|---------------------|
-| REQ-ROT-SEC-001 | The payload carries an inner Ed25519 signature over `BLAKE3(ROTATE_BLS_SIGNING_DOMAIN \|\| genesis_hash \|\| new_bls_pubkey \|\| expiry_height)`, verified against `ProducerInfo.public_key` of the producer named in the payload. | Must | see below |
-| REQ-ROT-SEC-002 | The proof of possession uses a **new** DST, distinct from `POP_DST` and `ATTESTATION_DST`, over `producer_ed25519 \|\| new_bls_pubkey \|\| genesis_hash`. | Must | see below |
-| REQ-ROT-SEC-003 | The payload carries `expiry_height`; a rotation is valid only when `block_height <= expiry_height <= block_height + ROTATION_TX_MAX_LIFETIME` (= `BLOCKS_PER_REWARD_EPOCH` = 360). No new `ProducerInfo` field. | Must | see below |
+| REQ-ROT-SEC-001 | The payload carries an inner Ed25519 signature over `BLAKE3("DOLI-ROTATE-BLS-V1" \|\| genesis_hash \|\| new_bls_pubkey \|\| prev_tx_hash \|\| output_index u32 LE)`, verified against `ProducerInfo.public_key` of the producer named in the payload. **Superseded** (architecture D2): the signature commits to the spending **outpoint**, not to an `expiry_height`. | Must | see below |
+| REQ-ROT-SEC-002 | The proof of possession uses a **new** DST, distinct from `POP_DST` and `ATTESTATION_DST`, over `genesis_hash \|\| producer_ed25519[32] \|\| new_bls_pubkey[48]`. **Superseded** (architecture D7): **genesis first**, then the two fixed-width fields. | Must | see below |
+| REQ-ROT-SEC-003 | ~~The payload carries `expiry_height`…~~ **SUPERSEDED** (architecture D2): the replay bind is the consumed input named inside the inner signature; `expiry_height` and `ROTATION_TX_MAX_LIFETIME` do not exist. The outpoint can be spent once, so the authorisation is single-use by construction. No new `ProducerInfo` field. | Must | see below |
 | REQ-ROT-SEC-004 | `new_bls_pubkey` must not equal any other producer's `bls_pubkey`, nor any pending rotation target, nor the sender's own current key. | Must | see below |
 | REQ-ROT-SEC-005 | At most one pending rotation per producer, enforced identically at mempool admission, block builder and block validation. | Must | see below |
 | REQ-ROT-SEC-006 | Sender must be a registered, non-exited, non-unbonding producer present in the producer set (or in `pending_updates` as a `Register`). | Must | see below |
@@ -120,21 +120,34 @@ SEC-010, not at merge time** — the gate is `u64::MAX` on every network at merg
 - [ ] Given the same payload with the signature replaced by another producer's signature, when validated, then `[ERRTX-ROT003] rotation signature invalid` and the block is rejected.
 - [ ] Given an all-zero signature (`Signature::default()`), when validated, then rejected — verification fails closed.
 - [ ] Given a payload whose `new_bls_pubkey` byte 0 is flipped after signing, when validated, then rejected (the signature commits to the key).
-- [ ] Given a payload whose `expiry_height` is changed after signing, when validated, then rejected.
+- [ ] Given a payload re-wrapped around a different spending outpoint after signing, when validated, then rejected (the signature commits to `prev_tx_hash` and `output_index`).
+  > Superseded (architecture D2): the mutable field the signature must catch is the **outpoint**, not `expiry_height`.
 - [ ] The verdict is identical at `validate_transaction` (stateless), mempool admission, block builder and `apply_block`.
 
 ### REQ-ROT-SEC-002: PoP domain separation
 - [ ] `ROTATE_POP_DST != crypto::bls::POP_DST` and `!= crypto::ATTESTATION_DST` (asserted by a test over the three byte strings).
 - [ ] Given a **registration** PoP for key K copied into a rotation payload for key K, when validated, then rejected — the registration PoP does not satisfy the rotation DST or the bound message.
 - [ ] Given a valid rotation PoP for producer A, when the same PoP is placed in a rotation payload naming producer B (same `new_bls_pubkey`), then rejected — the PoP message commits to the Ed25519 key.
+  > Superseded (architecture D7): the PoP message is `genesis_hash || producer_ed25519[32] || new_bls_pubkey[48]` — **genesis first**, no length prefix, the two fixed-width tails keep the parse unambiguous.
 - [ ] Given a rotation PoP for key K under `ROTATE_POP_DST`, when used as a `RegistrationData.bls_pop`, then registration rejects it.
 - [ ] The new write path is PoP-covered by construction, closing the rotation arm of spec precondition **P8**.
 
 ### REQ-ROT-SEC-003: Replay binding
-- [ ] Given a rotation mined at height h with `expiry_height = h + 10`, when the identical tx bytes are re-submitted at height `h + 11`, then rejected with `[ERRTX-ROT005] rotation expired`.
-- [ ] Given `expiry_height = h + 361`, when validated at height h, then rejected — lifetime exceeds one epoch.
-- [ ] Given `expiry_height < h`, when validated at height h, then rejected.
-- [ ] Given a rotation mined at h and re-submitted at `h + 1` (inside both the window and the deferral window), then rejected by REQ-ROT-SEC-005 (one pending rotation).
+
+> **SUPERSEDED by the outpoint binding (architecture D2).** The three `expiry_height`
+> criteria below belong to the 0-in/0-out + expiry design that D2 eliminated; they are
+> kept for traceability and are not acceptance criteria for any milestone. What replaces
+> them: the inner signature commits to `(prev_tx_hash, output_index)`, so re-submitting
+> the identical bytes fails the oldest rule in the node — the input is already spent
+> (`validation/utxo.rs:126-139`) — and a third party cannot re-wrap the tuple around a
+> fresh input of their own.
+
+- [ ] ~~Given a rotation mined at height h with `expiry_height = h + 10`, when the identical tx bytes are re-submitted at height `h + 11`, then rejected with `[ERRTX-ROT005] rotation expired`.~~
+- [ ] ~~Given `expiry_height = h + 361`, when validated at height h, then rejected — lifetime exceeds one epoch.~~
+- [ ] ~~Given `expiry_height < h`, when validated at height h, then rejected.~~
+- [ ] Given a rotation mined at h, when the identical tx bytes are re-submitted at any later height, then rejected — its input is spent.
+- [ ] Given the `(producer, new_bls_pubkey, bls_pop, signature)` tuple lifted into a transaction spending a different outpoint, then rejected — the inner signature does not cover that outpoint.
+- [ ] Given a rotation mined at h and re-submitted at `h + 1` (inside the deferral window), then rejected by REQ-ROT-SEC-005 (one pending rotation).
 - [ ] `bincode::serialize(&ProducerInfo)` for a producer that has never rotated is **byte-identical** before and after this change (golden vector) — no field was added.
 
 ### REQ-ROT-SEC-004: `bls_pubkey` uniqueness

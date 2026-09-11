@@ -4,6 +4,7 @@ mod core;
 mod data;
 mod input;
 mod output;
+mod rotate_bls;
 mod types;
 
 pub mod legacy;
@@ -31,4 +32,5 @@ pub use self::core::*;
 pub use data::*;
 pub use input::*;
 pub use output::*;
+pub use rotate_bls::*;
 pub use types::*;
