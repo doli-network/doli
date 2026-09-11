@@ -209,7 +209,7 @@ Copying `Exit` (brief item 1) is disqualified by name at `types.rs:130-131`.
 
 | ID | Requirement | Priority | Acceptance Criteria |
 |----|-------------|----------|---------------------|
-| REQ-ROT-001 | `TxType::RotateBlsKey = 23` declared **last**, after `ZKSettle = 31`; `from_u32(23)` arm added | Must | ordinal-stability golden vector; `from_u32` round-trip |
+| REQ-ROT-001 | `TxType::RotateBlsKey = 32` declared **last**, after `ZKSettle = 31` → wire ordinal 24 / discriminant 32; `from_u32(32)` arm added; discriminant 23 stays a permanent tombstone (`from_u32(23)` stays `None`) | Must | ordinal-stability golden vector; `from_u32` round-trip |
 | REQ-ROT-002 | `RotateBlsKeyData` payload, fixed 248 bytes, in `extra_data` | Must | exact-length encode/decode round-trip |
 | REQ-ROT-003 | `allows_empty_io => true`; transaction is strictly 0-in/0-out | Must | zero-flow accepted; any input or output rejected |
 | REQ-ROT-004 | `bls_key_rotation_activation_height` in `NetworkParams`, `u64::MAX` on mainnet, testnet and devnet; constant gate; no `HardForkSchedule` entry | Must | below-AH rejection on all three networks |

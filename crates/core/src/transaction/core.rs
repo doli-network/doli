@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::types::{Amount, BlockHeight};
 
 use super::data::*;
+use super::input::*;
 use super::output::*;
 use super::types::*;
 

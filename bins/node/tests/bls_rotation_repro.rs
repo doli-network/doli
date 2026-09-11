@@ -27,7 +27,6 @@
 
 use std::collections::BTreeMap;
 use std::io::Write;
-use std::path::{Path, PathBuf};
 use std::sync::{Mutex, Once};
 
 use crypto::{hash::hash_with_domain, BlsKeyPair, Hash, KeyPair, PublicKey, ADDRESS_DOMAIN};
@@ -46,6 +45,9 @@ use vdf::{VdfOutput, VdfProof};
 
 #[path = "it/inc_i_178_m0_common.rs"]
 mod m0_common;
+
+#[path = "it/bls_rotation_scan.rs"]
+mod bls_scan;
 
 use m0_common::{
     active_at, assemble, build_via_production, dual, make_node, register_bls, safe_build_height,
@@ -701,60 +703,17 @@ fn req_rot_010_b3_no_pending_update_variant_rewrites_a_registered_producers_bls_
 
 // B3 supplement — source scan. Not a substitute for the behavioural test above.
 
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .canonicalize()
-        .expect("repo root must resolve")
-}
-
-/// Every non-test `.rs` file under the given roots, with whole-line `//` comments
-/// stripped so a tombstone comment cannot satisfy or break a scan.
-fn production_sources(roots: &[&str]) -> Vec<(String, Vec<String>)> {
-    let root = repo_root();
-    let mut stack: Vec<PathBuf> = roots.iter().map(|r| root.join(r)).collect();
-    let mut out = Vec::new();
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for e in entries.flatten() {
-            let p = e.path();
-            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or_default();
-            if p.is_dir() {
-                if name != "tests" && name != "target" {
-                    stack.push(p);
-                }
-            } else if name.ends_with(".rs") && name != "tests.rs" {
-                let Ok(src) = std::fs::read_to_string(&p) else {
-                    continue;
-                };
-                let rel = p
-                    .strip_prefix(&root)
-                    .unwrap_or(&p)
-                    .to_string_lossy()
-                    .to_string();
-                let lines = src
-                    .lines()
-                    .filter(|l| !l.trim_start().starts_with("//"))
-                    .map(|l| l.to_string())
-                    .collect();
-                out.push((rel, lines));
-            }
-        }
-    }
-    out
-}
-
 // REQ-ROT-010 (Must) — Decision: a failure means a fifth write site appeared, so the
 // behavioural enumeration above is no longer exhaustive and B3's conclusion is unsound.
 #[test]
 fn req_rot_010_b3_registration_is_the_only_writer_of_bls_pubkey() {
+    let scan = bls_scan::scan_sources(&["crates", "bins"]);
+    bls_scan::assert_scan_is_honest(&scan);
+
     let mut sites: BTreeMap<String, usize> = BTreeMap::new();
     let mut fresh_value_writes = 0usize;
 
-    for (file, lines) in production_sources(&["crates", "bins"]) {
+    for (file, lines) in &scan.production {
         for (i, line) in lines.iter().enumerate() {
             let Some(pos) = line.find(".bls_pubkey") else {
                 continue;

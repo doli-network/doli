@@ -2,6 +2,7 @@
 
 mod core;
 mod data;
+mod input;
 mod output;
 mod types;
 
@@ -19,8 +20,15 @@ mod tests_price_attestation;
 #[cfg(test)]
 mod tests_oracle_output;
 
+#[cfg(test)]
+mod wire_golden_tests;
+
+#[cfg(test)]
+mod input_module_tests;
+
 // Re-export everything for API compatibility
 pub use self::core::*;
 pub use data::*;
+pub use input::*;
 pub use output::*;
 pub use types::*;

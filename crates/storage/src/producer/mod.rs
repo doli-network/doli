@@ -42,6 +42,9 @@ mod tests_delegation;
 #[allow(deprecated)]
 mod tests_delegation_cap;
 mod types;
+#[cfg(test)]
+#[allow(deprecated)]
+mod wire_golden_tests;
 mod withdrawal_inputs;
 
 // Re-export everything for identical public API
