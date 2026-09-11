@@ -86,3 +86,11 @@ path = "tests/inc_i_171_m5_vesting_build.rs"
 [[test]]
 name = "inc_i_171_m6_shadow_counter"
 path = "tests/inc_i_171_m6_shadow_counter.rs"
+
+# INC-I-217 M9 — own binary, same constraint as inc_i_171_m6_shadow_counter:
+# the counter and REGISTRY are process-global lazy_statics and NetworkParams is a
+# per-network OnceLock frozen by the first params() call in the process, so a
+# delta assertion inside the shared `it` binary is a flake.
+[[test]]
+name = "bls_rotation_metrics"
+path = "tests/bls_rotation_metrics.rs"

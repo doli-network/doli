@@ -183,8 +183,9 @@ impl ProducerSet {
                 } => {
                     if let Some(producer_info) = self.get_by_pubkey_mut(&pubkey) {
                         tracing::info!(
-                            "[BLS_ROTATE] applied producer={:.8} new={:.8} h={}",
+                            "[BLS_ROTATE] applied producer={:.8} old={:.8} new={:.8} h={}",
                             crypto_hash(pubkey.as_bytes()),
+                            crypto_hash(&producer_info.bls_pubkey),
                             crypto_hash(&new_bls_pubkey),
                             height
                         );
@@ -204,6 +205,14 @@ impl ProducerSet {
     /// Get the count of pending updates.
     pub fn pending_update_count(&self) -> usize {
         self.pending_updates.len()
+    }
+
+    /// Get the count of pending BLS key rotations.
+    pub fn pending_rotation_count(&self) -> u64 {
+        self.pending_updates
+            .iter()
+            .filter(|u| matches!(u, PendingProducerUpdate::RotateBlsKey { .. }))
+            .count() as u64
     }
 
     /// Get pending updates for a specific producer (by public key).

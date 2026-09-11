@@ -124,6 +124,12 @@ pub struct PendingUpdateInfo {
     /// Bond count affected (if applicable)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bond_count: Option<u32>,
+    /// Queued BLS key, lowercase hex (rotate_bls_key only)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_bls_pubkey: Option<String>,
+    /// Height the queue flushes this update at (rotate_bls_key only)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_at_height: Option<u64>,
 }
 
 // ==================== Epoch ====================
