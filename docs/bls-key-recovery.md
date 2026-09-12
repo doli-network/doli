@@ -136,7 +136,7 @@ the key the chain holds for your producer.
 ### 5.1. Preconditions
 
 1. The network must have activated rotation. `bls_key_rotation_activation_height` is `u64::MAX`
-   on mainnet, testnet and devnet today. Below that height the node refuses the transaction with
+   on mainnet and devnet today, and 176_200 on testnet (pinned 2026-09-12). Below that height the node refuses the transaction with
    `[ERRTX-ROT002]`. Ask the maintainers before you plan a rotation.
 2. The wallet must hold the key you want to publish. If the wallet still holds the leaked key,
    replace it first with `doli import-bls <new-secret> --force`, or start from a wallet whose key

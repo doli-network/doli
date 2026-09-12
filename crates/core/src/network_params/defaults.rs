@@ -526,7 +526,9 @@ impl NetworkParams {
                 // INC-I-208 own-attestation pooling. PINNED 118_500 on testnet
                 // (rehearsal crossing, 2026-09-05, v6.28.0); IMMUTABLE once crossed.
                 inc_i_208_own_attestation_activation_height: 118_500,
-                bls_key_rotation_activation_height: u64::MAX,
+                // INC-I-217: testnet pin. Tip was 176_119 at 2026-09-12T08:27Z (10 s slots);
+                // 176_200 is ~13 min above it. Once crossed this height is IMMUTABLE.
+                bls_key_rotation_activation_height: 176_200,
                 // INC-I-171 vesting-penalty payout bound. PINNED 133_640 on testnet
                 // (deploy 2026-09-07, ~19 min after tip 133_525 at 10:06Z, user
                 // decision); IMMUTABLE once crossed. Mainnet and devnet stay u64::MAX.

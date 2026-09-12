@@ -374,11 +374,18 @@ fn rotations_queued(ps: &ProducerSet, pk: &PublicKey) -> usize {
 /// every RED below pass for a reason that is not the code under test.
 #[test]
 fn precondition_the_three_shipped_defaults_are_still_frozen() {
-    for network in [Network::Devnet, Network::Testnet, Network::Mainnet] {
+    // INC-I-217: testnet was pinned to 176_200 on 2026-09-12; this harness runs on Devnet
+    // (`NET`), whose default must stay u64::MAX so the gate is armed by ENV only.
+    for (network, expected) in [
+        (Network::Devnet, u64::MAX),
+        (Network::Testnet, 176_200),
+        (Network::Mainnet, u64::MAX),
+    ] {
         assert_eq!(
             NetworkParams::defaults(network).bls_key_rotation_activation_height,
-            u64::MAX,
-            "{network:?} default must stay u64::MAX — M8 arms the gate by ENV, never by pin"
+            expected,
+            "{network:?} default must be exactly {expected} — devnet/mainnet stay frozen, \
+             M8 arms the devnet gate by ENV, never by pin"
         );
     }
 }

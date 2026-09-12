@@ -1314,8 +1314,9 @@ A skip is never block-invalidating. The transaction stays in the block, and the
 producer set stays byte-identical. Key uniqueness is therefore an apply-time
 verdict, not a transaction rejection code.
 
-**Activation.** `bls_key_rotation_activation_height` is `u64::MAX` on mainnet,
-on testnet and on devnet (`crates/core/src/network_params/defaults.rs`). No
+**Activation.** `bls_key_rotation_activation_height` is `u64::MAX` on mainnet
+and on devnet, and **176_200 on testnet** (pinned 2026-09-12, INC-I-217;
+`crates/core/src/network_params/defaults.rs`). No
 rotation can enter a block until a future binary pins a height. Pinning a real
 height is a separate decision-session. Never bundle it with another change. See
 precondition **P4** in `specs/attestation-bls-architecture.md`.
@@ -1866,7 +1867,7 @@ therefore cannot exist on-chain without a BLS key.
 
 `RotateBlsKey` (type 32, section 3.24) is the one transaction that replaces a registered
 `bls_pubkey`. It is gated by `bls_key_rotation_activation_height`, which is `u64::MAX` on
-mainnet, on testnet and on devnet, so no rotation can enter a block until a future binary
+mainnet and on devnet and 176_200 on testnet, so no mainnet rotation can enter a block until a future binary
 pins a height. On every other path `bls_pubkey` is written at `Registration` apply, at
 genesis completion, during a `ProducerSet` rebuild, and at the epoch-boundary flush of a
 queued `RotateBlsKey`.

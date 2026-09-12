@@ -93,14 +93,22 @@ const HARDFORK_SRC: &str = include_str!("../../../updater/src/hardfork.rs");
 // live local chain forks on the next rebuild, because devnet keeps its data directory.
 #[test]
 fn req_rot_004_the_rotation_gate_is_frozen_on_every_network() {
-    for network in [Network::Mainnet, Network::Testnet, Network::Devnet] {
+    // INC-I-217 testnet pin (2026-09-12, tip 176_119): testnet asserts the exact pinned
+    // value; mainnet and devnet stay FROZEN. Once crossed on testnet the value is IMMUTABLE
+    // (INC-I-054 shape) — this triad is the tripwire against moving it.
+    for (network, expected) in [
+        (Network::Mainnet, u64::MAX),
+        (Network::Testnet, 176_200),
+        (Network::Devnet, u64::MAX),
+    ] {
         assert_eq!(
             NetworkParams::defaults(network).bls_key_rotation_activation_height,
-            u64::MAX,
-            "{network:?}: BLS key rotation must ship FROZEN. Pinning a real height is a \
-             separate decision-session (HC-6 / INC-I-075): the rule changes the verdict \
-             on a user-submittable transaction, so INV-12 Q1=YES and Q3=NO. Devnet is \
-             frozen too — a `0` default forks every live local chain on the next rebuild."
+            expected,
+            "{network:?}: BLS key rotation gate must be exactly {expected}. Mainnet stays \
+             FROZEN: pinning a real height is a separate decision-session (HC-6 / \
+             INC-I-075): the rule changes the verdict on a user-submittable transaction, \
+             so INV-12 Q1=YES and Q3=NO. Devnet is frozen too — a `0` default forks every \
+             live local chain on the next rebuild. Testnet was pinned 2026-09-12."
         );
     }
 }
