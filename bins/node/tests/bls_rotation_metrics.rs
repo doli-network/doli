@@ -383,11 +383,18 @@ fn applied_old_and_new(log: &str) -> Option<(String, String)> {
 // assertion below pass for a reason that is not the code under test.
 #[test]
 fn precondition_the_three_shipped_defaults_are_still_frozen() {
-    for net in [Network::Mainnet, Network::Testnet, Network::Devnet] {
+    // INC-I-217 pins (2026-09-12): mainnet 450_789, testnet 176_200; this harness runs on
+    // Devnet, whose default must stay u64::MAX so the gate is armed by ENV only.
+    for (network, expected) in [
+        (Network::Devnet, u64::MAX),
+        (Network::Testnet, 176_200),
+        (Network::Mainnet, 450_789),
+    ] {
         assert_eq!(
-            NetworkParams::defaults(net).bls_key_rotation_activation_height,
-            u64::MAX,
-            "{net:?} must ship the rotation gate frozen"
+            NetworkParams::defaults(network).bls_key_rotation_activation_height,
+            expected,
+            "{network:?} default must be exactly {expected} — devnet stays frozen, the M8 harness \
+             arms the devnet gate by ENV, never by pin"
         );
     }
 }

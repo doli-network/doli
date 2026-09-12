@@ -97,15 +97,15 @@ fn req_rot_004_the_rotation_gate_is_frozen_on_every_network() {
     // value; mainnet and devnet stay FROZEN. Once crossed on testnet the value is IMMUTABLE
     // (INC-I-054 shape) — this triad is the tripwire against moving it.
     for (network, expected) in [
-        (Network::Mainnet, u64::MAX),
+        (Network::Mainnet, 450_789),
         (Network::Testnet, 176_200),
         (Network::Devnet, u64::MAX),
     ] {
         assert_eq!(
             NetworkParams::defaults(network).bls_key_rotation_activation_height,
             expected,
-            "{network:?}: BLS key rotation gate must be exactly {expected}. Mainnet stays \
-             FROZEN: pinning a real height is a separate decision-session (HC-6 / \
+            "{network:?}: BLS key rotation gate must be exactly {expected}. Mainnet was \
+             pinned 2026-09-12 (tip 441_806) in its own decision-session (HC-6 / \
              INC-I-075): the rule changes the verdict on a user-submittable transaction, \
              so INV-12 Q1=YES and Q3=NO. Devnet is frozen too — a `0` default forks every \
              live local chain on the next rebuild. Testnet was pinned 2026-09-12."

@@ -63,7 +63,7 @@
 # removed by this script alone.
 set -uo pipefail
 
-REPO="/Users/isudoajl/ownCloud/Projects/doli-network/doli/.claude/worktrees/bls-key-rotation"
+REPO="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"
 cd "$REPO" || exit 1
 
 A="crates/core/tests/zz_m5_probe_gate_field.rs"

@@ -403,11 +403,20 @@ fn req_rot_sec_009_digest_is_bound_to_the_genesis_hash() {
 // `InvalidTransaction` reject arm, due to fire the moment M5 replaced that arm. M5 landed the gate,
 // so the assertion now names the typed refusal instead. The INVARIANT IS UNCHANGED AND STRICTER: a
 // well-formed RotateBlsKey still does not validate on shipped mainnet params, and the refusal now
-// has to prove WHY — `[ERRTX-ROT002]`, below `bls_key_rotation_activation_height`, whose shipped
-// value on every network is `u64::MAX`.
+// has to prove WHY — `[ERRTX-ROT002]`, below `bls_key_rotation_activation_height`. The height
+// is read from the SHIPPED mainnet params (pinned 450_789 on 2026-09-12, INC-I-217) and the probe
+// block sits one below it, so the test follows the pin instead of a frozen literal.
 #[test]
 fn req_rot_001_rotate_bls_key_is_rejected_below_the_m5_gate() {
-    let ctx = ValidationContext::new(ConsensusParams::mainnet(), Network::Mainnet, 0, 1_000_000);
+    let gate = NetworkParams::defaults(Network::Mainnet).bls_key_rotation_activation_height;
+    assert!(
+        gate > 1,
+        "the shipped mainnet gate must leave room for a block below it"
+    );
+    // A bare ValidationContext::new defaults the rotation gate to u64::MAX (REQ-ROT-004 O1);
+    // production sites plumb the shipped value through the typed builder, so this probe does too.
+    let ctx = ValidationContext::new(ConsensusParams::mainnet(), Network::Mainnet, 0, gate - 1)
+        .with_bls_key_rotation_activation_height(gate);
     let recipient = crypto::hash::hash(b"inc-i-217-m4-fail-closed");
 
     // I20 — 1 input / 1 output carrying a canonical 240-byte payload, so every
@@ -434,20 +443,20 @@ fn req_rot_001_rotate_bls_key_is_rejected_below_the_m5_gate() {
         matches!(
             err,
             ValidationError::RotateBlsNotActivated {
-                activation_height: u64::MAX,
+                activation_height,
                 ..
-            }
+            } if activation_height == gate
         ),
-        "expected the typed below-gate refusal at the shipped u64::MAX height, got {err:?}"
+        "expected the typed below-gate refusal at the shipped mainnet height {gate}, got {err:?}"
     );
     assert!(
         err.to_string().contains("[ERRTX-ROT002]"),
         "the refusal must carry its stable code, got: {err}"
     );
     assert_eq!(
-        NetworkParams::defaults(Network::Mainnet).bls_key_rotation_activation_height,
-        u64::MAX,
-        "the gate this test leans on must still be frozen on mainnet"
+        gate, 450_789,
+        "the mainnet gate is the 2026-09-12 pin; if this moved, the pin was touched after \
+         being crossed (INC-I-054 shape) — that is the failure this line exists to catch"
     );
 
     // I21 non-vacuity — the byte-identical transaction retyped Transfer DOES

@@ -1242,8 +1242,8 @@ a script you must pass `--yes`, or the command refuses. Every refusal path exits
 non-zero, so a caller can never read the exit code as a rotation that happened.
 
 **Activation gate.** `RotateBlsKey` is gated by
-`bls_key_rotation_activation_height`, which is `u64::MAX` on mainnet and on devnet
-and 176_200 on testnet (pinned 2026-09-12). **No RPC method exposes that height**, so the CLI cannot check the
+`bls_key_rotation_activation_height`, which is 450_789 on mainnet and 176_200 on testnet
+(both pinned 2026-09-12) and `u64::MAX` on devnet. **No RPC method exposes that height**, so the CLI cannot check the
 gate before it submits. Below the height the node rejects the transaction and the
 CLI prints the node's own text verbatim:
 

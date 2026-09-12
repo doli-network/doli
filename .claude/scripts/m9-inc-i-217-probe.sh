@@ -10,7 +10,7 @@
 #                        is visible BEFORE it takes effect (of 1).
 # ROT_RPC_SHAPE_FROZEN   pre-existing pending-update kinds whose JSON bytes are
 #                        unchanged by the two additive fields — the explorer on
-#                        ai2 reads this object today (of 1).
+#                        the public explorer reads this object today (of 1).
 # ROT_METRIC_MOVES       scrape-visible doli_producer_bls_rotation_total series
 #                        that actually MOVE when a real node flushes a rotation
 #                        at an epoch boundary (of 1). INC-I-187: 28/57 doli_*

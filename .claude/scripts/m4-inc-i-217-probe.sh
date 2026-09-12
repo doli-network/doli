@@ -23,7 +23,7 @@
 # committed and never counted.
 set -uo pipefail
 
-REPO="/Users/isudoajl/ownCloud/Projects/doli-network/doli/.claude/worktrees/bls-key-rotation"
+REPO="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"
 cd "$REPO" || exit 1
 
 A="crates/core/tests/zz_m4_probe_txtype_surface.rs"

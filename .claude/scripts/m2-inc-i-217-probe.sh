@@ -24,7 +24,7 @@
 # Before M2 both read 0 -- clap exits 2 on an unknown subcommand and no
 # restore path exists. After M2 both read 1.
 set -uo pipefail
-WT=/Users/isudoajl/ownCloud/Projects/doli-network/doli/.claude/worktrees/bls-key-rotation
+WT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"
 cd "$WT" || exit 1
 
 cargo build -p doli-cli --bin doli >/dev/null 2>&1

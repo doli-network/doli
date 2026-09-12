@@ -23,7 +23,7 @@
 # counters read 0 -- the diagnostics are unexercised code. After M1 the
 # reproduction harness drives the condition and the tokens fire.
 set -uo pipefail
-cd /Users/isudoajl/ownCloud/Projects/doli-network/doli/.claude/worktrees/bls-key-rotation || exit 1
+cd "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}" || exit 1
 
 OUT=$(cargo test -p doli-node --test bls_rotation_repro -- --nocapture 2>&1)
 

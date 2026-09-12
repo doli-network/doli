@@ -62,7 +62,7 @@ Constraint table entries:          8 (companion §Constraint Table)
 | D3 | Invalid at apply | **SKIP** (DelegateBond D4 precedent), logged + counted; below the AH the tx type itself makes the block invalid | analogist D4 (`tx_processing.rs:488-529`); skeptic A2/A3 |
 | D4 | Timing | **Epoch-deferred**; flush arm unconditional on status; convergence test asserts the queue and spans the boundary | CLAUDE.md law; skeptic A5/A6; `post_commit.rs:421` |
 | D5 | Pool poison | Boundary flush and `parent_sig_pool.clear()` share one predicate (`is_epoch_boundary_with`) — pinned by a test; **plus** clear the pool whenever a rollback restores a `ProducerSet` | `post_commit.rs:194,421`; `state_update.rs:181`; `rollback.rs:178-191`; `ingress.rs:63-90`; `keys.rs:13-28` |
-| D6 | Un-upgraded nodes | Below `bls_key_rotation_activation_height` (= `u64::MAX` on mainnet/devnet, 176_200 on testnet) a block containing the type is **invalid**, so no honest node ever gossips one pre-pin; post-pin protection is the pinning session's job (census + `MIN_PEER_PROTOCOL_VERSION`, needs user approval) | skeptic A4; `gossip/validation.rs:96-105`; `behaviour_events.rs:70-74` |
+| D6 | Un-upgraded nodes | Below `bls_key_rotation_activation_height` (= 450_789 on mainnet, 176_200 on testnet, `u64::MAX` on devnet) a block containing the type is **invalid**, so no honest node ever gossips one pre-pin; post-pin protection is the pinning session's job (census + `MIN_PEER_PROTOCOL_VERSION`, needs user approval) | skeptic A4; `gossip/validation.rs:96-105`; `behaviour_events.rs:70-74` |
 | D7 | Signing message | `authmsg.rs` disciplines verbatim; two private `-V1` tags; ONE published preimage encoder used by node and CLI; PoP bound to the Ed25519 pubkey and genesis | analogist D1/P3; `authmsg.rs:89-153` |
 | D8 | Uniqueness | O(n) scan over `producers` values + queued rotations, in storage, called by apply and rebuild only; no reverse index | explorer §(4); `set_core.rs:25` |
 
@@ -347,7 +347,7 @@ CLI encoder golden, import-bls round-trip).
 (1) user-submittable tx reaches this path: **YES**. (2) producer-action/attestation pattern reaches
 it: **YES** (attestation verification reads the rotated key). (3) bit-identical for all reachable
 inputs: **NO above the AH** ⇒ activation height REQUIRED — `bls_key_rotation_activation_height`,
-`u64::MAX` on mainnet and devnet, 176_200 on testnet (pinned 2026-09-12); below it the verdict on a block carrying ordinal 24 is
+450_789 on mainnet, 176_200 on testnet (both pinned 2026-09-12), `u64::MAX` on devnet; below it the verdict on a block carrying ordinal 24 is
 "invalid" on the new binary and "undecodable" on the old — the same verdict. Consensus RULES change:
 **YES** (AH). Block CONTENT change: **YES** (new tx type, pending-update variant in snap-sync
 payloads) ⇒ **synchronized deploy at pin time**, not at merge. No `HardForkSchedule` entry; no

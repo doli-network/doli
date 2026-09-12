@@ -379,12 +379,12 @@ fn precondition_the_three_shipped_defaults_are_still_frozen() {
     for (network, expected) in [
         (Network::Devnet, u64::MAX),
         (Network::Testnet, 176_200),
-        (Network::Mainnet, u64::MAX),
+        (Network::Mainnet, 450_789),
     ] {
         assert_eq!(
             NetworkParams::defaults(network).bls_key_rotation_activation_height,
             expected,
-            "{network:?} default must be exactly {expected} — devnet/mainnet stay frozen, \
+            "{network:?} default must be exactly {expected} — devnet stays frozen, \
              M8 arms the devnet gate by ENV, never by pin"
         );
     }
