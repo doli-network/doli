@@ -23,3 +23,9 @@ proptest = { workspace = true }
 [[test]]
 name = "inc_i_171_m5_vesting_admission"
 path = "tests/inc_i_171_m5_vesting_admission.rs"
+
+# INC-I-217 M6. Its own binary because the frozen outcome probe
+# (.claude/scripts/m6-inc-i-217-probe.sh) addresses `--test rotation_parity`.
+[[test]]
+name = "rotation_parity"
+path = "tests/rotation_parity.rs"

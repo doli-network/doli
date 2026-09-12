@@ -287,6 +287,9 @@ pub fn validate_transaction(
             // input ZKRollup UTXO is available.
             validate_zk_settle_structure(tx, ctx)?;
         }
+        TxType::RotateBlsKey => {
+            super::rotate_bls::rotate_stateless(tx, ctx)?;
+        }
     }
 
     Ok(())

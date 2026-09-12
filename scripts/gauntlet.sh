@@ -111,6 +111,15 @@
 #     CLI run is fenced behind a fake --service and inert sudo/systemctl shims.
 #     It SKIPs — never fails — with no doli CLI, no maintainer_state.bin under
 #     ~/testnet, or no scratch dir. See scripts/gauntlet-gs020.sh.
+#   * GS-021 (BLS rotation frozen pre-activation) is OBSERVATIONAL, READ-ONLY
+#     and testnet-only: it runs in the DEFAULT gate, is NOT opt-in and has NO
+#     confirm-var. Guards INC-I-217 (TxType::RotateBlsKey = 32 ships, but every
+#     network keeps bls_key_rotation_activation_height = u64::MAX) and asserts
+#     that no rotate_bls_key pendingUpdate exists and that
+#     doli_producer_bls_rotation_total is 0. The live [ERRTX-ROT002] refusal
+#     SKIPs: the CLI has no offline dry-run path, and this scenario never puts
+#     a transaction on a chain. A pinned activation height SKIPs the whole
+#     scenario. See scripts/gauntlet-gs021.sh.
 #
 # Assertions key off STRUCTURED telemetry fields (gap=, rollback_depth=,
 # sync_fails=, state=) and distinct-event phrases — NEVER raw keywords that also
@@ -150,6 +159,9 @@ GS019_LIB="$ROOT/scripts/gauntlet-gs019.sh"
 GS020_LIB="$ROOT/scripts/gauntlet-gs020.sh"
 # shellcheck source=/dev/null
 [ -f "$GS020_LIB" ] && . "$GS020_LIB"
+GS021_LIB="$ROOT/scripts/gauntlet-gs021.sh"
+# shellcheck source=/dev/null
+[ -f "$GS021_LIB" ] && . "$GS021_LIB"
 LOG_DIR="$HOME/testnet/logs"
 LABEL_PREFIX="network.doli.testnet"
 
@@ -678,6 +690,8 @@ assert(){
       _gs010_assert "$t"; return $? ;;
     gs012-bls-matches-registration)
       _gs012_assert "$t"; return $? ;;
+    gs021-no-queued-rotation|gs021-rotation-metric-zero|gs021-below-ah-refused)
+      _gs021_assert "$t"; return $? ;;
     gs013-no-unbacked-weight)
       _gs013_assert "$t"; return $? ;;
     gs014-relay-accepted|gs014-applies-from-non-producer|gs014-set-restored|gs014-fleet-agrees-on-set)

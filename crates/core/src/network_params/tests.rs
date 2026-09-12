@@ -622,3 +622,91 @@ fn req_auth_012_2_floor_bound_env_override_off_mainnet_only() {
          lets a single operator fork mainnet"
     );
 }
+
+// ===========================================================================
+// INC-I-217 M8 / REQ-ROT-003 — the rotation activation height must be reachable
+// on devnet/testnet and unreachable on mainnet.
+//
+// OUTPUT CONTRACT: `env_loader::load_from_env(network)`
+//   O1 return.bls_key_rotation_activation_height
+//   O2 process env DOLI_BLS_KEY_ROTATION_ACTIVATION_HEIGHT — restored before asserting
+// PATHS
+//   P1 is_mainnet == true  -> env IGNORED, `defaults` returned
+//   P2 is_mainnet == false -> env HONOURED
+// INPUT PARTITIONS: on P1 the attack value is a LOW height (arming a user-submittable
+//   consensus rule on one mainnet node); on P2 a distinctive low height. P2 is the
+//   control — without it a loader that returned defaults unconditionally would satisfy
+//   P1 and prove nothing.
+// ===========================================================================
+
+const ROTATION_AH_ENV: &str = "DOLI_BLS_KEY_ROTATION_ACTIVATION_HEIGHT";
+const ROTATION_AH_PROBE: u64 = 8;
+
+/// `ENV_MUTEX` is poisoned by any sibling env test that panics, and a poisoned lock
+/// would turn this pair's verdict into a cascade of the first failure. The data it
+/// guards is the process env, which each body restores itself.
+fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn with_rotation_ah_env<T>(value: &str, body: impl FnOnce() -> T) -> T {
+    let original = std::env::var(ROTATION_AH_ENV);
+    std::env::set_var(ROTATION_AH_ENV, value);
+    let observed = body();
+    match original {
+        Ok(v) => std::env::set_var(ROTATION_AH_ENV, v),
+        Err(_) => std::env::remove_var(ROTATION_AH_ENV),
+    }
+    observed
+}
+
+/// REQ-ROT-003 (Must) — Decision: whether any end-to-end rotation test can exist at all.
+/// The three shipped defaults are `u64::MAX`, so without this override no reachable
+/// height is above the gate and REQ-ROT-005/006/007/011 stay unverifiable.
+/// [P2 -> O1, O2]
+#[test]
+fn req_rot_003_devnet_and_testnet_honour_the_rotation_activation_height_override() {
+    let _lock = env_lock();
+    let observed = with_rotation_ah_env(&ROTATION_AH_PROBE.to_string(), || {
+        (
+            super::env_loader::load_from_env(Network::Devnet),
+            super::env_loader::load_from_env(Network::Testnet),
+        )
+    });
+
+    assert_eq!(
+        observed.0.bls_key_rotation_activation_height, ROTATION_AH_PROBE,
+        "devnet must honour {ROTATION_AH_ENV}. env_loader.rs pins the field to `defaults` on \
+         EVERY network; it needs the same non-mainnet `env_parse` arm that \
+         DOLI_INC_I_171_VESTING_PENALTY_ACTIVATION_HEIGHT has"
+    );
+    assert_eq!(
+        observed.1.bls_key_rotation_activation_height, ROTATION_AH_PROBE,
+        "testnet must honour {ROTATION_AH_ENV} for the same reason"
+    );
+    println!("ROT-ENV-AH-HONORED");
+}
+
+/// REQ-ROT-003 (Must) — Decision: whether a single mainnet operator can arm a
+/// user-submittable consensus rule from a data-dir `.env` and fork the chain alone.
+/// [P1 -> O1, O2]
+#[test]
+fn req_rot_003_mainnet_ignores_the_rotation_activation_height_override() {
+    let _lock = env_lock();
+    let observed = with_rotation_ah_env(&ROTATION_AH_PROBE.to_string(), || {
+        super::env_loader::load_from_env(Network::Mainnet)
+    });
+    let defaults = NetworkParams::defaults(Network::Mainnet);
+
+    assert_eq!(
+        observed.bls_key_rotation_activation_height, defaults.bls_key_rotation_activation_height,
+        "mainnet MUST ignore {ROTATION_AH_ENV}: the gate decides whether a user-submittable \
+         transaction is valid, so an env-settable value is a single-operator fork"
+    );
+    assert_eq!(
+        defaults.bls_key_rotation_activation_height, 450_789,
+        "the mainnet default is the 2026-09-12 pin (450_789); it was pinned in its own \
+         decision-session (HC-6 / INC-I-075), never as an M8 side effect, and is \
+         IMMUTABLE once crossed"
+    );
+}

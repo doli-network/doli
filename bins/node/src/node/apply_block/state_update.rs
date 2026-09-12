@@ -184,6 +184,7 @@ impl Node {
                 let mut producers = self.producer_set.write().await;
                 if producers.has_pending_updates() {
                     let count = producers.pending_update_count();
+                    let rotations = producers.pending_rotation_count();
                     // INC-I-078: pass the height-gated received-delegation cap
                     // as the defensive layer for queued DelegateBond entries.
                     // Pre-activation OR cap==u64::MAX: `cap=0` disables the
@@ -200,6 +201,7 @@ impl Node {
                         0
                     };
                     producers.apply_pending_updates_with_cap(cap);
+                    crate::metrics::BLS_ROTATIONS_APPLIED.inc_by(rotations);
                     needs_full_producer_write = true; // Many producers may have changed
                     info!(
                         "Applied {} deferred producer updates at height {} (epoch_0={}, boundary={}, delegation_cap={})",

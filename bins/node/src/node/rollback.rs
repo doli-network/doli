@@ -184,12 +184,20 @@ impl Node {
             } else if let Ok(restored_producers) =
                 bincode::deserialize::<storage::ProducerSet>(&undo.producer_snapshot)
             {
-                let mut producers = self.producer_set.write().await;
-                *producers = restored_producers;
+                {
+                    let mut producers = self.producer_set.write().await;
+                    *producers = restored_producers;
+                }
+                // INC-I-217 D5: a pooled half is verified against the key set
+                // this restore just moved.
+                self.parent_sig_pool.clear();
             } else {
                 warn!("Failed to deserialize producer snapshot, rebuilding from blocks");
-                let mut producers = self.producer_set.write().await;
-                self.rebuild_producer_set_from_blocks(&mut producers, target_height)?;
+                {
+                    let mut producers = self.producer_set.write().await;
+                    self.rebuild_producer_set_from_blocks(&mut producers, target_height)?;
+                }
+                self.parent_sig_pool.clear();
             }
         } else {
             // Legacy fallback: rebuild from genesis (no undo data)

@@ -3,4 +3,5 @@
 pub mod cmd_release_verify;
 pub mod cmd_service_helper_units;
 pub mod producer_ledger;
+pub mod rotate_tx;
 pub mod upgrade_systemd_plan;

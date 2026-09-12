@@ -661,7 +661,7 @@ Returns all producers in the network.
 | status | Producer status (see below) |
 | era | Current era number |
 | pendingWithdrawals | Array of pending withdrawals (always empty -- withdrawals are instant) |
-| pendingUpdates | Array of pending epoch-deferred updates (register, exit, add_bond, etc.) |
+| pendingUpdates | Array of pending epoch-deferred updates (`register`, `exit`, `add_bond`, `rotate_bls_key`, and the rest). The object shape is documented under `getProducer` below. |
 | blsPubkey | BLS12-381 public key for attestation (hex, empty string if not set) |
 
 **Note:** `bondCount` and `bondAmount` are derived from the UTXO set (count/sum of Bond UTXOs for the producer's pubkey_hash). They reflect the current live state, not the epoch snapshot used for scheduling. `producerSetBondCount` reports the ProducerSet ledger count instead; compare the two (via `getBondDetails.bondCount` for the pure UTXO count) to detect a producer whose selection weight is not backed by Bond UTXOs (INC-I-180). Producers with pending registrations appear with status `"pending"`.
@@ -711,6 +711,37 @@ Returns information about a specific producer.
 | exited | Completed exit |
 | slashed | Slashed for misbehavior |
 | pending | Registration pending (epoch-deferred, not yet active) |
+
+**pendingUpdates object** (identical on `getProducer` and `getProducers`):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| updateType | string | One of `register`, `exit`, `slash`, `add_bond`, `delegate_bond`, `revoke_delegation`, `withdrawal`, `rotate_bls_key` |
+| bondCount | number | Bonds affected. Present for `add_bond`, `delegate_bond` and `withdrawal` only. |
+| newBlsPubkey | string | **INC-I-217, additive.** Queued BLS12-381 key, lowercase hex, 96 hex characters. Present for `rotate_bls_key` only. |
+| effectiveAtHeight | number | **INC-I-217, additive.** Height at which the queue flushes this update, which is the next epoch boundary. Present for `rotate_bls_key` only. |
+
+`newBlsPubkey` and `effectiveAtHeight` are additive. They are OMITTED from the
+object for every pre-existing update type -- they are absent, not `null`. The
+shape of the pre-existing update types did not change, so a client that parses
+`pendingUpdates` today keeps working without a change.
+
+A queued BLS key rotation looks like this (INC-I-217):
+```json
+"pendingUpdates": [
+    {
+        "updateType": "rotate_bls_key",
+        "newBlsPubkey": "a1b2c3...",
+        "effectiveAtHeight": 412000
+    }
+]
+```
+
+Until the chain reaches `effectiveAtHeight`, `blsPubkey` still reports the OLD
+key. The chain expects the old key until the boundary flush installs the new one.
+`rotate_bls_key` entries can only appear at or above
+`bls_key_rotation_activation_height`, which is `u64::MAX` on mainnet, on testnet
+and on devnet today.
 
 **Example:**
 ```bash

@@ -151,6 +151,7 @@ impl RpcContext {
                     doli_core::TxType::RemoveLiquidity => "remove_liquidity",
                     doli_core::TxType::Swap => "swap",
                     doli_core::TxType::ZKSettle => "zk_settle",
+                    doli_core::TxType::RotateBlsKey => "rotate_bls_key",
                     doli_core::TxType::PriceAttestation => "price_attestation",
                 };
 

@@ -36,6 +36,7 @@ pub(crate) mod pool;
 mod producer;
 mod registration;
 mod rewards_legacy;
+pub mod rotate_bls;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -59,6 +60,7 @@ pub use error::ValidationError;
 pub use producer::{
     bootstrap_fallback_order, bootstrap_schedule_with_liveness, validate_producer_eligibility,
 };
+pub use rotate_bls::rotate_stateless;
 pub use transaction::{validate_transaction, validate_transaction_skip_registration_vdf};
 pub use tx_types::{check_addbond_cap, count_bond_outputs};
 pub use types::{

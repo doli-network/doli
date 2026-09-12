@@ -1213,6 +1213,114 @@ The following transaction types support the on-chain lending system:
 
 **LendingWithdraw (type 28):** Withdraws DOLI plus accrued interest from the lending pool. Consumes LendingDeposit UTXOs.
 
+### 3.24 RotateBlsKey (type 32)
+
+Replaces the BLS attestation key of a registered producer (INC-I-217). The
+producer authorises the change with its Ed25519 producer key. The node queues
+the new key and installs it at the next epoch boundary. Gated by
+`bls_key_rotation_activation_height` in `NetworkParams`.
+
+**Two numberings.** The wire `type` field and the bincode ordinal differ,
+because the variant is declared last in the enum but carries the first
+discriminant above the 23-30 tombstone band
+(`crates/core/src/transaction/types.rs`):
+
+| Numbering | Value | Where it appears |
+|-----------|-------|------------------|
+| `#[repr(u32)]` discriminant | 32 | the `type` field on the wire, and `from_u32()` |
+| bincode ordinal (declaration position) | 24 | the bincode-serialized enum tag |
+
+```
+rotate_bls_key_tx = {
+    version: 1,
+    type: 32,                    // discriminant, not the bincode ordinal
+    inputs: [{...}],             // EXACTLY one input; it pays the fee
+    outputs: [{...}],            // EXACTLY one Normal output (the change)
+    extra_data: RotateBlsData (240 bytes)
+}
+```
+
+`extra_data` layout (240 bytes, fixed, length-exact):
+
+```
+offset   0  producer        [u8; 32]   Ed25519 producer key that authorises
+offset  32  new_bls_pubkey  [u8; 48]   BLS12-381 key to install
+offset  80  bls_pop         [u8; 96]   proof of possession of new_bls_pubkey
+offset 176  signature       [u8; 64]   Ed25519 sig over the authorisation digest
+```
+
+A payload of any other length is rejected. Trailing bytes that the signature
+does not cover are a rejection, not slack.
+
+**Preimage 1 — the producer authorisation** (`transaction/rotate_bls.rs`):
+
+```
+auth_preimage = "DOLI-ROTATE-BLS-V1" || genesis_hash || new_bls_pubkey
+                || prev_tx_hash || output_index (uint32 LE)
+auth_digest   = BLAKE3(auth_preimage)
+```
+
+There are no length prefixes and no key-kind byte: the genesis hash is the only
+variable-width field, and every field after it is fixed width. The outpoint
+(`prev_tx_hash`, `output_index`) of the single input is the replay bind. The
+same key tuple replayed onto another outpoint produces a different digest and
+fails `[ERRTX-ROT003]`.
+
+**Preimage 2 — the proof of possession** (`crypto/bls_rotation.rs`):
+
+```
+pop_dst     = "DOLI-ROTATE-POP-V1"
+pop_message = genesis_hash || producer_ed25519 || new_bls_pubkey
+bls_pop     = BLS_sign(new_bls_secret, pop_message, pop_dst)
+```
+
+The rotation DST is not the registration DST. A registration proof of
+possession therefore never verifies as a rotation proof, and the reverse also
+holds. There is no fallback between the two.
+
+**Validation rules** (`rotate_stateless`, `crates/core/src/validation/rotate_bls.rs`),
+in the order they run:
+
+1. `current_height >= bls_key_rotation_activation_height` (`[ERRTX-ROT002]`)
+2. The transaction spends exactly one input (`[ERRTX-ROT001]`)
+3. The transaction has exactly one output, of type `Normal` (`[ERRTX-ROT009]`)
+4. `extra_data` decodes as the 240-byte payload (`[ERRTX-ROT010]`)
+5. `new_bls_pubkey` is not zero, is not the compressed G1 identity, and is on
+   the curve (`[ERRTX-ROT004]`)
+6. `payload.producer` equals the public key the single input reveals (`[ERRTX-ROT008]`)
+7. The Ed25519 signature verifies over `auth_digest` (`[ERRTX-ROT003]`)
+8. The proof of possession verifies under the rotation DST (`[ERRTX-ROT007]`)
+
+The order is a wire contract. The two pairing-bearing checks run last, so a
+block full of malformed rotations never makes a validator pay a pairing.
+
+**Apply semantics.** A valid rotation queues one
+`PendingProducerUpdate::RotateBlsKey`. It never writes `bls_pubkey` mid-epoch.
+The epoch-boundary flush then installs the key unconditionally on producer
+status. The only branch at the flush is a producer that is no longer in the
+map, which drains silently.
+
+Before it queues, `apply_rotation` (`crates/storage/src/producer/rotation.rs`)
+evaluates four skip verdicts in this order:
+
+| Verdict | Condition |
+|---------|-----------|
+| `NotProducer` | The sender is not `Active` and has no queued `Register` |
+| `SameKey` | The target key is the sender's own current key |
+| `AlreadyPending` | A rotation for this sender is already queued |
+| `KeyInUse` | The target key belongs to another producer, or the queue reserves it |
+
+A skip is never block-invalidating. The transaction stays in the block, and the
+producer set stays byte-identical. Key uniqueness is therefore an apply-time
+verdict, not a transaction rejection code.
+
+**Activation.** `bls_key_rotation_activation_height` is **450_789 on mainnet** and **176_200 on testnet** (both pinned
+2026-09-12, INC-I-217) and `u64::MAX` on devnet (
+`crates/core/src/network_params/defaults.rs`). No
+rotation can enter a block until a future binary pins a height. Pinning a real
+height is a separate decision-session. Never bundle it with another change. See
+precondition **P4** in `specs/attestation-bls-architecture.md`.
+
 ---
 
 ## 4. Blocks
@@ -1757,10 +1865,15 @@ rejects an empty `bls_pubkey`, `:52,149` rejects an empty `bls_pop`, and `valida
 (`registration.rs:259`) then verifies the proof of possession against the key. A producer
 therefore cannot exist on-chain without a BLS key.
 
-No `TxType` among the 24 rotates a BLS key. `bls_pubkey` is written only at `Registration`
-apply, at genesis completion and during a `ProducerSet` rebuild, so key loss today means
-`Exit` plus a fresh `Registration`, which forfeits `registered_at` seniority. Whether to add
-a rotation transaction before the attestation-BLS height is pinned is open decision **O5** /
+`RotateBlsKey` (type 32, section 3.24) is the one transaction that replaces a registered
+`bls_pubkey`. It is gated by `bls_key_rotation_activation_height`, which is 450_789 on
+mainnet, 176_200 on testnet and `u64::MAX` on devnet, so no mainnet rotation can enter a block before that height
+pins a height. On every other path `bls_pubkey` is written at `Registration` apply, at
+genesis completion, during a `ProducerSet` rebuild, and at the epoch-boundary flush of a
+queued `RotateBlsKey`.
+
+While the gate stays frozen, key loss still means `Exit` plus a fresh `Registration`, which
+forfeits `registered_at` seniority. The conditions to pin the rotation height are
 precondition **P4** in `specs/attestation-bls-architecture.md`.
 
 ### 6.2 Bond Amount

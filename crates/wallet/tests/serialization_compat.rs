@@ -354,17 +354,19 @@ fn test_core_txtype_variant_count() {
             count += 1;
         }
     }
-    // Core has 24 variants (post B.1+B.2 tombstoning): Transfer(0), Registration(1),
+    // Core has 25 variants (post B.1+B.2 tombstoning): Transfer(0), Registration(1),
     // Exit(2), ClaimReward(3), ClaimBond(4), SlashProducer(5), Coinbase(6),
     // AddBond(7), RequestWithdrawal(8), ClaimWithdrawal(9), EpochReward(10),
     // RemoveMaintainer(11), AddMaintainer(12), DelegateBond(13),
     // RevokeDelegation(14), ProtocolActivation(15), PriceAttestation(16),
     // MintAsset(17), BurnAsset(18), CreatePool(19), AddLiquidity(20),
-    // RemoveLiquidity(21), Swap(22), ZKSettle(31)
+    // RemoveLiquidity(21), Swap(22), ZKSettle(31), RotateBlsKey(32)
     // Note: discriminants 23, 24-28, 29-30 are tombstoned/gaps.
+    // INC-I-217 M4: RotateBlsKey(32) gets NO wallet TxType entry — the CLI
+    // serialises rotation through core, so the wallet enum stays at 15.
     assert_eq!(
-        count, 24,
-        "Core TxType variant count changed from 24 to {}! Update wallet TxType to match.",
+        count, 25,
+        "Core TxType variant count changed from 25 to {}! Update wallet TxType to match.",
         count,
     );
 }
@@ -556,5 +558,96 @@ fn test_vesting_penalty_parity() {
             "Vesting penalty mismatch at age_slots={}: wallet={}, core={}",
             age_slots, wallet_pct, core_pct,
         );
+    }
+}
+
+// =============================================================================
+// Wallet -> core wire-slot parity (INC-I-217 M3)
+// =============================================================================
+
+/// `to_core_type_id()` returns core's `#[repr(u32)]` DISCRIMINANT, but the value is
+/// written into the wire slot core's bincode decoder reads as the VARIANT INDEX
+/// (declaration position). The two agree only for core variants 0..=22. This test
+/// pins that every wallet type still lands inside that aliasing range, and that the
+/// two core surfaces really are equal there — the existing `is_some()` check would
+/// pass for `ZKSettle`'s discriminant 31, which decodes as nothing at all.
+///
+/// REQ-ROT-001 — Decision: whether a wallet type started serializing a core discriminant whose bincode ordinal differs, making every such transaction decode as the wrong type or fail outright on peers.
+#[test]
+fn test_to_core_type_id_stays_inside_the_bincode_aliasing_range() {
+    use wallet::TxType as WTx;
+
+    // Exhaustive — NO `_` arm. A new wallet TxType fails the build here.
+    fn wallet_name(t: WTx) -> &'static str {
+        match t {
+            WTx::Transfer => "Transfer",
+            WTx::Registration => "Registration",
+            WTx::ProducerExit => "ProducerExit",
+            WTx::Coinbase => "Coinbase",
+            WTx::NftMint => "NftMint",
+            WTx::NftTransfer => "NftTransfer",
+            WTx::RewardClaim => "RewardClaim",
+            WTx::AddBond => "AddBond",
+            WTx::RequestWithdrawal => "RequestWithdrawal",
+            WTx::ClaimWithdrawal => "ClaimWithdrawal",
+            WTx::SlashingEvidence => "SlashingEvidence",
+            WTx::TokenIssuance => "TokenIssuance",
+            WTx::BridgeLock => "BridgeLock",
+            WTx::DelegateBond => "DelegateBond",
+            WTx::RevokeDelegation => "RevokeDelegation",
+        }
+    }
+
+    let all = [
+        WTx::Transfer,
+        WTx::Registration,
+        WTx::ProducerExit,
+        WTx::Coinbase,
+        WTx::NftMint,
+        WTx::NftTransfer,
+        WTx::RewardClaim,
+        WTx::AddBond,
+        WTx::RequestWithdrawal,
+        WTx::ClaimWithdrawal,
+        WTx::SlashingEvidence,
+        WTx::TokenIssuance,
+        WTx::BridgeLock,
+        WTx::DelegateBond,
+        WTx::RevokeDelegation,
+    ];
+    assert_eq!(all.len(), 15, "wallet TxType variant count changed");
+
+    let kp = KeyPair::from_seed([77u8; 32]);
+
+    for wtype in all {
+        let name = wallet_name(wtype);
+
+        let mut builder = wallet::TxBuilder::new(wtype);
+        builder.add_input([0xAAu8; 32], 0);
+        builder.add_output(100, [0xBBu8; 32], 0, 0, Vec::new());
+        let bytes = hex::decode(builder.sign_and_build(&kp).unwrap()).unwrap();
+        let on_wire = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+
+        assert!(
+            on_wire <= 22,
+            "wallet TxType::{name} serializes core id {on_wire}, outside the 0..=22 range \
+             where core's bincode ordinal equals its discriminant",
+        );
+
+        let core_variant = doli_core::transaction::TxType::from_u32(on_wire)
+            .unwrap_or_else(|| panic!("wallet TxType::{name} -> core id {on_wire} is not live"));
+
+        let ordinal_bytes = bincode::serialize(&core_variant).unwrap();
+        assert_eq!(ordinal_bytes.len(), 4);
+        let ordinal = u32::from_le_bytes(ordinal_bytes[..4].try_into().unwrap());
+        assert_eq!(
+            ordinal, on_wire,
+            "core {core_variant:?} has bincode ordinal {ordinal} but discriminant {on_wire}; \
+             wallet TxType::{name} would be decoded as a different type by peers",
+        );
+
+        let decoded: Transaction = bincode::deserialize(&bytes)
+            .unwrap_or_else(|e| panic!("wallet TxType::{name} bytes must decode in core: {e}"));
+        assert_eq!(decoded.tx_type, core_variant);
     }
 }

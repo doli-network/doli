@@ -23,6 +23,7 @@ pub(super) fn block_mutates_producer_set(block: &Block) -> bool {
                 | TxType::ClaimWithdrawal
                 | TxType::DelegateBond
                 | TxType::RevokeDelegation
+                | TxType::RotateBlsKey
         )
     })
 }
@@ -182,5 +183,167 @@ mod tests {
         let base = vec![pk(1), pk(2), pk(3)];
         let extra = vec![pk(9)];
         assert!(missing_attesters(&[0, 1, 2, 3], &base, &extra).is_empty());
+    }
+}
+
+/// INC-I-217 M7 — `block_mutates_producer_set` x `TxType`.
+///
+/// covers: REQ-ROT-006
+///
+/// OUTPUT CONTRACT: fn block_mutates_producer_set(&Block) -> bool
+///   O1 return: the ONLY output. No mutable params, no receiver, no store, no statics.
+///   Consumed at `apply_block/mod.rs:173-183`: `true` -> the undo entry carries a full
+///   `ProducerSet` snapshot; `false` -> the empty sentinel and rollback SKIPS the restore.
+/// PATHS: P1 block with a producer-mutating tx -> true. P2 block without one -> false.
+/// INPUT PARTITIONS: I1 rotation only (P1, the new case). I2 transfer only (P2, the
+///   non-vacuity control). I3 every `TxType` variant, one block each (P1+P2, the tripwire).
+/// MATRIX: I1xO1=true, I2xO1=false, I3xO1 == `expected_producer_mutating(t)` for all t.
+#[cfg(test)]
+mod rotation_tests {
+    use super::*;
+    use doli_core::transaction::{Input, Output, Transaction};
+    use doli_core::BlockHeader;
+
+    fn pk(seed: u8) -> PublicKey {
+        let mut bytes = [0u8; 32];
+        bytes[0] = seed;
+        PublicKey::from_bytes(bytes)
+    }
+
+    /// Every `TxType` the wire can carry. Paired with the exhaustive match below,
+    /// which the compiler breaks when a variant is added.
+    const ALL_TX_TYPES: [TxType; 25] = [
+        TxType::Transfer,
+        TxType::Registration,
+        TxType::Exit,
+        TxType::ClaimReward,
+        TxType::ClaimBond,
+        TxType::SlashProducer,
+        TxType::Coinbase,
+        TxType::AddBond,
+        TxType::RequestWithdrawal,
+        TxType::ClaimWithdrawal,
+        TxType::EpochReward,
+        TxType::RemoveMaintainer,
+        TxType::AddMaintainer,
+        TxType::DelegateBond,
+        TxType::RevokeDelegation,
+        TxType::ProtocolActivation,
+        TxType::PriceAttestation,
+        TxType::MintAsset,
+        TxType::BurnAsset,
+        TxType::CreatePool,
+        TxType::AddLiquidity,
+        TxType::RemoveLiquidity,
+        TxType::Swap,
+        TxType::ZKSettle,
+        TxType::RotateBlsKey,
+    ];
+
+    /// EXHAUSTIVE — no `_` arm. A new `TxType` fails to compile here, which is the
+    /// point: a producer-mutating type omitted from `block_mutates_producer_set`
+    /// compiles clean, skips the undo snapshot, and forks the chain on the first
+    /// reorg across a block carrying it.
+    fn expected_producer_mutating(t: TxType) -> bool {
+        match t {
+            TxType::Registration
+            | TxType::Exit
+            | TxType::AddBond
+            | TxType::RequestWithdrawal
+            | TxType::ClaimWithdrawal
+            | TxType::DelegateBond
+            | TxType::RevokeDelegation
+            | TxType::RotateBlsKey => true,
+            TxType::Transfer
+            | TxType::ClaimReward
+            | TxType::ClaimBond
+            | TxType::SlashProducer
+            | TxType::Coinbase
+            | TxType::EpochReward
+            | TxType::RemoveMaintainer
+            | TxType::AddMaintainer
+            | TxType::ProtocolActivation
+            | TxType::PriceAttestation
+            | TxType::MintAsset
+            | TxType::BurnAsset
+            | TxType::CreatePool
+            | TxType::AddLiquidity
+            | TxType::RemoveLiquidity
+            | TxType::Swap
+            | TxType::ZKSettle => false,
+        }
+    }
+
+    fn tx_of(tx_type: TxType) -> Transaction {
+        Transaction {
+            version: 1,
+            tx_type,
+            inputs: vec![Input::new(crypto::hash::hash(b"m7-helpers-outpoint"), 0)],
+            outputs: vec![Output::normal(1, crypto::hash::hash(b"m7-helpers-change"))],
+            extra_data: Vec::new(),
+        }
+    }
+
+    fn block_with(tx_types: &[TxType]) -> Block {
+        let header = BlockHeader {
+            version: 2,
+            prev_hash: crypto::Hash::ZERO,
+            merkle_root: crypto::Hash::ZERO,
+            presence_root: crypto::Hash::ZERO,
+            genesis_hash: crypto::Hash::ZERO,
+            timestamp: 0,
+            slot: 1,
+            producer: pk(1),
+            vdf_output: vdf::VdfOutput {
+                value: vec![0u8; 32],
+            },
+            vdf_proof: vdf::VdfProof::empty(),
+            missed_producers: Vec::new(),
+            data_root: crypto::Hash::ZERO,
+            fork_id: crypto::Hash::ZERO,
+        };
+        Block::new(header, tx_types.iter().copied().map(tx_of).collect())
+    }
+
+    // REQ-ROT-006 — Decision: whether a rotation-carrying block gets its undo snapshot. A
+    // `false` here means `rollback.rs` writes the empty sentinel, the restore is skipped,
+    // and a reorg across the rotation leaves the node holding a key its peers rolled back.
+    #[test]
+    fn rotation_block_mutates_the_producer_set() {
+        assert!(block_mutates_producer_set(&block_with(&[
+            TxType::RotateBlsKey
+        ])));
+        println!("ROT-UNDO-SNAPSHOT-NON-EMPTY");
+    }
+
+    // REQ-ROT-006 — Decision: whether the predicate is a constant `true`, which would make
+    // the assertion above pass for any block and prove nothing.
+    #[test]
+    fn transfer_only_block_does_not_mutate_the_producer_set() {
+        assert!(!block_mutates_producer_set(&block_with(&[
+            TxType::Transfer
+        ])));
+    }
+
+    // REQ-ROT-006 — Decision: whether the predicate agrees with the intended set for EVERY
+    // wire type. This is the guard that makes the next producer-mutating type impossible to
+    // forget: the exhaustive match above breaks the build, this test breaks on the verdict.
+    #[test]
+    fn predicate_agrees_with_the_exhaustive_intent_for_every_tx_type() {
+        for t in ALL_TX_TYPES {
+            assert_eq!(
+                block_mutates_producer_set(&block_with(&[t])),
+                expected_producer_mutating(t),
+                "block_mutates_producer_set disagrees with the intended set for {t:?}"
+            );
+        }
+    }
+
+    // REQ-ROT-006 — Decision: whether a rotation is still seen when it shares a block with
+    // non-mutating traffic, i.e. whether the scan is `any` and not "first tx only".
+    #[test]
+    fn rotation_is_seen_behind_a_coinbase_and_a_transfer() {
+        let block = block_with(&[TxType::Coinbase, TxType::Transfer, TxType::RotateBlsKey]);
+        assert!(block_mutates_producer_set(&block));
     }
 }

@@ -183,6 +183,42 @@ until a future binary flips the height). Templates live in
 | `ERRTX-ORACLE003` | Oracle sunset triggered (structural-bond-share fell below 5500 bps = 55.00%) | `share_bps`, threshold=5500 |
 | `ERRTX-ORACLE004` | `OraclePrice` output (type=15) cannot be user-created (system-only — apply_block at epoch boundary is the sole legitimate writer) | `output_index` |
 
+### BLS Key Rotation (validation/rotate_bls.rs)
+
+INC-I-217. Emitted by `rotate_stateless`, which `validate_transaction` and the
+D6 block-level gate in `validation/block.rs` both call. Gated by
+`bls_key_rotation_activation_height` (default `u64::MAX` on all three networks
+-- unreachable in production until a future binary pins a height). These are
+typed `ValidationError` variants, not `InvalidTransaction(String)`, so
+`error_code()` and `to_structured_json()` carry their fields.
+
+The checks run in the order listed: structural first, the two pairing-bearing
+checks last, so a block of malformed rotations never costs a validator a pairing.
+
+`ERRTX-ROT005` and `ERRTX-ROT006` are both NEVER EMITTED, and neither number is
+reused. `ERRTX-ROT005` is a tombstone: it was the superseded "rotation expired"
+rule. `ERRTX-ROT006` was never allocated to a code path. M7 shipped the
+key-uniqueness rule as an apply-time SKIP VERDICT, not as a transaction
+rejection.
+
+A rotation to a BLS key that another producer already holds is therefore a valid
+transaction. It enters the block, and the epoch-boundary apply skips it. The
+producer set stays byte-identical and no error code is raised. The four skip
+verdicts are `NotProducer`, `SameKey`, `AlreadyPending` and `KeyInUse`, in that
+order. They live in `crates/storage/src/producer/rotation.rs`. Section 3.24 of
+`specs/protocol.md` lists what each one means.
+
+| Code | Description | Context Variables |
+|------|-------------|-------------------|
+| `ERRTX-ROT002` | Rotation submitted before `bls_key_rotation_activation_height` | `current_height`, `activation_height` |
+| `ERRTX-ROT001` | Wrong input count (a rotation spends exactly 1 input) | `got` |
+| `ERRTX-ROT009` | Wrong output count, or output 0 is not `Normal` | `outputs`, `first_type` |
+| `ERRTX-ROT010` | `extra_data` is not a decodable 240-byte payload | `len`, `expected` |
+| `ERRTX-ROT004` | `new_bls_pubkey` is zero, the G1 identity, or not on the curve | `reason` |
+| `ERRTX-ROT008` | `payload.producer` is not the key the spent input reveals | `payload`, `input` |
+| `ERRTX-ROT003` | Ed25519 authorisation over `rotation_auth_digest` invalid (includes a rotation replayed onto another outpoint) | `producer` |
+| `ERRTX-ROT007` | Rotation proof of possession invalid (no fallback to the registration DST) | `producer` |
+
 ### Block Validation (validation_checks.rs)
 
 | Code | Description | Context Variables |

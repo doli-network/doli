@@ -207,6 +207,15 @@ pub enum PendingProducerUpdate {
         bond_count: u32,
         bond_unit: u64,
     },
+    /// INC-I-217 M7 (REQ-ROT-005): install `new_bls_pubkey` on `pubkey` at the
+    /// next epoch boundary. Appended LAST — bincode indexes variants by
+    /// declaration order and the undo snapshot is `bincode::serialize(&ProducerSet)`,
+    /// so any other position renumbers the seven variants above.
+    RotateBlsKey {
+        pubkey: PublicKey,
+        new_bls_pubkey: Vec<u8>,
+        height: u64,
+    },
 }
 
 /// Set of producers with their states

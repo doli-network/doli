@@ -546,6 +546,16 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
         // moving it into NetworkParams was to make it visible per network in one
         // audited place rather than tunable per host.
         maintainer_seed_min_producers: defaults.maintainer_seed_min_producers,
+        // INC-I-217 rotation gate. Mainnet LOCKED: it decides whether a
+        // user-submittable transaction is valid.
+        bls_key_rotation_activation_height: if is_mainnet {
+            defaults.bls_key_rotation_activation_height
+        } else {
+            env_parse(
+                "DOLI_BLS_KEY_ROTATION_ACTIVATION_HEIGHT",
+                defaults.bls_key_rotation_activation_height,
+            )
+        },
         // Gossip mesh (locked for mainnet - wrong values could isolate nodes)
         mesh_n: if is_mainnet {
             defaults.mesh_n

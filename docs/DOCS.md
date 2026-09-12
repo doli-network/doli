@@ -32,6 +32,7 @@ Master index for all DOLI documentation.
 | [docker.md](./docker.md) | Docker deployment guide - containers, compose, and monitoring |
 | [running_a_node.md](./running_a_node.md) | Node setup, operation, and **environment configuration** (.env files) |
 | [becoming_a_producer.md](./becoming_a_producer.md) | Block producer onboarding |
+| [bls-key-recovery.md](./bls-key-recovery.md) | Operator recovery when the node's BLS attestation key does not match the on-chain key: how to detect the mismatch (`[ATTEST_EGRESS]` log line, wallet key vs `getProducer.blsPubkey`), `doli import-bls` (old key still held, client-side, no transaction), `doli producer rotate-bls` (lost or leaked key; one fee, irreversible, effective at the next epoch boundary, gated by `bls_key_rotation_activation_height`), plus delegation and exit as last remedies (INC-I-217). |
 | [rpc_reference.md](./rpc_reference.md) | RPC API documentation |
 | [troubleshooting.md](./troubleshooting.md) | Common issues and solutions (disk-full/ENOSPC crash-loop + log rotation section lands with Option 1 M2 — design: `specs/disk-guardian-architecture.md`) |
 | [archiver.md](./archiver.md) | **Block archiver & seed infrastructure** - archive format, seed/relay role, block explorer, disaster recovery, RPC methods |
@@ -97,6 +98,7 @@ docs/
 ├── auto_update_system.md         # Auto-update documentation
 ├── battle_test.md                # Battle testing
 ├── becoming_a_producer.md        # Producer guide
+├── bls-key-recovery.md           # Producer BLS key mismatch recovery
 ├── buy_doli.md                   # Exchange system guide
 ├── cli.md                        # CLI reference
 ├── configuration_verification.md # Configuration verification

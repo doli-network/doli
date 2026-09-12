@@ -98,6 +98,12 @@ impl Node {
             .with_inc_i_173_activation_height(
                 self.config.network.params().inc_i_173_activation_height,
             )
+            .with_bls_key_rotation_activation_height(
+                self.config
+                    .network
+                    .params()
+                    .bls_key_rotation_activation_height,
+            )
             .with_oracle_activation_height(self.config.network.params().oracle_activation_height)
             .with_oracle_sunset_triggered(
                 self.oracle_sunset_triggered
@@ -195,7 +201,7 @@ impl Node {
     /// Process producer-related effects for a single transaction.
     ///
     /// Handles: Registration, Exit, SlashProducer, AddBond, RequestWithdrawal,
-    /// DelegateBond, RevokeDelegation — all epoch-deferred.
+    /// DelegateBond, RevokeDelegation, RotateBlsKey — all epoch-deferred.
     #[allow(clippy::too_many_arguments)]
     pub fn process_transaction_producer_effects(
         &self,
@@ -573,6 +579,19 @@ impl Node {
                         height,
                         crypto_hash(data.delegator.as_bytes())
                     );
+                }
+            }
+        }
+
+        // INC-I-217 M7 (REQ-ROT-005/008): RotateBlsKey — deferred to the epoch
+        // boundary. Fail-closed below the activation height. The verdict and the
+        // queueing live in `storage::producer::rotation`, the ONE implementation
+        // M8's rebuild path also calls.
+        if tx.tx_type == TxType::RotateBlsKey {
+            let params = self.config.network.params();
+            if height >= params.bls_key_rotation_activation_height {
+                if let Some(data) = doli_core::transaction::RotateBlsData::decode(&tx.extra_data) {
+                    let _ = storage::producer::apply_rotation(producers, &data, height);
                 }
             }
         }

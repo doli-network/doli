@@ -625,10 +625,14 @@ seeing this reason on a shipped network means the height was pinned by a newer b
 
 **What to check, in order:**
 
-1. **BLS key match.** Run gauntlet scenario **GS-012** (`gs012-bls-matches-registration`, `scripts/gauntlet.sh:459`). A
+1. **BLS key match.** Run gauntlet scenario **GS-012** (`gs012-bls-matches-registration`). A
    producer whose wallet BLS key differs from its registered `bls_pubkey` produces halves
-   that never verify, and no `TxType` rotates a BLS key — recovery is `Exit` plus a fresh
-   `Registration`, which loses `registered_at` seniority.
+   that never verify. Recovery, cheapest first: `doli import-bls` when the operator still
+   holds the old secret (client-side, no transaction); `doli producer rotate-bls`
+   (`TxType::RotateBlsKey = 32`, INC-I-217) once `bls_key_rotation_activation_height` is
+   pinned — it is `u64::MAX` on every network today, so the node answers `[ERRTX-ROT002]`
+   below it; and only last, `Exit` plus a fresh `Registration`, which loses `registered_at`
+   seniority. Full procedure: `docs/bls-key-recovery.md`.
 2. **Mixed-fleet window.** During a rolling deploy some peers run the pre-activation
    binary and some the post-activation one. The two build different `presence_root`
    preimages for the same block, so `root_mismatch` is the expected symptom of a rolling

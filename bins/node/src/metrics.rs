@@ -758,6 +758,17 @@ lazy_static! {
     ).unwrap();
 }
 
+// Its own block: the ones above are at the `lazy_static!` recursion limit.
+lazy_static! {
+    /// INC-I-217 M9: BLS key rotations installed by an epoch-boundary flush. The ONE
+    /// write site is the flush arm of `node/apply_block/state_update.rs`, by the number
+    /// of `RotateBlsKey` entries the flush drained.
+    pub static ref BLS_ROTATIONS_APPLIED: IntCounter = IntCounter::new(
+        "doli_producer_bls_rotation_total",
+        "INC-I-217 BLS key rotations applied at an epoch boundary."
+    ).unwrap();
+}
+
 /// Every `reason` value `ATTESTATION_VERIFY_REJECTED` is written with.
 pub const ATTESTATION_VERIFY_REASONS: [&str; 4] = [
     "root_mismatch",
@@ -829,6 +840,7 @@ pub fn register_metrics() {
 
     let _ = REGISTRY.register(Box::new(ACTIVE_PRODUCERS.clone()));
     let _ = REGISTRY.register(Box::new(BLOCKS_PRODUCED.clone()));
+    let _ = REGISTRY.register(Box::new(BLS_ROTATIONS_APPLIED.clone()));
     let _ = REGISTRY.register(Box::new(ATTESTATION_MISSING_CURRENT.clone()));
     let _ = REGISTRY.register(Box::new(ATTESTATION_MISSES_TOTAL.clone()));
     // INC-I-154: a labelled metric publishes NO series until a label value is first

@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context, Result};
 use bip39::Mnemonic;
 use crypto::{
-    hash::hash_with_domain, signature, BlsKeyPair, KeyPair, PrivateKey, PublicKey, ADDRESS_DOMAIN,
+    bls_sign, bls_verify, hash::hash_with_domain, signature, BlsKeyPair, BlsSecretKey, KeyPair,
+    PrivateKey, PublicKey, ADDRESS_DOMAIN,
 };
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroize;
@@ -15,15 +16,15 @@ use zeroize::Zeroize;
 /// History of the `version` field:
 /// - `1` — legacy. Both keys random. No seed phrase.
 /// - `2` — the Ed25519 spending key is derived from the BIP-39 seed. The BLS
-///   attestation key is still random, so the phrase does NOT restore a producer
-///   identity (INC-I-162).
+///   attestation key is NOT, so the phrase does NOT restore a producer identity
+///   (INC-I-162). [`Wallet::import_bls_key`] writes this version back.
 /// - `3` — BOTH keys are derived from the BIP-39 seed. The phrase is a complete
 ///   backup.
 ///
-/// The version is a marker only. Nothing gates behaviour on it, and every version
-/// loads and works. It exists so that tooling and operators can tell whether a
-/// given wallet's phrase can restore its producer identity, which is otherwise
-/// impossible to determine from the file.
+/// Every version loads and works, but the marker is NOT inert: it is the sole
+/// input to [`Wallet::bls_is_seed_derived`], which two production call sites read
+/// to decide what they tell the operator — the `doli info` Backup verdict
+/// (`cmd_wallet.rs`) and the [`Wallet::save`] overwrite warning below.
 pub const WALLET_VERSION_SEED_DERIVED_BLS: u32 = 3;
 
 /// A wallet address with optional label
@@ -505,6 +506,46 @@ impl Wallet {
         Ok(bls_pub_hex)
     }
 
+    /// Install a BLS secret the operator already holds into the primary address.
+    ///
+    /// INC-I-217 / REQ-ROT-014. Sibling of [`Wallet::add_bls_key`], which generates
+    /// a fresh key and therefore cannot recover a producer whose registered key the
+    /// wallet has lost. Returns the public key DERIVED from `secret_hex`.
+    ///
+    /// The secret is fully validated before the receiver is touched, so a rejected
+    /// import leaves the wallet exactly as it was. The secret is never placed in an
+    /// error message.
+    ///
+    /// # Errors
+    /// Returns an error if a BLS key is already present and `force` is false, if
+    /// `secret_hex` is not a usable BLS scalar, or if the wallet has no addresses.
+    pub fn import_bls_key(&mut self, secret_hex: &str, force: bool) -> Result<String> {
+        if self.has_bls_key() && !force {
+            return Err(anyhow!(
+                "This wallet already holds a BLS producer key.\n  \
+                 No seed phrase can restore the key an import replaces (INC-I-162), and \
+                 recovering from that costs ~75% of the bond via exit + re-register.\n  \
+                 Back up this wallet file first, then re-run with --force."
+            ));
+        }
+
+        let secret = validated_bls_secret(secret_hex)?;
+        let bls_pub_hex = secret.public_key().to_hex();
+        let addr = self
+            .addresses
+            .first_mut()
+            .ok_or_else(|| anyhow!("Wallet has no addresses"))?;
+        addr.bls_private_key = Some(secret.to_hex());
+        addr.bls_public_key = Some(bls_pub_hex.clone());
+
+        // An imported key is not seed-derived, so the marker must drop below the
+        // version-3 threshold. `min` never RAISES a version-1 wallet, whose Ed25519
+        // key is random too and which version 2 would misdescribe.
+        self.version = self.version.min(WALLET_VERSION_SEED_DERIVED_BLS - 1);
+
+        Ok(bls_pub_hex)
+    }
+
     /// Find address entry by address string
     fn find_address(&self, address: &str) -> Option<&WalletAddress> {
         self.addresses.iter().find(|a| a.address == address)
@@ -535,6 +576,49 @@ impl Wallet {
 
         PrivateKey::from_hex(&addr.private_key).map_err(|e| anyhow!("Invalid key: {}", e))
     }
+}
+
+/// Probe message for the import round-trip. Fixed and public; carries no secret.
+const BLS_IMPORT_PROBE: &[u8] = b"doli import-bls self-check";
+
+/// Decode and fully exercise a supplied BLS secret, before any caller mutates state.
+///
+/// Rejects non-hex, any length other than 32 bytes, and scalars `blst` refuses
+/// (zero, or at/above the group order). The final sign -> verify round trip under
+/// the real attestation DST proves the key can actually produce the signatures a
+/// producer is judged on, which a decode alone does not.
+///
+/// No error message carries `secret_hex`: it would land in shell scrollback and in
+/// any log the operator pastes into a support channel.
+fn validated_bls_secret(secret_hex: &str) -> Result<BlsSecretKey> {
+    let bytes = hex::decode(secret_hex).map_err(|_| {
+        anyhow!(
+            "The BLS secret key is not valid hexadecimal.\n  \
+             Expected 64 hex characters (32 bytes); got {} characters.",
+            secret_hex.len()
+        )
+    })?;
+    let bytes: [u8; 32] = bytes.as_slice().try_into().map_err(|_| {
+        anyhow!(
+            "A BLS secret key is 64 hex characters (32 bytes); got {} characters.\n  \
+             A BLS PUBLIC key is 96 characters — check you did not paste that instead.",
+            secret_hex.len()
+        )
+    })?;
+    let secret = BlsSecretKey::from_bytes(bytes).map_err(|_| {
+        anyhow!(
+            "Those 32 bytes are not a valid BLS scalar (zero, or at or above the \
+             group order), so no producer key can exist for them."
+        )
+    })?;
+
+    let probe = bls_sign(BLS_IMPORT_PROBE, &secret)
+        .map_err(|_| anyhow!("The supplied BLS secret key could not produce a signature."))?;
+    bls_verify(BLS_IMPORT_PROBE, &probe, &secret.public_key()).map_err(|_| {
+        anyhow!("The supplied BLS secret key failed a sign/verify self-check and was not imported.")
+    })?;
+
+    Ok(secret)
 }
 
 /// Verify a message signature

@@ -7,36 +7,78 @@ use crate::types::*;
 
 use super::context::RpcContext;
 
+#[cfg(test)]
+#[path = "tests_inc_i217_m9_pending_update_shape.rs"]
+mod tests_inc_i217_m9_pending_update_shape;
+
+/// The height the epoch-deferred queue actually flushes at: every block inside
+/// epoch 0, the next epoch boundary above it (`state_update.rs` predicate).
+fn next_flush_height(best_height: u64, blocks_per_epoch: u64) -> u64 {
+    let blocks_per_epoch = blocks_per_epoch.max(1);
+    let next = best_height.saturating_add(1);
+    if next < blocks_per_epoch {
+        next
+    } else {
+        (best_height / blocks_per_epoch)
+            .saturating_add(1)
+            .saturating_mul(blocks_per_epoch)
+    }
+}
+
 /// Convert a PendingProducerUpdate to its RPC representation.
-fn pending_update_to_info(update: &storage::PendingProducerUpdate) -> PendingUpdateInfo {
+fn pending_update_to_info(
+    update: &storage::PendingProducerUpdate,
+    best_height: u64,
+    blocks_per_epoch: u64,
+) -> PendingUpdateInfo {
     match update {
         storage::PendingProducerUpdate::Register { .. } => PendingUpdateInfo {
             update_type: "register".to_string(),
             bond_count: None,
+            new_bls_pubkey: None,
+            effective_at_height: None,
         },
         storage::PendingProducerUpdate::Exit { .. } => PendingUpdateInfo {
             update_type: "exit".to_string(),
             bond_count: None,
+            new_bls_pubkey: None,
+            effective_at_height: None,
         },
         storage::PendingProducerUpdate::Slash { .. } => PendingUpdateInfo {
             update_type: "slash".to_string(),
             bond_count: None,
+            new_bls_pubkey: None,
+            effective_at_height: None,
         },
         storage::PendingProducerUpdate::AddBond { outpoints, .. } => PendingUpdateInfo {
             update_type: "add_bond".to_string(),
             bond_count: Some(outpoints.len() as u32),
+            new_bls_pubkey: None,
+            effective_at_height: None,
         },
         storage::PendingProducerUpdate::DelegateBond { bond_count, .. } => PendingUpdateInfo {
             update_type: "delegate_bond".to_string(),
             bond_count: Some(*bond_count),
+            new_bls_pubkey: None,
+            effective_at_height: None,
         },
         storage::PendingProducerUpdate::RevokeDelegation { .. } => PendingUpdateInfo {
             update_type: "revoke_delegation".to_string(),
             bond_count: None,
+            new_bls_pubkey: None,
+            effective_at_height: None,
         },
         storage::PendingProducerUpdate::RequestWithdrawal { bond_count, .. } => PendingUpdateInfo {
             update_type: "withdrawal".to_string(),
             bond_count: Some(*bond_count),
+            new_bls_pubkey: None,
+            effective_at_height: None,
+        },
+        storage::PendingProducerUpdate::RotateBlsKey { new_bls_pubkey, .. } => PendingUpdateInfo {
+            update_type: "rotate_bls_key".to_string(),
+            bond_count: None,
+            new_bls_pubkey: Some(hex::encode(new_bls_pubkey)),
+            effective_at_height: Some(next_flush_height(best_height, blocks_per_epoch)),
         },
     }
 }
@@ -97,7 +139,9 @@ impl RpcContext {
         let pending_updates: Vec<PendingUpdateInfo> = producers
             .pending_updates_for(&pubkey)
             .into_iter()
-            .map(pending_update_to_info)
+            .map(|u| {
+                pending_update_to_info(u, chain_state.best_height, self.blocks_per_reward_epoch)
+            })
             .collect();
 
         let delegated_to = info.delegated_to.map(|pk| hex::encode(pk.as_bytes()));
@@ -161,6 +205,8 @@ impl RpcContext {
 
         // Build pending updates index once — O(M) instead of O(N×M)
         let pending_by_pubkey = producers.pending_updates_by_pubkey();
+        let best_height = chain_state.best_height;
+        let blocks_per_epoch = self.blocks_per_reward_epoch;
 
         // Derive bond data from UTXO set (source of truth)
         let utxo_set = self.utxo_set.read().await;
@@ -195,7 +241,12 @@ impl RpcContext {
 
                 let pending_updates: Vec<PendingUpdateInfo> = pending_by_pubkey
                     .get(&info.public_key)
-                    .map(|updates| updates.iter().map(|u| pending_update_to_info(u)).collect())
+                    .map(|updates| {
+                        updates
+                            .iter()
+                            .map(|u| pending_update_to_info(u, best_height, blocks_per_epoch))
+                            .collect()
+                    })
                     .unwrap_or_default();
 
                 let delegated_to = info.delegated_to.map(|pk| hex::encode(pk.as_bytes()));
@@ -254,6 +305,8 @@ impl RpcContext {
                 pending_updates: vec![PendingUpdateInfo {
                     update_type: "register".to_string(),
                     bond_count: Some(info.bond_count),
+                    new_bls_pubkey: None,
+                    effective_at_height: None,
                 }],
                 bls_pubkey: if info.bls_pubkey.is_empty() {
                     String::new()

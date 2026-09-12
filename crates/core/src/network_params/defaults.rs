@@ -270,6 +270,9 @@ impl NetworkParams {
                 // same height as #178 by design (BLS without the own bit ships
                 // the M1 defect). IMMUTABLE once crossed.
                 inc_i_208_own_attestation_activation_height: 409_000,
+                // INC-I-217: MAINNET pin. Tip was 441_806 at 2026-09-12T09:03Z (10 s slots);
+                // 450_789 is ~25 h above it. Once crossed this height is IMMUTABLE.
+                bls_key_rotation_activation_height: 450_789,
                 // INC-I-171 vesting-penalty payout bound. PINNED 418_000 on mainnet
                 // (user decision 2026-09-07; tip 400_175 at 11:53Z, ~49 h lead, one day
                 // after the 409_000 pins of #178/#204/#208). Own gate, never bundled.
@@ -525,6 +528,9 @@ impl NetworkParams {
                 // INC-I-208 own-attestation pooling. PINNED 118_500 on testnet
                 // (rehearsal crossing, 2026-09-05, v6.28.0); IMMUTABLE once crossed.
                 inc_i_208_own_attestation_activation_height: 118_500,
+                // INC-I-217: testnet pin. Tip was 176_119 at 2026-09-12T08:27Z (10 s slots);
+                // 176_200 is ~13 min above it. Once crossed this height is IMMUTABLE.
+                bls_key_rotation_activation_height: 176_200,
                 // INC-I-171 vesting-penalty payout bound. PINNED 133_640 on testnet
                 // (deploy 2026-09-07, ~19 min after tip 133_525 at 10:06Z, user
                 // decision); IMMUTABLE once crossed. Mainnet and devnet stay u64::MAX.
@@ -785,6 +791,7 @@ impl NetworkParams {
                 // live local devnet chain on the next rebuild.
                 inc_i_178_attestation_bls_activation_height: u64::MAX,
                 inc_i_208_own_attestation_activation_height: u64::MAX,
+                bls_key_rotation_activation_height: u64::MAX,
                 // INC-I-171 vesting-penalty payout bound. FROZEN at u64::MAX
                 // even here: 0 would reinterpret every live local chain.
                 inc_i_171_vesting_penalty_activation_height: u64::MAX,

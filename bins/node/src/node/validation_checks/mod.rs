@@ -118,6 +118,12 @@ impl Node {
         // field set: a context that is silently weaker than its siblings is how
         // INV-VALIDATION-001 gets violated the next time this path grows.
         .with_inc_i_173_activation_height(self.config.network.params().inc_i_173_activation_height)
+        .with_bls_key_rotation_activation_height(
+            self.config
+                .network
+                .params()
+                .bls_key_rotation_activation_height,
+        )
         .with_epoch_producer_list(if self.epoch_state.active_list.is_empty() {
             self.epoch_state.producer_list.clone()
         } else {
@@ -335,6 +341,12 @@ impl Node {
         // M2 must re-pin the testnet height above the then-current tip and
         // re-verify the tip immediately before pinning.
         .with_inc_i_173_activation_height(self.config.network.params().inc_i_173_activation_height)
+        .with_bls_key_rotation_activation_height(
+            self.config
+                .network
+                .params()
+                .bls_key_rotation_activation_height,
+        )
         .with_inc_i_026_scheduler_activation_height(
             self.config
                 .network

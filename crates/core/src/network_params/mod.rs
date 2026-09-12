@@ -837,6 +837,9 @@ pub struct NetworkParams {
     /// IMMUTABILITY (INC-I-054): once crossed, never move.
     pub inc_i_208_own_attestation_activation_height: u64,
 
+    /// INC-I-217 `RotateBlsKey` gate — `u64::MAX` = FROZEN on every network; pinning one is a separate decision-session (`specs/bls-key-rotation-architecture.md`).
+    pub bls_key_rotation_activation_height: u64,
+
     /// INC-I-171 vesting-penalty activation height.
     ///
     /// At and above it a `RequestWithdrawal` payout is bounded by the penalized
@@ -889,7 +892,6 @@ pub struct NetworkParams {
     /// assumption is visible per network in one audited place.
     pub maintainer_seed_min_producers: usize,
 
-    // === Gossip mesh ===
     /// Target number of peers in gossipsub mesh per topic
     pub mesh_n: usize,
     /// Minimum peers in gossipsub mesh before requesting more

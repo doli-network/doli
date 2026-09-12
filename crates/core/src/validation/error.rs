@@ -499,6 +499,78 @@ pub enum ValidationError {
         /// Byte length actually found.
         len: usize,
     },
+
+    /// [ERRTX-ROT001] a `RotateBlsKey` must spend exactly one input, which is
+    /// the input that reveals the authorising producer key.
+    #[error("[ERRTX-ROT001] rotation input count: got={got} expected=1")]
+    RotateBlsInputCount {
+        /// Number of inputs the transaction actually carries.
+        got: usize,
+    },
+
+    /// [ERRTX-ROT002] the block height is below
+    /// `bls_key_rotation_activation_height`, so the type does not exist for
+    /// consensus yet.
+    #[error("[ERRTX-ROT002] bls key rotation not activated: current_height={current_height} activation_height={activation_height}")]
+    RotateBlsNotActivated {
+        /// Height of the block being validated.
+        current_height: u64,
+        /// Gate in force for this context.
+        activation_height: u64,
+    },
+
+    /// [ERRTX-ROT003] the Ed25519 authorisation over `rotation_auth_digest`
+    /// does not verify for `producer`. The digest binds the spent outpoint, so
+    /// a rotation lifted onto another outpoint lands here (REQ-ROT-SEC-003).
+    #[error("[ERRTX-ROT003] rotation authorisation signature invalid: producer={producer}")]
+    RotateBlsBadSignature {
+        /// Hex of the producer key the signature was checked against.
+        producer: String,
+    },
+
+    /// [ERRTX-ROT004] `new_bls_pubkey` is not a key that can ever attest.
+    #[error("[ERRTX-ROT004] rotation new bls key invalid: reason={reason}")]
+    RotateBlsBadPoint {
+        /// Stable label: `zero`, `identity` or `not_on_curve`.
+        reason: String,
+    },
+
+    /// [ERRTX-ROT007] the proof of possession does not verify under the
+    /// rotation DST. There is no fallback to the registration DST.
+    #[error("[ERRTX-ROT007] rotation proof of possession invalid: producer={producer}")]
+    RotateBlsBadPop {
+        /// Hex of the producer key the proof of possession binds.
+        producer: String,
+    },
+
+    /// [ERRTX-ROT008] `payload.producer` is not the key the spent input
+    /// reveals: the fee payer IS the producer.
+    #[error("[ERRTX-ROT008] rotation producer mismatch: payload={payload} input={input}")]
+    RotateBlsProducerMismatch {
+        /// Hex of `payload.producer`.
+        payload: String,
+        /// Hex of `inputs[0].public_key`, or `none` when the input reveals none.
+        input: String,
+    },
+
+    /// [ERRTX-ROT009] a rotation carries exactly one `Normal` output.
+    #[error("[ERRTX-ROT009] rotation output shape: outputs={outputs} first_type={first_type}")]
+    RotateBlsOutputShape {
+        /// Number of outputs the transaction actually carries.
+        outputs: usize,
+        /// Type of output 0, or `none` when there is no output.
+        first_type: String,
+    },
+
+    /// [ERRTX-ROT010] `extra_data` is not a decodable canonical payload.
+    /// Length-exact, so a tolerated suffix cannot become a malleability channel.
+    #[error("[ERRTX-ROT010] rotation payload invalid: len={len} expected={expected}")]
+    RotateBlsBadPayload {
+        /// Byte length actually found.
+        len: usize,
+        /// Canonical length, `ROTATE_BLS_DATA_LEN`.
+        expected: usize,
+    },
 }
 
 impl ValidationError {
@@ -568,6 +640,14 @@ impl ValidationError {
             Self::WithdrawalBondExtraDataMalformed { .. } => {
                 "ECON_WITHDRAWAL_BOND_EXTRA_DATA_MALFORMED"
             }
+            Self::RotateBlsInputCount { .. } => "ROTATE_BLS_INPUT_COUNT",
+            Self::RotateBlsNotActivated { .. } => "ROTATE_BLS_NOT_ACTIVATED",
+            Self::RotateBlsBadSignature { .. } => "ROTATE_BLS_BAD_SIGNATURE",
+            Self::RotateBlsBadPoint { .. } => "ROTATE_BLS_BAD_POINT",
+            Self::RotateBlsBadPop { .. } => "ROTATE_BLS_BAD_POP",
+            Self::RotateBlsProducerMismatch { .. } => "ROTATE_BLS_PRODUCER_MISMATCH",
+            Self::RotateBlsOutputShape { .. } => "ROTATE_BLS_OUTPUT_SHAPE",
+            Self::RotateBlsBadPayload { .. } => "ROTATE_BLS_BAD_PAYLOAD",
         }
     }
 
@@ -827,6 +907,37 @@ impl ValidationError {
             Self::WithdrawalBondExtraDataMalformed { input_index, len } => {
                 map.insert("input_index".into(), (*input_index).into());
                 map.insert("len".into(), (*len).into());
+            }
+            Self::RotateBlsInputCount { got } => {
+                map.insert("got".into(), (*got).into());
+            }
+            Self::RotateBlsNotActivated {
+                current_height,
+                activation_height,
+            } => {
+                map.insert("current_height".into(), (*current_height).into());
+                map.insert("activation_height".into(), (*activation_height).into());
+            }
+            Self::RotateBlsBadSignature { producer } | Self::RotateBlsBadPop { producer } => {
+                map.insert("producer".into(), Value::String(producer.clone()));
+            }
+            Self::RotateBlsBadPoint { reason } => {
+                map.insert("reason".into(), Value::String(reason.clone()));
+            }
+            Self::RotateBlsProducerMismatch { payload, input } => {
+                map.insert("payload".into(), Value::String(payload.clone()));
+                map.insert("input".into(), Value::String(input.clone()));
+            }
+            Self::RotateBlsOutputShape {
+                outputs,
+                first_type,
+            } => {
+                map.insert("outputs".into(), (*outputs).into());
+                map.insert("first_type".into(), Value::String(first_type.clone()));
+            }
+            Self::RotateBlsBadPayload { len, expected } => {
+                map.insert("len".into(), (*len).into());
+                map.insert("expected".into(), (*expected).into());
             }
         }
 

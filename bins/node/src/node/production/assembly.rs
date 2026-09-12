@@ -248,6 +248,12 @@ impl Node {
             .with_inc_i_173_activation_height(
                 self.config.network.params().inc_i_173_activation_height,
             )
+            .with_bls_key_rotation_activation_height(
+                self.config
+                    .network
+                    .params()
+                    .bls_key_rotation_activation_height,
+            )
             .with_oracle_activation_height(self.config.network.params().oracle_activation_height)
             .with_oracle_sunset_triggered(
                 self.oracle_sunset_triggered
@@ -263,6 +269,15 @@ impl Node {
                         included_count, total_mempool
                     );
                     break;
+                }
+                // INC-I-217 M6: named rotation verdict before the generic one.
+                if let Err(reason) = mempool::rotation_filter::rotation_admissible(tx, &utxo_ctx) {
+                    warn!(
+                        "Skipping mempool tx {} — rotation not admissible: {}",
+                        tx.hash(),
+                        reason
+                    );
+                    continue;
                 }
                 if let Err(e) = validation::validate_transaction_with_utxos(tx, &utxo_ctx, &*utxo) {
                     warn!(

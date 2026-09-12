@@ -25,6 +25,7 @@ mod cmd_token;
 mod cmd_upgrade;
 mod cmd_upgrade_staged;
 mod cmd_wallet;
+mod cmd_wallet_bls;
 mod commands;
 mod common;
 mod lp_select;
@@ -184,6 +185,14 @@ async fn main() -> Result<()> {
         }
         Commands::AddBls => {
             cmd_wallet::cmd_add_bls(&wallet)?;
+        }
+        Commands::ImportBls {
+            secret,
+            force,
+            rpc,
+            address,
+        } => {
+            cmd_wallet_bls::cmd_import_bls(&wallet, &secret, force, rpc, address).await?;
         }
         Commands::Sign { message, address } => {
             cmd_wallet::cmd_sign(&wallet, &message, address)?;

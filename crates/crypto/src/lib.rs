@@ -54,6 +54,7 @@
 pub mod adaptor;
 pub mod address;
 pub mod bls;
+pub mod bls_rotation;
 pub mod encrypted_content;
 pub mod hash;
 pub mod keys;
@@ -65,6 +66,7 @@ pub use bls::{
     BlsError, BlsKeyPair, BlsPublicKeyWrapped as BlsPublicKey, BlsSecretKey, BlsSignature,
     BLS_PUBLIC_KEY_SIZE, BLS_SIGNATURE_SIZE,
 };
+pub use bls_rotation::{sign_rotation_pop, verify_rotation_pop};
 pub use hash::{hash_with_domain, Hash, Hasher};
 pub use keys::{Address, KeyPair, PrivateKey, PublicKey};
 pub use signature::Signature;
@@ -107,6 +109,10 @@ pub const ATTESTATION_DOMAIN: &[u8] = b"DOLI_ATTEST_V1";
 /// This is the actual DST used in BLS hash-to-curve operations.
 /// It follows the RFC 9380 / Ethereum convention.
 pub use bls::ATTESTATION_DST as BLS_ATTESTATION_DST;
+
+#[cfg(test)]
+#[allow(clippy::doc_markdown)]
+mod bls_rotation_tests;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]

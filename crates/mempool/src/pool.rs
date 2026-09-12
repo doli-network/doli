@@ -529,6 +529,9 @@ impl Mempool {
             // its frozen pre-activation branch, admitting a transaction shape
             // that apply_block (which IS wired) would then reject.
             .with_inc_i_173_activation_height(self.network.params().inc_i_173_activation_height)
+            .with_bls_key_rotation_activation_height(
+                self.network.params().bls_key_rotation_activation_height,
+            )
             .with_oracle_activation_height(self.network.params().oracle_activation_height)
             .with_oracle_sunset_triggered(
                 self.oracle_sunset_triggered
@@ -536,6 +539,10 @@ impl Mempool {
             )
             .with_producers_weighted(active_producers_snapshot)
             .with_pending_producer_keys(pending_keys);
+        // INC-I-217 M6: the named rotation verdict runs BEFORE the generic
+        // validator, so it is the verdict and not a second opinion.
+        crate::rotation_filter::rotation_admissible(&tx, &ctx)
+            .map_err(MempoolError::InvalidTransaction)?;
         validate_transaction(&tx, &ctx)?;
 
         // Validate input spending conditions: pubkey + signature for Normal/Bond,
@@ -945,6 +952,9 @@ impl Mempool {
             // its frozen pre-activation branch, admitting a transaction shape
             // that apply_block (which IS wired) would then reject.
             .with_inc_i_173_activation_height(self.network.params().inc_i_173_activation_height)
+            .with_bls_key_rotation_activation_height(
+                self.network.params().bls_key_rotation_activation_height,
+            )
             .with_oracle_activation_height(self.network.params().oracle_activation_height)
             .with_oracle_sunset_triggered(
                 self.oracle_sunset_triggered

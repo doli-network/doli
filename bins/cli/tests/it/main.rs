@@ -14,3 +14,6 @@ mod inc_i_215_docs_tripwire;
 mod inc_i_215_fixture;
 mod inc_i_215_from_staged;
 mod inc_i_215_helper_units_test;
+mod inc_i_217_import_bls_golden;
+mod inc_i_217_m10_rotate_bls_golden;
+mod inc_i_217_m10_wallet_untouched;
