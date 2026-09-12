@@ -2,11 +2,11 @@
 <!-- @INDEX
 ENTRY-POINTS: lines 12-31
 OPERATIONS: lines 33-53
-METHODS: lines 55-162
-DATA-FLOWS: lines 164-197
-DEPENDENCIES: lines 199-221
-CONSTRAINTS: lines 223-257
-PATTERNS: lines 259-314
+METHODS: lines 55-163
+DATA-FLOWS: lines 165-198
+DEPENDENCIES: lines 200-222
+CONSTRAINTS: lines 224-258
+PATTERNS: lines 260-315
 -->
 
 ## ENTRY-POINTS
@@ -89,6 +89,7 @@ PATTERNS: lines 259-314
 
 **`getProducer`** (line 46) — `{public_key}` → `ProducerResponse` (status/era/bonds/delegations/selection_weight). Status: `active`,`unbonding`,`exited`,`slashed`. Bond data sourced from UTXO set, falls back to ProducerInfo for genesis.
 **`getProducers`** (line 144) — `{active_only}` → `ProducerResponse[]`, includes `"pending"` status for awaiting-activation registrations.
+**`pendingUpdates` shape** (`types/producer.rs:121 PendingUpdateInfo`, built at `methods/producer.rs:40-83`) — `updateType` is one of `register`, `exit`, `slash`, `add_bond`, `delegate_bond`, `revoke_delegation`, `withdrawal`, `rotate_bls_key`. `bondCount` is present only where a bond count applies. INC-I-217 added two ADDITIVE fields emitted for `rotate_bls_key` ONLY: `newBlsPubkey` (queued BLS12-381 key, lowercase hex, 96 chars) and `effectiveAtHeight` (`next_flush_height(best_height, blocks_per_epoch)` — the next epoch boundary). Both are `skip_serializing_if = "Option::is_none"`: for every other update type the keys are ABSENT, never `null`. Use them to confirm a rotation is queued; after the boundary `pendingUpdates` is empty and `blsPubkey` holds the new key.
 **`getBondDetails`** (line 276) — `{public_key}` → `BondDetailsResponse`: per-bond FIFO list `{creation_slot,amount,age_slots,penalty_pct,vested,maturation_slot}` + `summary:{q1,q2,q3,vested}`.
 
 ### Schedule & Attestation Methods (`crates/rpc/src/methods/schedule.rs`)

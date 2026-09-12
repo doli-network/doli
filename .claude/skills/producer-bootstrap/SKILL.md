@@ -204,6 +204,57 @@ Expect 12 producers, `bondCount == K`, `selectionWeight == K`, `status == active
 
 ---
 
+## Recovery — a restored wallet attests with the WRONG BLS key (INC-I-217)
+
+A wallet written at **version 1 or 2** holds a BLS attestation key drawn at
+random: the 24-word phrase restores the spending key but NOT that key. Restore
+such a wallet and the node signs attestations with a key the chain does not
+hold. The registration stays "active", so nothing looks broken until you read
+the logs.
+
+**Symptoms (all four together):**
+```
+own node:  [ATTEST_EGRESS] own BLS half does not verify against the on-chain key — check the BLS key config
+peers:     [ATTEST_INGEST] unverifiable BLS half from <attester>
+RPC:       getAttestationStats → 0 attested minutes for this producer
+balance:   no epoch rewards, while blocks are still produced normally
+```
+
+**Confirm it in one comparison** — the wallet key must equal the chain key:
+```bash
+doli -w <wallet.json> info                       # field: BLS Public Key
+curl -s -X POST http://127.0.0.1:<rpc-port> -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getProducer","params":{"public_key":"<ed25519-hex>"}}'
+#                                                  field: result.blsPubkey
+```
+Both values are 96 hex characters. Equal = the keys match and your problem is elsewhere.
+
+**Decision tree:**
+
+| Do you still hold the OLD BLS secret (old wallet file, or the 64-hex secret)? | Remedy |
+|---|---|
+| **YES** | `doli import-bls <SECRET> --rpc <rpc-url>` then restart the node. Client-side only — no transaction, no fee, no consensus change. `--rpc` compares against the chain BEFORE writing and refuses on mismatch. Back up `wallet.json` first, and again afterwards: an imported key is NOT in the phrase. |
+| **NO**, and the chain is at/above `bls_key_rotation_activation_height` | `doli producer rotate-bls` — one on-chain transaction that installs the wallet's current BLS key. Irreversible; takes effect at the NEXT EPOCH BOUNDARY, and until then the chain still expects the old key. |
+| **NO**, and the chain is still below that height | The node answers `[ERRTX-ROT002] bls key rotation not activated`. Wait for the height, or use one of the older options below. |
+| Older options (still valid) | Delegate the bond weight to another producer you control (`producer delegate`), or `producer exit` and register again — the exit pays the vesting penalty. |
+
+**Verify a rotation:**
+```bash
+# BEFORE the boundary — the queue holds it
+doli producer status        # or getProducer → pendingUpdates:
+#   [{ "updateType": "rotate_bls_key", "newBlsPubkey": "<hex>", "effectiveAtHeight": N }]
+# AFTER the boundary — the key is installed
+#   blsPubkey == the new key, pendingUpdates empty
+# node log at the boundary:  [BLS_ROTATE] applied producer=… old=… new=… h=…
+```
+
+**Prevent a repeat:** a wallet created by a current binary is version 3 — both
+keys derive from the seed, so the phrase is a complete backup. After any
+`import-bls` the wallet FILE is the only copy of that key. Full page:
+`docs/bls-key-recovery.md`.
+
+---
+
 ## Learnings / pitfalls (from the first run)
 
 1. **`send` takes `--yes`; `register`/`add-bond` do NOT** — they error on `--yes`.
@@ -226,9 +277,14 @@ Expect 12 producers, `bondCount == K`, `selectionWeight == K`, `status == active
    and get explicit approval before broadcasting. One seed/producer at a time if unsure.
 10. **Identity is `producer.json`** — same file is wallet AND producer key; it carries
     the BLS keys `register` needs. Back it up; losing it loses the producer.
+11. **The seed phrase alone is not always a backup** — it restores the BLS
+    attestation key only for a **version 3** wallet. A version 1/2 wallet, or any
+    wallet that went through `import-bls`, needs the FILE. See the recovery
+    section above (INC-I-217).
 
 ## References
 - Fleet deploy & server layout: `.claude/skills/mainnet/SKILL.md`
 - Recovery / fork / checkpoint: `.claude/skills/guardian/SKILL.md`, `.claude/skills/mainnet/RECOVERY.md`
 - Bond/producer consensus internals: `.claude/skills/core/SKILL.md`, `crates/core/src/consensus/constants.rs`
 - Delegation (weight without self-bond): `.claude/skills/delegation/SKILL.md`
+- BLS attestation key recovery (`import-bls` / `rotate-bls`): `docs/bls-key-recovery.md`, `.claude/skills/cli/SKILL.md`
