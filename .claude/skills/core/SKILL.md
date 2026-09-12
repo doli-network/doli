@@ -3,13 +3,13 @@
 ENTRY-POINTS: lines 15-53
 OPERATIONS: lines 55-69
 DATA-FLOWS: lines 71-162
-STRUCTS: lines 164-372
-FUNCTIONS: lines 374-451
-CONSTANTS: lines 453-582
-ACTIVATION-HEIGHTS: lines 584-628
-DEPENDENCIES: lines 630-646
-CONSTRAINTS: lines 648-681
-PATTERNS: lines 683-788
+STRUCTS: lines 164-379
+FUNCTIONS: lines 381-458
+CONSTANTS: lines 460-589
+ACTIVATION-HEIGHTS: lines 591-636
+DEPENDENCIES: lines 638-654
+CONSTRAINTS: lines 656-689
+PATTERNS: lines 691-798
 -->
 
 ## ENTRY-POINTS
@@ -191,7 +191,8 @@ Block {
 BlockBuilder { ... }  // builder pattern, block.rs:282
 ```
 
-### Transaction types (`transaction/` — split into core.rs, data.rs, output.rs, types.rs, legacy.rs)
+### Transaction types (`transaction/` — split into core.rs, data.rs, input.rs, output.rs, types.rs, legacy.rs, rotate_bls.rs)
+`rotate_bls.rs` (INC-I-217) holds the `RotateBlsKey` payload codec: 240 bytes, `producer(32) ‖ new_bls_pubkey(48) ‖ bls_pop(96) ‖ signature(64)`, carried in tx `extra_data`; the signed preimage is `"DOLI-ROTATE-BLS-V1" ‖ genesis_hash ‖ new_bls_pubkey ‖ prev_tx_hash ‖ output_index (u32 LE)` and `rotation_auth_digest` is its BLAKE3-256 with no second domain tag (the spent outpoint is the replay bind).
 ```rust
 Transaction {
     version: u32,
@@ -309,9 +310,15 @@ ValidationMode { Full, Light, Replay }
 UtxoInfo { output: Output, pubkey: Option<PublicKey>, spent: bool }
 trait UtxoProvider { fn get_utxo(&self, tx_hash: &Hash, output_index: u32) -> Option<UtxoInfo> }
 ```
-Validation module now spans 14 files: `amm.rs, block.rs, error.rs, errors_oracle.rs, parallel.rs,
-pool.rs, producer.rs, registration.rs, rewards_legacy.rs (dead code), transaction.rs, tx_types.rs,
-types.rs, utxo.rs, zk.rs` (`validation/mod.rs:1-66`).
+Validation module now spans 17 non-test files: `amm.rs, block.rs, error.rs, errors_oracle.rs,
+parallel.rs, pool.rs, producer.rs, registration.rs, rewards_legacy.rs (dead code), rotate_bls.rs,
+transaction.rs, tx_types.rs, types.rs, utxo.rs, vesting.rs, zk.rs` (+ `mod.rs`).
+`rotate_bls.rs` is the `RotateBlsKey` (TxType 32) checker — INC-I-217. It gates on
+`bls_key_rotation_activation_height` (`RotateBlsNotActivated` / `[ERRTX-ROT002]` below it), then
+enforces 1 input / 1 `Normal` output, a decodable 240-byte payload, a non-identity on-curve
+`new_bls_pubkey`, `payload.producer` == the key the spent input reveals, the Ed25519 authorisation
+over `rotation_auth_digest`, and the rotation proof of possession (no fallback to the registration
+DST). Error codes `ERRTX-ROT001..010`; `ROT005`/`ROT006` are never emitted and never reused.
 
 ### Scheduler (`scheduler.rs`)
 ```rust
@@ -616,6 +623,7 @@ fields (`network_params/mod.rs`, defaults in `network_params/defaults.rs`). ALWA
 | `inc_i_096_activation_height` | **0** | **0** | 0 | Pool-aware value conservation |
 | `large_block_activation_height` | **0** | **0** | 0 | ~2MB builder budget, ~300 TPS (builder policy, not consensus) |
 | `oracle_activation_height` | **u64::MAX — FROZEN** | **u64::MAX — FROZEN** | u64::MAX | Phase 2.1 PriceAttestation (TxType=16) — code shipped M1-M11 but gate NEVER pinned; separate decision-session required (HC-6/INC-I-075) |
+| `bls_key_rotation_activation_height` | **450_789** | **176_200** | u64::MAX | `RotateBlsKey` (TxType=32) accepted — INC-I-217. Below it validation returns `RotateBlsNotActivated` → `ROTATE_BLS_NOT_ACTIVATED` / `[ERRTX-ROT002]`. Mainnet LOCKED in `env_loader.rs:551`; `DOLI_BLS_KEY_ROTATION_ACTIVATION_HEIGHT` overrides on testnet/devnet only |
 
 **IMMUTABILITY (INC-I-054)**: once any height above is crossed AND honored by a deployed binary on
 mainnet, it is IMMUTABLE — never move forward. The fresh genesis reset does not violate this: the
@@ -748,7 +756,7 @@ let total = a.saturating_add(b);           // never plain `+` for amounts
 let fee = amount.saturating_sub(output_sum);
 ```
 
-### TxType discriminants (24 constructible; gaps are PERMANENT tombstones — see CONSTRAINTS #11)
+### TxType discriminants (25 constructible; gaps are PERMANENT tombstones — see CONSTRAINTS #11)
 ```
 0=Transfer, 1=Registration, 2=Exit, 3=ClaimReward, 4=ClaimBond, 5=SlashProducer,
 6=Coinbase, 7=AddBond, 8=RequestWithdrawal, 9=ClaimWithdrawal(tombstone-but-decodable),
@@ -756,7 +764,9 @@ let fee = amount.saturating_sub(output_sum);
 14=RevokeDelegation, 15=ProtocolActivation, 16=PriceAttestation (Phase 2.1 oracle, frozen),
 17=MintAsset, 18=BurnAsset, 19=CreatePool, 20=AddLiquidity, 21=RemoveLiquidity, 22=Swap,
 23=(reserved, never assigned), 24-28=TOMBSTONED (native lending, B.1),
-29-30=TOMBSTONED (NFT fractionalization, B.2), 31=ZKSettle
+29-30=TOMBSTONED (NFT fractionalization, B.2), 31=ZKSettle,
+32=RotateBlsKey (INC-I-217; declared LAST in the enum → bincode ordinal 24,
+   first discriminant above the 23-30 tombstone band)
 ```
 
 ### OutputType discriminants (14 constructible; 11-12 PERMANENTLY tombstoned — B.1 lending removal)

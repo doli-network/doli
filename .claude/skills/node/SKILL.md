@@ -5,8 +5,8 @@ DATA-FLOWS      70-152
 STRUCTS         154-176
 FUNCTIONS       178-280
 DEPENDENCIES    282-296
-CONSTRAINTS     298-342
-PATTERNS        344-374
+CONSTRAINTS     298-346
+PATTERNS        348-378
 @/INDEX -->
 # node — DOLI Node Binary
 
@@ -301,7 +301,11 @@ undo.epoch_state_snapshot: always present, deserialize → self.epoch_state
 
 **3-state identity** — `ChainState`, `UtxoSet`, `ProducerSet` MUST be identical across nodes. Since Phase 3/4, `utxo_set` is a thin wrapper backed directly by `state_db` (no separate cache to diverge).
 
-**Epoch state ordering** — Producer mutations (Register/Exit/Slash/AddBond/RequestWithdrawal/DelegateBond/RevokeDelegation) DEFERRED to epoch boundary, applied every block during epoch 0. Maintainer changes immediate.
+**Epoch state ordering** — Producer mutations (Register/Exit/Slash/AddBond/RequestWithdrawal/DelegateBond/RevokeDelegation/RotateBlsKey) DEFERRED to epoch boundary, applied every block during epoch 0. Maintainer changes immediate.
+
+**BLS key rotation (INC-I-217)** — `RotateBlsKey` (TxType 32) is queued like any other producer mutation and installed at the next epoch boundary. Queue: `crates/storage/src/producer/rotation.rs` → `PendingProducerUpdate::RotateBlsKey`, logging `[BLS_ROTATE] queued producer=… new=… h=…` (or `[BLS_ROTATE] skipped producer=… reason=… h=…`). Flush: `producer/set_core.rs:186` logs `[BLS_ROTATE] applied producer=… old=… new=… h=…`, and `apply_block/state_update.rs:204` is the ONE write site of `doli_producer_bls_rotation_total` (`metrics.rs:767`), incremented by the number of rotations the flush drained. Gated by `NetworkParams::bls_key_rotation_activation_height` (mainnet 450_789, testnet 176_200, devnet `u64::MAX`; `DOLI_BLS_KEY_ROTATION_ACTIVATION_HEIGHT` overrides on non-mainnet only). Until the boundary lands, the chain still expects the OLD key.
+
+**Own-BLS-key mismatch (INC-I-217 symptom)** — when the node's wallet BLS key is not the key the chain has registered, `create_and_broadcast_attestation()` (`startup.rs:593`) gets `BlsAttestVerdict::Invalid`, declines to pool its own half and warns `[ATTEST_EGRESS] own BLS half does not verify against the on-chain key — check the BLS key config` (`startup.rs:636`, inside the `inc_i_208_own_attestation_activation_height` gate); peers log `[ATTEST_INGEST] unverifiable BLS half from <attester>` (`attestation/ingress.rs:113`). Effect: `getAttestationStats` shows 0 attested minutes and the producer earns nothing. Remedy is client-side (`doli import-bls`) or on-chain (`doli producer rotate-bls`) — `docs/bls-key-recovery.md`.
 
 **INC-I-071 undo sentinel** — `undo.producer_snapshot == Vec::new()` means "ProducerSet unchanged at this height — rollback/reorg MUST skip restore". Decided per-block by `block_mutates_producer_set()`. `epoch_state_snapshot` is NEVER covered by this optimization — always present.
 

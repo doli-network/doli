@@ -1,11 +1,11 @@
 # cli — DOLI CLI Interface (`bins/cli`)
 <!-- @INDEX
-ENTRY-POINTS   11-46
-OPERATIONS     48-159
-DATA-FLOW      161-181
-DEPENDENCIES   183-198
-CONSTRAINTS    200-235
-PATTERNS       237-293
+ENTRY-POINTS   11-47
+OPERATIONS     49-162
+DATA-FLOW      164-184
+DEPENDENCIES   186-201
+CONSTRAINTS    203-238
+PATTERNS       240-296
 @/INDEX -->
 
 ## ENTRY-POINTS
@@ -23,12 +23,13 @@ Data dir (`paths.rs:14,75`): Linux=`/var/lib/doli/{network}`, macOS=`~/Library/A
 
 RPC client: `rpc_client.rs:363 RpcClient` — JSON-RPC 2.0 over HTTP POST (`reqwest`), connect timeout 10s, request timeout 30s (`rpc_client.rs:405-411`). Archiver fallback (`rpc_client.rs:507-546 call_with_archiver_fallback`): on "not found"/`-32001` errors, retries `getTransaction`/`getHistory` against seed archivers (`common.rs:33 archiver_endpoints_for_network`) + local seed `127.0.0.1:8500` when RPC targets localhost.
 
-Module map (`main.rs:12-34`, 55 files total):
+Module map (`main.rs:12-34`, 60 non-test source files):
 | Module | Files | Purpose |
 |--------|-------|---------|
-| `commands.rs` | 1 | clap `Cli`/`Commands`/all subcommand enums (1355 lines) |
+| `commands.rs` | 1 | clap `Cli`/`Commands`/all subcommand enums (1439 lines) |
 | `cmd_wallet.rs` | 1 | new/restore/address/balance/send/spend/history/export/import/info/add-bls/sign/verify |
-| `cmd_producer/` | 9 (mod,common,dispatch,register,status,bonds,withdrawal,exit,delegation) | producer lifecycle |
+| `cmd_producer/` | 10 (mod,common,dispatch,register,status,bonds,withdrawal,exit,delegation,rotate) | producer lifecycle; `rotate.rs` = `rotate-bls` fetch/print/submit |
+| `cmd_wallet_bls.rs` + `rotate_tx.rs` | 2 | `import-bls` (client-side BLS key install) and the pure `rotate-bls` tx builder/precondition/consent logic (INC-I-217) |
 | `cmd_nft/` | 9 (mod,list,info,mint,export,batch,transfer,sell,buy) | NFT mint/trade |
 | `cmd_template/` | 9 (mod,dispatch,serialize,vault,escrow,htlc_payment,subscription,agent_allowance,escrow_loan) | covenant condition templates |
 | `cmd_pool.rs` + `pool_tx.rs` + `lp_select.rs` | 3 | AMM pool create/swap/add/remove |
@@ -62,6 +63,7 @@ Module map (`main.rs:12-34`, 55 files total):
 | View tx history | 1. `history` | `doli history [--limit N]` default 10 (`cmd_wallet.rs:720`) | none | RPC `getHistory` w/ archiver fallback |
 | Export/import wallet | 1. `export <path>` / `import <path>` | `cmd_wallet.rs:784,793` | file path | wallet file copied/loaded |
 | Add BLS key (needed before producer register) | 1. `add-bls` | `doli add-bls` (`cmd_wallet.rs:825`) | none | BLS keypair added; must restart node to load |
+| Import a BLS key you still hold | 1. back up `wallet.json` 2. `import-bls <SECRET>` 3. restart node | `doli import-bls <SECRET> [--force] [--rpc URL] [--address ADDR]` (`cmd_wallet_bls.rs:14`, declared `commands.rs:167`) | BLS secret, 64 hex chars; `--force` to replace an existing key | secret + derived pubkey written to the wallet. `--rpc` compares against `getProducer -> blsPubkey` BEFORE `save()` and writes nothing on mismatch; `--address` picks a non-primary registration (default primary). Wallet version drops to `min(version, 2)` (`wallet.rs:544`) so the 24-word phrase NO LONGER restores the BLS key — back up the wallet FILE. Restart the node to load it. Client-side only: nothing reaches a block (INC-I-217) |
 | Sign/verify a message | 1. `sign <msg>` / `verify <msg> <sig> <pubkey>` | `cmd_wallet.rs:848,859` | message string | Ed25519 signature hex |
 
 ### Producer lifecycle (`cmd_producer/`)
@@ -79,6 +81,7 @@ Module map (`main.rs:12-34`, 55 files total):
 | Report equivocation (slashing evidence) | 1. `producer slash --block1 H1 --block2 H2` | `cmd_producer/exit.rs:204` | two block hashes, same slot+producer, different hash | verified via `getBlockByHash`×2; informational — node auto-detects/submits real slashing |
 | Delegate bond weight | 1. `producer delegate <pubkey> --bonds N` | `cmd_producer/delegation.rs:12`, range 1-`MAX_BONDS_PER_PRODUCER` | active self + active delegatee, not self-delegation | DelegateBond tx (Ed25519-signed payload, INC-I-078 M2); delegatee keeps 10%, delegator 90%; epoch-deferred |
 | Revoke delegation | 1. `producer revoke-delegation` | `cmd_producer/delegation.rs:154` | active delegation must exist | RevokeDelegation tx; unbonding delay applies |
+| Rotate the BLS attestation key | 1. wallet holds the NEW BLS key 2. `producer rotate-bls` 3. accept the irreversibility prompt | `doli producer rotate-bls [-y\|--yes]` (`cmd_producer/rotate.rs:24`, dispatch `cmd_producer/dispatch.rs:37`) | wallet BLS key ≠ on-chain key, no rotation already queued, chain at/above `bls_key_rotation_activation_height`; one spendable UTXO for the fee | prints current key / new key / fee / change / `Takes effect: height N (next epoch boundary)` + `ROTATE_BLS_NOTICE`; `--yes` accepts without the prompt (a non-terminal stdin is never consent). Fee-paying 1-in/1-out tx, the spent outpoint is the replay bind; wallet opened READ-ONLY. Below the activation height the node answers `-32002` `Error submitting the BLS key rotation: [ERRTX-ROT002] bls key rotation not activated: current_height=… activation_height=…`. Confirm with `producer status` / `getProducer -> pendingUpdates` (INC-I-217) |
 | Check delegation status | 1. `producer delegation-status` | `cmd_producer/status.rs` (dispatch `commands.rs:860`) | none | outgoing/received delegations, effective selection weight |
 
 ### AMM Pool operations (`cmd_pool.rs`, `pool_tx.rs`, `lp_select.rs`)
