@@ -2,10 +2,10 @@
 <!-- @INDEX
 ENTRY-POINTS    11-99
 OPERATIONS      101-114
-DATA-FLOW       116-162
-DEPENDENCIES    164-182
-CONSTRAINTS     184-202
-PATTERNS        204-217
+DATA-FLOW       116-163
+DEPENDENCIES    165-183
+CONSTRAINTS     185-204
+PATTERNS        206-219
 @/INDEX -->
 
 ## ENTRY POINTS
@@ -200,6 +200,7 @@ Mempool has NO knowledge of block production internals, P2P, or storage persiste
 | `RequestWithdrawal`/`Exit` skip both coinbase-maturity AND lock checks | edge-case | `pool.rs:1016-1020` | They unlock Bond UTXOs; mirrors `validation.rs:2527` exemption |
 | Pool-UTXO contention diagnostic is read-only, non-mutating of selection | invariant | `contention.rs:8-12` | Does not change which TXs the producer includes; no competing tx hashes leaked to the submitter (MEV-safety design constraint, AC-12 false-positive rate <=0.1%) |
 | Contention check runs BEFORE the double-spend check | invariant | `pool.rs:532-549` vs `551-563` | So a rejected double-spend on a Pool UTXO can still carry contention context in logs, even though the caller only sees `DoubleSpend` |
+| `RotateBlsKey` admission is ONE shared predicate (INC-I-217) | invariant | `rotation_filter.rs:16`, called at `pool.rs:544` and `bins/node/src/node/production/assembly.rs:274` | `rotation_admissible(tx, ctx)` returns `Ok(())` for any non-`RotateBlsKey` tx and otherwise delegates to `doli_core::validation::rotate_bls::rotate_stateless` — stateless, no snapshot, no UTXO pass. The `Err` string is the bracketed consensus code the fleet greps, e.g. `[ERRTX-ROT002]` below `bls_key_rotation_activation_height`. Relay REFUSES, builder SKIPS. Both surfaces MUST keep calling this one function or a node packs a rotation it would not relay |
 | `active_producers_weighted` snapshot may be empty pre-oracle-activation | edge-case | `pool.rs:284-290` | Harmless because `oracle_activation_height = u64::MAX` rejects `PriceAttestation` at the height gate first (Phase 2.1, frozen per CLAUDE.md) |
 
 ## PATTERNS

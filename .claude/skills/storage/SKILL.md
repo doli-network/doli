@@ -3,19 +3,19 @@
 ENTRY-POINTS: lines 21-47
 OPERATIONS: lines 48-62
 DATA-FLOWS: lines 63-126
-STRUCTS: lines 127-279
-COLUMN-FAMILIES: lines 280-342
-FUNCTIONS-BLOCKSTORE: lines 343-401
-FUNCTIONS-STATEDB: lines 402-488
-FUNCTIONS-UTXO: lines 489-521
-FUNCTIONS-PRODUCERSET: lines 522-543
-FUNCTIONS-SNAPSHOT: lines 544-557
-FUNCTIONS-ARCHIVER: lines 558-571
-FUNCTIONS-MISC: lines 572-581
-DEPENDENCIES: lines 582-600
-CONSTRAINTS: lines 601-650
-PATTERNS: lines 651-732
-SERIALIZATION: lines 733-774
+STRUCTS: lines 127-280
+COLUMN-FAMILIES: lines 281-343
+FUNCTIONS-BLOCKSTORE: lines 344-402
+FUNCTIONS-STATEDB: lines 403-489
+FUNCTIONS-UTXO: lines 490-522
+FUNCTIONS-PRODUCERSET: lines 523-548
+FUNCTIONS-SNAPSHOT: lines 549-562
+FUNCTIONS-ARCHIVER: lines 563-576
+FUNCTIONS-MISC: lines 577-586
+DEPENDENCIES: lines 587-605
+CONSTRAINTS: lines 606-655
+PATTERNS: lines 656-737
+SERIALIZATION: lines 738-778
 -->
 
 ## ENTRY-POINTS
@@ -234,6 +234,7 @@ pub struct ProducerSet {
     pending_updates: Vec<PendingProducerUpdate>,        // applied at epoch boundary
 }
 ```
+- `pending_updates` is also the rotation UNIQUENESS ledger: `resolve_rotation_inputs()` scans it so a queued `RotateBlsKey` or `Register` reserves its `new_bls_pubkey`/`bls_pubkey` against a second claimant (INC-I-217).
 - Persisted to `StateDb` (split: `cf_producers` + `cf_exit_history` + `META_PENDING_UPDATES`)
 - Legacy file persistence: JSON first, bincode fallback (`producer/set_persistence.rs:18`)
 
@@ -535,7 +536,11 @@ is_spendable_at_with_maturity(height, maturity):
 
 **`producer/seniority.rs`** — `producer_weight_for_network()` (discrete yearly steps 1-4), `total_weight_for_network()`, `weighted_veto_threshold_for_network()`.
 
-**`PendingProducerUpdate` variants** (`producer/types.rs`): `Register`, `Exit`, `Slash`, `AddBond`, `DelegateBond`, `RevokeDelegation`, `RequestWithdrawal`.
+**`PendingProducerUpdate` variants** (`producer/types.rs`): `Register`, `Exit`, `Slash`, `AddBond`, `DelegateBond`, `RevokeDelegation`, `RequestWithdrawal`, `RotateBlsKey { pubkey, new_bls_pubkey, height }` (INC-I-217).
+
+**`producer/rotation.rs`** (INC-I-217) — the stateful half of a BLS key rotation; shape and cryptography are already block-invalidating in `validation/block.rs`, so nothing here reads `bls_pop`/`signature`. `ProducerSet::resolve_rotation_inputs(data)` (`rotation.rs:95`) builds `RotationInputs` by scanning BOTH the producer map and `pending_updates`: `key_in_use = held_by_other || reserved_by_queue`, where `reserved_by_queue` also covers the `bls_pubkey` of a queued `Register` — a key may never be claimed twice, even across the boundary. `rotate_verdict()` (`rotation.rs:44`) is pure and its evaluation order is a WIRE CONTRACT: `NotProducer` → `SameKey` → `AlreadyPending` → `KeyInUse`; the rebuild path calls the same function so the two apply paths cannot drift. A `RotateSkip` is never block-invalidating — it logs `[BLS_ROTATE] skipped …` and the sender loses only the fee. Queue logs `[BLS_ROTATE] queued …`.
+
+**Rotation boundary apply** (`producer/set_core.rs:179-194`) — the `RotateBlsKey` arm of `apply_pending_updates_with_cap()` overwrites `producer_info.bls_pubkey` UNCONDITIONALLY on status (D4): a status branch here would make the apply path and the rebuild path disagree when the status moved between queue and boundary. The only branch is "producer no longer in the map", which drains silently. Logs `[BLS_ROTATE] applied producer=… old=… new=… h=…` (hashes, `{:.8}`-truncated).
 
 **Constants** (`producer/constants.rs`): `ACTIVATION_DELAY=10`, `MAX_WEIGHT=4`/`MIN_WEIGHT=1`, `VETO_THRESHOLD_PERCENT=40`, `VETO_BOND_AMOUNT=1e9`, `BOND_UNIT=1e9` (mainnet/testnet; devnet uses `bond_unit_for_network()`=1e8), `EXIT_HISTORY_RETENTION=2*2_102_400` (~8yr), `REACTIVATION_THRESHOLD=8_640`. Network-aware variants (`*_for_network`) preferred over deprecated legacy constants.
 

@@ -4,8 +4,8 @@ ENTRY-POINTS    11-41
 OPERATIONS      42-59
 DATA-FLOW       60-118
 DEPENDENCIES    119-140
-CONSTRAINTS     141-194
-PATTERNS        195-259
+CONSTRAINTS     141-196
+PATTERNS        197-261
 @/INDEX -->
 
 ## ENTRY POINTS
@@ -44,7 +44,7 @@ Public API surface (`crates/wallet/src/lib.rs:20-31`): re-exports `Wallet`, `Wal
 | Task | Steps | Commands/Functions | Inputs | Success |
 |------|-------|--------------------|--------|---------|
 | Create a new wallet | 1. Generate BIP-39 phrase + Ed25519/BLS keys 2. Persist to disk | `Wallet::new(name)` → `wallet.save(&path)` | wallet name, target path | `wallet.json` written; 24-word phrase shown to user once, never stored |
-| Restore a wallet from seed phrase | 1. Parse+validate BIP-39 phrase 2. Re-derive Ed25519 key 3. Save | `Wallet::from_seed_phrase(name, phrase)` → `wallet.save(&path)` | 24-word phrase | Ed25519 pubkey/address identical to original; BLS key is a NEW random pair (must re-register on-chain if this was a producer) |
+| Restore a wallet from seed phrase | 1. Parse+validate BIP-39 phrase 2. Re-derive Ed25519 AND BLS keys 3. Save | `Wallet::from_seed_phrase(name, phrase)` → `wallet.save(&path)` | 24-word phrase | Ed25519 pubkey/address identical to original; BLS key ALSO re-derived from the same BIP-39 seed (`wallet.rs:129` `BlsKeyPair::from_seed`, version 3, INC-I-162). A wallet **written at version 1 or 2** held a random BLS key the phrase cannot reproduce — restoring one produces a DIFFERENT attestation key and the producer stops attesting (recovery: `doli import-bls` or `doli producer rotate-bls`, INC-I-217) |
 | Load an existing wallet | 1. Read JSON file | `Wallet::load(&path)` | path to `wallet.json` | `Wallet` in memory; errors distinguish "not found" vs "failed to parse" |
 | Add a secondary address | 1. Generate random Ed25519 keypair 2. Append, save | `wallet.generate_address(label)` → `wallet.save(&path)` | optional label | New entry in `addresses`, no BLS key attached |
 | Add a BLS key to primary address | 1. Check none exists 2. Generate BLS keypair | `wallet.add_bls_key()` | none | Returns BLS pubkey hex; errors "already exists" if present |
@@ -65,11 +65,11 @@ Wallet::new(name)
   → Mnemonic::generate(24)       # bip39
   → mnemonic.to_seed("")         # 64-byte seed, empty passphrase
   → seed[..32] → KeyPair::from_seed()   # Ed25519 keypair
-  → BlsKeyPair::generate()       # random BLS, NOT derived from seed
+  → BlsKeyPair::from_seed(&bip39_seed)   # BLS derived from the SAME seed (v3)
   → WalletAddress { address=kp.address().to_hex(), ... }
-  → Wallet { version: 2, addresses: [primary] }
+  → Wallet { version: WALLET_VERSION_SEED_DERIVED_BLS (3), addresses: [primary] }
 ```
-Location: `wallet.rs:53-84`
+Location: `wallet.rs:87-107`
 
 ### Wallet Restoration
 ```
@@ -77,9 +77,9 @@ Wallet::from_seed_phrase(name, phrase)
   → Mnemonic::parse(phrase)      # validates BIP-39
   → mnemonic.to_seed("")
   → seed[..32] → KeyPair::from_seed()   # SAME Ed25519 key as new()
-  → BlsKeyPair::generate()       # NEW random BLS (not deterministic from seed)
+  → BlsKeyPair::from_seed(&bip39_seed)   # SAME BLS key as new() (v3)
 ```
-Location: `wallet.rs:88-115`. **Critical**: BLS key is always random — only Ed25519 is deterministic from seed phrase.
+Location: `wallet.rs:117-143`. **Critical**: both keys are deterministic ONLY for wallets written at version 3. `bls_is_seed_derived()` (`wallet.rs:310`) is `version >= 3` and nothing else — for a version 1 or 2 file the phrase restores the spending key and a WRONG attestation key.
 
 ### Transaction Build + Sign
 ```
@@ -185,7 +185,9 @@ Fee-tier multiplier (`tx_builder/fees.rs:17-40`) and vesting penalty boundaries 
 ### Wallet File Format (GUI-NF-008)
 JSON must have exactly 3 top-level keys: `name`, `version`, `addresses`.
 Each address: `address`, `public_key`, `private_key`, `label` required; `bls_private_key`/`bls_public_key` optional (omitted from JSON when None, `#[serde(skip_serializing_if = "Option::is_none")]` at `wallet.rs:30-34`).
-Version 1 = legacy (no BLS), version 2 = BIP-39 with BLS. Crate can load both. This format is duplicated independently in `bins/cli/src/wallet.rs` — both MUST evolve together or wallet.json files stop being cross-compatible.
+Version history (`wallet.rs:17-29`, `WALLET_VERSION_SEED_DERIVED_BLS = 3`): **1** = legacy, both keys random, no phrase; **2** = Ed25519 from the BIP-39 seed, BLS still random (the phrase does NOT restore a producer identity, INC-I-162); **3** = BOTH keys from the seed, the phrase is a complete backup. Marker only — nothing gates behaviour on it and every version loads. This format is duplicated independently in `bins/cli/src/wallet.rs` — both MUST evolve together or wallet.json files stop being cross-compatible.
+
+**Imported BLS keys (INC-I-217, CLI-only).** `doli import-bls <SECRET> [--force] [--rpc URL] [--address ADDR]` installs a BLS secret the operator already holds — the recovery path for a version 1/2 producer whose restored wallet attests with the wrong key. It lives in the CLI copy of the format (`bins/cli/src/cmd_wallet_bls.rs`, `Wallet::import_bls_key`) and has **no counterpart in this crate**: `crates/wallet` can only `add_bls_key()` (random, refuses if one exists). The CLI import writes the version back DOWN to `min(version, 2)` (`bins/cli/src/wallet.rs:544`) precisely so `bls_is_seed_derived()` stops claiming the 24 words are a complete backup. After an import the wallet FILE is the only copy of that key — back up the file, not the phrase.
 
 ### Bond Output Encoding
 Bond outputs: `output_type=1`, `lock_until=u64::MAX`, `amount=BOND_UNIT`.

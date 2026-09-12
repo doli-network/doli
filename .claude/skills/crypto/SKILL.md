@@ -1,16 +1,16 @@
 # crypto — DOLI Cryptographic Primitives (`doli-crypto` crate, leaf crate)
 <!-- @INDEX
-ENTRY-POINTS    11-70
-OPERATIONS      72-92
-DATA-FLOW       94-112
-DEPENDENCIES    114-145
-CONSTRAINTS     147-185
-PATTERNS        187-282
+ENTRY-POINTS    11-71
+OPERATIONS      73-93
+DATA-FLOW       95-113
+DEPENDENCIES    115-146
+CONSTRAINTS     148-186
+PATTERNS        188-283
 @/INDEX -->
 
 ## ENTRY POINTS
 
-Crate root: `crates/crypto/src/lib.rs:1`. Pure leaf crate — zero internal `doli-*` dependencies, no async runtime, no consensus/node types. Re-exports at `lib.rs:63-70,109`: `Hash`, `Hasher`, `hash_with_domain`, `KeyPair`, `PrivateKey`, `PublicKey`, `Address`, `Signature`, `BlsKeyPair`, `BlsPublicKey` (alias of `BlsPublicKeyWrapped`), `BlsSecretKey`, `BlsSignature`, `bls_sign`, `bls_verify`, `bls_aggregate`, `bls_verify_aggregate`, `bls_sign_pop`, `bls_verify_pop`, `BlsError`, `BLS_PUBLIC_KEY_SIZE`, `BLS_SIGNATURE_SIZE` (`lib.rs:63-70`). `attestation_message` and `BLS_ATTESTATION_DST` are NOT re-exported — the former was deleted (INC-I-178 M2 R1); the DST constant is `bls::ATTESTATION_DST` (`bls.rs:60`).
+Crate root: `crates/crypto/src/lib.rs:1`. Pure leaf crate — zero internal `doli-*` dependencies, no async runtime, no consensus/node types. Re-exports at `lib.rs:63-70,109`: `Hash`, `Hasher`, `hash_with_domain`, `KeyPair`, `PrivateKey`, `PublicKey`, `Address`, `Signature`, `BlsKeyPair`, `BlsPublicKey` (alias of `BlsPublicKeyWrapped`), `BlsSecretKey`, `BlsSignature`, `bls_sign`, `bls_verify`, `bls_aggregate`, `bls_verify_aggregate`, `bls_sign_pop`, `bls_verify_pop`, `BlsError`, `BLS_PUBLIC_KEY_SIZE`, `BLS_SIGNATURE_SIZE` (`lib.rs:63-70`). `sign_rotation_pop` / `verify_rotation_pop` come from `bls_rotation.rs` (`lib.rs:57,69`). `attestation_message` and `BLS_ATTESTATION_DST` are NOT re-exported — the former was deleted (INC-I-178 M2 R1); the DST constant is `bls::ATTESTATION_DST` (`bls.rs:60`).
 
 Module map:
 
@@ -55,6 +55,7 @@ Module map:
 | `BlsKeyPair` | `bls.rs:448` | `struct{secret,public}` | + `proof_of_possession()` at `bls.rs:490` |
 | `bls_sign` / `bls_verify` | `bls.rs:522` / `bls.rs:533` | `fn bls_sign(msg,&BlsSecretKey)->Result<BlsSignature,BlsError>` | Attestation sign/verify (`ATTESTATION_DST`) |
 | `bls_sign_pop` / `bls_verify_pop` | `bls.rs:556` / `bls.rs:574` | `fn bls_sign_pop(&BlsSecretKey,&BlsPublicKeyWrapped)->Result<BlsSignature,BlsError>` | Proof-of-possession (`POP_DST`) |
+| `sign_rotation_pop` / `verify_rotation_pop` | `bls_rotation.rs:35` / `bls_rotation.rs:55` | `fn sign_rotation_pop(&BlsSecretKey,&BlsPublicKeyWrapped,genesis_hash:&[u8],producer_ed25519:&[u8;32])->Result<BlsSignature,BlsError>` | INC-I-217 rotation PoP over `genesis_hash ‖ producer_ed25519 ‖ new_bls_pubkey`, DST `DOLI-ROTATE-POP-V1` (`ROTATE_POP_DST`, `bls_rotation.rs:14`). Its OWN DST — a registration PoP and a rotation PoP are mutually unacceptable in either direction, no fallback |
 | `bls_aggregate` / `bls_verify_aggregate` | `bls.rs:595` / `bls.rs:621` | `fn bls_aggregate(&[BlsSignature])->Result<BlsSignature,BlsError>` | N→1 aggregation / N-key verify |
 | `attestation_message` | `bls.rs:654` | `fn attestation_message(&Hash,slot:u32)->Vec<u8>` | `block_hash(32)\|\|slot(4 BE)` |
 | `address::encode` / `address::decode` | `address.rs:70` / `address.rs:81` | `fn encode(&Hash,&str)->Result<String,AddressError>`; `fn decode(&str)->Result<(Hash,String),AddressError>` | Bech32m (BIP-350) encode/decode |

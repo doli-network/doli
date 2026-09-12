@@ -684,6 +684,8 @@ grep "Connected to peer\|Disconnected from" ~/.doli/devnet/logs/node0.log | tail
 | `doli producer list` | List all producers |
 | `doli producer register --bonds N` | Register with N bonds |
 | `doli producer add-bond --count N` | Add N more bonds |
+| `doli producer rotate-bls [--yes]` | Rotate the on-chain BLS attestation key to the one in this wallet (irreversible, next epoch boundary) |
+| `doli import-bls <SECRET> [--force] [--rpc URL]` | Install a BLS producer secret you already hold; client-side only, restart the node |
 
 ## Troubleshooting
 
@@ -769,17 +771,16 @@ ls -la /var/lib/doli/mainnet/{name}/data/wallet.json
 **Recovery from seed phrase:**
 
 > ⚠️ **STOP for any producer registered before BLS keys became seed-derived.** For those
-> wallets `doli restore` generates a **new random** BLS key, not the one committed on-chain
-> at registration. Wallets created by the current release derive the BLS key from the
-> phrase and DO restore fully. The seed phrase derives only the Ed25519 spending key. A restored
-> producer therefore comes back with the right address and balance and the WRONG
-> identity — silently, since attestation is Ed25519-only today and nothing compares the
-> loaded BLS key to the registered `blsPubkey`.
+> wallets (`version` 1 or 2) `doli restore` generates a **new random** BLS key, not the one
+> committed on-chain at registration — the phrase derives only the Ed25519 spending key.
+> Wallets created by the current release are `version` 3 and DO restore both keys. A
+> restored version-1/2 producer comes back with the right address and balance and the
+> WRONG attestation identity.
 >
-> Use this procedure only for a **non-producer** wallet, or for a producer that has not
-> yet registered. For a registered producer the only real recovery is restoring
-> `wallet.json` from backup. If no backup exists, the identity is unrecoverable except by
-> exit + re-register (~75% bond burn, seniority reset, delegations destroyed).
+> Use this procedure freely for a **non-producer** wallet, or for a producer that has not
+> yet registered. For a registered producer, restore `wallet.json` from backup if you have
+> one; if you do not, see **BLS key mismatch after restore** below — exit + re-register is
+> no longer the only way out.
 >
 > Verify after any restore: `doli info` BLS public key must equal `getProducer` →
 > `blsPubkey`. If they differ, do **not** assume the node is healthy just because it syncs
@@ -814,6 +815,47 @@ sudo tail -5 /var/log/doli/mainnet/{name}.log
 **Multi-node servers:** Repeat for each producer, using the correct wallet path and service name.
 
 **Prevention:** Before wiping any `data/` directory, verify `wallet.json` and the seed file are not inside it. Back them up first if present. Prefer `doli wipe` over manual `rm -rf` — its preserve list is `[keys, .env, wallet.json, wallet.seed.txt, node_key, config.toml]` (`WIPE_PRESERVE` in `bins/cli/src/cmd_chain.rs`). **Two gotchas: (1) `doli wipe` does NOT preserve `signed_slots.db` — back it up manually on active producers (double-sign slash risk); (2) it preserves `wallet.seed.txt`, NOT `producer.seed.txt` — if your seed is stored under that name, back it up too.** See `.claude/skills/producers/wipe-protocol.md`.
+
+### BLS key mismatch after restore: producer attests but earns nothing (INC-I-217)
+
+**Cause:** the node's wallet holds a BLS attestation key that is not the key the chain has
+registered for this producer — almost always a version-1/2 wallet restored from its phrase.
+Blocks are still produced; only attestation fails, so the node looks healthy.
+
+**Diagnosis — all four agree:**
+```bash
+# 1. own node log
+grep "ATTEST_EGRESS" <node.log>
+#   [ATTEST_EGRESS] own BLS half does not verify against the on-chain key — check the BLS key config
+# 2. any peer's log
+grep "ATTEST_INGEST" <peer.log>
+#   [ATTEST_INGEST] unverifiable BLS half from <attester>
+# 3. the two keys differ
+doli -w <wallet.json> info                     # field: BLS Public Key
+curl -s -X POST http://127.0.0.1:<rpc> -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getProducer","params":{"public_key":"<ed25519-hex>"}}'
+#   field: result.blsPubkey
+# 4. getAttestationStats reports 0 attested minutes for this producer
+```
+
+**Remedy — pick one:**
+
+| Situation | Command | Cost |
+|---|---|---|
+| You still hold the OLD BLS secret (old wallet file, or 64 hex chars) | `doli import-bls <SECRET> --rpc <rpc-url>`, then restart the node | none — client-side only, no transaction. `--rpc` refuses to write on mismatch |
+| Secret is gone; chain is at/above `bls_key_rotation_activation_height` | `doli producer rotate-bls` (add `--yes` to skip the prompt) | one fee-paying transaction; IRREVERSIBLE; effective at the NEXT EPOCH BOUNDARY |
+| Secret is gone; chain still below that height | — | the node answers `[ERRTX-ROT002] bls key rotation not activated`. Wait, delegate the weight (`producer delegate`), or exit + re-register at the vesting penalty |
+
+**After `import-bls`**: the wallet FILE is the only copy of that key — the 24 words no
+longer restore it. Back up the file.
+
+**After `rotate-bls`**: before the boundary `getProducer` → `pendingUpdates` holds
+`{ "updateType": "rotate_bls_key", "newBlsPubkey": "<hex>", "effectiveAtHeight": N }`;
+after it, `blsPubkey` is the new key and `pendingUpdates` is empty. The node logs
+`[BLS_ROTATE] queued …` then `[BLS_ROTATE] applied …`. Until the boundary lands the chain
+still expects the OLD key.
+
+Full page: `docs/bls-key-recovery.md`.
 
 ### Node won't sync (testnet/mainnet)
 
