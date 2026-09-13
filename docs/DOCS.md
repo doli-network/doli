@@ -39,7 +39,7 @@ Master index for all DOLI documentation.
 | [disaster-recovery.md](./disaster-recovery.md) | Disaster recovery procedures (restore, backfill, hot backfill) |
 | [releases.md](./releases.md) | Release process, versioning, and download verification |
 | [buy_doli.md](./buy_doli.md) | DOLI/USDT exchange system - API, deployment, and operational guide |
-| [faucet-bot.md](./faucet-bot.md) | Testnet faucet bot setup and operation |
+| [faucet-bot.md](./faucet-bot.md) | Mainnet faucet — Discord `/faucet` intake, human-approved, one claim per person |
 | [producer_node_quickstart.md](./producer_node_quickstart.md) | Quick-start guide for producer node setup |
 | [producer-ux-proposal.md](./producer-ux-proposal.md) | Producer UX improvement proposal |
 | [configuration_verification.md](./configuration_verification.md) | Configuration verification procedures |
@@ -106,7 +106,7 @@ docs/
 ├── disaster-recovery.md          # Disaster recovery procedures
 ├── docker.md                     # Docker deployment
 ├── extreme_devnet_600.md         # Extreme testing results
-├── faucet-bot.md                 # Testnet faucet bot
+├── faucet-bot.md                 # Mainnet faucet (Discord /faucet)
 ├── genesis.md                    # Genesis launch guide
 ├── genesis_ceremony.md           # Genesis ceremony procedures
 ├── infrastructure.md             # Infrastructure layout
