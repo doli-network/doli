@@ -587,7 +587,7 @@ doli import-bls <64-hex-characters> --rpc http://127.0.0.1:8500
 ```
 
 Branch (b) needs an active network gate. `bls_key_rotation_activation_height` is pinned at
-450_789 on mainnet and 176_200 on testnet; devnet stays `u64::MAX`. Below that height the node
+457_855 on mainnet (re-pinned 2026-09-13) and 176_200 on testnet; devnet stays `u64::MAX`. Below that height the node
 refuses the transaction with `[ERRTX-ROT002]`. Read the value for your network from
 `crates/core/src/network_params/defaults.rs` — the code is the source of truth.
 

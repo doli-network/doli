@@ -270,9 +270,9 @@ impl NetworkParams {
                 // same height as #178 by design (BLS without the own bit ships
                 // the M1 defect). IMMUTABLE once crossed.
                 inc_i_208_own_attestation_activation_height: 409_000,
-                // INC-I-217: MAINNET pin. Tip was 441_806 at 2026-09-12T09:03Z (10 s slots);
-                // 450_789 is ~25 h above it. Once crossed this height is IMMUTABLE.
-                bls_key_rotation_activation_height: 450_789,
+                // INC-I-217: MAINNET re-pin 2026-09-13 (450_789 never shipped). Tip 453_367 at
+                // 17:17Z (10 s slots); 457_855 is ~12.5 h above it. IMMUTABLE once crossed.
+                bls_key_rotation_activation_height: 457_855,
                 // INC-I-171 vesting-penalty payout bound. PINNED 418_000 on mainnet
                 // (user decision 2026-09-07; tip 400_175 at 11:53Z, ~49 h lead, one day
                 // after the 409_000 pins of #178/#204/#208). Own gate, never bundled.

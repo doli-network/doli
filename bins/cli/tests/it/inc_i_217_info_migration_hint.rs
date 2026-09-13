@@ -29,17 +29,17 @@
 //       existing getProducer comparison line, so it must stay absent.
 //
 // INPUT PARTITIONS (P1 only — P2 and P3 suppress the block, so the height never renders):
-//   P1a: --network mainnet — finite height 450789. Distinct relationship: a REAL height
+//   P1a: --network mainnet — finite height 457855. Distinct relationship: a REAL height
 //        the operator can compare against `getChainInfo -> height` today.
 //   P1b: --network testnet — finite height 176200. Same branch as P1a, different number:
 //        this partition is what makes "read from NetworkParams" non-vacuous. A hardcoded
-//        450789 passes P1a and fails here.
+//        457855 passes P1a and fails here.
 //   P1c: --network devnet — u64::MAX. The number must NOT render: printed as a decimal it
 //        would read as height 18446744073709551615, and any operator comparison against it
 //        is nonsense. Prose replaces it.
 //
 // MATRIX: 6 outputs × 5 (paths × partitions) = 30 cells.
-//   P1a: O1 printed / O2 "450789" / O3 success / O4 unchanged / O5 no secret / O6 present
+//   P1a: O1 printed / O2 "457855" / O3 success / O4 unchanged / O5 no secret / O6 present
 //   P1b: O1 printed / O2 "176200" / O3 success / O4 unchanged / O5 no secret / O6 present
 //   P1c: O1 printed / O2 prose, no MAX digits / O3 success / O4 unchanged / O5 no secret / O6 present
 //   P2 : O1 absent  / O2 absent (no height anywhere) / O3 success / O4 unchanged / O5 no secret / O6 absent
@@ -202,8 +202,8 @@ fn p1a_legacy_wallet_on_mainnet_recommends_migration_with_the_mainnet_height() {
         "P1a/O1: the hint must name the step that produces the phrase-derived key. Got:\n{seen}"
     );
     assert!(
-        seen.contains("450789"),
-        "P1a/O2: the hint must quote the mainnet bls_key_rotation_activation_height (450_789, \
+        seen.contains("457855"),
+        "P1a/O2: the hint must quote the mainnet bls_key_rotation_activation_height (457_855, \
          crates/core/src/network_params/defaults.rs). Without it the operator cannot tell \
          whether the rotation is submittable today. Got:\n{seen}"
     );
@@ -220,7 +220,7 @@ fn p1a_legacy_wallet_on_mainnet_recommends_migration_with_the_mainnet_height() {
 }
 
 /// P1b — testnet: same branch, a different height. This is the partition a hardcoded
-/// 450789 fails.
+/// 457855 fails.
 #[test]
 fn p1b_legacy_wallet_on_testnet_quotes_the_testnet_height_not_the_mainnet_one() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -241,7 +241,7 @@ fn p1b_legacy_wallet_on_testnet_quotes_the_testnet_height_not_the_mainnet_one() 
         "P1b/O2: on testnet the hint must quote 176_200. Got:\n{seen}"
     );
     assert!(
-        !seen.contains("450789"),
+        !seen.contains("457855"),
         "P1b/O2: the mainnet height must not be printed to a testnet operator — the height has \
          to come from NetworkParams::defaults(network), not from a literal. Got:\n{seen}"
     );
@@ -279,7 +279,7 @@ fn p1c_legacy_wallet_on_devnet_says_not_activated_instead_of_printing_u64_max() 
          for it and cannot compare it with getChainInfo. Got:\n{seen}"
     );
     assert!(
-        !seen.contains("450789") && !seen.contains("176200"),
+        !seen.contains("457855") && !seen.contains("176200"),
         "P1c/O2: another network's height must not leak into a devnet report. Got:\n{seen}"
     );
 }
@@ -306,7 +306,7 @@ fn p2_seed_derived_wallet_is_not_told_to_migrate() {
          rotation there costs a transaction fee and a node restart for no change. Got:\n{seen}"
     );
     assert!(
-        !seen.contains("rotate-bls") && !seen.contains("450789"),
+        !seen.contains("rotate-bls") && !seen.contains("457855"),
         "P2/O1+O2: neither the command nor the activation height belongs in a version-3 \
          report. Got:\n{seen}"
     );
@@ -340,7 +340,7 @@ fn p3_legacy_wallet_without_a_bls_key_gets_no_rotation_hint() {
          read, so recommending it here sends the operator down a dead end. Got:\n{seen}"
     );
     assert!(
-        !seen.contains("450789"),
+        !seen.contains("457855"),
         "P3/O2: no height without a hint to carry it. Got:\n{seen}"
     );
 }

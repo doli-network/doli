@@ -208,7 +208,7 @@ curl -s -X POST $RPC -d '{"jsonrpc":"2.0","id":1,"method":"getProducer","params"
 
 If they differ, the cheapest remedy is `doli import-bls <secret-hex>` when you still hold the
 old secret. If the secret is lost, `doli producer rotate-bls` publishes the key the wallet holds
-now, for one transaction fee, from `bls_key_rotation_activation_height` (450_789 mainnet,
+now, for one transaction fee, from `bls_key_rotation_activation_height` (457_855 mainnet,
 176_200 testnet, `u64::MAX` devnet). Exit-and-re-register is the last resort, not the only one.
 The full decision tree is in [docs/bls-key-recovery.md](bls-key-recovery.md).
 
@@ -1250,8 +1250,8 @@ a script you must pass `--yes`, or the command refuses. Every refusal path exits
 non-zero, so a caller can never read the exit code as a rotation that happened.
 
 **Activation gate.** `RotateBlsKey` is gated by
-`bls_key_rotation_activation_height`, which is 450_789 on mainnet and 176_200 on testnet
-(both pinned 2026-09-12) and `u64::MAX` on devnet. **No RPC method exposes that height**, so the CLI cannot check the
+`bls_key_rotation_activation_height`, which is 457_855 on mainnet (re-pinned 2026-09-13) and 176_200 on testnet
+(pinned 2026-09-12) and `u64::MAX` on devnet. **No RPC method exposes that height**, so the CLI cannot check the
 gate before it submits. Below the height the node rejects the transaction and the
 CLI prints the node's own text verbatim:
 

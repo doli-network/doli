@@ -623,7 +623,7 @@ fields (`network_params/mod.rs`, defaults in `network_params/defaults.rs`). ALWA
 | `inc_i_096_activation_height` | **0** | **0** | 0 | Pool-aware value conservation |
 | `large_block_activation_height` | **0** | **0** | 0 | ~2MB builder budget, ~300 TPS (builder policy, not consensus) |
 | `oracle_activation_height` | **u64::MAX — FROZEN** | **u64::MAX — FROZEN** | u64::MAX | Phase 2.1 PriceAttestation (TxType=16) — code shipped M1-M11 but gate NEVER pinned; separate decision-session required (HC-6/INC-I-075) |
-| `bls_key_rotation_activation_height` | **450_789** | **176_200** | u64::MAX | `RotateBlsKey` (TxType=32) accepted — INC-I-217. Below it validation returns `RotateBlsNotActivated` → `ROTATE_BLS_NOT_ACTIVATED` / `[ERRTX-ROT002]`. Mainnet LOCKED in `env_loader.rs:551`; `DOLI_BLS_KEY_ROTATION_ACTIVATION_HEIGHT` overrides on testnet/devnet only |
+| `bls_key_rotation_activation_height` | **457_855** | **176_200** | u64::MAX | `RotateBlsKey` (TxType=32) accepted — INC-I-217. Below it validation returns `RotateBlsNotActivated` → `ROTATE_BLS_NOT_ACTIVATED` / `[ERRTX-ROT002]`. Mainnet LOCKED in `env_loader.rs:551`; `DOLI_BLS_KEY_ROTATION_ACTIVATION_HEIGHT` overrides on testnet/devnet only |
 
 **IMMUTABILITY (INC-I-054)**: once any height above is crossed AND honored by a deployed binary on
 mainnet, it is IMMUTABLE — never move forward. The fresh genesis reset does not violate this: the
