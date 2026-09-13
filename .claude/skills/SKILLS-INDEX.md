@@ -1,10 +1,10 @@
 <!-- @INDEX
 MANIFEST        25-68
-KEYWORD-MAP     69-432
-COVERAGE        433-465
-CROSS-REFS      466-538
-INDEX-WARNINGS  539-570
-ADDENDUM        571-589
+KEYWORD-MAP     69-438
+COVERAGE        439-471
+CROSS-REFS      472-544
+INDEX-WARNINGS  545-576
+ADDENDUM        577-595
 @/INDEX -->
 
 # SKILLS-INDEX — DOLI Master Skill Manifest
@@ -103,13 +103,14 @@ Line ranges reflect verified actual content positions (15 domains re-validated 2
 | `bls_aggregate` | `crypto/SKILL.md` | ENTRY-POINTS | 11-71 |
 | `bls_sign` / `bls_verify` | `crypto/SKILL.md` | ENTRY-POINTS | 11-71 |
 | BLS12-381 | `crypto/SKILL.md` | ENTRY-POINTS | 11-71 |
-| BLS key rotation (operator runbook) | `network-setup/SKILL.md` | Troubleshooting — BLS key mismatch after restore | 819-858 |
+| BLS key rotation (operator runbook) | `network-setup/SKILL.md` | Troubleshooting — BLS key mismatch after restore | 819-866 |
+| `bls_migration_hint.rs` (`doli info` recommendation) | `cli/SKILL.md` | ENTRY-POINTS | 11-48 |
 | BLS key rotation (consensus rule) | `core/SKILL.md` | STRUCTS | 164-379 |
 | `bls_key_rotation_activation_height` | `core/SKILL.md` | ACTIVATION-HEIGHTS | 591-636 |
 | `[BLS_ROTATE]` queued / applied / skipped | `node/SKILL.md` | CONSTRAINTS | 298-346 |
 | `bls_rotation.rs` (rotation PoP) | `crypto/SKILL.md` | ENTRY-POINTS | 11-71 |
-| bls-key-recovery (decision tree) | `producer-bootstrap/SKILL.md` | Recovery — restored wallet, wrong BLS key | 207-256 |
-| `bls_is_seed_derived` / wallet version 1-2-3 | `wallet/SKILL.md` | CONSTRAINTS | 141-196 |
+| bls-key-recovery (decision tree) | `producer-bootstrap/SKILL.md` | Recovery — restored wallet, wrong BLS key | 207-265 |
+| `bls_is_seed_derived` / wallet version 1-2-3 | `wallet/SKILL.md` | CONSTRAINTS | 141-198 |
 | block archiver | `storage/SKILL.md` | FUNCTIONS-ARCHIVER | 563-576 |
 | block production | `node/SKILL.md` | FUNCTIONS | 178-280 |
 | `BlockArchiver` | `storage/SKILL.md` | ENTRY-POINTS | 21-47 |
@@ -117,10 +118,10 @@ Line ranges reflect verified actual content positions (15 domains re-validated 2
 | `BlockStore` | `storage/SKILL.md` | FUNCTIONS-BLOCKSTORE | 344-402 |
 | `BlockStore::open` | `storage/SKILL.md` | ENTRY-POINTS | 21-47 |
 | bond lifecycle | `core/SKILL.md` | STRUCTS | 164-379 |
-| bond withdrawal | `cli/SKILL.md` | OPERATIONS | 49-162 |
+| bond withdrawal | `cli/SKILL.md` | OPERATIONS | 50-164 |
 | `broadcast_block` | `network/SKILL.md` | ENTRY-POINTS | 12-53 |
 | bridge | `bridge/SKILL.md` | ENTRY-POINTS | 10-36 |
-| bridge CLI | `cli/SKILL.md` | OPERATIONS | 49-162 |
+| bridge CLI | `cli/SKILL.md` | OPERATIONS | 50-164 |
 
 ### C
 
@@ -161,10 +162,11 @@ Line ranges reflect verified actual content positions (15 domains re-validated 2
 | deploy mainnet | `mainnet/SKILL.md` | full file | — |
 | `DeterministicScheduler` | `core/SKILL.md` | ENTRY-POINTS | 15-53 |
 | devnet params | `network-setup/SKILL.md` | full file | — |
-| `doli init` | `cli/SKILL.md` | OPERATIONS | 49-162 |
-| `doli new` | `cli/SKILL.md` | OPERATIONS | 49-162 |
+| `doli init` | `cli/SKILL.md` | OPERATIONS | 50-164 |
+| `doli new` | `cli/SKILL.md` | OPERATIONS | 50-164 |
+| `doli info` BLS backup verdict + migration hint | `cli/SKILL.md` | OPERATIONS | 50-164 |
 | `doli producer delegate` | `delegation/SKILL.md` | full file | — |
-| `doli producer register` | `cli/SKILL.md` | OPERATIONS | 49-162 |
+| `doli producer register` | `cli/SKILL.md` | OPERATIONS | 50-164 |
 | documentation sync | `sync-docs/SKILL.md` | full file | — |
 | draft release | `release/SKILL.md` | full file | — |
 
@@ -242,8 +244,8 @@ Line ranges reflect verified actual content positions (15 domains re-validated 2
 | Keyword / Concept | Skill File | Section | Lines |
 |-------------------|-----------|---------|-------|
 | `InFlightHtlc` | `channels/SKILL.md` | STRUCTS | 35-101 |
-| `import-bls` (CLI) | `cli/SKILL.md` | OPERATIONS | 49-162 |
-| `import-bls` (wallet format effect) | `wallet/SKILL.md` | CONSTRAINTS | 141-196 |
+| `import-bls` (CLI) | `cli/SKILL.md` | OPERATIONS | 50-164 |
+| `import-bls` (wallet format effect) | `wallet/SKILL.md` | CONSTRAINTS | 141-198 |
 | integration tests | `testing/SKILL.md` | INTEGRATION-TESTS | 16-142 |
 
 ### K
@@ -257,7 +259,7 @@ Line ranges reflect verified actual content positions (15 domains re-validated 2
 | Keyword / Concept | Skill File | Section | Lines |
 |-------------------|-----------|---------|-------|
 | libp2p | `network/SKILL.md` | ENTRY-POINTS | 12-53 |
-| loan CLI (REMOVED 2026-05-11, lending tombstoned) | `cli/SKILL.md` | ENTRY-POINTS | 11-47 |
+| loan CLI (REMOVED 2026-05-11, lending tombstoned) | `cli/SKILL.md` | ENTRY-POINTS | 11-48 |
 
 ### M
 
@@ -273,7 +275,7 @@ Line ranges reflect verified actual content positions (15 domains re-validated 2
 | `Mempool` | `mempool/SKILL.md` | ENTRY-POINTS | 11-99 |
 | `MempoolEntry` | `mempool/SKILL.md` | ENTRY-POINTS | 11-99 |
 | `MerkleTree` | `crypto/SKILL.md` | ENTRY-POINTS | 11-71 |
-| mint asset | `cli/SKILL.md` | OPERATIONS | 49-162 |
+| mint asset | `cli/SKILL.md` | OPERATIONS | 50-164 |
 | `monitor-release-signed.sh` | `release/SKILL.md` | full file | — |
 
 ### N
@@ -287,7 +289,7 @@ Line ranges reflect verified actual content positions (15 domains re-validated 2
 | `Node::new` | `node/SKILL.md` | ENTRY-POINTS | 13-50 |
 | `Node::new_for_test` | `testing/SKILL.md` | TEST-UTILITIES | 301-349 |
 | `NodeManager` GUI | `gui/SKILL.md` | STRUCTS | 274-304 |
-| NFT | `cli/SKILL.md` | OPERATIONS | 49-162 |
+| NFT | `cli/SKILL.md` | OPERATIONS | 50-164 |
 
 ### O
 
@@ -305,7 +307,7 @@ Line ranges reflect verified actual content positions (15 domains re-validated 2
 |-------------------|-----------|---------|-------|
 | `pauseProduction` | `rpc/SKILL.md` | METHODS | 55-163 |
 | payment channel | `channels/SKILL.md` | ENTRY-POINTS | 14-34 |
-| payment channel CLI | `cli/SKILL.md` | OPERATIONS | 49-162 |
+| payment channel CLI | `cli/SKILL.md` | OPERATIONS | 50-164 |
 | payment channel (DeFi flows) | `defi/SKILL.md` | CLI-SURFACE / KNOWN-BUGS | 48-119, 143-164 |
 | pool (AMM) | `defi/SKILL.md` | CLI-SURFACE / TX-CONSTRUCTION | 48-119, 198-247 |
 | `pool_id` | `defi/SKILL.md` | CLI-SURFACE / COVENANT-MECHANICS | 48-119, 166-196 |
@@ -323,13 +325,17 @@ Line ranges reflect verified actual content positions (15 domains re-validated 2
 | `verify_amm_conservation` | `defi/SKILL.md` | COVENANT-MECHANICS / INCIDENT-MAP (INC-I-096) | 166-196, 287-304 |
 | peer scoring | `network/SKILL.md` | ENTRY-POINTS | 12-53 |
 | `PeerScorer` | `network/SKILL.md` | ENTRY-POINTS | 12-53 |
+| phrase-derived BLS key (wallet version 3) | `wallet/SKILL.md` | CONSTRAINTS | 141-198 |
+| phrase-derived BLS key (migration steps) | `network-setup/SKILL.md` | Troubleshooting — BLS key mismatch after restore | 819-866 |
 | penalty transaction | `channels/SKILL.md` | FUNCTIONS | 117-221 |
 | `ProducerSet` | `storage/SKILL.md` | FUNCTIONS-PRODUCERSET | 523-548 |
 | `PendingProducerUpdate::RotateBlsKey` | `storage/SKILL.md` | FUNCTIONS-PRODUCERSET | 523-548 |
 | `pendingUpdates` (`newBlsPubkey`, `effectiveAtHeight`) | `rpc/SKILL.md` | METHODS | 55-163 |
 | `ProducerSet::new` | `storage/SKILL.md` | ENTRY-POINTS | 21-47 |
 | producer onboarding | `producers/SKILL.md` | full index | — |
-| producer registration | `cli/SKILL.md` | OPERATIONS | 49-162 |
+| producer registration | `cli/SKILL.md` | OPERATIONS | 50-164 |
+| proactive migration (pre-v3 BLS wallet) | `cli/SKILL.md` | OPERATIONS | 50-164 |
+| proactive migration (operator runbook) | `producer-bootstrap/SKILL.md` | Recovery — restored wallet, wrong BLS key | 207-265 |
 | promote draft release | `release/SKILL.md` | full file | — |
 | `ProtocolActivation` | `core/SKILL.md` | ACTIVATION-HEIGHTS | 591-636 |
 | `publish-release.sh` | `release/SKILL.md` | full file | — |
@@ -342,10 +348,10 @@ Line ranges reflect verified actual content positions (15 domains re-validated 2
 | recover chain state | `node/SKILL.md` | ENTRY-POINTS | 13-50 |
 | recovery mode | `guardian/SKILL.md` | full index | 1-30 |
 | release signing | `release/SKILL.md` | full file | — |
-| restore wallet | `cli/SKILL.md` | OPERATIONS | 49-162 |
+| restore wallet | `cli/SKILL.md` | OPERATIONS | 50-164 |
 | revocation store | `channels/SKILL.md` | STRUCTS | 35-101 |
 | `RevokeDelegationData` | `delegation/SKILL.md` | full file | — |
-| `rotate-bls` (CLI) | `cli/SKILL.md` | OPERATIONS | 49-162 |
+| `rotate-bls` (CLI) | `cli/SKILL.md` | OPERATIONS | 50-164 |
 | `RotateBlsKey` (TxType 32) | `core/SKILL.md` | PATTERNS | 691-798 |
 | `rotation_admissible` / `rotation_filter.rs` | `mempool/SKILL.md` | CONSTRAINTS | 185-204 |
 | `rotation.rs` (rotate verdict, uniqueness scan) | `storage/SKILL.md` | FUNCTIONS-PRODUCERSET | 523-548 |
@@ -422,7 +428,7 @@ Line ranges reflect verified actual content positions (15 domains re-validated 2
 | Keyword / Concept | Skill File | Section | Lines |
 |-------------------|-----------|---------|-------|
 | wallet file format | `wallet/SKILL.md` | ENTRY-POINTS | 11-41 |
-| wallet management | `cli/SKILL.md` | OPERATIONS | 49-162 |
+| wallet management | `cli/SKILL.md` | OPERATIONS | 50-164 |
 | `Wallet` | `wallet/SKILL.md` | ENTRY-POINTS | 11-41 |
 | `Watcher::run` | `bridge/SKILL.md` | ENTRY-POINTS | 10-36 |
 | WebSocket subscriptions | `rpc/SKILL.md` | ENTRY-POINTS | 12-31 |

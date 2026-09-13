@@ -88,6 +88,7 @@ and `qualified: false`. Do not read `hasBls`: that field reports key registratio
 | The old BLS secret is lost or leaked | Rotate to a new key. One transaction. | 5 |
 | You cannot operate the node any more | Delegate the bond. | 8 |
 | Every option above is closed | Exit and register again. | 9 |
+| Nothing is broken, but the wallet predates version 3 | Migrate to a phrase-derived key. One transaction. | 11 |
 
 Try the remedies in that order. The list runs from cheapest to most expensive.
 
@@ -259,10 +260,86 @@ not suit you.
 
 - Back up `wallet.json` itself, not only the 24-word phrase. The phrase does not restore an
   imported BLS key.
+- Better than backing the file up: stop needing it. If `doli info` says the BLS key is RANDOM,
+  migrate to a phrase-derived key — section 11.
 - Keep the backup off the producer host.
 - After any wallet restore, run check 2.2 **before** you start the node.
 - Never copy one wallet to two producer hosts. Two nodes signing with one producer key cause an
   equivocation slash.
+
+---
+
+## 11. Proactive migration to a phrase-derived BLS key (pre-v3 wallets)
+
+This section is for a producer whose key still MATCHES the chain. Nothing is broken. The exposure
+is that the wallet **file** is the only copy of the BLS key, so losing the file loses the producer
+identity, and no 24-word phrase brings it back.
+
+`doli info` names the state:
+
+```
+  Wallet version 2 — the BLS producer key is RANDOM, not derived
+  from your seed phrase.
+```
+
+A version-3 wallet derives both keys from the phrase. Rotation lets you move to that state on
+purpose, at the cost of one transaction fee, at a moment you choose — instead of discovering the
+gap after a disk failure.
+
+### 11.1. The five steps
+
+**1. Leave the node running on the current wallet file.** It holds the key the chain expects. Do
+not stop it, do not edit it, do not replace it yet.
+
+**2. Restore the phrase into a NEW wallet file.**
+
+```bash
+doli -w ~/.doli/wallet-v3.json restore
+# Prompts for the 24 words. It refuses to write over an existing file,
+# so the path must be new.
+
+doli -w ~/.doli/wallet-v3.json info
+```
+
+The new file must show the **same address** and the same public key as the old one, and the Backup
+verdict must read *"both keys are derived from your 24-word phrase"*. The BLS key will be
+different — that is the whole point. If the address differs, you typed the wrong phrase; stop and
+start over.
+
+**3. Publish the new BLS key, once the network is past the activation height.**
+
+```bash
+doli -w ~/.doli/wallet-v3.json -r <your-rpc-url> -n <network> producer rotate-bls --yes
+```
+
+The transaction spends one small normal output of the producer's own address as the fee, and
+returns the change to you. The command prints `Takes effect: height N (next epoch boundary)`.
+Write N down. Below `bls_key_rotation_activation_height` (section 5.1) the node refuses with
+`[ERRTX-ROT002]` and nothing is signed.
+
+**4. At or right after height N, switch the node to the new file, and restart the node once.**
+Either replace the file the node's `--producer-key` points at, or repoint the flag at the new
+file. **Do not switch earlier.** Until N the chain still expects the old key, and a node signing
+with the new one attests into the void. After N the opposite is true.
+
+**5. Verify** with the checks of section 5.5: `getProducer` → `blsPubkey` equals the new wallet's
+BLS key and `pendingUpdates` is empty; the node log no longer prints
+`[ATTEST_EGRESS] own BLS half does not verify`; `getAttestationStats` counts minutes again inside
+the epoch.
+
+From that point the 24 words are a complete backup of the producer identity, and the old wallet
+file can be retired.
+
+### 11.2. What it costs, and what it does not
+
+- **Cost:** one transaction fee, and one node restart. No bond movement, no seniority change, no
+  re-registration.
+- **Irreversible:** the only way back to the old key is another rotation, with another fee.
+- **Visible while queued:** `getProducer` → `pendingUpdates[]` carries `updateType:
+  "rotate_bls_key"`, your new key in `newBlsPubkey`, and N in `effectiveAtHeight`.
+- **Not available yet on some networks:** if `bls_key_rotation_activation_height` is `u64::MAX`
+  for your network, the rule is not live. Do steps 1 and 2 now, and keep both files; run step 3
+  when the height is pinned.
 
 ---
 

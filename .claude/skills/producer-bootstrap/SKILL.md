@@ -253,6 +253,15 @@ keys derive from the seed, so the phrase is a complete backup. After any
 `import-bls` the wallet FILE is the only copy of that key. Full page:
 `docs/bls-key-recovery.md`.
 
+**Proactive migration (do this before anything breaks):** a producer whose
+`doli info` says the BLS key is RANDOM (version 1 or 2) still matches the chain,
+but the file is its only copy. Close that: `restore` the 24 words into a NEW
+wallet file (same address, version 3, phrase-derived BLS key), `producer
+rotate-bls` from the NEW file once the chain is past the activation height, then
+repoint `--producer-key` and restart ONCE at the height the command prints — not
+earlier. Cost: one transaction fee. `doli info` prints this recommendation
+itself. Steps and checks: `docs/bls-key-recovery.md` section 11.
+
 ---
 
 ## Learnings / pitfalls (from the first run)

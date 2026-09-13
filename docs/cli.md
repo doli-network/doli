@@ -206,13 +206,16 @@ curl -s -X POST $RPC -d '{"jsonrpc":"2.0","id":1,"method":"getProducer","params"
   | jq -r '.result.blsPubkey'
 ```
 
-If they differ, the only remedy is to **exit and re-register**, which burns roughly 75%
-of the bond (for bonds under one year), resets seniority, and destroys all delegations to
-you. There is no key-rotation transaction.
+If they differ, the cheapest remedy is `doli import-bls <secret-hex>` when you still hold the
+old secret. If the secret is lost, `doli producer rotate-bls` publishes the key the wallet holds
+now, for one transaction fee, from `bls_key_rotation_activation_height` (450_789 mainnet,
+176_200 testnet, `u64::MAX` devnet). Exit-and-re-register is the last resort, not the only one.
+The full decision tree is in [docs/bls-key-recovery.md](bls-key-recovery.md).
 
-**Therefore: back up `wallet.json` itself.** For a wallet created before this change the
-phrase is insufficient for a producer; for a newly created one it is sufficient, but the
-file remains the faster and less error-prone recovery path.
+**Therefore: back up `wallet.json` itself** — or stop needing to. For a version 1 or 2 wallet the
+phrase is insufficient for a producer. Restoring the phrase into a NEW file and rotating to the
+phrase-derived key makes the 24 words a complete backup: section 11 of
+[docs/bls-key-recovery.md](bls-key-recovery.md).
 
 ---
 
@@ -265,6 +268,11 @@ Display wallet metadata and summary.
 ```bash
 doli info
 ```
+
+For a wallet whose BLS producer key is random (version 1 or 2, and a BLS key present), the Backup
+block also recommends the proactive migration — restore the phrase into a new file, then
+`doli producer rotate-bls` — and quotes `bls_key_rotation_activation_height` for the `--network`
+you invoked, or says it is not yet activated there.
 
 ---
 

@@ -1,11 +1,11 @@
 # cli — DOLI CLI Interface (`bins/cli`)
 <!-- @INDEX
-ENTRY-POINTS   11-47
-OPERATIONS     49-162
-DATA-FLOW      164-184
-DEPENDENCIES   186-201
-CONSTRAINTS    203-238
-PATTERNS       240-296
+ENTRY-POINTS   11-48
+OPERATIONS     50-164
+DATA-FLOW      166-186
+DEPENDENCIES   188-203
+CONSTRAINTS    205-240
+PATTERNS       242-298
 @/INDEX -->
 
 ## ENTRY-POINTS
@@ -30,6 +30,7 @@ Module map (`main.rs:12-34`, 60 non-test source files):
 | `cmd_wallet.rs` | 1 | new/restore/address/balance/send/spend/history/export/import/info/add-bls/sign/verify |
 | `cmd_producer/` | 10 (mod,common,dispatch,register,status,bonds,withdrawal,exit,delegation,rotate) | producer lifecycle; `rotate.rs` = `rotate-bls` fetch/print/submit |
 | `cmd_wallet_bls.rs` + `rotate_tx.rs` | 2 | `import-bls` (client-side BLS key install) and the pure `rotate-bls` tx builder/precondition/consent logic (INC-I-217) |
+| `bls_migration_hint.rs` | 1 | pure `migration_hint_lines(Option<&str>)` — the 5-line proactive-migration recommendation `doli info` prints for a version 1/2 wallet; reads `bls_key_rotation_activation_height` from `NetworkParams::defaults`, prose when `u64::MAX` (INC-I-217) |
 | `cmd_nft/` | 9 (mod,list,info,mint,export,batch,transfer,sell,buy) | NFT mint/trade |
 | `cmd_template/` | 9 (mod,dispatch,serialize,vault,escrow,htlc_payment,subscription,agent_allowance,escrow_loan) | covenant condition templates |
 | `cmd_pool.rs` + `pool_tx.rs` + `lp_select.rs` | 3 | AMM pool create/swap/add/remove |
@@ -62,9 +63,10 @@ Module map (`main.rs:12-34`, 60 non-test source files):
 | Spend a covenant UTXO (multi-output) | 1. `spend <utxo> --witness W --output 0:normal:addr:amt --output 1:...` | same cmd, `--output` repeatable, mutually exclusive with positional TO/AMOUNT (`cmd_wallet.rs:579`) | max 8 outputs (`MAX_SPEND_OUTPUTS`), contiguous indices from 0, types: `normal,multisig,hashlock,htlc,vesting,nft` (protocol-internal types `bond,bridgehtlc,pool,lpshare,zkrollup,encryptedcontent,fungibleasset` rejected) | tx broadcast; warns if computed fee >1% of input or >10000 units (S3 mitigation) |
 | View tx history | 1. `history` | `doli history [--limit N]` default 10 (`cmd_wallet.rs:720`) | none | RPC `getHistory` w/ archiver fallback |
 | Export/import wallet | 1. `export <path>` / `import <path>` | `cmd_wallet.rs:784,793` | file path | wallet file copied/loaded |
-| Add BLS key (needed before producer register) | 1. `add-bls` | `doli add-bls` (`cmd_wallet.rs:825`) | none | BLS keypair added; must restart node to load |
+| Add BLS key (needed before producer register) | 1. `add-bls` | `doli add-bls` (`cmd_wallet.rs:896`) | none | BLS keypair added; must restart node to load |
 | Import a BLS key you still hold | 1. back up `wallet.json` 2. `import-bls <SECRET>` 3. restart node | `doli import-bls <SECRET> [--force] [--rpc URL] [--address ADDR]` (`cmd_wallet_bls.rs:14`, declared `commands.rs:167`) | BLS secret, 64 hex chars; `--force` to replace an existing key | secret + derived pubkey written to the wallet. `--rpc` compares against `getProducer -> blsPubkey` BEFORE `save()` and writes nothing on mismatch; `--address` picks a non-primary registration (default primary). Wallet version drops to `min(version, 2)` (`wallet.rs:544`) so the 24-word phrase NO LONGER restores the BLS key — back up the wallet FILE. Restart the node to load it. Client-side only: nothing reaches a block (INC-I-217) |
-| Sign/verify a message | 1. `sign <msg>` / `verify <msg> <sig> <pubkey>` | `cmd_wallet.rs:848,859` | message string | Ed25519 signature hex |
+| Migrate a pre-v3 wallet to a phrase-derived BLS key (proactive, INC-I-217) | 1. leave the node on the OLD file 2. `restore` the 24 words into a NEW file 3. `producer rotate-bls` from the NEW file 4. at the printed height, repoint `--producer-key` and restart | `doli -w <new> restore` then `doli -w <new> producer rotate-bls --yes` | the 24-word phrase; chain at/above `bls_key_rotation_activation_height`; one spendable UTXO for the fee | new file = same address + same Ed25519 key + version 3 + a phrase-derived BLS key; after height N the chain holds it and the phrase is a COMPLETE backup. `doli info` recommends this itself for any version 1/2 wallet holding a BLS key (`bls_migration_hint.rs`, height read from `NetworkParams::defaults`). Switching the node BEFORE N attests with a key the chain does not hold. Procedure: `docs/bls-key-recovery.md` section 11 |
+| Sign/verify a message | 1. `sign <msg>` / `verify <msg> <sig> <pubkey>` | `cmd_wallet.rs:919,930` | message string | Ed25519 signature hex |
 
 ### Producer lifecycle (`cmd_producer/`)
 

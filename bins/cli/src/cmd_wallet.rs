@@ -879,6 +879,12 @@ pub(crate) fn cmd_info(wallet_path: &Path) -> Result<()> {
         if wallet.primary_bls_public_key().is_some() {
             println!("  To confirm a producer still matches the chain, compare the BLS Key");
             println!("  above with getProducer -> blsPubkey for this address.");
+            // INC-I-217: the exposure is closeable, not just backupable.
+            for line in
+                crate::bls_migration_hint::migration_hint_lines(NETWORK.get().map(|s| s.as_str()))
+            {
+                println!("{}", line);
+            }
         }
     }
     println!();

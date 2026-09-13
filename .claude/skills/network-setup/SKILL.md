@@ -855,6 +855,14 @@ after it, `blsPubkey` is the new key and `pendingUpdates` is empty. The node log
 `[BLS_ROTATE] queued …` then `[BLS_ROTATE] applied …`. Until the boundary lands the chain
 still expects the OLD key.
 
+**Before it breaks — proactive migration.** If `doli info` says the BLS producer key is
+RANDOM (wallet version 1 or 2), the key still matches the chain, but the file is its only
+copy. Close that gap for one fee: `restore` the 24 words into a NEW wallet file (same
+address, version 3, phrase-derived BLS key), run `producer rotate-bls` from the NEW file
+once the chain is past `bls_key_rotation_activation_height`, then repoint `--producer-key`
+and restart ONCE at the height the command prints — never earlier. `doli info` prints the
+same recommendation. Steps: `docs/bls-key-recovery.md` section 11.
+
 Full page: `docs/bls-key-recovery.md`.
 
 ### Node won't sync (testnet/mainnet)
