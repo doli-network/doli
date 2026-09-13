@@ -606,33 +606,27 @@ impl Node {
             }
         }
 
-        // PEER MAINTENANCE: Periodically redial bootstrap nodes when isolated.
-        // REQ-NET-001: Exponential backoff per bootstrap address to avoid
-        // saturating the event loop with failed TCP handshakes to dead peers.
+        // PEER MAINTENANCE: re-dial bootstrap nodes with per-address backoff (REQ-NET-001).
         {
-            let peer_count = self.sync_manager.read().await.peer_count();
-            if peer_count > 0 {
-                // Connected — reset all backoff counters
-                self.bootstrap_backoff.clear();
-            } else if !self.config.bootstrap_nodes.is_empty() {
-                let now = std::time::Instant::now();
-                if let Some(ref network) = self.network {
-                    for addr in &self.config.bootstrap_nodes {
-                        let (count, last_attempt) = self
-                            .bootstrap_backoff
-                            .entry(addr.clone())
-                            .or_insert((0, now - Duration::from_secs(300)));
-
-                        // Backoff: 1s, 2s, 4s, 8s, ... capped at 60s for bootstrap nodes
-                        let backoff_secs = std::cmp::min(60, 1u64 << (*count).min(6));
-                        let backoff = Duration::from_secs(backoff_secs);
-
-                        if last_attempt.elapsed() >= backoff {
-                            *last_attempt = now;
-                            *count = count.saturating_add(1);
-                            let _ = network.connect(addr).await;
-                        }
-                    }
+            let (peer_count, min_peers) = {
+                let sm = self.sync_manager.read().await;
+                (sm.peer_count(), sm.min_peers_for_production())
+            };
+            if let Some(ref network) = self.network {
+                let due = bootstrap_redial::due_bootstrap_redials(
+                    peer_count,
+                    min_peers,
+                    &self.config.bootstrap_nodes,
+                    &mut self.bootstrap_backoff,
+                    std::time::Instant::now(),
+                );
+                if let Some(msg) =
+                    bootstrap_redial::redial_round_message(peer_count, min_peers, due.len())
+                {
+                    info!("{}", msg);
+                }
+                for addr in &due {
+                    let _ = network.connect(addr).await;
                 }
             }
         }
