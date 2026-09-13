@@ -4,8 +4,8 @@ ENTRY-POINTS    11-41
 OPERATIONS      42-59
 DATA-FLOW       60-118
 DEPENDENCIES    119-140
-CONSTRAINTS     141-196
-PATTERNS        197-261
+CONSTRAINTS     141-198
+PATTERNS        199-263
 @/INDEX -->
 
 ## ENTRY POINTS
@@ -188,6 +188,8 @@ Each address: `address`, `public_key`, `private_key`, `label` required; `bls_pri
 Version history (`wallet.rs:17-29`, `WALLET_VERSION_SEED_DERIVED_BLS = 3`): **1** = legacy, both keys random, no phrase; **2** = Ed25519 from the BIP-39 seed, BLS still random (the phrase does NOT restore a producer identity, INC-I-162); **3** = BOTH keys from the seed, the phrase is a complete backup. Marker only — nothing gates behaviour on it and every version loads. This format is duplicated independently in `bins/cli/src/wallet.rs` — both MUST evolve together or wallet.json files stop being cross-compatible.
 
 **Imported BLS keys (INC-I-217, CLI-only).** `doli import-bls <SECRET> [--force] [--rpc URL] [--address ADDR]` installs a BLS secret the operator already holds — the recovery path for a version 1/2 producer whose restored wallet attests with the wrong key. It lives in the CLI copy of the format (`bins/cli/src/cmd_wallet_bls.rs`, `Wallet::import_bls_key`) and has **no counterpart in this crate**: `crates/wallet` can only `add_bls_key()` (random, refuses if one exists). The CLI import writes the version back DOWN to `min(version, 2)` (`bins/cli/src/wallet.rs:544`) precisely so `bls_is_seed_derived()` stops claiming the 24 words are a complete backup. After an import the wallet FILE is the only copy of that key — back up the file, not the phrase.
+
+**Proactive migration to a phrase-derived key (INC-I-217).** A version 1/2 wallet whose key still MATCHES the chain has an open exposure: the file is the only copy. The migration closes it without waiting for a failure — restore the 24 words into a NEW file (same address, same Ed25519 key, version 3, a phrase-derived BLS key), then `doli producer rotate-bls` from that file once the chain is past `bls_key_rotation_activation_height`, then repoint the node at the new file at the height the command prints. Cost: one transaction fee. `doli info` prints this recommendation itself for any version 1/2 wallet that holds a BLS key (`bins/cli/src/bls_migration_hint.rs`). Procedure: `docs/bls-key-recovery.md` section 11.
 
 ### Bond Output Encoding
 Bond outputs: `output_type=1`, `lock_until=u64::MAX`, `amount=BOND_UNIT`.

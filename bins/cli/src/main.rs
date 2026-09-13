@@ -9,6 +9,7 @@
 use anyhow::Result;
 use clap::Parser;
 
+mod bls_migration_hint;
 mod cmd_bridge;
 mod cmd_chain;
 mod cmd_channel;

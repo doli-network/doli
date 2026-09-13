@@ -586,9 +586,10 @@ doli import-bls <64-hex-characters> --rpc http://127.0.0.1:8500
 # Restart the node to load the imported key.
 ```
 
-Branch (b) needs an active network gate. `bls_key_rotation_activation_height` is `u64::MAX` on
-every network today. Below that height the node refuses the transaction with `[ERRTX-ROT002]`.
-Ask the maintainers before you plan a rotation.
+Branch (b) needs an active network gate. `bls_key_rotation_activation_height` is pinned at
+450_789 on mainnet and 176_200 on testnet; devnet stays `u64::MAX`. Below that height the node
+refuses the transaction with `[ERRTX-ROT002]`. Read the value for your network from
+`crates/core/src/network_params/defaults.rs` — the code is the source of truth.
 
 ```bash
 doli producer rotate-bls          # prompts before it signs; --yes accepts non-interactively
@@ -601,6 +602,14 @@ Branch (d) costs more than it looks. An Exit ends the registration, so:
 - You must fund and bond again at the current bond price.
 
 Use branch (d) only when branches (a), (b) and (c) are all closed to you.
+
+**Before any of this happens to you.** If `doli info` says your BLS producer key is RANDOM
+(wallet version 1 or 2), the key still matches the chain, but the wallet file is its only copy —
+the 24 words do not bring it back. You can close that gap on purpose, for one transaction fee:
+restore the phrase into a NEW wallet file, rotate to the phrase-derived key with
+`doli producer rotate-bls`, and point the node at the new file at the height the command prints.
+`doli info` prints the same recommendation. The five steps, in order, with the checks:
+[docs/bls-key-recovery.md, section 11](bls-key-recovery.md#11-proactive-migration-to-a-phrase-derived-bls-key-pre-v3-wallets).
 
 Full procedure, every command, and the confirmation steps: [docs/bls-key-recovery.md](bls-key-recovery.md).
 
