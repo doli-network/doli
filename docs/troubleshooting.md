@@ -367,6 +367,7 @@ network name (`testnet`, `devnet`, ...) on both the filename and the leading pat
 | Wrong key file | Verify `--producer-key` path |
 | VDF computation slow | Check CPU performance |
 | Already produced for slot | Only one block per slot allowed |
+| Fewer peers than the production minimum (`InsufficientPeers`) | See [2.9](#29-producer-stuck-at-1-peer--insufficientpeers-inc-i-221) |
 
 **Check producer status:**
 ```bash
@@ -726,6 +727,46 @@ trace, which is exactly why the counters — not the logs — are the coverage m
 Code: `bins/node/src/node/attestation/ingress.rs` (`BlsAttestVerdict`),
 `bins/node/src/metrics.rs:644-728`. Gauntlet: GS-018
 (`gs018-active-producers-dual-sign`, REQ-BLS-006 AC-2).
+
+---
+
+### 2.9. Producer Stuck at 1 Peer — `InsufficientPeers` (INC-I-221)
+
+**Symptom:** The node holds 1 peer and never gains a second. It does not produce, and
+the log repeats:
+
+```
+[NODE_PRODUCE] slot=… BLOCKED: InsufficientPeers - only 1 peers (need 2)
+```
+
+Before the fix, only a restart cleared it.
+
+**Cause:** The node connected to one other peer before its bootstrap (seed) node was
+listening. The periodic bootstrap re-dial ran only at 0 peers. With 1 peer the node
+stopped re-dialing and cleared its backoff. Peer discovery knew only that one peer, so
+the node never found a second. Production needs 2 peers on mainnet and testnet.
+
+**Fix (INC-I-221):** The re-dial now runs while the peer count is below the production
+minimum (`max(min_peers_for_production, 1)`), not only at 0. It dials only the configured
+`--bootstrap` addresses. Per address, the first attempt is immediate, then the gaps are
+2, 4, 8, 16, 32, 60 s (60 s cap). The backoff clears when the node reaches the minimum.
+Not a consensus change; safe for a rolling restart.
+
+**What to look for:** one INFO line per round that dials:
+
+```
+[BOOTSTRAP_REDIAL] peers=1/2 dialing <n> addr(s)
+```
+
+- The line stops when the node reaches the minimum. This is the healthy path.
+- The line repeats for minutes: the node cannot reach any `--bootstrap` address. Check
+  the addresses and the P2P firewall (see [1.5](#15-low-peer-count)).
+- `InsufficientPeers` with no `[BOOTSTRAP_REDIAL]` line: the binary does not have the
+  fix, or the node has no bootstrap addresses. Upgrade, or restart as a workaround.
+
+Code: `bins/node/src/node/bootstrap_redial.rs` (called from `periodic.rs`).
+Regression: `bins/node/src/node/bootstrap_redial_tests.rs`,
+`bins/node/tests/it/inc_i_221_bootstrap_retry.rs`.
 
 ---
 

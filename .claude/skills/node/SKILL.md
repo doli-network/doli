@@ -248,6 +248,7 @@ undo.epoch_state_snapshot: always present, deserialize → self.epoch_state
 `periodic.rs:1137` `maybe_run_integrity_check()` — every 1000 blocks, blocking-task scan + auto-repair
 `periodic.rs:1248` `parse_checkpoint_height()` (pure, tested)
 `periodic.rs:1261` `integrity_scan()` (pure block-store scan)
+`periodic.rs:609` PEER MAINTENANCE → `bootstrap_redial.rs` `due_bootstrap_redials()` (pure, tested) — re-dials the configured `--bootstrap` addrs (never cached/peer-learned) while sync peers < `max(min_peers_for_production, 1)`; per-address backoff immediate then 2..60 s; one `[BOOTSTRAP_REDIAL] peers=x/min dialing n addr(s)` INFO line per dialing round (INC-I-221; the old gate fired only at 0 peers). Followed by the DISCV5 seed fallback (:634) and stale-chain detection (:664)
 
 ### Network events (`network_events.rs`)
 `network_events.rs:8` `on_peer_connected()` / `:52` `on_peer_disconnected()` — churn-rate-limited (Fix 5a)

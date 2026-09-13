@@ -1997,9 +1997,11 @@ Per-peer limit: 2 established connections (handles simultaneous-dial race and DC
 4. Every 60s: kademlia.bootstrap() refreshes routing table
 5. New peers discovered → dialed directly (not through bootstrap)
 6. Peer cache persisted to disk for fast restart recovery
+7. While peers < production minimum: re-dial the configured bootstrap
+   nodes, per-address backoff (first attempt immediate, then 2..60 s)
 ```
 
-Bootnodes are introduction points, not permanent hubs. A node needs one successful bootstrap connection to discover the rest of the network via DHT.
+Bootnodes are introduction points, not permanent hubs. A node needs one successful connection to a bootnode (or to any well-connected peer) to discover the rest of the network via DHT. A connection only to a peer that is itself isolated is not enough, so the node keeps re-dialing its configured bootstrap list until its peer count reaches `max(min_peers_for_production, 1)` (INC-I-221). Cached and peer-learned addresses are never re-dialed by this path.
 
 ### 7.2 GossipSub Topics
 
