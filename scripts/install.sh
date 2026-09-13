@@ -58,17 +58,85 @@ VERSION=$(printf '%s' "$RELEASE_JSON" | grep '"tag_name"' | head -1 | sed 's/.*"
 
 info "Latest version: ${VERSION}"
 
-# Skip if already at this version. Escape hatches: --force arg or DOLI_FORCE_INSTALL=1
-# (env var preserves the `curl ... | sudo sh` one-liner — sudo sh -s -- --force for the arg).
+# Flags: --force (reinstall same version), --no-restart (leave running units alone).
+# Env equivalents keep the `curl ... | sudo sh` one-liner usable: DOLI_FORCE_INSTALL=1,
+# DOLI_NO_RESTART=1. With args: curl ... | sudo sh -s -- --force
+FORCE="${DOLI_FORCE_INSTALL:-}"
+NO_RESTART="${DOLI_NO_RESTART:-}"
+for arg in "$@"; do
+    case "$arg" in
+        --force)      FORCE=1 ;;
+        --no-restart) NO_RESTART=1 ;;
+        *) err "Unknown argument: $arg (accepted: --force, --no-restart)" ;;
+    esac
+done
+RPC_PORT="${DOLI_RPC_PORT:-8500}"
+
+# Running node detection (Linux/systemd). A binary replaced on disk does NOT change the
+# running process: the node keeps executing the old version until its unit restarts.
+UNITS=""
+if [ "$OS" = "Linux" ] && command -v systemctl >/dev/null 2>&1; then
+    UNITS=$(systemctl list-units --type=service --state=active --no-legend --plain 2>/dev/null \
+            | awk '{print $1}' | grep '^doli' | tr '\n' ' ' | sed 's/ *$//')
+fi
+UNIT_COUNT=$(printf '%s' "$UNITS" | wc -w | tr -d ' ')
+
+rpc_call() {
+    command -v curl >/dev/null 2>&1 || return 1
+    curl -s -m 5 -X POST -H 'Content-Type: application/json' \
+        -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"$1\",\"params\":[]}" \
+        "http://127.0.0.1:${RPC_PORT}" 2>/dev/null
+}
+rpc_version() { rpc_call getNodeInfo  | sed -n 's/.*"version":"\([^"]*\)".*/\1/p'; }
+rpc_height()  { rpc_call getChainInfo | sed -n 's/.*"bestHeight":\([0-9]*\).*/\1/p'; }
+
+# Verify that the RUNNING node serves the expected version and advances. Single-unit hosts
+# only (the RPC port of a multi-unit host is not knowable here). Returns 1 on any failure.
+verify_running() {
+    _want="$1"; _v=""; _i=0
+    while [ $_i -lt 9 ]; do
+        _v=$(rpc_version); [ -n "$_v" ] && break
+        sleep 10; _i=$((_i+1))
+    done
+    if [ "$_v" != "$_want" ]; then
+        printf "${RED}==>${NC} running node reports version '%s', expected %s\n" "$_v" "$_want" >&2
+        return 1
+    fi
+    _h0=$(rpc_height); info "Running ${_v}; checking that the chain height advances (60 s)..."
+    sleep 60
+    _h1=$(rpc_height)
+    if [ -z "$_h0" ] || [ -z "$_h1" ] || [ "$_h1" -le "$_h0" ]; then
+        printf "${RED}==>${NC} chain height did not advance (%s -> %s)\n" "$_h0" "$_h1" >&2
+        return 1
+    fi
+    ok "Running node: version ${_v}, height ${_h0} -> ${_h1}"
+}
+
 LATEST_BARE=${VERSION#v}
-if [ -z "${DOLI_FORCE_INSTALL:-}" ] && [ "${1:-}" != "--force" ] && command -v doli-node >/dev/null 2>&1; then
+RESTART_ONLY=0
+if [ -z "$FORCE" ] && command -v doli-node >/dev/null 2>&1; then
     INSTALLED=$(doli-node --version 2>/dev/null | awk '{print $2}')
     if [ -n "$INSTALLED" ] && [ "$INSTALLED" = "$LATEST_BARE" ]; then
-        ok "DOLI ${VERSION} already installed at $(command -v doli-node) — nothing to do"
-        echo "    Re-run with --force or DOLI_FORCE_INSTALL=1 to reinstall."
-        exit 0
+        RUNNING=""
+        [ "$UNIT_COUNT" = "1" ] && RUNNING=$(rpc_version)
+        if [ -n "$RUNNING" ] && [ "$RUNNING" != "$LATEST_BARE" ] && [ -z "$NO_RESTART" ]; then
+            info "DOLI ${VERSION} is on disk but ${UNITS} still runs ${RUNNING} — restarting it"
+            RESTART_ONLY=1
+        else
+            ok "DOLI ${VERSION} already installed at $(command -v doli-node) — nothing to do"
+            [ -n "$RUNNING" ] && echo "    Running node reports ${RUNNING}."
+            echo "    Re-run with --force or DOLI_FORCE_INSTALL=1 to reinstall."
+            exit 0
+        fi
     fi
-    [ -n "$INSTALLED" ] && info "Currently installed: ${INSTALLED}, upgrading to ${LATEST_BARE}"
+    [ -n "$INSTALLED" ] && [ "$RESTART_ONLY" = "0" ] && info "Currently installed: ${INSTALLED}, upgrading to ${LATEST_BARE}"
+fi
+
+if [ "$RESTART_ONLY" = "1" ]; then
+    systemctl restart $UNITS
+    verify_running "$LATEST_BARE" || err "Restart of ${UNITS} did not bring up ${VERSION}. Check: journalctl -u ${UNITS}"
+    ok "DOLI ${VERSION} running (${UNITS} restarted)"
+    exit 0
 fi
 
 # Always use tarball — it's the only format guaranteed to exist in every release.
@@ -112,9 +180,43 @@ info "Extracting..."
 tar -xzf "${TMPDIR}/${FILE}" -C "$TMPDIR"
 DIR=$(find "$TMPDIR" -maxdepth 1 -type d -name "doli-*" | head -1)
 [ -z "$DIR" ] && err "Failed to extract archive"
+# Back up the binaries currently on disk so a failed upgrade can be reverted.
+BK=".pre-${VERSION}-backup"
+[ -f /usr/bin/doli-node ] && cp -p /usr/bin/doli-node "/usr/bin/doli-node${BK}"
+[ -f /usr/bin/doli ]      && cp -p /usr/bin/doli      "/usr/bin/doli${BK}"
+
+restore_backups() {
+    printf "${RED}==>${NC} Restoring previous binaries\n" >&2
+    [ -f "/usr/bin/doli-node${BK}" ] && install -m 755 "/usr/bin/doli-node${BK}" /usr/bin/doli-node
+    [ -f "/usr/bin/doli${BK}" ]      && install -m 755 "/usr/bin/doli${BK}"      /usr/bin/doli
+    [ -n "$UNITS" ] && systemctl start $UNITS 2>/dev/null
+    err "Upgrade to ${VERSION} failed; previous binaries restored and ${UNITS:-no unit} restarted."
+}
+
+STOPPED=""
+if [ -n "$UNITS" ] && [ -z "$NO_RESTART" ]; then
+    info "Stopping ${UNITS}..."
+    systemctl stop $UNITS
+    STOPPED="$UNITS"
+fi
+
 info "Installing to /usr/bin..."
-sudo install -m 755 "${DIR}/doli-node" /usr/bin/doli-node
-sudo install -m 755 "${DIR}/doli"      /usr/bin/doli
+sudo install -m 755 "${DIR}/doli-node" /usr/bin/doli-node || restore_backups
+sudo install -m 755 "${DIR}/doli"      /usr/bin/doli      || restore_backups
+
+if [ -n "$STOPPED" ]; then
+    info "Starting ${STOPPED}..."
+    systemctl start $STOPPED || restore_backups
+    sleep 5
+    for u in $STOPPED; do
+        systemctl is-active --quiet "$u" || { printf "${RED}==>${NC} %s is not active after start\n" "$u" >&2; restore_backups; }
+    done
+    if [ "$UNIT_COUNT" = "1" ]; then
+        verify_running "$LATEST_BARE" || restore_backups
+    else
+        ok "Restarted ${STOPPED} (multi-unit host: running version not checked over RPC)"
+    fi
+fi
 
 # ---------------------------------------------------------------------------
 # Install agent skills to ~/.doli/skills/
@@ -210,11 +312,20 @@ echo ""
 printf "  ${BOLD}doli-node${NC}  %s\n" "$(command -v doli-node)"
 printf "  ${BOLD}doli${NC}      %s\n" "$(command -v doli)"
 echo ""
-echo "  Get started:"
-echo "    doli init                                         # create wallet + keys"
-echo "    sudo doli service install                         # start node as system service"
-echo "    doli chain                                        # check sync progress"
-echo ""
+if [ -n "$STOPPED" ]; then
+    printf "  ${BOLD}Restarted${NC}  %s (backups: /usr/bin/doli-node%s, /usr/bin/doli%s)\n" "$STOPPED" "$BK" "$BK"
+    echo ""
+elif [ -n "$UNITS" ]; then
+    printf "  ${BOLD}IMPORTANT:${NC} %s still runs the previous binary. Restart it to finish the upgrade:\n" "$UNITS"
+    echo "    sudo systemctl restart ${UNITS}"
+    echo ""
+else
+    echo "  Get started:"
+    echo "    doli init                                         # create wallet + keys"
+    echo "    sudo doli service install                         # start node as system service"
+    echo "    doli chain                                        # check sync progress"
+    echo ""
+fi
 
 if [ "$SKILL_COUNT" -gt 0 ] 2>/dev/null; then
     printf "  ${BOLD}Agent Skills${NC}  %s (%s skills)\n" "$SKILLS_DIR" "$SKILL_COUNT"
