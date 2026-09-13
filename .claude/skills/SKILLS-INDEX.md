@@ -51,7 +51,7 @@ Index path: `.claude/skills/SKILLS-INDEX.md`
 | doli-network | `doli-network/SKILL.md` | RPC reference, server inventory (ai1/ai2/ai3), state root debugging, epoch params | — |
 | producers | `producers/SKILL.md` | External producer server management (index only) | servers.md, onboarding.md, upgrade.md, wipe-protocol.md, troubleshooting.md, auto-update.md, auto-bond.md, migration.md |
 | delegation | `delegation/SKILL.md` | Bond delegation CLI, RPC fields, constants, epoch-deferred processing | — |
-| faucet | `faucet/SKILL.md` | GitHub bot faucet (ai2), hot wallet + vault (ai3), anti-abuse, refill | — |
+| faucet | `faucet/SKILL.md` | Discord `/faucet` intake, `faucet-approve` human approval, dispenser hot wallet + vault, anti-abuse gates, refill | — |
 | guardian | `guardian/SKILL.md` | Mainnet protection, fork detection, emergency halt, checkpoint recovery, canonical anchors | reference/overview.md, procedures.md, node-heal.md, hostile-recovery.md, anchors.md, deployment.md |
 | mainnet | `mainnet/SKILL.md` | Full mainnet fleet deploy (ai1-ai5), per-service binary layout, confirmation gates | RECOVERY.md |
 | auto-update | `auto-update/SKILL.md` | Auto-update implementation guide, vote weight formula (DELETED — head count), devnet E2E test scripts, staged upgrade path + `UPDATE_TARGET_NOT_WRITABLE` WARN (INC-I-215) | — |

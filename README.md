@@ -93,9 +93,10 @@ sudo doli service install
 # 4. Verify your node is synced
 doli chain
 
-# 5. Request 10.01 DOLI from the faucet
-#    Open a faucet request — paste your address (doli info) and doli chain output
-#    Wait ~7 minutes for the bot to process
+# 5. Request 10.000001 DOLI from the faucet (one per person, to a new empty address)
+#    Join the DOLI Discord (https://discord.gg/uGzCvxGYC) and run /faucet
+#    Open the private link it sends you and submit your address (doli info)
+#    A human approves every claim before it is paid
 
 # 6. Verify you received the DOLI
 doli balance

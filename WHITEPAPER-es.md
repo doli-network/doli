@@ -1022,7 +1022,7 @@ El resultado: los productores fundadores pagaron sus propios bonds con produccio
 
 **Los fundadores no recibieron privilegio alguno — pagaron el costo del arranque con trabajo.**
 
-**Fase 4 — Participacion abierta.** En el bloque 26,979 (~3 dias despues del genesis), los productores fundadores financiaron un faucet publico con sus propias recompensas ganadas — 250 DOLI cada uno, 1,500 DOLI en total. El faucet distribuye 10.01 DOLI (1 unidad de bond + comisiones de transaccion) a cualquier nuevo participante que lo solicite. La barrera de entrada es cero capital — solo un VPS de $5/mes y la voluntad de operar un nodo. Todas las transacciones del faucet estan en cadena y son verificables. Hoy, los nuevos participantes pueden reclamar su airdrop de DOLI para comenzar a minar uniendose al [Discord de DOLI](https://discord.gg/hB3mjQmv) y mencionando a @dolifather o @isudoajl.
+**Fase 4 — Participacion abierta.** En el bloque 26,979 (~3 dias despues del genesis), los productores fundadores financiaron un faucet publico con sus propias recompensas ganadas — 250 DOLI cada uno, 1,500 DOLI en total. El faucet paga 10.000001 DOLI (1 unidad de bond + 100 unidades base para comisiones) — un reclamo por persona, a una direccion nueva y vacia. La barrera de entrada es cero capital — solo un VPS de $5/mes y la voluntad de operar un nodo. Todas las transacciones del faucet estan en cadena y son verificables. Para reclamar, unete al [Discord de DOLI](https://discord.gg/uGzCvxGYC) y ejecuta `/faucet`, luego envia tu direccion nueva en el formulario privado de reclamo; una persona aprueba cada reclamo antes de pagarlo. Discord es el unico canal de solicitud.
 
 ---
 
@@ -1345,7 +1345,7 @@ El protocolo continua. La produccion de bloques es determinista — no requiere 
 
 **"Como puedo participar?"**
 
-Ejecuta un nodo en cualquier VPS ($5/mes es suficiente). Reclama tus 10 DOLI iniciales del faucet en [Discord](https://discord.gg/hB3mjQmv). Registrate como productor. Comienza a ganar recompensas de bloques. El proceso completo toma menos de una hora. Consulta la [guia de instalacion](https://doli.network/guide.html) para instrucciones paso a paso.
+Ejecuta un nodo en cualquier VPS ($5/mes es suficiente). Reclama 10.000001 DOLI (uno por persona) ejecutando `/faucet` en [Discord](https://discord.gg/uGzCvxGYC). Registrate como productor. Comienza a ganar recompensas de bloques. El proceso completo toma menos de una hora. Consulta la [guia de instalacion](https://doli.network/guide.html) para instrucciones paso a paso.
 
 **"Es DOLI adecuado para agentes de IA y tooling autonomo?"**
 
@@ -1353,7 +1353,7 @@ Si — por diseno (Seccion 19). Cada error retornado por el nodo lleva un codigo
 
 **"Que pasa si encuentro un bug o no estoy de acuerdo con una decision de diseno?"**
 
-Dinoslo. Abre un issue en [GitHub](https://github.com/doli-network/doli), inicia una discusion en [Discord](https://discord.gg/hB3mjQmv), o envia un correo directamente a los mantenedores. Construimos esto en publico porque creemos que los buenos sistemas emergen de la retroalimentacion honesta, no del desarrollo cerrado. Cada critica que lleva a una mejora hace la red mas fuerte para todos.
+Dinoslo. Abre un issue en [GitHub](https://github.com/doli-network/doli), inicia una discusion en [Discord](https://discord.gg/uGzCvxGYC), o envia un correo directamente a los mantenedores. Construimos esto en publico porque creemos que los buenos sistemas emergen de la retroalimentacion honesta, no del desarrollo cerrado. Cada critica que lleva a una mejora hace la red mas fuerte para todos.
 
 ---
 
@@ -1371,7 +1371,7 @@ Estamos buscando activamente:
 Este no es un producto terminado. Es un sistema en funcionamiento que mejora a traves de retroalimentacion honesta y colaboracion abierta. La peor respuesta ante una falla es el silencio.
 
 - GitHub: [github.com/doli-network/doli](https://github.com/doli-network/doli)
-- Discord: [discord.gg/hB3mjQmv](https://discord.gg/hB3mjQmv)
+- Discord: [discord.gg/uGzCvxGYC](https://discord.gg/uGzCvxGYC)
 - Email: ivan@doli.network / antonio@doli.network
 
 ---

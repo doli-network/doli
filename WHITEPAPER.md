@@ -1024,7 +1024,7 @@ The result: the founding producers paid for their own bonds with real block prod
 
 **The founders received no privilege — they paid the bootstrap cost with work.**
 
-**Phase 4 — Open participation.** At block 26,979 (~3 days after genesis), the founding producers funded a public faucet from their own earned rewards — 250 DOLI each, 1,500 DOLI total. The faucet distributes 10.01 DOLI (1 bond unit + transaction fees) to any new participant who requests it. The barrier to entry is zero capital — only a $5/month VPS and the willingness to run a node. All faucet transactions are on-chain and verifiable. Today, new participants can claim their DOLI airdrop to start mining by joining the [DOLI Discord](https://discord.gg/hB3mjQmv) and mentioning @dolifather or @isudoajl.
+**Phase 4 — Open participation.** At block 26,979 (~3 days after genesis), the founding producers funded a public faucet from their own earned rewards — 250 DOLI each, 1,500 DOLI total. The faucet pays 10.000001 DOLI (1 bond unit + 100 base units for fees) — one claim per person, to a new empty address. The barrier to entry is zero capital — only a $5/month VPS and the willingness to run a node. All faucet transactions are on-chain and verifiable. To claim, join the [DOLI Discord](https://discord.gg/uGzCvxGYC) and run `/faucet`, then submit your new address in the private claim form; a human approves every claim before it is paid. Discord is the only intake.
 
 ---
 
@@ -1347,7 +1347,7 @@ The protocol continues. Block production is deterministic — it requires no hum
 
 **"How do I participate?"**
 
-Run a node on any VPS ($5/month is sufficient). Claim your initial 10 DOLI from the faucet on [Discord](https://discord.gg/hB3mjQmv). Register as a producer. Start earning block rewards. The full process takes less than an hour. See the [installation guide](https://doli.network/guide.html) for step-by-step instructions.
+Run a node on any VPS ($5/month is sufficient). Claim 10.000001 DOLI (one per person) by running `/faucet` on [Discord](https://discord.gg/uGzCvxGYC). Register as a producer. Start earning block rewards. The full process takes less than an hour. See the [installation guide](https://doli.network/guide.html) for step-by-step instructions.
 
 **"Is DOLI suitable for AI agents and autonomous tooling?"**
 
@@ -1355,7 +1355,7 @@ Yes — by design (Section 19). Every error returned by the node carries a stabl
 
 **"What if I find a bug or disagree with a design decision?"**
 
-Tell us. Open an issue on [GitHub](https://github.com/doli-network/doli), start a discussion on [Discord](https://discord.gg/hB3mjQmv), or email the maintainers directly. We are building this in public because we believe good systems emerge from honest feedback, not from closed development. Every critique that leads to an improvement makes the network stronger for everyone.
+Tell us. Open an issue on [GitHub](https://github.com/doli-network/doli), start a discussion on [Discord](https://discord.gg/uGzCvxGYC), or email the maintainers directly. We are building this in public because we believe good systems emerge from honest feedback, not from closed development. Every critique that leads to an improvement makes the network stronger for everyone.
 
 ---
 
@@ -1373,7 +1373,7 @@ We are actively looking for:
 This is not a finished product. It is a working system that improves through honest feedback and open collaboration. The worst response to a flaw is silence.
 
 - GitHub: [github.com/doli-network/doli](https://github.com/doli-network/doli)
-- Discord: [discord.gg/hB3mjQmv](https://discord.gg/hB3mjQmv)
+- Discord: [discord.gg/uGzCvxGYC](https://discord.gg/uGzCvxGYC)
 - Email: ivan@doli.network / antonio@doli.network
 
 ---

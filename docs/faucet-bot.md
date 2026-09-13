@@ -1,108 +1,65 @@
-# Faucet Bot
+# Faucet
 
-Automated DOLI faucet that processes GitHub issue requests every 5 minutes.
+The mainnet DOLI faucet gives a new participant enough DOLI to register as a block producer.
+
+**Discord is the only intake.** Since 2026-09-13, you request DOLI with the `/faucet` command in the
+[DOLI Discord](https://discord.gg/uGzCvxGYC). The GitHub issue form is retired. The faucet does not
+process GitHub issues.
+
+## What you get
+
+| Item | Value |
+|------|-------|
+| Amount | **10.000001 DOLI** (1,000,000,100 base units) |
+| Breakdown | 1 bond unit (10 DOLI) + 100 base units for the registration fee |
+| Limit | One claim per person, for life |
+| Destination | A new, empty address |
+
+## How to claim
+
+1. Install a node, create a wallet, and let the node sync. See the
+   [installation guide](https://doli.network/guide.html).
+2. Join the [DOLI Discord](https://discord.gg/uGzCvxGYC).
+3. Run `/faucet` in the server. The bot replies with a private link. Only you can see it.
+4. Open the link and press the button. The claim form opens.
+5. Submit your address (`doli info`) in the form. The form asks you to prove that you control the
+   address.
+6. Wait for a human to approve the claim. The faucet sends the DOLI after approval.
+7. Check your balance with `doli balance`. The bot does not yet send a Discord message when it pays.
+8. Register: `doli producer register --bonds 1`.
+
+If the private link shows *Preparing your claim* for more than about a minute, run `/faucet` again.
+
+## Eligibility rules
+
+All rules must pass. A human approves every claim, including claims that pass every rule.
+
+| Rule | Requirement |
+|------|-------------|
+| Discord account age | At least 1 year |
+| Server membership | Member of the DOLI Discord for at least 7 days |
+| One per person | A Discord account that received DOLI cannot claim again. One open claim at a time. |
+| One per address | An address that received DOLI cannot receive it again |
+| Empty address | The address total balance must be 0 |
+| Not a producer | The address must not be a registered producer |
+| Valid address | A mainnet `doli1...` address with a valid checksum |
+| Proof of control | You prove that you control the address before the claim opens |
+| Human check | The form runs an anti-bot check |
 
 ## How it works
 
-1. User opens a GitHub issue using the [faucet request template](https://github.com/doli-network/doli/issues/new?template=faucet-request.yml)
-2. Bot polls open issues every 5 minutes via GitHub API
-3. Bot validates the address and sends 10.01 DOLI (1 bond + fees)
-4. Bot comments with TX hash and next steps, then closes the issue
+1. The Discord bot receives `/faucet` and opens a claim.
+2. The web form takes the address and the proof of control.
+3. Automatic checks apply the eligibility rules.
+4. A human approver reviews the claim and approves or rejects it.
+5. The faucet pays from its hot wallet with a normal `doli send`. The payment is on-chain and
+   anyone can verify it.
+6. Operators refill the hot wallet by hand from a separate reserve. The faucet software cannot
+   reach the reserve.
 
-## Validations
+## History
 
-The bot checks 5 conditions before sending. All must pass:
-
-| Check | Rejects if |
-|-------|-----------|
-| Address format | Not `doli1` + 58 bech32 chars (63 total) |
-| Address length | Not exactly 63 characters |
-| Node verification | `getBalance` RPC returns an error for the address |
-| Existing balance | Address already has any DOLI (confirmed, bonded, or immature) |
-| Already funded | Address appears in `sent.log` (prevents re-sends) |
-| Already registered | Address is an active or pending producer |
-
-Rejected requests are closed with an explanation comment.
-
-## Infrastructure
-
-| Component | Location |
-|-----------|----------|
-| Script | `ai2:/mainnet/faucet/faucet-bot.sh` |
-| Cron | Every 5 min on ai2: `*/5 * * * *` |
-| Log | `ai2:/var/log/doli/mainnet/faucet-bot.log` |
-| Sent database | `ai2:/mainnet/faucet/sent.log` |
-| GitHub token | `ai2:/mainnet/faucet/.gh-token` (fine-grained, issues only) |
-| Faucet wallet | `ai3:/mainnet/faucet/keys/wallet.json` |
-| Faucet vault | `ai3:/mainnet/faucet-vault/keys/wallet.json` |
-
-The bot runs on **ai2** but sends DOLI from **ai3** via SSH (`ssh ai3 "doli -w ... send ..."`). The faucet wallet's RPC is the ai3 seed at port 8500.
-
-## Faucet wallets
-
-| Wallet | Address | Purpose |
-|--------|---------|---------|
-| Faucet (operational) | `doli1em9zhehsseaq2ca4xxfkwevpwqfv9zn252ya24ska8t08dtc9u7szr064k` | Daily sends |
-| Faucet-vault (reserve) | `doli1c8aukqm4j209s2g5h7uucmy99ff8f5csy3r9526e2wwvm3l549zqqc6jl7` | Refill faucet when low |
-
-Funded at block 26,979 (~3 days after genesis). 250 DOLI from each founding producer (N1-N6), 1,500 DOLI total.
-
-## sent.log format
-
-```
-2026-03-24T02:50:00Z doli1alzf...pjl62 270660437d...eb46 issue#11
-```
-
-Fields: `timestamp address tx_hash issue_reference`
-
-One line per send. The bot greps this file to prevent duplicate sends.
-
-## GitHub token
-
-Fine-grained personal access token with:
-- **Repository**: `doli-network/doli` only
-- **Permissions**: Issues (Read and write), Metadata (Read-only)
-- **Name**: `doli-faucet-bot`
-
-To rotate: generate new token at https://github.com/settings/tokens?type=beta, then:
-```bash
-ssh ai2 "echo 'NEW_TOKEN' > /mainnet/faucet/.gh-token && chmod 600 /mainnet/faucet/.gh-token"
-```
-
-## Manual operations
-
-### Check bot status
-```bash
-ssh ai2 "tail -20 /var/log/doli/mainnet/faucet-bot.log"
-```
-
-### Run manually
-```bash
-ssh ai2 "bash /mainnet/faucet/faucet-bot.sh"
-```
-
-### Check sent history
-```bash
-ssh ai2 "cat /mainnet/faucet/sent.log"
-```
-
-### Check faucet balance
-```bash
-ssh ai3 "doli -w /mainnet/faucet/keys/wallet.json balance"
-```
-
-### Refill faucet from vault
-```bash
-ssh ai3 "echo y | doli -w /mainnet/faucet-vault/keys/wallet.json send doli1em9zhehsseaq2ca4xxfkwevpwqfv9zn252ya24ska8t08dtc9u7szr064k AMOUNT"
-```
-
-## Failure modes
-
-| Failure | Bot behavior |
-|---------|-------------|
-| GitHub API down | Bot exits silently, retries next cron cycle |
-| ai3 unreachable | SSH fails, bot comments "send failed" on the issue (does not close) |
-| Faucet wallet empty | `doli send` fails, bot comments "send failed" on the issue |
-| Duplicate address | Bot comments "already funded" with previous TX hash, closes issue |
-| Invalid address | Bot comments with error explanation, closes issue |
-| GitHub token expired | Bot exits with "No token" error in log |
+- At block 26,979 (~3 days after genesis), the founding producers funded the faucet from their own
+  earned rewards: 250 DOLI each, 1,500 DOLI total.
+- Until 2026-09-13, the faucet took requests through a GitHub issue form. That intake is closed.
+- On 2026-09-13, the Discord faucet paid its first mainnet claim.
