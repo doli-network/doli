@@ -383,12 +383,13 @@ fn applied_old_and_new(log: &str) -> Option<(String, String)> {
 // assertion below pass for a reason that is not the code under test.
 #[test]
 fn precondition_the_three_shipped_defaults_are_still_frozen() {
-    // INC-I-217 pins (2026-09-12): mainnet 450_789, testnet 176_200; this harness runs on
+    // INC-I-217 pins: mainnet 457_855 (re-pinned 2026-09-13; the 2026-09-12 pin 450_789 never
+    // shipped in a release), testnet 176_200 (2026-09-12); this harness runs on
     // Devnet, whose default must stay u64::MAX so the gate is armed by ENV only.
     for (network, expected) in [
         (Network::Devnet, u64::MAX),
         (Network::Testnet, 176_200),
-        (Network::Mainnet, 450_789),
+        (Network::Mainnet, 457_855),
     ] {
         assert_eq!(
             NetworkParams::defaults(network).bls_key_rotation_activation_height,

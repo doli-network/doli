@@ -379,7 +379,7 @@ fn precondition_the_three_shipped_defaults_are_still_frozen() {
     for (network, expected) in [
         (Network::Devnet, u64::MAX),
         (Network::Testnet, 176_200),
-        (Network::Mainnet, 450_789),
+        (Network::Mainnet, 457_855),
     ] {
         assert_eq!(
             NetworkParams::defaults(network).bls_key_rotation_activation_height,

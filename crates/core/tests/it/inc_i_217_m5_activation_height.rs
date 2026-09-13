@@ -97,7 +97,7 @@ fn req_rot_004_the_rotation_gate_is_frozen_on_every_network() {
     // value; mainnet and devnet stay FROZEN. Once crossed on testnet the value is IMMUTABLE
     // (INC-I-054 shape) — this triad is the tripwire against moving it.
     for (network, expected) in [
-        (Network::Mainnet, 450_789),
+        (Network::Mainnet, 457_855),
         (Network::Testnet, 176_200),
         (Network::Devnet, u64::MAX),
     ] {

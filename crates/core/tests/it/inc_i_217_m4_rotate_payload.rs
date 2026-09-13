@@ -404,7 +404,8 @@ fn req_rot_sec_009_digest_is_bound_to_the_genesis_hash() {
 // so the assertion now names the typed refusal instead. The INVARIANT IS UNCHANGED AND STRICTER: a
 // well-formed RotateBlsKey still does not validate on shipped mainnet params, and the refusal now
 // has to prove WHY — `[ERRTX-ROT002]`, below `bls_key_rotation_activation_height`. The height
-// is read from the SHIPPED mainnet params (pinned 450_789 on 2026-09-12, INC-I-217) and the probe
+// is read from the SHIPPED mainnet params (re-pinned 457_855 on 2026-09-13, INC-I-217; the 2026-09-12
+// pin 450_789 never shipped in a release) and the probe
 // block sits one below it, so the test follows the pin instead of a frozen literal.
 #[test]
 fn req_rot_001_rotate_bls_key_is_rejected_below_the_m5_gate() {
@@ -454,8 +455,9 @@ fn req_rot_001_rotate_bls_key_is_rejected_below_the_m5_gate() {
         "the refusal must carry its stable code, got: {err}"
     );
     assert_eq!(
-        gate, 450_789,
-        "the mainnet gate is the 2026-09-12 pin; if this moved, the pin was touched after \
+        gate, 457_855,
+        "the mainnet gate is the 2026-09-13 re-pin (the 2026-09-12 pin 450_789 never shipped \
+         in a release); if this moved, the pin was touched after \
          being crossed (INC-I-054 shape) — that is the failure this line exists to catch"
     );
 

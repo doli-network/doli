@@ -704,8 +704,9 @@ fn req_rot_003_mainnet_ignores_the_rotation_activation_height_override() {
          transaction is valid, so an env-settable value is a single-operator fork"
     );
     assert_eq!(
-        defaults.bls_key_rotation_activation_height, 450_789,
-        "the mainnet default is the 2026-09-12 pin (450_789); it was pinned in its own \
+        defaults.bls_key_rotation_activation_height, 457_855,
+        "the mainnet default is the 2026-09-13 re-pin (457_855; the 2026-09-12 pin 450_789 \
+         never shipped in a release, so no mainnet node enforced it); it was pinned in its own \
          decision-session (HC-6 / INC-I-075), never as an M8 side effect, and is \
          IMMUTABLE once crossed"
     );
