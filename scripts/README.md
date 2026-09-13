@@ -234,6 +234,27 @@ Proceed with deployment? [y/N]: y
 > ```
 > The scripts below are for specific test scenarios and legacy setups.
 
+### sim-bootstrap-island.sh
+
+| Property | Value |
+|----------|-------|
+| **Path** | `scripts/sim-bootstrap-island.sh` |
+| **Purpose** | Live reproduction of INC-I-221 on the **local testnet**: a node that holds exactly 1 peer when its bootstrap node comes back. Run it twice — control on the old binary, treatment on the new binary — to prove a peer-discovery or dial fix. |
+| **What it tests** | Two temporary non-producer nodes start with a copy of the seed's chain data (without `peers.cache`, `producer_gset.bin` and `checkpoints/`), and each one bootstraps only to the seed and to the other node. The seed is stopped, so they pair at 1 peer and fall behind. After 60 s the seed returns. **Exit 0** = both reach ≥2 peers and the fleet tip. **Exit 1** = stuck (the pre-fix behavior). **Exit 7** = the island did not form, so the run is invalid. |
+| **Dependencies** | `curl`, `lsof`, `rsync`, `pgrep`, a live local testnet (`scripts/testnet.sh`), the `doli-node` binary under test |
+| **Run time** | ~3 min (recovered) to ~7 min (stuck, default 300 s observe window) |
+| **Output** | Samples and a `VERDICT:` line on stdout; node logs in `${TMPDIR:-/tmp}/doli-bootstrap-island-<label>-<ts>/` |
+
+**Safety:** requires `SIM_CONFIRM=1`; refuses unless the seed RPC reports `network=testnet`. It stops **only the seed** (through `scripts/testnet.sh`). The EXIT trap always stops the temporary nodes (exact pids) and restarts the seed. Nothing is wiped and nothing is written to the chain.
+
+**Usage:**
+```bash
+SIM_CONFIRM=1 bash scripts/sim-bootstrap-island.sh ~/testnet/bin/doli-node.old old   # control: expect exit 1
+SIM_CONFIRM=1 bash scripts/sim-bootstrap-island.sh ~/testnet/bin/doli-node     new   # treatment: expect exit 0
+```
+
+**Env:** `SIM_TESTNET_DIR`, `SIM_SEED_RPC`, `SIM_SEED_P2P`, `SIM_REF_RPC`, `SIM_ISLAND_SECS` (default 60), `SIM_OBSERVE_SECS` (default 300), `SIM_A_P2P`/`SIM_B_P2P`, `SIM_A_RPC`/`SIM_B_RPC`, `SIM_A_MET`/`SIM_B_MET` (discv5 uses P2P+1 over UDP).
+
 ### launch_testnet.sh
 
 | Property | Value |
@@ -944,6 +965,7 @@ The gate (`.claude/hooks/gauntlet-gate.sh`) arms only when `.omega/gauntlet.conf
 | Script | Nodes | Duration | Purpose |
 |--------|-------|----------|---------|
 | `gauntlet.sh` | 6 (live) | ~50-90 sec | **System-impact gauntlet (8 scenarios)** |
+| `sim-bootstrap-island.sh` | 2 temp + seed (live) | ~3-7 min | **INC-I-221 live repro: 1-peer island, control vs treatment** |
 | `build_release.sh` | 0 | ~10-30 min | **Build release binaries** |
 | `smoke_test_release.sh` | 1 | ~30-60 sec | **Release verification** |
 | `update.sh` | 0 | ~30 sec | **Manual binary update** |
