@@ -4,7 +4,7 @@
 
 ### Un Sistema de Efectivo Electrónico Peer-to-Peer Basado en Tiempo Verificable
 
-**I. Lozada** · ivan@doli.network | **A. Lozada** · antonio@doli.network
+**I. Lozada** · ivan@omegacortex.ai | **A. Lozada** · antonio@omegacortex.ai | **L. Lozada** · luis@omegacortex.ai
 
 ---
 
@@ -1372,7 +1372,7 @@ Este no es un producto terminado. Es un sistema en funcionamiento que mejora a t
 
 - GitHub: [github.com/doli-network/doli](https://github.com/doli-network/doli)
 - Discord: [discord.gg/uGzCvxGYC](https://discord.gg/uGzCvxGYC)
-- Email: ivan@doli.network / antonio@doli.network
+- Email: ivan@omegacortex.ai / antonio@omegacortex.ai / luis@omegacortex.ai
 
 ---
 
@@ -1408,7 +1408,7 @@ Cualquier regla e incentivo necesario puede aplicarse con este mecanismo de cons
 
 *"El tiempo es la unica moneda justa."*
 
-**I. Lozada** · ivan@doli.network | **A. Lozada** · antonio@doli.network
+**I. Lozada** · ivan@omegacortex.ai | **A. Lozada** · antonio@omegacortex.ai | **L. Lozada** · luis@omegacortex.ai
 
 *Ultima actualizacion: mayo 2026*
 

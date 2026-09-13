@@ -4,7 +4,7 @@
 
 ### A Peer-to-Peer Electronic Cash System Based on Verifiable Time
 
-**I. Lozada** · ivan@doli.network | **A. Lozada** · antonio@doli.network
+**I. Lozada** · ivan@omegacortex.ai | **A. Lozada** · antonio@omegacortex.ai | **L. Lozada** · luis@omegacortex.ai
 
 ---
 
@@ -1374,7 +1374,7 @@ This is not a finished product. It is a working system that improves through hon
 
 - GitHub: [github.com/doli-network/doli](https://github.com/doli-network/doli)
 - Discord: [discord.gg/uGzCvxGYC](https://discord.gg/uGzCvxGYC)
-- Email: ivan@doli.network / antonio@doli.network
+- Email: ivan@omegacortex.ai / antonio@omegacortex.ai / luis@omegacortex.ai
 
 ---
 
@@ -1410,7 +1410,7 @@ Any needed rules and incentives can be enforced with this consensus mechanism.
 
 *"Time is the only fair currency."*
 
-**I. Lozada** · ivan@doli.network | **A. Lozada** · antonio@doli.network
+**I. Lozada** · ivan@omegacortex.ai | **A. Lozada** · antonio@omegacortex.ai | **L. Lozada** · luis@omegacortex.ai
 
 *Last updated: May 2026*
 
