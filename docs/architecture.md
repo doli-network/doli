@@ -304,6 +304,7 @@ Existing gates (mainnet values):
 - **Transport layer** (`max_peers * 1.5`): Allows temporary over-capacity so new peers can be evaluated before eviction decides who stays. Without headroom, libp2p rejects connections at TCP level before scoring runs.
 - **Defaults**: Mainnet: 50, Testnet: 25 (halved from 50, INC-I-012 Yamux RAM reduction), Devnet: 150. Override: `DOLI_MAX_PEERS` env var.
 - **Peer discovery flow**: Bootstrap node → Identify → DHT → peer cache. Bootnodes are introduction points, not permanent hubs.
+- **Bootstrap re-dial (node layer, INC-I-221)**: the startup dial in `NetworkService::new` runs once. After that, `run_periodic_tasks` re-dials the configured `--bootstrap` addresses (never cached or peer-learned ones) while the sync peer count is below `max(min_peers_for_production, 1)` (2 on mainnet and testnet). Each address has its own backoff: the first attempt is immediate, then the gaps are 2, 4, 8, 16, 32, 60 s (60 s cap). The backoff clears when the peer count reaches the threshold. Each round that dials logs one INFO line: `[BOOTSTRAP_REDIAL] peers=<count>/<min> dialing <n> addr(s)`. Decision logic: `bins/node/src/node/bootstrap_redial.rs` (pure fn `due_bootstrap_redials`). Before INC-I-221 the gate was `peer_count == 0`, so a node that held exactly 1 peer never re-dialed and stayed blocked by `InsufficientPeers`.
 
 ### 3.7. mempool
 

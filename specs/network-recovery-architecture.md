@@ -202,7 +202,7 @@ These are divergent additions where evaluators proposed different approaches. Th
 **What**: Single bash script orchestrating seed recovery: query checkpoints -> stop seeds -> restore best checkpoint -> delete peers.cache -> start with --recovery-mode -> verify convergence -> exit recovery mode.
 **Evidence**: Current procedure is ~20 manual SSH commands with critical unprotected window. Script automates and adds anti-poisoning step. All building blocks exist except the recovery RPC methods (D4).
 **Complexity cost**: +1 script (~150 lines bash), +0 Rust code beyond definite changes
-**Failure modes**: F8 (SSH timeout — must verify each step), F9 (concurrent runs — should detect). Must delete peers.cache after restore (Radical Simplifier evidence: peers.cache at service/mod.rs:281-296 redials forked peers).
+**Failure modes**: F8 (SSH timeout — must verify each step), F9 (concurrent runs — should detect). Must delete peers.cache after restore (Radical Simplifier evidence: at startup `NetworkService::new` loads peers.cache and dials the cached peers after the bootstrap dials, service/mod.rs:297-330, so it redials forked peers). The node-layer bootstrap re-dial (INC-I-221, `bins/node/src/node/bootstrap_redial.rs`) dials only the configured `--bootstrap` addresses, never peers.cache entries, so it does not bring cached forked peers back.
 **vs. Radical floor**: Separate deliverable, does not affect core code complexity
 **Confidence**: conf(0.60, observed)
 

@@ -467,6 +467,11 @@ impl SyncManager {
         );
     }
 
+    /// Minimum sync peers required for production.
+    pub fn min_peers_for_production(&self) -> usize {
+        self.min_peers_for_production
+    }
+
     /// Set the producer tier and adjust min_peers_for_production accordingly.
     ///
     /// If no blocks are received via gossip for this duration, production is blocked.

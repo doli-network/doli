@@ -10,6 +10,9 @@ mod attestation_authority_tests;
 #[allow(unused_imports)]
 pub use apply_block::state_fp_sr_field;
 mod block_handling;
+pub mod bootstrap_redial;
+#[cfg(test)]
+mod bootstrap_redial_tests;
 pub mod checkpoint_health;
 mod event_loop;
 mod floor_window;
