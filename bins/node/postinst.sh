@@ -55,3 +55,9 @@ fi
 if [ -f /usr/bin/doli ] && [ ! -f /usr/local/bin/doli ]; then
     ln -sf /usr/bin/doli /usr/local/bin/doli
 fi
+
+# 7. INC-I-222: root helper units that install a release a sandboxed node staged.
+#    No-op unless /etc/systemd/system/doli-<network>.service exists.
+for net in mainnet testnet; do
+    /usr/bin/doli --network "$net" service refresh-helpers 2>/dev/null || true
+done

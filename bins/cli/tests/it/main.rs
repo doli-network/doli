@@ -18,3 +18,4 @@ mod inc_i_217_import_bls_golden;
 mod inc_i_217_info_migration_hint;
 mod inc_i_217_m10_rotate_bls_golden;
 mod inc_i_217_m10_wallet_untouched;
+mod inc_i_222_helper_refresh_paths;

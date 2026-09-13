@@ -1193,6 +1193,17 @@ pub(crate) enum ServiceCommand {
         #[arg(short = 'n', long, default_value = "50")]
         lines: u32,
     },
+
+    /// Write the staged-upgrade helper units if missing or stale (Linux, root; else no-op)
+    RefreshHelpers {
+        /// Custom service name (default: doli-{network})
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Data directory (default: /var/lib/doli/{network})
+        #[arg(long)]
+        data_dir: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]

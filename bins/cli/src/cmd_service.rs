@@ -43,6 +43,9 @@ pub(crate) fn cmd_service(network: &str, command: ServiceCommand) -> Result<()> 
             follow,
             lines,
         } => cmd_logs(network, name, follow, lines),
+        ServiceCommand::RefreshHelpers { name, data_dir } => {
+            helper_units::cmd_refresh_helpers(network, name, data_dir)
+        }
     }
 }
 

@@ -641,12 +641,13 @@ fn helper_install_is_idempotent() {
 // before review. [O18 x P5]
 #[test]
 fn cmd_service_rs_and_cmd_upgrade_rs_are_within_the_module_budget() {
-    // 918 pre-existing + at most 10 wiring lines in install_systemd / cmd_uninstall.
+    // 918 pre-existing + 10 INC-I-215 wiring lines + 3 for the INC-I-222 dispatch arm.
     let service_lines = line_count("src/cmd_service.rs");
     assert!(
-        service_lines <= 928,
-        "cmd_service.rs is {service_lines} lines (budget 928 = 918 pre-existing + 10 \
-         wiring lines); the helper logic belongs in cmd_service_helper_units.rs"
+        service_lines <= 931,
+        "cmd_service.rs is {service_lines} lines (budget 931 = 918 pre-existing + 10 \
+         INC-I-215 wiring + 3 INC-I-222 dispatch lines); the helper logic belongs in \
+         cmd_service_helper_units.rs"
     );
 
     let upgrade_lines = line_count("src/cmd_upgrade.rs");

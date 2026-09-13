@@ -208,6 +208,17 @@ pub fn refresh_helper_units_if_root(network: &str, service: Option<&str>, data_d
     }
 }
 
+/// `doli service refresh-helpers` (INC-I-222): the entry point `install.sh` and the package
+/// postinst scripts call as root, after the new CLI is on disk.
+pub fn cmd_refresh_helpers(
+    network: &str,
+    name: Option<String>,
+    data_dir: Option<String>,
+) -> Result<()> {
+    refresh_helper_units_if_root(network, name.as_deref(), data_dir.as_deref().map(Path::new));
+    Ok(())
+}
+
 fn run_systemctl(args: &[&str]) -> Result<()> {
     let status = std::process::Command::new("systemctl")
         .args(args)
