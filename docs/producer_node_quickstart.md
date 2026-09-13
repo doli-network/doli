@@ -190,8 +190,8 @@ systemctl --user status doli-producer
 > `{service}-upgrade.path` and `{service}-upgrade.service`, which pick up each release the
 > node stages under `<data-dir>/updates` and install it after re-verifying the signatures.
 > The helper units are part of the install — you do not create them by hand. A host set up
-> before this shipped needs ONE `sudo doli upgrade` (or a re-run of
-> `sudo doli service install`) to receive them; see
+> before this shipped receives them from any root install step: `install.sh`, the `.deb` /
+> `.rpm` package, `sudo doli upgrade`, or directly `sudo doli service refresh-helpers`; see
 > [troubleshooting.md §5.3](./troubleshooting.md#53-node-never-upgrades-itself--install-target-not-writable-inc-i-215).
 
 ---

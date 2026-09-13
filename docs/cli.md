@@ -2409,10 +2409,14 @@ So a mainnet host with the default name gets `doli-mainnet-upgrade.path` and
 `doli-mainnet-upgrade.service`. Without them a sandboxed node stages every approved
 update and nothing ever installs it.
 
-Hosts installed before this existed get the pair on their next **root** `doli upgrade`:
-it rewrites both units when `/etc/systemd/system/{service}.service` is present and the
-content differs, then reloads and enables the watcher. Re-running `doli service install`
-is also safe — both writes are plain overwrites.
+Hosts installed before this existed get the pair from any root install path (INC-I-222):
+`sudo doli service refresh-helpers [--name <NAME>] [--data-dir <PATH>]`, a **root**
+`doli upgrade`, `install.sh`, or the `.deb` / `.rpm` post-install script. Each rewrites
+both units when `/etc/systemd/system/{service}.service` is present and the content
+differs, then reloads and enables the watcher. Off Linux, as non-root, or without that
+unit it does nothing. `install.sh` and the post-install scripts run it for `mainnet` and
+`testnet`. Re-running `doli service install` is also safe — both writes are plain
+overwrites.
 
 ### 21.2. Uninstall Service
 

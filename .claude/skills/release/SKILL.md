@@ -112,9 +112,11 @@ The staged artifact is the signed tarball because the signature chain terminates
 extracts after verification, inside its own process.
 
 **Release-time consequence.** A hardened host deployed before this shipped has no helper
-units: it will stage every release you publish and install none. It needs ONE manual
-`sudo doli upgrade` (or a re-run of `sudo doli service install`) — both write and enable the
-helper pair as root. Until that is done, publishing does not move that host. Check with:
+units: it will stage every release you publish and install none. It needs ONE root install
+step — `sudo doli upgrade`, a re-run of `sudo doli service install`, `install.sh`, the
+`.deb`/`.rpm` package, or (CLI with INC-I-222) `sudo doli service refresh-helpers` — each
+writes and enables the helper pair as root. A `doli upgrade` run BY a CLI older than v6.29.1
+cannot write them (INC-I-222). Until that is done, publishing does not move that host. Check with:
 
 ```bash
 ssh <host> 'systemctl is-enabled doli-mainnet-upgrade.path; ls /var/lib/doli/mainnet/updates/'

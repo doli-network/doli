@@ -218,6 +218,15 @@ if [ -n "$STOPPED" ]; then
     fi
 fi
 
+# INC-I-222: a sandboxed node can only STAGE a release; root helper units install it. Only
+# the new CLI writes them, so run it here, as root, after the binaries are in place. An
+# older CLI without the subcommand fails, and that failure is ignored.
+if [ "$OS" = "Linux" ] && [ "$(id -u)" = "0" ] && command -v systemctl >/dev/null 2>&1; then
+    for net in mainnet testnet; do
+        /usr/bin/doli --network "$net" service refresh-helpers 2>/dev/null || true
+    done
+fi
+
 # ---------------------------------------------------------------------------
 # Install agent skills to ~/.doli/skills/
 # ---------------------------------------------------------------------------

@@ -1192,10 +1192,17 @@ Expect `ready`, `release.tar.gz`, `CHECKSUMS.txt`, `SIGNATURES.json`.
 
 **Fix — install the helper units once (root):**
 ```bash
-sudo doli service install --network mainnet        # writes + enables the helper pair
+sudo doli --network mainnet service refresh-helpers   # writes + enables only the helper pair
+# or re-install the service (also writes the pair):
+sudo doli service install --network mainnet
 # or, on a host you are upgrading by hand anyway:
-sudo doli upgrade                                  # refreshes the helper units as a side effect
+sudo doli upgrade                                     # refreshes the helper units as a side effect
 ```
+
+Since INC-I-222, `install.sh` and the `.deb` / `.rpm` post-install scripts also run the
+refresh, so any root install path gives the host the pair. A CLI from before INC-I-222 has
+no `refresh-helpers` subcommand; on such a host use `sudo doli upgrade`. A `doli upgrade`
+run BY a CLI older than v6.29.1 cannot write the units at all.
 
 Confirm, then restart the node so the INFO verdict replaces the WARN:
 ```bash
