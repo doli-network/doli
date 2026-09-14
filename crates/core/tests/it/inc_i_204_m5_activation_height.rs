@@ -411,12 +411,12 @@ fn req_fork_014_no_mainnet_activation_height_was_moved() {
     assert_eq!(p.inc_i_176_auth_binding_activation_height, 317_861);
     // INC-I-208 M3 — pinned 2026-09-05, IMMUTABLE once crossed (INC-I-054).
     assert_eq!(p.inc_i_178_attestation_bls_activation_height, 409_000);
-    // TEST-193-07 — Decision: a failure means the attestor-refill gate went live on mainnet
-    // without the HC-6 decision session, re-deriving the schedule mid-flight.
+    // TEST-193-07 — Decision: a failure means the mainnet pin moved after the fleet crossed
+    // it, which is the INC-I-054 shape (a crossed height is consensus history). Pinned
+    // 2026-09-14 (owner decision, tip 462_424); first boundary at/above it is h = 475_200.
     assert_eq!(
-        p.inc_i_193_attestor_refill_activation_height,
-        u64::MAX,
-        "INC-I-193 M1 — mainnet stays frozen pre-activation"
+        p.inc_i_193_attestor_refill_activation_height, 475_000,
+        "INC-I-193 M1 — mainnet pin, first boundary at/above it is h = 475_200 (epoch 1320)"
     );
 }
 

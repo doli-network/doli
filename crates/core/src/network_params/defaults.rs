@@ -112,7 +112,7 @@ impl NetworkParams {
                 // external auto-update population must run >= this binary BEFORE
                 // 332_664, or the gate activates on a mixed fleet.
                 inc_i_190_floor_bound_activation_height: 332_664,
-                inc_i_193_attestor_refill_activation_height: u64::MAX,
+                inc_i_193_attestor_refill_activation_height: 475_000, // tip 462_424 measured 2026-09-14 19:28Z at slot 469_700; first boundary >= 475_000 is h = 475_200 (epoch 1320, 360 blocks/epoch)
                 // INC-I-068 / INC-I-075: filter weight=0 producers out of the active
                 // list. ACTIVE FROM GENESIS on the fresh chain — same reasoning as
                 // above: the re-gate at a future height existed to make the

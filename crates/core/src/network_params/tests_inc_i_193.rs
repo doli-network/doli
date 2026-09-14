@@ -14,8 +14,11 @@ use crate::Network;
 
 use super::NetworkParams;
 
-/// Frozen pre-activation: pinning a real mainnet height is a separate HC-6 decision session.
-const REFILL_MAINNET: u64 = u64::MAX;
+/// Pinned 2026-09-14 19:28Z (owner decision, HC-6). First boundary at/above it is h = 475_200
+/// (epoch 1320 x 360).
+const REFILL_MAINNET: u64 = 475_000;
+/// Mainnet tip read by `getChainInfo` at pin time (slot 469_700) — a frozen floor, not a probe.
+const REFILL_MAINNET_TIP_AT_PIN: u64 = 462_424;
 /// Re-pinned 2026-09-14 (was 195_000). First boundary at/above it is h = 192_168 (epoch 5338 x 36).
 const REFILL_TESTNET: u64 = 192_163;
 /// Testnet tip read by `getChainInfo` on 2026-09-14, at the ORIGINAL pin time — a frozen floor,
@@ -36,7 +39,7 @@ fn test_193_07_attestor_refill_gate_pinned_per_network() {
     assert_eq!(
         NetworkParams::defaults(Network::Mainnet).inc_i_193_attestor_refill_activation_height,
         REFILL_MAINNET,
-        "O1/IP-M: mainnet stays frozen until its own decision session pins a height"
+        "O1/IP-M: mainnet is pinned at 475_000 (owner decision 2026-09-14)"
     );
     assert_eq!(h, REFILL_TESTNET, "O1/IP-T: testnet is pinned at 192_163");
     assert_eq!(
@@ -68,6 +71,37 @@ fn test_193_07_attestor_refill_testnet_gate_is_above_the_tip_it_was_measured_aga
         ("ghost_exclusion", t.ghost_exclusion_activation_height),
     ] {
         assert_ne!(h, other, "O3/IP-T: must not be bundled onto {name}");
+    }
+}
+
+// TEST-193-07 — Decision: a failure means the mainnet gate is retroactive (crossed before the
+// fleet runs the binary), bundled onto a neighbouring height, or moved after being crossed —
+// every one of them the INC-I-054 shape on the chain where the gated path is LIVE (> 50).
+#[test]
+fn test_193_07_attestor_refill_mainnet_gate_is_above_the_tip_it_was_measured_against() {
+    let m = NetworkParams::defaults(Network::Mainnet);
+    let h = m.inc_i_193_attestor_refill_activation_height;
+
+    assert!(
+        h > REFILL_MAINNET_TIP_AT_PIN,
+        "O3/IP-M: the gate ({h}) must be strictly above the tip it was measured against \
+         ({REFILL_MAINNET_TIP_AT_PIN}) — crossing it before every mainnet producer runs \
+         >= 6.40.0 is a RETROACTIVE rule change (INC-I-054). Both sides are compile-time \
+         constants: GREEN does NOT mean the live tip is still below it, so re-measure before deploy"
+    );
+    assert_ne!(h, 0, "O3/IP-M: a gate of 0 reinterprets sealed history");
+    assert_ne!(
+        h,
+        u64::MAX,
+        "O3/IP-M: u64::MAX means never — the owner pinned it"
+    );
+    for (name, other) in [
+        ("inc_i_190", m.inc_i_190_floor_bound_activation_height),
+        ("inc_i_178", m.inc_i_178_attestation_bls_activation_height),
+        ("epoch_prune", m.epoch_prune_activation_height),
+        ("ghost_exclusion", m.ghost_exclusion_activation_height),
+    ] {
+        assert_ne!(h, other, "O3/IP-M: must not be bundled onto {name}");
     }
 }
 
