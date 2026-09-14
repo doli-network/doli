@@ -1,6 +1,6 @@
 ---
 name: release
-description: Cut, sign, and publish a DOLI release, and deploy binaries to the mainnet fleet. Covers the post-tag draft -> sign -> verify -> promote -> confirm sequence (sign-release.sh, doli release verify, publish-release.sh, monitor-release-signed.sh), plus per-node binary layout, MD5 verification, and correct replacement procedure.
+description: Cut, sign, and publish a DOLI release, and deploy binaries to the mainnet fleet. Covers the release cut (chore(release) bump PR, tag via the doli-network account API route), then the draft -> sign -> verify -> promote -> confirm sequence (sign-release.sh, doli release verify, publish-release.sh, monitor-release-signed.sh), plus per-node binary layout, MD5 verification, and correct replacement procedure.
 user_invocable: true
 ---
 
@@ -13,22 +13,52 @@ is what auto-updating external producers consume. (b) **The manual per-node bina
 rest of this file. Neither substitutes for the other: a published release does not move the fleet
 binaries, and a fleet deploy does not give external producers anything to update to.
 
-Run these six steps in this order. Do not stop early. No step publishes before verification.
+Run these seven steps in this order. Do not stop early. No step publishes before verification.
 
 | # | Step | Command |
 |---|------|---------|
-| 1 | Tag + push | `git tag vX.Y.Z && git push origin main --tags` |
+| 0 | Bump PR | `chore(release): vX.Y.Z` PR (`Cargo.toml` + `Cargo.lock` only), merged to `main` |
+| 1 | Tag | `gh api …/git/refs -f ref=refs/tags/vX.Y.Z` as the `doli-network` account |
 | 2 | CI builds | (automatic — creates the release as a **DRAFT**) |
 | 3 | **SIGN** | `./scripts/sign-release.sh X.Y.Z` |
 | 4 | **VERIFY** (optional) | `doli release verify --version vX.Y.Z --dir <path> --trust-root bootstrap` |
 | 5 | **PROMOTE** | `./scripts/publish-release.sh X.Y.Z` |
 | 6 | **CONFIRM** | `./scripts/monitor-release-signed.sh` |
 
-**1. Tag + push**
+**0. Bump PR — `main` is protected**
+
+`main` rejects a direct push. Cut the version on a short branch and merge it by PR:
 
 ```bash
-git tag vX.Y.Z && git push origin main --tags
+git switch -c chore/vX.Y.Z origin/main
+# edit [workspace.package] version = "X.Y.Z" in Cargo.toml
+cargo update --workspace --offline      # Cargo.lock: workspace crate versions only
+git add Cargo.toml Cargo.lock
+git commit -m "chore(release): vX.Y.Z"
+git push -u origin chore/vX.Y.Z && gh pr create --base main --fill
 ```
+
+The diff is one line of `Cargo.toml` plus the workspace crate versions in `Cargo.lock`. A fix and
+its bump can share one PR as two commits. Merge after CI passes.
+
+**1. Tag — as the `doli-network` account, through the API**
+
+The `protect-release-tags` ruleset refuses a `v*` tag from an account without bypass
+(`GH013 … creations being restricted`). Only the `doli-network` gh account bypasses it. `git push`
+over HTTPS sends the keychain credential, not the gh account, so create the tag with the API:
+
+```bash
+git fetch origin
+SHA=$(git rev-parse origin/main)                   # must be the bump PR's merge commit
+git show "$SHA":Cargo.toml | grep -m1 '^version'   # must print X.Y.Z
+gh auth switch --user doli-network
+gh api repos/doli-network/doli/git/refs -f ref=refs/tags/vX.Y.Z -f sha="$SHA"
+gh auth switch --user <your-account>               # ALWAYS switch back
+git ls-remote --tags origin vX.Y.Z                 # confirm
+```
+
+Tags are lightweight and sit on the `main` merge commit. Creating the tag starts the `Release`
+workflow.
 
 **2. CI builds all 7 artifacts and creates the GitHub Release as a DRAFT**
 
@@ -36,6 +66,10 @@ A draft is invisible to the unauthenticated GitHub API. At this point the releas
 and **NOT reachable by any node**: no `doli upgrade` and no auto-updating producer can see it. CI
 also injects an "UNSIGNED DRAFT" banner into the notes and writes a "Release ... created as DRAFT"
 job step summary. A tag alone publishes nothing.
+
+**Known flake:** the `Deploy Install Scripts` job copies `install.sh` / `install.ps1` to the web
+server over SSH and often times out (v6.29.0, v6.30.0, v6.30.2). It does not affect the draft or
+its assets. Rerun only the failed job: `gh run rerun <run-id> --failed`.
 
 **3. SIGN — collect the 3-of-5 maintainer quorum on the draft**
 
@@ -268,3 +302,4 @@ ssh doli-server-nano "sudo systemctl stop doli-mainnet && sudo cp /tmp/doli-node
 8. **A tag alone publishes nothing** — CI leaves the release a DRAFT that no node can reach; steps 3-6 above are mandatory (INC-I-202)
 9. **Never promote by hand** — only `./scripts/publish-release.sh X.Y.Z` may clear the draft flag; a hand-run `gh release edit --draft=false` skips verification
 10. **Never sign with the leaked pre-rotation producer key files** committed under `testnet/keys/` (INC-I-175) — their private halves are public; signing keys are the rotated wallets at `~/.ssh/doli/maintainer-{1,2,3}.json`
+11. **`main` takes no direct push, and a `v*` tag needs the `doli-network` account** — the bump goes by PR (step 0) and the tag through `gh api …/git/refs` (step 1); a plain `git push` of the tag fails with `GH013`

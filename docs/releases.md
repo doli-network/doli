@@ -161,18 +161,29 @@ doli-v1.0.0-x86_64-unknown-linux-musl/
 
 ### Creating a Release
 
-1. **Update version in Cargo.toml:**
+1. **Bump the version by PR (`main` is protected — a direct push is rejected):**
    ```bash
-   # Update workspace version
-   vim Cargo.toml  # Change version = "X.Y.Z"
+   git switch -c chore/vX.Y.Z origin/main
+   # edit [workspace.package] version = "X.Y.Z" in Cargo.toml
+   cargo update --workspace --offline   # refresh Cargo.lock for the workspace crates
+   git add Cargo.toml Cargo.lock
+   git commit -m "chore(release): vX.Y.Z"
+   git push -u origin chore/vX.Y.Z
+   gh pr create --base main --fill      # merge after CI passes
    ```
 
-2. **Create and push tag:**
+2. **Create the tag on the merge commit, as the `doli-network` account:**
+
+   The `protect-release-tags` ruleset refuses a `v*` tag from an account without bypass
+   (`GH013`). `git push` sends the keychain credential, not the gh account, so create the
+   tag through the API:
    ```bash
-   git add Cargo.toml
-   git commit -m "chore: bump version to vX.Y.Z"
-   git tag vX.Y.Z
-   git push origin main --tags
+   git fetch origin
+   SHA=$(git rev-parse origin/main)     # the bump PR's merge commit
+   gh auth switch --user doli-network
+   gh api repos/doli-network/doli/git/refs -f ref=refs/tags/vX.Y.Z -f sha="$SHA"
+   gh auth switch --user <your-account> # always switch back
+   git ls-remote --tags origin vX.Y.Z
    ```
 
 3. **GitHub Actions automatically:**
@@ -182,6 +193,9 @@ doli-v1.0.0-x86_64-unknown-linux-musl/
      SIGNATURES.json scaffold (INC-I-202: a draft is invisible to the unauthenticated
      API, so no node and no `doli upgrade` can reach an unsigned release)
    - Generates release notes from commits
+   - Runs `Deploy Install Scripts`, which copies `install.sh` / `install.ps1` to the web
+     server. This job often times out on SSH; it does not affect the draft. Rerun only the
+     failed job: `gh run rerun <run-id> --failed`
 
    **The release is not done here.** Until step 5 promotes it, the draft is invisible to the
    unauthenticated GitHub API: it is not public, `releases/latest` does not return it, and no
@@ -248,12 +262,12 @@ doli-v1.0.0-x86_64-unknown-linux-musl/
 A strict sequence. Do not tick an item before every item above it is ticked.
 
 - [ ] All tests passing on main branch
-- [ ] Version bumped in Cargo.toml
+- [ ] Version bumped by a merged `chore(release): vX.Y.Z` PR (`Cargo.toml` + `Cargo.lock`)
 - [ ] CHANGELOG.md updated (if maintained)
 - [ ] **BLOCKING — maintainer-rotation ordering checked** (see
       [Maintainer rotation: mandatory release ordering](#maintainer-rotation-mandatory-release-ordering)
       below). Violating this order stops auto-update on every node in the fleet.
-- [ ] Tag created and pushed
+- [ ] Tag created on the bump PR's merge commit via the `doli-network` API route (step 2)
 - [ ] GitHub Actions workflow completed — release exists as a **DRAFT** (not public yet)
 - [ ] Binaries tested on target platforms
 - [ ] Docker images verified
