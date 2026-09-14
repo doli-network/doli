@@ -745,7 +745,7 @@
 - const ACTIVE_PRODUCERS_CAP: usize = 50 — max producers in round-robin after TIER_SYSTEM_ACTIVATION_HEIGHT
 - const UNIQUE_COINBASE_ACTIVATION_HEIGHT: u64 = 0 — coinbase extra_data = height ++ slot
 - const SNAP_HEADER_ACTIVATION_HEIGHT: u64 = 0 — snap sync includes anchor block header
-- const TIER_PROMOTION_ACTIVATION_HEIGHT: u64 = 0 — active list filtered by MIN_ATTESTATION_MINUTES (+ blocks-produced check, INC-I-193), then sorted by registered_at asc
+- const TIER_PROMOTION_ACTIVATION_HEIGHT: u64 = 0 — active list filtered by MIN_ATTESTATION_MINUTES (+ blocks-produced check before inc_i_193_attestor_refill_activation_height, INC-I-193), then sorted by registered_at asc
 - const MIN_ATTESTATION_MINUTES: usize = 30 — minimum attestation minutes to stay in active list
 - const REWARDS_EPOCH_LIST_FIX_HEIGHT: u64 = 13_320 — rewards decode with epoch_state.producer_list (epoch 37 boundary)
 - const FULL_BITFIELD_DECODE_HEIGHT: u64 = 14_000 — decode ALL indices including mid-epoch activated producers (Full Bitfield Decode stability pillar)

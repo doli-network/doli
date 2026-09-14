@@ -411,6 +411,13 @@ fn req_fork_014_no_mainnet_activation_height_was_moved() {
     assert_eq!(p.inc_i_176_auth_binding_activation_height, 317_861);
     // INC-I-208 M3 — pinned 2026-09-05, IMMUTABLE once crossed (INC-I-054).
     assert_eq!(p.inc_i_178_attestation_bls_activation_height, 409_000);
+    // TEST-193-07 — Decision: a failure means the mainnet pin moved after the fleet crossed
+    // it, which is the INC-I-054 shape (a crossed height is consensus history). Pinned
+    // 2026-09-14 (owner decision, tip 462_424); first boundary at/above it is h = 475_200.
+    assert_eq!(
+        p.inc_i_193_attestor_refill_activation_height, 475_000,
+        "INC-I-193 M1 — mainnet pin, first boundary at/above it is h = 475_200 (epoch 1320)"
+    );
 }
 
 /// REQ-FORK-014 — O3 x P-Testnet.
@@ -442,6 +449,12 @@ fn req_fork_014_no_testnet_activation_height_was_moved() {
     assert_eq!(p.inc_i_173_activation_height, 25_500);
     assert_eq!(p.inc_i_176_auth_binding_activation_height, 15_087); // INC-I-178 — the BLS gate joins the ledger; PINNED on testnet 2026-09-05 (v6.27.0).
     assert_eq!(p.inc_i_178_attestation_bls_activation_height, 112_619);
+    // TEST-193-07 — Decision: a failure means the testnet pin moved after the fleet crossed
+    // it, which is the INC-I-054 shape (a crossed height is consensus history).
+    assert_eq!(
+        p.inc_i_193_attestor_refill_activation_height, 192_163,
+        "INC-I-193 M1 — testnet pin, first boundary at/above it is h = 192_168"
+    );
 }
 
 /// REQ-FORK-014 — O3 x P-Devnet.
@@ -474,6 +487,13 @@ fn req_fork_014_no_devnet_activation_height_was_moved() {
     assert_eq!(p.inc_i_176_auth_binding_activation_height, 20);
     // INC-I-208 M3 — devnet stays frozen; mainnet+testnet are pinned (INC-I-054).
     assert_eq!(p.inc_i_178_attestation_bls_activation_height, u64::MAX);
+    // TEST-193-07 — Decision: a failure means devnet armed a gate its <= 50-producer
+    // registry can never exercise, hiding the real behaviour behind a green local run.
+    assert_eq!(
+        p.inc_i_193_attestor_refill_activation_height,
+        u64::MAX,
+        "INC-I-193 M1 — devnet stays frozen"
+    );
 }
 
 // ===========================================================================

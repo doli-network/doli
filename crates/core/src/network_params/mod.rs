@@ -33,6 +33,9 @@ mod ordering;
 mod tests;
 
 #[cfg(test)]
+mod tests_inc_i_193;
+
+#[cfg(test)]
 mod tests_oracle;
 
 /// INC-I-176 M2 review F4 — the `#22 >= #20` ordering on the RUNTIME (env-loaded)
@@ -259,6 +262,11 @@ pub struct NetworkParams {
     ///       which is also the bitfield encoder order.
     ///   Verdict: activation height REQUIRED.
     pub inc_i_190_floor_bound_activation_height: u64,
+
+    /// INC-I-193: at/above this height the tier retain drops the produced>=min_produced clause
+    /// (shrink-only defect); before it the legacy predicate applies. Consensus-visible schedule
+    /// change → own AH (three-question gate: specs/inc-i-193-attestor-refill-architecture.md §2.1).
+    pub inc_i_193_attestor_refill_activation_height: u64,
 
     /// INC-I-075: Height at which the INC-I-068 weight=0 filter activates.
     ///

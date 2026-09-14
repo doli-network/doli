@@ -44,6 +44,7 @@ mod inc_i_180_in_block_parity;
 mod inc_i_180_rebuild_parity;
 mod inc_i_180_replay_mode;
 mod inc_i_180_withdrawal_holdings_gate;
+mod inc_i_193_rebuild_parity;
 mod inc_i_203_builder_gap;
 mod inc_i_204_m0_common;
 mod inc_i_204_m0_export_paths;

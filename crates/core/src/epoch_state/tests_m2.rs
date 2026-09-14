@@ -45,6 +45,7 @@ fn derive_producer_list(
         ghost_exclusion_activation_height: ghost_ah,
         epoch_prune_activation_height: prune_ah,
         inc_i_190_floor_bound_activation_height: u64::MAX,
+        inc_i_193_attestor_refill_activation_height: u64::MAX,
     };
     EpochState::derive_at_boundary(&prev, &input).producer_list
 }
@@ -326,6 +327,7 @@ fn test_decode_list_pre_act_identity() {
         ghost_exclusion_activation_height: u64::MAX,
         epoch_prune_activation_height: u64::MAX,
         inc_i_190_floor_bound_activation_height: u64::MAX,
+        inc_i_193_attestor_refill_activation_height: u64::MAX,
     };
     let state = EpochState::derive_at_boundary(&prev, &input);
 
@@ -366,6 +368,7 @@ fn test_decode_list_post_act_divergence() {
         ghost_exclusion_activation_height: u64::MAX,
         epoch_prune_activation_height: 0,
         inc_i_190_floor_bound_activation_height: u64::MAX,
+        inc_i_193_attestor_refill_activation_height: u64::MAX,
     };
     let state = EpochState::derive_at_boundary(&prev, &input);
 
@@ -427,6 +430,7 @@ fn test_filter08_tier_cap_floor_passes() {
         ghost_exclusion_activation_height: u64::MAX,
         epoch_prune_activation_height: u64::MAX,
         inc_i_190_floor_bound_activation_height: u64::MAX,
+        inc_i_193_attestor_refill_activation_height: u64::MAX,
     };
     let state = EpochState::derive_at_boundary(&prev, &input);
 
@@ -479,6 +483,7 @@ fn test_filter08_tier_cap_active_diverges() {
         ghost_exclusion_activation_height: u64::MAX,
         epoch_prune_activation_height: u64::MAX,
         inc_i_190_floor_bound_activation_height: u64::MAX,
+        inc_i_193_attestor_refill_activation_height: u64::MAX,
     };
     let state = EpochState::derive_at_boundary(&prev, &input);
 

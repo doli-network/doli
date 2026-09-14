@@ -454,7 +454,9 @@ producer_list = active producers that attested in any of the last 3 epochs
                 (liveness filter + deadlock floor), sorted by pubkey
 if len(producer_list) > ACTIVE_PRODUCERS_CAP (50):
     candidates  = producers with >= MIN_ATTESTATION_MINUTES (30) attested minutes
-                  in the just-completed epoch (plus a blocks-produced check, INC-I-193)
+                  in the just-completed epoch (before inc_i_193_attestor_refill_activation_height:
+                  also >= 80% of expected blocks produced — the INC-I-193 shrink-only defect;
+                  after: attestation minutes only)
     active_list = first 50 of candidates sorted by registered_at asc (pubkey tiebreak)
     if len(active_list) < len(producer_list) / 3 or active_list is empty:
         active_list = producer_list          # deadlock safety

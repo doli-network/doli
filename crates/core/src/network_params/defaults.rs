@@ -112,6 +112,7 @@ impl NetworkParams {
                 // external auto-update population must run >= this binary BEFORE
                 // 332_664, or the gate activates on a mixed fleet.
                 inc_i_190_floor_bound_activation_height: 332_664,
+                inc_i_193_attestor_refill_activation_height: 475_000, // tip 462_424 measured 2026-09-14 19:28Z at slot 469_700; first boundary >= 475_000 is h = 475_200 (epoch 1320, 360 blocks/epoch)
                 // INC-I-068 / INC-I-075: filter weight=0 producers out of the active
                 // list. ACTIVE FROM GENESIS on the fresh chain — same reasoning as
                 // above: the re-gate at a future height existed to make the
@@ -456,6 +457,7 @@ impl NetworkParams {
                 // crossing at any height on the local nodes.
                 // Never move it once crossed.
                 inc_i_190_floor_bound_activation_height: 58_000,
+                inc_i_193_attestor_refill_activation_height: 192_163, // tip 192_081 measured 2026-09-14 at slot 1_237_319; first boundary >= 192_163 is h = 192_168 (epoch 5338, 36 blocks/epoch)
                 // INC-I-075: Testnet never ran v6.21.16 in production — always
                 // apply the INC-I-068 filter (matches current testnet runtime).
                 inc_i_068_weight_filter_activation_height: 0,
@@ -731,6 +733,7 @@ impl NetworkParams {
                 // Active from genesis — devnet has no sealed history to stay
                 // bit-compatible with.
                 inc_i_190_floor_bound_activation_height: 0,
+                inc_i_193_attestor_refill_activation_height: u64::MAX,
                 // INC-I-075: Always active on devnet (clean chain).
                 inc_i_068_weight_filter_activation_height: 0,
                 // INC-I-078: devnet default disabled (u64::MAX). Tests that

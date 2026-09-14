@@ -704,6 +704,11 @@ impl Node {
                         .network
                         .params()
                         .inc_i_190_floor_bound_activation_height,
+                    inc_i_193_attestor_refill_activation_height: self
+                        .config
+                        .network
+                        .params()
+                        .inc_i_193_attestor_refill_activation_height,
                 };
                 let (derived, floor_outcome) =
                     doli_core::EpochState::derive_at_boundary_with_outcome(

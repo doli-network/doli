@@ -549,6 +549,8 @@ async fn demotion_survivors(
         ghost_exclusion_activation_height: params.ghost_exclusion_activation_height,
         epoch_prune_activation_height: params.epoch_prune_activation_height,
         inc_i_190_floor_bound_activation_height: params.inc_i_190_floor_bound_activation_height,
+        inc_i_193_attestor_refill_activation_height: params
+            .inc_i_193_attestor_refill_activation_height,
     };
     let derived = EpochState::derive_at_boundary(&node.epoch_state, &input);
     derived
