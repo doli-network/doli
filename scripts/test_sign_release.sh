@@ -232,6 +232,23 @@ else
 fi
 
 # ============================================================
+# INC-I-202 (Must) — Decision: proves the success text does not tell the
+# operator that nodes already see a release that is still a DRAFT, and names
+# the promote step instead. [P1]
+# ============================================================
+if grep -q "still a DRAFT" "$LOG_FILE" && grep -q "publish-release.sh $VERSION" "$LOG_FILE"; then
+    test_result "success_text_says_release_is_still_a_draft: names publish-release.sh" "pass"
+else
+    test_result "success_text_says_release_is_still_a_draft: names publish-release.sh" "fail" "log=$LOG_FILE"
+fi
+
+if grep -qi "auto-detect" "$LOG_FILE"; then
+    test_result "success_text_says_release_is_still_a_draft: no auto-detect claim" "fail" "log=$LOG_FILE"
+else
+    test_result "success_text_says_release_is_still_a_draft: no auto-detect claim" "pass"
+fi
+
+# ============================================================
 # REQ-202-001 (Must) — Decision: proves the default KEY_DIR (with KEY_DIR
 # unset) resolves to the live rotated wallets, not the dead pre-rotation
 # producer_N.json names that no longer exist post-INC-I-175. [P2]
