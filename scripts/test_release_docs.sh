@@ -24,9 +24,11 @@
 #   S5: no live runbook claims CI publication ends the release      — O1 O2 O3 O4
 #   S6: every .claude/skills/<n>/SKILL.md cross-ref resolves        — O1 O2 O3
 #   S7: SKILLS-INDEX row `| release |` mentions signing             — O1 O2
-# MATRIX: 4 outputs x 7 partitions (only cells the path reaches are asserted)
+#   S8: runbooks cut via a bump PR + the doli-network tag route,
+#       never `git push origin main`                                — O1 O2 O3
+# MATRIX: 4 outputs x 8 partitions (only cells the path reaches are asserted)
 #   S1: O1 O2 | S2: O1 O2 | S3: O1 O2 O3 | S4: O1 O2 O3 O4
-#   S5: O1 O2 O3 O4 | S6: O1 O2 O3 | S7: O1 O2
+#   S5: O1 O2 O3 O4 | S6: O1 O2 O3 | S7: O1 O2 | S8: O1 O2 O3
 #
 # TDD RED tests for REQ-202-006: the signing + promotion procedure must be impossible to miss
 # when following the docs. This suite READS FILES ONLY — no network, no `gh`, no `doli`, no
@@ -339,6 +341,22 @@ else
     test_result "S7 skills_index_release_row_mentions_signing" "fail" \
         "file does not exist: $(rel "$SKILLS_INDEX")"
 fi
+
+# ============================================================
+# S8 — release cut (v6.30.2, 2026-09-14) — Decision: a failure reveals a runbook that still
+# commits the bump on main and runs `git push origin main --tags`. main is protected (a direct
+# push is rejected) and the protect-release-tags ruleset refuses a v* tag from an account
+# without bypass, so that command fails at step 1 and the release never starts.
+# ============================================================
+print_header "S8 — RUNBOOKS CUT THE RELEASE THROUGH A PR AND THE doli-network TAG ROUTE"
+assert_no_match "S8a release_skill_has_no_direct_push_to_main" "$SKILL_RELEASE" 'git push origin main'
+assert_no_match "S8b releases_doc_has_no_direct_push_to_main" "$RELEASES_DOC" 'git push origin main'
+assert_contains "S8c release_skill_names_the_bump_pr_commit" "$SKILL_RELEASE" "chore(release): vX.Y.Z"
+assert_contains "S8d release_skill_switches_to_doli_network_for_the_tag" "$SKILL_RELEASE" "gh auth switch --user doli-network"
+assert_contains "S8e release_skill_creates_the_tag_via_the_refs_api" "$SKILL_RELEASE" "-f ref=refs/tags/vX.Y.Z"
+assert_contains "S8f release_skill_switches_back_after_the_tag" "$SKILL_RELEASE" "gh auth switch --user <your-account>"
+assert_contains "S8g releases_doc_switches_to_doli_network_for_the_tag" "$RELEASES_DOC" "gh auth switch --user doli-network"
+assert_contains "S8h release_skill_names_the_failed_job_rerun" "$SKILL_RELEASE" "gh run rerun"
 
 # ============================================================
 print_header "TEST SUMMARY"
