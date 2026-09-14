@@ -718,8 +718,8 @@ Producer weight based on seniority only (discrete yearly steps):
   - Year 3: weight = 3
   - Year 4+: weight = 4 (maximum)
 
-Note: Bond count affects slot allocation (more bonds = more slots),
-NOT producer weight. Weight is purely seniority-based.
+Note: Bond count affects epoch reward share only (every listed producer
+gets one slot per rotation), NOT producer weight. Weight is purely seniority-based.
 
 There is NO activity gap penalty. Producers who miss slots simply
 miss rewards - no slashing or weight reduction occurs.

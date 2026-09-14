@@ -4,9 +4,12 @@ use super::constants::{FALLBACK_TIMEOUT_MS, MAX_FALLBACK_PRODUCERS, MAX_FALLBACK
 
 /// Select the producer for a slot using evenly-distributed ticket offsets.
 ///
-/// This is the primary selection function. It uses a deterministic round-robin
-/// based on bond count (consecutive tickets). Selection is independent of
-/// the previous block hash to prevent grinding attacks.
+/// LEGACY: this is NOT the production scheduler. Production and validation use
+/// `active_list[slot % len]` (`validation/producer.rs::validate_producer_eligibility`);
+/// bond count never enters slot assignment. This function survives only for
+/// tests and the `getSlotSchedule`/`getProducerSchedule` RPCs (INC-I-224).
+/// It uses a deterministic round-robin based on bond count (consecutive
+/// tickets). Selection is independent of the previous block hash.
 ///
 /// # Algorithm
 /// 1. Calculate total tickets = sum of all producer bond counts

@@ -206,40 +206,40 @@ doli --wallet ~/.doli/keys/my_producer.json \
 
 ## 4. Understanding Selection
 
-### 4.1. Ticket-Based Round-Robin
+### 4.1. Epoch-Frozen Round-Robin
 
 Selection is NOT a lottery. It's deterministic based on:
 - Slot number
-- Active producer set (sorted by pubkey)
-- Bond counts (each bond = 1 ticket)
+- The active production list frozen at the epoch boundary
 
-**How tickets work:**
-- Producers are sorted by public key (deterministic ordering)
-- Each producer gets consecutive tickets equal to their bond count
-- Primary producer: `slot % total_tickets` determines which ticket is selected
-
-```
-Example with 2 producers (5 total bonds/tickets):
-
-Alice: 3 bonds → tickets 0, 1, 2
-Bob:   2 bonds → tickets 3, 4
-
-Selection pattern (repeating every 5 slots):
-Slot 0: 0 % 5 = 0 → ticket 0 (Alice)
-Slot 1: 1 % 5 = 1 → ticket 1 (Alice)
-Slot 2: 2 % 5 = 2 → ticket 2 (Alice)
-Slot 3: 3 % 5 = 3 → ticket 3 (Bob)
-Slot 4: 4 % 5 = 4 → ticket 4 (Bob)
-Slot 5: 5 % 5 = 0 → ticket 0 (Alice) [cycle repeats]
-```
-
-### 4.2. Calculating Your Slots
+**How the active list is built (every epoch boundary):**
+- Producers that attested in any of the last 3 epochs stay in the epoch producer list (liveness filter, sorted by pubkey)
+- If that list has more than 50 producers, the first 50 by registration seniority (earliest `registered_at`) that attested at least 30 minutes in the just-completed epoch form the active list; otherwise the whole list is active
+- Primary producer: `active_list[slot % active_list.len()]` — bond count is never an input
 
 ```
-Your blocks per epoch = (your_bonds / total_bonds) × blocks_per_epoch
+Example with 2 producers in the active list:
+
+Alice: 3 bonds → position 0
+Bob:   2 bonds → position 1
+
+Selection pattern (repeating every 2 slots):
+Slot 0: 0 % 2 = 0 → Alice
+Slot 1: 1 % 2 = 1 → Bob
+Slot 2: 2 % 2 = 0 → Alice [cycle repeats]
+```
+
+If a producer is offline for its slot, the slot stays empty and the next slot goes to the next producer.
+
+### 4.2. Calculating Your Slots and Rewards
+
+```
+Your blocks per epoch = blocks_per_epoch / active_list.len()   (if you are in the active list)
   (mainnet: 360, testnet: 36, devnet: 4)
-Your blocks per day = (your_bonds / total_bonds) × 8,640
+Your epoch reward   = pool × your_bonds / qualifying_bonds     (every qualifying producer, listed or not)
 ```
+
+Production frequency does not change your earnings — rewards are paid at every epoch boundary to all qualifying producers proportional to bonds.
 
 ### 4.3. Fallback Mechanism
 
@@ -252,8 +252,7 @@ If the primary producer is offline, fallback producers become eligible in exclus
 
 2 ranks x 2,000ms = 4,000ms. Rank 1 only produces if rank 0's block hasn't arrived via gossip after 2 seconds.
 
-**Fallback calculation:** The fallback producer at rank 1 is selected by offsetting the primary ticket:
-`offset = total_bonds * rank / MAX_FALLBACK_RANKS`
+**Fallback calculation:** the epoch-frozen round-robin resolves exactly one producer per slot; no fallback producer is derived from bond tickets. If the primary is offline, the slot stays empty (INC-I-026 trade-off).
 
 Only one rank is eligible at any given time. Producers verify block existence before and after VDF computation to prevent duplicates.
 
@@ -325,7 +324,7 @@ Producers also earn transaction fees from included transactions.
 ### 6.1. Bond Stacking
 
 You can hold multiple bonds (up to 3,000), each with its own vesting schedule:
-- Each bond = 10 DOLI (mainnet) or 1 DOLI (testnet/devnet) = 1 ticket per cycle
+- Each bond = 10 DOLI (mainnet) or 1 DOLI (testnet/devnet) = 1 unit of epoch reward weight (bonds do not add production slots)
 - Maximum: 3,000 bonds = 30,000 DOLI (mainnet)
 - Bonds vest individually based on their creation time
 
@@ -401,7 +400,7 @@ Producer weight is based on discrete yearly tiers and increases with time:
 **Weight affects fork choice only:**
 - Chains with higher accumulated weight win
 - Seniority rewards long-term commitment
-- Does NOT affect block production frequency (that's bond count)
+- Does NOT affect block production frequency (every listed producer gets one slot per rotation) or reward share (that's bond count)
 
 **Example fork choice:**
 ```

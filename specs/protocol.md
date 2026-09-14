@@ -1716,7 +1716,7 @@ def selected_producer(slot, active_producers, bond_snapshot):
 
 ### 5.4.1 Bond Stacking
 
-Producers can stake multiple bonds (1-3,000) to increase their block production share:
+Producers can stake multiple bonds (1-3,000) to increase their share of the epoch reward pool (slot allocation is unaffected — see the §5.4 banner):
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
@@ -1749,30 +1749,24 @@ When the primary producer misses their slot, a single fallback producer takes ov
 
 **History:** Previously set to 5 ranks (filling the entire 10s slot), reduced to 2 to eliminate fork fragmentation observed at 22+ nodes. With reliable gossip, a single fallback is sufficient to cover offline primaries without risking competing blocks.
 
-**Fallback producer selection:** Each rank gets an evenly-distributed offset in the ticket space:
-```
-offset(rank) = total_tickets * rank / MAX_FALLBACK_RANKS
-ticket(slot, rank) = (slot + offset(rank)) % total_tickets
-```
+**Fallback producer selection:** the epoch-frozen round-robin resolves exactly one producer per slot (`active_list[slot % len]`, `production/scheduling.rs` and `validation/producer.rs`); no fallback rank is derived from bond tickets. An offline primary leaves the slot empty and the next slot goes to the next producer in the list (INC-I-026 trade-off).
 
-This ensures fallback producers are spread across the producer set, not consecutive.
-
-**Example distribution:**
+**Example distribution (3 producers in the active list, 10 total bonds):**
 ```
-Producer  Bonds   Tickets   Blocks/100   ROI/Bond
-────────────────────────────────────────────────
-Alice       1        1          1         1.0
-Bob         5        5          5         1.0
-Carol       4        4          4         1.0
-Total      10       10         10         1.0 (equal)
+Producer  Bonds   Slots/rotation   Epoch pool share   ROI/Bond
+──────────────────────────────────────────────────────────────
+Alice       1           1               10%              1.0
+Bob         5           1               50%              1.0
+Carol       4           1               40%              1.0
+Total      10           3              100%              1.0 (equal)
 ```
 
 **ROI Calculation:**
-- Alice: 1 bond → 1 block/cycle → ROI = 1/1 = 1.0
-- Bob: 5 bonds → 5 blocks/cycle → ROI = 5/5 = 1.0
-- Carol: 4 bonds → 4 blocks/cycle → ROI = 4/4 = 1.0
+- Alice: 1 bond → 10% of the epoch pool → ROI per bond = 1.0
+- Bob: 5 bonds → 50% of the epoch pool → ROI per bond = 1.0
+- Carol: 4 bonds → 40% of the epoch pool → ROI per bond = 1.0
 
-All producers earn the **same percentage return** on their investment.
+All producers earn the **same percentage return** on their investment; production frequency carries no economic weight.
 
 ### 5.5 Chain Selection (Weight-Based Fork Choice)
 
@@ -1798,7 +1792,7 @@ def accumulated_weight(block):
 
 **Important distinction:**
 - Weight is based on **seniority only** (years active)
-- Bond count affects **slot allocation** (more bonds = more slots per cycle)
+- Bond count affects **epoch reward share** only (every listed producer gets one slot per rotation)
 - Bond count does NOT affect weight
 
 **No activity penalty:**
@@ -1889,9 +1883,9 @@ LOCK_DURATION = VESTING_PERIOD_SLOTS  // Mainnet: 4 years (4 × 1-year quarters)
 ```
 
 **Bond tracking:** Registration creates Bond UTXOs (one per bond unit) with
-`creation_slot` in extra_data. The bond count for scheduling is derived from
+`creation_slot` in extra_data. The bond count used for epoch rewards is derived from
 the UTXO set at each epoch boundary (epoch bond snapshot), not stored in
-ProducerInfo. See Section 5.4 for the epoch snapshot mechanism.
+ProducerInfo; it is not an input to slot selection. See Section 5.4 for the epoch snapshot mechanism.
 
 ### 6.3 Registration VDF
 

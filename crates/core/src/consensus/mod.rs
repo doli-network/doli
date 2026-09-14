@@ -29,16 +29,19 @@
 //!
 //! Time is proven via VDF (Verifiable Delay Function):
 //! - One producer per slot (10 seconds)
-//! - Selection uses consecutive tickets based on bond count
+//! - Selection is round-robin over the epoch-frozen active list (bond count is not an input)
 //! - VDF computation (~7s) proves sequential work
 //! - Producer receives 100% of block reward via coinbase
 //!
 //! ## Selection System
 //!
 //! Producer selection is deterministic and independent of previous block hash:
-//! - Total tickets = sum of all producer bond counts
-//! - Primary producer: slot % total_tickets
-//! - Fallback producers at +33% and +50% ticket offsets
+//! - Active list frozen at each epoch boundary (liveness-filtered, capped at
+//!   ACTIVE_PRODUCERS_CAP by registered_at asc — `epoch_state::derive_at_boundary`)
+//! - Exactly one producer per slot: `active_list[slot % active_list.len()]`
+//!   (`validation/producer.rs`; the node's `production/scheduling.rs` matches)
+//! - Bond count never enters slot assignment; it weights epoch rewards only
+//! - The ticket model in `selection.rs` / `scheduler.rs` is legacy (tests + RPC)
 //!
 //! This prevents grinding attacks - changing the block hash cannot influence
 //! who gets selected for future slots.

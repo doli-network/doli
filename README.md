@@ -60,7 +60,7 @@ These aren't documentation written for humans to skim. They're machine-optimized
 
 ## How It Works
 
-**Block production** follows deterministic bond-weighted scheduling: each producer receives block assignments proportional to their bond count. Both production frequency and epoch rewards scale linearly with bonds — ensuring identical ROI percentage for all participants.
+**Block production** is a deterministic round-robin over the active producer list frozen at each epoch boundary (at most 50 producers, ranked by registration seniority, liveness-filtered each epoch): every listed producer gets the same number of slots regardless of bond count. Epoch rewards scale linearly with bonds and production frequency carries no economic weight — ensuring identical ROI percentage for all participants.
 
 **Rewards** accumulate into an epoch pool (360 blocks, ~1 hour) and are distributed proportionally by bond weight to all producers who proved continuous presence via on-chain liveness attestations.
 

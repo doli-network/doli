@@ -12,7 +12,7 @@
 
 We propose a peer-to-peer electronic cash system where the only resource required for consensus is time — the one resource distributed equally to all participants.
 
-Block production follows deterministic bond-weighted scheduling: each active producer receives block assignments proportional to their bond count. The protocol distributes rewards every epoch through a built-in pool — proportional to bonds, no external mining pools, no operators, no fees. Rewards compound into productive stake, creating predictable exponential growth for every participant regardless of size.
+Block production is a deterministic round-robin over the active producer list frozen at each epoch boundary — at most 50 producers, ranked by registration seniority and liveness-filtered every epoch — and every producer in the list receives the same number of slots regardless of bond count. The protocol distributes rewards at every epoch boundary through a built-in pool to all qualifying producers, proportional to bonded weight — no external mining pools, no operators, no fees. Production frequency does not affect earnings, and no producer waits for a turn to earn. Rewards compound into productive stake, creating predictable exponential growth for every participant regardless of size.
 
 A new producer receiving 10 DOLI can reinvest block rewards to double their stake at regular intervals. The doubling rate is identical for all participants — one bond or three thousand. Continuous presence is proven through on-chain liveness attestations — producers who are online and following the chain qualify for their share. A dynamic liveness filter excludes offline producers from the rotation and re-includes them upon attestation. No lottery. No variance. No pools. Just time.
 
@@ -448,7 +448,7 @@ A block *B* is valid if:
 2. `B.timestamp <= network_time + DRIFT`
 3. `B.slot` derives correctly from `B.timestamp`
 4. `B.slot > prev_block.slot`
-5. `B.producer` is the correct bond-weighted selection for `B.slot` given the active set and liveness filter
+5. `B.producer` is the correct round-robin selection for `B.slot` given the epoch-frozen active list (`active_list[slot mod |active_list|]`)
 6. `verify_hash_chain(preimage, B.delay_output, T) == true`
 7. All transactions in the block are valid
 
@@ -548,23 +548,23 @@ MIN_STAKE = 1 × BOND_UNIT (10 DOLI)
 MAX_STAKE = 3,000 × BOND_UNIT (30,000 DOLI)
 ```
 
-Block production uses bond-weighted scheduling — each producer receives block assignments proportional to their bond count. A producer with 5 bonds receives 5 consecutive slots per rotation cycle; a producer with 1 bond receives 1. Both production frequency and epoch reward distribution (Section 10.2) scale linearly with bonds.
+Block production uses deterministic round-robin scheduling over the active producer list frozen at each epoch boundary (at most 50 producers, ranked by registration seniority, liveness-filtered each epoch). Every producer in the list receives the same number of slots regardless of bond count. Bonds do not change production frequency; they set each producer's share of the epoch reward pool (Section 10.2), which is distributed to all qualifying producers at every epoch boundary — so no producer waits for a turn to earn.
 
 **Example (3 producers, 10 total bonds):**
 
 ```
-Alice: 1 bond unit  (10 DOLI)   → 1 slot per cycle  (10% of blocks)
-Bob:   5 bond units (50 DOLI)   → 5 slots per cycle (50% of blocks)
-Carol: 4 bond units (40 DOLI)   → 4 slots per cycle (40% of blocks)
+Alice: 1 bond unit  (10 DOLI)   → 1 slot per rotation  (10% of epoch rewards)
+Bob:   5 bond units (50 DOLI)   → 1 slot per rotation  (50% of epoch rewards)
+Carol: 4 bond units (40 DOLI)   → 1 slot per rotation  (40% of epoch rewards)
 ```
 
-Production frequency and epoch rewards both scale with bonds:
+Production is equal; epoch rewards scale with bonds:
 
-- Alice earns 10% of blocks + 10% of epoch rewards
-- Bob earns 50% of blocks + 50% of epoch rewards
-- Carol earns 40% of blocks + 40% of epoch rewards
+- Alice produces 1 of every 3 blocks and earns 10% of epoch rewards
+- Bob produces 1 of every 3 blocks and earns 50% of epoch rewards
+- Carol produces 1 of every 3 blocks and earns 40% of epoch rewards
 
-**All producers earn identical ROI percentage regardless of stake size** — because both production and rewards scale linearly with bonds, each DOLI bonded generates the same return.
+**All producers earn identical ROI percentage regardless of stake size** — because rewards scale linearly with bonds and production frequency carries no economic weight, each DOLI bonded generates the same return.
 
 | Parameter             | Value                    |
 |-----------------------|--------------------------|
@@ -572,20 +572,20 @@ Production frequency and epoch rewards both scale with bonds:
 | Min stake             | 10 DOLI (1 bond)         |
 | Max stake             | 30,000 DOLI (3,000 bonds) |
 | Block reward (Era 1)  | 1 DOLI                   |
-| Production frequency  | Proportional to bonds (deterministic) |
+| Production frequency  | Equal for every listed producer (round-robin) |
 | Reward distribution   | Proportional to bonds (epoch pool) |
 
 #### Accessibility at Scale
 
 At network maturity (500 producers, 18,000 total bonds):
 
-| Your Stake | Bonds | Blocks/Week | Income/Week | Hardware |
-|-----------|-------|-------------|-------------|----------|
-| 10 DOLI   | 1     | ~3          | ~3 DOLI     | Any CPU  |
-| 100 DOLI  | 10    | ~34         | ~34 DOLI    | Any CPU  |
-| 1,000 DOLI| 100   | ~336        | ~336 DOLI   | Any CPU  |
+| Your Stake | Bonds | Pool Share | Income/Week | Hardware |
+|-----------|-------|------------|-------------|----------|
+| 10 DOLI   | 1     | 1/18,000   | ~3 DOLI     | Any CPU  |
+| 100 DOLI  | 10    | 10/18,000  | ~34 DOLI    | Any CPU  |
+| 1,000 DOLI| 100   | 100/18,000 | ~336 DOLI   | Any CPU  |
 
-Both block assignments and epoch rewards scale linearly with bonds — every bonded DOLI generates the same return regardless of total stake size. No mining rigs. No staking pools. No minimum hardware requirements. A $5/month VPS is sufficient.
+Epoch rewards scale linearly with bonds, and every qualifying producer is paid at every epoch boundary whether or not it produced a block — every bonded DOLI generates the same return regardless of total stake size. No mining rigs. No staking pools. No minimum hardware requirements. A $5/month VPS is sufficient.
 
 ### 7.4. Bond Lifecycle
 
@@ -618,16 +618,15 @@ All penalties are burned permanently, removing coins from circulation.
 
 ## 8. Producer Selection
 
-For each slot, a deterministic function selects the block producer. Let *P* = {*p₁*, ..., *p_n*} be the active set frozen at the epoch boundary, sorted by public key. Each producer *p_i* receives *bonds(p_i)* consecutive tickets in the rotation. The total ticket space is *T = Σ bonds(p_i)*.
+For each slot, a deterministic function selects the block producer. Let *A* = [*a₀*, ..., *a_{n-1}*] be the active production list frozen at the epoch boundary: the liveness-filtered producer set, capped at `ACTIVE_PRODUCERS_CAP` (50) by registration seniority (Section 8.1). Every producer in *A* holds exactly one position in the rotation, regardless of bond count.
 
 ```
-ticket(s) = s mod T
-producer(s) = p_i where ticket(s) falls in p_i's ticket range
+producer(s) = A[s mod n]
 ```
 
-The scheduler is a `DeterministicScheduler`: a pure function of `(slot, EpochBondSnapshot)`. It depends on no value the current producer can influence — not `prev_hash`, not transaction ordering, not timestamps within the drift window. **Grinding is impossible because the schedule is a function of time and the frozen epoch bond snapshot alone.**
+The schedule is a pure function of `(slot, A)`. It depends on no value the current producer can influence — not `prev_hash`, not transaction ordering, not timestamps within the drift window. **Grinding is impossible because the schedule is a function of time and the frozen epoch producer list alone.** A producer that is offline for its slot leaves that slot empty; the next slot goes to the next producer in the list.
 
-Bond count influences production frequency proportionally — a producer with 5 bonds receives 5 consecutive slots per rotation cycle, a producer with 1 bond receives 1. Both production frequency and epoch reward distribution (Section 10.2) scale with bonds. This ensures that every bonded DOLI generates identical return regardless of the producer's total stake size — the ROI percentage is uniform.
+Bond count does not influence production frequency — a producer with 5 bonds and a producer with 1 bond each receive one slot per rotation. Bonds set the producer's share of the epoch reward pool (Section 10.2), which is distributed to all qualifying producers at every epoch boundary — including producers outside *A*. This ensures that every bonded DOLI generates identical return regardless of the producer's total stake size — the ROI percentage is uniform, and no producer waits for a turn to earn.
 
 ### 8.1. Liveness Filter
 
@@ -650,16 +649,16 @@ The liveness filter is deterministic: every node computes the same `EpochState` 
 
 ### 8.2. Comparison with Existing Systems
 
-Pools exist in PoW and PoS because rewards are probabilistic — variance forces small participants to delegate control to centralized operators. DOLI's deterministic bond-weighted scheduling eliminates production variance entirely — every producer receives guaranteed block assignments proportional to their bonds. The built-in epoch reward pool (Section 10.5) distributes rewards bond-weighted to all qualified producers. External pools cannot offer a better deal.
+Pools exist in PoW and PoS because rewards are probabilistic — variance forces small participants to delegate control to centralized operators. DOLI's deterministic round-robin scheduling eliminates production variance entirely — every producer in the active list receives the same guaranteed block assignments — and earnings never depend on production frequency. The built-in epoch reward pool (Section 10.5) distributes rewards bond-weighted to all qualified producers. External pools cannot offer a better deal.
 
 | System       | Selection                 | Variance | Pools | Energy        | Min Hardware    |
 |--------------|---------------------------|----------|-------|---------------|-----------------|
 | Bitcoin      | Lottery (hashpower)       | High     | Yes   | ~150 TWh/yr   | ASIC ($5,000+)  |
 | Ethereum PoS | Lottery (stake)           | Medium   | Yes   | ~2.6 GWh/yr   | 32 ETH ($100K+)  |
 | Solana PoH   | Leader schedule (stake)   | Low      | Yes   | ~4 GWh/yr     | $10,000+ server  |
-| DOLI PoT     | Deterministic bond-weighted | **Zero** | **Built-in**| **Negligible**| **Any CPU ($5/mo)**|
+| DOLI PoT     | Deterministic round-robin | **Zero** | **Built-in**| **Negligible**| **Any CPU ($5/mo)**|
 
-Solana uses Proof of History as a clock, but leader selection remains stake-weighted with probabilistic elements and requires high-performance hardware. DOLI uses the delay proof purely as a heartbeat — leader selection is a deterministic bond-weighted function of `(slot, ActiveSet(epoch), LivenessFilter)`. No hardware advantage exists. Both production frequency and rewards scale linearly with bonds — every bonded DOLI earns the same return.
+Solana uses Proof of History as a clock, but leader selection remains stake-weighted with probabilistic elements and requires high-performance hardware. DOLI uses the delay proof purely as a heartbeat — leader selection is a deterministic round-robin function of `(slot, ActiveSet(epoch), LivenessFilter)`. No hardware advantage exists. No stake advantage exists for production — only for rewards, which scale linearly with bonds so that every bonded DOLI earns the same return.
 
 **Tiered scaling path.** The protocol defines a two-tier architecture for future growth: up to 500 Tier 1 validators (block producers with full consensus participation) and up to 15,000 Tier 2 attestors (liveness attestation without block production). Delegation enables Tier 3 participants to stake without running infrastructure, with rewards split 10% to the delegate (Tier 1/2 node operator) and 90% to the staker. This tiered model preserves the accessibility of the base protocol while scaling consensus participation beyond the active producer set.
 
@@ -801,7 +800,7 @@ Outputs from epoch reward transactions require 6 confirmations (~1 minute) befor
 
 ### 10.8. Compound Growth
 
-DOLI rewards compound into productive capital. Every DOLI earned from block production can be reinvested as additional bond units, increasing future block assignments proportionally.
+DOLI rewards compound into productive capital. Every DOLI earned from block production can be reinvested as additional bond units, increasing the producer's future share of the epoch reward pool proportionally.
 
 **Definition.** Let *b* = a producer's bond count, *B* = total network bonds, *R* = block reward, *S* = slots per week (60,480). The producer's weekly earnings and doubling time are:
 
@@ -946,11 +945,11 @@ The system does not claim immunity from wealthy adversaries — no system can. I
 
 **Proof.** Define per epoch *e*:
 
-- *S_h(e)* = set of slots assigned to honest producers (bond-weighted)
-- *S_a(e)* = set of slots assigned to attacker producers (bond-weighted)
+- *S_h(e)* = set of slots assigned to honest producers (one position per producer)
+- *S_a(e)* = set of slots assigned to attacker producers (one position per producer)
 - *w(p)* = seniority weight of producer *p* ∈ [1.0, 4.0]
 
-The schedule is a pure function of `(slot, ActiveSet(epoch), LivenessFilter)` — no block content influences it. Under bond-weighted scheduling, each bond unit receives equal slot assignments: *|S_h(e)| + |S_a(e)| = total slots*, distributed proportionally to bonds.
+The schedule is a pure function of `(slot, ActiveSet(epoch), LivenessFilter)` — no block content influences it. Under round-robin scheduling, each producer in the active list receives equal slot assignments: *|S_h(e)| + |S_a(e)| = total slots*, distributed in proportion to the number of honest and attacker positions in the list.
 
 The accumulated chain weight over *k* epochs:
 
@@ -1265,7 +1264,7 @@ The current producer count reflects early growth. The protocol's security proper
 
 ```
 Genesis:    2026-04-22 (current chain)
-Consensus:  Proof of Time (delay proof heartbeat + deterministic bond-weighted scheduling)
+Consensus:  Proof of Time (delay proof heartbeat + deterministic round-robin scheduling)
 Status:     Live
 Source:     https://github.com/doli-network/doli
 Explorer:   https://doli.network
@@ -1319,11 +1318,11 @@ We list these not as disclaimers but as invitations. Each limitation is a proble
 
 **"How is this different from Solana's Proof of History?"**
 
-Solana uses iterated SHA-256 hashing as a clock — a verifiable record of time passage. But Solana's leader selection is stake-weighted and probabilistic, and running a validator requires high-end hardware (256 GB RAM, NVMe storage, high-bandwidth connectivity). DOLI uses the delay proof purely as a heartbeat; leader selection is a deterministic function of `(slot, bond_snapshot)`. Any CPU can participate. The philosophical difference: Solana optimizes for throughput at the cost of accessibility. DOLI optimizes for accessibility at the cost of throughput.
+Solana uses iterated SHA-256 hashing as a clock — a verifiable record of time passage. But Solana's leader selection is stake-weighted and probabilistic, and running a validator requires high-end hardware (256 GB RAM, NVMe storage, high-bandwidth connectivity). DOLI uses the delay proof purely as a heartbeat; leader selection is a deterministic function of `(slot, active_list)`. Any CPU can participate. The philosophical difference: Solana optimizes for throughput at the cost of accessibility. DOLI optimizes for accessibility at the cost of throughput.
 
 **"How is this different from Ethereum?"**
 
-Ethereum uses Proof of Stake — validators lock 32 ETH (~$100K+) and are selected probabilistically to propose blocks. Execution happens on the EVM, a Turing-complete virtual machine that runs arbitrary smart contracts with gas metering. DOLI uses Proof of Time with a 10 DOLI bond (~$1 equivalent at launch) and deterministic bond-weighted scheduling. There is no virtual machine — outputs carry declarative spending conditions compiled into the node binary (Section 3). The practical differences: Ethereum requires significant capital and specialized infrastructure to validate; DOLI runs on a $5/month VPS. Ethereum's smart contracts enable arbitrary computation but introduce unbounded attack surface (reentrancy, MEV, gas manipulation); DOLI's declarative conditions have fixed verification cost and no shared mutable state. Ethereum has a mature ecosystem with thousands of applications; DOLI is in its growth phase with a focused feature set. They solve different problems at different scales.
+Ethereum uses Proof of Stake — validators lock 32 ETH (~$100K+) and are selected probabilistically to propose blocks. Execution happens on the EVM, a Turing-complete virtual machine that runs arbitrary smart contracts with gas metering. DOLI uses Proof of Time with a 10 DOLI bond (~$1 equivalent at launch) and deterministic round-robin scheduling. There is no virtual machine — outputs carry declarative spending conditions compiled into the node binary (Section 3). The practical differences: Ethereum requires significant capital and specialized infrastructure to validate; DOLI runs on a $5/month VPS. Ethereum's smart contracts enable arbitrary computation but introduce unbounded attack surface (reentrancy, MEV, gas manipulation); DOLI's declarative conditions have fixed verification cost and no shared mutable state. Ethereum has a mature ecosystem with thousands of applications; DOLI is in its growth phase with a focused feature set. They solve different problems at different scales.
 
 **"What prevents a wealthy attacker from buying 51% of producers?"**
 
@@ -1396,7 +1395,7 @@ We started with the usual framework of coins made from digital signatures, which
 
 **Nodes vote with their time.** The network cannot be accelerated by wealth or parallelized by hardware. One hour of sequential computation is one hour, whether performed by an individual or a nation-state.
 
-**Rewards are deterministic, not probabilistic.** Every producer receives guaranteed block assignments proportional to their bonds through deterministic scheduling. The protocol acts as a built-in pool, distributing epoch rewards bond-weighted on-chain to all producers who prove continuous presence through on-chain liveness attestations. External pools are unnecessary. Every bonded DOLI generates the same percentage return regardless of total stake size.
+**Rewards are deterministic, not probabilistic.** Every producer in the active list receives the same guaranteed block assignments through deterministic round-robin scheduling, and earnings do not depend on production frequency. The protocol acts as a built-in pool, distributing epoch rewards bond-weighted on-chain to all producers who prove continuous presence through on-chain liveness attestations. External pools are unnecessary. Every bonded DOLI generates the same percentage return regardless of total stake size.
 
 The network is robust in its simplicity. Nodes work with little coordination. They do not need to be identified, since messages are not routed to any particular place and only need to be delivered on a best effort basis. Nodes can leave and rejoin the network at will, accepting the heaviest chain as proof of what happened while they were gone.
 

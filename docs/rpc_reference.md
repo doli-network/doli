@@ -1296,6 +1296,8 @@ curl -X POST http://127.0.0.1:8500 \
 
 Returns the producer schedule for upcoming slots based on the current producer set and bond weights.
 
+> **Known issue (INC-I-224):** this method still computes the schedule with the deprecated bond-weighted `select_producer_for_slot()`. The real slot leader is `active_list[slot % len]` over the epoch-frozen active list (bond count is not an input), so the returned assignments do not match the chain.
+
 **Parameters:**
 | Name | Type | Description |
 |------|------|-------------|
@@ -1352,6 +1354,8 @@ curl -X POST http://127.0.0.1:8500 \
 ### getProducerSchedule
 
 Returns schedule and performance information for a specific producer in the current epoch, including assigned slots, fill rate, and economics.
+
+> **Known issue (INC-I-224):** the assigned-slot list is computed with the deprecated bond-weighted `select_producer_for_slot()` and does not match the real `active_list[slot % len]` round-robin; the derived fill rate is therefore unreliable.
 
 **Parameters:**
 | Name | Type | Description |

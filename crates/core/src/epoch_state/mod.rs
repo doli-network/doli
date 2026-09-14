@@ -65,7 +65,7 @@ pub struct BlockAccumulationInput {
 
 /// The complete epoch scheduler state.
 ///
-/// Every field that the DeterministicScheduler reads is here. Two nodes with
+/// Every field that the epoch-frozen round-robin scheduler reads is here. Two nodes with
 /// identical EpochState will produce identical scheduling decisions — guaranteed
 /// at the type level.
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -68,7 +68,7 @@ A mismatch means the wrong key is deployed to that slot — STOP.
 | `BOND_UNIT` | `1_000_000_000` = **10 DOLI** | 1 bond = 10 DOLI. Bonds are whole units only. |
 | `MAX_BONDS_PER_PRODUCER` | **3000** | Hard cap = 30,000 DOLI bonded. (CLI accepts 1-10000 but consensus caps at 3000.) |
 | `INITIAL_BOND` | 1 bond (10 DOLI) | Default `register` stake. |
-| selection weight | = **bondCount** | Block production share is proportional to bond count. |
+| selection weight | = **bondCount** | Sets the epoch reward share only. Block production is round-robin over the epoch-frozen active list — one slot per listed producer regardless of bond count. |
 | activation | **epoch boundary** + `ACTIVATION_DELAY` (10 blocks) | Register/add-bond do not take effect immediately. |
 | withdrawal | `request-withdrawal` | FIFO, 7-day delay + vesting penalty. Bonds are NOT instantly liquid. |
 

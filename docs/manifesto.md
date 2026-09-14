@@ -44,7 +44,7 @@ One hour of DOLI consensus requires one hour of wall-clock time. This is true wh
 
 In Bitcoin, a miner with 1% of hashpower has a 1% chance of finding each block. This means extreme variance—they might find two blocks in a day, or none in a month. Pools exist to smooth this variance.
 
-In DOLI, producer selection is deterministic round-robin based on bond count. A producer with 1% of total bonds produces exactly 1% of blocks. There is no luck. There is no variance. There is no need for pools.
+In DOLI, producer selection is deterministic round-robin over the epoch-frozen active list — every listed producer gets the same number of slots. A producer with 1% of total bonds earns exactly 1% of every epoch's rewards, whether or not it was scheduled. There is no luck. There is no variance. There is no need for pools.
 
 **The smallest participant receives the same percentage return as the largest.**
 

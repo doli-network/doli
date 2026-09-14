@@ -320,7 +320,8 @@ enforces 1 input / 1 `Normal` output, a decodable 240-byte payload, a non-identi
 over `rotation_auth_digest`, and the rotation proof of possession (no fallback to the registration
 DST). Error codes `ERRTX-ROT001..010`; `ROT005`/`ROT006` are never emitted and never reused.
 
-### Scheduler (`scheduler.rs`)
+### Scheduler (`scheduler.rs`) — NOT the production scheduler
+Production and validation use `epoch_state.active_list[slot % len]` (`bins/node/src/node/production/scheduling.rs`, `crates/core/src/validation/producer.rs`); `DeterministicScheduler` has no production caller (integration tests only).
 ```rust
 DeterministicScheduler { producers: Vec<ScheduledProducer>, total_bonds: u64, ticket_boundaries: Vec<u64> }
 ScheduledProducer { pubkey: PublicKey, bond_units: u32 }
@@ -387,14 +388,14 @@ FinalityTracker  // tracks pending blocks, emits checkpoint when 2/3+ weight
 ### VDF input (`block.rs:100-107`)
 `BlockHeader::vdf_input() -> Hash` → `vdf::block_input(prev_hash, merkle_root, slot, producer)`
 
-### Scheduler selection (`scheduler.rs:171-199`)
+### Scheduler selection (`scheduler.rs:171-199`) — legacy ticket model, unused in production
 ```
 select_producer(slot, rank):
   offset = (total_bonds * rank) / MAX_FALLBACK_RANKS
   ticket = (slot + offset) % total_bonds
   binary search ticket_boundaries → producer
 ```
-**CRITICAL**: `consensus::selection::select_producer_for_slot()` is DEPRECATED — use `DeterministicScheduler`.
+**CRITICAL**: neither `DeterministicScheduler` nor the deprecated `consensus::selection::select_producer_for_slot()` decides slots. The real slot leader is `epoch_state.active_list[slot % len]` (`production/scheduling.rs::resolve_epoch_eligibility`, `validation/producer.rs::validate_producer_eligibility`); bond count never enters slot assignment. `select_producer_for_slot()` survives only in the `getSlotSchedule`/`getProducerSchedule` RPCs, which therefore publish a wrong schedule (INC-I-224).
 
 ### Slot timing (`consensus/selection.rs`)
 ```

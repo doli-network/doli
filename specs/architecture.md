@@ -293,52 +293,46 @@ slot = floor((now - GENESIS_TIME) / 10)  // 10 seconds per slot
 
 #### Producer Selection (Deterministic Round-Robin)
 
-DOLI uses **deterministic round-robin rotation** based on bond count, NOT probabilistic lottery:
+DOLI uses **deterministic round-robin rotation** over the epoch-frozen active producer list, NOT probabilistic lottery. Bond count never enters slot assignment:
 
 ```python
-def select_producer(slot, active_producers):
+def select_producer(slot, active_list):
     """
-    Deterministic rotation by bond tickets.
+    Deterministic rotation over the active list frozen at the epoch boundary
+    (liveness-filtered, capped at ACTIVE_PRODUCERS_CAP=50 by registration
+    seniority — crates/core/src/epoch_state/mod.rs, derive_at_boundary).
 
-    Alice: 1 bond  → 1 turn per cycle  (tickets: [0])
-    Bob:   5 bonds → 5 turns per cycle (tickets: [1,2,3,4,5])
-    Carol: 4 bonds → 4 turns per cycle (tickets: [6,7,8,9])
+    Alice: 1 bond  → 1 turn per rotation
+    Bob:   5 bonds → 1 turn per rotation
+    Carol: 4 bonds → 1 turn per rotation
 
-    slot % 10 → ticket index → producer
+    slot % len(active_list) → producer
     """
-    sorted_producers = sorted(active_producers, key=lambda p: p.public_key)
-    total_tickets = sum(p.bond_count for p in sorted_producers)
-    ticket_index = slot % total_tickets
-
-    cumulative = 0
-    for producer in sorted_producers:
-        cumulative += producer.bond_count
-        if ticket_index < cumulative:
-            return producer
+    return active_list[slot % len(active_list)]
 ```
 
 **Key Difference from PoS Lottery:**
 | Aspect | PoS Lottery | DOLI Round-Robin |
 |--------|-------------|------------------|
 | Selection | Random weighted | Deterministic rotation |
-| Variance | High (Bob could win 10 or 0) | Zero (Bob wins exactly 5/10) |
+| Variance | High (Bob could win 10 or 0) | Zero (every listed producer gets exactly 1 slot per rotation) |
 | Fairness | Probabilistic | Guaranteed |
 | ROI | Variable | Fixed, equal % for all |
 
 #### Bond Stacking
 
-Producers can stake 1-3,000 bonds to increase their block production share:
+Producers can stake 1-3,000 bonds to increase their share of the epoch reward pool (production frequency is unaffected):
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  BOND STACKING: Deterministic Ticket Assignment                 │
+│  BOND STACKING: Equal Slots, Bond-Weighted Epoch Rewards        │
 │                                                                 │
-│  Alice: 1 bond  → 1 ticket  → 1 block per 10 slots             │
-│  Bob:   5 bonds → 5 tickets → 5 blocks per 10 slots            │
-│  Carol: 4 bonds → 4 tickets → 4 blocks per 10 slots            │
+│  Alice: 1 bond  → 1 slot per rotation → 10% of epoch pool      │
+│  Bob:   5 bonds → 1 slot per rotation → 50% of epoch pool      │
+│  Carol: 4 bonds → 1 slot per rotation → 40% of epoch pool      │
 │                                                                 │
-│  Rotation: [Alice, Bob, Bob, Bob, Bob, Bob, Carol, Carol, ...]  │
-│             slot 0   1    2    3    4    5     6      7         │
+│  Rotation: [Alice, Bob, Carol, Alice, Bob, Carol, ...]          │
+│             slot 0   1    2      3      4    5                  │
 │                                                                 │
 │  EQUITABLE ROI: All producers earn same % return on investment │
 └─────────────────────────────────────────────────────────────────┘
@@ -525,23 +519,15 @@ DOLI is designed to support **thousands of producers worldwide** with the follow
 
 ### 1. Deterministic Round-Robin Selection
 
-Producer selection uses **deterministic round-robin rotation** based on bond count:
+Producer selection uses **deterministic round-robin rotation** over the epoch-frozen active producer list (bond count is not an input):
 
 ```python
-def select_producer(slot, active_producers):
+def select_producer(slot, active_list):
     """
-    Deterministic rotation by bond tickets.
-    Bob with 5 bonds gets exactly 5 of every N slots.
+    Deterministic rotation over the active list frozen at the epoch boundary.
+    Every listed producer gets exactly 1 of every len(active_list) slots.
     """
-    sorted_producers = sorted(active_producers, key=lambda p: p.public_key)
-    total_tickets = sum(p.bond_count for p in sorted_producers)
-    ticket_index = slot % total_tickets
-
-    cumulative = 0
-    for producer in sorted_producers:
-        cumulative += producer.bond_count
-        if ticket_index < cumulative:
-            return producer
+    return active_list[slot % len(active_list)]
 ```
 
 **Enterprise properties:**
@@ -654,7 +640,7 @@ Year 4+: weight = 4 (maximum)
 
 **Key distinction:**
 - **Weight** (seniority): Affects fork choice. Senior producers' chains are preferred.
-- **Bond count**: Affects slot allocation. More bonds = more slots per cycle.
+- **Bond count**: Affects epoch reward share only. Every listed producer gets one slot per rotation regardless of bond count.
 - Bond count does NOT increase weight. A 100-bond producer has the same weight as a 1-bond producer with the same seniority.
 
 **No activity penalty:**
