@@ -44,7 +44,7 @@ Index path: `.claude/skills/SKILLS-INDEX.md`
 | testing | `testing/SKILL.md` | integration tests, e2e, fuzz, simulation, benchmarks, test utilities | TestNode, Node::new_for_test, test_two_nodes_sync_basic | 30 test files | Consumes all domain crates. CRITICAL DRIFT (verified 2026-07-09): only 7 of 13 `testing/integration/` files are wired into Cargo.toml `[[test]]` entries; 6 orphaned (never run), 2 of those additionally broken against current code (compile errors) |
 | defi | `defi/SKILL.md` | AMM (pool/swap/add/remove), bridge HTLC live roundtrips, channel pay+close, covenant templates (vault/escrow/htlc-payment), Phase 2.1 oracle (sunset gradient), MintAsset/NFT, activation gates | scripts/test_defi_e2e.sh (13 phases), cmd_pool.rs, cmd_bridge.rs, cmd_channel.rs, cmd_template/, lp_select.rs, pool_tx.rs, validation/amm.rs | cross-cutting | MAJOR DRIFT: mainnet fresh genesis reset 2026-07-08 moved amm/inc_i_092/inc_i_096/large_block activation heights from future-pinned values to 0 (active from genesis) — CLAUDE.md's "If You Touch → activation heights" section still documents the old pending-pin values and needs a hotfix. Only `oracle_activation_height` remains `u64::MAX` (frozen) |
 
-### Operational / Workflow Skills (15)
+### Operational / Workflow Skills (16)
 
 | Skill | Directory | Purpose | Sub-files |
 |-------|-----------|---------|-----------|
@@ -63,6 +63,7 @@ Index path: `.claude/skills/SKILLS-INDEX.md`
 | sync-docs | `sync-docs/SKILL.md` | Documentation alignment workflow, truth hierarchy, 8-step commit process | — |
 | test-script | `test-script/SKILL.md` | Test script management, scripts/README.md registry protocol | — |
 | skill-creator | `skill-creator/SKILL.md` | Skill creation guide, progressive disclosure design, frontmatter requirements | — |
+| bls-key-recovery | `bls-key-recovery/SKILL.md` | Operator runbook: BLS key mismatch detection, `import-bls` / `producer rotate-bls` remedies, proactive migration of a pre-v3 wallet to the phrase-derived key, boundary timing rule, verification probes, refusals (INC-I-217) | — |
 
 ---
 
@@ -75,6 +76,7 @@ Line ranges reflect verified actual content positions (15 domains re-validated 2
 
 | Keyword / Concept | Skill File | Section | Lines |
 |-------------------|-----------|---------|-------|
+| `[ATTEST_EGRESS]` (what to do) | `bls-key-recovery/SKILL.md` | §1 Detect | — |
 | `activate_feature` | `core/SKILL.md` | ACTIVATION-HEIGHTS | 591-636 |
 | activation height | `core/SKILL.md` | ACTIVATION-HEIGHTS | 591-636 |
 | AMM | `defi/SKILL.md` | CLI-SURFACE / ACTIVATION-GATES | 48-119, 121-141 |
@@ -98,6 +100,8 @@ Line ranges reflect verified actual content positions (15 domains re-validated 2
 
 | Keyword / Concept | Skill File | Section | Lines |
 |-------------------|-----------|---------|-------|
+| BLS key recovery (operator procedure) | `bls-key-recovery/SKILL.md` | full file | — |
+| BLS key rotation (operator procedure) | `bls-key-recovery/SKILL.md` | §3 Remedies, §5 Verify | — |
 | `backfillFromPeer` | `rpc/SKILL.md` | METHODS | 55-163 |
 | `backfill_from_archive` | `node/SKILL.md` | ENTRY-POINTS | 13-50 |
 | `bls_aggregate` | `crypto/SKILL.md` | ENTRY-POINTS | 11-71 |
@@ -174,6 +178,7 @@ Line ranges reflect verified actual content positions (15 domains re-validated 2
 
 | Keyword / Concept | Skill File | Section | Lines |
 |-------------------|-----------|---------|-------|
+| `ERRTX-ROT002` (what to do) | `bls-key-recovery/SKILL.md` | §3 Remedy B refusals | — |
 | ECIES encryption | `crypto/SKILL.md` | ENTRY-POINTS | 11-71 |
 | Ed25519 | `crypto/SKILL.md` | ENTRY-POINTS | 11-71 |
 | emergency halt | `guardian/SKILL.md` | full index | 1-30 |
@@ -243,6 +248,7 @@ Line ranges reflect verified actual content positions (15 domains re-validated 2
 
 | Keyword / Concept | Skill File | Section | Lines |
 |-------------------|-----------|---------|-------|
+| `import-bls` (procedure) | `bls-key-recovery/SKILL.md` | §3 Remedy A | — |
 | `InFlightHtlc` | `channels/SKILL.md` | STRUCTS | 35-101 |
 | `import-bls` (CLI) | `cli/SKILL.md` | OPERATIONS | 50-164 |
 | `import-bls` (wallet format effect) | `wallet/SKILL.md` | CONSTRAINTS | 141-198 |
@@ -305,6 +311,7 @@ Line ranges reflect verified actual content positions (15 domains re-validated 2
 
 | Keyword / Concept | Skill File | Section | Lines |
 |-------------------|-----------|---------|-------|
+| proactive migration (procedure) | `bls-key-recovery/SKILL.md` | §4 | — |
 | `pauseProduction` | `rpc/SKILL.md` | METHODS | 55-163 |
 | payment channel | `channels/SKILL.md` | ENTRY-POINTS | 14-34 |
 | payment channel CLI | `cli/SKILL.md` | OPERATIONS | 50-164 |
@@ -344,6 +351,8 @@ Line ranges reflect verified actual content positions (15 domains re-validated 2
 
 | Keyword / Concept | Skill File | Section | Lines |
 |-------------------|-----------|---------|-------|
+| `rotate-bls` (procedure) | `bls-key-recovery/SKILL.md` | §3 Remedy B | — |
+| restored wallet, wrong BLS key | `bls-key-recovery/SKILL.md` | §1 Detect, §2 Choose | — |
 | `RateLimiter` | `network/SKILL.md` | ENTRY-POINTS | 12-53 |
 | recover chain state | `node/SKILL.md` | ENTRY-POINTS | 13-50 |
 | recovery mode | `guardian/SKILL.md` | full index | 1-30 |
@@ -593,3 +602,15 @@ This session's refresh brief listed 16 operational/workflow skills including `do
 - `vesting tier`, `vesting_quarter_slots`, `vesting penalty network-dependent`, `Q1 75% penalty` → `producer-retirement/SKILL.md` (§CRITICAL vesting note)
 - `finality weight math`, `pre-exit window`, `honest weight >67%`, `MAX_BONDS_PER_PRODUCER sizing` → `producer-retirement/SKILL.md` (§Phase 1 sizing / §Limitation)
 - `node-by-node retirement`, `human-gated retirement`, `four checks after exit` → `producer-retirement/SKILL.md` (§Phase 2)
+
+### `bls-key-recovery` (operational)
+
+| Skill | Directory | Key Concepts | Entry Points |
+|-------|-----------|-------------|-------------|
+| bls-key-recovery | `bls-key-recovery/SKILL.md` | BLS key mismatch detection, import-bls, producer rotate-bls, proactive migration to the phrase-derived key, boundary timing rule, verification, refusals, rehearsal gotchas | §0 Facts, §1 Detect, §2 Choose, §3 Remedies, §4 Proactive migration, §5 Verify, §6 Gotchas, §7 Code pointers |
+
+**KEYWORD-MAP rows (grep targets):**
+- `[ATTEST_EGRESS]`, `own BLS half does not verify`, `unverifiable BLS half`, `0 attested minutes` → `bls-key-recovery/SKILL.md` §1
+- `import-bls`, `rotate-bls`, `BLS key rotation`, `ERRTX-ROT002` → `bls-key-recovery/SKILL.md` §3
+- `proactive migration`, `phrase-derived BLS key`, `pre-v3 wallet`, `phrase does not restore the producer key` → `bls-key-recovery/SKILL.md` §4
+- `INC-I-217`, `INC-I-162` (wallet BLS derivation), `INC-I-220` → `bls-key-recovery/SKILL.md`

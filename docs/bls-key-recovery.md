@@ -344,6 +344,7 @@ file can be retired.
 ---
 
 ## Related pages
+- Runbook skill (ships with the client, `~/.doli/skills/bls-key-recovery/SKILL.md`): detection, remedies, proactive migration, verification, gotchas.
 
 | Page | Why |
 |------|-----|
