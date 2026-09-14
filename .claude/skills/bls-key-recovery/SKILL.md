@@ -128,6 +128,39 @@ Metric and `[BLS_ROTATE] applied` are on every node, not only the producer's.
 - The `[BLS_ROTATE] applied` line prints internal hash identifiers and the queue height, not the key prefixes and the boundary height (INC-I-220).
 - Log level: nodes started without `--log-level info` do not print the "BLS key loaded" line; judge by behaviour (§5).
 
+## 8. What a correct run looks like — observed on the testnet
+
+Two rehearsals on a local 18-node testnet (6.30.0, 10 s slots, 36-block epochs). Compare your
+run against these; the shapes transfer to mainnet, the numbers do not.
+
+### 8.1 Reactive path (2026-09-12) — node key already wrong, Remedy B
+
+| Moment | What we saw |
+|---|---|
+| Mismatch injected (import-bls of a foreign key, node restarted) | node: `[ATTEST_EGRESS] own BLS half does not verify …` ~7 lines/min; seed: `[ATTEST_INGEST] unverifiable BLS half from <producer>` ~5/min; `getAttestationStats` 0 attested minutes |
+| `rotate-bls --yes` BELOW the activation height | CLI printed the consent block, then: `Error: … RPC error -32002 (INVALID_TRANSACTION): … [ERRTX-ROT002] bls key rotation not activated: current_height=176155 activation_height=176200`, `"stage":"mempool"`; `getProducer` still `pendingUpdates: null` — nothing queued |
+| `rotate-bls --yes` ABOVE it (height 176201) | `Rotation submitted.` / `Retention: held in the node mempool, not yet mined` / `Takes effect: height 176220 (next epoch boundary)`; mined in the next block; 18/18 nodes: `pendingUpdates: [{updateType: rotate_bls_key, newBlsPubkey: <new>, effectiveAtHeight: 176220}]`; metric still 0 |
+| Boundary 176220 | all nodes `[BLS_ROTATE] applied …`; 18/18 `blsPubkey = <new>`, `pendingUpdates` empty, same tip; `doli_producer_bls_rotation_total` 0 → 1 on every running node |
+| Next epoch | node egress warnings stop at the boundary; seed rejections stop; producer attested 7/6 minutes and `qualified: true` in the following epoch |
+| `rotate-bls` again with the same wallet | `Error: the wallet BLS key is already the key on chain — a rotation would pay a fee to change nothing` (refused before submitting) |
+
+Time from submission to a counted attestation: one epoch boundary plus a few minutes.
+
+### 8.2 Proactive path (2026-09-14) — healthy pre-v3 producer, §4
+
+| Moment | What we saw |
+|---|---|
+| Start state | version-2 wallet, random key A on-chain and in the node; attesting 6/6, 0 warnings |
+| Step 2 `restore` into a NEW file | `Enter your 24-word recovery phrase:` (read from stdin) → `Wallet restored successfully.` same address; `info`: `Wallet version 3 — both keys are derived from your 24-word phrase. The phrase is a COMPLETE backup of this wallet.`; BLS key B ≠ A |
+| Step 3 `rotate-bls --yes -w <new file>` | `Current BLS key: A… New BLS key: B… Fee: 3 base units … Takes effect: height 189396 (next epoch boundary)`; queued on 18/18 within one block |
+| Boundary 189396 (11:05:32Z) | 18/18 `blsPubkey = B`, queue empty |
+| Step 4 restart onto the new file (11:05:41Z, 9 s after the boundary) | exactly two mismatch lines on the node and on the seed: the boundary block's own attestation (still signed with A) and the last block before the restart; none after |
+| Verify | next epoch: attested 2/2 on key B; `doli_producer_bls_rotation_total` +1 on nodes that were up at the boundary (a node restarted after the boundary shows 0 — its counter reset) |
+
+The switch window is `[boundary block, node restart]`: restart within one block of the printed
+height and you lose at most two attestations. Restart BEFORE the height and every attestation
+until the height fails, because the chain still holds key A.
+
 ## 7. For agents reading code
 
 - Wire: `TxType::RotateBlsKey = 32` (bincode ordinal 24), 240-byte payload `producer(32) ‖ new_bls_pubkey(48) ‖ bls_pop(96) ‖ signature(64)`; preimage domain `DOLI-ROTATE-BLS-V1`, PoP domain `DOLI-ROTATE-POP-V1` (`crates/core/src/transaction/rotate_bls.rs`, `crates/crypto/src/bls_rotation.rs`).
