@@ -182,7 +182,7 @@ After completing any code change, ALWAYS propose the following checklist to the 
 
 | What | Where |
 |------|-------|
-| **Skill index (grep-first)** | `.claude/skills/SKILLS-INDEX.md` — keyword→skill:section:line map for all 30 skills (15 code + 15 ops). Grep it before reading any skill file. |
+| **Skill index (grep-first)** | `.claude/skills/SKILLS-INDEX.md` — keyword→skill:section:line map for all 31 skills (15 code + 16 ops). Grep it before reading any skill file. |
 | Architecture | `docs/architecture.md` |
 | Rewards system | `docs/rewards.md` |
 | RPC reference (56 methods) | `docs/rpc_reference.md` |
