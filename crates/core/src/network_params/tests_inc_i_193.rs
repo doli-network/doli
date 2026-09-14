@@ -16,9 +16,10 @@ use super::NetworkParams;
 
 /// Frozen pre-activation: pinning a real mainnet height is a separate HC-6 decision session.
 const REFILL_MAINNET: u64 = u64::MAX;
-/// Pinned 2026-09-14. First boundary at/above it is h = 195_012 (epoch 5417 x 36).
-const REFILL_TESTNET: u64 = 195_000;
-/// Testnet tip read by `getChainInfo` on 2026-09-14, at pin time — a frozen floor, not a probe.
+/// Re-pinned 2026-09-14 (was 195_000). First boundary at/above it is h = 192_168 (epoch 5338 x 36).
+const REFILL_TESTNET: u64 = 192_163;
+/// Testnet tip read by `getChainInfo` on 2026-09-14, at the ORIGINAL pin time — a frozen floor,
+/// not a probe. The re-pin measured 192_081 (slot 1_237_319), still below the gate.
 const REFILL_TESTNET_TIP_AT_PIN: u64 = 191_020;
 const REFILL_ENV: &str = "DOLI_INC_I_193_ATTESTOR_REFILL_ACTIVATION_HEIGHT";
 
@@ -37,7 +38,7 @@ fn test_193_07_attestor_refill_gate_pinned_per_network() {
         REFILL_MAINNET,
         "O1/IP-M: mainnet stays frozen until its own decision session pins a height"
     );
-    assert_eq!(h, REFILL_TESTNET, "O1/IP-T: testnet is pinned at 195_000");
+    assert_eq!(h, REFILL_TESTNET, "O1/IP-T: testnet is pinned at 192_163");
     assert_eq!(
         NetworkParams::defaults(Network::Devnet).inc_i_193_attestor_refill_activation_height,
         u64::MAX,

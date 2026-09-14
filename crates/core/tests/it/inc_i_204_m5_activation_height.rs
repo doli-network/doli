@@ -452,8 +452,8 @@ fn req_fork_014_no_testnet_activation_height_was_moved() {
     // TEST-193-07 — Decision: a failure means the testnet pin moved after the fleet crossed
     // it, which is the INC-I-054 shape (a crossed height is consensus history).
     assert_eq!(
-        p.inc_i_193_attestor_refill_activation_height, 195_000,
-        "INC-I-193 M1 — testnet pin, first boundary at/above it is h = 195_012"
+        p.inc_i_193_attestor_refill_activation_height, 192_163,
+        "INC-I-193 M1 — testnet pin, first boundary at/above it is h = 192_168"
     );
 }
 

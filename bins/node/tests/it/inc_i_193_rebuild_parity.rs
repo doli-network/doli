@@ -30,7 +30,7 @@
 //! (`node.inc_i_178_attestation_bls_activation_height`); INC-I-193's C7 deliberately
 //! has no such field, so the only clean lever is the network selector. `Network::Devnet`
 //! pins the gate at `u64::MAX`, so every boundary is below it — the legacy arm.
-//! `Network::Testnet` pins it at `195_000`, so the first boundary at or above it — the
+//! `Network::Testnet` pins it at `192_163`, so the first boundary at or above it — the
 //! gated arm. Both arms therefore read the SHIPPED pins, never a test literal.
 //!
 //! No blocks are stored: `rebuild_epoch_state_from_blocks` takes its
@@ -276,7 +276,7 @@ async fn test_193_05_parity_below_the_activation_height() {
 // the shrink-only schedule after the fleet has moved on — the FM-1 fork, post-AH.
 #[tokio::test]
 async fn test_193_05_parity_at_and_above_the_activation_height() {
-    // Testnet pins the gate at 195_000; the first boundary at/above it is h = 195_012.
+    // Testnet pins the gate at 192_163; the first boundary at/above it is h = 192_168.
     let arm = parity_arm(Network::Testnet, first_boundary_at_or_above).await;
 
     assert_eq!(

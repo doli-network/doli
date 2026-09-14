@@ -23,7 +23,7 @@ design commit ab24182b.
 | # | File:line | Change |
 |---|-----------|--------|
 | C1 | `crates/core/src/network_params/mod.rs:261` (after `inc_i_190_floor_bound_activation_height`) | Add `pub inc_i_193_attestor_refill_activation_height: u64` with the doc-comment shape of :250-261, including the three-question gate (see §2.1). |
-| C2 | `crates/core/src/network_params/defaults.rs:114` (mainnet), `:458` (testnet), `:733` (devnet) | Add the field next to the `inc_i_190` line in each arm: mainnet `u64::MAX`, testnet `195_000`, devnet `u64::MAX`. Testnet comment: tip 191_020 measured 2026-09-14; first boundary `>= 195_000` is `h = 195_012` (epoch 5417, 36 blocks/epoch, defaults.rs:396). |
+| C2 | `crates/core/src/network_params/defaults.rs:114` (mainnet), `:458` (testnet), `:733` (devnet) | Add the field next to the `inc_i_190` line in each arm: mainnet `u64::MAX`, testnet `192_163`, devnet `u64::MAX`. Testnet comment: tip 192_081 measured 2026-09-14 at slot 1_237_319 (re-pin from 195_000; the original pin measured tip 191_020); first boundary `>= 192_163` is `h = 192_168` (epoch 5338, 36 blocks/epoch, defaults.rs:396). |
 | C3 | `crates/core/src/network_params/env_loader.rs:316-323` | Twin arm: mainnet locked to defaults; non-mainnet `env_parse("DOLI_INC_I_193_ATTESTOR_REFILL_ACTIVATION_HEIGHT", ..)`. `chainspec_loader.rs` loads no activation height (grep: 0 hits) — no change there. |
 | C4 | `crates/core/src/epoch_state/mod.rs:48-49` | Add `pub inc_i_193_attestor_refill_activation_height: u64` to `EpochDerivationInput` (last field, after the `inc_i_190` one). |
 | C5 | `crates/core/src/epoch_state/mod.rs:242-246` | Gated retain: `let minutes_only = input.height >= input.inc_i_193_attestor_refill_activation_height; with_reg.retain(|(pk,_)| { let mins = ..; if minutes_only { mins >= MIN_ATTESTATION_MINUTES } else { let produced = ..; mins >= MIN_ATTESTATION_MINUTES && produced >= min_produced } });`. `min_produced` (:237-238) stays computed (it is also logged by the rebuild twin). |
@@ -74,7 +74,7 @@ tests_inc_i_193;` in mod.rs:16-21 (`tests.rs` is 1012 lines, over the 800-line t
 | TEST-193-04 | 60 producers, every candidate has 30 min and 10 blocks (both predicates true) | `active_list` identical for AH=`height+1` and AH=`height` (bit-identity at the gate edge). |
 | TEST-193-05 | derive/rebuild parity. No shared pure function exists (the rebuild twin is inline at rewards.rs:1041-1116) → node-level test `bins/node/tests/it/inc_i_193_rebuild_parity.rs` + `mod` line in `bins/node/tests/it/main.rs`. Reuse `inc_i_178_m6_replay_harness.rs` (`replay_epoch` :248, `healthy_epoch` :686, `degraded_epoch` :697, `demotion_survivors` :520 already builds the derive input from node state). | After replaying one epoch with >50 producers where a subset attests >= 30 min but produces 0 blocks: `node.rebuild_epoch_state_from_blocks(boundary_h)` (rewards.rs:562) yields `epoch_state.active_list == derive_at_boundary(..).active_list`, once with AH > boundary and once with AH = boundary. UNVERIFIED: how the AH reaches `Node::new_for_test` params (env var via `load_from_env` vs direct field set) and whether `replay_producer_count()` (:71) exceeds 50 — the test-writer must confirm both. |
 | TEST-193-06 | AH=`height`; 80 producers; producer Y is in the previous list with 29 minutes and 11 blocks; 40 others have 30 min | Y NOT in `active_list` (attestation demotion survives). |
-| TEST-193-07 | `crates/core/src/network_params/tests.rs` after :591, pattern :489-508 and :595-619 | defaults: mainnet `u64::MAX`, testnet `195_000`, devnet `u64::MAX`; testnet `> 191_020` (tip at pin), `!= 0`, not equal to `inc_i_190_floor_bound_activation_height` / `epoch_prune_activation_height`; env override honoured off mainnet only. Also add the field to the per-network asserts in `crates/core/tests/it/inc_i_204_m5_activation_height.rs:397/429/460`. |
+| TEST-193-07 | `crates/core/src/network_params/tests.rs` after :591, pattern :489-508 and :595-619 | defaults: mainnet `u64::MAX`, testnet `192_163`, devnet `u64::MAX`; testnet `> 191_020` (tip at original pin; re-pin tip 192_081), `!= 0`, not equal to `inc_i_190_floor_bound_activation_height` / `epoch_prune_activation_height`; env override honoured off mainnet only. Also add the field to the per-network asserts in `crates/core/tests/it/inc_i_204_m5_activation_height.rs:397/429/460`. |
 
 Command: `cargo test -p doli-core --lib epoch_state::tests_inc_i_193` (RED before C5, GREEN after) and
 `cargo test -p doli-node --test it inc_i_193_rebuild_parity` (RED before C7).
@@ -84,7 +84,7 @@ Command: `cargo test -p doli-core --lib epoch_state::tests_inc_i_193` (RED befor
 | FM | Trigger | Blast radius | Detection signal | Mitigation |
 |----|---------|--------------|------------------|------------|
 | FM-1 derive/rebuild gate mismatch | C5 and C7 read different heights or params (e.g. `target_height` instead of `epoch_boundary_h`) | a node that rebuilds after rollback/reorg schedules a different `active_list` → it rejects valid blocks or produces off-schedule → fork | `[STARTUP][TIER] Active production list` count differs from peers' `[EPOCH] Frozen producer list ... active_list=` for the same epoch; `scripts/fork-monitor.sh` | TEST-193-05; both sites use `params()` + boundary height (C7) |
-| FM-2 AH crossed on a mixed testnet fleet | any of the 18 local nodes still on the old binary at `h = 195_012` | old nodes keep B2, new nodes take B3 (only if `len > 50` — see FM-6) → fork at that boundary | tip-hash divergence on RPC 8500-8517; two distinct `Frozen producer list for epoch 5417` lines | deploy all 18 before 195_000 (~4_000 blocks ≈ 11 h at ~10 s/block); re-measure the tip with `getChainInfo` right before deploy |
+| FM-2 AH crossed on a mixed testnet fleet | any of the 18 local nodes still on the old binary at `h = 192_168` | old nodes keep B2, new nodes take B3 (only if `len > 50` — see FM-6) → fork at that boundary | tip-hash divergence on RPC 8500-8517; two distinct `Frozen producer list for epoch 5338` lines | deploy all 18 before 192_163 (tip 192_081 at re-pin, ~80 blocks ≈ 15 min at ~10 s/block); re-measure the tip with `getChainInfo` right before deploy |
 | FM-3 attesting-but-non-producing member | a listed producer attests but cannot produce (VDF, key, config) | 1/50 of slots missed until it stops attesting (accepted by the owner) | per-producer missed-slot rate in seed log | none by design; the 30-minute demotion still removes silent nodes |
 | FM-4 en-masse re-entry | first boundary `>= AH` on mainnet re-admits every benched attester (19+ nodes) | one epoch of missed slots if their producers cannot produce (BLS-mismatch nodes CAN produce, they only lose rewards) | `active_list` jumps to 50 then missed-slot rate | accepted; they were attesting, so they are online; VDF fallback covers misses |
 | FM-5 snap-synced node rebuild | `rebuild_epoch_state_from_blocks` with `has_incomplete_history` (rewards.rs:592-613) | uses all active producers + Light mode; the gate keys on `epoch_boundary_h`, so predicate choice never depends on local history — only inputs can differ (pre-existing INC-I-054 class) | `[EPOCH_REBUILD] Incomplete block history` | unchanged; next boundary re-derives in post_commit |
@@ -101,13 +101,13 @@ promotion filter): trigger = B3, action = minutes-only retain, thresholds unchan
 
 Q1 consensus rules change → YES → activation height (C1-C3). Q2 block content change → NO (no header, bitfield,
 coinbase or tx-order change) → a rolling deploy BEFORE the AH is safe; every node must run the new binary before
-`h = 195_012`. Testnet is LOCAL (`~/testnet/`, 18 nodes, `scripts/testnet.sh`; seed RPC needs ~120 s after a restart —
+`h = 192_168`. Testnet is LOCAL (`~/testnet/`, 18 nodes, `scripts/testnet.sh`; seed RPC needs ~120 s after a restart —
 restart the seed last). Mainnet height: separate owner decision; not pinned here.
 
 ## 7. Outcome metric
 
-Live testnet can only prove NO-FORK / NO-REGRESSION (FM-6). Probe, run after `h >= 195_012`:
-`grep -h "Frozen producer list for epoch 5417:" ~/testnet/logs/*.log | sed 's/^.*\[EPOCH\]/[EPOCH]/' | sort | uniq -c`
+Live testnet can only prove NO-FORK / NO-REGRESSION (FM-6). Probe, run after `h >= 192_168`:
+`grep -h "Frozen producer list for epoch 5338:" ~/testnet/logs/*.log | sed 's/^.*\[EPOCH\]/[EPOCH]/' | sort | uniq -c`
 → exactly ONE distinct line, `... 5 producers, active_list=5 ...`, with a count equal to the number of nodes that
 reached the boundary (log path: `LOG_DIR="$HOME/testnet/logs"`, `scripts/testnet.sh:21`; per-node files `seed.log`,
 `n1.log` … `n17.log`), plus one tip hash across RPC 8500-8517 (`scripts/fork-monitor.sh`).

@@ -457,7 +457,7 @@ impl NetworkParams {
                 // crossing at any height on the local nodes.
                 // Never move it once crossed.
                 inc_i_190_floor_bound_activation_height: 58_000,
-                inc_i_193_attestor_refill_activation_height: 195_000, // tip 191_020 measured 2026-09-14; first boundary >= 195_000 is h = 195_012 (epoch 5417, 36 blocks/epoch)
+                inc_i_193_attestor_refill_activation_height: 192_163, // tip 192_081 measured 2026-09-14 at slot 1_237_319; first boundary >= 192_163 is h = 192_168 (epoch 5338, 36 blocks/epoch)
                 // INC-I-075: Testnet never ran v6.21.16 in production — always
                 // apply the INC-I-068 filter (matches current testnet runtime).
                 inc_i_068_weight_filter_activation_height: 0,
