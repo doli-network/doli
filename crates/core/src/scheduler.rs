@@ -1,11 +1,18 @@
-//! Deterministic slot scheduler based on bond units.
+//! Deterministic slot scheduler based on bond units (LEGACY — not used by
+//! production or validation).
+//!
+//! The live slot leader is `epoch_state.active_list[slot % len]`
+//! (`bins/node/src/node/production/scheduling.rs`, `validation/producer.rs`);
+//! bond count never enters slot assignment. This module has no production
+//! caller — integration tests only. The deprecated `select_producer_for_slot`
+//! sibling still backs the `getSlotSchedule`/`getProducerSchedule` RPCs (INC-I-224).
 //!
 //! Each producer gets consecutive "tickets" equal to their bond units.
 //! The primary producer for a slot is determined by: slot % total_tickets
 //!
 //! # Design
 //!
-//! This scheduler replaces the heartbeat/presence system with a simple,
+//! This scheduler replaced the heartbeat/presence system with a simple,
 //! deterministic round-robin selection based on bond count:
 //!
 //! - No network traffic for presence proofs

@@ -88,7 +88,7 @@ The adversary **cannot**:
 | Attack | Mitigation |
 |--------|------------|
 | Nothing-at-stake | Bond slashing for equivocation |
-| Grinding | Epoch Lookahead: selection uses `slot % total_tickets`, independent of `prev_hash` |
+| Grinding | Epoch Lookahead: selection uses `active_list[slot % len]`, independent of `prev_hash` |
 | Time manipulation | Slot anchored to VDF-proven timestamp |
 | Genesis-time hijack | `genesis_hash` in every block header (see 2.2.5) |
 
@@ -449,17 +449,29 @@ def should_reorg(current_chain, new_chain):
 ### 5.2 Producer Selection (Deterministic Round-Robin)
 
 ```
-sorted_producers = sort by pubkey (deterministic)
-total_tickets = sum of all bond counts (each bond = 1 ticket)
-ticket_index = slot % total_tickets
-selected = find producer whose cumulative ticket range contains ticket_index
+# Epoch boundary (crates/core/src/epoch_state/mod.rs, derive_at_boundary):
+producer_list = active producers that attested in any of the last 3 epochs
+                (liveness filter + deadlock floor), sorted by pubkey
+if len(producer_list) > ACTIVE_PRODUCERS_CAP (50):
+    candidates  = producers with >= MIN_ATTESTATION_MINUTES (30) attested minutes
+                  in the just-completed epoch (plus a blocks-produced check, INC-I-193)
+    active_list = first 50 of candidates sorted by registered_at asc (pubkey tiebreak)
+    if len(active_list) < len(producer_list) / 3 or active_list is empty:
+        active_list = producer_list          # deadlock safety
+else:
+    active_list = producer_list
+
+# Per slot (production/scheduling.rs and validation/producer.rs, same formula):
+selected = active_list[slot % len(active_list)]
 ```
 
 **Security Properties**:
-- **Independent of prev_hash**: Selection uses `slot % total_tickets`, NOT hash-based lottery. This prevents grinding attacks entirely (Epoch Lookahead).
+- **Independent of prev_hash**: Selection uses `active_list[slot % len]`, NOT hash-based lottery. This prevents grinding attacks entirely (Epoch Lookahead).
 - **Deterministic**: All honest nodes compute same result for any slot
-- **Proportional**: Each producer gets exactly their bond proportion of slots
+- **Equal**: Every producer in `active_list` holds exactly one position per rotation, regardless of bond count. Bond count never enters slot assignment.
 - **Unbiasable**: Attacker cannot influence future selection by manipulating block content
+- **Sybil resistance for production membership**: a position in `active_list` is earned by registration seniority + liveness, not by bond count. Bonds back registration cost, epoch reward share, and slashing.
+- **Empty slots**: an offline producer leaves its slot empty; the next slot goes to the next producer (INC-I-026 trade-off — no fallback rank).
 
 ### 5.3 Timing Constraints
 
@@ -724,7 +736,7 @@ pub fn construct_vdf_input(
 | Fallback Window | 2,000ms per rank | 2,000ms | 2 ranks (primary + single fallback) |
 
 **Why Grinding Is Impractical**:
-1. **Epoch Lookahead**: Selection uses `slot % total_tickets`, independent of `prev_hash`
+1. **Epoch Lookahead**: Selection uses `active_list[slot % len]`, independent of `prev_hash`
 2. **prev_hash in VDF input**: VDF output changes with different block content, but cannot influence selection
 3. **Sequential VDF**: Cannot be parallelized regardless of iteration count
 4. **No Compounding**: Winning slot N provides no advantage for N+1
@@ -943,25 +955,25 @@ signature, and the threshold is enforced on the reading side.
 
 **Defense: Epoch Lookahead**
 
-DOLI's producer selection uses `slot % total_tickets` (deterministic round-robin based on bond count), which is completely independent of `prev_hash`. This eliminates grinding attacks entirely:
+DOLI's producer selection uses `active_list[slot % len(active_list)]` (deterministic round-robin over the epoch-frozen active producer list, one position per producer), which is completely independent of `prev_hash`. This eliminates grinding attacks entirely:
 
 ```
-selected_producer(slot) = find_ticket_owner(slot % total_tickets)
+selected_producer(slot) = active_list[slot % len(active_list)]
 ```
 
 The selection depends ONLY on:
 1. The slot number (deterministic from wall-clock time)
-2. The producer set and bond counts (frozen at epoch boundary)
+2. The active producer list (frozen at epoch boundary, see 5.2 — bond counts are not an input)
 
 Since `prev_hash` is not used in selection, manipulating block content cannot influence who produces future blocks. This is a fundamental design choice -- Epoch Lookahead trades theoretical unpredictability for grinding immunity.
 
 **prev_hash in VDF input**: The VDF input includes `prev_hash`, but this only affects VDF output validity (anti-pre-computation), NOT producer selection. An attacker cannot pre-compute VDF for a future block because they do not know `prev_hash` until the previous block is finalized.
 
-**Residual risk**: The only remaining vector is manipulating the producer set itself (registering/deregistering at epoch boundaries to shift ticket assignments). This is mitigated by:
+**Residual risk**: The only remaining vector is manipulating the producer set itself (registering/deregistering at epoch boundaries to shift slot assignments). This is mitigated by:
 1. Registration requires VDF computation + bond
 2. Bond withdrawals incur vesting penalties
 3. Producer set changes are deferred to epoch boundaries
-4. MAX_BONDS cap (3,000) limits any single entity's influence
+4. One position per producer regardless of bond count; entering the capped list requires registration seniority + liveness (5.2)
 
 **Status**: Grinding is a non-issue due to Epoch Lookahead. No monitoring needed for this specific attack vector.
 

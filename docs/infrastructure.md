@@ -433,7 +433,7 @@ A change is consensus-critical if different binary versions would produce or val
 
 | Category | Examples | Consensus-Critical? |
 |----------|----------|:---:|
-| **Scheduling** | `count_bonds()`, `select_producer_for_slot()`, bond weights, sort order | **YES** |
+| **Scheduling** | `derive_at_boundary()` (active-list derivation), `resolve_epoch_eligibility()` / `validate_producer_eligibility()` (`active_list[slot % len]`), list sort order | **YES** |
 | **Validation** | Block validation rules, timestamp checks, VDF params | **YES** |
 | **Genesis** | Genesis timestamp, genesis message, network_id, slot_duration | **YES** (new genesis_hash) |
 | **Economics** | Reward calculation, halving schedule, bond_unit, vesting | **YES** |
@@ -660,7 +660,7 @@ done'
 
 Before deploying, answer these:
 
-- [ ] Does this change affect `slot % total_bonds` calculation? → **Simultaneous**
+- [ ] Does this change affect the `active_list[slot % len]` calculation or the epoch active-list derivation? → **Simultaneous**
 - [ ] Does this change how blocks are validated? → **Simultaneous**
 - [ ] Does this change genesis_hash inputs? → **Simultaneous + wipe**
 - [ ] Does this change reward/penalty calculations? → **Simultaneous**

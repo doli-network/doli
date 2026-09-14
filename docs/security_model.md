@@ -87,17 +87,17 @@ DOLI is built on three fundamental security principles:
 |----------|-----------|
 | **Safety** | No conflicting blocks finalized |
 | **Liveness** | Blocks produced at slot rate |
-| **Fairness** | Proportional to bond count |
+| **Fairness** | Equal slots for every listed producer; epoch rewards proportional to bond count |
 
 ### 3.2. Attack Resistance
 
 **51% Attack:**
-- Requires controlling >50% of total bond tickets
+- Requires controlling >50% of the positions in the active producer list (one position per producer, regardless of bond count)
 - Each bond requires 10 DOLI locked for 4 years
 - Cannot accelerate through hardware (VDF is sequential)
 
 **Grinding Attack:**
-- Selection is deterministic: `slot % total_tickets`
+- Selection is deterministic: `active_list[slot % len]`
 - Producer cannot influence future selection
 - Active set frozen at epoch boundaries
 
@@ -231,7 +231,7 @@ Score range: -1000 to +1000. Peers below threshold are disconnected and banned.
    - Only slashable offense: double production (equivocation)
 
 4. **Bond Count vs Weight**
-   - Bond count affects slot allocation (more slots per cycle)
+   - Bond count affects epoch reward share only (every listed producer gets one slot per rotation)
    - Bond count does NOT affect weight (seniority only)
 
 5. **Bond Stacking Cap**

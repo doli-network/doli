@@ -12,7 +12,7 @@ use super::constants::{
 /// In PoT, time is proven by producing blocks with valid VDF when selected:
 /// - One producer per slot (10 seconds)
 /// - Producer receives 100% of block reward
-/// - Bond count determines selection (round-robin)
+/// - Round-robin over the epoch-frozen active list; bond count weights epoch rewards, not selection
 /// - VDF provides anti-grinding protection
 ///
 /// There are no multi-signature attestations. The act of producing

@@ -732,7 +732,7 @@ kill <PID>               # Kill it
 
 **Symptom:** All nodes stuck at the same height, logs show `BlockedBehindPeers` with `height_diff: 0`, slots keep advancing but no blocks produced.
 
-**Cause:** A registered producer was killed without submitting an exit transaction first. The scheduler keeps selecting it for slots proportional to its bond count, but no node produces those blocks. If the dead producer holds many bonds (e.g., 10 out of 16 total), the majority of slots go empty and liveness checks block all remaining producers.
+**Cause:** A registered producer was killed without submitting an exit transaction first. The round-robin keeps assigning it one slot per rotation (bond count does not change this) until the epoch-boundary liveness filter drops it after 3 epochs without attestations, but no node produces those blocks. With few producers (e.g., 1 dead out of 2), half the slots go empty and liveness checks block all remaining producers.
 
 **Prevention:** Always follow the exit-before-kill procedure in Scenario 3b.
 

@@ -22,7 +22,7 @@ The testnet has been relaunched with accelerated epoch parameters for faster tes
 
 **To join:**
 - Run with `--producer` flag to participate in block production
-- Producers are selected in round-robin based on bond count
+- Producers are selected in round-robin over the epoch-frozen active list (bond count sets reward share, not slots)
 
 ---
 

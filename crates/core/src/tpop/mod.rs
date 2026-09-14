@@ -2,8 +2,9 @@
 //!
 //! **IMPORTANT: This module is TELEMETRY ONLY and does NOT affect consensus.**
 //!
-//! Producer selection is determined by `consensus::select_producer_for_slot()` using
-//! bond-based round-robin. Block VDF (T_BLOCK = 800K iterations, ~55ms) provides anti-grinding.
+//! Producer selection is the epoch-frozen round-robin `active_list[slot % len]`
+//! (`validation/producer.rs`); bond count is not an input. Block VDF (T_BLOCK = 800K
+//! iterations, ~55ms) provides anti-grinding.
 //!
 //! This module provides network health monitoring via heartbeat proofs.
 //!

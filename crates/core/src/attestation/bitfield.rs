@@ -1,8 +1,8 @@
 //! On-chain attestation bitfield codecs and the minute helpers.
 //!
 //! Each block producer commits which producers attested the current minute.
-//! Bit N = 1 means the producer at index N (sorted by pubkey, same order as
-//! `DeterministicScheduler`) sent an attestation for that minute. The header
+//! Bit N = 1 means the producer at index N (sorted by pubkey — the
+//! `epoch_state.producer_list` order) sent an attestation for that minute. The header
 //! variants pack the bits into the 32-byte `presence_root` (256-producer cap);
 //! the `_vec` variants store them in the block body with no cap.
 

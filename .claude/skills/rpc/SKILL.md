@@ -94,7 +94,7 @@ PATTERNS: lines 260-315
 
 ### Schedule & Attestation Methods (`crates/rpc/src/methods/schedule.rs`)
 
-**`getSlotSchedule`** (line 44) — `{from_slot,count}` (count max 360, default 20) → upcoming slot→producer assignments. Bond-weighted via `select_producer_for_slot()`.
+**`getSlotSchedule`** (line 44) — `{from_slot,count}` (count max 360, default 20) → upcoming slot→producer assignments. Computed with the deprecated bond-weighted `select_producer_for_slot()`, so the returned schedule does NOT match the real `active_list[slot % len]` round-robin (INC-I-224).
 **`getProducerSchedule`** (line 98) — `{public_key}` → assigned/produced slot counts, fill_rate, weekly_earnings, doubling_weeks.
 **`getAttestationStats`** (line 211) — none → per-producer attestation-minute stats for current epoch. Decodes the **body** attestation bit array across **three decode eras** (see CONSTRAINTS). `presence_root` is a commitment hash, never decoded into indices — it is only the has-attestations discriminator, and `schedule.rs:300-304` skips both `Hash::ZERO` and the canonical-empty commitment `presence_commitment(&[],&[])`, so a post-activation zero-attester block is NOT counted in `blocks_with_attestations`.
 

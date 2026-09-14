@@ -81,8 +81,11 @@ pub const SNAP_HEADER_ACTIVATION_HEIGHT: u64 = 0;
 
 /// Tier promotion activation height.
 /// Before: active_production_list = first 50 by registered_at (static seniority).
-/// After: active_production_list = first 50 by attestation_count desc, registered_at asc.
-/// Producers who go offline lose their slot to more active attestors automatically.
+/// After: producers below MIN_ATTESTATION_MINUTES (or below 80% of expected blocks
+/// produced — INC-I-193, shrink-only defect) in the just-completed epoch are filtered
+/// out first; the survivors are sorted by registered_at asc (pubkey tiebreak) and the
+/// first 50 form the list. Bond count is never an input.
+/// Producers who go offline lose their slot; the next-senior live producer fills it.
 /// Consensus-breaking — all nodes must update before this height.
 pub const TIER_PROMOTION_ACTIVATION_HEIGHT: u64 = 0;
 
@@ -618,12 +621,15 @@ pub const STAKER_REWARD_PCT: u32 = 90;
 /// Unbonding period for delegation revocation (in slots).
 pub const DELEGATION_UNBONDING_SLOTS: u64 = 60_480; // ~7 days
 
-/// Size of the eligible producer pool for weighted selection.
+/// Size of the eligible producer pool for the legacy weighted selection.
 ///
-/// Anti-Grinding Selection:
-/// - Producers are sorted by pubkey (deterministic)
-/// - Selection uses consecutive tickets: slot % total_tickets
-/// - Fallbacks use consecutive offsets: (base + 1), (base + 2)
+/// Anti-Grinding Selection (production, INC-I-026):
+/// - The active list is frozen at the epoch boundary (liveness-filtered,
+///   capped at ACTIVE_PRODUCERS_CAP by registered_at asc)
+/// - Selection is `active_list[slot % len]`: one position per producer,
+///   bond count is not an input, no fallback rank
+/// - The ticket model (`slot % total_tickets`) survives only in
+///   `scheduler.rs` / `selection.rs` (tests + schedule RPCs, INC-I-224)
 ///
 /// This prevents grinding attacks: prev_hash is not used in selection,
 /// making it impossible to influence future producer selection.

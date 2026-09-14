@@ -361,13 +361,13 @@ $CLI producer add-bond --wallet $TEST_DIR/keys/node1_wallet.json \
 # VERIFY: Rejected if total would exceed 100
 ```
 
-### 5.3 Bond Stacking Affects Selection Weight
+### 5.3 Bond Stacking Affects Reward Share, Not Slots
 
-**Whitepaper claim:** Each bond unit grants one ticket in rotation
+**Whitepaper claim:** Every producer in the active list gets the same number of slots; bonds set the epoch reward share
 
 ```bash
 # Node1 has 5 bonds, Node2 has 1 bond
-# Over 60 blocks, Node1 should produce ~50 (5/6), Node2 ~10 (1/6)
+# Over 60 blocks, Node1 and Node2 should each produce ~30 (1:1 round-robin)
 
 wait_for_height 28601 300
 START_HEIGHT=$(rpc 28601 getChainInfo | jq -r '.result.bestHeight')
@@ -380,7 +380,7 @@ for h in $(seq $START_HEIGHT $((START_HEIGHT + 59))); do
   rpc 28601 getBlockByHeight "{\"height\":$h}" | jq -r '.result.producer'
 done | sort | uniq -c
 
-# VERIFY: Distribution matches bond proportions (5:1 ratio)
+# VERIFY: Distribution is 1:1 (bond count does not change slots); epoch rewards follow 5:1
 ```
 
 ### 5.4 Proportional Rewards Demonstration (30:1 Ratio)
@@ -550,7 +550,7 @@ CURRENT_SLOT=$(rpc 28601 getChainInfo | jq -r '.result.bestSlot')
 PRODUCERS=$(rpc 28601 getProducerSet | jq -r '.result.producers')
 
 # The next block producer should be deterministic
-# slot % total_tickets determines the producer
+# active_list[slot % len] determines the producer
 
 # Wait and check
 sleep 2
@@ -566,7 +566,7 @@ echo "Producer: $(echo $NEXT_BLOCK | jq -r '.result.producer')"
 
 ```bash
 # Verify in code and logs that selection uses only (slot, active_set)
-grep "select_producer_for_slot" $TEST_DIR/logs/node1.log
+grep "SCHED_RR" $TEST_DIR/logs/node1.log
 grep "prev_hash" $TEST_DIR/logs/node1.log | grep -i "select"
 
 # VERIFY: No prev_hash in selection logs
@@ -908,8 +908,8 @@ pkill -f "doli-node.*whitepaper-test" || true
 ### Bond Stacking
 - [ ] Can add bonds up to 100
 - [ ] Max 100 bonds enforced
-- [ ] Selection weight proportional to bonds
-- [ ] **30 bonds earns 30× more blocks than 1 bond**
+- [ ] Epoch reward share proportional to bonds (slots are equal per listed producer)
+- [ ] **30 bonds earns 30× more epoch rewards than 1 bond**
 - [ ] **ROI per bond is IDENTICAL regardless of total bonds**
 
 ### Producer Selection

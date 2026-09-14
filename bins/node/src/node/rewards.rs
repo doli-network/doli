@@ -967,8 +967,9 @@ impl Node {
             // each node restarted at a different mid-epoch height, so they
             // accumulated into [0] from different starting points.
             //
-            // This is cosmetic today (tier promotion doesn't fire with <50
-            // producers), but a latent fork risk post-growth. Scan here is
+            // This is cosmetic while producer_list.len() <= ACTIVE_PRODUCERS_CAP
+            // (tier promotion does not fire below the cap), but a fork risk
+            // once the list exceeds the cap (INC-I-193 context). Scan here is
             // bounded to at most blocks_per_epoch blocks (~360 for mainnet),
             // typically much less. Cost: ~50ms at startup.
             if current_h > epoch_boundary_h {
@@ -1038,10 +1039,10 @@ impl Node {
             }
 
             // Fix #4B: apply tier system identical to post_commit.rs:237-310.
-            // With current mainnet (24 producers < ACTIVE_PRODUCERS_CAP=50), this
-            // is a no-op (active_production_list = epoch_producer_list.clone()),
-            // but we include it for forward-compatibility when the network grows
-            // past 50 producers.
+            // While producer_list.len() <= ACTIVE_PRODUCERS_CAP this is a no-op
+            // (active_production_list = epoch_producer_list.clone()); once the
+            // list exceeds the cap it must match derive_at_boundary exactly
+            // (registered_at asc, MIN_ATTESTATION_MINUTES filter, INC-I-193).
             use doli_core::consensus::{
                 ACTIVE_PRODUCERS_CAP, MIN_ATTESTATION_MINUTES, TIER_PROMOTION_ACTIVATION_HEIGHT,
                 TIER_SYSTEM_ACTIVATION_HEIGHT,
