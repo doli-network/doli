@@ -607,10 +607,11 @@ This session's refresh brief listed 16 operational/workflow skills including `do
 
 | Skill | Directory | Key Concepts | Entry Points |
 |-------|-----------|-------------|-------------|
-| bls-key-recovery | `bls-key-recovery/SKILL.md` | BLS key mismatch detection, import-bls, producer rotate-bls, proactive migration to the phrase-derived key, boundary timing rule, verification, refusals, rehearsal gotchas | §0 Facts, §1 Detect, §2 Choose, §3 Remedies, §4 Proactive migration, §5 Verify, §6 Gotchas, §7 Code pointers |
+| bls-key-recovery | `bls-key-recovery/SKILL.md` | BLS key mismatch detection, import-bls, producer rotate-bls, proactive migration to the phrase-derived key, boundary timing rule, verification, refusals, rehearsal gotchas, observed correct runs | §0 Facts, §1 Detect, §2 Choose, §3 Remedies, §4 Proactive migration, §5 Verify, §6 Gotchas, §7 Code pointers, §8 Observed runs |
 
 **KEYWORD-MAP rows (grep targets):**
 - `[ATTEST_EGRESS]`, `own BLS half does not verify`, `unverifiable BLS half`, `0 attested minutes` → `bls-key-recovery/SKILL.md` §1
 - `import-bls`, `rotate-bls`, `BLS key rotation`, `ERRTX-ROT002` → `bls-key-recovery/SKILL.md` §3
 - `proactive migration`, `phrase-derived BLS key`, `pre-v3 wallet`, `phrase does not restore the producer key` → `bls-key-recovery/SKILL.md` §4
 - `INC-I-217`, `INC-I-162` (wallet BLS derivation), `INC-I-220` → `bls-key-recovery/SKILL.md`
+- `what a correct rotation looks like`, `expected output rotate-bls`, `switch window` → `bls-key-recovery/SKILL.md` §8
