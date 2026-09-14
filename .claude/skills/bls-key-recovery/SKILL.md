@@ -18,7 +18,7 @@ check, which command to run, and what to look at afterwards. Code is the source 
 | Wallet version 3 (created or restored with a binary from 2026-08-08 on) | BOTH keys derive from the 24-word phrase; the phrase is a complete backup |
 | Wallet version 1 or 2 | the BLS key is RANDOM; the phrase restores the address and funds, NOT the producer identity; the wallet file is the only copy |
 | What the chain verifies | every attestation against `ProducerInfo.bls_pubkey` = the key given at registration (or the last rotation) |
-| `bls_key_rotation_activation_height` | mainnet 450_789, testnet 176_200, devnet `u64::MAX` (devnet/testnet env override `DOLI_BLS_KEY_ROTATION_ACTIVATION_HEIGHT`; mainnet locked) |
+| `bls_key_rotation_activation_height` | mainnet 457_855 (crossed 2026-09-14; rotation is live), testnet 176_200, devnet `u64::MAX` (devnet/testnet env override `DOLI_BLS_KEY_ROTATION_ACTIVATION_HEIGHT`; mainnet locked) |
 | A rotation takes effect | at the NEXT EPOCH BOUNDARY after it is mined; the CLI prints `Takes effect: height N` |
 | Cost of a rotation | one ordinary transaction fee (1 input from the producer's own address, 1 change output); irreversible except by another rotation |
 | Where a queued rotation shows | `getProducer` / `getProducers` → `pendingUpdates: [{ "updateType": "rotate_bls_key", "newBlsPubkey": "<hex>", "effectiveAtHeight": N }]` |
