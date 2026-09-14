@@ -245,7 +245,7 @@ pub(crate) enum Commands {
         version: Option<String>,
 
         /// Skip confirmation prompt
-        #[arg(long)]
+        #[arg(short = 'y', long)]
         yes: bool,
 
         /// Custom path to doli-node binary (skip auto-detection)

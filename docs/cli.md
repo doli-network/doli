@@ -2195,7 +2195,7 @@ doli upgrade [OPTIONS]
 
 Options:
       --version <VERSION>           Target version (default: latest)
-      --yes                         Skip confirmation
+  -y, --yes                         Skip confirmation
       --doli-node-path <PATH>       Custom path to doli-node binary
       --service <NAME>              Restart only this systemd service
       --data-dir <PATH>             Node data directory holding maintainer_state.bin

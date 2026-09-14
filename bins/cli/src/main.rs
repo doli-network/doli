@@ -607,6 +607,15 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_upgrade_yes_short_and_long() {
+        for flag in ["-y", "--yes"] {
+            let cli = Cli::try_parse_from(["doli", "upgrade", flag])
+                .unwrap_or_else(|e| panic!("`doli upgrade {flag}` must parse: {e}"));
+            assert!(matches!(cli.command, Commands::Upgrade { yes: true, .. }));
+        }
+    }
+
+    #[test]
     fn test_parse_missing_subcommand_fails() {
         let cli = Cli::try_parse_from(["doli"]);
         assert!(cli.is_err());
