@@ -321,6 +321,14 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
                 defaults.inc_i_190_floor_bound_activation_height,
             )
         },
+        inc_i_193_attestor_refill_activation_height: if is_mainnet {
+            defaults.inc_i_193_attestor_refill_activation_height
+        } else {
+            env_parse(
+                "DOLI_INC_I_193_ATTESTOR_REFILL_ACTIVATION_HEIGHT",
+                defaults.inc_i_193_attestor_refill_activation_height,
+            )
+        },
         // INC-I-075: locked for mainnet — overriding could resurrect the
         // INC-I-068 mixed-version cascade. Testnet/devnet may override for
         // mixed-cohort regression testing.

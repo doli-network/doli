@@ -81,11 +81,11 @@ pub const SNAP_HEADER_ACTIVATION_HEIGHT: u64 = 0;
 
 /// Tier promotion activation height.
 /// Before: active_production_list = first 50 by registered_at (static seniority).
-/// After: producers below MIN_ATTESTATION_MINUTES (or below 80% of expected blocks
-/// produced — INC-I-193, shrink-only defect) in the just-completed epoch are filtered
-/// out first; the survivors are sorted by registered_at asc (pubkey tiebreak) and the
-/// first 50 form the list. Bond count is never an input.
-/// Producers who go offline lose their slot; the next-senior live producer fills it.
+/// After: candidates below MIN_ATTESTATION_MINUTES in the just-completed epoch are
+/// removed; before inc_i_193_attestor_refill_activation_height a >= 80% of expected
+/// blocks produced clause also applied (INC-I-193 shrink-only defect, removed at that
+/// height). Survivors sorted by registered_at asc (pubkey tiebreak); first 50 form the
+/// list. Bond count is never an input. Producers who go offline lose their slot.
 /// Consensus-breaking — all nodes must update before this height.
 pub const TIER_PROMOTION_ACTIVATION_HEIGHT: u64 = 0;
 

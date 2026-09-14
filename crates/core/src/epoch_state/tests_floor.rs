@@ -735,6 +735,7 @@ fn test_derive_at_boundary_threads_floor_bound_ah() {
         ghost_exclusion_activation_height: GHOST_OFF,
         epoch_prune_activation_height: PRUNE_ON,
         inc_i_190_floor_bound_activation_height: FLOOR_AH,
+        inc_i_193_attestor_refill_activation_height: u64::MAX,
     };
 
     let state = EpochState::derive_at_boundary(&prev, &input);

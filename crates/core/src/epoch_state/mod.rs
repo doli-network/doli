@@ -18,6 +18,8 @@ mod tests;
 #[cfg(test)]
 mod tests_floor;
 #[cfg(test)]
+mod tests_inc_i_193;
+#[cfg(test)]
 mod tests_m2;
 
 pub mod floor;
@@ -47,6 +49,8 @@ pub struct EpochDerivationInput {
     pub epoch_prune_activation_height: u64,
     /// INC-I-190: Floor-fallback cap-bound activation height (from NetworkParams)
     pub inc_i_190_floor_bound_activation_height: u64,
+    /// INC-I-193: Attestor-refill activation height (from NetworkParams)
+    pub inc_i_193_attestor_refill_activation_height: u64,
 }
 
 /// Block data needed by accumulate_block. Extracted from BlockHeader so
@@ -239,10 +243,17 @@ impl EpochState {
                 let attestation_minutes = &prev.attestation_accum[0];
                 let blocks_produced_map = &prev.blocks_produced;
 
+                // INC-I-193: at/above the AH the produced clause is gone (shrink-only defect).
+                let minutes_only =
+                    input.height >= input.inc_i_193_attestor_refill_activation_height;
                 with_reg.retain(|(pk, _)| {
                     let mins = attestation_minutes.get(pk).map(|s| s.len()).unwrap_or(0);
-                    let produced = blocks_produced_map.get(pk).copied().unwrap_or(0) as u64;
-                    mins >= MIN_ATTESTATION_MINUTES && produced >= min_produced
+                    if minutes_only {
+                        mins >= MIN_ATTESTATION_MINUTES
+                    } else {
+                        let produced = blocks_produced_map.get(pk).copied().unwrap_or(0) as u64;
+                        mins >= MIN_ATTESTATION_MINUTES && produced >= min_produced
+                    }
                 });
             }
 

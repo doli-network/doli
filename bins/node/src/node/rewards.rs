@@ -1039,10 +1039,10 @@ impl Node {
             }
 
             // Fix #4B: apply tier system identical to post_commit.rs:237-310.
-            // While producer_list.len() <= ACTIVE_PRODUCERS_CAP this is a no-op
-            // (active_production_list = epoch_producer_list.clone()); once the
-            // list exceeds the cap it must match derive_at_boundary exactly
-            // (registered_at asc, MIN_ATTESTATION_MINUTES filter, INC-I-193).
+            // While producer_list.len() <= ACTIVE_PRODUCERS_CAP this is a no-op;
+            // above the cap it must match derive_at_boundary exactly: registered_at
+            // asc, plus the INC-I-193 gated pair — minutes-only at/above
+            // inc_i_193_attestor_refill_activation_height, else minutes && produced.
             use doli_core::consensus::{
                 ACTIVE_PRODUCERS_CAP, MIN_ATTESTATION_MINUTES, TIER_PROMOTION_ACTIVATION_HEIGHT,
                 TIER_SYSTEM_ACTIVATION_HEIGHT,
@@ -1067,17 +1067,33 @@ impl Node {
                     let attestation_minutes = &self.epoch_state.attestation_accum[0];
                     let blocks_produced = &self.epoch_state.blocks_produced;
 
+                    // INC-I-193: gate on the boundary height, never on target/current height.
+                    let minutes_only = epoch_boundary_h
+                        >= self
+                            .config
+                            .network
+                            .params()
+                            .inc_i_193_attestor_refill_activation_height;
+
                     let before = with_reg.len();
                     with_reg.retain(|(pk, _)| {
                         let mins = attestation_minutes.get(pk).map(|s| s.len()).unwrap_or(0);
-                        let produced = blocks_produced.get(pk).copied().unwrap_or(0) as u64;
-                        mins >= MIN_ATTESTATION_MINUTES && produced >= min_produced
+                        if minutes_only {
+                            mins >= MIN_ATTESTATION_MINUTES
+                        } else {
+                            let produced = blocks_produced.get(pk).copied().unwrap_or(0) as u64;
+                            mins >= MIN_ATTESTATION_MINUTES && produced >= min_produced
+                        }
                     });
                     let demoted = before - with_reg.len();
                     if demoted > 0 {
                         info!(
-                            "[STARTUP][TIER] Demoted {} producers (min_att={}, min_prod={}/{})",
-                            demoted, MIN_ATTESTATION_MINUTES, min_produced, expected_per_producer
+                            "[STARTUP][TIER] Demoted {} producers (min_att={}, min_prod={}/{}, mode={})",
+                            demoted,
+                            MIN_ATTESTATION_MINUTES,
+                            min_produced,
+                            expected_per_producer,
+                            if minutes_only { "minutes-only" } else { "legacy" },
                         );
                     }
                 }
