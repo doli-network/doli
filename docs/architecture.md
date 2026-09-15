@@ -1126,7 +1126,7 @@ Code: `bins/node/src/node/apply_block/`
 
 ### 9.2. State Root
 
-`H(H(chain_state) || H(utxo_set) || H(producer_set))`. Each component uses `serialize_canonical()` — fixed-byte encoding, sorted keys, no bincode. Used by snap sync (quorum agreement) and cached after each `apply_block()`.
+`H(H(chain_state) || H(utxo_set) || H(producer_set))`. Each component uses a canonical fixed-byte encoding — sorted keys, no bincode. `ChainState` and `ProducerSet` materialize via `serialize_canonical()`; the UTXO component is hashed by a **streaming fold** (`UtxoSet::canonical_digest()`, `crates/storage/src/utxo/canonical.rs`) that never holds the canonical image in memory, and which returns `Err` rather than skipping an undecodable entry. The same fold serves `canonical_range()` (bounded body slices, for chunked snap transport) and `canonical_len()`. Used by snap sync (quorum agreement) and cached after each `apply_block()`.
 
 Code: `crates/storage/src/snapshot.rs`
 

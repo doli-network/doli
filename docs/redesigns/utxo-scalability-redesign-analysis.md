@@ -366,6 +366,41 @@ Measured at N = 50,000 UTXOs: `M1_PEAK_BYTES=15778678`, `M1_SET_BYTES=4850008`,
 in-memory set already costs 1.9 serialized copies, so the 2.0 bound requires dropping
 the decoded set before deriving the post-install root from the state_db backend.
 
+### 6.2 Test traceability — M2 [F2] streaming canonical fold
+
+Written test-first; evidence in `docs/.workflow/m2-test-red-evidence.txt`.
+
+| Requirement | Test ID | File | Status on unchanged code |
+|---|---|---|---|
+| REQ-SCALE-001 | `m2_digest_equals_hash_of_the_canonical_image_in_memory` | `crates/storage/tests/m2_canonical_fold_byte_equality.rs` | **RED (API absent)** |
+| REQ-SCALE-001 | `m2_digest_equals_hash_of_the_canonical_image_state_db` | `crates/storage/tests/m2_canonical_fold_byte_equality.rs` | **RED (API absent)** |
+| REQ-SCALE-001 | `m2_range_concat_equals_the_canonical_body_in_memory` | `crates/storage/tests/m2_canonical_fold_byte_equality.rs` | **RED (API absent)** |
+| REQ-SCALE-001 | `m2_range_concat_equals_the_canonical_body_state_db` | `crates/storage/tests/m2_canonical_fold_byte_equality.rs` | **RED (API absent)** |
+| REQ-SCALE-006 | `m2_backends_agree_on_digest_and_range_bytes` (INV-SYNC-007) | `crates/storage/tests/m2_canonical_fold_byte_equality.rs` | **RED (API absent)** |
+| REQ-SCALE-006 | `m2_folding_does_not_mutate_the_set` | `crates/storage/tests/m2_canonical_fold_byte_equality.rs` | **RED (API absent)** |
+| REQ-SCALE-018 | `m2_range_makes_progress_when_max_bytes_is_below_one_entry` | `crates/storage/tests/m2_canonical_fold_byte_equality.rs` | **RED (API absent)** |
+| REQ-SCALE-018 | `m2_range_wider_than_the_set_returns_the_whole_body_and_no_cursor` | `crates/storage/tests/m2_canonical_fold_byte_equality.rs` | **RED (API absent)** |
+| REQ-SCALE-018 | `m2_range_starts_at_the_first_key_at_or_after_the_cursor` | `crates/storage/tests/m2_canonical_fold_byte_equality.rs` | **RED (API absent)** |
+| REQ-SCALE-018 | `m2_range_past_the_last_key_is_empty_and_terminal` | `crates/storage/tests/m2_canonical_fold_byte_equality.rs` | **RED (API absent)** |
+| REQ-SCALE-001 | `m2_canonical_digest_is_err_on_an_undecodable_entry` (AP-7) | `crates/storage/tests/m2_canonical_fold_fail_loud.rs` | **RED (API absent)** |
+| REQ-SCALE-001 | `m2_canonical_range_is_err_on_an_undecodable_entry` (AP-7) | `crates/storage/tests/m2_canonical_fold_fail_loud.rs` | **RED (API absent)** |
+| REQ-SCALE-001 | `m2_digest_over_a_corrupt_set_is_never_the_digest_of_the_survivors` | `crates/storage/tests/m2_canonical_fold_fail_loud.rs` | **RED (API absent)** |
+| REQ-SCALE-001 | `m2_empty_set_digest_and_range_agree_with_the_canonical_image` | `crates/storage/tests/m2_canonical_fold_fail_loud.rs` | **RED (API absent)** |
+| REQ-SCALE-001 | `m2_single_entry_digest_and_range_agree_with_the_canonical_image` | `crates/storage/tests/m2_canonical_fold_fail_loud.rs` | **RED (API absent)** |
+| REQ-SCALE-001 | `m2_pre_m2_serialize_canonical_silently_drops_the_undecodable_entry` | `crates/storage/tests/m2_canonical_fold_fail_loud.rs` | PASS (PRE-M2 companion — delete with `serialize_canonical()`) |
+| REQ-SCALE-014 | `m2_probe_reports_state_root_peak` | `crates/storage/tests/m2_canonical_digest_peak_alloc.rs` | PASS (instrument) |
+| REQ-SCALE-001 | `m2_probe_backends_agree_on_utxo_hash` | `crates/storage/tests/m2_canonical_digest_peak_alloc.rs` | PASS (lock) |
+| REQ-SCALE-006 | `m2_utxo_size_monitor_reports_the_pinned_canonical_length` | `crates/storage/tests/it/m2_caller_port_locks.rs` | PASS (lock) |
+| REQ-SCALE-006 | `m2_utxo_size_monitor_counts_every_recomputation` | `crates/storage/tests/it/m2_caller_port_locks.rs` | PASS (lock) |
+| REQ-SCALE-006 | `m2_utxo_size_monitor_on_an_empty_set_is_the_eight_byte_header` | `crates/storage/tests/it/m2_caller_port_locks.rs` | PASS (lock) |
+| REQ-SCALE-006 | `m2_utxo_size_monitor_equals_serialize_canonical_len` | `crates/storage/tests/it/m2_caller_port_locks.rs` | PASS (PRE-M2 companion) |
+| REQ-SCALE-001 | `m2_state_root_over_the_fixed_state_is_the_pinned_golden` (INV-SYNC-007) | `crates/storage/tests/it/m2_caller_port_locks.rs` | PASS (lock) |
+| REQ-SCALE-001 | `m2_pinned_state_root_is_backend_independent` | `crates/storage/tests/it/m2_caller_port_locks.rs` | PASS (lock) |
+
+Measured at N = 100,000 UTXOs on unchanged code: `M2_SET_BYTES=10853285`,
+`M2_PEAK_BYTES_INMEM=21000100` (1.93 full-set copies), `M2_PEAK_BYTES_ROCKS=19401302`
+(1.79 copies), `M2_UTXO_HASH=e19b721e42c50867f3b32eaefed1d29933ada2e6ff09b99f390da1ceab03cdca`.
+
 ---
 
 ## 7. What I do not understand (stated before any design)

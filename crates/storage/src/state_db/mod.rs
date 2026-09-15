@@ -25,6 +25,7 @@
 //! at open time).
 
 mod batch;
+mod canonical;
 mod open;
 mod queries;
 #[cfg(test)]

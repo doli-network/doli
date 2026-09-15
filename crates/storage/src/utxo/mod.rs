@@ -7,6 +7,7 @@
 //! The `UtxoSet` enum dispatches to the active backend. Consumers don't need
 //! to know which backend is active — all methods work identically.
 
+pub(crate) mod canonical;
 mod in_memory;
 mod set;
 #[cfg(test)]

@@ -19,7 +19,7 @@ use crate::StorageError;
 ///
 /// Deterministic because all three components use canonical serialization:
 /// - ChainState: `serialize_canonical()` — 140-byte fixed encoding, immune to struct evolution
-/// - UtxoSet: `serialize_canonical()` — entries sorted by outpoint key, 59-byte canonical values
+/// - UtxoSet: `canonical_digest()` — entries sorted by outpoint key, 61-byte-base values
 /// - ProducerSet: `serialize_canonical()` — entries sorted by pubkey hash
 pub fn compute_state_root(
     chain_state: &ChainState,
@@ -28,12 +28,12 @@ pub fn compute_state_root(
 ) -> Result<Hash, StorageError> {
     // Canonical fixed-byte encodings — immune to bincode struct evolution.
     let cs_bytes = chain_state.serialize_canonical();
-    let utxo_bytes = utxo_set.serialize_canonical();
     let ps_bytes = producer_set.serialize_canonical();
 
-    // Hash each component individually, then combine
+    // Hash each component individually, then combine. The UTXO component is
+    // streamed: its canonical image is never materialised.
     let cs_hash = crypto::hash::hash(&cs_bytes);
-    let utxo_hash = crypto::hash::hash(&utxo_bytes);
+    let (utxo_hash, utxo_bytes_len) = utxo_set.canonical_digest_and_len()?;
     let ps_hash = crypto::hash::hash(&ps_bytes);
 
     // F-D0-2 canary seam (State-Root Lazy Tier-0, M1 / B1): emit the full
@@ -45,7 +45,7 @@ pub fn compute_state_root(
         &utxo_hash,
         &ps_hash,
         cs_bytes.len(),
-        utxo_bytes.len(),
+        utxo_bytes_len as usize,
         ps_bytes.len(),
     );
 
@@ -122,11 +122,10 @@ pub fn compute_state_root_with_epoch_state(
             // Same canonical encoding as compute_state_root; append
             // H(EpochSnapshot) as the 4th component.
             let cs_bytes = chain_state.serialize_canonical();
-            let utxo_bytes = utxo_set.serialize_canonical();
             let ps_bytes = producer_set.serialize_canonical();
 
             let cs_hash = crypto::hash::hash(&cs_bytes);
-            let utxo_hash = crypto::hash::hash(&utxo_bytes);
+            let (utxo_hash, utxo_bytes_len) = utxo_set.canonical_digest_and_len()?;
             let ps_hash = crypto::hash::hash(&ps_bytes);
 
             // INFO so the 4 component hashes are visible in production
@@ -141,7 +140,7 @@ pub fn compute_state_root_with_epoch_state(
                 ps_hash,
                 es_hash,
                 cs_bytes.len(),
-                utxo_bytes.len(),
+                utxo_bytes_len,
                 ps_bytes.len()
             );
 
@@ -275,7 +274,7 @@ impl StateSnapshot {
 ///
 /// Wire format:
 /// - `chain_state_bytes`: bincode-serialized `ChainState`
-/// - `utxo_set_bytes`: canonical format (sorted outpoints, 59-byte values)
+/// - `utxo_set_bytes`: canonical format (sorted outpoints, 61-byte-base values)
 /// - `producer_set_bytes`: bincode-serialized `ProducerSet`
 pub fn compute_state_root_from_bytes(
     chain_state_bytes: &[u8],
