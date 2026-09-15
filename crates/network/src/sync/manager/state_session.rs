@@ -54,7 +54,8 @@ impl SyncManager {
     }
 
     /// Admit a manifest: INC-I-143 F4 Gate 1 (exact root equality) and Gate 2
-    /// (quorum-corroborated anchor height) both run BEFORE one chunk is requested.
+    /// (equality with the recorded quorum anchor) both run BEFORE one chunk is
+    /// requested.
     #[allow(clippy::too_many_arguments)]
     pub fn handle_state_manifest(
         &mut self,
@@ -73,12 +74,13 @@ impl SyncManager {
         epoch_accumulators_bytes: Option<Vec<u8>>,
         epoch_state_bytes: Option<Vec<u8>>,
     ) {
-        let (target_height, quorum_root) = match &self.pipeline_data {
+        let (target_hash, target_height, quorum_root) = match &self.pipeline_data {
             SyncPipelineData::SnapDownloading {
+                target_hash,
                 target_height,
                 quorum_root,
                 ..
-            } => (*target_height, *quorum_root),
+            } => (*target_hash, *target_height, *quorum_root),
             _ => {
                 warn!(
                     "[SNAP_SYNC] Unexpected state manifest from {} — not in SnapDownloading, ignoring",
@@ -98,6 +100,18 @@ impl SyncManager {
             return;
         }
 
+        // F-08: the peer advanced past the anchor — re-collect the quorum at the
+        // new tip, never punish (F-09).
+        if state_root != quorum_root && block_height > target_height {
+            warn!(
+                "[SNAP_SYNC] Tip advanced at {}: requested ({:.16}, h={}) but manifest is ({:.16}, h={}) — re-collecting the quorum",
+                peer, quorum_root, target_height, state_root, block_height
+            );
+            self.clear_state_session();
+            self.snap_fallback_to_normal();
+            return;
+        }
+
         if state_root != quorum_root {
             self.snap.integrity_refusals += 1;
             warn!(
@@ -109,17 +123,13 @@ impl SyncManager {
             return;
         }
 
-        let quorum = self.snap_quorum();
-        let corroborators = self
-            .peers
-            .values()
-            .filter(|s| s.best_hash == block_hash && s.best_height == block_height)
-            .count();
-        if corroborators < quorum {
+        // F4 Gate 2: the state root commits height and hash, so the anchor the
+        // quorum recorded is the only pair an honest peer can serve with it.
+        if block_hash != target_hash || block_height != target_height {
             self.snap.integrity_refusals += 1;
             warn!(
-                "[SNAP_SYNC] F4 REFUSE (manifest height): anchor ({:.16}, h={}) corroborated by {}/{} — refusals={}",
-                block_hash, block_height, corroborators, quorum, self.snap.integrity_refusals
+                "[SNAP_SYNC] F4 REFUSE (manifest anchor): manifest ({:.16}, h={}) != quorum anchor ({:.16}, h={}) — refusals={}",
+                block_hash, block_height, target_hash, target_height, self.snap.integrity_refusals
             );
             self.clear_state_session();
             self.handle_snap_download_error(peer);

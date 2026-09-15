@@ -433,6 +433,26 @@ consensus change (INV-SYNC-007). `M3_INSTALL_PEAK_BYTES` is UNCHANGED — REQ-SC
 claimed by M3; the staged-install seam that moves it ships here untested-in-production and is
 carried as wiring debt due M4.
 
+### 6.4 Test traceability — M5 quorum-anchor manifest admission (INC-I-231)
+
+Written test-first; red evidence in `docs/.workflow/m5-test-red-evidence.txt`. 5 tests in one
+file, 3 RED on unchanged code. The defect: `handle_state_manifest` corroborated the manifest
+anchor by counting peers whose STORED `PeerSyncStatus` equalled it. That status is refreshed
+only by periodic status responses, so on a 10 s-slot chain a manifest served AT the quorum
+height matched 0 peers (`docs/.workflow/runtime-evidence.md`, N6 at h=3505: `corroborated by
+0/4` on four identical correct manifests).
+
+| Requirement | Coverage | File | Implementation Module | Status after M5 |
+|---|---|---|---|---|
+| REQ-SCALE-002, -013 | a manifest equal to the quorum anchor is admitted and a chunk is requested, with every stored peer status stale | `crates/network/src/sync/manager/tests_m5_quorum_anchor.rs` | `state_session` @ `crates/network/src/sync/manager/state_session.rs` | **GREEN** |
+| REQ-SCALE-006 | spliced anchor height and foreign anchor hash stay counted refusals; foreign root stays F4 Gate 1 | `crates/network/src/sync/manager/tests_m5_quorum_anchor.rs` | `state_session` @ `crates/network/src/sync/manager/state_session.rs` | **GREEN** |
+| REQ-SCALE-006 | an advanced tip (F-08) consumes exactly one snap attempt, is not blacklisted (F-09) and is not counted as an integrity refusal | `crates/network/src/sync/manager/tests_m5_quorum_anchor.rs` | `state_session` @ `crates/network/src/sync/manager/state_session.rs` | **GREEN** |
+| REQ-SCALE-002 | the outcome probe — identical correct manifests admitted at the quorum anchor | `crates/network/src/sync/manager/tests_m5_quorum_anchor.rs` | `M5_MANIFESTS_ADMITTED` 0 → 4 | **GREEN (metric met)** |
+
+No wire-format change: `crates/network/src/protocols/sync.rs` has an empty diff. The quorum
+anchor consumed by the gate is the `SyncPipelineData::SnapDownloading { target_hash,
+target_height, quorum_root }` already recorded at "Quorum reached" — no new state.
+
 
 ## 7. What I do not understand (stated before any design)
 

@@ -11,7 +11,7 @@
 
 # UTXO Scalability Architecture
 
-**Status:** STAGES 1-4 IMPLEMENTED on branch `feature/utxo-scalability-streaming` (2026-09-15): `0f11daca` [F1] install once, `d8a4b508` [F2] streaming canonical fold, `c552c8c0` [F3] chunked state session (wire side), `94b419d3` [F3] staged streaming install (client install side, M4). Stage 4 in the Milestones table is that install-side work; the Migration Path's stage 4 ([F4] asset fee) is a DIFFERENT change and is not implemented. Stages 5+ ([F4] asset fee, [F5] resident-byte cap, Options A-K) remain PROPOSAL-ONLY — no code. Original synthesis: 2026-09-14, `/omega-redesign utxo-scalability`, synthesizer over 5 design evaluators; the architect's discussion paper ran under run 558 (decision 124), the user's anchoring decision is decision 126.
+**Status:** STAGES 1-4 IMPLEMENTED on branch `feature/utxo-scalability-streaming` (2026-09-15), plus the M5 manifest-admission correction (INC-I-231): `0f11daca` [F1] install once, `d8a4b508` [F2] streaming canonical fold, `c552c8c0` [F3] chunked state session (wire side), `94b419d3` [F3] staged streaming install (client install side, M4). Stage 4 in the Milestones table is that install-side work; the Migration Path's stage 4 ([F4] asset fee) is a DIFFERENT change and is not implemented. Stages 5+ ([F4] asset fee, [F5] resident-byte cap, Options A-K) remain PROPOSAL-ONLY — no code. Original synthesis: 2026-09-14, `/omega-redesign utxo-scalability`, synthesizer over 5 design evaluators; the architect's discussion paper ran under run 558 (decision 124), the user's anchoring decision is decision 126.
 **Reasoning trace:** `docs/.workflow/architecture-reasoning.md` (convergence matrix, 16-filter table, 12 contradictions, UNVERIFIED list).
 **Inputs:** `docs/.workflow/design-{subtraction,restructure,patterns,failures,radical}.md`, `docs/.workflow/design-brief.md`, `docs/redesigns/utxo-scalability-redesign-analysis.md` (REQ-SCALE-001..024), `docs/redesigns/utxo-scalability-architect-position.md` (a CANDIDATE; three of its claims are FALSE, see §Contradictions), `specs/utxo-storage-architecture.md` (Approved 2026-06-03).
 
@@ -232,7 +232,7 @@ Why this proposal anyway: it satisfies every MUST criterion with zero consensus 
 | F-05 | MUST test apply→rollback→re-apply→root identity at AH−1/AH/AH+1 on both backends | [F4], [F5], B, C, D, E, F |
 | F-06 | MUST pin a versioned read before any multi-message state stream | [F3] |
 | F-07 | MUST carry a resumption cursor | [F3] |
-| F-08 | MUST NOT blacklist a peer for advancing its tip mid-stream | [F3] |
+| F-08 | MUST NOT blacklist a peer for advancing its tip mid-stream | [F3]; enforced for the manifest itself by INC-I-231 (`state_session.rs`), which retries the quorum instead of refusing |
 | F-09 | MUST NOT claim peer scoring as mitigation (0 callers, blacklist clears every 30 s) | [F3]; architect D.4 is FALSE |
 | F-10 | MUST re-derive the installed root from the installed backend | [F1], [F3] |
 | F-11 | MUST reuse `rebuild_in_progress` + `rebuild_halt_reason` for any non-atomic install | [F3] |
@@ -492,3 +492,45 @@ are unchanged (INV-SYNC-007), so no activation height and no synchronized deploy
 | Installed state | unchanged | `M4_INSTALL_UTXO_HASH` byte-identical before/after at both n (INV-SYNC-007) |
 | RocksDB write batch (C++) | **bounded by construction, NOT measured** | `write_staged_rows_in_sub_batches()` commits whenever the pending payload reaches `PROMOTE_BATCH_MAX_BYTES` (128 KiB), so at most one sub-batch is live at a time. The probe's counting `#[global_allocator]` sees RUST allocations only; `rocksdb::WriteBatch` is an FFI handle over C++ memory and is invisible to it. No probe in the repo measures this today |
 | REQ-SCALE-014 as written (peak RSS <= 2 GB at 10M UTXOs) | **NOT yet claimed** | the requirement is an RSS figure at 10M entries; what M4 measured is the Rust-heap SHAPE at n<=100k. An RSS-based probe is the follow-up |
+
+### Stage 3 [F3] manifest admission, corrected (as built, M5 — INC-I-231)
+
+**What was wrong.** As shipped in M3, `handle_state_manifest` ran two admission gates:
+exact equality against `quorum_root`, then a COUNT of connected peers whose stored
+`PeerSyncStatus` equalled the manifest's `(block_hash, block_height)`. That second gate was
+copied from `handle_snap_snapshot` (INC-I-143 F4 Gate 2), where the anchor arrived with the
+STATE and had to be corroborated from somewhere. In the session protocol it is unsound:
+`PeerSyncStatus` is refreshed only by periodic status responses, so on a 10 s-slot chain the
+stored tuples lag the moving tip. A manifest served AT the quorum height then matches ZERO
+peers. Field evidence: a fresh node reached `Quorum reached: 4 peers agree on root=4e246f28…,
+best_height=3505`, received four IDENTICAL correct manifests, refused all four with
+`corroborated by 0/4`, exhausted `snap_attempts=3` in seconds and fell back to header-first.
+
+**The correction.** The quorum anchor is already recorded at quorum time —
+`SyncPipelineData::SnapDownloading { target_hash, target_height, quorum_root }`, set at the
+"Quorum reached" transition. The manifest is now corroborated against THAT, not against peer
+status: admit iff `state_root == quorum_root && (block_hash, block_height) == (target_hash,
+target_height)`. The state root commits height and hash, so the test is exact and costs no
+peer iteration. `self.peers` is no longer read by this path at all, which is the property that
+makes status-refresh latency unable to refuse a correct manifest.
+
+This is STRICTER than what it replaces, not looser: the old count could be satisfied by any
+`snap_quorum()` peers whose status happened to match, whereas the anchor cannot be satisfied by
+peer status at all. INC-I-012 (a forked peer serving at a height different from the quorum
+target) stays closed; INV-SYNC-005 (quorum formation filters candidates) is untouched.
+
+**F-08 handling.** A manifest with a foreign root at a height ABOVE the anchor is the
+tip-advanced peer, not an attacker: the session is cleared and `snap_fallback_to_normal()`
+re-collects the quorum at the new tip. No blacklist, no `integrity_refusals` increment, no
+peer-score change (F-09). It is bounded by the pre-existing `snap.attempts >= 3` cap and its
+`last_snap_attempt` cooldown — no new counter was introduced. `snap_sync.rs` already documented
+this exact tolerance on the VOTE side; M5 extends it to the manifest.
+
+**Not in scope.** `handle_snap_snapshot` still carries the original status-count Gate 2. It is
+dead on the request side — no code in `crates/network/src` constructs
+`SyncRequest::GetStateSnapshot` any more; M3 replaced the request with
+`GetStateManifest`/`GetStateChunk`, and the serve side only answers old peers. It is recorded
+here so the same mechanism is not rediscovered as a second incident.
+
+Wire format unchanged (`crates/network/src/protocols/sync.rs` empty diff), no consensus rule
+change, no block-content change: rolling deploy, no activation height.

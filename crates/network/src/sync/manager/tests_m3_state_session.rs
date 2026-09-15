@@ -442,11 +442,13 @@ fn m3_manifest_state_root_must_equal_quorum_root() {
     );
 }
 
-/// INC-I-143 F4 Gate 2 — Decision: the height-corroboration gate that caught the -1 anchor
-/// splice must apply to the manifest too. If it moved to the end of the transfer, an
-/// uncorroborated height costs a full state download before it is refused.
+/// INC-I-143 F4 Gate 2 / INC-I-231 — Decision: a manifest whose anchor differs from the
+/// quorum anchor must be refused BEFORE any chunk, so the -1 height splice never costs a
+/// full state download. Corroboration is equality against the quorum anchor recorded in
+/// `SnapDownloading`, not a count over per-peer status (that count is the INC-I-231 defect);
+/// the assertions below hold under either mechanism.
 #[test]
-fn m3_manifest_height_must_be_corroborated_by_quorum() {
+fn m3_manifest_anchor_must_equal_the_quorum_anchor() {
     let quorum_root = h(b"m3_quorum_root");
     let anchor = h(b"m3_anchor");
     let canonical_height = 200_000u64;
