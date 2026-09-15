@@ -1404,7 +1404,7 @@ legacy single frame, so an old peer syncing from a new node is unaffected.
 
 | Path | Client marker | Server marker |
 |---|---|---|
-| Session (current) | `[SNAP_SYNC] Session <id> admitted from <peer>: anchor (…, h=…), N entries, chunk<=…B` then `[SNAP_SYNC] Session <id> complete: N B reassembled, digest matches manifest` | `[SNAP_SYNC] Session <id> open at h=… (N entries, root=…)` |
+| Session (current) | `[SNAP_SYNC] Session <id> admitted from <peer>: anchor (…, h=…), N entries, chunk<=…B` then `[SNAP_SYNC] Session <id> complete: digest matches manifest (N entries, R staged rows)` | `[SNAP_SYNC] Session <id> open at h=… (N entries, root=…)` |
 | Legacy single frame | `[SNAP_SYNC] F4 ADMIT: anchor (…, h=…)` with no `Session … admitted` line | `[SNAP_SYNC] Serving snapshot at height=…, size=…KB, root=…` |
 
 ```bash
@@ -1465,9 +1465,38 @@ returns a reason and every state-serving and production entry point refuses. The
 CLOSED: an undecodable marker is treated as armed (INC-I-156 / AUDIT-P3-103).
 
 **What to do:** this is the §1.10 `[STATE_CORRUPT]` procedure — the marker lives in the state DB and
-clears with the data directory, so resync the node. The snapshot install itself is one
-`atomic_replace` WriteBatch and is all-or-nothing; the in-memory 3-state is swapped in only when that
-batch succeeds, so a crash cannot leave memory holding a snapshot while disk holds the old chain.
+clears with the data directory, so **resync the node**. There is NO resume-from-staging path: on
+restart `reconcile_staged_utxos_on_startup()` clears `cf_utxo_staging` and leaves the marker
+exactly as it found it, so a node that died inside a promotion window stays out of service until it
+is re-synced. Its live UTXO family is knowingly partial and is never served.
+
+**Which install path was interrupted matters:**
+
+| Path | Write shape | After a crash |
+|---|---|---|
+| Staged (current client) | `promote_staged_utxos()` — range tombstones, then sub-batches capped at `PROMOTE_BATCH_MAX_BYTES` (128 KiB), then the state labels | live set may be PARTIAL; `rebuild_in_progress` armed before the first write and cleared only after the post-install root check, so the halt is the protection |
+| Legacy single frame / rollback / reorg replay | `StateDb::atomic_replace()` — one all-or-nothing WriteBatch, no marker armed | nothing half-written; the in-memory 3-state is swapped in only when the batch succeeds |
+
+**Staged-install log lines (grep the joining node):**
+
+| Line | Meaning |
+|---|---|
+| `[SNAP_SYNC] Session <id> complete: digest matches manifest (N entries, R staged rows)` | the stream is verified and R rows are durable in staging; `R>0` means the staged path |
+| `[SNAP_SYNC] Promoted N staged UTXO rows at height H` | promotion finished; the marker is cleared right after the root re-derivation matches |
+| `[SNAP_SYNC] Promotion of N staged rows failed: <e> — the node stays halted` | the live family may be partial; marker stays ARMED — resync |
+| `[SNAP_SYNC] Staging holds N rows, manifest announced M — rejecting` | staging belongs to some other transfer; nothing was installed, staging is cleared |
+| `[SNAP_SYNC] Could not arm the rebuild marker before promoting: <e> — nothing installed` | refused before the live family was touched; the node is intact |
+| `[SNAP_SYNC] Staging a verified chunk of session <id> failed: <e> — abandoning the transfer` | a staging write failed (disk full / RocksDB error); the session is abandoned, no half-stream can be promoted |
+| `[SNAP_SYNC] Cleared N staged UTXO rows inside a promotion window — the rebuild marker stays armed and recovery is a fresh snap-sync` | on startup: this is the crash-mid-promotion case |
+| `[SNAP_SYNC] Cleared N staged UTXO rows left by an abandoned transfer` / `[SNAP_SYNC] Startup cleared N staged UTXO rows from an abandoned transfer` | on startup: transfer died BEFORE promotion; the marker is not armed and the node simply re-syncs |
+| `[SNAP_SYNC] staged install re-derived root X != snapshot root Y at height H` | the promoted set does not re-derive the verified root; marker left ARMED on purpose — resync |
+
+```bash
+grep -E '\[SNAP_SYNC\] (Promot|Staging|Cleared|Startup cleared|staged install)' <data_dir>/*.log | tail -20
+```
+
+Code: `bins/node/src/node/snapshot_install.rs`, `crates/storage/src/state_db/promote.rs`,
+`bins/node/src/node/fork_recovery.rs`, `crates/network/src/sync/manager/state_session.rs`.
 
 ---
 

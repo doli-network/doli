@@ -11,7 +11,7 @@
 
 # UTXO Scalability Architecture
 
-**Status:** STAGES 1-3 IMPLEMENTED on branch `feature/utxo-scalability-streaming` (2026-09-15): `0f11daca` [F1] install once, `d8a4b508` [F2] streaming canonical fold, `c552c8c0` [F3] chunked state session. Stages 4-7 ([F4] asset fee, [F5] resident-byte cap, Options A-K) remain PROPOSAL-ONLY — no code. Original synthesis: 2026-09-14, `/omega-redesign utxo-scalability`, synthesizer over 5 design evaluators; the architect's discussion paper ran under run 558 (decision 124), the user's anchoring decision is decision 126.
+**Status:** STAGES 1-4 IMPLEMENTED on branch `feature/utxo-scalability-streaming` (2026-09-15): `0f11daca` [F1] install once, `d8a4b508` [F2] streaming canonical fold, `c552c8c0` [F3] chunked state session (wire side), `94b419d3` [F3] staged streaming install (client install side, M4). Stage 4 in the Milestones table is that install-side work; the Migration Path's stage 4 ([F4] asset fee) is a DIFFERENT change and is not implemented. Stages 5+ ([F4] asset fee, [F5] resident-byte cap, Options A-K) remain PROPOSAL-ONLY — no code. Original synthesis: 2026-09-14, `/omega-redesign utxo-scalability`, synthesizer over 5 design evaluators; the architect's discussion paper ran under run 558 (decision 124), the user's anchoring decision is decision 126.
 **Reasoning trace:** `docs/.workflow/architecture-reasoning.md` (convergence matrix, 16-filter table, 12 contradictions, UNVERIFIED list).
 **Inputs:** `docs/.workflow/design-{subtraction,restructure,patterns,failures,radical}.md`, `docs/.workflow/design-brief.md`, `docs/redesigns/utxo-scalability-redesign-analysis.md` (REQ-SCALE-001..024), `docs/redesigns/utxo-scalability-architect-position.md` (a CANDIDATE; three of its claims are FALSE, see §Contradictions), `specs/utxo-storage-architecture.md` (Approved 2026-06-03).
 
@@ -338,7 +338,7 @@ Evidence independence verified: YES (per-row in the matrix; facts (a)-(h) re-ver
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
-## Implementation Notes (as built, M1-M3)
+## Implementation Notes (as built, M1-M4)
 
 Deviations from the proposal text above, recorded because the code is the source of truth.
 
@@ -483,3 +483,12 @@ Two asymmetries are deliberate and must not be "tidied":
 
 This is a client-local install mechanism: the wire format, the served bytes, and the resulting state
 are unchanged (INV-SYNC-007), so no activation height and no synchronized deploy are required.
+
+### REQ-SCALE-014 status after M4
+
+| Dimension | Status | Evidence |
+|---|---|---|
+| Client install peak, Rust heap | **MET for the install path** — O(chunk), not O(set) | `m4_install_peak_probe`: 2,097,350 B at n=50k vs 2,097,376 B at n=100k, `M4_PEAK_RATIO` 2.00 -> 1.00 against an unchanged <= 1.25 bound; 21.2x lower in absolute terms at n=100k (`docs/.workflow/m4-outcome-metric.txt`) |
+| Installed state | unchanged | `M4_INSTALL_UTXO_HASH` byte-identical before/after at both n (INV-SYNC-007) |
+| RocksDB write batch (C++) | **bounded by construction, NOT measured** | `write_staged_rows_in_sub_batches()` commits whenever the pending payload reaches `PROMOTE_BATCH_MAX_BYTES` (128 KiB), so at most one sub-batch is live at a time. The probe's counting `#[global_allocator]` sees RUST allocations only; `rocksdb::WriteBatch` is an FFI handle over C++ memory and is invisible to it. No probe in the repo measures this today |
+| REQ-SCALE-014 as written (peak RSS <= 2 GB at 10M UTXOs) | **NOT yet claimed** | the requirement is an RSS figure at 10M entries; what M4 measured is the Rust-heap SHAPE at n<=100k. An RSS-based probe is the follow-up |

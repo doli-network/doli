@@ -628,6 +628,31 @@ serves rollback and reorg replay as a single all-or-nothing batch. A node that c
 promotion window comes back halted; startup clears staging and recovery is a fresh snap-sync
 (NO-RESUME).
 
+Staged install, step by step (code: `crates/network/src/sync/manager/state_session.rs`,
+`crates/network/src/sync/chunk_sink.rs`, `bins/node/src/node/utxo_chunk_sink.rs`,
+`crates/storage/src/state_db/{staging,promote}.rs`, `bins/node/src/node/snapshot_install.rs`,
+`bins/node/src/node/fork_recovery.rs`):
+
+| Step | What happens | Resident bound |
+|---|---|---|
+| chunk arrives | the verified body is written to `cf_utxo_staging` through the `UtxoChunkSink` trait BEFORE it is folded into the digest, then dropped — the client no longer accumulates `StateSessionClient.image` | one chunk body |
+| session ends | the incremental BLAKE3 must equal the manifest `utxo_hash`; on success `VerifiedSnapshot.utxo_set` is EMPTY and `utxo_staged: Some(StagedUtxoMarker{utxo_hash, utxo_count})` carries the claim instead | marker only |
+| install, pre-flight | ChainState/ProducerSet decode, envelope match, and `staged_utxo_len() == marker.utxo_count`; any failure refuses and clears staging | small |
+| install, promotion | `rebuild_in_progress` is armed FIRST, then phase 1 drops `cf_utxo` / `cf_utxo_by_pubkey` with two `delete_range_cf` tombstones, phase 2 streams staging into the live families in sub-batches capped at `PROMOTE_BATCH_MAX_BYTES` (128 KiB), phase 3 writes the producer families and the `CF_META` labels | one sub-batch |
+| install, post-check | the root is RE-DERIVED from the installed backend; only on a match is `rebuild_in_progress` cleared. On the staged arm a mismatch returns `Err` with the marker left ARMED (the live family is already replaced) | — |
+| restart with the marker armed | `reconcile_staged_utxos_on_startup()` clears staging on BOTH arms and never touches the marker, so `rebuild_halt_reason()` keeps refusing production, `GetStateSnapshot`, `GetStateRoot` and state sessions. **NO-RESUME: there is no resume-from-staging path — the node re-syncs.** | — |
+
+`atomic_replace` arms no marker and is UNCHANGED: rollback and reorg replay keep the single
+all-or-nothing batch. The chunked path is safe to write non-atomically only because the marker is
+armed before the first write and cleared after the post-install root check.
+
+Measured (`cargo test -p doli-node --test m4_install_peak_probe`, numbers in
+`docs/.workflow/m4-outcome-metric.txt`): the peak Rust heap on the receiving node is FLAT across a
+doubled set — 2,097,350 B at n=50k vs 2,097,376 B at n=100k (ratio 1.00, was 2.00), 21.2x lower in
+absolute terms at n=100k, with the installed UTXO digest byte-identical before and after. The probe
+counts RUST allocations only; the RocksDB `WriteBatch` is C++ memory and is invisible to it — that
+batch is bounded by construction to one `PROMOTE_BATCH_MAX_BYTES` sub-batch, not measured.
+
 Whichever transport delivered the bytes, the install itself decodes them ONCE:
 `storage::verify_state_root_from_bytes()` returns the root together with the decoded
 `(ChainState, UtxoSet, ProducerSet)`, the pairs move into the one `atomic_replace` WriteBatch via

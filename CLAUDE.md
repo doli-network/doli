@@ -134,7 +134,9 @@ After completing any code change, ALWAYS propose the following checklist to the 
 | **Canonical UTXO encoder (one fold: digest/len/range/materialize)** | `crates/storage/src/utxo/canonical.rs` (+ RocksDB row view `crates/storage/src/state_db/canonical.rs`, pinned view `crates/storage/src/utxo/pinned.rs`) |
 | **Snap state session — serve side** | `bins/node/src/node/state_session_serve.rs`, pin worker `bins/node/src/node/state_session.rs` |
 | **Snap state session — client side** | `crates/network/src/sync/manager/state_session.rs` |
-| **Staged UTXO install seam (unwired, M4)** | `crates/storage/src/state_db/staging.rs` |
+| **Staged UTXO transfer (chunk landing zone `cf_utxo_staging`)** | `crates/storage/src/state_db/staging.rs` (sink trait `crates/network/src/sync/chunk_sink.rs`, impl `bins/node/src/node/utxo_chunk_sink.rs`) |
+| **Staged-install promotion (bounded sub-batches)** | `crates/storage/src/state_db/promote.rs` |
+| **Snap install — staged + legacy arms, startup staging reconcile** | `bins/node/src/node/snapshot_install.rs` |
 | RPC methods (56) | `crates/rpc/src/methods/` (incl. `oracle.rs` + `oracle_status.rs` for Phase 2.1 M9-M11) |
 | Transaction mempool | `crates/mempool/src/` |
 | Auto-update + hard fork schedule | `crates/updater/src/` |
