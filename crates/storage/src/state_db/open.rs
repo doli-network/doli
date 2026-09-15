@@ -9,7 +9,7 @@ use crate::StorageError;
 
 use super::types::{
     StateDb, CF_EXIT_HISTORY, CF_META, CF_PRODUCERS, CF_UNDO, CF_UNIQUE_ID, CF_UTXO,
-    CF_UTXO_BY_PUBKEY, DB_WRITE_BUFFER_SIZE_BYTES,
+    CF_UTXO_BY_PUBKEY, CF_UTXO_STAGING, DB_WRITE_BUFFER_SIZE_BYTES,
 };
 
 /// Build per-CF Options for state_db column families.
@@ -180,6 +180,12 @@ impl StateDb {
                 CF_UNIQUE_ID,
                 cf_opts_state_db(&opts, &cache, 2, 2, true, 4, Lz4, 4, None, None),
             ),
+            // M3 [F3] staging. Write-once during a transfer, read-once at
+            // promotion, then dropped — no bloom, same value shape as CF_UTXO.
+            rocksdb::ColumnFamilyDescriptor::new(
+                CF_UTXO_STAGING,
+                cf_opts_state_db(&opts, &cache, 8, 2, false, 16, Lz4, 32, None, None),
+            ),
         ];
 
         let db = rocksdb::DB::open_cf_descriptors(&opts, path, cf_descriptors)?;
@@ -230,6 +236,7 @@ impl StateDb {
             CF_PRODUCERS,
             CF_EXIT_HISTORY,
             CF_UNIQUE_ID,
+            CF_UTXO_STAGING,
         ];
         let db = rocksdb::DB::open_cf_for_read_only(&opts, path, cf_names, false)?;
         let cache = rocksdb::Cache::new_lru_cache(8 * 1024 * 1024);

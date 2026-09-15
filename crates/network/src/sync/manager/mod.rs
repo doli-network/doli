@@ -14,6 +14,7 @@ mod peers;
 mod production_gate;
 pub mod recovery;
 mod snap_sync;
+mod state_session;
 mod sync_engine;
 mod types;
 
@@ -49,6 +50,8 @@ mod tests_inc_i204_m41;
 mod tests_inc_i204_m6;
 #[cfg(test)]
 mod tests_inc_i204_m6_census;
+#[cfg(test)]
+mod tests_m3_state_session;
 
 // Re-export all public types from types.rs
 pub use types::{
@@ -167,6 +170,11 @@ pub struct SyncManager {
     /// Snap sync configuration and runtime state
     pub(crate) snap: SnapSyncState,
 
+    /// M3 [F3]: the chunked state transfer in progress, if any. Kept beside the
+    /// pipeline rather than inside `SnapDownloading` so a refusal can drop the
+    /// session without disturbing the download's peer list.
+    pub(crate) state_session: Option<state_session::StateSessionClient>,
+
     // `post_recovery_grace`, `post_recovery_grace_started`, `blocks_applied_since_recovery`
     // moved to RecoveryPhase::PostRecoveryGrace { started, blocks_applied }
     // === PRODUCTION GATE DEADLOCK FIX (PGD) FIELDS ===
@@ -263,6 +271,7 @@ impl SyncManager {
             peer_loss_timeout_secs: 30,
             // Snap sync state (sub-struct)
             snap: SnapSyncState::new(),
+            state_session: None,
             // PGD fix defaults
             max_grace_cap_secs: 60,
             blocks_since_resync_completed: 0,
@@ -410,7 +419,7 @@ impl SyncManager {
 
     /// Transition to a new sync state with logging.
     /// All state transitions MUST go through this method for auditability.
-    fn set_state(&mut self, new_state: SyncState, trigger: &str) {
+    pub(crate) fn set_state(&mut self, new_state: SyncState, trigger: &str) {
         // Validate transition — hard-block invalid transitions (M3 enforcement)
         if !self.is_valid_transition(&new_state) {
             warn!(

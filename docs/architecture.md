@@ -606,6 +606,36 @@ Producer Selection (deterministic round-robin)
       │                                   │
 ```
 
+#### State Transport: chunked session, with the single frame as a bridge
+
+Once `SnapCollecting` has admitted a download (see the admission authority below), the state itself
+moves in one of two ways on the same `/doli/sync/1.0.0` protocol.
+
+The **session transport** is the default: `GetStateManifest` returns the small parts of the state
+(ChainState, ProducerSet, EpochState, the roots) plus `utxo_count` and a `session_id`, and pins one
+consistent read of `cf_utxo` on the serving node. The client then pulls `GetStateChunk` in sorted
+key order until the cursor is exhausted, folding each body into an incremental BLAKE3 that must
+land exactly on the manifest's `utxo_hash`. This is what removes the 16 MiB ceiling: the bound is
+now the chunk size, not the size of the whole set.
+
+Install goes through a staging column family (`cf_utxo_staging`), promoted in the single existing
+`atomic_replace` WriteBatch with `rebuild_in_progress` armed across the window and the installed
+root re-derived from the installed backend afterwards. As of Stage 3 that staging seam exists and
+is tested but is not yet on the live path: the client still reassembles the whole canonical image
+and installs it through the unchanged `apply_snap_snapshot`, so Stage 3 moves the WIRE bound and
+not the client's install peak. Stage 4 wires the staged install.
+
+The **single-frame transport** (`GetStateSnapshot`) is unchanged and retained as a temporary bridge
+for peers on older binaries, valid only while the whole set still fits in one `MAX_SYNC_SIZE`
+(16 MiB) message. `MAX_SYNC_SIZE` was NOT raised — raising it would relax four other payload
+classes that share the constant.
+
+Three session outcomes are refusals rather than failures: `Busy` (serving node at its
+concurrent-session cap), `ManifestExpired` (the pinned view is gone) and `Halted` (the serving
+node's own ledger is truncated by an interrupted rebuild). None of them blacklists the peer. A peer
+whose tip advances during a multi-minute transfer is behaving correctly, and treating that as
+misbehaviour is how a small network starves itself of peers.
+
 **Restart behavior:** On restart, the SyncManager initializes from stored ChainState (not genesis). This means sync resumes from the chain tip, avoiding re-download of already-stored blocks. As a defense-in-depth measure, `apply_block()` also rejects blocks already present in BlockStore.
 
 #### Snap-Admission Authority (single funnel, INC-I-139; genesis window, INC-I-152)

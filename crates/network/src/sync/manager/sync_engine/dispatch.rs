@@ -202,7 +202,14 @@ impl SyncManager {
                         return None;
                     }
                 }
-                let request = SyncRequest::get_state_snapshot(target_hash);
+                // M3 [F3]: a live session resumes at its last VERIFIED cursor; with no
+                // session the transfer opens (or re-opens) with a manifest.
+                let request = match self.state_session_cursor(peer) {
+                    Some((session_id, start_key, max_bytes)) => {
+                        SyncRequest::get_state_chunk(session_id, start_key, max_bytes)
+                    }
+                    None => SyncRequest::get_state_manifest(target_hash),
+                };
                 let id = self.register_request(peer, request.clone());
                 if let Some(status) = self.peers.get_mut(&peer) {
                     status.pending_request = Some(id);

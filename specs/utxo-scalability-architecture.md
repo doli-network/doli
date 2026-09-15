@@ -335,3 +335,68 @@ Contradictions resolved:        10/12 (C1 anchor mechanism and C10 price mechani
 Evidence independence verified: YES (per-row in the matrix; facts (a)-(h) re-verified in code this session)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
+
+## Implementation Notes — Stage 3 [F3] chunked state-transfer session (as built, M3)
+
+**Wire shape (additive only).** `GetStateManifest{block_hash}` and
+`GetStateChunk{session_id,start_key,max_bytes}` are APPENDED to `SyncRequest`; `StateManifest`,
+`StateChunk` and `StateSessionUnavailable{session_id,reason}` are APPENDED to `SyncResponse`.
+Appending is load-bearing: bincode encodes an enum as a u32 index, so appending leaves every
+existing discriminant where it is and old peers keep decoding old messages unchanged. An old
+binary that receives a new variant fails inside `bincode::deserialize` in the codec's
+`read_request`/`read_response` and surfaces an `io::Error(InvalidData)` — a stream failure, not a
+panic. `CURRENT_PROTOCOL_VERSION`, `MIN_PEER_PROTOCOL_VERSION`, `HardForkSchedule` and
+`MAX_SYNC_SIZE` (16 MiB) are ALL untouched (Res-7). Negotiation is behavioural: a peer that does
+not answer a manifest request is served by the legacy single-frame `GetStateSnapshot` BRIDGE while
+the set is <= 16 MiB.
+
+**Consistency (F-06).** `UtxoSet::with_rows()` pins a NEW `rocksdb::Snapshot` per call
+(`utxo/set.rs:500`), which is sufficient for a single-call fold but NOT across a multi-message
+session. The session therefore holds ONE pinned view for its whole lifetime; `canonical_range()`
+is driven from that single pin, never from a fresh one per chunk. The proof obligation is a test
+that mutates the serving node's UTXO set mid-session and still reassembles a digest equal to the
+manifest `utxo_hash`.
+
+**Rate-limit interaction (found in code, not predicted).** `MAX_SYNC_REQUESTS_PER_INTERVAL = 24`
+(`bins/node/src/node/network_events.rs:307`) applies to every request kind with no exemption, and
+the client blacklists a peer on any response whose error text contains "busy"
+(`sync_engine/response.rs:111,126-128`). A chunked session issues one request per chunk, so
+counting chunk requests against that cap would make the new transport blacklist honest peers with
+its own traffic. `GetStateChunk` is therefore exempt from that cap — chunk traffic is already
+admission-controlled by `MAX_CONCURRENT_STATE_SESSIONS` plus one-outstanding-chunk-per-session —
+while `GetStateManifest` stays under it, because the manifest is the request that costs a pin.
+Session refusals travel as the typed `StateSessionUnavailable`, never as the `Error("busy: ...")`
+string, so they cannot reach the string-matching blacklist branch.
+
+**Honest limitation — peer scoring is NOT a mitigation (F-09).** The architect's D.4 claim that a
+misbehaving peer is "scored down" is FALSE in this codebase: `record_malformed` and
+`record_invalid_block` have zero production callers, and `snap.blacklisted_peers` is in-memory and
+cleared every 30 s once attempts are exhausted. Nothing in Stage 3 relies on a peer paying a
+durable cost for serving bad chunks. What actually protects the client is the end-of-session
+digest equality against the manifest `utxo_hash` and the unchanged INC-I-143 F4 Gate-1 root
+equality against the quorum root — a peer that serves wrong bytes wastes one attempt and is
+refused, it is not punished. Any future claim that Stage 3 is safe "because bad peers are scored"
+must be rejected until `scoring.rs` acquires production callers.
+
+**As built — the mechanism chosen for the pin.** The session is a small actor, not a held lock. On
+`GetStateManifest` the node takes an OWNED, lock-free handle to the set
+(`UtxoSet::pinnable_handle()` — an `Arc` clone for the RocksDB backend, a frozen copy for the
+in-memory one, which is the only honest freeze when the pin is a live `BTreeMap` the writer still
+owns) and hands it to a dedicated worker thread. The worker calls `UtxoSet::with_pinned_view()` and
+serves every chunk of that session from INSIDE the closure, so the `rocksdb::Snapshot` is created
+once, cannot escape, and is released when the worker ends. Because the worker holds no guard on
+`Node::utxo_set`, a live session can never block `apply_block` — the property failure 3a says the
+read-guard approach cannot provide. Sessions are capped at `MAX_CONCURRENT_STATE_SESSIONS` and
+evicted on `STATE_SESSION_TTL_SECS` / `STATE_SESSION_IDLE_TIMEOUT_SECS` or when the cursor is
+exhausted.
+
+**As built — `max_bytes` is peer-supplied.** `serve_state_chunk` clamps it to
+`STATE_CHUNK_MAX_BYTES` before it reaches storage. The requester never sizes the server's
+allocation.
+
+**As built — the staged install is a seam, not yet the live path.** `stage_utxo_bytes`,
+`staged_utxo_len`, `promote_staged_utxos` and `clear_staged_utxos` ship with M3 and are locked by
+`bins/node/tests/it/m3_staging_install.rs`, including the Res-2 exclusion of `cf_utxo_staging` from
+`StateDb::deletable_cf_names()`. The M3 client still carries a whole canonical image in
+`VerifiedSnapshot.utxo_set` and installs through the unchanged `apply_snap_snapshot`, so the
+client-side install peak is unchanged by this milestone and REQ-SCALE-018 is not claimed here.

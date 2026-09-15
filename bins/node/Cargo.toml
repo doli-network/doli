@@ -102,3 +102,12 @@ path = "tests/inc_i_171_m6_shadow_counter.rs"
 [[test]]
 name = "bls_rotation_metrics"
 path = "tests/bls_rotation_metrics.rs"
+
+# utxo-scalability M3 — its OWN test binary on purpose, same constraint as
+# m1_snap_install_peak_alloc: the file installs a counting `#[global_allocator]`,
+# which is per-BINARY, so folding it into `tests/it/` would wrap every unrelated
+# node test and make the measured peak unattributable. This is the milestone's
+# outcome probe (docs/.workflow/m3-outcome-metric.txt).
+[[test]]
+name = "m3_wire_bound_probe"
+path = "tests/m3_wire_bound_probe.rs"

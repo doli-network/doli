@@ -403,6 +403,37 @@ Measured at N = 100,000 UTXOs on unchanged code: `M2_SET_BYTES=10853285`,
 
 ---
 
+### 6.3 Test traceability — M3 [F3] chunked snap-sync session
+
+Written test-first; red evidence in `docs/.workflow/m3-test-red-evidence.txt`, inventory and API
+contract in `docs/.workflow/m3-test-writer-report.md`. 36 tests across 7 files: 29 RED on
+unchanged code (missing API only — E0432/E0425/E0599/E0603, zero type errors) and 6 declared
+GREEN locks on the M2 `canonical_range` seam that M3's wire format depends on.
+
+| Requirement | Coverage | File | Implementation Module | Status after M3 |
+|---|---|---|---|---|
+| REQ-SCALE-013 | wire-index parity, graceful legacy decode, chunk/manifest size bounds, `MAX_SYNC_SIZE` tripwire, session constants (6 tests) | `crates/network/tests/it/m3_protocol_session.rs` | `sync_protocol_session` @ `crates/network/src/protocols/sync.rs` | **GREEN** |
+| REQ-SCALE-006, -002 | chunk reassembly byte-identical to the canonical image on BOTH backends, identical cursor sequences, degenerate budgets (6 tests) | `crates/storage/tests/it/m3_chunk_byte_equality.rs` | `canonical_range` @ `crates/storage/src/utxo/{set.rs,canonical.rs}` (M2 seam, locked by M3) | **GREEN (lock)** |
+| REQ-SCALE-006, -007 | manifest `utxo_hash` == legacy `utxo_hash`; **pinned view survives server mutation (F-06)**; session cap answers `Busy`; unknown session answers `ManifestExpired`; halt refusal; BRIDGE unchanged; slot release; per-interval cap exemption; `max_bytes` clamp | `bins/node/tests/it/m3_state_session_serve.rs` | `state_session_serve` @ `bins/node/src/node/state_session_serve.rs`; `state_session` @ `bins/node/src/node/state_session.rs`; `pinned` @ `crates/storage/src/utxo/pinned.rs` | **GREEN** |
+| REQ-SCALE-013, -006 | cursor resumes at last verified range (F-07); no blacklist on any of the three refusals (F-08); attempt cap unchanged; digest mismatch refuses install; manifest root must equal quorum root (F4 Gate 1) | `crates/network/src/sync/manager/tests_m3_state_session.rs` | `state_session` @ `crates/network/src/sync/manager/state_session.rs`; dispatch @ `.../sync_engine/dispatch.rs`; response @ `.../sync_engine/response.rs` | **GREEN** |
+| REQ-SCALE-002, -006 | staging CF isolation (Res-2), one atomic promotion, rebuild markers across the window (F-11), root re-derived from the installed backend (F-10) | `bins/node/tests/it/m3_staging_install.rs` | `staging` @ `crates/storage/src/state_db/staging.rs`; `deletable_cf_names` consumed by `atomic_replace` @ `crates/storage/src/state_db/writes.rs`. **Seam only — no production caller until M4** (`docs/.workflow/wiring-debt.md`) | **GREEN** |
+| REQ-SCALE-013 | the outcome probe — largest single wire message needed to transfer an over-16-MiB set | `bins/node/tests/m3_wire_bound_probe.rs` | walks `StateManifest` + `StateChunk`; `M3_SYNC_OK=1`, `M3_MAX_WIRE_BYTES=1,048,638` | **GREEN (metric met)** |
+| REQ-SCALE-013 (adversarial) | `max_bytes = u32::MAX` clamped server-side; `max_bytes = 0` still advances | `bins/node/tests/it/m3_state_session_serve.rs` (C9, added by the developer at TASK 0) | `serve_state_chunk` @ `bins/node/src/node/state_session_serve.rs` | **GREEN** |
+
+Outcome metric (`docs/.workflow/m3-outcome-metric.txt`), captured against unchanged code:
+`M3_MAX_WIRE_BYTES=17,606,499` for a 162,224-entry set — larger than `MAX_SYNC_SIZE`
+(16,777,216) — so `M3_SYNC_OK=0`. That set is not slow to sync today; it is **untransferable**,
+rejected by the receiving codec before one byte of state is decoded. N was measured from
+`canonical_len()`, not guessed.
+
+**After M3** (same command, same seed, same N): `M3_MAX_WIRE_BYTES=1,048,638` and `M3_SYNC_OK=1`.
+The same set is now transferable; the largest message is the 1 MiB chunk budget plus 62 B of
+bincode envelope. `M3_UTXO_HASH` is bit-identical before and after, so the wire win cost no
+consensus change (INV-SYNC-007). `M3_INSTALL_PEAK_BYTES` is UNCHANGED — REQ-SCALE-018 is NOT
+claimed by M3; the staged-install seam that moves it ships here untested-in-production and is
+carried as wiring debt due M4.
+
+
 ## 7. What I do not understand (stated before any design)
 
 1. **What actually drives the 0.1228 UTXO/block baseline on a 15-address testnet.** I measured it; I did not trace the mechanism

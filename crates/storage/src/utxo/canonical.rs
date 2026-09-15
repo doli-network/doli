@@ -178,35 +178,13 @@ pub(crate) fn deserialize(bytes: &[u8]) -> Result<InMemoryUtxoStore, StorageErro
         })?;
         pos += KEY_LEN;
 
-        if pos + VALUE_BASE_LEN > bytes.len() {
-            return Err(StorageError::Serialization(format!(
+        let entry_size = value_len(bytes, pos).ok_or_else(|| {
+            StorageError::Serialization(format!(
                 "[STOR030] UTXO canonical bytes truncated at entry (pos={}, len={})",
                 pos,
                 bytes.len()
-            )));
-        }
-        // 0xFFFF marks a u32 extra_data length (NFT payloads above 64 KB).
-        let raw_len = u16::from_le_bytes(bytes[pos + 59..pos + 61].try_into().unwrap());
-        let (extra_len, header_overhead) = if raw_len == 0xFFFF {
-            if pos + 65 > bytes.len() {
-                return Err(StorageError::Serialization(
-                    "UTXO canonical bytes truncated (u32 length)".to_string(),
-                ));
-            }
-            let len = u32::from_le_bytes(bytes[pos + 61..pos + 65].try_into().unwrap()) as usize;
-            (len, 65)
-        } else {
-            (raw_len as usize, VALUE_BASE_LEN)
-        };
-        let entry_size = header_overhead + extra_len;
-        if pos + entry_size > bytes.len() {
-            return Err(StorageError::Serialization(format!(
-                "[STOR031] UTXO canonical bytes truncated at extra_data (pos={}, entry_size={}, len={})",
-                pos,
-                entry_size,
-                bytes.len()
-            )));
-        }
+            ))
+        })?;
         let entry = UtxoEntry::deserialize_canonical_bytes(&bytes[pos..pos + entry_size])
             .ok_or_else(|| {
                 StorageError::Serialization(format!(
@@ -220,6 +198,66 @@ pub(crate) fn deserialize(bytes: &[u8]) -> Result<InMemoryUtxoStore, StorageErro
     }
 
     Ok(store)
+}
+
+/// Byte length of the canonical VALUE starting at `pos`, or `None` when `bytes`
+/// does not yet hold all of it.
+///
+/// Sole definition of the length rule: `0xFFFF` in the 2-byte extra-data header
+/// escapes to a u32 length (NFT payloads above 64 KB). Both the whole-image
+/// decoder and the chunk-stream stager read it from here, so a chunk boundary
+/// falling inside a record can never be measured by a second, drifting copy.
+pub(crate) fn value_len(bytes: &[u8], pos: usize) -> Option<usize> {
+    if pos + VALUE_BASE_LEN > bytes.len() {
+        return None;
+    }
+    let raw_len = u16::from_le_bytes(bytes[pos + 59..pos + 61].try_into().ok()?);
+    let (extra_len, header_overhead) = if raw_len == 0xFFFF {
+        if pos + 65 > bytes.len() {
+            return None;
+        }
+        let len = u32::from_le_bytes(bytes[pos + 61..pos + 65].try_into().ok()?) as usize;
+        (len, 65)
+    } else {
+        (raw_len as usize, VALUE_BASE_LEN)
+    };
+    let size = header_overhead + extra_len;
+    if pos + size > bytes.len() {
+        return None;
+    }
+    Some(size)
+}
+
+/// Parse one `key || value` record at `pos`.
+///
+/// `Ok(None)` means the buffer is short of a complete record — the normal case
+/// at a chunk boundary, not an error.
+#[allow(clippy::type_complexity)]
+pub(crate) fn parse_record(
+    bytes: &[u8],
+    pos: usize,
+) -> Result<Option<(Outpoint, UtxoEntry, usize)>, StorageError> {
+    if pos + KEY_LEN > bytes.len() {
+        return Ok(None);
+    }
+    let outpoint = Outpoint::from_bytes(&bytes[pos..pos + KEY_LEN]).ok_or_else(|| {
+        StorageError::Serialization(format!(
+            "[STOR029] invalid outpoint in canonical bytes at pos={}",
+            pos
+        ))
+    })?;
+    let vpos = pos + KEY_LEN;
+    let Some(entry_size) = value_len(bytes, vpos) else {
+        return Ok(None);
+    };
+    let entry = UtxoEntry::deserialize_canonical_bytes(&bytes[vpos..vpos + entry_size])
+        .ok_or_else(|| {
+            StorageError::Serialization(format!(
+                "[STOR032] invalid UTXO entry in canonical bytes at pos={} (entry_size={})",
+                vpos, entry_size
+            ))
+        })?;
+    Ok(Some((outpoint, entry, KEY_LEN + entry_size)))
 }
 
 /// Canonical key bytes of an outpoint, without a heap allocation.

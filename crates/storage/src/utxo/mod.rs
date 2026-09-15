@@ -9,6 +9,7 @@
 
 pub(crate) mod canonical;
 mod in_memory;
+mod pinned;
 mod set;
 #[cfg(test)]
 mod tests;
@@ -18,6 +19,7 @@ mod types;
 
 // Re-export everything for identical public API
 pub use in_memory::InMemoryUtxoStore;
+pub use pinned::PinnedUtxoRows;
 pub use set::UtxoSet;
 pub use types::reward_maturity_for_network;
 pub use types::{uid_key, UID_PREFIX_ASSET, UID_PREFIX_CHANNEL, UID_PREFIX_NFT, UID_PREFIX_POOL};

@@ -304,25 +304,17 @@ impl Node {
         request: SyncRequest,
         channel: ResponseChannel<SyncResponse>,
     ) -> Result<()> {
-        const MAX_SYNC_REQUESTS_PER_INTERVAL: u32 = 24;
-        if self.sync_requests_this_interval >= MAX_SYNC_REQUESTS_PER_INTERVAL {
+        use super::MAX_SYNC_REQUESTS_PER_INTERVAL;
+        if let Some(refusal) = self.admit_sync_request(&request) {
             debug!(
                 "Sync request from {} deferred — serving limit reached ({}/{})",
                 peer_id, self.sync_requests_this_interval, MAX_SYNC_REQUESTS_PER_INTERVAL
             );
             if let Some(ref network) = self.network {
-                let _ = network
-                    .send_sync_response(
-                        channel,
-                        network::protocols::SyncResponse::Error(
-                            "busy: sync serving limit reached".to_string(),
-                        ),
-                    )
-                    .await;
+                let _ = network.send_sync_response(channel, refusal).await;
             }
         } else {
             debug!("Sync request from {}: {:?}", peer_id, request);
-            self.sync_requests_this_interval += 1;
             // DirectAttestation: register locally BEFORE delegating to handle_sync_request
             // (which only re-broadcasts via gossip). gossipsub does not deliver published
             // messages back to the publisher, so re-broadcast alone never reaches our own

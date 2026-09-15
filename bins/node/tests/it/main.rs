@@ -65,4 +65,7 @@ mod inc_i_208_own_attestation_pooled;
 mod inc_i_217_m7_rotation_apply;
 mod inc_i_221_bootstrap_retry;
 mod m1_snap_install_identity;
+mod m3_common;
+mod m3_staging_install;
+mod m3_state_session_serve;
 mod tied_fork_finality;

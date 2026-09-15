@@ -226,16 +226,21 @@ impl MaintainerUndoSnapshot {
 pub(super) const DB_WRITE_BUFFER_SIZE_BYTES: u64 = 64 * 1024 * 1024;
 
 // Column family names
-pub(super) const CF_UTXO: &str = "cf_utxo";
-pub(super) const CF_UTXO_BY_PUBKEY: &str = "cf_utxo_by_pubkey";
-pub(super) const CF_PRODUCERS: &str = "cf_producers";
-pub(super) const CF_EXIT_HISTORY: &str = "cf_exit_history";
-pub(super) const CF_META: &str = "cf_meta";
-pub(super) const CF_UNDO: &str = "cf_undo";
+pub const CF_UTXO: &str = "cf_utxo";
+/// M3 [F3]: landing zone for a chunked snap-sync state transfer. Chunks are
+/// written here, never into the live `cf_utxo` that `atomic_replace` wipes
+/// before rewriting, and the promotion streams OUT of this family — so it is
+/// deliberately absent from `deletable_cf_names()`.
+pub const CF_UTXO_STAGING: &str = "cf_utxo_staging";
+pub const CF_UTXO_BY_PUBKEY: &str = "cf_utxo_by_pubkey";
+pub const CF_PRODUCERS: &str = "cf_producers";
+pub const CF_EXIT_HISTORY: &str = "cf_exit_history";
+pub const CF_META: &str = "cf_meta";
+pub const CF_UNDO: &str = "cf_undo";
 /// Phase 1 of UTXO storage consolidation: unique ID index for NFT/Pool/Asset
 /// uniqueness checks. Mirrors utxo_store's `unique_id` CF.
 /// Key: prefix(1B) + id(32B) -> empty. See `specs/utxo-storage-architecture.md`.
-pub(super) const CF_UNIQUE_ID: &str = "cf_unique_id";
+pub const CF_UNIQUE_ID: &str = "cf_unique_id";
 
 // Meta keys
 pub(super) const META_CHAIN_STATE: &[u8] = b"chain_state";
@@ -272,6 +277,7 @@ pub(super) const META_ORACLE_LAST_UPDATE_HEIGHT: &[u8] = b"oracle_last_update_he
 /// `atomic_replace` does not iterate-delete (`writes.rs:181-186`), so the
 /// marker survives the very operation that clears it explicitly — and survives
 /// a `systemctl restart` in the middle of the replay window.
+pub(super) const META_UTXO_STAGING_RESIDUAL: &[u8] = b"utxo_staging_residual";
 pub(super) const META_REBUILD_IN_PROGRESS: &[u8] = b"rebuild_in_progress";
 
 /// Unified state database wrapping a single RocksDB instance.

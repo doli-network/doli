@@ -49,12 +49,19 @@ pub fn compute_state_root(
         ps_bytes.len(),
     );
 
+    Ok(compose_state_root(&cs_hash, &utxo_hash, &ps_hash))
+}
+
+/// Combine the three component hashes into the state root.
+///
+/// Split out so a caller that already holds the UTXO digest — the M3 [F3]
+/// manifest reads it from its pinned view — does not fold the whole set twice.
+pub fn compose_state_root(cs_hash: &Hash, utxo_hash: &Hash, ps_hash: &Hash) -> Hash {
     let mut combined = Vec::with_capacity(96);
     combined.extend_from_slice(cs_hash.as_bytes());
     combined.extend_from_slice(utxo_hash.as_bytes());
     combined.extend_from_slice(ps_hash.as_bytes());
-
-    Ok(crypto::hash::hash(&combined))
+    crypto::hash::hash(&combined)
 }
 
 /// Emit the per-component `[STATE_ROOT]` breadcrumb: the chain_state, utxo, and

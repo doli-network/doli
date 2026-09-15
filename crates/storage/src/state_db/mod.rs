@@ -16,6 +16,7 @@
 //! | `cf_undo` | height (8B LE) | UndoData (bincode) |
 //! | `cf_undo` | 0x4D ++ height (9B) | MaintainerUndoSnapshot (bincode) — INC-I-174 |
 //! | `cf_unique_id` | prefix(1B) + id(32B) | 0x00 |
+//! | `cf_utxo_staging` | Outpoint (36B) | UtxoEntry (bincode) — M3 [F3] transfer landing zone |
 //!
 //! The two `cf_undo` families are distinguished by key LENGTH, so they can never
 //! collide at any height. INC-I-174 chose this over a sixth field on `UndoData`
@@ -30,10 +31,14 @@ mod open;
 mod queries;
 #[cfg(test)]
 mod rebuild_marker_tests;
+mod staging;
 #[cfg(test)]
 mod tests;
 mod types;
 mod undo;
 mod writes;
 
-pub use types::{BlockBatch, LastApplied, MaintainerUndoSnapshot, StateDb, UndoData};
+pub use types::{
+    BlockBatch, LastApplied, MaintainerUndoSnapshot, StateDb, UndoData, CF_EXIT_HISTORY, CF_META,
+    CF_PRODUCERS, CF_UNDO, CF_UNIQUE_ID, CF_UTXO, CF_UTXO_BY_PUBKEY, CF_UTXO_STAGING,
+};
