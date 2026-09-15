@@ -68,6 +68,14 @@ assets = [
 ]
 post_install_script = "bins/node/postinst.sh"
 
+# utxo-scalability M1 — its OWN test binary on purpose. The file installs a
+# counting `#[global_allocator]`; a global allocator is per-BINARY, so folding it
+# into `tests/it/` would wrap every unrelated test in the shared node binary and
+# make the measured peak unattributable.
+[[test]]
+name = "m1_snap_install_peak_alloc"
+path = "tests/m1_snap_install_peak_alloc.rs"
+
 # INC-I-171 M4 — its OWN test binary on purpose. The vesting gate ships frozen
 # (activation == disable == u64::MAX on every network), so no height can arm it;
 # only a process-wide env override can, and `tests/it/` is one shared process

@@ -283,6 +283,19 @@ impl UtxoSet {
         }
     }
 
+    /// Consume the set and yield its `(Outpoint, UtxoEntry)` pairs.
+    ///
+    /// The `InMemory` arm moves the backing map out instead of cloning it, so an
+    /// installing caller can hand the pairs to `StateDb::atomic_replace` without
+    /// materialising a second full-set `Vec`.
+    pub fn into_pairs(self) -> impl Iterator<Item = (Outpoint, UtxoEntry)> {
+        let inner: Box<dyn Iterator<Item = (Outpoint, UtxoEntry)>> = match self {
+            UtxoSet::InMemory(store) => Box::new(store.into_pairs()),
+            UtxoSet::RocksDb(sdb) => Box::new(sdb.iter_utxos().into_iter()),
+        };
+        inner
+    }
+
     /// Count unique addresses (pubkey hashes) in the UTXO set.
     pub fn address_count(&self) -> u64 {
         match self {

@@ -282,12 +282,11 @@ impl Node {
     /// Called when the sync manager's snap sync quorum voting + download completes.
     /// The snapshot has already been verified (state root matches quorum) by the
     /// network layer. This method:
-    /// 1. Re-verifies state root (defense-in-depth)
-    /// 2. Deserializes the 3 state components
-    /// 3. Replaces local state atomically
-    /// 4. Persists to StateDb
-    /// 5. Seeds canonical index for post-snap header sync
-    ///
+    /// 1. Decodes the 3 state components ONCE, re-verifying the state root
+    /// 2. Moves the decoded UTXO pairs into StateDb::atomic_replace
+    /// 3. Installs in-memory state on the Ok arm only, then derives the cached
+    ///    state root from the installed backend
+    /// 4. Seeds canonical index for post-snap header sync
     pub async fn apply_snap_snapshot(&mut self, snapshot: network::VerifiedSnapshot) -> Result<()> {
         // Recovery mode: block snap sync consumption (anti-poisoning gate)
         if self.recovery_mode.load(Ordering::Relaxed) {
@@ -300,22 +299,24 @@ impl Node {
             snapshot.block_height, snapshot.block_hash, snapshot.state_root
         );
 
-        // Step 1: Verify state root (node-side, since network crate has no storage dep)
-        let computed_root = match storage::compute_state_root_from_bytes(
-            &snapshot.chain_state,
-            &snapshot.utxo_set,
-            &snapshot.producer_set,
-        ) {
-            Ok(root) => root,
-            Err(e) => {
-                error!(
-                    "[SNAP_SYNC] Snapshot deserialization failed at height={}: {} — rejecting",
-                    snapshot.block_height, e
-                );
-                self.sync_manager.write().await.snap_fallback_to_normal();
-                return Ok(());
-            }
-        };
+        // Step 1: decode once and verify the state root (node-side, since the
+        // network crate has no storage dep)
+        let (computed_root, mut new_chain_state, new_utxo_set, new_producer_set) =
+            match storage::verify_state_root_from_bytes(
+                &snapshot.chain_state,
+                &snapshot.utxo_set,
+                &snapshot.producer_set,
+            ) {
+                Ok(decoded) => decoded,
+                Err(e) => {
+                    error!(
+                        "[SNAP_SYNC] Snapshot deserialization failed at height={}: {} — rejecting",
+                        snapshot.block_height, e
+                    );
+                    self.sync_manager.write().await.snap_fallback_to_normal();
+                    return Ok(());
+                }
+            };
         if computed_root != snapshot.state_root {
             error!(
                 "[SNAP_SYNC] State root mismatch! computed={}, expected={} — rejecting",
@@ -324,18 +325,6 @@ impl Node {
             self.sync_manager.write().await.snap_fallback_to_normal();
             return Ok(());
         }
-
-        // Step 2: Deserialize snapshot components
-        let new_chain_state: ChainState = bincode::deserialize(&snapshot.chain_state)
-            .map_err(|e| anyhow::anyhow!("[SNAP_SYNC] Failed to deserialize chain_state: {}", e))?;
-        let new_utxo_set: storage::UtxoSet =
-            storage::UtxoSet::deserialize_canonical(&snapshot.utxo_set).map_err(|e| {
-                anyhow::anyhow!("[SNAP_SYNC] Failed to deserialize utxo_set: {}", e)
-            })?;
-        let new_producer_set: storage::ProducerSet = bincode::deserialize(&snapshot.producer_set)
-            .map_err(|e| {
-            anyhow::anyhow!("[SNAP_SYNC] Failed to deserialize producer_set: {}", e)
-        })?;
 
         // C3 defense: envelope must match deserialized state
         if new_chain_state.best_hash != snapshot.block_hash
@@ -346,88 +335,96 @@ impl Node {
             return Ok(());
         }
 
-        // Step 3: Replace local state
-        let genesis_hash = self.chain_state.read().await.genesis_hash;
+        new_chain_state.genesis_hash = self.chain_state.read().await.genesis_hash;
+        new_chain_state.mark_snap_synced(snapshot.block_height);
+
+        // Step 2: persist. The decoded set is MOVED into the batch, so it is gone
+        // before the post-install root derivation reads the backend.
+        if let Err(e) = self.state_db.atomic_replace(
+            &new_chain_state,
+            &new_producer_set,
+            new_utxo_set.into_pairs(),
+        ) {
+            // Nothing was installed. Publishing the snapshot into the in-memory
+            // 3-state here would leave memory on the new chain and disk on the old
+            // one — the split INC-I-156 paid for.
+            error!(
+                "[SNAP_SYNC] StateDb atomic_replace failed: {} — nothing installed",
+                e
+            );
+            self.sync_manager.write().await.snap_fallback_to_normal();
+            return Ok(());
+        }
+
+        // INC-I-156 / AUDIT-P2-101: disarm the rebuild halt. Ok arm ONLY — the
+        // durable set has just been replaced wholesale by a root-verified snapshot,
+        // so this REPAIRS a truncation rather than laundering one (unlike the two
+        // undo-based rebuild sites, rollback.rs:329 / block_handling.rs:951, which
+        // keep their per-call conditional disarm). `atomic_replace` deliberately
+        // excludes CF_META from deletable_cfs (writes.rs:216-221), so without this
+        // the marker outlives the operation that repaired the ledger and leaves a
+        // self-healed node production-halted. A failed disarm is logged, never
+        // propagated: staying halted is the fail-safe direction.
+        if let Err(e) = self.state_db.clear_rebuild_in_progress() {
+            warn!(
+                "[SNAP_SYNC] Installed a verified snapshot but failed to clear the \
+                 rebuild-in-progress marker: {} — the node stays halted until this \
+                 is resolved",
+                e
+            );
+        }
+
+        // INC-I-174 / AUDIT-P1-001 defence in depth. A chain replacement must not
+        // leave undo records describing the chain it replaced. `put_undo` is
+        // unconditional, but `put_maintainer_undo` is written ONLY for a
+        // rotation-carrying block, so a maintainer record above the new tip would
+        // survive until some later reorg reads it. `prune_undo_above` covers both
+        // key families. Preferred over adding CF_UNDO to `atomic_replace`'s
+        // deletable_cfs: that list is walked by the two rebuild sites too, so it
+        // would erase the WHOLE undo log and widen the set of inputs reaching the
+        // rebuild-from-genesis fallback, which REQ-174-004 forbids. Belt and braces
+        // only: the record's `block_hash` binding is the actual fix.
+        self.state_db.prune_undo_above(snapshot.block_height);
+
+        // Step 3: install the in-memory 3-state now that the durable write landed
         {
             let mut cs = self.chain_state.write().await;
             *cs = new_chain_state;
-            cs.genesis_hash = genesis_hash;
-            cs.mark_snap_synced(snapshot.block_height);
 
+            // INC-I-118: adopt the state_db-backed variant. Post-snap apply_block
+            // writes UTXO changes only to state_db (BlockBatch is the sole write
+            // path), so a frozen InMemory copy would stay at snapshot-time state
+            // forever, diverging the reward-pool balance and per-block state-root
+            // reads from a continuous node and triggering [ECON_EPOCH_OVERFLOW] at
+            // the first post-snap epoch boundary. Mirrors init.rs:305.
             let mut utxo = self.utxo_set.write().await;
-            *utxo = new_utxo_set;
+            *utxo = storage::UtxoSet::from_state_db(self.state_db.clone());
 
             let mut ps = self.producer_set.write().await;
             *ps = new_producer_set;
 
-            // Cache state root atomically
-            if let Ok(root) = storage::compute_state_root(&cs, &utxo, &ps) {
-                let mut cache = self.cached_state_root.write().await;
-                *cache = Some((root, cs.best_hash, cs.best_height));
-            }
-
-            // Persist to StateDb
-            let utxo_pairs = utxo.iter_all();
-            match self
-                .state_db
-                .atomic_replace(&cs, &ps, utxo_pairs.into_iter())
-            {
-                Ok(()) => {
-                    // INC-I-118: convert the in-memory snapshot UTXO set to the
-                    // state_db-backed variant. Post-snap apply_block writes UTXO
-                    // changes only to state_db (storage Phase 3 — BlockBatch is the
-                    // sole write path), so a frozen InMemory copy would stay at
-                    // snapshot-time state forever. That makes the reward-pool balance
-                    // and per-block state-root reads (both routed through
-                    // self.utxo_set) diverge from a continuous node, triggering an
-                    // [ECON_EPOCH_OVERFLOW] rejection at the first post-snap epoch
-                    // boundary. Mirrors init.rs:305 so snap-synced reads match
-                    // continuous-node reads bit-for-bit.
-                    *utxo = storage::UtxoSet::from_state_db(self.state_db.clone());
-
-                    // INC-I-156 / AUDIT-P2-101: disarm the rebuild halt.
-                    //
-                    // This arm has just replaced the ENTIRE durable set with a
-                    // snapshot whose state root was re-verified above (:296-303),
-                    // so it genuinely REPAIRS a truncation rather than laundering
-                    // one — unlike an undo-based rollback, which reconstructs
-                    // nothing, and which is why the two rebuild sites
-                    // (rollback.rs:329, block_handling.rs:951) keep their
-                    // per-call conditional disarm instead.
-                    //
-                    // Ok(()) arm ONLY: on Err nothing was installed and the halt
-                    // must survive. `atomic_replace` deliberately excludes CF_META
-                    // from its deletable_cfs (writes.rs:216-221), so without this
-                    // the marker outlives the very operation that repaired the
-                    // ledger — leaving a self-healed node production-halted and
-                    // refusing GetStateSnapshot until an operator wipes its disk.
-                    // A failed disarm is logged, never propagated: it leaves the
-                    // node halted, which is the fail-safe direction.
-                    if let Err(e) = self.state_db.clear_rebuild_in_progress() {
-                        warn!(
-                            "[SNAP_SYNC] Installed a verified snapshot but failed to clear the \
-                             rebuild-in-progress marker: {} — the node stays halted until this \
-                             is resolved",
-                            e
-                        );
-                    }
-
-                    // INC-I-174 / AUDIT-P1-001 defence in depth. A chain replacement must
-                    // not leave undo records describing the chain it replaced. `put_undo`
-                    // is unconditional so stale `UndoData` is overwritten on re-apply, but
-                    // `put_maintainer_undo` is written ONLY for a rotation-carrying block,
-                    // so a maintainer record above the new tip survives until some later
-                    // reorg reads it. `prune_undo_above` covers both key families.
-                    // Preferred over adding `CF_UNDO` to `atomic_replace`'s
-                    // `deletable_cfs`: that list is walked by the two rebuild sites too,
-                    // so it would erase the WHOLE undo log and widen the set of inputs
-                    // reaching the rebuild-from-genesis fallback — which the REQ-174-004
-                    // decision forbids. Belt and braces only: the record's `block_hash`
-                    // binding (`maintainer_rewind/binding.rs`) is the actual fix.
-                    self.state_db.prune_undo_above(snapshot.block_height);
+            // Cache the root derived from the INSTALLED backend: the wire hash
+            // verified above proves transport, not storage.
+            match storage::compute_state_root(&cs, &utxo, &ps) {
+                Ok(root) if root == snapshot.state_root => {
+                    let mut cache = self.cached_state_root.write().await;
+                    *cache = Some((root, cs.best_hash, cs.best_height));
+                }
+                Ok(root) => {
+                    error!(
+                        "[SNAP_SYNC] Installed state root {} != verified snapshot root {}",
+                        root, snapshot.state_root
+                    );
+                    self.sync_manager.write().await.snap_fallback_to_normal();
+                    return Ok(());
                 }
                 Err(e) => {
-                    error!("[SNAP_SYNC] StateDb atomic_replace failed: {}", e);
+                    error!(
+                        "[SNAP_SYNC] Post-install state root derivation failed: {}",
+                        e
+                    );
+                    self.sync_manager.write().await.snap_fallback_to_normal();
+                    return Ok(());
                 }
             }
 

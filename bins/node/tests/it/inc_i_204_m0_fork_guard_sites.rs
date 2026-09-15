@@ -39,8 +39,7 @@
 //! every assertion is a BEFORE/AFTER delta on a monotonic counter. No test asserts
 //! an absolute value.
 
-#[path = "../inc_i_156_m1_harness/mod.rs"]
-mod harness;
+use crate::inc_i_156_m1_harness as harness;
 
 use crypto::Hash;
 use doli_core::validation::ValidationMode;

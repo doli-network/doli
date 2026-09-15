@@ -14,3 +14,4 @@ mod inc_i_171_m1_dead_impl_tripwire;
 mod inc_i_171_m3_three_site_tripwire;
 mod inc_i_171_m3_withdrawal_inputs;
 mod inc_i_180_withdrawal_holdings;
+mod m1_state_root_decode_seam;

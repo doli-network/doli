@@ -222,8 +222,8 @@ pub(crate) async fn cmd_snap(
     let utxo_bytes = hex::decode(utxo_hex)?;
     let ps_bytes = hex::decode(ps_hex)?;
 
-    let computed =
-        storage::snapshot::compute_state_root_from_bytes(&cs_bytes, &utxo_bytes, &ps_bytes)
+    let (computed, chain_state, utxo_set, producer_set) =
+        storage::snapshot::verify_state_root_from_bytes(&cs_bytes, &utxo_bytes, &ps_bytes)
             .map_err(|e| anyhow::anyhow!("INTEGRITY: Snapshot deserialization failed: {}", e))?;
     if computed.to_hex() != snap_root_str {
         anyhow::bail!(
@@ -235,23 +235,15 @@ pub(crate) async fn cmd_snap(
     println!("  Verified (root confirmed by seeds at h={})", final_height);
     let height = final_height;
 
-    // 7. Write to StateDb
+    // 7. Write to StateDb — the verified decode is moved in, never re-decoded
     println!("Applying snapshot...");
-    let chain_state: storage::ChainState = bincode::deserialize(&cs_bytes)?;
-    let producer_set: storage::ProducerSet = bincode::deserialize(&ps_bytes)?;
-    let utxo_set = storage::UtxoSet::deserialize_canonical(&utxo_bytes)
-        .map_err(|e| anyhow!("UtxoSet deserialize: {}", e))?;
+    let utxo_len = utxo_set.len();
 
     let state_db = storage::StateDb::open(&data_dir.join("state_db"))
         .map_err(|e| anyhow!("StateDb open: {}", e))?;
 
-    let utxo_iter: Vec<(storage::Outpoint, storage::UtxoEntry)> = match &utxo_set {
-        storage::UtxoSet::InMemory(mem) => mem.iter().map(|(o, e)| (*o, e.clone())).collect(),
-        _ => return Err(anyhow!("Expected InMemory UtxoSet")),
-    };
-
     state_db
-        .atomic_replace(&chain_state, &producer_set, utxo_iter.into_iter())
+        .atomic_replace(&chain_state, &producer_set, utxo_set.into_pairs())
         .map_err(|e| anyhow!("StateDb write: {}", e))?;
 
     // Write epoch bond snapshot if present in the RPC response.
@@ -311,7 +303,7 @@ pub(crate) async fn cmd_snap(
     println!(
         "  Applied: h={}, {} UTXOs, {} producers",
         height,
-        utxo_set.len(),
+        utxo_len,
         producer_set.active_count()
     );
 

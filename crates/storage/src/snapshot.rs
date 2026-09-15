@@ -282,6 +282,17 @@ pub fn compute_state_root_from_bytes(
     utxo_set_bytes: &[u8],
     producer_set_bytes: &[u8],
 ) -> Result<Hash, StorageError> {
+    verify_state_root_from_bytes(chain_state_bytes, utxo_set_bytes, producer_set_bytes)
+        .map(|(root, _, _, _)| root)
+}
+
+/// Same verification as [`compute_state_root_from_bytes`], but hands the decoded
+/// components back so an installing caller does not decode the blobs a second time.
+pub fn verify_state_root_from_bytes(
+    chain_state_bytes: &[u8],
+    utxo_set_bytes: &[u8],
+    producer_set_bytes: &[u8],
+) -> Result<(Hash, ChainState, UtxoSet, ProducerSet), StorageError> {
     let cs: ChainState = bincode::deserialize(chain_state_bytes).map_err(|e| {
         StorageError::Serialization(format!(
             "[STOR033] ChainState deserialization failed ({} bytes): {}",
@@ -303,7 +314,8 @@ pub fn compute_state_root_from_bytes(
             e
         ))
     })?;
-    compute_state_root(&cs, &utxo, &ps)
+    let root = compute_state_root(&cs, &utxo, &ps)?;
+    Ok((root, cs, utxo, ps))
 }
 
 #[cfg(test)]

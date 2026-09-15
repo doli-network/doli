@@ -123,7 +123,8 @@ pub use producer::{
     VETO_THRESHOLD_PERCENT,
 };
 pub use snapshot::{
-    compute_scheduler_root, compute_state_root, compute_state_root_from_bytes, StateSnapshot,
+    compute_scheduler_root, compute_state_root, compute_state_root_from_bytes,
+    verify_state_root_from_bytes, StateSnapshot,
 };
 pub use state_db::{BlockBatch, LastApplied, MaintainerUndoSnapshot, StateDb, UndoData};
 pub use update::UpdateState;

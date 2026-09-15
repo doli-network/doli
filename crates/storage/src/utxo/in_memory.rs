@@ -352,6 +352,11 @@ impl InMemoryUtxoStore {
         self.utxos.iter()
     }
 
+    /// Consume the store and yield its entries, without cloning any of them.
+    pub fn into_pairs(self) -> impl Iterator<Item = (Outpoint, UtxoEntry)> {
+        self.utxos.into_iter()
+    }
+
     /// Produce canonical bytes for deterministic state root computation.
     ///
     /// Output: `[8-byte LE count] [sorted_key1][value1] [sorted_key2][value2] ...`
