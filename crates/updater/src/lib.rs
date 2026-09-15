@@ -42,6 +42,7 @@ mod install_gate;
 mod params;
 mod release_args;
 mod skills;
+mod skills_dir;
 mod staging;
 mod trust_root;
 mod types;
@@ -68,7 +69,14 @@ pub use staging::{
 };
 
 // Re-exports: skills
-pub use skills::{install_skills_from_tarball, install_skills_into, skill_entry_path_is_safe};
+pub use skills::{
+    install_skills_from_tarball, install_skills_into, install_skills_to_resolved_dir,
+    skill_entry_path_is_safe,
+};
+pub use skills_dir::{
+    apply_skills_ownership, existing_owner, normalize_skill_modes, real_home_dir_of, skills_dir,
+    skills_dir_for, skills_owner_for, SkillsEnv, SkillsOwnerEnv,
+};
 
 // Re-exports: download
 pub use download::{

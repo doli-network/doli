@@ -13,6 +13,10 @@ use flate2::read::GzDecoder;
 use tar::Archive;
 use tracing::{info, warn};
 
+use crate::skills_dir::{
+    apply_skills_ownership, existing_owner, normalize_skill_modes, skills_dir, skills_owner_for,
+    SkillsOwnerEnv,
+};
 use crate::types::{Result, UpdateError};
 
 /// Largest skill file this will write. Skills are markdown; anything larger is not one,
@@ -46,19 +50,25 @@ pub fn skill_entry_path_is_safe(relative: &str) -> bool {
     })
 }
 
-/// Extract and install agent skills from a release tarball to `~/.doli/skills/`.
+/// Extract and install agent skills from a release tarball to the resolved skills
+/// directory, returning the count and the directory actually used.
 ///
-/// Skills are markdown files that enable AI agents to operate DOLI nodes. They live in
-/// the tarball under `*/skills/**`, and any previously installed skills are replaced.
+/// The ONE entry point every install path shares (REQ-SKILLS-002): two resolutions drift,
+/// and the one that drifts is the one running under sudo. Skills are markdown files that
+/// enable AI agents to operate DOLI nodes. They live in the tarball under `*/skills/**`,
+/// and any previously installed skills are replaced.
 ///
-/// Best-effort: returns `Ok(count)` on success, `Err` on failure. Callers should treat
-/// failure as non-fatal — skills are not required for node operation.
+/// Best-effort: callers treat failure as non-fatal — skills are not required for node
+/// operation, and the binary is already installed by the time this runs.
+pub fn install_skills_to_resolved_dir(tarball: &[u8]) -> Result<(usize, PathBuf)> {
+    let dest = skills_dir()?;
+    let count = install_skills_into(tarball, &dest)?;
+    Ok((count, dest))
+}
+
+/// [`install_skills_to_resolved_dir`] without the destination.
 pub fn install_skills_from_tarball(tarball: &[u8]) -> Result<usize> {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .map_err(|_| UpdateError::InstallFailed("Cannot determine home directory".into()))?;
-    let skills_dir = PathBuf::from(&home).join(".doli").join("skills");
-    install_skills_into(tarball, &skills_dir)
+    install_skills_to_resolved_dir(tarball).map(|(count, _)| count)
 }
 
 /// The body of [`install_skills_from_tarball`], with the destination injected.
@@ -77,6 +87,10 @@ pub fn install_skills_into(tarball: &[u8], skills_dir: &Path) -> Result<usize> {
     let decoder = GzDecoder::new(tarball);
     let mut archive = Archive::new(decoder);
     let mut skill_count = 0;
+
+    // REQ-SKILLS-003: read the owner BEFORE the removal destroys it. A re-install under
+    // sudo must not hand the operator's directory to root.
+    let previous_owner = existing_owner(skills_dir);
 
     // Clear previous skills
     if skills_dir.exists() {
@@ -191,6 +205,16 @@ pub fn install_skills_into(tarball: &[u8], skills_dir: &Path) -> Result<usize> {
         if relative.ends_with("SKILL.md") {
             skill_count += 1;
         }
+    }
+
+    normalize_skill_modes(skills_dir);
+    let owner = skills_owner_for(previous_owner, &SkillsOwnerEnv::from_process());
+    if let Err(e) = apply_skills_ownership(skills_dir, owner) {
+        warn!(
+            "Could not set ownership on {}: {} (non-fatal)",
+            skills_dir.display(),
+            e
+        );
     }
 
     if skill_count > 0 {

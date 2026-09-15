@@ -449,8 +449,8 @@ pub async fn auto_apply_from_github(version: &str, signed_checksums_sha256: &str
     }
 
     // 8. Update agent skills (best-effort — skill failure never blocks node update)
-    match crate::skills::install_skills_from_tarball(&tarball) {
-        Ok(count) if count > 0 => info!("Updated {} agent skills", count),
+    match crate::skills::install_skills_to_resolved_dir(&tarball) {
+        Ok((count, at)) if count > 0 => info!("Updated {} agent skills at {:?}", count, at),
         Ok(_) => debug!("No skills found in tarball"),
         Err(e) => warn!("Failed to update agent skills: {} (non-fatal)", e),
     }

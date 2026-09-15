@@ -178,6 +178,16 @@ async fn staged_install(
         }
     }
 
+    // Agent skills ride the same tarball, through the entry point the direct path uses.
+    // Best-effort: the binary is installed by this point, so a skills error cannot abort.
+    match updater::install_skills_to_resolved_dir(&staged.tarball) {
+        Ok((count, at)) if count > 0 => {
+            println!("Updated {} agent skills at {}", count, at.display())
+        }
+        Ok(_) => {}
+        Err(e) => println!("Note: could not update agent skills: {}", e),
+    }
+
     let restarted = match service {
         Some(ref svc) => restart_specific_service(svc),
         None => restart_doli_service(Some(node_target.as_path())),
