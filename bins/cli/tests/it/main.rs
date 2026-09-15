@@ -19,3 +19,5 @@ mod inc_i_217_info_migration_hint;
 mod inc_i_217_m10_rotate_bls_golden;
 mod inc_i_217_m10_wallet_untouched;
 mod inc_i_222_helper_refresh_paths;
+mod sk_m1_service_unit_render;
+mod sk_m1_staged_installs_skills;

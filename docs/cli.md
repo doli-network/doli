@@ -2213,6 +2213,20 @@ doli upgrade --yes
 doli upgrade --version v1.1.12 --yes
 ```
 
+### 18.0. Where agent skills are installed
+
+Every upgrade path (`doli upgrade`, `doli upgrade --from-staged`, the node auto-updater)
+also refreshes the agent-skills tree, best-effort: a skills failure never fails an upgrade
+whose binary is already installed. The destination is resolved in this order:
+
+1. `DOLI_SKILLS_DIR`, used verbatim.
+2. Under `sudo`, the **invoking operator's** home + `.doli/skills` — not root's.
+3. Otherwise `$HOME` (or `%USERPROFILE%`) + `.doli/skills`.
+
+The command prints the directory it actually used. An existing directory keeps its owner
+across the re-install; a new one created under `sudo` is chowned to `SUDO_UID:SUDO_GID`.
+Files are written 0644 and directories 0755, regardless of the caller's umask.
+
 ### 18.1. Which keys authorise the install
 
 `doli upgrade` runs as root and refuses to install a release that is not signed by the
@@ -2397,6 +2411,12 @@ Options:
       --rpc-port <PORT>            RPC listen port
 ```
 
+The generated systemd unit carries `Environment=DOLI_SKILLS_DIR=<operator home>/.doli/skills`
+and adds that path to `ReadWritePaths=`. Under `ProtectSystem=full` a path absent from that
+list is not merely the wrong one — it is unwritable, and the auto-updater's skills install
+fails silently. `doli service install` pre-creates the directory and chowns it to the
+service user.
+
 On Linux this also writes, reloads and enables two root helper units next to the node
 unit, named after the resolved service name (default `doli-{network}`):
 
@@ -2532,6 +2552,7 @@ doli wipe --network testnet --yes
 | `DOLI_MAX_PEERS` | Maximum peer connections (node) | `50` |
 | `DOLI_EVICTION_GRACE_SECS` | Peer eviction grace period in seconds (node) | `30` |
 | `DOLI_DATA_DIR` | Override data directory (node) | Platform-specific |
+| `DOLI_SKILLS_DIR` | Override the agent-skills install directory, used verbatim | `<home>/.doli/skills` |
 
 ---
 

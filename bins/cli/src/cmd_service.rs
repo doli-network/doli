@@ -123,45 +123,13 @@ fn get_uid() -> String {
 }
 
 /// Get the real user's home directory, even when running under sudo.
+///
+/// The account-database lookup itself lives in `updater::real_home_dir_of`, shared with
+/// the skills-directory resolver: two copies of it drift.
 fn real_home_dir() -> std::path::PathBuf {
-    // If running under sudo, resolve the real user's home
     if let Ok(user) = std::env::var("SUDO_USER") {
         if !user.is_empty() && user != "root" {
-            // macOS: use dscl
-            #[cfg(target_os = "macos")]
-            {
-                if let Ok(output) = std::process::Command::new("dscl")
-                    .args([
-                        ".",
-                        "-read",
-                        &format!("/Users/{}", user),
-                        "NFSHomeDirectory",
-                    ])
-                    .output()
-                {
-                    if let Ok(s) = String::from_utf8(output.stdout) {
-                        if let Some(home) = s.split_whitespace().last() {
-                            return std::path::PathBuf::from(home);
-                        }
-                    }
-                }
-                return std::path::PathBuf::from(format!("/Users/{}", user));
-            }
-            // Linux: use getent or /home/$user
-            #[cfg(not(target_os = "macos"))]
-            {
-                if let Ok(output) = std::process::Command::new("getent")
-                    .args(["passwd", &user])
-                    .output()
-                {
-                    if let Ok(s) = String::from_utf8(output.stdout) {
-                        if let Some(home) = s.split(':').nth(5) {
-                            return std::path::PathBuf::from(home.trim());
-                        }
-                    }
-                }
-                return std::path::PathBuf::from(format!("/home/{}", user));
-            }
+            return updater::real_home_dir_of(&user);
         }
     }
     dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."))
@@ -355,37 +323,15 @@ fn install_systemd(
     let exec_args = build_exec_args(network, &data_dir, &producer_key, p2p_port, rpc_port);
     let exec_start = format!("{} {}", doli_node_bin, exec_args.join(" \\\n  "));
 
-    let unit = format!(
-        r#"[Unit]
-Description=DOLI {network} Node
-After=network-online.target
-Wants=network-online.target
-StartLimitIntervalSec=600
-StartLimitBurst=5
-
-[Service]
-Type=simple
-User={user}
-Group={group}
-ExecStart={exec_start}
-Restart=always
-RestartSec=10
-StandardOutput=append:/var/log/doli/{network}.log
-StandardError=append:/var/log/doli/{network}.log
-NoNewPrivileges=true
-ProtectSystem=full
-ReadWritePaths={data_dir} /var/log/doli
-PrivateTmp=true
-LimitNOFILE=65535
-
-[Install]
-WantedBy=multi-user.target
-"#,
-        network = network,
-        exec_start = exec_start,
-        data_dir = actual_data_dir,
-        user = run_user,
-        group = run_group,
+    // The operator's agent reads skills here; the unit grants and exports the path.
+    let skills_dir = real_home_dir().join(".doli").join("skills");
+    let unit = doli_cli::service_unit::render_service_unit(
+        network,
+        &exec_start,
+        &actual_data_dir,
+        &run_user,
+        &run_group,
+        &skills_dir,
     );
 
     // Ensure data and log directories exist with correct ownership
@@ -404,6 +350,14 @@ WantedBy=multi-user.target
             "-R",
             &format!("{}:{}", run_user, run_group),
             "/var/log/doli",
+        ])
+        .status();
+    let _ = std::fs::create_dir_all(&skills_dir);
+    let _ = std::process::Command::new("chown")
+        .args([
+            "-R",
+            &format!("{}:{}", run_user, run_group),
+            &skills_dir.display().to_string(),
         ])
         .status();
 
