@@ -111,3 +111,19 @@ path = "tests/bls_rotation_metrics.rs"
 [[test]]
 name = "m3_wire_bound_probe"
 path = "tests/m3_wire_bound_probe.rs"
+
+# utxo-scalability M4 — the install-side OUTCOME PROBE
+# (docs/.workflow/m4-outcome-metric.txt). Own binary for the same reason as
+# m3_wire_bound_probe: `tests/m4_measure/mod.rs` installs a counting
+# `#[global_allocator]`, which is per-BINARY.
+[[test]]
+name = "m4_install_peak_probe"
+path = "tests/m4_install_peak_probe.rs"
+
+# utxo-scalability M4 — the RED peak-ratio claim. It shares ONE copy of the
+# allocator and the measurement routine with the probe above
+# (`tests/m4_measure/mod.rs`), but must live in its own binary: the probe has to
+# PASS on pre-M4 code to yield the `before` reading, and this file has to FAIL.
+[[test]]
+name = "m4_peak_ratio_red"
+path = "tests/m4_peak_ratio_red.rs"

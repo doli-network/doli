@@ -280,10 +280,19 @@ pub(super) const META_ORACLE_LAST_UPDATE_HEIGHT: &[u8] = b"oracle_last_update_he
 pub(super) const META_UTXO_STAGING_RESIDUAL: &[u8] = b"utxo_staging_residual";
 pub(super) const META_REBUILD_IN_PROGRESS: &[u8] = b"rebuild_in_progress";
 
+/// Payload budget of ONE staged-install promotion sub-batch, in bytes.
+///
+/// Matched to a node-test fixture of 2_500 entries, which must span more than
+/// one sub-batch for the abort contract to be observable.
+pub const PROMOTE_BATCH_MAX_BYTES: usize = 128 * 1024;
+
 /// Unified state database wrapping a single RocksDB instance.
 pub struct StateDb {
     pub(super) db: rocksdb::DB,
     pub(super) utxo_count: AtomicU64,
+    /// Test seam: abort `promote_staged_utxos` after this many committed
+    /// sub-batches. `u64::MAX` is disarmed.
+    pub(super) promote_abort_after: AtomicU64,
     /// Shared LRU block cache referenced by every CF. Held on the struct so
     /// `metrics()` can query its real usage via `Cache::get_usage()` instead
     /// of summing per-CF property reads (INC-I-106 root-cause fix).

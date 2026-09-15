@@ -382,7 +382,12 @@ impl Node {
 
         let snap = self.sync_manager.write().await.take_snap_snapshot();
         if let Some(snapshot) = snap {
-            self.apply_snap_snapshot(snapshot).await?;
+            // A refused staged install halts the node through the armed rebuild
+            // marker. Propagating here would kill the event loop instead, and an
+            // operator cannot read `rebuild_halt_reason()` off a dead process.
+            if let Err(e) = self.apply_snap_snapshot(snapshot).await {
+                error!("[SNAP_SYNC] Failed to apply snapshot: {}", e);
+            }
         }
         Ok(())
     }

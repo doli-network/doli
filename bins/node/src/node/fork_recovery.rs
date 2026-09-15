@@ -299,80 +299,19 @@ impl Node {
             snapshot.block_height, snapshot.block_hash, snapshot.state_root
         );
 
-        // Step 1: decode once and verify the state root (node-side, since the
-        // network crate has no storage dep)
-        let (computed_root, mut new_chain_state, new_utxo_set, new_producer_set) =
-            match storage::verify_state_root_from_bytes(
-                &snapshot.chain_state,
-                &snapshot.utxo_set,
-                &snapshot.producer_set,
-            ) {
-                Ok(decoded) => decoded,
-                Err(e) => {
-                    error!(
-                        "[SNAP_SYNC] Snapshot deserialization failed at height={}: {} — rejecting",
-                        snapshot.block_height, e
-                    );
+        // Step 1+2: decode-and-replace, or promote what the session already
+        // staged. Both arms leave the durable 3-state installed.
+        let staged = snapshot.utxo_staged.is_some();
+        let (new_chain_state, new_producer_set) =
+            match self.install_snapshot_prelude(&snapshot).await? {
+                super::snapshot_install::SnapshotPrelude::Installed(installed) => {
+                    (installed.chain_state, installed.producer_set)
+                }
+                super::snapshot_install::SnapshotPrelude::Refused => {
                     self.sync_manager.write().await.snap_fallback_to_normal();
                     return Ok(());
                 }
             };
-        if computed_root != snapshot.state_root {
-            error!(
-                "[SNAP_SYNC] State root mismatch! computed={}, expected={} — rejecting",
-                computed_root, snapshot.state_root
-            );
-            self.sync_manager.write().await.snap_fallback_to_normal();
-            return Ok(());
-        }
-
-        // C3 defense: envelope must match deserialized state
-        if new_chain_state.best_hash != snapshot.block_hash
-            || new_chain_state.best_height != snapshot.block_height
-        {
-            error!("[SNAP_SYNC] Envelope/state mismatch — rejecting",);
-            self.sync_manager.write().await.snap_fallback_to_normal();
-            return Ok(());
-        }
-
-        new_chain_state.genesis_hash = self.chain_state.read().await.genesis_hash;
-        new_chain_state.mark_snap_synced(snapshot.block_height);
-
-        // Step 2: persist. The decoded set is MOVED into the batch, so it is gone
-        // before the post-install root derivation reads the backend.
-        if let Err(e) = self.state_db.atomic_replace(
-            &new_chain_state,
-            &new_producer_set,
-            new_utxo_set.into_pairs(),
-        ) {
-            // Nothing was installed. Publishing the snapshot into the in-memory
-            // 3-state here would leave memory on the new chain and disk on the old
-            // one — the split INC-I-156 paid for.
-            error!(
-                "[SNAP_SYNC] StateDb atomic_replace failed: {} — nothing installed",
-                e
-            );
-            self.sync_manager.write().await.snap_fallback_to_normal();
-            return Ok(());
-        }
-
-        // INC-I-156 / AUDIT-P2-101: disarm the rebuild halt. Ok arm ONLY — the
-        // durable set has just been replaced wholesale by a root-verified snapshot,
-        // so this REPAIRS a truncation rather than laundering one (unlike the two
-        // undo-based rebuild sites, rollback.rs:329 / block_handling.rs:951, which
-        // keep their per-call conditional disarm). `atomic_replace` deliberately
-        // excludes CF_META from deletable_cfs (writes.rs:216-221), so without this
-        // the marker outlives the operation that repaired the ledger and leaves a
-        // self-healed node production-halted. A failed disarm is logged, never
-        // propagated: staying halted is the fail-safe direction.
-        if let Err(e) = self.state_db.clear_rebuild_in_progress() {
-            warn!(
-                "[SNAP_SYNC] Installed a verified snapshot but failed to clear the \
-                 rebuild-in-progress marker: {} — the node stays halted until this \
-                 is resolved",
-                e
-            );
-        }
 
         // INC-I-174 / AUDIT-P1-001 defence in depth. A chain replacement must not
         // leave undo records describing the chain it replaced. `put_undo` is
@@ -409,12 +348,36 @@ impl Node {
                 Ok(root) if root == snapshot.state_root => {
                     let mut cache = self.cached_state_root.write().await;
                     *cache = Some((root, cs.best_hash, cs.best_height));
+                    // F-11: the staged promotion window closes here, on the Ok
+                    // arm only. The legacy path disarmed right after its batch.
+                    if staged {
+                        if let Err(e) = self.state_db.clear_rebuild_in_progress() {
+                            warn!(
+                                "[SNAP_SYNC] Installed a staged snapshot but failed to clear the \
+                                 rebuild-in-progress marker: {} — the node stays halted until \
+                                 this is resolved",
+                                e
+                            );
+                        }
+                    }
                 }
                 Ok(root) => {
                     error!(
                         "[SNAP_SYNC] Installed state root {} != verified snapshot root {}",
                         root, snapshot.state_root
                     );
+                    // A staged promotion has ALREADY replaced the live family,
+                    // so `Ok(())` would tell the caller a node whose durable set
+                    // may be wrong is healthy. The armed marker is the halt; the
+                    // `Err` is how the caller learns of it.
+                    if staged {
+                        anyhow::bail!(
+                            "[SNAP_SYNC] staged install re-derived root {} != snapshot root {} at height {}",
+                            root,
+                            snapshot.state_root,
+                            snapshot.block_height
+                        );
+                    }
                     self.sync_manager.write().await.snap_fallback_to_normal();
                     return Ok(());
                 }
@@ -423,6 +386,13 @@ impl Node {
                         "[SNAP_SYNC] Post-install state root derivation failed: {}",
                         e
                     );
+                    if staged {
+                        anyhow::bail!(
+                            "[SNAP_SYNC] staged install could not re-derive a root at height {}: {}",
+                            snapshot.block_height,
+                            e
+                        );
+                    }
                     self.sync_manager.write().await.snap_fallback_to_normal();
                     return Ok(());
                 }

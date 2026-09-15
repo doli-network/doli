@@ -28,6 +28,7 @@
 mod batch;
 mod canonical;
 mod open;
+mod promote;
 mod queries;
 #[cfg(test)]
 mod rebuild_marker_tests;
@@ -41,4 +42,5 @@ mod writes;
 pub use types::{
     BlockBatch, LastApplied, MaintainerUndoSnapshot, StateDb, UndoData, CF_EXIT_HISTORY, CF_META,
     CF_PRODUCERS, CF_UNDO, CF_UNIQUE_ID, CF_UTXO, CF_UTXO_BY_PUBKEY, CF_UTXO_STAGING,
+    PROMOTE_BATCH_MAX_BYTES,
 };

@@ -1,21 +1,18 @@
-//! M3 [F3] staged UTXO install: chunks land in `cf_utxo_staging`, one
-//! `atomic_replace` promotes them, a separate write clears the staging family.
+//! M3 [F3] staged UTXO transfer landing zone: chunks land in `cf_utxo_staging`,
+//! `promote.rs` moves them into the live family, a separate write clears them.
 //!
-//! `atomic_replace` deletes every family in `deletable_cf_names()` before it
-//! writes, so the staging family is deliberately absent from that list: the
-//! promotion streams OUT of the rows the batch would otherwise delete.
+//! `cf_utxo_staging` is deliberately absent from `deletable_cf_names()`: the
+//! promotion streams OUT of the rows a wipe would otherwise delete.
 
-use crate::chain_state::ChainState;
-use crate::producer::ProducerSet;
-use crate::utxo::{canonical, Outpoint, UtxoEntry};
+use crate::utxo::canonical;
 use crate::StorageError;
 
 use super::types::{StateDb, CF_META, CF_UTXO_STAGING, META_UTXO_STAGING_RESIDUAL};
 
 impl StateDb {
-    /// Column families `atomic_replace` wipes before rewriting.
+    /// Column families a whole-state replace wipes before rewriting.
     ///
-    /// `atomic_replace` reads its delete set from here, so a caller asserting
+    /// The replace path reads its delete set from here, so a caller asserting
     /// against this list is reading the real one, not a second copy.
     pub fn deletable_cf_names() -> &'static [&'static str] {
         use super::types::{CF_EXIT_HISTORY, CF_PRODUCERS, CF_UTXO, CF_UTXO_BY_PUBKEY};
@@ -65,31 +62,6 @@ impl StateDb {
             .iterator_cf(cf_stage, rocksdb::IteratorMode::Start)
             .flatten()
             .count()
-    }
-
-    /// Install the staged set: one `atomic_replace` WriteBatch, then a SEPARATE
-    /// write that clears staging.
-    ///
-    /// The clear cannot join the batch: the batch's delete set would then overlap
-    /// the rows it is promoting from, and the live set would land as a prefix.
-    pub fn promote_staged_utxos(
-        &self,
-        cs: &ChainState,
-        ps: &ProducerSet,
-    ) -> Result<(), StorageError> {
-        let cf_stage = self.db.cf_handle(CF_UTXO_STAGING).unwrap();
-        let staged = self
-            .db
-            .iterator_cf(cf_stage, rocksdb::IteratorMode::Start)
-            .flatten()
-            .filter_map(|(k, v)| {
-                let outpoint = Outpoint::from_bytes(&k)?;
-                let entry: UtxoEntry = bincode::deserialize(&v).ok()?;
-                Some((outpoint, entry))
-            });
-
-        self.atomic_replace(cs, ps, staged)?;
-        self.clear_staged_utxos()
     }
 
     /// Discard everything in the staging family, including any residual tail.

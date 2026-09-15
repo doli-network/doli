@@ -208,6 +208,7 @@ impl StateDb {
         Ok(Self {
             db,
             utxo_count: AtomicU64::new(count),
+            promote_abort_after: AtomicU64::new(u64::MAX),
             block_cache: cache,
             block_cache_capacity_bytes: 48 * 1024 * 1024,
         })
@@ -243,6 +244,7 @@ impl StateDb {
         Ok(Self {
             db,
             utxo_count: AtomicU64::new(0),
+            promote_abort_after: AtomicU64::new(u64::MAX),
             block_cache: cache,
             block_cache_capacity_bytes: 8 * 1024 * 1024,
         })

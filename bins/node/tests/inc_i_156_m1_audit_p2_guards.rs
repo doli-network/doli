@@ -144,6 +144,8 @@ async fn healthy_node_with_self_snapshot() -> (Node, VerifiedSnapshot, TempDir) 
             block_height: snap.block_height,
             chain_state: snap.chain_state_bytes,
             utxo_set: snap.utxo_set_bytes,
+            // Legacy single-frame path: the image arrived whole.
+            utxo_staged: None,
             producer_set: snap.producer_set_bytes,
             state_root: snap.state_root,
             block_header_bytes: None,

@@ -317,7 +317,7 @@ Ordering rules honoured: stages 1-3 carry no AH and no block-content change; no 
 | M1 | Stage 1 | snap-synced testnet node: `getStateRootDebug` byte-identical to a full node (REQ-SCALE-001/002); peak RSS during install measured, not argued |
 | M2 | Stage 2 | byte-equality test both backends green; `serialize_canonical()` deleted; AP-7 fail-loud test |
 | M3 | Stage 3 | testnet node joins a synthetic >16 MiB set via chunks (REQ-SCALE-013 measured); mid-stream tip advance does not blacklist; crash mid-install refuses to serve then recovers |
-| M4 | Stage 4 | AH wired at 7 sites with miss-test; AH±1 root-identity tests; `MintAsset` with native fee input mines; padded metadata rejected post-AH |
+| M4 | Stage 4 | client install peak RAM is O(chunk) not O(set): `m4_install_peak_probe` ratio at n=50k vs n=100k is flat (REQ-SCALE-014); installed UTXO digest byte-identical before/after at both n (INV-SYNC-007); crash/abandon mid-transfer leaves no staged rows |
 | M5 | Stage 5 | census artifact + economist decision row + exemption table; pre/post-AH block-equality test; cap value `C` recorded in `NetworkParams` |
 | M6+ | Options as chosen | per-option gates above |
 
@@ -441,9 +441,45 @@ exhausted.
 `STATE_CHUNK_MAX_BYTES` before it reaches storage. The requester never sizes the server's
 allocation.
 
-**As built — the staged install is a seam, not yet the live path.** `stage_utxo_bytes`,
-`staged_utxo_len`, `promote_staged_utxos` and `clear_staged_utxos` ship with M3 and are locked by
-`bins/node/tests/it/m3_staging_install.rs`, including the Res-2 exclusion of `cf_utxo_staging` from
-`StateDb::deletable_cf_names()`. The M3 client still carries a whole canonical image in
-`VerifiedSnapshot.utxo_set` and installs through the unchanged `apply_snap_snapshot`, so the
-client-side install peak is unchanged by this milestone and REQ-SCALE-018 is not claimed here.
+**As built — the staged install is the live client path (M4).** `stage_utxo_bytes`,
+`staged_utxo_len`, `promote_staged_utxos` and `clear_staged_utxos` shipped as a seam with M3,
+locked by `bins/node/tests/it/m3_staging_install.rs` including the Res-2 exclusion of
+`cf_utxo_staging` from `StateDb::deletable_cf_names()`. M4 wired them. `crates/network` defines a
+backend-agnostic `UtxoChunkSink` trait (`crates/network/src/sync/chunk_sink.rs`); `bins/node`
+implements it over the `StateDb` (`bins/node/src/node/utxo_chunk_sink.rs`) and installs it on the
+live `SyncManager` at `bins/node/src/node/init.rs`. The session client no longer accumulates
+`StateSessionClient.image`: each verified chunk body is staged and dropped, and `VerifiedSnapshot`
+carries a `utxo_staged: Option<StagedUtxoMarker>` instead of a whole canonical image. Install
+(`bins/node/src/node/snapshot_install.rs`) promotes the staged rows under the
+`rebuild_in_progress` / `rebuild_halt_reason` markers; every abandon path clears staging; the state
+root is re-derived from the INSTALLED backend (F-10).
+
+M4 round 2 (decision 136) replaced the single promotion `WriteBatch` with a staged-install-only
+chunked write path in `crates/storage/src/state_db/promote.rs`. `StateDb::atomic_replace`
+(`writes.rs`) is UNCHANGED and keeps single-batch all-or-nothing for rollback and reorg replay,
+which arm no marker. Phase 1 drops the live `cf_utxo` / `cf_utxo_by_pubkey` rows with two
+`delete_range_cf` tombstones; Phase 2 streams staging into the live families in sub-batches
+bounded by `PROMOTE_BATCH_MAX_BYTES` (128 KiB of batch payload), each its own `WriteBatch`;
+Phase 3 writes the producer families and the three `CF_META` labels AFTER the UTXO rows and BEFORE
+the root check; staging is cleared in a separate write on the `Ok` arm only.
+
+Restart is **NO-RESUME**: `Node::reconcile_staged_utxos_on_startup` clears `cf_utxo_staging` on
+BOTH arms and never touches the rebuild marker, so a node that crashed inside a promotion window
+comes back halted and recovers by a fresh snap-sync. There is no resume-from-staging path.
+
+The before/after numbers for `cargo test -p doli-node --test m4_install_peak_probe` are recorded in
+`docs/.workflow/m4-outcome-metric.txt`. Note the probe's counting `#[global_allocator]` observes
+RUST allocations only; `rocksdb::WriteBatch` is an FFI handle over C++ memory, so the batch this
+milestone bounds does not appear in `M4_PEAK_RATIO` — see
+`docs/.workflow/m4-developer-report-round2.md`.
+
+Two asymmetries are deliberate and must not be "tidied":
+- The STAGED post-install root-mismatch arm returns `Err` and leaves `rebuild_in_progress` ARMED,
+  because staging has already overwritten the live CF and a soft refuse would leave a silently
+  wrong set installed. Every pre-existing M1/legacy refusal arm keeps its soft-refuse (log,
+  `snap_fallback_to_normal`, `Ok(())`) byte-for-byte.
+- The in-memory UTXO backend has no `cf_utxo_staging`, so it keeps the materialised-image path.
+  That path is test-only; the RocksDB backend is the one REQ-SCALE-014 is measured against.
+
+This is a client-local install mechanism: the wire format, the served bytes, and the resulting state
+are unchanged (INV-SYNC-007), so no activation height and no synchronized deploy are required.

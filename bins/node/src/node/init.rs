@@ -1142,6 +1142,23 @@ impl Node {
             defi_health_cache: std::sync::Mutex::new(None),
         };
 
+        // M4 [F3]: a session always begins from an empty staging family, and
+        // verified chunk bodies stream into it instead of being reassembled.
+        match node.reconcile_staged_utxos_on_startup() {
+            Ok(0) => {}
+            Ok(rows) => info!(
+                "[SNAP_SYNC] Startup cleared {} staged UTXO rows from an abandoned transfer",
+                rows
+            ),
+            Err(e) => warn!("[SNAP_SYNC] Startup staging reconciliation failed: {}", e),
+        }
+        node.sync_manager
+            .write()
+            .await
+            .set_utxo_chunk_sink(Arc::new(super::StateDbChunkSink::new(
+                node.state_db.clone(),
+            )));
+
         Ok(node)
     }
 

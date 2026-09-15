@@ -243,6 +243,8 @@ impl SyncManager {
                     block_height,
                     chain_state,
                     utxo_set,
+                    // Legacy single-frame path: the image arrived whole.
+                    utxo_staged: None,
                     producer_set,
                     state_root: response_root,
                     block_header_bytes,

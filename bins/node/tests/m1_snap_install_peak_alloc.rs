@@ -190,6 +190,8 @@ async fn measure_install(n: usize) -> Measurement {
             block_height: base.block_height,
             chain_state: base.chain_state_bytes,
             utxo_set: utxo_bytes,
+            // Legacy single-frame path: the image arrived whole.
+            utxo_staged: None,
             producer_set: base.producer_set_bytes,
             state_root: root,
             block_header_bytes: None,

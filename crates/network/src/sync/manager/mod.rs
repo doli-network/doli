@@ -175,6 +175,10 @@ pub struct SyncManager {
     /// session without disturbing the download's peer list.
     pub(crate) state_session: Option<state_session::StateSessionClient>,
 
+    /// M4 [F3]: where verified chunk bodies land. `None` on a backend with no
+    /// staging family — the session then keeps the M3 materialised-image path.
+    pub(crate) utxo_chunk_sink: Option<std::sync::Arc<dyn super::UtxoChunkSink>>,
+
     // `post_recovery_grace`, `post_recovery_grace_started`, `blocks_applied_since_recovery`
     // moved to RecoveryPhase::PostRecoveryGrace { started, blocks_applied }
     // === PRODUCTION GATE DEADLOCK FIX (PGD) FIELDS ===
@@ -272,6 +276,7 @@ impl SyncManager {
             // Snap sync state (sub-struct)
             snap: SnapSyncState::new(),
             state_session: None,
+            utxo_chunk_sink: None,
             // PGD fix defaults
             max_grace_cap_secs: 60,
             blocks_since_resync_completed: 0,

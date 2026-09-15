@@ -290,6 +290,7 @@ async fn m3_install_peak_at_100k() {
             block_height: base.block_height,
             chain_state: base.chain_state_bytes,
             utxo_set: utxo_bytes,
+            utxo_staged: None,
             producer_set: base.producer_set_bytes,
             state_root: root,
             block_header_bytes: None,

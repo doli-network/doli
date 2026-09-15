@@ -20,3 +20,4 @@ mod inc_i_180_withdrawal_holdings;
 mod m1_state_root_decode_seam;
 mod m2_caller_port_locks;
 mod m3_chunk_byte_equality;
+mod m4_chunked_promotion;

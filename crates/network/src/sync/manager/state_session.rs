@@ -11,6 +11,8 @@ use crypto::Hash;
 
 use crate::protocols::sync::StateSessionRefusal;
 
+use crate::sync::{StagedUtxoMarker, UtxoChunkSink};
+
 use super::{SyncManager, SyncPhase, SyncPipelineData, SyncState, VerifiedSnapshot};
 
 /// A state transfer in progress against one peer.
@@ -24,7 +26,13 @@ pub(crate) struct StateSessionClient {
     pub chunk_max_bytes: u32,
     /// Cursor of the last VERIFIED range. A failed chunk resumes here, never at zero.
     pub cursor: Option<Vec<u8>>,
-    /// `utxo_count` LE header followed by every body accepted so far.
+    /// Entries the manifest announced.
+    pub utxo_count: u64,
+    /// `hash(utxo_count LE || body0 || body1 || ...)`, folded as bodies arrive.
+    /// One digest implementation for both paths, so they cannot drift.
+    pub digest: crypto::Hasher,
+    /// `utxo_count` LE header followed by every body accepted so far. Stays at
+    /// the bare header on the staged path — nothing accumulates.
     pub image: Vec<u8>,
     pub chain_state: Vec<u8>,
     pub producer_set: Vec<u8>,
@@ -96,7 +104,7 @@ impl SyncManager {
                 "[SNAP_SYNC] F4 REFUSE (manifest root): {:.16} != quorum {:.16} from {} (h={}) — refusals={}",
                 state_root, quorum_root, peer, block_height, self.snap.integrity_refusals
             );
-            self.state_session = None;
+            self.clear_state_session();
             self.handle_snap_download_error(peer);
             return;
         }
@@ -113,7 +121,7 @@ impl SyncManager {
                 "[SNAP_SYNC] F4 REFUSE (manifest height): anchor ({:.16}, h={}) corroborated by {}/{} — refusals={}",
                 block_hash, block_height, corroborators, quorum, self.snap.integrity_refusals
             );
-            self.state_session = None;
+            self.clear_state_session();
             self.handle_snap_download_error(peer);
             return;
         }
@@ -122,6 +130,14 @@ impl SyncManager {
             "[SNAP_SYNC] Session {} admitted from {}: anchor ({:.16}, h={}), {} entries, chunk<={}B",
             session_id, peer, block_hash, block_height, utxo_count, chunk_max_bytes
         );
+        // A session always begins from an EMPTY staging family: rows from an
+        // earlier peer would be concatenated onto this stream and match neither
+        // manifest.
+        self.clear_state_session();
+        self.clear_utxo_staging();
+
+        let mut digest = crypto::Hasher::new();
+        digest.update(&utxo_count.to_le_bytes());
         self.state_session = Some(StateSessionClient {
             session_id,
             peer,
@@ -131,6 +147,8 @@ impl SyncManager {
             utxo_hash,
             chunk_max_bytes,
             cursor: None,
+            utxo_count,
+            digest,
             image: utxo_count.to_le_bytes().to_vec(),
             chain_state,
             producer_set,
@@ -162,12 +180,32 @@ impl SyncManager {
             }
         }
 
+        // The body lands in the staging family BEFORE it is folded into the
+        // digest, so a write that cannot be made durable abandons the session
+        // rather than being counted as accepted (INC-I-204).
+        if let Some(sink) = self.utxo_chunk_sink.clone() {
+            if let Err(e) = sink.stage(&body) {
+                warn!(
+                    "[SNAP_SYNC] Staging a verified chunk of session {} failed: {} — abandoning \
+                     the transfer",
+                    session_id, e
+                );
+                self.clear_state_session();
+                self.handle_snap_download_error(peer);
+                return;
+            }
+        }
+
+        let staged = self.utxo_chunk_sink.is_some();
         {
             let s = self
                 .state_session
                 .as_mut()
                 .expect("session presence checked above");
-            s.image.extend_from_slice(&body);
+            s.digest.update(&body);
+            if !staged {
+                s.image.extend_from_slice(&body);
+            }
             s.cursor = next_key.clone();
         }
 
@@ -179,25 +217,40 @@ impl SyncManager {
             .state_session
             .take()
             .expect("session presence checked above");
-        let reassembled = crypto::hash::hash(&session.image);
+        let reassembled = session.digest.finalize();
         if reassembled != session.utxo_hash {
             self.snap.integrity_refusals += 1;
             warn!(
-                "[SNAP_SYNC] REFUSE (digest): reassembled {:.16} != manifest {:.16} from {} ({} B) — refusals={}",
+                "[SNAP_SYNC] REFUSE (digest): reassembled {:.16} != manifest {:.16} from {} ({} entries) — refusals={}",
                 reassembled,
                 session.utxo_hash,
                 peer,
-                session.image.len(),
+                session.utxo_count,
                 self.snap.integrity_refusals
             );
+            // Quarantine: bytes that never passed the digest must not survive
+            // into the next peer's stream.
+            self.clear_utxo_staging();
             self.handle_snap_download_error(peer);
             return;
         }
 
+        let (utxo_set, utxo_staged) = if staged {
+            (
+                Vec::new(),
+                Some(StagedUtxoMarker {
+                    utxo_hash: session.utxo_hash,
+                    utxo_count: session.utxo_count,
+                }),
+            )
+        } else {
+            (session.image, None)
+        };
         info!(
-            "[SNAP_SYNC] Session {} complete: {} B reassembled, digest matches manifest",
+            "[SNAP_SYNC] Session {} complete: digest matches manifest ({} entries, {} staged rows)",
             session_id,
-            session.image.len()
+            session.utxo_count,
+            self.staged_utxo_rows()
         );
         self.set_syncing(
             SyncPhase::SnapDownloading,
@@ -206,7 +259,8 @@ impl SyncManager {
                     block_hash: session.block_hash,
                     block_height: session.block_height,
                     chain_state: session.chain_state,
-                    utxo_set: session.image,
+                    utxo_set,
+                    utxo_staged,
                     producer_set: session.producer_set,
                     state_root: session.state_root,
                     block_header_bytes: session.block_header_bytes,
@@ -217,6 +271,34 @@ impl SyncManager {
             },
             "snap_state_session_complete",
         );
+    }
+
+    /// Install the durable landing zone for verified chunk bodies.
+    ///
+    /// Without one the session keeps the M3 materialised-image path, which is
+    /// what a backend with no staging family needs.
+    pub fn set_utxo_chunk_sink(&mut self, sink: std::sync::Arc<dyn UtxoChunkSink>) {
+        self.utxo_chunk_sink = Some(sink);
+    }
+
+    /// Rows currently staged, or 0 with no sink installed.
+    pub(crate) fn staged_utxo_rows(&self) -> u64 {
+        self.utxo_chunk_sink
+            .as_ref()
+            .map_or(0, |sink| sink.staged_len())
+    }
+
+    /// Discard whatever the sink holds. Every abandon path runs through here.
+    pub(crate) fn clear_utxo_staging(&self) {
+        if let Some(sink) = self.utxo_chunk_sink.as_ref() {
+            if let Err(e) = sink.clear() {
+                warn!(
+                    "[SNAP_SYNC] Failed to clear the UTXO staging family: {} — the next session \
+                     admission retries the clear",
+                    e
+                );
+            }
+        }
     }
 
     /// A chunk failed or timed out. The cursor does NOT rewind and no snap attempt is
@@ -247,7 +329,7 @@ impl SyncManager {
         );
         if let Some(s) = self.state_session.as_ref() {
             if s.session_id == session_id {
-                self.state_session = None;
+                self.clear_state_session();
             }
         }
         if matches!(self.state, SyncState::Idle) {
@@ -258,6 +340,8 @@ impl SyncManager {
     /// Drop any live session. Called wherever the snap pipeline is abandoned so a stale
     /// cursor can never be spliced onto a new manifest.
     pub(crate) fn clear_state_session(&mut self) {
-        self.state_session = None;
+        if self.state_session.take().is_some() {
+            self.clear_utxo_staging();
+        }
     }
 }

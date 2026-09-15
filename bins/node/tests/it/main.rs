@@ -68,4 +68,7 @@ mod m1_snap_install_identity;
 mod m3_common;
 mod m3_staging_install;
 mod m3_state_session_serve;
+mod m4_backend_parity;
+mod m4_chunked_install;
+mod m4_streaming_install;
 mod tied_fork_finality;

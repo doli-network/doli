@@ -126,6 +126,8 @@ async fn test_post_snap_utxo_write_visible_through_utxo_set() {
         state_root,
         chain_state: cs_bytes,
         utxo_set: utxo_bytes,
+        // Legacy single-frame path: the image arrived whole.
+        utxo_staged: None,
         producer_set: ps_bytes,
         block_header_bytes: None,
         epoch_state_bytes: None,

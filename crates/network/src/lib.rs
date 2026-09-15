@@ -91,9 +91,10 @@ pub use service::{NetworkCommand, NetworkError, NetworkEvent, NetworkService};
 pub use sync::{
     ChainBreakInfo, EquivocationDetector, EquivocationProof, ForceReorgPoll, ForkChoiceFinality,
     NetworkEvidence, ProductionAuthorization, RecoveryAction, RecoveryContext, RecoveryEvidence,
-    RecoveryPhase, RecoveryReason, ReorgResult, StuckForkAlert, SyncConfig, SyncManager, SyncPhase,
-    SyncPipelineData, SyncState, VerifiedSnapshot, WedgeReason, WeightVerdict,
-    FORCE_REORG_MAX_HEIGHT_SPAN, FORCE_REORG_TTL_SECS, MAX_CONSECUTIVE_RESYNCS,
+    RecoveryPhase, RecoveryReason, ReorgResult, StagedUtxoMarker, StuckForkAlert, SyncConfig,
+    SyncManager, SyncPhase, SyncPipelineData, SyncState, UtxoChunkSink, VerifiedSnapshot,
+    WedgeReason, WeightVerdict, FORCE_REORG_MAX_HEIGHT_SPAN, FORCE_REORG_TTL_SECS,
+    MAX_CONSECUTIVE_RESYNCS,
 };
 
 // Re-export libp2p types that are part of our public API

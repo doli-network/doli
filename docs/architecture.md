@@ -618,17 +618,20 @@ key order until the cursor is exhausted, folding each body into an incremental B
 land exactly on the manifest's `utxo_hash`. This is what removes the 16 MiB ceiling: the bound is
 now the chunk size, not the size of the whole set.
 
-Install goes through a staging column family (`cf_utxo_staging`), promoted in the single existing
-`atomic_replace` WriteBatch with `rebuild_in_progress` armed across the window and the installed
-root re-derived from the installed backend afterwards. As of Stage 3 that staging seam exists and
-is tested but is not yet on the live path: the client still reassembles the whole canonical image
-and installs it through the unchanged `apply_snap_snapshot`, so Stage 3 moves the WIRE bound and
-not the client's install peak. Stage 4 wires the staged install.
+Install goes through a staging column family (`cf_utxo_staging`) with `rebuild_in_progress` armed
+across the window and the installed root re-derived from the installed backend afterwards. Stage 4
+wired that seam onto the live client path and gave it its own chunked write path
+(`crates/storage/src/state_db/promote.rs`): the live UTXO families are dropped with range
+tombstones, the staged rows move across in sub-batches bounded by `PROMOTE_BATCH_MAX_BYTES`, and
+the tip label lands in its own small batch afterwards. `atomic_replace` is untouched and still
+serves rollback and reorg replay as a single all-or-nothing batch. A node that crashes inside a
+promotion window comes back halted; startup clears staging and recovery is a fresh snap-sync
+(NO-RESUME).
 
 Whichever transport delivered the bytes, the install itself decodes them ONCE:
 `storage::verify_state_root_from_bytes()` returns the root together with the decoded
 `(ChainState, UtxoSet, ProducerSet)`, the pairs move into the one `atomic_replace` WriteBatch via
-`UtxoSet::into_pairs()`, and the cached state root is then RE-DERIVED from the installed
+`UtxoSet::into_pairs()` (the legacy single-frame arm only), and the cached state root is then RE-DERIVED from the installed
 `state_db` backend — a wire hash proves transport, not storage. The in-memory 3-state is swapped in
 only on the `Ok` arm, so a failed `atomic_replace` cannot leave memory ahead of disk.
 `doli snap` uses the same seam. Code: `bins/node/src/node/fork_recovery.rs`,
