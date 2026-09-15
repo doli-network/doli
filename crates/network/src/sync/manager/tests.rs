@@ -2193,6 +2193,7 @@ mod regression_tests {
                 block_height: 100,
                 chain_state: vec![],
                 utxo_set: vec![],
+                utxo_staged: None,
                 producer_set: vec![],
                 state_root: Hash::ZERO,
                 block_header_bytes: None,

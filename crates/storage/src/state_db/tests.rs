@@ -394,18 +394,19 @@ fn test_serialize_canonical_utxo_deterministic() {
 // O1: serialize_canonical_utxo() produces bytes whose header LE-count equals the
 //     number of entries actually present in the body (header/body coherence)
 // O2: UtxoSet::deserialize_canonical(serialize_canonical_utxo()) parses without
-//     STOR028/STOR030/STOR031 truncation errors, for any subset of CF_UTXO that
-//     contains undecodable bincode (RocksDB iter failure, value corruption,
-//     schema drift) — silently-dropped entries MUST also be dropped from header
+//     STOR028/STOR030/STOR031 truncation errors
+// O3: the streaming fold (canonical_digest) returns Err on an undecodable value
+//     instead of a digest over the survivors (AP-7)
 // PATHS: happy (all entries valid), corrupted (one value corrupted)
-// MATRIX: O1 × O2 across (happy, corrupted) — four cells, four assertions
+// MATRIX: O1 × O2 across (happy, corrupted), plus O3 on corrupted — 5 assertions
 //
 // Regression for STOR028 snap-sync truncation:
 // Mainnet seeds emit canonical bytes whose header advertised N entries but body
 // emitted ≤N because serialize_canonical_utxo counted via the live utxo_len()
-// atomic while the iterator silently dropped failed entries via `.flatten()` +
-// `if let Ok(entry) = bincode::deserialize`. Every external node hit STOR028
-// at snap and fell back to header-first sync from genesis.
+// atomic while the iterator silently dropped failed entries. The header/body
+// coherence assertions below hold the fix for the materialising wire path; O3
+// holds the M2 rule that no consensus digest is ever computed over a body that
+// dropped an entry.
 #[test]
 fn test_serialize_canonical_round_trip_with_corrupted_entry() {
     use crate::utxo::UtxoSet;
@@ -455,11 +456,17 @@ fn test_serialize_canonical_round_trip_with_corrupted_entry() {
         .put_cf(cf, &first_key, [0xFFu8; 4])
         .expect("overwrite with garbage");
 
+    assert!(
+        crate::utxo::canonical::digest_and_len(&db.utxo_rows()).is_err(),
+        "corrupted O3: the fold must fail loud on an undecodable value, never \
+         digest the survivors"
+    );
+
     let bytes = db.serialize_canonical_utxo();
     let header_count = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
 
-    // Pre-fix: header=5 (utxo_len atomic), body=4 (one entry silently dropped).
-    // Post-fix: header=4, body=4. Either way header MUST match body.
+    // The materialising wire path keeps its pre-M2 bytes until M3 retires it;
+    // header MUST still match the body it emitted.
     assert_eq!(
         header_count, 4,
         "corrupted O1: header count must reflect body count, not the live atomic. \

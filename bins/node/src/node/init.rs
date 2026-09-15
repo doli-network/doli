@@ -1123,6 +1123,7 @@ impl Node {
             floor_fallback_window: false,
             floor_fallback_boundaries: 0,
             sync_requests_this_interval: 0,
+            state_sessions: Arc::new(crate::node::state_session::StateSessionRegistry::default()),
             last_checkpoint_height: 0,
             pending_tx_announcements: HashMap::new(),
             hardfork_schedule: updater::HardForkSchedule::for_network(network_for_schedule),
@@ -1140,6 +1141,23 @@ impl Node {
             defi_health_refresh_counter: AtomicU64::new(0),
             defi_health_cache: std::sync::Mutex::new(None),
         };
+
+        // M4 [F3]: a session always begins from an empty staging family, and
+        // verified chunk bodies stream into it instead of being reassembled.
+        match node.reconcile_staged_utxos_on_startup() {
+            Ok(0) => {}
+            Ok(rows) => info!(
+                "[SNAP_SYNC] Startup cleared {} staged UTXO rows from an abandoned transfer",
+                rows
+            ),
+            Err(e) => warn!("[SNAP_SYNC] Startup staging reconciliation failed: {}", e),
+        }
+        node.sync_manager
+            .write()
+            .await
+            .set_utxo_chunk_sink(Arc::new(super::StateDbChunkSink::new(
+                node.state_db.clone(),
+            )));
 
         Ok(node)
     }
@@ -1353,6 +1371,7 @@ impl Node {
             floor_fallback_window: false,
             floor_fallback_boundaries: 0,
             sync_requests_this_interval: 0,
+            state_sessions: Arc::new(crate::node::state_session::StateSessionRegistry::default()),
             last_checkpoint_height: 0,
             pending_tx_announcements: HashMap::new(),
             hardfork_schedule: updater::HardForkSchedule::for_network(network),
@@ -1567,6 +1586,7 @@ impl Node {
             floor_fallback_window: false,
             floor_fallback_boundaries: 0,
             sync_requests_this_interval: 0,
+            state_sessions: Arc::new(crate::node::state_session::StateSessionRegistry::default()),
             last_checkpoint_height: 0,
             pending_tx_announcements: HashMap::new(),
             hardfork_schedule: updater::HardForkSchedule::for_network(network),

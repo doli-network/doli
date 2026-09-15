@@ -352,26 +352,16 @@ impl InMemoryUtxoStore {
         self.utxos.iter()
     }
 
+    /// Consume the store and yield its entries, without cloning any of them.
+    pub fn into_pairs(self) -> impl Iterator<Item = (Outpoint, UtxoEntry)> {
+        self.utxos.into_iter()
+    }
+
     /// Produce canonical bytes for deterministic state root computation.
     ///
     /// Output: `[8-byte LE count] [sorted_key1][value1] [sorted_key2][value2] ...`
-    ///
-    /// Keys are sorted lexicographically (by outpoint bytes).
     pub fn serialize_canonical(&self) -> Vec<u8> {
-        let mut entries: Vec<(&Outpoint, &UtxoEntry)> = self.utxos.iter().collect();
-        entries.sort_by_key(|(a, _)| a.to_bytes());
-
-        let count = entries.len() as u64;
-        // 36 bytes outpoint key + 61+ bytes canonical entry value + 8 bytes header
-        let mut buf = Vec::with_capacity(8 + entries.len() * 97);
-        buf.extend_from_slice(&count.to_le_bytes());
-
-        for (outpoint, entry) in entries {
-            buf.extend_from_slice(&outpoint.to_bytes());
-            buf.extend_from_slice(&entry.serialize_canonical_bytes());
-        }
-
-        buf
+        super::canonical::materialize(self)
     }
 }
 

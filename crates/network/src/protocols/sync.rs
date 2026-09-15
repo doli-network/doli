@@ -19,7 +19,36 @@ pub const SYNC_PROTOCOL: &str = "/doli/sync/1.0.0";
 /// 16MB is generous for any reasonable UTXO set + producer set. Non-snapshot
 /// messages (headers, bodies, blocks) are much smaller. The 64MB limit allowed
 /// a malicious peer to force 64MB allocation per stream via the length prefix.
-const MAX_SYNC_SIZE: usize = 16 * 1024 * 1024;
+pub const MAX_SYNC_SIZE: usize = 16 * 1024 * 1024;
+
+/// M3 [F3]: per-chunk body budget for a state-transfer session. Two orders of
+/// magnitude under `MAX_SYNC_SIZE`, so the codec bound is never the binding
+/// constraint on a chunk.
+pub const STATE_CHUNK_MAX_BYTES: u32 = 1024 * 1024;
+
+/// Concurrent state sessions one node will serve. Each holds a pinned storage
+/// read for its lifetime, and a pinned read defers compaction.
+pub const MAX_CONCURRENT_STATE_SESSIONS: usize = 4;
+
+/// Wall-clock lifetime of a session, pinned view included.
+pub const STATE_SESSION_TTL_SECS: u64 = 120;
+
+/// Idle window after which a session is evicted ahead of its TTL.
+pub const STATE_SESSION_IDLE_TIMEOUT_SECS: u64 = 30;
+
+/// Why a state-transfer session cannot be served right now.
+///
+/// Typed, never `SyncResponse::Error`: the client's error path treats any error
+/// as peer misbehaviour and blacklists, and every reason here is retryable.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum StateSessionRefusal {
+    /// The serving node is at `MAX_CONCURRENT_STATE_SESSIONS`.
+    Busy,
+    /// No such session: never issued, evicted, expired, or lost to a restart.
+    ManifestExpired,
+    /// The serving node refuses to serve state at all (rebuild-in-progress halt).
+    Halted(String),
+}
 
 /// Sync request types
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -82,6 +111,22 @@ pub enum SyncRequest {
         /// Maximum number of headers to return
         max_count: u32,
     },
+
+    /// M3 [F3]: open a chunked state-transfer session (index 8 — APPENDED).
+    GetStateManifest {
+        /// Block hash the requester believes is the anchor
+        block_hash: Hash,
+    },
+
+    /// M3 [F3]: fetch one sorted-key range of a session (index 9 — APPENDED).
+    GetStateChunk {
+        /// Session the manifest issued
+        session_id: u64,
+        /// Resume cursor; `None` starts at the first key
+        start_key: Option<Vec<u8>>,
+        /// Requested body budget. Advisory — the server clamps it.
+        max_bytes: u32,
+    },
 }
 
 /// Sync response types
@@ -143,6 +188,58 @@ pub enum SyncResponse {
 
     /// Error response
     Error(String),
+
+    /// M3 [F3]: session opened; an O(1) description of an unbounded set (index 6 — APPENDED).
+    StateManifest {
+        /// Session id to quote on every `GetStateChunk`
+        session_id: u64,
+        /// Block this pinned view is anchored at
+        block_hash: Hash,
+        /// Height of that block
+        block_height: u64,
+        /// Composed three-component state root, identical to the legacy frame's
+        state_root: Hash,
+        /// BLAKE3 over the whole canonical UTXO image the chunks reconstruct
+        utxo_hash: Hash,
+        /// Entry count — the LE header the reassembled image starts with
+        utxo_count: u64,
+        /// Body budget the server will actually honour
+        chunk_max_bytes: u32,
+        /// Serialized ChainState (bincode)
+        chain_state: Vec<u8>,
+        /// Serialized ProducerSet (bincode)
+        producer_set: Vec<u8>,
+        /// Anchor block header, as on `StateSnapshot`
+        #[serde(default)]
+        block_header_bytes: Option<Vec<u8>>,
+        /// Epoch bond snapshot, as on `StateSnapshot`
+        #[serde(default)]
+        epoch_bond_snapshot_bytes: Option<Vec<u8>>,
+        /// Attestation accumulators, as on `StateSnapshot`
+        #[serde(default)]
+        epoch_accumulators_bytes: Option<Vec<u8>>,
+        /// Complete EpochState, as on `StateSnapshot`
+        #[serde(default)]
+        epoch_state_bytes: Option<Vec<u8>>,
+    },
+
+    /// M3 [F3]: one sorted-key range of the pinned image (index 7 — APPENDED).
+    StateChunk {
+        /// Session this range belongs to
+        session_id: u64,
+        /// Canonical BODY bytes — no count header, entry-aligned
+        body: Vec<u8>,
+        /// Cursor for the next range; `None` means the walk is exhausted
+        next_key: Option<Vec<u8>>,
+    },
+
+    /// M3 [F3]: typed, retryable session refusal (index 8 — APPENDED).
+    StateSessionUnavailable {
+        /// Session the client asked about
+        session_id: u64,
+        /// Why it cannot be served
+        reason: StateSessionRefusal,
+    },
 }
 
 impl SyncRequest {
@@ -167,6 +264,18 @@ impl SyncRequest {
 
     pub fn get_state_snapshot(block_hash: Hash) -> Self {
         Self::GetStateSnapshot { block_hash }
+    }
+
+    pub fn get_state_manifest(block_hash: Hash) -> Self {
+        Self::GetStateManifest { block_hash }
+    }
+
+    pub fn get_state_chunk(session_id: u64, start_key: Option<Vec<u8>>, max_bytes: u32) -> Self {
+        Self::GetStateChunk {
+            session_id,
+            start_key,
+            max_bytes,
+        }
     }
 
     pub fn get_state_root(block_hash: Hash) -> Self {
@@ -201,7 +310,9 @@ impl SyncRequest {
             | SyncRequest::GetStateSnapshot { .. }
             | SyncRequest::GetStateRoot { .. }
             | SyncRequest::GetHeadersByHeight { .. }
-            | SyncRequest::DirectAttestation { .. } => false,
+            | SyncRequest::DirectAttestation { .. }
+            | SyncRequest::GetStateManifest { .. }
+            | SyncRequest::GetStateChunk { .. } => false,
         }
     }
 }
@@ -229,6 +340,9 @@ impl SyncResponse {
             SyncResponse::StateSnapshot { .. } => "StateSnapshot",
             SyncResponse::StateRoot { .. } => "StateRoot",
             SyncResponse::Error(_) => "Error",
+            SyncResponse::StateManifest { .. } => "StateManifest",
+            SyncResponse::StateChunk { .. } => "StateChunk",
+            SyncResponse::StateSessionUnavailable { .. } => "StateSessionUnavailable",
         }
     }
 }

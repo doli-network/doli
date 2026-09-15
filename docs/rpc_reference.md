@@ -1524,7 +1524,7 @@ Returns the per-component state root hashes. Compare these across nodes at the s
 | bestHash | Best block hash |
 | stateRoot | Combined state root: `H(H(chain_state) \|\| H(utxo_set) \|\| H(producer_set))` |
 | csHash | Hash of the canonical ChainState serialization |
-| utxoHash | Hash of the canonical UTXO set serialization |
+| utxoHash | Hash of the canonical UTXO set serialization. Computed by the streaming fold `UtxoSet::canonical_digest()` — the value is unchanged, but the method now returns a JSON-RPC internal error if any UTXO entry fails to decode, instead of a hash over the entries that happened to decode |
 | psHash | Hash of the canonical ProducerSet serialization |
 | utxoCount | Number of UTXOs in the set |
 | producerCount | Number of active producers |

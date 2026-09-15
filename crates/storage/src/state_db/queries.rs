@@ -471,35 +471,6 @@ impl StateDb {
         }
     }
 
-    /// Produce canonical UTXO bytes for state root computation.
-    ///
-    /// RocksDB iterates in lexicographic key order — no sorting needed.
-    /// Values are re-encoded to canonical 59-byte format.
-    ///
-    /// Header count is derived from the body that is actually emitted, so the
-    /// LE prefix always matches what the snap deserializer will iterate. Using
-    /// the atomic `utxo_len()` here would let a single RocksDB iter error or
-    /// undecodable bincode value desync the header from the body (STOR028).
-    pub fn serialize_canonical_utxo(&self) -> Vec<u8> {
-        let cf = self.db.cf_handle(CF_UTXO).unwrap();
-
-        let entries: Vec<(Box<[u8]>, UtxoEntry)> = self
-            .db
-            .iterator_cf(cf, rocksdb::IteratorMode::Start)
-            .filter_map(|r| r.ok())
-            .filter_map(|(k, v)| bincode::deserialize::<UtxoEntry>(&v).ok().map(|e| (k, e)))
-            .collect();
-
-        let count = entries.len() as u64;
-        let mut buf = Vec::with_capacity(8 + entries.len() * 95);
-        buf.extend_from_slice(&count.to_le_bytes());
-        for (key, entry) in &entries {
-            buf.extend_from_slice(key);
-            buf.extend_from_slice(&entry.serialize_canonical_bytes());
-        }
-        buf
-    }
-
     /// Load persisted epoch producer list.
     ///
     /// Returns `None` if never persisted (first run or pre-upgrade DB).

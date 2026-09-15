@@ -43,8 +43,14 @@ mod rollback_authority;
 pub use rollback_authority::RollbackAuthority;
 mod startup;
 mod state_root_serve;
+pub mod state_session;
+mod state_session_serve;
+pub use state_session_serve::MAX_SYNC_REQUESTS_PER_INTERVAL;
+mod snapshot_install;
 mod state_snapshot_serve;
 mod tx_announcements;
+mod utxo_chunk_sink;
+pub use utxo_chunk_sink::StateDbChunkSink;
 mod validation_checks;
 pub mod wedge_alarm;
 mod wedge_escape;
@@ -266,6 +272,10 @@ pub struct Node {
     /// INC-I-012: Rate limiter for sync requests processed per interval.
     /// Reset each production timer tick. Prevents sync I/O from starving production.
     pub sync_requests_this_interval: u32,
+
+    /// M3 [F3]: chunked state-transfer sessions this node is serving. Each holds
+    /// a pinned UTXO view, so the count is capped.
+    pub state_sessions: Arc<state_session::StateSessionRegistry>,
     /// Last height at which an auto-checkpoint was created.
     /// Used to determine when the next checkpoint is due.
     pub last_checkpoint_height: u64,

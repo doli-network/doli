@@ -1171,6 +1171,19 @@ impl Node {
                 self.serve_state_snapshot(block_hash).await
             }
 
+            SyncRequest::GetStateManifest { block_hash } => {
+                self.serve_state_manifest(block_hash).await
+            }
+
+            SyncRequest::GetStateChunk {
+                session_id,
+                start_key,
+                max_bytes,
+            } => {
+                self.serve_state_chunk(session_id, start_key, max_bytes)
+                    .await
+            }
+
             SyncRequest::DirectAttestation { data } => {
                 // Re-broadcast via gossip so it reaches minute tracker
                 if let Some(ref network) = self.network {

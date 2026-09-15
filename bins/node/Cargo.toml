@@ -68,6 +68,14 @@ assets = [
 ]
 post_install_script = "bins/node/postinst.sh"
 
+# utxo-scalability M1 — its OWN test binary on purpose. The file installs a
+# counting `#[global_allocator]`; a global allocator is per-BINARY, so folding it
+# into `tests/it/` would wrap every unrelated test in the shared node binary and
+# make the measured peak unattributable.
+[[test]]
+name = "m1_snap_install_peak_alloc"
+path = "tests/m1_snap_install_peak_alloc.rs"
+
 # INC-I-171 M4 — its OWN test binary on purpose. The vesting gate ships frozen
 # (activation == disable == u64::MAX on every network), so no height can arm it;
 # only a process-wide env override can, and `tests/it/` is one shared process
@@ -94,3 +102,28 @@ path = "tests/inc_i_171_m6_shadow_counter.rs"
 [[test]]
 name = "bls_rotation_metrics"
 path = "tests/bls_rotation_metrics.rs"
+
+# utxo-scalability M3 — its OWN test binary on purpose, same constraint as
+# m1_snap_install_peak_alloc: the file installs a counting `#[global_allocator]`,
+# which is per-BINARY, so folding it into `tests/it/` would wrap every unrelated
+# node test and make the measured peak unattributable. This is the milestone's
+# outcome probe (docs/.workflow/m3-outcome-metric.txt).
+[[test]]
+name = "m3_wire_bound_probe"
+path = "tests/m3_wire_bound_probe.rs"
+
+# utxo-scalability M4 — the install-side OUTCOME PROBE
+# (docs/.workflow/m4-outcome-metric.txt). Own binary for the same reason as
+# m3_wire_bound_probe: `tests/m4_measure/mod.rs` installs a counting
+# `#[global_allocator]`, which is per-BINARY.
+[[test]]
+name = "m4_install_peak_probe"
+path = "tests/m4_install_peak_probe.rs"
+
+# utxo-scalability M4 — the RED peak-ratio claim. It shares ONE copy of the
+# allocator and the measurement routine with the probe above
+# (`tests/m4_measure/mod.rs`), but must live in its own binary: the probe has to
+# PASS on pre-M4 code to yield the `before` reading, and this file has to FAIL.
+[[test]]
+name = "m4_peak_ratio_red"
+path = "tests/m4_peak_ratio_red.rs"

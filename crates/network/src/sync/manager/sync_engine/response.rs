@@ -169,6 +169,58 @@ impl SyncManager {
                 );
                 vec![]
             }
+            SyncResponse::StateManifest {
+                session_id,
+                block_hash,
+                block_height,
+                state_root,
+                utxo_hash,
+                utxo_count,
+                chunk_max_bytes,
+                chain_state,
+                producer_set,
+                block_header_bytes,
+                epoch_bond_snapshot_bytes,
+                epoch_accumulators_bytes,
+                epoch_state_bytes,
+            } => {
+                info!(
+                    "[SNAP_SYNC] Received state manifest from {}: session={}, hash={}, height={}, root={}, entries={}",
+                    peer, session_id, block_hash, block_height, state_root, utxo_count
+                );
+                self.handle_state_manifest(
+                    peer,
+                    session_id,
+                    block_hash,
+                    block_height,
+                    state_root,
+                    utxo_hash,
+                    utxo_count,
+                    chunk_max_bytes,
+                    chain_state,
+                    producer_set,
+                    block_header_bytes,
+                    epoch_bond_snapshot_bytes,
+                    epoch_accumulators_bytes,
+                    epoch_state_bytes,
+                );
+                vec![]
+            }
+
+            SyncResponse::StateChunk {
+                session_id,
+                body,
+                next_key,
+            } => {
+                self.handle_state_chunk(peer, session_id, body, next_key);
+                vec![]
+            }
+
+            SyncResponse::StateSessionUnavailable { session_id, reason } => {
+                self.handle_state_session_unavailable(peer, session_id, reason);
+                vec![]
+            }
+
             SyncResponse::StateRoot {
                 block_hash,
                 block_height,

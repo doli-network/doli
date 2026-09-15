@@ -68,10 +68,11 @@ impl RpcContext {
         let utxo_set = self.utxo_set.read().await;
 
         let cs_bytes = chain_state.serialize_canonical();
-        let utxo_bytes = utxo_set.serialize_canonical();
 
         let cs_hash = crypto::hash::hash(&cs_bytes);
-        let utxo_hash = crypto::hash::hash(&utxo_bytes);
+        let utxo_hash = utxo_set
+            .canonical_digest()
+            .map_err(|e| RpcError::internal_error(e.to_string()))?;
 
         let (ps_hash, producer_count) = if let Some(ref ps_arc) = self.producer_set {
             let ps = ps_arc.read().await;

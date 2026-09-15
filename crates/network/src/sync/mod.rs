@@ -7,6 +7,7 @@
 //! - Equivocation detection for slashing
 
 mod bodies;
+pub mod chunk_sink;
 mod equivocation;
 mod fork_recovery;
 mod headers;
@@ -17,6 +18,7 @@ mod reorg;
 mod adversarial_tests;
 
 pub use bodies::BodyDownloader;
+pub use chunk_sink::{StagedUtxoMarker, UtxoChunkSink};
 pub use equivocation::{EquivocationDetector, EquivocationProof};
 pub use fork_recovery::CompletedRecovery;
 pub use headers::HeaderDownloader;

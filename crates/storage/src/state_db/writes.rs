@@ -213,13 +213,14 @@ impl StateDb {
         // Phase 2 below still overwrites META_CHAIN_STATE,
         // META_PENDING_UPDATES, and META_LAST_APPLIED — so those three keys
         // retain the atomic replace semantics. Other META keys now survive.
-        let deletable_cfs: [(&str, &rocksdb::ColumnFamily); 4] = [
-            (CF_UTXO, cf_utxo),
-            (CF_UTXO_BY_PUBKEY, cf_by_pk),
-            (CF_PRODUCERS, cf_prod),
-            (CF_EXIT_HISTORY, cf_exit),
-        ];
-        for (_, cf) in &deletable_cfs {
+        //
+        // M3 [F3]: the list lives in `deletable_cf_names()` so `cf_utxo_staging`
+        // — which a promotion streams out of — cannot drift back into it.
+        let deletable_cfs: Vec<&rocksdb::ColumnFamily> = Self::deletable_cf_names()
+            .iter()
+            .map(|name| self.db.cf_handle(name).unwrap())
+            .collect();
+        for cf in &deletable_cfs {
             for (key, _) in self
                 .db
                 .iterator_cf(*cf, rocksdb::IteratorMode::Start)

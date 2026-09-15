@@ -606,6 +606,94 @@ Producer Selection (deterministic round-robin)
       │                                   │
 ```
 
+#### State Transport: chunked session, with the single frame as a bridge
+
+Once `SnapCollecting` has admitted a download (see the admission authority below), the state itself
+moves in one of two ways on the same `/doli/sync/1.0.0` protocol.
+
+The **session transport** is the default: `GetStateManifest` returns the small parts of the state
+(ChainState, ProducerSet, EpochState, the roots) plus `utxo_count` and a `session_id`, and pins one
+consistent read of `cf_utxo` on the serving node. The client then pulls `GetStateChunk` in sorted
+key order until the cursor is exhausted, folding each body into an incremental BLAKE3 that must
+land exactly on the manifest's `utxo_hash`. This is what removes the 16 MiB ceiling: the bound is
+now the chunk size, not the size of the whole set.
+
+Install goes through a staging column family (`cf_utxo_staging`) with `rebuild_in_progress` armed
+across the window and the installed root re-derived from the installed backend afterwards. Stage 4
+wired that seam onto the live client path and gave it its own chunked write path
+(`crates/storage/src/state_db/promote.rs`): the live UTXO families are dropped with range
+tombstones, the staged rows move across in sub-batches bounded by `PROMOTE_BATCH_MAX_BYTES`, and
+the tip label lands in its own small batch afterwards. `atomic_replace` is untouched and still
+serves rollback and reorg replay as a single all-or-nothing batch. A node that crashes inside a
+promotion window comes back halted; startup clears staging and recovery is a fresh snap-sync
+(NO-RESUME).
+
+Staged install, step by step (code: `crates/network/src/sync/manager/state_session.rs`,
+`crates/network/src/sync/chunk_sink.rs`, `bins/node/src/node/utxo_chunk_sink.rs`,
+`crates/storage/src/state_db/{staging,promote}.rs`, `bins/node/src/node/snapshot_install.rs`,
+`bins/node/src/node/fork_recovery.rs`):
+
+| Step | What happens | Resident bound |
+|---|---|---|
+| chunk arrives | the verified body is written to `cf_utxo_staging` through the `UtxoChunkSink` trait BEFORE it is folded into the digest, then dropped — the client no longer accumulates `StateSessionClient.image` | one chunk body |
+| session ends | the incremental BLAKE3 must equal the manifest `utxo_hash`; on success `VerifiedSnapshot.utxo_set` is EMPTY and `utxo_staged: Some(StagedUtxoMarker{utxo_hash, utxo_count})` carries the claim instead | marker only |
+| install, pre-flight | ChainState/ProducerSet decode, envelope match, and `staged_utxo_len() == marker.utxo_count`; any failure refuses and clears staging | small |
+| install, promotion | `rebuild_in_progress` is armed FIRST, then phase 1 drops `cf_utxo` / `cf_utxo_by_pubkey` with two `delete_range_cf` tombstones, phase 2 streams staging into the live families in sub-batches capped at `PROMOTE_BATCH_MAX_BYTES` (128 KiB), phase 3 writes the producer families and the `CF_META` labels | one sub-batch |
+| install, post-check | the root is RE-DERIVED from the installed backend; only on a match is `rebuild_in_progress` cleared. On the staged arm a mismatch returns `Err` with the marker left ARMED (the live family is already replaced) | — |
+| restart with the marker armed | `reconcile_staged_utxos_on_startup()` clears staging on BOTH arms and never touches the marker, so `rebuild_halt_reason()` keeps refusing production, `GetStateSnapshot`, `GetStateRoot` and state sessions. **NO-RESUME: there is no resume-from-staging path — the node re-syncs.** | — |
+
+`atomic_replace` arms no marker and is UNCHANGED: rollback and reorg replay keep the single
+all-or-nothing batch. The chunked path is safe to write non-atomically only because the marker is
+armed before the first write and cleared after the post-install root check.
+
+Measured (`cargo test -p doli-node --test m4_install_peak_probe`, numbers in
+`docs/.workflow/m4-outcome-metric.txt`): the peak Rust heap on the receiving node is FLAT across a
+doubled set — 2,097,350 B at n=50k vs 2,097,376 B at n=100k (ratio 1.00, was 2.00), 21.2x lower in
+absolute terms at n=100k, with the installed UTXO digest byte-identical before and after. The probe
+counts RUST allocations only; the RocksDB `WriteBatch` is C++ memory and is invisible to it — that
+batch is bounded by construction to one `PROMOTE_BATCH_MAX_BYTES` sub-batch, not measured.
+
+Whichever transport delivered the bytes, the install itself decodes them ONCE:
+`storage::verify_state_root_from_bytes()` returns the root together with the decoded
+`(ChainState, UtxoSet, ProducerSet)`, the pairs move into the one `atomic_replace` WriteBatch via
+`UtxoSet::into_pairs()` (the legacy single-frame arm only), and the cached state root is then RE-DERIVED from the installed
+`state_db` backend — a wire hash proves transport, not storage. The in-memory 3-state is swapped in
+only on the `Ok` arm, so a failed `atomic_replace` cannot leave memory ahead of disk.
+`doli snap` uses the same seam. Code: `bins/node/src/node/fork_recovery.rs`,
+`crates/storage/src/snapshot.rs`, `bins/cli/src/cmd_snap.rs`.
+
+The **single-frame transport** (`GetStateSnapshot`) is unchanged and retained as a temporary bridge
+for peers on older binaries, valid only while the whole set still fits in one `MAX_SYNC_SIZE`
+(16 MiB) message. `MAX_SYNC_SIZE` was NOT raised — raising it would relax four other payload
+classes that share the constant.
+
+| Wire message | Direction | Carries |
+|---|---|---|
+| `GetStateManifest{block_hash}` | client -> server | opens the session; costs one pinned read |
+| `StateManifest{session_id, block_hash, block_height, state_root, utxo_hash, utxo_count, chunk_max_bytes, chain_state, producer_set, block_header_bytes, epoch_bond_snapshot_bytes, epoch_accumulators_bytes, epoch_state_bytes}` | server -> client | everything except the UTXO set, plus the digest the chunks must reach |
+| `GetStateChunk{session_id, start_key, max_bytes}` | client -> server | resume cursor; `max_bytes` is advisory, clamped server-side |
+| `StateChunk{session_id, body, next_key}` | server -> client | canonical BODY bytes only (no count header); `next_key: None` ends the walk |
+| `StateSessionUnavailable{session_id, reason}` | server -> client | typed refusal: `Busy`, `ManifestExpired`, `Halted(String)` |
+
+| Bound | Value | Where |
+|---|---|---|
+| `STATE_CHUNK_MAX_BYTES` | 1 MiB | server-side clamp on the chunk body |
+| `MAX_CONCURRENT_STATE_SESSIONS` | 4 | pinned views one node will serve at once |
+| `STATE_SESSION_TTL_SECS` / `STATE_SESSION_IDLE_TIMEOUT_SECS` | 120 / 30 | session eviction |
+| `MAX_SYNC_SIZE` | 16 MiB | UNCHANGED codec cap, shared with four other payload classes |
+
+Definitions: `crates/network/src/protocols/sync.rs`. Serving: `bins/node/src/node/state_session_serve.rs`
+(+ the pin worker in `bins/node/src/node/state_session.rs`, `crates/storage/src/utxo/pinned.rs`).
+Client side: `crates/network/src/sync/manager/state_session.rs`. `GetStateManifest` counts against
+the inbound per-interval sync cap (24); `GetStateChunk` is exempt, because chunk traffic is already
+bounded by the session cap plus one outstanding chunk per session.
+
+Three session outcomes are refusals rather than failures: `Busy` (serving node at its
+concurrent-session cap), `ManifestExpired` (the pinned view is gone) and `Halted` (the serving
+node's own ledger is truncated by an interrupted rebuild). None of them blacklists the peer. A peer
+whose tip advances during a multi-minute transfer is behaving correctly, and treating that as
+misbehaviour is how a small network starves itself of peers.
+
 **Restart behavior:** On restart, the SyncManager initializes from stored ChainState (not genesis). This means sync resumes from the chain tip, avoiding re-download of already-stored blocks. As a defense-in-depth measure, `apply_block()` also rejects blocks already present in BlockStore.
 
 #### Snap-Admission Authority (single funnel, INC-I-139; genesis window, INC-I-152)
@@ -1126,7 +1214,7 @@ Code: `bins/node/src/node/apply_block/`
 
 ### 9.2. State Root
 
-`H(H(chain_state) || H(utxo_set) || H(producer_set))`. Each component uses `serialize_canonical()` — fixed-byte encoding, sorted keys, no bincode. Used by snap sync (quorum agreement) and cached after each `apply_block()`.
+`H(H(chain_state) || H(utxo_set) || H(producer_set))`. Each component uses a canonical fixed-byte encoding — sorted keys, no bincode. `ChainState` and `ProducerSet` materialize via `serialize_canonical()`; the UTXO component is hashed by a **streaming fold** (`UtxoSet::canonical_digest()`, `crates/storage/src/utxo/canonical.rs`) that never holds the canonical image in memory, and which returns `Err` rather than skipping an undecodable entry. The same fold serves `canonical_range()` (bounded body slices, for chunked snap transport) and `canonical_len()`. Used by snap sync (quorum agreement) and cached after each `apply_block()`.
 
 Code: `crates/storage/src/snapshot.rs`
 

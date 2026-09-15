@@ -11,6 +11,11 @@
 //! the ~60 legacy top-level files stay where they are until they are migrated.
 //! `.claude/hooks/test-binary-gate.sh` enforces the layout.
 
+// Shared fixture for the snap-install / fork-guard modules. Declared once HERE:
+// a `#[path]` include in two sibling modules loads the same file twice.
+#[path = "../inc_i_156_m1_harness/mod.rs"]
+mod inc_i_156_m1_harness;
+
 mod bls_rotation_convergence;
 mod inc_i_178_m0_attestation_lock;
 mod inc_i_178_m0_block_identity;
@@ -59,4 +64,11 @@ mod inc_i_204_m42_poison_contract_pins;
 mod inc_i_208_own_attestation_pooled;
 mod inc_i_217_m7_rotation_apply;
 mod inc_i_221_bootstrap_retry;
+mod m1_snap_install_identity;
+mod m3_common;
+mod m3_staging_install;
+mod m3_state_session_serve;
+mod m4_backend_parity;
+mod m4_chunked_install;
+mod m4_streaming_install;
 mod tied_fork_finality;

@@ -9,7 +9,7 @@
 //! - `UtxoSizeMonitor` holds an `Arc<StateDb>` and caches the last
 //!   computed size + timestamp.
 //! - `get_cached_size()` returns the cached value if < 60s old;
-//!   otherwise recomputes via `serialize_canonical_utxo().len()`.
+//!   otherwise recomputes via the streaming `canonical_len()`.
 //! - `compute_size()` always recomputes (for tests / one-shot use).
 //! - `computation_count()` exposes how many times the full computation
 //!   has run (for cache-hit testing).
@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use crate::utxo::UtxoSet;
 use crate::StateDb;
 
 /// How often (in seconds) the canonical size is recomputed.
@@ -43,9 +44,20 @@ impl UtxoSizeMonitor {
     }
 
     /// Compute the canonical UTXO serialization size (always recomputes).
+    ///
+    /// Streamed, so the gauge no longer materialises the image it measures.
+    /// A fold error means no canonical image exists to size: the gauge reports
+    /// 0 and the loud failure surfaces on the state-root path.
     pub fn compute_size(&self) -> u64 {
         self.computations.fetch_add(1, Ordering::Relaxed);
-        self.state_db.serialize_canonical_utxo().len() as u64
+        let set = UtxoSet::from_state_db(Arc::clone(&self.state_db));
+        match set.canonical_len() {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                tracing::warn!("[UTXO_SIZE] canonical fold failed: {}", e);
+                0
+            }
+        }
     }
 
     /// Return the cached size, recomputing only if the cache is stale (> 60s).

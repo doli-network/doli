@@ -227,11 +227,20 @@ impl SyncManager {
             } else {
                 return; // Should not happen given the guard above
             };
-            warn!(
-                "[SNAP_SYNC] Snapshot download from {} timed out after {:?} — trying alternate peer",
-                peer, self.snap.download_timeout
-            );
-            self.handle_snap_download_error(peer);
+            // M3 [F3]: inside a live session a timeout costs one chunk retry, not the
+            // whole transfer — the cursor holds and no snap attempt is consumed.
+            match self.state_session_cursor(peer) {
+                Some((session_id, _, _)) => {
+                    self.handle_state_chunk_error(peer, session_id);
+                }
+                None => {
+                    warn!(
+                        "[SNAP_SYNC] Snapshot download from {} timed out after {:?} — trying alternate peer",
+                        peer, self.snap.download_timeout
+                    );
+                    self.handle_snap_download_error(peer);
+                }
+            }
         }
 
         // Stall recovery: if "Synchronized" but significantly behind in slots

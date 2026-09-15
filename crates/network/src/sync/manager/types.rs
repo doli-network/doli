@@ -185,8 +185,11 @@ pub struct VerifiedSnapshot {
     pub block_height: u64,
     /// Serialized ChainState (bincode)
     pub chain_state: Vec<u8>,
-    /// Serialized UtxoSet (bincode)
+    /// Serialized UtxoSet (bincode). EMPTY when `utxo_staged` is `Some`.
     pub utxo_set: Vec<u8>,
+    /// M4 [F3]: set when the rows are already in the staging family, so the
+    /// install promotes instead of decoding an image.
+    pub utxo_staged: Option<crate::sync::chunk_sink::StagedUtxoMarker>,
     /// Serialized ProducerSet (bincode)
     pub producer_set: Vec<u8>,
     /// Quorum-agreed state root (node re-verifies)

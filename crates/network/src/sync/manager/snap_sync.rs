@@ -15,7 +15,7 @@ impl SyncManager {
     /// majority of connected peers, whichever is larger, capped at 5. Shared by the
     /// state-root vote quorum and the INC-I-143 F4 anchor-height corroboration so
     /// both admission checks use one definition.
-    fn snap_quorum(&self) -> usize {
+    pub(super) fn snap_quorum(&self) -> usize {
         let total_peers = self.peers.len();
         std::cmp::max(self.snap.quorum, std::cmp::min(total_peers / 2 + 1, 5))
     }
@@ -243,6 +243,8 @@ impl SyncManager {
                     block_height,
                     chain_state,
                     utxo_set,
+                    // Legacy single-frame path: the image arrived whole.
+                    utxo_staged: None,
                     producer_set,
                     state_root: response_root,
                     block_header_bytes,
@@ -267,6 +269,9 @@ impl SyncManager {
             return;
         }
         self.snap.blacklisted_peers.insert(peer);
+        // M3 [F3]: the cursor belongs to the failed peer's pinned view; a new peer
+        // issues a new manifest.
+        self.clear_state_session();
         // Take the pipeline data so we can decompose it without borrow issues
         let old = std::mem::replace(&mut self.pipeline_data, SyncPipelineData::None);
         if let SyncPipelineData::SnapDownloading {
@@ -371,6 +376,7 @@ impl SyncManager {
         // measures.
         self.snap.attempts += 1;
         self.snap.last_snap_attempt = Some(Instant::now());
+        self.clear_state_session();
         warn!(
             "[SNAP_SYNC] Attempt {}/3 failed, {}",
             self.snap.attempts,

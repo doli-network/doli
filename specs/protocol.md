@@ -2032,8 +2032,86 @@ Topics do NOT include `network_id`. Network isolation is achieved via genesis ha
 | Protocol | Request | Response |
 |----------|---------|----------|
 | `/doli/status/1.0.0` | Status request (version, network_id, genesis_hash, producer_pubkey?) | Status response (version, network_id, genesis_hash, best_height, best_hash, best_slot, producer_pubkey?) |
-| `/doli/sync/1.0.0` | GetHeaders, GetBodies, GetBlockByHeight, GetBlockByHash, GetStateSnapshot, GetStateRoot, GetHeadersByHeight | Headers, bodies, blocks, state snapshots, state root hashes |
+| `/doli/sync/1.0.0` | GetHeaders, GetBodies, GetBlockByHeight, GetBlockByHash, GetStateSnapshot, GetStateRoot, GetHeadersByHeight, GetStateManifest, GetStateChunk | Headers, bodies, blocks, state snapshots, state root hashes, state manifests, state chunks, typed session refusals |
 | `/doli/txfetch/1.0.0` | Transaction hashes (max 50) | Full transactions from mempool |
+
+#### 7.3.1 Chunked state-transfer session (Stage 3 [F3])
+
+Snap sync has two transports on the same `/doli/sync/1.0.0` protocol. Which one is used is decided
+by BEHAVIOUR, not by a version number: no protocol version is bumped and `HardForkSchedule` is not
+touched.
+
+**Wire variants (ADDITIVE — appended, so every existing bincode discriminant keeps its index).**
+Exact names and fields, `crates/network/src/protocols/sync.rs`:
+
+| Enum | Index | Variant and fields |
+|---|---|---|
+| `SyncRequest` | 8 | `GetStateManifest { block_hash: Hash }` |
+| `SyncRequest` | 9 | `GetStateChunk { session_id: u64, start_key: Option<Vec<u8>>, max_bytes: u32 }` |
+| `SyncResponse` | 6 | `StateManifest { session_id: u64, block_hash: Hash, block_height: u64, state_root: Hash, utxo_hash: Hash, utxo_count: u64, chunk_max_bytes: u32, chain_state: Vec<u8>, producer_set: Vec<u8>, block_header_bytes: Option<Vec<u8>>, epoch_bond_snapshot_bytes: Option<Vec<u8>>, epoch_accumulators_bytes: Option<Vec<u8>>, epoch_state_bytes: Option<Vec<u8>> }` |
+| `SyncResponse` | 7 | `StateChunk { session_id: u64, body: Vec<u8>, next_key: Option<Vec<u8>> }` |
+| `SyncResponse` | 8 | `StateSessionUnavailable { session_id: u64, reason: StateSessionRefusal }` |
+| `StateSessionRefusal` | 0/1/2 | `Busy` / `ManifestExpired` / `Halted(String)` |
+
+Indices 0-7 of `SyncRequest` (`GetHeaders`, `GetBodies`, `GetBlockByHeight`, `GetBlockByHash`,
+`GetStateSnapshot`, `GetStateRoot`, `DirectAttestation`, `GetHeadersByHeight`) and indices 0-5 of
+`SyncResponse` (`Headers`, `Bodies`, `Block`, `StateSnapshot`, `StateRoot`, `Error`) are UNCHANGED.
+`GetStateSnapshot` / `StateSnapshot` remain valid messages that every node still serves. The four
+`Option` fields on `StateManifest` carry `#[serde(default)]`, as on `StateSnapshot`. New session
+constants: `STATE_CHUNK_MAX_BYTES = 1 MiB`, `MAX_CONCURRENT_STATE_SESSIONS = 4`,
+`STATE_SESSION_TTL_SECS = 120`, `STATE_SESSION_IDLE_TIMEOUT_SECS = 30`; `MAX_SYNC_SIZE` stays at
+16 MiB.
+
+**Session transport (preferred).**
+
+1. `GetStateManifest{block_hash}` -> `StateManifest{session_id, block_hash, block_height,
+   state_root, utxo_hash, utxo_count, chunk_max_bytes, chain_state, producer_set, ...}`. Everything
+   except the UTXO set rides in the manifest, because everything except the UTXO set is bounded by
+   producer count. Answering a manifest PINS one consistent read of `cf_utxo` on the serving node
+   for the session's lifetime.
+2. `GetStateChunk{session_id, start_key, max_bytes}` -> `StateChunk{session_id, body, next_key}`,
+   repeated until `next_key` is `None`. `body` is the canonical UTXO BODY slice produced by
+   `UtxoSet::canonical_range()` over that single pinned view — sorted by key, no header.
+   `max_bytes` is peer-supplied and therefore ADVISORY: the server clamps it to
+   `STATE_CHUNK_MAX_BYTES` (1 MiB). Without the clamp a peer asking for `u32::MAX` would make the
+   SERVING node materialise its whole UTXO set in one body — the allocation DoS `MAX_SYNC_SIZE`
+   exists to prevent, arriving through the new door. A `max_bytes` of 0 still yields one entry, so
+   a session can never stall while holding a pin.
+3. The client folds the transfer into an incremental BLAKE3: the 8-byte LE `utxo_count` header
+   first, then every chunk body in cursor order. The result MUST equal `manifest.utxo_hash`, which
+   is bit-identical to the `utxo_hash` the legacy single-frame path computes for the same state.
+   The manifest's `state_root` is additionally held to the unchanged INC-I-143 F4 Gate-1 exact
+   equality against the cross-peer quorum root, BEFORE the first chunk is requested.
+4. Install goes through a staging column family (`cf_utxo_staging`): chunk bytes are staged there,
+   never into the live `cf_utxo` that `atomic_replace` wipes before rewriting, and promotion to the
+   live state is the single existing `atomic_replace` WriteBatch with the staging family excluded
+   from its delete set. The staging family is cleared by a SEPARATE write AFTER the batch commits.
+   `rebuild_in_progress` is armed across the whole non-atomic window, so a crash mid-promotion
+   leaves the node refusing to serve state or produce until it is resynced, and after promotion the
+   root is RE-DERIVED from the installed backend.
+   **As of M3 the staging seam exists and is tested but the client does not yet drive it**: the
+   session still reassembles the whole canonical image and installs it through the unchanged
+   `apply_snap_snapshot` -> `atomic_replace(into_pairs())` path, so the client-side install peak is
+   unchanged by Stage 3. Replacing that with per-chunk staging is Stage 4 [F4] work; the debt is
+   recorded in `docs/.workflow/wiring-debt.md`.
+5. A session that cannot be served answers `StateSessionUnavailable{session_id, reason}` where
+   reason is `Busy` (the node is at its concurrent-session cap), `ManifestExpired` (the pinned view
+   is gone — TTL, restart, or eviction) or `Halted(reason)` (the serving node's own ledger is
+   truncated). **All three are retryable and none is misbehaviour**: a peer whose tip advanced
+   mid-session must not be blacklisted for it. The client restarts with a fresh manifest and counts
+   it as one retry inside the existing snap attempt cap.
+
+**Single-frame transport (BRIDGE, temporary).** `GetStateSnapshot{block_hash}` ->
+`StateSnapshot{...}` is retained unchanged so a peer running an older binary can still be served
+while the UTXO set fits in one 16 MiB `MAX_SYNC_SIZE` frame. It is removed once the fleet and the
+external operators all speak the session transport, or once the set exceeds the frame — whichever
+comes first. Above 16 MiB the bridge simply cannot serve, which is the condition Stage 3 exists to
+remove.
+
+**Rate limiting.** `GetStateManifest` counts against the inbound per-interval sync serving cap;
+`GetStateChunk` does NOT, because chunk traffic is already bounded by the concurrent-session cap
+and by one outstanding chunk per session. Counting it twice would make a normal transfer trip the
+generic cap and blacklist an honest peer with its own traffic.
 
 ### 7.4 Connection Flow
 

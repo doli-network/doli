@@ -5,6 +5,7 @@ use doli_core::transaction::Transaction;
 use doli_core::types::{Amount, BlockHeight};
 use doli_core::validation::{UtxoInfo, UtxoProvider};
 
+use super::canonical;
 use super::in_memory::InMemoryUtxoStore;
 #[allow(deprecated)]
 use super::types::DEFAULT_REWARD_MATURITY;
@@ -283,6 +284,19 @@ impl UtxoSet {
         }
     }
 
+    /// Consume the set and yield its `(Outpoint, UtxoEntry)` pairs.
+    ///
+    /// The `InMemory` arm moves the backing map out instead of cloning it, so an
+    /// installing caller can hand the pairs to `StateDb::atomic_replace` without
+    /// materialising a second full-set `Vec`.
+    pub fn into_pairs(self) -> impl Iterator<Item = (Outpoint, UtxoEntry)> {
+        let inner: Box<dyn Iterator<Item = (Outpoint, UtxoEntry)>> = match self {
+            UtxoSet::InMemory(store) => Box::new(store.into_pairs()),
+            UtxoSet::RocksDb(sdb) => Box::new(sdb.iter_utxos().into_iter()),
+        };
+        inner
+    }
+
     /// Count unique addresses (pubkey hashes) in the UTXO set.
     pub fn address_count(&self) -> u64 {
         match self {
@@ -440,87 +454,54 @@ impl UtxoSet {
     ///
     /// Consensus-critical — Phase 1 equivalence tests proved bit-identity.
     pub fn serialize_canonical(&self) -> Vec<u8> {
-        match self {
-            UtxoSet::InMemory(store) => store.serialize_canonical(),
-            UtxoSet::RocksDb(sdb) => sdb.serialize_canonical_utxo(),
-        }
+        self.with_rows(canonical::materialize)
     }
 
     /// Deserialize a UtxoSet from canonical bytes (inverse of `serialize_canonical`).
     ///
     /// Always produces an InMemory backend (sufficient for state root verification).
-    /// Format: `[8-byte LE count] [36-byte outpoint][entry_bytes] ...`
     pub fn deserialize_canonical(bytes: &[u8]) -> Result<Self, StorageError> {
-        if bytes.len() < 8 {
-            return Err(StorageError::Serialization(format!(
-                "[STOR027] UTXO canonical bytes too short: {} bytes (min 8)",
-                bytes.len()
-            )));
+        Ok(UtxoSet::InMemory(canonical::deserialize(bytes)?))
+    }
+
+    /// BLAKE3 over the canonical image, streamed — the image is never held.
+    ///
+    /// `Err` on an undecodable entry or an iterator error: a state root over the
+    /// entries that happened to decode is a wrong root, not a degraded one.
+    pub fn canonical_digest(&self) -> Result<Hash, StorageError> {
+        Ok(self.canonical_digest_and_len()?.0)
+    }
+
+    /// [`Self::canonical_digest`] with the canonical byte length from the same
+    /// fold, for callers that also report the image size.
+    pub(crate) fn canonical_digest_and_len(&self) -> Result<(Hash, u64), StorageError> {
+        self.with_rows(canonical::digest_and_len)
+    }
+
+    /// Byte length of the canonical image, without materialising it.
+    pub fn canonical_len(&self) -> Result<u64, StorageError> {
+        self.with_rows(canonical::len)
+    }
+
+    /// Canonical BODY bytes (no header) from the first key `>= start_key`, up to
+    /// `max_bytes`, with the cursor of the next entry (`None` when exhausted).
+    ///
+    /// One entry is always emitted when one exists, so an undersized budget
+    /// still advances.
+    pub fn canonical_range(
+        &self,
+        start_key: Option<&[u8]>,
+        max_bytes: usize,
+    ) -> Result<(Vec<u8>, Option<Vec<u8>>), StorageError> {
+        self.with_rows(|rows| canonical::range(rows, start_key, max_bytes))
+    }
+
+    /// Run `f` over this set's canonical rows, pinned for the whole call.
+    fn with_rows<R>(&self, f: impl FnOnce(&dyn canonical::CanonicalRows) -> R) -> R {
+        match self {
+            UtxoSet::InMemory(store) => f(store),
+            UtxoSet::RocksDb(sdb) => f(&sdb.utxo_rows()),
         }
-        let count = u64::from_le_bytes(bytes[0..8].try_into().unwrap()) as usize;
-        let mut store = InMemoryUtxoStore::new();
-        let mut pos = 8;
-
-        for _ in 0..count {
-            // Read 36-byte outpoint
-            if pos + 36 > bytes.len() {
-                return Err(StorageError::Serialization(format!(
-                    "[STOR028] UTXO canonical bytes truncated at outpoint (pos={}, len={})",
-                    pos,
-                    bytes.len()
-                )));
-            }
-            let outpoint = Outpoint::from_bytes(&bytes[pos..pos + 36]).ok_or_else(|| {
-                StorageError::Serialization(format!(
-                    "[STOR029] invalid outpoint in canonical bytes at pos={}",
-                    pos
-                ))
-            })?;
-            pos += 36;
-
-            // Read entry (variable length: min 61 bytes)
-            if pos + 61 > bytes.len() {
-                return Err(StorageError::Serialization(format!(
-                    "[STOR030] UTXO canonical bytes truncated at entry (pos={}, len={})",
-                    pos,
-                    bytes.len()
-                )));
-            }
-            // Peek at extra_data length to determine total entry size
-            // 0xFFFF marker -> u32 length follows (large NFTs >64KB)
-            let raw_len = u16::from_le_bytes(bytes[pos + 59..pos + 61].try_into().unwrap());
-            let (extra_len, header_overhead) = if raw_len == 0xFFFF {
-                if pos + 65 > bytes.len() {
-                    return Err(StorageError::Serialization(
-                        "UTXO canonical bytes truncated (u32 length)".to_string(),
-                    ));
-                }
-                let len =
-                    u32::from_le_bytes(bytes[pos + 61..pos + 65].try_into().unwrap()) as usize;
-                (len, 65) // 61 base + 4 bytes u32
-            } else {
-                (raw_len as usize, 61) // 59 base + 2 bytes u16
-            };
-            let entry_size = header_overhead + extra_len;
-            if pos + entry_size > bytes.len() {
-                return Err(StorageError::Serialization(format!(
-                    "[STOR031] UTXO canonical bytes truncated at extra_data (pos={}, entry_size={}, len={})",
-                    pos, entry_size, bytes.len()
-                )));
-            }
-            let entry = UtxoEntry::deserialize_canonical_bytes(&bytes[pos..pos + entry_size])
-                .ok_or_else(|| {
-                    StorageError::Serialization(format!(
-                        "[STOR032] invalid UTXO entry in canonical bytes at pos={} (entry_size={})",
-                        pos, entry_size
-                    ))
-                })?;
-            pos += entry_size;
-
-            store.insert(outpoint, entry);
-        }
-
-        Ok(UtxoSet::InMemory(store))
     }
 
     /// Find an NFT UTXO by its token ID.

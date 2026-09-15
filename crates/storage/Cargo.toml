@@ -28,3 +28,23 @@ regex = "1"
 # mask the defect and make the assertion vacuous.
 [target.'cfg(unix)'.dev-dependencies]
 libc = "0.2"
+
+# utxo-scalability M2 — its OWN test binary on purpose. The file installs a
+# counting `#[global_allocator]`; a global allocator is per-BINARY, so folding it
+# into `tests/it/` would wrap every unrelated storage test and make the measured
+# peak unattributable.
+[[test]]
+name = "m2_canonical_digest_peak_alloc"
+path = "tests/m2_canonical_digest_peak_alloc.rs"
+
+# utxo-scalability M2 — their OWN test binaries on purpose. Both name the [F2] API
+# (`canonical_digest` / `canonical_range`) that does not exist until the milestone lands,
+# so folding them into `tests/it/` would make every unrelated storage integration test
+# uncompilable for the whole RED phase.
+[[test]]
+name = "m2_canonical_fold_byte_equality"
+path = "tests/m2_canonical_fold_byte_equality.rs"
+
+[[test]]
+name = "m2_canonical_fold_fail_loud"
+path = "tests/m2_canonical_fold_fail_loud.rs"

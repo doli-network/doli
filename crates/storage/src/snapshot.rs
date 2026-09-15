@@ -19,7 +19,7 @@ use crate::StorageError;
 ///
 /// Deterministic because all three components use canonical serialization:
 /// - ChainState: `serialize_canonical()` — 140-byte fixed encoding, immune to struct evolution
-/// - UtxoSet: `serialize_canonical()` — entries sorted by outpoint key, 59-byte canonical values
+/// - UtxoSet: `canonical_digest()` — entries sorted by outpoint key, 61-byte-base values
 /// - ProducerSet: `serialize_canonical()` — entries sorted by pubkey hash
 pub fn compute_state_root(
     chain_state: &ChainState,
@@ -28,12 +28,12 @@ pub fn compute_state_root(
 ) -> Result<Hash, StorageError> {
     // Canonical fixed-byte encodings — immune to bincode struct evolution.
     let cs_bytes = chain_state.serialize_canonical();
-    let utxo_bytes = utxo_set.serialize_canonical();
     let ps_bytes = producer_set.serialize_canonical();
 
-    // Hash each component individually, then combine
+    // Hash each component individually, then combine. The UTXO component is
+    // streamed: its canonical image is never materialised.
     let cs_hash = crypto::hash::hash(&cs_bytes);
-    let utxo_hash = crypto::hash::hash(&utxo_bytes);
+    let (utxo_hash, utxo_bytes_len) = utxo_set.canonical_digest_and_len()?;
     let ps_hash = crypto::hash::hash(&ps_bytes);
 
     // F-D0-2 canary seam (State-Root Lazy Tier-0, M1 / B1): emit the full
@@ -45,16 +45,23 @@ pub fn compute_state_root(
         &utxo_hash,
         &ps_hash,
         cs_bytes.len(),
-        utxo_bytes.len(),
+        utxo_bytes_len as usize,
         ps_bytes.len(),
     );
 
+    Ok(compose_state_root(&cs_hash, &utxo_hash, &ps_hash))
+}
+
+/// Combine the three component hashes into the state root.
+///
+/// Split out so a caller that already holds the UTXO digest — the M3 [F3]
+/// manifest reads it from its pinned view — does not fold the whole set twice.
+pub fn compose_state_root(cs_hash: &Hash, utxo_hash: &Hash, ps_hash: &Hash) -> Hash {
     let mut combined = Vec::with_capacity(96);
     combined.extend_from_slice(cs_hash.as_bytes());
     combined.extend_from_slice(utxo_hash.as_bytes());
     combined.extend_from_slice(ps_hash.as_bytes());
-
-    Ok(crypto::hash::hash(&combined))
+    crypto::hash::hash(&combined)
 }
 
 /// Emit the per-component `[STATE_ROOT]` breadcrumb: the chain_state, utxo, and
@@ -122,11 +129,10 @@ pub fn compute_state_root_with_epoch_state(
             // Same canonical encoding as compute_state_root; append
             // H(EpochSnapshot) as the 4th component.
             let cs_bytes = chain_state.serialize_canonical();
-            let utxo_bytes = utxo_set.serialize_canonical();
             let ps_bytes = producer_set.serialize_canonical();
 
             let cs_hash = crypto::hash::hash(&cs_bytes);
-            let utxo_hash = crypto::hash::hash(&utxo_bytes);
+            let (utxo_hash, utxo_bytes_len) = utxo_set.canonical_digest_and_len()?;
             let ps_hash = crypto::hash::hash(&ps_bytes);
 
             // INFO so the 4 component hashes are visible in production
@@ -141,7 +147,7 @@ pub fn compute_state_root_with_epoch_state(
                 ps_hash,
                 es_hash,
                 cs_bytes.len(),
-                utxo_bytes.len(),
+                utxo_bytes_len,
                 ps_bytes.len()
             );
 
@@ -275,13 +281,24 @@ impl StateSnapshot {
 ///
 /// Wire format:
 /// - `chain_state_bytes`: bincode-serialized `ChainState`
-/// - `utxo_set_bytes`: canonical format (sorted outpoints, 59-byte values)
+/// - `utxo_set_bytes`: canonical format (sorted outpoints, 61-byte-base values)
 /// - `producer_set_bytes`: bincode-serialized `ProducerSet`
 pub fn compute_state_root_from_bytes(
     chain_state_bytes: &[u8],
     utxo_set_bytes: &[u8],
     producer_set_bytes: &[u8],
 ) -> Result<Hash, StorageError> {
+    verify_state_root_from_bytes(chain_state_bytes, utxo_set_bytes, producer_set_bytes)
+        .map(|(root, _, _, _)| root)
+}
+
+/// Same verification as [`compute_state_root_from_bytes`], but hands the decoded
+/// components back so an installing caller does not decode the blobs a second time.
+pub fn verify_state_root_from_bytes(
+    chain_state_bytes: &[u8],
+    utxo_set_bytes: &[u8],
+    producer_set_bytes: &[u8],
+) -> Result<(Hash, ChainState, UtxoSet, ProducerSet), StorageError> {
     let cs: ChainState = bincode::deserialize(chain_state_bytes).map_err(|e| {
         StorageError::Serialization(format!(
             "[STOR033] ChainState deserialization failed ({} bytes): {}",
@@ -303,7 +320,8 @@ pub fn compute_state_root_from_bytes(
             e
         ))
     })?;
-    compute_state_root(&cs, &utxo, &ps)
+    let root = compute_state_root(&cs, &utxo, &ps)?;
+    Ok((root, cs, utxo, ps))
 }
 
 #[cfg(test)]
