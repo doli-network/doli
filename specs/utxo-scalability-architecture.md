@@ -11,7 +11,7 @@
 
 # UTXO Scalability Architecture
 
-**Status:** PROPOSAL-ONLY (2026-09-14, `/omega-redesign utxo-scalability`, synthesizer over 5 design evaluators). No code changed. No `RUN_ID`/`INC_ID`; the architect's discussion paper ran under run 558 (decision 124); the user's anchoring decision is decision 126.
+**Status:** STAGES 1-3 IMPLEMENTED on branch `feature/utxo-scalability-streaming` (2026-09-15): `0f11daca` [F1] install once, `d8a4b508` [F2] streaming canonical fold, `c552c8c0` [F3] chunked state session. Stages 4-7 ([F4] asset fee, [F5] resident-byte cap, Options A-K) remain PROPOSAL-ONLY — no code. Original synthesis: 2026-09-14, `/omega-redesign utxo-scalability`, synthesizer over 5 design evaluators; the architect's discussion paper ran under run 558 (decision 124), the user's anchoring decision is decision 126.
 **Reasoning trace:** `docs/.workflow/architecture-reasoning.md` (convergence matrix, 16-filter table, 12 contradictions, UNVERIFIED list).
 **Inputs:** `docs/.workflow/design-{subtraction,restructure,patterns,failures,radical}.md`, `docs/.workflow/design-brief.md`, `docs/redesigns/utxo-scalability-redesign-analysis.md` (REQ-SCALE-001..024), `docs/redesigns/utxo-scalability-architect-position.md` (a CANDIDATE; three of its claims are FALSE, see §Contradictions), `specs/utxo-storage-architecture.md` (Approved 2026-06-03).
 
@@ -293,6 +293,8 @@ anchors: Option A (tip UTXO per stack, 0 LOC) or Option B (Anchor output, never 
 
 Ordering rules honoured: stages 1-3 carry no AH and no block-content change; no two rules share a field; every AH is `u64::MAX` on devnet until pinned; nothing here bumps `CURRENT_PROTOCOL_VERSION` or `EPOCH_STATE_FORMAT_VERSION` or touches `HardForkSchedule`; no genesis reset at any stage.
 
+**Implementation status (2026-09-15).** Stages 1, 2 and 3 are SHIPPED on branch `feature/utxo-scalability-streaming` as `0f11daca`, `d8a4b508` and `c552c8c0`; each carries its Q1/Q2 answers (rules NO, content NO) in its commit body and none pins an activation height. Stage 3 ships with a DEPLOY-ORDER constraint the table did not anticipate: a new client no longer emits `GetStateSnapshot`, so the snap-sync SERVERS (the seeds) must be upgraded before the clients. Stages 4-7 and Options A-K are untouched.
+
 ## Complexity Comparison
 
 | Metric | Current | Radical minimum (SSF, filters applied) | Full proposal ([F1]-[F5] + Option A) | + Option B |
@@ -336,7 +338,52 @@ Evidence independence verified: YES (per-row in the matrix; facts (a)-(h) re-ver
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
-## Implementation Notes — Stage 3 [F3] chunked state-transfer session (as built, M3)
+## Implementation Notes (as built, M1-M3)
+
+Deviations from the proposal text above, recorded because the code is the source of truth.
+
+### Stage 1 [F1] install once (as built, M1 — `0f11daca`)
+
+`storage::verify_state_root_from_bytes()` returns `(root, chain_state, utxo_set, producer_set)`, so
+the caller stops decoding the snapshot a second time; `compute_state_root_from_bytes()` is now a
+projection of it with its signature and its [STOR033]/[STOR034]/[STOR035] text unchanged. The
+decoded pairs move into the single `atomic_replace` WriteBatch through `UtxoSet::into_pairs()` /
+`InMemoryUtxoStore::into_pairs()` instead of being cloned into a `Vec`. The cached root is
+RE-DERIVED from the INSTALLED `state_db` backend (filter F-10: a wire hash proves transport, not
+storage). `apply_snap_snapshot()` installs the in-memory 3-state only on the `Ok` arm, so an
+`atomic_replace` failure can no longer leave memory holding the snapshot while disk holds the old
+chain. `doli snap` (`bins/cli/src/cmd_snap.rs`) carried the identical triple-copy pattern and is
+ported to the same seam; its flags and its printed output are unchanged.
+
+Measured, not argued: install peak at n=50,000 fell 15,778,678 -> 14,629,849 bytes (full-set copies
+3.3 -> 3.0) and the probe's `M1_UTXO_HASH` is bit-identical before and after.
+
+### Stage 2 [F2] streaming canonical fold (as built, M2 — `d8a4b508`)
+
+One encoder, `crates/storage/src/utxo/canonical.rs`: a `u64` LE count header, then
+`key || UtxoEntry::serialize_canonical_bytes()` per entry in ascending key order.
+`canonical_digest()`, `canonical_len()`, `canonical_range()` and `materialize()` are all built on
+the same `fold`, and `serialize_canonical()` survives as a thin `materialize()` for the one
+remaining production caller (the legacy snap wire path, `snapshot.rs:235`).
+
+**Deviation — the digest takes TWO passes over one pinned view (STOR028).** A streaming hasher
+cannot back-patch the LE count header, and the header must come from the rows the body actually
+emits, never from a live counter an iteration can desync from. So pass 1 reads keys only
+(`row_count()`) and the fail-loud pass 2 decodes and feeds the hasher; pass 2 can never emit fewer
+rows than pass 1 counted. This is a read amplification the proposal did not price, and it is the
+price of keeping the header coherent with the body.
+
+**AP-7 closed.** `queries.rs:483-501` used `filter_map(|r| r.ok())` twice inside a CONSENSUS
+serializer: an undecodable value was silently skipped and the node computed a
+different-but-valid-looking `utxo_hash`. The fold returns `Err` on the first undecodable entry and
+on the first iterator error, and never skips. The user-visible consequence is that
+`getStateRootDebug` now returns a JSON-RPC internal error instead of a hash when an entry cannot be
+decoded.
+
+Measured: root-compute peak on the production (RocksDB) backend at n=100,000 fell 19,401,302 -> 1,286
+bytes; `M2_UTXO_HASH` is identical before and after.
+
+### Stage 3 [F3] chunked state-transfer session (as built, M3 — `c552c8c0`)
 
 **Wire shape (additive only).** `GetStateManifest{block_hash}` and
 `GetStateChunk{session_id,start_key,max_bytes}` are APPENDED to `SyncRequest`; `StateManifest`,

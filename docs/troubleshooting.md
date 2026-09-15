@@ -259,7 +259,8 @@ See [disaster-recovery.md](./disaster-recovery.md) for all recovery methods.
 
 **Symptom:** the log carries `[STATE_CORRUPT] Interrupted rebuild-from-genesis detected on
 startup`, the node syncs and accepts blocks but never produces one, and peers asking it for a
-snap-sync snapshot or a state root get an error response instead of an answer.
+snap-sync snapshot or a state root get an error response instead of an answer (a chunked
+state-session request gets a typed `Halted` refusal instead — see §7.10).
 
 If the message says `target height UNKNOWN (marker unreadable)`, the marker key is present but
 its value could not be decoded. The read fails **closed** (INC-I-156 / AUDIT-P3-103): an
@@ -1392,6 +1393,83 @@ Code: `decision.rs`, `dispatch.rs`, `production_gate.rs`, `recovery.rs`, `types.
 4. Operators can watch `doli_vesting_would_reject_total{code=…}` and `doli_vesting_shadow_evaluated_total` (`/metrics`): the node evaluates the rule in shadow below the activation height so a pin can be preceded by a zero-would-reject soak.
 
 `ECON_WITHDRAWAL_BOND_EXTRA_DATA_MALFORMED` on a snap-synced node means a peer served a Bond UTXO that a validated block could never create (ERRTX007 blocks it). Re-sync from a canonical seed.
+
+### 7.8. Which State Transport Did This Node Use? (session vs legacy frame)
+
+**Why it matters:** snap sync now has two transports on `/doli/sync/1.0.0`. A current binary as
+CLIENT always asks for a session and never emits `GetStateSnapshot`; as SERVER it still answers the
+legacy single frame, so an old peer syncing from a new node is unaffected.
+
+**Tell them apart from the log (grep the joining node):**
+
+| Path | Client marker | Server marker |
+|---|---|---|
+| Session (current) | `[SNAP_SYNC] Session <id> admitted from <peer>: anchor (…, h=…), N entries, chunk<=…B` then `[SNAP_SYNC] Session <id> complete: N B reassembled, digest matches manifest` | `[SNAP_SYNC] Session <id> open at h=… (N entries, root=…)` |
+| Legacy single frame | `[SNAP_SYNC] F4 ADMIT: anchor (…, h=…)` with no `Session … admitted` line | `[SNAP_SYNC] Serving snapshot at height=…, size=…KB, root=…` |
+
+```bash
+# Client side — which transport did the last snap use?
+grep -E '\[SNAP_SYNC\] (Session [0-9]+ (admitted|complete)|F4 ADMIT)' <data_dir>/*.log | tail -20
+
+# Server side — is this node serving sessions, frames, or both?
+grep -cE '\[SNAP_SYNC\] Session [0-9]+ open at h=' <data_dir>/*.log
+grep -cE '\[SNAP_SYNC\] Serving snapshot at height=' <data_dir>/*.log
+```
+
+**Deploy order — upgrade the seeds FIRST.** A new client against an OLD server sends
+`GetStateManifest`, which the old binary cannot decode: the stream fails, the client blacklists that
+peer for the rest of the download and moves to the next alternate, and one of the three snap attempts
+is consumed each time the alternates run out. The signature is
+`[SNAP_SYNC] Peer <id> failed, retrying with alternate peer …` and then
+`[SNAP_SYNC] Attempt n/3 failed, …` with no `Session … admitted` line anywhere. The fix is ordering,
+not configuration: upgrade the snap-sync servers (the seeds) before the clients. No protocol version
+is bumped and `HardForkSchedule` is untouched, so nothing else in the rolling deploy changes.
+
+---
+
+### 7.9. `[SNAP_SYNC] Session … unavailable` — Busy / ManifestExpired / Halted
+
+**Symptom:** the joining node logs
+`[SNAP_SYNC] Session <id> unavailable at <peer>: Busy|ManifestExpired|Halted(…) — retrying with a fresh manifest`,
+and the transfer restarts instead of finishing.
+
+**What it means:** all three are RETRYABLE server conditions carried as a typed
+`StateSessionUnavailable`, never as an `Error` string, and none of them blacklists the peer.
+
+| Reason | Server condition | Operator action |
+|---|---|---|
+| `Busy` | the serving node is at `MAX_CONCURRENT_STATE_SESSIONS` (4) pinned views; it also logs `[SNAP_SYNC] Refusing GetStateManifest — 4 sessions already pinned` | none — wait, or point the client at another seed. Many of these at once mean several nodes are resyncing from the same seed |
+| `ManifestExpired` | the pinned view is gone: TTL (120 s), idle eviction (30 s), a completed walk, or a server restart | none — the client re-opens with a fresh manifest. Recurring expiry on a large set means the transfer is slower than the TTL; investigate the link, not the node |
+| `Halted(reason)` | the serving node refuses to serve state at all because `rebuild_in_progress` is armed — the same halt as §1.10 | fix the SERVING node (§1.10), not the client |
+
+A chunk request that times out mid-session logs
+`[SNAP_SYNC] Chunk failed in session <id> from <peer> — resuming at the last verified cursor`: the
+cursor does NOT rewind and no snap attempt is consumed. A digest mismatch at the end
+(`[SNAP_SYNC] REFUSE (digest): reassembled … != manifest …`) is a real integrity refusal — the peer
+served bytes that do not hash to the manifest it issued. That one DOES blacklist the peer for the
+rest of the download and moves to an alternate; a snap attempt is consumed only when the alternates
+run out (`[SNAP_SYNC] No alternate peers left after N failed — restarting snap sync`).
+
+---
+
+### 7.10. Crash During a Snapshot Install
+
+**Symptom:** a node crashed or was restarted while installing a snapshot; on restart it syncs but
+never produces, and peers asking it for state get a refusal — an `Error` on the legacy
+`GetStateSnapshot`/`GetStateRoot` path, and a typed `StateSessionUnavailable{reason: Halted(…)}` on
+the session path (logged as `[SNAP_SYNC] Refusing GetStateManifest — …` /
+`[SNAP_SYNC] Refusing GetStateChunk — …`).
+
+**What it means:** `rebuild_in_progress` in `CF_META` is still armed, so `Node::rebuild_halt_reason()`
+returns a reason and every state-serving and production entry point refuses. The marker reads FAIL
+CLOSED: an undecodable marker is treated as armed (INC-I-156 / AUDIT-P3-103).
+
+**What to do:** this is the §1.10 `[STATE_CORRUPT]` procedure — the marker lives in the state DB and
+clears with the data directory, so resync the node. The snapshot install itself is one
+`atomic_replace` WriteBatch and is all-or-nothing; the in-memory 3-state is swapped in only when that
+batch succeeds, so a crash cannot leave memory holding a snapshot while disk holds the old chain.
+
+---
 
 ## 8. Getting Help
 

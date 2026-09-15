@@ -625,10 +625,40 @@ is tested but is not yet on the live path: the client still reassembles the whol
 and installs it through the unchanged `apply_snap_snapshot`, so Stage 3 moves the WIRE bound and
 not the client's install peak. Stage 4 wires the staged install.
 
+Whichever transport delivered the bytes, the install itself decodes them ONCE:
+`storage::verify_state_root_from_bytes()` returns the root together with the decoded
+`(ChainState, UtxoSet, ProducerSet)`, the pairs move into the one `atomic_replace` WriteBatch via
+`UtxoSet::into_pairs()`, and the cached state root is then RE-DERIVED from the installed
+`state_db` backend — a wire hash proves transport, not storage. The in-memory 3-state is swapped in
+only on the `Ok` arm, so a failed `atomic_replace` cannot leave memory ahead of disk.
+`doli snap` uses the same seam. Code: `bins/node/src/node/fork_recovery.rs`,
+`crates/storage/src/snapshot.rs`, `bins/cli/src/cmd_snap.rs`.
+
 The **single-frame transport** (`GetStateSnapshot`) is unchanged and retained as a temporary bridge
 for peers on older binaries, valid only while the whole set still fits in one `MAX_SYNC_SIZE`
 (16 MiB) message. `MAX_SYNC_SIZE` was NOT raised — raising it would relax four other payload
 classes that share the constant.
+
+| Wire message | Direction | Carries |
+|---|---|---|
+| `GetStateManifest{block_hash}` | client -> server | opens the session; costs one pinned read |
+| `StateManifest{session_id, block_hash, block_height, state_root, utxo_hash, utxo_count, chunk_max_bytes, chain_state, producer_set, block_header_bytes, epoch_bond_snapshot_bytes, epoch_accumulators_bytes, epoch_state_bytes}` | server -> client | everything except the UTXO set, plus the digest the chunks must reach |
+| `GetStateChunk{session_id, start_key, max_bytes}` | client -> server | resume cursor; `max_bytes` is advisory, clamped server-side |
+| `StateChunk{session_id, body, next_key}` | server -> client | canonical BODY bytes only (no count header); `next_key: None` ends the walk |
+| `StateSessionUnavailable{session_id, reason}` | server -> client | typed refusal: `Busy`, `ManifestExpired`, `Halted(String)` |
+
+| Bound | Value | Where |
+|---|---|---|
+| `STATE_CHUNK_MAX_BYTES` | 1 MiB | server-side clamp on the chunk body |
+| `MAX_CONCURRENT_STATE_SESSIONS` | 4 | pinned views one node will serve at once |
+| `STATE_SESSION_TTL_SECS` / `STATE_SESSION_IDLE_TIMEOUT_SECS` | 120 / 30 | session eviction |
+| `MAX_SYNC_SIZE` | 16 MiB | UNCHANGED codec cap, shared with four other payload classes |
+
+Definitions: `crates/network/src/protocols/sync.rs`. Serving: `bins/node/src/node/state_session_serve.rs`
+(+ the pin worker in `bins/node/src/node/state_session.rs`, `crates/storage/src/utxo/pinned.rs`).
+Client side: `crates/network/src/sync/manager/state_session.rs`. `GetStateManifest` counts against
+the inbound per-interval sync cap (24); `GetStateChunk` is exempt, because chunk traffic is already
+bounded by the session cap plus one outstanding chunk per session.
 
 Three session outcomes are refusals rather than failures: `Busy` (serving node at its
 concurrent-session cap), `ManifestExpired` (the pinned view is gone) and `Halted` (the serving

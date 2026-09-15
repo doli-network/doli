@@ -53,6 +53,7 @@ Two root-cause fixes stabilized the network. All other fixes were symptom mitiga
 ## If You Touch
 
 - `apply_block()` → verify both UTXO paths match, check rollback paths mirror it, test state root convergence. Producer mutations (Register, AddBond, Exit, Slash, Withdrawal, Delegation) are DEFERRED to epoch boundary — never mid-epoch except epoch 0. Maintainer changes are immediate.
+- **canonical UTXO encoder** (`crates/storage/src/utxo/canonical.rs`) → changing the byte order or the encoding changes `utxo_hash`, which changes the state root on every node — that is a chain reset, not a refactor. BOTH backends (RocksDB and InMemory) MUST stay bit-identical, and the serializer MUST fail loud: an undecodable entry returns `Err`, it is never skipped (AP-7 — skipping produced a different-but-valid-looking `utxo_hash`).
 - **bitfield encoder/decoder** → encoder order is `[epoch_state.producer_list | extra sorted by pubkey]`. ALL decoders (post_commit, rewards, RPC) MUST use the same order or indices misalign. See Full Bitfield Decode pillar.
 - **HardForkSchedule** → NEVER add entries for rolling deploys. `current_fork_id()` uses `u64::MAX`, which makes ALL entries active in fork_id immediately. Use constant gates instead.
 - **CURRENT_PROTOCOL_VERSION** → **DO NOT bump unless the EpochState serialization format actually changes** (INV-4, in every session briefing). A bump triggers `delete_epoch_state()` on restart (`init.rs:727`) → non-deterministic rebuild → fork at the next epoch boundary (INC-I-054). The check is `!=`, so rollback deletes a second time. Use `EPOCH_STATE_FORMAT_VERSION` for epoch_state; `CURRENT_PROTOCOL_VERSION` is peer handshake only.
@@ -130,6 +131,10 @@ After completing any code change, ALWAYS propose the following checklist to the 
 | UTXO set (RocksDB) | `crates/storage/src/utxo/set.rs` |
 | ProducerSet + bonds | `crates/storage/src/producer/` (dir) |
 | State root + snapshots | `crates/storage/src/snapshot.rs` |
+| **Canonical UTXO encoder (one fold: digest/len/range/materialize)** | `crates/storage/src/utxo/canonical.rs` (+ RocksDB row view `crates/storage/src/state_db/canonical.rs`, pinned view `crates/storage/src/utxo/pinned.rs`) |
+| **Snap state session — serve side** | `bins/node/src/node/state_session_serve.rs`, pin worker `bins/node/src/node/state_session.rs` |
+| **Snap state session — client side** | `crates/network/src/sync/manager/state_session.rs` |
+| **Staged UTXO install seam (unwired, M4)** | `crates/storage/src/state_db/staging.rs` |
 | RPC methods (56) | `crates/rpc/src/methods/` (incl. `oracle.rs` + `oracle_status.rs` for Phase 2.1 M9-M11) |
 | Transaction mempool | `crates/mempool/src/` |
 | Auto-update + hard fork schedule | `crates/updater/src/` |

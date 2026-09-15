@@ -2041,6 +2041,27 @@ Snap sync has two transports on the same `/doli/sync/1.0.0` protocol. Which one 
 by BEHAVIOUR, not by a version number: no protocol version is bumped and `HardForkSchedule` is not
 touched.
 
+**Wire variants (ADDITIVE — appended, so every existing bincode discriminant keeps its index).**
+Exact names and fields, `crates/network/src/protocols/sync.rs`:
+
+| Enum | Index | Variant and fields |
+|---|---|---|
+| `SyncRequest` | 8 | `GetStateManifest { block_hash: Hash }` |
+| `SyncRequest` | 9 | `GetStateChunk { session_id: u64, start_key: Option<Vec<u8>>, max_bytes: u32 }` |
+| `SyncResponse` | 6 | `StateManifest { session_id: u64, block_hash: Hash, block_height: u64, state_root: Hash, utxo_hash: Hash, utxo_count: u64, chunk_max_bytes: u32, chain_state: Vec<u8>, producer_set: Vec<u8>, block_header_bytes: Option<Vec<u8>>, epoch_bond_snapshot_bytes: Option<Vec<u8>>, epoch_accumulators_bytes: Option<Vec<u8>>, epoch_state_bytes: Option<Vec<u8>> }` |
+| `SyncResponse` | 7 | `StateChunk { session_id: u64, body: Vec<u8>, next_key: Option<Vec<u8>> }` |
+| `SyncResponse` | 8 | `StateSessionUnavailable { session_id: u64, reason: StateSessionRefusal }` |
+| `StateSessionRefusal` | 0/1/2 | `Busy` / `ManifestExpired` / `Halted(String)` |
+
+Indices 0-7 of `SyncRequest` (`GetHeaders`, `GetBodies`, `GetBlockByHeight`, `GetBlockByHash`,
+`GetStateSnapshot`, `GetStateRoot`, `DirectAttestation`, `GetHeadersByHeight`) and indices 0-5 of
+`SyncResponse` (`Headers`, `Bodies`, `Block`, `StateSnapshot`, `StateRoot`, `Error`) are UNCHANGED.
+`GetStateSnapshot` / `StateSnapshot` remain valid messages that every node still serves. The four
+`Option` fields on `StateManifest` carry `#[serde(default)]`, as on `StateSnapshot`. New session
+constants: `STATE_CHUNK_MAX_BYTES = 1 MiB`, `MAX_CONCURRENT_STATE_SESSIONS = 4`,
+`STATE_SESSION_TTL_SECS = 120`, `STATE_SESSION_IDLE_TIMEOUT_SECS = 30`; `MAX_SYNC_SIZE` stays at
+16 MiB.
+
 **Session transport (preferred).**
 
 1. `GetStateManifest{block_hash}` -> `StateManifest{session_id, block_hash, block_height,

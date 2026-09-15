@@ -12,6 +12,16 @@ INPUT PARTITIONS: N/A — architecture specification file (not a test file)
 - Phases 1-4: UTXO store elimination, read migration, write simplification, cleanup.
 - Phase 5 (2026-06-04): BlobDB on cf_utxo + F1 snap-sync size monitor.
 
+**Amended by `specs/utxo-scalability-architecture.md` (2026-09-15).** The Tier 3-A escalation this
+spec deferred at line 47 ("design separately as standalone workstream when monitor approaches the
+6-month warning") has been designed and its first three stages are implemented: chunked snap sync
+now ships as a manifest + sorted-key-range session over one pinned read (`c552c8c0`), on top of a
+single streaming canonical UTXO encoder (`d8a4b508`) and a decode-once snapshot install
+(`0f11daca`). Tier 3-B (incremental UTXO hash) and Tier 3-C (ContentStore wiring) remain deferred,
+and nothing in this spec's approved scope is superseded — the `utxo_store` elimination, the CF
+layout, BlobDB and the F1 monitor are unchanged. Read the new spec for the wire protocol and the
+as-built deviations; read this one for the storage layout it runs on.
+
 ## Decision Record
 - 5-evaluator parallel design analysis converged on **eliminate `utxo_store`** (4/5 evaluators independent).
 - BlobDB promoted from Tier 2 to Tier 1 — confidence 0.70 (Pattern Matcher), cost ~6 config lines, addresses the dominant payload-bearing-UTXO concern (large-value compaction + cache amplification) at near-zero risk.
