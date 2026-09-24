@@ -1821,6 +1821,12 @@ Options:
 doli issue-token DOGEOLI --supply 1000000000
 ```
 
+**Asset ID.** The command derives the `asset_id` from the first input it selects:
+`compute_asset_id(inputs[0].prev_tx_hash, inputs[0].output_index)`. This makes the issuance
+valid at and above `inc_i_234_activation_height` (see `specs/protocol.md` §3.22.1). Above that
+height, a node rejects an issuance whose `asset_id` is not anchored on input 0
+(`[ERRTX-AUTH004]`). Tokens issued earlier keep their ids and remain transferable.
+
 ---
 
 ### 13.2. Token Info

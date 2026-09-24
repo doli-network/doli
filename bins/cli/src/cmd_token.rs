@@ -15,7 +15,7 @@ pub(crate) async fn cmd_issue_token(
     condition: Option<String>,
 ) -> Result<()> {
     use crypto::{signature, Hash};
-    use doli_core::{Input, Output, Transaction};
+    use doli_core::Output;
 
     let wallet = Wallet::load(wallet_path)?;
     let rpc = RpcClient::new(rpc_endpoint);
@@ -36,47 +36,19 @@ pub(crate) async fn cmd_issue_token(
     let issuer_hash = Hash::from_hex(&issuer_pubkey_hash)
         .ok_or_else(|| anyhow::anyhow!("Invalid issuer pubkey hash"))?;
 
-    // asset_id is derived from genesis tx hash + output index after mining.
-    // Use a placeholder for construction; the canonical asset_id is computed on-chain.
-    let placeholder_asset_id = {
-        use crypto::hash::hash_with_domain;
-        let mut data = Vec::new();
-        data.extend_from_slice(issuer_hash.as_bytes());
-        data.extend_from_slice(ticker.as_bytes());
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-            .to_le_bytes();
-        data.extend_from_slice(&nonce);
-        hash_with_domain(b"DOLI_ASSET_PRE", &data)
-    };
-
-    // Default condition: signature of the issuer
     let cond = if let Some(cond_str) = &condition {
         parse_condition(cond_str)?
     } else {
         doli_core::Condition::signature(issuer_hash)
     };
 
-    // Token UTXO amount = supply in token base units (not DOLI).
-    // FungibleAsset.amount represents token quantity, not native DOLI.
-    let token_output = Output::fungible_asset(
-        supply,
-        issuer_hash,
-        placeholder_asset_id,
-        supply,
-        ticker,
-        &cond,
-    )
-    .map_err(|e| anyhow::anyhow!("Failed to create token output: {}", e))?;
+    let sizing_output =
+        Output::fungible_asset(supply, issuer_hash, Hash::ZERO, supply, ticker, &cond)
+            .map_err(|e| anyhow::anyhow!("Failed to create token output: {}", e))?;
+    let fee_units = doli_core::consensus::BASE_FEE
+        + sizing_output.extra_data.len() as u64 * doli_core::consensus::FEE_PER_BYTE
+            / doli_core::consensus::FEE_DIVISOR;
 
-    // Calculate fee: base + per-byte for token output extra_data
-    let fee_units = {
-        let extra_bytes: u64 = token_output.extra_data.len() as u64;
-        doli_core::consensus::BASE_FEE
-            + extra_bytes * doli_core::consensus::FEE_PER_BYTE / doli_core::consensus::FEE_DIVISOR
-    };
     let utxos: Vec<_> = rpc
         .get_utxos(&issuer_pubkey_hash, true)
         .await?
@@ -87,39 +59,28 @@ pub(crate) async fn cmd_issue_token(
         anyhow::bail!("No spendable UTXOs available for fee");
     }
 
-    let mut selected_utxos = Vec::new();
+    let mut selected: Vec<(Hash, u32, u64)> = Vec::new();
     let mut total_input = 0u64;
-    let required = fee_units;
     for utxo in &utxos {
-        if total_input >= required {
+        if total_input >= fee_units {
             break;
         }
-        selected_utxos.push(utxo.clone());
+        let prev_tx_hash =
+            Hash::from_hex(&utxo.tx_hash).ok_or_else(|| anyhow::anyhow!("Invalid UTXO hash"))?;
+        selected.push((prev_tx_hash, utxo.output_index, utxo.amount));
         total_input += utxo.amount;
     }
 
-    if total_input < required {
+    if total_input < fee_units {
         anyhow::bail!(
             "Insufficient balance. Available: {}, Required: {}",
             format_balance(total_input),
-            format_balance(required)
+            format_balance(fee_units)
         );
     }
 
-    let mut inputs: Vec<Input> = Vec::new();
-    for utxo in &selected_utxos {
-        let prev_tx_hash =
-            Hash::from_hex(&utxo.tx_hash).ok_or_else(|| anyhow::anyhow!("Invalid UTXO hash"))?;
-        inputs.push(Input::new(prev_tx_hash, utxo.output_index));
-    }
-
-    let mut outputs = vec![token_output];
-    let change = total_input - required;
-    if change > 0 {
-        outputs.push(Output::normal(change, issuer_hash));
-    }
-
-    let mut tx = Transaction::new_transfer(inputs, outputs);
+    let mut tx = build_issue_tx(&selected, issuer_hash, ticker, supply, &cond, fee_units)?;
+    let asset_id = Output::compute_asset_id(&selected[0].0, selected[0].1);
 
     let keypair = wallet.primary_keypair()?;
     for i in 0..tx.inputs.len() {
@@ -139,6 +100,7 @@ pub(crate) async fn cmd_issue_token(
     println!("  Ticker:      {}", ticker);
     println!("  Supply:      {}", supply);
     println!("  Issuer:      {}", issuer_display);
+    println!("  Asset ID:    {}", asset_id.to_hex());
     println!("  Fee:         {}", format_balance(fee_units));
     println!("  TX Hash:     {}", tx_hash.to_hex());
     println!("  Size:        {} bytes", tx_bytes.len());
@@ -149,11 +111,7 @@ pub(crate) async fn cmd_issue_token(
         Ok(_) => {
             println!("Token issued successfully!");
             println!("TX Hash: {}", tx_hash.to_hex());
-            println!();
-            println!(
-                "Asset ID (canonical): BLAKE3(\"DOLI_ASSET\" || {} || 0)",
-                tx_hash.to_hex()
-            );
+            println!("Asset ID: {}", asset_id.to_hex());
             println!("Query with: doli token-info {}:0", tx_hash.to_hex());
         }
         Err(e) => {
@@ -163,6 +121,47 @@ pub(crate) async fn cmd_issue_token(
     }
 
     Ok(())
+}
+
+pub(crate) fn build_issue_tx(
+    selected: &[(crypto::Hash, u32, u64)],
+    issuer_hash: crypto::Hash,
+    ticker: &str,
+    supply: u64,
+    cond: &doli_core::Condition,
+    fee: u64,
+) -> Result<doli_core::Transaction> {
+    use doli_core::{Input, Output, Transaction};
+
+    let (anchor_hash, anchor_index, _) = selected
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("No inputs selected"))?;
+    let total_input = selected
+        .iter()
+        .try_fold(0u64, |acc, (_, _, amt)| acc.checked_add(*amt))
+        .ok_or_else(|| anyhow::anyhow!("Input amount overflow"))?;
+    if total_input < fee {
+        anyhow::bail!(
+            "Insufficient balance. Available: {}, Required: {}",
+            format_balance(total_input),
+            format_balance(fee)
+        );
+    }
+
+    let asset_id = Output::compute_asset_id(anchor_hash, *anchor_index);
+    let token_output = Output::fungible_asset(supply, issuer_hash, asset_id, supply, ticker, cond)
+        .map_err(|e| anyhow::anyhow!("Failed to create token output: {}", e))?;
+
+    let inputs: Vec<Input> = selected
+        .iter()
+        .map(|(h, idx, _)| Input::new(*h, *idx))
+        .collect();
+    let mut outputs = vec![token_output];
+    let change = total_input - fee;
+    if change > 0 {
+        outputs.push(Output::normal(change, issuer_hash));
+    }
+    Ok(Transaction::new_transfer(inputs, outputs))
 }
 
 pub(crate) async fn cmd_token_info(rpc_endpoint: &str, utxo_ref: &str) -> Result<()> {
@@ -233,3 +232,7 @@ pub(crate) async fn cmd_token_info(rpc_endpoint: &str, utxo_ref: &str) -> Result
 
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "cmd_token_tests.rs"]
+mod tests;

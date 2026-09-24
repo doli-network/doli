@@ -36,6 +36,9 @@ mod tests;
 mod tests_inc_i_193;
 
 #[cfg(test)]
+mod tests_inc_i_234;
+
+#[cfg(test)]
 mod tests_oracle;
 
 /// INC-I-176 M2 review F4 — the `#22 >= #20` ordering on the RUNTIME (env-loaded)
@@ -847,6 +850,9 @@ pub struct NetworkParams {
 
     /// INC-I-217 `RotateBlsKey` gate — `u64::MAX` = FROZEN on every network; pinning one is a separate decision-session (`specs/bls-key-rotation-architecture.md`).
     pub bls_key_rotation_activation_height: u64,
+
+    /// INC-I-234 output-creation-authority gate.
+    pub inc_i_234_activation_height: u64,
 
     /// INC-I-171 vesting-penalty activation height.
     ///

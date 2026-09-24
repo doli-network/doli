@@ -1193,6 +1193,43 @@ that height no aggregate is built or verified, so nothing in this subsection is 
   seniority under INC-I-193 tiering. Key rotation is an open decision (O5) and a pinning
   precondition (P4) in `specs/attestation-bls-architecture.md`.
 
+### 7.10 Output-Creation Authority — Unbacked Non-Native Value (INC-I-234)
+
+**Risk**: Pool, FungibleAsset and LPShare outputs carry value that is not native DOLI. Below
+`inc_i_234_activation_height`, consensus checks that these outputs are well-formed, but not that
+the creating transaction has the right to create them. Vectors (analysis
+`docs/bugfixes/inc-i-234-output-creation-authority-analysis.md` §2):
+
+- **W1** a `Transfer` writes a Pool with unbacked reserves; a later `Swap` pays out native DOLI
+  from it (native mint).
+- **W2** a `Transfer` writes FA units it never owned (counterfeit `asset_b`), then drains a real
+  pool through `Swap`.
+- **W3** a counterfeit LPShare for a real `pool_id` drains that pool through `RemoveLiquidity`.
+- **W4** `BurnAsset` with FA outputs greater than FA inputs inflates the asset.
+- **W5** `CreatePool` change outputs of a foreign asset create counterfeit FA.
+- **W6** an extra Pool at output[1..] of `Swap`/`AddLiquidity`/`RemoveLiquidity` claims an
+  asset it is not backed by.
+- **W7** a producer shapes a coinbase output as Pool/FA/LP (no inputs, no UTXO checks).
+- **W8** a pre-existing phantom Pool with the attacker's key is consumed as a second input of a
+  `Swap` and its reserves are counted.
+
+**Mitigation** (`specs/protocol.md` §3.22.1, `crates/core/src/validation/output_authority.rs`):
+at and above the activation height, Pool outputs appear only at output[0] of the four AMM types
+(exactly one), `Swap`/`AddLiquidity`/`RemoveLiquidity` consume exactly one Pool at input[0], the
+coinbase is Normal-only, and FA (per `asset_id`) and LP (per `pool_id`) are conserved
+(`Σout ≤ Σin`), except the keys the AMM rules already bind and one input-anchored issuance per
+`Transfer`. Codes `[ERRTX-AUTH001]`..`[ERRTX-AUTH005]`. Mempool, block assembly and block apply
+share the same predicates. The gate is an own `NetworkParams` field; the mainnet value cannot be
+overridden by env.
+
+**Residual risk**:
+
+- **Forward-only.** The rule does not re-validate or neutralize Pool/FA/LP UTXOs created
+  **before** the activation height. A pre-AH phantom stays in the UTXO set. A read-only census of
+  all existing Pool/FA/LP UTXOs (Pool lineage from `CreatePool`, per-asset Σ ≤ issued supply,
+  per-pool LP Σ within `total_lp`) is required before the mainnet height is pinned.
+- `ZKRollup` has the same free-creation shape; it is not exploitable while `ZKSettle` is frozen.
+
 ---
 
 ## 8. Audit Trail

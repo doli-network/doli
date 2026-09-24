@@ -274,6 +274,7 @@ impl NetworkParams {
                 // INC-I-217: MAINNET re-pin 2026-09-13 (450_789 never shipped). Tip 453_367 at
                 // 17:17Z (10 s slots); 457_855 is ~12.5 h above it. IMMUTABLE once crossed.
                 bls_key_rotation_activation_height: 457_855,
+                inc_i_234_activation_height: 551_202,
                 // INC-I-171 vesting-penalty payout bound. PINNED 418_000 on mainnet
                 // (user decision 2026-09-07; tip 400_175 at 11:53Z, ~49 h lead, one day
                 // after the 409_000 pins of #178/#204/#208). Own gate, never bundled.
@@ -533,6 +534,7 @@ impl NetworkParams {
                 // INC-I-217: testnet pin. Tip was 176_119 at 2026-09-12T08:27Z (10 s slots);
                 // 176_200 is ~13 min above it. Once crossed this height is IMMUTABLE.
                 bls_key_rotation_activation_height: 176_200,
+                inc_i_234_activation_height: 78_199,
                 // INC-I-171 vesting-penalty payout bound. PINNED 133_640 on testnet
                 // (deploy 2026-09-07, ~19 min after tip 133_525 at 10:06Z, user
                 // decision); IMMUTABLE once crossed. Mainnet and devnet stay u64::MAX.
@@ -795,6 +797,7 @@ impl NetworkParams {
                 inc_i_178_attestation_bls_activation_height: u64::MAX,
                 inc_i_208_own_attestation_activation_height: u64::MAX,
                 bls_key_rotation_activation_height: u64::MAX,
+                inc_i_234_activation_height: 0,
                 // INC-I-171 vesting-penalty payout bound. FROZEN at u64::MAX
                 // even here: 0 would reinterpret every live local chain.
                 inc_i_171_vesting_penalty_activation_height: u64::MAX,

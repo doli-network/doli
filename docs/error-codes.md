@@ -219,6 +219,18 @@ order. They live in `crates/storage/src/producer/rotation.rs`. Section 3.24 of
 | `ERRTX-ROT003` | Ed25519 authorisation over `rotation_auth_digest` invalid (includes a rotation replayed onto another outpoint) | `producer` |
 | `ERRTX-ROT007` | Rotation proof of possession invalid (no fallback to the registration DST) | `producer` |
 
+### Output-Creation Authority (validation/output_authority.rs)
+
+Active at and above `inc_i_234_activation_height` (INC-I-234). Rules: `specs/protocol.md` §3.22.1.
+
+| Code | Description | Context Variables |
+|------|-------------|-------------------|
+| `ERRTX-AUTH001` | Pool output outside output[0] of an AMM tx, or not exactly one Pool in an AMM tx | `tx_type`, pool output indices |
+| `ERRTX-AUTH002` | Swap/AddLiquidity/RemoveLiquidity does not consume exactly one Pool at input[0], another tx type consumes a Pool, or the own pool's metadata is missing/malformed | `tx_type`, pool input indices |
+| `ERRTX-AUTH003` | FA (per `asset_id`) or LP (per `pool_id`) outputs exceed inputs, or FA/LP metadata malformed | key, output sum, input sum |
+| `ERRTX-AUTH004` | Invalid issuance: not a `Transfer`, `asset_id` not anchored on input 0, non-uniform `total_supply`, sum above `total_supply`, or a second fresh asset in one tx | `asset_id` |
+| `ERRTX-AUTH005` | Coinbase output is not `Normal` | output index, output type |
+
 ### Block Validation (validation_checks.rs)
 
 | Code | Description | Context Variables |
