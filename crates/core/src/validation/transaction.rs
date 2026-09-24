@@ -112,6 +112,7 @@ pub fn validate_transaction(
 
     // 4. Validate all outputs
     let total_output = validate_outputs(&tx.outputs, ctx)?;
+    super::check_output_placement(tx, ctx)?;
 
     // 5. Total output must not exceed max supply
     if total_output > TOTAL_SUPPLY {
@@ -317,6 +318,7 @@ pub fn validate_transaction_skip_registration_vdf(
                     max: TOTAL_SUPPLY,
                 });
             }
+            super::check_output_placement(tx, ctx)?;
             validate_registration_data_skip_vdf(tx, ctx)?;
             Ok(())
         }
@@ -324,6 +326,7 @@ pub fn validate_transaction_skip_registration_vdf(
             if tx.version != 1 {
                 return Err(ValidationError::InvalidVersion(tx.version));
             }
+            super::check_output_placement(tx, ctx)?;
             validate_slash_data_skip_vdf(tx, ctx)?;
             Ok(())
         }

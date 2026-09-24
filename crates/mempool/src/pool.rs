@@ -6,7 +6,8 @@ use crypto::Hash;
 use doli_core::consensus::ConsensusParams;
 use doli_core::network::Network;
 use doli_core::validation::{
-    validate_transaction, verify_amm_conservation, ValidationContext, ValidationError,
+    check_value_authority, validate_transaction, verify_amm_conservation, ValidationContext,
+    ValidationError,
 };
 use doli_core::{BlockHeight, Transaction, TxType};
 use serde_json::Value;
@@ -532,6 +533,7 @@ impl Mempool {
             .with_bls_key_rotation_activation_height(
                 self.network.params().bls_key_rotation_activation_height,
             )
+            .with_inc_i_234_activation_height(self.network.params().inc_i_234_activation_height)
             .with_oracle_activation_height(self.network.params().oracle_activation_height)
             .with_oracle_sunset_triggered(
                 self.oracle_sunset_triggered
@@ -680,31 +682,17 @@ impl Mempool {
             && !tx.outputs.is_empty();
         let amm_gated = is_amm_pool_tx && current_height >= inc_i_096_height;
 
-        let fee = if amm_gated {
-            // Resolve consumed outputs from UTXO set (mirrors consensus
-            // utxo.rs:205-209). Order must match tx.inputs.
-            let mut consumed_outputs = Vec::with_capacity(tx.inputs.len());
-            for input in &tx.inputs {
-                let outpoint = Outpoint::new(input.prev_tx_hash, input.output_index);
-                if let Some(entry) = utxo_set.get(&outpoint) {
-                    consumed_outputs.push(entry.output.clone());
-                } else if let Some(parent_entry) = self.entries.get(&input.prev_tx_hash) {
-                    if let Some(output) = parent_entry.tx.outputs.get(input.output_index as usize) {
-                        consumed_outputs.push(output.clone());
-                    } else {
-                        return Err(MempoolError::MissingInput(
-                            input.prev_tx_hash,
-                            input.output_index,
-                        ));
-                    }
-                } else {
-                    return Err(MempoolError::MissingInput(
-                        input.prev_tx_hash,
-                        input.output_index,
-                    ));
-                }
-            }
+        let authority_gated = current_height >= self.network.params().inc_i_234_activation_height;
+        let consumed_outputs = if amm_gated || authority_gated {
+            self.resolve_consumed_outputs(&tx, utxo_set)?
+        } else {
+            Vec::new()
+        };
+        if authority_gated {
+            check_value_authority(&tx, &consumed_outputs, &ctx)?;
+        }
 
+        let fee = if amm_gated {
             // Delegate to the shared verify_amm_conservation (E1/E2/E3 +
             // proportional + k-invariant + FM-S11). Parity: same function,
             // same inputs, same outputs as consensus (FILTER-4).
@@ -955,6 +943,7 @@ impl Mempool {
             .with_bls_key_rotation_activation_height(
                 self.network.params().bls_key_rotation_activation_height,
             )
+            .with_inc_i_234_activation_height(self.network.params().inc_i_234_activation_height)
             .with_oracle_activation_height(self.network.params().oracle_activation_height)
             .with_oracle_sunset_triggered(
                 self.oracle_sunset_triggered
@@ -1268,6 +1257,30 @@ impl Mempool {
     pub fn get_unconfirmed_balance(&self, pubkey_hash: &Hash, utxo_set: &UtxoSet) -> i64 {
         let (incoming, outgoing) = self.calculate_unconfirmed_balance(pubkey_hash, utxo_set);
         incoming as i64 - outgoing as i64
+    }
+
+    /// Consumed outputs in input order, from the UTXO set or mempool parents.
+    fn resolve_consumed_outputs(
+        &self,
+        tx: &Transaction,
+        utxo_set: &UtxoSet,
+    ) -> Result<Vec<doli_core::transaction::Output>, MempoolError> {
+        tx.inputs
+            .iter()
+            .map(|input| {
+                let outpoint = Outpoint::new(input.prev_tx_hash, input.output_index);
+                if let Some(entry) = utxo_set.get(&outpoint) {
+                    return Ok(entry.output.clone());
+                }
+                self.entries
+                    .get(&input.prev_tx_hash)
+                    .and_then(|p| p.tx.outputs.get(input.output_index as usize).cloned())
+                    .ok_or(MempoolError::MissingInput(
+                        input.prev_tx_hash,
+                        input.output_index,
+                    ))
+            })
+            .collect()
     }
 
     /// Calculate total input value and ancestor set

@@ -31,6 +31,7 @@ mod block;
 mod error;
 pub mod errors_oracle;
 /// Parallel transaction validation via dependency graph.
+pub mod output_authority;
 pub mod parallel;
 pub(crate) mod pool;
 mod producer;
@@ -57,6 +58,7 @@ pub mod zk;
 pub use amm::{verify_amm_conservation, AmmConservationResult};
 pub use block::{validate_block_with_mode, validate_header};
 pub use error::ValidationError;
+pub use output_authority::{check_output_placement, check_value_authority};
 pub use producer::{
     bootstrap_fallback_order, bootstrap_schedule_with_liveness, validate_producer_eligibility,
 };

@@ -124,6 +124,7 @@ impl Node {
                 .params()
                 .bls_key_rotation_activation_height,
         )
+        .with_inc_i_234_activation_height(self.config.network.params().inc_i_234_activation_height)
         .with_epoch_producer_list(if self.epoch_state.active_list.is_empty() {
             self.epoch_state.producer_list.clone()
         } else {
@@ -347,6 +348,7 @@ impl Node {
                 .params()
                 .bls_key_rotation_activation_height,
         )
+        .with_inc_i_234_activation_height(self.config.network.params().inc_i_234_activation_height)
         .with_inc_i_026_scheduler_activation_height(
             self.config
                 .network

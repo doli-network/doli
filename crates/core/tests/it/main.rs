@@ -25,3 +25,6 @@ mod inc_i_217_m4_rotate_payload;
 mod inc_i_217_m5_activation_height;
 mod inc_i_217_m5_block_gate;
 mod inc_i_217_m5_rotate_stateless;
+mod inc_i_234_boundary;
+mod inc_i_234_m1_activation_height;
+mod inc_i_234_m2_output_authority;

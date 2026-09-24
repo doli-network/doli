@@ -95,7 +95,8 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
         TxType::Swap | TxType::AddLiquidity | TxType::RemoveLiquidity
     ) && !tx.inputs.is_empty()
         && !tx.outputs.is_empty();
-    let mut consumed_outputs: Vec<Output> = if is_amm_pool_tx {
+    let collect_consumed = is_amm_pool_tx || ctx.current_height >= ctx.inc_i_234_activation_height;
+    let mut consumed_outputs: Vec<Output> = if collect_consumed {
         Vec::with_capacity(tx.inputs.len())
     } else {
         Vec::new()
@@ -204,10 +205,11 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
 
         // Collect resolved output for AMM conservation (reuses the UTXO we
         // already looked up — no redundant provider call).
-        if is_amm_pool_tx {
+        if collect_consumed {
             consumed_outputs.push(utxo.output.clone());
         }
     }
+    super::check_value_authority(tx, &consumed_outputs, ctx)?;
 
     // Verify inputs >= outputs (difference is fee).
     // Exempt TxTypes:

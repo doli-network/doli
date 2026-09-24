@@ -1102,7 +1102,14 @@ State-only transaction: no UTXO inputs required (spam-protected by bond requirem
 
 ### 3.20 MintAsset Transaction
 
-Mints new units of a fungible asset. Issuer-only — requires matching `asset_id`.
+Mints new units of a fungible asset. Input[0] must be the asset's genesis UTXO, with
+`compute_asset_id(input0.prev_tx_hash, input0.output_index) == ` the `asset_id` stored in that UTXO.
+
+**Unreachable in practice.** The `asset_id` sits in the output's `extra_data`, and the tx hash
+commits to it, so a genesis output would have to contain a hash of its own transaction hash. No
+asset can satisfy this, so no `MintAsset` succeeds. Tokens are issued by a plain `Transfer` (see
+§3.22.1 "Issuance"). At and above `inc_i_234_activation_height`, `MintAsset` is also subject to
+per-key conservation (§3.22.1).
 
 ```
 mint_asset_tx = {
@@ -1125,6 +1132,9 @@ mint_asset_tx = {
 ### 3.21 BurnAsset Transaction
 
 Burns units of a fungible asset. Holder burns own tokens, provably destroyed.
+Below `inc_i_234_activation_height` no rule bounds the FungibleAsset change amount (the
+UTXO balance check is native-only). At and above it, per-key conservation (§3.22.1) makes
+the burn sound: FA outputs of an `asset_id` cannot exceed FA inputs of that `asset_id`.
 
 ```
 burn_asset_tx = {
@@ -1198,6 +1208,49 @@ The following transaction types support the on-chain AMM (Automated Market Maker
 **Swap (type 22):** Swaps assets through a pool. Consumes the Pool UTXO and input assets, creates updated Pool UTXO with modified reserves and the swapped output. Fee: 0.3% (30 basis points) by default.
 
 Pool IDs are deterministic: `BLAKE3("DOLI_POOL" || asset_a_id || asset_b_id)`. Pool metadata (116 bytes) includes: version, pool_id, asset_b_id, reserve_a, reserve_b, total_lp, cumulative_price (TWAP), last_slot, fee_bps, creation_slot, status.
+
+#### 3.22.1 Output-Creation Authority (INC-I-234)
+
+Active when `current_height >= inc_i_234_activation_height` (NetworkParams; see §8.2). Below
+that height validation is unchanged. Code: `crates/core/src/validation/output_authority.rs`.
+Mempool admission, block assembly and block apply use the same predicates.
+
+**Placement (stateless, `check_output_placement`):**
+1. A **coinbase** may contain only `Normal` outputs (`[ERRTX-AUTH005]`).
+2. A `Pool` output is valid only at **output[0]** of `CreatePool`, `Swap`, `AddLiquidity`
+   or `RemoveLiquidity`, and each of these must carry **exactly one** Pool output. Any other
+   tx type with a Pool output is invalid (`[ERRTX-AUTH001]`).
+
+**Value authority (after input resolution, `check_value_authority`):**
+3. `Swap`, `AddLiquidity` and `RemoveLiquidity` must consume **exactly one** Pool, at
+   **input[0]**. Every other tx type must consume **no** Pool (`[ERRTX-AUTH002]`). Missing or
+   malformed pool metadata on the AMM tx's own pool is also `[ERRTX-AUTH002]`.
+4. **Per-key conservation**: for each key, `Σ outputs ≤ Σ consumed inputs` (u128 sums).
+   Keys are `FungibleAsset` by `asset_id` only (ticker and `total_supply` are not part of
+   the key) and `LPShare` by `pool_id`. Malformed FA or LP metadata, or a key whose outputs
+   exceed its inputs, is `[ERRTX-AUTH003]`.
+5. **AMM exemption**: for `CreatePool`/`Swap`/`AddLiquidity`/`RemoveLiquidity`, the FA key of
+   the tx's own pool `asset_b_id` and the LP key of its own `pool_id` are skipped. The AMM
+   rules already bind these amounts. The own pool is output[0] for `CreatePool` and input[0]
+   for the other three.
+6. **Issuance** (the only exception to rule 4): an FA key with **no** FA input in the tx is
+   an issuance. It is valid only if all of these are true, otherwise `[ERRTX-AUTH004]`:
+   - the tx type is `Transfer`;
+   - `asset_id == compute_asset_id(inputs[0].prev_tx_hash, inputs[0].output_index)`, where
+     `compute_asset_id = BLAKE3("DOLI_ASSET" || tx_hash || index)`;
+   - every issued output of that `asset_id` declares the same `total_supply`;
+   - `Σ issued ≤ total_supply`;
+   - the tx issues at most one fresh `asset_id`.
+
+   An outpoint can be spent once, so each `asset_id` can be issued once. The anchor is an
+   input the tx spends, never the tx's own hash (see §3.20 for why the old rule is circular).
+
+Consequences: `BurnAsset` becomes sound through rule 4. `MintAsset` stays unreachable and is
+also subject to rule 4 (a fresh key in a `MintAsset` fails rule 6). Assets issued before the
+activation height keep their `asset_id` and stay transferable under rule 4.
+
+**Forward-only.** The rule seals creation from the activation height. It does not re-validate
+or neutralize Pool/FA/LP UTXOs created before it (see `specs/security_model.md` §7.10).
 
 ### 3.23 Lending Transactions
 
@@ -2206,6 +2259,7 @@ Devnet (local development) → Testnet (public testing) → Mainnet (production)
 | Veto Period | 5 min | 5 min | 60s | All |
 | Fallback Ranks | 2 | 2 | 2 | All |
 | DeFi Activation Height | `u64::MAX` | `u64::MAX` | `u64::MAX` | Non-mainnet (`DOLI_DEFI_ACTIVATION_HEIGHT`) |
+| Output-Creation Authority (`inc_i_234_activation_height`, §3.22.1) | 551,202 | 78,199 | 0 | Non-mainnet (`DOLI_INC_I_234_ACTIVATION_HEIGHT`) |
 | Data Directory | `~/.doli/mainnet/` | `~/.doli/testnet/` | `~/.doli/devnet/` | - |
 | Config File | `.env` in data dir | `.env` in data dir | `.env` in data dir | - |
 
