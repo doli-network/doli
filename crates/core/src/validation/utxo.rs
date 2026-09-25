@@ -281,15 +281,7 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
         // total_input and total_output are both 0 for native DOLI — the fee
         // computation is inapplicable). Pool/Lending types move DOLI to
         // reserves tracked in extra_data, not Output.amount.
-        let fee_exempt = matches!(
-            tx.tx_type,
-            TxType::CreatePool
-                | TxType::Swap
-                | TxType::AddLiquidity
-                | TxType::RemoveLiquidity
-                | TxType::MintAsset
-                | TxType::BurnAsset
-        );
+        let fee_exempt = super::coinbase_credit::is_native_fee_exempt(tx.tx_type);
         if !fee_exempt {
             let actual_fee = total_input.saturating_sub(total_output);
             let min_fee = tx.minimum_fee();

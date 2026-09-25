@@ -28,6 +28,7 @@
 /// Called by both consensus (M2) and mempool (M3).
 pub mod amm;
 mod block;
+pub mod coinbase_credit;
 mod error;
 pub mod errors_oracle;
 /// Parallel transaction validation via dependency graph.

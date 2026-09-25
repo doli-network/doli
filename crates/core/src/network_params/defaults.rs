@@ -275,6 +275,9 @@ impl NetworkParams {
                 // 17:17Z (10 s slots); 457_855 is ~12.5 h above it. IMMUTABLE once crossed.
                 bls_key_rotation_activation_height: 457_855,
                 inc_i_234_activation_height: 551_202,
+                // INC-I-233 F4 coinbase credit. FROZEN until pinned at release
+                // (user decision-session, together with the INC-I-234 re-pin).
+                inc_i_233_activation_height: u64::MAX,
                 // INC-I-171 vesting-penalty payout bound. PINNED 418_000 on mainnet
                 // (user decision 2026-09-07; tip 400_175 at 11:53Z, ~49 h lead, one day
                 // after the 409_000 pins of #178/#204/#208). Own gate, never bundled.
@@ -535,6 +538,8 @@ impl NetworkParams {
                 // 176_200 is ~13 min above it. Once crossed this height is IMMUTABLE.
                 bls_key_rotation_activation_height: 176_200,
                 inc_i_234_activation_height: 78_199,
+                // INC-I-233 F4 coinbase credit. FROZEN until pinned at the testnet deploy.
+                inc_i_233_activation_height: u64::MAX,
                 // INC-I-171 vesting-penalty payout bound. PINNED 133_640 on testnet
                 // (deploy 2026-09-07, ~19 min after tip 133_525 at 10:06Z, user
                 // decision); IMMUTABLE once crossed. Mainnet and devnet stay u64::MAX.
@@ -798,6 +803,9 @@ impl NetworkParams {
                 inc_i_208_own_attestation_activation_height: u64::MAX,
                 bls_key_rotation_activation_height: u64::MAX,
                 inc_i_234_activation_height: 0,
+                // INC-I-233 F4: 0 is safe on devnet — a chain with no fee-exempt
+                // txs gets a byte-identical coinbase.
+                inc_i_233_activation_height: 0,
                 // INC-I-171 vesting-penalty payout bound. FROZEN at u64::MAX
                 // even here: 0 would reinterpret every live local chain.
                 inc_i_171_vesting_penalty_activation_height: u64::MAX,

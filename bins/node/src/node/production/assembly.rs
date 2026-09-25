@@ -367,12 +367,16 @@ impl Node {
             // Calculate extra fees from included user transactions only.
             // Protocol-generated transactions (coinbase, epoch rewards, registrations)
             // are NOT counted — only mempool TXs contribute per-byte fees.
+            // INC-I-233 F4: same per-tx credit as validate_block_economics.
+            let exempt_gate_active =
+                height >= self.config.network.params().inc_i_233_activation_height;
             let extra_fees: u64 = included_txs
                 .iter()
-                .flat_map(|tx| tx.outputs.iter())
-                .map(|o| {
-                    o.extra_data.len() as u64 * doli_core::consensus::FEE_PER_BYTE
-                        / doli_core::consensus::FEE_DIVISOR
+                .map(|tx| {
+                    doli_core::validation::coinbase_credit::tx_coinbase_credit(
+                        tx,
+                        exempt_gate_active,
+                    )
                 })
                 .sum();
 

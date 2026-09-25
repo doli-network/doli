@@ -570,6 +570,9 @@ impl Node {
         // - Coinbase/EpochReward: protocol-generated, no user fees
         // - Genesis Registration (0 inputs, 0 outputs): protocol-generated VDF proof
         // User Registration (from mempool, has inputs/outputs) DOES pay per-byte fees.
+        // INC-I-233 F4: per-tx credit shared with the builder; fee-exempt types
+        // credit 0 from inc_i_233_activation_height.
+        let exempt_gate_active = height >= self.config.network.params().inc_i_233_activation_height;
         let extra_fees: u64 = block
             .transactions
             .iter()
@@ -580,10 +583,8 @@ impl Node {
                         && tx.inputs.is_empty()
                         && tx.outputs.is_empty())
             })
-            .flat_map(|tx| tx.outputs.iter())
-            .map(|o| {
-                o.extra_data.len() as u64 * doli_core::consensus::FEE_PER_BYTE
-                    / doli_core::consensus::FEE_DIVISOR
+            .map(|tx| {
+                doli_core::validation::coinbase_credit::tx_coinbase_credit(tx, exempt_gate_active)
             })
             .sum();
 
