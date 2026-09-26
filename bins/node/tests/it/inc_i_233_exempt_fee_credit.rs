@@ -449,3 +449,104 @@ async fn case_d_builder_coinbase_includes_unbacked_credit() {
         coinbase - reward
     );
 }
+
+// ------------------------------------------------ mempool native-fee parity
+//
+// OUTPUT CONTRACT: fn Mempool::add_transaction(tx, utxo_set, height, slot) -> Result<AddTransactionResult, MempoolError>
+//   (crates/mempool/src/pool.rs; fee = calculate_inputs(..) - tx.total_output())
+//   O1 return value   Ok | Err — admission verdict; must match consensus (INC-I-147 class)
+//   O2 stored entry   MempoolEntry.fee — native sats the tx destroys (priority)
+// PATHS:
+//   P-TOKEN-ONLY  Transfer of FungibleAsset units, 0 native in/out  -> consensus rejects (fee 0)
+//   P-MIXED       Transfer FA + native funding, native change        -> fee = native surplus only
+//   P-EXEMPT      BurnAsset, 0 native (case_d above)                 -> consensus accepts, mempool admits
+// MATRIX:
+//   O1 x P-TOKEN-ONLY -> case_e_mempool_rejects_token_only_transfer   [EXPECTED RED]
+//   O2 x P-MIXED      -> case_f_mempool_fee_counts_native_only        [EXPECTED RED]
+//   O1 x P-EXEMPT     -> case_d_builder_coinbase_includes_unbacked_credit (admission assert)
+
+fn fa_out(pkh: Hash, amount: u64) -> Output {
+    Output::fungible_asset(
+        amount,
+        pkh,
+        Output::compute_asset_id(&Hash::from_bytes([0xEE; 32]), 0),
+        TOKENS,
+        "TKN",
+        &Condition::Signature(pkh),
+    )
+    .expect("fa output")
+}
+
+#[tokio::test]
+async fn case_e_mempool_rejects_token_only_transfer() {
+    let (mut node, kp, _t) = make_node().await;
+    let pkh = addr(&kp);
+    seed(&node, FA_PREV, 0, fa_out(pkh, TOKENS)).await;
+    let mut tx = Transaction {
+        version: 1,
+        tx_type: TxType::Transfer,
+        inputs: vec![input(FA_PREV, 0, &kp)],
+        outputs: vec![fa_out(pkh, TOKENS)],
+        extra_data: vec![],
+    };
+    sign_with_witnesses(&mut tx, &kp);
+
+    let admit = {
+        let utxo = node.utxo_set.read().await;
+        let mut mp = node.mempool.write().await;
+        mp.add_transaction(tx.clone(), &utxo, H, 1)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    };
+    let reward = node.params.block_reward(H);
+    let block = block_at(&node, &kp, reward, vec![tx]);
+    let consensus = node
+        .apply_block(block, ValidationMode::Full)
+        .await
+        .map_err(|e| e.to_string());
+    println!("[INC-I-233][e] mempool={admit:?} consensus={consensus:?}");
+    assert!(
+        consensus.is_err(),
+        "fixture: consensus must reject a 0-native-fee Transfer"
+    );
+    assert!(
+        admit.is_err(),
+        "case (e): mempool admitted a Transfer whose only fee is {TOKENS} token units; \
+         consensus rejects it"
+    );
+}
+
+#[tokio::test]
+async fn case_f_mempool_fee_counts_native_only() {
+    let (node, kp, _t) = make_node().await;
+    let pkh = addr(&kp);
+    let native_prev = Hash::from_bytes([0xF2; 32]);
+    let funding: u64 = 10_000_000;
+    seed(&node, FA_PREV, 0, fa_out(pkh, TOKENS)).await;
+    seed(&node, native_prev, 0, Output::normal(funding, pkh)).await;
+    let mut tx = Transaction {
+        version: 1,
+        tx_type: TxType::Transfer,
+        inputs: vec![input(FA_PREV, 0, &kp), input(native_prev, 0, &kp)],
+        outputs: vec![fa_out(pkh, TOKENS), Output::normal(0, pkh)],
+        extra_data: vec![],
+    };
+    let fee = tx.minimum_fee();
+    tx.outputs[1].amount = funding - fee;
+    sign_with_witnesses(&mut tx, &kp);
+    let tx_hash = tx.hash();
+
+    let utxo = node.utxo_set.read().await;
+    let mut mp = node.mempool.write().await;
+    let admit = mp.add_transaction(tx, &utxo, H, 1);
+    assert!(
+        admit.is_ok(),
+        "fixture: consensus-valid tx must be admitted: {admit:?}"
+    );
+    let entry_fee = mp.get(&tx_hash).expect("entry").fee;
+    println!("[INC-I-233][f] native_fee={fee} mempool_fee={entry_fee}");
+    assert_eq!(
+        entry_fee, fee,
+        "case (f): mempool fee must be native sats only (token units counted as fee)"
+    );
+}
