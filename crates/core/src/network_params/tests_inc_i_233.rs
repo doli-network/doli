@@ -61,6 +61,6 @@ fn inc_i_233_f4_env_override_locked_on_mainnet_honoured_elsewhere() {
 fn inc_i_233_f4_env_unset_falls_back_to_defaults() {
     let [mainnet, testnet, devnet] = load_with(None);
     assert_eq!(mainnet.inc_i_233_activation_height, u64::MAX);
-    assert_eq!(testnet.inc_i_233_activation_height, u64::MAX);
+    assert_eq!(testnet.inc_i_233_activation_height, 94_500);
     assert_eq!(devnet.inc_i_233_activation_height, 0);
 }

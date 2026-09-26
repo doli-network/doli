@@ -538,8 +538,9 @@ impl NetworkParams {
                 // 176_200 is ~13 min above it. Once crossed this height is IMMUTABLE.
                 bls_key_rotation_activation_height: 176_200,
                 inc_i_234_activation_height: 78_199,
-                // INC-I-233 F4 coinbase credit. FROZEN until pinned at the testnet deploy.
-                inc_i_233_activation_height: u64::MAX,
+                // INC-I-233 F4 coinbase credit. PINNED 94_500 on testnet (tip 94_131 at
+                // 2026-09-26 09:48Z, ~1 h lead, user decision). IMMUTABLE once crossed.
+                inc_i_233_activation_height: 94_500,
                 // INC-I-171 vesting-penalty payout bound. PINNED 133_640 on testnet
                 // (deploy 2026-09-07, ~19 min after tip 133_525 at 10:06Z, user
                 // decision); IMMUTABLE once crossed. Mainnet and devnet stay u64::MAX.
