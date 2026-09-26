@@ -256,6 +256,12 @@ returned as `null`. Clients MUST model them as optional or a valid response fail
 a mined one. The answer is per-node: a transaction lives in the mempool of the node that received
 it, so retention questions must be asked of that node and no other.
 
+For a mined transaction, `fee` is the native DOLI the transaction destroyed:
+`Σ doli_value(inputs) − Σ doli_value(outputs)`, where `doli_value` is the `amount` of a
+native-amount output, the `reserve_a` of a Pool output, and 0 for any other output (token or LP
+units). DOLI moved into a pool reserve is therefore not reported as fee. `fee` is omitted when an
+input cannot be resolved or the transaction has no inputs.
+
 **Response (mined):**
 ```json
 {
@@ -898,7 +904,7 @@ Returns transaction history for an address.
 | timestamp | Block timestamp |
 | amountReceived | Amount received by this address |
 | amountSent | Amount sent from this address |
-| fee | Transaction fee (may be 0 if not calculable) |
+| fee | Native DOLI destroyed: inputs minus outputs, both valued with `doli_value` (see `getTransaction`); 0 if not calculable |
 | confirmations | Number of confirmations |
 
 **Note:** Fee calculation may be incomplete for some transaction types. History uses an address-transaction index for O(1) lookup (not block scanning). The `limit` parameter is capped at 100.

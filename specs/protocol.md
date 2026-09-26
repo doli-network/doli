@@ -241,6 +241,13 @@ Where `BASE_FEE = 1` and `FEE_PER_BYTE = 1`. This prices on-chain storage propor
 - Bond (4 bytes): 5 sats
 - NFT (300 bytes): 301 sats
 
+The fee sums count native-amount outputs only (token and LP units never pay a fee). The six
+fee-exempt types — `CreatePool`, `Swap`, `AddLiquidity`, `RemoveLiquidity`, `MintAsset`,
+`BurnAsset` — skip rule 7. Consensus and the mempool read the same list
+(`validation::coinbase_credit::is_native_fee_exempt`), so the mempool does not reject a
+transaction that consensus accepts. The mempool rejects a fee-checked transaction that pays
+its fee only in token units with `FEE_TOO_LOW`.
+
 ### 3.6 Coinbase Transaction
 
 Every block contains a coinbase transaction as the first transaction. The coinbase
@@ -262,6 +269,13 @@ coinbase_tx = {
     extra_data: block_height as uint64
 }
 ```
+
+`total_fees` is the per-transaction coinbase credit summed over the block's user transactions:
+`credit(tx) = Σ floor(output.extra_data.len() × FEE_PER_BYTE / FEE_DIVISOR)` over the outputs of
+`tx`. At and above `inc_i_233_activation_height` (§8.2) a fee-exempt transaction (§3.5) credits 0.
+The validator (`validate_block_economics`) and the block builder call the same function
+(`validation::coinbase_credit::tx_coinbase_credit`). A coinbase of exactly `block_reward` (no
+credit) is also accepted.
 
 Coinbase outputs require 6 confirmations before spending (COINBASE_MATURITY).
 
@@ -2259,6 +2273,7 @@ Devnet (local development) → Testnet (public testing) → Mainnet (production)
 | Veto Period | 5 min | 5 min | 60s | All |
 | Fallback Ranks | 2 | 2 | 2 | All |
 | DeFi Activation Height | `u64::MAX` | `u64::MAX` | `u64::MAX` | Non-mainnet (`DOLI_DEFI_ACTIVATION_HEIGHT`) |
+| Fee-exempt coinbase credit (`inc_i_233_activation_height`, §3.6) | `u64::MAX` | 94,500 | 0 | Non-mainnet (`DOLI_INC_I_233_ACTIVATION_HEIGHT`) |
 | Output-Creation Authority (`inc_i_234_activation_height`, §3.22.1) | 551,202 | 78,199 | 0 | Non-mainnet (`DOLI_INC_I_234_ACTIVATION_HEIGHT`) |
 | Data Directory | `~/.doli/mainnet/` | `~/.doli/testnet/` | `~/.doli/devnet/` | - |
 | Config File | `.env` in data dir | `.env` in data dir | `.env` in data dir | - |
