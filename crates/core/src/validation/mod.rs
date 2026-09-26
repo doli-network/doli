@@ -29,6 +29,7 @@
 pub mod amm;
 mod block;
 pub mod coinbase_credit;
+mod doli_value;
 mod error;
 pub mod errors_oracle;
 /// Parallel transaction validation via dependency graph.

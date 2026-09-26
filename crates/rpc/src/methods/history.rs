@@ -96,9 +96,9 @@ impl RpcContext {
                 for input in &tx.inputs {
                     if let Some(prev_outputs) = tx_output_cache.get(&input.prev_tx_hash) {
                         if let Some(prev_output) = prev_outputs.get(input.output_index as usize) {
-                            if prev_output.output_type.is_native_amount() {
-                                total_input += prev_output.amount;
-                            }
+                            // INC-I-233: DOLI value (native + Pool reserve_a), as consensus.
+                            total_input +=
+                                doli_core::validation::amm::doli_value(prev_output) as u64;
                             if prev_output.pubkey_hash == pubkey_hash
                                 && prev_output.output_type.is_native_amount()
                             {
@@ -118,8 +118,7 @@ impl RpcContext {
                 let total_output: u64 = tx
                     .outputs
                     .iter()
-                    .filter(|o| o.output_type.is_native_amount())
-                    .map(|o| o.amount)
+                    .map(|o| doli_core::validation::amm::doli_value(o) as u64)
                     .sum();
                 let fee = if total_input > 0 && total_input >= total_output {
                     total_input - total_output
