@@ -66,6 +66,7 @@ mod inc_i_217_m7_rotation_apply;
 mod inc_i_221_bootstrap_retry;
 mod inc_i_233_coinbase_credit;
 mod inc_i_233_exempt_fee_credit;
+mod inc_i_233_w4_epoch_reward_skip;
 mod inc_i_234_output_authority;
 mod inc_i_234_output_authority_more;
 mod m1_snap_install_identity;

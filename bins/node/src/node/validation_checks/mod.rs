@@ -758,51 +758,59 @@ impl Node {
             // Distribution amount check depends on local-state rewards
             // calculation (`calculate_epoch_rewards`). In Light mode the local
             // state may be on a transient micro-fork, so keep Full-only.
+            let mut reward_calc_skipped = false;
             if matches!(mode, ValidationMode::Full) {
                 // Exact match of amounts and recipients
+                // INC-I-233 W4: on Err skip ONLY this comparison, then still run
+                // the pool-input checks below (Light mode enforces them). The
+                // early Ok(()) is kept AFTER them, so the INC-I-080 AddBond cap
+                // stays skipped exactly as before (INV-CONSENSUS-001).
                 let expected = match self.calculate_epoch_rewards(completed_epoch).await {
-                    Ok(outputs) => outputs,
+                    Ok(outputs) => Some(outputs),
                     Err(err) => {
                         warn!(
                             "[INC_I_081_VALIDATION_SKIP] Cannot validate EpochReward content at h={} for epoch={}: {}. \
                              Skipping strict comparison (Full mode degrades to Light for this block).",
                             height, completed_epoch, err
                         );
-                        return Ok(());
+                        None
                     }
                 };
-                let mut expected_sorted: Vec<(u64, crypto::Hash)> = expected;
-                expected_sorted.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
+                reward_calc_skipped = expected.is_none();
+                if let Some(expected) = expected {
+                    let mut expected_sorted: Vec<(u64, crypto::Hash)> = expected;
+                    expected_sorted.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
 
-                let mut actual_sorted: Vec<(u64, crypto::Hash)> = epoch_tx
-                    .outputs
-                    .iter()
-                    .map(|o| (o.amount, o.pubkey_hash))
-                    .collect();
-                actual_sorted.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
+                    let mut actual_sorted: Vec<(u64, crypto::Hash)> = epoch_tx
+                        .outputs
+                        .iter()
+                        .map(|o| (o.amount, o.pubkey_hash))
+                        .collect();
+                    actual_sorted.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
 
-                if expected_sorted != actual_sorted {
-                    let total_distributed: u64 = actual_sorted.iter().map(|(a, _)| *a).sum();
-                    let expected_total: u64 = expected_sorted.iter().map(|(a, _)| *a).sum();
-                    warn!(
-                        "[VALIDATION] EpochReward divergence: h={} hash={:.16} epoch={} expected_outputs={} actual_outputs={} expected_total={} actual_total={}",
-                        height,
-                        block.hash(),
-                        completed_epoch,
-                        expected_sorted.len(),
-                        actual_sorted.len(),
-                        expected_total,
-                        total_distributed
-                    );
-                    anyhow::bail!(
-                        "[ECON_EPOCH_DISTRIBUTION] EpochReward mismatch at height={}: \
-                         expected {} outputs totaling {}, got {} outputs totaling {}",
-                        height,
-                        expected_sorted.len(),
-                        expected_total,
-                        actual_sorted.len(),
-                        total_distributed
-                    );
+                    if expected_sorted != actual_sorted {
+                        let total_distributed: u64 = actual_sorted.iter().map(|(a, _)| *a).sum();
+                        let expected_total: u64 = expected_sorted.iter().map(|(a, _)| *a).sum();
+                        warn!(
+                            "[VALIDATION] EpochReward divergence: h={} hash={:.16} epoch={} expected_outputs={} actual_outputs={} expected_total={} actual_total={}",
+                            height,
+                            block.hash(),
+                            completed_epoch,
+                            expected_sorted.len(),
+                            actual_sorted.len(),
+                            expected_total,
+                            total_distributed
+                        );
+                        anyhow::bail!(
+                            "[ECON_EPOCH_DISTRIBUTION] EpochReward mismatch at height={}: \
+                             expected {} outputs totaling {}, got {} outputs totaling {}",
+                            height,
+                            expected_sorted.len(),
+                            expected_total,
+                            actual_sorted.len(),
+                            total_distributed
+                        );
+                    }
                 }
             }
 
@@ -848,6 +856,12 @@ impl Node {
                     "[ECON_EPOCH_PRE_INPUTS] EpochReward at height={} (pre-activation) must not have inputs",
                     height
                 );
+            }
+            // INC-I-233 W4: the pre-fix early return, now placed after the
+            // structural input checks. Keeps every later check (INC-I-080 cap)
+            // exactly as skipped as before.
+            if reward_calc_skipped {
+                return Ok(());
             }
         } else if is_epoch_boundary && matches!(mode, ValidationMode::Full) {
             // Only enforce missing-EpochReward check in Full mode.
