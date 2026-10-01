@@ -19,6 +19,7 @@ mod floor_window;
 mod force_reorg;
 pub use force_reorg::ForceReorgOutcome;
 mod fork_recovery;
+mod fork_walk;
 mod genesis;
 mod holdings;
 use holdings::holdings_of_every_producer;

@@ -7,6 +7,7 @@
 //!
 //! This is the Bitcoin-like "request missing ancestors" mechanism.
 
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use crypto::Hash;
@@ -25,6 +26,9 @@ const RECOVERY_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Timeout for a single block request before trying a different peer
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Bound on remembered (branch tip, local tip) verdicts that did not win fork choice.
+const MAX_REJECTED_BRANCHES: usize = 32;
 
 /// Active recovery session state
 struct ActiveRecovery {
@@ -63,6 +67,8 @@ pub struct ForkRecoveryTracker {
     exceeded_max_depth: bool,
     /// Our chain's genesis hash — blocks from other chains are rejected.
     genesis_hash: Hash,
+    /// (branch tip, local tip) pairs already walked and not adopted (LB-9).
+    rejected: VecDeque<(Hash, Hash)>,
 }
 
 impl ForkRecoveryTracker {
@@ -72,6 +78,7 @@ impl ForkRecoveryTracker {
             cooldown_until: None,
             exceeded_max_depth: false,
             genesis_hash: Hash::default(),
+            rejected: VecDeque::new(),
         }
     }
 
@@ -88,6 +95,7 @@ impl ForkRecoveryTracker {
     /// Start recovery for an orphan block.
     /// Returns false if already recovering or on cooldown.
     pub fn start(&mut self, orphan_block: Block, peer: PeerId) -> bool {
+        self.expire_stale_session();
         if self.active.is_some() {
             return false;
         }
@@ -123,8 +131,6 @@ impl ForkRecoveryTracker {
     }
 
     /// Set alternate peers for failover during recovery (INC-I-012 F11).
-    /// Called by the node when it knows which peers have higher heights.
-    #[allow(dead_code)]
     pub fn set_alternate_peers(&mut self, peers: Vec<PeerId>) {
         if let Some(recovery) = self.active.as_mut() {
             recovery.alternate_peers = peers.into_iter().filter(|p| *p != recovery.peer).collect();
@@ -171,15 +177,15 @@ impl ForkRecoveryTracker {
             Some(r) if r.pending && r.peer == peer => r,
             _ => return false,
         };
+        // Content-keyed: a block that is not the requested parent is some other
+        // response (e.g. an orphan chase) — pass it through, keep waiting.
+        if matches!(&block, Some(blk) if blk.hash() != recovery.next_parent) {
+            return false;
+        }
         recovery.pending = false;
 
         match block {
             Some(blk) => {
-                let expected = recovery.next_parent;
-                if blk.hash() != expected {
-                    self.cancel("unexpected block hash");
-                    return true;
-                }
                 // Reject blocks from a different chain
                 if !self.genesis_hash.is_zero() && blk.header.genesis_hash != self.genesis_hash {
                     warn!(
@@ -248,7 +254,7 @@ impl ForkRecoveryTracker {
 
     /// Can a new recovery start? (not active and not on cooldown)
     pub fn can_start(&self) -> bool {
-        if self.active.is_some() {
+        if matches!(&self.active, Some(r) if r.started_at.elapsed() <= RECOVERY_TIMEOUT) {
             return false;
         }
         if let Some(until) = self.cooldown_until {
@@ -275,6 +281,29 @@ impl ForkRecoveryTracker {
         }
     }
 
+    /// Drop a session past RECOVERY_TIMEOUT even if `next_fetch` never ran.
+    fn expire_stale_session(&mut self) {
+        if matches!(&self.active, Some(r) if r.started_at.elapsed() > RECOVERY_TIMEOUT) {
+            self.cancel("session timeout");
+        }
+    }
+
+    /// Remember that the branch ending at `branch_tip` lost fork choice against `local_tip`.
+    pub fn mark_branch_rejected(&mut self, branch_tip: Hash, local_tip: Hash) {
+        if self.is_branch_rejected(branch_tip, local_tip) {
+            return;
+        }
+        if self.rejected.len() >= MAX_REJECTED_BRANCHES {
+            self.rejected.pop_front();
+        }
+        self.rejected.push_back((branch_tip, local_tip));
+    }
+
+    /// Was this branch already walked and not adopted while on this local tip?
+    pub fn is_branch_rejected(&self, branch_tip: Hash, local_tip: Hash) -> bool {
+        self.rejected.contains(&(branch_tip, local_tip))
+    }
+
     /// Check and consume the exceeded-max-depth flag.
     /// Returns true exactly once after a max-depth cancellation.
     pub fn take_exceeded_max_depth(&mut self) -> bool {
@@ -289,155 +318,5 @@ impl Default for ForkRecoveryTracker {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn make_block(prev_hash: Hash, slot: u32) -> Block {
-        let header = doli_core::BlockHeader {
-            version: 1,
-            prev_hash,
-            merkle_root: Hash::ZERO,
-            presence_root: Hash::ZERO,
-            genesis_hash: Hash::ZERO,
-            timestamp: slot as u64 * 10,
-            slot,
-            producer: crypto::PublicKey::from_bytes([0u8; 32]),
-            vdf_output: vdf::VdfOutput { value: vec![] },
-            vdf_proof: vdf::VdfProof::empty(),
-            missed_producers: Vec::new(),
-            data_root: Hash::ZERO,
-            fork_id: Hash::ZERO,
-        };
-        Block::new(header, vec![])
-    }
-
-    #[test]
-    fn test_start_and_walk_parents() {
-        let mut tracker = ForkRecoveryTracker::new();
-        let peer = PeerId::random();
-
-        // Build a chain: genesis → A → B → C (orphan tip)
-        let genesis = Hash::ZERO;
-        let block_a = make_block(genesis, 1);
-        let hash_a = block_a.hash();
-        let block_b = make_block(hash_a, 2);
-        let hash_b = block_b.hash();
-        let block_c = make_block(hash_b, 3);
-
-        // Start with orphan C
-        assert!(tracker.start(block_c, peer));
-        assert!(tracker.is_active());
-
-        // Fetch parent of C → should be hash_b
-        let (_, fetch_hash) = tracker.next_fetch().unwrap();
-        assert_eq!(fetch_hash, hash_b);
-
-        // Feed block B
-        assert!(tracker.handle_block(peer, Some(block_b)));
-
-        // Not connected yet (genesis not in "store")
-        assert!(tracker.check_connection(false).is_none());
-
-        // Fetch parent of B → should be hash_a
-        let (_, fetch_hash) = tracker.next_fetch().unwrap();
-        assert_eq!(fetch_hash, hash_a);
-
-        // Feed block A
-        assert!(tracker.handle_block(peer, Some(block_a)));
-
-        // Parent of A is genesis — "in store"
-        let completed = tracker.check_connection(true).unwrap();
-        assert_eq!(completed.connection_point, genesis);
-        assert_eq!(completed.blocks.len(), 3); // A, B, C in forward order
-        assert_eq!(completed.blocks[0].header.slot, 1); // A first
-        assert_eq!(completed.blocks[2].header.slot, 3); // C last
-        assert!(!tracker.is_active());
-    }
-
-    #[test]
-    fn test_depth_limit_cancels() {
-        let mut tracker = ForkRecoveryTracker::new();
-        let peer = PeerId::random();
-
-        // Start with an orphan
-        let orphan = make_block(crypto::hash::hash(b"parent0"), 100);
-        assert!(tracker.start(orphan, peer));
-
-        // Feed MAX_RECOVERY_DEPTH blocks
-        for i in 1..=MAX_RECOVERY_DEPTH {
-            let (_, hash) = tracker.next_fetch().unwrap();
-            let parent = crypto::hash::hash(format!("parent{}", i).as_bytes());
-            // Build a block whose hash matches what we're looking for
-            // We need the block hash to equal `hash`, but we can't control that.
-            // Instead, let's just verify the depth limit fires.
-            let block = make_block(parent, 100 - i as u32);
-            // This won't match the expected hash, so it will cancel with "unexpected"
-            // Let's test the depth differently.
-            if block.hash() != hash {
-                // Expected: hash mismatch cancels recovery
-                assert!(tracker.handle_block(peer, Some(block)));
-                assert!(!tracker.is_active()); // cancelled
-                return;
-            }
-        }
-        // If somehow all hashes matched (astronomically unlikely), depth limit would fire
-    }
-
-    #[test]
-    fn test_cooldown_blocks_restart() {
-        let mut tracker = ForkRecoveryTracker::new();
-        let peer = PeerId::random();
-
-        let orphan = make_block(Hash::ZERO, 1);
-        assert!(tracker.start(orphan.clone(), peer));
-
-        // Complete the recovery
-        let _ = tracker.check_connection(true);
-        assert!(!tracker.is_active());
-
-        // Try to start again immediately — should fail (cooldown)
-        assert!(!tracker.start(orphan, peer));
-        assert!(!tracker.can_start());
-    }
-
-    #[test]
-    fn test_peer_missing_block_cancels() {
-        let mut tracker = ForkRecoveryTracker::new();
-        let peer = PeerId::random();
-
-        let orphan = make_block(crypto::hash::hash(b"unknown"), 5);
-        assert!(tracker.start(orphan, peer));
-
-        let _ = tracker.next_fetch().unwrap();
-
-        // Peer doesn't have the block
-        assert!(tracker.handle_block(peer, None));
-        assert!(!tracker.is_active()); // cancelled
-    }
-
-    #[test]
-    fn test_wrong_hash_cancels() {
-        let mut tracker = ForkRecoveryTracker::new();
-        let peer = PeerId::random();
-
-        let orphan = make_block(crypto::hash::hash(b"expected_parent"), 5);
-        assert!(tracker.start(orphan, peer));
-
-        let _ = tracker.next_fetch().unwrap();
-
-        // Feed a block with wrong hash
-        let wrong_block = make_block(Hash::ZERO, 99);
-        assert!(tracker.handle_block(peer, Some(wrong_block)));
-        assert!(!tracker.is_active()); // cancelled due to hash mismatch
-    }
-
-    #[test]
-    fn test_not_consumed_when_inactive() {
-        let mut tracker = ForkRecoveryTracker::new();
-        let peer = PeerId::random();
-
-        let block = make_block(Hash::ZERO, 1);
-        // No active recovery — handle_block should return false
-        assert!(!tracker.handle_block(peer, Some(block)));
-    }
-}
+#[path = "fork_recovery_tests.rs"]
+mod tests;

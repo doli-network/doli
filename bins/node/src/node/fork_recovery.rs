@@ -1,11 +1,10 @@
 use super::*;
 
 impl Node {
-    /// Handle a completed fork recovery — evaluate the fork chain and reorg if heavier.
+    /// Evaluate a completed, eligibility-gated fork walk and reorg if heavier.
     ///
-    /// Called when the parent chain walk connects to a block in our block_store.
     /// Records weights, moves blocks to fork_block_cache, plans reorg, executes if heavier.
-    pub async fn handle_completed_fork_recovery(
+    pub(super) async fn evaluate_recovered_fork(
         &mut self,
         recovery: network::sync::CompletedRecovery,
     ) -> Result<()> {
@@ -172,32 +171,6 @@ impl Node {
         }
 
         Ok(())
-    }
-
-    /// Try to start fork recovery from cached orphan blocks.
-    /// Called from production gate when fork is detected (ChainMismatch, AheadOfPeers).
-    pub async fn try_trigger_fork_recovery(&mut self) {
-        let can_start = self.sync_manager.read().await.can_start_fork_recovery();
-        if !can_start {
-            return;
-        }
-        let orphan = {
-            let cache = self.fork_block_cache.read().await;
-            cache.values().next().cloned()
-        };
-        if let Some(orphan) = orphan {
-            let peer = self.sync_manager.read().await.best_peer_for_recovery();
-            if let Some(peer) = peer {
-                let started = self
-                    .sync_manager
-                    .write()
-                    .await
-                    .start_fork_recovery(orphan, peer);
-                if started {
-                    info!("[FORK] RECOVERY_START triggered from production gate");
-                }
-            }
-        }
     }
 
     /// Try to apply a chain of cached blocks when we're behind

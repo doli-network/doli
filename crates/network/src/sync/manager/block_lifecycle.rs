@@ -2,7 +2,6 @@
 
 use std::time::{Duration, Instant};
 
-use libp2p::PeerId;
 use tracing::{info, warn};
 
 use crypto::Hash;
@@ -446,12 +445,6 @@ impl SyncManager {
     // =========================================================================
     // FORK RECOVERY — Active parent chain download
     // =========================================================================
-
-    /// Start fork recovery for an orphan block.
-    /// Walks backward through parent chain requesting blocks from the peer.
-    pub fn start_fork_recovery(&mut self, orphan: doli_core::Block, peer: PeerId) -> bool {
-        self.fork.fork_recovery.start(orphan, peer)
-    }
 
     /// Check if fork recovery chain connected to our block_store.
     /// Node calls this with the result of `block_store.has_block(current_parent)`.

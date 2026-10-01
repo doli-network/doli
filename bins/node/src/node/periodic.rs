@@ -893,6 +893,8 @@ impl Node {
                             let _ = network.request_sync(peer_id, request).await;
                         }
                     }
+                    // INC-I-235: walk the competing branch back to the stored fork point.
+                    self.try_trigger_fork_recovery().await;
                     return Ok(());
                 }
             }

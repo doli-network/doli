@@ -70,6 +70,7 @@ mod inc_i_233_exempt_fee_credit;
 mod inc_i_233_w4_epoch_reward_skip;
 mod inc_i_234_output_authority;
 mod inc_i_234_output_authority_more;
+mod inc_i_235_wedged_fork_walk;
 mod m1_snap_install_identity;
 mod m3_common;
 mod m3_staging_install;
