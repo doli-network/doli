@@ -42,7 +42,7 @@ fn load_with(value: Option<&str>) -> [NetworkParams; 3] {
 fn inc_i_234_m1_env_override_locked_on_mainnet_honoured_elsewhere() {
     let [mainnet, testnet, devnet] = load_with(Some("7"));
     assert_eq!(
-        mainnet.inc_i_234_activation_height, 551_202,
+        mainnet.inc_i_234_activation_height, 612_000,
         "mainnet must ignore env"
     );
     assert_eq!(
@@ -59,7 +59,7 @@ fn inc_i_234_m1_env_override_locked_on_mainnet_honoured_elsewhere() {
 #[test]
 fn inc_i_234_m1_env_unset_falls_back_to_defaults() {
     let [mainnet, testnet, devnet] = load_with(None);
-    assert_eq!(mainnet.inc_i_234_activation_height, 551_202);
+    assert_eq!(mainnet.inc_i_234_activation_height, 612_000);
     assert_eq!(testnet.inc_i_234_activation_height, 78_199);
     assert_eq!(devnet.inc_i_234_activation_height, 0);
 }

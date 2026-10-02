@@ -27,7 +27,7 @@
 //   O3 receiver consumed by value
 //   PATHS: one
 // INPUT PARTITIONS
-//   defaults: IP-M mainnet (551_202) | IP-T testnet (78_199) | IP-D devnet (0)
+//   defaults: IP-M mainnet (612_000) | IP-T testnet (78_199) | IP-D devnet (0)
 //   new:      current_height below / equal to / far above the testnet AH (0, 78_199, u64::MAX-1)
 //   builder:  sentinel h distinct from every default (234_234)
 //   sites:    each of the 4 files holding the 6 production ctx sites
@@ -49,7 +49,7 @@ const CTX_SENTINEL: u64 = 234_234;
 #[test]
 fn req_234_001_per_network_values() {
     for (network, expected) in [
-        (Network::Mainnet, 551_202),
+        (Network::Mainnet, 612_000),
         (Network::Testnet, 78_199),
         (Network::Devnet, 0),
     ] {

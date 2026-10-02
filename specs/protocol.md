@@ -2283,8 +2283,9 @@ Devnet (local development) → Testnet (public testing) → Mainnet (production)
 | Veto Period | 5 min | 5 min | 60s | All |
 | Fallback Ranks | 2 | 2 | 2 | All |
 | DeFi Activation Height | `u64::MAX` | `u64::MAX` | `u64::MAX` | Non-mainnet (`DOLI_DEFI_ACTIVATION_HEIGHT`) |
-| Fee-exempt coinbase credit (`inc_i_233_activation_height`, §3.6) | `u64::MAX` | 94,500 | 0 | Non-mainnet (`DOLI_INC_I_233_ACTIVATION_HEIGHT`) |
-| Output-Creation Authority (`inc_i_234_activation_height`, §3.22.1) | 551,202 | 78,199 | 0 | Non-mainnet (`DOLI_INC_I_234_ACTIVATION_HEIGHT`) |
+| Fee-exempt coinbase credit (`inc_i_233_activation_height`, §3.6) | 612,000 | 94,500 | 0 | Non-mainnet (`DOLI_INC_I_233_ACTIVATION_HEIGHT`) |
+| Output-Creation Authority (`inc_i_234_activation_height`, §3.22.1) | 612,000 | 78,199 | 0 | Non-mainnet (`DOLI_INC_I_234_ACTIVATION_HEIGHT`) |
+| Pending-updates state-root cover (`inc_i_181_pending_root_activation_height`) | 612,000 | 97,886 | 0 | Non-mainnet (`DOLI_INC_I_181_PENDING_ROOT_ACTIVATION_HEIGHT`) |
 | Data Directory | `~/.doli/mainnet/` | `~/.doli/testnet/` | `~/.doli/devnet/` | - |
 | Config File | `.env` in data dir | `.env` in data dir | `.env` in data dir | - |
 

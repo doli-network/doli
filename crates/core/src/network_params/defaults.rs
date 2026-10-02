@@ -274,12 +274,19 @@ impl NetworkParams {
                 // INC-I-217: MAINNET re-pin 2026-09-13 (450_789 never shipped). Tip 453_367 at
                 // 17:17Z (10 s slots); 457_855 is ~12.5 h above it. IMMUTABLE once crossed.
                 bls_key_rotation_activation_height: 457_855,
-                inc_i_234_activation_height: 551_202,
-                // INC-I-233 F4 coinbase credit. FROZEN until pinned at release
-                // (user decision-session, together with the INC-I-234 re-pin).
-                inc_i_233_activation_height: u64::MAX,
-                // TODO(INC-I-181): pin. FROZEN until the user picks the mainnet value.
-                inc_i_181_pending_root_activation_height: u64::MAX,
+                // INC-I-234: MAINNET re-pin 2026-10-02 (551_202 passed on 6.40.0, which
+                // never carried this rule, so it never shipped). Tip 603_085 at ~14:20Z,
+                // ~7_732 blocks/day: 612_000 is ~28 h ahead (~2026-10-03 17:19Z).
+                // IMMUTABLE once crossed. INC-I-234, INC-I-233 and INC-I-181 share
+                // 612_000 by explicit user decision (2026-10-02), each in its own field.
+                inc_i_234_activation_height: 612_000,
+                // INC-I-233 F4 coinbase credit. PINNED 612_000 on mainnet (user
+                // decision 2026-10-02). Block CONTENT changes => every producer must
+                // run the release before this height. IMMUTABLE once crossed.
+                inc_i_233_activation_height: 612_000,
+                // INC-I-181 pending_updates state-root cover. PINNED 612_000 on mainnet
+                // (user decision 2026-10-02). IMMUTABLE once crossed.
+                inc_i_181_pending_root_activation_height: 612_000,
                 // INC-I-171 vesting-penalty payout bound. PINNED 418_000 on mainnet
                 // (user decision 2026-09-07; tip 400_175 at 11:53Z, ~49 h lead, one day
                 // after the 409_000 pins of #178/#204/#208). Own gate, never bundled.
