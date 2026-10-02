@@ -21,7 +21,7 @@ const MAX_RECOVERY_DEPTH: usize = 1000;
 /// Cooldown between recovery attempts
 const RECOVERY_COOLDOWN: Duration = Duration::from_secs(30);
 
-/// Timeout for a single recovery session
+/// Walk session timeout, measured from the last accepted walk block
 const RECOVERY_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Timeout for a single block request before trying a different peer
@@ -40,8 +40,8 @@ struct ActiveRecovery {
     pending: bool,
     /// Peer to query
     peer: PeerId,
-    /// When this session started
-    started_at: Instant,
+    /// When the last walk block was accepted (or the session started)
+    last_progress_at: Instant,
     /// When the current request was sent (for per-request timeout / F11 failover)
     request_sent_at: Option<Instant>,
     /// Alternate peers to try if primary fails or times out
@@ -123,7 +123,7 @@ impl ForkRecoveryTracker {
             blocks: vec![orphan_block],
             pending: false,
             peer,
-            started_at: Instant::now(),
+            last_progress_at: Instant::now(),
             request_sent_at: None,
             alternate_peers: Vec::new(),
         });
@@ -141,14 +141,14 @@ impl ForkRecoveryTracker {
     pub fn next_fetch(&mut self) -> Option<(PeerId, Hash)> {
         let recovery = self.active.as_mut()?;
         // Check session timeout
-        if recovery.started_at.elapsed() > RECOVERY_TIMEOUT {
+        if recovery.last_progress_at.elapsed() > RECOVERY_TIMEOUT {
             self.cancel("session timeout");
             return None;
         }
         // INC-I-012 F11: Per-request timeout with peer failover.
         // If the current request has been pending for >10s, switch to an
         // alternate peer and retry. This prevents a single slow/disconnected
-        // peer from stalling the entire 120s recovery session.
+        // peer from stalling the walk until the progress deadline.
         if recovery.pending {
             let sent_at = recovery.request_sent_at?;
             if sent_at.elapsed() <= REQUEST_TIMEOUT {
@@ -197,6 +197,7 @@ impl ForkRecoveryTracker {
                 }
                 recovery.next_parent = blk.header.prev_hash;
                 recovery.blocks.push(blk);
+                recovery.last_progress_at = Instant::now();
                 // Depth check
                 if recovery.blocks.len() > MAX_RECOVERY_DEPTH {
                     self.cancel("exceeded max depth");
@@ -254,7 +255,7 @@ impl ForkRecoveryTracker {
 
     /// Can a new recovery start? (not active and not on cooldown)
     pub fn can_start(&self) -> bool {
-        if matches!(&self.active, Some(r) if r.started_at.elapsed() <= RECOVERY_TIMEOUT) {
+        if matches!(&self.active, Some(r) if r.last_progress_at.elapsed() <= RECOVERY_TIMEOUT) {
             return false;
         }
         if let Some(until) = self.cooldown_until {
@@ -283,7 +284,7 @@ impl ForkRecoveryTracker {
 
     /// Drop a session past RECOVERY_TIMEOUT even if `next_fetch` never ran.
     fn expire_stale_session(&mut self) {
-        if matches!(&self.active, Some(r) if r.started_at.elapsed() > RECOVERY_TIMEOUT) {
+        if matches!(&self.active, Some(r) if r.last_progress_at.elapsed() > RECOVERY_TIMEOUT) {
             self.cancel("session timeout");
         }
     }
