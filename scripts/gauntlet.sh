@@ -120,12 +120,15 @@
 #     SKIPs: the CLI has no offline dry-run path, and this scenario never puts
 #     a transaction on a chain. A pinned activation height SKIPs the whole
 #     scenario. See scripts/gauntlet-gs021.sh.
+#   * GS-022 (losing-sibling fork walk) is opt-in (`--gs022` WITH
+#     GAUNTLET_GS022_CONFIRM=1; testnet only). Replays INC-I-235 on ONE non-seed
+#     producer via scripts/inc-i-235-drill.sh. See scripts/gauntlet-gs022.sh.
 #
 # Assertions key off STRUCTURED telemetry fields (gap=, rollback_depth=,
 # sync_fails=, state=) and distinct-event phrases — NEVER raw keywords that also
 # appear in per-second telemetry (the word "rollback" logs ~1/sec at depth 0).
 #
-# Usage:  bash scripts/gauntlet.sh [--quick] [--chaos|--gs009|--gs010|--gs014|--gs016|--gs019]
+# Usage:  bash scripts/gauntlet.sh [--quick] [--chaos|--gs009|--gs010|--gs014|--gs016|--gs019|--gs022]
 # Env:    WORKFLOW_RUN_ID, GAUNTLET_WINDOW (s, default 45), GAUNTLET_RESTART_NODE
 #         (default n5), GAUNTLET_RSS_CEIL_MB (default 800), GAUNTLET_MIN_NODES
 #         (default 3), GAUNTLET_NO_PERTURB (1=skip restart).
@@ -162,6 +165,9 @@ GS020_LIB="$ROOT/scripts/gauntlet-gs020.sh"
 GS021_LIB="$ROOT/scripts/gauntlet-gs021.sh"
 # shellcheck source=/dev/null
 [ -f "$GS021_LIB" ] && . "$GS021_LIB"
+GS022_LIB="$ROOT/scripts/gauntlet-gs022.sh"
+# shellcheck source=/dev/null
+[ -f "$GS022_LIB" ] && . "$GS022_LIB"
 LOG_DIR="$HOME/testnet/logs"
 LABEL_PREFIX="network.doli.testnet"
 
@@ -182,6 +188,7 @@ GS010=0
 GS014=0
 GS016=0
 GS019=0
+GS022=0
 for a in "$@"; do
   case "$a" in
     --quick) WINDOW=20 ;;
@@ -191,6 +198,7 @@ for a in "$@"; do
     --gs014) GS014=1 ;;
     --gs016) GS016=1 ;;
     --gs019) GS019=1 ;;
+    --gs022) GS022=1 ;;
   esac
 done
 CHAOS_RECOVERED=1   # stays 1 unless a chaos injector fails to recover the node
@@ -415,6 +423,11 @@ elif [ "${GS009:-0}" = "1" ]; then
   gs009_inject
   say "  [gs009] settling 10s, then re-baselining for a clean observation window"
   sleep 10
+  build_nodecfg
+elif [ "${GS022:-0}" = "1" ]; then
+  # OPT-IN GS-022 losing-sibling fork walk on one non-seed producer.
+  say "\n${C_R}▸ GS-022 MODE — LOSING-SIBLING FORK WALK (recovery-mode + pause RPCs on one producer)${C_0}"
+  gs022_inject
   build_nodecfg
 elif [ "${GS019:-0}" = "1" ]; then
   # OPT-IN GS-019 attestation-aggregate poison. No attestation ingress is
@@ -708,6 +721,8 @@ assert(){
       _gs019_assert "$t"; return $? ;;
     gs020-refuses-sub-threshold|gs020-target-untouched|gs020-marker-parked|gs020-preflight-token-present|gs020-helper-unit-rendered)
       _gs020_assert "$t"; return $? ;;
+    gs022-sibling-induced|gs022-converged-by-reorg|gs022-no-snapsync|gs022-fleet-converged)
+      _gs022_assert "$t"; return $? ;;
     *)
       why="unknown assertion token '$t'" ;;
   esac
@@ -724,6 +739,7 @@ inj_tag(){
   if [ "${GS014:-0}" = "1" ] && [ "$sid" = "GS-014" ]; then echo "inj"; return; fi
   if [ "${GS016:-0}" = "1" ] && [ "$sid" = "GS-016" ]; then echo "inj"; return; fi
   if [ "${GS019:-0}" = "1" ] && [ "$sid" = "GS-019" ]; then echo "inj"; return; fi
+  if [ "${GS022:-0}" = "1" ] && [ "$sid" = "GS-022" ]; then echo "inj"; return; fi
   if [ "$CHAOS" = "1" ]; then
     case "$sid" in GS-002|GS-003|GS-004|GS-005|GS-007) echo "inj";; *) echo "obs";; esac
   elif [ "$NO_PERTURB" != "1" ]; then
