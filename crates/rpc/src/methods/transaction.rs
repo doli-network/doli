@@ -56,14 +56,16 @@ impl RpcContext {
                 response.confirmations = Some(confirmations);
 
                 // Resolve input addresses from referenced outputs
-                self.resolve_input_addresses(tx, &mut response);
+                let consumed = self.resolve_input_addresses(tx, &mut response);
 
-                // Calculate fee from resolved inputs
-                if response.fee.is_none() {
-                    let total_in: u64 = response.inputs.iter().filter_map(|i| i.amount).sum();
-                    let total_out: u64 = response.outputs.iter().map(|o| o.amount).sum();
-                    if total_in > 0 && total_in >= total_out {
-                        response.fee = Some(total_in - total_out);
+                // Fee = native DOLI destroyed (INC-I-233): token/LP units are not
+                // DOLI and a Pool counts its reserve_a, so DOLI moved into a pool
+                // reserve is not reported as fee. Only when every input resolved.
+                if response.fee.is_none() && !tx.inputs.is_empty() {
+                    let consumed: Option<Vec<_>> = consumed.into_iter().collect();
+                    if let Some(consumed) = consumed {
+                        response.fee =
+                            doli_core::validation::amm::doli_surplus(&consumed, &tx.outputs);
                     }
                 }
 
@@ -76,7 +78,13 @@ impl RpcContext {
     }
 
     /// Resolve input addresses by looking up referenced outputs
-    fn resolve_input_addresses(&self, tx: &Transaction, response: &mut TransactionResponse) {
+    /// Returns the consumed output per input (`None` when it cannot be resolved).
+    fn resolve_input_addresses(
+        &self,
+        tx: &Transaction,
+        response: &mut TransactionResponse,
+    ) -> Vec<Option<doli_core::transaction::Output>> {
+        let mut consumed = vec![None; tx.inputs.len()];
         for (i, input) in tx.inputs.iter().enumerate() {
             if let Ok(Some(parent_height)) =
                 self.block_store.get_tx_block_height(&input.prev_tx_hash)
@@ -91,6 +99,7 @@ impl RpcContext {
                                         crypto::address::encode(&output.pubkey_hash, "doli").ok();
                                     resp_input.amount = Some(output.amount);
                                 }
+                                consumed[i] = Some(output.clone());
                             }
                             break;
                         }
@@ -98,6 +107,7 @@ impl RpcContext {
                 }
             }
         }
+        consumed
     }
 
     /// Get NFT by token ID — scans UTXO set for the NFT with matching token_id

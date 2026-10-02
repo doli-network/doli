@@ -129,6 +129,13 @@ VALUES ('GS-021', 'bls-rotation-frozen-pre-activation',
   'gs021-no-queued-rotation,gs021-rotation-metric-zero,gs021-below-ah-refused', json('{"nodes": 18}'), 'gauntlet.sh', 'active')
 ON CONFLICT(scenario_id) DO UPDATE SET incident_ids=excluded.incident_ids, description=excluded.description, assertions=excluded.assertions, runner=excluded.runner, status='active';
 
+INSERT INTO gauntlet_scenarios (scenario_id, name, description, incident_ids, assertions, scale_params, runner, status)
+VALUES ('GS-022', 'losing-sibling-fork-walk',
+  'Guards the 1-deep losing-sibling fork walk (INC-I-235). INJECTS (opt-in only, --gs022 WITH GAUNTLET_GS022_CONFIRM=1, testnet only): scripts/inc-i-235-drill.sh drops block A on one non-seed producer via enterRecoveryMode, lets it build sibling B'' at the same height, pauses its production, then asserts the sibling formed, the target converged to the canonical hash, no snap sync ran in the window, and every node tip matches the seed. All four SKIP without drill evidence.',
+  json('["INC-I-235"]'),
+  'gs022-sibling-induced,gs022-converged-by-reorg,gs022-no-snapsync,gs022-fleet-converged', json('{"nodes": 7}'), 'gauntlet.sh', 'active')
+ON CONFLICT(scenario_id) DO UPDATE SET incident_ids=excluded.incident_ids, description=excluded.description, assertions=excluded.assertions, runner=excluded.runner, status='active';
+
 COMMIT;
 
 -- ── DELIBERATELY UNMAPPED (out of system-dynamics scope) ─────────────────────

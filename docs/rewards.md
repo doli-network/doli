@@ -243,7 +243,7 @@ A coinbase transaction is valid if:
 2. **Position**: First transaction in the block
 3. **Inputs**: Empty (no inputs)
 4. **Outputs**: Exactly one output
-5. **Amount**: Equals calculated block reward for the height (plus extra per-byte fees)
+5. **Amount**: Equals the block reward for the height plus the per-byte `extra_data` credit of the block's transactions, or exactly the block reward. From `inc_i_233_activation_height` the six fee-exempt types (`CreatePool`, `Swap`, `AddLiquidity`, `RemoveLiquidity`, `MintAsset`, `BurnAsset`) credit 0 (`specs/protocol.md` §3.6)
 6. **Recipient**: Output `pubkey_hash` matches `reward_pool_pubkey_hash()`
 7. **Lock**: `lock_until` is 0 (maturity enforced by validation logic, not output field)
 
@@ -253,7 +253,7 @@ An EpochReward transaction is valid if:
 
 1. **Type**: Transaction type is 10 (EpochReward)
 2. **Position**: Appears only at epoch boundary blocks (height divisible by `blocks_per_reward_epoch`)
-3. **Inputs**: Empty (pool UTXOs consumed by consensus engine, not via inputs)
+3. **Inputs**: From `EPOCH_REWARD_EXPLICIT_INPUTS_HEIGHT`, the pool UTXOs as explicit inputs (`ECON_EPOCH_NO_INPUTS`, `ECON_EPOCH_INPUTS_MISMATCH`); below it, empty (`ECON_EPOCH_PRE_INPUTS`). A Full-mode node that cannot compute the expected distribution (`[INC_I_081_VALIDATION_SKIP]`) skips only the amount/recipient comparison; it still runs these input checks
 4. **Outputs**: One or more outputs to qualified producers and their delegators
 5. **Total**: Sum of outputs equals the entire pool balance (no value created or destroyed)
 

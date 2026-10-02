@@ -36,6 +36,10 @@ mod tests;
 mod tests_inc_i_193;
 
 #[cfg(test)]
+mod tests_inc_i_181;
+#[cfg(test)]
+mod tests_inc_i_233;
+#[cfg(test)]
 mod tests_inc_i_234;
 
 #[cfg(test)]
@@ -853,6 +857,21 @@ pub struct NetworkParams {
 
     /// INC-I-234 output-creation-authority gate.
     pub inc_i_234_activation_height: u64,
+
+    /// INC-I-233 (F4) coinbase-credit gate. At and above it the six fee-exempt
+    /// tx types credit 0 to the coinbase (`validation::coinbase_credit`); below
+    /// it the old per-byte credit applies, byte-identical. Q1 YES (user tx) +
+    /// changes block CONTENT (coinbase amount) -> every producer must upgrade
+    /// before it. Own gate, never bundled. IMMUTABLE once crossed (INC-I-054).
+    pub inc_i_233_activation_height: u64,
+
+    /// INC-I-181 snap pending-queue root gate. At and above it the ProducerSet
+    /// state-root component also hashes a non-empty `pending_updates` queue
+    /// (`ProducerSet::state_root_component`); below it the root is byte-identical.
+    /// Not a block-validity rule (the root is not in `BlockHeader`), but mixed
+    /// versions above it disagree on the root, so every node upgrades first.
+    /// IMMUTABLE once crossed (INC-I-054).
+    pub inc_i_181_pending_root_activation_height: u64,
 
     /// INC-I-171 vesting-penalty activation height.
     ///

@@ -57,10 +57,11 @@ impl Node {
         snapshot: &network::VerifiedSnapshot,
     ) -> Result<SnapshotPrelude> {
         let (computed_root, mut new_chain_state, new_utxo_set, new_producer_set) =
-            match storage::verify_state_root_from_bytes(
+            match storage::verify_state_root_from_bytes_gated(
                 &snapshot.chain_state,
                 &snapshot.utxo_set,
                 &snapshot.producer_set,
+                self.pending_root_ah(),
             ) {
                 Ok(decoded) => decoded,
                 Err(e) => {

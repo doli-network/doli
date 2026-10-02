@@ -572,6 +572,22 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
                 defaults.inc_i_234_activation_height,
             )
         },
+        inc_i_233_activation_height: if is_mainnet {
+            defaults.inc_i_233_activation_height
+        } else {
+            env_parse(
+                "DOLI_INC_I_233_ACTIVATION_HEIGHT",
+                defaults.inc_i_233_activation_height,
+            )
+        },
+        inc_i_181_pending_root_activation_height: if is_mainnet {
+            defaults.inc_i_181_pending_root_activation_height
+        } else {
+            env_parse(
+                "DOLI_INC_I_181_PENDING_ROOT_ACTIVATION_HEIGHT",
+                defaults.inc_i_181_pending_root_activation_height,
+            )
+        },
         // Gossip mesh (locked for mainnet - wrong values could isolate nodes)
         mesh_n: if is_mainnet {
             defaults.mesh_n

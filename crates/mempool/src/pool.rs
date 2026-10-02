@@ -731,7 +731,11 @@ impl Mempool {
         // reserves tracked in extra_data, so the per-byte fee floor is inapplicable.
         // Conservation is already guaranteed by verify_amm_conservation. Exempting
         // here keeps the mempool from rejecting a tx that consensus would accept.
-        if !amm_gated {
+        // INC-I-233: the six fee-exempt types skip the floor, like consensus
+        // (one shared list); with native-only inputs they would otherwise be
+        // rejected here while consensus accepts them (INC-I-147 class).
+        let fee_exempt = doli_core::validation::coinbase_credit::is_native_fee_exempt(tx.tx_type);
+        if !amm_gated && !fee_exempt {
             // Require fee >= minimum_fee (base + per-byte for output extra_data)
             let min_fee = tx.minimum_fee();
             if fee < min_fee {
@@ -1299,7 +1303,10 @@ impl Mempool {
             // First check if output is in mempool
             if let Some(parent_entry) = self.entries.get(&input.prev_tx_hash) {
                 if let Some(output) = parent_entry.tx.outputs.get(input.output_index as usize) {
-                    total += output.amount;
+                    // INC-I-233: native amounts only, same as consensus (utxo.rs).
+                    if output.output_type.is_native_amount() {
+                        total += output.amount;
+                    }
                     ancestors.insert(input.prev_tx_hash);
                     // Include parent's ancestors
                     ancestors.extend(parent_entry.ancestors.iter().cloned());
@@ -1322,7 +1329,10 @@ impl Mempool {
                         )));
                     }
                 }
-                total += utxo.output.amount;
+                // INC-I-233: token/LP units are not native DOLI and never pay a fee.
+                if utxo.output.output_type.is_native_amount() {
+                    total += utxo.output.amount;
+                }
             } else {
                 return Err(MempoolError::MissingInput(
                     input.prev_tx_hash,

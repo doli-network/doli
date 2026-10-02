@@ -18,6 +18,14 @@ use tracing::error;
 use super::Node;
 
 impl Node {
+    /// INC-I-181 pending-queue state-root gate for this node's network.
+    pub(crate) fn pending_root_ah(&self) -> u64 {
+        self.config
+            .network
+            .params()
+            .inc_i_181_pending_root_activation_height
+    }
+
     /// Serve the current state root, memoizing on cold/stale-memo compute.
     ///
     /// - memo HIT (cache `Some` and `cached.best_hash == current best_hash`):
@@ -70,7 +78,12 @@ impl Node {
             let ps = self.producer_set.read().await;
             let best_hash = chain_state.best_hash;
             let best_height = chain_state.best_height;
-            let root_result = storage::compute_state_root(&chain_state, &utxo_set, &ps);
+            let root_result = storage::compute_state_root_gated(
+                &chain_state,
+                &utxo_set,
+                &ps,
+                self.pending_root_ah(),
+            );
             (best_hash, best_height, root_result)
             // chain_state / utxo_set / ps read guards drop here, BEFORE the
             // cached_state_root write guard is taken (leaf-lock ordering).

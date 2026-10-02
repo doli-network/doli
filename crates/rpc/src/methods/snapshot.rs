@@ -38,8 +38,13 @@ impl RpcContext {
             }
         };
 
-        let snapshot = storage::StateSnapshot::create(&chain_state, &utxo_set, producer_set_ref)
-            .map_err(|e| RpcError::internal_error(format!("Failed to create snapshot: {}", e)))?;
+        let snapshot = storage::StateSnapshot::create_gated(
+            &chain_state,
+            &utxo_set,
+            producer_set_ref,
+            self.inc_i_181_pending_root_activation_height,
+        )
+        .map_err(|e| RpcError::internal_error(format!("Failed to create snapshot: {}", e)))?;
 
         // Include persisted epoch meta keys so doli snap receivers get
         // the correct bond snapshot (computed at epoch boundary, not snap height).

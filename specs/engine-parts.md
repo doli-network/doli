@@ -2395,14 +2395,17 @@ Note: struct PresenceHeartbeat (not Heartbeat) in the tpop module; this is diffe
 - `SLIDING_WINDOW_SLOTS` = 360 — slots retained in the sliding window (1 epoch)
 
 ### Sync — Fork Recovery
-- `ForkRecoveryTracker` — parent chain walking for fork resolution; tracks active session, cooldown, exceeded_max_depth flag, genesis_hash
+- `ForkRecoveryTracker` — parent chain walking for fork resolution; tracks active session, cooldown, exceeded_max_depth flag, genesis_hash, and a bounded (32) memo of (branch tip, local tip) pairs already walked and not adopted (INC-I-235 LB-9)
 - `CompletedRecovery` — result of completed recovery: `blocks: Vec<Block>` (forward order), `connection_point: Hash` (where fork connects to stored chain)
-- `ForkRecoveryTracker::start(orphan_block, peer)` — begins parent-walk recovery; returns bool
+- `ForkRecoveryTracker::start(orphan_block, peer)` — begins parent-walk recovery; returns bool. A session past RECOVERY_TIMEOUT is expired here (and `can_start()` reports true) even if `next_fetch()` never ran
 - `ForkRecoveryTracker::next_fetch()` — returns (peer, hash_to_fetch); handles session timeout and per-request peer failover
-- `ForkRecoveryTracker::handle_block(peer, block)` — feeds block response; validates; checks depth limit
+- `ForkRecoveryTracker::handle_block(peer, block)` — feeds block response; content-keyed (INC-I-235 C2): a block whose hash is not the requested parent returns false (passed through to normal handling) and the walk stays pending until REQUEST_TIMEOUT failover; genesis mismatch and `None` still cancel; checks depth limit
 - `ForkRecoveryTracker::check_connection(parent_known)` — completes recovery when parent_known=true; returns CompletedRecovery
 - `ForkRecoveryTracker::set_alternate_peers(peers)` / `cancel(reason)` / `take_exceeded_max_depth()` — control methods
 - `ForkRecoveryTracker::is_active()` / `can_start()` / `current_parent()` — state queries
+- `ForkRecoveryTracker::mark_branch_rejected(branch_tip, local_tip)` / `is_branch_rejected(..)` — LB-9 memo (SyncManager wrappers `mark_fork_branch_rejected` / `is_fork_branch_rejected`)
+- `SyncManager::start_fork_recovery(orphan, peer)` (`sync/manager/fork_walk.rs`) — starts the walk and hands it up to 4 alternate peers above local height for failover
+- `SyncManager::next_request()` serves the walk's `GetBlockByHash` first whenever the pipeline is `None` or `Headers` (INC-I-235 C1); one walk request in flight
 - `MAX_RECOVERY_DEPTH` = 1,000 — maximum parent chain walk depth
 - `RECOVERY_COOLDOWN` = 30s — cooldown between recovery attempts
 - `RECOVERY_TIMEOUT` = 120s — timeout for a single recovery session
@@ -2822,8 +2825,10 @@ NOTE: UpdateService, PendingUpdate, and spawn_update_service() are NOT in this c
 - LAST_ROLLBACK_HEIGHT — AtomicU64 file-scoped static; tracks local height at most recent rollback; detects whether height advanced (sync is working)
 
 ### Fork Recovery
-- handle_completed_fork_recovery() — records per-block weights into reorg handler, moves blocks into fork_block_cache, attempts check_reorg_weighted (single-block forks), falls back to plan_reorg for deeper forks; deterministic hash tie-break (lower hash wins) when weight_delta == 0
-- try_trigger_fork_recovery() — checks can_start_fork_recovery(), picks orphan seed from fork_block_cache, starts sync_manager.start_fork_recovery(orphan, peer)
+- handle_completed_fork_recovery() — (fork_walk.rs) eligibility-gates every walked block with check_producer_eligibility (INC-I-235 SEC-001; an ineligible block drops the whole walk), then evaluate_recovered_fork() (fork_recovery.rs) records per-block weights into reorg handler, moves blocks into fork_block_cache, attempts check_reorg_weighted (single-block forks), falls back to plan_reorg for deeper forks; deterministic hash tie-break (lower hash wins) when weight_delta == 0. If the tip did not move, the (cached branch tip, local tip) pair is memoised
+- try_trigger_fork_recovery() -> bool — (fork_walk.rs) called from the ReorgCandidate gossip path (block_handling.rs) AND the Wedged recovery terminal (periodic.rs, INC-I-235 D2); returns true when a walk started; checks can_start_fork_recovery(); seed = cached orphan whose prev_hash is not CANONICAL (get_height_by_hash; a rolled-back body does not count, INC-I-235 REQ-008) and which roots the longest cached chain (lowest slot on ties); skips a branch already memoised as not adopted on the current tip; starts sync_manager.start_fork_recovery(seed, best_peer_for_recovery)
+- cache_block_with_eviction() / drain_cached_children() — (fork_cache.rs, INC-I-235 M2) cache cap 100: evicts the 50 lowest-slot entries NOT on the walk-seed chain (seed + its longest cached descendant chain, ≤50 pinned); ORPHAN_APPLY drain tries the tip's cached children longest-cached-chain first, tie → lower slot, a rejected child is dropped and its next sibling tried; ≤50 attempts
+- ORPHAN_CHASE — (block_handling.rs) by-height `best_height+1` request to the sender, at most once per (peer, height) per ORPHAN_CHASE_REPEAT_WINDOW (3 s); guard map pruned to the window, reset at 1024 entries (orphan_chase.rs)
 - try_apply_cached_chain() — builds contiguous chain backwards from latest_block to our_tip (MAX_CHAIN_LENGTH = 50 hops) via fork_block_cache; validates producer eligibility; applies blocks via apply_block(ValidationMode::Full)
 - maybe_auto_resync() — exponential backoff (60s * 2^min(resyncs, 4)); guards: fork threshold (devnet=5, other=10), height 0, resync in progress, MAX_CONSECUTIVE_RESYNCS hard cap, blocks_applied > 0 progress check; when all pass: calls rollback_one_block()
 - apply_checkpoint_state() — #[allow(dead_code)]; verifies state root against received_state_root and hardcoded CHECKPOINT_STATE_ROOT; deserializes all three state components; only called for new nodes (height=0) during initial sync; NOT used in current production

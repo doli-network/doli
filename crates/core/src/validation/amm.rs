@@ -18,6 +18,8 @@ use crate::types::Amount;
 
 use super::ValidationError;
 
+pub use super::doli_value::{doli_surplus, doli_value};
+
 /// Result of a successful AMM conservation check.
 /// `doli_surplus` is the DOLI left over after conservation (usable as fee by mempool).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,19 +77,6 @@ pub fn verify_amm_conservation(
     }
 
     // --- Per-asset value extractors (u128 to avoid overflow) ---
-    let doli_value = |o: &Output| -> u128 {
-        if o.output_type.is_native_amount() {
-            o.amount as u128
-        } else if o.output_type == OutputType::Pool {
-            if let Some(pm) = o.pool_metadata() {
-                pm.reserve_a as u128
-            } else {
-                0
-            }
-        } else {
-            0
-        }
-    };
 
     let token_b = |o: &Output| -> u128 {
         if o.output_type == OutputType::FungibleAsset {

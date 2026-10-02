@@ -45,7 +45,7 @@ Epoch boundary: pool drained → rewards distributed bond-weighted to qualified 
 ## Stability Pillars (read `docs/postmortems/2026-04-17-attestation-stability-pillars.md`)
 
 Two root-cause fixes stabilized the network. All other fixes were symptom mitigation:
-1. **Orphan Chase** (v6.16.1): request parent block from sender when orphan arrives. 14 lines.
+1. **Orphan Chase** (v6.16.1): when an orphan arrives, request height `best+1` from the sender (by height, not the parent hash). Fills a same-chain gap; a sibling fork's parent is reached by the fork walk. Max once per (peer, height) per 3 s (INC-I-235).
 2. **Full Bitfield Decode** (v6.17.1, h=14000): decoder matches encoder order `[base | extra sorted]`. Broke the death spiral where filtered producers could never re-enter.
 
 **CRITICAL**: Any encoder/decoder pair MUST be verified for index parity. Any consensus change MUST use constant gate (NOT HardForkSchedule) for rolling deploy — `current_fork_id(u64::MAX)` includes ALL entries immediately.

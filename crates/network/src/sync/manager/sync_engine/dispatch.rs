@@ -13,19 +13,22 @@ use crate::sync::manager::{
 impl SyncManager {
     /// Get the next sync request to send
     pub fn next_request(&mut self) -> Option<(PeerId, SyncRequest)> {
-        match &self.pipeline_data {
-            SyncPipelineData::None => {
-                // Serve fork recovery requests when main sync is idle
-                if let Some((peer, hash)) = self.fork.fork_recovery.next_fetch() {
-                    let request = SyncRequest::GetBlockByHash { hash };
-                    let id = self.register_request(peer, request.clone());
-                    if let Some(status) = self.peers.get_mut(&peer) {
-                        status.pending_request = Some(id);
-                    }
-                    return Some((peer, request));
+        // Fork recovery walk is served while idle AND under header sync (INC-I-235 C1).
+        if matches!(
+            self.pipeline_data,
+            SyncPipelineData::None | SyncPipelineData::Headers { .. }
+        ) {
+            if let Some((peer, hash)) = self.fork.fork_recovery.next_fetch() {
+                let request = SyncRequest::GetBlockByHash { hash };
+                let id = self.register_request(peer, request.clone());
+                if let Some(status) = self.peers.get_mut(&peer) {
+                    status.pending_request = Some(id);
                 }
-                None
+                return Some((peer, request));
             }
+        }
+        match &self.pipeline_data {
+            SyncPipelineData::None => None,
 
             SyncPipelineData::Headers { peer, .. } => {
                 let mut peer = *peer;

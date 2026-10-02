@@ -10,6 +10,7 @@ mod block_lifecycle;
 mod branch_verdict;
 mod cleanup;
 pub mod force_reorg;
+mod fork_walk;
 mod peers;
 mod production_gate;
 pub mod recovery;
@@ -50,6 +51,8 @@ mod tests_inc_i204_m41;
 mod tests_inc_i204_m6;
 #[cfg(test)]
 mod tests_inc_i204_m6_census;
+#[cfg(test)]
+mod tests_inc_i235;
 #[cfg(test)]
 mod tests_m3_state_session;
 #[cfg(test)]

@@ -241,6 +241,13 @@ Where `BASE_FEE = 1` and `FEE_PER_BYTE = 1`. This prices on-chain storage propor
 - Bond (4 bytes): 5 sats
 - NFT (300 bytes): 301 sats
 
+The fee sums count native-amount outputs only (token and LP units never pay a fee). The six
+fee-exempt types — `CreatePool`, `Swap`, `AddLiquidity`, `RemoveLiquidity`, `MintAsset`,
+`BurnAsset` — skip rule 7. Consensus and the mempool read the same list
+(`validation::coinbase_credit::is_native_fee_exempt`), so the mempool does not reject a
+transaction that consensus accepts. The mempool rejects a fee-checked transaction that pays
+its fee only in token units with `FEE_TOO_LOW`.
+
 ### 3.6 Coinbase Transaction
 
 Every block contains a coinbase transaction as the first transaction. The coinbase
@@ -262,6 +269,13 @@ coinbase_tx = {
     extra_data: block_height as uint64
 }
 ```
+
+`total_fees` is the per-transaction coinbase credit summed over the block's user transactions:
+`credit(tx) = Σ floor(output.extra_data.len() × FEE_PER_BYTE / FEE_DIVISOR)` over the outputs of
+`tx`. At and above `inc_i_233_activation_height` (§8.2) a fee-exempt transaction (§3.5) credits 0.
+The validator (`validate_block_economics`) and the block builder call the same function
+(`validation::coinbase_credit::tx_coinbase_credit`). A coinbase of exactly `block_reward` (no
+credit) is also accepted.
 
 Coinbase outputs require 6 confirmations before spending (COINBASE_MATURITY).
 
@@ -2147,6 +2161,16 @@ constants: `STATE_CHUNK_MAX_BYTES = 1 MiB`, `MAX_CONCURRENT_STATE_SESSIONS = 4`,
    `apply_snap_snapshot` -> `atomic_replace(into_pairs())` path, so the client-side install peak is
    unchanged by Stage 3. Replacing that with per-chunk staging is Stage 4 [F4] work; the debt is
    recorded in `docs/.workflow/wiring-debt.md`.
+
+**State-root ProducerSet component (INC-I-181).** Keyed on the rooted state's `best_height`:
+below `inc_i_181_pending_root_activation_height` the component is `H(ps.serialize_canonical())`,
+unchanged. At and above it a NON-EMPTY `pending_updates` queue is committed too:
+`H(ps_canonical || H(bincode(pending_updates)))`, in queue order; an empty queue keeps the legacy
+bytes. Every root producer and verifier (legacy serve, session manifest, `GetStateRoot`, both
+install arms, `getStateRootDebug` / `getStateSnapshot` RPC, `doli snap`) goes through
+`ProducerSet::state_root_component`. Not a block-validity rule, but mixed versions above the height
+disagree on the root, so every node upgrades before it.
+
 5. A session that cannot be served answers `StateSessionUnavailable{session_id, reason}` where
    reason is `Busy` (the node is at its concurrent-session cap), `ManifestExpired` (the pinned view
    is gone — TTL, restart, or eviction) or `Halted(reason)` (the serving node's own ledger is
@@ -2259,7 +2283,9 @@ Devnet (local development) → Testnet (public testing) → Mainnet (production)
 | Veto Period | 5 min | 5 min | 60s | All |
 | Fallback Ranks | 2 | 2 | 2 | All |
 | DeFi Activation Height | `u64::MAX` | `u64::MAX` | `u64::MAX` | Non-mainnet (`DOLI_DEFI_ACTIVATION_HEIGHT`) |
-| Output-Creation Authority (`inc_i_234_activation_height`, §3.22.1) | 551,202 | 78,199 | 0 | Non-mainnet (`DOLI_INC_I_234_ACTIVATION_HEIGHT`) |
+| Fee-exempt coinbase credit (`inc_i_233_activation_height`, §3.6) | 612,000 | 94,500 | 0 | Non-mainnet (`DOLI_INC_I_233_ACTIVATION_HEIGHT`) |
+| Output-Creation Authority (`inc_i_234_activation_height`, §3.22.1) | 612,000 | 78,199 | 0 | Non-mainnet (`DOLI_INC_I_234_ACTIVATION_HEIGHT`) |
+| Pending-updates state-root cover (`inc_i_181_pending_root_activation_height`) | 612,000 | 97,886 | 0 | Non-mainnet (`DOLI_INC_I_181_PENDING_ROOT_ACTIVATION_HEIGHT`) |
 | Data Directory | `~/.doli/mainnet/` | `~/.doli/testnet/` | `~/.doli/devnet/` | - |
 | Config File | `.env` in data dir | `.env` in data dir | `.env` in data dir | - |
 

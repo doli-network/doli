@@ -318,8 +318,9 @@ impl SyncManager {
     /// wedged at finality==tip, where the finality guard correctly forbids a
     /// rollback), ask peers for the block at `height` — our OWN tip height — to
     /// pull the competing sibling onto this node. The response flows through
-    /// normal block handling, where the INC-I-139 wedge-escape retains and
-    /// re-evaluates it via plan_reorg. Returns up to 3 (peer, request) pairs,
+    /// normal block handling: a worse-slot sibling is retained and re-evaluated
+    /// via plan_reorg (INC-I-139 wedge-escape); a better-slot sibling is dropped
+    /// and only signals stuck-fork. Returns up to 3 (peer, request) pairs,
     /// one per distinct peer at/above `height` with no in-flight request.
     /// Non-destructive and idempotent (skips if a GetBlockByHeight for `height`
     /// is already pending).
@@ -346,9 +347,9 @@ impl SyncManager {
 
     /// INC-I-204 M3 (REQ-FORK-010): the `Wedged` terminal's only action. Ask up to
     /// 3 peers for the TIP BLOCK of each distinct competing branch they advertise,
-    /// by hash. The bodies flow through normal block handling, where the wedge
-    /// escape re-evaluates them via `plan_reorg` — so validated fork choice decides
-    /// the branch, never this function (B-F1). Read-only: nothing is rolled back,
+    /// by hash. The bodies flow through normal block handling; a body whose parent
+    /// we lack is cached as an orphan and reaches fork choice only through the
+    /// node's fork walk. This function never decides the branch (B-F1). Read-only: nothing is rolled back,
     /// wiped or replaced, and our own chain keeps being served.
     pub fn wedge_evidence_requests(&self) -> Vec<(PeerId, SyncRequest)> {
         const WEDGE_EVIDENCE_FANOUT: usize = 3;

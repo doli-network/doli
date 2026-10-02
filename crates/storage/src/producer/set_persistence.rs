@@ -111,4 +111,21 @@ impl ProducerSet {
 
         buf
     }
+
+    /// INC-I-181: the ProducerSet component of the state root, plus the canonical
+    /// byte length for the `[STATE_ROOT]` log.
+    ///
+    /// `pending_bound` = rooted height >= `inc_i_181_pending_root_activation_height`.
+    /// Unbound, or with an empty queue: `H(canonical)`, the legacy bytes. Bound and
+    /// non-empty: `H(canonical || H(bincode(pending_updates)))` in queue order — the
+    /// flush order is consensus, so the queue is never sorted.
+    pub fn state_root_component(&self, pending_bound: bool) -> (Hash, usize) {
+        let mut bytes = self.serialize_canonical();
+        let canonical_len = bytes.len();
+        if pending_bound && !self.pending_updates.is_empty() {
+            let queue = bincode::serialize(&self.pending_updates).unwrap_or_default();
+            bytes.extend_from_slice(crypto::hash::hash(&queue).as_bytes());
+        }
+        (crypto::hash::hash(&bytes), canonical_len)
+    }
 }

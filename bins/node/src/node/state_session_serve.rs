@@ -84,7 +84,9 @@ impl Node {
         let state_root = storage::compose_state_root(
             &crypto::hash::hash(&chain_state.serialize_canonical()),
             &opening.utxo_hash,
-            &crypto::hash::hash(&producer_set.serialize_canonical()),
+            &producer_set
+                .state_root_component(chain_state.best_height >= self.pending_root_ah())
+                .0,
         );
 
         let chain_state_bytes = match bincode::serialize(&chain_state) {
