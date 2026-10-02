@@ -481,8 +481,9 @@ impl SyncManager {
     /// Record a fork block's weight in reorg_handler WITHOUT updating local chain tip.
     /// Used during fork recovery to populate weights before plan_reorg.
     /// `real_height` is the fork block's true chain height (INC-I-204 M5,
-    /// Contradiction 2): both callers hold the `Block`, so they pass
-    /// `block.header.height` instead of letting the map derive `parent_height + 1`.
+    /// Contradiction 2). `BlockHeader` carries no height: both callers derive it
+    /// from the block store (canonical parent height + offset) instead of letting
+    /// the map derive `parent_height + 1`.
     pub fn record_fork_block_weight(
         &mut self,
         hash: Hash,

@@ -17,15 +17,19 @@ pub mod checkpoint_health;
 mod event_loop;
 mod floor_window;
 mod force_reorg;
+#[cfg(test)]
+mod orphan_chase_tests;
 pub use force_reorg::ForceReorgOutcome;
 mod fork_recovery;
 mod fork_walk;
 mod genesis;
 mod holdings;
 use holdings::holdings_of_every_producer;
+mod fork_cache;
 mod init;
 mod maintainer_rewind;
 mod network_events;
+mod orphan_chase;
 
 // Re-export Phase 4 disk cleanup helper so integration tests can verify
 // orphan-dir removal behavior. Used only through the lib target.
@@ -257,6 +261,9 @@ pub struct Node {
     /// forks (AUDIT-P2-001/P2-002). Bounded by WEDGE_RETAINED_CAP to cap
     /// gossip-sourced descendant chain depth well below MAX_REORG_DEPTH.
     pub wedge_retained_tips: HashSet<Hash>,
+    /// ORPHAN_CHASE requests decided (sent, or due when no network is attached).
+    orphan_chase_requests: u64,
+    orphan_chase_guard: orphan_chase::OrphanChaseGuard,
     /// Height at which snap sync was applied (for validation mode selection).
     /// Blocks at or below this height use Light validation (no full tx verification)
     /// since the state was verified by state root quorum, not replayed.

@@ -8,7 +8,7 @@ type BranchInfo = (usize, Hash);
 
 /// Depth and tip of the cached descendant chain under every cached block.
 /// Deeper wins; ties go to the lower slot, then the lower hash.
-fn cached_branches(cache: &HashMap<Hash, Block>) -> HashMap<Hash, BranchInfo> {
+pub(super) fn cached_branches(cache: &HashMap<Hash, Block>) -> HashMap<Hash, BranchInfo> {
     let mut children: HashMap<Hash, Vec<Hash>> = HashMap::new();
     for (h, b) in cache {
         children.entry(b.header.prev_hash).or_default().push(*h);
@@ -42,7 +42,7 @@ fn cached_branches(cache: &HashMap<Hash, Block>) -> HashMap<Hash, BranchInfo> {
     memo
 }
 
-/// Walk seed: the cached orphan whose parent is NOT stored and which roots the
+/// Walk seed: the cached orphan whose parent is NOT canonical and which roots the
 /// longest cached chain (lowest slot on ties). Returns (seed, branch tip).
 pub(super) fn select_walk_seed(
     cache: &HashMap<Hash, Block>,
@@ -67,19 +67,25 @@ fn cached_branch_tip(cache: &HashMap<Hash, Block>, from: Hash) -> Hash {
 }
 
 impl Node {
+    /// True when `h` is on our canonical chain (a rolled-back body is not).
+    pub(super) fn is_canonical(&self, h: &Hash) -> bool {
+        matches!(self.block_store.get_height_by_hash(h), Ok(Some(_)))
+    }
+
     /// Start a fork-recovery parent walk from the cached competing branch.
-    /// Called from the production gate and the Wedged terminal.
-    pub async fn try_trigger_fork_recovery(&mut self) {
+    /// Called from the ReorgCandidate gossip path and the Wedged terminal.
+    /// Returns true when a walk was started.
+    pub async fn try_trigger_fork_recovery(&mut self) -> bool {
         if !self.sync_manager.read().await.can_start_fork_recovery() {
-            return;
+            return false;
         }
         let local_tip = self.chain_state.read().await.best_hash;
         let picked = {
             let cache = self.fork_block_cache.read().await;
-            select_walk_seed(&cache, |h| self.block_store.has_block(h).unwrap_or(false))
+            select_walk_seed(&cache, |h| self.is_canonical(h))
         };
         let Some((seed, branch_tip)) = picked else {
-            return;
+            return false;
         };
         let mut sm = self.sync_manager.write().await;
         if sm.is_fork_branch_rejected(branch_tip, local_tip) {
@@ -87,18 +93,21 @@ impl Node {
                 "[FORK] RECOVERY_SKIP branch tip {:.16} already lost fork choice on {:.16}",
                 branch_tip, local_tip
             );
-            return;
+            return false;
         }
         let Some(peer) = sm.best_peer_for_recovery() else {
-            return;
+            return false;
         };
         let seed_hash = seed.hash();
-        if sm.start_fork_recovery(seed, peer) {
+        let seed_slot = seed.header.slot;
+        let started = sm.start_fork_recovery(seed, peer);
+        if started {
             info!(
-                "[FORK] RECOVERY_START seed {:.16} (branch tip {:.16}) from {}",
-                seed_hash, branch_tip, peer
+                "[FORK] RECOVERY_START seed {:.16} slot {} (branch tip {:.16}) from {}",
+                seed_hash, seed_slot, branch_tip, peer
             );
         }
+        started
     }
 
     /// Handle a completed fork recovery: eligibility-gate every walked block
@@ -129,7 +138,17 @@ impl Node {
         if eligible {
             result = self.evaluate_recovered_fork(recovery).await;
         }
-        if self.chain_state.read().await.best_hash == tip_before {
+        let tip_after = self.chain_state.read().await.best_hash;
+        if tip_after == tip_before {
+            let reason = match (&result, eligible) {
+                (_, false) => "ineligible walked block".to_string(),
+                (Err(e), _) => format!("reorg failed: {}", e),
+                _ => "not heavier or refused by finality".to_string(),
+            };
+            warn!(
+                "[FORK] RECOVERY_DONE fork tip {:.16}: no reorg ({})",
+                fork_tip, reason
+            );
             let branch_tip = {
                 let cache = self.fork_block_cache.read().await;
                 cached_branch_tip(&cache, fork_tip)
@@ -138,6 +157,11 @@ impl Node {
                 .write()
                 .await
                 .mark_fork_branch_rejected(branch_tip, tip_before);
+        } else {
+            info!(
+                "[FORK] RECOVERY_DONE fork tip {:.16}: reorged, tip {:.16} -> {:.16}",
+                fork_tip, tip_before, tip_after
+            );
         }
         result
     }

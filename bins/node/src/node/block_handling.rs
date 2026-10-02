@@ -97,21 +97,10 @@ pub(crate) fn classify_gossip_block(
 // Block handling — dispatch actions based on classification
 // =============================================================================
 
-impl Node {
-    /// Insert a block into the fork cache with unified slot-sorted eviction.
-    pub(super) async fn cache_block_with_eviction(&self, hash: Hash, block: Block) {
-        let mut cache = self.fork_block_cache.write().await;
-        cache.insert(hash, block);
-        if cache.len() > 100 {
-            let mut blocks_by_slot: Vec<(Hash, u32)> =
-                cache.iter().map(|(h, b)| (*h, b.header.slot)).collect();
-            blocks_by_slot.sort_by_key(|(_, slot)| *slot);
-            for (hash, _) in blocks_by_slot.into_iter().take(50) {
-                cache.remove(&hash);
-            }
-        }
-    }
+/// Minimum spacing between ORPHAN_CHASE requests for the same (peer, height).
+pub(super) const ORPHAN_CHASE_REPEAT_WINDOW: Duration = Duration::from_secs(3);
 
+impl Node {
     /// Handle a new block from the network
     pub async fn handle_new_block(&mut self, block: Block, source_peer: PeerId) -> Result<()> {
         let block_hash = block.hash();
@@ -272,20 +261,29 @@ impl Node {
                     return Ok(());
                 }
 
-                // Parent not in store — orphan gossip block. The sender has the
-                // missing block (they passed through our height to produce this one).
-                // Request it directly: causal, deterministic, no heuristics.
+                // Parent not in store — orphan gossip block. Ask the sender for our
+                // next height (best_height + 1). This fills a gap when we are behind
+                // on the same chain; it does NOT fetch the parent of a sibling-fork
+                // block (that is the fork walk's job). A (peer, height) is asked at
+                // most once per ORPHAN_CHASE_REPEAT_WINDOW.
                 //
                 // STABILITY PILLAR: ORPHAN_CHASE — do not modify this request logic.
-                if let Some(ref network) = self.network {
-                    info!(
-                        "[ORPHAN_CHASE] Requesting h={} from {} (orphan block {:.8} at slot {})",
-                        need_height, source_peer, block_hash, block_slot
-                    );
-                    let request = SyncRequest::GetBlockByHeight {
-                        height: need_height,
-                    };
-                    let _ = network.request_sync(source_peer, request).await;
+                if self.orphan_chase_guard.should_chase(
+                    source_peer,
+                    need_height,
+                    ORPHAN_CHASE_REPEAT_WINDOW,
+                ) {
+                    self.orphan_chase_requests += 1;
+                    if let Some(ref network) = self.network {
+                        info!(
+                            "[ORPHAN_CHASE] Requesting h={} from {} (orphan block {:.8} at slot {})",
+                            need_height, source_peer, block_hash, block_slot
+                        );
+                        let request = SyncRequest::GetBlockByHeight {
+                            height: need_height,
+                        };
+                        let _ = network.request_sync(source_peer, request).await;
+                    }
                 }
                 self.sync_manager
                     .write()
@@ -446,37 +444,7 @@ impl Node {
             sync.note_peer_block_applied_since_rollback();
         }
 
-        // Post-apply: recursively drain cached orphans that chain on our new tip.
-        // Bounded to 50 iterations to prevent unbounded loops from malicious caches.
-        {
-            let mut drained = 0u32;
-            const MAX_DRAIN: u32 = 50;
-            while drained < MAX_DRAIN {
-                let tip_hash = self.chain_state.read().await.best_hash;
-                let next_from_cache = {
-                    let cache = self.fork_block_cache.read().await;
-                    cache
-                        .values()
-                        .find(|b| b.header.prev_hash == tip_hash)
-                        .cloned()
-                };
-                match next_from_cache {
-                    Some(cached_block) => {
-                        let cached_hash = cached_block.hash();
-                        info!(
-                            "[ORPHAN_APPLY] Applying cached orphan {:.8} (slot {}) from fork cache [{}/{}]",
-                            cached_hash, cached_block.header.slot, drained + 1, MAX_DRAIN
-                        );
-                        self.fork_block_cache.write().await.remove(&cached_hash);
-                        if self.apply_block(cached_block, mode).await.is_err() {
-                            break;
-                        }
-                        drained += 1;
-                    }
-                    None => break,
-                }
-            }
-        }
+        self.drain_cached_children(mode).await;
 
         // Post-apply catch-up: if any peer has a block above our new tip, pull
         // the next one immediately instead of waiting for gossip.

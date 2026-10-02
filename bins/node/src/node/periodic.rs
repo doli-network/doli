@@ -567,7 +567,7 @@ impl Node {
         // Expire old mempool transactions
         self.mempool.write().await.expire_old();
 
-        // Poll fork recovery: check if parent chain reached our block_store
+        // Poll fork recovery: the walk connects at a CANONICAL parent.
         {
             let parent_hash = self
                 .sync_manager
@@ -575,8 +575,7 @@ impl Node {
                 .await
                 .fork_recovery_current_parent();
             if let Some(parent_hash) = parent_hash {
-                let parent_known = self.block_store.has_block(&parent_hash).unwrap_or(false);
-                if parent_known {
+                if self.is_canonical(&parent_hash) {
                     let completed = self
                         .sync_manager
                         .write()
@@ -872,8 +871,9 @@ impl Node {
                 }
                 network::RecoveryAction::Wedged { reason } => {
                     // INC-I-204 M3 (REQ-FORK-010): the ladder's one named terminal.
-                    // Alarm, then fetch the competing branch by hash and let validated
-                    // fork choice decide. No rollback, no wipe, no branch decision here.
+                    // Alarm, fetch the competing branch tips by hash, and start a
+                    // parent walk from the cached competing branch. No rollback, no
+                    // wipe, no branch decision here.
                     crate::metrics::record_wedge_escape_outcome(reason.label());
                     let (requests, unique_tips) = {
                         let sm = self.sync_manager.read().await;
@@ -882,19 +882,25 @@ impl Node {
                     // This arm returns early, past the periodic gauge publish below.
                     // The wedge witness must move on the very tick the node wedges.
                     crate::metrics::update_unique_chain_tips(unique_tips);
-                    warn!(
-                        "[WEDGED] reason={} — chain retained and still served; \
-                         {} competing-branch fetch(es) issued, fork choice decides",
-                        reason.label(),
-                        requests.len()
-                    );
+                    let fetches = requests.len();
                     if let Some(ref network) = self.network {
                         for (peer_id, request) in requests {
                             let _ = network.request_sync(peer_id, request).await;
                         }
                     }
-                    // INC-I-235: walk the competing branch back to the stored fork point.
-                    self.try_trigger_fork_recovery().await;
+                    let walk_started = self.try_trigger_fork_recovery().await;
+                    let walk = if walk_started {
+                        "fork walk started; fork choice decides when it connects"
+                    } else {
+                        "no fork walk started (active, cooling down, no cached seed, or no peer)"
+                    };
+                    warn!(
+                        "[WEDGED] reason={} — chain retained and still served; \
+                         {} competing-branch fetch(es) issued; {}",
+                        reason.label(),
+                        fetches,
+                        walk
+                    );
                     return Ok(());
                 }
             }

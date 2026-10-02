@@ -61,6 +61,21 @@ nodes sit at the same height, so the recorded cell is empty.
 **Precondition to re-scope:** C-12 live drill executed end-to-end against a fleet that
 answers `forceReorgTo`.
 
+### R4 — REQ-FORK-004 time dimension (INC-I-235)
+
+REQ-FORK-004 was verified on static gap cells only. A node wedged on a losing
+sibling keeps its height while the fleet advances, so the gap ages past
+`SNAP_SYNC_GAP_MIN` (500) and the node becomes snap-eligible through
+"genuine behind-ness" — a fork remedied by snap after all.
+
+**Resolution (INC-I-235 M1/M2):** the `Wedged` terminal starts a by-hash parent
+walk (`fork_walk.rs`) from the root of the longest cached competing chain, so the
+node reorgs onto the heavier branch before the gap ages. The walk connects only at a
+canonical parent (a rolled-back body does not count), the walk seed is pinned against
+fork-cache eviction, and the ORPHAN_APPLY drain picks the longest cached chain
+(tie → lower slot). Recovery Rule 2 is unchanged: a wedge the walk cannot resolve
+still ages into the snap path.
+
 ---
 
 ## Traceability (M6)
