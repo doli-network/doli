@@ -7,6 +7,7 @@ set -uo pipefail
 usage() {
     cat <<'EOF'
 Usage: scripts/inc-i-235-drill.sh --target nN [--dry-run] [--attempts N] [--timeout S] [--out FILE]
+                                  [--isolate-gap N [--isolate-exec CMD]]
 
 Induces a 1-deep losing sibling block on ONE non-seed testnet producer (nN) and
 observes whether it converges back to the canonical tip WITHOUT snap sync.
@@ -16,6 +17,12 @@ observes whether it converges back to the canonical tip WITHOUT snap sync.
   --attempts N    induction attempts (default 3)
   --timeout S     convergence observation window in seconds (default 900)
   --out FILE      also write the evidence block to FILE
+  --isolate-gap N after B' forms, stop the target (scripts/testnet.sh stop nN, launchd;
+                  never a signal) until the seed is N blocks above B', then start it again.
+                  N >= 50 closes Rule 1/1b (MINOR_FORK_GAP_MAX) = the INC-I-235 seed2 shape,
+                  so only the Wedged terminal and its by-hash walk can converge the node.
+  --isolate-exec CMD  run CMD (bash -c) while the target is stopped, e.g. a binary swap
+                  for an old-vs-new control; the drill does not inspect what CMD does.
 
 Env: DRILL_RPC_HOST (127.0.0.1 only), DRILL_RPC_BASE (default 8500; 8400/8900/30200 refused)
 
@@ -40,6 +47,8 @@ LOG_DIR="$TESTNET_DIR/logs"
 HOST="${DRILL_RPC_HOST:-127.0.0.1}"
 BASE="${DRILL_RPC_BASE:-8500}"
 TARGET="" DRY=0 ATTEMPTS=3 TIMEOUT=900 OUT=""
+ISO_GAP="" ISO_EXEC="" STOPPED=0
+TESTNET_SH="$(cd "$(dirname "$0")" && pwd)/testnet.sh"
 SLOT_SECS=10
 MUTATED=0
 
@@ -56,6 +65,8 @@ while [ $# -gt 0 ]; do
         --attempts) ATTEMPTS="${2-}"; shift ;;
         --timeout) TIMEOUT="${2-}"; shift ;;
         --out) OUT="${2-}"; shift ;;
+        --isolate-gap) ISO_GAP="${2-}"; shift ;;
+        --isolate-exec) ISO_EXEC="${2-}"; shift ;;
         *) die "unknown argument '$1' (see --help)" ;;
     esac
     shift
@@ -77,10 +88,19 @@ TARGET_N="${BASH_REMATCH[1]}"
 [ -d "$TESTNET_DIR/$TARGET" ] || refuse "--target $TARGET: no $TESTNET_DIR/$TARGET directory"
 [[ "$ATTEMPTS" =~ ^[1-9][0-9]*$ ]] || die "--attempts must be a positive integer"
 [[ "$TIMEOUT" =~ ^[1-9][0-9]*$ ]] || die "--timeout must be a positive integer"
+[ -z "$ISO_GAP" ] || [[ "$ISO_GAP" =~ ^[1-9][0-9]*$ ]] || die "--isolate-gap must be a positive integer"
+[ -z "$ISO_EXEC" ] || [ -n "$ISO_GAP" ] || die "--isolate-exec needs --isolate-gap"
 TPORT=$((BASE + TARGET_N))
 SPORT="$BASE"
 
 if [ "$DRY" = 1 ]; then
+    ISO_PLAN=""
+    if [ -n "$ISO_GAP" ]; then
+        ISO_PLAN="  7b. isolate: testnet.sh stop $TARGET (verify RPC down), wait until the seed is at
+      gap >= $ISO_GAP above B'${ISO_EXEC:+, run --isolate-exec}, then testnet.sh start $TARGET,
+      wait for RPC, pauseProduction again
+"
+    fi
     cat <<EOF
 dry-run: INC-I-235 drill plan (nothing is sent)
   target           $TARGET  rpc http://$HOST:$TPORT  log $LOG_DIR/$TARGET.log
@@ -92,7 +112,7 @@ dry-run: INC-I-235 drill plan (nothing is sent)
   5. exitRecoveryMode ~9.5 s later, before S_t ($TARGET builds sibling B' on A's parent)
   6. pauseProduction on $TARGET once [BLOCK_PRODUCED] slot=S_t is logged
   7. verify B' hash differs from the seed's block at the same height (retry up to $ATTEMPTS)
-  8. observe up to ${TIMEOUT}s for RECOVERY_START, RECOVERY_DONE ... reorged, [WEDGED],
+${ISO_PLAN}  8. observe up to ${TIMEOUT}s for RECOVERY_START, RECOVERY_DONE ... reorged, [WEDGED],
      [COORDINATOR] action=, [ORPHAN_CHASE], [ROLLBACK] Initiating, Reorg complete;
      assert no [SNAP_SYNC] / SnapSync lines
   9. ALWAYS restore: exitRecoveryMode + resumeProduction on $TARGET
@@ -133,6 +153,12 @@ mutate() {
 }
 
 restore() {
+    if [ "$STOPPED" = 1 ]; then
+        STOPPED=0
+        note "$TARGET was stopped by the drill; starting it"
+        bash "$TESTNET_SH" start "$TARGET" >/dev/null 2>&1
+        wait_rpc 180 || note "$TARGET RPC not answering after start"
+    fi
     [ "$MUTATED" = 1 ] || return 0
     MUTATED=0
     mutate exitRecoveryMode
@@ -140,6 +166,16 @@ restore() {
 }
 trap restore EXIT
 trap 'restore; exit 130' INT TERM
+
+# wait_rpc SECS — 0 once the target answers getChainInfo.
+wait_rpc() {
+    local end=$(( $(date +%s) + $1 ))
+    while [ "$(date +%s)" -lt "$end" ]; do
+        [ -n "$(jfield "$(rpc "$TPORT" getChainInfo '{}')" bestHeight)" ] && return 0
+        sleep 3
+    done
+    return 1
+}
 
 # ── live fleet ──────────────────────────────────────────────────────────────
 NODES=() PORTS=()
@@ -257,6 +293,43 @@ for attempt in $(seq 1 "$ATTEMPTS"); do
     SIB_HASH=""; restore; sleep 20
 done
 
+# ── isolation (gap >= N: Rule 1/1b closed) ──────────────────────────────────
+ISO_REPORT=""
+if [ -n "$SIB_HASH" ] && [ -n "$ISO_GAP" ]; then
+    note "isolating $TARGET: testnet.sh stop $TARGET"
+    STOPPED=1
+    bash "$TESTNET_SH" stop "$TARGET" >/dev/null 2>&1
+    down=0
+    for _ in $(seq 1 30); do
+        [ -z "$(jfield "$(rpc "$TPORT" getChainInfo '{}')" bestHeight)" ] && { down=1; break; }
+        sleep 2
+    done
+    [ "$down" = 1 ] || { note "FAILED: $TARGET still answers RPC after stop"; exit 1; }
+    ISO_T0="$(date -u +%H:%M:%SZ)"
+    note "$TARGET stopped at $ISO_T0; waiting for seed gap >= $ISO_GAP above h=$SIB_HEIGHT"
+    iso_end=$(( $(date +%s) + ISO_GAP * 20 + 300 )) gap=0
+    while [ "$(date +%s)" -lt "$iso_end" ]; do
+        read -r sH _ <<<"$(tip "$SPORT")"
+        [ -n "$sH" ] && gap=$(( sH - SIB_HEIGHT ))
+        [ "$gap" -ge "$ISO_GAP" ] && break
+        sleep 10
+    done
+    note "isolation end: seed h=$sH gap=$gap (B' at h=$SIB_HEIGHT)"
+    if [ -n "$ISO_EXEC" ]; then
+        note "isolate-exec: $ISO_EXEC"
+        bash -c "$ISO_EXEC"; note "isolate-exec rc=$?"
+    fi
+    bash "$TESTNET_SH" start "$TARGET" >/dev/null 2>&1
+    STOPPED=0
+    ISO_T1="$(date -u +%H:%M:%SZ)"
+    wait_rpc 180 || { note "FAILED: $TARGET RPC not up 180s after start"; exit 1; }
+    mutate pauseProduction
+    read -r tH tHash <<<"$(tip "$TPORT")"
+    ISO_REPORT="isolation: stopped=$ISO_T0 started=$ISO_T1 gap_at_start=$gap target_tip=$tH ${tHash:0:16}"
+    note "$ISO_REPORT"
+    if [ "$tHash" != "$SIB_HASH" ]; then note "WARNING: target tip is not B' after restart"; fi
+fi
+
 # ── observation ─────────────────────────────────────────────────────────────
 CONVERGED=0 CONV_BY="none" SNAP=0 CONV_TS=""
 if [ -n "$SIB_HASH" ]; then
@@ -285,8 +358,9 @@ evidence() {
     echo "start=$START_TS end=$(date -u +%Y-%m-%dT%H:%M:%SZ) target=$TARGET prev_producer=${PREV_PRODUCER:-?}"
     echo "sibling: height=${SIB_HEIGHT:-none} slot=${SIB_SLOT:-none} hash=${SIB_HASH:-none} canonical=${CANON_HASH:-none}"
     echo "converged=$CONVERGED at=${CONV_TS:-never} by=$CONV_BY snap_sync_in_window=$SNAP"
+    [ -z "$ISO_REPORT" ] || echo "$ISO_REPORT"
     echo "-- $TARGET log lines in window"
-    window "$TARGET" | grep -E '\[FORK\] RECOVERY_(START|DONE)|\[WEDGED\] reason=|\[COORDINATOR\] action=|\[ORPHAN_CHASE\]|\[ROLLBACK\] Initiating|Reorg complete|\[SNAP_SYNC\]|SnapSync' | tail -n 60
+    window "$TARGET" | grep -E '\[FORK\] RECOVERY_START|\[FORK\] RECOVERY_DONE|\[FORK\] RECOVERY_SKIP|\[FORK\] Walked block|BLOCKED: Sync|\[WEDGED\] reason=|\[COORDINATOR\] action=|\[ORPHAN_CHASE\]|\[ROLLBACK\] Initiating|Reorg complete|\[SNAP_SYNC\]|SnapSync' | tail -n 60
     echo "-- convergence table"
     printf '%-6s %-8s %-18s %s\n' node height hash "matches-seed-at-height"
     for n in "${NODES[@]}"; do

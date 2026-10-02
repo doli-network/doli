@@ -303,6 +303,40 @@ for pat in '[SNAP_SYNC] starting snap sync' '[ROLLBACK] Initiating rollback to h
     check "TEST-I235-M3-23b early '${pat%% *}' match in a 6 MB window is detected (pipefail)" "$rc" "cond=[$cond] rc=$rc"
 done
 
+# --- M3b: gap>=50 isolation (Rule 1b closed, the seed2 shape) ----------------
+
+# TEST-I235-M3B-01 REQ-I235-014 — Decision: without an isolation step the drill never
+# reaches gap >= 50, Rule 1/1b always settle the fork first and the walk is never exercised.
+run_drill --help
+r=0; for tok in '--isolate-gap' '--isolate-exec' 'testnet.sh stop'; do out_has "$tok" || r=1; done
+check "TEST-I235-M3B-01 --help documents --isolate-gap, --isolate-exec and the stop" "$r" "$(snippet)"
+
+# TEST-I235-M3B-02 REQ-I235-014 — Decision: an isolation plan must be reviewable before it stops a node.
+run_drill --dry-run --target n3 --isolate-gap 60
+r=0; for tok in 'isolate' 'gap >= 60' 'testnet.sh stop n3' 'testnet.sh start n3'; do out_has "$tok" || r=1; done
+[ "$RC" = 0 ] || r=1
+check "TEST-I235-M3B-02 dry-run with --isolate-gap 60 prints the stop/start plan" "$r" "$(snippet)"
+no_mutation "TEST-I235-M3B-02b dry-run with --isolate-gap stops nothing"
+
+# TEST-I235-M3B-03 REQ-I235-014 — Decision: a non-numeric gap would loop forever or stop the node for nothing.
+for bad in abc 0 -5; do
+    run_drill --dry-run --target n3 --isolate-gap "$bad"
+    r=0; [ "$RC" != 0 ] || r=1
+    check "TEST-I235-M3B-03 --isolate-gap '$bad' rejected" "$r" "$(snippet)"
+    no_mutation "TEST-I235-M3B-03b --isolate-gap '$bad' performs no mutation"
+done
+
+# TEST-I235-M3B-04 REQ-I235-014 — Decision: an exit path that leaves the target stopped
+# drops a producer from the fleet; restore() must start it again.
+r=0
+code_only "$DRILL" | sed -n '/^restore() {/,/^}/p' | grep -qE 'TESTNET_SH"? start' || r=1
+check "TEST-I235-M3B-04 restore() restarts a target the drill stopped" "$r"
+
+# TEST-I235-M3B-05 REQ-I235-014 — Decision: the walk evidence must be in the window report.
+r=0
+for tok in 'RECOVERY_SKIP' 'Walked block' 'BLOCKED'; do code_only "$DRILL" | grep -qF -- "$tok" || r=1; done
+check "TEST-I235-M3B-05 evidence regex covers RECOVERY_SKIP, ineligible walk and production blocks" "$r"
+
 echo
 echo "passed=$PASS_COUNT failed=$FAIL_COUNT"
 [ "$FAIL_COUNT" = 0 ]
