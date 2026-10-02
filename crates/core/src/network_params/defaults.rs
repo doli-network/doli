@@ -278,6 +278,8 @@ impl NetworkParams {
                 // INC-I-233 F4 coinbase credit. FROZEN until pinned at release
                 // (user decision-session, together with the INC-I-234 re-pin).
                 inc_i_233_activation_height: u64::MAX,
+                // TODO(INC-I-181): pin. FROZEN until the user picks the mainnet value.
+                inc_i_181_pending_root_activation_height: u64::MAX,
                 // INC-I-171 vesting-penalty payout bound. PINNED 418_000 on mainnet
                 // (user decision 2026-09-07; tip 400_175 at 11:53Z, ~49 h lead, one day
                 // after the 409_000 pins of #178/#204/#208). Own gate, never bundled.
@@ -541,6 +543,10 @@ impl NetworkParams {
                 // INC-I-233 F4 coinbase credit. PINNED 94_500 on testnet (tip 94_131 at
                 // 2026-09-26 09:48Z, ~1 h lead, user decision). IMMUTABLE once crossed.
                 inc_i_233_activation_height: 94_500,
+                // INC-I-181 pending_updates state-root cover. PINNED 97_886 on testnet
+                // (tip 97_796 at 2026-09-27 20:26Z, ~15 min lead, user decision).
+                // IMMUTABLE once crossed.
+                inc_i_181_pending_root_activation_height: 97_886,
                 // INC-I-171 vesting-penalty payout bound. PINNED 133_640 on testnet
                 // (deploy 2026-09-07, ~19 min after tip 133_525 at 10:06Z, user
                 // decision); IMMUTABLE once crossed. Mainnet and devnet stay u64::MAX.
@@ -807,6 +813,9 @@ impl NetworkParams {
                 // INC-I-233 F4: 0 is safe on devnet — a chain with no fee-exempt
                 // txs gets a byte-identical coinbase.
                 inc_i_233_activation_height: 0,
+                // INC-I-181: 0 on devnet — an empty queue keeps the legacy root, so
+                // only a mid-epoch root with queued producer txs changes.
+                inc_i_181_pending_root_activation_height: 0,
                 // INC-I-171 vesting-penalty payout bound. FROZEN at u64::MAX
                 // even here: 0 would reinterpret every live local chain.
                 inc_i_171_vesting_penalty_activation_height: u64::MAX,

@@ -325,76 +325,84 @@ impl Node {
         // only: the record's `block_hash` binding is the actual fix.
         self.state_db.prune_undo_above(snapshot.block_height);
 
-        // Step 3: install the in-memory 3-state now that the durable write landed
+        // INC-I-118: adopt the state_db-backed variant. Post-snap apply_block
+        // writes UTXO changes only to state_db (BlockBatch is the sole write
+        // path), so a frozen InMemory copy would stay at snapshot-time state
+        // forever, diverging the reward-pool balance and per-block state-root
+        // reads from a continuous node and triggering [ECON_EPOCH_OVERFLOW] at
+        // the first post-snap epoch boundary. Mirrors init.rs:305.
+        let new_utxo_set = storage::UtxoSet::from_state_db(self.state_db.clone());
+
+        // Step 3: derive the root from the INSTALLED backend (the wire hash
+        // verified above proves transport, not storage) BEFORE memory is
+        // touched. INC-I-181: a staged mismatch must leave memory on the old
+        // state; the legacy arm keeps memory in step with its replaced disk.
+        let verified_root = match storage::compute_state_root_gated(
+            &new_chain_state,
+            &new_utxo_set,
+            &new_producer_set,
+            self.pending_root_ah(),
+        ) {
+            Ok(root) if root == snapshot.state_root => Some(root),
+            Ok(root) => {
+                error!(
+                    "[SNAP_SYNC] Installed state root {} != verified snapshot root {}",
+                    root, snapshot.state_root
+                );
+                // A staged promotion has ALREADY replaced the live family,
+                // so `Ok(())` would tell the caller a node whose durable set
+                // may be wrong is healthy. The armed marker is the halt; the
+                // `Err` is how the caller learns of it.
+                if staged {
+                    anyhow::bail!(
+                        "[SNAP_SYNC] staged install re-derived root {} != snapshot root {} at height {}",
+                        root,
+                        snapshot.state_root,
+                        snapshot.block_height
+                    );
+                }
+                None
+            }
+            Err(e) => {
+                error!(
+                    "[SNAP_SYNC] Post-install state root derivation failed: {}",
+                    e
+                );
+                if staged {
+                    anyhow::bail!(
+                        "[SNAP_SYNC] staged install could not re-derive a root at height {}: {}",
+                        snapshot.block_height,
+                        e
+                    );
+                }
+                None
+            }
+        };
+
         {
             let mut cs = self.chain_state.write().await;
             *cs = new_chain_state;
-
-            // INC-I-118: adopt the state_db-backed variant. Post-snap apply_block
-            // writes UTXO changes only to state_db (BlockBatch is the sole write
-            // path), so a frozen InMemory copy would stay at snapshot-time state
-            // forever, diverging the reward-pool balance and per-block state-root
-            // reads from a continuous node and triggering [ECON_EPOCH_OVERFLOW] at
-            // the first post-snap epoch boundary. Mirrors init.rs:305.
             let mut utxo = self.utxo_set.write().await;
-            *utxo = storage::UtxoSet::from_state_db(self.state_db.clone());
-
+            *utxo = new_utxo_set;
             let mut ps = self.producer_set.write().await;
             *ps = new_producer_set;
 
-            // Cache the root derived from the INSTALLED backend: the wire hash
-            // verified above proves transport, not storage.
-            match storage::compute_state_root(&cs, &utxo, &ps) {
-                Ok(root) if root == snapshot.state_root => {
-                    let mut cache = self.cached_state_root.write().await;
-                    *cache = Some((root, cs.best_hash, cs.best_height));
-                    // F-11: the staged promotion window closes here, on the Ok
-                    // arm only. The legacy path disarmed right after its batch.
-                    if staged {
-                        if let Err(e) = self.state_db.clear_rebuild_in_progress() {
-                            warn!(
-                                "[SNAP_SYNC] Installed a staged snapshot but failed to clear the \
-                                 rebuild-in-progress marker: {} — the node stays halted until \
-                                 this is resolved",
-                                e
-                            );
-                        }
-                    }
-                }
-                Ok(root) => {
-                    error!(
-                        "[SNAP_SYNC] Installed state root {} != verified snapshot root {}",
-                        root, snapshot.state_root
-                    );
-                    // A staged promotion has ALREADY replaced the live family,
-                    // so `Ok(())` would tell the caller a node whose durable set
-                    // may be wrong is healthy. The armed marker is the halt; the
-                    // `Err` is how the caller learns of it.
-                    if staged {
-                        anyhow::bail!(
-                            "[SNAP_SYNC] staged install re-derived root {} != snapshot root {} at height {}",
-                            root,
-                            snapshot.state_root,
-                            snapshot.block_height
-                        );
-                    }
-                    self.sync_manager.write().await.snap_fallback_to_normal();
-                    return Ok(());
-                }
-                Err(e) => {
-                    error!(
-                        "[SNAP_SYNC] Post-install state root derivation failed: {}",
+            let Some(root) = verified_root else {
+                self.sync_manager.write().await.snap_fallback_to_normal();
+                return Ok(());
+            };
+            let mut cache = self.cached_state_root.write().await;
+            *cache = Some((root, cs.best_hash, cs.best_height));
+            // F-11: the staged promotion window closes here, on the Ok arm
+            // only. The legacy path disarmed right after its batch.
+            if staged {
+                if let Err(e) = self.state_db.clear_rebuild_in_progress() {
+                    warn!(
+                        "[SNAP_SYNC] Installed a staged snapshot but failed to clear the \
+                         rebuild-in-progress marker: {} — the node stays halted until \
+                         this is resolved",
                         e
                     );
-                    if staged {
-                        anyhow::bail!(
-                            "[SNAP_SYNC] staged install could not re-derive a root at height {}: {}",
-                            snapshot.block_height,
-                            e
-                        );
-                    }
-                    self.sync_manager.write().await.snap_fallback_to_normal();
-                    return Ok(());
                 }
             }
 

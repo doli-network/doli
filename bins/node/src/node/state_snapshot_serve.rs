@@ -78,7 +78,12 @@ impl Node {
         }
         let utxo_set = self.utxo_set.read().await;
         let ps = self.producer_set.read().await;
-        match storage::StateSnapshot::create(&chain_state, &utxo_set, &ps) {
+        match storage::StateSnapshot::create_gated(
+            &chain_state,
+            &utxo_set,
+            &ps,
+            self.pending_root_ah(),
+        ) {
             Ok(snap) => {
                 info!(
                     "[SNAP_SYNC] Serving snapshot at height={}, size={}KB, root={}",

@@ -124,7 +124,8 @@ pub use producer::{
 };
 pub use snapshot::{
     compose_state_root, compute_scheduler_root, compute_state_root, compute_state_root_from_bytes,
-    verify_state_root_from_bytes, StateSnapshot,
+    compute_state_root_from_bytes_gated, compute_state_root_gated, verify_state_root_from_bytes,
+    verify_state_root_from_bytes_gated, StateSnapshot,
 };
 pub use state_db::{BlockBatch, LastApplied, MaintainerUndoSnapshot, StateDb, UndoData};
 pub use update::UpdateState;

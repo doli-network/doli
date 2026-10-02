@@ -76,8 +76,9 @@ impl RpcContext {
 
         let (ps_hash, producer_count) = if let Some(ref ps_arc) = self.producer_set {
             let ps = ps_arc.read().await;
-            let ps_bytes = ps.serialize_canonical();
-            let hash = crypto::hash::hash(&ps_bytes);
+            let pending_bound =
+                chain_state.best_height >= self.inc_i_181_pending_root_activation_height;
+            let (hash, _) = ps.state_root_component(pending_bound);
             let count = ps.active_count();
             (hash, count)
         } else {

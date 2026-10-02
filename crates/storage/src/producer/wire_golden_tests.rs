@@ -251,3 +251,61 @@ fn pre_change_queue_json_still_deserializes() {
     let tags: Vec<&str> = set.pending_updates.iter().map(serde_tag).collect();
     assert_eq!(tags, vec!["Exit", "Slash"]);
 }
+
+// ==================== TEST-181-004 — INC-I-181 pending-queue root component ====================
+// OUTPUT CONTRACT: fn ProducerSet::state_root_component(&self, pending_bound: bool) -> (Hash, usize)
+//   O1 .0 component hash; O2 .1 canonical byte length (log only)
+//   PATHS: unbound | bound + empty queue | bound + non-empty queue
+//   PARTITIONS: queue empty | non-empty; content differs | order differs
+
+fn golden_set_with_queue(queue: Vec<PendingProducerUpdate>) -> ProducerSet {
+    let mut set = golden_producer_set();
+    for u in queue {
+        set.queue_update(u);
+    }
+    set
+}
+
+// REQ-181-002 — Decision: a failure means the root moved below the AH, which forks every un-upgraded node (#0 rule).
+#[test]
+fn inc_i_181_unbound_component_is_the_legacy_golden_hash() {
+    let set = golden_set_with_queue(all_pending_updates());
+    let (component, len) = set.state_root_component(false);
+    assert_eq!(component.to_hex(), CANONICAL_HASH_HEX);
+    assert_eq!(len, CANONICAL_LEN);
+    let (empty_bound, _) = golden_producer_set().state_root_component(true);
+    assert_eq!(
+        empty_bound.to_hex(),
+        CANONICAL_HASH_HEX,
+        "an empty queue must keep the legacy component even above the AH"
+    );
+}
+
+// REQ-181-001 — Decision: a failure means a forged or reordered queue hashes to the honest root above the AH.
+#[test]
+fn inc_i_181_bound_component_covers_queue_content_and_order() {
+    let queue = all_pending_updates();
+    let honest = golden_set_with_queue(queue.clone())
+        .state_root_component(true)
+        .0;
+    assert_ne!(
+        honest.to_hex(),
+        CANONICAL_HASH_HEX,
+        "above the AH a non-empty queue must move the component"
+    );
+
+    let mut reordered = queue.clone();
+    reordered.swap(0, 1);
+    let reordered = golden_set_with_queue(reordered)
+        .state_root_component(true)
+        .0;
+    assert_ne!(honest, reordered, "queue order must move the component");
+
+    let mut forged = queue;
+    forged.push(PendingProducerUpdate::Slash {
+        pubkey: pk(0x03),
+        height: 1,
+    });
+    let forged = golden_set_with_queue(forged).state_root_component(true).0;
+    assert_ne!(honest, forged, "queue content must move the component");
+}

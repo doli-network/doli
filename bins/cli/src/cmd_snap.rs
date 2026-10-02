@@ -15,6 +15,13 @@ fn seed_rpcs(network: &str) -> Vec<&'static str> {
     }
 }
 
+/// INC-I-181 pending-queue root gate; an unknown network name keeps the legacy root.
+fn pending_root_ah(network: &str) -> u64 {
+    <doli_core::Network as std::str::FromStr>::from_str(network)
+        .map(|n| n.params().inc_i_181_pending_root_activation_height)
+        .unwrap_or(u64::MAX)
+}
+
 /// Default data directory for a network (uses standard path resolution).
 fn default_data_dir(network: &str) -> Result<PathBuf> {
     Ok(crate::paths::resolve_base_dir(network, None))
@@ -223,8 +230,13 @@ pub(crate) async fn cmd_snap(
     let ps_bytes = hex::decode(ps_hex)?;
 
     let (computed, chain_state, utxo_set, producer_set) =
-        storage::snapshot::verify_state_root_from_bytes(&cs_bytes, &utxo_bytes, &ps_bytes)
-            .map_err(|e| anyhow::anyhow!("INTEGRITY: Snapshot deserialization failed: {}", e))?;
+        storage::snapshot::verify_state_root_from_bytes_gated(
+            &cs_bytes,
+            &utxo_bytes,
+            &ps_bytes,
+            pending_root_ah(network),
+        )
+        .map_err(|e| anyhow::anyhow!("INTEGRITY: Snapshot deserialization failed: {}", e))?;
     if computed.to_hex() != snap_root_str {
         anyhow::bail!(
             "INTEGRITY: Recomputed state root does not match (computed={}, expected={}). Snapshot corrupted.",

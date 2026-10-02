@@ -2161,6 +2161,16 @@ constants: `STATE_CHUNK_MAX_BYTES = 1 MiB`, `MAX_CONCURRENT_STATE_SESSIONS = 4`,
    `apply_snap_snapshot` -> `atomic_replace(into_pairs())` path, so the client-side install peak is
    unchanged by Stage 3. Replacing that with per-chunk staging is Stage 4 [F4] work; the debt is
    recorded in `docs/.workflow/wiring-debt.md`.
+
+**State-root ProducerSet component (INC-I-181).** Keyed on the rooted state's `best_height`:
+below `inc_i_181_pending_root_activation_height` the component is `H(ps.serialize_canonical())`,
+unchanged. At and above it a NON-EMPTY `pending_updates` queue is committed too:
+`H(ps_canonical || H(bincode(pending_updates)))`, in queue order; an empty queue keeps the legacy
+bytes. Every root producer and verifier (legacy serve, session manifest, `GetStateRoot`, both
+install arms, `getStateRootDebug` / `getStateSnapshot` RPC, `doli snap`) goes through
+`ProducerSet::state_root_component`. Not a block-validity rule, but mixed versions above the height
+disagree on the root, so every node upgrades before it.
+
 5. A session that cannot be served answers `StateSessionUnavailable{session_id, reason}` where
    reason is `Busy` (the node is at its concurrent-session cap), `ManifestExpired` (the pinned view
    is gone — TTL, restart, or eviction) or `Halted(reason)` (the serving node's own ledger is
