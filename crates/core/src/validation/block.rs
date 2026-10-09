@@ -103,7 +103,7 @@ pub fn validate_header(
 
 /// Verify the producer's strict Ed25519 signature carried in `header.vdf_proof.pi`
 /// over `header.signing_message()` (INC-I-236).
-pub(super) fn verify_block_signature(header: &BlockHeader) -> Result<(), ValidationError> {
+pub fn verify_block_signature(header: &BlockHeader) -> Result<(), ValidationError> {
     let fail = |reason: String| ValidationError::InvalidBlockSignature { reason };
     let sig = crypto::Signature::try_from_slice(&header.vdf_proof.pi)
         .map_err(|e| fail(format!("malformed signature: {e}")))?;

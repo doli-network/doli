@@ -36,6 +36,7 @@ mod fork_recovery;
 mod fork_walk;
 mod genesis;
 mod gossip_verdicts;
+mod header_auth;
 mod holdings;
 use holdings::holdings_of_every_producer;
 mod fork_cache;

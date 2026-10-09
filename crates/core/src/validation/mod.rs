@@ -59,7 +59,7 @@ pub mod vesting;
 pub mod zk;
 
 pub use amm::{verify_amm_conservation, AmmConservationResult};
-pub use block::{validate_block_with_mode, validate_header};
+pub use block::{validate_block_with_mode, validate_header, verify_block_signature};
 pub use error::ValidationError;
 pub use output_authority::{check_output_placement, check_value_authority};
 pub use producer::{

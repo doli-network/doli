@@ -4,9 +4,8 @@
 //! which is the only slashable offense in DOLI. Double production cannot happen by
 //! accident - it requires intentionally signing two different blocks for the same slot.
 //!
-//! The evidence includes full block headers with VDF proofs, which cryptographically
-//! prove that the producer actually created both blocks. This prevents fabricated
-//! evidence attacks where a malicious reporter could invent fake hashes.
+//! The evidence includes full block headers. Authorship is proven by the producer's
+//! block signature (`vdf_proof.pi`, INC-I-236, enforced from the AH), not by the VDF.
 
 use crypto::{signature, KeyPair, PublicKey};
 use doli_core::transaction::{SlashData, SlashingEvidence};
@@ -25,14 +24,14 @@ const SLIDING_WINDOW_SLOTS: u32 = 360;
 /// Evidence of double production that can be used to create a slash transaction
 ///
 /// Contains full block headers (not just hashes) so that validators can verify
-/// the VDF proofs and confirm the producer actually created both blocks.
+/// each header's producer block signature (INC-I-236); the VDF does not prove authorship.
 #[derive(Clone, Debug)]
 pub struct EquivocationProof {
     /// Producer who committed the offense
     pub producer: PublicKey,
-    /// First block header (complete, for VDF verification)
+    /// First block header (complete, for signature verification)
     pub block_header_1: BlockHeader,
-    /// Second block header (complete, for VDF verification)
+    /// Second block header (complete, for signature verification)
     pub block_header_2: BlockHeader,
     /// Slot where double production occurred
     pub slot: u32,
@@ -41,9 +40,8 @@ pub struct EquivocationProof {
 impl EquivocationProof {
     /// Convert to SlashData for creating a slash transaction
     ///
-    /// The evidence includes full block headers with VDF proofs, allowing
-    /// any validator to cryptographically verify the producer actually
-    /// created both blocks.
+    /// The evidence includes full block headers; validators check each header's
+    /// producer block signature (INC-I-236) to confirm authorship.
     pub fn to_slash_data(&self, reporter_keypair: &KeyPair) -> SlashData {
         let evidence = SlashingEvidence::DoubleProduction {
             block_header_1: self.block_header_1.clone(),

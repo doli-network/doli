@@ -161,20 +161,26 @@ impl Node {
             return Ok(());
         }
 
-        // Check for equivocation (double signing) - even for forks.
-        // This is critical for slashing misbehaving producers.
-        let equivocation_proof = { self.equivocation_detector.write().await.check_block(&block) };
-        if let Some(proof) = equivocation_proof {
-            self.handle_equivocation(proof).await;
-        }
-
-        // Classify the block against our current chain state
         let (best_hash, best_height, genesis_hash) = {
             let state = self.chain_state.read().await;
             (state.best_hash, state.best_height, state.genesis_hash)
         };
+        let net = self.config.network.params();
+        // INC-I-236: no pre-classification height, so gate on the prospective tip; verified once.
+        let authenticated = super::header_auth::gossip_header_authenticated(
+            &block.header,
+            best_height + 1,
+            net.inc_i_236_block_signature_activation_height,
+        );
+        // Equivocation check (even for forks) only on authenticated headers.
+        if authenticated {
+            let proof = self.equivocation_detector.write().await.check_block(&block);
+            if let Some(proof) = proof {
+                self.handle_equivocation(proof).await;
+            }
+        }
         let our_fork_id = self.current_fork_id();
-        let fork_id_activation = self.config.network.params().fork_id_activation_height;
+        let fork_id_activation = net.fork_id_activation_height;
 
         let class = classify_gossip_block(
             &block,
@@ -203,7 +209,9 @@ impl Node {
                 //
                 // Legitimate reorg comes through header-first sync, not gossip.
                 // O(1): one get_block_height + one get_block_by_height lookup.
-                if is_better {
+                if is_better && !authenticated {
+                    debug!("[FORK_GUARD] Dropping unsigned better block {}", block_hash);
+                } else if is_better {
                     // INC-I-040: If the dropped block has a BETTER (lower) slot,
                     // WE are on the losing fork. Signal stuck_fork for
                     // recovery via the RecoveryCoordinator on the next
