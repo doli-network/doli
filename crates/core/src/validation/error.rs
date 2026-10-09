@@ -98,6 +98,13 @@ pub enum ValidationError {
     #[error("invalid data root")]
     InvalidDataRoot,
 
+    /// Producer signature over the block header is missing or invalid (INC-I-236).
+    #[error("invalid block signature: {reason}")]
+    InvalidBlockSignature {
+        /// What specifically failed.
+        reason: String,
+    },
+
     /// VDF proof is invalid.
     #[error("invalid VDF proof: {reason}")]
     InvalidVdfProof {
@@ -592,6 +599,7 @@ impl ValidationError {
             Self::InvalidMerkleRoot { .. } => "INVALID_MERKLE_ROOT",
             Self::InvalidDataRoot => "INVALID_DATA_ROOT",
             Self::InvalidVdfProof { .. } => "INVALID_VDF_PROOF",
+            Self::InvalidBlockSignature { .. } => "INVALID_BLOCK_SIGNATURE",
             Self::InvalidProducer { .. } => "INVALID_PRODUCER",
             Self::BlockTooLarge { .. } => "BLOCK_TOO_LARGE",
             Self::MissingCoinbase => "MISSING_COINBASE",
@@ -718,7 +726,7 @@ impl ValidationError {
                 map.insert("computed".into(), Value::String(computed.to_string()));
             }
             Self::InvalidDataRoot => {}
-            Self::InvalidVdfProof { reason } => {
+            Self::InvalidVdfProof { reason } | Self::InvalidBlockSignature { reason } => {
                 map.insert("reason".into(), Value::String(reason.clone()));
             }
             Self::InvalidProducer {

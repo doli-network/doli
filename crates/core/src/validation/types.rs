@@ -256,6 +256,8 @@ pub struct ValidationContext {
     pub bls_key_rotation_activation_height: u64,
     /// INC-I-234 gate, from `NetworkParams::inc_i_234_activation_height`. Default `u64::MAX` (fail-closed).
     pub inc_i_234_activation_height: u64,
+    /// INC-I-236 block-signature gate. Default `u64::MAX` (fail-closed).
+    pub inc_i_236_block_signature_activation_height: u64,
 }
 
 impl ValidationContext {
@@ -299,6 +301,7 @@ impl ValidationContext {
             inc_i_173_activation_height: u64::MAX,
             bls_key_rotation_activation_height: u64::MAX,
             inc_i_234_activation_height: u64::MAX,
+            inc_i_236_block_signature_activation_height: u64::MAX,
         }
     }
 

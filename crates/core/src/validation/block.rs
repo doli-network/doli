@@ -100,6 +100,20 @@ pub fn validate_header(
     Ok(())
 }
 
+/// Verify the producer's strict Ed25519 signature carried in `header.vdf_proof.pi`
+/// over `header.signing_message()` (INC-I-236).
+fn verify_block_signature(header: &BlockHeader) -> Result<(), ValidationError> {
+    let fail = |reason: String| ValidationError::InvalidBlockSignature { reason };
+    let sig = crypto::Signature::try_from_slice(&header.vdf_proof.pi)
+        .map_err(|e| fail(format!("malformed signature: {e}")))?;
+    crypto::signature_strict::verify_strict(
+        header.signing_message().as_bytes(),
+        &sig,
+        &header.producer,
+    )
+    .map_err(|e| fail(format!("verification failed: {e}")))
+}
+
 /// Validate a block with a specified validation mode.
 ///
 /// In `Full` mode, this is identical to `validate_block()` -- all checks including
@@ -122,6 +136,10 @@ pub fn validate_block_with_mode(
         if tx.tx_type == TxType::RotateBlsKey {
             super::rotate_bls::rotate_stateless(tx, ctx)?;
         }
+    }
+
+    if ctx.current_height >= ctx.inc_i_236_block_signature_activation_height {
+        verify_block_signature(&block.header)?;
     }
 
     match mode {

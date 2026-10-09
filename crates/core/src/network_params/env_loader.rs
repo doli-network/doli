@@ -573,6 +573,14 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
                 defaults.inc_i_234_activation_height,
             )
         },
+        inc_i_236_block_signature_activation_height: if is_mainnet {
+            defaults.inc_i_236_block_signature_activation_height
+        } else {
+            env_parse(
+                "DOLI_INC_I_236_BLOCK_SIGNATURE_ACTIVATION_HEIGHT",
+                defaults.inc_i_236_block_signature_activation_height,
+            )
+        },
         inc_i_233_activation_height: if is_mainnet {
             defaults.inc_i_233_activation_height
         } else {

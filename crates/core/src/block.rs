@@ -15,6 +15,9 @@ use crate::consensus::ConsensusParams;
 use crate::transaction::Transaction;
 use crate::types::{Amount, BlockHeight, Slot};
 
+mod signature;
+pub use signature::BLOCK_SIGNATURE_DOMAIN;
+
 /// Block header
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockHeader {

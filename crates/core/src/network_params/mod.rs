@@ -858,6 +858,9 @@ pub struct NetworkParams {
     /// INC-I-234 output-creation-authority gate.
     pub inc_i_234_activation_height: u64,
 
+    /// INC-I-236 block producer-signature gate.
+    pub inc_i_236_block_signature_activation_height: u64,
+
     /// INC-I-233 (F4) coinbase-credit gate. At and above it the six fee-exempt
     /// tx types credit 0 to the coinbase (`validation::coinbase_credit`); below
     /// it the old per-byte credit applies, byte-identical. Q1 YES (user tx) +
