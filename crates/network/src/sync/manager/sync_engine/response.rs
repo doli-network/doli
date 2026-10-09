@@ -429,10 +429,11 @@ impl SyncManager {
         info!("Received {} headers from {}", headers.len(), peer);
 
         // Validate and store headers
-        let accepted = self
-            .pipeline
-            .header_downloader
-            .accept_headers(&headers, self.local_hash);
+        let accepted = self.pipeline.header_downloader.accept_headers(
+            &headers,
+            self.local_hash,
+            self.local_height,
+        );
         let valid_count = accepted.len();
 
         // D2 (INC-I-090): record chain break info for diagnostic emission

@@ -59,6 +59,17 @@ pub struct SyncConfig {
     /// DISABLED — behavior identical to pre-INC-I-152); the node overrides it from
     /// `NetworkParams` at startup.
     pub genesis_blocks: u64,
+    /// INC-I-236 header signature AH; `u64::MAX` (dormant) unless overridden.
+    pub inc_i_236_block_signature_activation_height: u64,
+}
+
+impl SyncConfig {
+    /// Every `HeaderDownloader` must come from here so the signature AH is applied.
+    pub(crate) fn header_downloader(&self) -> HeaderDownloader {
+        let mut d = HeaderDownloader::new(self.max_headers_per_request, self.request_timeout);
+        d.set_block_signature_activation_height(self.inc_i_236_block_signature_activation_height);
+        d
+    }
 }
 
 impl Default for SyncConfig {
@@ -73,6 +84,7 @@ impl Default for SyncConfig {
             inc_i_147_activation_height: 0,          // always-on unless overridden
             inc_i_204_fork_choice_activation_height: u64::MAX, // dormant unless overridden
             genesis_blocks: 0,                       // window disabled unless overridden
+            inc_i_236_block_signature_activation_height: u64::MAX,
         }
     }
 }
@@ -328,10 +340,7 @@ impl SyncPipeline {
             pending_requests: HashMap::new(),
             next_request_id: 0,
             sync_epoch: 0,
-            header_downloader: HeaderDownloader::new(
-                config.max_headers_per_request,
-                config.request_timeout,
-            ),
+            header_downloader: config.header_downloader(),
             body_downloader: BodyDownloader::new(
                 config.max_bodies_per_request,
                 config.max_concurrent_body_requests,

@@ -766,6 +766,11 @@ impl Node {
             // INC-I-152: sync-side bootstrap window, so orphan chase walking a freshly
             // wiped node off h==0 does not foreclose bootstrap snap admission.
             genesis_blocks: config.network.params().genesis_blocks,
+            // INC-I-236: header-first sync verifies producer signatures at h >= AH.
+            inc_i_236_block_signature_activation_height: config
+                .network
+                .params()
+                .inc_i_236_block_signature_activation_height,
             ..SyncConfig::default()
         };
         let sync_manager = Arc::new(RwLock::new(SyncManager::new(sync_config, genesis_hash)));
