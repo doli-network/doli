@@ -1,9 +1,10 @@
 use crate::block::{Block, BlockHeader};
 use crate::consensus::{max_block_size, MAX_DRIFT, MAX_FUTURE_SLOTS, NETWORK_MARGIN};
-use crate::transaction::{RegistrationData, SlashData, TxType};
+use crate::transaction::{RegistrationData, TxType};
 
 use super::producer::{validate_producer_eligibility, validate_vdf};
 use super::registration::validate_registration_vdf;
+use super::slash_evidence::decode_slash_data;
 use super::transaction::{validate_transaction, validate_transaction_skip_registration_vdf};
 use super::utxo::check_internal_double_spend;
 use super::{ValidationContext, ValidationError, ValidationMode};
@@ -102,7 +103,7 @@ pub fn validate_header(
 
 /// Verify the producer's strict Ed25519 signature carried in `header.vdf_proof.pi`
 /// over `header.signing_message()` (INC-I-236).
-fn verify_block_signature(header: &BlockHeader) -> Result<(), ValidationError> {
+pub(super) fn verify_block_signature(header: &BlockHeader) -> Result<(), ValidationError> {
     let fail = |reason: String| ValidationError::InvalidBlockSignature { reason };
     let sig = crypto::Signature::try_from_slice(&header.vdf_proof.pi)
         .map_err(|e| fail(format!("malformed signature: {e}")))?;
@@ -206,7 +207,7 @@ pub fn validate_block_with_mode(
                                 let err_ref = &vdf_error;
                                 s.spawn(move || {
                                     if let Ok(slash_data) =
-                                        bincode::deserialize::<SlashData>(&tx.extra_data)
+                                        decode_slash_data(&tx.extra_data, ctx)
                                     {
                                         // Only DoubleProduction evidence carries VDFs
                                         // worth verifying in the parallel pre-pass.

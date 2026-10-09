@@ -30,5 +30,6 @@ mod inc_i_234_m1_activation_height;
 mod inc_i_234_m2_output_authority;
 mod inc_i_236_block_sig_contract;
 mod inc_i_236_forged_block_authn;
+mod inc_i_236_slash_evidence_authn;
 mod inc_i_248_quorum;
 mod inc_i_248_rel_m1_quorum;

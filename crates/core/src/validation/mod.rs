@@ -40,6 +40,7 @@ mod producer;
 mod registration;
 mod rewards_legacy;
 pub mod rotate_bls;
+mod slash_evidence;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
