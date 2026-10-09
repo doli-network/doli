@@ -52,6 +52,20 @@ const MESH_N_CAP: usize = 50;
 /// updating the boundary test and documenting the new rationale.
 pub const AGGRESSIVE_DEDUP_THRESHOLD: Duration = Duration::from_secs(30);
 
+/// Production gossipsub duplicate-cache lifetime.
+///
+/// INC-I-237: was 60 s. On mainnet 2026-10-09 stale messages re-arrived
+/// 60-119 s after first sight, just past the 60 s window; gossipsub treated
+/// them as new and the fleet re-forwarded them in a loop until the unbounded
+/// per-peer send queues OOM-killed every node. 300 s drops those copies
+/// before validation, so they are never forwarded. MUST stay >= the
+/// app-level `staleness::SEEN_CACHE_TTL_SECS` (180 s).
+///
+/// RESOURCE COST: one 20-byte message ID + timestamp per distinct message;
+/// at 1 000 msg/s x 300 s ~= 30 MB worst case, a few MB at normal rates.
+/// Local per-node policy: no consensus, wire or block-content change.
+pub const GOSSIP_DUPLICATE_CACHE_TIME: Duration = Duration::from_secs(300);
+
 /// Verify that a gossipsub [`Config`] satisfies INV-NETWORK-002: aggressive
 /// propagation settings require both application-level validation and a
 /// bounded event queue to prevent heap exhaustion.
@@ -216,8 +230,8 @@ pub fn new_gossipsub(keypair: &Keypair, mesh: &MeshConfig) -> Result<Gossipsub, 
         .history_gossip(3)
         // Message size limit — uses named constant for testability
         .max_transmit_size(GOSSIP_MAX_TRANSMIT_SIZE)
-        // Duplicate cache time
-        .duplicate_cache_time(Duration::from_secs(60))
+        // Duplicate cache time (INC-I-237)
+        .duplicate_cache_time(GOSSIP_DUPLICATE_CACHE_TIME)
         // Flood publish: send OUR messages to ALL peers, not just mesh.
         // Defensive — ensures our blocks/attestations reach everyone regardless
         // of mesh topology. At 42 nodes the bandwidth cost is negligible.
