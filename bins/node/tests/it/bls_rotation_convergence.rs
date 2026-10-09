@@ -156,7 +156,7 @@ fn block_at(
     );
     let mut all = vec![coinbase];
     all.extend(txs);
-    let header = BlockHeader {
+    let mut header = BlockHeader {
         version: 2,
         prev_hash: prev,
         merkle_root: doli_core::block::compute_merkle_root(&all),
@@ -173,6 +173,7 @@ fn block_at(
         data_root: Hash::ZERO,
         fork_id: Hash::ZERO,
     };
+    crate::block_sig::sign_header(&mut header, by);
     Block::new(header, all)
 }
 

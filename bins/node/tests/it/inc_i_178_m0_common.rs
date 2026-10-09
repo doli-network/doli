@@ -35,6 +35,7 @@ pub async fn make_node(n_producers: usize) -> (Node, Vec<KeyPair>, TempDir) {
         .await
         .expect("Node::new_for_test failed");
     node.params.blocks_per_era = 100_000;
+    crate::block_sig::register_keys(&producers);
     (node, producers, temp)
 }
 
@@ -151,7 +152,8 @@ pub async fn build_pair_in_one_slot(node: &mut Node, height: u64) -> (Built, Bui
     panic!("could not obtain two builds inside one slot after 8 attempts");
 }
 
-pub fn assemble(header: BlockHeader, txs: Vec<Transaction>, bf: Vec<u8>) -> Block {
+pub fn assemble(mut header: BlockHeader, txs: Vec<Transaction>, bf: Vec<u8>) -> Block {
+    crate::block_sig::resign(&mut header);
     Block {
         header,
         transactions: txs,

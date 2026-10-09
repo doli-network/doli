@@ -12,6 +12,7 @@
 mod inc_i_180_admission_parity;
 mod inc_i_203_addbond_cap;
 mod inc_i_203_admission_gap;
+mod inc_i_236_m2_ctx_parity;
 
 /// INC-I-203 M2 outcome metric. Root-level because libtest's `--exact` matches
 /// the full `module::fn` name and the milestone command addresses it bare.

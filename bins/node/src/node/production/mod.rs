@@ -4,6 +4,7 @@ mod assembly;
 mod gates;
 mod poison;
 mod scheduling;
+mod signing;
 mod withdrawal_holdings;
 
 impl Node {
@@ -578,7 +579,7 @@ impl Node {
         }
 
         // Create final block header with VDF
-        let final_header = BlockHeader {
+        let mut final_header = BlockHeader {
             version: header.version,
             prev_hash: header.prev_hash,
             merkle_root: header.merkle_root,
@@ -593,6 +594,7 @@ impl Node {
             data_root: header.data_root,
             fork_id: header.fork_id,
         };
+        self.sign_block_header(&mut final_header);
 
         // Use the transactions from the builder — same list used for merkle root computation.
         // No duplicate transaction assembly needed.

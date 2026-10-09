@@ -30,6 +30,9 @@ use tempfile::TempDir;
 use tokio::sync::Mutex;
 use vdf::{VdfOutput, VdfProof};
 
+#[path = "../support/block_sig.rs"]
+pub mod block_sig;
+
 // ============================================================
 // INC-I-198 — LIVE-NODE BUDGET
 // ============================================================
@@ -192,7 +195,7 @@ impl TestNetwork {
         let merkle_root = doli_core::block::compute_merkle_root(std::slice::from_ref(&coinbase));
         let genesis_hash = doli_core::chainspec::ChainSpec::devnet().genesis_hash();
 
-        let header = BlockHeader {
+        let mut header = BlockHeader {
             version: 2,
             prev_hash,
             merkle_root,
@@ -210,6 +213,7 @@ impl TestNetwork {
             fork_id: crypto::Hash::ZERO,
         };
 
+        block_sig::sign_header(&mut header, producer);
         Block::new(header, vec![coinbase])
     }
 
@@ -1210,7 +1214,7 @@ impl TestNetwork {
             }
         }
 
-        let header = BlockHeader {
+        let mut header = BlockHeader {
             version: 2,
             prev_hash,
             merkle_root,
@@ -1228,6 +1232,7 @@ impl TestNetwork {
             fork_id: Hash::ZERO,
         };
 
+        block_sig::sign_header(&mut header, producer);
         Block::new(header, vec![coinbase])
     }
 

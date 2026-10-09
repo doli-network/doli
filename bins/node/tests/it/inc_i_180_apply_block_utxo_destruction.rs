@@ -232,7 +232,8 @@ async fn apply_n11_shape(node: &mut Node, kp: &KeyPair, height: u64) -> Result<(
     }
 
     let tx = signed_withdrawal(node, kp, OWNED_BOND_UTXOS, OWNED_BOND_UTXOS);
-    let block = block_with(node, height, pk, vec![tx]);
+    let mut block = block_with(node, height, pk, vec![tx]);
+    crate::block_sig::sign_block(&mut block, kp);
 
     node.apply_block(block, ValidationMode::Light)
         .await

@@ -13,6 +13,7 @@
 
 // Shared fixture for the snap-install / fork-guard modules. Declared once HERE:
 // a `#[path]` include in two sibling modules loads the same file twice.
+use inc_i_156_m1_harness::block_sig;
 #[path = "../inc_i_156_m1_harness/mod.rs"]
 mod inc_i_156_m1_harness;
 
@@ -72,6 +73,9 @@ mod inc_i_234_output_authority;
 mod inc_i_234_output_authority_more;
 mod inc_i_235_m2_drain_seed;
 mod inc_i_235_wedged_fork_walk;
+mod inc_i_236_m2_common;
+mod inc_i_236_m2_ctx_parity;
+mod inc_i_236_m2_producer_signs;
 mod inc_i_237_m0_common;
 mod inc_i_237_m0_metrics;
 mod inc_i_237_m0_node_hook;

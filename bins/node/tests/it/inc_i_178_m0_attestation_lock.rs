@@ -95,6 +95,7 @@ async fn req_bls_003_ac2_presence_root_commitment_is_enforced_for_a_full_bitfiel
     // O1/O2 on P2a: a rewritten presence_root is rejected by name.
     let mut tampered = block.clone();
     tampered.header.presence_root = crypto::hash::hash(b"relay-rewrote-this");
+    crate::block_sig::resign(&mut tampered.header);
     let bad = node
         .validate_block_for_apply(&tampered, height, ValidationMode::Light)
         .await;
@@ -191,6 +192,7 @@ async fn req_bls_003_ac2_stray_bits_beyond_producer_count_are_rejected_today() {
     block.attestation_bitfield[last] |= 0b1000_0000;
     block.header.presence_root =
         Hash::from_bytes(*crypto::hash::hash(&block.attestation_bitfield).as_bytes());
+    crate::block_sig::resign(&mut block.header);
 
     let bad = node
         .validate_block_for_apply(&block, height, ValidationMode::Light)
@@ -235,6 +237,7 @@ async fn req_bls_003_ac3_empty_body_bitfield_bypasses_the_commitment_check_today
     // guard at validation_checks.rs:423.
     let mut stripped = block.clone();
     stripped.header.presence_root = crypto::hash::hash(b"arbitrary-uncommitted-root");
+    crate::block_sig::resign(&mut stripped.header);
     let legacy = node
         .validate_block_for_apply(&stripped, height, ValidationMode::Light)
         .await;

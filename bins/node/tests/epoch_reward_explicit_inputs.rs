@@ -7,6 +7,8 @@
 //! Tests 1-6 are fast unit-level tests (~ms).
 //! Tests 7-8 build a full chain to the activation height (~60s each).
 
+#[path = "support/block_sig.rs"]
+mod block_sig;
 use std::collections::HashMap;
 
 use crypto::{Hash, KeyPair};
@@ -112,7 +114,7 @@ fn build_block(
     let merkle_root = doli_core::block::compute_merkle_root(std::slice::from_ref(&coinbase));
     let genesis_hash = doli_core::chainspec::ChainSpec::devnet().genesis_hash();
 
-    let header = doli_core::BlockHeader {
+    let mut header = doli_core::BlockHeader {
         version: 2,
         prev_hash,
         merkle_root,
@@ -129,6 +131,7 @@ fn build_block(
         data_root: crypto::Hash::ZERO,
         fork_id: crypto::Hash::ZERO,
     };
+    crate::block_sig::sign_header(&mut header, producer);
 
     Block::new(header, vec![coinbase])
 }
@@ -389,7 +392,7 @@ async fn test_pre_activation_epoch_reward_drains_pool() {
     let merkle_root = doli_core::block::compute_merkle_root(&txs);
     let genesis_hash = doli_core::chainspec::ChainSpec::devnet().genesis_hash();
 
-    let header = doli_core::BlockHeader {
+    let mut header = doli_core::BlockHeader {
         version: 2,
         prev_hash,
         merkle_root,
@@ -406,6 +409,7 @@ async fn test_pre_activation_epoch_reward_drains_pool() {
         data_root: crypto::Hash::ZERO,
         fork_id: crypto::Hash::ZERO,
     };
+    crate::block_sig::sign_header(&mut header, &producers[0]);
     let block = Block::new(header, txs);
 
     node.apply_block(block, doli_core::validation::ValidationMode::Light)
@@ -464,7 +468,7 @@ async fn test_rollback_post_activation_restores_pool() {
     let merkle_root = doli_core::block::compute_merkle_root(&txs);
     let genesis_hash = doli_core::chainspec::ChainSpec::devnet().genesis_hash();
 
-    let header = doli_core::BlockHeader {
+    let mut header = doli_core::BlockHeader {
         version: 2,
         prev_hash,
         merkle_root,
@@ -481,6 +485,7 @@ async fn test_rollback_post_activation_restores_pool() {
         data_root: crypto::Hash::ZERO,
         fork_id: crypto::Hash::ZERO,
     };
+    crate::block_sig::sign_header(&mut header, &producers[0]);
     let block = Block::new(header, txs);
     node.apply_block(block, doli_core::validation::ValidationMode::Light)
         .await

@@ -162,7 +162,7 @@ fn block_at(node: &Node, producer: &KeyPair, coinbase_amount: u64, txs: Vec<Tran
         SLOT,
     )];
     all.extend(txs);
-    let header = BlockHeader {
+    let mut header = BlockHeader {
         version: 2,
         prev_hash: Hash::ZERO,
         merkle_root: doli_core::block::compute_merkle_root(&all),
@@ -179,6 +179,7 @@ fn block_at(node: &Node, producer: &KeyPair, coinbase_amount: u64, txs: Vec<Tran
         data_root: Hash::ZERO,
         fork_id: Hash::ZERO,
     };
+    crate::block_sig::sign_header(&mut header, producer);
     Block::new(header, all)
 }
 

@@ -111,6 +111,8 @@
 //! this file pins: the error, if any, must NOT be the mid-rebuild error raised from
 //! INSIDE the mutation section, and O2..O6 must be untouched.
 
+#[path = "support/block_sig.rs"]
+mod block_sig;
 use std::sync::Once;
 
 use crypto::{Hash, KeyPair};
@@ -193,7 +195,7 @@ fn build_block_with_txs(
     let timestamp = params.genesis_time + (block_slot as u64 * params.slot_duration);
     let merkle_root = doli_core::block::compute_merkle_root(&txs);
 
-    let header = BlockHeader {
+    let mut header = BlockHeader {
         version: 2,
         prev_hash,
         merkle_root,
@@ -210,6 +212,7 @@ fn build_block_with_txs(
         data_root: Hash::ZERO,
         fork_id: Hash::ZERO,
     };
+    crate::block_sig::sign_header(&mut header, producer);
     Block::new(header, txs)
 }
 

@@ -88,6 +88,8 @@
 //!
 //! Constraints: read-only on source; uses `Node::new_for_test` with real RocksDB.
 
+#[path = "support/block_sig.rs"]
+mod block_sig;
 use std::panic::AssertUnwindSafe;
 use std::sync::Once;
 
@@ -146,7 +148,7 @@ fn build_plain_block(
     let merkle_root = doli_core::block::compute_merkle_root(std::slice::from_ref(&coinbase));
     let genesis_hash = doli_core::chainspec::ChainSpec::devnet().genesis_hash();
 
-    let header = BlockHeader {
+    let mut header = BlockHeader {
         version: 2,
         prev_hash,
         merkle_root,
@@ -163,6 +165,7 @@ fn build_plain_block(
         data_root: Hash::ZERO,
         fork_id: Hash::ZERO,
     };
+    crate::block_sig::sign_header(&mut header, producer);
     Block::new(header, vec![coinbase])
 }
 
@@ -203,7 +206,7 @@ fn build_bad_epoch_reward_block(
     let merkle_root = doli_core::block::compute_merkle_root(&txs);
     let genesis_hash = doli_core::chainspec::ChainSpec::devnet().genesis_hash();
 
-    let header = BlockHeader {
+    let mut header = BlockHeader {
         version: 2,
         prev_hash,
         merkle_root,
@@ -220,6 +223,7 @@ fn build_bad_epoch_reward_block(
         data_root: Hash::ZERO,
         fork_id: Hash::ZERO,
     };
+    crate::block_sig::sign_header(&mut header, producer);
     Block::new(header, txs)
 }
 

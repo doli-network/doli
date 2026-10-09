@@ -142,7 +142,7 @@ fn build_block(
     txs.extend(extra);
     let merkle_root = doli_core::block::compute_merkle_root(&txs);
 
-    let header = BlockHeader {
+    let mut header = BlockHeader {
         version: 2,
         prev_hash,
         merkle_root,
@@ -159,6 +159,7 @@ fn build_block(
         data_root: Hash::ZERO,
         fork_id: Hash::ZERO,
     };
+    crate::block_sig::sign_header(&mut header, producer);
     Block::new(header, txs)
 }
 

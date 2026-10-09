@@ -543,6 +543,11 @@ impl Mempool {
                 self.network.params().bls_key_rotation_activation_height,
             )
             .with_inc_i_234_activation_height(self.network.params().inc_i_234_activation_height)
+            .with_inc_i_236_block_signature_activation_height(
+                self.network
+                    .params()
+                    .inc_i_236_block_signature_activation_height,
+            )
             .with_oracle_activation_height(self.network.params().oracle_activation_height)
             .with_oracle_sunset_triggered(
                 self.oracle_sunset_triggered
@@ -994,6 +999,11 @@ impl Mempool {
                 self.network.params().bls_key_rotation_activation_height,
             )
             .with_inc_i_234_activation_height(self.network.params().inc_i_234_activation_height)
+            .with_inc_i_236_block_signature_activation_height(
+                self.network
+                    .params()
+                    .inc_i_236_block_signature_activation_height,
+            )
             .with_oracle_activation_height(self.network.params().oracle_activation_height)
             .with_oracle_sunset_triggered(
                 self.oracle_sunset_triggered

@@ -389,6 +389,13 @@ impl ValidationContext {
         self
     }
 
+    /// Set the INC-I-236 block-signature activation height (see field doc).
+    #[must_use]
+    pub fn with_inc_i_236_block_signature_activation_height(mut self, height: u64) -> Self {
+        self.inc_i_236_block_signature_activation_height = height;
+        self
+    }
+
     /// Set the INC-I-026 scheduler activation height (see field doc).
     #[must_use]
     pub fn with_inc_i_026_scheduler_activation_height(mut self, height: u64) -> Self {

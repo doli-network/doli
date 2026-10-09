@@ -76,6 +76,7 @@ async fn req_bls_007_light_mode_skips_pairing_but_checks_root() {
     // A block whose ROOT is wrong: step 1 must answer in ANY mode.
     let mut bad_root = f.block.clone();
     bad_root.header.presence_root = crypto::hash::hash(b"m5-not-the-commitment");
+    crate::block_sig::resign(&mut bad_root.header);
 
     // Control: the forged block IS rejected in Full, or "Light accepted it" is
     // not evidence of a skip.
@@ -188,6 +189,7 @@ async fn req_bls_007_verify_runs_after_vdf_total_unchanged() {
 
     // The witness: same block, deliberately wrong VDF output.
     stamp_invalid_vdf(&mut poison.header);
+    crate::block_sig::resign(&mut poison.header);
     let before = Counters::now();
     let verdict = f.validate_full(&poison).await;
     let after = Counters::now();
@@ -305,6 +307,7 @@ async fn req_bls_002_same_shapes_at_ah_minus_one_accept_as_today() {
     let mut post_root: Block = honest.clone();
     post_root.header.presence_root =
         doli_core::presence_commitment(&post_root.attestation_bitfield, &[]);
+    crate::block_sig::resign(&mut post_root.header);
     let verdict = node
         .validate_block_for_apply(&post_root, height, ValidationMode::Full)
         .await;

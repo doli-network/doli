@@ -28,6 +28,9 @@ mod inc_i_237_m5_tests;
 mod inc_i_237_slash_tests;
 #[cfg(test)]
 mod orphan_chase_tests;
+#[cfg(test)]
+#[path = "../../tests/support/block_sig.rs"]
+pub(crate) mod test_block_sig;
 pub use force_reorg::ForceReorgOutcome;
 mod fork_recovery;
 mod fork_walk;

@@ -230,11 +230,12 @@ pub async fn build_scheduled(node: &mut Node, height: u64) -> Built {
 }
 
 pub fn assemble_with(
-    header: BlockHeader,
+    mut header: BlockHeader,
     txs: Vec<Transaction>,
     bf: Vec<u8>,
     agg: Vec<u8>,
 ) -> Block {
+    crate::block_sig::resign(&mut header);
     Block {
         header,
         transactions: txs,
@@ -248,6 +249,7 @@ pub fn assemble_with(
 pub fn recommit(block: &mut Block) {
     block.header.presence_root =
         presence_commitment(&block.attestation_bitfield, &block.aggregate_bls_signature);
+    crate::block_sig::resign(&mut block.header);
 }
 
 /// One universe member whose BLS key is published ON-CHAIN.

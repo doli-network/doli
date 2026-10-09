@@ -168,6 +168,7 @@ async fn inc_i_178_m3_midepoch_exit_rejects_an_honest_block() {
 
     let mut post_block = block.clone();
     post_block.header.presence_root = presence_commitment(&bf, &post_block.aggregate_bls_signature);
+    crate::block_sig::resign(&mut post_block.header);
     assert_ne!(
         post_block.header.presence_root, block.header.presence_root,
         "P2: the post-AH root must differ from the legacy BLAKE3(bitfield) root"
