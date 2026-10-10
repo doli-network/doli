@@ -6,9 +6,10 @@ members = [
     "testing/benchmarks",
     "testing/integration",
 ]
+exclude = ["vendor/libp2p-gossipsub"]
 
 [workspace.package]
-version = "6.43.1"
+version = "6.43.2"
 edition = "2021"
 authors = ["DOLI Network <doli@doli.network>"]
 license = "MIT"
@@ -124,3 +125,8 @@ opt-level = 1
 
 [profile.test]
 opt-level = 1
+
+# DOLI INC-I-237: vendored gossipsub with a byte-bounded per-connection
+# send_queue. See vendor/libp2p-gossipsub/DOLI-PATCH.md.
+[patch.crates-io]
+libp2p-gossipsub = { path = "vendor/libp2p-gossipsub" }
