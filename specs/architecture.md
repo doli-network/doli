@@ -883,7 +883,7 @@ use core::consensus::BOND_UNIT;  // DON'T DO THIS in consumers
 | `manager/` | Sync orchestration directory with sub-modules: `mod.rs` (core), `block_lifecycle.rs`, `cleanup.rs`, `production_gate.rs` (10-layer gating), `peers.rs`, `snap_sync.rs`, `types.rs`, `tests.rs`, `sync_engine/` (sub-directory: `mod.rs`, `decision.rs`, `dispatch.rs`, `response.rs`) |
 | `reorg/` | Chain reorganization: `mod.rs`, `tests.rs` |
 | `fork_recovery.rs` | Fork recovery logic |
-| `equivocation.rs` | Double-production detection and slashing |
+| `equivocation.rs` | Double-production detection (logged only; slashing inactive, INC-I-237) |
 | `bodies.rs` | Block body download |
 | `headers.rs` | Header-first sync |
 | `adversarial_tests.rs` | Adversarial sync scenario tests |

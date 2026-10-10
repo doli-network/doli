@@ -427,10 +427,11 @@ impl SyncManager {
         info!("Received {} headers from {}", headers.len(), peer);
 
         // Validate and store headers
-        let valid_count = self
+        let accepted = self
             .pipeline
             .header_downloader
-            .process_headers(&headers, self.local_hash);
+            .accept_headers(&headers, self.local_hash);
+        let valid_count = accepted.len();
 
         // D2 (INC-I-090): record chain break info for diagnostic emission
         if let Some(cb) = self.pipeline.header_downloader.take_chain_break() {
@@ -455,7 +456,8 @@ impl SyncManager {
             self.network.last_sync_activity = Instant::now();
 
             // Queue header hashes for body download
-            for header in headers.iter().take(valid_count) {
+            // INC-I-237: queue exactly the accepted headers (not a prefix).
+            for header in &accepted {
                 self.pipeline
                     .headers_needing_bodies
                     .push_back(header.hash());

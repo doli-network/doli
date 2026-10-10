@@ -438,79 +438,23 @@ impl Node {
     // NOTE: build_presence_commitment removed in deterministic scheduler model
     // Rewards go 100% to block producer via coinbase, no presence tracking needed
 
-    /// Handle a detected equivocation (double signing)
+    /// Handle a detected equivocation (two headers, same producer and slot).
     ///
-    /// Creates and submits a slash transaction to the mempool when a producer
-    /// is caught creating two different blocks for the same slot.
+    /// INC-I-237: log only. Consensus rejects every SlashProducer in a block —
+    /// it is 0-in/0-out, not in `TxType::allows_empty_io` (INC-I-173 C1: headers
+    /// are unsigned and the hash-chain VDF is public, so this evidence is
+    /// forgeable) and not fee-exempt, so `validate_transaction_with_utxos`
+    /// returns InsufficientFee. Building and broadcasting one injected a tx no
+    /// peer could admit or mine, which gossip relayed without end.
     pub async fn handle_equivocation(&mut self, proof: EquivocationProof) {
-        // Log the equivocation with all details
         warn!(
-            "SLASHING: Producer {} created two blocks for slot {}: {} and {}",
+            "EQUIVOCATION: producer {} made two headers for slot {}: {} and {} \
+             (logged only; no slash tx - INC-I-237)",
             crypto_hash(proof.producer.as_bytes()),
             proof.slot,
             proof.block_header_1.hash(),
             proof.block_header_2.hash()
         );
-
-        // Check if the producer is actually registered (to avoid spam for unknown producers)
-        let is_registered = {
-            let producers = self.producer_set.read().await;
-            producers.get_by_pubkey(&proof.producer).is_some()
-        };
-
-        if !is_registered {
-            info!(
-                "Equivocation by unregistered producer {} - not submitting slash tx",
-                crypto_hash(proof.producer.as_bytes())
-            );
-            return;
-        }
-
-        // Create slash transaction using our producer key as reporter
-        // If we don't have a producer key, we can't sign the slash tx
-        let slash_tx = if let Some(ref reporter_key) = self.producer_key {
-            proof.to_slash_transaction(reporter_key)
-        } else {
-            // Generate ephemeral keypair for reporting (anyone can report)
-            let reporter_key = KeyPair::generate();
-            proof.to_slash_transaction(&reporter_key)
-        };
-
-        let slash_tx_hash = slash_tx.hash();
-
-        // Add to mempool for inclusion in next block
-        // Use add_system_transaction since slash txs have no inputs/outputs
-        let current_height = self.chain_state.read().await.best_height;
-        let add_result = {
-            let mut mempool = self.mempool.write().await;
-            mempool.add_system_transaction(slash_tx.clone(), current_height)
-        };
-
-        match add_result {
-            Ok(_hash) => {
-                info!(
-                    "Slash transaction {} submitted to mempool for producer {}",
-                    slash_tx_hash,
-                    crypto_hash(proof.producer.as_bytes())
-                );
-
-                // Broadcast the slash tx to the network
-                if let Some(ref network) = self.network {
-                    if let Err(e) = network.broadcast_transaction(slash_tx).await {
-                        warn!("Failed to broadcast slash transaction: {}", e);
-                    }
-                }
-            }
-            Err(rpc::MempoolError::AlreadyExists) => {
-                debug!("Slash transaction {} already in mempool", slash_tx_hash);
-            }
-            Err(e) => {
-                warn!(
-                    "Failed to add slash transaction {} to mempool: {}",
-                    slash_tx_hash, e
-                );
-            }
-        }
     }
 
     /// Rebuild the producer set by replaying all producer-modifying transactions

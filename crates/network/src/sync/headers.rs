@@ -81,17 +81,33 @@ impl HeaderDownloader {
     /// `self.last_chain_break` is populated with the break details. The caller
     /// should check `take_chain_break()` after this call.
     pub fn process_headers(&mut self, headers: &[BlockHeader], local_tip: Hash) -> usize {
+        self.accept_headers(headers, local_tip).len()
+    }
+
+    /// Same as [`Self::process_headers`], but returns the newly accepted
+    /// headers in order (INC-I-237: they are not always a prefix of `headers`).
+    pub fn accept_headers(&mut self, headers: &[BlockHeader], local_tip: Hash) -> Vec<BlockHeader> {
         // D2: clear previous chain break info
         self.last_chain_break = None;
 
+        let mut accepted = Vec::new();
         if headers.is_empty() {
-            return 0;
+            return accepted;
         }
 
         let mut valid_count = 0u32;
         let mut prev_hash = self.expected_prev_hash.unwrap_or(local_tip);
 
-        for header in headers {
+        // INC-I-237: the request was built from an older tip; a block applied
+        // while it was in flight moved the tip onto a header in this response.
+        // Skip the leading headers up to and including that one, then link the
+        // rest from it. With no such header, the break below fires as before.
+        let start = headers
+            .iter()
+            .position(|h| h.hash() == prev_hash)
+            .map_or(0, |i| i + 1);
+
+        for header in &headers[start..] {
             // Check chain linkage
             if header.prev_hash != prev_hash {
                 warn!(
@@ -125,6 +141,7 @@ impl HeaderDownloader {
 
             // Add to validated chain
             self.validated_headers.push_back(header.clone());
+            accepted.push(header.clone());
             self.known_hashes.insert(hash);
             prev_hash = hash;
             valid_count += 1;
@@ -139,7 +156,7 @@ impl HeaderDownloader {
             );
         }
 
-        valid_count as usize
+        accepted
     }
 
     /// D2 (INC-I-090): Take the chain break info from the last `process_headers` call.

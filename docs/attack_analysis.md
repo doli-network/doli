@@ -350,8 +350,7 @@ Attack chain: 10 blocks from weight-1 producers = 10 total weight
 **Automatic Equivocation Detection**:
 - Network tracks blocks by (producer, slot) pairs
 - Double-signing (same producer, same slot, different blocks) is detected automatically
-- Equivocation proofs trigger automatic slash transactions
-- 100% bond burn for detected equivocation
+- Equivocation proofs are logged only; automatic slashing is inactive (a SlashProducer tx cannot be mined, INC-I-173; the node no longer generates one, INC-I-237)
 
 ### Result
 Attack requires controlling enough weight to exceed honest chain. Low-weight Sybil nodes cannot outweigh established producers.

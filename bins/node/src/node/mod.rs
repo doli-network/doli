@@ -18,6 +18,8 @@ mod event_loop;
 mod floor_window;
 mod force_reorg;
 #[cfg(test)]
+mod inc_i_237_slash_tests;
+#[cfg(test)]
 mod orphan_chase_tests;
 pub use force_reorg::ForceReorgOutcome;
 mod fork_recovery;

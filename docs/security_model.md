@@ -334,9 +334,9 @@ struct EquivocationProof {
 1. Node receives block for (producer, slot)
 2. Check if different block already seen for (producer, slot)
 3. If yes, construct EquivocationProof
-4. Create SlashProducer transaction
-5. Broadcast to network
-6. On inclusion: producer bond burned, removed from set
+4. Log the proof. No SlashProducer transaction is created or broadcast:
+   it cannot be mined (InsufficientFee at every height, INC-I-173), so
+   automatic slashing is inactive (INC-I-237)
 ```
 
 ---

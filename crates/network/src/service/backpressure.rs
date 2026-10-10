@@ -13,10 +13,9 @@
 //!
 //! ## Scope
 //!
-//! Only gossip BLOCK sends are routed through this path. Non-block event sends
-//! (transactions, headers, votes, heartbeats, attestations, etc.) remain on
-//! their existing `.send().await` path — they are not the flood vector and
-//! benefit from backpressure.
+//! Only gossip BLOCK sends are routed through this path. Every other event
+//! goes through `event_sink::EventSink::emit` (INC-I-237), which also never
+//! awaits: gossip events are shed when full, control events are backlogged.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 

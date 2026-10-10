@@ -325,7 +325,7 @@ Existing gates (mainnet values):
 - **CPFP support**: Child-Pays-For-Parent via ancestor tracking
 - **Eviction policy**: Removes lowest fee rate transactions without descendants
 - **Dynamic fees**: Minimum fee increases when pool >90% full
-- **System transactions**: SlashProducer etc. bypass fee requirements
+- **System transactions**: SlashProducer is rejected (InsufficientFee) at every height (INC-I-173), and the node no longer generates it (INC-I-237)
 - **14-day expiration**: Old transactions automatically removed
 - **Revalidation**: After chain reorg, invalid transactions are purged. Registrations
   whose producer has since become active or pending are also evicted (INC-I-147) —

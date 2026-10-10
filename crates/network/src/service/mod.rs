@@ -15,6 +15,7 @@
 pub(super) mod backpressure;
 mod behaviour_events;
 mod command_handling;
+mod event_sink;
 mod helpers;
 mod swarm_events;
 mod swarm_loop;
