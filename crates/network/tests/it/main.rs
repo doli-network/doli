@@ -13,6 +13,7 @@
 
 mod inc_i_178_m2_scoring;
 mod inc_i_204_m0_decision_pins;
+mod inc_i_237_flood;
 mod m3_protocol_session;
 mod m4_sink_seam;
 mod m4_wire_unchanged;
