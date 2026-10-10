@@ -531,8 +531,9 @@ The equivocation detector tracks block production to detect double-signing (the 
 1. Block received → check if `(producer, slot)` exists in tracker
 2. If exists with different hash → **EQUIVOCATION DETECTED**
 3. Create `EquivocationProof` with both full `BlockHeader`s
-4. Convert to `SlashProducer` transaction with reporter signature
-5. Broadcast for inclusion in blockchain
+4. Log the proof. No `SlashProducer` transaction is created, pooled, or broadcast:
+   a SlashProducer tx fails `InsufficientFee` at every height, and its evidence is
+   forgeable because headers are unsigned (INC-I-173 C1, INC-I-237)
 
 **Slashing Evidence Structure**:
 ```rust
@@ -613,7 +614,10 @@ in the INC-I-114 incident). Defense in depth:
    instead of `.send().await`. When the bounded event channel is full, the block
    is dropped and counted by `GossipShedMetrics`. The swarm task never suspends,
    so libp2p drains its internal queue normally.
-3. Only block-topic sends use load-shedding. Non-block sends retain backpressure.
+3. All gossip-topic event sends are load-shed; control events (peer, status,
+   sync) use a bounded FIFO backlog (8192, then dropped and counted). The swarm
+   task never awaits event delivery, so it cannot deadlock against the node
+   loop's command send (INC-I-237).
 4. Dropped blocks are recoverable via sync protocol (GetBlocks request-response).
 5. **Memory watchdog** (M2): a periodic sampler (5s interval) reads process RSS
    via `/proc/self/statm` (Linux) and trips a shared `AtomicBool` when RSS
@@ -624,7 +628,7 @@ in the INC-I-114 incident). Defense in depth:
    false (never sheds). Default: disabled (threshold=0).
 
 
-**Implementation**: `crates/network/src/service/backpressure.rs` (metrics + enqueue_or_shed), `crates/network/src/watchdog.rs` (memory watchdog).
+**Implementation**: `crates/network/src/service/backpressure.rs` (metrics + enqueue_or_shed), `crates/network/src/service/event_sink.rs` (non-blocking event delivery), `crates/network/src/watchdog.rs` (memory watchdog).
 
 **INV-NETWORK-002** (construction-time invariant, Level 3): Any aggressive gossip-propagation setting (`flood_publish=true` and/or `duplicate_cache_time <= 30s`) REQUIRES `validate_messages=true` AND a bounded (load-shedding) event queue. The invariant is enforced at gossipsub construction time via `assert_gossip_hardening_invariant()` — the node fails to start if either mitigation half is missing. Incident lineage: INC-I-009, INC-I-014, INC-I-118, INC-I-120, INC-I-114 (5 occurrences of the same unbounded-queue + aggressive-propagation shape). Implementation: `crates/network/src/gossip/config.rs` (`assert_gossip_hardening_invariant`, `AGGRESSIVE_DEDUP_THRESHOLD`). 7 gate tests cover all branch arms.
 

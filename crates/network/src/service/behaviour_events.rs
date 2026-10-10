@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use libp2p::{autonat, gossipsub, identify, kad, request_response, Multiaddr, PeerId, Swarm};
 use std::time::SystemTime;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 use doli_core::{decode_digest, decode_producer_set, is_legacy_bincode_format, BlockHeader};
@@ -28,6 +28,7 @@ use crate::rate_limit::RateLimiter;
 use crypto::PublicKey;
 
 use super::backpressure::enqueue_or_shed;
+use super::event_sink::EventSink;
 use super::helpers::{all_addresses_routable, is_routable_address};
 use super::types::{NetworkEvent, GENESIS_MISMATCH_COOLDOWN_SECS};
 use crate::protocols::status::{CURRENT_PROTOCOL_VERSION, MIN_PEER_PROTOCOL_VERSION};
@@ -37,7 +38,7 @@ use crate::protocols::status::{CURRENT_PROTOCOL_VERSION, MIN_PEER_PROTOCOL_VERSI
 pub(super) async fn handle_behaviour_event(
     event: DoliBehaviourEvent,
     swarm: &mut Swarm<DoliBehaviour>,
-    event_tx: &mpsc::Sender<NetworkEvent>,
+    event_tx: &EventSink,
     peers: &Arc<RwLock<HashMap<PeerId, PeerInfo>>>,
     config: &NetworkConfig,
     peer_cache_path: &Option<PathBuf>,
@@ -185,7 +186,7 @@ pub(super) async fn handle_behaviour_event(
                             is_candidate_next
                         );
                         enqueue_or_shed(
-                            event_tx,
+                            event_tx.sender(),
                             NetworkEvent::NewBlock(block, propagation_source),
                             shed_metrics,
                         );
@@ -210,7 +211,7 @@ pub(super) async fn handle_behaviour_event(
                             recv_ts
                         );
                         enqueue_or_shed(
-                            event_tx,
+                            event_tx.sender(),
                             NetworkEvent::NewBlock(block, propagation_source),
                             shed_metrics,
                         );
@@ -221,7 +222,7 @@ pub(super) async fn handle_behaviour_event(
                         }
                         rate_limiter.record_block(&propagation_source, msg_size);
                         enqueue_or_shed(
-                            event_tx,
+                            event_tx.sender(),
                             NetworkEvent::NewBlock(block, propagation_source),
                             shed_metrics,
                         );
@@ -251,6 +252,16 @@ pub(super) async fn handle_behaviour_event(
                 None => gossipsub::MessageAcceptance::Accept,
             };
             let is_accepted = matches!(acceptance, gossipsub::MessageAcceptance::Accept);
+            // INC-I-237: a tx batch is processed locally but never mesh-forwarded.
+            // The node re-publishes each tx its mempool accepts
+            // (`handle_new_transaction` -> `broadcast_transaction`), so only
+            // checked txs travel on. Forwarding before the check relayed txs no
+            // node could admit, at every hop, without end.
+            let acceptance = if is_accepted && topic == TRANSACTIONS_TOPIC {
+                gossipsub::MessageAcceptance::Ignore
+            } else {
+                acceptance
+            };
             if let Err(e) = swarm
                 .behaviour_mut()
                 .gossipsub
@@ -287,16 +298,14 @@ pub(super) async fn handle_behaviour_event(
                     match crate::gossip::decode_tx_gossip(&message.data) {
                         Some(crate::gossip::TxGossipMessage::FullBatch(txs)) => {
                             for tx in txs {
-                                let _ = event_tx.send(NetworkEvent::NewTransaction(tx)).await;
+                                event_tx.emit(NetworkEvent::NewTransaction(tx));
                             }
                         }
                         Some(crate::gossip::TxGossipMessage::Announce(hashes)) => {
-                            let _ = event_tx
-                                .send(NetworkEvent::TxAnnouncement {
-                                    peer_id: propagation_source,
-                                    hashes,
-                                })
-                                .await;
+                            event_tx.emit(NetworkEvent::TxAnnouncement {
+                                peer_id: propagation_source,
+                                hashes,
+                            });
                         }
                         None => {
                             warn!(
@@ -331,12 +340,10 @@ pub(super) async fn handle_behaviour_event(
                                 bloom.size_bits(),
                                 propagation_source
                             );
-                            let _ = event_tx
-                                .send(NetworkEvent::ProducerDigestReceived {
-                                    peer_id: propagation_source,
-                                    digest: bloom,
-                                })
-                                .await;
+                            event_tx.emit(NetworkEvent::ProducerDigestReceived {
+                                peer_id: propagation_source,
+                                digest: bloom,
+                            });
                             true
                         } else {
                             false
@@ -355,9 +362,7 @@ pub(super) async fn handle_behaviour_event(
                                         pubkeys.len(),
                                         propagation_source
                                     );
-                                    let _ = event_tx
-                                        .send(NetworkEvent::ProducersAnnounced(pubkeys))
-                                        .await;
+                                    event_tx.emit(NetworkEvent::ProducersAnnounced(pubkeys));
                                 }
                                 Err(e) => {
                                     warn!(
@@ -375,11 +380,9 @@ pub(super) async fn handle_behaviour_event(
                                         announcements.len(),
                                         propagation_source
                                     );
-                                    let _ = event_tx
-                                        .send(NetworkEvent::ProducerAnnouncementsReceived(
-                                            announcements,
-                                        ))
-                                        .await;
+                                    event_tx.emit(NetworkEvent::ProducerAnnouncementsReceived(
+                                        announcements,
+                                    ));
                                 }
                                 Err(e) => {
                                     warn!(
@@ -400,9 +403,7 @@ pub(super) async fn handle_behaviour_event(
                         "Received vote message ({} bytes) from {}",
                         msg_size, propagation_source
                     );
-                    let _ = event_tx
-                        .send(NetworkEvent::NewVote(message.data.clone()))
-                        .await;
+                    event_tx.emit(NetworkEvent::NewVote(message.data.clone()));
                 }
                 HEARTBEATS_TOPIC => {
                     if !rate_limiter.check_request(&propagation_source) {
@@ -413,9 +414,7 @@ pub(super) async fn handle_behaviour_event(
                         "Received heartbeat ({} bytes) from {}",
                         msg_size, propagation_source
                     );
-                    let _ = event_tx
-                        .send(NetworkEvent::NewHeartbeat(message.data.clone()))
-                        .await;
+                    event_tx.emit(NetworkEvent::NewHeartbeat(message.data.clone()));
                 }
                 topic if topic == crate::gossip::ATTESTATION_TOPIC => {
                     if !rate_limiter.check_request(&propagation_source) {
@@ -426,12 +425,10 @@ pub(super) async fn handle_behaviour_event(
                         "Received attestation ({} bytes) from {}",
                         msg_size, propagation_source
                     );
-                    let _ = event_tx
-                        .send(NetworkEvent::NewAttestation(
-                            message.data.clone(),
-                            propagation_source,
-                        ))
-                        .await;
+                    event_tx.emit(NetworkEvent::NewAttestation(
+                        message.data.clone(),
+                        propagation_source,
+                    ));
                 }
                 HEADERS_TOPIC => {
                     if !rate_limiter.check_block(&propagation_source) {
@@ -439,7 +436,7 @@ pub(super) async fn handle_behaviour_event(
                     }
                     if let Some(header) = BlockHeader::deserialize(&message.data) {
                         rate_limiter.record_block(&propagation_source, msg_size);
-                        let _ = event_tx.send(NetworkEvent::NewHeader(header)).await;
+                        event_tx.emit(NetworkEvent::NewHeader(header));
                     } else {
                         warn!("Failed to deserialize header from {}", propagation_source);
                     }
@@ -541,13 +538,11 @@ pub(super) async fn handle_behaviour_event(
                             "Network mismatch with peer {}: we are on network {}, they are on {}",
                             peer, config.network_id, request.network_id
                         );
-                        let _ = event_tx
-                            .send(NetworkEvent::NetworkMismatch {
-                                peer_id: peer,
-                                our_network_id: config.network_id,
-                                their_network_id: request.network_id,
-                            })
-                            .await;
+                        event_tx.emit(NetworkEvent::NetworkMismatch {
+                            peer_id: peer,
+                            our_network_id: config.network_id,
+                            their_network_id: request.network_id,
+                        });
                         // Disconnect the peer
                         let _ = swarm.disconnect_peer_id(peer);
                         return;
@@ -566,9 +561,7 @@ pub(super) async fn handle_behaviour_event(
                     if request.genesis_hash != config.genesis_hash {
                         warn!("Genesis hash mismatch with peer {}: cooldown 1h", peer);
                         genesis_mismatch_cooldown.insert(peer, Instant::now());
-                        let _ = event_tx
-                            .send(NetworkEvent::GenesisMismatch { peer_id: peer })
-                            .await;
+                        event_tx.emit(NetworkEvent::GenesisMismatch { peer_id: peer });
                         let _ = swarm.disconnect_peer_id(peer);
                         return;
                     }
@@ -579,13 +572,11 @@ pub(super) async fn handle_behaviour_event(
                             "Protocol version mismatch with peer {}: we require >= {}, they report {}",
                             peer, MIN_PEER_PROTOCOL_VERSION, request.version
                         );
-                        let _ = event_tx
-                            .send(NetworkEvent::VersionMismatch {
-                                peer_id: peer,
-                                our_version: CURRENT_PROTOCOL_VERSION,
-                                their_version: request.version,
-                            })
-                            .await;
+                        event_tx.emit(NetworkEvent::VersionMismatch {
+                            peer_id: peer,
+                            our_version: CURRENT_PROTOCOL_VERSION,
+                            their_version: request.version,
+                        });
                         let _ = swarm.disconnect_peer_id(peer);
                         return;
                     }
@@ -603,13 +594,11 @@ pub(super) async fn handle_behaviour_event(
                         return;
                     }
 
-                    let _ = event_tx
-                        .send(NetworkEvent::StatusRequest {
-                            peer_id: peer,
-                            request,
-                            channel,
-                        })
-                        .await;
+                    event_tx.emit(NetworkEvent::StatusRequest {
+                        peer_id: peer,
+                        request,
+                        channel,
+                    });
                 }
                 request_response::Message::Response { response, .. } => {
                     debug!("Received status response from {}", peer);
@@ -620,13 +609,11 @@ pub(super) async fn handle_behaviour_event(
                             "Network mismatch with peer {}: we are on network {}, they are on {}",
                             peer, config.network_id, response.network_id
                         );
-                        let _ = event_tx
-                            .send(NetworkEvent::NetworkMismatch {
-                                peer_id: peer,
-                                our_network_id: config.network_id,
-                                their_network_id: response.network_id,
-                            })
-                            .await;
+                        event_tx.emit(NetworkEvent::NetworkMismatch {
+                            peer_id: peer,
+                            our_network_id: config.network_id,
+                            their_network_id: response.network_id,
+                        });
                         let _ = swarm.disconnect_peer_id(peer);
                         return;
                     }
@@ -644,9 +631,7 @@ pub(super) async fn handle_behaviour_event(
                     if response.genesis_hash != config.genesis_hash {
                         warn!("Genesis hash mismatch with peer {}: cooldown 1h", peer);
                         genesis_mismatch_cooldown.insert(peer, Instant::now());
-                        let _ = event_tx
-                            .send(NetworkEvent::GenesisMismatch { peer_id: peer })
-                            .await;
+                        event_tx.emit(NetworkEvent::GenesisMismatch { peer_id: peer });
                         let _ = swarm.disconnect_peer_id(peer);
                         return;
                     }
@@ -657,13 +642,11 @@ pub(super) async fn handle_behaviour_event(
                             "Protocol version mismatch with peer {}: we require >= {}, they report {}",
                             peer, MIN_PEER_PROTOCOL_VERSION, response.version
                         );
-                        let _ = event_tx
-                            .send(NetworkEvent::VersionMismatch {
-                                peer_id: peer,
-                                our_version: CURRENT_PROTOCOL_VERSION,
-                                their_version: response.version,
-                            })
-                            .await;
+                        event_tx.emit(NetworkEvent::VersionMismatch {
+                            peer_id: peer,
+                            our_version: CURRENT_PROTOCOL_VERSION,
+                            their_version: response.version,
+                        });
                         let _ = swarm.disconnect_peer_id(peer);
                         return;
                     }
@@ -695,12 +678,10 @@ pub(super) async fn handle_behaviour_event(
                         }
                     }
 
-                    let _ = event_tx
-                        .send(NetworkEvent::PeerStatus {
-                            peer_id: peer,
-                            status: response,
-                        })
-                        .await;
+                    event_tx.emit(NetworkEvent::PeerStatus {
+                        peer_id: peer,
+                        status: response,
+                    });
                 }
             }
         }
@@ -714,13 +695,11 @@ pub(super) async fn handle_behaviour_event(
                         "[SYNC_DEBUG] Received sync request from peer={}, request={:?}",
                         peer, request
                     );
-                    let _ = event_tx
-                        .send(NetworkEvent::SyncRequest {
-                            peer_id: peer,
-                            request,
-                            channel,
-                        })
-                        .await;
+                    event_tx.emit(NetworkEvent::SyncRequest {
+                        peer_id: peer,
+                        request,
+                        channel,
+                    });
                 }
                 request_response::Message::Response { response, .. } => {
                     info!(
@@ -728,12 +707,10 @@ pub(super) async fn handle_behaviour_event(
                         peer,
                         response.type_name()
                     );
-                    let _ = event_tx
-                        .send(NetworkEvent::SyncResponse {
-                            peer_id: peer,
-                            response,
-                        })
-                        .await;
+                    event_tx.emit(NetworkEvent::SyncResponse {
+                        peer_id: peer,
+                        response,
+                    });
                 }
             }
         }
@@ -748,13 +725,11 @@ pub(super) async fn handle_behaviour_event(
                         peer,
                         request.hashes.len()
                     );
-                    let _ = event_tx
-                        .send(NetworkEvent::TxFetchRequest {
-                            peer_id: peer,
-                            hashes: request.hashes,
-                            channel,
-                        })
-                        .await;
+                    event_tx.emit(NetworkEvent::TxFetchRequest {
+                        peer_id: peer,
+                        hashes: request.hashes,
+                        channel,
+                    });
                 }
                 request_response::Message::Response { response, .. } => {
                     debug!(
@@ -762,12 +737,10 @@ pub(super) async fn handle_behaviour_event(
                         peer,
                         response.transactions.len()
                     );
-                    let _ = event_tx
-                        .send(NetworkEvent::TxFetchResponse {
-                            peer_id: peer,
-                            transactions: response.transactions,
-                        })
-                        .await;
+                    event_tx.emit(NetworkEvent::TxFetchResponse {
+                        peer_id: peer,
+                        transactions: response.transactions,
+                    });
                 }
             }
         }

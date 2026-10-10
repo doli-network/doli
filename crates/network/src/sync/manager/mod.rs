@@ -54,6 +54,8 @@ mod tests_inc_i204_m6_census;
 #[cfg(test)]
 mod tests_inc_i235;
 #[cfg(test)]
+mod tests_inc_i237_tip_race;
+#[cfg(test)]
 mod tests_m3_state_session;
 #[cfg(test)]
 mod tests_m5_quorum_anchor;

@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use libp2p::swarm::SwarmEvent;
 use libp2p::{PeerId, Swarm};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 use crate::behaviour::{DoliBehaviour, DoliBehaviourEvent};
@@ -22,6 +22,7 @@ use crate::peer_cache::PeerCache;
 use crate::rate_limit::RateLimiter;
 
 use super::behaviour_events::handle_behaviour_event;
+use super::event_sink::EventSink;
 use super::helpers::{is_routable_address, strip_p2p_suffix};
 use super::types::NetworkEvent;
 
@@ -30,7 +31,7 @@ use super::types::NetworkEvent;
 pub(super) async fn handle_swarm_event(
     event: SwarmEvent<DoliBehaviourEvent>,
     swarm: &mut Swarm<DoliBehaviour>,
-    event_tx: &mpsc::Sender<NetworkEvent>,
+    event_tx: &EventSink,
     peers: &Arc<RwLock<HashMap<PeerId, PeerInfo>>>,
     config: &NetworkConfig,
     peer_cache_path: &Option<PathBuf>,
@@ -179,9 +180,7 @@ pub(super) async fn handle_swarm_event(
                         // peers and re-dials them, creating O(N - max_peers) connection
                         // attempts per cycle. At 213 nodes: ~188 unnecessary dials/60s.
                         swarm.behaviour_mut().kademlia.remove_peer(&evict_id);
-                        let _ = event_tx
-                            .send(NetworkEvent::PeerDisconnected(evict_id))
-                            .await;
+                        event_tx.emit(NetworkEvent::PeerDisconnected(evict_id));
                         // INC-I-011: Add evicted peer to cooldown so it can't
                         // immediately reconnect and trigger another eviction.
                         eviction_cooldown.insert(evict_id, Instant::now());
@@ -191,7 +190,7 @@ pub(super) async fn handle_swarm_event(
                     let addr = endpoint.get_remote_address().to_string();
                     peers.insert(peer_id, PeerInfo::new(peer_id.to_string(), addr));
 
-                    let _ = event_tx.send(NetworkEvent::PeerConnected(peer_id)).await;
+                    event_tx.emit(NetworkEvent::PeerConnected(peer_id));
                 } else if config.bootstrap_slots > 0
                     && bootstrap_peers.len() < config.bootstrap_slots
                 {
@@ -246,7 +245,7 @@ pub(super) async fn handle_swarm_event(
                 // Clean up rate limiter state for disconnected peer
                 rate_limiter.remove_peer(&peer_id);
 
-                let _ = event_tx.send(NetworkEvent::PeerDisconnected(peer_id)).await;
+                event_tx.emit(NetworkEvent::PeerDisconnected(peer_id));
             }
         }
 

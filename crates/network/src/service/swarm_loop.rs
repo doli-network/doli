@@ -26,6 +26,7 @@ use crate::rate_limit::{RateLimitConfig, RateLimiter};
 use crate::watchdog::MemoryWatchdog;
 
 use super::command_handling::handle_command;
+use super::event_sink::EventSink;
 use super::swarm_events::handle_swarm_event;
 use super::types::{NetworkCommand, NetworkEvent};
 
@@ -169,11 +170,22 @@ pub(super) async fn run_swarm(
     let mut watchdog_tick = tokio::time::interval(Duration::from_secs(5));
     watchdog_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+    // INC-I-237: the swarm loop never awaits event delivery (see event_sink.rs).
+    let event_sink = EventSink::new(event_tx);
+
     loop {
         tokio::select! {
             // Handle swarm events
             event = swarm.select_next_some() => {
-                handle_swarm_event(event, &mut swarm, &event_tx, &peers, &config, &peer_cache_path, &mut rate_limiter, &mut genesis_mismatch_cooldown, &mut mismatch_redial_cooldown, &mut dial_backoff, &mut eviction_cooldown, &mut bootstrap_peers, &mut stale_peer_ids, &mut gossip_seen_cache, &best_slot, &shed_metrics, &memory_shed_flag).await;
+                handle_swarm_event(event, &mut swarm, &event_sink, &peers, &config, &peer_cache_path, &mut rate_limiter, &mut genesis_mismatch_cooldown, &mut mismatch_redial_cooldown, &mut dial_backoff, &mut eviction_cooldown, &mut bootstrap_peers, &mut stale_peer_ids, &mut gossip_seen_cache, &best_slot, &shed_metrics, &memory_shed_flag).await;
+            }
+
+            // INC-I-237: drain control events held while the node was behind.
+            permit = event_sink.sender().reserve(), if event_sink.has_backlog() => {
+                match permit {
+                    Ok(permit) => event_sink.flush_one(permit),
+                    Err(_) => event_sink.clear_backlog(), // node gone (shutdown)
+                }
             }
 
             // Handle commands — intercept BroadcastTransaction for batching

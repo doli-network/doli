@@ -113,11 +113,12 @@ pub const SEEN_CACHE_CAPACITY: usize = 16_384;
 /// [`SEEN_CACHE_TTL_SECS`] (180s). Transactions carry no embedded age, so
 /// identity dedup is the WHOLE gate (no secondary filter).
 /// **F-1 invariant `120s ≤ TX_SEEN_TTL < mempool_rebroadcast_interval`:** DOLI
-/// has NO mempool rebroadcast loop — `BroadcastTransaction` is emitted only on
-/// RPC submission and batched/flushed every 100ms; downstream nodes propagate
-/// via the libp2p mesh, never re-publishing from the mempool. The rebroadcast
-/// interval is effectively infinite, so `120s ≤ 180s < ∞` holds with no
-/// per-topic override; after 180s a re-submitted txid re-propagates.
+/// has NO periodic mempool rebroadcast loop. Since INC-I-237 a tx batch is
+/// never mesh-forwarded (`behaviour_events` reports Ignore after local
+/// delivery); each node re-publishes, once, only the txs its mempool accepts
+/// (`handle_new_transaction` -> `BroadcastTransaction`, batched every 100ms).
+/// The rebroadcast interval is effectively infinite, so `120s ≤ 180s < ∞`
+/// holds with no per-topic override; after 180s a re-submitted txid re-propagates.
 pub const TX_SEEN_TTL_SECS: u64 = SEEN_CACHE_TTL_SECS;
 
 /// Every gossip topic DOLI subscribes to that carries re-forward risk.

@@ -1089,7 +1089,7 @@ cp -r data_dir/checkpoints/h{HEIGHT}-{TS}/blocks data_dir/blocks
 
 **Cause:** Gossip messages on un-gated topics (attestations, heartbeats, headers, votes, transactions) were `Accept`ed by default and re-forwarded. Once libp2p's 60s duplicate cache expired, a re-delivered copy (age 60–120s) passed the dedup check and was re-forwarded to the whole mesh — a self-amplifying duplicate re-forward storm. Attestations, being the most frequent message, were the leading source.
 
-**Resolution:** Fixed by the INC-I-142 unified gossip staleness/dedup gate (`v > 6.23.10`). All five topics now route through `classify_gossip()` (`crates/network/src/gossip/staleness.rs`), which applies a PRIMARY raw-bytes identity dedup — `blake3(topic_discriminant || raw_message_bytes)` against a 180s bounded `SeenCache` — that closes the 60–120s re-delivery window independent of libp2p's duplicate cache, plus a SECONDARY generous age filter. The change is node-local (no activation height, rolling-safe). Upgrade all nodes to a build past v6.23.10.
+**Resolution:** Fixed by the INC-I-142 unified gossip staleness/dedup gate (`v > 6.23.10`). All five topics now route through `classify_gossip()` (`crates/network/src/gossip/staleness.rs`), which applies a PRIMARY raw-bytes identity dedup — `blake3(topic_discriminant || raw_message_bytes)` against a 180s bounded `SeenCache` — that closes the 60–120s re-delivery window independent of libp2p's duplicate cache, plus a SECONDARY generous age filter. The change is node-local (no activation height, rolling-safe). Upgrade all nodes to a build past v6.23.10. Since INC-I-237, tx batches are also never mesh-forwarded: a node re-publishes only the txs its mempool accepts.
 
 ---
 
