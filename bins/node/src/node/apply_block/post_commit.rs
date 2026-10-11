@@ -77,6 +77,7 @@ impl Node {
                         32
                     }
                 );
+                crate::metrics_gossip::observe_attestation_coverage(idx.len(), decode_len);
                 // INC-I-154 F2/F3: report producers MISSING from the attestation bitfield
                 // over the FULL decode universe [base | extra sorted], not just the base
                 // segment. An active producer the epoch-boundary attestation filter left

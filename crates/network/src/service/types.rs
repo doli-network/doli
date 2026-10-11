@@ -10,10 +10,12 @@ use doli_core::{Block, BlockHeader, ProducerAnnouncement, ProducerBloomFilter, T
 
 use crate::protocols::{StatusRequest, StatusResponse, SyncRequest, SyncResponse, TxFetchResponse};
 
+use super::GossipHandle;
+
 /// Genesis mismatch peers are silently rejected for this duration.
 pub(super) const GENESIS_MISMATCH_COOLDOWN_SECS: u64 = 86400; // 24 hours
 
-/// Events from the network
+/// Events from the network. Gossip variants carry the swarm's receive stamp.
 #[derive(Debug)]
 pub enum NetworkEvent {
     /// New peer connected
@@ -21,11 +23,11 @@ pub enum NetworkEvent {
     /// Peer disconnected
     PeerDisconnected(PeerId),
     /// New block received via gossip (block, propagation source peer)
-    NewBlock(Block, PeerId),
+    NewBlock(Block, PeerId, GossipHandle),
     /// New block header received via gossip (lightweight pre-announcement)
-    NewHeader(BlockHeader),
+    NewHeader(BlockHeader, GossipHandle),
     /// New transaction received via gossip
-    NewTransaction(Transaction),
+    NewTransaction(Transaction, GossipHandle),
     /// Status request received
     StatusRequest {
         peer_id: PeerId,
@@ -65,26 +67,31 @@ pub enum NetworkEvent {
     /// Producers announced via anti-entropy gossip (bootstrap protocol)
     /// Contains the sender's full view of known producers for CRDT merge
     /// Legacy format - will be deprecated after network migration
-    ProducersAnnounced(Vec<PublicKey>),
+    ProducersAnnounced(Vec<PublicKey>, GossipHandle),
     /// Producer announcements received via gossip (new format)
     /// Contains cryptographically signed announcements with replay protection
-    ProducerAnnouncementsReceived(Vec<ProducerAnnouncement>),
+    ProducerAnnouncementsReceived(Vec<ProducerAnnouncement>, GossipHandle),
     /// Producer set digest received for delta sync
     /// Peer is requesting only the producers they don't know about
     ProducerDigestReceived {
         peer_id: PeerId,
         digest: ProducerBloomFilter,
+        handle: GossipHandle,
     },
     /// Vote message received for governance veto system
-    NewVote(Vec<u8>),
+    NewVote(Vec<u8>, GossipHandle),
     /// Heartbeat received for weighted presence rewards
-    NewHeartbeat(Vec<u8>),
+    NewHeartbeat(Vec<u8>, GossipHandle),
     /// Attestation received for finality gadget.
     /// INC-I-049: Now includes propagation_source so the node can request
     /// blocks from the attestation source peer.
-    NewAttestation(Vec<u8>, PeerId),
+    NewAttestation(Vec<u8>, PeerId, GossipHandle),
     /// Transaction hash announcement received (announce-request pattern)
-    TxAnnouncement { peer_id: PeerId, hashes: Vec<Hash> },
+    TxAnnouncement {
+        peer_id: PeerId,
+        hashes: Vec<Hash>,
+        handle: GossipHandle,
+    },
     /// Peer is requesting transactions by hash (announce-request pattern)
     TxFetchRequest {
         peer_id: PeerId,

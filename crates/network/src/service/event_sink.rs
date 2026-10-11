@@ -40,14 +40,14 @@ pub struct EventSink {
 fn is_sheddable(ev: &NetworkEvent) -> bool {
     matches!(
         ev,
-        NetworkEvent::NewTransaction(_)
+        NetworkEvent::NewTransaction(..)
             | NetworkEvent::TxAnnouncement { .. }
-            | NetworkEvent::NewHeader(_)
-            | NetworkEvent::NewVote(_)
-            | NetworkEvent::NewHeartbeat(_)
+            | NetworkEvent::NewHeader(..)
+            | NetworkEvent::NewVote(..)
+            | NetworkEvent::NewHeartbeat(..)
             | NetworkEvent::NewAttestation(..)
-            | NetworkEvent::ProducersAnnounced(_)
-            | NetworkEvent::ProducerAnnouncementsReceived(_)
+            | NetworkEvent::ProducersAnnounced(..)
+            | NetworkEvent::ProducerAnnouncementsReceived(..)
             | NetworkEvent::ProducerDigestReceived { .. }
     )
 }

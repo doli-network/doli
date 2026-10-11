@@ -270,8 +270,24 @@ impl Node {
         Ok(())
     }
 
-    /// Handle network events — delegates to network_events.rs handlers.
+    /// Handle network events — delegates to network_events.rs handlers, then
+    /// observes the gossip metrics on Ok and Err alike.
     pub async fn handle_network_event(&mut self, event: NetworkEvent) -> Result<()> {
+        let probe = event.gossip_topic().zip(event.gossip_handle().cloned());
+        if let NetworkEvent::NewBlock(block, _, handle) = &event {
+            crate::metrics_gossip::observe_block_recv_latency(
+                crate::metrics_gossip::recv_unix_ms(handle),
+                block.header.timestamp,
+            );
+        }
+        let result = self.dispatch_network_event(event).await;
+        if let Some((topic, handle)) = &probe {
+            crate::metrics_gossip::observe_gossip_handled(*topic, handle);
+        }
+        result
+    }
+
+    async fn dispatch_network_event(&mut self, event: NetworkEvent) -> Result<()> {
         match event {
             NetworkEvent::PeerConnected(peer_id) => {
                 self.on_peer_connected(peer_id).await;
@@ -279,13 +295,13 @@ impl Node {
             NetworkEvent::PeerDisconnected(peer_id) => {
                 self.on_peer_disconnected(peer_id).await;
             }
-            NetworkEvent::NewBlock(block, source_peer) => {
+            NetworkEvent::NewBlock(block, source_peer, _) => {
                 self.on_new_block_event(block, source_peer).await?;
             }
-            NetworkEvent::NewHeader(header) => {
+            NetworkEvent::NewHeader(header, _) => {
                 debug!("Received new header: {}", header.hash());
             }
-            NetworkEvent::NewTransaction(tx) => {
+            NetworkEvent::NewTransaction(tx, _) => {
                 self.handle_new_transaction(tx).await?;
             }
             NetworkEvent::PeerStatus { peer_id, status } => {
@@ -344,22 +360,26 @@ impl Node {
                     let _ = network.disconnect(peer_id).await;
                 }
             }
-            NetworkEvent::ProducersAnnounced(remote_list) => {
+            NetworkEvent::ProducersAnnounced(remote_list, _) => {
                 self.on_producers_announced(remote_list);
             }
-            NetworkEvent::ProducerAnnouncementsReceived(announcements) => {
+            NetworkEvent::ProducerAnnouncementsReceived(announcements, _) => {
                 self.on_producer_announcements(announcements);
             }
-            NetworkEvent::ProducerDigestReceived { peer_id, digest } => {
+            NetworkEvent::ProducerDigestReceived {
+                peer_id, digest, ..
+            } => {
                 self.on_producer_digest(peer_id, digest);
             }
-            NetworkEvent::NewVote(vote_data) => {
+            NetworkEvent::NewVote(vote_data, _) => {
                 self.on_new_vote(vote_data);
             }
-            NetworkEvent::NewHeartbeat(_) => {
+            NetworkEvent::NewHeartbeat(..) => {
                 // Heartbeats handled by the presence system
             }
-            NetworkEvent::TxAnnouncement { peer_id, hashes } => {
+            NetworkEvent::TxAnnouncement {
+                peer_id, hashes, ..
+            } => {
                 self.on_tx_announcement(peer_id, hashes).await;
             }
             NetworkEvent::TxFetchRequest {
@@ -375,7 +395,7 @@ impl Node {
             } => {
                 self.on_tx_fetch_response(peer_id, transactions).await?;
             }
-            NetworkEvent::NewAttestation(data, source_peer) => {
+            NetworkEvent::NewAttestation(data, source_peer, _) => {
                 self.on_new_attestation(data, source_peer).await;
             }
         }

@@ -106,7 +106,7 @@ async fn inc_i_237_node_loop_command_send_survives_tx_flood() {
         }
         let until = Instant::now() + Duration::from_millis(500);
         while Instant::now() < until {
-            if let Ok(Some(NetworkEvent::NewTransaction(_))) =
+            if let Ok(Some(NetworkEvent::NewTransaction(..))) =
                 tokio::time::timeout(Duration::from_millis(100), a.next_event()).await
             {
                 break 'warm;
@@ -148,7 +148,7 @@ async fn inc_i_237_node_loop_command_send_survives_tx_flood() {
     // Phase 4 (diagnostic only): resume the consumer and count events.
     let mut new_tx_events = 0usize;
     while let Ok(Some(ev)) = tokio::time::timeout(Duration::from_secs(2), a.next_event()).await {
-        if matches!(ev, NetworkEvent::NewTransaction(_)) {
+        if matches!(ev, NetworkEvent::NewTransaction(..)) {
             new_tx_events += 1;
         }
     }

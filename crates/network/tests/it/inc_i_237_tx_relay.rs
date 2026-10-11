@@ -78,7 +78,7 @@ async fn inc_i_237_tx_batch_not_relayed_before_node_accepts_it() {
     let b_seen = b_seen_f.clone();
     tokio::spawn(async move {
         while let Some(ev) = b.next_event().await {
-            if let NetworkEvent::NewTransaction(t) = ev {
+            if let NetworkEvent::NewTransaction(t, _) = ev {
                 if (F_BASE..B_BASE).contains(&origin(&t)) {
                     b_seen.fetch_add(1, Ordering::Relaxed);
                 }
@@ -99,7 +99,7 @@ async fn inc_i_237_tx_batch_not_relayed_before_node_accepts_it() {
         n += 1;
         let until = Instant::now() + Duration::from_millis(500);
         while Instant::now() < until {
-            if let Ok(Some(NetworkEvent::NewTransaction(_))) =
+            if let Ok(Some(NetworkEvent::NewTransaction(..))) =
                 tokio::time::timeout(Duration::from_millis(100), c.next_event()).await
             {
                 break 'warm;
@@ -131,7 +131,7 @@ async fn inc_i_237_tx_batch_not_relayed_before_node_accepts_it() {
     let mut c_got_f = 0u64;
     let until = Instant::now() + Duration::from_secs(8);
     while Instant::now() < until {
-        if let Ok(Some(NetworkEvent::NewTransaction(t))) =
+        if let Ok(Some(NetworkEvent::NewTransaction(t, _))) =
             tokio::time::timeout(Duration::from_millis(100), c.next_event()).await
         {
             if (F_BASE..B_BASE).contains(&origin(&t)) {

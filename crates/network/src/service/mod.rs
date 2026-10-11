@@ -16,6 +16,7 @@ pub(super) mod backpressure;
 mod behaviour_events;
 mod command_handling;
 mod event_sink;
+mod gossip_handle;
 mod helpers;
 mod swarm_events;
 mod swarm_loop;
@@ -24,6 +25,7 @@ mod types;
 #[cfg(test)]
 mod tests;
 
+pub use gossip_handle::GossipHandle;
 pub use types::{NetworkCommand, NetworkError, NetworkEvent};
 
 use std::collections::HashMap;

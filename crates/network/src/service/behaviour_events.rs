@@ -56,6 +56,7 @@ pub(super) async fn handle_behaviour_event(
             message_id,
             message,
         }) => {
+            let handle = super::GossipHandle::now();
             let topic = message.topic.as_str();
             let msg_size = message.data.len();
             debug!(
@@ -187,7 +188,7 @@ pub(super) async fn handle_behaviour_event(
                         );
                         enqueue_or_shed(
                             event_tx.sender(),
-                            NetworkEvent::NewBlock(block, propagation_source),
+                            NetworkEvent::NewBlock(block, propagation_source, handle),
                             shed_metrics,
                         );
                     }
@@ -212,7 +213,7 @@ pub(super) async fn handle_behaviour_event(
                         );
                         enqueue_or_shed(
                             event_tx.sender(),
-                            NetworkEvent::NewBlock(block, propagation_source),
+                            NetworkEvent::NewBlock(block, propagation_source, handle),
                             shed_metrics,
                         );
                     }
@@ -223,7 +224,7 @@ pub(super) async fn handle_behaviour_event(
                         rate_limiter.record_block(&propagation_source, msg_size);
                         enqueue_or_shed(
                             event_tx.sender(),
-                            NetworkEvent::NewBlock(block, propagation_source),
+                            NetworkEvent::NewBlock(block, propagation_source, handle),
                             shed_metrics,
                         );
                     }
@@ -297,14 +298,16 @@ pub(super) async fn handle_behaviour_event(
                     rate_limiter.record_transaction(&propagation_source, msg_size);
                     match crate::gossip::decode_tx_gossip(&message.data) {
                         Some(crate::gossip::TxGossipMessage::FullBatch(txs)) => {
+                            crate::gossip::tx_batch_stats::TX_GOSSIP_BATCH_STATS.record(txs.len());
                             for tx in txs {
-                                event_tx.emit(NetworkEvent::NewTransaction(tx));
+                                event_tx.emit(NetworkEvent::NewTransaction(tx, handle.clone()));
                             }
                         }
                         Some(crate::gossip::TxGossipMessage::Announce(hashes)) => {
                             event_tx.emit(NetworkEvent::TxAnnouncement {
                                 peer_id: propagation_source,
                                 hashes,
+                                handle,
                             });
                         }
                         None => {
@@ -343,6 +346,7 @@ pub(super) async fn handle_behaviour_event(
                             event_tx.emit(NetworkEvent::ProducerDigestReceived {
                                 peer_id: propagation_source,
                                 digest: bloom,
+                                handle: handle.clone(),
                             });
                             true
                         } else {
@@ -362,7 +366,8 @@ pub(super) async fn handle_behaviour_event(
                                         pubkeys.len(),
                                         propagation_source
                                     );
-                                    event_tx.emit(NetworkEvent::ProducersAnnounced(pubkeys));
+                                    event_tx
+                                        .emit(NetworkEvent::ProducersAnnounced(pubkeys, handle));
                                 }
                                 Err(e) => {
                                     warn!(
@@ -382,6 +387,7 @@ pub(super) async fn handle_behaviour_event(
                                     );
                                     event_tx.emit(NetworkEvent::ProducerAnnouncementsReceived(
                                         announcements,
+                                        handle,
                                     ));
                                 }
                                 Err(e) => {
@@ -403,7 +409,7 @@ pub(super) async fn handle_behaviour_event(
                         "Received vote message ({} bytes) from {}",
                         msg_size, propagation_source
                     );
-                    event_tx.emit(NetworkEvent::NewVote(message.data.clone()));
+                    event_tx.emit(NetworkEvent::NewVote(message.data.clone(), handle));
                 }
                 HEARTBEATS_TOPIC => {
                     if !rate_limiter.check_request(&propagation_source) {
@@ -414,7 +420,7 @@ pub(super) async fn handle_behaviour_event(
                         "Received heartbeat ({} bytes) from {}",
                         msg_size, propagation_source
                     );
-                    event_tx.emit(NetworkEvent::NewHeartbeat(message.data.clone()));
+                    event_tx.emit(NetworkEvent::NewHeartbeat(message.data.clone(), handle));
                 }
                 topic if topic == crate::gossip::ATTESTATION_TOPIC => {
                     if !rate_limiter.check_request(&propagation_source) {
@@ -428,6 +434,7 @@ pub(super) async fn handle_behaviour_event(
                     event_tx.emit(NetworkEvent::NewAttestation(
                         message.data.clone(),
                         propagation_source,
+                        handle,
                     ));
                 }
                 HEADERS_TOPIC => {
@@ -436,7 +443,7 @@ pub(super) async fn handle_behaviour_event(
                     }
                     if let Some(header) = BlockHeader::deserialize(&message.data) {
                         rate_limiter.record_block(&propagation_source, msg_size);
-                        event_tx.emit(NetworkEvent::NewHeader(header));
+                        event_tx.emit(NetworkEvent::NewHeader(header, handle));
                     } else {
                         warn!("Failed to deserialize header from {}", propagation_source);
                     }

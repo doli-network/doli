@@ -23,6 +23,7 @@ mod config;
 mod devnet;
 mod keys;
 mod metrics;
+mod metrics_gossip;
 mod node;
 mod operations;
 mod producer;

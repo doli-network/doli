@@ -570,7 +570,7 @@ impl Node {
         if !pending_events.is_empty() {
             let mut block_count = 0;
             for event in pending_events {
-                if matches!(event, NetworkEvent::NewBlock(_, _)) {
+                if matches!(event, NetworkEvent::NewBlock(..)) {
                     block_count += 1;
                 }
                 if let Err(e) = self.handle_network_event(event).await {

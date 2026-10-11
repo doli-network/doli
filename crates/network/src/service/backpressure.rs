@@ -102,6 +102,7 @@ mod tests {
     use tokio::sync::mpsc;
 
     use crate::service::types::NetworkEvent;
+    use crate::service::GossipHandle;
 
     /// Build a minimal valid block with a given slot for testing.
     fn make_block(slot: u32) -> Block {
@@ -124,7 +125,7 @@ mod tests {
     }
 
     fn make_event(slot: u32) -> NetworkEvent {
-        NetworkEvent::NewBlock(make_block(slot), PeerId::random())
+        NetworkEvent::NewBlock(make_block(slot), PeerId::random(), GossipHandle::now())
     }
 
     // ---------------------------------------------------------------
@@ -177,7 +178,7 @@ mod tests {
         // Drain and verify all 5 arrived
         let mut count = 0;
         while let Ok(event) = rx.try_recv() {
-            if let NetworkEvent::NewBlock(_, _) = event {
+            if let NetworkEvent::NewBlock(..) = event {
                 count += 1;
             }
         }
@@ -293,7 +294,7 @@ mod tests {
 
         let event = rx.try_recv().expect("event must be in channel");
         match event {
-            NetworkEvent::NewBlock(block, _) => {
+            NetworkEvent::NewBlock(block, ..) => {
                 assert_eq!(block.header.slot, 42, "block slot must match");
             }
             _ => panic!("expected NewBlock event"),

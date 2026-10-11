@@ -180,6 +180,9 @@ pub fn decode_tx_message(data: &[u8]) -> Option<Vec<Transaction>> {
     }
 }
 
+/// Smallest batch frame: 4-byte length + a 32-byte tx (bincode, empty vecs).
+const MIN_TX_FRAME_BYTES: usize = 4 + 32;
+
 /// Decode a batched transaction message (0xBA prefix).
 fn decode_tx_batch(data: &[u8]) -> Option<Vec<Transaction>> {
     if data.len() < 5 {
@@ -189,10 +192,14 @@ fn decode_tx_batch(data: &[u8]) -> Option<Vec<Transaction>> {
     if count == 0 || count > 10_000 {
         return None;
     }
-    // Cap pre-allocation to prevent OOM from malicious count values.
-    // Each tx needs at least 4 bytes (length prefix), so bound by remaining data.
-    let max_possible = (data.len() - 5) / 4;
-    let mut txs = Vec::with_capacity(count.min(max_possible));
+    // Reserve `count` only when the payload can hold `count` minimum frames;
+    // a shorter payload cannot complete, so it reserves at most one slot.
+    let max_fit = (data.len() - 5) / MIN_TX_FRAME_BYTES;
+    let mut txs = Vec::with_capacity(if count <= max_fit {
+        count
+    } else {
+        max_fit.min(1)
+    });
     let mut offset = 5;
     for _ in 0..count {
         if offset + 4 > data.len() {

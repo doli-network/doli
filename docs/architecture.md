@@ -299,6 +299,19 @@ Existing gates (mainnet values):
 - Request-response for sync
 - Identify for peer address exchange
 
+**Gossip receive/verdict metrics (INC-I-237 M0, observation only):** the swarm stamps every gossipsub message once at receive (`service/gossip_handle.rs::GossipHandle`) and clones the stamp into each event the message produces; `NetworkEvent::gossip_topic()` / `gossip_handle()` map gossip variants to a topic. `gossip/tx_batch_stats.rs` counts received tx batch sizes in plain atomics. The node (`bins/node/src/metrics_gossip.rs`) observes after `handle_network_event` returns (Ok or Err) and exports:
+
+| Series | Type | Labels | Emitted where |
+|--------|------|--------|---------------|
+| `doli_gossip_verdict_latency_seconds` | histogram | `topic` (blocks, txs, attestations, votes, producers) | receive stamp → handler done; headers/heartbeats are not timed |
+| `doli_gossip_events_received_total` | counter | `topic` (+ headers, heartbeats) | every gossip event the node handles |
+| `doli_gossip_block_recv_latency_seconds` | histogram | — | wall receive time − block header timestamp, saturating at 0 |
+| `doli_attestation_coverage_ratio` | histogram | — | attesting indices / decode universe at `[ATTEST_DECODE]` (`apply_block/post_commit.rs`); skipped for an empty universe |
+| `doli_gossip_tx_batch_messages_total` | counter | `size` (1, 2_5, 6_10, 11_25, 26_50, 51_100, 101_plus) | delta-scraped from `TX_GOSSIP_BATCH_STATS` on each `/metrics` request |
+| `doli_gossip_tx_batch_txs_total` | counter | — | same scrape |
+
+Reader: `scripts/inc-i-237-m0-latency-probe.sh [--series-count] [--file PATH | URL]` prints per-topic p50/p99 and a `GATE` line (p99 ≤ 2 s).
+
 **Connection model (two-tier):**
 - **Application layer** (`max_peers`): Tracks scored peers. When full, evicts lowest gossipsub-scored peer. Producers keep slots (high P2 score from first-message delivery).
 - **Transport layer** (`max_peers * 1.5`): Allows temporary over-capacity so new peers can be evaluated before eviction decides who stays. Without headroom, libp2p rejects connections at TCP level before scoring runs.

@@ -5,6 +5,7 @@
 mod config;
 mod publish;
 pub mod staleness;
+pub mod tx_batch_stats;
 pub mod validation;
 
 #[cfg(test)]
