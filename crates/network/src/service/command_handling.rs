@@ -15,6 +15,7 @@ use crate::gossip::{BLOCKS_TOPIC, PRODUCERS_TOPIC, TRANSACTIONS_TOPIC, VOTES_TOP
 use crate::rate_limit::RateLimiter;
 
 use super::types::NetworkCommand;
+use super::verdict::apply_gossip_verdict;
 
 /// Handle network commands
 pub(super) async fn handle_command(
@@ -221,6 +222,17 @@ pub(super) async fn handle_command(
                 .behaviour_mut()
                 .txfetch
                 .send_response(channel, response);
+        }
+
+        NetworkCommand::GossipVerdict { handle, verdict } => {
+            let gossipsub = &mut swarm.behaviour_mut().gossipsub;
+            apply_gossip_verdict(handle, verdict, |msg_id, source, acceptance| {
+                if let Err(e) =
+                    gossipsub.report_message_validation_result(msg_id, source, acceptance)
+                {
+                    debug!("[GOSSIP_VERDICT] report failed msg_id={msg_id} err={e:?}");
+                }
+            });
         }
     }
 }

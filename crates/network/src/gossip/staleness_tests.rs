@@ -10,19 +10,24 @@ use libp2p::gossipsub::MessageAcceptance;
 
 // INC-I-237 M1: every classifier below is reached through the one relay table.
 fn att_d(data: &[u8], c: &mut StalenessCtx<'_>) -> MessageAcceptance {
-    relay_decision(RelayTopic::Attestations, data, c).acceptance()
+    relay_decision(RelayTopic::Attestations, data, c)
+        .acceptance()
+        .expect("attestations are swarm-judged until M3")
 }
 
 fn vote_d(data: &[u8], c: &mut StalenessCtx<'_>) -> MessageAcceptance {
-    relay_decision(RelayTopic::Votes, data, c).acceptance()
+    relay_decision(RelayTopic::Votes, data, c)
+        .acceptance()
+        .expect("votes are swarm-judged until M3")
 }
 
-/// Tx rows are LocalOnly (processed, never forwarded) or Ignore in M1.
+/// INC-I-237 M2 (D1): a first-sight full tx message is Deferred to the node
+/// verdict, a 0xAA announce stays LocalOnly; both map to Accept ("processed").
 fn tx_d(data: &[u8], c: &mut StalenessCtx<'_>) -> MessageAcceptance {
     match relay_decision(RelayTopic::Transactions, data, c) {
-        RelayDecision::LocalOnly => MessageAcceptance::Accept,
+        RelayDecision::Defer | RelayDecision::LocalOnly => MessageAcceptance::Accept,
         RelayDecision::Ignore => MessageAcceptance::Ignore,
-        _ => panic!("tx relay decision must be LocalOnly or Ignore until M2"),
+        _ => panic!("from M2 a tx relay decision is Defer, LocalOnly or Ignore"),
     }
 }
 

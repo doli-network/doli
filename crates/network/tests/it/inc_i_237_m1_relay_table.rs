@@ -92,14 +92,17 @@ fn name(d: &RelayDecision) -> &'static str {
         RelayDecision::AcceptBlock(_) => "AcceptBlock",
         RelayDecision::LocalOnly => "LocalOnly",
         RelayDecision::AcceptTransitional => "AcceptTransitional",
+        RelayDecision::Defer => "Defer",
     }
 }
 
+/// INC-I-237 M2: `None` = no swarm report (Defer waits for the node verdict).
 fn reported(d: &RelayDecision) -> &'static str {
     match d.acceptance() {
-        MessageAcceptance::Accept => "Accept",
-        MessageAcceptance::Ignore => "Ignore",
-        MessageAcceptance::Reject => "Reject",
+        Some(MessageAcceptance::Accept) => "Accept",
+        Some(MessageAcceptance::Ignore) => "Ignore",
+        Some(MessageAcceptance::Reject) => "Reject",
+        None => "none",
     }
 }
 
@@ -273,18 +276,30 @@ fn f_16_equivocating_block_pair_both_accepted() {
     );
 }
 
-// REQ-GRV-003 — Decision: a failure means M1 changed the tx bridge (6.43.3 b) before M2: a tx message is forwarded, a decodable one is not processed locally, or a re-delivery is processed twice.
+// REQ-GRV-003 / D1 — Decision: a failure means the swarm still decides tx relay (the 6.43.3 b LocalOnly bridge survived M2, or a tx message is reported before the node verdict), or a re-delivery is judged twice.
 #[test]
-fn req_grv_003_tx_rows_keep_the_local_only_bridge() {
-    for (row, data) in [
-        ("legacy single tx", v::bytes(v::TX_LEGACY_TRANSFER)),
-        ("legacy minimum tx", v::bytes(v::TX_LEGACY_MIN)),
-        ("0xBA batch 3", v::bytes(v::TX_BATCH_3)),
-        ("0xAA announce", v::bytes(v::TX_ANNOUNCE_2)),
+fn req_grv_003_tx_rows_defer_to_the_node_verdict() {
+    for (row, data, want) in [
+        (
+            "legacy single tx",
+            v::bytes(v::TX_LEGACY_TRANSFER),
+            ("Defer", "none"),
+        ),
+        (
+            "legacy minimum tx",
+            v::bytes(v::TX_LEGACY_MIN),
+            ("Defer", "none"),
+        ),
+        ("0xBA batch 3", v::bytes(v::TX_BATCH_3), ("Defer", "none")),
+        (
+            "0xAA announce",
+            v::bytes(v::TX_ANNOUNCE_2),
+            ("LocalOnly", "Ignore"),
+        ),
     ] {
         let mut s = seen();
         let d = decide(RelayTopic::Transactions, &data, &mut s);
-        assert_eq!((name(&d), reported(&d)), ("LocalOnly", "Ignore"), "{row}");
+        assert_eq!((name(&d), reported(&d)), want, "{row}");
         assert_row(
             RelayTopic::Transactions,
             &data,
@@ -299,18 +314,12 @@ fn req_grv_003_tx_rows_keep_the_local_only_bridge() {
     }
     let one = v::bytes(v::TX_BATCH_1);
     let three = v::bytes(v::TX_BATCH_3);
-    assert_row(
-        RelayTopic::Transactions,
-        &one,
-        &mut s,
-        "LocalOnly",
-        "batch 1",
-    );
+    assert_row(RelayTopic::Transactions, &one, &mut s, "Defer", "batch 1");
     assert_row(
         RelayTopic::Transactions,
         &three,
         &mut s,
-        "LocalOnly",
+        "Defer",
         "superset batch: raw-bytes key",
     );
 }

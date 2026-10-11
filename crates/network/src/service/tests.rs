@@ -17,6 +17,7 @@ mod inc_i_237_m15_budgets;
 mod inc_i_237_m15_dev_paths;
 mod inc_i_237_m15_fixtures;
 mod inc_i_237_m15_lanes;
+mod inc_i_237_m2_verdict;
 
 #[test]
 fn test_network_event_announcement_type() {

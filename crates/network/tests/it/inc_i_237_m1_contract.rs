@@ -68,6 +68,7 @@ fn command_name(c: &NetworkCommand) -> &'static str {
         NetworkCommand::BroadcastAttestation(_) => "BroadcastAttestation",
         NetworkCommand::RequestTxFetch { .. } => "RequestTxFetch",
         NetworkCommand::SendTxFetchResponse { .. } => "SendTxFetchResponse",
+        NetworkCommand::GossipVerdict { .. } => "GossipVerdict",
     }
 }
 

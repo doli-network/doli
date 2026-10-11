@@ -1,9 +1,7 @@
 //! Network service implementation
 //!
 //! Manages the libp2p swarm and provides high-level network operations.
-//!
 //! ## Module structure
-//!
 //! - `types` — Public enums: `NetworkEvent`, `NetworkCommand`, `NetworkError`
 //! - `helpers` — Address filtering, keypair persistence, multiaddr manipulation
 //! - `swarm_loop` — Main tokio::select! event loop driving the swarm
@@ -23,6 +21,7 @@ mod helpers;
 mod swarm_events;
 mod swarm_loop;
 mod types;
+mod verdict;
 
 #[cfg(test)]
 mod tests;
@@ -30,6 +29,7 @@ mod tests;
 pub use event_sink::{LaneBudgets, LaneSnapshot, LaneStats};
 pub use gossip_handle::GossipHandle;
 pub use types::{NetworkCommand, NetworkError, NetworkEvent};
+pub use verdict::{send_gossip_verdict, Verdict, LATE_VERDICTS};
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};

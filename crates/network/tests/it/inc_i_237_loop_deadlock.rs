@@ -49,8 +49,12 @@ use network::{NetworkConfig, NetworkEvent, NetworkService, PeerId};
 const MAX_PEERS: usize = 8;
 const EVENT_BUF: usize = 4096;
 const COMMAND_BUF: usize = 2048;
-/// Unique txs flooded by F (> EVENT_BUF, sent in 50-tx gossip batches).
+/// Unique txs flooded by F (> EVENT_BUF; one tx per gossip message since M2 R4).
 const FLOOD_TXS: u64 = 12_000;
+/// M2: A's swarm admits one tx message per token (500 + 50/s per peer, 1000 +
+/// 200/s in total), so a full bulk lane needs extra flooders and a paced window.
+const EXTRA_FLOODERS: usize = 4;
+const PACED_FLOOD: Duration = Duration::from_secs(12);
 const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 
 fn reserve_port() -> u16 {
@@ -228,6 +232,24 @@ async fn flood(f_cmd: &tokio::sync::mpsc::Sender<network::NetworkCommand>, base:
     tokio::time::sleep(Duration::from_secs(8)).await;
 }
 
+/// ~100 unique tx messages/s from every flooder for PACED_FLOOD.
+async fn paced_flood(cmds: &[tokio::sync::mpsc::Sender<network::NetworkCommand>], base: u64) {
+    let until = Instant::now() + PACED_FLOOD;
+    let mut i = 0u64;
+    while Instant::now() < until {
+        for cmd in cmds {
+            cmd.send(network::NetworkCommand::BroadcastTransaction(unique_tx(
+                base + i,
+            )))
+            .await
+            .unwrap();
+            i += 1;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    tokio::time::sleep(Duration::from_secs(1)).await;
+}
+
 // REQ-GRV-006 / F-6 — Decision: a failure means the sync-only sink loses control events or stops the swarm while the node is behind: a peer joining during a node stall is never reported, or the swarm stops serving connections and commands.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn req_grv_006_swarm_serves_while_node_stopped_and_backlog_delivered_after_resume() {
@@ -239,9 +261,18 @@ async fn req_grv_006_swarm_serves_while_node_stopped_and_backlog_delivered_after
     let f_id: PeerId = *f.local_peer_id();
     let f_cmd = f.command_sender();
     let f_drain = tokio::spawn(async move { while f.next_event().await.is_some() {} });
+    let mut cmds = vec![f_cmd.clone()];
+    let mut drains = Vec::new();
+    for _ in 0..EXTRA_FLOODERS {
+        let mut x = start_node(reserve_port(), vec![format!("/ip4/127.0.0.1/tcp/{a_port}")]).await;
+        cmds.push(x.command_sender());
+        drains.push(tokio::spawn(async move {
+            while x.next_event().await.is_some() {}
+        }));
+    }
 
     warm_up_tx_mesh(&mut a, &f_cmd, 20_000_000).await;
-    flood(&f_cmd, 21_000_000).await;
+    paced_flood(&cmds, 21_000_000).await;
 
     let mut g = start_node(reserve_port(), vec![format!("/ip4/127.0.0.1/tcp/{a_port}")]).await;
     let g_id: PeerId = *g.local_peer_id();
@@ -263,7 +294,7 @@ async fn req_grv_006_swarm_serves_while_node_stopped_and_backlog_delivered_after
         "A's swarm did not serve a new peer while A's node consumer was stopped"
     );
     let deadline = Instant::now() + Duration::from_secs(10);
-    while a.peer_count().await < 2 {
+    while a.peer_count().await < 2 + EXTRA_FLOODERS {
         assert!(
             Instant::now() < deadline,
             "A's swarm never recorded G in its peer table"
@@ -299,6 +330,7 @@ async fn req_grv_006_swarm_serves_while_node_stopped_and_backlog_delivered_after
         .count();
     f_drain.abort();
     g_drain.abort();
+    drains.iter().for_each(|d| d.abort());
     assert!(
         delivered,
         "the PeerConnected(G) control event backlogged during the stall was never delivered after resume"

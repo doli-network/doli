@@ -4,7 +4,8 @@
 # Usage: inc-i-237-m0-latency-probe.sh [--series-count] [--file PATH | URL]
 #   default URL: http://127.0.0.1:9000/metrics
 # Prints per-topic verdict latency (histogram_quantile linear interpolation),
-# block_recv, attestation_coverage, tx_batch and a GATE line (p99 <= 2s).
+# block_recv, attestation_coverage, tx_batch, verdict_late (M2 late-verdict
+# counter per topic) and a GATE line (p99 <= 2s).
 # --series-count prints only the number of verdict-latency series.
 # Exit 0 on success, 2 when the source is unreachable or unreadable.
 set -u
@@ -20,7 +21,7 @@ while [ $# -gt 0 ]; do
             file="$2"
             shift
             ;;
-        -h|--help) sed -n '2,9p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
         *) url="$1" ;;
     esac
     shift
@@ -92,6 +93,7 @@ function fmt(v) { return (v == "NaN") ? "NaN" : sprintf("%.6f", v) }
 /^doli_attestation_coverage_ratio_count / { ACC = $2 + 0; next }
 /^doli_gossip_tx_batch_messages_total\{/ { labels($1); TB[L["size"]] = $2 + 0; TBM += $2; next }
 /^doli_gossip_tx_batch_txs_total / { TBT = $2 + 0; next }
+/^doli_gossip_verdict_late_total\{/ { labels($1); LT[L["topic"]] = $2 + 0; LTS += $2; next }
 END {
     nt = 0
     for (t in TOPIC) T[++nt] = t
@@ -111,6 +113,12 @@ END {
     line = sprintf("tx_batch msgs=%.0f txs=%.0f", TBM, TBT)
     ns = split("1 2_5 6_10 11_25 26_50 51_100 101_plus", S, " ")
     for (i = 1; i <= ns; i++) line = line sprintf(" %s=%.0f", S[i], TB[S[i]] + 0)
+    print line
+    nl = 0
+    for (t in LT) K[++nl] = t
+    for (i = 2; i <= nl; i++) for (j = i; j > 1 && K[j - 1] > K[j]; j--) { x = K[j]; K[j] = K[j - 1]; K[j - 1] = x }
+    line = sprintf("verdict_late total=%.0f", LTS)
+    for (i = 1; i <= nl; i++) line = line sprintf(" %s=%.0f", K[i], LT[K[i]])
     print line
     if (max < 0) print "GATE verdict_p99_max=NaN NO_DATA (<= 2s)"
     else printf "GATE verdict_p99_max=%s %s (<= 2s)\n", fmt(max), (max <= 2 + 1e-9) ? "PASS" : "FAIL"

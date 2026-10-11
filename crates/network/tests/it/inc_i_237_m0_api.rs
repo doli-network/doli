@@ -75,7 +75,7 @@ fn gossip_events(h: &GossipHandle) -> Vec<(&'static str, NetworkEvent, GossipTop
         ),
         (
             "NewTransaction",
-            NetworkEvent::NewTransaction(tx(), h.clone()),
+            NetworkEvent::NewTransaction(vec![tx()], h.clone()),
             GossipTopic::Transactions,
         ),
         (

@@ -1,12 +1,13 @@
 //! The one per-topic gossip relay table (INC-I-237 D2). Blocks keep the one
 //! pre-verdict Accept (decode + stale <= 6 slots) and undecodable block bytes
 //! are the only Reject. Every other topic is Ignore, LocalOnly (processed,
-//! never forwarded) or AcceptTransitional (swarm Accept until M3).
+//! never forwarded), Defer (the node's verdict decides) or AcceptTransitional
+//! (swarm Accept until M3).
 
-use crypto::PublicKey;
+use crypto::{Hash, PublicKey};
 use doli_core::{
     decode_digest, decode_producer_set, is_legacy_bincode_format, Attestation, Block,
-    ProducerAnnouncement, ProducerBloomFilter,
+    ProducerAnnouncement, ProducerBloomFilter, Transaction,
 };
 use libp2p::gossipsub::MessageAcceptance;
 
@@ -73,15 +74,18 @@ pub enum RelayDecision {
     LocalOnly,
     /// Forwarded and processed.
     AcceptTransitional,
+    /// Processed; the node's verdict decides the forward.
+    Defer,
 }
 
 impl RelayDecision {
-    /// The gossipsub validation report for this decision.
-    pub fn acceptance(&self) -> MessageAcceptance {
+    /// The swarm's validation report for this decision; `None` = the node reports.
+    pub fn acceptance(&self) -> Option<MessageAcceptance> {
         match self {
-            Self::Reject => MessageAcceptance::Reject,
-            Self::Ignore | Self::LocalOnly => MessageAcceptance::Ignore,
-            Self::AcceptBlock(_) | Self::AcceptTransitional => MessageAcceptance::Accept,
+            Self::Reject => Some(MessageAcceptance::Reject),
+            Self::Ignore | Self::LocalOnly => Some(MessageAcceptance::Ignore),
+            Self::AcceptBlock(_) | Self::AcceptTransitional => Some(MessageAcceptance::Accept),
+            Self::Defer => None,
         }
     }
 }
@@ -89,7 +93,8 @@ impl RelayDecision {
 /// Decoded content of a message the node processes.
 pub(crate) enum Payload {
     None,
-    Txs(TxGossipMessage),
+    Txs(Vec<Transaction>),
+    TxHashes(Vec<Hash>),
     Digest(ProducerBloomFilter),
     LegacyProducers(Vec<PublicKey>),
     Announcements(Vec<ProducerAnnouncement>),
@@ -119,7 +124,10 @@ pub(crate) fn decide(
         },
         RelayTopic::Transactions => {
             match first_sight(GossipTopic::Transactions, data, ctx, decode_tx_gossip) {
-                Some(msg) => (RelayDecision::LocalOnly, Payload::Txs(msg)),
+                Some(TxGossipMessage::FullBatch(txs)) => (RelayDecision::Defer, Payload::Txs(txs)),
+                Some(TxGossipMessage::Announce(h)) => {
+                    (RelayDecision::LocalOnly, Payload::TxHashes(h))
+                }
                 None => (RelayDecision::Ignore, Payload::None),
             }
         }

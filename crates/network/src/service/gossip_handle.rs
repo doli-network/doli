@@ -1,24 +1,42 @@
-//! Receive stamp of a gossip message and the gossip-event → topic mapping
-//! (INC-I-237 M0). Observation only: nothing here steers a verdict.
+//! Receive stamp of a gossip message, the origin a node verdict reports on
+//! (INC-I-237 D1), and the gossip-event → topic mapping.
 
 use std::time::Instant;
+
+use libp2p::gossipsub::MessageId;
+use libp2p::PeerId;
 
 use crate::gossip::staleness::GossipTopic;
 
 use super::types::NetworkEvent;
 
-/// Receive stamp of one gossip message, taken once by the swarm and cloned
-/// into every event the message produces.
+/// Receive stamp of one gossip message; a deferred message also carries the
+/// topic, original message id and propagation source its verdict reports on.
 #[derive(Debug, Clone)]
 pub struct GossipHandle {
     pub recv_at: Instant,
+    origin: Option<(GossipTopic, MessageId, PeerId)>,
 }
 
 impl GossipHandle {
+    /// A handle whose verdict is reported on `msg_id` from `source`.
+    pub fn new(topic: GossipTopic, msg_id: MessageId, source: PeerId) -> Self {
+        Self {
+            recv_at: Instant::now(),
+            origin: Some((topic, msg_id, source)),
+        }
+    }
+
+    /// An unstamped handle: a verdict on it is never reported nor counted.
     pub fn now() -> Self {
         Self {
             recv_at: Instant::now(),
+            origin: None,
         }
+    }
+
+    pub(super) fn origin(&self) -> Option<&(GossipTopic, MessageId, PeerId)> {
+        self.origin.as_ref()
     }
 }
 

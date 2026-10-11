@@ -10,6 +10,7 @@ use doli_core::{Block, ProducerAnnouncement, ProducerBloomFilter, Transaction};
 
 use crate::protocols::{StatusRequest, StatusResponse, SyncRequest, SyncResponse, TxFetchResponse};
 
+use super::verdict::Verdict;
 use super::GossipHandle;
 
 /// Genesis mismatch peers are silently rejected for this duration.
@@ -24,8 +25,8 @@ pub enum NetworkEvent {
     PeerDisconnected(PeerId),
     /// New block received via gossip (block, propagation source peer)
     NewBlock(Block, PeerId, GossipHandle),
-    /// New transaction received via gossip
-    NewTransaction(Transaction, GossipHandle),
+    /// Every transaction of one gossip message; the node owes it one verdict.
+    NewTransaction(Vec<Transaction>, GossipHandle),
     /// Status request received
     StatusRequest {
         peer_id: PeerId,
@@ -155,6 +156,11 @@ pub enum NetworkCommand {
     SendTxFetchResponse {
         channel: ResponseChannel<TxFetchResponse>,
         response: TxFetchResponse,
+    },
+    /// The node's relay verdict on a deferred gossip message
+    GossipVerdict {
+        handle: GossipHandle,
+        verdict: Verdict,
     },
 }
 

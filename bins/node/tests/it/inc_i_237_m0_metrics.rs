@@ -46,11 +46,11 @@ const BLOCK_RECV_BUCKETS: [f64; 14] = [
 const COVERAGE_BUCKETS: [f64; 12] = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 1.0];
 
 fn handle_aged(ms: u64) -> GossipHandle {
-    GossipHandle {
-        recv_at: Instant::now()
-            .checked_sub(Duration::from_millis(ms))
-            .unwrap(),
-    }
+    let mut h = GossipHandle::now();
+    h.recv_at = Instant::now()
+        .checked_sub(Duration::from_millis(ms))
+        .unwrap();
+    h
 }
 
 fn batch_msgs(size: &str) -> f64 {

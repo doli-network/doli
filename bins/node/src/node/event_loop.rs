@@ -298,8 +298,11 @@ impl Node {
             NetworkEvent::NewBlock(block, source_peer, _) => {
                 self.on_new_block_event(block, source_peer).await?;
             }
-            NetworkEvent::NewTransaction(tx, _) => {
-                self.handle_new_transaction(tx).await?;
+            NetworkEvent::NewTransaction(txs, handle) => {
+                let verdict = self.handle_gossip_txs(txs).await;
+                if let Some(net) = &self.network {
+                    network::service::send_gossip_verdict(&net.command_sender(), handle, verdict);
+                }
             }
             NetworkEvent::PeerStatus { peer_id, status } => {
                 self.on_peer_status(peer_id, status).await;

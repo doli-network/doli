@@ -1,7 +1,8 @@
 //! INC-I-237 M0 / F-10 / REQ-GRV-012 — gossip wire-format corpus, retargeted in
 //! M1 to the one relay-decision table.
 //!
-//! Every old wire format is pinned to its M1 relay decision. Rows the spec
+//! M2 (D1): decodable tx rows now report "Defer" (no swarm report; the node
+//! verdict decides). Every old wire format is pinned to its relay decision. Rows the spec
 //! changes (D2/D3: undecodable non-block -> Ignore, legacy bincode producer list
 //! -> LocalOnly, headers / heartbeats / tier1 / region / unknown -> Ignore) carry
 //! their new verdict; every other row keeps its v6.43.3 verdict.
@@ -63,8 +64,9 @@ fn swarm_report(topic: &str, data: &[u8], seen: &mut SeenCache) -> (&'static str
         RelayDecision::AcceptBlock(_)
             | RelayDecision::LocalOnly
             | RelayDecision::AcceptTransitional
+            | RelayDecision::Defer
     );
-    (label(&d.acceptance()), local)
+    (d.acceptance().as_ref().map_or("Defer", label), local)
 }
 
 /// The NetworkEvent kind the swarm emits for a locally processed message, rate limits aside.
@@ -137,12 +139,13 @@ fn corpus() -> Vec<Row> {
     let empty = Vec::new;
     let junk = || v::GARBAGE.to_vec();
     vec![
-        // txs: classify Accept -> reported Ignore (6.43.3 b); local dispatch still runs.
+        // txs (M2 / D1): a decodable first sight is Deferred to the node verdict
+        // (no swarm report); a re-delivery is Ignored; 0xAA stays LocalOnly (Ignore).
         row(
             "tx legacy transfer",
             TRANSACTIONS_TOPIC,
             v::bytes(v::TX_LEGACY_TRANSFER),
-            "Ignore",
+            "Defer",
             "Ignore",
             "NewTransaction x1",
         ),
@@ -150,7 +153,7 @@ fn corpus() -> Vec<Row> {
             "tx legacy rotate-bls era",
             TRANSACTIONS_TOPIC,
             v::bytes(v::TX_LEGACY_ROTATE_BLS_ERA),
-            "Ignore",
+            "Defer",
             "Ignore",
             "NewTransaction x1",
         ),
@@ -158,7 +161,7 @@ fn corpus() -> Vec<Row> {
             "tx legacy minimum",
             TRANSACTIONS_TOPIC,
             v::bytes(v::TX_LEGACY_MIN),
-            "Ignore",
+            "Defer",
             "Ignore",
             "NewTransaction x1",
         ),
@@ -166,7 +169,7 @@ fn corpus() -> Vec<Row> {
             "tx 0xBA batch 1",
             TRANSACTIONS_TOPIC,
             v::bytes(v::TX_BATCH_1),
-            "Ignore",
+            "Defer",
             "Ignore",
             "NewTransaction x1",
         ),
@@ -174,7 +177,7 @@ fn corpus() -> Vec<Row> {
             "tx 0xBA batch 3",
             TRANSACTIONS_TOPIC,
             v::bytes(v::TX_BATCH_3),
-            "Ignore",
+            "Defer",
             "Ignore",
             "NewTransaction x3",
         ),

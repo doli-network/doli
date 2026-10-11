@@ -214,7 +214,7 @@ fn sync_response_bytes(r: &SyncResponse) -> usize {
 pub fn event_bytes(ev: &NetworkEvent) -> usize {
     let payload = match ev {
         NetworkEvent::NewBlock(b, ..) => block_bytes(b),
-        NetworkEvent::NewTransaction(tx, _) => tx_bytes(tx),
+        NetworkEvent::NewTransaction(txs, _) => txs.iter().map(tx_bytes).sum(),
         NetworkEvent::SyncResponse { response, .. } => sync_response_bytes(response),
         NetworkEvent::NewAttestation(d, ..) | NetworkEvent::NewVote(d, _) => d.len(),
         NetworkEvent::TxFetchResponse { transactions, .. } => {

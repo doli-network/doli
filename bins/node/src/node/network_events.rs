@@ -699,7 +699,7 @@ impl Node {
                 hashes.retain(|h| h != &tx_hash);
                 !hashes.is_empty()
             });
-            self.handle_new_transaction(tx).await?;
+            self.handle_new_transaction(tx).await;
         }
         Ok(())
     }

@@ -1,29 +1,30 @@
-//! Gossipsub message intake (INC-I-237 D2/D6): one relay decision, one
-//! validation report, then local delivery to the node.
+//! Gossipsub message intake (INC-I-237 D1/D2/D6): one relay decision, then
+//! one validation report — by the swarm, or by the node's verdict on Defer.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
 use doli_core::Block;
-use libp2p::gossipsub::{self, MessageId};
+use libp2p::gossipsub::{self, MessageAcceptance, MessageId};
 use libp2p::{PeerId, Swarm};
 use tracing::{debug, info, warn};
 
 use crate::behaviour::DoliBehaviour;
 use crate::config::NetworkConfig;
-use crate::gossip::staleness::{SeenCache, StalenessCtx};
+use crate::gossip::staleness::{GossipTopic, SeenCache, StalenessCtx};
 use crate::gossip::tx_batch_stats::TX_GOSSIP_BATCH_STATS;
-use crate::gossip::{decide, now_unix_secs, Payload, RelayDecision, RelayTopic, TxGossipMessage};
+use crate::gossip::{decide, now_unix_secs, Payload, RelayDecision, RelayTopic};
 use crate::rate_limit::RateLimiter;
 
 use super::backpressure::GossipShedMetrics;
-use super::event_sink::EventSink;
+use super::event_sink::{EmitOutcome, EventSink};
 use super::types::NetworkEvent;
 use super::GossipHandle;
 
-/// Decide, report exactly once, then deliver what the decision processes.
+/// Decide, report at most once, then deliver what the decision processes.
 /// Order on blocks: per-peer bucket (non-candidates) BEFORE the report;
 /// memory shed and the global bucket AFTER it, as local drops (F-1).
+/// A Deferred message dropped here is reported Ignore at the drop.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn handle_gossip_message(
     swarm: &mut Swarm<DoliBehaviour>,
@@ -58,17 +59,26 @@ pub(super) fn handle_gossip_message(
             );
             (RelayDecision::Ignore, payload)
         }
+        (RelayDecision::Defer, _) if !rate_limiter.check_transaction(&source) => {
+            warn!("Rate limit: dropping tx from {source} (tx rate exceeded)");
+            (RelayDecision::Ignore, Payload::None)
+        }
         other => other,
     };
-    if let Err(e) = swarm
-        .behaviour_mut()
-        .gossipsub
-        .report_message_validation_result(&message_id, &source, decision.acceptance())
-    {
-        warn!(
-            "[GOSSIP_VALIDATE] report failed topic={} msg_id={} err={:?}",
-            message.topic, message_id, e
-        );
+    let mut report = |acceptance| {
+        if let Err(e) = swarm
+            .behaviour_mut()
+            .gossipsub
+            .report_message_validation_result(&message_id, &source, acceptance)
+        {
+            warn!(
+                "[GOSSIP_VALIDATE] report failed topic={} msg_id={} err={:?}",
+                message.topic, message_id, e
+            );
+        }
+    };
+    if let Some(acceptance) = decision.acceptance() {
+        report(acceptance);
     }
     let size = message.data.len();
     match decision {
@@ -89,6 +99,21 @@ pub(super) fn handle_gossip_message(
                 rate_limiter.record_block(&source, size);
                 log_block_recv(&block, source, size, candidate);
                 event_tx.emit_block(NetworkEvent::NewBlock(*block, source, handle), shed_metrics);
+            }
+        }
+        RelayDecision::Defer => {
+            let id = message_id.clone();
+            let outcome = defer(
+                payload,
+                id,
+                source,
+                size,
+                handle.recv_at,
+                event_tx,
+                rate_limiter,
+            );
+            if outcome == EmitOutcome::Shed {
+                report(MessageAcceptance::Ignore);
             }
         }
         RelayDecision::LocalOnly | RelayDecision::AcceptTransitional => deliver_local(
@@ -134,7 +159,14 @@ fn deliver_local(
     rate_limiter: &mut RateLimiter,
 ) {
     let (event, is_producer) = match payload {
-        Payload::Txs(msg) => return deliver_txs(msg, source, size, handle, event_tx, rate_limiter),
+        Payload::TxHashes(hashes) => {
+            let announce = NetworkEvent::TxAnnouncement {
+                peer_id: source,
+                hashes,
+                handle,
+            };
+            return deliver_txs(announce, source, size, event_tx, rate_limiter);
+        }
         Payload::Digest(digest) => (
             NetworkEvent::ProducerDigestReceived {
                 peer_id: source,
@@ -150,7 +182,7 @@ fn deliver_local(
         ),
         Payload::Vote => (NetworkEvent::NewVote(data, handle), false),
         Payload::Attestation => (NetworkEvent::NewAttestation(data, source, handle), false),
-        Payload::None => return,
+        Payload::None | Payload::Txs(_) => return,
     };
     if rate_limiter.check_request(&source) {
         rate_limiter.record_request(&source, size);
@@ -161,31 +193,37 @@ fn deliver_local(
 }
 
 fn deliver_txs(
-    msg: TxGossipMessage,
+    event: NetworkEvent,
     source: PeerId,
     size: usize,
-    handle: GossipHandle,
     event_tx: &EventSink,
     rate_limiter: &mut RateLimiter,
 ) {
-    if !rate_limiter.check_transaction(&source) {
-        warn!("Rate limit: dropping tx from {source} (tx rate exceeded)");
-    } else {
+    if rate_limiter.check_transaction(&source) {
         rate_limiter.record_transaction(&source, size);
-        match msg {
-            TxGossipMessage::FullBatch(txs) => {
-                TX_GOSSIP_BATCH_STATS.record(txs.len());
-                for tx in txs {
-                    event_tx.emit(NetworkEvent::NewTransaction(tx, handle.clone()));
-                }
-            }
-            TxGossipMessage::Announce(hashes) => {
-                event_tx.emit(NetworkEvent::TxAnnouncement {
-                    peer_id: source,
-                    hashes,
-                    handle,
-                });
-            }
-        }
+        event_tx.emit(event);
+    } else {
+        warn!("Rate limit: dropping tx from {source} (tx rate exceeded)");
     }
+}
+
+/// Carry a Deferred tx message to the node as ONE event whose handle names the
+/// original message; the caller reports Ignore when this returns `Shed`.
+fn defer(
+    payload: Payload,
+    msg_id: MessageId,
+    source: PeerId,
+    size: usize,
+    recv_at: Instant,
+    event_tx: &EventSink,
+    rate_limiter: &mut RateLimiter,
+) -> EmitOutcome {
+    let Payload::Txs(txs) = payload else {
+        return EmitOutcome::Shed;
+    };
+    rate_limiter.record_transaction(&source, size);
+    TX_GOSSIP_BATCH_STATS.record(txs.len());
+    let mut handle = GossipHandle::new(GossipTopic::Transactions, msg_id, source);
+    handle.recv_at = recv_at;
+    event_tx.emit(NetworkEvent::NewTransaction(txs, handle))
 }

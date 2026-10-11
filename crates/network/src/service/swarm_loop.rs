@@ -10,17 +10,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
-use libp2p::gossipsub::IdentTopic;
 use libp2p::{Multiaddr, PeerId, Swarm};
 use tokio::sync::{mpsc, RwLock};
 use tracing::warn;
 
-use crypto::Hash;
-use doli_core::Transaction;
-
 use crate::behaviour::DoliBehaviour;
 use crate::config::NetworkConfig;
-use crate::gossip::TRANSACTIONS_TOPIC;
 use crate::peer::PeerInfo;
 use crate::rate_limit::{RateLimitConfig, RateLimiter};
 use crate::watchdog::MemoryWatchdog;
@@ -137,13 +132,9 @@ pub(super) async fn run_swarm(
     let mut discv5_retry_tick = tokio::time::interval(Duration::from_secs(5));
     discv5_retry_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    // TX batching: buffer outbound transactions and flush every 100ms.
-    // When tx_announce_enabled, we batch hashes (32 bytes each) instead of full txs.
-    let mut tx_batch: Vec<Transaction> = Vec::new();
-    let mut tx_announce_batch: Vec<Hash> = Vec::new();
-    let tx_announce_enabled = config.tx_announce_enabled;
-    let mut tx_flush = tokio::time::interval(Duration::from_millis(100));
-    tx_flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Wakes the loop every 100 ms so the top-of-loop try_flush drains the backlog.
+    let mut flush_tick = tokio::time::interval(Duration::from_millis(100));
+    flush_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     // INC-I-114 M2: the watchdog (if enabled) owns `memory_shed_flag`.
     if watchdog.is_some() {
@@ -167,57 +158,11 @@ pub(super) async fn run_swarm(
                 handle_swarm_event(event, &mut swarm, &event_sink, &peers, &config, &peer_cache_path, &mut rate_limiter, &mut genesis_mismatch_cooldown, &mut mismatch_redial_cooldown, &mut dial_backoff, &mut eviction_cooldown, &mut bootstrap_peers, &mut stale_peer_ids, &mut gossip_seen_cache, &best_slot, &shed_metrics, &memory_shed_flag).await;
             }
 
-            // Handle commands — intercept BroadcastTransaction for batching
             Some(command) = command_rx.recv() => {
-                if let NetworkCommand::BroadcastTransaction(tx) = command {
-                    if tx_announce_enabled {
-                        // Announce mode: batch hashes, not full txs
-                        tx_announce_batch.push(tx.hash());
-                        if tx_announce_batch.len() >= 50 {
-                            let hashes = std::mem::take(&mut tx_announce_batch);
-                            let data = crate::gossip::encode_tx_announce(&hashes);
-                            let topic = IdentTopic::new(TRANSACTIONS_TOPIC);
-                            if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, data) {
-                                warn!("Failed to flush tx announce batch: {}", e);
-                            }
-                        }
-                    } else {
-                        // Legacy mode: batch full txs
-                        tx_batch.push(tx);
-                        if tx_batch.len() >= 50 {
-                            let batch = std::mem::take(&mut tx_batch);
-                            let data = crate::gossip::encode_tx_batch(&batch);
-                            let topic = IdentTopic::new(TRANSACTIONS_TOPIC);
-                            if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, data) {
-                                warn!("Failed to flush tx batch: {}", e);
-                            }
-                        }
-                    }
-                } else {
-                    handle_command(command, &mut swarm, &config, &mut rate_limiter).await;
-                }
+                handle_command(command, &mut swarm, &config, &mut rate_limiter).await;
             }
 
-            // Flush buffered transactions every 100ms
-            _ = tx_flush.tick() => {
-                if tx_announce_enabled {
-                    if !tx_announce_batch.is_empty() {
-                        let hashes = std::mem::take(&mut tx_announce_batch);
-                        let data = crate::gossip::encode_tx_announce(&hashes);
-                        let topic = IdentTopic::new(TRANSACTIONS_TOPIC);
-                        if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, data) {
-                            warn!("Failed to flush tx announce batch: {}", e);
-                        }
-                    }
-                } else if !tx_batch.is_empty() {
-                    let batch = std::mem::take(&mut tx_batch);
-                    let data = crate::gossip::encode_tx_batch(&batch);
-                    let topic = IdentTopic::new(TRANSACTIONS_TOPIC);
-                    if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, data) {
-                        warn!("Failed to flush tx batch: {}", e);
-                    }
-                }
-            }
+            _ = flush_tick.tick() => {}
 
             // Periodic DHT peer discovery
             _ = dht_refresh.tick() => {

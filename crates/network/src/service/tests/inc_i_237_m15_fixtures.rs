@@ -32,12 +32,12 @@ pub(super) fn tx(tag: u64) -> Transaction {
 }
 
 pub(super) fn tx_event(tag: u64) -> NetworkEvent {
-    NetworkEvent::NewTransaction(tx(tag), GossipHandle::now())
+    NetworkEvent::NewTransaction(vec![tx(tag)], GossipHandle::now())
 }
 
 pub(super) fn tx_tag(ev: &NetworkEvent) -> u64 {
     match ev {
-        NetworkEvent::NewTransaction(t, _) => t.outputs[0].amount,
+        NetworkEvent::NewTransaction(t, _) => t[0].outputs[0].amount,
         other => panic!("expected NewTransaction, got {other:?}"),
     }
 }

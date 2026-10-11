@@ -1,0 +1,8 @@
+# HELP doli_gossip_verdict_late_total Node gossip verdicts that missed the 3.5 s window (counted, never reported), per topic.
+# TYPE doli_gossip_verdict_late_total counter
+doli_gossip_verdict_late_total{topic="attestations"} 1
+doli_gossip_verdict_late_total{topic="txs"} 3
+doli_gossip_verdict_late_total{topic="votes"} 0
+# HELP doli_gossip_verdict_latency_seconds_late_lookalike not the late family
+# TYPE doli_gossip_verdict_latency_seconds_late_lookalike counter
+doli_gossip_verdict_latency_seconds_late_lookalike{topic="txs"} 99

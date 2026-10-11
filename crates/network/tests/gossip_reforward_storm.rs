@@ -229,7 +229,9 @@ fn classify_with(
         best_slot: p.best_slot,
         seen: cache,
     };
-    relay_decision(topic, data, &mut ctx).acceptance()
+    relay_decision(topic, data, &mut ctx)
+        .acceptance()
+        .expect("attestations and votes are swarm-judged until M3")
 }
 
 // ============================================================================

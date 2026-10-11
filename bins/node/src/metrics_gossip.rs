@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use lazy_static::lazy_static;
 use network::gossip::staleness::GossipTopic;
 use network::gossip::tx_batch_stats::{TxBatchSnapshot, TX_BATCH_BUCKETS, TX_GOSSIP_BATCH_STATS};
-use network::service::{LaneBudgets, LaneSnapshot, LaneStats};
+use network::service::{LaneBudgets, LaneSnapshot, LaneStats, LATE_VERDICTS};
 use network::GossipHandle;
 use prometheus::{
     Histogram, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGaugeVec, Opts, Registry,
@@ -94,6 +94,14 @@ lazy_static! {
         &["lane"]
     )
     .unwrap();
+    static ref VERDICT_LATE: IntCounterVec = IntCounterVec::new(
+        Opts::new(
+            "doli_gossip_verdict_late_total",
+            "Node gossip verdicts that missed the 3.5 s window (counted, never reported), per topic."
+        ),
+        &["topic"]
+    )
+    .unwrap();
     static ref LANE_SHED: IntGaugeVec = IntGaugeVec::new(
         Opts::new(
             "doli_event_lane_shed_total",
@@ -145,10 +153,12 @@ pub fn register_gossip_metrics(registry: &Registry) {
     let _ = registry.register(Box::new(LANE_BUDGET_BYTES.clone()));
     let _ = registry.register(Box::new(LANE_INFLIGHT_BYTES.clone()));
     let _ = registry.register(Box::new(LANE_SHED.clone()));
+    let _ = registry.register(Box::new(VERDICT_LATE.clone()));
     for topic in EVENT_TOPICS {
         received(topic);
         verdict(topic);
     }
+    scrape_late_verdicts();
     for size in TX_BATCH_BUCKETS {
         TX_BATCH_MESSAGES.with_label_values(&[size]);
     }
@@ -249,9 +259,19 @@ pub fn watch_event_lanes(stats: Arc<LaneStats>, budgets: LaneBudgets) {
     let _ = EVENT_LANES.set((stats, budgets));
 }
 
-/// Scrape the batch stats and lane counters into the registry before a `/metrics` exposition.
+/// Raise each per-topic late counter to the swarm's monotone count.
+fn scrape_late_verdicts() {
+    for topic in EVENT_TOPICS {
+        let c = VERDICT_LATE.with_label_values(&[topic.metric_label()]);
+        c.inc_by(LATE_VERDICTS.get(topic).saturating_sub(c.get()));
+    }
+}
+
+/// Scrape the batch stats, late verdicts and lane counters into the registry before a `/metrics` exposition.
 pub fn scrape_for_exposition() {
-    scrape_tx_batch_stats(&mut EXPOSITION_SCRAPE.lock().unwrap_or_else(|e| e.into_inner()));
+    let mut state = EXPOSITION_SCRAPE.lock().unwrap_or_else(|e| e.into_inner());
+    scrape_tx_batch_stats(&mut state);
+    scrape_late_verdicts();
     if let Some((stats, budgets)) = EVENT_LANES.get() {
         observe_event_lanes(&stats.snapshot(), budgets);
     }

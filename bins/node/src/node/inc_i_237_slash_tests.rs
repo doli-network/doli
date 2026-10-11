@@ -14,8 +14,8 @@
 //!   fn Node::handle_new_block(&mut self, Block, PeerId) — equivocation arm
 //!     O1 receiver: mempool SlashProducer count
 //!     O2 detector still records the proof (detection is kept, for logs)
-//!   fn Node::handle_new_transaction(&self, Transaction)
-//!     O1 receiver: mempool membership (rebroadcast is gated on it)
+//!   fn Node::handle_gossip_txs(&self, Vec<Transaction>) -> Verdict (M2)
+//!     O1 receiver: mempool membership   O3 verdict (relay is gated on it)
 //!
 //! INPUT PARTITIONS
 //!   P1 VDF-committed pair (merkle_root differs)   -> no slash tx anywhere
@@ -142,7 +142,11 @@ async fn test_handle_new_transaction_does_not_admit_gossiped_slash() {
     }
     .to_slash_transaction(&KeyPair::generate());
     let (peer, _t) = node(&producers).await;
-    peer.handle_new_transaction(tx.clone()).await.unwrap();
+    assert_eq!(
+        peer.handle_gossip_txs(vec![tx.clone()]).await,
+        network::Verdict::Ignore,
+        "M2 W01: a gossiped SlashProducer is never relayed"
+    );
     assert!(
         !peer.mempool.read().await.contains(&tx.hash()),
         "gossiped SlashProducer must not enter the mempool"

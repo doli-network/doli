@@ -7,9 +7,11 @@
 //!   O5: TX_GOSSIP_BATCH_STATS (process-global: asserted as lower-bound deltas,
 //!       other modules in this binary run tx floods in parallel)
 //!   O6: NetworkEvent stream at B — gossip events carry Some(handle) with
-//!       publish_at <= recv_at <= received_at; one handle per message (a 0xBA
-//!       batch of 3 -> 3 events with the same recv_at); control events None
-//! PATHS: P1 legacy-mode 0xBA batch of 1 (warm-up), P2 0xBA batch of 3,
+//!       publish_at <= recv_at <= received_at; one event per message (M2 / D1:
+//!       a 0xBA batch of 3 from an old-version peer -> ONE event with 3 txs);
+//!       control events None
+//! PATHS: P1 own-origin single tx (warm-up), P2 0xBA batch of 3 from a raw
+//!   old-version publisher,
 //!   P3 inbound StatusRequest / SyncRequest / TxFetchRequest (ResponseChannel
 //!   variants T1 cannot build), P4 PeerConnected
 //! INPUT PARTITIONS: batch size 1 (bucket "1"), batch size 3 (bucket "2_5")
@@ -23,6 +25,8 @@ use doli_core::Transaction;
 use network::gossip::tx_batch_stats::TX_GOSSIP_BATCH_STATS;
 use network::protocols::{StatusRequest, SyncRequest};
 use network::{NetworkCommand, NetworkConfig, NetworkEvent, NetworkService};
+
+use super::inc_i_237_m2_common as m2;
 
 const WARM_BASE: u64 = 37_000_000;
 const TRIO_BASE: u64 = 37_500_000;
@@ -147,51 +151,57 @@ async fn req_grv_008_swarm_stamps_one_handle_per_message_and_counts_the_batch() 
         }
     }
 
-    // P2: three txs in one 100 ms flush -> one 0xBA batch of 3 at B.
+    // P2: an old-version peer's 0xBA batch of 3 -> ONE event with 3 txs at B.
+    let r = m2::raw_peer(&m2::addr(b_port)).await;
     let mut proof = None;
     let mut attempts = Vec::new();
-    for attempt in 0..5u64 {
+    for attempt in 0..10u64 {
         let base = TRIO_BASE + attempt * 10;
         let before = TX_GOSSIP_BATCH_STATS.snapshot();
         let publish_at = Instant::now();
-        for k in 0..3 {
-            a_cmd
-                .send(NetworkCommand::BroadcastTransaction(tx(base + k)))
-                .await
-                .unwrap();
-        }
-        let mut trio = Vec::new();
-        let until = Instant::now() + Duration::from_secs(5);
-        while trio.len() < 3 && Instant::now() < until {
+        r.publish(network::gossip::encode_tx_batch(&[
+            tx(base),
+            tx(base + 1),
+            tx(base + 2),
+        ]));
+        let mut events = Vec::new();
+        let until = Instant::now() + Duration::from_millis(1_500);
+        while Instant::now() < until {
             if let Ok(Some(ev)) =
                 tokio::time::timeout(Duration::from_millis(100), b.next_event()).await
             {
                 let received_at = Instant::now();
                 seen.note(&ev, received_at, start);
-                if let NetworkEvent::NewTransaction(t, h) = &ev {
-                    if (base..base + 3).contains(&tag(t)) {
-                        trio.push((h.recv_at, received_at));
+                if let NetworkEvent::NewTransaction(txs, h) = &ev {
+                    if txs.iter().any(|t| (base..base + 3).contains(&tag(t))) {
+                        let tags: Vec<u64> = txs.iter().map(tag).collect();
+                        events.push((tags, h.recv_at, received_at));
                     }
                 }
             }
         }
         let after = TX_GOSSIP_BATCH_STATS.snapshot();
-        let one_message = trio.len() == 3 && trio.iter().all(|(r, _)| *r == trio[0].0);
-        attempts.push((trio.len(), one_message));
-        if one_message {
-            proof = Some((publish_at, trio, before, after));
+        attempts.push(events.len());
+        if !events.is_empty() {
+            proof = Some((base, publish_at, events, before, after));
             break;
         }
     }
-    let (publish_at, trio, before, after) = proof.unwrap_or_else(|| {
-        panic!("no 3-tx batch arrived as 3 events sharing one recv_at: {attempts:?}")
-    });
-    let recv_at = trio[0].0;
-    assert!(publish_at <= recv_at, "recv_at precedes the publish");
-    assert!(
-        trio.iter().all(|(_, got)| recv_at <= *got),
-        "recv_at after delivery"
+    let (base, publish_at, events, before, after) =
+        proof.unwrap_or_else(|| panic!("the raw peer's batch never reached B: {attempts:?}"));
+    assert_eq!(
+        events.len(),
+        1,
+        "D1: one gossip message -> ONE event, got {events:?}"
     );
+    let (tags, recv_at, got) = &events[0];
+    assert_eq!(
+        *tags,
+        vec![base, base + 1, base + 2],
+        "the event carries the whole message"
+    );
+    assert!(publish_at <= *recv_at, "recv_at precedes the publish");
+    assert!(recv_at <= got, "recv_at after delivery");
     assert!(
         after.msgs - before.msgs >= 1,
         "C4: the batch message was not counted"

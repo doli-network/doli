@@ -62,10 +62,10 @@ pub const SEEN_CACHE_CAPACITY: usize = 16_384;
 /// [`SEEN_CACHE_TTL_SECS`] (180s). Transactions carry no embedded age, so
 /// identity dedup is the WHOLE gate (no secondary filter).
 /// **F-1 invariant `120s ≤ TX_SEEN_TTL < mempool_rebroadcast_interval`:** DOLI
-/// has NO periodic mempool rebroadcast loop. Since INC-I-237 a tx batch is
-/// never mesh-forwarded (the relay table returns LocalOnly: Ignore after local
-/// delivery); each node re-publishes, once, only the txs its mempool accepts
-/// (`handle_new_transaction` -> `BroadcastTransaction`, batched every 100ms).
+/// has NO periodic mempool rebroadcast loop. Since INC-I-237 M2 a tx message
+/// is Deferred: the mesh forwards it only after the node's Accept (every tx
+/// newly admitted); no node re-publishes a received tx, and the origin
+/// publishes each tx once as one legacy single-tx message.
 /// The rebroadcast interval is effectively infinite, so `120s ≤ 180s < ∞`
 /// holds with no per-topic override; after 180s a re-submitted txid re-propagates.
 pub const TX_SEEN_TTL_SECS: u64 = SEEN_CACHE_TTL_SECS;

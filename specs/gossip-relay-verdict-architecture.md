@@ -96,7 +96,7 @@ Gap = 0.09 <= 0.1 → **PRESENT RADICAL ALONE FIRST.** The Definite + Recommende
 
 ```
 swarm (one fn, exhaustive):  relay_decision(topic, bytes, ctx) -> Reject | Ignore | AcceptNow(block) | Defer(decoded)
-  Defer: per-peer rate check -> emit(Event{payload, GossipHandle{msg_id, source, recv_at}}) ; any swarm-side drop -> report Ignore NOW
+  Defer: per-peer rate check -> emit(Event{payload, GossipHandle{topic, msg_id, source, recv_at}}) ; any swarm-side drop -> report Ignore NOW
 node:  existing handlers return Verdict{Accept|Ignore} instead of (); command_tx.try_send(GossipVerdict{handle, verdict})  (never awaits)
 swarm command arm:  if handle.recv_at.elapsed() > 3.5 s -> late_counter[topic]++ (NO report) else report_message_validation_result(id, src, verdict)
 ```
@@ -126,7 +126,7 @@ proposed: node --cmd slot (await, must-deliver)--> swarm   [swarm drains uncondi
 
 ## Definite Changes (High Convergence)
 
-- ARCHITECTURAL: D1 — the node becomes the relay authority: every non-block gossip message is Deferred (no swarm report) and carried to the node as ONE event per gossip message with a `GossipHandle{msg_id, source, recv_at}`; the node's existing handler returns a verdict that a `try_send` `GossipVerdict` command carries back to `report_message_validation_result` on the ORIGINAL id; the 6.43.3 (b) override (`behaviour_events.rs:255-264`), the node re-publish (`validation_checks/mod.rs:1027-1030`) and the per-tx fan-out (`:299-302`) are deleted in the SAME commit.
+- ARCHITECTURAL: D1 — the node becomes the relay authority: every non-block gossip message is Deferred (no swarm report) and carried to the node as ONE event per gossip message with a `GossipHandle{topic, msg_id, source, recv_at}`; the node's existing handler returns a verdict that a `try_send` `GossipVerdict` command carries back to `report_message_validation_result` on the ORIGINAL id; the 6.43.3 (b) override (`behaviour_events.rs:255-264`), the node re-publish (`validation_checks/mod.rs:1027-1030`) and the per-tx fan-out (`:299-302`) are deleted in the SAME commit.
     Convergence: 5/5 (Sub P3, Restr P1, Patt P1, Fail (i)+P5, Rad P1)
     Evidence: vendor `mcache.rs:123-124,166-167,186-206`; `behaviour.rs:607-616,755-768`; `types.rs:103-160` (0 verdict commands); [E8] production node log (RUN 570 evidence)
     Confidence: conf(0.85, converged)

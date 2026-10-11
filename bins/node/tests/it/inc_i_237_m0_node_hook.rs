@@ -36,11 +36,11 @@ async fn node() -> (Node, TempDir) {
 }
 
 fn aged(ms: u64) -> GossipHandle {
-    GossipHandle {
-        recv_at: Instant::now()
-            .checked_sub(Duration::from_millis(ms))
-            .unwrap(),
-    }
+    let mut h = GossipHandle::now();
+    h.recv_at = Instant::now()
+        .checked_sub(Duration::from_millis(ms))
+        .unwrap();
+    h
 }
 
 fn orphan_block(ts: u64) -> Block {

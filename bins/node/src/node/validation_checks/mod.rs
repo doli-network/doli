@@ -1,6 +1,7 @@
 use super::*;
 use crate::node::attestation::{commit, width};
 
+mod gossip_txs;
 mod withdrawal_economics;
 
 impl Node {
@@ -973,8 +974,9 @@ impl Node {
         Ok(())
     }
 
-    /// Handle a new transaction from the network
-    pub async fn handle_new_transaction(&self, tx: Transaction) -> Result<()> {
+    /// Admit a network tx into the mempool; true iff this call newly admitted it.
+    /// Never publishes: gossip relay is the swarm's, on the node's verdict.
+    pub async fn handle_new_transaction(&self, tx: Transaction) -> bool {
         let tx_hash = tx.hash();
 
         // Check if we already have this transaction
@@ -982,7 +984,7 @@ impl Node {
             let mempool = self.mempool.read().await;
             if mempool.contains(&tx_hash) {
                 debug!("Transaction {} already in mempool", tx_hash);
-                return Ok(());
+                return false;
             }
         }
 
@@ -1024,17 +1026,13 @@ impl Node {
                         fee: 0,
                     });
                 }
-                // Broadcast to network
-                if let Some(ref network) = self.network {
-                    let _ = network.broadcast_transaction(tx).await;
-                }
+                true
             }
             Err(e) => {
                 debug!("Failed to add transaction {} to mempool: {}", tx_hash, e);
+                false
             }
         }
-
-        Ok(())
     }
 
     /// Handle a sync request from a peer.
