@@ -199,6 +199,7 @@ impl RpcContext {
         })?;
 
         let tx_hash = tx.hash();
+        let permit = (self.broadcast_tx)().ok_or_else(RpcError::broadcast_busy)?;
 
         // Add to mempool — state-only txs (Exit, RequestWithdrawal, etc.) bypass
         // UTXO fee accounting since they have no inputs by design. Their spam
@@ -232,8 +233,7 @@ impl RpcContext {
             }
         };
 
-        // Broadcast to network
-        (self.broadcast_tx)(tx);
+        permit(tx);
 
         // Build response: always include hash, optionally include warnings
         if let Some(contention) = diagnostic {

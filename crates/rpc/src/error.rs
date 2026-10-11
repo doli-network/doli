@@ -148,6 +148,19 @@ impl RpcError {
         Self::new(codes::MEMPOOL_FULL, "Mempool full")
     }
 
+    /// The node cannot hand a broadcast to the network right now; retry later
+    pub fn broadcast_busy() -> Self {
+        Self::with_data(
+            codes::MEMPOOL_FULL,
+            "Node busy: broadcast queue full, retry later",
+            serde_json::json!({
+                "error_code": "BROADCAST_BUSY",
+                "stage": "broadcast",
+                "retryable": true,
+            }),
+        )
+    }
+
     /// UTXO not found
     pub fn utxo_not_found() -> Self {
         Self::new(codes::UTXO_NOT_FOUND, "UTXO not found")

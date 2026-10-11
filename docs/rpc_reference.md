@@ -346,6 +346,11 @@ Submits a signed transaction to the network.
 "abc123..." // Transaction hash
 ```
 
+**Busy:** when the node cannot reserve a broadcast slot it answers `-32004` with
+`data: {"error_code": "BROADCAST_BUSY", "stage": "broadcast", "retryable": true}`.
+The transaction was NOT admitted to the mempool; resubmit it after a short wait.
+`submitMaintainerChange` returns the same Busy error.
+
 **Example:**
 ```bash
 curl -X POST http://127.0.0.1:8500 \
@@ -1082,6 +1087,9 @@ Submit a veto vote for a pending update.
 ```
 
 **Note:** Only active producers can submit votes.
+
+**Busy:** a vote that cannot be handed to the network right now answers `-32004` with
+`data: {"error_code": "BROADCAST_BUSY", "stage": "broadcast", "retryable": true}`; resubmit it.
 
 **Example:**
 ```bash

@@ -20,6 +20,7 @@ mod inc_i_237_m0_corpus;
 mod inc_i_237_m0_corpus_vectors;
 mod inc_i_237_m0_sec005;
 mod inc_i_237_m0_swarm;
+mod inc_i_237_m15_contract;
 mod inc_i_237_m1_block_gate;
 mod inc_i_237_m1_contract;
 mod inc_i_237_m1_relay_table;

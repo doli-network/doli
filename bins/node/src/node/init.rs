@@ -930,7 +930,6 @@ impl Node {
             (snap, epoch)
         };
 
-        // Create equivocation detector
         let equivocation_detector = Arc::new(RwLock::new(EquivocationDetector::new()));
 
         // Create VDF calibrator with network-specific target time
@@ -1073,11 +1072,10 @@ impl Node {
             fork_block_cache: Arc::new(RwLock::new(HashMap::new())),
             last_producer_list_change: None,
             producer_gset: producer_gset.clone(),
+            announcement_merge_busy: Arc::new(AtomicBool::new(false)),
             adaptive_gossip,
             our_announcement: Arc::new(RwLock::new(None)),
-            // Recover sequence from persisted GSet so we don't create stale
-            // announcements after restart. Sequence is stable (no heartbeat
-            // bumps) — only incremented on actual state changes.
+            // Sequence recovered from the persisted GSet (see initial_seq above).
             announcement_sequence: Arc::new(AtomicU64::new(initial_seq)),
             last_broadcast_gset_len: 0,
             signed_slots_db,
@@ -1320,6 +1318,7 @@ impl Node {
             fork_block_cache: Arc::new(RwLock::new(HashMap::new())),
             last_producer_list_change: None,
             producer_gset: Arc::new(RwLock::new(ProducerGSet::new(network.id(), genesis_hash))),
+            announcement_merge_busy: Arc::new(AtomicBool::new(false)),
             adaptive_gossip: Arc::new(RwLock::new(AdaptiveGossip::new())),
             our_announcement: Arc::new(RwLock::new(None)),
             announcement_sequence: Arc::new(AtomicU64::new(0)),
@@ -1543,6 +1542,7 @@ impl Node {
             fork_block_cache: Arc::new(RwLock::new(HashMap::new())),
             last_producer_list_change: None,
             producer_gset: Arc::new(RwLock::new(ProducerGSet::new(network.id(), genesis_hash))),
+            announcement_merge_busy: Arc::new(AtomicBool::new(false)),
             adaptive_gossip: Arc::new(RwLock::new(AdaptiveGossip::new())),
             our_announcement: Arc::new(RwLock::new(None)),
             announcement_sequence: Arc::new(AtomicU64::new(0)),

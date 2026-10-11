@@ -52,7 +52,9 @@ impl RpcContext {
         let vote_data = serde_json::to_vec(&params.vote)
             .map_err(|e| RpcError::internal_error(format!("Failed to serialize vote: {}", e)))?;
 
-        (self.broadcast_vote)(vote_data);
+        if !(self.broadcast_vote)(vote_data) {
+            return Err(RpcError::broadcast_busy());
+        }
 
         Ok(serde_json::json!({
             "status": "submitted",
@@ -276,9 +278,8 @@ impl RpcContext {
             chain_state.best_height
         };
 
+        let permit = (self.broadcast_tx)().ok_or_else(RpcError::broadcast_busy)?;
         // Submit to mempool (maintainer txs are state-only, no UTXO inputs).
-        // The lock is scoped so it is released before the broadcast below,
-        // mirroring `submit_transaction` (transaction.rs).
         {
             let mut mempool = self.mempool.write().await;
             mempool
@@ -302,7 +303,7 @@ impl RpcContext {
         // lane this handler used. No new admission rule is introduced, and this
         // is transport only — it changes no consensus rule and no block
         // content, so it needs no activation height.
-        (self.broadcast_tx)(tx);
+        permit(tx);
 
         Ok(serde_json::json!({
             "status": "accepted",

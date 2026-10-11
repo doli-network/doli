@@ -39,5 +39,8 @@ mod snapshot;
 mod stats;
 mod transaction;
 
+#[cfg(test)]
+mod tests_inc_i237_busy;
+
 // Re-export public API (unchanged)
-pub use context::{BackfillState, RpcContext, SyncStatus};
+pub use context::{BackfillState, RpcContext, SyncStatus, TxBroadcastPermit};

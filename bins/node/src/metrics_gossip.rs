@@ -1,15 +1,16 @@
 //! Gossip receive/verdict metrics (INC-I-237 M0). Observation only: nothing
 //! here feeds a relay, validation or consensus decision.
 
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use lazy_static::lazy_static;
 use network::gossip::staleness::GossipTopic;
 use network::gossip::tx_batch_stats::{TxBatchSnapshot, TX_BATCH_BUCKETS, TX_GOSSIP_BATCH_STATS};
+use network::service::{LaneBudgets, LaneSnapshot, LaneStats};
 use network::GossipHandle;
 use prometheus::{
-    Histogram, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, Opts, Registry,
+    Histogram, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGaugeVec, Opts, Registry,
 };
 
 /// 2 s = SLO, 3.5 s = R5 deadline, 5 s = mcache window.
@@ -77,7 +78,34 @@ lazy_static! {
         "Transactions received in tx batches"
     )
     .unwrap();
+    static ref LANE_BUDGET_BYTES: IntGaugeVec = IntGaugeVec::new(
+        Opts::new(
+            "doli_event_lane_budget_bytes",
+            "Byte budget of each swarm-to-node event lane"
+        ),
+        &["lane"]
+    )
+    .unwrap();
+    static ref LANE_INFLIGHT_BYTES: IntGaugeVec = IntGaugeVec::new(
+        Opts::new(
+            "doli_event_lane_inflight_bytes",
+            "Bytes queued in each swarm-to-node event lane"
+        ),
+        &["lane"]
+    )
+    .unwrap();
+    static ref LANE_SHED: IntGaugeVec = IntGaugeVec::new(
+        Opts::new(
+            "doli_event_lane_shed_total",
+            "Events dropped by each event lane since start"
+        ),
+        &["lane"]
+    )
+    .unwrap();
 }
+
+/// Lane counters of the running network service, read at scrape time.
+static EVENT_LANES: OnceLock<(Arc<LaneStats>, LaneBudgets)> = OnceLock::new();
 
 /// Per-topic children, resolved once so the per-event path does no label lookup.
 static RECEIVED_CHILDREN: [OnceLock<IntCounter>; 5] = [const { OnceLock::new() }; 5];
@@ -114,6 +142,9 @@ pub fn register_gossip_metrics(registry: &Registry) {
     let _ = registry.register(Box::new(ATTESTATION_COVERAGE.clone()));
     let _ = registry.register(Box::new(TX_BATCH_MESSAGES.clone()));
     let _ = registry.register(Box::new(TX_BATCH_TXS.clone()));
+    let _ = registry.register(Box::new(LANE_BUDGET_BYTES.clone()));
+    let _ = registry.register(Box::new(LANE_INFLIGHT_BYTES.clone()));
+    let _ = registry.register(Box::new(LANE_SHED.clone()));
     for topic in EVENT_TOPICS {
         received(topic);
         verdict(topic);
@@ -185,7 +216,43 @@ pub fn scrape_tx_batch_stats(state: &mut TxBatchScrapeState) {
     state.last = now;
 }
 
-/// Scrape the batch stats into the registry before a `/metrics` exposition.
+/// Publish lane budgets, in-flight bytes and drop counts (gauges, replaced each call).
+pub fn observe_event_lanes(snap: &LaneSnapshot, budgets: &LaneBudgets) {
+    let rows = [
+        (
+            "consensus",
+            budgets.consensus_bytes,
+            snap.consensus_bytes,
+            snap.consensus_shed,
+        ),
+        ("bulk", budgets.bulk_bytes, snap.bulk_bytes, snap.bulk_shed),
+        (
+            "backlog",
+            budgets.backlog_bytes,
+            snap.backlog_bytes,
+            snap.control_dropped,
+        ),
+    ];
+    for (lane, budget, inflight, shed) in rows {
+        LANE_BUDGET_BYTES
+            .with_label_values(&[lane])
+            .set(budget as i64);
+        LANE_INFLIGHT_BYTES
+            .with_label_values(&[lane])
+            .set(inflight as i64);
+        LANE_SHED.with_label_values(&[lane]).set(shed as i64);
+    }
+}
+
+/// Register the network service's lane counters for scrape-time refresh.
+pub fn watch_event_lanes(stats: Arc<LaneStats>, budgets: LaneBudgets) {
+    let _ = EVENT_LANES.set((stats, budgets));
+}
+
+/// Scrape the batch stats and lane counters into the registry before a `/metrics` exposition.
 pub fn scrape_for_exposition() {
     scrape_tx_batch_stats(&mut EXPOSITION_SCRAPE.lock().unwrap_or_else(|e| e.into_inner()));
+    if let Some((stats, budgets)) = EVENT_LANES.get() {
+        observe_event_lanes(&stats.snapshot(), budgets);
+    }
 }

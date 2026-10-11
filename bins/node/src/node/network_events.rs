@@ -392,62 +392,59 @@ impl Node {
         Ok(())
     }
 
-    /// Handle legacy producer list broadcast via anti-entropy.
-    pub fn on_producers_announced(&self, remote_list: Vec<PublicKey>) {
-        let chain_state = self.chain_state.clone();
+    /// Handle legacy producer list broadcast via anti-entropy (inline list merge).
+    pub async fn on_producers_announced(&self, remote_list: Vec<PublicKey>) {
         let network_type = self.config.network;
-        let known_producers = self.known_producers.clone();
-
-        tokio::spawn(async move {
-            let genesis_active = {
-                let state = chain_state.read().await;
-                network_type.is_in_genesis(state.best_height + 1)
-            };
-            if network_type == Network::Testnet || network_type == Network::Devnet || genesis_active
-            {
-                let mut known = known_producers.write().await;
-                let mut changed = false;
-                for producer in &remote_list {
-                    if !known.contains(producer) {
-                        known.push(*producer);
-                        changed = true;
-                        let pubkey_hash = crypto_hash(producer.as_bytes());
-                        info!(
-                            "Bootstrap producer discovered via ANTI-ENTROPY: {} (now {} known)",
-                            &pubkey_hash.to_hex()[..16],
-                            known.len()
-                        );
-                    }
-                }
-                if changed {
-                    known.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+        let genesis_active = {
+            let state = self.chain_state.read().await;
+            network_type.is_in_genesis(state.best_height + 1)
+        };
+        if network_type == Network::Testnet || network_type == Network::Devnet || genesis_active {
+            let mut known = self.known_producers.write().await;
+            let mut changed = false;
+            for producer in &remote_list {
+                if !known.contains(producer) {
+                    known.push(*producer);
+                    changed = true;
+                    let pubkey_hash = crypto_hash(producer.as_bytes());
                     info!(
-                        "Producer set updated via anti-entropy: {} total known producers",
+                        "Bootstrap producer discovered via ANTI-ENTROPY: {} (now {} known)",
+                        &pubkey_hash.to_hex()[..16],
                         known.len()
                     );
                 }
             }
-        });
+            if changed {
+                known.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+                info!(
+                    "Producer set updated via anti-entropy: {} total known producers",
+                    known.len()
+                );
+            }
+        }
     }
 
-    /// Handle GSet CRDT announcement merge (CPU-intensive, spawned).
+    /// GSet announcement merge (CPU-heavy, spawned); at most one merge in flight,
+    /// batches arriving meanwhile are dropped (the digest exchange repairs them).
     pub fn on_producer_announcements(&self, announcements: Vec<ProducerAnnouncement>) {
+        let Some(slot) = super::producer_merge::MergeSlot::acquire(&self.announcement_merge_busy)
+        else {
+            debug!("Producer announcements dropped: a GSet merge is in flight");
+            return;
+        };
         let gset = self.producer_gset.clone();
         let adaptive = self.adaptive_gossip.clone();
         let sync_mgr = self.sync_manager.clone();
         let known_producers = self.known_producers.clone();
 
         tokio::spawn(async move {
-            let merge_result = {
-                let mut g = gset.write().await;
-                g.merge(announcements)
-            };
-
+            let _slot = slot;
+            let merge_result = gset.write().await.merge(announcements);
             let peer_count = sync_mgr.read().await.peer_count();
-            {
-                let mut gossip = adaptive.write().await;
-                gossip.on_gossip_result(&merge_result, peer_count);
-            }
+            adaptive
+                .write()
+                .await
+                .on_gossip_result(&merge_result, peer_count);
 
             if merge_result.added > 0 {
                 info!(
@@ -455,9 +452,7 @@ impl Node {
                     merge_result.added, merge_result.new_producers,
                     merge_result.rejected, merge_result.duplicates
                 );
-
-                let g = gset.read().await;
-                let producers = g.sorted_producers();
+                let producers = gset.read().await.sorted_producers();
                 let mut known = known_producers.write().await;
                 for pubkey in producers {
                     if !known.contains(&pubkey) {
@@ -474,35 +469,32 @@ impl Node {
         });
     }
 
-    /// Handle bloom filter delta sync request (spawned).
-    pub fn on_producer_digest(&self, peer_id: PeerId, digest: doli_core::ProducerBloomFilter) {
-        let gset = self.producer_gset.clone();
-        let cmd_tx = self.network.as_ref().map(|n| n.command_sender());
-
-        tokio::spawn(async move {
-            debug!(
-                "Received producer digest from {} ({} elements)",
+    /// Bloom filter delta sync: compute the delta inline, reply without waiting
+    /// (a full command channel drops the reply; the peer re-sends its digest).
+    pub async fn on_producer_digest(
+        &self,
+        peer_id: PeerId,
+        digest: doli_core::ProducerBloomFilter,
+    ) {
+        debug!(
+            "Received producer digest from {} ({} elements)",
+            peer_id,
+            digest.element_count()
+        );
+        let delta = self.producer_gset.read().await.delta_for_peer(&digest);
+        if let (false, Some(network)) = (delta.is_empty(), self.network.as_ref()) {
+            debug!("Sending {} producers as delta to {}", delta.len(), peer_id);
+            let reply = NetworkCommand::SendProducerDelta {
                 peer_id,
-                digest.element_count()
-            );
-
-            let delta = {
-                let g = gset.read().await;
-                g.delta_for_peer(&digest)
+                announcements: delta,
             };
-
-            if !delta.is_empty() {
-                debug!("Sending {} producers as delta to {}", delta.len(), peer_id);
-                if let Some(tx) = cmd_tx {
-                    let _ = tx
-                        .send(NetworkCommand::SendProducerDelta {
-                            peer_id,
-                            announcements: delta,
-                        })
-                        .await;
-                }
+            if network.command_sender().try_send(reply).is_err() {
+                debug!(
+                    "Producer delta to {} dropped: command channel full",
+                    peer_id
+                );
             }
-        });
+        }
     }
 
     /// Handle a vote message received via gossip (for the auto-update system).

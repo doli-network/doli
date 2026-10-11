@@ -28,14 +28,14 @@ use crate::watchdog::MemoryWatchdog;
 use super::command_handling::handle_command;
 use super::event_sink::EventSink;
 use super::swarm_events::handle_swarm_event;
-use super::types::{NetworkCommand, NetworkEvent};
+use super::types::NetworkCommand;
 
 /// Run the swarm event loop
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_swarm(
     mut swarm: Swarm<DoliBehaviour>,
     mut command_rx: mpsc::Receiver<NetworkCommand>,
-    event_tx: mpsc::Sender<NetworkEvent>,
+    event_sink: EventSink,
     peers: Arc<RwLock<HashMap<PeerId, PeerInfo>>>,
     config: NetworkConfig,
     peer_cache_path: Option<PathBuf>,
@@ -156,9 +156,6 @@ pub(super) async fn run_swarm(
     // Watchdog tick interval: 5 seconds. Only ticks when watchdog is active.
     let mut watchdog_tick = tokio::time::interval(Duration::from_secs(5));
     watchdog_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-    // INC-I-237: the swarm loop never awaits event delivery (see event_sink.rs).
-    let event_sink = EventSink::new(event_tx);
 
     loop {
         if !event_sink.try_flush() {

@@ -76,6 +76,7 @@ mod inc_i_237_m0_common;
 mod inc_i_237_m0_metrics;
 mod inc_i_237_m0_node_hook;
 mod inc_i_237_m0_probe;
+mod inc_i_237_m15_lane_metrics;
 mod m1_snap_install_identity;
 mod m3_common;
 mod m3_staging_install;

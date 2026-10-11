@@ -15,6 +15,7 @@
 pub(super) mod backpressure;
 mod behaviour_events;
 mod command_handling;
+mod event_lanes;
 mod event_sink;
 mod gossip_handle;
 mod gossip_intake;
@@ -26,6 +27,7 @@ mod types;
 #[cfg(test)]
 mod tests;
 
+pub use event_sink::{LaneBudgets, LaneSnapshot, LaneStats};
 pub use gossip_handle::GossipHandle;
 pub use types::{NetworkCommand, NetworkError, NetworkEvent};
 
@@ -53,6 +55,7 @@ use crypto::PublicKey;
 use libp2p::request_response::ResponseChannel;
 
 use backpressure::GossipShedMetrics;
+use event_lanes::EventLanes;
 use helpers::{load_keypair, plan_startup_dials, save_keypair};
 use swarm_loop::run_swarm;
 
@@ -63,21 +66,17 @@ pub struct NetworkService {
     config: NetworkConfig,
     /// Connected peers
     peers: Arc<RwLock<HashMap<PeerId, PeerInfo>>>,
-    /// Event sender
-    #[allow(dead_code)]
-    event_tx: mpsc::Sender<NetworkEvent>,
-    /// Event receiver
-    event_rx: mpsc::Receiver<NetworkEvent>,
+    /// Node side of the two event lanes; the swarm task owns the only senders.
+    lanes: EventLanes,
+    lane_stats: Arc<LaneStats>,
+    lane_budgets: LaneBudgets,
     /// Command sender
     command_tx: mpsc::Sender<NetworkCommand>,
     /// Local peer ID
     local_peer_id: PeerId,
-    /// INC-I-049: Shared best slot for rate limiter height+1 exemption.
-    /// Updated by the node after every apply_block. Read by the network layer
-    /// to exempt candidate-next blocks from per-peer rate limiting.
+    /// INC-I-049: best slot, exempts candidate-next blocks from rate limiting.
     best_slot: Arc<AtomicU32>,
     /// INC-I-114: Load-shedding metrics for gossip block events.
-    /// Shared with the swarm task (writer) and exposed via getter for M2/RPC.
     gossip_shed_metrics: Arc<GossipShedMetrics>,
     memory_shed_flag: Arc<AtomicBool>,
 }
@@ -85,14 +84,11 @@ pub struct NetworkService {
 impl NetworkService {
     /// Create a new network service
     pub async fn new(config: NetworkConfig) -> Result<Self, NetworkError> {
-        // SCALE-T2-003: Channel buffers scale with max_peers.
-        // At 5000 nodes, the old 1024-slot buffer fills in ~2 seconds causing
-        // backpressure that blocks the swarm loop → cascade disconnections.
-        // Formula: max(4096, max_peers * 16) for events, max(2048, max_peers * 4) for commands.
-        // Capped at 32768 to bound memory (~1MB per channel at max capacity).
-        let event_buf = (config.max_peers * 16).clamp(4096, 32768);
+        // SCALE-T2-003: command buffer scales with max_peers; event lanes per LaneBudgets.
         let command_buf = (config.max_peers * 4).clamp(2048, 32768);
-        let (event_tx, event_rx) = mpsc::channel(event_buf);
+        let lane_budgets = LaneBudgets::for_max_peers(config.max_peers);
+        let (event_sink, lanes) = event_sink::event_lanes(lane_budgets);
+        let lane_stats = event_sink.stats();
         let (command_tx, command_rx) = mpsc::channel(command_buf);
 
         // INC-I-114: Gossip block load-shedding metrics (shared with swarm task)
@@ -291,7 +287,7 @@ impl NetworkService {
             yamux_window / 1024,
             idle_timeout_secs,
             eviction_grace_secs,
-            event_buf,
+            lane_budgets.consensus_cap,
             command_buf
         );
 
@@ -387,7 +383,6 @@ impl NetworkService {
 
         // Spawn the swarm event loop
         let peers_clone = peers.clone();
-        let event_tx_clone = event_tx.clone();
         let config_clone = config.clone();
         let peer_cache_path = config.peer_cache_path.clone();
         let best_slot_clone = best_slot.clone();
@@ -404,7 +399,7 @@ impl NetworkService {
             run_swarm(
                 swarm,
                 command_rx,
-                event_tx_clone,
+                event_sink,
                 peers_clone,
                 config_clone,
                 peer_cache_path,
@@ -418,14 +413,12 @@ impl NetworkService {
             .await;
         });
 
-        // INC-I-048: Bootstrap dials moved to pre-swarm-spawn (above) so they
-        // get pending slots before cached peers. No longer needed here.
-
         Ok(Self {
             config,
             peers,
-            event_tx,
-            event_rx,
+            lanes,
+            lane_stats,
+            lane_budgets,
             command_tx,
             local_peer_id,
             best_slot,
@@ -451,18 +444,24 @@ impl NetworkService {
     pub fn memory_shed_flag(&self) -> Arc<AtomicBool> {
         self.memory_shed_flag.clone()
     }
-    /// Get the next network event
-    pub async fn next_event(&mut self) -> Option<NetworkEvent> {
-        self.event_rx.recv().await
+    /// Lane byte counters and drop counts (read by node metrics).
+    pub fn lane_stats(&self) -> Arc<LaneStats> {
+        self.lane_stats.clone()
     }
 
-    /// Try to get a network event without blocking
-    ///
-    /// Returns None immediately if no event is available.
-    /// This is used to drain pending block events before production
-    /// to ensure the chain tip is up-to-date before starting VDF computation.
+    /// Lane budgets this service runs with.
+    pub fn lane_budgets(&self) -> LaneBudgets {
+        self.lane_budgets
+    }
+
+    /// Get the next network event, consensus lane first
+    pub async fn next_event(&mut self) -> Option<NetworkEvent> {
+        self.lanes.recv().await
+    }
+
+    /// Next queued network event without blocking (drains blocks before production).
     pub fn try_next_event(&mut self) -> Option<NetworkEvent> {
-        self.event_rx.try_recv().ok()
+        self.lanes.try_recv()
     }
 
     /// Broadcast a block to the network

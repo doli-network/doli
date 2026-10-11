@@ -358,7 +358,7 @@ impl Node {
                 }
             }
             NetworkEvent::ProducersAnnounced(remote_list, _) => {
-                self.on_producers_announced(remote_list);
+                self.on_producers_announced(remote_list).await;
             }
             NetworkEvent::ProducerAnnouncementsReceived(announcements, _) => {
                 self.on_producer_announcements(announcements);
@@ -366,7 +366,7 @@ impl Node {
             NetworkEvent::ProducerDigestReceived {
                 peer_id, digest, ..
             } => {
-                self.on_producer_digest(peer_id, digest);
+                self.on_producer_digest(peer_id, digest).await;
             }
             NetworkEvent::NewVote(vote_data, _) => {
                 self.on_new_vote(vote_data);

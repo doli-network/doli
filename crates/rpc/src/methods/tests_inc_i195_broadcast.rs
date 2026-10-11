@@ -63,7 +63,13 @@ fn build_harness() -> Harness {
         params,
         Network::Mainnet,
     )
-    .with_broadcast(move |tx| sink.lock().expect("broadcast sink").push(tx));
+    .with_broadcast(move || {
+        let sink = sink.clone();
+        Some(
+            Box::new(move |tx: Transaction| sink.lock().expect("broadcast sink").push(tx))
+                as crate::TxBroadcastPermit,
+        )
+    });
 
     Harness {
         ctx,

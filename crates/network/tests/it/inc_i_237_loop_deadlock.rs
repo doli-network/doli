@@ -294,15 +294,19 @@ async fn req_grv_006_swarm_serves_while_node_stopped_and_backlog_delivered_after
             Err(_) => break,
         }
     }
+    let queued_behind = std::iter::from_fn(|| a.try_next_event())
+        .filter(|ev| matches!(ev, NetworkEvent::NewTransaction(..)))
+        .count();
     f_drain.abort();
     g_drain.abort();
     assert!(
         delivered,
         "the PeerConnected(G) control event backlogged during the stall was never delivered after resume"
     );
+    let gossip_queued = gossip_before + queued_behind;
     assert!(
-        gossip_before >= EVENT_BUF / 2,
-        "non-vacuity: PeerConnected(G) must have waited behind a full channel ({gossip_before} gossip events ahead of it)"
+        gossip_queued >= EVENT_BUF / 2,
+        "non-vacuity: the stalled node must have held a full bulk lane ({gossip_queued} gossip events queued; R1 delivers PeerConnected(G) ahead of them)"
     );
 }
 
