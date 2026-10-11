@@ -6,12 +6,15 @@ use doli_core::{
 };
 use libp2p::{Multiaddr, PeerId};
 
+use super::backpressure::GossipShedMetrics;
+use super::event_sink::{EmitOutcome, EventSink, BACKLOG_CAP};
 use super::helpers::{
     all_addresses_routable, is_routable_address, plan_startup_dials,
     purge_non_routable_dht_addresses, strip_p2p_suffix,
 };
 use super::types::{NetworkCommand, NetworkEvent};
 use super::GossipHandle;
+use tokio::sync::mpsc;
 
 #[test]
 fn test_network_event_announcement_type() {
@@ -619,4 +622,161 @@ fn test_inc_i050v2_purge_removes_private_on_mainnet() {
     let removed = purge_non_routable_dht_addresses(&mut kad, 1);
 
     assert!(removed > 0, "Private address should be purged on mainnet");
+}
+
+// ==================== INC-I-237 M1 (D4): sync-only EventSink ====================
+//
+// OUTPUT CONTRACT: fn EventSink::emit(&self, ev) -> EmitOutcome /
+//   emit_block(&self, ev, &GossipShedMetrics) -> EmitOutcome / try_flush(&self)
+//   O1: none   O2: sink backlog (observed through delivery order after try_flush)
+//   O3: EmitOutcome {Emitted, Shed}
+//   O5: GossipShedMetrics::blocks_dropped (emit_block only)
+//   O6: events on the node channel (count + order)
+// PATHS: P1 capacity -> sent; P2 full + gossip -> Shed; P3 full + control ->
+//   backlog (Emitted); P4 control while a backlog exists and the channel has room
+//   -> queued behind the backlog; P5 backlog at BACKLOG_CAP -> Shed; P6 try_flush
+//   with room / without room / with empty backlog; P7 receiver dropped
+// INPUT PARTITIONS: channel {room, full, closed} x event {gossip, control, block}
+//   x backlog {empty, non-empty, at cap}
+// MATRIX: O3 x P1-P7, O6 x P1/P3/P4/P6, O5 x {sent, full, closed} — all asserted.
+
+fn control() -> (PeerId, NetworkEvent) {
+    let p = PeerId::random();
+    (p, NetworkEvent::PeerConnected(p))
+}
+
+fn gossip() -> NetworkEvent {
+    NetworkEvent::NewVote(b"{}".to_vec(), GossipHandle::now())
+}
+
+fn block_event() -> NetworkEvent {
+    let header = doli_core::BlockHeader {
+        version: 2,
+        prev_hash: Hash::ZERO,
+        merkle_root: Hash::ZERO,
+        presence_root: Hash::ZERO,
+        genesis_hash: Hash::ZERO,
+        timestamp: 0,
+        slot: 1,
+        producer: crypto::PublicKey::from_bytes([0u8; 32]),
+        vdf_output: vdf::VdfOutput { value: vec![] },
+        vdf_proof: vdf::VdfProof::empty(),
+        missed_producers: Vec::new(),
+        data_root: Hash::ZERO,
+        fork_id: Hash::ZERO,
+    };
+    NetworkEvent::NewBlock(
+        doli_core::Block::new(header, vec![]),
+        PeerId::random(),
+        GossipHandle::now(),
+    )
+}
+
+fn connected(ev: NetworkEvent) -> PeerId {
+    match ev {
+        NetworkEvent::PeerConnected(p) => p,
+        other => panic!("expected PeerConnected, got {other:?}"),
+    }
+}
+
+// REQ-GRV-006 — Decision: a failure means the sync sink either blocks/loses a sendable event or stops shedding gossip on a full channel, so the swarm parks or the node queue grows without bound.
+#[test]
+fn inc_i_237_m1_emit_sends_with_room_and_sheds_gossip_when_full() {
+    let (tx, mut rx) = mpsc::channel(2);
+    let sink = EventSink::new(tx);
+    assert_eq!(sink.emit(control().1), EmitOutcome::Emitted);
+    assert_eq!(sink.emit(gossip()), EmitOutcome::Emitted);
+    assert_eq!(sink.emit(gossip()), EmitOutcome::Shed, "full + gossip");
+    assert!(rx.try_recv().is_ok() && rx.try_recv().is_ok());
+    assert!(
+        rx.try_recv().is_err(),
+        "the shed event must not be delivered"
+    );
+    sink.try_flush();
+    assert!(
+        rx.try_recv().is_err(),
+        "nothing backlogged for a shed gossip event"
+    );
+}
+
+// REQ-GRV-006 / F-12 — Decision: a failure means a control event emitted while the node is behind is lost or re-ordered, so the node's peer table diverges from the swarm's.
+#[test]
+fn inc_i_237_m1_control_events_backlog_in_order_and_try_flush_drains_them() {
+    let (tx, mut rx) = mpsc::channel(2);
+    let sink = EventSink::new(tx);
+    let ids: Vec<(PeerId, NetworkEvent)> = (1..=4).map(|_| control()).collect();
+    let want: Vec<PeerId> = ids.iter().map(|(p, _)| *p).collect();
+    let mut evs = ids.into_iter().map(|(_, e)| e);
+    for _ in 0..3 {
+        assert_eq!(sink.emit(evs.next().unwrap()), EmitOutcome::Emitted);
+    }
+    sink.try_flush();
+    let mut got = vec![connected(rx.try_recv().unwrap())];
+    assert_eq!(sink.emit(evs.next().unwrap()), EmitOutcome::Emitted);
+    sink.try_flush();
+    got.push(connected(rx.try_recv().unwrap()));
+    got.push(connected(rx.try_recv().unwrap()));
+    assert!(
+        rx.try_recv().is_err(),
+        "c4 must wait behind c3, not jump the backlog"
+    );
+    sink.try_flush();
+    got.push(connected(rx.try_recv().unwrap()));
+    assert_eq!(got, want, "control events delivered in emit order");
+    sink.try_flush();
+    assert!(
+        rx.try_recv().is_err(),
+        "empty backlog: try_flush is a no-op"
+    );
+}
+
+// REQ-GRV-007 / F-12 — Decision: a failure means the control backlog is unbounded (memory) or silently drops below its cap, so a long node stall either grows the heap or loses control events it promised to keep.
+#[test]
+fn inc_i_237_m1_control_backlog_is_bounded_and_overflow_is_shed() {
+    let (tx, mut rx) = mpsc::channel(1);
+    let sink = EventSink::new(tx);
+    assert_eq!(sink.emit(control().1), EmitOutcome::Emitted);
+    for i in 0..BACKLOG_CAP {
+        assert_eq!(
+            sink.emit(NetworkEvent::PeerDisconnected(PeerId::random())),
+            EmitOutcome::Emitted,
+            "backlog slot {i}"
+        );
+    }
+    assert_eq!(
+        sink.emit(NetworkEvent::PeerDisconnected(PeerId::random())),
+        EmitOutcome::Shed,
+        "backlog at BACKLOG_CAP"
+    );
+    let mut delivered = 0usize;
+    while let Ok(_ev) = rx.try_recv() {
+        delivered += 1;
+        sink.try_flush();
+    }
+    assert_eq!(delivered, 1 + BACKLOG_CAP);
+}
+
+// REQ-GRV-006 / F-11 — Decision: a failure means a block shed is not counted (or a shutdown is counted as a shed), or a closed node channel makes the sync sink panic or report delivery.
+#[test]
+fn inc_i_237_m1_emit_block_counts_full_shed_not_closed_and_closed_is_safe() {
+    let metrics = GossipShedMetrics::new();
+    let (tx, mut rx) = mpsc::channel(1);
+    let sink = EventSink::new(tx);
+    assert_eq!(
+        sink.emit_block(block_event(), &metrics),
+        EmitOutcome::Emitted
+    );
+    assert_eq!(metrics.blocks_dropped(), 0);
+    assert_eq!(sink.emit_block(block_event(), &metrics), EmitOutcome::Shed);
+    assert_eq!(metrics.blocks_dropped(), 1, "full channel = counted shed");
+    assert!(matches!(rx.try_recv(), Ok(NetworkEvent::NewBlock(..))));
+    assert_eq!(sink.emit(control().1), EmitOutcome::Emitted);
+    assert_eq!(sink.emit(control().1), EmitOutcome::Emitted);
+    drop(rx);
+    sink.try_flush();
+    assert_eq!(sink.emit_block(block_event(), &metrics), EmitOutcome::Shed);
+    assert_eq!(metrics.blocks_dropped(), 1, "closed = shutdown, not a shed");
+    assert_eq!(sink.emit(gossip()), EmitOutcome::Shed);
+    assert_eq!(sink.emit(control().1), EmitOutcome::Shed);
+    sink.try_flush();
 }

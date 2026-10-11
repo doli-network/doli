@@ -648,9 +648,7 @@ impl Node {
         // Broadcast the block to the network
         // This is only done for blocks we produce ourselves - received blocks
         // are already on the network and don't need to be re-broadcast.
-        // Header is sent first so peers can pre-validate before the full block arrives.
         if let Some(ref network) = self.network {
-            let _ = network.broadcast_header(block.header.clone()).await;
             let _ = network.broadcast_block(block).await;
         }
 

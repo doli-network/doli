@@ -207,22 +207,12 @@ impl RateLimiter {
 
     /// Check if a block can be received from a peer (per-peer + global)
     pub fn check_block(&mut self, peer: &PeerId) -> bool {
-        if !self.config.enabled {
-            return true;
-        }
+        self.check_block_peer_only(peer) && self.check_block_global_only()
+    }
 
-        let limits = self.get_or_create_limits(peer);
-        if !limits.blocks.can_consume(1) {
-            debug!(peer = %peer, "Block rate limit exceeded");
-            return false;
-        }
-
-        if !self.global_blocks.can_consume(1) {
-            debug!("Global block rate limit exceeded");
-            return false;
-        }
-
-        true
+    /// INC-I-237 D6: check only the per-peer block bucket (before the report).
+    pub fn check_block_peer_only(&mut self, peer: &PeerId) -> bool {
+        !self.config.enabled || self.get_or_create_limits(peer).blocks.can_consume(1)
     }
 
     /// INC-I-049: Check only the global block rate limit (skip per-peer).

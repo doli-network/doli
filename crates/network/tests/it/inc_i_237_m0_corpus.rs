@@ -1,16 +1,19 @@
-//! INC-I-237 M0 / F-10 / REQ-GRV-012 — gossip wire-format corpus.
+//! INC-I-237 M0 / F-10 / REQ-GRV-012 — gossip wire-format corpus, retargeted in
+//! M1 to the one relay-decision table.
 //!
-//! Characterisation: these tests PASS on v6.43.3 and pin what today's code does
-//! with every old wire format, so M1/M2 (undecodable -> Ignore, verdict table)
-//! cannot silently drop a format an older peer still sends.
+//! Every old wire format is pinned to its M1 relay decision. Rows the spec
+//! changes (D2/D3: undecodable non-block -> Ignore, legacy bincode producer list
+//! -> LocalOnly, headers / heartbeats / tier1 / region / unknown -> Ignore) carry
+//! their new verdict; every other row keeps its v6.43.3 verdict.
 //!
 //! OUTPUT CONTRACT: fn decode_tx_gossip / decode_digest / decode_producer_set /
 //!   BlockHeader::deserialize / Heartbeat::deserialize / Attestation::from_bytes
-//!   and fn classify_gossip(topic, data, ctx) + swarm report/dispatch (mirrors below)
+//!   and fn relay_decision(topic, data, ctx) -> RelayDecision (+ acceptance())
 //!   O1: ctx.seen — SeenCache identity record (observed via the re-delivery verdict)
 //!   O2: none (no receiver)
-//!   O3: decoded value per vector; MessageAcceptance per (topic, vector)
-//!   O4: none   O5: none   O6: local NetworkEvent kind the swarm would emit
+//!   O3: decoded value per vector; reported MessageAcceptance per (topic, vector)
+//!   O4: none   O5: none   O6: local NetworkEvent kind, emitted only when the
+//!       decision processes locally (AcceptBlock | LocalOnly | AcceptTransitional)
 //! PATHS: P1 decodes + fresh, P2 empty bytes, P3 garbage bytes, P4 re-delivery,
 //!   P5 wrong-topic bytes (header on blocks), P6 unknown topic
 //! INPUT PARTITIONS: one row per format era (single era since v6.24.0 except
@@ -24,15 +27,17 @@ use crypto::PublicKey;
 use doli_core::{Attestation, Block, BlockHeader, Heartbeat, Transaction, TxType};
 use libp2p::gossipsub::MessageAcceptance;
 use network::gossip::staleness::{
-    classify_gossip, GossipTopic, SeenCache, StalenessCtx, SEEN_CACHE_CAPACITY, SEEN_CACHE_TTL_SECS,
+    SeenCache, StalenessCtx, SEEN_CACHE_CAPACITY, SEEN_CACHE_TTL_SECS,
 };
 use network::gossip::{
-    classify_block_gossip, decode_tx_gossip, encode_tx_announce, encode_tx_batch, TxGossipMessage,
-    ATTESTATION_TOPIC, BLOCKS_TOPIC, HEADERS_TOPIC, HEARTBEATS_TOPIC, PRODUCERS_TOPIC,
+    decode_tx_gossip, encode_tx_announce, encode_tx_batch, relay_decision, RelayDecision,
+    RelayTopic, TxGossipMessage, ATTESTATION_TOPIC, BLOCKS_TOPIC, PRODUCERS_TOPIC,
     TIER1_BLOCKS_TOPIC, TRANSACTIONS_TOPIC, VOTES_TOPIC,
 };
 
 const REGION_BLOCKS_TOPIC: &str = "/doli/r1/blocks/1";
+const HEADERS_TOPIC: &str = "/doli/headers/1";
+const HEARTBEATS_TOPIC: &str = "/doli/heartbeats/1";
 const UNKNOWN_TOPIC: &str = "/doli/unknown/1";
 
 fn label(a: &MessageAcceptance) -> &'static str {
@@ -43,42 +48,28 @@ fn label(a: &MessageAcceptance) -> &'static str {
     }
 }
 
-fn is_block_body_topic(topic: &str) -> bool {
-    topic == BLOCKS_TOPIC
-        || topic == TIER1_BLOCKS_TOPIC
-        || (topic.starts_with("/doli/r") && topic.ends_with("/blocks/1"))
-}
-
-/// What the swarm reports to gossipsub today (behaviour_events.rs:89-107 and 241-268).
-fn swarm_report(topic: &str, data: &[u8], seen: &mut SeenCache) -> &'static str {
-    if is_block_body_topic(topic) {
-        let (a, _) = classify_block_gossip(data, v::GENESIS_TIME, v::SLOT_DURATION, v::NOW_UNIX);
-        return label(&a);
-    }
-    let acceptance = match GossipTopic::from_topic_str(topic) {
-        Some(t) => {
-            let mut ctx = StalenessCtx {
-                now_unix: v::NOW_UNIX,
-                genesis_time: v::GENESIS_TIME,
-                slot_duration: v::SLOT_DURATION,
-                best_slot: 1_000,
-                seen,
-            };
-            classify_gossip(t, data, &mut ctx)
-        }
-        None => MessageAcceptance::Accept,
+/// What the swarm reports to gossipsub, and whether it processes the message locally.
+fn swarm_report(topic: &str, data: &[u8], seen: &mut SeenCache) -> (&'static str, bool) {
+    let mut ctx = StalenessCtx {
+        now_unix: v::NOW_UNIX,
+        genesis_time: v::GENESIS_TIME,
+        slot_duration: v::SLOT_DURATION,
+        best_slot: 1_000,
+        seen,
     };
-    let accepted = matches!(acceptance, MessageAcceptance::Accept);
-    if accepted && topic == TRANSACTIONS_TOPIC {
-        return "Ignore"; // 6.43.3 (b)
-    }
-    label(&acceptance)
+    let d = relay_decision(RelayTopic::from_topic_str(topic), data, &mut ctx);
+    let local = matches!(
+        d,
+        RelayDecision::AcceptBlock(_)
+            | RelayDecision::LocalOnly
+            | RelayDecision::AcceptTransitional
+    );
+    (label(&d.acceptance()), local)
 }
 
-/// The NetworkEvent kind the swarm emits for an accepted message
-/// (behaviour_events.rs:143-231 and 288-445), rate limits aside.
+/// The NetworkEvent kind the swarm emits for a locally processed message, rate limits aside.
 fn local_event(topic: &str, data: &[u8]) -> String {
-    if is_block_body_topic(topic) {
+    if topic == BLOCKS_TOPIC {
         return match Block::deserialize(data) {
             Some(_) => "NewBlock".into(),
             None => "none".into(),
@@ -109,12 +100,7 @@ fn local_event(topic: &str, data: &[u8]) -> String {
             }
         }
         VOTES_TOPIC => "NewVote".into(),
-        HEARTBEATS_TOPIC => "NewHeartbeat".into(),
         t if t == ATTESTATION_TOPIC => "NewAttestation".into(),
-        HEADERS_TOPIC => match BlockHeader::deserialize(data) {
-            Some(_) => "NewHeader".into(),
-            None => "none".into(),
-        },
         _ => "none".into(),
     }
 }
@@ -221,8 +207,8 @@ fn corpus() -> Vec<Row> {
             "producers legacy bincode",
             PRODUCERS_TOPIC,
             v::bytes(v::PRODUCERS_LEGACY_BINCODE),
-            "Accept",
-            "Accept",
+            "Ignore",
+            "Ignore",
             "ProducersAnnounced x2",
         ),
         row(
@@ -253,8 +239,8 @@ fn corpus() -> Vec<Row> {
             "producers garbage",
             PRODUCERS_TOPIC,
             junk(),
-            "Accept",
-            "Accept",
+            "Ignore",
+            "Ignore",
             "none",
         ),
         // votes/heartbeats/attestations/headers: raw-bytes identity dedup, fail-open decode.
@@ -270,41 +256,41 @@ fn corpus() -> Vec<Row> {
             "vote empty",
             VOTES_TOPIC,
             empty(),
-            "Accept",
             "Ignore",
-            "NewVote",
+            "Ignore",
+            "none",
         ),
         row(
             "vote garbage",
             VOTES_TOPIC,
             junk(),
-            "Accept",
             "Ignore",
-            "NewVote",
+            "Ignore",
+            "none",
         ),
         row(
             "heartbeat v1",
             HEARTBEATS_TOPIC,
             v::bytes(v::HEARTBEAT),
-            "Accept",
             "Ignore",
-            "NewHeartbeat",
+            "Ignore",
+            "none",
         ),
         row(
             "heartbeat empty",
             HEARTBEATS_TOPIC,
             empty(),
-            "Accept",
             "Ignore",
-            "NewHeartbeat",
+            "Ignore",
+            "none",
         ),
         row(
             "heartbeat garbage",
             HEARTBEATS_TOPIC,
             junk(),
-            "Accept",
             "Ignore",
-            "NewHeartbeat",
+            "Ignore",
+            "none",
         ),
         row(
             "attestation bls",
@@ -326,31 +312,31 @@ fn corpus() -> Vec<Row> {
             "attestation empty",
             ATTESTATION_TOPIC,
             empty(),
-            "Accept",
             "Ignore",
-            "NewAttestation",
+            "Ignore",
+            "none",
         ),
         row(
             "attestation garbage",
             ATTESTATION_TOPIC,
             junk(),
-            "Accept",
             "Ignore",
-            "NewAttestation",
+            "Ignore",
+            "none",
         ),
         row(
             "header",
             HEADERS_TOPIC,
             v::bytes(v::HEADER),
-            "Accept",
             "Ignore",
-            "NewHeader",
+            "Ignore",
+            "none",
         ),
         row(
             "header empty",
             HEADERS_TOPIC,
             empty(),
-            "Accept",
+            "Ignore",
             "Ignore",
             "none",
         ),
@@ -358,7 +344,7 @@ fn corpus() -> Vec<Row> {
             "header garbage",
             HEADERS_TOPIC,
             junk(),
-            "Accept",
+            "Ignore",
             "Ignore",
             "none",
         ),
@@ -391,32 +377,32 @@ fn corpus() -> Vec<Row> {
             "tier1 empty",
             TIER1_BLOCKS_TOPIC,
             empty(),
-            "Reject",
-            "Reject",
+            "Ignore",
+            "Ignore",
             "none",
         ),
         row(
             "tier1 garbage",
             TIER1_BLOCKS_TOPIC,
             junk(),
-            "Reject",
-            "Reject",
+            "Ignore",
+            "Ignore",
             "none",
         ),
         row(
             "region empty",
             REGION_BLOCKS_TOPIC,
             empty(),
-            "Reject",
-            "Reject",
+            "Ignore",
+            "Ignore",
             "none",
         ),
         row(
             "region garbage",
             REGION_BLOCKS_TOPIC,
             junk(),
-            "Reject",
-            "Reject",
+            "Ignore",
+            "Ignore",
             "none",
         ),
         // unknown topic fails open.
@@ -424,40 +410,44 @@ fn corpus() -> Vec<Row> {
             "unknown topic garbage",
             UNKNOWN_TOPIC,
             junk(),
-            "Accept",
-            "Accept",
+            "Ignore",
+            "Ignore",
             "none",
         ),
         row(
             "unknown topic empty",
             UNKNOWN_TOPIC,
             empty(),
-            "Accept",
-            "Accept",
+            "Ignore",
+            "Ignore",
             "none",
         ),
         row(
             "unknown topic tx batch",
             UNKNOWN_TOPIC,
             v::bytes(v::TX_BATCH_3),
-            "Accept",
-            "Accept",
+            "Ignore",
+            "Ignore",
             "none",
         ),
     ]
 }
 
-// REQ-GRV-012 — Decision: a failure means a change moved the verdict or the local event for a wire format an old peer still sends (Reject = peer penalty, Ignore = silent drop), so M1/M2 must add a fail-open exception before shipping.
+// REQ-GRV-012 / F-10 / REQ-GRV-SEC-004 — Decision: a failure means the relay table moved the verdict or the local event for a wire format an old peer still sends (Reject = peer penalty, Ignore = silent drop) beyond the rows M1 deliberately changes.
 #[test]
-fn req_grv_012_f10_corpus_verdicts_and_local_events_match_v6_43_3() {
+fn req_grv_012_f10_corpus_relay_decisions_and_local_events() {
     let rows = corpus();
     assert!(rows.len() >= 36, "corpus must not shrink");
     let mut bad = Vec::new();
     for r in &rows {
         let mut seen = SeenCache::new(SEEN_CACHE_TTL_SECS, SEEN_CACHE_CAPACITY);
-        let first = swarm_report(r.topic, &r.data, &mut seen);
-        let again = swarm_report(r.topic, &r.data, &mut seen);
-        let local = local_event(r.topic, &r.data);
+        let (first, processed) = swarm_report(r.topic, &r.data, &mut seen);
+        let (again, _) = swarm_report(r.topic, &r.data, &mut seen);
+        let local = if processed {
+            local_event(r.topic, &r.data)
+        } else {
+            "none".to_string()
+        };
         if (first, again, local.as_str()) != (r.first, r.again, r.local) {
             bad.push(format!(
                 "{} on {}: got ({first}, {again}, {local}) want ({}, {}, {})",

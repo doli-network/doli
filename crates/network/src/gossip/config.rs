@@ -7,8 +7,8 @@ use libp2p::gossipsub::{
 use libp2p::identity::Keypair;
 
 use super::{
-    GossipError, MeshConfig, ATTESTATION_TOPIC, BLOCKS_TOPIC, HEADERS_TOPIC, HEARTBEATS_TOPIC,
-    PRODUCERS_TOPIC, TRANSACTIONS_TOPIC, VOTES_TOPIC,
+    GossipError, MeshConfig, ATTESTATION_TOPIC, BLOCKS_TOPIC, PRODUCERS_TOPIC, TRANSACTIONS_TOPIC,
+    VOTES_TOPIC,
 };
 
 /// Maximum message size that gossipsub will transmit (bytes).
@@ -242,7 +242,7 @@ pub fn new_gossipsub(keypair: &Keypair, mesh: &MeshConfig) -> Result<Gossipsub, 
     // INV-NETWORK-002: construction-time hardening gate — fail fast if
     // aggressive config is missing validation or bounded queue mitigations.
     // Production passes true for has_bounded_queue because the block
-    // ingestion path uses M1 backpressure (enqueue_or_shed).
+    // ingestion path sheds on a full channel (EventSink::emit_block).
     assert_gossip_hardening_invariant(&config, true)?;
 
     let mut gossipsub = Gossipsub::new(MessageAuthenticity::Signed(keypair.clone()), config)
@@ -394,39 +394,18 @@ pub fn new_gossipsub_with_cache_time(
     Ok(gossipsub)
 }
 
-/// Subscribe to block, transaction, producer, vote, and heartbeat topics
+/// Subscribe to the five consumed topics (headers/heartbeats are not, D3).
 pub fn subscribe_to_topics(gossipsub: &mut Gossipsub) -> Result<(), GossipError> {
-    let blocks_topic = IdentTopic::new(BLOCKS_TOPIC);
-    let txs_topic = IdentTopic::new(TRANSACTIONS_TOPIC);
-    let producers_topic = IdentTopic::new(PRODUCERS_TOPIC);
-    let votes_topic = IdentTopic::new(VOTES_TOPIC);
-    let heartbeats_topic = IdentTopic::new(HEARTBEATS_TOPIC);
-
-    gossipsub
-        .subscribe(&blocks_topic)
-        .map_err(|e| GossipError::Subscribe(format!("blocks: {}", e)))?;
-    gossipsub
-        .subscribe(&txs_topic)
-        .map_err(|e| GossipError::Subscribe(format!("txs: {}", e)))?;
-    gossipsub
-        .subscribe(&producers_topic)
-        .map_err(|e| GossipError::Subscribe(format!("producers: {}", e)))?;
-    gossipsub
-        .subscribe(&votes_topic)
-        .map_err(|e| GossipError::Subscribe(format!("votes: {}", e)))?;
-    gossipsub
-        .subscribe(&heartbeats_topic)
-        .map_err(|e| GossipError::Subscribe(format!("heartbeats: {}", e)))?;
-
-    let headers_topic = IdentTopic::new(HEADERS_TOPIC);
-    gossipsub
-        .subscribe(&headers_topic)
-        .map_err(|e| GossipError::Subscribe(format!("headers: {}", e)))?;
-
-    let attestation_topic = IdentTopic::new(ATTESTATION_TOPIC);
-    gossipsub
-        .subscribe(&attestation_topic)
-        .map_err(|e| GossipError::Subscribe(format!("attestations: {}", e)))?;
-
+    for topic in [
+        BLOCKS_TOPIC,
+        TRANSACTIONS_TOPIC,
+        PRODUCERS_TOPIC,
+        VOTES_TOPIC,
+        ATTESTATION_TOPIC,
+    ] {
+        gossipsub
+            .subscribe(&IdentTopic::new(topic))
+            .map_err(|e| GossipError::Subscribe(format!("{topic}: {e}")))?;
+    }
     Ok(())
 }

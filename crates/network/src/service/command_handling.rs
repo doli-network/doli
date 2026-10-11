@@ -11,9 +11,7 @@ use doli_core::encode_producer_set;
 
 use crate::behaviour::DoliBehaviour;
 use crate::config::NetworkConfig;
-use crate::gossip::{
-    BLOCKS_TOPIC, HEADERS_TOPIC, HEARTBEATS_TOPIC, PRODUCERS_TOPIC, TRANSACTIONS_TOPIC, VOTES_TOPIC,
-};
+use crate::gossip::{BLOCKS_TOPIC, PRODUCERS_TOPIC, TRANSACTIONS_TOPIC, VOTES_TOPIC};
 use crate::rate_limit::RateLimiter;
 
 use super::types::NetworkCommand;
@@ -52,14 +50,6 @@ pub(super) async fn handle_command(
                         block_slot, block_hash, e, mesh_peers
                     );
                 }
-            }
-        }
-
-        NetworkCommand::BroadcastHeader(header) => {
-            let data = header.serialize();
-            let topic = IdentTopic::new(HEADERS_TOPIC);
-            if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, data) {
-                warn!("Failed to broadcast header: {}", e);
             }
         }
 
@@ -200,19 +190,6 @@ pub(super) async fn handle_command(
             if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, vote_data) {
                 if !matches!(e, libp2p::gossipsub::PublishError::Duplicate) {
                     warn!("Failed to broadcast vote: {}", e);
-                }
-            }
-        }
-
-        NetworkCommand::BroadcastHeartbeat(heartbeat_data) => {
-            let topic = IdentTopic::new(HEARTBEATS_TOPIC);
-            if let Err(e) = swarm
-                .behaviour_mut()
-                .gossipsub
-                .publish(topic, heartbeat_data)
-            {
-                if !matches!(e, libp2p::gossipsub::PublishError::Duplicate) {
-                    warn!("Failed to broadcast heartbeat: {}", e);
                 }
             }
         }

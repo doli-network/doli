@@ -1,7 +1,30 @@
 use super::super::{encode_tx_announce, encode_tx_batch};
 use super::*;
+use crate::gossip::{
+    relay_decision, RelayDecision, RelayTopic, ATTESTATION_TOPIC, BLOCKS_TOPIC, PRODUCERS_TOPIC,
+    TRANSACTIONS_TOPIC, VOTES_TOPIC,
+};
 use crypto::{Hash, KeyPair, PublicKey, Signature};
-use doli_core::Block;
+use doli_core::{Block, BlockHeader, Heartbeat};
+use libp2p::gossipsub::MessageAcceptance;
+
+// INC-I-237 M1: every classifier below is reached through the one relay table.
+fn att_d(data: &[u8], c: &mut StalenessCtx<'_>) -> MessageAcceptance {
+    relay_decision(RelayTopic::Attestations, data, c).acceptance()
+}
+
+fn vote_d(data: &[u8], c: &mut StalenessCtx<'_>) -> MessageAcceptance {
+    relay_decision(RelayTopic::Votes, data, c).acceptance()
+}
+
+/// Tx rows are LocalOnly (processed, never forwarded) or Ignore in M1.
+fn tx_d(data: &[u8], c: &mut StalenessCtx<'_>) -> MessageAcceptance {
+    match relay_decision(RelayTopic::Transactions, data, c) {
+        RelayDecision::LocalOnly => MessageAcceptance::Accept,
+        RelayDecision::Ignore => MessageAcceptance::Ignore,
+        _ => panic!("tx relay decision must be LocalOnly or Ignore until M2"),
+    }
+}
 
 // ── verdict helpers (MessageAcceptance has no PartialEq) ──────────────
 fn is_accept(v: MessageAcceptance) -> bool {
@@ -9,9 +32,6 @@ fn is_accept(v: MessageAcceptance) -> bool {
 }
 fn is_ignore(v: MessageAcceptance) -> bool {
     matches!(v, MessageAcceptance::Ignore)
-}
-fn is_reject(v: MessageAcceptance) -> bool {
-    matches!(v, MessageAcceptance::Reject)
 }
 
 // Standard clock fixture: genesis=1000, slot_duration=10, now=2000 → wall_slot=100.
@@ -48,30 +68,31 @@ fn make_tx(n: u64) -> doli_core::Transaction {
 
 // ── M0: registry completeness ─────────────────────────────────────────
 
+// REQ-GRV-003 — Decision: a failure means a subscribed topic string no longer reaches its own table row, so its messages fall to the Unknown (Ignore) row and stop propagating.
 #[test]
 fn from_topic_str_round_trips_all_subscribed_topics() {
     let cases = [
-        (BLOCKS_TOPIC, GossipTopic::Blocks),
-        (TIER1_BLOCKS_TOPIC, GossipTopic::Tier1Blocks),
-        (PRODUCERS_TOPIC, GossipTopic::Producers),
-        (ATTESTATION_TOPIC, GossipTopic::Attestations),
-        (HEARTBEATS_TOPIC, GossipTopic::Heartbeats),
-        (HEADERS_TOPIC, GossipTopic::Headers),
-        (VOTES_TOPIC, GossipTopic::Votes),
-        (TRANSACTIONS_TOPIC, GossipTopic::Transactions),
+        (BLOCKS_TOPIC, RelayTopic::Blocks),
+        (PRODUCERS_TOPIC, RelayTopic::Producers),
+        (ATTESTATION_TOPIC, RelayTopic::Attestations),
+        (VOTES_TOPIC, RelayTopic::Votes),
+        (TRANSACTIONS_TOPIC, RelayTopic::Transactions),
     ];
     for (topic_str, expected) in cases {
         assert_eq!(
-            GossipTopic::from_topic_str(topic_str),
-            Some(expected),
-            "topic const {topic_str} must map to its variant"
+            RelayTopic::from_topic_str(topic_str),
+            expected,
+            "{topic_str}"
         );
     }
     assert_eq!(
-        GossipTopic::from_topic_str(&super::super::region_topic(3)),
-        None
+        RelayTopic::from_topic_str(&super::super::region_topic(3)),
+        RelayTopic::RegionBlocks
     );
-    assert_eq!(GossipTopic::from_topic_str("/doli/unknown/9"), None);
+    assert_eq!(
+        RelayTopic::from_topic_str("/doli/unknown/9"),
+        RelayTopic::Unknown
+    );
 }
 
 // ── M0: generalized SeenCache ─────────────────────────────────────────
@@ -144,7 +165,7 @@ fn attestation_stale_ignored() {
     let data = make_attestation(WALL - ATTEST_STALE_SLOTS - 1);
     let mut seen = make_seen();
     assert!(
-        is_ignore(classify_attestation_gossip(&data, &mut ctx(&mut seen))),
+        is_ignore(att_d(&data, &mut ctx(&mut seen))),
         "an attestation older than the staleness window must be Ignored"
     );
 }
@@ -154,7 +175,7 @@ fn attestation_fresh_accepted() {
     let data = make_attestation(WALL);
     let mut seen = make_seen();
     assert!(
-        is_accept(classify_attestation_gossip(&data, &mut ctx(&mut seen))),
+        is_accept(att_d(&data, &mut ctx(&mut seen))),
         "a current-slot attestation must be Accepted"
     );
 }
@@ -164,18 +185,19 @@ fn attestation_boundary_accepted() {
     let data = make_attestation(WALL - ATTEST_STALE_SLOTS);
     let mut seen = make_seen();
     assert!(
-        is_accept(classify_attestation_gossip(&data, &mut ctx(&mut seen))),
+        is_accept(att_d(&data, &mut ctx(&mut seen))),
         "attestation exactly at the threshold boundary must be Accepted (inclusive)"
     );
 }
 
+// REQ-GRV-SEC-004 / F-4 — Decision: a failure means undecodable attestation bytes are forwarded (fail-open Accept) or penalised (Reject).
 #[test]
-fn attestation_garbage_fails_open_to_accept() {
+fn attestation_garbage_ignored_never_rejected() {
     let mut seen = make_seen();
-    let v = classify_attestation_gossip(b"not-an-attestation", &mut ctx(&mut seen));
+    let v = att_d(b"not-an-attestation", &mut ctx(&mut seen));
     assert!(
-        is_accept(v),
-        "undecodable bytes must fail open to Accept (never Reject)"
+        is_ignore(v),
+        "undecodable bytes: Ignore (not forwarded, never Reject)"
     );
 }
 
@@ -186,7 +208,7 @@ fn attestation_genesis_zero_fails_open() {
     let mut c = ctx(&mut seen);
     c.genesis_time = 0;
     assert!(
-        is_accept(classify_attestation_gossip(&data, &mut c)),
+        is_accept(att_d(&data, &mut c)),
         "genesis_time=0 must fail open to Accept (staleness disabled)"
     );
 }
@@ -198,11 +220,11 @@ fn attestation_redelivery_within_ttl_ignored() {
     let data = make_attestation(WALL - 9); // age 90s — inside the age window
     let mut seen = make_seen();
     assert!(
-        is_accept(classify_attestation_gossip(&data, &mut ctx(&mut seen))),
+        is_accept(att_d(&data, &mut ctx(&mut seen))),
         "first sight of a new attestation must forward (Accept)"
     );
     assert!(
-        is_ignore(classify_attestation_gossip(&data, &mut ctx(&mut seen))),
+        is_ignore(att_d(&data, &mut ctx(&mut seen))),
         "a re-delivered identical (attester, block_hash) attestation within TTL must Ignore"
     );
 }
@@ -211,124 +233,21 @@ fn attestation_redelivery_within_ttl_ignored() {
 /// still forward — identity dedup must not suppress first sights.
 #[test]
 fn attestation_new_at_age_90s_accepted() {
-    let data = make_attestation_id(WALL - 9, 7, Hash::from_bytes([9u8; 32]));
+    let data = make_attestation_id(WALL - 9, 0, Hash::from_bytes([9u8; 32]));
     let mut seen = make_seen();
     assert!(
-        is_accept(classify_attestation_gossip(&data, &mut ctx(&mut seen))),
+        is_accept(att_d(&data, &mut ctx(&mut seen))),
         "a genuinely-new late attestation (age 90s) must be Accepted"
     );
 }
 
-// ── M2: heartbeats ────────────────────────────────────────────────────
+// ── M1 (D3): headers and heartbeats are unsubscribed — every input is Ignored ──
 
 fn make_heartbeat(slot: u32) -> Vec<u8> {
-    make_heartbeat_id(slot, 0)
+    make_heartbeat_sig(slot, PublicKey::from_bytes([0u8; 32]), 0)
 }
-
-fn make_heartbeat_id(slot: u32, producer_byte: u8) -> Vec<u8> {
-    Heartbeat {
-        version: 1,
-        producer: PublicKey::from_bytes([producer_byte; 32]),
-        slot,
-        prev_block_hash: Hash::ZERO,
-        vdf_output: [0u8; 32],
-        signature: Signature::from_bytes([0u8; 64]),
-        witnesses: Vec::new(),
-    }
-    .serialize()
-}
-
-#[test]
-fn heartbeat_stale_ignored() {
-    let data = make_heartbeat(WALL - HEARTBEAT_STALE_SLOTS - 1);
-    let mut seen = make_seen();
-    assert!(
-        is_ignore(classify_heartbeat_gossip(&data, &mut ctx(&mut seen))),
-        "a heartbeat older than the staleness window must be Ignored"
-    );
-}
-
-#[test]
-fn heartbeat_fresh_accepted() {
-    let data = make_heartbeat(WALL);
-    let mut seen = make_seen();
-    assert!(
-        is_accept(classify_heartbeat_gossip(&data, &mut ctx(&mut seen))),
-        "a current-slot heartbeat must be Accepted"
-    );
-}
-
-#[test]
-fn heartbeat_boundary_accepted() {
-    let data = make_heartbeat(WALL - HEARTBEAT_STALE_SLOTS);
-    let mut seen = make_seen();
-    assert!(
-        is_accept(classify_heartbeat_gossip(&data, &mut ctx(&mut seen))),
-        "heartbeat exactly at the threshold boundary must be Accepted (inclusive)"
-    );
-}
-
-#[test]
-fn heartbeat_garbage_fails_open_to_accept() {
-    let mut seen = make_seen();
-    let v = classify_heartbeat_gossip(b"not-a-heartbeat", &mut ctx(&mut seen));
-    assert!(
-        is_accept(v),
-        "undecodable bytes must fail open to Accept (never Reject)"
-    );
-}
-
-#[test]
-fn heartbeat_genesis_zero_fails_open() {
-    let data = make_heartbeat(0);
-    let mut seen = make_seen();
-    let mut c = ctx(&mut seen);
-    c.genesis_time = 0;
-    assert!(
-        is_accept(classify_heartbeat_gossip(&data, &mut c)),
-        "genesis_time=0 must fail open to Accept"
-    );
-}
-
-/// STORM-CLOSURE (M2). FAILS against the age-only M2 (both sights Accept at a
-/// slot inside the window); PASSES with identity dedup.
-#[test]
-fn heartbeat_redelivery_within_ttl_ignored() {
-    let data = make_heartbeat(WALL - 3); // age 30s — inside the age window
-    let mut seen = make_seen();
-    assert!(
-        is_accept(classify_heartbeat_gossip(&data, &mut ctx(&mut seen))),
-        "first sight of a new heartbeat must forward (Accept)"
-    );
-    assert!(
-        is_ignore(classify_heartbeat_gossip(&data, &mut ctx(&mut seen))),
-        "a re-delivered identical (producer, slot) heartbeat within TTL must Ignore"
-    );
-}
-
-/// A genuinely-new heartbeat (distinct producer/slot identity) must forward.
-#[test]
-fn heartbeat_new_identity_accepted() {
-    let mut seen = make_seen();
-    let a = make_heartbeat_id(WALL, 1);
-    let b = make_heartbeat_id(WALL, 2);
-    assert!(is_accept(classify_heartbeat_gossip(
-        &a,
-        &mut ctx(&mut seen)
-    )));
-    assert!(
-        is_accept(classify_heartbeat_gossip(&b, &mut ctx(&mut seen))),
-        "a distinct-producer heartbeat is a new identity → Accept"
-    );
-}
-
-// ── M3: headers ───────────────────────────────────────────────────────
 
 fn make_header_bytes(slot: u32) -> Vec<u8> {
-    make_header(slot).serialize()
-}
-
-fn make_header(slot: u32) -> BlockHeader {
     BlockHeader {
         version: 2,
         prev_hash: Hash::ZERO,
@@ -344,47 +263,90 @@ fn make_header(slot: u32) -> BlockHeader {
         data_root: Hash::ZERO,
         fork_id: Hash::ZERO,
     }
+    .serialize()
 }
 
-#[test]
-fn header_fresh_accepted() {
-    let data = make_header_bytes(WALL);
+/// First sight and re-delivery, on both unconsumed topics.
+fn assert_unconsumed(data: &[u8], genesis_time: u64, row: &str) {
     let mut seen = make_seen();
-    assert!(
-        is_accept(classify_header_gossip(&data, &mut ctx(&mut seen))),
-        "a current-slot header must be Accepted"
+    for sight in ["first", "again"] {
+        for topic in [RelayTopic::Heartbeats, RelayTopic::Headers] {
+            let mut c = ctx(&mut seen);
+            c.genesis_time = genesis_time;
+            let d = relay_decision(topic, data, &mut c);
+            assert!(
+                matches!(d, RelayDecision::Ignore),
+                "{topic:?} {row} ({sight} sight) must be Ignore"
+            );
+        }
+    }
+}
+
+// REQ-GRV-015 — Decision: a failure means a stale heartbeat is relayed or processed on a topic with no consumer.
+#[test]
+fn heartbeat_stale_ignored() {
+    assert_unconsumed(&make_heartbeat(WALL - 7), GEN, "stale heartbeat");
+}
+
+// REQ-GRV-015 — Decision: a failure means a fresh heartbeat is still relayed or processed although no node consumes heartbeats.
+#[test]
+fn heartbeat_fresh_ignored_unsubscribed() {
+    assert_unconsumed(&make_heartbeat(WALL), GEN, "fresh heartbeat");
+}
+
+// REQ-GRV-015 — Decision: a failure means the old age-window boundary still admits a heartbeat.
+#[test]
+fn heartbeat_boundary_ignored_unsubscribed() {
+    assert_unconsumed(&make_heartbeat(WALL - 6), GEN, "boundary heartbeat");
+}
+
+// REQ-GRV-015 / REQ-GRV-SEC-004 — Decision: a failure means undecodable heartbeat bytes fail open to Accept or are Rejected.
+#[test]
+fn heartbeat_garbage_ignored() {
+    assert_unconsumed(b"not-a-heartbeat", GEN, "garbage heartbeat");
+}
+
+// REQ-GRV-015 — Decision: a failure means an unset clock re-opens the heartbeat fail-open Accept.
+#[test]
+fn heartbeat_genesis_zero_ignored() {
+    assert_unconsumed(&make_heartbeat(0), 0, "heartbeat, genesis_time 0");
+}
+
+// REQ-GRV-015 — Decision: a failure means a heartbeat re-delivery is relayed (INC-I-142 storm shape on an unconsumed topic).
+#[test]
+fn heartbeat_redelivery_within_ttl_ignored() {
+    assert_unconsumed(&make_heartbeat(WALL - 1), GEN, "heartbeat re-delivery");
+}
+
+// REQ-GRV-015 — Decision: a failure means a heartbeat with a new identity is still relayed.
+#[test]
+fn heartbeat_new_identity_ignored() {
+    assert_unconsumed(
+        &make_heartbeat_sig(WALL, PublicKey::from_bytes([7u8; 32]), 0),
+        GEN,
+        "new heartbeat identity",
     );
 }
 
+// REQ-GRV-015 — Decision: a failure means a fresh header is still relayed or processed although no node consumes headers.
+#[test]
+fn header_fresh_ignored_unsubscribed() {
+    assert_unconsumed(&make_header_bytes(WALL), GEN, "fresh header");
+}
+
+// REQ-GRV-015 — Decision: a failure means a stale header is relayed or processed.
 #[test]
 fn header_stale_ignored() {
-    let data = make_header_bytes(WALL - STALE_BLOCK_SLOT_THRESHOLD - 1);
-    let mut seen = make_seen();
-    assert!(
-        is_ignore(classify_header_gossip(&data, &mut ctx(&mut seen))),
-        "a header older than the block staleness window must be Ignored"
-    );
+    assert_unconsumed(&make_header_bytes(WALL - 7), GEN, "stale header");
 }
 
-/// STORM-CLOSURE (M3). FAILS against the M3 stub (both sights Accept);
-/// PASSES with identity dedup on `header.hash()`.
+// REQ-GRV-015 / F-2 — Decision: a failure means a header re-delivery is relayed and can drain a peer's block budget (C-3).
 #[test]
 fn header_redelivery_ignored() {
-    let data = make_header_bytes(WALL);
-    let mut seen = make_seen();
-    assert!(
-        is_accept(classify_header_gossip(&data, &mut ctx(&mut seen))),
-        "first sight of a new header must forward (Accept)"
-    );
-    assert!(
-        is_ignore(classify_header_gossip(&data, &mut ctx(&mut seen))),
-        "a re-delivered identical header.hash() within TTL must Ignore"
-    );
+    assert_unconsumed(&make_header_bytes(WALL - 1), GEN, "header re-delivery");
 }
 
-/// P0-001 regression: header bytes fail `Block::deserialize`. The classifier
-/// MUST use `BlockHeader::deserialize` and NEVER `Reject` (which would trigger
-/// a P4 penalty → mesh-expulsion cascade, INV-NETWORK-002).
+// INV-NETWORK-002 / REQ-GRV-SEC-004 — Decision: a failure means header bytes on the headers topic are Rejected (P4 penalty, mesh-expulsion cascade P0-001) instead of Ignored.
 #[test]
 fn header_bytes_never_rejected_p0_001() {
     let data = make_header_bytes(WALL);
@@ -393,33 +355,23 @@ fn header_bytes_never_rejected_p0_001() {
         "precondition: header bytes MUST fail Block::deserialize (else the test is vacuous)"
     );
     let mut seen = make_seen();
-    let v = classify_header_gossip(&data, &mut ctx(&mut seen));
+    let v = relay_decision(RelayTopic::Headers, &data, &mut ctx(&mut seen));
     assert!(
-        !is_reject(v),
-        "header bytes that fail as a Block must NEVER be Rejected (P0-001)"
+        matches!(v, RelayDecision::Ignore),
+        "header bytes on the headers topic must be Ignored, never Rejected (P0-001)"
     );
 }
 
+// REQ-GRV-015 / REQ-GRV-SEC-004 — Decision: a failure means undecodable header bytes fail open to Accept or are Rejected.
 #[test]
-fn header_garbage_fails_open_to_accept() {
-    let mut seen = make_seen();
-    let v = classify_header_gossip(b"not-a-header", &mut ctx(&mut seen));
-    assert!(
-        is_accept(v),
-        "undecodable header bytes must fail open to Accept (never Reject)"
-    );
+fn header_garbage_ignored() {
+    assert_unconsumed(b"not-a-header", GEN, "garbage header");
 }
 
+// REQ-GRV-015 — Decision: a failure means an unset clock re-opens the header fail-open Accept.
 #[test]
-fn header_genesis_zero_fails_open() {
-    let data = make_header_bytes(0);
-    let mut seen = make_seen();
-    let mut c = ctx(&mut seen);
-    c.genesis_time = 0;
-    assert!(
-        is_accept(classify_header_gossip(&data, &mut c)),
-        "genesis_time=0 must fail open to Accept"
-    );
+fn header_genesis_zero_ignored() {
+    assert_unconsumed(&make_header_bytes(0), 0, "header, genesis_time 0");
 }
 
 // ── M4: votes ─────────────────────────────────────────────────────────
@@ -427,7 +379,7 @@ fn header_genesis_zero_fails_open() {
 fn vote_fresh_accepted() {
     let data = make_vote_json("prod-a", "v6.24.0", "Veto", NOW);
     let mut seen = make_seen();
-    assert!(is_accept(classify_vote_gossip(&data, &mut ctx(&mut seen))));
+    assert!(is_accept(vote_d(&data, &mut ctx(&mut seen))));
 }
 
 /// STORM-CLOSURE (M4). FAILS against the Accept stub (both sights Accept);
@@ -437,11 +389,11 @@ fn vote_redelivery_within_ttl_ignored() {
     let data = make_vote_json("prod-a", "v6.24.0", "Veto", NOW);
     let mut seen = make_seen();
     assert!(
-        is_accept(classify_vote_gossip(&data, &mut ctx(&mut seen))),
+        is_accept(vote_d(&data, &mut ctx(&mut seen))),
         "first sight of a new vote must forward (Accept)"
     );
     assert!(
-        is_ignore(classify_vote_gossip(&data, &mut ctx(&mut seen))),
+        is_ignore(vote_d(&data, &mut ctx(&mut seen))),
         "a re-delivered identical (producer,version,vote) within TTL must Ignore"
     );
 }
@@ -451,9 +403,9 @@ fn vote_new_identity_accepted() {
     let mut seen = make_seen();
     let a = make_vote_json("prod-a", "v6.24.0", "Veto", NOW);
     let b = make_vote_json("prod-b", "v6.24.0", "Veto", NOW);
-    assert!(is_accept(classify_vote_gossip(&a, &mut ctx(&mut seen))));
+    assert!(is_accept(vote_d(&a, &mut ctx(&mut seen))));
     assert!(
-        is_accept(classify_vote_gossip(&b, &mut ctx(&mut seen))),
+        is_accept(vote_d(&b, &mut ctx(&mut seen))),
         "a distinct producer_id is a new identity → Accept"
     );
 }
@@ -467,7 +419,7 @@ fn vote_stale_ignored() {
     let mut c = ctx(&mut seen);
     c.now_unix = VOTE_MAX_AGE_SECS + 1000;
     assert!(
-        is_ignore(classify_vote_gossip(&data, &mut c)),
+        is_ignore(vote_d(&data, &mut c)),
         "a vote older than VOTE_MAX_AGE_SECS must be Ignored"
     );
 }
@@ -480,7 +432,7 @@ fn vote_age_boundary_accepted() {
     let mut c = ctx(&mut seen);
     c.now_unix = ts + VOTE_MAX_AGE_SECS; // exactly at boundary, strict > → Accept
     assert!(
-        is_accept(classify_vote_gossip(&data, &mut c)),
+        is_accept(vote_d(&data, &mut c)),
         "a vote exactly at the age boundary must be Accepted (inclusive)"
     );
 }
@@ -490,7 +442,7 @@ fn vote_timestamp_zero_fails_open() {
     let data = make_vote_json("prod-a", "v6.24.0", "Veto", 0);
     let mut seen = make_seen();
     assert!(
-        is_accept(classify_vote_gossip(&data, &mut ctx(&mut seen))),
+        is_accept(vote_d(&data, &mut ctx(&mut seen))),
         "timestamp==0 must fail open to Accept (cannot judge age)"
     );
 }
@@ -502,11 +454,11 @@ fn vote_timestamp_zero_redelivery_ignored() {
     let data = make_vote_json("prod-a", "v6.24.0", "Veto", 0);
     let mut seen = make_seen();
     assert!(
-        is_accept(classify_vote_gossip(&data, &mut ctx(&mut seen))),
+        is_accept(vote_d(&data, &mut ctx(&mut seen))),
         "first sight of a timestamp==0 vote fails open to Accept"
     );
     assert!(
-        is_ignore(classify_vote_gossip(&data, &mut ctx(&mut seen))),
+        is_ignore(vote_d(&data, &mut ctx(&mut seen))),
         "a re-delivered identical timestamp==0 vote must Ignore (F2 residual closed)"
     );
 }
@@ -524,25 +476,22 @@ fn vote_canonical_wire_shape_decodes() {
         )
         .into_bytes();
     assert!(
-        is_accept(classify_vote_gossip(&camel, &mut ctx(&mut seen))),
+        is_accept(vote_d(&camel, &mut ctx(&mut seen))),
         "canonical camelCase producerId + Approve variant must decode → Accept"
     );
 }
 
+// REQ-GRV-SEC-004 / F-4 — Decision: a failure means undecodable vote JSON is forwarded (fail-open Accept) or penalised (Reject).
 #[test]
-fn vote_bad_json_fails_open() {
+fn vote_bad_json_ignored_never_rejected() {
     let mut seen = make_seen();
-    // MessageAcceptance is not Copy and the predicate helpers consume it, so we
-    // re-invoke. First sight fails open to Accept + records the raw-bytes key;
-    // the second (byte-identical) sight is a dedup hit → Ignore. Both are
-    // non-Reject, which is the invariant votes must uphold.
     assert!(
-        is_accept(classify_vote_gossip(b"not-json", &mut ctx(&mut seen))),
-        "undecodable vote JSON must fail open to Accept on first sight"
+        is_ignore(vote_d(b"not-json", &mut ctx(&mut seen))),
+        "first sight"
     );
     assert!(
-        !is_reject(classify_vote_gossip(b"not-json", &mut ctx(&mut seen))),
-        "votes must never Reject (second, byte-identical sight is Ignored)"
+        is_ignore(vote_d(b"not-json", &mut ctx(&mut seen))),
+        "re-delivery"
     );
 }
 
@@ -560,12 +509,9 @@ fn transaction_distinct_txids_accepted() {
     let mut seen = make_seen();
     let a = encode_tx_batch(&[make_tx(1)]);
     let b = encode_tx_batch(&[make_tx(2)]);
-    assert!(is_accept(classify_transaction_gossip(
-        &a,
-        &mut ctx(&mut seen)
-    )));
+    assert!(is_accept(tx_d(&a, &mut ctx(&mut seen))));
     assert!(
-        is_accept(classify_transaction_gossip(&b, &mut ctx(&mut seen))),
+        is_accept(tx_d(&b, &mut ctx(&mut seen))),
         "a distinct txid is a new identity → Accept"
     );
 }
@@ -577,11 +523,11 @@ fn transaction_redelivery_within_ttl_ignored() {
     let data = encode_tx_batch(&[make_tx(7)]);
     let mut seen = make_seen();
     assert!(
-        is_accept(classify_transaction_gossip(&data, &mut ctx(&mut seen))),
+        is_accept(tx_d(&data, &mut ctx(&mut seen))),
         "first sight of a new txid must forward (Accept)"
     );
     assert!(
-        is_ignore(classify_transaction_gossip(&data, &mut ctx(&mut seen))),
+        is_ignore(tx_d(&data, &mut ctx(&mut seen))),
         "a re-delivered identical txid within TTL must Ignore"
     );
 }
@@ -593,11 +539,11 @@ fn transaction_announce_redelivery_ignored() {
     let data = encode_tx_announce(&[h]);
     let mut seen = make_seen();
     assert!(
-        is_accept(classify_transaction_gossip(&data, &mut ctx(&mut seen))),
+        is_accept(tx_d(&data, &mut ctx(&mut seen))),
         "first sight of an announced hash must forward"
     );
     assert!(
-        is_ignore(classify_transaction_gossip(&data, &mut ctx(&mut seen))),
+        is_ignore(tx_d(&data, &mut ctx(&mut seen))),
         "a re-announced identical hash within TTL must Ignore"
     );
 }
@@ -609,13 +555,13 @@ fn transaction_reaccepted_after_ttl_expiry() {
     let mut seen = make_seen();
     {
         let mut c = ctx(&mut seen);
-        assert!(is_accept(classify_transaction_gossip(&data, &mut c)));
+        assert!(is_accept(tx_d(&data, &mut c)));
     }
     {
         let mut c = ctx(&mut seen);
         c.now_unix = NOW + TX_SEEN_TTL_SECS + 1;
         assert!(
-            is_accept(classify_transaction_gossip(&data, &mut c)),
+            is_accept(tx_d(&data, &mut c)),
             "a txid re-seen after TTL expiry must re-Accept (legit rebroadcast preserved)"
         );
     }
@@ -628,37 +574,25 @@ fn transaction_reaccepted_after_ttl_expiry() {
 fn transaction_batch_with_one_new_tx_accepted() {
     let mut seen = make_seen();
     let seed_batch = encode_tx_batch(&[make_tx(20)]);
-    assert!(is_accept(classify_transaction_gossip(
-        &seed_batch,
-        &mut ctx(&mut seen)
-    )));
+    assert!(is_accept(tx_d(&seed_batch, &mut ctx(&mut seen))));
     let mixed = encode_tx_batch(&[make_tx(20), make_tx(21)]);
     assert!(
-        is_accept(classify_transaction_gossip(&mixed, &mut ctx(&mut seen))),
+        is_accept(tx_d(&mixed, &mut ctx(&mut seen))),
         "a batch with at least one new txid must forward (first sight preserved)"
     );
     let again = encode_tx_batch(&[make_tx(20), make_tx(21)]);
     assert!(
-        is_ignore(classify_transaction_gossip(&again, &mut ctx(&mut seen))),
+        is_ignore(tx_d(&again, &mut ctx(&mut seen))),
         "a batch whose every txid was already seen must Ignore"
     );
 }
 
+// REQ-GRV-SEC-004 / F-4 — Decision: a failure means empty or undecodable tx bytes are processed or penalised instead of Ignored.
 #[test]
-fn transaction_garbage_fails_open_to_accept() {
+fn transaction_garbage_ignored_never_rejected() {
     let mut seen = make_seen();
-    // MessageAcceptance is not Copy and the predicate helpers consume it, so we
-    // re-invoke. First sight of empty/undecodable bytes is a first sight →
-    // Accept + record the raw-bytes key; the second (byte-identical) sight is a
-    // dedup hit → Ignore. Both are non-Reject.
-    assert!(
-        is_accept(classify_transaction_gossip(b"", &mut ctx(&mut seen))),
-        "empty/undecodable tx bytes must Accept on first sight (never Reject)"
-    );
-    assert!(
-        !is_reject(classify_transaction_gossip(b"", &mut ctx(&mut seen))),
-        "transactions must never Reject (second, byte-identical sight is Ignored)"
-    );
+    assert!(is_ignore(tx_d(b"", &mut ctx(&mut seen))), "empty");
+    assert!(is_ignore(tx_d(b"\xde\xad", &mut ctx(&mut seen))), "garbage");
 }
 
 #[test]
@@ -704,11 +638,11 @@ fn attestation_forged_variant_does_not_suppress_genuine() {
     let forged = make_attestation_sig(WALL, victim, bh, 0xAA); // victim identity, garbage sig
     let genuine = make_attestation_sig(WALL, victim, bh, 0x00); // same (attester,block_hash), real sig
     assert!(
-        is_accept(classify_attestation_gossip(&forged, &mut ctx(&mut seen))),
+        is_accept(att_d(&forged, &mut ctx(&mut seen))),
         "forged first-sight is Accepted + recorded"
     );
     assert!(
-        is_accept(classify_attestation_gossip(&genuine, &mut ctx(&mut seen))),
+        is_accept(att_d(&genuine, &mut ctx(&mut seen))),
         "genuine attestation with same (attester,block_hash) but different bytes must STILL be \
              Accepted - a forgery must not pre-seed its identity key (SEC-LOGIC-001)"
     );
@@ -727,20 +661,19 @@ fn make_heartbeat_sig(slot: u32, producer: PublicKey, sig_byte: u8) -> Vec<u8> {
     .serialize()
 }
 
+// REQ-GRV-015 / REQ-GRV-SEC-002 — Decision: a failure means a forged or genuine heartbeat variant is relayed on the unsubscribed topic.
 #[test]
 fn heartbeat_forged_variant_does_not_suppress_genuine() {
-    let mut seen = make_seen();
     let victim = *KeyPair::generate().public_key();
-    let forged = make_heartbeat_sig(WALL, victim, 0xAA); // victim (producer,slot), garbage sig
-    let genuine = make_heartbeat_sig(WALL, victim, 0x00); // same (producer,slot), real sig
-    assert!(is_accept(classify_heartbeat_gossip(
-        &forged,
-        &mut ctx(&mut seen)
-    )));
-    assert!(
-        is_accept(classify_heartbeat_gossip(&genuine, &mut ctx(&mut seen))),
-        "genuine heartbeat with same (producer,slot) but different bytes must STILL be Accepted \
-             (SEC-LOGIC-002)"
+    assert_unconsumed(
+        &make_heartbeat_sig(WALL, victim, 0xAA),
+        GEN,
+        "forged heartbeat",
+    );
+    assert_unconsumed(
+        &make_heartbeat_sig(WALL, victim, 0x00),
+        GEN,
+        "genuine heartbeat",
     );
 }
 
@@ -763,12 +696,9 @@ fn vote_forged_variant_does_not_suppress_genuine() {
     // Same (producer_id, version, vote) - the pre-fix vote identity - different sig field.
     let forged = make_vote_json_sig("prod-a", "v6.24.0", "Veto", NOW, "ff");
     let genuine = make_vote_json_sig("prod-a", "v6.24.0", "Veto", NOW, "00");
-    assert!(is_accept(classify_vote_gossip(
-        &forged,
-        &mut ctx(&mut seen)
-    )));
+    assert!(is_accept(vote_d(&forged, &mut ctx(&mut seen))));
     assert!(
-        is_accept(classify_vote_gossip(&genuine, &mut ctx(&mut seen))),
+        is_accept(vote_d(&genuine, &mut ctx(&mut seen))),
         "genuine vote with same (producer_id,version,vote) but different bytes must STILL be \
              Accepted (SEC-LOGIC-002 governance suppression)"
     );
@@ -797,12 +727,9 @@ fn transaction_forged_variant_does_not_suppress_genuine() {
     );
     let forged = encode_tx_batch(&[forged_tx]);
     let genuine = encode_tx_batch(&[genuine_tx]);
-    assert!(is_accept(classify_transaction_gossip(
-        &forged,
-        &mut ctx(&mut seen)
-    )));
+    assert!(is_accept(tx_d(&forged, &mut ctx(&mut seen))));
     assert!(
-        is_accept(classify_transaction_gossip(&genuine, &mut ctx(&mut seen))),
+        is_accept(tx_d(&genuine, &mut ctx(&mut seen))),
         "genuine tx batch with the same txid but different bytes must STILL be Accepted - a \
              forged same-txid variant must not pre-seed its key (SEC-LOGIC-001 tx censorship)"
     );
@@ -828,12 +755,9 @@ fn attestation_bls_and_non_bls_do_not_collide() {
         bls_signature: vec![1u8; 48],
     }
     .to_bytes();
-    assert!(is_accept(classify_attestation_gossip(
-        &non_bls,
-        &mut ctx(&mut seen)
-    )));
+    assert!(is_accept(att_d(&non_bls, &mut ctx(&mut seen))));
     assert!(
-        is_accept(classify_attestation_gossip(&bls, &mut ctx(&mut seen))),
+        is_accept(att_d(&bls, &mut ctx(&mut seen))),
         "a BLS-aggregate attestation for the same (attester,block_hash) must not be suppressed \
              by a prior non-BLS one (SEC-CONSENSUS-003)"
     );

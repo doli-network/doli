@@ -1,28 +1,10 @@
-//! Bounded, load-shedding gossip event queue (INC-I-114 M1).
+//! Gossip block load-shedding metrics (INC-I-114 M1).
 //!
-//! When the gossip block handler cannot deliver a block to the node's event
-//! channel (because the consumer is behind), the block is DROPPED and counted
-//! rather than suspending the swarm task. This prevents libp2p's internal
-//! VecDeque from growing unboundedly during a gossip flood.
-//!
-//! ## Design
-//!
-//! - `GossipShedMetrics` — atomic drop counter, shareable via `Arc`.
-//! - `enqueue_or_shed()` — synchronous (no `.await`) try-send with rate-limited
-//!   warn on full channel; never suspends the caller.
-//!
-//! ## Scope
-//!
-//! Only gossip BLOCK sends are routed through this path. Every other event
-//! goes through `event_sink::EventSink::emit` (INC-I-237), which also never
-//! awaits: gossip events are shed when full, control events are backlogged.
+//! A gossip block the node channel cannot take is dropped and counted
+//! (`EventSink::emit_block`), never awaited, so the swarm task is not
+//! suspended and libp2p's inbound queue stays bounded.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-
-use tokio::sync::mpsc;
-use tracing::{debug, warn};
-
-use super::types::NetworkEvent;
 
 /// Interval (in drop count) between warn-level log emissions.
 /// During a flood, logging every drop would itself become a resource problem.
@@ -57,43 +39,6 @@ impl GossipShedMetrics {
     }
 }
 
-/// Synchronously enqueue a gossip block event, or shed it if the channel is full.
-///
-/// This function MUST NOT `.await` — it uses `try_send` so the swarm task is
-/// never suspended by a slow consumer.
-///
-/// # Behavior per `try_send` result
-///
-/// - `Ok(())` — event delivered, no drop.
-/// - `Err(Full)` — channel saturated; event dropped, counter incremented,
-///   rate-limited warn emitted.
-/// - `Err(Closed)` — receiver gone (shutdown); event dropped silently
-///   (debug log only). NOT counted as a block drop because this is a
-///   shutdown condition, not a load-shedding decision.
-pub fn enqueue_or_shed(
-    tx: &mpsc::Sender<NetworkEvent>,
-    event: NetworkEvent,
-    metrics: &GossipShedMetrics,
-) {
-    match tx.try_send(event) {
-        Ok(()) => {}
-        Err(mpsc::error::TrySendError::Full(_)) => {
-            metrics.record_block_drop();
-            let total = metrics.blocks_dropped();
-            // Rate-limited warn: emit at most once per WARN_EVERY_N_DROPS
-            if total.is_multiple_of(WARN_EVERY_N_DROPS) {
-                warn!(
-                    "[GOSSIP_SHED] channel full — dropped {} block(s) total (load shedding active)",
-                    total
-                );
-            }
-        }
-        Err(mpsc::error::TrySendError::Closed(_)) => {
-            debug!("[GOSSIP_SHED] channel closed — dropping block event (shutdown)");
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,6 +46,7 @@ mod tests {
     use libp2p::PeerId;
     use tokio::sync::mpsc;
 
+    use crate::service::event_sink::EventSink;
     use crate::service::types::NetworkEvent;
     use crate::service::GossipHandle;
 
@@ -137,9 +83,10 @@ mod tests {
     async fn stale_block_flood_sheds_and_stays_bounded() {
         let (tx, _rx) = mpsc::channel::<NetworkEvent>(8);
         let metrics = GossipShedMetrics::new();
+        let sink = EventSink::new(tx.clone());
 
         for i in 0..1000u32 {
-            enqueue_or_shed(&tx, make_event(i), &metrics);
+            sink.emit_block(make_event(i), &metrics);
         }
 
         // Channel capacity is exhausted (all 8 slots full)
@@ -162,10 +109,11 @@ mod tests {
     async fn enqueue_succeeds_when_capacity_available() {
         let (tx, mut rx) = mpsc::channel::<NetworkEvent>(16);
         let metrics = GossipShedMetrics::new();
+        let sink = EventSink::new(tx.clone());
 
         // Enqueue 5 events into a 16-slot channel
         for i in 0..5u32 {
-            enqueue_or_shed(&tx, make_event(i), &metrics);
+            sink.emit_block(make_event(i), &metrics);
         }
 
         assert_eq!(
@@ -186,7 +134,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // TEST 3: enqueue_or_shed is synchronous — it must never block.
+    // TEST 3: emit_block is synchronous — it must never block.
     // We prove this by flooding a full channel inside a timeout.
     // If try_send secretly awaited, the timeout would fire.
     // ---------------------------------------------------------------
@@ -194,24 +142,25 @@ mod tests {
     async fn enqueue_never_blocks() {
         let (tx, _rx) = mpsc::channel::<NetworkEvent>(4);
         let metrics = GossipShedMetrics::new();
+        let sink = EventSink::new(tx.clone());
 
         // Fill the channel
         for i in 0..4u32 {
-            enqueue_or_shed(&tx, make_event(i), &metrics);
+            sink.emit_block(make_event(i), &metrics);
         }
         assert_eq!(tx.capacity(), 0);
 
         // Now flood 500 more into the full channel — must complete instantly
         let start = std::time::Instant::now();
         for i in 4..504u32 {
-            enqueue_or_shed(&tx, make_event(i), &metrics);
+            sink.emit_block(make_event(i), &metrics);
         }
         let elapsed = start.elapsed();
 
         // 500 synchronous try_send calls should take < 10ms even on slow CI
         assert!(
             elapsed.as_millis() < 50,
-            "enqueue_or_shed must be non-blocking; took {}ms",
+            "emit_block must be non-blocking; took {}ms",
             elapsed.as_millis()
         );
         assert_eq!(metrics.blocks_dropped(), 500);
@@ -225,13 +174,14 @@ mod tests {
     async fn closed_channel_drops_without_panic() {
         let (tx, rx) = mpsc::channel::<NetworkEvent>(8);
         let metrics = GossipShedMetrics::new();
+        let sink = EventSink::new(tx.clone());
 
         // Drop the receiver — channel is now closed
         drop(rx);
 
         // Must not panic
-        enqueue_or_shed(&tx, make_event(1), &metrics);
-        enqueue_or_shed(&tx, make_event(2), &metrics);
+        sink.emit_block(make_event(1), &metrics);
+        sink.emit_block(make_event(2), &metrics);
 
         // Closed channel is NOT counted as a block drop — it's shutdown
         assert_eq!(
@@ -250,14 +200,15 @@ mod tests {
     async fn warn_throttle_bounds_log_emission() {
         let (tx, _rx) = mpsc::channel::<NetworkEvent>(1);
         let metrics = GossipShedMetrics::new();
+        let sink = EventSink::new(tx.clone());
 
         // Fill the single slot
-        enqueue_or_shed(&tx, make_event(0), &metrics);
+        sink.emit_block(make_event(0), &metrics);
         assert_eq!(metrics.blocks_dropped(), 0);
 
         // Drop 300 more — counter should be 300
         for i in 1..=300u32 {
-            enqueue_or_shed(&tx, make_event(i), &metrics);
+            sink.emit_block(make_event(i), &metrics);
         }
         assert_eq!(metrics.blocks_dropped(), 300);
 
@@ -270,7 +221,7 @@ mod tests {
             "throttle constant must be 100 (test assumption)"
         );
         // At 300 drops, exactly 3 warn emissions (at 100, 200, 300)
-        // would have occurred — verified by the modulo logic in enqueue_or_shed.
+        // would have occurred — verified by the modulo logic in emit_block.
     }
 
     // ---------------------------------------------------------------
@@ -289,8 +240,9 @@ mod tests {
     async fn path_ok_delivers_event() {
         let (tx, mut rx) = mpsc::channel::<NetworkEvent>(4);
         let metrics = GossipShedMetrics::new();
+        let sink = EventSink::new(tx.clone());
 
-        enqueue_or_shed(&tx, make_event(42), &metrics);
+        sink.emit_block(make_event(42), &metrics);
 
         let event = rx.try_recv().expect("event must be in channel");
         match event {
@@ -309,14 +261,15 @@ mod tests {
     async fn path_full_sheds_and_counts() {
         let (tx, _rx) = mpsc::channel::<NetworkEvent>(2);
         let metrics = GossipShedMetrics::new();
+        let sink = EventSink::new(tx.clone());
 
         // Fill
-        enqueue_or_shed(&tx, make_event(1), &metrics);
-        enqueue_or_shed(&tx, make_event(2), &metrics);
+        sink.emit_block(make_event(1), &metrics);
+        sink.emit_block(make_event(2), &metrics);
         assert_eq!(metrics.blocks_dropped(), 0);
 
         // Shed
-        enqueue_or_shed(&tx, make_event(3), &metrics);
+        sink.emit_block(make_event(3), &metrics);
         assert_eq!(metrics.blocks_dropped(), 1);
     }
 
@@ -328,9 +281,10 @@ mod tests {
     async fn path_closed_drops_silently() {
         let (tx, rx) = mpsc::channel::<NetworkEvent>(4);
         let metrics = GossipShedMetrics::new();
+        let sink = EventSink::new(tx.clone());
         drop(rx);
 
-        enqueue_or_shed(&tx, make_event(1), &metrics);
+        sink.emit_block(make_event(1), &metrics);
         assert_eq!(metrics.blocks_dropped(), 0, "closed = shutdown, not shed");
     }
 }

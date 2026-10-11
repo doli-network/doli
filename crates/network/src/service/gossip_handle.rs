@@ -27,12 +27,10 @@ impl NetworkEvent {
     pub fn gossip_topic(&self) -> Option<GossipTopic> {
         match self {
             NetworkEvent::NewBlock(..) => Some(GossipTopic::Blocks),
-            NetworkEvent::NewHeader(..) => Some(GossipTopic::Headers),
             NetworkEvent::NewTransaction(..) | NetworkEvent::TxAnnouncement { .. } => {
                 Some(GossipTopic::Transactions)
             }
             NetworkEvent::NewVote(..) => Some(GossipTopic::Votes),
-            NetworkEvent::NewHeartbeat(..) => Some(GossipTopic::Heartbeats),
             NetworkEvent::NewAttestation(..) => Some(GossipTopic::Attestations),
             NetworkEvent::ProducersAnnounced(..)
             | NetworkEvent::ProducerAnnouncementsReceived(..)
@@ -55,11 +53,9 @@ impl NetworkEvent {
     pub fn gossip_handle(&self) -> Option<&GossipHandle> {
         match self {
             NetworkEvent::NewBlock(_, _, h)
-            | NetworkEvent::NewHeader(_, h)
             | NetworkEvent::NewTransaction(_, h)
             | NetworkEvent::TxAnnouncement { handle: h, .. }
             | NetworkEvent::NewVote(_, h)
-            | NetworkEvent::NewHeartbeat(_, h)
             | NetworkEvent::NewAttestation(_, _, h)
             | NetworkEvent::ProducersAnnounced(_, h)
             | NetworkEvent::ProducerAnnouncementsReceived(_, h)
@@ -84,27 +80,10 @@ impl GossipTopic {
     pub fn metric_label(self) -> &'static str {
         match self {
             GossipTopic::Blocks => "blocks",
-            GossipTopic::Tier1Blocks => "tier1_blocks",
             GossipTopic::Producers => "producers",
             GossipTopic::Attestations => "attestations",
-            GossipTopic::Heartbeats => "heartbeats",
-            GossipTopic::Headers => "headers",
             GossipTopic::Votes => "votes",
             GossipTopic::Transactions => "txs",
-        }
-    }
-
-    /// Whether verdict latency is timed; headers and heartbeats have no
-    /// consumer, so they are only counted.
-    pub fn latency_tracked(self) -> bool {
-        match self {
-            GossipTopic::Headers | GossipTopic::Heartbeats => false,
-            GossipTopic::Blocks
-            | GossipTopic::Tier1Blocks
-            | GossipTopic::Producers
-            | GossipTopic::Attestations
-            | GossipTopic::Votes
-            | GossipTopic::Transactions => true,
         }
     }
 }

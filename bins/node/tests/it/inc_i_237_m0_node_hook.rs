@@ -8,10 +8,10 @@
 //!   O5: received counter{topic}, verdict histogram{topic}, block-recv histogram
 //!       (deltas under `common::lock()`)
 //!   O6: none
-//! PATHS: P1 handler returns Ok normally (NewHeartbeat), P2 handler returns early
+//! PATHS: P1 handler returns Ok normally (empty ProducersAnnounced), P2 handler returns early
 //!   (NewVote with garbage JSON), P3 block path (orphan NewBlock: early drop, Ok
 //!   or Err), P4 control event (no gossip metric moves)
-//! INPUT PARTITIONS: untracked topic (heartbeats), tracked topic with a 1.2 s old
+//! INPUT PARTITIONS: producers topic with a fresh handle, tracked topic with a 1.2 s old
 //!   handle (votes), NewBlock with a 1.0 s old handle and a header 3 s old
 //! MATRIX: O5 x P1-P4 — all asserted.
 
@@ -25,15 +25,7 @@ use network::{GossipHandle, NetworkEvent, PeerId};
 use tempfile::TempDir;
 use vdf::{VdfOutput, VdfProof};
 
-const TOPICS: [&str; 7] = [
-    "blocks",
-    "txs",
-    "attestations",
-    "votes",
-    "producers",
-    "headers",
-    "heartbeats",
-];
+const TOPICS: [&str; 5] = ["blocks", "txs", "attestations", "votes", "producers"];
 
 async fn node() -> (Node, TempDir) {
     let temp = TempDir::new().expect("tempdir");
@@ -88,17 +80,18 @@ async fn req_grv_008_handle_network_event_observes_gossip_on_every_path() {
     let (mut node, _tmp) = node().await;
     let _g = c::lock();
 
-    // P1: untracked topic, handler returns Ok.
-    let hb0 = received("heartbeats");
+    // P1: handler returns Ok normally.
+    let (p0, ph0) = (received("producers"), verdict("producers"));
     handle(
         &mut node,
-        NetworkEvent::NewHeartbeat(vec![], GossipHandle::now()),
+        NetworkEvent::ProducersAnnounced(vec![], GossipHandle::now()),
     )
     .await;
-    assert_eq!(received("heartbeats") - hb0, 1.0, "heartbeat counted");
-    assert!(
-        c::hist(c::VERDICT, &[("topic", "heartbeats")]).is_none(),
-        "heartbeat not timed"
+    assert_eq!(received("producers") - p0, 1.0, "producers event counted");
+    assert_eq!(
+        verdict("producers").count - ph0.count,
+        1,
+        "producers event timed on the normal-return path"
     );
 
     // P2: tracked topic, garbage vote -> handler returns early.

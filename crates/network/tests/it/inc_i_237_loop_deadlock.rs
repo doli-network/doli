@@ -23,9 +23,18 @@
 //!   O1: each `request_sync` on A completes within SEND_TIMEOUT (liveness)
 //!   O2: NewTransaction events A received before the stall (non-vacuity)
 //!   O3: A's command channel free capacity at the stall (0 = channel full)
+//!   O4 (M1, REQ-GRV-006): A's swarm serves a new peer while A's consumer is
+//!       stopped (G sees PeerConnected(A), A's peer table grows) and, after the
+//!       consumer resumes, the backlogged PeerConnected(G) control event is
+//!       delivered behind the queued gossip
+//!   O5 (M1, F-11): dropping A's NetworkService with a full event channel and a
+//!       stopped consumer ends A's swarm (F sees PeerDisconnected(A)) <= 5 s
 //! PATHS: P1 swarm loop not blocked -> commands drained, O1 holds;
-//!        P2 swarm loop parked on event_tx.send -> commands pile up, O1 fails.
-//! INPUT PARTITIONS: IP-1 unique tx flood > event_buf, consumer stalled.
+//!        P2 swarm loop parked on event_tx.send -> commands pile up, O1 fails;
+//!        P3 control event while the channel is full -> backlog -> try_flush;
+//!        P4 node handle dropped while the channel is full -> swarm exits.
+//! INPUT PARTITIONS: IP-1 unique tx flood > event_buf, consumer stalled;
+//!   IP-2 control event (inbound peer) during IP-1; IP-3 handle drop during IP-1.
 
 use std::net::{SocketAddr, TcpListener};
 use std::time::{Duration, Instant};
@@ -171,5 +180,170 @@ async fn inc_i_237_node_loop_command_send_survives_tx_flood() {
          event_tx.send (behaviour_events.rs:290) (event channel buf {EVENT_BUF}; \
          {new_tx_events} NewTransaction events drained after consumer resumed)",
         stalled_at.unwrap()
+    );
+}
+
+async fn warm_up_tx_mesh(
+    a: &mut NetworkService,
+    f_cmd: &tokio::sync::mpsc::Sender<network::NetworkCommand>,
+    base: u64,
+) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut warm = 0u64;
+    loop {
+        assert!(
+            Instant::now() < deadline,
+            "A never received warm-up tx gossip"
+        );
+        for _ in 0..50 {
+            f_cmd
+                .send(network::NetworkCommand::BroadcastTransaction(unique_tx(
+                    base + warm,
+                )))
+                .await
+                .unwrap();
+            warm += 1;
+        }
+        let until = Instant::now() + Duration::from_millis(500);
+        while Instant::now() < until {
+            if let Ok(Some(NetworkEvent::NewTransaction(..))) =
+                tokio::time::timeout(Duration::from_millis(100), a.next_event()).await
+            {
+                while a.try_next_event().is_some() {}
+                return;
+            }
+        }
+    }
+}
+
+async fn flood(f_cmd: &tokio::sync::mpsc::Sender<network::NetworkCommand>, base: u64) {
+    for i in 0..FLOOD_TXS {
+        f_cmd
+            .send(network::NetworkCommand::BroadcastTransaction(unique_tx(
+                base + i,
+            )))
+            .await
+            .unwrap();
+    }
+    tokio::time::sleep(Duration::from_secs(8)).await;
+}
+
+// REQ-GRV-006 / F-6 — Decision: a failure means the sync-only sink loses control events or stops the swarm while the node is behind: a peer joining during a node stall is never reported, or the swarm stops serving connections and commands.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn req_grv_006_swarm_serves_while_node_stopped_and_backlog_delivered_after_resume() {
+    std::env::set_var("DOLI_IP_COLOCATION_THRESHOLD", "500");
+    let a_port = reserve_port();
+    let mut a = start_node(a_port, Vec::new()).await;
+    let a_id: PeerId = *a.local_peer_id();
+    let mut f = start_node(reserve_port(), vec![format!("/ip4/127.0.0.1/tcp/{a_port}")]).await;
+    let f_id: PeerId = *f.local_peer_id();
+    let f_cmd = f.command_sender();
+    let f_drain = tokio::spawn(async move { while f.next_event().await.is_some() {} });
+
+    warm_up_tx_mesh(&mut a, &f_cmd, 20_000_000).await;
+    flood(&f_cmd, 21_000_000).await;
+
+    let mut g = start_node(reserve_port(), vec![format!("/ip4/127.0.0.1/tcp/{a_port}")]).await;
+    let g_id: PeerId = *g.local_peer_id();
+    let (g_tx, g_rx) = tokio::sync::oneshot::channel::<()>();
+    let g_drain = tokio::spawn(async move {
+        let mut g_tx = Some(g_tx);
+        while let Some(ev) = g.next_event().await {
+            if matches!(ev, NetworkEvent::PeerConnected(p) if p == a_id) {
+                if let Some(tx) = g_tx.take() {
+                    let _ = tx.send(());
+                }
+            }
+        }
+    });
+    assert!(
+        tokio::time::timeout(Duration::from_secs(20), g_rx)
+            .await
+            .is_ok(),
+        "A's swarm did not serve a new peer while A's node consumer was stopped"
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while a.peer_count().await < 2 {
+        assert!(
+            Instant::now() < deadline,
+            "A's swarm never recorded G in its peer table"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    for i in 0..64u64 {
+        let req = SyncRequest::get_block_by_hash(crypto::hash::hash(&(i + 1_000).to_le_bytes()));
+        let r = tokio::time::timeout(SEND_TIMEOUT, a.request_sync(f_id, req)).await;
+        assert!(
+            r.is_ok(),
+            "command #{i} not served while A's node consumer was stopped"
+        );
+    }
+
+    let mut gossip_before = 0usize;
+    let mut delivered = false;
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_secs(5), a.next_event()).await {
+            Ok(Some(NetworkEvent::PeerConnected(p))) if p == g_id => {
+                delivered = true;
+                break;
+            }
+            Ok(Some(NetworkEvent::NewTransaction(..))) => gossip_before += 1,
+            Ok(Some(_)) => {}
+            Ok(None) => panic!("A's event channel closed"),
+            Err(_) => break,
+        }
+    }
+    f_drain.abort();
+    g_drain.abort();
+    assert!(
+        delivered,
+        "the PeerConnected(G) control event backlogged during the stall was never delivered after resume"
+    );
+    assert!(
+        gossip_before >= EVENT_BUF / 2,
+        "non-vacuity: PeerConnected(G) must have waited behind a full channel ({gossip_before} gossip events ahead of it)"
+    );
+}
+
+// F-11 / REQ-GRV-006 — Decision: a failure means shutting the node down while its event channel is full and its consumer stopped leaves the swarm running (it waits on the swarm/node channel or never notices), so shutdown hangs or leaks the swarm and its connections.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn f_11_dropping_the_node_handle_under_full_channel_ends_the_swarm_within_5s() {
+    std::env::set_var("DOLI_IP_COLOCATION_THRESHOLD", "500");
+    let a_port = reserve_port();
+    let mut a = start_node(a_port, Vec::new()).await;
+    let a_id: PeerId = *a.local_peer_id();
+    let mut f = start_node(reserve_port(), vec![format!("/ip4/127.0.0.1/tcp/{a_port}")]).await;
+    let f_cmd = f.command_sender();
+    let (gone_tx, mut gone_rx) = tokio::sync::mpsc::unbounded_channel::<Instant>();
+    let f_watch = tokio::spawn(async move {
+        while let Some(ev) = f.next_event().await {
+            if matches!(ev, NetworkEvent::PeerDisconnected(p) if p == a_id) {
+                let _ = gone_tx.send(Instant::now());
+            }
+        }
+    });
+
+    warm_up_tx_mesh(&mut a, &f_cmd, 30_000_000).await;
+    flood(&f_cmd, 31_000_000).await;
+    assert!(
+        a.peer_count().await >= 1,
+        "non-vacuity: F must be connected at drop time"
+    );
+
+    let dropped_at = Instant::now();
+    drop(a);
+    let deadline = dropped_at + Duration::from_secs(5);
+    let mut ended = false;
+    while let Ok(Some(at)) = tokio::time::timeout_at(deadline.into(), gone_rx.recv()).await {
+        if at >= dropped_at {
+            ended = true;
+            break;
+        }
+    }
+    f_watch.abort();
+    assert!(
+        ended,
+        "F-11: A's swarm still running 5 s after its node handle was dropped (full event channel, stopped consumer)"
     );
 }

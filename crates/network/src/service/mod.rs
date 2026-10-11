@@ -10,13 +10,14 @@
 //! - `swarm_events` — Swarm-level event handling (connections, listen addrs)
 //! - `behaviour_events` — Behaviour-level event handling (gossip, identify, status, sync)
 //! - `command_handling` — Network command dispatch (publish, dial, request-response)
-//! - `backpressure` — Bounded load-shedding gossip event queue (INC-I-114)
+//! - `backpressure` — Gossip block load-shedding metrics (INC-I-114)
 
 pub(super) mod backpressure;
 mod behaviour_events;
 mod command_handling;
 mod event_sink;
 mod gossip_handle;
+mod gossip_intake;
 mod helpers;
 mod swarm_events;
 mod swarm_loop;
@@ -29,7 +30,7 @@ pub use gossip_handle::GossipHandle;
 pub use types::{NetworkCommand, NetworkError, NetworkEvent};
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -47,6 +48,7 @@ use crate::peer::PeerInfo;
 use crate::peer_cache::PeerCache;
 use crate::protocols::{StatusRequest, StatusResponse, SyncRequest, SyncResponse, TxFetchResponse};
 use crate::transport::build_transport;
+use crate::watchdog::MemoryWatchdog;
 use crypto::PublicKey;
 use libp2p::request_response::ResponseChannel;
 
@@ -77,6 +79,7 @@ pub struct NetworkService {
     /// INC-I-114: Load-shedding metrics for gossip block events.
     /// Shared with the swarm task (writer) and exposed via getter for M2/RPC.
     gossip_shed_metrics: Arc<GossipShedMetrics>,
+    memory_shed_flag: Arc<AtomicBool>,
 }
 
 impl NetworkService {
@@ -389,6 +392,13 @@ impl NetworkService {
         let peer_cache_path = config.peer_cache_path.clone();
         let best_slot_clone = best_slot.clone();
         let shed_metrics_clone = gossip_shed_metrics.clone();
+        let watchdog_threshold = config.memory_watchdog_threshold_bytes;
+        let watchdog =
+            (watchdog_threshold > 0).then(|| MemoryWatchdog::with_real_sampler(watchdog_threshold));
+        let memory_shed_flag = watchdog
+            .as_ref()
+            .map_or_else(|| Arc::new(AtomicBool::new(false)), |wd| wd.shed_flag());
+        let shed_flag_clone = memory_shed_flag.clone();
 
         tokio::spawn(async move {
             run_swarm(
@@ -402,6 +412,8 @@ impl NetworkService {
                 discv5_svc,
                 best_slot_clone,
                 shed_metrics_clone,
+                watchdog,
+                shed_flag_clone,
             )
             .await;
         });
@@ -418,6 +430,7 @@ impl NetworkService {
             local_peer_id,
             best_slot,
             gossip_shed_metrics,
+            memory_shed_flag,
         })
     }
 
@@ -432,6 +445,11 @@ impl NetworkService {
     /// Used by M2 watchdog and RPC layer to monitor drop counts.
     pub fn gossip_shed_metrics(&self) -> Arc<GossipShedMetrics> {
         self.gossip_shed_metrics.clone()
+    }
+
+    /// The memory-watchdog shed flag the gossip block path reads.
+    pub fn memory_shed_flag(&self) -> Arc<AtomicBool> {
+        self.memory_shed_flag.clone()
     }
     /// Get the next network event
     pub async fn next_event(&mut self) -> Option<NetworkEvent> {
@@ -451,18 +469,6 @@ impl NetworkService {
     pub async fn broadcast_block(&self, block: doli_core::Block) -> Result<(), NetworkError> {
         self.command_tx
             .send(NetworkCommand::BroadcastBlock(block))
-            .await
-            .map_err(|_| NetworkError::ChannelClosed)?;
-        Ok(())
-    }
-
-    /// Broadcast a block header to the network (lightweight pre-announcement)
-    pub async fn broadcast_header(
-        &self,
-        header: doli_core::BlockHeader,
-    ) -> Result<(), NetworkError> {
-        self.command_tx
-            .send(NetworkCommand::BroadcastHeader(header))
             .await
             .map_err(|_| NetworkError::ChannelClosed)?;
         Ok(())
@@ -525,17 +531,6 @@ impl NetworkService {
             .send(NetworkCommand::BroadcastProducerDigest(digest))
             .await
             .map_err(|_| NetworkError::ChannelClosed)?;
-        Ok(())
-    }
-
-    /// Broadcast a heartbeat to the network.
-    ///
-    /// NOTE: Deprecated in deterministic scheduler model. Heartbeats are no longer
-    /// used for presence tracking. Rewards go 100% to block producer via coinbase.
-    /// This function is kept for API compatibility but does nothing.
-    #[deprecated(note = "Heartbeats removed in deterministic scheduler model")]
-    pub async fn broadcast_heartbeat(&self, _heartbeat_data: Vec<u8>) -> Result<(), NetworkError> {
-        // No-op: heartbeats removed in deterministic scheduler model
         Ok(())
     }
 

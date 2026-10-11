@@ -298,9 +298,6 @@ impl Node {
             NetworkEvent::NewBlock(block, source_peer, _) => {
                 self.on_new_block_event(block, source_peer).await?;
             }
-            NetworkEvent::NewHeader(header, _) => {
-                debug!("Received new header: {}", header.hash());
-            }
             NetworkEvent::NewTransaction(tx, _) => {
                 self.handle_new_transaction(tx).await?;
             }
@@ -373,9 +370,6 @@ impl Node {
             }
             NetworkEvent::NewVote(vote_data, _) => {
                 self.on_new_vote(vote_data);
-            }
-            NetworkEvent::NewHeartbeat(..) => {
-                // Heartbeats handled by the presence system
             }
             NetworkEvent::TxAnnouncement {
                 peer_id, hashes, ..

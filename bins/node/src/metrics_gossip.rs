@@ -22,14 +22,12 @@ const BLOCK_RECV_BUCKETS: [f64; 14] = [
 const COVERAGE_BUCKETS: [f64; 12] = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 1.0];
 
 /// Every topic `NetworkEvent::gossip_topic` can return.
-const EVENT_TOPICS: [GossipTopic; 7] = [
+const EVENT_TOPICS: [GossipTopic; 5] = [
     GossipTopic::Blocks,
     GossipTopic::Transactions,
     GossipTopic::Attestations,
     GossipTopic::Votes,
     GossipTopic::Producers,
-    GossipTopic::Headers,
-    GossipTopic::Heartbeats,
 ];
 
 lazy_static! {
@@ -82,8 +80,8 @@ lazy_static! {
 }
 
 /// Per-topic children, resolved once so the per-event path does no label lookup.
-static RECEIVED_CHILDREN: [OnceLock<IntCounter>; 8] = [const { OnceLock::new() }; 8];
-static VERDICT_CHILDREN: [OnceLock<Histogram>; 8] = [const { OnceLock::new() }; 8];
+static RECEIVED_CHILDREN: [OnceLock<IntCounter>; 5] = [const { OnceLock::new() }; 5];
+static VERDICT_CHILDREN: [OnceLock<Histogram>; 5] = [const { OnceLock::new() }; 5];
 
 /// Scrape state of the `/metrics` handler.
 static EXPOSITION_SCRAPE: Mutex<TxBatchScrapeState> = Mutex::new(TxBatchScrapeState::new());
@@ -91,13 +89,10 @@ static EXPOSITION_SCRAPE: Mutex<TxBatchScrapeState> = Mutex::new(TxBatchScrapeSt
 fn slot(topic: GossipTopic) -> usize {
     match topic {
         GossipTopic::Blocks => 0,
-        GossipTopic::Tier1Blocks => 1,
-        GossipTopic::Producers => 2,
-        GossipTopic::Attestations => 3,
-        GossipTopic::Heartbeats => 4,
-        GossipTopic::Headers => 5,
-        GossipTopic::Votes => 6,
-        GossipTopic::Transactions => 7,
+        GossipTopic::Producers => 1,
+        GossipTopic::Attestations => 2,
+        GossipTopic::Votes => 3,
+        GossipTopic::Transactions => 4,
     }
 }
 
@@ -121,8 +116,6 @@ pub fn register_gossip_metrics(registry: &Registry) {
     let _ = registry.register(Box::new(TX_BATCH_TXS.clone()));
     for topic in EVENT_TOPICS {
         received(topic);
-    }
-    for topic in EVENT_TOPICS.into_iter().filter(|t| t.latency_tracked()) {
         verdict(topic);
     }
     for size in TX_BATCH_BUCKETS {
@@ -130,12 +123,10 @@ pub fn register_gossip_metrics(registry: &Registry) {
     }
 }
 
-/// Count one handled gossip event; time it from `recv_at` iff the topic is tracked.
+/// Count one handled gossip event and time it from `recv_at`.
 pub fn observe_gossip_handled(topic: GossipTopic, handle: &GossipHandle) {
     received(topic).inc();
-    if topic.latency_tracked() {
-        verdict(topic).observe(handle.recv_at.elapsed().as_secs_f64());
-    }
+    verdict(topic).observe(handle.recv_at.elapsed().as_secs_f64());
 }
 
 /// Wall-clock Unix ms at which the swarm received the message.

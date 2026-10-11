@@ -6,7 +6,7 @@ use libp2p::request_response::ResponseChannel;
 use libp2p::{Multiaddr, PeerId};
 
 use crypto::{Hash, PublicKey};
-use doli_core::{Block, BlockHeader, ProducerAnnouncement, ProducerBloomFilter, Transaction};
+use doli_core::{Block, ProducerAnnouncement, ProducerBloomFilter, Transaction};
 
 use crate::protocols::{StatusRequest, StatusResponse, SyncRequest, SyncResponse, TxFetchResponse};
 
@@ -24,8 +24,6 @@ pub enum NetworkEvent {
     PeerDisconnected(PeerId),
     /// New block received via gossip (block, propagation source peer)
     NewBlock(Block, PeerId, GossipHandle),
-    /// New block header received via gossip (lightweight pre-announcement)
-    NewHeader(BlockHeader, GossipHandle),
     /// New transaction received via gossip
     NewTransaction(Transaction, GossipHandle),
     /// Status request received
@@ -80,8 +78,6 @@ pub enum NetworkEvent {
     },
     /// Vote message received for governance veto system
     NewVote(Vec<u8>, GossipHandle),
-    /// Heartbeat received for weighted presence rewards
-    NewHeartbeat(Vec<u8>, GossipHandle),
     /// Attestation received for finality gadget.
     /// INC-I-049: Now includes propagation_source so the node can request
     /// blocks from the attestation source peer.
@@ -110,8 +106,6 @@ pub enum NetworkEvent {
 pub enum NetworkCommand {
     /// Broadcast a block
     BroadcastBlock(Block),
-    /// Broadcast a block header (lightweight pre-announcement)
-    BroadcastHeader(BlockHeader),
     /// Broadcast a transaction
     BroadcastTransaction(Transaction),
     /// Request status from a peer
@@ -153,8 +147,6 @@ pub enum NetworkCommand {
     },
     /// Broadcast a vote message (governance veto system)
     BroadcastVote(Vec<u8>),
-    /// Broadcast a heartbeat (weighted presence rewards)
-    BroadcastHeartbeat(Vec<u8>),
     /// Broadcast an attestation (finality gadget)
     BroadcastAttestation(Vec<u8>),
     /// Request transactions from a peer by hash (announce-request pattern)

@@ -10,11 +10,11 @@
 //!       block-recv histogram, coverage histogram, batch counters (deltas only:
 //!       the registry is process-global, all writers hold `common::lock()`)
 //!   O6: none
-//! PATHS: P1 zero-init at registration, P2 tracked topic, P3 untracked topic
-//!   (headers/heartbeats), P4 recv after block ts, P5 recv before block ts
+//! PATHS: P1 zero-init at registration, P2 tracked topic, P3 removed topics
+//!   (headers/heartbeats, INC-I-237 M1 D3: no series), P4 recv after block ts, P5 recv before block ts
 //!   (saturate 0), P6 universe > 0, P7 universe 0 (skip), P8 scrape with new
 //!   records, P9 scrape with none (no double count)
-//! INPUT PARTITIONS: 5 tracked + 2 untracked topics; latency 1.5 s (bucket (1,2]);
+//! INPUT PARTITIONS: 5 tracked topics + 2 removed labels; latency 1.5 s (bucket (1,2]);
 //!   block delay 2.5 s / -1 s / block_ts u64::MAX; coverage 3/4, 5/5, 0/0;
 //!   batches of 3 and 1
 //! MATRIX: O5 x P1-P9 and O1 x {P8, P9} — every cell asserted below.
@@ -73,23 +73,8 @@ fn req_grv_016_register_metrics_zero_initialises_every_gossip_series() {
             "{topic}: verdict buckets (2 s SLO, 3.5 s R5, 5 s mcache)"
         );
     }
-    for topic in [
-        "blocks",
-        "txs",
-        "attestations",
-        "votes",
-        "producers",
-        "headers",
-        "heartbeats",
-    ] {
+    for topic in ["blocks", "txs", "attestations", "votes", "producers"] {
         received(topic);
-    }
-    let verdict_labels = c::label_values(c::VERDICT, "topic");
-    for untracked in ["headers", "heartbeats"] {
-        assert!(
-            !verdict_labels.iter().any(|l| l == untracked),
-            "{untracked} must have no verdict histogram"
-        );
     }
     assert_eq!(block_recv().bounds(), BLOCK_RECV_BUCKETS.to_vec());
     assert_eq!(coverage().bounds(), COVERAGE_BUCKETS.to_vec());
@@ -124,20 +109,22 @@ fn req_grv_008_observe_gossip_handled_counts_and_times_every_tracked_topic() {
     }
 }
 
-// REQ-GRV-008 — Decision: a failure means headers/heartbeats (no consumer) get a latency series, so dead topics pollute the gate, or stop being counted, so their removal (D3) has no baseline.
+// REQ-GRV-015 / REQ-GRV-008 — Decision: a failure means a headers/heartbeats series survives D3 (dead labels on dashboards and the M0 gate) or a GossipTopic lands outside the five subscribed-topic labels.
 #[test]
-fn req_grv_008_headers_and_heartbeats_are_counted_but_never_timed() {
+fn req_grv_015_headers_and_heartbeats_have_no_series() {
     let _g = c::lock();
-    for (topic, label) in [
-        (GossipTopic::Headers, "headers"),
-        (GossipTopic::Heartbeats, "heartbeats"),
-    ] {
-        let n0 = received(label);
+    for (topic, _) in TRACKED {
         observe_gossip_handled(topic, &handle_aged(10));
-        assert_eq!(received(label) - n0, 1.0, "{label}: received counter");
-        assert!(
-            c::hist(c::VERDICT, &[("topic", label)]).is_none(),
-            "{label}: must not be timed"
+    }
+    let want: Vec<&str> = TRACKED.iter().map(|(_, l)| *l).collect();
+    for metric in [c::RECEIVED, c::VERDICT] {
+        let mut got = c::label_values(metric, "topic");
+        got.sort();
+        let mut w: Vec<String> = want.iter().map(|s| s.to_string()).collect();
+        w.sort();
+        assert_eq!(
+            got, w,
+            "{metric}: topic labels must be exactly the five subscribed topics"
         );
     }
 }

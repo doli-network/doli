@@ -4,8 +4,7 @@ use crypto::Hash;
 use doli_core::Transaction;
 
 use super::{
-    region_topic, GossipError, ATTESTATION_TOPIC, BLOCKS_TOPIC, HEADERS_TOPIC, HEARTBEATS_TOPIC,
-    PRODUCERS_TOPIC, TIER1_BLOCKS_TOPIC, TRANSACTIONS_TOPIC, VOTES_TOPIC,
+    GossipError, ATTESTATION_TOPIC, BLOCKS_TOPIC, PRODUCERS_TOPIC, TRANSACTIONS_TOPIC, VOTES_TOPIC,
 };
 
 /// Publish a block to the network
@@ -47,39 +46,6 @@ pub fn publish_vote(gossipsub: &mut Gossipsub, vote_data: Vec<u8>) -> Result<(),
     Ok(())
 }
 
-/// Publish a heartbeat to the network (for weighted presence rewards)
-pub fn publish_heartbeat(
-    gossipsub: &mut Gossipsub,
-    heartbeat_data: Vec<u8>,
-) -> Result<(), GossipError> {
-    let topic = IdentTopic::new(HEARTBEATS_TOPIC);
-    gossipsub
-        .publish(topic, heartbeat_data)
-        .map_err(|e| GossipError::Publish(format!("heartbeat: {}", e)))?;
-    Ok(())
-}
-
-/// Publish a block header to the lightweight headers topic (all tiers)
-pub fn publish_header(gossipsub: &mut Gossipsub, header_data: Vec<u8>) -> Result<(), GossipError> {
-    let topic = IdentTopic::new(HEADERS_TOPIC);
-    gossipsub
-        .publish(topic, header_data)
-        .map_err(|e| GossipError::Publish(format!("header: {}", e)))?;
-    Ok(())
-}
-
-/// Publish a block to the Tier 1 dense mesh topic
-pub fn publish_tier1_block(
-    gossipsub: &mut Gossipsub,
-    block_data: Vec<u8>,
-) -> Result<(), GossipError> {
-    let topic = IdentTopic::new(TIER1_BLOCKS_TOPIC);
-    gossipsub
-        .publish(topic, block_data)
-        .map_err(|e| GossipError::Publish(format!("t1_block: {}", e)))?;
-    Ok(())
-}
-
 /// Publish an attestation message
 pub fn publish_attestation(
     gossipsub: &mut Gossipsub,
@@ -89,19 +55,6 @@ pub fn publish_attestation(
     gossipsub
         .publish(topic, attestation_data)
         .map_err(|e| GossipError::Publish(format!("attestation: {}", e)))?;
-    Ok(())
-}
-
-/// Publish a block to a regional topic (Tier 2 sharding)
-pub fn publish_to_region(
-    gossipsub: &mut Gossipsub,
-    region: u32,
-    block_data: Vec<u8>,
-) -> Result<(), GossipError> {
-    let topic = IdentTopic::new(region_topic(region));
-    gossipsub
-        .publish(topic, block_data)
-        .map_err(|e| GossipError::Publish(format!("region_{}: {}", region, e)))?;
     Ok(())
 }
 

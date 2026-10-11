@@ -2,7 +2,7 @@
 //!
 //! OUTPUT CONTRACT: fn GossipHandle::now() / NetworkEvent::gossip_topic(&self) /
 //!   NetworkEvent::gossip_handle(&self) / GossipTopic::metric_label(self) /
-//!   GossipTopic::latency_tracked(self) / bucket_index(n) /
+//!   bucket_index(n) /
 //!   TxGossipBatchStats::{new, record(&self, n), snapshot(&self)}
 //!   O1: none (no &mut params)
 //!   O2: TxGossipBatchStats atomics (observed via snapshot)
@@ -11,10 +11,11 @@
 //!   O4: none   O5: TX_BATCH_BUCKETS const   O6: none
 //! PATHS: P1 gossip variant, P2 control variant, P3 each GossipTopic,
 //!   P4 record(n>0), P5 record(0) no-op, P6 concurrent record
-//! INPUT PARTITIONS: 10 gossip variants; 8 constructible control variants (the 3
-//!   ResponseChannel variants are driven live in inc_i_237_m0_swarm); 8 topics;
+//! INPUT PARTITIONS: 8 gossip variants (M1: NewHeader/NewHeartbeat deleted);
+//!   8 constructible control variants (the 3 ResponseChannel variants are driven
+//!   live in inc_i_237_m0_swarm); 5 topics (M1: the subscribed set);
 //!   bucket boundaries 1,2,5,6,10,11,25,26,50,51,100,101 + 10_000 + usize::MAX
-//! MATRIX: every variant x {topic, handle}; every topic x {label, tracked};
+//! MATRIX: every variant x {topic, handle}; every topic x label;
 //!   every boundary x index; record paths x {msgs, txs, buckets}.
 
 use std::time::{Duration, Instant};
@@ -30,28 +31,22 @@ use network::gossip::tx_batch_stats::{
 use network::protocols::{StatusResponse, SyncResponse};
 use network::{GossipHandle, NetworkEvent};
 
-const ALL_TOPICS: [GossipTopic; 8] = [
+const ALL_TOPICS: [GossipTopic; 5] = [
     GossipTopic::Blocks,
-    GossipTopic::Tier1Blocks,
     GossipTopic::Producers,
     GossipTopic::Attestations,
-    GossipTopic::Heartbeats,
-    GossipTopic::Headers,
     GossipTopic::Votes,
     GossipTopic::Transactions,
 ];
 
 /// No wildcard: a new GossipTopic variant must be added to this test.
-fn expected_label(t: GossipTopic) -> (&'static str, bool) {
+fn expected_label(t: GossipTopic) -> &'static str {
     match t {
-        GossipTopic::Blocks => ("blocks", true),
-        GossipTopic::Tier1Blocks => ("tier1_blocks", true),
-        GossipTopic::Producers => ("producers", true),
-        GossipTopic::Attestations => ("attestations", true),
-        GossipTopic::Heartbeats => ("heartbeats", false),
-        GossipTopic::Headers => ("headers", false),
-        GossipTopic::Votes => ("votes", true),
-        GossipTopic::Transactions => ("txs", true),
+        GossipTopic::Blocks => "blocks",
+        GossipTopic::Producers => "producers",
+        GossipTopic::Attestations => "attestations",
+        GossipTopic::Votes => "votes",
+        GossipTopic::Transactions => "txs",
     }
 }
 
@@ -79,11 +74,6 @@ fn gossip_events(h: &GossipHandle) -> Vec<(&'static str, NetworkEvent, GossipTop
             GossipTopic::Blocks,
         ),
         (
-            "NewHeader",
-            NetworkEvent::NewHeader(header(), h.clone()),
-            GossipTopic::Headers,
-        ),
-        (
             "NewTransaction",
             NetworkEvent::NewTransaction(tx(), h.clone()),
             GossipTopic::Transactions,
@@ -101,11 +91,6 @@ fn gossip_events(h: &GossipHandle) -> Vec<(&'static str, NetworkEvent, GossipTop
             "NewVote",
             NetworkEvent::NewVote(v::VOTE_RPC.to_vec(), h.clone()),
             GossipTopic::Votes,
-        ),
-        (
-            "NewHeartbeat",
-            NetworkEvent::NewHeartbeat(v::bytes(v::HEARTBEAT), h.clone()),
-            GossipTopic::Heartbeats,
         ),
         (
             "NewAttestation",
@@ -223,7 +208,7 @@ fn req_grv_008_gossip_handle_now_stamps_the_call_instant() {
 fn req_grv_008_every_gossip_variant_maps_to_its_topic_and_keeps_its_handle() {
     let h = GossipHandle::now();
     let events = gossip_events(&h);
-    assert_eq!(events.len(), 10, "C2 lists ten gossip variants");
+    assert_eq!(events.len(), 8, "C2 lists eight gossip variants (M1)");
     for (name, ev, topic) in &events {
         assert_eq!(ev.gossip_topic(), Some(*topic), "{name}: wrong topic");
         let got = ev
@@ -254,24 +239,20 @@ fn req_grv_008_control_variants_have_no_topic_and_no_handle() {
     }
 }
 
-// REQ-GRV-008 — Decision: a failure means a Prometheus label changes or two topics share one, so dashboards and the probe script read the wrong series.
+// REQ-GRV-008 / REQ-GRV-015 — Decision: a failure means a Prometheus label changes, two topics share one, or a headers/heartbeats/tier1 label survives D3, so dashboards and the probe script read the wrong series.
 #[test]
-fn req_grv_008_metric_label_and_latency_tracked_for_all_eight_topics() {
+fn req_grv_008_metric_label_for_the_five_subscribed_topics() {
     let mut labels = Vec::new();
     for t in ALL_TOPICS {
-        let (label, tracked) = expected_label(t);
-        assert_eq!(t.metric_label(), label, "{t:?}: label");
-        assert_eq!(t.latency_tracked(), tracked, "{t:?}: latency_tracked");
+        assert_eq!(t.metric_label(), expected_label(t), "{t:?}: label");
         labels.push(t.metric_label());
     }
     labels.sort();
     labels.dedup();
-    assert_eq!(labels.len(), 8, "labels must be distinct");
-    let untracked: Vec<_> = ALL_TOPICS.iter().filter(|t| !t.latency_tracked()).collect();
-    assert_eq!(
-        untracked,
-        vec![&GossipTopic::Heartbeats, &GossipTopic::Headers]
-    );
+    assert_eq!(labels.len(), 5, "labels must be distinct");
+    for gone in ["headers", "heartbeats", "tier1_blocks"] {
+        assert!(!labels.contains(&gone), "{gone} label must be gone (D3)");
+    }
 }
 
 // REQ-GRV-008 — Decision: a failure means a batch lands in the wrong size bucket, so the batch-size distribution (R4 re-batching condition) is misread.

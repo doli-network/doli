@@ -1,34 +1,28 @@
-//! Non-blocking event delivery from the swarm loop to the node (INC-I-237).
-//!
-//! The swarm loop used to `event_tx.send(..).await`. With the event channel
-//! full it parked inside `handle_swarm_event`, so its `command_rx` arm was not
-//! polled. The node loop, parked on `command_tx.send(..).await` with the
-//! command channel full, could not drain events again: a mutual deadlock.
-//!
-//! `EventSink::emit` never awaits:
-//! - gossip events are shed (counted) when the channel is full — the same
-//!   policy as gossip blocks (`backpressure::enqueue_or_shed`);
-//! - control events (peer, status, sync, mismatch) go to a FIFO backlog that
-//!   the swarm loop drains in its own `select!` arm, so they are not lost.
-//!
-//! RESOURCE COST: the backlog is capped at [`BACKLOG_CAP`] events (control
-//! events are small and low-rate; ~few MB worst case). Above the cap a control
-//! event is dropped and counted, so growth is bounded (INV-NETWORK-002).
+//! Synchronous swarm→node event delivery (INC-I-237 D4). Gossip events and
+//! blocks are shed (counted) on a full channel; control events wait in a FIFO
+//! backlog, capped at [`BACKLOG_CAP`] (INV-NETWORK-002), drained by `try_flush`.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-use tokio::sync::mpsc;
-use tracing::warn;
+use tokio::sync::mpsc::{self, error::TrySendError};
+use tracing::{debug, warn};
 
-use super::backpressure::WARN_EVERY_N_DROPS;
+use super::backpressure::{GossipShedMetrics, WARN_EVERY_N_DROPS};
 use super::types::NetworkEvent;
 
 /// Max control events held while the node is not draining.
 pub const BACKLOG_CAP: usize = 8_192;
 
-/// Swarm-side handle for delivering events to the node without awaiting.
+/// `Emitted` = sent or backlogged; `Shed` = dropped (full, backlog cap, closed).
+#[derive(Debug, PartialEq, Eq)]
+pub enum EmitOutcome {
+    Emitted,
+    Shed,
+}
+
+/// Swarm-side handle for delivering events to the node without waiting.
 pub struct EventSink {
     tx: mpsc::Sender<NetworkEvent>,
     backlog: Mutex<VecDeque<NetworkEvent>>,
@@ -42,14 +36,20 @@ fn is_sheddable(ev: &NetworkEvent) -> bool {
         ev,
         NetworkEvent::NewTransaction(..)
             | NetworkEvent::TxAnnouncement { .. }
-            | NetworkEvent::NewHeader(..)
             | NetworkEvent::NewVote(..)
-            | NetworkEvent::NewHeartbeat(..)
             | NetworkEvent::NewAttestation(..)
             | NetworkEvent::ProducersAnnounced(..)
             | NetworkEvent::ProducerAnnouncementsReceived(..)
             | NetworkEvent::ProducerDigestReceived { .. }
     )
+}
+
+fn count_drop(counter: &AtomicU64, what: &str) -> EmitOutcome {
+    let n = counter.fetch_add(1, Ordering::Relaxed) + 1;
+    if n % WARN_EVERY_N_DROPS == 1 {
+        warn!("INC-I-237 event sink full: dropping {what} dropped_total={n}");
+    }
+    EmitOutcome::Shed
 }
 
 impl EventSink {
@@ -62,60 +62,60 @@ impl EventSink {
         }
     }
 
-    /// The raw sender, for `backpressure::enqueue_or_shed` (gossip blocks).
-    pub fn sender(&self) -> &mpsc::Sender<NetworkEvent> {
-        &self.tx
-    }
-
-    /// Deliver `ev` without awaiting. Never blocks the swarm loop.
-    pub fn emit(&self, ev: NetworkEvent) {
+    /// Deliver `ev` without waiting; control events keep their order.
+    pub fn emit(&self, ev: NetworkEvent) -> EmitOutcome {
         let mut backlog = self.backlog.lock().unwrap_or_else(|e| e.into_inner());
-        // Keep control events in order behind any backlog.
-        let ev = if backlog.is_empty() || is_sheddable(&ev) {
+        let sheddable = is_sheddable(&ev);
+        let ev = if backlog.is_empty() || sheddable || self.tx.is_closed() {
             match self.tx.try_send(ev) {
-                Ok(()) => return,
-                Err(mpsc::error::TrySendError::Closed(_)) => return,
-                Err(mpsc::error::TrySendError::Full(ev)) => ev,
+                Ok(()) => return EmitOutcome::Emitted,
+                Err(TrySendError::Closed(_)) => return EmitOutcome::Shed,
+                Err(TrySendError::Full(ev)) => ev,
             }
         } else {
             ev
         };
-        if is_sheddable(&ev) {
-            let n = self.gossip_dropped.fetch_add(1, Ordering::Relaxed) + 1;
-            if n % WARN_EVERY_N_DROPS == 1 {
-                warn!("INC-I-237 event channel full: shedding gossip events dropped_total={n}");
-            }
+        if sheddable {
+            count_drop(&self.gossip_dropped, "gossip events")
         } else if backlog.len() < BACKLOG_CAP {
             backlog.push_back(ev);
+            EmitOutcome::Emitted
         } else {
-            let n = self.control_dropped.fetch_add(1, Ordering::Relaxed) + 1;
-            if n % WARN_EVERY_N_DROPS == 1 {
-                warn!("INC-I-237 event backlog full: dropping control events dropped_total={n}");
+            count_drop(&self.control_dropped, "control events")
+        }
+    }
+
+    /// Deliver a gossip block; a full channel sheds it and counts the drop.
+    pub fn emit_block(&self, ev: NetworkEvent, metrics: &GossipShedMetrics) -> EmitOutcome {
+        match self.tx.try_send(ev) {
+            Ok(()) => return EmitOutcome::Emitted,
+            Err(TrySendError::Full(_)) => {
+                metrics.record_block_drop();
+                let total = metrics.blocks_dropped();
+                if total.is_multiple_of(WARN_EVERY_N_DROPS) {
+                    warn!("[GOSSIP_SHED] channel full — dropped {total} block(s) total");
+                }
+            }
+            Err(TrySendError::Closed(_)) => debug!("[GOSSIP_SHED] channel closed (shutdown)"),
+        }
+        EmitOutcome::Shed
+    }
+
+    /// Move backlog events into free channel slots, oldest first.
+    /// Returns false once the node side is gone.
+    pub fn try_flush(&self) -> bool {
+        let mut backlog = self.backlog.lock().unwrap_or_else(|e| e.into_inner());
+        while !backlog.is_empty() {
+            match self.tx.try_reserve() {
+                Ok(permit) => {
+                    if let Some(ev) = backlog.pop_front() {
+                        permit.send(ev);
+                    }
+                }
+                Err(TrySendError::Full(())) => break,
+                Err(TrySendError::Closed(())) => backlog.clear(),
             }
         }
-    }
-
-    pub fn has_backlog(&self) -> bool {
-        !self
-            .backlog
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_empty()
-    }
-
-    /// Hand the oldest backlog event to a reserved channel slot.
-    pub fn flush_one(&self, permit: mpsc::Permit<'_, NetworkEvent>) {
-        let mut backlog = self.backlog.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(ev) = backlog.pop_front() {
-            permit.send(ev);
-        }
-    }
-
-    /// Drop the backlog (the node side closed the channel).
-    pub fn clear_backlog(&self) {
-        self.backlog
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clear();
+        !self.tx.is_closed()
     }
 }

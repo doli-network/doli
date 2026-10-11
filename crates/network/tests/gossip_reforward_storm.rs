@@ -1,12 +1,12 @@
 //! INC-I-142 M7 — multi-node gossip "re-forward storm" integration test.
 //!
-//! Proves the unified application-level staleness gate ([`classify_gossip`] +
+//! Proves the unified application-level staleness gate ([`relay_decision`] +
 //! a **persistent** [`SeenCache`]) closes the INC-I-142 re-delivery storm by
 //! IDENTITY dedup, INDEPENDENT of libp2p's `duplicate_cache_time`.
 //!
-//! # OUTPUT CONTRACT: the relay-forwarding behaviour of `classify_gossip` as
+//! # OUTPUT CONTRACT: the relay-forwarding behaviour of `relay_decision` as
 //! # wired into a live gossipsub relay (function under test at integration level:
-//! # `classify_gossip(topic, data, &mut StalenessCtx{ seen: &mut SeenCache, .. })`)
+//! # `relay_decision(topic, data, &mut StalenessCtx{ seen: &mut SeenCache, .. }).acceptance()`)
 //!
 //! Observable outputs (as exercised through the relay):
 //!   O1: return `MessageAcceptance` at the relay (B) → Accept ⇒ gossipsub
@@ -35,9 +35,9 @@
 //!        → assert O1=Ignore, O3: C==0 & D==0 (STORM-CLOSURE).
 //!   IP-3 attestations, unconditional-Accept baseline, re-delivery → P3
 //!        → assert O1=Accept, O3: C+D>0 (PRE-M6 REPRODUCTION).
-//!   IP-4 heartbeats, persistent gate, 1st delivery → P1 (CONTROL).
-//!   IP-5 heartbeats, persistent gate, re-delivery → P2 (STORM-CLOSURE).
-//!   IP-6 heartbeats, unconditional-Accept baseline, re-delivery → P3 (REPRO).
+//!   IP-4 votes, persistent gate, 1st delivery → P1 (CONTROL).
+//!   IP-5 votes, persistent gate, re-delivery → P2 (STORM-CLOSURE).
+//!   IP-6 votes, unconditional-Accept baseline, re-delivery → P3 (REPRO).
 //!
 //! Matrix (outputs × paths): each gate test covers {P1: O1,O3} + {P2: O1,O2,O3};
 //! each baseline test covers {P1 sanity: O3} + {P3: O1,O3}. A vacuity guard
@@ -94,13 +94,14 @@ use libp2p::gossipsub::{self, IdentTopic, MessageAcceptance};
 use libp2p::swarm::SwarmEvent;
 use libp2p::{Multiaddr, Swarm};
 
-use doli_core::{Attestation, Heartbeat};
+use doli_core::Attestation;
 
 use network::gossip::staleness::{
-    classify_gossip, GossipTopic, SeenCache, StalenessCtx, SEEN_CACHE_CAPACITY, SEEN_CACHE_TTL_SECS,
+    SeenCache, StalenessCtx, SEEN_CACHE_CAPACITY, SEEN_CACHE_TTL_SECS,
 };
 use network::gossip::{
-    new_gossipsub_with_cache_time, MeshConfig, ATTESTATION_TOPIC, HEARTBEATS_TOPIC,
+    new_gossipsub_with_cache_time, relay_decision, MeshConfig, RelayTopic, ATTESTATION_TOPIC,
+    VOTES_TOPIC,
 };
 
 // ============================================================================
@@ -149,18 +150,13 @@ fn attestation_bytes() -> Vec<u8> {
     .to_bytes()
 }
 
-/// A fresh, current-slot heartbeat with a fixed `(producer, slot)` identity.
-fn heartbeat_bytes() -> Vec<u8> {
-    Heartbeat {
-        version: 1,
-        producer: crypto::PublicKey::from_bytes([0u8; 32]),
-        slot: WALL,
-        prev_block_hash: crypto::Hash::ZERO,
-        vdf_output: [0u8; 32],
-        signature: crypto::Signature::from_bytes([0u8; 64]),
-        witnesses: Vec::new(),
-    }
-    .serialize()
+/// A fresh governance vote with a fixed identity (raw-bytes dedup key).
+fn vote_bytes() -> Vec<u8> {
+    format!(
+        "{{\"version\":\"6.43.3\",\"vote\":\"approve\",\"producerId\":\"{}\",\"timestamp\":{NOW_UNIX},\"signature\":\"bb\"}}",
+        "00".repeat(32)
+    )
+    .into_bytes()
 }
 
 // ============================================================================
@@ -223,7 +219,7 @@ struct StaleParams {
 fn classify_with(
     cache: &mut SeenCache,
     p: &StaleParams,
-    topic: GossipTopic,
+    topic: RelayTopic,
     data: &[u8],
 ) -> MessageAcceptance {
     let mut ctx = StalenessCtx {
@@ -233,7 +229,7 @@ fn classify_with(
         best_slot: p.best_slot,
         seen: cache,
     };
-    classify_gossip(topic, data, &mut ctx)
+    relay_decision(topic, data, &mut ctx).acceptance()
 }
 
 // ============================================================================
@@ -265,7 +261,7 @@ async fn drive(
     c: &mut Swarm<gossipsub::Behaviour>,
     d: &mut Swarm<gossipsub::Behaviour>,
     wait: Duration,
-    topic_enum: GossipTopic,
+    topic_enum: RelayTopic,
     params: StaleParams,
     expected: &[u8],
     mut seen_b: Option<&mut SeenCache>,
@@ -371,7 +367,7 @@ struct StormOutcome {
 /// per-node [`SeenCache`]; `gate=false` models the pre-M6 unconditional-Accept
 /// relay. Returns the first-delivery and re-delivery drive results.
 async fn run_storm(
-    topic_enum: GossipTopic,
+    topic_enum: RelayTopic,
     topic_str: &str,
     payload: Vec<u8>,
     gate: bool,
@@ -559,7 +555,7 @@ fn assert_storm_open(out: &StormOutcome, topic: &str) {
 #[tokio::test]
 async fn attestation_reforward_storm_closed_by_persistent_gate() {
     let out = run_storm(
-        GossipTopic::Attestations,
+        RelayTopic::Attestations,
         ATTESTATION_TOPIC,
         attestation_bytes(),
         true,
@@ -571,7 +567,7 @@ async fn attestation_reforward_storm_closed_by_persistent_gate() {
 #[tokio::test]
 async fn attestation_reforward_storm_open_under_pre_m6_unconditional_accept() {
     let out = run_storm(
-        GossipTopic::Attestations,
+        RelayTopic::Attestations,
         ATTESTATION_TOPIC,
         attestation_bytes(),
         false,
@@ -581,29 +577,19 @@ async fn attestation_reforward_storm_open_under_pre_m6_unconditional_accept() {
 }
 
 // ============================================================================
-// Heartbeats (second topic)
+// Votes (second dedup topic; heartbeats are unsubscribed since INC-I-237 M1)
 // ============================================================================
 
+// INV-NETWORK-003 / REQ-GRV-013 — Decision: a failure means a vote re-delivery inside the libp2p escape window is re-forwarded (INC-I-142 storm) or the first vote is not forwarded exactly once.
 #[tokio::test]
-async fn heartbeat_reforward_storm_closed_by_persistent_gate() {
-    let out = run_storm(
-        GossipTopic::Heartbeats,
-        HEARTBEATS_TOPIC,
-        heartbeat_bytes(),
-        true,
-    )
-    .await;
-    assert_storm_closed(&out, "heartbeats");
+async fn vote_reforward_storm_closed_by_persistent_gate() {
+    let out = run_storm(RelayTopic::Votes, VOTES_TOPIC, vote_bytes(), true).await;
+    assert_storm_closed(&out, "votes");
 }
 
+// INV-NETWORK-003 / REQ-GRV-013 — Decision: a failure means the harness no longer reproduces the storm without the gate, so the closed-storm test above proves nothing.
 #[tokio::test]
-async fn heartbeat_reforward_storm_open_under_pre_m6_unconditional_accept() {
-    let out = run_storm(
-        GossipTopic::Heartbeats,
-        HEARTBEATS_TOPIC,
-        heartbeat_bytes(),
-        false,
-    )
-    .await;
-    assert_storm_open(&out, "heartbeats");
+async fn vote_reforward_storm_open_under_pre_m6_unconditional_accept() {
+    let out = run_storm(RelayTopic::Votes, VOTES_TOPIC, vote_bytes(), false).await;
+    assert_storm_open(&out, "votes");
 }
