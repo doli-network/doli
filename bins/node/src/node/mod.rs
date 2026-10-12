@@ -27,6 +27,7 @@ pub use force_reorg::ForceReorgOutcome;
 mod fork_recovery;
 mod fork_walk;
 mod genesis;
+mod gossip_verdicts;
 mod holdings;
 use holdings::holdings_of_every_producer;
 mod fork_cache;

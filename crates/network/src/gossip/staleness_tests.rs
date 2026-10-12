@@ -9,16 +9,22 @@ use doli_core::{Block, BlockHeader, Heartbeat};
 use libp2p::gossipsub::MessageAcceptance;
 
 // INC-I-237 M1: every classifier below is reached through the one relay table.
+// M3 (R2): a first-sight, in-window attestation or vote is Deferred to the node
+// verdict; like `tx_d`, Defer maps to Accept ("processed").
 fn att_d(data: &[u8], c: &mut StalenessCtx<'_>) -> MessageAcceptance {
-    relay_decision(RelayTopic::Attestations, data, c)
-        .acceptance()
-        .expect("attestations are swarm-judged until M3")
+    deferred_or_ignored(relay_decision(RelayTopic::Attestations, data, c))
 }
 
 fn vote_d(data: &[u8], c: &mut StalenessCtx<'_>) -> MessageAcceptance {
-    relay_decision(RelayTopic::Votes, data, c)
-        .acceptance()
-        .expect("votes are swarm-judged until M3")
+    deferred_or_ignored(relay_decision(RelayTopic::Votes, data, c))
+}
+
+fn deferred_or_ignored(d: RelayDecision) -> MessageAcceptance {
+    match d {
+        RelayDecision::Defer => MessageAcceptance::Accept,
+        RelayDecision::Ignore => MessageAcceptance::Ignore,
+        _ => panic!("from M3 an attestation/vote relay decision is Defer or Ignore"),
+    }
 }
 
 /// INC-I-237 M2 (D1): a first-sight full tx message is Deferred to the node

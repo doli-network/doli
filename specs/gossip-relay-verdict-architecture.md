@@ -87,9 +87,9 @@ Gap = 0.09 <= 0.1 → **PRESENT RADICAL ALONE FIRST.** The Definite + Recommende
 |---|---|---|---|---|
 | `/doli/blocks/1` | yes | `Block::deserialize` (Reject), stale > 6 slots (Ignore), **per-peer** block bucket (Ignore) — all BEFORE the report | **swarm — the ONE written exception (AcceptNow)**; global bucket + memory-watchdog shed stay AFTER the report (local drops only, F-1); forged-block volume unbounded until INC-I-236 (W04) | none |
 | `/doli/txs/1` | yes | decode bound (SEC-005), per-peer tx bucket (drop ⇒ Ignore at the drop site); 0xAA announce → Ignore | **node**: Accept iff every tx NEWLY admitted by this message (D5) | vendor mcache ≤ 5 s |
-| `/doli/attestations/1` | yes | slot age 12 (Ignore), per-peer bucket | **node** (M3): decode + Ed25519 + membership incl. pending activation; NOT block-known; NOT BLS | vendor mcache ≤ 5 s |
-| `/doli/votes/1` | yes | timestamp age (Ignore), per-peer bucket | **node** (M3): decode + `verify` + membership (`vote_msg.verify(&vote_msg.producer_id)` is self-certifying, `network_events.rs:514`) | vendor mcache ≤ 5 s |
-| `/doli/producers/1` | yes | age 3600 s (Ignore), per-peer bucket; legacy bincode → Ignore | **node** (M3): announcement batch → Accept iff GSet merge added ≥ 1 verified entry; bloom digest → **Ignore** (reply try_send to the forwarder; relaying it multi-hop sends the delta to the wrong peer, `behaviour_events.rs:328` `peer_id: propagation_source`) | vendor mcache ≤ 5 s |
+| `/doli/attestations/1` | yes | slot age 12 (Ignore), per-peer request bucket (never the tx bucket; drop ⇒ Ignore at the drop site) | **node** (M3): decode + Ed25519 + `producer_set.get_by_pubkey(attester).is_some()` (incl. pending activation, the set `ingest_attestation` admits); NOT block-known; NOT BLS; consensus lane | vendor mcache ≤ 5 s |
+| `/doli/votes/1` | yes | timestamp age (Ignore), per-peer request bucket | **node** (M3): decode + `vote_msg.verify(&vote_msg.producer_id)` (self-certifying) + `producer_set.get_by_pubkey(pk).is_some_and(is_active)` — the set the updater tally counts (`run.rs` `is_producer_fn`, X6 resolved); bulk lane | vendor mcache ≤ 5 s |
+| `/doli/producers/1` | yes | age 3600 s (Ignore), per-peer bucket; legacy bincode → Ignore | **node** (M3): announcement batch → Accept iff GSet merge added ≥ 1 verified entry (verdict sent from the spawned merge; single-flight drop ⇒ Ignore); bloom digest → swarm **LocalOnly** (Ignore, still processed; relaying it multi-hop sends the delta to the wrong peer, `behaviour_events.rs:328` `peer_id: propagation_source`). The reply is a `SendProducerDelta` try_send whose delta is computed for the forwarder's bloom but is PUBLISHED to all producer-topic peers (`command_handling.rs` `SendProducerDelta` arm) — "to the forwarder" holds by content only (G3) | vendor mcache ≤ 5 s |
 | headers, heartbeats, Tier1, region, unknown | **no** | never delivered (vendor dispatches only `mesh.contains_key(topic)`, `behaviour.rs:1747-1761`); handler fallback = Ignore | none | — |
 
 ### Verdict seam (D1)
@@ -262,7 +262,7 @@ proposed: node --cmd slot (await, must-deliver)--> swarm   [swarm drains uncondi
 
 - ARCHITECTURAL: R2 — attestations, votes and producer announcements go through the node verdict (M3): attestation = decode + Ed25519 + attester ∈ producer set (incl. pending activation), independent of block knowledge and BLS (F-9); `[ATTEST_FETCH]` gated by the same membership check and capped per tick; votes = decode + `verify` + membership; producer announcements = GSet merge added ≥ 1 verified entry; digests → Ignore. Gated on the M0 REQ-GRV-010 baseline; pre-planned fallback = option O9.
     Convergence: 5/5 membership (Sub K2/C7, Restr, Patt P4, Fail P4, Rad); F-9 overrules Patt's block-known clause
-    Evidence: `attestation/message.rs:103-107` (self-certifying); `network_events.rs:548-557` (unknown block → fetch + return, no verdict); `:514` (vote self-certifying); `network_events.rs:595-631` + `sync.rs:309` (ungoverned fetch per forged hash)
+    Evidence: `attestation/message.rs:103-107` (self-certifying); pre-M3 `network_events.rs:541-549` (unknown block → fetch + return BEFORE membership, no verdict — drifted from the cited `:548-557`, G2; M3 moved the handlers to `gossip_verdicts.rs`); `:514` (vote self-certifying); `network_events.rs:595-631` + `sync.rs:309` (ungoverned fetch per forged hash)
     Confidence: conf(0.75, converged)
 
     ━━━ RESOURCE COST — COST-DECLARED ━━━
@@ -423,7 +423,7 @@ Binding order: F-2 + F-7 (D3 + R1) ship before any attestation verdict (R2/M3); 
   - BRIDGE: keep 6.43.3 (b) (tx first-sight → Ignore + node re-publish) until M2 lands; watch metric = count of `Not publishing a message that has already been published` on `/doli/txs/1`. Temporary — removed in the M2 commit.
 - **M1 — Subtraction + contract (keeps (b)).** D3 unsubscribe + stop header publish (after F-10 sweep); D4 sync-only sink; D2 exhaustive table with `None`/0xAA/legacy-bincode/Tier1/region → Ignore and undecodable non-block → Ignore; D6 per-peer reorder on blocks; R3 RPC `try_reserve`/Busy + digest `try_send` + byte-bounded backlog; R1 two lanes. Tests: F-1, F-2, F-6, F-11; gauntlet. Deploy: rolling.
 - **M2 — Tx verdict (ONE atomic commit).** D1 verdict seam + D5 strict rule + R5 deadline/counters + R4 single-tx origin publish + batcher deletion; remove (b) AND the node re-publish in the same commit (never one without the other: one alone re-opens either the flood or the one-hop gap). Tests: REQ-GRV-001 line A-B-C-D (single-tx and 50-tx variants — the missing partition "B admits F's tx → C receives it"), 002, 004, 005; F-3, F-5, F-13; mixed testnet with 6.43.3 + 6.43.0-equivalent + an old external (REQ-GRV-012). Deploy: rolling.
-- **M3 — Attestations / votes / producers via the verdict.** R2 (membership, NOT block-known, ATTEST_FETCH gate + per-tick cap, digest Ignore). Precondition: M0 baseline + R1 shipped (F-2/F-7). Tests: F-7, F-9, REQ-GRV-010 coverage ≥ baseline under flood. If coverage drops → O9. Deploy: rolling.
+- **M3 — Attestations / votes / producers via the verdict.** R2 (membership, NOT block-known, ATTEST_FETCH gate + per-tick cap of 8 `GetBlockByHash`, excess kept queued oldest-first inside the tracker's 30 s TTL, digest Ignore). One identity per message: no `DirectAttestation` re-publish (the attester's own gossip publish carries it), no second own-block attestation publish, no byte-identical digest publish inside `GOSSIP_DUPLICATE_CACHE_TIME`. Precondition: M0 baseline + R1 shipped (F-2/F-7). Tests: F-7, F-9, REQ-GRV-010 coverage ≥ baseline under flood. If coverage drops → O9. Deploy: rolling.
 - **M4 — Cleanup + invariants.** R6 SeenCache deletion + const assert; INV-NET-002 / INV-NETWORK-002/003/004 amendments with linked regression tests; `config.rs:246` literal fixed; specs/docs drift closed (REQ-GRV-019); REQ-GRV-016 metrics with readers (lane depth, late verdicts per topic, control drops, shed per topic); chosen options O3/O4/O5. Deploy: rolling.
 
 ## Deploy Answers (CLAUDE.md three-question checklist, INC-I-075 / INV-12)
@@ -475,7 +475,7 @@ CPU: swarm task −1 BLAKE3 per message, −header/heartbeat decode, +1 report p
 4. **External/third-party consumers of `/doli/headers/1`, `/doli/heartbeats/1`** and the full F-10 format census (only v6.25.0 checked).
 5. **RPC `Busy` client compatibility** (wallet, faucet, CLI not searched).
 6. **F-12** has no passing proposal (O12 undesigned); **F-15** open for chained/late received txs (O8 or documented status).
-7. `sizeof(Transaction)` for the SEC-005 2× decode bound; per-topic `TopicScoreParams` interaction with held-then-Ignored messages (tx-topic P3 deficit, O7); GSet merge signature verification (producer verdict); vote-path membership source.
+7. `sizeof(Transaction)` for the SEC-005 2× decode bound; per-topic `TopicScoreParams` interaction with held-then-Ignored messages (tx-topic P3 deficit, O7); GSet merge signature verification (producer verdict). Vote-path membership source RESOLVED in M3 (X6): `producer_set` `get_by_pubkey(pk).is_some_and(|p| p.is_active())`, the same `Arc<RwLock<ProducerSet>>` the updater tally reads (`run.rs:440-452`).
 8. Fleet-synchronous stalls turn "forwarded late" into "not forwarded" on every node at once (Fail i-6); the only floor is the origin's `flood_publish` hop.
 9. During the mixed-version window, old re-batchers still amplify to their direct peers; new nodes stop it at one hop only.
 
@@ -491,7 +491,7 @@ Failure modes identified:       16 (F-1..F-16) + 10 current-state (C-1..C-10)
 Failure modes applied as filters: 16/16 (14 PASS, F-8 = M0 gate, F-12 OPEN, F-15 partial)
 Radical floor gap:              5 relay sites / 6 pre-verdict topics / 4 post-Accept drops → 2 / 1 / 0 (radical) → 2 / 1 / 2 (proposed; +2 lanes)
 Contradictions found:           13 (C1-C7 + X1 batcher, X2 block-known, X3 announce/fetch, X4 header publish timing, X5 digest relay, X6 vote authority)
-Contradictions resolved:        12/13 (X6 vote membership source flagged UNVERIFIED)
+Contradictions resolved:        13/13 (X6 vote membership source resolved in M3: active producer set, same as the updater tally)
 Evidence independence verified: YES (vendor code read by 4 evaluators independently; Lighthouse source by the 5th)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```

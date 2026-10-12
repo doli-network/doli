@@ -315,10 +315,8 @@ impl Node {
             }
         } else {
             debug!("Sync request from {}: {:?}", peer_id, request);
-            // DirectAttestation: register locally BEFORE delegating to handle_sync_request
-            // (which only re-broadcasts via gossip). gossipsub does not deliver published
-            // messages back to the publisher, so re-broadcast alone never reaches our own
-            // minute_tracker. Process here where we have &mut self.
+            // DirectAttestation: register locally (handle_sync_request only acknowledges it;
+            // the attester's own gossip publish carries it to the mesh).
             if let SyncRequest::DirectAttestation { ref data } = request {
                 if let Some(att) = doli_core::Attestation::from_bytes(data) {
                     if att.verify().is_ok() {
@@ -424,51 +422,6 @@ impl Node {
         }
     }
 
-    /// GSet announcement merge (CPU-heavy, spawned); at most one merge in flight,
-    /// batches arriving meanwhile are dropped (the digest exchange repairs them).
-    pub fn on_producer_announcements(&self, announcements: Vec<ProducerAnnouncement>) {
-        let Some(slot) = super::producer_merge::MergeSlot::acquire(&self.announcement_merge_busy)
-        else {
-            debug!("Producer announcements dropped: a GSet merge is in flight");
-            return;
-        };
-        let gset = self.producer_gset.clone();
-        let adaptive = self.adaptive_gossip.clone();
-        let sync_mgr = self.sync_manager.clone();
-        let known_producers = self.known_producers.clone();
-
-        tokio::spawn(async move {
-            let _slot = slot;
-            let merge_result = gset.write().await.merge(announcements);
-            let peer_count = sync_mgr.read().await.peer_count();
-            adaptive
-                .write()
-                .await
-                .on_gossip_result(&merge_result, peer_count);
-
-            if merge_result.added > 0 {
-                info!(
-                    "Producer announcements: added={}, new_producers={}, rejected={}, duplicates={}",
-                    merge_result.added, merge_result.new_producers,
-                    merge_result.rejected, merge_result.duplicates
-                );
-                let producers = gset.read().await.sorted_producers();
-                let mut known = known_producers.write().await;
-                for pubkey in producers {
-                    if !known.contains(&pubkey) {
-                        known.push(pubkey);
-                    }
-                }
-                known.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
-            } else if merge_result.rejected > 0 {
-                debug!(
-                    "Producer announcements rejected: {} (invalid signature, stale, or wrong network)",
-                    merge_result.rejected
-                );
-            }
-        });
-    }
-
     /// Bloom filter delta sync: compute the delta inline, reply without waiting
     /// (a full command channel drops the reply; the peer re-sends its digest).
     pub async fn on_producer_digest(
@@ -493,85 +446,6 @@ impl Node {
                     "Producer delta to {} dropped: command channel full",
                     peer_id
                 );
-            }
-        }
-    }
-
-    /// Handle a vote message received via gossip (for the auto-update system).
-    pub fn on_new_vote(&self, vote_data: Vec<u8>) {
-        debug!("Received vote message ({} bytes)", vote_data.len());
-        if let Some(ref vote_tx) = self.vote_tx {
-            match serde_json::from_slice::<node_updater::VoteMessage>(&vote_data) {
-                Ok(vote_msg) => {
-                    if !vote_msg.verify(&vote_msg.producer_id) {
-                        debug!(
-                            "Rejected gossip vote with invalid signature from {}",
-                            &vote_msg.producer_id[..16.min(vote_msg.producer_id.len())]
-                        );
-                        return;
-                    }
-                    info!(
-                        "Vote received via gossip: {} vote for v{} from {}",
-                        if vote_msg.vote == node_updater::Vote::Veto {
-                            "VETO"
-                        } else {
-                            "APPROVE"
-                        },
-                        vote_msg.version,
-                        &vote_msg.producer_id[..16.min(vote_msg.producer_id.len())]
-                    );
-                    let _ = vote_tx.try_send(vote_msg);
-                }
-                Err(e) => {
-                    debug!("Failed to decode vote message: {}", e);
-                }
-            }
-        }
-    }
-
-    /// Handle a new attestation: verify, accumulate finality weight, flush to archive.
-    /// INC-I-049: Now includes source_peer for attestation-triggered block fetch.
-    pub async fn on_new_attestation(&mut self, data: Vec<u8>, source_peer: PeerId) {
-        if let Some(attestation) = doli_core::Attestation::from_bytes(&data) {
-            if attestation.verify().is_ok() {
-                // Only accept attestations for blocks we know are canonical
-                // Only accept attestations for blocks we know are canonical, and
-                // capture that block's LOCAL height for authority derivation.
-                let local_height =
-                    match self.block_store.get_height_by_hash(&attestation.block_hash) {
-                        Ok(Some(h)) => h,
-                        _ => {
-                            // INC-I-049: Unknown block — try to fetch it if it's
-                            // at height+1 (candidate next block).
-                            self.maybe_fetch_attested_block(&attestation.block_hash, source_peer)
-                                .await;
-                            return;
-                        }
-                    };
-
-                // Membership, attendance and the BLS verdict are the shared body's (D4);
-                // authority is derived at the attested block's LOCAL height.
-                let Some(weight) = self
-                    .ingest_attestation(&attestation, local_height, source_peer)
-                    .await
-                else {
-                    return;
-                };
-
-                // Finality numerator: only a positive locally-derived weight counts.
-                if weight > 0 {
-                    let mut sync = self.sync_manager.write().await;
-                    sync.add_attestation_weight(
-                        &attestation.block_hash,
-                        attestation.attester,
-                        weight,
-                    );
-                    drop(sync);
-                }
-
-                self.flush_finalized_to_archive().await;
-            } else {
-                debug!("Received invalid attestation signature");
             }
         }
     }

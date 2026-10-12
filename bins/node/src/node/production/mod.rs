@@ -652,10 +652,7 @@ impl Node {
             let _ = network.broadcast_block(block).await;
         }
 
-        // Attest our own block for finality gadget + record in minute tracker.
-        self.attest_own_block(block_hash, current_slot, height)
-            .await;
-
+        // Our own block was attested in apply_block's post-commit step.
         // Flush any blocks that just reached finality
         self.flush_finalized_to_archive().await;
 

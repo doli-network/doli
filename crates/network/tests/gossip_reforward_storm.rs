@@ -100,8 +100,8 @@ use network::gossip::staleness::{
     SeenCache, StalenessCtx, SEEN_CACHE_CAPACITY, SEEN_CACHE_TTL_SECS,
 };
 use network::gossip::{
-    new_gossipsub_with_cache_time, relay_decision, MeshConfig, RelayTopic, ATTESTATION_TOPIC,
-    VOTES_TOPIC,
+    new_gossipsub_with_cache_time, relay_decision, MeshConfig, RelayDecision, RelayTopic,
+    ATTESTATION_TOPIC, VOTES_TOPIC,
 };
 
 // ============================================================================
@@ -215,7 +215,9 @@ struct StaleParams {
 }
 
 /// Apply the unified gate with a node's PERSISTENT cache. Building the ctx per
-/// call is correct: the borrowed `cache` carries all cross-call state.
+/// call is correct: the borrowed `cache` carries all cross-call state. From
+/// INC-I-237 M3 a first-sight attestation/vote is Deferred to the node verdict;
+/// this harness models the node Accepting the honest fixture.
 fn classify_with(
     cache: &mut SeenCache,
     p: &StaleParams,
@@ -229,9 +231,11 @@ fn classify_with(
         best_slot: p.best_slot,
         seen: cache,
     };
-    relay_decision(topic, data, &mut ctx)
-        .acceptance()
-        .expect("attestations and votes are swarm-judged until M3")
+    match relay_decision(topic, data, &mut ctx) {
+        RelayDecision::Defer => MessageAcceptance::Accept,
+        RelayDecision::Ignore => MessageAcceptance::Ignore,
+        other => panic!("from M3 an attestation/vote relay decision is Defer or Ignore: {other:?}"),
+    }
 }
 
 // ============================================================================

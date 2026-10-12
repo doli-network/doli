@@ -887,6 +887,11 @@ Attester (a ProducerSet member) dual-signs the block it saw:
         pre-BLS attestations — the mixed-fleet bridge.
    │
    ▼ gossip
+Relay verdict (`bins/node/src/node/gossip_verdicts.rs`, INC-I-237 M3): forwarded
+  iff decode + Ed25519 + ProducerSet member (pending activation included); block
+  knowledge and BLS never decide the relay; [ATTEST_FETCH] only for members,
+  at most 8 GetBlockByHash per periodic tick.
+   │
 Ingress (`bins/node/src/node/attestation/ingress.rs`)
   1. Attendance is recorded FIRST and is Ed25519-authenticated: a ProducerSet
      member attends whatever the BLS verdict is, and regardless of weight

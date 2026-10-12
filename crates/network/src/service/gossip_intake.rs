@@ -1,4 +1,4 @@
-//! Gossipsub message intake (INC-I-237 D1/D2/D6): one relay decision, then
+//! Gossipsub message intake (INC-I-237 D1/D2/D6/R2): one relay decision, then
 //! one validation report — by the swarm, or by the node's verdict on Defer.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -59,8 +59,7 @@ pub(super) fn handle_gossip_message(
             );
             (RelayDecision::Ignore, payload)
         }
-        (RelayDecision::Defer, _) if !rate_limiter.check_transaction(&source) => {
-            warn!("Rate limit: dropping tx from {source} (tx rate exceeded)");
+        (RelayDecision::Defer, payload) if !within_peer_budget(&payload, &source, rate_limiter) => {
             (RelayDecision::Ignore, Payload::None)
         }
         other => other,
@@ -105,6 +104,7 @@ pub(super) fn handle_gossip_message(
             let id = message_id.clone();
             let outcome = defer(
                 payload,
+                message.data,
                 id,
                 source,
                 size,
@@ -116,15 +116,9 @@ pub(super) fn handle_gossip_message(
                 report(MessageAcceptance::Ignore);
             }
         }
-        RelayDecision::LocalOnly | RelayDecision::AcceptTransitional => deliver_local(
-            payload,
-            message.data,
-            source,
-            size,
-            handle,
-            event_tx,
-            rate_limiter,
-        ),
+        RelayDecision::LocalOnly => {
+            deliver_local(payload, source, size, handle, event_tx, rate_limiter)
+        }
         RelayDecision::Reject | RelayDecision::Ignore => {
             debug!("[GOSSIP_VALIDATE] not processed topic={topic:?} from={source}")
         }
@@ -151,14 +145,13 @@ fn log_block_recv(block: &Block, source: PeerId, size: usize, candidate: bool) {
 
 fn deliver_local(
     payload: Payload,
-    data: Vec<u8>,
     source: PeerId,
     size: usize,
     handle: GossipHandle,
     event_tx: &EventSink,
     rate_limiter: &mut RateLimiter,
 ) {
-    let (event, is_producer) = match payload {
+    let event = match payload {
         Payload::TxHashes(hashes) => {
             let announce = NetworkEvent::TxAnnouncement {
                 peer_id: source,
@@ -167,27 +160,22 @@ fn deliver_local(
             };
             return deliver_txs(announce, source, size, event_tx, rate_limiter);
         }
-        Payload::Digest(digest) => (
-            NetworkEvent::ProducerDigestReceived {
-                peer_id: source,
-                digest,
-                handle,
-            },
-            true,
-        ),
-        Payload::LegacyProducers(keys) => (NetworkEvent::ProducersAnnounced(keys, handle), true),
-        Payload::Announcements(anns) => (
-            NetworkEvent::ProducerAnnouncementsReceived(anns, handle),
-            true,
-        ),
-        Payload::Vote => (NetworkEvent::NewVote(data, handle), false),
-        Payload::Attestation => (NetworkEvent::NewAttestation(data, source, handle), false),
-        Payload::None | Payload::Txs(_) => return,
+        Payload::Digest(digest) => NetworkEvent::ProducerDigestReceived {
+            peer_id: source,
+            digest,
+            handle,
+        },
+        Payload::LegacyProducers(keys) => NetworkEvent::ProducersAnnounced(keys, handle),
+        Payload::None
+        | Payload::Txs(_)
+        | Payload::Announcements(_)
+        | Payload::Vote
+        | Payload::Attestation => return,
     };
     if rate_limiter.check_request(&source) {
         rate_limiter.record_request(&source, size);
         event_tx.emit(event);
-    } else if is_producer {
+    } else {
         warn!("Rate limit: dropping producer msg from {source} (request rate exceeded)");
     }
 }
@@ -207,10 +195,29 @@ fn deliver_txs(
     }
 }
 
-/// Carry a Deferred tx message to the node as ONE event whose handle names the
+/// Per-peer bucket of a deferred message: txs draw on the tx bucket, every
+/// other topic on the request bucket, never on the tx bucket (F-2).
+fn within_peer_budget(payload: &Payload, source: &PeerId, rate_limiter: &mut RateLimiter) -> bool {
+    if let Payload::Txs(_) = payload {
+        let ok = rate_limiter.check_transaction(source);
+        if !ok {
+            warn!("Rate limit: dropping tx from {source} (tx rate exceeded)");
+        }
+        return ok;
+    }
+    let ok = rate_limiter.check_request(source);
+    if !ok && matches!(payload, Payload::Announcements(_)) {
+        warn!("Rate limit: dropping producer msg from {source} (request rate exceeded)");
+    }
+    ok
+}
+
+/// Carry a Deferred message to the node as ONE event whose handle names the
 /// original message; the caller reports Ignore when this returns `Shed`.
+#[allow(clippy::too_many_arguments)]
 fn defer(
     payload: Payload,
+    data: Vec<u8>,
     msg_id: MessageId,
     source: PeerId,
     size: usize,
@@ -218,12 +225,29 @@ fn defer(
     event_tx: &EventSink,
     rate_limiter: &mut RateLimiter,
 ) -> EmitOutcome {
-    let Payload::Txs(txs) = payload else {
-        return EmitOutcome::Shed;
+    let stamp = move |topic| {
+        let mut handle = GossipHandle::new(topic, msg_id, source);
+        handle.recv_at = recv_at;
+        handle
     };
-    rate_limiter.record_transaction(&source, size);
-    TX_GOSSIP_BATCH_STATS.record(txs.len());
-    let mut handle = GossipHandle::new(GossipTopic::Transactions, msg_id, source);
-    handle.recv_at = recv_at;
-    event_tx.emit(NetworkEvent::NewTransaction(txs, handle))
+    let event = match payload {
+        Payload::Txs(txs) => {
+            rate_limiter.record_transaction(&source, size);
+            TX_GOSSIP_BATCH_STATS.record(txs.len());
+            let handle = stamp(GossipTopic::Transactions);
+            return event_tx.emit(NetworkEvent::NewTransaction(txs, handle));
+        }
+        Payload::Announcements(anns) => {
+            NetworkEvent::ProducerAnnouncementsReceived(anns, stamp(GossipTopic::Producers))
+        }
+        Payload::Vote => NetworkEvent::NewVote(data, stamp(GossipTopic::Votes)),
+        Payload::Attestation => {
+            NetworkEvent::NewAttestation(data, source, stamp(GossipTopic::Attestations))
+        }
+        Payload::None | Payload::TxHashes(_) | Payload::Digest(_) | Payload::LegacyProducers(_) => {
+            return EmitOutcome::Shed
+        }
+    };
+    rate_limiter.record_request(&source, size);
+    event_tx.emit(event)
 }

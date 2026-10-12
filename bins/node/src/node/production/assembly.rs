@@ -656,15 +656,4 @@ impl Node {
             ))
         }
     }
-
-    /// Attest our own block for finality gadget + record in minute tracker.
-    pub async fn attest_own_block(&mut self, block_hash: Hash, current_slot: u32, height: u64) {
-        self.create_and_broadcast_attestation(block_hash, current_slot, height)
-            .await;
-        if let Some(ref kp) = self.producer_key {
-            // Attendance only: at/above the INC-I-208 gate the egress pools its own verified half.
-            let minute = attestation_minute(current_slot);
-            self.minute_tracker.record(*kp.public_key(), minute);
-        }
-    }
 }

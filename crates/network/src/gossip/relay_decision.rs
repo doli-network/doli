@@ -1,8 +1,7 @@
 //! The one per-topic gossip relay table (INC-I-237 D2). Blocks keep the one
 //! pre-verdict Accept (decode + stale <= 6 slots) and undecodable block bytes
 //! are the only Reject. Every other topic is Ignore, LocalOnly (processed,
-//! never forwarded), Defer (the node's verdict decides) or AcceptTransitional
-//! (swarm Accept until M3).
+//! never forwarded) or Defer (the node's verdict decides).
 
 use crypto::{Hash, PublicKey};
 use doli_core::{
@@ -72,8 +71,6 @@ pub enum RelayDecision {
     AcceptBlock(Box<Block>),
     /// Processed locally, never forwarded.
     LocalOnly,
-    /// Forwarded and processed.
-    AcceptTransitional,
     /// Processed; the node's verdict decides the forward.
     Defer,
 }
@@ -84,7 +81,7 @@ impl RelayDecision {
         match self {
             Self::Reject => Some(MessageAcceptance::Reject),
             Self::Ignore | Self::LocalOnly => Some(MessageAcceptance::Ignore),
-            Self::AcceptBlock(_) | Self::AcceptTransitional => Some(MessageAcceptance::Accept),
+            Self::AcceptBlock(_) => Some(MessageAcceptance::Accept),
             Self::Defer => None,
         }
     }
@@ -138,7 +135,7 @@ pub(crate) fn decide(
                     v.timestamp == 0 || now <= v.timestamp.saturating_add(VOTE_MAX_AGE_SECS)
                 })
             };
-            transitional(
+            deferred(
                 first_sight(GossipTopic::Votes, data, ctx, current),
                 Payload::Vote,
             )
@@ -149,7 +146,7 @@ pub(crate) fn decide(
                     .filter(|a| attestation_is_current(a, genesis, slot_secs, now))
             };
             let seen = first_sight(GossipTopic::Attestations, data, ctx, current);
-            transitional(seen, Payload::Attestation)
+            deferred(seen, Payload::Attestation)
         }
         RelayTopic::Headers
         | RelayTopic::Heartbeats
@@ -185,9 +182,9 @@ fn first_sight<T>(
     decoded
 }
 
-fn transitional<T>(decoded: Option<T>, payload: Payload) -> (RelayDecision, Payload) {
+fn deferred<T>(decoded: Option<T>, payload: Payload) -> (RelayDecision, Payload) {
     match decoded {
-        Some(_) => (RelayDecision::AcceptTransitional, payload),
+        Some(_) => (RelayDecision::Defer, payload),
         None => (RelayDecision::Ignore, Payload::None),
     }
 }
@@ -206,8 +203,8 @@ fn producers(data: &[u8], now_unix: u64) -> (RelayDecision, Payload) {
         _ => decode_producer_set(data).map_or(Payload::None, Payload::Announcements),
     };
     let decision = match payload {
-        Payload::LegacyProducers(_) => RelayDecision::LocalOnly,
-        Payload::Digest(_) | Payload::Announcements(_) => RelayDecision::AcceptTransitional,
+        Payload::LegacyProducers(_) | Payload::Digest(_) => RelayDecision::LocalOnly,
+        Payload::Announcements(_) => RelayDecision::Defer,
         _ => RelayDecision::Ignore,
     };
     (decision, payload)

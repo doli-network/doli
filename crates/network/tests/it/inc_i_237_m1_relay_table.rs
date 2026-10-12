@@ -85,14 +85,15 @@ fn decide(topic: RelayTopic, data: &[u8], seen: &mut SeenCache) -> RelayDecision
     decide_at(topic, data, seen, v::GENESIS_TIME, v::NOW_UNIX)
 }
 
+/// INC-I-237 M3: by Debug name, so the test compiles with or without a variant.
 fn name(d: &RelayDecision) -> &'static str {
-    match d {
-        RelayDecision::Reject => "Reject",
-        RelayDecision::Ignore => "Ignore",
-        RelayDecision::AcceptBlock(_) => "AcceptBlock",
-        RelayDecision::LocalOnly => "LocalOnly",
-        RelayDecision::AcceptTransitional => "AcceptTransitional",
-        RelayDecision::Defer => "Defer",
+    match format!("{d:?}").split('(').next().unwrap_or_default() {
+        "Reject" => "Reject",
+        "Ignore" => "Ignore",
+        "AcceptBlock" => "AcceptBlock",
+        "LocalOnly" => "LocalOnly",
+        "Defer" => "Defer",
+        _ => "other",
     }
 }
 
@@ -324,7 +325,7 @@ fn req_grv_003_tx_rows_defer_to_the_node_verdict() {
     );
 }
 
-// REQ-GRV-003 / F-4 — Decision: a failure means the attestation row changed before M3 (fresh no longer forwarded, stale or duplicate forwarded) or undecodable bytes still fail open to Accept.
+// REQ-GRV-003 / F-4 — Decision: a failure means a fresh attestation is not Deferred to the node verdict (M3), a stale or duplicate one reaches the node, or undecodable bytes fail open.
 #[test]
 fn req_grv_003_attestation_rows() {
     let mut s = seen();
@@ -334,11 +335,7 @@ fn req_grv_003_attestation_rows() {
         ("boundary", attestation(WALL - ATTEST_STALE_SLOTS)),
     ] {
         let d = decide(RelayTopic::Attestations, &data, &mut s);
-        assert_eq!(
-            (name(&d), reported(&d)),
-            ("AcceptTransitional", "Accept"),
-            "{row}"
-        );
+        assert_eq!((name(&d), reported(&d)), ("Defer", "none"), "{row}");
         assert_row(
             RelayTopic::Attestations,
             &data,
@@ -360,11 +357,7 @@ fn req_grv_003_attestation_rows() {
         0,
         v::NOW_UNIX,
     );
-    assert_eq!(
-        name(&d),
-        "AcceptTransitional",
-        "clock unset: decodable fails open"
-    );
+    assert_eq!(name(&d), "Defer", "clock unset: decodable goes to the node");
     let d = decide_at(
         RelayTopic::Attestations,
         v::GARBAGE,
@@ -379,7 +372,7 @@ fn req_grv_003_attestation_rows() {
     );
 }
 
-// REQ-GRV-003 / F-4 — Decision: a failure means the vote row changed before M3 or a non-vote JSON still fails open to Accept and is forwarded.
+// REQ-GRV-003 / F-4 — Decision: a failure means a fresh vote is not Deferred to the node verdict (M3) or a non-vote JSON reaches the node or is forwarded.
 #[test]
 fn req_grv_003_vote_rows() {
     let mut s = seen();
@@ -390,11 +383,7 @@ fn req_grv_003_vote_rows() {
         ("timestamp 0", vote(0)),
     ] {
         let d = decide(RelayTopic::Votes, &data, &mut s);
-        assert_eq!(
-            (name(&d), reported(&d)),
-            ("AcceptTransitional", "Accept"),
-            "{row}"
-        );
+        assert_eq!((name(&d), reported(&d)), ("Defer", "none"), "{row}");
         assert_row(
             RelayTopic::Votes,
             &data,
@@ -415,26 +404,26 @@ fn req_grv_003_vote_rows() {
     }
 }
 
-// REQ-GRV-003 / F-10 — Decision: a failure means the producer row changed before M3, the legacy bincode list is forwarded (or no longer processed), or undecodable bytes still fail open.
+// REQ-GRV-003 / F-10 — Decision: a failure means a producer set is not Deferred to the GSet verdict (M3), a digest is forwarded (X5) or not processed, the legacy bincode list is forwarded, or undecodable bytes fail open.
 #[test]
 fn req_grv_003_producer_rows() {
     let mut s = seen();
     let set = v::bytes(v::PRODUCERS_PROTOBUF_SET);
-    for (row, data) in [
-        ("protobuf set", set.clone()),
-        ("bloom digest", v::bytes(v::PRODUCERS_BLOOM_DIGEST)),
+    for (row, data, want) in [
+        ("protobuf set", set.clone(), ("Defer", "none")),
+        (
+            "bloom digest",
+            v::bytes(v::PRODUCERS_BLOOM_DIGEST),
+            ("LocalOnly", "Ignore"),
+        ),
     ] {
         let d = decide(RelayTopic::Producers, &data, &mut s);
-        assert_eq!(
-            (name(&d), reported(&d)),
-            ("AcceptTransitional", "Accept"),
-            "{row}"
-        );
+        assert_eq!((name(&d), reported(&d)), want, "{row}");
         assert_row(
             RelayTopic::Producers,
             &data,
             &mut s,
-            "AcceptTransitional",
+            want.0,
             &format!("{row} again"),
         );
     }
@@ -456,7 +445,7 @@ fn req_grv_003_producer_rows() {
         v::GENESIS_TIME,
         late - 1,
     );
-    assert_eq!(name(&d), "AcceptTransitional", "age boundary is fresh");
+    assert_eq!(name(&d), "Defer", "age boundary is fresh");
     assert_row(
         RelayTopic::Producers,
         v::GARBAGE,
@@ -465,11 +454,7 @@ fn req_grv_003_producer_rows() {
         "garbage",
     );
     let d = decide_at(RelayTopic::Producers, &set, &mut s, v::GENESIS_TIME, 0);
-    assert_eq!(
-        name(&d),
-        "AcceptTransitional",
-        "clock unset: decodable fails open"
-    );
+    assert_eq!(name(&d), "Defer", "clock unset: decodable goes to the node");
     let d = decide_at(
         RelayTopic::Producers,
         v::GARBAGE,

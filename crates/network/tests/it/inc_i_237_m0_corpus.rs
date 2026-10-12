@@ -2,7 +2,8 @@
 //! M1 to the one relay-decision table.
 //!
 //! M2 (D1): decodable tx rows now report "Defer" (no swarm report; the node
-//! verdict decides). Every old wire format is pinned to its relay decision. Rows the spec
+//! verdict decides). M3 (R2): fresh attestation / vote / producer-set rows
+//! report "Defer"; the bloom digest is processed locally and reported Ignore. Every old wire format is pinned to its relay decision. Rows the spec
 //! changes (D2/D3: undecodable non-block -> Ignore, legacy bincode producer list
 //! -> LocalOnly, headers / heartbeats / tier1 / region / unknown -> Ignore) carry
 //! their new verdict; every other row keeps its v6.43.3 verdict.
@@ -14,7 +15,7 @@
 //!   O2: none (no receiver)
 //!   O3: decoded value per vector; reported MessageAcceptance per (topic, vector)
 //!   O4: none   O5: none   O6: local NetworkEvent kind, emitted only when the
-//!       decision processes locally (AcceptBlock | LocalOnly | AcceptTransitional)
+//!       decision processes locally (AcceptBlock | LocalOnly | Defer)
 //! PATHS: P1 decodes + fresh, P2 empty bytes, P3 garbage bytes, P4 re-delivery,
 //!   P5 wrong-topic bytes (header on blocks), P6 unknown topic
 //! INPUT PARTITIONS: one row per format era (single era since v6.24.0 except
@@ -31,9 +32,9 @@ use network::gossip::staleness::{
     SeenCache, StalenessCtx, SEEN_CACHE_CAPACITY, SEEN_CACHE_TTL_SECS,
 };
 use network::gossip::{
-    decode_tx_gossip, encode_tx_announce, encode_tx_batch, relay_decision, RelayDecision,
-    RelayTopic, TxGossipMessage, ATTESTATION_TOPIC, BLOCKS_TOPIC, PRODUCERS_TOPIC,
-    TIER1_BLOCKS_TOPIC, TRANSACTIONS_TOPIC, VOTES_TOPIC,
+    decode_tx_gossip, encode_tx_announce, encode_tx_batch, relay_decision, RelayTopic,
+    TxGossipMessage, ATTESTATION_TOPIC, BLOCKS_TOPIC, PRODUCERS_TOPIC, TIER1_BLOCKS_TOPIC,
+    TRANSACTIONS_TOPIC, VOTES_TOPIC,
 };
 
 const REGION_BLOCKS_TOPIC: &str = "/doli/r1/blocks/1";
@@ -59,12 +60,10 @@ fn swarm_report(topic: &str, data: &[u8], seen: &mut SeenCache) -> (&'static str
         seen,
     };
     let d = relay_decision(RelayTopic::from_topic_str(topic), data, &mut ctx);
-    let local = matches!(
-        d,
-        RelayDecision::AcceptBlock(_)
-            | RelayDecision::LocalOnly
-            | RelayDecision::AcceptTransitional
-            | RelayDecision::Defer
+    let variant = format!("{d:?}");
+    let local = !matches!(
+        variant.split('(').next().unwrap_or_default(),
+        "Reject" | "Ignore"
     );
     (d.acceptance().as_ref().map_or("Defer", label), local)
 }
@@ -218,24 +217,24 @@ fn corpus() -> Vec<Row> {
             "producers protobuf set",
             PRODUCERS_TOPIC,
             v::bytes(v::PRODUCERS_PROTOBUF_SET),
-            "Accept",
-            "Accept",
+            "Defer",
+            "Defer",
             "ProducerAnnouncementsReceived x1",
         ),
         row(
             "producers bloom digest",
             PRODUCERS_TOPIC,
             v::bytes(v::PRODUCERS_BLOOM_DIGEST),
-            "Accept",
-            "Accept",
+            "Ignore",
+            "Ignore",
             "ProducerDigestReceived",
         ),
         row(
             "producers empty",
             PRODUCERS_TOPIC,
             empty(),
-            "Accept",
-            "Accept",
+            "Defer",
+            "Defer",
             "ProducerAnnouncementsReceived x0",
         ),
         row(
@@ -251,7 +250,7 @@ fn corpus() -> Vec<Row> {
             "vote rpc json",
             VOTES_TOPIC,
             v::VOTE_RPC.to_vec(),
-            "Accept",
+            "Defer",
             "Ignore",
             "NewVote",
         ),
@@ -299,7 +298,7 @@ fn corpus() -> Vec<Row> {
             "attestation bls",
             ATTESTATION_TOPIC,
             v::bytes(v::ATTESTATION_BLS),
-            "Accept",
+            "Defer",
             "Ignore",
             "NewAttestation",
         ),
@@ -307,7 +306,7 @@ fn corpus() -> Vec<Row> {
             "attestation no-bls",
             ATTESTATION_TOPIC,
             v::bytes(v::ATTESTATION_NO_BLS),
-            "Accept",
+            "Defer",
             "Ignore",
             "NewAttestation",
         ),
