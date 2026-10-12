@@ -11,7 +11,8 @@
 //! OUTPUT CONTRACT: fn decode_tx_gossip / decode_digest / decode_producer_set /
 //!   BlockHeader::deserialize / Heartbeat::deserialize / Attestation::from_bytes
 //!   and fn relay_decision(topic, data, ctx) -> RelayDecision (+ acceptance())
-//!   O1: ctx.seen — SeenCache identity record (observed via the re-delivery verdict)
+//!   O1: none (M4 R6: re-delivery dedup is the vendor duplicate cache, so the
+//!       app re-delivery verdict equals the first verdict)
 //!   O2: none (no receiver)
 //!   O3: decoded value per vector; reported MessageAcceptance per (topic, vector)
 //!   O4: none   O5: none   O6: local NetworkEvent kind, emitted only when the
@@ -28,9 +29,7 @@ use super::inc_i_237_m0_corpus_vectors as v;
 use crypto::PublicKey;
 use doli_core::{Attestation, Block, BlockHeader, Heartbeat, Transaction, TxType};
 use libp2p::gossipsub::MessageAcceptance;
-use network::gossip::staleness::{
-    SeenCache, StalenessCtx, SEEN_CACHE_CAPACITY, SEEN_CACHE_TTL_SECS,
-};
+use network::gossip::staleness::StalenessCtx;
 use network::gossip::{
     decode_tx_gossip, encode_tx_announce, encode_tx_batch, relay_decision, RelayTopic,
     TxGossipMessage, ATTESTATION_TOPIC, BLOCKS_TOPIC, PRODUCERS_TOPIC, TIER1_BLOCKS_TOPIC,
@@ -51,15 +50,14 @@ fn label(a: &MessageAcceptance) -> &'static str {
 }
 
 /// What the swarm reports to gossipsub, and whether it processes the message locally.
-fn swarm_report(topic: &str, data: &[u8], seen: &mut SeenCache) -> (&'static str, bool) {
-    let mut ctx = StalenessCtx {
+fn swarm_report(topic: &str, data: &[u8]) -> (&'static str, bool) {
+    let ctx = StalenessCtx {
         now_unix: v::NOW_UNIX,
         genesis_time: v::GENESIS_TIME,
         slot_duration: v::SLOT_DURATION,
         best_slot: 1_000,
-        seen,
     };
-    let d = relay_decision(RelayTopic::from_topic_str(topic), data, &mut ctx);
+    let d = relay_decision(RelayTopic::from_topic_str(topic), data, &ctx);
     let variant = format!("{d:?}");
     let local = !matches!(
         variant.split('(').next().unwrap_or_default(),
@@ -139,13 +137,13 @@ fn corpus() -> Vec<Row> {
     let junk = || v::GARBAGE.to_vec();
     vec![
         // txs (M2 / D1): a decodable first sight is Deferred to the node verdict
-        // (no swarm report); a re-delivery is Ignored; 0xAA stays LocalOnly (Ignore).
+        // (no swarm report); 0xAA stays LocalOnly (Ignore).
         row(
             "tx legacy transfer",
             TRANSACTIONS_TOPIC,
             v::bytes(v::TX_LEGACY_TRANSFER),
             "Defer",
-            "Ignore",
+            "Defer",
             "NewTransaction x1",
         ),
         row(
@@ -153,7 +151,7 @@ fn corpus() -> Vec<Row> {
             TRANSACTIONS_TOPIC,
             v::bytes(v::TX_LEGACY_ROTATE_BLS_ERA),
             "Defer",
-            "Ignore",
+            "Defer",
             "NewTransaction x1",
         ),
         row(
@@ -161,7 +159,7 @@ fn corpus() -> Vec<Row> {
             TRANSACTIONS_TOPIC,
             v::bytes(v::TX_LEGACY_MIN),
             "Defer",
-            "Ignore",
+            "Defer",
             "NewTransaction x1",
         ),
         row(
@@ -169,7 +167,7 @@ fn corpus() -> Vec<Row> {
             TRANSACTIONS_TOPIC,
             v::bytes(v::TX_BATCH_1),
             "Defer",
-            "Ignore",
+            "Defer",
             "NewTransaction x1",
         ),
         row(
@@ -177,7 +175,7 @@ fn corpus() -> Vec<Row> {
             TRANSACTIONS_TOPIC,
             v::bytes(v::TX_BATCH_3),
             "Defer",
-            "Ignore",
+            "Defer",
             "NewTransaction x3",
         ),
         row(
@@ -245,13 +243,13 @@ fn corpus() -> Vec<Row> {
             "Ignore",
             "none",
         ),
-        // votes/heartbeats/attestations/headers: raw-bytes identity dedup, fail-open decode.
+        // votes/heartbeats/attestations/headers: fail-open decode.
         row(
             "vote rpc json",
             VOTES_TOPIC,
             v::VOTE_RPC.to_vec(),
             "Defer",
-            "Ignore",
+            "Defer",
             "NewVote",
         ),
         row(
@@ -299,7 +297,7 @@ fn corpus() -> Vec<Row> {
             ATTESTATION_TOPIC,
             v::bytes(v::ATTESTATION_BLS),
             "Defer",
-            "Ignore",
+            "Defer",
             "NewAttestation",
         ),
         row(
@@ -307,7 +305,7 @@ fn corpus() -> Vec<Row> {
             ATTESTATION_TOPIC,
             v::bytes(v::ATTESTATION_NO_BLS),
             "Defer",
-            "Ignore",
+            "Defer",
             "NewAttestation",
         ),
         row(
@@ -442,9 +440,8 @@ fn req_grv_012_f10_corpus_relay_decisions_and_local_events() {
     assert!(rows.len() >= 36, "corpus must not shrink");
     let mut bad = Vec::new();
     for r in &rows {
-        let mut seen = SeenCache::new(SEEN_CACHE_TTL_SECS, SEEN_CACHE_CAPACITY);
-        let (first, processed) = swarm_report(r.topic, &r.data, &mut seen);
-        let (again, _) = swarm_report(r.topic, &r.data, &mut seen);
+        let (first, processed) = swarm_report(r.topic, &r.data);
+        let (again, _) = swarm_report(r.topic, &r.data);
         let local = if processed {
             local_event(r.topic, &r.data)
         } else {

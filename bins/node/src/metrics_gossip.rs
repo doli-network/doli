@@ -110,6 +110,22 @@ lazy_static! {
         &["lane"]
     )
     .unwrap();
+    static ref LANE_DEPTH: IntGaugeVec = IntGaugeVec::new(
+        Opts::new(
+            "doli_event_lane_depth",
+            "Events queued in each swarm-to-node event lane"
+        ),
+        &["lane"]
+    )
+    .unwrap();
+    static ref SHED_BY_TOPIC: IntCounterVec = IntCounterVec::new(
+        Opts::new(
+            "doli_event_shed_by_topic_total",
+            "Gossip events refused by a full event lane, per topic"
+        ),
+        &["topic"]
+    )
+    .unwrap();
 }
 
 /// Lane counters of the running network service, read at scrape time.
@@ -154,9 +170,12 @@ pub fn register_gossip_metrics(registry: &Registry) {
     let _ = registry.register(Box::new(LANE_INFLIGHT_BYTES.clone()));
     let _ = registry.register(Box::new(LANE_SHED.clone()));
     let _ = registry.register(Box::new(VERDICT_LATE.clone()));
+    let _ = registry.register(Box::new(LANE_DEPTH.clone()));
+    let _ = registry.register(Box::new(SHED_BY_TOPIC.clone()));
     for topic in EVENT_TOPICS {
         received(topic);
         verdict(topic);
+        SHED_BY_TOPIC.with_label_values(&[topic.metric_label()]);
     }
     scrape_late_verdicts();
     for size in TX_BATCH_BUCKETS {
@@ -226,7 +245,8 @@ pub fn scrape_tx_batch_stats(state: &mut TxBatchScrapeState) {
     state.last = now;
 }
 
-/// Publish lane budgets, in-flight bytes and drop counts (gauges, replaced each call).
+/// Publish lane budgets, in-flight bytes, depth and drop counts (gauges, replaced
+/// each call); raise each per-topic shed counter to the lanes' monotone count.
 pub fn observe_event_lanes(snap: &LaneSnapshot, budgets: &LaneBudgets) {
     let rows = [
         (
@@ -234,16 +254,24 @@ pub fn observe_event_lanes(snap: &LaneSnapshot, budgets: &LaneBudgets) {
             budgets.consensus_bytes,
             snap.consensus_bytes,
             snap.consensus_shed,
+            snap.consensus_len,
         ),
-        ("bulk", budgets.bulk_bytes, snap.bulk_bytes, snap.bulk_shed),
+        (
+            "bulk",
+            budgets.bulk_bytes,
+            snap.bulk_bytes,
+            snap.bulk_shed,
+            snap.bulk_len,
+        ),
         (
             "backlog",
             budgets.backlog_bytes,
             snap.backlog_bytes,
             snap.control_dropped,
+            snap.backlog_len,
         ),
     ];
-    for (lane, budget, inflight, shed) in rows {
+    for (lane, budget, inflight, shed, depth) in rows {
         LANE_BUDGET_BYTES
             .with_label_values(&[lane])
             .set(budget as i64);
@@ -251,6 +279,11 @@ pub fn observe_event_lanes(snap: &LaneSnapshot, budgets: &LaneBudgets) {
             .with_label_values(&[lane])
             .set(inflight as i64);
         LANE_SHED.with_label_values(&[lane]).set(shed as i64);
+        LANE_DEPTH.with_label_values(&[lane]).set(depth as i64);
+    }
+    for topic in EVENT_TOPICS {
+        let c = SHED_BY_TOPIC.with_label_values(&[topic.metric_label()]);
+        c.inc_by(snap.shed_by_topic.get(topic).saturating_sub(c.get()));
     }
 }
 

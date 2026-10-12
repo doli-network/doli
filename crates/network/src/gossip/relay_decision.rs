@@ -10,9 +10,7 @@ use doli_core::{
 };
 use libp2p::gossipsub::MessageAcceptance;
 
-use super::staleness::{
-    attestation_is_current, seen_key, GossipTopic, StalenessCtx, VOTE_MAX_AGE_SECS,
-};
+use super::staleness::{attestation_is_current, StalenessCtx, VOTE_MAX_AGE_SECS};
 use super::validation::{classify_block_gossip, classify_producer_gossip};
 use super::{
     decode_tx_gossip, TxGossipMessage, ATTESTATION_TOPIC, BLOCKS_TOPIC, HEADERS_TOPIC,
@@ -100,7 +98,7 @@ pub(crate) enum Payload {
 }
 
 /// The relay decision for `data` received on `topic`.
-pub fn relay_decision(topic: RelayTopic, data: &[u8], ctx: &mut StalenessCtx<'_>) -> RelayDecision {
+pub fn relay_decision(topic: RelayTopic, data: &[u8], ctx: &StalenessCtx) -> RelayDecision {
     decide(topic, data, ctx).0
 }
 
@@ -108,7 +106,7 @@ pub fn relay_decision(topic: RelayTopic, data: &[u8], ctx: &mut StalenessCtx<'_>
 pub(crate) fn decide(
     topic: RelayTopic,
     data: &[u8],
-    ctx: &mut StalenessCtx<'_>,
+    ctx: &StalenessCtx,
 ) -> (RelayDecision, Payload) {
     let (genesis, slot_secs, now) = (ctx.genesis_time, ctx.slot_duration, ctx.now_unix);
     match topic {
@@ -119,15 +117,11 @@ pub(crate) fn decide(
             (MessageAcceptance::Reject, _) => (RelayDecision::Reject, Payload::None),
             _ => (RelayDecision::Ignore, Payload::None),
         },
-        RelayTopic::Transactions => {
-            match first_sight(GossipTopic::Transactions, data, ctx, decode_tx_gossip) {
-                Some(TxGossipMessage::FullBatch(txs)) => (RelayDecision::Defer, Payload::Txs(txs)),
-                Some(TxGossipMessage::Announce(h)) => {
-                    (RelayDecision::LocalOnly, Payload::TxHashes(h))
-                }
-                None => (RelayDecision::Ignore, Payload::None),
-            }
-        }
+        RelayTopic::Transactions => match decode_tx_gossip(data) {
+            Some(TxGossipMessage::FullBatch(txs)) => (RelayDecision::Defer, Payload::Txs(txs)),
+            Some(TxGossipMessage::Announce(h)) => (RelayDecision::LocalOnly, Payload::TxHashes(h)),
+            None => (RelayDecision::Ignore, Payload::None),
+        },
         RelayTopic::Producers => producers(data, now),
         RelayTopic::Votes => {
             let current = |d: &[u8]| {
@@ -135,18 +129,14 @@ pub(crate) fn decide(
                     v.timestamp == 0 || now <= v.timestamp.saturating_add(VOTE_MAX_AGE_SECS)
                 })
             };
-            deferred(
-                first_sight(GossipTopic::Votes, data, ctx, current),
-                Payload::Vote,
-            )
+            deferred(current(data), Payload::Vote)
         }
         RelayTopic::Attestations => {
             let current = |d: &[u8]| {
                 Attestation::from_bytes(d)
                     .filter(|a| attestation_is_current(a, genesis, slot_secs, now))
             };
-            let seen = first_sight(GossipTopic::Attestations, data, ctx, current);
-            deferred(seen, Payload::Attestation)
+            deferred(current(data), Payload::Attestation)
         }
         RelayTopic::Headers
         | RelayTopic::Heartbeats
@@ -156,30 +146,10 @@ pub(crate) fn decide(
     }
 }
 
-/// Only the vote field the age bound needs; identity is the raw bytes.
+/// Only the vote field the age bound needs.
 #[derive(serde::Deserialize)]
 struct VoteAge {
     timestamp: u64,
-}
-
-/// Raw-bytes identity dedup (INV-NETWORK-004) around `decode`; records the
-/// key only when the message is new and `decode` accepts it.
-fn first_sight<T>(
-    topic: GossipTopic,
-    data: &[u8],
-    ctx: &mut StalenessCtx<'_>,
-    decode: impl FnOnce(&[u8]) -> Option<T>,
-) -> Option<T> {
-    let key = seen_key(topic, &[data]);
-    let decoded = if ctx.seen.contains(&key, ctx.now_unix) {
-        None
-    } else {
-        decode(data)
-    };
-    if decoded.is_some() {
-        ctx.seen.record(key, ctx.now_unix);
-    }
-    decoded
 }
 
 fn deferred<T>(decoded: Option<T>, payload: Payload) -> (RelayDecision, Payload) {

@@ -2,7 +2,7 @@
 //! sets moved to the node verdict: blocks keep the ONE pre-verdict Accept.
 //!
 //! OUTPUT CONTRACT: fn relay_decision(topic, data, ctx) -> RelayDecision (+ acceptance())
-//!   O1: ctx.seen (raw-bytes SeenCache) — observed via the second decision
+//!   O1: none (M4 R6: no app dedup; the second decision is judged on its own)
 //!   O3: RelayDecision variant and the MessageAcceptance the swarm reports
 //!   O6: network source text (one relay authority: no AcceptTransitional,
 //!       two report sites)
@@ -20,9 +20,7 @@ use super::inc_i_237_m3_fake_node::{attestation, forge, vote_json};
 use crypto::{Hash, KeyPair, PublicKey};
 use doli_core::{Block, BlockHeader};
 use libp2p::gossipsub::MessageAcceptance;
-use network::gossip::staleness::{
-    SeenCache, StalenessCtx, SEEN_CACHE_CAPACITY, SEEN_CACHE_TTL_SECS,
-};
+use network::gossip::staleness::StalenessCtx;
 use network::gossip::{relay_decision, RelayDecision, RelayTopic};
 
 const WALL: u32 = 1_000;
@@ -40,19 +38,14 @@ const ALL: [RelayTopic; 10] = [
     RelayTopic::Unknown,
 ];
 
-fn seen() -> SeenCache {
-    SeenCache::new(SEEN_CACHE_TTL_SECS, SEEN_CACHE_CAPACITY)
-}
-
-fn decide(topic: RelayTopic, data: &[u8], seen: &mut SeenCache) -> RelayDecision {
-    let mut ctx = StalenessCtx {
+fn decide(topic: RelayTopic, data: &[u8]) -> RelayDecision {
+    let ctx = StalenessCtx {
         now_unix: v::NOW_UNIX,
         genesis_time: v::GENESIS_TIME,
         slot_duration: v::SLOT_DURATION,
         best_slot: WALL,
-        seen,
     };
-    relay_decision(topic, data, &mut ctx)
+    relay_decision(topic, data, &ctx)
 }
 
 /// Variant name without its payload; compiles whichever variants exist.
@@ -106,7 +99,7 @@ fn req_grv_003_relay_table_has_exactly_one_pre_verdict_accept_blocks() {
     let mut accepted = Vec::new();
     for topic in ALL {
         for (row, data) in payloads() {
-            let d = decide(topic, &data, &mut seen());
+            let d = decide(topic, &data);
             if matches!(d.acceptance(), Some(MessageAcceptance::Accept)) {
                 accepted.push(format!("{topic:?} x {row} -> {}", name(&d)));
             }
@@ -136,7 +129,7 @@ fn req_grv_003_fresh_attestation_vote_and_producer_set_defer() {
             v::bytes(v::PRODUCERS_PROTOBUF_SET),
         ),
     ] {
-        let d = decide(topic, &data, &mut seen());
+        let d = decide(topic, &data);
         assert_eq!(
             (name(&d), d.acceptance().is_none()),
             ("Defer".into(), true),
@@ -168,9 +161,8 @@ fn req_grv_sec_002_forged_variant_first_leaves_the_genuine_deferred() {
         (RelayTopic::Votes, vote_forged, vote_json(&kp, v::NOW_UNIX)),
     ];
     for (topic, forged, genuine) in cases {
-        let mut s = seen();
-        let first = decide(topic, &forged, &mut s);
-        let second = decide(topic, &genuine, &mut s);
+        let first = decide(topic, &forged);
+        let second = decide(topic, &genuine);
         assert_eq!(
             name(&first),
             "Defer",

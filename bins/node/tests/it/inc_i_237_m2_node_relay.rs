@@ -50,7 +50,8 @@ async fn line() -> Line {
         b.network
             .as_ref()
             .unwrap()
-            .broadcast_transaction(warm)
+            .command_sender()
+            .send(NetworkCommand::BroadcastTransaction(warm))
             .await
             .unwrap();
         i += 1;

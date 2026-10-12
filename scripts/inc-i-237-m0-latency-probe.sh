@@ -5,7 +5,11 @@
 #   default URL: http://127.0.0.1:9000/metrics
 # Prints per-topic verdict latency (histogram_quantile linear interpolation),
 # block_recv, attestation_coverage, tx_batch, verdict_late (M2 late-verdict
-# counter per topic) and a GATE line (p99 <= 2s).
+# counter per topic), received (events handled per topic), the swarm-to-node
+# channel section (M4) and a GATE line (p99 <= 2s). Channel lines:
+#   channel lane=<l> depth=<n> inflight_bytes=<n> budget_bytes=<n> shed=<n>
+#   channel shed topic=<t> n=<n>     (one per topic series present)
+#   channel control_dropped=<n>      (doli_event_lane_shed_total{lane="backlog"})
 # --series-count prints only the number of verdict-latency series.
 # Exit 0 on success, 2 when the source is unreachable or unreadable.
 set -u
@@ -21,7 +25,7 @@ while [ $# -gt 0 ]; do
             file="$2"
             shift
             ;;
-        -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
         *) url="$1" ;;
     esac
     shift
@@ -94,6 +98,12 @@ function fmt(v) { return (v == "NaN") ? "NaN" : sprintf("%.6f", v) }
 /^doli_gossip_tx_batch_messages_total\{/ { labels($1); TB[L["size"]] = $2 + 0; TBM += $2; next }
 /^doli_gossip_tx_batch_txs_total / { TBT = $2 + 0; next }
 /^doli_gossip_verdict_late_total\{/ { labels($1); LT[L["topic"]] = $2 + 0; LTS += $2; next }
+/^doli_gossip_events_received_total\{/ { labels($1); RC[L["topic"]] = $2 + 0; RCS += $2; next }
+/^doli_event_lane_depth\{/ { labels($1); LANE[L["lane"]] = 1; DEP[L["lane"]] = $2 + 0; next }
+/^doli_event_lane_inflight_bytes\{/ { labels($1); LANE[L["lane"]] = 1; INFL[L["lane"]] = $2 + 0; next }
+/^doli_event_lane_budget_bytes\{/ { labels($1); LANE[L["lane"]] = 1; BUD[L["lane"]] = $2 + 0; next }
+/^doli_event_lane_shed_total\{/ { labels($1); LANE[L["lane"]] = 1; LSH[L["lane"]] = $2 + 0; next }
+/^doli_event_shed_by_topic_total\{/ { labels($1); TSH[L["topic"]] = $2 + 0; next }
 END {
     nt = 0
     for (t in TOPIC) T[++nt] = t
@@ -120,6 +130,13 @@ END {
     line = sprintf("verdict_late total=%.0f", LTS)
     for (i = 1; i <= nl; i++) line = line sprintf(" %s=%.0f", K[i], LT[K[i]])
     print line
+    line = sprintf("received total=%.0f", RCS)
+    for (t in RC) line = line sprintf(" %s=%.0f", t, RC[t])
+    print line
+    for (l in LANE)
+        printf "channel lane=%s depth=%.0f inflight_bytes=%.0f budget_bytes=%.0f shed=%.0f\n", l, DEP[l] + 0, INFL[l] + 0, BUD[l] + 0, LSH[l] + 0
+    for (t in TSH) printf "channel shed topic=%s n=%.0f\n", t, TSH[t]
+    printf "channel control_dropped=%.0f\n", LSH["backlog"] + 0
     if (max < 0) print "GATE verdict_p99_max=NaN NO_DATA (<= 2s)"
     else printf "GATE verdict_p99_max=%s %s (<= 2s)\n", fmt(max), (max <= 2 + 1e-9) ? "PASS" : "FAIL"
 }'

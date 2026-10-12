@@ -11,7 +11,7 @@
 //! PATHS: P1 production subscribe; P2 every NetworkCommand variant; P3 each
 //!   forbidden token per file; P4 each required sync method present.
 //! INPUT PARTITIONS: subscription set {5 consumed topics present, headers absent,
-//!   heartbeats absent}; NetworkCommand {17 kept variants}; tokens {async fn,
+//!   heartbeats absent}; NetworkCommand {16 kept variants; M4 deleted BroadcastProducers}; tokens {async fn,
 //!   async block, .await, Sender accessor, Sender return, pub Sender field,
 //!   awaitable reserve, raw sender use, flush_one/has_backlog leftovers}.
 //! MATRIX: O1 x P1 (exact set); shape x P2-P4 — all asserted.
@@ -60,7 +60,6 @@ fn command_name(c: &NetworkCommand) -> &'static str {
         NetworkCommand::Connect(_) => "Connect",
         NetworkCommand::Disconnect(_) => "Disconnect",
         NetworkCommand::Bootstrap => "Bootstrap",
-        NetworkCommand::BroadcastProducers(_) => "BroadcastProducers",
         NetworkCommand::BroadcastProducerAnnouncements(_) => "BroadcastProducerAnnouncements",
         NetworkCommand::BroadcastProducerDigest(_) => "BroadcastProducerDigest",
         NetworkCommand::SendProducerDelta { .. } => "SendProducerDelta",

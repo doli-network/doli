@@ -28,6 +28,7 @@ fn snapshot(c: usize, b: usize, k: usize) -> LaneSnapshot {
         consensus_shed: 5,
         bulk_shed: 6,
         control_dropped: 7,
+        ..LaneSnapshot::default()
     }
 }
 

@@ -3,17 +3,17 @@
 //! wait in a FIFO backlog, drained by `try_flush`.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicIsize, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use doli_core::{Block, Transaction};
 use tokio::sync::mpsc::{self, error::TrySendError};
 use tracing::{debug, warn};
 
 use super::backpressure::{GossipShedMetrics, WARN_EVERY_N_DROPS};
 use super::event_lanes::EventLanes;
+use super::event_size::{block_bytes, sync_response_bytes, tx_bytes};
 use super::types::NetworkEvent;
-use crate::protocols::SyncResponse;
+use crate::gossip::staleness::GossipTopic;
 
 /// Bytes the consensus lane may hold.
 pub const CONSENSUS_LANE_BYTES: usize = 64 << 20;
@@ -24,8 +24,6 @@ pub const BACKLOG_BYTES: usize = 64 << 20;
 /// Max control events held while the node is not draining.
 pub const BACKLOG_CAP: usize = 8_192;
 
-const INPUT_BYTES: usize = 112;
-const OUTPUT_BYTES: usize = 56;
 const HASH_BYTES: usize = 32;
 const ANNOUNCEMENT_BYTES: usize = 192;
 
@@ -70,6 +68,43 @@ impl LaneBudgets {
             backlog_cap: BACKLOG_CAP,
         }
     }
+
+    /// INV-NETWORK-002 queue half: every budget is finite and non-zero.
+    pub fn is_bounded(&self) -> bool {
+        [
+            self.consensus_cap,
+            self.bulk_cap,
+            self.consensus_bytes,
+            self.bulk_bytes,
+            self.backlog_bytes,
+            self.backlog_cap,
+        ]
+        .iter()
+        .all(|&b| b > 0 && b < usize::MAX)
+    }
+}
+
+/// Gossip events refused by a full lane, per topic.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TopicCounts {
+    pub blocks: u64,
+    pub txs: u64,
+    pub attestations: u64,
+    pub votes: u64,
+    pub producers: u64,
+}
+
+impl TopicCounts {
+    /// The count of `topic`.
+    pub fn get(&self, topic: GossipTopic) -> u64 {
+        match topic {
+            GossipTopic::Blocks => self.blocks,
+            GossipTopic::Transactions => self.txs,
+            GossipTopic::Attestations => self.attestations,
+            GossipTopic::Votes => self.votes,
+            GossipTopic::Producers => self.producers,
+        }
+    }
 }
 
 /// Point-in-time copy of [`LaneStats`].
@@ -82,6 +117,9 @@ pub struct LaneSnapshot {
     pub consensus_shed: u64,
     pub bulk_shed: u64,
     pub control_dropped: u64,
+    pub consensus_len: usize,
+    pub bulk_len: usize,
+    pub shed_by_topic: TopicCounts,
 }
 
 /// In-flight bytes and drop counters shared by the sink, the receiver and readers.
@@ -94,6 +132,22 @@ pub struct LaneStats {
     consensus_shed: AtomicU64,
     bulk_shed: AtomicU64,
     control_dropped: AtomicU64,
+    // Signed: a dequeue can land before the post-send increment.
+    consensus_len: AtomicIsize,
+    bulk_len: AtomicIsize,
+    shed_by_topic: [AtomicU64; 5],
+}
+
+const TOPIC_ORDER: [GossipTopic; 5] = [
+    GossipTopic::Blocks,
+    GossipTopic::Transactions,
+    GossipTopic::Attestations,
+    GossipTopic::Votes,
+    GossipTopic::Producers,
+];
+
+fn depth(n: &AtomicIsize) -> usize {
+    usize::try_from(n.load(Ordering::Acquire)).unwrap_or(0)
 }
 
 impl LaneStats {
@@ -107,6 +161,36 @@ impl LaneStats {
             consensus_shed: self.consensus_shed.load(Ordering::Relaxed),
             bulk_shed: self.bulk_shed.load(Ordering::Relaxed),
             control_dropped: self.control_dropped.load(Ordering::Relaxed),
+            consensus_len: depth(&self.consensus_len),
+            bulk_len: depth(&self.bulk_len),
+            shed_by_topic: {
+                let [blocks, txs, attestations, votes, producers] = self
+                    .shed_by_topic
+                    .each_ref()
+                    .map(|c| c.load(Ordering::Relaxed));
+                TopicCounts {
+                    blocks,
+                    txs,
+                    attestations,
+                    votes,
+                    producers,
+                }
+            },
+        }
+    }
+
+    fn len(&self, lane: Lane) -> &AtomicIsize {
+        match lane {
+            Lane::Consensus => &self.consensus_len,
+            Lane::Bulk => &self.bulk_len,
+        }
+    }
+
+    /// Count a gossip event refused by a full lane under its topic.
+    fn shed_topic(&self, ev: &NetworkEvent) {
+        if let Some(t) = ev.gossip_topic() {
+            let i = TOPIC_ORDER.iter().position(|&x| x == t).unwrap_or(0);
+            self.shed_by_topic[i].fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -117,9 +201,15 @@ impl LaneStats {
         }
     }
 
-    /// Return `size` bytes of `lane` once its event leaves the queue.
+    /// Return `size` bytes of `lane` on a refused send.
     pub(super) fn release(&self, lane: Lane, size: usize) {
         self.bytes(lane).fetch_sub(size, Ordering::AcqRel);
+    }
+
+    /// An event of `size` bytes left `lane`'s queue.
+    pub(super) fn dequeued(&self, lane: Lane, size: usize) {
+        self.release(lane, size);
+        self.len(lane).fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -145,68 +235,6 @@ pub fn lane_of(ev: &NetworkEvent) -> Lane {
         | NetworkEvent::ProducersAnnounced(..)
         | NetworkEvent::ProducerAnnouncementsReceived(..)
         | NetworkEvent::ProducerDigestReceived { .. } => Lane::Bulk,
-    }
-}
-
-fn tx_bytes(tx: &Transaction) -> usize {
-    let outputs: usize = tx
-        .outputs
-        .iter()
-        .map(|o| OUTPUT_BYTES + o.extra_data.len())
-        .sum();
-    16 + tx.inputs.len() * INPUT_BYTES + outputs + tx.extra_data.len()
-}
-
-fn block_bytes(b: &Block) -> usize {
-    b.header.size() + b.transactions.iter().map(tx_bytes).sum::<usize>()
-}
-
-fn opt_len(v: &Option<Vec<u8>>) -> usize {
-    v.as_ref().map_or(0, Vec::len)
-}
-
-fn sync_response_bytes(r: &SyncResponse) -> usize {
-    match r {
-        SyncResponse::Headers(h) => h.iter().map(|h| h.size()).sum(),
-        SyncResponse::Bodies(b) => b.iter().map(block_bytes).sum(),
-        SyncResponse::Block(b) => b.as_ref().map_or(0, block_bytes),
-        SyncResponse::StateSnapshot {
-            chain_state,
-            utxo_set,
-            producer_set,
-            block_header_bytes,
-            epoch_bond_snapshot_bytes,
-            epoch_accumulators_bytes,
-            epoch_state_bytes,
-            ..
-        } => {
-            chain_state.len()
-                + utxo_set.len()
-                + producer_set.len()
-                + opt_len(block_header_bytes)
-                + opt_len(epoch_bond_snapshot_bytes)
-                + opt_len(epoch_accumulators_bytes)
-                + opt_len(epoch_state_bytes)
-        }
-        SyncResponse::StateManifest {
-            chain_state,
-            producer_set,
-            block_header_bytes,
-            epoch_bond_snapshot_bytes,
-            epoch_accumulators_bytes,
-            epoch_state_bytes,
-            ..
-        } => {
-            chain_state.len()
-                + producer_set.len()
-                + opt_len(block_header_bytes)
-                + opt_len(epoch_bond_snapshot_bytes)
-                + opt_len(epoch_accumulators_bytes)
-                + opt_len(epoch_state_bytes)
-        }
-        SyncResponse::StateChunk { body, next_key, .. } => body.len() + opt_len(next_key),
-        SyncResponse::Error(s) => s.len(),
-        SyncResponse::StateRoot { .. } | SyncResponse::StateSessionUnavailable { .. } => 0,
     }
 }
 
@@ -321,7 +349,10 @@ impl EventSink {
             return Err(Refused::Full(item));
         }
         match tx.try_send(item) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                self.stats.len(lane).fetch_add(1, Ordering::AcqRel);
+                Ok(())
+            }
             Err(TrySendError::Full(item)) => {
                 self.stats.release(lane, size);
                 Err(Refused::Full(item))
@@ -344,7 +375,10 @@ impl EventSink {
             };
             return match self.try_lane(lane, (ev, size), false) {
                 Ok(()) => EmitOutcome::Emitted,
-                Err(Refused::Full(_)) => count_drop(shed, "gossip events"),
+                Err(Refused::Full((ev, _))) => {
+                    self.stats.shed_topic(&ev);
+                    count_drop(shed, "gossip events")
+                }
                 Err(Refused::Closed) => EmitOutcome::Shed,
             };
         }
@@ -388,7 +422,8 @@ impl EventSink {
         let size = event_bytes(&ev);
         match self.try_lane(Lane::Consensus, (ev, size), false) {
             Ok(()) => return EmitOutcome::Emitted,
-            Err(Refused::Full(_)) => {
+            Err(Refused::Full((ev, _))) => {
+                self.stats.shed_topic(&ev);
                 self.stats.consensus_shed.fetch_add(1, Ordering::Relaxed);
                 metrics.record_block_drop();
                 let total = metrics.blocks_dropped();

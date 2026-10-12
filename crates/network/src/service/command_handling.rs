@@ -133,16 +133,6 @@ pub(super) async fn handle_command(
             }
         }
 
-        NetworkCommand::BroadcastProducers(data) => {
-            let topic = IdentTopic::new(PRODUCERS_TOPIC);
-            if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, data) {
-                // Duplicate is expected if we broadcast the same list frequently
-                if !matches!(e, libp2p::gossipsub::PublishError::Duplicate) {
-                    warn!("Failed to broadcast producer list: {}", e);
-                }
-            }
-        }
-
         NetworkCommand::BroadcastProducerAnnouncements(announcements) => {
             let data = encode_producer_set(&announcements);
             let topic = IdentTopic::new(PRODUCERS_TOPIC);

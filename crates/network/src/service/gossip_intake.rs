@@ -11,7 +11,7 @@ use tracing::{debug, info, warn};
 
 use crate::behaviour::DoliBehaviour;
 use crate::config::NetworkConfig;
-use crate::gossip::staleness::{GossipTopic, SeenCache, StalenessCtx};
+use crate::gossip::staleness::{GossipTopic, StalenessCtx};
 use crate::gossip::tx_batch_stats::TX_GOSSIP_BATCH_STATS;
 use crate::gossip::{decide, now_unix_secs, Payload, RelayDecision, RelayTopic};
 use crate::rate_limit::RateLimiter;
@@ -31,7 +31,6 @@ pub(super) fn handle_gossip_message(
     event_tx: &EventSink,
     config: &NetworkConfig,
     rate_limiter: &mut RateLimiter,
-    seen: &mut SeenCache,
     best_slot: &AtomicU32,
     shed_metrics: &GossipShedMetrics,
     memory_shed_flag: &AtomicBool,
@@ -42,14 +41,13 @@ pub(super) fn handle_gossip_message(
     let handle = GossipHandle::now();
     let topic = RelayTopic::from_topic_str(message.topic.as_str());
     let best = best_slot.load(Ordering::Relaxed);
-    let mut ctx = StalenessCtx {
+    let ctx = StalenessCtx {
         now_unix: now_unix_secs(),
         genesis_time: config.genesis_time,
         slot_duration: config.slot_duration,
         best_slot: best,
-        seen,
     };
-    let (decision, payload) = match decide(topic, &message.data, &mut ctx) {
+    let (decision, payload) = match decide(topic, &message.data, &ctx) {
         (RelayDecision::AcceptBlock(b), payload)
             if b.header.slot < best && !rate_limiter.check_block_peer_only(&source) =>
         {

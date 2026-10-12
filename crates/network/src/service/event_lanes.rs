@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 use super::event_sink::{Lane, LaneItem, LaneStats};
 use super::types::NetworkEvent;
 
-/// Consensus-first receiver; releases each event's lane bytes on dequeue.
+/// Consensus-first receiver; releases each event's lane bytes and depth on dequeue.
 pub struct EventLanes {
     consensus: mpsc::Receiver<LaneItem>,
     bulk: mpsc::Receiver<LaneItem>,
@@ -28,7 +28,7 @@ impl EventLanes {
     }
 
     fn take(&self, lane: Lane, (ev, size): LaneItem) -> NetworkEvent {
-        self.stats.release(lane, size);
+        self.stats.dequeued(lane, size);
         ev
     }
 

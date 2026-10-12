@@ -614,10 +614,12 @@ in the INC-I-114 incident). Defense in depth:
    instead of `.send().await`. When the bounded event channel is full, the block
    is dropped and counted by `GossipShedMetrics`. The swarm task never suspends,
    so libp2p drains its internal queue normally.
-3. All gossip-topic event sends are load-shed; control events (peer, status,
-   sync) use a bounded FIFO backlog (8192, then dropped and counted). The swarm
-   task never awaits event delivery, so it cannot deadlock against the node
-   loop's command send (INC-I-237).
+3. All gossip-topic event sends are load-shed into two bounded lanes (consensus
+   lane: blocks, attestations, control; bulk lane: txs, votes, producers), each
+   bounded by count and bytes. Control events (peer, status, sync) that do not
+   fit use a FIFO backlog (8,192 events; status/sync also 64 MiB), then are
+   dropped and counted (F-12, open). The swarm task never awaits event delivery,
+   so it cannot deadlock against the node loop's command send (INC-I-237).
 4. Dropped blocks are recoverable via sync protocol (GetBlocks request-response).
 5. **Memory watchdog** (M2): a periodic sampler (5s interval) reads process RSS
    via `/proc/self/statm` (Linux) and trips a shared `AtomicBool` when RSS
@@ -630,7 +632,12 @@ in the INC-I-114 incident). Defense in depth:
 
 **Implementation**: `crates/network/src/service/backpressure.rs` (metrics + enqueue_or_shed), `crates/network/src/service/event_sink.rs` (non-blocking event delivery), `crates/network/src/watchdog.rs` (memory watchdog).
 
-**INV-NETWORK-002** (construction-time invariant, Level 3): Any aggressive gossip-propagation setting (`flood_publish=true` and/or `duplicate_cache_time <= 30s`) REQUIRES `validate_messages=true` AND a bounded (load-shedding) event queue. The invariant is enforced at gossipsub construction time via `assert_gossip_hardening_invariant()` — the node fails to start if either mitigation half is missing. Incident lineage: INC-I-009, INC-I-014, INC-I-118, INC-I-120, INC-I-114 (5 occurrences of the same unbounded-queue + aggressive-propagation shape). Implementation: `crates/network/src/gossip/config.rs` (`assert_gossip_hardening_invariant`, `AGGRESSIVE_DEDUP_THRESHOLD`). 7 gate tests cover all branch arms.
+**Gossip relay authority (INC-I-237).** The swarm forwards only one topic before the node judges it: a decodable, non-stale block (`Accept`; undecodable block bytes are the only `Reject`). For every other subscribed topic the NODE is the relay authority: the swarm defers the message, the vendor mcache holds it un-forwarded, and the node's verdict (`Accept | Ignore`, never `Reject`) is reported once on the original message id within 3.5 s. A late verdict is counted (`doli_gossip_verdict_late_total{topic}`) and never reported; the message then expires un-forwarded. A tx is forwarded only by a hop that newly admitted every tx in the message; an attestation only after its Ed25519 signature and the attester's ProducerSet membership verify; a vote only for a verified active producer; a producer batch only when the GSet merge added a verified entry. The node never re-publishes received content. Rules: `specs/protocol.md` §7.2; design: `specs/gossip-relay-verdict-architecture.md`.
+
+- **INV-NETWORK-004** is carried by the vendor message id: BLAKE3 over the FULL raw message bytes, kept 300 s by the gossipsub duplicate cache (`GOSSIP_DUPLICATE_CACHE_TIME`). There is no application-level dedup cache, and mempool residency keyed on the signature-excluding `tx.hash()` never authorizes a forward.
+- **INC-I-238 (OPEN, pre-existing):** an attestation's Ed25519 signature covers only `(block_hash, slot)`. A copy of a genuine member-signed attestation with changed unsigned fields (`height`, `attester_weight`, `bls_signature`) is a new message id and passes the node verdict, so it is relayed again. Votes have the same shape through their JSON form (field order, whitespace). The relay of such re-minted copies is bounded by the per-peer request bucket and the bulk/consensus lane budgets; it is not closed.
+
+**INV-NETWORK-002** (construction-time invariant, Level 3): Any aggressive gossip-propagation setting (`flood_publish=true` and/or `duplicate_cache_time <= 30s`) REQUIRES `validate_messages=true` AND bounded (load-shedding) event lanes. The invariant is enforced at network-service construction via `assert_production_hardening()` → `assert_gossip_hardening_invariant()`, whose queue half reads the real lane budgets (`LaneBudgets::is_bounded()`) — the node fails to start if either mitigation half is missing. Incident lineage: INC-I-009, INC-I-014, INC-I-118, INC-I-120, INC-I-114 (5 occurrences of the same unbounded-queue + aggressive-propagation shape). Implementation: `crates/network/src/gossip/config.rs` (`assert_gossip_hardening_invariant`, `AGGRESSIVE_DEDUP_THRESHOLD`). 7 gate tests cover all branch arms.
 
 #### 6.1.4 Transaction Malleability Prevention
 

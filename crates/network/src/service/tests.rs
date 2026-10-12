@@ -18,6 +18,7 @@ mod inc_i_237_m15_dev_paths;
 mod inc_i_237_m15_fixtures;
 mod inc_i_237_m15_lanes;
 mod inc_i_237_m2_verdict;
+mod inc_i_237_m4_lane_depth;
 
 #[test]
 fn test_network_event_announcement_type() {

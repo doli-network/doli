@@ -1,9 +1,9 @@
 //! INC-I-237 M1 (D2) — the one relay-decision table `relay_decision`.
 //!
 //! OUTPUT CONTRACT: fn relay_decision(topic: RelayTopic, data: &[u8],
-//!   ctx: &mut StalenessCtx<'_>) -> RelayDecision; fn RelayDecision::acceptance(&self);
+//!   ctx: &StalenessCtx) -> RelayDecision; fn RelayDecision::acceptance(&self);
 //!   fn RelayTopic::from_topic_str(&str) -> RelayTopic
-//!   O1: ctx.seen (SeenCache) — observed via the re-delivery decision
+//!   O1: none (M4 R6: the vendor duplicate cache, not the app, drops re-deliveries)
 //!   O3: RelayDecision variant (+ the decoded block inside AcceptBlock);
 //!       MessageAcceptance reported to gossipsub; RelayTopic
 //! PATHS: blocks {undecodable, stale, boundary, fresh, clock unset, equivocating
@@ -14,16 +14,13 @@
 //! INPUT PARTITIONS: every RelayTopic x {valid current format, undecodable,
 //!   adversarial (injection strings, ANSI, 1 MiB)}; topic strings {exact const,
 //!   region_topic(n), look-alike}
-//! MATRIX: O3 x every path above; O1 x re-delivery rows; acceptance() x variant.
+//! MATRIX: O3 x every path above (re-delivery = first-sight verdict); acceptance() x variant.
 
 use super::inc_i_237_m0_corpus_vectors as v;
 use crypto::{Hash, PublicKey, Signature};
 use doli_core::{Attestation, Block, BlockHeader};
 use libp2p::gossipsub::MessageAcceptance;
-use network::gossip::staleness::{
-    SeenCache, StalenessCtx, ATTEST_STALE_SLOTS, SEEN_CACHE_CAPACITY, SEEN_CACHE_TTL_SECS,
-    VOTE_MAX_AGE_SECS,
-};
+use network::gossip::staleness::{StalenessCtx, ATTEST_STALE_SLOTS, VOTE_MAX_AGE_SECS};
 use network::gossip::{
     region_topic, relay_decision, RelayDecision, RelayTopic, ATTESTATION_TOPIC, BLOCKS_TOPIC,
     PRODUCERS_TOPIC, PRODUCER_ANNOUNCEMENT_MAX_AGE_SECS, STALE_BLOCK_SLOT_THRESHOLD,
@@ -60,29 +57,18 @@ fn variant_name(t: RelayTopic) -> &'static str {
     }
 }
 
-fn seen() -> SeenCache {
-    SeenCache::new(SEEN_CACHE_TTL_SECS, SEEN_CACHE_CAPACITY)
-}
-
-fn decide_at(
-    topic: RelayTopic,
-    data: &[u8],
-    seen: &mut SeenCache,
-    genesis_time: u64,
-    now_unix: u64,
-) -> RelayDecision {
-    let mut ctx = StalenessCtx {
+fn decide_at(topic: RelayTopic, data: &[u8], genesis_time: u64, now_unix: u64) -> RelayDecision {
+    let ctx = StalenessCtx {
         now_unix,
         genesis_time,
         slot_duration: v::SLOT_DURATION,
         best_slot: WALL,
-        seen,
     };
-    relay_decision(topic, data, &mut ctx)
+    relay_decision(topic, data, &ctx)
 }
 
-fn decide(topic: RelayTopic, data: &[u8], seen: &mut SeenCache) -> RelayDecision {
-    decide_at(topic, data, seen, v::GENESIS_TIME, v::NOW_UNIX)
+fn decide(topic: RelayTopic, data: &[u8]) -> RelayDecision {
+    decide_at(topic, data, v::GENESIS_TIME, v::NOW_UNIX)
 }
 
 /// INC-I-237 M3: by Debug name, so the test compiles with or without a variant.
@@ -147,24 +133,22 @@ fn vote(timestamp: u64) -> Vec<u8> {
     .into_bytes()
 }
 
-fn assert_row(topic: RelayTopic, data: &[u8], seen: &mut SeenCache, want: &str, row: &str) {
-    let d = decide(topic, data, seen);
+fn assert_row(topic: RelayTopic, data: &[u8], want: &str, row: &str) {
+    let d = decide(topic, data);
     assert_eq!(name(&d), want, "{row}");
 }
 
 // REQ-GRV-009 — Decision: a failure means relay_decision stopped being a plain sync fn, so an await entered the block forward path.
 #[test]
 fn req_grv_009_relay_decision_is_a_sync_fn() {
-    let f: fn(RelayTopic, &[u8], &mut StalenessCtx<'_>) -> RelayDecision = relay_decision;
-    let mut s = seen();
-    let mut ctx = StalenessCtx {
+    let f: fn(RelayTopic, &[u8], &StalenessCtx) -> RelayDecision = relay_decision;
+    let ctx = StalenessCtx {
         now_unix: v::NOW_UNIX,
         genesis_time: v::GENESIS_TIME,
         slot_duration: v::SLOT_DURATION,
         best_slot: WALL,
-        seen: &mut s,
     };
-    assert_eq!(name(&f(RelayTopic::Blocks, &[], &mut ctx)), "Reject");
+    assert_eq!(name(&f(RelayTopic::Blocks, &[], &ctx)), "Reject");
 }
 
 // REQ-GRV-003 — Decision: a failure means a topic string maps to the wrong table row, so a look-alike topic could borrow the block pre-verdict exception or a real topic loses its rule.
@@ -215,18 +199,17 @@ fn req_grv_003_from_topic_str_maps_every_topic_and_nothing_else() {
 // REQ-GRV-009 / REQ-GRV-SEC-004 — Decision: a failure means the block exception moved: undecodable block bytes no longer Reject, a stale block is forwarded, or a fresh block is not Accepted (or decoded twice).
 #[test]
 fn req_grv_009_block_rows_reject_ignore_accept_block() {
-    let mut s = seen();
     for (row, data) in [
         ("empty", Vec::new()),
         ("garbage", v::GARBAGE.to_vec()),
         ("header bytes", v::bytes(v::HEADER)),
     ] {
-        let d = decide(RelayTopic::Blocks, &data, &mut s);
+        let d = decide(RelayTopic::Blocks, &data);
         assert_eq!((name(&d), reported(&d)), ("Reject", "Reject"), "{row}");
     }
     let cutoff = WALL - STALE_BLOCK_SLOT_THRESHOLD;
     let stale = block(cutoff - 1, 1);
-    let d = decide(RelayTopic::Blocks, &stale.serialize(), &mut s);
+    let d = decide(RelayTopic::Blocks, &stale.serialize());
     assert_eq!(
         (name(&d), reported(&d)),
         ("Ignore", "Ignore"),
@@ -237,14 +220,14 @@ fn req_grv_009_block_rows_reject_ignore_accept_block() {
         ("current", block(WALL, 3)),
         ("future", block(WALL + 50, 4)),
     ] {
-        match decide(RelayTopic::Blocks, &b.serialize(), &mut s) {
+        match decide(RelayTopic::Blocks, &b.serialize()) {
             RelayDecision::AcceptBlock(got) => {
                 assert_eq!(got.hash(), b.hash(), "{row}: decoded block");
                 assert_eq!(got.header.slot, b.header.slot, "{row}");
             }
             other => panic!("{row}: want AcceptBlock, got {}", name(&other)),
         }
-        let d = decide(RelayTopic::Blocks, &b.serialize(), &mut s);
+        let d = decide(RelayTopic::Blocks, &b.serialize());
         assert_eq!(
             reported(&d),
             "Accept",
@@ -252,7 +235,7 @@ fn req_grv_009_block_rows_reject_ignore_accept_block() {
         );
     }
     let old = block(1, 5);
-    let d = decide_at(RelayTopic::Blocks, &old.serialize(), &mut s, 0, v::NOW_UNIX);
+    let d = decide_at(RelayTopic::Blocks, &old.serialize(), 0, v::NOW_UNIX);
     assert_eq!(
         name(&d),
         "AcceptBlock",
@@ -263,21 +246,20 @@ fn req_grv_009_block_rows_reject_ignore_accept_block() {
 // F-16 / REQ-GRV-SEC-002 — Decision: a failure means a (slot, producer) dedup entered the block row, so a forged variant suppresses the genuine block.
 #[test]
 fn f_16_equivocating_block_pair_both_accepted() {
-    let mut s = seen();
     let a = block(WALL, 0xA1);
     let b = block(WALL, 0xB2);
     assert_ne!(a.hash(), b.hash());
     assert_eq!(
-        name(&decide(RelayTopic::Blocks, &a.serialize(), &mut s)),
+        name(&decide(RelayTopic::Blocks, &a.serialize())),
         "AcceptBlock"
     );
     assert_eq!(
-        name(&decide(RelayTopic::Blocks, &b.serialize(), &mut s)),
+        name(&decide(RelayTopic::Blocks, &b.serialize())),
         "AcceptBlock"
     );
 }
 
-// REQ-GRV-003 / D1 — Decision: a failure means the swarm still decides tx relay (the 6.43.3 b LocalOnly bridge survived M2, or a tx message is reported before the node verdict), or a re-delivery is judged twice.
+// REQ-GRV-003 / D1 — Decision: a failure means the swarm still decides tx relay (the 6.43.3 b LocalOnly bridge survived M2, or a tx message is reported before the node verdict).
 #[test]
 fn req_grv_003_tx_rows_defer_to_the_node_verdict() {
     for (row, data, want) in [
@@ -298,73 +280,54 @@ fn req_grv_003_tx_rows_defer_to_the_node_verdict() {
             ("LocalOnly", "Ignore"),
         ),
     ] {
-        let mut s = seen();
-        let d = decide(RelayTopic::Transactions, &data, &mut s);
+        let d = decide(RelayTopic::Transactions, &data);
         assert_eq!((name(&d), reported(&d)), want, "{row}");
         assert_row(
             RelayTopic::Transactions,
             &data,
-            &mut s,
-            "Ignore",
-            &format!("{row} again"),
+            want.0,
+            &format!("{row} again (R6: vendor dedup)"),
         );
     }
-    let mut s = seen();
     for (row, data) in [("empty", Vec::new()), ("garbage", v::GARBAGE.to_vec())] {
-        assert_row(RelayTopic::Transactions, &data, &mut s, "Ignore", row);
+        assert_row(RelayTopic::Transactions, &data, "Ignore", row);
     }
     let one = v::bytes(v::TX_BATCH_1);
     let three = v::bytes(v::TX_BATCH_3);
-    assert_row(RelayTopic::Transactions, &one, &mut s, "Defer", "batch 1");
+    assert_row(RelayTopic::Transactions, &one, "Defer", "batch 1");
     assert_row(
         RelayTopic::Transactions,
         &three,
-        &mut s,
         "Defer",
         "superset batch: raw-bytes key",
     );
 }
 
-// REQ-GRV-003 / F-4 — Decision: a failure means a fresh attestation is not Deferred to the node verdict (M3), a stale or duplicate one reaches the node, or undecodable bytes fail open.
+// REQ-GRV-003 / F-4 — Decision: a failure means a fresh attestation is not Deferred to the node verdict (M3), a stale one reaches the node, or undecodable bytes fail open.
 #[test]
 fn req_grv_003_attestation_rows() {
-    let mut s = seen();
     for (row, data) in [
         ("bls", v::bytes(v::ATTESTATION_BLS)),
         ("no bls", v::bytes(v::ATTESTATION_NO_BLS)),
         ("boundary", attestation(WALL - ATTEST_STALE_SLOTS)),
     ] {
-        let d = decide(RelayTopic::Attestations, &data, &mut s);
+        let d = decide(RelayTopic::Attestations, &data);
         assert_eq!((name(&d), reported(&d)), ("Defer", "none"), "{row}");
         assert_row(
             RelayTopic::Attestations,
             &data,
-            &mut s,
-            "Ignore",
-            &format!("{row} again"),
+            "Defer",
+            &format!("{row} again (R6: vendor dedup)"),
         );
     }
     let stale = attestation(WALL - ATTEST_STALE_SLOTS - 1);
-    assert_row(RelayTopic::Attestations, &stale, &mut s, "Ignore", "stale");
+    assert_row(RelayTopic::Attestations, &stale, "Ignore", "stale");
     for (row, data) in [("empty", Vec::new()), ("garbage", v::GARBAGE.to_vec())] {
-        assert_row(RelayTopic::Attestations, &data, &mut s, "Ignore", row);
+        assert_row(RelayTopic::Attestations, &data, "Ignore", row);
     }
-    let mut s0 = seen();
-    let d = decide_at(
-        RelayTopic::Attestations,
-        &attestation(1),
-        &mut s0,
-        0,
-        v::NOW_UNIX,
-    );
+    let d = decide_at(RelayTopic::Attestations, &attestation(1), 0, v::NOW_UNIX);
     assert_eq!(name(&d), "Defer", "clock unset: decodable goes to the node");
-    let d = decide_at(
-        RelayTopic::Attestations,
-        v::GARBAGE,
-        &mut s0,
-        0,
-        v::NOW_UNIX,
-    );
+    let d = decide_at(RelayTopic::Attestations, v::GARBAGE, 0, v::NOW_UNIX);
     assert_eq!(
         name(&d),
         "Ignore",
@@ -375,39 +338,36 @@ fn req_grv_003_attestation_rows() {
 // REQ-GRV-003 / F-4 — Decision: a failure means a fresh vote is not Deferred to the node verdict (M3) or a non-vote JSON reaches the node or is forwarded.
 #[test]
 fn req_grv_003_vote_rows() {
-    let mut s = seen();
     let boundary = vote(v::NOW_UNIX - VOTE_MAX_AGE_SECS);
     for (row, data) in [
         ("rpc json", v::VOTE_RPC.to_vec()),
         ("age boundary", boundary),
         ("timestamp 0", vote(0)),
     ] {
-        let d = decide(RelayTopic::Votes, &data, &mut s);
+        let d = decide(RelayTopic::Votes, &data);
         assert_eq!((name(&d), reported(&d)), ("Defer", "none"), "{row}");
         assert_row(
             RelayTopic::Votes,
             &data,
-            &mut s,
-            "Ignore",
-            &format!("{row} again"),
+            "Defer",
+            &format!("{row} again (R6: vendor dedup)"),
         );
     }
     let stale = vote(v::NOW_UNIX - VOTE_MAX_AGE_SECS - 1);
-    assert_row(RelayTopic::Votes, &stale, &mut s, "Ignore", "stale");
+    assert_row(RelayTopic::Votes, &stale, "Ignore", "stale");
     for (row, data) in [
         ("empty", Vec::new()),
         ("garbage", v::GARBAGE.to_vec()),
         ("json without timestamp", b"{\"vote\":\"approve\"}".to_vec()),
         ("json array", b"[1,2,3]".to_vec()),
     ] {
-        assert_row(RelayTopic::Votes, &data, &mut s, "Ignore", row);
+        assert_row(RelayTopic::Votes, &data, "Ignore", row);
     }
 }
 
 // REQ-GRV-003 / F-10 — Decision: a failure means a producer set is not Deferred to the GSet verdict (M3), a digest is forwarded (X5) or not processed, the legacy bincode list is forwarded, or undecodable bytes fail open.
 #[test]
 fn req_grv_003_producer_rows() {
-    let mut s = seen();
     let set = v::bytes(v::PRODUCERS_PROTOBUF_SET);
     for (row, data, want) in [
         ("protobuf set", set.clone(), ("Defer", "none")),
@@ -417,18 +377,17 @@ fn req_grv_003_producer_rows() {
             ("LocalOnly", "Ignore"),
         ),
     ] {
-        let d = decide(RelayTopic::Producers, &data, &mut s);
+        let d = decide(RelayTopic::Producers, &data);
         assert_eq!((name(&d), reported(&d)), want, "{row}");
         assert_row(
             RelayTopic::Producers,
             &data,
-            &mut s,
             want.0,
             &format!("{row} again"),
         );
     }
     let legacy = v::bytes(v::PRODUCERS_LEGACY_BINCODE);
-    let d = decide(RelayTopic::Producers, &legacy, &mut s);
+    let d = decide(RelayTopic::Producers, &legacy);
     assert_eq!(
         (name(&d), reported(&d)),
         ("LocalOnly", "Ignore"),
@@ -436,32 +395,14 @@ fn req_grv_003_producer_rows() {
     );
     let ann_ts = 1_790_000_000u64;
     let late = ann_ts + PRODUCER_ANNOUNCEMENT_MAX_AGE_SECS + 1;
-    let d = decide_at(RelayTopic::Producers, &set, &mut s, v::GENESIS_TIME, late);
+    let d = decide_at(RelayTopic::Producers, &set, v::GENESIS_TIME, late);
     assert_eq!(name(&d), "Ignore", "every announcement stale");
-    let d = decide_at(
-        RelayTopic::Producers,
-        &set,
-        &mut s,
-        v::GENESIS_TIME,
-        late - 1,
-    );
+    let d = decide_at(RelayTopic::Producers, &set, v::GENESIS_TIME, late - 1);
     assert_eq!(name(&d), "Defer", "age boundary is fresh");
-    assert_row(
-        RelayTopic::Producers,
-        v::GARBAGE,
-        &mut s,
-        "Ignore",
-        "garbage",
-    );
-    let d = decide_at(RelayTopic::Producers, &set, &mut s, v::GENESIS_TIME, 0);
+    assert_row(RelayTopic::Producers, v::GARBAGE, "Ignore", "garbage");
+    let d = decide_at(RelayTopic::Producers, &set, v::GENESIS_TIME, 0);
     assert_eq!(name(&d), "Defer", "clock unset: decodable goes to the node");
-    let d = decide_at(
-        RelayTopic::Producers,
-        v::GARBAGE,
-        &mut s,
-        v::GENESIS_TIME,
-        0,
-    );
+    let d = decide_at(RelayTopic::Producers, v::GARBAGE, v::GENESIS_TIME, 0);
     assert_eq!(
         name(&d),
         "Ignore",
@@ -490,8 +431,7 @@ fn req_grv_015_unconsumed_topics_are_always_ignored() {
     ] {
         for (row, data) in &payloads {
             for genesis in [v::GENESIS_TIME, 0] {
-                let mut s = seen();
-                let d = decide_at(topic, data, &mut s, genesis, v::NOW_UNIX);
+                let d = decide_at(topic, data, genesis, v::NOW_UNIX);
                 assert_eq!(
                     (name(&d), reported(&d)),
                     ("Ignore", "Ignore"),
@@ -530,8 +470,7 @@ fn req_grv_sec_004_no_non_block_topic_ever_rejects() {
             continue;
         }
         for (row, data) in &payloads {
-            let mut s = seen();
-            let d = decide(topic, data, &mut s);
+            let d = decide(topic, data);
             assert_ne!(name(&d), "Reject", "{} x {row}", variant_name(topic));
             assert_ne!(reported(&d), "Reject", "{} x {row}", variant_name(topic));
             assert_ne!(name(&d), "AcceptBlock", "{} x {row}", variant_name(topic));

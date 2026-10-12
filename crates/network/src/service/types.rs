@@ -135,8 +135,6 @@ pub enum NetworkCommand {
     Disconnect(PeerId),
     /// Bootstrap the DHT
     Bootstrap,
-    /// Broadcast producer list (anti-entropy gossip) - legacy format
-    BroadcastProducers(Vec<u8>),
     /// Broadcast producer announcements (new format with protobuf)
     BroadcastProducerAnnouncements(Vec<ProducerAnnouncement>),
     /// Broadcast producer set digest for delta sync

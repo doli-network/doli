@@ -6,6 +6,9 @@ use libp2p::gossipsub::{
 };
 use libp2p::identity::Keypair;
 
+use crate::service::LaneBudgets;
+
+use super::staleness::ATTEST_STALE_SLOTS;
 use super::{
     GossipError, MeshConfig, ATTESTATION_TOPIC, BLOCKS_TOPIC, PRODUCERS_TOPIC, TRANSACTIONS_TOPIC,
     VOTES_TOPIC,
@@ -58,13 +61,21 @@ pub const AGGRESSIVE_DEDUP_THRESHOLD: Duration = Duration::from_secs(30);
 /// 60-119 s after first sight, just past the 60 s window; gossipsub treated
 /// them as new and the fleet re-forwarded them in a loop until the unbounded
 /// per-peer send queues OOM-killed every node. 300 s drops those copies
-/// before validation, so they are never forwarded. MUST stay >= the
-/// app-level `staleness::SEEN_CACHE_TTL_SECS` (180 s).
+/// before validation, so they are never forwarded. This vendor cache (keyed
+/// by BLAKE3 of the raw data) is the only re-delivery dedup.
 ///
 /// RESOURCE COST: one 20-byte message ID + timestamp per distinct message;
 /// at 1 000 msg/s x 300 s ~= 30 MB worst case, a few MB at normal rates.
 /// Local per-node policy: no consensus, wire or block-content change.
 pub const GOSSIP_DUPLICATE_CACHE_TIME: Duration = Duration::from_secs(300);
+
+// Not shorter than the deleted 180 s app cache, nor the attestation age window
+// (every network's default slot is `consensus::SLOT_DURATION`).
+const _: () = assert!(
+    GOSSIP_DUPLICATE_CACHE_TIME.as_secs() >= 180
+        && GOSSIP_DUPLICATE_CACHE_TIME.as_secs()
+            >= ATTEST_STALE_SLOTS as u64 * doli_core::consensus::SLOT_DURATION
+);
 
 /// Verify that a gossipsub [`Config`] satisfies INV-NETWORK-002: aggressive
 /// propagation settings require both application-level validation and a
@@ -185,66 +196,74 @@ pub fn compute_dynamic_mesh(total_peers: usize) -> MeshConfig {
     }
 }
 
-/// Create a new GossipSub behaviour with configurable mesh parameters.
+/// Production GossipSub behaviour with configurable mesh parameters.
 ///
 /// Mesh parameters are loaded from `NetworkParams` via env vars / `.env` / defaults.
 /// Devnet uses larger mesh (12/8/48) for --no-dht star topology.
 /// Mainnet/testnet use standard mesh (6/4/12) with DHT peer rotation.
 pub fn new_gossipsub(keypair: &Keypair, mesh: &MeshConfig) -> Result<Gossipsub, GossipError> {
-    // INC-I-012 F9: Message ID uses BLAKE3 (deterministic across platforms).
-    // DefaultHasher is NOT guaranteed to produce the same output across Rust
-    // versions or platforms (x86 vs ARM). If two nodes compute different IDs
-    // for the same message, gossipsub breaks deduplication. BLAKE3 is already
-    // a project dependency (via crypto crate) and is platform-independent.
+    build_gossipsub(
+        keypair,
+        gossipsub_config(mesh, GOSSIP_DUPLICATE_CACHE_TIME)?,
+    )
+}
+
+/// [`new_gossipsub`] with a custom `duplicate_cache_time`, for integration
+/// tests that exercise dedup expiry in seconds.
+pub fn new_gossipsub_with_cache_time(
+    keypair: &Keypair,
+    mesh: &MeshConfig,
+    duplicate_cache_time: Duration,
+) -> Result<Gossipsub, GossipError> {
+    build_gossipsub(keypair, gossipsub_config(mesh, duplicate_cache_time)?)
+}
+
+/// INV-NETWORK-002 for the [`new_gossipsub`] config and the node's event lanes.
+pub(crate) fn assert_production_hardening(
+    mesh: &MeshConfig,
+    lanes: &LaneBudgets,
+) -> Result<(), GossipError> {
+    let config = gossipsub_config(mesh, GOSSIP_DUPLICATE_CACHE_TIME)?;
+    assert_gossip_hardening_invariant(&config, lanes.is_bounded())
+}
+
+/// The one gossipsub config.
+fn gossipsub_config(
+    mesh: &MeshConfig,
+    duplicate_cache_time: Duration,
+) -> Result<Config, GossipError> {
+    // INC-I-012 F9: BLAKE3 of the raw data (platform-independent), first 20 bytes.
     let message_id_fn = |message: &Message| {
         let hash = crypto::hash::hash(&message.data);
-        // Use first 20 bytes of BLAKE3 hash as message ID (standard gossipsub practice)
         MessageId::from(hash.as_bytes()[..20].to_vec())
     };
 
-    let config = ConfigBuilder::default()
-        // Heartbeat interval
+    ConfigBuilder::default()
         .heartbeat_interval(Duration::from_secs(1))
-        // Message validation
         .validation_mode(ValidationMode::Strict)
-        // INC-I-114: Application-level validation — every received message is
-        // held un-forwarded until the application calls
-        // report_message_validation_result(). This prevents stale blocks from
-        // being auto-forwarded after the dedup cache expires, which caused a
-        // fleet-wide gossip amplification storm and OOM cascade.
+        // INC-I-114: every message is held un-forwarded until the application
+        // reports its validation result.
         .validate_messages()
-        // Message ID function
         .message_id_fn(message_id_fn)
-        // Mesh parameters (from NetworkParams)
         .mesh_n(mesh.mesh_n)
         .mesh_n_low(mesh.mesh_n_low)
         .mesh_n_high(mesh.mesh_n_high)
-        .mesh_outbound_min((mesh.mesh_n / 3).max(1).min(mesh.mesh_n / 2)) // Scale with mesh_n, capped at mesh_n/2 (gossipsub constraint)
-        // Gossip parameters
+        .mesh_outbound_min((mesh.mesh_n / 3).max(1).min(mesh.mesh_n / 2)) // capped at mesh_n/2 (gossipsub constraint)
         .gossip_lazy(mesh.gossip_lazy)
-        // INC-I-015: 50% ensures blocks reach non-mesh peers in 1-2 heartbeats
-        // instead of 3-4. At 106 nodes: 94 non-mesh × 0.5 = 47 IHAVE/heartbeat.
+        // INC-I-015: 50% ensures blocks reach non-mesh peers in 1-2 heartbeats.
         .gossip_factor(0.50)
-        // History
         .history_length(5)
         .history_gossip(3)
-        // Message size limit — uses named constant for testability
         .max_transmit_size(GOSSIP_MAX_TRANSMIT_SIZE)
-        // Duplicate cache time (INC-I-237)
-        .duplicate_cache_time(GOSSIP_DUPLICATE_CACHE_TIME)
-        // Flood publish: send OUR messages to ALL peers, not just mesh.
-        // Defensive — ensures our blocks/attestations reach everyone regardless
-        // of mesh topology. At 42 nodes the bandwidth cost is negligible.
+        .duplicate_cache_time(duplicate_cache_time)
+        // Flood publish: send OUR messages to ALL peers, not just the mesh.
         .flood_publish(true)
         .build()
-        .map_err(|e| GossipError::Config(e.to_string()))?;
+        .map_err(|e| GossipError::Config(e.to_string()))
+}
 
-    // INV-NETWORK-002: construction-time hardening gate — fail fast if
-    // aggressive config is missing validation or bounded queue mitigations.
-    // Production passes true for has_bounded_queue because the block
-    // ingestion path sheds on a full channel (EventSink::emit_block).
-    assert_gossip_hardening_invariant(&config, true)?;
-
+/// The behaviour for `config`, with the production topic scores.
+fn build_gossipsub(keypair: &Keypair, config: Config) -> Result<Gossipsub, GossipError> {
     let mut gossipsub = Gossipsub::new(MessageAuthenticity::Signed(keypair.clone()), config)
         .map_err(|e| GossipError::Init(e.to_string()))?;
 
@@ -326,64 +345,6 @@ pub fn new_gossipsub(keypair: &Keypair, mesh: &MeshConfig) -> Result<Gossipsub, 
 
     let peer_score_params = PeerScoreParams {
         topics: topic_scores,
-        ip_colocation_factor_threshold: ip_colocation_threshold,
-        ..Default::default()
-    };
-    gossipsub
-        .with_peer_score(peer_score_params, PeerScoreThresholds::default())
-        .map_err(GossipError::Config)?;
-
-    Ok(gossipsub)
-}
-
-/// Create a GossipSub behaviour identical to [`new_gossipsub`] but with a
-/// custom `duplicate_cache_time`. Intended for integration tests that need
-/// short cache TTLs (e.g., 2-3s) to exercise dedup-expiry behavior without
-/// waiting 60 seconds. Production code should use [`new_gossipsub`].
-pub fn new_gossipsub_with_cache_time(
-    keypair: &Keypair,
-    mesh: &MeshConfig,
-    duplicate_cache_time: Duration,
-) -> Result<Gossipsub, GossipError> {
-    let message_id_fn = |message: &Message| {
-        let hash = crypto::hash::hash(&message.data);
-        MessageId::from(hash.as_bytes()[..20].to_vec())
-    };
-
-    let config = ConfigBuilder::default()
-        .heartbeat_interval(Duration::from_secs(1))
-        .validation_mode(ValidationMode::Strict)
-        // INC-I-114: validate_messages enabled (behavior-identical to production)
-        .validate_messages()
-        .message_id_fn(message_id_fn)
-        .mesh_n(mesh.mesh_n)
-        .mesh_n_low(mesh.mesh_n_low)
-        .mesh_n_high(mesh.mesh_n_high)
-        .mesh_outbound_min((mesh.mesh_n / 3).max(1).min(mesh.mesh_n / 2))
-        .gossip_lazy(mesh.gossip_lazy)
-        .gossip_factor(0.50)
-        .history_length(5)
-        .history_gossip(3)
-        .max_transmit_size(GOSSIP_MAX_TRANSMIT_SIZE)
-        .duplicate_cache_time(duplicate_cache_time)
-        .flood_publish(true)
-        .build()
-        .map_err(|e| GossipError::Config(e.to_string()))?;
-
-    // INV-NETWORK-002: construction-time hardening gate (same as production).
-    // Test variant also uses bounded queue (true) since integration tests
-    // exercise the same backpressure path.
-    assert_gossip_hardening_invariant(&config, true)?;
-
-    let mut gossipsub = Gossipsub::new(MessageAuthenticity::Signed(keypair.clone()), config)
-        .map_err(|e| GossipError::Init(e.to_string()))?;
-
-    let ip_colocation_threshold: f64 = std::env::var("DOLI_IP_COLOCATION_THRESHOLD")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(5.0);
-
-    let peer_score_params = PeerScoreParams {
         ip_colocation_factor_threshold: ip_colocation_threshold,
         ..Default::default()
     };
