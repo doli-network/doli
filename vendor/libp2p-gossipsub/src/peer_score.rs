@@ -193,6 +193,11 @@ impl Default for DeliveryRecord {
 }
 
 impl PeerScore {
+    // DOLI INC-I-237: M7.1 size readout of the delivery records.
+    pub(crate) fn deliveries_stats(&self) -> crate::TimeCacheStats {
+        self.deliveries.stats()
+    }
+
     /// Creates a new [`PeerScore`] using a given set of peer scoring parameters.
     #[allow(dead_code)]
     pub(crate) fn new(params: PeerScoreParams) -> Self {

@@ -343,6 +343,7 @@ A gossip event that does not fit its lane is shed and counted; a shed Deferred m
 | `doli_event_lane_depth` | gauge | `lane` (consensus, bulk, backlog) | events queued now (lane `consensus_len` / `bulk_len`, backlog length) |
 | `doli_event_lane_shed_total` | gauge | `lane` (consensus, bulk, backlog) | events dropped since start; `backlog` = control events dropped (`control_dropped`) |
 | `doli_event_shed_by_topic_total` | counter | `topic` (blocks, txs, attestations, votes, producers) | gossip events refused by a full lane, raised to the lanes' monotone count |
+| `doli_gossip_duplicate_cache_entries` | gauge | — | message ids in the node's gossipsub duplicate cache (INC-I-237 M7.1); the swarm stores `NetworkService::retention()` every 100 ms, the scrape copies its `duplicate_cache.entries` |
 
 The lane series are refreshed on each `/metrics` request (`scrape_for_exposition` → `observe_event_lanes`). Reader: `scripts/inc-i-237-m0-latency-probe.sh [--series-count] [--file PATH | URL]` prints per-topic p50/p99, a `verdict_late total=<n> <topic>=<n>…` line, a `received total=<n> <topic>=<n>…` line, the channel lines below and a `GATE` line (p99 ≤ 2 s):
 
@@ -350,6 +351,7 @@ The lane series are refreshed on each `/metrics` request (`scrape_for_exposition
 channel lane=<l> depth=<n> inflight_bytes=<n> budget_bytes=<n> shed=<n>   (one per lane)
 channel shed topic=<t> n=<n>                                             (one per topic series)
 channel control_dropped=<n>                                              (doli_event_lane_shed_total{lane="backlog"})
+dup_cache entries=<n>|absent                                             (doli_gossip_duplicate_cache_entries; absent = pre-M7.1 binary)
 ```
 
 **Connection model (two-tier):**

@@ -281,6 +281,7 @@ impl Node {
         );
         let network = NetworkService::new(network_config).await?;
         crate::metrics_gossip::watch_event_lanes(network.lane_stats(), network.lane_budgets());
+        crate::metrics_gossip::watch_retention(network.retention());
         self.network = Some(network);
 
         // When discv5 is active, give the sync engine 30s grace to discover

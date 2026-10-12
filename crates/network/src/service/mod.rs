@@ -21,6 +21,7 @@ mod event_size;
 mod gossip_handle;
 mod gossip_intake;
 mod helpers;
+mod retention;
 mod swarm_events;
 mod swarm_loop;
 mod types;
@@ -31,6 +32,7 @@ mod tests;
 
 pub use event_sink::{LaneBudgets, LaneSnapshot, LaneStats, TopicCounts};
 pub use gossip_handle::GossipHandle;
+pub use retention::{Retention, RetentionSnapshot};
 pub use types::{NetworkCommand, NetworkError, NetworkEvent};
 pub use verdict::{send_gossip_verdict, Verdict, DROPPED_VERDICTS, LATE_VERDICTS};
 
@@ -68,6 +70,7 @@ pub struct NetworkService {
     lanes: EventLanes,
     lane_stats: Arc<LaneStats>,
     lane_budgets: LaneBudgets,
+    retention: Arc<Retention>,
     /// Command sender
     command_tx: mpsc::Sender<NetworkCommand>,
     /// Local peer ID
@@ -394,6 +397,8 @@ impl NetworkService {
             .as_ref()
             .map_or_else(|| Arc::new(AtomicBool::new(false)), |wd| wd.shed_flag());
         let shed_flag_clone = memory_shed_flag.clone();
+        let retention = Arc::new(Retention::default());
+        let retention_clone = retention.clone();
 
         tokio::spawn(async move {
             run_swarm(
@@ -409,6 +414,7 @@ impl NetworkService {
                 shed_metrics_clone,
                 watchdog,
                 shed_flag_clone,
+                retention_clone,
             )
             .await;
         });
@@ -419,6 +425,7 @@ impl NetworkService {
             lanes,
             lane_stats,
             lane_budgets,
+            retention,
             command_tx,
             local_peer_id,
             best_slot,

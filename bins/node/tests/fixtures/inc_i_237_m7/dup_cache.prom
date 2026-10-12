@@ -1,0 +1,33 @@
+# HELP doli_event_lane_depth Events queued in each swarm-to-node event lane
+# TYPE doli_event_lane_depth gauge
+doli_event_lane_depth{lane="backlog"} 4
+doli_event_lane_depth{lane="bulk"} 2
+doli_event_lane_depth{lane="consensus"} 1
+# TYPE doli_event_lane_inflight_bytes gauge
+doli_event_lane_inflight_bytes{lane="backlog"} 300
+doli_event_lane_inflight_bytes{lane="bulk"} 200
+doli_event_lane_inflight_bytes{lane="consensus"} 100
+# TYPE doli_event_lane_budget_bytes gauge
+doli_event_lane_budget_bytes{lane="backlog"} 67108864
+doli_event_lane_budget_bytes{lane="bulk"} 16777216
+doli_event_lane_budget_bytes{lane="consensus"} 67108864
+# TYPE doli_event_lane_shed_total gauge
+doli_event_lane_shed_total{lane="backlog"} 7
+doli_event_lane_shed_total{lane="bulk"} 6
+doli_event_lane_shed_total{lane="consensus"} 5
+# TYPE doli_event_shed_by_topic_total counter
+doli_event_shed_by_topic_total{topic="attestations"} 3
+doli_event_shed_by_topic_total{topic="blocks"} 5
+doli_event_shed_by_topic_total{topic="producers"} 0
+doli_event_shed_by_topic_total{topic="txs"} 4
+doli_event_shed_by_topic_total{topic="votes"} 1
+# noise: other families that carry a lane or topic label
+doli_event_lane_depth_noise{lane="bulk"} 888
+doli_other_queue_depth{lane="bulk"} 999
+doli_other_shed_total{topic="txs"} 777
+# HELP doli_gossip_duplicate_cache_entries_noise Prefix-sharing family the probe must not read
+# TYPE doli_gossip_duplicate_cache_entries_noise gauge
+doli_gossip_duplicate_cache_entries_noise 7
+# HELP doli_gossip_duplicate_cache_entries Message ids held in the node's gossipsub duplicate cache
+# TYPE doli_gossip_duplicate_cache_entries gauge
+doli_gossip_duplicate_cache_entries 123456

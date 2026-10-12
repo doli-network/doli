@@ -40,6 +40,7 @@ pub(super) async fn run_swarm(
     shed_metrics: std::sync::Arc<super::backpressure::GossipShedMetrics>,
     mut watchdog: Option<MemoryWatchdog>,
     memory_shed_flag: Arc<AtomicBool>,
+    retention: Arc<super::Retention>,
 ) {
     // Periodic DHT refresh: re-run Kademlia bootstrap every 60s so that peers
     // discover each other through shared bootstrap nodes. Without this, a node
@@ -151,7 +152,13 @@ pub(super) async fn run_swarm(
                 handle_command(command, &mut swarm, &config, &mut rate_limiter).await;
             }
 
-            _ = flush_tick.tick() => {}
+            // INC-I-237 M7.1: also refreshes the cache sizes read by node metrics.
+            _ = flush_tick.tick() => {
+                retention.store(super::RetentionSnapshot {
+                    gossipsub: swarm.behaviour().gossipsub.retention_stats(),
+                    rate_limit_peers: rate_limiter.stats().tracked_peers,
+                });
+            }
 
             // Periodic DHT peer discovery
             _ = dht_refresh.tick() => {

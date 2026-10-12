@@ -16,6 +16,11 @@
 //!   honest second member}; vote {hex-case variants of one signed vote};
 //!   duration {SOAK_SECS 30 default, 600 ignored}
 //! MATRIX: every O x P asserted in `check`; offered / admitted rates printed.
+//! M7.1 (REQ-GRV-026): `run` prints the per-(swarm, structure) attribution of
+//!   the retained heap (`inc_i_237_m5_soak_support/attribution.rs`) before `check`;
+//!   `SOAK_ATTACKER_DUP_TTL_SECS` = the attackers' duplicate-cache TTL (differential run).
+//! covers: vendor/libp2p-gossipsub/src/behaviour.rs crates/network/src/gossip/config.rs
+//!   crates/network/src/service/retention.rs bins/node/src/node/mod.rs
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::HashSet;
@@ -29,18 +34,19 @@ use doli_core::transaction::DelegateBondData;
 use doli_core::{Attestation, Network, Transaction};
 use doli_node::node::Node;
 use futures::StreamExt;
-use libp2p::gossipsub::{self, IdentTopic, MessageAcceptance};
+use libp2p::gossipsub::{self, IdentTopic, MessageAcceptance, RetentionStats};
 use libp2p::swarm::SwarmEvent;
 use libp2p::{identity::Keypair, Multiaddr, Swarm};
 use network::gossip::staleness::GossipTopic;
 use network::gossip::{
-    encode_tx_batch, new_gossipsub, MeshConfig, ATTESTATION_TOPIC, TRANSACTIONS_TOPIC, VOTES_TOPIC,
+    encode_tx_batch, new_gossipsub, new_gossipsub_with_cache_time, MeshConfig, ATTESTATION_TOPIC,
+    TRANSACTIONS_TOPIC, VOTES_TOPIC,
 };
 use network::service::LATE_VERDICTS;
 use network::transport::build_transport;
 use network::{NetworkCommand, NetworkEvent, NetworkService};
 use storage::ProducerInfo;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 #[allow(dead_code)]
 #[path = "it/inc_i_237_m2_node_common.rs"]
@@ -49,6 +55,12 @@ mod inc_i_237_m2_node_common;
 mod inc_i_237_m3_node_common;
 use inc_i_237_m2_node_common as c2;
 use inc_i_237_m3_node_common as c3;
+#[path = "inc_i_237_m5_soak_support/attribution.rs"]
+mod attribution;
+#[path = "inc_i_237_m5_soak_support/calibration.rs"]
+mod calibration;
+#[path = "inc_i_237_m5_soak_support/gauge.rs"]
+mod gauge;
 
 static CURRENT: AtomicUsize = AtomicUsize::new(0);
 static PEAK: AtomicUsize = AtomicUsize::new(0);
@@ -114,10 +126,12 @@ struct Attacker {
     small: mpsc::Sender<(usize, Vec<u8>)>,
     /// Published Ok per kind: tx batch, mutant, junk, vote.
     published: Arc<[AtomicU64; 4]>,
+    retention: mpsc::Sender<oneshot::Sender<RetentionStats>>,
 }
 
-/// A raw production-config gossipsub peer: publishes any bytes, Ignores what it receives.
-fn attacker(dial: &str) -> Attacker {
+/// A raw production-config gossipsub peer: publishes any bytes, Ignores what it
+/// receives. `dup_ttl` replaces only its duplicate-cache TTL.
+fn attacker(dial: &str, dup_ttl: Option<Duration>) -> Attacker {
     let kp = Keypair::generate_ed25519();
     let peer_id = kp.public().to_peer_id();
     let mesh = MeshConfig {
@@ -128,7 +142,11 @@ fn attacker(dial: &str) -> Attacker {
     };
     let mut swarm: Swarm<gossipsub::Behaviour> = Swarm::new(
         build_transport(&kp, None).expect("transport"),
-        new_gossipsub(&kp, &mesh).expect("production gossipsub"),
+        match dup_ttl {
+            Some(ttl) => new_gossipsub_with_cache_time(&kp, &mesh, ttl),
+            None => new_gossipsub(&kp, &mesh),
+        }
+        .expect("production gossipsub"),
         peer_id,
         libp2p::swarm::Config::with_tokio_executor()
             .with_idle_connection_timeout(Duration::from_secs(3_600)),
@@ -142,6 +160,7 @@ fn attacker(dial: &str) -> Attacker {
     let (small, mut small_rx) = mpsc::channel::<(usize, Vec<u8>)>(256);
     let published: Arc<[AtomicU64; 4]> = Arc::default();
     let count = published.clone();
+    let (retention, mut retention_rx) = mpsc::channel::<oneshot::Sender<RetentionStats>>(1);
     tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -165,6 +184,9 @@ fn attacker(dial: &str) -> Attacker {
                         count[kind].fetch_add(1, Relaxed);
                     }
                 }
+                Some(reply) = retention_rx.recv() => {
+                    let _ = reply.send(swarm.behaviour().retention_stats());
+                }
             }
         }
     });
@@ -172,6 +194,7 @@ fn attacker(dial: &str) -> Attacker {
         big,
         small,
         published,
+        retention,
     }
 }
 
@@ -474,7 +497,7 @@ struct Report {
     peak_mib: f64,
 }
 
-async fn run(secs: u64) -> Report {
+async fn run(secs: u64) -> (Report, attribution::Attribution) {
     let late0 = LATE_VERDICTS.get(GossipTopic::Attestations);
     let (mut b, member, _t) = c3::member_node().await;
     // B's node slot clock (the M6 wall prune) pinned to FAMILY_SLOT for the run.
@@ -487,11 +510,19 @@ async fn run(secs: u64) -> Report {
     let b_port = c2::reserve_port();
     b.network = Some(c2::start_net(b_port, vec![]).await);
     let c_net = c2::start_net(c2::reserve_port(), vec![c2::addr(b_port)]).await;
+    let c_ret = c_net.retention();
     let at_c = observe_c(c_net, *member.public_key(), *honest.public_key());
     let h = c2::start_net(c2::reserve_port(), vec![c2::addr(b_port)]).await;
     let h_cmd = h.command_sender();
+    let h_ret = h.retention();
     c3::observe(h);
-    let attackers: Vec<Attacker> = (0..3).map(|_| attacker(&c2::addr(b_port))).collect();
+    let dup_ttl = std::env::var("SOAK_ATTACKER_DUP_TTL_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .map(Duration::from_secs);
+    let attackers: Vec<Attacker> = (0..3)
+        .map(|_| attacker(&c2::addr(b_port), dup_ttl))
+        .collect();
 
     let mut at_b = AtB::default();
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -536,6 +567,7 @@ async fn run(secs: u64) -> Report {
     flags.paused.store(true, Relaxed);
     pump(&mut b, Instant::now() + DRAIN, &mut at_b).await;
     let warm = CURRENT.load(Relaxed);
+    let warm_rows = attribution::sample(&b, &attackers, &h_ret, &c_ret).await;
     flags.paused.store(false, Relaxed);
     pump(&mut b, start + Duration::from_secs(secs) + DRAIN, &mut at_b).await;
     flags.stop.store(true, Relaxed);
@@ -543,6 +575,9 @@ async fn run(secs: u64) -> Report {
     pump(&mut b, Instant::now() + DRAIN, &mut at_b).await;
     let end = CURRENT.load(Relaxed);
     let peak = PEAK.load(Relaxed);
+    let end_rows = attribution::sample(&b, &attackers, &h_ret, &c_ret).await;
+    let table = attribution::Attribution::new(&warm_rows, &end_rows, end as i64 - warm as i64);
+    table.print();
 
     let transfer = c2::transfer(&funded, c2::prev(0x5E));
     h_cmd
@@ -564,7 +599,7 @@ async fn run(secs: u64) -> Report {
         .filter(|s| **s >= HONEST_BASE)
         .count();
     let mib = |b: usize| b as f64 / MIB as f64;
-    Report {
+    let report = Report {
         secs,
         tx_msgs,
         offered_per_link_per_s: offered,
@@ -582,7 +617,8 @@ async fn run(secs: u64) -> Report {
         end_mib: mib(end),
         retained_mib: (end as f64 - warm as f64) / MIB as f64,
         peak_mib: mib(peak),
-    }
+    };
+    (report, table)
 }
 
 fn check(r: &Report) {
@@ -642,12 +678,15 @@ fn soak_secs(default: u64) -> u64 {
         .unwrap_or(default)
 }
 
+// REQ-GRV-026 (M7.1) — Decision: a failure in `check_attribution` means a swarm's retention accessor reads empty or the summed (swarm, structure) rows explain < 90% of the retained heap, so a cap chosen from the table would target the wrong owner.
 // REQ-GRV-007 / REQ-GRV-017 / REQ-GRV-SEC-002 / REQ-GRV-004 (F-13) — Decision: a failure means a sustained multi-topic flood through the real node grows retained heap past 64 MiB, delays attestation verdicts past 2 s, relays forged zero-flow txs or attestation variants past B, or drains C's bucket for B so a genuine attester goes dark.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[allow(clippy::await_holding_lock)]
 async fn soak() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    check(&run(soak_secs(30)).await);
+    let (report, table) = run(soak_secs(30)).await;
+    check(&report);
+    attribution::check_attribution(&table);
 }
 
 /// The 10-minute REQ-GRV-007 soak. Runner:
@@ -658,5 +697,5 @@ async fn soak() {
 #[allow(clippy::await_holding_lock)]
 async fn soak_10min() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    check(&run(soak_secs(600)).await);
+    check(&run(soak_secs(600)).await.0);
 }

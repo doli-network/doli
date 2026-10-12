@@ -11,6 +11,15 @@ Wired in via `[patch.crates-io]` in the workspace root `Cargo.toml`.
   once per overflow episode, plus a running total every 1000 drops.
 - The per-pop `shrink_to_fit()` now runs only when capacity > 4 × len and capacity > 64.
 
+## M7.1 — retention readout (measurement only, no behaviour change)
+- `src/time_cache.rs`: `TimeCacheStats`, `RetentionStats`, `table_bytes`; `TimeCache::stats`;
+  `DuplicateCache` and its `new` / `insert` made `pub` (`#[doc(hidden)]`), plus `stats`;
+  `map_capacity_hwm` (max `capacity()` read in `entry`, because tombstones hide allocated slots).
+- `src/mcache.rs`: running `held_bytes` (put / remove / shift), `msgs_capacity_hwm` (put), `retention()`.
+- `src/peer_score.rs`: `PeerScore::deliveries_stats`.
+- `src/behaviour.rs`: `Behaviour::retention_stats` (`#[doc(hidden)]`), len/capacity reads only.
+- `src/lib.rs`: `#[doc(hidden)]` re-export of `DuplicateCache`, `RetentionStats`, `TimeCacheStats`.
+
 ## Why
 Upstream queue is unbounded: a slow-draining peer grew it without limit (OOM on mainnet).
 Judge: `cargo test -p network --test it inc_i_237`.

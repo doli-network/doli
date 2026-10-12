@@ -76,13 +76,18 @@ impl AttestSeen {
         self.admit(key, false)
     }
 
-    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.seen.len()
     }
 }
 
 impl Node {
+    /// Entries in the attestation relay's seen set (read by the soak harness).
+    #[allow(dead_code)]
+    pub fn attest_seen_len(&self) -> usize {
+        self.attest_seen.len()
+    }
+
     /// Derive an attester's authority from the LOCAL ProducerSet (Seam A, [F1]).
     /// `None` = not a producer-set member (reject; never trust the wire's
     /// self-declared weight). `Some(w)` = member with locally-derived selection

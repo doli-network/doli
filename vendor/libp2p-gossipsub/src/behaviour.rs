@@ -517,6 +517,23 @@ where
             .map(|(score, ..)| score.score(peer_id))
     }
 
+    // DOLI INC-I-237: M7.1 sizes of the time-bounded caches, len/capacity reads only.
+    #[doc(hidden)]
+    pub fn retention_stats(&self) -> crate::RetentionStats {
+        let (mcache_entries, mcache_bytes) = self.mcache.retention();
+        crate::RetentionStats {
+            duplicate_cache: self.duplicate_cache.stats(),
+            published_message_ids: self.published_message_ids.stats(),
+            peer_score_deliveries: self
+                .peer_score
+                .as_ref()
+                .map(|(score, ..)| score.deliveries_stats())
+                .unwrap_or_default(),
+            mcache_entries,
+            mcache_bytes,
+        }
+    }
+
     /// Subscribe to a topic.
     ///
     /// Returns [`Ok(true)`] if the subscription worked. Returns [`Ok(false)`] if we were already

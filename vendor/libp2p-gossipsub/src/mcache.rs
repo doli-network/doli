@@ -46,6 +46,19 @@ pub(crate) struct MessageCache {
     /// won't get gossiped anymore when shift got called `gossip` many times after inserting the
     /// message in the cache.
     gossip: usize,
+    // DOLI INC-I-237: heap bytes owned by `msgs` entries, kept on put/remove/shift (M7.1).
+    held_bytes: usize,
+    // DOLI INC-I-237: largest `msgs.capacity()` read; tombstones hide allocated slots (M7.1).
+    msgs_capacity_hwm: usize,
+}
+
+// DOLI INC-I-237: per-entry heap of one `msgs` entry (M7.1).
+fn held(id: &MessageId, msg: &RawMessage) -> usize {
+    id.0.len()
+        + msg.data.len()
+        + msg.topic.as_str().len()
+        + msg.signature.as_ref().map_or(0, Vec::len)
+        + msg.key.as_ref().map_or(0, Vec::len)
 }
 
 impl fmt::Debug for MessageCache {
@@ -66,6 +79,8 @@ impl MessageCache {
             msgs: HashMap::default(),
             iwant_counts: HashMap::default(),
             history: vec![Vec::new(); history_capacity],
+            held_bytes: 0,
+            msgs_capacity_hwm: 0,
         }
     }
 
@@ -83,7 +98,9 @@ impl MessageCache {
                     mid: message_id.clone(),
                     topic: msg.topic.clone(),
                 };
+                self.held_bytes += held(message_id, &msg); // DOLI INC-I-237
                 entry.insert((msg, HashSet::default()));
+                self.msgs_capacity_hwm = self.msgs_capacity_hwm.max(self.msgs.capacity()); // DOLI INC-I-237
                 self.history[0].push(cache_entry);
 
                 tracing::trace!(message=?message_id, "Put message in mcache");
@@ -186,6 +203,7 @@ impl MessageCache {
     pub(crate) fn shift(&mut self) {
         for entry in self.history.pop().expect("history is always > 1") {
             if let Some((msg, _)) = self.msgs.remove(&entry.mid) {
+                self.held_bytes = self.held_bytes.saturating_sub(held(&entry.mid, &msg)); // DOLI INC-I-237
                 if !msg.validated {
                     // If GossipsubConfig::validate_messages is true, the implementing
                     // application has to ensure that Gossipsub::validate_message gets called for
@@ -214,7 +232,22 @@ impl MessageCache {
         // history vector. Zhe id in the history vector will simply be ignored on popping.
 
         self.iwant_counts.remove(message_id);
-        self.msgs.remove(message_id)
+        let removed = self.msgs.remove(message_id);
+        // DOLI INC-I-237
+        if let Some((msg, _)) = &removed {
+            self.held_bytes = self.held_bytes.saturating_sub(held(message_id, msg));
+        }
+        removed
+    }
+
+    // DOLI INC-I-237: (entries, bytes) of the cache, O(1) (M7.1).
+    pub(crate) fn retention(&self) -> (usize, usize) {
+        let msgs_slot = std::mem::size_of::<(MessageId, (RawMessage, HashSet<PeerId>))>();
+        let iwant_slot = std::mem::size_of::<(MessageId, HashMap<PeerId, u32>)>();
+        let msgs_capacity = self.msgs.capacity().max(self.msgs_capacity_hwm);
+        let tables = crate::time_cache::table_bytes(msgs_capacity, msgs_slot)
+            + crate::time_cache::table_bytes(self.iwant_counts.capacity(), iwant_slot);
+        (self.msgs.len(), self.held_bytes + tables)
     }
 }
 

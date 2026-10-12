@@ -7,10 +7,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use lazy_static::lazy_static;
 use network::gossip::staleness::GossipTopic;
 use network::gossip::tx_batch_stats::{TxBatchSnapshot, TX_BATCH_BUCKETS, TX_GOSSIP_BATCH_STATS};
-use network::service::{LaneBudgets, LaneSnapshot, LaneStats, DROPPED_VERDICTS, LATE_VERDICTS};
+use network::service::{
+    LaneBudgets, LaneSnapshot, LaneStats, Retention, DROPPED_VERDICTS, LATE_VERDICTS,
+};
 use network::GossipHandle;
 use prometheus::{
-    Histogram, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGaugeVec, Opts, Registry,
+    Histogram, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGauge, IntGaugeVec, Opts,
+    Registry,
 };
 
 /// 2 s = SLO, 3.5 s = R5 deadline, 5 s = mcache window.
@@ -134,10 +137,18 @@ lazy_static! {
         &["topic"]
     )
     .unwrap();
+    static ref DUPLICATE_CACHE_ENTRIES: IntGauge = IntGauge::new(
+        "doli_gossip_duplicate_cache_entries",
+        "Message ids held in the node's gossipsub duplicate cache"
+    )
+    .unwrap();
 }
 
 /// Lane counters of the running network service, read at scrape time.
 static EVENT_LANES: OnceLock<(Arc<LaneStats>, LaneBudgets)> = OnceLock::new();
+
+/// Swarm cache sizes of the running network service, read at scrape time.
+static RETENTION: Mutex<Option<Arc<Retention>>> = Mutex::new(None);
 
 /// Per-topic children, resolved once so the per-event path does no label lookup.
 static RECEIVED_CHILDREN: [OnceLock<IntCounter>; 5] = [const { OnceLock::new() }; 5];
@@ -181,6 +192,7 @@ pub fn register_gossip_metrics(registry: &Registry) {
     let _ = registry.register(Box::new(VERDICT_DROPPED.clone()));
     let _ = registry.register(Box::new(LANE_DEPTH.clone()));
     let _ = registry.register(Box::new(SHED_BY_TOPIC.clone()));
+    let _ = registry.register(Box::new(DUPLICATE_CACHE_ENTRIES.clone()));
     for topic in EVENT_TOPICS {
         received(topic);
         verdict(topic);
@@ -301,6 +313,11 @@ pub fn watch_event_lanes(stats: Arc<LaneStats>, budgets: LaneBudgets) {
     let _ = EVENT_LANES.set((stats, budgets));
 }
 
+/// Register the network service's cache sizes for scrape-time refresh.
+pub fn watch_retention(retention: Arc<Retention>) {
+    *RETENTION.lock().unwrap_or_else(|e| e.into_inner()) = Some(retention);
+}
+
 /// Raise each per-topic late and dropped counter to the swarm's monotone count.
 fn scrape_late_verdicts() {
     for topic in EVENT_TOPICS {
@@ -312,12 +329,16 @@ fn scrape_late_verdicts() {
     }
 }
 
-/// Scrape the batch stats, late verdicts and lane counters into the registry before a `/metrics` exposition.
+/// Scrape the batch stats, late verdicts, lane counters and cache sizes into the registry before a `/metrics` exposition.
 pub fn scrape_for_exposition() {
     let mut state = EXPOSITION_SCRAPE.lock().unwrap_or_else(|e| e.into_inner());
     scrape_tx_batch_stats(&mut state);
     scrape_late_verdicts();
     if let Some((stats, budgets)) = EVENT_LANES.get() {
         observe_event_lanes(&stats.snapshot(), budgets);
+    }
+    if let Some(retention) = RETENTION.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        let entries = retention.snapshot().gossipsub.duplicate_cache.entries;
+        DUPLICATE_CACHE_ENTRIES.set(entries as i64);
     }
 }

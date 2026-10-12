@@ -64,8 +64,8 @@ pub const AGGRESSIVE_DEDUP_THRESHOLD: Duration = Duration::from_secs(30);
 /// before validation, so they are never forwarded. This vendor cache (keyed
 /// by BLAKE3 of the raw data) is the only re-delivery dedup.
 ///
-/// RESOURCE COST: one 20-byte message ID + timestamp per distinct message;
-/// at 1 000 msg/s x 300 s ~= 30 MB worst case, a few MB at normal rates.
+/// RESOURCE COST: measured 146-168 B per distinct id (100k-500k entries);
+/// no count cap yet; see M7.2.
 /// Local per-node policy: no consensus, wire or block-content change.
 pub const GOSSIP_DUPLICATE_CACHE_TIME: Duration = Duration::from_secs(300);
 

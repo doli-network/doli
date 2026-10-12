@@ -11,6 +11,7 @@
 #   channel lane=<l> depth=<n> inflight_bytes=<n> budget_bytes=<n> shed=<n>
 #   channel shed topic=<t> n=<n>     (one per topic series present)
 #   channel control_dropped=<n>      (doli_event_lane_shed_total{lane="backlog"})
+#   dup_cache entries=<n>|absent     (M7 doli_gossip_duplicate_cache_entries)
 # --series-count prints only the number of verdict-latency series.
 # Exit 0 on success, 2 when the source is unreachable or unreadable.
 set -u
@@ -26,7 +27,7 @@ while [ $# -gt 0 ]; do
             file="$2"
             shift
             ;;
-        -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
         *) url="$1" ;;
     esac
     shift
@@ -106,6 +107,7 @@ function fmt(v) { return (v == "NaN") ? "NaN" : sprintf("%.6f", v) }
 /^doli_event_lane_budget_bytes\{/ { labels($1); LANE[L["lane"]] = 1; BUD[L["lane"]] = $2 + 0; next }
 /^doli_event_lane_shed_total\{/ { labels($1); LANE[L["lane"]] = 1; LSH[L["lane"]] = $2 + 0; next }
 /^doli_event_shed_by_topic_total\{/ { labels($1); TSH[L["topic"]] = $2 + 0; next }
+/^doli_gossip_duplicate_cache_entries / { DUP = $2 + 0; HASDUP = 1; next }
 END {
     nt = 0
     for (t in TOPIC) T[++nt] = t
@@ -142,6 +144,8 @@ END {
         printf "channel lane=%s depth=%.0f inflight_bytes=%.0f budget_bytes=%.0f shed=%.0f\n", l, DEP[l] + 0, INFL[l] + 0, BUD[l] + 0, LSH[l] + 0
     for (t in TSH) printf "channel shed topic=%s n=%.0f\n", t, TSH[t]
     printf "channel control_dropped=%.0f\n", LSH["backlog"] + 0
+    if (HASDUP) printf "dup_cache entries=%.0f\n", DUP
+    else print "dup_cache entries=absent"
     if (max < 0) print "GATE verdict_p99_max=NaN NO_DATA (<= 2s)"
     else printf "GATE verdict_p99_max=%s %s (<= 2s)\n", fmt(max), (max <= 2 + 1e-9) ? "PASS" : "FAIL"
 }'

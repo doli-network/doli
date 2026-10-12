@@ -94,6 +94,7 @@ mod inc_i_237_m6_attest_seen_wall;
 mod inc_i_237_m6_bls_half;
 mod inc_i_237_m6_common;
 mod inc_i_237_m6_relay_authority;
+mod inc_i_237_m7_probe_dup_cache;
 mod m1_snap_install_identity;
 mod m3_common;
 mod m3_staging_install;

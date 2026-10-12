@@ -10,7 +10,9 @@ use libp2p::{Multiaddr, PeerId};
 use tokio::sync::{mpsc, RwLock};
 
 use super::backpressure::GossipShedMetrics;
-use super::{LaneBudgets, LaneStats, NetworkCommand, NetworkError, NetworkEvent, NetworkService};
+use super::{
+    LaneBudgets, LaneStats, NetworkCommand, NetworkError, NetworkEvent, NetworkService, Retention,
+};
 use crate::peer::PeerInfo;
 use crate::protocols::{StatusRequest, StatusResponse, SyncRequest, SyncResponse, TxFetchResponse};
 
@@ -35,6 +37,11 @@ impl NetworkService {
     /// Lane byte counters and drop counts (read by node metrics).
     pub fn lane_stats(&self) -> Arc<LaneStats> {
         self.lane_stats.clone()
+    }
+
+    /// Swarm cache sizes, refreshed by the swarm task (read by node metrics).
+    pub fn retention(&self) -> Arc<Retention> {
+        self.retention.clone()
     }
 
     /// Lane budgets this service runs with.
