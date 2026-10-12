@@ -7,6 +7,7 @@ use std::time::Duration;
 use libp2p::gossipsub::{MessageAcceptance, MessageId};
 use libp2p::PeerId;
 use tokio::sync::mpsc;
+use tracing::warn;
 
 use crate::gossip::staleness::GossipTopic;
 
@@ -29,9 +30,15 @@ pub struct LateVerdicts([AtomicU64; 5]);
 /// Process-wide late-verdict counters the node exports.
 pub static LATE_VERDICTS: LateVerdicts = LateVerdicts([const { AtomicU64::new(0) }; 5]);
 
+/// Process-wide count of verdicts refused by a full or closed command channel.
+pub static DROPPED_VERDICTS: LateVerdicts = LateVerdicts([const { AtomicU64::new(0) }; 5]);
+
+const WARN_EVERY_N_DROPPED_VERDICTS: u64 = 64;
+
 impl LateVerdicts {
-    pub fn record(&self, topic: GossipTopic) {
-        self.slot(topic).fetch_add(1, Ordering::Relaxed);
+    /// Count one more for `topic`; returns the new count.
+    pub fn record(&self, topic: GossipTopic) -> u64 {
+        self.slot(topic).fetch_add(1, Ordering::Relaxed) + 1
     }
 
     pub fn get(&self, topic: GossipTopic) -> u64 {
@@ -72,12 +79,25 @@ pub(crate) fn apply_gossip_verdict(
 }
 
 /// Hand a verdict to the swarm without waiting; false when the channel is
-/// full or the swarm is gone (the message then expires unreported).
+/// full or the swarm is gone (the message then expires unreported, counted
+/// in [`DROPPED_VERDICTS`] under its topic).
 pub fn send_gossip_verdict(
     cmd: &mpsc::Sender<NetworkCommand>,
     handle: GossipHandle,
     verdict: Verdict,
 ) -> bool {
-    cmd.try_send(NetworkCommand::GossipVerdict { handle, verdict })
+    let topic = handle.origin().map(|(t, ..)| *t);
+    if cmd
+        .try_send(NetworkCommand::GossipVerdict { handle, verdict })
         .is_ok()
+    {
+        return true;
+    }
+    if let Some(topic) = topic {
+        let n = DROPPED_VERDICTS.record(topic);
+        if n % WARN_EVERY_N_DROPPED_VERDICTS == 1 {
+            warn!("INC-I-237 command channel full: dropped {topic:?} verdict dropped_total={n}");
+        }
+    }
+    false
 }

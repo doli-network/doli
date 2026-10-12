@@ -147,7 +147,8 @@ async fn f_13_unjudged_flood_is_bounded_by_the_peer_share_and_expires() {
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
     b.set(Policy::Never);
-    let (flood, n) = (96_000_000u64, 700u64);
+    // n must exceed the per-peer tx burst (2,000 since M5) plus refill.
+    let (flood, n) = (96_000_000u64, 3_000u64);
     let late0 = LATE_VERDICTS.get(GossipTopic::Transactions);
     for k in 0..n {
         r.publish(h::tx(flood + k).serialize());

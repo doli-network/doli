@@ -407,9 +407,13 @@ impl Node {
     }
 }
 
+/// Margin past `GOSSIP_DUPLICATE_CACHE_TIME`: the vendor cache keeps an
+/// expired id until its next insert.
+const DIGEST_REPUBLISH_MARGIN: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Byte-identical digest bytes are refused by the vendor duplicate cache until
-/// `GOSSIP_DUPLICATE_CACHE_TIME` after they went out; they are not due before.
-fn digest_due(last: Option<&(Vec<u8>, Instant)>, bytes: &[u8]) -> bool {
-    !matches!(last, Some((sent, at))
-        if sent.as_slice() == bytes && at.elapsed() < network::gossip::GOSSIP_DUPLICATE_CACHE_TIME)
+/// `GOSSIP_DUPLICATE_CACHE_TIME` (+ margin) after they went out; not due before.
+pub(super) fn digest_due(last: Option<&(Vec<u8>, Instant)>, bytes: &[u8]) -> bool {
+    let wait = network::gossip::GOSSIP_DUPLICATE_CACHE_TIME + DIGEST_REPUBLISH_MARGIN;
+    !matches!(last, Some((sent, at)) if sent.as_slice() == bytes && at.elapsed() < wait)
 }

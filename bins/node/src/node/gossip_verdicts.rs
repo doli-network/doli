@@ -15,9 +15,10 @@ impl Node {
     }
 
     /// Ingest a gossip attestation and return its relay verdict: Accept iff it
-    /// decodes, its Ed25519 signature verifies and the attester is in the
-    /// producer set (pending activation included). Block knowledge and BLS do
-    /// not decide the relay (F-9); an unknown block is fetched only for members.
+    /// decodes, its Ed25519 signature verifies, the attester is in the producer
+    /// set (pending activation included) and either its `(attester, slot)` is
+    /// first seen or this message pooled the genuine BLS half (AUDIT-P1-506).
+    /// An unknown block is fetched only for members (F-9).
     pub async fn on_new_attestation(&mut self, data: Vec<u8>, source_peer: PeerId) -> Verdict {
         let Some(attestation) = Attestation::from_bytes(&data).filter(|a| a.verify().is_ok())
         else {
@@ -38,20 +39,31 @@ impl Node {
             return Verdict::Ignore;
         }
 
+        let first = self
+            .attest_seen
+            .insert((attestation.attester, attestation.slot));
+        let relay = |newly_pooled: bool| {
+            if first || newly_pooled {
+                Verdict::Accept
+            } else {
+                Verdict::Ignore
+            }
+        };
+
         // Authority is derived at the attested block's LOCAL height (D4).
         let local_height = match self.block_store.get_height_by_hash(&attestation.block_hash) {
             Ok(Some(h)) => h,
             _ => {
                 self.maybe_fetch_attested_block(&attestation.block_hash, source_peer)
                     .await;
-                return Verdict::Accept;
+                return relay(false);
             }
         };
-        let Some(weight) = self
+        let Some((weight, newly_pooled)) = self
             .ingest_attestation(&attestation, local_height, source_peer)
             .await
         else {
-            return Verdict::Accept;
+            return relay(false);
         };
 
         // Finality numerator: only a positive locally-derived weight counts.
@@ -61,7 +73,7 @@ impl Node {
             drop(sync);
         }
         self.flush_finalized_to_archive().await;
-        Verdict::Accept
+        relay(newly_pooled)
     }
 
     /// Hand a gossip vote to the updater and return its relay verdict: Accept

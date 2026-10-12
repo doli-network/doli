@@ -17,8 +17,13 @@
 //!   resident first}
 //! MATRIX: O3 x every partition, O2 x every partition (admission is per tx and
 //!   never undone by the verdict) — asserted below.
+//! M5 (AUDIT-P1-505): P6 any zero-flow tx -> Ignore, admission unchanged;
+//!   partitions {4 zero-flow types, forged/genuine, 1/100 per message, with a
+//!   fee-paying sibling}. Contract: docs/.workflow/inc-i-237-M5-test-contract.md §1a.
 
 use crypto::{Hash, KeyPair};
+use doli_core::maintainer::MaintainerSignature;
+use doli_core::transaction::{DelegateBondData, RevokeDelegationData};
 use doli_core::{BlockHeader, Transaction};
 use doli_node::node::Node;
 use network::{EquivocationProof, Verdict};
@@ -241,4 +246,90 @@ fn req_grv_008_node_sends_verdicts_only_through_the_try_send_helper() {
         "verdict built outside the try_send helper: {literal:?}"
     );
     assert!(helper > 0, "no node path sends a gossip verdict");
+}
+
+fn genuine_delegation() -> Transaction {
+    let kp = KeyPair::generate();
+    let mut d = DelegateBondData::new(*kp.public_key(), *KeyPair::generate().public_key(), 1);
+    d.signature = crypto::signature::sign_hash(&d.signing_message(), kp.private_key());
+    Transaction::new_delegate_bond(d)
+}
+
+/// The other admissible zero-flow types, each with garbage signatures.
+fn forged_other_zero_flow() -> Vec<(&'static str, Transaction)> {
+    let target = *KeyPair::generate().public_key();
+    let sigs: Vec<MaintainerSignature> = (1..=3u8)
+        .map(|i| MaintainerSignature {
+            pubkey: *KeyPair::from_seed([i; 32]).public_key(),
+            signature: crypto::Signature::from_bytes([0xE0 ^ i; 64]),
+        })
+        .collect();
+    let mut revoke = RevokeDelegationData::new(*KeyPair::generate().public_key(), target);
+    revoke.signature = crypto::Signature::from_bytes([0xD1; 64]);
+    vec![
+        (
+            "RevokeDelegation",
+            Transaction::new_revoke_delegation(revoke),
+        ),
+        (
+            "AddMaintainer",
+            Transaction::new_add_maintainer(target, sigs.clone()),
+        ),
+        (
+            "RemoveMaintainer",
+            Transaction::new_remove_maintainer(target, sigs, None),
+        ),
+    ]
+}
+
+// REQ-GRV-004 / REQ-GRV-SEC-001 (AUDIT-P1-505) — Decision: a failure means a zero-flow tx, admitted on shape alone with its signature unread until apply, authorizes a forward, so forged delegations cross every hop as new content.
+#[tokio::test]
+async fn m5_audit_p1_505_forged_zero_flow_tx_never_authorizes_a_forward() {
+    let (node, x, y, _t) = funded().await;
+    let forged = c::forged_delegation(1);
+    let v = node.handle_gossip_txs(vec![forged.clone()]).await;
+    assert_eq!(v, Verdict::Ignore, "AUDIT-P1-505: forged DelegateBond");
+    assert!(
+        has(&node, &forged).await,
+        "admission unchanged: forged DelegateBond admitted"
+    );
+    let batch: Vec<Transaction> = (100..200).map(c::forged_delegation).collect();
+    let v = node.handle_gossip_txs(batch.clone()).await;
+    assert_eq!(v, Verdict::Ignore, "AUDIT-P1-505: 100 forged DelegateBonds");
+    for tx in &batch {
+        assert!(
+            has(&node, tx).await,
+            "admission unchanged: batch member admitted"
+        );
+    }
+    for (row, tx) in forged_other_zero_flow() {
+        let v = node.handle_gossip_txs(vec![tx]).await;
+        assert_eq!(v, Verdict::Ignore, "AUDIT-P1-505: forged {row}");
+    }
+    let genuine = genuine_delegation();
+    let v = node.handle_gossip_txs(vec![genuine.clone()]).await;
+    assert_eq!(
+        v,
+        Verdict::Ignore,
+        "genuine DelegateBond: one-hop reach until AUDIT-P2-001"
+    );
+    assert!(has(&node, &genuine).await, "genuine DelegateBond admitted");
+    let v = node
+        .handle_gossip_txs(vec![x.clone(), c::forged_delegation(2)])
+        .await;
+    assert_eq!(
+        v,
+        Verdict::Ignore,
+        "a fee-paying sibling does not carry a zero-flow tx"
+    );
+    assert!(
+        has(&node, &x).await,
+        "the fee-paying sibling is still admitted"
+    );
+    let v = node.handle_gossip_txs(vec![y.clone()]).await;
+    assert_eq!(
+        v,
+        Verdict::Accept,
+        "control: a new fee-paying tx alone still relays"
+    );
 }

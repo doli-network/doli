@@ -10,6 +10,7 @@ use crypto::{bls_verify, BlsPublicKey, BlsSignature, BLS_SIGNATURE_SIZE};
 use doli_core::attestation::bls_attest_msg;
 
 use crate::metrics::{ATTESTATION_BLS_VALID_BY_ATTESTER, ATTESTATION_BLS_VALID_TOTAL};
+use network::gossip::staleness::ATTEST_STALE_SLOTS;
 
 /// Outcome of checking the BLS half of one attestation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,6 +23,28 @@ pub(crate) enum BlsAttestVerdict {
     NoKey,
     /// Present, but not this attester's signature over the frozen preimage.
     Invalid,
+}
+
+/// First-seen `(attester, slot)` set behind the attestation relay verdict (AUDIT-P1-506).
+#[derive(Debug, Default)]
+pub(crate) struct AttestSeen(HashSet<(PublicKey, u32)>);
+
+impl AttestSeen {
+    /// `true` iff `key` was not in the set.
+    pub(crate) fn insert(&mut self, key: (PublicKey, u32)) -> bool {
+        self.0.insert(key)
+    }
+
+    /// Keep slots `>= best_slot - ATTEST_STALE_SLOTS`, the swarm's attestation age bound.
+    pub(crate) fn prune(&mut self, best_slot: u32) {
+        let floor = best_slot.saturating_sub(ATTEST_STALE_SLOTS);
+        self.0.retain(|&(_, slot)| slot >= floor);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.0.len()
+    }
 }
 
 impl Node {
@@ -48,7 +71,8 @@ impl Node {
     }
 
     /// Admit one Ed25519-verified attestation: membership, then attendance, then the
-    /// BLS verdict. Returns the locally derived weight, or `None` for a non-member.
+    /// BLS verdict. Returns the locally derived weight and whether this call pooled
+    /// the BLS half, or `None` for a non-member.
     ///
     /// `height` is the height authority is derived at — the attested block's height at
     /// the gossip ingress, the local tip at the direct one.
@@ -57,7 +81,7 @@ impl Node {
         att: &Attestation,
         height: u64,
         source_peer: PeerId,
-    ) -> Option<u64> {
+    ) -> Option<(u64, bool)> {
         let derived = {
             let producers = self.producer_set.read().await;
             self.derive_attester_weight(&producers, &att.attester, height)
@@ -82,12 +106,13 @@ impl Node {
         self.minute_tracker
             .record(att.attester, attestation_minute(att.slot));
 
+        let mut newly_pooled = false;
         match self.bls_verdict(att, &onchain_bls_key) {
             BlsAttestVerdict::Valid(sig) => {
-                if self
+                newly_pooled = self
                     .parent_sig_pool
-                    .insert(att.block_hash, att.attester, sig)
-                {
+                    .insert(att.block_hash, att.attester, sig);
+                if newly_pooled {
                     let attester_hex = att.attester.to_hex();
                     let attester = &attester_hex[..8];
                     ATTESTATION_BLS_VALID_TOTAL.inc();
@@ -122,7 +147,7 @@ impl Node {
             BlsAttestVerdict::Empty | BlsAttestVerdict::NoKey => {}
         }
 
-        Some(weight)
+        Some((weight, newly_pooled))
     }
 
     /// Check the BLS half against the attester's on-chain key. Never mutates.

@@ -306,10 +306,13 @@ peer ─► gossipsub (dup cache 300 s, id = BLAKE3(raw)[..20]) ─► mcache (h
      ─► relay_decision (gossip/relay_decision.rs; exhaustive RelayTopic match, no wildcard)
           blocks: AcceptNow  → report Accept now (after the per-peer bucket for non-candidates)
           txs / attestations / votes / producer batches: Defer → no report yet
+            (tx bucket charged per tx: 500/s burst 2,000 per peer, 1,000/s burst 4,000 global;
+             own RPC txs: origin_tx_bucket 500/s burst 2,000, empty → Busy)
           tx announce, digest, legacy producer list: LocalOnly → report Ignore, process
           everything else: Ignore (undecodable block bytes: Reject)
      ─► EventSink (service/event_sink.rs; never awaits)
           consensus lane: blocks, attestations, control events     (64 MiB + count bound)
+                          attestations stop 256 slots / 8 MiB short of the bound (block headroom)
           bulk lane:      txs, votes, producer announcements/digests (16 MiB + count bound)
           control backlog: FIFO, 8,192 events (status/sync ≤ 64 MiB), drained into the consensus lane
      ─► EventLanes::recv (service/event_lanes.rs; biased, consensus lane first)
@@ -321,6 +324,8 @@ peer ─► gossipsub (dup cache 300 s, id = BLAKE3(raw)[..20]) ─► mcache (h
 ```
 
 A gossip event that does not fit its lane is shed and counted; a shed Deferred message is reported `Ignore` at the drop. The node never re-publishes received content; each own-origin tx goes out once as one legacy single-tx message. `NetworkService::new` refuses to start unless the lane budgets are bounded (`LaneBudgets::is_bounded`, INV-NETWORK-002).
+
+**Command channel ceiling (REQ-GRV-007):** the node → swarm command channel (`NetworkCommand`, `service/mod.rs`) is bounded by count: `(max_peers * 4).clamp(2048, 32768)` items. Its largest item is `SendSyncResponse` (≤ 16 MiB, `MAX_SYNC_SIZE`); `BroadcastBlock` is ≤ `BASE_BLOCK_SIZE` 2,000,000 B. Theoretical ceiling = count x largest item = 2,048 x 16 MiB = 32 GiB at `max_peers` 50. Realistic ≈ the in-flight sync responses (request-paced: inbound sync requests are limited to 10/s per peer) + ≤ 1 own block per slot. The count bound is the enforced one.
 
 **Gossip receive/verdict metrics (INC-I-237 M0, observation only):** the swarm stamps every gossipsub message once at receive (`service/gossip_handle.rs::GossipHandle`) and clones the stamp into each event the message produces (a tx message is ONE event, and its handle also names the original message id the node's verdict is reported on — INC-I-237 M2); `NetworkEvent::gossip_topic()` / `gossip_handle()` map gossip variants to a topic. `gossip/tx_batch_stats.rs` counts received tx batch sizes in plain atomics. The node (`bins/node/src/metrics_gossip.rs`) observes after `handle_network_event` returns (Ok or Err) and exports:
 

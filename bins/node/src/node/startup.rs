@@ -430,8 +430,10 @@ impl Node {
         // RPC tx/vote broadcast reserves a command slot first (INC-I-237 R3); None/false = Busy
         if let Some(ref network) = self.network {
             let cmd_tx = network.command_sender();
-            context =
-                context.with_broadcast(move || super::rpc_broadcast::reserve_tx_broadcast(&cmd_tx));
+            let origin = self.origin_tx_bucket.clone();
+            context = context.with_broadcast(move || {
+                super::rpc_broadcast::reserve_tx_broadcast(&cmd_tx, &origin)
+            });
             let cmd_tx = network.command_sender();
             let local = self.vote_tx.clone();
             context = context.with_broadcast_vote(move |vote_data: Vec<u8>| {

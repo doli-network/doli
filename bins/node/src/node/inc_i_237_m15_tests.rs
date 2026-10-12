@@ -1,6 +1,6 @@
 //! INC-I-237 M1.5 (R3) — node side of the RPC broadcast reservation.
 //!
-//! OUTPUT CONTRACT: fn reserve_tx_broadcast(&mpsc::Sender<NetworkCommand>)
+//! OUTPUT CONTRACT: fn reserve_tx_broadcast(&mpsc::Sender<NetworkCommand>, &Mutex<TokenBucket>)
 //!   -> Option<rpc::TxBroadcastPermit> / broadcast_vote_now(&cmd_tx, local, vote_data) -> bool
 //!   O1: none   O2: none   O3: Option<permit> / bool   O4: none   O5: none
 //!   O6: command channel (BroadcastTransaction / BroadcastVote, count + payload);
@@ -13,12 +13,20 @@
 //!   dropped}; local {None, free, full}
 //! MATRIX: O3 x P1-P6, O6 x P1-P6 — all asserted below.
 
+use std::sync::Mutex;
+
 use doli_core::Transaction;
+use network::rate_limit::TokenBucket;
 use network::NetworkCommand;
 use tokio::sync::mpsc;
 
 use super::rpc_broadcast::{broadcast_vote_now, reserve_tx_broadcast};
 use crate::updater::{Vote, VoteMessage};
+
+/// An origin budget that never binds, so these rows judge the command slot alone.
+fn open_origin() -> Mutex<TokenBucket> {
+    Mutex::new(TokenBucket::new(1 << 30, 0.0))
+}
 
 fn tx() -> Transaction {
     let target = *crypto::KeyPair::from_seed([0x37; 32]).public_key();
@@ -49,18 +57,24 @@ fn only_bootstrap(rx: &mut mpsc::Receiver<NetworkCommand>) {
 #[test]
 fn req_grv_007_reserve_on_full_or_closed_command_channel_is_none() {
     let (cmd, mut rx) = full_channel();
-    assert!(reserve_tx_broadcast(&cmd).is_none(), "full -> Busy");
+    assert!(
+        reserve_tx_broadcast(&cmd, &open_origin()).is_none(),
+        "full -> Busy"
+    );
     only_bootstrap(&mut rx);
     let (cmd, rx) = mpsc::channel::<NetworkCommand>(1);
     drop(rx);
-    assert!(reserve_tx_broadcast(&cmd).is_none(), "closed -> Busy");
+    assert!(
+        reserve_tx_broadcast(&cmd, &open_origin()).is_none(),
+        "closed -> Busy"
+    );
 }
 
 // REQ-GRV-007 / F-15 — Decision: a failure means a reserved permit broadcasts nothing, the wrong tx, or a second copy.
 #[test]
 fn req_grv_007_reserved_permit_sends_broadcast_transaction_exactly_once() {
     let (cmd, mut rx) = mpsc::channel(1);
-    let permit = reserve_tx_broadcast(&cmd).expect("free slot");
+    let permit = reserve_tx_broadcast(&cmd, &open_origin()).expect("free slot");
     let t = tx();
     permit(t.clone());
     match rx.try_recv() {
@@ -74,14 +88,14 @@ fn req_grv_007_reserved_permit_sends_broadcast_transaction_exactly_once() {
 #[test]
 fn req_grv_007_dropped_unused_permit_frees_the_slot() {
     let (cmd, mut rx) = mpsc::channel(1);
-    let held = reserve_tx_broadcast(&cmd).expect("free slot");
+    let held = reserve_tx_broadcast(&cmd, &open_origin()).expect("free slot");
     assert!(
-        reserve_tx_broadcast(&cmd).is_none(),
+        reserve_tx_broadcast(&cmd, &open_origin()).is_none(),
         "the permit holds the only slot"
     );
     drop(held);
     assert!(
-        reserve_tx_broadcast(&cmd).is_some(),
+        reserve_tx_broadcast(&cmd, &open_origin()).is_some(),
         "drop must release the slot"
     );
     assert!(rx.try_recv().is_err(), "an unused permit sends nothing");

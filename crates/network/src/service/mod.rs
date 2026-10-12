@@ -32,7 +32,7 @@ mod tests;
 pub use event_sink::{LaneBudgets, LaneSnapshot, LaneStats, TopicCounts};
 pub use gossip_handle::GossipHandle;
 pub use types::{NetworkCommand, NetworkError, NetworkEvent};
-pub use verdict::{send_gossip_verdict, Verdict, LATE_VERDICTS};
+pub use verdict::{send_gossip_verdict, Verdict, DROPPED_VERDICTS, LATE_VERDICTS};
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32};

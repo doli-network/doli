@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crypto::{Hash, KeyPair};
-use doli_core::transaction::{Input, Output, SighashType, Transaction, TxType};
+use doli_core::transaction::{DelegateBondData, Input, Output, SighashType, Transaction, TxType};
 use doli_node::node::Node;
 use network::{NetworkConfig, NetworkEvent, NetworkService};
 use storage::{Outpoint, UtxoEntry};
@@ -77,6 +77,16 @@ pub fn malleate(tx: &Transaction) -> Transaction {
     let mut m = tx.clone();
     m.inputs[0].signature = crypto::Signature::from_bytes([0x5A; 64]);
     m
+}
+
+/// A DelegateBond no key signed: fresh random parties, bond_count 1, garbage signature.
+pub fn forged_delegation(i: u32) -> Transaction {
+    let party = || *KeyPair::generate().public_key();
+    let mut d = DelegateBondData::new(party(), party(), 1);
+    let mut sig = [0xF0u8; 64];
+    sig[..4].copy_from_slice(&i.to_le_bytes());
+    d.signature = crypto::Signature::from_bytes(sig);
+    Transaction::new_delegate_bond(d)
 }
 
 pub fn prev(tag: u8) -> Hash {

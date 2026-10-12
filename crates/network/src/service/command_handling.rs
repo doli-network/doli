@@ -148,10 +148,12 @@ pub(super) async fn handle_command(
             // In the future, this could use a dedicated request-response protocol
             let data = doli_core::encode_digest(&digest);
             let topic = IdentTopic::new(PRODUCERS_TOPIC);
-            if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, data) {
-                if !matches!(e, libp2p::gossipsub::PublishError::Duplicate) {
-                    warn!("Failed to broadcast producer digest: {}", e);
+            match swarm.behaviour_mut().gossipsub.publish(topic, data) {
+                Err(libp2p::gossipsub::PublishError::Duplicate) => {
+                    debug!("Producer digest unchanged: duplicate publish skipped");
                 }
+                Err(e) => warn!("Failed to broadcast producer digest: {}", e),
+                Ok(_) => {}
             }
         }
 

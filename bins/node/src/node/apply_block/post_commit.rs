@@ -447,6 +447,8 @@ impl Node {
             self.advance_floor_window(floor_outcome, epoch, height);
         }
 
+        self.attest_seen.prune(block.header.slot);
+
         // Per-block attestation: sign chain tip for finality gadget + record in tracker.
         self.create_and_broadcast_attestation(block_hash, block.header.slot, height)
             .await;

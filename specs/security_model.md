@@ -585,8 +585,9 @@ Token bucket rate limiting protects against DoS attacks at both per-peer and glo
 | Resource | Per-Peer Limit | Global Limit |
 |----------|---------------|--------------|
 | Blocks | 10/minute | 100/minute |
-| Transactions | 50/second | 200/second |
-| Requests | 20/second | - |
+| Transactions (one token per tx; a 0xBA batch of n txs costs n) | 500/second, burst 2,000 | 1,000/second, burst 4,000 |
+| Requests (votes, producer gossip) | 20/second, burst 200 | - |
+| Attestations (own bucket, INC-I-237 M5 decision C) | 20/second, burst 200 | - |
 | Bandwidth | 1 MB/second | 10 MB/second |
 
 **Token Bucket Algorithm**:
@@ -594,6 +595,7 @@ Token bucket rate limiting protects against DoS attacks at both per-peer and glo
 - Refill Rate: Tokens per second (e.g., 10/60 = 0.167 blocks/sec)
 - Check before accept: `can_consume(amount)` returns false if bucket empty
 - Record after accept: `try_consume(amount)` deducts tokens
+- Own-origin RPC txs draw on `Node.origin_tx_bucket` (500/second, burst 2,000) before a command slot is reserved; an empty bucket answers Busy (INC-I-237 AUDIT-P2-511)
 
 **Features**:
 - Per-peer tracking via `HashMap<PeerId, PeerLimits>`

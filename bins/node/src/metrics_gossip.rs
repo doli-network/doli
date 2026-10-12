@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use lazy_static::lazy_static;
 use network::gossip::staleness::GossipTopic;
 use network::gossip::tx_batch_stats::{TxBatchSnapshot, TX_BATCH_BUCKETS, TX_GOSSIP_BATCH_STATS};
-use network::service::{LaneBudgets, LaneSnapshot, LaneStats, LATE_VERDICTS};
+use network::service::{LaneBudgets, LaneSnapshot, LaneStats, DROPPED_VERDICTS, LATE_VERDICTS};
 use network::GossipHandle;
 use prometheus::{
     Histogram, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGaugeVec, Opts, Registry,
@@ -102,6 +102,14 @@ lazy_static! {
         &["topic"]
     )
     .unwrap();
+    static ref VERDICT_DROPPED: IntCounterVec = IntCounterVec::new(
+        Opts::new(
+            "doli_gossip_verdict_dropped_total",
+            "Node gossip verdicts refused by a full swarm command channel (message expires unreported), per topic."
+        ),
+        &["topic"]
+    )
+    .unwrap();
     static ref LANE_SHED: IntGaugeVec = IntGaugeVec::new(
         Opts::new(
             "doli_event_lane_shed_total",
@@ -170,6 +178,7 @@ pub fn register_gossip_metrics(registry: &Registry) {
     let _ = registry.register(Box::new(LANE_INFLIGHT_BYTES.clone()));
     let _ = registry.register(Box::new(LANE_SHED.clone()));
     let _ = registry.register(Box::new(VERDICT_LATE.clone()));
+    let _ = registry.register(Box::new(VERDICT_DROPPED.clone()));
     let _ = registry.register(Box::new(LANE_DEPTH.clone()));
     let _ = registry.register(Box::new(SHED_BY_TOPIC.clone()));
     for topic in EVENT_TOPICS {
@@ -292,11 +301,14 @@ pub fn watch_event_lanes(stats: Arc<LaneStats>, budgets: LaneBudgets) {
     let _ = EVENT_LANES.set((stats, budgets));
 }
 
-/// Raise each per-topic late counter to the swarm's monotone count.
+/// Raise each per-topic late and dropped counter to the swarm's monotone count.
 fn scrape_late_verdicts() {
     for topic in EVENT_TOPICS {
-        let c = VERDICT_LATE.with_label_values(&[topic.metric_label()]);
+        let label = [topic.metric_label()];
+        let c = VERDICT_LATE.with_label_values(&label);
         c.inc_by(LATE_VERDICTS.get(topic).saturating_sub(c.get()));
+        let d = VERDICT_DROPPED.with_label_values(&label);
+        d.inc_by(DROPPED_VERDICTS.get(topic).saturating_sub(d.get()));
     }
 }
 

@@ -1112,6 +1112,7 @@ impl Node {
             ws_sender: Arc::new(RwLock::new(None)),
             minute_tracker: MinuteAttestationTracker::new(),
             parent_sig_pool: ParentSignaturePool::new(),
+            attest_seen: Default::default(),
             inc_i_178_attestation_bls_activation_height: bls_activation_height,
             last_built_aggregate: Vec::new(),
             bls_ingress_scorer: PeerScorer::new(PeerScorerConfig::default()),
@@ -1140,6 +1141,7 @@ impl Node {
             attest_fetch_tracker: HashMap::new(),
             defi_health_refresh_counter: AtomicU64::new(0),
             defi_health_cache: std::sync::Mutex::new(None),
+            origin_tx_bucket: super::rpc_broadcast::new_origin_tx_bucket(),
         };
 
         // M4 [F3]: a session always begins from an empty staging family, and
@@ -1363,6 +1365,7 @@ impl Node {
             ws_sender: Arc::new(RwLock::new(None)),
             minute_tracker: MinuteAttestationTracker::new(),
             parent_sig_pool: ParentSignaturePool::new(),
+            attest_seen: Default::default(),
             inc_i_178_attestation_bls_activation_height: bls_activation_height,
             last_built_aggregate: Vec::new(),
             bls_ingress_scorer: PeerScorer::new(PeerScorerConfig::default()),
@@ -1391,6 +1394,7 @@ impl Node {
             attest_fetch_tracker: HashMap::new(),
             defi_health_refresh_counter: AtomicU64::new(0),
             defi_health_cache: std::sync::Mutex::new(None),
+            origin_tx_bucket: super::rpc_broadcast::new_origin_tx_bucket(),
         })
     }
 
@@ -1581,6 +1585,7 @@ impl Node {
             ws_sender: Arc::new(RwLock::new(None)),
             minute_tracker: MinuteAttestationTracker::new(),
             parent_sig_pool: ParentSignaturePool::new(),
+            attest_seen: Default::default(),
             inc_i_178_attestation_bls_activation_height: bls_activation_height,
             last_built_aggregate: Vec::new(),
             bls_ingress_scorer: PeerScorer::new(PeerScorerConfig::default()),
@@ -1609,6 +1614,7 @@ impl Node {
             attest_fetch_tracker: HashMap::new(),
             defi_health_refresh_counter: AtomicU64::new(0),
             defi_health_cache: std::sync::Mutex::new(None),
+            origin_tx_bucket: super::rpc_broadcast::new_origin_tx_bucket(),
         })
     }
 }

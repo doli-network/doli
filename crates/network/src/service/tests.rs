@@ -19,6 +19,9 @@ mod inc_i_237_m15_fixtures;
 mod inc_i_237_m15_lanes;
 mod inc_i_237_m2_verdict;
 mod inc_i_237_m4_lane_depth;
+mod inc_i_237_m5_attest_budget;
+mod inc_i_237_m5_block_headroom;
+mod inc_i_237_m5_tx_budget;
 
 #[test]
 fn test_network_event_announcement_type() {

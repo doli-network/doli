@@ -23,6 +23,10 @@ pub const BULK_LANE_BYTES: usize = 16 << 20;
 pub const BACKLOG_BYTES: usize = 64 << 20;
 /// Max control events held while the node is not draining.
 pub const BACKLOG_CAP: usize = 8_192;
+/// Consensus-lane slots reserved for blocks and control events (AUDIT-P2-510).
+pub const ATTEST_HEADROOM_SLOTS: usize = 256;
+/// Consensus-lane bytes reserved for blocks and control events (AUDIT-P2-510).
+pub const ATTEST_HEADROOM_BYTES: usize = 8 << 20;
 
 const HASH_BYTES: usize = 32;
 const ANNOUNCEMENT_BYTES: usize = 192;
@@ -53,6 +57,10 @@ pub struct LaneBudgets {
     pub bulk_bytes: usize,
     pub backlog_bytes: usize,
     pub backlog_cap: usize,
+    /// Consensus-lane slots an attestation may never take (kept for blocks).
+    pub attest_headroom_slots: usize,
+    /// Consensus-lane bytes an attestation may never take (kept for blocks).
+    pub attest_headroom_bytes: usize,
 }
 
 impl LaneBudgets {
@@ -66,6 +74,8 @@ impl LaneBudgets {
             bulk_bytes: BULK_LANE_BYTES,
             backlog_bytes: BACKLOG_BYTES,
             backlog_cap: BACKLOG_CAP,
+            attest_headroom_slots: ATTEST_HEADROOM_SLOTS,
+            attest_headroom_bytes: ATTEST_HEADROOM_BYTES,
         }
     }
 
@@ -368,6 +378,10 @@ impl EventSink {
     pub fn emit(&self, ev: NetworkEvent) -> EmitOutcome {
         let size = event_bytes(&ev);
         let lane = lane_of(&ev);
+        if matches!(ev, NetworkEvent::NewAttestation(..)) && self.in_block_headroom(size) {
+            self.stats.shed_topic(&ev);
+            return count_drop(&self.stats.consensus_shed, "gossip events");
+        }
         if lane == Lane::Bulk || is_consensus_gossip(&ev) {
             let shed = match lane {
                 Lane::Bulk => &self.stats.bulk_shed,
@@ -396,6 +410,17 @@ impl EventSink {
             (ev, size)
         };
         self.admit_backlog(&mut backlog, item, payload)
+    }
+
+    /// True when `size` more attestation bytes would enter the block headroom.
+    fn in_block_headroom(&self, size: usize) -> bool {
+        let b = &self.budgets;
+        let used = self.stats.consensus_bytes.load(Ordering::Acquire);
+        depth(&self.stats.consensus_len).saturating_add(b.attest_headroom_slots) >= b.consensus_cap
+            || used
+                .saturating_add(size)
+                .saturating_add(b.attest_headroom_bytes)
+                > b.consensus_bytes
     }
 
     fn admit_backlog(

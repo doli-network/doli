@@ -14,7 +14,12 @@ use super::validation::wall_clock_slot_from;
 /// attestation backing a recent block is never dropped.
 pub const ATTEST_STALE_SLOTS: u32 = 12;
 
-/// The attestation age bound; an unset clock (`genesis_time == 0`) fails open.
+/// Future bound (in slots) for attestations: newer than
+/// `wall_slot + ATTEST_FUTURE_SLOTS` is `Ignore`d (M5-DEV-F1).
+pub const ATTEST_FUTURE_SLOTS: u32 = 2;
+
+/// The attestation age and future bounds; an unset clock (`genesis_time == 0`)
+/// fails open.
 pub(super) fn attestation_is_current(
     a: &Attestation,
     genesis_time: u64,
@@ -22,7 +27,9 @@ pub(super) fn attestation_is_current(
     now: u64,
 ) -> bool {
     let wall = wall_clock_slot_from(genesis_time, slot_duration, now);
-    genesis_time == 0 || a.slot >= wall.saturating_sub(ATTEST_STALE_SLOTS)
+    genesis_time == 0
+        || (a.slot >= wall.saturating_sub(ATTEST_STALE_SLOTS)
+            && a.slot <= wall.saturating_add(ATTEST_FUTURE_SLOTS))
 }
 
 /// Age bound (seconds) for governance votes: a vote whose `timestamp` is older

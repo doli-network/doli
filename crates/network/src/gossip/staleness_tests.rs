@@ -461,3 +461,37 @@ fn heartbeat_forged_variant_does_not_suppress_genuine() {
         "genuine heartbeat",
     );
 }
+
+// ── M5 (M5-DEV-F1, decision C): attestation slot upper bound wall + 2 ─────
+// OUTPUT CONTRACT: relay_decision(Attestations, data, ctx) -> RelayDecision
+//   O3 Defer / Ignore. PATHS: slot <= wall + 2 -> Defer; slot > wall + 2 ->
+//   Ignore. PARTITIONS: slot {wall, +1, +2, +3, +1,000, u32::MAX}; wall {100,
+//   u32::MAX (saturating, no overflow panic)}.
+
+// REQ-GRV-SEC-002 (M5-DEV-F1) — Decision: a failure means one member key mints a first-seen (attester, slot) Accept for every future slot, re-opening the AUDIT-P1-506 bucket drain and growing AttestSeen without a bound.
+#[test]
+fn m5_dev_f1_attestation_more_than_two_slots_ahead_is_ignored() {
+    let rows = [
+        (WALL, true),
+        (WALL + 1, true),
+        (WALL + 2, true),
+        (WALL + 3, false),
+        (WALL + 1_000, false),
+        (u32::MAX, false),
+    ];
+    let got: Vec<(u32, bool)> = rows
+        .iter()
+        .map(|&(s, _)| (s, is_accept(att_d(&make_attestation(s), &ctx()))))
+        .collect();
+    assert_eq!(
+        got,
+        rows.to_vec(),
+        "M5-DEV-F1: (slot, Deferred) with wall {WALL}; bound = wall + 2"
+    );
+    let mut top = ctx();
+    top.now_unix = GEN + DUR * u64::from(u32::MAX);
+    assert!(
+        is_accept(att_d(&make_attestation(u32::MAX), &top)),
+        "wall = u32::MAX: slot u32::MAX is current (the bound must saturate)"
+    );
+}

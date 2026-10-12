@@ -51,6 +51,7 @@ fn req_grv_007_lane_gauges_export_three_budget_series_and_live_inflight_bytes() 
         bulk_bytes: 16 << 20,
         backlog_bytes: 32 << 20,
         backlog_cap: 8_192,
+        ..LaneBudgets::for_max_peers(8)
     };
     observe_event_lanes(&snapshot(1_111, 2_222, 3_333), &budgets);
     assert_eq!(series(BUDGET), 3, "exactly one budget series per lane");

@@ -18,6 +18,8 @@
 //!   topic {txs, votes, producers, blocks}; channel {free, full, closed};
 //!   tx message size {0, 1, 50}
 //! MATRIX: O6 x P1-P3 x verdicts, O5 x P1-P3, O3 x P1-P4 — asserted below.
+//! M5 (AUDIT-P3-406): O5 also DROPPED_VERDICTS per topic — P4 full -> +1 on
+//!   the handle's topic, free -> unchanged (this test owns Attestations).
 //!   Duplicate and never-sent verdicts are judged on the wire (vendor mcache)
 //!   in tests/it/inc_i_237_m2_verdict_path.rs.
 
@@ -33,7 +35,8 @@ use crate::gossip::staleness::GossipTopic;
 use crate::service::event_sink::event_bytes;
 use crate::service::types::{NetworkCommand, NetworkEvent};
 use crate::service::verdict::{
-    apply_gossip_verdict, send_gossip_verdict, Verdict, LATE_VERDICTS, VERDICT_DEADLINE,
+    apply_gossip_verdict, send_gossip_verdict, Verdict, DROPPED_VERDICTS, LATE_VERDICTS,
+    VERDICT_DEADLINE,
 };
 use crate::service::GossipHandle;
 
@@ -90,7 +93,7 @@ fn f_3_on_time_verdict_reports_exactly_once_on_the_original_id_and_source() {
     );
 }
 
-// F-3 / REQ-GRV-008 — Decision: a failure means a verdict after the window is still reported (a vendor no-op WARN per message with log rotation off) or is not counted, so late relays are invisible to the operator.
+// F-3 / REQ-GRV-008 — Decision: a failure means a verdict after the window is still reported (a vendor no-op WARN per message, unbounded log growth) or is not counted, so late relays are invisible to the operator.
 #[test]
 fn f_3_late_verdict_is_counted_per_topic_and_never_reported() {
     let (txs0, blocks0) = (
@@ -193,5 +196,35 @@ fn d1_one_tx_message_event_charges_every_tx_to_the_lane() {
     assert!(
         fifty >= 50 * one,
         "50-tx message charged {fifty} B < 50 x {one} B"
+    );
+}
+
+// REQ-GRV-SEC-003 (AUDIT-P3-406) — Decision: a failure means a verdict refused by a full swarm command channel vanishes uncounted, so messages that expire unreported (valid content never relayed) are invisible.
+#[test]
+fn m5_audit_p3_406_refused_verdict_is_counted() {
+    let topic = GossipTopic::Attestations;
+    let before = DROPPED_VERDICTS.get(topic);
+    let (cmd, mut rx) = mpsc::channel(1);
+    let (h, _, _) = handle(topic, Duration::ZERO);
+    assert!(
+        send_gossip_verdict(&cmd, h, Verdict::Accept),
+        "free slot -> sent"
+    );
+    assert_eq!(
+        DROPPED_VERDICTS.get(topic),
+        before,
+        "a sent verdict is not a drop"
+    );
+    assert!(rx.try_recv().is_ok(), "the verdict was queued");
+    let _held = cmd.try_reserve().expect("hold the only slot");
+    let (h, _, _) = handle(topic, Duration::ZERO);
+    assert!(
+        !send_gossip_verdict(&cmd, h, Verdict::Ignore),
+        "full -> refused"
+    );
+    assert_eq!(
+        DROPPED_VERDICTS.get(topic) - before,
+        1,
+        "AUDIT-P3-406: one count per refused verdict"
     );
 }

@@ -21,6 +21,8 @@ pub(super) fn roomy() -> LaneBudgets {
         bulk_bytes: 1 << 20,
         backlog_bytes: 1 << 20,
         backlog_cap: 64,
+        attest_headroom_slots: 0,
+        attest_headroom_bytes: 0,
     }
 }
 

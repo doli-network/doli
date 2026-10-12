@@ -20,6 +20,10 @@ mod force_reorg;
 #[cfg(test)]
 mod inc_i_237_m15_tests;
 #[cfg(test)]
+mod inc_i_237_m5_attest_seen_tests;
+#[cfg(test)]
+mod inc_i_237_m5_tests;
+#[cfg(test)]
 mod inc_i_237_slash_tests;
 #[cfg(test)]
 mod orphan_chase_tests;
@@ -244,6 +248,8 @@ pub struct Node {
     /// Bounded pool of gossiped BLS attestation signatures, keyed by the
     /// attested parent hash.
     pub parent_sig_pool: ParentSignaturePool,
+    /// First-seen `(attester, slot)` for the attestation relay verdict; pruned per applied block.
+    pub(crate) attest_seen: attestation::ingress::AttestSeen,
     /// INC-I-178 M4 gate, copied from `config.network.params()` at construction.
     /// Settable so tests can drive both sides; production never writes it.
     pub inc_i_178_attestation_bls_activation_height: u64,
@@ -397,6 +403,9 @@ pub struct Node {
     /// `run_periodic_tasks()`; refreshed only when stale (>30s).
     #[allow(clippy::type_complexity)]
     pub defi_health_cache: std::sync::Mutex<Option<((u64, Option<(Hash, u64)>), Instant)>>,
+
+    /// Own-origin tx budget consulted before an RPC broadcast (INC-I-237 AUDIT-P2-511).
+    pub origin_tx_bucket: Arc<std::sync::Mutex<network::rate_limit::TokenBucket>>,
 }
 
 /// INC-I-055: Number of health samples to track in the rolling window.

@@ -88,6 +88,8 @@ mod inc_i_237_m3_node_republish;
 mod inc_i_237_m3_node_vote_producers;
 mod inc_i_237_m4_lane_depth_api;
 mod inc_i_237_m4_metric_readers;
+mod inc_i_237_m5_attest_bound;
+mod inc_i_237_m5_attest_newness;
 mod m1_snap_install_identity;
 mod m3_common;
 mod m3_staging_install;

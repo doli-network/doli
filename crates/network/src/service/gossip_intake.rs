@@ -185,23 +185,27 @@ fn deliver_txs(
     event_tx: &EventSink,
     rate_limiter: &mut RateLimiter,
 ) {
-    if rate_limiter.check_transaction(&source) {
-        rate_limiter.record_transaction(&source, size);
+    if rate_limiter.check_transaction(&source, 1) {
+        rate_limiter.record_transaction(&source, 1, size);
         event_tx.emit(event);
     } else {
         warn!("Rate limit: dropping tx from {source} (tx rate exceeded)");
     }
 }
 
-/// Per-peer bucket of a deferred message: txs draw on the tx bucket, every
-/// other topic on the request bucket, never on the tx bucket (F-2).
+/// Per-peer bucket of a deferred message: txs draw on the tx bucket,
+/// attestations on their own bucket, every other topic on the request bucket,
+/// never on the tx bucket (F-2).
 fn within_peer_budget(payload: &Payload, source: &PeerId, rate_limiter: &mut RateLimiter) -> bool {
-    if let Payload::Txs(_) = payload {
-        let ok = rate_limiter.check_transaction(source);
+    if let Payload::Txs(txs) = payload {
+        let ok = rate_limiter.check_transaction(source, txs.len() as u64);
         if !ok {
             warn!("Rate limit: dropping tx from {source} (tx rate exceeded)");
         }
         return ok;
+    }
+    if let Payload::Attestation = payload {
+        return rate_limiter.check_attestation(source);
     }
     let ok = rate_limiter.check_request(source);
     if !ok && matches!(payload, Payload::Announcements(_)) {
@@ -230,7 +234,7 @@ fn defer(
     };
     let event = match payload {
         Payload::Txs(txs) => {
-            rate_limiter.record_transaction(&source, size);
+            rate_limiter.record_transaction(&source, txs.len() as u64, size);
             TX_GOSSIP_BATCH_STATS.record(txs.len());
             let handle = stamp(GossipTopic::Transactions);
             return event_tx.emit(NetworkEvent::NewTransaction(txs, handle));
@@ -240,7 +244,9 @@ fn defer(
         }
         Payload::Vote => NetworkEvent::NewVote(data, stamp(GossipTopic::Votes)),
         Payload::Attestation => {
-            NetworkEvent::NewAttestation(data, source, stamp(GossipTopic::Attestations))
+            rate_limiter.record_attestation(&source, size);
+            let handle = stamp(GossipTopic::Attestations);
+            return event_tx.emit(NetworkEvent::NewAttestation(data, source, handle));
         }
         Payload::None | Payload::TxHashes(_) | Payload::Digest(_) | Payload::LegacyProducers(_) => {
             return EmitOutcome::Shed
