@@ -20,6 +20,19 @@ Wired in via `[patch.crates-io]` in the workspace root `Cargo.toml`.
 - `src/behaviour.rs`: `Behaviour::retention_stats` (`#[doc(hidden)]`), len/capacity reads only.
 - `src/lib.rs`: `#[doc(hidden)]` re-export of `DuplicateCache`, `RetentionStats`, `TimeCacheStats`.
 
+## M7.2 — count caps on the duplicate and peer-score `deliveries` caches
+- `src/time_cache.rs`: `TimeCache.max_entries` (`usize::MAX` = uncapped, `new` unchanged) and
+  `TimeCache::new_capped`; in `entry`, a NEW key at `len >= max_entries` evicts the oldest id first
+  (`make_room`); with zero growth slack and `len >= max_entries / 2` the map is rebuilt at
+  `with_capacity(max_entries)` (drops tombstones; the table never doubles past the cap's size).
+  TTL expiry unchanged. `TimeCacheStats.max_entries`; `DuplicateCache::new_capped` (`#[doc(hidden)]` type).
+- `src/config.rs`: `Config::{duplicate_cache_max_entries, peer_score_deliveries_max_entries}` and the
+  `#[doc(hidden)]` `ConfigBuilder` setters; defaults `usize::MAX` (upstream behaviour).
+- `src/behaviour.rs`: the duplicate cache is built with the configured cap; `with_peer_score*`
+  passes the deliveries cap to `PeerScore`.
+- `src/peer_score.rs`: `PeerScore::with_deliveries_max_entries`.
+- Judge also covers: `cargo nextest run -p network --test it -E 'test(inc_i_237_m7_2)'`.
+
 ## Why
 Upstream queue is unbounded: a slow-draining peer grew it without limit (OOM on mainnet).
 Judge: `cargo test -p network --test it inc_i_237`.

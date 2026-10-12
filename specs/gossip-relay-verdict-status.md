@@ -1,6 +1,6 @@
 # Gossip Relay Verdict — Implementation Status, Evidence, Open Items
 
-> INC-I-237 · companion to `specs/gossip-relay-verdict-architecture.md` (design) and `specs/protocol.md` §7.2 (relay rules as shipped). Branch `refactor/inc-i-237-gossip-relay-verdict`. Updated 2026-10-12 (M6).
+> INC-I-237 · companion to `specs/gossip-relay-verdict-architecture.md` (design) and `specs/protocol.md` §7.2 (relay rules as shipped). Branch `refactor/inc-i-237-gossip-relay-verdict`. Updated 2026-10-12 (M7).
 
 ## Status: IMPLEMENTED
 
@@ -13,7 +13,9 @@
 | M3 | `ec84959d` | R2 attestation / vote / producer verdicts, ATTEST_FETCH gate + per-tick cap, digest LocalOnly |
 | M4 | `b4fa9ce9` | R6 app dedup cache deleted + const assert, INV-NETWORK-002 real lane budgets, lane depth / shed-by-topic metrics + probe `channel` lines, dead seam code removed, seam files ≤ 500 lines, specs/docs drift closed |
 | M5 | `7fb9d2b1` | zero-flow never forwards, `(attester, slot)` attestation newness, own attestation bucket, future-slot bound, per-tx bucket charge, block headroom, F-13 soak |
-| M6 | this branch, after `7fb9d2b1` | attestation relay authority from a per-`(attester, slot)` BLS-forwarded bit (not pool residency), unknown-block relay-only BLS check (F7), wall-clock `AttestSeen` prune |
+| M6 | `bf6c8efd` | attestation relay authority from a per-`(attester, slot)` BLS-forwarded bit (not pool residency), unknown-block relay-only BLS check (F7), wall-clock `AttestSeen` prune |
+| M7.1 | `80724ccf` | soak retained-heap attribution per (swarm, structure); vendor size readouts; duplicate-cache gauge |
+| M7.2 | this branch, after `80724ccf` | count caps with oldest-first eviction on the vendor duplicate cache (218,000) and peer-score `deliveries` cache (50,000); table pinned at the cap's size (F-13) |
 
 ## Evidence
 
@@ -22,7 +24,7 @@
 - **M3 devnet A-B-C-D line:** duplicate-publish WARNs 64 → 0; attestations at D = 40; all four nodes at the same height.
 - **NOT run:** a mixed-version testnet soak with the M3/M4 build.
 
-## Open items (owed; none is part of M6)
+## Open items (owed; none is part of M7)
 
 | ID | Item | Where it stands |
 |---|---|---|

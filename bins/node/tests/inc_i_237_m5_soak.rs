@@ -8,8 +8,8 @@
 //!   O6: at C — honest attestations, forged zero-flow txs, mutant-family and
 //!   junk-hash crossings; at B — attestation receive -> verdict latency
 //! PATHS: P1 honest attestation under flood -> at C; P2 forged zero-flow batch
-//!   -> never at C; P3 mutant / junk-hash family -> <= 2 at C each; P4 heap
-//!   retained after drain < 64 MiB; P5 lanes inside budgets; P6 genuine
+//!   -> never at C; P3 mutant / junk-hash family -> <= 2 at C each; P4 B-only
+//!   retained after drain < 64 MiB (M7.2, `bound.rs`); P5 lanes inside budgets; P6 genuine
 //!   transfer after the flood -> at C (non-vacuity of P2)
 //! INPUT PARTITIONS: tx {0xBA batch of forged DelegateBonds ~1.6 MB, every tx
 //!   unique}; attestation {mutants of one genuine, junk hash on one slot,
@@ -57,6 +57,8 @@ use inc_i_237_m2_node_common as c2;
 use inc_i_237_m3_node_common as c3;
 #[path = "inc_i_237_m5_soak_support/attribution.rs"]
 mod attribution;
+#[path = "inc_i_237_m5_soak_support/bound.rs"]
+mod bound;
 #[path = "inc_i_237_m5_soak_support/calibration.rs"]
 mod calibration;
 #[path = "inc_i_237_m5_soak_support/gauge.rs"]
@@ -497,7 +499,7 @@ struct Report {
     peak_mib: f64,
 }
 
-async fn run(secs: u64) -> (Report, attribution::Attribution) {
+async fn run(secs: u64) -> (Report, attribution::Attribution, bound::Bound) {
     let late0 = LATE_VERDICTS.get(GossipTopic::Attestations);
     let (mut b, member, _t) = c3::member_node().await;
     // B's node slot clock (the M6 wall prune) pinned to FAMILY_SLOT for the run.
@@ -576,6 +578,13 @@ async fn run(secs: u64) -> (Report, attribution::Attribution) {
     let end = CURRENT.load(Relaxed);
     let peak = PEAK.load(Relaxed);
     let end_rows = attribution::sample(&b, &attackers, &h_ret, &c_ret).await;
+    let b_caches = b
+        .network
+        .as_ref()
+        .expect("B network")
+        .retention()
+        .snapshot()
+        .gossipsub;
     let table = attribution::Attribution::new(&warm_rows, &end_rows, end as i64 - warm as i64);
     table.print();
 
@@ -591,6 +600,14 @@ async fn run(secs: u64) -> (Report, attribution::Attribution) {
         let total: u64 = attackers.iter().map(|a| a.published[k].load(Relaxed)).sum();
         *o = total as f64 / attackers.len() as f64 / flood_secs;
     }
+    let ingress = offered.iter().sum::<f64>() * attackers.len() as f64;
+    let bound = bound::Bound::new(
+        &table,
+        b_caches.duplicate_cache,
+        b_caches.peer_score_deliveries,
+        ingress,
+    );
+    bound.print();
     let honest_at_c = at_c
         .honest
         .lock()
@@ -618,7 +635,7 @@ async fn run(secs: u64) -> (Report, attribution::Attribution) {
         retained_mib: (end as f64 - warm as f64) / MIB as f64,
         peak_mib: mib(peak),
     };
-    (report, table)
+    (report, table, bound)
 }
 
 fn check(r: &Report) {
@@ -652,14 +669,6 @@ fn check(r: &Report) {
         r.at_b.max_verdict,
         r.late_delta
     );
-    assert!(
-        r.retained_mib < 64.0,
-        "REQ-GRV-007: retained heap {:.1} MiB >= 64 MiB (warm {:.1}, end {:.1}, peak {:.1})",
-        r.retained_mib,
-        r.warm_mib,
-        r.end_mib,
-        r.peak_mib
-    );
     let [cons, bulk, backlog] = r.at_b.lane_max;
     assert!(
         cons <= 64 * MIB && bulk <= 16 * MIB && backlog <= 64 * MIB,
@@ -679,23 +688,27 @@ fn soak_secs(default: u64) -> u64 {
 }
 
 // REQ-GRV-026 (M7.1) — Decision: a failure in `check_attribution` means a swarm's retention accessor reads empty or the summed (swarm, structure) rows explain < 90% of the retained heap, so a cap chosen from the table would target the wrong owner.
-// REQ-GRV-007 / REQ-GRV-017 / REQ-GRV-SEC-002 / REQ-GRV-004 (F-13) — Decision: a failure means a sustained multi-topic flood through the real node grows retained heap past 64 MiB, delays attestation verdicts past 2 s, relays forged zero-flow txs or attestation variants past B, or drains C's bucket for B so a genuine attester goes dark.
+// REQ-GRV-007 / REQ-GRV-017 / REQ-GRV-SEC-002 / REQ-GRV-004 (F-13) — Decision: a failure means a sustained multi-topic flood through the real node grows the node-under-test retained heap (harness rows not counted) past 64 MiB, holds block ids in B's dup cache for less than the 6-slot stale window (REQ-GRV-027), delays attestation verdicts past 2 s, relays forged zero-flow txs or attestation variants past B, or drains C's bucket for B so a genuine attester goes dark.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[allow(clippy::await_holding_lock)]
 async fn soak() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    let (report, table) = run(soak_secs(30)).await;
+    let (report, table, bound) = run(soak_secs(30)).await;
     check(&report);
+    bound::check_bound(&bound);
     attribution::check_attribution(&table);
 }
 
 /// The 10-minute REQ-GRV-007 soak. Runner:
 /// `SOAK_SECS=600 cargo test -p doli-node --release --test inc_i_237_m5_soak -- --ignored --nocapture soak_10min`
 // REQ-GRV-007 (F-13) — Decision: same as `soak`, at the 10-minute duration REQ-GRV-007 names; a failure the 30 s run misses is a slow leak.
+// REQ-GRV-027 (M7.2) — Decision: a failure means B's capped dup cache holds block ids for less than the 6-slot stale window at the flood rate, so a re-sent young block is re-forwarded.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "10-minute soak; run explicitly (see doc comment)"]
 #[allow(clippy::await_holding_lock)]
 async fn soak_10min() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    check(&run(soak_secs(600)).await.0);
+    let (report, _, bound) = run(soak_secs(600)).await;
+    check(&report);
+    bound::check_bound(&bound);
 }

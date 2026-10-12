@@ -95,6 +95,9 @@ pub struct Config {
     max_ihave_messages: usize,
     iwant_followup_time: Duration,
     published_message_ids_cache_time: Duration,
+    // DOLI INC-I-237: count caps of the duplicate and peer-score deliveries caches (M7.2).
+    duplicate_cache_max_entries: usize,
+    peer_score_deliveries_max_entries: usize,
 }
 
 impl Config {
@@ -350,6 +353,16 @@ impl Config {
     pub fn published_message_ids_cache_time(&self) -> Duration {
         self.published_message_ids_cache_time
     }
+
+    // DOLI INC-I-237: duplicate-cache count cap; `usize::MAX` = uncapped (M7.2).
+    pub fn duplicate_cache_max_entries(&self) -> usize {
+        self.duplicate_cache_max_entries
+    }
+
+    // DOLI INC-I-237: peer-score deliveries count cap; `usize::MAX` = uncapped (M7.2).
+    pub fn peer_score_deliveries_max_entries(&self) -> usize {
+        self.peer_score_deliveries_max_entries
+    }
 }
 
 impl Default for Config {
@@ -417,6 +430,8 @@ impl Default for ConfigBuilder {
                 max_ihave_messages: 10,
                 iwant_followup_time: Duration::from_secs(3),
                 published_message_ids_cache_time: Duration::from_secs(10),
+                duplicate_cache_max_entries: usize::MAX,
+                peer_score_deliveries_max_entries: usize::MAX,
             },
             invalid_protocol: false,
         }
@@ -779,6 +794,20 @@ impl ConfigBuilder {
         published_message_ids_cache_time: Duration,
     ) -> &mut Self {
         self.config.published_message_ids_cache_time = published_message_ids_cache_time;
+        self
+    }
+
+    // DOLI INC-I-237: duplicate-cache count cap (M7.2).
+    #[doc(hidden)]
+    pub fn duplicate_cache_max_entries(&mut self, max_entries: usize) -> &mut Self {
+        self.config.duplicate_cache_max_entries = max_entries;
+        self
+    }
+
+    // DOLI INC-I-237: peer-score deliveries count cap (M7.2).
+    #[doc(hidden)]
+    pub fn peer_score_deliveries_max_entries(&mut self, max_entries: usize) -> &mut Self {
+        self.config.peer_score_deliveries_max_entries = max_entries;
         self
     }
 

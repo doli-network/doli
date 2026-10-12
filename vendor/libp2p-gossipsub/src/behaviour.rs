@@ -441,7 +441,10 @@ where
             events: VecDeque::new(),
             control_pool: HashMap::new(),
             publish_config: privacy.into(),
-            duplicate_cache: DuplicateCache::new(config.duplicate_cache_time()),
+            duplicate_cache: DuplicateCache::new_capped(
+                config.duplicate_cache_time(),
+                config.duplicate_cache_max_entries(), // DOLI INC-I-237
+            ),
             topic_peers: HashMap::new(),
             peer_topics: HashMap::new(),
             explicit_peers: HashSet::new(),
@@ -884,7 +887,8 @@ where
         }
 
         let interval = Ticker::new(params.decay_interval);
-        let peer_score = PeerScore::new_with_message_delivery_time_callback(params, callback);
+        let peer_score = PeerScore::new_with_message_delivery_time_callback(params, callback)
+            .with_deliveries_max_entries(self.config.peer_score_deliveries_max_entries()); // DOLI INC-I-237
         self.peer_score = Some((peer_score, threshold, interval, GossipPromises::default()));
         Ok(())
     }

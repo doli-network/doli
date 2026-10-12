@@ -64,8 +64,8 @@ pub const AGGRESSIVE_DEDUP_THRESHOLD: Duration = Duration::from_secs(30);
 /// before validation, so they are never forwarded. This vendor cache (keyed
 /// by BLAKE3 of the raw data) is the only re-delivery dedup.
 ///
-/// RESOURCE COST: measured 146-168 B per distinct id (100k-500k entries);
-/// no count cap yet; see M7.2.
+/// RESOURCE COST: count-capped at [`GOSSIP_DUPLICATE_CACHE_MAX_ENTRIES`];
+/// measured 137 B per id at the cap (table pinned, ~29 MiB per node).
 /// Local per-node policy: no consensus, wire or block-content change.
 pub const GOSSIP_DUPLICATE_CACHE_TIME: Duration = Duration::from_secs(300);
 
@@ -75,6 +75,40 @@ const _: () = assert!(
     GOSSIP_DUPLICATE_CACHE_TIME.as_secs() >= 180
         && GOSSIP_DUPLICATE_CACHE_TIME.as_secs()
             >= ATTEST_STALE_SLOTS as u64 * doli_core::consensus::SLOT_DURATION
+);
+
+/// Count cap of the vendor duplicate cache (INC-I-237 M7.2): oldest-first eviction.
+pub const GOSSIP_DUPLICATE_CACHE_MAX_ENTRIES: usize = 218_000;
+
+/// Count cap of the vendor peer-score `deliveries` cache (INC-I-237 M7.2).
+pub const PEER_SCORE_DELIVERIES_MAX_ENTRIES: usize = 50_000;
+
+// Pinned table (M7.1 model): buckets x (slot + 1) + expiry deque x 40 + per-entry heap.
+const fn capped_cache_model_bytes(cap: usize, slot: usize, per_entry: usize) -> usize {
+    (cap * 8 / 7).next_power_of_two() * (slot + 1) + cap.next_power_of_two() * 40 + cap * per_entry
+}
+
+const fn rebuild_slack_ok(cap: usize) -> bool {
+    (cap * 8 / 7).next_power_of_two() * 7 / 8 >= cap * 105 / 100
+}
+
+// Honest 500 ids/s deduplicated for the full TTL; soak flood (1,804 ids/s) kept >= 120 s.
+const _: () = assert!(
+    GOSSIP_DUPLICATE_CACHE_MAX_ENTRIES as u64 >= 500 * GOSSIP_DUPLICATE_CACHE_TIME.as_secs()
+        && GOSSIP_DUPLICATE_CACHE_MAX_ENTRIES >= 1_804 * 120
+);
+
+// >= 5% rebuild slack; modelled bytes inside the 32 MiB / 20 MiB shares of the 64 MiB budget.
+// Deliveries slot 120 B and 187 B heap per record: M7.2 calibration of the M7.1 soak row.
+const _: () = assert!(
+    rebuild_slack_ok(GOSSIP_DUPLICATE_CACHE_MAX_ENTRIES)
+        && rebuild_slack_ok(PEER_SCORE_DELIVERIES_MAX_ENTRIES)
+        && capped_cache_model_bytes(
+            GOSSIP_DUPLICATE_CACHE_MAX_ENTRIES,
+            std::mem::size_of::<(MessageId, std::time::Instant)>(),
+            40,
+        ) <= 32 << 20
+        && capped_cache_model_bytes(PEER_SCORE_DELIVERIES_MAX_ENTRIES, 120, 187) <= 20 << 20
 );
 
 /// Verify that a gossipsub [`Config`] satisfies INV-NETWORK-002: aggressive
@@ -256,6 +290,8 @@ fn gossipsub_config(
         .history_gossip(3)
         .max_transmit_size(GOSSIP_MAX_TRANSMIT_SIZE)
         .duplicate_cache_time(duplicate_cache_time)
+        .duplicate_cache_max_entries(GOSSIP_DUPLICATE_CACHE_MAX_ENTRIES)
+        .peer_score_deliveries_max_entries(PEER_SCORE_DELIVERIES_MAX_ENTRIES)
         // Flood publish: send OUR messages to ALL peers, not just the mesh.
         .flood_publish(true)
         .build()

@@ -217,6 +217,13 @@ impl PeerScore {
         }
     }
 
+    // DOLI INC-I-237: count cap on the delivery records (M7.2).
+    pub(crate) fn with_deliveries_max_entries(mut self, max_entries: usize) -> Self {
+        self.deliveries =
+            TimeCache::new_capped(Duration::from_secs(TIME_CACHE_DURATION), max_entries);
+        self
+    }
+
     /// Returns the score for a peer
     pub(crate) fn score(&self, peer_id: &PeerId) -> f64 {
         self.metric_score(peer_id, None)
