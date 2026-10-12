@@ -13,6 +13,7 @@ mod pool;
 pub mod rotation_filter;
 pub mod vesting_bound;
 mod withdrawal_holdings;
+pub mod zero_flow_auth;
 
 pub use contention::{AddTransactionResult, ContentionInfo, MempoolDiagnostic};
 pub use entry::MempoolEntry;

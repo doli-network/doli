@@ -41,6 +41,8 @@ mod transaction;
 
 #[cfg(test)]
 mod tests_inc_i237_busy;
+#[cfg(test)]
+mod tests_inc_i237_m8_admission;
 
 // Re-export public API (unchanged)
 pub use context::{BackfillState, RpcContext, SyncStatus, TxBroadcastPermit};

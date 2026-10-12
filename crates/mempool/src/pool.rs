@@ -25,6 +25,7 @@ use super::holdings::HoldingsSources;
 use super::pending_registrations;
 use super::policy::MempoolPolicy;
 use super::withdrawal_holdings;
+use super::zero_flow_auth::authorized;
 
 /// Mempool errors
 #[derive(Debug, Error)]
@@ -869,10 +870,13 @@ impl Mempool {
     ///
     /// System transactions like SlashProducer have no inputs/outputs and therefore
     /// no fees. They are added with priority 0 (lowest) but are still valid.
+    ///
+    /// `maintainers` is the CURRENT maintainer set; zero-flow auth runs against it (INC-I-237 M8).
     pub fn add_system_transaction(
         &mut self,
         tx: Transaction,
         current_height: BlockHeight,
+        maintainers: Option<&doli_core::MaintainerSet>,
     ) -> Result<Hash, MempoolError> {
         let tx_hash = tx.hash();
 
@@ -956,6 +960,14 @@ impl Mempool {
             .with_producers_weighted(active_producers_snapshot)
             .with_pending_producer_keys(pending_keys);
         validate_transaction(&tx, &ctx)?;
+        let mined_at = current_height.saturating_add(1);
+        let genesis = &self.params.genesis_hash;
+        if !authorized(&tx, mined_at, self.network, genesis, maintainers) {
+            return Err(MempoolError::InvalidTransaction(format!(
+                "[MPTX010] {:?} authorization refused at height {}",
+                tx.tx_type, mined_at
+            )));
+        }
 
         // Make room if necessary
         while self.needs_eviction(tx_size) {

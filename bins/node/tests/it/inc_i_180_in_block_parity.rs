@@ -462,7 +462,7 @@ async fn inc_i180_m2_an_in_block_exit_never_splits_builder_from_gate() {
         let mut mp = node.mempool.write().await;
         mp.add_transaction(withdrawal.clone(), &utxo, POST_AH, 1)
             .expect("fixture: partial withdrawal admitted against allowance 4");
-        mp.add_system_transaction(exit.clone(), POST_AH)
+        mp.add_system_transaction(exit.clone(), POST_AH, None)
             .expect("fixture: a zero-flow Exit routes through add_system_transaction");
     }
 

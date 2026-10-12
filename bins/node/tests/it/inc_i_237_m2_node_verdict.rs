@@ -17,9 +17,9 @@
 //!   resident first}
 //! MATRIX: O3 x every partition, O2 x every partition (admission is per tx and
 //!   never undone by the verdict) — asserted below.
-//! M5 (AUDIT-P1-505): P6 any zero-flow tx -> Ignore, admission unchanged;
-//!   partitions {4 zero-flow types, forged/genuine, 1/100 per message, with a
-//!   fee-paying sibling}. Contract: docs/.workflow/inc-i-237-M5-test-contract.md §1a.
+//! M8 (AUDIT-P1-505, auth AH 0): P6 forged zero-flow tx -> refused + Ignore;
+//!   genuine DelegateBond -> admitted + Accept; partitions {4 zero-flow types,
+//!   forged/genuine, 1/100 per message, with a fee-paying sibling}.
 
 use crypto::{Hash, KeyPair};
 use doli_core::maintainer::MaintainerSignature;
@@ -29,6 +29,7 @@ use doli_node::node::Node;
 use network::{EquivocationProof, Verdict};
 
 use super::inc_i_237_m2_node_common as c;
+use super::inc_i_237_m8_common as m8;
 
 async fn has(node: &Node, tx: &Transaction) -> bool {
     node.mempool.read().await.contains(&tx.hash())
@@ -282,36 +283,43 @@ fn forged_other_zero_flow() -> Vec<(&'static str, Transaction)> {
     ]
 }
 
-// REQ-GRV-004 / REQ-GRV-SEC-001 (AUDIT-P1-505) — Decision: a failure means a zero-flow tx, admitted on shape alone with its signature unread until apply, authorizes a forward, so forged delegations cross every hop as new content.
+// REQ-GRV-SEC-008 / REQ-GRV-029 (AUDIT-P1-505) — Decision: a failure means a forged zero-flow tx is admitted or authorizes a forward, or a genuine one (signature verified at admission) still stops at hop 1.
 #[tokio::test]
 async fn m5_audit_p1_505_forged_zero_flow_tx_never_authorizes_a_forward() {
-    let (node, x, y, _t) = funded().await;
+    let (node, kp, _m, _t) = m8::auth_node().await;
+    c::seed(&node, &kp, c::prev(1)).await;
+    c::seed(&node, &kp, c::prev(2)).await;
+    let (x, y) = (c::transfer(&kp, c::prev(1)), c::transfer(&kp, c::prev(2)));
+    let before = node.mempool.read().await.len();
     let forged = c::forged_delegation(1);
     let v = node.handle_gossip_txs(vec![forged.clone()]).await;
     assert_eq!(v, Verdict::Ignore, "AUDIT-P1-505: forged DelegateBond");
     assert!(
-        has(&node, &forged).await,
-        "admission unchanged: forged DelegateBond admitted"
+        !has(&node, &forged).await,
+        "REQ-GRV-SEC-008: forged DelegateBond admitted"
     );
     let batch: Vec<Transaction> = (100..200).map(c::forged_delegation).collect();
     let v = node.handle_gossip_txs(batch.clone()).await;
     assert_eq!(v, Verdict::Ignore, "AUDIT-P1-505: 100 forged DelegateBonds");
-    for tx in &batch {
+    for (row, tx) in forged_other_zero_flow() {
+        let v = node.handle_gossip_txs(vec![tx.clone()]).await;
+        assert_eq!(v, Verdict::Ignore, "AUDIT-P1-505: forged {row}");
         assert!(
-            has(&node, tx).await,
-            "admission unchanged: batch member admitted"
+            !has(&node, &tx).await,
+            "REQ-GRV-SEC-008: forged {row} admitted"
         );
     }
-    for (row, tx) in forged_other_zero_flow() {
-        let v = node.handle_gossip_txs(vec![tx]).await;
-        assert_eq!(v, Verdict::Ignore, "AUDIT-P1-505: forged {row}");
-    }
+    assert_eq!(
+        node.mempool.read().await.len(),
+        before,
+        "REQ-GRV-SEC-008: no forged zero-flow tx admitted"
+    );
     let genuine = genuine_delegation();
     let v = node.handle_gossip_txs(vec![genuine.clone()]).await;
     assert_eq!(
         v,
-        Verdict::Ignore,
-        "genuine DelegateBond: one-hop reach until AUDIT-P2-001"
+        Verdict::Accept,
+        "REQ-GRV-029: a genuine DelegateBond authorizes a forward"
     );
     assert!(has(&node, &genuine).await, "genuine DelegateBond admitted");
     let v = node
@@ -320,7 +328,7 @@ async fn m5_audit_p1_505_forged_zero_flow_tx_never_authorizes_a_forward() {
     assert_eq!(
         v,
         Verdict::Ignore,
-        "a fee-paying sibling does not carry a zero-flow tx"
+        "a fee-paying sibling does not carry a forged zero-flow tx"
     );
     assert!(
         has(&node, &x).await,

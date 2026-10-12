@@ -988,7 +988,6 @@ impl Node {
             }
         }
 
-        // Add to mempool
         let (current_height, current_slot) = {
             let chain_state = self.chain_state.read().await;
             (chain_state.best_height, chain_state.best_slot)
@@ -998,12 +997,13 @@ impl Node {
         // authorized to exist in that shape. See the same note at the RPC
         // admission site in `crates/rpc/src/methods/transaction.rs`.
         let is_zero_flow = tx.is_zero_flow();
+        let maintainers =
+            mempool::zero_flow_auth::current_set_for(&tx, self.maintainer_state.as_ref()).await;
         let result = {
             let mut mempool = self.mempool.write().await;
             if is_zero_flow {
-                // Zero-flow txs have no inputs/outputs/fees — use system tx path
                 mempool
-                    .add_system_transaction(tx.clone(), current_height)
+                    .add_system_transaction(tx.clone(), current_height, maintainers.as_ref())
                     .map(|_| ())
             } else {
                 let utxo = self.utxo_set.read().await;

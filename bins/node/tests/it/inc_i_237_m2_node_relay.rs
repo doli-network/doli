@@ -15,8 +15,8 @@
 //!   forged variant first then genuine}; size {1, 2}
 //! MATRIX: O6 x P1-P4 and O2 x P1-P3 — asserted below. Non-vacuity: B's own
 //!   publish reaches C before every probe (the B -> C mesh is live).
-//! M5 (AUDIT-P1-505): P5 100 forged zero-flow txs from A -> admitted at B, 0
-//!   at C; a fee-paying tx after them still crosses. Contract §1b.
+//! M8 (AUDIT-P1-505, B on auth AH 0): P5 100 forged zero-flow txs from A ->
+//!   refused at B, 0 at C; a genuine DelegateBond and a fee-paying tx still cross.
 
 use std::time::{Duration, Instant};
 
@@ -26,6 +26,7 @@ use network::{GossipHandle, NetworkCommand, NetworkEvent};
 use tokio::sync::mpsc;
 
 use super::inc_i_237_m2_node_common as c;
+use super::inc_i_237_m8_common::{self as m8, Sig};
 
 struct Line {
     b: Node,
@@ -35,9 +36,12 @@ struct Line {
     _t: tempfile::TempDir,
 }
 
-/// A -> B(node) -> C, warmed until B's own publish reaches C.
 async fn line() -> Line {
-    let (mut b, kp, t) = c::make_node().await;
+    line_on(c::make_node().await).await
+}
+
+/// A -> B(node) -> C, warmed until B's own publish reaches C.
+async fn line_on((mut b, kp, t): (Node, crypto::KeyPair, tempfile::TempDir)) -> Line {
     let b_port = c::reserve_port();
     b.network = Some(c::start_net(b_port, vec![]).await);
     let mut a = c::start_net(c::reserve_port(), vec![c::addr(b_port)]).await;
@@ -152,10 +156,10 @@ async fn req_grv_sec_001_002_forged_variant_stops_at_b_genuine_still_crosses() {
     assert_eq!(at_c[0], vec![x.serialize()], "C got the genuine signature");
 }
 
-// REQ-GRV-004 / REQ-GRV-SEC-001 (AUDIT-P1-505) — Decision: a failure means forged zero-flow txs the first honest node admits on shape still cross it, the fleet-wide forged-delegation relay the release audit found.
+// REQ-GRV-SEC-008 / REQ-GRV-029 (AUDIT-P1-505) — Decision: a failure means forged zero-flow txs are admitted at or cross the first honest node, or a genuine DelegateBond still stops there.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn m5_audit_p1_505_forged_zero_flow_batch_stops_at_the_first_node() {
-    let mut l = line().await;
+    let mut l = line_on(m8::auth_node_with(&m8::maintainer_keys()).await).await;
     let forged: Vec<Transaction> = (0..100).map(c::forged_delegation).collect();
     for tx in &forged {
         l.a_cmd
@@ -168,8 +172,8 @@ async fn m5_audit_p1_505_forged_zero_flow_batch_stops_at_the_first_node() {
     let admitted = forged.iter().filter(|t| pool.contains(&t.hash())).count();
     drop(pool);
     assert_eq!(
-        admitted, 100,
-        "admission at B is unchanged (user decision 1)"
+        admitted, 0,
+        "REQ-GRV-SEC-008: {admitted} forged zero-flow txs admitted at B"
     );
     let crossed = forged
         .iter()
@@ -178,6 +182,17 @@ async fn m5_audit_p1_505_forged_zero_flow_batch_stops_at_the_first_node() {
     assert_eq!(
         crossed, 0,
         "AUDIT-P1-505: {crossed} forged zero-flow txs crossed B"
+    );
+    let genuine = m8::delegate_bond(Sig::Genuine);
+    l.a_cmd
+        .send(NetworkCommand::BroadcastTransaction(genuine.clone()))
+        .await
+        .unwrap();
+    c::pump(&mut l.b, Duration::from_secs(5)).await;
+    let n = c::events_with(&l.c_log, genuine.hash()).len();
+    assert_eq!(
+        n, 1,
+        "REQ-GRV-029: a genuine DelegateBond must cross B once"
     );
     c::seed(&l.b, &l.kp, c::prev(11)).await;
     let x = c::transfer(&l.kp, c::prev(11));

@@ -254,6 +254,7 @@ Used in `MempoolError::InvalidTransaction(String)` in `crates/mempool/src/pool.r
 | `MPTX007` | Input covenant condition not satisfied | `input_index` |
 | `MPTX008` | Insufficient funds (input < output) | `input_total`, `output_total`, `deficit` |
 | `MPTX009` | Output not spendable (locked/immature) | `spendable_height`, `current_height`, `maturity` |
+| `MPTX010` | Zero-flow DelegateBond / RevokeDelegation signature or AddMaintainer / RemoveMaintainer current-set multisig refused, as apply would at the next height | `tx_type`, `height` |
 
 ## STOR -- Storage Layer Errors
 

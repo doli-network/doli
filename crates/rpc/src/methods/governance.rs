@@ -279,11 +279,13 @@ impl RpcContext {
         };
 
         let permit = (self.broadcast_tx)().ok_or_else(RpcError::broadcast_busy)?;
+        let maintainers =
+            mempool::zero_flow_auth::current_set_for(&tx, self.maintainer_state.as_ref()).await;
         // Submit to mempool (maintainer txs are state-only, no UTXO inputs).
         {
             let mut mempool = self.mempool.write().await;
             mempool
-                .add_system_transaction(tx.clone(), current_height)
+                .add_system_transaction(tx.clone(), current_height, maintainers.as_ref())
                 .map_err(|e| RpcError::internal_error(format!("mempool error: {}", e)))?;
         }
 
@@ -296,13 +298,8 @@ impl RpcContext {
         // seed, set unchanged ~36 blocks later; the same transactions applied
         // in 4-5 blocks each against a producer).
         //
-        // Relaying is safe on the receiving side because a maintainer change is
-        // 0-in/0-out: `handle_new_transaction`
-        // (`bins/node/src/node/validation_checks.rs:1253-1259`) routes
-        // `is_zero_flow()` transactions to the SAME `add_system_transaction`
-        // lane this handler used. No new admission rule is introduced, and this
-        // is transport only — it changes no consensus rule and no block
-        // content, so it needs no activation height.
+        // The receiving side (`Node::handle_new_transaction`) re-runs the same zero-flow
+        // auth inside `add_system_transaction` before it relays (INC-I-237 M8).
         permit(tx);
 
         Ok(serde_json::json!({

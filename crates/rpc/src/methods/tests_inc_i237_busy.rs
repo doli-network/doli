@@ -13,7 +13,8 @@
 //! PATHS: P1 reserve None -> Busy; P2 reserve Some + admission ok -> permit(tx)
 //!   once; P3 reserve Some + admission error -> permit dropped uninvoked;
 //!   P4 vote hook false -> Busy; P5 vote hook true -> submitted
-//! INPUT PARTITIONS: tx {valid 0-in/0-out maintainer tx, duplicate of an admitted
+//! INPUT PARTITIONS: tx {valid 0-in/0-out maintainer tx (3 of the 4 current
+//!   maintainers sign the apply-time bytes, INC-I-237 M8), duplicate of an admitted
 //!   tx, transfer spending a missing UTXO}; path {sendTransaction,
 //!   submitMaintainerChange, submitVote}; hook {free, busy}
 //! MATRIX: O3 x P1-P5, O4 x P1-P3, O6 x P1-P5 — all asserted below.
@@ -29,7 +30,7 @@ use doli_core::network::Network;
 use doli_core::{Input, Output, Transaction};
 use mempool::{Mempool, MempoolPolicy};
 use serde_json::Value;
-use storage::{BlockStore, ChainState, ProducerInfo, ProducerSet, UtxoSet};
+use storage::{BlockStore, ChainState, MaintainerState, ProducerInfo, ProducerSet, UtxoSet};
 use tempfile::TempDir;
 use tokio::sync::RwLock;
 
@@ -70,7 +71,7 @@ fn base_ctx() -> (RpcContext, TempDir) {
     let dir = TempDir::new().expect("tempdir");
     let params = doli_core::consensus::ConsensusParams::default();
     let mempool = Mempool::new(MempoolPolicy::default(), params.clone(), Network::Mainnet);
-    let ctx = RpcContext::new_for_network(
+    let mut ctx = RpcContext::new_for_network(
         Arc::new(RwLock::new(ChainState::new(crypto::Hash::ZERO))),
         Arc::new(BlockStore::open(dir.path()).expect("blockstore")),
         Arc::new(RwLock::new(UtxoSet::new())),
@@ -78,6 +79,13 @@ fn base_ctx() -> (RpcContext, TempDir) {
         params,
         Network::Mainnet,
     );
+    let members = (1..=4u8)
+        .map(|i| *crypto::KeyPair::from_seed([i; 32]).public_key())
+        .collect();
+    ctx.maintainer_state = Some(Arc::new(RwLock::new(MaintainerState {
+        set: doli_core::MaintainerSet::with_members(members, 0),
+        ..Default::default()
+    })));
     (ctx, dir)
 }
 
@@ -86,13 +94,26 @@ fn ctx_with(probe: &Arc<Probe>, free: bool) -> (RpcContext, TempDir) {
     (ctx.with_broadcast(reserve_hook(probe.clone(), free)), dir)
 }
 
-fn sigs(n: u8) -> Vec<doli_core::maintainer::MaintainerSignature> {
+/// `n` current members sign the bytes apply verifies for adding `target` at height 1 (tip 0).
+fn sigs(n: u8, target: &crypto::PublicKey) -> Vec<doli_core::maintainer::MaintainerSignature> {
+    let msg = doli_core::maintainer::signing_message_at(
+        doli_core::consensus::ConsensusParams::default()
+            .genesis_hash
+            .as_bytes(),
+        true,
+        target,
+        doli_core::maintainer::MAINTAINER_AUTH_VALID_BEFORE_UNSET,
+        1,
+        Network::Mainnet
+            .params()
+            .inc_i_176_auth_binding_activation_height,
+    );
     (1..=n)
         .map(|i| {
             let kp = crypto::KeyPair::from_seed([i; 32]);
             doli_core::maintainer::MaintainerSignature {
                 pubkey: *kp.public_key(),
-                signature: crypto::signature::sign(b"inc-i-237 busy", kp.private_key()),
+                signature: crypto::signature::sign(&msg, kp.private_key()),
             }
         })
         .collect()
@@ -100,7 +121,7 @@ fn sigs(n: u8) -> Vec<doli_core::maintainer::MaintainerSignature> {
 
 fn maintainer_tx(seed: u8) -> Transaction {
     let target = *crypto::KeyPair::from_seed([seed; 32]).public_key();
-    Transaction::new_add_maintainer(target, sigs(3))
+    Transaction::new_add_maintainer(target, sigs(3, &target))
 }
 
 fn send_params(tx: &Transaction) -> Value {
@@ -108,13 +129,14 @@ fn send_params(tx: &Transaction) -> Value {
 }
 
 fn change_params(seed: u8) -> Value {
-    let sig_json: Vec<Value> = sigs(3)
+    let target = *crypto::KeyPair::from_seed([seed; 32]).public_key();
+    let sig_json: Vec<Value> = sigs(3, &target)
         .iter()
         .map(|s| serde_json::json!({ "pubkey": s.pubkey.to_hex(), "signature": s.signature.to_hex() }))
         .collect();
     serde_json::json!({
         "action": "add",
-        "target_pubkey": crypto::KeyPair::from_seed([seed; 32]).public_key().to_hex(),
+        "target_pubkey": target.to_hex(),
         "signatures": sig_json,
     })
 }
