@@ -94,6 +94,9 @@ struct Run {
 async fn drive() -> Run {
     let (mut b, member, t) = c::member_node().await;
     let genesis = c::now_secs() - u64::from(WALL) * SLOT_SECS - 1;
+    // B's node slot clock (the M6 wall prune) matches its swarm clock.
+    b.params.slot_duration = SLOT_SECS;
+    b.params.genesis_time = genesis;
     let b_port = c2::reserve_port();
     b.network = Some(clocked_net(b_port, genesis).await);
     let a = c2::start_net(c2::reserve_port(), vec![c2::addr(b_port)]).await;

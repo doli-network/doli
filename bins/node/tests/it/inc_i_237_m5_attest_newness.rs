@@ -33,6 +33,7 @@ use super::inc_i_178_m0_common::{
 use super::inc_i_237_m2_node_common as c2;
 use super::inc_i_237_m3_node_common as c;
 use super::inc_i_237_m3_node_common::Ev;
+use super::inc_i_237_m6_common::set_wall;
 
 async fn known_block(node: &mut Node) -> (Hash, u32, u64) {
     let h = safe_build_height(node);
@@ -157,6 +158,7 @@ async fn register_member(node: &Node, kp: &KeyPair) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn m5_audit_p1_506_mutant_flood_does_not_suppress_a_genuine_attester() {
     let (mut b, member, _t) = c::member_node().await;
+    set_wall(&mut b, FAMILY_SLOT);
     let honest = KeyPair::generate();
     register_member(&b, &honest).await;
     let b_port = c2::reserve_port();

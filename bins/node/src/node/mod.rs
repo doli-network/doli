@@ -248,7 +248,7 @@ pub struct Node {
     /// Bounded pool of gossiped BLS attestation signatures, keyed by the
     /// attested parent hash.
     pub parent_sig_pool: ParentSignaturePool,
-    /// First-seen `(attester, slot)` for the attestation relay verdict; pruned per applied block.
+    /// Seen `(attester, slot)` for the attestation relay verdict; pruned per applied block and per wall slot.
     pub(crate) attest_seen: attestation::ingress::AttestSeen,
     /// INC-I-178 M4 gate, copied from `config.network.params()` at construction.
     /// Settable so tests can drive both sides; production never writes it.

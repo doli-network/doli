@@ -3,6 +3,7 @@
 
 use super::*;
 
+use super::attestation::ingress::AttestSeen;
 use network::service::{send_gossip_verdict, Verdict};
 use network::GossipHandle;
 
@@ -17,8 +18,9 @@ impl Node {
     /// Ingest a gossip attestation and return its relay verdict: Accept iff it
     /// decodes, its Ed25519 signature verifies, the attester is in the producer
     /// set (pending activation included) and either its `(attester, slot)` is
-    /// first seen or this message pooled the genuine BLS half (AUDIT-P1-506).
-    /// An unknown block is fetched only for members (F-9).
+    /// first seen or this copy is the first with a valid BLS half for that
+    /// `(attester, slot)` (AUDIT-P1-506, REQ-GRV-023). An unknown block is
+    /// fetched only for members (F-9).
     pub async fn on_new_attestation(&mut self, data: Vec<u8>, source_peer: PeerId) -> Verdict {
         let Some(attestation) = Attestation::from_bytes(&data).filter(|a| a.verify().is_ok())
         else {
@@ -39,11 +41,15 @@ impl Node {
             return Verdict::Ignore;
         }
 
-        let first = self
-            .attest_seen
-            .insert((attestation.attester, attestation.slot));
-        let relay = |newly_pooled: bool| {
-            if first || newly_pooled {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        self.attest_seen
+            .prune_wall(self.params.timestamp_to_slot(now));
+        let key = (attestation.attester, attestation.slot);
+        let relay = |seen: &mut AttestSeen, bls_valid: bool| {
+            if seen.admit(key, bls_valid) {
                 Verdict::Accept
             } else {
                 Verdict::Ignore
@@ -56,14 +62,16 @@ impl Node {
             _ => {
                 self.maybe_fetch_attested_block(&attestation.block_hash, source_peer)
                     .await;
-                return relay(false);
+                let bls_valid =
+                    self.attest_seen.awaits_bls(&key) && self.relay_bls_valid(&attestation).await;
+                return relay(&mut self.attest_seen, bls_valid);
             }
         };
-        let Some((weight, newly_pooled)) = self
+        let Some((weight, bls_valid)) = self
             .ingest_attestation(&attestation, local_height, source_peer)
             .await
         else {
-            return relay(false);
+            return relay(&mut self.attest_seen, false);
         };
 
         // Finality numerator: only a positive locally-derived weight counts.
@@ -73,7 +81,7 @@ impl Node {
             drop(sync);
         }
         self.flush_finalized_to_archive().await;
-        relay(newly_pooled)
+        relay(&mut self.attest_seen, bls_valid)
     }
 
     /// Hand a gossip vote to the updater and return its relay verdict: Accept

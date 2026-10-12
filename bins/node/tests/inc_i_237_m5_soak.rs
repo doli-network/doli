@@ -477,6 +477,9 @@ struct Report {
 async fn run(secs: u64) -> Report {
     let late0 = LATE_VERDICTS.get(GossipTopic::Attestations);
     let (mut b, member, _t) = c3::member_node().await;
+    // B's node slot clock (the M6 wall prune) pinned to FAMILY_SLOT for the run.
+    b.params.slot_duration = 600;
+    b.params.genesis_time = c3::now_secs() - u64::from(FAMILY_SLOT) * 600 - 1;
     let honest = KeyPair::generate();
     register_member(&b, &honest).await;
     let funded = KeyPair::generate();
