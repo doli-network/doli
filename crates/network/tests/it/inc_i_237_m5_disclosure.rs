@@ -10,6 +10,8 @@
 //!   external-producer count}; case {any}; planted lines {each token, each
 //!   approved replacement}
 //! The guard stores no operational fact: it matches generic patterns only.
+//! M10 (REQ-GRV-SEC-010): the planted rows are assembled at run time, so the
+//! source carries none of the tokens (self-scan test below).
 //! MATRIX: every document x every token, plus the planted falsifier rows.
 
 use std::path::PathBuf;
@@ -137,6 +139,30 @@ fn m5_audit_p3_417_gossip_relay_docs_disclose_no_host_or_fleet_detail() {
     assert!(
         hits.is_empty(),
         "AUDIT-P3-417 disclosure:\n{}",
+        hits.join("\n")
+    );
+}
+
+// REQ-GRV-SEC-010 (M10) — Decision: the guard's own source carries none of
+// the fleet tokens it hunts (host alias, host log file, external-producer
+// count), so the pre-push scan over the branch's added lines reports 0 hits
+// for this file too. The planted rows are assembled at run time.
+// PATHS: P1 a literal token in this file -> fail with line; P2 none -> pass.
+#[test]
+fn m10_req_grv_sec_010_disclosure_guard_source_carries_no_token() {
+    let src = include_str!("inc_i_237_m5_disclosure.rs");
+    let hits: Vec<String> = src
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| {
+            let l = l.to_lowercase();
+            host_word(&l) || node_log(&l) || external_count(&l)
+        })
+        .map(|(n, l)| format!("{}: {}", n + 1, l.trim()))
+        .collect();
+    assert!(
+        hits.is_empty(),
+        "guard source discloses:\n{}",
         hits.join("\n")
     );
 }
