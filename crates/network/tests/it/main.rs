@@ -42,6 +42,7 @@ mod inc_i_237_m5_channel_ceiling_doc;
 mod inc_i_237_m5_disclosure;
 mod inc_i_237_m5_tx_budget_line;
 mod inc_i_237_m7_2_cache_caps;
+mod inc_i_237_m9_spec_sync;
 mod inc_i_237_tx_relay;
 mod m3_protocol_session;
 mod m4_sink_seam;

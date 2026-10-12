@@ -30,7 +30,7 @@ Index path: `.claude/skills/SKILLS-INDEX.md`
 |-------|-----------|-------------|-------------|-----------|-------|
 | core | `core/SKILL.md` | consensus, validation, scheduler, epoch, transactions, activation heights, oracle (frozen), AMM foundations | validate_block, validate_transaction, DeterministicScheduler::select_producer, EpochState::derive_at_boundary, NetworkParams::load, generate_genesis_block | 109 source files | Base layer — all other crates depend on this. MAJOR DRIFT: mainnet fresh genesis reset 2026-07-08 (GENESIS_TIME=1783532348) — amm/inc_i_092/inc_i_096/large_block activation heights now 0 on mainnet; `oracle_activation_height` still `u64::MAX` (frozen) |
 | node | `node/SKILL.md` | node binary, apply_block, event loop, fork recovery, block production, reorg, bootnode, disaster-recovery replay | Node::run, Node::start_network, Node::start_rpc, run_event_loop, handle_network_event, Node::new, Node::new_for_test, Node::new_for_replay | 89 source files | Top-level binary; consumes all domain crates. New: `run_bootnode()` (UDP-only lightweight discovery), `Node::new_for_replay()` (headless disaster-recovery) |
-| network | `network/SKILL.md` | libp2p, GossipSub, SyncManager (8 submodules), snap sync, peer scoring, rate limiting, backpressure/watchdog | NetworkService::new, SyncManager::new, PeerScorer, RateLimiter, MemoryWatchdog | 59 source files | P2P transport + sync state machine. New: `sync/manager/` split into 8 submodules; INC-I-114 backpressure (`enqueue_or_shed`) + `MemoryWatchdog` |
+| network | `network/SKILL.md` | libp2p, GossipSub, SyncManager (8 submodules), snap sync, peer scoring, rate limiting, backpressure/watchdog | NetworkService::new, SyncManager::new, PeerScorer, RateLimiter, MemoryWatchdog | 59 source files | P2P transport + sync state machine. New: `sync/manager/` split into 8 submodules; INC-I-237 two bounded event lanes (`EventSink::emit/emit_block`) + relay `decide()` + verdict seam (`send_gossip_verdict`) + `MemoryWatchdog` |
 | storage | `storage/SKILL.md` | RocksDB, BlockStore, StateDb, UtxoSet, ProducerSet, snapshot, archiver, ContentStore, MMR (unwired) | BlockStore::open, StateDb::open, UtxoSet::from_state_db, ProducerSet::new, ContentStore::open, UpdateState::load | 55 source files | 9 CFs BlockStore / 7 CFs StateDb; atomic batch writes. MAJOR DRIFT: `utxo_rocks.rs` ELIMINATED — `UtxoSet::RocksDb` now wraps `Arc<StateDb>` directly. New modules: metrics, mmr (CompactMmr/IncrementalStateRoot, not yet wired into apply_block), content_store, update |
 | cli | `cli/SKILL.md` | CLI binary `doli`, wallet, producer, NFT, bridge, pool, channel, template, guardian, token | main (main.rs:92), RpcClient, all subcommands | 55 source files | Links `doli_core` + `channels` directly (does NOT link the `wallet` crate — has its own parallel `wallet.rs`). REMOVED since 2026-05-11: `cmd_loan.rs`/`Loan` subcommand (lending tombstoned). Oracle attestation has NO CLI subcommand yet (RPC-only, frozen pre-activation) |
 | rpc | `rpc/SKILL.md` | JSON-RPC 2.0, 53 methods, HTTP POST, WebSocket, admin auth, oracle (M9-M11), DeFi health | RpcServer, RpcContext, handle_request, dispatch.rs (53-arm match) | 32 source files | HTTP on :8500 (mainnet); admin requires Bearer token from public IPs. Method count corrected 45→53 (verified against dispatch.rs 2026-07-09). New: oracle.rs/oracle_status.rs (Phase 2.1 M9-M11), defi_health.rs, repairArchiveFromPeer (post-ISSUE-174). Removed: lending.rs (tombstoned) |
@@ -123,7 +123,7 @@ Line ranges reflect verified actual content positions (15 domains re-validated 2
 | `BlockStore::open` | `storage/SKILL.md` | ENTRY-POINTS | 21-47 |
 | bond lifecycle | `core/SKILL.md` | STRUCTS | 164-379 |
 | bond withdrawal | `cli/SKILL.md` | OPERATIONS | 50-164 |
-| `broadcast_block` | `network/SKILL.md` | ENTRY-POINTS | 12-53 |
+| `broadcast_block` | `network/SKILL.md` | ENTRY-POINTS | 12-55 |
 | bridge | `bridge/SKILL.md` | ENTRY-POINTS | 10-36 |
 | bridge CLI | `cli/SKILL.md` | OPERATIONS | 50-164 |
 
@@ -230,7 +230,7 @@ Line ranges reflect verified actual content positions (15 domains re-validated 2
 | `getStateSnapshot` | `rpc/SKILL.md` | METHODS | 55-163 |
 | `getUtxoDiff` | `rpc/SKILL.md` | METHODS | 55-163 |
 | `getUtxos` | `rpc/SKILL.md` | METHODS | 55-163 |
-| GossipSub | `network/SKILL.md` | ENTRY-POINTS | 12-53 |
+| GossipSub | `network/SKILL.md` | ENTRY-POINTS | 12-55 |
 | GUI desktop app | `gui/SKILL.md` | ENTRY-POINTS | 15-105 |
 
 ### H
@@ -264,7 +264,7 @@ Line ranges reflect verified actual content positions (15 domains re-validated 2
 
 | Keyword / Concept | Skill File | Section | Lines |
 |-------------------|-----------|---------|-------|
-| libp2p | `network/SKILL.md` | ENTRY-POINTS | 12-53 |
+| libp2p | `network/SKILL.md` | ENTRY-POINTS | 12-55 |
 | loan CLI (REMOVED 2026-05-11, lending tombstoned) | `cli/SKILL.md` | ENTRY-POINTS | 11-48 |
 
 ### M
@@ -290,8 +290,8 @@ Line ranges reflect verified actual content positions (15 domains re-validated 2
 |-------------------|-----------|---------|-------|
 | `NetworkParams` | `core/SKILL.md` | ENTRY-POINTS | 15-53 |
 | `NetworkParams::load` | `core/SKILL.md` | ENTRY-POINTS | 15-53 |
-| `NetworkService` | `network/SKILL.md` | ENTRY-POINTS | 12-53 |
-| `NetworkService::new` | `network/SKILL.md` | ENTRY-POINTS | 12-53 |
+| `NetworkService` | `network/SKILL.md` | ENTRY-POINTS | 12-55 |
+| `NetworkService::new` | `network/SKILL.md` | ENTRY-POINTS | 12-55 |
 | `Node::new` | `node/SKILL.md` | ENTRY-POINTS | 13-50 |
 | `Node::new_for_test` | `testing/SKILL.md` | TEST-UTILITIES | 301-349 |
 | `NodeManager` GUI | `gui/SKILL.md` | STRUCTS | 274-304 |
@@ -330,8 +330,8 @@ Line ranges reflect verified actual content positions (15 domains re-validated 2
 | `test_defi_e2e.sh` | `defi/SKILL.md` | LIVE-TEST-HARNESS | 249-285 |
 | oracle (Phase 2.1) | `defi/SKILL.md` | CLI-SURFACE / ACTIVATION-GATES | 48-119, 121-141 |
 | `verify_amm_conservation` | `defi/SKILL.md` | COVENANT-MECHANICS / INCIDENT-MAP (INC-I-096) | 166-196, 287-304 |
-| peer scoring | `network/SKILL.md` | ENTRY-POINTS | 12-53 |
-| `PeerScorer` | `network/SKILL.md` | ENTRY-POINTS | 12-53 |
+| peer scoring | `network/SKILL.md` | ENTRY-POINTS | 12-55 |
+| `PeerScorer` | `network/SKILL.md` | ENTRY-POINTS | 12-55 |
 | phrase-derived BLS key (wallet version 3) | `wallet/SKILL.md` | CONSTRAINTS | 141-198 |
 | phrase-derived BLS key (migration steps) | `network-setup/SKILL.md` | Troubleshooting — BLS key mismatch after restore | 819-866 |
 | penalty transaction | `channels/SKILL.md` | FUNCTIONS | 117-221 |
@@ -353,7 +353,7 @@ Line ranges reflect verified actual content positions (15 domains re-validated 2
 |-------------------|-----------|---------|-------|
 | `rotate-bls` (procedure) | `bls-key-recovery/SKILL.md` | §3 Remedy B | — |
 | restored wallet, wrong BLS key | `bls-key-recovery/SKILL.md` | §1 Detect, §2 Choose | — |
-| `RateLimiter` | `network/SKILL.md` | ENTRY-POINTS | 12-53 |
+| `RateLimiter` | `network/SKILL.md` | ENTRY-POINTS | 12-55 |
 | recover chain state | `node/SKILL.md` | ENTRY-POINTS | 13-50 |
 | recovery mode | `guardian/SKILL.md` | full index | 1-30 |
 | release signing | `release/SKILL.md` | full file | — |
@@ -386,7 +386,7 @@ Line ranges reflect verified actual content positions (15 domains re-validated 2
 | `sign-release.sh` | `release/SKILL.md` | full file | — |
 | `sign_release_hash` | `updater/SKILL.md` | ENTRY-POINTS | 14-61 |
 | skill creation | `skill-creator/SKILL.md` | full file | — |
-| snap sync | `network/SKILL.md` | DATA-FLOW | 66-77 |
+| snap sync | `network/SKILL.md` | DATA-FLOW | 68-79 |
 | staging (`{data_dir}/updates`, `ready` marker) | `updater/SKILL.md` | DATA-FLOWS / CONSTRAINTS | 325-494, 519-610 |
 | `StateDb` | `storage/SKILL.md` | FUNCTIONS-STATEDB | 403-489 |
 | `StateDb::open` | `storage/SKILL.md` | ENTRY-POINTS | 21-47 |
@@ -394,8 +394,8 @@ Line ranges reflect verified actual content positions (15 domains re-validated 2
 | state root | `storage/SKILL.md` | FUNCTIONS-SNAPSHOT | 549-562 |
 | state root debug | `doli-network/SKILL.md` | full file | — |
 | `STAKER_REWARD_PCT` | `delegation/SKILL.md` | full file | — |
-| `SyncManager` | `network/SKILL.md` | ENTRY-POINTS | 12-53 |
-| `SyncManager::new` | `network/SKILL.md` | ENTRY-POINTS | 12-53 |
+| `SyncManager` | `network/SKILL.md` | ENTRY-POINTS | 12-55 |
+| `SyncManager::new` | `network/SKILL.md` | ENTRY-POINTS | 12-55 |
 
 ### T
 
