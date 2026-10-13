@@ -4,6 +4,9 @@ Upstream: crates.io `libp2p-gossipsub` 0.46.1 (pulled by `libp2p` 0.53), copied 
 Wired in via `[patch.crates-io]` in the workspace root `Cargo.toml`.
 
 ## What changed (`src/handler.rs`, every hunk marked `// DOLI INC-I-237:`)
+- CI lint hygiene (`RUSTFLAGS=-D warnings` on current stable): `generated/compat/pb.rs` allows
+  `dead_code` (the compat `Message` is only decoded); `time_cache.rs` `entry()` spells the
+  elided lifetime as `Entry<'_, Key, Value>`. No behaviour change.
 - Per-connection `send_queue` is bounded at `MAX_SEND_QUEUE_BYTES` (4 MiB, protobuf encoded size).
 - Over the cap, RPCs with publishes or IHAVE/IWANT-only control are dropped and counted;
   RPCs with subscriptions or GRAFT/PRUNE are always queued.

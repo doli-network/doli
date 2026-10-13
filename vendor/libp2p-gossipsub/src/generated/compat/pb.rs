@@ -6,6 +6,7 @@
 #![allow(unused_imports)]
 #![allow(unknown_lints)]
 #![allow(clippy::all)]
+#![allow(dead_code)] // DOLI: `Message` is decoded, never constructed here
 #![cfg_attr(rustfmt, rustfmt_skip)]
 
 
