@@ -5,8 +5,9 @@
 //! (`attestation/commit.rs` `pooled_commitment`), and the only pool insert lived in the
 //! gossip `ingress`. The `startup` egress signed and broadcast but never pooled, and
 //! gossipsub does not loop a node's own message back, so every block omitted its own
-//! builder's bit (`[ATTEST_MISS]`). The `assembly` caller `attest_own_block` reaches the
-//! same egress, so both production call sites inherited the gap.
+//! builder's bit (`[ATTEST_MISS]`). The `assembly` caller `attest_own_block` reached the
+//! same egress, so both production call sites inherited the gap (INC-I-237 M3 removed
+//! that duplicate caller; `post_commit` is the one own-block attestation site).
 //!
 //! M2: pooling its own half changes what an upgraded producer EMITS — its own bit in the
 //! attestation bitfield, its own component in the aggregate, therefore `presence_root`,
@@ -17,7 +18,7 @@
 //! (118_500) separately, 2026-09-05.
 //!
 //! covers: bins/node/src/node/startup.rs (the gated egress),
-//! bins/node/src/node/production/assembly.rs (the `attest_own_block` caller),
+//! bins/node/src/node/apply_block/post_commit.rs (the own-block attestation caller),
 //! crates/core/src/network_params/mod.rs (the field),
 //! crates/core/src/network_params/defaults.rs (the three per-network literals),
 //! crates/core/src/network_params/env_loader.rs (the exhaustive rebuild that must name

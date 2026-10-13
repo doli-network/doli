@@ -10,17 +10,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
-use libp2p::gossipsub::IdentTopic;
 use libp2p::{Multiaddr, PeerId, Swarm};
 use tokio::sync::{mpsc, RwLock};
 use tracing::warn;
 
-use crypto::Hash;
-use doli_core::Transaction;
-
 use crate::behaviour::DoliBehaviour;
 use crate::config::NetworkConfig;
-use crate::gossip::TRANSACTIONS_TOPIC;
 use crate::peer::PeerInfo;
 use crate::rate_limit::{RateLimitConfig, RateLimiter};
 use crate::watchdog::MemoryWatchdog;
@@ -28,14 +23,14 @@ use crate::watchdog::MemoryWatchdog;
 use super::command_handling::handle_command;
 use super::event_sink::EventSink;
 use super::swarm_events::handle_swarm_event;
-use super::types::{NetworkCommand, NetworkEvent};
+use super::types::NetworkCommand;
 
 /// Run the swarm event loop
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_swarm(
     mut swarm: Swarm<DoliBehaviour>,
     mut command_rx: mpsc::Receiver<NetworkCommand>,
-    event_tx: mpsc::Sender<NetworkEvent>,
+    event_sink: EventSink,
     peers: Arc<RwLock<HashMap<PeerId, PeerInfo>>>,
     config: NetworkConfig,
     peer_cache_path: Option<PathBuf>,
@@ -43,6 +38,9 @@ pub(super) async fn run_swarm(
     discv5_service: Option<std::sync::Arc<crate::discovery::discv5_service::Discv5Service>>,
     best_slot: Arc<std::sync::atomic::AtomicU32>,
     shed_metrics: std::sync::Arc<super::backpressure::GossipShedMetrics>,
+    mut watchdog: Option<MemoryWatchdog>,
+    memory_shed_flag: Arc<AtomicBool>,
+    retention: Arc<super::Retention>,
 ) {
     // Periodic DHT refresh: re-run Kademlia bootstrap every 60s so that peers
     // discover each other through shared bootstrap nodes. Without this, a node
@@ -77,17 +75,6 @@ pub(super) async fn run_swarm(
     // These are ghost peer IDs from previous chain resets that keep re-entering
     // via DHT propagation. Blocked for 24h to stop connect/disconnect spam.
     let mut stale_peer_ids: HashMap<PeerId, Instant> = HashMap::new();
-
-    // INC-I-142 M6: persistent per-event-loop gossip staleness dedup cache.
-    // MUST live for the whole loop so identity dedup spans EVERY gossip event —
-    // this is the load-bearing requirement. A per-call cache dedups nothing; the
-    // storm-closer works only across libp2p's 60–120s re-deliveries. Passed by
-    // &mut into handle_swarm_event → handle_behaviour_event, where the unified
-    // classify_gossip gate records/checks message identities.
-    let mut gossip_seen_cache = crate::gossip::staleness::SeenCache::new(
-        crate::gossip::staleness::SEEN_CACHE_TTL_SECS,
-        crate::gossip::staleness::SEEN_CACHE_CAPACITY,
-    );
 
     // INC-I-011: Eviction cooldown — recently evicted peers cannot reconnect
     // for 30 seconds, breaking the evict→reconnect→evict thrashing loop that
@@ -135,109 +122,42 @@ pub(super) async fn run_swarm(
     let mut discv5_retry_tick = tokio::time::interval(Duration::from_secs(5));
     discv5_retry_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    // TX batching: buffer outbound transactions and flush every 100ms.
-    // When tx_announce_enabled, we batch hashes (32 bytes each) instead of full txs.
-    let mut tx_batch: Vec<Transaction> = Vec::new();
-    let mut tx_announce_batch: Vec<Hash> = Vec::new();
-    let tx_announce_enabled = config.tx_announce_enabled;
-    let mut tx_flush = tokio::time::interval(Duration::from_millis(100));
-    tx_flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Wakes the loop every 100 ms so the top-of-loop try_flush drains the backlog.
+    let mut flush_tick = tokio::time::interval(Duration::from_millis(100));
+    flush_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    // INC-I-114 M2: Memory watchdog — shed gossip blocks under memory pressure.
-    // Constructed only when threshold > 0 (i.e., explicitly enabled via config
-    // or DOLI_MEMORY_WATCHDOG_BYTES env var). When disabled, the shared flag
-    // is always false (never sheds).
-    let watchdog_threshold = config.memory_watchdog_threshold_bytes;
-    let mut watchdog: Option<MemoryWatchdog> = if watchdog_threshold > 0 {
-        let wd = MemoryWatchdog::with_real_sampler(watchdog_threshold);
+    // INC-I-114 M2: the watchdog (if enabled) owns `memory_shed_flag`.
+    if watchdog.is_some() {
         tracing::info!(
             "[MEM_WATCHDOG] Enabled: soft_threshold={} MB",
-            watchdog_threshold / (1024 * 1024),
+            config.memory_watchdog_threshold_bytes / (1024 * 1024),
         );
-        Some(wd)
-    } else {
-        None
-    };
-
-    // Shared shed flag: read by the gossip hot path in behaviour_events.rs.
-    // When None (watchdog disabled), the flag is permanently false (never sheds).
-    let memory_shed_flag: Arc<AtomicBool> = watchdog
-        .as_ref()
-        .map(|wd| wd.shed_flag())
-        .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+    }
 
     // Watchdog tick interval: 5 seconds. Only ticks when watchdog is active.
     let mut watchdog_tick = tokio::time::interval(Duration::from_secs(5));
     watchdog_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    // INC-I-237: the swarm loop never awaits event delivery (see event_sink.rs).
-    let event_sink = EventSink::new(event_tx);
-
     loop {
+        if !event_sink.try_flush() {
+            return;
+        }
         tokio::select! {
             // Handle swarm events
             event = swarm.select_next_some() => {
-                handle_swarm_event(event, &mut swarm, &event_sink, &peers, &config, &peer_cache_path, &mut rate_limiter, &mut genesis_mismatch_cooldown, &mut mismatch_redial_cooldown, &mut dial_backoff, &mut eviction_cooldown, &mut bootstrap_peers, &mut stale_peer_ids, &mut gossip_seen_cache, &best_slot, &shed_metrics, &memory_shed_flag).await;
+                handle_swarm_event(event, &mut swarm, &event_sink, &peers, &config, &peer_cache_path, &mut rate_limiter, &mut genesis_mismatch_cooldown, &mut mismatch_redial_cooldown, &mut dial_backoff, &mut eviction_cooldown, &mut bootstrap_peers, &mut stale_peer_ids, &best_slot, &shed_metrics, &memory_shed_flag).await;
             }
 
-            // INC-I-237: drain control events held while the node was behind.
-            permit = event_sink.sender().reserve(), if event_sink.has_backlog() => {
-                match permit {
-                    Ok(permit) => event_sink.flush_one(permit),
-                    Err(_) => event_sink.clear_backlog(), // node gone (shutdown)
-                }
-            }
-
-            // Handle commands — intercept BroadcastTransaction for batching
             Some(command) = command_rx.recv() => {
-                if let NetworkCommand::BroadcastTransaction(tx) = command {
-                    if tx_announce_enabled {
-                        // Announce mode: batch hashes, not full txs
-                        tx_announce_batch.push(tx.hash());
-                        if tx_announce_batch.len() >= 50 {
-                            let hashes = std::mem::take(&mut tx_announce_batch);
-                            let data = crate::gossip::encode_tx_announce(&hashes);
-                            let topic = IdentTopic::new(TRANSACTIONS_TOPIC);
-                            if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, data) {
-                                warn!("Failed to flush tx announce batch: {}", e);
-                            }
-                        }
-                    } else {
-                        // Legacy mode: batch full txs
-                        tx_batch.push(tx);
-                        if tx_batch.len() >= 50 {
-                            let batch = std::mem::take(&mut tx_batch);
-                            let data = crate::gossip::encode_tx_batch(&batch);
-                            let topic = IdentTopic::new(TRANSACTIONS_TOPIC);
-                            if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, data) {
-                                warn!("Failed to flush tx batch: {}", e);
-                            }
-                        }
-                    }
-                } else {
-                    handle_command(command, &mut swarm, &config, &mut rate_limiter).await;
-                }
+                handle_command(command, &mut swarm, &config, &mut rate_limiter).await;
             }
 
-            // Flush buffered transactions every 100ms
-            _ = tx_flush.tick() => {
-                if tx_announce_enabled {
-                    if !tx_announce_batch.is_empty() {
-                        let hashes = std::mem::take(&mut tx_announce_batch);
-                        let data = crate::gossip::encode_tx_announce(&hashes);
-                        let topic = IdentTopic::new(TRANSACTIONS_TOPIC);
-                        if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, data) {
-                            warn!("Failed to flush tx announce batch: {}", e);
-                        }
-                    }
-                } else if !tx_batch.is_empty() {
-                    let batch = std::mem::take(&mut tx_batch);
-                    let data = crate::gossip::encode_tx_batch(&batch);
-                    let topic = IdentTopic::new(TRANSACTIONS_TOPIC);
-                    if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, data) {
-                        warn!("Failed to flush tx batch: {}", e);
-                    }
-                }
+            // INC-I-237 M7.1: also refreshes the cache sizes read by node metrics.
+            _ = flush_tick.tick() => {
+                retention.store(super::RetentionSnapshot {
+                    gossipsub: swarm.behaviour().gossipsub.retention_stats(),
+                    rate_limit_peers: rate_limiter.stats().tracked_peers,
+                });
             }
 
             // Periodic DHT peer discovery
@@ -383,8 +303,7 @@ pub(super) async fn run_swarm(
                 use libp2p::gossipsub::IdentTopic as MeshTopic;
                 use crate::gossip::{
                     BLOCKS_TOPIC as B, TRANSACTIONS_TOPIC as T, PRODUCERS_TOPIC as P,
-                    ATTESTATION_TOPIC as A, HEARTBEATS_TOPIC as HB, HEADERS_TOPIC as HD,
-                    TIER1_BLOCKS_TOPIC as T1,
+                    ATTESTATION_TOPIC as A, TIER1_BLOCKS_TOPIC as T1,
                 };
 
                 let gs = &swarm.behaviour().gossipsub;
@@ -394,8 +313,6 @@ pub(super) async fn run_swarm(
                 let txs_mesh = gs.mesh_peers(&MeshTopic::new(T).hash()).count();
                 let producers_mesh = gs.mesh_peers(&MeshTopic::new(P).hash()).count();
                 let attestation_mesh = gs.mesh_peers(&MeshTopic::new(A).hash()).count();
-                let heartbeats_mesh = gs.mesh_peers(&MeshTopic::new(HB).hash()).count();
-                let headers_mesh = gs.mesh_peers(&MeshTopic::new(HD).hash()).count();
                 let t1_mesh = gs.mesh_peers(&MeshTopic::new(T1).hash()).count();
                 let total_mesh = gs.all_mesh_peers().count();
                 let total_gossip_peers = gs.all_peers().count();
@@ -415,9 +332,8 @@ pub(super) async fn run_swarm(
                 }
 
                 tracing::info!(
-                    "[GOSSIP_MESH] blocks={} txs={} producers={} attestations={} heartbeats={} headers={} t1={} | total_mesh={} gossip_peers={}",
-                    blocks_mesh, txs_mesh, producers_mesh, attestation_mesh,
-                    heartbeats_mesh, headers_mesh, t1_mesh,
+                    "[GOSSIP_MESH] blocks={} txs={} producers={} attestations={} t1={} | total_mesh={} gossip_peers={}",
+                    blocks_mesh, txs_mesh, producers_mesh, attestation_mesh, t1_mesh,
                     total_mesh, total_gossip_peers
                 );
 

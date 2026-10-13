@@ -1,6 +1,7 @@
 use super::*;
 use crate::node::attestation::{commit, width};
 
+mod gossip_txs;
 mod withdrawal_economics;
 
 impl Node {
@@ -973,8 +974,9 @@ impl Node {
         Ok(())
     }
 
-    /// Handle a new transaction from the network
-    pub async fn handle_new_transaction(&self, tx: Transaction) -> Result<()> {
+    /// Admit a network tx into the mempool; true iff this call newly admitted it.
+    /// Never publishes: gossip relay is the swarm's, on the node's verdict.
+    pub async fn handle_new_transaction(&self, tx: Transaction) -> bool {
         let tx_hash = tx.hash();
 
         // Check if we already have this transaction
@@ -982,11 +984,10 @@ impl Node {
             let mempool = self.mempool.read().await;
             if mempool.contains(&tx_hash) {
                 debug!("Transaction {} already in mempool", tx_hash);
-                return Ok(());
+                return false;
             }
         }
 
-        // Add to mempool
         let (current_height, current_slot) = {
             let chain_state = self.chain_state.read().await;
             (chain_state.best_height, chain_state.best_slot)
@@ -995,20 +996,23 @@ impl Node {
         // lane is for transactions that are genuinely 0-in/0-out AND whose type is
         // authorized to exist in that shape. See the same note at the RPC
         // admission site in `crates/rpc/src/methods/transaction.rs`.
-        let is_zero_flow = tx.is_zero_flow();
-        let result = {
+        let result = if tx.is_zero_flow() {
+            mempool::zero_flow_mined::admit_zero_flow(
+                &self.mempool,
+                tx.clone(),
+                current_height,
+                self.maintainer_state.as_ref(),
+                Some(&self.producer_set),
+                &self.block_store,
+            )
+            .await
+            .map(|_| ())
+        } else {
             let mut mempool = self.mempool.write().await;
-            if is_zero_flow {
-                // Zero-flow txs have no inputs/outputs/fees — use system tx path
-                mempool
-                    .add_system_transaction(tx.clone(), current_height)
-                    .map(|_| ())
-            } else {
-                let utxo = self.utxo_set.read().await;
-                mempool
-                    .add_transaction(tx.clone(), &utxo, current_height, current_slot)
-                    .map(|_| ())
-            }
+            let utxo = self.utxo_set.read().await;
+            mempool
+                .add_transaction(tx.clone(), &utxo, current_height, current_slot)
+                .map(|_| ())
         };
 
         match result {
@@ -1024,17 +1028,13 @@ impl Node {
                         fee: 0,
                     });
                 }
-                // Broadcast to network
-                if let Some(ref network) = self.network {
-                    let _ = network.broadcast_transaction(tx).await;
-                }
+                true
             }
             Err(e) => {
                 debug!("Failed to add transaction {} to mempool: {}", tx_hash, e);
+                false
             }
         }
-
-        Ok(())
     }
 
     /// Handle a sync request from a peer.
@@ -1201,13 +1201,7 @@ impl Node {
                     .await
             }
 
-            SyncRequest::DirectAttestation { data } => {
-                // Re-broadcast via gossip so it reaches minute tracker
-                if let Some(ref network) = self.network {
-                    let _ = network.broadcast_attestation(data).await;
-                }
-                SyncResponse::Block(None)
-            }
+            SyncRequest::DirectAttestation { .. } => SyncResponse::Block(None),
         };
 
         if let Some(ref network) = self.network {

@@ -126,6 +126,9 @@ pub use self::subscription_filter::{
 pub use self::topic::{Hasher, Topic, TopicHash};
 pub use self::transform::{DataTransform, IdentityTransform};
 pub use self::types::{Message, MessageAcceptance, MessageId, RawMessage};
+// DOLI INC-I-237: M7.1 retention readout.
+#[doc(hidden)]
+pub use self::time_cache::{DuplicateCache, RetentionStats, TimeCacheStats};
 
 #[deprecated(note = "Will be removed from the public API.")]
 pub type Rpc = self::types::Rpc;

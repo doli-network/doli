@@ -810,6 +810,7 @@ const VESTING_WOULD_REJECT_CODES: [&str; 3] = [
 
 /// Register all metrics with the registry
 pub fn register_metrics() {
+    crate::metrics_gossip::register_gossip_metrics(&REGISTRY);
     let _ = REGISTRY.register(Box::new(BLOCKS_PROCESSED.clone()));
     let _ = REGISTRY.register(Box::new(BLOCKS_BY_STATUS.clone()));
     let _ = REGISTRY.register(Box::new(CHAIN_HEIGHT.clone()));
@@ -1277,6 +1278,7 @@ pub fn spawn_utxo_size_monitor(state_db: std::sync::Arc<storage::StateDb>) {
 
 /// HTTP handler for metrics endpoint
 async fn metrics_handler() -> String {
+    crate::metrics_gossip::scrape_for_exposition();
     let encoder = TextEncoder::new();
     let metric_families = REGISTRY.gather();
     let mut buffer = Vec::new();

@@ -280,6 +280,8 @@ impl Node {
             self.config.network.id()
         );
         let network = NetworkService::new(network_config).await?;
+        crate::metrics_gossip::watch_event_lanes(network.lane_stats(), network.lane_budgets());
+        crate::metrics_gossip::watch_retention(network.retention());
         self.network = Some(network);
 
         // When discv5 is active, give the sync engine 30s grace to discover
@@ -426,39 +428,17 @@ impl Node {
                 });
         }
 
-        // Wire up transaction broadcast so RPC-submitted txs are gossiped to peers
+        // RPC tx/vote broadcast reserves a command slot first (INC-I-237 R3); None/false = Busy
         if let Some(ref network) = self.network {
             let cmd_tx = network.command_sender();
-            context = context.with_broadcast(move |tx: Transaction| {
-                let cmd_tx = cmd_tx.clone();
-                tokio::spawn(async move {
-                    let _ = cmd_tx.send(NetworkCommand::BroadcastTransaction(tx)).await;
-                });
+            let origin = self.origin_tx_bucket.clone();
+            context = context.with_broadcast(move || {
+                super::rpc_broadcast::reserve_tx_broadcast(&cmd_tx, &origin)
             });
-        }
-
-        // Wire up vote broadcast so RPC-submitted votes are gossiped to peers
-        // AND processed locally (gossip doesn't echo back to publisher)
-        if let Some(ref network) = self.network {
             let cmd_tx = network.command_sender();
-            let local_vote_tx = self.vote_tx.clone();
+            let local = self.vote_tx.clone();
             context = context.with_broadcast_vote(move |vote_data: Vec<u8>| {
-                let cmd_tx = cmd_tx.clone();
-                let local_tx = local_vote_tx.clone();
-                tokio::spawn(async move {
-                    // Broadcast to network
-                    let _ = cmd_tx
-                        .send(NetworkCommand::BroadcastVote(vote_data.clone()))
-                        .await;
-                    // Also deliver to local update service (gossip won't echo back)
-                    if let Some(tx) = local_tx {
-                        if let Ok(vote_msg) =
-                            serde_json::from_slice::<node_updater::VoteMessage>(&vote_data)
-                        {
-                            let _ = tx.send(vote_msg).await;
-                        }
-                    }
-                });
+                super::rpc_broadcast::broadcast_vote_now(&cmd_tx, local.as_ref(), vote_data)
             });
         }
 

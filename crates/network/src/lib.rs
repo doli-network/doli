@@ -87,7 +87,9 @@ pub use discovery::discv5_service::{Discv5Config, Discv5Service};
 pub use nat::{NatConfig, NatInfo, NatStatus};
 pub use rate_limit::{RateLimitConfig, RateLimiter};
 pub use scoring::{Infraction, PeerScore, PeerScorer, PeerScorerConfig, ScorerStats};
-pub use service::{NetworkCommand, NetworkError, NetworkEvent, NetworkService};
+pub use service::{
+    GossipHandle, NetworkCommand, NetworkError, NetworkEvent, NetworkService, Verdict,
+};
 pub use sync::{
     ChainBreakInfo, EquivocationDetector, EquivocationProof, ForceReorgPoll, ForkChoiceFinality,
     NetworkEvidence, ProductionAuthorization, RecoveryAction, RecoveryContext, RecoveryEvidence,

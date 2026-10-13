@@ -1,33 +1,43 @@
 //! Network service implementation
 //!
 //! Manages the libp2p swarm and provides high-level network operations.
-//!
 //! ## Module structure
-//!
 //! - `types` — Public enums: `NetworkEvent`, `NetworkCommand`, `NetworkError`
 //! - `helpers` — Address filtering, keypair persistence, multiaddr manipulation
 //! - `swarm_loop` — Main tokio::select! event loop driving the swarm
 //! - `swarm_events` — Swarm-level event handling (connections, listen addrs)
 //! - `behaviour_events` — Behaviour-level event handling (gossip, identify, status, sync)
+//! - `command_api` — `NetworkService` accessors and command senders
 //! - `command_handling` — Network command dispatch (publish, dial, request-response)
-//! - `backpressure` — Bounded load-shedding gossip event queue (INC-I-114)
+//! - `backpressure` — Gossip block load-shedding metrics (INC-I-114)
 
 pub(super) mod backpressure;
 mod behaviour_events;
+mod command_api;
 mod command_handling;
+mod event_lanes;
 mod event_sink;
+mod event_size;
+mod gossip_handle;
+mod gossip_intake;
 mod helpers;
+mod retention;
 mod swarm_events;
 mod swarm_loop;
 mod types;
+mod verdict;
 
 #[cfg(test)]
 mod tests;
 
+pub use event_sink::{LaneBudgets, LaneSnapshot, LaneStats, TopicCounts};
+pub use gossip_handle::GossipHandle;
+pub use retention::{Retention, RetentionSnapshot};
 pub use types::{NetworkCommand, NetworkError, NetworkEvent};
+pub use verdict::{send_gossip_verdict, Verdict, DROPPED_VERDICTS, LATE_VERDICTS};
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -35,20 +45,17 @@ use libp2p::{autonat, dcutr, relay, Multiaddr, PeerId, Swarm};
 use tokio::sync::{mpsc, RwLock};
 use tracing::{info, warn};
 
-use doli_core::{ProducerAnnouncement, ProducerBloomFilter, Transaction};
-
 use crate::behaviour::DoliBehaviour;
 use crate::config::NetworkConfig;
 use crate::discovery::new_kademlia;
 use crate::gossip::{new_gossipsub, subscribe_to_topics};
 use crate::peer::PeerInfo;
 use crate::peer_cache::PeerCache;
-use crate::protocols::{StatusRequest, StatusResponse, SyncRequest, SyncResponse, TxFetchResponse};
 use crate::transport::build_transport;
-use crypto::PublicKey;
-use libp2p::request_response::ResponseChannel;
+use crate::watchdog::MemoryWatchdog;
 
 use backpressure::GossipShedMetrics;
+use event_lanes::EventLanes;
 use helpers::{load_keypair, plan_startup_dials, save_keypair};
 use swarm_loop::run_swarm;
 
@@ -59,35 +66,30 @@ pub struct NetworkService {
     config: NetworkConfig,
     /// Connected peers
     peers: Arc<RwLock<HashMap<PeerId, PeerInfo>>>,
-    /// Event sender
-    #[allow(dead_code)]
-    event_tx: mpsc::Sender<NetworkEvent>,
-    /// Event receiver
-    event_rx: mpsc::Receiver<NetworkEvent>,
+    /// Node side of the two event lanes; the swarm task owns the only senders.
+    lanes: EventLanes,
+    lane_stats: Arc<LaneStats>,
+    lane_budgets: LaneBudgets,
+    retention: Arc<Retention>,
     /// Command sender
     command_tx: mpsc::Sender<NetworkCommand>,
     /// Local peer ID
     local_peer_id: PeerId,
-    /// INC-I-049: Shared best slot for rate limiter height+1 exemption.
-    /// Updated by the node after every apply_block. Read by the network layer
-    /// to exempt candidate-next blocks from per-peer rate limiting.
+    /// INC-I-049: best slot, exempts candidate-next blocks from rate limiting.
     best_slot: Arc<AtomicU32>,
     /// INC-I-114: Load-shedding metrics for gossip block events.
-    /// Shared with the swarm task (writer) and exposed via getter for M2/RPC.
     gossip_shed_metrics: Arc<GossipShedMetrics>,
+    memory_shed_flag: Arc<AtomicBool>,
 }
 
 impl NetworkService {
     /// Create a new network service
     pub async fn new(config: NetworkConfig) -> Result<Self, NetworkError> {
-        // SCALE-T2-003: Channel buffers scale with max_peers.
-        // At 5000 nodes, the old 1024-slot buffer fills in ~2 seconds causing
-        // backpressure that blocks the swarm loop → cascade disconnections.
-        // Formula: max(4096, max_peers * 16) for events, max(2048, max_peers * 4) for commands.
-        // Capped at 32768 to bound memory (~1MB per channel at max capacity).
-        let event_buf = (config.max_peers * 16).clamp(4096, 32768);
+        // SCALE-T2-003: command buffer scales with max_peers; event lanes per LaneBudgets.
         let command_buf = (config.max_peers * 4).clamp(2048, 32768);
-        let (event_tx, event_rx) = mpsc::channel(event_buf);
+        let lane_budgets = LaneBudgets::for_max_peers(config.max_peers);
+        let (event_sink, lanes) = event_sink::event_lanes(lane_budgets);
+        let lane_stats = event_sink.stats();
         let (command_tx, command_rx) = mpsc::channel(command_buf);
 
         // INC-I-114: Gossip block load-shedding metrics (shared with swarm task)
@@ -127,6 +129,8 @@ impl NetworkService {
             mesh_n_high: config.mesh_n_high,
             gossip_lazy: config.gossip_lazy,
         };
+        crate::gossip::assert_production_hardening(&mesh, &lane_budgets)
+            .map_err(|e| NetworkError::Other(format!("GossipSub error: {}", e)))?;
         let mut gossipsub = new_gossipsub(&keypair, &mesh)
             .map_err(|e| NetworkError::Other(format!("GossipSub error: {}", e)))?;
         subscribe_to_topics(&mut gossipsub)
@@ -286,7 +290,7 @@ impl NetworkService {
             yamux_window / 1024,
             idle_timeout_secs,
             eviction_grace_secs,
-            event_buf,
+            lane_budgets.consensus_cap,
             command_buf
         );
 
@@ -382,17 +386,25 @@ impl NetworkService {
 
         // Spawn the swarm event loop
         let peers_clone = peers.clone();
-        let event_tx_clone = event_tx.clone();
         let config_clone = config.clone();
         let peer_cache_path = config.peer_cache_path.clone();
         let best_slot_clone = best_slot.clone();
         let shed_metrics_clone = gossip_shed_metrics.clone();
+        let watchdog_threshold = config.memory_watchdog_threshold_bytes;
+        let watchdog =
+            (watchdog_threshold > 0).then(|| MemoryWatchdog::with_real_sampler(watchdog_threshold));
+        let memory_shed_flag = watchdog
+            .as_ref()
+            .map_or_else(|| Arc::new(AtomicBool::new(false)), |wd| wd.shed_flag());
+        let shed_flag_clone = memory_shed_flag.clone();
+        let retention = Arc::new(Retention::default());
+        let retention_clone = retention.clone();
 
         tokio::spawn(async move {
             run_swarm(
                 swarm,
                 command_rx,
-                event_tx_clone,
+                event_sink,
                 peers_clone,
                 config_clone,
                 peer_cache_path,
@@ -400,294 +412,25 @@ impl NetworkService {
                 discv5_svc,
                 best_slot_clone,
                 shed_metrics_clone,
+                watchdog,
+                shed_flag_clone,
+                retention_clone,
             )
             .await;
         });
 
-        // INC-I-048: Bootstrap dials moved to pre-swarm-spawn (above) so they
-        // get pending slots before cached peers. No longer needed here.
-
         Ok(Self {
             config,
             peers,
-            event_tx,
-            event_rx,
+            lanes,
+            lane_stats,
+            lane_budgets,
+            retention,
             command_tx,
             local_peer_id,
             best_slot,
             gossip_shed_metrics,
+            memory_shed_flag,
         })
-    }
-
-    /// INC-I-049: Update the best slot after applying a block.
-    /// Read by the network rate limiter to exempt candidate-next blocks
-    /// from per-peer rate limiting.
-    pub fn update_best_slot(&self, slot: u32) {
-        self.best_slot.store(slot, Ordering::Relaxed);
-    }
-
-    /// INC-I-114: Access gossip block load-shedding metrics.
-    /// Used by M2 watchdog and RPC layer to monitor drop counts.
-    pub fn gossip_shed_metrics(&self) -> Arc<GossipShedMetrics> {
-        self.gossip_shed_metrics.clone()
-    }
-    /// Get the next network event
-    pub async fn next_event(&mut self) -> Option<NetworkEvent> {
-        self.event_rx.recv().await
-    }
-
-    /// Try to get a network event without blocking
-    ///
-    /// Returns None immediately if no event is available.
-    /// This is used to drain pending block events before production
-    /// to ensure the chain tip is up-to-date before starting VDF computation.
-    pub fn try_next_event(&mut self) -> Option<NetworkEvent> {
-        self.event_rx.try_recv().ok()
-    }
-
-    /// Broadcast a block to the network
-    pub async fn broadcast_block(&self, block: doli_core::Block) -> Result<(), NetworkError> {
-        self.command_tx
-            .send(NetworkCommand::BroadcastBlock(block))
-            .await
-            .map_err(|_| NetworkError::ChannelClosed)?;
-        Ok(())
-    }
-
-    /// Broadcast a block header to the network (lightweight pre-announcement)
-    pub async fn broadcast_header(
-        &self,
-        header: doli_core::BlockHeader,
-    ) -> Result<(), NetworkError> {
-        self.command_tx
-            .send(NetworkCommand::BroadcastHeader(header))
-            .await
-            .map_err(|_| NetworkError::ChannelClosed)?;
-        Ok(())
-    }
-
-    /// Broadcast an attestation to the network (finality gadget)
-    pub async fn broadcast_attestation(&self, data: Vec<u8>) -> Result<(), NetworkError> {
-        self.command_tx
-            .send(NetworkCommand::BroadcastAttestation(data))
-            .await
-            .map_err(|_| NetworkError::ChannelClosed)?;
-        Ok(())
-    }
-
-    /// Broadcast a transaction to the network
-    pub async fn broadcast_transaction(&self, tx: Transaction) -> Result<(), NetworkError> {
-        self.command_tx
-            .send(NetworkCommand::BroadcastTransaction(tx))
-            .await
-            .map_err(|_| NetworkError::ChannelClosed)?;
-        Ok(())
-    }
-
-    /// Broadcast producer list to the network (anti-entropy gossip) - legacy format
-    /// This broadcasts the full view of known producers for CRDT merge
-    /// DEPRECATED: Use broadcast_producer_announcements instead
-    pub async fn broadcast_producers(&self, pubkeys: Vec<PublicKey>) -> Result<(), NetworkError> {
-        let data = bincode::serialize(&pubkeys).map_err(|e| {
-            NetworkError::Other(format!("Failed to serialize producer list: {}", e))
-        })?;
-        self.command_tx
-            .send(NetworkCommand::BroadcastProducers(data))
-            .await
-            .map_err(|_| NetworkError::ChannelClosed)?;
-        Ok(())
-    }
-
-    /// Broadcast producer announcements to the network (new format)
-    /// Uses protobuf encoding for forward compatibility
-    pub async fn broadcast_producer_announcements(
-        &self,
-        announcements: Vec<ProducerAnnouncement>,
-    ) -> Result<(), NetworkError> {
-        self.command_tx
-            .send(NetworkCommand::BroadcastProducerAnnouncements(
-                announcements,
-            ))
-            .await
-            .map_err(|_| NetworkError::ChannelClosed)?;
-        Ok(())
-    }
-
-    /// Broadcast producer set digest for delta sync
-    /// Peers will respond with only the producers not in the digest
-    pub async fn broadcast_producer_digest(
-        &self,
-        digest: ProducerBloomFilter,
-    ) -> Result<(), NetworkError> {
-        self.command_tx
-            .send(NetworkCommand::BroadcastProducerDigest(digest))
-            .await
-            .map_err(|_| NetworkError::ChannelClosed)?;
-        Ok(())
-    }
-
-    /// Broadcast a heartbeat to the network.
-    ///
-    /// NOTE: Deprecated in deterministic scheduler model. Heartbeats are no longer
-    /// used for presence tracking. Rewards go 100% to block producer via coinbase.
-    /// This function is kept for API compatibility but does nothing.
-    #[deprecated(note = "Heartbeats removed in deterministic scheduler model")]
-    pub async fn broadcast_heartbeat(&self, _heartbeat_data: Vec<u8>) -> Result<(), NetworkError> {
-        // No-op: heartbeats removed in deterministic scheduler model
-        Ok(())
-    }
-
-    /// Send producer delta to a specific peer
-    pub async fn send_producer_delta(
-        &self,
-        peer_id: PeerId,
-        announcements: Vec<ProducerAnnouncement>,
-    ) -> Result<(), NetworkError> {
-        self.command_tx
-            .send(NetworkCommand::SendProducerDelta {
-                peer_id,
-                announcements,
-            })
-            .await
-            .map_err(|_| NetworkError::ChannelClosed)?;
-        Ok(())
-    }
-
-    /// Request status from a peer
-    pub async fn request_status(
-        &self,
-        peer_id: PeerId,
-        request: StatusRequest,
-    ) -> Result<(), NetworkError> {
-        self.command_tx
-            .send(NetworkCommand::RequestStatus { peer_id, request })
-            .await
-            .map_err(|_| NetworkError::ChannelClosed)?;
-        Ok(())
-    }
-
-    /// Request sync from a peer
-    pub async fn request_sync(
-        &self,
-        peer_id: PeerId,
-        request: SyncRequest,
-    ) -> Result<(), NetworkError> {
-        self.command_tx
-            .send(NetworkCommand::RequestSync { peer_id, request })
-            .await
-            .map_err(|_| NetworkError::ChannelClosed)?;
-        Ok(())
-    }
-
-    /// Send status response
-    pub async fn send_status_response(
-        &self,
-        channel: ResponseChannel<StatusResponse>,
-        response: StatusResponse,
-    ) -> Result<(), NetworkError> {
-        self.command_tx
-            .send(NetworkCommand::SendStatusResponse { channel, response })
-            .await
-            .map_err(|_| NetworkError::ChannelClosed)?;
-        Ok(())
-    }
-
-    /// Send sync response
-    pub async fn send_sync_response(
-        &self,
-        channel: ResponseChannel<SyncResponse>,
-        response: SyncResponse,
-    ) -> Result<(), NetworkError> {
-        self.command_tx
-            .send(NetworkCommand::SendSyncResponse { channel, response })
-            .await
-            .map_err(|_| NetworkError::ChannelClosed)?;
-        Ok(())
-    }
-
-    /// Request transactions from a peer by hash (announce-request pattern)
-    pub async fn request_tx_fetch(
-        &self,
-        peer_id: PeerId,
-        hashes: Vec<crypto::Hash>,
-    ) -> Result<(), NetworkError> {
-        self.command_tx
-            .send(NetworkCommand::RequestTxFetch { peer_id, hashes })
-            .await
-            .map_err(|_| NetworkError::ChannelClosed)?;
-        Ok(())
-    }
-
-    /// Send transaction fetch response (announce-request pattern)
-    pub async fn send_tx_fetch_response(
-        &self,
-        channel: ResponseChannel<TxFetchResponse>,
-        response: TxFetchResponse,
-    ) -> Result<(), NetworkError> {
-        self.command_tx
-            .send(NetworkCommand::SendTxFetchResponse { channel, response })
-            .await
-            .map_err(|_| NetworkError::ChannelClosed)?;
-        Ok(())
-    }
-
-    /// Connect to a peer
-    pub async fn connect(&self, address: &str) -> Result<(), NetworkError> {
-        let multiaddr: Multiaddr = address
-            .parse()
-            .map_err(|_| NetworkError::ConnectionFailed(format!("Invalid address: {}", address)))?;
-        self.command_tx
-            .send(NetworkCommand::Connect(multiaddr))
-            .await
-            .map_err(|_| NetworkError::ChannelClosed)?;
-        Ok(())
-    }
-
-    /// Bootstrap the DHT
-    pub async fn bootstrap(&self) -> Result<(), NetworkError> {
-        self.command_tx
-            .send(NetworkCommand::Bootstrap)
-            .await
-            .map_err(|_| NetworkError::ChannelClosed)?;
-        Ok(())
-    }
-
-    /// Get connected peer count
-    pub async fn peer_count(&self) -> usize {
-        self.peers.read().await.len()
-    }
-
-    /// Get peer info
-    pub async fn get_peer(&self, peer_id: &PeerId) -> Option<PeerInfo> {
-        self.peers.read().await.get(peer_id).cloned()
-    }
-
-    /// Get all peers
-    pub async fn get_peers(&self) -> Vec<PeerInfo> {
-        self.peers.read().await.values().cloned().collect()
-    }
-
-    /// Get local peer ID
-    pub fn local_peer_id(&self) -> &PeerId {
-        &self.local_peer_id
-    }
-
-    /// Get shared peers map for sync peer-count queries
-    pub fn peers_arc(&self) -> Arc<RwLock<HashMap<PeerId, PeerInfo>>> {
-        self.peers.clone()
-    }
-
-    /// Disconnect from a specific peer
-    pub async fn disconnect(&self, peer_id: PeerId) -> Result<(), NetworkError> {
-        self.command_tx
-            .send(NetworkCommand::Disconnect(peer_id))
-            .await
-            .map_err(|_| NetworkError::ChannelClosed)?;
-        Ok(())
-    }
-
-    /// Get command sender for external use
-    pub fn command_sender(&self) -> mpsc::Sender<NetworkCommand> {
-        self.command_tx.clone()
     }
 }

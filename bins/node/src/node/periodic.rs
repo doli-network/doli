@@ -388,22 +388,30 @@ impl Node {
         {
             let now = Instant::now();
             const GRACE_MS: u128 = 500;
+            // F-9: at most this many fetches per tick; the rest wait, oldest first.
+            const FETCH_CAP_PER_TICK: usize = 8;
 
             // Collect matured entries (>500ms old)
-            let matured: Vec<(Hash, PeerId, u8)> = self
+            let mut matured: Vec<(Instant, Hash, PeerId, u8)> = self
                 .attest_fetch_tracker
                 .iter()
                 .filter(|(_, (t, _, _))| now.duration_since(*t).as_millis() >= GRACE_MS)
-                .map(|(hash, (_, count, peer))| (*hash, *peer, *count))
+                .map(|(hash, (t, count, peer))| (*t, *hash, *peer, *count))
                 .collect();
+            matured.sort_by_key(|(t, ..)| *t);
 
-            for (block_hash, source_peer, attempt) in matured {
+            let mut fired = 0;
+            for (_, block_hash, source_peer, attempt) in matured {
                 // Check if gossip delivered the block during the grace period
                 if let Ok(Some(_)) = self.block_store.get_height_by_hash(&block_hash) {
                     // Block arrived via gossip — no fetch needed
                     self.attest_fetch_tracker.remove(&block_hash);
                     continue;
                 }
+                if fired == FETCH_CAP_PER_TICK {
+                    continue;
+                }
+                fired += 1;
 
                 // Still missing — genuine recovery, fire one fetch and remove.
                 // If another attestation arrives for this hash later, it will

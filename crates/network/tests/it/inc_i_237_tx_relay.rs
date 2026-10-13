@@ -8,8 +8,8 @@
 //! raw mesh forwarding is not needed for propagation.
 //!
 //! Topology (real `NetworkService`s, 127.0.0.1): F -- B -- C. F and C have no
-//! direct link. B's "node" drains events and re-publishes NOTHING (it rejects
-//! every tx). Then C must not receive any of F's txs.
+//! direct link. B's "node" drains events, re-publishes NOTHING and never sends
+//! a verdict (M2: no verdict = no forward). Then C must not receive any of F's txs.
 //!
 //! OUTPUT CONTRACT
 //!   O1: count of F-originated NewTransaction events at C   (must be 0)
@@ -78,10 +78,9 @@ async fn inc_i_237_tx_batch_not_relayed_before_node_accepts_it() {
     let b_seen = b_seen_f.clone();
     tokio::spawn(async move {
         while let Some(ev) = b.next_event().await {
-            if let NetworkEvent::NewTransaction(t) = ev {
-                if (F_BASE..B_BASE).contains(&origin(&t)) {
-                    b_seen.fetch_add(1, Ordering::Relaxed);
-                }
+            if let NetworkEvent::NewTransaction(txs, _) = ev {
+                let f = txs.iter().filter(|t| (F_BASE..B_BASE).contains(&origin(t)));
+                b_seen.fetch_add(f.count() as u64, Ordering::Relaxed);
             }
         }
     });
@@ -99,7 +98,7 @@ async fn inc_i_237_tx_batch_not_relayed_before_node_accepts_it() {
         n += 1;
         let until = Instant::now() + Duration::from_millis(500);
         while Instant::now() < until {
-            if let Ok(Some(NetworkEvent::NewTransaction(_))) =
+            if let Ok(Some(NetworkEvent::NewTransaction(..))) =
                 tokio::time::timeout(Duration::from_millis(100), c.next_event()).await
             {
                 break 'warm;
@@ -131,12 +130,13 @@ async fn inc_i_237_tx_batch_not_relayed_before_node_accepts_it() {
     let mut c_got_f = 0u64;
     let until = Instant::now() + Duration::from_secs(8);
     while Instant::now() < until {
-        if let Ok(Some(NetworkEvent::NewTransaction(t))) =
+        if let Ok(Some(NetworkEvent::NewTransaction(txs, _))) =
             tokio::time::timeout(Duration::from_millis(100), c.next_event()).await
         {
-            if (F_BASE..B_BASE).contains(&origin(&t)) {
-                c_got_f += 1;
-            }
+            c_got_f += txs
+                .iter()
+                .filter(|t| (F_BASE..B_BASE).contains(&origin(t)))
+                .count() as u64;
         }
     }
     let b_got_f = b_seen_f.load(Ordering::Relaxed);

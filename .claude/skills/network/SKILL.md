@@ -1,12 +1,12 @@
 # network — DOLI P2P Network Layer (`crates/network`)
 
 <!-- @INDEX
-ENTRY-POINTS    12-53
-OPERATIONS      55-64
-DATA-FLOW       66-77
-DEPENDENCIES    79-94
-CONSTRAINTS     96-129
-PATTERNS        131-145
+ENTRY-POINTS    12-55
+OPERATIONS      57-66
+DATA-FLOW       68-79
+DEPENDENCIES    81-96
+CONSTRAINTS     98-131
+PATTERNS        133-147
 @/INDEX -->
 
 ## ENTRY POINTS
@@ -16,15 +16,17 @@ PATTERNS        131-145
 | Function/Struct | Location | Signature | Description |
 |-------------------|----------|-----------|--------------|
 | `NetworkService::new(config)` | `service/mod.rs:81` | `async fn new(config: NetworkConfig) -> Result<Self, NetworkError>` | Builds libp2p swarm+behaviour, dials bootstrap BEFORE cached peers (INC-I-048), spawns `run_swarm` task on tokio |
-| `NetworkService::next_event/try_next_event()` | `service/mod.rs:434,443` | `async fn next_event(&mut self) -> Option<NetworkEvent>` / `fn try_next_event(&mut self) -> Option<NetworkEvent>` | Node event loop drains events; `try_next_event` used to flush pending blocks before production |
-| `NetworkService::broadcast_block/header/attestation/transaction()` | `service/mod.rs:448-484` | `async fn broadcast_block(&self, block: Block) -> Result<(), NetworkError>` | Sends `NetworkCommand` over mpsc to swarm loop |
-| `NetworkService::update_best_slot(slot)` | `service/mod.rs:424` | `fn update_best_slot(&self, slot: u32)` | Node calls after every `apply_block()`; feeds rate-limiter INC-I-049 exemption |
-| `NetworkService::gossip_shed_metrics()` | `service/mod.rs:430` | `fn gossip_shed_metrics(&self) -> Arc<GossipShedMetrics>` | INC-I-114 M2: exposes block load-shed drop counter to node/RPC |
+| `NetworkService::next_event/try_next_event()` | `service/command_api.rs:53,58` | `async fn next_event(&mut self) -> Option<NetworkEvent>` / `fn try_next_event(&mut self) -> Option<NetworkEvent>` | Node event loop drains the two event lanes (`EventLanes::recv/try_recv`, `service/event_lanes.rs`); `try_next_event` used to flush pending blocks before production |
+| `NetworkService::broadcast_block/attestation()` | `service/command_api.rs:63,72` | `async fn broadcast_block(&self, block: Block) -> Result<(), NetworkError>` | Sends `NetworkCommand` over mpsc to swarm loop. Own-origin txs have no `NetworkService` method: the node's RPC path takes an origin-budget token + a command permit (`reserve_tx_broadcast`, `bins/node/src/node/rpc_broadcast.rs`) and sends `NetworkCommand::BroadcastTransaction` |
+| `NetworkService::update_best_slot(slot)` | `service/command_api.rs:23` | `fn update_best_slot(&self, slot: u32)` | Node calls after every `apply_block()`; feeds rate-limiter INC-I-049 exemption |
+| `NetworkService::gossip_shed_metrics()` | `service/command_api.rs:29` | `fn gossip_shed_metrics(&self) -> Arc<GossipShedMetrics>` | INC-I-114 M2: exposes block load-shed drop counter to node/RPC |
 | `run_swarm()` | `service/swarm_loop.rs:34` | `async fn run_swarm(swarm, command_rx, event_tx, peers, config, ...)` | `tokio::select!` loop: swarm events, commands, DHT refresh (60s), rate-limit cleanup (5min), bootstrap-TTL cleanup (5s) |
 | `handle_swarm_event()` | `service/swarm_events.rs:30` | `async fn handle_swarm_event(event, swarm, ...)` | Connection lifecycle: eviction (LIFO+grace), genesis/version mismatch cooldowns, dial backoff |
 | `handle_behaviour_event()` | `service/behaviour_events.rs:37` | `async fn handle_behaviour_event(event, swarm, ...)` | Gossipsub message classify+report, Kademlia routing filter, Identify, status/sync req-resp |
 | `handle_command()` | `service/command_handling.rs:22` | `async fn handle_command(command, swarm, config, rate_limiter)` | Dispatches `NetworkCommand` → gossipsub publish / req-resp send / dial; RequestSync passes through INC-I-120 governor |
-| `enqueue_or_shed()` | `service/backpressure.rs:74` | `fn enqueue_or_shed(tx, event, metrics)` | INC-I-114 M1: synchronous `try_send`, sheds gossip blocks on full channel (never `.await`s) |
+| `EventSink::emit()/emit_block()` | `service/event_sink.rs:378,446` | `fn emit(&self, ev: NetworkEvent) -> EmitOutcome` / `fn emit_block(&self, ev: NetworkEvent, metrics: &GossipShedMetrics) -> EmitOutcome` | INC-I-237 R1: synchronous swarm→node delivery over two bounded lanes (consensus: blocks, attestations, control; bulk: txs, votes, producers). Gossip on a full lane (count or bytes) is shed and counted (`Shed` → caller reports Ignore); an attestation never enters the block headroom (256 slots / 8 MiB); control events wait in a FIFO backlog (`try_flush`) |
+| `handle_gossip_message()` / `decide()` | `service/gossip_intake.rs:29`, `gossip/relay_decision.rs:106` | `fn decide(topic: RelayTopic, data: &[u8], ctx: &StalenessCtx) -> (RelayDecision, Payload)` | INC-I-237: one relay decision and at most one report per gossip message. Blocks: `AcceptBlock`/`Ignore`/`Reject` at the swarm. Txs, attestations, votes, producer announcements: `Defer` to the node after the per-peer bucket. Tx announces, digests: `LocalOnly` (never forwarded) |
+| `send_gossip_verdict()` / `apply_gossip_verdict()` | `service/verdict.rs:84,61` | `fn send_gossip_verdict(cmd: &mpsc::Sender<NetworkCommand>, handle: GossipHandle, verdict: Verdict) -> bool` | Verdict seam for `Defer`: node `try_send`s `NetworkCommand::GossipVerdict` (full channel → `DROPPED_VERDICTS`); swarm reports Accept/Ignore, or skips it past `VERDICT_DEADLINE` 3.5 s (`LATE_VERDICTS`) |
 | `MemoryWatchdog::tick()/should_shed()` | `watchdog.rs:103,156` | `fn tick(&mut self)` | INC-I-114 M2: trips shared flag at RSS soft threshold; fail-open on non-Linux/sampler-None |
 | `plan_startup_dials()` | `service/helpers.rs:129` | `fn plan_startup_dials(bootstrap_nodes, cached_addrs, pending_limit) -> (Vec<Multiaddr>, Vec<Multiaddr>)` | INC-I-048: bootstrap addrs get priority pending slots over cached addrs |
 
@@ -49,7 +51,7 @@ PATTERNS        131-145
 | `SyncManager::request_genesis_resync(reason)` | `sync/manager/production_gate.rs:660` | `fn request_genesis_resync(&mut self, reason: RecoveryReason) -> bool` | Single gated entry point for all resync triggers: floor, concurrency, rate-limit, snap-availability, snap-attempt-limit (emergency bypass for 3 reasons) |
 | `SyncManager::reset_local_state(genesis_hash)` | `sync/manager/block_lifecycle.rs:281` | `fn reset_local_state(&mut self, genesis_hash: Hash)` | Refuses to reset below `confirmed_height_floor` (INC-I-005 Fix C) |
 | `PeerScorer::new/tick()` | `scoring.rs:155,284` | `fn tick(&mut self)` | Call periodically: decay scores, expire bans |
-| `RateLimiter::check_block/check_block_global_only/check_sync_request()` | `rate_limit.rs:209,232,333` | `fn check_sync_request(&mut self, peer: &PeerId) -> bool` | INC-I-120: outbound sync-request governor (per-peer 10/s burst 100, global 60/s burst 300) |
+| `RateLimiter::check_block/check_block_global_only/check_transaction/check_attestation/check_sync_request()` | `rate_limit.rs:218,231,259,321,359` | `fn check_transaction(&mut self, peer: &PeerId, n: u64) -> bool` | INC-I-237 M5 inbound buckets: one token per tx (per peer 500/s burst 2,000; global 1,000/s burst 4,000; a batch above 2,000 txs never fits → Ignore); attestations own per-peer bucket 20/s burst 200. INC-I-120 outbound sync-request governor (per-peer 10/s burst 100, global 60/s burst 300) |
 | `classify_block_gossip()` / `classify_producer_gossip()` | `gossip/validation.rs:96,157` | `fn classify_block_gossip(data, genesis_time, slot_duration, now_unix) -> (MessageAcceptance, Option<Block>)` | INC-I-114: staleness verdict for `validate_messages` gate; `Ignore` (no penalty) vs `Reject` (P4 penalty) vs `Accept` |
 
 ## OPERATIONS
@@ -67,8 +69,8 @@ PATTERNS        131-145
 
 | Input | Transform | Output | Location |
 |-------|-----------|--------|----------|
-| Peer gossip block bytes | `validate_messages` hold → `classify_block_gossip()` (deserialize once, staleness check vs wall-clock slot) → `report_message_validation_result` | `NetworkEvent::NewBlock(block, peer_id)` via `enqueue_or_shed()` (bounded, load-shed) | `service/behaviour_events.rs:82`, `gossip/validation.rs:96`, `service/backpressure.rs:74` |
-| `try_produce_block()` output | `NetworkService::broadcast_block()` → `NetworkCommand::BroadcastBlock` mpsc → gossipsub publish | wire bytes on `/doli/blocks/1` topic | `service/mod.rs:448` → `command_handling.rs:29` |
+| Peer gossip block bytes | `handle_gossip_message()` → `decide()` → `classify_block_gossip()` (deserialize once, staleness vs wall-clock slot) → per-peer block bucket (non-candidates) → ONE `report_message_validation_result` → memory shed / global bucket as local drops | `NetworkEvent::NewBlock(block, peer_id, GossipHandle)` via `EventSink::emit_block()` (consensus lane; shed + counted when full) | `service/gossip_intake.rs:29`, `gossip/relay_decision.rs:106`, `gossip/validation.rs:96`, `service/event_sink.rs:446` |
+| `try_produce_block()` output | `NetworkService::broadcast_block()` → `NetworkCommand::BroadcastBlock` mpsc → gossipsub publish | wire bytes on `/doli/blocks/1` topic | `service/command_api.rs:63` → `command_handling.rs` |
 | New peer connection | `StatusRequest`/`StatusResponse` exchange (version, network_id, genesis_hash, fork_id, producer_pubkey) | `SyncManager::add_peer()`/`update_peer()`, version/fork_id mismatch → disconnect | `protocols/status.rs`, `sync/manager/peers.rs:19,73` |
 | Sync gap detected | `SyncManager::start_sync()` → `SyncRequest::GetHeaders`/`GetHeadersByHeight` → outbound governor (`is_rate_governed()`) → `SyncResponse::Headers` → `SyncResponse::Bodies` → sequential apply | node's `apply_block()` per downloaded block | `sync_engine/decision.rs:117`, `protocols/sync.rs:195` |
 | Snap sync gap (>50, ≥3 peers) | `GetStateRoot` votes → majority-quorum group → `GetStateSnapshot` from quorum peer → node `compute_state_root_from_bytes()` independent verify | `VerifiedSnapshot{chain_state, utxo_set, producer_set, epoch_state_bytes}` applied wholesale | `sync/manager/snap_sync.rs:19-207` |
@@ -90,7 +92,7 @@ PATTERNS        131-145
 |---------|-----------|----------|
 | `bins/node/src/node/*` (init.rs, event_loop.rs, block_handling.rs, fork_recovery.rs, production.rs, periodic.rs, rollback.rs) | node/core skill (if present) | Drives `NetworkService`/`SyncManager` as the network I/O and sync-state backbone; `apply_block()` calls `update_local_tip()`/`block_applied_with_weight()`; recovery actions executed here |
 | `crates/rpc/src/methods/*` | rpc skill / doli-network skill | `getPeers`, `getNetworkStatus`, gossip-shed metrics, guardian pause/resume touch `NetworkService` handle |
-| `crates/mempool` | — | Consumes `NetworkEvent::NewTransaction`/`TxFetchResponse`, produces txs for `broadcast_transaction()` |
+| `crates/mempool` | — | Fed by the node from `NetworkEvent::NewTransaction(Vec<Transaction>, GossipHandle)`/`TxFetchResponse`; each `NewTransaction` owes one relay verdict (`send_gossip_verdict`); own-origin txs leave as `NetworkCommand::BroadcastTransaction` |
 | `crates/updater` (hardfork.rs) | — | `CURRENT_PROTOCOL_VERSION`/`fork_id` interplay with `HardForkSchedule` (constant-gate discipline, NOT schedule entries, for rolling deploys) |
 
 ## CONSTRAINTS
@@ -109,7 +111,7 @@ PATTERNS        131-145
 | `MAX_SYNC_SIZE=16MB`, `MAX_STATUS_SIZE=64KB`, `MAX_TXFETCH_SIZE=256KB`/`MAX_TXFETCH_HASHES=50` | security | `protocols/sync.rs:22`, `status.rs:86`, `txfetch.rs:20,23` | INC-I-012 F13: sync size reduced from 64MB — length-prefix DoS mitigation |
 | `GOSSIP_MAX_TRANSMIT_SIZE = BASE_BLOCK_SIZE + GOSSIP_ENVELOPE_MARGIN` | invariant | `gossip/config.rs:26` | INC-I-091: gossip cap must be ≥ largest producible block or valid blocks can't propagate; production block size gated separately by `large_block_activation_height` |
 | Gossip message ID = BLAKE3(data)[0..20] | invariant | `gossip/config.rs:185-189` | INC-I-012 F9: `DefaultHasher` is NOT platform-independent (x86 vs ARM) — would break cross-platform dedup |
-| `validate_messages=true` + `enqueue_or_shed()` bounded queue REQUIRED together with `flood_publish=true` / `duplicate_cache_time≤30s` | security/invariant (INV-NETWORK-002) | `gossip/config.rs:89-138` | `assert_gossip_hardening_invariant()` fails fast at construction if aggressive gossip config lacks BOTH mitigations. Lineage: INC-I-009/014/114/118/120 all share unbounded-queue + aggressive-propagation root shape |
+| `validate_messages=true` + bounded event lanes (`EventSink`, `LaneBudgets::is_bounded()`) REQUIRED together with `flood_publish=true` / `duplicate_cache_time≤30s` | security/invariant (INV-NETWORK-002) | `gossip/config.rs:148,256` | `assert_gossip_hardening_invariant(cfg, lanes.is_bounded())` (called by `assert_production_hardening`) fails fast at construction if aggressive gossip config lacks BOTH mitigations. Lineage: INC-I-009/014/114/118/120 all share unbounded-queue + aggressive-propagation root shape |
 | `STALE_BLOCK_SLOT_THRESHOLD=6` slots (60s) | invariant | `gossip/validation.rs:35` | Stale gossip blocks → `Ignore` (no penalty, INC-I-016 safety), not `Reject` — avoids eviction cascades on honest catch-up peers |
 | `PRODUCER_ANNOUNCEMENT_MAX_AGE_SECS=3600` | invariant | `gossip/validation.rs:135` | INC-I-137: only forward producer-gossip if ≥1 announcement is within TTL (GSet convergence preserved); all-stale → `Ignore` |
 | `DOLI_IP_COLOCATION_THRESHOLD` (default 5) | performance | `gossip/config.rs:308-317` | Devnet with many 127.0.0.1 nodes MUST raise to ~500 or co-located peers exceed graylist (-16K) at 33+ peers |
@@ -135,7 +137,7 @@ PATTERNS        131-145
 | Recovery evidence report → coordinator classify → caller executes | `sync/manager/block_lifecycle.rs:623-704`, `recovery.rs:270` | Detectors NEVER decide actions; centralizes fork-recovery policy in one pure-function classifier for testability (see recovery.rs's 30+ unit tests) |
 | Escalation ladder, least-severe-first | `recovery.rs:311-437` | `None < ShallowRollback < HeaderFirstSync < SnapSync < GenesisResync`; each rule gate checked in order, first match wins |
 | Single outbound chokepoint for governed requests | `service/command_handling.rs:78-98` | ALL `NetworkCommand::RequestSync` funnels through one `if request.is_rate_governed()` check before `swarm.send_request()` — add new SyncRequest variants by declaring their governed-ness in `SyncRequest::is_rate_governed()`, not by scattering checks |
-| Bounded-queue + validate-then-forward gossip hot path | `service/backpressure.rs:74`, `gossip/validation.rs:58-124` | `try_send` (never `.await`s) + pure classify function decouples I/O from decision logic; same shape required for any new "aggressive propagation" gossip feature per INV-NETWORK-002 |
+| Bounded-lane + decide-then-report gossip hot path | `service/event_sink.rs:378-462`, `gossip/relay_decision.rs:106`, `service/gossip_intake.rs:29` | `try_send` only (never `.await`s) + pure `decide()`: one relay decision, at most one report per message, `Defer` hands the verdict to the node (`NetworkCommand::GossipVerdict`); same shape required for any new "aggressive propagation" gossip feature per INV-NETWORK-002 |
 | Sub-struct grouping to prevent illegal states | `sync/manager/types.rs` (`ForkState`, `NetworkState`, `SnapSyncState`, `SyncPipeline`) | Independent booleans (`resync_in_progress`, `post_recovery_grace`, `awaiting_canonical_block`) replaced by single `RecoveryPhase` enum — illegal combinations become unrepresentable |
 | Load-distributing peer selection seeded by local state | `sync_engine/decision.rs:81-109`, `snap_sync.rs` quorum group `max_by_key` | Avoid thundering-herd on a single "best" peer at scale — hash `(local_height, sync_epoch)` into peer index instead of always picking absolute max height |
 | Diagnosing sync stuck | check in order: `sync_state_name()` → `pipeline_stats()` → `progress()` → `consecutive_empty_headers()` (≥10→deep fork) → `fork.use_height_based_headers` (post-snap fallback active) → `recovery_phase` | `production_gate.rs`, `mod.rs:437-457` |

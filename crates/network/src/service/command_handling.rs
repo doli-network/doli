@@ -11,12 +11,11 @@ use doli_core::encode_producer_set;
 
 use crate::behaviour::DoliBehaviour;
 use crate::config::NetworkConfig;
-use crate::gossip::{
-    BLOCKS_TOPIC, HEADERS_TOPIC, HEARTBEATS_TOPIC, PRODUCERS_TOPIC, TRANSACTIONS_TOPIC, VOTES_TOPIC,
-};
+use crate::gossip::{BLOCKS_TOPIC, PRODUCERS_TOPIC, TRANSACTIONS_TOPIC, VOTES_TOPIC};
 use crate::rate_limit::RateLimiter;
 
 use super::types::NetworkCommand;
+use super::verdict::apply_gossip_verdict;
 
 /// Handle network commands
 pub(super) async fn handle_command(
@@ -52,14 +51,6 @@ pub(super) async fn handle_command(
                         block_slot, block_hash, e, mesh_peers
                     );
                 }
-            }
-        }
-
-        NetworkCommand::BroadcastHeader(header) => {
-            let data = header.serialize();
-            let topic = IdentTopic::new(HEADERS_TOPIC);
-            if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, data) {
-                warn!("Failed to broadcast header: {}", e);
             }
         }
 
@@ -142,16 +133,6 @@ pub(super) async fn handle_command(
             }
         }
 
-        NetworkCommand::BroadcastProducers(data) => {
-            let topic = IdentTopic::new(PRODUCERS_TOPIC);
-            if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, data) {
-                // Duplicate is expected if we broadcast the same list frequently
-                if !matches!(e, libp2p::gossipsub::PublishError::Duplicate) {
-                    warn!("Failed to broadcast producer list: {}", e);
-                }
-            }
-        }
-
         NetworkCommand::BroadcastProducerAnnouncements(announcements) => {
             let data = encode_producer_set(&announcements);
             let topic = IdentTopic::new(PRODUCERS_TOPIC);
@@ -167,10 +148,12 @@ pub(super) async fn handle_command(
             // In the future, this could use a dedicated request-response protocol
             let data = doli_core::encode_digest(&digest);
             let topic = IdentTopic::new(PRODUCERS_TOPIC);
-            if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, data) {
-                if !matches!(e, libp2p::gossipsub::PublishError::Duplicate) {
-                    warn!("Failed to broadcast producer digest: {}", e);
+            match swarm.behaviour_mut().gossipsub.publish(topic, data) {
+                Err(libp2p::gossipsub::PublishError::Duplicate) => {
+                    debug!("Producer digest unchanged: duplicate publish skipped");
                 }
+                Err(e) => warn!("Failed to broadcast producer digest: {}", e),
+                Ok(_) => {}
             }
         }
 
@@ -204,19 +187,6 @@ pub(super) async fn handle_command(
             }
         }
 
-        NetworkCommand::BroadcastHeartbeat(heartbeat_data) => {
-            let topic = IdentTopic::new(HEARTBEATS_TOPIC);
-            if let Err(e) = swarm
-                .behaviour_mut()
-                .gossipsub
-                .publish(topic, heartbeat_data)
-            {
-                if !matches!(e, libp2p::gossipsub::PublishError::Duplicate) {
-                    warn!("Failed to broadcast heartbeat: {}", e);
-                }
-            }
-        }
-
         NetworkCommand::BroadcastAttestation(attestation_data) => {
             let topic = IdentTopic::new(crate::gossip::ATTESTATION_TOPIC);
             if let Err(e) = swarm
@@ -244,6 +214,17 @@ pub(super) async fn handle_command(
                 .behaviour_mut()
                 .txfetch
                 .send_response(channel, response);
+        }
+
+        NetworkCommand::GossipVerdict { handle, verdict } => {
+            let gossipsub = &mut swarm.behaviour_mut().gossipsub;
+            apply_gossip_verdict(handle, verdict, |msg_id, source, acceptance| {
+                if let Err(e) =
+                    gossipsub.report_message_validation_result(msg_id, source, acceptance)
+                {
+                    debug!("[GOSSIP_VERDICT] report failed msg_id={msg_id} err={e:?}");
+                }
+            });
         }
     }
 }

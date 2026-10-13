@@ -346,6 +346,50 @@ Submits a signed transaction to the network.
 "abc123..." // Transaction hash
 ```
 
+**Busy:** when the node cannot reserve a broadcast slot it answers `-32004` with
+`data: {"error_code": "BROADCAST_BUSY", "stage": "broadcast", "retryable": true}`.
+The transaction was NOT admitted to the mempool; resubmit it after a short wait.
+`submitMaintainerChange` returns the same Busy error.
+
+**Errors (DelegateBond / RevokeDelegation):** these txs pay no fee, so admission checks them as the
+next epoch boundary would (applied producer set plus the delegator's queued updates). A refusal returns
+`-32002` with the code in `data.error_code`: `MPTX010` (delegator signature refused), `MPTX016` (the
+boundary turns the tx into a no-op: delegator not registered or not active, self-delegation, delegate
+not registered or not active, `bond_count` above the available bonds, an effective delegation exists,
+or a revoke with no effective delegation; also when the node has no producer-set view), `MPTX013` (a
+revoke names a delegate other than the effective one, or the delegation exceeds the delegate's received
+cap), `MPTX014` (a DelegateBond that a canonical block already carries), `MPTX017` (the node must read a
+block body to check a DelegateBond that the tx index places in a canonical block, and its mined-check read
+budget is spent: retry later; nothing is cached, and the tx is not called mined).
+`MPTX014` is checked after every other refusal; repeated copies hit a bounded cache (10,000 txids),
+so a repeat reads no block body. Block body reads draw on one per-node budget (2 reads/s, burst 2);
+a cache hit and a DelegateBond that is not in the tx index (every new delegation) spend none of it.
+At most one DelegateBond / RevokeDelegation per delegator stays pending: a second one returns `-32003` /
+`TX_ALREADY_EXISTS` until the first is mined, evicted or expires. These checks are admission only, not a
+consensus rule.
+
+**Edge flows (refused until the INC-I-246 consensus fix):**
+- (a) Re-delegation to the same delegate with the same `bond_count` after a revoke: `MPTX014`, because the
+  tx is byte-identical to the mined one (it gets `MPTX014` only after every other check passes). The
+  re-delegation must be a new tx, not a replay of the mined one. The CLI signer is deterministic, so the same
+  delegate and `bond_count` give the same txid: a delegator with one bond has no new tx for that delegate.
+  Workaround: AddBond first (then use the new `bond_count`), or delegate to a different delegate; a different
+  `bond_count` works only while an unused one is available.
+- (b) CLI revoke while a same-epoch delegation switch is queued: `MPTX013`, because the CLI names the
+  applied delegate and the queued one is effective. Workaround: wait for the epoch boundary.
+- (c) An Add / Remove maintainer change that depends on a pending change at the set bounds: `MPTX011`,
+  because admission checks the current set. Workaround: wait until the pending change is mined.
+- (d) Revoke, then delegate back to back: the DelegateBond gets `MPTX016`, because the revoke is not mined
+  and the effective delegation still stands. Workaround: wait one block (until the revoke is mined).
+- (e) A pending delegation tx holds the delegator's one slot until it is mined, evicted or expires; a
+  second one gets `TX_ALREADY_EXISTS`. Workaround: wait.
+- (f) A DelegateBond while the delegator's own queued DelegateBond will fail at the boundary (e.g. its
+  delegate leaves active status earlier in the same epoch): `MPTX016`, because admission counts the queued
+  tx as the effective delegation. Admission is stricter than the boundary for up to one epoch. Workaround:
+  revoke naming the queued delegate, then delegate (after the revoke is mined); or wait for the boundary.
+
+Code table: `docs/error-codes.md` (MPTX).
+
 **Example:**
 ```bash
 curl -X POST http://127.0.0.1:8500 \
@@ -1083,6 +1127,9 @@ Submit a veto vote for a pending update.
 
 **Note:** Only active producers can submit votes.
 
+**Busy:** a vote that cannot be handed to the network right now answers `-32004` with
+`data: {"error_code": "BROADCAST_BUSY", "stage": "broadcast", "retryable": true}`; resubmit it.
+
 **Example:**
 ```bash
 curl -X POST http://127.0.0.1:8500 \
@@ -1216,6 +1263,15 @@ Submit a maintainer add or remove transaction (requires 3/5 multisig).
 ```
 
 **Note:** Requires at least 3 valid signatures from current maintainers.
+
+**Errors:** mempool refusals return the same codes as `sendTransaction`, with `data.error_code`:
+`-32003` / `TX_ALREADY_EXISTS` when a change for the same action and target is already pending (wait until it is mined, evicted or expires, then retry);
+`-32002` / `MPTX010` (multisig refused), `MPTX011` (no effect on the current set: Add of a member or into a full set, Remove of a non-member or at the minimum size),
+`MPTX012` (non-canonical payload or a repeated signature entry), `MPTX015` (pending changes for this action at the cap).
+A change that depends on a pending change at the set bounds gets `MPTX011` until that change is mined
+(edge flow (c) under `sendTransaction`). A copy of a change that is still in effect gets `MPTX011`.
+This method never carries DelegateBond / RevokeDelegation, so it never returns `MPTX014` (DelegateBond
+only) or `MPTX016`.
 
 **Example:**
 ```bash
@@ -1647,7 +1703,7 @@ curl -X POST http://127.0.0.1:8500 \
 | -32001 | Transaction not found | Requested tx doesn't exist |
 | -32002 | Invalid transaction | Transaction validation failed |
 | -32003 | Already in mempool | Transaction already submitted |
-| -32004 | Mempool full | Mempool at capacity |
+| -32004 | Mempool full / Node busy | Mempool at capacity; or `"Node busy: broadcast queue full, retry later"` with `data.error_code = "BROADCAST_BUSY"` (`sendTransaction`, `submitVote`, `submitMaintainerChange`; retryable) |
 | -32005 | UTXO not found | Referenced UTXO doesn't exist |
 | -32006 | Producer not found | Producer not in registry |
 | -32007 | Pool not found | AMM pool not found |

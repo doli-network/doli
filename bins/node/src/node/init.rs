@@ -930,7 +930,6 @@ impl Node {
             (snap, epoch)
         };
 
-        // Create equivocation detector
         let equivocation_detector = Arc::new(RwLock::new(EquivocationDetector::new()));
 
         // Create VDF calibrator with network-specific target time
@@ -1073,11 +1072,10 @@ impl Node {
             fork_block_cache: Arc::new(RwLock::new(HashMap::new())),
             last_producer_list_change: None,
             producer_gset: producer_gset.clone(),
+            announcement_merge_busy: Arc::new(AtomicBool::new(false)),
             adaptive_gossip,
             our_announcement: Arc::new(RwLock::new(None)),
-            // Recover sequence from persisted GSet so we don't create stale
-            // announcements after restart. Sequence is stable (no heartbeat
-            // bumps) — only incremented on actual state changes.
+            // Sequence recovered from the persisted GSet (see initial_seq above).
             announcement_sequence: Arc::new(AtomicU64::new(initial_seq)),
             last_broadcast_gset_len: 0,
             signed_slots_db,
@@ -1114,6 +1112,7 @@ impl Node {
             ws_sender: Arc::new(RwLock::new(None)),
             minute_tracker: MinuteAttestationTracker::new(),
             parent_sig_pool: ParentSignaturePool::new(),
+            attest_seen: Default::default(),
             inc_i_178_attestation_bls_activation_height: bls_activation_height,
             last_built_aggregate: Vec::new(),
             bls_ingress_scorer: PeerScorer::new(PeerScorerConfig::default()),
@@ -1142,6 +1141,7 @@ impl Node {
             attest_fetch_tracker: HashMap::new(),
             defi_health_refresh_counter: AtomicU64::new(0),
             defi_health_cache: std::sync::Mutex::new(None),
+            origin_tx_bucket: super::rpc_broadcast::new_origin_tx_bucket(),
         };
 
         // M4 [F3]: a session always begins from an empty staging family, and
@@ -1320,6 +1320,7 @@ impl Node {
             fork_block_cache: Arc::new(RwLock::new(HashMap::new())),
             last_producer_list_change: None,
             producer_gset: Arc::new(RwLock::new(ProducerGSet::new(network.id(), genesis_hash))),
+            announcement_merge_busy: Arc::new(AtomicBool::new(false)),
             adaptive_gossip: Arc::new(RwLock::new(AdaptiveGossip::new())),
             our_announcement: Arc::new(RwLock::new(None)),
             announcement_sequence: Arc::new(AtomicU64::new(0)),
@@ -1364,6 +1365,7 @@ impl Node {
             ws_sender: Arc::new(RwLock::new(None)),
             minute_tracker: MinuteAttestationTracker::new(),
             parent_sig_pool: ParentSignaturePool::new(),
+            attest_seen: Default::default(),
             inc_i_178_attestation_bls_activation_height: bls_activation_height,
             last_built_aggregate: Vec::new(),
             bls_ingress_scorer: PeerScorer::new(PeerScorerConfig::default()),
@@ -1392,6 +1394,7 @@ impl Node {
             attest_fetch_tracker: HashMap::new(),
             defi_health_refresh_counter: AtomicU64::new(0),
             defi_health_cache: std::sync::Mutex::new(None),
+            origin_tx_bucket: super::rpc_broadcast::new_origin_tx_bucket(),
         })
     }
 
@@ -1543,6 +1546,7 @@ impl Node {
             fork_block_cache: Arc::new(RwLock::new(HashMap::new())),
             last_producer_list_change: None,
             producer_gset: Arc::new(RwLock::new(ProducerGSet::new(network.id(), genesis_hash))),
+            announcement_merge_busy: Arc::new(AtomicBool::new(false)),
             adaptive_gossip: Arc::new(RwLock::new(AdaptiveGossip::new())),
             our_announcement: Arc::new(RwLock::new(None)),
             announcement_sequence: Arc::new(AtomicU64::new(0)),
@@ -1581,6 +1585,7 @@ impl Node {
             ws_sender: Arc::new(RwLock::new(None)),
             minute_tracker: MinuteAttestationTracker::new(),
             parent_sig_pool: ParentSignaturePool::new(),
+            attest_seen: Default::default(),
             inc_i_178_attestation_bls_activation_height: bls_activation_height,
             last_built_aggregate: Vec::new(),
             bls_ingress_scorer: PeerScorer::new(PeerScorerConfig::default()),
@@ -1609,6 +1614,7 @@ impl Node {
             attest_fetch_tracker: HashMap::new(),
             defi_health_refresh_counter: AtomicU64::new(0),
             defi_health_cache: std::sync::Mutex::new(None),
+            origin_tx_bucket: super::rpc_broadcast::new_origin_tx_bucket(),
         })
     }
 }

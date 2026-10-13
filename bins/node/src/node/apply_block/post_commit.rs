@@ -77,6 +77,7 @@ impl Node {
                         32
                     }
                 );
+                crate::metrics_gossip::observe_attestation_coverage(idx.len(), decode_len);
                 // INC-I-154 F2/F3: report producers MISSING from the attestation bitfield
                 // over the FULL decode universe [base | extra sorted], not just the base
                 // segment. An active producer the epoch-boundary attestation filter left
@@ -445,6 +446,8 @@ impl Node {
             // — and no longer than FLOOR_FALLBACK_WINDOW_MAX_BOUNDARIES.
             self.advance_floor_window(floor_outcome, epoch, height);
         }
+
+        self.attest_seen.prune(block.header.slot);
 
         // Per-block attestation: sign chain tip for finality gadget + record in tracker.
         self.create_and_broadcast_attestation(block_hash, block.header.slot, height)

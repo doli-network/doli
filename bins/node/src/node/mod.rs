@@ -18,6 +18,12 @@ mod event_loop;
 mod floor_window;
 mod force_reorg;
 #[cfg(test)]
+mod inc_i_237_m15_tests;
+#[cfg(test)]
+mod inc_i_237_m5_attest_seen_tests;
+#[cfg(test)]
+mod inc_i_237_m5_tests;
+#[cfg(test)]
 mod inc_i_237_slash_tests;
 #[cfg(test)]
 mod orphan_chase_tests;
@@ -25,6 +31,7 @@ pub use force_reorg::ForceReorgOutcome;
 mod fork_recovery;
 mod fork_walk;
 mod genesis;
+mod gossip_verdicts;
 mod holdings;
 use holdings::holdings_of_every_producer;
 mod fork_cache;
@@ -33,13 +40,13 @@ mod maintainer_rewind;
 mod network_events;
 mod orphan_chase;
 
-// Re-export Phase 4 disk cleanup helper so integration tests can verify
-// orphan-dir removal behavior. Used only through the lib target.
+// Phase 4 disk cleanup helpers, re-exported for integration tests (lib target only).
 #[allow(unused_imports)]
 pub use init::cleanup_orphan_utxo_store;
 #[allow(unused_imports)]
 pub use init::recover_body_gaps;
 mod periodic;
+mod producer_merge;
 mod production;
 mod rewards;
 #[allow(unused_imports)]
@@ -48,6 +55,7 @@ mod rollback;
 pub use rollback::RollbackOutcome;
 mod rollback_authority;
 pub use rollback_authority::RollbackAuthority;
+mod rpc_broadcast;
 mod startup;
 mod state_root_serve;
 pub mod state_session;
@@ -80,7 +88,6 @@ use doli_core::block::BlockBuilder;
 use doli_core::consensus::{
     self, construct_vdf_input, reward_epoch, ConsensusParams, DELEGATE_REWARD_PCT, UNBONDING_PERIOD,
 };
-// WeightedRewardCalculator removed — replaced by attestation-qualified bond-weighted distribution
 use doli_core::tpop::calibration::VdfCalibrator;
 use doli_core::tpop::heartbeat::hash_chain_vdf;
 use doli_core::transaction::{RegistrationData, TxType};
@@ -130,8 +137,7 @@ pub struct Node {
     pub mempool: Arc<RwLock<Mempool>>,
     /// Network service
     pub network: Option<NetworkService>,
-    /// PeerIds of bootstrap/seed nodes — disconnected after DHT bootstrap + gossip verified.
-    /// Frees seed slots so the network scales without seed becoming a bottleneck.
+    /// Bootstrap/seed PeerIds, disconnected after DHT bootstrap + gossip verified.
     pub seed_peer_ids: Vec<network::PeerId>,
     /// Whether we've already disconnected from seeds (one-shot, don't reconnect)
     pub seeds_released: bool,
@@ -161,6 +167,7 @@ pub struct Node {
     pub last_producer_list_change: Option<Instant>,
     /// Producer discovery CRDT with cryptographic announcements
     pub producer_gset: Arc<RwLock<ProducerGSet>>,
+    pub announcement_merge_busy: Arc<AtomicBool>,
     /// Adaptive gossip controller for smart interval management
     pub adaptive_gossip: Arc<RwLock<AdaptiveGossip>>,
     /// Our current producer announcement (if we are a producer)
@@ -241,6 +248,8 @@ pub struct Node {
     /// Bounded pool of gossiped BLS attestation signatures, keyed by the
     /// attested parent hash.
     pub parent_sig_pool: ParentSignaturePool,
+    /// Seen `(attester, slot)` for the attestation relay verdict; pruned per applied block and per wall slot.
+    pub(crate) attest_seen: attestation::ingress::AttestSeen,
     /// INC-I-178 M4 gate, copied from `config.network.params()` at construction.
     /// Settable so tests can drive both sides; production never writes it.
     pub inc_i_178_attestation_bls_activation_height: u64,
@@ -394,6 +403,9 @@ pub struct Node {
     /// `run_periodic_tasks()`; refreshed only when stale (>30s).
     #[allow(clippy::type_complexity)]
     pub defi_health_cache: std::sync::Mutex<Option<((u64, Option<(Hash, u64)>), Instant)>>,
+
+    /// Own-origin tx budget consulted before an RPC broadcast (INC-I-237 AUDIT-P2-511).
+    pub origin_tx_bucket: Arc<std::sync::Mutex<network::rate_limit::TokenBucket>>,
 }
 
 /// INC-I-055: Number of health samples to track in the rolling window.

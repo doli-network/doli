@@ -1089,7 +1089,7 @@ cp -r data_dir/checkpoints/h{HEIGHT}-{TS}/blocks data_dir/blocks
 
 **Cause:** Gossip messages on un-gated topics (attestations, heartbeats, headers, votes, transactions) were `Accept`ed by default and re-forwarded. Once libp2p's 60s duplicate cache expired, a re-delivered copy (age 60–120s) passed the dedup check and was re-forwarded to the whole mesh — a self-amplifying duplicate re-forward storm. Attestations, being the most frequent message, were the leading source.
 
-**Resolution:** Fixed by the INC-I-142 unified gossip staleness/dedup gate (`v > 6.23.10`). All five topics now route through `classify_gossip()` (`crates/network/src/gossip/staleness.rs`), which applies a PRIMARY raw-bytes identity dedup — `blake3(topic_discriminant || raw_message_bytes)` against a 180s bounded `SeenCache` — that closes the 60–120s re-delivery window independent of libp2p's duplicate cache, plus a SECONDARY generous age filter. The change is node-local (no activation height, rolling-safe). Upgrade all nodes to a build past v6.23.10. Since INC-I-237, tx batches are also never mesh-forwarded: a node re-publishes only the txs its mempool accepts.
+**Resolution:** Fixed by INC-I-142 (`v > 6.23.10`) and replaced by INC-I-237. Re-delivered copies are now dropped by the gossipsub duplicate cache before the application sees them: the message id is BLAKE3 over the raw bytes and the cache keeps it for 300 s (`GOSSIP_DUPLICATE_CACHE_TIME`), which closes the 60–120 s re-delivery window. A generous age filter (attestations 12 slots, votes 7 days, blocks 6 slots) still drops old messages. Since INC-I-237 only blocks are forwarded before the node judges them; every other topic is forwarded only on the node's own verdict, on the original message id, and the node never re-publishes received content (see 4.7). The change is node-local (no activation height, rolling-safe).
 
 ---
 
@@ -1100,6 +1100,39 @@ cp -r data_dir/checkpoints/h{HEIGHT}-{TS}/blocks data_dir/blocks
 **Cause:** The node finalized one branch of a genuine sibling fork (`finality == local_tip`), so a depth-1 rollback target (`local_height − 1`) is below finality and the INV-SYNC-008 guard correctly refuses it. Pre-fix the recovery coordinator then returned `RecoveryAction::None` and re-evaluated the same unchanged state every tick — a hot refusal livelock that could not fetch the competing sibling.
 
 **Resolution:** Fixed by INC-I-143 (D4). The coordinator now emits a non-destructive `RecoveryAction::SiblingFetch { height: local_tip }` instead of `None` — a `GetBlockByHeight` request to up to 3 top peers, logged as `[FINALITY_GUARD] … INC-I-143 non-destructive SiblingFetch attempt N/3`. The fetched sibling flows through normal block handling where the wedge-escape re-evaluates it via `plan_reorg`. It is bounded to 3 consecutive attempts (~90s at the 30s cooldown), then falls through to standard escalation. If you see a handful of SiblingFetch lines followed by recovery, that is the fix working; the finality guard's strict `<` is UNCHANGED (it never rolls back below finality). Upgrade to a build carrying INC-I-143.
+
+---
+
+### 4.7. Gossip Relay Verdicts (INC-I-237)
+
+**Background:** Since INC-I-237 a node forwards a tx, attestation, vote or producer batch only after its own node loop has judged it (`Accept`), and it reports that verdict on the original message id. A verdict later than 3.5 s after receipt is counted in `doli_gossip_verdict_late_total{topic}` and never reported, so that hop does not forward the message. Blocks are still forwarded before the node judges them. Rules: `specs/protocol.md` §7.2.
+
+**Diagnose:** run the probe against the node's Prometheus endpoint (default `http://127.0.0.1:9000/metrics`):
+
+```bash
+scripts/inc-i-237-m0-latency-probe.sh                         # default URL
+scripts/inc-i-237-m0-latency-probe.sh http://127.0.0.1:9001/metrics
+scripts/inc-i-237-m0-latency-probe.sh --file saved-metrics.prom
+```
+
+Exit code 2 means the URL or file could not be read. Read the lines:
+
+| Line | Meaning |
+|------|---------|
+| `topic=<t> count=<n> p50=<s> p99=<s> le2s=<f>` | receive → node-handler-done latency per topic; `le2s` = share of messages handled within 2 s |
+| `GATE verdict_p99_max=<s> PASS\|FAIL (<= 2s)` | worst per-topic p99; `FAIL` = some topic's p99 is above 2 s, close to the 3.5 s verdict deadline |
+| `verdict_late total=<n> <topic>=<n>` | verdicts that missed the 3.5 s deadline (`doli_gossip_verdict_late_total`) |
+| `verdict_dropped total=<n> <topic>=<n>` | verdicts refused by a full swarm command channel; the message expires unreported and this hop does not forward it (`doli_gossip_verdict_dropped_total`) |
+| `received total=<n> <topic>=<n>` | gossip events the node handled (`doli_gossip_events_received_total`) |
+| `channel lane=<l> depth=<n> inflight_bytes=<n> budget_bytes=<n> shed=<n>` | per lane (`consensus`, `bulk`, `backlog`): events queued, bytes queued, byte budget, events dropped since start |
+| `channel shed topic=<t> n=<n>` | gossip events refused by a full lane, per topic |
+| `channel control_dropped=<n>` | control events (peer/status/sync) dropped because the backlog was full |
+
+**What the numbers mean:**
+- **`verdict_late` rising:** this node's loop takes longer than 3.5 s to judge some messages (epoch boundary apply, integrity scans, catch-up after a restart). This hop does not forward those messages. A message is not lost if another hop forwards it; it is lost only when every hop is late at the same time. Look for what stalls the node loop at those times.
+- **Bulk-lane `shed` or `channel shed topic=txs|votes|producers` rising:** the bulk lane was full, so those messages were dropped and reported `Ignore` (not forwarded by this hop) under load. A dropped tx is not lost if another hop forwards it.
+- **Consensus-lane `shed` or `channel shed topic=blocks|attestations` rising:** blocks or attestations were dropped at this node. Dropped blocks come back through sync; check that the node keeps up.
+- **`control_dropped` non-zero:** peer, status or sync events were dropped because the control backlog held 8,192 events (or 64 MiB of status/sync payload). The node's view of its peers or a sync response can then be stale. This is open item F-12 (no fix yet); record the value and the time.
 
 ---
 

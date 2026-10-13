@@ -52,7 +52,9 @@ impl RpcContext {
         let vote_data = serde_json::to_vec(&params.vote)
             .map_err(|e| RpcError::internal_error(format!("Failed to serialize vote: {}", e)))?;
 
-        (self.broadcast_vote)(vote_data);
+        if !(self.broadcast_vote)(vote_data) {
+            return Err(RpcError::broadcast_busy());
+        }
 
         Ok(serde_json::json!({
             "status": "submitted",
@@ -276,15 +278,18 @@ impl RpcContext {
             chain_state.best_height
         };
 
+        let permit = (self.broadcast_tx)().ok_or_else(RpcError::broadcast_busy)?;
         // Submit to mempool (maintainer txs are state-only, no UTXO inputs).
-        // The lock is scoped so it is released before the broadcast below,
-        // mirroring `submit_transaction` (transaction.rs).
-        {
-            let mut mempool = self.mempool.write().await;
-            mempool
-                .add_system_transaction(tx.clone(), current_height)
-                .map_err(|e| RpcError::internal_error(format!("mempool error: {}", e)))?;
-        }
+        mempool::zero_flow_mined::admit_zero_flow(
+            &self.mempool,
+            tx.clone(),
+            current_height,
+            self.maintainer_state.as_ref(),
+            self.producer_set.as_ref(),
+            &self.block_store,
+        )
+        .await
+        .map_err(Self::mempool_error_to_rpc)?;
 
         // INC-I-195 — RELAY. Without this the transaction never leaves the node
         // that received the RPC, so any non-producer endpoint accepts it and
@@ -295,14 +300,9 @@ impl RpcContext {
         // seed, set unchanged ~36 blocks later; the same transactions applied
         // in 4-5 blocks each against a producer).
         //
-        // Relaying is safe on the receiving side because a maintainer change is
-        // 0-in/0-out: `handle_new_transaction`
-        // (`bins/node/src/node/validation_checks.rs:1253-1259`) routes
-        // `is_zero_flow()` transactions to the SAME `add_system_transaction`
-        // lane this handler used. No new admission rule is introduced, and this
-        // is transport only — it changes no consensus rule and no block
-        // content, so it needs no activation height.
-        (self.broadcast_tx)(tx);
+        // The receiving side (`Node::handle_new_transaction`) re-runs the same zero-flow
+        // admission (`admit_zero_flow`) before it relays (INC-I-237 M8).
+        permit(tx);
 
         Ok(serde_json::json!({
             "status": "accepted",

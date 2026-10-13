@@ -114,9 +114,9 @@ async fn builder_drops_counterfeit_fa_transfer() {
     let (bad_h, control_h) = (bad.hash(), control.hash());
     {
         let mut mp = node.mempool.write().await;
-        mp.add_system_transaction(bad, HEIGHT)
+        mp.add_system_transaction(bad, HEIGHT, None)
             .expect("fixture: system lane admits the counterfeit (stateless-valid)");
-        mp.add_system_transaction(control, HEIGHT)
+        mp.add_system_transaction(control, HEIGHT, None)
             .expect("fixture: system lane admits the control");
     }
     let our_pubkey = *kp.public_key();
@@ -255,9 +255,9 @@ async fn builder_drops_w1_pool_output_transfer_admitted_below_ah() {
             node.params.clone(),
             Network::Testnet,
         );
-        mp.add_system_transaction(bad, testnet_ah - 1)
+        mp.add_system_transaction(bad, testnet_ah - 1, None)
             .expect("fixture: below-AH admission accepts the W1 Transfer");
-        mp.add_system_transaction(control, testnet_ah - 1)
+        mp.add_system_transaction(control, testnet_ah - 1, None)
             .expect("fixture: below-AH admission accepts the control");
     }
     let our_pubkey = *kp.public_key();

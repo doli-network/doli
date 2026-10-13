@@ -48,6 +48,7 @@ base64.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 futures.workspace = true
+libp2p.workspace = true
 
 [package.metadata.deb]
 name = "doli"
@@ -127,3 +128,10 @@ path = "tests/m4_install_peak_probe.rs"
 [[test]]
 name = "m4_peak_ratio_red"
 path = "tests/m4_peak_ratio_red.rs"
+
+# INC-I-237 M5 (F-13 soak) — its OWN test binary on purpose, same constraint as
+# m1_snap_install_peak_alloc: the file installs a counting `#[global_allocator]`
+# (per-BINARY) to measure retained heap under a sustained flood.
+[[test]]
+name = "inc_i_237_m5_soak"
+path = "tests/inc_i_237_m5_soak.rs"

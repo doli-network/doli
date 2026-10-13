@@ -74,7 +74,7 @@ pub mod types;
 pub mod ws;
 
 pub use error::RpcError;
-pub use methods::{RpcContext, SyncStatus};
+pub use methods::{RpcContext, SyncStatus, TxBroadcastPermit};
 pub use server::{RpcServer, RpcServerConfig};
 pub use types::PeerInfoEntry;
 pub use ws::WsEvent;

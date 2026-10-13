@@ -13,6 +13,9 @@ use network::SyncManager;
 use storage::{BlockStore, ChainState, ProducerSet, StateDb, UtxoSet};
 
 use crate::error::RpcError;
+
+/// A reserved node->swarm command slot. Calling it broadcasts; dropping it frees the slot.
+pub type TxBroadcastPermit = Box<dyn FnOnce(Transaction) + Send>;
 use crate::types::PeerInfoEntry;
 use mempool::Mempool;
 
@@ -65,12 +68,12 @@ pub struct RpcContext {
     pub peer_count: Arc<dyn Fn() -> usize + Send + Sync>,
     /// Peer list function (returns detailed peer info)
     pub peer_list: Arc<dyn Fn() -> Vec<PeerInfoEntry> + Send + Sync>,
-    /// Broadcast transaction function
-    pub broadcast_tx: Arc<dyn Fn(Transaction) + Send + Sync>,
+    /// Reserve a tx broadcast slot before mempool admission; `None` = Busy
+    pub broadcast_tx: Arc<dyn Fn() -> Option<TxBroadcastPermit> + Send + Sync>,
     /// Sync status function
     pub sync_status: Arc<dyn Fn() -> SyncStatus + Send + Sync>,
-    /// Broadcast vote function (for governance veto system)
-    pub broadcast_vote: Arc<dyn Fn(Vec<u8>) + Send + Sync>,
+    /// Broadcast vote function (governance veto system); `false` = Busy
+    pub broadcast_vote: Arc<dyn Fn(Vec<u8>) -> bool + Send + Sync>,
     /// Update status callback (reads live state from UpdateService)
     pub update_status: Arc<dyn Fn() -> Value + Send + Sync>,
     /// On-chain maintainer set (shared with Node — bootstrapped from first 5 producers,
@@ -141,9 +144,9 @@ impl RpcContext {
             peer_id: "unknown".to_string(),
             peer_count: Arc::new(|| 0),
             peer_list: Arc::new(std::vec::Vec::new),
-            broadcast_tx: Arc::new(|_| {}),
+            broadcast_tx: Arc::new(|| Some(Box::new(|_| {}) as TxBroadcastPermit)),
             sync_status: Arc::new(SyncStatus::default),
-            broadcast_vote: Arc::new(|_| {}),
+            broadcast_vote: Arc::new(|_| true),
             update_status: Arc::new(|| {
                 serde_json::json!({
                     "pending_update": null,
@@ -208,9 +211,9 @@ impl RpcContext {
                 peer_id: "unknown".to_string(),
                 peer_count: Arc::new(|| 0),
                 peer_list: Arc::new(std::vec::Vec::new),
-                broadcast_tx: Arc::new(|_| {}),
+                broadcast_tx: Arc::new(|| Some(Box::new(|_| {}) as TxBroadcastPermit)),
                 sync_status: Arc::new(SyncStatus::default),
-                broadcast_vote: Arc::new(|_| {}),
+                broadcast_vote: Arc::new(|_| true),
                 update_status: Arc::new(|| {
                     serde_json::json!({
                         "pending_update": null,
@@ -267,8 +270,11 @@ impl RpcContext {
         self
     }
 
-    /// Set broadcast callback
-    pub fn with_broadcast(mut self, f: impl Fn(Transaction) + Send + Sync + 'static) -> Self {
+    /// Set the tx broadcast reservation hook
+    pub fn with_broadcast(
+        mut self,
+        f: impl Fn() -> Option<TxBroadcastPermit> + Send + Sync + 'static,
+    ) -> Self {
         self.broadcast_tx = Arc::new(f);
         self
     }
@@ -316,7 +322,10 @@ impl RpcContext {
     }
 
     /// Set broadcast vote callback (for governance veto system)
-    pub fn with_broadcast_vote(mut self, f: impl Fn(Vec<u8>) + Send + Sync + 'static) -> Self {
+    pub fn with_broadcast_vote(
+        mut self,
+        f: impl Fn(Vec<u8>) -> bool + Send + Sync + 'static,
+    ) -> Self {
         self.broadcast_vote = Arc::new(f);
         self
     }

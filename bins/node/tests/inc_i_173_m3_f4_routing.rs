@@ -159,6 +159,7 @@ fn audit_p3_002_is_state_only_no_longer_exists() {
 /// `crates/rpc/src/methods/transaction.rs:203` decides whether a
 /// client-submitted transaction takes the 0-fee system lane. It is the
 /// user-reachable half of the routing decision.
+// REQ-GRV-042 — Decision: a failure means the M12 change moved the RPC submit routing off the shape predicate, so client-sent txs carrying outputs could reach the 0-fee lane.
 #[test]
 fn audit_p3_002_rpc_send_transaction_routes_on_is_zero_flow() {
     assert_eq!(
@@ -183,6 +184,7 @@ fn audit_p3_002_rpc_send_transaction_routes_on_is_zero_flow() {
 /// decides how a transaction arriving over gossip is admitted. Both callers must
 /// move together — one migrated and one not is a routing split between the RPC
 /// and gossip entry points for the same transaction.
+// REQ-GRV-042 — Decision: a failure means the M12 change moved gossip routing off the shape predicate, splitting peer and RPC entry points for one tx.
 #[test]
 fn audit_p3_002_node_gossip_admission_routes_on_is_zero_flow() {
     assert_eq!(

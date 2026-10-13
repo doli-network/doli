@@ -44,6 +44,10 @@ pub(crate) struct TimeCache<Key, Value> {
     list: VecDeque<ExpiringElement<Key>>,
     /// The time elements remain in the cache.
     ttl: Duration,
+    // DOLI INC-I-237: largest `map.capacity()` read; tombstones hide allocated slots (M7.1).
+    map_capacity_hwm: usize,
+    // DOLI INC-I-237: count cap, oldest-first eviction; `usize::MAX` = uncapped (M7.2).
+    max_entries: usize,
 }
 
 pub(crate) struct OccupiedEntry<'a, K, V> {
@@ -113,6 +117,33 @@ where
             map: FnvHashMap::default(),
             list: VecDeque::new(),
             ttl,
+            map_capacity_hwm: 0,
+            max_entries: usize::MAX,
+        }
+    }
+
+    // DOLI INC-I-237: count-capped cache (M7.2); allocates nothing until the first insert.
+    pub(crate) fn new_capped(ttl: Duration, max_entries: usize) -> Self {
+        TimeCache {
+            max_entries,
+            ..Self::new(ttl)
+        }
+    }
+
+    // DOLI INC-I-237: evict oldest at the cap; at zero growth slack rebuild at the cap's size, never double (M7.2).
+    fn make_room(&mut self) {
+        while self.map.len() >= self.max_entries {
+            match self.list.pop_front() {
+                Some(oldest) => self.map.remove(&oldest.element),
+                None => break,
+            };
+        }
+        if self.map.len() == self.map.capacity() && self.map.len() >= self.max_entries / 2 {
+            let old = std::mem::replace(
+                &mut self.map,
+                FnvHashMap::with_capacity_and_hasher(self.max_entries, Default::default()),
+            );
+            self.map.extend(old);
         }
     }
 
@@ -132,7 +163,11 @@ where
 
     pub(crate) fn entry(&mut self, key: Key) -> Entry<Key, Value> {
         let now = Instant::now();
+        self.map_capacity_hwm = self.map_capacity_hwm.max(self.map.capacity()); // DOLI INC-I-237
         self.remove_expired_keys(now);
+        if self.max_entries != usize::MAX && !self.map.contains_key(&key) {
+            self.make_room(); // DOLI INC-I-237
+        }
         match self.map.entry(key) {
             Occupied(entry) => Entry::Occupied(OccupiedEntry { entry }),
             Vacant(entry) => Entry::Vacant(VacantEntry {
@@ -153,23 +188,74 @@ where
     pub(crate) fn contains_key(&self, key: &Key) -> bool {
         self.map.contains_key(key)
     }
+
+    // DOLI INC-I-237: M7.1 size readout, len/capacity reads only.
+    pub(crate) fn stats(&self) -> TimeCacheStats {
+        TimeCacheStats {
+            entries: self.map.len(),
+            map_capacity: self.map.capacity().max(self.map_capacity_hwm),
+            deque_capacity: self.list.capacity(),
+            map_slot_bytes: std::mem::size_of::<(Key, ExpiringElement<Value>)>(),
+            deque_slot_bytes: std::mem::size_of::<ExpiringElement<Key>>(),
+            max_entries: self.max_entries,
+        }
+    }
 }
 
-pub(crate) struct DuplicateCache<Key>(TimeCache<Key, ()>);
+// DOLI INC-I-237: M7.1 size readout of one time cache.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TimeCacheStats {
+    pub entries: usize,
+    pub map_capacity: usize,
+    pub deque_capacity: usize,
+    pub map_slot_bytes: usize,
+    pub deque_slot_bytes: usize,
+    pub max_entries: usize,
+}
+
+// DOLI INC-I-237: M7.1 sizes of the behaviour's time-bounded caches.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RetentionStats {
+    pub duplicate_cache: TimeCacheStats,
+    pub published_message_ids: TimeCacheStats,
+    pub peer_score_deliveries: TimeCacheStats,
+    pub mcache_entries: usize,
+    pub mcache_bytes: usize,
+}
+
+// DOLI INC-I-237: hashbrown table allocation for `capacity` (M7.1).
+pub(crate) fn table_bytes(capacity: usize, slot_bytes: usize) -> usize {
+    match capacity {
+        0 => 0,
+        1..=7 => (capacity + 1).next_power_of_two() * (slot_bytes + 1) + 16,
+        _ => (capacity * 8 / 7).next_power_of_two() * (slot_bytes + 1) + 16,
+    }
+}
+
+// DOLI INC-I-237: pub (was pub(crate)) so the M7.1 calibration can size it.
+#[doc(hidden)]
+pub struct DuplicateCache<Key>(TimeCache<Key, ()>);
 
 impl<Key> DuplicateCache<Key>
 where
     Key: Eq + std::hash::Hash + Clone,
 {
-    pub(crate) fn new(ttl: Duration) -> Self {
+    pub fn new(ttl: Duration) -> Self {
         Self(TimeCache::new(ttl))
+    }
+
+    // DOLI INC-I-237: count-capped duplicate cache (M7.2).
+    pub fn new_capped(ttl: Duration, max_entries: usize) -> Self {
+        Self(TimeCache::new_capped(ttl, max_entries))
     }
 
     // Inserts new elements and removes any expired elements.
     //
     // If the key was not present this returns `true`. If the value was already present this
     // returns `false`.
-    pub(crate) fn insert(&mut self, key: Key) -> bool {
+    pub fn insert(&mut self, key: Key) -> bool {
         if let Entry::Vacant(entry) = self.0.entry(key) {
             entry.insert(());
             true
@@ -180,6 +266,11 @@ where
 
     pub(crate) fn contains(&self, key: &Key) -> bool {
         self.0.contains_key(key)
+    }
+
+    // DOLI INC-I-237: M7.1 size readout.
+    pub fn stats(&self) -> TimeCacheStats {
+        self.0.stats()
     }
 }
 

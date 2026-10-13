@@ -500,9 +500,9 @@ async fn req_fork_002_f_the_purge_takes_the_blocks_txs_and_spares_the_honest_one
     let honest = toxic_tx(b"t5-honest");
     {
         let mut mp = s.node.mempool.write().await;
-        mp.add_system_transaction(toxic.clone(), TIP)
+        mp.add_system_transaction(toxic.clone(), TIP, None)
             .expect("fixture: the toxic tx must be in the mempool");
-        mp.add_system_transaction(honest.clone(), TIP)
+        mp.add_system_transaction(honest.clone(), TIP, None)
             .expect("fixture: the honest tx must be in the mempool");
     }
     let (block, err) = poisoned_self_apply(&mut s, vec![toxic.clone()]).await;
@@ -545,9 +545,9 @@ async fn req_fork_002_g_the_purge_runs_on_the_refused_no_mutation_path_too() {
     let honest = toxic_tx(b"t5b-honest");
     {
         let mut mp = s.node.mempool.write().await;
-        mp.add_system_transaction(toxic.clone(), TIP)
+        mp.add_system_transaction(toxic.clone(), TIP, None)
             .expect("fixture: toxic in mempool");
-        mp.add_system_transaction(honest.clone(), TIP)
+        mp.add_system_transaction(honest.clone(), TIP, None)
             .expect("fixture: honest in mempool");
     }
     let (block, err) = poisoned_self_apply(&mut s, vec![toxic.clone()]).await;
@@ -592,9 +592,9 @@ async fn req_fork_002_h_the_purge_runs_even_when_the_rollback_errors() {
     let honest = toxic_tx(b"t5c-honest");
     {
         let mut mp = s.node.mempool.write().await;
-        mp.add_system_transaction(toxic.clone(), TIP)
+        mp.add_system_transaction(toxic.clone(), TIP, None)
             .expect("fixture: toxic in mempool");
-        mp.add_system_transaction(honest.clone(), TIP)
+        mp.add_system_transaction(honest.clone(), TIP, None)
             .expect("fixture: honest in mempool");
     }
     let (block, err) = poisoned_self_apply(&mut s, vec![toxic.clone()]).await;

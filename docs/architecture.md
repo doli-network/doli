@@ -281,7 +281,7 @@ Existing gates (mainnet values):
 | `service/` | Main network service |
 | `behaviour.rs` | libp2p behaviour composition |
 | `config.rs` | Network configuration |
-| `gossip/` | GossipSub management (`mod.rs`, `publish.rs`, `config.rs`) |
+| `gossip/` | GossipSub management (`mod.rs`, `publish.rs`, `config.rs`; `relay_decision.rs` = the per-topic relay table, `staleness.rs` = age bounds) |
 | `sync/` | Chain synchronization (sync manager state machine) |
 | `discovery.rs` | Kademlia DHT |
 | `scoring.rs` | Peer reputation |
@@ -298,6 +298,62 @@ Existing gates (mainnet values):
 - Kademlia DHT for peer discovery (60s bootstrap interval)
 - Request-response for sync
 - Identify for peer address exchange
+
+**Gossip relay seam (INC-I-237):** one path per message, swarm task → node task → swarm task. Full rules: `specs/protocol.md` §7.2.
+
+```
+peer ─► gossipsub (dup cache 300 s, id = BLAKE3(raw)[..20]) ─► mcache (held, validate_messages)
+     ─► relay_decision (gossip/relay_decision.rs; exhaustive RelayTopic match, no wildcard)
+          blocks: AcceptNow  → report Accept now (after the per-peer bucket for non-candidates)
+          txs / attestations / votes / producer batches: Defer → no report yet
+            (tx bucket charged per tx: 500/s burst 2,000 per peer, 1,000/s burst 4,000 global;
+             own RPC txs: origin_tx_bucket 500/s burst 2,000, empty → Busy)
+          tx announce, digest, legacy producer list: LocalOnly → report Ignore, process
+          everything else: Ignore (undecodable block bytes: Reject)
+     ─► EventSink (service/event_sink.rs; never awaits)
+          consensus lane: blocks, attestations, control events     (64 MiB + count bound)
+                          attestations stop 256 slots / 8 MiB short of the bound (block headroom)
+          bulk lane:      txs, votes, producer announcements/digests (16 MiB + count bound)
+          control backlog: FIFO, 8,192 events (status/sync ≤ 64 MiB), drained into the consensus lane
+     ─► EventLanes::recv (service/event_lanes.rs; biased, consensus lane first)
+     ─► node handler returns Verdict (Accept | Ignore)
+          (bins/node/src/node/gossip_verdicts.rs, validation_checks/gossip_txs.rs)
+     ─► send_gossip_verdict → NetworkCommand::GossipVerdict (try_send, service/verdict.rs)
+     ─► swarm reports on the ORIGINAL message id if ≤ 3.5 s after receipt; later = counted, never reported
+     ─► gossipsub forwards the original bytes to the mesh on Accept
+```
+
+A gossip event that does not fit its lane is shed and counted; a shed Deferred message is reported `Ignore` at the drop. The node never re-publishes received content; each own-origin tx goes out once as one legacy single-tx message. `NetworkService::new` refuses to start unless the lane budgets are bounded (`LaneBudgets::is_bounded`, INV-NETWORK-002).
+
+**Command channel ceiling (REQ-GRV-007):** the node → swarm command channel (`NetworkCommand`, `service/mod.rs`) is bounded by count: `(max_peers * 4).clamp(2048, 32768)` items. Its largest item is `SendSyncResponse` (≤ 16 MiB, `MAX_SYNC_SIZE`); `BroadcastBlock` is ≤ `BASE_BLOCK_SIZE` 2,000,000 B. Theoretical ceiling = count x largest item = 2,048 x 16 MiB = 32 GiB at `max_peers` 50. Realistic ≈ the in-flight sync responses (request-paced: the node serves at most 24 inbound sync requests per production-check interval, node-wide — `MAX_SYNC_REQUESTS_PER_INTERVAL`, 1 s; 200 ms on devnet; the 10/s per-peer bucket governs OUTBOUND requests) + ≤ 1 own block per slot. The count bound is the enforced one.
+
+**Gossip receive/verdict metrics (INC-I-237 M0, observation only):** the swarm stamps every gossipsub message once at receive (`service/gossip_handle.rs::GossipHandle`) and clones the stamp into each event the message produces (a tx message is ONE event, and its handle also names the original message id the node's verdict is reported on — INC-I-237 M2); `NetworkEvent::gossip_topic()` / `gossip_handle()` map gossip variants to a topic. `gossip/tx_batch_stats.rs` counts received tx batch sizes in plain atomics. The node (`bins/node/src/metrics_gossip.rs`) observes after `handle_network_event` returns (Ok or Err) and exports:
+
+| Series | Type | Labels | Emitted where |
+|--------|------|--------|---------------|
+| `doli_gossip_verdict_latency_seconds` | histogram | `topic` (blocks, txs, attestations, votes, producers) | receive stamp → handler done |
+| `doli_gossip_events_received_total` | counter | `topic` (blocks, txs, attestations, votes, producers) | every gossip event the node handles |
+| `doli_gossip_block_recv_latency_seconds` | histogram | — | wall receive time − block header timestamp, saturating at 0 |
+| `doli_attestation_coverage_ratio` | histogram | — | attesting indices / decode universe at `[ATTEST_DECODE]` (`apply_block/post_commit.rs`); skipped for an empty universe |
+| `doli_gossip_tx_batch_messages_total` | counter | `size` (1, 2_5, 6_10, 11_25, 26_50, 51_100, 101_plus) | delta-scraped from `TX_GOSSIP_BATCH_STATS` on each `/metrics` request |
+| `doli_gossip_tx_batch_txs_total` | counter | — | same scrape |
+| `doli_gossip_verdict_late_total` | counter | `topic` (blocks, txs, attestations, votes, producers) | scraped from `network::service::LATE_VERDICTS`: node verdicts later than 3.5 s after receipt (counted, never reported) |
+| `doli_gossip_verdict_dropped_total` | counter | `topic` (blocks, txs, attestations, votes, producers) | scraped from `network::service::DROPPED_VERDICTS`: node verdicts refused by a full or closed swarm command channel (never reported; the message expires un-forwarded) |
+| `doli_event_lane_budget_bytes` | gauge | `lane` (consensus, bulk, backlog) | `LaneBudgets` byte bound of each lane and of the control backlog |
+| `doli_event_lane_inflight_bytes` | gauge | `lane` (consensus, bulk, backlog) | bytes queued now (`LaneStats::snapshot`) |
+| `doli_event_lane_depth` | gauge | `lane` (consensus, bulk, backlog) | events queued now (lane `consensus_len` / `bulk_len`, backlog length) |
+| `doli_event_lane_shed_total` | gauge | `lane` (consensus, bulk, backlog) | events dropped since start; `backlog` = control events dropped (`control_dropped`) |
+| `doli_event_shed_by_topic_total` | counter | `topic` (blocks, txs, attestations, votes, producers) | gossip events refused by a full lane, raised to the lanes' monotone count |
+| `doli_gossip_duplicate_cache_entries` | gauge | — | message ids in the node's gossipsub duplicate cache (INC-I-237 M7.1); the swarm stores `NetworkService::retention()` every 100 ms, the scrape copies its `duplicate_cache.entries` |
+
+The lane series are refreshed on each `/metrics` request (`scrape_for_exposition` → `observe_event_lanes`). Reader: `scripts/inc-i-237-m0-latency-probe.sh [--series-count] [--file PATH | URL]` prints per-topic p50/p99, a `verdict_late total=<n> <topic>=<n>…` line, a `received total=<n> <topic>=<n>…` line, the channel lines below and a `GATE` line (p99 ≤ 2 s):
+
+```
+channel lane=<l> depth=<n> inflight_bytes=<n> budget_bytes=<n> shed=<n>   (one per lane)
+channel shed topic=<t> n=<n>                                             (one per topic series)
+channel control_dropped=<n>                                              (doli_event_lane_shed_total{lane="backlog"})
+dup_cache entries=<n>|absent                                             (doli_gossip_duplicate_cache_entries; absent = pre-M7.1 binary)
+```
 
 **Connection model (two-tier):**
 - **Application layer** (`max_peers`): Tracks scored peers. When full, evicts lowest gossipsub-scored peer. Producers keep slots (high P2 score from first-message delivery).
@@ -521,9 +577,9 @@ User/Wallet
 │ Mempool │ ◄─── verify against UTXO set
 └───┬─────┘
     │
-    ▼ broadcast
+    ▼ broadcast (one legacy single-tx message per tx)
 ┌─────────┐
-│ Network │ ──► GossipSub /doli/txs/1 ──► Peers
+│ Network │ ──► GossipSub /doli/txs/1 ──► Peers (forward only on their node's Accept)
 └─────────┘
     │
     ▼ (when selected as producer)
@@ -873,6 +929,11 @@ Attester (a ProducerSet member) dual-signs the block it saw:
         pre-BLS attestations — the mixed-fleet bridge.
    │
    ▼ gossip
+Relay verdict (`bins/node/src/node/gossip_verdicts.rs`, INC-I-237 M3): forwarded
+  iff decode + Ed25519 + ProducerSet member (pending activation included); block
+  knowledge and BLS never decide the relay; [ATTEST_FETCH] only for members,
+  at most 8 GetBlockByHash per periodic tick.
+   │
 Ingress (`bins/node/src/node/attestation/ingress.rs`)
   1. Attendance is recorded FIRST and is Ed25519-authenticated: a ProducerSet
      member attends whatever the BLS verdict is, and regardless of weight

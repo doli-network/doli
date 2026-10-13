@@ -11,14 +11,25 @@ use super::helpers::{
     purge_non_routable_dht_addresses, strip_p2p_suffix,
 };
 use super::types::{NetworkCommand, NetworkEvent};
+use super::GossipHandle;
+
+mod inc_i_237_m15_budgets;
+mod inc_i_237_m15_dev_paths;
+mod inc_i_237_m15_fixtures;
+mod inc_i_237_m15_lanes;
+mod inc_i_237_m2_verdict;
+mod inc_i_237_m4_lane_depth;
+mod inc_i_237_m5_attest_budget;
+mod inc_i_237_m5_block_headroom;
+mod inc_i_237_m5_tx_budget;
 
 #[test]
 fn test_network_event_announcement_type() {
     let keypair = KeyPair::generate();
     let ann = ProducerAnnouncement::new(&keypair, 1, 0, Hash::ZERO);
-    let event = NetworkEvent::ProducerAnnouncementsReceived(vec![ann.clone()]);
+    let event = NetworkEvent::ProducerAnnouncementsReceived(vec![ann.clone()], GossipHandle::now());
 
-    if let NetworkEvent::ProducerAnnouncementsReceived(anns) = event {
+    if let NetworkEvent::ProducerAnnouncementsReceived(anns, _) = event {
         assert_eq!(anns.len(), 1);
         assert!(anns[0].verify());
     } else {
@@ -30,9 +41,9 @@ fn test_network_event_announcement_type() {
 fn test_network_event_legacy_producers() {
     let keypair = KeyPair::generate();
     let pubkey = *keypair.public_key();
-    let event = NetworkEvent::ProducersAnnounced(vec![pubkey]);
+    let event = NetworkEvent::ProducersAnnounced(vec![pubkey], GossipHandle::now());
 
-    if let NetworkEvent::ProducersAnnounced(pubkeys) = event {
+    if let NetworkEvent::ProducersAnnounced(pubkeys, _) = event {
         assert_eq!(pubkeys.len(), 1);
         assert_eq!(pubkeys[0], pubkey);
     } else {
@@ -47,11 +58,13 @@ fn test_network_event_digest_received() {
     let event = NetworkEvent::ProducerDigestReceived {
         peer_id,
         digest: bloom.clone(),
+        handle: GossipHandle::now(),
     };
 
     if let NetworkEvent::ProducerDigestReceived {
         peer_id: pid,
         digest,
+        ..
     } = event
     {
         assert_eq!(pid, peer_id);

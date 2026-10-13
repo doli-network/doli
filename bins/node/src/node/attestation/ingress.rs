@@ -10,6 +10,8 @@ use crypto::{bls_verify, BlsPublicKey, BlsSignature, BLS_SIGNATURE_SIZE};
 use doli_core::attestation::bls_attest_msg;
 
 use crate::metrics::{ATTESTATION_BLS_VALID_BY_ATTESTER, ATTESTATION_BLS_VALID_TOTAL};
+use network::gossip::staleness::ATTEST_STALE_SLOTS;
+use std::collections::hash_map::Entry;
 
 /// Outcome of checking the BLS half of one attestation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,7 +26,68 @@ pub(crate) enum BlsAttestVerdict {
     Invalid,
 }
 
+/// Seen `(attester, slot)` keys behind the attestation relay verdict (AUDIT-P1-506),
+/// each with whether a copy carrying a valid BLS half was forwarded.
+#[derive(Debug, Default)]
+pub(crate) struct AttestSeen {
+    seen: HashMap<(PublicKey, u32), bool>,
+    wall: Option<u32>,
+}
+
+impl AttestSeen {
+    /// Relay decision for one copy, recorded: `true` iff `key` is first seen, or
+    /// `bls_valid` and no valid BLS half was forwarded for `key` yet.
+    pub(crate) fn admit(&mut self, key: (PublicKey, u32), bls_valid: bool) -> bool {
+        match self.seen.entry(key) {
+            Entry::Vacant(e) => {
+                e.insert(bls_valid);
+                true
+            }
+            Entry::Occupied(mut e) if bls_valid && !*e.get() => {
+                e.insert(true);
+                true
+            }
+            Entry::Occupied(_) => false,
+        }
+    }
+
+    /// `true` iff `key` was seen and no valid BLS half was forwarded for it yet.
+    pub(crate) fn awaits_bls(&self, key: &(PublicKey, u32)) -> bool {
+        self.seen.get(key) == Some(&false)
+    }
+
+    /// Keep slots `>= best_slot - ATTEST_STALE_SLOTS`, the swarm's attestation age bound.
+    pub(crate) fn prune(&mut self, best_slot: u32) {
+        let floor = best_slot.saturating_sub(ATTEST_STALE_SLOTS);
+        self.seen.retain(|&(_, slot), _| slot >= floor);
+    }
+
+    /// `prune(wall_slot)`, at most once per wall-slot change (REQ-GRV-024).
+    pub(crate) fn prune_wall(&mut self, wall_slot: u32) {
+        if self.wall != Some(wall_slot) {
+            self.wall = Some(wall_slot);
+            self.prune(wall_slot);
+        }
+    }
+
+    /// `true` iff `key` was not in the set.
+    #[cfg(test)]
+    pub(crate) fn insert(&mut self, key: (PublicKey, u32)) -> bool {
+        self.admit(key, false)
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.seen.len()
+    }
+}
+
 impl Node {
+    /// Entries in the attestation relay's seen set (read by the soak harness).
+    #[allow(dead_code)]
+    pub fn attest_seen_len(&self) -> usize {
+        self.attest_seen.len()
+    }
+
     /// Derive an attester's authority from the LOCAL ProducerSet (Seam A, [F1]).
     /// `None` = not a producer-set member (reject; never trust the wire's
     /// self-declared weight). `Some(w)` = member with locally-derived selection
@@ -48,7 +111,8 @@ impl Node {
     }
 
     /// Admit one Ed25519-verified attestation: membership, then attendance, then the
-    /// BLS verdict. Returns the locally derived weight, or `None` for a non-member.
+    /// BLS verdict. Returns the locally derived weight and whether the BLS half is
+    /// valid (verified now or already pooled), or `None` for a non-member.
     ///
     /// `height` is the height authority is derived at — the attested block's height at
     /// the gossip ingress, the local tip at the direct one.
@@ -57,7 +121,7 @@ impl Node {
         att: &Attestation,
         height: u64,
         source_peer: PeerId,
-    ) -> Option<u64> {
+    ) -> Option<(u64, bool)> {
         let derived = {
             let producers = self.producer_set.read().await;
             self.derive_attester_weight(&producers, &att.attester, height)
@@ -82,12 +146,13 @@ impl Node {
         self.minute_tracker
             .record(att.attester, attestation_minute(att.slot));
 
-        match self.bls_verdict(att, &onchain_bls_key) {
+        let verdict = self.bls_verdict(att, &onchain_bls_key);
+        match verdict {
             BlsAttestVerdict::Valid(sig) => {
-                if self
+                let newly_pooled = self
                     .parent_sig_pool
-                    .insert(att.block_hash, att.attester, sig)
-                {
+                    .insert(att.block_hash, att.attester, sig);
+                if newly_pooled {
                     let attester_hex = att.attester.to_hex();
                     let attester = &attester_hex[..8];
                     ATTESTATION_BLS_VALID_TOTAL.inc();
@@ -122,7 +187,23 @@ impl Node {
             BlsAttestVerdict::Empty | BlsAttestVerdict::NoKey => {}
         }
 
-        Some(weight)
+        Some((weight, matches!(verdict, BlsAttestVerdict::Valid(_))))
+    }
+
+    /// Relay-only BLS check against the attester's on-chain key: no pooling,
+    /// attendance or scoring.
+    pub(crate) async fn relay_bls_valid(&self, att: &Attestation) -> bool {
+        let onchain_bls_key = self
+            .producer_set
+            .read()
+            .await
+            .get_by_pubkey(&att.attester)
+            .map(|p| p.bls_pubkey.clone())
+            .unwrap_or_default();
+        matches!(
+            self.bls_verdict(att, &onchain_bls_key),
+            BlsAttestVerdict::Valid(_)
+        )
     }
 
     /// Check the BLS half against the attester's on-chain key. Never mutates.

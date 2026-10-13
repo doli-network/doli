@@ -537,7 +537,7 @@ async fn test_recovery_preserves_mempool() {
         for i in 0..10u64 {
             let dummy_hash = crypto::hash::hash(&i.to_le_bytes());
             let tx = Transaction::new_coinbase(1, dummy_hash, 999 + i, 0);
-            let _ = mempool.add_system_transaction(tx, 10);
+            let _ = mempool.add_system_transaction(tx, 10, None);
         }
     }
     let mempool_after_add = node.mempool.read().await.len();

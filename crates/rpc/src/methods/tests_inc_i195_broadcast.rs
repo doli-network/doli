@@ -5,8 +5,11 @@
 //! transaction never left the node that received the RPC. The ordinary
 //! transaction path (`transaction.rs`) routes the same 0-in/0-out shape to the
 //! system lane and THEN broadcasts; the gossip ingest path
-//! (`bins/node/src/node/validation_checks.rs:1253-1259`) admits it on the
-//! receiving side. Only the broadcast call was missing.
+//! (`Node::handle_new_transaction`) admits it on the receiving side. Only the
+//! broadcast call was missing.
+//!
+//! INC-I-237 M8: admission now verifies the CURRENT set's multisig, so P1/P2
+//! attach a 4-member set and sign the exact bytes apply verifies.
 //!
 //! MEASURED consequence (local testnet, 2026-08-29): a removal submitted to the
 //! seed (`--relay-server`, no `--producer`) answered `accepted` and the
@@ -19,8 +22,8 @@
 //!   O2: Err(invalid_params) AND `broadcast_tx` NOT called
 //! PATHS: valid add | valid remove | bad action | too few signatures
 //! INPUT PARTITIONS:
-//!   P1: action="add", 3 well-formed signatures
-//!   P2: action="remove", 3 well-formed signatures, with reason
+//!   P1: action="add", 3 member signatures over the apply-time message
+//!   P2: action="remove" of member 4 (M11: apply no-ops a non-member), 3 member signatures, with reason
 //!   P3: action="transfer" (not add/remove)
 //!   P4: action="add", 2 signatures (below MAINTAINER_THRESHOLD)
 //! MATRIX: P1→O1, P2→O1, P3→O2, P4→O2
@@ -28,10 +31,11 @@
 use std::sync::{Arc, Mutex};
 
 use super::*;
+use doli_core::maintainer::{signing_message_at, MAINTAINER_AUTH_VALID_BEFORE_UNSET};
 use doli_core::network::Network;
-use doli_core::Transaction;
+use doli_core::{MaintainerSet, Transaction};
 use mempool::{Mempool, MempoolPolicy};
-use storage::{BlockStore, ChainState, UtxoSet};
+use storage::{BlockStore, ChainState, MaintainerState, UtxoSet};
 use tempfile::TempDir;
 use tokio::sync::RwLock;
 
@@ -55,7 +59,7 @@ fn build_harness() -> Harness {
 
     let broadcast: Arc<Mutex<Vec<Transaction>>> = Arc::new(Mutex::new(Vec::new()));
     let sink = broadcast.clone();
-    let ctx = RpcContext::new_for_network(
+    let mut ctx = RpcContext::new_for_network(
         chain_state,
         block_store,
         utxo_set,
@@ -63,7 +67,18 @@ fn build_harness() -> Harness {
         params,
         Network::Mainnet,
     )
-    .with_broadcast(move |tx| sink.lock().expect("broadcast sink").push(tx));
+    .with_broadcast(move || {
+        let sink = sink.clone();
+        Some(
+            Box::new(move |tx: Transaction| sink.lock().expect("broadcast sink").push(tx))
+                as crate::TxBroadcastPermit,
+        )
+    });
+    let members = (1..=4).map(|i| *keypair(i).public_key()).collect();
+    ctx.maintainer_state = Some(Arc::new(RwLock::new(MaintainerState {
+        set: MaintainerSet::with_members(members, 0),
+        ..Default::default()
+    })));
 
     Harness {
         ctx,
@@ -74,8 +89,7 @@ fn build_harness() -> Harness {
 
 /// A deterministic, genuinely valid Ed25519 public key. The handler PARSES the
 /// key material, so a repeated-byte string is rejected before the relay is even
-/// reached; the keys must be real curve points. The quorum itself is verified on
-/// the apply path, not here, so these need not authorize anything.
+/// reached; the keys must be real curve points. Keys 1..=4 are the current set.
 fn keypair(seed_byte: u8) -> crypto::KeyPair {
     crypto::KeyPair::from_seed([seed_byte; 32])
 }
@@ -97,6 +111,32 @@ fn sigs(n: usize) -> Vec<serde_json::Value> {
         .collect()
 }
 
+/// `n` current-member signatures over the bytes apply verifies at the next height (tip 0 → 1).
+fn member_sigs(n: usize, is_add: bool, target_seed: u8) -> Vec<serde_json::Value> {
+    let genesis = doli_core::consensus::ConsensusParams::default().genesis_hash;
+    let binding = Network::Mainnet
+        .params()
+        .inc_i_176_auth_binding_activation_height;
+    let target = *keypair(target_seed).public_key();
+    let msg = signing_message_at(
+        genesis.as_bytes(),
+        is_add,
+        &target,
+        MAINTAINER_AUTH_VALID_BEFORE_UNSET,
+        1,
+        binding,
+    );
+    (0..n)
+        .map(|i| {
+            let kp = keypair(i as u8 + 1);
+            serde_json::json!({
+                "pubkey": kp.public_key().to_hex(),
+                "signature": crypto::signature::sign(&msg, kp.private_key()).to_hex(),
+            })
+        })
+        .collect()
+}
+
 /// P1 → O1. The acceptance test: an accepted `add` must reach the network.
 #[tokio::test]
 async fn inc_i195_add_is_broadcast_not_only_enqueued() {
@@ -104,7 +144,7 @@ async fn inc_i195_add_is_broadcast_not_only_enqueued() {
     let params = serde_json::json!({
         "action": "add",
         "target_pubkey": pk(0xaa),
-        "signatures": sigs(3),
+        "signatures": member_sigs(3, true, 0xaa),
     });
     let out = h
         .ctx
@@ -133,8 +173,8 @@ async fn inc_i195_remove_is_broadcast_not_only_enqueued() {
     let h = build_harness();
     let params = serde_json::json!({
         "action": "remove",
-        "target_pubkey": pk(0xbb),
-        "signatures": sigs(3),
+        "target_pubkey": pk(4),
+        "signatures": member_sigs(3, false, 4),
         "reason": "INC-I-175 rotation",
     });
     let out = h

@@ -5,29 +5,20 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Instant;
 
 use libp2p::{autonat, gossipsub, identify, kad, request_response, Multiaddr, PeerId, Swarm};
-use std::time::SystemTime;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
-use doli_core::{decode_digest, decode_producer_set, is_legacy_bincode_format, BlockHeader};
-
 use crate::behaviour::{DoliBehaviour, DoliBehaviourEvent};
 use crate::config::NetworkConfig;
-use crate::gossip::{
-    classify_block_gossip, now_unix_secs, BLOCKS_TOPIC, HEADERS_TOPIC, HEARTBEATS_TOPIC,
-    PRODUCERS_TOPIC, TRANSACTIONS_TOPIC, VOTES_TOPIC,
-};
 use crate::peer::PeerInfo;
 use crate::peer_cache::PeerCache;
 use crate::rate_limit::RateLimiter;
-use crypto::PublicKey;
 
-use super::backpressure::enqueue_or_shed;
 use super::event_sink::EventSink;
 use super::helpers::{all_addresses_routable, is_routable_address};
 use super::types::{NetworkEvent, GENESIS_MISMATCH_COOLDOWN_SECS};
@@ -45,7 +36,6 @@ pub(super) async fn handle_behaviour_event(
     rate_limiter: &mut RateLimiter,
     genesis_mismatch_cooldown: &mut HashMap<PeerId, Instant>,
     stale_peer_ids: &mut HashMap<PeerId, Instant>,
-    gossip_seen_cache: &mut crate::gossip::staleness::SeenCache,
     best_slot: &Arc<std::sync::atomic::AtomicU32>,
     shed_metrics: &std::sync::Arc<super::backpressure::GossipShedMetrics>,
     memory_shed_flag: &Arc<AtomicBool>,
@@ -55,395 +45,18 @@ pub(super) async fn handle_behaviour_event(
             propagation_source,
             message_id,
             message,
-        }) => {
-            let topic = message.topic.as_str();
-            let msg_size = message.data.len();
-            debug!(
-                "Received gossip message on topic {} from {}",
-                topic, propagation_source
-            );
-
-            // INC-I-114: With validate_messages=true, every message is held
-            // un-forwarded until we call report_message_validation_result().
-            // We MUST report for ALL topics or gossip propagation dies.
-            //
-            // Block-body topics get staleness classification via classify_block_gossip.
-            // P0-001: HEADERS_TOPIC is NOT a block topic — header bytes are
-            // BlockHeader-serialized (no Vec<Transaction>), so Block::deserialize
-            // fails on them. Routing headers through classify_block_gossip would
-            // Reject every header → P4 penalty on honest producers → mesh
-            // expulsion cascade (INC-I-016 shape).
-            //
-            // INC-I-142 M6: every OTHER (non-block-body) subscribed re-forward-risk
-            // topic now routes through the unified `classify_gossip` staleness gate
-            // (persistent per-event-loop SeenCache, identity dedup PRIMARY) — NOT
-            // unconditional Accept. Only a genuinely-unclassified/unsubscribed topic
-            // still Accepts by default (fail-open, preserves propagation).
-            let is_block_body_topic = topic == BLOCKS_TOPIC
-                || topic == crate::gossip::TIER1_BLOCKS_TOPIC
-                || (topic.starts_with("/doli/r") && topic.ends_with("/blocks/1"));
-
-            // P1-001: Deserialize ONCE via classify_block_gossip, which returns
-            // both the acceptance verdict and the deserialized Block (if valid).
-            // The handler reuses the returned Block instead of deserializing again.
-            if is_block_body_topic {
-                let now = now_unix_secs();
-                let (acceptance, maybe_block) = classify_block_gossip(
-                    &message.data,
-                    config.genesis_time,
-                    config.slot_duration,
-                    now,
-                );
-                let is_accepted = matches!(acceptance, gossipsub::MessageAcceptance::Accept);
-
-                // CRITICAL: report_message_validation_result MUST be called BEFORE
-                // any early return (including the memory watchdog shed below).
-                // This preserves gossipsub propagation semantics (INV-NET-002):
-                // the validation result controls whether the message is forwarded
-                // to other peers. Skipping it would silently kill gossip propagation.
-                if let Err(e) = swarm
-                    .behaviour_mut()
-                    .gossipsub
-                    .report_message_validation_result(&message_id, &propagation_source, acceptance)
-                {
-                    warn!(
-                        "[GOSSIP_VALIDATE] report failed topic={} msg_id={} err={:?}",
-                        topic, message_id, e
-                    );
-                }
-                // If the message was Ignored or Rejected, skip further processing
-                if !is_accepted {
-                    debug!(
-                        "[GOSSIP_VALIDATE] stale/invalid block on topic={} from={}",
-                        topic, propagation_source
-                    );
-                    return;
-                }
-
-                // INC-I-114 M2: Memory watchdog shed gate.
-                // When the watchdog has tripped (process RSS above soft threshold),
-                // shed ALL accepted gossip blocks to reduce memory pressure.
-                // This check is AFTER report_message_validation_result (so gossip
-                // propagation to other peers is preserved) but BEFORE enqueue
-                // (so the block never reaches the node's event channel or apply_block).
-                // Dropped blocks are recoverable via the sync protocol (GetBlocks).
-                if memory_shed_flag.load(Ordering::Relaxed) {
-                    shed_metrics.record_block_drop();
-                    debug!(
-                        "[MEM_WATCHDOG] Shedding block s={} from {} (memory pressure)",
-                        maybe_block.as_ref().map(|b| b.header.slot).unwrap_or(0),
-                        propagation_source
-                    );
-                    return;
-                }
-
-                // At this point: acceptance=Accept, maybe_block=Some(block)
-                // (Accept is only returned when deserialization succeeds).
-                // Unwrap is safe — classify_block_gossip returns Some on Accept.
-                let block = match maybe_block {
-                    Some(b) => b,
-                    None => return, // defensive — cannot happen for Accept
-                };
-
-                // Dispatch to the per-topic handler using the already-deserialized block
-                match topic {
-                    BLOCKS_TOPIC => {
-                        // INC-I-049: Rate limiting for blocks. Candidate-next blocks
-                        // (at or beyond our best slot) skip per-peer limits.
-                        let current_best = best_slot.load(std::sync::atomic::Ordering::Relaxed);
-                        let is_candidate_next = block.header.slot >= current_best;
-
-                        if is_candidate_next {
-                            if !rate_limiter.check_block_global_only() {
-                                warn!(
-                                    "Rate limit: dropping candidate block s={} from {} (global rate exceeded)",
-                                    block.header.slot, propagation_source
-                                );
-                                return;
-                            }
-                        } else if !rate_limiter.check_block(&propagation_source) {
-                            warn!(
-                                "Rate limit: dropping block s={} from {} (per-peer rate exceeded)",
-                                block.header.slot, propagation_source
-                            );
-                            return;
-                        }
-
-                        rate_limiter.record_block(&propagation_source, msg_size);
-                        let recv_ts = SystemTime::now()
-                            .duration_since(SystemTime::UNIX_EPOCH)
-                            .map(|d| d.as_millis())
-                            .unwrap_or(0);
-                        info!(
-                            "[GOSSIP_BLOCK] recv s={} hash={:.8} producer={:.8} block_ts={} from={} size={} recv_ts_ms={} next={}",
-                            block.header.slot,
-                            block.hash(),
-                            block.header.producer,
-                            block.header.timestamp,
-                            propagation_source,
-                            msg_size,
-                            recv_ts,
-                            is_candidate_next
-                        );
-                        enqueue_or_shed(
-                            event_tx.sender(),
-                            NetworkEvent::NewBlock(block, propagation_source),
-                            shed_metrics,
-                        );
-                    }
-                    t if t == crate::gossip::TIER1_BLOCKS_TOPIC => {
-                        if !rate_limiter.check_block(&propagation_source) {
-                            return;
-                        }
-                        rate_limiter.record_block(&propagation_source, msg_size);
-                        let recv_ts = SystemTime::now()
-                            .duration_since(SystemTime::UNIX_EPOCH)
-                            .map(|d| d.as_millis())
-                            .unwrap_or(0);
-                        info!(
-                            "[GOSSIP_BLOCK] recv_t1 s={} hash={:.8} producer={:.8} block_ts={} from={} size={} recv_ts_ms={}",
-                            block.header.slot,
-                            block.hash(),
-                            block.header.producer,
-                            block.header.timestamp,
-                            propagation_source,
-                            msg_size,
-                            recv_ts
-                        );
-                        enqueue_or_shed(
-                            event_tx.sender(),
-                            NetworkEvent::NewBlock(block, propagation_source),
-                            shed_metrics,
-                        );
-                    }
-                    t if t.starts_with("/doli/r") && t.ends_with("/blocks/1") => {
-                        if !rate_limiter.check_block(&propagation_source) {
-                            return;
-                        }
-                        rate_limiter.record_block(&propagation_source, msg_size);
-                        enqueue_or_shed(
-                            event_tx.sender(),
-                            NetworkEvent::NewBlock(block, propagation_source),
-                            shed_metrics,
-                        );
-                    }
-                    _ => {} // unreachable — is_block_body_topic already filtered
-                }
-
-                return; // block topics fully handled above
-            }
-
-            // INC-I-142 M6: unified staleness gate (see the block comment above).
-            // Producers keep bit-identical behavior (classify_gossip's Producers arm
-            // delegates to the same classify_producer_gossip). An unclassified /
-            // unsubscribed topic fails open to Accept+forward (dispatch then no-ops)
-            // so propagation is never stalled.
-            let acceptance = match crate::gossip::staleness::GossipTopic::from_topic_str(topic) {
-                Some(topic_enum) => {
-                    let mut ctx = crate::gossip::staleness::StalenessCtx {
-                        now_unix: now_unix_secs(),
-                        genesis_time: config.genesis_time,
-                        slot_duration: config.slot_duration,
-                        best_slot: best_slot.load(std::sync::atomic::Ordering::Relaxed),
-                        seen: gossip_seen_cache,
-                    };
-                    crate::gossip::staleness::classify_gossip(topic_enum, &message.data, &mut ctx)
-                }
-                None => gossipsub::MessageAcceptance::Accept,
-            };
-            let is_accepted = matches!(acceptance, gossipsub::MessageAcceptance::Accept);
-            // INC-I-237: a tx batch is processed locally but never mesh-forwarded.
-            // The node re-publishes each tx its mempool accepts
-            // (`handle_new_transaction` -> `broadcast_transaction`), so only
-            // checked txs travel on. Forwarding before the check relayed txs no
-            // node could admit, at every hop, without end.
-            let acceptance = if is_accepted && topic == TRANSACTIONS_TOPIC {
-                gossipsub::MessageAcceptance::Ignore
-            } else {
-                acceptance
-            };
-            if let Err(e) = swarm
-                .behaviour_mut()
-                .gossipsub
-                .report_message_validation_result(&message_id, &propagation_source, acceptance)
-            {
-                warn!(
-                    "[GOSSIP_VALIDATE] report failed topic={} msg_id={} err={:?}",
-                    topic, message_id, e
-                );
-            }
-            // Stale / already-seen gossip: reported Ignore above (suppresses
-            // re-forward, no peer penalty) — skip local processing too. A duplicate
-            // re-delivery carries no new information, and a fully-stale producer set
-            // would be rejected by the GSet merge anyway.
-            if !is_accepted {
-                debug!(
-                    "[GOSSIP_VALIDATE] stale/duplicate gossip suppressed topic={} from={}",
-                    topic, propagation_source
-                );
-                return;
-            }
-
-            // Non-block topic dispatch (block topics already returned above)
-            match topic {
-                TRANSACTIONS_TOPIC => {
-                    if !rate_limiter.check_transaction(&propagation_source) {
-                        warn!(
-                            "Rate limit: dropping tx from {} (tx rate exceeded)",
-                            propagation_source
-                        );
-                        return;
-                    }
-                    rate_limiter.record_transaction(&propagation_source, msg_size);
-                    match crate::gossip::decode_tx_gossip(&message.data) {
-                        Some(crate::gossip::TxGossipMessage::FullBatch(txs)) => {
-                            for tx in txs {
-                                event_tx.emit(NetworkEvent::NewTransaction(tx));
-                            }
-                        }
-                        Some(crate::gossip::TxGossipMessage::Announce(hashes)) => {
-                            event_tx.emit(NetworkEvent::TxAnnouncement {
-                                peer_id: propagation_source,
-                                hashes,
-                            });
-                        }
-                        None => {
-                            warn!(
-                                "Failed to deserialize transaction from {}",
-                                propagation_source
-                            );
-                        }
-                    }
-                }
-                PRODUCERS_TOPIC => {
-                    if !rate_limiter.check_request(&propagation_source) {
-                        warn!(
-                            "Rate limit: dropping producer msg from {} (request rate exceeded)",
-                            propagation_source
-                        );
-                        return;
-                    }
-                    rate_limiter.record_request(&propagation_source, msg_size);
-
-                    // Decode order: bloom digest → ProducerSet protobuf → legacy bincode
-                    //
-                    // INC-I-002: Bloom filter digest MUST be tried FIRST.
-                    // is_legacy_bincode_format() misclassifies ProducerSetDigest protobuf
-                    // as legacy bincode (because ProducerSet::decode fails on digest data,
-                    // the heuristic assumes it's bincode). This caused 39,000+ silent
-                    // deserialization failures and prevented GSet CRDT convergence entirely.
-                    let handled_as_digest = if let Ok(bloom) = decode_digest(&message.data) {
-                        if bloom.size_bits() > 0 {
-                            debug!(
-                                "Received producer digest ({} elements, {} bits) from {}",
-                                bloom.element_count(),
-                                bloom.size_bits(),
-                                propagation_source
-                            );
-                            event_tx.emit(NetworkEvent::ProducerDigestReceived {
-                                peer_id: propagation_source,
-                                digest: bloom,
-                            });
-                            true
-                        } else {
-                            false
-                        }
-                    } else {
-                        false
-                    };
-
-                    if !handled_as_digest {
-                        if is_legacy_bincode_format(&message.data) {
-                            // Legacy bincode format: Vec<PublicKey>
-                            match bincode::deserialize::<Vec<PublicKey>>(&message.data) {
-                                Ok(pubkeys) => {
-                                    debug!(
-                                        "Received legacy producer list ({} producers) from {}",
-                                        pubkeys.len(),
-                                        propagation_source
-                                    );
-                                    event_tx.emit(NetworkEvent::ProducersAnnounced(pubkeys));
-                                }
-                                Err(e) => {
-                                    warn!(
-                                        "Failed to deserialize legacy producer list from {}: {}",
-                                        propagation_source, e
-                                    );
-                                }
-                            }
-                        } else {
-                            // New protobuf format: ProducerSet
-                            match decode_producer_set(&message.data) {
-                                Ok(announcements) => {
-                                    debug!(
-                                        "Received producer announcements ({} producers) from {}",
-                                        announcements.len(),
-                                        propagation_source
-                                    );
-                                    event_tx.emit(NetworkEvent::ProducerAnnouncementsReceived(
-                                        announcements,
-                                    ));
-                                }
-                                Err(e) => {
-                                    warn!(
-                                        "Failed to decode producer announcements from {}: {}",
-                                        propagation_source, e
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-                VOTES_TOPIC => {
-                    if !rate_limiter.check_request(&propagation_source) {
-                        return;
-                    }
-                    rate_limiter.record_request(&propagation_source, msg_size);
-                    debug!(
-                        "Received vote message ({} bytes) from {}",
-                        msg_size, propagation_source
-                    );
-                    event_tx.emit(NetworkEvent::NewVote(message.data.clone()));
-                }
-                HEARTBEATS_TOPIC => {
-                    if !rate_limiter.check_request(&propagation_source) {
-                        return;
-                    }
-                    rate_limiter.record_request(&propagation_source, msg_size);
-                    debug!(
-                        "Received heartbeat ({} bytes) from {}",
-                        msg_size, propagation_source
-                    );
-                    event_tx.emit(NetworkEvent::NewHeartbeat(message.data.clone()));
-                }
-                topic if topic == crate::gossip::ATTESTATION_TOPIC => {
-                    if !rate_limiter.check_request(&propagation_source) {
-                        return;
-                    }
-                    rate_limiter.record_request(&propagation_source, msg_size);
-                    debug!(
-                        "Received attestation ({} bytes) from {}",
-                        msg_size, propagation_source
-                    );
-                    event_tx.emit(NetworkEvent::NewAttestation(
-                        message.data.clone(),
-                        propagation_source,
-                    ));
-                }
-                HEADERS_TOPIC => {
-                    if !rate_limiter.check_block(&propagation_source) {
-                        return;
-                    }
-                    if let Some(header) = BlockHeader::deserialize(&message.data) {
-                        rate_limiter.record_block(&propagation_source, msg_size);
-                        event_tx.emit(NetworkEvent::NewHeader(header));
-                    } else {
-                        warn!("Failed to deserialize header from {}", propagation_source);
-                    }
-                }
-                _ => {}
-            }
-        }
+        }) => super::gossip_intake::handle_gossip_message(
+            swarm,
+            event_tx,
+            config,
+            rate_limiter,
+            best_slot,
+            shed_metrics,
+            memory_shed_flag,
+            propagation_source,
+            message_id,
+            message,
+        ),
 
         DoliBehaviourEvent::Kademlia(kad::Event::RoutingUpdated {
             peer, addresses, ..

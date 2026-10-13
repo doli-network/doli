@@ -32,3 +32,10 @@ libc = "0.2"
 [dev-dependencies]
 vdf = { workspace = true }
 tempfile = { workspace = true }
+
+# INC-I-237 M0 / REQ-GRV-SEC-005 (C7 b) — its OWN test binary on purpose: it
+# installs a counting `#[global_allocator]`, which is per-BINARY; inside
+# `tests/it/` it would wrap every unrelated test and make the peak unattributable.
+[[test]]
+name = "inc_i_237_m0_sec005_alloc"
+path = "tests/inc_i_237_m0_sec005_alloc.rs"

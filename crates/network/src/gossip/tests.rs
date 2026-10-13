@@ -474,9 +474,8 @@ fn both_aggressive_triggers_require_both_halves() {
 //
 // OUTPUT CONTRACT: const GOSSIP_DUPLICATE_CACHE_TIME
 //   O1: >= 300 s (covers the observed 60-119 s re-delivery band with margin)
-//   O2: >= staleness::SEEN_CACHE_TTL_SECS (gossipsub layer never forgets
-//       earlier than the app-level SeenCache)
-//   MATRIX: 2 outputs x 1 path (production builder constant)
+//   MATRIX: 1 output x 1 path (production builder constant); the R6 bound is
+//   pinned by it::inc_i_237_m4_vendor_dedup.
 
 #[test]
 fn inc_i_237_duplicate_cache_outlives_redelivery_band() {
@@ -484,13 +483,5 @@ fn inc_i_237_duplicate_cache_outlives_redelivery_band() {
         GOSSIP_DUPLICATE_CACHE_TIME >= Duration::from_secs(300),
         "INC-I-237: duplicate_cache_time {}s re-opens the 60-119 s re-delivery storm",
         GOSSIP_DUPLICATE_CACHE_TIME.as_secs()
-    );
-}
-
-#[test]
-fn inc_i_237_duplicate_cache_not_shorter_than_seen_cache() {
-    assert!(
-        GOSSIP_DUPLICATE_CACHE_TIME >= Duration::from_secs(super::staleness::SEEN_CACHE_TTL_SECS),
-        "INC-I-237: gossipsub dedup must not expire before the app SeenCache"
     );
 }

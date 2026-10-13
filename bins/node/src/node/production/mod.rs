@@ -648,16 +648,11 @@ impl Node {
         // Broadcast the block to the network
         // This is only done for blocks we produce ourselves - received blocks
         // are already on the network and don't need to be re-broadcast.
-        // Header is sent first so peers can pre-validate before the full block arrives.
         if let Some(ref network) = self.network {
-            let _ = network.broadcast_header(block.header.clone()).await;
             let _ = network.broadcast_block(block).await;
         }
 
-        // Attest our own block for finality gadget + record in minute tracker.
-        self.attest_own_block(block_hash, current_slot, height)
-            .await;
-
+        // Our own block was attested in apply_block's post-commit step.
         // Flush any blocks that just reached finality
         self.flush_finalized_to_archive().await;
 

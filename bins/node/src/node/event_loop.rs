@@ -24,6 +24,7 @@ impl Node {
         // Phase 1: Use AdaptiveGossip for dynamic interval adjustment
         let mut current_gossip_interval = self.adaptive_gossip.read().await.interval();
         let mut gossip_timer = tokio::time::interval(current_gossip_interval);
+        let mut last_digest: Option<(Vec<u8>, Instant)> = None;
 
         // Reset GSet broadcast tracker at event loop start.
         self.last_broadcast_gset_len = 0;
@@ -203,12 +204,18 @@ impl Node {
                                     let gset = self.producer_gset.read().await;
                                     gset.to_bloom_filter()
                                 };
-                                debug!(
-                                    "Delta sync: broadcasting bloom filter ({} bytes) for {} producers",
-                                    bloom.size_bytes(),
-                                    producer_count
-                                );
-                                let _ = network.broadcast_producer_digest(bloom).await;
+                                let bytes = doli_core::encode_digest(&bloom);
+                                if digest_due(last_digest.as_ref(), &bytes) {
+                                    debug!(
+                                        "Delta sync: broadcasting bloom filter ({} bytes) for {} producers",
+                                        bloom.size_bytes(),
+                                        producer_count
+                                    );
+                                    if network.peer_count().await > 0 {
+                                        last_digest = Some((bytes, Instant::now()));
+                                    }
+                                    let _ = network.broadcast_producer_digest(bloom).await;
+                                }
                             } else {
                                 // FULL SYNC FALLBACK: Only when GSet is empty (fresh startup)
                                 let announcements = {
@@ -270,8 +277,24 @@ impl Node {
         Ok(())
     }
 
-    /// Handle network events — delegates to network_events.rs handlers.
+    /// Handle network events — delegates to network_events.rs handlers, then
+    /// observes the gossip metrics on Ok and Err alike.
     pub async fn handle_network_event(&mut self, event: NetworkEvent) -> Result<()> {
+        let probe = event.gossip_topic().zip(event.gossip_handle().cloned());
+        if let NetworkEvent::NewBlock(block, _, handle) = &event {
+            crate::metrics_gossip::observe_block_recv_latency(
+                crate::metrics_gossip::recv_unix_ms(handle),
+                block.header.timestamp,
+            );
+        }
+        let result = self.dispatch_network_event(event).await;
+        if let Some((topic, handle)) = &probe {
+            crate::metrics_gossip::observe_gossip_handled(*topic, handle);
+        }
+        result
+    }
+
+    async fn dispatch_network_event(&mut self, event: NetworkEvent) -> Result<()> {
         match event {
             NetworkEvent::PeerConnected(peer_id) => {
                 self.on_peer_connected(peer_id).await;
@@ -279,14 +302,12 @@ impl Node {
             NetworkEvent::PeerDisconnected(peer_id) => {
                 self.on_peer_disconnected(peer_id).await;
             }
-            NetworkEvent::NewBlock(block, source_peer) => {
+            NetworkEvent::NewBlock(block, source_peer, _) => {
                 self.on_new_block_event(block, source_peer).await?;
             }
-            NetworkEvent::NewHeader(header) => {
-                debug!("Received new header: {}", header.hash());
-            }
-            NetworkEvent::NewTransaction(tx) => {
-                self.handle_new_transaction(tx).await?;
+            NetworkEvent::NewTransaction(txs, handle) => {
+                let verdict = self.handle_gossip_txs(txs).await;
+                self.relay_verdict(handle, verdict);
             }
             NetworkEvent::PeerStatus { peer_id, status } => {
                 self.on_peer_status(peer_id, status).await;
@@ -344,22 +365,24 @@ impl Node {
                     let _ = network.disconnect(peer_id).await;
                 }
             }
-            NetworkEvent::ProducersAnnounced(remote_list) => {
-                self.on_producers_announced(remote_list);
+            NetworkEvent::ProducersAnnounced(remote_list, _) => {
+                self.on_producers_announced(remote_list).await;
             }
-            NetworkEvent::ProducerAnnouncementsReceived(announcements) => {
-                self.on_producer_announcements(announcements);
+            NetworkEvent::ProducerAnnouncementsReceived(announcements, handle) => {
+                self.on_producer_announcements(announcements, handle);
             }
-            NetworkEvent::ProducerDigestReceived { peer_id, digest } => {
-                self.on_producer_digest(peer_id, digest);
+            NetworkEvent::ProducerDigestReceived {
+                peer_id, digest, ..
+            } => {
+                self.on_producer_digest(peer_id, digest).await;
             }
-            NetworkEvent::NewVote(vote_data) => {
-                self.on_new_vote(vote_data);
+            NetworkEvent::NewVote(vote_data, handle) => {
+                let verdict = self.on_new_vote(vote_data).await;
+                self.relay_verdict(handle, verdict);
             }
-            NetworkEvent::NewHeartbeat(_) => {
-                // Heartbeats handled by the presence system
-            }
-            NetworkEvent::TxAnnouncement { peer_id, hashes } => {
+            NetworkEvent::TxAnnouncement {
+                peer_id, hashes, ..
+            } => {
                 self.on_tx_announcement(peer_id, hashes).await;
             }
             NetworkEvent::TxFetchRequest {
@@ -375,10 +398,22 @@ impl Node {
             } => {
                 self.on_tx_fetch_response(peer_id, transactions).await?;
             }
-            NetworkEvent::NewAttestation(data, source_peer) => {
-                self.on_new_attestation(data, source_peer).await;
+            NetworkEvent::NewAttestation(data, source_peer, handle) => {
+                let verdict = self.on_new_attestation(data, source_peer).await;
+                self.relay_verdict(handle, verdict);
             }
         }
         Ok(())
     }
+}
+
+/// Margin past `GOSSIP_DUPLICATE_CACHE_TIME`: the vendor cache keeps an
+/// expired id until its next insert.
+const DIGEST_REPUBLISH_MARGIN: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Byte-identical digest bytes are refused by the vendor duplicate cache until
+/// `GOSSIP_DUPLICATE_CACHE_TIME` (+ margin) after they went out; not due before.
+pub(super) fn digest_due(last: Option<&(Vec<u8>, Instant)>, bytes: &[u8]) -> bool {
+    let wait = network::gossip::GOSSIP_DUPLICATE_CACHE_TIME + DIGEST_REPUBLISH_MARGIN;
+    !matches!(last, Some((sent, at)) if sent.as_slice() == bytes && at.elapsed() < wait)
 }

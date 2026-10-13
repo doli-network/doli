@@ -193,6 +193,11 @@ impl Default for DeliveryRecord {
 }
 
 impl PeerScore {
+    // DOLI INC-I-237: M7.1 size readout of the delivery records.
+    pub(crate) fn deliveries_stats(&self) -> crate::TimeCacheStats {
+        self.deliveries.stats()
+    }
+
     /// Creates a new [`PeerScore`] using a given set of peer scoring parameters.
     #[allow(dead_code)]
     pub(crate) fn new(params: PeerScoreParams) -> Self {
@@ -210,6 +215,13 @@ impl PeerScore {
             deliveries: TimeCache::new(Duration::from_secs(TIME_CACHE_DURATION)),
             message_delivery_time_callback: callback,
         }
+    }
+
+    // DOLI INC-I-237: count cap on the delivery records (M7.2).
+    pub(crate) fn with_deliveries_max_entries(mut self, max_entries: usize) -> Self {
+        self.deliveries =
+            TimeCache::new_capped(Duration::from_secs(TIME_CACHE_DURATION), max_entries);
+        self
     }
 
     /// Returns the score for a peer

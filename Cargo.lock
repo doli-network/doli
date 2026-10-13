@@ -1632,6 +1632,7 @@ dependencies = [
  "futures",
  "hex",
  "lazy_static",
+ "libp2p",
  "mempool",
  "network",
  "prometheus",

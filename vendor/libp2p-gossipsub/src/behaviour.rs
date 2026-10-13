@@ -441,7 +441,10 @@ where
             events: VecDeque::new(),
             control_pool: HashMap::new(),
             publish_config: privacy.into(),
-            duplicate_cache: DuplicateCache::new(config.duplicate_cache_time()),
+            duplicate_cache: DuplicateCache::new_capped(
+                config.duplicate_cache_time(),
+                config.duplicate_cache_max_entries(), // DOLI INC-I-237
+            ),
             topic_peers: HashMap::new(),
             peer_topics: HashMap::new(),
             explicit_peers: HashSet::new(),
@@ -515,6 +518,23 @@ where
         self.peer_score
             .as_ref()
             .map(|(score, ..)| score.score(peer_id))
+    }
+
+    // DOLI INC-I-237: M7.1 sizes of the time-bounded caches, len/capacity reads only.
+    #[doc(hidden)]
+    pub fn retention_stats(&self) -> crate::RetentionStats {
+        let (mcache_entries, mcache_bytes) = self.mcache.retention();
+        crate::RetentionStats {
+            duplicate_cache: self.duplicate_cache.stats(),
+            published_message_ids: self.published_message_ids.stats(),
+            peer_score_deliveries: self
+                .peer_score
+                .as_ref()
+                .map(|(score, ..)| score.deliveries_stats())
+                .unwrap_or_default(),
+            mcache_entries,
+            mcache_bytes,
+        }
     }
 
     /// Subscribe to a topic.
@@ -867,7 +887,8 @@ where
         }
 
         let interval = Ticker::new(params.decay_interval);
-        let peer_score = PeerScore::new_with_message_delivery_time_callback(params, callback);
+        let peer_score = PeerScore::new_with_message_delivery_time_callback(params, callback)
+            .with_deliveries_max_entries(self.config.peer_score_deliveries_max_entries()); // DOLI INC-I-237
         self.peer_score = Some((peer_score, threshold, interval, GossipPromises::default()));
         Ok(())
     }

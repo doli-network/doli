@@ -199,6 +199,7 @@ impl RpcContext {
         })?;
 
         let tx_hash = tx.hash();
+        let permit = (self.broadcast_tx)().ok_or_else(RpcError::broadcast_busy)?;
 
         // Add to mempool — state-only txs (Exit, RequestWithdrawal, etc.) bypass
         // UTXO fee accounting since they have no inputs by design. Their spam
@@ -209,8 +210,6 @@ impl RpcContext {
             let current_slot = chain_state.best_slot;
             drop(chain_state);
 
-            let mut mempool = self.mempool.write().await;
-
             // INC-I-173 M3 / F4 (AUDIT-P3-002). Routing is SHAPE-based, not
             // type-based: the 0-fee system lane is for transactions that are
             // genuinely 0-in/0-out AND whose type is authorized to exist in that
@@ -219,11 +218,19 @@ impl RpcContext {
             // lane and gave free relay that `evict_lowest_fee` then used to push
             // out legitimate 0-fee governance transactions (FM-10).
             if tx.is_zero_flow() {
-                mempool
-                    .add_system_transaction(tx.clone(), current_height)
-                    .map_err(Self::mempool_error_to_rpc)?;
+                mempool::zero_flow_mined::admit_zero_flow(
+                    &self.mempool,
+                    tx.clone(),
+                    current_height,
+                    self.maintainer_state.as_ref(),
+                    self.producer_set.as_ref(),
+                    &self.block_store,
+                )
+                .await
+                .map_err(Self::mempool_error_to_rpc)?;
                 None
             } else {
+                let mut mempool = self.mempool.write().await;
                 let utxo_set = self.utxo_set.read().await;
                 let result = mempool
                     .add_transaction(tx.clone(), &utxo_set, current_height, current_slot)
@@ -232,8 +239,7 @@ impl RpcContext {
             }
         };
 
-        // Broadcast to network
-        (self.broadcast_tx)(tx);
+        permit(tx);
 
         // Build response: always include hash, optionally include warnings
         if let Some(contention) = diagnostic {
@@ -255,7 +261,7 @@ impl RpcContext {
     }
 
     /// Convert a MempoolError to a structured RpcError with full context.
-    fn mempool_error_to_rpc(e: MempoolError) -> RpcError {
+    pub(super) fn mempool_error_to_rpc(e: MempoolError) -> RpcError {
         match e {
             MempoolError::AlreadyExists => RpcError::with_data(
                 crate::error::codes::TX_ALREADY_KNOWN,

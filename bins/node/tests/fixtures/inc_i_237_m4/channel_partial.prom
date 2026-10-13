@@ -1,0 +1,19 @@
+# TYPE doli_event_lane_depth gauge
+doli_event_lane_depth{lane="consensus"} 9
+doli_event_lane_depth{lane="bulk"} 8
+doli_event_lane_depth{lane="backlog"} 0
+# TYPE doli_event_lane_inflight_bytes gauge
+doli_event_lane_inflight_bytes{lane="consensus"} 90
+doli_event_lane_inflight_bytes{lane="bulk"} 80
+doli_event_lane_inflight_bytes{lane="backlog"} 0
+# TYPE doli_event_lane_budget_bytes gauge
+doli_event_lane_budget_bytes{lane="consensus"} 1000
+doli_event_lane_budget_bytes{lane="bulk"} 500
+doli_event_lane_budget_bytes{lane="backlog"} 2000
+# TYPE doli_event_lane_shed_total gauge
+doli_event_lane_shed_total{lane="consensus"} 0
+doli_event_lane_shed_total{lane="bulk"} 12
+doli_event_lane_shed_total{lane="backlog"} 0
+# TYPE doli_event_shed_by_topic_total counter
+doli_event_shed_by_topic_total{topic="votes"} 2
+doli_event_shed_by_topic_total{topic="txs"} 10

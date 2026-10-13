@@ -10,6 +10,7 @@
 
 pub mod config;
 pub mod metrics;
+pub mod metrics_gossip;
 pub mod node;
 pub mod producer;
 pub mod updater;

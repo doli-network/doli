@@ -67,6 +67,9 @@ impl TokenBucket {
     }
 }
 
+/// Per-peer tx burst in seconds of `max_txs_per_second` (AUDIT-P2-506).
+const TX_BURST_SECONDS: u64 = 4;
+
 /// Rate limits for a single peer
 #[derive(Debug)]
 pub struct PeerLimits {
@@ -76,6 +79,8 @@ pub struct PeerLimits {
     pub transactions: TokenBucket,
     /// General request rate limiter
     pub requests: TokenBucket,
+    /// Attestation gossip limiter (request-bucket shape, INC-I-237 decision C)
+    pub attestations: TokenBucket,
     /// INC-I-120: outbound sync-request rate limiter. Governs how fast THIS node
     /// issues sync requests (GetHeaders/GetBodies/GetBlockByHeight) to a peer.
     /// Closes the structural gap that let a busy-retry loop self-amplify to
@@ -96,10 +101,14 @@ impl PeerLimits {
                 config.max_blocks_per_minute as f64 / 60.0,
             ),
             transactions: TokenBucket::new(
-                config.max_txs_per_second as u64 * 10,
+                config.max_txs_per_second as u64 * TX_BURST_SECONDS,
                 config.max_txs_per_second as f64,
             ),
             requests: TokenBucket::new(
+                config.max_requests_per_second as u64 * 10,
+                config.max_requests_per_second as f64,
+            ),
+            attestations: TokenBucket::new(
                 config.max_requests_per_second as u64 * 10,
                 config.max_requests_per_second as f64,
             ),
@@ -146,7 +155,7 @@ impl Default for RateLimitConfig {
     fn default() -> Self {
         Self {
             max_blocks_per_minute: 10,
-            max_txs_per_second: 50,
+            max_txs_per_second: 500,
             max_requests_per_second: 20,
             // INC-I-120: 10/s sustained per peer (burst 100) bounds the ~40 req/s
             // self-amplified storm while leaving ample headroom for legitimate
@@ -182,7 +191,7 @@ impl RateLimiter {
     pub fn new(config: RateLimitConfig) -> Self {
         Self {
             global_blocks: TokenBucket::new(100, 100.0 / 60.0), // 100 blocks/min globally
-            global_transactions: TokenBucket::new(1000, 200.0), // 200 tx/sec globally
+            global_transactions: TokenBucket::new(4_000, 1_000.0), // 1,000 tx/sec globally
             // INC-I-120: 60/s sustained outbound sync requests globally (burst 300).
             global_sync_requests: TokenBucket::new(300, 60.0),
             global_bandwidth: TokenBucket::new(
@@ -207,22 +216,12 @@ impl RateLimiter {
 
     /// Check if a block can be received from a peer (per-peer + global)
     pub fn check_block(&mut self, peer: &PeerId) -> bool {
-        if !self.config.enabled {
-            return true;
-        }
+        self.check_block_peer_only(peer) && self.check_block_global_only()
+    }
 
-        let limits = self.get_or_create_limits(peer);
-        if !limits.blocks.can_consume(1) {
-            debug!(peer = %peer, "Block rate limit exceeded");
-            return false;
-        }
-
-        if !self.global_blocks.can_consume(1) {
-            debug!("Global block rate limit exceeded");
-            return false;
-        }
-
-        true
+    /// INC-I-237 D6: check only the per-peer block bucket (before the report).
+    pub fn check_block_peer_only(&mut self, peer: &PeerId) -> bool {
+        !self.config.enabled || self.get_or_create_limits(peer).blocks.can_consume(1)
     }
 
     /// INC-I-049: Check only the global block rate limit (skip per-peer).
@@ -256,37 +255,37 @@ impl RateLimiter {
         self.global_bandwidth.try_consume(size as u64);
     }
 
-    /// Check if a transaction can be received from a peer
-    pub fn check_transaction(&mut self, peer: &PeerId) -> bool {
+    /// Check if `n` transactions can be received from a peer (one token per tx)
+    pub fn check_transaction(&mut self, peer: &PeerId, n: u64) -> bool {
         if !self.config.enabled {
             return true;
         }
 
         let limits = self.get_or_create_limits(peer);
-        if !limits.transactions.can_consume(1) {
-            debug!(peer = %peer, "Transaction rate limit exceeded");
+        if !limits.transactions.can_consume(n) {
+            debug!(peer = %peer, n, "Transaction rate limit exceeded");
             return false;
         }
 
-        if !self.global_transactions.can_consume(1) {
-            debug!("Global transaction rate limit exceeded");
+        if !self.global_transactions.can_consume(n) {
+            debug!(n, "Global transaction rate limit exceeded");
             return false;
         }
 
         true
     }
 
-    /// Record a transaction received from a peer
-    pub fn record_transaction(&mut self, peer: &PeerId, size: usize) {
+    /// Record `n` transactions (`size` bytes) received from a peer
+    pub fn record_transaction(&mut self, peer: &PeerId, n: u64, size: usize) {
         if !self.config.enabled {
             return;
         }
 
         let limits = self.get_or_create_limits(peer);
-        limits.transactions.try_consume(1);
+        limits.transactions.try_consume(n);
         limits.bandwidth.try_consume(size as u64);
 
-        self.global_transactions.try_consume(1);
+        self.global_transactions.try_consume(n);
         self.global_bandwidth.try_consume(size as u64);
     }
 
@@ -313,6 +312,33 @@ impl RateLimiter {
 
         let limits = self.get_or_create_limits(peer);
         limits.requests.try_consume(1);
+        limits.bandwidth.try_consume(size as u64);
+
+        self.global_bandwidth.try_consume(size as u64);
+    }
+
+    /// Check if an attestation can be received from a peer (own per-peer bucket)
+    pub fn check_attestation(&mut self, peer: &PeerId) -> bool {
+        if !self.config.enabled {
+            return true;
+        }
+
+        if !self.get_or_create_limits(peer).attestations.can_consume(1) {
+            debug!(peer = %peer, "Attestation rate limit exceeded");
+            return false;
+        }
+
+        true
+    }
+
+    /// Record an attestation (`size` bytes) received from a peer
+    pub fn record_attestation(&mut self, peer: &PeerId, size: usize) {
+        if !self.config.enabled {
+            return;
+        }
+
+        let limits = self.get_or_create_limits(peer);
+        limits.attestations.try_consume(1);
         limits.bandwidth.try_consume(size as u64);
 
         self.global_bandwidth.try_consume(size as u64);
@@ -489,20 +515,20 @@ mod tests {
         let peer = test_peer_id();
 
         // Should allow initial transactions
-        for _ in 0..100 {
-            assert!(limiter.check_transaction(&peer));
-            limiter.record_transaction(&peer, 500);
+        for _ in 0..40 {
+            assert!(limiter.check_transaction(&peer, 1));
+            limiter.record_transaction(&peer, 1, 500);
         }
 
         // Should eventually reject
-        // (need to consume all tokens in the bucket which has 10x burst capacity)
+        // (need to consume all tokens in the bucket which has 4x burst capacity)
         let mut rejected = false;
         for _ in 0..200 {
-            if !limiter.check_transaction(&peer) {
+            if !limiter.check_transaction(&peer, 1) {
                 rejected = true;
                 break;
             }
-            limiter.record_transaction(&peer, 500);
+            limiter.record_transaction(&peer, 1, 500);
         }
         assert!(rejected);
     }
@@ -519,8 +545,11 @@ mod tests {
         // Should always allow when disabled
         for _ in 0..1000 {
             assert!(limiter.check_block(&peer));
-            assert!(limiter.check_transaction(&peer));
+            assert!(limiter.check_transaction(&peer, 1));
             assert!(limiter.check_request(&peer));
+            // 1,000 charges exceed the 200 burst: only the disabled path passes.
+            assert!(limiter.check_attestation(&peer));
+            limiter.record_attestation(&peer, 300);
         }
     }
 

@@ -1,10 +1,10 @@
-//! GossipSub for block and transaction propagation
-//!
-//! Implements efficient message propagation using libp2p GossipSub protocol.
+//! GossipSub topics, configuration, publishing and the relay table.
 
 mod config;
 mod publish;
+mod relay_decision;
 pub mod staleness;
+pub mod tx_batch_stats;
 pub mod validation;
 
 #[cfg(test)]
@@ -12,6 +12,8 @@ mod tests;
 
 pub use config::*;
 pub use publish::*;
+pub(crate) use relay_decision::{decide, Payload};
+pub use relay_decision::{relay_decision, RelayDecision, RelayTopic};
 pub use validation::{
     classify_block, classify_block_gossip, classify_producer_gossip, now_unix_secs,
     wall_clock_slot, wall_clock_slot_from, PRODUCER_ANNOUNCEMENT_MAX_AGE_SECS,
@@ -30,15 +32,13 @@ pub const PRODUCERS_TOPIC: &str = "/doli/producers/1";
 /// GossipSub topic for update votes (governance veto system)
 pub const VOTES_TOPIC: &str = "/doli/votes/1";
 
-/// GossipSub topic for presence heartbeats (weighted rewards)
+/// Presence heartbeats — not subscribed (INC-I-237 D3).
 pub const HEARTBEATS_TOPIC: &str = "/doli/heartbeats/1";
-
-// ==================== Tiered Architecture Topics ====================
 
 /// Tier 1 block propagation (dense mesh, validators only)
 pub const TIER1_BLOCKS_TOPIC: &str = "/doli/t1/blocks/1";
 
-/// Lightweight header topic (all tiers — for Tier 3 header-only validation)
+/// Block headers — not subscribed (INC-I-237 D3).
 pub const HEADERS_TOPIC: &str = "/doli/headers/1";
 
 /// Attestation topic (Tier 1 + Tier 2 — for finality gadget)

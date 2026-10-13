@@ -6,14 +6,17 @@ use libp2p::request_response::ResponseChannel;
 use libp2p::{Multiaddr, PeerId};
 
 use crypto::{Hash, PublicKey};
-use doli_core::{Block, BlockHeader, ProducerAnnouncement, ProducerBloomFilter, Transaction};
+use doli_core::{Block, ProducerAnnouncement, ProducerBloomFilter, Transaction};
 
 use crate::protocols::{StatusRequest, StatusResponse, SyncRequest, SyncResponse, TxFetchResponse};
+
+use super::verdict::Verdict;
+use super::GossipHandle;
 
 /// Genesis mismatch peers are silently rejected for this duration.
 pub(super) const GENESIS_MISMATCH_COOLDOWN_SECS: u64 = 86400; // 24 hours
 
-/// Events from the network
+/// Events from the network. Gossip variants carry the swarm's receive stamp.
 #[derive(Debug)]
 pub enum NetworkEvent {
     /// New peer connected
@@ -21,11 +24,9 @@ pub enum NetworkEvent {
     /// Peer disconnected
     PeerDisconnected(PeerId),
     /// New block received via gossip (block, propagation source peer)
-    NewBlock(Block, PeerId),
-    /// New block header received via gossip (lightweight pre-announcement)
-    NewHeader(BlockHeader),
-    /// New transaction received via gossip
-    NewTransaction(Transaction),
+    NewBlock(Block, PeerId, GossipHandle),
+    /// Every transaction of one gossip message; the node owes it one verdict.
+    NewTransaction(Vec<Transaction>, GossipHandle),
     /// Status request received
     StatusRequest {
         peer_id: PeerId,
@@ -65,26 +66,29 @@ pub enum NetworkEvent {
     /// Producers announced via anti-entropy gossip (bootstrap protocol)
     /// Contains the sender's full view of known producers for CRDT merge
     /// Legacy format - will be deprecated after network migration
-    ProducersAnnounced(Vec<PublicKey>),
+    ProducersAnnounced(Vec<PublicKey>, GossipHandle),
     /// Producer announcements received via gossip (new format)
     /// Contains cryptographically signed announcements with replay protection
-    ProducerAnnouncementsReceived(Vec<ProducerAnnouncement>),
+    ProducerAnnouncementsReceived(Vec<ProducerAnnouncement>, GossipHandle),
     /// Producer set digest received for delta sync
     /// Peer is requesting only the producers they don't know about
     ProducerDigestReceived {
         peer_id: PeerId,
         digest: ProducerBloomFilter,
+        handle: GossipHandle,
     },
     /// Vote message received for governance veto system
-    NewVote(Vec<u8>),
-    /// Heartbeat received for weighted presence rewards
-    NewHeartbeat(Vec<u8>),
+    NewVote(Vec<u8>, GossipHandle),
     /// Attestation received for finality gadget.
     /// INC-I-049: Now includes propagation_source so the node can request
     /// blocks from the attestation source peer.
-    NewAttestation(Vec<u8>, PeerId),
+    NewAttestation(Vec<u8>, PeerId, GossipHandle),
     /// Transaction hash announcement received (announce-request pattern)
-    TxAnnouncement { peer_id: PeerId, hashes: Vec<Hash> },
+    TxAnnouncement {
+        peer_id: PeerId,
+        hashes: Vec<Hash>,
+        handle: GossipHandle,
+    },
     /// Peer is requesting transactions by hash (announce-request pattern)
     TxFetchRequest {
         peer_id: PeerId,
@@ -103,8 +107,6 @@ pub enum NetworkEvent {
 pub enum NetworkCommand {
     /// Broadcast a block
     BroadcastBlock(Block),
-    /// Broadcast a block header (lightweight pre-announcement)
-    BroadcastHeader(BlockHeader),
     /// Broadcast a transaction
     BroadcastTransaction(Transaction),
     /// Request status from a peer
@@ -133,8 +135,6 @@ pub enum NetworkCommand {
     Disconnect(PeerId),
     /// Bootstrap the DHT
     Bootstrap,
-    /// Broadcast producer list (anti-entropy gossip) - legacy format
-    BroadcastProducers(Vec<u8>),
     /// Broadcast producer announcements (new format with protobuf)
     BroadcastProducerAnnouncements(Vec<ProducerAnnouncement>),
     /// Broadcast producer set digest for delta sync
@@ -146,8 +146,6 @@ pub enum NetworkCommand {
     },
     /// Broadcast a vote message (governance veto system)
     BroadcastVote(Vec<u8>),
-    /// Broadcast a heartbeat (weighted presence rewards)
-    BroadcastHeartbeat(Vec<u8>),
     /// Broadcast an attestation (finality gadget)
     BroadcastAttestation(Vec<u8>),
     /// Request transactions from a peer by hash (announce-request pattern)
@@ -156,6 +154,11 @@ pub enum NetworkCommand {
     SendTxFetchResponse {
         channel: ResponseChannel<TxFetchResponse>,
         response: TxFetchResponse,
+    },
+    /// The node's relay verdict on a deferred gossip message
+    GossipVerdict {
+        handle: GossipHandle,
+        verdict: Verdict,
     },
 }
 
