@@ -4,7 +4,7 @@
 //! re-admits; maintainer changes never pay the mined check.
 //!
 //! OUTPUT CONTRACT: Node::handle_gossip_txs / Node::handle_new_transaction /
-//!   RPC sendTransaction, and MinedCheck::{record, is_cached, cached_len}
+//!   RPC sendTransaction, and MinedCheck::is_cached
 //!   O1: none   O2: node.mempool membership; MinedCheck body_reads / index_gets
 //!   deltas and cache membership   O3: Verdict; bool; RPC error_code + message
 //!   O4: none (block store, producer and maintainer sets are fixture inputs)
@@ -15,16 +15,14 @@
 //!   -> 0 body reads; P4 canonical index at h re-pointed to X' without T -> next
 //!   copy Accept, resident, entry dropped (1 index get + 1 body read);
 //!   P5 applied + mined maintainer change -> MPTX011, 0 body reads; P6 reversed
-//!   change, its mined carrier -> Accept, resident, 0 body reads;
-//!   P7 10,001 records -> 10,000 kept, oldest gone, other instance empty
+//!   change, its mined carrier -> Accept, resident, 0 body reads
 //! INPUT PARTITIONS: copies {1, 1,000 one per message}; first site {gossip,
 //!   sendTransaction}; later site {gossip, sendTransaction, handle_new_transaction};
 //!   carrier at h {canonical X, re-pointed X'}; maintainer change {AddMaintainer,
 //!   RemoveMaintainer} x {applied, applied then reversed}; params {testnet, tip 30_000}.
 // covers: zero_flow_mined zero_flow_auth zero_flow_policy zero_flow_standing zero_flow_newness pool lib mod gossip_txs validation_checks network_events transaction governance error-codes rpc_reference gossip-relay-verdict-status protocol security_model
 
-use crypto::{Hash, KeyPair};
-use mempool::zero_flow_mined::{MinedCheck, MINED_CACHE_CAP};
+use crypto::KeyPair;
 use network::Verdict;
 
 use super::inc_i_237_m11_common as m11;
@@ -222,38 +220,4 @@ async fn m12_2_sec_019_reversed_change_carrier_admitted_without_block_read() {
         v == Verdict::Accept && resident && spent == 0,
         "REQ-GRV-SEC-019 residual: verdict={v:?} resident={resident} body_reads={spent}"
     );
-}
-
-fn txid(i: u32) -> Hash {
-    let mut b = [0u8; 32];
-    b[..4].copy_from_slice(&i.to_le_bytes());
-    Hash::from_bytes(b)
-}
-
-// REQ-GRV-SEC-017 (FM3) — Decision: a failure means the negative cache is unbounded, evicts the newest instead of the oldest, or is one process-wide store instead of one per node.
-#[test]
-fn m12_2_sec_017_cache_keeps_the_newest_10_000_per_instance() {
-    let check = MinedCheck::default();
-    let other = MinedCheck::default();
-    let n = MINED_CACHE_CAP as u32 + 1;
-    for i in 0..n {
-        check.record(txid(i), u64::from(i), Hash::from_bytes([0xB7; 32]));
-    }
-    let mut bad = Vec::new();
-    if MINED_CACHE_CAP != 10_000 {
-        bad.push(format!("cap={MINED_CACHE_CAP}"));
-    }
-    if check.cached_len() != MINED_CACHE_CAP {
-        bad.push(format!("cached_len={}", check.cached_len()));
-    }
-    if check.is_cached(&txid(0)) {
-        bad.push("oldest entry still cached".to_string());
-    }
-    if !check.is_cached(&txid(1)) || !check.is_cached(&txid(n - 1)) {
-        bad.push("second or newest entry evicted".to_string());
-    }
-    if other.cached_len() != 0 || other.is_cached(&txid(n - 1)) {
-        bad.push(format!("other instance holds {}", other.cached_len()));
-    }
-    assert!(bad.is_empty(), "REQ-GRV-SEC-017 cap: {bad:#?}");
 }

@@ -1312,8 +1312,15 @@ updates (`MPTX016`). It keeps at most one pending delegation tx per delegator.
 - **Revoke during a queued switch.** `revoke-delegation` names the applied
   delegate. If a same-epoch switch to another delegate is queued, the node
   refuses it with `MPTX013`. Wait for the epoch boundary.
-- **Same delegation again after a revoke.** The tx is byte-identical to the mined
-  one, so the node refuses it with `MPTX014`. Use a different `--bonds` value.
+- **Same delegation again after a revoke.** The CLI signs deterministically, so the
+  same delegatee and `--bonds` give the same txid as the mined tx, and the node
+  refuses it with `MPTX014`. A delegator with one bond has no other `--bonds`
+  value. Use AddBond first (`add-bond`, then the new `--bonds` value), or delegate
+  to a different delegate. A different `--bonds` value works only while you have
+  an unused one.
+- **Node busy checking a replay.** If the node must read a block to check a
+  DelegateBond that a canonical block may carry and its read budget is spent, it
+  refuses with `MPTX017`. Retry after a second.
 
 Codes and causes: `docs/error-codes.md` (MPTX).
 

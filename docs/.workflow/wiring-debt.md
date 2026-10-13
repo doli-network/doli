@@ -24,7 +24,7 @@ deletes them. Verified with `git grep` over `bins/*/src` and `crates/*/src`
 | relay_decision | crates/network/src/gossip/relay_decision.rs | test-infra | INC-I-237 M1 verdict-only view of the relay table for the relay-table, corpus and storm tests; production calls `decide` (same match, plus the decoded payload so the swarm decodes once). |
 | memory_shed_flag | crates/network/src/service/mod.rs | test-infra | INC-I-237 M1 seam: the block-gate test arms the memory-watchdog shed flag the swarm block arm reads (watchdog disabled in tests). |
 | attest_seen_len | bins/node/src/node/attestation/ingress.rs | test-infra | INC-I-237 M7.1 (REQ-GRV-026) size accessor read only by the soak attribution table (`bins/node/tests/inc_i_237_m5_soak_support/attribution.rs`); an integration binary cannot reach the crate-private `AttestSeen`. No production reader: the relay verdict uses `admit` / `awaits_bls`. |
-| body_reads | crates/mempool/src/zero_flow_mined.rs | test-infra | per-instance read-only test seam for INC-I-237 M12.2 |
-| index_gets | crates/mempool/src/zero_flow_mined.rs | test-infra | per-instance read-only test seam for INC-I-237 M12.2 |
-| cached_len | crates/mempool/src/zero_flow_mined.rs | test-infra | per-instance read-only test seam for INC-I-237 M12.2 |
-| is_cached | crates/mempool/src/zero_flow_mined.rs | test-infra | per-instance read-only test seam for INC-I-237 M12.2 |
+| body_reads | crates/mempool/src/zero_flow_mined.rs | test-infra | per-instance read-only test seam for INC-I-237 M12.2; the only pub accessors left on `MinedCheck` (the cache writer `record` is pub(crate) since M12.3) |
+| index_gets | crates/mempool/src/zero_flow_mined.rs | test-infra | per-instance read-only test seam for INC-I-237 M12.2; the only pub accessors left on `MinedCheck` (the cache writer `record` is pub(crate) since M12.3) |
+| cached_len | crates/mempool/src/zero_flow_mined.rs | test-infra | per-instance read-only test seam for INC-I-237 M12.2; the only pub accessors left on `MinedCheck` (the cache writer `record` is pub(crate) since M12.3) |
+| is_cached | crates/mempool/src/zero_flow_mined.rs | test-infra | per-instance read-only test seam for INC-I-237 M12.2; the only pub accessors left on `MinedCheck` (the cache writer `record` is pub(crate) since M12.3) |

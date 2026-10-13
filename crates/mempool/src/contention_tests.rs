@@ -32,6 +32,10 @@
 //   Structural → ContentionInfo has no competing tx hashes — test: diagnostic_does_not_leak
 
 #[cfg(test)]
+#[path = "zero_flow_mined_tests.rs"]
+mod zero_flow_mined_tests;
+
+#[cfg(test)]
 mod tests {
     use crate::contention::ContentionInfo;
     use crate::{Mempool, MempoolPolicy};

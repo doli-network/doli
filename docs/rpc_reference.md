@@ -358,9 +358,12 @@ boundary turns the tx into a no-op: delegator not registered or not active, self
 not registered or not active, `bond_count` above the available bonds, an effective delegation exists,
 or a revoke with no effective delegation; also when the node has no producer-set view), `MPTX013` (a
 revoke names a delegate other than the effective one, or the delegation exceeds the delegate's received
-cap), `MPTX014` (a DelegateBond that a canonical block already carries).
+cap), `MPTX014` (a DelegateBond that a canonical block already carries), `MPTX017` (the node must read a
+block body to check a DelegateBond that the tx index places in a canonical block, and its mined-check read
+budget is spent: retry later; nothing is cached, and the tx is not called mined).
 `MPTX014` is checked after every other refusal; repeated copies hit a bounded cache (10,000 txids),
-so a repeat reads no block body.
+so a repeat reads no block body. Block body reads draw on one per-node budget (2 reads/s, burst 2);
+a cache hit and a DelegateBond that is not in the tx index (every new delegation) spend none of it.
 At most one DelegateBond / RevokeDelegation per delegator stays pending: a second one returns `-32003` /
 `TX_ALREADY_EXISTS` until the first is mined, evicted or expires. These checks are admission only, not a
 consensus rule.
@@ -368,7 +371,10 @@ consensus rule.
 **Edge flows (refused until the INC-I-246 consensus fix):**
 - (a) Re-delegation to the same delegate with the same `bond_count` after a revoke: `MPTX014`, because the
   tx is byte-identical to the mined one (it gets `MPTX014` only after every other check passes). The
-  re-delegation must be a new tx, not a replay of the mined one. Workaround: use a different `bond_count`.
+  re-delegation must be a new tx, not a replay of the mined one. The CLI signer is deterministic, so the same
+  delegate and `bond_count` give the same txid: a delegator with one bond has no new tx for that delegate.
+  Workaround: AddBond first (then use the new `bond_count`), or delegate to a different delegate; a different
+  `bond_count` works only while an unused one is available.
 - (b) CLI revoke while a same-epoch delegation switch is queued: `MPTX013`, because the CLI names the
   applied delegate and the queued one is effective. Workaround: wait for the epoch boundary.
 - (c) An Add / Remove maintainer change that depends on a pending change at the set bounds: `MPTX011`,
@@ -377,6 +383,10 @@ consensus rule.
   and the effective delegation still stands. Workaround: wait one block (until the revoke is mined).
 - (e) A pending delegation tx holds the delegator's one slot until it is mined, evicted or expires; a
   second one gets `TX_ALREADY_EXISTS`. Workaround: wait.
+- (f) A DelegateBond while the delegator's own queued DelegateBond will fail at the boundary (e.g. its
+  delegate leaves active status earlier in the same epoch): `MPTX016`, because admission counts the queued
+  tx as the effective delegation. Admission is stricter than the boundary for up to one epoch. Workaround:
+  revoke naming the queued delegate, then delegate (after the revoke is mined); or wait for the boundary.
 
 Code table: `docs/error-codes.md` (MPTX).
 
