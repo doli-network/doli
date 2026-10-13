@@ -16,6 +16,7 @@ mod withdrawal_holdings;
 pub mod zero_flow_auth;
 mod zero_flow_newness;
 mod zero_flow_policy;
+mod zero_flow_standing;
 
 pub use contention::{AddTransactionResult, ContentionInfo, MempoolDiagnostic};
 pub use entry::MempoolEntry;

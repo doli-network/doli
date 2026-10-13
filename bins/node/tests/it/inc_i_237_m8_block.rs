@@ -23,7 +23,7 @@ use doli_node::node::Node;
 use vdf::{VdfOutput, VdfProof};
 
 use super::inc_i_237_m2_node_common as c;
-use super::inc_i_237_m8_common::{self as m8, Sig};
+use super::inc_i_237_m8_common::{self as m8, Parties, Sig};
 
 const H: u64 = 1;
 const SLOT: u32 = 1;
@@ -88,17 +88,21 @@ async fn req_grv_030_old_block_with_forged_delegations_applies_without_effect() 
     let (mut node, kp, _t) = c::make_node().await;
     m8::on_testnet(&mut node);
     m8::attach(&mut node, &m8::maintainer_keys());
-    let forged = vec![m8::delegate_bond(Sig::Wrong), m8::revoke(Sig::Absent)];
+    let throwaway = Parties::throwaway();
+    let forged = vec![
+        m8::delegate_bond(&throwaway, Sig::Wrong),
+        m8::revoke(&throwaway, Sig::Absent),
+    ];
     for tx in &forged {
         let fx = m8::apply_effect(&node, tx, H).await;
         assert!(!fx, "forged {:?} has an apply effect", tx.tx_type);
     }
-    let genuine = m8::delegate_bond(Sig::Genuine);
+    apply(&mut node, &kp, forged).await;
+    let genuine = m8::genuine_delegate_bond(&[&node]).await;
     assert!(
         m8::apply_effect(&node, &genuine, H).await,
         "non-vacuity: auth gate live at H"
     );
-    apply(&mut node, &kp, forged).await;
 }
 
 // REQ-GRV-030 — Decision: a failure means a maintainer-signature rule leaked into block validation, or a forged maintainer change in an old producer's block now changes the set.

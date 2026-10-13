@@ -209,6 +209,7 @@ Weight is conserved across the network: delegation moves weight, it does not cre
 | Transaction data types | `crates/core/src/transaction/data.rs` (DelegateBondData, RevokeDelegationData) |
 | Transaction constructors | `crates/core/src/transaction/core.rs` (new_delegate_bond, new_revoke_delegation) |
 | Structural validation | `crates/core/src/validation/tx_types.rs` (validate_delegate_bond_data, validate_revoke_delegation_data) |
+| Mempool admission (INC-I-237 M12.1, admission only) | `crates/mempool/src/zero_flow_standing.rs` (boundary preconditions, `MPTX016`), `zero_flow_policy.rs` (`post_auth`, `MPTX013` stop-gap), `zero_flow_newness.rs` (one resident per delegator) |
 | Storage ProducerInfo fields | `crates/storage/src/producer/types.rs` (delegated_to, delegated_bonds, received_delegations) |
 | Storage delegation ops | `crates/storage/src/producer/set_lifecycle.rs` (delegate_bonds, revoke_delegation, cleanup_all_delegations) |
 | selection_weight_at() | `crates/storage/src/producer/info.rs:390` |
@@ -226,3 +227,6 @@ Weight is conserved across the network: delegation moves weight, it does not cre
 | "delegatee is not a registered producer" | Pubkey not in producer set | Verify pubkey with `doli producer list --format json` |
 | Delegation not visible after submit | Epoch-deferred processing | Wait for next epoch boundary |
 | Weight unchanged after delegation | Same epoch — not applied yet | Check `pendingUpdates` in producer status |
+| `MPTX016` at submit | The next epoch boundary would turn the tx into a no-op (inactive or unknown party, self, bonds above available, an effective delegation exists, revoke with no delegation) | Fix the precondition; after a revoke, wait until it is mined |
+| `TX_ALREADY_EXISTS` at submit | One delegation tx from this delegator is already pending | Wait until it is mined, evicted or expires |
+| `MPTX013` / `MPTX014` at submit | Revoke names a non-effective delegate (queued switch) / byte-identical re-delegation after a revoke | Wait for the epoch boundary / use a different `--bonds` (`docs/error-codes.md`) |

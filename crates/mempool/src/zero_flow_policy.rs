@@ -1,6 +1,7 @@
-//! Zero-flow admission policy (INC-I-237 M11): canonical maintainer payloads,
-//! state-effect preconditions, the INC-I-246 delegation stop-gap and the
-//! canonical mined check. Admission-only: block validation and apply are untouched.
+//! Zero-flow admission policy (INC-I-237 M11/M12.1): canonical maintainer payloads,
+//! state-effect preconditions, delegation standing, the INC-I-246 delegation
+//! stop-gap and the canonical mined check. Admission-only: block validation and
+//! apply are untouched.
 
 use crypto::PublicKey;
 use doli_core::maintainer::MaintainerChangeData;
@@ -11,6 +12,7 @@ use storage::{BlockStore, PendingProducerUpdate, ProducerSet};
 use crate::pool::MempoolError;
 use crate::zero_flow_auth::ZeroFlowSnapshot;
 use crate::zero_flow_newness::ChangeKey;
+use crate::zero_flow_standing::Standing;
 
 /// A delegation tx against its delegator's delegation as the next epoch boundary would see it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -19,6 +21,7 @@ pub(crate) struct DelegationView {
     bonds: Option<u32>,
     effective: Option<(PublicKey, u32)>,
     received: Option<u64>,
+    standing: Standing,
 }
 
 /// `bonds` is Some for a DelegateBond, None for a RevokeDelegation naming `delegate`.
@@ -31,7 +34,8 @@ pub(crate) fn delegation_view(
     let mut effective = ps
         .get_by_pubkey(delegator)
         .and_then(|i| i.delegated_to.map(|to| (to, i.delegated_bonds)));
-    for update in ps.pending_updates_for(delegator) {
+    let queued = ps.pending_updates_for(delegator);
+    for &update in &queued {
         match update {
             PendingProducerUpdate::DelegateBond {
                 delegate,
@@ -53,6 +57,7 @@ pub(crate) fn delegation_view(
         bonds,
         effective,
         received,
+        standing: Standing::of(ps, delegator, delegate, bonds, &queued),
     }
 }
 
@@ -82,9 +87,18 @@ fn change_data(tx: &Transaction) -> Option<MaintainerChangeData> {
         .flatten()
 }
 
-/// Newness key of a maintainer change: its signed content (action, target).
+/// Newness key: a maintainer change's signed content (action, target); a delegation tx's delegator.
 pub(crate) fn change_key(tx: &Transaction) -> Option<ChangeKey> {
-    change_data(tx).map(|d| (tx.tx_type == TxType::AddMaintainer, d.target))
+    match tx.tx_type {
+        TxType::DelegateBond => tx
+            .delegate_bond_data()
+            .map(|d| ChangeKey::Delegator(d.delegator)),
+        TxType::RevokeDelegation => tx
+            .revoke_delegation_data()
+            .map(|d| ChangeKey::Delegator(d.delegator)),
+        _ => change_data(tx)
+            .map(|d| ChangeKey::Maintainer(tx.tx_type == TxType::AddMaintainer, d.target)),
+    }
 }
 
 /// Checks that run before the multisig: canonical payload bytes, then the state-effect precondition.
@@ -118,19 +132,25 @@ fn effect_possible(tx_type: TxType, set: &MaintainerSet, target: &PublicKey) -> 
     }
 }
 
-/// Checks that run after the multisig: the INC-I-246 delegation stop-gap, then the mined check.
+/// Checks that run after the multisig: delegation standing, the INC-I-246 stop-gap, then the mined check.
 pub(crate) fn post_auth(
     tx: &Transaction,
     snapshot: Option<&ZeroFlowSnapshot>,
     height: u64,
     network: Network,
 ) -> Result<(), MempoolError> {
+    if matches!(tx.tx_type, TxType::DelegateBond | TxType::RevokeDelegation) {
+        let Some(view) = snapshot.and_then(|s| s.delegation.as_ref()) else {
+            return refuse("MPTX016", tx, "has no producer-set view to check standing");
+        };
+        if let Some(why) = view.standing.no_op(view.bonds, view.effective.is_some()) {
+            return refuse("MPTX016", tx, why);
+        }
+        delegation_stop_gap(tx, view, height, network)?;
+    }
     let Some(snap) = snapshot else {
         return Ok(());
     };
-    if let Some(view) = &snap.delegation {
-        delegation_stop_gap(tx, view, height, network)?;
-    }
     if snap.mined_in_chain {
         return refuse("MPTX014", tx, "is already mined in the canonical chain");
     }
@@ -151,9 +171,6 @@ fn delegation_stop_gap(
             _ => Ok(()),
         };
     };
-    if view.effective == Some((view.named, bonds)) {
-        return refuse("MPTX013", tx, "repeats the current delegation");
-    }
     let p = network.params();
     let cap = if height >= p.received_delegation_cap_activation_height
         && p.received_delegation_cap != u64::MAX

@@ -1,6 +1,7 @@
 //! INC-I-237 M8 — fixtures: test nodes with a 4-member current maintainer set,
 //! on auth-active params (testnet, delegation auth AH 0) or devnet (AH u64::MAX),
-//! and genuine / forged zero-flow txs of the 4 authenticated types.
+//! and genuine / forged zero-flow txs of the 4 authenticated types; delegation
+//! parties are registered and active on every node under test (REQ-GRV-038).
 //!
 //! OUTPUT CONTRACT: N/A — fixture file (helpers only, asserts nothing).
 //! INPUT PARTITIONS: N/A — fixture file.
@@ -109,14 +110,46 @@ fn sign_or_forge(msg: &crypto::Hash, delegator: &KeyPair, sig: Sig) -> crypto::S
     }
 }
 
-pub fn delegate_bond(sig: Sig) -> Transaction {
-    let delegator = KeyPair::generate();
-    let mut d = DelegateBondData::new(
-        *delegator.public_key(),
-        *KeyPair::generate().public_key(),
-        1,
-    );
-    d.signature = sign_or_forge(&d.signing_message(), &delegator, sig);
+pub const DELEGATOR_BONDS: u32 = 2;
+
+/// Delegator and delegate of one delegation tx.
+pub struct Parties {
+    pub delegator: KeyPair,
+    pub delegate: KeyPair,
+}
+
+impl Parties {
+    /// Keys no node has registered.
+    pub fn throwaway() -> Self {
+        Self {
+            delegator: KeyPair::generate(),
+            delegate: KeyPair::generate(),
+        }
+    }
+
+    /// Fresh keys registered and active on every node; `delegated` applies delegator -> delegate (1 bond).
+    pub async fn registered(nodes: &[&Node], delegated: bool) -> Self {
+        let p = Self::throwaway();
+        for node in nodes {
+            let unit = node.config.network.bond_unit();
+            let mut ps = node.producer_set.write().await;
+            ps.register_genesis_producer(*p.delegator.public_key(), DELEGATOR_BONDS, unit)
+                .expect("register delegator");
+            ps.register_genesis_producer(*p.delegate.public_key(), 1, unit)
+                .expect("register delegate");
+            if delegated {
+                ps.delegate_bonds(p.delegator.public_key(), p.delegate.public_key(), 1)
+                    .expect("fixture delegation");
+            }
+        }
+        p
+    }
+}
+
+/// DelegateBond of 1 bond from `p.delegator` to `p.delegate`.
+pub fn delegate_bond(p: &Parties, sig: Sig) -> Transaction {
+    let mut d = DelegateBondData::new(*p.delegator.public_key(), *p.delegate.public_key(), 1);
+    d.signature = sign_or_forge(&d.signing_message(), &p.delegator, sig);
     let mut tx = Transaction::new_delegate_bond(d.clone());
     if let Sig::Absent = sig {
         tx.extra_data = d.to_bytes_legacy();
@@ -124,16 +157,25 @@ pub fn delegate_bond(sig: Sig) -> Transaction {
     tx
 }
 
-pub fn revoke(sig: Sig) -> Transaction {
-    let delegator = KeyPair::generate();
-    let mut d =
-        RevokeDelegationData::new(*delegator.public_key(), *KeyPair::generate().public_key());
-    d.signature = sign_or_forge(&d.signing_message(), &delegator, sig);
+/// RevokeDelegation by `p.delegator` naming `p.delegate`.
+pub fn revoke(p: &Parties, sig: Sig) -> Transaction {
+    let mut d = RevokeDelegationData::new(*p.delegator.public_key(), *p.delegate.public_key());
+    d.signature = sign_or_forge(&d.signing_message(), &p.delegator, sig);
     let mut tx = Transaction::new_revoke_delegation(d.clone());
     if let Sig::Absent = sig {
         tx.extra_data = d.to_bytes_legacy();
     }
     tx
+}
+
+/// Genuine DelegateBond by fresh parties registered and active on every node.
+pub async fn genuine_delegate_bond(nodes: &[&Node]) -> Transaction {
+    delegate_bond(&Parties::registered(nodes, false).await, Sig::Genuine)
+}
+
+/// Genuine RevokeDelegation of a delegation applied on every node.
+pub async fn genuine_revoke(nodes: &[&Node]) -> Transaction {
+    revoke(&Parties::registered(nodes, true).await, Sig::Genuine)
 }
 
 /// The exact bytes apply verifies a maintainer change against at `height`.

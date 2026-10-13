@@ -26,7 +26,7 @@ use network::{GossipHandle, NetworkCommand, NetworkEvent};
 use tokio::sync::mpsc;
 
 use super::inc_i_237_m2_node_common as c;
-use super::inc_i_237_m8_common::{self as m8, Sig};
+use super::inc_i_237_m8_common as m8;
 
 struct Line {
     b: Node,
@@ -183,7 +183,7 @@ async fn m5_audit_p1_505_forged_zero_flow_batch_stops_at_the_first_node() {
         crossed, 0,
         "AUDIT-P1-505: {crossed} forged zero-flow txs crossed B"
     );
-    let genuine = m8::delegate_bond(Sig::Genuine);
+    let genuine = m8::genuine_delegate_bond(&[&l.b]).await;
     l.a_cmd
         .send(NetworkCommand::BroadcastTransaction(genuine.clone()))
         .await

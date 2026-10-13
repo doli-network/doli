@@ -10,7 +10,8 @@
 //!   P2 genuine zero-flow -> Ok, admitted, exactly 1 broadcast (INV-RPC-002)
 //! INPUT PARTITIONS: type {DelegateBond, RevokeDelegation, AddMaintainer,
 //!   RemoveMaintainer}; delegation signature {genuine, absent, malformed, wrong
-//!   key}; maintainer signatures (3 entries, so the count pre-check passes)
+//!   key}; delegation parties registered and active in the context's producer
+//!   set (REQ-GRV-038); maintainer signatures (3 entries, so the count pre-check passes)
 //!   {3 of 4 members, 2 members + 1 outsider, 3 outsiders, members over other
 //!   bytes, target as signer}; params {testnet, tip past every maintainer AH}.
 // covers: zero_flow_auth pool lib gossip_txs validation_checks mod transaction governance context verdict relay_decision init startup gossip-relay-verdict-status gossip-relay-verdict-architecture
@@ -26,7 +27,7 @@ use doli_core::transaction::{DelegateBondData, RevokeDelegationData};
 use doli_core::{MaintainerSet, Transaction};
 use mempool::{Mempool, MempoolPolicy};
 use serde_json::{json, Value};
-use storage::{BlockStore, ChainState, MaintainerState, UtxoSet};
+use storage::{BlockStore, ChainState, MaintainerState, ProducerSet, UtxoSet};
 use tempfile::TempDir;
 use tokio::sync::RwLock;
 
@@ -34,6 +35,7 @@ const TIP: u64 = 30_000;
 
 struct H {
     ctx: RpcContext,
+    producers: Arc<RwLock<ProducerSet>>,
     sent: Arc<Mutex<Vec<Transaction>>>,
     m: Vec<KeyPair>,
     params: ConsensusParams,
@@ -49,6 +51,7 @@ fn harness() -> H {
     let mempool = Mempool::new(MempoolPolicy::testnet(), params.clone(), Network::Testnet);
     let sent: Arc<Mutex<Vec<Transaction>>> = Arc::default();
     let sink = sent.clone();
+    let producers: Arc<RwLock<ProducerSet>> = Arc::default();
     let mut ctx = RpcContext::new_for_network(
         Arc::new(RwLock::new(cs)),
         Arc::new(BlockStore::open(dir.path()).expect("blockstore")),
@@ -57,6 +60,7 @@ fn harness() -> H {
         params.clone(),
         Network::Testnet,
     )
+    .with_producer_set(producers.clone())
     .with_broadcast(move || {
         let sink = sink.clone();
         Some(
@@ -72,6 +76,7 @@ fn harness() -> H {
     ctx.maintainer_state = Some(Arc::new(RwLock::new(state)));
     H {
         ctx,
+        producers,
         sent,
         m,
         params,
@@ -152,9 +157,22 @@ impl H {
     }
 }
 
-fn delegation(revoke: bool, sig: &str) -> Transaction {
+/// Delegation tx by fresh parties registered and active in `h`'s producer set (delegated for a revoke).
+async fn delegation(h: &H, revoke: bool, sig: &str) -> Transaction {
     let k = KeyPair::generate();
     let other = *KeyPair::generate().public_key();
+    {
+        let unit = Network::Testnet.bond_unit();
+        let mut ps = h.producers.write().await;
+        ps.register_genesis_producer(*k.public_key(), 2, unit)
+            .expect("register delegator");
+        ps.register_genesis_producer(other, 1, unit)
+            .expect("register delegate");
+        if revoke {
+            ps.delegate_bonds(k.public_key(), &other, 1)
+                .expect("fixture delegation");
+        }
+    }
     let signer = if sig == "wrong" {
         KeyPair::generate()
     } else {
@@ -211,7 +229,10 @@ async fn req_grv_sec_007_send_transaction_refuses_forged_zero_flow_txs() {
     let mut rows: Vec<(String, Transaction)> = Vec::new();
     for revoke in [false, true] {
         for sig in ["absent", "malformed", "wrong"] {
-            rows.push((format!("revoke={revoke} {sig}"), delegation(revoke, sig)));
+            rows.push((
+                format!("revoke={revoke} {sig}"),
+                delegation(&h, revoke, sig).await,
+            ));
         }
     }
     for is_add in [true, false] {
@@ -247,8 +268,8 @@ async fn inv_rpc_002_send_transaction_admits_and_broadcasts_genuine_zero_flow_tx
     let add_t = h.target(true);
     let rm_t = h.target(false);
     let rows = vec![
-        ("DelegateBond", delegation(false, "genuine")),
-        ("RevokeDelegation", delegation(true, "genuine")),
+        ("DelegateBond", delegation(&h, false, "genuine").await),
+        ("RevokeDelegation", delegation(&h, true, "genuine").await),
         (
             "AddMaintainer",
             maintainer_tx(

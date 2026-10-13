@@ -23,7 +23,7 @@
 
 use crypto::{Hash, KeyPair};
 use doli_core::maintainer::MaintainerSignature;
-use doli_core::transaction::{DelegateBondData, RevokeDelegationData};
+use doli_core::transaction::RevokeDelegationData;
 use doli_core::{BlockHeader, Transaction};
 use doli_node::node::Node;
 use network::{EquivocationProof, Verdict};
@@ -249,13 +249,6 @@ fn req_grv_008_node_sends_verdicts_only_through_the_try_send_helper() {
     assert!(helper > 0, "no node path sends a gossip verdict");
 }
 
-fn genuine_delegation() -> Transaction {
-    let kp = KeyPair::generate();
-    let mut d = DelegateBondData::new(*kp.public_key(), *KeyPair::generate().public_key(), 1);
-    d.signature = crypto::signature::sign_hash(&d.signing_message(), kp.private_key());
-    Transaction::new_delegate_bond(d)
-}
-
 /// The other admissible zero-flow types, each with garbage signatures.
 fn forged_other_zero_flow() -> Vec<(&'static str, Transaction)> {
     let target = *KeyPair::generate().public_key();
@@ -314,7 +307,7 @@ async fn m5_audit_p1_505_forged_zero_flow_tx_never_authorizes_a_forward() {
         before,
         "REQ-GRV-SEC-008: no forged zero-flow tx admitted"
     );
-    let genuine = genuine_delegation();
+    let genuine = m8::genuine_delegate_bond(&[&node]).await;
     let v = node.handle_gossip_txs(vec![genuine.clone()]).await;
     assert_eq!(
         v,

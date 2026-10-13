@@ -13,11 +13,13 @@
 //!   (auth AH active) -> refused + Ignore; P3 maintainer change below the current
 //!   set's threshold -> refused + Ignore; P4 mixed [forged, genuine] -> Ignore,
 //!   genuine admitted alone; P5 zero-flow Registration -> Ignore; P6 devnet
-//!   (auth AH u64::MAX) unsigned delegation -> admitted + Accept
+//!   (auth AH u64::MAX) unsigned delegation -> admitted + Accept; P7
+//!   (REQ-GRV-038) genuine delegation by throwaway keys -> refused + Ignore
 //! INPUT PARTITIONS: type {DelegateBond, RevokeDelegation, AddMaintainer,
 //!   RemoveMaintainer, Registration}; delegation signature {genuine, absent
 //!   (legacy bytes), malformed, wrong key}; maintainer signatures {3 of 4, 4 of 4,
 //!   2 of 4, non-members, other bytes, garbage, one member x3, target as signer};
+//!   delegation parties {registered and active on the node, throwaway};
 //!   params {auth AH 0 (testnet), devnet u64::MAX}; message {single, mixed order}
 //! MATRIX: O2 x O3 x every partition below; parity rows pin O3 (admitted) ==
 //!   apply effect for every (type, signature, params) cell.
@@ -28,7 +30,7 @@ use doli_node::node::Node;
 use network::Verdict;
 
 use super::inc_i_237_m2_node_common as c;
-use super::inc_i_237_m8_common::{self as m8, Sig};
+use super::inc_i_237_m8_common::{self as m8, Parties, Sig};
 
 /// Rows that leaked: admitted, forwarded, or grew the mempool.
 async fn leaks(node: &Node, rows: Vec<(String, Transaction)>) -> Vec<String> {
@@ -47,20 +49,28 @@ async fn leaks(node: &Node, rows: Vec<(String, Transaction)>) -> Vec<String> {
     out
 }
 
-fn delegation_rows(make: fn(Sig) -> Transaction, kind: &str) -> Vec<(String, Transaction)> {
-    m8::FORGED_SIGS
-        .iter()
-        .map(|s| (format!("{kind}: {s:?} signature"), make(*s)))
-        .collect()
+/// One tx per signature in `sigs`, each by fresh parties registered on `node` (delegated for a revoke).
+async fn delegation_rows(node: &Node, revoke: bool, sigs: &[Sig]) -> Vec<(String, Transaction)> {
+    let mut rows = Vec::new();
+    for s in sigs {
+        let p = Parties::registered(&[node], revoke).await;
+        let (kind, tx) = if revoke {
+            ("RevokeDelegation", m8::revoke(&p, *s))
+        } else {
+            ("DelegateBond", m8::delegate_bond(&p, *s))
+        };
+        rows.push((format!("{kind}: {s:?} signature"), tx));
+    }
+    rows
 }
 
 // REQ-GRV-SEC-007 — Decision: a failure means gossip admits a DelegateBond whose signature apply refuses, so forged delegations sit in mempools and (post-M8) would relay.
 #[tokio::test]
 async fn req_grv_sec_007_gossip_refuses_forged_delegate_bond() {
     let (node, _kp, _m, _t) = m8::auth_node().await;
-    let bad = leaks(&node, delegation_rows(m8::delegate_bond, "DelegateBond")).await;
+    let bad = leaks(&node, delegation_rows(&node, false, &m8::FORGED_SIGS).await).await;
     assert!(bad.is_empty(), "REQ-GRV-SEC-007 gossip: {bad:#?}");
-    let genuine = m8::delegate_bond(Sig::Genuine);
+    let genuine = m8::genuine_delegate_bond(&[&node]).await;
     assert!(
         node.handle_new_transaction(genuine).await,
         "non-vacuity: a genuine DelegateBond is admitted"
@@ -71,9 +81,9 @@ async fn req_grv_sec_007_gossip_refuses_forged_delegate_bond() {
 #[tokio::test]
 async fn req_grv_sec_007_gossip_refuses_forged_revoke_delegation() {
     let (node, _kp, _m, _t) = m8::auth_node().await;
-    let bad = leaks(&node, delegation_rows(m8::revoke, "RevokeDelegation")).await;
+    let bad = leaks(&node, delegation_rows(&node, true, &m8::FORGED_SIGS).await).await;
     assert!(bad.is_empty(), "REQ-GRV-SEC-007 gossip: {bad:#?}");
-    let genuine = m8::revoke(Sig::Genuine);
+    let genuine = m8::genuine_revoke(&[&node]).await;
     assert!(
         node.handle_new_transaction(genuine).await,
         "non-vacuity: a genuine RevokeDelegation is admitted"
@@ -113,8 +123,8 @@ async fn req_grv_sec_007_gossip_refuses_remove_maintainer_below_the_current_thre
 async fn req_grv_029_genuine_zero_flow_of_each_type_authorizes_a_forward() {
     let (node, _kp, m, _t) = m8::auth_node().await;
     let rows = vec![
-        ("DelegateBond", m8::delegate_bond(Sig::Genuine)),
-        ("RevokeDelegation", m8::revoke(Sig::Genuine)),
+        ("DelegateBond", m8::genuine_delegate_bond(&[&node]).await),
+        ("RevokeDelegation", m8::genuine_revoke(&[&node]).await),
         ("AddMaintainer", m8::genuine_add(&node, &m).await),
         ("RemoveMaintainer", m8::genuine_remove(&node, &m).await),
     ];
@@ -134,8 +144,8 @@ async fn req_grv_029_genuine_zero_flow_of_each_type_authorizes_a_forward() {
 async fn d5_mixed_forged_and_genuine_zero_flow_message_is_ignored() {
     for forged_first in [true, false] {
         let (node, _kp, _m, _t) = m8::auth_node().await;
-        let forged = m8::delegate_bond(Sig::Wrong);
-        let genuine = m8::delegate_bond(Sig::Genuine);
+        let forged = m8::delegate_bond(&Parties::registered(&[&node], false).await, Sig::Wrong);
+        let genuine = m8::genuine_delegate_bond(&[&node]).await;
         let msg = if forged_first {
             vec![forged.clone(), genuine.clone()]
         } else {
@@ -188,7 +198,7 @@ async fn fixture_auth_node_admits_and_forwards_a_fee_paying_transfer() {
 #[tokio::test]
 async fn devnet_unsigned_legacy_delegate_bond_is_still_admitted() {
     let (node, _kp, _m, _t) = m8::devnet_node().await;
-    let tx = m8::delegate_bond(Sig::Absent);
+    let tx = m8::delegate_bond(&Parties::registered(&[&node], false).await, Sig::Absent);
     let h = m8::next_height(&node).await;
     assert!(
         m8::apply_effect(&node, &tx, h).await,
@@ -204,7 +214,7 @@ async fn devnet_unsigned_legacy_delegate_bond_is_still_admitted() {
 #[tokio::test]
 async fn devnet_unsigned_legacy_delegate_bond_authorizes_a_forward() {
     let (node, _kp, _m, _t) = m8::devnet_node().await;
-    let tx = m8::delegate_bond(Sig::Absent);
+    let tx = m8::delegate_bond(&Parties::registered(&[&node], false).await, Sig::Absent);
     let v = node.handle_gossip_txs(vec![tx.clone()]).await;
     assert!(m8::has(&node, &tx).await, "admitted");
     assert_eq!(v, Verdict::Accept, "devnet legacy DelegateBond forwards");
@@ -212,11 +222,9 @@ async fn devnet_unsigned_legacy_delegate_bond_authorizes_a_forward() {
 
 /// Every (type, signature) cell: admitted at the next height == apply has a state effect there.
 async fn parity_mismatches(node: &Node, m: &[crypto::KeyPair]) -> Vec<String> {
-    let mut rows: Vec<(String, Transaction)> = Vec::new();
-    for s in [Sig::Genuine, Sig::Absent, Sig::Malformed, Sig::Wrong] {
-        rows.push((format!("DelegateBond {s:?}"), m8::delegate_bond(s)));
-        rows.push((format!("RevokeDelegation {s:?}"), m8::revoke(s)));
-    }
+    let all_sigs = [Sig::Genuine, Sig::Absent, Sig::Malformed, Sig::Wrong];
+    let mut rows = delegation_rows(node, false, &all_sigs).await;
+    rows.extend(delegation_rows(node, true, &all_sigs).await);
     rows.push((
         "AddMaintainer 3 of 4".into(),
         m8::genuine_add(node, m).await,
@@ -265,4 +273,27 @@ async fn admission_matches_apply_on_devnet_params() {
     let (node, _kp, m, _t) = m8::devnet_node().await;
     let bad = parity_mismatches(&node, &m).await;
     assert!(bad.is_empty(), "admission != apply (devnet): {bad:#?}");
+}
+
+// REQ-GRV-038 / REQ-GRV-SEC-012 / REQ-GRV-SEC-013 — Decision: a failure means a delegation signed by a key no node has registered (a boundary no-op on every network) is still admitted and authorizes a forward.
+#[tokio::test]
+async fn req_grv_038_throwaway_key_delegations_are_refused() {
+    let (auth, _kp, _m, _t) = m8::auth_node().await;
+    let (dev, _kp2, _m2, _t2) = m8::devnet_node().await;
+    let mut bad = Vec::new();
+    for (net, node, sig) in [("auth", &auth, Sig::Genuine), ("devnet", &dev, Sig::Absent)] {
+        let p = Parties::throwaway();
+        let rows = vec![
+            (
+                format!("{net} DelegateBond {sig:?}"),
+                m8::delegate_bond(&p, sig),
+            ),
+            (
+                format!("{net} RevokeDelegation {sig:?}"),
+                m8::revoke(&p, sig),
+            ),
+        ];
+        bad.extend(leaks(node, rows).await);
+    }
+    assert!(bad.is_empty(), "REQ-GRV-038 throwaway rows: {bad:#?}");
 }

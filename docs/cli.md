@@ -1284,6 +1284,41 @@ what the CHAIN holds, and costs a fee.
 
 ---
 
+### 4.11. Delegate Bonds and Revoke a Delegation
+
+Delegate bond weight to another active producer, or revoke your delegation. Both
+transactions pay no fee. Both take effect at the next epoch boundary.
+
+```bash
+doli producer delegate <DELEGATEE> --bonds <N>
+doli producer revoke-delegation
+doli producer delegation-status [--address <PUBKEY>]
+```
+
+Before it submits, the CLI reads the applied producer set. You and the delegatee
+must be registered and active. You cannot delegate to yourself. `--bonds` must not
+exceed your available bonds. You must have no delegation. `revoke-delegation`
+revokes the delegation that the applied set shows.
+
+The node checks the same conditions against the applied set plus your queued
+updates (`MPTX016`). It keeps at most one pending delegation tx per delegator.
+
+- **Revoke, then delegate.** `delegate` refuses until the next epoch boundary,
+  because the applied set still shows the delegation. A tool that builds the
+  DelegateBond itself gets `MPTX016` until the revoke is mined: wait one block.
+- **A pending delegation holds the slot.** While one delegation tx from your key
+  is pending, a second one gets `Transaction already in mempool`
+  (`TX_ALREADY_EXISTS`). Wait until the first is mined, evicted or expires.
+- **Revoke during a queued switch.** `revoke-delegation` names the applied
+  delegate. If a same-epoch switch to another delegate is queued, the node
+  refuses it with `MPTX013`. Wait for the epoch boundary.
+- **Same delegation again after a revoke.** The tx is byte-identical to the mined
+  one, so the node refuses it with `MPTX014`. Use a different `--bonds` value.
+
+Codes and causes: `docs/error-codes.md` (MPTX).
+
+---
+
 ## 5. Rewards
 
 Block rewards in DOLI work via a pooled epoch model: each block's coinbase goes to the reward pool, and at epoch boundaries, the pool is drained and distributed bond-weighted to qualified producers.

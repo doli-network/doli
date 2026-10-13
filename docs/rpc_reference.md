@@ -351,6 +351,31 @@ Submits a signed transaction to the network.
 The transaction was NOT admitted to the mempool; resubmit it after a short wait.
 `submitMaintainerChange` returns the same Busy error.
 
+**Errors (DelegateBond / RevokeDelegation):** these txs pay no fee, so admission checks them as the
+next epoch boundary would (applied producer set plus the delegator's queued updates). A refusal returns
+`-32002` with the code in `data.error_code`: `MPTX010` (delegator signature refused), `MPTX016` (the
+boundary turns the tx into a no-op: delegator not registered or not active, self-delegation, delegate
+not registered or not active, `bond_count` above the available bonds, an effective delegation exists,
+or a revoke with no effective delegation; also when the node has no producer-set view), `MPTX013` (a
+revoke names a delegate other than the effective one, or the delegation exceeds the delegate's received
+cap), `MPTX014` (a DelegateBond that a canonical block already carries). At most one DelegateBond /
+RevokeDelegation per delegator stays pending: a second one returns `-32003` / `TX_ALREADY_EXISTS` until
+the first is mined, evicted or expires. These checks are admission only, not a consensus rule.
+
+**Edge flows (refused until the INC-I-246 consensus fix):**
+- (a) Re-delegation to the same delegate with the same `bond_count` after a revoke: `MPTX014`, because the
+  tx is byte-identical to the mined one. Workaround: use a different `bond_count`.
+- (b) CLI revoke while a same-epoch delegation switch is queued: `MPTX013`, because the CLI names the
+  applied delegate and the queued one is effective. Workaround: wait for the epoch boundary.
+- (c) An Add / Remove maintainer change that depends on a pending change at the set bounds: `MPTX011`,
+  because admission checks the current set. Workaround: wait until the pending change is mined.
+- (d) Revoke, then delegate back to back: the DelegateBond gets `MPTX016`, because the revoke is not mined
+  and the effective delegation still stands. Workaround: wait one block (until the revoke is mined).
+- (e) A pending delegation tx holds the delegator's one slot until it is mined, evicted or expires; a
+  second one gets `TX_ALREADY_EXISTS`. Workaround: wait.
+
+Code table: `docs/error-codes.md` (MPTX).
+
 **Example:**
 ```bash
 curl -X POST http://127.0.0.1:8500 \
@@ -1229,6 +1254,9 @@ Submit a maintainer add or remove transaction (requires 3/5 multisig).
 `-32003` / `TX_ALREADY_EXISTS` when a change for the same action and target is already pending (wait until it is mined, evicted or expires, then retry);
 `-32002` / `MPTX010` (multisig refused), `MPTX011` (no effect on the current set: Add of a member or into a full set, Remove of a non-member or at the minimum size),
 `MPTX012` (non-canonical payload or a repeated signature entry), `MPTX014` (already mined), `MPTX015` (pending changes for this action at the cap).
+A change that depends on a pending change at the set bounds gets `MPTX011` until that change is mined
+(edge flow (c) under `sendTransaction`). This method never carries DelegateBond / RevokeDelegation, so it
+never returns `MPTX016`.
 
 **Example:**
 ```bash
