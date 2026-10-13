@@ -33,6 +33,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 COPY bins/ bins/
 COPY testing/ testing/
+COPY vendor/ vendor/
 COPY chainspec.mainnet.json chainspec.testnet.json ./
 
 # Build release binary

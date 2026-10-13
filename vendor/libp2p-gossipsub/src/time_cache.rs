@@ -161,7 +161,7 @@ where
         }
     }
 
-    pub(crate) fn entry(&mut self, key: Key) -> Entry<Key, Value> {
+    pub(crate) fn entry(&mut self, key: Key) -> Entry<'_, Key, Value> {
         let now = Instant::now();
         self.map_capacity_hwm = self.map_capacity_hwm.max(self.map.capacity()); // DOLI INC-I-237
         self.remove_expired_keys(now);
