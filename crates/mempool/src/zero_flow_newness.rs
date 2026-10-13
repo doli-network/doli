@@ -28,26 +28,38 @@ impl ChangeIndex {
         key: Option<ChangeKey>,
         live: &HashMap<Hash, MempoolEntry>,
     ) -> Result<Option<ChangeKey>, MempoolError> {
+        if let Some(ChangeKey::Maintainer(..)) = key {
+            self.0.retain(|_, txid| live.contains_key(txid));
+        }
+        self.probe(key, live)?;
+        Ok(key)
+    }
+
+    /// The refusal `admit` would return, without pruning.
+    pub(crate) fn probe(
+        &self,
+        key: Option<ChangeKey>,
+        live: &HashMap<Hash, MempoolEntry>,
+    ) -> Result<(), MempoolError> {
         let Some(key) = key else {
-            return Ok(None);
+            return Ok(());
         };
-        let ChangeKey::Maintainer(is_add, _) = key else {
-            return match self.0.get(&key) {
-                Some(txid) if live.contains_key(txid) => Err(MempoolError::AlreadyExists),
-                _ => Ok(Some(key)),
-            };
-        };
-        self.0.retain(|_, txid| live.contains_key(txid));
-        if self.0.contains_key(&key) {
+        let resident = |k: &ChangeKey| self.0.get(k).is_some_and(|txid| live.contains_key(txid));
+        if resident(&key) {
             return Err(MempoolError::AlreadyExists);
         }
-        let same_action = |k: &&ChangeKey| matches!(k, ChangeKey::Maintainer(a, _) if *a == is_add);
+        let ChangeKey::Maintainer(is_add, _) = key else {
+            return Ok(());
+        };
+        let same_action = |k: &&ChangeKey| {
+            matches!(k, ChangeKey::Maintainer(a, _) if *a == is_add) && resident(k)
+        };
         if self.0.keys().filter(same_action).count() >= MAX_MAINTAINERS {
             return Err(MempoolError::InvalidTransaction(format!(
                 "[MPTX015] maintainer-change residents for this action at cap {MAX_MAINTAINERS}"
             )));
         }
-        Ok(Some(key))
+        Ok(())
     }
 
     pub(crate) fn record(&mut self, key: ChangeKey, txid: Hash) {

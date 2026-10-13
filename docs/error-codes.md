@@ -258,7 +258,7 @@ Used in `MempoolError::InvalidTransaction(String)` in `crates/mempool/src/pool.r
 | `MPTX011` | AddMaintainer / RemoveMaintainer has no effect on the current maintainer set (Add: target already a member or set full; Remove: target not a member or set at `MIN_MAINTAINERS`) | `tx_type` |
 | `MPTX012` | AddMaintainer / RemoveMaintainer payload is not canonical (e.g. trailing bytes) or repeats a signature entry | `tx_type` |
 | `MPTX013` | INC-I-246 admission stop-gap: RevokeDelegation names a delegate other than the effective one, or DelegateBond exceeds the delegate's received cap | `tx_type` |
-| `MPTX014` | DelegateBond / AddMaintainer / RemoveMaintainer is already mined in the canonical chain | `tx_type` |
+| `MPTX014` | DelegateBond is already mined in the canonical chain; checked after every other refusal; repeated copies hit a bounded cache (10,000 txids, each pinned to its carrying block and re-checked against the canonical height index). AddMaintainer / RemoveMaintainer do not reach this check: a copy of a change that is still in effect gets `MPTX011`. A re-delegation after a revoke must be a new tx, not a replay of the mined one: use a different `bond_count` (flow (a)) | `tx_type` |
 | `MPTX015` | Maintainer-change residents for this action are at the cap (`MAX_MAINTAINERS`); retry after one is mined, evicted or expires | none |
 | `MPTX016` | DelegateBond / RevokeDelegation that the next epoch boundary turns into a no-op, checked on the applied producer set plus the delegator's queued updates. DelegateBond: delegator not registered or not active (a queued Register counts), delegator equals delegate, delegate not registered or not active (a queued active Register counts), `bond_count` above the available bonds (applied + queued Register / AddBond bonds - pending withdrawals), or an effective delegation exists. RevokeDelegation: delegator not known, or no effective delegation. Also refused when admission has no producer-set view (fail closed) | `tx_type` |
 
@@ -268,7 +268,7 @@ Admission keeps at most one pending DelegateBond / RevokeDelegation per delegato
 
 | Flow | Code | Cause | Workaround |
 |------|------|-------|------------|
-| (a) Re-delegate to the same delegate with the same `bond_count` after a revoke | `MPTX014` | The new tx is byte-identical to the mined one | Use a different `bond_count` |
+| (a) Re-delegate to the same delegate with the same `bond_count` after a revoke | `MPTX014` | The new tx is byte-identical to the mined one; `MPTX014` comes only after every other check passes | Use a different `bond_count` |
 | (b) CLI revoke while a same-epoch delegation switch is queued | `MPTX013` | The CLI names the applied delegate; the effective delegate is the queued one | Wait for the epoch boundary |
 | (c) Add / Remove maintainer change that depends on a pending change at the set bounds | `MPTX011` | Admission checks the current set; the pending change is not applied yet | Wait until the pending change is mined |
 | (d) Revoke, then delegate back to back | `MPTX016` | The revoke is not mined yet, so the effective delegation still stands | Wait one block (until the revoke is mined) |

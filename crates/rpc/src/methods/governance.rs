@@ -279,20 +279,17 @@ impl RpcContext {
         };
 
         let permit = (self.broadcast_tx)().ok_or_else(RpcError::broadcast_busy)?;
-        let snapshot = mempool::zero_flow_auth::snapshot_for(
-            &tx,
+        // Submit to mempool (maintainer txs are state-only, no UTXO inputs).
+        mempool::zero_flow_mined::admit_zero_flow(
+            &self.mempool,
+            tx.clone(),
+            current_height,
             self.maintainer_state.as_ref(),
             self.producer_set.as_ref(),
             &self.block_store,
         )
-        .await;
-        // Submit to mempool (maintainer txs are state-only, no UTXO inputs).
-        {
-            let mut mempool = self.mempool.write().await;
-            mempool
-                .add_system_transaction(tx.clone(), current_height, Some(&snapshot))
-                .map_err(Self::mempool_error_to_rpc)?;
-        }
+        .await
+        .map_err(Self::mempool_error_to_rpc)?;
 
         // INC-I-195 — RELAY. Without this the transaction never leaves the node
         // that received the RPC, so any non-producer endpoint accepts it and
@@ -304,7 +301,7 @@ impl RpcContext {
         // in 4-5 blocks each against a producer).
         //
         // The receiving side (`Node::handle_new_transaction`) re-runs the same zero-flow
-        // auth inside `add_system_transaction` before it relays (INC-I-237 M8).
+        // admission (`admit_zero_flow`) before it relays (INC-I-237 M8).
         permit(tx);
 
         Ok(serde_json::json!({

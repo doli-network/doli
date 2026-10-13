@@ -1,16 +1,15 @@
 //! Zero-flow admission policy (INC-I-237 M11/M12.1): canonical maintainer payloads,
-//! state-effect preconditions, delegation standing, the INC-I-246 delegation
-//! stop-gap and the canonical mined check. Admission-only: block validation and
-//! apply are untouched.
+//! state-effect preconditions, authorization, delegation standing and the INC-I-246
+//! delegation stop-gap. Admission-only: block validation and apply are untouched.
 
-use crypto::PublicKey;
+use crypto::{Hash, PublicKey};
 use doli_core::maintainer::MaintainerChangeData;
 use doli_core::network::Network;
 use doli_core::{MaintainerSet, Transaction, TxType};
-use storage::{BlockStore, PendingProducerUpdate, ProducerSet};
+use storage::{PendingProducerUpdate, ProducerSet};
 
 use crate::pool::MempoolError;
-use crate::zero_flow_auth::ZeroFlowSnapshot;
+use crate::zero_flow_auth::{authorized, ZeroFlowSnapshot};
 use crate::zero_flow_newness::ChangeKey;
 use crate::zero_flow_standing::Standing;
 
@@ -61,20 +60,27 @@ pub(crate) fn delegation_view(
     }
 }
 
-/// True iff the tx index places `tx` at a height whose canonical block carries it.
-pub(crate) fn mined_in_chain(tx: &Transaction, blocks: &BlockStore) -> bool {
-    let txid = tx.hash();
-    let Ok(Some(height)) = blocks.get_tx_block_height(&txid) else {
-        return false;
-    };
-    blocks
-        .get_block_by_height(height)
-        .ok()
-        .flatten()
-        .is_some_and(|b| b.transactions.iter().any(|t| t.hash() == txid))
+/// Every zero-flow refusal after structural validation: payload and effect, authorization, standing.
+pub(crate) fn check(
+    tx: &Transaction,
+    snapshot: Option<&ZeroFlowSnapshot>,
+    current_height: u64,
+    network: Network,
+    genesis: &Hash,
+) -> Result<(), MempoolError> {
+    let mined_at = current_height.saturating_add(1);
+    pre_auth(tx, snapshot)?;
+    let maintainers = snapshot.and_then(|s| s.maintainers.as_ref());
+    if !authorized(tx, mined_at, network, genesis, maintainers) {
+        return Err(MempoolError::InvalidTransaction(format!(
+            "[MPTX010] {:?} authorization refused at height {}",
+            tx.tx_type, mined_at
+        )));
+    }
+    post_auth(tx, snapshot, mined_at, network)
 }
 
-fn refuse(code: &str, tx: &Transaction, why: &str) -> Result<(), MempoolError> {
+pub(crate) fn refuse(code: &str, tx: &Transaction, why: &str) -> Result<(), MempoolError> {
     Err(MempoolError::InvalidTransaction(format!(
         "[{code}] {:?} {why}",
         tx.tx_type
@@ -102,10 +108,7 @@ pub(crate) fn change_key(tx: &Transaction) -> Option<ChangeKey> {
 }
 
 /// Checks that run before the multisig: canonical payload bytes, then the state-effect precondition.
-pub(crate) fn pre_auth(
-    tx: &Transaction,
-    snapshot: Option<&ZeroFlowSnapshot>,
-) -> Result<(), MempoolError> {
+fn pre_auth(tx: &Transaction, snapshot: Option<&ZeroFlowSnapshot>) -> Result<(), MempoolError> {
     if !matches!(tx.tx_type, TxType::AddMaintainer | TxType::RemoveMaintainer) {
         return Ok(());
     }
@@ -132,29 +135,23 @@ fn effect_possible(tx_type: TxType, set: &MaintainerSet, target: &PublicKey) -> 
     }
 }
 
-/// Checks that run after the multisig: delegation standing, the INC-I-246 stop-gap, then the mined check.
-pub(crate) fn post_auth(
+/// Checks that run after the multisig: delegation standing, then the INC-I-246 stop-gap.
+fn post_auth(
     tx: &Transaction,
     snapshot: Option<&ZeroFlowSnapshot>,
     height: u64,
     network: Network,
 ) -> Result<(), MempoolError> {
-    if matches!(tx.tx_type, TxType::DelegateBond | TxType::RevokeDelegation) {
-        let Some(view) = snapshot.and_then(|s| s.delegation.as_ref()) else {
-            return refuse("MPTX016", tx, "has no producer-set view to check standing");
-        };
-        if let Some(why) = view.standing.no_op(view.bonds, view.effective.is_some()) {
-            return refuse("MPTX016", tx, why);
-        }
-        delegation_stop_gap(tx, view, height, network)?;
-    }
-    let Some(snap) = snapshot else {
+    if !matches!(tx.tx_type, TxType::DelegateBond | TxType::RevokeDelegation) {
         return Ok(());
-    };
-    if snap.mined_in_chain {
-        return refuse("MPTX014", tx, "is already mined in the canonical chain");
     }
-    Ok(())
+    let Some(view) = snapshot.and_then(|s| s.delegation.as_ref()) else {
+        return refuse("MPTX016", tx, "has no producer-set view to check standing");
+    };
+    if let Some(why) = view.standing.no_op(view.bonds, view.effective.is_some()) {
+        return refuse("MPTX016", tx, why);
+    }
+    delegation_stop_gap(tx, view, height, network)
 }
 
 fn delegation_stop_gap(

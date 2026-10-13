@@ -588,13 +588,13 @@ No genesis reset, no `CURRENT_PROTOCOL_VERSION` change and no `HardForkSchedule`
 | REQ-GRV-037 | Must | `inc_i_237_m12_guards.rs` (`m12_req_grv_037_*`), `m11_same_epoch_sequences_*` | Architecture Context (M12) | `Standing::of` @ `zero_flow_standing.rs` |
 | REQ-GRV-038 | Must | `inc_i_237_m8_*.rs`, `inc_i_237_m2_node_{relay,verdict}.rs`, `tests_inc_i237_m8_admission.rs` | Architecture Context (M12) | test fixtures only |
 | REQ-GRV-039 | Should | n/a (docs) | Architecture Context (M12) | `docs/error-codes.md`, `docs/rpc_reference.md`, `docs/cli.md` §4.11, `specs/gossip-relay-verdict-status.md` |
-| REQ-GRV-SEC-016 | Must | (test-writer) | Architecture Context (M12) | (developer) |
-| REQ-GRV-SEC-017 | Must | (test-writer) | Architecture Context (M12) | (developer) |
-| REQ-GRV-SEC-018 | Must | (test-writer) | Architecture Context (M12) | (developer) |
-| REQ-GRV-SEC-019 | Should | (test-writer) | Architecture Context (M12) | (developer) |
-| REQ-GRV-040 | Should | (test-writer) | Architecture Context (M12) | (developer) |
-| REQ-GRV-041 | Should | n/a (docs) | Architecture Context (M12) | (developer) |
-| REQ-GRV-042 | Must | (test-writer) | Architecture Context (M12) | (developer) |
+| REQ-GRV-SEC-016 | Must | `inc_i_237_m12_mined_cost.rs` (`m12_2_sec_016_*`) | Architecture Context (M12) | `admit_zero_flow` @ `crates/mempool/src/zero_flow_mined.rs`; `check_system_transaction` @ `crates/mempool/src/pool.rs`; `zero_flow_policy::check` @ `zero_flow_policy.rs`; `ChangeIndex::probe` @ `zero_flow_newness.rs` |
+| REQ-GRV-SEC-017 | Must | `inc_i_237_m12_mined_cache.rs` (`m12_2_sec_017_*`), `inc_i_237_m12_mined_probe.rs` | Architecture Context (M12) | `MinedCheck` + `Mempool::mined_check` @ `crates/mempool/src/zero_flow_mined.rs` |
+| REQ-GRV-SEC-018 | Must | `inc_i_237_m12_mined_dedupe.rs` (`m12_2_sec_018_*`) | Architecture Context (M12) | `handle_gossip_txs` @ `bins/node/src/node/validation_checks/gossip_txs.rs` |
+| REQ-GRV-SEC-019 | Should | `inc_i_237_m12_mined_cache.rs` (`m12_2_sec_019_*`), `m11_after_{add,remove}_maintainer_applies_*` | Architecture Context (M12) | `admit_zero_flow` (DelegateBond only) @ `crates/mempool/src/zero_flow_mined.rs` |
+| REQ-GRV-040 | Should | `inc_i_237_m11_probe.rs` (`m11_audit_p1_509_variant_flood_probe`) | Architecture Context (M12) | test only |
+| REQ-GRV-041 | Should | n/a (docs) | Architecture Context (M12) | `docs/error-codes.md`, `docs/rpc_reference.md`, `specs/gossip-relay-verdict-status.md`, `specs/protocol.md` §7.2, `specs/security_model.md`; registry PM-237-12 |
+| REQ-GRV-042 | Must | scope diff + `inc_i_173_m3_f4_routing` scans | Architecture Context (M12) | admission only (no validation / apply / storage / activation-height change) |
 
 ### What I did not verify
 - The status that the normal `register()` path gives a queued Register. I read only that `register_genesis_producer` sets Active (`set_registration.rs:195`), not the `ProducerInfo` that a Register tx builds. The REQ-GRV-037 queued-Register guard settles it.

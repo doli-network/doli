@@ -102,13 +102,7 @@ async fn m12_sec_015_snapshot_without_producers_is_refused() {
     let h = w.node.chain_state.read().await.best_height;
     let mut bad = Vec::new();
     for (row, tx) in admissible(&w).await {
-        let blind = snapshot_for(
-            &tx,
-            w.node.maintainer_state.as_ref(),
-            None,
-            &w.node.block_store,
-        )
-        .await;
+        let blind = snapshot_for(&tx, w.node.maintainer_state.as_ref(), None).await;
         let res = w
             .node
             .mempool
@@ -123,7 +117,6 @@ async fn m12_sec_015_snapshot_without_producers_is_refused() {
             &tx,
             w.node.maintainer_state.as_ref(),
             Some(&w.node.producer_set),
-            &w.node.block_store,
         )
         .await;
         let res = w
@@ -144,7 +137,7 @@ async fn m12_sec_015_snapshot_without_producers_is_refused() {
 async fn m12_sec_015_maintainer_change_without_producers_still_admitted() {
     let (node, _kp, m, _t) = m8::auth_node().await;
     let tx = m8::genuine_add(&node, &m).await;
-    let snap = snapshot_for(&tx, node.maintainer_state.as_ref(), None, &node.block_store).await;
+    let snap = snapshot_for(&tx, node.maintainer_state.as_ref(), None).await;
     let h = node.chain_state.read().await.best_height;
     let res = node
         .mempool

@@ -12,10 +12,10 @@ use doli_core::maintainer::{
 };
 use doli_core::network::Network;
 use doli_core::{MaintainerSet, Transaction, TxType};
-use storage::{BlockStore, MaintainerState, ProducerSet};
+use storage::{MaintainerState, ProducerSet};
 use tokio::sync::RwLock;
 
-use crate::zero_flow_policy::{delegation_view, mined_in_chain, DelegationView};
+use crate::zero_flow_policy::{delegation_view, DelegationView};
 
 /// Zero-flow types whose authorization admission verifies; only these may authorize a gossip forward.
 pub fn is_authenticated(tx_type: TxType) -> bool {
@@ -33,15 +33,13 @@ pub fn is_authenticated(tx_type: TxType) -> bool {
 pub struct ZeroFlowSnapshot {
     pub(crate) maintainers: Option<MaintainerSet>,
     pub(crate) delegation: Option<DelegationView>,
-    pub(crate) mined_in_chain: bool,
 }
 
-/// Snapshot for `tx`: the current maintainer set, the delegation view, and the canonical mined check.
+/// Snapshot for `tx`: the current maintainer set and the delegation view.
 pub async fn snapshot_for(
     tx: &Transaction,
     maintainer_state: Option<&Arc<RwLock<MaintainerState>>>,
     producers: Option<&Arc<RwLock<ProducerSet>>>,
-    blocks: &BlockStore,
 ) -> ZeroFlowSnapshot {
     let mut snap = ZeroFlowSnapshot::default();
     let parties = match tx.tx_type {
@@ -61,10 +59,6 @@ pub async fn snapshot_for(
     };
     if let (Some(ps), Some((from, to, bonds))) = (producers, parties) {
         snap.delegation = Some(delegation_view(&*ps.read().await, &from, &to, bonds));
-    }
-    // A second honest revoke of the same delegate is byte-identical to the first.
-    if tx.tx_type != TxType::RevokeDelegation {
-        snap.mined_in_chain = mined_in_chain(tx, blocks);
     }
     snap
 }

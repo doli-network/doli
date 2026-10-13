@@ -14,6 +14,7 @@ pub mod rotation_filter;
 pub mod vesting_bound;
 mod withdrawal_holdings;
 pub mod zero_flow_auth;
+pub mod zero_flow_mined;
 mod zero_flow_newness;
 mod zero_flow_policy;
 mod zero_flow_standing;

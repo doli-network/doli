@@ -209,15 +209,6 @@ impl RpcContext {
             let current_height = chain_state.best_height;
             let current_slot = chain_state.best_slot;
             drop(chain_state);
-            let snapshot = mempool::zero_flow_auth::snapshot_for(
-                &tx,
-                self.maintainer_state.as_ref(),
-                self.producer_set.as_ref(),
-                &self.block_store,
-            )
-            .await;
-
-            let mut mempool = self.mempool.write().await;
 
             // INC-I-173 M3 / F4 (AUDIT-P3-002). Routing is SHAPE-based, not
             // type-based: the 0-fee system lane is for transactions that are
@@ -227,11 +218,19 @@ impl RpcContext {
             // lane and gave free relay that `evict_lowest_fee` then used to push
             // out legitimate 0-fee governance transactions (FM-10).
             if tx.is_zero_flow() {
-                mempool
-                    .add_system_transaction(tx.clone(), current_height, Some(&snapshot))
-                    .map_err(Self::mempool_error_to_rpc)?;
+                mempool::zero_flow_mined::admit_zero_flow(
+                    &self.mempool,
+                    tx.clone(),
+                    current_height,
+                    self.maintainer_state.as_ref(),
+                    self.producer_set.as_ref(),
+                    &self.block_store,
+                )
+                .await
+                .map_err(Self::mempool_error_to_rpc)?;
                 None
             } else {
+                let mut mempool = self.mempool.write().await;
                 let utxo_set = self.utxo_set.read().await;
                 let result = mempool
                     .add_transaction(tx.clone(), &utxo_set, current_height, current_slot)

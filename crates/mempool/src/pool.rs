@@ -25,9 +25,9 @@ use super::holdings::HoldingsSources;
 use super::pending_registrations;
 use super::policy::MempoolPolicy;
 use super::withdrawal_holdings;
-use super::zero_flow_auth::{authorized, ZeroFlowSnapshot};
+use super::zero_flow_auth::ZeroFlowSnapshot;
 use super::zero_flow_newness::ChangeIndex;
-use super::zero_flow_policy;
+use super::{zero_flow_mined::MinedCheck, zero_flow_policy};
 
 /// Mempool errors
 #[derive(Debug, Error)]
@@ -224,6 +224,8 @@ pub struct Mempool {
     producer_holdings: HoldingsSources,
     /// INC-I-237 M11: resident maintainer changes by signed content.
     change_index: ChangeIndex,
+    /// INC-I-237 M12.2: the one mined check every admission site shares.
+    pub(crate) mined_check: std::sync::Arc<MinedCheck>,
 }
 
 impl Mempool {
@@ -245,6 +247,7 @@ impl Mempool {
             pending_producer_keys: std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
             producer_holdings: HoldingsSources::default(),
             change_index: ChangeIndex::default(),
+            mined_check: Default::default(),
         }
     }
 
@@ -883,14 +886,48 @@ impl Mempool {
         current_height: BlockHeight,
         snapshot: Option<&ZeroFlowSnapshot>,
     ) -> Result<Hash, MempoolError> {
+        self.check_system_transaction(&tx, current_height, snapshot)?;
+        let (tx_hash, tx_size) = (tx.hash(), tx.size());
+        let change_key = self
+            .change_index
+            .admit(zero_flow_policy::change_key(&tx), &self.entries)?;
+
+        while self.needs_eviction(tx_size) {
+            if !self.evict_lowest_fee() {
+                return Err(MempoolError::Full);
+            }
+        }
+
+        let entry = MempoolEntry::new(tx.clone(), 0);
+
+        // No inputs to mark as spent and no outputs to index by address.
+        self.by_fee_rate.insert((0, tx_hash));
+        self.total_size += tx_size;
+        self.entries.insert(tx_hash, entry);
+        if let Some(key) = change_key {
+            self.change_index.record(key, tx_hash);
+        }
+
+        debug!(
+            "Added system transaction {} to mempool (type: {:?})",
+            tx_hash, tx.tx_type
+        );
+        Ok(tx_hash)
+    }
+
+    /// Every system-lane refusal except the mined check; mutates nothing.
+    pub(crate) fn check_system_transaction(
+        &self,
+        tx: &Transaction,
+        current_height: BlockHeight,
+        snapshot: Option<&ZeroFlowSnapshot>,
+    ) -> Result<(), MempoolError> {
         let tx_hash = tx.hash();
 
-        // Check if already in mempool
         if self.entries.contains_key(&tx_hash) {
             return Err(MempoolError::AlreadyExists);
         }
 
-        // Check transaction size
         let tx_size = tx.size();
         if tx_size > self.policy.max_tx_size {
             return Err(MempoolError::TooLarge(tx_size, self.policy.max_tx_size));
@@ -932,7 +969,7 @@ impl Mempool {
         // The pending-key wiring below is therefore no longer vacuous on this path,
         // which is exactly why it was wired: so the two mempool ValidationContext
         // sites cannot drift apart, the defect class INV-VALIDATION-001 exists to close.
-        let pending_keys = self.pending_keys_for(&tx, Some(&tx_hash));
+        let pending_keys = self.pending_keys_for(tx, Some(&tx_hash));
         let ctx = ValidationContext::new(self.params.clone(), self.network, 0, current_height)
             .with_sig_verification_height(self.network.params().sig_verification_height)
             .with_encrypted_content_activation_height(
@@ -964,48 +1001,11 @@ impl Mempool {
             )
             .with_producers_weighted(active_producers_snapshot)
             .with_pending_producer_keys(pending_keys);
-        validate_transaction(&tx, &ctx)?;
-        let mined_at = current_height.saturating_add(1);
+        validate_transaction(tx, &ctx)?;
         let genesis = &self.params.genesis_hash;
-        zero_flow_policy::pre_auth(&tx, snapshot)?;
-        let maintainers = snapshot.and_then(|s| s.maintainers.as_ref());
-        if !authorized(&tx, mined_at, self.network, genesis, maintainers) {
-            return Err(MempoolError::InvalidTransaction(format!(
-                "[MPTX010] {:?} authorization refused at height {}",
-                tx.tx_type, mined_at
-            )));
-        }
-        zero_flow_policy::post_auth(&tx, snapshot, mined_at, self.network)?;
-        let change_key = self
-            .change_index
-            .admit(zero_flow_policy::change_key(&tx), &self.entries)?;
-
-        // Make room if necessary
-        while self.needs_eviction(tx_size) {
-            if !self.evict_lowest_fee() {
-                return Err(MempoolError::Full);
-            }
-        }
-
-        // Create entry with 0 fee (system transaction)
-        let entry = MempoolEntry::new(tx.clone(), 0);
-
-        // System transactions have no inputs to mark as spent
-        // and no outputs to index by address
-
-        // Add to indexes with lowest priority (fee_rate = 0)
-        self.by_fee_rate.insert((0, tx_hash));
-        self.total_size += tx_size;
-        self.entries.insert(tx_hash, entry);
-        if let Some(key) = change_key {
-            self.change_index.record(key, tx_hash);
-        }
-
-        debug!(
-            "Added system transaction {} to mempool (type: {:?})",
-            tx_hash, tx.tx_type
-        );
-        Ok(tx_hash)
+        zero_flow_policy::check(tx, snapshot, current_height, self.network, genesis)?;
+        let key = zero_flow_policy::change_key(tx);
+        self.change_index.probe(key, &self.entries)
     }
 
     /// Remove a transaction from the mempool
