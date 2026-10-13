@@ -1,5 +1,15 @@
 //! INC-I-237 M9 — REQ-GRV-032: specs, the redesign analysis and the network
 //! skill describe the state shipped by M5-M8.
+//!
+//! OUTPUT CONTRACT: specs/{protocol,security_model,gossip-relay-verdict-status}.md,
+//!   the redesign analysis, the network skill + index, docs/{architecture,
+//!   troubleshooting}.md (read-only scan).  O4: document text; O1-O3, O5, O6: none
+//! PATHS: P1 required token absent -> fail listing doc + token; P2 forbidden
+//!   token present -> fail listing doc + token; P3 vacuous read (`doc`)
+//! INPUT PARTITIONS: token source {derived from a code constant (cache caps,
+//!   cap ÷ 180 s floor rate), literal (symbols, metric name)}; document {each
+//!   file above}
+//! MATRIX: every document x every token of its test, all asserted.
 
 use std::path::Path;
 
@@ -40,6 +50,23 @@ fn m9_req_grv_032_specs_state_m6_to_m8_bounds() {
     let tokens = [dup.as_str(), del.as_str(), "zero_flow_auth", "× 15"];
     let rels = ["specs/protocol.md", "specs/security_model.md"];
     let gaps = mismatches(&rels, &tokens, true);
+    assert!(gaps.is_empty(), "missing tokens:\n{}", gaps.join("\n"));
+}
+
+// REQ-GRV-032 — Decision: a failure means a spec still states the 180 s dedup floor as unconditional (REL-573-R-01), so a TTL or cap change reasons from a retention the M7.2 cap gives only up to cap ÷ 180 ids/s.
+#[test]
+fn m9_req_grv_032_specs_state_rate_dependent_retention() {
+    let floor_rate = thousands(GOSSIP_DUPLICATE_CACHE_MAX_ENTRIES / 180);
+    let rels = ["specs/protocol.md", "specs/security_model.md"];
+    let gaps = mismatches(&rels, &[floor_rate.as_str()], true);
+    assert!(gaps.is_empty(), "missing tokens:\n{}", gaps.join("\n"));
+}
+
+// REQ-GRV-032 — Decision: a failure means an operator doc omits the dropped-verdict counter (REL-573-R-04), so verdicts refused by a full swarm command channel have no documented signal.
+#[test]
+fn m9_req_grv_032_docs_name_verdict_dropped_counter() {
+    let rels = ["docs/architecture.md", "docs/troubleshooting.md"];
+    let gaps = mismatches(&rels, &["doli_gossip_verdict_dropped_total"], true);
     assert!(gaps.is_empty(), "missing tokens:\n{}", gaps.join("\n"));
 }
 

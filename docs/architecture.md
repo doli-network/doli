@@ -338,6 +338,7 @@ A gossip event that does not fit its lane is shed and counted; a shed Deferred m
 | `doli_gossip_tx_batch_messages_total` | counter | `size` (1, 2_5, 6_10, 11_25, 26_50, 51_100, 101_plus) | delta-scraped from `TX_GOSSIP_BATCH_STATS` on each `/metrics` request |
 | `doli_gossip_tx_batch_txs_total` | counter | — | same scrape |
 | `doli_gossip_verdict_late_total` | counter | `topic` (blocks, txs, attestations, votes, producers) | scraped from `network::service::LATE_VERDICTS`: node verdicts later than 3.5 s after receipt (counted, never reported) |
+| `doli_gossip_verdict_dropped_total` | counter | `topic` (blocks, txs, attestations, votes, producers) | scraped from `network::service::DROPPED_VERDICTS`: node verdicts refused by a full or closed swarm command channel (never reported; the message expires un-forwarded) |
 | `doli_event_lane_budget_bytes` | gauge | `lane` (consensus, bulk, backlog) | `LaneBudgets` byte bound of each lane and of the control backlog |
 | `doli_event_lane_inflight_bytes` | gauge | `lane` (consensus, bulk, backlog) | bytes queued now (`LaneStats::snapshot`) |
 | `doli_event_lane_depth` | gauge | `lane` (consensus, bulk, backlog) | events queued now (lane `consensus_len` / `bulk_len`, backlog length) |

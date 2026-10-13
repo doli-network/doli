@@ -69,8 +69,9 @@ pub const AGGRESSIVE_DEDUP_THRESHOLD: Duration = Duration::from_secs(30);
 /// Local per-node policy: no consensus, wire or block-content change.
 pub const GOSSIP_DUPLICATE_CACHE_TIME: Duration = Duration::from_secs(300);
 
-// Not shorter than the deleted 180 s app cache, nor the attestation age window
-// (every network's default slot is `consensus::SLOT_DURATION`).
+// TTL bound only: not shorter than the deleted 180 s app cache, nor the attestation age
+// window (every network's default slot is `consensus::SLOT_DURATION`). Under the M7.2 cap,
+// retention = min(TTL, cap ÷ distinct-id ingress): 180 s holds only up to 1,211 ids/s.
 const _: () = assert!(
     GOSSIP_DUPLICATE_CACHE_TIME.as_secs() >= 180
         && GOSSIP_DUPLICATE_CACHE_TIME.as_secs()
@@ -92,7 +93,8 @@ const fn rebuild_slack_ok(cap: usize) -> bool {
     (cap * 8 / 7).next_power_of_two() * 7 / 8 >= cap * 105 / 100
 }
 
-// Honest 500 ids/s deduplicated for the full TTL; soak flood (1,804 ids/s) kept >= 120 s.
+// Retention = min(TTL, cap ÷ ingress): full TTL up to 726 ids/s (honest 500), 180 s up to
+// 1,211, 120 s (12 slots) up to 1,816, the 60 s block window up to 3,633; soak 1,804 -> 120.8 s.
 const _: () = assert!(
     GOSSIP_DUPLICATE_CACHE_MAX_ENTRIES as u64 >= 500 * GOSSIP_DUPLICATE_CACHE_TIME.as_secs()
         && GOSSIP_DUPLICATE_CACHE_MAX_ENTRIES >= 1_804 * 120

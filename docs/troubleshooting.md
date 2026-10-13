@@ -1122,6 +1122,7 @@ Exit code 2 means the URL or file could not be read. Read the lines:
 | `topic=<t> count=<n> p50=<s> p99=<s> le2s=<f>` | receive → node-handler-done latency per topic; `le2s` = share of messages handled within 2 s |
 | `GATE verdict_p99_max=<s> PASS\|FAIL (<= 2s)` | worst per-topic p99; `FAIL` = some topic's p99 is above 2 s, close to the 3.5 s verdict deadline |
 | `verdict_late total=<n> <topic>=<n>` | verdicts that missed the 3.5 s deadline (`doli_gossip_verdict_late_total`) |
+| `verdict_dropped total=<n> <topic>=<n>` | verdicts refused by a full swarm command channel; the message expires unreported and this hop does not forward it (`doli_gossip_verdict_dropped_total`) |
 | `received total=<n> <topic>=<n>` | gossip events the node handled (`doli_gossip_events_received_total`) |
 | `channel lane=<l> depth=<n> inflight_bytes=<n> budget_bytes=<n> shed=<n>` | per lane (`consensus`, `bulk`, `backlog`): events queued, bytes queued, byte budget, events dropped since start |
 | `channel shed topic=<t> n=<n>` | gossip events refused by a full lane, per topic |
