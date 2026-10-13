@@ -123,6 +123,11 @@ New IDs continue the RUN 572 numbering (last: REQ-GRV-022, REQ-GRV-SEC-005).
 | REQ-GRV-SEC-009 | Replay of a captured genuine zero-flow tx: residual recorded or spun off (user decision Q2) | Should | M8 |
 | REQ-GRV-032 | Specs, docs, skill and protection registry match the code at the new V | Should | M9 (+ folded rows in M6-M8) |
 | REQ-GRV-SEC-010 | 0 disclosure hits in every branch commit message, diff and file version before the first push | Must | M10 |
+| REQ-GRV-033 | (AUDIT-P1-509) Maintainer-change newness is keyed on signed content: at most one resident AddMaintainer / RemoveMaintainer per `(action, target)`; a second one is `AlreadyExists` (not admitted, not forwarded) | Must | M11 |
+| REQ-GRV-034 | (AUDIT-P1-509) Admission refuses a maintainer change apply would turn into a no-op against the same current set: Add of a member or into a full set, Remove of a non-member or at the minimum size (`MPTX011`) | Must | M11 |
+| REQ-GRV-035 | (AUDIT-P1-509) Admission refuses a non-canonical maintainer-change payload (trailing bytes) or a repeated signature entry (`MPTX012`); `reason` is never gated | Must | M11 |
+| REQ-GRV-036 | (INC-I-246 stop-gap) Admission refuses a RevokeDelegation naming a delegate other than the effective one, a DelegateBond apply refuses (cap) or that repeats the effective delegation (`MPTX013`), and a DelegateBond / maintainer change whose txid a canonical block carries (`MPTX014`) | Must | M11 |
+| REQ-GRV-SEC-011 | Maintainer-change residents are bounded: `MAX_MAINTAINERS` per action, `2 × MAX_MAINTAINERS` total (`MPTX015`); one captured change costs one resident and no forward | Must | M11 |
 
 ## Milestones
 
@@ -237,6 +242,16 @@ What may bound C1 without re-opening stale re-forwarding? A count or byte cap on
   - [ ] `backup/inc-i-237-pre-rewrite-20261012` is untouched and never pushed.
 - Hardware: NEGLIGIBLE (history only).
 
+### M11 — keyless maintainer-change variants and the INC-I-246 stop-gap (AUDIT-P1-509, admission only)
+- SSF: newness on the signed content `(action, target)` + the apply precondition against the same snapshot + canonical bytes. Admission layer only; `crates/core`, `apply_block` and `crates/storage` are unchanged; no activation height.
+- Acceptance criteria:
+  - [x] REQ-GRV-033: after a genuine change T is resident, a different-reason / reordered-entries copy is `AlreadyExists` on gossip (`Ignore`) and on `sendTransaction` / `submitMaintainerChange` (`TX_ALREADY_EXISTS`); the probe line reads `variant_forwards=0 middle_residents=1`.
+  - [x] REQ-GRV-034: Add of a member, Add into a full set, Remove of a non-member and Remove at `MIN_MAINTAINERS` are refused with `MPTX011` (not `MPTX010`); after T applies, a variant and a byte-identical copy are refused.
+  - [x] REQ-GRV-035: one trailing byte or a repeated signature entry is refused (`MPTX012`); a genuine change with a `reason` is admitted and broadcast once.
+  - [x] REQ-GRV-036: a revoke naming P while D is effectively delegated to Q, a repeat of the effective delegation and an over-cap DelegateBond are refused (`MPTX013`); a DelegateBond whose txid a canonical block carries is refused (`MPTX014`); first-time delegation, a matching revoke, same-epoch queued sequences and a txid seen only on a side block are admitted. RevokeDelegation is exempt from the mined check (a second honest revoke of the same delegate is byte-identical).
+  - [x] REQ-GRV-SEC-011: 10,000 variants of T leave 1 resident and 0 Accepts; 20 Adds + 4 Removes for distinct targets peak at <= 10 residents and admit the first of each.
+- Residual (owed to the INC-I-246 consensus fix, activation height required): nonce / valid-before / chain binding in the signed preimage, `RevokeDelegation.delegate == delegated_to` at apply, and the replay of a mined revoke while D is again delegated to the same P.
+
 ## Post-milestone validation (pipeline steps, not milestones)
 1. Release validation pass at the post-M10 V: QA (incl. `soak_10min` 600 s and the 30 s soak), reviewer, security fix-verification of AUDIT-P1-506, SEC-FIXVERIFY-R572-01/-04, AUDIT-P2-001, REL-572-R2-01/-02.
 2. Local testnet deploy (`scripts/testnet.sh`, seed + n1-n6, copy + `codesign`, never pkill), mixed-version check (review F5: no mixed-version run exists with the M3+ rules), then `scripts/gauntlet.sh` (run 572 baseline: 7/7).
@@ -304,7 +319,7 @@ What may bound C1 without re-opening stale re-forwarding? A count or byte cap on
 | REQ-GRV-026 | Must | (test-writer) | (architect) | `Behaviour::retention_stats` @ vendor/libp2p-gossipsub/src/{behaviour,time_cache,mcache,peer_score}.rs; `Retention` @ crates/network/src/service/retention.rs (swarm_loop.rs flush_tick); `watch_retention` + `doli_gossip_duplicate_cache_entries` @ bins/node/src/metrics_gossip.rs (startup.rs); `Node::attest_seen_len` @ bins/node/src/node/attestation/ingress.rs; probe line @ scripts/inc-i-237-m0-latency-probe.sh |
 | REQ-GRV-027 | Must | (test-writer) | (architect) | `GOSSIP_DUPLICATE_CACHE_MAX_ENTRIES` + const asserts @ `crates/network/src/gossip/config.rs`; oldest-first eviction @ `vendor/libp2p-gossipsub/src/time_cache.rs::make_room` |
 | REQ-GRV-028 | Should | (test-writer) | (architect) | caps @ `vendor/libp2p-gossipsub/src/{time_cache,config,behaviour,peer_score}.rs`; constants @ `crates/network/src/gossip/config.rs` |
-| REQ-GRV-SEC-007 | Must | `inc_i_237_m8_admission::req_grv_sec_007_gossip_refuses_*` (4), `admission_matches_apply_*` (2), `devnet_unsigned_legacy_delegate_bond_is_still_admitted`; rpc `tests_inc_i237_m8_admission::req_grv_sec_007_*` (2), `inv_rpc_002_*` (2) | (architect) | zero_flow_auth::authorized @ crates/mempool/src/zero_flow_auth.rs; Mempool::add_system_transaction @ crates/mempool/src/pool.rs; current_set_for callers @ bins/node/src/node/validation_checks/mod.rs, crates/rpc/src/methods/{transaction,governance}.rs |
+| REQ-GRV-SEC-007 | Must | `inc_i_237_m8_admission::req_grv_sec_007_gossip_refuses_*` (4), `admission_matches_apply_*` (2), `devnet_unsigned_legacy_delegate_bond_is_still_admitted`; rpc `tests_inc_i237_m8_admission::req_grv_sec_007_*` (2), `inv_rpc_002_*` (2) | (architect) | zero_flow_auth::authorized @ crates/mempool/src/zero_flow_auth.rs; Mempool::add_system_transaction @ crates/mempool/src/pool.rs; snapshot_for callers (M11; was current_set_for) @ bins/node/src/node/validation_checks/mod.rs, crates/rpc/src/methods/{transaction,governance}.rs |
 | REQ-GRV-SEC-008 | Must | `m5_audit_p1_505_*` (2, flipped in M8), `inc_i_237_m8_admission::d5_mixed_forged_and_genuine_zero_flow_message_is_ignored` | (architect) | zero_flow_auth::authorized @ crates/mempool/src/zero_flow_auth.rs; handle_gossip_txs @ bins/node/src/node/validation_checks/gossip_txs.rs |
 | REQ-GRV-029 | Must | `inc_i_237_m8_admission::req_grv_029_genuine_zero_flow_of_each_type_authorizes_a_forward`, `devnet_unsigned_legacy_delegate_bond_authorizes_a_forward`, `inc_i_237_m8_relay::req_grv_029_genuine_zero_flow_txs_reach_a_node_two_hops_away` | (architect) | handle_gossip_txs @ bins/node/src/node/validation_checks/gossip_txs.rs; zero_flow_auth::is_authenticated @ crates/mempool/src/zero_flow_auth.rs |
 | REQ-GRV-030 | Must | `inc_i_237_m8_block::req_grv_030_old_block_with_forged_*` (2) | (architect) | none (admission-only; crates/core/src/validation/ and bins/node/src/node/apply_block/ unchanged) |
@@ -312,6 +327,11 @@ What may bound C1 without re-opening stale re-forwarding? A count or byte cap on
 | REQ-GRV-SEC-009 | Should | (decision) | (architect) | not fixed: residual recorded as INC-I-246 (memory.db incident_entries) |
 | REQ-GRV-032 | Should | network `it::inc_i_237_m9_spec_sync::m9_req_grv_032_*` (4) | n/a (docs) | specs/protocol.md §7.2, specs/security_model.md, specs/gossip-relay-verdict-status.md, redesign traceability matrix, .claude/skills/network/SKILL.md, SKILLS-INDEX.md; protection_mechanisms PM-237-* (memory.db) |
 | REQ-GRV-SEC-010 | Must | scan command (M10) | n/a | (orchestrator) |
+| REQ-GRV-033 | Must | `inc_i_237_m11_variants::m11_gossip_variants_of_a_resident_{add,remove}_maintainer_are_ignored` (2), `inc_i_237_m11_probe::m11_audit_p1_509_variant_flood_probe`, rpc `tests_inc_i237_m11_admission::m11_send_transaction_refuses_keyless_variants_of_a_resident_change`, `m11_submit_maintainer_change_second_call_for_the_same_change_errors` | M11 (audit remediation steps 1-3) | `ChangeIndex::admit` @ crates/mempool/src/zero_flow_newness.rs |
+| REQ-GRV-034 | Must | `inc_i_237_m11_preconditions::m11_*` (5), `inc_i_237_m11_variants::m11_after_{add,remove}_maintainer_applies_its_variant_and_copy_are_refused` (2), rpc `m11_send_transaction_precondition_refusal_carries_its_own_code` | M11 (audit remediation steps 1-3) | `zero_flow_policy::pre_auth` @ crates/mempool/src/zero_flow_policy.rs |
+| REQ-GRV-035 | Must | variants rows `one trailing byte` / `duplicated signature entry`, `inc_i_237_m11_variants::m11_genuine_change_with_a_reason_still_admits_and_relays`, rpc `m11_send_transaction_admits_a_genuine_change_with_a_reason` | M11 (audit remediation steps 1-3) | `zero_flow_policy::pre_auth` @ crates/mempool/src/zero_flow_policy.rs |
+| REQ-GRV-036 | Must | `inc_i_237_m11_delegation::m11_*` (9) | M11 (audit remediation steps 1-3) | `zero_flow_policy::{delegation_view, post_auth, mined_in_chain}` @ crates/mempool/src/zero_flow_policy.rs; `zero_flow_auth::snapshot_for` @ crates/mempool/src/zero_flow_auth.rs |
+| REQ-GRV-SEC-011 | Must | `inc_i_237_m11_bound::m11_*` (2), probe | M11 (audit remediation steps 1-3) | `ChangeIndex::admit` cap @ crates/mempool/src/zero_flow_newness.rs |
 
 ## Assumptions
 | # | Assumption (technical) | Explanation (plain language) | Confirmed |

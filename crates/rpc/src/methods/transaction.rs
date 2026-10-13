@@ -209,8 +209,13 @@ impl RpcContext {
             let current_height = chain_state.best_height;
             let current_slot = chain_state.best_slot;
             drop(chain_state);
-            let maintainers =
-                mempool::zero_flow_auth::current_set_for(&tx, self.maintainer_state.as_ref()).await;
+            let snapshot = mempool::zero_flow_auth::snapshot_for(
+                &tx,
+                self.maintainer_state.as_ref(),
+                self.producer_set.as_ref(),
+                &self.block_store,
+            )
+            .await;
 
             let mut mempool = self.mempool.write().await;
 
@@ -223,7 +228,7 @@ impl RpcContext {
             // out legitimate 0-fee governance transactions (FM-10).
             if tx.is_zero_flow() {
                 mempool
-                    .add_system_transaction(tx.clone(), current_height, maintainers.as_ref())
+                    .add_system_transaction(tx.clone(), current_height, Some(&snapshot))
                     .map_err(Self::mempool_error_to_rpc)?;
                 None
             } else {
@@ -257,7 +262,7 @@ impl RpcContext {
     }
 
     /// Convert a MempoolError to a structured RpcError with full context.
-    fn mempool_error_to_rpc(e: MempoolError) -> RpcError {
+    pub(super) fn mempool_error_to_rpc(e: MempoolError) -> RpcError {
         match e {
             MempoolError::AlreadyExists => RpcError::with_data(
                 crate::error::codes::TX_ALREADY_KNOWN,

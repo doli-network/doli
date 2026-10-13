@@ -997,13 +997,18 @@ impl Node {
         // authorized to exist in that shape. See the same note at the RPC
         // admission site in `crates/rpc/src/methods/transaction.rs`.
         let is_zero_flow = tx.is_zero_flow();
-        let maintainers =
-            mempool::zero_flow_auth::current_set_for(&tx, self.maintainer_state.as_ref()).await;
+        let snapshot = mempool::zero_flow_auth::snapshot_for(
+            &tx,
+            self.maintainer_state.as_ref(),
+            Some(&self.producer_set),
+            &self.block_store,
+        )
+        .await;
         let result = {
             let mut mempool = self.mempool.write().await;
             if is_zero_flow {
                 mempool
-                    .add_system_transaction(tx.clone(), current_height, maintainers.as_ref())
+                    .add_system_transaction(tx.clone(), current_height, Some(&snapshot))
                     .map(|_| ())
             } else {
                 let utxo = self.utxo_set.read().await;

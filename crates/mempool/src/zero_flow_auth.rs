@@ -2,7 +2,7 @@
 //!
 //! Mirrors the apply-time checks in `apply_block/tx_processing.rs` (delegations)
 //! and `apply_block/governance.rs` (maintainer changes). Admission-only: block
-//! validation and apply are untouched.
+//! validation and apply are untouched. M11 adds the pre-lock state snapshot.
 
 use std::sync::Arc;
 
@@ -12,8 +12,10 @@ use doli_core::maintainer::{
 };
 use doli_core::network::Network;
 use doli_core::{MaintainerSet, Transaction, TxType};
-use storage::MaintainerState;
+use storage::{BlockStore, MaintainerState, ProducerSet};
 use tokio::sync::RwLock;
+
+use crate::zero_flow_policy::{delegation_view, mined_in_chain, DelegationView};
 
 /// Zero-flow types whose authorization admission verifies; only these may authorize a gossip forward.
 pub fn is_authenticated(tx_type: TxType) -> bool {
@@ -26,17 +28,45 @@ pub fn is_authenticated(tx_type: TxType) -> bool {
     )
 }
 
-/// The CURRENT set for a maintainer tx, else None; take it BEFORE the mempool write lock.
-pub async fn current_set_for(
+/// State one zero-flow admission reads, taken BEFORE the mempool write lock (INC-I-237 M11).
+#[derive(Clone, Debug, Default)]
+pub struct ZeroFlowSnapshot {
+    pub(crate) maintainers: Option<MaintainerSet>,
+    pub(crate) delegation: Option<DelegationView>,
+    pub(crate) mined_in_chain: bool,
+}
+
+/// Snapshot for `tx`: the current maintainer set, the delegation view, and the canonical mined check.
+pub async fn snapshot_for(
     tx: &Transaction,
-    state: Option<&Arc<RwLock<MaintainerState>>>,
-) -> Option<MaintainerSet> {
-    match (tx.tx_type, state) {
-        (TxType::AddMaintainer | TxType::RemoveMaintainer, Some(s)) => {
-            Some(s.read().await.set.clone())
+    maintainer_state: Option<&Arc<RwLock<MaintainerState>>>,
+    producers: Option<&Arc<RwLock<ProducerSet>>>,
+    blocks: &BlockStore,
+) -> ZeroFlowSnapshot {
+    let mut snap = ZeroFlowSnapshot::default();
+    let parties = match tx.tx_type {
+        TxType::AddMaintainer | TxType::RemoveMaintainer => {
+            if let Some(s) = maintainer_state {
+                snap.maintainers = Some(s.read().await.set.clone());
+            }
+            None
         }
-        _ => None,
+        TxType::DelegateBond => tx
+            .delegate_bond_data()
+            .map(|d| (d.delegator, d.delegate, Some(d.bond_count))),
+        TxType::RevokeDelegation => tx
+            .revoke_delegation_data()
+            .map(|d| (d.delegator, d.delegate, None)),
+        _ => return snap,
+    };
+    if let (Some(ps), Some((from, to, bonds))) = (producers, parties) {
+        snap.delegation = Some(delegation_view(&*ps.read().await, &from, &to, bonds));
     }
+    // A second honest revoke of the same delegate is byte-identical to the first.
+    if tx.tx_type != TxType::RevokeDelegation {
+        snap.mined_in_chain = mined_in_chain(tx, blocks);
+    }
+    snap
 }
 
 /// Apply's authorization predicate for `tx` mined at `height`; types it does not cover pass.

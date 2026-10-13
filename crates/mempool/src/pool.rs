@@ -25,7 +25,9 @@ use super::holdings::HoldingsSources;
 use super::pending_registrations;
 use super::policy::MempoolPolicy;
 use super::withdrawal_holdings;
-use super::zero_flow_auth::authorized;
+use super::zero_flow_auth::{authorized, ZeroFlowSnapshot};
+use super::zero_flow_newness::ChangeIndex;
+use super::zero_flow_policy;
 
 /// Mempool errors
 #[derive(Debug, Error)]
@@ -220,6 +222,8 @@ pub struct Mempool {
     /// lookup is `Unavailable` and the rules do not run — pre-fix admission,
     /// bit-identical.
     producer_holdings: HoldingsSources,
+    /// INC-I-237 M11: resident maintainer changes by signed content.
+    change_index: ChangeIndex,
 }
 
 impl Mempool {
@@ -240,6 +244,7 @@ impl Mempool {
             active_producers_weighted: std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
             pending_producer_keys: std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
             producer_holdings: HoldingsSources::default(),
+            change_index: ChangeIndex::default(),
         }
     }
 
@@ -871,12 +876,12 @@ impl Mempool {
     /// System transactions like SlashProducer have no inputs/outputs and therefore
     /// no fees. They are added with priority 0 (lowest) but are still valid.
     ///
-    /// `maintainers` is the CURRENT maintainer set; zero-flow auth runs against it (INC-I-237 M8).
+    /// `snapshot` is the pre-lock zero-flow state; auth and policy run against it (INC-I-237 M8/M11).
     pub fn add_system_transaction(
         &mut self,
         tx: Transaction,
         current_height: BlockHeight,
-        maintainers: Option<&doli_core::MaintainerSet>,
+        snapshot: Option<&ZeroFlowSnapshot>,
     ) -> Result<Hash, MempoolError> {
         let tx_hash = tx.hash();
 
@@ -962,12 +967,18 @@ impl Mempool {
         validate_transaction(&tx, &ctx)?;
         let mined_at = current_height.saturating_add(1);
         let genesis = &self.params.genesis_hash;
+        zero_flow_policy::pre_auth(&tx, snapshot)?;
+        let maintainers = snapshot.and_then(|s| s.maintainers.as_ref());
         if !authorized(&tx, mined_at, self.network, genesis, maintainers) {
             return Err(MempoolError::InvalidTransaction(format!(
                 "[MPTX010] {:?} authorization refused at height {}",
                 tx.tx_type, mined_at
             )));
         }
+        zero_flow_policy::post_auth(&tx, snapshot, mined_at, self.network)?;
+        let change_key = self
+            .change_index
+            .admit(zero_flow_policy::change_key(&tx), &self.entries)?;
 
         // Make room if necessary
         while self.needs_eviction(tx_size) {
@@ -986,6 +997,9 @@ impl Mempool {
         self.by_fee_rate.insert((0, tx_hash));
         self.total_size += tx_size;
         self.entries.insert(tx_hash, entry);
+        if let Some(key) = change_key {
+            self.change_index.record(key, tx_hash);
+        }
 
         debug!(
             "Added system transaction {} to mempool (type: {:?})",

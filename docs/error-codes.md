@@ -255,6 +255,11 @@ Used in `MempoolError::InvalidTransaction(String)` in `crates/mempool/src/pool.r
 | `MPTX008` | Insufficient funds (input < output) | `input_total`, `output_total`, `deficit` |
 | `MPTX009` | Output not spendable (locked/immature) | `spendable_height`, `current_height`, `maturity` |
 | `MPTX010` | Zero-flow DelegateBond / RevokeDelegation signature or AddMaintainer / RemoveMaintainer current-set multisig refused, as apply would at the next height | `tx_type`, `height` |
+| `MPTX011` | AddMaintainer / RemoveMaintainer has no effect on the current maintainer set (Add: target already a member or set full; Remove: target not a member or set at `MIN_MAINTAINERS`) | `tx_type` |
+| `MPTX012` | AddMaintainer / RemoveMaintainer payload is not canonical (e.g. trailing bytes) or repeats a signature entry | `tx_type` |
+| `MPTX013` | INC-I-246 admission stop-gap: RevokeDelegation names a delegate other than the effective one, or DelegateBond repeats the effective delegation or exceeds the delegate's received cap | `tx_type` |
+| `MPTX014` | DelegateBond / AddMaintainer / RemoveMaintainer is already mined in the canonical chain | `tx_type` |
+| `MPTX015` | Maintainer-change residents for this action are at the cap (`MAX_MAINTAINERS`); retry after one is mined, evicted or expires | none |
 
 ## STOR -- Storage Layer Errors
 

@@ -1225,6 +1225,11 @@ Submit a maintainer add or remove transaction (requires 3/5 multisig).
 
 **Note:** Requires at least 3 valid signatures from current maintainers.
 
+**Errors:** mempool refusals return the same codes as `sendTransaction`, with `data.error_code`:
+`-32003` / `TX_ALREADY_EXISTS` when a change for the same action and target is already pending (wait until it is mined, evicted or expires, then retry);
+`-32002` / `MPTX010` (multisig refused), `MPTX011` (no effect on the current set: Add of a member or into a full set, Remove of a non-member or at the minimum size),
+`MPTX012` (non-canonical payload or a repeated signature entry), `MPTX014` (already mined), `MPTX015` (pending changes for this action at the cap).
+
 **Example:**
 ```bash
 curl -X POST http://127.0.0.1:8500 \

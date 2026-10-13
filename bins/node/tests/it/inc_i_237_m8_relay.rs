@@ -16,61 +16,10 @@
 use std::time::{Duration, Instant};
 
 use doli_core::Transaction;
-use doli_node::node::Node;
 use network::NetworkCommand;
-use tokio::sync::mpsc;
 
-use super::inc_i_237_m2_node_common as c;
+use super::inc_i_237_m11_common::{line, pump_both};
 use super::inc_i_237_m8_common::{self as m8, Sig};
-
-struct Line {
-    a_cmd: mpsc::Sender<NetworkCommand>,
-    b: Node,
-    c: Node,
-    m: Vec<crypto::KeyPair>,
-    _t: (tempfile::TempDir, tempfile::TempDir),
-}
-
-async fn pump_both(l: &mut Line, d: Duration) {
-    c::pump(&mut l.b, d).await;
-    c::pump(&mut l.c, d).await;
-}
-
-/// A -> B -> C, warmed until B's own publish is admitted at C.
-async fn line() -> Line {
-    let m = m8::maintainer_keys();
-    let (mut b, _kb, tb) = m8::auth_node_with(&m).await;
-    let (mut cn, kc, tc) = m8::auth_node_with(&m).await;
-    let b_port = c::reserve_port();
-    b.network = Some(c::start_net(b_port, vec![]).await);
-    cn.network = Some(c::start_net(c::reserve_port(), vec![c::addr(b_port)]).await);
-    let mut a = c::start_net(c::reserve_port(), vec![c::addr(b_port)]).await;
-    let a_cmd = a.command_sender();
-    tokio::spawn(async move { while a.next_event().await.is_some() {} });
-    let mut l = Line {
-        a_cmd,
-        b,
-        c: cn,
-        m,
-        _t: (tb, tc),
-    };
-    let deadline = Instant::now() + Duration::from_secs(30);
-    for tag in 100u8.. {
-        assert!(Instant::now() < deadline, "setup: B -> C mesh never formed");
-        c::seed(&l.c, &kc, c::prev(tag)).await;
-        let warm = c::transfer(&kc, c::prev(tag));
-        let b_cmd = l.b.network.as_ref().unwrap().command_sender();
-        b_cmd
-            .send(NetworkCommand::BroadcastTransaction(warm.clone()))
-            .await
-            .unwrap();
-        pump_both(&mut l, Duration::from_millis(400)).await;
-        if m8::has(&l.c, &warm).await {
-            break;
-        }
-    }
-    l
-}
 
 // REQ-GRV-029 — Decision: a failure means a genuine DelegateBond / RevokeDelegation / AddMaintainer / RemoveMaintainer submitted at a non-producer still stops at hop 1 and never reaches a block builder two hops away.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

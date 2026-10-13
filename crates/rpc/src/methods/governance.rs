@@ -279,14 +279,19 @@ impl RpcContext {
         };
 
         let permit = (self.broadcast_tx)().ok_or_else(RpcError::broadcast_busy)?;
-        let maintainers =
-            mempool::zero_flow_auth::current_set_for(&tx, self.maintainer_state.as_ref()).await;
+        let snapshot = mempool::zero_flow_auth::snapshot_for(
+            &tx,
+            self.maintainer_state.as_ref(),
+            self.producer_set.as_ref(),
+            &self.block_store,
+        )
+        .await;
         // Submit to mempool (maintainer txs are state-only, no UTXO inputs).
         {
             let mut mempool = self.mempool.write().await;
             mempool
-                .add_system_transaction(tx.clone(), current_height, maintainers.as_ref())
-                .map_err(|e| RpcError::internal_error(format!("mempool error: {}", e)))?;
+                .add_system_transaction(tx.clone(), current_height, Some(&snapshot))
+                .map_err(Self::mempool_error_to_rpc)?;
         }
 
         // INC-I-195 — RELAY. Without this the transaction never leaves the node

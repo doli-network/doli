@@ -1,6 +1,6 @@
 # Gossip Relay Verdict — Implementation Status, Evidence, Open Items
 
-> INC-I-237 · companion to `specs/gossip-relay-verdict-architecture.md` (design) and `specs/protocol.md` §7.2 (relay rules as shipped). Branch `refactor/inc-i-237-gossip-relay-verdict`. Updated 2026-10-13 (M9: specs and docs synced to M8).
+> INC-I-237 · companion to `specs/gossip-relay-verdict-architecture.md` (design) and `specs/protocol.md` §7.2 (relay rules as shipped). Branch `refactor/inc-i-237-gossip-relay-verdict`. Updated 2026-10-13 (M9: specs and docs synced to M8; M11: AUDIT-P1-509 + INC-I-246 admission stop-gap).
 
 ## Status: IMPLEMENTED
 
@@ -17,6 +17,7 @@
 | M7.1 | `fe248eb1` | soak retained-heap attribution per (swarm, structure); vendor size readouts; duplicate-cache gauge |
 | M7.2 | `5fbf3b0d` | count caps with oldest-first eviction on the vendor duplicate cache (218,000) and peer-score `deliveries` cache (50,000); table pinned at the cap's size (F-13) |
 | M8 | `3a123e4a` | zero-flow admission verifies DelegateBond / RevokeDelegation signatures and AddMaintainer / RemoveMaintainer current-set multisig as apply does (all 3 admission sites, `mempool::zero_flow_auth`); those 4 types relay multi-hop again; Registration stays never-forward |
+| M11 | (this milestone) | zero-flow admission reads a pre-lock `ZeroFlowSnapshot` (`zero_flow_auth::snapshot_for`, all 3 sites): canonical maintainer payload + no repeated signature entry (`MPTX012`), Add/Remove precondition against the same current set (`MPTX011`), INC-I-246 delegation stop-gap (`MPTX013`), canonical mined check (`MPTX014`), newness on signed content `(action, target)` = `AlreadyExists`, `MAX_MAINTAINERS` residents per action (`MPTX015`); `submitMaintainerChange` returns the mempool error code |
 
 ## Evidence
 
@@ -25,7 +26,7 @@
 - **M3 devnet A-B-C-D line:** duplicate-publish WARNs 64 → 0; attestations at D = 40; all four nodes at the same height.
 - **NOT run:** a mixed-version testnet soak with the M3/M4 build.
 
-## Open items (owed after M8; M9 is docs only)
+## Open items (owed after M11)
 
 | ID | Item | Where it stands |
 |---|---|---|
@@ -36,5 +37,7 @@
 | M5-DEV-F1 | One member key could sign `(attester, slot)` for any future slot; each was first seen, so Accepted, forwarded and kept in `AttestSeen`. | CLOSED (M5 decision C): the swarm Ignores an attestation with slot > wall + 2 (`staleness.rs::ATTEST_FUTURE_SLOTS`). Risk: a relaying node whose clock lags ≥ 2 slots (20 s at 10 s slots) Ignores genuine current attestations. |
 | G3 | The digest reply delta is a producer-topic publish to all peers, not a direct reply to the forwarder. | Owed: request-response reply. |
 | AUDIT-P1-505 reach | M5 gave every zero-flow tx `Ignore`, so a genuine DelegateBond / RevokeDelegation / AddMaintainer / RemoveMaintainer reached only the origin's direct peers. | CLOSED (M8): admission refuses a forged one (signature or current-set multisig, as apply), so a genuine one relays multi-hop again; a zero-flow Registration stays never-forward. Residual: replay of a captured genuine tx (INC-I-246). |
+| AUDIT-P1-509 | A captured genuine AddMaintainer / RemoveMaintainer could be rewritten without a key (`reason`, signature-entry order or padding, trailing bytes) into new txids, each admitted at fee 0 and forwarded. | CLOSED (M11): one resident per `(action, target)` (newness on the signed content), the apply precondition against the same current set (a mined change stops being a carrier when it applies), canonical bytes and no repeated signature entry; at most `MAX_MAINTAINERS` residents per action. Probe: `variant_forwards=0 middle_residents=1`. A front-run variant holds the slot with the same state effect (only `reason` may differ). |
+| INC-I-246 | Delegation txs carry no nonce, expiry or chain binding, and apply does not check `RevokeDelegation.delegate`: a public past revoke can strip a later delegation; a mined DelegateBond can be replayed. | Admission stop-gap (M11): refuses a RevokeDelegation that names a delegate other than the effective one (current state + that delegator's queued updates in queue order; effective `None` is admitted), a DelegateBond apply refuses (received cap, mirrored) or that repeats the effective delegation, and a DelegateBond / maintainer change whose txid a canonical block carries (a side-block index entry does not refuse; no index entry admits). Block validity and apply are unchanged, so a producer can still mine a replay. OWED (consensus fix, activation height required): nonce / valid-before / chain binding in the signed preimage, and `RevokeDelegation.delegate == delegated_to` at apply. Residual until then: a mined revoke replays while D is again delegated to the same P (exempt from the mined check because a second honest revoke of the same delegate is byte-identical), and an honest re-delegation with the same `(D, P, bonds)` after a revoke is refused by the mined check. |
 | F-15 | A transient `Ignore` can strand a valid chained or late received tx (no hop re-forwards it). Own-origin txs are covered by RPC Busy (R3). | Owed: O8 (origin re-publish of own unmined txs) or an RPC-visible status. |
 | REQ-GRV-016 remainder | Not built: command-channel depth gauge, pending-verdict gauge, vendor `send_queue` drop metric (today counted inside the vendor handler and logged at WARN, not exported), 1/min INFO summary line. | Owed. |

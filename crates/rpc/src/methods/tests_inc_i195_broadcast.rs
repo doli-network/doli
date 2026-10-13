@@ -23,7 +23,7 @@
 //! PATHS: valid add | valid remove | bad action | too few signatures
 //! INPUT PARTITIONS:
 //!   P1: action="add", 3 member signatures over the apply-time message
-//!   P2: action="remove", 3 member signatures over the apply-time message, with reason
+//!   P2: action="remove" of member 4 (M11: apply no-ops a non-member), 3 member signatures, with reason
 //!   P3: action="transfer" (not add/remove)
 //!   P4: action="add", 2 signatures (below MAINTAINER_THRESHOLD)
 //! MATRIX: P1→O1, P2→O1, P3→O2, P4→O2
@@ -173,8 +173,8 @@ async fn inc_i195_remove_is_broadcast_not_only_enqueued() {
     let h = build_harness();
     let params = serde_json::json!({
         "action": "remove",
-        "target_pubkey": pk(0xbb),
-        "signatures": member_sigs(3, false, 0xbb),
+        "target_pubkey": pk(4),
+        "signatures": member_sigs(3, false, 4),
         "reason": "INC-I-175 rotation",
     });
     let out = h
