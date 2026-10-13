@@ -134,10 +134,10 @@ fn req_grv_019_architecture_spec_records_implementation_and_open_items() {
     assert!(text.contains("IMPLEMENTED"), "status IMPLEMENTED absent");
     let missing: Vec<&str> = [
         "4277c300",
-        "7c8dc3be",
-        "b0051849",
-        "cc90ddcd",
-        "ec84959d",
+        "07a8b122",
+        "0ac1123e",
+        "a5d7d4e1",
+        "0e69eb5d",
         "F-12",
         "INC-I-238",
         "F2-bucket",

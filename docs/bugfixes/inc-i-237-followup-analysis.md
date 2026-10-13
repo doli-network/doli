@@ -1,6 +1,6 @@
 # INC-I-237 follow-up — bugfix analysis (RUN 573, resumed incident)
 
-> Analyst, 2026-10-12. Branch `refactor/inc-i-237-gossip-relay-verdict`, V = `7fb9d2b1` (M5). Base origin/main `d0e15686` (v6.43.3).
+> Analyst, 2026-10-12. Branch `refactor/inc-i-237-gossip-relay-verdict`, V = `ba55599a` (M5). Base origin/main `d0e15686` (v6.43.3).
 > Inputs: `docs/bugfixes/inc-i-237-followup-session-prompt.md` (main checkout), release pass 2 reports (QA FAIL, review PASS, audit FAIL), memory.db incident entries 3005-3033.
 > Code is the source of truth. Every `file:line` below was read at V unless marked otherwise.
 > Graph: graphify (`graphify-out/graph.json`, refreshed at V) + `blast.py`. graphify does not resolve Rust `self.method()` edges, so every caller list was cross-checked with grep.
@@ -41,7 +41,7 @@ The branch rebuilt how a DOLI node decides to pass gossip on. Four gaps remain b
 | `pool.rs:28,58-62,68` 8-parent FIFO | CONFIRMED | `:28` `MAX_PARENTS = 8`; `:58-62` evicts the oldest parent and all its signatures; `:64-68` a re-insert returns `true` |
 | `inc_i_237_m5_soak.rs:616` heap assert | CONFIRMED | `:616-617` `assert!(r.retained_mib < 64.0, ...)` |
 | `config.rs:70` TTL 300 s, `:67-68` "30 MB worst case", const assert | CONFIRMED | `:70`; `:67-68`; `:74-78` (>= 180 s and >= `ATTEST_STALE_SLOTS` x `SLOT_DURATION`) |
-| Push blocker "reword the M5 commit message" | **INCOMPLETE** | The same absolute session path (with the workstation account name) is in **6** messages: `7c8dc3be` (M1, line 63), `b0051849` (M1.5, :153), `cc90ddcd` (M2, :57), `ec84959d` (M3, :65), `b4fa9ce9` (M4, :34), `7fb9d2b1` (M5, :34). M0 is clean. |
+| Push blocker "reword the M5 commit message" | **INCOMPLETE** | The same absolute session path (with the workstation account name) is in **6** messages: `07a8b122` (M1, line 63), `0ac1123e` (M1.5, :153), `a5d7d4e1` (M2, :57), `0e69eb5d` (M3, :65), `19ce3987` (M4, :34), `ba55599a` (M5, :34). M0 is clean. |
 | "4 zero-fee tx types" | **INCOMPLETE** | `TxType::allows_empty_io` (`crates/core/src/transaction/types.rs:187-193`) also returns `true` for `Registration`. So `is_zero_flow()` (`crates/core/src/transaction/core.rs:479-481`) covers 5 types. A zero-flow Registration passes validation only in the genesis window (`crates/mempool/src/pool.rs` comment at `add_system_transaction`, citing `validation/registration.rs:37-71`). |
 | `AttestSeen` "pruned only on block apply" (review F1) | CONFIRMED | only call: `bins/node/src/node/apply_block/post_commit.rs:450` `self.attest_seen.prune(block.header.slot)` |
 
@@ -230,7 +230,7 @@ What may bound C1 without re-opening stale re-forwarding? A count or byte cap on
 ### M10 — push hygiene (item 4; the final history operation)
 - SSF: Reword every branch commit message that holds a local path, encode the planted guard fixtures like the other tokens, and run one disclosure scan over every branch commit before the release pass.
 - Acceptance criteria:
-  - [ ] The probe lines in `7c8dc3be`, `b0051849`, `cc90ddcd`, `ec84959d`, `b4fa9ce9`, `7fb9d2b1` (and any M6-M9 message) name an in-repo script or a neutral command; no absolute path, no account name.
+  - [ ] The probe lines in `07a8b122`, `0ac1123e`, `a5d7d4e1`, `0e69eb5d`, `19ce3987`, `ba55599a` (and any M6-M9 message) name an in-repo script or a neutral command; no absolute path, no account name.
   - [ ] `crates/network/tests/it/inc_i_237_m5_disclosure.rs:100-102` stores its 3 planted fixtures (an external-producer count phrase, a host alias, a host log file name) in the same encoded form as the rest; the guard still detects them.
   - [ ] Scan = 0 hits for: workstation paths and the account name, host aliases, non-loopback IPv4, operator names, host log file names, unit or producer counts, deploy dates. Scope: every message in `d0e15686..HEAD`, every added line in `git log -p d0e15686..HEAD`, and every file version the branch adds or changes. (The base tree already holds some host tokens, for example `docs/infrastructure.md:303`; that is pre-existing on origin/main and out of this scope.)
   - [ ] The trees after the reword are identical to the trees before it (`git diff <old-head> <new-head>` empty).
@@ -260,7 +260,7 @@ What may bound C1 without re-opening stale re-forwarding? A count or byte cap on
 |---|---|---|---|
 | 1 | `specs/gossip-relay-verdict-architecture.md:92` | "<= 2 Accepts per `(attester, slot)` on a known block" | unbounded after pool cycling (M6) |
 | 2 | `specs/gossip-relay-verdict-status.md:28` | "Relay half CLOSED for attestations (M5, AUDIT-P1-506)" | not closed (M6) |
-| 3 | `specs/gossip-relay-verdict-architecture.md:23` | header stops at "M4: this branch, commit after `ec84959d`" | M4 = `b4fa9ce9`, M5 = `7fb9d2b1` |
+| 3 | `specs/gossip-relay-verdict-architecture.md:23` | header stops at "M4: this branch, commit after `0e69eb5d`" | M4 = `19ce3987`, M5 = `ba55599a` |
 | 4 | `specs/gossip-relay-verdict-status.md:3` | "Updated 2026-10-12 (M4)" | M5 shipped |
 | 5 | `specs/gossip-relay-verdict-architecture.md:401` | F-13 "PASS" | `soak_10min` fails (M7) |
 | 6 | `crates/network/src/gossip/config.rs:67-68` | "1 000 msg/s x 300 s ~= 30 MB worst case" | nothing caps distinct-id ingress (M7) |

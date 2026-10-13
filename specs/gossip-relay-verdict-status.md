@@ -7,16 +7,16 @@
 | Milestone | Commit | Content |
 |---|---|---|
 | M0 | `4277c300` | verdict-latency / block-recv / attestation-coverage metrics, probe, F-10 format corpus |
-| M1 | `7c8dc3be` | D2 exhaustive relay table, D3 unsubscribe headers/heartbeats, D4 sync-only sink, D6 per-peer block bucket before the report |
-| M1.5 | `b0051849` | R1 two bounded lanes, R3 reserve-before-admit (RPC Busy), byte-bounded control backlog |
-| M2 | `cc90ddcd` | D1 verdict seam, D5 newly-admitted tx rule, R5 3.5 s deadline + late counter, R4 single-tx origin publish |
-| M3 | `ec84959d` | R2 attestation / vote / producer verdicts, ATTEST_FETCH gate + per-tick cap, digest LocalOnly |
-| M4 | `b4fa9ce9` | R6 app dedup cache deleted + const assert, INV-NETWORK-002 real lane budgets, lane depth / shed-by-topic metrics + probe `channel` lines, dead seam code removed, seam files ≤ 500 lines, specs/docs drift closed |
-| M5 | `7fb9d2b1` | zero-flow never forwards, `(attester, slot)` attestation newness, own attestation bucket, future-slot bound, per-tx bucket charge, block headroom, F-13 soak |
-| M6 | `bf6c8efd` | attestation relay authority from a per-`(attester, slot)` BLS-forwarded bit (not pool residency), unknown-block relay-only BLS check (F7), wall-clock `AttestSeen` prune |
-| M7.1 | `80724ccf` | soak retained-heap attribution per (swarm, structure); vendor size readouts; duplicate-cache gauge |
-| M7.2 | `5076336b` | count caps with oldest-first eviction on the vendor duplicate cache (218,000) and peer-score `deliveries` cache (50,000); table pinned at the cap's size (F-13) |
-| M8 | `3949dff5` | zero-flow admission verifies DelegateBond / RevokeDelegation signatures and AddMaintainer / RemoveMaintainer current-set multisig as apply does (all 3 admission sites, `mempool::zero_flow_auth`); those 4 types relay multi-hop again; Registration stays never-forward |
+| M1 | `07a8b122` | D2 exhaustive relay table, D3 unsubscribe headers/heartbeats, D4 sync-only sink, D6 per-peer block bucket before the report |
+| M1.5 | `0ac1123e` | R1 two bounded lanes, R3 reserve-before-admit (RPC Busy), byte-bounded control backlog |
+| M2 | `a5d7d4e1` | D1 verdict seam, D5 newly-admitted tx rule, R5 3.5 s deadline + late counter, R4 single-tx origin publish |
+| M3 | `0e69eb5d` | R2 attestation / vote / producer verdicts, ATTEST_FETCH gate + per-tick cap, digest LocalOnly |
+| M4 | `19ce3987` | R6 app dedup cache deleted + const assert, INV-NETWORK-002 real lane budgets, lane depth / shed-by-topic metrics + probe `channel` lines, dead seam code removed, seam files ≤ 500 lines, specs/docs drift closed |
+| M5 | `ba55599a` | zero-flow never forwards, `(attester, slot)` attestation newness, own attestation bucket, future-slot bound, per-tx bucket charge, block headroom, F-13 soak |
+| M6 | `f0db9111` | attestation relay authority from a per-`(attester, slot)` BLS-forwarded bit (not pool residency), unknown-block relay-only BLS check (F7), wall-clock `AttestSeen` prune |
+| M7.1 | `fe248eb1` | soak retained-heap attribution per (swarm, structure); vendor size readouts; duplicate-cache gauge |
+| M7.2 | `5fbf3b0d` | count caps with oldest-first eviction on the vendor duplicate cache (218,000) and peer-score `deliveries` cache (50,000); table pinned at the cap's size (F-13) |
+| M8 | `3a123e4a` | zero-flow admission verifies DelegateBond / RevokeDelegation signatures and AddMaintainer / RemoveMaintainer current-set multisig as apply does (all 3 admission sites, `mempool::zero_flow_auth`); those 4 types relay multi-hop again; Registration stays never-forward |
 
 ## Evidence
 
