@@ -295,6 +295,9 @@ fn count_drop(counter: &AtomicU64, what: &str) -> EmitOutcome {
 }
 
 /// Add `size` to `counter` if it fits `budget`; `lenient` also admits into an empty lane.
+// `fetch_update` is deprecated from rustc 1.99 in favour of `try_update`, which is newer
+// than the workspace MSRV (1.85). Same semantics; keep the portable call.
+#[allow(deprecated)]
 fn reserve_bytes(counter: &AtomicUsize, size: usize, budget: usize, lenient: bool) -> bool {
     counter
         .fetch_update(Ordering::AcqRel, Ordering::Acquire, |cur| {

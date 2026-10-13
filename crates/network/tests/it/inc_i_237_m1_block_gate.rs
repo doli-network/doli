@@ -189,9 +189,12 @@ async fn f_1_candidate_block_forwarded_with_global_bucket_empty_and_shed_armed()
     }
     let bg_cmd = c_cmd.clone();
     let background = tokio::spawn(async move {
-        for i in 0.. {
+        // Unbounded by design: the task runs until it is aborted below.
+        let mut i = 0;
+        loop {
             publish(&bg_cmd, 1, BACKGROUND + i).await;
             tokio::time::sleep(Duration::from_millis(50)).await;
+            i += 1;
         }
     });
     tokio::time::sleep(Duration::from_secs(3)).await;
