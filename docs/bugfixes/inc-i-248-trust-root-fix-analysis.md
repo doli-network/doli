@@ -225,3 +225,24 @@ Rules:
 - D = 0 never fires (pruning keeps genesis and removes block 1).
 - The check runs at start, next to the retired-key sanitizer, before the
   startup probe arms.
+
+## Live repair fix, second shape (REL-M2.5)
+
+A second live run hit the other shape of a pre-fix snap node: it installed the
+snapshot before it applied block 1, then seeded from the live producers at its
+first block after the snapshot (D = S + 1 >= the activation gate). Blocks D and
+D + 1 both exist, so the REL-M2 rule does not fire, and the fixed binary kept
+the stale set. The node's own code logs this seed path as an ERROR (INC-I-172
+R1: a post-gate seed rebuilds the root from live producers and can re-arm a
+removed key).
+
+| ID | Requirement | Priority | Acceptance criterion |
+|---|---|---|---|
+| REQ-248-009 | At start, a non-empty set that came from a post-gate producer seed is reset to EMPTY at the tip, so the peer quorum repairs it. Signature (local data only): the network's activation gate G > 0, D = `last_derived_height` >= G, `set.last_updated == D`, the tip is above D, and the node's own block at height D is present and holds no AddMaintainer or RemoveMaintainer transaction. If block D is absent (pruned), the rule does not fire. | Must | `inc_i_248_post_gate_seed_root_repaired_on_start` fails on 63f009f0 and passes after; live drill step 4 repairs the control dir whichever shape it has. |
+
+Why replay nodes are not affected: on a network with G > 0 a replay node holds
+a pre-gate seed (D < G) or a set that last changed at a governance block (block
+D holds the maintainer-change transaction). A quorum adoption stamps D at the
+adoption tip while `last_updated` keeps the history value, and `doli snap`
+stamps D at the snapshot height with the history `last_updated`, so neither
+matches. Devnet (G = 0) never fires.

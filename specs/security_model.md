@@ -1274,6 +1274,12 @@ release for it.
   with block D in the local block store and block D+1 absent, was not derived from replayed
   history. The node resets it to EMPTY at the tip and the peer quorum repairs it. Pruning removes
   a contiguous prefix from height 1, so a pruned or full replay node never matches.
+- Post-gate seed check at start: a non-empty set with `last_updated` == D == `last_derived_height`
+  >= G > 0 (G = `maintainer_derivation_activation_height`), the tip above D, and the node's own
+  block D present with no AddMaintainer or RemoveMaintainer transaction came from a producer seed
+  above the gate. The node resets it to EMPTY at the tip and the peer quorum repairs it. A missing
+  block D keeps the set. A replay node holds a pre-gate seed or a governance-block D and keeps its
+  set. Devnet (G = 0) never matches.
 - A reply to the probe never reaches the sync manager, and a node never answers the probe busy.
 - `doli snap` installs the snapshot's maintainer set only when the seeds agree on its digest by
   the state-root rule, with the configured seed count (silent seeds count against it), and the

@@ -163,8 +163,8 @@ async fn inc_i_248_rel_m2_snap_store_guards_keep_root() {
             m2::TIP,
         ),
         (
-            "D = S+1 above the hole, D+1 present",
-            m2::producer_set_at(m2::S + 1),
+            "D = S+1 above the hole, D+1 present, last_updated below D",
+            m2::producer_set_at(1),
             m2::S + 1,
         ),
         ("EMPTY@1 with the hole", MaintainerSet::new(), 1),

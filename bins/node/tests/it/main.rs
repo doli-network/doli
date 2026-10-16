@@ -127,6 +127,7 @@ mod inc_i_248_rel_m1_eligibility;
 mod inc_i_248_rel_m1_fixture;
 mod inc_i_248_rel_m1_routing;
 mod inc_i_248_rel_m1_sanitizer;
+mod inc_i_248_rel_m25_post_gate_seed;
 mod inc_i_248_rel_m2_fixture;
 mod inc_i_248_rel_m2_probe;
 mod inc_i_248_rel_m2_unreplayed;

@@ -11,10 +11,48 @@ impl Node {
     /// Start-time check: reset a set that holds a retired key, or that was not
     /// derived from replayed history, to EMPTY at the tip. Returns `true` when it
     /// reset; otherwise nothing is written.
+    /// Third check: a set that came from a post-gate producer seed.
     pub async fn sanitize_retired_maintainer_set(&self) -> bool {
         let tip = self.chain_state.read().await.best_height;
         self.sanitize_retired_maintainer_set_at(tip).await
             || self.reset_unreplayed_maintainer_set_at(tip).await
+            || self.reset_post_gate_seed_set_at(tip).await
+    }
+
+    /// A non-empty set seeded at D = last_updated >= G > 0 below the tip, with block
+    /// D stored and free of maintainer changes. A missing block or read error keeps it.
+    async fn reset_post_gate_seed_set_at(&self, tip: u64) -> bool {
+        let Some(ms) = &self.maintainer_state else {
+            return false;
+        };
+        let gate = self
+            .config
+            .network
+            .params()
+            .maintainer_derivation_activation_height;
+        let mut state = ms.write().await;
+        let d = state.last_derived_height;
+        if state.set.members.is_empty()
+            || gate == 0
+            || d < gate
+            || state.set.last_updated != d
+            || tip <= d
+            || !matches!(
+                self.block_store.get_block_by_height(d),
+                Ok(Some(block)) if !block.transactions.iter().any(|tx| tx.is_maintainer_change())
+            )
+        {
+            return false;
+        }
+        let members = state.set.member_count();
+        state.set = MaintainerSet::new();
+        state.last_derived_height = tip;
+        let saved = state.save(&self.config.data_dir);
+        warn!(
+            "[MAINTAINER] trust root came from a post-gate producer seed, not from replayed history: {} members, D={}, reset to EMPTY at tip {} (saved: {:?}); waiting for a peer quorum (INC-I-248)",
+            members, d, tip, saved
+        );
+        true
     }
 
     /// A non-empty set stamped at D >= 1 below the tip, with block D stored and

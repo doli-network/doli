@@ -324,7 +324,22 @@ async fn inc_i_248_replay_node_full_store_keeps_root_on_start() {
         h::last_rotation_height(),
         "fixture: D = last rotation height"
     );
-    m2::put_heights(&a.node, &[0..=h::SNAP_HEIGHT]);
+    let genesis = h::node_genesis(&a.node);
+    let changes: Vec<h::Step> = h::rotation_plan()
+        .into_iter()
+        .filter(|s| s.accept && !matches!(s.op, h::Op::Activate(..)))
+        .collect();
+    m2::put_heights_with(&a.node, &[0..=h::SNAP_HEIGHT], |height, prev| match changes
+        .iter()
+        .find(|s| s.height == height)
+    {
+        Some(s) => m2::stub_block_with(height, prev, h::step_tx(&genesis, s)),
+        None => m2::stub_block(height, prev),
+    });
+    assert!(
+        m2::block_has_maintainer_change(&a.node, h::last_rotation_height()),
+        "fixture: block D holds the last maintainer change"
+    );
     m2::set_tip_to_store(&a.node, h::SNAP_HEIGHT).await;
     m2::assert_start_keeps(&a.node, "rotated D, tip = SNAP_HEIGHT").await;
     assert_eq!(

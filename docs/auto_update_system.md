@@ -161,7 +161,7 @@ What DOES converge today:
 | Recovery path | Converges? | Why |
 |---|---|---|
 | Full data-dir wipe + **full resync from genesis** | YES | Every block is re-applied, so `process_transaction_governance` re-executes the whole governance history |
-| Delete `maintainer_state.bin` only, chain intact | **NO** | Re-seeds from live producer state — R1. The peer-quorum probe (§2.6.1, INC-I-248) never changes a non-empty root. Only a set that holds a retired genesis key is reset (sanitizer) and repaired from peers |
+| Delete `maintainer_state.bin` only, chain intact | **After the next start** (INC-I-248) | Re-seeds from live producer state above the gate — R1. At the next start the node resets that post-gate seed to EMPTY at the tip and repairs it from the peer quorum (§2.6.1). Devnet (gate 0) keeps the seed |
 | Full data-dir wipe + **snap sync** | **YES, from peers** (INC-I-248) | Governance below the snapshot floor is never replayed. The node does not seed from producers: it holds an EMPTY root at the snap height (fails closed) and adopts the set a peer quorum agrees on (§2.6.1). R3 is closed |
 
 REQ-172-010 ("the trust root SHOULD be derivable from block history alone, **without
@@ -306,6 +306,12 @@ rule is `select_quorum_maintainer_state` in `crates/core/src/maintainer/quorum.r
   with block D in the local block store and block D+1 absent, was not derived from replayed
   history. The node resets it to EMPTY at the tip and the peer quorum repairs it. Pruning removes
   a contiguous prefix from height 1, so a pruned or full replay node never matches.
+- **Post-gate seed.** At start, a non-empty set with `last_updated` == D == `last_derived_height`
+  >= G > 0 (G = `maintainer_derivation_activation_height`), the tip above D, and the node's own
+  block D present with no AddMaintainer or RemoveMaintainer transaction came from a producer seed
+  above the gate. The node resets it to EMPTY at the tip and the peer quorum repairs it. A missing
+  block D keeps the set. A replay node holds a pre-gate seed or a governance-block D and keeps its
+  set. Devnet (G = 0) never matches.
 - **Routing.** A reply to the probe never reaches the sync manager. A node serves
   `GetMaintainerState` outside the sync serving limit.
 - **Effect.** Every verdict logs one line: `[MAINTAINER] quorum verdict … phase=…`. An adoption

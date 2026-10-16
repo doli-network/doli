@@ -52,12 +52,42 @@ pub fn stub_block(height: u64, prev_hash: Hash) -> Block {
     Block::new(header, vec![coinbase])
 }
 
+/// `stub_block` with `tx` appended after the coinbase.
+pub fn stub_block_with(height: u64, prev_hash: Hash, tx: Transaction) -> Block {
+    let stub = stub_block(height, prev_hash);
+    let mut txs = stub.transactions.clone();
+    txs.push(tx);
+    let mut header = stub.header.clone();
+    header.merkle_root = doli_core::block::compute_merkle_root(&txs);
+    Block::new(header, txs)
+}
+
+/// Stored block at `height` holds an AddMaintainer or RemoveMaintainer tx.
+pub fn block_has_maintainer_change(node: &Node, height: u64) -> bool {
+    node.block_store
+        .get_block_by_height(height)
+        .expect("fixture: block read")
+        .expect("fixture: block stored")
+        .transactions
+        .iter()
+        .any(|tx| tx.is_maintainer_change())
+}
+
 /// Store a canonical block at every height in `ranges` (in order).
 pub fn put_heights(node: &Node, ranges: &[RangeInclusive<u64>]) {
+    put_heights_with(node, ranges, stub_block);
+}
+
+/// `put_heights` with the block at each height built by `block_at(height, prev_hash)`.
+pub fn put_heights_with(
+    node: &Node,
+    ranges: &[RangeInclusive<u64>],
+    block_at: impl Fn(u64, Hash) -> Block,
+) {
     let mut prev = Hash::ZERO;
     for range in ranges {
         for height in range.clone() {
-            let block = stub_block(height, prev);
+            let block = block_at(height, prev);
             prev = block.hash();
             node.block_store
                 .put_block_canonical(&block, height)
