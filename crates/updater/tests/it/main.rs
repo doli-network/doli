@@ -5,6 +5,8 @@
 //! OUTPUT CONTRACT: N/A — fixture file (module aggregator only, no test logic).
 //! INPUT PARTITIONS: N/A — fixture file.
 
+mod inc_i_248_m3_outcome_probe;
+mod inc_i_248_retired_keys;
 mod sk_m1_outcome_probe;
 mod sk_m1_skills_dir_resolution;
 mod sk_m1_skills_ownership;

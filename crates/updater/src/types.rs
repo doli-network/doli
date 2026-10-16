@@ -125,12 +125,13 @@ pub enum UpdateError {
 
     /// The resolved trust root cannot authorise anything (INC-I-172 F1).
     ///
-    /// Returned when the root has fewer keys than its own threshold, or a
-    /// threshold of zero. This is a FAIL-CLOSED outcome: verification refuses
-    /// rather than falling back to the compile-time bootstrap keys.
+    /// Returned when the root has fewer keys than its own threshold, a threshold
+    /// of zero, or a retired compromised key. This is a FAIL-CLOSED outcome:
+    /// verification refuses rather than falling back to the compile-time bootstrap keys.
     #[error(
         "Trust root unavailable: {provenance} root has {keys} key(s) for a threshold of {threshold} \
-         — refusing to verify (no fallback to compiled bootstrap keys)"
+         or holds a retired compromised key — refusing to verify (no fallback to compiled \
+         bootstrap keys)"
     )]
     TrustRootUnavailable {
         provenance: String,
