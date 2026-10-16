@@ -275,7 +275,7 @@ MaintainerState {
 3. On MaintainerAdd/Remove tx: updated immediately, persisted to disk
 4. On release verification: `maintainer_trust_root_fn` resolves a `TrustRoot` from
    `MaintainerState` (`bins/node/src/updater/trust_root_wiring.rs`)
-5. After a snapshot install, or at start after the retired-key sanitizer: the peer-quorum
+5. After a snapshot install, or at start after the retired-key or provenance reset: the peer-quorum
    probe (§2.6.1) can replace an EMPTY root stamped at a snap height (INC-I-248).
 
 **Key lookup is O(1)** — reads 3-5 members, regardless of producer count.
@@ -302,6 +302,10 @@ rule is `select_quorum_maintainer_state` in `crates/core/src/maintainer/quorum.r
 - **Retired keys.** Above `retired_genesis_maintainer_keys_height` (mainnet 331_457, testnet and
   devnet never) the 5 genesis keys are not maintainers. At start and after a producer seed, a
   set that holds one becomes EMPTY at the tip, and the probe repairs it.
+- **Provenance.** At start, a non-empty set whose `last_derived_height` D >= 1 is below the tip,
+  with block D in the local block store and block D+1 absent, was not derived from replayed
+  history. The node resets it to EMPTY at the tip and the peer quorum repairs it. Pruning removes
+  a contiguous prefix from height 1, so a pruned or full replay node never matches.
 - **Routing.** A reply to the probe never reaches the sync manager. A node serves
   `GetMaintainerState` outside the sync serving limit.
 - **Effect.** Every verdict logs one line: `[MAINTAINER] quorum verdict … phase=…`. An adoption

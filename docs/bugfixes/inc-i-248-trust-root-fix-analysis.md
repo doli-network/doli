@@ -196,3 +196,32 @@ Rules:
 - `doli snap`: a set that holds a key retired at the snapshot height is
   written as EMPTY at that height. The digest agreement follows the state-root
   rule exactly, also when other seeds give no usable answer.
+
+## Live repair fix (REL-M2)
+
+The live drill on the local testnet showed a gap. A pre-fix snap node held a
+stale set from a producer seed at height 1 (`last_change_block` 1). After the
+owner installed the fixed binary, the node kept that set: REL-M1 lets the peer
+quorum repair only an EMPTY root, and the retired-key sanitizer acts only where
+the keys are retired (mainnet). So a stale set that is not the retired set is
+never repaired.
+
+| ID | Requirement | Priority | Acceptance criterion |
+|---|---|---|---|
+| REQ-248-008 | At start, a node whose non-empty maintainer set was not derived from history it replayed resets the set to EMPTY at its tip, so the peer quorum repairs it. "Not replayed" = with D = `last_derived_height` >= 1 and the tip above D, the node's own block store HAS the block at D and has NO block at D + 1 (the history right after the derivation was skipped by a snapshot). A node that replayed the history keeps its set (REQ-248-004). | Must | `inc_i_248_unreplayed_root_repaired_on_start` fails on 0b722d35 and passes after; the live drill step 4 shows the repaired digest equal to the fleet. |
+
+Rules:
+
+- The check reads only local data (the node's own block store). No peer
+  answer can trigger it, so it does not reopen the release-gate P1 (a peer
+  quorum replacing a usable root).
+- `last_derived_height` changes only at a seed, a governance change, a quorum
+  adoption, a reset or a rollback rewind. Nodes CAN prune blocks (admin RPC
+  `pruneBlocks`, `BlockStore::prune_blocks_below`), but pruning deletes a
+  contiguous prefix of heights from 1 upward (genesis kept). So on a pruned
+  replay node, a missing block at D + 1 means the block at D is missing too,
+  and the rule does not fire. A node that applied block D and then installed
+  a snapshot has block D and lacks D + 1: the rule fires.
+- D = 0 never fires (pruning keeps genesis and removes block 1).
+- The check runs at start, next to the retired-key sanitizer, before the
+  startup probe arms.

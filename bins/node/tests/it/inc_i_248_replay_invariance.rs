@@ -20,11 +20,17 @@
 //! MATRIX: 21 states x (O2 set, O2 ldh, O3, O4, digest vs reference, digest vs frozen hex)
 //!   + F3 at 3 points x (O2 set, O2 ldh, O4 bytes, probe phase).
 //!
+//! F4 (REL-M2): `Node::sanitize_retired_maintainer_set(&self) -> bool` on a full block store
+//! (every block 0..=tip): O3 false, O2 set/ldh, O4 bytes, eligibility, probe phase. Partitions:
+//! D = 1 with tip = D + 1 or tip = 60; D = last rotation with tip = SNAP_HEIGHT. 3 x 6 cells.
+//!
 // covers: crates/core/src/maintainer/quorum.rs, bins/node/src/node/maintainer_quorum.rs, bins/node/src/node/periodic.rs
+// covers: bins/node/src/node/maintainer_sanitize.rs, bins/node/src/run.rs (start-time sanitize)
 
 use std::time::{Duration, Instant};
 
 use crate::inc_i_248_harness as h;
+use crate::inc_i_248_rel_m2_fixture as m2;
 use doli_core::maintainer::{derive_canonical_maintainer_set, maintainer_set_digest};
 use doli_core::MaintainerSet;
 use doli_node::node::maintainer_quorum::ProbeReason;
@@ -291,4 +297,39 @@ async fn inc_i_248_replay_node_maintainer_set_invariant() {
             row.label, row.height
         );
     }
+}
+
+// REQ-248-004 (Must) — Decision: a failure means the REL-M2 start-time check resets the root of a node that replayed every block, so the peer quorum could replace replayed history.
+#[tokio::test]
+async fn inc_i_248_replay_node_full_store_keeps_root_on_start() {
+    let (mut seeded, _ts) = h::testnet_node(&h::producer_keys()).await;
+    m2::assert_retired_check_off(&seeded);
+    seeded.maybe_bootstrap_maintainer_set(1).await;
+    let disk = h::disk_state_of(&seeded);
+    assert!(
+        h::is_producer_seed(&disk.set) && disk.last_derived_height == 1,
+        "fixture: producer seed at h=1 on disk"
+    );
+    m2::install_state(&mut seeded, &disk);
+    m2::put_heights(&seeded, &[0..=2]);
+    m2::set_tip_to_store(&seeded, 2).await;
+    m2::assert_start_keeps(&seeded, "seed D = 1, tip = D + 1").await;
+    m2::put_heights(&seeded, &[3..=60]);
+    m2::set_tip_to_store(&seeded, 60).await;
+    m2::assert_start_keeps(&seeded, "seed D = 1, tip = 60").await;
+
+    let a = h::build_replay_node_a().await;
+    assert_eq!(
+        h::state_of(&a.node).await.last_derived_height,
+        h::last_rotation_height(),
+        "fixture: D = last rotation height"
+    );
+    m2::put_heights(&a.node, &[0..=h::SNAP_HEIGHT]);
+    m2::set_tip_to_store(&a.node, h::SNAP_HEIGHT).await;
+    m2::assert_start_keeps(&a.node, "rotated D, tip = SNAP_HEIGHT").await;
+    assert_eq!(
+        hex_digest(&h::state_of(&a.node).await.set),
+        FROZEN_DIGESTS[20],
+        "digest != frozen v6.44.0 digest after the plan"
+    );
 }

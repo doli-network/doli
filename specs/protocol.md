@@ -2246,6 +2246,11 @@ height is above the retirement height becomes EMPTY at that height. The node sav
 one warning. The root is then eligible and the probe repairs it. An EMPTY set verifies no
 governance signature, so the retired keys cannot rotate it.
 
+**Provenance check.** At start, a non-empty set whose `last_derived_height` D >= 1 is below the
+tip, with block D in the local block store and block D+1 absent, was not derived from replayed
+history. The node resets it to EMPTY at the tip and the peer quorum repairs it. Pruning removes a
+contiguous prefix from height 1, so a pruned or full replay node never matches.
+
 **Snapshot install.** The maintainer state always becomes EMPTY at the snapshot height S. A set
 the node held before the snapshot is not kept.
 

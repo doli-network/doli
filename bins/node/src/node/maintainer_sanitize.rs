@@ -8,11 +8,44 @@ use tracing::warn;
 use super::Node;
 
 impl Node {
-    /// Reset a set that holds a key retired below the chain tip to EMPTY at the
-    /// tip. Returns `true` when it reset; otherwise nothing is written.
+    /// Start-time check: reset a set that holds a retired key, or that was not
+    /// derived from replayed history, to EMPTY at the tip. Returns `true` when it
+    /// reset; otherwise nothing is written.
     pub async fn sanitize_retired_maintainer_set(&self) -> bool {
         let tip = self.chain_state.read().await.best_height;
         self.sanitize_retired_maintainer_set_at(tip).await
+            || self.reset_unreplayed_maintainer_set_at(tip).await
+    }
+
+    /// A non-empty set stamped at D >= 1 below the tip, with block D stored and
+    /// block D+1 absent, skipped the history after D. A read error keeps the set.
+    async fn reset_unreplayed_maintainer_set_at(&self, tip: u64) -> bool {
+        let Some(ms) = &self.maintainer_state else {
+            return false;
+        };
+        let mut state = ms.write().await;
+        let d = state.last_derived_height;
+        if state.set.members.is_empty() || tip <= d {
+            return false;
+        }
+        let stored = |h: u64| {
+            self.block_store
+                .get_hash_by_height(h)
+                .map(|hash| hash.is_some())
+                .ok()
+        };
+        if d == 0 || stored(d) != Some(true) || stored(d.saturating_add(1)) != Some(false) {
+            return false;
+        }
+        let members = state.set.member_count();
+        state.set = MaintainerSet::new();
+        state.last_derived_height = tip;
+        let saved = state.save(&self.config.data_dir);
+        warn!(
+            "[MAINTAINER] trust root not derived from replayed history (block D present, block D+1 missing): {} members, D={}, reset to EMPTY at tip {} (saved: {:?}); waiting for a peer quorum (INC-I-248)",
+            members, d, tip, saved
+        );
+        true
     }
 
     pub(super) async fn sanitize_retired_maintainer_set_at(&self, height: u64) -> bool {

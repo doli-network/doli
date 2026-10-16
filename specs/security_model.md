@@ -1270,6 +1270,10 @@ release for it.
   after a producer seed, a local set that holds one becomes EMPTY at the tip (the sanitizer). An
   EMPTY set verifies no governance signature, so the leaked keys cannot rotate it. The probe then
   repairs the root.
+- Provenance check at start: a non-empty set whose `last_derived_height` D >= 1 is below the tip,
+  with block D in the local block store and block D+1 absent, was not derived from replayed
+  history. The node resets it to EMPTY at the tip and the peer quorum repairs it. Pruning removes
+  a contiguous prefix from height 1, so a pruned or full replay node never matches.
 - A reply to the probe never reaches the sync manager, and a node never answers the probe busy.
 - `doli snap` installs the snapshot's maintainer set only when the seeds agree on its digest by
   the state-root rule, with the configured seed count (silent seeds count against it), and the
