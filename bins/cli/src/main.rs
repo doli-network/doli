@@ -21,6 +21,7 @@ mod cmd_pool;
 mod cmd_producer;
 mod cmd_service;
 mod cmd_snap;
+mod cmd_snap_service;
 mod cmd_template;
 mod cmd_token;
 mod cmd_upgrade;

@@ -1,6 +1,12 @@
 use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};
+use doli_cli::cmd_snap_maintainer::{
+    agree_maintainer_digest, query_maintainer_digest, write_snap_maintainer_state,
+    SnapMaintainerOutcome,
+};
+
+use crate::cmd_snap_service::{restart_matching_service, stop_doli_service};
 
 /// Seed RPC endpoints per network for state root consensus verification.
 fn seed_rpcs(network: &str) -> Vec<&'static str> {
@@ -105,6 +111,22 @@ pub(crate) async fn cmd_snap(
         }
         (state_roots[0].0.to_string(), state_roots[0].2.clone())
     };
+
+    // Maintainer digest agreement; a disagreement never aborts the snap.
+    let mut maintainer_answers: Vec<(String, String)> = Vec::new();
+    for seed in &seeds {
+        match query_maintainer_digest(seed).await {
+            Ok(digest) => {
+                println!("  {} — maintainer digest={:.16}...", seed, digest);
+                maintainer_answers.push((seed.to_string(), digest));
+            }
+            Err(e) => println!("  {} — maintainer digest not counted ({})", seed, e),
+        }
+    }
+    let agreed_maintainer = agree_maintainer_digest(&maintainer_answers, trust);
+    if agreed_maintainer.is_none() {
+        println!("  Warning: seeds do not agree on the maintainer set; the node gets the fail-closed EMPTY root and repairs it from its peers");
+    }
     println!();
 
     // 2. Stop the node service
@@ -319,6 +341,23 @@ pub(crate) async fn cmd_snap(
         producer_set.active_count()
     );
 
+    // Written before the chown below so the file gets the service owner.
+    match write_snap_maintainer_state(
+        &data_dir,
+        &snap["maintainerState"],
+        height,
+        agreed_maintainer.as_deref(),
+        &chain_state.genesis_hash,
+    )? {
+        SnapMaintainerOutcome::Canonical => {
+            println!("  Maintainer state: canonical set at h={}", height)
+        }
+        SnapMaintainerOutcome::FailClosed(reason) => println!(
+            "  Maintainer state: EMPTY at h={} (fail closed: {})",
+            height, reason
+        ),
+    }
+
     // Fix ownership: snap runs as root (sudo) but the service runs as user 'doli'.
     // Without this, RocksDB files are owned by root and the service crashes with Permission denied.
     // Also fix parent directory (/var/lib/doli/) and log directory (/var/log/doli/).
@@ -437,112 +476,4 @@ async fn download_snapshot(rpc_url: &str) -> Result<serde_json::Value> {
     body.get("result")
         .cloned()
         .ok_or_else(|| anyhow!("No result"))
-}
-
-/// Stop the doli-node service that owns the given data directory.
-/// On multi-node servers, only stops the service whose ExecStart references this data_dir.
-/// If no match is found, stops nothing (safe default).
-fn stop_doli_service(data_dir: &std::path::Path) {
-    let data_dir_str = data_dir.to_string_lossy();
-
-    // systemd: find the service whose ExecStart contains our data_dir
-    if let Ok(output) = std::process::Command::new("systemctl")
-        .args(["list-units", "--type=service", "--no-pager", "-q"])
-        .output()
-    {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            let service = line.split_whitespace().next().unwrap_or("");
-            if !service.contains("doli") {
-                continue;
-            }
-            // Read the service's ExecStart to check if it uses our data_dir
-            if let Ok(cat_output) = std::process::Command::new("systemctl")
-                .args(["cat", service, "--no-pager"])
-                .output()
-            {
-                let cat_str = String::from_utf8_lossy(&cat_output.stdout);
-                if cat_str.contains(data_dir_str.as_ref()) {
-                    let _ = std::process::Command::new("sudo")
-                        .args(["systemctl", "stop", service])
-                        .output();
-                    println!("  Stopped {}", service);
-                    return;
-                }
-            }
-        }
-    }
-
-    // launchd (macOS): find the plist whose ProgramArguments contains our data_dir
-    if let Ok(output) = std::process::Command::new("launchctl")
-        .args(["list"])
-        .output()
-    {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            let label = line.split_whitespace().last().unwrap_or("");
-            if !label.contains("doli") {
-                continue;
-            }
-            let _ = std::process::Command::new("launchctl")
-                .args(["stop", label])
-                .output();
-            println!("  Stopped {}", label);
-            return;
-        }
-    }
-
-    println!("  No running service found");
-}
-
-/// Restart the doli-node service that owns the given data directory.
-fn restart_matching_service(data_dir: &std::path::Path) {
-    let data_dir_str = data_dir.to_string_lossy();
-
-    // systemd
-    if let Ok(output) = std::process::Command::new("systemctl")
-        .args(["list-unit-files", "--type=service", "--no-pager"])
-        .output()
-    {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            let service = line.split_whitespace().next().unwrap_or("");
-            if !service.contains("doli") {
-                continue;
-            }
-            if let Ok(cat_output) = std::process::Command::new("systemctl")
-                .args(["cat", service, "--no-pager"])
-                .output()
-            {
-                let cat_str = String::from_utf8_lossy(&cat_output.stdout);
-                if cat_str.contains(data_dir_str.as_ref()) {
-                    let _ = std::process::Command::new("sudo")
-                        .args(["systemctl", "restart", service])
-                        .output();
-                    println!("  Restarted {}", service);
-                    return;
-                }
-            }
-        }
-    }
-
-    // launchd (macOS)
-    if let Ok(output) = std::process::Command::new("launchctl")
-        .args(["list"])
-        .output()
-    {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            let label = line.split_whitespace().last().unwrap_or("");
-            if label.contains("doli") {
-                let _ = std::process::Command::new("launchctl")
-                    .args(["start", label])
-                    .output();
-                println!("  Started {}", label);
-                return;
-            }
-        }
-    }
-
-    println!("No doli-node service or process found. Restart manually if needed.");
 }
