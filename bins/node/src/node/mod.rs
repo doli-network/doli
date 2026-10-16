@@ -411,6 +411,9 @@ pub struct Node {
 
     /// INC-I-248 maintainer trust-root quorum probe.
     pub(crate) maintainer_quorum: std::sync::Mutex<maintainer_quorum::MaintainerQuorumProbe>,
+
+    /// Wakes the update service after the quorum replaces the trust root.
+    pub(crate) update_recheck: Option<Arc<tokio::sync::Notify>>,
 }
 
 /// INC-I-055: Number of health samples to track in the rolling window.
@@ -562,6 +565,10 @@ impl Node {
 
     pub fn set_maintainer_state(&mut self, state: Arc<RwLock<storage::MaintainerState>>) {
         self.maintainer_state = Some(state);
+    }
+
+    pub fn set_update_recheck(&mut self, notify: Arc<tokio::sync::Notify>) {
+        self.update_recheck = Some(notify);
     }
 
     /// Shutdown the node

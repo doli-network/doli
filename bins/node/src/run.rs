@@ -459,6 +459,7 @@ pub(crate) async fn run_node(
     )?));
     let maintainer_keys_fn =
         crate::updater::maintainer_trust_root_fn(maintainer_state.clone(), network);
+    let update_recheck = Arc::new(tokio::sync::Notify::new());
 
     // Spawn update service with real producer registry
     let (vote_tx, pending_update) = crate::updater::spawn_update_service(
@@ -468,6 +469,7 @@ pub(crate) async fn run_node(
         producer_count_fn,
         is_producer_fn,
         maintainer_keys_fn,
+        update_recheck.clone(),
     );
 
     // Create shared shutdown flag for graceful shutdown signaling
@@ -514,6 +516,7 @@ pub(crate) async fn run_node(
 
     // Connect on-chain maintainer set: Node (apply_block) → UpdateService (signature verification)
     node.set_maintainer_state(maintainer_state);
+    node.set_update_recheck(update_recheck);
 
     // Block archiver: streams blocks to filesystem for disaster recovery
     if let Some(ref archive_dir) = archive_to {

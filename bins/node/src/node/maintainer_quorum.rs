@@ -26,6 +26,8 @@ pub const MAINTAINER_QUORUM_WINDOW_SECS: u64 = 15;
 pub const MAINTAINER_QUORUM_RETRY_SECS: u64 = 60;
 /// Attempts before the probe gives up.
 pub const MAINTAINER_QUORUM_MAX_ATTEMPTS: u32 = 3;
+/// Process uptime before the startup probe may arm.
+pub const MAINTAINER_STARTUP_MIN_UPTIME_SECS: u64 = 10;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProbeReason {
@@ -61,6 +63,8 @@ pub struct MaintainerQuorumProbe {
     phase: Phase,
     attempts: u32,
     reason: ProbeReason,
+    created: Instant,
+    startup_armed: bool,
 }
 
 impl Default for MaintainerQuorumProbe {
@@ -81,10 +85,16 @@ fn is_final(verdict: &QuorumVerdict) -> bool {
 
 impl MaintainerQuorumProbe {
     pub fn new() -> Self {
+        Self::new_at(Instant::now())
+    }
+
+    pub fn new_at(created: Instant) -> Self {
         Self {
             phase: Phase::Idle,
             attempts: 0,
             reason: ProbeReason::Startup,
+            created,
+            startup_armed: false,
         }
     }
 
@@ -95,6 +105,7 @@ impl MaintainerQuorumProbe {
             Phase::Collecting { .. } | Phase::RetryWait { .. } => self.attempts.saturating_add(1),
             Phase::Idle | Phase::Done | Phase::GaveUp => 1,
         };
+        self.startup_armed |= reason == ProbeReason::Startup;
         self.reason = reason;
         self.phase = Phase::Collecting {
             started: now,
@@ -112,6 +123,15 @@ impl MaintainerQuorumProbe {
             }
             _ => false,
         }
+    }
+
+    /// The startup probe arms once per process, from an idle probe, with a peer.
+    pub fn startup_arming_due(&self, peer_count: usize, now: Instant) -> bool {
+        !self.startup_armed
+            && matches!(self.phase, Phase::Idle)
+            && peer_count >= 1
+            && now.saturating_duration_since(self.created)
+                >= Duration::from_secs(MAINTAINER_STARTUP_MIN_UPTIME_SECS)
     }
 
     pub fn on_tick(&mut self, now: Instant) -> ProbeStep {
@@ -243,6 +263,12 @@ impl Node {
                 tip_height,
                 agreeing
             );
+            // Released first: the update service resolves the root with `try_read`.
+            drop(state);
+            if let Some(recheck) = &self.update_recheck {
+                info!("[MAINTAINER] trust root replaced: release re-check requested");
+                recheck.notify_one();
+            }
         }
         verdict
     }
@@ -306,6 +332,9 @@ impl Node {
             }
             probe.answers()
         };
+        if self.defers_to_window_end().await {
+            return;
+        }
         let verdict = self.apply_maintainer_quorum_answers(answers).await;
         if is_final(&verdict) {
             info!(
@@ -316,11 +345,36 @@ impl Node {
         }
     }
 
-    /// Periodic driver: evaluate at the end of a window, re-arm after a retry wait.
+    /// Replay node with a non-empty usable root: only the window-end tick evaluates,
+    /// so every answer of the window counts as possible dissent.
+    async fn defers_to_window_end(&self) -> bool {
+        let snap_synced = self.chain_state.read().await.is_snap_synced();
+        match &self.maintainer_state {
+            Some(ms) if !snap_synced => {
+                let state = ms.read().await;
+                !state.set.members.is_empty()
+                    && crate::updater::resolve_trust_root(&state, self.config.network).is_usable()
+            }
+            _ => false,
+        }
+    }
+
     pub(crate) async fn maintainer_quorum_tick(&self) {
+        self.maintainer_quorum_tick_at(Instant::now()).await;
+    }
+
+    /// Periodic driver: arm the startup probe once, evaluate at the end of a window,
+    /// re-arm after a retry wait.
+    pub async fn maintainer_quorum_tick_at(&self, now: Instant) {
+        let peers = self.sync_manager.read().await.peer_count();
+        let startup_due = self.maintainer_probe().startup_arming_due(peers, now);
+        if startup_due {
+            self.arm_maintainer_quorum(ProbeReason::Startup).await;
+            return;
+        }
         let (step, reason) = {
             let mut probe = self.maintainer_probe();
-            (probe.on_tick(Instant::now()), probe.reason())
+            (probe.on_tick(now), probe.reason())
         };
         match step {
             ProbeStep::Idle | ProbeStep::Wait => {}
@@ -329,7 +383,7 @@ impl Node {
                 let answers = self.maintainer_probe().answers();
                 let verdict = self.apply_maintainer_quorum_answers(answers).await;
                 let mut probe = self.maintainer_probe();
-                probe.on_verdict(&verdict, Instant::now());
+                probe.on_verdict(&verdict, now);
                 if probe.phase_name() == "gave-up" {
                     warn!(
                         "[MAINTAINER] quorum probe gave up after {} attempts ({}); keeping the current trust root",

@@ -386,6 +386,9 @@ async fn inc_i_248_serve_maintainer_state_not_collecting_dropped() {
 
     replay.arm_maintainer_quorum(ProbeReason::Startup).await;
     h::deliver(&mut replay, &served, 3).await;
+    replay
+        .maintainer_quorum_tick_at(std::time::Instant::now() + std::time::Duration::from_secs(30))
+        .await;
     assert_eq!(
         h::node_digest(&replay, &h::state_of(&replay).await.set),
         view.digest,
