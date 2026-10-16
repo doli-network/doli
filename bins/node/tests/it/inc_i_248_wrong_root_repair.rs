@@ -7,11 +7,14 @@
 //   Derived: resolve_trust_root(state).keys()/is_usable(); verify_release_with_trust_root(3 rotated)
 // OUTPUT CONTRACT: MaintainerQuorumProbe::{new_at, startup_arming_due}
 //   O3: startup_arming_due -> bool
-// PATHS: P1 restart, unusable root (retired five), uptime < 10 s -> not armed, answers dropped;
-//   P2 same node, uptime >= 10 s + 1 peer -> armed Startup, 3 answers -> Adopt at once, Notify;
-//   P3 replay node, usable root, 3 agree + 1 dissent, window end -> Keep(PeersDisagree);
-//   P4 replay node, usable root, 3 agree, no dissent -> nothing before the window end, Adopt at it;
-//   P5 replay node, usable root, 3 answers = local digest -> Keep(AlreadyCanonical);
+// PATHS (REL-M1): P0 restart holding the retired five above the retirement height ->
+//   sanitize_retired_maintainer_set() resets it to EMPTY@tip;
+//   P1 uptime < 10 s -> not armed, answers dropped;
+//   P2 same node, uptime >= 10 s + 1 peer -> armed Startup, 3 answers -> nothing before the
+//   window end, Adopt at it, Notify;
+//   P3 replay node, usable root, 3 agree + 1 dissent -> never armed, untouched;
+//   P4 replay node, usable root, 3 agree, no dissent -> never armed, untouched;
+//   P5 replay node, usable root, 3 answers = local digest -> never armed, untouched;
 //   P6 0 sync peers at uptime >= 10 s -> not armed.
 // INPUT PARTITIONS: canonical = compiled mainnet keys | synthetic rotated keys; local root =
 //   retired five (unusable) | producer seed (usable, replay); answer order = agree-first then
@@ -19,7 +22,7 @@
 //   done | gave-up; first arm Startup | PostSnapInstall.
 // MATRIX: P1-P6 x (O2 set, O2 last_derived_height, O4 bytes/mtime, O5 notify) + P2 derived x2
 //   + probe 9 cells.
-// covers: maintainer_quorum.rs mod.rs init.rs periodic.rs run.rs service.rs service_apply.rs service_checks.rs trust_root_wiring.rs
+// covers: maintainer_quorum.rs maintainer_sanitize.rs retired.rs quorum.rs params.rs mod.rs init.rs startup.rs periodic.rs run.rs service.rs service_apply.rs service_checks.rs trust_root_wiring.rs
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -41,6 +44,7 @@ use tokio::sync::{Notify, RwLock};
 
 const TIP: u64 = 480_001;
 const CANONICAL_LAST_UPDATED: u64 = 331_457;
+const MAINNET_RETIREMENT: u64 = 331_457;
 const OTHER_LAST_UPDATED: u64 = 20_310;
 const STARTUP: Duration = Duration::from_secs(11);
 const WINDOW_END: Duration = Duration::from_secs(30);
@@ -134,7 +138,8 @@ struct Restarted {
     retired: MaintainerSet,
 }
 
-/// Node restarted from a file holding the retired five at threshold 3, tip TIP, never armed.
+/// Node restarted from a file holding the retired five at threshold 3, tip TIP, retirement
+/// height below the tip; the start-up sanitizer has run (EMPTY@TIP), never armed.
 async fn restarted_with_retired_five() -> Restarted {
     let (mut node, temp) = h::testnet_node(&h::producer_keys()).await;
     let retired = MaintainerSet::with_members(retired_five(), 0);
@@ -158,25 +163,34 @@ async fn restarted_with_retired_five() -> Restarted {
         !h::resolved_root(&node).await.is_usable(),
         "fixture: a root holding the retired five must be unusable"
     );
+    node.params.retired_genesis_maintainer_keys_height = MAINNET_RETIREMENT;
+    assert!(
+        node.sanitize_retired_maintainer_set().await,
+        "the start-up sanitizer must reset the retired five"
+    );
     let notify = Arc::new(Notify::new());
     node.set_update_recheck(notify.clone());
-    Restarted {
+    let r = Restarted {
         node,
         _temp: temp,
         notify,
         retired,
-    }
+    };
+    assert_still_empty(&r, "after the start-up sanitizer").await;
+    r
 }
 
-async fn assert_still_retired(r: &Restarted, ctx: &str) {
+async fn assert_still_empty(r: &Restarted, ctx: &str) {
     let state = h::state_of(&r.node).await;
-    assert_eq!(state.set, r.retired, "{ctx}: in-memory set changed");
-    assert_eq!(state.last_derived_height, TIP, "{ctx}: height changed");
-    assert_eq!(
-        h::disk_state_of(&r.node).set,
-        r.retired,
-        "{ctx}: disk changed"
+    assert!(
+        state.set.members.is_empty(),
+        "{ctx}: in-memory set not EMPTY"
     );
+    assert_ne!(state.set, r.retired, "{ctx}: the retired five came back");
+    assert_eq!(state.last_derived_height, TIP, "{ctx}: height changed");
+    let disk = h::disk_state_of(&r.node);
+    assert!(disk.set.members.is_empty(), "{ctx}: disk set not EMPTY");
+    assert_eq!(disk.last_derived_height, TIP, "{ctx}: disk height changed");
     assert!(!fired(&r.notify, QUIET).await, "{ctx}: recheck fired");
 }
 
@@ -188,12 +202,16 @@ async fn repair_on_start(canonical: &MaintainerSet) -> Restarted {
 
     r.node.maintainer_quorum_tick_at(Instant::now()).await;
     h::deliver(&mut r.node, &answer, 3).await;
-    assert_still_retired(&r, "uptime < 10 s: the startup probe must not be armed").await;
+    assert_still_empty(&r, "uptime < 10 s: the startup probe must not be armed").await;
 
     r.node
         .maintainer_quorum_tick_at(Instant::now() + STARTUP)
         .await;
     h::deliver(&mut r.node, &answer, 3).await;
+    assert_still_empty(&r, "before the window end: no early adoption").await;
+    r.node
+        .maintainer_quorum_tick_at(Instant::now() + WINDOW_END)
+        .await;
 
     let state = h::state_of(&r.node).await;
     assert_eq!(
@@ -214,7 +232,7 @@ async fn repair_on_start(canonical: &MaintainerSet) -> Restarted {
     r
 }
 
-/// REQ-248-003 (Must) — Decision: a failure means a node restarting with the retired five keeps them, so it can never install a release signed by the rotated maintainers, or the updater waits for its next interval.
+/// REQ-248-003 (Must) — Decision: a failure means a node restarting with the retired five keeps them (the sanitizer or the quorum repair is missing), so it can never install a release signed by the rotated maintainers, or the updater waits for its next interval.
 #[tokio::test]
 async fn inc_i_248_wrong_root_repaired_on_start() {
     let compiled = well_formed(compiled_mainnet_keys(), CANONICAL_LAST_UPDATED);
@@ -248,7 +266,7 @@ struct ReplayCase {
     before_mtime: SystemTime,
 }
 
-/// Replay node with a usable producer-seeded root at SNAP_HEIGHT, armed via the startup path.
+/// Replay node with a usable producer-seeded root at SNAP_HEIGHT after its startup tick (never armed).
 async fn armed_replay_node() -> ReplayCase {
     let (mut node, temp) = h::replay_node_at_snap_height().await;
     assert!(
@@ -264,6 +282,11 @@ async fn armed_replay_node() -> ReplayCase {
     add_sync_peer(&node, h::SNAP_HEIGHT).await;
     node.maintainer_quorum_tick_at(Instant::now() + STARTUP)
         .await;
+    assert_eq!(
+        node.maintainer_probe_phase(),
+        "idle",
+        "a usable replay root never arms the probe"
+    );
     let before = h::state_of(&node).await;
     let before_bytes = file_bytes(&node);
     let before_mtime = file_mtime(&node);
@@ -294,13 +317,18 @@ async fn assert_untouched(c: &ReplayCase, ctx: &str) {
         c.before_mtime,
         "{ctx}: file was rewritten"
     );
+    assert_eq!(
+        c.node.maintainer_probe_phase(),
+        "idle",
+        "{ctx}: probe armed"
+    );
 }
 
 fn other_set() -> MaintainerSet {
     well_formed(rotated_pubkeys(), OTHER_LAST_UPDATED)
 }
 
-/// REQ-248-004 (Must) — Decision: a failure means a colluding quorum that answers first replaces a correct replay node's root even though an honest peer dissents.
+/// REQ-248-004 (Must) — Decision: a failure means a colluding quorum replaces a correct replay node's root, with or without an honest dissent (REL-M1: a non-empty root is never eligible).
 #[tokio::test]
 async fn inc_i_248_correct_replay_root_keeps_on_dissent() {
     let mut c = armed_replay_node().await;
@@ -314,7 +342,7 @@ async fn inc_i_248_correct_replay_root_keeps_on_dissent() {
     assert_untouched(&c, "3 agree + 1 dissent at the window end").await;
     assert!(
         !fired(&c.notify, QUIET).await,
-        "Keep(PeersDisagree) must not fire the recheck"
+        "a non-eligible root must not fire the recheck"
     );
 
     let mut ctl = armed_replay_node().await;
@@ -323,16 +351,12 @@ async fn inc_i_248_correct_replay_root_keeps_on_dissent() {
     ctl.node
         .maintainer_quorum_tick_at(Instant::now() + WINDOW_END)
         .await;
-    assert_eq!(
-        h::state_of(&ctl.node).await.set,
-        other_set(),
-        "control: the same node without the dissent must adopt at the window end"
-    );
+    assert_untouched(&ctl, "3 agree, no dissent: still not eligible").await;
 }
 
-/// REQ-248-003 (Must) — Decision: a failure means a stale replay node either adopts before a dissenting peer can answer, or never adopts a unanimous quorum and never re-checks releases.
+/// REQ-248-004 (Must) — Decision: a failure means a unanimous peer quorum replaces a replay node's history-derived root, before or at the window end.
 #[tokio::test]
-async fn inc_i_248_replay_root_adopts_unanimous_only_at_window_end() {
+async fn inc_i_248_replay_root_never_adopts_unanimous() {
     let mut c = armed_replay_node().await;
     let other = other_set();
     let agree = frame(&c.node, &other, h::SNAP_HEIGHT);
@@ -346,18 +370,11 @@ async fn inc_i_248_replay_root_adopts_unanimous_only_at_window_end() {
     c.node
         .maintainer_quorum_tick_at(Instant::now() + WINDOW_END)
         .await;
-    let state = h::state_of(&c.node).await;
-    assert_eq!(
-        state.set, other,
-        "a unanimous quorum must be adopted at the window end"
-    );
-    assert_eq!(state.last_derived_height, h::SNAP_HEIGHT);
-    let disk = h::disk_state_of(&c.node);
-    assert_eq!(disk.set, other, "disk must hold the adopted set");
-    assert_eq!(disk.last_derived_height, h::SNAP_HEIGHT);
+    assert_untouched(&c, "at the window end").await;
+    assert_ne!(h::state_of(&c.node).await.set, other);
     assert!(
-        fired(&c.notify, secs(1)).await,
-        "Adopt must fire the updater recheck"
+        !fired(&c.notify, QUIET).await,
+        "no recheck at the window end"
     );
 }
 
@@ -373,7 +390,7 @@ async fn inc_i_248_correct_replay_root_unanimous_is_already_canonical() {
     assert_untouched(&c, "peers agree with the local root").await;
     assert!(
         !fired(&c.notify, QUIET).await,
-        "Keep(AlreadyCanonical) must not fire the recheck"
+        "a non-eligible root must not fire the recheck"
     );
 }
 
@@ -415,11 +432,7 @@ async fn inc_i_248_startup_probe_arms_once() {
             set: other_set(),
             agreeing: 3,
         },
-        QuorumVerdict::Keep(KeepReason::AlreadyCanonical),
-        QuorumVerdict::Keep(KeepReason::PeersDisagree {
-            agreeing: 3,
-            dissenting: 1,
-        }),
+        QuorumVerdict::Keep(KeepReason::NotEligible),
     ];
     for verdict in finals {
         let mut p = MaintainerQuorumProbe::new_at(t0);
@@ -468,13 +481,16 @@ async fn inc_i_248_startup_probe_arms_once() {
         .maintainer_quorum_tick_at(Instant::now() + STARTUP)
         .await;
     h::deliver(&mut r.node, &answer, 3).await;
-    assert_still_retired(&r, "0 sync peers: the startup probe must not be armed").await;
+    assert_still_empty(&r, "0 sync peers: the startup probe must not be armed").await;
 
     add_sync_peer(&r.node, TIP).await;
     r.node
         .maintainer_quorum_tick_at(Instant::now() + STARTUP)
         .await;
     h::deliver(&mut r.node, &answer, 3).await;
+    r.node
+        .maintainer_quorum_tick_at(Instant::now() + WINDOW_END)
+        .await;
     assert_eq!(
         h::state_of(&r.node).await.set,
         canonical,

@@ -161,7 +161,7 @@ What DOES converge today:
 | Recovery path | Converges? | Why |
 |---|---|---|
 | Full data-dir wipe + **full resync from genesis** | YES | Every block is re-applied, so `process_transaction_governance` re-executes the whole governance history |
-| Delete `maintainer_state.bin` only, chain intact | **NO** | Re-seeds from live producer state — R1. The start-up peer-quorum probe (§2.6.1, INC-I-248) can replace that root, but do not rely on it |
+| Delete `maintainer_state.bin` only, chain intact | **NO** | Re-seeds from live producer state — R1. The peer-quorum probe (§2.6.1, INC-I-248) never changes a non-empty root. Only a set that holds a retired genesis key is reset (sanitizer) and repaired from peers |
 | Full data-dir wipe + **snap sync** | **YES, from peers** (INC-I-248) | Governance below the snapshot floor is never replayed. The node does not seed from producers: it holds an EMPTY root at the snap height (fails closed) and adopts the set a peer quorum agrees on (§2.6.1). R3 is closed |
 
 REQ-172-010 ("the trust root SHOULD be derivable from block history alone, **without
@@ -275,8 +275,8 @@ MaintainerState {
 3. On MaintainerAdd/Remove tx: updated immediately, persisted to disk
 4. On release verification: `maintainer_trust_root_fn` resolves a `TrustRoot` from
    `MaintainerState` (`bins/node/src/updater/trust_root_wiring.rs`)
-5. After a snapshot install and once at each start: the peer-quorum probe (§2.6.1) can
-   replace the set (INC-I-248).
+5. After a snapshot install, or at start after the retired-key sanitizer: the peer-quorum
+   probe (§2.6.1) can replace an EMPTY root stamped at a snap height (INC-I-248).
 
 **Key lookup is O(1)** — reads 3-5 members, regardless of producer count.
 
@@ -287,26 +287,31 @@ A node that did not replay the chain cannot derive its maintainer set. It asks i
 `specs/protocol.md` §7.3.2). The probe lives in `bins/node/src/node/maintainer_quorum.rs`; the
 rule is `select_quorum_maintainer_state` in `crates/core/src/maintainer/quorum.rs`.
 
-- **When.** At the end of a snapshot install, and once per process start: on the first periodic
-  tick with at least 1 sync peer and at least 10 s of uptime. Each attempt collects answers for
-  15 s. No answer, no quorum or a tie retries after 60 s, for at most 3 attempts. Then the node
-  logs `[MAINTAINER] quorum probe gave up …; keeping the current trust root`. The next start
-  tries again.
+- **Which roots.** Only an EMPTY root stamped at a snap height S (`last_derived_height > 0`) can
+  change. A non-empty root, or an EMPTY root at height 0, never changes, and the probe does not
+  arm for it. A snapshot install always resets the root to EMPTY at S.
+- **When.** At the end of a snapshot install, and on the first periodic tick with at least 1
+  sync peer and at least 10 s of uptime. Each attempt collects answers for 15 s and decides only
+  at the end of the window. No answer, no quorum, a tie or no majority retries after 60 s, for at
+  most 3 attempts. Then the node keeps its root. The next start tries again.
 - **Which answers count.** The receiver recomputes each digest with its LOCAL genesis hash and
-  drops a mismatch. An answer counts only when the peer tip >= the local tip, the set's
-  `last_updated` <= the local tip, and the set is not empty.
-- **Adopt.** The largest digest group must have at least `snap_quorum()` answers and must not
-  tie. A node that replayed the chain and holds a usable root adopts only when no counted
-  answer dissents, and it decides at the end of the window. A snap-synced node, an EMPTY root or
-  an unusable root (for example the retired genesis five) adopts as soon as a quorum agrees.
-- **Effect.** The file is replaced atomically. The node logs
-  `[MAINTAINER] MAINTAINER_SET_DIGEST=… (peer quorum, N agreeing)` and
-  `[MAINTAINER] trust root replaced: release re-check requested`, and the update service checks
-  for releases at once. A node whose set already equals the quorum set writes nothing.
+  drops a mismatch. An answer counts only when the peer tip >= S and the set is not empty. An
+  answer whose set holds a key retired at S is dropped.
+- **Adopt.** The largest digest group must have at least `snap_quorum()` answers, must not tie,
+  and must be a strict majority of the counted answers.
+- **Retired keys.** Above `retired_genesis_maintainer_keys_height` (mainnet 331_457, testnet and
+  devnet never) the 5 genesis keys are not maintainers. At start and after a producer seed, a
+  set that holds one becomes EMPTY at the tip, and the probe repairs it.
+- **Routing.** A reply to the probe never reaches the sync manager. A node serves
+  `GetMaintainerState` outside the sync serving limit.
+- **Effect.** Every verdict logs one line: `[MAINTAINER] quorum verdict … phase=…`. An adoption
+  carries `MAINTAINER_SET_DIGEST=…`. The file is replaced atomically and the update service
+  checks for releases at once.
 
 `doli snap` uses the same idea on the CLI side: it writes the snapshot's `maintainerState` only
-when the seeds agree on its digest, else an EMPTY set at the snapshot height
-(`docs/cli.md` §22).
+when the seeds agree on its digest by the state-root rule (the configured seed count, so a silent
+seed counts against it), else an EMPTY set at the snapshot height. A set that holds a key
+retired at the snapshot height is also written EMPTY (`docs/cli.md` §22).
 
 ### 2.7 Signature Verification Flow
 

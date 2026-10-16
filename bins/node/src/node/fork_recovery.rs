@@ -722,6 +722,8 @@ impl Node {
             snapshot.block_height, snapshot.block_hash
         );
 
+        self.reset_maintainer_root_to_snapshot(snapshot.block_height)
+            .await;
         self.arm_maintainer_quorum(super::maintainer_quorum::ProbeReason::PostSnapInstall)
             .await;
         Ok(())

@@ -100,6 +100,11 @@ Design: the fix-design document of run 577, sections 2, 3.1-3.4, 3.6 (node rows)
   root adopts only on a unanimous quorum (zero dissent among counted answers).
   The local set is never a multisig base: adoption replaces the file under the
   write lock.
+  **Superseded by REL-M1 (below).** FM-6 in commit f3ebc311 said "one honest
+  dissenting answer keeps the root". That was false (QA-248-R01): a replay node
+  that applied a block in the window dropped the honest answers, so fake peers
+  had zero dissent. Since REL-M1 a replay root or any non-empty root is never
+  eligible, so peers cannot change it at all.
 - Seed gate: `maybe_bootstrap_maintainer_set` seeds from producers only when
   the node is not snap-synced (`is_snap_synced()`, persisted). A snap-synced
   node without a set stores EMPTY with `last_derived_height` = snap height,
@@ -139,3 +144,55 @@ Design: section 4.
   `inc_i_248_correct_replay_root_keeps_on_dissent`,
   `inc_i_248_serve_maintainer_state_round_trip`,
   `inc_i_248_updater_recheck_on_notify`.
+
+## Release-gate fix (REL-M1)
+
+The release validation of the M1-M2 code found four P1 findings with two roots:
+
+1. The peer quorum could replace a usable root. Honest answers carried the tip
+   from the start of the 15 s window, so `peer tip >= local tip` dropped them
+   after the node applied a new block. Peer-reported tips and `last_updated` are
+   not authenticated, so 3 to 5 fake peers had zero dissent. A fresh replay
+   node with an EMPTY root could also adopt the current set early, which breaks
+   REQ-248-004.
+2. Sets that hold retired keys were valid answers. A node could adopt the
+   retired set, or keep it as "already canonical". On a node that holds the
+   retired set, governance transactions signed with the leaked keys can rotate
+   it to an attacker set that passes the M3 check.
+
+| ID | Requirement | Priority | Acceptance criterion |
+|---|---|---|---|
+| REQ-248-007 | The peer quorum never changes a usable root and never changes a root that came from the node's own replay. It installs only into an EMPTY root stamped at a snap height. It never installs a set that holds a retired key on a network where the keys are retired. A node that holds the retired set past the retirement height fails closed and then repairs from the quorum. | Must | Tests below fail on b45e89fc and pass after. |
+
+Rules:
+
+- Eligibility: a node adopts from the quorum ONLY when its root is EMPTY with
+  `last_derived_height > 0` (snap install, `doli snap` EMPTY write, or the
+  retired-set sanitizer). An EMPTY root at height 0 (a fresh replay node that
+  has not reached the gate) and any non-empty root never change. The probe
+  arms only for an eligible root.
+- Snapshot install (network path): the maintainer state ALWAYS becomes EMPTY at
+  the snap height S. The node skipped the history before S, so a set it held
+  before the snapshot (for example a producer seed at height 1) is not trusted.
+- Retirement height: a new `NetworkParams` field gives the height after which
+  the 5 retired genesis keys are no longer maintainers on that network:
+  mainnet 331_457 (the last block of the rotation, public `last_change_block`);
+  testnet and devnet `u64::MAX` (their on-chain sets still hold the keys).
+- Sanitizer: when a node loads its maintainer state at start, and after a
+  producer seed, a set that holds a retired key while the tip is above the
+  retirement height becomes EMPTY at the tip (saved, one log line). Then the
+  node is eligible and the probe arms. An EMPTY set verifies no governance
+  signature, so the leaked keys cannot rotate it. Replay nodes are not
+  affected: below the retirement height the genesis set is history, above it
+  the canonical set holds no retired key.
+- Vote: the filter uses the fixed snap height S of the EMPTY root (not the
+  moving tip): an answer counts only if `peer tip >= S`. The `last_updated`
+  filter is removed. Answers whose set holds a key retired at S are dropped.
+  The decision is made only at the end of the window. Adopt the largest digest
+  group only if it reaches `snap_quorum()` AND holds a strict majority of the
+  counted answers. A tie keeps the EMPTY root. Every verdict logs one line.
+- Routing: no response to the node's own `GetMaintainerState` requests,
+  including an Error or busy reply, reaches the sync manager.
+- `doli snap`: a set that holds a key retired at the snapshot height is
+  written as EMPTY at that height. The digest agreement follows the state-root
+  rule exactly, also when other seeds give no usable answer.

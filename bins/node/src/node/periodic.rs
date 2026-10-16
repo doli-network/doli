@@ -173,6 +173,9 @@ impl Node {
                 .collect::<Vec<_>>()
                 .join(", ")
         );
+        drop(state);
+        drop(producers);
+        self.sanitize_retired_maintainer_set_at(height).await;
     }
 
     /// Has the genesis seed already happened?

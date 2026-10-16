@@ -3,15 +3,15 @@
 //! The selection rule is `doli_core::maintainer::select_quorum_maintainer_state`.
 //! The probe mutex is never held across an `.await`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::MutexGuard;
 use std::time::{Duration, Instant};
 
 use crypto::Hash;
 use doli_core::maintainer::{
-    maintainer_set_digest, select_quorum_maintainer_state, KeepReason, LocalRootView,
-    PeerMaintainerAnswer, QuorumVerdict,
+    holds_retired_key_at, maintainer_set_digest, quorum_eligible, select_quorum_maintainer_state,
+    KeepReason, LocalRootView, PeerMaintainerAnswer, QuorumVerdict,
 };
 use doli_core::MaintainerSet;
 use network::protocols::{SyncRequest, SyncResponse};
@@ -65,6 +65,7 @@ pub struct MaintainerQuorumProbe {
     reason: ProbeReason,
     created: Instant,
     startup_armed: bool,
+    outstanding: HashSet<PeerId>,
 }
 
 impl Default for MaintainerQuorumProbe {
@@ -77,9 +78,7 @@ impl Default for MaintainerQuorumProbe {
 fn is_final(verdict: &QuorumVerdict) -> bool {
     matches!(
         verdict,
-        QuorumVerdict::Adopt { .. }
-            | QuorumVerdict::Keep(KeepReason::AlreadyCanonical)
-            | QuorumVerdict::Keep(KeepReason::PeersDisagree { .. })
+        QuorumVerdict::Adopt { .. } | QuorumVerdict::Keep(KeepReason::NotEligible)
     )
 }
 
@@ -95,6 +94,7 @@ impl MaintainerQuorumProbe {
             reason: ProbeReason::Startup,
             created,
             startup_armed: false,
+            outstanding: HashSet::new(),
         }
     }
 
@@ -107,10 +107,21 @@ impl MaintainerQuorumProbe {
         };
         self.startup_armed |= reason == ProbeReason::Startup;
         self.reason = reason;
+        self.outstanding.clear();
         self.phase = Phase::Collecting {
             started: now,
             answers: HashMap::new(),
         };
+    }
+
+    /// Remember the peers asked in the current attempt.
+    pub fn ask(&mut self, peers: impl IntoIterator<Item = PeerId>) {
+        self.outstanding.extend(peers);
+    }
+
+    /// Consume `peer`'s outstanding request; `true` when it had one.
+    pub fn take_outstanding(&mut self, peer: &PeerId) -> bool {
+        self.outstanding.remove(peer)
     }
 
     /// Store a peer answer (a second answer from one peer replaces the first).
@@ -156,6 +167,7 @@ impl MaintainerQuorumProbe {
     }
 
     pub fn on_verdict(&mut self, verdict: &QuorumVerdict, now: Instant) {
+        self.outstanding.clear();
         self.phase = if is_final(verdict) {
             Phase::Done
         } else if self.attempts < MAINTAINER_QUORUM_MAX_ATTEMPTS {
@@ -195,20 +207,53 @@ impl MaintainerQuorumProbe {
     }
 }
 
+/// The local root as the quorum rule sees it.
+pub(super) fn root_view(state: &storage::MaintainerState, genesis: &Hash) -> LocalRootView {
+    LocalRootView {
+        digest: (!state.set.members.is_empty())
+            .then(|| maintainer_set_digest(&state.set, genesis.as_bytes())),
+        last_derived_height: state.last_derived_height,
+    }
+}
+
 impl Node {
-    fn maintainer_probe(&self) -> MutexGuard<'_, MaintainerQuorumProbe> {
+    pub(super) fn maintainer_probe(&self) -> MutexGuard<'_, MaintainerQuorumProbe> {
         self.maintainer_quorum
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Arm the probe and ask every sync peer for its maintainer state.
+    /// Probe phase: "idle", "collecting", "retry-wait", "done" or "gave-up".
+    pub fn maintainer_probe_phase(&self) -> &'static str {
+        self.maintainer_probe().phase_name()
+    }
+
+    async fn maintainer_root_eligible(&self) -> bool {
+        match &self.maintainer_state {
+            Some(ms) => quorum_eligible(&root_view(&*ms.read().await, &self.params.genesis_hash)),
+            None => false,
+        }
+    }
+
+    /// Arm the probe and ask every sync peer for its maintainer state; a no-op
+    /// unless the local root is quorum-eligible.
     pub async fn arm_maintainer_quorum(&self, reason: ProbeReason) {
-        self.maintainer_probe().arm(reason, Instant::now());
-        let Some(network) = &self.network else {
-            return;
-        };
+        self.try_arm_maintainer_quorum(reason).await;
+    }
+
+    pub(super) async fn try_arm_maintainer_quorum(&self, reason: ProbeReason) -> bool {
+        if !self.maintainer_root_eligible().await {
+            return false;
+        }
         let peers: Vec<PeerId> = self.sync_manager.read().await.peer_ids().collect();
+        {
+            let mut probe = self.maintainer_probe();
+            probe.arm(reason, Instant::now());
+            probe.ask(peers.iter().copied());
+        }
+        let Some(network) = &self.network else {
+            return true;
+        };
         info!(
             "[MAINTAINER] quorum probe armed ({:?}): asking {} peers",
             reason,
@@ -219,6 +264,7 @@ impl Node {
                 .request_sync(peer, SyncRequest::GetMaintainerState)
                 .await;
         }
+        true
     }
 
     /// Run the quorum rule over `answers`; on `Adopt`, replace and persist the local set.
@@ -229,23 +275,18 @@ impl Node {
         let Some(ms) = self.maintainer_state.clone() else {
             return QuorumVerdict::Keep(KeepReason::NoAnswers);
         };
-        let (snap_synced, tip_height) = {
-            let cs = self.chain_state.read().await;
-            (cs.is_snap_synced(), cs.best_height)
-        };
+        let tip_height = self.chain_state.read().await.best_height;
         let quorum = self.sync_manager.read().await.snap_quorum();
-        let genesis = self.params.genesis_hash;
+        let retired_after = self.params.retired_genesis_maintainer_keys_height;
 
         let mut state = ms.write().await;
-        let local = LocalRootView {
-            digest: (!state.set.members.is_empty())
-                .then(|| maintainer_set_digest(&state.set, genesis.as_bytes())),
-            snap_synced,
-            usable: crate::updater::resolve_trust_root(&state, self.config.network).is_usable(),
-            tip_height,
-        };
+        let local = root_view(&state, &self.params.genesis_hash);
+        let answers: Vec<PeerMaintainerAnswer> = answers
+            .into_iter()
+            .filter(|a| !holds_retired_key_at(&a.set, local.last_derived_height, retired_after))
+            .collect();
         let verdict = select_quorum_maintainer_state(&local, &answers, quorum);
-        if let QuorumVerdict::Adopt { set, agreeing } = &verdict {
+        if let QuorumVerdict::Adopt { set, .. } = &verdict {
             state.set = set.clone();
             state.last_derived_height = tip_height;
             if let Err(e) = state.save(&self.config.data_dir) {
@@ -254,19 +295,9 @@ impl Node {
                     e
                 );
             }
-            info!(
-                "[MAINTAINER] MAINTAINER_SET_DIGEST={} members={} threshold={} last_updated={} height={} (peer quorum, {} agreeing)",
-                hex::encode(maintainer_set_digest(&state.set, genesis.as_bytes())),
-                state.set.member_count(),
-                state.set.threshold,
-                state.set.last_updated,
-                tip_height,
-                agreeing
-            );
             // Released first: the update service resolves the root with `try_read`.
             drop(state);
             if let Some(recheck) = &self.update_recheck {
-                info!("[MAINTAINER] trust root replaced: release re-check requested");
                 recheck.notify_one();
             }
         }
@@ -296,7 +327,7 @@ impl Node {
         })
     }
 
-    /// Record a `MaintainerStateAt` answer and evaluate all recorded answers at once.
+    /// Record a `MaintainerStateAt` answer; only the window-end tick evaluates.
     pub(crate) async fn on_maintainer_state_answer(&self, peer: PeerId, response: SyncResponse) {
         let SyncResponse::MaintainerStateAt {
             block_height,
@@ -312,50 +343,13 @@ impl Node {
             debug!("[MAINTAINER] dropped answer from {}: not collecting", peer);
             return;
         }
-        let answer = match self.decode_maintainer_answer(
-            block_height,
-            digest,
-            &set_bytes,
-            last_derived_height,
-        ) {
-            Ok(a) => a,
-            Err(e) => {
-                debug!("[MAINTAINER] dropped answer from {}: {}", peer, e);
-                return;
+        match self.decode_maintainer_answer(block_height, digest, &set_bytes, last_derived_height) {
+            Ok(answer) => {
+                if !self.maintainer_probe().record(peer, answer) {
+                    debug!("[MAINTAINER] dropped answer from {}: not collecting", peer);
+                }
             }
-        };
-        let answers = {
-            let mut probe = self.maintainer_probe();
-            if !probe.record(peer, answer) {
-                debug!("[MAINTAINER] dropped answer from {}: not collecting", peer);
-                return;
-            }
-            probe.answers()
-        };
-        if self.defers_to_window_end().await {
-            return;
-        }
-        let verdict = self.apply_maintainer_quorum_answers(answers).await;
-        if is_final(&verdict) {
-            info!(
-                "[MAINTAINER] quorum probe finished: {}",
-                verdict_label(&verdict)
-            );
-            self.maintainer_probe().on_verdict(&verdict, Instant::now());
-        }
-    }
-
-    /// Replay node with a non-empty usable root: only the window-end tick evaluates,
-    /// so every answer of the window counts as possible dissent.
-    async fn defers_to_window_end(&self) -> bool {
-        let snap_synced = self.chain_state.read().await.is_snap_synced();
-        match &self.maintainer_state {
-            Some(ms) if !snap_synced => {
-                let state = ms.read().await;
-                !state.set.members.is_empty()
-                    && crate::updater::resolve_trust_root(&state, self.config.network).is_usable()
-            }
-            _ => false,
+            Err(e) => debug!("[MAINTAINER] dropped answer from {}: {}", peer, e),
         }
     }
 
@@ -378,19 +372,17 @@ impl Node {
         };
         match step {
             ProbeStep::Idle | ProbeStep::Wait => {}
-            ProbeStep::Rearm => self.arm_maintainer_quorum(reason).await,
+            ProbeStep::Rearm => {
+                if !self.try_arm_maintainer_quorum(reason).await {
+                    let verdict = QuorumVerdict::Keep(KeepReason::NotEligible);
+                    self.finish_maintainer_quorum(&verdict, 0, now);
+                }
+            }
             ProbeStep::Evaluate => {
                 let answers = self.maintainer_probe().answers();
+                let counted = answers.len();
                 let verdict = self.apply_maintainer_quorum_answers(answers).await;
-                let mut probe = self.maintainer_probe();
-                probe.on_verdict(&verdict, now);
-                if probe.phase_name() == "gave-up" {
-                    warn!(
-                        "[MAINTAINER] quorum probe gave up after {} attempts ({}); keeping the current trust root",
-                        probe.attempts(),
-                        verdict_label(&verdict)
-                    );
-                }
+                self.finish_maintainer_quorum(&verdict, counted, now);
             }
         }
     }
@@ -425,12 +417,5 @@ impl Node {
             );
         }
         true
-    }
-}
-
-fn verdict_label(verdict: &QuorumVerdict) -> String {
-    match verdict {
-        QuorumVerdict::Adopt { agreeing, .. } => format!("Adopt(agreeing={agreeing})"),
-        QuorumVerdict::Keep(reason) => format!("Keep({reason:?})"),
     }
 }

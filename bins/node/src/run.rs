@@ -516,6 +516,7 @@ pub(crate) async fn run_node(
 
     // Connect on-chain maintainer set: Node (apply_block) → UpdateService (signature verification)
     node.set_maintainer_state(maintainer_state);
+    node.sanitize_retired_maintainer_set().await;
     node.set_update_recheck(update_recheck);
 
     // Block archiver: streams blocks to filesystem for disaster recovery

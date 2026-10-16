@@ -925,6 +925,10 @@ pub struct NetworkParams {
     /// assumption is visible per network in one audited place.
     pub maintainer_seed_min_producers: usize,
 
+    /// INC-I-248: above this height the `MAINNET_GENESIS_PRODUCERS` keys are not
+    /// maintainers. Node-local trust-root check, not consensus; not env-overridable.
+    pub retired_genesis_maintainer_keys_height: u64,
+
     /// Target number of peers in gossipsub mesh per topic
     pub mesh_n: usize,
     /// Minimum peers in gossipsub mesh before requesting more

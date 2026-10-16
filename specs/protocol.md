@@ -2220,28 +2220,48 @@ every answer that arrives while no probe collects.
 **Selection rule** (`select_quorum_maintainer_state`, `crates/core/src/maintainer/quorum.rs`, a pure
 function):
 
-1. An answer counts only when the peer tip >= the local tip, the set's `last_updated` <= the local
-   tip, and the set is not empty.
-2. The counted answers are grouped by digest. A tie between the largest groups keeps the local
-   set. A largest group smaller than `snap_quorum()` keeps the local set
-   (`snap_quorum() = max(3, min(peers / 2 + 1, 5))`, the same quorum as the state-root vote).
-3. When the local digest equals the winning digest, the node keeps its set and writes nothing.
-4. A node that is not snap-synced and holds a usable root adopts only when no counted answer
-   dissents. Any dissent keeps its root.
-5. Otherwise the node adopts the winning set. Its `last_updated` is the minimum of the agreeing
-   group, and `last_derived_height` is the local tip. The file is replaced atomically under the
-   write lock. The local set is never the multisig base for this replacement.
+1. Eligibility: only an EMPTY root with `last_derived_height > 0` (an EMPTY root stamped at a snap
+   height S) can change. A non-empty root, or an EMPTY root at height 0 (a replay node that has
+   not reached the gate), is never changed (`NotEligible`).
+2. An answer counts only when the peer tip >= S (the fixed height of the EMPTY root, not the
+   moving tip) and the set is not empty. There is no `last_updated` filter. Peer tips and
+   `last_updated` are not authenticated.
+3. The node drops an answer whose set holds a retired genesis key at S (see the retirement height
+   below).
+4. The counted answers are grouped by digest. A tie between the largest groups keeps the EMPTY
+   root. A largest group smaller than `snap_quorum()` keeps it
+   (`snap_quorum() = max(3, min(peers / 2 + 1, 5))`, the same quorum as the state-root vote). A
+   largest group that is not a strict majority of the counted answers keeps it.
+5. Otherwise the node adopts the largest group. Its `last_updated` is the minimum of the group,
+   and `last_derived_height` is the local tip at adoption. The file is replaced atomically under
+   the write lock.
+
+**Retirement height.** `NetworkParams::retired_genesis_maintainer_keys_height` gives the height
+after which the 5 keys of `MAINNET_GENESIS_PRODUCERS` are not maintainers: mainnet 331_457 (the
+last block of the rotation), testnet and devnet `u64::MAX`. It is a node-local trust-root check.
+It changes no block, no state root and no governance verdict.
+
+**Sanitizer.** At start, and after a producer seed, a set that holds a retired key while the
+height is above the retirement height becomes EMPTY at that height. The node saves it and logs
+one warning. The root is then eligible and the probe repairs it. An EMPTY set verifies no
+governance signature, so the retired keys cannot rotate it.
+
+**Snapshot install.** The maintainer state always becomes EMPTY at the snapshot height S. A set
+the node held before the snapshot is not kept.
 
 **Probe** (`bins/node/src/node/maintainer_quorum.rs`):
 
-- It arms at the end of a snapshot install, and once per process start: on the first periodic
+- It arms only for an eligible root: at the end of a snapshot install, and on the first periodic
   tick with at least 1 sync peer and at least 10 s of uptime.
-- It sends `GetMaintainerState` to every sync peer and collects answers for 15 s.
-- A snap-synced node, an EMPTY root or an unusable root evaluates the rule on each answer. A node
-  that replayed the chain and holds a non-empty usable root evaluates only at the end of the
-  window, so every answer of the window can dissent.
-- No counted answer, no quorum or a tie retries after 60 s, for at most 3 attempts. Then the node
-  logs one warning and keeps its root. The next start tries again.
+- It sends `GetMaintainerState` to every sync peer and collects answers for 15 s. An answer is
+  only recorded. The rule runs once, at the end of the window.
+- A reply to the node's own `GetMaintainerState` never reaches the sync manager: a
+  `MaintainerStateAt`, or an `Error` from a peer that the probe asked. Other responses are
+  unchanged.
+- A node serves `GetMaintainerState` outside the sync serving limit. It never answers it busy.
+- Adopt and NotEligible end the probe. No answer, no quorum, a tie or no majority retries after
+  60 s, for at most 3 attempts. Then the node keeps its root. The next start tries again.
+- Every verdict logs one line.
 - After an adoption the node signals the update service, which checks for releases at once.
 
 **Snap-synced seed gate.** At and above `maintainer_derivation_activation_height`, a node whose

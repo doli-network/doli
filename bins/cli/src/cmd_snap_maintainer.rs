@@ -1,11 +1,10 @@
 //! INC-I-248 M1.5 — the maintainer state that `doli snap` installs with the 3-state.
 
-use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{anyhow, bail, Result};
 use crypto::{Hash, PublicKey};
-use doli_core::maintainer::{maintainer_set_digest, MaintainerSet};
+use doli_core::maintainer::{holds_retired_key_at, maintainer_set_digest, MaintainerSet};
 use serde_json::Value;
 use storage::{validate_persisted_set, MaintainerState, MAINTAINER_STATE_VERSION};
 
@@ -18,23 +17,41 @@ pub enum SnapMaintainerOutcome {
     FailClosed(String),
 }
 
-/// Seed agreement on the maintainer digest, same rule as the state root:
-/// with >= 2 answers and no `--trust` the largest group needs >= 2 and no tie.
-pub fn agree_maintainer_digest(answers: &[(String, String)], trust: bool) -> Option<String> {
-    if answers.len() < 2 || trust {
-        return answers.first().map(|(_, digest)| digest.clone());
+/// Seed agreement on the snapshot's maintainer digest, the state-root rule of
+/// `cmd_snap`: `count` seeds answer `snapshot_digest`; accepted when
+/// `trust || count >= 1`, refused when `!trust && seed_count >= 2 && count < 2`.
+pub fn agree_maintainer_digest(
+    answers: &[(String, String)],
+    snapshot_digest: &str,
+    seed_count: usize,
+    trust: bool,
+) -> Option<String> {
+    let count = answers.iter().filter(|(_, d)| d == snapshot_digest).count();
+    let accepted = (trust || count >= 1) && !(!trust && seed_count >= 2 && count < 2);
+    accepted.then(|| snapshot_digest.to_string())
+}
+
+/// `getMaintainerSet` digest of each seed that answers.
+pub async fn query_maintainer_answers(seeds: &[&str]) -> Vec<(String, String)> {
+    let mut answers = Vec::new();
+    for seed in seeds {
+        match query_maintainer_digest(seed).await {
+            Ok(digest) => {
+                println!("  {} — maintainer digest={:.16}...", seed, digest);
+                answers.push((seed.to_string(), digest));
+            }
+            Err(e) => println!("  {} — maintainer digest not counted ({})", seed, e),
+        }
     }
-    let mut counts: HashMap<&str, usize> = HashMap::new();
-    for (_, digest) in answers {
-        *counts.entry(digest.as_str()).or_insert(0) += 1;
-    }
-    let top = counts.values().copied().max()?;
-    let mut leaders = counts.into_iter().filter(|(_, c)| *c == top);
-    let (digest, _) = leaders.next()?;
-    if top < 2 || leaders.next().is_some() {
-        return None;
-    }
-    Some(digest.to_string())
+    answers
+}
+
+/// Height above which the retired genesis keys are not maintainers; `u64::MAX`
+/// for an unknown network name.
+pub fn retired_keys_height(network: &str) -> u64 {
+    <doli_core::Network as std::str::FromStr>::from_str(network)
+        .map(|n| n.params().retired_genesis_maintainer_keys_height)
+        .unwrap_or(u64::MAX)
 }
 
 /// Always writes `maintainer_state.bin`: the verified snapshot set, else EMPTY.
@@ -45,8 +62,20 @@ pub fn write_snap_maintainer_state(
     height: u64,
     agreed_digest: Option<&str>,
     genesis_hash: &Hash,
+    retired_after: u64,
 ) -> Result<SnapMaintainerOutcome> {
-    let (set, outcome) = match verified_set(data_dir, field, height, agreed_digest, genesis_hash) {
+    let verified =
+        verified_set(data_dir, field, height, agreed_digest, genesis_hash).and_then(|set| {
+            if holds_retired_key_at(&set, height, retired_after) {
+                Err(format!(
+                    "the set holds a genesis key retired after height {}",
+                    retired_after
+                ))
+            } else {
+                Ok(set)
+            }
+        });
+    let (set, outcome) = match verified {
         Ok(set) => (set, SnapMaintainerOutcome::Canonical),
         Err(reason) => (
             MaintainerSet::new(),

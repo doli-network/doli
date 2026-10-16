@@ -554,6 +554,7 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
         // moving it into NetworkParams was to make it visible per network in one
         // audited place rather than tunable per host.
         maintainer_seed_min_producers: defaults.maintainer_seed_min_producers,
+        retired_genesis_maintainer_keys_height: defaults.retired_genesis_maintainer_keys_height,
         // INC-I-217 rotation gate. Mainnet LOCKED: it decides whether a
         // user-submittable transaction is valid.
         bls_key_rotation_activation_height: if is_mainnet {

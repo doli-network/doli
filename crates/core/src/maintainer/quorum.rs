@@ -20,19 +20,17 @@ pub struct PeerMaintainerAnswer {
 pub struct LocalRootView {
     /// `None` when the local set is empty.
     pub digest: Option<[u8; 32]>,
-    pub snap_synced: bool,
-    pub usable: bool,
-    pub tip_height: u64,
+    pub last_derived_height: u64,
 }
 
 /// Why the local root is kept.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum KeepReason {
+    NotEligible,
     NoAnswers,
     NoQuorum { largest: usize, quorum: usize },
     Tie,
-    AlreadyCanonical,
-    PeersDisagree { agreeing: usize, dissenting: usize },
+    NoMajority { largest: usize, counted: usize },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -41,12 +39,9 @@ pub enum QuorumVerdict {
     Keep(KeepReason),
 }
 
-/// An answer counts only when the peer is at or above the local tip, its set
-/// did not change above the local tip, and its set is not empty.
-fn counts(local: &LocalRootView, a: &PeerMaintainerAnswer) -> bool {
-    a.tip_height >= local.tip_height
-        && a.set.last_updated <= local.tip_height
-        && !a.set.members.is_empty()
+/// Only an EMPTY root stamped at a snap height may be replaced by the quorum.
+pub fn quorum_eligible(local: &LocalRootView) -> bool {
+    local.digest.is_none() && local.last_derived_height > 0
 }
 
 /// Select the maintainer set a peer quorum agrees on, or why the local one is kept.
@@ -55,7 +50,13 @@ pub fn select_quorum_maintainer_state(
     answers: &[PeerMaintainerAnswer],
     quorum: usize,
 ) -> QuorumVerdict {
-    let valid: Vec<&PeerMaintainerAnswer> = answers.iter().filter(|a| counts(local, a)).collect();
+    if !quorum_eligible(local) {
+        return QuorumVerdict::Keep(KeepReason::NotEligible);
+    }
+    let valid: Vec<&PeerMaintainerAnswer> = answers
+        .iter()
+        .filter(|a| a.tip_height >= local.last_derived_height && !a.set.members.is_empty())
+        .collect();
     if valid.is_empty() {
         return QuorumVerdict::Keep(KeepReason::NoAnswers);
     }
@@ -74,22 +75,19 @@ pub fn select_quorum_maintainer_state(
     if largest < quorum {
         return QuorumVerdict::Keep(KeepReason::NoQuorum { largest, quorum });
     }
-    let best_at = groups
-        .iter()
-        .position(|(_, g)| g.len() == largest)
-        .unwrap_or(0);
-    let (best_digest, best) = groups.swap_remove(best_at);
-    if local.digest == Some(best_digest) {
-        return QuorumVerdict::Keep(KeepReason::AlreadyCanonical);
+    let counted = valid.len();
+    if largest * 2 <= counted {
+        return QuorumVerdict::Keep(KeepReason::NoMajority { largest, counted });
     }
-    let dissenting = valid.len() - largest;
-    if !local.snap_synced && local.usable && dissenting > 0 {
-        return QuorumVerdict::Keep(KeepReason::PeersDisagree {
-            agreeing: largest,
-            dissenting,
-        });
-    }
-    let mut set = best[0].set.clone();
+    let best = groups
+        .into_iter()
+        .find(|(_, g)| g.len() == largest)
+        .map(|(_, g)| g)
+        .unwrap_or_default();
+    let Some(first) = best.first() else {
+        return QuorumVerdict::Keep(KeepReason::NoAnswers);
+    };
+    let mut set = first.set.clone();
     set.last_updated = best
         .iter()
         .map(|a| a.set.last_updated)

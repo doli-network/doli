@@ -1,18 +1,20 @@
 //! INC-I-248 M1.5 — unit contract of `doli_cli::cmd_snap_maintainer`.
 //! REQ-248-002 — Decision: a red here means `doli snap` installs an unverified set or no fail-closed root.
 //
-// OUTPUT CONTRACT: fn agree_maintainer_digest(answers: &[(String, String)], trust: bool) -> Option<String>
-//   O1: return — Some(digest) | None ; no other output (pure)
-// PATHS: A1 quorum (>=2 answers, !trust); A2 single answer or trust; A3 no answers
+// OUTPUT CONTRACT (REL-M1): fn agree_maintainer_digest(answers: &[(String, String)],
+//   snapshot_digest: &str, seed_count: usize, trust: bool) -> Option<String>
+//   O1: return — Some(snapshot_digest) iff (trust || count >= 1) && !(!trust && seed_count >= 2
+//       && count < 2), count = answers equal to snapshot_digest (the cmd_snap.rs state-root rule)
+// PATHS: A1 accepted ; A2 refused
 // INPUT PARTITIONS:
-//   A1a 3 agree -> Some ; A1b 2-of-3 (dissent first or last) -> Some(majority)
-//   A1c all differ -> None ; A1d 2 answers differ -> None ; A1e 2 answers agree -> Some
-//   A1f tie 2-2 -> None ; A2a 1 answer -> Some(first) ; A2b trust, 3 differ -> Some(first)
-//   A2c trust, majority != first -> Some(first) ; A3a 0 -> None ; A3b 0 + trust -> None
-// MATRIX: 1 output x 11 partitions = 11 cells
+//   A1a 3 agree -> Some ; A1b 2-of-3 (dissent first or last) -> Some ; A1b' 2-of-3 for another
+//   digest -> None ; A1c all differ -> None ; A1d 2 seeds differ -> None ; A1e 2 agree -> Some
+//   A1f tie 2-2 -> Some(snapshot digest) ; A2a 1 seed 1 answer -> Some ; A2a' 1 seed other -> None
+//   A2b trust, 3 differ -> Some ; A2c trust, none matches -> Some ; A3a 0 -> None ; A3b 0 + trust -> Some
+// MATRIX: 1 output x 13 partitions = 13 cells
 //
-// OUTPUT CONTRACT: fn write_snap_maintainer_state(data_dir, field, height, agreed_digest, genesis_hash)
-//                      -> anyhow::Result<SnapMaintainerOutcome>
+// OUTPUT CONTRACT: fn write_snap_maintainer_state(data_dir, field, height, agreed_digest, genesis_hash,
+//                      retired_after: u64) -> anyhow::Result<SnapMaintainerOutcome>
 //   O1: return — Ok(Canonical) | Ok(FailClosed(reason))
 //   O2: data_dir/maintainer_state.bin — ALWAYS rewritten; bytes == MaintainerState::save of
 //       {set, last_derived_height: height} (Canonical) or {MaintainerSet::new(), height} (FailClosed)
@@ -21,7 +23,8 @@
 // INPUT PARTITIONS:
 //   W1a 5 canonical keys, lastChangeBlock < height
 //   W1b lastChangeBlock == height (boundary)
-//   W1c agreed set holds one retired mainnet genesis key -> written as received
+//   W1c agreed set holds one retired mainnet genesis key, retired_after = u64::MAX (testnet)
+//       -> written as received (the mainnet case is in inc_i_248_rel_m1_doli_snap.rs)
 //   W2a field null/absent ; W2b field not an object ; W2c field digest != recomputed
 //   W2d agreed None ; W2e agreed != field digest ; W2f lastChangeBlock > height
 //   W2g member not hex ; W2h member wrong length ; W2i duplicate member
@@ -35,6 +38,7 @@
 //   Q1a on-chain 5 members ; Q2a source "derived" ; Q2b member_count 0
 //   Q2c digest missing ; Q2d JSON-RPC error ; Q2e unreachable
 // MATRIX: 1 output x 6 partitions = 6 cells
+// covers: bins/cli/src/cmd_snap.rs, bins/cli/src/cmd_snap_maintainer.rs
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
@@ -124,7 +128,7 @@ fn run_writer(field: &Value, agreed: Option<&str>) -> (TempDir, SnapMaintainerOu
     }
     .save(tmp.path())
     .expect("fixture: pre-existing file");
-    let outcome = write_snap_maintainer_state(tmp.path(), field, H, agreed, &genesis())
+    let outcome = write_snap_maintainer_state(tmp.path(), field, H, agreed, &genesis(), u64::MAX)
         .expect("O1: the writer must not error on a writable data dir");
     (tmp, outcome)
 }
@@ -169,7 +173,7 @@ fn assert_fail_closed(field: &Value, agreed: Option<&str>, case: &str) {
 #[test]
 fn inc_i_248_agree_three_agree() {
     assert_eq!(
-        agree_maintainer_digest(&answers(&[D_A, D_A, D_A]), false),
+        agree_maintainer_digest(&answers(&[D_A, D_A, D_A]), D_A, 3, false),
         Some(D_A.into())
     );
 }
@@ -177,68 +181,91 @@ fn inc_i_248_agree_three_agree() {
 #[test]
 fn inc_i_248_agree_two_of_three() {
     assert_eq!(
-        agree_maintainer_digest(&answers(&[D_A, D_A, D_B]), false),
+        agree_maintainer_digest(&answers(&[D_A, D_A, D_B]), D_A, 3, false),
         Some(D_A.into())
     );
     assert_eq!(
-        agree_maintainer_digest(&answers(&[D_B, D_A, D_A]), false),
+        agree_maintainer_digest(&answers(&[D_B, D_A, D_A]), D_A, 3, false),
         Some(D_A.into())
+    );
+    assert_eq!(
+        agree_maintainer_digest(&answers(&[D_A, D_A, D_B]), D_B, 3, false),
+        None,
+        "the count is of the snapshot digest, not of the largest group"
     );
 }
 
 #[test]
 fn inc_i_248_agree_all_differ_is_none() {
     assert_eq!(
-        agree_maintainer_digest(&answers(&[D_A, D_B, D_C]), false),
+        agree_maintainer_digest(&answers(&[D_A, D_B, D_C]), D_A, 3, false),
         None
     );
 }
 
 #[test]
 fn inc_i_248_agree_two_answers() {
-    assert_eq!(agree_maintainer_digest(&answers(&[D_A, D_B]), false), None);
     assert_eq!(
-        agree_maintainer_digest(&answers(&[D_A, D_A]), false),
+        agree_maintainer_digest(&answers(&[D_A, D_B]), D_A, 2, false),
+        None
+    );
+    assert_eq!(
+        agree_maintainer_digest(&answers(&[D_A, D_A]), D_A, 2, false),
         Some(D_A.into())
     );
 }
 
 #[test]
-fn inc_i_248_agree_tie_two_two_is_none() {
+fn inc_i_248_agree_tie_two_two_follows_snapshot_digest() {
     assert_eq!(
-        agree_maintainer_digest(&answers(&[D_A, D_A, D_B, D_B]), false),
-        None
+        agree_maintainer_digest(&answers(&[D_A, D_A, D_B, D_B]), D_A, 4, false),
+        Some(D_A.into())
     );
     assert_eq!(
-        agree_maintainer_digest(&answers(&[D_A, D_B, D_B, D_A]), false),
-        None
-    );
-}
-
-#[test]
-fn inc_i_248_agree_single_answer_is_first() {
-    assert_eq!(
-        agree_maintainer_digest(&answers(&[D_B]), false),
+        agree_maintainer_digest(&answers(&[D_A, D_B, D_B, D_A]), D_B, 4, false),
         Some(D_B.into())
     );
-}
-
-#[test]
-fn inc_i_248_agree_trust_takes_first() {
     assert_eq!(
-        agree_maintainer_digest(&answers(&[D_C, D_A, D_B]), true),
-        Some(D_C.into())
-    );
-    assert_eq!(
-        agree_maintainer_digest(&answers(&[D_C, D_A, D_A]), true),
-        Some(D_C.into())
+        agree_maintainer_digest(&answers(&[D_A, D_B, D_B, D_A]), D_C, 4, false),
+        None
     );
 }
 
 #[test]
-fn inc_i_248_agree_no_answers_is_none() {
-    assert_eq!(agree_maintainer_digest(&[], false), None);
-    assert_eq!(agree_maintainer_digest(&[], true), None);
+fn inc_i_248_agree_single_seed_counts_one() {
+    assert_eq!(
+        agree_maintainer_digest(&answers(&[D_B]), D_B, 1, false),
+        Some(D_B.into())
+    );
+    assert_eq!(
+        agree_maintainer_digest(&answers(&[D_B]), D_A, 1, false),
+        None
+    );
+    assert_eq!(
+        agree_maintainer_digest(&answers(&[D_B]), D_B, 3, false),
+        None,
+        "two configured seeds gave no answer"
+    );
+}
+
+#[test]
+fn inc_i_248_agree_trust_accepts_snapshot_digest() {
+    assert_eq!(
+        agree_maintainer_digest(&answers(&[D_C, D_A, D_B]), D_C, 3, true),
+        Some(D_C.into())
+    );
+    assert_eq!(
+        agree_maintainer_digest(&answers(&[D_A, D_A, D_A]), D_C, 3, true),
+        Some(D_C.into()),
+        "--trust verifies like the state root: no count needed"
+    );
+}
+
+#[test]
+fn inc_i_248_agree_no_answers() {
+    assert_eq!(agree_maintainer_digest(&[], D_A, 0, false), None);
+    assert_eq!(agree_maintainer_digest(&[], D_A, 3, false), None);
+    assert_eq!(agree_maintainer_digest(&[], D_A, 1, true), Some(D_A.into()));
 }
 
 // ---- write_snap_maintainer_state: canonical ---------------------------------

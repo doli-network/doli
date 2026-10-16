@@ -2549,7 +2549,7 @@ doli -n testnet snap
 doli snap --seed http://127.0.0.1:8500 --trust
 ```
 
-**Maintainer state (INC-I-248):** `doli snap` always writes `maintainer_state.bin`. The seeds vote on `getMaintainerSet.maintainer_set_digest` (only on-chain, non-empty answers count) with the same rule as the state root. The snapshot's `maintainerState` is installed only when its recomputed digest equals both the field digest and the agreed digest. Otherwise the file holds an EMPTY set at the snapshot height (fail closed) and the node repairs it from its peers. A maintainer disagreement never aborts the snap.
+**Maintainer state (INC-I-248):** `doli snap` always writes `maintainer_state.bin`. After the download, the seeds vote on the snapshot's maintainer digest with `getMaintainerSet.maintainer_set_digest` (only on-chain, non-empty answers count) by the state-root rule: with 2 or more configured seeds and no `--trust`, at least 2 seeds must answer that digest, so a silent seed counts against it. The snapshot's `maintainerState` is installed only when its recomputed digest equals both the field digest and the agreed digest, and it holds no genesis key retired at the snapshot height (mainnet: above 331_457). Otherwise the file holds an EMPTY set at the snapshot height (fail closed) and the node repairs it from its peers. A maintainer disagreement never aborts the snap.
 
 ---
 

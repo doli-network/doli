@@ -5,6 +5,8 @@
 //! OUTPUT CONTRACT:
 //!   F1 `Node::maybe_bootstrap_maintainer_set(&self, height)` (gate seed + per-block hook)
 //!   F2 `Node::process_transaction_governance(&self, tx, height, producers) -> Option<(u32, u64)>`
+//!   F3 the M2 probe path (REL-M1): startup tick + arm + 3 forged `MaintainerStateAt` answers +
+//!      window-end tick, run at EMPTY@0 (before the gate), after the gate seed and after the plan
 //!   O2 receiver: maintainer_state.set (members, order, threshold, last_updated) and
 //!      maintainer_state.last_derived_height
 //!   O3 return: F2 -> Some((version, epoch)) for an accepted activation, else None
@@ -15,11 +17,18 @@
 //!   minimum); activation rejected (2-of-4, non-members, removed producers).
 //! INPUT PARTITIONS: set composition P = all producers, M = producers + rotated keys,
 //!   R = all rotated keys; set size 3, 4, 5 (threshold 2, 3, 3).
-//! MATRIX: 21 states x (O2 set, O2 ldh, O3, O4, digest vs reference, digest vs frozen hex).
+//! MATRIX: 21 states x (O2 set, O2 ldh, O3, O4, digest vs reference, digest vs frozen hex)
+//!   + F3 at 3 points x (O2 set, O2 ldh, O4 bytes, probe phase).
+//!
+// covers: crates/core/src/maintainer/quorum.rs, bins/node/src/node/maintainer_quorum.rs, bins/node/src/node/periodic.rs
+
+use std::time::{Duration, Instant};
 
 use crate::inc_i_248_harness as h;
 use doli_core::maintainer::{derive_canonical_maintainer_set, maintainer_set_digest};
 use doli_core::MaintainerSet;
+use doli_node::node::maintainer_quorum::ProbeReason;
+use network::protocols::SyncResponse;
 
 const DIGEST_GENESIS: [u8; 32] = [0x48; 32];
 
@@ -102,6 +111,49 @@ fn hex_digest(set: &MaintainerSet) -> String {
     hex::encode(maintainer_set_digest(set, &DIGEST_GENESIS))
 }
 
+/// F3: no peer input may change a replaying node's set, at any point of its history.
+async fn assert_probe_never_changes(node: &mut doli_node::node::Node, ctx: &str) {
+    let before = h::state_of(node).await;
+    let file = node.config.data_dir.join("maintainer_state.bin");
+    let before_bytes = std::fs::read(&file).ok();
+    let forged =
+        MaintainerSet::with_members(h::OUTSIDER_SEEDS.iter().map(|s| h::pk(*s)).collect(), 0);
+    let frame = SyncResponse::MaintainerStateAt {
+        block_hash: h::tip_hash(),
+        block_height: 50_000,
+        digest: crypto::Hash::from_bytes(h::node_digest(node, &forged)),
+        set_bytes: bincode::serialize(&forged).expect("forged set must serialize"),
+        last_derived_height: 50_000,
+    };
+    node.maintainer_quorum_tick_at(Instant::now() + Duration::from_secs(11))
+        .await;
+    node.arm_maintainer_quorum(ProbeReason::Startup).await;
+    assert_eq!(
+        node.maintainer_probe_phase(),
+        "idle",
+        "[{ctx}] a replaying node is never eligible"
+    );
+    h::deliver(node, &frame, 3).await;
+    node.maintainer_quorum_tick_at(Instant::now() + Duration::from_secs(30))
+        .await;
+    let after = h::state_of(node).await;
+    assert_eq!(after.set, before.set, "[{ctx}] set changed by peer answers");
+    assert_eq!(
+        after.last_derived_height, before.last_derived_height,
+        "[{ctx}] last_derived_height changed by peer answers"
+    );
+    assert_eq!(
+        hex_digest(&after.set),
+        hex_digest(&before.set),
+        "[{ctx}] digest changed"
+    );
+    assert_eq!(
+        std::fs::read(&file).ok(),
+        before_bytes,
+        "[{ctx}] maintainer_state.bin changed by peer answers"
+    );
+}
+
 struct Row {
     label: &'static str,
     height: u64,
@@ -129,7 +181,7 @@ async fn inc_i_248_replay_node_maintainer_set_invariant() {
     }
 
     let producers = h::producer_keys();
-    let (node, _temp) = h::testnet_node(&producers).await;
+    let (mut node, _temp) = h::testnet_node(&producers).await;
     let genesis = h::node_genesis(&node);
     assert!(
         !node.chain_state.read().await.is_snap_synced(),
@@ -137,7 +189,15 @@ async fn inc_i_248_replay_node_maintainer_set_invariant() {
     );
 
     let mut reference = reference_seed();
+    node.sync_manager.write().await.add_peer(
+        network::PeerId::random(),
+        50_000,
+        h::tip_hash(),
+        50_000,
+    );
+    assert_probe_never_changes(&mut node, "EMPTY@0 before the gate").await;
     node.maybe_bootstrap_maintainer_set(h::GATE).await;
+    assert_probe_never_changes(&mut node, "producer seed at the gate").await;
 
     let mut rows: Vec<Row> = Vec::with_capacity(plan.len() + 1);
     let mut check_state = |label: &'static str,
@@ -210,6 +270,8 @@ async fn inc_i_248_replay_node_maintainer_set_invariant() {
             &reference,
         );
     }
+
+    assert_probe_never_changes(&mut node, "after the plan").await;
 
     for (i, row) in rows.iter().enumerate() {
         println!(

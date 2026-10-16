@@ -25,11 +25,12 @@
 //! OUTPUT CONTRACT: Node::handle_network_event(SyncResponse{MaintainerStateAt}) on the receiver
 //!   O2 receiver: maintainer_state.set (adopted or unchanged); O4 maintainer_state.bin
 //! PATHS: P3 snap-joined B + 3 agreeing answers -> Adopt, seed gate then a no-op;
-//!   P4 served frame round-trips the wire and 3 peers make B adopt;
+//!   P4 served frame round-trips the wire and 3 peers make B adopt at the window end (REL-M1);
 //!   P5 frame digest bound to a foreign genesis -> dropped; P6 frame digest != body -> dropped;
-//!   P7 frame to a node that is not collecting -> dropped (control: same node armed adopts).
+//!   P7 frame to a node that is not collecting -> dropped (control: the same EMPTY@H node,
+//!   armed, adopts at the window end; a replay node never arms).
 //! INPUT PARTITIONS: P3/P4 canonical rotated set S1..S5; P5 same set, other genesis;
-//!   P6 same set, forged digest; P7 replay node holding the producer seed, unanimous answers.
+//!   P6 same set, forged digest; P7 EMPTY@H node and replay node holding the producer seed.
 //! MATRIX: P3 6 cells (verdict, digest, set, last_derived_height, disk, verify);
 //!   P4 frame fields 5 + adopted set 2; P5/P6/P7 set unchanged + control.
 //!
@@ -290,6 +291,7 @@ async fn inc_i_248_serve_maintainer_state_round_trip() {
     let snapshot = h::snapshot_of(&a.node).await;
     let (mut node_b, _temp_b) = h::snap_joined_node_b(snapshot).await;
     h::deliver(&mut node_b, &decoded, 3).await;
+    window_end(&node_b).await;
 
     let state = h::state_of(&node_b).await;
     assert_eq!(
@@ -331,6 +333,7 @@ async fn inc_i_248_serve_maintainer_state_foreign_genesis_dropped() {
     assert_root_untouched(&node_b, &before, "answers from another chain").await;
 
     h::deliver(&mut node_b, &a.node.serve_maintainer_state().await, 3).await;
+    window_end(&node_b).await;
     assert_eq!(
         h::node_digest(&node_b, &h::state_of(&node_b).await.set),
         view.digest,
@@ -365,6 +368,7 @@ async fn inc_i_248_serve_maintainer_state_digest_mismatch_dropped() {
     .await;
 
     h::deliver(&mut node_b, &a.node.serve_maintainer_state().await, 3).await;
+    window_end(&node_b).await;
     assert_eq!(
         h::node_digest(&node_b, &h::state_of(&node_b).await.set),
         view.digest,
@@ -372,28 +376,55 @@ async fn inc_i_248_serve_maintainer_state_digest_mismatch_dropped() {
     );
 }
 
-// REQ-248-004 (Must) — Decision: a failure means a replay node replaces its history-derived root from unsolicited peer frames it never asked for.
+async fn window_end(node: &doli_node::node::Node) {
+    node.maintainer_quorum_tick_at(std::time::Instant::now() + std::time::Duration::from_secs(30))
+        .await;
+}
+
+// REQ-248-004 (Must) — Decision: a failure means a node replaces its root from unsolicited peer frames it never asked for, or a replay node is armed at all.
 #[tokio::test]
 async fn inc_i_248_serve_maintainer_state_not_collecting_dropped() {
     let a = h::build_replay_node_a().await;
     let view = h::peer_view(&a.node).await;
     let served = a.node.serve_maintainer_state().await;
+    let (mut empty, _temp_e) = h::testnet_node(&h::producer_keys()).await;
+    empty.set_maintainer_state(std::sync::Arc::new(tokio::sync::RwLock::new(
+        storage::MaintainerState {
+            last_derived_height: h::SNAP_HEIGHT,
+            ..storage::MaintainerState::default()
+        },
+    )));
+    {
+        let mut cs = empty.chain_state.write().await;
+        cs.best_height = h::SNAP_HEIGHT;
+        cs.best_hash = h::tip_hash();
+    }
+    let before = h::state_of(&empty).await;
+
+    h::deliver(&mut empty, &served, 3).await;
+    window_end(&empty).await;
+    assert_root_untouched(&empty, &before, "answers to a node that is not collecting").await;
+
+    empty.arm_maintainer_quorum(ProbeReason::Startup).await;
+    h::deliver(&mut empty, &served, 3).await;
+    window_end(&empty).await;
+    assert_eq!(
+        h::node_digest(&empty, &h::state_of(&empty).await.set),
+        view.digest,
+        "control: once armed, 3 unanimous answers must be adopted at the window end"
+    );
+
     let (mut replay, _temp_r) = h::replay_node_at_snap_height().await;
     let before = h::state_of(&replay).await;
-
-    h::deliver(&mut replay, &served, 3).await;
-    assert_root_untouched(&replay, &before, "answers to a node that is not collecting").await;
-
     replay.arm_maintainer_quorum(ProbeReason::Startup).await;
-    h::deliver(&mut replay, &served, 3).await;
-    replay
-        .maintainer_quorum_tick_at(std::time::Instant::now() + std::time::Duration::from_secs(30))
-        .await;
     assert_eq!(
-        h::node_digest(&replay, &h::state_of(&replay).await.set),
-        view.digest,
-        "control: once armed, 3 unanimous answers must be adopted"
+        replay.maintainer_probe_phase(),
+        "idle",
+        "a replay root never arms"
     );
+    h::deliver(&mut replay, &served, 3).await;
+    window_end(&replay).await;
+    assert_root_untouched(&replay, &before, "replay node after arm + window end").await;
 }
 
 fn producer_pubkeys() -> Vec<crypto::PublicKey> {

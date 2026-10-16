@@ -7,11 +7,13 @@
 //!   O3 return: record -> bool; on_tick -> ProbeStep
 //!   O1/O4/O5/O6: none
 //! PATHS: idle; collecting (record accept / same-peer replace, tick Wait | Evaluate);
-//!   transient verdict (NoAnswers | NoQuorum | Tie) -> retry-wait (tick Wait | Rearm) or gave-up
-//!   at MAX attempts; final verdict (Adopt | AlreadyCanonical | PeersDisagree) -> done.
+//!   transient verdict (NoAnswers | NoQuorum | Tie | NoMajority) -> retry-wait (tick Wait | Rearm)
+//!   or gave-up at MAX attempts; final verdict (Adopt | NotEligible) -> done (REL-M1).
 //! INPUT PARTITIONS: elapsed 0 | WINDOW-1s | WINDOW | RETRY-1s | RETRY; attempts 1 | 2 | MAX;
 //!   same peer twice | distinct peers.
 //! MATRIX: 5 phases x (phase_name, attempts, is_collecting, answers, record, on_tick) = 30 cells.
+//!
+// covers: crates/core/src/maintainer/quorum.rs, crates/core/src/maintainer/mod.rs, bins/node/src/node/maintainer_quorum.rs
 
 use std::time::{Duration, Instant};
 
@@ -48,6 +50,10 @@ fn transient_verdicts() -> Vec<QuorumVerdict> {
             quorum: 3,
         }),
         QuorumVerdict::Keep(KeepReason::Tie),
+        QuorumVerdict::Keep(KeepReason::NoMajority {
+            largest: 3,
+            counted: 7,
+        }),
     ]
 }
 
@@ -57,11 +63,7 @@ fn final_verdicts() -> Vec<QuorumVerdict> {
             set: answer(7).set,
             agreeing: 3,
         },
-        QuorumVerdict::Keep(KeepReason::AlreadyCanonical),
-        QuorumVerdict::Keep(KeepReason::PeersDisagree {
-            agreeing: 3,
-            dissenting: 1,
-        }),
+        QuorumVerdict::Keep(KeepReason::NotEligible),
     ]
 }
 

@@ -1830,10 +1830,15 @@ Note: struct PresenceHeartbeat (not Heartbeat) in the tpop module; this is diffe
 
 #### Peer quorum (`maintainer/quorum.rs`, INC-I-248)
 - struct PeerMaintainerAnswer — set, last_derived_height, digest, tip_height (already decoded and digest-checked under the LOCAL genesis by the caller)
-- struct LocalRootView — digest (None when empty), snap_synced, usable, tip_height
-- enum KeepReason — NoAnswers, NoQuorum { largest, quorum }, Tie, AlreadyCanonical, PeersDisagree { agreeing, dissenting }
+- struct LocalRootView — digest (None when empty), last_derived_height
+- enum KeepReason — NotEligible, NoAnswers, NoQuorum { largest, quorum }, Tie, NoMajority { largest, counted }
 - enum QuorumVerdict — Adopt { set, agreeing }, Keep(KeepReason)
-- fn select_quorum_maintainer_state(local, answers, quorum) — pure; counts answers with tip >= local tip, set.last_updated <= local tip, non-empty set; largest digest group; tie or below quorum keeps; equal to local digest keeps; a non-snap node with a usable root keeps on any dissent; Adopt sets last_updated = minimum of the agreeing group
+- fn quorum_eligible(local) — EMPTY root with last_derived_height > 0 (REL-M1)
+- fn select_quorum_maintainer_state(local, answers, quorum) — pure; NotEligible unless quorum_eligible; counts answers with tip >= local last_derived_height and a non-empty set; then Tie, NoQuorum, NoMajority (largest * 2 <= counted); Adopt sets last_updated = minimum of the group
+
+#### Retired genesis keys (`maintainer/retired.rs`, INC-I-248 REL-M1)
+- fn retired_genesis_maintainer_keys() — the keys of MAINNET_GENESIS_PRODUCERS
+- fn holds_retired_key_at(set, height, retired_after) — height > retired_after and the set holds one of them
 
 ---
 

@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};
 use doli_cli::cmd_snap_maintainer::{
-    agree_maintainer_digest, query_maintainer_digest, write_snap_maintainer_state,
-    SnapMaintainerOutcome,
+    agree_maintainer_digest, query_maintainer_answers, retired_keys_height,
+    write_snap_maintainer_state, SnapMaintainerOutcome,
 };
 
 use crate::cmd_snap_service::{restart_matching_service, stop_doli_service};
@@ -112,21 +112,6 @@ pub(crate) async fn cmd_snap(
         (state_roots[0].0.to_string(), state_roots[0].2.clone())
     };
 
-    // Maintainer digest agreement; a disagreement never aborts the snap.
-    let mut maintainer_answers: Vec<(String, String)> = Vec::new();
-    for seed in &seeds {
-        match query_maintainer_digest(seed).await {
-            Ok(digest) => {
-                println!("  {} — maintainer digest={:.16}...", seed, digest);
-                maintainer_answers.push((seed.to_string(), digest));
-            }
-            Err(e) => println!("  {} — maintainer digest not counted ({})", seed, e),
-        }
-    }
-    let agreed_maintainer = agree_maintainer_digest(&maintainer_answers, trust);
-    if agreed_maintainer.is_none() {
-        println!("  Warning: seeds do not agree on the maintainer set; the node gets the fail-closed EMPTY root and repairs it from its peers");
-    }
     println!();
 
     // 2. Stop the node service
@@ -341,6 +326,14 @@ pub(crate) async fn cmd_snap(
         producer_set.active_count()
     );
 
+    // Maintainer digest agreement on the downloaded snapshot; never aborts the snap.
+    let maintainer_answers = query_maintainer_answers(&seeds).await;
+    let agreed_maintainer = snap["maintainerState"]["digest"]
+        .as_str()
+        .and_then(|d| agree_maintainer_digest(&maintainer_answers, d, seeds.len(), trust));
+    if agreed_maintainer.is_none() {
+        println!("  Warning: seeds do not agree on the maintainer set; the node gets the fail-closed EMPTY root and repairs it from its peers");
+    }
     // Written before the chown below so the file gets the service owner.
     match write_snap_maintainer_state(
         &data_dir,
@@ -348,6 +341,7 @@ pub(crate) async fn cmd_snap(
         height,
         agreed_maintainer.as_deref(),
         &chain_state.genesis_hash,
+        retired_keys_height(network),
     )? {
         SnapMaintainerOutcome::Canonical => {
             println!("  Maintainer state: canonical set at h={}", height)

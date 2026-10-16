@@ -969,8 +969,8 @@ sudo systemctl start doli-node
 > maintainer_derivation_activation_height`** on a chain that had already passed that height,
 > its `maintainer_state.bin` went missing and the root was rebuilt from live producer state.
 > Treat that host's auto-update as untrusted until the root is cross-checked against a
-> known-good node (residual R1). A node with the INC-I-248 fix also runs the start-up
-> peer-quorum probe (5.4), which can replace that root.
+> known-good node (residual R1). The INC-I-248 peer-quorum probe (5.4) does not replace a
+> non-empty root, except one that holds a retired genesis key.
 
 ### 4.3. Consensus-Critical Fork (Network-Wide Split)
 
@@ -1301,20 +1301,23 @@ trust root from its peers. Do NOT delete `maintainer_state.bin`, and do NOT run 
 to fix the root. The auto-updater and `doli upgrade` on this host use the same wrong root, so
 they refuse the fixed release too; install it by hand (see 5.1).
 
-**What the node does at start.** After at least 10 s of uptime and with at least 1 sync peer,
-it asks every sync peer for its maintainer set and collects answers for 15 s. It adopts the
-set that a quorum agrees on (3 to 5 peers, by digest). An EMPTY root or a retired-key root
-adopts as soon as the quorum agrees. Expect:
+**What the node does at start.** On mainnet, above height 331_457, a set that holds a
+retired genesis key becomes EMPTY at the tip (one warning line). Only an EMPTY root stamped
+at a snap height can be repaired from peers; a non-empty root never changes. After at least
+10 s of uptime and with at least 1 sync peer, the node asks every sync peer for its
+maintainer set and collects answers for 15 s. At the end of the window it adopts the set
+that a quorum (3 to 5 peers, by digest) AND a strict majority of the answers agree on.
+Expect:
 
 ```
+[MAINTAINER] trust root of 5 members held a key retired after height 331457: reset to EMPTY at height N …
 [MAINTAINER] quorum probe armed (Startup): asking N peers
-[MAINTAINER] MAINTAINER_SET_DIGEST=… (peer quorum, N agreeing)
-[MAINTAINER] trust root replaced: release re-check requested
+[MAINTAINER] quorum verdict Adopt(agreeing=N) MAINTAINER_SET_DIGEST=… phase=done
 ```
 
 The update service then checks for releases at once. If not enough peers answer (old peers
 do not answer), the node tries 3 times, 60 s apart, then logs
-`[MAINTAINER] quorum probe gave up after 3 attempts (…); keeping the current trust root`.
+`[MAINTAINER] quorum verdict Keep(…) … phase=gave-up; keeping the current trust root`.
 Upgrade more peers (the seeds first) and restart the node.
 
 ---
