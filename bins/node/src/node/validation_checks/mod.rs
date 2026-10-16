@@ -1202,6 +1202,8 @@ impl Node {
             }
 
             SyncRequest::DirectAttestation { .. } => SyncResponse::Block(None),
+
+            SyncRequest::GetMaintainerState => self.serve_maintainer_state().await,
         };
 
         if let Some(ref network) = self.network {

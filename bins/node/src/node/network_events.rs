@@ -364,6 +364,11 @@ impl Node {
     ) -> Result<()> {
         debug!("Sync response from {}", peer_id);
 
+        if matches!(response, SyncResponse::MaintainerStateAt { .. }) {
+            self.on_maintainer_state_answer(peer_id, response).await;
+            return Ok(());
+        }
+
         self.sync_manager
             .write()
             .await

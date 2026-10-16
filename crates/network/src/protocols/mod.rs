@@ -5,6 +5,7 @@
 
 pub mod status;
 pub mod sync;
+mod sync_codec;
 pub mod txfetch;
 
 pub use status::{

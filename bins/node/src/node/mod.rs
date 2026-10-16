@@ -36,7 +36,9 @@ mod holdings;
 use holdings::holdings_of_every_producer;
 mod fork_cache;
 mod init;
+pub mod maintainer_quorum;
 mod maintainer_rewind;
+mod maintainer_state_serve;
 mod network_events;
 mod orphan_chase;
 
@@ -406,6 +408,9 @@ pub struct Node {
 
     /// Own-origin tx budget consulted before an RPC broadcast (INC-I-237 AUDIT-P2-511).
     pub origin_tx_bucket: Arc<std::sync::Mutex<network::rate_limit::TokenBucket>>,
+
+    /// INC-I-248 maintainer trust-root quorum probe.
+    pub(crate) maintainer_quorum: std::sync::Mutex<maintainer_quorum::MaintainerQuorumProbe>,
 }
 
 /// INC-I-055: Number of health samples to track in the rolling window.

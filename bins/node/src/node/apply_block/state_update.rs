@@ -45,6 +45,9 @@ impl Node {
         height: u64,
         pending_protocol_activation_data: Option<(u32, u64)>,
     ) {
+        // INC-I-248: stamp the snap-synced EMPTY trust root before the snap marker is cleared.
+        self.hold_snap_root_empty(height).await;
+
         // Phase 1: brief write lock for chain_state metadata only.
         // chain_state.write() is released before the expensive compute_state_root()
         // so concurrent RPC readers (e.g. getChainInfo) are not blocked. Block-apply

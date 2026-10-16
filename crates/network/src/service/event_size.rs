@@ -65,6 +65,7 @@ pub(super) fn sync_response_bytes(r: &SyncResponse) -> usize {
         }
         SyncResponse::StateChunk { body, next_key, .. } => body.len() + opt_len(next_key),
         SyncResponse::Error(s) => s.len(),
+        SyncResponse::MaintainerStateAt { set_bytes, .. } => set_bytes.len(),
         SyncResponse::StateRoot { .. } | SyncResponse::StateSessionUnavailable { .. } => 0,
     }
 }

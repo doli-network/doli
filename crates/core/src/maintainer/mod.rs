@@ -64,6 +64,7 @@ mod authmsg;
 mod data;
 mod derivation;
 mod digest;
+mod quorum;
 mod set;
 
 #[cfg(test)]
@@ -79,6 +80,9 @@ pub use derivation::{
     derive_canonical_maintainer_set, derive_maintainer_set, BlockchainReader, MaintainerChange,
 };
 pub use digest::maintainer_set_digest;
+pub use quorum::{
+    select_quorum_maintainer_state, KeepReason, LocalRootView, PeerMaintainerAnswer, QuorumVerdict,
+};
 pub use set::{MaintainerError, MaintainerSet, MaintainerSignature};
 
 // ============================================================================

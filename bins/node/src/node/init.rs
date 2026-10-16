@@ -1142,6 +1142,7 @@ impl Node {
             defi_health_refresh_counter: AtomicU64::new(0),
             defi_health_cache: std::sync::Mutex::new(None),
             origin_tx_bucket: super::rpc_broadcast::new_origin_tx_bucket(),
+            maintainer_quorum: Default::default(),
         };
 
         // M4 [F3]: a session always begins from an empty staging family, and
@@ -1395,6 +1396,7 @@ impl Node {
             defi_health_refresh_counter: AtomicU64::new(0),
             defi_health_cache: std::sync::Mutex::new(None),
             origin_tx_bucket: super::rpc_broadcast::new_origin_tx_bucket(),
+            maintainer_quorum: Default::default(),
         })
     }
 
@@ -1615,6 +1617,7 @@ impl Node {
             defi_health_refresh_counter: AtomicU64::new(0),
             defi_health_cache: std::sync::Mutex::new(None),
             origin_tx_bucket: super::rpc_broadcast::new_origin_tx_bucket(),
+            maintainer_quorum: Default::default(),
         })
     }
 }
