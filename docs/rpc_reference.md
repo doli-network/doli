@@ -1143,6 +1143,8 @@ curl -X POST http://127.0.0.1:8500 \
 
 Returns the current maintainer set. Since v1.1.15, reads from the persisted `MaintainerState` (bootstrapped from the first registered producers, then governed via on-chain `MaintainerAdd`/`MaintainerRemove` transactions). Falls back to a derivation from the producer registry if `MaintainerState` is not attached.
 
+A snap-synced node does not bootstrap from producers (INC-I-248). Until a peer quorum agrees on a set, it reports `source: "on-chain"` with `member_count: 0` (an EMPTY, fail-closed root). Then it reports the adopted set. `doli snap` counts only `on-chain` answers with `member_count > 0` when the seeds vote on `maintainer_set_digest`.
+
 **Read `source` and `enforced` before comparing two nodes.**
 
 - `source: "on-chain"`, `enforced: true` — this **is** the root the node enforces for governance and the one the updater installs against. Only these responses are comparable across nodes.
@@ -1976,7 +1978,15 @@ Returns a full state snapshot (chain state, UTXO set, producer set) as hex-encod
     "chainState": "hex...",
     "utxoSet": "hex...",
     "producerSet": "hex...",
-    "totalBytes": 123456
+    "totalBytes": 123456,
+    "maintainerState": {
+        "members": ["hex..."],
+        "threshold": 3,
+        "lastChangeBlock": 0,
+        "lastDerivedHeight": 12345,
+        "digest": "hex...",
+        "genesisHash": "hex..."
+    }
 }
 ```
 
@@ -1990,6 +2000,7 @@ Returns a full state snapshot (chain state, UTXO set, producer set) as hex-encod
 | utxoSet | Hex-encoded canonical UTXO set bytes |
 | producerSet | Hex-encoded canonical ProducerSet bytes |
 | totalBytes | Total size of all snapshot data in bytes |
+| maintainerState | The node's maintainer set (members in set order, threshold, `lastChangeBlock`, `lastDerivedHeight`, `digest` = `getMaintainerSet.maintainer_set_digest`, `genesisHash`), or `null` when the node has no maintainer state (INC-I-248). Not part of the state root. `doli snap` installs it only when it matches the seed-agreed digest; otherwise it writes an EMPTY set at the snapshot height |
 
 **Example:**
 ```bash

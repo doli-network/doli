@@ -1716,7 +1716,7 @@ doli update rollback
 
 ## 11. Maintainer Commands (doli maintainer)
 
-Maintainers are the first 5 registered producers. Changes require 3/5 multisig.
+Genesis seeded the maintainer set from the first 5 registered producers. Both networks have since rotated it by governance. A node that replays the chain derives the current set from that history; a snap-synced node takes the set a peer quorum agrees on (INC-I-248). Changes require 3/5 multisig.
 
 ### 11.1 List Maintainers
 
@@ -2291,6 +2291,11 @@ Trust root: OnChain (5 key(s), threshold 3, mainnet) from /var/lib/doli/mainnet
   data directory was wiped or `maintainer_state.bin` was deleted.
 - If the file exists but cannot be decoded, the command ABORTS. It never falls back to
   the compiled keys.
+- An `OnChain` root that holds one of the 5 retired mainnet genesis keys is not usable
+  (INC-I-248): the command refuses every release with `Trust root unavailable`. Do not
+  delete `maintainer_state.bin` and do not run `doli snap` to fix it. Upgrade the node to
+  a release with the INC-I-248 fix; the node repairs its trust root from its peers at
+  start (`docs/troubleshooting.md` §5.4).
 
 ### 18.2. `--network` is NOT a security boundary (known gap)
 
@@ -2544,6 +2549,8 @@ doli -n testnet snap
 doli snap --seed http://127.0.0.1:8500 --trust
 ```
 
+**Maintainer state (INC-I-248):** `doli snap` always writes `maintainer_state.bin`. The seeds vote on `getMaintainerSet.maintainer_set_digest` (only on-chain, non-empty answers count) with the same rule as the state root. The snapshot's `maintainerState` is installed only when its recomputed digest equals both the field digest and the agreed digest. Otherwise the file holds an EMPTY set at the snapshot height (fail closed) and the node repairs it from its peers. A maintainer disagreement never aborts the snap.
+
 ---
 
 ## 23. Wipe
@@ -2563,6 +2570,11 @@ Options:
 ```bash
 doli wipe --network testnet --yes
 ```
+
+`doli wipe` also deletes `maintainer_state.bin`, the release trust root. A full resync from
+genesis rebuilds it from the governance history. A node that snap-syncs instead holds an
+EMPTY root (it refuses every release) until a peer quorum agrees on the set, and then
+adopts it (INC-I-248).
 
 ---
 

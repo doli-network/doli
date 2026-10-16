@@ -891,8 +891,9 @@ compiled bootstrap keys — and re-runs the full **L1–L4** gate over the stage
 
 The threshold is read from `TrustRoot::threshold()`, never hard-coded: a 5-member on-chain
 maintainer set requires **3-of-5** distinct signers, a 4-member set 3, and an empty or
-sub-threshold root is not usable at all (fail-closed). L3 counts DISTINCT signers, so one
-key signing repeatedly cannot reach the threshold.
+sub-threshold root is not usable at all (fail-closed). A root that holds one of the 5 retired
+mainnet genesis keys (`RETIRED_COMPROMISED_MAINTAINER_KEYS`) is not usable either (INC-I-248).
+L3 counts DISTINCT signers, so one key signing repeatedly cannot reach the threshold.
 
 **The staged operand is the signed tarball, never an extracted binary.** The signature
 chain terminates at `release.tar.gz`; an extracted ELF is covered by nothing and would
@@ -1242,6 +1243,37 @@ overridden by env.
   all existing Pool/FA/LP UTXOs (Pool lineage from `CreatePool`, per-asset Σ ≤ issued supply,
   per-pool LP Σ within `total_lp`) is required before the mainnet height is pinned.
 - `ZKRollup` has the same free-creation shape; it is not exploitable while `ZKSettle` is frozen.
+
+### 7.11 Maintainer Trust Root of Snap-Synced Nodes (INC-I-248)
+
+**Risk**: The maintainer set is the release trust root. It is node-local (`maintainer_state.bin`)
+and is not in the state root. A snap-synced node cannot replay the governance history below its
+snapshot. Before INC-I-248 such a node seeded its set from the current producer set. On mainnet
+that gave the 5 retired genesis keys, whose private halves are public. The node then refused every
+real release (`Insufficient signatures: 0/3`), and a holder of the leaked keys could sign a
+release for it.
+
+**Mitigation** (`specs/protocol.md` §7.3.2 and §10.2):
+
+- A root that holds a retired genesis key is never usable for releases, on every network.
+- A snap-synced node never seeds from producers. It stores an EMPTY set at the snap height, which
+  authorises no release (fail closed).
+- The node adopts the set that `snap_quorum()` peers agree on by digest. Each digest is recomputed
+  with the local genesis hash. A minority, a tie or an empty set never wins. The node runs the same
+  probe at each start, so a node that holds an EMPTY, unusable or snap-synced root repairs it.
+- `doli snap` installs the snapshot's maintainer set only when the seeds agree on its digest (the
+  state-root rule) and the recomputed digest matches. Otherwise it writes an EMPTY set at the
+  snapshot height.
+
+**Residual risk**:
+
+- **Same trust as the snapshot.** A dishonest quorum of peers can give a snap-synced node a wrong
+  maintainer set, as it can give it a wrong state. A node that replayed the chain and holds a
+  usable root adopts only when no counted peer dissents. The producer veto window still applies to
+  every release.
+- **No peers, no repair.** With fewer agreeing answers than the quorum (for example a devnet below
+  3 peers, or old peers that do not answer) the node keeps its root. An EMPTY root then refuses
+  every release until enough upgraded peers answer.
 
 ---
 

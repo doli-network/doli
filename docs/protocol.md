@@ -165,6 +165,12 @@ enum SyncResponse {
 }
 ```
 
+These listings are partial and do not show bincode index order. The full wire list with
+indices is in `specs/protocol.md` §7.3. INC-I-248 appended `GetMaintainerState` (request
+index 10) and `MaintainerStateAt { block_hash, block_height, digest, set_bytes,
+last_derived_height }` (response index 9). A snap-synced node uses them to get its
+maintainer set from a peer quorum (`specs/protocol.md` §7.3.2).
+
 ### 5.3. Sync Flow
 
 ```

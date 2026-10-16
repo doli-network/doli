@@ -950,10 +950,12 @@ sudo systemctl start doli-node
 > maintainer set from **live producer state**, which brings back any maintainer key that
 > governance removed (residual R1, `docs/.workflow/inc-i-172-M3-scope.md`). The full wipe
 > above is safe **if the node then full-syncs from genesis** (every block is re-applied, so
-> governance re-executes). If it **snap-syncs** instead, it seeds from the snapshot's
-> producer set and can hold a stale root without any warning (residual R3). After a snap
-> sync on a chain whose maintainer set has been rotated, verify the root with
-> `getMaintainerSet` against a known-good node before trusting auto-update on that host.
+> governance re-executes). If it **snap-syncs** instead, a node with the INC-I-248 fix does
+> not seed from producers: it holds an EMPTY root (it refuses every release) until a peer
+> quorum agrees on the set, then adopts that set (see 5.4). A node without the fix seeds
+> from the snapshot's producer set and can hold a wrong root (residual R3). After a snap
+> sync, verify the root with `getMaintainerSet` against a known-good node before trusting
+> auto-update on that host.
 >
 > **Compare `getMaintainerSet` only when `"source": "on-chain"` on BOTH nodes.** A
 > `"source": "derived"` response is advisory (`"enforced": false`): no `MaintainerState` is
@@ -967,7 +969,8 @@ sudo systemctl start doli-node
 > maintainer_derivation_activation_height`** on a chain that had already passed that height,
 > its `maintainer_state.bin` went missing and the root was rebuilt from live producer state.
 > Treat that host's auto-update as untrusted until the root is cross-checked against a
-> known-good node (residual R1).
+> known-good node (residual R1). A node with the INC-I-248 fix also runs the start-up
+> peer-quorum probe (5.4), which can replace that root.
 
 ### 4.3. Consensus-Critical Fork (Network-Wide Split)
 
@@ -1265,6 +1268,54 @@ the exact refusal reason. Then delete the directory before the next cycle:
 ```bash
 sudo rm -rf /var/lib/doli/mainnet/updates
 ```
+
+---
+
+### 5.4. Every Release Refused — `Insufficient signatures: 0/3` or `TRUST_ROOT_RETIRED_KEY` (INC-I-248)
+
+**Symptom.** In the node's log file, every release is refused. A binary without the
+INC-I-248 fix logs:
+
+```
+Release <version> rejected by the OnChain trust root (5 keys, threshold 3): Insufficient signatures: 0/3
+```
+
+A binary with the fix logs one of these instead:
+
+```
+TRUST_ROOT_RETIRED_KEY: the on-chain maintainer set on this host contains 5 retired, publicly compromised genesis key(s) (…); release verification refuses every release until the set is repaired (INC-I-248)
+[MAINTAINER] snap-synced node: trust root stored EMPTY at height N; waiting for a peer quorum (INC-I-248)
+```
+
+**Cause.** The maintainer set is node-local (`maintainer_state.bin`). A node that joined by
+snap sync, or by `doli snap`, cannot replay the governance history below its snapshot.
+Before INC-I-248 it seeded the set from the current producer set. On mainnet that gives the
+5 retired genesis keys. Real releases are signed by the rotated maintainer keys, so 0 of 3
+signers match. The fix makes a retired-key root unusable and repairs the root from the peers.
+
+**Check.** Compare `maintainer_set_digest` from `getMaintainerSet` on this node and on a
+known-good node. Compare only when both answer `"source": "on-chain"`.
+
+**Fix.** Upgrade the node to a release with the INC-I-248 fix. At start the node repairs its
+trust root from its peers. Do NOT delete `maintainer_state.bin`, and do NOT run `doli snap`
+to fix the root. The auto-updater and `doli upgrade` on this host use the same wrong root, so
+they refuse the fixed release too; install it by hand (see 5.1).
+
+**What the node does at start.** After at least 10 s of uptime and with at least 1 sync peer,
+it asks every sync peer for its maintainer set and collects answers for 15 s. It adopts the
+set that a quorum agrees on (3 to 5 peers, by digest). An EMPTY root or a retired-key root
+adopts as soon as the quorum agrees. Expect:
+
+```
+[MAINTAINER] quorum probe armed (Startup): asking N peers
+[MAINTAINER] MAINTAINER_SET_DIGEST=… (peer quorum, N agreeing)
+[MAINTAINER] trust root replaced: release re-check requested
+```
+
+The update service then checks for releases at once. If not enough peers answer (old peers
+do not answer), the node tries 3 times, 60 s apart, then logs
+`[MAINTAINER] quorum probe gave up after 3 attempts (…); keeping the current trust root`.
+Upgrade more peers (the seeds first) and restart the node.
 
 ---
 

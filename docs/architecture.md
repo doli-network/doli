@@ -146,7 +146,7 @@ crypto ──► wallet (shared wallet library, NO vdf/doli-core)
 | `config_validation.rs` | Configuration validation rules |
 | `finality.rs` | Finality gadget types |
 | `heartbeat.rs` | Heartbeat message types |
-| `maintainer/` | Maintainer governance types (`set`, `data`, `derivation`) |
+| `maintainer/` | Maintainer governance types (`set`, `data`, `derivation`, `quorum` — the INC-I-248 peer-quorum selection rule) |
 | `nft.rs` | NFT types and validation |
 | `presence.rs` | Presence tracking types |
 | `rewards.rs` | Reward calculation tests |
@@ -289,7 +289,7 @@ Existing gates (mainnet values):
 | `nat.rs` | NAT traversal |
 | `peer.rs` | Peer state tracking |
 | `peer_cache.rs` | Persistent peer cache |
-| `protocols/` | Sub-protocols (`status.rs`, `sync.rs`, `txfetch.rs`) |
+| `protocols/` | Sub-protocols (`status.rs`, `sync.rs`, `sync_codec.rs`, `txfetch.rs`) |
 | `rate_limit.rs` | Per-peer rate limiting |
 | `transport.rs` | Transport layer configuration |
 
@@ -507,11 +507,11 @@ in it. Every such over-rejection is bounded until the resident confirms **or exp
 
 | Module | Function |
 |--------|----------|
-| `constants.rs` | Bootstrap maintainer keys (per network), GitHub repo/API/releases URLs (owned namespace, INC-I-157) |
+| `constants.rs` | Bootstrap maintainer keys (per network), `RETIRED_COMPROMISED_MAINTAINER_KEYS` deny-list (INC-I-248), GitHub repo/API/releases URLs (owned namespace, INC-I-157) |
 | `params.rs` | `UpdateParams` — network-aware timing (veto/grace/check intervals from NetworkParams) |
 | `types.rs` | Release, UpdateConfig, MaintainerSignature, VoteResult |
 | `download.rs` | Fetch releases from GitHub, download binaries, verify SHA-256 hashes |
-| `trust_root.rs` | `TrustRoot` — resolved release-verification root (keys + threshold + provenance); an empty or sub-threshold on-chain root FAILS CLOSED (INC-I-172 F1) |
+| `trust_root.rs` | `TrustRoot` — resolved release-verification root (keys + threshold + provenance); an empty or sub-threshold on-chain root FAILS CLOSED (INC-I-172 F1), and so does a root that holds a retired genesis key (INC-I-248) |
 | `verification.rs` | Ed25519 release signature verification against a `TrustRoot`, counting DISTINCT SIGNERS; veto calculation |
 | `vote.rs` | VoteTracker — count-based veto tally (one active producer, one vote) |
 | `apply.rs` | Binary swap (backup, install, restart), auto-apply from GitHub |
@@ -749,6 +749,17 @@ concurrent-session cap), `ManifestExpired` (the pinned view is gone) and `Halted
 node's own ledger is truncated by an interrupted rebuild). None of them blacklists the peer. A peer
 whose tip advances during a multi-minute transfer is behaving correctly, and treating that as
 misbehaviour is how a small network starves itself of peers.
+
+**Maintainer trust root after a snap (INC-I-248).** The snapshot carries no maintainer set, and
+the set is not in the state root. A snap-synced node never seeds its set from producers: it stores
+an EMPTY set at the snap height (no release verifies against it) and asks its peers.
+`SyncRequest::GetMaintainerState` (index 10) and `SyncResponse::MaintainerStateAt` (index 9) are
+appended variants; an old peer does not answer. The node adopts the set that `snap_quorum()` peers
+agree on by digest. The same probe runs once at each start and repairs an EMPTY, unusable or
+snap-synced root; after an adoption the update service checks for releases at once. Rule:
+`crates/core/src/maintainer/quorum.rs`. Probe: `bins/node/src/node/maintainer_quorum.rs`. Serve:
+`bins/node/src/node/maintainer_state_serve.rs`. `doli snap` writes the seed-agreed set or an EMPTY
+set (`bins/cli/src/cmd_snap_maintainer.rs`). Full rule: `specs/protocol.md` §7.3.2.
 
 **Restart behavior:** On restart, the SyncManager initializes from stored ChainState (not genesis). This means sync resumes from the chain tip, avoiding re-download of already-stored blocks. As a defense-in-depth measure, `apply_block()` also rejects blocks already present in BlockStore.
 

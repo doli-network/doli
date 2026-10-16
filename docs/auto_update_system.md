@@ -161,12 +161,14 @@ What DOES converge today:
 | Recovery path | Converges? | Why |
 |---|---|---|
 | Full data-dir wipe + **full resync from genesis** | YES | Every block is re-applied, so `process_transaction_governance` re-executes the whole governance history |
-| Delete `maintainer_state.bin` only, chain intact | **NO** | Re-seeds from live producer state — R1 |
-| Full data-dir wipe + **snap sync** | **NO** | Governance below the snapshot floor is never replayed, and the node does not fail closed — R3 |
+| Delete `maintainer_state.bin` only, chain intact | **NO** | Re-seeds from live producer state — R1. The start-up peer-quorum probe (§2.6.1, INC-I-248) can replace that root, but do not rely on it |
+| Full data-dir wipe + **snap sync** | **YES, from peers** (INC-I-248) | Governance below the snapshot floor is never replayed. The node does not seed from producers: it holds an EMPTY root at the snap height (fails closed) and adopts the set a peer quorum agrees on (§2.6.1). R3 is closed |
 
 REQ-172-010 ("the trust root SHOULD be derivable from block history alone, **without
 trusting `maintainer_state.bin`**") is therefore **M2 partial**, not closed. REQ-172-005's
-convergence criterion holds for the full-sync and backfill paths only.
+convergence criterion holds for the full-sync and backfill paths, and since INC-I-248 for
+the snap path through the peer quorum (§2.6.1). A snap-synced node trusts its peers for the
+set, as it trusts them for the snapshot.
 
 ### 2.4 Maintainer Management Transactions
 
@@ -267,11 +269,44 @@ MaintainerState {
    (~10 s). That is the AUDIT-P1-013 defect M2 closes forward-only; it is not fixed
    retroactively because the root decides `ProtocolActivation` acceptance, which is
    consensus-visible.
+   **Snap-synced node (INC-I-248):** at and above that height, a node that installed a
+   snapshot never seeds from producers. It stores an EMPTY set with `last_derived_height`
+   = the snap height. That root fails closed until step 5 replaces it.
 3. On MaintainerAdd/Remove tx: updated immediately, persisted to disk
 4. On release verification: `maintainer_trust_root_fn` resolves a `TrustRoot` from
    `MaintainerState` (`bins/node/src/updater/trust_root_wiring.rs`)
+5. After a snapshot install and once at each start: the peer-quorum probe (§2.6.1) can
+   replace the set (INC-I-248).
 
 **Key lookup is O(1)** — reads 3-5 members, regardless of producer count.
+
+#### 2.6.1 Peer-quorum repair of the trust root (INC-I-248)
+
+A node that did not replay the chain cannot derive its maintainer set. It asks its peers
+(`SyncRequest::GetMaintainerState`, answer `SyncResponse::MaintainerStateAt`; wire details in
+`specs/protocol.md` §7.3.2). The probe lives in `bins/node/src/node/maintainer_quorum.rs`; the
+rule is `select_quorum_maintainer_state` in `crates/core/src/maintainer/quorum.rs`.
+
+- **When.** At the end of a snapshot install, and once per process start: on the first periodic
+  tick with at least 1 sync peer and at least 10 s of uptime. Each attempt collects answers for
+  15 s. No answer, no quorum or a tie retries after 60 s, for at most 3 attempts. Then the node
+  logs `[MAINTAINER] quorum probe gave up …; keeping the current trust root`. The next start
+  tries again.
+- **Which answers count.** The receiver recomputes each digest with its LOCAL genesis hash and
+  drops a mismatch. An answer counts only when the peer tip >= the local tip, the set's
+  `last_updated` <= the local tip, and the set is not empty.
+- **Adopt.** The largest digest group must have at least `snap_quorum()` answers and must not
+  tie. A node that replayed the chain and holds a usable root adopts only when no counted
+  answer dissents, and it decides at the end of the window. A snap-synced node, an EMPTY root or
+  an unusable root (for example the retired genesis five) adopts as soon as a quorum agrees.
+- **Effect.** The file is replaced atomically. The node logs
+  `[MAINTAINER] MAINTAINER_SET_DIGEST=… (peer quorum, N agreeing)` and
+  `[MAINTAINER] trust root replaced: release re-check requested`, and the update service checks
+  for releases at once. A node whose set already equals the quorum set writes nothing.
+
+`doli snap` uses the same idea on the CLI side: it writes the snapshot's `maintainerState` only
+when the seeds agree on its digest, else an EMPTY set at the snapshot height
+(`docs/cli.md` §22).
 
 ### 2.7 Signature Verification Flow
 
@@ -291,8 +326,10 @@ maintainer_trust_root_fn() resolves the TrustRoot (INC-I-172 F1):
                                                  There is NO fallback to the compiled keys.
     ↓
 verify_release_with_trust_root():
-    1. root.is_usable()? (threshold >= 1 AND keys.len() >= threshold)
+    1. root.is_usable()? (threshold >= 1 AND keys.len() >= threshold
+                          AND no key is in RETIRED_COMPROMISED_MAINTAINER_KEYS — INC-I-248)
        → if not: error! + UpdateError::TrustRootUnavailable. STOP. No fallback.
+       (a retired-key root also logs TRUST_ROOT_RETIRED_KEY when it is resolved)
     2. DISTINCT-SIGNER count (covenant k-of-n shape, conditions/eval.rs):
        for each key in root.keys():
            for each signature entry: if it matches this key and verifies → +1, break
@@ -307,6 +344,11 @@ root as a **required parameter**, on the manual `doli-node update apply` path (F
 revoked during the veto period therefore invalidates an already-staged update on both
 paths instead of authorising it (F7(a)). Revocation that cannot reach the manual apply
 is not revocation.
+
+**Four ways a root fails closed.** An on-chain set that is empty, a set with fewer keys
+than its threshold, a threshold of zero, and (INC-I-248) a set that holds any of the 5
+retired mainnet genesis keys. The last is a deny-list in `crates/updater/src/constants.rs`;
+it applies on every network and only to release verification, never to governance.
 
 ### 2.x Artifact binding (INC-I-172 F1)
 
@@ -1211,6 +1253,8 @@ doli-node run \
 │ Component                       │ Path                                        │
 ├─────────────────────────────────┼─────────────────────────────────────────────┤
 │ Maintainer set management       │ crates/core/src/maintainer/                 │
+│ Peer-quorum rule (INC-I-248)    │ crates/core/src/maintainer/quorum.rs        │
+│ Peer-quorum probe (INC-I-248)   │ bins/node/src/node/maintainer_quorum.rs     │
 │ Maintainer transactions         │ crates/core/src/transaction.rs              │
 │ Maintainer validation           │ crates/core/src/validation.rs               │
 │ Core updater library            │ crates/updater/src/lib.rs                   │
@@ -1358,6 +1402,8 @@ pub const GITHUB_API_URL: &str = "https://api.github.com/repos/doli-network/doli
 ### Q: How are the initial maintainers chosen?
 
 **Automatically.** The first 5 producers to register become maintainers. There's no pre-selection, no governance vote, no configuration file. The blockchain itself determines who the maintainers are.
+
+That is the genesis seed only. Both networks have since rotated the set by governance (section 2). A node that replays the chain gets the current set from that history. A snap-synced node does not seed from producers; it takes the set a peer quorum agrees on (section 2.6.1, INC-I-248).
 
 ### Q: Can maintainers force an update without community consent?
 
