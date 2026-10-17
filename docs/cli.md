@@ -1620,7 +1620,7 @@ doli-node run [OPTIONS]
 Options:
   --producer               Enable block production
   --producer-key <PATH>    Path to producer key file (required with --producer)
-  --no-auto-update         Disable automatic updates
+  --no-auto-update         Opt out of automatic updates (default: ON)
   --update-notify-only     Only notify about updates, don't apply
   --p2p-port <PORT>        P2P listen port
   --rpc-port <PORT>        RPC listen port

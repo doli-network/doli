@@ -691,11 +691,14 @@ sudo cp target/release/doli-node /usr/local/bin/
 sudo systemctl start doli-node
 ```
 
-### 11.3. Disable Auto-Update
+### 11.3. Keep Auto-Update On
 
-```bash
-./target/release/doli-node run --no-auto-update
-```
+Auto-update is ON by default. No flag is needed. Do not turn it off: the node then never
+installs a release, and you must install every release by hand. The opt-out flag and its
+effect are in [auto_update_system.md §9.5](auto_update_system.md#95-node-run-options).
+
+After the first sync, check that the node holds the correct release trust root:
+[troubleshooting.md §5.5](troubleshooting.md#55-check-your-release-trust-root).
 
 ---
 
@@ -736,7 +739,7 @@ doli-node checkpoint-info         # Print checkpoint constants compiled into bin
 --bootstrap <multiaddr>           # Bootstrap node (can be specified multiple times)
 --no-dht                          # Disable DHT discovery
 --relay-server                    # Enable relay server mode for NAT traversal
---no-auto-update                  # Disable auto-updates
+--no-auto-update                  # Opt out of auto-update (default: ON; see section 11.3)
 --no-auto-rollback                # NO-OP: no automatic rollback exists (see docs/auto_update_system.md section 6)
 --update-notify-only              # Notify only, don't apply updates
 --force-start                     # Skip duplicate key detection (DANGEROUS)

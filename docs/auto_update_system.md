@@ -323,6 +323,11 @@ when the seeds agree on its digest by the state-root rule (the configured seed c
 seed counts against it), else an EMPTY set at the snapshot height. A set that holds a key
 retired at the snapshot height is also written EMPTY (`docs/cli.md` §22).
 
+**Operators.** To check the set on a node, see `docs/troubleshooting.md` §5.5. A node whose
+binary predates this fix and holds a wrong set refuses the fixed release too. It needs one
+verified manual install: `docs/releases.md`, "Upgrade Note: Node With a Wrong Release Trust
+Root".
+
 ### 2.7 Signature Verification Flow
 
 ```
@@ -1100,10 +1105,12 @@ doli-node maintainer sign --proposal-id 12345 --key /path/to/maintainer.json
 ### 9.5 Node Run Options
 
 ```bash
-# Run with auto-updates enabled (default)
+# Run with auto-updates enabled (default; no flag needed)
 doli-node run --network mainnet
 
-# Disable auto-updates entirely
+# Opt OUT of auto-updates (not recommended). The update service does not start:
+# the node never checks for, downloads or installs a release. You must install
+# every release by hand.
 doli-node run --network mainnet --no-auto-update
 
 # Notify only (check but don't apply)

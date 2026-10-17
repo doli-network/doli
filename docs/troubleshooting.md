@@ -931,31 +931,29 @@ Prefer `scripts/node-heal.sh` (see §4.4 Step 5) — it preserves `signed_slots.
 (slashing protection) and excludes `utxo_store/` (avoids the INC-I-027 silent
 corruption rollback). Producers only.
 
-Manual fallback (only if no trusted healthy source exists):
+Manual fallback (only if no trusted healthy source exists). This removes the chain data and
+the state that the node derives from it; the node then syncs again:
 ```bash
 sudo systemctl stop doli-node
-# Remove chain state (platform-specific path, or use DOLI_DATA_DIR):
-#   Linux:  /var/lib/doli/mainnet/data/
-#   macOS:  ~/Library/Application Support/doli/mainnet/data/
-#   Legacy: ~/.doli/mainnet/data/
-# IMPORTANT: do NOT delete signed_slots.db — it's slashing protection.
-cd <DATA_DIR>/data
+# Go to the node data directory: the --data-dir of the unit, or DOLI_DATA_DIR.
+# Defaults:
+#   Linux:  /var/lib/doli/mainnet/
+#   macOS:  ~/Library/Application Support/doli/mainnet/
+#   Legacy: ~/.doli/mainnet/
+# It holds state_db/, blocks/ and maintainer_state.bin side by side.
+# IMPORTANT: do NOT delete signed_slots.db (slashing protection), keys or wallet files.
+cd <NODE_DATA_DIR>
 rm -rf state_db blocks utxo_store maintainer_state.bin producer_gset.bin peers.cache
 sudo systemctl start doli-node
 ```
 
-> **INC-I-172: `maintainer_state.bin` is the install trust root, not just a cache.**
-> Delete it **only** as part of the full wipe above — never on its own. A node that loses
-> that file while its chain is intact does NOT replay governance history; it re-seeds the
-> maintainer set from **live producer state**, which brings back any maintainer key that
-> governance removed (residual R1, `docs/.workflow/inc-i-172-M3-scope.md`). The full wipe
-> above is safe **if the node then full-syncs from genesis** (every block is re-applied, so
-> governance re-executes). If it **snap-syncs** instead, a node with the INC-I-248 fix does
-> not seed from producers: it holds an EMPTY root (it refuses every release) until a peer
-> quorum agrees on the set, then adopts that set (see 5.4). A node without the fix seeds
-> from the snapshot's producer set and can hold a wrong root (residual R3). After a snap
-> sync, verify the root with `getMaintainerSet` against a known-good node before trusting
-> auto-update on that host.
+> **`maintainer_state.bin` is the release trust root (INC-I-172, INC-I-248).** The node
+> derives it from the chain, so it goes with the chain data in the full wipe above, and the
+> node builds it again: a full sync from genesis re-applies every governance block, and a
+> snap sync stores an EMPTY root that the peer quorum then repairs (see 5.4). Never delete
+> this file alone, and never wipe the node to repair the trust root: a node that runs a
+> release with the INC-I-248 fix repairs a wrong root at start (5.4). After the sync, check
+> the root (5.5).
 >
 > **Compare `getMaintainerSet` only when `"source": "on-chain"` on BOTH nodes.** A
 > `"source": "derived"` response is advisory (`"enforced": false`): no `MaintainerState` is
@@ -967,10 +965,10 @@ sudo systemctl start doli-node
 >
 > **If a node logs `[MAINTAINER] Seeding the trust root at height N which is AT OR ABOVE
 > maintainer_derivation_activation_height`** on a chain that had already passed that height,
-> its `maintainer_state.bin` went missing and the root was rebuilt from live producer state.
-> Treat that host's auto-update as untrusted until the root is cross-checked against a
-> known-good node (residual R1). The INC-I-248 peer-quorum probe (5.4) does not replace a
-> non-empty root, except one that holds a retired genesis key.
+> it built its root from live producer state, not from history (residual R1). A node with the
+> INC-I-248 fix resets that root to EMPTY at the next start when its own block at that height
+> holds no maintainer change, and the peer quorum repairs it (5.4). Until then, treat that
+> host's auto-update as untrusted, and check the root (5.5).
 
 ### 4.3. Consensus-Critical Fork (Network-Wide Split)
 
@@ -1283,7 +1281,7 @@ Release <version> rejected by the OnChain trust root (5 keys, threshold 3): Insu
 A binary with the fix logs one of these instead:
 
 ```
-TRUST_ROOT_RETIRED_KEY: the on-chain maintainer set on this host contains 5 retired, publicly compromised genesis key(s) (…); release verification refuses every release until the set is repaired (INC-I-248)
+TRUST_ROOT_RETIRED_KEY: the on-chain maintainer set on this host contains 5 retired, … genesis key(s) (…); release verification refuses every release until the set is repaired (INC-I-248)
 [MAINTAINER] snap-synced node: trust root stored EMPTY at height N; waiting for a peer quorum (INC-I-248)
 ```
 
@@ -1293,18 +1291,22 @@ Before INC-I-248 it seeded the set from the current producer set. On mainnet tha
 5 retired genesis keys. Real releases are signed by the rotated maintainer keys, so 0 of 3
 signers match. The fix makes a retired-key root unusable and repairs the root from the peers.
 
-**Check.** Compare `maintainer_set_digest` from `getMaintainerSet` on this node and on a
-known-good node. Compare only when both answer `"source": "on-chain"`.
+**Check.** See 5.5.
 
 **Fix.** Upgrade the node to a release with the INC-I-248 fix. At start the node repairs its
-trust root from its peers. Do NOT delete `maintainer_state.bin`, and do NOT run `doli snap`
-to fix the root. The auto-updater and `doli upgrade` on this host use the same wrong root, so
-they refuse the fixed release too; install it by hand (see 5.1).
+trust root from its peers. Do NOT delete `maintainer_state.bin`, do NOT run `doli snap` to
+fix the root, and do NOT bypass the signature check. The auto-updater and `doli upgrade` on
+this host use the same wrong root, so they refuse the fixed release too. Install it once by
+hand, verified: follow the
+[upgrade note in releases.md](releases.md#upgrade-note-node-with-a-wrong-release-trust-root-inc-i-248).
 
-**What the node does at start.** On mainnet, above height 331_457, a set that holds a
-retired genesis key becomes EMPTY at the tip (one warning line). Only an EMPTY root stamped
-at a snap height can be repaired from peers; a non-empty root never changes. After at least
-10 s of uptime and with at least 1 sync peer, the node asks every sync peer for its
+**What the node does at start.** The node resets a wrong set to EMPTY at the tip, with one
+warning line, in three cases: on mainnet above height 331_457 the set holds a retired genesis
+key; the set was not derived from replayed history (block D present, block D+1 missing); or
+the set came from a producer seed above the derivation gate (block D holds no maintainer
+change). Rules: `docs/auto_update_system.md` §2.6.1. Only an EMPTY root stamped at a height
+above 0 (a snap height, or the tip after a reset) can be repaired from peers; a non-empty set
+that passes these checks never changes. After at least 10 s of uptime and with at least 1 sync peer, the node asks every sync peer for its
 maintainer set and collects answers for 15 s. At the end of the window it adopts the set
 that a quorum (3 to 5 peers, by digest) AND a strict majority of the answers agree on.
 Expect:
@@ -1319,6 +1321,59 @@ The update service then checks for releases at once. If not enough peers answer 
 do not answer), the node tries 3 times, 60 s apart, then logs
 `[MAINTAINER] quorum verdict Keep(…) … phase=gave-up; keeping the current trust root`.
 Upgrade more peers (the seeds first) and restart the node.
+
+---
+
+### 5.5. Check Your Release Trust Root
+
+The node verifies every release against its maintainer set: the release trust root. Check it
+after the first sync, after each snap sync, and when releases are refused. The check is
+read-only. Run it on the node host, with the RPC port of your node:
+
+```bash
+curl -s -X POST http://127.0.0.1:8500 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getMaintainerSet","params":{},"id":1}'
+```
+
+With `jq`, this shows the important fields and the first 8 characters of each key:
+
+```bash
+curl -s -X POST http://127.0.0.1:8500 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"getMaintainerSet","params":{},"id":1}' \
+  | jq '.result | {source, enforced, member_count, threshold, last_change_block,
+                   maintainer_set_digest, genesis_hash, keys: [.maintainers[].pubkey[0:8]]}'
+```
+
+**Correct set (mainnet).**
+
+| Field | Expected value |
+|-------|----------------|
+| `source` | `on-chain` |
+| `enforced` | `true` |
+| `member_count` | `5` |
+| `threshold` | `3` |
+| key prefixes | `d07ec4ec`, `25c24110`, `2559a47e`, `e477c1f2`, `3fd5be3d`, in any order |
+
+These 5 keys became the maintainer set on-chain at height 331,457. They are also the compiled
+mainnet bootstrap keys (`BOOTSTRAP_MAINTAINER_KEYS_MAINNET` in
+`crates/updater/src/constants.rs`). A later on-chain rotation can change the set. The digest
+check is always valid: compare `maintainer_set_digest` with the same field on a node that you
+trust. Both nodes must show `"source": "on-chain"` and the same `genesis_hash`. On testnet,
+use only the digest check.
+
+**Wrong set.**
+
+| What you see | What it means | What to do |
+|--------------|---------------|------------|
+| Key prefixes `20204725`, `effe88fe`, `54323cef`, `2d27fdcc`, `3047e96b` | The 5 retired maintainer keys. A binary without the INC-I-248 fix refuses every release with `Insufficient signatures: 0/3`. A binary with the fix logs `TRUST_ROOT_RETIRED_KEY`. | 5.4, then the [upgrade note in releases.md](releases.md#upgrade-note-node-with-a-wrong-release-trust-root-inc-i-248). |
+| Other keys, or a digest that differs from a node that you trust | A wrong set, for example one seeded from producers after a snap sync. Every release is refused with `Insufficient signatures: N/3` (N below 3). | Same as above. |
+| `"member_count": 0` with `"source": "on-chain"` | An EMPTY root. The node refuses every release until a peer quorum agrees on a set. This is normal for a few minutes after a snap sync. | Wait for the `[MAINTAINER] quorum verdict` line (5.4). |
+| `"source": "derived"` or `"source": "none"` | Advisory only. This is not the root that the node enforces. | Do not compare it. |
+
+Do not delete `maintainer_state.bin` and do not run `doli snap` to fix a wrong set. A node
+with the INC-I-248 fix repairs it at start (5.4).
 
 ---
 
