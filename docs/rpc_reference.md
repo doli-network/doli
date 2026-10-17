@@ -1155,29 +1155,32 @@ INC-I-172: the `derived` branch used to be a fourth, ungated derivation (`all_pr
 
 **Parameters:** None
 
-**Response:**
+**Response** (`result` of a local testnet node, `source: "on-chain"`; keys and hashes are
+shortened here, the node returns 64 hex characters for each):
 ```json
 {
-    "maintainers": [
-        {
-            "pubkey": "abc123...",
-            "registered_at_block": 100,
-            "is_active_producer": true
-        }
-    ],
-    "threshold": 3,
-    "member_count": 5,
-    "max_maintainers": 5,
-    "min_maintainers": 3,
-    "initial_maintainer_count": 5,
-    "last_change_block": 500,
-    "source": "on-chain",
     "enforced": true,
-    "maintainer_derivation_activation_height": 172000,
-    "maintainer_set_digest": "f99d3e79....",
-    "genesis_hash": "0000...."
+    "genesis_hash": "f6cc888a1b03238c…",
+    "initial_maintainer_count": 5,
+    "last_change_block": 254402,
+    "maintainer_derivation_activation_height": 15087,
+    "maintainer_set_digest": "711dc79bb71e3f38…",
+    "maintainers": [
+        { "pubkey": "d13ae33891d55930…" }
+    ],
+    "max_maintainers": 5,
+    "member_count": 5,
+    "min_maintainers": 3,
+    "source": "on-chain",
+    "threshold": 3
 }
 ```
+
+`maintainers` holds one object per member (5 in this response; one is shown). On
+`on-chain` each object has only `pubkey`. On `derived` each object also has
+`registered_at_block` and `is_active_producer`, `last_change_block` is 0, and the response
+adds `advisory_note`. `none` returns only `maintainers` (empty), `threshold` 0,
+`member_count` 0, `source`, `enforced` (`false`), `genesis_hash` and `advisory_note`.
 
 **Source values:**
 | Value | `enforced` | Description |

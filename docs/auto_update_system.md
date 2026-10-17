@@ -978,7 +978,7 @@ DOLI has three upgrade paths:
 |------|--------|---------|---------------------|
 | **Operator upgrade** | `doli upgrade` | Manual, operator-driven. Downloads from GitHub, installs both `doli` + `doli-node`, restarts a service. | **Yes — install ABORTS on failure** (INC-I-172 F6) |
 | **Auto-update** | `doli-node update` | Autonomous. Node checks for updates, verifies 3/5 maintainer sigs, respects veto period, applies automatically. | Yes (3/5 required) |
-| **Legacy node upgrade** | `doli-node upgrade` | Manual. Downloads from GitHub and installs `doli-node` only. | **No — checksum only, NO signature check** |
+| **Legacy node upgrade** | `doli-node upgrade` | Manual. Downloads from GitHub and installs `doli-node` only. | **Yes — install ABORTS on failure** (INC-I-172 F6) |
 
 Use `doli upgrade` for planned rolling upgrades. Use `doli-node update` / auto-update for autonomous operation.
 
@@ -987,18 +987,20 @@ Use `doli upgrade` for planned rolling upgrades. Use `doli-node update` / auto-u
 > signatures **bound to the artifact** before anything is extracted, backed up or
 > written, and each aborts on failure or on an absent `SIGNATURES.json`.
 >
-> On a **producer host, prefer `doli-node upgrade`**: it resolves the trust root from
-> that host's on-chain `maintainer_state.bin` (INC-I-172 F3). The `doli` CLI can only
-> use the compile-time bootstrap root — it is not the node host and has no chain state.
+> `doli upgrade` and `doli-node upgrade` both resolve the trust root from the host's
+> on-chain `maintainer_state.bin` in the node data directory (INC-I-172 F3, AUDIT-P1-012).
+> They use the compiled bootstrap keys only on a host that has never had an on-chain set.
 
 ### 9.1 Operator Upgrade (`doli upgrade`)
 
-For planned upgrades from a machine that is not a node. Downloads the release tarball
-from GitHub, **verifies maintainer signatures from `SIGNATURES.json` bound to that exact
-tarball (§2.x L1-L4) and aborts before installing anything if any link breaks or the file
-is absent**, installs both `doli` and `doli-node` binaries via atomic rename, and
-restarts the specified systemd service. Its trust root is the compile-time bootstrap
-set.
+For planned, operator-driven upgrades. Downloads the release tarball from GitHub,
+**verifies maintainer signatures from `SIGNATURES.json` bound to that exact tarball
+(§2.x L1-L4) and aborts before installing anything if any link breaks or the file is
+absent**, installs both `doli` and `doli-node` binaries via atomic rename, and restarts
+the specified systemd service. Its trust root is this host's on-chain maintainer set,
+read from `maintainer_state.bin` in the node data directory (`--data-dir`). The compiled
+bootstrap keys are used only when the host has never had an on-chain set. An on-chain set
+that is empty or holds a retired key fails closed: the install is refused (§2.7).
 
 ```bash
 # Upgrade to latest version
@@ -1022,17 +1024,32 @@ sudo /opt/doli/target/release/doli upgrade --yes --service doli-mainnet-node4
 | `--yes` | No | Skip confirmation prompt |
 | `--doli-node-path <PATH>` | Depends | Path to `doli-node` binary. Required if not in: `which doli-node`, `/usr/local/bin/doli-node`, or `/opt/doli/target/release/doli-node` |
 | `--service <SERVICE>` | Recommended | Systemd service to restart. **Critical** on multi-node servers (omegacortex has N1+N2+N6) |
+| `--data-dir <PATH>` | No | Node data directory that holds `maintainer_state.bin`, the trust root of this install (default: the platform node data directory) |
 
-**How it works:**
-1. Fetches release metadata from GitHub (`doli-network/doli`)
-2. Downloads platform tarball (auto-detects linux x86_64 / darwin aarch64)
-3. Verifies SHA-256 checksum from `CHECKSUMS.txt`
-4. Checks maintainer signatures (informational warning — does **not** block the upgrade)
+**How it works** (v6.44.0, `bins/cli/src/cmd_upgrade.rs`):
+1. Fetches release metadata from GitHub (`doli-network/doli`). If that release is not
+   newer than the installed `doli`, it installs nothing (see the note below).
+2. Asks for confirmation, unless `--yes`.
+3. Downloads the platform tarball (auto-detects linux x86_64 / darwin aarch64).
+4. Verifies the maintainer signatures and **blocks the install on any failure**. It
+   downloads `SIGNATURES.json`, resolves the trust root from `--data-dir`, and checks that
+   the signed version is this release, that the signed hash matches the fetched
+   `CHECKSUMS.txt`, that the tarball matches its `CHECKSUMS.txt` line, and that at least
+   `threshold` distinct maintainers signed. An unreachable or absent `SIGNATURES.json`,
+   a trust root that cannot be loaded or is unusable, or any failed check aborts the
+   command before anything is extracted or written. On success it prints
+   `Verified: N distinct maintainer signature(s) bound to this vX tarball`.
 5. Installs `doli` binary (to its own path via `current_exe()`)
 6. Installs `doli-node` binary (auto-detected or `--doli-node-path`)
-7. Restarts the specified `--service`
+7. Updates the agent skills (best effort)
+8. Restarts the `--service`. Without `--service`, it restarts the systemd service that
+   runs the installed `doli-node` (Linux), else a launchd job (macOS), else the running
+   process. As root on systemd, it also refreshes the staged-upgrade helper units
+   (INC-I-215).
 
-**Note:** If the binary is already at the target version, `doli upgrade` prints "Already up to date" and exits without restarting the service. To restart a service with an already-updated binary, use `sudo systemctl restart <service>` directly.
+**Note:** If the release is not newer than the installed `doli`, `doli upgrade` installs
+nothing. With `--service` it restarts that service; without it, it prints "Already up to
+date" and exits.
 
 For the full per-server command reference and the fleet upgrade sequence, see
 `.claude/skills/release/SKILL.md` (post-tag release sequence + per-node binary map) and
@@ -1142,29 +1159,38 @@ doli-node run \
   "id": 1
 }
 
-// Response
+// Response from a local testnet node (source "on-chain"). Keys and hashes are
+// shortened here; the node returns 64 hex characters for each.
 {
   "jsonrpc": "2.0",
   "result": {
+    "enforced": true,
+    "genesis_hash": "f6cc888a1b03238c…",
+    "initial_maintainer_count": 5,
+    "last_change_block": 254402,
+    "maintainer_derivation_activation_height": 15087,
+    "maintainer_set_digest": "711dc79bb71e3f38…",
     "maintainers": [
-      {
-        "pubkey": "doli1abc...",
-        "registered_at_block": 1,
-        "is_active_producer": true
-      },
-      {
-        "pubkey": "doli1def...",
-        "registered_at_block": 2,
-        "is_active_producer": true
-      }
-      // ... 3 more
+      { "pubkey": "d13ae33891d55930…" }
+      // ... one { "pubkey": … } object per member (5 here)
     ],
-    "threshold": 3,
-    "last_change_block": 50000
+    "max_maintainers": 5,
+    "member_count": 5,
+    "min_maintainers": 3,
+    "source": "on-chain",
+    "threshold": 3
   },
   "id": 1
 }
 ```
+
+`source: "on-chain"` (`enforced: true`) is the set that the node enforces. Each member has
+only `pubkey`, a hex Ed25519 key. A node with no `MaintainerState` answers
+`source: "derived"` (`enforced: false`, advisory): each member also has
+`registered_at_block` and `is_active_producer`, `last_change_block` is 0, and the response
+adds `advisory_note`. `source: "none"` returns only `maintainers` (empty), `threshold` 0,
+`member_count` 0, `source`, `enforced: false`, `genesis_hash` and `advisory_note`. Field
+reference: `docs/rpc_reference.md`, getMaintainerSet.
 
 ### 10.2 getUpdateStatus
 
