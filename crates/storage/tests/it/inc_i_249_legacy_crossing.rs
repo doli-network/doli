@@ -216,10 +216,9 @@ fn next_start_trusts_h_over_legacy_file() {
 
     let again = bounded(dir, &store);
 
-    assert!(
-        again.files_read <= 1,
-        "next start read {} files; only the spot-check may read",
-        again.files_read
+    assert_eq!(
+        again.files_read, 0,
+        "next start: H == tip, no file may be read"
     );
     assert_eq!(again.verified_height, TIP);
     assert_eq!(manifest_h(dir), Some(TIP), "manifest verified_height");

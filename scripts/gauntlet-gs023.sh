@@ -17,6 +17,7 @@
 #   gs023-clean-shutdown   SIGTERM -> process exits within 30 s
 #   METRIC T_ready_s= second_call_ms= time_to_tip_s= shutdown_s=   (<n>|none)
 #   exit: 0 all PASS · 1 any FAIL · 2 SKIP
+#   setup failure after the clones (verified_height not stripped): `FAIL gs023-setup <why>`, exit 1, no METRIC.
 # INPUT PARTITIONS: base binary (catch-up before RPC -> rpc-10s FAIL) · fixed binary
 #   (background check -> all PASS) · precondition missing (`SKIP gs023: <reason>`, exit 2).
 # Env: GS023_BINARY GS023_TESTNET_DIR GS023_CHECKPOINT GS023_ARCHIVE_SRC GS023_SEED_RPC
@@ -126,6 +127,40 @@ trap 'exit 1' INT TERM
 
 clone() { cp -c -R "$1" "$2" 2>/dev/null || { rm -rf "$2" && cp -R "$1" "$2"; }; }
 
+setup_fail() {
+  echo "FAIL gs023-setup $*"
+  exit 1
+}
+
+# Removes only `verified_height` from manifest $1 (exact ints, atomic rewrite); non-zero + message on failure.
+gs023_strip_verified_height() {
+  python3 -I - "$1" <<'PY'
+import contextlib, json, os, sys, tempfile
+path = sys.argv[1]
+try:
+    with open(path, encoding="utf-8") as f:
+        m = json.load(f)
+    if not isinstance(m, dict):
+        raise ValueError("not a JSON object")
+    if "verified_height" in m:
+        del m["verified_height"]
+        fd, tmp = tempfile.mkstemp(prefix=".manifest.", dir=os.path.dirname(os.path.abspath(path)))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(m, f, indent=2)
+            os.replace(tmp, path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+            raise
+    with open(path, encoding="utf-8") as f:
+        if "verified_height" in json.load(f):
+            raise ValueError("verified_height still present after the rewrite")
+except Exception as e:
+    sys.exit(f"gs023: cannot strip verified_height from {path}: {e}")
+PY
+}
+
 # --- preconditions --------------------------------------------------------------
 { pgrep -x cargo || pgrep -x rustc; } >/dev/null 2>&1 && skip "a build is running (cargo/rustc)"
 [ -f "$GS023_BINARY" ] && [ -x "$GS023_BINARY" ] || skip "binary $GS023_BINARY missing or not executable"
@@ -154,6 +189,7 @@ n_arch="$(find "$GS023_ARCHIVE_SRC" -maxdepth 1 -name '*.block' 2>/dev/null | wc
 S="$(mktemp -d "$TMPROOT/gs023.XXXXXX")" || skip "mktemp failed"
 clone "$GS023_CHECKPOINT" "$S/data" || skip "cannot clone checkpoint $GS023_CHECKPOINT"
 clone "$GS023_ARCHIVE_SRC" "$S/archive" || skip "cannot clone archive $GS023_ARCHIVE_SRC"
+gs023_strip_verified_height "$S/archive/manifest.json" || setup_fail "verified_height not stripped from the archive clone: no background full check to measure"
 echo "gs023: binary=$("$GS023_BINARY" --version 2>/dev/null) checkpoint=${GS023_CHECKPOINT##*/} archive_blocks=$n_arch scratch=$S"
 
 args=(--network testnet --data-dir "$S/data" --log-level info run

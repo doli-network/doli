@@ -336,6 +336,10 @@ this takes longer than the watchdog allows. The watchdog had no start grace: its
    for that line before the next node.
 3. If a node needs more start time, set `DOLI_WATCHDOG_COLD_START_GRACE` in the environment of
    the watchdog service.
+4. `Archiver not started: genesis fence of <dir> failed: ...` means the archive directory holds
+   another chain's archive that the node could neither rename nor empty. The node runs without an
+   archiver for that start. Make the directory and its parent writable by the node user, then
+   restart.
 
 Regression scenario: GS-023 (`bash scripts/gauntlet-gs023.sh`, standalone, local testnet only).
 

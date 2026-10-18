@@ -16,6 +16,8 @@
 #   skip-exit-2        (a) binary missing · (b) stub binary + empty testnet dir -> exit 2, stub unused
 #   harness-safety     runner clean · planted pkill / foreign kill / testnet rm / ln -> 4 of 4 flagged
 #   docs-synced        post-fix wording present, pre-fix wording gone
+#   manifest-strip     key present -> removed, rest kept · key absent -> unchanged ·
+#                      unparsable -> rc != 0 · unwritable with key -> rc != 0 · called after the clone
 
 # shellcheck disable=SC2016,SC2020  # literal $VARS are grep patterns, tr maps two chars
 set -u
@@ -190,11 +192,61 @@ c_docs() {
   if [ -z "$why" ]; then pass docs-synced; else fail docs-synced "$why"; fi
 }
 
+# Calls the runner's gs023_strip_verified_height (extracted to $T/strip.sh) in a fresh bash; prints its rc.
+call_strip() {
+  bash -c '. "$1" || exit 99; gs023_strip_verified_height "$2"' _ "$T/strip.sh" "$1" >"$T/strip.out" 2>&1
+  echo $?
+}
+
+# Exit 0 when JSON file $1 equals JSON text $2 (python3, exact ints).
+json_eq() { python3 -I -c 'import json, sys; sys.exit(json.load(open(sys.argv[1])) != json.loads(sys.argv[2]))' "$1" "$2" 2>/dev/null; }
+
+# REQ-ARCH-010 — Decision: a FAIL means a cloned seed manifest keeps verified_height, so GS-023 never sees a background full check (REVIEW-P1-001).
+c_manifest_strip() {
+  local rc cl cs m="$T/manifest.json" ro="$T/ro"
+  local rest='{"latest_height": 9007199254740993, "latest_hash": "ab12", "genesis_hash": "cd34", "extra": [1, {"k": null}]}'
+  local full='{"latest_height": 9007199254740993, "latest_hash": "ab12", "genesis_hash": "cd34", "verified_height": 9007199254740993, "extra": [1, {"k": null}]}'
+  awk '/^gs023_strip_verified_height\(\)[[:space:]]*\{/ { on = 1 } on { print } on && /^}/ { exit }' "$RUNNER" >"$T/strip.sh"
+  grep -q '^gs023_strip_verified_height()' "$T/strip.sh" ||
+    { fail manifest-strip "gs023_strip_verified_height() is not defined in the runner"; return; }
+  printf '%s' "$full" >"$m"
+  rc="$(call_strip "$m")"
+  [ "$rc" = 0 ] || { fail manifest-strip "(with key) rc $rc: $(head -1 "$T/strip.out")"; return; }
+  json_eq "$m" "$rest" || { fail manifest-strip "(with key) want verified_height removed and the rest kept, got: $(head -c 200 "$m")"; return; }
+  printf '%s' "$rest" >"$m"
+  rc="$(call_strip "$m")"
+  [ "$rc" = 0 ] || { fail manifest-strip "(without key) rc $rc: $(head -1 "$T/strip.out")"; return; }
+  json_eq "$m" "$rest" || { fail manifest-strip "(without key) keys changed: $(head -c 200 "$m")"; return; }
+  printf '%s' '{not json' >"$m"
+  rc="$(call_strip "$m")"
+  [ "$rc" != 0 ] || { fail manifest-strip "(unparsable) rc 0, want non-zero"; return; }
+  [ -s "$T/strip.out" ] || { fail manifest-strip "(unparsable) failed without a message"; return; }
+  mkdir -p "$ro"
+  printf '%s' "$full" >"$ro/manifest.json"
+  chmod 0444 "$ro/manifest.json"
+  chmod 0555 "$ro"
+  if touch "$ro/.probe" 2>/dev/null; then
+    rm -f "$ro/.probe"
+  else
+    rc="$(call_strip "$ro/manifest.json")"
+    chmod 0755 "$ro"
+    chmod 0644 "$ro/manifest.json"
+    [ "$rc" != 0 ] || { fail manifest-strip "(unwritable, key kept) rc 0, want non-zero"; return; }
+  fi
+  chmod 0755 "$ro" 2>/dev/null
+  cl="$(grep -nF 'clone "$GS023_ARCHIVE_SRC" "$S/archive"' "$RUNNER" | head -1 | cut -d: -f1)"
+  cs="$(grep -nE '^[^#]*gs023_strip_verified_height "\$S/archive/manifest\.json"' "$RUNNER" | grep -E '\|\||:[[:space:]]*if !' | head -1 | cut -d: -f1)"
+  { [ -n "$cl" ] && [ -n "$cs" ] && [ "$cs" -gt "$cl" ]; } ||
+    { fail manifest-strip "runner does not call gs023_strip_verified_height \"\$S/archive/manifest.json\" with a failure arm after the archive clone"; return; }
+  pass manifest-strip "key stripped, rest kept, absent key unchanged, unparsable/unwritable rc != 0"
+}
+
 c_runner_present
 c_seed_parity
 c_skip_arm
 c_skip_exit_2
 c_harness_safety
 c_docs
+c_manifest_strip
 echo "$NP passed, $NF failed"
 [ "$NF" = 0 ]

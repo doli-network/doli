@@ -113,7 +113,7 @@ fn leftover_tmp_archiver(dir: &Path) -> Vec<String> {
 
 // REQ-ARCH-004 — Decision: a failure means a restart still reads O(chain) files, the cause of the slow RPC start.
 #[test]
-fn bounded_catch_up_100k_reads_at_most_tip_minus_h_plus_spot_check() {
+fn bounded_catch_up_100k_reads_at_most_tip_minus_h() {
     const TIP: u64 = 100_000;
     const H: u64 = 99_000;
     let g = genesis_g();
@@ -133,8 +133,8 @@ fn bounded_catch_up_100k_reads_at_most_tip_minus_h_plus_spot_check() {
     println!("FILES_READ={}", r.files_read);
 
     assert!(
-        r.files_read <= TIP - H + 1,
-        "files_read={} > tip-H+1",
+        r.files_read <= TIP - H,
+        "files_read={} > tip-H",
         r.files_read
     );
     assert_eq!(r.files_written, 0);
@@ -143,10 +143,7 @@ fn bounded_catch_up_100k_reads_at_most_tip_minus_h_plus_spot_check() {
     assert_eq!(read_manifest(dir)["latest_height"].as_u64(), Some(TIP));
 
     let again = bounded(dir, &store, TIP);
-    assert!(
-        again.files_read <= 1,
-        "H == tip: only the spot-check may read"
-    );
+    assert_eq!(again.files_read, 0, "H == tip: no file may be read");
     assert_eq!(again.verified_height, TIP);
 }
 
@@ -181,7 +178,11 @@ fn missing_pair_above_h_is_written_and_h_reaches_tip() {
     assert_pair_is_store_block(dir, &store, 45);
     assert_eq!(r.files_written, 1);
     assert_eq!(r.verified_height, CHAIN);
-    assert!(r.files_read <= CHAIN - 40 + 1);
+    assert_eq!(
+        r.files_read,
+        CHAIN - 41,
+        "H=40, 45 missing: only 41..=CHAIN minus 45 may be read"
+    );
     assert_eq!(manifest_h(dir), Some(CHAIN));
 }
 
@@ -195,7 +196,7 @@ fn h_above_tip_does_nothing_and_keeps_h() {
     let r = bounded(dir, &store, 30);
 
     assert_eq!(r.files_written, 0);
-    assert!(r.files_read <= 1, "only the spot-check may read");
+    assert_eq!(r.files_read, 0, "H above tip: no file may be read");
     assert_eq!(r.verified_height, CHAIN);
     assert_eq!(manifest_h(dir), Some(CHAIN));
 }
@@ -223,7 +224,10 @@ fn no_manifest_full_check_reads_every_file_once_then_next_call_is_bounded() {
     );
 
     let second = bounded(dir, &store, CHAIN);
-    assert!(second.files_read <= 1, "second call reads <= tip - H + 1");
+    assert_eq!(
+        second.files_read, 0,
+        "second call: H == tip, no file may be read"
+    );
     assert_eq!(second.verified_height, CHAIN);
 }
 
@@ -258,10 +262,10 @@ fn partial_run_manifest_resumes_from_saved_h() {
         .unwrap();
     let second = bounded(dir, &store, CHAIN);
 
-    assert!(
-        second.files_read <= CHAIN - 29 + 1,
-        "files_read={}",
-        second.files_read
+    assert_eq!(
+        second.files_read,
+        CHAIN - 30,
+        "H=29, 30 missing: only 31..=CHAIN may be read"
     );
     assert_eq!(second.files_written, 1);
     assert_pair_is_store_block(dir, &store, 30);
@@ -425,13 +429,30 @@ fn sec_spot_check_file_missing_is_not_trusted() {
     assert_untrusted(&m, |dir| remove_pair(dir, 40));
 }
 
-// REQ-ARCH-SEC-001 REQ-ARCH-005 — Decision: a failure means a spot-check file from another chain does not void H.
+// REQ-ARCH-004 REQ-ARCH-SEC-001 — Decision: a failure means the spot-check still opens file H, so a restart reads tip − H + 1 files.
 #[test]
-fn sec_spot_check_file_wrong_genesis_is_not_trusted() {
-    let m = manifest_json(CHAIN, &genesis_g(), Some(40)).to_string();
-    assert_untrusted(&m, |dir| {
-        plant_foreign(dir, 40);
-    });
+fn sec_spot_check_is_metadata_only_foreign_pair_at_h_keeps_h() {
+    let (archive, store, _s) = small();
+    let dir = archive.path();
+    write_manifest(dir, &manifest_json(CHAIN, &genesis_g(), Some(40)));
+    let at_h = plant_foreign(dir, 40);
+    plant_foreign(dir, 10);
+
+    let r = bounded(dir, &store, CHAIN);
+
+    assert_eq!(r.files_read, CHAIN - 40, "only 41..=CHAIN may be read");
+    assert_eq!(
+        std::fs::read(block_path(dir, 40)).unwrap(),
+        at_h,
+        "file at H re-verified"
+    );
+    assert_eq!(
+        file_genesis(dir, 10),
+        genesis_other(),
+        "file below H re-read"
+    );
+    assert_eq!(r.verified_height, CHAIN);
+    assert_eq!(manifest_h(dir), Some(CHAIN));
 }
 
 // ---------------------------------------------------------------------------

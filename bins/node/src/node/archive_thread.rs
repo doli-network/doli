@@ -25,20 +25,20 @@ pub struct ArchiveThreadExit {
 
 /// Fences a foreign-genesis archive (O(1)), then hands the stale-dir delete,
 /// the catch-up and the live archive loop to one detached OS thread, the only
-/// `manifest.json` writer. Returns without waiting for any of them.
+/// `manifest.json` writer. Returns without waiting for any of them; `Err`
+/// (nothing started) when the fence fails.
 pub fn start_archive_thread(
     node: &mut Node,
     archive_dir: PathBuf,
     tip: u64,
 ) -> std::io::Result<ArchiveThread> {
     let genesis = node.params.genesis_hash;
-    let stale_dir = archiver::fence_stale_archive(&archive_dir, &genesis).unwrap_or_else(|e| {
-        warn!(
-            "[ARCHIVER] Genesis fence of {:?} failed: {}",
-            archive_dir, e
-        );
-        None
-    });
+    let stale_dir = archiver::fence_stale_archive(&archive_dir, &genesis).map_err(|e| {
+        std::io::Error::new(
+            e.kind(),
+            format!("genesis fence of {:?} failed: {}", archive_dir, e),
+        )
+    })?;
     if let Some(stale) = &stale_dir {
         info!("[ARCHIVER] Foreign-genesis archive fenced to {:?}", stale);
     }

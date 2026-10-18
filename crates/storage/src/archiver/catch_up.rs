@@ -92,15 +92,15 @@ fn from_block(block: &ArchiveBlock, expected: &Hash) -> Option<(Vec<u8>, Hash)> 
 }
 
 /// Loads the manifest; H is trusted only when bound to `expected`, not above
-/// `latest_height`, and file H passes the spot-check.
-fn load_base(dir: &Path, expected: &Hash, report: &mut CatchUpReport) -> Base {
+/// `latest_height`, and the pair at H passes the metadata-only spot-check.
+fn load_base(dir: &Path, expected: &Hash) -> Base {
     let m = Manifest::load(dir).unwrap_or_default();
     let ours = m.genesis_hash.as_deref() == Some(expected.to_string().as_str());
     let latest = m.latest_height.filter(|_| ours);
     let claimed = m
         .verified_height
         .filter(|h| ours && latest.is_some_and(|l| *h <= l));
-    let trusted = claimed.filter(|&h| h == 0 || spot_check(dir, h, expected, report));
+    let trusted = claimed.filter(|&h| h == 0 || spot_check(dir, h));
     Base {
         trusted,
         latest: latest.unwrap_or(0),
@@ -108,22 +108,20 @@ fn load_base(dir: &Path, expected: &Hash, report: &mut CatchUpReport) -> Base {
     }
 }
 
-fn spot_check(dir: &Path, h: u64, expected: &Hash, report: &mut CatchUpReport) -> bool {
-    if !pair_exists(dir, h) {
-        return false;
-    }
-    report.files_read += 1;
-    matches!(check_file(dir, h, expected), Check::Valid(_))
+/// Never opens a file: both files of the pair at `h` exist and are non-empty.
+fn spot_check(dir: &Path, h: u64) -> bool {
+    let non_empty = |p: &Path| std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.len() > 0);
+    non_empty(&block_path(dir, h)) && non_empty(&sum_path(dir, h))
 }
 
 impl<'a> Scan<'a> {
-    fn new(dir: &'a Path, expected: &'a Hash, start: u64, report: CatchUpReport) -> Self {
+    fn new(dir: &'a Path, expected: &'a Hash, start: u64) -> Self {
         Self {
             dir,
             expected,
             report: CatchUpReport {
                 verified_height: start,
-                ..report
+                ..CatchUpReport::default()
             },
             contiguous: true,
             last: None,
@@ -241,8 +239,7 @@ pub(super) fn catch_up_bounded(
     expected: &Hash,
 ) -> io::Result<CatchUpReport> {
     std::fs::create_dir_all(dir)?;
-    let mut report = CatchUpReport::default();
-    let base = load_base(dir, expected, &mut report);
+    let base = load_base(dir, expected);
     let start = base.trusted.unwrap_or(0);
     let latest = base.latest.max(tip);
     if base.trusted.is_none() {
@@ -251,7 +248,7 @@ pub(super) fn catch_up_bounded(
             tip
         );
     }
-    let mut scan = Scan::new(dir, expected, start, report);
+    let mut scan = Scan::new(dir, expected, start);
     let save = |s: &Scan| save_scan(dir, expected, &base, latest, s);
     scan.run(
         start.saturating_add(1)..=tip,
@@ -281,10 +278,9 @@ pub fn archive_finalized(
     expected_genesis: &Hash,
 ) -> io::Result<CatchUpReport> {
     std::fs::create_dir_all(dir)?;
-    let mut report = CatchUpReport::default();
-    let base = load_base(dir, expected_genesis, &mut report);
+    let base = load_base(dir, expected_genesis);
     let start = base.trusted.unwrap_or(0);
-    let mut scan = Scan::new(dir, expected_genesis, start, report);
+    let mut scan = Scan::new(dir, expected_genesis, start);
     if block.height <= start {
         return Ok(scan.report);
     }

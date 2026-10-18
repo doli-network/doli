@@ -1,9 +1,12 @@
-use std::io;
+use std::io::{self, Read};
 use std::path::Path;
 
 use serde_json::Value;
 
 use super::write::{sync_dir, write_durable};
+
+/// Larger manifests are never read: treated as absent.
+const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
 
 /// `manifest.json` keys, each `None` when absent or of the wrong JSON type.
 #[derive(Default)]
@@ -15,9 +18,22 @@ pub(super) struct Manifest {
 }
 
 impl Manifest {
-    /// `None` when the file is missing or is not a JSON object.
+    /// `None` when the file is missing, above [`MAX_MANIFEST_BYTES`] or is
+    /// not a JSON object.
     pub(super) fn load(dir: &Path) -> Option<Self> {
-        let data = std::fs::read_to_string(dir.join("manifest.json")).ok()?;
+        let path = dir.join("manifest.json");
+        if std::fs::metadata(&path).ok()?.len() > MAX_MANIFEST_BYTES {
+            return None;
+        }
+        let mut data = String::new();
+        std::fs::File::open(&path)
+            .ok()?
+            .take(MAX_MANIFEST_BYTES + 1)
+            .read_to_string(&mut data)
+            .ok()?;
+        if data.len() as u64 > MAX_MANIFEST_BYTES {
+            return None;
+        }
         let v: Value = serde_json::from_str(&data).ok()?;
         let text = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
         v.as_object()?;

@@ -21,7 +21,7 @@ pub struct ArchiveBlock {
 /// Outcome of one catch-up or live archive call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CatchUpReport {
-    /// `.block` files read (the spot-check counts as one).
+    /// `.block` files read (the spot-check at H reads none).
     pub files_read: u64,
     /// `.block` + `.blake3` pairs written.
     pub files_written: u64,
