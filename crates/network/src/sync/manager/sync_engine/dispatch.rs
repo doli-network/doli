@@ -1,14 +1,19 @@
 //! Request dispatch — next_request, next_snap_requests, register_request
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use libp2p::PeerId;
 use tracing::{debug, info, warn};
 
 use crate::protocols::SyncRequest;
+use crate::sync::manager::recovery::thresholds::SNAP_SYNC_GAP_MIN;
 use crate::sync::manager::{
     PendingRequest, SyncManager, SyncPipelineData, SyncRequestId, SyncState,
 };
+
+/// INC-I-235 R-3: minimum seconds between parked header retries on a snap-disabled
+/// node. Equal to the recovery coordinator's action cooldown.
+const PARKED_HEADER_RETRY_SECS: u64 = 30;
 
 impl SyncManager {
     /// Get the next sync request to send
@@ -119,9 +124,13 @@ impl SyncManager {
                     // INC-I-204 M6 (REQ-FORK-004): the gap >= 50 fallthrough to
                     // request_genesis_resync(GenesisFallbackEmptyHeaders) is deleted; the
                     // park now covers every gap > 3. Behind-ness is decided only by the
-                    // recovery coordinator (Rule 2 still snaps at gap >= 500).
+                    // recovery coordinator (Rule 2 snaps at gap >= SNAP_SYNC_GAP_MIN; a
+                    // snap-disabled node gets the bounded header retry instead, INC-I-235).
                     // INC-I-138 D2 co-deploy still applies: this arm must not reset
                     // consecutive_empty_headers (INV-SYNC-011).
+                    if let Some(retry) = self.parked_header_retry(gap) {
+                        return Some(retry);
+                    }
                     debug!(
                         "Fork/behind regime (gap={}, empties={}): awaiting coordinator — \
                          no dispatcher-side genesis resync",
@@ -282,6 +291,70 @@ impl SyncManager {
         }
 
         batch
+    }
+
+    /// INC-I-235 R-3: one header retry from the far-behind park on a snap-disabled
+    /// node (Rule 2 closed), rotating over peers ahead of us. The empty-headers
+    /// counter is kept (INV-SYNC-011); a non-empty reply resets it in response.rs.
+    fn parked_header_retry(&mut self, gap: u64) -> Option<(PeerId, SyncRequest)> {
+        if !self.recovery.snap_disabled() || gap < SNAP_SYNC_GAP_MIN {
+            return None;
+        }
+        let due = self
+            .fork
+            .parked_header_retry_at
+            .is_none_or(|t| t.elapsed() >= Duration::from_secs(PARKED_HEADER_RETRY_SECS));
+        if !due {
+            return None;
+        }
+        let mut eligible: Vec<PeerId> = self
+            .peers
+            .iter()
+            .filter(|(pid, s)| {
+                s.best_height > self.local_height
+                    && !self.fork.header_blacklisted_peers.contains_key(pid)
+            })
+            .map(|(pid, _)| *pid)
+            .collect();
+        if eligible.is_empty() {
+            return None;
+        }
+        eligible.sort_unstable();
+        // Skip a peer with a request in flight: the fork-walk peer keeps one
+        // GetBlockByHash outstanding, and waiting on it stalls the retry for the walk.
+        let start = self.fork.parked_header_retries as usize % eligible.len();
+        let (offset, peer) = (0..eligible.len())
+            .map(|i| (i, eligible[(start + i) % eligible.len()]))
+            .find(|(_, p)| {
+                self.peers
+                    .get(p)
+                    .is_some_and(|s| s.pending_request.is_none())
+            })?;
+        self.fork.parked_header_retries = self
+            .fork
+            .parked_header_retries
+            .wrapping_add(offset as u32 + 1);
+        if let SyncPipelineData::Headers {
+            peer: ref mut p, ..
+        } = &mut self.pipeline_data
+        {
+            *p = peer;
+        }
+        let request = SyncRequest::get_headers_by_height(
+            self.local_height,
+            self.config.max_headers_per_request,
+        );
+        let id = self.register_request(peer, request.clone());
+        if let Some(status) = self.peers.get_mut(&peer) {
+            status.pending_request = Some(id);
+        }
+        self.fork.parked_header_retry_at = Some(Instant::now());
+        info!(
+            "[SYNC] Parked far behind with snap disabled (gap={}, empties={}): \
+             header retry to {} (INC-I-235)",
+            gap, self.fork.consecutive_empty_headers, peer
+        );
+        Some((peer, request))
     }
 
     /// Register a pending request

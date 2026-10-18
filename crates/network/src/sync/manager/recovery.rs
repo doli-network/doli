@@ -321,6 +321,11 @@ impl RecoveryCoordinator {
         self.snap_disabled = disabled;
     }
 
+    /// True while Rule 2 (SnapSync) is closed on this node.
+    pub fn snap_disabled(&self) -> bool {
+        self.snap_disabled
+    }
+
     /// A detector reports one piece of evidence.
     pub fn report(&mut self, evidence: RecoveryEvidence) {
         let now = Instant::now();

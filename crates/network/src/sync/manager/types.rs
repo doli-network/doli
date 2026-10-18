@@ -546,6 +546,10 @@ pub(crate) struct ForkState {
     /// When >= 10, we're on a deep fork and need genesis resync.
     /// Only incremented for truly EMPTY responses (peer doesn't have our hash).
     pub consecutive_empty_headers: u32,
+    /// INC-I-235 R-3: last header retry sent from the far-behind park (snap disabled).
+    pub parked_header_retry_at: Option<Instant>,
+    /// INC-I-235 R-3: parked header retries sent; picks the next peer in rotation.
+    pub parked_header_retries: u32,
     /// Consecutive sync failures (empty header responses)
     pub consecutive_sync_failures: u32,
     /// Consecutive block-apply failures (downloaded chain can't be applied).
@@ -649,6 +653,8 @@ impl ForkState {
     pub fn new() -> Self {
         Self {
             consecutive_empty_headers: 0,
+            parked_header_retry_at: None,
+            parked_header_retries: 0,
             consecutive_sync_failures: 0,
 
             consecutive_apply_failures: 0,
