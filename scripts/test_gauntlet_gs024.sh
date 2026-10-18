@@ -43,8 +43,12 @@
 #   W1 default window static · GH1 throttled, 20 behind through a 2 s window, catches up on -B
 #   GH2 throttled, at tip inside the window · GH3 snap ordered 20 behind · GH4 coordinator gap 20 · GH5 coordinator gap 9 · FS1 default lo · FS2 FULL_SCAN=1 · FS3 scanner missing · FS4 scanner errors
 #   SC1 holes · SC2 none · SC3 --compare mismatch · SC4 node down · SC5 usage error
+#   GT1 each gs024-* token · GT2 each gs023-* token · GT3 unknown gs024-like token
+# O16 gauntlet.sh assert() TOKEN (real function, extracted) -- standalone gs023-*/gs024-* token: rc 2, SKIP reason
+#                                     names its runner, no FAIL reason | unknown token: rc 1 + FAIL "unknown assertion token"
 # MATRIX: O1:R0a-R0b · O2:B1-B13 · O3:P1-P9 · O4:R1-R6 · O5:X1-X3 · O6:M1-M4 · O7:L1-L2 · O8:S1-S12
 #         O9:T1-T6,S10 · O10:I1-I9 · O11:G1-G2 · O12:MT0-MT2 · O13:W1,GH1-GH5 · O14:FS1-FS4 · O15:SC1-SC5
+#         O16:GT1-GT3
 
 # shellcheck source=scripts/test_gauntlet_gs024_lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test_gauntlet_gs024_lib.sh"
@@ -318,7 +322,26 @@ sck "S12 hygiene: runner, lib and scanner are <= 500 lines each" \
     '[[ -f "$SCAN" && "$(cat "$LIB" | wc -l)" -le 500 && "$(cat "$HLIB" | wc -l)" -le 500 && "$(cat "$SCAN" | wc -l)" -le 500 ]]' \
     "lines: $(wc -l "$LIB" "$HLIB" "$SCAN" 2>&1 | tr '\n' ' ')"
 
-# L2 — REQ-ARCHSYNC-004 — Decision: without gs024_throttle and gs024_irpc the throttled control run cannot be driven or unit-tested.
+# GT1-GT3 — REQ-ARCHSYNC-004 — Decision: gauntlet.sh reads every active scenario row; a standalone token it cannot evaluate turns into "unknown assertion token" and fails every gauntlet.sh run.
+GAUNTLET="$PROJECT_ROOT/scripts/gauntlet.sh"
+GS023_TOKENS="gs023-rpc-30s gs023-rpc-10s gs023-second-call-1s gs023-no-failed-probe gs023-no-respawn gs023-reaches-tip gs023-clean-shutdown"
+ga_assert() {
+    ( SKIP_REASONS=""; FAIL_REASONS=""
+      eval "$(awk '/^assert\(\)\{/{f=1} f{print} f&&/^}/{exit}' "$GAUNTLET")" 2>/dev/null || exit 99
+      assert "$1"; rc=$?
+      printf '%s|%s|%s\n' "$rc" "$SKIP_REASONS" "$FAIL_REASONS" )
+}
+for tok in $TOKENS $GS023_TOKENS; do
+    GA="$(ga_assert "$tok")"; run="scripts/gauntlet-${tok%%-*}.sh"; gt=GT1; [[ "$tok" == gs023-* ]] && gt=GT2
+    sck "$gt gauntlet.sh assert() SKIPs standalone $tok (rc 2, names $run)" \
+        '[[ "${GA%%|*}" == 2 && "$GA" == *"$tok: standalone scenario, run $run (not part of gauntlet.sh)"* && "$GA" == *"|" ]]' \
+        "assert $tok -> [$GA]"
+done
+GA="$(ga_assert gs024-no-such-token)"
+sck "GT3 gauntlet.sh assert() still FAILs an unknown gs024-like token" \
+    '[[ "${GA%%|*}" == 1 && "$GA" == *"unknown assertion token"* ]]' "assert gs024-no-such-token -> [$GA]"
+
+# L2 —REQ-ARCHSYNC-004 — Decision: without gs024_throttle and gs024_irpc the throttled control run cannot be driven or unit-tested.
 LOAD_FNS="gs024_throttle gs024_irpc"; new_sandbox l2_lib_only_new; bounded _load_body; LOAD_FNS=""
 NFN="$(cat "$CASE_DIR/nfn" 2>/dev/null || echo 0)"; DEFINED=yes; RC=0
 ck "L2 lib_only: gs024_throttle and gs024_irpc defined" '[[ "$NFN" -eq 2 ]]' "defined=$NFN/2 lib=$LIB"

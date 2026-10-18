@@ -126,6 +126,9 @@
 #   * GS-023 (archive-node cold restart, INC-I-249) is STANDALONE ONLY: this
 #     runner SKIPs its tokens. It builds a scratch archive node from a seed
 #     checkpoint; run scripts/gauntlet-gs023.sh directly.
+#   * GS-024 (archive far-behind restart, INC-I-235) is STANDALONE ONLY: this
+#     runner SKIPs its tokens. It starts a scratch archive node from an old seed
+#     checkpoint; run scripts/gauntlet-gs024.sh directly.
 #
 # Assertions key off STRUCTURED telemetry fields (gap=, rollback_depth=,
 # sync_fails=, state=) and distinct-event phrases — NEVER raw keywords that also
@@ -728,6 +731,8 @@ assert(){
       _gs022_assert "$t"; return $? ;;
     gs023-rpc-30s|gs023-rpc-10s|gs023-second-call-1s|gs023-no-failed-probe|gs023-no-respawn|gs023-reaches-tip|gs023-clean-shutdown)
       ok=2; why="$t: standalone scenario, run scripts/gauntlet-gs023.sh (not part of gauntlet.sh)" ;;
+    gs024-gap-held|gs024-no-snap|gs024-reaches-tip|gs024-no-missing-height|gs024-commitment-matches-seed|gs024-archive-files-present|gs024-clean-exit)
+      ok=2; why="$t: standalone scenario, run scripts/gauntlet-gs024.sh (not part of gauntlet.sh)" ;;
     *)
       why="unknown assertion token '$t'" ;;
   esac
