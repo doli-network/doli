@@ -255,7 +255,7 @@ Existing gates (mainnet values):
 | `producer/` | Producer registry (simplified: pubkey, registered_at, status, seniority_weight — bond tracking via UTXO set) |
 | `maintainer.rs` | MaintainerState — governance maintainer set tracking |
 | `update.rs` | UpdateState — auto-update state persistence |
-| `archiver/` | Block archiver — streams blocks to flat files with BLAKE3 checksums, bounded genesis-verified catch-up (`verified_height` in `manifest.json`), restore/backfill from archive |
+| `archiver/` | Block archiver — streams blocks to flat files with BLAKE3 checksums, bounded genesis-verified catch-up (`verified_height` in `manifest.json`), O(1) start fence (`fence.rs`), restore/backfill from archive. The node runs one catch-up per start, then the live loop, on one background thread (`bins/node/src/node/archive_thread.rs`); RPC does not wait for it |
 
 **ChainState fields:**
 - `best_hash` - Current chain tip hash

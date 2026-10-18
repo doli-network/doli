@@ -271,8 +271,9 @@ cannot prove its ledger is intact. The remedy is the same.
 That path empties the durable UTXO set first and replays `1..=target_height` back into it, which
 takes minutes on a real chain and holds the `chain_state` + `utxo_set` write locks throughout.
 If the process is restarted inside that window — the fleet watchdog (`scripts/doli-watchdog.sh`)
-does exactly this, because its `getChainInfo` probe blocks on those locks and times out after
-5s — the node reboots at its old tip with a truncated ledger. A durable
+does exactly this once the unit has been active longer than its cold-start grace
+(`DOLI_WATCHDOG_COLD_START_GRACE`, default 600 s), because its `getChainInfo` probe blocks on
+those locks and times out after 5s — the node reboots at its old tip with a truncated ledger. A durable
 `rebuild_in_progress` marker is written to `CF_META` before the wipe and removed only after the
 rebuild's final `atomic_replace` succeeds, so its presence is proof the rebuild never finished.
 
@@ -302,6 +303,41 @@ snapshot and disarms the marker automatically (INC-I-156 / AUDIT-P2-101). A snap
 snapshot service and state-root service precisely because the ledger this node would produce
 from, hand to a bootstrapping peer, or vote with in the snap-sync quorum is incomplete — and
 nothing downstream would catch that, since block headers carry no state root.
+
+---
+
+### 1.11. Archive Node Restarts in a Loop After a Host Reboot (INC-I-249)
+
+**Symptom:** after a host reboot, a node that runs with `--archive-to` and a large archive
+restarts again and again. Its RPC does not answer before each restart, and the watchdog logs
+`RESTART <unit> — RPC port <port> unresponsive` (tag `doli-watchdog`).
+
+**Cause:** older binaries ran the archive catch-up on the start path, before RPC bound: they read
+and deserialized every archive file from height 1. With a large archive and a cold disk cache
+this takes longer than the watchdog allows. The watchdog had no start grace: its 5 s
+`getChainInfo` probe failed, it restarted the unit, and the next start began the same scan again.
+
+**Fix:**
+- The node start does O(1) archive work (it reads only `manifest.json`). One background thread
+  runs one catch-up per start, only above the manifest `verified_height`, then the live archive
+  loop. RPC answers while the catch-up runs. See [archiver.md §4](./archiver.md#write-safety).
+- `scripts/doli-watchdog.sh` skips a unit that became active (systemd
+  `ActiveEnterTimestampMonotonic`) less than `DOLI_WATCHDOG_COLD_START_GRACE` seconds ago
+  (default 600, `0` disables the grace, an invalid value logs one line and uses 600). A skip logs
+  `SKIP <unit> — started <age>s ago < grace <grace>s`. When the start time cannot be read, the
+  watchdog restarts the unit as before.
+
+**Operator action:**
+1. Deploy the fixed binary and the updated watchdog script.
+2. The first start of the fixed binary on an archive written by an older binary runs one full
+   background check, because that manifest has no `verified_height`. The log shows
+   `[ARCHIVER] No trusted verified height: full check of 1..=<tip>`. RPC stays up, but disk IO is
+   high until `[ARCHIVER] Catch-up finished` appears. Roll archive nodes one at a time and wait
+   for that line before the next node.
+3. If a node needs more start time, set `DOLI_WATCHDOG_COLD_START_GRACE` in the environment of
+   the watchdog service.
+
+Regression scenario: GS-023 (`bash scripts/gauntlet-gs023.sh`, standalone, local testnet only).
 
 ---
 

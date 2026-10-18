@@ -123,6 +123,9 @@
 #   * GS-022 (losing-sibling fork walk) is opt-in (`--gs022` WITH
 #     GAUNTLET_GS022_CONFIRM=1; testnet only). Replays INC-I-235 on ONE non-seed
 #     producer via scripts/inc-i-235-drill.sh. See scripts/gauntlet-gs022.sh.
+#   * GS-023 (archive-node cold restart, INC-I-249) is STANDALONE ONLY: this
+#     runner SKIPs its tokens. It builds a scratch archive node from a seed
+#     checkpoint; run scripts/gauntlet-gs023.sh directly.
 #
 # Assertions key off STRUCTURED telemetry fields (gap=, rollback_depth=,
 # sync_fails=, state=) and distinct-event phrases — NEVER raw keywords that also
@@ -723,6 +726,8 @@ assert(){
       _gs020_assert "$t"; return $? ;;
     gs022-sibling-induced|gs022-converged-by-reorg|gs022-no-snapsync|gs022-fleet-converged)
       _gs022_assert "$t"; return $? ;;
+    gs023-rpc-30s|gs023-rpc-10s|gs023-second-call-1s|gs023-no-failed-probe|gs023-no-respawn|gs023-reaches-tip|gs023-clean-shutdown)
+      ok=2; why="$t: standalone scenario, run scripts/gauntlet-gs023.sh (not part of gauntlet.sh)" ;;
     *)
       why="unknown assertion token '$t'" ;;
   esac

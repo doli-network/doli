@@ -136,6 +136,13 @@ VALUES ('GS-022', 'losing-sibling-fork-walk',
   'gs022-sibling-induced,gs022-converged-by-reorg,gs022-no-snapsync,gs022-fleet-converged', json('{"nodes": 7}'), 'gauntlet.sh', 'active')
 ON CONFLICT(scenario_id) DO UPDATE SET incident_ids=excluded.incident_ids, description=excluded.description, assertions=excluded.assertions, runner=excluded.runner, status='active';
 
+INSERT INTO gauntlet_scenarios (scenario_id, name, description, incident_ids, assertions, scale_params, runner, status)
+VALUES ('GS-023', 'archive-node-cold-restart',
+  'Guards the cold start of a node with a large block archive (INC-I-249: the node read every archive file before RPC bound, so a watchdog with no start grace restarted it in a loop). STANDALONE ONLY, not part of the default gauntlet.sh flow. INJECTS: scripts/gauntlet-gs023.sh clones the newest local seed RocksDB checkpoint and the seed archive (legacy manifest) into a scratch dir and starts the binary under test there as a non-producer node on free ports. ASSERTS: first getChainInfo within 30 s and 10 s of process start; a second call during the background archive check under 1000 ms; no failed probe after the first answer; an unchanged PID; height within 2 of the seed within 300 s; exit within 30 s of SIGTERM. It never touches a running node, kills only its own PID and deletes the scratch dir. Missing inputs, a busy port or a running build SKIP (rc 2).',
+  json('["INC-I-249"]'),
+  'gs023-rpc-30s,gs023-rpc-10s,gs023-second-call-1s,gs023-no-failed-probe,gs023-no-respawn,gs023-reaches-tip,gs023-clean-shutdown', json('{"nodes": 1, "archive_blocks_min": 100000}'), 'scripts/gauntlet-gs023.sh', 'active')
+ON CONFLICT(scenario_id) DO UPDATE SET incident_ids=excluded.incident_ids, description=excluded.description, assertions=excluded.assertions, runner=excluded.runner, status='active';
+
 COMMIT;
 
 -- ── DELIBERATELY UNMAPPED (out of system-dynamics scope) ─────────────────────

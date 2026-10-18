@@ -17,11 +17,11 @@ Archiver nodes are full sync-only nodes that run with `--archive-to` and `--rela
 ### Deployment
 
 ```
-Producer nodes (N1-N12 across ai1, ai2, ai4, ai5 + SANTIAGO, IVAN on ai3)
+Producer nodes
        │
        │ gossip (blocks + attestations)
        ▼
-Archiver / Seed nodes (ai1, ai2, ai3)
+Archiver / Seed nodes
        │
        ├── P2P seed (DNS: seed1/seed2.doli.network)
        ├── Public RPC → doli.network/explorer.html
@@ -29,7 +29,7 @@ Archiver / Seed nodes (ai1, ai2, ai3)
        └── getBlockRaw RPC → remote backfill source
 ```
 
-Both archiver nodes run on ai1 and ai2 behind DNS round-robin, providing full redundancy.
+Several archiver nodes run on separate servers behind DNS round-robin, providing redundancy.
 
 ### Data Flow: Archive vs Block Store
 
@@ -116,6 +116,8 @@ Key flags:
 - `--archive-to <path>`: Enables block archiving to flat files
 - No `--producer` or `--producer-key`: Non-producing, sync-only
 
+The fleet watchdog (`scripts/doli-watchdog.sh`) does not restart a unit that became active less than `DOLI_WATCHDOG_COLD_START_GRACE` seconds ago (default 600). See [troubleshooting.md §1.11](./troubleshooting.md#111-archive-node-restarts-in-a-loop-after-a-host-reboot-inc-i-249).
+
 ---
 
 ## 3. Block Explorer
@@ -164,10 +166,11 @@ Each applied block is streamed to flat files with atomic writes:
 ### Write Safety
 
 - **Atomic, durable writes**: The archiver writes each file to `<name>.tmp-archiver`, calls `sync_all`, then renames it. A manifest save covers a height only after its pair is durable. (`repairArchiveFromPeer` uses `.tmp`, so the two writers never share a tmp file.)
-- **Non-blocking**: Uses `mpsc::channel` with `try_send` — never stalls block production or sync
-- **Catch-up after sync**: On first periodic tick after sync (height > 0), scans from block 1 to tip and fills any missing `.block` files from the local BlockStore. This handles the case where a node resynced thousands of blocks but the archive was empty or had gaps — the catch-up backfills everything in seconds. Runs once per startup (one-shot flag).
-- **Catch-up on startup**: Additionally, `main.rs` calls `catch_up()` before the node loop starts, covering the case where the BlockStore already has blocks at startup time.
+- **Non-blocking**: The node hands each finalized block to the archive thread with `try_send` on a 256-slot channel, so archiving never stalls block production or sync. A full channel drops the block; the next archived block fills the missing heights from the BlockStore (`archive_finalized`).
+- **O(1) start**: At start the node reads only `manifest.json` (genesis fence: a foreign `genesis_hash` renames the directory to `<dir>.stale-<unix-ts>` and recreates it empty), opens the channel and continues. RPC does not wait for any archive IO.
+- **One background catch-up per start**: One detached OS thread (`doli-archiver`) deletes a fenced stale directory, runs one `catch_up_bounded` up to the tip at start, then runs the live archive loop. It is the only `manifest.json` writer. No periodic task runs a catch-up.
 - **Bounded catch-up**: `catch_up(.., Some(genesis))` trusts H only when the manifest parses, `genesis_hash` equals the node genesis, `verified_height <= latest_height`, and a spot-check of file H passes. Then it reads only `H+1..=tip`: an existing pair is read and its genesis checked (a foreign file is rewritten from the BlockStore); a missing pair is written from the BlockStore. H advances only over contiguous verified or self-written heights; it stops at a height missing from both the archive and the BlockStore. A file that does not deserialize (INC-I-119 legacy) is intact when its `.blake3` sidecar matches and its header decodes: with the node genesis, H crosses it and the file is kept (never rewritten); with another genesis, it is rewritten like a foreign file. Any other undeserializable file stops H below it and is kept. An untrusted or missing H costs one full check from height 1, with the manifest saved at least every 1000 heights (resumable).
+- **First start on an older archive**: A manifest written by an older binary has no `verified_height`, so the first start of a new binary runs one full check from height 1 in the background. RPC stays up, but the check reads every archive file: on a slow disk the IO load is high until it finishes. Roll archive nodes one at a time.
 
 ### Integrity
 
@@ -335,7 +338,7 @@ Any node can archive blocks by adding `--archive-to`:
 doli-node --network mainnet run --archive-to /path/to/archive
 ```
 
-The node syncs normally and streams all applied blocks to the archive directory. After sync completes, a one-shot catch-up scans for gaps and fills any missing blocks from the local BlockStore — ensuring the archive is complete even after a full resync.
+The node syncs normally and streams finalized blocks to the archive directory. At each start, one background catch-up checks the heights above the manifest `verified_height` and fills missing blocks from the local BlockStore, so the archive stays complete after a resync. RPC answers while it runs.
 
 For a dedicated archiver that also serves as a seed:
 
@@ -373,6 +376,7 @@ tar czf doli-archive-$(date +%Y%m%d).tar.gz /mainnet/seed/blocks/
 | File | Purpose |
 |------|---------|
 | `crates/storage/src/archiver/` | BlockArchiver, `catch_up()` / `catch_up_bounded()` (`catch_up.rs`), `manifest.json` keys (`manifest.rs`), durable writes (`write.rs`), restore/backfill from files (`import.rs`), O(1) stale-archive fence (`fence.rs`) |
-| `bins/node/src/node/periodic.rs` | One-shot archive catch-up trigger in `run_periodic_tasks()` after sync completes |
+| `bins/node/src/node/archive_thread.rs` | `start_archive_thread()`, called from `bins/node/src/run.rs`: O(1) genesis fence on the caller, then one detached thread runs stale-dir delete → one `catch_up_bounded()` → live loop (`archive_finalized()`) |
+| `bins/node/src/node/periodic.rs` | `flush_finalized_to_archive()`: sends finalized blocks to the archive channel (no catch-up) |
 | `crates/rpc/src/methods/` | `getBlockRaw`, `backfillFromPeer`, `backfillStatus`, `verifyChainIntegrity` RPC handlers (dispatch in `dispatch.rs`, backfill in `backfill.rs`) |
 | `bins/node/src/main.rs` | CLI flags (`--archive-to`, `restore --from/--from-rpc/--backfill`); delegates to `operations` module for `restore_from_rpc()`, `backfill_from_archive()`, `restore_from_archive()` |
