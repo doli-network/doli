@@ -255,6 +255,24 @@ SIM_CONFIRM=1 bash scripts/sim-bootstrap-island.sh ~/testnet/bin/doli-node     n
 
 **Env:** `SIM_TESTNET_DIR`, `SIM_SEED_RPC`, `SIM_SEED_P2P`, `SIM_REF_RPC`, `SIM_ISLAND_SECS` (default 60), `SIM_OBSERVE_SECS` (default 300), `SIM_A_P2P`/`SIM_B_P2P`, `SIM_A_RPC`/`SIM_B_RPC`, `SIM_A_MET`/`SIM_B_MET` (discv5 uses P2P+1 over UDP).
 
+### test_doli_watchdog.sh
+
+| Property | Value |
+|----------|-------|
+| **Path** | `scripts/test_doli_watchdog.sh` |
+| **Purpose** | Offline test of `scripts/doli-watchdog.sh`: the cold-start grace, the grace env var parsing, and the exact `systemctl` argv |
+| **What it tests** | A unit younger than the grace is skipped (`SKIP` log), an older unit is restarted (`RESTART` log), an unreadable start time restarts, invalid or hostile grace values fall back to 600 s and run no code, a healthy RPC causes no action |
+| **Dependencies** | `bash`, `grep`, `mktemp`; `systemctl`, `curl` and `logger` are shims in a temp dir |
+| **Run time** | < 5 s |
+| **Output** | One `PASS`/`FAIL` line per case and `N passed, M failed`; exit 1 on any failure |
+
+**Usage:**
+```bash
+bash scripts/test_doli_watchdog.sh
+```
+
+**Watchdog env:** `DOLI_WATCHDOG_COLD_START_GRACE` (seconds, default 600). The watchdog does not restart a unit whose `ActiveEnterTimestampMonotonic` is less than this many seconds ago. `0` disables the grace. A value that is not 1-9 decimal digits logs one `invalid DOLI_WATCHDOG_COLD_START_GRACE` line and uses 600.
+
 ### launch_testnet.sh
 
 | Property | Value |
