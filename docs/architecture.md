@@ -757,6 +757,9 @@ misbehaviour is how a small network starves itself of peers.
 Escalation to `SnapCollecting` (a full state download, not the header/body catch-up above) has **one** gap-based admission authority. Prior to INC-I-139 the `should_snap` decision re-derived the choice across three OR-terms — one an ungated bare-gap comparator — so a minor-fork wedge could snap without fork evidence. Phase 1 (RUN 455) collapsed this to a single evidence-gated funnel; INC-I-152 then repaired the bootstrap fencepost. Admission requires `peers ≥ 3 && snap.attempts < 3 && snap enabled` plus **one of three gated doors**:
 
 ```
+ snap disabled (--no-snap-sync, --archive-to, --relay-server)   [INC-I-235]
+   ⇒ ALL doors closed, including coordinator Rule 2 (gap ≥ 500 → SnapSync)
+
                   ┌─ (a) local_height == 0  (bootstrap by nature) ─────────┐
                   │                                                        │
 start_sync() ─────┼─ (c) 0 < local_height ≤ genesis_blocks    [INC-I-152]  ├──► SnapCollecting
@@ -766,14 +769,12 @@ start_sync() ─────┼─ (c) 0 < local_height ≤ genesis_blocks    [I
                   └─ (b) needs_genesis_resync (set ONLY by                 │
                          request_genesis_resync, evidence-gated) ──────────┘
                         │
-                        ├ ≥10 empty headers, gap ≥ MINOR_FORK_GAP_MAX(50)
-                        ├ explicit deep-fork signal
                         ├ ≥3 apply failures
                         ├ all-peers-blacklisted / height-offset signature
                         └ gap ≥ SNAP_SYNC_GAP_MIN(500)   (forward-large-gap)
 ```
 
-No bare gap-over-threshold admits snap on any path. `consecutive_empty_headers` (the evidence counter) has one owner — reset only by genuine progress/recovery writers (block apply, gap≤3 gossip-wait, valid-headers, anti-cascade, post-rollback/post-snap grace, genesis), never by a request-dispatch or admission path. Gate-1 (`production_gate.rs`) exempts only emergency ∪ forward-large-gap from the backward-wipe floor; `SNAP_SYNC_GAP_MIN(500)` is the single named gap floor, with the old threshold demoted to an enable-sentinel. Invariant: `INV-SYNC-011` (extended, all-paths). Future escalation tiers enter as new evidence feeders of this funnel — never as new transitions into `SnapCollecting`.
+INC-I-204 M6 deleted two feeders: the ≥10-empty-headers fallback at gap ≥ 50 (the dispatcher now parks and awaits the coordinator) and the explicit deep-fork trigger (Rule 2 now reads behind-ness only). Snap disabled sets `snap.threshold = u64::MAX`, so `start_sync` refuses every door even when an emergency request sets `needs_genesis_resync`, and the coordinator skips Rule 2 and falls through to Rule 3 / Wedged / None (normal header-first sync continues). `--archive-to` and `--relay-server` imply snap disabled, so archive and seed nodes keep every block. No bare gap-over-threshold admits snap on any path. `consecutive_empty_headers` (the evidence counter) has one owner — reset only by genuine progress/recovery writers (block apply, gap≤3 gossip-wait, valid-headers, anti-cascade, post-rollback/post-snap grace, genesis), never by a request-dispatch or admission path. Gate-1 (`production_gate.rs`) exempts only emergency ∪ forward-large-gap from the backward-wipe floor; `SNAP_SYNC_GAP_MIN(500)` is the single named gap floor, with the old threshold demoted to an enable-sentinel. Invariant: `INV-SYNC-011` (extended, all-paths). Future escalation tiers enter as new evidence feeders of this funnel — never as new transitions into `SnapCollecting`.
 
 **Door (c) — the bootstrap genesis window (INC-I-152).** Keying bootstrap admission strictly on `local_height == 0` was a fencepost bug once Orphan Chase existed: on a freshly wiped mainnet node the first gossip block triggers a parent-chase that applies genesis blocks 1..14 within ~10s, destroying `h == 0` before a 3-peer snap quorum can form. The node then committed to header-first and serially walked 129,822 headers at 500 per 1s tick — ~260s, 92% of a measured 4m43s wipe-to-synced (INC-I-152, three reproductions). Door (c) treats a node still inside the genesis window as bootstrap-**shaped**, so orphan chase can no longer foreclose the fast path. The same `(local_height == 0 || in_genesis_window)` term extends the two bootstrap **holds** — the fresh-node 60s wait and the discv5 grace — which park a node rather than commit it to header-first; those holds are what buy the snap quorum, so they must cover the whole window. The window value is plumbed, never hardcoded: `NetworkParams::genesis_blocks` → `SyncConfig.genesis_blocks` (`types.rs`; default `0` = window disabled, bit-identical to pre-INC-I-152) → set at startup in `bins/node/src/node/init.rs`. Mainnet 360, testnet 36, devnet 40.
 

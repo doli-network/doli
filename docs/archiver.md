@@ -115,6 +115,7 @@ Key flags:
 - `--rpc-bind 0.0.0.0`: Binds RPC to all interfaces (public access for explorer)
 - `--archive-to <path>`: Enables block archiving to flat files
 - No `--producer` or `--producer-key`: Non-producing, sync-only
+- `--archive-to` and `--relay-server` each imply `--no-snap-sync`. The node never snap-syncs: it closes every gap with full blocks (header-first) and keeps every block. Without an explicit `--no-snap-sync`, the startup log shows `Snap sync disabled: archive/seed role (--archive-to/--relay-server) syncs full blocks`. A new node at height 0 therefore replays the whole chain, which is slow on a long chain.
 
 The fleet watchdog (`scripts/doli-watchdog.sh`) does not restart a unit that became active less than `DOLI_WATCHDOG_COLD_START_GRACE` seconds ago (default 600). See [troubleshooting.md §1.11](./troubleshooting.md#111-archive-node-restarts-in-a-loop-after-a-host-reboot-inc-i-249).
 
@@ -217,30 +218,64 @@ How it works:
 4. Verifies BLAKE3 checksum on every block
 5. In backfill mode, skips blocks already in local BlockStore
 
-### 5.3. Hot Backfill (Live — No Restart)
+### 5.3. Hot Backfill: Fill and Verify a Height Hole
 
-For nodes already running and synced to tip but missing historical blocks (snap sync gaps), `backfillFromPeer` fills the gap while the node keeps producing:
+Use this runbook when a running node answers `Block not found` for a height range (for example, a snap sync skipped the range). The node keeps running, and producing, during steps 1-4.
+
+Two other nodes take part:
+- **Source**: a node that has the full range. `backfillFromPeer` copies blocks from it.
+- **Verifier**: a different node. It proves that the copied blocks match the canonical chain. Never use the source as the verifier: the source supplies both the block and its BLAKE3 checksum, so the checksum proves transit integrity only.
+
+`backfillFromPeer` and `verifyChainIntegrity` are admin methods. Requests from loopback or a private (RFC 1918) address need no token; a request from a public address needs `Authorization: Bearer <admin-token>` (the target node's `DOLI_RPC_ADMIN_TOKEN`). On mainnet, `backfillFromPeer` refuses a URL whose host is a private, loopback or link-local IP literal, so use a DNS name. Set these once:
 
 ```bash
-# Start backfill
-curl -X POST http://127.0.0.1:8501 -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","method":"backfillFromPeer","params":{"rpc_url":"http://seed2.doli.network:8500"},"id":1}'
-
-# Monitor progress
-curl -X POST http://127.0.0.1:8501 -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","method":"backfillStatus","params":{},"id":1}'
+NODE=http://127.0.0.1:8500                    # the node to repair
+SOURCE=http://<source-hostname>:8500          # has the full range
+VERIFIER=http://<verifier-hostname>:8500      # a third node, NOT the source
+ARCHIVE_DIR=/path/to/archive                  # the node's --archive-to directory
+ADMIN_TOKEN=<verifier-admin-token>            # only if VERIFIER is reached over a public address
 ```
 
-**Response:**
-```json
-{"result": {"running": true, "imported": 3994, "total": 6291, "pct": 63, "error": null}}
-```
+1. **Find the hole** on the repaired node:
+   ```bash
+   curl -s -X POST "$NODE" -H "Content-Type: application/json" \
+       -d '{"jsonrpc":"2.0","method":"verifyChainIntegrity","params":[],"id":1}'
+   # → "missing": ["100001-103284"], "missingCount": 3284
+   ```
+2. **Start the backfill.** Give the source's RPC URL, never a peer ID. The node scans every height from 1 to its tip and fetches each missing block. There is no range parameter.
+   ```bash
+   curl -s -X POST "$NODE" -H "Content-Type: application/json" \
+       -d "{\"jsonrpc\":\"2.0\",\"method\":\"backfillFromPeer\",\"params\":{\"rpc_url\":\"$SOURCE\"},\"id\":1}"
+   # → {"started": true, "gaps": "100001-103284", "total": 3284}
+   ```
+   The call fails with `Tip divergence detected` when the local tip hash differs from the source's block at the same height. Backfill cannot repair diverged state. Set `"skip_divergence_check": true` only after a genesis reset, where the tips differ by design. Backfill writes the block store (RocksDB) only. It does not apply state and never writes the archive directory.
+3. **Wait for the end.** Poll until `running` is `false` and `error` is `null`:
+   ```bash
+   curl -s -X POST "$NODE" -H "Content-Type: application/json" \
+       -d '{"jsonrpc":"2.0","method":"backfillStatus","params":{},"id":1}'
+   # → {"running": false, "imported": 3284, "total": 3284, "pct": 100, "error": null}
+   ```
+   If the source does not have a height, backfill skips it with a log warning. `error` stays `null` and `imported` stays below `total`. Step 4 shows these heights. Run step 2 again with another source.
+4. **Verify against the verifier.** Pick one height `H` at or below both tips. Run `verifyChainIntegrity [H]` with the SAME `H` on the repaired node and on the verifier:
+   ```bash
+   H=103300
+   for url in "$NODE" "$VERIFIER"; do
+       curl -s -X POST "$url" -H "Content-Type: application/json" \
+           -H "Authorization: Bearer $ADMIN_TOKEN" \
+           -d "{\"jsonrpc\":\"2.0\",\"method\":\"verifyChainIntegrity\",\"params\":[$H],\"id\":1}"
+       echo
+   done
+   ```
+   Pass: both return `"missingCount": 0` and the same `chainCommitment`. The commitment is a BLAKE3 chain over the block hashes 1..H, so equal values prove that every hash in 1..H matches. Always give an explicit `H`: the no-parameter form can return a persisted commitment for another height.
+5. **Refill the archive directory** (archive nodes only). Backfill never writes the archive directory. The archiver copies missing `.block` files from the block store above the manifest `verified_height`, which stays below the hole: the running archiver does it at the next finalized block, and a restart does it in one background catch-up while RPC answers. `verified_height` stays below a height that is in neither the archive directory nor the block store. After step 4, check the range:
+   ```bash
+   for h in $(seq 100001 103284); do
+       f=$(printf '%s/%010d.block' "$ARCHIVE_DIR" "$h"); [ -f "$f" ] || echo "missing $h"
+   done
+   ```
+   No output means the range is complete.
 
-Security guarantees:
-- **Chain-linking**: Every block's `prev_hash` must match the previous block's hash, from genesis
-- **Anchor verification**: Last backfilled block must connect to the lowest existing block
-- **BLAKE3**: Checksum verified on every block
-- **Single instance**: Only one backfill can run at a time (atomic guard)
+Restart an archive node only with a binary where `--archive-to` and `--relay-server` imply `--no-snap-sync` (§2). An older binary can snap-sync a far-behind archive node again and open a new hole. Only one backfill runs at a time.
 
 ### 5.4. Comparison of Recovery Methods
 
@@ -248,7 +283,7 @@ Security guarantees:
 |--------|:--------:|--------|:------------------:|
 | `restore --from /path` | Yes (offline) | Local archive files | BLAKE3 + genesis_hash |
 | `restore --from-rpc <URL>` | Yes (offline) | Any seed/archiver RPC | BLAKE3 + genesis_hash |
-| `backfillFromPeer` RPC | **No** (hot) | Any node's RPC | BLAKE3 + chain-linking + anchor |
+| `backfillFromPeer` RPC | **No** (hot) | Any node's RPC | BLAKE3 (transit) + `verifyChainIntegrity [H]` on a second node (§5.3) |
 
 ---
 
@@ -282,7 +317,7 @@ Unlike `getBlockByHeight` (JSON — lossy for signatures/VDF proofs), `getBlockR
 
 ### backfillFromPeer
 
-Starts a background task to fill snap sync gaps from a remote node's RPC.
+Starts a background task to fill block-store gaps from a remote node's RPC. Params: `rpc_url` (required) and `skip_divergence_check` (optional, default `false`). It writes the block store only, never the archive directory. Procedure: §5.3.
 
 **Request:**
 ```json
@@ -310,7 +345,7 @@ Returns current backfill progress.
 
 ### verifyChainIntegrity
 
-Full scan of every height from 1 to tip. Detects missing blocks (gaps) anywhere in the chain — not just at the start. Uses lightweight height-index lookups (no block deserialization).
+Full scan of every height from 1 to tip (or `[up_to_height, from_height]`). Detects missing blocks (gaps) anywhere in the chain and returns a BLAKE3 `chainCommitment` over the block hashes. To compare two nodes, pass the same explicit `up_to_height` to both. Full reference: [rpc_reference.md](./rpc_reference.md).
 
 **Request:**
 ```json
@@ -319,12 +354,12 @@ Full scan of every height from 1 to tip. Detects missing blocks (gaps) anywhere 
 
 **Response (complete):**
 ```json
-{"result": {"complete": true, "tip": 1223, "scanned": 1223, "missing": [], "missing_count": 0}}
+{"result": {"complete": true, "tip": 1223, "scanned": 1223, "fromHeight": 1, "missing": [], "missingCount": 0, "chainCommitment": "abc123..."}}
 ```
 
 **Response (gaps found):**
 ```json
-{"result": {"complete": false, "tip": 1000000, "scanned": 1000000, "missing": ["45-67", "1234"], "missing_count": 24}}
+{"result": {"complete": false, "tip": 1000000, "scanned": 1000000, "fromHeight": 1, "missing": ["45-67", "1234"], "missingCount": 24, "chainCommitment": null}}
 ```
 
 Missing heights are compressed into ranges. Performance: ~10-30s for 1M blocks on SSD. Added in v2.0.29.
@@ -339,7 +374,7 @@ Any node can archive blocks by adding `--archive-to`:
 doli-node --network mainnet run --archive-to /path/to/archive
 ```
 
-The node syncs normally and streams finalized blocks to the archive directory. At each start, one background catch-up checks the heights above the manifest `verified_height` and fills missing blocks from the local BlockStore, so the archive stays complete after a resync. RPC answers while it runs.
+The node syncs header-first (never snap, see §2) and streams finalized blocks to the archive directory. At each start, one background catch-up checks the heights above the manifest `verified_height` and fills missing blocks from the local BlockStore, so the archive stays complete after a resync. RPC answers while it runs.
 
 For a dedicated archiver that also serves as a seed:
 

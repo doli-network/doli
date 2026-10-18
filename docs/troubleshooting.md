@@ -237,12 +237,14 @@ sudo systemctl start doli-testnet-nt6
 ```bash
 # Backfill from any seed node's RPC — runs in the background while the node operates
 curl -s -X POST http://127.0.0.1:PORT -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","method":"backfillFromPeer","params":{"rpc_url":"http://127.0.0.1:SEED_PORT"},"id":1}'
+    -d '{"jsonrpc":"2.0","method":"backfillFromPeer","params":{"rpc_url":"http://<source-hostname>:8500"},"id":1}'
 
 # Monitor progress
 curl -s -X POST http://127.0.0.1:PORT -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"backfillStatus","params":{},"id":1}'
 ```
+On mainnet the source URL must be a DNS name (IP literals of private/loopback hosts are refused).
+Verify the result against a second node: [archiver.md §5.3](./archiver.md#53-hot-backfill-fill-and-verify-a-height-hole).
 
 **Fix — Offline backfill (requires restart):**
 ```bash
@@ -284,20 +286,24 @@ sudo systemctl stop doli-node
 # CHECK FIRST that no wallet.json / producer.seed.txt lives inside the data dir:
 find /var/lib/doli/mainnet -name 'wallet*' -o -name '*.seed.txt'
 sudo rm -rf /var/lib/doli/mainnet/state_db /var/lib/doli/mainnet/blocks
-sudo systemctl start doli-node   # snap-syncs from a healthy peer
+sudo systemctl start doli-node   # snap-syncs from a healthy peer (archive/seed: full blocks)
 ```
 Restoring a checkpoint taken **before** the rebuild works too — see
 [disaster-recovery.md](./disaster-recovery.md).
 
-**A completed snap sync also clears it**, but the node will no longer reach one on its own from
-a fork. Since INC-I-204 M6 the recovery classifier admits snap sync only at
-`gap >= SNAP_SYNC_GAP_MIN` (500 blocks behind); no amount of fork evidence, apply failures or
-empty-header responses admits it below that gap. A corroborated fork now terminates in
-`[WEDGED] reason=...` — non-lossy, the node keeps its block history — and the operator exit is
-the audited `forceReorgTo` RPC, not a snap. If a snap sync does occur (genuine behind-ness, a
-bootstrap, or the operator flag), the install replaces the whole set with a root-verified
-snapshot and disarms the marker automatically (INC-I-156 / AUDIT-P2-101). A snap sync that is
-*rejected* (root mismatch) installs nothing and leaves the halt in place, which is correct.
+**A completed snap sync also clears it.** Since INC-I-204 M6 the recovery classifier admits snap
+sync only at `gap >= SNAP_SYNC_GAP_MIN` (500 blocks behind). M6 deleted the empty-header
+fallback (10+ empty responses, gap >= 50) and the deep-fork and rollback-exhausted triggers. Two
+emergency requests remain on a node with snap enabled: 3 apply failures in a row at gap > 50, and
+all peers blacklisted for over 300 s with 20+ empty responses at gap > 12. Otherwise a
+corroborated fork terminates in `[WEDGED] reason=...` — non-lossy, the node keeps its block
+history — and the operator exit is the audited `forceReorgTo` RPC, not a snap. Snap disabled
+(`--no-snap-sync`, `--archive-to` or `--relay-server`) closes every door, including the
+classifier's gap rule: such a node never snap-syncs. If a snap sync does occur (genuine
+behind-ness, a bootstrap, or the operator flag), the install replaces the whole set with a
+root-verified snapshot and disarms the marker automatically (INC-I-156 / AUDIT-P2-101). A snap
+sync that is *rejected* (root mismatch) installs nothing and leaves the halt in place, which is
+correct.
 
 **Do not** delete the marker by hand to silence the message. It is refusing production,
 snapshot service and state-root service precisely because the ledger this node would produce
@@ -342,6 +348,29 @@ this takes longer than the watchdog allows. The watchdog had no start grace: its
    restart.
 
 Regression scenario: GS-023 (`bash scripts/gauntlet-gs023.sh`, standalone, local testnet only).
+
+---
+
+### 1.12. Archive/Seed Returns `Block not found` for a Height Range (INC-I-235)
+
+**Symptom:** an archive or seed node (`--archive-to` / `--relay-server`) answers
+`Block not found` from `getBlockByHeight` for a range in the middle of the chain.
+`verifyChainIntegrity` lists the range in `missing`, and the archive directory has no `.block`
+files for it. The node log shows `[COORDINATOR] action=SnapSync` and then
+`[SNAP_SYNC] Starting snap sync` after a restart.
+
+**Cause:** a binary without the role exemption let the node snap-sync. The node restarted 500 or
+more blocks behind, and the recovery coordinator ordered a snap sync. The snapshot installs state
+at the peers' tip and never fetches the blocks in between, so they reach neither the block store
+nor the archive. Current binaries make `--archive-to` and `--relay-server` imply
+`--no-snap-sync`, and snap disabled also skips the coordinator's snap rule, so the node catches
+up with full blocks.
+
+**Fix:** upgrade the node, then follow the runbook in
+[archiver.md §5.3](./archiver.md#53-hot-backfill-fill-and-verify-a-height-hole): `backfillFromPeer`
+from one node, `verifyChainIntegrity [H]` against a different node. Backfill fills the block store
+only; the archiver then copies the backfilled blocks to the archive directory at the next
+finalized block, or in the background catch-up after a restart.
 
 ---
 

@@ -645,7 +645,7 @@ Any node can archive blocks by adding `--archive-to`:
 doli-node run --archive-to /path/to/archive/
 ```
 
-The archiver streams every applied block to flat files with BLAKE3 checksums. On the DOLI network, the seed/archiver nodes serve this role — they are the DNS-registered entry points, public RPC backends (powering `doli.network/explorer.html`), and disaster recovery sources.
+The archiver streams every applied block to flat files with BLAKE3 checksums. `--archive-to` and `--relay-server` imply `--no-snap-sync`: archive and seed nodes always sync header-first and keep every block. On the DOLI network, the seed/archiver nodes serve this role — they are the DNS-registered entry points, public RPC backends (powering `doli.network/explorer.html`), and disaster recovery sources.
 
 **Quick restore:**
 ```bash
@@ -735,14 +735,15 @@ doli-node checkpoint-info         # Print checkpoint constants compiled into bin
 --external-address <multiaddr>    # External address to advertise to peers
 --bootstrap <multiaddr>           # Bootstrap node (can be specified multiple times)
 --no-dht                          # Disable DHT discovery
---relay-server                    # Enable relay server mode for NAT traversal
+--relay-server                    # Enable relay server mode for NAT traversal (implies --no-snap-sync)
+--no-snap-sync                    # Header-first sync only; keep full block history
 --no-auto-update                  # Disable auto-updates
 --no-auto-rollback                # NO-OP: no automatic rollback exists (see docs/auto_update_system.md section 6)
 --update-notify-only              # Notify only, don't apply updates
 --force-start                     # Skip duplicate key detection (DANGEROUS)
 --yes                             # Skip interactive confirmations
 --chainspec <path>                # Path to chainspec JSON (testnet/devnet only)
---archive-to <path>               # Archive blocks to directory for disaster recovery
+--archive-to <path>               # Archive blocks to directory for disaster recovery (implies --no-snap-sync)
 --checkpoint-height <height>      # Start syncing from trusted checkpoint
 --checkpoint-hash <hash>          # Hash of trusted checkpoint block
 ```

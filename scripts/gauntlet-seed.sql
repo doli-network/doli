@@ -143,6 +143,13 @@ VALUES ('GS-023', 'archive-node-cold-restart',
   'gs023-rpc-30s,gs023-rpc-10s,gs023-second-call-1s,gs023-no-failed-probe,gs023-no-respawn,gs023-reaches-tip,gs023-clean-shutdown', json('{"nodes": 1, "archive_blocks_min": 100000}'), 'scripts/gauntlet-gs023.sh', 'active')
 ON CONFLICT(scenario_id) DO UPDATE SET incident_ids=excluded.incident_ids, description=excluded.description, assertions=excluded.assertions, runner=excluded.runner, status='active';
 
+INSERT INTO gauntlet_scenarios (scenario_id, name, description, incident_ids, assertions, scale_params, runner, status, expect_fail)
+VALUES ('GS-024', 'archive-node-far-behind-restart',
+  'Guards the archive/seed snap hole (INC-I-235): an --archive-to node that restarts 500+ blocks behind must never snap-sync, because a snapshot carries no block history and leaves a permanent Block not found range. scripts/gauntlet-gs024.sh starts ONE separate non-producer instance on its own ports from an APFS clone of the OLDEST canonical seed checkpoint 500..20000 blocks behind the seed tip, with a cloned archive dir cut back to the base height and a fresh node identity. Once its RPC answers it runs under darwin background policy (taskpolicy -b) for 600 s (GS024_THROTTLE_WINDOW; GS024_THROTTLE=0 disables) to model a slow host, then is released. It asserts Rule 2 was reachable (>= 500 behind at the window end or at a snap order, or a [COORDINATOR] decision logged at gap >= 500), no snap line in the log, the instance reaches the seed tip, verifyChainIntegrity [H,1] reports 0 missing and every height base+1..H (1..H with GS024_FULL_SCAN=1) answers getBlockByHeight, the chainCommitment at the same explicit H equals the seed, the archive dir holds every block file up to the finalized height, and the instance exits cleanly on SIGTERM. It prints NOT READY and exits 3 when no base is admissible, a port is busy, a build of this checkout runs, or the scanner interpreter is missing. It never stops, wipes or pkills an existing node and kills only its own PID.',
+  json('["INC-I-235"]'),
+  'gs024-gap-held,gs024-no-snap,gs024-reaches-tip,gs024-no-missing-height,gs024-commitment-matches-seed,gs024-archive-files-present,gs024-clean-exit', json('{"nodes": 1, "min_gap": 500, "max_gap": 20000, "throttle_window_s": 600}'), 'gauntlet-gs024.sh', 'active', 0)
+ON CONFLICT(scenario_id) DO UPDATE SET incident_ids=excluded.incident_ids, description=excluded.description, assertions=excluded.assertions, scale_params=excluded.scale_params, runner=excluded.runner, expect_fail=excluded.expect_fail, status='active';
+
 COMMIT;
 
 -- ── DELIBERATELY UNMAPPED (out of system-dynamics scope) ─────────────────────
