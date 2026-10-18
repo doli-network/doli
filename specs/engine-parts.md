@@ -2120,10 +2120,13 @@ Note: struct PresenceHeartbeat (not Heartbeat) in the tpop module; this is diffe
 - `compute_state_root_from_bytes(cs_bytes, utxo_bytes, ps_bytes)` — verify snapshot integrity from raw bytes
 
 ### Archiver
-- `BlockArchiver` — filesystem block archiver; receives blocks via mpsc channel; stores `{height:010}.block` + `{height:010}.blake3` sidecar + manifest.json
+- `BlockArchiver` — unit struct namespace for the catch-up functions; the archive stores `{height:010}.block` + `{height:010}.blake3` sidecar + manifest.json
 - `ArchiveBlock` — block data for archiving; fields: `height: u64`, `hash: Hash`, `data: Vec<u8>`
-- `BlockArchiver::new(rx, dir)` / `BlockArchiver::run(self)` — constructor and async archiver loop
-- `BlockArchiver::catch_up(dir, block_store, tip)` — static; archives all missing blocks from 1..=tip
+- `BlockArchiver::catch_up(dir, block_store, tip, expected_genesis: Option<&Hash>)` — `Some` = `catch_up_bounded` (returns pairs written); `None` = presence-only fill of 1..=tip
+- `BlockArchiver::catch_up_bounded(dir, block_store, tip, expected_genesis)` — verifies/fills heights above the trusted manifest `verified_height` up to tip; returns `CatchUpReport`
+- `archive_finalized(dir, block_store, block, expected_genesis)` — live path for one finalized block; fills gaps H+1..h-1 from the block store, writes h, advances `verified_height`
+- `fence_stale_archive(dir, expected_genesis)` — O(1): a manifest with a foreign genesis renames `dir` to `<dir>.stale-<ts>` and recreates an empty `dir`
+- Node side (`bins/node/src/node/archive_thread.rs`): `start_archive_thread(node, dir, tip)` runs the fence on the caller, then one detached `doli-archiver` OS thread does stale-dir delete → one `catch_up_bounded` → `blocking_recv` live loop calling `archive_finalized`; it is the only `manifest.json` writer. `run_periodic_tasks` does no archive catch-up (INC-I-249)
 - `manifest_height(dir)` — read latest archived height from manifest.json
 - `restore_from_archive(archive_dir, block_store, expected_genesis_hash)` — full restore with checksum verification
 - `backfill_from_archive(archive_dir, block_store, expected_genesis_hash)` — backfill: skips blocks already in BlockStore; for post-snap-sync gap filling
@@ -2733,7 +2736,7 @@ NOTE: UpdateService, PendingUpdate, and spawn_update_service() are NOT in this c
 - load_bls_key(path) — reads JSON wallet file; returns BlsKeyPair if bls_private_key field present; returns None gracefully for pre-BLS wallets
 
 ### Node Core (62 fields)
-- Node — 62 fields: config, params, block_store, state_db, utxo_set, chain_state, producer_set, mempool, network, seed_peer_ids, seeds_released, sync_manager, shutdown, producer_key, bls_key, last_produced_slot, known_producers, first_peer_connected, equivocation_detector, vdf_calibrator, fork_block_cache, last_resync_time, last_producer_list_change, producer_gset, adaptive_gossip, our_announcement, announcement_sequence, last_broadcast_gset_len, signed_slots_db, consecutive_fork_blocks, shallow_rollback_count, cumulative_rollback_depth, seen_blocks_for_slot, epoch_state, is_active_producer, last_active_status_epoch, vote_tx, pending_update, last_peer_redial, bootstrap_backoff, producer_liveness, genesis_vdf_output, cached_state_root, cached_genesis_producers, port_check_done, maintainer_state, archive_tx, pending_archive, archive_dir, archive_caught_up, ws_sender, minute_tracker, rejected_fork_tips, snap_sync_height, sync_requests_this_interval, last_checkpoint_height, pending_tx_announcements, hardfork_schedule, peer_churn, last_integrity_check_tip, last_active_fork_correction_height
+- Node — 61 fields: config, params, block_store, state_db, utxo_set, chain_state, producer_set, mempool, network, seed_peer_ids, seeds_released, sync_manager, shutdown, producer_key, bls_key, last_produced_slot, known_producers, first_peer_connected, equivocation_detector, vdf_calibrator, fork_block_cache, last_resync_time, last_producer_list_change, producer_gset, adaptive_gossip, our_announcement, announcement_sequence, last_broadcast_gset_len, signed_slots_db, consecutive_fork_blocks, shallow_rollback_count, cumulative_rollback_depth, seen_blocks_for_slot, epoch_state, is_active_producer, last_active_status_epoch, vote_tx, pending_update, last_peer_redial, bootstrap_backoff, producer_liveness, genesis_vdf_output, cached_state_root, cached_genesis_producers, port_check_done, maintainer_state, archive_tx, pending_archive, archive_dir, ws_sender, minute_tracker, rejected_fork_tips, snap_sync_height, sync_requests_this_interval, last_checkpoint_height, pending_tx_announcements, hardfork_schedule, peer_churn, last_integrity_check_tip, last_active_fork_correction_height
 - PEER_CHURN_MAX: usize = 5 — max connect+disconnect events per peer within PEER_CHURN_WINDOW before rate-limit
 - PEER_CHURN_WINDOW: Duration = 30s — rolling window for peer churn tracking
 - Node::set_vote_tx() — wires gossip vote channel to UpdateService

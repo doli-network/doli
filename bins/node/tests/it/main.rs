@@ -119,6 +119,8 @@ mod inc_i_237_m8_admission;
 mod inc_i_237_m8_block;
 mod inc_i_237_m8_common;
 mod inc_i_237_m8_relay;
+mod inc_i_249_archive_fixture;
+mod inc_i_249_archive_startup;
 mod m1_snap_install_identity;
 mod m3_common;
 mod m3_staging_install;

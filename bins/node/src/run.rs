@@ -518,52 +518,16 @@ pub(crate) async fn run_node(
     // Block archiver: streams blocks to filesystem for disaster recovery
     if let Some(ref archive_dir) = archive_to {
         let archive_dir = expand_tilde_path(archive_dir);
-
-        // INC-I-055: Wipe archive directory if it contains data from a different chain.
-        // After a genesis reset in Node::new(), the block store and state_db are wiped
-        // but the archive directory was left behind. Stale archive files then poison
-        // backfill and bridge operations, requiring manual cleanup.
-        if archive_dir.exists() {
-            let node_genesis = node.params.genesis_hash.to_string();
-            let archive_genesis = storage::archiver::manifest_genesis_hash(&archive_dir);
-            if let Some(ref ag) = archive_genesis {
-                if *ag != node_genesis {
-                    warn!(
-                        "[GENESIS_RESET] Archive dir has wrong genesis (archive={:.16} node={:.16}) — wiping {:?}",
-                        ag, node_genesis, archive_dir
-                    );
-                    if let Err(e) = std::fs::remove_dir_all(&archive_dir) {
-                        warn!("[GENESIS_RESET] Failed to wipe archive dir: {}", e);
-                    } else {
-                        info!("[GENESIS_RESET] Archive directory wiped successfully");
-                    }
-                }
-            }
-        }
-
         let tip = node.best_height().await;
-
-        // Catch up: archive any blocks we missed while down
-        if tip > 0 {
-            info!("Archiver: catching up to height {}...", tip);
-            let genesis = node.params.genesis_hash;
-            match storage::archiver::BlockArchiver::catch_up(
-                &archive_dir,
-                node.block_store(),
-                tip,
-                Some(&genesis),
-            ) {
-                Ok(n) if n > 0 => info!("Archiver: caught up {} blocks", n),
-                Ok(_) => info!("Archiver: already up to date"),
-                Err(e) => warn!("Archiver catch-up error: {}", e),
+        match crate::node::archive_thread::start_archive_thread(&mut node, archive_dir, tip) {
+            Ok(at) => {
+                if let Some(stale) = at.stale_dir {
+                    info!("Archiver: removing stale archive {:?} in background", stale);
+                }
+                drop(at.thread);
             }
+            Err(e) => warn!("Archiver not started: {}", e),
         }
-
-        let (archive_tx, archive_rx) = tokio::sync::mpsc::channel(256);
-        node.set_archive_tx(archive_tx, archive_dir.clone());
-        let archiver = storage::archiver::BlockArchiver::new(archive_rx, archive_dir);
-        tokio::spawn(async move { archiver.run().await });
-        info!("Block archiver enabled");
     }
 
     // Spawn RocksDB metrics scraper (Prometheus). Reads runtime properties

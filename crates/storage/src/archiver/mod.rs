@@ -1,7 +1,4 @@
-use std::path::{Path, PathBuf};
-
-use tokio::sync::mpsc;
-use tracing::{error, info};
+use std::path::Path;
 
 mod catch_up;
 mod fence;
@@ -37,42 +34,9 @@ pub struct CatchUpReport {
 /// Each block is stored as `{height:010}.block` with a BLAKE3 checksum sidecar
 /// (`{height:010}.blake3`). `manifest.json` holds `latest_height` (high-water
 /// mark), `genesis_hash` and `verified_height` (contiguous verified height).
-pub struct BlockArchiver {
-    rx: mpsc::Receiver<ArchiveBlock>,
-    dir: PathBuf,
-}
+pub struct BlockArchiver;
 
 impl BlockArchiver {
-    pub fn new(rx: mpsc::Receiver<ArchiveBlock>, dir: PathBuf) -> Self {
-        Self { rx, dir }
-    }
-
-    /// Run the archiver loop. Call this in a tokio::spawn.
-    pub async fn run(mut self) {
-        if let Err(e) = std::fs::create_dir_all(&self.dir) {
-            error!(
-                "[ARCHIVER] Failed to create archive dir {:?}: {}",
-                self.dir, e
-            );
-            return;
-        }
-
-        let last = manifest::read_manifest_height_from(&self.dir);
-        info!(
-            "[ARCHIVER] Started — dir={:?}, last_archived={}",
-            self.dir,
-            last.unwrap_or(0)
-        );
-
-        while let Some(block) = self.rx.recv().await {
-            if let Err(e) = self.archive_block(&block) {
-                error!("[ARCHIVER] Failed to archive block {}: {}", block.height, e);
-            }
-        }
-
-        info!("[ARCHIVER] Channel closed, shutting down");
-    }
-
     /// Catch up the archive to `tip` from the BlockStore.
     ///
     /// `Some(genesis)`: bounded, genesis-verified catch-up
@@ -99,27 +63,5 @@ impl BlockArchiver {
         expected_genesis: &crypto::Hash,
     ) -> std::io::Result<CatchUpReport> {
         catch_up::catch_up_bounded(dir, block_store, tip, expected_genesis)
-    }
-
-    fn archive_block(&self, block: &ArchiveBlock) -> Result<(), std::io::Error> {
-        if write::block_path(&self.dir, block.height).exists() {
-            return Ok(());
-        }
-
-        write::write_pair(&self.dir, block.height, &block.data)?;
-
-        let genesis = doli_core::transaction::legacy::deserialize_block_compat(&block.data)
-            .map(|b| b.header.genesis_hash);
-        manifest::save_carrying(&self.dir, block.height, &block.hash, genesis.as_ref())?;
-
-        if block.height.is_multiple_of(100) {
-            info!(
-                "[ARCHIVER] Archived block {} (hash={})",
-                block.height,
-                &block.hash.to_string()[..16]
-            );
-        }
-
-        Ok(())
     }
 }
