@@ -19,6 +19,8 @@ mod inc_i_171_m3_withdrawal_inputs;
 mod inc_i_180_withdrawal_holdings;
 mod inc_i_249_archive_catchup;
 mod inc_i_249_archive_catchup_api;
+mod inc_i_249_legacy_crossing;
+mod inc_i_249_m15_outcome_probe;
 mod inc_i_249_outcome_probe;
 mod m1_state_root_decode_seam;
 mod m2_caller_port_locks;

@@ -4,10 +4,11 @@ use std::path::Path;
 
 use crypto::Hash;
 use doli_core::transaction::legacy::deserialize_block_compat;
+use doli_core::BlockHeader;
 use tracing::{debug, error, info, warn};
 
 use super::manifest::{self, Manifest};
-use super::write::{block_path, pair_exists, write_pair};
+use super::write::{blake3_hex, block_path, pair_exists, sum_path, write_pair};
 use super::{ArchiveBlock, CatchUpReport};
 use crate::BlockStore;
 
@@ -49,6 +50,26 @@ fn check_file(dir: &Path, h: u64, expected: &Hash) -> Check {
     };
     match deserialize_block_compat(&data) {
         Some(b) if b.header.genesis_hash == *expected => Check::Valid(b.hash()),
+        Some(_) => Check::Foreign,
+        None => check_legacy(dir, h, &data, expected),
+    }
+}
+
+/// Undeserializable file: intact when its `.blake3` sidecar matches and its
+/// header prefix decodes; then judged by the header's genesis.
+fn check_legacy(dir: &Path, h: u64, data: &[u8], expected: &Hash) -> Check {
+    let header = std::fs::read_to_string(sum_path(dir, h))
+        .ok()
+        .filter(|sum| sum.trim() == blake3_hex(data))
+        .and_then(|_| bincode::deserialize::<BlockHeader>(data).ok());
+    match header {
+        Some(header) if header.genesis_hash == *expected => {
+            debug!(
+                "[ARCHIVER] Legacy archive file at height {} kept (sidecar + header verified)",
+                h
+            );
+            Check::Valid(header.hash())
+        }
         Some(_) => Check::Foreign,
         None => Check::Unusable,
     }
