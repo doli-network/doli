@@ -21,7 +21,9 @@
 #   O13 gs024_main throttle window -- -B no earlier than ${GS024_THROTTLE_WINDOW:-600} s after -b; gs024-gap-held PASS iff
 #                                     seed - instance >= MIN_GAP at the window end or at the first snap order
 #                                     (end=snap_ordered), or a logged [COORDINATOR] action=X gap=N with N >= MIN_GAP
-#                                     (end=coordinator); RESULT carries window_gap=N, post_window_s=S|none
+#                                     (end=coordinator), or the post-lockout gap (first sample >= RPC-up +
+#                                     ${GS024_LOCKOUT_EVAL:-90} s) >= MIN_GAP; detail post_lockout_gap=N|none
+#                                     (none = tip reached first); RESULT carries window_gap=N, post_window_s=S|none
 #   O14 gs024_main hole scan       -- scanner ($GS024_PYTHON) on the instance URL, lo = base+1 | 1 (GS024_FULL_SCAN=1),
 #                                     hi = H; scanner missing>0, errors>0 or rc!=0 -> FAIL gs024-no-missing-height + range
 #   O15 gauntlet-gs024-scan.py URL LO HI [--compare URL2] -- one line `scan LO..HI checked= missing= ranges=
@@ -42,12 +44,14 @@
 #   MT0 unthrottled, instance calls 2-3 fail · MT1 throttled, tip reached · MT2 throttled, catch-up timeout
 #   W1 default window static · GH1 throttled, 20 behind through a 2 s window, catches up on -B
 #   GH2 throttled, at tip inside the window · GH3 snap ordered 20 behind · GH4 coordinator gap 20 · GH5 coordinator gap 9 · FS1 default lo · FS2 FULL_SCAN=1 · FS3 scanner missing · FS4 scanner errors
+#   GH6 post-lockout gap 20, window-end gap 5, no line · GH7 post-lockout gap 5, window-end 5 · GH8 20 behind, tip before the
+#   post-lockout sample · GH9 default LOCKOUT_EVAL static
 #   SC1 holes · SC2 none · SC3 --compare mismatch · SC4 node down · SC5 usage error
 #   GT1 each gs024-* token · GT2 each gs023-* token · GT3 unknown gs024-like token
 # O16 gauntlet.sh assert() TOKEN (real function, extracted) -- standalone gs023-*/gs024-* token: rc 2, SKIP reason
 #                                     names its runner, no FAIL reason | unknown token: rc 1 + FAIL "unknown assertion token"
 # MATRIX: O1:R0a-R0b · O2:B1-B13 · O3:P1-P9 · O4:R1-R6 · O5:X1-X3 · O6:M1-M4 · O7:L1-L2 · O8:S1-S12
-#         O9:T1-T6,S10 · O10:I1-I9 · O11:G1-G2 · O12:MT0-MT2 · O13:W1,GH1-GH5 · O14:FS1-FS4 · O15:SC1-SC5
+#         O9:T1-T6,S10 · O10:I1-I9 · O11:G1-G2 · O12:MT0-MT2 · O13:W1,GH1-GH9 · O14:FS1-FS4 · O15:SC1-SC5
 #         O16:GT1-GT3
 
 # shellcheck source=scripts/test_gauntlet_gs024_lib.sh
@@ -529,6 +533,26 @@ run_sandbox gh5_coord_small 50000; T_THR=1
 echo "INFO network::sync::manager::block_lifecycle: [COORDINATOR] action=HeaderFirstSync gap=9 last_applied=0s peers=7" > "$FIX_DIR/snapline"; run_full
 ck "GH5 coordinator decided at gap 9 < 10, at tip inside the window: FAIL gs024-gap-held" \
    '[[ "$RC" -eq 1 ]] && fail_line gs024-gap-held | grep -qE "^ *FAIL "' "$(mt_det) line=[$(fail_line gs024-gap-held)]"
+
+# GH6 — REQ-ARCHSYNC-004 — Decision: measured, a fixed binary was ~1,750 behind when its post-restart lockout ended, logged no coordinator line and was 594 behind at the window end; judging only the window end makes a correct run pass or fail on host speed.
+run_sandbox gh6_post_lockout 49980; T_THR=1; T_WIN=6; T_LOCK=1; T_TP=tpcatch; echo "25 49995" > "$FIX_DIR/tip.later"; run_full
+ck "GH6 post-lockout gap 20 >= 10, window-end gap 5, no coordinator line: PASS gs024-gap-held post_lockout_gap=20" \
+   'fail_line gs024-gap-held | grep -qE "^ *PASS " && out_has "post_lockout_gap=20( |\$)" && result_has window_gap=5' "$(mt_det) line=[$(fail_line gs024-gap-held)] detail=[$(printf '%s\n' "$OUT" | grep -m 1 -A 1 'gs024-gap-held' | tail -n 1)]"
+ck "GH6 no snap, catches up after -B: RESULT PASS, exit 0" '[[ "$RC" -eq 0 ]] && out_has "^GS024 RESULT: PASS "' "$(mt_det)"
+
+# GH7 — REQ-ARCHSYNC-004 — Decision: a gap under MIN_GAP when the lockout ends is the medium-gap path; Rule 2 was never reachable.
+run_sandbox gh7_post_lockout_small 49995; T_THR=1; T_WIN=3; T_LOCK=1; T_TP=tpcatch; run_full
+ck "GH7 post-lockout gap 5 < 10, window-end gap 5, no coordinator line: FAIL gs024-gap-held post_lockout_gap=5" \
+   '[[ "$RC" -eq 1 ]] && fail_line gs024-gap-held | grep -qE "^ *FAIL .*post_lockout_gap=5( |\$)"' "$(mt_det) line=[$(fail_line gs024-gap-held)]"
+
+# GH8 — REQ-ARCHSYNC-004 — Decision: a gap sampled before the lockout ends was never seen by the coordinator; an instance at the tip by then never reached Rule 2.
+run_sandbox gh8_tip_before_lockout 49980; T_THR=1; T_LOCK=3; echo "5 50000" > "$FIX_DIR/tip.later"; run_full
+ck "GH8 20 behind at RPC-up, at tip before the post-lockout sample: FAIL gs024-gap-held post_lockout_gap=none" \
+   '[[ "$RC" -eq 1 ]] && fail_line gs024-gap-held | grep -qE "^ *FAIL .*post_lockout_gap=none( |\$)"' "$(mt_det) line=[$(fail_line gs024-gap-held)]"
+
+# GH9 — REQ-ARCHSYNC-004 — Decision: the node holds a 60 s post-restart lockout and ticks every ~30 s, so Rule 2 is first evaluated by ~90 s; an earlier default samples a gap the coordinator never saw.
+sck "GH9 static: post-lockout sample defaults to \${GS024_LOCKOUT_EVAL:-90}, named in the runner Env header" \
+    'code_lines | grep -qE "GS024_LOCKOUT_EVAL:-90([^0-9]|\$)" && head -n 16 "$LIB" | grep -qE "^#.*GS024_LOCKOUT_EVAL"' "GS024_LOCKOUT_EVAL:-90 absent from $LIB / $HLIB or from the Env header"
 
 # FS2 — REQ-ARCHSYNC-004 — Decision: holes below the base are invisible to a base+1 scan; the drills need genesis..H.
 run_sandbox fs2_full 50000; T_THR=0; T_FULL=1; run_full

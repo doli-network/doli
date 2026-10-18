@@ -21,6 +21,8 @@ _gs024_cfg() {
     gs_py="${GS024_PYTHON:-python3}"
     gs_scan="$_GS024_ROOT/scripts/gauntlet-gs024-scan.py"
     gs_win="${GS024_THROTTLE_WINDOW:-600}"
+    gs_lock="${GS024_LOCKOUT_EVAL:-90}"
+    _gs024_num "$gs_lock" || gs_lock=90
     gs_thr=0
     [ "${GS024_THROTTLE:-1}" = 1 ] && gs_thr=1
     return 0

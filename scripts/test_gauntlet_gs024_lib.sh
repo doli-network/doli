@@ -136,7 +136,7 @@ new_sandbox() {
     CURL_LOG="$CASE_DIR/curl.log"; LSOF_LOG="$CASE_DIR/lsof.log"; PGREP_LOG="$CASE_DIR/pgrep.log"
     MUTATE_LOG="$CASE_DIR/mutate.log"; BIN_LOG="$CASE_DIR/bin.log"
     T_MIN=""; T_MAX=""; T_ALLOW=""; T_P2P=""; T_RPC=""; T_MET=""; T_SEED_URL=""; STDIN_FILE=""
-    T_THR=""; T_TRIES=""; T_RTO=""; T_GRACE=""; T_TIMEOUT=""; T_WIN=""; T_FULL=""; T_PY=""; T_TP=""
+    T_THR=""; T_TRIES=""; T_RTO=""; T_GRACE=""; T_TIMEOUT=""; T_WIN=""; T_FULL=""; T_PY=""; T_TP=""; T_LOCK=""
     mkdir -p "$BIN_DIR" "$FIX_DIR/$SEED_PORT" "$HOME_DIR/testnet" "$POOL_DIR" "$CWD_DIR" \
         "$CASE_DIR/nodebin" "$CASE_DIR/seedarch" "$CASE_DIR/seedckpt"
     : > "$CURL_LOG"; : > "$LSOF_LOG"; : > "$PGREP_LOG"; : > "$MUTATE_LOG"; : > "$BIN_LOG"
@@ -171,7 +171,8 @@ _env() {
     export PATH="$BIN_DIR:$ORIG_PATH" HOME="$HOME_DIR"
     export FIX_DIR CURL_LOG LSOF_LOG PGREP_LOG MUTATE_LOG BIN_LOG
     unset GS024_MIN_GAP GS024_MAX_GAP GS024_P2P_PORT GS024_RPC_PORT GS024_METRICS_PORT GS024_ALLOW_BUILD GS024_LIB_ONLY \
-        GS024_THROTTLE GS024_RPC_TRIES GS024_RPC_TIMEOUT GS024_STOP_GRACE GS024_TIMEOUT GS024_THROTTLE_WINDOW GS024_FULL_SCAN
+        GS024_THROTTLE GS024_RPC_TRIES GS024_RPC_TIMEOUT GS024_STOP_GRACE GS024_TIMEOUT GS024_THROTTLE_WINDOW GS024_FULL_SCAN \
+        GS024_LOCKOUT_EVAL
     export GS024_TASKPOLICY="$BIN_DIR/${T_TP:-tpstub}" GS024_PYTHON="${T_PY:-$BIN_DIR/pystub}"
     [ -n "$T_THR" ] && export GS024_THROTTLE="$T_THR"
     [ -n "$T_TRIES" ] && export GS024_RPC_TRIES="$T_TRIES"
@@ -180,6 +181,7 @@ _env() {
     [ -n "$T_TIMEOUT" ] && export GS024_TIMEOUT="$T_TIMEOUT"
     [ -n "$T_WIN" ] && export GS024_THROTTLE_WINDOW="$T_WIN"
     [ -n "$T_FULL" ] && export GS024_FULL_SCAN="$T_FULL"
+    [ -n "$T_LOCK" ] && export GS024_LOCKOUT_EVAL="$T_LOCK"
     export GS024_POOL="$POOL_DIR" GS024_SEED_RPC="${T_SEED_URL:-http://127.0.0.1:$SEED_PORT}"
     export GS024_SEED_ARCHIVE="$CASE_DIR/seedarch" GS024_SEED_CKPT_DIR="$CASE_DIR/seedckpt" GS024_BIN="$NODE_BIN"
     [ -n "$T_MIN" ] && export GS024_MIN_GAP="$T_MIN"
@@ -352,8 +354,13 @@ if [ -n "$a" ] && read -r lo hi < "$FIX_DIR/arch.range"; then
 fi
 [ -f "$FIX_DIR/snapline" ] && cat "$FIX_DIR/snapline"
 trap 'echo "node TERM" >> "${CURL_LOG:?}"; exit 0' TERM
-n=0
-while [ "$n" -lt 900 ]; do /bin/sleep 0.1; n=$((n + 1)); done
+n=0; ld=""; lt=""
+# tip.later "ITER TIP": the instance height becomes TIP after ITER 0.1 s ticks.
+[ -f "$FIX_DIR/tip.later" ] && read -r ld lt < "$FIX_DIR/tip.later"
+while [ "$n" -lt 900 ]; do
+    /bin/sleep 0.1; n=$((n + 1))
+    [ "$n" = "$ld" ] && echo "$lt" > "$FIX_DIR/8590/tip"
+done
 STUB
     chmod +x "$BIN_DIR/df" "$NODE_BIN"
 }

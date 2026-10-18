@@ -10,7 +10,7 @@
 # Env: GS024_POOL GS024_SEED_RPC GS024_SEED_ARCHIVE GS024_SEED_CKPT_DIR GS024_BIN GS024_PYTHON
 #   GS024_MIN_GAP GS024_MAX_GAP GS024_P2P_PORT GS024_RPC_PORT GS024_METRICS_PORT GS024_ALLOW_BUILD
 #   GS024_THROTTLE (1) GS024_THROTTLE_WINDOW (600) GS024_TASKPOLICY GS024_FULL_SCAN (1 = scan 1..H)
-#   GS024_TIMEOUT GS024_RPC_TIMEOUT GS024_RPC_TRIES GS024_STOP_GRACE GS024_LIB_ONLY (1 = define only)
+#   GS024_LOCKOUT_EVAL (90 = s after RPC-up of the post-lockout gap sample) GS024_TIMEOUT GS024_RPC_TIMEOUT GS024_RPC_TRIES GS024_STOP_GRACE GS024_LIB_ONLY (1 = define only)
 # --keep keeps the run dir (the instance is still stopped); restart it with its start.sh.
 # Safety: signals only the PID it started; deletes only its run dir and pool ckpt-h* dirs.
 
@@ -112,8 +112,8 @@ _gs024_res() {
     return 0
 }
 
-# Rule 2 was reachable: >= MIN_GAP behind at the window end or at a snap order, or the coordinator
-# logged a decision at gap >= MIN_GAP (a fixed binary may catch up inside the window).
+# Rule 2 was reachable: >= MIN_GAP behind at the window end, at a snap order or when the post-restart
+# lockout ended (first coordinator evaluation), or the coordinator logged a decision at gap >= MIN_GAP.
 _gs024_check_gap() {
     local ok=0 why="${GS_WWHY:-none}" c
     case "$why" in
@@ -122,7 +122,8 @@ _gs024_check_gap() {
     c="$(_gs024_log | grep -oE '\[COORDINATOR\] action=[A-Za-z]+ gap=[0-9]+' | awk -v m="$gs_min" '
         { a = $2; g = $3; sub(/^action=/, "", a); sub(/^gap=/, "", g); if (g + 0 >= m + 0) { print a ":" g; exit } }')"
     if [ "$ok" = 0 ] && [ -n "$c" ]; then ok=1; why=coordinator; fi
-    _gs024_res gs024-gap-held "$ok" "window_gap=${GS_WGAP:-none} min_gap=$gs_min end=$why throttle_end=${GS_WWHY:-none} coordinator=${c:-none} window_s=$gs_win throttle=$gs_thr"
+    if [ "$ok" = 0 ] && _gs024_num "$GS_PLGAP" && [ "$GS_PLGAP" -ge "$gs_min" ]; then ok=1; why=post_lockout; fi
+    _gs024_res gs024-gap-held "$ok" "window_gap=${GS_WGAP:-none} post_lockout_gap=${GS_PLGAP:-none} min_gap=$gs_min end=$why throttle_end=${GS_WWHY:-none} coordinator=${c:-none} window_s=$gs_win lockout_eval_s=$gs_lock throttle=$gs_thr"
 }
 
 # _gs024_check_holes BASE_H H — verifyChainIntegrity [H,1] + scanner LO..H (LO = base+1 | 1).
@@ -285,7 +286,7 @@ _gs024_prepare() {
     return 0
 }
 
-# _gs024_catchup — launch, throttle window, wait for the tip. Sets reached tcatch hn st GS_WGAP GS_WWHY.
+# _gs024_catchup — launch, throttle window, wait for the tip. Sets reached tcatch hn st GS_WGAP GS_WWHY GS_PLGAP.
 _gs024_catchup() {
     local now h last=0 tthr="" snap=""
     t0="$(date +%s)"
@@ -302,6 +303,10 @@ _gs024_catchup() {
             [ "$gs_thr" = 1 ] && gs024_throttle on "$PID" && GS_THR_ON=1
             tthr="$(date +%s)"
             echo "gs024: RPC up at t=$((tthr - t0))s height=$h seed=$st; throttle=$GS_THR_ON for ${gs_win}s"
+        fi
+        if [ -n "$tthr" ] && [ -z "$GS_PLGAP" ] && [ "$now" -ge $((tthr + gs_lock)) ] && _gs024_num "$h"; then
+            GS_PLGAP=$((st - h))
+            echo "gs024: post-lockout sample at t=$((now - t0))s height=$h seed=$st gap=$GS_PLGAP"
         fi
         if [ -z "$snap" ]; then
             snap="$(_gs024_snap_line)"
@@ -341,7 +346,7 @@ gs024_main() {
         esac
     done
     R=""; PID=""; TIP=""; GS_TORN=0; GS_FORCED=0; GS_FAIL=0; GS_RUNDIR=none; GS_RESTART=0
-    GS_MISS_N=unknown; GS_MISS_R=none; GS_THR_ON=0; GS_TWEND=""; GS_WGAP=""; GS_WWHY=""
+    GS_MISS_N=unknown; GS_MISS_R=none; GS_THR_ON=0; GS_TWEND=""; GS_WGAP=""; GS_WWHY=""; GS_PLGAP=""
     trap _gs024_on_exit EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
