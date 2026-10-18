@@ -79,6 +79,14 @@ fn combined(out: &Output) -> String {
     format!("{}{}", stdout_of(out), stderr_of(out))
 }
 
+/// True when `number` is a whole token of `seen`. `info` also prints random hex keys and a
+/// bech32 address; a substring check fails whenever one of them happens to contain the digits
+/// (seen once in a full workspace run: a BLS key with "176200" at offset 2).
+fn has_number(seen: &str, number: &str) -> bool {
+    seen.split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|token| token == number)
+}
+
 fn wallet_json(path: &Path) -> serde_json::Value {
     let contents = std::fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("cannot read wallet {}: {e}", path.display()));
@@ -202,7 +210,7 @@ fn p1a_legacy_wallet_on_mainnet_recommends_migration_with_the_mainnet_height() {
         "P1a/O1: the hint must name the step that produces the phrase-derived key. Got:\n{seen}"
     );
     assert!(
-        seen.contains("457855"),
+        has_number(&seen, "457855"),
         "P1a/O2: the hint must quote the mainnet bls_key_rotation_activation_height (457_855, \
          crates/core/src/network_params/defaults.rs). Without it the operator cannot tell \
          whether the rotation is submittable today. Got:\n{seen}"
@@ -237,11 +245,11 @@ fn p1b_legacy_wallet_on_testnet_quotes_the_testnet_height_not_the_mainnet_one() 
         "P1b/O1: the hint must render on testnet too. Got:\n{seen}"
     );
     assert!(
-        seen.contains("176200"),
+        has_number(&seen, "176200"),
         "P1b/O2: on testnet the hint must quote 176_200. Got:\n{seen}"
     );
     assert!(
-        !seen.contains("457855"),
+        !has_number(&seen, "457855"),
         "P1b/O2: the mainnet height must not be printed to a testnet operator — the height has \
          to come from NetworkParams::defaults(network), not from a literal. Got:\n{seen}"
     );
@@ -274,12 +282,12 @@ fn p1c_legacy_wallet_on_devnet_says_not_activated_instead_of_printing_u64_max() 
          so in words. Got:\n{seen}"
     );
     assert!(
-        !seen.contains("18446744073709551615"),
+        !has_number(&seen, "18446744073709551615"),
         "P1c/O2: u64::MAX must never be rendered as a decimal height — an operator cannot wait \
          for it and cannot compare it with getChainInfo. Got:\n{seen}"
     );
     assert!(
-        !seen.contains("457855") && !seen.contains("176200"),
+        !has_number(&seen, "457855") && !has_number(&seen, "176200"),
         "P1c/O2: another network's height must not leak into a devnet report. Got:\n{seen}"
     );
 }
@@ -306,7 +314,7 @@ fn p2_seed_derived_wallet_is_not_told_to_migrate() {
          rotation there costs a transaction fee and a node restart for no change. Got:\n{seen}"
     );
     assert!(
-        !seen.contains("rotate-bls") && !seen.contains("457855"),
+        !seen.contains("rotate-bls") && !has_number(&seen, "457855"),
         "P2/O1+O2: neither the command nor the activation height belongs in a version-3 \
          report. Got:\n{seen}"
     );
@@ -340,7 +348,7 @@ fn p3_legacy_wallet_without_a_bls_key_gets_no_rotation_hint() {
          read, so recommending it here sends the operator down a dead end. Got:\n{seen}"
     );
     assert!(
-        !seen.contains("457855"),
+        !has_number(&seen, "457855"),
         "P3/O2: no height without a hint to carry it. Got:\n{seen}"
     );
 }
