@@ -14,6 +14,8 @@
 #   seed-parity        GS-023 block: runner, INC-I-249, 7-id set; ids emitted by the runner; DB row
 #   gauntlet-skip-arm  each gs023 id -> rc 2 + SKIP_REASONS names the runner; control: unknown -> rc 1
 #   skip-exit-2        (a) binary missing · (b) stub binary + empty testnet dir -> exit 2, stub unused
+#   build-scope        cargo/rustc of another repo (u) · under ROOT/.claude/worktrees (w) -> no build SKIP ·
+#                      cargo/rustc naming this checkout ROOT/ (r) -> `SKIP gs023: a build is running (cargo/rustc)` naming ROOT
 #   harness-safety     runner clean · planted pkill / foreign kill / testnet rm / ln -> 4 of 4 flagged
 #   docs-synced        post-fix wording present, pre-fix wording gone
 #   manifest-strip     key present -> removed, rest kept · key absent -> unchanged ·
@@ -152,6 +154,53 @@ c_skip_exit_2() {
   pass skip-exit-2 "a+b exit 2, stub never run"
 }
 
+# Process-listing stubs driven by $T_PROCS (one args line per process); `ps -p` calls reach /bin/ps.
+mk_proc_stubs() {
+  mk_stubs
+  cat >"$T/bin/pgrep" <<'EOF'
+#!/bin/sh
+for a in "$@"; do n="$a"; done
+[ -f "${T_PROCS:-}" ] || exit 1
+awk -v n="$n" '{ b = $1; sub(/.*\//, "", b) } b == n { f = 1 } END { exit !f }' "$T_PROCS"
+EOF
+  cat >"$T/bin/ps" <<'EOF'
+#!/bin/sh
+case " $* " in *" -p "*) exec /bin/ps "$@" ;; esac
+[ -f "${T_PROCS:-}" ] && cat "$T_PROCS"
+exit 0
+EOF
+  chmod +x "$T/bin/pgrep" "$T/bin/ps"
+}
+
+# REQ-ARCH-010 — Decision: a FAIL means GS-023 SKIPs (rc 2, counted as FAIL by gauntlet-run.sh) whenever ANY cargo/rustc runs on the machine (measured: another project's `cargo test`), or runs while this checkout is being built.
+c_build_scope() {
+  local rc c
+  mk_proc_stubs
+  for c in u w; do
+    if [ "$c" = u ]; then
+      printf '%s\n' '/opt/tools/cargo test --manifest-path /opt/other-project/Cargo.toml' \
+        'rustc --crate-name other --edition=2021 /opt/other-project/src/lib.rs' >"$T/procs.$c"
+    else
+      printf '%s\n' "rustc --crate-name wt --edition=2021 $ROOT/.claude/worktrees/other/src/lib.rs" >"$T/procs.$c"
+    fi
+    guarded "$T/bs-$c.log" T_PROCS="$T/procs.$c" GS023_BINARY=/nonexistent/doli-node
+    rc=$?
+    if grep -q '^SKIP gs023: a build is running' "$T/bs-$c.log"; then
+      fail build-scope "($c) a cargo/rustc outside this checkout caused the build SKIP: $(grep -m 1 '^SKIP' "$T/bs-$c.log")"; return
+    fi
+    { [ "$rc" = 2 ] && grep -q '^SKIP gs023: binary ' "$T/bs-$c.log"; } ||
+      { fail build-scope "($c) exit $rc, want 2 at the next precondition (binary): $(tail -1 "$T/bs-$c.log")"; return; }
+  done
+  printf '%s\n' "/opt/tools/cargo build --release --manifest-path $ROOT/Cargo.toml" >"$T/procs.r"
+  guarded "$T/bs-r.log" T_PROCS="$T/procs.r" GS023_BINARY=/nonexistent/doli-node
+  rc=$?
+  { [ "$rc" = 2 ] && grep -q '^SKIP gs023: a build is running (cargo/rustc)' "$T/bs-r.log"; } ||
+    { fail build-scope "(r) exit $rc, want 2 + 'SKIP gs023: a build is running (cargo/rustc)': $(tail -1 "$T/bs-r.log")"; return; }
+  grep '^SKIP gs023: a build is running' "$T/bs-r.log" | grep -qF -- "$ROOT" ||
+    { fail build-scope "(r) the build SKIP reason does not name this checkout $ROOT: $(grep -m 1 '^SKIP' "$T/bs-r.log")"; return; }
+  pass build-scope "other repo + worktree: no build SKIP; this checkout: SKIP naming ROOT"
+}
+
 # Prints one line per unsafe construct in the non-comment lines of $1.
 unsafe() {
   local code
@@ -245,6 +294,7 @@ c_runner_present
 c_seed_parity
 c_skip_arm
 c_skip_exit_2
+c_build_scope
 c_harness_safety
 c_docs
 c_manifest_strip

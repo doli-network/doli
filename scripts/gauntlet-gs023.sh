@@ -93,6 +93,12 @@ alive() {
   [ -n "$st" ] && [ "${st#Z}" = "$st" ]
 }
 ours() { ps -p "$1" -o command= 2>/dev/null | grep -qF -- "$S"; }
+# Prints cargo|rustc when a build of THIS checkout runs (its args name ROOT/, not a worktree under it).
+build_running() {
+  ps -axww -o args= 2>/dev/null | awk -v r="$ROOT/" -v w="$ROOT/.claude/worktrees/" '
+    { b = $1; sub(/.*\//, "", b) }
+    (b == "cargo" || b == "rustc") && index($0, r) && !index($0, w) { print b; exit }'
+}
 
 evidence() {
   [ "$EVIDENCE_DONE" = 1 ] && return 0
@@ -162,7 +168,7 @@ PY
 }
 
 # --- preconditions --------------------------------------------------------------
-{ pgrep -x cargo || pgrep -x rustc; } >/dev/null 2>&1 && skip "a build is running (cargo/rustc)"
+[ -n "$(build_running)" ] && skip "a build is running (cargo/rustc) in this checkout $ROOT"
 [ -f "$GS023_BINARY" ] && [ -x "$GS023_BINARY" ] || skip "binary $GS023_BINARY missing or not executable"
 for p in "$GS023_P2P_PORT" "$GS023_RPC_PORT" "$GS023_METRICS_PORT"; do
   port_busy "$p" && skip "TCP port $p is busy"
