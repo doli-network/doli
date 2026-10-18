@@ -368,7 +368,8 @@ up with full blocks.
 
 **Fix:** upgrade the node, then follow the runbook in
 [archiver.md §5.3](./archiver.md#53-hot-backfill-fill-and-verify-a-height-hole): `backfillFromPeer`
-from one node, `verifyChainIntegrity [H]` against a different node. Backfill fills the block store
+from one node, then `verifyChainIntegrity [H]` (header hashes) and a per-height `getBlockRaw`
+`blake3` compare (block bytes) against a different node. Backfill fills the block store
 only; the archiver then copies the backfilled blocks to the archive directory at the next
 finalized block, or in the background catch-up after a restart.
 

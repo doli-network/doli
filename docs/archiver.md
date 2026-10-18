@@ -220,20 +220,26 @@ How it works:
 
 ### 5.3. Hot Backfill: Fill and Verify a Height Hole
 
-Use this runbook when a running node answers `Block not found` for a height range (for example, a snap sync skipped the range). The node keeps running, and producing, during steps 1-4.
+Use this runbook when a running node answers `Block not found` for a height range (for example, a snap sync skipped the range). The node keeps running, and producing, during steps 1-5.
 
 Two other nodes take part:
 - **Source**: a node that has the full range. `backfillFromPeer` copies blocks from it.
-- **Verifier**: a different node. It proves that the copied blocks match the canonical chain. Never use the source as the verifier: the source supplies both the block and its BLAKE3 checksum, so the checksum proves transit integrity only.
+- **Verifier**: a different node that holds the range from its own validated sync (header-first sync or `restore`). Never use the source as the verifier, and never use a node that received the range by a backfill or restore from the source. Steps 4 and 5 prove that the repaired node agrees with the verifier's copy. They do not re-validate either copy.
 
-`backfillFromPeer` and `verifyChainIntegrity` are admin methods. Requests from loopback or a private (RFC 1918) address need no token; a request from a public address needs `Authorization: Bearer <admin-token>` (the target node's `DOLI_RPC_ADMIN_TOKEN`). On mainnet, `backfillFromPeer` refuses a URL whose host is a private, loopback or link-local IP literal, so use a DNS name. Set these once:
+Run every command on the repaired node's host. `backfillFromPeer` and `verifyChainIntegrity` are admin methods; `getBlockRaw` is not. Send admin requests to `127.0.0.1` only: a loopback request needs no token. Reach the verifier through an ssh tunnel, so that its admin requests also arrive over loopback:
 
 ```bash
-NODE=http://127.0.0.1:8500                    # the node to repair
-SOURCE=http://<source-hostname>:8500          # has the full range
-VERIFIER=http://<verifier-hostname>:8500      # a third node, NOT the source
+ssh -f -N -M -S ~/.ssh/doli-verifier.sock -L 18500:127.0.0.1:8500 <verifier-host>
+# close it at the end: ssh -S ~/.ssh/doli-verifier.sock -O exit <verifier-host>
+```
+
+Never send `Authorization: Bearer <admin-token>` over plain `http://` to an address that is not loopback. The RPC server has no TLS, so anyone on the path can read the token and replay it against every admin method. The source needs no token: backfill reads it with `getBlockRaw`. On mainnet, `backfillFromPeer` refuses a URL whose host is a private, loopback or link-local IP literal, so give the source as a DNS name. Set these once:
+
+```bash
+NODE=http://127.0.0.1:8500                    # the node to repair (this host)
+SOURCE=http://<source-hostname>:8500          # has the full range; no token is sent to it
+VERIFIER=http://127.0.0.1:18500               # the ssh tunnel to the verifier, NOT the source
 ARCHIVE_DIR=/path/to/archive                  # the node's --archive-to directory
-ADMIN_TOKEN=<verifier-admin-token>            # only if VERIFIER is reached over a public address
 ```
 
 1. **Find the hole** on the repaired node:
@@ -241,7 +247,9 @@ ADMIN_TOKEN=<verifier-admin-token>            # only if VERIFIER is reached over
    curl -s -X POST "$NODE" -H "Content-Type: application/json" \
        -d '{"jsonrpc":"2.0","method":"verifyChainIntegrity","params":[],"id":1}'
    # → "missing": ["100001-103284"], "missingCount": 3284
+   FROM=100001; TO=103284                     # the hole, for steps 4-6
    ```
+   This proves which heights have no block in the node's block store.
 2. **Start the backfill.** Give the source's RPC URL, never a peer ID. The node scans every height from 1 to its tip and fetches each missing block. There is no range parameter.
    ```bash
    curl -s -X POST "$NODE" -H "Content-Type: application/json" \
@@ -256,24 +264,36 @@ ADMIN_TOKEN=<verifier-admin-token>            # only if VERIFIER is reached over
    # → {"running": false, "imported": 3284, "total": 3284, "pct": 100, "error": null}
    ```
    If the source does not have a height, backfill skips it with a log warning. `error` stays `null` and `imported` stays below `total`. Step 4 shows these heights. Run step 2 again with another source.
-4. **Verify against the verifier.** Pick one height `H` at or below both tips. Run `verifyChainIntegrity [H]` with the SAME `H` on the repaired node and on the verifier:
+
+   This proves only that the copy finished. The BLAKE3 checksum that backfill checks comes from the source together with the block, so it detects accidental corruption only. It does not prove that the block is authentic, and backfill skips it when the source sends no checksum. Backfill does not validate the blocks: it checks no signature, VDF or merkle root.
+4. **Compare the block hashes with the verifier.** Pick one height `H` at or above `TO` and at or below both tips. Run `verifyChainIntegrity [H]` with the SAME `H` on the repaired node and on the verifier:
    ```bash
-   H=103300
+   H=$TO
    for url in "$NODE" "$VERIFIER"; do
        curl -s -X POST "$url" -H "Content-Type: application/json" \
-           -H "Authorization: Bearer $ADMIN_TOKEN" \
            -d "{\"jsonrpc\":\"2.0\",\"method\":\"verifyChainIntegrity\",\"params\":[$H],\"id\":1}"
        echo
    done
    ```
-   Pass: both return `"missingCount": 0` and the same `chainCommitment`. The commitment is a BLAKE3 chain over the block hashes 1..H, so equal values prove that every hash in 1..H matches. Always give an explicit `H`: the no-parameter form can return a persisted commitment for another height.
-5. **Refill the archive directory** (archive nodes only). Backfill never writes the archive directory. The archiver copies missing `.block` files from the block store above the manifest `verified_height`, which stays below the hole: the running archiver does it at the next finalized block, and a restart does it in one background catch-up while RPC answers. `verified_height` stays below a height that is in neither the archive directory nor the block store. After step 4, check the range:
+   Pass: both return `"missingCount": 0` and the same `chainCommitment`. The commitment is a BLAKE3 chain over the block header hashes 1..H, so equal values prove that every header hash in 1..H matches the verifier's. They do not prove the block bodies or the VDF proof: a header hash commits to the transaction merkle root, but nothing on the backfill path checks a body against its header, and the header hash does not cover the VDF proof. Always give an explicit `H`: the no-parameter form can return a persisted commitment for another height.
+5. **Compare the block bytes with the verifier**, for every height in the hole:
    ```bash
-   for h in $(seq 100001 103284); do
+   raw() { curl -s -X POST "$1" -H "Content-Type: application/json" \
+       -d "{\"jsonrpc\":\"2.0\",\"method\":\"getBlockRaw\",\"params\":{\"height\":$2},\"id\":1}" \
+       | jq -r '.result.blake3 // "none"'; }
+   for h in $(seq "$FROM" "$TO"); do
+       a=$(raw "$NODE" "$h"); b=$(raw "$VERIFIER" "$h")
+       [ "$a" != none ] && [ "$a" = "$b" ] || echo "mismatch $h node=$a verifier=$b"
+   done
+   ```
+   Pass: no output. Each node computes `blake3` over its whole stored block: the header with its VDF proof, and the body (transactions, attestation bitfield, BLS aggregate). Equal values prove that every block in `FROM..TO` is byte-identical to the verifier's copy. This step does not prove that the verifier's copy is valid. That is why the verifier must hold the range from its own validated sync.
+6. **Refill the archive directory** (archive nodes only). Backfill never writes the archive directory. The archiver copies missing `.block` files from the block store above the manifest `verified_height`, which stays below the hole: the running archiver does it at the next finalized block, and a restart does it in one background catch-up while RPC answers. `verified_height` stays below a height that is in neither the archive directory nor the block store. After step 5, check the range:
+   ```bash
+   for h in $(seq "$FROM" "$TO"); do
        f=$(printf '%s/%010d.block' "$ARCHIVE_DIR" "$h"); [ -f "$f" ] || echo "missing $h"
    done
    ```
-   No output means the range is complete.
+   No output means that every file exists. This step checks presence only, not file contents.
 
 Restart an archive node only with a binary where `--archive-to` and `--relay-server` imply `--no-snap-sync` (§2). An older binary can snap-sync a far-behind archive node again and open a new hole. Only one backfill runs at a time.
 
@@ -283,7 +303,7 @@ Restart an archive node only with a binary where `--archive-to` and `--relay-ser
 |--------|:--------:|--------|:------------------:|
 | `restore --from /path` | Yes (offline) | Local archive files | BLAKE3 + genesis_hash |
 | `restore --from-rpc <URL>` | Yes (offline) | Any seed/archiver RPC | BLAKE3 + genesis_hash |
-| `backfillFromPeer` RPC | **No** (hot) | Any node's RPC | BLAKE3 (transit) + `verifyChainIntegrity [H]` on a second node (§5.3) |
+| `backfillFromPeer` RPC | **No** (hot) | Any node's RPC | BLAKE3 (accidental corruption only); then header hashes (`verifyChainIntegrity [H]`) and block bytes (`getBlockRaw` blake3) compared with a second node (§5.3) |
 
 ---
 

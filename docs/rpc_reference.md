@@ -1872,10 +1872,10 @@ Trigger hot backfill of missing blocks from a remote seed/archive node. Admin-ga
 
 **Behavior:**
 - Scans every height 1..tip of the local block store and fetches each missing one. There is no range parameter. When nothing is missing and the source answers `verifyChainIntegrity` with a different `chainCommitment`, it re-fetches the divergent heights from the tip down.
-- Fetches with `getBlockRaw` and checks the BLAKE3 checksum that the same source supplies (transit integrity only).
+- Fetches with `getBlockRaw` and checks the BLAKE3 checksum that the same source supplies. This detects accidental corruption only: it is not an authenticity check, and it is skipped when the source sends no checksum. Backfill does not validate the blocks (no signature, VDF or merkle-root check).
 - Writes the block store only. It does not apply state and never writes the `--archive-to` directory (one node restart refills it from the block store).
 - A height the source lacks is skipped with a log warning; `backfillStatus.error` stays `null`.
-- Verify the result with `verifyChainIntegrity [H]` on this node and on a second node that is not the source. Runbook: [archiver.md §5.3](./archiver.md#53-hot-backfill-fill-and-verify-a-height-hole).
+- Verify the result against a second node that is not the source: `verifyChainIntegrity [H]` compares the header hashes 1..H, and a per-height `getBlockRaw` `blake3` compare proves the block bytes (header and body). Runbook: [archiver.md §5.3](./archiver.md#53-hot-backfill-fill-and-verify-a-height-hole).
 
 **Response:**
 ```json
@@ -1964,7 +1964,7 @@ Positional: `[up_to_height, from_height]` — or named: `{"up_to_height": N, "fr
 - `fromHeight` echoes back the scan floor used
 - Runs in a background thread to avoid blocking the RPC event loop
 - The persisted full-chain commitment (used as a fast path) is only stored/used for full scans from block 1
-- The no-parameter form can return that persisted commitment (`scanned` = its height), even when gaps exist. To compare two nodes, pass the same explicit `up_to_height` to both: equal `chainCommitment` with `missingCount: 0` proves every block hash in 1..H matches
+- The no-parameter form can return that persisted commitment (`scanned` = its height), even when gaps exist. To compare two nodes, pass the same explicit `up_to_height` to both: equal `chainCommitment` with `missingCount: 0` proves every block header hash in 1..H matches. It does not cover the block bodies; compare `getBlockRaw` `blake3` per height for those ([archiver.md §5.3](./archiver.md#53-hot-backfill-fill-and-verify-a-height-hole))
 - Added in v2.0.29; `from_height` parameter added in v6.20.5
 
 ---
