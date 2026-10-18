@@ -522,6 +522,7 @@ impl SyncManager {
 
     pub fn disable_snap_sync(&mut self) {
         self.snap.threshold = u64::MAX;
+        self.recovery.set_snap_disabled(true);
     }
 
     /// Explicit enable sentinel, symmetric to `disable_snap_sync()`. Sets
@@ -533,6 +534,7 @@ impl SyncManager {
         // 50 = default enabled sentinel — value is dead semantics post-Phase-1,
         // only `< u64::MAX` matters. Matches SnapSyncState::new() (types.rs:468).
         self.snap.threshold = 50;
+        self.recovery.set_snap_disabled(false);
     }
 
     pub fn set_store_floor(&mut self, floor: u64) {

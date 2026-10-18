@@ -134,7 +134,8 @@ pub(crate) enum Commands {
         #[arg(long)]
         force_start: bool,
 
-        /// Disable snap sync (use header-first only). For testing/debugging.
+        /// Disable snap sync (use header-first only, keeps full block history).
+        /// Implied by --archive-to and --relay-server.
         #[arg(long)]
         no_snap_sync: bool,
 

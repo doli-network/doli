@@ -10,7 +10,7 @@ use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
 use crate::cli::expand_tilde_path;
-use crate::config::NodeConfig;
+use crate::config::{snap_sync_forbidden, NodeConfig};
 use crate::keys::{load_bls_key, load_producer_key};
 use crate::updater::UpdateConfig;
 
@@ -168,9 +168,13 @@ pub(crate) async fn run_node(
         config.relay_server = true;
         info!("Relay server enabled — NAT'd peers can relay through this node");
     }
-    if no_snap_sync {
+    if snap_sync_forbidden(no_snap_sync, relay_server, archive_to.is_some()) {
         config.no_snap_sync = true;
-        info!("Snap sync disabled — using header-first sync only");
+        if no_snap_sync {
+            info!("Snap sync disabled — using header-first sync only");
+        } else {
+            info!("Snap sync disabled: archive/seed role (--archive-to/--relay-server) syncs full blocks");
+        }
     }
     if let Some(interval) = auto_checkpoint {
         if interval > 0 {
