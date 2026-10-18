@@ -255,7 +255,7 @@ Existing gates (mainnet values):
 | `producer/` | Producer registry (simplified: pubkey, registered_at, status, seniority_weight — bond tracking via UTXO set) |
 | `maintainer.rs` | MaintainerState — governance maintainer set tracking |
 | `update.rs` | UpdateState — auto-update state persistence |
-| `archiver.rs` | Block archiver — streams blocks to flat files with BLAKE3 checksums, catch-up gap filler, restore/backfill from archive |
+| `archiver/` | Block archiver — streams blocks to flat files with BLAKE3 checksums, bounded genesis-verified catch-up (`verified_height` in `manifest.json`), restore/backfill from archive |
 
 **ChainState fields:**
 - `best_hash` - Current chain tip hash

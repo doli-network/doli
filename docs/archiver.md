@@ -153,17 +153,21 @@ Each applied block is streamed to flat files with atomic writes:
 {
   "latest_height": 12345,
   "latest_hash": "a1b2c3d4e5f6...",
-  "genesis_hash": "d34b16931c4d..."
+  "genesis_hash": "d34b16931c4d...",
+  "verified_height": 12340
 }
 ```
 
+- `latest_height` is a high-water mark (import reads `1..=latest_height`, skipping missing files).
+- `verified_height` (H) is the highest height such that every `.block` + `.blake3` pair in `1..=H` was read and matched the node genesis, or was written by the archiver from the node's own chain. It is written in the same atomic manifest write as `genesis_hash`. Manifests from older binaries have no `verified_height`.
+
 ### Write Safety
 
-- **Atomic writes**: Each file is written to a `.tmp` path first, then renamed — crash-safe
+- **Atomic, durable writes**: The archiver writes each file to `<name>.tmp-archiver`, calls `sync_all`, then renames it. A manifest save covers a height only after its pair is durable. (`repairArchiveFromPeer` uses `.tmp`, so the two writers never share a tmp file.)
 - **Non-blocking**: Uses `mpsc::channel` with `try_send` — never stalls block production or sync
 - **Catch-up after sync**: On first periodic tick after sync (height > 0), scans from block 1 to tip and fills any missing `.block` files from the local BlockStore. This handles the case where a node resynced thousands of blocks but the archive was empty or had gaps — the catch-up backfills everything in seconds. Runs once per startup (one-shot flag).
 - **Catch-up on startup**: Additionally, `main.rs` calls `catch_up()` before the node loop starts, covering the case where the BlockStore already has blocks at startup time.
-- **Idempotent**: Both catch-up paths skip blocks whose `.block` file already exists on disk (file existence check, not manifest-based)
+- **Bounded catch-up**: `catch_up(.., Some(genesis))` trusts H only when the manifest parses, `genesis_hash` equals the node genesis, `verified_height <= latest_height`, and a spot-check of file H passes. Then it reads only `H+1..=tip`: an existing pair is read and its genesis checked (a foreign file is rewritten from the BlockStore); a missing pair is written from the BlockStore. H advances only over contiguous verified or self-written heights; it stops at a height missing from both the archive and the BlockStore, and at a file that does not deserialize (kept, never rewritten — INC-I-119). An untrusted or missing H costs one full check from height 1, with the manifest saved at least every 1000 heights (resumable).
 
 ### Integrity
 
@@ -368,7 +372,7 @@ tar czf doli-archive-$(date +%Y%m%d).tar.gz /mainnet/seed/blocks/
 
 | File | Purpose |
 |------|---------|
-| `crates/storage/src/archiver.rs` | BlockArchiver, `catch_up()` (gap-filling), `manifest_height()`, restore/backfill from files |
+| `crates/storage/src/archiver/` | BlockArchiver, `catch_up()` / `catch_up_bounded()` (`catch_up.rs`), `manifest.json` keys (`manifest.rs`), durable writes (`write.rs`), restore/backfill from files (`import.rs`), O(1) stale-archive fence (`fence.rs`) |
 | `bins/node/src/node/periodic.rs` | One-shot archive catch-up trigger in `run_periodic_tasks()` after sync completes |
 | `crates/rpc/src/methods/` | `getBlockRaw`, `backfillFromPeer`, `backfillStatus`, `verifyChainIntegrity` RPC handlers (dispatch in `dispatch.rs`, backfill in `backfill.rs`) |
 | `bins/node/src/main.rs` | CLI flags (`--archive-to`, `restore --from/--from-rpc/--backfill`); delegates to `operations` module for `restore_from_rpc()`, `backfill_from_archive()`, `restore_from_archive()` |

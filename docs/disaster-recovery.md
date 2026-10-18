@@ -31,7 +31,8 @@ archive/
 {
   "latest_height": 1057,
   "latest_hash": "03d91f6ccb18...",
-  "genesis_hash": "d34b16931c4d..."
+  "genesis_hash": "d34b16931c4d...",
+  "verified_height": 1057
 }
 ```
 
