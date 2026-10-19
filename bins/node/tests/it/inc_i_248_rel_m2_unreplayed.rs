@@ -117,7 +117,7 @@ async fn inc_i_248_rel_m2_pruned_replay_node_keeps_root() {
     const CUTOFF: u64 = 50;
     const PRUNED_TIP: u64 = CUTOFF + 2_000;
     let (mut node, _t) = m2::node_with(&fx::state(m2::producer_set_at(1), 1)).await;
-    m2::put_heights(&node, &[0..=PRUNED_TIP]);
+    m2::put_heights(&node, std::slice::from_ref(&(0..=PRUNED_TIP)));
     let pruned = node
         .block_store
         .prune_blocks_below(CUTOFF, PRUNED_TIP)

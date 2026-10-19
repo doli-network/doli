@@ -311,10 +311,10 @@ async fn inc_i_248_replay_node_full_store_keeps_root_on_start() {
         "fixture: producer seed at h=1 on disk"
     );
     m2::install_state(&mut seeded, &disk);
-    m2::put_heights(&seeded, &[0..=2]);
+    m2::put_heights(&seeded, std::slice::from_ref(&(0..=2)));
     m2::set_tip_to_store(&seeded, 2).await;
     m2::assert_start_keeps(&seeded, "seed D = 1, tip = D + 1").await;
-    m2::put_heights(&seeded, &[3..=60]);
+    m2::put_heights(&seeded, std::slice::from_ref(&(3..=60)));
     m2::set_tip_to_store(&seeded, 60).await;
     m2::assert_start_keeps(&seeded, "seed D = 1, tip = 60").await;
 
@@ -329,13 +329,14 @@ async fn inc_i_248_replay_node_full_store_keeps_root_on_start() {
         .into_iter()
         .filter(|s| s.accept && !matches!(s.op, h::Op::Activate(..)))
         .collect();
-    m2::put_heights_with(&a.node, &[0..=h::SNAP_HEIGHT], |height, prev| match changes
-        .iter()
-        .find(|s| s.height == height)
-    {
-        Some(s) => m2::stub_block_with(height, prev, h::step_tx(&genesis, s)),
-        None => m2::stub_block(height, prev),
-    });
+    m2::put_heights_with(
+        &a.node,
+        std::slice::from_ref(&(0..=h::SNAP_HEIGHT)),
+        |height, prev| match changes.iter().find(|s| s.height == height) {
+            Some(s) => m2::stub_block_with(height, prev, h::step_tx(&genesis, s)),
+            None => m2::stub_block(height, prev),
+        },
+    );
     assert!(
         m2::block_has_maintainer_change(&a.node, h::last_rotation_height()),
         "fixture: block D holds the last maintainer change"

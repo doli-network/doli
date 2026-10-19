@@ -80,7 +80,7 @@ async fn post_gate_seed_node(d: u64, ranges: &[RangeInclusive<u64>]) -> (Node, T
 // REQ-248-009 (Must) — Decision: a failure means a pre-fix snap node that seeded from live producers at its first post-snapshot block keeps that stale root after the upgrade and never converges to the fleet set.
 #[tokio::test]
 async fn inc_i_248_post_gate_seed_root_repaired_on_start() {
-    let (mut node, _t) = post_gate_seed_node(D, &[D..=m2::TIP]).await;
+    let (mut node, _t) = post_gate_seed_node(D, std::slice::from_ref(&(D..=m2::TIP))).await;
     assert!(
         !m2::has_block(&node, 1) && !m2::has_block(&node, m2::S),
         "fixture: store = S+1..=TIP only"
@@ -172,13 +172,17 @@ async fn inc_i_248_rel_m25_governance_block_d_keeps_root() {
         let st = fx::state(fx::well_formed(members, D), D);
         let (node, _t) = m2::node_with(&st).await;
         let change = change_tx(&node, D, op);
-        m2::put_heights_with(&node, &[D..=m2::TIP], |height, prev| {
-            if height == D {
-                m2::stub_block_with(height, prev, change.clone())
-            } else {
-                m2::stub_block(height, prev)
-            }
-        });
+        m2::put_heights_with(
+            &node,
+            std::slice::from_ref(&(D..=m2::TIP)),
+            |height, prev| {
+                if height == D {
+                    m2::stub_block_with(height, prev, change.clone())
+                } else {
+                    m2::stub_block(height, prev)
+                }
+            },
+        );
         m2::set_tip_to_store(&node, m2::TIP).await;
         assert!(
             m2::has_block(&node, D + 1) && m2::block_has_maintainer_change(&node, D),
@@ -215,7 +219,7 @@ async fn inc_i_248_rel_m25_pre_gate_seed_keeps_root() {
 async fn inc_i_248_rel_m25_adopted_set_keeps_root() {
     let canonical = fx::canonical(h::last_rotation_height());
     let (mut node, _t) = m2::node_with(&fx::state(canonical.clone(), D)).await;
-    m2::put_heights(&node, &[D..=m2::TIP]);
+    m2::put_heights(&node, std::slice::from_ref(&(D..=m2::TIP)));
     m2::set_tip_to_store(&node, m2::TIP).await;
     for (ctx, t) in [
         ("adopted at T = S+1", D),
@@ -239,7 +243,7 @@ async fn inc_i_248_rel_m25_adopted_set_keeps_root() {
 async fn inc_i_248_rel_m25_doli_snap_write_keeps_root() {
     let canonical = fx::canonical(h::last_rotation_height());
     let (mut node, _t) = m2::node_with(&fx::state(canonical.clone(), m2::S)).await;
-    m2::put_heights(&node, &[m2::S..=m2::TIP]);
+    m2::put_heights(&node, std::slice::from_ref(&(m2::S..=m2::TIP)));
     m2::set_tip_to_store(&node, m2::TIP).await;
     let cases: [(&str, u64, bool); 2] = [
         ("doli snap at H = S, block H stored", m2::S, true),
@@ -296,7 +300,7 @@ async fn inc_i_248_rel_m25_block_d_absent_keeps_root() {
 // REQ-248-009 (Must) — Decision: a failure means the check fires on a network without an activation gate (devnet G = 0), where every seed is post-gate.
 #[tokio::test]
 async fn inc_i_248_rel_m25_devnet_gate_zero_keeps_root() {
-    let (mut node, _t) = post_gate_seed_node(D, &[D..=m2::TIP]).await;
+    let (mut node, _t) = post_gate_seed_node(D, std::slice::from_ref(&(D..=m2::TIP))).await;
     node.config.network = Network::Devnet;
     assert_eq!(
         node.config
@@ -313,7 +317,7 @@ async fn inc_i_248_rel_m25_devnet_gate_zero_keeps_root() {
 // REQ-248-009 (Must) — Decision: a failure means a node restarted before its next block loses a root stamped at its own tip.
 #[tokio::test]
 async fn inc_i_248_rel_m25_tip_equals_d_keeps_root() {
-    let (node, _t) = post_gate_seed_node(m2::TIP, &[D..=m2::TIP + 1]).await;
+    let (node, _t) = post_gate_seed_node(m2::TIP, std::slice::from_ref(&(D..=m2::TIP + 1))).await;
     assert_eq!(
         node.chain_state.read().await.best_height,
         m2::TIP,
@@ -332,7 +336,7 @@ async fn inc_i_248_rel_m25_probe_post_gate_seed_datadir() {
     if std::env::var("INC_I_248_REL_M25_PROBE").ok().as_deref() != Some("1") {
         return;
     }
-    let (mut node, _temp) = post_gate_seed_node(D, &[D..=m2::TIP]).await;
+    let (mut node, _temp) = post_gate_seed_node(D, std::slice::from_ref(&(D..=m2::TIP))).await;
     node.sanitize_retired_maintainer_set().await;
 
     fx::add_sync_peer(&node, m2::TIP).await;
