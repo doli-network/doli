@@ -375,6 +375,35 @@ finalized block, or in the background catch-up after a restart.
 
 ---
 
+### 1.13. `[INTEGRITY]` Repeats `missing blocks` on an Archive Node (INC-I-253)
+
+**Symptom:** every 100 blocks the log shows
+`[INTEGRITY] Periodic scan: N missing blocks in F..=T: [h, ...]`, and auto-repair does not
+close the hole.
+
+**How the repair works:** each scan repairs only the missing heights it lists (at most 1,000 per
+pass) from the `--archive-to` directory. Only one scan runs at a time; a due scan while the last
+one still runs logs `[INTEGRITY] Scan at T skipped: previous scan still running` (DEBUG). A height
+is imported only when its `.block` file exists, its `.blake3` sidecar matches, the block names this
+chain's genesis, and it links to the stored blocks at h-1 and h+1. Else the height is counted as
+missing or rejected (`[ARCHIVER] Targeted backfill rejected h=...`), and the other heights continue.
+The 1,000-block `[INTEGRITY_CHECK]` repair uses the same targeted path.
+
+**Back-off:** when a repair imports 0 blocks or fails, the node logs
+`[INTEGRITY] Auto-repair imported 0 blocks ... next attempt in 11 scans` (or
+`[INTEGRITY] Auto-repair failed: ...`). The next 10 scans with the same missing set log
+`[INTEGRITY] ... repair backed off ... retry in N scans` and start no repair. A changed missing set
+repairs at once; a clean scan clears the back-off.
+
+**What to do (unrepairable hole):** the archive does not hold the listed heights, or holds a
+different block for them. Fill the block store from a known-good node with the runbook in
+[archiver.md §5.3](./archiver.md#53-hot-backfill-fill-and-verify-a-height-hole) (`backfillFromPeer`,
+then verify against a different node). The next scan then reports `chain complete`. If the log
+names rejected heights, compare the archive files for those heights against a known-good node
+before you trust that archive.
+
+---
+
 ### 1.7. Disk full / ENOSPC
 
 **Symptom:** The node stops or returns a clean error mentioning `ENOSPC` /

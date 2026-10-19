@@ -8,7 +8,10 @@ mod write;
 
 pub use catch_up::archive_finalized;
 pub use fence::fence_stale_archive;
-pub use import::{backfill_from_archive, force_backfill_from_archive, restore_from_archive};
+pub use import::{
+    backfill_from_archive, backfill_heights_from_archive, force_backfill_from_archive,
+    restore_from_archive, TargetedBackfillReport,
+};
 pub use manifest::{manifest_genesis_hash, manifest_height};
 
 /// A block ready to be archived.

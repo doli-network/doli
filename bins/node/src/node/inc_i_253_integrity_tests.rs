@@ -600,3 +600,7 @@ mod target_api {
         );
     }
 }
+
+// INC-I-253 M2 tests (separate file: this one is near the 800-line test budget).
+#[path = "inc_i_253_m2_tests.rs"]
+mod m2;

@@ -1,6 +1,9 @@
 use super::*;
 
-use super::integrity::{integrity_scan, scan_floor};
+use super::integrity::{
+    expected_genesis, integrity_scan, scan_and_repair, scan_floor, targeted_repair, CycleOutcome,
+    InFlightGuard,
+};
 
 /// INC-I-111 (2026-06-04): Prometheus scrape interval is 15-30s; 30s cache
 /// reduces scan load from ~120/min to ~2/min. See
@@ -248,9 +251,8 @@ impl Node {
         }
 
         // Periodic chain integrity scan every 100 blocks over scan_floor..=scan_tip
-        // (see `integrity.rs`): BLAKE3 fold of the served block hashes.
-        // Auto-repair: when gaps are found and an archive directory exists,
-        // backfill from the archive, then re-scan for a clean commitment.
+        // (see `integrity.rs`): BLAKE3 fold of the served block hashes, then a
+        // single-flight, backed-off, targeted archive repair of the missing heights.
         {
             let tip = self.chain_state.read().await.best_height;
             let last_scan = self.last_integrity_check_tip.unwrap_or(0);
@@ -258,111 +260,71 @@ impl Node {
             // at the same height, eliminating explorer flickering from scan-timing drift.
             let scan_tip = (tip / 100) * 100;
             if scan_tip > 0 && scan_tip > last_scan {
-                let block_store = self.block_store.clone();
-                let state_db = self.state_db.clone();
-                let archive_dir = self.archive_dir.clone();
-                let archive_configured = self.archive_dir.is_some();
-                tokio::task::spawn(async move {
-                    let result = tokio::task::spawn_blocking(move || {
-                        // --- First scan: detect gaps ---
-                        let report = integrity_scan(&block_store, scan_tip, archive_configured);
-
-                        if report.missing_count == 0 {
-                            return (report, 0u64);
-                        }
-
-                        // --- Auto-repair: backfill from archive if available ---
-                        let archive_path = match &archive_dir {
-                            Some(dir) if dir.exists() => dir,
-                            _ => {
-                                tracing::warn!(
-                                    "[INTEGRITY] {} — no archive configured, cannot auto-repair",
-                                    report.missing_summary()
+                self.last_integrity_check_tip = Some(scan_tip);
+                match InFlightGuard::try_acquire(&self.integrity_in_flight) {
+                    None => tracing::debug!(
+                        "[INTEGRITY] Scan at {} skipped: previous scan still running",
+                        scan_tip
+                    ),
+                    Some(guard) => {
+                        let block_store = self.block_store.clone();
+                        let state_db = self.state_db.clone();
+                        let archive_dir = self.archive_dir.clone();
+                        let backoff = self.integrity_backoff.clone();
+                        tokio::task::spawn(async move {
+                            let _guard = guard;
+                            let result = tokio::task::spawn_blocking(move || {
+                                let lock = || backoff.lock().unwrap_or_else(|e| e.into_inner());
+                                let mut state = lock().clone();
+                                let out = scan_and_repair(
+                                    &block_store,
+                                    scan_tip,
+                                    archive_dir.as_deref(),
+                                    &mut state,
                                 );
-                                return (report, 0u64);
-                            }
-                        };
+                                *lock() = state;
+                                out
+                            })
+                            .await;
 
-                        tracing::info!(
-                            "[INTEGRITY] {} — auto-repairing from archive {:?}",
-                            report.missing_summary(),
-                            archive_path
-                        );
-
-                        // Read genesis_hash from an existing block for validation
-                        let genesis_hash = {
-                            let mut found = None;
-                            for h in 1..=10_000u64 {
-                                if let Ok(Some(blk)) = block_store.get_block_by_height(h) {
-                                    found = Some(blk.header.genesis_hash);
-                                    break;
+                            if let Ok(CycleOutcome { report, repair }) = result {
+                                let repaired = match repair {
+                                    Some(Ok(r)) => r.imported,
+                                    _ => 0,
+                                };
+                                if report.missing_count > 0 {
+                                    tracing::warn!(
+                                        "[INTEGRITY] Periodic scan: {}",
+                                        report.missing_summary()
+                                    );
+                                    state_db.delete_chain_commitment();
+                                } else {
+                                    if repaired > 0 {
+                                        tracing::info!(
+                                            "[INTEGRITY] Auto-repair successful: {} blocks restored, \
+                                             chain complete ({}..={}), commitment={:.16}",
+                                            repaired,
+                                            report.floor,
+                                            report.tip,
+                                            report.commitment
+                                        );
+                                    } else {
+                                        tracing::info!(
+                                            "[INTEGRITY] Periodic scan: chain complete ({}..={}), commitment={:.16}",
+                                            report.floor,
+                                            report.tip,
+                                            report.commitment
+                                        );
+                                    }
+                                    state_db.put_chain_commitment_with_tip(
+                                        &report.commitment,
+                                        scan_tip,
+                                    );
                                 }
                             }
-                            found
-                        };
-
-                        let repaired = match storage::archiver::backfill_from_archive(
-                            archive_path,
-                            &block_store,
-                            genesis_hash.as_ref(),
-                        ) {
-                            Ok(count) => {
-                                tracing::info!(
-                                    "[INTEGRITY] Auto-repair imported {} blocks from archive",
-                                    count
-                                );
-                                count
-                            }
-                            Err(e) => {
-                                tracing::error!("[INTEGRITY] Auto-repair failed: {}", e);
-                                return (report, 0u64);
-                            }
-                        };
-
-                        // --- Re-scan after repair to produce clean commitment ---
-                        let after = integrity_scan(&block_store, scan_tip, archive_configured);
-
-                        if after.missing_count > 0 {
-                            tracing::warn!(
-                                "[INTEGRITY] After auto-repair: still {} (archive may be incomplete)",
-                                after.missing_summary()
-                            );
-                        }
-
-                        (after, repaired)
-                    })
-                    .await;
-
-                    if let Ok((report, repaired)) = result {
-                        if report.missing_count > 0 {
-                            tracing::warn!(
-                                "[INTEGRITY] Periodic scan: {}",
-                                report.missing_summary()
-                            );
-                            state_db.delete_chain_commitment();
-                        } else {
-                            if repaired > 0 {
-                                tracing::info!(
-                                    "[INTEGRITY] Auto-repair successful: {} blocks restored, \
-                                     chain complete ({}..={}), commitment={:.16}",
-                                    repaired,
-                                    report.floor,
-                                    report.tip,
-                                    report.commitment
-                                );
-                            } else {
-                                tracing::info!(
-                                    "[INTEGRITY] Periodic scan: chain complete ({}..={}), commitment={:.16}",
-                                    report.floor,
-                                    report.tip,
-                                    report.commitment
-                                );
-                            }
-                            state_db.put_chain_commitment_with_tip(&report.commitment, scan_tip);
-                        }
+                        });
                     }
-                });
-                self.last_integrity_check_tip = Some(scan_tip);
+                }
             }
         }
 
@@ -1305,7 +1267,8 @@ impl Node {
     /// Runs every `INTEGRITY_CHECK_INTERVAL_BLOCKS` blocks (default 1000).
     /// Scans `BlockStore::ensure_blocks_present(floor, tip)` with the floor from
     /// `integrity::scan_floor` (same as the 100-block scan). On gap detection,
-    /// attempts auto-repair from the archive directory if configured. Falls back
+    /// runs a targeted archive repair of the missing heights (capped per pass)
+    /// if an archive is configured. Falls back
     /// to a CRITICAL log with operator action guidance if no archive is available
     /// or the archive is incomplete.
     ///
@@ -1345,26 +1308,15 @@ impl Node {
                 archive_path
             );
 
-            let genesis_hash = {
-                let mut found = None;
-                for h in 1..=10_000u64 {
-                    if let Ok(Some(blk)) = block_store.get_block_by_height(h) {
-                        found = Some(blk.header.genesis_hash);
-                        break;
-                    }
-                }
-                found
-            };
-
-            match storage::archiver::backfill_from_archive(
-                archive_path,
-                &block_store,
-                genesis_hash.as_ref(),
-            ) {
-                Ok(count) => {
+            let report = integrity_scan(&block_store, current_tip, archive_configured);
+            let repair = expected_genesis(&block_store)
+                .ok_or_else(|| "no stored block names the genesis".to_string())
+                .and_then(|g| targeted_repair(&block_store, archive_path, &g, &report));
+            match repair {
+                Ok(r) => {
                     tracing::info!(
                         "[INTEGRITY_CHECK] Auto-repair imported {} blocks from archive",
-                        count
+                        r.imported
                     );
                 }
                 Err(e) => {

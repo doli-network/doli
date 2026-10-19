@@ -318,6 +318,12 @@ pub struct Node {
     /// Phase 1 observability-only (INC-I-034 / M-Choice2).
     pub last_integrity_check_tip: Option<u64>,
 
+    /// Single-flight flag for the 100-block integrity scan task.
+    pub(crate) integrity_in_flight: Arc<AtomicBool>,
+
+    /// Repair back-off carried across 100-block integrity scans.
+    pub(crate) integrity_backoff: Arc<std::sync::Mutex<integrity::RepairBackoff>>,
+
     /// Recovery mode: when true, apply_block() and apply_snap_snapshot() silently
     /// drop all inbound state mutations (anti-poisoning gate for seed recovery).
     /// Toggled via enterRecoveryMode/exitRecoveryMode RPC. Non-persistent: cleared on restart.
