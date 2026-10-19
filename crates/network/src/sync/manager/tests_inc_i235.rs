@@ -202,6 +202,43 @@ fn c1_lock_headers_arm_unchanged_without_walk() {
     }
 }
 
+/// A snap-disabled node parked this far behind gets the parked header retry (R-3).
+const PARKED_GAP: u64 = 3_285;
+
+// REQ-ARCHSYNC-003 (INC-I-235 R-3, release review F1) — Decision: a FAIL means an
+// active fork walk takes every tick before the parked header retry. The node calls
+// next_request once per tick (periodic.rs) and a walk fetch is answered within the
+// tick, so a snap-disabled node far behind never sends the retry during a walk.
+// Cell: O1/O3 × I8 (walk active and idle; snap disabled, parked, gap >= 500).
+#[test]
+fn c1_parked_retry_goes_before_an_idle_fork_walk() {
+    let f = fork();
+    let (mut m, _header_peer, walk_peer) = wedged_mgr(PARKED_GAP);
+    m.disable_snap_sync();
+    m.fork.consecutive_empty_headers = 10;
+    assert!(m.start_fork_recovery(f.a1.clone(), walk_peer));
+
+    let first = m.next_request();
+    assert!(
+        matches!(&first, Some((p, SyncRequest::GetHeadersByHeight { .. })) if *p != walk_peer),
+        "I8: a due parked retry must take the tick before an idle walk, on a peer that is \
+         not the walk peer; got {:?}",
+        first.map(|(p, r)| (p == walk_peer, format!("{:?}", r)))
+    );
+    let second = m.next_request();
+    assert_eq!(
+        by_hash(&second).map(|(p, _)| p),
+        Some(walk_peer),
+        "I8: the walk still gets the next tick"
+    );
+    let third = m.next_request();
+    assert!(
+        third.is_none(),
+        "I8: walk in flight, retry not due, retry peer busy -> nothing; got {:?}",
+        third.map(|(_, r)| format!("{:?}", r))
+    );
+}
+
 // ---------------------------------------------------------------------------
 // C2 — content-keyed intercept (REQ-I235-SEC-001 "wrong-hash → alternate peer")
 // ---------------------------------------------------------------------------
