@@ -224,22 +224,17 @@ Use this runbook when a running node answers `Block not found` for a height rang
 
 Two other nodes take part:
 - **Source**: a node that has the full range. `backfillFromPeer` copies blocks from it.
-- **Verifier**: a different node that holds the range from its own validated sync (header-first sync or `restore`). Never use the source as the verifier, and never use a node that received the range by a backfill or restore from the source. Steps 4 and 5 prove that the repaired node agrees with the verifier's copy. They do not re-validate either copy.
+- **Verifier**: a different node that holds the range from its own header-first sync, where it applied and validated every block. Never use the source as the verifier, and never use a node that received the range by a backfill, a `restore` or a snap sync. Steps 4 and 5 prove that the repaired node agrees with the verifier's copy. They do not re-validate either copy.
 
-Run every command on the repaired node's host. `backfillFromPeer` and `verifyChainIntegrity` are admin methods; `getBlockRaw` is not. Send admin requests to `127.0.0.1` only: a loopback request needs no token. Reach the verifier through an ssh tunnel, so that its admin requests also arrive over loopback:
-
-```bash
-ssh -f -N -M -S ~/.ssh/doli-verifier.sock -L 18500:127.0.0.1:8500 <verifier-host>
-# close it at the end: ssh -S ~/.ssh/doli-verifier.sock -O exit <verifier-host>
-```
-
-Never send `Authorization: Bearer <admin-token>` over plain `http://` to an address that is not loopback. The RPC server has no TLS, so anyone on the path can read the token and replay it against every admin method. The source needs no token: backfill reads it with `getBlockRaw`. On mainnet, `backfillFromPeer` refuses a URL whose host is a private, loopback or link-local IP literal, so give the source as a DNS name. Set these once:
+Run the commands on the repaired node's host. `backfillFromPeer` and `verifyChainIntegrity` are admin methods; `getBlockRaw` is not. Send admin requests to `127.0.0.1` only: a loopback request needs no token. Run the verifier's commands on the verifier's host over ssh, also against its own `127.0.0.1`. Never send `Authorization: Bearer <admin-token>` over plain `http://` to an address that is not loopback. The RPC server has no TLS, so anyone on the path can read the token and replay it against every admin method. The source needs no token: backfill reads it with `getBlockRaw`. On mainnet, `backfillFromPeer` refuses a URL whose host is a private, loopback or link-local IP literal, so give the source as a DNS name. Set these once (the verifier host needs `curl` and `jq`):
 
 ```bash
 NODE=http://127.0.0.1:8500                    # the node to repair (this host)
 SOURCE=http://<source-hostname>:8500          # has the full range; no token is sent to it
-VERIFIER=http://127.0.0.1:18500               # the ssh tunnel to the verifier, NOT the source
+VERIFIER_HOST=<verifier-host>                 # ssh name of a third node, NOT the source
 ARCHIVE_DIR=/path/to/archive                  # the node's --archive-to directory
+# One JSON-RPC call to the local node on the host where it runs.
+rpc() { curl -s -X POST http://127.0.0.1:8500 -H "Content-Type: application/json" -d "$1"; }
 ```
 
 1. **Find the hole** on the repaired node:
@@ -249,7 +244,7 @@ ARCHIVE_DIR=/path/to/archive                  # the node's --archive-to director
    # → "missing": ["100001-103284"], "missingCount": 3284
    FROM=100001; TO=103284                     # the hole, for steps 4-6
    ```
-   This proves which heights have no block in the node's block store.
+   This proves which heights have no block in the node's block store. If `missing` lists more than one range, do steps 4-6 for each range.
 2. **Start the backfill.** Give the source's RPC URL, never a peer ID. The node scans every height from 1 to its tip and fetches each missing block. There is no range parameter.
    ```bash
    curl -s -X POST "$NODE" -H "Content-Type: application/json" \
@@ -269,24 +264,26 @@ ARCHIVE_DIR=/path/to/archive                  # the node's --archive-to director
 4. **Compare the block hashes with the verifier.** Pick one height `H` at or above `TO` and at or below both tips. Run `verifyChainIntegrity [H]` with the SAME `H` on the repaired node and on the verifier:
    ```bash
    H=$TO
-   for url in "$NODE" "$VERIFIER"; do
-       curl -s -X POST "$url" -H "Content-Type: application/json" \
-           -d "{\"jsonrpc\":\"2.0\",\"method\":\"verifyChainIntegrity\",\"params\":[$H],\"id\":1}"
-       echo
-   done
+   Q="{\"jsonrpc\":\"2.0\",\"method\":\"verifyChainIntegrity\",\"params\":[$H],\"id\":1}"
+   rpc "$Q"; echo
+   { declare -f rpc; printf 'rpc %q\n' "$Q"; } | ssh "$VERIFIER_HOST" bash; echo
    ```
    Pass: both return `"missingCount": 0` and the same `chainCommitment`. The commitment is a BLAKE3 chain over the block header hashes 1..H, so equal values prove that every header hash in 1..H matches the verifier's. They do not prove the block bodies or the VDF proof: a header hash commits to the transaction merkle root, but nothing on the backfill path checks a body against its header, and the header hash does not cover the VDF proof. Always give an explicit `H`: the no-parameter form can return a persisted commitment for another height.
 5. **Compare the block bytes with the verifier**, for every height in the hole:
    ```bash
-   raw() { curl -s -X POST "$1" -H "Content-Type: application/json" \
-       -d "{\"jsonrpc\":\"2.0\",\"method\":\"getBlockRaw\",\"params\":{\"height\":$2},\"id\":1}" \
-       | jq -r '.result.blake3 // "none"'; }
-   for h in $(seq "$FROM" "$TO"); do
-       a=$(raw "$NODE" "$h"); b=$(raw "$VERIFIER" "$h")
-       [ "$a" != none ] && [ "$a" = "$b" ] || echo "mismatch $h node=$a verifier=$b"
-   done
+   # Prints "<height> <blake3>" per height; "none" when the node has no block there.
+   hashes() { for h in $(seq "$1" "$2"); do
+       curl -s -X POST http://127.0.0.1:8500 -H "Content-Type: application/json" \
+           -d "{\"jsonrpc\":\"2.0\",\"method\":\"getBlockRaw\",\"params\":{\"height\":$h},\"id\":1}" \
+           | jq -r --arg h "$h" '"\($h) \(.result.blake3 // "none")"'
+   done; }
+   hashes "$FROM" "$TO" > node.hashes
+   { declare -f hashes; echo "hashes $FROM $TO"; } | ssh "$VERIFIER_HOST" bash > verifier.hashes
+   echo "expected $((TO - FROM + 1))"
+   grep -c ' [0-9a-f]\{64\}$' node.hashes verifier.hashes
+   diff node.hashes verifier.hashes && echo "block bytes match"
    ```
-   Pass: no output. Each node computes `blake3` over its whole stored block: the header with its VDF proof, and the body (transactions, attestation bitfield, BLS aggregate). Equal values prove that every block in `FROM..TO` is byte-identical to the verifier's copy. This step does not prove that the verifier's copy is valid. That is why the verifier must hold the range from its own validated sync.
+   Pass: both counts equal `expected`, `diff` prints no line, and the last line is `block bytes match`. A missing height, a failed call or an unreachable verifier gives a lower count or a `diff` line, so it can never pass. Each node computes `blake3` over its whole stored block: the header with its VDF proof, and the body (transactions, attestation bitfield, BLS aggregate). Equal values prove that every block in `FROM..TO` is byte-identical to the verifier's copy. This step does not prove that the verifier's copy is valid. That is why the verifier must hold the range from its own header-first sync.
 6. **Refill the archive directory** (archive nodes only). Backfill never writes the archive directory. The archiver copies missing `.block` files from the block store above the manifest `verified_height`, which stays below the hole: the running archiver does it at the next finalized block, and a restart does it in one background catch-up while RPC answers. `verified_height` stays below a height that is in neither the archive directory nor the block store. After step 5, check the range:
    ```bash
    for h in $(seq "$FROM" "$TO"); do
