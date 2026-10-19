@@ -4,6 +4,7 @@
 // v0.2.1-test: upgrade pipeline validation
 
 mod apply_block;
+pub mod archive_thread;
 pub mod attestation;
 #[cfg(test)]
 mod attestation_authority_tests;
@@ -238,8 +239,6 @@ pub struct Node {
     pub pending_archive: std::collections::VecDeque<ArchiveBlock>,
     /// Archive directory path (for catch-up after sync)
     pub archive_dir: Option<PathBuf>,
-    /// Whether archive catch-up has been performed after sync
-    pub archive_caught_up: bool,
     /// WebSocket broadcast sender for real-time events (new blocks, new txs)
     pub ws_sender: Arc<RwLock<Option<tokio::sync::broadcast::Sender<rpc::WsEvent>>>>,
     /// In-memory tracker for minute attestations received via gossip.

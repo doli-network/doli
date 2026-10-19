@@ -31,9 +31,12 @@ archive/
 {
   "latest_height": 1057,
   "latest_hash": "03d91f6ccb18...",
-  "genesis_hash": "d34b16931c4d..."
+  "genesis_hash": "d34b16931c4d...",
+  "verified_height": 1057
 }
 ```
+
+`verified_height` is the highest height at or below which every archive file was verified to belong to the node genesis, or was written by the archiver from the node's own chain. Manifests from older binaries do not have it.
 
 Only finalized blocks (67%+ attestation weight) are archived — blocks that the protocol has declared irreversible.
 
@@ -57,7 +60,7 @@ Any node can archive blocks by adding `--archive-to`:
 doli-node --network mainnet run --archive-to /path/to/archive
 ```
 
-The node syncs normally and streams finalized blocks to the archive directory. After sync completes, a one-shot catch-up scans for gaps and fills any missing blocks from the local BlockStore — ensuring the archive is complete even after a full resync.
+The node syncs normally and streams finalized blocks to the archive directory. At each start, one background catch-up checks the heights above the manifest `verified_height` and fills missing blocks from the local BlockStore, so the archive stays complete after a resync. RPC answers while it runs. The first start of a new binary on an archive whose manifest has no `verified_height` checks every file once (high disk IO, RPC stays up): roll archive nodes one at a time. See [archiver.md §4](./archiver.md#write-safety).
 
 ## Restoring from Archive
 

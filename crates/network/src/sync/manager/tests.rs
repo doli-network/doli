@@ -10,6 +10,9 @@ use doli_core::BlockHeader;
 use super::*;
 use crate::protocols::SyncResponse;
 
+mod inc_i235_archive;
+mod inc_i235_parked;
+
 #[test]
 fn test_sync_state_is_syncing() {
     assert!(!SyncState::Idle.is_syncing());

@@ -207,3 +207,12 @@ pub struct ProducerConfig {
     /// Reward address
     pub reward_address: String,
 }
+
+/// True when snap sync must stay off: the explicit flag, or an archive/relay role.
+pub fn snap_sync_forbidden(no_snap_sync: bool, relay_server: bool, archive_to_set: bool) -> bool {
+    no_snap_sync || relay_server || archive_to_set
+}
+
+#[cfg(test)]
+#[path = "config_tests.rs"]
+mod config_tests;

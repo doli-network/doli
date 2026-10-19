@@ -294,6 +294,8 @@ pub struct RecoveryCoordinator {
     /// cannot loop hot (the 454-refusal livelock). Reset by any other concrete
     /// action; `None` is a no-op. Capped at `thresholds::SIBLING_FETCH_MAX`.
     sibling_fetch_attempts: u32,
+    /// Snap sync is disabled on this node (`--no-snap-sync` or archive/relay role).
+    snap_disabled: bool,
 }
 
 /// Max evidence entries retained (prevents unbounded growth under event floods).
@@ -310,7 +312,18 @@ impl RecoveryCoordinator {
             evidence: VecDeque::new(),
             last_action: None,
             sibling_fetch_attempts: 0,
+            snap_disabled: false,
         }
+    }
+
+    /// Keep Rule 2 (SnapSync) closed while snap sync is disabled on this node.
+    pub fn set_snap_disabled(&mut self, disabled: bool) {
+        self.snap_disabled = disabled;
+    }
+
+    /// True while Rule 2 (SnapSync) is closed on this node.
+    pub fn snap_disabled(&self) -> bool {
+        self.snap_disabled
     }
 
     /// A detector reports one piece of evidence.
@@ -416,6 +429,7 @@ impl RecoveryCoordinator {
         let large_gap = gap >= thresholds::SNAP_SYNC_GAP_MIN;
 
         if large_gap
+            && !self.snap_disabled
             && ctx.snap_attempts < thresholds::SNAP_ATTEMPTS_MAX
             && ctx.peer_count >= thresholds::SNAP_MIN_PEERS
         {

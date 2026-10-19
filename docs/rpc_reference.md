@@ -1864,10 +1864,18 @@ Retrieve a raw block by height (for archiving/backfill).
 
 ### `backfillFromPeer`
 
-Trigger hot backfill of missing blocks from a remote seed/archive node.
+Trigger hot backfill of missing blocks from a remote seed/archive node. Admin-gated.
 
 **Parameters:**
-- `rpc_url` (string) — RPC URL of the source node (e.g., `"http://127.0.0.1:18500"`)
+- `rpc_url` (string, required) — RPC URL of the source node, never a peer ID (e.g., `"http://<source-hostname>:8500"`). On mainnet, a URL whose host is a private, loopback or link-local IP literal is refused; use a DNS name.
+- `skip_divergence_check` (bool, optional, default `false`) — skip the tip check. By default the call fails with `Tip divergence detected` when the local tip hash differs from the source's block at that height. Set `true` only after a genesis reset.
+
+**Behavior:**
+- Scans every height 1..tip of the local block store and fetches each missing one. There is no range parameter. When nothing is missing and the source answers `verifyChainIntegrity` with a different `chainCommitment`, it re-fetches the divergent heights from the tip down.
+- Fetches with `getBlockRaw` and checks the BLAKE3 checksum that the same source supplies. This detects accidental corruption only: it is not an authenticity check, and it is skipped when the source sends no checksum. Backfill does not validate the blocks (no signature, VDF or merkle-root check).
+- Writes the block store only. It does not apply state and never writes the `--archive-to` directory (one node restart refills it from the block store).
+- A height the source lacks is skipped with a log warning; `backfillStatus.error` stays `null`.
+- Verify the result against a second node that is not the source: `verifyChainIntegrity [H]` compares the header hashes 1..H, and a per-height `getBlockRaw` `blake3` compare proves the block bytes (header and body). Runbook: [archiver.md §5.3](./archiver.md#53-hot-backfill-fill-and-verify-a-height-hole).
 
 **Response:**
 ```json
@@ -1877,6 +1885,7 @@ Trigger hot backfill of missing blocks from a remote seed/archive node.
   "total": 977
 }
 ```
+With no gaps: `{"started": false, "message": "No gaps detected — chain is complete."}`
 
 ### `backfillStatus`
 
@@ -1897,7 +1906,7 @@ Check the progress of an active backfill operation.
 
 ### `verifyChainIntegrity`
 
-Scans a height range for missing blocks (gaps). Deserializes each block and computes a running BLAKE3 chain commitment (returned as `chainCommitment` when scanning from block 1 with no gaps, null otherwise).
+Scans a height range for missing blocks (gaps). Deserializes each block and computes a running BLAKE3 chain commitment (returned as `chainCommitment` when scanning from block 1 with no gaps, null otherwise). Admin-gated.
 
 **Parameters:**
 
@@ -1955,6 +1964,7 @@ Positional: `[up_to_height, from_height]` — or named: `{"up_to_height": N, "fr
 - `fromHeight` echoes back the scan floor used
 - Runs in a background thread to avoid blocking the RPC event loop
 - The persisted full-chain commitment (used as a fast path) is only stored/used for full scans from block 1
+- The no-parameter form can return that persisted commitment (`scanned` = its height), even when gaps exist. To compare two nodes, pass the same explicit `up_to_height` to both: equal `chainCommitment` with `missingCount: 0` proves every block header hash in 1..H matches. It does not cover the block bodies; compare `getBlockRaw` `blake3` per height for those ([archiver.md §5.3](./archiver.md#53-hot-backfill-fill-and-verify-a-height-hole))
 - Added in v2.0.29; `from_height` parameter added in v6.20.5
 
 ---
