@@ -444,44 +444,27 @@ impl BlockStore {
         Ok(stats)
     }
 
-    /// Get the lowest and highest heights in the height index.
+    /// Numeric `(min, max)` over the height-index keys `>= 1`, or `None` when
+    /// there is no such key.
     ///
-    /// Returns `(min_height, max_height)` or `None` if the index is empty.
+    /// Key 0 (virtual genesis, no stored block) and malformed keys are
+    /// ignored. Keys are u64 LE, so RocksDB byte order is not numeric order:
+    /// this is one key-only pass over the index, O(index entries).
     pub fn height_range(&self) -> Result<Option<(u64, u64)>, StorageError> {
         let cf_height = self.db.cf_handle(CF_HEIGHT_INDEX).unwrap();
-
-        // First entry (lowest height)
-        let min = self
-            .db
-            .iterator_cf(cf_height, rocksdb::IteratorMode::Start)
-            .flatten()
-            .next();
-
-        let max = self
-            .db
-            .iterator_cf(cf_height, rocksdb::IteratorMode::End)
-            .flatten()
-            .next();
-
-        match (min, max) {
-            (Some((min_key, _)), Some((max_key, _))) => {
-                let min_h = if min_key.len() == 8 {
-                    let mut arr = [0u8; 8];
-                    arr.copy_from_slice(&min_key);
-                    u64::from_le_bytes(arr)
-                } else {
-                    return Ok(None);
-                };
-                let max_h = if max_key.len() == 8 {
-                    let mut arr = [0u8; 8];
-                    arr.copy_from_slice(&max_key);
-                    u64::from_le_bytes(arr)
-                } else {
-                    return Ok(None);
-                };
-                Ok(Some((min_h, max_h)))
+        let mut range: Option<(u64, u64)> = None;
+        let mut iter = self.db.raw_iterator_cf(cf_height);
+        iter.seek_to_first();
+        while let Some(key) = iter.key() {
+            if let Ok(bytes) = <[u8; 8]>::try_from(key) {
+                let h = u64::from_le_bytes(bytes);
+                if h >= 1 {
+                    range = Some(range.map_or((h, h), |(lo, hi)| (lo.min(h), hi.max(h))));
+                }
             }
-            _ => Ok(None),
+            iter.next();
         }
+        iter.status()?;
+        Ok(range)
     }
 }

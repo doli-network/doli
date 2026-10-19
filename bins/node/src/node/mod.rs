@@ -37,6 +37,7 @@ mod holdings;
 use holdings::holdings_of_every_producer;
 mod fork_cache;
 mod init;
+mod integrity;
 mod maintainer_rewind;
 mod network_events;
 mod orphan_chase;
