@@ -973,7 +973,7 @@ Additional top-level files in `bins/node/src/`:
 | Block store   | RocksDB (headers, bodies, height/slot indexes) |
 | State DB      | RocksDB (6 CFs: cf_utxo, cf_utxo_by_pubkey, cf_producers, cf_exit_history, cf_meta, cf_undo) |
 | UTXO set      | In-memory HashMap (loaded from StateDb on startup) |
-| Archive       | Flat files ({height}.block + {height}.blake3 + manifest.json) |
+| Archive       | Flat files ({height}.block + {height}.blake3 + manifest.json: `latest_height`, `latest_hash`, `genesis_hash`, `verified_height`) |
 
 ---
 

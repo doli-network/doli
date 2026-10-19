@@ -124,6 +124,7 @@ Non-producing, sync-only, publicly accessible. These are the network entry point
 | Seed3 | ai3 | 30300 | 8500 | 9000 | `doli-mainnet-seed` | `seeds.doli.network` |
 
 All run with `--relay-server --rpc-bind 0.0.0.0 --archive-to /mainnet/seed/blocks`.
+Either role flag implies `--no-snap-sync`: seeds always sync header-first and keep every block. To fill a height hole, see [archiver.md §5.3](./archiver.md#53-hot-backfill-fill-and-verify-a-height-hole).
 
 ### Producer Nodes (N1-N12 + Named Producers)
 

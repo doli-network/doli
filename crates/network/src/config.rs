@@ -45,7 +45,8 @@ pub struct NetworkConfig {
     /// Seed mode: auto-disconnect peers after DHT exchange (SEED_PEER_TTL).
     /// Seeds are bootstrap points — they accept connections, share DHT routing
     /// tables, and disconnect. Not permanent gossip mesh participants.
-    /// Enabled automatically when relay_server is true.
+    /// Inert: the node always passes false (relay_server does not set it) and
+    /// the swarm loop never acts on it.
     pub seed_mode: bool,
     /// Enable transaction announce-request protocol (EIP-4938 style).
     /// When true, nodes broadcast tx hashes instead of full txs via gossipsub,

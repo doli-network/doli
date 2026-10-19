@@ -239,6 +239,11 @@ impl ForkRecoveryTracker {
     }
 
     /// Get current parent hash being sought (for Node to check block_store)
+    /// The peer the active walk fetches from (INC-I-235: the parked header retry avoids it).
+    pub fn active_peer(&self) -> Option<PeerId> {
+        self.active.as_ref().map(|r| r.peer)
+    }
+
     pub fn current_parent(&self) -> Option<Hash> {
         let recovery = self.active.as_ref()?;
         if recovery.pending {
