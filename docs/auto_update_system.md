@@ -305,7 +305,10 @@ rule is `select_quorum_maintainer_state` in `crates/core/src/maintainer/quorum.r
 - **Provenance.** At start, a non-empty set whose `last_derived_height` D >= 1 is below the tip,
   with block D in the local block store and block D+1 absent, was not derived from replayed
   history. The node resets it to EMPTY at the tip and the peer quorum repairs it. Pruning removes
-  a contiguous prefix from height 1, so a pruned or full replay node never matches.
+  a contiguous prefix from height 1, so a pruned or full replay node never matches. A
+  `backfillFromPeer`, a `restore` or the `[INTEGRITY]` auto-repair that fills the hole before
+  the first start with this rule removes the evidence, and the node keeps the set. Run that
+  start before any hole repair (`docs/archiver.md` §5.3).
 - **Post-gate seed.** At start, a non-empty set with `last_updated` == D == `last_derived_height`
   >= G > 0 (G = `maintainer_derivation_activation_height`), the tip above D, and the node's own
   block D present with no AddMaintainer or RemoveMaintainer transaction came from a producer seed

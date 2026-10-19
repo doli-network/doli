@@ -120,6 +120,7 @@ mod inc_i_237_m8_block;
 mod inc_i_237_m8_common;
 mod inc_i_237_m8_relay;
 mod inc_i_248_harness;
+mod inc_i_248_hole_backfill_order;
 mod inc_i_248_m1_probe;
 mod inc_i_248_m2_probe;
 mod inc_i_248_quorum_probe;

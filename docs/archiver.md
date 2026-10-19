@@ -250,6 +250,16 @@ curl -s -X POST "$SOURCE" -H "Content-Type: application/json" -d "$ID" | jq -r .
 
 Continue only when the command prints three different peer IDs.
 
+**Trust root first (INC-I-248).** A backfill also fills the hole that the start-time trust-root check looks for (block D present, block D+1 missing). If the node was ever snap-synced, start it once on a release with the INC-I-248 fix before step 2, and before any `restore`. That start resets a maintainer set that the node did not derive from replayed history. Then compare the release trust root with the verifier's, before step 2 and again after step 3. `getMaintainerSet` is not an admin method:
+
+```bash
+GM='{"jsonrpc":"2.0","method":"getMaintainerSet","params":{},"id":1}'
+rpc "$PORT" "$GM" | jq -r '.result | "\(.source) \(.member_count) \(.maintainer_set_digest)"'
+{ declare -f rpc; printf 'rpc %q %q\n' "$VERIFIER_PORT" "$GM"; } | ssh "$VERIFIER_HOST" bash | jq -r '.result | "\(.source) \(.member_count) \(.maintainer_set_digest)"'
+```
+
+Pass: both lines show `on-chain` and the same `maintainer_set_digest`. A `member_count` of 0 on the repaired node is normal for a few minutes after that start: wait for the `[MAINTAINER] quorum verdict` line in its log. If the digests still differ after a backfill, see [troubleshooting.md §5.4](./troubleshooting.md), "After a backfill".
+
 1. **Find the hole** on the repaired node:
    ```bash
    curl -s -X POST "$NODE" -H "Content-Type: application/json" \

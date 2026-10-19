@@ -371,7 +371,9 @@ up with full blocks.
 from one node, then `verifyChainIntegrity [H]` (header hashes) and a per-height `getBlockRaw`
 `blake3` compare (block bytes) against a different node. Backfill fills the block store
 only; the archiver then copies the backfilled blocks to the archive directory at the next
-finalized block, or in the background catch-up after a restart.
+finalized block, or in the background catch-up after a restart. If the node was ever
+snap-synced, start it once on a release with the INC-I-248 fix before the backfill: the
+backfill fills the hole that the start-time trust-root check looks for (§5.4).
 
 ---
 
@@ -1022,7 +1024,8 @@ sudo systemctl start doli-node
 > node builds it again: a full sync from genesis re-applies every governance block, and a
 > snap sync stores an EMPTY root that the peer quorum then repairs (see 5.4). Never delete
 > this file alone, and never wipe the node to repair the trust root: a node that runs a
-> release with the INC-I-248 fix repairs a wrong root at start (5.4). After the sync, check
+> release with the INC-I-248 fix repairs a wrong root at start (5.4). The one exception is a
+> snap hole that a backfill filled first (5.4, "After a backfill"). After the sync, check
 > the root (5.5).
 >
 > **Compare `getMaintainerSet` only when `"source": "on-chain"` on BOTH nodes.** A
@@ -1392,6 +1395,18 @@ do not answer), the node tries 3 times, 60 s apart, then logs
 `[MAINTAINER] quorum verdict Keep(…) … phase=gave-up; keeping the current trust root`.
 Upgrade more peers (the seeds first) and restart the node.
 
+**After a backfill.** The provenance check looks for a hole: block D present, block D+1
+missing. A `backfillFromPeer`, a `restore` or the `[INTEGRITY]` auto-repair that fills the
+hole before the first start on the fixed release removes that evidence, and the node keeps the
+wrong set. On mainnet the retired-key check still resets a set that holds a retired genesis
+key. On testnet and devnet that check is off. To prevent it, start the node once on the fixed
+release before any backfill ([archiver.md §5.3](./archiver.md#53-hot-backfill-fill-and-verify-a-height-hole)).
+If the digest already differs from a node that you trust after a backfill, a start cannot
+repair the set. Remove the chain data with the manual fallback in 4.2 and let the node sync
+again on the fixed release. An archive or relay node then does a full resync from genesis and
+re-applies every governance block. Another node can snap-sync: it then stores an EMPTY root
+that the peer quorum repairs.
+
 ---
 
 ### 5.5. Check Your Release Trust Root
@@ -1443,7 +1458,8 @@ use only the digest check.
 | `"source": "derived"` or `"source": "none"` | Advisory only. This is not the root that the node enforces. | Do not compare it. |
 
 Do not delete `maintainer_state.bin` and do not run `doli snap` to fix a wrong set. A node
-with the INC-I-248 fix repairs it at start (5.4).
+with the INC-I-248 fix repairs it at start (5.4), unless a backfill filled its snap hole
+first (5.4, "After a backfill").
 
 ---
 
