@@ -16,7 +16,15 @@ use std::fmt;
 use doli_core::network::Network;
 use tracing::{debug, error, warn};
 
-use crate::constants::{bootstrap_maintainer_keys, REQUIRED_SIGNATURES};
+use crate::constants::{
+    bootstrap_maintainer_keys, REQUIRED_SIGNATURES, RETIRED_COMPROMISED_MAINTAINER_KEYS,
+};
+
+fn is_retired(key: &str) -> bool {
+    RETIRED_COMPROMISED_MAINTAINER_KEYS
+        .iter()
+        .any(|r| r.eq_ignore_ascii_case(key))
+}
 
 /// Where a release-verification trust root came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -88,14 +96,33 @@ impl TrustRoot {
         self.provenance
     }
 
-    /// A root can authorize an install only if it has at least `threshold` keys and
-    /// `threshold >= 1`. An empty or sub-threshold root is NOT usable.
+    /// Keys of this root on `RETIRED_COMPROMISED_MAINTAINER_KEYS`.
+    pub fn retired_keys(&self) -> Vec<&str> {
+        self.keys
+            .iter()
+            .map(String::as_str)
+            .filter(|k| is_retired(k))
+            .collect()
+    }
+
+    pub(crate) fn retired_key_prefixes(&self) -> String {
+        self.retired_keys()
+            .into_iter()
+            .map(|k| k.get(..8).unwrap_or(k))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// A root can authorize an install only if it has at least `threshold` keys,
+    /// `threshold >= 1`, and no retired key. Any other root is NOT usable.
     ///
     /// `threshold >= 1` matters on its own: `MaintainerSet::calculate_threshold(0)`
     /// is 0, so a `valid >= threshold` test on a defaulted set would be vacuously
     /// satisfied by a release carrying zero valid signatures (FM-02).
     pub fn is_usable(&self) -> bool {
-        self.threshold >= 1 && self.keys.len() >= self.threshold
+        self.threshold >= 1
+            && self.keys.len() >= self.threshold
+            && !self.keys.iter().any(|k| is_retired(k))
     }
 
     /// Resolve a trust root from a host's persisted on-chain maintainer set.
@@ -129,13 +156,9 @@ impl TrustRoot {
             // (`MaintainerSet::count_distinct_signers`, routed by `verify_multisig_at`
             // at and above `maintainer_derivation_activation_height`).
             //
-            // The INC-I-172 M1 containment that compared against the compiled five was
-            // deleted here by INC-I-196: it outlived its stated exit condition and turned
-            // the INC-I-175 rotation into a fleet-wide refusal of every release.
-            //
             // NOT relaxed, and must stay that way: an emptied set fails closed, a
-            // sub-threshold root is unusable, and `Bootstrap` is reachable ONLY through
-            // the never-bootstrapped branch below.
+            // sub-threshold or retired-key root is unusable, and `Bootstrap` is reachable
+            // ONLY through the never-bootstrapped branch below.
             debug!(
                 "Release trust root: on-chain maintainer set ({} keys, threshold {}, derived at \
                  height {})",
@@ -149,7 +172,18 @@ impl TrustRoot {
             // and therefore changes which AddMaintainer / RemoveMaintainer /
             // ProtocolActivation transactions take effect (INV-12 Q1 YES / Q2 YES /
             // Q3 NO) — that needs an activation height, which M1 does not have.
-            Self::on_chain(keys, threshold)
+            let root = Self::on_chain(keys, threshold);
+            let retired = root.retired_keys().len();
+            if retired > 0 {
+                error!(
+                    "TRUST_ROOT_RETIRED_KEY: the on-chain maintainer set on this host contains \
+                     {} retired, publicly compromised genesis key(s) ({}); release verification \
+                     refuses every release until the set is repaired (INC-I-248)",
+                    retired,
+                    root.retired_key_prefixes()
+                );
+            }
+            root
         } else if last_derived_height == 0 {
             // This host has never established an on-chain maintainer set: a fresh
             // install, or a node that has not yet reached the bootstrap height. It keeps

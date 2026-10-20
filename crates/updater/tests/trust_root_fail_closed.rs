@@ -722,3 +722,23 @@ fn req_196_003_mainnet_and_testnet_no_longer_share_a_signer() {
         );
     }
 }
+
+// REQ-248-001 (Must) — Decision: a failure means the compiled retired list drifted from the five leaked genesis keys, so one of them could again form a usable release root.
+// INC-I-248 M3. covers: crates/updater/src/constants.rs, crates/updater/src/lib.rs
+#[test]
+fn req_248_001_retired_list_is_the_genesis_five_byte_equal() {
+    let compiled: [&str; 5] = updater::RETIRED_COMPROMISED_MAINTAINER_KEYS;
+    assert_eq!(
+        compiled, RETIRED_AND_PUBLICLY_COMPROMISED,
+        "RETIRED_COMPROMISED_MAINTAINER_KEYS must equal the five publicly compromised keys"
+    );
+    let genesis: Vec<&str> = doli_core::genesis::MAINNET_GENESIS_PRODUCERS
+        .iter()
+        .map(|(key, _)| *key)
+        .collect();
+    assert_eq!(
+        compiled.as_slice(),
+        genesis.as_slice(),
+        "RETIRED_COMPROMISED_MAINTAINER_KEYS must equal MAINNET_GENESIS_PRODUCERS, in order"
+    );
+}

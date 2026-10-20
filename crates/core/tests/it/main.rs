@@ -28,3 +28,5 @@ mod inc_i_217_m5_rotate_stateless;
 mod inc_i_234_boundary;
 mod inc_i_234_m1_activation_height;
 mod inc_i_234_m2_output_authority;
+mod inc_i_248_quorum;
+mod inc_i_248_rel_m1_quorum;

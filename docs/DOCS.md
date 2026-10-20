@@ -50,7 +50,7 @@ Master index for all DOLI documentation.
 |------|-------------|
 | [manifesto.md](./manifesto.md) | Project philosophy and principles |
 | [roadmap.md](./roadmap.md) | Development roadmap and milestones |
-| [auto_update_system.md](./auto_update_system.md) | Complete auto-update system - fail-closed TrustRoot release verification (INC-I-172 F1), distinct-signer 3-of-5, node-local veto/grace timing, count-based 40% producer veto (the seniority-weighted veto was deleted in INC-I-172 F8), binary replacement, rollback |
+| [auto_update_system.md](./auto_update_system.md) | Complete auto-update system - fail-closed TrustRoot release verification (INC-I-172 F1; retired genesis keys never usable, INC-I-248), peer-quorum trust-root repair for snap-synced nodes (INC-I-248), distinct-signer 3-of-5, node-local veto/grace timing, count-based 40% producer veto (the seniority-weighted veto was deleted in INC-I-172 F8), binary replacement, rollback |
 
 ## Testing & Research
 

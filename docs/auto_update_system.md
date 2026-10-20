@@ -161,12 +161,14 @@ What DOES converge today:
 | Recovery path | Converges? | Why |
 |---|---|---|
 | Full data-dir wipe + **full resync from genesis** | YES | Every block is re-applied, so `process_transaction_governance` re-executes the whole governance history |
-| Delete `maintainer_state.bin` only, chain intact | **NO** | Re-seeds from live producer state — R1 |
-| Full data-dir wipe + **snap sync** | **NO** | Governance below the snapshot floor is never replayed, and the node does not fail closed — R3 |
+| Delete `maintainer_state.bin` only, chain intact | **After the next start** (INC-I-248) | Re-seeds from live producer state above the gate — R1. At the next start the node resets that post-gate seed to EMPTY at the tip and repairs it from the peer quorum (§2.6.1). Devnet (gate 0) keeps the seed |
+| Full data-dir wipe + **snap sync** | **YES, from peers** (INC-I-248) | Governance below the snapshot floor is never replayed. The node does not seed from producers: it holds an EMPTY root at the snap height (fails closed) and adopts the set a peer quorum agrees on (§2.6.1). R3 is closed |
 
 REQ-172-010 ("the trust root SHOULD be derivable from block history alone, **without
 trusting `maintainer_state.bin`**") is therefore **M2 partial**, not closed. REQ-172-005's
-convergence criterion holds for the full-sync and backfill paths only.
+convergence criterion holds for the full-sync and backfill paths, and since INC-I-248 for
+the snap path through the peer quorum (§2.6.1). A snap-synced node trusts its peers for the
+set, as it trusts them for the snapshot.
 
 ### 2.4 Maintainer Management Transactions
 
@@ -267,11 +269,67 @@ MaintainerState {
    (~10 s). That is the AUDIT-P1-013 defect M2 closes forward-only; it is not fixed
    retroactively because the root decides `ProtocolActivation` acceptance, which is
    consensus-visible.
+   **Snap-synced node (INC-I-248):** at and above that height, a node that installed a
+   snapshot never seeds from producers. It stores an EMPTY set with `last_derived_height`
+   = the snap height. That root fails closed until step 5 replaces it.
 3. On MaintainerAdd/Remove tx: updated immediately, persisted to disk
 4. On release verification: `maintainer_trust_root_fn` resolves a `TrustRoot` from
    `MaintainerState` (`bins/node/src/updater/trust_root_wiring.rs`)
+5. After a snapshot install, or at start after the retired-key or provenance reset: the peer-quorum
+   probe (§2.6.1) can replace an EMPTY root stamped at a snap height (INC-I-248).
 
 **Key lookup is O(1)** — reads 3-5 members, regardless of producer count.
+
+#### 2.6.1 Peer-quorum repair of the trust root (INC-I-248)
+
+A node that did not replay the chain cannot derive its maintainer set. It asks its peers
+(`SyncRequest::GetMaintainerState`, answer `SyncResponse::MaintainerStateAt`; wire details in
+`specs/protocol.md` §7.3.2). The probe lives in `bins/node/src/node/maintainer_quorum.rs`; the
+rule is `select_quorum_maintainer_state` in `crates/core/src/maintainer/quorum.rs`.
+
+- **Which roots.** Only an EMPTY root stamped at a snap height S (`last_derived_height > 0`) can
+  change. A non-empty root, or an EMPTY root at height 0, never changes, and the probe does not
+  arm for it. A snapshot install always resets the root to EMPTY at S.
+- **When.** At the end of a snapshot install, and on the first periodic tick with at least 1
+  sync peer and at least 10 s of uptime. Each attempt collects answers for 15 s and decides only
+  at the end of the window. No answer, no quorum, a tie or no majority retries after 60 s, for at
+  most 3 attempts. Then the node keeps its root. The next start tries again.
+- **Which answers count.** The receiver recomputes each digest with its LOCAL genesis hash and
+  drops a mismatch. An answer counts only when the peer tip >= S and the set is not empty. An
+  answer whose set holds a key retired at S is dropped.
+- **Adopt.** The largest digest group must have at least `snap_quorum()` answers, must not tie,
+  and must be a strict majority of the counted answers.
+- **Retired keys.** Above `retired_genesis_maintainer_keys_height` (mainnet 331_457, testnet and
+  devnet never) the 5 genesis keys are not maintainers. At start and after a producer seed, a
+  set that holds one becomes EMPTY at the tip, and the probe repairs it.
+- **Provenance.** At start, a non-empty set whose `last_derived_height` D >= 1 is below the tip,
+  with block D in the local block store and block D+1 absent, was not derived from replayed
+  history. The node resets it to EMPTY at the tip and the peer quorum repairs it. Pruning removes
+  a contiguous prefix from height 1, so a pruned or full replay node never matches. A
+  `backfillFromPeer`, a `restore` or the `[INTEGRITY]` auto-repair that fills the hole before
+  the first start with this rule removes the evidence, and the node keeps the set. Run that
+  start before any hole repair (`docs/archiver.md` §5.3).
+- **Post-gate seed.** At start, a non-empty set with `last_updated` == D == `last_derived_height`
+  >= G > 0 (G = `maintainer_derivation_activation_height`), the tip above D, and the node's own
+  block D present with no AddMaintainer or RemoveMaintainer transaction came from a producer seed
+  above the gate. The node resets it to EMPTY at the tip and the peer quorum repairs it. A missing
+  block D keeps the set. A replay node holds a pre-gate seed or a governance-block D and keeps its
+  set. Devnet (G = 0) never matches.
+- **Routing.** A reply to the probe never reaches the sync manager. A node serves
+  `GetMaintainerState` outside the sync serving limit.
+- **Effect.** Every verdict logs one line: `[MAINTAINER] quorum verdict … phase=…`. An adoption
+  carries `MAINTAINER_SET_DIGEST=…`. The file is replaced atomically and the update service
+  checks for releases at once.
+
+`doli snap` uses the same idea on the CLI side: it writes the snapshot's `maintainerState` only
+when the seeds agree on its digest by the state-root rule (the configured seed count, so a silent
+seed counts against it), else an EMPTY set at the snapshot height. A set that holds a key
+retired at the snapshot height is also written EMPTY (`docs/cli.md` §22).
+
+**Operators.** To check the set on a node, see `docs/troubleshooting.md` §5.5. A node whose
+binary predates this fix and holds a wrong set refuses the fixed release too. It needs one
+verified manual install: `docs/releases.md`, "Upgrade Note: Node With a Wrong Release Trust
+Root".
 
 ### 2.7 Signature Verification Flow
 
@@ -291,8 +349,10 @@ maintainer_trust_root_fn() resolves the TrustRoot (INC-I-172 F1):
                                                  There is NO fallback to the compiled keys.
     ↓
 verify_release_with_trust_root():
-    1. root.is_usable()? (threshold >= 1 AND keys.len() >= threshold)
+    1. root.is_usable()? (threshold >= 1 AND keys.len() >= threshold
+                          AND no key is in RETIRED_COMPROMISED_MAINTAINER_KEYS — INC-I-248)
        → if not: error! + UpdateError::TrustRootUnavailable. STOP. No fallback.
+       (a retired-key root also logs TRUST_ROOT_RETIRED_KEY when it is resolved)
     2. DISTINCT-SIGNER count (covenant k-of-n shape, conditions/eval.rs):
        for each key in root.keys():
            for each signature entry: if it matches this key and verifies → +1, break
@@ -307,6 +367,11 @@ root as a **required parameter**, on the manual `doli-node update apply` path (F
 revoked during the veto period therefore invalidates an already-staged update on both
 paths instead of authorising it (F7(a)). Revocation that cannot reach the manual apply
 is not revocation.
+
+**Four ways a root fails closed.** An on-chain set that is empty, a set with fewer keys
+than its threshold, a threshold of zero, and (INC-I-248) a set that holds any of the 5
+retired mainnet genesis keys. The last is a deny-list in `crates/updater/src/constants.rs`;
+it applies on every network and only to release verification, never to governance.
 
 ### 2.x Artifact binding (INC-I-172 F1)
 
@@ -916,7 +981,7 @@ DOLI has three upgrade paths:
 |------|--------|---------|---------------------|
 | **Operator upgrade** | `doli upgrade` | Manual, operator-driven. Downloads from GitHub, installs both `doli` + `doli-node`, restarts a service. | **Yes — install ABORTS on failure** (INC-I-172 F6) |
 | **Auto-update** | `doli-node update` | Autonomous. Node checks for updates, verifies 3/5 maintainer sigs, respects veto period, applies automatically. | Yes (3/5 required) |
-| **Legacy node upgrade** | `doli-node upgrade` | Manual. Downloads from GitHub and installs `doli-node` only. | **No — checksum only, NO signature check** |
+| **Legacy node upgrade** | `doli-node upgrade` | Manual. Downloads from GitHub and installs `doli-node` only. | **Yes — install ABORTS on failure** (INC-I-172 F6) |
 
 Use `doli upgrade` for planned rolling upgrades. Use `doli-node update` / auto-update for autonomous operation.
 
@@ -925,18 +990,20 @@ Use `doli upgrade` for planned rolling upgrades. Use `doli-node update` / auto-u
 > signatures **bound to the artifact** before anything is extracted, backed up or
 > written, and each aborts on failure or on an absent `SIGNATURES.json`.
 >
-> On a **producer host, prefer `doli-node upgrade`**: it resolves the trust root from
-> that host's on-chain `maintainer_state.bin` (INC-I-172 F3). The `doli` CLI can only
-> use the compile-time bootstrap root — it is not the node host and has no chain state.
+> `doli upgrade` and `doli-node upgrade` both resolve the trust root from the host's
+> on-chain `maintainer_state.bin` in the node data directory (INC-I-172 F3, AUDIT-P1-012).
+> They use the compiled bootstrap keys only on a host that has never had an on-chain set.
 
 ### 9.1 Operator Upgrade (`doli upgrade`)
 
-For planned upgrades from a machine that is not a node. Downloads the release tarball
-from GitHub, **verifies maintainer signatures from `SIGNATURES.json` bound to that exact
-tarball (§2.x L1-L4) and aborts before installing anything if any link breaks or the file
-is absent**, installs both `doli` and `doli-node` binaries via atomic rename, and
-restarts the specified systemd service. Its trust root is the compile-time bootstrap
-set.
+For planned, operator-driven upgrades. Downloads the release tarball from GitHub,
+**verifies maintainer signatures from `SIGNATURES.json` bound to that exact tarball
+(§2.x L1-L4) and aborts before installing anything if any link breaks or the file is
+absent**, installs both `doli` and `doli-node` binaries via atomic rename, and restarts
+the specified systemd service. Its trust root is this host's on-chain maintainer set,
+read from `maintainer_state.bin` in the node data directory (`--data-dir`). The compiled
+bootstrap keys are used only when the host has never had an on-chain set. An on-chain set
+that is empty or holds a retired key fails closed: the install is refused (§2.7).
 
 ```bash
 # Upgrade to latest version
@@ -960,17 +1027,32 @@ sudo /opt/doli/target/release/doli upgrade --yes --service doli-mainnet-node4
 | `--yes` | No | Skip confirmation prompt |
 | `--doli-node-path <PATH>` | Depends | Path to `doli-node` binary. Required if not in: `which doli-node`, `/usr/local/bin/doli-node`, or `/opt/doli/target/release/doli-node` |
 | `--service <SERVICE>` | Recommended | Systemd service to restart. **Critical** on multi-node servers (omegacortex has N1+N2+N6) |
+| `--data-dir <PATH>` | No | Node data directory that holds `maintainer_state.bin`, the trust root of this install (default: the platform node data directory) |
 
-**How it works:**
-1. Fetches release metadata from GitHub (`doli-network/doli`)
-2. Downloads platform tarball (auto-detects linux x86_64 / darwin aarch64)
-3. Verifies SHA-256 checksum from `CHECKSUMS.txt`
-4. Checks maintainer signatures (informational warning — does **not** block the upgrade)
+**How it works** (v6.44.0, `bins/cli/src/cmd_upgrade.rs`):
+1. Fetches release metadata from GitHub (`doli-network/doli`). If that release is not
+   newer than the installed `doli`, it installs nothing (see the note below).
+2. Asks for confirmation, unless `--yes`.
+3. Downloads the platform tarball (auto-detects linux x86_64 / darwin aarch64).
+4. Verifies the maintainer signatures and **blocks the install on any failure**. It
+   downloads `SIGNATURES.json`, resolves the trust root from `--data-dir`, and checks that
+   the signed version is this release, that the signed hash matches the fetched
+   `CHECKSUMS.txt`, that the tarball matches its `CHECKSUMS.txt` line, and that at least
+   `threshold` distinct maintainers signed. An unreachable or absent `SIGNATURES.json`,
+   a trust root that cannot be loaded or is unusable, or any failed check aborts the
+   command before anything is extracted or written. On success it prints
+   `Verified: N distinct maintainer signature(s) bound to this vX tarball`.
 5. Installs `doli` binary (to its own path via `current_exe()`)
 6. Installs `doli-node` binary (auto-detected or `--doli-node-path`)
-7. Restarts the specified `--service`
+7. Updates the agent skills (best effort)
+8. Restarts the `--service`. Without `--service`, it restarts the systemd service that
+   runs the installed `doli-node` (Linux), else a launchd job (macOS), else the running
+   process. As root on systemd, it also refreshes the staged-upgrade helper units
+   (INC-I-215).
 
-**Note:** If the binary is already at the target version, `doli upgrade` prints "Already up to date" and exits without restarting the service. To restart a service with an already-updated binary, use `sudo systemctl restart <service>` directly.
+**Note:** If the release is not newer than the installed `doli`, `doli upgrade` installs
+nothing. With `--service` it restarts that service; without it, it prints "Already up to
+date" and exits.
 
 For the full per-server command reference and the fleet upgrade sequence, see
 `.claude/skills/release/SKILL.md` (post-tag release sequence + per-node binary map) and
@@ -1043,10 +1125,12 @@ doli-node maintainer sign --proposal-id 12345 --key /path/to/maintainer.json
 ### 9.5 Node Run Options
 
 ```bash
-# Run with auto-updates enabled (default)
+# Run with auto-updates enabled (default; no flag needed)
 doli-node run --network mainnet
 
-# Disable auto-updates entirely
+# Opt OUT of auto-updates (not recommended). The update service does not start:
+# the node never checks for, downloads or installs a release. You must install
+# every release by hand.
 doli-node run --network mainnet --no-auto-update
 
 # Notify only (check but don't apply)
@@ -1078,29 +1162,38 @@ doli-node run \
   "id": 1
 }
 
-// Response
+// Response from a local testnet node (source "on-chain"). Keys and hashes are
+// shortened here; the node returns 64 hex characters for each.
 {
   "jsonrpc": "2.0",
   "result": {
+    "enforced": true,
+    "genesis_hash": "f6cc888a1b03238c…",
+    "initial_maintainer_count": 5,
+    "last_change_block": 254402,
+    "maintainer_derivation_activation_height": 15087,
+    "maintainer_set_digest": "711dc79bb71e3f38…",
     "maintainers": [
-      {
-        "pubkey": "doli1abc...",
-        "registered_at_block": 1,
-        "is_active_producer": true
-      },
-      {
-        "pubkey": "doli1def...",
-        "registered_at_block": 2,
-        "is_active_producer": true
-      }
-      // ... 3 more
+      { "pubkey": "d13ae33891d55930…" }
+      // ... one { "pubkey": … } object per member (5 here)
     ],
-    "threshold": 3,
-    "last_change_block": 50000
+    "max_maintainers": 5,
+    "member_count": 5,
+    "min_maintainers": 3,
+    "source": "on-chain",
+    "threshold": 3
   },
   "id": 1
 }
 ```
+
+`source: "on-chain"` (`enforced: true`) is the set that the node enforces. Each member has
+only `pubkey`, a hex Ed25519 key. A node with no `MaintainerState` answers
+`source: "derived"` (`enforced: false`, advisory): each member also has
+`registered_at_block` and `is_active_producer`, `last_change_block` is 0, and the response
+adds `advisory_note`. `source: "none"` returns only `maintainers` (empty), `threshold` 0,
+`member_count` 0, `source`, `enforced: false`, `genesis_hash` and `advisory_note`. Field
+reference: `docs/rpc_reference.md`, getMaintainerSet.
 
 ### 10.2 getUpdateStatus
 
@@ -1211,6 +1304,8 @@ doli-node run \
 │ Component                       │ Path                                        │
 ├─────────────────────────────────┼─────────────────────────────────────────────┤
 │ Maintainer set management       │ crates/core/src/maintainer/                 │
+│ Peer-quorum rule (INC-I-248)    │ crates/core/src/maintainer/quorum.rs        │
+│ Peer-quorum probe (INC-I-248)   │ bins/node/src/node/maintainer_quorum.rs     │
 │ Maintainer transactions         │ crates/core/src/transaction.rs              │
 │ Maintainer validation           │ crates/core/src/validation.rs               │
 │ Core updater library            │ crates/updater/src/lib.rs                   │
@@ -1358,6 +1453,8 @@ pub const GITHUB_API_URL: &str = "https://api.github.com/repos/doli-network/doli
 ### Q: How are the initial maintainers chosen?
 
 **Automatically.** The first 5 producers to register become maintainers. There's no pre-selection, no governance vote, no configuration file. The blockchain itself determines who the maintainers are.
+
+That is the genesis seed only. Both networks have since rotated the set by governance (section 2). A node that replays the chain gets the current set from that history. A snap-synced node does not seed from producers; it takes the set a peer quorum agrees on (section 2.6.1, INC-I-248).
 
 ### Q: Can maintainers force an update without community consent?
 

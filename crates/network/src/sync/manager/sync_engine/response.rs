@@ -233,6 +233,8 @@ impl SyncManager {
                 self.handle_snap_state_root(peer, block_hash, block_height, state_root);
                 vec![]
             }
+
+            SyncResponse::MaintainerStateAt { .. } => vec![],
         }
     }
 

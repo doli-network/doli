@@ -147,6 +147,7 @@ impl ConsensusParams {
             max_block_size_cap: MAX_BLOCK_SIZE_CAP,
             reward_mode: RewardMode::EpochPool,
             genesis_hash: crypto::Hash::ZERO, // Stress tests don't validate genesis_hash
+            retired_genesis_maintainer_keys_height: u64::MAX,
         }
     }
 }

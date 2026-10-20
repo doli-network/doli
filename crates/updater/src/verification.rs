@@ -57,8 +57,8 @@ pub fn verify_release_signatures(release: &Release, network: Network) -> Result<
 /// Verify that a release carries enough DISTINCT maintainer signatures to satisfy
 /// the supplied trust root.
 ///
-/// Fail-closed (INC-I-172 F1): an unusable root — empty, sub-threshold, or with a
-/// threshold of zero — is refused with `UpdateError::TrustRootUnavailable`. There is
+/// Fail-closed (INC-I-172 F1): an unusable root — empty, sub-threshold, threshold zero,
+/// or holding a retired key — is refused with `UpdateError::TrustRootUnavailable`. There is
 /// no fallback to `bootstrap_maintainer_keys`; only `TrustRoot::bootstrap` may reach
 /// those, and only a caller that has never had on-chain state may ask for it.
 ///
@@ -74,15 +74,28 @@ pub fn verify_release_signatures(release: &Release, network: Network) -> Result<
 /// an operator with 5 valid signatures that only 3 were found (QA OBS-001).
 pub fn verify_release_with_trust_root(release: &Release, root: &TrustRoot) -> Result<usize> {
     if !root.is_usable() {
-        error!(
-            "Refusing to verify release {}: {} trust root has {} key(s) for a threshold of {} \
-             — an absent, empty or sub-threshold root authorises nothing and does NOT fall back \
-             to the compiled bootstrap keys (INC-I-172 F1)",
-            release.version,
-            root.provenance(),
-            root.keys().len(),
-            root.threshold()
-        );
+        let retired = root.retired_keys().len();
+        if retired > 0 {
+            error!(
+                "Refusing to verify release {}: {} trust root holds {} retired, publicly \
+                 compromised genesis key(s) ({}) and authorises nothing until the set is \
+                 repaired; it does NOT fall back to the compiled bootstrap keys (INC-I-248)",
+                release.version,
+                root.provenance(),
+                retired,
+                root.retired_key_prefixes()
+            );
+        } else {
+            error!(
+                "Refusing to verify release {}: {} trust root has {} key(s) for a threshold of \
+                 {} — an absent, empty or sub-threshold root authorises nothing and does NOT \
+                 fall back to the compiled bootstrap keys (INC-I-172 F1)",
+                release.version,
+                root.provenance(),
+                root.keys().len(),
+                root.threshold()
+            );
+        }
         return Err(UpdateError::TrustRootUnavailable {
             provenance: root.provenance().to_string(),
             keys: root.keys().len(),

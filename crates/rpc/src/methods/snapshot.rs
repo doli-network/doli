@@ -18,33 +18,36 @@ impl RpcContext {
     ///   "chainState": "hex...",
     ///   "utxoSet": "hex...",
     ///   "producerSet": "hex...",
-    ///   "totalBytes": 123456
+    ///   "totalBytes": 123456,
+    ///   "maintainerState": { "members": ["hex..."], "threshold": 3, "lastChangeBlock": 0, "lastDerivedHeight": 12345, "digest": "hex...", "genesisHash": "hex..." }
     /// }
     /// ```
     pub(super) async fn get_state_snapshot(&self) -> Result<Value, RpcError> {
-        let chain_state = self.chain_state.read().await;
-        let utxo_set = self.utxo_set.read().await;
+        let snapshot = {
+            let chain_state = self.chain_state.read().await;
+            let utxo_set = self.utxo_set.read().await;
 
-        let producer_set_guard;
-        let producer_set_ref = match &self.producer_set {
-            Some(ps) => {
-                producer_set_guard = ps.read().await;
-                &*producer_set_guard
-            }
-            None => {
-                return Err(RpcError::internal_error(
-                    "Producer set not available".to_string(),
-                ));
-            }
+            let producer_set_guard;
+            let producer_set_ref = match &self.producer_set {
+                Some(ps) => {
+                    producer_set_guard = ps.read().await;
+                    &*producer_set_guard
+                }
+                None => {
+                    return Err(RpcError::internal_error(
+                        "Producer set not available".to_string(),
+                    ));
+                }
+            };
+
+            storage::StateSnapshot::create_gated(
+                &chain_state,
+                &utxo_set,
+                producer_set_ref,
+                self.inc_i_181_pending_root_activation_height,
+            )
+            .map_err(|e| RpcError::internal_error(format!("Failed to create snapshot: {}", e)))?
         };
-
-        let snapshot = storage::StateSnapshot::create_gated(
-            &chain_state,
-            &utxo_set,
-            producer_set_ref,
-            self.inc_i_181_pending_root_activation_height,
-        )
-        .map_err(|e| RpcError::internal_error(format!("Failed to create snapshot: {}", e)))?;
 
         // Include persisted epoch meta keys so doli snap receivers get
         // the correct bond snapshot (computed at epoch boundary, not snap height).
@@ -66,6 +69,8 @@ impl RpcContext {
             })
         });
 
+        let maintainer_state = self.snapshot_maintainer_state().await;
+
         let response = serde_json::json!({
             "height": snapshot.block_height,
             "blockHash": snapshot.block_hash.to_hex(),
@@ -76,8 +81,28 @@ impl RpcContext {
             "epochBondSnapshot": epoch_meta,
             "epochAccumulators": epoch_accumulators,
             "totalBytes": snapshot.total_bytes(),
+            "maintainerState": maintainer_state,
         });
 
         Ok(response)
+    }
+
+    /// The `maintainerState` field; `null` when no maintainer state is attached.
+    async fn snapshot_maintainer_state(&self) -> Value {
+        let Some(ms) = &self.maintainer_state else {
+            return Value::Null;
+        };
+        let state = ms.read().await;
+        let genesis_hash = self.params.genesis_hash;
+        let digest =
+            doli_core::maintainer::maintainer_set_digest(&state.set, genesis_hash.as_bytes());
+        serde_json::json!({
+            "members": state.set.members.iter().map(|k| k.to_hex()).collect::<Vec<_>>(),
+            "threshold": state.set.threshold,
+            "lastChangeBlock": state.set.last_updated,
+            "lastDerivedHeight": state.last_derived_height,
+            "digest": hex::encode(digest),
+            "genesisHash": genesis_hash.to_hex(),
+        })
     }
 }

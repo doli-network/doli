@@ -26,6 +26,8 @@ pub struct ConsensusParams {
     /// Genesis hash — chain identity fingerprint. Blocks with a different
     /// genesis_hash are rejected immediately. Set from chainspec at startup.
     pub genesis_hash: crypto::Hash,
+    /// `NetworkParams::retired_genesis_maintainer_keys_height` of this network.
+    pub retired_genesis_maintainer_keys_height: BlockHeight,
 }
 
 impl ConsensusParams {
@@ -50,6 +52,10 @@ impl ConsensusParams {
             max_block_size_cap: MAX_BLOCK_SIZE_CAP,
             reward_mode: RewardMode::EpochPool,
             genesis_hash: spec.genesis_hash(),
+            retired_genesis_maintainer_keys_height: crate::network_params::NetworkParams::defaults(
+                Network::Mainnet,
+            )
+            .retired_genesis_maintainer_keys_height,
         }
     }
 
@@ -78,6 +84,10 @@ impl ConsensusParams {
             max_block_size_cap: MAX_BLOCK_SIZE_CAP,
             reward_mode: RewardMode::EpochPool,
             genesis_hash: spec.genesis_hash(),
+            retired_genesis_maintainer_keys_height: crate::network_params::NetworkParams::defaults(
+                Network::Testnet,
+            )
+            .retired_genesis_maintainer_keys_height,
         }
     }
 
@@ -109,6 +119,10 @@ impl ConsensusParams {
             max_block_size_cap: MAX_BLOCK_SIZE_CAP,
             reward_mode: RewardMode::EpochPool,
             genesis_hash: spec.genesis_hash(),
+            retired_genesis_maintainer_keys_height: crate::network_params::NetworkParams::defaults(
+                Network::Devnet,
+            )
+            .retired_genesis_maintainer_keys_height,
         }
     }
 

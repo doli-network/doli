@@ -26,8 +26,12 @@ impl Node {
     /// bounded by `MAX_CONCURRENT_STATE_SESSIONS` and one outstanding chunk per
     /// session, and counting it here would let a session's own traffic saturate
     /// the cap and make the client blacklist the peer serving it correctly.
+    /// `GetMaintainerState` is exempt too: its reply is one bounded set.
     pub fn admit_sync_request(&mut self, request: &SyncRequest) -> Option<SyncResponse> {
-        if matches!(request, SyncRequest::GetStateChunk { .. }) {
+        if matches!(
+            request,
+            SyncRequest::GetStateChunk { .. } | SyncRequest::GetMaintainerState
+        ) {
             return None;
         }
         if self.sync_requests_this_interval >= MAX_SYNC_REQUESTS_PER_INTERVAL {
