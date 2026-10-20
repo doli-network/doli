@@ -1143,6 +1143,8 @@ curl -X POST http://127.0.0.1:8500 \
 
 Returns the current maintainer set. Since v1.1.15, reads from the persisted `MaintainerState` (bootstrapped from the first registered producers, then governed via on-chain `MaintainerAdd`/`MaintainerRemove` transactions). Falls back to a derivation from the producer registry if `MaintainerState` is not attached.
 
+A snap-synced node does not bootstrap from producers (INC-I-248). Until a peer quorum agrees on a set, it reports `source: "on-chain"` with `member_count: 0` (an EMPTY, fail-closed root). Then it reports the adopted set. `doli snap` counts only `on-chain` answers with `member_count > 0` when the seeds vote on `maintainer_set_digest`.
+
 **Read `source` and `enforced` before comparing two nodes.**
 
 - `source: "on-chain"`, `enforced: true` — this **is** the root the node enforces for governance and the one the updater installs against. Only these responses are comparable across nodes.
@@ -1153,29 +1155,32 @@ INC-I-172: the `derived` branch used to be a fourth, ungated derivation (`all_pr
 
 **Parameters:** None
 
-**Response:**
+**Response** (`result` of a local testnet node, `source: "on-chain"`; keys and hashes are
+shortened here, the node returns 64 hex characters for each):
 ```json
 {
-    "maintainers": [
-        {
-            "pubkey": "abc123...",
-            "registered_at_block": 100,
-            "is_active_producer": true
-        }
-    ],
-    "threshold": 3,
-    "member_count": 5,
-    "max_maintainers": 5,
-    "min_maintainers": 3,
-    "initial_maintainer_count": 5,
-    "last_change_block": 500,
-    "source": "on-chain",
     "enforced": true,
-    "maintainer_derivation_activation_height": 172000,
-    "maintainer_set_digest": "f99d3e79....",
-    "genesis_hash": "0000...."
+    "genesis_hash": "f6cc888a1b03238c…",
+    "initial_maintainer_count": 5,
+    "last_change_block": 254402,
+    "maintainer_derivation_activation_height": 15087,
+    "maintainer_set_digest": "711dc79bb71e3f38…",
+    "maintainers": [
+        { "pubkey": "d13ae33891d55930…" }
+    ],
+    "max_maintainers": 5,
+    "member_count": 5,
+    "min_maintainers": 3,
+    "source": "on-chain",
+    "threshold": 3
 }
 ```
+
+`maintainers` holds one object per member (5 in this response; one is shown). On
+`on-chain` each object has only `pubkey`. On `derived` each object also has
+`registered_at_block` and `is_active_producer`, `last_change_block` is 0, and the response
+adds `advisory_note`. `none` returns only `maintainers` (empty), `threshold` 0,
+`member_count` 0, `source`, `enforced` (`false`), `genesis_hash` and `advisory_note`.
 
 **Source values:**
 | Value | `enforced` | Description |
@@ -1986,7 +1991,15 @@ Returns a full state snapshot (chain state, UTXO set, producer set) as hex-encod
     "chainState": "hex...",
     "utxoSet": "hex...",
     "producerSet": "hex...",
-    "totalBytes": 123456
+    "totalBytes": 123456,
+    "maintainerState": {
+        "members": ["hex..."],
+        "threshold": 3,
+        "lastChangeBlock": 0,
+        "lastDerivedHeight": 12345,
+        "digest": "hex...",
+        "genesisHash": "hex..."
+    }
 }
 ```
 
@@ -2000,6 +2013,7 @@ Returns a full state snapshot (chain state, UTXO set, producer set) as hex-encod
 | utxoSet | Hex-encoded canonical UTXO set bytes |
 | producerSet | Hex-encoded canonical ProducerSet bytes |
 | totalBytes | Total size of all snapshot data in bytes |
+| maintainerState | The node's maintainer set (members in set order, threshold, `lastChangeBlock`, `lastDerivedHeight`, `digest` = `getMaintainerSet.maintainer_set_digest`, `genesisHash`), or `null` when the node has no maintainer state (INC-I-248). Not part of the state root. `doli snap` installs it only when it matches the seed-agreed digest; otherwise it writes an EMPTY set at the snapshot height |
 
 **Example:**
 ```bash

@@ -333,10 +333,11 @@ doli-node update status
 
 # Manual update
 doli-node update apply
-
-# Disable auto-updates
-doli-node run --no-auto-update
 ```
+
+Auto-update is ON by default. No flag is needed. To check the keys that the node uses to
+verify releases, see
+[troubleshooting.md §5.5](./troubleshooting.md#55-check-your-release-trust-root).
 
 See [auto_update_system.md](./auto_update_system.md) for details.
 
@@ -379,6 +380,75 @@ as root, and auto-update works unattended from then on.
 
 ---
 
+## Upgrade Note: Node With a Wrong Release Trust Root (INC-I-248)
+
+This note is for the release that carries the INC-I-248 fix. It applies only to a node that
+holds a wrong maintainer set. First check your node:
+[troubleshooting.md §5.5](./troubleshooting.md#55-check-your-release-trust-root). A node with
+the correct set needs no action. It installs this release by itself.
+
+**Why a manual install is needed.** A node that joined by snap sync, or by `doli snap`, can
+hold a wrong maintainer set. On mainnet this is usually the 5 retired maintainer keys. Such a
+node refuses every release with `Insufficient signatures: 0/3`, and it refuses this release
+too. `doli upgrade` on that host uses the same set, so it also refuses. Install this release
+once by hand.
+
+**Steps** (Linux and systemd; use the tarball for your platform, see
+[Supported Platforms](#supported-platforms)). Run them in a new, empty directory:
+
+```bash
+VERSION=v<x.y.z>                    # the release that carries the INC-I-248 fix
+TARGET=x86_64-unknown-linux-musl    # your platform
+BASE=https://github.com/doli-network/doli/releases/download/${VERSION}
+curl -LO "${BASE}/doli-${VERSION}-${TARGET}.tar.gz"
+curl -LO "${BASE}/CHECKSUMS.txt"
+curl -LO "${BASE}/SIGNATURES.json"
+
+# 1. Verify the maintainer signatures. Verify only: this installs nothing.
+#    Use the doli CLI that is ALREADY installed (v6.29.0 or later),
+#    never the binary that you just downloaded.
+doli --network mainnet release verify --version "$VERSION" --dir . --trust-root bootstrap
+
+# 2. Verify the tarball against the signed checksum list.
+#    (macOS: use "shasum -a 256 -c -" in place of "sha256sum -c -")
+grep "doli-${VERSION}-${TARGET}.tar.gz$" CHECKSUMS.txt | sha256sum -c -
+
+# 3. Install both binaries at the paths that your service uses
+#    (see ExecStart in: systemctl cat <your-node-service>), then start the node.
+tar -xzf "doli-${VERSION}-${TARGET}.tar.gz"
+sudo systemctl stop <your-node-service>
+sudo cp "doli-${VERSION}-${TARGET}/doli-node" "doli-${VERSION}-${TARGET}/doli" /usr/local/bin/
+sudo systemctl start <your-node-service>
+```
+
+Step 1 must print a line that starts with `Verified:` with at least 3 signatures. It also
+prints a `BYPASS:` line. That line is expected: `--trust-root bootstrap` checks the release
+against the maintainer keys compiled into your installed `doli`, not against the wrong set on
+disk. It does not skip the check. If step 1 or step 2 fails, stop. Do not install.
+
+**What the node does at start.** The new binary finds the wrong set and resets it to EMPTY
+(one warning line). Then it asks its peers for the maintainer set and adopts the set that a
+peer quorum agrees on. Look for this line in the node's log file:
+
+```
+[MAINTAINER] quorum verdict Adopt(agreeing=N) MAINTAINER_SET_DIGEST=… phase=done
+```
+
+Then check the set again (§5.5 of troubleshooting.md). From now on, later releases install
+automatically. If the log shows `phase=gave-up`, not enough peers run this release yet. The
+node keeps the EMPTY set and installs nothing. Restart it later. If §5.5 still shows a wrong
+set and the log shows no reset line, open an issue with the `[MAINTAINER]` log lines. Do not
+try other fixes. Details:
+[troubleshooting.md §5.4](./troubleshooting.md#54-every-release-refused--insufficient-signatures-03-or-trust_root_retired_key-inc-i-248).
+
+**Never do these things:**
+
+- Do not delete `maintainer_state.bin`.
+- Do not run `doli snap` to fix the trust root.
+- Do not bypass the signature check. Install only a release that steps 1 and 2 accept.
+
+---
+
 ## Rollback
 
 If a release causes issues:
@@ -411,4 +481,4 @@ Planned security improvements:
 
 ---
 
-*Last updated: August 2026*
+*Last updated: October 2026*

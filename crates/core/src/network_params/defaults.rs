@@ -357,6 +357,8 @@ impl NetworkParams {
                 // 30+ registered producers, so the precondition has always been
                 // satisfied here.
                 maintainer_seed_min_producers: crate::maintainer::INITIAL_MAINTAINER_COUNT,
+                // Last block of the 2026-08-30 maintainer rotation (INC-I-248).
+                retired_genesis_maintainer_keys_height: 331_457,
 
                 // Gossip mesh: universal config for all network sizes.
                 // mesh_n=12 keeps all peers in eager-push for networks ≤24 (mesh_n_high),
@@ -663,6 +665,7 @@ impl NetworkParams {
                 // clears, and keeping 5 makes the testnet seed path
                 // byte-identical to M2 as reviewed.
                 maintainer_seed_min_producers: crate::maintainer::INITIAL_MAINTAINER_COUNT,
+                retired_genesis_maintainer_keys_height: u64::MAX,
 
                 // INC-I-015: Gossip mesh sized to max_peers for eager push to ALL
                 // connected peers. At mesh_n=12, blocks reach 12 peers immediately
@@ -885,6 +888,7 @@ impl NetworkParams {
                 // exactly the pre-M2 devnet behavior: a 2-member root with
                 // calculate_threshold(2) == 2.
                 maintainer_seed_min_producers: 2,
+                retired_genesis_maintainer_keys_height: u64::MAX,
 
                 // Gossip mesh: same universal config as mainnet.
                 // With --no-dht, mesh_n_high=24 keeps all devnet peers in mesh.

@@ -74,6 +74,11 @@ impl Node {
             }
         }
 
+        // INC-I-248: a snap-synced node never seeds its trust root from live producers.
+        if one_shot && self.hold_snap_root_empty(height).await {
+            return;
+        }
+
         // Need enough registered producers to bootstrap.
         //
         // INC-I-172 M2 review F3: this precondition was the hardcoded
@@ -168,6 +173,9 @@ impl Node {
                 .collect::<Vec<_>>()
                 .join(", ")
         );
+        drop(state);
+        drop(producers);
+        self.sanitize_retired_maintainer_set_at(height).await;
     }
 
     /// Has the genesis seed already happened?
@@ -209,6 +217,7 @@ impl Node {
         // INC-I-204 M4.1 / REQ-FORK-012: the audited operator wedge escape. A
         // no-op unless an operator armed `forceReorgTo` on this node.
         self.try_consume_force_reorg().await;
+        self.maintainer_quorum_tick().await;
 
         // D4 / AC-6 monitoring metric refresh (INC-I-111: 30s TTL cache).
         //

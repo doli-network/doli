@@ -2,6 +2,7 @@
 //! helpers that the `doli` binary also consumes (INC-I-180 M3).
 pub mod cmd_release_verify;
 pub mod cmd_service_helper_units;
+pub mod cmd_snap_maintainer;
 pub mod producer_ledger;
 pub mod rotate_tx;
 pub mod service_unit;

@@ -893,6 +893,7 @@ use core::consensus::BOND_UNIT;  // DON'T DO THIS in consumers
 |------|-------|---------|
 | `status.rs` | 227 | Peer status exchange (`/doli/status/1.0.0`) |
 | `sync.rs` | 198 | Unified sync request/response (`/doli/sync/1.0.0`) |
+| `sync_codec.rs` | ~110 | `SyncCodec` length-prefixed bincode framing for `/doli/sync/1.0.0` (moved out of `sync.rs`, INC-I-248) |
 | `txfetch.rs` | ~100 | Transaction fetch by hash (`/doli/txfetch/1.0.0`) |
 
 ### Maintainer Bootstrap System
@@ -904,6 +905,7 @@ The maintainer system (`core/maintainer.rs`, 701 lines) implements decentralized
 3. **Operations**: AddMaintainer (tx type 12), RemoveMaintainer (tx type 11)
 4. **Slashing**: Producers removed from maintainer set automatically when slashed
 5. **Update Governance**: 2-epoch (~2h) veto period, 40% veto threshold to block updates
+6. **Snap-synced nodes (INC-I-248)**: never seed from producers; hold an EMPTY (fail-closed) set at the snap height and adopt the set a peer quorum agrees on by digest (`core/maintainer/quorum.rs`, `specs/protocol.md` §7.3.2)
 
 ### Binary Crates
 
@@ -923,6 +925,8 @@ The maintainer system (`core/maintainer.rs`, 701 lines) implements decentralized
 | `rollback.rs` | `rollback_one_block()`, `resolve_shallow_fork()` -- undo-based |
 | `fork_recovery.rs` | Fork recovery (9 functions) |
 | `periodic.rs` | `run_periodic_tasks()` |
+| `maintainer_quorum.rs` | Maintainer trust-root peer-quorum probe (INC-I-248): post-snap and start-up arming, 15 s window, adopt under the write lock, update re-check signal |
+| `maintainer_state_serve.rs` | Serves `SyncRequest::GetMaintainerState` with `MaintainerStateAt` (INC-I-248) |
 | `genesis.rs` | Genesis producer derivation |
 | `tx_announcements.rs` | Transaction announcement handling |
 | `apply_block/` | Core state transition (6 sub-modules: mod, state_update, tx_processing, governance, genesis_completion, post_commit) |

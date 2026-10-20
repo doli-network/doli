@@ -90,8 +90,18 @@
 >   (§F7) without closing it, because the signed message still carries no network term.
 >   `req_196_004_no_network_ships_a_publicly_compromised_key`
 >   (`crates/updater/tests/trust_root_fail_closed.rs`) is the standing guard.
-> * **M3 (Layer 3)** — F7's replay-domain binding on governance messages, plus residuals
->   **R1** and **R3** from M2 (**R2** is closed, see above). NOT implemented. Scope:
+> * **R3 CLOSED by INC-I-248, by a peer quorum, not by replay.** A snap-synced
+>   node no longer seeds from producers at or above the derivation gate: it stores an EMPTY
+>   root at the snap height (fail closed) and adopts the set that `snap_quorum()` peers agree
+>   on by digest (`crates/core/src/maintainer/quorum.rs`,
+>   `bins/node/src/node/maintainer_quorum.rs`; wire `SyncRequest::GetMaintainerState` /
+>   `SyncResponse::MaintainerStateAt`, `specs/protocol.md` §7.3.2). The same probe runs once
+>   at each start. `doli snap` writes the seed-agreed set or EMPTY. A root that holds a
+>   retired genesis key is never usable for releases (`RETIRED_COMPROMISED_MAINTAINER_KEYS`).
+>   R1 stays open: a deleted file on a replay node still re-seeds from live producers, but
+>   the start-up probe can replace that root.
+> * **M3 (Layer 3)** — F7's replay-domain binding on governance messages, plus residual
+>   **R1** from M2 (**R2** and **R3** are closed, see above). NOT implemented. Scope:
 >   `docs/.workflow/inc-i-172-M3-scope.md`.
 > * Option A (weight hatch) and Option C (cold-key role separation) remain user decisions.
 
@@ -254,7 +264,8 @@ no longer reset the root because it is no longer producer-order-derived post-see
 > to drift:
 > * **F-7 is NOT satisfied for the snap path.** Snap-only nodes do **not** fail closed —
 >   nothing in `bins/node/src/node/periodic.rs` reads `ChainState::is_snap_synced()`. See the
->   F-7 amendment in *Failure Filters* below. Residual **R3**.
+>   F-7 amendment in *Failure Filters* below. Residual **R3** — **CLOSED by INC-I-248**
+>   (see the status block at the top).
 > * **F2's replay claim landed as a pure function only.** `derive_maintainer_set` was revived
 >   and is replay-complete, but it has **zero production callers**. The node seeds from LIVE
 >   `ProducerSet` state via `derive_canonical_maintainer_set`, so deleting
@@ -271,7 +282,8 @@ no longer reset the root because it is no longer producer-order-derived post-see
 >
 > None of the three is a regression against pre-M2 behavior, which is why they do not block
 > the M2 activation height. All three are scoped in
-> `docs/.workflow/inc-i-172-M3-scope.md`; **R2 is now closed, R1 and R3 remain open.**
+> `docs/.workflow/inc-i-172-M3-scope.md`; **R2 and R3 are now closed (R3 by INC-I-248), R1
+> remains open.**
 
 ━━━ RESOURCE COST — COST-DECLARED ━━━
 Dimensions:
@@ -628,6 +640,14 @@ rejection rules, not tradeoffs.
   >
   > The full-sync / backfill half of F-7 **does** hold: a full data-dir wipe followed by a full
   > resync from genesis re-executes the whole governance history and converges.
+  >
+  > **UPDATE (INC-I-248): the snap half now holds.** `maybe_bootstrap_maintainer_set` calls
+  > `hold_snap_root_empty`, which reads `ChainState::snap_sync_height()`: at and above the gate
+  > a snap-synced node stores an EMPTY root at the snap height and never seeds from producers.
+  > It then adopts the set a peer quorum agrees on by digest. The divergence axis named above
+  > is bounded: a node that replayed the chain keeps the unchanged seed path (frozen-digest
+  > test `inc_i_248_replay_node_maintainer_set_invariant`), and a governance tx that fails the
+  > local multisig only warns and is skipped, so block validity does not change.
 - **F-8 OUT-OF-BAND FIRST DELIVERY, NEW ANCHOR** — see First-Delivery Plan; must not depend on
   `is_newer_version`/`/releases/latest` (attacker-pinnable).
 - **F-9 NO IN-BAND-ONLY TRUST** — reproducible build + independently published digest, or nothing.

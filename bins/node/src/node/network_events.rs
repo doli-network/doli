@@ -364,6 +364,10 @@ impl Node {
     ) -> Result<()> {
         debug!("Sync response from {}", peer_id);
 
+        let Some(response) = self.route_maintainer_probe_reply(peer_id, response).await else {
+            return Ok(());
+        };
+
         self.sync_manager
             .write()
             .await

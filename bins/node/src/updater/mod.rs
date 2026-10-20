@@ -20,7 +20,9 @@ mod service;
 mod staged_apply;
 mod trust_root_wiring;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use tokio::sync::{mpsc, Notify, RwLock};
 use tracing::warn;
 
 // Re-export items from the updater crate (preserves original public API)
@@ -35,10 +37,46 @@ pub use updater::{
 };
 
 // Re-export sub-module public items
-pub use service::spawn_update_service;
 pub use trust_root_wiring::{
     command_trust_root, load_maintainer_state, maintainer_trust_root_fn, resolve_trust_root,
 };
+
+/// Start the update service in a background task
+///
+/// Returns `(vote_tx, pending)`:
+/// - `vote_tx`: channel to forward gossip votes into the UpdateService
+/// - `pending`: shared state for RPC to read live update status
+///
+/// `recheck` runs an update check at once, outside the interval.
+pub fn spawn_update_service(
+    config: UpdateConfig,
+    data_dir: PathBuf,
+    network: doli_core::network::Network,
+    producer_count_fn: impl Fn() -> Option<usize> + Send + Sync + 'static,
+    is_producer_fn: impl Fn(&str) -> Option<bool> + Send + Sync + 'static,
+    maintainer_keys_fn: impl Fn() -> updater::TrustRoot + Send + Sync + 'static,
+    recheck: Arc<Notify>,
+) -> (
+    mpsc::Sender<VoteMessage>,
+    Arc<RwLock<Option<PendingUpdate>>>,
+) {
+    let service = service::UpdateService::new(config, data_dir, network);
+    let vote_tx = service.vote_sender();
+    let pending = service.pending_state();
+
+    tokio::spawn(async move {
+        service
+            .run(
+                producer_count_fn,
+                is_producer_fn,
+                maintainer_keys_fn,
+                recheck,
+            )
+            .await;
+    });
+
+    (vote_tx, pending)
+}
 
 /// Re-export CLI as a sub-module (preserves `updater::cli::show_status_from_disk` path)
 pub mod cli {

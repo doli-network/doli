@@ -1007,16 +1007,17 @@ add_maintainer_tx = {
 - Cannot exceed MAX_MAINTAINERS (5)
 
 **Maintainer Bootstrap:**
-- The first 5 registered producers automatically become the initial maintainer set
+- The first 5 registered producers automatically become the initial maintainer set (the genesis seed). A node that replays the chain from genesis takes this seed and then applies every governance transaction
 - Bootstrap occurs once at the epoch boundary where the 5th producer becomes available
-- The maintainer set is persisted to `maintainer_state.bin` in the node's data directory
+- The maintainer set is persisted to `maintainer_state.bin` in the node's data directory. It is node-local: it is not in the snapshot payload and not in the state root
+- **Snap-synced node (INC-I-248):** at and above `maintainer_derivation_activation_height`, a node that installed a snapshot never seeds the set from producers. It stores an EMPTY set stamped at the snap height (fails closed) and adopts the set that a peer quorum agrees on (§7.3.2)
 - After bootstrap, changes require 3/5 multisig via AddMaintainer/RemoveMaintainer transactions
 - MaintainerAdd/RemoveMaintainer transactions are applied immediately (not deferred to epoch boundary)
 - Pre-bootstrap: nodes fall back to `BOOTSTRAP_MAINTAINER_KEYS` (hardcoded in binary) for release signature verification
 
 ### 3.17 ProtocolActivation Transaction
 
-Activates new consensus rules at a future epoch boundary. Requires 3/5 multisig from current maintainers (first 5 registered producers). This is the on-chain mechanism for coordinated consensus upgrades — all nodes switch simultaneously at the target epoch.
+Activates new consensus rules at a future epoch boundary. Requires 3/5 multisig from current maintainers (the node's current on-chain maintainer set). This is the on-chain mechanism for coordinated consensus upgrades — all nodes switch simultaneously at the target epoch.
 
 ```
 protocol_activation_tx = {
@@ -1043,7 +1044,7 @@ protocol_activation_tx = {
 - At least 1 signature present
 
 **Validation rules (node-level, requires state):**
-- 3/5 valid maintainer signatures (first 5 registered producers)
+- 3/5 valid maintainer signatures (the node's current on-chain maintainer set)
 - `protocol_version > active_protocol_version`
 - `activation_epoch > current_epoch`
 
@@ -2107,7 +2108,7 @@ Topics do NOT include `network_id`. Network isolation is achieved via genesis ha
 | Protocol | Request | Response |
 |----------|---------|----------|
 | `/doli/status/1.0.0` | Status request (version, network_id, genesis_hash, producer_pubkey?) | Status response (version, network_id, genesis_hash, best_height, best_hash, best_slot, producer_pubkey?) |
-| `/doli/sync/1.0.0` | GetHeaders, GetBodies, GetBlockByHeight, GetBlockByHash, GetStateSnapshot, GetStateRoot, GetHeadersByHeight, GetStateManifest, GetStateChunk | Headers, bodies, blocks, state snapshots, state root hashes, state manifests, state chunks, typed session refusals |
+| `/doli/sync/1.0.0` | GetHeaders, GetBodies, GetBlockByHeight, GetBlockByHash, GetStateSnapshot, GetStateRoot, GetHeadersByHeight, GetStateManifest, GetStateChunk, GetMaintainerState | Headers, bodies, blocks, state snapshots, state root hashes, state manifests, state chunks, typed session refusals, maintainer trust roots (`MaintainerStateAt`) |
 | `/doli/txfetch/1.0.0` | Transaction hashes (max 50) | Full transactions from mempool |
 
 #### 7.3.1 Chunked state-transfer session (Stage 3 [F3])
@@ -2197,6 +2198,91 @@ remove.
 `GetStateChunk` does NOT, because chunk traffic is already bounded by the concurrent-session cap
 and by one outstanding chunk per session. Counting it twice would make a normal transfer trip the
 generic cap and blacklist an honest peer with its own traffic.
+
+#### 7.3.2 Maintainer trust-root quorum (INC-I-248)
+
+The maintainer set (`maintainer_state.bin`) is node-local. It is not in the snapshot payload and
+not in the state root. A snap-synced node cannot replay the governance history below its snapshot,
+so it asks its peers for their set. Two variants are APPENDED on `/doli/sync/1.0.0`. No existing
+variant, field or index changes, and no protocol version changes. An old peer does not answer.
+
+| Enum | Index | Variant and fields |
+|---|---|---|
+| `SyncRequest` | 10 | `GetMaintainerState` |
+| `SyncResponse` | 9 | `MaintainerStateAt { block_hash: Hash, block_height: u64, digest: Hash, set_bytes: Vec<u8>, last_derived_height: u64 }` |
+
+The server answers with its tip (`block_hash`, `block_height`), `maintainer_set_digest(set,
+genesis_hash)`, the bincode `MaintainerSet` (an EMPTY set when it holds none) and its
+`last_derived_height`. The receiver decodes and validates the set and recomputes the digest with
+its LOCAL genesis hash. It drops a digest mismatch, a body that does not decode or validate, and
+every answer that arrives while no probe collects.
+
+**Selection rule** (`select_quorum_maintainer_state`, `crates/core/src/maintainer/quorum.rs`, a pure
+function):
+
+1. Eligibility: only an EMPTY root with `last_derived_height > 0` (an EMPTY root stamped at a snap
+   height S) can change. A non-empty root, or an EMPTY root at height 0 (a replay node that has
+   not reached the gate), is never changed (`NotEligible`).
+2. An answer counts only when the peer tip >= S (the fixed height of the EMPTY root, not the
+   moving tip) and the set is not empty. There is no `last_updated` filter. Peer tips and
+   `last_updated` are not authenticated.
+3. The node drops an answer whose set holds a retired genesis key at S (see the retirement height
+   below).
+4. The counted answers are grouped by digest. A tie between the largest groups keeps the EMPTY
+   root. A largest group smaller than `snap_quorum()` keeps it
+   (`snap_quorum() = max(3, min(peers / 2 + 1, 5))`, the same quorum as the state-root vote). A
+   largest group that is not a strict majority of the counted answers keeps it.
+5. Otherwise the node adopts the largest group. Its `last_updated` is the minimum of the group,
+   and `last_derived_height` is the local tip at adoption. The file is replaced atomically under
+   the write lock.
+
+**Retirement height.** `NetworkParams::retired_genesis_maintainer_keys_height` gives the height
+after which the 5 keys of `MAINNET_GENESIS_PRODUCERS` are not maintainers: mainnet 331_457 (the
+last block of the rotation), testnet and devnet `u64::MAX`. It is a node-local trust-root check.
+It changes no block, no state root and no governance verdict.
+
+**Sanitizer.** At start, and after a producer seed, a set that holds a retired key while the
+height is above the retirement height becomes EMPTY at that height. The node saves it and logs
+one warning. The root is then eligible and the probe repairs it. An EMPTY set verifies no
+governance signature, so the retired keys cannot rotate it.
+
+**Provenance check.** At start, a non-empty set whose `last_derived_height` D >= 1 is below the
+tip, with block D in the local block store and block D+1 absent, was not derived from replayed
+history. The node resets it to EMPTY at the tip and the peer quorum repairs it. Pruning removes a
+contiguous prefix from height 1, so a pruned or full replay node never matches.
+
+**Post-gate seed check.** At start, a non-empty set with `last_updated` == D ==
+`last_derived_height` >= G > 0 (G = `maintainer_derivation_activation_height`), the tip above D,
+and the node's own block D present with no AddMaintainer or RemoveMaintainer transaction came from
+a producer seed above the gate. The node resets it to EMPTY at the tip and the peer quorum repairs
+it. A missing block D keeps the set. A replay node holds a pre-gate seed or a governance-block D
+and keeps its set. Devnet (G = 0) never matches.
+
+**Snapshot install.** The maintainer state always becomes EMPTY at the snapshot height S. A set
+the node held before the snapshot is not kept.
+
+**Probe** (`bins/node/src/node/maintainer_quorum.rs`):
+
+- It arms only for an eligible root: at the end of a snapshot install, and on the first periodic
+  tick with at least 1 sync peer and at least 10 s of uptime.
+- It sends `GetMaintainerState` to every sync peer and collects answers for 15 s. An answer is
+  only recorded. The rule runs once, at the end of the window.
+- A reply to the node's own `GetMaintainerState` never reaches the sync manager: a
+  `MaintainerStateAt`, or an `Error` from a peer that the probe asked. Other responses are
+  unchanged.
+- A node serves `GetMaintainerState` outside the sync serving limit. It never answers it busy.
+- Adopt and NotEligible end the probe. No answer, no quorum, a tie or no majority retries after
+  60 s, for at most 3 attempts. Then the node keeps its root. The next start tries again.
+- Every verdict logs one line.
+- After an adoption the node signals the update service, which checks for releases at once.
+
+**Snap-synced seed gate.** At and above `maintainer_derivation_activation_height`, a node whose
+`ChainState` carries a snap height never seeds the set from producers. It stores an EMPTY set with
+`last_derived_height` = the snap height. That root is unusable for releases (fails closed) until
+the probe replaces it. A node that replayed the chain keeps the unchanged seed path.
+
+This changes no block content, no block-validity rule and no state-root term. It needs no
+activation height. Upgrade the seeds first, so joining nodes get answers.
 
 ### 7.4 Connection Flow
 
@@ -2589,8 +2675,8 @@ If absent, the release targets all networks (backward compatibility).
 
 Verification runs against a **resolved trust root** — keys, the threshold they must
 meet, and where they came from — never against a bare key list. There is **no fallback
-to the compiled bootstrap keys** (INC-I-172 F1): an empty or sub-threshold on-chain root
-**fails closed** and refuses every release.
+to the compiled bootstrap keys** (INC-I-172 F1): an empty or sub-threshold on-chain root, or a
+root that holds a retired genesis key (INC-I-248), **fails closed** and refuses every release.
 
 **Trust-root resolution** (`bins/node/src/updater/trust_root_wiring.rs`, the only place
 in the node that makes this decision):
@@ -2605,9 +2691,16 @@ A root that cannot be read at all (lock contention, unreadable
 `maintainer_state.bin`) resolves to an unusable `OnChain` root or is fatal at startup.
 "I could not check" is never "it is fine".
 
+**Retired keys (INC-I-248).** `RETIRED_COMPROMISED_MAINTAINER_KEYS` (`crates/updater/src/constants.rs`)
+lists the public keys of the 5 retired mainnet genesis maintainers. Their private halves are public.
+A resolved root that holds any of them is not usable, on every network: verification refuses with
+`TrustRootUnavailable`, and `TrustRoot::resolve` logs `TRUST_ROOT_RETIRED_KEY`. The list is a
+deny-list for release verification only. Governance and the maintainer derivation do not read it.
+
 ```
 // Verification, given a resolved root
-if root.threshold < 1 OR count(root.keys) < root.threshold:
+if root.threshold < 1 OR count(root.keys) < root.threshold
+   OR any key of root.keys is in RETIRED_COMPROMISED_MAINTAINER_KEYS:
     REFUSE (TrustRootUnavailable)      // never falls back to BOOTSTRAP_MAINTAINER_KEYS
 
 message = version + ":" + binary_sha256      // binary_sha256 = sha256(CHECKSUMS.txt)
@@ -2648,7 +2741,7 @@ file that carries the signatures, so a verbatim copy of any past genuine
 
 | Path | Root |
 |---|---|
-| node auto-update (`UpdateService`) | resolved per check; re-verified again immediately before install |
+| node auto-update (`UpdateService`) | resolved per check; re-verified again immediately before install; checked again at once after a peer-quorum adoption (§7.3.2) |
 | `doli-node upgrade` / `update verify` / `update apply` | resolved from this host's `maintainer_state.bin` |
 | `doli upgrade` (CLI) | `Bootstrap` — the CLI is not the node host and has no chain state |
 

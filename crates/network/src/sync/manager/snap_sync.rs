@@ -15,7 +15,7 @@ impl SyncManager {
     /// majority of connected peers, whichever is larger, capped at 5. Shared by the
     /// state-root vote quorum and the INC-I-143 F4 anchor-height corroboration so
     /// both admission checks use one definition.
-    pub(super) fn snap_quorum(&self) -> usize {
+    pub fn snap_quorum(&self) -> usize {
         let total_peers = self.peers.len();
         std::cmp::max(self.snap.quorum, std::cmp::min(total_peers / 2 + 1, 5))
     }

@@ -122,7 +122,6 @@ To register with more bonds:
 ./target/release/doli-node run \
     --producer \
     --producer-key ~/.doli/mainnet/producer.json \
-    --no-auto-update \
     --p2p-port 30300 \
     --rpc-port 8500
 ```
@@ -133,11 +132,13 @@ With a bootstrap node (to join an existing network):
 ./target/release/doli-node run \
     --producer \
     --producer-key ~/.doli/mainnet/producer.json \
-    --no-auto-update \
     --bootstrap /ip4/<BOOTSTRAP_IP>/tcp/30300
 ```
 
-> **Note:** `--no-auto-update` is recommended during early mainnet while the update system uses bootstrap keys. Once maintainer keys are derived on-chain, this flag can be removed.
+> **Note:** Auto-update is ON by default. You do not need a flag for it. The node installs
+> each release only after it verifies the maintainer signatures. After the first sync, check
+> that the node holds the correct release trust root:
+> [troubleshooting.md §5.5](troubleshooting.md#55-check-your-release-trust-root).
 
 ### systemd service (production)
 
@@ -157,7 +158,6 @@ Type=simple
 ExecStart=%h/repos/doli/target/release/doli-node run \
     --producer \
     --producer-key %h/.doli/mainnet/producer.json \
-    --no-auto-update \
     --p2p-port 30300 \
     --rpc-port 8500
 Restart=always
